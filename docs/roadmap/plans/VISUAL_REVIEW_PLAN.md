@@ -1,6 +1,6 @@
 # Review of generated images and video, phase 1 (BL-175, FO-REQ-0018 §A–§D)
 
-Status: IN PROGRESS (branch `feature/visual-review`). Owner's go: Telegram 2026-10-11 msg 2538 («Ок» to "Берём фазу 1 в работу
+Status: BUILT, waiting for the owner's merge decision (branch `feature/visual-review`). Owner's go: Telegram 2026-10-11 msg 2538 («Ок» to "Берём фазу 1 в работу
 (BL-175)?"). Reply to the Operator: DEV-RESP-0021. Phase 2 (§E–§F) and phase 3 (§G) are not part of this plan.
 
 ## 1. Facts (code read 2026-10-11, `dev` 9a7720a; the Mac's database read-only)
@@ -186,7 +186,23 @@ same way from the entry it already receives (`currentFile`, stage `auditionFile`
 5. Screen (AC-VR-14), locales en/ru.
 6. Validation, docs, live check (AC-VR-15), then two review rounds before the merge request.
 
-## 5. Not in this phase
+## 5. Changed while building (2026-10-11)
+
+- **Reject vs pick** (§2.2): a rejection always withdraws the pick, also one that arrives later from the other computer or
+  answers a re-check; the withdrawal is dated no earlier than the pick. A pick on an attempt whose current verdict is rejected
+  (stored, or on its way from the other computer) is refused here and superseded when it comes from there.
+- **A pick's note** is the screen's comment field at the moment of the pick (FO-REQ-0018 asks for no separate field). A pick
+  stays on the attempt (no auto-advance): the owner may still rate it.
+- **The wheel** zooms a picture on the screen itself only with Ctrl / ⌘ (a trackpad pinch), so the column still scrolls; in the
+  whole-window layer it always zooms (found in the live check).
+- **A picture wave's summary** reads "looked at: picked, accepted, rejected"; music keeps its text.
+- **The grid** shows the attempts in a stable order (item, then attempt), not the queue's (which moves settled ones down).
+- **Live check (AC-VR-15)** ran on an isolated instance of the branch (`next dev` on 127.0.0.1:3100 with a scratch HOME and
+  database, a test user and channel, generated PNG stills, 16 fps MP4 loops and an MP3; a session minted with the worktree's
+  throwaway secret). Pictures in the owner's Chrome; clips in a separate headless Chrome (the Mac's display was off, and Chrome
+  does not load media in a hidden tab). Not checked live: two computers -- that needs the Windows update.
+
+## 6. Not in this phase
 
 Wipe slider, difference, image/video references in A/B, visual re-check compare, seam view (phase 2); Gemini outputs without
 copying, owner time per verdict, phone mode (phase 3); relaying a pick through `factory_plan_report`; N-up survey.

@@ -3496,6 +3496,37 @@ generation plans module (`src/lib/generation-plans/`); extends §29 and §33.
 - **Limits.** The report's review list holds 500 entries; the attempts of open re-checks are always among them. Both computers must
   run report version 4 (RISK-119).
 
+## 44. Review of generated images and video: one of N, pins, reason chips (BL-175, FO-REQ-0018 §A-§D)
+
+Plan: `docs/roadmap/plans/VISUAL_REVIEW_PLAN.md`; reply to the Operator: DEV-RESP-0021. Phase 1 only (wipe, difference, visual
+re-checks and the seam view are phase 2; Gemini outputs without copying, owner time and the phone mode are phase 3).
+
+- **A pick is not a verdict.** `generation_plan_picks` (schema v84, on the plan's computer) holds one record per plan, item, kind
+  (`pick` / `none_fits`) and attempt; withdrawing clears `active` and keeps the time, so "newer wins" also holds against a
+  withdrawal that came from the other computer. The rules are pure (`src/lib/generation-plans/picks.ts`, `applyPickAction`) and
+  serve the owner's own actions, the other computer's actions on the tick, and both pending overlays. A pick writes no result row
+  and no verdict history; events `owner_pick` / `owner_unpick` / `owner_none_fits` (and `peer_pick` for an action weighed from
+  the other computer) are recorded. An attempt is never both picked and rejected: a rejection withdraws the pick (also one that
+  arrives later from the other computer), a pick on a rejected attempt is refused.
+- **Counting.** `entryWaits` is the one "waits for the owner" rule (queue, counts, badge, screen). An item is decided at its pick
+  target (`pickTargetOf`); its attempts without a verdict are `notChosen` (neither accepted, pending nor rejected). Attempts that
+  only external stages report now count in `attempts`, `accepted` and `missing`; the Mac's two music plans had none, so their
+  numbers did not change (`picks.test.ts` AC-VR-07 pins the old rules with fixed values).
+- **Two computers.** Plans report v5: marker `region`s, `reviewReasons`, items' `pickTarget`, active `picks` / `noneFits`,
+  entries' `picked` / `notChosen`, `handledPicks`, and the top-level `picks` this computer sent. A v4 build refuses v5. A pick on
+  another computer's plan is refused (`peer_update_required`) while that computer's report is below v5.
+- **Previews** (`src/lib/media-preview/`, a shared module that knows nothing about plans): `sharp` (a direct dependency since
+  BL-175; Next.js already installed it) resizes an image to at most 480 px a side, `limitInputPixels` guards against decompression
+  bombs, a 300-entry memory cache is keyed by path, size and mtime; any failure streams the original. The `…/preview` routes
+  resolve and prove the file exactly as the audition route does (loopback, session, active channel, workspace proof) and answer
+  415 for anything that is not an image.
+- **Screen.** The media kind (`mediaKindOf`, by the played file's extension) picks the viewer before `MediaReviewPlayer` would
+  decode a picture as audio. New components: `media-image-viewer.tsx`, `media-video-player.tsx`, `visual-review-layer.tsx`
+  (grid / loupe / compare), pure helpers in `visual-review-model.ts` (pin geometry, view state shared for linked zoom, frames,
+  chips, keys). The keys of pictures live in `visualKeyAction`; the music key map, chips and player are untouched.
+- **Known limits.** The frame rate comes from the row's `metrics.fps`, else it is measured while the clip plays
+  (`requestVideoFrameCallback`); Chrome does not load media in a hidden tab, so a clip shows only once its tab is visible.
+
 ## 43. Images and video through Google's Gemini API, driven by the Factory Operator (BL-174, ADR 0035)
 
 Plan: `docs/roadmap/plans/GEMINI_MEDIA_PLAN.md` (AC-GM-01..16). Schema v83, Factory API 1.12.0. A separate feature module,
