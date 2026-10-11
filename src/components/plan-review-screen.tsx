@@ -532,6 +532,35 @@ function walkOf<E extends PlanReviewEntry>(lists: { entries: E[]; rechecks: Plan
 /** One entry of the screen: a track of the plan's queue, or an open re-check (`recheck`). BL-175: `pickSent` = picked from here, on its way. */
 type ScreenEntry = PlanReviewEntry & { recheck?: PlanRecheck; pendingKept?: boolean; pickSent?: true };
 
+/** BL-175 (review rounds 1 and 2): the pictures' kept drafts, each with the verdict time it was written against. */
+export type KeptDrafts = Map<string, { draft: Draft; verdictAt: string | null }>;
+type DraftOwner = { itemKey: string; attemptRef: string; verdict: { at: string } | null; recheck?: Pick<PlanRecheck, "recheckId"> };
+/** Keeps the draft of the attempt the owner leaves (an empty one is forgotten). Exported for its test. */
+export function keepDraft(kept: KeptDrafts, from: DraftOwner, draft: Draft): void {
+  if (draftIsEmpty(draft)) kept.delete(draftKeyOf(from));
+  else kept.set(draftKeyOf(from), { draft, verdictAt: from.verdict?.at ?? null });
+}
+/** The draft an attempt comes back with: its kept one, unless its verdict changed since (then a fresh one). Exported for its test. */
+export function draftBack(kept: KeptDrafts, target: DraftOwner): Draft {
+  const found = kept.get(draftKeyOf(target));
+  if (!found) return emptyDraft();
+  if (found.verdictAt !== (target.verdict?.at ?? null)) {
+    kept.delete(draftKeyOf(target));
+    return emptyDraft();
+  }
+  return found.draft;
+}
+
+/** An attempt's key on the screen: its item and attempt. */
+function entryKey(e: { itemKey: string; attemptRef: string }): string {
+  return `${e.itemKey}\u0000${e.attemptRef}`;
+}
+
+/** BL-175 (review round 2): the key a picture's kept draft is filed under -- an open re-check of the attempt has its own. */
+function draftKeyOf(entry: { itemKey: string; attemptRef: string; recheck?: Pick<PlanRecheck, "recheckId"> }): string {
+  return `${entry.itemKey}\u0000${entry.attemptRef}\u0000${entry.recheck?.recheckId ?? ""}`;
+}
+
 /** BL-175 (§2.1): what the screen shows for an entry -- a re-check's revised file decides for a revision, else the entry's own kind. */
 export function screenMedia(entry: { media?: PlanMediaKind | null; recheck?: Pick<PlanRecheck, "kind" | "auditionFile"> }): PlanMediaKind | null {
   if (entry.recheck?.kind === "revision" && entry.recheck.auditionFile) return mediaKindOf(entry.recheck.auditionFile);
@@ -628,6 +657,7 @@ export function PlanReviewScreen({
   const [pickItems, setPickItems] = useState<Map<string, ItemPickInfo>>(new Map());
   const [noneFitsDraft, setNoneFitsDraft] = useState<{ itemKey: string; note: string; rerun: boolean } | null>(null);
   const noneFitsForm = useRef<HTMLFormElement | null>(null);
+  const noteBoxForm = useRef<HTMLFormElement | null>(null);
   const [confirmRejectPicked, setConfirmRejectPicked] = useState(false);
   const [imageBytes, setImageBytes] = useState<{ src: string; bytes: number | null } | null>(null);
   // BL-162 (AC-UX-15): the queue keeps the open track in view.
@@ -744,24 +774,26 @@ export function PlanReviewScreen({
 
   // BL-175 (review round 1): a picture's draft (pins with notes, chips, rating) waits for the owner when another attempt is opened
   // from the grid or the strip, and comes back with its attempt. Music keeps a fresh draft per track, as before.
-  const visualDrafts = useRef(new Map<string, Draft>());
+  // Review round 2: every move to another attempt keeps and brings back drafts the same way (the arrows, auto-advance, filters,
+  // waves); a draft written before the attempt's verdict changed (a verdict from the other computer, an answered re-check) is
+  // dropped rather than shown again.
+  const visualDrafts = useRef<KeptDrafts>(new Map());
+  const stashDraft = useCallback(() => {
+    const from = entries?.[Math.min(index, entries.length - 1)];
+    if (from && isVisual(screenMedia(from))) keepDraft(visualDrafts.current, from, draft);
+  }, [draft, entries, index]);
+  const draftFor = useCallback((target: ScreenEntry | undefined): Draft => (target ? draftBack(visualDrafts.current, target) : emptyDraft()), []);
   const go = useCallback(
     (to: number) => {
       if (!entries || entries.length === 0) return;
       stopB();
       const next = ((to % entries.length) + entries.length) % entries.length;
-      const from = entries[Math.min(index, entries.length - 1)];
-      if (from && isVisual(screenMedia(from))) {
-        const key = `${from.itemKey}\u0000${from.attemptRef}`;
-        if (draftIsEmpty(draft)) visualDrafts.current.delete(key);
-        else visualDrafts.current.set(key, draft);
-      }
-      const target = entries[next];
+      stashDraft();
       setIndex(next);
-      setDraft((target && visualDrafts.current.get(`${target.itemKey}\u0000${target.attemptRef}`)) ?? emptyDraft());
+      setDraft(draftFor(entries[next]));
       setMessage(null);
     },
-    [draft, entries, index, stopB]
+    [draftFor, entries, stashDraft, stopB]
   );
 
   /**
@@ -792,16 +824,18 @@ export function PlanReviewScreen({
         // An answered re-check leaves the list here (on another computer's plan it stays, "sent"): look on from where it was.
         const here = list.findIndex((e) => (e as ScreenEntry).recheck?.recheckId === recheck.recheckId);
         const next = nextWaitingIndex(list, here >= 0 ? here : index - 1, skipFresh);
-        setDraft(emptyDraft());
+        const to = next >= 0 ? next : Math.max(0, Math.min(here >= 0 ? here : index, list.length - 1));
+        visualDrafts.current.delete(draftKeyOf(entry));
+        setDraft(draftFor(list[to] as ScreenEntry | undefined));
         stopB();
-        setIndex(next >= 0 ? next : Math.max(0, Math.min(here >= 0 ? here : index, list.length - 1)));
+        setIndex(to);
       } catch (error) {
         setMessage({ tone: "error", text: error instanceof Error ? error.message : t("review.saveFailed") });
       } finally {
         setBusy(false);
       }
     },
-    [base, busy, draft, entry, filter, index, load, onChanged, skipFresh, stopB, t, wave]
+    [base, busy, draft, draftFor, entry, filter, index, load, onChanged, skipFresh, stopB, t, wave]
   );
 
   const submit = useCallback(
@@ -809,6 +843,13 @@ export function PlanReviewScreen({
       if (!entry || busy) return;
       if (entry.recheck) {
         void answerRecheck(result);
+        return;
+      }
+      // Review round 1: a mark still waiting for its note is never dropped -- kept with the note typed so far, else asked for
+      // (review round 2: before any question, so the owner is not asked twice and then told the note is missing).
+      const pending = pendingMarkOf(draft);
+      if (pending === "needs_note") {
+        setMessage({ tone: "error", text: t("review.pin.saveFirst") });
         return;
       }
       // BL-175 (§2.2): rejecting the picked attempt withdraws its pick -- asked first.
@@ -830,12 +871,6 @@ export function PlanReviewScreen({
         });
         return;
       }
-      // Review round 1: a mark still waiting for its note is never dropped -- kept with the note typed so far, else asked for.
-      const pending = pendingMarkOf(draft);
-      if (pending === "needs_note") {
-        setMessage({ tone: "error", text: t("review.pin.saveFirst") });
-        return;
-      }
       setBusy(true);
       try {
         const marks = [...(draft.openMark !== null ? [...draft.marks, { start: draft.openMark, end: null, note: null }] : draft.marks), ...(pending ? [pending] : [])];
@@ -850,15 +885,16 @@ export function PlanReviewScreen({
           ...(draft.note.trim() ? { note: draft.note.trim() } : {}),
         });
         setMessage({ tone: "ok", text: t("review.verdictSaved", { item: entry.itemKey, result: resultLabel(t, result) }) });
-        visualDrafts.current.delete(`${entry.itemKey}\u0000${entry.attemptRef}`);
+        visualDrafts.current.delete(draftKeyOf(entry));
         onChanged?.();
         // Auto-advance: the next attempt still waiting after this one, in the refreshed queue.
         const list = visibleEntries((await load()).entries, filter, wave);
         const here = list.findIndex((e) => e.itemKey === entry.itemKey && e.attemptRef === entry.attemptRef);
         const next = nextWaitingIndex(list, here >= 0 ? here : index, skipFresh);
-        setDraft(emptyDraft());
+        const to = next >= 0 ? next : Math.max(0, here);
+        setDraft(draftFor(list[to] as ScreenEntry | undefined));
         stopB();
-        setIndex(next >= 0 ? next : Math.max(0, here));
+        setIndex(to);
       } catch (error) {
         // The screen's data was stale: the server found a verdict there -- ask now (AC-TC-04).
         if (error instanceof RequestError && error.code === "plan_verdict_exists") {
@@ -873,7 +909,7 @@ export function PlanReviewScreen({
         setBusy(false);
       }
     },
-    [answerRecheck, base, busy, draft, entry, filter, index, load, onChanged, skipFresh, stopB, t, wave]
+    [answerRecheck, base, busy, draft, draftFor, entry, filter, index, load, onChanged, skipFresh, stopB, t, wave]
   );
 
   // BL-157 (AC-TC-01): this computer claims the waiting track on screen (and the wave it took), renewed every minute;
@@ -909,8 +945,8 @@ export function PlanReviewScreen({
     // Only in the first seconds after opening (review): a claim that arrives later (an older build's report) never pulls a track
     // away from the owner mid-listen -- the "being reviewed on" line says it instead.
     if (!claim || claim.scope !== "attempt" || !opened || opened.key !== claimKey || pickedByHand.current === claimKey || nowMs - opened.at > AUTO_MOVE_WINDOW_MS || !(Date.parse(claim.since) < opened.at)) return;
-    const untouched = draft.reasons.length === 0 && draft.rating === null && !draft.note.trim() && draft.marks.length === 0 && draft.openMark === null;
-    if (!untouched) return;
+    // Review round 2: a mark waiting for its note counts as touched too (the note box keeps its place).
+    if (!draftIsEmpty(draft)) return;
     const next = nextWaitingIndex(entries, index, skipClaimed);
     if (next < 0 || next === index) return;
     go(next);
@@ -922,12 +958,15 @@ export function PlanReviewScreen({
     (next: ReviewFilter) => {
       stopB();
       setCompareKey(null);
+      stashDraft();
+      const list = visibleEntries(allEntries ?? [], next, wave);
+      const to = Math.max(0, list.findIndex((e) => entryWaits(e) && !skipClaimed(e)));
       setFilter(next);
-      setIndex(Math.max(0, visibleEntries(allEntries ?? [], next, wave).findIndex((e) => entryWaits(e) && !skipClaimed(e))));
-      setDraft(emptyDraft());
+      setIndex(to);
+      setDraft(draftFor(list[to] as ScreenEntry | undefined));
       setMessage(null);
     },
-    [allEntries, skipClaimed, stopB, wave]
+    [allEntries, draftFor, skipClaimed, stashDraft, stopB, wave]
   );
   /** BL-157 (AC-WV-02): a wave shows its own first waiting attempt; null = all waves. */
   const chooseWave = useCallback(
@@ -936,13 +975,16 @@ export function PlanReviewScreen({
       setCompareKey(null);
       // BL-173: the re-checks have no validator filter of their own.
       const nextFilter = next === RECHECKS_WAVE ? "all" : filter;
+      stashDraft();
+      const list = walkOf({ entries: allEntries ?? [], rechecks: recheckEntries }, nextFilter, next);
+      const to = Math.max(0, list.findIndex((e) => entryWaits(e) && !skipClaimed(e)));
       setFilter(nextFilter);
       setWave(next);
-      setIndex(Math.max(0, walkOf({ entries: allEntries ?? [], rechecks: recheckEntries }, nextFilter, next).findIndex((e) => entryWaits(e) && !skipClaimed(e))));
-      setDraft(emptyDraft());
+      setIndex(to);
+      setDraft(draftFor(list[to]));
       setMessage(null);
     },
-    [allEntries, filter, recheckEntries, skipClaimed, stopB]
+    [allEntries, draftFor, filter, recheckEntries, skipClaimed, stashDraft, stopB]
   );
   const waves = useMemo(() => waveSummaries(allEntries ?? [], batches), [allEntries, batches]);
   const chosenWave = wave === null ? null : (waves.find((w) => w.groupId === wave) ?? null);
@@ -1071,6 +1113,15 @@ export function PlanReviewScreen({
     }
   }, [abSource, matchLoudness, onB, t]);
 
+  /** The visual attempts of the walk, stable (item, then attempt): the grid never reorders under the owner's hands. */
+  const visualWalk = (entries ?? [])
+    .filter((e) => !e.recheck && e.playable && isVisual(screenMedia(e)))
+    .sort((a, b) => a.itemKey.localeCompare(b.itemKey, undefined, { numeric: true }) || attemptLabel(a).localeCompare(attemptLabel(b), undefined, { numeric: true }));
+  // Review round 2: one rule for compare, the C key and the button alike -- a second picture or clip of the walk is chosen.
+  const comparable = entry !== null && compareKey !== null && compareKey !== entryKey(entry) && visualWalk.some((e) => entryKey(e) === compareKey);
+  // Review round 2: an open re-check shows its own file on the screen only -- the grid, the loupe and compare never open on it.
+  const layerable = visualEntry && !entry?.recheck;
+
   // Keyboard shortcuts, except while typing.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -1083,10 +1134,11 @@ export function PlanReviewScreen({
       if (layer !== null || visualEntry) {
         const v = visualKeyAction(event.key);
         // Enter on a focused button, switch or link keeps its own meaning.
-        if (v && !(v === "loupe" && target?.closest("button, [role=switch], [role=button], a")) && !(v === "close" && layer === null)) {
+        const opensLayer = v === "grid" || v === "loupe" || v === "compare";
+        if (v && !(v === "loupe" && target?.closest("button, [role=switch], [role=button], a")) && !(v === "close" && layer === null) && !(opensLayer && layer === null && !layerable)) {
           event.preventDefault();
-          // A held key never picks and unpicks, nor flickers the grid (review round 1).
-          if (event.repeat && v !== "zoom" && v !== "frameBack" && v !== "frameForward") return;
+          // A held key never picks and unpicks, nor flickers the grid or the zoom (review rounds 1 and 2); frames step while held.
+          if (event.repeat && v !== "frameBack" && v !== "frameForward") return;
           if (v === "close") {
             setLayer(layer !== "grid" && layerBack === "grid" ? "grid" : null);
             setLayerBack(null);
@@ -1100,13 +1152,14 @@ export function PlanReviewScreen({
             else videoPlayer.current?.stepFrame(direction);
           } else if (v === "grid") setLayer((l) => (l === "grid" ? null : "grid"));
           else if (v === "loupe") {
-            if (visualEntry) {
-              setLayerBack(layer === "grid" ? "grid" : null);
+            if (layerable) {
+              // Esc goes back to the grid when the layer started there -- also after loupe <-> compare (review round 2).
+              setLayerBack(layer === "grid" ? "grid" : layer !== null ? layerBack : null);
               setLayer("loupe");
             }
           } else if (v === "compare") {
-            if (entry && compareKey && compareKey !== `${entry.itemKey}\u0000${entry.attemptRef}` && (allEntries ?? []).some((e) => `${e.itemKey}\u0000${e.attemptRef}` === compareKey && e.groupId === entry.groupId)) {
-              setLayerBack(layer === "grid" ? "grid" : null);
+            if (comparable) {
+              setLayerBack(layer === "grid" ? "grid" : layer !== null ? layerBack : null);
               setLayer("compare");
             } else setMessage({ tone: "ok", text: t("review.layer.compareNeedsTwo") });
           } else if (v === "pick") togglePick(entry);
@@ -1120,11 +1173,19 @@ export function PlanReviewScreen({
       // In the layer only playback and moving between attempts act; a verdict is given on the screen itself.
       if (layer !== null) {
         if (action === "play" || action === "back" || action === "forward" || action === "next" || action === "previous") event.preventDefault();
+        // A held N/P never runs through the attempts (review round 2, as on the screen).
+        if (event.repeat && (action === "next" || action === "previous")) return;
         if (action === "play") layerRef.current?.togglePlay();
         else if (action === "back") layerRef.current?.seekBy(-1);
         else if (action === "forward") layerRef.current?.seekBy(1);
-        else if (action === "next") go(stepIndex(entries ?? [], index, 1, skipClaimed));
-        else if (action === "previous") go(stepIndex(entries ?? [], index, -1, skipClaimed));
+        else if (action === "next" || action === "previous") {
+          const direction = action === "next" ? 1 : -1;
+          // In compare, never onto the compared attempt itself (it would compare with itself): one step further.
+          let to = stepIndex(entries ?? [], index, direction, skipClaimed);
+          const at = (entries ?? [])[to];
+          if (layer === "compare" && at && entryKey(at) === compareKey) to = stepIndex(entries ?? [], to, direction, skipClaimed);
+          go(to);
+        }
         return;
       }
       // A picture has no A/B and no playhead; a clip seeks a second at a time and marks with a note.
@@ -1161,7 +1222,7 @@ export function PlanReviewScreen({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [allEntries, answerRecheck, compareKey, confirmRejectPicked, confirmReplace, currentMedia, draft.pending, entries, entry, go, index, layer, layerBack, mark, noneFitsDraft, skipClaimed, submit, t, toggleAB, togglePick, onB, visualEntry]);
+  }, [answerRecheck, comparable, compareKey, confirmRejectPicked, confirmReplace, currentMedia, draft.pending, entries, entry, go, index, layer, layerBack, layerable, mark, noneFitsDraft, skipClaimed, submit, t, toggleAB, togglePick, onB, visualEntry]);
 
   // The reference's volume follows the loudness switch while it plays.
   useEffect(() => {
@@ -1234,7 +1295,6 @@ export function PlanReviewScreen({
   const allChecks = entry ? entry.stages.flatMap((st) => st.checks) : [];
 
   // -- BL-175 (VISUAL_REVIEW_PLAN.md §2.9): pictures and clips ---------------------------------------------------------------
-  const entryKey = (e: { itemKey: string; attemptRef: string }) => `${e.itemKey}\u0000${e.attemptRef}`;
   const auditionSrc = (e: { itemKey: string; attemptRef: string }) => `${base}/audition?itemKey=${encodeURIComponent(e.itemKey)}&attemptRef=${encodeURIComponent(e.attemptRef)}`;
   /** The pins an entry shows: its verdict's (numbered), the draft's and the one waiting for its note on screen, a re-check's spots. */
   const pinsOf = (e: ScreenEntry, current: boolean): ViewerPin[] => {
@@ -1254,10 +1314,6 @@ export function PlanReviewScreen({
     const pending = current && draft.pending ? [{ start: draft.pending.start, end: draft.pending.end, label: String(own.length + 1), tone: "mark" as const, ...(draft.pending.region ? { region: draft.pending.region } : {}) }] : [];
     return [...findings, ...asked, ...own, ...open, ...pending];
   };
-  /** The visual attempts of the walk, stable (item, then attempt): the grid never reorders under the owner's hands. */
-  const visualWalk = (entries ?? [])
-    .filter((e) => !e.recheck && e.playable && isVisual(screenMedia(e)))
-    .sort((a, b) => a.itemKey.localeCompare(b.itemKey, undefined, { numeric: true }) || attemptLabel(a).localeCompare(attemptLabel(b), undefined, { numeric: true }));
   const layerEntryOf = (e: ScreenEntry): LayerEntry => {
     const current = entry !== null && entryKey(e) === entryKey(entry);
     const media = screenMedia(e) as "image" | "video";
@@ -1288,52 +1344,56 @@ export function PlanReviewScreen({
   const currentNoneFits = entry ? (pickItems.get(entry.itemKey)?.noneFits ?? null) : null;
   const currentPickTarget = entry ? (pickItems.get(entry.itemKey)?.pickTarget ?? 1) : 1;
   const chips = entry ? reasonChipsFor(currentMedia, entry.groupId, reviewReasons, REVIEW_REASONS) : null;
-  const comparable = entry !== null && compareKey !== null && compareKey !== entryKey(entry) && visualWalk.some((e) => entryKey(e) === compareKey);
   const openLayer = (mode: LayerMode, fromLayer = false) => {
     if (mode === "compare" && !comparable) {
       setMessage({ tone: "ok", text: t("review.layer.compareNeedsTwo") });
       setLayer("grid");
       return;
     }
-    setLayerBack(fromLayer && layer === "grid" && mode !== "grid" ? "grid" : null);
+    setLayerBack(fromLayer && mode !== "grid" ? (layer === "grid" ? "grid" : layerBack) : null);
     setLayer(mode);
   };
   /** BL-175 (§C): the note of the mark just set -- typed when it is set (Enter keeps it, Esc drops the mark). Floating over the layer. */
   const pendingNoteBox = (floating: boolean) =>
     draft.pending ? (
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          savePending();
-        }}
-        className={`flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/60 bg-zinc-900 p-2 shadow-lg ${floating ? "fixed bottom-6 left-1/2 z-[55] w-[min(40rem,90vw)] -translate-x-1/2" : ""}`}
-      >
-        <span className="text-xs text-amber-200">{t("review.pin.noteLabel", { number: (entry?.verdict?.markers.length ?? 0) + draft.marks.length + 1 })}</span>
-        <input
-          autoFocus
-          value={draft.pending.note ?? ""}
-          maxLength={200}
-          placeholder={t("review.pin.notePlaceholder")}
-          onChange={(event) => {
-            const note = event.target.value;
-            setDraft((d) => (d.pending ? { ...d, pending: { ...d.pending, note } } : d));
+      <>
+        {/* Review round 2: over the layer it holds the focus (Tab stays in it; the layer's own hold steps aside). */}
+        {floating ? <HoldFocus formRef={noteBoxForm} /> : null}
+        <form
+          ref={floating ? noteBoxForm : undefined}
+          onSubmit={(event) => {
+            event.preventDefault();
+            savePending();
           }}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.preventDefault();
-              event.stopPropagation();
-              cancelPending();
-            }
-          }}
-          className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm text-zinc-100"
-        />
-        <button type="submit" disabled={!draft.pending.note?.trim()} className="rounded-md bg-amber-500/80 px-3 py-1 text-xs font-medium text-black hover:bg-amber-400 disabled:opacity-40">
-          {t("review.pin.save")}
-        </button>
-        <button type="button" onClick={cancelPending} className="rounded-md border border-zinc-700 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-800">
-          {t("review.pin.cancel")}
-        </button>
-      </form>
+          className={`flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/60 bg-zinc-900 p-2 shadow-lg ${floating ? "fixed bottom-6 left-1/2 z-[55] w-[min(40rem,90vw)] -translate-x-1/2" : ""}`}
+        >
+          <span className="text-xs text-amber-200">{t("review.pin.noteLabel", { number: (entry?.verdict?.markers.length ?? 0) + draft.marks.length + 1 })}</span>
+          <input
+            autoFocus
+            value={draft.pending.note ?? ""}
+            maxLength={200}
+            placeholder={t("review.pin.notePlaceholder")}
+            onChange={(event) => {
+              const note = event.target.value;
+              setDraft((d) => (d.pending ? { ...d, pending: { ...d.pending, note } } : d));
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                event.stopPropagation();
+                cancelPending();
+              }
+            }}
+            className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm text-zinc-100"
+          />
+          <button type="submit" disabled={!draft.pending.note?.trim()} className="rounded-md bg-amber-500/80 px-3 py-1 text-xs font-medium text-black hover:bg-amber-400 disabled:opacity-40">
+            {t("review.pin.save")}
+          </button>
+          <button type="button" onClick={cancelPending} className="rounded-md border border-zinc-700 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-800">
+            {t("review.pin.cancel")}
+          </button>
+        </form>
+      </>
     ) : null;
   /** BL-175 (§B): "none of these fits", with the owner's note -- and, on this computer's own plan, a request to generate again. */
   const submitNoneFits = async () => {
@@ -1662,24 +1722,27 @@ export function PlanReviewScreen({
                         })}
                       </ul>
                     )}
-                    <div className="flex flex-wrap items-center gap-2 text-xs">
-                      <button type="button" onClick={() => openLayer("grid")} className={toolButton}>
-                        {t("review.layer.grid")}
-                        {/* ui-text-ignore: a keyboard key */}
-                        <kbd className="text-[10px] text-zinc-500">G</kbd>
-                      </button>
-                      <button type="button" onClick={() => openLayer("loupe")} className={toolButton}>
-                        {t("review.layer.loupe")}
-                        {/* ui-text-ignore: a keyboard key */}
-                        <kbd className="text-[10px] text-zinc-500">Enter</kbd>
-                      </button>
-                      <button type="button" onClick={() => openLayer("compare")} className={toolButton}>
-                        {t("review.layer.compare")}
-                        {/* ui-text-ignore: a keyboard key */}
-                        <kbd className="text-[10px] text-zinc-500">C</kbd>
-                      </button>
-                      <span className="text-zinc-500">{t("review.strip.compareHint")}</span>
-                    </div>
+                    {/* Review round 2: an open re-check shows its own file here only -- no grid, loupe or compare on it. */}
+                    {layerable && (
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <button type="button" onClick={() => openLayer("grid")} className={toolButton}>
+                          {t("review.layer.grid")}
+                          {/* ui-text-ignore: a keyboard key */}
+                          <kbd className="text-[10px] text-zinc-500">G</kbd>
+                        </button>
+                        <button type="button" onClick={() => openLayer("loupe")} className={toolButton}>
+                          {t("review.layer.loupe")}
+                          {/* ui-text-ignore: a keyboard key */}
+                          <kbd className="text-[10px] text-zinc-500">Enter</kbd>
+                        </button>
+                        <button type="button" onClick={() => openLayer("compare")} className={toolButton}>
+                          {t("review.layer.compare")}
+                          {/* ui-text-ignore: a keyboard key */}
+                          <kbd className="text-[10px] text-zinc-500">C</kbd>
+                        </button>
+                        <span className="text-zinc-500">{t("review.strip.compareHint")}</span>
+                      </div>
+                    )}
                   </div>
                 ) : entry.playable && src ? (
                   <div className="space-y-1.5">
@@ -2141,7 +2204,7 @@ export function PlanReviewScreen({
       )}
       {noneFitsDraft && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4" role="presentation">
-          <NoneFitsFocus formRef={noneFitsForm} />
+          <HoldFocus formRef={noneFitsForm} />
           <form
             ref={noneFitsForm}
             role="dialog"
@@ -2162,7 +2225,6 @@ export function PlanReviewScreen({
             <h3 className="text-base font-semibold text-white">{t("review.noneFits.title")}</h3>
             <p className="text-sm text-zinc-400">{t("review.noneFits.description", { item: noneFitsDraft.itemKey })}</p>
             <textarea
-              autoFocus
               value={noneFitsDraft.note}
               maxLength={2000}
               rows={3}
@@ -2230,8 +2292,8 @@ export function PlanReviewScreen({
   );
 }
 
-/** BL-175 (review round 1): the "none fits" dialog holds the focus like ConfirmDialog (mounted only while it is open). */
-function NoneFitsFocus({ formRef }: { formRef: React.RefObject<HTMLFormElement | null> }) {
+/** BL-175 (review rounds 1 and 2): the "none fits" dialog and a pin's note box over the layer hold the focus like ConfirmDialog (mounted only while open). */
+function HoldFocus({ formRef }: { formRef: React.RefObject<HTMLFormElement | null> }) {
   useDialogFocus(formRef);
   return null;
 }

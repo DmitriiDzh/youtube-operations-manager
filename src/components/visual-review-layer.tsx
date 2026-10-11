@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { useDialogFocus } from "./use-dialog-focus";
 import type { PlanMarkerRegion, PlanPickMark, PlanValidatorVerdict } from "@/lib/generation-plans/contracts";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
@@ -74,6 +74,16 @@ export const VisualReviewLayer = forwardRef<LayerHandle, Props>(function VisualR
   // Review round 1: the layer is a dialog -- it takes the focus, keeps Tab inside and gives the focus back when it closes.
   const root = useRef<HTMLDivElement | null>(null);
   useDialogFocus(root, { initial: "container" });
+
+  // Review round 2: in compare the two clips start together -- each waits until both are loaded, then both play from the start.
+  const ready = useRef(new Set<string>());
+  useEffect(() => {
+    ready.current.clear();
+  }, [mode, current?.key, other?.key]);
+  const onClipReady = (key: string) => {
+    ready.current.add(key);
+    if (mode === "compare" && pair && pair.every((e) => ready.current.has(e.key))) for (const v of videos.current) v?.seekTo(0, "play");
+  };
 
   // Compare: the first clip leads -- every key and button drives it, and the other one follows its moves (`onUserSeek`).
   useImperativeHandle(ref, () => ({
@@ -160,8 +170,12 @@ export const VisualReviewLayer = forwardRef<LayerHandle, Props>(function VisualR
         compact={shared}
         onAddPin={slot === 0 && entry.key === currentKey && props.onAddPin ? props.onAddPin : undefined}
         // Compare: a seek in one clip moves the other to the same moment and the same state (playing or paused), without it
-        // seeking back (review round 1).
+        // seeking back (review round 1); so do play and pause asked for in either clip (review round 2). The loop range stays
+        // the clip's own.
         onUserSeek={shared ? (seconds, playing) => videos.current[slot === 0 ? 1 : 0]?.seekTo(seconds, playing ? "play" : "pause") : undefined}
+        onUserPlay={shared ? (playing, seconds) => videos.current[slot === 0 ? 1 : 0]?.seekTo(seconds, playing ? "play" : "pause") : undefined}
+        autoPlay={!shared}
+        onReady={shared ? () => onClipReady(entry.key) : undefined}
       />
     );
 

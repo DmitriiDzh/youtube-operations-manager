@@ -229,6 +229,17 @@ export function externalAttempts(plan: Pick<GenerationPlan, "stages">, inApp: Pl
   return [...out.values()];
 }
 
+/**
+ * BL-175 (review round 2): the attempts a pick may stand on ("item\u0000ref") -- in the owner's queue (`reviewCandidates`) and
+ * counted in the item's numbers (an in-app attempt or one an external stage reports). A pick anywhere else -- an attempt a stage
+ * failed after it was picked, a verdict relayed for a ref nothing reports -- neither shows nor decides its item.
+ */
+export function pickableRefs(plan: Pick<GenerationPlan, "stages" | "items" | "reviewRejected">, attempts: PlanAttempt[], results: PlanResultRow[]): Set<string> {
+  const key = (a: { itemKey: string; attemptRef: string }) => `${a.itemKey}\u0000${a.attemptRef}`;
+  const counted = new Set([...attempts, ...externalAttempts(plan, attempts, results)].map(key));
+  return new Set(reviewCandidates(plan, attempts, results, { keepFoundOrder: true }).map(key).filter((k) => counted.has(k)));
+}
+
 function derive(plan: GenerationPlan, jobs: PlanJobRow[], results: PlanResultRow[], picks: readonly PlanPickRecord[] = []): Derived {
   const attempts = inAppAttempts(plan, jobs, results);
   const byStageResults = new Map<string, PlanResultRow[]>();
@@ -239,7 +250,8 @@ function derive(plan: GenerationPlan, jobs: PlanJobRow[], results: PlanResultRow
   }
   const final = finalStage(plan);
   const pickState = pickStateOf(picks);
-  const flags = picks.length > 0 ? pickFlagsOf(pickState, plan.items) : undefined;
+  const live = picks.length > 0 ? pickableRefs(plan, attempts, results) : new Set<string>();
+  const flags = picks.length > 0 ? pickFlagsOf(pickState, plan.items, live) : undefined;
   const candidates = reviewCandidates(plan, attempts, results, { keepFoundOrder: true, flags });
   const waiting = candidates.filter((c) => !settled(c)).map((c) => ({ itemKey: c.itemKey, attemptRef: c.attemptRef, validator: c.validator ?? "passed" }));
   const candidateOf = new Map(candidates.map((c) => [`${c.itemKey}\u0000${c.attemptRef}`, c]));
@@ -306,7 +318,7 @@ function derive(plan: GenerationPlan, jobs: PlanJobRow[], results: PlanResultRow
       pending,
       missing,
       pickTarget: pickTargetOf(item),
-      picks: state ? state.picks.map((p) => ({ ...p })) : [],
+      picks: state ? state.picks.filter((p) => live.has(`${item.itemKey}\u0000${p.attemptRef}`)).map((p) => ({ ...p })) : [],
       noneFits: state?.noneFits ? { note: state.noneFits.note, device: state.noneFits.device, at: state.noneFits.at, attempts: state.noneFits.attempts } : null,
       notChosen,
     };

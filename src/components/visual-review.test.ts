@@ -263,3 +263,38 @@ test("review round 1: a question re-check about a picture shows the picture", as
   const noBase = recheckEntry(recheck, null, { groupId: "W1", params: {} }, { stageId: "~recheck", itemKey: "W1/I", attemptRef: "a1", result: "done", reportedBy: "factory", note: null, rating: null, reasons: [], markers: [], auditionFile: "H/a1__r1.mp4", checks: [], metrics: {}, at: "" });
   assert.equal(screenMedia(noBase), "video");
 });
+
+// -- Review round 2 -------------------------------------------------------------------------------------------------------
+
+test("review round 2: a picture's draft comes back with its attempt on every move; an empty one is forgotten; a changed verdict drops it; a re-check keeps its own", async () => {
+  const { keepDraft, draftBack } = await import("./plan-review-screen");
+  const empty = { reasons: [], rating: null, note: "", marks: [], openMark: null, pending: null };
+  const pinned = { ...empty, reasons: ["lighting"], marks: [{ start: 0, end: null, note: "фонарь", region: { x: 0.4, y: 0.6, r: 0.1 } }] };
+  const kept = new Map();
+  const a1 = { itemKey: "W1/I", attemptRef: "a1", verdict: null };
+  // a1 with a pin and a chip, the owner moves on (any move) and comes back: the same draft.
+  keepDraft(kept, a1, pinned);
+  assert.deepEqual(draftBack(kept, a1), pinned);
+  // Left empty: nothing kept.
+  keepDraft(kept, a1, empty);
+  assert.deepEqual(draftBack(kept, a1), empty);
+  // Written while a2 waited; a verdict from the other computer arrived meanwhile: a fresh draft, and the old one is gone.
+  const a2 = { itemKey: "W1/I", attemptRef: "a2", verdict: null };
+  keepDraft(kept, a2, pinned);
+  assert.deepEqual(draftBack(kept, { ...a2, verdict: { at: "2026-10-11T12:00:00.000Z" } }), empty);
+  assert.deepEqual(draftBack(kept, a2), empty);
+  // An open re-check of a1 has its own draft, apart from a1's.
+  const r1 = { ...a1, verdict: { at: "2026-10-11T11:00:00.000Z" }, recheck: { recheckId: "q1" } };
+  keepDraft(kept, r1, pinned);
+  assert.deepEqual(draftBack(kept, { ...a1, verdict: { at: "2026-10-11T11:00:00.000Z" } }), empty);
+  assert.deepEqual(draftBack(kept, r1), pinned);
+});
+
+test("review round 2: the grid's hint says a click selects and Enter or a double-click opens; the compare badge and hint read right", () => {
+  const ru = createTranslator("ru");
+  const en = createTranslator("en");
+  assert.match(ru("review.layer.gridHint"), /Клик — выбрать/);
+  assert.match(en("review.layer.gridHint"), /double-click or Enter: full size/);
+  assert.equal(ru("review.layer.compareMark"), "для сравнения");
+  assert.match(en("review.layer.compareHint"), /play, pause and seeks/);
+});

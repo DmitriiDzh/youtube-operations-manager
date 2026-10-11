@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { generationPlansReportSchema, type GenerationPlansReport, type SharedClaim, type SharedGroupNote, type SharedPickAction, type SharedVerdict } from "@/lib/sync-gateway";
 import { isDomainError, mediaKindOf, pickTargetOf, type PlanEvent, type PlanPickRecord, type PlanRecheck, type PlanResultRow, type PlanVerdictHistoryRow } from "./contracts";
-import { withSentPicks } from "./picks";
+import { applyPickAction, pickFlagsOf, pickStateOf, withSentPicks } from "./picks";
 import type { PlanJobRow } from "./progress";
 import { createGenerationPlanServices, type PlanStore, type StoredPlan } from "./services";
 
@@ -584,9 +584,12 @@ test("review round 1: the owner withdraws a pick still on its way from Windows -
   assert.equal((await mac.services.reviewQueue({ planId: PLAN })).entries.find((e) => e.attemptRef === "a3")?.picked?.device, "WIN", "shown as picked");
   tick();
   assert.equal((await mac.services.recordOwnerPick({ planId: PLAN, itemKey: "W1/I", attemptRef: "a3", action: "unpick" })).outcome, "applied");
-  assert.deepEqual(await mac.services.applyPeerPicks(), { applied: 0, skipped: 1 });
+  // Review round 2 (§L: the requirement is "what the owner saw is what is stored"; round 1 only kept the pick out by superseding
+  // it, which lost what the pending action itself moved -- see the next test): the owner's action weighs the pending pick first,
+  // so it is applied, then withdrawn by the newer own action, and the tick finds nothing left to weigh.
+  assert.deepEqual(await mac.services.applyPeerPicks(), { applied: 0, skipped: 0 });
   assert.deepEqual([(await itemOf(mac)).picks.length, (await itemOf(mac)).waitingReview], [0, 8]);
-  assert.equal((kinds(mac, "peer_pick").at(-1)?.[1] as Record<string, unknown> | undefined)?.superseded, true);
+  assert.equal((kinds(mac, "peer_pick").at(-1)?.[1] as Record<string, unknown> | undefined)?.superseded, undefined);
   // The same for "none fits": withdrawn here before the tick, it stays withdrawn.
   tick();
   await win.services.recordPeerPick({ deviceId: "mac-id", planId: PLAN, itemKey: "W1/I", action: "none_fits", note: "все мимо" });
@@ -611,4 +614,127 @@ test("review round 1: a none-fits from Windows covers only the attempts its owne
   const item = await itemOf(mac);
   assert.deepEqual([item.noneFits?.attempts, item.notChosen, item.waitingReview], [8, 8, 1]);
   assert.deepEqual((await mac.services.todo({ planId: PLAN })).waitingReview.map((w) => w.attemptRef), ["a9"]);
+});
+
+// -- Review round 2 -------------------------------------------------------------------------------------------------------
+
+test("review round 2: the Mac picked a1, Windows' pick of a3 is on its way, the owner picks a5 on the Mac -- only a5 stays picked, every move stored", async () => {
+  const { mac, win, sync } = await twoComputers();
+  tick();
+  await mac.services.recordOwnerPick({ planId: PLAN, itemKey: "W1/I", attemptRef: "a1", action: "pick" });
+  await sync();
+  tick();
+  const sent = await win.services.recordPeerPick({ deviceId: "mac-id", planId: PLAN, itemKey: "W1/I", attemptRef: "a3", action: "pick" });
+  await sync();
+  tick();
+  const own = await mac.services.recordOwnerPick({ planId: PLAN, itemKey: "W1/I", attemptRef: "a5", action: "pick" });
+  assert.deepEqual(own.picks.map((p) => [p.attemptRef, p.device]), [["a5", "MAC"]]);
+  // Target 1: a3 moved a1 out (Windows' action, its own time), then a5 moved a3 out (the owner's, later).
+  assert.deepEqual(kinds(mac, "owner_pick", "owner_unpick", "peer_pick").slice(1), [
+    ["owner_unpick", { itemKey: "W1/I", attemptRef: "a1", device: "WIN", reason: "moved" }],
+    ["owner_pick", { itemKey: "W1/I", attemptRef: "a3", device: "WIN" }],
+    ["peer_pick", { pickId: sent.pickId, fromDevice: "WIN", itemKey: "W1/I", attemptRef: "a3", action: "pick" }],
+    ["owner_unpick", { itemKey: "W1/I", attemptRef: "a3", device: "MAC", reason: "moved" }],
+    ["owner_pick", { itemKey: "W1/I", attemptRef: "a5", device: "MAC" }],
+  ]);
+  assert.deepEqual(await mac.services.applyPeerPicks(), { applied: 0, skipped: 0 });
+  const item = await itemOf(mac);
+  assert.deepEqual([item.picks.map((p) => p.attemptRef), item.accepted, item.notChosen, item.waitingReview], [["a5"], 1, 7, 0]);
+});
+
+test("review round 2: nothing picked, Windows' pick of a3 on its way, the owner picks a5 -- the wave is recorded as reviewed once", async () => {
+  const { mac, win, sync } = await twoComputers();
+  tick();
+  await win.services.recordPeerPick({ deviceId: "mac-id", planId: PLAN, itemKey: "W1/I", attemptRef: "a3", action: "pick" });
+  await sync();
+  tick();
+  await mac.services.recordOwnerPick({ planId: PLAN, itemKey: "W1/I", attemptRef: "a5", action: "pick" });
+  await mac.services.applyPeerPicks();
+  assert.deepEqual((await itemOf(mac)).picks.map((p) => p.attemptRef), ["a5"]);
+  // 8 waiting -> 0 by Windows' pick (applied first); the owner's move keeps it at 0, so no second record.
+  assert.deepEqual(kinds(mac, "group_reviewed"), [["group_reviewed", { groupId: "W1", accepted: 0, rejected: 0, overridesValidator: 0, picked: 1, noneFits: 0 }]]);
+});
+
+test("review round 2: a none-fits from Windows also covers the attempts already settled on the Mac that its report had cut", async () => {
+  let macReport: GenerationPlansReport | null = null;
+  let winReport: GenerationPlansReport | null = null;
+  const mac = setup([], { deviceId: "mac-id", label: "MAC", peers: () => (winReport ? [winReport] : []) });
+  const win = setup([], { deviceId: "win-id", label: "WIN", peers: () => (macReport ? [macReport] : []) });
+  const sync = async () => {
+    macReport = await reportOf(mac, "mac-id", "MAC");
+    winReport = await reportOf(win, "win-id", "WIN");
+  };
+  await mac.services.createPlan({
+    planId: PLAN,
+    title: "big",
+    channelId: CHANNEL,
+    stages: [
+      { stageId: "render", title: "Render", kind: "external" },
+      { stageId: "owner_review", title: "Owner review", kind: "owner_review" },
+    ],
+    groups: [{ groupId: "W1", title: "Stills" }],
+    items: [
+      { itemKey: "W1/A", groupId: "W1", targetCount: 1 },
+      { itemKey: "W1/B", groupId: "W1", targetCount: 1 },
+    ],
+  });
+  // A: 499 waiting attempts; B: 9, a3 picked -- the other 8 not chosen. The report keeps 500 entries, settled ones cut first.
+  for (let i = 0; i < 499; i += 100) {
+    const rows = Array.from({ length: Math.min(100, 499 - i) }, (_, j) => ({ stageId: "render", itemKey: "W1/A", attemptRef: `x${String(i + j).padStart(3, "0")}`, result: "done" as const, auditionFile: `A/x${i + j}.png` }));
+    await mac.services.report({ planId: PLAN, rows });
+  }
+  await mac.services.report({ planId: PLAN, rows: refs(9).map((a) => ({ stageId: "render", itemKey: "W1/B", attemptRef: a, result: "done", auditionFile: `B/${a}.png` })) });
+  tick();
+  await mac.services.recordOwnerPick({ planId: PLAN, itemKey: "W1/B", attemptRef: "a3", action: "pick" });
+  await sync();
+  tick();
+  const sent = await win.services.recordPeerPick({ deviceId: "mac-id", planId: PLAN, itemKey: "W1/B", action: "none_fits", note: "все мимо" });
+  assert.deepEqual(sent.covered, ["a1"], "only B/a1 made it into the 500 entries");
+  await sync();
+  await mac.services.applyPeerPicks();
+  const b = (await mac.services.getPlan({ planId: PLAN })).progress.items.find((i) => i.itemKey === "W1/B");
+  assert.deepEqual([b?.picks.length, b?.noneFits?.attempts, b?.notChosen, b?.waitingReview], [0, 9, 9, 0]);
+});
+
+for (const result of ["failed", "rejected"] as const) {
+  test(`review round 2: a picked attempt the stage before the review re-reports ${result} loses its pick -- the item is open again`, async () => {
+    const s = await visualPlan({ mode: "until_accepted", targetCount: 1 });
+    tick();
+    await s.services.recordOwnerPick({ planId: PLAN, itemKey: "W1/I", attemptRef: "a3", action: "pick" });
+    tick();
+    await s.services.report({ planId: PLAN, rows: [{ stageId: "render", itemKey: "W1/I", attemptRef: "a3", result }] });
+    assert.deepEqual(kinds(s, "owner_unpick").at(-1), ["owner_unpick", { itemKey: "W1/I", attemptRef: "a3", device: "factory", reason: "left_queue" }]);
+    let item = await itemOf(s);
+    // a3 is out; the other 7 wait again; 7 pending cover the one wanted, so nothing more is asked for.
+    assert.deepEqual([item.picks.length, item.accepted, item.notChosen, item.waitingReview, item.missing], [0, 0, 0, 7, 0]);
+    tick();
+    await s.services.report({ planId: PLAN, rows: [{ stageId: "render", itemKey: "W1/I", attemptRef: "a9", result: "done", auditionFile: "H-0004/planC/a9.png" }] });
+    assert.equal((await s.services.reviewQueue({ planId: PLAN })).entries.find((e) => e.attemptRef === "a9")?.notChosen, undefined);
+    item = await itemOf(s);
+    assert.equal(item.waitingReview, 8);
+  });
+}
+
+test("review round 2: a ref only a relayed verdict names is no attempt -- it cannot be picked", async () => {
+  const s = await visualPlan({ mode: "until_accepted", targetCount: 1 }, 3);
+  await s.services.report({ planId: PLAN, rows: [{ stageId: "owner_review", itemKey: "W1/I", attemptRef: "ghost", result: "accepted" }] });
+  tick();
+  await assert.rejects(
+    () => s.services.recordOwnerPick({ planId: PLAN, itemKey: "W1/I", attemptRef: "ghost", action: "pick" }),
+    (e: unknown) => isDomainError(e) && e.code === "plan_mismatch" && (e.details as Record<string, unknown>).reason === "unknown_attempt"
+  );
+  const item = await itemOf(s);
+  assert.deepEqual([item.picks.length, item.notChosen, item.waitingReview], [0, 0, 3]);
+});
+
+test("review round 2: a pick on an attempt that is no longer pickable neither shows nor decides its item; the same none-fits again changes nothing", () => {
+  const at = "2026-10-11T12:00:00.000Z";
+  const records: PlanPickRecord[] = [{ itemKey: "I", kind: "pick", attemptRef: "a3", active: true, note: null, device: "MAC", at, covered: [] }];
+  const items = [{ itemKey: "I", mode: "fixed" as const, targetCount: 1 }];
+  const live = new Set(["I\u0000a1", "I\u0000a2"]);
+  assert.deepEqual(pickFlagsOf(pickStateOf(records), items, live)("I", "a1", false), { picked: null, notChosen: false });
+  assert.deepEqual(pickFlagsOf(pickStateOf(records), items)("I", "a1", false), { picked: null, notChosen: true }, "without the live set, as before");
+  const none: PlanPickRecord = { itemKey: "I", kind: "none_fits", attemptRef: null, active: true, note: "мимо", device: "WIN", at, covered: ["a1", "a2"] };
+  const again = applyPickAction({ itemKey: "I", attemptRef: null, action: "none_fits", note: "мимо", device: "WIN", at }, { records: [none], target: 1, queueRefs: ["a1", "a2"], rejected: new Set(), validatorRejected: new Set() });
+  assert.deepEqual(again, { outcome: "unchanged" });
 });

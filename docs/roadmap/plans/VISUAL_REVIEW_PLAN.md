@@ -130,8 +130,8 @@ same way from the entry it already receives (`currentFile`, stage `auditionFile`
 - **Compare** (`C`, full window): two attempts side by side, linked zoom and pan (images) or linked play and seek (videos).
 - **Decisions:** «Выбрать» (`S`) and «Снять выбор»; «Ни один не подходит» on the item (in-app dialog with a required note and
   an optional "↻ Ask to generate again"); Accept / Reject as today; Reject on a picked attempt asks first.
-- **Pins:** `Shift`+click on the picture (or the paused frame) adds a pin; the radius is set by dragging before release (or the
-  wheel while the note box is open); every new marker on an image or a video opens a small note box (≤ 200).
+- **Pins:** `Shift`+click on the picture (or the paused frame) adds a pin; the radius is set by dragging before release; every
+  new marker on an image or a video opens a small note box (≤ 200).
 - **Chips:** the wave's / plan's list, else the media kind's defaults.
 - **The keyboard** belongs to an open layer (grid, loupe, compare, note box): the screen's A/R/digits never fire under it.
 
@@ -216,6 +216,21 @@ same way from the entry it already receives (`currentFile`, stage `auditionFile`
   - the "Reject the picked attempt?" → "Replace?" questions no longer loop;
   - the layer and the "none fits" dialog hold the focus; held keys do not repeat a pick;
   - a hover-scrub gives the paused frame back; the frame rate is measured only at 1×.
+- **Review round 2** (two reviewers again; all findings fixed):
+  - the owner's own pick action first applies the picks still on their way from the other computer (as the tick would), then is
+    weighed against the stored picks -- what those moved is stored, never only shown (round 1 had lost it);
+  - a "none fits" from the other computer also covers the item's attempts already settled here (its report may have cut them);
+  - a report row that fails or rejects a picked attempt before the review withdraws the pick (`left_queue`); only picks on
+    attempts in the queue that are counted show and decide an item; a ref only a relayed verdict names cannot be picked;
+  - the same "none fits" weighed twice changes nothing;
+  - focus holders stack (the "none fits" dialog and a pin's note box over the layer keep Tab); the focus goes back where it was;
+  - a picture's draft is kept and brought back on every move (arrows, auto-advance, filters, waves) and dropped when the
+    attempt's verdict changed meanwhile; the missing-note check comes before any question;
+  - an open re-check never opens the grid, loupe or compare (they would be empty);
+  - video compare: play and pause in either clip drive the other, and both clips start together once loaded; the loop range
+    stays each clip's own;
+  - Esc goes back to the grid also after loupe ↔ compare; the C key and the button follow one rule; N/P in compare skip the
+    compared attempt; held Z and held N/P in the layer do not repeat; the wheel does not set a pin's radius (dropped from §2.9).
 - **Live check (AC-VR-15)** ran on an isolated instance of the branch (`next dev` on 127.0.0.1:3100 with a scratch HOME and
   database, a test user and channel, generated PNG stills, 16 fps MP4 loops and an MP3; a session minted with the worktree's
   throwaway secret). Pictures in the owner's Chrome; clips in a separate headless Chrome (the Mac's display was off, and Chrome

@@ -55,13 +55,19 @@ export const MediaVideoPlayer = forwardRef<
     onPlayStart?: () => void;
     /** Seeks made here (and whether this clip plays on), so a linked player (compare) can follow. */
     onUserSeek?: (seconds: number, playing: boolean) => void;
+    /** Review round 2: play or pause asked for here (the button, a click on the frame), with the moment -- for a linked player. */
+    onUserPlay?: (playing: boolean, seconds: number) => void;
     onPlayingChange?: (playing: boolean) => void;
+    /** Starts playing once loaded (the default, §A); off when a linked pair starts together (`onReady`). */
+    autoPlay?: boolean;
+    /** The clip's metadata is loaded (it can be sought and played). */
+    onReady?: () => void;
     className?: string;
     /** Starts muted (the default) -- FO-REQ-0018 §A. */
     startMuted?: boolean;
     compact?: boolean;
   }
->(function MediaVideoPlayer({ src, markers, fps: reportedFps, onAddPin, onPlayStart, onUserSeek, onPlayingChange, className = "h-[48vh]", startMuted = true, compact = false }, ref) {
+>(function MediaVideoPlayer({ src, markers, fps: reportedFps, onAddPin, onPlayStart, onUserSeek, onUserPlay, onPlayingChange, autoPlay = true, onReady, className = "h-[48vh]", startMuted = true, compact = false }, ref) {
   const { t } = useUiText();
   const video = useRef<HTMLVideoElement | null>(null);
   const frameBox = useRef<HTMLDivElement | null>(null);
@@ -145,7 +151,11 @@ export const MediaVideoPlayer = forwardRef<
       const to = Math.max(0, Math.min(Number.isFinite(v.duration) ? v.duration : seconds, seconds));
       v.currentTime = to;
       setTime(to);
-      if (fromUser) onUserSeek?.(to, !v.paused);
+      if (fromUser) {
+        // A step, a seek or a click commits the moment: a hover-scrub no longer gives its frame back (review round 2).
+        scrubFrom.current = null;
+        onUserSeek?.(to, !v.paused);
+      }
     },
     [onUserSeek]
   );
@@ -153,9 +163,19 @@ export const MediaVideoPlayer = forwardRef<
   const play = useCallback(() => {
     const v = video.current;
     if (!v) return;
+    scrubFrom.current = null;
     onPlayStart?.();
     void v.play().catch(() => undefined);
   }, [onPlayStart]);
+  /** Play or pause asked for in this player itself (the button, a click on the frame): a linked player follows. */
+  const toggleHere = () => {
+    const v = video.current;
+    if (!v) return;
+    const wasPaused = v.paused;
+    if (wasPaused) play();
+    else v.pause();
+    onUserPlay?.(wasPaused, v.currentTime);
+  };
 
   useImperativeHandle(ref, () => ({
     togglePlay() {
@@ -268,11 +288,7 @@ export const MediaVideoPlayer = forwardRef<
         onPointerMove={onFrameMove}
         onPointerUp={onFrameUp}
         onClick={(event) => {
-          if (!event.shiftKey) {
-            const v = video.current;
-            if (v?.paused) play();
-            else v?.pause();
-          }
+          if (!event.shiftKey) toggleHere();
         }}
       >
         {failed ? (
@@ -293,7 +309,8 @@ export const MediaVideoPlayer = forwardRef<
               setBox({ naturalWidth: event.currentTarget.videoWidth, naturalHeight: event.currentTarget.videoHeight });
               event.currentTarget.playbackRate = rate;
               // §A: plays looped and muted by default.
-              void event.currentTarget.play().catch(() => undefined);
+              if (autoPlay) void event.currentTarget.play().catch(() => undefined);
+              onReady?.();
             }}
             onPlay={() => setPlaying(true)}
             onPause={(event) => {
@@ -356,7 +373,7 @@ export const MediaVideoPlayer = forwardRef<
         )}
       </div>
       <div className={`flex flex-wrap items-center gap-2 text-xs text-zinc-300 ${compact ? "" : "pt-0.5"}`}>
-        <button type="button" onClick={() => (playing ? video.current?.pause() : play())} className="flex h-8 w-8 items-center justify-center rounded-full bg-zinc-700 text-white hover:bg-zinc-600" aria-label={playing ? t("review.visual.pause") : t("review.visual.play")} title={playing ? t("review.visual.pause") : t("review.visual.play")}>
+        <button type="button" onClick={toggleHere} className="flex h-8 w-8 items-center justify-center rounded-full bg-zinc-700 text-white hover:bg-zinc-600" aria-label={playing ? t("review.visual.pause") : t("review.visual.play")} title={playing ? t("review.visual.pause") : t("review.visual.play")}>
           {/* ui-text-ignore: play / pause symbols */}
           {playing ? "❚❚" : "▶"}
         </button>

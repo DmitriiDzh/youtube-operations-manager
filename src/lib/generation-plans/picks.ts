@@ -36,15 +36,21 @@ export function pickStateOf(records: readonly PlanPickRecord[]): Map<string, Ite
  * The flags of one attempt (§2.3): `picked` when it has an active pick; `notChosen` when it has no verdict, is not picked, and
  * its item is decided -- as many picks as its pick target, or an active "none fits" that covers it.
  */
-export function pickFlagsOf(state: ReadonlyMap<string, ItemPickState>, items: ReadonlyArray<Pick<PlanItem, "itemKey" | "mode" | "targetCount" | "pickTarget">>) {
+export function pickFlagsOf(
+  state: ReadonlyMap<string, ItemPickState>,
+  items: ReadonlyArray<Pick<PlanItem, "itemKey" | "mode" | "targetCount" | "pickTarget">>,
+  /** Review round 2: the attempts a pick may stand on (`pickableRefs`, "item\u0000ref"); a pick elsewhere neither shows nor decides its item. */
+  live?: ReadonlySet<string>
+) {
   const targets = new Map(items.map((i) => [i.itemKey, pickTargetOf(i)]));
   return (itemKey: string, attemptRef: string, hasVerdict: boolean): { picked: PlanPickMark | null; notChosen: boolean } => {
     const s = state.get(itemKey);
     if (!s) return { picked: null, notChosen: false };
-    const pick = s.picks.find((p) => p.attemptRef === attemptRef);
+    const picks = live ? s.picks.filter((p) => live.has(`${itemKey}\u0000${p.attemptRef}`)) : s.picks;
+    const pick = picks.find((p) => p.attemptRef === attemptRef);
     const picked = pick ? { device: pick.device, at: pick.at, note: pick.note } : null;
     if (picked || hasVerdict) return { picked, notChosen: false };
-    const decided = s.picks.length >= (targets.get(itemKey) ?? 1) || (s.noneFits !== null && s.noneFits.covered.includes(attemptRef));
+    const decided = picks.length >= (targets.get(itemKey) ?? 1) || (s.noneFits !== null && s.noneFits.covered.includes(attemptRef));
     return { picked: null, notChosen: decided };
   };
 }
@@ -126,6 +132,8 @@ export function applyPickAction(input: PickActionInput, ctx: PickContext): PickO
       return { outcome: "applied", writes: [withdraw(own)], events: [{ kind: "owner_unpick", details: { itemKey, attemptRef: ref, device, reason: "withdrawn" } }] };
     }
     case "none_fits": {
+      // Review round 2: the same "none fits" weighed again (its event fell out of the kept events) changes nothing.
+      if (noneFits?.active && ms(noneFits.at) === ms(at)) return { outcome: "unchanged" };
       if (noneFits && newer(noneFits.at, at)) return { outcome: "superseded", reason: "none_fits_later" };
       if (activePicks.some((p) => newer(p.at, at))) return { outcome: "superseded", reason: "picked_later" };
       for (const p of activePicks) {
@@ -150,11 +158,19 @@ export function applyPickAction(input: PickActionInput, ctx: PickContext): PickO
  * when the verdict was given before the pick on the other computer and arrives late (the rejection is the explicit word). The
  * withdrawal is dated no earlier than the pick, so the pick's own older actions stay superseded. Null when it is not picked.
  */
-export function withdrawPickOnReject(records: readonly PlanPickRecord[], itemKey: string, attemptRef: string, at: string, device: string): { writes: PlanPickRecord[]; events: PickEvent[] } | null {
+export function withdrawPickOnReject(
+  records: readonly PlanPickRecord[],
+  itemKey: string,
+  attemptRef: string,
+  at: string,
+  device: string,
+  /** Review round 2: `left_queue` -- a stage before the review failed or rejected the attempt, so it left the owner's queue. */
+  reason: "rejected" | "left_queue" = "rejected"
+): { writes: PlanPickRecord[]; events: PickEvent[] } | null {
   const pick = records.find((r) => r.itemKey === itemKey && r.kind === "pick" && r.attemptRef === attemptRef && r.active);
   if (!pick) return null;
   const when = newer(pick.at, at) ? pick.at : at;
-  return { writes: [{ ...pick, active: false, at: when, device }], events: [{ kind: "owner_unpick", details: { itemKey, attemptRef, device, reason: "rejected" } }] };
+  return { writes: [{ ...pick, active: false, at: when, device }], events: [{ kind: "owner_unpick", details: { itemKey, attemptRef, device, reason } }] };
 }
 
 /** The plan as another computer's report carries it -- what `withSentPicks` needs of it. */
@@ -172,11 +188,31 @@ export type SentPickAction = { pickId: string; itemKey: string; attemptRef: stri
 /**
  * Review round 1: the attempts a "none fits" sent from another computer covers -- those its owner saw there (`covered`) that the
  * item still has here; the item's attempts now when the action names none (a newer attempt is never covered by an older action).
+ * Review round 2: an attempt already settled here (`settled`: ruled on, picked or not chosen) is covered too -- the other
+ * computer's report may have cut it from what its owner saw -- so only an attempt that waits and was not seen stays out.
  */
-export function coveredRefs(action: { action: PlanPickAction; covered?: readonly string[] }, queueRefs: readonly string[]): readonly string[] {
+export function coveredRefs(action: { action: PlanPickAction; covered?: readonly string[] }, queueRefs: readonly string[], settled: ReadonlySet<string> = new Set()): readonly string[] {
   if (action.action !== "none_fits" || !action.covered) return queueRefs;
   const seen = new Set(action.covered);
-  return queueRefs.filter((ref) => seen.has(ref));
+  return queueRefs.filter((ref) => seen.has(ref) || settled.has(ref));
+}
+
+/** Review round 2: an item's attempts that no longer wait under `records` -- with a verdict, picked, or not chosen. */
+export function settledRefs(
+  records: readonly PlanPickRecord[],
+  items: ReadonlyArray<Pick<PlanItem, "itemKey" | "mode" | "targetCount" | "pickTarget">>,
+  entries: ReadonlyArray<{ itemKey: string; attemptRef: string; verdict: unknown }>,
+  itemKey: string,
+  live?: ReadonlySet<string>
+): Set<string> {
+  const flags = pickFlagsOf(pickStateOf(records), items, live);
+  const out = new Set<string>();
+  for (const e of entries) {
+    if (e.itemKey !== itemKey) continue;
+    const mark = flags(itemKey, e.attemptRef, e.verdict !== null);
+    if (e.verdict !== null || mark.picked !== null || mark.notChosen) out.add(e.attemptRef);
+  }
+  return out;
 }
 
 /**
@@ -210,7 +246,7 @@ export function withSentPicks<E extends { itemKey: string; attemptRef: string; v
       {
         records: records.filter((r) => r.itemKey === a.itemKey),
         target: pickTargetOf(item),
-        queueRefs: coveredRefs(a, own.map((e) => e.attemptRef)),
+        queueRefs: coveredRefs(a, own.map((e) => e.attemptRef), settledRefs(records, plan.items, review, a.itemKey)),
         rejected: new Set(own.filter((e) => e.verdict?.result === "rejected").map((e) => e.attemptRef)),
         validatorRejected: new Set(),
       }
