@@ -145,6 +145,9 @@ files on the internal disk (30 GB free).
 - **Restarting the encoder is not a YouTube write.**
 - **The app never writes to YouTube by itself.** Creating, binding, starting, ending or editing a broadcast happens only when
   the owner presses a button, with Live writes on.
+- **A running stream does not keep Live writes on.** It does not count as "busy" for the idle watcher (`isBusy`, unlike open
+  pods), so Live writes still switch off after 10 idle minutes (ADR 0032 §4, RISK-09). The encoder and the status polls need
+  no session.
 - **ADR 0029 §4 is untouched.** It governs generation plans; this is a separate rule for streams only.
 - **Hosting.**
   - Only on the Mac running as the system service (`YTOM_SERVICE_MODE=1`), with the module switched on in Settings (off by
@@ -262,12 +265,14 @@ files on the internal disk (30 GB free).
   2. starts the helper.
 
   The prepared sources live on the internal disk, so the T9 is not needed.
-- **`stop.sh` and the server restarts after merges leave a running stream alone.** If spike A shows that launchd kills the
+- **Intended: `stop.sh` and the server restarts after merges leave a running stream alone.** If spike A shows that launchd kills the
   helper with the job, the plist gains `AbandonProcessGroup` (one reinstall, one admin password).
 - **Recorded per stream:** restarts with cause and gap, bytes and bitrate, dropped frames.
 
 ### 3.7 The stream key (request §E)
 - **Never stored.** It is read from YouTube at each helper start (1 unit), kept in the helper's memory, and passed to ffmpeg.
+- **Fallback.** If spike B shows that `liveStreams.list` does not return `streamName`, the key is stored the way the Gemini key
+  is: encrypted with the device key file, and kept out of snapshots.
 - **The UI shows only** "the key comes from YouTube" and the last 4 characters.
 - **The scrubber** replaces the key, and any `rtmp(s)://…` path after the host, before a line reaches:
   - the helper's status or log file;
@@ -399,13 +404,15 @@ files on the internal disk (30 GB free).
 **Quota**
 - Each of the 11 live methods costs 1.
 - `bind` and `transition` count as writes.
-- A first Start costs 5 units: `liveStreams.insert`, `videos.list`, `liveBroadcasts.insert`, `bind`, `liveStreams.list`.
+- Before its first status poll, a first Start costs 5 units: `liveStreams.insert`, `videos.list`, `liveBroadcasts.insert`,
+  `bind`, `liveStreams.list`.
 - A later Start costs 4.
 
 **Gateway inventory**
 - The 5 new primitives are in `WRITE_PRIMITIVE_NAMES`.
 - Each caller calls `assertLiveWritesAuthorized` first.
 - Live writes off → each Start, Stop and Edit write is refused, and the encoder is not started.
+- A stream is running and nothing else is busy. After 10 minutes with no window and no agent request, Live writes read off.
 
 **Recovery**
 - Consecutive exits wait 2, 4, 8, 16, 32, 60 and 60 s before the next start.
