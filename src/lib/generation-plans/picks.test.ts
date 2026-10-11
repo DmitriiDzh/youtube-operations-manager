@@ -841,3 +841,25 @@ test("review round 3: a none-fits from Windows never covers an attempt reported 
   assert.deepEqual([item.picks.length, item.noneFits?.attempts, item.notChosen, item.waitingReview], [0, 8, 8, 1]);
   assert.deepEqual((await mac.services.todo({ planId: PLAN })).waitingReview.map((w) => w.attemptRef), ["a9"]);
 });
+
+test("review round 3: a fixed item's only attempt, external and picked, then failed by a stage after the review -- accepted, nothing more asked for", async () => {
+  const s = setup();
+  await s.services.createPlan({
+    planId: PLAN,
+    title: "one",
+    channelId: CHANNEL,
+    stages: [
+      { stageId: "render", title: "Render", kind: "external" },
+      { stageId: "owner_review", title: "Owner review", kind: "owner_review" },
+      { stageId: "post", title: "Post", kind: "external" },
+    ],
+    items: [{ itemKey: "K", targetCount: 1 }],
+  });
+  await s.services.report({ planId: PLAN, rows: [{ stageId: "render", itemKey: "K", attemptRef: "a1", result: "done", auditionFile: "x/a1.png" }] });
+  tick();
+  await s.services.recordOwnerPick({ planId: PLAN, itemKey: "K", attemptRef: "a1", action: "pick" });
+  tick();
+  await s.services.report({ planId: PLAN, rows: [{ stageId: "post", itemKey: "K", attemptRef: "a1", result: "failed" }] });
+  const item = await itemNamed(s, "K");
+  assert.deepEqual([item?.accepted, item?.missing], [1, 0]);
+});

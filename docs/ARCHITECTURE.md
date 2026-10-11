@@ -3577,7 +3577,9 @@ re-checks and the seam view are phase 2; Gemini outputs without copying, owner t
   action first weighs the pick actions still on their way from the other computer (`weighPeerPicks`, as the tick does), so what
   those move is stored before the owner's action is weighed. A "none fits" sent from the other computer carries `covered` (the
   attempts its owner saw there); here it covers those plus the item's attempts already settled that existed when it was given
-  (review round 3), so an attempt that still waits and was not seen -- or arrived later -- stays out (the report keeps 500 entries and cuts settled ones first). The same "none fits" weighed twice
+  (review round 3: its job's creation, else the oldest of its stored rows -- a re-report replaces a row and its time, so an
+  attempt known only by a row re-reported after the action counts as new and waits), so an attempt that still waits and was not
+  seen -- or arrived later -- stays out (the report keeps 500 entries and cuts settled ones first). The same "none fits" weighed twice
   (its `peer_pick` event fell out of the newest 5000 events) is `unchanged`.
 - **Previews** (`src/lib/media-preview/`, a shared module that knows nothing about plans): `sharp` (a direct dependency since
   BL-175; Next.js already installed it) resizes an image to at most 480 px a side, `limitInputPixels` guards against decompression

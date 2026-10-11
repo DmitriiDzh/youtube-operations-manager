@@ -281,8 +281,13 @@ function derive(plan: GenerationPlan, jobs: PlanJobRow[], results: PlanResultRow
     return "pending";
   };
   const external = externalAttempts(plan, attempts, results);
-  // An external attempt is "done" unless a row says it failed (it was made outside the app; its rows are all there is).
-  const externalState = (e: { itemKey: string; attemptRef: string }): PlanAttemptState => ((verdictsOf.get(`${e.itemKey}\u0000${e.attemptRef}`) ?? []).some((r) => r.result === "failed") ? "failed" : "done");
+  // An external attempt is "done" unless a row says it failed (it was made outside the app; its rows are all there is) -- or,
+  // review round 3, the owner picked it: then it is done and usable, as a picked attempt of the app's own (its job is done).
+  const externalState = (e: { itemKey: string; attemptRef: string }): PlanAttemptState => {
+    const key = `${e.itemKey}\u0000${e.attemptRef}`;
+    if (candidateOf.get(key)?.picked) return "done";
+    return (verdictsOf.get(key) ?? []).some((r) => r.result === "failed") ? "failed" : "done";
+  };
   const items: PlanItemProgress[] = plan.items.map((item) => {
     const own = attempts.filter((a) => a.itemKey === item.itemKey);
     const outside = external.filter((e) => e.itemKey === item.itemKey);
