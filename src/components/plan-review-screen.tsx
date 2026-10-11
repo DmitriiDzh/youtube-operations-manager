@@ -558,7 +558,8 @@ export function draftBack(kept: KeptDrafts, target: DraftOwner): Draft {
 
 /**
  * BL-175 phase 3 (FO-REQ-0018 §G): whether a second on screen counts as the owner's review time -- the tab is visible and the
- * owner is there: an input within the last 5 minutes, or a clip or track playing. Exported for its test.
+ * owner is there: an input within the last 5 minutes, or sound playing (a track, the A/B reference; a clip loops by itself and
+ * does not count -- review). Exported for its test.
  */
 export const REVIEW_IDLE_MS = 5 * 60_000;
 const secondsField = (reviewSeconds: number | undefined) => (reviewSeconds !== undefined ? { reviewSeconds } : {});
@@ -812,13 +813,15 @@ export function PlanReviewScreen({
   useEffect(() => {
     if (!clockKey) return;
     const timer = setInterval(() => {
-      const playing = [...document.querySelectorAll<HTMLMediaElement>("video, audio")].some((m) => !m.paused);
+      // Sound playing -- the track (the player's own state: wavesurfer keeps its audio out of reach) or the A/B reference. A clip
+      // loops by itself, muted (§A), so it is no sign the owner is there: for a picture or clip, an input in the last minutes is.
+      const playing = (!isVisual(currentMedia) && Boolean(player.current?.isPlaying())) || Boolean(referenceAudio.current && !referenceAudio.current.paused);
       if (countsReviewTime({ visible: document.visibilityState === "visible", idleMs: Date.now() - lastInput.current, playing })) {
         reviewMs.current.set(clockKey, (reviewMs.current.get(clockKey) ?? 0) + 1000);
       }
     }, 1000);
     return () => clearInterval(timer);
-  }, [clockKey]);
+  }, [clockKey, currentMedia]);
   /** The whole seconds counted on these attempts (absent when none was counted), at most a day. */
   const reviewSecondsOf = useCallback((keys: readonly string[]): number | undefined => {
     const counted = keys.map((k) => reviewMs.current.get(k)).filter((ms): ms is number => ms !== undefined);
@@ -1265,10 +1268,12 @@ export function PlanReviewScreen({
           // In compare, never onto the compared attempt itself (it would compare with itself): one step further.
           let to = stepIndex(entries ?? [], index, direction, skipClaimed);
           const at = (entries ?? [])[to];
-          if (layer === "compare" && at && entryKey(at) === compareKey) to = stepIndex(entries ?? [], to, direction, skipClaimed);
+          // Comparing with a reference or «Было», no attempt is the other side: nothing to skip.
+          const skipCompared = layer === "compare" && against === null;
+          if (skipCompared && at && entryKey(at) === compareKey) to = stepIndex(entries ?? [], to, direction, skipClaimed);
           const landed = (entries ?? [])[to];
           // Nowhere else to go (two attempts, the other one compared): stay (review round 3).
-          if (!(layer === "compare" && landed && entryKey(landed) === compareKey)) go(to);
+          if (!(skipCompared && landed && entryKey(landed) === compareKey)) go(to);
         }
         return;
       }
@@ -1310,7 +1315,8 @@ export function PlanReviewScreen({
   // Phase 2: compare against «Было» ends where the attempt on screen is no revision of a picture or clip (N/P moved on); a
   // closed layer forgets what it compared against.
   useEffect(() => {
-    if (layer === null) {
+    // Review: any way out of compare (Esc, G, Enter, a button) forgets the reference or «Было» -- C then compares attempts again.
+    if (layer !== "compare") {
       if (against !== null) setAgainst(null);
     } else if (against === "before" && !visualRevision) {
       setLayer(null);

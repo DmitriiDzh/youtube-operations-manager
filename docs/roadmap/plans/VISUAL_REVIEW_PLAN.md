@@ -299,7 +299,7 @@ copying, owner time per verdict, phone mode (phase 3); relaying a pick through `
   duration badge, on YouTube's dark (#0f0f0f) and light (#ffffff) backgrounds: 360 px (home, search), 246 px (narrow grid),
   168 px («Далее» column), 120 px (notifications, playlists).
 - **Loop clips** (§F): a clip whose rows say `metrics.loop` is true (on any stage row: `true` or `"true"`) gets a «Петля» row:
-  - *Стык ±1 с:* the player plays the last second straight into the first, on repeat (the browser's own loop makes the join;
+  - *Стык (конец → начало):* the player plays the last second straight into the first, on repeat (the browser's own loop makes the join;
     the player jumps from the end of the first second back to one second before the end). At 1× and 0.5× (the speed buttons).
     The window is min(1 s, a quarter of the clip).
   - *Подряд ×5:* the whole clip five times without a gap, a counter «2 / 5», then it stops.
@@ -355,7 +355,8 @@ copying, owner time per verdict, phone mode (phase 3); relaying a pick through `
   must not be deleted (or the row is re-reported with a Sent to YTM copy). The owner's seconds columns are a migration of their
   own (v85), so a database an earlier build of this branch stamped v84 gets them too.
 - **Owner time per verdict (§G).** The screen counts, per attempt (a re-check apart), the seconds it is on screen while the tab is
-  visible and the owner is there: an input (key, pointer, wheel) in the last 5 minutes, or a clip or a track playing. A verdict, a
+  visible and the owner is there: an input (key, pointer, wheel) in the last 5 minutes, or sound playing (the track, the A/B reference; a clip loops by itself,
+  muted, so it is no sign of the owner -- review of phases 2–3). A verdict, a
   re-check answer, a pick and a "none fits" carry `reviewSeconds` (0..86400, whole seconds; the counter of that attempt starts
   again after it is sent). Stored with the verdict (`generation_plan_verdict_history.review_seconds`), in the events
   (`owner_verdict`, `recheck_answered`, `owner_pick`, `owner_none_fits`), and carried from the other computer
@@ -381,5 +382,18 @@ copying, owner time per verdict, phone mode (phase 3); relaying a pick through `
   `owner_none_fits { …, reviewSeconds: 20 }`; a re-check answer with 15 s gives `recheck_answered { …, reviewSeconds: 15 }` and
   its `owner_verdict` the same.
 - **AC-V3-06 What counts as review time.** Visible and an input 10 s ago: counts; visible, no input for 6 min, nothing playing:
-  does not; the same with a clip or track playing: counts; hidden: never.
+  does not; the same with a track playing: counts; hidden: never. (Review of phases 2–3: a looping clip does not count as
+  playing -- the screen passes only sound; `countsReviewTime` itself is unchanged.)
 - **AC-V3-07 Live check:** a Gemini-folder picture reviewed on the isolated instance; a verdict's seconds in `factory_plan_get`.
+
+## 9. Review of phases 2–3 (2026-10-11; two reviewers, no blocker; all should-fix items fixed)
+
+- Server: the review-seconds columns are their own migration (v85), so a database an earlier build stamped v84 gets them; the
+  move and revision checks name the Gemini folder; MCP texts and docs agree on Gemini paths (references included); AC-V3-02 has
+  route and revision tests; the plans' Gemini folder name is tied to the Gemini module's by a test.
+- Screen: a shorter second clip holds on its last frame (no seek storm); only sound counts as playing for review time (a track's
+  state comes from the player -- wavesurfer keeps its audio out of reach); the clips of a pair start together after a view
+  change too; Z zooms the wipe / difference picture (the compare view is shared); a second side that cannot load says so; the
+  seam window rests a loop range; leaving compare forgets the reference / «Было»; N/P skip a compared attempt only when an
+  attempt is the other side; a question marker at 0 s opens paused; the wipe line resets on a lost pointer; headers show the
+  re-check's key; texts («Стык (конец → начало)», proportions).

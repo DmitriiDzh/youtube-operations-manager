@@ -4,7 +4,17 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useSta
 import type { PlanMarkerRegion } from "@/lib/generation-plans/contracts";
 import { formatPlayerTime } from "./media-review-player";
 import { useUiText } from "./ui-text-provider";
-import { fitView, frameAt, isWrap, measuredFps, regionFromDrag, regionToScreen, sameProportions, seamJump, seamWindowOf, splitAt, stepFrame, wipeClip, type ImageBox } from "./visual-review-model";
+import { fitView, frameAt, isWrap, lastFrameTime, measuredFps, regionFromDrag, regionToScreen, sameProportions, seamJump, seamWindowOf, splitAt, stepFrame, wipeClip, type ImageBox } from "./visual-review-model";
+
+/**
+ * BL-175 phase 2 (review): where the second clip of a wipe / difference stands for the first one's `time` -- the same moment, or,
+ * past its own end (a shorter clip), its last frame (held, so it never wraps and gets sent back on every frame).
+ */
+function followerTime(time: number, followerDuration: number, fps: number | null): { at: number; hold: boolean } {
+  if (!(followerDuration > 0)) return { at: time, hold: false };
+  const last = lastFrameTime(followerDuration, fps);
+  return time >= last ? { at: last, hold: true } : { at: time, hold: false };
+}
 
 // BL-175 (FO-REQ-0018 §A/§C, VISUAL_REVIEW_PLAN.md §2.9): one clip of a review -- looped and muted by default, speed 0.25-2, one
 // frame back and forward (the row's fps, else measured while it plays, else 1/30 s), a timeline that scrubs under the mouse while
@@ -104,9 +114,14 @@ export const MediaVideoPlayer = forwardRef<
   const runs = useRef<{ left: number; total: number; last: number } | null>(null);
   const [runShown, setRunShown] = useState<{ pass: number; total: number } | null>(null);
   const [secondBox, setSecondBox] = useState<{ src: string; box: ImageBox } | null>(null);
+  // Review: the second clip that could not load -- said, never shown as if it were the first one.
+  const [secondFailed, setSecondFailed] = useState<string | null>(null);
   const splitDrag = useRef(false);
   const [pinDraft, setPinDraft] = useState<{ start: { x: number; y: number }; end: { x: number; y: number } } | null>(null);
   const fps = reportedFps ?? measured;
+  // Review: the seam window and a loop range would fight over the playhead -- while the seam is on, the range rests (it comes
+  // back when the seam is turned off).
+  const loopRange = seam ? null : range;
   const fpsRef = useRef<number | null>(fps);
   useEffect(() => {
     fpsRef.current = fps;
@@ -129,7 +144,7 @@ export const MediaVideoPlayer = forwardRef<
     const tick = () => {
       const v = video.current;
       if (v) {
-        if (range && (v.currentTime >= range.end || v.currentTime < range.start - 0.05)) v.currentTime = range.start;
+        if (loopRange && (v.currentTime >= loopRange.end || v.currentTime < loopRange.start - 0.05)) v.currentTime = loopRange.start;
         // §F: the seam window -- past the first second, back to a second before the end (the browser's loop makes the join).
         const window = seam && !runs.current ? seamWindowOf(v.duration) : null;
         const jump = window !== null ? seamJump(v.currentTime, v.duration, window) : null;
@@ -150,9 +165,12 @@ export const MediaVideoPlayer = forwardRef<
         }
         // §E: the second clip follows -- corrected when it drifts by more than half a frame.
         const o = second.current;
-        if (o) {
-          if (Math.abs(o.currentTime - v.currentTime) > 0.5 / (fpsRef.current ?? 30)) o.currentTime = v.currentTime;
-          if (o.paused) void o.play().catch(() => undefined);
+        if (o && !o.seeking) {
+          const follow = followerTime(v.currentTime, o.duration, fpsRef.current);
+          if (Math.abs(o.currentTime - follow.at) > 0.5 / (fpsRef.current ?? 30)) o.currentTime = follow.at;
+          if (follow.hold) {
+            if (!o.paused) o.pause();
+          } else if (o.paused) void o.play().catch(() => undefined);
         }
         setTime(v.currentTime);
       }
@@ -160,7 +178,7 @@ export const MediaVideoPlayer = forwardRef<
     };
     handle = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(handle);
-  }, [playing, range, seam]);
+  }, [playing, loopRange, seam]);
 
   // The frame rate when the row gives none: the presented frames' media times while it plays.
   useEffect(() => {
@@ -190,7 +208,7 @@ export const MediaVideoPlayer = forwardRef<
     const o = second.current;
     if (!o || playing) return;
     o.pause();
-    o.currentTime = time;
+    o.currentTime = followerTime(time, o.duration, fpsRef.current).at;
   }, [playing, time, overlay?.src]);
   useEffect(() => {
     if (video.current) video.current.muted = muted;
@@ -373,7 +391,7 @@ export const MediaVideoPlayer = forwardRef<
               setBox({ naturalWidth: event.currentTarget.videoWidth, naturalHeight: event.currentTarget.videoHeight });
               event.currentTarget.playbackRate = rate;
               // Phase 2 (§E): a question about a spot opens paused there, so its pin shows.
-              if (initialTime !== null && initialTime > 0) {
+              if (initialTime !== null) {
                 event.currentTarget.currentTime = Math.min(initialTime, event.currentTarget.duration || initialTime);
                 setTime(event.currentTarget.currentTime);
               } else if (autoPlay) void event.currentTarget.play().catch(() => undefined);
@@ -392,7 +410,7 @@ export const MediaVideoPlayer = forwardRef<
             }}
             onSeeked={(event) => {
               setTime(event.currentTarget.currentTime);
-              if (second.current) second.current.currentTime = event.currentTarget.currentTime;
+              if (second.current) second.current.currentTime = followerTime(event.currentTarget.currentTime, second.current.duration, fpsRef.current).at;
             }}
             onError={() => {
               setFailed(true);
@@ -401,8 +419,11 @@ export const MediaVideoPlayer = forwardRef<
             }}
           />
         )}
-        {overlay && !failed ? (
-          <div className="pointer-events-none absolute inset-0 [isolation:isolate]" style={overlay.mode === "wipe" ? { clipPath: wipeClip(overlay.split) } : { mixBlendMode: "difference" }}>
+        {overlay && !failed && secondFailed === overlay.src ? (
+          <span className="pointer-events-none absolute right-2 top-2 z-10 rounded bg-red-950/90 px-1.5 py-0.5 text-[11px] text-red-200">{t("review.compare.secondFailed", { name: overlay.labels.second })}</span>
+        ) : null}
+        {overlay && !failed && secondFailed !== overlay.src ? (
+          <div className="pointer-events-none absolute inset-0" style={overlay.mode === "wipe" ? { clipPath: wipeClip(overlay.split) } : { mixBlendMode: "difference" }}>
             <video
               key={overlay.src}
               ref={second}
@@ -418,10 +439,11 @@ export const MediaVideoPlayer = forwardRef<
                 event.currentTarget.currentTime = video.current?.currentTime ?? 0;
                 if (video.current && !video.current.paused) void event.currentTarget.play().catch(() => undefined);
               }}
+              onError={() => setSecondFailed(overlay.src)}
             />
           </div>
         ) : null}
-        {overlay?.mode === "wipe" && !failed ? (
+        {overlay?.mode === "wipe" && !failed && secondFailed !== overlay.src ? (
           <>
             <span className="pointer-events-none absolute left-2 top-2 z-10 rounded bg-black/70 px-1.5 py-0.5 text-[11px] text-zinc-100">{overlay.labels.first}</span>
             <span className="pointer-events-none absolute right-2 top-2 z-10 rounded bg-black/70 px-1.5 py-0.5 text-[11px] text-zinc-100">{overlay.labels.second}</span>
@@ -429,6 +451,8 @@ export const MediaVideoPlayer = forwardRef<
               role="separator"
               aria-orientation="vertical"
               aria-label={t("review.compare.wipeLine")}
+              aria-valuemin={0}
+              aria-valuemax={100}
               aria-valuenow={Math.round(overlay.split * 100)}
               className="absolute inset-y-0 z-10 w-4 -translate-x-1/2 cursor-ew-resize touch-none"
               // ui-text-ignore: a CSS length, not text
@@ -446,6 +470,12 @@ export const MediaVideoPlayer = forwardRef<
               }}
               onPointerUp={(event) => {
                 event.stopPropagation();
+                splitDrag.current = false;
+              }}
+              onPointerCancel={() => {
+                splitDrag.current = false;
+              }}
+              onLostPointerCapture={() => {
                 splitDrag.current = false;
               }}
               onClick={(event) => event.stopPropagation()}
@@ -495,7 +525,7 @@ export const MediaVideoPlayer = forwardRef<
           // ui-text-ignore: a CSS length, not text
           <span key={i} title={m.label ?? undefined} className={`absolute top-1 bottom-1 rounded-sm ${TONE_COLORS[m.tone]}`} style={{ left: pct(m.start), width: m.end !== null && m.end > m.start ? `calc(${pct(m.end - m.start)} + 2px)` : "3px" }} />
         ))}
-        {range && <span className="absolute inset-y-0 rounded-sm border border-indigo-300/70 bg-indigo-400/20" style={{ left: pct(range.start), width: pct(range.end - range.start) }} />}
+        {loopRange && <span className="absolute inset-y-0 rounded-sm border border-indigo-300/70 bg-indigo-400/20" style={{ left: pct(loopRange.start), width: pct(loopRange.end - loopRange.start) }} />}
         <span className="absolute inset-y-0 w-0.5 bg-white" style={{ left: pct(time) }} />
         {hover !== null && (
           <>
@@ -536,9 +566,9 @@ export const MediaVideoPlayer = forwardRef<
         {overlay && box && secondBox && secondBox.src === overlay.src && !sameProportions({ width: box.naturalWidth, height: box.naturalHeight }, { width: secondBox.box.naturalWidth, height: secondBox.box.naturalHeight }) ? (
           <span className="text-amber-300">{t("review.compare.proportionsDiffer", { first: `${box.naturalWidth}×${box.naturalHeight}`, second: `${secondBox.box.naturalWidth}×${secondBox.box.naturalHeight}` })}</span>
         ) : null}
-        {range ? (
+        {loopRange ? (
           <button type="button" onClick={() => setRange(null)} className="rounded border border-indigo-500/60 px-2 py-0.5 text-indigo-200 hover:bg-indigo-500/10">
-            {t("review.visual.loopRange", { start: formatPlayerTime(range.start), end: formatPlayerTime(range.end) })} ×
+            {t("review.visual.loopRange", { start: formatPlayerTime(loopRange.start), end: formatPlayerTime(loopRange.end) })} ×
           </button>
         ) : (
           !compact && <span className="text-zinc-600">{t("review.visual.rangeHint")}</span>

@@ -105,12 +105,12 @@ export const VisualReviewLayer = forwardRef<LayerHandle, Props>(function VisualR
   // one stays) takes the other clip's moment and state. A picture beside a clip never holds the clip back.
   const ready = useRef(new Set<string>());
   const started = useRef(false);
-  // Layout effects: run before a cached clip's metadata can arrive. A mode change remounts every clip; a new pair keeps only
-  // the clips still in it.
+  // Layout effects: run before a cached clip's metadata can arrive. A mode or view change remounts every clip; a new pair keeps
+  // only the clips still in it.
   useLayoutEffect(() => {
     ready.current.clear();
     started.current = false;
-  }, [mode]);
+  }, [mode, view]);
   // A JSON list: an entry's key holds "\u0000" itself.
   const pairKeys = JSON.stringify(pair ? pair.map((e) => e.key) : []);
   useLayoutEffect(() => {
@@ -195,8 +195,9 @@ export const VisualReviewLayer = forwardRef<LayerHandle, Props>(function VisualR
   );
 
   /** One side's header in compare: an attempt's key, ref, status and pick button, or what the side is (reference, «Было»). */
-  const sideHeader = (entry: LayerEntry) =>
-    entry.noPick && entry.caption ? (
+  const sideHeader = (entry: LayerEntry, inline = false) =>
+    // A reference or «Было» (keys "~…") is named by its caption; an attempt -- also a re-check's «Исправлено» -- by its key.
+    entry.key.startsWith("~") && entry.caption ? (
       <span className="rounded-full bg-sky-500/15 px-2 py-0.5 text-xs text-sky-200">{entry.caption}</span>
     ) : (
       <>
@@ -204,7 +205,7 @@ export const VisualReviewLayer = forwardRef<LayerHandle, Props>(function VisualR
         <span className="font-mono text-xs text-zinc-400">{attemptLabel(entry)}</span>
         {entry.caption ? <span className="rounded-full bg-sky-500/15 px-2 py-0.5 text-xs text-sky-200">{entry.caption}</span> : null}
         {status(entry)}
-        <span className="ml-auto">{pickButton(entry)}</span>
+        <span className={inline ? "" : "ml-auto"}>{pickButton(entry)}</span>
       </>
     );
 
@@ -221,7 +222,8 @@ export const VisualReviewLayer = forwardRef<LayerHandle, Props>(function VisualR
         className={className}
         wheelZoom="always"
         overlay={overlay}
-        {...(shared ? { view: linked, onViewChange: setLinked } : {})}
+        // Compare shares one view -- side by side, and the wipe / difference picture too (Z and the zoom carry across views).
+        {...(shared || overlay ? { view: linked, onViewChange: setLinked } : {})}
       />
     ) : (
       <MediaVideoPlayer
@@ -404,10 +406,10 @@ export const VisualReviewLayer = forwardRef<LayerHandle, Props>(function VisualR
       {mode === "compare" && pair && view !== "side" && (
         <div className="flex min-h-0 flex-1 flex-col gap-2 p-4">
           <div className="flex flex-wrap items-center gap-2 text-sm">
-            {sideHeader(pair[0])}
+            {sideHeader(pair[0], true)}
             {/* ui-text-ignore: a separator */}
             <span className="text-zinc-600">|</span>
-            {sideHeader(pair[1])}
+            {sideHeader(pair[1], true)}
           </div>
           <div className="min-h-0 flex-1">{viewer(pair[0], 0, pair[0].media === "video" ? FULL_CLIP : FULL_PICTURE, false, pair[1])}</div>
         </div>

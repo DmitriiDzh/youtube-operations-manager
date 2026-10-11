@@ -71,6 +71,8 @@ export const MediaImageViewer = forwardRef<
   const [own, setOwn] = useState<ViewState>(FIT);
   const [failed, setFailed] = useState(false);
   const [overlayBox, setOverlayBox] = useState<{ src: string; box: ImageBox } | null>(null);
+  // Review: the second picture that could not load -- said, never shown as if it were the first one.
+  const [overlayFailed, setOverlayFailed] = useState<string | null>(null);
   const splitDrag = useRef(false);
   const state = shared ?? own;
   const setState = useCallback(
@@ -194,9 +196,12 @@ export const MediaImageViewer = forwardRef<
             style={view && box ? { width: box.naturalWidth * view.scale, height: box.naturalHeight * view.scale, transform: `translate(${view.offsetX}px, ${view.offsetY}px)` } : { opacity: 0 }}
           />
         )}
-        {overlay && view && box ? (
-          // The second side, in the first side's rectangle and view; isolated so the blend sees only the two pictures.
-          <div className="pointer-events-none absolute inset-0 [isolation:isolate]" style={overlay.mode === "wipe" ? { clipPath: wipeClip(overlay.split) } : { mixBlendMode: "difference" }}>
+        {overlay && box && overlayFailed === overlay.src ? (
+          <span className="pointer-events-none absolute right-2 top-2 z-10 rounded bg-red-950/90 px-1.5 py-0.5 text-[11px] text-red-200">{t("review.compare.secondFailed", { name: overlay.labels.second })}</span>
+        ) : null}
+        {overlay && view && box && overlayFailed !== overlay.src ? (
+          // The second side, in the first side's rectangle and view.
+          <div className="pointer-events-none absolute inset-0" style={overlay.mode === "wipe" ? { clipPath: wipeClip(overlay.split) } : { mixBlendMode: "difference" }}>
             {/* eslint-disable-next-line @next/next/no-img-element -- a local file of this computer */}
             <img
               key={overlay.src}
@@ -204,13 +209,14 @@ export const MediaImageViewer = forwardRef<
               alt=""
               draggable={false}
               onLoad={(event) => setOverlayBox({ src: overlay.src, box: { naturalWidth: event.currentTarget.naturalWidth, naturalHeight: event.currentTarget.naturalHeight } })}
+              onError={() => setOverlayFailed(overlay.src)}
               className="absolute left-0 top-0 max-w-none origin-top-left"
               // ui-text-ignore: CSS values, not text
               style={{ width: box.naturalWidth * view.scale, height: box.naturalHeight * view.scale, transform: `translate(${view.offsetX}px, ${view.offsetY}px)` }}
             />
           </div>
         ) : null}
-        {overlay?.mode === "wipe" && box ? (
+        {overlay?.mode === "wipe" && box && overlayFailed !== overlay.src ? (
           <>
             <span className="pointer-events-none absolute left-2 top-2 rounded bg-black/70 px-1.5 py-0.5 text-[11px] text-zinc-100">{overlay.labels.first}</span>
             <span className="pointer-events-none absolute right-2 top-2 rounded bg-black/70 px-1.5 py-0.5 text-[11px] text-zinc-100">{overlay.labels.second}</span>
@@ -219,6 +225,8 @@ export const MediaImageViewer = forwardRef<
               role="separator"
               aria-orientation="vertical"
               aria-label={t("review.compare.wipeLine")}
+              aria-valuemin={0}
+              aria-valuemax={100}
               aria-valuenow={Math.round(overlay.split * 100)}
               className="absolute inset-y-0 z-10 w-4 -translate-x-1/2 cursor-ew-resize touch-none"
               // ui-text-ignore: a CSS length, not text
@@ -236,6 +244,12 @@ export const MediaImageViewer = forwardRef<
               }}
               onPointerUp={(event) => {
                 event.stopPropagation();
+                splitDrag.current = false;
+              }}
+              onPointerCancel={() => {
+                splitDrag.current = false;
+              }}
+              onLostPointerCapture={() => {
                 splitDrag.current = false;
               }}
               onDoubleClick={(event) => event.stopPropagation()}

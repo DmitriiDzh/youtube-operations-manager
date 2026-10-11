@@ -3600,7 +3600,7 @@ re-checks and the seam view are phase 2; Gemini outputs without copying, owner t
   <jobId>/<file>` for the caller's allowed folders with `resolveFromYtmJobFile`'s proofs, else a Sent to YTM path; the plans pass
   `PLAN_JOB_OUTPUT_SUBDIRS = ["gemini"]` (a contract string -- the plans never import the Gemini module). Every plan file route,
   the revision check and the plan move use it. *Owner review time:* the screen counts seconds per attempt while the tab is
-  visible and the owner is there (`countsReviewTime`: an input within 5 min or media playing) and sends `reviewSeconds` with a
+  visible and the owner is there (`countsReviewTime`: an input within 5 min, or sound playing -- the track or the A/B reference; a looping clip does not count) and sends `reviewSeconds` with a
   verdict, an answer, a pick or "none fits" (a pick sums the item's attempts); stored in `generation_plan_verdict_history`
   (→ `owner_verdict`), in event details, and from the other computer through `SharedVerdict` / `SharedPickAction` and the peer
   tables (`review_seconds`, schema v85 -- its own migration, so a database stamped v84 by an earlier build gets it too).
