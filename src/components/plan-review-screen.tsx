@@ -1950,7 +1950,12 @@ export function PlanReviewScreen({
             {/* AC-WV-05: the wave is done -- its summary, and the next wave that still waits. */}
             {chosenWave && chosenWave.waitingPassed + chosenWave.waitingRejected === 0 && (
               <div className="space-y-1.5 border-b border-zinc-800 bg-emerald-950/30 px-3 py-2 text-xs text-emerald-200">
-                <p>{t("review.wave.done", { accepted: chosenWave.accepted, rejected: chosenWave.rejected, overrides: chosenWave.overridesValidator })}</p>
+                <p>
+                  {/* BL-175: a wave of pictures is looked at, and its picks are what it decided. */}
+                  {(allEntries ?? []).some((e) => e.groupId === chosenWave.groupId && isVisual(screenMedia(e)))
+                    ? t("review.wave.doneVisual", { picked: (allEntries ?? []).filter((e) => e.groupId === chosenWave.groupId && e.picked).length, accepted: chosenWave.accepted, rejected: chosenWave.rejected })
+                    : t("review.wave.done", { accepted: chosenWave.accepted, rejected: chosenWave.rejected, overrides: chosenWave.overridesValidator })}
+                </p>
                 {nextWave && (
                   <button type="button" onClick={() => chooseWave(nextWave.groupId)} className="rounded-md bg-violet-600 px-2.5 py-1 font-medium text-white hover:bg-violet-500">
                     {t("review.wave.next", { wave: nextWave.groupId, count: nextWave.waitingPassed + nextWave.waitingRejected })}

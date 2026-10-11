@@ -439,5 +439,6 @@ export const production = {
   "review.pin.save": "Save",
   "review.pin.cancel": "Cancel",
   "review.strip.label": "Attempts of this item",
+  "review.wave.doneVisual": "Wave reviewed: {picked} picked, {accepted} accepted, {rejected} rejected.",
   "review.strip.compareHint": "Shift+click an attempt to compare it",
 } as const;

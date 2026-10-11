@@ -135,6 +135,7 @@ export const VisualReviewLayer = forwardRef<LayerHandle, Props>(function VisualR
         pins={entry.pins}
         onAddPin={slot === 0 && entry.key === currentKey && props.onAddPin ? (region) => props.onAddPin?.(region, 0) : undefined}
         className={className}
+        wheelZoom="always"
         {...(shared ? { view: linked, onViewChange: setLinked } : {})}
       />
     ) : (
@@ -249,12 +250,13 @@ export const VisualReviewLayer = forwardRef<LayerHandle, Props>(function VisualR
                               />
                             )}
                           </div>
+                          {/* The state over the picture, so the name and the pick button keep the footer to themselves. */}
+                          <span className="pointer-events-none absolute right-2 top-2 rounded-md bg-black/70 px-1 py-0.5">{status(entry)}</span>
                           <div className="flex items-center gap-2 px-2 py-1.5">
-                            <span className="min-w-0 truncate font-mono text-xs text-zinc-300" title={entry.attemptRef}>
+                            <span className="min-w-0 flex-1 truncate font-mono text-xs text-zinc-300" title={entry.attemptRef}>
                               {attemptLabel(entry)}
                             </span>
-                            {status(entry)}
-                            <span className="ml-auto">{pickButton(entry)}</span>
+                            <span className="shrink-0">{pickButton(entry)}</span>
                           </div>
                           {isCompared ? <span className="absolute left-2 top-2 rounded bg-sky-500/80 px-1.5 text-[11px] text-white">{t("review.layer.compareMark")}</span> : null}
                         </div>

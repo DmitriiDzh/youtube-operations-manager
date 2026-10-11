@@ -440,5 +440,6 @@ export const production: Record<keyof typeof en, string> = {
   "review.pin.save": "Сохранить",
   "review.pin.cancel": "Отмена",
   "review.strip.label": "Варианты этого пункта",
+  "review.wave.doneVisual": "Волна просмотрена: выбрано — {picked}, принято — {accepted}, отклонено — {rejected}.",
   "review.strip.compareHint": "Shift+клик по варианту — сравнить с ним",
 };

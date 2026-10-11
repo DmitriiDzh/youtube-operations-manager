@@ -11,6 +11,16 @@ import { fitView, frameAt, measuredFps, regionFromDrag, regionToScreen, stepFram
 // paused, a dragged range that loops, the markers as ranges on the timeline, and pins on the frame. Shift + drag on the paused
 // frame sets a pin. It knows nothing about plans; the screen drives it through the handle like the audio player.
 
+
+/** Keeps a drag going outside the frame; a pointer the browser no longer tracks cannot be captured (harmless). */
+function capture(event: { currentTarget: Element; pointerId: number }) {
+  try {
+    event.currentTarget.setPointerCapture(event.pointerId);
+  } catch {
+    // The drag still works inside the frame.
+  }
+}
+
 export type VideoMarker = { start: number; end: number | null; label: string | null; tone: "finding" | "mark" | "question"; region?: PlanMarkerRegion };
 
 export type VideoPlayerHandle = {
@@ -174,7 +184,7 @@ export const MediaVideoPlayer = forwardRef<
   };
   const onTimelineDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
-    event.currentTarget.setPointerCapture(event.pointerId);
+    capture(event);
     selecting.current = { start: timeAt(event.clientX), moved: false };
   };
   const onTimelineMove = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -210,7 +220,7 @@ export const MediaVideoPlayer = forwardRef<
   const view = box ? fitView(box, frame, true) : null;
   const onFrameDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!onAddPin || !event.shiftKey || !view || playing || event.button !== 0) return;
-    event.currentTarget.setPointerCapture(event.pointerId);
+    capture(event);
     const p = local(event);
     pinDrag.current = p;
     setPinDraft({ start: p, end: p });

@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import type { PlanMarkerRegion } from "@/lib/generation-plans/contracts";
 import { useUiText } from "./ui-text-provider";
 import { FIT, regionFromDrag, regionToScreen, stateOf, toggleActual, viewOf, zoomAround, type ImageBox, type ViewState } from "./visual-review-model";
@@ -9,6 +9,16 @@ import { FIT, regionFromDrag, regionToScreen, stateOf, toggleActual, viewOf, zoo
 // drag to pan, the wheel to zoom around the cursor, and the owner's pins as numbered circles; Shift + drag sets a new pin (the
 // drag's length is its radius). It knows nothing about plans: the screen gives it a URL, the pins and what to do with a new one.
 // `view` / `onViewChange` let two viewers share one view (compare: linked zoom and pan).
+
+
+/** Keeps a drag going outside the frame; a pointer the browser no longer tracks cannot be captured (harmless). */
+function capture(event: { currentTarget: Element; pointerId: number }) {
+  try {
+    event.currentTarget.setPointerCapture(event.pointerId);
+  } catch {
+    // The drag still works inside the frame.
+  }
+}
 
 export type ViewerPin = { region: PlanMarkerRegion; label: string; tone: "mark" | "draft" | "question" | "previous"; title?: string | null };
 
@@ -39,8 +49,13 @@ export const MediaImageViewer = forwardRef<
     className?: string;
     /** The readout line under the image (zoom, pixels, bytes). */
     readout?: boolean;
+    /**
+     * The wheel zooms always (the whole-window layer), or only with Ctrl / ⌘ -- a trackpad pinch -- so that on the screen itself
+     * the wheel keeps scrolling the column (the default).
+     */
+    wheelZoom?: "always" | "modifier";
   }
->(function MediaImageViewer({ src, pins, onAddPin, view: shared, onViewChange, bytes = null, className = "h-[52vh]", readout = true }, ref) {
+>(function MediaImageViewer({ src, pins, onAddPin, view: shared, onViewChange, bytes = null, className = "h-[52vh]", readout = true, wheelZoom = "modifier" }, ref) {
   const { t, formatNumber } = useUiText();
   const frameRef = useRef<HTMLDivElement | null>(null);
   const [frame, setFrame] = useState({ width: 0, height: 0 });
@@ -87,7 +102,7 @@ export const MediaImageViewer = forwardRef<
     const p = local(event);
     const kind = event.shiftKey && onAddPin ? "pin" : "pan";
     if (kind === "pan" && state.fit) return;
-    event.currentTarget.setPointerCapture(event.pointerId);
+    capture(event);
     drag.current = { kind, startX: p.x, startY: p.y, lastX: p.x, lastY: p.y };
     if (kind === "pin") setPinDraft({ start: p, end: p });
   };
@@ -111,13 +126,27 @@ export const MediaImageViewer = forwardRef<
       onAddPin?.(regionFromDrag({ x: d.startX, y: d.startY }, local(event), box, view));
     }
   };
-  const onWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
-    if (!box || !view) return;
-    const p = local(event);
-    const factor = Math.exp(-event.deltaY * 0.0015);
-    const scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, view.scale * factor));
-    setState(stateOf(zoomAround(view, scale, p.x, p.y), box, frame));
-  };
+  // The wheel, as a native listener: React's is passive, and a zoom must keep the page from scrolling too.
+  const wheel = useRef({ view, box, frame, setState, wheelZoom });
+  useEffect(() => {
+    wheel.current = { view, box, frame, setState, wheelZoom };
+  });
+  useEffect(() => {
+    const el = frameRef.current;
+    if (!el) return;
+    const onWheel = (event: WheelEvent) => {
+      const w = wheel.current;
+      if (!w.box || !w.view) return;
+      if (w.wheelZoom === "modifier" && !event.ctrlKey && !event.metaKey) return;
+      event.preventDefault();
+      const rect = el.getBoundingClientRect();
+      const factor = Math.exp(-event.deltaY * (event.ctrlKey ? 0.01 : 0.0015));
+      const scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, w.view.scale * factor));
+      w.setState(stateOf(zoomAround(w.view, scale, event.clientX - rect.left, event.clientY - rect.top), w.box, w.frame));
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
 
   const draftRegion = pinDraft && box && view ? regionFromDrag(pinDraft.start, pinDraft.end, box, view) : null;
   const circles = [...pins, ...(draftRegion ? [{ region: draftRegion, label: "", tone: "draft" as const }] : [])];
@@ -135,7 +164,6 @@ export const MediaImageViewer = forwardRef<
           setPinDraft(null);
         }}
         onDoubleClick={(event) => box && setState(toggleActual(state, box, frame, local(event)))}
-        onWheel={onWheel}
       >
         {failed ? (
           <p className="absolute inset-0 flex items-center justify-center p-4 text-sm text-red-300">{t("review.visual.loadFailed")}</p>
