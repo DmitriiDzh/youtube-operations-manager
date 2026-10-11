@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { GenerationPlansReport, SharedClaim, SharedGroupNote, SharedPickAction, SharedVerdict } from "@/lib/sync-gateway";
+import { generationPlansReportSchema, type GenerationPlansReport, type SharedClaim, type SharedGroupNote, type SharedPickAction, type SharedVerdict } from "@/lib/sync-gateway";
 import { isDomainError, mediaKindOf, pickTargetOf, type PlanEvent, type PlanPickRecord, type PlanRecheck, type PlanResultRow, type PlanVerdictHistoryRow } from "./contracts";
+import { withSentPicks } from "./picks";
 import type { PlanJobRow } from "./progress";
 import { createGenerationPlanServices, type PlanStore, type StoredPlan } from "./services";
 
@@ -120,8 +121,8 @@ function setup(jobs: Array<PlanJobRow & { planId: string | null }> = [], opts: {
 const refs = (n: number, from = 1) => Array.from({ length: n }, (_, i) => `a${i + from}`);
 
 /** A visual plan: an external `render` stage, then the owner's review; item I with `n` external attempts reported done with PNGs. */
-async function visualPlan(item: { mode?: "fixed" | "until_accepted"; targetCount: number; pickTarget?: number }, n = 8) {
-  const s = setup();
+async function visualPlan(item: { mode?: "fixed" | "until_accepted"; targetCount: number; pickTarget?: number }, n = 8, opts: Parameters<typeof setup>[1] = {}) {
+  const s = setup([], opts);
   await s.services.createPlan({
     planId: PLAN,
     title: "Plan C stills",
@@ -387,4 +388,155 @@ test("AC-VR-09: the plan's and a wave's own reason chips are stored and returned
   await assert.rejects(s.services.updatePlan({ planId: PLAN, reviewReasons: tooMany }), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
   await assert.rejects(s.services.updatePlan({ planId: PLAN, reviewReasons: ["x".repeat(61)] }), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
   await assert.rejects(s.services.updatePlan({ planId: PLAN, reviewReasons: ["a", "a"] }), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
+});
+
+// -- AC-VR-10/11 (two computers) ---------------------------------------------------------------------------------------------
+
+/** A computer's plans report, validated as the other computer reads it. */
+async function reportOf(s: ReturnType<typeof setup>, deviceId: string, hostname: string, version = 5): Promise<GenerationPlansReport> {
+  return generationPlansReportSchema.parse({
+    format: "ytm-generation-plans",
+    version,
+    deviceId,
+    hostname,
+    updatedAt: new Date(clockMs).toISOString(),
+    plans: await s.services.buildSharedPlans(),
+    verdicts: await s.services.outgoingVerdicts(),
+    claims: [],
+    groupNotes: await s.services.outgoingGroupNotes(),
+    picks: await s.services.outgoingPicks(),
+  });
+}
+
+/** The Mac owns the visual plan (8 attempts, target 1); Windows reads the Mac's report and the Mac reads Windows'. */
+async function twoComputers(macVersion = 5) {
+  let macReport: GenerationPlansReport | null = null;
+  let winReport: GenerationPlansReport | null = null;
+  const mac = await visualPlan({ targetCount: 1 }, 8, { deviceId: "mac-id", label: "MAC", peers: () => (winReport ? [winReport] : []) });
+  const win = setup([], { deviceId: "win-id", label: "WIN", peers: () => (macReport ? [macReport] : []) });
+  const sync = async () => {
+    macReport = await reportOf(mac, "mac-id", "MAC", macVersion);
+    winReport = await reportOf(win, "win-id", "WIN");
+  };
+  await sync();
+  return { mac, win, sync, macPlan: () => macReport!.plans[0] };
+}
+
+test("AC-VR-10: a version 5 report with picks, none-fits, handled ids, pick targets, reason lists and pins parses; version 4 still parses; 6 is refused", async () => {
+  const { mac, win, sync, macPlan } = await twoComputers();
+  await mac.services.updatePlan({ planId: PLAN, reviewReasons: ["лишний предмет"], upsertGroups: [{ groupId: "W1", reviewReasons: ["лестница"] }] });
+  tick();
+  await mac.services.recordOwnerPick({ planId: PLAN, itemKey: "W1/I", attemptRef: "a2", action: "pick" });
+  tick();
+  await mac.services.recordOwnerVerdict({ planId: PLAN, itemKey: "W1/I", attemptRef: "a1", result: "rejected", markers: [{ start: 0, note: "фонарь", region: { x: 0.5, y: 0.5, r: 0.2 } }] });
+  await sync();
+  const plan = macPlan();
+  assert.deepEqual([plan.reviewReasons, plan.groups[0].reviewReasons, plan.items[0].pickTarget], [["лишний предмет"], ["лестница"], 1]);
+  assert.deepEqual(plan.picks?.map((p) => [p.itemKey, p.attemptRef, p.device]), [["W1/I", "a2", "MAC"]]);
+  assert.deepEqual(plan.noneFits, []);
+  assert.deepEqual(plan.handledPicks, []);
+  const a1 = plan.review.find((e) => e.attemptRef === "a1");
+  assert.deepEqual(a1?.verdict?.markers, [{ start: 0, end: null, note: "фонарь", region: { x: 0.5, y: 0.5, r: 0.2 } }]);
+  assert.equal(plan.review.find((e) => e.attemptRef === "a2")?.picked?.device, "MAC");
+  assert.equal(plan.review.filter((e) => e.notChosen).length, 6, "8 attempts: a2 picked, a1 rated, 6 not chosen");
+  assert.equal(Object.hasOwn(plan.review[0], "media"), false, "the reader derives media itself");
+  const report = await reportOf(mac, "mac-id", "MAC");
+  assert.equal(generationPlansReportSchema.safeParse({ ...report, version: 4 }).success, true);
+  assert.equal(generationPlansReportSchema.safeParse({ ...report, version: 6 }).success, false);
+  void win;
+});
+
+test("AC-VR-11: a pick given on Windows -- stored and carried there, counted on the Mac before its tick, applied once, then shown as applied", async () => {
+  const { mac, win, sync, macPlan } = await twoComputers();
+  tick();
+  const sent = await win.services.recordPeerPick({ deviceId: "mac-id", planId: PLAN, itemKey: "W1/I", attemptRef: "a3", action: "pick", note: "стройная" });
+  assert.deepEqual([sent.action, sent.ownerDeviceId, sent.attemptRef, sent.note], ["pick", "mac-id", "a3", "стройная"]);
+  assert.equal((await win.services.outgoingPicks()).length, 1);
+  // Windows: its own pick settles the item at once in its view and badge.
+  const overlaid = withSentPicks(macPlan(), macPlan().review, await win.services.outgoingPicks(), "WIN");
+  assert.deepEqual(overlaid.filter((e) => e.picked).map((e) => [e.attemptRef, e.pickSent]), [["a3", true]]);
+  assert.equal(overlaid.filter((e) => e.notChosen).length, 7);
+  assert.equal((await win.services.summary()).otherDevices, 0);
+  await sync();
+  // The Mac before its tick: the pick on its way already counts (queue, progress, badge).
+  const queue = (await mac.services.reviewQueue({ planId: PLAN })).entries;
+  assert.deepEqual(queue.filter((e) => e.picked).map((e) => [e.attemptRef, e.picked?.device]), [["a3", "WIN"]]);
+  assert.equal((await mac.services.summary()).waitingReview, 0);
+  const owner = (await mac.services.getPlan({ planId: PLAN }, { ownerView: true })).progress.items[0];
+  assert.deepEqual([owner.accepted, owner.notChosen, owner.waitingReview], [1, 7, 0]);
+  assert.equal((await mac.services.getPlan({ planId: PLAN })).progress.items[0].waitingReview, 8, "the factory's read stays the stored state until the tick");
+  // The tick applies it once.
+  assert.deepEqual(await mac.services.applyPeerPicks(), { applied: 1, skipped: 0 });
+  assert.deepEqual(await mac.services.applyPeerPicks(), { applied: 0, skipped: 0 });
+  assert.deepEqual(kinds(mac, "owner_pick", "peer_pick", "group_reviewed"), [
+    ["owner_pick", { itemKey: "W1/I", attemptRef: "a3", device: "WIN", note: "стройная" }],
+    ["peer_pick", { pickId: sent.pickId, fromDevice: "WIN", itemKey: "W1/I", attemptRef: "a3", action: "pick" }],
+    ["group_reviewed", { groupId: "W1", accepted: 0, rejected: 0, overridesValidator: 0, picked: 1, noneFits: 0 }],
+  ]);
+  await sync();
+  assert.deepEqual(macPlan().handledPicks, [sent.pickId]);
+  const after = withSentPicks(macPlan(), macPlan().review, await win.services.outgoingPicks(), "WIN");
+  assert.deepEqual(after.filter((e) => e.picked).map((e) => [e.attemptRef, e.picked?.device, e.pickSent ?? false]), [["a3", "WIN", false]], "applied there: no longer 'sent'");
+});
+
+test("AC-VR-11: an action older than the Mac's state is superseded; a pick on an attempt the Mac rejected never applies; both are weighed once", async () => {
+  const { mac, win, sync } = await twoComputers();
+  tick();
+  const old = await win.services.recordPeerPick({ deviceId: "mac-id", planId: PLAN, itemKey: "W1/I", attemptRef: "a1", action: "pick" });
+  tick();
+  await mac.services.recordOwnerPick({ planId: PLAN, itemKey: "W1/I", attemptRef: "a5", action: "pick" });
+  await sync();
+  tick();
+  assert.deepEqual(await mac.services.applyPeerPicks(), { applied: 0, skipped: 1 });
+  assert.deepEqual((await itemOf(mac)).picks.map((p) => p.attemptRef), ["a5"], "the Mac's later pick stands");
+  assert.deepEqual(kinds(mac, "peer_pick").at(-1), ["peer_pick", { pickId: old.pickId, fromDevice: "WIN", itemKey: "W1/I", attemptRef: "a1", action: "pick", superseded: true, reason: "picked_later" }]);
+  // The Mac rejects a6; Windows (an older report) still picks it.
+  tick();
+  const late = await win.services.recordPeerPick({ deviceId: "mac-id", planId: PLAN, itemKey: "W1/I", attemptRef: "a6", action: "pick" });
+  tick();
+  await mac.services.recordOwnerVerdict({ planId: PLAN, itemKey: "W1/I", attemptRef: "a6", result: "rejected" });
+  await sync();
+  assert.deepEqual(await mac.services.applyPeerPicks(), { applied: 0, skipped: 1 });
+  assert.deepEqual(kinds(mac, "peer_pick").at(-1)?.[1], { pickId: late.pickId, fromDevice: "WIN", itemKey: "W1/I", attemptRef: "a6", action: "pick", superseded: true, reason: "rejected" });
+  assert.deepEqual((await itemOf(mac)).picks.map((p) => p.attemptRef), ["a5"]);
+  assert.deepEqual(await mac.services.applyPeerPicks(), { applied: 0, skipped: 0 }, "each weighed once");
+});
+
+test("AC-VR-11: a rejection given on Windows withdraws the Mac's pick of that attempt; Windows cannot pick an attempt it rejected", async () => {
+  const { mac, win, sync } = await twoComputers();
+  tick();
+  await mac.services.recordOwnerPick({ planId: PLAN, itemKey: "W1/I", attemptRef: "a4", action: "pick" });
+  await sync();
+  tick();
+  await win.services.recordPeerVerdict({ deviceId: "mac-id", planId: PLAN, itemKey: "W1/I", attemptRef: "a4", result: "rejected", replace: true, markers: [{ start: 0, note: "лестница", region: { x: 0.1, y: 0.9, r: 0.05 } }] });
+  await assert.rejects(
+    win.services.recordPeerPick({ deviceId: "mac-id", planId: PLAN, itemKey: "W1/I", attemptRef: "a4", action: "pick" }),
+    (e: unknown) => isDomainError(e) && e.code === "plan_mismatch" && (e.details as { reason?: string }).reason === "rejected"
+  );
+  await sync();
+  await mac.services.applyPeerVerdicts();
+  const item = await itemOf(mac);
+  assert.deepEqual([item.picks.length, item.rejected, item.waitingReview], [0, 1, 7]);
+  assert.deepEqual(kinds(mac, "owner_unpick").at(-1), ["owner_unpick", { itemKey: "W1/I", attemptRef: "a4", device: "WIN", reason: "rejected" }]);
+  // The pin of Windows' verdict reached the Mac's history unchanged.
+  assert.deepEqual(mac.history.at(-1)?.markers, [{ start: 0, end: null, note: "лестница", region: { x: 0.1, y: 0.9, r: 0.05 } }]);
+});
+
+test("AC-VR-11: refused on Windows -- the Mac reads only version 4, an attempt not in its report, a closed plan; none fits travels too", async () => {
+  const old = await twoComputers(4);
+  await assert.rejects(
+    old.win.services.recordPeerPick({ deviceId: "mac-id", planId: PLAN, itemKey: "W1/I", attemptRef: "a1", action: "pick" }),
+    (e: unknown) => isDomainError(e) && e.code === "plan_invalid" && (e.details as { reason?: string }).reason === "peer_update_required"
+  );
+  const { mac, win, sync } = await twoComputers();
+  await assert.rejects(win.services.recordPeerPick({ deviceId: "mac-id", planId: PLAN, itemKey: "W1/I", attemptRef: "zz", action: "pick" }), (e: unknown) => isDomainError(e) && e.code === "plan_mismatch");
+  tick();
+  await win.services.recordPeerPick({ deviceId: "mac-id", planId: PLAN, itemKey: "W1/I", action: "none_fits", note: "все с фонарём" });
+  await sync();
+  assert.deepEqual(await mac.services.applyPeerPicks(), { applied: 1, skipped: 0 });
+  const item = await itemOf(mac);
+  assert.deepEqual([item.noneFits?.device, item.noneFits?.attempts, item.notChosen, item.waitingReview], ["WIN", 8, 8, 0]);
+  await mac.services.closePlan({ planId: PLAN, status: "completed" });
+  await sync();
+  await assert.rejects(win.services.recordPeerPick({ deviceId: "mac-id", planId: PLAN, itemKey: "W1/I", attemptRef: "a1", action: "pick" }), (e: unknown) => isDomainError(e) && e.code === "plan_closed");
 });

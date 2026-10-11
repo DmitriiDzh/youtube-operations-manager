@@ -220,6 +220,8 @@ export const sharedPlanSchema = z
     /** BL-175 (v5): the plan's active picks and "none fits" (what the other computer's grid and counts show). */
     picks: z.array(z.object({ itemKey: z.string().max(120), attemptRef: z.string().max(120), device: z.string().max(255), at: isoSchema, note: z.string().max(2000).nullable() }).strict()).max(5000).optional(),
     noneFits: z.array(z.object({ itemKey: z.string().max(120), note: z.string().max(2000).nullable(), device: z.string().max(255), at: isoSchema, attempts: z.number().int().min(0) }).strict()).max(1000).optional(),
+    /** BL-175 (v5): the pick actions from other devices this device already weighed (applied or superseded), newest 1000. */
+    handledPicks: z.array(z.string().max(64)).max(1000).optional(),
     /** BL-143 phase 3: the plan's reference tracks for A/B (files relative to the channel's Sent to YTM). */
     references: z
       .array(z.object({ id: z.string().max(64), label: z.string().max(200), file: relativePathSchema, lufs: z.number().nullable(), lra: z.number().nullable(), truePeak: z.number().nullable() }).strict())
@@ -300,7 +302,8 @@ export const sharedPickActionSchema = z
  * BL-173 (PLAN_RECHECKS_PLAN.md §2.7): version 4 adds the open re-checks (`plans[].rechecks`), an entry's `currentFile`, and
  * `recheckId` / `kept` on history entries and verdicts. Read: 1-4; a version 3 build refuses it, so both computers update again.
  * BL-175 (VISUAL_REVIEW_PLAN.md §2.6): version 5 adds marker `region`s, `reviewReasons` (plan, waves), items' `pickTarget`, the
- * plans' active `picks` / `noneFits`, entries' `picked` / `notChosen`, and the pick actions sent to other devices (`picks`).
+ * plans' active `picks` / `noneFits` and `handledPicks`, entries' `picked` / `notChosen`, and the pick actions sent to other
+ * devices (`picks`).
  * Read: 1-5; a version 4 build refuses it, so both computers update again.
  */
 export const GENERATION_PLANS_REPORT_VERSION = 5;

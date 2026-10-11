@@ -156,3 +156,71 @@ export function withdrawPickOnReject(records: readonly PlanPickRecord[], itemKey
   const when = newer(pick.at, at) ? pick.at : at;
   return { writes: [{ ...pick, active: false, at: when, device }], events: [{ kind: "owner_unpick", details: { itemKey, attemptRef, device, reason: "rejected" } }] };
 }
+
+/** The plan as another computer's report carries it -- what `withSentPicks` needs of it. */
+export type SharedPickPlan = {
+  items: ReadonlyArray<Pick<PlanItem, "itemKey" | "mode" | "targetCount"> & { pickTarget?: number }>;
+  picks?: ReadonlyArray<{ itemKey: string; attemptRef: string; device: string; at: string; note: string | null }>;
+  noneFits?: ReadonlyArray<{ itemKey: string; note: string | null; device: string; at: string; attempts: number }>;
+  /** The ids of the pick actions that device already weighed (applied or superseded). */
+  handledPicks?: readonly string[];
+};
+
+/** A pick action this computer sent to another computer's plan (the report's `picks`). */
+export type SentPickAction = { pickId: string; itemKey: string; attemptRef: string | null; action: PlanPickAction; note: string | null; at: string };
+
+/**
+ * BL-175 (VISUAL_REVIEW_PLAN.md §2.6): another computer's plan as THIS computer shows it -- the pick actions sent from here that
+ * the owning computer has not weighed yet (`handledPicks`) are played over its state with the same rules (`applyPickAction`), and
+ * each entry's `picked` / `notChosen` follow. `pickSent` marks an attempt picked from here and on its way. Pure (the review
+ * screen, the plan card and this computer's badge all read it). With nothing pending, the entries come back as they are.
+ */
+export function withSentPicks<E extends { itemKey: string; attemptRef: string; verdict: { result: string } | null; picked?: PlanPickMark; notChosen?: boolean }>(
+  plan: SharedPickPlan,
+  review: readonly E[],
+  sent: readonly SentPickAction[],
+  device: string
+): Array<E & { pickSent?: true }> {
+  const handled = new Set(plan.handledPicks ?? []);
+  const pending = sent.filter((a) => !handled.has(a.pickId)).sort((a, b) => ms(a.at) - ms(b.at));
+  if (pending.length === 0) return [...review];
+  let records: PlanPickRecord[] = [
+    ...(plan.picks ?? []).map((p): PlanPickRecord => ({ itemKey: p.itemKey, kind: "pick", attemptRef: p.attemptRef, active: true, note: p.note, device: p.device, at: p.at, covered: [] })),
+    // What a "none fits" there covers: the item's entries it shows as not chosen (no picks can stand beside it).
+    ...(plan.noneFits ?? []).map((n): PlanPickRecord => ({ itemKey: n.itemKey, kind: "none_fits", attemptRef: null, active: true, note: n.note, device: n.device, at: n.at, covered: review.filter((e) => e.itemKey === n.itemKey && e.notChosen === true).map((e) => e.attemptRef) })),
+  ];
+  const sentPicks = new Set<string>();
+  const key = (itemKey: string, ref: string) => `${itemKey}\u0000${ref}`;
+  for (const a of pending) {
+    const item = plan.items.find((i) => i.itemKey === a.itemKey);
+    if (!item) continue;
+    const own = review.filter((e) => e.itemKey === a.itemKey);
+    const outcome = applyPickAction(
+      { itemKey: a.itemKey, attemptRef: a.attemptRef, action: a.action, note: a.note, device, at: a.at },
+      {
+        records: records.filter((r) => r.itemKey === a.itemKey),
+        target: pickTargetOf(item),
+        queueRefs: own.map((e) => e.attemptRef),
+        rejected: new Set(own.filter((e) => e.verdict?.result === "rejected").map((e) => e.attemptRef)),
+        validatorRejected: new Set(),
+      }
+    );
+    if (outcome.outcome !== "applied") continue;
+    const same = (x: PlanPickRecord, w: PlanPickRecord) => x.itemKey === w.itemKey && x.kind === w.kind && (x.attemptRef ?? "") === (w.attemptRef ?? "");
+    records = [...records.filter((r) => !outcome.writes.some((w) => same(r, w))), ...outcome.writes];
+    for (const w of outcome.writes) if (w.kind === "pick" && w.attemptRef !== null) (w.active ? sentPicks.add(key(w.itemKey, w.attemptRef)) : sentPicks.delete(key(w.itemKey, w.attemptRef)));
+  }
+  const flags = pickFlagsOf(pickStateOf(records), plan.items);
+  return review.map((e) => {
+    const { picked: _picked, notChosen: _notChosen, ...rest } = e;
+    void _picked;
+    void _notChosen;
+    const mark = flags(e.itemKey, e.attemptRef, e.verdict !== null);
+    return {
+      ...rest,
+      ...(mark.picked ? { picked: mark.picked } : {}),
+      ...(mark.notChosen ? { notChosen: true } : {}),
+      ...(mark.picked && sentPicks.has(key(e.itemKey, e.attemptRef)) ? { pickSent: true as const } : {}),
+    } as E & { pickSent?: true };
+  });
+}

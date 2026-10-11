@@ -6,7 +6,7 @@ import { activeChannelOf, planErrorResponse } from "../shared";
 
 export type PeersRouteDeps = {
   getSession: () => Promise<{ user?: { id?: string | null } } | null>;
-  core: Pick<GenerationPlanServices, "peerPlans" | "outgoingVerdicts" | "peerClaims" | "outgoingGroupNotes">;
+  core: Pick<GenerationPlanServices, "peerPlans" | "outgoingVerdicts" | "peerClaims" | "outgoingGroupNotes" | "outgoingPicks">;
   activeChannelId: (userId: string) => Promise<string | null>;
 };
 
@@ -14,7 +14,7 @@ export type PeersRouteDeps = {
  * BL-143 phase 2 (AC-GP2-06): the other devices' plans (read-only) and the verdicts this device sent them. BL-157 (AC-SM-03,
  * ADR 0004/0031): only the ACTIVE channel's -- the plans, the verdicts sent from here and the other devices' claims alike
  * (a verdict names another channel's track as much as a plan does); none while no channel is active. BL-162: and the wave
- * notes sent from here (`outgoingNotes`), filtered the same way.
+ * notes sent from here (`outgoingNotes`), filtered the same way. BL-175: and the pick actions sent from here (`outgoingPicks`).
  */
 export function createPeersGetHandler(deps: PeersRouteDeps) {
   return async function GET() {
@@ -22,7 +22,14 @@ export function createPeersGetHandler(deps: PeersRouteDeps) {
     const userId = session?.user?.id;
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     try {
-      const [devices, outgoing, channelId, claims, notes] = await Promise.all([deps.core.peerPlans(), deps.core.outgoingVerdicts(), deps.activeChannelId(userId), deps.core.peerClaims(), deps.core.outgoingGroupNotes()]);
+      const [devices, outgoing, channelId, claims, notes, picks] = await Promise.all([
+        deps.core.peerPlans(),
+        deps.core.outgoingVerdicts(),
+        deps.activeChannelId(userId),
+        deps.core.peerClaims(),
+        deps.core.outgoingGroupNotes(),
+        deps.core.outgoingPicks(),
+      ]);
       const plans = devices.map((d) => ({ ...d, plans: channelId ? d.plans.filter((p) => p.channelId === channelId) : [] }));
       const shown = new Set(plans.flatMap((d) => d.plans.map((p) => `${d.deviceId}\u0000${p.planId}`)));
       return NextResponse.json({
@@ -30,6 +37,7 @@ export function createPeersGetHandler(deps: PeersRouteDeps) {
         outgoing: outgoing.filter((v) => shown.has(`${v.ownerDeviceId}\u0000${v.planId}`)),
         claims: claims.filter((c) => shown.has(`${c.ownerDeviceId}\u0000${c.planId}`)),
         outgoingNotes: notes.filter((n) => shown.has(`${n.ownerDeviceId}\u0000${n.planId}`)),
+        outgoingPicks: picks.filter((a) => shown.has(`${a.ownerDeviceId}\u0000${a.planId}`)),
       });
     } catch (error) {
       return planErrorResponse(error);

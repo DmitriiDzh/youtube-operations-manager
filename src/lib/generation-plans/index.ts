@@ -88,6 +88,8 @@ export async function publishGenerationPlansShare(): Promise<void> {
   await core.applyPeerVerdicts().catch((error: unknown) => console.warn(`[generation-plans] could not apply other devices' verdicts: ${error instanceof Error ? error.message : String(error)}`));
   // BL-162 (FO-REQ-0013 §2.3): and the wave notes they wrote on this device's plans.
   await core.applyPeerGroupNotes().catch((error: unknown) => console.warn(`[generation-plans] could not apply other devices' wave notes: ${error instanceof Error ? error.message : String(error)}`));
+  // BL-175 (VISUAL_REVIEW_PLAN.md §2.6): and their picks -- after the verdicts, so a rejection that came with them is known.
+  await core.applyPeerPicks().catch((error: unknown) => console.warn(`[generation-plans] could not apply other devices' picks: ${error instanceof Error ? error.message : String(error)}`));
   await createGenerationPlansShareCoreForProduction().publishLocalReport({
     format: GENERATION_PLANS_REPORT_FORMAT,
     version: GENERATION_PLANS_REPORT_VERSION,
@@ -100,5 +102,7 @@ export async function publishGenerationPlansShare(): Promise<void> {
     claims: await core.ownClaims(),
     // BL-162 (v3): the wave notes written here on other devices' plans.
     groupNotes: await core.outgoingGroupNotes(),
+    // BL-175 (v5): the pick actions taken here on other devices' plans.
+    picks: await core.outgoingPicks(),
   });
 }

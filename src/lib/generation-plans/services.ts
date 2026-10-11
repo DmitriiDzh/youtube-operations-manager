@@ -53,7 +53,7 @@ import {
 } from "./contracts";
 import { createHash } from "node:crypto";
 import type { GenerationPlansReport, SharedClaim, SharedGroupNote, SharedPickAction, SharedPlan, SharedRecheck, SharedVerdict } from "@/lib/sync-gateway";
-import { applyPickAction, pickFlagsOf, pickStateOf, withdrawPickOnReject, type PickEvent, type PickOutcome } from "./picks";
+import { applyPickAction, pickFlagsOf, pickStateOf, withdrawPickOnReject, withSentPicks, type PickEvent, type PickOutcome } from "./picks";
 import { inAppAttempts, planEvents, planProgress, planTodo, reviewBatches, reviewCandidates, secondFloor, type PlanJobRow, type PlanSessionRow } from "./progress";
 import {
   cloneGroupInputSchema,
@@ -388,6 +388,12 @@ export function validateDefinition(definition: PlanDefinition): void {
     if (item.pickTarget !== undefined && (item.pickTarget < 1 || item.pickTarget > item.targetCount)) problems.push(`item ${item.itemKey} picks ${item.pickTarget}, outside 1..targetCount (${item.targetCount})`);
   }
   if (problems.length > 0) throw planInvalid(`The plan is not valid: ${problems.slice(0, 10).join("; ")}`, { problems });
+}
+
+/** BL-175: the records after `writes` (one record per plan, item, kind and attempt: a write replaces it). */
+function mergePicks(records: readonly PlanPickRecord[], writes: readonly PlanPickRecord[]): PlanPickRecord[] {
+  const same = (a: PlanPickRecord, b: PlanPickRecord) => a.itemKey === b.itemKey && a.kind === b.kind && (a.attemptRef ?? "") === (b.attemptRef ?? "");
+  return [...records.filter((r) => !writes.some((w) => same(r, w))), ...writes];
 }
 
 /** BL-175 (v5, §2.6): a plan's active picks and "none fits" as its report carries them (within the report's bounds). */
@@ -751,6 +757,13 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
     if (!deps.peers) return reported;
     const events = await deps.store.listEvents(row.id);
     let progress = reported;
+    // BL-175 (§2.6): picks sent from the other computer and not applied yet count here as given (the plan's numbers again).
+    const stored = await deps.store.listPicks(row.id);
+    const picks = await effectivePicks(row, stored, events, jobs, results);
+    if (picks !== stored) {
+      const [sessions, rechecks] = await Promise.all([deps.store.listSessions(row.id), deps.store.listRechecks(row.id)]);
+      progress = { ...planProgress(toPublicPlan(row), jobs, results, sessions, now(), rechecks, picks), ...(reported.rechecks ? { rechecks: reported.rechecks } : {}) };
+    }
     // BL-173 (AC-RC-10c): a re-check answered on another device, not applied here yet, is no longer open.
     const answers = await pendingRecheckAnswers(row, events);
     if (answers.size > 0) {
@@ -769,7 +782,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
     }
     const pending = await pendingPeerVerdicts(row, events, results);
     if (pending.size === 0) return progress;
-    const given = reviewEntries(row, jobs, results).filter((e) => entryWaits(e) && pending.has(keyOf(e.itemKey, e.attemptRef)));
+    const given = reviewEntries(row, jobs, results, picks).filter((e) => entryWaits(e) && pending.has(keyOf(e.itemKey, e.attemptRef)));
     if (given.length === 0) return progress;
     const perItem = new Map<string, number>();
     const perGroup = new Map<string, number>();
@@ -795,7 +808,9 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
   async function ownerQueue(row: StoredPlan, jobs: PlanJobRow[], results: PlanResultRow[]): Promise<PlanReviewEntry[]> {
     const review = row.definition.stages.find((s) => s.kind === "owner_review");
     if (!review) return [];
-    const [events, history, rechecks, picks] = await Promise.all([deps.store.listEvents(row.id), deps.store.listVerdictHistory(row.id), deps.store.listRechecks(row.id), deps.store.listPicks(row.id)]);
+    const [events, history, rechecks, stored] = await Promise.all([deps.store.listEvents(row.id), deps.store.listVerdictHistory(row.id), deps.store.listRechecks(row.id), deps.store.listPicks(row.id)]);
+    // BL-175 (§2.6): picks sent from the other computer and not applied yet already count here.
+    const picks = await effectivePicks(row, stored, events, jobs, results);
     // BL-173 (review round 1): an attempt that plays an accepted revision says so (the screen then measures its loudness).
     const currentFiles = currentFilesOf(rechecks);
     const entries = reviewEntries(row, jobs, results, picks).map((e) => {
@@ -847,8 +862,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
     if (writes.length === 0) return [...records];
     await deps.store.upsertPicks(row.id, writes);
     for (const e of events) await record(row.id, e.kind, "owner", { ...e.details, ...extra });
-    const same = (a: PlanPickRecord, b: PlanPickRecord) => a.itemKey === b.itemKey && a.kind === b.kind && (a.attemptRef ?? "") === (b.attemptRef ?? "");
-    return [...records.filter((r) => !writes.some((w) => same(r, w))), ...writes];
+    return mergePicks(records, writes);
   }
 
   /** A rejection's effect on a pick (§2.2): the attempt's active pick is withdrawn. Returns the plan's records after it. */
@@ -872,6 +886,48 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       rejected: new Set([...own.filter((e) => e.verdict?.result === "rejected").map((e) => e.attemptRef), ...pendingRejected]),
       validatorRejected: new Set(own.filter((e) => e.validator === "rejected").map((e) => e.attemptRef)),
     };
+  }
+
+  /** The ids of the pick actions from other devices this plan already weighed (`peer_pick` events). */
+  function handledPickIds(events: readonly PlanEvent[]): Set<string> {
+    return new Set(events.filter((e) => e.kind === "peer_pick" && typeof e.details.pickId === "string").map((e) => e.details.pickId as string));
+  }
+
+  /**
+   * BL-175 (§2.6): the pick actions other devices sent for THIS device's active plan that it has not weighed yet, oldest first --
+   * the same ones `applyPeerPicks` will weigh (not dated more than 5 minutes ahead), each with the device it came from.
+   */
+  async function pendingPeerPicks(row: StoredPlan, events: readonly PlanEvent[]): Promise<Array<{ action: SharedPickAction; from: string }>> {
+    if (!deps.peers || row.status !== "active") return [];
+    const own = await deps.peers.ownDeviceId();
+    const handled = handledPickIds(events);
+    const limit = now().getTime() + 5 * 60_000;
+    const out: Array<{ action: SharedPickAction; from: string }> = [];
+    for (const report of await deps.peers.listPeerReports()) {
+      for (const action of report.picks ?? []) {
+        if (action.ownerDeviceId !== own || action.planId !== row.id || handled.has(action.pickId) || !(Date.parse(action.at) <= limit)) continue;
+        out.push({ action, from: report.hostname ?? report.deviceId });
+      }
+    }
+    return out.sort((a, b) => Date.parse(a.action.at) - Date.parse(b.action.at));
+  }
+
+  /**
+   * The plan's pick records with the other devices' not-yet-weighed actions played over them by the same rules -- what the owner
+   * sees here before the tick applies them. The stored records themselves when nothing is pending (the same array).
+   */
+  async function effectivePicks(row: StoredPlan, stored: PlanPickRecord[], events: readonly PlanEvent[], jobs: PlanJobRow[], results: PlanResultRow[]): Promise<PlanPickRecord[]> {
+    const pending = await pendingPeerPicks(row, events);
+    if (pending.length === 0) return stored;
+    const review = row.definition.stages.find((s) => s.kind === "owner_review");
+    // A rejection on its way from the other computer already counts, as it does for the owner's own picks.
+    const entries = review ? withPending(reviewEntries(row, jobs, results, stored), await pendingPeerVerdicts(row, [...events], results), review.stageId) : [];
+    let records = [...stored];
+    for (const { action, from } of pending) {
+      const outcome = applyPickAction({ itemKey: action.itemKey, attemptRef: action.attemptRef, action: action.action, note: action.note, device: from, at: action.at }, pickContextOf(row, entries, records, action.itemKey));
+      if (outcome.outcome === "applied") records = mergePicks(records, outcome.writes);
+    }
+    return records;
   }
 
   /** An item's state as the screen and the report show it: pick target and active "none fits". */
@@ -1749,9 +1805,13 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       let otherDevices = 0;
       if (deps.peers) {
         const sent = new Set((await more.outgoingVerdicts()).map((v) => `${v.ownerDeviceId}\u0000${v.planId}\u0000${v.itemKey}\u0000${v.attemptRef}`));
+        const sentPicks = await more.outgoingPicks();
+        const label = await ownLabel();
         for (const report of await deps.peers.listPeerReports()) {
           for (const plan of report.plans.filter((p) => p.status === "active")) {
-            const waiting = plan.review.filter((e) => entryWaits(e) && !sent.has(`${report.deviceId}\u0000${plan.planId}\u0000${e.itemKey}\u0000${e.attemptRef}`));
+            // BL-175 (§2.6): a pick sent from here already settles its attempts here.
+            const review = withSentPicks(plan, plan.review, sentPicks.filter((a) => a.ownerDeviceId === report.deviceId && a.planId === plan.planId), label);
+            const waiting = review.filter((e) => entryWaits(e) && !sent.has(`${report.deviceId}\u0000${plan.planId}\u0000${e.itemKey}\u0000${e.attemptRef}`));
             otherDevices += waiting.length;
             rejected += waiting.filter((e) => validatorOfEntry(e) === "rejected").length;
           }
@@ -1799,11 +1859,15 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       }
       if (deps.peers) {
         const sent = new Set((await more.outgoingVerdicts()).map((v) => `${v.ownerDeviceId}\u0000${v.planId}\u0000${v.itemKey}\u0000${v.attemptRef}`));
+        const sentPicks = await more.outgoingPicks();
+        const label = await ownLabel();
         for (const report of await deps.peers.listPeerReports()) {
           for (const plan of report.plans.filter((p) => p.status === "active")) {
             const target = work.get(plan.channelId);
             if (!target) continue;
-            const waiting = plan.review.filter((e) => entryWaits(e) && !sent.has(`${report.deviceId}\u0000${plan.planId}\u0000${e.itemKey}\u0000${e.attemptRef}`));
+            // BL-175 (§2.6): a pick sent from here already settles its attempts here.
+            const review = withSentPicks(plan, plan.review, sentPicks.filter((a) => a.ownerDeviceId === report.deviceId && a.planId === plan.planId), label);
+            const waiting = review.filter((e) => entryWaits(e) && !sent.has(`${report.deviceId}\u0000${plan.planId}\u0000${e.itemKey}\u0000${e.attemptRef}`));
             add(target, plan, { deviceId: report.deviceId, hostname: report.hostname }, waiting.map((e) => ({ groupId: e.groupId, rejected: validatorOfEntry(e) === "rejected" })), sharedNotices(plan.progress));
           }
         }
@@ -2103,6 +2167,117 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       const newest = new Map<string, SharedGroupNote>();
       for (const n of await deps.store.listPeerGroupNotes(new Date(now().getTime() - PEER_VERDICTS_KEPT_MS).toISOString())) newest.set(`${n.ownerDeviceId}\u0000${n.planId}\u0000${n.groupId}`, n);
       return [...newest.values()].sort((a, b) => a.at.localeCompare(b.at)).slice(-200);
+    },
+
+    /**
+     * BL-175 (FO-REQ-0018 §B, VISUAL_REVIEW_PLAN.md §2.6): the owner's pick action on ANOTHER device's plan -- only for a plan and
+     * attempt (or item) in that device's latest report, while the plan is active there, and only when that device reads report
+     * version 5 (an older one could not take it: `peer_update_required`). Stored here and carried in this device's report until
+     * that device weighs it. A pick on an attempt rejected there, or rejected from here and on its way, is refused.
+     */
+    async recordPeerPick(input: unknown): Promise<SharedPickAction> {
+      const parsed = parseWithSchema(peerPickInputSchema, input, "pick");
+      if (!deps.peers || !deps.generateId) throw planInvalid("Picks on other devices' plans are not available in this process");
+      const report = (await deps.peers.listPeerReports()).find((r) => r.deviceId === parsed.deviceId);
+      const plan = report?.plans.find((p) => p.planId === parsed.planId);
+      if (!report || !plan) throw planNotFound(parsed.planId);
+      if (report.version < 5) {
+        throw planInvalid(`${report.hostname ?? report.deviceId} runs an older version of the app: update it there to pick attempts from here`, { reason: "peer_update_required", device: report.hostname ?? report.deviceId });
+      }
+      if (plan.status !== "active") throw planClosed(parsed.planId, plan.status);
+      if (!plan.items.some((i) => i.itemKey === parsed.itemKey)) throw planMismatch(`Plan ${parsed.planId} has no item ${parsed.itemKey}`, { planId: parsed.planId, itemKey: parsed.itemKey });
+      if (parsed.attemptRef !== undefined) {
+        const entry = plan.review.find((e) => e.itemKey === parsed.itemKey && e.attemptRef === parsed.attemptRef);
+        if (!entry) throw planMismatch(`Plan ${parsed.planId} on that device has no attempt ${parsed.attemptRef} of ${parsed.itemKey} to review`, { planId: parsed.planId, itemKey: parsed.itemKey, attemptRef: parsed.attemptRef, reason: "unknown_attempt" });
+        if (parsed.action === "pick") {
+          // The verdict that counts here: one sent from here that the owning device does not show yet, else its own.
+          const sent = (await more.outgoingVerdicts()).filter((v) => v.ownerDeviceId === parsed.deviceId && v.planId === parsed.planId && v.itemKey === parsed.itemKey && v.attemptRef === parsed.attemptRef && v.kept !== true).at(-1);
+          const theirs = entry.verdict;
+          const current = sent && (!theirs || Math.floor(Date.parse(sent.at) / 1000) > Math.floor(Date.parse(theirs.at) / 1000)) ? sent.result : theirs?.result;
+          if (current === "rejected") throw planMismatch(`${parsed.itemKey} ${parsed.attemptRef} is rejected; change its verdict before picking it`, { planId: parsed.planId, itemKey: parsed.itemKey, attemptRef: parsed.attemptRef, reason: "rejected" });
+        }
+      }
+      const action: SharedPickAction = {
+        pickId: deps.generateId(),
+        planId: parsed.planId,
+        ownerDeviceId: parsed.deviceId,
+        itemKey: parsed.itemKey,
+        attemptRef: parsed.attemptRef ?? null,
+        action: parsed.action,
+        note: parsed.note?.trim() ? parsed.note.trim() : null,
+        at: now().toISOString(),
+      };
+      await deps.store.insertPeerPick(action);
+      if (parsed.action === "pick" && parsed.attemptRef) {
+        const attemptRef = parsed.attemptRef;
+        await serializedPerPlan(parsed.planId, () => endTrackClaim(parsed.deviceId, parsed.planId, parsed.itemKey, attemptRef));
+        await publishPresence();
+      }
+      return action;
+    },
+
+    /** BL-175: the pick actions this device carries for other devices (the last 30 days). */
+    async outgoingPicks(): Promise<SharedPickAction[]> {
+      return deps.store.listPeerPicks(new Date(now().getTime() - PEER_VERDICTS_KEPT_MS).toISOString());
+    },
+
+    /**
+     * BL-175 (VISUAL_REVIEW_PLAN.md §2.6, AC-VR-11): the pick actions other devices carry for THIS device's plans, weighed in time
+     * order by the owner's own rules (`applyPickAction`: newer wins; a pick on a rejected attempt never applies). Applied or
+     * not, each id goes into a `peer_pick` event, so it is weighed once; one dated more than 5 minutes ahead waits. Closed,
+     * unknown or another device's plans are skipped.
+     */
+    async applyPeerPicks(): Promise<{ applied: number; skipped: number }> {
+      if (!deps.peers) return { applied: 0, skipped: 0 };
+      const own = await deps.peers.ownDeviceId();
+      const limit = now().getTime() + 5 * 60_000;
+      const byPlan = new Map<string, Array<{ action: SharedPickAction; from: string }>>();
+      for (const report of await deps.peers.listPeerReports()) {
+        for (const action of report.picks ?? []) {
+          if (action.ownerDeviceId !== own) continue;
+          const list = byPlan.get(action.planId) ?? [];
+          list.push({ action, from: report.hostname ?? report.deviceId });
+          byPlan.set(action.planId, list);
+        }
+      }
+      let applied = 0;
+      let skipped = 0;
+      for (const [planId, incoming] of byPlan) {
+        const done = await serializedPerPlan(planId, async () => {
+          const row = await deps.store.getPlan(planId);
+          if (!row || row.status !== "active" || !row.definition.stages.some((s) => s.kind === "owner_review")) return { applied: 0, skipped: incoming.length };
+          const [jobs, results, events, stored] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id), deps.store.listEvents(row.id), deps.store.listPicks(row.id)]);
+          const handled = handledPickIds(events);
+          const entries = reviewEntries(row, jobs, results, stored);
+          let records: PlanPickRecord[] = stored;
+          let a = 0;
+          let k = 0;
+          for (const { action, from } of [...incoming].sort((x, y) => Date.parse(x.action.at) - Date.parse(y.action.at))) {
+            if (handled.has(action.pickId)) continue;
+            if (!(Date.parse(action.at) <= limit)) {
+              k++;
+              continue;
+            }
+            const outcome = applyPickAction({ itemKey: action.itemKey, attemptRef: action.attemptRef, action: action.action, note: action.note, device: from, at: action.at }, pickContextOf(row, entries, records, action.itemKey));
+            const base = { pickId: action.pickId, fromDevice: from, itemKey: action.itemKey, ...(action.attemptRef ? { attemptRef: action.attemptRef } : {}), action: action.action };
+            if (outcome.outcome === "applied") {
+              records = await takePicks(row, records, outcome.writes, outcome.events);
+              await record(row.id, "peer_pick", "owner", base);
+              a++;
+            } else {
+              await record(row.id, "peer_pick", "owner", { ...base, ...(outcome.outcome === "unchanged" ? { unchanged: true } : { superseded: true, reason: outcome.reason }) });
+              k++;
+            }
+            handled.add(action.pickId);
+          }
+          // A pick from the other computer may finish a wave too.
+          if (a > 0) await recordGroupsReviewed(row, entries, reviewEntries(row, jobs, results, records), records);
+          return { applied: a, skipped: k };
+        });
+        applied += done.applied;
+        skipped += done.skipped;
+      }
+      return { applied, skipped };
     },
 
     /**
@@ -2421,8 +2596,10 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
           // BL-175 (v5): each item's pick target, so the other computer can tell when its picks decide the item.
           items: plan.items.map((i) => ({ itemKey: i.itemKey, groupId: i.groupId, templateLabel: i.templateLabel ?? i.templateId, targetCount: i.targetCount, mode: i.mode, pickTarget: pickTargetOf(i) })),
           ...(plan.reviewReasons && plan.reviewReasons.length > 0 ? { reviewReasons: plan.reviewReasons } : {}),
-          // BL-175 (v5): the active picks and "none fits", for the other computer's grid and counts.
+          // BL-175 (v5): the active picks and "none fits", for the other computer's grid and counts, and which of its pick
+          // actions this computer already weighed (so it stops showing them as "sent").
           ...sharedPicksOf(picks),
+          handledPicks: [...handledPickIds(recorded)].slice(-1000),
           progress: progress as unknown as Record<string, unknown>,
           itemParams,
           references: plan.references ?? [],
