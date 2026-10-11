@@ -43,7 +43,9 @@ same way from the entry it already receives (`currentFile`, stage `auditionFile`
     at that moment.
   - **clear_none_fits.**
 - **Reject vs pick:** an owner verdict `rejected` on a picked attempt withdraws its pick in the same lock (the screen asks
-  first with `ConfirmDialog`). A pick on a rejected attempt is refused; the screen disables «Выбрать» there.
+  first with `ConfirmDialog`) -- also a rejection that arrives later from the other computer or answers a re-check (the
+  rejection is the explicit word). A pick on a rejected attempt (a stored verdict, or one on its way from the other computer) is
+  refused; the screen disables «Выбрать» there.
 - **Not a verdict:** a pick writes no result row and no verdict history; `plan_verdict_exists` / `replace` are untouched.
 - **Events (recorded):** `owner_pick { itemKey, attemptRef, device, note?, overridesValidator? }`,
   `owner_unpick { itemKey, attemptRef, device, reason: withdrawn | moved | rejected | none_fits }`,
@@ -91,8 +93,9 @@ same way from the entry it already receives (`currentFile`, stage `auditionFile`
   version 5.
 - **Apply on the owning computer** (`applyPeerPicks`, on the tick after `applyPeerVerdicts`, under the plan's lock), in time
   order: an action older than the state it would change (the row's `at`) is recorded superseded; a pick on an attempt rejected by
-  a newer verdict is superseded; an applied or superseded action's id goes into a `peer_pick` event, so it is weighed once. An
-  applied peer verdict `rejected` newer than an active pick withdraws the pick (`reason: rejected`).
+  a newer verdict is superseded; an applied or superseded action's id goes into a `peer_pick` event, so it is weighed once. A pick on
+  an attempt whose current verdict is rejected is superseded; an applied peer verdict `rejected` withdraws an active pick
+  (`reason: rejected`).
 - **Pending overlays:** on the owning computer, actions not applied yet count as done in the queue, progress and badge (as
   pending peer verdicts do); on the sending computer, its own actions newer than the plan's state overlay the report
   ("sent, waiting for <device>").
@@ -149,7 +152,9 @@ same way from the entry it already receives (`currentFile`, stage `auditionFile`
 - **AC-VR-06 None fits.** On I: `owner_none_fits { attempts: 8 }`, `waitingReview 0`, `notChosen 8`, `accepted 0`; a 9th attempt
   reported after it waits; a pick clears the none-fits.
 - **AC-VR-07 Music unchanged.** A fixture shaped like `R-0001-S1-music` (only `job:` attempts, no picks): every progress number,
-  todo list, queue order and event equals the values computed before this change (fixed expected values).
+  todo list and queue order equals the values computed by the rules before this change (fixed expected values); the only
+  additions are the new fields at their empty values (`pickTarget`, `picks: []`, `noneFits: null`, `notChosen 0`, wave
+  `picked 0` / `noneFits 0`, `group_reviewed` details `picked 0` / `noneFits 0`, entry `media`).
 - **AC-VR-08 Region round trip.** A verdict with `region { x 0.25, y 0.5, r 0.1 }` and a note: stored, in the history, in
   `owner_verdict`, in the review route, in a re-check's `previousVerdict`; through the other computer (peer verdict → report →
   apply → history) unchanged. A marker without a region has no `region` key anywhere. Out of range (`x 1.2`) is refused.

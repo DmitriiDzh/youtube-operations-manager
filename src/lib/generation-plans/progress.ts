@@ -1,3 +1,4 @@
+import { pickTargetOf } from "./contracts";
 import type {
   GenerationPlan,
   PlanAttempt,
@@ -5,6 +6,7 @@ import type {
   PlanEvent,
   PlanItemProgress,
   PlanParamValue,
+  PlanPickRecord,
   PlanProgress,
   PlanResultRow,
   PlanReviewBatch,
@@ -14,6 +16,7 @@ import type {
   PlanValidatorVerdict,
   PlanVerdictHistoryRow,
 } from "./contracts";
+import { pickFlagsOf, pickStateOf } from "./picks";
 
 // ---------------------------------------------------------------------------
 // BL-143 (ADR 0029 decision 2): everything a plan shows is derived here from the rows -- the linked jobs, the result rows,
@@ -35,6 +38,8 @@ export type PlanJobRow = {
   createdAt: Date;
   submittedAt: Date | null;
   finishedAt: Date | null;
+  /** BL-175 (VISUAL_REVIEW_PLAN.md §2.1): the file name of the output the review shows (as `resolveAudition` picks it); null = none yet. */
+  outputFile?: string | null;
 };
 
 /** What the plans module needs of a media session linked to a plan (`media_sessions.plan_id`). */
@@ -119,8 +124,17 @@ export function finalStage(plan: Pick<GenerationPlan, "stages">): PlanStage | nu
   return plan.stages.find((s) => s.kind === "owner_review") ?? plan.stages.at(-1) ?? null;
 }
 
-/** One attempt the owner reviews (or reviewed): what the stage before the review said, and whether the owner already ruled. */
-export type ReviewCandidate = { itemKey: string; attemptRef: string; validator: PlanValidatorVerdict | null; reviewed: boolean; failedChecks: number };
+/**
+ * One attempt the owner reviews (or reviewed): what the stage before the review said, and whether the owner already ruled.
+ * BL-175: `picked` / `notChosen` (VISUAL_REVIEW_PLAN.md §2.3) -- settled without a verdict, so not waiting either.
+ */
+export type ReviewCandidate = { itemKey: string; attemptRef: string; validator: PlanValidatorVerdict | null; reviewed: boolean; failedChecks: number; picked: boolean; notChosen: boolean };
+
+/** BL-175: an attempt's pick flags (`pickFlagsOf`); absent = no picks anywhere (every attempt as before). */
+export type PickFlags = (itemKey: string, attemptRef: string, hasVerdict: boolean) => { picked: unknown; notChosen: boolean };
+
+/** Settled = no longer waiting: the owner ruled on it, picked it, or decided its item without it. */
+const settled = (c: Pick<ReviewCandidate, "reviewed" | "picked" | "notChosen">) => c.reviewed || c.picked || c.notChosen;
 
 /** `fail`-severity checks that did not pass -- the near-miss order of rejected attempts (BL-153 AC-RR-05). */
 function failedFailChecks(row: PlanResultRow | undefined): number {
@@ -138,7 +152,7 @@ export function reviewCandidates(
   attempts: PlanAttempt[],
   results: PlanResultRow[],
   /** todo/counts: passed attempts in the order they were found (job order, then stored results -- as before BL-153). */
-  options: { keepFoundOrder?: boolean } = {}
+  options: { keepFoundOrder?: boolean; flags?: PickFlags } = {}
 ): ReviewCandidate[] {
   const index = plan.stages.findIndex((s) => s.kind === "owner_review");
   if (index < 0) return [];
@@ -154,7 +168,10 @@ export function reviewCandidates(
   const out = new Map<string, ReviewCandidate>();
   const add = (itemKey: string, attemptRef: string, validator: PlanValidatorVerdict | null) => {
     const k = key(itemKey, attemptRef);
-    if (!out.has(k)) out.set(k, { itemKey, attemptRef, validator, reviewed: verdicts.has(k), failedChecks: failedFailChecks(beforeRows.get(k)) });
+    if (out.has(k)) return;
+    const reviewed = verdicts.has(k);
+    const flags = options.flags ? options.flags(itemKey, attemptRef, reviewed) : null;
+    out.set(k, { itemKey, attemptRef, validator, reviewed, failedChecks: failedFailChecks(beforeRows.get(k)), picked: Boolean(flags?.picked), notChosen: flags?.notChosen === true });
   };
   if (before?.kind === "in_app") for (const a of attempts) if (a.state === "done") add(a.itemKey, a.attemptRef, "passed");
   for (const r of beforeRows.values()) {
@@ -168,10 +185,11 @@ export function reviewCandidates(
     add(r.itemKey, r.attemptRef, row ? (row.result === "rejected" || row.result === "failed" ? "rejected" : "passed") : before?.kind === "in_app" ? "passed" : null);
   }
   const itemOrder = new Map(plan.items.map((i, n) => [i.itemKey, n]));
-  const rank = (c: ReviewCandidate) => (c.reviewed ? 2 : c.validator === "rejected" ? 1 : 0);
+  // BL-175: picked and not-chosen attempts rank with the reviewed ones (the report's queue cut drops them first).
+  const rank = (c: ReviewCandidate) => (settled(c) ? 2 : c.validator === "rejected" ? 1 : 0);
   if (options.keepFoundOrder) {
     const found = [...out.values()];
-    return [...found.filter((c) => c.validator !== "rejected" || c.reviewed), ...found.filter((c) => c.validator === "rejected" && !c.reviewed).sort((a, b) => a.failedChecks - b.failedChecks || (itemOrder.get(a.itemKey) ?? Infinity) - (itemOrder.get(b.itemKey) ?? Infinity) || a.attemptRef.localeCompare(b.attemptRef))];
+    return [...found.filter((c) => c.validator !== "rejected" || settled(c)), ...found.filter((c) => c.validator === "rejected" && !settled(c)).sort((a, b) => a.failedChecks - b.failedChecks || (itemOrder.get(a.itemKey) ?? Infinity) - (itemOrder.get(b.itemKey) ?? Infinity) || a.attemptRef.localeCompare(b.attemptRef))];
   }
   // Passed and reviewed attempts keep the queue's order from before BL-153 (item key, then attempt); waiting rejects follow
   // the passed ones, fewest failed `fail` checks first, then the plan's item order (AC-RR-05).
@@ -189,9 +207,28 @@ type Derived = {
   items: PlanItemProgress[];
   /** Waiting for the owner, in the plan's item order (see `reviewCandidates`). */
   waiting: Array<{ itemKey: string; attemptRef: string; validator: PlanValidatorVerdict }>;
+  /** BL-175: picked attempts that have no accepted row at the owner-review stage (they count as accepted there). */
+  pickedWithoutRow: number;
 };
 
-function derive(plan: GenerationPlan, jobs: PlanJobRow[], results: PlanResultRow[]): Derived {
+/**
+ * BL-175 (VISUAL_REVIEW_PLAN.md §2.3): the attempts only external stages report -- refs no in-app attempt of the item carries
+ * (a copied Gemini file, a seed made outside the app). Before BL-175 they could wait and be rejected but never counted as
+ * accepted; now they join the item's counts like the app's own.
+ */
+export function externalAttempts(plan: Pick<GenerationPlan, "stages">, inApp: PlanAttempt[], results: PlanResultRow[]): Array<{ itemKey: string; attemptRef: string }> {
+  const inAppStage = plan.stages.find((s) => s.kind === "in_app")?.stageId ?? null;
+  const known = new Set(inApp.map((a) => `${a.itemKey}\u0000${a.attemptRef}`));
+  const out = new Map<string, { itemKey: string; attemptRef: string }>();
+  for (const r of results) {
+    if (r.stageId === inAppStage) continue;
+    const k = `${r.itemKey}\u0000${r.attemptRef}`;
+    if (!known.has(k) && !out.has(k)) out.set(k, { itemKey: r.itemKey, attemptRef: r.attemptRef });
+  }
+  return [...out.values()];
+}
+
+function derive(plan: GenerationPlan, jobs: PlanJobRow[], results: PlanResultRow[], picks: readonly PlanPickRecord[] = []): Derived {
   const attempts = inAppAttempts(plan, jobs, results);
   const byStageResults = new Map<string, PlanResultRow[]>();
   for (const r of results) {
@@ -200,9 +237,11 @@ function derive(plan: GenerationPlan, jobs: PlanJobRow[], results: PlanResultRow
     byStageResults.set(r.stageId, list);
   }
   const final = finalStage(plan);
-  const waiting = reviewCandidates(plan, attempts, results, { keepFoundOrder: true })
-    .filter((c) => !c.reviewed)
-    .map((c) => ({ itemKey: c.itemKey, attemptRef: c.attemptRef, validator: c.validator ?? "passed" }));
+  const pickState = pickStateOf(picks);
+  const flags = picks.length > 0 ? pickFlagsOf(pickState, plan.items) : undefined;
+  const candidates = reviewCandidates(plan, attempts, results, { keepFoundOrder: true, flags });
+  const waiting = candidates.filter((c) => !settled(c)).map((c) => ({ itemKey: c.itemKey, attemptRef: c.attemptRef, validator: c.validator ?? "passed" }));
+  const candidateOf = new Map(candidates.map((c) => [`${c.itemKey}\u0000${c.attemptRef}`, c]));
   const finalRows = final && final.kind !== "in_app" ? (byStageResults.get(final.stageId) ?? []) : [];
   // An attempt is dead once its job failed, or any stage after generation said failed/rejected; accepted once the final stage
   // accepted it; otherwise it may still become accepted (pending).
@@ -213,35 +252,68 @@ function derive(plan: GenerationPlan, jobs: PlanJobRow[], results: PlanResultRow
     list.push(r);
     verdictsOf.set(key, list);
   }
-  const fate = (a: PlanAttempt): "accepted" | "dead" | "pending" => {
-    if (a.state === "failed" || a.state === "interrupted" || a.state === "cancelled") return "dead";
-    const rows = verdictsOf.get(`${a.itemKey}\u0000${a.attemptRef}`) ?? [];
+  type Fate = "accepted" | "dead" | "pending" | "not_chosen";
+  const fateOf = (itemKey: string, attemptRef: string, state: PlanAttemptState): Fate => {
+    if (state === "failed" || state === "interrupted" || state === "cancelled") return "dead";
+    const key = `${itemKey}\u0000${attemptRef}`;
+    const rows = verdictsOf.get(key) ?? [];
+    // BL-175: a pick is the owner's choice -- it wins over a validator's rejection; a not-chosen attempt is settled, not pending.
+    const candidate = candidateOf.get(key);
+    if (candidate?.picked) return "accepted";
     if (final && final.kind !== "in_app" && rows.some((r) => r.stageId === final.stageId && (r.result === "accepted" || r.result === "done"))) return "accepted";
-    if (final?.kind === "in_app" && a.state === "done") return "accepted";
+    if (final?.kind === "in_app" && state === "done") return "accepted";
+    if (candidate?.notChosen) return "not_chosen";
     if (rows.some((r) => r.result === "rejected" || r.result === "failed")) return "dead";
     return "pending";
   };
+  const external = externalAttempts(plan, attempts, results);
+  // An external attempt is "done" unless a row says it failed (it was made outside the app; its rows are all there is).
+  const externalState = (e: { itemKey: string; attemptRef: string }): PlanAttemptState => ((verdictsOf.get(`${e.itemKey}\u0000${e.attemptRef}`) ?? []).some((r) => r.result === "failed") ? "failed" : "done");
   const items: PlanItemProgress[] = plan.items.map((item) => {
     const own = attempts.filter((a) => a.itemKey === item.itemKey);
+    const outside = external.filter((e) => e.itemKey === item.itemKey);
     const generated = own.filter((a) => a.state === "done").length;
     const open = own.filter((a) => a.state === "queued" || a.state === "running").length;
-    const fates = own.map(fate);
+    const fates = [...own.map((a) => fateOf(a.itemKey, a.attemptRef, a.state)), ...outside.map((e) => fateOf(e.itemKey, e.attemptRef, externalState(e)))];
     const accepted = fates.filter((f) => f === "accepted").length;
     const pending = fates.filter((f) => f === "pending").length;
+    const notChosen = fates.filter((f) => f === "not_chosen").length;
     const rejected = finalRows.filter((r) => r.itemKey === item.itemKey && (r.result === "rejected" || r.result === "failed")).length;
     const waitingReview = waiting.filter((w) => w.itemKey === item.itemKey).length;
+    const total = own.length + outside.length;
     let missing: number;
     if (item.mode === "fixed") {
       // Exactly targetCount attempts that generated or still may: a failed or interrupted job is replaced, a rejection is not.
-      const usable = own.filter((a) => a.state === "done" || a.state === "queued" || a.state === "running").length;
+      const usable = own.filter((a) => a.state === "done" || a.state === "queued" || a.state === "running").length + outside.filter((e) => externalState(e) === "done").length;
       missing = Math.max(0, item.targetCount - usable);
     } else {
-      const capLeft = item.maxAttempts === null ? Infinity : Math.max(0, item.maxAttempts - own.length);
+      const capLeft = item.maxAttempts === null ? Infinity : Math.max(0, item.maxAttempts - total);
       missing = Math.min(Math.max(0, item.targetCount - accepted - pending), capLeft);
     }
-    return { itemKey: item.itemKey, groupId: item.groupId, targetCount: item.targetCount, mode: item.mode, attempts: own.length, generated, accepted, rejected, open, waitingReview, pending, missing };
+    const state = pickState.get(item.itemKey);
+    return {
+      itemKey: item.itemKey,
+      groupId: item.groupId,
+      targetCount: item.targetCount,
+      mode: item.mode,
+      attempts: total,
+      generated,
+      accepted,
+      rejected,
+      open,
+      waitingReview,
+      pending,
+      missing,
+      pickTarget: pickTargetOf(item),
+      picks: state ? state.picks.map((p) => ({ ...p })) : [],
+      noneFits: state?.noneFits ? { note: state.noneFits.note, device: state.noneFits.device, at: state.noneFits.at, attempts: state.noneFits.attempts } : null,
+      notChosen,
+    };
   });
-  return { attempts, byStageResults, items, waiting };
+  const review = plan.stages.find((s) => s.kind === "owner_review");
+  const acceptedRows = new Set(review ? (byStageResults.get(review.stageId) ?? []).filter((r) => r.result === "accepted" || r.result === "done").map((r) => `${r.itemKey}\u0000${r.attemptRef}`) : []);
+  const pickedWithoutRow = candidates.filter((c) => c.picked && !acceptedRows.has(`${c.itemKey}\u0000${c.attemptRef}`)).length;
+  return { attempts, byStageResults, items, waiting, pickedWithoutRow };
 }
 
 function sessionUsd(s: PlanSessionRow, now: Date): { usd: number; final: boolean; seconds: number } {
@@ -257,8 +329,17 @@ function sessionUsd(s: PlanSessionRow, now: Date): { usd: number; final: boolean
  * `rechecks` (BL-173, PLAN_RECHECKS_PLAN.md §2.5): the plan's re-checks -- the open ones are counted per plan and per wave, apart
  * from `waitingReview` (they never enter the review counts, the notices or the badge).
  */
-export function planProgress(plan: GenerationPlan, jobs: PlanJobRow[], results: PlanResultRow[], sessions: PlanSessionRow[], now: Date, rechecks: ReadonlyArray<{ itemKey: string; status: string }> = []): PlanProgress {
-  const d = derive(plan, jobs, results);
+export function planProgress(
+  plan: GenerationPlan,
+  jobs: PlanJobRow[],
+  results: PlanResultRow[],
+  sessions: PlanSessionRow[],
+  now: Date,
+  rechecks: ReadonlyArray<{ itemKey: string; status: string }> = [],
+  /** BL-175 (§2.2): the plan's pick records (active or not). */
+  picks: readonly PlanPickRecord[] = []
+): PlanProgress {
+  const d = derive(plan, jobs, results, picks);
   const open = rechecks.filter((r) => r.status === "open");
   const groupOf = new Map(plan.items.map((i) => [i.itemKey, i.groupId]));
   const totalTarget = plan.items.reduce((sum, i) => sum + i.targetCount, 0);
@@ -268,6 +349,8 @@ export function planProgress(plan: GenerationPlan, jobs: PlanJobRow[], results: 
       for (const a of d.attempts) counts[a.state] += 1;
     } else {
       for (const r of d.byStageResults.get(stage.stageId) ?? []) counts[r.result] += 1;
+      // BL-175 (§2.3): a picked attempt is the owner's acceptance at the review stage, row or not.
+      if (stage.kind === "owner_review") counts.accepted += d.pickedWithoutRow;
     }
     return { ...stage, counts };
   });
@@ -284,6 +367,8 @@ export function planProgress(plan: GenerationPlan, jobs: PlanJobRow[], results: 
         waitingReview: own.reduce((s, i) => s + i.waitingReview, 0),
         missing: own.reduce((s, i) => s + i.missing, 0),
         rechecks: open.filter((r) => groupOf.get(r.itemKey) === g.groupId).length,
+        picked: own.reduce((s, i) => s + i.picks.length, 0),
+        noneFits: own.filter((i) => i.noneFits !== null).length,
       },
     };
   });
@@ -346,8 +431,8 @@ function estimate(plan: GenerationPlan, d: Derived, jobs: PlanJobRow[], sessions
   return { seconds: Math.round(mean * left), gpuTypeId, samples: durations.length };
 }
 
-export function planTodo(plan: GenerationPlan, jobs: PlanJobRow[], results: PlanResultRow[]): Omit<PlanTodo, "rechecks"> {
-  const d = derive(plan, jobs, results);
+export function planTodo(plan: GenerationPlan, jobs: PlanJobRow[], results: PlanResultRow[], picks: readonly PlanPickRecord[] = []): Omit<PlanTodo, "rechecks"> {
+  const d = derive(plan, jobs, results, picks);
   // A failed/interrupted attempt needs a re-run only while its item is still short of its target.
   const shortItems = new Set(d.items.filter((i) => i.missing > 0).map((i) => i.itemKey));
   return {

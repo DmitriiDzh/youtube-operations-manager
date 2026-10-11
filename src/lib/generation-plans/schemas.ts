@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { parseWithSchema } from "@/lib/shared-domain";
-import { PLAN_ITEM_MODES, PLAN_RECHECK_KINDS, PLAN_RESULTS, PLAN_STAGE_KINDS, PLAN_STATUSES } from "./contracts";
+import { PLAN_ITEM_MODES, PLAN_PICK_ACTIONS, PLAN_RECHECK_KINDS, PLAN_RESULTS, PLAN_STAGE_KINDS, PLAN_STATUSES } from "./contracts";
 
 export { parseWithSchema };
 
@@ -30,6 +30,9 @@ export const PLAN_LIMITS = Object.freeze({
   /** BL-173: a re-check's short reason and its note. */
   recheckTitleChars: 60,
   recheckNoteChars: 1000,
+  /** BL-175: a plan's or a wave's own reason chips (each as long as a verdict's reason). */
+  reviewReasons: 20,
+  reasonChars: 60,
 });
 
 export const planIdSchema = z.string().trim().regex(PLAN_ID_PATTERN, "a plan id: 2-80 letters, digits, '.', '_' or '-'");
@@ -41,10 +44,22 @@ const noteSchema = z.string().max(PLAN_LIMITS.noteChars);
 const paramValueSchema = z.union([z.string().max(20_000), z.number().finite(), z.boolean()]);
 const seedSchema = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const attemptRefSchema = z.string().min(1).max(120);
+/** BL-175 (VISUAL_REVIEW_PLAN.md §2.5): the reason chips a plan or a wave offers on its review (each distinct). */
+const reviewReasonsSchema = z
+  .array(z.string().trim().min(1).max(PLAN_LIMITS.reasonChars))
+  .max(PLAN_LIMITS.reviewReasons)
+  .refine((list) => new Set(list).size === list.length, "each reason once");
 
 export const stageSchema = z.object({ stageId: stageIdSchema, title: titleSchema, kind: z.enum(PLAN_STAGE_KINDS) }).strict();
 export const groupSchema = z
-  .object({ groupId: groupIdSchema, title: titleSchema.optional(), dependsOn: groupIdSchema.nullable().optional(), note: noteSchema.nullable().optional() })
+  .object({
+    groupId: groupIdSchema,
+    title: titleSchema.optional(),
+    dependsOn: groupIdSchema.nullable().optional(),
+    note: noteSchema.nullable().optional(),
+    /** BL-175: this wave's own reason chips (null clears them). */
+    reviewReasons: reviewReasonsSchema.nullable().optional(),
+  })
   .strict();
 export const itemSchema = z
   .object({
@@ -58,6 +73,8 @@ export const itemSchema = z
     maxAttempts: z.number().int().min(1).max(100_000).nullable().optional(),
     params: z.record(z.string().min(1).max(64), paramValueSchema).optional(),
     seeds: z.array(seedSchema).max(PLAN_LIMITS.seedsPerItem).optional(),
+    /** BL-175: how many attempts the owner picks for this item (1..targetCount; default by mode, `pickTargetOf`). */
+    pickTarget: z.number().int().min(1).max(10_000).nullable().optional(),
   })
   .strict();
 
@@ -91,6 +108,8 @@ export const createPlanInputSchema = z
     references: z.array(referenceSchema).max(PLAN_LIMITS.references).optional(),
     /** BL-153: validator-rejected attempts that can be played also wait for the owner. */
     reviewRejected: z.boolean().optional(),
+    /** BL-175: the plan's own reason chips (a wave's list wins). */
+    reviewReasons: reviewReasonsSchema.optional(),
   })
   .strict();
 export type CreatePlanInput = z.infer<typeof createPlanInputSchema>;
@@ -115,6 +134,8 @@ export const updatePlanInputSchema = z
     removeReferenceIds: z.array(z.string().min(1).max(64)).max(PLAN_LIMITS.references).optional(),
     /** BL-153: switches the review of validator-rejected attempts on or off. */
     reviewRejected: z.boolean().optional(),
+    /** BL-175: the plan's own reason chips; null removes them. */
+    reviewReasons: reviewReasonsSchema.nullable().optional(),
   })
   .strict();
 export type UpdatePlanInput = z.infer<typeof updatePlanInputSchema>;
@@ -150,8 +171,16 @@ const checkSchema = z
   })
   .strict();
 
+/** BL-175 (VISUAL_REVIEW_PLAN.md §2.4): a pin -- `x` of the width, `y` of the height, `r` of the shorter side, 0..1. */
+export const markerRegionSchema = z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1), r: z.number().gt(0).max(1) }).strict();
+
 const markerSchema = z
-  .object({ start: z.number().min(0).max(86_400), end: z.number().min(0).max(86_400).nullable().optional(), note: z.string().max(200).nullable().optional() })
+  .object({
+    start: z.number().min(0).max(86_400),
+    end: z.number().min(0).max(86_400).nullable().optional(),
+    note: z.string().max(200).nullable().optional(),
+    region: markerRegionSchema.optional(),
+  })
   .strict()
   .refine((m) => m.end === undefined || m.end === null || m.end >= m.start, "end >= start");
 
@@ -242,6 +271,24 @@ export const peerGroupNoteInputSchema = z.object({ deviceId: z.string().min(1).m
 
 export const rerunRequestInputSchema = z.object({ planId: planIdSchema, itemKey: itemKeySchema, attemptRef: attemptRefSchema.optional(), note: noteSchema.nullable().optional() }).strict();
 
+// -- BL-175 (FO-REQ-0018 §B, VISUAL_REVIEW_PLAN.md §2.2): the owner's picks and "none fits" ------------------------------------
+
+const pickFields = {
+  itemKey: itemKeySchema,
+  attemptRef: attemptRefSchema.optional(),
+  action: z.enum(PLAN_PICK_ACTIONS),
+  note: noteSchema.nullable().optional(),
+};
+const pickShape = (v: { action: string; attemptRef?: string; note?: string | null }) =>
+  v.action === "pick" || v.action === "unpick" ? v.attemptRef !== undefined : v.attemptRef === undefined && (v.action !== "none_fits" || (v.note ?? "").trim().length > 0);
+const PICK_SHAPE_MESSAGE = "pick and unpick name attemptRef; none_fits names no attempt and needs a note; clear_none_fits names no attempt";
+
+export const pickInputSchema = z.object({ planId: planIdSchema, ...pickFields }).strict().refine(pickShape, PICK_SHAPE_MESSAGE);
+export type PickInput = z.infer<typeof pickInputSchema>;
+
+/** The same action on ANOTHER device's plan (carried there in this device's report). */
+export const peerPickInputSchema = z.object({ deviceId: z.string().min(1).max(128), planId: planIdSchema, ...pickFields }).strict().refine(pickShape, PICK_SHAPE_MESSAGE);
+
 // -- BL-173 (FO-REQ-0017, PLAN_RECHECKS_PLAN.md §2.2/§2.3): re-checks of rated attempts ------------------------------------
 
 export const RECHECK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/;
@@ -330,6 +377,8 @@ export const importFileSchema = z
     stages: z.array(stageSchema).min(1).max(PLAN_LIMITS.stages),
     references: z.array(referenceSchema).max(PLAN_LIMITS.references).optional(),
     reviewRejected: z.boolean().optional(),
+    /** BL-175: the plan's own reason chips. */
+    reviewReasons: reviewReasonsSchema.optional(),
     /** FO-MSG-0010: the file's waves with their titles; `groupId` or `id`. Groups only named by items keep their id as title. */
     groups: z
       .array(
@@ -340,6 +389,8 @@ export const importFileSchema = z
             title: titleSchema.optional(),
             dependsOn: groupIdSchema.nullable().optional(),
             note: noteSchema.nullable().optional(),
+            /** BL-175: the wave's own reason chips. */
+            reviewReasons: reviewReasonsSchema.optional(),
           })
           .passthrough()
       )
@@ -358,6 +409,8 @@ export const importFileSchema = z
             maxAttempts: z.number().int().min(1).max(100_000).nullable().optional(),
             params: z.record(z.string().min(1).max(64), paramValueSchema).optional(),
             seeds: z.array(seedSchema).max(PLAN_LIMITS.seedsPerItem).optional(),
+            /** BL-175: how many attempts the owner picks for this item. */
+            pickTarget: z.number().int().min(1).max(10_000).nullable().optional(),
           })
           .passthrough()
       )

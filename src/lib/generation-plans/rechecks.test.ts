@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { generationPlansReportSchema, type GenerationPlansReport, type SharedClaim, type SharedGroupNote, type SharedVerdict } from "@/lib/sync-gateway";
-import { historyEntryOfVerdict, isDomainError, type PlanEvent, type PlanRecheck, type PlanResultRow, type PlanVerdictHistoryRow } from "./contracts";
+import { generationPlansReportSchema, type GenerationPlansReport, type SharedClaim, type SharedGroupNote, type SharedPickAction, type SharedVerdict } from "@/lib/sync-gateway";
+import { historyEntryOfVerdict, isDomainError, type PlanEvent, type PlanPickRecord, type PlanRecheck, type PlanResultRow, type PlanVerdictHistoryRow } from "./contracts";
 import type { PlanJobRow } from "./progress";
 import { createGenerationPlanServices, type PlanStore, type StoredPlan } from "./services";
 
@@ -17,6 +17,9 @@ function memoryStore(jobs: Array<PlanJobRow & { planId: string | null }>) {
   const history: Array<PlanVerdictHistoryRow & { planId: string }> = [];
   const claims = new Map<string, SharedClaim>();
   const rechecks: Array<PlanRecheck & { planId: string }> = [];
+  // BL-175: picks, one record per (plan, item, kind, attempt); pick actions sent to other devices.
+  const picks: Array<PlanPickRecord & { planId: string }> = [];
+  const peerPicks: SharedPickAction[] = [];
   const strip = <T extends { planId: string | null }>(row: T): Omit<T, "planId"> => {
     const { planId: _p, ...rest } = structuredClone(row);
     void _p;
@@ -85,6 +88,18 @@ function memoryStore(jobs: Array<PlanJobRow & { planId: string | null }>) {
       r.answer = structuredClone(answer);
       return true;
     },
+    listPicks: async (planId) => picks.filter((r) => r.planId === planId).map(({ planId: _p, ...r }) => (void _p, structuredClone(r))),
+    async upsertPicks(planId, records) {
+      for (const r of records) {
+        const i = picks.findIndex((x) => x.planId === planId && x.itemKey === r.itemKey && x.kind === r.kind && (x.attemptRef ?? "") === (r.attemptRef ?? ""));
+        if (i >= 0) picks.splice(i, 1);
+        picks.push({ ...structuredClone(r), planId });
+      }
+    },
+    async insertPeerPick(a) {
+      peerPicks.push(structuredClone(a));
+    },
+    listPeerPicks: async (sinceIso) => peerPicks.filter((a) => a.at >= sinceIso).map((a) => structuredClone(a)),
   };
   return { store, results, events, history, rechecks, peerVerdicts };
 }
@@ -399,7 +414,8 @@ test("AC-RC-09: a plan with an open re-check does not move; closing it withdraws
 
 // -- AC-RC-10 (two computers) ------------------------------------------------------------------------------------------------
 
-test("AC-RC-10a: a version 4 report with re-checks, a current file and answers validates; version 5 is refused; version 3 still reads", async () => {
+// BL-175 (FO-REQ-0018, VISUAL_REVIEW_PLAN.md §2.6) made version 5 the current one: the first version above it (6) is refused now.
+test("AC-RC-10a: a version 4 report with re-checks, a current file and answers validates; a version above the current one is refused; version 3 still reads", async () => {
   const mac = await rated();
   await mac.services.requestRecheck(revision());
   await mac.services.answerRecheck({ planId: PLAN, recheckId: "C14-XL_V04_s1811__r1", result: "accepted" });
@@ -409,7 +425,7 @@ test("AC-RC-10a: a version 4 report with re-checks, a current file and answers v
   assert.deepEqual(plan.rechecks?.map((r) => [r.recheckId, r.kind, r.markers]), [["C14-XL_V03_s1803__q1", "question", [{ start: 25, end: 35, note: null }]]], "only the open one");
   assert.equal(plan.review.find((e) => e.itemKey === V04.itemKey)?.currentFile, REVISED);
   assert.deepEqual(plan.review.find((e) => e.itemKey === V04.itemKey)?.history?.map((h) => h.recheckId ?? null), [null, "C14-XL_V04_s1811__r1"]);
-  assert.equal(generationPlansReportSchema.safeParse({ ...report, version: 5 }).success, false);
+  assert.equal(generationPlansReportSchema.safeParse({ ...report, version: 6 }).success, false);
   const v3 = { ...report, version: 3, plans: [{ ...plan, rechecks: undefined, review: plan.review.map((e) => ({ ...e, currentFile: undefined, history: e.history?.map((h) => ({ result: h.result, rating: h.rating, note: h.note, device: h.device, at: h.at })) })) }] };
   assert.equal(generationPlansReportSchema.safeParse(JSON.parse(JSON.stringify(v3))).success, true);
 });

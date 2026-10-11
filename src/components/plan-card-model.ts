@@ -109,7 +109,8 @@ export function sharedProgress(raw: Record<string, unknown>): PlanProgress {
           groupId: str(g.groupId),
           title: str(g.title, str(g.groupId)),
           // BL-173: `rechecks` is absent in an older build's report (none open there).
-          counts: { items: num(c.items), generated: num(c.generated), accepted: num(c.accepted), rejected: num(c.rejected), waitingReview: num(c.waitingReview), missing: num(c.missing), rechecks: num(c.rechecks) },
+          // BL-175: `picked` / `noneFits` are absent in an older build's report (none there).
+          counts: { items: num(c.items), generated: num(c.generated), accepted: num(c.accepted), rejected: num(c.rejected), waitingReview: num(c.waitingReview), missing: num(c.missing), rechecks: num(c.rechecks), picked: num(c.picked), noneFits: num(c.noneFits) },
         };
       }),
     items: list(raw.items)
@@ -128,6 +129,16 @@ export function sharedProgress(raw: Record<string, unknown>): PlanProgress {
           waitingReview: num(i.waitingReview),
           pending: num(i.pending),
           missing: num(i.missing),
+          // BL-175: absent in an older build's report -- no picks there.
+          pickTarget: num(i.pickTarget, 1),
+          picks: list(i.picks)
+            .filter((p) => typeof p.attemptRef === "string")
+            .map((p) => ({ attemptRef: str(p.attemptRef), device: str(p.device), at: str(p.at), note: strOrNull(p.note) })),
+          noneFits: (() => {
+            const nf = i.noneFits && typeof i.noneFits === "object" ? record(i.noneFits) : null;
+            return nf ? { note: strOrNull(nf.note), device: str(nf.device), at: str(nf.at), attempts: num(nf.attempts) } : null;
+          })(),
+          notChosen: num(i.notChosen),
         })
       ),
     spend: {

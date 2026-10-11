@@ -1153,6 +1153,47 @@ export const generationPlanRechecks = sqliteTable(
 );
 
 /**
+ * Schema v84 (BL-175, FO-REQ-0018 §B, docs/roadmap/plans/VISUAL_REVIEW_PLAN.md §2.2): the owner's picks ("this one of N",
+ * `kind` pick, one per attempt) and "none fits" (`kind` none_fits, one per item, `attempt_ref` ''), on this device's plans.
+ * Never deleted: withdrawing clears `active` and keeps the time, so a newer action from another computer is weighed against it.
+ * `at` is an ISO string (millisecond order matters); `covered_json` = the attempts a "none fits" covered. Device-local.
+ */
+export const generationPlanPicks = sqliteTable(
+  "generation_plan_picks",
+  {
+    planId: text("plan_id").notNull(),
+    itemKey: text("item_key").notNull(),
+    kind: text("kind", { enum: ["pick", "none_fits"] }).notNull(),
+    attemptRef: text("attempt_ref").notNull(),
+    active: integer("active").notNull(),
+    note: text("note"),
+    device: text("device").notNull(),
+    at: text("at").notNull(),
+    coveredJson: text("covered_json"),
+  },
+  (table) => [primaryKey({ columns: [table.planId, table.itemKey, table.kind, table.attemptRef] })]
+);
+
+/**
+ * Schema v84 (BL-175, VISUAL_REVIEW_PLAN.md §2.6): pick actions the owner took on THIS device for plans owned by ANOTHER device.
+ * They travel in this device's generation plans report (version 5); the owning device applies them. `at` is an ISO string.
+ */
+export const generationPlanPeerPicks = sqliteTable(
+  "generation_plan_peer_picks",
+  {
+    pickId: text("pick_id").primaryKey(),
+    planId: text("plan_id").notNull(),
+    ownerDeviceId: text("owner_device_id").notNull(),
+    itemKey: text("item_key").notNull(),
+    attemptRef: text("attempt_ref"),
+    action: text("action", { enum: ["pick", "unpick", "none_fits", "clear_none_fits"] }).notNull(),
+    note: text("note"),
+    at: text("at").notNull(),
+  },
+  (table) => [index("generation_plan_peer_picks_at_idx").on(table.at)]
+);
+
+/**
  * Schema v83 (BL-174, docs/roadmap/plans/GEMINI_MEDIA_PLAN.md §2.2): the Gemini API key, AES-256-GCM under this device's
  * `gemini-media.key` (shared `device-key-file`), one row. Only the last 4 characters are kept readable (`key_hint`).
  * Device-local, never in a snapshot or sync family (the key file is per device).
@@ -4486,6 +4527,36 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS gemini_media_jobs_request_idx ON gemini_media_jobs (created_by, request_id)");
       await client.execute("CREATE INDEX IF NOT EXISTS gemini_media_jobs_status_idx ON gemini_media_jobs (status, next_attempt_at)");
       await client.execute("CREATE INDEX IF NOT EXISTS gemini_media_jobs_created_idx ON gemini_media_jobs (created_at)");
+    },
+  },
+  {
+    version: 84,
+    description:
+      "generation_plan_picks + generation_plan_peer_picks -- BL-175 (FO-REQ-0018 §B, docs/roadmap/plans/VISUAL_REVIEW_PLAN.md): the owner's picks of one attempt of N and \"none fits\" on an item, and those given here on other devices' plans. Additive, device-local",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS generation_plan_picks (
+        plan_id TEXT NOT NULL,
+        item_key TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        attempt_ref TEXT NOT NULL,
+        active INTEGER NOT NULL,
+        note TEXT,
+        device TEXT NOT NULL,
+        at TEXT NOT NULL,
+        covered_json TEXT,
+        PRIMARY KEY (plan_id, item_key, kind, attempt_ref)
+      )`);
+      await client.execute(`CREATE TABLE IF NOT EXISTS generation_plan_peer_picks (
+        pick_id TEXT PRIMARY KEY NOT NULL,
+        plan_id TEXT NOT NULL,
+        owner_device_id TEXT NOT NULL,
+        item_key TEXT NOT NULL,
+        attempt_ref TEXT,
+        action TEXT NOT NULL,
+        note TEXT,
+        at TEXT NOT NULL
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS generation_plan_peer_picks_at_idx ON generation_plan_peer_picks (at)");
     },
   },
 ];
@@ -9673,6 +9744,40 @@ export async function replaceGenerationPlanRecheckAnswer(planId: string, recheck
     .where(and(eq(generationPlanRechecks.planId, planId), eq(generationPlanRechecks.recheckId, recheckId), eq(generationPlanRechecks.status, "answered")))
     .returning({ recheckId: generationPlanRechecks.recheckId });
   return rows.length > 0;
+}
+
+export type StoredGenerationPlanPick = typeof generationPlanPicks.$inferSelect;
+
+/** BL-175: writes picks / "none fits" records (one per plan, item, kind and attempt; a write replaces the record). */
+export async function upsertGenerationPlanPicks(rows: Array<typeof generationPlanPicks.$inferInsert>, database: AppDb = db): Promise<void> {
+  for (const row of rows) {
+    await database
+      .insert(generationPlanPicks)
+      .values(row)
+      .onConflictDoUpdate({
+        target: [generationPlanPicks.planId, generationPlanPicks.itemKey, generationPlanPicks.kind, generationPlanPicks.attemptRef],
+        set: { active: row.active, note: row.note ?? null, device: row.device, at: row.at, coveredJson: row.coveredJson ?? null },
+      });
+  }
+}
+
+/** A plan's pick records (active or not), oldest first. */
+export async function listGenerationPlanPicks(planId: string, database: AppDb = db): Promise<StoredGenerationPlanPick[]> {
+  return database.select().from(generationPlanPicks).where(eq(generationPlanPicks.planId, planId)).orderBy(asc(generationPlanPicks.at), asc(generationPlanPicks.itemKey), asc(generationPlanPicks.attemptRef)).limit(20_000);
+}
+
+export type StoredGenerationPlanPeerPick = typeof generationPlanPeerPicks.$inferSelect;
+
+/** BL-175: one pick action given here on another device's plan. */
+export async function insertGenerationPlanPeerPick(row: typeof generationPlanPeerPicks.$inferInsert, database: AppDb = db): Promise<void> {
+  await database.insert(generationPlanPeerPicks).values(row);
+}
+
+/** The peer pick actions given since `sinceIso` (newest 1000), oldest first; older ones are deleted (kept 30 days by the caller). */
+export async function listGenerationPlanPeerPicks(sinceIso: string, database: AppDb = db): Promise<StoredGenerationPlanPeerPick[]> {
+  await database.delete(generationPlanPeerPicks).where(lt(generationPlanPeerPicks.at, sinceIso));
+  const rows = await database.select().from(generationPlanPeerPicks).orderBy(desc(generationPlanPeerPicks.at)).limit(1000);
+  return rows.reverse();
 }
 
 // ---------------------------------------------------------------------------
