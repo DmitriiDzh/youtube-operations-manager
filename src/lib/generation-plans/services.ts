@@ -4,6 +4,7 @@ import {
   entryWaits,
   mediaKindOf,
   normalizeMarker,
+  PLAN_JOB_OUTPUT_SUBDIRS,
   pickTargetOf,
   planClosed,
   planInvalid,
@@ -187,7 +188,8 @@ export type PlanServiceDependencies = {
   peers?: { ownDeviceId(): Promise<string>; listPeerReports(): Promise<GenerationPlansReport[]> };
   /**
    * BL-157 (AC-MV-02/03): this device's channel workspaces, for a plan move's file check (absent = moves are refused).
-   * `sentFileExists` uses the player's own resolver, so "exists" means "plays" (inside Sent to YTM, no symlink, a file).
+   * `sentFileExists` uses the player's own resolver, so "exists" means "plays" (inside Sent to YTM -- or, BL-175 phase 3, inside a
+   * Gemini job's folder under From YTM -- no symlink out, a file).
    */
   files?: { workspaceOf(channelId: string): Promise<string | null>; sentFileExists(workspace: string, relativePath: string): Promise<boolean> };
   /** BL-157 (AC-TC-04/05): how this computer is named in a verdict's history (its host name, else its device id). */
@@ -1189,7 +1191,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       // current file (`currentFilesOf`) never contradicts the attempt's verdict.
       if (await deps.store.replaceRecheckAnswer(row.id, recheck.recheckId, answer)) {
         recheck.answer = answer;
-        await record(row.id, "recheck_answered", "owner", { recheckId: recheck.recheckId, kind: recheck.kind, itemKey: recheck.itemKey, attemptRef: recheck.attemptRef, kept: false, result: answer.result, device: answer.device, replaced: true });
+        await record(row.id, "recheck_answered", "owner", { recheckId: recheck.recheckId, kind: recheck.kind, itemKey: recheck.itemKey, attemptRef: recheck.attemptRef, kept: false, result: answer.result, device: answer.device, replaced: true, ...secondsOf(reviewSeconds) });
       }
     }
     if (recheck.status === "open") {
@@ -1447,7 +1449,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         if (openRecheck) throw planInvalid(`Plan ${row.id} has an open re-check (${openRecheck.recheckId}); withdraw it or wait for the owner's answer, then move the plan`, { planId: row.id, reason: "recheck_open", recheckId: openRecheck.recheckId });
         if (unfinishedJobs > 0) throw planInvalid(`Plan ${row.id} has ${unfinishedJobs} unfinished job(s); move it when they have finished`, { planId: row.id, unfinishedJobs });
         if (missing.length > 0) {
-          throw planInvalid(`${missing.length} of ${files.length} file(s) of plan ${row.id} are not in channel ${to}'s Sent to YTM; copy them there first`, {
+          throw planInvalid(`${missing.length} of ${files.length} file(s) of plan ${row.id} are not in channel ${to}'s workspace; copy them to the same place there first (Sent to YTM, or From YTM/gemini/<jobId>/ for a Gemini output)`, {
             planId: row.id,
             from,
             to,
@@ -1754,7 +1756,12 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
           const workspace = deps.files ? await deps.files.workspaceOf(row.channelId) : null;
           if (!deps.files || !workspace) throw planInvalid(`Channel ${row.channelId} has no workspace folder on this device (Settings → Channels); the file lives there`, { planId: row.id, channelId: row.channelId, reason: "no_workspace" });
           if (!(await deps.files.sentFileExists(workspace, parsed.auditionFile))) {
-            throw planInvalid(`${parsed.auditionFile} is not in the channel's '99 Data Exchange/Sent to YTM/'; copy it there first`, { planId: row.id, auditionFile: parsed.auditionFile, reason: "file_missing" });
+            throw planInvalid(
+              PLAN_JOB_OUTPUT_SUBDIRS.some((dir) => parsed.auditionFile?.startsWith(`From YTM/${dir}/`))
+                ? `${parsed.auditionFile} is not in that Gemini job's folder of the channel's '99 Data Exchange/From YTM/'`
+                : `${parsed.auditionFile} is not in the channel's '99 Data Exchange/Sent to YTM/'; copy it there first`,
+              { planId: row.id, auditionFile: parsed.auditionFile, reason: "file_missing" }
+            );
           }
         }
         const previousVerdict: PlanRecheckVerdict | null = current

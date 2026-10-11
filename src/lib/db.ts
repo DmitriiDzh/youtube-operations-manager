@@ -1050,7 +1050,7 @@ export const generationPlanPeerVerdicts = sqliteTable(
     recheckId: text("recheck_id"),
     /** Schema v82 (BL-173): 1 = the owner kept the verdict and only wrote a note. */
     kept: integer("kept"),
-    /** Schema v84 (BL-175 phase 3, FO-REQ-0018 §G): the owner's seconds on the attempt before this verdict (null = not measured). */
+    /** Schema v85 (BL-175 phase 3, FO-REQ-0018 §G): the owner's seconds on the attempt before this verdict (null = not measured). */
     reviewSeconds: integer("review_seconds"),
   },
   (table) => [index("generation_plan_peer_verdicts_at_idx").on(table.at)]
@@ -1098,7 +1098,7 @@ export const generationPlanVerdictHistory = sqliteTable(
     recheckId: text("recheck_id"),
     /** Schema v82 (BL-173): 1 = a re-check answered "keep the verdict" with a note -- not a verdict. */
     kept: integer("kept"),
-    /** Schema v84 (BL-175 phase 3, FO-REQ-0018 §G): the owner's seconds on the attempt before this verdict (null = not measured). */
+    /** Schema v85 (BL-175 phase 3, FO-REQ-0018 §G): the owner's seconds on the attempt before this verdict (null = not measured). */
     reviewSeconds: integer("review_seconds"),
   },
   (table) => [index("generation_plan_verdict_history_plan_idx").on(table.planId, table.itemKey, table.attemptRef)]
@@ -1195,7 +1195,7 @@ export const generationPlanPeerPicks = sqliteTable(
     at: text("at").notNull(),
     /** A "none fits": the attempts the owner saw here (JSON array) -- only those are covered on the owning device. */
     coveredJson: text("covered_json"),
-    /** BL-175 phase 3 (§G): the owner's seconds on the attempt before this action (null = not measured). */
+    /** Schema v85 (BL-175 phase 3, §G): the owner's seconds on the attempt before this action (null = not measured). */
     reviewSeconds: integer("review_seconds"),
   },
   (table) => [index("generation_plan_peer_picks_at_idx").on(table.at)]
@@ -4540,7 +4540,7 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
   {
     version: 84,
     description:
-      "generation_plan_picks + generation_plan_peer_picks, review_seconds on generation_plan_verdict_history / generation_plan_peer_verdicts -- BL-175 (FO-REQ-0018 §B/§G, docs/roadmap/plans/VISUAL_REVIEW_PLAN.md): the owner's picks of one attempt of N and \"none fits\" on an item, those given here on other devices' plans, and the owner's seconds per verdict. Additive, device-local",
+      "generation_plan_picks + generation_plan_peer_picks -- BL-175 (FO-REQ-0018 §B, docs/roadmap/plans/VISUAL_REVIEW_PLAN.md): the owner's picks of one attempt of N and \"none fits\" on an item, and those given here on other devices' plans. Additive, device-local",
     apply: async (client) => {
       await client.execute(`CREATE TABLE IF NOT EXISTS generation_plan_picks (
         plan_id TEXT NOT NULL,
@@ -4563,14 +4563,19 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         action TEXT NOT NULL,
         note TEXT,
         at TEXT NOT NULL,
-        covered_json TEXT,
-        review_seconds INTEGER
+        covered_json TEXT
       )`);
       await client.execute("CREATE INDEX IF NOT EXISTS generation_plan_peer_picks_at_idx ON generation_plan_peer_picks (at)");
-      // BL-175 phase 3 (FO-REQ-0018 §G): the owner's seconds on an attempt before a verdict, here and from the other computer.
-      for (const statement of ["ALTER TABLE generation_plan_verdict_history ADD COLUMN review_seconds INTEGER", "ALTER TABLE generation_plan_peer_verdicts ADD COLUMN review_seconds INTEGER"]) {
+    },
+  },
+  {
+    version: 85,
+    description:
+      "review_seconds on generation_plan_verdict_history / generation_plan_peer_verdicts / generation_plan_peer_picks -- BL-175 phase 3 (FO-REQ-0018 §G, docs/roadmap/plans/VISUAL_REVIEW_PLAN.md §8): the owner's seconds on an attempt before a verdict or a pick, here and from the other computer. Additive, nullable (null = not measured)",
+    apply: async (client) => {
+      for (const table of ["generation_plan_verdict_history", "generation_plan_peer_verdicts", "generation_plan_peer_picks"]) {
         try {
-          await client.execute(statement);
+          await client.execute(`ALTER TABLE ${table} ADD COLUMN review_seconds INTEGER`);
         } catch (error) {
           if (!isDuplicateColumnError(error)) throw error;
         }

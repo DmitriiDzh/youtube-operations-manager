@@ -86,7 +86,7 @@ export const referenceSchema = z
       .string()
       .min(1)
       .max(500)
-      .refine((v) => !v.startsWith("/") && !v.includes("\\") && !/^[A-Za-z]:/.test(v) && !v.split("/").some((x) => x === "" || x === "." || x === ".."), "a path relative to the workspace's '99 Data Exchange/Sent to YTM/'"),
+      .refine((v) => !v.startsWith("/") && !v.includes("\\") && !/^[A-Za-z]:/.test(v) && !v.split("/").some((x) => x === "" || x === "." || x === ".."), "a path relative to the workspace's '99 Data Exchange/Sent to YTM/' (or 'From YTM/gemini/<jobId>/<file>': a Gemini output in place)"),
     lufs: z.number().min(-70).max(10).nullable().optional(),
     lra: z.number().min(0).max(100).nullable().optional(),
     truePeak: z.number().min(-70).max(20).nullable().optional(),
@@ -151,7 +151,7 @@ const auditionFileSchema = z
   .string()
   .min(1)
   .max(500)
-  .refine((v) => !v.startsWith("/") && !v.includes("\\") && !/^[A-Za-z]:/.test(v) && !v.split("/").some((s) => s === "" || s === "." || s === ".."), "a path relative to the workspace's '99 Data Exchange/Sent to YTM/', with no '..' or '\\'");
+  .refine((v) => !v.startsWith("/") && !v.includes("\\") && !/^[A-Za-z]:/.test(v) && !v.split("/").some((s) => s === "" || s === "." || s === ".."), "a path relative to the workspace's '99 Data Exchange/Sent to YTM/' (or 'From YTM/gemini/<jobId>/<file>': a Gemini output in place), with no '..' or '\\'");
 
 const checkSchema = z
   .object({

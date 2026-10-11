@@ -309,7 +309,7 @@ export const sharedPickActionSchema = z
  * `recheckId` / `kept` on history entries and verdicts. Read: 1-4; a version 3 build refuses it, so both computers update again.
  * BL-175 (VISUAL_REVIEW_PLAN.md §2.6): version 5 adds marker `region`s, `reviewReasons` (plan, waves), items' `pickTarget`, the
  * plans' active `picks` / `noneFits` and `handledPicks`, entries' `picked` / `notChosen`, and the pick actions sent to other
- * devices (`picks`).
+ * devices (`picks`, with `covered`); phase 3 (§8) adds the owner's `reviewSeconds` on verdicts and pick actions.
  * Read: 1-5; a version 4 build refuses it, so both computers update again.
  */
 export const GENERATION_PLANS_REPORT_VERSION = 5;

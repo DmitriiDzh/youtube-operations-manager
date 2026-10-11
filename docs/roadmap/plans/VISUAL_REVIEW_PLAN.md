@@ -349,14 +349,18 @@ copying, owner time per verdict, phone mode (phase 3); relaying a pick through `
   `From YTM/gemini/<jobId>/` -- read where it is, through `resolveExchangeFile` (shared `workspace-exchange`; the plans pass their
   allowed folder list `PLAN_JOB_OUTPUT_SUBDIRS = ["gemini"]`, a contract string, never an import of the Gemini module). Every
   other path is relative to `Sent to YTM` as before. The audition, preview, reference and re-check routes (own and other
-  computer's), the revision check and the plan move all use it.
+  computer's), the revision check and the plan move all use it. Limits (review): a plan move needs a Gemini file at the same
+  `From YTM/gemini/<jobId>/` path in the target channel's workspace (a copy into Sent to YTM does not count -- the path is read as
+  a From YTM path; `Sent to YTM/From YTM/gemini/…` is not reachable); From YTM is a buffer, so a Gemini output a plan still names
+  must not be deleted (or the row is re-reported with a Sent to YTM copy). The owner's seconds columns are a migration of their
+  own (v85), so a database an earlier build of this branch stamped v84 gets them too.
 - **Owner time per verdict (§G).** The screen counts, per attempt (a re-check apart), the seconds it is on screen while the tab is
   visible and the owner is there: an input (key, pointer, wheel) in the last 5 minutes, or a clip or a track playing. A verdict, a
   re-check answer, a pick and a "none fits" carry `reviewSeconds` (0..86400, whole seconds; the counter of that attempt starts
   again after it is sent). Stored with the verdict (`generation_plan_verdict_history.review_seconds`), in the events
   (`owner_verdict`, `recheck_answered`, `owner_pick`, `owner_none_fits`), and carried from the other computer
-  (`SharedVerdict.reviewSeconds`, `SharedPickAction.reviewSeconds`; peer tables `review_seconds`). Schema v84 (unreleased) gains
-  the three columns; report v5 (unreleased) the two optional fields. Absent = not measured (an older screen, a factory relay).
+  (`SharedVerdict.reviewSeconds`, `SharedPickAction.reviewSeconds`; peer tables `review_seconds`). Schema v85 adds
+  the three columns; report v5 (unreleased) gains the two optional fields. Absent = not measured (an older screen, a factory relay).
 - **Phone mode (§G).** Deferred by the owner (Telegram 2554, 2026-10-11: «Пока что использую наш инструмент только на компьютере»).
   Not built: the server listens on 127.0.0.1 and the plan file routes serve this computer only (ADR 0029 §5), and the app shell
   has a fixed sidebar -- a phone mode needs the owner's decision on LAN access first, then a narrow shell and the triage view.

@@ -3603,7 +3603,7 @@ re-checks and the seam view are phase 2; Gemini outputs without copying, owner t
   visible and the owner is there (`countsReviewTime`: an input within 5 min or media playing) and sends `reviewSeconds` with a
   verdict, an answer, a pick or "none fits" (a pick sums the item's attempts); stored in `generation_plan_verdict_history`
   (→ `owner_verdict`), in event details, and from the other computer through `SharedVerdict` / `SharedPickAction` and the peer
-  tables (`review_seconds`, schema v84).
+  tables (`review_seconds`, schema v85 -- its own migration, so a database stamped v84 by an earlier build gets it too).
 - **Previews** (`src/lib/media-preview/`, a shared module that knows nothing about plans): `sharp` (a direct dependency since
   BL-175; Next.js already installed it) resizes an image to at most 480 px a side, `limitInputPixels` guards against decompression
   bombs, a 300-entry memory cache is keyed by path, size and mtime; any failure streams the original. The `…/preview` routes

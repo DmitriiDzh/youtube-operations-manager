@@ -69,6 +69,20 @@ test("schema v82: a second run of the migration converges (the four added column
     assert.ok((await columns("generation_plan_rechecks")).includes("previous_verdict_json"));
   }));
 
+test("schema v85 (BL-175 phase 3): the review seconds columns are added to a database already at v84, and a second run converges", () =>
+  withDb(async (_database, client) => {
+    const columns = async (table: string) => (await client.execute(`PRAGMA table_info(${table})`)).rows.map((r) => String(r.name));
+    const tables = ["generation_plan_verdict_history", "generation_plan_peer_verdicts", "generation_plan_peer_picks"];
+    // A database an earlier build stamped 84: the three tables without the column.
+    for (const table of tables) await client.execute(`ALTER TABLE ${table} DROP COLUMN review_seconds`);
+    for (const table of tables) assert.equal((await columns(table)).includes("review_seconds"), false, table);
+    const v85 = SCHEMA_MIGRATIONS.find((m) => m.version === 85);
+    assert.ok(v85);
+    await v85.apply(client);
+    await v85.apply(client);
+    for (const table of tables) assert.equal((await columns(table)).includes("review_seconds"), true, table);
+  }));
+
 test("re-checks: one per (plan, id); listed oldest first; only an open one closes, once", () =>
   withDb(async (database) => {
     assert.equal(await insertGenerationPlanRecheck(recheck("r1"), database), true);

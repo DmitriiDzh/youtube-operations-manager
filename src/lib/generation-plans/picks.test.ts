@@ -104,7 +104,7 @@ const PLAN = "H-0004-C";
 let clockMs = Date.parse("2026-10-11T12:00:00.000Z");
 const tick = (ms = 1000) => (clockMs += ms);
 
-function setup(jobs: Array<PlanJobRow & { planId: string | null }> = [], opts: { peers?: () => GenerationPlansReport[]; deviceId?: string; label?: string } = {}) {
+function setup(jobs: Array<PlanJobRow & { planId: string | null }> = [], opts: { peers?: () => GenerationPlansReport[]; deviceId?: string; label?: string; files?: { workspaceOf(channelId: string): Promise<string | null>; sentFileExists(workspace: string, relativePath: string): Promise<boolean> } } = {}) {
   const mem = memoryStore(jobs);
   let ids = 0;
   const services = createGenerationPlanServices({
@@ -114,6 +114,7 @@ function setup(jobs: Array<PlanJobRow & { planId: string | null }> = [], opts: {
     deviceLabel: async () => opts.label ?? "Mac",
     generateId: () => `id-${String(++ids).padStart(6, "0")}`,
     ...(opts.peers ? { peers: { ownDeviceId: async () => opts.deviceId ?? "mac-id", listPeerReports: async () => opts.peers!() } } : {}),
+    ...(opts.files ? { files: opts.files } : {}),
   });
   return { ...mem, services };
 }
@@ -989,4 +990,53 @@ test("AC-V3-05: a pick, a none-fits and a re-check answer carry their seconds; w
   await s.services.answerRecheck({ planId: PLAN, recheckId: "q1", result: "rejected", reviewSeconds: 15 });
   assert.equal((kinds(s, "recheck_answered").at(-1)?.[1] as Record<string, unknown>).reviewSeconds, 15);
   assert.deepEqual((await verdictEvents(s)).filter((d) => d.recheckId === "q1").map((d) => d.reviewSeconds), [15]);
+});
+
+test("AC-V3-02: a revision may name a Gemini output in place; a missing one is refused as file_missing, naming the Gemini folder", async () => {
+  const { mkdir, mkdtemp, realpath, rm, writeFile } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const pathMod = await import("node:path");
+  const { createExchangeFs, resolveExchangeFile } = await import("@/lib/workspace-exchange");
+  const { isPathInsideOrEqual } = await import("@/lib/local-path-validation");
+  const { PLAN_JOB_OUTPUT_SUBDIRS } = await import("./contracts");
+  const root = await realpath(await mkdtemp(pathMod.join(tmpdir(), "ytm-gemini-plan-")));
+  try {
+    const ws = pathMod.join(root, "ws");
+    await mkdir(pathMod.join(ws, "99 Data Exchange", "Sent to YTM"), { recursive: true });
+    await mkdir(pathMod.join(ws, "99 Data Exchange", "From YTM", "gemini", "gm_7"), { recursive: true });
+    await writeFile(pathMod.join(ws, "99 Data Exchange", "From YTM", "gemini", "gm_7", "image-1.png"), "png");
+    const files = {
+      workspaceOf: async () => ws,
+      sentFileExists: (workspace: string, relativePath: string) =>
+        resolveExchangeFile({ workspace, relativePath, jobSubdirs: PLAN_JOB_OUTPUT_SUBDIRS, fs: createExchangeFs(), validateWorkspacePath: async () => ({ ok: true as const }), isPathInsideOrEqual, unavailable: (r) => new Error(r) }).then(
+          () => true,
+          () => false
+        ),
+    };
+    const s = setup([], { files });
+    await s.services.createPlan({
+      planId: PLAN,
+      title: "gemini",
+      channelId: CHANNEL,
+      stages: [
+        { stageId: "render", title: "Render", kind: "external" },
+        { stageId: "owner_review", title: "Owner review", kind: "owner_review" },
+      ],
+      items: [{ itemKey: "I", targetCount: 1 }],
+    });
+    await s.services.report({ planId: PLAN, rows: [{ stageId: "render", itemKey: "I", attemptRef: "g1", result: "done", auditionFile: "From YTM/gemini/gm_7/image-1.png" }] });
+    assert.equal((await s.services.reviewQueue({ planId: PLAN })).entries[0]?.media, "image");
+    tick();
+    await s.services.recordOwnerVerdict({ planId: PLAN, itemKey: "I", attemptRef: "g1", result: "rejected" });
+    tick();
+    const ok = await s.services.requestRecheck({ planId: PLAN, itemKey: "I", attemptRef: "g1", recheckId: "r1", kind: "revision", title: "фон", note: "убрал предмет", auditionFile: "From YTM/gemini/gm_7/image-1.png" });
+    assert.equal(ok.recheck.status, "open");
+    await s.services.withdrawRecheck({ planId: PLAN, recheckId: "r1" });
+    await assert.rejects(
+      () => s.services.requestRecheck({ planId: PLAN, itemKey: "I", attemptRef: "g1", recheckId: "r2", kind: "revision", title: "фон", note: "ещё раз", auditionFile: "From YTM/gemini/gm_7/missing.png" }),
+      (e: unknown) => isDomainError(e) && (e.details as Record<string, unknown>).reason === "file_missing" && /Gemini job's folder/.test(e.message)
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
