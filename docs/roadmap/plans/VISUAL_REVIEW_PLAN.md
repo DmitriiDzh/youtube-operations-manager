@@ -357,7 +357,9 @@ copying, owner time per verdict, phone mode (phase 3); relaying a pick through `
   (`owner_verdict`, `recheck_answered`, `owner_pick`, `owner_none_fits`), and carried from the other computer
   (`SharedVerdict.reviewSeconds`, `SharedPickAction.reviewSeconds`; peer tables `review_seconds`). Schema v84 (unreleased) gains
   the three columns; report v5 (unreleased) the two optional fields. Absent = not measured (an older screen, a factory relay).
-- **Phone mode (§G).** Waiting for the owner's choice (layout only / layout and LAN access / later).
+- **Phone mode (§G).** Deferred by the owner (Telegram 2554, 2026-10-11: «Пока что использую наш инструмент только на компьютере»).
+  Not built: the server listens on 127.0.0.1 and the plan file routes serve this computer only (ADR 0029 §5), and the app shell
+  has a fixed sidebar -- a phone mode needs the owner's decision on LAN access first, then a narrow shell and the triage view.
 
 ### 8.3 Acceptance criteria (fixed before the code; numbers worked out by hand)
 
