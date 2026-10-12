@@ -588,6 +588,20 @@ export function createBatchServices(deps: ServiceDependencies) {
     return Promise.all(row.changeIds.map((changeId) => requireChangeForVideo(changeId, row.videoId)));
   }
 
+  /**
+   * Whether a fresh read shows the snippet a write sent: `defaultLanguage` (when it sent one) and the title/description exactly.
+   * The goal-state evidence for paths that never saw their own response (reconciliation, crash recovery) -- an aligning write
+   * (BL-178, PROJECT_SPEC §14) must show the channel's language and the untouched original, not only its rows (review S1).
+   */
+  function readBackMatchesSentSnippet(fresh: FreshVideoContext, payloadSnapshot: unknown): boolean {
+    const sent = (payloadSnapshot as { snippet?: Record<string, unknown> } | null | undefined)?.snippet;
+    if (!sent || typeof sent !== "object") return true;
+    if (typeof sent.defaultLanguage === "string" && !sameLanguage(fresh.snippet.defaultLanguage, sent.defaultLanguage)) return false;
+    if (typeof sent.title === "string" && fresh.snippet.title !== sent.title) return false;
+    if (typeof sent.description === "string" && fresh.snippet.description !== sent.description) return false;
+    return true;
+  }
+
   function toPendingChanges(changeRecords: PendingChangeRecord[]): PendingChange[] {
     return changeRecords.map((change) => ({
       id: change.id,
@@ -661,8 +675,8 @@ export function createBatchServices(deps: ServiceDependencies) {
       // The baseline language's text would become the snippet title/description; a change for it,
       // or an existing remote localization under that code, would be silently overwritten/dropped.
       const collides =
-        changeRecords.some((change) => change.language === baselineLanguage) ||
-        Object.prototype.hasOwnProperty.call(fresh.localizations, baselineLanguage);
+        changeRecords.some((change) => sameLanguage(change.language, baselineLanguage)) ||
+        Object.keys(fresh.localizations).some((key) => sameLanguage(key, baselineLanguage));
       if (collides) {
         return {
           outcome: "FAILED",
@@ -1150,6 +1164,17 @@ export function createBatchServices(deps: ServiceDependencies) {
     // BL-178: an aligning write that did not land leaves the video in its old language; its rows are read against the channel's
     // language like the pre-send check did, so "nothing happened yet" is not mistaken for a third party's change.
     const channelBaseline = (await deps.channelLanguageBaseline?.getExpectedDefaultLanguage(batch.channelId)) ?? null;
+    const attemptsForRow = await batchStore.listAttemptsByLedgerRow(row.id);
+    const sentPayload = attemptsForRow.length > 0 ? attemptsForRow[attemptsForRow.length - 1].payloadSnapshot : null;
+
+    // Rows confirmed but the snippet not as sent (review S1): never a success -- the write did something other than assumed.
+    const finalizeSnippetMismatch = async (): Promise<ExecutionResult> => {
+      const detail = "verification_mismatch: the rows read back as requested, but the video's language or original title/description did not match what was sent";
+      await transitionLedgerStatus(row.id, "FAILED", { error: detail });
+      await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "VERIFICATION", detail: { resolvedVia: "reconciliation", confirmed: false, snippetMatchesSent: false } });
+      await releaseVideoLock({ batchId: batch.id, videoId: row.videoId });
+      return { ledgerRowId: row.id, videoId: row.videoId, status: "FAILED", detail, systemic: true };
+    };
 
     const finalizeSuccess = async (): Promise<ExecutionResult> => {
       await transitionLedgerStatus(row.id, "SUCCESS", {
@@ -1202,7 +1227,7 @@ export function createBatchServices(deps: ServiceDependencies) {
     const classification1 = freshContext1 ? classifyFreshStateAgainstAttempt(pendingChanges, freshContext1, { channelBaseline }) : "diverged";
     await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "RECONCILIATION", detail: { step: 1, classification: classification1 } });
 
-    if (classification1 === "matches_requested") return finalizeSuccess();
+    if (classification1 === "matches_requested") return freshContext1 && readBackMatchesSentSnippet(freshContext1, sentPayload) ? finalizeSuccess() : finalizeSnippetMismatch();
     if (classification1 === "diverged") return finalizeConflict(freshContext1);
 
     // matches_baseline -- inconclusive by itself (§0.F Step 1), proceed to Step 2.
@@ -1212,7 +1237,7 @@ export function createBatchServices(deps: ServiceDependencies) {
     const classification2 = read2 ? classifyFreshStateAgainstAttempt(pendingChanges, toFreshVideoContext(read2), { channelBaseline }) : "diverged";
     await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "RECONCILIATION", detail: { step: 2, classification: classification2 } });
 
-    if (classification2 === "matches_requested") return finalizeSuccess();
+    if (classification2 === "matches_requested") return read2 && readBackMatchesSentSnippet(toFreshVideoContext(read2), sentPayload) ? finalizeSuccess() : finalizeSnippetMismatch();
 
     // Both a consistent-negative (matches_baseline again) and a diverged/inconsistent
     // second read land here -- §0.F Step 3: neither, by itself or together, ever
@@ -1350,7 +1375,9 @@ export function createBatchServices(deps: ServiceDependencies) {
         const classifyVerify = (raw: typeof verifyRaw) => {
           if (!raw) return "diverged" as const;
           const context = toFreshVideoContext(raw);
-          const classification = classifyFreshStateAgainstAttempt(pendingChanges, context);
+          // An aligning write that has not shown up yet leaves the video in its old language: its rows still hold (review B1),
+          // so a lagging read is re-read like any other, not failed.
+          const classification = classifyFreshStateAgainstAttempt(pendingChanges, context, alignedDefaultLanguage ? { channelBaseline: alignedDefaultLanguage.to } : {});
           if (classification === "matches_requested" && appliedDefaultLanguage && context.snippet.defaultLanguage !== appliedDefaultLanguage) {
             return "matches_baseline" as const;
           }
@@ -1390,8 +1417,12 @@ export function createBatchServices(deps: ServiceDependencies) {
         // AC-VERIFY-01/AC-CONFLICT-02: a 200 response alone is never sufficient -- a
         // mismatch here means either a partial apply or a same-instant external race.
         await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "VERIFICATION", detail: { confirmed: false, classification: verifyClassification, observed: describeObservedState(pendingChanges, verifyRaw ? toFreshVideoContext(verifyRaw) : null) } });
-        if (snippetChanged) {
-          const detail = "verification_mismatch: the original title/description read back different from what was sent while aligning the video's language -- the batch stops";
+        // PROJECT_SPEC §14 (2026-10-12): an aligning write whose read-back does not show the channel's language and the
+        // original exactly as sent fails the row AND stops the batch -- YouTube did not do what this write assumed (review S2).
+        if (snippetChanged || alignedDefaultLanguage) {
+          const detail = snippetChanged
+            ? "verification_mismatch: the original title/description read back different from what was sent while aligning the video's language -- the batch stops"
+            : "verification_mismatch: the video's language did not read back as the channel's after aligning it -- the batch stops";
           await transitionLedgerStatus(row.id, "FAILED", { error: detail });
           await releaseVideoLock({ batchId: batch.id, videoId: row.videoId });
           return { ledgerRowId: row.id, videoId: row.videoId, status: "FAILED", detail, systemic: true };
@@ -1509,7 +1540,7 @@ export function createBatchServices(deps: ServiceDependencies) {
     const verifyRaw = await deps.youtubeApi.fetchFreshVideoContext({ credentials, videoId: row.videoId });
     const classification = verifyRaw ? classifyFreshStateAgainstAttempt(pendingChanges, toFreshVideoContext(verifyRaw)) : "diverged";
 
-    if (classification === "matches_requested") {
+    if (classification === "matches_requested" && verifyRaw && readBackMatchesSentSnippet(toFreshVideoContext(verifyRaw), attempt.payloadSnapshot)) {
       await transitionLedgerStatus(row.id, "SUCCESS", {
         verificationResult: { resolvedVia: "crash_recovery_reverification", ownResponseObserved: true, confirmedAt: new Date().toISOString() },
       });

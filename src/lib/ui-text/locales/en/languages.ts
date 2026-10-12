@@ -165,6 +165,7 @@ export const languages = {
   "changeSet.review.noMatch": "No changes match the current filters.",
   "changeSet.review.alignNotice": "On send, {count} video(s) get the channel's language: the title and description stay exactly as they are, the translations go into their own languages.",
   "changeSet.review.alignItem": "{videoId}: {from} → {to}",
+  "changeSet.review.alignTranslationBadge": "translation, not an edit of the original",
   "changeSet.review.conflictBadge": "Conflict",
   "changeSet.review.invalidBadge": "Invalid",
   "changeSet.review.current": "Current (synced)",

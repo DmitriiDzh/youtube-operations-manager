@@ -10,7 +10,7 @@
 //     RISK-03-affected behavior, see docs/TECHNICAL_DEBT.md RISK-03)
 //   - AC-MERGE-01/02/03/04, AC-MULTI-01 (buildSafeLocalizationsPayload)
 
-import { baselineValueStillHolds, readAgainstBaseline, type VideoLanguageView } from "@/lib/shared-language-baseline";
+import { baselineValueStillHolds, readAgainstBaseline, sameLanguage, type VideoLanguageView } from "@/lib/shared-language-baseline";
 import { pickWritableSnippetFields } from "@/lib/youtube-write-gateway";
 
 export type FreshVideoLocale = { title: string; description: string };
@@ -68,10 +68,17 @@ export function checkDefaultLanguage(
  * one shared primitive, per architectural decision #4 (2026-09-17 plan approval), not two
  * separately-maintained implementations of the same read. */
 export function readCurrentValue(fresh: FreshVideoContext, language: string, field: "title" | "description"): string {
-  if (fresh.snippet.defaultLanguage && language === fresh.snippet.defaultLanguage) {
+  // Language codes compare case-insensitively (BL-178 review M1, the shared rule in `@/lib/shared-language-baseline`).
+  if (sameLanguage(language, fresh.snippet.defaultLanguage)) {
     return field === "title" ? fresh.snippet.title : fresh.snippet.description;
   }
-  return fresh.localizations[language]?.[field] ?? "";
+  const key = localeKeyFor(fresh.localizations, language);
+  return key ? fresh.localizations[key][field] : "";
+}
+
+/** The existing `localizations` key for a language, matched case-insensitively (`pt-br` finds `pt-BR`); `null` when none. */
+function localeKeyFor(localizations: Record<string, FreshVideoLocale>, language: string): string | null {
+  return Object.keys(localizations).find((key) => sameLanguage(key, language)) ?? null;
 }
 
 export type ConflictResult =
@@ -168,7 +175,7 @@ export function buildSafeLocalizationsPayload(
   // read via the same default-language-aware `readCurrentValue`).
   const localizations: Record<string, FreshVideoLocale> = {};
   for (const [locale, value] of Object.entries(fresh.localizations)) {
-    if (fresh.snippet.defaultLanguage && locale === fresh.snippet.defaultLanguage) continue;
+    if (sameLanguage(locale, fresh.snippet.defaultLanguage)) continue;
     localizations[locale] = { ...value };
   }
 
@@ -190,22 +197,24 @@ export function buildSafeLocalizationsPayload(
       // so silently proceeding would blank the video's real title/description instead
       // of removing a localization. Fail closed rather than merge a payload that could
       // destroy real data.
-      if (fresh.snippet.defaultLanguage && change.language === fresh.snippet.defaultLanguage) {
+      if (sameLanguage(change.language, fresh.snippet.defaultLanguage)) {
         throw new Error(
           `Refusing to merge a "delete" change for language "${change.language}": it is this video's own defaultLanguage, so deleting it would blank the real snippet title/description instead of removing a localization.`
         );
       }
-      languagesToDelete.add(change.language);
+      languagesToDelete.add(localeKeyFor(localizations, change.language) ?? change.language);
       continue;
     }
 
-    if (fresh.snippet.defaultLanguage && change.language === fresh.snippet.defaultLanguage) {
+    if (sameLanguage(change.language, fresh.snippet.defaultLanguage)) {
       snippet[change.field] = change.proposedValue;
       continue;
     }
 
-    const existingLocale = localizations[change.language] ?? { title: "", description: "" };
-    localizations[change.language] = { ...existingLocale, [change.field]: change.proposedValue };
+    // An existing entry keeps its key's spelling (a row `pt-br` updates `pt-BR`, never adds a second key).
+    const key = localeKeyFor(localizations, change.language) ?? change.language;
+    const existingLocale = localizations[key] ?? { title: "", description: "" };
+    localizations[key] = { ...existingLocale, [change.field]: change.proposedValue };
   }
 
   for (const language of languagesToDelete) {

@@ -3672,11 +3672,23 @@ Owner exception 2026-10-12 (msg 2665), recorded in `docs/PROJECT_SPEC.md` §14 a
     - The backup adds `snippetTitle`/`snippetDescription`.
     - DRY_RUN/ATTEMPT audit gets `defaultLanguageAligned {from, to}`.
     - The read-back must show the snippet exactly as sent. Otherwise the row FAILS with `systemic`, and the batch stops.
+    - A read that still shows the old language is re-read (lag), not failed. A read that never shows the channel's language
+      also stops the batch.
+    - Reconciliation and crash recovery accept a success only when the read shows the sent snippet: `defaultLanguage`, title
+      and description (`readBackMatchesSentSnippet`, against the attempt's stored payload). Otherwise the row FAILS with
+      `systemic`.
+    - Language codes match localization keys case-insensitively in `merge.ts` too: a row `pt-br` updates `pt-BR`.
 - **Change Sets, XLSX import, AI localization, the Languages overview:**
   - They read videos with the baseline (`changesets/diff.ts` `readWithChannelBaseline`). For a mislabelled video an `es` row is
     an `add`.
   - AI `sourceLanguage` = the configured baseline, else the video's own language.
-  - The overview row gains `originalLanguage`; `defaultLanguage` stays YouTube's value.
+  - The overview row gains `originalLanguage` (a video without a language takes the channel's); `defaultLanguage` stays
+    YouTube's value.
+  - The approval screen marks old-language rows "translation, not an edit of the original".
+  - **Known limits, both fail closed:**
+    - a row in the channel's language on a mislabelled video looks approvable, but the Batch refuses it (fix the language
+      first);
+    - a video whose old-language entry differs from its snippet ("ambiguous") is read as it is, and the Batch refuses it.
   - `getChangeSet` returns `languageAlignments` for the approval screen.
 - **Single-item writes** (`video-details`, including "Fix all", and `video-metadata`):
   - They send the `defaultAudioLanguage` read just before the write (`pickWritableSnippetFields(..., { includeDefaultAudioLanguage:

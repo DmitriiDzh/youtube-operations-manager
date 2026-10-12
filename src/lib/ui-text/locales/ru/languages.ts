@@ -169,6 +169,7 @@ export const languages: Record<keyof typeof en, string> = {
   "changeSet.review.noMatch": "Нет изменений, подходящих под фильтры.",
   "changeSet.review.alignNotice": "При отправке у видео ({count}) язык будет исправлен на язык канала: название и описание останутся как есть, переводы уйдут в свои языки.",
   "changeSet.review.alignItem": "{videoId}: {from} → {to}",
+  "changeSet.review.alignTranslationBadge": "перевод, а не правка оригинала",
   "changeSet.review.conflictBadge": "Конфликт",
   "changeSet.review.invalidBadge": "Ошибка",
   "changeSet.review.current": "Сейчас (синхронизировано)",

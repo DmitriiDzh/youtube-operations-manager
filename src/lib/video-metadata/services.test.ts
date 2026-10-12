@@ -497,6 +497,9 @@ test("RISK-11 (legacy single-item path, 2026-09-18): every documented read-only 
   // owner 2026-10-04 "a field left out is reset"). PROJECT_SPEC §14 (2026-10-12) now requires a single-item edit to send back the
   // value read just before the write (here "es"), except `zxx`.
   assert.equal(proposal.update.snippet.defaultAudioLanguage, "es");
+  // BL-178 review M4: the preview's "before" carries it too -- no false change shown.
+  assert.equal(result.snippet.before.defaultAudioLanguage, "es");
+  assert.equal(result.snippet.proposed.defaultAudioLanguage, "es");
 });
 
 // Requirement change (architecture audit 2026-10-01, H5 + its review): the single-localization

@@ -49,7 +49,8 @@ function computeOverviewRow(video: StoredVideoRecord, languages: string[], chann
     { defaultLanguage: video.defaultLanguage, title: video.title, description: video.description, localizations: video.existingLocalizations },
     channelBaseline
   );
-  const originalLanguage = reading.kind === "aligned" ? reading.to : video.defaultLanguage;
+  // A video with no language of its own takes the channel's: that is what a Batch writes for it (2026-10-02 exception; review M6).
+  const originalLanguage = reading.kind === "aligned" ? reading.to : (video.defaultLanguage ?? channelBaseline);
   const localizations = reading.kind === "aligned" ? reading.view.localizations : video.existingLocalizations;
   const present = new Set(Object.keys(localizations));
   const presentLanguages = languages.filter((lang) => present.has(lang)).sort();

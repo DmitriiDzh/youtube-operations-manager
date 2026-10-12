@@ -381,3 +381,12 @@ test("BL-178: without a channel language the overview reads the video as it is (
   assert.equal(row.originalLanguage, "es");
   assert.deepEqual(row.missingLanguages, []);
 });
+
+test("BL-178 review M6: a video with no language of its own takes the channel's as its original (it is not 'missing' en)", async () => {
+  const video = makeVideo({ defaultLanguage: null, existingLocalizations: { es: { title: "ES", description: "" } } });
+  const { services, trackedLanguagesByChannel } = createFixture([video], makeChannel(), "en");
+  trackedLanguagesByChannel.set("UC_TEST", ["en", "es"]);
+  const row = (await services.getLocalizationOverview({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST" })).videos[0];
+  assert.equal(row.originalLanguage, "en");
+  assert.deepEqual(row.missingLanguages, []);
+});

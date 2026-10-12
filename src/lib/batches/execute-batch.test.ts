@@ -1540,3 +1540,57 @@ test("BL-178 live: an aligning write with an unknown outcome that did not land r
 
   assert.equal(summary.results[0].status, "UNKNOWN");
 });
+
+// --- BL-178 independent review (2026-10-12) ---
+
+test("BL-178 review B1: a first read-back that still shows the old language (YouTube lag) is re-read, not failed; the later read confirms SUCCESS", async () => {
+  const harness = createHarness({
+    channelBaseline: "en",
+    channelBaselineAudio: "en",
+    verifyRetryDelaysMs: [0],
+    freshSequenceByVideoId: { v1: [MISLABELLED, MISLABELLED, MISLABELLED, ALIGNED_AFTER()] },
+  });
+  const batch = await createApprovedBatch(harness, { channelId: "UC_TEST", dryRun: false, selections: [{ videoId: "v1", changeIds: ["c1"] }] }, ES_ROW);
+  const summary = await harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, executor: scriptedExecutor([{ outcome: "SUCCESS" }]) });
+  assert.equal(summary.results[0].status, "SUCCESS");
+});
+
+test("BL-178 review S2: YouTube did not apply the language (read-back still es after every re-read) -> the row fails AND the batch stops", async () => {
+  const notApplied: Fixture = {
+    snippet: { title: EN_T, description: EN_D, defaultLanguage: "es", defaultAudioLanguage: "en" },
+    localizations: { es: { title: EN_T, description: EN_D } },
+  };
+  const harness = createHarness({
+    channelBaseline: "en",
+    channelBaselineAudio: "en",
+    verifyRetryDelaysMs: [0],
+    freshSequenceByVideoId: { v1: [MISLABELLED, MISLABELLED, notApplied, notApplied], v2: [MISLABELLED, MISLABELLED, ALIGNED_AFTER()] },
+  });
+  const batch = await createApprovedBatch(
+    harness,
+    { channelId: "UC_TEST", dryRun: false, selections: [{ videoId: "v1", changeIds: ["c1"] }, { videoId: "v2", changeIds: ["c2"] }] },
+    { ...ES_ROW, c2: { ...ES_ROW.c1 } }
+  );
+  let writes = 0;
+  const executor = { async attemptWrite() { writes += 1; return { outcome: "SUCCESS" as const }; } };
+  const summary = await harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, executor: executor as never });
+  const byVideo = Object.fromEntries(summary.results.map((r) => [r.videoId, r.status]));
+  assert.equal(byVideo.v1, "FAILED");
+  assert.notEqual(byVideo.v2, "SUCCESS");
+  assert.equal(writes, 1);
+});
+
+test("BL-178 review S1: an unknown outcome whose read shows the rows written but the language not aligned and the title changed is NOT a success", async () => {
+  const odd: Fixture = {
+    snippet: { title: `${EN_T} (edited)`, description: EN_D, defaultLanguage: "es", defaultAudioLanguage: "en" },
+    localizations: { es: { title: `${EN_T} (edited)`, description: EN_D }, fr: { title: "Jazz cubain", description: "" } },
+  };
+  const harness = createHarness({ channelBaseline: "en", channelBaselineAudio: "en", freshSequenceByVideoId: { v1: [MISLABELLED, MISLABELLED, odd, odd] } });
+  const batch = await createApprovedBatch(
+    harness,
+    { channelId: "UC_TEST", dryRun: false, selections: [{ videoId: "v1", changeIds: ["c1"] }] },
+    { c1: { language: "fr", field: "title", baselineValue: "", proposedValue: "Jazz cubain" } }
+  );
+  const summary = await harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, executor: scriptedExecutor([{ outcome: "UNKNOWN", detail: "timeout" }]) });
+  assert.notEqual(summary.results[0].status, "SUCCESS");
+});

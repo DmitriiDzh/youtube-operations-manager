@@ -344,6 +344,9 @@ export function ChangeSetReview({
               <span>·</span>
               <span>{fieldLabel(t, change.field)}</span>
               {changeTypeBadge(t, change.changeType)}
+              {languageAlignments.some((a) => a.videoId === change.videoId && a.from.toLowerCase() === change.language.toLowerCase()) && (
+                <span className="rounded bg-sky-900/40 px-1.5 py-0.5 text-[10px] uppercase text-sky-300">{t("changeSet.review.alignTranslationBadge")}</span>
+              )}
               {change.conflictStatus === "conflict" && (
                 <span className="rounded bg-red-900/40 px-1.5 py-0.5 text-[10px] uppercase text-red-400">{t("changeSet.review.conflictBadge")}</span>
               )}

@@ -161,7 +161,8 @@ function buildMetadataSyncProposal(args: {
       details: { inferredLanguage: resolvedLanguage.targetLanguage },
     });
   }
-  const beforeSnippet = removeReadOnlySnippetFields(args.context.snippet);
+  // The same audio rule as `proposedSnippet` below, so the preview shows no change that is not one (BL-178 review M4).
+  const beforeSnippet = pickWritableSnippetFields(args.context.snippet, { includeDefaultAudioLanguage: "keep" });
   // RISK-102 (PROJECT_SPEC §14, 2026-10-12): the audio language read just before the write is sent back, so this edit does not
   // reset it (`videos.update` resets a left-out snippet field); `zxx`, rejected when echoed, stays out.
   const proposedSnippet = pickWritableSnippetFields({
