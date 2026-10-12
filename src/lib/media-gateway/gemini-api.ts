@@ -6,7 +6,7 @@ import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { DomainError, isDomainError } from "@/lib/shared-domain";
 import { assertMediaGatewayAuthorized, type Authorize } from "./authorization";
-import { jsonRequest, type JsonResponse } from "./http";
+import { createLongWaitFetch, jsonRequest, type JsonResponse } from "./http";
 import { asNumber, asRecord, asString } from "./json";
 
 // ---------------------------------------------------------------------------
@@ -168,10 +168,14 @@ function causeText(error: unknown): string | null {
   return text ? text.slice(0, 200) : null;
 }
 
+/** undici's own waits (headers, body) are timeouts too -- they fire after 300 s whatever the AbortSignal (BL-179 review). */
+const TIMEOUT_CODES = new Set(["UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT", "ETIMEDOUT"]);
+
 function isTimeout(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
-  const record = error as { name?: unknown; cause?: unknown };
+  const record = error as { name?: unknown; code?: unknown; cause?: unknown };
   if (record.name === "TimeoutError" || record.name === "AbortError") return true;
+  if (typeof record.code === "string" && TIMEOUT_CODES.has(record.code)) return true;
   return record.cause ? isTimeout(record.cause) : false;
 }
 
@@ -200,8 +204,12 @@ function safeUrlForError(url: string): string {
   }
 }
 
-export function createGeminiApiClient(args: { fetchImpl?: Fetch; authorize?: Authorize; baseUrl?: string } = {}) {
+export function createGeminiApiClient(args: { fetchImpl?: Fetch; longWaitFetchImpl?: Fetch; authorize?: Authorize; baseUrl?: string } = {}) {
   const fetchImpl = args.fetchImpl ?? fetch;
+  // BL-179 (review blocker): fetch gives up after 300 s without response headers whatever the signal; the Omni call (minutes)
+  // goes through `node:https` instead. Its answer is the base64 video: bounded at the video cap's base64 size plus 1 MB.
+  const longWaitFetchImpl =
+    args.longWaitFetchImpl ?? args.fetchImpl ?? createLongWaitFetch({ maxBodyBytes: Math.ceil((GEMINI_MAX_VIDEO_BYTES * 4) / 3) + 1024 * 1024 });
   const authorize = args.authorize ?? assertMediaGatewayAuthorized;
   const baseUrl = (args.baseUrl ?? GEMINI_API_BASE_URL).replace(/\/$/, "");
   // The key goes to this exact origin only (scheme, host and port): an http:// hop to the same host never carries it.
@@ -263,11 +271,11 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; authorize?: Aut
     method: string,
     pathAndQuery: string,
     context: Record<string, unknown>,
-    options: { body?: unknown; timeoutMs: number; keyCheck?: boolean }
+    options: { body?: unknown; timeoutMs: number; keyCheck?: boolean; longWait?: boolean }
   ): Promise<unknown> {
     await authorized(context);
     const response = await jsonRequest({
-      fetchImpl,
+      fetchImpl: options.longWait ? longWaitFetchImpl : fetchImpl,
       url: `${baseUrl}${pathAndQuery}`,
       method,
       headers: { accept: "application/json", "x-goog-api-key": apiKey, ...(options.body === undefined ? {} : { "content-type": "application/json" }) },
@@ -329,6 +337,23 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; authorize?: Aut
     return images;
   }
 
+  /**
+   * A Files API reference as a download URL (review item 4): `files/<id>` or `…/v1beta/files/<id>` (the file's metadata) become
+   * `<base>/v1beta/files/<id>:download?alt=media`; anything else is kept as given (the worker refuses a non-http(s) one).
+   */
+  function downloadUriOf(uri: string): string {
+    const bare = /^files\/([A-Za-z0-9_-]+)$/.exec(uri);
+    if (bare) return `${baseUrl}/v1beta/files/${bare[1]}:download?alt=media`;
+    try {
+      const parsed = new URL(uri);
+      const metadata = /^\/v1beta\/files\/([A-Za-z0-9_-]+)$/.exec(parsed.pathname);
+      if (parsed.origin === geminiOrigin && metadata) return `${geminiOrigin}/v1beta/files/${metadata[1]}:download?alt=media`;
+    } catch {
+      // not an absolute URL: kept as given
+    }
+    return uri;
+  }
+
   /** The final video block of an Interactions answer (`steps[]` model output; legacy `outputs[]`): inline data, or a URI. */
   function finalVideo(body: Record<string, unknown>): GeminiInteractionsVideoResult["video"] {
     const blocks: Array<Record<string, unknown>> = [];
@@ -347,7 +372,7 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; authorize?: Aut
       const data = asString(block.data);
       if (data) return { mimeType, data: Buffer.from(data, "base64") };
       const uri = asString(block.uri);
-      if (uri) return { mimeType, uri };
+      if (uri) return { mimeType, uri: downloadUriOf(uri) };
     }
     return null;
   }
@@ -397,6 +422,7 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; authorize?: Aut
       const body = asRecord(
         await call(apiKey, "POST", "/v1beta/interactions", context, {
           timeoutMs: GEMINI_INTERACTIONS_VIDEO_TIMEOUT_MS,
+          longWait: true,
           body: {
             model: request.model,
             input: [
@@ -519,6 +545,11 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; authorize?: Aut
           throw new DomainError({ code: "gemini_unavailable", message: `The video's storage host refused the download (HTTP ${response.status}).`, details: { ...context, outcome: "answered", status: response.status } });
         }
         throw failure({ status: response.status, ok: false, body }, context);
+      }
+      // A JSON answer is a metadata page or an error, never the video (review item 4: it would be saved as video-1.mp4).
+      if ((response.headers.get("content-type") ?? "").toLowerCase().includes("application/json")) {
+        await response.body.cancel().catch(() => undefined);
+        throw new DomainError({ code: "gemini_unavailable", message: "The video download answered with JSON, not a video file.", details: { ...context, outcome: "answered", status: response.status } });
       }
       const declared = Number(response.headers.get("content-length") ?? "");
       if (Number.isFinite(declared) && declared > GEMINI_MAX_VIDEO_BYTES) {

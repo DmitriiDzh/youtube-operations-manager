@@ -3547,11 +3547,17 @@ Plan: `docs/roadmap/plans/GEMINI_MEDIA_PLAN.md` (AC-GM-01..16). Schema v83, Fact
   down on 2026-10-22, and `predictLongRunning` rejects first/last frames (HTTP 400; Google: frames only through generateContent).
   - `gemini-omni-1.1-flash` (`transport: "interactions"`) is one synchronous `POST /v1beta/interactions` call (15-min timeout,
     `store:false`, `delivery:"inline"`). The frames come first, in order, with `video_config.task = "image_to_video"`.
-  - The worker runs it like an image job. Its cost is Google's token counts (`videoCostFromUsage`: input, video output, other
-    output and thinking at their rates), else the estimate. The estimate is 5,792 video tokens per second at 720p, 2.25 x for
+  - The call goes through `http.ts`'s `createLongWaitFetch` (`node:http(s)`): fetch itself gives up after 300 s without response
+    headers whatever the signal (undici, probed). The transport never follows a redirect, caps the body (the video limit in
+    base64 + 1 MB) and keeps transport codes. undici's own waits count as timeouts (outcome `unknown`).
+  - The worker runs it like an image job. Its cost is Google's token counts (`videoCostFromUsage`: input at the input rate, text
+    output and thinking at the text rate, all other output, audio included, at the video rate), never below the saved video's
+    table price (`videoCostFloor`), else the estimate. The estimate is 5,792 video tokens per second at 720p, 2.25 x for
     1080p, plus input and the thinking allowance.
-  - A video delivered as a Files API URI becomes `running` with the URI as `remoteName`, and the poll downloads it without a
-    Veo operation.
+  - A video delivered as a Files API URI (normalised to its download link) becomes `running` with the URI as `remoteName` and its
+    known cost. The poll downloads it without a Veo operation; a 404 or the 47-h give-up keeps the known cost. A link that
+    cannot be followed fails the job at its cost, and a JSON answer to a download is refused. The stale-`submitting` sweep is 20
+    min, above the 15-min call.
   - The model table gains `transport`, `frames` and `retiresOn`. Frames on a Veo model are refused at create time
     (`gemini_invalid_params`), before any call.
   - A transport error names its inner cause (FO-MSG-0014).

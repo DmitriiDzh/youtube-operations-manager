@@ -29,21 +29,33 @@ export function estimateVideoUsd(args: { model: string; resolution: string; dura
 }
 
 /**
- * BL-179: the cost of a finished Omni call from Google's own token counts -- all input at the input rate, video-modality output
- * at the video rate, every other output token and every thought token at the text rate. When a video came back but Google did
- * not split the output by modality, every output token is priced at the video rate (never under-count, as for images).
+ * BL-179: the cost of a finished Omni call from Google's own token counts -- all input at the input rate, text output and
+ * thinking at the text rate, every other output token (video, and the audio Omni always makes) at the video rate. Never
+ * under-counted (review item 2): the output total is at least the sum of its modality split, and a call that saved a video
+ * costs at least that video's table price (`videoCostFloor`) -- a renamed or missing count can only raise the price, never
+ * lower it to the input alone.
  */
 export function videoCostFromUsage(
   model: string,
   usage: { inputTokens: number; outputTokens: number; thoughtTokens: number; outputByModality: Record<string, number> },
-  videoSaved: boolean
+  saved: { resolution: string; durationSeconds: number } | null
 ): number {
   const tokens = ownEntry(GEMINI_VIDEO_MODELS, model)?.tokenPricing;
   if (!tokens) throw new Error(`no token prices for ${model}`);
-  const split = ownEntry(usage.outputByModality, "video") ?? 0;
-  const videoOut = videoSaved && split <= 0 ? usage.outputTokens : split;
-  const otherOut = Math.max(0, usage.outputTokens - videoOut);
-  return ceil4((usage.inputTokens * tokens.inputPerM + videoOut * tokens.videoOutPerM + (otherOut + usage.thoughtTokens) * tokens.textOutPerM) / PER_M);
+  const splitTotal = Object.values(usage.outputByModality).reduce((sum, n) => sum + n, 0);
+  const totalOut = Math.max(usage.outputTokens, splitTotal);
+  const textOut = Math.min(totalOut, ownEntry(usage.outputByModality, "text") ?? 0);
+  const mediaOut = totalOut - textOut;
+  const counted = ceil4((usage.inputTokens * tokens.inputPerM + mediaOut * tokens.videoOutPerM + (textOut + usage.thoughtTokens) * tokens.textOutPerM) / PER_M);
+  return saved ? Math.max(counted, videoCostFloor(model, saved.resolution, saved.durationSeconds)) : counted;
+}
+
+/** The table price of a saved Omni video alone: its seconds x the video tokens per second x the video rate. */
+export function videoCostFloor(model: string, resolution: string, durationSeconds: number): number {
+  const tokens = ownEntry(GEMINI_VIDEO_MODELS, model)?.tokenPricing;
+  const perSecond = tokens ? ownEntry(tokens.videoTokensPerSecond, resolution) : undefined;
+  if (!tokens || perSecond === undefined) throw new Error(`no token prices for ${model} ${resolution}`);
+  return ceil4((perSecond * durationSeconds * tokens.videoOutPerM) / PER_M);
 }
 
 /**

@@ -305,7 +305,7 @@ export function createGeminiWorker(deps: GeminiMediaDeps) {
       else await fail(job, "submitting", verdict.failure);
       return;
     }
-    const charged = result.usage ? videoCostFromUsage(job.model, result.usage, result.video !== null) : null;
+    const charged = result.usage ? videoCostFromUsage(job.model, result.usage, result.video ? { resolution: params.resolution, durationSeconds: params.durationSeconds } : null) : null;
     if (!result.video) {
       // The image rule (review rounds 1 and 2 of BL-174): only a terminal refusal or a completed answer with Google's counts
       // decides the cost; anything else may still be generating and charged -- its estimate.
@@ -321,6 +321,11 @@ export function createGeminiWorker(deps: GeminiMediaDeps) {
     }
     const costUsd = charged ?? job.estimateUsd;
     const costBasis: GeminiCostBasis = charged !== null ? "usage" : "price_table";
+    if ("uri" in result.video && !isDownloadUri(result.video.uri)) {
+      // A reference no download can follow (review item 4): paid, but not collectable -- counted, never polled for 47 h.
+      await fail(job, "submitting", { errorCode: "gemini_output_failed", error: `The video was generated (and charged) but Google gave no downloadable link (${result.video.uri.slice(0, 120)}).`, costUsd, costBasis });
+      return;
+    }
     if ("uri" in result.video) {
       await deps.store.updateJob(job.jobId, "submitting", {
         status: "running",
@@ -389,8 +394,11 @@ export function createGeminiWorker(deps: GeminiMediaDeps) {
     const later = (ms: number, note?: string) =>
       deps.store.updateJob(job.jobId, "running", { nextAttemptAt: new Date(now().getTime() + ms), ...(note ? { error: note.slice(0, 2000) } : {}), updatedAt: now() });
     const startedAt = (job.submittedAt ?? job.createdAt).getTime();
+    // An Omni video's cost is already known from Google's counts: kept, never replaced by the estimate (review item 4).
+    const knownCost = (errorCode: GeminiJobErrorCode, error: string): Failure =>
+      job.costUsd !== null && job.costBasis ? { errorCode, error, costUsd: job.costUsd, costBasis: job.costBasis as GeminiCostBasis } : maybeCharged(job, errorCode, error);
     if (now().getTime() - startedAt > GEMINI_LIMITS.videoGiveUpMs) {
-      await fail(job, "running", maybeCharged(job, "gemini_expired", "The video was not collected within 47 hours; Google keeps it for 2 days."));
+      await fail(job, "running", knownCost("gemini_expired", "The video was not collected within 47 hours; Google keeps it for 2 days."));
       return;
     }
     if (!job.remoteName) {
@@ -447,6 +455,11 @@ export function createGeminiWorker(deps: GeminiMediaDeps) {
     try {
       written = await deps.api.downloadVideo(apiKey, operation.videoUri, localPath);
     } catch (error) {
+      // Google answered that the file is gone (review item 4): nothing left to collect -- not retried for 47 h.
+      if (isDomainError(error) && (error.details as { status?: number } | undefined)?.status === 404) {
+        await fail(job, "running", knownCost("gemini_expired", `Google no longer has the video file: ${error.message}`));
+        return;
+      }
       await later(GEMINI_LIMITS.videoRetryMs, `Download failed: ${error instanceof Error ? error.message : String(error)}`);
       return;
     }

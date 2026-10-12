@@ -99,7 +99,8 @@ export const GEMINI_LIMITS = Object.freeze({
   videoGiveUpMs: 47 * 3600_000,
   inFlightPerProcess: 3,
   /** A job still `submitting` this long after its claim, and not in flight here, was left by a failed write (review round 1). */
-  staleSubmittingMs: 15 * 60_000,
+  // BL-179 (review item 3): above the longest call (an Omni video, 15 min) with a margin.
+  staleSubmittingMs: 20 * 60_000,
   listMax: 50,
 });
 

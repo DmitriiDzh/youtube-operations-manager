@@ -47,12 +47,12 @@
 1. **Omni video model.** `GEMINI_VIDEO_MODELS["gemini-omni-1.1-flash"]`, transport `interactions`.
    - It covers text-to-video, a first frame, and first + last frame. A reference image is not offered.
    - Resolutions are 720p and 1080p, at 16:9 and 9:16. Durations are 4, 6 and 8 s as `duration: "<n>s"`; the paid test checks the format.
-   - The call is synchronous with a 10-minute timeout, `store:false`, and `delivery:"inline"`.
+   - The call is synchronous with a 15-minute timeout, `store:false`, and `delivery:"inline"`. It goes through a `node:https` transport, because fetch gives up after 300 s without response headers (review).
    - The cost comes from Google's `usage`: input at the input rate, video tokens at the video rate. Without usage, it falls back to the table.
-   - The estimate for 720p is 5,792 tokens per second. 1080p is estimated conservatively at the 4k rate until the test measures it.
+   - The estimate for 720p is 5,792 tokens per second. 1080p is estimated at 2.25 x 720p (the pixel ratio) until the test measures it.
 2. **Veo.** Frames on a Veo model are refused before any call (`gemini_invalid_params`, field `video.inputs.firstFrame`, free), and the error names Omni.
    - `factory_gemini_get_status` marks each Veo model with `retiresOn: "2026-10-22"` and `frames: false`.
-   - After 2026-10-22 the models are removed from the catalog.
+   - After 2026-10-22 the models are removed from the catalog (BL-180, a follow-up).
 3. **A lost answer** keeps its current behaviour: the job fails, the estimate is counted, and there is no automatic retry (it could bill twice).
    - The job's `error` gains the transport cause code, for example `UND_ERR_SOCKET`.
 4. **The owner's "Google did not charge"** action for an `unknown_outcome` job, in Settings → Gemini → recent jobs.
@@ -87,3 +87,17 @@
 
   A wrong `duration` format is a free 400 that keeps Google's message. See RISK-127.
 
+## 5. Independent review (2026-10-13), fixed
+
+- **Blocker.** fetch's own 300 s headers timeout cut the 15-min call. The Omni call now goes through `createLongWaitFetch`
+  (`node:http(s)`): no follow of a redirect, a body cap, transport codes kept. `UND_ERR_HEADERS_TIMEOUT`/`UND_ERR_BODY_TIMEOUT` count
+  as timeouts everywhere.
+- **Cost floor.** A saved video costs at least its table price (`videoCostFloor`). Audio and other non-text output are priced at
+  the video rate, and the output total is at least its modality split.
+- **Stale sweep.** It moved to 20 min, above the 15-min call.
+- **URI path.**
+  - A Files API reference is normalised to its download link.
+  - A non-http(s) link fails the job at its cost, with no polling.
+  - A 404 on the download, and the 47-h give-up, keep the known cost.
+  - A JSON answer to a download is never saved as the video.
+- **Spend.** An active job whose cost is known counts that cost instead of its estimate.

@@ -1,3 +1,5 @@
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import type { DomainError } from "@/lib/shared-domain";
 
 // ---------------------------------------------------------------------------
@@ -57,4 +59,80 @@ export async function jsonRequest(args: {
 /** True for a parsed JSON body (an object), false for `{ raw }` (non-JSON text) or no body. */
 export function isJsonBody(body: unknown): body is Record<string, unknown> {
   return body !== null && typeof body === "object" && !("raw" in (body as Record<string, unknown>));
+}
+
+/**
+ * BL-179 (independent review, blocker): a fetch-shaped call over `node:http(s)` for a request that may wait longer than fetch's
+ * own limits -- undici gives up after 300 s without response headers (`UND_ERR_HEADERS_TIMEOUT`) or 300 s between body chunks,
+ * whatever the AbortSignal says. An Omni video is generated within its one call, so the answer can take longer than that.
+ *
+ * The same contract as fetch for `jsonRequest`: it rejects on a transport error (keeping its `code`, so "never sent" can still
+ * be told from "sent, then lost") or when the signal fires (its reason: a `TimeoutError` stays a timeout). It never follows a
+ * redirect -- a 3xx comes back as an answer -- so a credential header never travels to another host. The body is read whole,
+ * up to `maxBodyBytes`.
+ */
+export function createLongWaitFetch(options: { maxBodyBytes: number }): typeof fetch {
+  return ((input: string | URL | Request, init: RequestInit = {}) =>
+    new Promise<Response>((resolve, reject) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      const send = url.protocol === "https:" ? httpsRequest : url.protocol === "http:" ? httpRequest : null;
+      if (!send) {
+        reject(Object.assign(new TypeError(`Unsupported protocol ${url.protocol}`), { code: "ERR_INVALID_URL" }));
+        return;
+      }
+      const signal = init.signal ?? undefined;
+      if (signal?.aborted) {
+        reject(signal.reason);
+        return;
+      }
+      const headers: Record<string, string> = {};
+      new Headers(init.headers).forEach((value, key) => {
+        headers[key] = value;
+      });
+      const body = typeof init.body === "string" ? Buffer.from(init.body) : undefined;
+      if (init.body !== undefined && init.body !== null && body === undefined) {
+        reject(new TypeError("Only a string body is supported here"));
+        return;
+      }
+      if (body) headers["content-length"] = String(body.length);
+      let settled = false;
+      const finish = (outcome: () => void) => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener("abort", onAbort);
+        outcome();
+      };
+      const req = send(url, { method: init.method ?? "GET", headers }, (res) => {
+        const chunks: Buffer[] = [];
+        let size = 0;
+        res.on("data", (chunk: Buffer) => {
+          if (settled) return;
+          size += chunk.length;
+          if (size > options.maxBodyBytes) {
+            // Refused here, then the connection is closed without an error event (nothing left to listen for it).
+            finish(() => reject(Object.assign(new Error(`The answer passed ${options.maxBodyBytes} bytes`), { code: "ERR_BODY_TOO_LARGE" })));
+            res.destroy();
+            req.destroy();
+            return;
+          }
+          chunks.push(chunk);
+        });
+        res.on("end", () => {
+          const responseHeaders = new Headers();
+          for (const [key, value] of Object.entries(res.headers)) {
+            if (value !== undefined) responseHeaders.set(key, Array.isArray(value) ? value.join(", ") : value);
+          }
+          const status = res.statusCode ?? 502;
+          const noBody = status === 204 || status === 304;
+          finish(() => resolve(new Response(noBody ? null : Buffer.concat(chunks), { status, headers: responseHeaders })));
+        });
+        res.on("error", (error) => finish(() => reject(error)));
+        res.on("aborted", () => finish(() => reject(Object.assign(new Error("The answer was cut off"), { code: "ECONNRESET" }))));
+      });
+      const onAbort = () => req.destroy(signal?.reason instanceof Error ? signal.reason : new Error("aborted"));
+      signal?.addEventListener("abort", onAbort, { once: true });
+      req.on("error", (error) => finish(() => reject(error)));
+      if (body) req.write(body);
+      req.end();
+    })) as typeof fetch;
 }

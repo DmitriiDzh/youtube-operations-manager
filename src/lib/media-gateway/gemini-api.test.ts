@@ -397,3 +397,50 @@ test("FO-MSG-0014: a lost answer's error names the transport cause (code and mes
     assert.equal((error.details as { outcome?: string }).outcome, "unknown");
   }
 });
+
+// BL-179 independent review (blocker): fetch gives up after 300 s without response headers whatever the AbortSignal
+// (UND_ERR_HEADERS_TIMEOUT, probed on Node 26), so the Omni call goes through a `node:http(s)` transport with no such limit.
+test("BL-179 review: the Omni call goes through the long-wait transport, never the ordinary fetch", async () => {
+  const ordinary = (async () => {
+    throw new Error("the ordinary fetch must not carry the Omni call");
+  }) as typeof fetch;
+  const long = fakeFetch(() => ({ status: 200, body: { status: "completed", steps: [{ type: "model_output", content: [{ type: "video", mime_type: "video/mp4", data: "AAAA" }] }] } }));
+  const client = createGeminiApiClient({ fetchImpl: ordinary, longWaitFetchImpl: long.fetchImpl, authorize: async () => undefined });
+  const result = await client.generateVideo(KEY, { model: "gemini-omni-1.1-flash", prompt: "p", frames: [], aspectRatio: "16:9", resolution: "720p", durationSeconds: 4 });
+  assert.equal(long.calls.length, 1);
+  assert.equal(headersOf(long.calls[0])["x-goog-api-key"], KEY);
+  assert.ok(result.video && "data" in result.video);
+});
+
+test("BL-179 review: undici's own waits (headers, body) count as a timeout -- sent, outcome unknown", async () => {
+  const headersTimeout = Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error("Headers Timeout Error"), { code: "UND_ERR_HEADERS_TIMEOUT" }) });
+  assert.equal(transportOutcome("request", headersTimeout), "unknown");
+  const fetchImpl = (async () => {
+    throw headersTimeout;
+  }) as typeof fetch;
+  const details = await expectError(createGeminiApiClient({ fetchImpl, authorize: async () => undefined }).generateImage(KEY, { model: "m", prompt: "p", images: [], aspectRatio: "1:1", imageSize: "1K" }), "gemini_unavailable");
+  assert.deepEqual([details.outcome, details.timedOut], ["unknown", true]);
+});
+
+test("BL-179 review: a Files API reference becomes its download link; a JSON answer to a download is never saved as the video", async () => {
+  const answers = [
+    { status: "completed", steps: [{ type: "model_output", content: [{ type: "video", mime_type: "video/mp4", uri: "files/abc123" }] }] },
+    { status: "completed", steps: [{ type: "model_output", content: [{ type: "video", mime_type: "video/mp4", uri: "https://generativelanguage.googleapis.com/v1beta/files/def456" }] }] },
+  ];
+  let i = 0;
+  const { fetchImpl } = fakeFetch(() => ({ status: 200, body: answers[i++] }));
+  const client = createGeminiApiClient({ fetchImpl, authorize: async () => undefined });
+  const request = { model: "gemini-omni-1.1-flash", prompt: "p", frames: [], aspectRatio: "16:9", resolution: "720p", durationSeconds: 4 };
+  assert.deepEqual((await client.generateVideo(KEY, request)).video, { mimeType: "video/mp4", uri: "https://generativelanguage.googleapis.com/v1beta/files/abc123:download?alt=media" });
+  assert.deepEqual((await client.generateVideo(KEY, request)).video, { mimeType: "video/mp4", uri: "https://generativelanguage.googleapis.com/v1beta/files/def456:download?alt=media" });
+
+  const dir = await mkdtemp(path.join(tmpdir(), "gemini-json-"));
+  try {
+    const json = fakeFetch(() => new Response(JSON.stringify({ name: "files/def456", state: "ACTIVE" }), { status: 200, headers: { "content-type": "application/json; charset=UTF-8" } }));
+    const dest = path.join(dir, "video-1.mp4");
+    await expectError(createGeminiApiClient({ fetchImpl: json.fetchImpl, authorize: async () => undefined }).downloadVideo(KEY, "https://generativelanguage.googleapis.com/v1beta/files/def456", dest), "gemini_unavailable");
+    assert.deepEqual(await readdir(dir), [], "nothing saved");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

@@ -212,8 +212,9 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
       deps.store.listJobs({ statuses: GEMINI_ACTIVE_STATUSES, limit: 100_000 }),
     ]);
     const isActive = (row: StoredGeminiMediaJob) => (GEMINI_ACTIVE_STATUSES as readonly string[]).includes(row.status);
-    // An active job reserves its estimate; a finished one counts what it cost (0 when Google charged nothing).
-    const amount = (row: StoredGeminiMediaJob) => (isActive(row) ? row.estimateUsd : (row.costUsd ?? 0));
+    // An active job reserves its estimate -- or, once Google's counts are in (an Omni video still being downloaded, BL-179), what
+    // it cost; a finished one counts what it cost (0 when Google charged nothing).
+    const amount = (row: StoredGeminiMediaJob) => (isActive(row) ? (row.costUsd ?? row.estimateUsd) : (row.costUsd ?? 0));
     const sum = (rows: StoredGeminiMediaJob[]) => round4(rows.reduce((total, row) => total + amount(row), 0));
     return {
       todayUsd: sum(thisMonth.filter((row) => row.createdAt.getTime() >= dayStart.getTime())),
