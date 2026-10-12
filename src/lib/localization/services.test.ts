@@ -390,3 +390,82 @@ test("BL-178 review M6: a video with no language of its own takes the channel's 
   assert.equal(row.originalLanguage, "en");
   assert.deepEqual(row.missingLanguages, []);
 });
+
+// ---------------------------------------------------------------------------
+// BL-178 part C (LOCALIZATION_BASELINE_PLAN §3.3 C2, FO-REQ-0022 §6). Expected values stated by hand from the rule: a public or
+// scheduled (`publishAt` set) video that lacks a title or description in a tracked language, measured against the channel's
+// language (a mislabelled video's mirror entry is not a translation); private and unlisted videos never alert.
+// ---------------------------------------------------------------------------
+const FULL = (lang: string) => ({ title: `Title ${lang}`, description: `Description ${lang}` });
+
+test("BL-178 C2: alerts list the public and scheduled videos missing a tracked language, measured against the channel's language", async () => {
+  const englishTitle = "Cuban Jazz Morning Coffee";
+  const videos = [
+    makeVideo({ videoId: "public", existingLocalizations: { es: FULL("es") } }),
+    makeVideo({ videoId: "scheduled", privacyStatus: "private", publishAt: "2026-11-01T10:00:00.000Z" }),
+    makeVideo({ videoId: "private", privacyStatus: "private" }),
+    makeVideo({ videoId: "unlisted", privacyStatus: "unlisted" }),
+    makeVideo({ videoId: "complete", existingLocalizations: { es: FULL("es"), "pt-BR": FULL("pt-BR") } }),
+    // Labelled es, English text: its es entry is YouTube's mirror of the snippet -- the Spanish translation is still missing.
+    makeVideo({
+      videoId: "mislabelled",
+      defaultLanguage: "es",
+      title: englishTitle,
+      description: "Two hours",
+      existingLocalizations: { es: { title: englishTitle, description: "Two hours" }, "pt-BR": FULL("pt-BR") },
+    }),
+    // An es entry without a description, while the original has one: missing.
+    makeVideo({ videoId: "no-description", existingLocalizations: { es: { title: "Título", description: "" }, "pt-BR": FULL("pt-BR") } }),
+    // An original without a description: a translation without one is complete.
+    makeVideo({ videoId: "short", description: "", existingLocalizations: { es: { title: "Título", description: "" }, "pt-BR": { title: "Título", description: "" } } }),
+  ];
+  const { services, trackedLanguagesByChannel } = createFixture(videos, makeChannel(), "en");
+  trackedLanguagesByChannel.set("UC_TEST", ["en", "es", "pt-BR"]);
+
+  const alerts = await services.getTranslationAlerts({ channelId: "UC_TEST" });
+  assert.deepEqual(
+    alerts.videos.map((v) => [v.videoId, v.missingLanguages]),
+    [
+      ["public", ["pt-BR"]],
+      ["scheduled", ["es", "pt-BR"]],
+      ["mislabelled", ["es"]],
+      ["no-description", ["es"]],
+    ]
+  );
+  assert.deepEqual(alerts.byLanguage, { es: 3, "pt-BR": 2 });
+});
+
+test("BL-178 C2: no tracked languages, nothing to alert", async () => {
+  const { services } = createFixture([makeVideo({ videoId: "public" })], makeChannel(), "en");
+  const alerts = await services.getTranslationAlerts({ channelId: "UC_TEST" });
+  assert.deepEqual(alerts.videos, []);
+  assert.deepEqual(alerts.byLanguage, {});
+});
+
+test("BL-178 C1: the refresh version moves when a video's translations, the tracked languages or the channel's language change, and only then", async () => {
+  const videos = [makeVideo({ videoId: "v1", existingLocalizations: { es: FULL("es") } })];
+  let baseline: string | null = "en";
+  const tracked = new Map<string, string[]>([["UC_TEST", ["es"]]]);
+  const services = createLocalizationServices({
+    channelStore: {
+      getChannel: async () => makeChannel(),
+      listVideosByChannel: async () => videos,
+      getTargetLanguages: async (id) => tracked.get(id) ?? [],
+      setTargetLanguages: async () => undefined,
+    },
+    channelLanguageBaseline: { getExpectedDefaultLanguage: async () => baseline },
+    xlsxBuilder: { buildWorkbook: async () => ({ buffer: Buffer.from(""), rowCount: 0 }) },
+  });
+  const version = async () => (await services.getLocalizationVersion({ channelId: "UC_TEST" })).version;
+
+  const first = await version();
+  assert.equal(await version(), first, "nothing changed");
+  videos[0] = { ...videos[0], existingLocalizations: { es: FULL("es"), "pt-BR": FULL("pt-BR") } };
+  const afterWrite = await version();
+  assert.notEqual(afterWrite, first, "a Batch's verified write changed the local copy");
+  tracked.set("UC_TEST", ["es", "pt-BR"]);
+  const afterTracked = await version();
+  assert.notEqual(afterTracked, afterWrite);
+  baseline = "es";
+  assert.notEqual(await version(), afterTracked);
+});

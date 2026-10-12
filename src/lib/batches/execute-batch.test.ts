@@ -1436,6 +1436,25 @@ test("local copy (owner request 2026-10-04): a confirmed write puts the READ-BAC
   ]);
 });
 
+// BL-178 part C (LOCALIZATION_BASELINE_PLAN §3.3 C1: "the reconciliation success path also updates the local copy"): a write
+// whose response was lost but whose first reconciliation read shows the requested value is a success -- and that read, being
+// YouTube's current state, is what the local copy takes.
+test("local copy: a write confirmed by reconciliation (response lost) also puts the confirming read into the local copy", async () => {
+  const applied: unknown[] = [];
+  const confirming = { snippet: { title: "T", description: "D", defaultLanguage: "en" }, localizations: { es: { title: "New Value", description: "" } } };
+  const harness = createHarness({
+    localMirror: { applyConfirmedWrite: async (input) => (applied.push(input), true) },
+    freshSequenceByVideoId: { v1: [PRE_SEND_BASELINE, PRE_SEND_BASELINE, confirming] },
+  });
+  const batch = await createApprovedBatch(harness, { channelId: "UC_TEST", dryRun: false, selections: [{ videoId: "v1", changeIds: ["c1"] }] });
+  const summary = await harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, executor: scriptedExecutor([{ outcome: "UNKNOWN", detail: "timeout" }]) });
+  assert.equal(summary.results[0].status, "SUCCESS");
+  assert.equal(summary.results[0].ownResponseObserved, false);
+  assert.deepEqual(applied, [
+    { channelId: "UC_TEST", videoId: "v1", title: "T", description: "D", defaultLanguage: "en", defaultAudioLanguage: null, localizations: { es: { title: "New Value", description: "" } } },
+  ]);
+});
+
 test("local copy: it is NOT touched when the write fails or the read-back does not confirm it", async () => {
   const applied: unknown[] = [];
   const harness = createHarness({ localMirror: { applyConfirmedWrite: async (input) => (applied.push(input), true) } });

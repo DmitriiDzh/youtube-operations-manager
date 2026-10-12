@@ -4,11 +4,14 @@ import {
   type LocalizationExportResult,
   type LocalizationOverview,
   type LocalizationOverviewRow,
+  type LocalizationVersion,
   type StoredChannelRecord,
   type StoredVideoRecord,
+  type TranslationAlerts,
   type VideoLocalizationDetail,
 } from "./contracts";
 import {
+  channelOnlyInputSchema,
   exportLocalizationsInputSchema,
   localizationOverviewInputSchema,
   localizationOverviewOutputSchema,
@@ -21,7 +24,8 @@ import {
 // language-code-accepting entrypoint in this app (XLSX import, AI localization) still uses the
 // looser `isValidLanguageCode` BCP-47-ish regex from `@/lib/changesets/diff`, unchanged.
 import { isSupportedYoutubeLanguageCode } from "@/lib/youtube-supported-languages";
-import { readAgainstBaseline } from "@/lib/shared-language-baseline";
+import { createHash } from "node:crypto";
+import { readAgainstBaseline, sameLanguage } from "@/lib/shared-language-baseline";
 
 type ServiceDependencies = {
   channelStore: {
@@ -72,6 +76,34 @@ function computeOverviewRow(video: StoredVideoRecord, languages: string[], chann
     status: missingLanguages.length === 0 && languages.length > 0 ? "complete" : "missing",
     lastSyncedAt: video.lastSyncedAt.toISOString(),
   };
+}
+
+/**
+ * BL-178 part C (§3.3 C2): the tracked languages this video lacks, read against the channel's language -- no entry, an empty
+ * title, or an empty description where the original has one. The original's own language is never "missing".
+ */
+export function missingTrackedTranslations(video: StoredVideoRecord, trackedLanguages: string[], channelBaseline: string | null): string[] {
+  const reading = readAgainstBaseline(
+    { defaultLanguage: video.defaultLanguage, title: video.title, description: video.description, localizations: video.existingLocalizations },
+    channelBaseline
+  );
+  const original = reading.kind === "aligned" ? reading.to : (video.defaultLanguage ?? channelBaseline);
+  const localizations = reading.kind === "aligned" ? reading.view.localizations : video.existingLocalizations;
+  const originalHasDescription = video.description.trim() !== "";
+  return trackedLanguages
+    .filter((language) => !sameLanguage(language, original))
+    .filter((language) => {
+      const key = Object.keys(localizations).find((k) => sameLanguage(k, language));
+      if (!key) return true;
+      const entry = localizations[key];
+      return entry.title.trim() === "" || (originalHasDescription && entry.description.trim() === "");
+    })
+    .sort();
+}
+
+/** Public, or scheduled to become public (`publishAt` set): what viewers see or are about to see. */
+function isPublicOrScheduled(video: StoredVideoRecord): boolean {
+  return video.privacyStatus === "public" || video.publishAt !== null;
 }
 
 function collectChannelLanguages(videos: StoredVideoRecord[]): string[] {
@@ -136,6 +168,49 @@ export function createLocalizationServices(deps: ServiceDependencies) {
         );
 
         return output;
+      } catch (error) {
+        throw mapUnknownError(error, "not_found");
+      }
+    },
+
+    /** BL-178 part C (§3.3 C2): the alert for this channel -- see `TranslationAlerts`. A local read. */
+    async getTranslationAlerts(input: unknown): Promise<TranslationAlerts> {
+      const { channelId } = parseWithSchema(channelOnlyInputSchema, input, "translation alerts input");
+      try {
+        const { channel, videos } = await requireChannelAndVideos(deps, channelId);
+        const trackedLanguages = await deps.channelStore.getTargetLanguages(channel.channelId);
+        const channelBaseline = (await deps.channelLanguageBaseline?.getExpectedDefaultLanguage(channel.channelId)) ?? null;
+        const missing = videos
+          .filter(isPublicOrScheduled)
+          .map((video) => ({ videoId: video.videoId, title: video.title, missingLanguages: missingTrackedTranslations(video, trackedLanguages, channelBaseline) }))
+          .filter((row) => row.missingLanguages.length > 0);
+        const byLanguage: Record<string, number> = {};
+        for (const row of missing) for (const language of row.missingLanguages) byLanguage[language] = (byLanguage[language] ?? 0) + 1;
+        return { channelId: channel.channelId, trackedLanguages, videos: missing, byLanguage };
+      } catch (error) {
+        throw mapUnknownError(error, "not_found");
+      }
+    },
+
+    /**
+     * BL-178 part C (§3.3 C1): a fingerprint of everything the Languages page and a Change Set read for the channel -- the
+     * videos' local copy (a verified Batch write or a sync changes it), the tracked languages and the channel's language. An
+     * open page polls it and reloads when it moves, whoever made the change (this page, the Batches page, an agent).
+     */
+    async getLocalizationVersion(input: unknown): Promise<LocalizationVersion> {
+      const { channelId } = parseWithSchema(channelOnlyInputSchema, input, "localization version input");
+      try {
+        const { channel, videos } = await requireChannelAndVideos(deps, channelId);
+        const trackedLanguages = await deps.channelStore.getTargetLanguages(channel.channelId);
+        const channelBaseline = (await deps.channelLanguageBaseline?.getExpectedDefaultLanguage(channel.channelId)) ?? null;
+        const hash = createHash("sha256");
+        hash.update(JSON.stringify({ trackedLanguages, channelBaseline }));
+        for (const video of [...videos].sort((a, b) => a.videoId.localeCompare(b.videoId))) {
+          hash.update(
+            JSON.stringify([video.videoId, video.title, video.description, video.defaultLanguage, video.existingLocalizations, video.privacyStatus, video.publishAt, video.lastSyncedAt.toISOString()])
+          );
+        }
+        return { channelId: channel.channelId, version: hash.digest("hex").slice(0, 16) };
       } catch (error) {
         throw mapUnknownError(error, "not_found");
       }

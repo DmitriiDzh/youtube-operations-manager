@@ -10,6 +10,7 @@ import { createContentProposalCore } from "@/lib/content-proposals";
 import { createOperationsInstructionsCore } from "@/lib/operations-instructions";
 import { createComparableContentCore } from "@/lib/comparable-content";
 import { createAssetPerformanceCore } from "@/lib/asset-performance";
+import { createLocalizationCore } from "@/lib/localization";
 import { createAgentOperationsServices } from "./services";
 
 /**
@@ -43,6 +44,7 @@ export function createAgentOperationsCore() {
   const operationsInstructionsCore = createOperationsInstructionsCore();
   const comparableContentCore = createComparableContentCore();
   const assetPerformanceCore = createAssetPerformanceCore();
+  const localizationCore = createLocalizationCore();
 
   return createAgentOperationsServices({
     isAgentSession: () => getAgentSession() !== null,
@@ -55,6 +57,8 @@ export function createAgentOperationsCore() {
     getEditorialProfile: (channelId: string) => aiLocalizationCore.getEditorialProfile({ channelId }),
     getTrackedLanguages: getChannelTargetLanguages,
     getChannelLanguageBaseline: getChannelExpectedLanguages,
+    // BL-178 part C: the same list as the Languages badge (`localization`'s own rule, not a second copy of it).
+    getTranslationAlerts: (channelId: string) => localizationCore.getTranslationAlerts({ channelId }),
     // Slice C -- delegates unchanged to `analyticsCore`'s own already-existing, already-tested
     // functions (AGENTS.md §D). Both accept `input: unknown` and do their own internal
     // validation/credential-resolution/active-channel check.

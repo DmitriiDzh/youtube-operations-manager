@@ -1188,7 +1188,9 @@ export function createBatchServices(deps: ServiceDependencies) {
       return { ledgerRowId: row.id, videoId: row.videoId, status: "FAILED", detail, systemic: true };
     };
 
-    const finalizeSuccess = async (): Promise<ExecutionResult> => {
+    // BL-178 part C (LOCALIZATION_BASELINE_PLAN §3.3 C1): the confirming read updates the local copy here too, as on the
+    // ordinary success path -- the Languages page then shows the row done without a Sync Now.
+    const finalizeSuccess = async (confirmingRead: Parameters<typeof confirmLocalMirror>[2]): Promise<ExecutionResult> => {
       await transitionLedgerStatus(row.id, "SUCCESS", {
         verificationResult: { resolvedVia: "reconciliation", ownResponseObserved: false, confirmedAt: new Date().toISOString() },
       });
@@ -1199,6 +1201,7 @@ export function createBatchServices(deps: ServiceDependencies) {
         eventType: "VERIFICATION",
         detail: { resolvedVia: "reconciliation", ownResponseObserved: false },
       });
+      await confirmLocalMirror(batch, row, confirmingRead);
       await releaseVideoLock({ batchId: batch.id, videoId: row.videoId });
       return { ledgerRowId: row.id, videoId: row.videoId, status: "SUCCESS", ownResponseObserved: false };
     };
@@ -1239,7 +1242,7 @@ export function createBatchServices(deps: ServiceDependencies) {
     const classification1 = freshContext1 ? classifyFreshStateAgainstAttempt(pendingChanges, freshContext1, { channelBaseline }) : "diverged";
     await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "RECONCILIATION", detail: { step: 1, classification: classification1 } });
 
-    if (classification1 === "matches_requested") return freshContext1 && readBackMatchesSentSnippet(freshContext1, sentPayload) ? finalizeSuccess() : finalizeSnippetMismatch();
+    if (classification1 === "matches_requested") return freshContext1 && readBackMatchesSentSnippet(freshContext1, sentPayload) ? finalizeSuccess(read1) : finalizeSnippetMismatch();
     if (classification1 === "diverged") return finalizeConflict(freshContext1);
 
     // matches_baseline -- inconclusive by itself (§0.F Step 1), proceed to Step 2.
@@ -1249,7 +1252,7 @@ export function createBatchServices(deps: ServiceDependencies) {
     const classification2 = read2 ? classifyFreshStateAgainstAttempt(pendingChanges, toFreshVideoContext(read2), { channelBaseline }) : "diverged";
     await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "RECONCILIATION", detail: { step: 2, classification: classification2 } });
 
-    if (classification2 === "matches_requested") return read2 && readBackMatchesSentSnippet(toFreshVideoContext(read2), sentPayload) ? finalizeSuccess() : finalizeSnippetMismatch();
+    if (classification2 === "matches_requested") return read2 && readBackMatchesSentSnippet(toFreshVideoContext(read2), sentPayload) ? finalizeSuccess(read2) : finalizeSnippetMismatch();
 
     // Both a consistent-negative (matches_baseline again) and a diverged/inconsistent
     // second read land here -- §0.F Step 3: neither, by itself or together, ever

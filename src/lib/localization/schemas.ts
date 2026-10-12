@@ -19,6 +19,9 @@ const localizationOverviewRowSchema = z
   })
   .strict();
 
+/** BL-178 part C: local reads keyed by the channel only (alerts, the refresh version). */
+export const channelOnlyInputSchema = z.object({ channelId: z.string().min(1) }).strict();
+
 export const localizationOverviewInputSchema = z
   .object({
     credentialRef: credentialRefSchema,

@@ -153,6 +153,7 @@ function createFixture(
     profilesByChannel: Record<string, FakeProfile | null>;
     trackedLanguagesByChannel: Record<string, string[]>;
     languageBaselineByChannel: Record<string, { defaultLanguage: string | null; defaultAudioLanguage: string | null }>;
+    translationAlertsByChannel: Record<string, { byLanguage: Record<string, number>; videos: Array<{ videoId: string; missingLanguages: string[] }> }>;
     getChannelOverview: (input: unknown) => Promise<FakeChannelOverview>;
     listMetrics: (input: unknown) => Promise<FakeListMetricsResult>;
     now: () => Date;
@@ -198,6 +199,9 @@ function createFixture(
     async getChannelLanguageBaseline(channelId: string) {
       return overrides.languageBaselineByChannel?.[channelId] ?? { defaultLanguage: null, defaultAudioLanguage: null };
     },
+    ...(overrides.translationAlertsByChannel
+      ? { getTranslationAlerts: async (channelId: string) => overrides.translationAlertsByChannel?.[channelId] ?? { byLanguage: {}, videos: [] } }
+      : {}),
     getChannelOverview: overrides.getChannelOverview ?? (async () => { throw new Error("getChannelOverview not stubbed"); }),
     listMetrics: overrides.listMetrics ?? (async () => { throw new Error("listMetrics not stubbed"); }),
     now: overrides.now ?? (() => new Date("2026-09-24T12:00:00.000Z")),
@@ -1408,3 +1412,23 @@ test("BL-178: without a baseline the context says so (null) and lists no deviati
   assert.equal(result.languageBaseline, null);
   assert.deepEqual(result.languageDeviations, []);
 });
+
+// BL-178 part C (LOCALIZATION_BASELINE_PLAN §3.3 C2: "Agents: agent_get_channel_context gets missingTranslations (counts plus
+// video ids)"): the same list the Languages badge counts, passed through as counts and ids only.
+test("BL-178 C: getChannelContext carries the videos missing a tracked language, as counts and video ids", async () => {
+  const { services } = createFixture({
+    channels: { UC_A: { channelId: "UC_A", title: "Tropico Jazz", lastSyncedAt: null } },
+    videosByChannel: { UC_A: [fakeVideo({ videoId: "v1" }), fakeVideo({ videoId: "v2" })] },
+    translationAlertsByChannel: { UC_A: { byLanguage: { es: 2, "pt-BR": 1 }, videos: [{ videoId: "v1", missingLanguages: ["es", "pt-BR"] }, { videoId: "v2", missingLanguages: ["es"] }] } },
+  });
+  const result = await services.getChannelContext({ channelId: "UC_A" });
+  assert.deepEqual(result.missingTranslations, {
+    videoCount: 2,
+    byLanguage: { es: 2, "pt-BR": 1 },
+    videos: [
+      { videoId: "v1", missingLanguages: ["es", "pt-BR"] },
+      { videoId: "v2", missingLanguages: ["es"] },
+    ],
+  });
+});
+

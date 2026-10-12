@@ -2,6 +2,7 @@
 
 import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useState } from "react";
+import { useLocalizationVersion } from "./use-localization-version";
 import { ConfirmDialog } from "./confirm-dialog";
 import { LoadingIndicator } from "./operation-progress";
 import { SendApprovedButton } from "./send-approved-button";
@@ -113,9 +114,13 @@ export function ChangeSetReview({
   const [deleting, setDeleting] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
+  // `quiet` (BL-178 part C): a background reload after a change made elsewhere shows no loading state and keeps the error line.
+  const load = useCallback(async (options?: { quiet?: boolean }) => {
+    const quiet = options?.quiet === true;
+    if (!quiet) {
+      setLoading(true);
+      setError(null);
+    }
     try {
       const params = new URLSearchParams();
       if (statusFilter !== "all") params.set("status", statusFilter);
@@ -128,22 +133,26 @@ export function ChangeSetReview({
       );
       const data = await res.json();
       if (!res.ok) {
-        setError(errorText(t, data, t("common.errorStatus", { status: res.status })));
+        if (!quiet) setError(errorText(t, data, t("common.errorStatus", { status: res.status })));
         return;
       }
       setChangeSet(data.changeSet);
       setChanges(data.changes);
       setLanguageAlignments(Array.isArray(data.languageAlignments) ? data.languageAlignments : []);
     } catch (e) {
-      setError(String(e));
+      if (!quiet) setError(String(e));
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
   }, [channelId, changeSetId, statusFilter, languageFilter, videoFilter, t]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  // BL-178 part C (§3.3 C1): rows written by a Batch started anywhere show their new state within ~15 s.
+  const reloadQuietly = useCallback(() => void load({ quiet: true }), [load]);
+  useLocalizationVersion(channelId, reloadQuietly);
 
   async function handleAction(changeId: string, action: "approve" | "reject") {
     setBusyChangeId(changeId);

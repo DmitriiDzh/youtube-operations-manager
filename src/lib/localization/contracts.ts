@@ -103,3 +103,20 @@ export type StoredVideoRecord = {
   etag: string | null;
   lastSyncedAt: Date;
 };
+
+/**
+ * BL-178 part C (docs/roadmap/plans/LOCALIZATION_BASELINE_PLAN.md §3.3 C2; FO-REQ-0022 §6): the channel's public or scheduled
+ * videos that lack a tracked language -- no title in it, or no description where the original has one -- read against the
+ * channel's language (a mislabelled video's mirror entry is not a translation). Empty `videos` = nothing to alert.
+ */
+export type TranslationAlerts = {
+  channelId: string;
+  trackedLanguages: string[];
+  videos: Array<{ videoId: string; title: string; missingLanguages: string[] }>;
+  /** How many of those videos lack each language. */
+  byLanguage: Record<string, number>;
+};
+
+/** BL-178 part C (§3.3 C1): changes whenever what the Languages page or a Change Set shows for the channel could change. */
+export type LocalizationVersion = { channelId: string; version: string };
+

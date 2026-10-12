@@ -205,6 +205,10 @@ export const shell: Record<keyof typeof en, string> = {
   // BL-157 (SERVERS_MEDIA_PLAN.md §D): the other channels' open Media work in the channel switcher and the bell.
   "channelWork.title": "Другие каналы",
   "channelWork.open": "Открыть",
+  "languageAlerts.bellTitle": "Переводы",
+  "languageAlerts.missing": "{count, plural, one {# публичное или запланированное видео} few {# публичных или запланированных видео} many {# публичных или запланированных видео} other {# публичного или запланированного видео}} без перевода: {languages}",
+  "languageAlerts.deviations": "{count, plural, one {# видео помечено} few {# видео помечены} many {# видео помечены} other {# видео помечено}} не языком канала",
+  "languageAlerts.badgeTitle": "Без перевода: {missing}; помечены другим языком: {deviations}",
   "channelWork.waiting": "ждут: {count}",
   "channelWork.waitingSplit": "ждут: {count} (прошли: {passed}, отбракованы: {rejected})",
   "channelWork.review": "Медиа: {count, plural, one {# трек ждёт} few {# трека ждут} many {# треков ждут} other {# трека ждут}} прослушивания",

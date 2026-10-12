@@ -205,6 +205,10 @@ export const shell = {
   // BL-157 (SERVERS_MEDIA_PLAN.md §D): the other channels' open Media work in the channel switcher and the bell.
   "channelWork.title": "Other channels",
   "channelWork.open": "Open",
+  "languageAlerts.bellTitle": "Translations",
+  "languageAlerts.missing": "{count, plural, one {# public or scheduled video lacks} other {# public or scheduled videos lack}} a translation: {languages}",
+  "languageAlerts.deviations": "{count, plural, one {# video is} other {# videos are}} labelled with another language than the channel's",
+  "languageAlerts.badgeTitle": "Without a translation: {missing}; labelled with another language: {deviations}",
   "channelWork.waiting": "{count} waiting",
   "channelWork.waitingSplit": "{count} waiting ({passed} passed, {rejected} rejected)",
   "channelWork.review": "Media: {count, plural, one {# track} other {# tracks}} waiting for review",
