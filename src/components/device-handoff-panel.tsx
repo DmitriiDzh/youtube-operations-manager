@@ -30,7 +30,7 @@ type SnapshotSummary = {
  * FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4) -- mirrors `src/lib/db.ts`'s own `SyncFamily` type,
  * kept as a local structural type rather than importing a server-only module into a client
  * component. */
-type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens";
+type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens" | "live_streams";
 
 const FAMILY_LABELS: Record<SyncFamily, UiTextKey> = {
   change_drafts: "handoff.family.changeDrafts",
@@ -40,6 +40,7 @@ const FAMILY_LABELS: Record<SyncFamily, UiTextKey> = {
   generation_plans: "handoff.family.generationPlans",
   media_settings: "handoff.family.mediaSettings",
   agent_tokens: "handoff.family.agentTokens",
+  live_streams: "handoff.family.liveStreams",
 };
 
 type SyncFamilyStatusView = {

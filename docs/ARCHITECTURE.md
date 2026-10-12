@@ -3617,3 +3617,33 @@ re-checks and the seam view are phase 2; Gemini outputs without copying, owner t
   chips, keys). The keys of pictures live in `visualKeyAction`; the music key map, chips and player are untouched.
 - **Known limits.** The frame rate comes from the row's `metrics.fps`, else it is measured while the clip plays
   (`requestVideoFrameCallback`); Chrome does not load media in a hidden tab, so a clip shows only once its tab is visible.
+
+## 45. A channel's 24/7 live stream of its own public videos (BL-176, ADR 0036)
+
+Plan: `docs/roadmap/plans/LIVE_STREAMS_PLAN.md` (FO-REQ-0019). Schema v86, Factory API 1.14.0. A separate feature module,
+`src/lib/live-streams/`, off by default; it runs only on the Mac running as the system service (`YTOM_SERVICE_MODE=1`).
+
+- **Boundaries (§M).** It uses the shared gateways, `ffmpeg-host`, `workspace-exchange`, `write-context`, `sync-gateway` and the
+  channel store; no other feature module, and nothing imports it (`boundaries.test.ts`).
+- **YouTube writes** (`broadcasts.ts`, §3.9) only on the owner's button press: Live writes checked before the first write, then
+  `assertWriteChannel`, then the write gateway's live primitives (`youtube-write-gateway/live.ts`, each preceded by
+  `assertLiveWritesAuthorized` in `adapters/youtube-writes.ts`), an event per write. Start: `liveStreams.insert` (once),
+  `liveBroadcasts.insert` (auto-start on, auto-stop off, monitor off), `bind`, then the encoder; 5 units the first time, 4 after.
+- **Rotation** (`services.ts`, `rotation.ts`): a video enters only if it is the channel's (local store), public now (a fresh
+  `videos.list`) and its original (resolved by `workspace-exchange.resolveWorkspaceFile`) matches within 1 s with AAC sound.
+- **Buffer** (`buffer.ts`): copies of the originals of the video playing and the next ones in `<appData>/live-streams/<channelId>/`
+  (`.part`, checks, rename; delete only after the replacement is in place).
+- **Encoder helper** (`helper/encoder-helper.mjs`, plain JS sharing `playback.mjs` and `ffmpeg-host/keyframes.mjs`): a detached node
+  process (survives server and launchd job restarts, spike A) that runs ffmpeg over the pass, resumes at a source keyframe, backs off
+  2/4/8/16/32/60 s, tells an early end (exit 0 on a missing file) from a pass end, and replays the playable buffered videos when the
+  next one is missing. Contract: `plan.json` in, `status.json` (with an adoption token) and `events.jsonl` out; the key only on stdin.
+  A stall watchdog stops ffmpeg when its output time has not grown for 60 s (ffmpeg 7+ prints progress on a timer even over a dead
+  connection). The supervisor serializes start/stop/restart/tick per stream (buffer copies run under a separate buffer lock, never
+  under the stream's) and kills an ffmpeg left by a helper killed outright (matched by `<stream dir>/run.ffconcat`) on Start and Stop.
+- **Supervisor and loop** (`supervisor.ts`, `runner.ts`, `instrumentation.ts`): every 15 s a stream whose intent is on is adopted
+  (pid + token + fresh status) or started (the key read from YouTube); its position, buffer and next pass are tended; every 5 min the
+  broadcast, the stream's health and the viewers are read (`youtube.json`). YouTube ending the broadcast stops the encoder with no
+  write. A running stream is not "busy" for the idle watcher.
+- **Other computers** see the `live-streams` per-device report (`sync-gateway/live-streams`, strict fixed codes); the Operator reads
+  `factory_live_get_status` and maps files with `factory_live_map_sources`. Bell notices: down, ended by YouTube, next video missing.
+- **Risks:** RISK-125 (the key in ffmpeg's argv), RISK-126 (the T9 every ~2 h).

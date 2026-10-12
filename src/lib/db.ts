@@ -1257,6 +1257,91 @@ export const geminiMediaJobs = sqliteTable(
   ]
 );
 
+/**
+ * Schema v86 (BL-176, docs/roadmap/plans/LIVE_STREAMS_PLAN.md §3.3, ADR 0036): one channel's 24/7 live stream on this
+ * computer -- the owner's intent (`on|off`), the YouTube stream and broadcast ids, the broadcast texts, the order and the
+ * current pass. Never the stream key. Device-local: the stream runs from this computer. Times in ms.
+ */
+export const liveStreams = sqliteTable("live_streams", {
+  channelId: text("channel_id").primaryKey(),
+  intent: text("intent", { enum: ["on", "off"] }).notNull(),
+  streamId: text("stream_id"),
+  broadcastId: text("broadcast_id"),
+  title: text("title").notNull(),
+  description: text("description").notNull(),
+  privacyStatus: text("privacy_status", { enum: ["public", "unlisted", "private"] }).notNull(),
+  madeForKids: integer("made_for_kids", { mode: "boolean" }).notNull(),
+  orderMode: text("order_mode", { enum: ["sequence", "shuffle"] }).notNull(),
+  passNumber: integer("pass_number").notNull(),
+  /** JSON array of video ids: the current pass's order, and the next pass's once drawn. */
+  passOrderJson: text("pass_order_json"),
+  nextPassOrderJson: text("next_pass_order_json"),
+  positionIndex: integer("position_index").notNull(),
+  positionOffsetSeconds: real("position_offset_seconds").notNull(),
+  positionUpdatedAt: integer("position_updated_at", { mode: "timestamp_ms" }),
+  onSince: integer("on_since", { mode: "timestamp_ms" }),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+/**
+ * Schema v86 (LIVE_STREAMS_PLAN.md §3.3/§3.4): a channel's rotation, one row per video. `original_path` is relative to the
+ * channel workspace. `check_*` is the last check of the video (public-only guard, file, duration); a guard override is the
+ * owner's, with a reason.
+ */
+export const liveStreamVideos = sqliteTable(
+  "live_stream_videos",
+  {
+    channelId: text("channel_id").notNull(),
+    videoId: text("video_id").notNull(),
+    rotationIndex: integer("rotation_index").notNull(),
+    originalPath: text("original_path").notNull(),
+    videoDurationSeconds: real("video_duration_seconds"),
+    originalDurationSeconds: real("original_duration_seconds"),
+    originalBytes: integer("original_bytes"),
+    checkStatus: text("check_status", { enum: ["ok", "refused", "unchecked"] }).notNull(),
+    checkReason: text("check_reason"),
+    checkedAt: integer("checked_at", { mode: "timestamp_ms" }),
+    guardOverrideReason: text("guard_override_reason"),
+    guardOverrideAt: integer("guard_override_at", { mode: "timestamp_ms" }),
+    addedAt: integer("added_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.channelId, table.videoId] }), index("live_stream_videos_order_idx").on(table.channelId, table.rotationIndex)]
+);
+
+/**
+ * Schema v86 (LIVE_STREAMS_PLAN.md §3.3): the stream's audit trail and history -- writes (preview, before/after, result,
+ * read-back), encoder starts/exits/restarts, YouTube status changes, interruptions, guard and buffer events.
+ * `detail_json` is scrubbed of the key before it is written.
+ */
+export const liveStreamEvents = sqliteTable(
+  "live_stream_events",
+  {
+    id: text("id").primaryKey(),
+    channelId: text("channel_id").notNull(),
+    at: integer("at", { mode: "timestamp_ms" }).notNull(),
+    kind: text("kind").notNull(),
+    detailJson: text("detail_json").notNull(),
+  },
+  (table) => [index("live_stream_events_channel_at_idx").on(table.channelId, table.at)]
+);
+
+/**
+ * Schema v86 (LIVE_STREAMS_PLAN.md §3.4): the Operator's map of a channel's published videos to their original files
+ * (relative to the channel workspace). It only offers files; the owner builds the rotation.
+ */
+export const liveStreamSources = sqliteTable(
+  "live_stream_sources",
+  {
+    channelId: text("channel_id").notNull(),
+    videoId: text("video_id").notNull(),
+    originalPath: text("original_path").notNull(),
+    setBy: text("set_by").notNull(),
+    setAt: integer("set_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.channelId, table.videoId] })]
+);
+
 export const mediaExchangeInputs = sqliteTable(
   "media_exchange_inputs",
   {
@@ -4582,6 +4667,66 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       }
     },
   },
+  {
+    version: 86,
+    description:
+      "live_streams + live_stream_videos + live_stream_events + live_stream_sources -- BL-176 (docs/roadmap/plans/LIVE_STREAMS_PLAN.md, ADR 0036): a channel's 24/7 live stream of its own public videos, sent from this computer. Additive, device-local; never the stream key",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS live_streams (
+        channel_id TEXT PRIMARY KEY NOT NULL,
+        intent TEXT NOT NULL,
+        stream_id TEXT,
+        broadcast_id TEXT,
+        title TEXT NOT NULL,
+        description TEXT NOT NULL,
+        privacy_status TEXT NOT NULL,
+        made_for_kids INTEGER NOT NULL,
+        order_mode TEXT NOT NULL,
+        pass_number INTEGER NOT NULL,
+        pass_order_json TEXT,
+        next_pass_order_json TEXT,
+        position_index INTEGER NOT NULL,
+        position_offset_seconds REAL NOT NULL,
+        position_updated_at INTEGER,
+        on_since INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`);
+      await client.execute(`CREATE TABLE IF NOT EXISTS live_stream_videos (
+        channel_id TEXT NOT NULL,
+        video_id TEXT NOT NULL,
+        rotation_index INTEGER NOT NULL,
+        original_path TEXT NOT NULL,
+        video_duration_seconds REAL,
+        original_duration_seconds REAL,
+        original_bytes INTEGER,
+        check_status TEXT NOT NULL,
+        check_reason TEXT,
+        checked_at INTEGER,
+        guard_override_reason TEXT,
+        guard_override_at INTEGER,
+        added_at INTEGER NOT NULL,
+        PRIMARY KEY (channel_id, video_id)
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS live_stream_videos_order_idx ON live_stream_videos (channel_id, rotation_index)");
+      await client.execute(`CREATE TABLE IF NOT EXISTS live_stream_events (
+        id TEXT PRIMARY KEY NOT NULL,
+        channel_id TEXT NOT NULL,
+        at INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        detail_json TEXT NOT NULL
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS live_stream_events_channel_at_idx ON live_stream_events (channel_id, at)");
+      await client.execute(`CREATE TABLE IF NOT EXISTS live_stream_sources (
+        channel_id TEXT NOT NULL,
+        video_id TEXT NOT NULL,
+        original_path TEXT NOT NULL,
+        set_by TEXT NOT NULL,
+        set_at INTEGER NOT NULL,
+        PRIMARY KEY (channel_id, video_id)
+      )`);
+    },
+  },
 ];
 
 /**
@@ -6940,9 +7085,9 @@ export async function getGatewayTrafficLast24h(
   }));
 }
 
-export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens";
+export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens" | "live_streams";
 
-const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings", "agent_tokens"];
+const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings", "agent_tokens", "live_streams"];
 
 export type SyncFamilyStatusRow = {
   family: SyncFamily;
@@ -12943,4 +13088,133 @@ export async function setAnalyticsShareImportedJson(value: string, database: App
 export async function countStoredVideos(database: AppDb = db): Promise<number> {
   const [row] = await database.all<{ n: number }>(sql`SELECT count(*) AS n FROM videos`);
   return Number(row?.n ?? 0);
+}
+
+// ---------------------------------------------------------------------------
+// BL-176 (docs/roadmap/plans/LIVE_STREAMS_PLAN.md §3.3, ADR 0036) -- live streams, device-local. Never the stream key.
+// ---------------------------------------------------------------------------
+
+export type StoredLiveStream = typeof liveStreams.$inferSelect;
+export type StoredLiveStreamVideo = typeof liveStreamVideos.$inferSelect;
+export type StoredLiveStreamEvent = typeof liveStreamEvents.$inferSelect;
+export type StoredLiveStreamSource = typeof liveStreamSources.$inferSelect;
+
+export async function getLiveStream(channelId: string, database: AppDb = db): Promise<StoredLiveStream | null> {
+  const [row] = await database.select().from(liveStreams).where(eq(liveStreams.channelId, channelId));
+  return row ?? null;
+}
+
+export async function listLiveStreams(database: AppDb = db): Promise<StoredLiveStream[]> {
+  return database.select().from(liveStreams).orderBy(asc(liveStreams.channelId));
+}
+
+/** Creates the channel's row or replaces every column of it. */
+export async function upsertLiveStream(row: typeof liveStreams.$inferInsert, database: AppDb = db): Promise<void> {
+  const { channelId, createdAt, ...rest } = row;
+  void createdAt;
+  await database.insert(liveStreams).values(row).onConflictDoUpdate({ target: liveStreams.channelId, set: { ...rest, channelId } });
+}
+
+/** Updates some columns of an existing row; false when the channel has no row (nothing written). */
+export async function updateLiveStream(
+  channelId: string,
+  set: Partial<Omit<typeof liveStreams.$inferInsert, "channelId" | "createdAt">>,
+  database: AppDb = db
+): Promise<boolean> {
+  const rows = await database.update(liveStreams).set(set).where(eq(liveStreams.channelId, channelId)).returning({ channelId: liveStreams.channelId });
+  return rows.length > 0;
+}
+
+/** The channel's rotation in its order. */
+export async function listLiveStreamVideos(channelId: string, database: AppDb = db): Promise<StoredLiveStreamVideo[]> {
+  return database
+    .select()
+    .from(liveStreamVideos)
+    .where(eq(liveStreamVideos.channelId, channelId))
+    .orderBy(asc(liveStreamVideos.rotationIndex), asc(liveStreamVideos.videoId));
+}
+
+/** Adds a video to the rotation or replaces its row (same channel and video). */
+export async function upsertLiveStreamVideo(row: typeof liveStreamVideos.$inferInsert, database: AppDb = db): Promise<void> {
+  const { channelId, videoId, addedAt, ...rest } = row;
+  void addedAt;
+  await database
+    .insert(liveStreamVideos)
+    .values(row)
+    .onConflictDoUpdate({ target: [liveStreamVideos.channelId, liveStreamVideos.videoId], set: { ...rest, channelId, videoId } });
+}
+
+export async function updateLiveStreamVideo(
+  channelId: string,
+  videoId: string,
+  set: Partial<Omit<typeof liveStreamVideos.$inferInsert, "channelId" | "videoId" | "addedAt">>,
+  database: AppDb = db
+): Promise<boolean> {
+  const rows = await database
+    .update(liveStreamVideos)
+    .set(set)
+    .where(and(eq(liveStreamVideos.channelId, channelId), eq(liveStreamVideos.videoId, videoId)))
+    .returning({ videoId: liveStreamVideos.videoId });
+  return rows.length > 0;
+}
+
+export async function deleteLiveStreamVideo(channelId: string, videoId: string, database: AppDb = db): Promise<boolean> {
+  const rows = await database
+    .delete(liveStreamVideos)
+    .where(and(eq(liveStreamVideos.channelId, channelId), eq(liveStreamVideos.videoId, videoId)))
+    .returning({ videoId: liveStreamVideos.videoId });
+  return rows.length > 0;
+}
+
+/** Sets the rotation order to exactly `videoIds` (0, 1, 2, ...); false (nothing written) unless they are the rotation's videos. */
+export async function setLiveStreamRotationOrder(channelId: string, videoIds: readonly string[], database: AppDb = db): Promise<boolean> {
+  return database.transaction(async (tx) => {
+    const current = await tx.select({ videoId: liveStreamVideos.videoId }).from(liveStreamVideos).where(eq(liveStreamVideos.channelId, channelId));
+    const known = new Set(current.map((r) => r.videoId));
+    if (videoIds.length !== known.size || new Set(videoIds).size !== videoIds.length || videoIds.some((id) => !known.has(id))) return false;
+    for (const [index, videoId] of videoIds.entries()) {
+      await tx
+        .update(liveStreamVideos)
+        .set({ rotationIndex: index })
+        .where(and(eq(liveStreamVideos.channelId, channelId), eq(liveStreamVideos.videoId, videoId)));
+    }
+    return true;
+  });
+}
+
+export async function insertLiveStreamEvent(row: typeof liveStreamEvents.$inferInsert, database: AppDb = db): Promise<void> {
+  await database.insert(liveStreamEvents).values(row);
+}
+
+/** Newest first. */
+export async function listLiveStreamEvents(channelId: string, limit: number, database: AppDb = db): Promise<StoredLiveStreamEvent[]> {
+  return database
+    .select()
+    .from(liveStreamEvents)
+    .where(eq(liveStreamEvents.channelId, channelId))
+    .orderBy(desc(liveStreamEvents.at), desc(liveStreamEvents.id))
+    .limit(limit);
+}
+
+export async function upsertLiveStreamSource(row: typeof liveStreamSources.$inferInsert, database: AppDb = db): Promise<void> {
+  const { channelId, videoId, ...rest } = row;
+  await database
+    .insert(liveStreamSources)
+    .values(row)
+    .onConflictDoUpdate({ target: [liveStreamSources.channelId, liveStreamSources.videoId], set: { ...rest, channelId, videoId } });
+}
+
+export async function listLiveStreamSources(channelId: string, database: AppDb = db): Promise<StoredLiveStreamSource[]> {
+  return database.select().from(liveStreamSources).where(eq(liveStreamSources.channelId, channelId)).orderBy(asc(liveStreamSources.videoId));
+}
+
+const LIVE_STREAMS_SETTINGS_KEY = "live_streams_settings";
+
+/** BL-176: the live-streams module's settings on this computer (JSON), `null` before the first save. */
+export async function getLiveStreamsSettingsJson(database: AppDb = db): Promise<string | null> {
+  return getAppSetting(LIVE_STREAMS_SETTINGS_KEY, database);
+}
+
+export async function setLiveStreamsSettingsJson(json: string, database: AppDb = db): Promise<void> {
+  await setAppSetting(LIVE_STREAMS_SETTINGS_KEY, json, database);
 }

@@ -1810,7 +1810,8 @@ Do not implement yet:
 - image generation;
 - music generation;
 - rendering;
-- livestream management;
+- livestream management (lifted for one case on 2026-10-12, ADR 0036: a channel's 24/7 loop of its own public videos, sent
+  from the Mac, with broadcasts written only by the owner);
 - multi-user SaaS accounts;
 - billing;
 - cloud deployment;

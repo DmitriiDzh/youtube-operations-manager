@@ -121,6 +121,12 @@ const WRITE_PRIMITIVE_NAMES = [
   "deletePlaylistForAuthenticated",
   "addVideoToPlaylistForAuthenticated",
   "deletePlaylistItemById",
+  // BL-176 (ADR 0036): live streaming.
+  "insertLiveStream",
+  "insertLiveBroadcast",
+  "bindLiveBroadcast",
+  "transitionLiveBroadcast",
+  "updateLiveBroadcast",
 ];
 
 test("youtube-write-gateway inventory: every file that imports a real write primitive also calls assertLiveWritesAuthorized", async () => {

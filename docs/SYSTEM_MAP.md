@@ -727,6 +727,16 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Фаза 3 (§G):** файл плана может быть `From YTM/gemini/<jobId>/…` — выход Gemini без копирования (`resolveExchangeFile`, общий `workspace-exchange`; планы не импортируют модуль Gemini). Время оценки: экран считает секунды на попытку (вкладка видна, владелец активен) и шлёт `reviewSeconds` с вердиктом, ответом, выбором; хранится в истории вердиктов и событиях, приходит и с другого компьютера (v85: `review_seconds`).
 - **Экран:** по типу файла — просмотр картинки (вписать / 100 %, сдвиг, Ctrl+колесо, размер) или видео (по кругу без звука, скорость, кадр, шкала с подсмотром, петля отрезка); лента вариантов пункта; слой во весь экран — сетка, лупа, сравнение двух; «Выбрать» (S), «Ни один не подходит»; метка-кружок Shift+перетаскиванием с заметкой. Музыкальный экран не менялся.
 
+### 2.9am Круглосуточная трансляция своих открытых видео канала (BL-176, FO-REQ-0019, ADR 0036, `docs/roadmap/plans/LIVE_STREAMS_PLAN.md`) — **IMPLEMENTED на ветке `feature/live-streams`, не в `dev`; реальные записи в YouTube (spike B) и приёмка §4.2 ещё не проводились**
+
+- **Модуль `src/lib/live-streams/`** (отдельный, §M, выключен по умолчанию; работает только на Mac как системный сервис): ротация с проверкой «только открытые» (свежее чтение YouTube), карта файлов оператора, буфер оригиналов на диске Mac (текущее + следующее), процесс эфира `helper/encoder-helper.mjs` (отдельный node, переживает перезапуски), надзор и цикл раз в 15 с в `instrumentation.ts`, опрос YouTube раз в 5 мин, уведомления колокольчика.
+- **Запись в YouTube** только по кнопкам владельца (Старт / В эфир / Стоп / Изменить) через `youtube-write-gateway/live.ts` (5 примитивов в инвентаре), Live writes + `assertWriteChannel`; чтения — `getLiveBroadcasts`, `getLiveStreamStatuses` (без ключа), `readLiveStreamIngestion` (единственное чтение ключа), `getLiveViewerCounts`. Квота: 11 live-методов по 1 ед.
+- **Общие модули:** `src/lib/ffmpeg-host/` (поиск ffmpeg, возможности, ffprobe; `keyframes.mjs`), `workspace-exchange.resolveWorkspaceFile`, семейство `sync-gateway/live-streams` (отчёт `ytm-live-streams` v1).
+- **Схема v86:** `live_streams`, `live_stream_videos`, `live_stream_events`, `live_stream_sources` (только этот компьютер); настройки — `app_settings.live_streams_settings`.
+- **Web:** Контент → «Видео» | «Трансляции» (`/content/streams`, активный канал; на Windows — только чтение из отчёта), Настройки → «Трансляции»; API `/api/channels/[channelId]/live-stream/**`, `/api/live-streams/settings`, `/api/live-streams/notices`.
+- **Оператор (Factory API 1.14.0):** `factory_live_get_status`, `factory_live_map_sources`.
+- **Риски:** RISK-125 (ключ в командной строке ffmpeg), RISK-126 (T9 нужен раз в ~2 ч).
+
 ### 2.9ak Картинки и видео через Gemini API под управлением оператора (BL-174, ADR 0035, `docs/roadmap/plans/GEMINI_MEDIA_PLAN.md`) — **IMPLEMENTED, влито в `dev` (`e72502e`)**
 
 - **Модуль `src/lib/gemini-media/`** (отдельный, §M; не зависит от `media-generation` и `generation-plans`, проверяется тестом): ключ, настройки владельца, задания, фоновый обработчик, файлы. Выключен по умолчанию; без ключа или выключенный — никаких сетевых вызовов.

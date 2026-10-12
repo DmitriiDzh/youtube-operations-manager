@@ -3,6 +3,7 @@ import { createChangeDraftsSyncCoreForProduction } from "./change-drafts-sync";
 import { createEditorialProfileSyncRunnerForProduction } from "./editorial-profile-sync";
 import { createAiConnectionsCatalogSyncRunnerForProduction } from "./ai-connections-catalog-sync";
 import { createMediaSessionsSyncRunnerForProduction } from "./media-sessions-sync";
+import { createLiveStreamsSyncRunnerForProduction } from "./live-streams-sync";
 import { createGenerationPlansSyncRunnerForProduction } from "./generation-plans-sync";
 import { createMediaSettingsSyncRunnerForProduction } from "./media-settings-sync";
 import { createAgentTokensSyncRunnerForProduction } from "./agent-tokens-sync";
@@ -36,7 +37,7 @@ async function runAndRecord<T>(
  * process-wide guard in `runAllSyncFamiliesOnce` below.
  */
 async function runAllOnce() {
-  const [changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens] = await Promise.all([
+  const [changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams] = await Promise.all([
     runAndRecord("change_drafts", () => createChangeDraftsSyncCoreForProduction().runSyncCycle()),
     runAndRecord("editorial_profile", () => createEditorialProfileSyncRunnerForProduction().runSyncCycle()),
     runAndRecord("ai_connections", () => createAiConnectionsCatalogSyncRunnerForProduction().runSyncCycle()),
@@ -48,8 +49,10 @@ async function runAllOnce() {
     runAndRecord("media_settings", () => createMediaSettingsSyncRunnerForProduction().runSyncCycle()),
     // BL-160: the agent tokens this device knows (hashes only) out, the other devices' in; agent-token-sync applies them.
     runAndRecord("agent_tokens", () => createAgentTokensSyncRunnerForProduction().runSyncCycle()),
+    // BL-176: this computer's live streams report out (the Mac hosts them), the other devices' in (shown read-only).
+    runAndRecord("live_streams", () => createLiveStreamsSyncRunnerForProduction().runSyncCycle()),
   ]);
-  return { changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens };
+  return { changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams };
 }
 
 type AllFamiliesResult = Awaited<ReturnType<typeof runAllOnce>>;

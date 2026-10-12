@@ -42,6 +42,14 @@ type SyncStatus = {
 };
 
 const POLL_MS = 30_000;
+// BL-176 (LIVE_STREAMS_PLAN.md §3.10): this computer's live-stream notices, each opening the channel's «Трансляции» tab.
+type LiveNotice = { channelId: string; kind: "live_stream_down" | "live_stream_ended" | "live_stream_source_missing"; since: number; detail?: string };
+const LIVE_NOTICE_TEXT: Record<LiveNotice["kind"], UiTextKey> = {
+  live_stream_down: "live.bell.down",
+  live_stream_ended: "live.bell.ended",
+  live_stream_source_missing: "live.bell.sourceMissing",
+};
+const LIVE_STREAM_HREF = "/content/streams";
 
 const STATE_LABEL: Record<SyncStatus["state"], UiTextKey> = {
   disabled: "deviceSync.state.disabled",
@@ -85,6 +93,7 @@ export function DeviceSyncBell({
   const { channels: channelLabels, nameOf } = useChannelNames();
   const entries = otherChannelEntries(t, channelWork, activeChannelId);
   const [status, setStatus] = useState<SyncStatus | null>(null);
+  const [liveNotices, setLiveNotices] = useState<LiveNotice[]>([]);
   const [open, setOpen] = useState(false);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -92,7 +101,12 @@ export function DeviceSyncBell({
 
   const refresh = useCallback(async () => {
     try {
+      const live = fetch("/api/live-streams/notices")
+        .then((r) => (r.ok ? (r.json() as Promise<{ notices: LiveNotice[] }>) : { notices: [] }))
+        .then((body) => setLiveNotices(body.notices ?? []))
+        .catch(() => undefined);
       const res = await fetch("/api/device-sync/status");
+      await live;
       if (!res.ok) return;
       setStatus((await res.json()) as SyncStatus);
     } catch {
@@ -138,12 +152,12 @@ export function DeviceSyncBell({
   }
 
   const notices = status?.notices ?? [];
-  const attention = notices.length > 0;
+  const attention = notices.length > 0 || liveNotices.some((n) => n.kind !== "live_stream_source_missing");
   const dotClass = attention
     ? "bg-red-500"
     : status?.state === "waiting" || status?.state === "busy" || status?.state === "folder_unreachable"
       ? "bg-amber-400"
-      : entries.length > 0
+      : entries.length > 0 || liveNotices.length > 0
         ? "bg-sky-400"
         : null;
 
@@ -192,6 +206,31 @@ export function DeviceSyncBell({
                   </div>
                 );
               })}
+            </div>
+          )}
+          {liveNotices.length > 0 && (
+            <div className="space-y-2 border-b border-zinc-800 pb-3">
+              <h3 className="text-sm font-semibold text-zinc-100">{t("live.bell.title")}</h3>
+              {liveNotices.map((notice) => (
+                <div key={`${notice.channelId}-${notice.kind}`} className="flex items-start gap-2 rounded-lg border border-zinc-700 bg-zinc-950 p-2.5">
+                  <div className="min-w-0 flex-1">
+                    {/* ui-text-ignore: a channel's own name (data) */}
+                    <p className="truncate text-xs font-medium text-zinc-100">{nameOf(notice.channelId)}</p>
+                    <p className="text-xs text-zinc-300">{t(LIVE_NOTICE_TEXT[notice.kind], { since: formatTime(t, new Date(notice.since).toISOString()), videoId: notice.detail ?? "" })}</p>
+                  </div>
+                  {onOpenChannelWork && (
+                    <button
+                      onClick={() => {
+                        setOpen(false);
+                        onOpenChannelWork(notice.channelId, LIVE_STREAM_HREF);
+                      }}
+                      className="shrink-0 rounded-md bg-indigo-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-indigo-500"
+                    >
+                      {t("channelWork.open")}
+                    </button>
+                  )}
+                </div>
+              ))}
             </div>
           )}
           <div>

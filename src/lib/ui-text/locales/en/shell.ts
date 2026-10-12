@@ -34,6 +34,9 @@ export const shell = {
   "tabs.settings.sync": "Sync",
   "tabs.settings.runpod": "RunPod",
   "tabs.settings.gemini": "Gemini",
+  "tabs.settings.liveStreams": "Live streams",
+  "tabs.content.videos": "Videos",
+  "tabs.content.streams": "Live streams",
   "tabs.settings.about": "About",
 
   "shell.productName": "Operations Manager",

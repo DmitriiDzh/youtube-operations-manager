@@ -1953,3 +1953,17 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Bounds:** the same folder proofs as a job output (plain folders, the real file inside the job's folder); only the `gemini` folder is allowed; documented in the Factory API texts (`factory_plan_report`, `factory_plan_move`, `factory_plan_request_recheck`) and `docs/interfaces.md`.
 - **Re-evaluate:** if outputs go missing in practice, or when a cleanup of From YTM is automated -- then either copy on report, or keep a plan's Gemini outputs out of the cleanup.
 - **Gate(s):** none. **Status:** open, accepted (the Operator asked for no copy, FO-REQ-0018 §G).
+
+## RISK-125 — The live-stream key is in ffmpeg's command line on the Mac — OPEN, 2026-10-12
+
+- **What:** BL-176 / ADR 0036. ffmpeg needs the RTMPS URL with the stream key as an argument (`-/rtmp_playpath <file>` is not accepted, spike A). While a stream runs, any account on the Mac can read it with `ps`; the Mac's second account exists (ADR 0032).
+- **Bounds:** the key is never stored by the app (read from YouTube at each encoder start, handed to the helper's stdin); a scrubber removes it from every file the helper writes, every event, the report and the MCP output (tests with a fake key); the second account already holds the channels' Google sign-in, so it gains no new capability.
+- **Re-evaluate:** if another person gets an account on the Mac, or ffmpeg accepts the key from a file or a pipe.
+- **Gate(s):** none. **Status:** open, accepted.
+
+## RISK-126 — A live stream depends on the T9 every ~2 hours — OPEN, 2026-10-12
+
+- **What:** BL-176 (the owner's choice, msgs 2575/2578): only the video playing and the next one are copied to the Mac's own disk. After an unattended restart the T9 mounts only at the first login (ADR 0032), and it has disconnected by itself; when the next copy cannot be made the stream replays the copied videos (the bell says so) instead of moving on.
+- **Bounds:** a copy is renamed into place only after its checks; a copy is deleted only after its replacement is in place, so the buffer always holds `depth` videos; depth is a setting (up to 6).
+- **Re-evaluate:** if replays happen in practice -- raise the depth, or try `AutomountDisksWithoutUserLogin` (the T9 is not encrypted; unverified on macOS 15).
+- **Gate(s):** none. **Status:** open, accepted.

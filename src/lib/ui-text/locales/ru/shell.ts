@@ -34,6 +34,9 @@ export const shell: Record<keyof typeof en, string> = {
   "tabs.settings.sync": "Синхронизация",
   "tabs.settings.runpod": "RunPod",
   "tabs.settings.gemini": "Gemini",
+  "tabs.settings.liveStreams": "Трансляции",
+  "tabs.content.videos": "Видео",
+  "tabs.content.streams": "Трансляции",
   "tabs.settings.about": "О программе",
 
   "shell.productName": "Operations Manager",

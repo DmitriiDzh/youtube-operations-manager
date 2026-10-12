@@ -32,6 +32,9 @@ test("resolveAppPaths: Windows resolves under APPDATA", () => {
   assert.equal(result.generationPlansSyncFallbackDir, path.join(result.appDataDir, "generation-plans-sync-local"));
   assert.equal(result.agentTokensShareDir, path.join(result.appDataDir, "agent-tokens-share"));
   assert.equal(result.agentTokensSyncFallbackDir, path.join(result.appDataDir, "agent-tokens-sync-local"));
+  assert.equal(result.liveStreamsBufferDir, path.join(result.appDataDir, "live-streams"));
+  assert.equal(result.liveStreamsShareDir, path.join(result.appDataDir, "live-streams-share"));
+  assert.equal(result.liveStreamsSyncFallbackDir, path.join(result.appDataDir, "live-streams-sync-local"));
   assert.equal(result.aiConnectionsCatalogDiscardedBackupsDir, path.join(result.appDataDir, "ai-connections-catalog-discarded-backups"));
   assert.equal(result.bootstrapConfigPath, path.join(result.appDataDir, "bootstrap-config.json"));
 });

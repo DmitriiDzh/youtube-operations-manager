@@ -181,6 +181,14 @@ export type DomainErrorCode =
   | "gemini_unavailable"
   | "gemini_rate_limited"
   | "gemini_request_rejected"
+  // BL-176 (docs/roadmap/plans/LIVE_STREAMS_PLAN.md) -- VIDEO_REFUSED: a video cannot enter a live-stream rotation (not public,
+  // not this channel's, its file missing or unusable); details.reason says which. WORKSPACE_UNAVAILABLE: the channel has no
+  // usable workspace folder on this computer. NOT_FOUND: the video is not in the channel's rotation.
+  | "live_stream_video_refused"
+  | "live_stream_workspace_unavailable"
+  | "live_stream_video_not_found"
+  // HOST_UNSUPPORTED: the module can be switched on only on the Mac running as the system service (ADR 0036 §1).
+  | "live_streams_host_unsupported"
   // Research export (docs/roadmap/plans/RESEARCH_EXPORT_PLAN.md) -- NOT_CONFIGURED: the channel has no workspace folder on this
   // device (the operator sets it in Settings). UNAVAILABLE: the folder (or its exports/ subfolder) failed re-validation at export
   // time. WRITE_FAILED: a file could not be written; nothing from that call is left behind.

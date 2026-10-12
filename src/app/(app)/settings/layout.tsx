@@ -22,6 +22,7 @@ import { ChannelConnectionsSettings } from "@/components/channel-connections-set
 import { SyncFolderSettings } from "@/components/sync-folder-settings";
 import { RunpodConnectionSettings } from "@/components/media-generation-settings";
 import { GeminiMediaSettings } from "@/components/gemini-media-settings";
+import { LiveStreamsSettings } from "@/components/live-streams-settings";
 import { DeviceAutoSyncSettings } from "@/components/device-auto-sync-settings";
 import { AppVersionInfo } from "@/components/app-version-info";
 import { InfoTooltip } from "@/components/info-tooltip";
@@ -160,6 +161,12 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
       <div className={settingsSubTab === "gemini" ? "space-y-6" : "hidden"}>
         <FeatureErrorBoundary label={section("settingsCard.gemini")}>
           <GeminiMediaSettings />
+        </FeatureErrorBoundary>
+      </div>
+
+      <div className={settingsSubTab === "live-streams" ? "space-y-6" : "hidden"}>
+        <FeatureErrorBoundary label={`${t("nav.settings")} — ${t("tabs.settings.liveStreams")}`}>
+          <LiveStreamsSettings />
         </FeatureErrorBoundary>
       </div>
 

@@ -1073,3 +1073,122 @@ export async function getMostPopularMusicVideos(
       : []
   );
 }
+
+// ---------------------------------------------------------------------------
+// BL-176 (ADR 0036) -- live streaming reads (developers.google.com/youtube/v3/live/docs, "Last updated 2026-09-14").
+// The stream key (`cdn.ingestionInfo.streamName`) is returned ONLY by `readLiveStreamIngestion`; the status read asks
+// for `status` alone, so a status poll never carries the key.
+// ---------------------------------------------------------------------------
+
+export type LiveBroadcastSnapshot = {
+  broadcastId: string;
+  title: string;
+  description: string;
+  scheduledStartTime: string | null;
+  scheduledEndTime: string | null;
+  actualStartTime: string | null;
+  actualEndTime: string | null;
+  /** `created | ready | testStarting | testing | liveStarting | live | complete | revoked` (liveBroadcast resource). */
+  lifeCycleStatus: string | null;
+  privacyStatus: string | null;
+  boundStreamId: string | null;
+  /** Not in the installed client's types but listed as settable on update; echoed so an update does not delete it. */
+  categoryId: string | null;
+};
+
+/** `liveBroadcasts.list` by id (at most 50 per call). Unknown ids are simply absent from the result. */
+export async function getLiveBroadcasts(youtube: youtube_v3.Youtube, broadcastIds: string[]): Promise<LiveBroadcastSnapshot[]> {
+  const results: LiveBroadcastSnapshot[] = [];
+  for (const batch of chunk(broadcastIds, YOUTUBE_VIDEOS_LIST_BATCH_SIZE)) {
+    const res = await youtube.liveBroadcasts.list({
+      part: ["id", "snippet", "status", "contentDetails"],
+      id: batch,
+      maxResults: YOUTUBE_VIDEOS_LIST_BATCH_SIZE,
+    });
+    for (const item of res.data.items ?? []) {
+      if (!item.id) continue;
+      results.push({
+        broadcastId: item.id,
+        title: item.snippet?.title ?? "",
+        description: item.snippet?.description ?? "",
+        scheduledStartTime: item.snippet?.scheduledStartTime ?? null,
+        scheduledEndTime: item.snippet?.scheduledEndTime ?? null,
+        actualStartTime: item.snippet?.actualStartTime ?? null,
+        actualEndTime: item.snippet?.actualEndTime ?? null,
+        lifeCycleStatus: item.status?.lifeCycleStatus ?? null,
+        privacyStatus: item.status?.privacyStatus ?? null,
+        boundStreamId: item.contentDetails?.boundStreamId ?? null,
+        categoryId: ((item.snippet as Record<string, unknown> | undefined)?.categoryId as string | undefined) ?? null,
+      });
+    }
+  }
+  return results;
+}
+
+export type LiveStreamStatusSnapshot = {
+  streamId: string;
+  /** `active | created | error | inactive | ready` (liveStream resource). */
+  streamStatus: string | null;
+  /** `good | ok | bad | noData`. */
+  healthStatus: string | null;
+  /** Issue types and severities only -- no free text. */
+  configurationIssues: Array<{ type: string; severity: string | null }>;
+  healthUpdatedAt: number | null;
+};
+
+/** `liveStreams.list part=status` by id. Never requests `cdn`, so it never carries the stream key. */
+export async function getLiveStreamStatuses(youtube: youtube_v3.Youtube, streamIds: string[]): Promise<LiveStreamStatusSnapshot[]> {
+  const results: LiveStreamStatusSnapshot[] = [];
+  for (const batch of chunk(streamIds, YOUTUBE_VIDEOS_LIST_BATCH_SIZE)) {
+    const res = await youtube.liveStreams.list({ part: ["id", "status"], id: batch, maxResults: YOUTUBE_VIDEOS_LIST_BATCH_SIZE });
+    for (const item of res.data.items ?? []) {
+      if (!item.id) continue;
+      const health = item.status?.healthStatus;
+      const updated = health?.lastUpdateTimeSeconds === undefined || health?.lastUpdateTimeSeconds === null
+        ? NaN
+        : Number(health.lastUpdateTimeSeconds);
+      results.push({
+        streamId: item.id,
+        streamStatus: item.status?.streamStatus ?? null,
+        healthStatus: health?.status ?? null,
+        configurationIssues: (health?.configurationIssues ?? [])
+          .filter((issue) => typeof issue.type === "string" && issue.type.length > 0)
+          .map((issue) => ({ type: issue.type as string, severity: issue.severity ?? null })),
+        healthUpdatedAt: Number.isFinite(updated) ? updated : null,
+      });
+    }
+  }
+  return results;
+}
+
+/**
+ * `liveStreams.list part=cdn` for one stream: the RTMPS address and the stream key. The one read that returns the key;
+ * its only caller is the live-streams encoder start, which hands it to the encoder and keeps it nowhere else. `null`
+ * when the stream is unknown or YouTube returns no RTMPS address or key (spike B checks that it does).
+ */
+export async function readLiveStreamIngestion(
+  youtube: youtube_v3.Youtube,
+  streamId: string
+): Promise<{ rtmpsIngestionAddress: string; streamName: string } | null> {
+  const res = await youtube.liveStreams.list({ part: ["id", "cdn"], id: [streamId], maxResults: 1 });
+  const ingestion = res.data.items?.find((item) => item.id === streamId)?.cdn?.ingestionInfo;
+  const rtmpsIngestionAddress = ingestion?.rtmpsIngestionAddress;
+  const streamName = ingestion?.streamName;
+  if (!rtmpsIngestionAddress || !streamName) return null;
+  return { rtmpsIngestionAddress, streamName };
+}
+
+/** `videos.list part=liveStreamingDetails` (a broadcast's id is its video id): concurrent viewers, `null` when YouTube gives none. */
+export async function getLiveViewerCounts(youtube: youtube_v3.Youtube, videoIds: string[]): Promise<Record<string, number | null>> {
+  const result: Record<string, number | null> = {};
+  for (const batch of chunk(videoIds, YOUTUBE_VIDEOS_LIST_BATCH_SIZE)) {
+    const res = await youtube.videos.list({ part: ["id", "liveStreamingDetails"], id: batch, maxResults: YOUTUBE_VIDEOS_LIST_BATCH_SIZE });
+    for (const item of res.data.items ?? []) {
+      if (!item.id) continue;
+      const raw = item.liveStreamingDetails?.concurrentViewers;
+      const viewers = raw === undefined || raw === null ? NaN : Number(raw);
+      result[item.id] = Number.isFinite(viewers) && viewers >= 0 ? viewers : null;
+    }
+  }
+  return result;
+}

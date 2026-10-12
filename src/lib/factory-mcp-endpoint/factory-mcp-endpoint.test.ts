@@ -112,6 +112,10 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
       createJob: async (input) => (mediaCalls.push(`gemini.create:${(input as { channelId: string; dryRun?: boolean }).channelId}${(input as { dryRun?: boolean }).dryRun ? ":dry" : ""}`), { job: { jobId: "gm_1" } }),
       getJobs: async (input) => (mediaCalls.push(`gemini.get:${(input as { jobId?: string }).jobId ?? ""}`), { jobs: [] }),
     },
+    live: {
+      getStatus: async (input) => (mediaCalls.push(`live.status:${input.channelId ?? ""}`), { streams: [] }),
+      mapSources: async (input) => (mediaCalls.push(`live.map:${input.channelId}:${input.items.length}`), { results: [] }),
+    },
     async assertMutationAllowed() {
       mediaCalls.push("gate");
       if (gateClosed.value) throw new DomainError({ code: "OPERATION_LOCKED" as never, message: "an import is running" });
@@ -263,6 +267,8 @@ test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exact
     "factory_get_logical_path",
     "factory_list_channels",
     "factory_list_logical_paths",
+    "factory_live_get_status",
+    "factory_live_map_sources",
     "factory_media_adopt_template",
     "factory_media_cancel_job",
     "factory_media_cancel_pull",
@@ -323,14 +329,15 @@ test("AC-FO-07: a channel tool name is not callable on the factory endpoint", as
 // BL-173 (PLAN_RECHECKS_PLAN.md AC-RC-12): 1.11.0 and the two re-check WRITE tools, last in both lists (declaration order).
 // BL-174 (GEMINI_MEDIA_PLAN.md AC-GM-13): 1.12.0 and the three Gemini tools, last (declaration order); one of them a write.
 // BL-175 (VISUAL_REVIEW_PLAN.md AC-VR-13): 1.13.0, no new tool.
-test("factory_get_capabilities reports the factory API version 1.13.0 (BL-175), READ and WRITE, the tool list and the write tools", async () => {
+// BL-176 (LIVE_STREAMS_PLAN.md §3.11): 1.14.0 and the two live-stream tools, last (declaration order); the map is a write.
+test("factory_get_capabilities reports the factory API version 1.14.0 (BL-176), READ and WRITE, the tool list and the write tools", async () => {
   const { endpoint, tokenServices } = setup();
   const { token } = await tokenServices.issueToken({});
   const result = await toolResult(await endpoint.handle(rpc(call("factory_get_capabilities"), withToken(token))));
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.13.0",
+    factoryApiVersion: "1.14.0",
     tools: [
       "factory_get_capabilities",
       "factory_list_logical_paths",
@@ -373,6 +380,8 @@ test("factory_get_capabilities reports the factory API version 1.13.0 (BL-175), 
       "factory_gemini_get_status",
       "factory_gemini_create_job",
       "factory_gemini_get_job",
+      "factory_live_get_status",
+      "factory_live_map_sources",
     ],
     permissions: ["READ", "WRITE"],
     writeTools: [
@@ -398,6 +407,7 @@ test("factory_get_capabilities reports the factory API version 1.13.0 (BL-175), 
       "factory_plan_request_recheck",
       "factory_plan_withdraw_recheck",
       "factory_gemini_create_job",
+      "factory_live_map_sources",
     ],
   });
 });
@@ -886,4 +896,24 @@ test("BL-174: factory_gemini_create_job passes the gate first (a dry-run does no
     assert.match(String(body.result.content[0].text), /invalid|unrecognized|validation/i, name);
     assert.deepEqual(toolDeps.mediaCalls, [], "nothing reached the gate or the module");
   }
+});
+
+// BL-176 (LIVE_STREAMS_PLAN.md §3.4/§3.11): the map is a local write that passes the gate first; the status read needs none;
+// both schemas are strict (an 11-character video id, 1-200 items, no extra field).
+test("BL-176: factory_live_map_sources passes the gate first; factory_live_get_status needs no gate; strict schemas", async () => {
+  const { endpoint, tokenServices, toolDeps } = setupWithDeps();
+  const { token } = await tokenServices.issueToken({});
+  const map = { channelId: "UC_A", items: [{ videoId: "AAAAAAAAAA1", file: "04 Videos/a.mp4" }] };
+  assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_live_map_sources", map), withToken(token))))).isError, false);
+  assert.deepEqual(toolDeps.mediaCalls, ["gate", "live.map:UC_A:1"]);
+  toolDeps.mediaCalls.length = 0;
+  assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_live_get_status", { channelId: "UC_A" }), withToken(token))))).isError, false);
+  assert.deepEqual(toolDeps.mediaCalls, ["live.status:UC_A"]);
+  toolDeps.mediaCalls.length = 0;
+  for (const bad of [{ ...map, items: [{ videoId: "short", file: "x" }] }, { ...map, items: [] }, { ...map, extra: 1 }, { channelId: "UC_A" }]) {
+    // Refused either by the SDK's own schema check or by the tool's strict parse: an error result either way.
+    const body = await (await endpoint.handle(rpc(call("factory_live_map_sources", bad), withToken(token)))).json();
+    assert.equal(Boolean(body.result?.isError ?? body.error), true, JSON.stringify(bad));
+  }
+  assert.deepEqual(toolDeps.mediaCalls, [], "an invalid input reaches neither the gate nor the module");
 });

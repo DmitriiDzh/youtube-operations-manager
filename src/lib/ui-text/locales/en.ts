@@ -8,6 +8,7 @@ import { content } from "./en/content";
 import { decisions } from "./en/decisions";
 import { errors } from "./en/errors";
 import { languages } from "./en/languages";
+import { liveStreams } from "./en/liveStreams";
 import { media } from "./en/media";
 import { merge } from "./en/merge";
 import { production } from "./en/production";
@@ -17,8 +18,8 @@ import { settings } from "./en/settings";
 import { settingsCards } from "./en/settingsCards";
 import { shell } from "./en/shell";
 
-export const enAreas = { common, shell, settings, production, media, languages, batches, decisions, research, researchData, analytics, content, merge, settingsCards, errors, analyticsLabels } as const;
+export const enAreas = { common, shell, settings, production, media, languages, batches, decisions, research, researchData, analytics, content, merge, settingsCards, errors, analyticsLabels, liveStreams } as const;
 
-export const en = { ...common, ...shell, ...settings, ...production, ...media, ...languages, ...batches, ...decisions, ...research, ...researchData, ...analytics, ...content, ...merge, ...settingsCards, ...errors, ...analyticsLabels } as const;
+export const en = { ...common, ...shell, ...settings, ...production, ...media, ...languages, ...batches, ...decisions, ...research, ...researchData, ...analytics, ...content, ...merge, ...settingsCards, ...errors, ...analyticsLabels, ...liveStreams } as const;
 
 export type UiTextKey = keyof typeof en;

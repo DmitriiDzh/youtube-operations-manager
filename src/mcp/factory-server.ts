@@ -48,7 +48,11 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 // image/video waves: plans/waves take reviewReasons, items pickTarget; markers take an optional region { x, y, r } (a pin);
 // progress items gain pickTarget / picks / noneFits / notChosen and waves counts.picked / counts.noneFits; external attempts
 // count as accepted; the events owner_pick / owner_unpick / owner_none_fits; group_reviewed counts picked and noneFits. Additive.
-export const FACTORY_API_VERSION = "1.13.0";
+// BL-176 (FO-REQ-0019, LIVE_STREAMS_PLAN.md §3.4/§3.11, ADR 0036): 1.14.0 -- live streams: factory_live_get_status (READ: every
+// stream on this computer and the ones other computers report, in fixed codes -- never a key, URL or error text) and
+// factory_live_map_sources (WRITE, local only: which original file in the channel workspace is which published video; it only
+// offers files, the owner builds the rotation and starts streams). Additive.
+export const FACTORY_API_VERSION = "1.14.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -101,6 +105,9 @@ export const FACTORY_TOOL_NAMES = [
   "factory_gemini_get_status",
   "factory_gemini_create_job",
   "factory_gemini_get_job",
+  // BL-176: live streams -- their status (read) and the map of videos to their original files (a local write).
+  "factory_live_get_status",
+  "factory_live_map_sources",
 ] as const;
 
 /**
@@ -135,6 +142,8 @@ export const FACTORY_WRITE_TOOL_NAMES = [
   "factory_plan_withdraw_recheck",
   // BL-174: a paid Gemini job (only within the owner's limits; a dry-run passes no gate).
   "factory_gemini_create_job",
+  // BL-176: the map of videos to original files (local only; nothing reaches YouTube, nothing starts a stream).
+  "factory_live_map_sources",
 ] as const;
 
 export type FactoryChannelEntry = {
@@ -202,6 +211,11 @@ export type FactoryToolDeps = {
     getStatus(): Promise<Record<string, unknown>>;
     createJob(input: unknown): Promise<Record<string, unknown>>;
     getJobs(input: unknown): Promise<Record<string, unknown>>;
+  };
+  /** BL-176: live streams (the module validates every input strictly itself). */
+  live: {
+    getStatus(input: { channelId?: string }): Promise<Record<string, unknown>>;
+    mapSources(input: { channelId: string; items: Array<{ videoId: string; file: string }> }): Promise<Record<string, unknown>>;
   };
   /** The same local gate every mutating channel tool passes (operation lock, recovery mode); throws when not allowed. */
   assertMutationAllowed(): Promise<void>;
@@ -873,6 +887,39 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
       inputSchema: geminiGetJobInput,
     },
     async (args) => successResult(await deps.gemini.getJobs(parseInput(geminiGetJobInput, args)))
+  );
+
+  // -- BL-176 (LIVE_STREAMS_PLAN.md §3.4/§3.11): live streams. Reads the module's fixed-code status; the map is a local write.
+  const liveStatusInput = z.object({ channelId: z.string().min(1).max(64).optional() }).strict();
+  const liveMapInput = z
+    .object({
+      channelId: z.string().min(1).max(64),
+      items: z.array(z.object({ videoId: z.string().regex(/^[A-Za-z0-9_-]{11}$/), file: z.string().min(1).max(500) }).strict()).min(1).max(200),
+    })
+    .strict();
+
+  registerTool(
+    "factory_live_get_status",
+    {
+      description:
+        "Live streams (1.14.0): every 24/7 stream on THIS computer and the ones other computers report (about 1-2 minutes behind), optionally for one channelId -> { streams: [{ device: { deviceId, hostName, thisComputer }, updatedAt, channelId, state: off | ended_by_youtube (start a new broadcast in the app) | starting | live | replaying (the next video is not on the Mac: the copied ones are replayed) | no_source | reconnecting, since (ISO, when the owner turned it on), playing: { index, total, videoId } | null, health: { lifeCycleStatus, streamStatus, healthStatus, issueTypes: [YouTube's configurationIssues types] } | null (polled every 5 minutes), lastInterruption: { at, cause: encoder_exit | source_missing | pass_end | replay_end } | null, viewers }] }. Streams run only on the Mac running the app as its system service; only the owner starts, stops or edits a broadcast, in the app. Never a key, URL or error text. Read-only, local (no YouTube call).",
+      inputSchema: liveStatusInput,
+    },
+    async (args) => successResult(await deps.live.getStatus(parseInput(liveStatusInput, args)))
+  );
+
+  registerTool(
+    "factory_live_map_sources",
+    {
+      description:
+        "Tell the app which original file is which published video, for live streams (1.14.0): { channelId (connected here, with a workspace folder), items: [{ videoId (11 characters), file (a path relative to the channel workspace, '/' between folders, e.g. '04 Videos/10 October/1013 V47/V47 Japan Countryside Music.mp4') }] (1-200) } -> { results: [{ videoId, file, status: accepted | refused, reason?, detail? }] }. Each item is checked: the video is this channel's and public now (YouTube is asked: one read per call), the file is a regular file inside the workspace (no '..', no absolute path, no symlink out), and its duration is within 1 s of the video's, with AAC sound at 44.1/48 kHz, at most 2 channels. reason: not_channel_video | private | unlisted | scheduled | not_found | unknown | file_unavailable | no_video_stream | audio_unsupported | duration_unknown | duration_mismatch. Accepted items are stored (a later call replaces a video's file). The map only offers files: the owner builds the rotation and starts streams in the app; nothing here reaches a broadcast. Refused without a workspace folder: live_stream_workspace_unavailable. Passes the device mutation gate; recorded as done by the Factory Operator.",
+      inputSchema: liveMapInput,
+    },
+    async (args) => {
+      const input = parseInput(liveMapInput, args);
+      await deps.assertMutationAllowed();
+      return successResult(await deps.live.mapSources(input));
+    }
   );
 
   return server;
