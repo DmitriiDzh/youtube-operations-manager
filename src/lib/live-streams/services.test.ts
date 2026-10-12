@@ -48,6 +48,12 @@ function harness(overrides: { facts?: VideoFacts[]; probe?: Partial<MediaProbe>;
       async upsertStream(row) {
         streams.set(row.channelId, { streamId: null, broadcastId: null, passOrderJson: null, nextPassOrderJson: null, positionUpdatedAt: null, onSince: null, ...row } as StoredStreamRow);
       },
+      async updateStream(channelId, set) {
+        const row = streams.get(channelId);
+        if (!row) return false;
+        streams.set(channelId, { ...row, ...set });
+        return true;
+      },
       async listVideos(channelId) {
         return videos.filter((v) => v.channelId === channelId).sort((a, b) => a.rotationIndex - b.rotationIndex);
       },
@@ -110,7 +116,15 @@ function harness(overrides: { facts?: VideoFacts[]; probe?: Partial<MediaProbe>;
     clock: () => NOW,
     newId: () => `id-${++id}`,
   };
-  return { services: createLiveStreamsServices(deps), videos, events, sources, youtubeCalls };
+  return {
+    services: createLiveStreamsServices(deps),
+    videos,
+    events,
+    sources,
+    youtubeCalls,
+    streamRow: (c: string) => streams.get(c),
+    setStreamRow: (c: string, row: StoredStreamRow) => void streams.set(c, row),
+  };
 }
 
 function isRefusal(reason: string) {
@@ -261,4 +275,15 @@ test("saveSettings: a title of 1–100 characters and a description of at most 5
   const overview = await h.services.getOverview("UC1");
   assert.deepEqual([overview.stream?.intent, overview.stream?.settings.title, overview.stream?.settings.orderMode], ["off", "Tropico Jazz Radio", "shuffle"]);
   assert.equal(h.events.at(-1)?.kind, "settings_saved");
+});
+
+test("saveSettings changes only the five settings of an existing stream -- never its ids, intent or position (independent review)", async () => {
+  const h = harness();
+  await h.services.saveSettings("UC1", { title: "First", description: "", privacyStatus: "unlisted", madeForKids: false, orderMode: "sequence" });
+  // A Start (or YouTube ending it) changes the row between the page's read and its Save:
+  const row = h.streamRow("UC1")!;
+  h.setStreamRow("UC1", { ...row, intent: "on", streamId: "STREAM1", broadcastId: "BC1", positionIndex: 3 });
+  await h.services.saveSettings("UC1", { title: "Second", description: "d", privacyStatus: "public", madeForKids: false, orderMode: "shuffle" });
+  const after = h.streamRow("UC1")!;
+  assert.deepEqual([after.title, after.orderMode, after.intent, after.streamId, after.broadcastId, after.positionIndex], ["Second", "shuffle", "on", "STREAM1", "BC1", 3]);
 });

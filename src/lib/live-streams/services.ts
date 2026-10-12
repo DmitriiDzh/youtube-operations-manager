@@ -69,6 +69,8 @@ export type LiveStreamsDependencies = {
   store: {
     getStream(channelId: string): Promise<StoredStreamRow | null>;
     upsertStream(row: Omit<StoredStreamRow, "positionUpdatedAt" | "onSince" | "passOrderJson" | "nextPassOrderJson" | "streamId" | "broadcastId"> & Partial<StoredStreamRow>): Promise<void>;
+    /** Some columns of an existing row only (never the stream's ids, intent or position). */
+    updateStream(channelId: string, set: Partial<Pick<StoredStreamRow, "title" | "description" | "privacyStatus" | "madeForKids" | "orderMode" | "updatedAt">>): Promise<boolean>;
     listVideos(channelId: string): Promise<StoredVideoRow[]>;
     upsertVideo(row: StoredVideoRow): Promise<void>;
     updateVideo(channelId: string, videoId: string, set: Partial<Omit<StoredVideoRow, "channelId" | "videoId" | "addedAt">>): Promise<boolean>;
@@ -183,20 +185,12 @@ export function createLiveStreamsServices(deps: LiveStreamsDependencies) {
     async saveSettings(channelId: string, input: unknown): Promise<StreamSettingsInput> {
       const settings = parseWithSchema(streamSettingsSchema, input, "live stream settings");
       const now = deps.clock();
-      const existing = await deps.store.getStream(channelId);
-      await deps.store.upsertStream({
-        ...(existing ?? {
-          channelId,
-          intent: "off" as const,
-          passNumber: 0,
-          positionIndex: 0,
-          positionOffsetSeconds: 0,
-          createdAt: now,
-          ...DEFAULT_SETTINGS,
-        }),
-        ...settings,
-        updatedAt: now,
-      });
+      // Only the five settings columns of an existing row (independent review): rewriting the whole row could undo a Start
+      // or a YouTube-ended stop that landed between the read and the write.
+      const updated = await deps.store.updateStream(channelId, { ...settings, updatedAt: now });
+      if (!updated) {
+        await deps.store.upsertStream({ channelId, intent: "off", passNumber: 0, positionIndex: 0, positionOffsetSeconds: 0, createdAt: now, ...DEFAULT_SETTINGS, ...settings, updatedAt: now });
+      }
       await event(channelId, "settings_saved", { ...settings });
       return settings;
     },

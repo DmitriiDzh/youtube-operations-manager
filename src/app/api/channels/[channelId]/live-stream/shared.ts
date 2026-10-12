@@ -42,8 +42,6 @@ export type LiveStreamRouteDeps = {
   core: LiveStreamRouteCore;
 };
 
-type Patch = { title?: string; description?: string; privacyStatus?: "public" | "unlisted" | "private" };
-
 function objectBody(body: unknown): Record<string, unknown> {
   return body && typeof body === "object" ? (body as Record<string, unknown>) : {};
 }
@@ -90,11 +88,9 @@ export function createLiveStreamRouteCore(): LiveStreamRouteCore {
     stop: (channelId, credentialRef, body) => broadcasts.stop(channelId, credentialRef, { encoderOnly: objectBody(body).encoderOnly === true }),
     // §3.9 Restart: the encoder only, on the same broadcast, with the rotation as it is now -- no YouTube write.
     restart: async (channelId) => ({ restarted: true, ...(await supervisor.restart(channelId)) }),
-    previewEdit: (channelId, credentialRef, body) => broadcasts.previewEdit(channelId, credentialRef, objectBody(body).patch as Patch),
-    edit: (channelId, credentialRef, body) => {
-      const b = objectBody(body);
-      return broadcasts.edit(channelId, credentialRef, b.patch as Patch, b.expected as { title: string; description: string; privacyStatus: string });
-    },
+    // The module validates both strictly (a missing or malformed field is a 400, never a YouTube call).
+    previewEdit: (channelId, credentialRef, body) => broadcasts.previewEdit(channelId, credentialRef, objectBody(body).patch),
+    edit: (channelId, credentialRef, body) => broadcasts.edit(channelId, credentialRef, objectBody(body).patch, objectBody(body).expected),
   };
 }
 

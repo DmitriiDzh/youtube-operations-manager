@@ -1,6 +1,7 @@
 import {
   deleteLiveStreamVideo,
   getLiveStream,
+  updateLiveStream,
   insertLiveStreamEvent,
   listLiveStreamSources,
   listLiveStreamVideos,
@@ -17,6 +18,7 @@ export function createLiveStreamsStore(): LiveStreamsDependencies["store"] {
   return {
     getStream: (channelId) => getLiveStream(channelId),
     upsertStream: (row) => upsertLiveStream(row),
+    updateStream: (channelId, set) => updateLiveStream(channelId, set),
     listVideos: (channelId) => listLiveStreamVideos(channelId),
     upsertVideo: (row) => upsertLiveStreamVideo(row),
     updateVideo: (channelId, videoId, set) => updateLiveStreamVideo(channelId, videoId, set),

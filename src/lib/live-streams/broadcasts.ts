@@ -1,7 +1,9 @@
 import { YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
 import type { ResolvedCredentials } from "@/lib/shared-domain";
-import { DomainError, type LivePrivacy, type LiveStreamsSettings } from "./contracts";
-import { isRedundantTransition, toLiveDomainError } from "./errors";
+import { z } from "zod";
+import { DomainError, LIVE_PRIVACY_STATUSES, type LivePrivacy, type LiveStreamsSettings } from "./contracts";
+import { isRedundantTransition, liveErrorReason, toLiveDomainError } from "./errors";
+import { parseWithSchema } from "./schemas";
 
 // ---------------------------------------------------------------------------
 // BL-176 (LIVE_STREAMS_PLAN.md §3.9, ADR 0036 §3) -- the owner's attended actions, the only code that writes to YouTube
@@ -65,6 +67,13 @@ export type BroadcastsDependencies = {
 
 export type BroadcastPatch = { title?: string; description?: string; privacyStatus?: LivePrivacy };
 
+// The edit's inputs are checked before anything reaches YouTube (independent review): a title of 1–100 characters (trimmed,
+// as YouTube keeps it), a description of at most 5,000, one of the three privacy values; `expected` is what the preview showed.
+const patchSchema = z
+  .object({ title: z.string().trim().min(1).max(100).optional(), description: z.string().max(5000).optional(), privacyStatus: z.enum(LIVE_PRIVACY_STATUSES).optional() })
+  .strict();
+const expectedSchema = z.object({ title: z.string(), description: z.string(), privacyStatus: z.string().nullable() }).strict();
+
 export function createLiveBroadcasts(deps: BroadcastsDependencies) {
   async function requireModule(): Promise<void> {
     const settings = await deps.settings();
@@ -124,6 +133,8 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
     async start(channelId: string, credentialRef: unknown): Promise<{ broadcastId: string; streamId: string; encoderStarted: boolean; encoderError?: string }> {
       await requireModule();
       const stream = await requireStream(channelId);
+      // A second Start (a stale page, a repeated request) must not create another broadcast and lose track of the live one.
+      if (stream.intent === "on") throw new DomainError({ code: "validation_failed", message: "The stream is already on: stop it first", details: { channelId } });
       const credentials = await authorize(channelId, credentialRef);
       const playable = await deps.rotation.recheck(channelId);
       if (playable.length === 0) {
@@ -148,11 +159,26 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
           enableMonitorStream: false,
         };
         const { broadcastId, lifeCycleStatus } = await deps.youtube.insertBroadcast(credentials, sent);
-        await deps.streams.update(channelId, { broadcastId });
         await written(channelId, "liveBroadcasts.insert", { broadcastId, sent, lifeCycleStatus });
-        const bound = await deps.youtube.bind(credentials, { broadcastId, streamId });
+        let bound: { boundStreamId: string | null };
+        try {
+          bound = await deps.youtube.bind(credentials, { broadcastId, streamId });
+        } catch (error) {
+          // The channel's stream was deleted in Studio: forget it, so the next Start creates a new one (independent review).
+          if (liveErrorReason(error) === "liveStreamNotFound") {
+            await deps.streams.update(channelId, { streamId: null });
+            await deps.streams.event(channelId, "stream_forgotten", { streamId, broadcastId, reason: "liveStreamNotFound" });
+            throw new DomainError({
+              code: "update_failed",
+              message: "YouTube no longer has this channel's stream (deleted in Studio?). It is forgotten: press Start again to create a new one.",
+              details: { action: "Start", reason: "liveStreamNotFound", orphanBroadcastId: broadcastId },
+            });
+          }
+          throw error;
+        }
         await written(channelId, "liveBroadcasts.bind", { broadcastId, streamId, boundStreamId: bound.boundStreamId });
-        await deps.streams.update(channelId, { intent: "on", onSince: deps.clock() });
+        // The broadcast is recorded only once it is bound: a failed Start never leaves the app tracking a broadcast with no stream.
+        await deps.streams.update(channelId, { broadcastId, intent: "on", onSince: deps.clock() });
 
         try {
           await deps.supervisor.startEncoder(channelId, { freshPass: true, playable });
@@ -189,28 +215,38 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
      * `encoderOnly` (offered when Live writes are off) stops only the encoder: the broadcast stays open on YouTube
      * without a picture until it is ended there.
      */
-    async stop(channelId: string, credentialRef: unknown, options: { encoderOnly: boolean }): Promise<{ broadcastEnded: boolean }> {
+    async stop(channelId: string, credentialRef: unknown, options: { encoderOnly: boolean }): Promise<{ broadcastEnded: boolean; youtubeRefusal?: string }> {
       const stream = await deps.streams.get(channelId);
       if (!stream) throw new DomainError({ code: "validation_failed", message: "There is no stream", details: { channelId } });
       let broadcastEnded = false;
+      let youtubeRefusal: string | null = null;
       if (!options.encoderOnly && stream.broadcastId) {
         const credentials = await authorize(channelId, credentialRef);
         try {
           const result = await deps.youtube.transition(credentials, { broadcastId: stream.broadcastId, broadcastStatus: "complete" });
           await written(channelId, "liveBroadcasts.transition", { broadcastId: stream.broadcastId, broadcastStatus: "complete", lifeCycleStatus: result.lifeCycleStatus });
+          broadcastEnded = true;
         } catch (error) {
-          if (!isRedundantTransition(error)) throw toLiveDomainError(error, "Stop");
+          const reason = liveErrorReason(error);
+          if (isRedundantTransition(error)) {
+            broadcastEnded = true;
+          } else if (reason === "liveBroadcastNotFound" || reason === "invalidTransition") {
+            // YouTube has no broadcast to end (deleted in Studio) or it never went live: stop sending anyway (independent review).
+            youtubeRefusal = reason;
+          } else {
+            throw toLiveDomainError(error, "Stop");
+          }
         }
-        broadcastEnded = true;
       }
       await deps.supervisor.stopEncoder(channelId, options.encoderOnly ? "owner_encoder_only" : "owner_stop");
       await deps.streams.update(channelId, { intent: "off", onSince: null });
-      await deps.streams.event(channelId, "stopped_by_owner", { encoderOnly: options.encoderOnly, broadcastEnded });
-      return { broadcastEnded };
+      await deps.streams.event(channelId, "stopped_by_owner", { encoderOnly: options.encoderOnly, broadcastEnded, ...(youtubeRefusal ? { youtubeRefusal } : {}) });
+      return { broadcastEnded, ...(youtubeRefusal ? { youtubeRefusal } : {}) };
     },
 
     /** §3.9 Edit, step 1: the broadcast as YouTube has it now, and what it would become. A read. */
-    async previewEdit(channelId: string, credentialRef: unknown, patch: BroadcastPatch) {
+    async previewEdit(channelId: string, credentialRef: unknown, rawPatch: unknown) {
+      const patch: BroadcastPatch = parseWithSchema(patchSchema, rawPatch ?? {}, "broadcast edit");
       const stream = await deps.streams.get(channelId);
       if (!stream?.broadcastId) throw new DomainError({ code: "validation_failed", message: "There is no broadcast to edit", details: { channelId } });
       const credentials = await deps.auth.resolve({ credentialRef, requiredScopes: [YOUTUBE_WRITE_SCOPE] });
@@ -225,7 +261,9 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
      * the full merged snippet (the parts sent are replaced wholesale) and is read back. The event holds both versions:
      * that is the backup.
      */
-    async edit(channelId: string, credentialRef: unknown, patch: BroadcastPatch, expected: { title: string; description: string; privacyStatus: string }) {
+    async edit(channelId: string, credentialRef: unknown, rawPatch: unknown, rawExpected: unknown) {
+      const patch: BroadcastPatch = parseWithSchema(patchSchema, rawPatch ?? {}, "broadcast edit");
+      const expected = parseWithSchema(expectedSchema, rawExpected, "broadcast edit (what the preview showed)");
       await requireModule();
       const stream = await deps.streams.get(channelId);
       if (!stream?.broadcastId) throw new DomainError({ code: "validation_failed", message: "There is no broadcast to edit", details: { channelId } });

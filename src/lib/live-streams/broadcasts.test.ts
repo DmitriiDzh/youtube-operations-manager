@@ -13,12 +13,12 @@ function googleError(reason: string) {
   return Object.assign(new Error(reason), { response: { status: 403, data: { error: { errors: [{ reason }] } } } });
 }
 
-function harness(opts: { liveWrites?: boolean; streamId?: string | null; broadcastId?: string | null; wrongChannel?: boolean; transitionError?: string; readBack?: Partial<{ title: string }>; encoderFails?: boolean } = {}) {
+function harness(opts: { liveWrites?: boolean; streamId?: string | null; broadcastId?: string | null; intent?: "on" | "off"; wrongChannel?: boolean; transitionError?: string; bindError?: string; readBack?: Partial<{ title: string }>; encoderFails?: boolean } = {}) {
   const calls: string[] = [];
   const events: Array<{ kind: string; detail: Record<string, unknown> }> = [];
   let stream = {
     channelId: "UC1",
-    intent: "off" as "on" | "off",
+    intent: (opts.intent ?? "off") as "on" | "off",
     streamId: opts.streamId === undefined ? null : opts.streamId,
     broadcastId: (opts.broadcastId ?? null) as string | null,
     title: "Tropico Jazz Radio",
@@ -65,6 +65,7 @@ function harness(opts: { liveWrites?: boolean; streamId?: string | null; broadca
       },
       bind: async (_c, args) => {
         calls.push("liveBroadcasts.bind");
+        if (opts.bindError) throw googleError(opts.bindError);
         return { boundStreamId: args.streamId };
       },
       transition: async (_c, args) => {
@@ -168,13 +169,15 @@ test("Stop ends the broadcast (transition complete), stops the encoder, turns th
   assert.deepEqual(await again.broadcasts.stop("UC1", { userId: "u1" }, { encoderOnly: false }), { broadcastEnded: true });
 });
 
-test("a refused transition is shown in plain words and nothing is stopped", async () => {
-  const h = harness({ streamId: "STREAM1", transitionError: "invalidTransition" });
+// Changed after the independent review (2026-10-12): `invalidTransition` / `liveBroadcastNotFound` mean YouTube has nothing to
+// end, so Stop now stops the encoder anyway (test above). Any OTHER refusal is still shown in plain words and stops nothing.
+test("any other refused transition is shown in plain words and nothing is stopped", async () => {
+  const h = harness({ streamId: "STREAM1", transitionError: "livePermissionBlocked" });
   await h.broadcasts.start("UC1", { userId: "u1" });
   h.calls.length = 0;
   await assert.rejects(
     () => h.broadcasts.stop("UC1", { userId: "u1" }, { encoderOnly: false }),
-    (e: unknown) => e instanceof DomainError && e.code === "update_failed" && /cannot change to that state/.test(e.message)
+    (e: unknown) => e instanceof DomainError && e.code === "update_failed" && /does not allow this channel to stream/.test(e.message)
   );
   assert.ok(!h.calls.includes("stopEncoder"));
   assert.equal(h.stream().intent, "on");
@@ -215,4 +218,56 @@ test("previewStart: no YouTube call; 5 units the first time, 4 after", async () 
   assert.deepEqual([preview.units, preview.createsStream, preview.broadcast.enableAutoStop], [5, true, false]);
   assert.deepEqual(first.calls, []);
   assert.equal((await harness({ streamId: "STREAM1" }).broadcasts.previewStart("UC1")).units, 4);
+});
+
+// --- Independent review (2026-10-12) ---
+
+test("a second Start while the stream is on is refused before any YouTube call (no second broadcast)", async () => {
+  const h = harness({ streamId: "STREAM1", broadcastId: "BC1", intent: "on" });
+  await assert.rejects(() => h.broadcasts.start("UC1", { userId: "u1" }), (e: unknown) => e instanceof DomainError && e.code === "validation_failed");
+  assert.deepEqual(YOUTUBE_CALLS(h.calls), []);
+  assert.equal(h.stream().broadcastId, "BC1");
+});
+
+test("Stop still stops the encoder and turns the intent off when YouTube has no broadcast to end (deleted in Studio)", async () => {
+  for (const reason of ["liveBroadcastNotFound", "invalidTransition"]) {
+    const h = harness({ streamId: "STREAM1", broadcastId: "BC1", intent: "on", transitionError: reason });
+    assert.deepEqual(await h.broadcasts.stop("UC1", { userId: "u1" }, { encoderOnly: false }), { broadcastEnded: false, youtubeRefusal: reason });
+    assert.ok(h.calls.includes("stopEncoder"), reason);
+    assert.equal(h.stream().intent, "off", reason);
+  }
+});
+
+test("a stream deleted in Studio: the bind fails, the stream is forgotten for the next Start, no broadcast is recorded", async () => {
+  const h = harness({ streamId: "GONE", bindError: "liveStreamNotFound" });
+  await assert.rejects(
+    () => h.broadcasts.start("UC1", { userId: "u1" }),
+    (e: unknown) => e instanceof DomainError && e.code === "update_failed" && (e.details as { reason?: string }).reason === "liveStreamNotFound"
+  );
+  assert.deepEqual([h.stream().streamId, h.stream().broadcastId, h.stream().intent], [null, null, "off"]);
+  assert.ok(!h.calls.includes("liveStreams.list"), "no encoder start");
+});
+
+test("Edit is validated before any YouTube call: missing what the preview showed, an unknown privacy, an empty title", async () => {
+  const h = harness({ streamId: "STREAM1", broadcastId: "BC1", intent: "on" });
+  const expected = { title: "Tropico Jazz Radio", description: "24/7", privacyStatus: "unlisted" };
+  for (const [patch, exp] of [
+    [{ title: "x" }, undefined],
+    [{ privacyStatus: "everyone" }, expected],
+    [{ title: "   " }, expected],
+    [{ title: "x".repeat(101) }, expected],
+    [{ title: "x", extra: 1 }, expected],
+  ] as const) {
+    await assert.rejects(() => h.broadcasts.edit("UC1", { userId: "u1" }, patch, exp), (e: unknown) => e instanceof DomainError && e.code === "validation_failed", JSON.stringify(patch));
+  }
+  assert.deepEqual(YOUTUBE_CALLS(h.calls), []);
+});
+
+test("Edit sends the title trimmed, as YouTube keeps it, so its read-back matches", async () => {
+  const h = harness({ streamId: "STREAM1", broadcastId: "BC1", intent: "on" });
+  const preview = await h.broadcasts.previewEdit("UC1", { userId: "u1" }, { title: "  New title  " });
+  const result = await h.broadcasts.edit("UC1", { userId: "u1" }, { title: "  New title  " }, preview.before);
+  assert.equal(result.verified, true);
+  assert.equal((h.sent.update as { snippet: { title: string } }).snippet.title, "New title");
+  assert.equal(h.stream().title, "New title");
 });
