@@ -49,9 +49,12 @@ disconnected by itself.
 - The picture is re-encoded live: about 24 % of one core per stream on the M4 (measured, 60 s).
 - The key appears in ffmpeg's command line, which the other account on the Mac can read with `ps`. That account already holds the
   channels' Google sign-in (ADR 0032), so it gains no new capability; the risk is recorded in TECHNICAL_DEBT.
-- Whether YouTube keeps a broadcast live across a 2-, 10- or 30-minute gap with auto-stop off is not documented. Spike B measures
-  it on an unlisted Tropico broadcast, which needs the owner's separate "да" (AGENTS.md §K.4). If YouTube ends broadcasts across
-  short gaps, an automatic restart would need its own scoped standing approval and its own ADR.
+- Spike B (2026-10-12, the owner's "да", unlisted Tropico broadcast): with auto-stop off the broadcast stayed live across gaps
+  of 2, 10 and 30 minutes and resumed on the same link. So recovery needs no YouTube write. If YouTube ends a broadcast after a
+  longer outage, the app stops and tells the owner (§5 of this ADR's decision 4); an automatic new broadcast would still need its
+  own scoped approval and ADR.
+- The encoder default is the Mac's hardware H.264 (≈ 2.2 Mbit/s, YouTube's health `ok` with a low-bitrate warning). A 6 Mbit/s
+  x264 stream starved over the Mac's Wi-Fi (spike B).
 - Quota: each live method costs 1 unit; two running streams cost about 1,440 units a day in status polls.
 
 ## Alternatives rejected

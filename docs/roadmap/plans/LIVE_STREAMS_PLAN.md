@@ -575,7 +575,31 @@ Details (proposed in msg 2577, accepted in msg 2578):
 
   A plain child was killed in both cases. So `AbandonProcessGroup` looks unnecessary. The §4.2 run with the real `stop.sh`
   confirms it on the system service.
-- **Drift over a multi-hour run:** pending (a ≈ 3 h run across a join).
+- **Drift over a multi-hour run:** clean (V41 from 3,700 s, then V37 in full; 11,028.7 s of content in 11,029 s of wall time):
+  - audio and video ended 0.02 s apart;
+  - frame counts matched 30 fps to within 2 frames at every hour;
+  - no gap over 34 ms;
+  - keyframes exactly every 2.0 s;
+  - ≈ 12 % of one core (videotoolbox).
+
+### 6.2 Spike B (real YouTube, Tropico, 2026-10-12, with the owner; unlisted broadcast `SQpSE36gSjM`, ended)
+- **Key:** `liveStreams.list part=cdn` returns `streamName` (24 characters) and the RTMPS address. The key is not stored (§3.7
+  stands; no fallback needed).
+- **Auto-start:** with auto-start on and the monitor stream off, the broadcast went `live` about 1 minute after the picture
+  arrived. «В эфир» is a rarely needed fallback.
+- **Gaps with auto-stop off:** the broadcast stayed `live` (polled every minute) through gaps of 2, 10 and **30 minutes**.
+  - The stream read `inactive` / `noData` meanwhile.
+  - Within a minute of sending again it was `active` / `good` on the same broadcast.
+  - The owner's open player resumed by itself, without a reload.
+
+  §3.8's "YouTube ended it" path stays for longer outages; the phase-2 standing approval is not needed for gaps up to 30 min.
+- **Encoder:**
+  - `h264_videotoolbox` at ≈ 2.2 Mbit/s gives health `good`, or `ok` with a `bitrateLow` warning. **It is the default.**
+  - libx264 CBR 6 Mbit/s over the Mac's Wi-Fi: ffmpeg's input fell 6–7 s behind (speed 0.99x), and health was `bad` with
+    `videoIngestionStarved`. It stays a setting.
+- **Wi-Fi stalls:** in one later run on videotoolbox, the upload stalled for up to 13.7 s. Health went `bad`
+  (`videoIngestionStarved`) for a poll, and ffmpeg caught up by itself. A wired connection is advised for 24/7 streams.
+- **Quota:** 1 unit per live call as listed; the Cloud Console check is still owed.
 
 ## 7. Not in phase 1
 - **Phase 2:**
