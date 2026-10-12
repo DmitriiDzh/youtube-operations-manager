@@ -25,6 +25,7 @@ function setup(opts: {
   assertMutationAllowed?: () => Promise<void>;
   quotaGuard?: FixAllDependencies["quotaGuard"];
   conflictedFields?: string[];
+  conflictedFieldsUnknown?: true;
 } = {}) {
   const calls: Call[] = [];
   const registry = createOperationRegistry();
@@ -46,6 +47,7 @@ function setup(opts: {
         defaultAudioLanguageDeviates: d.audio ?? false,
       })),
       ...(opts.conflictedFields ? { conflictedFields: opts.conflictedFields } : {}),
+      ...(opts.conflictedFieldsUnknown ? { conflictedFieldsUnknown: true as const } : {}),
     }),
     applyFieldsUpdate: async (call) => {
       calls.push(call);
@@ -327,6 +329,16 @@ test("BL-178 B: a run is refused while the channel's defaults differ between the
   await assert.rejects(
     () => service.start(request(["v1", "v2"])),
     (error: unknown) => error instanceof DomainError && error.code === "validation_failed" && /set differently on your computers/.test(error.message)
+  );
+  assert.equal(calls.length, 0);
+  assert.equal(registry.list({ channelId: "UC1" }).length, 0);
+});
+
+test("BL-178 B: a run is refused when the shared settings cannot be read (agreement unknown); nothing is written", async () => {
+  const { service, calls, registry } = setup({ conflictedFieldsUnknown: true });
+  await assert.rejects(
+    () => service.start(request(["v1"])),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed" && /could not be read/.test(error.message)
   );
   assert.equal(calls.length, 0);
   assert.equal(registry.list({ channelId: "UC1" }).length, 0);

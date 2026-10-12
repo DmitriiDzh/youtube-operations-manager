@@ -24,6 +24,7 @@ type Report = {
   totalVideos: number;
   deviations: DeviationRow[];
   conflictedFields?: string[];
+  conflictedFieldsUnknown?: true;
 };
 
 const NOT_APPLICABLE = "zxx";
@@ -311,7 +312,7 @@ export function LanguageDefaultsPanel({
   }, [dirty]);
   // BL-178 part B (review item 1): while the defaults differ between the computers nobody has chosen the value an alignment
   // would write -- the "Fix all" run refuses on the server too.
-  const conflicted = (report?.conflictedFields?.length ?? 0) > 0;
+  const conflicted = (report?.conflictedFields?.length ?? 0) > 0 || report?.conflictedFieldsUnknown === true;
   const deviations = report?.deviations ?? [];
   const selectClass = "rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm";
 

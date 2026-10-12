@@ -3716,8 +3716,9 @@ Owner exception 2026-10-12 (msg 2665), recorded in `docs/PROJECT_SPEC.md` §14 a
   - Adding or removing a tracked language is refused while the tracked lists conflict, because it would drop the other
     computer's languages.
   - Batches refuse a row before any YouTube call while `defaultLanguage` or `defaultAudioLanguage` conflicts. So does "Fix
-    all". Per-video alignment is disabled in the panel. If the conflict state cannot be read, the row fails closed with the
-    cause. A tracked-languages conflict does not stop Batches, since no write reads the tracked list. The Languages page says
+    all", which also refuses when the shared document cannot be read. Per-video alignment (a `video-details` preview/apply of the
+    panel's value) is disabled in the panel only: `video-details` is the owner's single-video edit and has no channel-baseline
+    check of its own (low risk, accepted). If the conflict state cannot be read, a Batch row fails closed with the cause. A tracked-languages conflict does not stop Batches, since no write reads the tracked list. The Languages page says
     when the defaults differ.
   - **Known limit:** a value an owner clears before the first sync is not shared, because an empty value is never seeded.
     The other computer's set value then arrives and takes its place. A value cleared after it was shared reaches the other

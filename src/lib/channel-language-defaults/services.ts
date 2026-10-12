@@ -28,13 +28,16 @@ async function requireChannel(deps: ServiceDependencies, channelId: string) {
   return channel;
 }
 
-/** BL-178 part B: left out when the store cannot tell -- an unreadable shared document never breaks this report (review item 5). */
-async function conflictedFieldsOf(deps: ServiceDependencies, channelId: string): Promise<{ conflictedFields?: string[] }> {
+/**
+ * BL-178 part B: an unreadable shared document never breaks this report (review item 5), but it is flagged -- a write that
+ * needs the computers to agree ("Fix all") refuses on the flag, as a Batch does (review re-check).
+ */
+async function conflictedFieldsOf(deps: ServiceDependencies, channelId: string): Promise<{ conflictedFields?: string[]; conflictedFieldsUnknown?: true }> {
   if (!deps.store.getConflictedFields) return {};
   try {
     return { conflictedFields: await deps.store.getConflictedFields(channelId) };
   } catch {
-    return {};
+    return { conflictedFieldsUnknown: true };
   }
 }
 

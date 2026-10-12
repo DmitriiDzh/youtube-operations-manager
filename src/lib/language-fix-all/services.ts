@@ -46,6 +46,8 @@ export type FixAllDependencies = {
     }>;
     /** BL-178 part B: baseline fields set differently on the owner's computers; while any is, a run is refused. */
     conflictedFields?: string[];
+    /** The shared settings could not be read: agreement unknown, so a run is refused too. */
+    conflictedFieldsUnknown?: true;
   }>;
   applyFieldsUpdate(input: {
     credentialRef: { userId: string };
@@ -116,6 +118,12 @@ export function createLanguageFixAllServices(deps: FixAllDependencies) {
       }
       // BL-178 part B (review item 1): while the baseline differs between the owner's computers, nobody has chosen the value this
       // run would write -- the same refusal as a Batch's (PROJECT_SPEC §14).
+      if (report.conflictedFieldsUnknown) {
+        throw new DomainError({
+          code: "validation_failed",
+          message: "The channel's shared language settings could not be read, so it is unknown whether your computers agree -- nothing was written; try again after a sync",
+        });
+      }
       if ((report.conflictedFields ?? []).length > 0) {
         throw new DomainError({
           code: "validation_failed",

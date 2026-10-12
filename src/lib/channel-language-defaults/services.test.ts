@@ -123,7 +123,7 @@ test("setDefaults changes only the fields sent and returns the whole baseline", 
   assert.deepEqual(getStored(), { defaultLanguage: "en", defaultAudioLanguage: "zxx" });
 });
 
-test("an unreadable shared document leaves conflictedFields out instead of failing the report", async () => {
+test("an unreadable shared document flags the report (conflictedFieldsUnknown) instead of failing it", async () => {
   const services = createChannelLanguageDefaultsServices({
     store: {
       getChannel: async (channelId) => ({ channelId }),
@@ -137,5 +137,6 @@ test("an unreadable shared document leaves conflictedFields out instead of faili
   });
   const report = await services.getDeviations({ channelId: "ch" });
   assert.equal("conflictedFields" in report, false);
+  assert.equal(report.conflictedFieldsUnknown, true);
   assert.deepEqual(report.defaults, { defaultLanguage: "en", defaultAudioLanguage: "en" });
 });
