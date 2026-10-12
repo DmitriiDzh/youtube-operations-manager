@@ -253,7 +253,12 @@ export function createStreamSupervisor(deps: SupervisorDependencies) {
   /** Stops this stream's helper process -- running or hung -- with its ffmpeg (the process group); waits for it to exit. */
   async function stopRunning(channelId: string, reason: string): Promise<boolean> {
     const record = await liveHelper(channelId);
-    if (!record) return false;
+    if (!record) {
+      // No helper, but its ffmpeg may still be sending: a helper killed outright cannot take it along (final check).
+      if ((await deps.process.killStrayEncoders(dirOf(channelId))) === 0) return false;
+      await deps.streams.event(channelId, "encoder_stop", { reason: "stray" });
+      return true;
+    }
     deps.process.signalGroup(record.pid, "SIGTERM");
     if (!(await deps.process.waitForExit(record.pid, HELPER_STOP_GRACE_MS))) {
       deps.process.signalGroup(record.pid, "SIGKILL");
@@ -262,6 +267,19 @@ export function createStreamSupervisor(deps: SupervisorDependencies) {
     await deps.process.killStrayEncoders(dirOf(channelId));
     await deps.streams.event(channelId, "encoder_stop", { reason });
     return true;
+  }
+
+  /** The pass a start plays, from the stream's stored pass and position and the videos playable now. */
+  function passFor(stream: SupervisorStream, playable: readonly string[], options: StartOptions): { passNumber: number; pass: { order: string[]; index: number; offset: number } } {
+    const storedOrder = parseJson<string[]>(stream.passOrderJson);
+    const passNumber = stream.passNumber + 1;
+    if (options.rebuild && !options.freshPass && storedOrder) {
+      return { passNumber, pass: rebuiltPass(playable, stream.orderMode, deps.random, { videoId: storedOrder[stream.positionIndex] ?? null, offset: stream.positionOffsetSeconds }) };
+    }
+    if (options.freshPass || !storedOrder) return { passNumber, pass: { order: drawPassOrder(playable, stream.orderMode, deps.random, null), index: 0, offset: 0 } };
+    const pass = playablePass(storedOrder, playable, { index: stream.positionIndex, offset: stream.positionOffsetSeconds });
+    if (pass.index < pass.order.length) return { passNumber: stream.passNumber, pass };
+    return { passNumber, pass: { order: drawPassOrder(playable, stream.orderMode, deps.random, storedOrder.at(-1) ?? null), index: 0, offset: 0 } };
   }
 
   type Prepared = { settings: LiveStreamsSettings; tools: NonNullable<Awaited<ReturnType<SupervisorDependencies["ffmpeg"]>>>; playable: string[]; passNumber: number; pass: { order: string[]; index: number; offset: number } };
@@ -275,7 +293,8 @@ export function createStreamSupervisor(deps: SupervisorDependencies) {
     if (!settings.enabled || !settings.host.ok) throw new DomainError({ code: "live_streams_host_unsupported", message: settings.host.ok ? "The live-streams module is switched off in Settings" : settings.host.reason });
     const stream = await deps.streams.get(channelId);
     if (!stream || stream.intent !== "on" || !stream.streamId) throw new DomainError({ code: "validation_failed", message: "The stream is not on (press Start first)", details: { channelId } });
-    if (await runningHelper(channelId)) throw new DomainError({ code: "validation_failed", message: "The encoder is already running", details: { channelId } });
+    // Restart stops the running encoder itself, after this preparation.
+    if (!options.rebuild && (await runningHelper(channelId))) throw new DomainError({ code: "validation_failed", message: "The encoder is already running", details: { channelId } });
 
     const tools = await deps.ffmpeg(settings.ffmpegDir);
     const encoderOk = settings.encoder === "libx264" ? tools?.features.libx264 : tools?.features.h264Videotoolbox;
@@ -287,23 +306,7 @@ export function createStreamSupervisor(deps: SupervisorDependencies) {
     const playable = options.playable ? [...options.playable] : await deps.streams.recheck(channelId);
     if (playable.length === 0) throw new DomainError({ code: "live_stream_video_refused", message: "No video in the rotation is playable (public, with its file)", details: { channelId, reason: "empty" } });
 
-    const storedOrder = parseJson<string[]>(stream.passOrderJson);
-    let passNumber = stream.passNumber;
-    let pass: { order: string[]; index: number; offset: number };
-    if (options.rebuild && !options.freshPass && storedOrder) {
-      passNumber += 1;
-      pass = rebuiltPass(playable, stream.orderMode, deps.random, { videoId: storedOrder[stream.positionIndex] ?? null, offset: stream.positionOffsetSeconds });
-    } else if (options.freshPass || !storedOrder) {
-      passNumber += 1;
-      pass = { order: drawPassOrder(playable, stream.orderMode, deps.random, null), index: 0, offset: 0 };
-    } else {
-      pass = playablePass(storedOrder, playable, { index: stream.positionIndex, offset: stream.positionOffsetSeconds });
-      if (pass.index >= pass.order.length) {
-        passNumber += 1;
-        pass = { order: drawPassOrder(playable, stream.orderMode, deps.random, storedOrder.at(-1) ?? null), index: 0, offset: 0 };
-      }
-    }
-
+    const { passNumber, pass } = passFor(stream, playable, options);
     const buffered = await withBufferLock(channelId, () => syncBuffer(channelId, pass.order, pass.index, null));
     if (!buffered.present.includes(pass.order[pass.index]) && !buffered.present.some((id) => playable.includes(id))) {
       throw new DomainError({ code: "live_stream_video_refused", message: `The first video could not be copied to this computer: ${buffered.missing?.detail ?? "unknown"}`, details: { channelId, reason: buffered.missing?.reason ?? "source_unavailable" } });
@@ -399,12 +402,17 @@ export function createStreamSupervisor(deps: SupervisorDependencies) {
      * §3.9 Restart: the encoder stops and starts again on the same broadcast, with the pass rebuilt from the rotation as it is
      * now (edits apply at once; the video playing keeps its place while it is still in the rotation). No YouTube write.
      */
-    restart: (channelId: string) =>
-      withChannelLock(channelId, async () => {
+    restart: async (channelId: string) => {
+      // The buffer is filled before the stream's lock is taken (a copy may take minutes; Stop must not wait behind it).
+      const options: StartOptions = { freshPass: false, rebuild: true };
+      const prepared = await prepareStart(channelId, options);
+      return withChannelLock(channelId, async () => {
         await stopRunning(channelId, "owner_restart");
-        // Under the lock throughout, so the background loop cannot start an encoder in between (the buffer is mostly in place).
-        return commitStart(channelId, await prepareStart(channelId, { freshPass: false, rebuild: true }));
-      }),
+        // The pass again from the position as it is now: the encoder kept playing while the buffer was being filled.
+        const stream = await deps.streams.get(channelId);
+        return commitStart(channelId, stream ? { ...prepared, ...passFor(stream, prepared.playable, options) } : prepared);
+      });
+    },
 
     /**
      * One supervision step for a stream (every few seconds): import the helper's events, carry its pass and position into

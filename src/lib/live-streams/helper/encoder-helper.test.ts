@@ -303,3 +303,79 @@ test("an ffmpeg with no progress for the stall time is stopped by the helper (a 
   assert.equal(spawned, 1);
   assert.equal(kills[0], "SIGTERM");
 });
+
+test("progress blocks with a frozen output time (ffmpeg 7+ prints them on a timer while the connection is dead) do not keep it alive", async () => {
+  const kills: string[] = [];
+  const signal: { stopped: boolean; onStop?: () => void; wake?: () => void } = { stopped: false };
+  let ticker: ReturnType<typeof setInterval> | undefined;
+  const io = {
+    readPlan: () => basePlan(),
+    exists: () => true,
+    writeAtomic: () => undefined,
+    append: () => undefined,
+    spawnFfmpeg: () => {
+      const child = Object.assign(new EventEmitter(), {
+        stdout: new PassThrough(),
+        stderr: new PassThrough(),
+        kill: (sig: string) => {
+          kills.push(sig);
+          signal.stopped = true;
+          clearInterval(ticker);
+          setImmediate(() => child.emit("exit", null, sig));
+          return true;
+        },
+      });
+      // A progress block every 5 ms, out_time_us stuck at 208980 (what ffmpeg 9 prints writing into a stalled output).
+      ticker = setInterval(() => child.stdout.write("out_time_us=208980\nbitrate=2200.0kbits/s\nspeed=0.01x\nprogress=continue\n"), 5);
+      return child;
+    },
+    probeKeyframe: async () => 0,
+    sleep: async () => undefined,
+    now: () => Date.now(),
+  };
+  await runHelper({ dir: "/buf/UC1", key: KEY, pid: 1, stallMs: 50, io: io as never, signal });
+  clearInterval(ticker);
+  assert.equal(kills[0], "SIGTERM");
+});
+
+test("an ffmpeg whose output time keeps growing is not stopped by the stall watchdog", async () => {
+  const kills: string[] = [];
+  const signal: { stopped: boolean; onStop?: () => void; wake?: () => void } = { stopped: false };
+  let ticker: ReturnType<typeof setInterval> | undefined;
+  const io = {
+    readPlan: () => basePlan(),
+    exists: () => true,
+    writeAtomic: () => undefined,
+    append: () => undefined,
+    spawnFfmpeg: () => {
+      const child = Object.assign(new EventEmitter(), {
+        stdout: new PassThrough(),
+        stderr: new PassThrough(),
+        kill: (sig: string) => {
+          kills.push(sig);
+          return true;
+        },
+      });
+      let outUs = 0;
+      ticker = setInterval(() => {
+        outUs += 5000;
+        child.stdout.write(`out_time_us=${outUs}\nprogress=continue\n`);
+      }, 5);
+      // Runs for 4x the stall time, then ends the way a stop would.
+      setTimeout(() => {
+        clearInterval(ticker);
+        signal.stopped = true;
+        child.stdout.end();
+        child.stderr.end();
+        child.emit("exit", null, "SIGTERM");
+      }, 200);
+      return child;
+    },
+    probeKeyframe: async () => 0,
+    sleep: async () => undefined,
+    now: () => Date.now(),
+  };
+  await runHelper({ dir: "/buf/UC1", key: KEY, pid: 1, stallMs: 50, io: io as never, signal });
+  clearInterval(ticker);
+  assert.deepEqual(kills, []);
+});

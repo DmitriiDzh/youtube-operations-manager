@@ -166,7 +166,10 @@ export async function runHelper(options) {
     signal.onStop = stop;
     if (signal.stopped) stop();
     // The heartbeat keeps the status fresh, so a stuck ffmpeg would otherwise look healthy forever (verification review).
+    // Progress means the output time growing: ffmpeg 7+ prints its progress block on a timer even when nothing is sent
+    // (a dead connection), with out_time_us frozen (final check, ffmpeg 9.0.2).
     let lastProgressAt = io.now();
+    let lastGrownOutTime = -1;
     const watchdog = setInterval(() => {
       if (io.now() - lastProgressAt > (options.stallMs ?? STALL_MS)) {
         log(`no progress from ffmpeg for ${Math.round((io.now() - lastProgressAt) / 1000)}s: stopping it`);
@@ -202,7 +205,10 @@ export async function runHelper(options) {
           speed: block.speed ?? null,
         };
         block = {};
-        lastProgressAt = io.now();
+        if (outTime > lastGrownOutTime) {
+          lastGrownOutTime = outTime;
+          lastProgressAt = io.now();
+        }
         onProgress(outTime);
       }
     };

@@ -383,3 +383,60 @@ test("a check of the encoder process that fails (ps) is an error, never 'no enco
   await assert.rejects(() => h.supervisor.startEncoder("UC1", { freshPass: false }), /could not check/);
   assert.equal(h.spawned.length, 1);
 });
+
+// --- Final check (2026-10-12) ---
+
+test("Stop with no helper left still stops an ffmpeg that kept sending after its helper was killed outright", async () => {
+  const h = harness();
+  h.addStray();
+  assert.equal(await h.supervisor.stopEncoder("UC1", "owner_stop"), true);
+  assert.ok(h.events.some((e) => e.kind === "encoder_stop" && e.detail.reason === "stray"));
+  assert.equal(await h.supervisor.stopEncoder("UC1", "owner_stop"), false, "nothing left to stop");
+});
+
+test("Restart fills the buffer before taking the stream's lock: a Stop during the copy does not wait for it, and the restart then starts nothing", async () => {
+  const h = harness();
+  const { pid } = await h.supervisor.startEncoder("UC1", { freshPass: true });
+  h.status({ pid });
+  let release: () => void = () => undefined;
+  let entered: () => void = () => undefined;
+  const gate = new Promise<void>((r) => (release = r));
+  const copying = new Promise<void>((r) => (entered = r));
+  const original = h.deps.buffer.sync;
+  h.deps.buffer.sync = async (c, args) => {
+    entered();
+    await gate;
+    return original(c, args);
+  };
+  const restarting = h.supervisor.restart("UC1");
+  await copying; // the restart is now inside its buffer copy
+  await h.setStream({ intent: "off" });
+  assert.equal(await h.supervisor.stopEncoder("UC1", "owner_stop"), true, "Stop finished while the copy was still running");
+  assert.deepEqual(h.signals, [[pid, "SIGTERM"]]);
+  release();
+  await assert.rejects(() => restarting, (e: unknown) => e instanceof DomainError && e.code === "validation_failed");
+  assert.equal(h.spawned.length, 1, "no encoder after the Stop");
+});
+
+test("Restart starts from the position as it is when the encoder stops, not as it was before the buffer copy", async () => {
+  const h = harness({ stream: { passNumber: 4, passOrderJson: JSON.stringify([A, B, C]), positionIndex: 0, positionOffsetSeconds: 100 } });
+  const { pid } = await h.supervisor.startEncoder("UC1", { freshPass: false });
+  h.status({ pid });
+  let release: () => void = () => undefined;
+  let entered: () => void = () => undefined;
+  const gate = new Promise<void>((r) => (release = r));
+  const copying = new Promise<void>((r) => (entered = r));
+  const original = h.deps.buffer.sync;
+  h.deps.buffer.sync = async (c, args) => {
+    entered();
+    await gate;
+    return original(c, args);
+  };
+  const restarting = h.supervisor.restart("UC1");
+  await copying; // the restart is now inside its buffer copy
+  await h.setStream({ positionIndex: 1, positionOffsetSeconds: 42 }); // the helper moved on to B meanwhile
+  release();
+  await restarting;
+  const plan = JSON.parse(h.files.get("/appdata/live-streams/UC1/plan.json")!);
+  assert.deepEqual([plan.pass.videos[plan.pass.startIndex].videoId, plan.pass.startOffset], [B, 42]);
+});
