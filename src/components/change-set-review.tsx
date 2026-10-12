@@ -101,6 +101,8 @@ export function ChangeSetReview({
   const t = useT();
   const [changeSet, setChangeSet] = useState<ChangeSet | null>(null);
   const [changes, setChanges] = useState<Change[]>([]);
+  // BL-178: videos whose language a send aligns to the channel's (PROJECT_SPEC §14, 2026-10-12).
+  const [languageAlignments, setLanguageAlignments] = useState<Array<{ videoId: string; from: string; to: string }>>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("pending");
@@ -131,6 +133,7 @@ export function ChangeSetReview({
       }
       setChangeSet(data.changeSet);
       setChanges(data.changes);
+      setLanguageAlignments(Array.isArray(data.languageAlignments) ? data.languageAlignments : []);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -317,6 +320,17 @@ export function ChangeSetReview({
       </div>
 
       {error && <div className="rounded-lg border border-red-900 bg-red-950/50 p-3 text-sm text-red-400">{error}</div>}
+
+      {languageAlignments.length > 0 && (
+        <div className="rounded-lg border border-sky-900 bg-sky-950/40 p-3 text-xs text-sky-200">
+          <p>{t("changeSet.review.alignNotice", { count: languageAlignments.length })}</p>
+          <ul className="mt-1 space-y-0.5 font-mono">
+            {languageAlignments.map((a) => (
+              <li key={a.videoId}>{t("changeSet.review.alignItem", { videoId: a.videoId, from: a.from, to: a.to })}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <div className="space-y-2">
         {loading && <LoadingIndicator className="text-sm text-zinc-500" />}

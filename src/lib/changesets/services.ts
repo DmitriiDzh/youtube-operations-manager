@@ -211,7 +211,7 @@ async function loadRevalidated(
   deps: ServiceDependencies,
   channelId: string,
   changeSetId: string
-): Promise<{ changeSet: StoredChangeSetRecord; changes: StoredChangeRecord[] }> {
+): Promise<{ changeSet: StoredChangeSetRecord; changes: StoredChangeRecord[]; languageAlignments: LanguageAlignment[] }> {
   const changeSet = await requireChangeSet(deps, channelId, changeSetId);
   const storedChanges = await deps.changeSetStore.listChangesByChangeSet(changeSetId);
   const videos = await deps.channelStore.listVideosByChannel(channelId);
@@ -257,8 +257,18 @@ async function loadRevalidated(
     changeSet.status = newStatus;
   }
 
-  return { changeSet, changes: finalChanges };
+  // BL-178: the videos of this set whose language a send will align to the channel's (shown before approval).
+  const languageAlignments: LanguageAlignment[] = [];
+  for (const videoId of new Set(storedChanges.map((change) => change.videoId))) {
+    const read = videoRead(videoId);
+    if (read?.alignedFrom && read.alignedTo) languageAlignments.push({ videoId, from: read.alignedFrom, to: read.alignedTo });
+  }
+
+  return { changeSet, changes: finalChanges, languageAlignments };
 }
+
+/** BL-178 (PROJECT_SPEC §14, 2026-10-12): a send sets this video's defaultLanguage from `from` to the channel's `to`. */
+type LanguageAlignment = { videoId: string; from: string; to: string };
 
 type ChangeToPersist = {
   id: string;
@@ -675,12 +685,14 @@ export function createChangeSetServices(deps: ServiceDependencies) {
       changeSet: ChangeSet;
       changes: Change[];
       pagination: { page: number; pageSize: number; total: number };
+      /** BL-178: videos whose language the send aligns to the channel's (whole set, not only this page). Additive. */
+      languageAlignments?: LanguageAlignment[];
     }> {
       const parsedInput = parseWithSchema(getChangeSetInputSchema, input, "get change set input");
 
       try {
         await requireChannel(deps, parsedInput.channelId);
-        const { changeSet, changes } = await loadRevalidated(deps, parsedInput.channelId, parsedInput.changeSetId);
+        const { changeSet, changes, languageAlignments } = await loadRevalidated(deps, parsedInput.channelId, parsedInput.changeSetId);
 
         let filtered = changes;
         if (parsedInput.language) {
@@ -708,6 +720,7 @@ export function createChangeSetServices(deps: ServiceDependencies) {
           changeSet: toChangeSetRecord(changeSet, changes.map(toChangeRecord)),
           changes: pageItems,
           pagination: { page, pageSize, total: filtered.length },
+          languageAlignments,
         };
       } catch (error) {
         throw mapUnknownError(error, "not_found");

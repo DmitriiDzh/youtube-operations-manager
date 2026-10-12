@@ -678,3 +678,15 @@ test("BL-178: without a baseline the video is read as it is (the es row compares
   const detail = await services.getChangeSet({ channelId: "UC_TEST", changeSetId: created.changeSet.id });
   assert.equal(detail.changes[0]!.changeType, "modify");
 });
+
+test("BL-178: the change set lists the videos whose language the send will align (es -> en), so the approval screen can show it", async () => {
+  const { services, setVideos } = createFixture({ channelBaseline: "en" });
+  setVideos([MISLABELLED(), makeVideo({ videoId: "v2" })]);
+  const buffer = await buildWorkbookBuffer([
+    { video_id: "v1", language: "es", title: "Jazz cubano", description: "", remote_title: "", remote_description: "" },
+    { video_id: "v2", language: "es", title: "Nuevo", description: "", remote_title: "", remote_description: "" },
+  ]);
+  const created = await services.createChangeSetFromImport({ channelId: "UC_TEST", filename: "import.xlsx", buffer });
+  const detail = await services.getChangeSet({ channelId: "UC_TEST", changeSetId: created.changeSet.id });
+  assert.deepEqual(detail.languageAlignments, [{ videoId: "v1", from: "es", to: "en" }]);
+});

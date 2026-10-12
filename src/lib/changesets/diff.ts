@@ -62,6 +62,7 @@ export function readWithChannelBaseline(video: StoredVideoRecord, channelBaselin
     current: (language: string, field: "title" | "description") => currentValueIn(view, language, field),
     holds: (change: { language: string; field: "title" | "description"; baselineValue: string }) => baselineValueStillHolds(raw, reading, change),
     alignedFrom: reading.kind === "aligned" ? reading.from : null,
+    alignedTo: reading.kind === "aligned" ? reading.to : null,
   };
 }
 
