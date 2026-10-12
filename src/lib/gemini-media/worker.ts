@@ -455,9 +455,15 @@ export function createGeminiWorker(deps: GeminiMediaDeps) {
     try {
       written = await deps.api.downloadVideo(apiKey, operation.videoUri, localPath);
     } catch (error) {
-      // Google answered that the file is gone (review item 4): nothing left to collect -- not retried for 47 h.
-      if (isDomainError(error) && (error.details as { status?: number } | undefined)?.status === 404) {
-        await fail(job, "running", knownCost("gemini_expired", `Google no longer has the video file: ${error.message}`));
+      // Google answered that the file is gone (review item 4), or with something that is not a video (re-check): nothing left to
+      // collect -- not retried for 47 h.
+      const details = isDomainError(error) ? (error.details as { status?: number; notAVideo?: boolean } | undefined) : undefined;
+      if (details?.status === 404) {
+        await fail(job, "running", knownCost("gemini_expired", `Google no longer has the video file: ${(error as Error).message}`));
+        return;
+      }
+      if (details?.notAVideo) {
+        await fail(job, "running", knownCost("gemini_output_failed", `The video link did not give a video file: ${(error as Error).message}`));
         return;
       }
       await later(GEMINI_LIMITS.videoRetryMs, `Download failed: ${error instanceof Error ? error.message : String(error)}`);

@@ -1191,6 +1191,20 @@ test("BL-179 review: a link-delivered video Google no longer has, or one never c
   } finally {
     await late.cleanup();
   }
+  const notVideo = await harness();
+  try {
+    notVideo.behaviour.generateVideo = async () => ({ video: { mimeType: "video/mp4", uri: "https://generativelanguage.googleapis.com/v1beta/files/z:download?alt=media" }, usage, status: "completed", blockReason: null });
+    notVideo.behaviour.downloadVideo = async () => {
+      throw gatewayError("gemini_unavailable", { status: 200, notAVideo: true });
+    };
+    const { job } = (await notVideo.services.createJob(omniJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 8 } }), "factory")) as { job: { jobId: string } };
+    await notVideo.runTick();
+    await notVideo.runTick();
+    const row = notVideo.store.jobs.get(job.jobId)!;
+    assert.deepEqual([row.status, row.errorCode, row.costUsd, row.costBasis], ["failed", "gemini_output_failed", 0.8199, "usage"], "a link that gives no video is not retried for 47 h");
+  } finally {
+    await notVideo.cleanup();
+  }
   const odd = await harness();
   try {
     odd.behaviour.generateVideo = async () => ({ video: { mimeType: "video/mp4", uri: "gs://bucket/x.mp4" }, usage, status: "completed", blockReason: null });

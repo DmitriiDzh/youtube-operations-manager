@@ -549,7 +549,7 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; longWaitFetchIm
       // A JSON answer is a metadata page or an error, never the video (review item 4: it would be saved as video-1.mp4).
       if ((response.headers.get("content-type") ?? "").toLowerCase().includes("application/json")) {
         await response.body.cancel().catch(() => undefined);
-        throw new DomainError({ code: "gemini_unavailable", message: "The video download answered with JSON, not a video file.", details: { ...context, outcome: "answered", status: response.status } });
+        throw new DomainError({ code: "gemini_unavailable", message: "The video download answered with JSON, not a video file.", details: { ...context, outcome: "answered", status: response.status, notAVideo: true } });
       }
       const declared = Number(response.headers.get("content-length") ?? "");
       if (Number.isFinite(declared) && declared > GEMINI_MAX_VIDEO_BYTES) {

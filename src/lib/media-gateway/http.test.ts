@@ -92,3 +92,17 @@ test("a timeout that fires while the body is still arriving rejects with the tim
     server.close();
   }
 });
+
+test("an answer with a status fetch cannot represent is a rejected call, never an uncaught throw or a call that never ends", async () => {
+  const { createServer: createRawServer } = await import("node:net");
+  const raw = createRawServer((socket) => {
+    socket.on("data", () => socket.end("HTTP/1.1 600 Weird\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok"));
+  });
+  await new Promise<void>((resolve) => raw.listen(0, "127.0.0.1", resolve));
+  try {
+    const url = `http://127.0.0.1:${(raw.address() as AddressInfo).port}`;
+    await assert.rejects(createLongWaitFetch({ maxBodyBytes: 1024 })(url, { signal: AbortSignal.timeout(5000) }), (error: unknown) => (error as { code?: string }).code === "ERR_INVALID_RESPONSE");
+  } finally {
+    raw.close();
+  }
+});

@@ -124,7 +124,14 @@ export function createLongWaitFetch(options: { maxBodyBytes: number }): typeof f
           }
           const status = res.statusCode ?? 502;
           const noBody = status === 204 || status === 304;
-          finish(() => resolve(new Response(noBody ? null : Buffer.concat(chunks), { status, headers: responseHeaders })));
+          // A status fetch cannot represent (outside 200-599) is a transport failure, never an uncaught throw (review re-check).
+          finish(() => {
+            try {
+              resolve(new Response(noBody ? null : Buffer.concat(chunks), { status, headers: responseHeaders }));
+            } catch (error) {
+              reject(Object.assign(new Error(`Unusable answer (HTTP ${status}): ${error instanceof Error ? error.message : String(error)}`), { code: "ERR_INVALID_RESPONSE" }));
+            }
+          });
         });
         res.on("error", (error) => finish(() => reject(error)));
         res.on("aborted", () => finish(() => reject(Object.assign(new Error("The answer was cut off"), { code: "ECONNRESET" }))));
