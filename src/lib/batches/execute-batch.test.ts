@@ -1594,3 +1594,24 @@ test("BL-178 review S1: an unknown outcome whose read shows the rows written but
   const summary = await harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, executor: scriptedExecutor([{ outcome: "UNKNOWN", detail: "timeout" }]) });
   assert.notEqual(summary.results[0].status, "SUCCESS");
 });
+
+test("BL-178 re-check N1: language and original read back right but the translation differs -> that row fails, the batch goes on (no stop)", async () => {
+  const translationDiffers: Fixture = {
+    snippet: { title: EN_T, description: EN_D, defaultLanguage: "en", defaultAudioLanguage: "en" },
+    localizations: { en: { title: EN_T, description: EN_D }, es: { title: "Otro título", description: "" } },
+  };
+  const harness = createHarness({
+    channelBaseline: "en",
+    channelBaselineAudio: "en",
+    freshSequenceByVideoId: { v1: [MISLABELLED, MISLABELLED, translationDiffers], v2: [MISLABELLED, MISLABELLED, ALIGNED_AFTER()] },
+  });
+  const batch = await createApprovedBatch(
+    harness,
+    { channelId: "UC_TEST", dryRun: false, selections: [{ videoId: "v1", changeIds: ["c1"] }, { videoId: "v2", changeIds: ["c2"] }] },
+    { ...ES_ROW, c2: { ...ES_ROW.c1 } }
+  );
+  const summary = await harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, executor: scriptedExecutor([{ outcome: "SUCCESS" }, { outcome: "SUCCESS" }]) });
+  const byVideo = Object.fromEntries(summary.results.map((r) => [r.videoId, r.status]));
+  assert.equal(byVideo.v1, "FAILED");
+  assert.equal(byVideo.v2, "SUCCESS");
+});

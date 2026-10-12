@@ -1368,9 +1368,6 @@ export function createBatchServices(deps: ServiceDependencies) {
 
       if (result.outcome === "SUCCESS") {
         let verifyRaw = await deps.youtubeApi.fetchFreshVideoContext({ credentials, videoId: row.videoId });
-        // BL-178: an aligning write promised to leave the original title/description untouched (PROJECT_SPEC §14,
-        // 2026-10-12); anything else means YouTube did not do what this write assumed -- the row fails and the batch stops.
-        let snippetChanged = false;
         // An injected defaultLanguage is part of what this write promised: the read-back must show it.
         const classifyVerify = (raw: typeof verifyRaw) => {
           if (!raw) return "diverged" as const;
@@ -1381,15 +1378,14 @@ export function createBatchServices(deps: ServiceDependencies) {
           if (classification === "matches_requested" && appliedDefaultLanguage && context.snippet.defaultLanguage !== appliedDefaultLanguage) {
             return "matches_baseline" as const;
           }
+          // BL-178: an aligning write promised to leave the original title/description untouched (PROJECT_SPEC §14, 2026-10-12).
           if (
             classification === "matches_requested" &&
             alignedDefaultLanguage &&
             (context.snippet.title !== payload.snippet.title || context.snippet.description !== payload.snippet.description)
           ) {
-            snippetChanged = true;
             return "diverged" as const;
           }
-          snippetChanged = false;
           return classification;
         };
         let verifyClassification = classifyVerify(verifyRaw);
@@ -1417,10 +1413,12 @@ export function createBatchServices(deps: ServiceDependencies) {
         // AC-VERIFY-01/AC-CONFLICT-02: a 200 response alone is never sufficient -- a
         // mismatch here means either a partial apply or a same-instant external race.
         await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "VERIFICATION", detail: { confirmed: false, classification: verifyClassification, observed: describeObservedState(pendingChanges, verifyRaw ? toFreshVideoContext(verifyRaw) : null) } });
-        // PROJECT_SPEC §14 (2026-10-12): an aligning write whose read-back does not show the channel's language and the
+        // PROJECT_SPEC §14 (2026-10-12): an aligning write whose final read-back does not show the channel's language or the
         // original exactly as sent fails the row AND stops the batch -- YouTube did not do what this write assumed (review S2).
-        if (snippetChanged || alignedDefaultLanguage) {
-          const detail = snippetChanged
+        // Only a translation that differs is an ordinary, per-row mismatch (re-check N1).
+        const finalContext = verifyRaw ? toFreshVideoContext(verifyRaw) : null;
+        if (alignedDefaultLanguage && finalContext && !readBackMatchesSentSnippet(finalContext, payload)) {
+          const detail = sameLanguage(finalContext.snippet.defaultLanguage, alignedDefaultLanguage.to)
             ? "verification_mismatch: the original title/description read back different from what was sent while aligning the video's language -- the batch stops"
             : "verification_mismatch: the video's language did not read back as the channel's after aligning it -- the batch stops";
           await transitionLedgerStatus(row.id, "FAILED", { error: detail });
