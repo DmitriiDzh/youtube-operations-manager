@@ -5,6 +5,7 @@ import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
 import { createFactoryMcpEndpoint } from "@/lib/factory-mcp-endpoint";
 import { createFactoryTokenCore } from "@/lib/factory-agent-tokens";
 import { createGeminiMediaCore } from "@/lib/gemini-media";
+import { collectLiveStreamEntries, createLiveStreamsCore, getLiveStreamsDeviceId, listPeerLiveStreams } from "@/lib/live-streams";
 import { createLogicalPathsCore } from "@/lib/logical-paths";
 import { createGenerationPlansCore, withPlanLock } from "@/lib/generation-plans";
 import { createMediaGenerationCore, DomainError, withJobErrorCode } from "@/lib/media-generation";
@@ -192,6 +193,20 @@ function createToolDeps(): FactoryToolDeps {
       getStatus: async () => ({ ...(await createGeminiMediaCore().getStatus()) }),
       createJob: async (input) => ({ ...(await createGeminiMediaCore().createJob(input, "factory")) }),
       getJobs: async (input) => ({ ...(await createGeminiMediaCore().getJobs(input)) }),
+    },
+    // BL-176 (LIVE_STREAMS_PLAN.md §3.4/§3.11): live streams -- this computer's and the other computers' status (fixed codes,
+    // never a key or URL), and the Operator's map of videos to original files (it only offers files; the owner builds rotations).
+    live: {
+      getStatus: async (input) => {
+        const now = Date.now();
+        const [own, peers, deviceId] = await Promise.all([collectLiveStreamEntries(now), listPeerLiveStreams(), getLiveStreamsDeviceId()]);
+        const streams = [
+          ...own.map((entry) => ({ device: { deviceId, hostName: null, thisComputer: true }, updatedAt: new Date(now).toISOString(), ...entry })),
+          ...peers.flatMap((peer) => peer.streams.map((entry) => ({ device: { deviceId: peer.deviceId, hostName: peer.hostName, thisComputer: false }, updatedAt: peer.updatedAt, ...entry }))),
+        ].filter((s) => !input.channelId || s.channelId === input.channelId);
+        return { streams };
+      },
+      mapSources: async (input) => ({ results: await createLiveStreamsCore().setSources(input.channelId, { items: input.items }, "factory") }),
     },
     assertMutationAllowed: () => assertDeviceAvailableForMutation(rawSqlClient),
   };

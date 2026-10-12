@@ -10,6 +10,7 @@ import { createFactoryMcpServer, FACTORY_API_VERSION, FACTORY_TOOL_NAMES, FACTOR
 // BL-132 (FACTORY_MEDIA_CONTROL_PLAN.md §2.6, ADR 0025): eight media tools join the four 1.0.0 tools; BL-133
 // (FACTORY_GPU_SESSIONS_PLAN.md, ADR 0026): seven more -- its own sessions, jobs in them, the capacity log.
 // BL-174 (GEMINI_MEDIA_PLAN.md §2.7): three Gemini tools (two reads, one write).
+// BL-176 (LIVE_STREAMS_PLAN.md §3.4/§3.11): two live-stream tools (a status read, a local map write).
 const EXPECTED_TOOLS = [
   "factory_gemini_create_job",
   "factory_gemini_get_job",
@@ -18,6 +19,8 @@ const EXPECTED_TOOLS = [
   "factory_get_logical_path",
   "factory_list_channels",
   "factory_list_logical_paths",
+  "factory_live_get_status",
+  "factory_live_map_sources",
   "factory_media_adopt_template",
   "factory_media_cancel_job",
   "factory_media_cancel_pull",
@@ -64,6 +67,7 @@ function registeredNames(): string[] {
       media: {} as never,
       plans: {} as never,
       gemini: {} as never,
+      live: {} as never,
       async assertMutationAllowed() {},
     },
     { connectionEnabled: true, session: { tokenId: "t", async reverify() {} } }
@@ -97,6 +101,7 @@ test("§2.5(2): the channel-agent server's source never registers a factory_ too
 test("AC-FO-09 (amended by ADR 0025/0026): writes are exactly the named media/session/job actions; everything else is a read; nothing sets a path, workspace or token", () => {
   assert.deepEqual([...FACTORY_WRITE_TOOL_NAMES].sort(), [
     "factory_gemini_create_job",
+    "factory_live_map_sources",
     "factory_media_adopt_template",
     "factory_media_cancel_job",
     "factory_media_cancel_pull",
@@ -121,8 +126,8 @@ test("AC-FO-09 (amended by ADR 0025/0026): writes are exactly the named media/se
   ]);
   const writes = new Set<string>(FACTORY_WRITE_TOOL_NAMES);
   for (const name of FACTORY_TOOL_NAMES) {
-    // BL-174: the Gemini reads are factory_gemini_get_*.
-    if (!writes.has(name)) assert.match(name, /^factory_(get|list|media_(get|list|storage|capacity)|plan_(get|list|todo)|gemini_(get|list))_?/, `${name} must be a read`);
+    // BL-174: the Gemini reads are factory_gemini_get_*; BL-176: the live-stream read is factory_live_get_status.
+    if (!writes.has(name)) assert.match(name, /^factory_(get|list|media_(get|list|storage|capacity)|plan_(get|list|todo)|gemini_(get|list)|live_(get|list))_?/, `${name} must be a read`);
     assert.doesNotMatch(name, /_(set|issue|revoke)_|workspace|token|approve|reject/, `${name} must not touch paths, workspaces or tokens, or approve for anyone`);
   }
 });
@@ -155,6 +160,8 @@ test("§2.5(3): the factory route and endpoint reach only the allowlisted module
     "@/lib/generation-plans",
     // BL-174 (GEMINI_MEDIA_PLAN.md §2.7): the Gemini media module for the factory_gemini_* tools.
     "@/lib/gemini-media",
+    // BL-176 (LIVE_STREAMS_PLAN.md §3.11): the live-streams module for factory_live_get_status / factory_live_map_sources.
+    "@/lib/live-streams",
     "@/mcp/factory-server",
   ]);
   assert.deepEqual(route.filter((spec) => !routeAllowed.has(spec)), []);
@@ -177,7 +184,7 @@ test("§2.5(4): none of the factory files reads channel-scope state (agent-sessi
   }
 });
 
-test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.13.0 since BL-175), separate from the channel agents' version", async () => {
+test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.14.0 since BL-176), separate from the channel agents' version", async () => {
   // BL-153 (FO-REQ-0008): reviewRejected, split waiting counts and overridesValidator are additive -> a minor version.
   // BL-155 (FO-REQ-0007, CUDA_HOSTS_PLAN.md "Contract"): the jobs' errorCode, the error media_gpu_host_incompatible and the
   // stopReason "all jobs failed (release when done)" are additive -> 1.7.0, as the plan states.
@@ -188,7 +195,8 @@ test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.13.0 
   // BL-173 (PLAN_RECHECKS_PLAN.md AC-RC-12): two WRITE tools and additive fields and events -> 1.11.0.
   // BL-174 (GEMINI_MEDIA_PLAN.md AC-GM-13): two READ tools and one WRITE tool, all new -> 1.12.0.
   // BL-175 (VISUAL_REVIEW_PLAN.md AC-VR-13): picks, marker regions, reason lists and pick targets, all additive -> 1.13.0.
-  assert.equal(FACTORY_API_VERSION, "1.13.0");
+  // BL-176 (LIVE_STREAMS_PLAN.md §3.11): two new tools (a read, a local write), additive -> 1.14.0.
+  assert.equal(FACTORY_API_VERSION, "1.14.0");
   const agentOperations = await readFile("src/lib/agent-operations/contracts.ts", "utf8");
   assert.equal(agentOperations.includes("FACTORY_API_VERSION"), false);
 });

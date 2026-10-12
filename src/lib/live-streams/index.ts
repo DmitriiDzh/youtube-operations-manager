@@ -203,6 +203,7 @@ export function createLiveStreamsNoticesCore() {
   };
 }
 
+export { getBootstrapDeviceId as getLiveStreamsDeviceId } from "./adapters/device-id";
 export type { LiveNotice } from "./notices";
 export type { StreamReportEntry, LiveStreamState } from "./report";
 export type { LiveStreamsRunner } from "./runner";
