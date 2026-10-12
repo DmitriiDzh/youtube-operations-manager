@@ -84,6 +84,10 @@ export type AppPaths = {
   agentTokensSyncFallbackDir: string;
   /** BL-176: the live streams' rolling buffers of original videos, one folder per channel (on the internal disk). */
   liveStreamsBufferDir: string;
+  /** BL-176: the live-streams family -- this device's report and the peers' latest reports. */
+  liveStreamsShareDir: string;
+  /** BL-176: the live-streams family's local fallback when no sync folder is configured. */
+  liveStreamsSyncFallbackDir: string;
   /** Path to the device-local bootstrap config JSON file. */
   bootstrapConfigPath: string;
   /** Path to the CLI/MCP active-user auth-context JSON file. */

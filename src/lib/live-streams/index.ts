@@ -1,4 +1,5 @@
 import { randomBytes, randomInt, randomUUID } from "node:crypto";
+import os from "node:os";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import {
   getLiveStream,
@@ -16,6 +17,8 @@ import { detectFfmpeg } from "@/lib/ffmpeg-host";
 import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { createWriteContextCore } from "@/lib/write-context";
 import { getProductionAppPaths } from "@/lib/platform-paths";
+import { createLiveStreamsShareCoreForProduction, LIVE_STREAMS_REPORT_FORMAT, LIVE_STREAMS_REPORT_VERSION, type SharedLiveStream } from "@/lib/sync-gateway";
+import { getBootstrapDeviceId } from "./adapters/device-id";
 import { createBufferFs } from "./adapters/buffer-fs";
 import { createLiveStreamsFiles } from "./adapters/files";
 import { createHelperProcess, createSupervisorFiles } from "./adapters/helper-process";
@@ -26,6 +29,7 @@ import { createLiveBroadcasts } from "./broadcasts";
 import { createLiveStreamsYoutubeWrites } from "./adapters/youtube-writes";
 import { createLiveStreamsRunner } from "./runner";
 import { liveNotices, type LiveNotice } from "./notices";
+import { streamReportEntry, type StreamReportEntry } from "./report";
 import { createLiveStreamsServices } from "./services";
 import { createLiveStreamsSettings, liveStreamsHost } from "./settings";
 import { createStreamSupervisor } from "./supervisor";
@@ -107,6 +111,60 @@ export function createLiveBroadcastsCore() {
   });
 }
 
+/** §3.10/§3.11: every stream on this computer in the shared vocabulary (the page, the report, the Operator). Local reads only. */
+export async function collectLiveStreamEntries(now: number = Date.now()): Promise<StreamReportEntry[]> {
+  const supervisor = createStreamSupervisorCore();
+  return Promise.all(
+    (await listLiveStreams()).map(async (stream) => {
+      const [status, poll, events, videos] = await Promise.all([
+        supervisor.readStatus(stream.channelId),
+        supervisor.lastYoutubePoll(stream.channelId),
+        listLiveStreamEvents(stream.channelId, 50),
+        listLiveStreamVideos(stream.channelId),
+      ]);
+      const last = events.find((e) => e.kind === "youtube_ended" || e.kind === "encoder_start");
+      return streamReportEntry(
+        {
+          channelId: stream.channelId,
+          intent: stream.intent,
+          onSince: stream.onSince?.getTime() ?? null,
+          helper: status
+            ? { state: status.state, updatedAt: status.updatedAt, position: { index: status.position.index, videoId: status.position.videoId }, lastExit: status.lastExit ? { at: status.lastExit.at, cause: status.lastExit.cause } : null, missingVideoId: status.missingVideoId ?? null }
+            : null,
+          rotationSize: videos.length,
+          youtube: poll ? { lifeCycleStatus: poll.lifeCycleStatus, streamStatus: poll.streamStatus, healthStatus: poll.healthStatus, issueTypes: poll.configurationIssues.map((i) => i.type), viewers: poll.viewers } : null,
+          lastEndOrStart: last ? (last.kind as "youtube_ended" | "encoder_start") : null,
+        },
+        now
+      );
+    })
+  );
+}
+
+/** This computer's name as other computers show it ("on <host>"), or null when it has no usable name. */
+function hostName(): string | null {
+  const name = os.hostname().replace(/\.local$/, "").replace(/[^\p{L}\p{N} ._'-]/gu, "").slice(0, 64);
+  return name.length > 0 ? name : null;
+}
+
+/** §3.11: publishes this computer's live-streams report for the sync family (`streams: []` while the module is off). */
+export async function publishLiveStreamsReport(options: { enabled: boolean }): Promise<void> {
+  const streams: SharedLiveStream[] = options.enabled ? await collectLiveStreamEntries() : [];
+  await createLiveStreamsShareCoreForProduction().publishLocalReport({
+    format: LIVE_STREAMS_REPORT_FORMAT,
+    version: LIVE_STREAMS_REPORT_VERSION,
+    deviceId: await getBootstrapDeviceId(),
+    hostName: hostName(),
+    updatedAt: new Date().toISOString(),
+    streams,
+  });
+}
+
+/** §3.11: the other computers' streams (read-only), newest report first. */
+export async function listPeerLiveStreams(): Promise<Array<{ deviceId: string; hostName: string | null; updatedAt: string; streams: SharedLiveStream[] }>> {
+  return (await createLiveStreamsShareCoreForProduction().listPeerReports()).map((r) => ({ deviceId: r.deviceId, hostName: r.hostName, updatedAt: r.updatedAt, streams: r.streams }));
+}
+
 /** What the server does for live streams by itself (instrumentation's loop): restore, tend, read the broadcast. */
 export function createLiveStreamsRunnerCore() {
   return createLiveStreamsRunner({
@@ -114,6 +172,7 @@ export function createLiveStreamsRunnerCore() {
     listStreams: () => listLiveStreams(),
     supervisor: createStreamSupervisorCore(),
     event: async (channelId, kind, detail) => insertLiveStreamEvent({ id: randomUUID(), channelId, at: new Date(), kind, detailJson: JSON.stringify(detail) }),
+    publish: (enabled) => publishLiveStreamsReport({ enabled }),
     now: () => Date.now(),
   });
 }
@@ -145,6 +204,7 @@ export function createLiveStreamsNoticesCore() {
 }
 
 export type { LiveNotice } from "./notices";
+export type { StreamReportEntry, LiveStreamState } from "./report";
 export type { LiveStreamsRunner } from "./runner";
 export * from "./contracts";
 export { checkOriginal, checkPublicOnly, classifyRunEnd, locatePlayback, passLength, planBuffer, canCopyIntoBuffer } from "./rotation";

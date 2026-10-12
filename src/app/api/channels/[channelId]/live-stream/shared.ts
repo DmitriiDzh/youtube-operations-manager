@@ -5,6 +5,8 @@ import { authOptions } from "@/lib/auth";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { listLiveStreamEvents } from "@/lib/db";
 import {
+  collectLiveStreamEntries,
+  listPeerLiveStreams,
   createLiveBroadcastsCore,
   createLiveStreamsCore,
   createLiveStreamsSettingsCore,
@@ -53,17 +55,23 @@ export function createLiveStreamRouteCore(): LiveStreamRouteCore {
   const settings = createLiveStreamsSettingsCore();
   return {
     async overview(channelId) {
-      const [view, module, running, events, preview, youtube] = await Promise.all([
+      const [view, module, running, events, preview, youtube, entries, peers] = await Promise.all([
         rotation.getOverview(channelId),
         settings.get(),
         supervisor.runningHelper(channelId),
         listLiveStreamEvents(channelId, 50),
         broadcasts.previewStart(channelId).catch(() => null),
         supervisor.lastYoutubePoll(channelId),
+        collectLiveStreamEntries(),
+        listPeerLiveStreams().catch(() => []),
       ]);
       return {
         ...view,
         module,
+        // §3.10: the state in the one vocabulary the report and the Operator use.
+        state: entries.find((e) => e.channelId === channelId)?.state ?? "off",
+        // §3.11: the same channel's stream as other computers report it (read-only here).
+        peers: peers.flatMap((p) => p.streams.filter((st) => st.channelId === channelId).map((st) => ({ deviceId: p.deviceId, hostName: p.hostName, updatedAt: p.updatedAt, stream: st }))),
         encoder: { running: Boolean(running), status: running?.status ?? null },
         youtube,
         startPreview: preview,

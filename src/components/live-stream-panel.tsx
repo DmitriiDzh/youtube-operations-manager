@@ -52,7 +52,11 @@ type Overview = {
   } | null;
   startPreview: { createsStream: boolean; units: number; liveWritesEnabled: boolean; moduleReady: boolean } | null;
   events: Array<{ id: string; at: string; kind: string; detail: Record<string, unknown> }>;
+  state: StreamState;
+  peers: Array<{ deviceId: string; hostName: string | null; updatedAt: string; stream: { state: StreamState; since: string | null; playing: { index: number; total: number; videoId: string } | null; viewers: number | null } }>;
 };
+
+type StreamState = "off" | "ended_by_youtube" | "starting" | "live" | "replaying" | "no_source" | "reconnecting";
 
 const EMPTY_SETTINGS: Settings = { title: "", description: "", privacyStatus: "unlisted", madeForKids: false, orderMode: "sequence" };
 const POLL_MS = 15_000;
@@ -81,17 +85,16 @@ async function requestJson<T>(url: string, init: RequestInit | undefined, fallba
 
 const json = (method: string, body: unknown): RequestInit => ({ method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
-/** The stream's state in the owner's words (§3.10), from the intent, the encoder and the latest events. */
-function streamState(overview: Overview): { key: UiTextKey; tone: "off" | "live" | "warn" | "busy" } {
-  const ended = overview.events.find((e) => e.kind === "youtube_ended" || e.kind === "encoder_start" || e.kind === "stopped_by_owner");
-  if (overview.stream?.intent !== "on") return ended?.kind === "youtube_ended" ? { key: "live.state.endedByYoutube", tone: "warn" } : { key: "live.state.off", tone: "off" };
-  const status = overview.encoder.status;
-  if (!overview.encoder.running || !status) return { key: "live.state.starting", tone: "busy" };
-  if (status.state === "replaying") return { key: "live.state.replaying", tone: "warn" };
-  if (status.state === "waiting_for_source") return { key: "live.state.noSource", tone: "warn" };
-  if (status.state === "restarting") return { key: "live.state.reconnecting", tone: "busy" };
-  return { key: "live.state.live", tone: "live" };
-}
+/** The stream's state in the owner's words (§3.10); the server derives it in the same vocabulary as the report. */
+const STATE_VIEW: Record<StreamState, { key: UiTextKey; tone: "off" | "live" | "warn" | "busy" }> = {
+  off: { key: "live.state.off", tone: "off" },
+  ended_by_youtube: { key: "live.state.endedByYoutube", tone: "warn" },
+  starting: { key: "live.state.starting", tone: "busy" },
+  live: { key: "live.state.live", tone: "live" },
+  replaying: { key: "live.state.replaying", tone: "warn" },
+  no_source: { key: "live.state.noSource", tone: "warn" },
+  reconnecting: { key: "live.state.reconnecting", tone: "busy" },
+};
 
 const TONE_CLASS = {
   off: "bg-zinc-800 text-zinc-300",
@@ -149,15 +152,34 @@ export function LiveStreamPanel({ channelId, visible }: { channelId: string | nu
       {(!overview.module.enabled || !overview.module.host.ok) && (
         <div className="rounded-xl border border-amber-800/60 bg-amber-500/10 p-3 text-sm text-amber-200">
           {overview.module.host.ok ? t("live.module.off") : t("live.module.hostUnsupported")}{" "}
-          <Link href="/settings/live-streams" className="underline hover:text-white">
-            {t("live.module.openSettings")}
-          </Link>
+          {overview.module.host.ok && (
+            <Link href="/settings/live-streams" className="underline hover:text-white">
+              {t("live.module.openSettings")}
+            </Link>
+          )}
         </div>
       )}
-      <StatusCard overview={overview} base={base!} onChanged={load} />
-      <SettingsCard overview={overview} base={base!} onChanged={load} />
-      <RotationCard overview={overview} base={base!} onChanged={load} />
-      <HistoryCard overview={overview} />
+      {overview.peers.map((peer) => (
+        <div key={peer.deviceId} className={cardClass}>
+          <div className="flex flex-wrap items-center gap-3">
+            {/* ui-text-ignore: the other computer's own name (data) */}
+            <h3 className="text-base font-medium text-zinc-100">{t("live.peer.title", { host: peer.hostName ?? peer.deviceId })}</h3>
+            <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${TONE_CLASS[STATE_VIEW[peer.stream.state].tone]}`}>{t(STATE_VIEW[peer.stream.state].key)}</span>
+          </div>
+          {peer.stream.playing && <p className="text-sm text-zinc-300">{t("live.peer.playing", { n: String(peer.stream.playing.index + 1), total: String(peer.stream.playing.total), videoId: peer.stream.playing.videoId })}</p>}
+          {peer.stream.viewers !== null && <p className="text-xs text-zinc-400">{t("live.youtube.viewers", { viewers: String(peer.stream.viewers) })}</p>}
+          <p className="text-xs text-zinc-500">{t("live.peer.updated", { at: new Date(peer.updatedAt).toLocaleString(t.language) })}</p>
+        </div>
+      ))}
+      {overview.module.host.ok && (
+        <>
+          <StatusCard overview={overview} base={base!} onChanged={load} />
+          <SettingsCard overview={overview} base={base!} onChanged={load} />
+          <RotationCard overview={overview} base={base!} onChanged={load} />
+          <HistoryCard overview={overview} />
+        </>
+      )}
+      {!overview.module.host.ok && overview.peers.length === 0 && <p className="text-sm text-zinc-500">{t("live.peer.none")}</p>}
     </div>
   );
 }
@@ -168,7 +190,7 @@ function StatusCard({ overview, base, onChanged }: { overview: Overview; base: s
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [dialog, setDialog] = useState<"start" | "stop" | "goLive" | null>(null);
-  const state = streamState(overview);
+  const state = STATE_VIEW[overview.state] ?? STATE_VIEW.off;
   const on = overview.stream?.intent === "on";
   const status = overview.encoder.status;
   const playing = status?.position.videoId ? overview.rotation.find((v) => v.videoId === status.position.videoId) : null;

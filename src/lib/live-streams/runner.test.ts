@@ -83,3 +83,21 @@ test("a failing start is retried after 1, 2, 5 then 10 minutes, and recorded onc
   assert.equal(h.calls.filter((c) => c === "start:UC1").length, 3);
   assert.deepEqual(h.events, ["encoder_start_failed:YouTube did not return the key"]);
 });
+
+test("§3.11: a working tick publishes this computer's report; switched off, an empty report is published once", async () => {
+  const published: boolean[] = [];
+  let enabled = true;
+  const runner = createLiveStreamsRunner({
+    settings: async () => ({ ...DEFAULT_LIVE_STREAMS_SETTINGS, enabled, host: { ok: true } }),
+    listStreams: async () => [],
+    supervisor: { runningHelper: async () => null, startEncoder: async () => ({ pid: 1 }), tick: async () => ({ running: false, status: null }), checkBroadcast: async () => ({ lifeCycleStatus: null, endedByYoutube: false }) },
+    event: async () => undefined,
+    publish: async (on) => void published.push(on),
+    now: () => 0,
+  });
+  await runner.tick();
+  enabled = false;
+  await runner.tick();
+  await runner.tick();
+  assert.deepEqual(published, [true, false]);
+});

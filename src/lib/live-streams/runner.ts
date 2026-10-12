@@ -19,12 +19,15 @@ export type RunnerDependencies = {
   listStreams(): Promise<Array<{ channelId: string; intent: "on" | "off" }>>;
   supervisor: Pick<StreamSupervisor, "runningHelper" | "startEncoder" | "tick" | "checkBroadcast">;
   event(channelId: string, kind: string, detail: Record<string, unknown>): Promise<void>;
+  /** §3.11: this computer's report for the other computers; `false` publishes an empty one (the module is off). */
+  publish?(enabled: boolean): Promise<void>;
   now(): number;
 };
 
 export function createLiveStreamsRunner(deps: RunnerDependencies) {
   const lastBroadcastCheck = new Map<string, number>();
   const startFailures = new Map<string, { count: number; retryAt: number; message: string }>();
+  let publishedOff = false;
 
   async function tendStream(channelId: string): Promise<void> {
     const now = deps.now();
@@ -54,7 +57,15 @@ export function createLiveStreamsRunner(deps: RunnerDependencies) {
   return {
     async tick(): Promise<void> {
       const settings = await deps.settings();
-      if (!settings.enabled || !settings.host.ok) return;
+      if (!settings.enabled || !settings.host.ok) {
+        // Once, so the other computers stop showing streams this one no longer runs; then nothing at all.
+        if (!publishedOff && deps.publish) {
+          publishedOff = true;
+          await deps.publish(false).catch(() => undefined);
+        }
+        return;
+      }
+      publishedOff = false;
       for (const stream of await deps.listStreams()) {
         if (stream.intent !== "on") continue;
         try {
@@ -64,6 +75,7 @@ export function createLiveStreamsRunner(deps: RunnerDependencies) {
           console.warn(`[live-streams] ${stream.channelId}: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
+      await deps.publish?.(true).catch((error: unknown) => console.warn(`[live-streams] report: ${error instanceof Error ? error.message : String(error)}`));
     },
   };
 }
