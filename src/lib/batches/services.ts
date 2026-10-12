@@ -167,6 +167,8 @@ type BackupDeps = {
 type ChannelLanguageBaselineDeps = {
   getExpectedDefaultLanguage(channelId: string): Promise<string | null>;
   getExpectedDefaultAudioLanguage?(channelId: string): Promise<string | null>;
+  /** BL-178 part B: the baseline fields set differently on the owner's computers (each keeps its own until the owner picks). */
+  getConflictedBaselineFields?(channelId: string): Promise<string[]>;
 };
 
 type ServiceDependencies = {
@@ -646,6 +648,16 @@ export function createBatchServices(deps: ServiceDependencies) {
       for (const change of changeRecords) assertApprovalStillValid(change);
     } catch (error) {
       return { outcome: "FAILED", error: error instanceof DomainError ? error.message : String(error) };
+    }
+
+    // BL-178 part B (LOCALIZATION_BASELINE_PLAN §3.2): while the channel's baseline differs between the owner's computers,
+    // nobody has picked the language this write would set -- refuse before any YouTube call.
+    const conflictedBaseline = (await deps.channelLanguageBaseline?.getConflictedBaselineFields?.(batch.channelId)) ?? [];
+    if (conflictedBaseline.length > 0) {
+      return {
+        outcome: "FAILED",
+        error: `The channel's language defaults (${conflictedBaseline.join(", ")}) were set differently on your computers. Choose one in Merge (or on the startup screen), then retry.`,
+      };
     }
 
     const rawFresh = await deps.youtubeApi.fetchFreshVideoContext({ credentials, videoId: row.videoId });

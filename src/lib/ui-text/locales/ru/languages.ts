@@ -195,6 +195,7 @@ export const languages: Record<keyof typeof en, string> = {
 
   // --- Языки канала по умолчанию ---
   "languageDefaults.loadFailed": "Не удалось загрузить языки по умолчанию",
+  "languageDefaults.differsBetweenComputers": "На ваших компьютерах эти языки заданы по-разному. Каждый компьютер держит свой вариант, пока вы не выберете один во вкладке «Слияние» (или на экране запуска); до этого пакеты не отправляются.",
   "languageDefaults.saveFailed": "Не удалось сохранить",
   "languageDefaults.checkingTitle": "Проверка видео",
   "languageDefaults.checkingStage": "Чтение текущих значений из YouTube — ничего не меняется",

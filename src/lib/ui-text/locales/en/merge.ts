@@ -8,6 +8,7 @@ export const merge = {
   "handoff.family.mediaSettings": "Servers settings",
   "handoff.family.agentTokens": "Agent tokens",
   "handoff.family.liveStreams": "Live streams",
+  "handoff.family.channelLanguageSettings": "Channel languages",
 
   "handoff.requestFailed": "Request to {url} failed ({status})",
   "handoff.justNow": "just now",

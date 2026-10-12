@@ -14,7 +14,7 @@ import { errorText, uiMessageText } from "@/lib/ui-text";
 
 type SettingConflict = { field: string; values: unknown[]; thisComputer: unknown };
 type ActorConflict = {
-  family: "change_drafts" | "editorial_profile" | "ai_connections";
+  family: "change_drafts" | "editorial_profile" | "ai_connections" | "channel_language_settings";
   key: string;
   group: UiMessage;
   subject: UiMessage;
@@ -24,6 +24,8 @@ type ActorConflict = {
   connectionId?: string;
   valuesByActor: Record<string, unknown>;
   resolvable: boolean;
+  /** The writer of this computer's own value, when the family reports it (BL-178 language settings): shown first, as "This computer". */
+  mineActor?: string;
 };
 
 const RESOLVABLE_CHANGE_DRAFT_FIELDS = new Set(["proposedValue", "approvalStatus", "approvedValue", "conflictStatus"]);
@@ -37,6 +39,9 @@ const FIELD_LABELS: Record<string, UiTextKey> = {
   terminologyNotes: "conflicts.field.terminologyNotes",
   titleConstraints: "conflicts.field.titleConstraints",
   descriptionConstraints: "conflicts.field.descriptionConstraints",
+  defaultLanguage: "conflicts.field.defaultLanguage",
+  defaultAudioLanguage: "conflicts.field.defaultAudioLanguage",
+  trackedLanguages: "conflicts.field.trackedLanguages",
 };
 
 async function fetchJson<T>(t: Translate, url: string, init?: RequestInit): Promise<T> {
@@ -89,11 +94,13 @@ export function useConflictCenter(enabled: boolean): ConflictCenterState {
       // other (ADR 0004); another channel's conflicts appear here once it is the active one (independent review).
       const perChannel = await Promise.allSettled(
         channelsRes.value.channels.filter((ch) => ch.isActive).map(async (ch) => {
-          const [drafts, profile] = await Promise.all([
+          const [drafts, profile, languages] = await Promise.all([
             fetchJson<{ conflicts: Array<{ changeId: string; field: string; valuesByActor: Record<string, unknown> }> }>(t, `/api/channels/${ch.channelId}/change-drafts/conflicts`),
             fetchJson<{ conflicts: Array<{ field: string; valuesByActor: Record<string, unknown> }> }>(t, `/api/channels/${ch.channelId}/editorial-profile/conflicts`),
+            // BL-178 part B: the channel's language baseline and tracked languages (Batches refuse while the baseline differs).
+            fetchJson<{ conflicts: Array<{ field: string; valuesByActor: Record<string, unknown>; thisComputer: unknown }> }>(t, `/api/channels/${ch.channelId}/language-settings/conflicts`),
           ]);
-          return { ch, drafts: drafts.conflicts, profile: profile.conflicts };
+          return { ch, drafts: drafts.conflicts, profile: profile.conflicts, languages: languages.conflicts };
         })
       );
       for (const r of perChannel) {
@@ -101,12 +108,16 @@ export function useConflictCenter(enabled: boolean): ConflictCenterState {
           errors.push(r.reason instanceof Error ? r.reason.message : t("conflicts.unavailable.channel"));
           continue;
         }
-        const { ch, drafts, profile } = r.value;
+        const { ch, drafts, profile, languages } = r.value;
         for (const c of drafts) {
           next.push({ family: "change_drafts", key: `drafts.${ch.channelId}.${c.changeId}.${c.field}`, group: { key: "conflicts.group.changeDrafts", params: { channel: ch.title } }, subject: { key: "conflicts.subject.change", params: { id: c.changeId.slice(0, 8) } }, field: c.field, channelId: ch.channelId, changeId: c.changeId, valuesByActor: c.valuesByActor, resolvable: RESOLVABLE_CHANGE_DRAFT_FIELDS.has(c.field) });
         }
         for (const c of profile) {
           next.push({ family: "editorial_profile", key: `profile.${ch.channelId}.${c.field}`, group: { key: "conflicts.group.channelProfile", params: { channel: ch.title } }, subject: { key: "conflicts.subject.editorialProfile" }, field: c.field, channelId: ch.channelId, valuesByActor: c.valuesByActor, resolvable: true });
+        }
+        for (const c of languages) {
+          const mineActor = Object.entries(c.valuesByActor).find(([, value]) => JSON.stringify(value) === JSON.stringify(c.thisComputer))?.[0];
+          next.push({ family: "channel_language_settings", key: `languages.${ch.channelId}.${c.field}`, group: { key: "conflicts.group.channelLanguages", params: { channel: ch.title } }, subject: { key: "conflicts.subject.languageSettings" }, field: c.field, channelId: ch.channelId, valuesByActor: c.valuesByActor, resolvable: true, mineActor });
         }
       }
     } else errors.push(channelsRes.reason instanceof Error ? channelsRes.reason.message : t("conflicts.unavailable.channels"));
@@ -235,7 +246,9 @@ export function ConflictCenter({
         ? post(`/api/channels/${c.channelId}/change-drafts/conflicts`, { changeId: c.changeId, field: c.field, winningActorId: actor })
         : c.family === "editorial_profile"
           ? post(`/api/channels/${c.channelId}/editorial-profile/conflicts`, { field: c.field, winningActorId: actor })
-          : post("/api/ai-connections/conflicts", { connectionId: c.connectionId, field: c.field, winningActorId: actor })
+          : c.family === "channel_language_settings"
+            ? post(`/api/channels/${c.channelId}/language-settings/conflicts`, { field: c.field, winningActorId: actor })
+            : post("/api/ai-connections/conflicts", { connectionId: c.connectionId, field: c.field, winningActorId: actor })
     );
 
   const groups = new Map<string, ActorConflict[]>();
@@ -296,15 +309,25 @@ export function ConflictCenter({
         <section key={group} className="space-y-3">
           <h3 className="text-sm font-semibold text-zinc-200">{group}</h3>
           {conflicts.map((c) => {
-            const versions = Object.entries(c.valuesByActor);
+            // This computer's own value first, when the family reports which one it is.
+            const versions = Object.entries(c.valuesByActor).sort(([x], [y]) => (x === c.mineActor ? -1 : y === c.mineActor ? 1 : 0));
             const [a, b] = versions;
+            const mineFirst = c.mineActor !== undefined && a?.[0] === c.mineActor;
             return (
               <div key={c.key} className="space-y-2 rounded-xl border border-amber-800/60 bg-amber-950/10 p-3">
                 <p className="text-sm font-medium text-zinc-100">
                   {uiMessageText(t, c.subject)} · {FIELD_LABELS[c.field] ? t(FIELD_LABELS[c.field]) : c.field}
                 </p>
                 {a && b && versions.length === 2 ? (
-                  <VersionPair leftTitle={t("conflicts.version", { n: 1 })} rightTitle={t("conflicts.version", { n: 2 })} left={a[1]} right={b[1]} busy={busy} resolvable={c.resolvable} onKeep={(side) => void keepActor(c, side === "left" ? a[0] : b[0])} />
+                  <VersionPair
+                    leftTitle={mineFirst ? t("conflicts.thisComputer") : t("conflicts.version", { n: 1 })}
+                    rightTitle={mineFirst ? t("conflicts.otherComputer") : t("conflicts.version", { n: 2 })}
+                    left={a[1]}
+                    right={b[1]}
+                    busy={busy}
+                    resolvable={c.resolvable}
+                    onKeep={(side) => void keepActor(c, side === "left" ? a[0] : b[0])}
+                  />
                 ) : (
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                     {versions.map(([actor, value], i) => (

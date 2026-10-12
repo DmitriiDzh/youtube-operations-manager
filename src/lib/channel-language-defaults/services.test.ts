@@ -97,3 +97,20 @@ test("BL-178: a different letter case is no deviation (EN vs en), a different co
   const report = await services.getDeviations({ channelId: "ch" });
   assert.deepEqual(report.deviations.map((d) => [d.videoId, d.defaultLanguageDeviates, d.defaultAudioLanguageDeviates]), [["y", true, false]]);
 });
+
+// BL-178 part B: the Languages page tells the owner when the baseline was set differently on the computers (Batches refuse
+// meanwhile, PROJECT_SPEC §14), and stays silent when the store cannot tell.
+test("the report carries the baseline fields set differently on the computers, when the store knows them", async () => {
+  const services = createChannelLanguageDefaultsServices({
+    store: {
+      getChannel: async (channelId) => ({ channelId }),
+      getDefaults: async () => ({ defaultLanguage: "en", defaultAudioLanguage: "en" }),
+      setDefaults: async () => undefined,
+      listVideos: async () => [],
+      getConflictedFields: async () => ["defaultLanguage"],
+    },
+  });
+  assert.deepEqual((await services.getDeviations({ channelId: "ch" })).conflictedFields, ["defaultLanguage"]);
+  const { services: plain } = makeServices({ videos: [] });
+  assert.equal("conflictedFields" in (await plain.getDeviations({ channelId: "ch" })), false);
+});

@@ -15,6 +15,7 @@ type ServiceDependencies = {
     getDefaults(channelId: string): Promise<ChannelLanguageDefaults>;
     setDefaults(channelId: string, value: ChannelLanguageDefaults): Promise<void>;
     listVideos(channelId: string): Promise<StoredVideoLanguageRow[]>;
+    getConflictedFields?(channelId: string): Promise<string[]>;
   };
 };
 
@@ -76,6 +77,7 @@ export function createChannelLanguageDefaultsServices(deps: ServiceDependencies)
           defaultLanguageWritableViaApi: true,
           defaultAudioLanguageWritableViaApi: true,
           deviations,
+          ...(deps.store.getConflictedFields ? { conflictedFields: await deps.store.getConflictedFields(channelId) } : {}),
         };
       } catch (error) {
         throw mapUnknownError(error, "validation_failed");

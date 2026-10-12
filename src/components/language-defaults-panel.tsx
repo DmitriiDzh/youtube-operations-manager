@@ -22,6 +22,7 @@ type Report = {
   defaults: { defaultLanguage: string | null; defaultAudioLanguage: string | null };
   totalVideos: number;
   deviations: DeviationRow[];
+  conflictedFields?: string[];
 };
 
 const NOT_APPLICABLE = "zxx";
@@ -296,6 +297,9 @@ export function LanguageDefaultsPanel({
 
   return (
     <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4 text-sm">
+      {(report?.conflictedFields?.length ?? 0) > 0 && (
+        <p className="mb-3 rounded-lg border border-amber-800/60 bg-amber-950/20 px-3 py-2 text-xs text-amber-200">{t("languageDefaults.differsBetweenComputers")}</p>
+      )}
       <div className="flex flex-wrap items-end gap-4">
         <label className="space-y-1">
           <span className="block text-xs text-zinc-400">{t("languageDefaults.titleLanguage")}</span>
