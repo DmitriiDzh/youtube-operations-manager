@@ -457,6 +457,9 @@ Details (proposed in msg 2577, accepted in msg 2578):
 **Recovery**
 - Consecutive exits wait 2, 4, 8, 16, 32, 60 and 60 s before the next start.
 - A run that lasted 10 minutes or more resets the wait to 2 s.
+- ffmpeg whose output time has not grown for 60 s (a dead connection; ffmpeg 7+ still prints progress on its timer) is stopped
+  by the helper and restarted like any other exit.
+- An ffmpeg still sending after its helper was killed outright is stopped by Stop and before any new start.
 - A broadcast read as `complete` → no write call, the encoder stopped, a `live_stream_ended` notice.
 
 **Alert**

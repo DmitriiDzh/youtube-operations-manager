@@ -308,6 +308,7 @@ test("progress blocks with a frozen output time (ffmpeg 7+ prints them on a time
   const kills: string[] = [];
   const signal: { stopped: boolean; onStop?: () => void; wake?: () => void } = { stopped: false };
   let ticker: ReturnType<typeof setInterval> | undefined;
+  let clock = 0; // fake time, 10 ms per progress block: a slow or busy test machine cannot change the outcome
   const io = {
     readPlan: () => basePlan(),
     exists: () => true,
@@ -326,12 +327,15 @@ test("progress blocks with a frozen output time (ffmpeg 7+ prints them on a time
         },
       });
       // A progress block every 5 ms, out_time_us stuck at 208980 (what ffmpeg 9 prints writing into a stalled output).
-      ticker = setInterval(() => child.stdout.write("out_time_us=208980\nbitrate=2200.0kbits/s\nspeed=0.01x\nprogress=continue\n"), 5);
+      ticker = setInterval(() => {
+        clock += 10;
+        child.stdout.write("out_time_us=208980\nbitrate=2200.0kbits/s\nspeed=0.01x\nprogress=continue\n");
+      }, 5);
       return child;
     },
     probeKeyframe: async () => 0,
     sleep: async () => undefined,
-    now: () => Date.now(),
+    now: () => clock,
   };
   await runHelper({ dir: "/buf/UC1", key: KEY, pid: 1, stallMs: 50, io: io as never, signal });
   clearInterval(ticker);
@@ -342,6 +346,7 @@ test("an ffmpeg whose output time keeps growing is not stopped by the stall watc
   const kills: string[] = [];
   const signal: { stopped: boolean; onStop?: () => void; wake?: () => void } = { stopped: false };
   let ticker: ReturnType<typeof setInterval> | undefined;
+  let clock = 0; // fake time, 10 ms per progress block: a slow or busy test machine cannot change the outcome
   const io = {
     readPlan: () => basePlan(),
     exists: () => true,
@@ -358,6 +363,7 @@ test("an ffmpeg whose output time keeps growing is not stopped by the stall watc
       });
       let outUs = 0;
       ticker = setInterval(() => {
+        clock += 10;
         outUs += 5000;
         child.stdout.write(`out_time_us=${outUs}\nprogress=continue\n`);
       }, 5);
@@ -373,7 +379,7 @@ test("an ffmpeg whose output time keeps growing is not stopped by the stall watc
     },
     probeKeyframe: async () => 0,
     sleep: async () => undefined,
-    now: () => Date.now(),
+    now: () => clock,
   };
   await runHelper({ dir: "/buf/UC1", key: KEY, pid: 1, stallMs: 50, io: io as never, signal });
   clearInterval(ticker);
