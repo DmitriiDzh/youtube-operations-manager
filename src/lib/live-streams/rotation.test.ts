@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   canCopyIntoBuffer,
+  checkOriginal,
   checkPublicOnly,
   classifyRunEnd,
   locatePlayback,
@@ -127,4 +128,33 @@ test("disk: a copy that would leave less than the refuse level free is not start
 test("disk: a copy that leaves exactly the refuse level, or more, may start", () => {
   assert.equal(canCopyIntoBuffer({ freeBytes: 6 * GB, fileBytes: GB, refuseBelowBytes: 5 * GB }), true);
   assert.equal(canCopyIntoBuffer({ freeBytes: 30 * GB, fileBytes: GB, refuseBelowBytes: 5 * GB }), true);
+});
+
+// --- Originals (§3.5 checks; §1.3: AAC at 44.1/48 kHz; duration within 1 s of the YouTube video) --------------------
+
+const LIMITS = { toleranceSeconds: 1, sampleRates: [44100, 48000], maxChannels: 2 };
+const V41 = { durationSeconds: 7382.344375, video: { codec: "h264" }, audio: { codec: "aac", sampleRate: 48000, channels: 2 } };
+
+test("original: AAC 48 kHz stereo with a picture, within 1 s of YouTube's 7,382 s, is fine", () => {
+  assert.equal(checkOriginal(V41, 7382, LIMITS), null);
+  assert.equal(checkOriginal({ ...V41, audio: { codec: "aac", sampleRate: 44100, channels: 1 } }, 7382, LIMITS), null);
+});
+
+test("original: exactly 1 s apart is fine; 2 s apart is a mismatch", () => {
+  assert.equal(checkOriginal({ ...V41, durationSeconds: 7383 }, 7382, LIMITS), null);
+  assert.equal(checkOriginal({ ...V41, durationSeconds: 7384 }, 7382, LIMITS), "duration_mismatch");
+  assert.equal(checkOriginal({ ...V41, durationSeconds: 7380 }, 7382, LIMITS), "duration_mismatch");
+});
+
+test("original: audio that is not AAC, at another rate, with more than 2 channels, or missing is refused", () => {
+  assert.equal(checkOriginal({ ...V41, audio: { codec: "mp3", sampleRate: 48000, channels: 2 } }, 7382, LIMITS), "audio_unsupported");
+  assert.equal(checkOriginal({ ...V41, audio: { codec: "aac", sampleRate: 32000, channels: 2 } }, 7382, LIMITS), "audio_unsupported");
+  assert.equal(checkOriginal({ ...V41, audio: { codec: "aac", sampleRate: 48000, channels: 6 } }, 7382, LIMITS), "audio_unsupported");
+  assert.equal(checkOriginal({ ...V41, audio: null }, 7382, LIMITS), "audio_unsupported");
+});
+
+test("original: no picture, or an unknown duration on either side, is refused", () => {
+  assert.equal(checkOriginal({ ...V41, video: null }, 7382, LIMITS), "no_video_stream");
+  assert.equal(checkOriginal({ ...V41, durationSeconds: null }, 7382, LIMITS), "duration_unknown");
+  assert.equal(checkOriginal(V41, null, LIMITS), "duration_unknown");
 });

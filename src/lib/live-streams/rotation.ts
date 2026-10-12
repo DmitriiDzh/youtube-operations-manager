@@ -94,3 +94,25 @@ export function planBuffer(args: {
 export function canCopyIntoBuffer(args: { freeBytes: number; fileBytes: number; refuseBelowBytes: number }): boolean {
   return args.freeBytes - args.fileBytes >= args.refuseBelowBytes;
 }
+
+/**
+ * §3.5: whether a copy of an original can stream as it is. The audio is copied into FLV unchanged, so it must be AAC at
+ * 44.1/48 kHz with at most 2 channels; there must be a picture; and the file must be the YouTube video (duration within
+ * 1 s). `null` = fine.
+ */
+export function checkOriginal(
+  probe: {
+    durationSeconds: number | null;
+    video: { codec: string } | null;
+    audio: { codec: string; sampleRate: number | null; channels: number | null } | null;
+  },
+  youtubeDurationSeconds: number | null,
+  limits: { toleranceSeconds: number; sampleRates: readonly number[]; maxChannels: number }
+): "no_video_stream" | "audio_unsupported" | "duration_unknown" | "duration_mismatch" | null {
+  if (!probe.video) return "no_video_stream";
+  const audio = probe.audio;
+  if (!audio || audio.codec !== "aac" || audio.sampleRate === null || !limits.sampleRates.includes(audio.sampleRate)) return "audio_unsupported";
+  if (audio.channels === null || audio.channels < 1 || audio.channels > limits.maxChannels) return "audio_unsupported";
+  if (probe.durationSeconds === null || youtubeDurationSeconds === null) return "duration_unknown";
+  return Math.abs(probe.durationSeconds - youtubeDurationSeconds) <= limits.toleranceSeconds ? null : "duration_mismatch";
+}
