@@ -153,7 +153,7 @@ test("buffer: a copy refused for disk space frees the unwanted copies first and 
     {
       fs: {
         freeBytes: async (dir) => {
-          const names = await readdir(dir).catch(() => []);
+          const names: string[] = await readdir(dir).catch(() => []);
           // Removing A gives its space back.
           return names.includes(`${A}.mp4`) ? free : free + GB;
         },
