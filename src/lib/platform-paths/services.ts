@@ -59,6 +59,7 @@ export function resolveAppPaths(input: ResolveAppPathsInput): AppPaths {
     generationPlansSyncFallbackDir: path.join(appDataDir, "generation-plans-sync-local"),
     agentTokensShareDir: path.join(appDataDir, "agent-tokens-share"),
     agentTokensSyncFallbackDir: path.join(appDataDir, "agent-tokens-sync-local"),
+    liveStreamsBufferDir: path.join(appDataDir, "live-streams"),
     bootstrapConfigPath: path.join(appDataDir, "bootstrap-config.json"),
     authContextPath: path.join(appDataDir, "auth-context.json"),
   };

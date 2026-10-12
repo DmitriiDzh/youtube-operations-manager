@@ -251,8 +251,10 @@ Details (proposed in msg 2577, accepted in msg 2578):
      - its duration is within 1 s of the YouTube video's;
      - its audio is AAC at 44.1/48 kHz with at most 2 channels;
   3. rename it to `<videoId>.mp4`. The encoder never sees a file under its final name before it is complete.
-- **Deleting:** a copy is deleted only after the encoder has moved past it. The file now playing is never deleted; it is the
-  resume point after a restart.
+- **Deleting:** a copy is deleted only after the encoder has moved past it **and** the copies that replace it are in place, so
+  with the T9 gone the buffer still holds `depth` videos to replay. The file now playing is never deleted; it is the resume
+  point after a restart. Only a copy refused for disk space frees the unwanted copies first and tries again.
+- **Replaying** uses only buffer files whose videos are still playable (§3.4): a video that turned private is never replayed.
 - **When the next file cannot be copied** (the T9 is not mounted, the original is gone, a check fails, or the copy would leave
   less free space than the refuse level):
   - the stream keeps replaying the videos already in the buffer, in their order;
@@ -461,11 +463,12 @@ Details (proposed in msg 2577, accepted in msg 2578):
   which is never listed.
 - A copy that would leave less than the refuse level free is not started.
 - The T9 is missing when C is due:
+  - A and B stay in the buffer (A is not deleted until C is in place);
   - no YouTube write is made;
   - the run's early end is recorded as `source_missing`, not as a pass end;
   - the encoder goes on with the buffered videos;
   - a `live_stream_source_missing` notice appears.
-- The T9 comes back → C is copied, and the rotation resumes at the next run.
+- The T9 comes back → C is copied, then A is deleted, and the rotation resumes at the next run.
 
 **Now playing**
 - Rotation 7,288 / 7,211 / 7,224 s; one pass is 21,723 s.
