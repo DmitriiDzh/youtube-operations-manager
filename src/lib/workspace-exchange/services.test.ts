@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { isPathInsideOrEqual } from "@/lib/local-path-validation";
 import { createExchangeFs } from "./adapters/fs";
-import { jobOutputPathOf, resolveExchangeFile, resolveFromYtmDir, resolveFromYtmJobFile, resolveSentToYtmFile } from "./services";
+import { jobOutputPathOf, resolveExchangeFile, resolveFromYtmDir, resolveFromYtmJobFile, resolveSentToYtmFile, resolveWorkspaceFile } from "./services";
 
 // Behaviour fixed by ADR 0019 (amendment 2026-10-04): the folder is exactly <workspace>/99 Data Exchange/From YTM,
 // created when missing, refused when a symlink or a file sits at any of the three paths; nothing else is touched.
@@ -181,4 +181,59 @@ test("BL-175 §G: a plan file under From YTM/gemini/<jobId>/ is read in place; S
     assert.deepEqual(jobOutputPathOf("From YTM/gemini/job_42/sub/v.mp4", ["gemini"]), { subdir: "gemini", jobId: "job_42", rest: ["sub", "v.mp4"] });
     assert.equal(jobOutputPathOf("From YTM/gemini/job_42", ["gemini"]), null);
     assert.equal(jobOutputPathOf("gemini/job_42/a.png", ["gemini"]), null);
+  }));
+
+// BL-176 (LIVE_STREAMS_PLAN.md §3.4): a channel's own file anywhere in its workspace, named by an agent or the owner.
+test("BL-176 resolveWorkspaceFile: a regular file anywhere inside the workspace resolves to its real path and size", () =>
+  withWorkspace(async (workspace) => {
+    await mkdir(path.join(workspace, "04 Videos", "10 October", "1013 V47"), { recursive: true });
+    await writeFile(path.join(workspace, "04 Videos", "10 October", "1013 V47", "V47 Japan.mp4"), "12345");
+    const result = await resolveWorkspaceFile({ ...args(workspace), relativePath: "04 Videos/10 October/1013 V47/V47 Japan.mp4" });
+    assert.deepEqual(
+      { path: result.path, bytes: result.bytes },
+      { path: path.join(await realpath(workspace), "04 Videos", "10 October", "1013 V47", "V47 Japan.mp4"), bytes: 5 }
+    );
+  }));
+
+test("BL-176 resolveWorkspaceFile: .., absolute, backslash and empty paths, a symlink out, a folder and a missing file are refused", () =>
+  withWorkspace(async (workspace) => {
+    const outside = await mkdtemp(path.join(tmpdir(), "outside-"));
+    try {
+      await writeFile(path.join(outside, "secret.mp4"), "x");
+      await mkdir(path.join(workspace, "04 Videos"), { recursive: true });
+      await writeFile(path.join(workspace, "04 Videos", "ok.mp4"), "x");
+      await symlink(path.join(outside, "secret.mp4"), path.join(workspace, "04 Videos", "link.mp4"));
+      await symlink(outside, path.join(workspace, "linked-dir"));
+      for (const relativePath of [
+        "../outside.mp4",
+        "04 Videos/../../x.mp4",
+        "/etc/hosts",
+        "C:/Videos/x.mp4",
+        "04 Videos\\ok.mp4",
+        "",
+        "04 Videos//ok.mp4",
+        "./04 Videos/ok.mp4",
+        "04 Videos/link.mp4",
+        "linked-dir/secret.mp4",
+        "04 Videos",
+        "04 Videos/missing.mp4",
+      ]) {
+        await assert.rejects(
+          () => resolveWorkspaceFile({ ...args(workspace), relativePath }),
+          (error: unknown) => error instanceof Error && error.message.startsWith("unavailable:"),
+          relativePath
+        );
+      }
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  }));
+
+test("BL-176 resolveWorkspaceFile: a failed workspace validation is refused before the file is looked at", () =>
+  withWorkspace(async (workspace) => {
+    await writeFile(path.join(workspace, "ok.mp4"), "x");
+    await assert.rejects(
+      () => resolveWorkspaceFile({ ...args(workspace), validateWorkspacePath: async () => ({ ok: false as const, reason: "not set" }), relativePath: "ok.mp4" }),
+      /unavailable: not set/
+    );
   }));

@@ -133,3 +133,29 @@ export function jobOutputPathOf(relative: string, jobSubdirs: readonly string[])
   if (rest.some((s) => s === "" || s === "." || s === "..")) return null;
   return { subdir, jobId, rest };
 }
+
+/**
+ * BL-176 (LIVE_STREAMS_PLAN.md §3.4): a channel's own file anywhere in its workspace (e.g. a published video's original
+ * under `04 Videos/`), named by a path RELATIVE to the workspace -- by the owner or by an agent. The relative path uses `/`,
+ * has no empty, `.` or `..` segment and is not absolute; the file's REAL path (symlinks resolved) must lie strictly inside the
+ * workspace's real path and be a regular file. Read-only: nothing is created or deleted.
+ */
+export async function resolveWorkspaceFile(
+  args: Omit<ResolveFromYtmDirArgs, "fs"> & { fs: ExchangeReadFs; relativePath: string }
+): Promise<{ path: string; bytes: number; identity?: { dev: number; ino: number } }> {
+  const relative = args.relativePath;
+  const segments = relative.split("/");
+  if (!relative || relative.length > 500 || relative.startsWith("/") || /^[A-Za-z]:/.test(relative) || relative.includes("\\") || segments.some((s) => s === "" || s === "." || s === "..")) {
+    throw args.unavailable(`"${relative}" is not a path relative to the channel workspace (use / between folders, no .. or absolute paths)`);
+  }
+  const validation = await args.validateWorkspacePath(args.workspace);
+  if (!validation.ok) throw args.unavailable(validation.reason);
+  const realWorkspace = await args.fs.realpath(args.workspace).catch(() => null);
+  if (!realWorkspace) throw args.unavailable("the workspace folder does not exist or is not accessible");
+  const realFile = await args.fs.realpath(path.join(realWorkspace, ...segments)).catch(() => null);
+  if (!realFile) throw args.unavailable(`${relative} is not in the channel workspace`);
+  if (realFile === realWorkspace || !args.isPathInsideOrEqual(realWorkspace, realFile)) throw args.unavailable(`${relative} resolves outside the channel workspace`);
+  const info = await args.fs.stat(realFile);
+  if (!info || !info.isFile) throw args.unavailable(`${relative} is not a regular file`);
+  return { path: realFile, bytes: info.size, ...(info.dev !== undefined && info.ino !== undefined ? { identity: { dev: info.dev, ino: info.ino } } : {}) };
+}
