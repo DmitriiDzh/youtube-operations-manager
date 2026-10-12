@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { access, constants } from "node:fs/promises";
 import path from "node:path";
+import { keyframeProbeArgs, pickKeyframeAtOrBefore } from "./keyframes.mjs";
 
 // ---------------------------------------------------------------------------
 // BL-176 (docs/roadmap/plans/LIVE_STREAMS_PLAN.md §3.2, ADR 0036) -- the one place that finds ffmpeg/ffprobe on this
@@ -137,16 +138,8 @@ export async function probeMedia(tools: Pick<FfmpegTools, "ffprobePath">, file: 
   return parseProbe(output);
 }
 
-/** The greatest keyframe time at or before `offsetSeconds` from `ffprobe ... -show_entries frame=pts_time -of csv=p=0` output. */
-export function pickKeyframeAtOrBefore(csv: string, offsetSeconds: number): number | null {
-  let best: number | null = null;
-  for (const line of csv.split(/\r?\n/)) {
-    const t = Number(line.trim().split(",")[0]);
-    if (line.trim() === "" || !Number.isFinite(t)) continue;
-    if (t <= offsetSeconds + 1e-6 && (best === null || t > best)) best = t;
-  }
-  return best;
-}
+// The keyframe command and its parsing are shared with the live-stream encoder helper (a standalone node process).
+export { keyframeProbeArgs, pickKeyframeAtOrBefore };
 
 /**
  * The source keyframe at or before `offsetSeconds` (§3.6): a run whose `inpoint` is this time starts exactly there.
@@ -160,11 +153,6 @@ export async function keyframeAtOrBefore(
   options: { windowSeconds?: number; run?: RunTool } = {}
 ): Promise<number | null> {
   if (offsetSeconds <= 0) return 0;
-  const from = Math.max(0, offsetSeconds - (options.windowSeconds ?? 30));
-  const output = await (options.run ?? runTool)(
-    tools.ffprobePath,
-    ["-v", "error", "-select_streams", "v:0", "-skip_frame", "nokey", "-show_entries", "frame=pts_time", "-read_intervals", `${from}%${offsetSeconds + 0.001}`, "-of", "csv=p=0", file],
-    { timeoutMs: 60_000 }
-  );
+  const output = await (options.run ?? runTool)(tools.ffprobePath, keyframeProbeArgs(file, offsetSeconds, options.windowSeconds ?? 30), { timeoutMs: 60_000 });
   return pickKeyframeAtOrBefore(output, offsetSeconds);
 }

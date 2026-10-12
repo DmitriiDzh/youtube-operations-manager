@@ -27,41 +27,9 @@ export function checkPublicOnly(
   return { allowed: false, reason: "unknown" };
 }
 
-/** Seconds a run plays from `startIndex` at `startOffset` to the end of the list. */
-export function passLength(durations: readonly number[], startIndex: number, startOffset: number): number {
-  return durations.slice(startIndex).reduce((sum, d) => sum + d, 0) - startOffset;
-}
-
-/**
- * Which video plays, and where in it, `outTimeSeconds` into a run that started at `startIndex` / `startOffset`.
- * The run's `inpoint` is a source keyframe, so the run starts exactly there (§3.6).
- */
-export function locatePlayback(
-  durations: readonly number[],
-  start: { startIndex: number; startOffset: number },
-  outTimeSeconds: number
-): { index: number; offset: number; passEnded: boolean } {
-  let index = start.startIndex;
-  let offset = start.startOffset + Math.max(0, outTimeSeconds);
-  while (index < durations.length && offset >= durations[index]) {
-    offset -= durations[index];
-    index += 1;
-  }
-  if (index >= durations.length) return { index: durations.length, offset: 0, passEnded: true };
-  return { index, offset: roundMs(offset), passEnded: false };
-}
-
-function roundMs(seconds: number): number {
-  return Math.round(seconds * 1000) / 1000;
-}
-
-/**
- * §3.6: ffmpeg exits with code 0 both at the end of its list and when a listed file is missing, so the exit code
- * cannot tell them apart. A run is a pass end only if it played (within the tolerance) as long as its list.
- */
-export function classifyRunEnd(args: { outTimeSeconds: number; expectedSeconds: number; toleranceSeconds: number }): "pass_end" | "early_end" {
-  return args.outTimeSeconds >= args.expectedSeconds - args.toleranceSeconds ? "pass_end" : "early_end";
-}
+// The playback rules (where a run is, how it ended) are shared with the encoder helper, a standalone node process; their
+// one owner is `playback.mjs`.
+export { classifyRunEnd, locatePlayback, passLength } from "./playback.mjs";
 
 /**
  * §3.5: the buffer holds the video now playing and the next `depth - 1` of the pass (continuing into the next pass,
