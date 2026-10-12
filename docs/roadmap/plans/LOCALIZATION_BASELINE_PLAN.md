@@ -1,6 +1,7 @@
 # Localization: the channel's language is the truth (FO-REQ-0022, BL-178)
 
-- **Status:** PROPOSAL. It waits for the owner's answers to В1–В4 (§2) and an explicit go. Nothing is built.
+- **Status:** APPROVED 2026-10-12 (owner, Telegram msg 2665: В1 yes, В2 yes, В3 yes, В4 ok). Part A is built first, then B,
+  then C; each is merged on its own.
 - **Request:** FO-REQ-0022, created by the Operator on 2026-10-12 and relayed by the owner on 2026-10-12.
 - **Owner's rule:** decision 1078, quoted in the request:
   - "All our videos are in English by default."
@@ -86,7 +87,11 @@ A fix of `defaultLanguage` alone therefore turned the audio language `en` into `
   A batch run from the Batches page or by MCP leaves an open page stale.
 - **Coverage:** "Needs attention" does not exist as a state. Coverage is complete or missing per tracked language (`localization/services.ts:40-59`).
 
-## 2. Decisions for the owner
+## 2. Decisions (answered by the owner, msg 2665)
+
+Answers: В1 "да"; В2 "Да (но лучше не хард код английский, а выбирать на основе дефолтного языка…)" — the source language is
+the channel's configured baseline, never a hard-coded `en`; В3 "да"; В4 "ок". PROJECT_SPEC §14 and AGENTS.md §F record В1 when
+part A is built.
 
 - **В1 — align on apply.** The question: may a localization Batch set a deviating `defaultLanguage` (e.g. `es`) to the channel baseline (`en`) in the same `videos.update` as the translations?
   - This replaces the 2026-10-04 "fail closed" rule in PROJECT_SPEC §14 for this case.
