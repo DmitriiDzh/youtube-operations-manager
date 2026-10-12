@@ -271,9 +271,8 @@ Details (proposed in msg 2577, accepted in msg 2578):
   - **An early end is never a pass end.** ffmpeg exits with code 0 when a listed file is missing (§1.4). So the helper compares
     the run's last `out_time` with the length of its list. A run that ended early counts as `source_missing`, never as the end of
     a pass.
-  - Spike A picks how a run is listed:
-    - **only the files already in the buffer:** a reconnect of a few seconds every ~2 h at depth 2;
-    - **or the whole pass**, relying on lazy opening (§1.4): no reconnect between videos, if the next copy is always in place.
+  - **A run lists the whole pass** and relies on lazy opening (§1.4, §6): no reconnect between videos. The next copy is made
+    right after the encoder enters a video, about 2 h before it is needed; a copy takes 1–2 s.
   - Video: the original decoded → `fps=30` → `h264_videotoolbox`, CBR at the bitrate setting (default 6,000 kbit/s), 2 s GOP, no
     B-frames.
   - Audio: copied.
@@ -532,7 +531,40 @@ Details (proposed in msg 2577, accepted in msg 2578):
    - the owner's merge decision.
 
 ## 6. Spike results
-(Filled in while building.)
+
+### 6.1 Spike A (local, 2026-10-12; Tropico V41/V37 and Japan V47 originals; a local RTMP listener, no network)
+- **Copying into the buffer:** 1–2 s per original (0.8–0.9 GB) from the T9 to the internal disk.
+- **Joins:** V41 → V37 with re-encoding:
+  - timestamps stay monotonic, and no gap is over 34 ms;
+  - keyframes come exactly every 2.0 s;
+  - audio and video end within 0.1 s of each other.
+
+  At one join, ffmpeg corrected a 13 ms audio DTS overlap by itself (a warning only).
+- **Lazy listing on real files:**
+  - a next file renamed into place while the one before it played was played;
+  - the finished file was removed after the join without any effect.
+- **Bitrate. To decide in spike B.**
+  - `h264_videotoolbox` with `-constant_bit_rate 1` gives only ≈ 2.2 Mbit/s on these still pictures, not CBR: it does not pad.
+    It costs ≈ 11–12 % of one core per stream (Tropico V41; Japan V47 measured alongside another stream and an Operator render).
+  - libx264 with `nal-hrd=cbr` holds 6.3 Mbit/s with 2 s keyframes, at ≈ 52 % of one core per stream.
+  - YouTube recommends at least 5 Mbit/s for 1080p30. Two streams at 6 Mbit/s are ≈ 12.6 of the 19.7 Mbit/s upload.
+  - Spike B shows what YouTube's health check says at 2.2 Mbit/s.
+- **Resume with `inpoint`:** the run starts at the source keyframe before the in point. Source keyframes are 8.33 s apart, so a
+  restart replays up to ≈ 8 s, and position math that ignores this pre-roll is off by as much.
+- **Supervision (prototype helper):**
+  - after a SIGKILL of ffmpeg at 20 s, the run restarted 2 s later at the same position;
+  - with the listener down, the waits were 2, 4, 8 and 16 s.
+- **Scrubber:**
+  - ffmpeg prints the full output URL, key included, in its "Error opening output" lines.
+  - After scrubbing, the fake key `k3y-TEST-0000` appeared 0 times in the helper's log and status file.
+- **launchd** (a temporary LaunchAgent in the owner's GUI domain, not the system service). A helper spawned `detached` (its own
+  process group):
+  - survived the job's main process exiting and the job's restart;
+  - survived `launchctl bootout`.
+
+  A plain child was killed in both cases. So `AbandonProcessGroup` looks unnecessary. The §4.2 run with the real `stop.sh`
+  confirms it on the system service.
+- **Drift over a multi-hour run:** pending (a ≈ 3 h run across a join).
 
 ## 7. Not in phase 1
 - **Phase 2:**
