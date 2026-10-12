@@ -141,6 +141,7 @@ function makeFixture(videos: StoredVideoRecord[] = [makeVideo()]) {
       resolveConnectionProvider?: (connectionId: string) => Promise<LocalizationProvider>;
       assertDeviceAvailable?: () => Promise<void>;
       changeSetServices?: typeof changeSetServices;
+      channelLanguageBaseline?: { getExpectedDefaultLanguage(channelId: string): Promise<string | null> };
     } = {}
   ) {
     return createAiLocalizationServices({
@@ -817,4 +818,39 @@ test("RISK-99: a Change Set stored but read back incomplete still gets its prove
   assert.equal(provenance.createdVia, "mcp");
   assert.equal(provenance.agentApiVersion, "3.1.0");
   assert.equal(provenance.rationale, "why");
+});
+
+// ---------------------------------------------------------------------------
+// BL-178 (FO-REQ-0022 В2, owner msg 2665: "не хард код английский, а выбирать на основе дефолтного языка"; PROJECT_SPEC §14).
+// The provider is told the channel's configured language as the source -- never a literal "en", never the mislabelled video's own.
+// ---------------------------------------------------------------------------
+const MISLABELLED_ES = makeVideo({
+  title: "Cuban Jazz Morning Coffee",
+  description: "Two hours of relaxing Cuban jazz",
+  defaultLanguage: "es",
+  existingLocalizations: { es: { title: "Cuban Jazz Morning Coffee", description: "Two hours of relaxing Cuban jazz" } },
+});
+const echo = () => fixedProvider((req) => ({ status: "ok", title: `T-${req.targetLanguage}`, description: `D-${req.targetLanguage}` })) as LocalizationProvider & { calledWith: LocalizationGenerationRequest[] };
+
+test("BL-178 В2: the source language is the channel's configured language, not the video's own (a video labelled es under baseline en)", async () => {
+  const { build } = makeFixture([MISLABELLED_ES]);
+  const provider = echo();
+  const services = build(provider, { channelLanguageBaseline: { getExpectedDefaultLanguage: async () => "en" } });
+  const result = await services.generateProposals({ channelId: "UC_TEST", videoIds: ["v1"], targetLanguages: ["es"] });
+  assert.equal(provider.calledWith[0].sourceLanguage, "en");
+  assert.equal(provider.calledWith[0].sourceTitle, "Cuban Jazz Morning Coffee");
+  // The es proposal is a translation against nothing, not an edit of the original.
+  const title = result.results[0].fields.find((f) => f.field === "title")!;
+  assert.deepEqual([title.changeType, title.baselineValue], ["add", ""]);
+});
+
+test("BL-178 В2: whatever language the channel has configured is used (ja), and with none the video's own stays", async () => {
+  const { build } = makeFixture([makeVideo({ defaultLanguage: "ja" })]);
+  const provider = echo();
+  await build(provider, { channelLanguageBaseline: { getExpectedDefaultLanguage: async () => "ja" } }).generateProposals({ channelId: "UC_TEST", videoIds: ["v1"], targetLanguages: ["es"] });
+  assert.equal(provider.calledWith[0].sourceLanguage, "ja");
+
+  const noBaseline = echo();
+  await build(noBaseline, { channelLanguageBaseline: { getExpectedDefaultLanguage: async () => null } }).generateProposals({ channelId: "UC_TEST", videoIds: ["v1"], targetLanguages: ["es"] });
+  assert.equal(noBaseline.calledWith[0].sourceLanguage, "ja");
 });

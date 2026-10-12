@@ -161,17 +161,20 @@ function buildMetadataSyncProposal(args: {
       details: { inferredLanguage: resolvedLanguage.targetLanguage },
     });
   }
-  const beforeSnippet = removeReadOnlySnippetFields(args.context.snippet);
-  const proposedSnippet = removeReadOnlySnippetFields({
-    ...beforeSnippet,
+  // The same audio rule as `proposedSnippet` below, so the preview shows no change that is not one (BL-178 review M4).
+  const beforeSnippet = pickWritableSnippetFields(args.context.snippet, { includeDefaultAudioLanguage: "keep" });
+  // RISK-102 (PROJECT_SPEC §14, 2026-10-12): the audio language read just before the write is sent back, so this edit does not
+  // reset it (`videos.update` resets a left-out snippet field); `zxx`, rejected when echoed, stays out.
+  const proposedSnippet = pickWritableSnippetFields({
+    ...args.context.snippet,
     title: args.draft.finalTitle,
     description: args.draft.description,
     // Architecture audit 2026-10-01 (H5): `snippet.defaultLanguage` is never set as a side effect
     // (AGENTS.md §F -- the localization pipeline has authority over title/description only). The
-    // video's existing value, if any, is carried through unchanged via `beforeSnippet`; a video
+    // video's existing value, if any, is carried through unchanged from its current snippet; a video
     // without one stays without one even when the target language came from the
     // single-localization fallback.
-  });
+  }, { includeDefaultAudioLanguage: "keep" });
 
   const beforeLocalizations = { ...args.context.localizations };
   const proposedLocalizations = {

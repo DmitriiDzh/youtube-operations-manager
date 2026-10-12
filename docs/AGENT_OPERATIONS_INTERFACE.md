@@ -103,8 +103,10 @@ already read) -- neither ever makes a live YouTube call.
 `getChannelContext({ channelId })` returns `{ channelId, title, lastSyncedAt (ISO string, or
 `null` if the channel has never been synced -- never fabricated), syncedVideoCount,
 editorialProfile (the channel's saved editorial profile via `ai-localization`'s own
-`getEditorialProfile`, or `null` if none was ever saved), trackedLanguages }`. Throws
-`DATA_NOT_SYNCED` if `channelId` has no local record at all.
+`getEditorialProfile`, or `null` if none was ever saved), trackedLanguages, languageBaseline,
+languageDeviations }`. `languageBaseline` is the channel's configured language pair (Languages -> Language defaults) or `null`;
+`languageDeviations` lists the synced videos whose `defaultLanguage`/`defaultAudioLanguage` differ from it (BL-178, 2026-10-12,
+additive). Throws `DATA_NOT_SYNCED` if `channelId` has no local record at all.
 
 `getVideoContext({ channelId, videoId, include? })` returns `{ videoId, channelId,
 includedSections, metadata?, localizations? }`. `include` selects which of `"metadata"` /

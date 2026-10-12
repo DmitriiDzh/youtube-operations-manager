@@ -112,8 +112,9 @@ export function createVideoDetailsYoutubeApiAdapter() {
             ? {
                 snippet: pickWritableSnippetFields(
                   { ...context.snippet, ...args.patch },
-                  // Echoed only when the caller is changing it (never a blind round-trip of a stored value).
-                  { includeDefaultAudioLanguage: "defaultAudioLanguage" in args.patch }
+                  // Written when the patch changes it; otherwise the value just read is kept (RISK-102: "Fix all" changing only
+                  // defaultLanguage reset the audio language to en-US, 2026-10-12) -- never a stored copy.
+                  { includeDefaultAudioLanguage: "defaultAudioLanguage" in args.patch ? true : "keep" }
                 ) as typeof context.snippet,
               }
             : {}),

@@ -48,6 +48,7 @@ export const batches: Record<keyof typeof en, string> = {
   "batches.errorReport": "Отчёт об ошибках",
   "batches.noErrors": "Ошибок нет.",
   "batches.auditTrail": "Журнал аудита",
+  "batches.audit.languageAligned": "язык {from} → {to}",
   "batches.noAudit": "Событий аудита пока нет — выполните пробный запуск выше.",
   "batches.confirmSendAll.title": "Действительно отправить все одобренные изменения в YouTube?",
   "batches.confirmSendAll.body":

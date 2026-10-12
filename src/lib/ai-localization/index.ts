@@ -6,7 +6,7 @@ import { createAiConnectionCore } from "@/lib/ai-connections";
 import { createEditorialProfileStoreAdapter, createGenerationProvenanceStoreAdapter } from "./adapters/profile-store";
 import { resolveLocalizationProvider } from "./provider-registry";
 import { createAiLocalizationServices } from "./services";
-import { rawSqlClient } from "@/lib/db";
+import { getChannelExpectedLanguages, rawSqlClient } from "@/lib/db";
 import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
 
 export function createAiLocalizationCore() {
@@ -19,6 +19,8 @@ export function createAiLocalizationCore() {
     defaultProviderName: "mock",
     resolveConnectionProvider: connectionCore.resolveConnectionProvider,
     assertDeviceAvailable: () => assertDeviceAvailableForMutation(rawSqlClient),
+    // BL-178 (FO-REQ-0022 В2): the channel's configured language is the source language.
+    channelLanguageBaseline: { getExpectedDefaultLanguage: async (channelId) => (await getChannelExpectedLanguages(channelId)).defaultLanguage },
     changeSetServices: { createChangeSetFromProposals: changeSetCore.createChangeSetFromProposals },
     profileStore: createEditorialProfileStoreAdapter(),
     provenanceStore: createGenerationProvenanceStoreAdapter(),

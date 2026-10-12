@@ -443,6 +443,11 @@ Key MCP tools:
     actually granted today — always `["READ","DRAFT"]` — named future extension points, and the
     local schema version). Read-only, no channel scoping (instance-level information). Call this
     first, before assuming any other Agent Operations tool exists.
+  - BL-178 additions (2026-10-12, additive, no version bump): `agent_get_channel_context` also returns `languageBaseline`
+    (`{ defaultLanguage, defaultAudioLanguage }` or `null`) and `languageDeviations` (`[{ videoId, defaultLanguage,
+    defaultAudioLanguage }]`: synced videos whose language fields differ from the baseline, case-insensitive; a Batch aligns
+    such a video's `defaultLanguage` when it writes it, PROJECT_SPEC §14). `get_change_set` (Web and MCP) also returns
+    `languageAlignments` `[{ videoId, from, to }]`.
   - `agent_get_channel_context` — `{ channelId }` → `ChannelContext` (title, `lastSyncedAt`
     — `null` if never synced, never fabricated — synced video count, the channel's editorial
     profile or `null` if none was ever saved, and its explicitly tracked languages). Requires

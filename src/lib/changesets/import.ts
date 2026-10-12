@@ -16,8 +16,7 @@ import {
   YOUTUBE_DESCRIPTION_MAX_LENGTH,
   YOUTUBE_TITLE_MAX_LENGTH,
   classifyFieldChange,
-  computeConflictStatus,
-  currentRemoteValueFor,
+  readWithChannelBaseline,
   isValidLanguageCode,
 } from "./diff";
 
@@ -75,6 +74,8 @@ export async function parseAndValidateWorkbook(args: {
   buffer: Buffer;
   channelId: string;
   syncedVideos: StoredVideoRecord[];
+  /** BL-178: the channel's language baseline; a video whose own language differs is read as its original (see diff.ts). */
+  channelBaseline?: string | null;
 }): Promise<ParsedWorkbook> {
   let workbook;
   try {
@@ -206,7 +207,8 @@ export async function parseAndValidateWorkbook(args: {
       // Blank cell = no proposed change for this field (docs/PROJECT_SPEC.md §8).
       if (spec.proposedRaw.length === 0) continue;
 
-      const currentRemoteValue = currentRemoteValueFor(syncedVideo, language, spec.field);
+      const read = readWithChannelBaseline(syncedVideo, args.channelBaseline ?? null);
+      const currentRemoteValue = read.current(language, spec.field);
       const validationError =
         spec.proposedRaw.length > spec.maxLength
           ? `${spec.field} exceeds ${spec.maxLength} characters (${spec.proposedRaw.length})`
@@ -221,7 +223,7 @@ export async function parseAndValidateWorkbook(args: {
         changeType: classifyFieldChange(currentRemoteValue, spec.proposedRaw),
         validationStatus: validationError ? "invalid" : "valid",
         validationError,
-        conflictStatus: computeConflictStatus(spec.baselineRaw, currentRemoteValue),
+        conflictStatus: read.holds({ language, field: spec.field, baselineValue: spec.baselineRaw }) ? "none" : "conflict",
       });
     }
 

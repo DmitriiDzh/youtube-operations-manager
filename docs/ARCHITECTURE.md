@@ -3647,3 +3647,55 @@ Plan: `docs/roadmap/plans/LIVE_STREAMS_PLAN.md` (FO-REQ-0019). Schema v86, Facto
 - **Other computers** see the `live-streams` per-device report (`sync-gateway/live-streams`, strict fixed codes); the Operator reads
   `factory_live_get_status` and maps files with `factory_live_map_sources`. Bell notices: down, ended by YouTube, next video missing.
 - **Risks:** RISK-125 (the key in ffmpeg's argv), RISK-126 (the T9 every ~2 h).
+
+## 46. The channel's language is the truth for localization (BL-178 part A, FO-REQ-0022)
+
+Owner exception 2026-10-12 (msg 2665), recorded in `docs/PROJECT_SPEC.md` §14 and AGENTS.md §F. Plan:
+`docs/roadmap/plans/LOCALIZATION_BASELINE_PLAN.md`.
+
+- **The rule** lives in `src/lib/shared-language-baseline/` (pure, shared by `batches`, `changesets`, `localization`,
+  `agent-operations` and `channel-language-defaults`, AGENTS.md §M).
+  - YouTube lists a video's own default language in `localizations` too, equal to the snippet. This entry is called the mirror.
+  - With a channel baseline set, a video whose language differs from it is read **aligned**:
+    - its snippet is the original, in the baseline language;
+    - mirrors under the old or new code are dropped.
+  - An entry under either code that differs from the snippet is **ambiguous**, and a write refuses it.
+  - Language codes compare case-insensitively.
+  - `baselineValueStillHolds` accepts both row shapes for the old language: rows made against the mirror (the snippet text) and
+    rows made against nothing (`""`).
+- **Batches** (`runSafetyPipeline`):
+  - A wired baseline source with no language set → FAILED. This closes the path where an audio-only baseline let an `es` row
+    overwrite the English snippet.
+  - Deviating video → `mergeBase` gets the baseline `defaultLanguage` and the mirror-free localizations.
+    - A row in the baseline language → FAILED.
+    - Conflict detection and reconciliation read with the baseline.
+    - The backup adds `snippetTitle`/`snippetDescription`.
+    - DRY_RUN/ATTEMPT audit gets `defaultLanguageAligned {from, to}`.
+    - The read-back must show the snippet exactly as sent. Otherwise the row FAILS with `systemic`, and the batch stops.
+    - A read that still shows the old language is re-read (lag), not failed. A read that never shows the channel's language
+      also stops the batch.
+    - Reconciliation and crash recovery accept a success only when the read shows the sent snippet: `defaultLanguage`, title
+      and description (`readBackMatchesSentSnippet`, against the attempt's stored payload). Otherwise the row FAILS with
+      `systemic`.
+    - Language codes match localization keys case-insensitively in `merge.ts` too: a row `pt-br` updates `pt-BR`.
+- **Change Sets, XLSX import, AI localization, the Languages overview:**
+  - They read videos with the baseline (`changesets/diff.ts` `readWithChannelBaseline`). For a mislabelled video an `es` row is
+    an `add`.
+  - AI `sourceLanguage` = the configured baseline, else the video's own language.
+  - The overview row gains `originalLanguage` (a video without a language takes the channel's); `defaultLanguage` stays
+    YouTube's value.
+  - The approval screen marks old-language rows "translation, not an edit of the original".
+  - **Known limits, both fail closed:**
+    - a row in the channel's language on a mislabelled video looks approvable, but the Batch refuses it (fix the language
+      first);
+    - a video whose old-language entry differs from its snippet ("ambiguous") is read as it is, and the Batch refuses it.
+  - `getChangeSet` returns `languageAlignments` for the approval screen.
+- **Single-item writes** (`video-details`, including "Fix all", and `video-metadata`):
+  - They send the `defaultAudioLanguage` read just before the write (`pickWritableSnippetFields(..., { includeDefaultAudioLanguage:
+    "keep" })`), except `zxx`.
+  - This closes RISK-102.
+- **Agents:** `agent_get_channel_context` gains `languageBaseline` and `languageDeviations`. These are additive, with no version
+  bump.
+- **Not in part A:**
+  - syncing the baseline and tracked languages between computers (part B; they are still per computer);
+  - refresh after a send, and alerts (part C).

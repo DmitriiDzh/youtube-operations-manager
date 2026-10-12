@@ -24,6 +24,7 @@ import {
   buildSafeLocalizationsPayload,
   checkDefaultLanguage,
   detectPreWriteConflict,
+  readCurrentValue,
   type FreshVideoContext,
   type PendingChange,
 } from "./merge";
@@ -324,4 +325,22 @@ test("buildSafeLocalizationsPayload never carries a stale localizations entry fo
   assert.equal(result.snippet.title, "New EN Title");
   assert.equal(Object.prototype.hasOwnProperty.call(result.localizations, "en"), false);
   assert.deepEqual(result.localizations.es, { title: "Titulo ES", description: "Descripcion ES" });
+});
+
+// BL-178 review M1: language codes compare case-insensitively everywhere (the shared rule, `@/lib/shared-language-baseline`).
+// A row `pt-br` updates the existing `pt-BR` entry instead of adding a second key; a row `EN` on a video whose language is `en`
+// edits the snippet, as `en` would.
+test("BL-178 M1: a row's language matches an existing localization key and the snippet's language regardless of case", () => {
+  const fresh = {
+    snippet: { title: "T", description: "D", defaultLanguage: "en" },
+    localizations: { "pt-BR": { title: "Velho", description: "Desc" } },
+  };
+  const payload = buildSafeLocalizationsPayload(fresh, [
+    { id: "a", language: "pt-br", field: "title", baselineValue: "Velho", proposedValue: "Novo" },
+    { id: "b", language: "EN", field: "title", baselineValue: "T", proposedValue: "New T" },
+  ]);
+  assert.deepEqual(payload.localizations, { "pt-BR": { title: "Novo", description: "Desc" } });
+  assert.equal(payload.snippet.title, "New T");
+  assert.equal(readCurrentValue(fresh, "pt-br", "title"), "Velho");
+  assert.equal(readCurrentValue(fresh, "EN", "title"), "T");
 });

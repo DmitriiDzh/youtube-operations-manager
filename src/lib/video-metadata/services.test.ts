@@ -492,7 +492,14 @@ test("RISK-11 (legacy single-item path, 2026-09-18): every documented read-only 
   assert.equal(proposal.update.snippet.title, "Updated title");
   assert.equal(proposal.update.snippet.categoryId, "22");
   assert.deepEqual(proposal.update.snippet.tags, ["youtube", "metadata"]);
-  assert.equal(Object.prototype.hasOwnProperty.call(proposal.update.snippet, "defaultAudioLanguage"), false);
+  // Changed 2026-10-12 (BL-178), with justification (AGENTS.md §L): this asserted the audio language was never sent. The
+  // requirement it encoded was wrong about YouTube: `videos.update` resets a left-out snippet field (Tropico 2026-10-04, RISK-102;
+  // owner 2026-10-04 "a field left out is reset"). PROJECT_SPEC §14 (2026-10-12) now requires a single-item edit to send back the
+  // value read just before the write (here "es"), except `zxx`.
+  assert.equal(proposal.update.snippet.defaultAudioLanguage, "es");
+  // BL-178 review M4: the preview's "before" carries it too -- no false change shown.
+  assert.equal(result.snippet.before.defaultAudioLanguage, "es");
+  assert.equal(result.snippet.proposed.defaultAudioLanguage, "es");
 });
 
 // Requirement change (architecture audit 2026-10-01, H5 + its review): the single-localization

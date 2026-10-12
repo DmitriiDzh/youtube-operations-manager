@@ -1,7 +1,9 @@
 # Localization: the channel's language is the truth (FO-REQ-0022, BL-178)
 
 - **Status:** APPROVED 2026-10-12 (owner, Telegram msg 2665: В1 yes, В2 yes, В3 yes, В4 ok). Part A is built first, then B,
-  then C; each is merged on its own.
+  then C; each is merged on its own. **Part A DONE**: built on `feature/bl-178-localization-safety`, reviewed, merged into `dev`
+  2026-10-12 (owner, Telegram msg 2674). Parts B and C are not started. Deviation from §3.1 A5: `channel_video_list` gets no `languageDeviates` flag; the list is in
+  `agent_get_channel_context` (`languageDeviations`), which serves the same need.
 - **Request:** FO-REQ-0022, created by the Operator on 2026-10-12 and relayed by the owner on 2026-10-12.
 - **Owner's rule:** decision 1078, quoted in the request:
   - "All our videos are in English by default."

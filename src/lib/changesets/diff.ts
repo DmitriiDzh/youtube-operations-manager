@@ -1,3 +1,4 @@
+import { baselineValueStillHolds, currentValueIn, readAgainstBaseline, type VideoLanguageView } from "@/lib/shared-language-baseline";
 import type {
   Change,
   ChangeConflictStatus,
@@ -23,24 +24,46 @@ export function isValidLanguageCode(value: string): boolean {
 
 /**
  * The single canonical read of "what does the locally-synchronized copy of this video
- * currently say for (language, field)" -- YouTube's `localizations` map never contains an
- * entry keyed by the video's own `defaultLanguage` (that language's title/description is
- * `snippet.title`/`description`, i.e. `video.title`/`video.description` on this synced
- * record); only a non-default language is ever looked up in `existingLocalizations`.
- * Previously duplicated (and each copy missing this defaultLanguage special-case) across
- * `changesets/import.ts`, `changesets/services.ts`, and `ai-localization/services.ts` --
- * a change targeting a video's default language was diffed against an empty string
- * instead of its real current value in all three (AGENTS.md §D: one implementation).
+ * currently say for (language, field)": the video's default language is `snippet.title`/
+ * `description` (`video.title`/`video.description` here); any other language is its
+ * `existingLocalizations` entry. YouTube also lists the default language in `localizations`,
+ * equal to the snippet (the "mirror"; corrected 2026-10-12, BL-178 -- an earlier comment said such
+ * an entry never exists). Previously duplicated across `changesets/import.ts`,
+ * `changesets/services.ts` and `ai-localization/services.ts` (AGENTS.md §D: one implementation).
+ *
+ * BL-178 (PROJECT_SPEC §14, owner exception 2026-10-12): with a channel baseline, a video whose own
+ * language differs from it is read as the baseline's original -- its old-language mirror is no
+ * translation, so a row in that language is an `add` against nothing, never an edit of the original
+ * (`@/lib/shared-language-baseline`, the same rule the Batch write uses).
  */
 export function currentRemoteValueFor(
   video: StoredVideoRecord,
   language: string,
-  field: "title" | "description"
+  field: "title" | "description",
+  channelBaseline: string | null = null
 ): string {
-  if (video.defaultLanguage && language === video.defaultLanguage) {
-    return field === "title" ? video.title : video.description;
-  }
-  return video.existingLocalizations[language]?.[field] ?? "";
+  return readWithChannelBaseline(video, channelBaseline).current(language, field);
+}
+
+function toLanguageView(video: StoredVideoRecord): VideoLanguageView {
+  return { defaultLanguage: video.defaultLanguage, title: video.title, description: video.description, localizations: video.existingLocalizations };
+}
+
+/**
+ * A synced video read against its channel's language baseline (BL-178): `current` is the value a row compares with, `holds`
+ * whether a row's baseline still matches (both row shapes for a re-labelled video: made against the mirror or against nothing),
+ * `alignedFrom` the old language when the video is read aligned.
+ */
+export function readWithChannelBaseline(video: StoredVideoRecord, channelBaseline: string | null) {
+  const raw = toLanguageView(video);
+  const reading = readAgainstBaseline(raw, channelBaseline);
+  const view = reading.kind === "aligned" ? reading.view : raw;
+  return {
+    current: (language: string, field: "title" | "description") => currentValueIn(view, language, field),
+    holds: (change: { language: string; field: "title" | "description"; baselineValue: string }) => baselineValueStillHolds(raw, reading, change),
+    alignedFrom: reading.kind === "aligned" ? reading.from : null,
+    alignedTo: reading.kind === "aligned" ? reading.to : null,
+  };
 }
 
 /**
@@ -125,7 +148,9 @@ export function computeChangeSetStatus(changeList: ChangeStatusInput[]): ChangeS
  */
 export function revalidateChangeAgainstCurrentRemote(
   change: Change,
-  currentRemoteValue: string | null
+  currentRemoteValue: string | null,
+  /** BL-178: whether the change's baseline still matches, by the channel-baseline rule (`readWithChannelBaseline().holds`). */
+  baselineHolds?: boolean
 ): Change {
   // `null` = the video (or its language entry) is no longer present in synchronized
   // data at all (e.g. video removed from channel-sync results). Treat conservatively
@@ -140,7 +165,11 @@ export function revalidateChangeAgainstCurrentRemote(
       ? "conflict"
       : alreadyInEffect
         ? "none"
-        : computeConflictStatus(change.baselineValue, currentRemoteValue);
+        : baselineHolds !== undefined
+          ? baselineHolds
+            ? "none"
+            : "conflict"
+          : computeConflictStatus(change.baselineValue, currentRemoteValue);
 
   if (conflictStatus === change.conflictStatus) {
     return change;

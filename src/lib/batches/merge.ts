@@ -10,6 +10,7 @@
 //     RISK-03-affected behavior, see docs/TECHNICAL_DEBT.md RISK-03)
 //   - AC-MERGE-01/02/03/04, AC-MULTI-01 (buildSafeLocalizationsPayload)
 
+import { baselineValueStillHolds, readAgainstBaseline, sameLanguage, type VideoLanguageView } from "@/lib/shared-language-baseline";
 import { pickWritableSnippetFields } from "@/lib/youtube-write-gateway";
 
 export type FreshVideoLocale = { title: string; description: string };
@@ -67,10 +68,17 @@ export function checkDefaultLanguage(
  * one shared primitive, per architectural decision #4 (2026-09-17 plan approval), not two
  * separately-maintained implementations of the same read. */
 export function readCurrentValue(fresh: FreshVideoContext, language: string, field: "title" | "description"): string {
-  if (fresh.snippet.defaultLanguage && language === fresh.snippet.defaultLanguage) {
+  // Language codes compare case-insensitively (BL-178 review M1, the shared rule in `@/lib/shared-language-baseline`).
+  if (sameLanguage(language, fresh.snippet.defaultLanguage)) {
     return field === "title" ? fresh.snippet.title : fresh.snippet.description;
   }
-  return fresh.localizations[language]?.[field] ?? "";
+  const key = localeKeyFor(fresh.localizations, language);
+  return key ? fresh.localizations[key][field] : "";
+}
+
+/** The existing `localizations` key for a language, matched case-insensitively (`pt-br` finds `pt-BR`); `null` when none. */
+function localeKeyFor(localizations: Record<string, FreshVideoLocale>, language: string): string | null {
+  return Object.keys(localizations).find((key) => sameLanguage(key, language)) ?? null;
 }
 
 export type ConflictResult =
@@ -91,13 +99,32 @@ export type ConflictResult =
  * AC-CONFLICT-02) is the backstop for a race landing in the gap between this check and
  * the eventual write.
  */
-export function detectPreWriteConflict(changes: PendingChange[], fresh: FreshVideoContext): ConflictResult {
-  const conflicting = changes.filter(
-    (change) => readCurrentValue(fresh, change.language, change.field) !== change.baselineValue
-  );
+export function detectPreWriteConflict(
+  changes: PendingChange[],
+  fresh: FreshVideoContext,
+  options: { channelBaseline?: string | null } = {}
+): ConflictResult {
+  const conflicting = changes.filter((change) => !baselineHolds(change, fresh, options.channelBaseline ?? null));
 
   if (conflicting.length === 0) return { status: "none" };
   return { status: "conflict", conflictingChangeIds: conflicting.map((c) => c.id) };
+}
+
+/** The fresh fetch in the shape the shared language-baseline rule reads (`@/lib/shared-language-baseline`). */
+export function toLanguageView(fresh: FreshVideoContext): VideoLanguageView {
+  return { defaultLanguage: fresh.snippet.defaultLanguage, title: fresh.snippet.title, description: fresh.snippet.description, localizations: fresh.localizations };
+}
+
+/**
+ * Whether a change's baseline still matches the fresh fetch. Without a channel baseline: the plain current value
+ * (`readCurrentValue`). With one (BL-178, PROJECT_SPEC §14 2026-10-12), a video whose own language differs from it is read
+ * aligned: a change in the old default language holds when its baseline is empty or the snippet text (made against YouTube's
+ * mirror) -- both mean "no translation existed".
+ */
+function baselineHolds(change: PendingChange, fresh: FreshVideoContext, channelBaseline: string | null): boolean {
+  if (!channelBaseline) return readCurrentValue(fresh, change.language, change.field) === change.baselineValue;
+  const video = toLanguageView(fresh);
+  return baselineValueStillHolds(video, readAgainstBaseline(video, channelBaseline), change);
 }
 
 export type SafeLocalizationsPayload = {
@@ -148,7 +175,7 @@ export function buildSafeLocalizationsPayload(
   // read via the same default-language-aware `readCurrentValue`).
   const localizations: Record<string, FreshVideoLocale> = {};
   for (const [locale, value] of Object.entries(fresh.localizations)) {
-    if (fresh.snippet.defaultLanguage && locale === fresh.snippet.defaultLanguage) continue;
+    if (sameLanguage(locale, fresh.snippet.defaultLanguage)) continue;
     localizations[locale] = { ...value };
   }
 
@@ -170,22 +197,24 @@ export function buildSafeLocalizationsPayload(
       // so silently proceeding would blank the video's real title/description instead
       // of removing a localization. Fail closed rather than merge a payload that could
       // destroy real data.
-      if (fresh.snippet.defaultLanguage && change.language === fresh.snippet.defaultLanguage) {
+      if (sameLanguage(change.language, fresh.snippet.defaultLanguage)) {
         throw new Error(
           `Refusing to merge a "delete" change for language "${change.language}": it is this video's own defaultLanguage, so deleting it would blank the real snippet title/description instead of removing a localization.`
         );
       }
-      languagesToDelete.add(change.language);
+      languagesToDelete.add(localeKeyFor(localizations, change.language) ?? change.language);
       continue;
     }
 
-    if (fresh.snippet.defaultLanguage && change.language === fresh.snippet.defaultLanguage) {
+    if (sameLanguage(change.language, fresh.snippet.defaultLanguage)) {
       snippet[change.field] = change.proposedValue;
       continue;
     }
 
-    const existingLocale = localizations[change.language] ?? { title: "", description: "" };
-    localizations[change.language] = { ...existingLocale, [change.field]: change.proposedValue };
+    // An existing entry keeps its key's spelling (a row `pt-br` updates `pt-BR`, never adds a second key).
+    const key = localeKeyFor(localizations, change.language) ?? change.language;
+    const existingLocale = localizations[key] ?? { title: "", description: "" };
+    localizations[key] = { ...existingLocale, [change.field]: change.proposedValue };
   }
 
   for (const language of languagesToDelete) {
@@ -216,16 +245,16 @@ export type ReconciliationReadClassification = "matches_requested" | "matches_ba
  */
 export function classifyFreshStateAgainstAttempt(
   changes: PendingChange[],
-  fresh: FreshVideoContext
+  fresh: FreshVideoContext,
+  options: { channelBaseline?: string | null } = {}
 ): ReconciliationReadClassification {
   const allMatchRequested = changes.every(
     (change) => readCurrentValue(fresh, change.language, change.field) === change.proposedValue
   );
   if (allMatchRequested) return "matches_requested";
 
-  const allMatchBaseline = changes.every(
-    (change) => readCurrentValue(fresh, change.language, change.field) === change.baselineValue
-  );
+  // An aligning write (BL-178) that did not land leaves the video in its old language: its rows still hold (see baselineHolds).
+  const allMatchBaseline = changes.every((change) => baselineHolds(change, fresh, options.channelBaseline ?? null));
   if (allMatchBaseline) return "matches_baseline";
 
   return "diverged";

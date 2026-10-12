@@ -14,6 +14,7 @@ import {
   type VideoContext,
   type VideoContextSection,
 } from "./contracts";
+import { sameLanguage } from "@/lib/shared-language-baseline";
 import {
   ALL_VIDEO_CONTEXT_SECTIONS,
   channelAnalyticsContextOutputSchema,
@@ -681,6 +682,8 @@ type ServiceDependencies = {
   // Delegates to `src/lib/db.ts`'s `getChannelTargetLanguages` (the same function
   // `src/lib/localization/` itself reads) -- never a second parser of `target_languages_json`.
   getTrackedLanguages(channelId: string): Promise<string[]>;
+  /** BL-178: the channel's language baseline (Languages -> Language defaults; `db.getChannelExpectedLanguages`). Optional. */
+  getChannelLanguageBaseline?(channelId: string): Promise<{ defaultLanguage: string | null; defaultAudioLanguage: string | null }>;
   // Slice C -- delegates to `analyticsCore`'s own `getChannelOverview`/`listMetrics` unchanged
   // (AGENTS.md §D: no parallel analytics read path, no new YouTube call of this module's own).
   // Both take `input: unknown` and do their OWN internal validation/credential-resolution/
@@ -797,11 +800,21 @@ export function createAgentOperationsServices(deps: ServiceDependencies) {
         });
       }
 
-      const [videos, profile, trackedLanguages] = await Promise.all([
+      const [videos, profile, trackedLanguages, baseline] = await Promise.all([
         deps.channelStore.listVideosByChannel(channel.channelId),
         deps.getEditorialProfile(channel.channelId),
         deps.getTrackedLanguages(channel.channelId),
+        deps.getChannelLanguageBaseline?.(channel.channelId) ?? Promise.resolve({ defaultLanguage: null, defaultAudioLanguage: null }),
       ]);
+      // BL-178 (FO-REQ-0022 item 3): the same rule as Languages -> Language defaults and the Batch write -- a field is compared only
+      // when the baseline sets it, case-insensitively; a missing value deviates once a baseline exists.
+      const hasBaseline = baseline.defaultLanguage !== null || baseline.defaultAudioLanguage !== null;
+      const deviates = (own: string | null, expected: string | null) => expected !== null && !sameLanguage(own, expected);
+      const languageDeviations = hasBaseline
+        ? videos
+            .filter((video) => deviates(video.defaultLanguage, baseline.defaultLanguage) || deviates(video.defaultAudioLanguage, baseline.defaultAudioLanguage))
+            .map((video) => ({ videoId: video.videoId, defaultLanguage: video.defaultLanguage, defaultAudioLanguage: video.defaultAudioLanguage }))
+        : [];
 
       const output: ChannelContext = {
         channelId: channel.channelId,
@@ -823,6 +836,8 @@ export function createAgentOperationsServices(deps: ServiceDependencies) {
             }
           : null,
         trackedLanguages,
+        languageBaseline: hasBaseline ? baseline : null,
+        languageDeviations,
       };
 
       return parseWithSchema(channelContextOutputSchema, output, "get channel context output");

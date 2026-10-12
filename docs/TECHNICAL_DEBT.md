@@ -1760,9 +1760,11 @@ No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a d
 - **Possible fix:** have the planner keep a set while an experiment in a non-final state references it. Not done in slice 1 (no experiment facts in the retention module yet); decide with the owner whether it matters in practice.
 - **Gate(s):** none. **Status:** open.
 
-## RISK-102 — Single-item `video-metadata` apply can still reset `defaultAudioLanguage` — OPEN, 2026-10-04
+## RISK-102 — Single-item `video-metadata` apply can still reset `defaultAudioLanguage` — CLOSED 2026-10-12 (BL-178), except `zxx`
 
 Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet field is reset by `videos.update`; Tropico batch of 2026-10-04 turned 53 videos to `en-US`). The single-item apply path (`src/lib/video-metadata/services.ts`, `removeReadOnlySnippetFields`) still sends a snippet without it and has the same exposure. `src/lib/video-details/adapters/youtube-api.ts` has the same exposure: the audio field is sent only when the patch contains it, so editing just a title/description resets it. Not changed in this slice (separate write surfaces, no owner decision yet); apply the same baseline rule there before relying on it for videos whose audio language matters.
+
+**Closed 2026-10-12 (BL-178 part A, PROJECT_SPEC §14).** Seen live: "Fix all" changing only `defaultLanguage` reset the audio language `en` → `en-US` on two Tropico videos (Windows audit, 14:11–14:19 UTC). `video-details` (Details, "Fix all") and `video-metadata` now send the `defaultAudioLanguage` read from YouTube just before the write (`pickWritableSnippetFields` `"keep"`). Choice recorded: a single edit keeps what the video has (the fresh value, never a stored copy); Batches keep using the channel baseline. **Residual:** a `zxx` value is still left out (YouTube rejected it when echoed, 2026-10-02), so such a video's audio language may still be reset by a single edit.
 
 ## RISK-103 — Deep competitor collection: monthly re-backfill, a larger concurrency overshoot, and unrecorded spend on a crash — OPEN, 2026-10-04
 

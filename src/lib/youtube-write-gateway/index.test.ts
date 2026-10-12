@@ -383,3 +383,17 @@ test("pickWritableSnippetFields: defaultAudioLanguage is dropped by default (bat
     defaultAudioLanguage: "zxx",
   });
 });
+
+// RISK-102 (BL-178, PROJECT_SPEC §14 2026-10-12): `videos.update` resets a snippet field left out (Tropico 2026-10-04: audio
+// became en-US; "Исправить все" 2026-10-12 did the same when it changed only defaultLanguage). A single-item edit of another field
+// keeps the value read just before the write -- except `zxx`, which YouTube rejected when echoed (Japan Music, 2026-10-02).
+test("pickWritableSnippetFields 'keep': the freshly read audio language is sent back unchanged, except zxx; none read -> none sent", () => {
+  assert.deepEqual(pickWritableSnippetFields({ title: "T", defaultLanguage: "en", defaultAudioLanguage: "en" }, { includeDefaultAudioLanguage: "keep" }), {
+    title: "T",
+    defaultLanguage: "en",
+    defaultAudioLanguage: "en",
+  });
+  assert.equal("defaultAudioLanguage" in pickWritableSnippetFields({ title: "T", defaultAudioLanguage: "zxx" }, { includeDefaultAudioLanguage: "keep" }), false);
+  assert.equal("defaultAudioLanguage" in pickWritableSnippetFields({ title: "T" }, { includeDefaultAudioLanguage: "keep" }), false);
+  assert.equal("defaultAudioLanguage" in pickWritableSnippetFields({ title: "T", defaultAudioLanguage: null }, { includeDefaultAudioLanguage: "keep" }), false);
+});

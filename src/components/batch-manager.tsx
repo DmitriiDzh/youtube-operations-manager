@@ -65,7 +65,17 @@ type AuditEvent = {
   videoId: string;
   eventType: string;
   occurredAt: string;
+  detail?: unknown;
 };
+
+/** BL-178: the language a write aligned (DRY_RUN/ATTEMPT audit `defaultLanguageAligned`), if any. */
+function alignedLanguage(detail: unknown): { from: string; to: string } | null {
+  if (!detail || typeof detail !== "object") return null;
+  const aligned = (detail as { defaultLanguageAligned?: unknown }).defaultLanguageAligned;
+  if (!aligned || typeof aligned !== "object") return null;
+  const { from, to } = aligned as { from?: unknown; to?: unknown };
+  return typeof from === "string" && typeof to === "string" ? { from, to } : null;
+}
 
 type ApiError = { error: string; message: string; details?: unknown };
 
@@ -621,6 +631,7 @@ export function BatchManager({
                 {auditEvents.map((e) => (
                   <li key={e.id}>
                     {formatDisplayDateTime(e.occurredAt)} &mdash; {e.videoId} &mdash; {e.eventType}
+                    {alignedLanguage(e.detail) && <> &mdash; {t("batches.audit.languageAligned", alignedLanguage(e.detail)!)}</>}
                   </li>
                 ))}
               </ul>

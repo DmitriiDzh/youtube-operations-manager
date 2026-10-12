@@ -329,9 +329,12 @@ export type PendingChangeRecord = {
   changeType?: "add" | "modify" | "unchanged" | "delete";
 };
 
+/** BL-178 (PROJECT_SPEC §14, owner 2026-10-12): the write sets a mislabelled video's defaultLanguage from `from` to the channel's `to`. */
+export type AlignedDefaultLanguage = { from: string; to: string };
+
 export type PreparedRowOutcome =
-  | { ledgerRowId: string; videoId: string; status: "DRY_RUN_COMPLETE"; payload: PreparedPayload; appliedDefaultLanguage?: string | null }
-  | { ledgerRowId: string; videoId: string; status: "AWAITING_EXECUTION"; payload: PreparedPayload; appliedDefaultLanguage?: string | null }
+  | { ledgerRowId: string; videoId: string; status: "DRY_RUN_COMPLETE"; payload: PreparedPayload; appliedDefaultLanguage?: string | null; alignedDefaultLanguage?: AlignedDefaultLanguage | null }
+  | { ledgerRowId: string; videoId: string; status: "AWAITING_EXECUTION"; payload: PreparedPayload; appliedDefaultLanguage?: string | null; alignedDefaultLanguage?: AlignedDefaultLanguage | null }
   | { ledgerRowId: string; videoId: string; status: "FAILED"; error: string }
   | { ledgerRowId: string; videoId: string; status: "CONFLICT"; conflictingChangeIds: string[] }
   | { ledgerRowId: string; videoId: string; status: "CANCELLED" };

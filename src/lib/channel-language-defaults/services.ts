@@ -7,6 +7,7 @@ import {
   type StoredVideoLanguageRow,
 } from "./contracts";
 import { channelRefInputSchema, parseWithSchema, setDefaultsInputSchema } from "./schemas";
+import { sameLanguage } from "@/lib/shared-language-baseline";
 
 type ServiceDependencies = {
   store: {
@@ -62,9 +63,10 @@ export function createChannelLanguageDefaultsServices(deps: ServiceDependencies)
         const deviations = videos
           .map((video) => ({
             ...video,
-            defaultLanguageDeviates: defaults.defaultLanguage !== null && video.defaultLanguage !== defaults.defaultLanguage,
+            // Case-insensitive, the same rule as the Batch write and the agent context (BL-178).
+            defaultLanguageDeviates: defaults.defaultLanguage !== null && !sameLanguage(video.defaultLanguage, defaults.defaultLanguage),
             defaultAudioLanguageDeviates:
-              defaults.defaultAudioLanguage !== null && video.defaultAudioLanguage !== defaults.defaultAudioLanguage,
+              defaults.defaultAudioLanguage !== null && !sameLanguage(video.defaultAudioLanguage, defaults.defaultAudioLanguage),
           }))
           .filter((row) => row.defaultLanguageDeviates || row.defaultAudioLanguageDeviates);
         return {

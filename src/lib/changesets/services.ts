@@ -11,7 +11,7 @@ import {
   type StoredChannelRecord,
   type StoredVideoRecord,
 } from "./contracts";
-import { computeChangeSetStatus, currentRemoteValueFor, revalidateChangeAgainstCurrentRemote } from "./diff";
+import { computeChangeSetStatus, currentRemoteValueFor, readWithChannelBaseline, revalidateChangeAgainstCurrentRemote } from "./diff";
 import { classifyRowForSummary, parseAndValidateWorkbook, summarizeParsedWorkbook } from "./import";
 import {
   changeActionInputSchema,
@@ -93,6 +93,14 @@ type ServiceDependencies = {
   crdtConflicts: {
     listConflictedChangeIds(channelId: string): Promise<Set<string>>;
   };
+  /**
+   * BL-178 (PROJECT_SPEC §14, owner exception 2026-10-12): the channel's language baseline (Languages -> Language defaults).
+   * With it, a video whose own language differs is read as the baseline's original (`readWithChannelBaseline`). Optional:
+   * absent = every video read as it is (the earlier behaviour).
+   */
+  channelLanguageBaseline?: {
+    getExpectedDefaultLanguage(channelId: string): Promise<string | null>;
+  };
   idGenerator: () => string;
   logger: {
     info(payload: { event: string; context?: Record<string, unknown> }): void;
@@ -152,15 +160,15 @@ function toChangeSetRecord(stored: StoredChangeSetRecord, changeList: Change[]):
   };
 }
 
-/** Builds a `(videoId, language, field) -> current remote value` lookup from the
- * latest channel-sync snapshot, or `null` per video if it is no longer synced. */
-function buildCurrentRemoteLookup(videos: StoredVideoRecord[]) {
-  const byVideoId = new Map(videos.map((v) => [v.videoId, v]));
-  return (videoId: string, language: string, field: "title" | "description"): string | null => {
-    const video = byVideoId.get(videoId);
-    if (!video) return null;
-    return currentRemoteValueFor(video, language, field);
-  };
+/** Per video of the latest channel-sync snapshot, read against the channel's language baseline (BL-178); `null` when a video is
+ * no longer synced. */
+function buildCurrentRemoteLookup(videos: StoredVideoRecord[], channelBaseline: string | null) {
+  const byVideoId = new Map(videos.map((v) => [v.videoId, readWithChannelBaseline(v, channelBaseline)]));
+  return (videoId: string) => byVideoId.get(videoId) ?? null;
+}
+
+async function channelBaselineOf(deps: ServiceDependencies, channelId: string): Promise<string | null> {
+  return (await deps.channelLanguageBaseline?.getExpectedDefaultLanguage(channelId)) ?? null;
 }
 
 async function requireChannel(deps: ServiceDependencies, channelId: string): Promise<StoredChannelRecord> {
@@ -203,15 +211,16 @@ async function loadRevalidated(
   deps: ServiceDependencies,
   channelId: string,
   changeSetId: string
-): Promise<{ changeSet: StoredChangeSetRecord; changes: StoredChangeRecord[] }> {
+): Promise<{ changeSet: StoredChangeSetRecord; changes: StoredChangeRecord[]; languageAlignments: LanguageAlignment[] }> {
   const changeSet = await requireChangeSet(deps, channelId, changeSetId);
   const storedChanges = await deps.changeSetStore.listChangesByChangeSet(changeSetId);
   const videos = await deps.channelStore.listVideosByChannel(channelId);
-  const currentRemote = buildCurrentRemoteLookup(videos);
+  const videoRead = buildCurrentRemoteLookup(videos, await channelBaselineOf(deps, channelId));
 
   const revalidated = storedChanges.map((change) => {
-    const current = currentRemote(change.videoId, change.language, change.field);
-    const updated = revalidateChangeAgainstCurrentRemote(toChangeRecord(change), current);
+    const read = videoRead(change.videoId);
+    const current = read ? read.current(change.language, change.field) : null;
+    const updated = revalidateChangeAgainstCurrentRemote(toChangeRecord(change), current, read ? read.holds(change) : undefined);
     return { original: change, updated };
   });
 
@@ -248,8 +257,18 @@ async function loadRevalidated(
     changeSet.status = newStatus;
   }
 
-  return { changeSet, changes: finalChanges };
+  // BL-178: the videos of this set whose language a send will align to the channel's (shown before approval).
+  const languageAlignments: LanguageAlignment[] = [];
+  for (const videoId of new Set(storedChanges.map((change) => change.videoId))) {
+    const read = videoRead(videoId);
+    if (read?.alignedFrom && read.alignedTo) languageAlignments.push({ videoId, from: read.alignedFrom, to: read.alignedTo });
+  }
+
+  return { changeSet, changes: finalChanges, languageAlignments };
 }
+
+/** BL-178 (PROJECT_SPEC §14, 2026-10-12): a send sets this video's defaultLanguage from `from` to the channel's `to`. */
+type LanguageAlignment = { videoId: string; from: string; to: string };
 
 type ChangeToPersist = {
   id: string;
@@ -570,6 +589,7 @@ export function createChangeSetServices(deps: ServiceDependencies) {
           buffer: parsedInput.buffer,
           channelId: channel.channelId,
           syncedVideos: videos,
+          channelBaseline: await channelBaselineOf(deps, channel.channelId),
         });
 
         return {
@@ -594,6 +614,7 @@ export function createChangeSetServices(deps: ServiceDependencies) {
           buffer: parsedInput.buffer,
           channelId: channel.channelId,
           syncedVideos: videos,
+          channelBaseline: await channelBaselineOf(deps, channel.channelId),
         });
 
         const summary = summarizeParsedWorkbook(parsed);
@@ -664,12 +685,14 @@ export function createChangeSetServices(deps: ServiceDependencies) {
       changeSet: ChangeSet;
       changes: Change[];
       pagination: { page: number; pageSize: number; total: number };
+      /** BL-178: videos whose language the send aligns to the channel's (whole set, not only this page). Additive. */
+      languageAlignments?: LanguageAlignment[];
     }> {
       const parsedInput = parseWithSchema(getChangeSetInputSchema, input, "get change set input");
 
       try {
         await requireChannel(deps, parsedInput.channelId);
-        const { changeSet, changes } = await loadRevalidated(deps, parsedInput.channelId, parsedInput.changeSetId);
+        const { changeSet, changes, languageAlignments } = await loadRevalidated(deps, parsedInput.channelId, parsedInput.changeSetId);
 
         let filtered = changes;
         if (parsedInput.language) {
@@ -697,6 +720,7 @@ export function createChangeSetServices(deps: ServiceDependencies) {
           changeSet: toChangeSetRecord(changeSet, changes.map(toChangeRecord)),
           changes: pageItems,
           pagination: { page, pageSize, total: filtered.length },
+          languageAlignments,
         };
       } catch (error) {
         throw mapUnknownError(error, "not_found");

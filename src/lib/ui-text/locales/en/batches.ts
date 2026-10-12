@@ -43,6 +43,7 @@ export const batches = {
   "batches.errorReport": "Error report",
   "batches.noErrors": "No errors.",
   "batches.auditTrail": "Audit trail",
+  "batches.audit.languageAligned": "language {from} → {to}",
   "batches.noAudit": "No audit events yet — run the dry-run preview above.",
   "batches.confirmSendAll.title": "Send every approved change to YouTube for real?",
   "batches.confirmSendAll.body":

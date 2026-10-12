@@ -21,6 +21,7 @@ import {
 // language-code-accepting entrypoint in this app (XLSX import, AI localization) still uses the
 // looser `isValidLanguageCode` BCP-47-ish regex from `@/lib/changesets/diff`, unchanged.
 import { isSupportedYoutubeLanguageCode } from "@/lib/youtube-supported-languages";
+import { readAgainstBaseline } from "@/lib/shared-language-baseline";
 
 type ServiceDependencies = {
   channelStore: {
@@ -28,6 +29,10 @@ type ServiceDependencies = {
     listVideosByChannel(channelId: string): Promise<StoredVideoRecord[]>;
     getTargetLanguages(channelId: string): Promise<string[]>;
     setTargetLanguages(channelId: string, languages: string[]): Promise<void>;
+  };
+  /** BL-178 (PROJECT_SPEC §14, 2026-10-12): the channel's language; optional (absent = every video read as it is). */
+  channelLanguageBaseline?: {
+    getExpectedDefaultLanguage(channelId: string): Promise<string | null>;
   };
   xlsxBuilder: {
     buildWorkbook(args: {
@@ -37,12 +42,21 @@ type ServiceDependencies = {
   };
 };
 
-function computeOverviewRow(video: StoredVideoRecord, languages: string[]): LocalizationOverviewRow {
-  const present = new Set(Object.keys(video.existingLocalizations));
+function computeOverviewRow(video: StoredVideoRecord, languages: string[], channelBaseline: string | null): LocalizationOverviewRow {
+  // BL-178: with the channel's language set, a video whose own language differs is read as the baseline's original -- its
+  // old-language entry is YouTube's mirror of the snippet, not a translation (`@/lib/shared-language-baseline`).
+  const reading = readAgainstBaseline(
+    { defaultLanguage: video.defaultLanguage, title: video.title, description: video.description, localizations: video.existingLocalizations },
+    channelBaseline
+  );
+  // A video with no language of its own takes the channel's: that is what a Batch writes for it (2026-10-02 exception; review M6).
+  const originalLanguage = reading.kind === "aligned" ? reading.to : (video.defaultLanguage ?? channelBaseline);
+  const localizations = reading.kind === "aligned" ? reading.view.localizations : video.existingLocalizations;
+  const present = new Set(Object.keys(localizations));
   const presentLanguages = languages.filter((lang) => present.has(lang)).sort();
-  // The video's own (default) language is its ORIGINAL: YouTube takes no localization for it, so it is never "missing". If a real localization for that
+  // The video's original language: YouTube takes no localization for it, so it is never "missing". If a real localization for that
   // code does exist it still counts as present above. Matching is by exact code (a default of `en-US` is not `en`).
-  const missingLanguages = languages.filter((lang) => !present.has(lang) && lang !== video.defaultLanguage).sort();
+  const missingLanguages = languages.filter((lang) => !present.has(lang) && lang !== originalLanguage).sort();
 
   return {
     videoId: video.videoId,
@@ -52,6 +66,7 @@ function computeOverviewRow(video: StoredVideoRecord, languages: string[]): Loca
     privacyStatus: video.privacyStatus,
     publishAt: video.publishAt,
     defaultLanguage: video.defaultLanguage,
+    originalLanguage,
     presentLanguages,
     missingLanguages,
     status: missingLanguages.length === 0 && languages.length > 0 ? "complete" : "missing",
@@ -103,6 +118,7 @@ export function createLocalizationServices(deps: ServiceDependencies) {
       try {
         const { channel, videos } = await requireChannelAndVideos(deps, parsedInput.channelId);
         const trackedLanguages = await deps.channelStore.getTargetLanguages(channel.channelId);
+        const channelBaseline = (await deps.channelLanguageBaseline?.getExpectedDefaultLanguage(channel.channelId)) ?? null;
         const realLanguages = collectChannelLanguages(videos);
         const languages = [...new Set([...trackedLanguages, ...realLanguages])].sort();
 
@@ -114,7 +130,7 @@ export function createLocalizationServices(deps: ServiceDependencies) {
             languages,
             trackedLanguages,
             totalVideos: videos.length,
-            videos: videos.map((video) => computeOverviewRow(video, languages)),
+            videos: videos.map((video) => computeOverviewRow(video, languages, channelBaseline)),
           },
           "localization overview output"
         );
