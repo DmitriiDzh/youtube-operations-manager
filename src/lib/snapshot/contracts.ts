@@ -233,6 +233,10 @@ export const SNAPSHOT_DEVICE_LOCAL_TABLES: Readonly<Record<string, string>> = Ob
   generation_plan_peer_picks: "pick actions given here on another device's generation plans (BL-175); they travel in this device's sync report until that device applies them",
   gemini_credentials: "the encrypted Gemini API key (BL-174); the key file is per device, so the row is unreadable anywhere else",
   gemini_media_jobs: "this device's Gemini image/video jobs (BL-174); their files land in this device's copy of the channel folder",
+  live_streams: "this computer's 24/7 live streams (BL-176, ADR 0036): the owner's intent and the YouTube broadcast ids; a stream runs from this computer only",
+  live_stream_videos: "this computer's live-stream rotations (BL-176); the original paths are in this computer's copy of the channel folder",
+  live_stream_events: "this computer's live-stream audit trail and history (BL-176)",
+  live_stream_sources: "the Operator's map of videos to original files on this computer (BL-176)",
 });
 
 /**
