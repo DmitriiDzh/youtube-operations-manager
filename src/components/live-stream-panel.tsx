@@ -42,6 +42,14 @@ type Overview = {
   sources: Array<{ videoId: string; file: string; setBy: string; setAt: string }>;
   module: { enabled: boolean; host: { ok: true } | { ok: false; reason: string } };
   encoder: { running: boolean; status: HelperStatus | null };
+  youtube: {
+    checkedAt: number;
+    lifeCycleStatus: string | null;
+    streamStatus: string | null;
+    healthStatus: string | null;
+    configurationIssues: Array<{ type: string; severity: string | null }>;
+    viewers: number | null;
+  } | null;
   startPreview: { createsStream: boolean; units: number; liveWritesEnabled: boolean; moduleReady: boolean } | null;
   events: Array<{ id: string; at: string; kind: string; detail: Record<string, unknown> }>;
 };
@@ -205,6 +213,23 @@ function StatusCard({ overview, base, onChanged }: { overview: Overview; base: s
           {status.missingVideoId && <p className="text-xs text-amber-300">{t("live.status.missing", { videoId: status.missingVideoId })}</p>}
           {status.lastExit && <p className="text-xs text-zinc-500">{t("live.status.lastExit", { at: new Date(status.lastExit.at).toLocaleString(t.language), cause: status.lastExit.cause })}</p>}
           {status.progress.bitrate && <p className="text-xs text-zinc-500">{t("live.status.bitrate", { bitrate: status.progress.bitrate })}</p>}
+        </div>
+      )}
+      {on && overview.youtube && (
+        <div className="space-y-1 rounded-lg border border-zinc-800 bg-zinc-950 p-2.5 text-xs text-zinc-400">
+          <p className="text-zinc-300">
+            {/* ui-text-ignore: YouTube's own status words (data) */}
+            {t("live.youtube.status", {
+              lifecycle: overview.youtube.lifeCycleStatus ?? "—",
+              stream: overview.youtube.streamStatus ?? "—",
+              health: overview.youtube.healthStatus ?? "—",
+            })}
+          </p>
+          {overview.youtube.viewers !== null && <p>{t("live.youtube.viewers", { viewers: String(overview.youtube.viewers) })}</p>}
+          {overview.youtube.configurationIssues.length > 0 && (
+            <p className="text-amber-300">{t("live.youtube.issues", { issues: overview.youtube.configurationIssues.map((i) => i.type).join(", ") })}</p>
+          )}
+          <p className="text-zinc-500">{t("live.youtube.checked", { at: new Date(overview.youtube.checkedAt).toLocaleString(t.language) })}</p>
         </div>
       )}
       <div className="flex flex-wrap gap-2">

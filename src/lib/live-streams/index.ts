@@ -3,6 +3,7 @@ import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import {
   getLiveStream,
   getLiveWritesEnabled,
+  listLiveStreamEvents,
   getLiveStreamsSettingsJson,
   getStoredVideo,
   insertLiveStreamEvent,
@@ -24,6 +25,7 @@ import { createLiveStreamBuffer } from "./buffer";
 import { createLiveBroadcasts } from "./broadcasts";
 import { createLiveStreamsYoutubeWrites } from "./adapters/youtube-writes";
 import { createLiveStreamsRunner } from "./runner";
+import { liveNotices, type LiveNotice } from "./notices";
 import { createLiveStreamsServices } from "./services";
 import { createLiveStreamsSettings, liveStreamsHost } from "./settings";
 import { createStreamSupervisor } from "./supervisor";
@@ -116,6 +118,33 @@ export function createLiveStreamsRunnerCore() {
   });
 }
 
+/** §3.10: the bell's live-stream notices for this computer's streams. Local reads only (files and the database). */
+export function createLiveStreamsNoticesCore() {
+  const supervisor = createStreamSupervisorCore();
+  return {
+    async list(now: number = Date.now()): Promise<LiveNotice[]> {
+      const settings = await createLiveStreamsSettingsCore().get();
+      if (!settings.enabled || !settings.host.ok) return [];
+      const inputs = await Promise.all(
+        (await listLiveStreams()).map(async (stream) => {
+          const [status, poll, events] = await Promise.all([supervisor.readStatus(stream.channelId), supervisor.lastYoutubePoll(stream.channelId), listLiveStreamEvents(stream.channelId, 50)]);
+          const ended = events.find((e) => e.kind === "youtube_ended" || e.kind === "encoder_start");
+          return {
+            channelId: stream.channelId,
+            intent: stream.intent,
+            onSince: stream.onSince?.getTime() ?? null,
+            helper: status ? { state: status.state, updatedAt: status.updatedAt, lastExitAt: status.lastExit?.at ?? null, missingVideoId: status.missingVideoId ?? null } : null,
+            youtube: poll ? { checkedAt: poll.checkedAt, lifeCycleStatus: poll.lifeCycleStatus, notLiveSince: poll.notLiveSince } : null,
+            endedAt: ended?.kind === "youtube_ended" ? ended.at.getTime() : null,
+          };
+        })
+      );
+      return liveNotices(inputs, now, settings.alertMinutes);
+    },
+  };
+}
+
+export type { LiveNotice } from "./notices";
 export type { LiveStreamsRunner } from "./runner";
 export * from "./contracts";
 export { checkOriginal, checkPublicOnly, classifyRunEnd, locatePlayback, passLength, planBuffer, canCopyIntoBuffer } from "./rotation";

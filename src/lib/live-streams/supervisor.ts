@@ -26,6 +26,18 @@ export type HelperStatus = {
 
 export type HelperRecord = { pid: number; token: string; startedAt: number; protocol: number };
 
+/** §3.10: YouTube's side of a stream at the last poll, kept in the stream's folder as `youtube.json` (no key, no URL). */
+export type YoutubePoll = {
+  checkedAt: number;
+  lifeCycleStatus: string | null;
+  /** Since when the broadcast has not been `live` while the stream is on; null when it is live. */
+  notLiveSince: number | null;
+  streamStatus: string | null;
+  healthStatus: string | null;
+  configurationIssues: Array<{ type: string; severity: string | null }>;
+  viewers: number | null;
+};
+
 export type SupervisorStream = {
   channelId: string;
   intent: "on" | "off";
@@ -58,6 +70,10 @@ export type SupervisorDependencies = {
     readIngestion(channelId: string, streamId: string): Promise<{ rtmpsIngestionAddress: string; streamName: string } | null>;
     /** The broadcast's `lifeCycleStatus` (a read). */
     readLifecycle(channelId: string, broadcastId: string): Promise<string | null>;
+    /** §3.10: the stream's status and health, issue types only (a read, never `cdn`). */
+    readStreamHealth(channelId: string, streamId: string): Promise<{ streamStatus: string | null; healthStatus: string | null; configurationIssues: Array<{ type: string; severity: string | null }> } | null>;
+    /** §3.10: concurrent viewers of the broadcast (a read). */
+    readViewers(channelId: string, broadcastId: string): Promise<number | null>;
   };
   files: {
     read(file: string): Promise<string | null>;
@@ -118,6 +134,7 @@ export function createStreamSupervisor(deps: SupervisorDependencies) {
   const helperFile = (channelId: string) => path.join(dirOf(channelId), "helper.json");
   const eventsFile = (channelId: string) => path.join(dirOf(channelId), "events.jsonl");
   const eventsOffsetFile = (channelId: string) => path.join(dirOf(channelId), "events.offset");
+  const youtubeFile = (channelId: string) => path.join(dirOf(channelId), "youtube.json");
   const lastMissing = new Map<string, string | null>();
 
   async function readStatus(channelId: string) {
@@ -300,10 +317,35 @@ export function createStreamSupervisor(deps: SupervisorDependencies) {
         await stopRunning(channelId, `youtube_${lifeCycleStatus}`);
         await deps.streams.update(channelId, { intent: "off", onSince: null });
         await deps.streams.event(channelId, "youtube_ended", { broadcastId: stream.broadcastId, lifeCycleStatus });
+        await deps.files.writeAtomic(youtubeFile(channelId), JSON.stringify({ checkedAt: deps.clock().getTime(), lifeCycleStatus, notLiveSince: null, streamStatus: null, healthStatus: null, configurationIssues: [], viewers: null } satisfies YoutubePoll));
         return { lifeCycleStatus, endedByYoutube: true };
       }
+      // §3.10: the rest of the poll -- the stream's health and the viewers -- for the page and the bell.
+      const previous = parseJson<YoutubePoll>(await deps.files.read(youtubeFile(channelId)));
+      const now = deps.clock().getTime();
+      const health = stream.streamId ? await deps.youtube.readStreamHealth(channelId, stream.streamId) : null;
+      const viewers = lifeCycleStatus === "live" ? await deps.youtube.readViewers(channelId, stream.broadcastId) : null;
+      const poll: YoutubePoll = {
+        checkedAt: now,
+        lifeCycleStatus,
+        notLiveSince: lifeCycleStatus === "live" ? null : (previous?.notLiveSince ?? now),
+        streamStatus: health?.streamStatus ?? null,
+        healthStatus: health?.healthStatus ?? null,
+        configurationIssues: health?.configurationIssues ?? [],
+        viewers,
+      };
+      await deps.files.writeAtomic(youtubeFile(channelId), JSON.stringify(poll));
+      if (previous?.lifeCycleStatus !== lifeCycleStatus) await deps.streams.event(channelId, "youtube_status", { lifeCycleStatus, streamStatus: poll.streamStatus, healthStatus: poll.healthStatus });
       return { lifeCycleStatus, endedByYoutube: false };
     },
+
+    /** The last YouTube poll of this stream, if any. */
+    async lastYoutubePoll(channelId: string): Promise<YoutubePoll | null> {
+      return parseJson<YoutubePoll>(await deps.files.read(youtubeFile(channelId)));
+    },
+
+    /** The helper's last status, running or not (the page and the bell). */
+    readStatus,
   };
 
   /** The helper's new event lines, from the offset already imported. Scrubbed again on the way in. */

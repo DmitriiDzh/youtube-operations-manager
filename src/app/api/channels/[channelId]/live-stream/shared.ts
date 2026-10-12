@@ -53,17 +53,19 @@ export function createLiveStreamRouteCore(): LiveStreamRouteCore {
   const settings = createLiveStreamsSettingsCore();
   return {
     async overview(channelId) {
-      const [view, module, running, events, preview] = await Promise.all([
+      const [view, module, running, events, preview, youtube] = await Promise.all([
         rotation.getOverview(channelId),
         settings.get(),
         supervisor.runningHelper(channelId),
         listLiveStreamEvents(channelId, 50),
         broadcasts.previewStart(channelId).catch(() => null),
+        supervisor.lastYoutubePoll(channelId),
       ]);
       return {
         ...view,
         module,
         encoder: { running: Boolean(running), status: running?.status ?? null },
+        youtube,
         startPreview: preview,
         events: events.map((e) => ({ id: e.id, at: e.at.toISOString(), kind: e.kind, detail: JSON.parse(e.detailJson) as unknown })),
       };

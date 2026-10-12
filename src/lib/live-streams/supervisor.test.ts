@@ -60,6 +60,8 @@ function harness(opts: { stream?: Partial<SupervisorStream>; playable?: string[]
     youtube: {
       readIngestion: async () => (opts.ingestion === false ? null : { rtmpsIngestionAddress: "rtmps://a.rtmps.youtube.com/live2", streamName: KEY }),
       readLifecycle: async () => opts.lifecycle ?? "live",
+      readStreamHealth: async () => ({ streamStatus: "active", healthStatus: "ok", configurationIssues: [{ type: "bitrateLow", severity: "warning" }] }),
+      readViewers: async () => 7,
     },
     files: {
       read: async (f) => files.get(f) ?? null,
@@ -222,11 +224,26 @@ test("§3.8: a broadcast YouTube ended stops the encoder, turns the intent off, 
   assert.equal(h.events.at(-1)?.kind, "youtube_ended");
 });
 
-test("§3.8: a live broadcast is left alone", async () => {
+test("§3.8: a live broadcast is left alone; §3.10 the poll keeps health, issue types and viewers (no key, no URL)", async () => {
   const h = harness({ lifecycle: "live" });
   await h.supervisor.startEncoder("UC1", { freshPass: true });
   h.status({});
   assert.deepEqual(await h.supervisor.checkBroadcast("UC1"), { lifeCycleStatus: "live", endedByYoutube: false });
   assert.deepEqual(h.signals, []);
   assert.equal(h.stream().intent, "on");
+  const poll = await h.supervisor.lastYoutubePoll("UC1");
+  assert.deepEqual(poll, { checkedAt: NOW.getTime(), lifeCycleStatus: "live", notLiveSince: null, streamStatus: "active", healthStatus: "ok", configurationIssues: [{ type: "bitrateLow", severity: "warning" }], viewers: 7 });
+});
+
+test("§3.10: a broadcast not live keeps the time it was first seen not live across polls", async () => {
+  const h = harness({ lifecycle: "ready" });
+  await h.supervisor.startEncoder("UC1", { freshPass: true });
+  h.status({});
+  await h.supervisor.checkBroadcast("UC1");
+  h.advance(5 * 60_000);
+  h.status({});
+  await h.supervisor.checkBroadcast("UC1");
+  const poll = await h.supervisor.lastYoutubePoll("UC1");
+  assert.deepEqual([poll?.lifeCycleStatus, poll?.notLiveSince, poll?.viewers], ["ready", NOW.getTime(), null]);
+  assert.equal(h.events.filter((e) => e.kind === "youtube_status").length, 1, "a status change is recorded once");
 });

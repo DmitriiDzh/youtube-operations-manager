@@ -1,6 +1,13 @@
 import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { getStoredChannel } from "@/lib/db";
-import { getAuthenticatedYoutube, getLiveBroadcasts, getVideosMetadataContextBatch, readLiveStreamIngestion } from "@/lib/youtube-read-gateway";
+import {
+  getAuthenticatedYoutube,
+  getLiveBroadcasts,
+  getLiveStreamStatuses,
+  getLiveViewerCounts,
+  getVideosMetadataContextBatch,
+  readLiveStreamIngestion,
+} from "@/lib/youtube-read-gateway";
 import { DomainError, type VideoFacts } from "../contracts";
 
 // BL-176 (LIVE_STREAMS_PLAN.md §3.4): fresh reads of a channel's own videos, under the Google account the channel is
@@ -32,6 +39,19 @@ export function createLiveStreamsYoutubeReads() {
     async readLifecycle(channelId: string, broadcastId: string) {
       const youtube = await getAuthenticatedYoutube(await channelUserId(channelId));
       return (await getLiveBroadcasts(youtube, [broadcastId]))[0]?.lifeCycleStatus ?? null;
+    },
+
+    /** §3.10: the stream's status and health (part=status only: never the key). */
+    async readStreamHealth(channelId: string, streamId: string) {
+      const youtube = await getAuthenticatedYoutube(await channelUserId(channelId));
+      const status = (await getLiveStreamStatuses(youtube, [streamId]))[0];
+      return status ? { streamStatus: status.streamStatus, healthStatus: status.healthStatus, configurationIssues: status.configurationIssues } : null;
+    },
+
+    /** §3.10: concurrent viewers of a live broadcast. */
+    async readViewers(channelId: string, broadcastId: string) {
+      const youtube = await getAuthenticatedYoutube(await channelUserId(channelId));
+      return (await getLiveViewerCounts(youtube, [broadcastId]))[broadcastId] ?? null;
     },
   };
 }
