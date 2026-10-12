@@ -91,7 +91,7 @@ function harness(opts: { liveWrites?: boolean; streamId?: string | null; broadca
         return { pid: 1 };
       },
       stopEncoder: async () => {
-        calls.push("stopEncoder");
+        calls.push(`stopEncoder:intent=${stream.intent}`);
         return true;
       },
     },
@@ -100,7 +100,7 @@ function harness(opts: { liveWrites?: boolean; streamId?: string | null; broadca
   return { broadcasts: createLiveBroadcasts(deps), calls, events, sent, stream: () => stream };
 }
 
-const YOUTUBE_CALLS = (calls: string[]) => calls.filter((c) => c !== "identity" && c !== "stopEncoder");
+const YOUTUBE_CALLS = (calls: string[]) => calls.filter((c) => c !== "identity" && !c.startsWith("stopEncoder"));
 
 test("quota: a first Start makes exactly the 5 calls of 1 unit each; a later Start 4", async () => {
   const first = harness();
@@ -140,7 +140,7 @@ test("Live writes off: Start, Go live, Stop and Edit are refused before any YouT
   assert.deepEqual(h.calls, [], "no YouTube call, no identity call, no encoder");
   // Stopping only the encoder needs no YouTube write and stays possible.
   assert.deepEqual(await h.broadcasts.stop("UC1", {}, { encoderOnly: true }), { broadcastEnded: false });
-  assert.deepEqual(h.calls, ["stopEncoder"]);
+  assert.deepEqual(h.calls, ["stopEncoder:intent=off"]);
 });
 
 test("a wrong channel fails closed before any write", async () => {
@@ -161,7 +161,7 @@ test("Stop ends the broadcast (transition complete), stops the encoder, turns th
   await h.broadcasts.start("UC1", { userId: "u1" });
   h.calls.length = 0;
   assert.deepEqual(await h.broadcasts.stop("UC1", { userId: "u1" }, { encoderOnly: false }), { broadcastEnded: true });
-  assert.deepEqual(h.calls, ["identity", "liveBroadcasts.transition:complete", "stopEncoder"]);
+  assert.deepEqual(h.calls, ["identity", "liveBroadcasts.transition:complete", "stopEncoder:intent=off"], "the intent goes off before the encoder stops");
   assert.equal(h.stream().intent, "off");
 
   const again = harness({ streamId: "STREAM1", transitionError: "redundantTransition" });
@@ -179,7 +179,7 @@ test("any other refused transition is shown in plain words and nothing is stoppe
     () => h.broadcasts.stop("UC1", { userId: "u1" }, { encoderOnly: false }),
     (e: unknown) => e instanceof DomainError && e.code === "update_failed" && /does not allow this channel to stream/.test(e.message)
   );
-  assert.ok(!h.calls.includes("stopEncoder"));
+  assert.ok(!h.calls.some((c) => c.startsWith("stopEncoder")));
   assert.equal(h.stream().intent, "on");
 });
 
@@ -233,7 +233,7 @@ test("Stop still stops the encoder and turns the intent off when YouTube has no 
   for (const reason of ["liveBroadcastNotFound", "invalidTransition"]) {
     const h = harness({ streamId: "STREAM1", broadcastId: "BC1", intent: "on", transitionError: reason });
     assert.deepEqual(await h.broadcasts.stop("UC1", { userId: "u1" }, { encoderOnly: false }), { broadcastEnded: false, youtubeRefusal: reason });
-    assert.ok(h.calls.includes("stopEncoder"), reason);
+    assert.ok(h.calls.some((c) => c.startsWith("stopEncoder")), reason);
     assert.equal(h.stream().intent, "off", reason);
   }
 });
@@ -270,4 +270,13 @@ test("Edit sends the title trimmed, as YouTube keeps it, so its read-back matche
   assert.equal(result.verified, true);
   assert.equal((h.sent.update as { snippet: { title: string } }).snippet.title, "New title");
   assert.equal(h.stream().title, "New title");
+});
+
+// --- Verification review (2026-10-12) ---
+
+test("two Starts at the same moment make ONE set of YouTube writes; the second is refused as already on", async () => {
+  const h = harness({ streamId: "STREAM1" });
+  const results = await Promise.allSettled([h.broadcasts.start("UC1", { userId: "u1" }), h.broadcasts.start("UC1", { userId: "u1" })]);
+  assert.deepEqual(results.map((r) => r.status).sort(), ["fulfilled", "rejected"]);
+  assert.equal(h.calls.filter((c) => c === "liveBroadcasts.insert").length, 1);
 });

@@ -37,6 +37,8 @@ const WAIT_FOR_SOURCE_MS = 30_000;
 const KILL_GRACE_MS = 5_000;
 /** The status is rewritten at least this often, ffmpeg or not: the server tells a live helper from a hung one by it. */
 export const HEARTBEAT_MS = 10_000;
+/** ffmpeg with no progress for this long is stuck (e.g. on a dead connection): it is stopped, and the run restarts. */
+export const STALL_MS = 60_000;
 
 /** The ffmpeg this process runs now: killed if the helper itself dies, so no encoder outlives it (independent review). */
 let activeChild = null;
@@ -81,7 +83,7 @@ function realIo(dir) {
 
 /**
  * Runs the stream until `signal.stopped` turns true. Exported for tests (fake ffmpeg, fake files).
- * @param {{ dir: string; key: string; pid?: number; heartbeatMs?: number; io?: Partial<ReturnType<typeof realIo>>; signal?: { stopped: boolean; onStop?: () => void; wake?: () => void } }} options
+ * @param {{ dir: string; key: string; pid?: number; heartbeatMs?: number; stallMs?: number; io?: Partial<ReturnType<typeof realIo>>; signal?: { stopped: boolean; onStop?: () => void; wake?: () => void } }} options
  */
 export async function runHelper(options) {
   const io = { ...realIo(options.dir), ...options.io };
@@ -163,6 +165,16 @@ export async function runHelper(options) {
     };
     signal.onStop = stop;
     if (signal.stopped) stop();
+    // The heartbeat keeps the status fresh, so a stuck ffmpeg would otherwise look healthy forever (verification review).
+    let lastProgressAt = io.now();
+    const watchdog = setInterval(() => {
+      if (io.now() - lastProgressAt > (options.stallMs ?? STALL_MS)) {
+        log(`no progress from ffmpeg for ${Math.round((io.now() - lastProgressAt) / 1000)}s: stopping it`);
+        lastProgressAt = io.now();
+        stop();
+      }
+    }, Math.min(10_000, options.stallMs ?? STALL_MS));
+    watchdog.unref?.();
     let outTime = 0;
     /** @type {Record<string, string>} */
     let block = {};
@@ -190,6 +202,7 @@ export async function runHelper(options) {
           speed: block.speed ?? null,
         };
         block = {};
+        lastProgressAt = io.now();
         onProgress(outTime);
       }
     };
@@ -204,6 +217,7 @@ export async function runHelper(options) {
       child.on("exit", (code, sig) => resolve({ code, signal: sig }));
       child.on("error", (error) => resolve({ code: null, signal: null, error: String(error?.message ?? error) }));
     });
+    clearInterval(watchdog);
     signal.onStop = undefined;
     activeChild = null;
     return { ...exit, outTime };

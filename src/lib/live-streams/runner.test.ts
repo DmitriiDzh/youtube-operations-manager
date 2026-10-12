@@ -173,3 +173,21 @@ test("§3.11: a working tick publishes this computer's report; switched off, an 
   await runner.tick();
   assert.deepEqual(published, [true, false]);
 });
+
+test("an encoder that keeps dying right after its start backs off every time: 1, 2, 5, then 10 minutes (verification review)", async () => {
+  const h = harness({ streams: [{ channelId: "UC1", intent: "on" }] });
+  const starts = () => h.calls.filter((c) => c === "start:UC1").length;
+  await h.runner.tick(); // start 1 at 0
+  for (const wait of [60_000, 2 * 60_000, 5 * 60_000, 10 * 60_000]) {
+    h.kill("UC1");
+    h.advance(15_000);
+    await h.runner.tick(); // the early death is noted
+    const before = starts();
+    h.advance(wait - 30_000);
+    await h.runner.tick();
+    assert.equal(starts(), before, `no start before ${wait / 60_000} min`);
+    h.advance(30_000);
+    await h.runner.tick();
+    assert.equal(starts(), before + 1, `a start after ${wait / 60_000} min`);
+  }
+});

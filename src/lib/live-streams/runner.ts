@@ -51,7 +51,7 @@ export function createLiveStreamsRunner(deps: RunnerDependencies) {
       // An encoder that died right after this loop started it is a failed start: back off instead of restarting every 15 s
       // (each start reads YouTube).
       const started = lastStarted.get(channelId);
-      if (started !== undefined && now - started < EARLY_EXIT_MS && !startFailures.has(channelId)) {
+      if (started !== undefined && now - started < EARLY_EXIT_MS) {
         lastStarted.delete(channelId);
         const { changed, delay } = noteFailure(channelId, "the encoder stopped right after starting", now);
         if (changed) await deps.event(channelId, "encoder_start_failed", { message: "the encoder stopped right after starting", retryInSeconds: delay / 1000 });
@@ -61,7 +61,8 @@ export function createLiveStreamsRunner(deps: RunnerDependencies) {
       if (failure && now < failure.retryAt) return;
       try {
         await deps.supervisor.startEncoder(channelId, { freshPass: false });
-        lastStarted.set(channelId, now);
+        // From when the encoder really started (filling the buffer may have taken minutes).
+        lastStarted.set(channelId, deps.now());
         lastBroadcastCheck.delete(channelId); // read the broadcast at the next tick (§3.8: after every (re)start)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

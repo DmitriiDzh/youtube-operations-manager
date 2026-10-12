@@ -16,6 +16,7 @@ function harness(opts: { stream?: Partial<SupervisorStream>; playable?: string[]
   const files = new Map<string, string>();
   const events: Array<{ kind: string; detail: Record<string, unknown>; at?: string }> = [];
   const ours = new Set<number>();
+  let strays = 0;
   const alive = new Set<number>();
   const signals: Array<[number, string]> = [];
   const spawned: Array<{ dir: string; key: string }> = [];
@@ -82,6 +83,11 @@ function harness(opts: { stream?: Partial<SupervisorStream>; playable?: string[]
       },
       isAlive: (pid) => alive.has(pid),
       isOurHelper: async (pid) => ours.has(pid),
+      killStrayEncoders: async () => {
+        const n = strays;
+        strays = 0;
+        return n;
+      },
       signalGroup: (pid, sig) => {
         signals.push([pid, sig]);
         alive.delete(pid); // the fake helper exits at once
@@ -98,6 +104,8 @@ function harness(opts: { stream?: Partial<SupervisorStream>; playable?: string[]
       JSON.stringify({ protocol: 1, token: "tok-1", pid: 500, state: "running", passNumber: 1, position: { index: 0, videoId: A, offset: 10 }, lastExit: null, progress: {}, updatedAt: clock, ...s })
     );
   return {
+    deps,
+    setStream: async (set: Partial<SupervisorStream>) => void (stream = { ...stream, ...set }),
     supervisor: createStreamSupervisor(deps),
     files,
     events,
@@ -108,6 +116,7 @@ function harness(opts: { stream?: Partial<SupervisorStream>; playable?: string[]
     syncs,
     status,
     stream: () => stream,
+    addStray: () => void (strays += 1),
     setPlayable: (p: string[]) => void (playable = p),
     advance: (ms: number) => void (clock += ms),
   };
@@ -330,4 +339,47 @@ test("the helper's events keep their own times when imported", async () => {
   h.files.set("/appdata/live-streams/UC1/events.jsonl", `${JSON.stringify({ at: Date.parse("2026-10-12T03:00:00Z"), kind: "run_exit", cause: "encoder_exit" })}\n`);
   await h.supervisor.tick("UC1");
   assert.equal(h.events.find((e) => e.kind === "encoder_run_exit")?.at, "2026-10-12T03:00:00.000Z");
+});
+
+// --- Verification review (2026-10-12) ---
+
+test("a helper spawned moments ago whose first status is not written yet counts as starting: a second start is refused, nothing killed", async () => {
+  const h = harness({ spawnWritesStatus: false });
+  await h.supervisor.startEncoder("UC1", { freshPass: true });
+  await assert.rejects(() => h.supervisor.startEncoder("UC1", { freshPass: false }), (e: unknown) => e instanceof DomainError && /starting/.test(e.message));
+  assert.deepEqual(h.signals, []);
+  assert.equal(h.spawned.length, 1);
+});
+
+test("an ffmpeg left behind by a helper killed outright is killed before a new encoder starts", async () => {
+  const h = harness();
+  h.addStray();
+  await h.supervisor.startEncoder("UC1", { freshPass: true });
+  assert.ok(h.events.some((e) => e.kind === "encoder_stop" && e.detail.reason === "stray"));
+});
+
+test("Stop pressed while a start fills the buffer: the start does not spawn (the intent is re-read under the lock)", async () => {
+  const h = harness();
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((r) => (release = r));
+  const original = h.deps.buffer.sync;
+  h.deps.buffer.sync = async (c, args) => {
+    await gate;
+    return original(c, args);
+  };
+  const starting = h.supervisor.startEncoder("UC1", { freshPass: true });
+  await h.setStream({ intent: "off" });
+  release();
+  await assert.rejects(() => starting, (e: unknown) => e instanceof DomainError && e.code === "validation_failed");
+  assert.equal(h.spawned.length, 0);
+});
+
+test("a check of the encoder process that fails (ps) is an error, never 'no encoder' (no second encoder beside a running one)", async () => {
+  const h = harness();
+  await h.supervisor.startEncoder("UC1", { freshPass: true });
+  h.deps.process.isOurHelper = async () => {
+    throw new Error("could not check the encoder process");
+  };
+  await assert.rejects(() => h.supervisor.startEncoder("UC1", { freshPass: false }), /could not check/);
+  assert.equal(h.spawned.length, 1);
 });

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { DomainError, LIVE_PRIVACY_STATUSES, type LivePrivacy, type LiveStreamsSettings } from "./contracts";
 import { isRedundantTransition, liveErrorReason, toLiveDomainError } from "./errors";
 import { parseWithSchema } from "./schemas";
+import { withChannelLock as withLock } from "./supervisor";
 
 // ---------------------------------------------------------------------------
 // BL-176 (LIVE_STREAMS_PLAN.md §3.9, ADR 0036 §3) -- the owner's attended actions, the only code that writes to YouTube
@@ -104,6 +105,71 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
     await deps.streams.event(channelId, "youtube_write", { method, ...detail });
   }
 
+  /** One Start at a time per channel: a second request waits, then finds the stream on and is refused. */
+  async function startOnce(channelId: string, credentialRef: unknown): Promise<{ broadcastId: string; streamId: string; encoderStarted: boolean; encoderError?: string }> {
+    await requireModule();
+    const stream = await requireStream(channelId);
+    // A second Start (a stale page, a repeated request) must not create another broadcast and lose track of the live one.
+    if (stream.intent === "on") throw new DomainError({ code: "validation_failed", message: "The stream is already on: stop it first", details: { channelId } });
+    const credentials = await authorize(channelId, credentialRef);
+    const playable = await deps.rotation.recheck(channelId);
+    if (playable.length === 0) {
+      throw new DomainError({ code: "live_stream_video_refused", message: "No video in the rotation can be streamed (public, with its file)", details: { channelId, reason: "empty" } });
+    }
+
+    let streamId = stream.streamId;
+    try {
+      if (!streamId) {
+        ({ streamId } = await deps.youtube.insertStream(credentials, { title: stream.title }));
+        await deps.streams.update(channelId, { streamId });
+        await written(channelId, "liveStreams.insert", { streamId });
+      }
+      const sent = {
+        title: stream.title,
+        description: stream.description,
+        scheduledStartTime: new Date(deps.clock().getTime() + START_LEAD_MS).toISOString(),
+        privacyStatus: stream.privacyStatus,
+        selfDeclaredMadeForKids: stream.madeForKids,
+        enableAutoStart: true,
+        enableAutoStop: false,
+        enableMonitorStream: false,
+      };
+      const { broadcastId, lifeCycleStatus } = await deps.youtube.insertBroadcast(credentials, sent);
+      await written(channelId, "liveBroadcasts.insert", { broadcastId, sent, lifeCycleStatus });
+      let bound: { boundStreamId: string | null };
+      try {
+        bound = await deps.youtube.bind(credentials, { broadcastId, streamId });
+      } catch (error) {
+        // The channel's stream was deleted in Studio: forget it, so the next Start creates a new one (independent review).
+        if (liveErrorReason(error) === "liveStreamNotFound") {
+          await deps.streams.update(channelId, { streamId: null });
+          await deps.streams.event(channelId, "stream_forgotten", { streamId, broadcastId, reason: "liveStreamNotFound" });
+          throw new DomainError({
+            code: "update_failed",
+            message: "YouTube no longer has this channel's stream (deleted in Studio?). It is forgotten: press Start again to create a new one.",
+            details: { action: "Start", reason: "liveStreamNotFound", orphanBroadcastId: broadcastId },
+          });
+        }
+        throw error;
+      }
+      await written(channelId, "liveBroadcasts.bind", { broadcastId, streamId, boundStreamId: bound.boundStreamId });
+      // The broadcast is recorded only once it is bound: a failed Start never leaves the app tracking a broadcast with no stream.
+      await deps.streams.update(channelId, { broadcastId, intent: "on", onSince: deps.clock() });
+
+      try {
+        await deps.supervisor.startEncoder(channelId, { freshPass: true, playable });
+        return { broadcastId, streamId, encoderStarted: true };
+      } catch (error) {
+        // The broadcast exists and is bound; the intent is on, so the background loop keeps trying to start the encoder.
+        const message = error instanceof Error ? error.message : String(error);
+        await deps.streams.event(channelId, "encoder_start_failed", { message });
+        return { broadcastId, streamId, encoderStarted: false, encoderError: message };
+      }
+    } catch (error) {
+      throw toLiveDomainError(error, "Start");
+    }
+  }
+
   return {
     /**
      * §3.9 the Start dialog (the dry run): exactly what Start will send, and its quota units -- 5 the first time
@@ -130,69 +196,7 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
     },
 
     /** §3.9 Start: create the stream (first time), a broadcast, bind them, then start the encoder. */
-    async start(channelId: string, credentialRef: unknown): Promise<{ broadcastId: string; streamId: string; encoderStarted: boolean; encoderError?: string }> {
-      await requireModule();
-      const stream = await requireStream(channelId);
-      // A second Start (a stale page, a repeated request) must not create another broadcast and lose track of the live one.
-      if (stream.intent === "on") throw new DomainError({ code: "validation_failed", message: "The stream is already on: stop it first", details: { channelId } });
-      const credentials = await authorize(channelId, credentialRef);
-      const playable = await deps.rotation.recheck(channelId);
-      if (playable.length === 0) {
-        throw new DomainError({ code: "live_stream_video_refused", message: "No video in the rotation can be streamed (public, with its file)", details: { channelId, reason: "empty" } });
-      }
-
-      let streamId = stream.streamId;
-      try {
-        if (!streamId) {
-          ({ streamId } = await deps.youtube.insertStream(credentials, { title: stream.title }));
-          await deps.streams.update(channelId, { streamId });
-          await written(channelId, "liveStreams.insert", { streamId });
-        }
-        const sent = {
-          title: stream.title,
-          description: stream.description,
-          scheduledStartTime: new Date(deps.clock().getTime() + START_LEAD_MS).toISOString(),
-          privacyStatus: stream.privacyStatus,
-          selfDeclaredMadeForKids: stream.madeForKids,
-          enableAutoStart: true,
-          enableAutoStop: false,
-          enableMonitorStream: false,
-        };
-        const { broadcastId, lifeCycleStatus } = await deps.youtube.insertBroadcast(credentials, sent);
-        await written(channelId, "liveBroadcasts.insert", { broadcastId, sent, lifeCycleStatus });
-        let bound: { boundStreamId: string | null };
-        try {
-          bound = await deps.youtube.bind(credentials, { broadcastId, streamId });
-        } catch (error) {
-          // The channel's stream was deleted in Studio: forget it, so the next Start creates a new one (independent review).
-          if (liveErrorReason(error) === "liveStreamNotFound") {
-            await deps.streams.update(channelId, { streamId: null });
-            await deps.streams.event(channelId, "stream_forgotten", { streamId, broadcastId, reason: "liveStreamNotFound" });
-            throw new DomainError({
-              code: "update_failed",
-              message: "YouTube no longer has this channel's stream (deleted in Studio?). It is forgotten: press Start again to create a new one.",
-              details: { action: "Start", reason: "liveStreamNotFound", orphanBroadcastId: broadcastId },
-            });
-          }
-          throw error;
-        }
-        await written(channelId, "liveBroadcasts.bind", { broadcastId, streamId, boundStreamId: bound.boundStreamId });
-        // The broadcast is recorded only once it is bound: a failed Start never leaves the app tracking a broadcast with no stream.
-        await deps.streams.update(channelId, { broadcastId, intent: "on", onSince: deps.clock() });
-
-        try {
-          await deps.supervisor.startEncoder(channelId, { freshPass: true, playable });
-          return { broadcastId, streamId, encoderStarted: true };
-        } catch (error) {
-          // The broadcast exists and is bound; the intent is on, so the background loop keeps trying to start the encoder.
-          const message = error instanceof Error ? error.message : String(error);
-          await deps.streams.event(channelId, "encoder_start_failed", { message });
-          return { broadcastId, streamId, encoderStarted: false, encoderError: message };
-        }
-      } catch (error) {
-        throw toLiveDomainError(error, "Start");
-      }
-    },
+    start: (channelId: string, credentialRef: unknown) => withLock(`start:${channelId}`, () => startOnce(channelId, credentialRef)),
 
     /** §3.9: if the picture arrives but the broadcast is not live after a few minutes, the owner asks for `live`. */
     async goLive(channelId: string, credentialRef: unknown): Promise<{ lifeCycleStatus: string | null }> {
@@ -238,8 +242,9 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
           }
         }
       }
-      await deps.supervisor.stopEncoder(channelId, options.encoderOnly ? "owner_encoder_only" : "owner_stop");
+      // The intent goes off first, so the background loop cannot start a new encoder between the two (verification review).
       await deps.streams.update(channelId, { intent: "off", onSince: null });
+      await deps.supervisor.stopEncoder(channelId, options.encoderOnly ? "owner_encoder_only" : "owner_stop");
       await deps.streams.event(channelId, "stopped_by_owner", { encoderOnly: options.encoderOnly, broadcastEnded, ...(youtubeRefusal ? { youtubeRefusal } : {}) });
       return { broadcastEnded, ...(youtubeRefusal ? { youtubeRefusal } : {}) };
     },

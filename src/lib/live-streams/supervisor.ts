@@ -89,8 +89,10 @@ export type SupervisorDependencies = {
     spawnHelper(streamDir: string, key: string): Promise<number>;
     isAlive(pid: number): boolean;
     /** True only when `pid` is THIS stream's encoder helper (its command line names the helper and the stream folder): a pid
-     * reused after a reboot or a crash is never signalled. */
+     * reused after a reboot or a crash is never signalled. Throws when it cannot tell (fail closed: no second encoder). */
     isOurHelper(pid: number, streamDir: string): Promise<boolean>;
+    /** Kills any ffmpeg still sending this stream's run list (its helper died without taking it along); the count killed. */
+    killStrayEncoders(streamDir: string): Promise<number>;
     /** Signals the helper's whole process group (it is a group leader): its ffmpeg goes with it. */
     signalGroup(pid: number, signal: "SIGTERM" | "SIGKILL"): void;
     /** Waits up to `timeoutMs` for the pid to exit; true when it did. */
@@ -117,6 +119,18 @@ type GlobalWithLocks = typeof globalThis & { [LOCKS_KEY]?: Map<string, Promise<u
  * supervisors.
  */
 export function withChannelLock<T>(channelId: string, fn: () => Promise<T>): Promise<T> {
+  return withLock(channelId, fn);
+}
+
+/**
+ * The buffer's own lock (independent review): copying gigabytes never holds the stream's lock, so a Stop or a Restart never
+ * waits for a copy, and two syncs never delete each other's `.part` files.
+ */
+export function withBufferLock<T>(channelId: string, fn: () => Promise<T>): Promise<T> {
+  return withLock(`${channelId}#buffer`, fn);
+}
+
+function withLock<T>(channelId: string, fn: () => Promise<T>): Promise<T> {
   const g = globalThis as GlobalWithLocks;
   const locks = (g[LOCKS_KEY] ??= new Map());
   const previous = locks.get(channelId) ?? Promise.resolve();
@@ -245,22 +259,23 @@ export function createStreamSupervisor(deps: SupervisorDependencies) {
       deps.process.signalGroup(record.pid, "SIGKILL");
       await deps.process.waitForExit(record.pid, HELPER_STOP_GRACE_MS);
     }
+    await deps.process.killStrayEncoders(dirOf(channelId));
     await deps.streams.event(channelId, "encoder_stop", { reason });
     return true;
   }
 
+  type Prepared = { settings: LiveStreamsSettings; tools: NonNullable<Awaited<ReturnType<SupervisorDependencies["ffmpeg"]>>>; playable: string[]; passNumber: number; pass: { order: string[]; index: number; offset: number } };
+
   /**
-   * Starts the encoder for a stream whose intent is on (after Start, at boot, or on Restart). Reads the key from YouTube (a
-   * read), never stores it. Refuses, without any YouTube write, when something it needs is missing. Runs under the lock.
+   * Start, part 1 (no stream lock): the checks, the pass, and the buffer for its first videos (copying may take minutes, so it
+   * runs under the buffer's lock only). Nothing is spawned and nothing about the stream is written yet.
    */
-  async function startInternal(channelId: string, options: StartOptions): Promise<{ pid: number }> {
+  async function prepareStart(channelId: string, options: StartOptions): Promise<Prepared> {
     const settings = await deps.settings();
     if (!settings.enabled || !settings.host.ok) throw new DomainError({ code: "live_streams_host_unsupported", message: settings.host.ok ? "The live-streams module is switched off in Settings" : settings.host.reason });
     const stream = await deps.streams.get(channelId);
     if (!stream || stream.intent !== "on" || !stream.streamId) throw new DomainError({ code: "validation_failed", message: "The stream is not on (press Start first)", details: { channelId } });
     if (await runningHelper(channelId)) throw new DomainError({ code: "validation_failed", message: "The encoder is already running", details: { channelId } });
-    // A helper that is alive but hung (no status for a minute) is stopped first: never two encoders on one key.
-    if (await liveHelper(channelId)) await stopRunning(channelId, "hung");
 
     const tools = await deps.ffmpeg(settings.ffmpegDir);
     const encoderOk = settings.encoder === "libx264" ? tools?.features.libx264 : tools?.features.h264Videotoolbox;
@@ -288,6 +303,33 @@ export function createStreamSupervisor(deps: SupervisorDependencies) {
         pass = { order: drawPassOrder(playable, stream.orderMode, deps.random, storedOrder.at(-1) ?? null), index: 0, offset: 0 };
       }
     }
+
+    const buffered = await withBufferLock(channelId, () => syncBuffer(channelId, pass.order, pass.index, null));
+    if (!buffered.present.includes(pass.order[pass.index]) && !buffered.present.some((id) => playable.includes(id))) {
+      throw new DomainError({ code: "live_stream_video_refused", message: `The first video could not be copied to this computer: ${buffered.missing?.detail ?? "unknown"}`, details: { channelId, reason: buffered.missing?.reason ?? "source_unavailable" } });
+    }
+    return { settings, tools, playable, passNumber, pass };
+  }
+
+  /**
+   * Start, part 2 (under the stream's lock): the checks again, any helper or stray encoder dealt with, the pass recorded,
+   * the key read from YouTube (a read, never stored) and the helper spawned with it on stdin.
+   */
+  async function commitStart(channelId: string, prepared: Prepared): Promise<{ pid: number }> {
+    const { settings, tools, playable, passNumber, pass } = prepared;
+    const stream = await deps.streams.get(channelId);
+    // The owner may have pressed Stop while the buffer was being filled.
+    if (!stream || stream.intent !== "on" || !stream.streamId) throw new DomainError({ code: "validation_failed", message: "The stream is not on (press Start first)", details: { channelId } });
+    if (await runningHelper(channelId)) throw new DomainError({ code: "validation_failed", message: "The encoder is already running", details: { channelId } });
+    const live = await liveHelper(channelId);
+    if (live) {
+      // A helper spawned moments ago may not have written its first status yet: it is starting, not hung (independent review).
+      if (deps.clock().getTime() - live.startedAt < HELPER_STALE_MS) throw new DomainError({ code: "validation_failed", message: "The encoder is starting", details: { channelId } });
+      await stopRunning(channelId, "hung");
+    }
+    // An ffmpeg left behind by a helper that was killed outright (it cannot take its ffmpeg along) would send beside the new one.
+    if ((await deps.process.killStrayEncoders(dirOf(channelId))) > 0) await deps.streams.event(channelId, "encoder_stop", { reason: "stray" });
+
     await deps.streams.update(channelId, {
       passNumber,
       passOrderJson: JSON.stringify(pass.order),
@@ -296,11 +338,6 @@ export function createStreamSupervisor(deps: SupervisorDependencies) {
       positionOffsetSeconds: pass.offset,
       positionUpdatedAt: deps.clock(),
     });
-
-    const buffered = await syncBuffer(channelId, pass.order, pass.index, null);
-    if (!buffered.present.includes(pass.order[pass.index]) && !buffered.present.some((id) => playable.includes(id))) {
-      throw new DomainError({ code: "live_stream_video_refused", message: `The first video could not be copied to this computer: ${buffered.missing?.detail ?? "unknown"}`, details: { channelId, reason: buffered.missing?.reason ?? "source_unavailable" } });
-    }
 
     const ingestion = await deps.youtube.readIngestion(channelId, stream.streamId);
     if (!ingestion) throw new DomainError({ code: "validation_failed", message: "YouTube did not return the stream's ingestion address and key", details: { channelId } });
@@ -350,7 +387,10 @@ export function createStreamSupervisor(deps: SupervisorDependencies) {
     /** This stream's helper process if one is alive and ours, running or not (the background loop stops strays with it). */
     liveHelper,
 
-    startEncoder: (channelId: string, options: StartOptions) => withChannelLock(channelId, () => startInternal(channelId, options)),
+    startEncoder: async (channelId: string, options: StartOptions) => {
+      const prepared = await prepareStart(channelId, options);
+      return withChannelLock(channelId, () => commitStart(channelId, prepared));
+    },
 
     /** Stops this stream's helper (only a process proven ours by its command line), with its ffmpeg. No YouTube write. */
     stopEncoder: (channelId: string, reason: string) => withChannelLock(channelId, () => stopRunning(channelId, reason)),
@@ -362,7 +402,8 @@ export function createStreamSupervisor(deps: SupervisorDependencies) {
     restart: (channelId: string) =>
       withChannelLock(channelId, async () => {
         await stopRunning(channelId, "owner_restart");
-        return startInternal(channelId, { freshPass: false, rebuild: true });
+        // Under the lock throughout, so the background loop cannot start an encoder in between (the buffer is mostly in place).
+        return commitStart(channelId, await prepareStart(channelId, { freshPass: false, rebuild: true }));
       }),
 
     /**
@@ -371,39 +412,47 @@ export function createStreamSupervisor(deps: SupervisorDependencies) {
      */
     async tick(channelId: string): Promise<{ running: boolean; status: HelperStatus | null }> {
       await importEvents(channelId);
-      const running = await runningHelper(channelId);
-      if (!running) return { running: false, status: await readStatus(channelId) };
-      const { status } = running;
-      const stream = await deps.streams.get(channelId);
-      if (!stream) return { running: true, status };
-      let order = parseJson<string[]>(stream.passOrderJson) ?? [];
-      let nextOrder = parseJson<string[]>(stream.nextPassOrderJson);
+      // The record and plan.json are changed under the stream's lock (never interleaved with a Restart); the buffer after it,
+      // under its own lock.
+      const step = await withChannelLock(channelId, async () => {
+        const running = await runningHelper(channelId);
+        if (!running) return { running: false as const, status: await readStatus(channelId) };
+        const { status } = running;
+        const stream = await deps.streams.get(channelId);
+        if (!stream) return { running: true as const, status, buffer: null };
+        let order = parseJson<string[]>(stream.passOrderJson) ?? [];
+        let nextOrder = parseJson<string[]>(stream.nextPassOrderJson);
 
-      // The helper's pass is the truth: when it moved on -- to the drawn pass or, if none was drawn in time, to the same
-      // order without the videos no longer playable -- the record follows it.
-      const helperOrder = Array.isArray(status.passVideoIds) ? status.passVideoIds : null;
-      if (helperOrder && (status.passNumber !== stream.passNumber || JSON.stringify(helperOrder) !== JSON.stringify(order))) {
-        const movedOn = status.passNumber !== stream.passNumber;
-        order = helperOrder;
-        if (movedOn) nextOrder = null;
-        await deps.streams.update(channelId, { passNumber: status.passNumber, passOrderJson: JSON.stringify(order), ...(movedOn ? { nextPassOrderJson: null } : {}) });
-      }
-      await deps.streams.update(channelId, { positionIndex: status.position.index, positionOffsetSeconds: status.position.offset, positionUpdatedAt: deps.clock() });
-
-      if (status.position.index >= order.length - 1 && !nextOrder) {
-        const playable = await deps.streams.recheck(channelId);
-        nextOrder = drawPassOrder(playable, stream.orderMode, deps.random, order.at(-1) ?? null);
-        await deps.streams.update(channelId, { nextPassOrderJson: JSON.stringify(nextOrder) });
-        const plan = parseJson<Record<string, unknown>>(await deps.files.read(path.join(dirOf(channelId), "plan.json")));
-        if (plan) {
-          const durations = await durationsOf(channelId);
-          plan.nextPass = { number: status.passNumber + 1, videos: nextOrder.map((id) => ({ videoId: id, file: deps.buffer.fileOf(channelId, id), duration: durations.get(id) ?? 0 })) };
-          plan.playable = playable;
-          await deps.files.writeAtomic(path.join(dirOf(channelId), "plan.json"), JSON.stringify(plan, null, 1));
+        // The helper's pass is the truth: when it moved on -- to the drawn pass or, if none was drawn in time, to the same
+        // order without the videos no longer playable -- the record follows it.
+        const helperOrder = Array.isArray(status.passVideoIds) ? status.passVideoIds : null;
+        if (helperOrder && (status.passNumber !== stream.passNumber || JSON.stringify(helperOrder) !== JSON.stringify(order))) {
+          const movedOn = status.passNumber !== stream.passNumber;
+          order = helperOrder;
+          if (movedOn) nextOrder = null;
+          await deps.streams.update(channelId, { passNumber: status.passNumber, passOrderJson: JSON.stringify(order), ...(movedOn ? { nextPassOrderJson: null } : {}) });
         }
+        await deps.streams.update(channelId, { positionIndex: status.position.index, positionOffsetSeconds: status.position.offset, positionUpdatedAt: deps.clock() });
+
+        if (status.position.index >= order.length - 1 && !nextOrder) {
+          const playable = await deps.streams.recheck(channelId);
+          nextOrder = drawPassOrder(playable, stream.orderMode, deps.random, order.at(-1) ?? null);
+          await deps.streams.update(channelId, { nextPassOrderJson: JSON.stringify(nextOrder) });
+          const plan = parseJson<Record<string, unknown>>(await deps.files.read(path.join(dirOf(channelId), "plan.json")));
+          if (plan) {
+            const durations = await durationsOf(channelId);
+            plan.nextPass = { number: status.passNumber + 1, videos: nextOrder.map((id) => ({ videoId: id, file: deps.buffer.fileOf(channelId, id), duration: durations.get(id) ?? 0 })) };
+            plan.playable = playable;
+            await deps.files.writeAtomic(path.join(dirOf(channelId), "plan.json"), JSON.stringify(plan, null, 1));
+          }
+        }
+        return { running: true as const, status, buffer: { order, index: Math.min(status.position.index, Math.max(0, order.length - 1)), nextFirst: nextOrder?.[0] ?? null } };
+      });
+      if (step.running && step.buffer) {
+        const b = step.buffer;
+        await withBufferLock(channelId, () => syncBuffer(channelId, b.order, b.index, b.nextFirst));
       }
-      await syncBuffer(channelId, order, Math.min(status.position.index, Math.max(0, order.length - 1)), nextOrder?.[0] ?? null);
-      return { running: true, status };
+      return { running: step.running, status: step.status };
     },
 
     /**

@@ -36,10 +36,35 @@ export function createHelperProcess(root: string = process.cwd()): SupervisorDep
     // A pid is ours only if its command line is `node …/encoder-helper.mjs <this stream's folder>`: after a reboot or a crash
     // the number may belong to anything (independent review).
     isOurHelper: (pid, streamDir) =>
-      new Promise((resolve) => {
-        execFile("ps", ["-o", "command=", "-p", String(pid)], { timeout: 5_000 }, (error, stdout) => {
+      new Promise((resolve, reject) => {
+        execFile("ps", ["-ww", "-o", "command=", "-p", String(pid)], { timeout: 5_000 }, (error, stdout) => {
+          // `ps` exits 1 when the pid is gone: not ours. Any other failure must not read as "no helper" (independent review:
+          // that would start a second encoder beside a running one), so it is an error.
+          if (error && (error as { code?: unknown }).code !== 1) return reject(new Error(`could not check the encoder process (${error.message})`));
           const command = error ? "" : String(stdout).trim();
           resolve(command.includes("encoder-helper.mjs") && command.endsWith(streamDir));
+        });
+      }),
+    // An ffmpeg whose helper was killed outright keeps sending: it is found by its run list, `<streamDir>/run.ffconcat`.
+    killStrayEncoders: (streamDir) =>
+      new Promise((resolve, reject) => {
+        execFile("ps", ["-ww", "-A", "-o", "pid=,command="], { timeout: 5_000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => {
+          if (error) return reject(new Error(`could not list processes (${error.message})`));
+          const marker = path.join(streamDir, "run.ffconcat");
+          const pids = String(stdout)
+            .split("\n")
+            .map((line) => /^\s*(\d+)\s+(.*)$/.exec(line))
+            .filter((m): m is RegExpExecArray => Boolean(m) && m![2].includes(marker) && !m![2].includes("encoder-helper.mjs"))
+            .map((m) => Number(m[1]))
+            .filter((p) => p !== process.pid);
+          for (const p of pids) {
+            try {
+              process.kill(p, "SIGKILL");
+            } catch {
+              // already gone
+            }
+          }
+          resolve(pids.length);
         });
       }),
     // The helper is spawned `detached` (its own process group, ffmpeg inside it): the group goes down together.

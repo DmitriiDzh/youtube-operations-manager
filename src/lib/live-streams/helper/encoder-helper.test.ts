@@ -270,3 +270,36 @@ test("waiting for a missing video is recorded once, not every 30 s", async () =>
   assert.equal(events(h).filter((e) => e.kind === "waiting_for_source").length, 1);
   assert.deepEqual(h.sleeps, [30_000, 30_000, 30_000]);
 });
+
+test("an ffmpeg with no progress for the stall time is stopped by the helper (a dead connection does not look healthy)", async () => {
+  const kills: string[] = [];
+  const written: Record<string, string> = {};
+  let spawned = 0;
+  const signal: { stopped: boolean; onStop?: () => void; wake?: () => void } = { stopped: false };
+  const io = {
+    readPlan: () => basePlan(),
+    exists: () => true,
+    writeAtomic: (name: string, text: string) => void (written[name] = text),
+    append: () => undefined,
+    spawnFfmpeg: () => {
+      spawned += 1;
+      const child = Object.assign(new EventEmitter(), {
+        stdout: new PassThrough(),
+        stderr: new PassThrough(),
+        kill: (sig: string) => {
+          kills.push(sig);
+          signal.stopped = true; // end the test after this run
+          setImmediate(() => child.emit("exit", null, sig));
+          return true;
+        },
+      });
+      return child; // never prints progress, never exits by itself
+    },
+    probeKeyframe: async () => 0,
+    sleep: async () => undefined,
+    now: () => Date.now(),
+  };
+  await runHelper({ dir: "/buf/UC1", key: KEY, pid: 1, stallMs: 50, io: io as never, signal });
+  assert.equal(spawned, 1);
+  assert.equal(kills[0], "SIGTERM");
+});
