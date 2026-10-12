@@ -16,11 +16,13 @@ export const BROADCAST_CHECK_FAST_MS = 60_000;
 export const BROADCAST_FAST_WINDOW_MS = 10 * 60_000;
 /** Waits between failed encoder starts of one stream (each start reads YouTube: the key, the rotation). */
 export const START_RETRY_DELAYS_MS = [60_000, 2 * 60_000, 5 * 60_000, 10 * 60_000] as const;
+/** An encoder gone within this long after its start counts as a failed start (backoff), not a fresh reason to start again. */
+export const EARLY_EXIT_MS = 2 * 60_000;
 
 export type RunnerDependencies = {
   settings(): Promise<LiveStreamsSettings & { host: { ok: true } | { ok: false; reason: string } }>;
   listStreams(): Promise<Array<{ channelId: string; intent: "on" | "off" }>>;
-  supervisor: Pick<StreamSupervisor, "runningHelper" | "startEncoder" | "tick" | "checkBroadcast">;
+  supervisor: Pick<StreamSupervisor, "runningHelper" | "liveHelper" | "startEncoder" | "stopEncoder" | "tick" | "checkBroadcast">;
   event(channelId: string, kind: string, detail: Record<string, unknown>): Promise<void>;
   /** §3.11: this computer's report for the other computers; `false` publishes an empty one (the module is off). */
   publish?(enabled: boolean): Promise<void>;
@@ -31,26 +33,46 @@ export function createLiveStreamsRunner(deps: RunnerDependencies) {
   const lastBroadcastCheck = new Map<string, number>();
   const startFailures = new Map<string, { count: number; retryAt: number; message: string }>();
   let publishedOff = false;
+  let stoppedForOff = false;
+  const lastStarted = new Map<string, number>();
+
+  function noteFailure(channelId: string, message: string, now: number) {
+    const failure = startFailures.get(channelId);
+    const count = (failure?.count ?? 0) + 1;
+    const delay = START_RETRY_DELAYS_MS[Math.min(count - 1, START_RETRY_DELAYS_MS.length - 1)];
+    startFailures.set(channelId, { count, retryAt: now + delay, message });
+    return { changed: failure?.message !== message, delay };
+  }
 
   async function tendStream(channelId: string): Promise<void> {
     const now = deps.now();
     const running = await deps.supervisor.runningHelper(channelId);
     if (!running) {
+      // An encoder that died right after this loop started it is a failed start: back off instead of restarting every 15 s
+      // (each start reads YouTube).
+      const started = lastStarted.get(channelId);
+      if (started !== undefined && now - started < EARLY_EXIT_MS && !startFailures.has(channelId)) {
+        lastStarted.delete(channelId);
+        const { changed, delay } = noteFailure(channelId, "the encoder stopped right after starting", now);
+        if (changed) await deps.event(channelId, "encoder_start_failed", { message: "the encoder stopped right after starting", retryInSeconds: delay / 1000 });
+        return;
+      }
       const failure = startFailures.get(channelId);
       if (failure && now < failure.retryAt) return;
       try {
         await deps.supervisor.startEncoder(channelId, { freshPass: false });
-        startFailures.delete(channelId);
+        lastStarted.set(channelId, now);
         lastBroadcastCheck.delete(channelId); // read the broadcast at the next tick (§3.8: after every (re)start)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        const count = (failure?.count ?? 0) + 1;
-        const delay = START_RETRY_DELAYS_MS[Math.min(count - 1, START_RETRY_DELAYS_MS.length - 1)];
-        startFailures.set(channelId, { count, retryAt: now + delay, message });
-        if (failure?.message !== message) await deps.event(channelId, "encoder_start_failed", { message, retryInSeconds: delay / 1000 });
+        const { changed, delay } = noteFailure(channelId, message, now);
+        if (changed) await deps.event(channelId, "encoder_start_failed", { message, retryInSeconds: delay / 1000 });
       }
       return;
     }
+    // Running for a while: a start that worked clears the backoff.
+    const started = lastStarted.get(channelId);
+    if (started === undefined || now - started >= EARLY_EXIT_MS) startFailures.delete(channelId);
     await deps.supervisor.tick(channelId);
     // §3.8/§3.10: the broadcast is read right after every encoder (re)start -- the owner's Start included -- then every
     // minute for 10 minutes, then every 5 minutes.
@@ -67,7 +89,14 @@ export function createLiveStreamsRunner(deps: RunnerDependencies) {
     async tick(): Promise<void> {
       const settings = await deps.settings();
       if (!settings.enabled || !settings.host.ok) {
-        // Once, so the other computers stop showing streams this one no longer runs; then nothing at all.
+        // Once: the encoders still running stop (the intent stays, so they come back when the module is switched on again --
+        // no YouTube write either way), and the other computers stop showing streams this one no longer runs.
+        if (!stoppedForOff) {
+          stoppedForOff = true;
+          for (const stream of await deps.listStreams().catch(() => [])) {
+            await deps.supervisor.stopEncoder(stream.channelId, "module_off").catch(() => false);
+          }
+        }
         if (!publishedOff && deps.publish) {
           publishedOff = true;
           await deps.publish(false).catch(() => undefined);
@@ -75,8 +104,13 @@ export function createLiveStreamsRunner(deps: RunnerDependencies) {
         return;
       }
       publishedOff = false;
+      stoppedForOff = false;
       for (const stream of await deps.listStreams()) {
-        if (stream.intent !== "on") continue;
+        if (stream.intent !== "on") {
+          // A stream the owner stopped never keeps an encoder (e.g. one a Stop could not reach in time).
+          if (await deps.supervisor.liveHelper(stream.channelId).catch(() => null)) await deps.supervisor.stopEncoder(stream.channelId, "intent_off").catch(() => false);
+          continue;
+        }
         try {
           await tendStream(stream.channelId);
         } catch (error) {

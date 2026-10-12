@@ -69,8 +69,8 @@ export function createStreamSupervisorCore() {
   const workspaces = createChannelWorkspacesCore();
   const files = createLiveStreamsFiles(async (channelId) => workspaces.getWorkspace({ channelId }));
   const bufferRoot = getProductionAppPaths().liveStreamsBufferDir;
-  const event = async (channelId: string, kind: string, detail: Record<string, unknown>) =>
-    insertLiveStreamEvent({ id: randomUUID(), channelId, at: new Date(), kind, detailJson: JSON.stringify(detail) });
+  const event = async (channelId: string, kind: string, detail: Record<string, unknown>, at?: Date) =>
+    insertLiveStreamEvent({ id: randomUUID(), channelId, at: at ?? new Date(), kind, detailJson: JSON.stringify(detail) });
   return createStreamSupervisor({
     bufferRoot,
     settings: () => createLiveStreamsSettingsCore().get(),

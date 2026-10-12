@@ -12,9 +12,10 @@ const B = "BBBBBBBBBB2";
 const C = "CCCCCCCCCC3";
 const NOW = new Date("2026-10-12T12:00:00Z");
 
-function harness(opts: { stream?: Partial<SupervisorStream>; playable?: string[]; enabled?: boolean; ingestion?: boolean; lifecycle?: string } = {}) {
+function harness(opts: { stream?: Partial<SupervisorStream>; playable?: string[]; enabled?: boolean; ingestion?: boolean; lifecycle?: string | null; spawnWritesStatus?: boolean } = {}) {
   const files = new Map<string, string>();
-  const events: Array<{ kind: string; detail: Record<string, unknown> }> = [];
+  const events: Array<{ kind: string; detail: Record<string, unknown>; at?: string }> = [];
+  const ours = new Set<number>();
   const alive = new Set<number>();
   const signals: Array<[number, string]> = [];
   const spawned: Array<{ dir: string; key: string }> = [];
@@ -47,7 +48,7 @@ function harness(opts: { stream?: Partial<SupervisorStream>; playable?: string[]
       },
       videos: async () => [A, B, C].map((videoId) => ({ videoId, originalPath: `04 Videos/${videoId}.mp4`, videoDurationSeconds: 7382, originalDurationSeconds: 7382.3 })),
       recheck: async () => playable,
-      event: async (_c, kind, detail) => void events.push({ kind, detail }),
+      event: async (_c, kind, detail, at) => void events.push({ kind, detail, ...(at ? { at: at.toISOString() } : {}) }),
     },
     buffer: {
       sync: async (_c, args) => {
@@ -59,7 +60,7 @@ function harness(opts: { stream?: Partial<SupervisorStream>; playable?: string[]
     ffmpeg: async () => ({ ffmpegPath: "/opt/homebrew/bin/ffmpeg", ffprobePath: "/opt/homebrew/bin/ffprobe", features: { rtmps: true, h264Videotoolbox: true, libx264: true } }),
     youtube: {
       readIngestion: async () => (opts.ingestion === false ? null : { rtmpsIngestionAddress: "rtmps://a.rtmps.youtube.com/live2", streamName: KEY }),
-      readLifecycle: async () => opts.lifecycle ?? "live",
+      readLifecycle: async () => (opts.lifecycle === null ? { found: false, lifeCycleStatus: null } : { found: true, lifeCycleStatus: opts.lifecycle ?? "live" }),
       readStreamHealth: async () => ({ streamStatus: "active", healthStatus: "ok", configurationIssues: [{ type: "bitrateLow", severity: "warning" }] }),
       readViewers: async () => 7,
     },
@@ -72,10 +73,20 @@ function harness(opts: { stream?: Partial<SupervisorStream>; playable?: string[]
         spawned.push({ dir, key });
         const pid = nextPid++;
         alive.add(pid);
+        ours.add(pid);
+        // The real helper writes a "starting" status at once (with the token from plan.json).
+        if (opts.spawnWritesStatus !== false) {
+          files.set("/appdata/live-streams/UC1/status.json", JSON.stringify({ protocol: 1, token: "tok-1", pid, state: "starting", passNumber: 1, position: { index: 0, videoId: A, offset: 0 }, lastExit: null, progress: {}, updatedAt: clock }));
+        }
         return pid;
       },
       isAlive: (pid) => alive.has(pid),
-      signal: (pid, sig) => void signals.push([pid, sig]),
+      isOurHelper: async (pid) => ours.has(pid),
+      signalGroup: (pid, sig) => {
+        signals.push([pid, sig]);
+        alive.delete(pid); // the fake helper exits at once
+      },
+      waitForExit: async (pid) => !alive.has(pid),
     },
     clock: () => new Date(clock),
     newToken: () => "tok-1",
@@ -91,6 +102,7 @@ function harness(opts: { stream?: Partial<SupervisorStream>; playable?: string[]
     files,
     events,
     alive,
+    ours,
     signals,
     spawned,
     syncs,
@@ -173,34 +185,44 @@ test("startEncoder refuses while a helper is already running (no second encoder)
   assert.equal(h.spawned.length, 1);
 });
 
-test("stopEncoder signals only a process proven ours by its token", async () => {
+test("stopEncoder signals only a process proven ours by its command line (a reused pid is left alone), the whole group", async () => {
   const h = harness();
-  await h.supervisor.startEncoder("UC1", { freshPass: true });
-  h.status({ token: "someone-else" });
+  const { pid } = await h.supervisor.startEncoder("UC1", { freshPass: true });
+  h.ours.delete(pid); // after a reboot the number belongs to another process
   assert.equal(await h.supervisor.stopEncoder("UC1", "owner"), false);
   assert.deepEqual(h.signals, []);
-  h.status({});
+  h.ours.add(pid);
   assert.equal(await h.supervisor.stopEncoder("UC1", "owner"), true);
-  assert.deepEqual(h.signals, [[500, "SIGTERM"]]);
+  assert.deepEqual(h.signals, [[pid, "SIGTERM"]]);
 });
 
-test("tick: carries the position into the database, draws the next pass on the last video, and adopts it when the helper moves on", async () => {
+test("tick: carries the position into the database, draws the next pass on the last video, and follows the helper's pass", async () => {
   const h = harness({ stream: { orderMode: "sequence" } });
   await h.supervisor.startEncoder("UC1", { freshPass: true });
-  h.status({ position: { index: 1, videoId: B, offset: 120 } });
+  h.status({ passVideoIds: [A, B, C], position: { index: 1, videoId: B, offset: 120 } });
   await h.supervisor.tick("UC1");
   assert.deepEqual([h.stream().positionIndex, h.stream().positionOffsetSeconds, h.stream().nextPassOrderJson], [1, 120, null]);
 
-  h.status({ position: { index: 2, videoId: C, offset: 5 } });
+  h.status({ passVideoIds: [A, B, C], position: { index: 2, videoId: C, offset: 5 } });
   await h.supervisor.tick("UC1");
   assert.equal(h.stream().nextPassOrderJson, JSON.stringify([A, B, C]));
   const plan = JSON.parse(h.files.get("/appdata/live-streams/UC1/plan.json")!);
   assert.equal(plan.nextPass.number, 2);
   assert.deepEqual(h.syncs.at(-1), { order: [A, B, C], currentIndex: 2, nextPassFirst: A }, "the buffer copies the next pass's first video");
 
-  h.status({ passNumber: 2, position: { index: 0, videoId: A, offset: 3 } });
+  h.status({ passNumber: 2, passVideoIds: [A, B, C], position: { index: 0, videoId: A, offset: 3 } });
   await h.supervisor.tick("UC1");
   assert.deepEqual([h.stream().passNumber, h.stream().nextPassOrderJson, h.stream().positionIndex], [2, null, 0]);
+});
+
+test("tick: a pass the helper started without a drawn next pass (server was down) is adopted too, with its own order", async () => {
+  const h = harness();
+  await h.supervisor.startEncoder("UC1", { freshPass: true });
+  // The helper replayed the order without A (no longer playable) as pass 2, while the record still says pass 1.
+  h.status({ passNumber: 2, passVideoIds: [B, C], position: { index: 0, videoId: B, offset: 30 } });
+  await h.supervisor.tick("UC1");
+  assert.deepEqual([h.stream().passNumber, h.stream().passOrderJson, h.stream().positionIndex], [2, JSON.stringify([B, C]), 0]);
+  assert.deepEqual(h.syncs.at(-1)?.order, [B, C], "the buffer follows what is really played");
 });
 
 test("tick imports the helper's events once, prefixed encoder_", async () => {
@@ -246,4 +268,66 @@ test("§3.10: a broadcast not live keeps the time it was first seen not live acr
   const poll = await h.supervisor.lastYoutubePoll("UC1");
   assert.deepEqual([poll?.lifeCycleStatus, poll?.notLiveSince, poll?.viewers], ["ready", NOW.getTime(), null]);
   assert.equal(h.events.filter((e) => e.kind === "youtube_status").length, 1, "a status change is recorded once");
+});
+
+// --- Independent review (2026-10-12): never two encoders on one key; strays and hung helpers are stopped first. ---
+
+test("two starts at the same time (Start and a background tick) spawn ONE encoder; the other is refused as already running", async () => {
+  const h = harness();
+  const results = await Promise.allSettled([h.supervisor.startEncoder("UC1", { freshPass: true }), h.supervisor.startEncoder("UC1", { freshPass: false })]);
+  assert.equal(h.spawned.length, 1);
+  assert.deepEqual(results.map((r) => r.status).sort(), ["fulfilled", "rejected"]);
+});
+
+test("a hung helper (alive, ours, no status for a minute) is stopped -- with its group -- before a new one starts", async () => {
+  const h = harness();
+  const first = await h.supervisor.startEncoder("UC1", { freshPass: true });
+  h.advance(2 * 60_000); // its status is now stale
+  const second = await h.supervisor.startEncoder("UC1", { freshPass: false });
+  assert.notEqual(first.pid, second.pid);
+  assert.deepEqual(h.signals, [[first.pid, "SIGTERM"]]);
+  assert.equal(h.alive.has(first.pid), false);
+  assert.ok(h.events.some((e) => e.kind === "encoder_stop" && e.detail.reason === "hung"));
+});
+
+test("a live pid that is not our helper (reused) is neither stopped nor taken as running", async () => {
+  const h = harness();
+  const { pid } = await h.supervisor.startEncoder("UC1", { freshPass: true });
+  h.ours.delete(pid);
+  assert.equal(await h.supervisor.runningHelper("UC1"), null);
+  await h.supervisor.startEncoder("UC1", { freshPass: false });
+  assert.deepEqual(h.signals, [], "the stranger is not signalled");
+});
+
+test("§3.8: a broadcast YouTube no longer has (deleted in Studio) counts as ended: encoder stopped, intent off, no write", async () => {
+  const h = harness({ lifecycle: null });
+  const { pid } = await h.supervisor.startEncoder("UC1", { freshPass: true });
+  assert.deepEqual(await h.supervisor.checkBroadcast("UC1"), { lifeCycleStatus: "not_found", endedByYoutube: true });
+  assert.deepEqual(h.signals, [[pid, "SIGTERM"]]);
+  assert.equal(h.stream().intent, "off");
+});
+
+test("Restart rebuilds the pass from the rotation as it is now; the video playing keeps its place and offset", async () => {
+  const h = harness({ stream: { passNumber: 4, passOrderJson: JSON.stringify([A, B]), positionIndex: 1, positionOffsetSeconds: 300 }, playable: [C, B, A] });
+  await h.supervisor.startEncoder("UC1", { freshPass: false });
+  await h.supervisor.restart("UC1");
+  const plan = JSON.parse(h.files.get("/appdata/live-streams/UC1/plan.json")!);
+  assert.deepEqual(plan.pass.videos.map((v: { videoId: string }) => v.videoId), [C, B, A], "the new rotation order");
+  assert.deepEqual([plan.pass.startIndex, plan.pass.startOffset], [1, 300], "B keeps playing from 300 s");
+  assert.equal(h.spawned.length, 2);
+});
+
+test("rebuiltPass: shuffle puts the video playing first; a video no longer in the rotation starts the pass from the top", async () => {
+  const { rebuiltPass } = await import("./supervisor");
+  assert.deepEqual(rebuiltPass([A, B, C], "shuffle", () => 0, { videoId: B, offset: 50 }).order[0], B);
+  assert.deepEqual(rebuiltPass([A, C], "sequence", () => 0, { videoId: B, offset: 50 }), { order: [A, C], index: 0, offset: 0 });
+});
+
+test("the helper's events keep their own times when imported", async () => {
+  const h = harness();
+  await h.supervisor.startEncoder("UC1", { freshPass: true });
+  h.status({});
+  h.files.set("/appdata/live-streams/UC1/events.jsonl", `${JSON.stringify({ at: Date.parse("2026-10-12T03:00:00Z"), kind: "run_exit", cause: "encoder_exit" })}\n`);
+  await h.supervisor.tick("UC1");
+  assert.equal(h.events.find((e) => e.kind === "encoder_run_exit")?.at, "2026-10-12T03:00:00.000Z");
 });

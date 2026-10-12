@@ -14,7 +14,8 @@ type Step = { progress?: number[]; stderr?: string[]; exit: { code: number | nul
 function harness(opts: {
   steps: Step[];
   files: string[];
-  plan: Record<string, unknown>;
+  plan: Record<string, unknown> | ((spawned: number) => Record<string, unknown>);
+  onProbe?: (signal: { stopped: boolean; onStop?: () => void; wake?: () => void }) => void;
   keyframe?: (file: string, offset: number) => number | null;
   stopAfterRuns?: number;
   stopAfterSleeps?: number;
@@ -29,7 +30,7 @@ function harness(opts: {
   let stepIndex = 0;
 
   const io = {
-    readPlan: () => opts.plan,
+    readPlan: () => (typeof opts.plan === "function" ? opts.plan(runs.length) : opts.plan),
     exists: (file: string) => opts.files.includes(file),
     writeAtomic: (name: string, text: string) => {
       written[name] = text;
@@ -53,7 +54,10 @@ function harness(opts: {
       });
       return child;
     },
-    probeKeyframe: async (_p: string, file: string, offset: number) => (opts.keyframe ? opts.keyframe(file, offset) : offset),
+    probeKeyframe: async (_p: string, file: string, offset: number) => {
+      opts.onProbe?.(signal);
+      return opts.keyframe ? opts.keyframe(file, offset) : offset;
+    },
     sleep: async (ms: number) => {
       sleeps.push(ms);
       clock += ms;
@@ -212,4 +216,57 @@ test("real helper process: streams the pass, reports its position, keeps the key
     listener.kill("SIGKILL");
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+// Independent review, 2026-10-12: the server draws the next pass WHILE a pass plays; the helper must see it at the pass end.
+test("the next pass the server draws during the run is the one played next (the plan is read again at the pass end)", async () => {
+  const h = harness({
+    steps: [{ progress: [20], exit: { code: 0 } }, { progress: [1], exit: { code: 0 } }],
+    files: [A.file, B.file, C.file],
+    // Before the first run starts there is no next pass; once it is running, the server has drawn [C, B] (A turned private).
+    plan: (spawned) => basePlan({ nextPass: spawned === 0 ? null : { number: 2, videos: [C, B] }, playable: [B.videoId, C.videoId] }),
+    stopAfterRuns: 2,
+  });
+  await h.run();
+  assert.match(h.runs[1].list, new RegExp(`file '${C.file}'\\nfile '${B.file}'`));
+  assert.doesNotMatch(h.runs[1].list, new RegExp(A.file));
+});
+
+test("without a drawn next pass, the same order is replayed WITHOUT the videos no longer playable", async () => {
+  const h = harness({
+    steps: [{ progress: [20], exit: { code: 0 } }, { progress: [1], exit: { code: 0 } }],
+    files: [A.file, B.file],
+    plan: basePlan({ nextPass: null, playable: [B.videoId] }),
+    stopAfterRuns: 2,
+  });
+  await h.run();
+  assert.doesNotMatch(h.runs[1].list, new RegExp(A.file), "A turned private: not in the next pass");
+  assert.match(h.runs[1].list, new RegExp(B.file));
+});
+
+test("a stop that arrives during the keyframe probe starts no ffmpeg", async () => {
+  const h = harness({
+    steps: [],
+    files: [A.file, B.file],
+    plan: basePlan({ pass: { number: 1, videos: [A, B], startIndex: 0, startOffset: 5 } }),
+    onProbe: (signal) => {
+      signal.stopped = true;
+    },
+  });
+  await h.run();
+  assert.equal(h.runs.length, 0);
+  assert.equal(h.statuses.at(-1)?.state, "stopped");
+});
+
+test("the status is written at once ('starting', with the token and the pass's videos) before any ffmpeg", async () => {
+  const h = harness({ steps: [{ progress: [1], exit: { code: 1 } }], files: [A.file, B.file], plan: basePlan(), stopAfterRuns: 1 });
+  await h.run();
+  assert.deepEqual([h.statuses[0].state, h.statuses[0].token, h.statuses[0].passVideoIds], ["starting", "tok-123", [A.videoId, B.videoId]]);
+});
+
+test("waiting for a missing video is recorded once, not every 30 s", async () => {
+  const h = harness({ steps: [], files: [], plan: basePlan(), stopAfterSleeps: 3 });
+  await h.run();
+  assert.equal(events(h).filter((e) => e.kind === "waiting_for_source").length, 1);
+  assert.deepEqual(h.sleeps, [30_000, 30_000, 30_000]);
 });

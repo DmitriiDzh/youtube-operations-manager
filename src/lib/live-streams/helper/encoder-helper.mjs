@@ -35,6 +35,11 @@ export const HELPER_PROTOCOL = 1;
 const LOG_ROTATE_BYTES = 5 * 1024 * 1024;
 const WAIT_FOR_SOURCE_MS = 30_000;
 const KILL_GRACE_MS = 5_000;
+/** The status is rewritten at least this often, ffmpeg or not: the server tells a live helper from a hung one by it. */
+export const HEARTBEAT_MS = 10_000;
+
+/** The ffmpeg this process runs now: killed if the helper itself dies, so no encoder outlives it (independent review). */
+let activeChild = null;
 
 /**
  * @typedef {{ videoId: string; file: string; duration: number }} PlanVideo
@@ -76,7 +81,7 @@ function realIo(dir) {
 
 /**
  * Runs the stream until `signal.stopped` turns true. Exported for tests (fake ffmpeg, fake files).
- * @param {{ dir: string; key: string; pid?: number; io?: Partial<ReturnType<typeof realIo>>; signal?: { stopped: boolean; onStop?: () => void; wake?: () => void } }} options
+ * @param {{ dir: string; key: string; pid?: number; heartbeatMs?: number; io?: Partial<ReturnType<typeof realIo>>; signal?: { stopped: boolean; onStop?: () => void; wake?: () => void } }} options
  */
 export async function runHelper(options) {
   const io = { ...realIo(options.dir), ...options.io };
@@ -90,7 +95,13 @@ export async function runHelper(options) {
   const secrets = [options.key];
   const scrub = (text) => scrubSecrets(text, secrets);
   const log = (line) => io.append("helper.log", `${new Date(io.now()).toISOString()} ${scrub(line)}\n`);
-  const event = (kind, detail) => io.append("events.jsonl", `${scrub(JSON.stringify({ at: io.now(), kind, ...detail }))}\n`);
+  const event = (kind, detail) => {
+    try {
+      io.append("events.jsonl", `${scrub(JSON.stringify({ at: io.now(), kind, ...detail }))}\n`);
+    } catch {
+      // a full disk or a removed folder must not kill the stream
+    }
+  };
 
   let plan = io.readPlan();
   const token = plan.token;
@@ -102,43 +113,67 @@ export async function runHelper(options) {
   let lastExit = null;
   /** @type {Record<string, unknown>} */
   let progress = {};
+  let lastState = { state: "starting", extra: {} };
 
-  const writeStatus = (state, extra = {}) =>
-    io.writeAtomic(
-      "status.json",
-      scrub(
-        JSON.stringify({
-          protocol: HELPER_PROTOCOL,
-          token,
-          pid: options.pid ?? process.pid,
-          state,
-          passNumber: pass.number,
-          position: { index: position.index, videoId: pass.videos[position.index]?.videoId ?? null, offset: position.offset },
-          runs,
-          restarts,
-          lastExit,
-          progress,
-          updatedAt: io.now(),
-          ...extra,
-        })
-      )
-    );
+  // The status names the pass's videos too, so the server keeps its record of the pass in step with what is played.
+  const writeStatus = (state, extra = {}) => {
+    lastState = { state, extra };
+    try {
+      io.writeAtomic(
+        "status.json",
+        scrub(
+          JSON.stringify({
+            protocol: HELPER_PROTOCOL,
+            token,
+            pid: options.pid ?? process.pid,
+            state,
+            passNumber: pass.number,
+            passVideoIds: pass.videos.map((v) => v.videoId),
+            position: { index: position.index, videoId: pass.videos[position.index]?.videoId ?? null, offset: position.offset },
+            runs,
+            restarts,
+            lastExit,
+            progress,
+            updatedAt: io.now(),
+            ...extra,
+          })
+        )
+      );
+    } catch {
+      // a full disk or a removed folder must not kill the stream; the heartbeat tries again
+    }
+  };
+  // At once, before any wait: from this moment the server sees this helper (no second one is started beside it).
+  writeStatus("starting");
+  const heartbeat = setInterval(() => writeStatus(lastState.state, lastState.extra), options.heartbeatMs ?? HEARTBEAT_MS);
+  heartbeat.unref?.();
 
   /** One ffmpeg run over `files` starting at `inpoint`; resolves with what happened. */
   async function runOnce(files, inpoint, onProgress) {
+    // A stop that arrived while the run was being prepared (e.g. during the keyframe probe) starts nothing.
+    if (signal.stopped) return { code: null, signal: "SIGTERM", outTime: 0 };
     const listPath = path.join(options.dir, "run.ffconcat");
     io.writeAtomic("run.ffconcat", concatList(files, inpoint));
     const args = encoderArgs({ listPath, codec: plan.encoder.codec, bitrateKbps: plan.encoder.bitrateKbps, outputUrl: `${plan.ingestUrl}/${options.key}` });
     const child = io.spawnFfmpeg(plan.ffmpegPath, args);
+    activeChild = child;
     const stop = () => {
       child.kill("SIGTERM");
       setTimeout(() => child.kill("SIGKILL"), KILL_GRACE_MS).unref?.();
     };
     signal.onStop = stop;
+    if (signal.stopped) stop();
     let outTime = 0;
     /** @type {Record<string, string>} */
     let block = {};
     createInterface({ input: child.stdout }).on("line", (line) => {
+      try {
+        onLine(line);
+      } catch {
+        // never let a status write kill the helper and orphan ffmpeg
+      }
+    });
+    const onLine = (line) => {
       const eq = line.indexOf("=");
       if (eq < 0) return;
       const k = line.slice(0, eq).trim();
@@ -157,16 +192,25 @@ export async function runHelper(options) {
         block = {};
         onProgress(outTime);
       }
+    };
+    createInterface({ input: child.stderr }).on("line", (line) => {
+      try {
+        log(`ffmpeg: ${line}`);
+      } catch {
+        // as above
+      }
     });
-    createInterface({ input: child.stderr }).on("line", (line) => log(`ffmpeg: ${line}`));
     const exit = await new Promise((resolve) => {
       child.on("exit", (code, sig) => resolve({ code, signal: sig }));
       child.on("error", (error) => resolve({ code: null, signal: null, error: String(error?.message ?? error) }));
     });
     signal.onStop = undefined;
+    activeChild = null;
     return { ...exit, outTime };
   }
 
+  /** The video last reported as awaited (undefined = not waiting). */
+  let waitingFor;
   while (!signal.stopped) {
     plan = io.readPlan();
     if (plan.pass.number === pass.number) pass = plan.pass;
@@ -178,10 +222,13 @@ export async function runHelper(options) {
       const replay = pass.videos.filter((v) => plan.playable.includes(v.videoId) && io.exists(v.file));
       if (replay.length === 0) {
         writeStatus("waiting_for_source", { missingVideoId: current?.videoId ?? null });
-        event("waiting_for_source", { videoId: current?.videoId ?? null });
+        // Once per missing video, not every 30 s (the history would show nothing else).
+        if (waitingFor !== (current?.videoId ?? null)) event("waiting_for_source", { videoId: current?.videoId ?? null });
+        waitingFor = current?.videoId ?? null;
         await sleep(WAIT_FOR_SOURCE_MS);
         continue;
       }
+      waitingFor = undefined;
       runs += 1;
       event("replay_start", { missingVideoId: current?.videoId ?? null, videos: replay.map((v) => v.videoId) });
       writeStatus("replaying", { missingVideoId: current?.videoId ?? null });
@@ -204,6 +251,7 @@ export async function runHelper(options) {
     }
 
     // A normal run: the rest of the pass, from the source keyframe at or before the position (§3.6).
+    waitingFor = undefined;
     const keyframe = await io.probeKeyframe(plan.ffprobePath, current.file, position.offset);
     const inpoint = keyframe ?? position.offset;
     const durations = pass.videos.map((v) => v.duration);
@@ -226,7 +274,16 @@ export async function runHelper(options) {
     if (signal.stopped) break;
 
     if (end === "pass_end") {
-      const next = plan.nextPass && plan.nextPass.number === pass.number + 1 ? plan.nextPass : { number: pass.number + 1, videos: pass.videos };
+      // The server draws the next pass while this one plays (it may have changed the rotation): read the plan again now.
+      try {
+        plan = io.readPlan();
+      } catch {
+        // keep the last plan read
+      }
+      const next =
+        plan.nextPass && plan.nextPass.number === pass.number + 1
+          ? plan.nextPass
+          : { number: pass.number + 1, videos: pass.videos.filter((v) => plan.playable.includes(v.videoId)) };
       event("pass_end", { passNumber: pass.number, nextPassNumber: next.number });
       pass = next;
       position = { index: 0, offset: 0 };
@@ -244,6 +301,7 @@ export async function runHelper(options) {
     await sleep(wait * 1000);
   }
 
+  clearInterval(heartbeat);
   writeStatus("stopped");
   event("stopped", {});
 }
@@ -278,6 +336,13 @@ async function main() {
   };
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
+  // Whatever ends this process, its ffmpeg goes with it.
+  process.on("exit", () => activeChild?.kill("SIGKILL"));
+  process.on("uncaughtException", (error) => {
+    process.stderr.write(`helper failed: ${error?.message ?? error}\n`);
+    activeChild?.kill("SIGKILL");
+    process.exit(1);
+  });
   await runHelper({ dir, key, signal });
   process.exit(0);
 }

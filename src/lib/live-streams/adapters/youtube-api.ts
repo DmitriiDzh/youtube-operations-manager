@@ -35,10 +35,11 @@ export function createLiveStreamsYoutubeReads() {
       return readLiveStreamIngestion(youtube, streamId);
     },
 
-    /** §3.8: the broadcast's lifecycle status, `null` when YouTube does not return it. */
+    /** §3.8: the broadcast's lifecycle status; `found: false` when YouTube no longer returns the broadcast (deleted). */
     async readLifecycle(channelId: string, broadcastId: string) {
       const youtube = await getAuthenticatedYoutube(await channelUserId(channelId));
-      return (await getLiveBroadcasts(youtube, [broadcastId]))[0]?.lifeCycleStatus ?? null;
+      const broadcast = (await getLiveBroadcasts(youtube, [broadcastId]))[0];
+      return { found: Boolean(broadcast), lifeCycleStatus: broadcast?.lifeCycleStatus ?? null };
     },
 
     /** §3.10: the stream's status and health (part=status only: never the key). */

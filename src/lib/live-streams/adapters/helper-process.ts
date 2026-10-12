@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { SupervisorDependencies } from "../supervisor";
@@ -8,6 +8,15 @@ import type { SupervisorDependencies } from "../supervisor";
 // the pipe is closed at once; nothing else of the server is shared with it.
 
 export const HELPER_SCRIPT = path.join("src", "lib", "live-streams", "helper", "encoder-helper.mjs");
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
 
 export function createHelperProcess(root: string = process.cwd()): SupervisorDependencies["process"] {
   return {
@@ -22,19 +31,36 @@ export function createHelperProcess(root: string = process.cwd()): SupervisorDep
       return pid;
     },
     isAlive(pid) {
+      return isAlive(pid);
+    },
+    // A pid is ours only if its command line is `node …/encoder-helper.mjs <this stream's folder>`: after a reboot or a crash
+    // the number may belong to anything (independent review).
+    isOurHelper: (pid, streamDir) =>
+      new Promise((resolve) => {
+        execFile("ps", ["-o", "command=", "-p", String(pid)], { timeout: 5_000 }, (error, stdout) => {
+          const command = error ? "" : String(stdout).trim();
+          resolve(command.includes("encoder-helper.mjs") && command.endsWith(streamDir));
+        });
+      }),
+    // The helper is spawned `detached` (its own process group, ffmpeg inside it): the group goes down together.
+    signalGroup(pid, signal) {
       try {
-        process.kill(pid, 0);
-        return true;
-      } catch (error) {
-        return (error as NodeJS.ErrnoException).code === "EPERM";
+        process.kill(-pid, signal);
+      } catch {
+        try {
+          process.kill(pid, signal);
+        } catch {
+          // already gone
+        }
       }
     },
-    signal(pid, signal) {
-      try {
-        process.kill(pid, signal);
-      } catch {
-        // already gone
+    async waitForExit(pid, timeoutMs) {
+      const until = Date.now() + timeoutMs;
+      while (Date.now() < until) {
+        if (!isAlive(pid)) return true;
+        await new Promise((r) => setTimeout(r, 200));
       }
+      return !isAlive(pid);
     },
   };
 }

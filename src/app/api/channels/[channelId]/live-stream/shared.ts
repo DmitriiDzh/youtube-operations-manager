@@ -88,8 +88,8 @@ export function createLiveStreamRouteCore(): LiveStreamRouteCore {
     start: (channelId, credentialRef) => broadcasts.start(channelId, credentialRef),
     goLive: (channelId, credentialRef) => broadcasts.goLive(channelId, credentialRef),
     stop: (channelId, credentialRef, body) => broadcasts.stop(channelId, credentialRef, { encoderOnly: objectBody(body).encoderOnly === true }),
-    // §3.9 Restart: the encoder only, on the same broadcast -- no YouTube write. The background loop starts it again.
-    restart: async (channelId) => ({ stopped: await supervisor.stopEncoder(channelId, "owner_restart") }),
+    // §3.9 Restart: the encoder only, on the same broadcast, with the rotation as it is now -- no YouTube write.
+    restart: async (channelId) => ({ restarted: true, ...(await supervisor.restart(channelId)) }),
     previewEdit: (channelId, credentialRef, body) => broadcasts.previewEdit(channelId, credentialRef, objectBody(body).patch as Patch),
     edit: (channelId, credentialRef, body) => {
       const b = objectBody(body);

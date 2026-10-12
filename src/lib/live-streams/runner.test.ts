@@ -6,9 +6,10 @@ import { BROADCAST_CHECK_INTERVAL_MS, createLiveStreamsRunner } from "./runner";
 // BL-176 (LIVE_STREAMS_PLAN.md §3.1 "the owner's on is a saved intent", §3.6 "after a Mac restart", §3.8 "after every
 // encoder (re)start, the app reads the broadcast", ADR 0036 §2 "switched off: no timers, no processes").
 
-function harness(opts: { enabled?: boolean; hostOk?: boolean; streams?: Array<{ channelId: string; intent: "on" | "off" }>; startFails?: string } = {}) {
+function harness(opts: { enabled?: boolean; hostOk?: boolean; streams?: Array<{ channelId: string; intent: "on" | "off" }>; startFails?: string; strays?: string[] } = {}) {
   const calls: string[] = [];
   let running = new Set<string>();
+  const strays = new Set<string>(opts.strays ?? []);
   const startedAt = new Map<string, number>();
   let clock = 0;
   const events: string[] = [];
@@ -19,6 +20,13 @@ function harness(opts: { enabled?: boolean; hostOk?: boolean; streams?: Array<{ 
       runningHelper: async (c) => {
         calls.push(`running:${c}`);
         return running.has(c) ? ({ record: { startedAt: startedAt.get(c) ?? 0 } } as never) : null;
+      },
+      liveHelper: async (c) => (strays.has(c) ? ({ pid: 1 } as never) : null),
+      stopEncoder: async (c, reason) => {
+        calls.push(`stop:${c}:${reason}`);
+        strays.delete(c);
+        running.delete(c);
+        return true;
       },
       startEncoder: async (c) => {
         calls.push(`start:${c}`);
@@ -52,12 +60,36 @@ function harness(opts: { enabled?: boolean; hostOk?: boolean; streams?: Array<{ 
   };
 }
 
-test("switched off, or on a computer that cannot host streams, a tick touches nothing", async () => {
+test("switched off, or on a computer that cannot host streams: running encoders are stopped once (no write), then nothing", async () => {
   for (const options of [{ enabled: false }, { hostOk: false }]) {
     const h = harness(options);
     await h.runner.tick();
-    assert.deepEqual(h.calls, []);
+    assert.deepEqual(h.calls, ["stop:UC1:module_off", "stop:UC2:module_off"]);
+    h.calls.length = 0;
+    await h.runner.tick();
+    assert.deepEqual(h.calls, [], "only once");
   }
+});
+
+test("a stream whose intent is off never keeps an encoder: a stray one is stopped", async () => {
+  const h = harness({ strays: ["UC2"] });
+  await h.runner.tick();
+  assert.ok(h.calls.includes("stop:UC2:intent_off"));
+});
+
+test("an encoder that dies right after its start counts as a failed start (backoff), not a restart every 15 s", async () => {
+  const h = harness({ streams: [{ channelId: "UC1", intent: "on" }] });
+  await h.runner.tick(); // started
+  h.kill("UC1"); // gone at once
+  h.advance(15_000);
+  await h.runner.tick();
+  h.advance(15_000);
+  await h.runner.tick();
+  assert.equal(h.calls.filter((c) => c === "start:UC1").length, 1, "no restart within the backoff");
+  assert.deepEqual(h.events, ["encoder_start_failed:the encoder stopped right after starting"]);
+  h.advance(60_000);
+  await h.runner.tick();
+  assert.equal(h.calls.filter((c) => c === "start:UC1").length, 2, "retried after 1 minute");
 });
 
 test("a stream that is on gets its encoder started when none runs (boot / after a crash of the helper); off streams are left alone", async () => {
@@ -123,7 +155,14 @@ test("§3.11: a working tick publishes this computer's report; switched off, an 
   const runner = createLiveStreamsRunner({
     settings: async () => ({ ...DEFAULT_LIVE_STREAMS_SETTINGS, enabled, host: { ok: true } }),
     listStreams: async () => [],
-    supervisor: { runningHelper: async () => null, startEncoder: async () => ({ pid: 1 }), tick: async () => ({ running: false, status: null }), checkBroadcast: async () => ({ lifeCycleStatus: null, endedByYoutube: false }) },
+    supervisor: {
+      runningHelper: async () => null,
+      liveHelper: async () => null,
+      startEncoder: async () => ({ pid: 1 }),
+      stopEncoder: async () => false,
+      tick: async () => ({ running: false, status: null }),
+      checkBroadcast: async () => ({ lifeCycleStatus: null, endedByYoutube: false }),
+    },
     event: async () => undefined,
     publish: async (on) => void published.push(on),
     now: () => 0,
