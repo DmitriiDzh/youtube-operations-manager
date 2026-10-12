@@ -317,3 +317,83 @@ test("review 2: token counts may be decimal strings; a usage object with no read
   assert.equal((await client.generateImage(KEY, request)).usage, null, "renamed fields are not counts");
   assert.equal((await client.generateImage(KEY, request)).usage, null, "negative or fractional values are not counts");
 });
+
+// ---------------------------------------------------------------------------------------------------------------- BL-179
+// Omni through the Interactions API, from https://ai.google.dev/gemini-api/docs/omni and the Interactions API reference (read
+// 2026-10-13): images then the text in `input[]`, `generation_config.video_config.task = "image_to_video"` reads the first image
+// as the starting frame and a second one as the ending frame; `response_format {type:"video", aspect_ratio, resolution,
+// delivery}`; the answer's `steps[]` model output carries `{type:"video", mime_type:"video/mp4", data}` (or a `uri`).
+
+test("BL-179 generateVideo: one Interactions call with the frames in order, then the text; image_to_video, video response_format, store:false", async () => {
+  const mp4 = Buffer.from("00000020667479706d703432", "hex");
+  const { fetchImpl, calls } = fakeFetch(() => ({
+    status: 200,
+    body: {
+      id: "v1_omni",
+      status: "completed",
+      model: "gemini-omni-1.1-flash",
+      steps: [
+        { type: "user_input", content: [{ type: "text", text: "loop" }] },
+        { type: "thought", content: [{ type: "text", text: "planning" }] },
+        { type: "model_output", content: [{ type: "video", mime_type: "video/mp4", data: mp4.toString("base64") }] },
+      ],
+      usage: { total_input_tokens: 3000, total_output_tokens: 46336, total_thought_tokens: 500, output_tokens_by_modality: [{ modality: "video", tokens: 46336 }] },
+    },
+  }));
+  const client = createGeminiApiClient({ fetchImpl, authorize: async () => undefined });
+  const first = { mimeType: "image/jpeg", dataBase64: "FIRST" };
+  const last = { mimeType: "image/png", dataBase64: "LAST" };
+  const result = await client.generateVideo(KEY, { model: "gemini-omni-1.1-flash", prompt: "loop", frames: [first, last], aspectRatio: "16:9", resolution: "720p", durationSeconds: 8 });
+  assert.equal(calls[0].url, "https://generativelanguage.googleapis.com/v1beta/interactions");
+  assert.equal(headersOf(calls[0])["x-goog-api-key"], KEY);
+  assert.deepEqual(JSON.parse(String(calls[0].init.body)), {
+    model: "gemini-omni-1.1-flash",
+    input: [
+      { type: "image", mime_type: "image/jpeg", data: "FIRST" },
+      { type: "image", mime_type: "image/png", data: "LAST" },
+      { type: "text", text: "loop" },
+    ],
+    generation_config: { video_config: { task: "image_to_video" } },
+    response_format: { type: "video", aspect_ratio: "16:9", resolution: "720p", duration: "8s", delivery: "inline" },
+    store: false,
+  });
+  assert.deepEqual(result.video, { mimeType: "video/mp4", data: mp4 });
+  assert.deepEqual(result.usage, { inputTokens: 3000, outputTokens: 46336, thoughtTokens: 500, outputByModality: { video: 46336 } });
+  assert.deepEqual([result.status, result.blockReason], ["completed", null]);
+});
+
+test("BL-179 generateVideo: text only has no task; a URI delivery is returned as such; no video block is null", async () => {
+  const uri = "https://generativelanguage.googleapis.com/v1beta/files/abc:download?alt=media";
+  const answers = [
+    { status: "completed", steps: [{ type: "model_output", content: [{ type: "video", mime_type: "video/mp4", uri }] }] },
+    { status: "failed", errors: [{ code: "safety", message: "blocked" }], steps: [] },
+  ];
+  let i = 0;
+  const { fetchImpl, calls } = fakeFetch(() => ({ status: 200, body: answers[i++] }));
+  const client = createGeminiApiClient({ fetchImpl, authorize: async () => undefined });
+  const request = { model: "gemini-omni-1.1-flash", prompt: "waves", frames: [], aspectRatio: "9:16", resolution: "1080p", durationSeconds: 4 };
+  const byUri = await client.generateVideo(KEY, request);
+  const body = JSON.parse(String(calls[0].init.body));
+  assert.equal("generation_config" in body, false, "text-to-video: no task (Google's guide: let the prompt decide)");
+  assert.deepEqual(body.input, [{ type: "text", text: "waves" }]);
+  assert.deepEqual(byUri.video, { mimeType: "video/mp4", uri });
+  const refused = await client.generateVideo(KEY, request);
+  assert.deepEqual([refused.video, refused.status, refused.blockReason], [null, "failed", "safety"]);
+});
+
+// FO-MSG-0014 Q3: the job's error said only "fetch failed"; the transport's own cause is now part of it.
+test("FO-MSG-0014: a lost answer's error names the transport cause (code and message)", async () => {
+  const reset = Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" }) });
+  const fetchImpl = (async () => {
+    throw reset;
+  }) as typeof fetch;
+  try {
+    await createGeminiApiClient({ fetchImpl, authorize: async () => undefined }).startVideo(KEY, { model: "veo-3.1-lite-generate-preview", prompt: "p", aspectRatio: "16:9", resolution: "720p", durationSeconds: 8 });
+    assert.fail("expected an error");
+  } catch (error) {
+    assert.ok(isDomainError(error));
+    assert.equal(error.code, "gemini_unavailable");
+    assert.match(error.message, /fetch failed; cause UND_ERR_SOCKET: other side closed/);
+    assert.equal((error.details as { outcome?: string }).outcome, "unknown");
+  }
+});

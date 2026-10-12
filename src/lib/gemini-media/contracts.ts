@@ -9,8 +9,9 @@ export { DomainError, isDomainError };
 // or `generation-plans`; switched off (the default) or without a key it makes no network call.
 // ---------------------------------------------------------------------------
 
-/** The official Gemini API pricing page these prices were copied from (§1.1), "Last updated 2026-10-09 UTC". */
-export const GEMINI_PRICES_AS_OF = "2026-10-09";
+/** The official Gemini API pricing page these prices were copied from (§1.1): read 2026-10-09; Omni added from the page read
+ * 2026-10-13 (BL-179). */
+export const GEMINI_PRICES_AS_OF = "2026-10-13";
 
 export type GeminiImageModelSpec = {
   label: string;
@@ -30,15 +31,45 @@ export const GEMINI_IMAGE_MODELS: Readonly<Record<string, GeminiImageModelSpec>>
 
 export type GeminiVideoModelSpec = {
   label: string;
-  /** USD per second of video (with audio, the only output), by resolution; a missing resolution is not offered. */
+  /**
+   * How the model is called: `veo` = `predictLongRunning` + its operation (BL-174); `interactions` = one synchronous
+   * `POST /v1beta/interactions` whose answer carries the video (BL-179, Omni, https://ai.google.dev/gemini-api/docs/omni).
+   */
+  transport: "veo" | "interactions";
+  /** USD per second of video (with audio, the only output), by resolution; a missing resolution is not offered. For an
+   * `interactions` model this is the estimate (`tokenPricing`), its cost comes from Google's token counts. */
   perSecond: Readonly<Record<string, number>>;
   referenceImages: boolean;
+  /** Whether a first frame (and a last frame with it) can be given. */
+  frames: boolean;
+  /** Google's announced shutdown date (YYYY-MM-DD) -- https://ai.google.dev/gemini-api/docs/deprecations. */
+  retiresOn?: string;
+  /** Token prices (USD per 1M) of an `interactions` model, and the video tokens per second by resolution, for the estimate. */
+  tokenPricing?: { inputPerM: number; textOutPerM: number; videoOutPerM: number; videoTokensPerSecond: Readonly<Record<string, number>> };
 };
 
+// BL-179 (FO-REQ-0021): Omni's pricing page gives 5,792 tokens per second of 720p video at $17.50 per 1M (about $0.10/s). It
+// gives no count for 1080p (upscaled): the estimate takes 1080p's pixel ratio over 720p (2.25 x) until a real job measures
+// it -- the estimate gates the spend limits, the cost itself is Google's count.
+const OMNI_720P_TOKENS_PER_SECOND = 5792;
+const OMNI_TOKENS = { "720p": OMNI_720P_TOKENS_PER_SECOND, "1080p": Math.ceil(OMNI_720P_TOKENS_PER_SECOND * 2.25) };
+const OMNI_VIDEO_OUT_PER_M = 17.5;
+
 export const GEMINI_VIDEO_MODELS: Readonly<Record<string, GeminiVideoModelSpec>> = Object.freeze({
-  "veo-3.1-generate-preview": { label: "Veo 3.1", perSecond: { "720p": 0.4, "1080p": 0.4, "4k": 0.6 }, referenceImages: true },
-  "veo-3.1-fast-generate-preview": { label: "Veo 3.1 Fast", perSecond: { "720p": 0.1, "1080p": 0.12, "4k": 0.3 }, referenceImages: true },
-  "veo-3.1-lite-generate-preview": { label: "Veo 3.1 Lite", perSecond: { "720p": 0.05, "1080p": 0.08 }, referenceImages: false },
+  "gemini-omni-1.1-flash": {
+    label: "Gemini Omni Flash",
+    transport: "interactions",
+    perSecond: Object.fromEntries(Object.entries(OMNI_TOKENS).map(([resolution, tokens]) => [resolution, (tokens * OMNI_VIDEO_OUT_PER_M) / 1_000_000])),
+    referenceImages: false,
+    frames: true,
+    tokenPricing: { inputPerM: 1.5, textOutPerM: 9, videoOutPerM: OMNI_VIDEO_OUT_PER_M, videoTokensPerSecond: OMNI_TOKENS },
+  },
+  // FO-REQ-0021: Google shuts the three Veo 3.1 previews down on 2026-10-22 (replacement: Omni); first/last frames are refused
+  // by `predictLongRunning` ("`inlineData` isn't supported by this model", job gm_7d1d80b2) -- Google's Veo page: frames are
+  // "currently only available with the generateContent API".
+  "veo-3.1-generate-preview": { label: "Veo 3.1", transport: "veo", perSecond: { "720p": 0.4, "1080p": 0.4, "4k": 0.6 }, referenceImages: true, frames: false, retiresOn: "2026-10-22" },
+  "veo-3.1-fast-generate-preview": { label: "Veo 3.1 Fast", transport: "veo", perSecond: { "720p": 0.1, "1080p": 0.12, "4k": 0.3 }, referenceImages: true, frames: false, retiresOn: "2026-10-22" },
+  "veo-3.1-lite-generate-preview": { label: "Veo 3.1 Lite", transport: "veo", perSecond: { "720p": 0.05, "1080p": 0.08 }, referenceImages: false, frames: false, retiresOn: "2026-10-22" },
 });
 
 export const GEMINI_IMAGE_ASPECT_RATIOS = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"] as const;

@@ -50,7 +50,7 @@ export type GeminiStore = {
   updateJob(jobId: string, fromStatus: GeminiMediaJobStatusValue, set: Partial<StoredGeminiMediaJob>): Promise<boolean>;
 };
 
-export type GeminiApiPort = Pick<GeminiApiClient, "checkKey" | "generateImage" | "startVideo" | "getVideoOperation" | "downloadVideo">;
+export type GeminiApiPort = Pick<GeminiApiClient, "checkKey" | "generateImage" | "generateVideo" | "startVideo" | "getVideoOperation" | "downloadVideo">;
 
 export type ResolvedInputFile = { path: string; bytes: number; identity?: { dev: number; ino: number } };
 
@@ -265,7 +265,7 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
   function estimateOf(input: CreateJobInput, inputCount: number): number {
     return input.kind === "image"
       ? estimateImageUsd({ model: input.model, size: input.image!.size, promptChars: input.prompt.length, inputImages: inputCount })
-      : estimateVideoUsd({ model: input.model, resolution: input.video!.resolution, durationSeconds: input.video!.durationSeconds });
+      : estimateVideoUsd({ model: input.model, resolution: input.video!.resolution, durationSeconds: input.video!.durationSeconds, promptChars: input.prompt.length, inputImages: inputCount });
   }
 
   return {

@@ -1969,3 +1969,16 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Bounds:** a copy is renamed into place only after its checks; a copy is deleted only after its replacement is in place, so the buffer always holds `depth` videos; depth is a setting (up to 6).
 - **Re-evaluate:** if replays happen in practice -- raise the depth, or try `AutomountDisksWithoutUserLogin` (the T9 is not encrypted; unverified on macOS 15).
 - **Gate(s):** none. **Status:** open, accepted.
+
+## RISK-127 — Omni's video request is built from Google's docs, not yet from a paid call — OPEN, 2026-10-13
+
+- **What:** BL-179 (FO-REQ-0021) sends Omni's video request as Google's Omni page and Interactions reference show it. Three details
+  are not shown there and wait for the owner-approved paid test:
+  - the `duration` format (`"8s"`, sent in `response_format`);
+  - whether the answer is the inline video (we ask for `delivery: "inline"`);
+  - the token count of 1080p (estimated at 2.25 x 720p).
+- **Bounds:** a wrong field is a 400, which is not charged and keeps Google's message in the job's `error`. A URI answer is
+  collected by the poll. The cost always comes from Google's own counts when they are present. A lost answer counts its
+  estimate (`unknown_outcome`), as before.
+- **Re-evaluate:** after the first paid Omni job. Then correct the format or the 1080p estimate if needed, and close this entry.
+- **Gate(s):** none. **Status:** open.

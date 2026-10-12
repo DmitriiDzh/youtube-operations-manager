@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import type { StoredGeminiMediaJob } from "@/lib/db";
-import type { GeminiImageResult, GeminiInlineImage } from "@/lib/media-gateway";
+import type { GeminiImageResult, GeminiInlineImage, GeminiInteractionsVideoResult } from "@/lib/media-gateway";
 import {
   GEMINI_ACTIVE_STATUSES,
   GEMINI_LIMITS,
   GEMINI_MANIFEST_FILE,
   GEMINI_OUTPUT_SUBDIR,
+  GEMINI_VIDEO_MODELS,
   isDomainError,
   ownEntry,
   type GeminiCostBasis,
@@ -17,7 +18,7 @@ import {
   type GeminiJobOutput,
   type GeminiVideoParams,
 } from "./contracts";
-import { imageCostFromTable, imageCostFromUsage } from "./pricing";
+import { imageCostFromTable, imageCostFromUsage, videoCostFromUsage } from "./pricing";
 import { createGeminiMediaServices, jobView, type GeminiMediaDeps } from "./services";
 
 // BL-174 (GEMINI_MEDIA_PLAN.md §2.4): runs queued jobs and collects running videos. One `tick()` every few seconds from
@@ -25,11 +26,15 @@ import { createGeminiMediaServices, jobView, type GeminiMediaDeps } from "./serv
 // status the job was read in, so a second runner can never move a job twice.
 //
 // Money rules: a request Google provably never received, or answered with an error, costs 0 ("not_charged"); a finished
-// image costs Google's own token counts ("usage") or the table price ("price_table"); a finished video its table price; a
-// request that was sent and then lost (timeout, restart mid-call, video never collected) counts its estimate
-// ("unknown_outcome") so the spend is never under-counted.
+// image costs Google's own token counts ("usage") or the table price ("price_table"); a finished Veo video its table price, a
+// finished Omni video (BL-179) Google's token counts, else its estimate; a request that was sent and then lost (timeout,
+// restart mid-call, video never collected) counts its estimate ("unknown_outcome") so the spend is never under-counted.
 
 const EXTENSIONS: Readonly<Record<string, string>> = Object.freeze({ "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/heic": "heic", "image/heif": "heif" });
+const VIDEO_EXTENSIONS: Readonly<Record<string, string>> = Object.freeze({ "video/mp4": "mp4", "video/webm": "webm", "video/quicktime": "mov" });
+
+/** BL-179: an Omni video Google delivered as a Files API URI is collected like a Veo video, from `remoteName`. */
+const isDownloadUri = (remoteName: string) => remoteName.startsWith("https://") || remoteName.startsWith("http://");
 
 type Failure = { errorCode: GeminiJobErrorCode; error: string; costUsd: number; costBasis: GeminiCostBasis };
 
@@ -275,6 +280,84 @@ export function createGeminiWorker(deps: GeminiMediaDeps) {
     await finish(job, "submitting", claimed.dir, outputs, costUsd, costBasis);
   }
 
+  /**
+   * BL-179 (FO-REQ-0021): one Omni video, synchronous like an image. Its answer is the video: written here, priced by Google's
+   * token counts. Delivered as a URI instead, it is collected by the running-video poll (already paid for, so never dropped).
+   */
+  async function runInteractionsVideo(job: StoredGeminiMediaJob): Promise<void> {
+    const claimed = await claim(job);
+    if (!claimed) return;
+    const params = JSON.parse(job.paramsJson) as GeminiVideoParams;
+    const pick = (role: GeminiJobInput["role"]) => claimed.inputs.filter((i) => i.role === role).map((i) => claimed.loaded.get(`${i.role}:${i.path}`)!);
+    let result: GeminiInteractionsVideoResult;
+    try {
+      result = await deps.api.generateVideo(claimed.apiKey, {
+        model: job.model,
+        prompt: job.prompt,
+        frames: [...pick("first_frame"), ...pick("last_frame")],
+        aspectRatio: params.aspectRatio,
+        resolution: params.resolution,
+        durationSeconds: params.durationSeconds,
+      });
+    } catch (error) {
+      const verdict = classify(job, error);
+      if (verdict.retry) await retryOrFail(job, claimed.attempts, verdict.errorCode, verdict.message);
+      else await fail(job, "submitting", verdict.failure);
+      return;
+    }
+    const charged = result.usage ? videoCostFromUsage(job.model, result.usage, result.video !== null) : null;
+    if (!result.video) {
+      // The image rule (review rounds 1 and 2 of BL-174): only a terminal refusal or a completed answer with Google's counts
+      // decides the cost; anything else may still be generating and charged -- its estimate.
+      const refused = result.blockReason !== null || (result.status !== null && ["failed", "cancelled", "incomplete"].includes(result.status));
+      const completedWithCounts = result.status === "completed" && charged !== null;
+      if (!refused && !completedWithCounts) {
+        await fail(job, "submitting", maybeCharged(job, "gemini_unavailable", `Google answered without a video, a final status or token counts (status ${result.status ?? "none"}); it may have been charged.`));
+        return;
+      }
+      const reason = result.blockReason ?? (result.status && result.status !== "completed" ? `status ${result.status}` : "no video in the answer");
+      await fail(job, "submitting", { errorCode: "gemini_blocked", error: `Google returned no video (${reason}).`, costUsd: charged ?? 0, costBasis: charged !== null ? "usage" : "not_charged" });
+      return;
+    }
+    const costUsd = charged ?? job.estimateUsd;
+    const costBasis: GeminiCostBasis = charged !== null ? "usage" : "price_table";
+    if ("uri" in result.video) {
+      await deps.store.updateJob(job.jobId, "submitting", {
+        status: "running",
+        remoteName: result.video.uri,
+        costUsd,
+        costBasis,
+        error: null,
+        errorCode: null,
+        nextAttemptAt: now(),
+        updatedAt: now(),
+      });
+      return;
+    }
+    const file = `video-1.${ownEntry(VIDEO_EXTENSIONS, result.video.mimeType) ?? "mp4"}`;
+    const localPath = path.join(claimed.dir, file);
+    let output: GeminiJobOutput;
+    try {
+      const written = await deps.files.writeOutput(localPath, result.video.data);
+      const base = { path: relativeOutput(job, file), localPath, kind: "video" as const, mimeType: result.video.mimeType, bytes: written.bytes, sha256: written.sha256 };
+      output = { ...base, ...(await registerAsset(job, base)) };
+    } catch (error) {
+      // Paid: the cost stays.
+      await deps.store.updateJob(job.jobId, "submitting", {
+        status: "failed",
+        errorCode: "gemini_output_failed",
+        error: `The video was generated (and charged) but could not be written: ${error instanceof Error ? error.message : String(error)}`.slice(0, 2000),
+        costUsd,
+        costBasis,
+        nextAttemptAt: null,
+        finishedAt: now(),
+        updatedAt: now(),
+      });
+      return;
+    }
+    await finish(job, "submitting", claimed.dir, [output], costUsd, costBasis);
+  }
+
   async function startVideo(job: StoredGeminiMediaJob): Promise<void> {
     const claimed = await claim(job);
     if (!claimed) return;
@@ -325,9 +408,11 @@ export function createGeminiWorker(deps: GeminiMediaDeps) {
       await later(GEMINI_LIMITS.videoRetryMs, "No Gemini API key on this computer: the started video cannot be collected until one is entered.");
       return;
     }
+    // BL-179: an Omni video delivered as a URI has no operation to poll -- straight to the download (cost already known).
+    const uriDelivered = isDownloadUri(job.remoteName);
     let operation;
     try {
-      operation = await deps.api.getVideoOperation(apiKey, job.remoteName);
+      operation = uriDelivered ? { done: true as const, videoUri: job.remoteName, error: null, blockReason: null } : await deps.api.getVideoOperation(apiKey, job.remoteName);
     } catch (error) {
       // Google no longer knows the operation: nothing left to collect; it may have been charged (review round 2).
       if (isDomainError(error) && (error.details as { status?: number } | undefined)?.status === 404) {
@@ -367,7 +452,9 @@ export function createGeminiWorker(deps: GeminiMediaDeps) {
     }
     const base = { path: relativeOutput(job, file), localPath, kind: "video" as const, mimeType: "video/mp4", bytes: written.bytes, sha256: written.sha256 };
     const output: GeminiJobOutput = { ...base, ...(await registerAsset(job, base)) };
-    await finish(job, "running", dir, [output], job.estimateUsd, "price_table");
+    // An Omni video's cost was recorded from Google's counts when it was delivered; a Veo video costs its table price.
+    if (uriDelivered && job.costUsd !== null && job.costBasis) await finish(job, "running", dir, [output], job.costUsd, job.costBasis as GeminiCostBasis);
+    else await finish(job, "running", dir, [output], job.estimateUsd, "price_table");
   }
 
   function track(jobId: string, run: () => Promise<void>): Promise<void> {
@@ -401,7 +488,8 @@ export function createGeminiWorker(deps: GeminiMediaDeps) {
         }
         if (inFlight.size >= GEMINI_LIMITS.inFlightPerProcess) break;
         if (job.nextAttemptAt && job.nextAttemptAt.getTime() > at) continue;
-        started.push(track(job.jobId, () => (job.kind === "image" ? runImage(job) : startVideo(job))));
+        const interactions = job.kind === "video" && ownEntry(GEMINI_VIDEO_MODELS, job.model)?.transport === "interactions";
+        started.push(track(job.jobId, () => (job.kind === "image" ? runImage(job) : interactions ? runInteractionsVideo(job) : startVideo(job))));
       }
       const running = (await deps.store.listJobs({ statuses: ["running"], limit: 200 })).reverse();
       for (const job of running) {

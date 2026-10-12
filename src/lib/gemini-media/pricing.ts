@@ -14,11 +14,36 @@ export function estimateImageUsd(args: { model: string; size: string; promptChar
   return ceil4((imageTokens * spec.imageOutPerM + inputTokens * spec.inputPerM + GEMINI_LIMITS.thinkingAllowanceTokens * spec.textOutPerM) / PER_M);
 }
 
-export function estimateVideoUsd(args: { model: string; resolution: string; durationSeconds: number }): number {
+export function estimateVideoUsd(args: { model: string; resolution: string; durationSeconds: number; promptChars?: number; inputImages?: number }): number {
   const spec = ownEntry(GEMINI_VIDEO_MODELS, args.model);
   const perSecond = spec ? ownEntry(spec.perSecond, args.resolution) : undefined;
-  if (perSecond === undefined) throw new Error(`no price for ${args.model} ${args.resolution}`);
-  return ceil4(perSecond * args.durationSeconds);
+  if (!spec || perSecond === undefined) throw new Error(`no price for ${args.model} ${args.resolution}`);
+  const tokens = spec.tokenPricing;
+  if (!tokens) return ceil4(perSecond * args.durationSeconds);
+  // BL-179 (Omni): billed by tokens -- the video at the video rate, the prompt and frames at the input rate, and thinking (as
+  // for the image models) at the text rate.
+  const videoTokens = ownEntry(tokens.videoTokensPerSecond, args.resolution);
+  if (videoTokens === undefined) throw new Error(`no price for ${args.model} ${args.resolution}`);
+  const inputTokens = Math.ceil((args.promptChars ?? 0) / 3) + GEMINI_LIMITS.inputImageTokens * (args.inputImages ?? 0);
+  return ceil4((videoTokens * args.durationSeconds * tokens.videoOutPerM + inputTokens * tokens.inputPerM + GEMINI_LIMITS.thinkingAllowanceTokens * tokens.textOutPerM) / PER_M);
+}
+
+/**
+ * BL-179: the cost of a finished Omni call from Google's own token counts -- all input at the input rate, video-modality output
+ * at the video rate, every other output token and every thought token at the text rate. When a video came back but Google did
+ * not split the output by modality, every output token is priced at the video rate (never under-count, as for images).
+ */
+export function videoCostFromUsage(
+  model: string,
+  usage: { inputTokens: number; outputTokens: number; thoughtTokens: number; outputByModality: Record<string, number> },
+  videoSaved: boolean
+): number {
+  const tokens = ownEntry(GEMINI_VIDEO_MODELS, model)?.tokenPricing;
+  if (!tokens) throw new Error(`no token prices for ${model}`);
+  const split = ownEntry(usage.outputByModality, "video") ?? 0;
+  const videoOut = videoSaved && split <= 0 ? usage.outputTokens : split;
+  const otherOut = Math.max(0, usage.outputTokens - videoOut);
+  return ceil4((usage.inputTokens * tokens.inputPerM + videoOut * tokens.videoOutPerM + (otherOut + usage.thoughtTokens) * tokens.textOutPerM) / PER_M);
 }
 
 /**
@@ -63,8 +88,15 @@ export function modelCatalog() {
       kind: "video" as const,
       label: spec.label,
       resolutions: Object.keys(spec.perSecond),
-      usdPerSecond: { ...spec.perSecond },
+      // An Omni price per second is an estimate (billed by tokens, `usdPerMillionTokens`); rounded up like every amount.
+      usdPerSecond: Object.fromEntries(Object.entries(spec.perSecond).map(([resolution, usd]) => [resolution, ceil4(usd)])),
       referenceImages: spec.referenceImages,
+      // BL-179 (FO-REQ-0021): whether first/last frames are accepted, and Google's announced shutdown date.
+      frames: spec.frames,
+      retiresOn: spec.retiresOn ?? null,
+      ...(spec.tokenPricing
+        ? { usdPerMillionTokens: { input: spec.tokenPricing.inputPerM, textAndThinkingOutput: spec.tokenPricing.textOutPerM, videoOutput: spec.tokenPricing.videoOutPerM } }
+        : {}),
     })),
   ];
 }

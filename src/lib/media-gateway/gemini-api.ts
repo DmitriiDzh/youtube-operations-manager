@@ -26,6 +26,8 @@ const KEY_CHECK_TIMEOUT_MS = 30_000;
 export const GEMINI_IMAGE_TIMEOUT_MS = 5 * 60_000;
 /** The start call uploads the frames (up to ~16 MB in base64): the same 5 minutes as an image, never a phantom timeout on a slow uplink. */
 export const GEMINI_VIDEO_START_TIMEOUT_MS = 5 * 60_000;
+/** BL-179: an Omni video is generated within the one call -- Google documents no time; 8 s of video took minutes in its demos. */
+export const GEMINI_INTERACTIONS_VIDEO_TIMEOUT_MS = 15 * 60_000;
 const VIDEO_POLL_TIMEOUT_MS = 60_000;
 const DOWNLOAD_TIMEOUT_MS = 10 * 60_000;
 const MAX_REDIRECTS = 5;
@@ -121,6 +123,24 @@ export type GeminiVideoRequest = {
   personGeneration?: string;
 };
 
+/** BL-179: one Omni video through the Interactions API (synchronous). `frames` in order: the start frame, then the end frame. */
+export type GeminiInteractionsVideoRequest = {
+  model: string;
+  prompt: string;
+  frames: GeminiInlineImage[];
+  aspectRatio: string;
+  resolution: string;
+  durationSeconds: number;
+};
+
+export type GeminiInteractionsVideoResult = {
+  /** The final video: inline bytes, or a Files API URI to download (Google may deliver either). `null` = none came back. */
+  video: { mimeType: string; data: Buffer } | { mimeType: string; uri: string } | null;
+  usage: GeminiUsage | null;
+  status: string | null;
+  blockReason: string | null;
+};
+
 export type GeminiVideoOperation =
   | { done: false }
   | { done: true; videoUri: string | null; error: { code: string | null; message: string } | null; blockReason: string | null };
@@ -132,6 +152,20 @@ function errorCodeOf(error: unknown): string | null {
   const record = error as { name?: unknown; code?: unknown; cause?: unknown };
   if (typeof record.code === "string") return record.code;
   return record.cause ? errorCodeOf(record.cause) : null;
+}
+
+/** The innermost transport cause, for the job's error text (FO-MSG-0014 Q3: "fetch failed" alone says nothing). */
+function causeText(error: unknown): string | null {
+  let current: unknown = error;
+  let text: string | null = null;
+  for (let depth = 0; depth < 5 && current && typeof current === "object"; depth += 1) {
+    const record = current as { code?: unknown; message?: unknown; cause?: unknown };
+    const code = typeof record.code === "string" ? record.code : null;
+    const message = typeof record.message === "string" ? record.message : null;
+    if (depth > 0 && (code || message)) text = [code, message].filter(Boolean).join(": ");
+    current = record.cause;
+  }
+  return text ? text.slice(0, 200) : null;
 }
 
 function isTimeout(error: unknown): boolean {
@@ -184,8 +218,10 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; authorize?: Aut
   }
 
   function unavailable(context: Record<string, unknown>) {
-    return (stage: "request" | "read", detail: string, status?: number, cause?: unknown) => {
+    return (stage: "request" | "read", rawDetail: string, status?: number, cause?: unknown) => {
       const outcome = transportOutcome(stage, cause);
+      const inner = causeText(cause);
+      const detail = inner && !rawDetail.includes(inner) ? `${rawDetail}; cause ${inner}` : rawDetail;
       return new DomainError({
         code: "gemini_unavailable",
         message:
@@ -293,6 +329,29 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; authorize?: Aut
     return images;
   }
 
+  /** The final video block of an Interactions answer (`steps[]` model output; legacy `outputs[]`): inline data, or a URI. */
+  function finalVideo(body: Record<string, unknown>): GeminiInteractionsVideoResult["video"] {
+    const blocks: Array<Record<string, unknown>> = [];
+    const steps = Array.isArray(body.steps) ? body.steps.map(asRecord) : null;
+    if (steps) {
+      for (const step of steps) {
+        if (asString(step.type) !== "model_output") continue;
+        for (const block of Array.isArray(step.content) ? step.content.map(asRecord) : []) blocks.push(block);
+      }
+    } else if (Array.isArray(body.outputs)) {
+      for (const block of body.outputs.map(asRecord)) blocks.push(block);
+    }
+    for (const block of blocks) {
+      if (asString(block.type) !== "video") continue;
+      const mimeType = (asString(block.mime_type) ?? "video/mp4").toLowerCase();
+      const data = asString(block.data);
+      if (data) return { mimeType, data: Buffer.from(data, "base64") };
+      const uri = asString(block.uri);
+      if (uri) return { mimeType, uri };
+    }
+    return null;
+  }
+
   function inline(image: GeminiInlineImage) {
     return { inlineData: { mimeType: image.mimeType, data: image.dataBase64 } };
   }
@@ -325,6 +384,40 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; authorize?: Aut
       const errors = Array.isArray(body.errors) ? body.errors.map(asRecord) : [];
       const blockCode = errors.map((e) => asString(e.code)?.toLowerCase() ?? null).find((c) => c !== null && GEMINI_BLOCKED_CODES.has(c)) ?? null;
       return { images: finalImages(body), usage: usageOf(body.usage), status: asString(body.status), blockReason: blockCode };
+    },
+
+    /**
+     * BL-179 (FO-REQ-0021): one Omni video, synchronous -- the answer carries it (https://ai.google.dev/gemini-api/docs/omni).
+     * Frames go first, in order (start, then end) with `video_config.task = image_to_video`: Google's reference reads the first
+     * image as the starting frame and an optional second one as the ending frame. `store:false` (as for images): Google keeps
+     * nothing; `delivery: inline`, so the answer itself is the video.
+     */
+    async generateVideo(apiKey: string, request: GeminiInteractionsVideoRequest): Promise<GeminiInteractionsVideoResult> {
+      const context = { call: "interactions.create", model: request.model };
+      const body = asRecord(
+        await call(apiKey, "POST", "/v1beta/interactions", context, {
+          timeoutMs: GEMINI_INTERACTIONS_VIDEO_TIMEOUT_MS,
+          body: {
+            model: request.model,
+            input: [
+              ...request.frames.map((image) => ({ type: "image", mime_type: image.mimeType, data: image.dataBase64 })),
+              { type: "text", text: request.prompt },
+            ],
+            ...(request.frames.length > 0 ? { generation_config: { video_config: { task: "image_to_video" } } } : {}),
+            response_format: {
+              type: "video",
+              aspect_ratio: request.aspectRatio,
+              resolution: request.resolution,
+              duration: `${request.durationSeconds}s`,
+              delivery: "inline",
+            },
+            store: false,
+          },
+        })
+      );
+      const errors = Array.isArray(body.errors) ? body.errors.map(asRecord) : [];
+      const blockCode = errors.map((e) => asString(e.code)?.toLowerCase() ?? null).find((c) => c !== null && GEMINI_BLOCKED_CODES.has(c)) ?? null;
+      return { video: finalVideo(body), usage: usageOf(body.usage), status: asString(body.status), blockReason: blockCode };
     },
 
     /** Starts a Veo job; returns the long-running operation's name. */
