@@ -323,8 +323,11 @@ export function LanguagesManager() {
   const [creatingChangeSet, setCreatingChangeSet] = useState(false);
 
   // `quiet` (BL-178 part C): a background reload after a change made elsewhere keeps the open video, the error line and no
-  // loading state -- only the rows update.
+  // loading state -- only the rows update. Only the newest request's answer is applied (review item 7: a slow answer for the
+  // previous channel never lands after a switch).
+  const overviewRequestRef = useRef(0);
   const fetchOverview = useCallback(async (id: string, options?: { quiet?: boolean }) => {
+    const request = ++overviewRequestRef.current;
     if (!id) {
       setOverview(null);
       return;
@@ -339,6 +342,7 @@ export function LanguagesManager() {
     try {
       const res = await fetch(`/api/channels/${encodeURIComponent(id)}/localizations`);
       const data = await res.json();
+      if (request !== overviewRequestRef.current) return;
       if (!res.ok) {
         if (!quiet) setError(errorText(t, data, t("common.errorStatus", { status: res.status })));
         return;
@@ -620,7 +624,7 @@ export function LanguagesManager() {
   const refreshAfterOutsideChange = useCallback(() => {
     if (!channelId) return;
     void fetchOverview(channelId, { quiet: true });
-    void fetchChangeSets(channelId);
+    fetchChangeSets(channelId).catch(() => undefined);
   }, [channelId, fetchOverview, fetchChangeSets]);
   useLocalizationVersion(channelId, refreshAfterOutsideChange);
 

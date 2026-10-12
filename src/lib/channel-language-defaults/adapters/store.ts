@@ -8,7 +8,7 @@ export function createChannelLanguageDefaultsStoreAdapter() {
     getDefaults: getChannelExpectedLanguages,
     // BL-178 part B: the baseline is the same on every computer -- saved through the sync-gateway family, which also updates
     // this computer's copy (`channels.expected_default_*`, read above).
-    async setDefaults(channelId: string, value: ChannelLanguageDefaults) {
+    async setDefaults(channelId: string, value: Partial<ChannelLanguageDefaults>) {
       await createChannelLanguageSettingsCoreForProduction().save({ channelId, ...value });
     },
     /** The baseline fields set differently on the computers (shown on the Languages page; Batches refuse meanwhile). */

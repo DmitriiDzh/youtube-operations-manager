@@ -442,9 +442,11 @@ test("BL-178 C2: no tracked languages, nothing to alert", async () => {
   assert.deepEqual(alerts.byLanguage, {});
 });
 
-test("BL-178 C1: the refresh version moves when a video's translations, the tracked languages or the channel's language change, and only then", async () => {
+test("BL-178 C1: the refresh version moves when a video's translations, the tracked languages, the channel's language or audio language, or a conflict change, and only then", async () => {
   const videos = [makeVideo({ videoId: "v1", existingLocalizations: { es: FULL("es") } })];
   let baseline: string | null = "en";
+  let baselineAudio: string | null = "en";
+  let conflicted: string[] = [];
   const tracked = new Map<string, string[]>([["UC_TEST", ["es"]]]);
   const services = createLocalizationServices({
     channelStore: {
@@ -452,8 +454,9 @@ test("BL-178 C1: the refresh version moves when a video's translations, the trac
       listVideosByChannel: async () => videos,
       getTargetLanguages: async (id) => tracked.get(id) ?? [],
       setTargetLanguages: async () => undefined,
+      getConflictedLanguageSettings: async () => conflicted,
     },
-    channelLanguageBaseline: { getExpectedDefaultLanguage: async () => baseline },
+    channelLanguageBaseline: { getExpectedDefaultLanguage: async () => baseline, getExpectedDefaultAudioLanguage: async () => baselineAudio },
     xlsxBuilder: { buildWorkbook: async () => ({ buffer: Buffer.from(""), rowCount: 0 }) },
   });
   const version = async () => (await services.getLocalizationVersion({ channelId: "UC_TEST" })).version;
@@ -467,5 +470,49 @@ test("BL-178 C1: the refresh version moves when a video's translations, the trac
   const afterTracked = await version();
   assert.notEqual(afterTracked, afterWrite);
   baseline = "es";
-  assert.notEqual(await version(), afterTracked);
+  const afterBaseline = await version();
+  assert.notEqual(afterBaseline, afterTracked);
+  baselineAudio = "zxx";
+  const afterAudio = await version();
+  assert.notEqual(afterAudio, afterBaseline, "the audio baseline arrived from the other computer");
+  conflicted = ["defaultLanguage"];
+  assert.notEqual(await version(), afterAudio, "a conflict arrived: the Languages notice must show");
+});
+
+// BL-178 part B (review item 2): while the tracked lists differ between the computers, adding or removing one language would
+// silently drop the other computer's languages -- refused, the list untouched.
+test("BL-178 B: add/remove a tracked language is refused while the tracked languages differ between the computers", async () => {
+  const tracked = new Map<string, string[]>([["UC_TEST", ["es"]]]);
+  const writes: string[][] = [];
+  const services = createLocalizationServices({
+    channelStore: {
+      getChannel: async () => makeChannel(),
+      listVideosByChannel: async () => [],
+      getTargetLanguages: async (id) => tracked.get(id) ?? [],
+      setTargetLanguages: async (_id, languages) => void writes.push(languages),
+      getConflictedLanguageSettings: async () => ["trackedLanguages"],
+    },
+    xlsxBuilder: { buildWorkbook: async () => ({ buffer: Buffer.from(""), rowCount: 0 }) },
+  });
+  for (const call of [() => services.addTrackedLanguage({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST", language: "fr" }), () => services.removeTrackedLanguage({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST", language: "es" })]) {
+    await assert.rejects(call, (e: unknown) => e instanceof DomainError && e.code === "validation_failed" && /set differently on your computers/.test(e.message));
+  }
+  assert.deepEqual(writes, []);
+});
+
+test("BL-178 C2: an ambiguous video (labelled es, its es entry not the mirror) is measured against the channel's language too", async () => {
+  const videos = [
+    makeVideo({
+      videoId: "ambiguous",
+      defaultLanguage: "es",
+      title: "Cuban Jazz",
+      description: "Two hours",
+      existingLocalizations: { es: { title: "Jazz cubano", description: "Dos horas" } },
+    }),
+  ];
+  const { services, trackedLanguagesByChannel } = createFixture(videos, makeChannel(), "en");
+  trackedLanguagesByChannel.set("UC_TEST", ["en", "es", "pt-BR"]);
+  const alerts = await services.getTranslationAlerts({ channelId: "UC_TEST" });
+  // en is the original (never missing); es has an entry; only pt-BR is missing.
+  assert.deepEqual(alerts.videos.map((v) => [v.videoId, v.missingLanguages]), [["ambiguous", ["pt-BR"]]]);
 });

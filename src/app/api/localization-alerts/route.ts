@@ -14,6 +14,8 @@ export type LocalizationAlertChannel = {
   missingByLanguage: Record<string, number>;
   /** Synced videos whose language fields differ from the channel's baseline (the Languages page's "Fix all" list). */
   deviationCount: number;
+  /** Distinct videos in either list -- the «Языки» badge counts each video once (review item 7). */
+  attentionVideoCount: number;
 };
 
 export type LocalizationAlertsDeps = {
@@ -32,7 +34,8 @@ export function defaultLocalizationAlertsDeps(): LocalizationAlertsDeps {
     connectedChannelIds: async (userId) => (await createChannelConnectionsCore().listConnectedChannels(userId)).map((c) => c.channelId),
     async alertsFor(channelId) {
       const [missing, deviations] = await Promise.all([localization.getTranslationAlerts({ channelId }), languageDefaults.getDeviations({ channelId })]);
-      return { missingVideoCount: missing.videos.length, missingByLanguage: missing.byLanguage, deviationCount: deviations.deviations.length };
+      const attention = new Set([...missing.videos.map((v) => v.videoId), ...deviations.deviations.map((d) => d.videoId)]);
+      return { missingVideoCount: missing.videos.length, missingByLanguage: missing.byLanguage, deviationCount: deviations.deviations.length, attentionVideoCount: attention.size };
     },
   };
 }

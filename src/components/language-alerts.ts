@@ -11,6 +11,8 @@ export type LanguageAlertChannel = {
   missingVideoCount: number;
   missingByLanguage: Record<string, number>;
   deviationCount: number;
+  /** Distinct videos in either list (a video can lack a translation and be mislabelled at once). */
+  attentionVideoCount: number;
 };
 
 export const LANGUAGES_HREF = "/languages";
@@ -23,10 +25,10 @@ export function missingLanguagesLabel(byLanguage: Record<string, number>): strin
     .join(", ");
 }
 
-/** The «Языки» badge for the active channel: the videos to look at, and what they are made of (shown on hover). */
+/** The «Языки» badge for the active channel: the videos to look at, each once, and what they are made of (shown on hover). */
 export function languagesBadge(t: Translate, alert: LanguageAlertChannel | undefined): { badge: number; badgeTitle?: string } {
   if (!alert) return { badge: 0 };
-  const badge = alert.missingVideoCount + alert.deviationCount;
+  const badge = alert.attentionVideoCount;
   return badge === 0 ? { badge } : { badge, badgeTitle: t("languageAlerts.badgeTitle", { missing: alert.missingVideoCount, deviations: alert.deviationCount }) };
 }
 

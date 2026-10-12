@@ -173,3 +173,18 @@ test("an owner's save during a merge is kept (document operations run one at a t
   assert.equal(values.defaultAudioLanguage, "en");
   assert.deepEqual(values.trackedLanguages, ["es"]);
 });
+
+// Review item 2: a form that saves every field re-sends the value this computer already holds for a conflicted field. That is
+// not the owner's choice and must not settle the conflict (otherwise the other computer silently adopts this one's value).
+test("re-saving this computer's own value of a conflicted field does not settle the conflict; the other field still syncs", async () => {
+  const windows = computer({ defaultLanguage: "en", defaultAudioLanguage: "en" });
+  const mac = computer({ defaultLanguage: "es", defaultAudioLanguage: "en" });
+  await cycle(windows, mac);
+  assert.deepEqual(await mac.core.conflictedBaselineFields(CH), ["defaultLanguage"]);
+  // The Languages panel sends both fields; the owner only changed the audio language.
+  await mac.core.save({ channelId: CH, defaultLanguage: "es", defaultAudioLanguage: "fr" });
+  await cycle(windows, mac);
+  assert.deepEqual(await windows.core.conflictedBaselineFields(CH), ["defaultLanguage"], "still the owner's choice to make");
+  assert.equal(windows.local().defaultLanguage, "en", "Windows keeps its own value");
+  assert.equal(windows.local().defaultAudioLanguage, "fr", "the field the owner did change reaches Windows");
+});

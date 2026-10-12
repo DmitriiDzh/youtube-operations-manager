@@ -219,6 +219,8 @@ function createHarness(options: {
   verifyRetryDelaysMs?: number[];
   channelBaseline?: string | null;
   channelBaselineAudio?: string | null;
+  /** BL-178 part B: called on every safety check -- the baseline fields set differently on the owner's computers right now. */
+  conflictedBaselineFields?: () => string[];
   assertWriteChannel?: (args: {
     expectedChannelId?: string;
   }) => Promise<{ expectedChannelId: string; shouldPersistSelection: boolean; userId: string | null }>;
@@ -260,6 +262,7 @@ function createHarness(options: {
         : {
             getExpectedDefaultLanguage: async () => options.channelBaseline ?? null,
             ...(options.channelBaselineAudio !== undefined ? { getExpectedDefaultAudioLanguage: async () => options.channelBaselineAudio ?? null } : {}),
+            ...(options.conflictedBaselineFields ? { getConflictedBaselineFields: async () => options.conflictedBaselineFields?.() ?? [] } : {}),
           },
     youtubeApi: {
       async fetchFreshVideoContext(args: { videoId: string }) {
@@ -1633,4 +1636,29 @@ test("BL-178 re-check N1: language and original read back right but the translat
   const byVideo = Object.fromEntries(summary.results.map((r) => [r.videoId, r.status]));
   assert.equal(byVideo.v1, "FAILED");
   assert.equal(byVideo.v2, "SUCCESS");
+});
+
+// BL-178 part B (review item 8; PROJECT_SPEC §14 "One baseline on every computer"): a conflict that arrives between the
+// preparation and the send is caught by the immediately-before-send re-check -- nothing is written.
+test("BL-178 B: a baseline conflict that arrives after preparation fails the row at the pre-send check; no write is sent", async () => {
+  let checks = 0;
+  const harness = createHarness({
+    channelBaseline: "en",
+    channelBaselineAudio: "en",
+    conflictedBaselineFields: () => (checks++ === 0 ? [] : ["defaultLanguage"]),
+    freshSequenceByVideoId: { v1: [PRE_SEND_BASELINE, PRE_SEND_BASELINE, PRE_SEND_BASELINE] },
+  });
+  const batch = await createApprovedBatch(harness, { channelId: "UC_TEST", dryRun: false, selections: [{ videoId: "v1", changeIds: ["c1"] }] });
+  let writes = 0;
+  const executor: WriteExecutor = {
+    async attemptWrite() {
+      writes += 1;
+      return { outcome: "SUCCESS" };
+    },
+  };
+  const summary = await harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, executor });
+  assert.equal(summary.results[0].status, "FAILED");
+  assert.match(String((summary.results[0] as { detail?: string }).detail ?? ""), /set differently on your computers/);
+  assert.equal(writes, 0);
+  assert.ok(checks >= 2, "checked at preparation and again right before the send");
 });

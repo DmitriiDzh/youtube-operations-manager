@@ -9,9 +9,10 @@ import { languagesBadge, otherChannelLanguageEntries, type LanguageAlertChannel 
 const en = createTranslator("en");
 const ru = createTranslator("ru");
 
-const tropico: LanguageAlertChannel = { channelId: "UC_tropico", missingVideoCount: 2, missingByLanguage: { es: 2, "pt-BR": 1 }, deviationCount: 1 };
-const japan: LanguageAlertChannel = { channelId: "UC_japan", missingVideoCount: 3, missingByLanguage: { es: 2, "pt-BR": 3 }, deviationCount: 1 };
-const done: LanguageAlertChannel = { channelId: "UC_done", missingVideoCount: 0, missingByLanguage: {}, deviationCount: 0 };
+// Tropico: 2 videos lack a translation, 1 is mislabelled, and that one is also among the 2 -- 2 videos to look at.
+const tropico: LanguageAlertChannel = { channelId: "UC_tropico", missingVideoCount: 2, missingByLanguage: { es: 2, "pt-BR": 1 }, deviationCount: 1, attentionVideoCount: 2 };
+const japan: LanguageAlertChannel = { channelId: "UC_japan", missingVideoCount: 3, missingByLanguage: { es: 2, "pt-BR": 3 }, deviationCount: 1, attentionVideoCount: 4 };
+const done: LanguageAlertChannel = { channelId: "UC_done", missingVideoCount: 0, missingByLanguage: {}, deviationCount: 0, attentionVideoCount: 0 };
 
 test("the bell lists the other channels only: the missing languages, most missing first, and the mislabelled videos", () => {
   assert.deepEqual(otherChannelLanguageEntries(en, [tropico, japan, done], "UC_tropico"), [
@@ -21,8 +22,10 @@ test("the bell lists the other channels only: the missing languages, most missin
   assert.deepEqual(otherChannelLanguageEntries(en, [done], null), [], "nothing left: no entry");
 });
 
-test("the «Языки» badge counts the active channel's videos to look at, with what they are made of on hover", () => {
-  assert.deepEqual(languagesBadge(en, tropico), { badge: 3, badgeTitle: "Without a translation: 2; labelled with another language: 1" });
+// Changed 2026-10-13 (review item 7), with justification (AGENTS.md §L): the badge counts videos to look at, so a video both
+// without a translation and mislabelled is one video, not two -- the earlier expectation (3) double-counted it.
+test("the «Языки» badge counts the active channel's videos to look at, each once, with what they are made of on hover", () => {
+  assert.deepEqual(languagesBadge(en, tropico), { badge: 2, badgeTitle: "Without a translation: 2; labelled with another language: 1" });
   assert.deepEqual(languagesBadge(en, done), { badge: 0 });
   assert.deepEqual(languagesBadge(en, undefined), { badge: 0 });
 });

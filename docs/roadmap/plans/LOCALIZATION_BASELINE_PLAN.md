@@ -229,6 +229,12 @@ The Producer gets both through the shared handlers.
 - **C1, a fingerprint instead of a counter.** The page polls a fingerprint of the channel's local video copy, its tracked
   languages and its baseline. It is not a counter that a Batch bumps. The fingerprint sees changes from any process (agent, CLI,
   sync, the other computer's settings) with no schema change.
+- **B, edits during a conflict.** These rules came from the independent review:
+  - re-saving this computer's value of a conflicted field does not settle it;
+  - the defaults form sends only changed fields;
+  - tracked-language edits and "Fix all" are refused while the field conflicts.
+
+  A value cleared before the first sync is not shared (ARCHITECTURE §46, known limit).
 - **C2, the bell lists the other channels.** The active channel's alert is the «Языки» badge (the BL-157 rule, owner msg 2119).
-  The badge counts missing plus deviating videos and shows the split on hover. The bell's "Open" switches the channel and opens
+  The badge counts distinct videos missing a translation or deviating, and shows the split on hover. The bell's "Open" switches the channel and opens
   «Языки». The overview has no URL filter yet.

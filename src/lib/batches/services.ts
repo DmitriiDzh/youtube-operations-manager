@@ -652,7 +652,13 @@ export function createBatchServices(deps: ServiceDependencies) {
 
     // BL-178 part B (LOCALIZATION_BASELINE_PLAN §3.2): while the channel's baseline differs between the owner's computers,
     // nobody has picked the language this write would set -- refuse before any YouTube call.
-    const conflictedBaseline = (await deps.channelLanguageBaseline?.getConflictedBaselineFields?.(batch.channelId)) ?? [];
+    let conflictedBaseline: string[];
+    try {
+      conflictedBaseline = (await deps.channelLanguageBaseline?.getConflictedBaselineFields?.(batch.channelId)) ?? [];
+    } catch (error) {
+      // Cannot tell whether the computers agree: fail closed, with the cause on the row (review item 6).
+      return { outcome: "FAILED", error: `The channel's language settings could not be read (${error instanceof Error ? error.message : String(error)}); nothing was sent.` };
+    }
     if (conflictedBaseline.length > 0) {
       return {
         outcome: "FAILED",

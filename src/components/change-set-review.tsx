@@ -1,7 +1,7 @@
 "use client";
 
 import { errorText } from "@/lib/ui-text";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocalizationVersion } from "./use-localization-version";
 import { ConfirmDialog } from "./confirm-dialog";
 import { LoadingIndicator } from "./operation-progress";
@@ -115,7 +115,10 @@ export function ChangeSetReview({
   const [bulkBusy, setBulkBusy] = useState(false);
 
   // `quiet` (BL-178 part C): a background reload after a change made elsewhere shows no loading state and keeps the error line.
+  // Only the newest request's answer is applied (review item 7: a slow quiet reload never undoes a newer approve or filter).
+  const loadRequestRef = useRef(0);
   const load = useCallback(async (options?: { quiet?: boolean }) => {
+    const request = ++loadRequestRef.current;
     const quiet = options?.quiet === true;
     if (!quiet) {
       setLoading(true);
@@ -132,6 +135,7 @@ export function ChangeSetReview({
         `/api/channels/${encodeURIComponent(channelId)}/change-sets/${encodeURIComponent(changeSetId)}?${params.toString()}`
       );
       const data = await res.json();
+      if (request !== loadRequestRef.current) return;
       if (!res.ok) {
         if (!quiet) setError(errorText(t, data, t("common.errorStatus", { status: res.status })));
         return;

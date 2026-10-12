@@ -38,7 +38,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ cha
   }
 }
 
-/** Replaces the baseline (`null` clears a field). A local preference only -- never a YouTube call. */
+/** Sets the baseline fields sent (a field left out is unchanged; `null` clears one); shared with the owner's other computers
+ * (BL-178 part B). Never a YouTube call. */
 export async function PUT(request: Request, { params }: { params: Promise<{ channelId: string }> }) {
   const session = await getServerSession(authOptions);
   if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -46,12 +47,14 @@ export async function PUT(request: Request, { params }: { params: Promise<{ chan
   try {
     const { channelId } = await params;
     await channelAccess.assertActiveChannel({ userId: session.user.id, channelId });
-    const body = await parseVideoMetadataJsonBody(request);
+    const parsedBody = await parseVideoMetadataJsonBody(request);
+    const body: Record<string, unknown> = parsedBody && typeof parsedBody === "object" ? parsedBody : {};
+    // BL-178 part B (review item 3): only the fields sent change; a field left out keeps its (possibly newly synced) value.
     return NextResponse.json(
       await core.setDefaults({
         channelId,
-        defaultLanguage: body.defaultLanguage ?? null,
-        defaultAudioLanguage: body.defaultAudioLanguage ?? null,
+        ...("defaultLanguage" in body ? { defaultLanguage: body.defaultLanguage ?? null } : {}),
+        ...("defaultAudioLanguage" in body ? { defaultAudioLanguage: body.defaultAudioLanguage ?? null } : {}),
       })
     );
   } catch (error) {

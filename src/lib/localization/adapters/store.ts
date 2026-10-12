@@ -11,5 +11,8 @@ export function createLocalizationStoreAdapter() {
     async setTargetLanguages(channelId: string, languages: string[]) {
       await createChannelLanguageSettingsCoreForProduction().save({ channelId, trackedLanguages: languages });
     },
+    async getConflictedLanguageSettings(channelId: string): Promise<string[]> {
+      return (await createChannelLanguageSettingsCoreForProduction().listConflicts(channelId)).map((c) => c.field);
+    },
   };
 }

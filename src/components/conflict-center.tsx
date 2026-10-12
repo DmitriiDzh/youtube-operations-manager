@@ -92,23 +92,28 @@ export function useConflictCenter(enabled: boolean): ConflictCenterState {
     if (channelsRes.status === "fulfilled") {
       // The active channel's drafts and profile only: the server answers these for the session's active channel and refuses any
       // other (ADR 0004); another channel's conflicts appear here once it is the active one (independent review).
-      const perChannel = await Promise.allSettled(
+      // Each family is read on its own (BL-178 review item 5): one that fails never hides another's conflicts.
+      const perChannel = await Promise.all(
         channelsRes.value.channels.filter((ch) => ch.isActive).map(async (ch) => {
-          const [drafts, profile, languages] = await Promise.all([
+          const [drafts, profile, languages] = await Promise.allSettled([
             fetchJson<{ conflicts: Array<{ changeId: string; field: string; valuesByActor: Record<string, unknown> }> }>(t, `/api/channels/${ch.channelId}/change-drafts/conflicts`),
             fetchJson<{ conflicts: Array<{ field: string; valuesByActor: Record<string, unknown> }> }>(t, `/api/channels/${ch.channelId}/editorial-profile/conflicts`),
             // BL-178 part B: the channel's language baseline and tracked languages (Batches refuse while the baseline differs).
             fetchJson<{ conflicts: Array<{ field: string; valuesByActor: Record<string, unknown>; thisComputer: unknown }> }>(t, `/api/channels/${ch.channelId}/language-settings/conflicts`),
           ]);
-          return { ch, drafts: drafts.conflicts, profile: profile.conflicts, languages: languages.conflicts };
+          for (const r of [drafts, profile, languages]) {
+            if (r.status === "rejected") errors.push(r.reason instanceof Error ? r.reason.message : t("conflicts.unavailable.channel"));
+          }
+          return {
+            ch,
+            drafts: drafts.status === "fulfilled" ? drafts.value.conflicts : [],
+            profile: profile.status === "fulfilled" ? profile.value.conflicts : [],
+            languages: languages.status === "fulfilled" ? languages.value.conflicts : [],
+          };
         })
       );
       for (const r of perChannel) {
-        if (r.status === "rejected") {
-          errors.push(r.reason instanceof Error ? r.reason.message : t("conflicts.unavailable.channel"));
-          continue;
-        }
-        const { ch, drafts, profile, languages } = r.value;
+        const { ch, drafts, profile, languages } = r;
         for (const c of drafts) {
           next.push({ family: "change_drafts", key: `drafts.${ch.channelId}.${c.changeId}.${c.field}`, group: { key: "conflicts.group.changeDrafts", params: { channel: ch.title } }, subject: { key: "conflicts.subject.change", params: { id: c.changeId.slice(0, 8) } }, field: c.field, channelId: ch.channelId, changeId: c.changeId, valuesByActor: c.valuesByActor, resolvable: RESOLVABLE_CHANGE_DRAFT_FIELDS.has(c.field) });
         }

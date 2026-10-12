@@ -119,4 +119,3 @@ export type TranslationAlerts = {
 
 /** BL-178 part C (§3.3 C1): changes whenever what the Languages page or a Change Set shows for the channel could change. */
 export type LocalizationVersion = { channelId: string; version: string };
-

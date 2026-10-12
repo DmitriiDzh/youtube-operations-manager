@@ -3706,24 +3706,35 @@ Owner exception 2026-10-12 (msg 2665), recorded in `docs/PROJECT_SPEC.md` §14 a
     peer's document is merged (the runner exports before it merges). An unset value never conflicts with a set one, so the Mac
     with nothing received Windows' `en`/`en`.
   - A field set to different values is a conflict. Tracked languages compare as a set. While a field conflicts, each computer
-    keeps its own value. The owner picks a computer's version on the startup screen or in Merge (`/api/channels/[id]/
-    language-settings/conflicts`, by actor, re-derived server-side); saving the field also settles it.
-  - Batches refuse a row before any YouTube call while `defaultLanguage` or `defaultAudioLanguage` conflicts. A
-    tracked-languages conflict does not stop them: no write reads the tracked list. The Languages page says when the defaults
-    differ.
+    keeps its own value.
+  - The owner picks a computer's version on the startup screen or in Merge (`/api/channels/[id]/language-settings/conflicts`,
+    by actor, re-derived server-side). Saving the field with a value other than this computer's own also settles it. Re-sending
+    this computer's value does not: a form that saves every field never decides by itself.
+  - The Language defaults form sends only the fields the owner changed. A field left out keeps a value that arrived from the
+    other computer after the form loaded. The form also reloads when the refresh fingerprint moves, unless the owner is
+    editing.
+  - Adding or removing a tracked language is refused while the tracked lists conflict, because it would drop the other
+    computer's languages.
+  - Batches refuse a row before any YouTube call while `defaultLanguage` or `defaultAudioLanguage` conflicts. So does "Fix
+    all". Per-video alignment is disabled in the panel. If the conflict state cannot be read, the row fails closed with the
+    cause. A tracked-languages conflict does not stop Batches, since no write reads the tracked list. The Languages page says
+    when the defaults differ.
+  - **Known limit:** a value an owner clears before the first sync is not shared, because an empty value is never seeded.
+    The other computer's set value then arrives and takes its place. A value cleared after it was shared reaches the other
+    computer as cleared.
   - Load, change, merge and save run one at a time per process, the `media-settings` review finding.
 - **Part C — refresh and alerts:**
   - Reconciliation that confirms a write also updates the local copy, as the ordinary success path does.
-  - `GET /api/channels/[id]/localizations/version` is a fingerprint of the channel's local video copy, tracked languages and
-    baseline. A fingerprint, not a counter, sees a change made by any process (a Batch run by an agent or the CLI, a sync, a
+  - `GET /api/channels/[id]/localizations/version` is a fingerprint of the channel's local video copy, tracked languages,
+    baseline language and audio language, and which language settings conflict. A fingerprint, not a counter, sees a change made by any process (a Batch run by an agent or the CLI, a sync, a
     setting from the other computer) without a schema change. The Languages page and the Change Set view poll it every 15 s
-    while visible (`use-localization-version.ts`) and reload quietly when it moves.
+    while visible (`use-localization-version.ts`) and reload quietly when it moves. Only the newest request's answer is applied.
   - `localization.getTranslationAlerts` covers public or scheduled (`publishAt` set) videos that lack a tracked language: no
-    entry, an empty title, or an empty description where the original has one. It is read against the baseline (a mirror is not
-    a translation), and the original's language never counts.
+    entry, an empty title, or an empty description where the original has one. It is read against the baseline: a mirror is not
+    a translation, and an ambiguous video's original is in the baseline language too. The original's language never counts.
   - `GET /api/localization-alerts` returns every connected channel's counts plus its deviation count (the "Fix all" list). It
     feeds:
-    - the «Языки» badge for the active channel (missing + deviating, with the split on hover);
+    - the «Языки» badge for the active channel (distinct videos missing a translation or deviating, with the split on hover);
     - bell entries for the other channels (the BL-157 rule: the active channel has its badge).
 
     The entries are derived on every poll, so they clear once the translations are applied.

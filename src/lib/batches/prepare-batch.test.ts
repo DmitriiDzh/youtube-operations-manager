@@ -218,8 +218,8 @@ function createHarness(options: {
   auditFailsForVideoId?: string;
   channelBaseline?: string | null;
   channelBaselineAudio?: string | null;
-  /** BL-178 part B: the baseline fields set differently on the owner's computers. */
-  conflictedBaselineFields?: string[];
+  /** BL-178 part B: the baseline fields set differently on the owner's computers; `"unreadable"` = the read throws. */
+  conflictedBaselineFields?: string[] | "unreadable";
 } = {}) {
   const store = createFakeStore();
   let counter = 0;
@@ -251,7 +251,14 @@ function createHarness(options: {
         : {
             getExpectedDefaultLanguage: async () => options.channelBaseline ?? null,
             getExpectedDefaultAudioLanguage: async () => options.channelBaselineAudio ?? null,
-            ...(options.conflictedBaselineFields ? { getConflictedBaselineFields: async () => options.conflictedBaselineFields ?? [] } : {}),
+            ...(options.conflictedBaselineFields
+              ? {
+                  getConflictedBaselineFields: async () => {
+                    if (options.conflictedBaselineFields === "unreadable") throw new Error("corrupt document");
+                    return options.conflictedBaselineFields ?? [];
+                  },
+                }
+              : {}),
           },
     youtubeApi: {
       async fetchFreshVideoContext(args: { videoId: string }) {
@@ -812,4 +819,12 @@ test("BL-178 B: with no baseline conflict (a tracked-languages one never reaches
   const row = await dryRunOne(harness, { c1: { language: "es", field: "title", baselineValue: "", proposedValue: "Hola" } });
   assert.notEqual(row.status, "FAILED");
   assert.deepEqual(harness.fetchFreshCalls, ["v1"]);
+});
+
+test("BL-178 B: when the shared language settings cannot be read, the row fails closed with the cause, before any YouTube call", async () => {
+  const harness = createHarness({ channelBaseline: "en", channelBaselineAudio: "en", conflictedBaselineFields: "unreadable" });
+  const row = await dryRunOne(harness, { c1: { language: "es", field: "title", baselineValue: "", proposedValue: "Hola" } });
+  assert.equal(row.status, "FAILED");
+  assert.match((row as { error: string }).error, /could not be read \(corrupt document\)/);
+  assert.deepEqual(harness.fetchFreshCalls, []);
 });

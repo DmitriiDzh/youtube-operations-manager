@@ -160,20 +160,25 @@ export function createChannelLanguageSettingsCore(deps: ServiceDependencies) {
   return {
     /**
      * The owner saved these fields on this computer (after the caller's own validation). Written to the document: a field it
-     * holds differently or in conflict (an edit of a conflicted field settles it -- the owner's decision), and a field it lacks
-     * when the new value is set (an empty value the other computer never had is nothing to share, and would only conflict with
-     * a real value there). This computer's copy takes every saved field, then follows the document for the others.
+     * holds differently, and a field it lacks when the new value is set (an empty value the other computer never had is nothing
+     * to share, and would only conflict with a real value there). A field in conflict is written only when the owner changed
+     * it from this computer's own value -- that edit is the owner's decision and settles the conflict; re-sending the value this
+     * computer already holds (a form that saves every field) never does (review item 2). This computer's copy takes every saved
+     * field, then follows the document for the others.
      */
     save(input: { channelId: string } & Partial<LanguageSettingValues>): Promise<LanguageSettingValues> {
       return serialized(async () => {
         const doc = await loadOrGenesis(input.channelId);
         const conflicted = new Set(scan(doc).map((c) => c.field));
         const shared = sharedValues(doc);
+        const local = await deps.local.read(input.channelId);
         const provided = LANGUAGE_SETTING_FIELDS.filter((field) => input[field] !== undefined);
         const changed = provided.filter((field) =>
-          field in shared
-            ? conflicted.has(field) || canonical(field, shared[field]) !== canonical(field, input[field])
-            : isSet(plain(field, input[field]))
+          conflicted.has(field)
+            ? canonical(field, local[field]) !== canonical(field, input[field])
+            : field in shared
+              ? canonical(field, shared[field]) !== canonical(field, input[field])
+              : isSet(plain(field, input[field]))
         );
         let current = doc;
         if (changed.length > 0) {
@@ -182,6 +187,7 @@ export function createChannelLanguageSettingsCore(deps: ServiceDependencies) {
           });
           await deps.core.save(input.channelId, current);
         }
+        // A conflicted field the owner did not change keeps this computer's value (it already is that value).
         if (provided.length > 0) {
           await deps.local.write(input.channelId, Object.fromEntries(provided.map((field) => [field, plain(field, input[field])])));
         }

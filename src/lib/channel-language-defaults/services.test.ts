@@ -13,7 +13,7 @@ function makeServices(args: { videos: StoredVideoLanguageRow[]; defaults?: Chann
       getChannel: async (channelId) => (args.channelExists === false ? null : { channelId }),
       getDefaults: async () => defaults,
       setDefaults: async (_id, value) => {
-        defaults = value;
+        defaults = { ...defaults, ...value };
       },
       listVideos: async () => args.videos,
     },
@@ -113,4 +113,29 @@ test("the report carries the baseline fields set differently on the computers, w
   assert.deepEqual((await services.getDeviations({ channelId: "ch" })).conflictedFields, ["defaultLanguage"]);
   const { services: plain } = makeServices({ videos: [] });
   assert.equal("conflictedFields" in (await plain.getDeviations({ channelId: "ch" })), false);
+});
+
+// BL-178 part B (review item 3): a field left out is left unchanged -- a form that sends only what the owner changed can never
+// overwrite a value that arrived from the other computer after it loaded.
+test("setDefaults changes only the fields sent and returns the whole baseline", async () => {
+  const { services, getStored } = makeServices({ videos: [], defaults: { defaultLanguage: "en", defaultAudioLanguage: "en" } });
+  assert.deepEqual(await services.setDefaults({ channelId: "ch", defaultAudioLanguage: "zxx" }), { defaultLanguage: "en", defaultAudioLanguage: "zxx" });
+  assert.deepEqual(getStored(), { defaultLanguage: "en", defaultAudioLanguage: "zxx" });
+});
+
+test("an unreadable shared document leaves conflictedFields out instead of failing the report", async () => {
+  const services = createChannelLanguageDefaultsServices({
+    store: {
+      getChannel: async (channelId) => ({ channelId }),
+      getDefaults: async () => ({ defaultLanguage: "en", defaultAudioLanguage: "en" }),
+      setDefaults: async () => undefined,
+      listVideos: async () => [],
+      getConflictedFields: async () => {
+        throw new Error("corrupt document");
+      },
+    },
+  });
+  const report = await services.getDeviations({ channelId: "ch" });
+  assert.equal("conflictedFields" in report, false);
+  assert.deepEqual(report.defaults, { defaultLanguage: "en", defaultAudioLanguage: "en" });
 });

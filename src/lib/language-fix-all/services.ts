@@ -44,6 +44,8 @@ export type FixAllDependencies = {
       defaultLanguageDeviates: boolean;
       defaultAudioLanguageDeviates: boolean;
     }>;
+    /** BL-178 part B: baseline fields set differently on the owner's computers; while any is, a run is refused. */
+    conflictedFields?: string[];
   }>;
   applyFieldsUpdate(input: {
     credentialRef: { userId: string };
@@ -110,6 +112,15 @@ export function createLanguageFixAllServices(deps: FixAllDependencies) {
         throw new DomainError({
           code: "validation_failed",
           message: "This channel has no language baseline set -- save channel defaults first",
+        });
+      }
+      // BL-178 part B (review item 1): while the baseline differs between the owner's computers, nobody has chosen the value this
+      // run would write -- the same refusal as a Batch's (PROJECT_SPEC §14).
+      if ((report.conflictedFields ?? []).length > 0) {
+        throw new DomainError({
+          code: "validation_failed",
+          message: `The channel's language defaults (${(report.conflictedFields ?? []).join(", ")}) were set differently on your computers -- choose one in Merge (or on the startup screen) first`,
+          details: { conflictedFields: report.conflictedFields },
         });
       }
 

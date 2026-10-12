@@ -1,7 +1,8 @@
 "use client";
 
 import { errorText } from "@/lib/ui-text";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useLocalizationVersion } from "./use-localization-version";
 import { ConfirmDialog } from "./confirm-dialog";
 import { OperationOverlay, useOperation, type AttachedOperationResult } from "./operation-progress";
 import { parseQuotaBlock, QuotaBlockDialog, type QuotaBlock } from "./quota-block-dialog";
@@ -81,14 +82,27 @@ export function LanguageDefaultsPanel({
     void load();
   }, [load]);
 
+  // BL-178 part B/C (review item 3): a baseline (or a conflict) that arrives from the other computer shows here without a manual
+  // reload -- unless the owner is editing, whose choice is never replaced under them.
+  const dirtyRef = useRef(false);
+  const reloadUnlessEditing = useCallback(() => {
+    if (!dirtyRef.current) void load();
+  }, [load]);
+  useLocalizationVersion(channelId, reloadUnlessEditing);
+
 
   async function save() {
     setBusy(true);
     try {
+      // BL-178 part B (review item 3): only the fields the owner changed are sent, so a value that arrived from the other
+      // computer after this screen loaded is never overwritten by this screen's stale copy of it.
+      const body: Record<string, string | null> = {};
+      if ((report?.defaults.defaultLanguage ?? "") !== language) body.defaultLanguage = language || null;
+      if ((report?.defaults.defaultAudioLanguage ?? "") !== audio) body.defaultAudioLanguage = audio || null;
       const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/language-defaults`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ defaultLanguage: language || null, defaultAudioLanguage: audio || null }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(errorText(t, data, t("languageDefaults.saveFailed")));
@@ -292,6 +306,12 @@ export function LanguageDefaultsPanel({
   const dirty =
     report !== null &&
     ((report.defaults.defaultLanguage ?? "") !== language || (report.defaults.defaultAudioLanguage ?? "") !== audio);
+  useEffect(() => {
+    dirtyRef.current = dirty;
+  }, [dirty]);
+  // BL-178 part B (review item 1): while the defaults differ between the computers nobody has chosen the value an alignment
+  // would write -- the "Fix all" run refuses on the server too.
+  const conflicted = (report?.conflictedFields?.length ?? 0) > 0;
   const deviations = report?.deviations ?? [];
   const selectClass = "rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm";
 
@@ -334,8 +354,8 @@ export function LanguageDefaultsPanel({
         {(target || targetAudio) && fixable.length > 0 && (
           <button
             onClick={fixAll}
-            disabled={aligning !== null || dirty}
-            title={dirty ? t("languageDefaults.saveFirst") : undefined}
+            disabled={aligning !== null || dirty || conflicted}
+            title={conflicted ? t("languageDefaults.differsBetweenComputers") : dirty ? t("languageDefaults.saveFirst") : undefined}
             className="rounded-lg bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
           >
             {t("languageDefaults.fixAll", { count: fixable.length })}
@@ -400,14 +420,14 @@ export function LanguageDefaultsPanel({
           <span>{t("languageDefaults.alignIntro")}</span>
           <button
             onClick={() => void previewChosen()}
-            disabled={aligning !== null || chosen.length === 0}
+            disabled={aligning !== null || chosen.length === 0 || conflicted}
             className="rounded-lg bg-zinc-700 px-3 py-1 text-white hover:bg-zinc-600 disabled:opacity-50"
           >
             {aligning === "preview" ? t("languageDefaults.checking") : t("languageDefaults.preview", { count: chosen.length })}
           </button>
           <button
             onClick={() => void applyAlignment()}
-            disabled={aligning !== null || readyIds.length === 0}
+            disabled={aligning !== null || readyIds.length === 0 || conflicted}
             className="rounded-lg bg-red-600 px-3 py-1 text-white hover:bg-red-700 disabled:opacity-50"
           >
             {aligning === "apply" ? t("languageDefaults.writing") : t("languageDefaults.confirmAndWrite", { count: readyIds.length })}

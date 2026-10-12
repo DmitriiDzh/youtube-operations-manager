@@ -13,8 +13,8 @@ const deps = (overrides: Partial<LocalizationAlertsDeps> = {}): LocalizationAler
     if (channelId === "UC_never_synced") throw new Error("Channel has not been synchronized yet");
     const none: Record<string, number> = {};
     return channelId === "UC_A"
-      ? { missingVideoCount: 2, missingByLanguage: { es: 2, "pt-BR": 1 }, deviationCount: 1 }
-      : { missingVideoCount: 0, missingByLanguage: none, deviationCount: 0 };
+      ? { missingVideoCount: 2, missingByLanguage: { es: 2, "pt-BR": 1 }, deviationCount: 1, attentionVideoCount: 2 }
+      : { missingVideoCount: 0, missingByLanguage: none, deviationCount: 0, attentionVideoCount: 0 };
   },
   ...overrides,
 });
@@ -26,8 +26,8 @@ test("401 without a session; with one, every readable connected channel's counts
   assert.deepEqual(await res.json(), {
     activeChannelId: "UC_A",
     channels: [
-      { channelId: "UC_A", missingVideoCount: 2, missingByLanguage: { es: 2, "pt-BR": 1 }, deviationCount: 1 },
-      { channelId: "UC_B", missingVideoCount: 0, missingByLanguage: {}, deviationCount: 0 },
+      { channelId: "UC_A", missingVideoCount: 2, missingByLanguage: { es: 2, "pt-BR": 1 }, deviationCount: 1, attentionVideoCount: 2 },
+      { channelId: "UC_B", missingVideoCount: 0, missingByLanguage: {}, deviationCount: 0, attentionVideoCount: 0 },
     ],
   });
 });

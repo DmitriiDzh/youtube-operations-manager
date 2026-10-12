@@ -33,10 +33,14 @@ type ServiceDependencies = {
     listVideosByChannel(channelId: string): Promise<StoredVideoRecord[]>;
     getTargetLanguages(channelId: string): Promise<string[]>;
     setTargetLanguages(channelId: string, languages: string[]): Promise<void>;
+    /** BL-178 part B: the language settings set differently on the owner's computers (optional; absent = none). */
+    getConflictedLanguageSettings?(channelId: string): Promise<string[]>;
   };
   /** BL-178 (PROJECT_SPEC §14, 2026-10-12): the channel's language; optional (absent = every video read as it is). */
   channelLanguageBaseline?: {
     getExpectedDefaultLanguage(channelId: string): Promise<string | null>;
+    /** Only the refresh fingerprint reads it (review item 3: an audio baseline from the other computer reloads the page too). */
+    getExpectedDefaultAudioLanguage?(channelId: string): Promise<string | null>;
   };
   xlsxBuilder: {
     buildWorkbook(args: {
@@ -87,7 +91,9 @@ export function missingTrackedTranslations(video: StoredVideoRecord, trackedLang
     { defaultLanguage: video.defaultLanguage, title: video.title, description: video.description, localizations: video.existingLocalizations },
     channelBaseline
   );
-  const original = reading.kind === "aligned" ? reading.to : (video.defaultLanguage ?? channelBaseline);
+  // Measured against the channel's language (plan §3.3 C2): an ambiguous video's own label is a recognition error too -- its
+  // original is the baseline's; its entries are kept as they are (one of them may be a real translation). Review item 7.
+  const original = reading.kind === "as_is" ? (video.defaultLanguage ?? channelBaseline) : reading.to;
   const localizations = reading.kind === "aligned" ? reading.view.localizations : video.existingLocalizations;
   const originalHasDescription = video.description.trim() !== "";
   return trackedLanguages
@@ -126,6 +132,21 @@ async function requireChannel(deps: ServiceDependencies, channelId: string): Pro
     });
   }
   return channel;
+}
+
+/**
+ * BL-178 part B (review item 2): adding or removing one language edits this computer's list; while the lists differ between the
+ * computers that edit would silently drop the other computer's languages. The owner chooses a list in Merge first.
+ */
+async function assertTrackedLanguagesSettled(deps: ServiceDependencies, channelId: string): Promise<void> {
+  const conflicted = (await deps.channelStore.getConflictedLanguageSettings?.(channelId)) ?? [];
+  if (conflicted.includes("trackedLanguages")) {
+    throw new DomainError({
+      code: "validation_failed",
+      message: "The tracked languages were set differently on your computers -- choose one list in Merge (or on the startup screen) first",
+      details: { channelId },
+    });
+  }
 }
 
 async function requireChannelAndVideos(
@@ -194,8 +215,9 @@ export function createLocalizationServices(deps: ServiceDependencies) {
 
     /**
      * BL-178 part C (§3.3 C1): a fingerprint of everything the Languages page and a Change Set read for the channel -- the
-     * videos' local copy (a verified Batch write or a sync changes it), the tracked languages and the channel's language. An
-     * open page polls it and reloads when it moves, whoever made the change (this page, the Batches page, an agent).
+     * videos' local copy (a verified Batch write or a sync changes it), the tracked languages, the channel's language and audio
+     * language, and which of these differ between the computers. An open page polls it and reloads when it moves, whoever made
+     * the change (this page, the Batches page, an agent, the other computer).
      */
     async getLocalizationVersion(input: unknown): Promise<LocalizationVersion> {
       const { channelId } = parseWithSchema(channelOnlyInputSchema, input, "localization version input");
@@ -203,8 +225,10 @@ export function createLocalizationServices(deps: ServiceDependencies) {
         const { channel, videos } = await requireChannelAndVideos(deps, channelId);
         const trackedLanguages = await deps.channelStore.getTargetLanguages(channel.channelId);
         const channelBaseline = (await deps.channelLanguageBaseline?.getExpectedDefaultLanguage(channel.channelId)) ?? null;
+        const channelBaselineAudio = (await deps.channelLanguageBaseline?.getExpectedDefaultAudioLanguage?.(channel.channelId)) ?? null;
+        const conflicted = (await deps.channelStore.getConflictedLanguageSettings?.(channel.channelId).catch(() => null)) ?? null;
         const hash = createHash("sha256");
-        hash.update(JSON.stringify({ trackedLanguages, channelBaseline }));
+        hash.update(JSON.stringify({ trackedLanguages, channelBaseline, channelBaselineAudio, conflicted }));
         for (const video of [...videos].sort((a, b) => a.videoId.localeCompare(b.videoId))) {
           hash.update(
             JSON.stringify([video.videoId, video.title, video.description, video.defaultLanguage, video.existingLocalizations, video.privacyStatus, video.publishAt, video.lastSyncedAt.toISOString()])
@@ -239,6 +263,7 @@ export function createLocalizationServices(deps: ServiceDependencies) {
             details: { language: parsedInput.language },
           });
         }
+        await assertTrackedLanguagesSettled(deps, channel.channelId);
         const current = await deps.channelStore.getTargetLanguages(channel.channelId);
         const next = current.includes(parsedInput.language) ? current : [...current, parsedInput.language].sort();
         await deps.channelStore.setTargetLanguages(channel.channelId, next);
@@ -258,6 +283,7 @@ export function createLocalizationServices(deps: ServiceDependencies) {
       const parsedInput = parseWithSchema(manageTrackedLanguageInputSchema, input, "remove tracked language input");
       try {
         const channel = await requireChannel(deps, parsedInput.channelId);
+        await assertTrackedLanguagesSettled(deps, channel.channelId);
         const current = await deps.channelStore.getTargetLanguages(channel.channelId);
         const next = current.filter((l) => l !== parsedInput.language);
         await deps.channelStore.setTargetLanguages(channel.channelId, next);
