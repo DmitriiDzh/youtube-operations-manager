@@ -1,10 +1,12 @@
 # Live streams: a channel's 24/7 loop of its own published videos (BL-176, FO-REQ-0019)
 
-**Status: PROPOSAL.** Nothing is built. Building starts only on the owner's go. Two decisions are the owner's (§2).
+**Status: BUILDING** on `feature/live-streams` (owner's go, Telegram 2026-10-12, msg 2575). Storage is a rolling buffer, the
+owner's own proposal (§2.2). Real YouTube tests still wait for a separate "да" (§2.3).
 
 - Request: FO-REQ-0019 (Operator, 2026-10-11).
 - Owner's assignment: Telegram 2026-10-11, msg 2572 ("возьми в работу REQ-0019").
 - Reply to the Operator: DEV-RESP-0022.
+- Owner's answers: msg 2575 (2026-10-12). The buffer details proposed in msg 2577 were accepted in msg 2578 ("ок").
 
 ## 1. Facts (code read 2026-10-11 at `dev` 5f81da1; the Mac read-only; YouTube docs read 2026-10-11)
 
@@ -51,7 +53,10 @@
 - **ffmpeg.** Homebrew `ffmpeg-full` 9.0.2 is installed. It has `rtmps` (GnuTLS), `h264_videotoolbox` and libx264.
 - **Disk.**
   - Internal: 228 GB, **30 GB free**.
-  - T9: 1.6 TB free, but it mounts only at the first login after a restart (ADR 0032 consequences).
+  - T9 (Samsung T9, USB, APFS, not encrypted): 1.6 TB free, but it mounts only at the first login after a restart (ADR 0032
+    consequences), and it disconnected by itself on 2026-10-08.
+  - `AutomountDisksWithoutUserLogin` is not set (`/Library/Preferences/SystemConfiguration/autodiskmount` does not exist). Whether
+    setting it mounts the T9 at boot on macOS 15 is **unverified**; it is an admin step outside this plan.
 - **Local published videos:** 21 files per channel, 23.0 GB (Tropico) and 24.1 GB (Japan).
 - **Format of the published videos** (V55 Tropico, V47 Japan, V35 Tropico):
   - 1920×1080, 30 fps, H.264 High at 0.59–0.64 Mbit/s;
@@ -102,6 +107,10 @@
 - **Encoding live from a prepared source** (audio copied; picture at full rate for the opening seconds, then one frame a
   second; the encoder repeats frames to 30 fps): 4.4 s CPU per 60 s, about 7 % of one core. Output was CBR with a keyframe
   every 2.0 s.
+- **The concat demuxer opens each later file only when it reaches it** (2026-10-12, 4 s test clips, `-re`, `-c copy`): a file
+  created while the one before it played was played in full.
+- **A missing next file ends the input quietly.** ffmpeg logs `Impossible to open '<file>'` and `Error during demuxing`, then exits
+  with **code 0**, the same as a normal end of the list.
 - **Not in the encoder's command line.** ffmpeg prints the full output URL, key included, in its banner and in connection
   errors. Its command line is readable by **every account on the Mac** (`ps`: other users' arguments are visible, checked).
   `-/rtmp_playpath <file>` is not accepted ("Option not found").
@@ -114,23 +123,25 @@
 - Out of scope: live generation, chat, hosted services, streaming from Windows.
 
 ### 2.2 What sits on the Mac's internal disk
-The T9 is not readable after an unattended restart until someone logs in. So a stream that must come back by itself needs its
-files on the internal disk (30 GB free).
+The T9 is not readable after an unattended restart until someone logs in, and it has disconnected by itself. So a stream needs
+its next files on the internal disk (30 GB free).
 
-| Option | Size, both channels | Fits 30 GB | Picture |
+| Option | Size, both channels | Fits 30 GB | Needs the T9 |
 |---|---|---|---|
-| (a) The original files | 47.1 GB | no | as published |
-| (b) "Stream-ready copies" (request §C), 2 s GOP, copied as is | ≈ 2.4 Mbit/s × 7,250 s ≈ 2.2 GB each, ≈ 92 GB | no | as published |
-| (b') The same at CBR 5 Mbit/s (YouTube's 1080p30 minimum) | ≈ 4.8 GB each, ≈ 200 GB | no | as published |
-| **(c) Prepared sources (recommended)** | audio ≈ 0.28 GB + picture ≈ 0.05 GB per video ≈ 14 GB | yes, 16 GB left | the opening ~30 s at full rate, then one frame a second of the same still |
+| (a) All original files | 47.1 GB | no | no |
+| (b) "Stream-ready copies" (request §C), 2 s GOP | ≈ 92 GB (≈ 200 GB at CBR 5 Mbit/s) | no | no |
+| (c) All prepared sources (audio + one frame a second) | ≈ 14 GB | yes | only while preparing |
+| **(d) Rolling buffer of originals (chosen)** | depth 2: ≈ 4.5 GB; depth 4: ≈ 9 GB | yes | every ~2 h |
 
-- Option (c) keeps the published sound bit for bit. The picture is re-encoded from the original: the opening at full rate,
-  then one frame a second, which on these videos is the same still.
-- The app checks every video before using it:
-  - a video whose picture moves after the opening (a real clip) is refused in phase 1;
-  - its duration must match the YouTube video's within 1 s.
-- The ~0.05 GB picture figure is from a 5-minute sample. The page shows the real size after preparing.
-- Alternatives: free the disk and use (a), or stream fewer videos.
+**Decided (owner, msg 2575):** keep only the video now playing and the next one on the internal disk, and rotate the files.
+Details (proposed in msg 2577, accepted in msg 2578):
+- **The buffer holds copies of the originals**, not prepared sources. The picture is re-encoded live (≈ 24 % of one core per
+  stream, §1.4). No preparing step and no still-picture check, so videos whose picture moves work in phase 1.
+- **Depth is a setting**, default 2 (the video playing and the next one). Each original is ≈ 1.1 GB.
+- **The T9 becomes a running dependency.** Each new video is copied from it about every 2 h. After an unattended restart the
+  stream resumes from the buffer, and the buffer gives about 2–4 h at depth 2.
+- **When the next file cannot be copied** (T9 missing, file missing, disk too full), the stream does not stop. It replays the
+  videos already in the buffer, and the bell shows a notice. The rotation resumes once the T9 is back.
 
 ### 2.3 Real YouTube tests
 - Spike B and the acceptance run write to YouTube on Tropico, as an **unlisted** broadcast with the owner present.
@@ -155,7 +166,7 @@ files on the internal disk (30 GB free).
   - Every other computer shows streams read-only.
 
 ### 3.2 Module layout (AGENTS.md §G, §M)
-- **`src/lib/live-streams/`** (contracts, schemas, services, adapters): streams, rotation, prepared sources, status, events.
+- **`src/lib/live-streams/`** (contracts, schemas, services, adapters): streams, rotation, the buffer, status, events.
   - Switched off: no timers, no processes. Every other screen works as before.
 - **`src/lib/ffmpeg-host/`**: the one place that finds ffmpeg, checks its features (`rtmps`, `h264_videotoolbox`, libx264) and
   spawns it.
@@ -196,8 +207,8 @@ files on the internal disk (30 GB free).
   - the current pass's position;
   - `on_since`.
 - **`live_stream_videos`** (the rotation, one row per video):
-  - `video_id`, the original's path (relative to the channel workspace), the prepared file and its size;
-  - durations (the video's and the prepared source's);
+  - `video_id`, the original's path (relative to the channel workspace);
+  - durations (the video's and the original's);
   - the check result;
   - the owner's override of the public-only guard, with its reason;
   - the position in the rotation.
@@ -230,25 +241,41 @@ files on the internal disk (30 GB free).
   - It returns a result per item. The map only offers files; the owner builds the rotation.
 - **Not touched:** the channel's `mix_history.csv` and every other workspace file.
 
-### 3.5 Prepared sources (request §C, option (c))
-- **"Подготовить" runs in the background**, one video at a time, and resumes after a restart. For each video it:
-  1. reads the original from the T9, which must be mounted at that time;
-  2. writes `<appData>/live-streams/<channelId>/<videoId>.mp4`:
-     - the audio copied as is;
-     - the picture at full rate for the first 30 s, then one frame a second, with libx264 at high quality.
-- **Checks before a source is marked ready:**
-  - duration within 1 s of the YouTube video;
-  - AAC at 44.1/48 kHz, at most 2 channels;
-  - the picture still after 30 s: 12 sample points, two consecutive frames each, mean difference under a fixed threshold.
+### 3.5 The buffer (request §C, option (d))
+- **Where:** `<appData>/live-streams/<channelId>/`, on the internal disk.
+- **What:** the video now playing and the next `depth − 1` videos of the pass, as copies of the originals.
+- **Copying** runs in the background while the stream plays:
+  1. copy the original from the T9 to `<videoId>.mp4.part`;
+  2. check the copy:
+     - its size matches the original's;
+     - its duration is within 1 s of the YouTube video's;
+     - its audio is AAC at 44.1/48 kHz with at most 2 channels;
+  3. rename it to `<videoId>.mp4`. The encoder never sees a file under its final name before it is complete.
+- **Deleting:** a copy is deleted only after the encoder has moved past it. The file now playing is never deleted; it is the
+  resume point after a restart.
+- **When the next file cannot be copied** (the T9 is not mounted, the original is gone, a check fails, or the copy would leave
+  less free space than the refuse level):
+  - the stream keeps replaying the videos already in the buffer, in their order;
+  - an event records the cause, and the bell shows `live_stream_source_missing`;
+  - copying is retried every few minutes. Once the next file is in place, the rotation resumes at the next run.
 - **Disk.**
-  - The page shows each channel's size and the free space.
+  - The page shows the buffer's size per channel and the free space.
   - A warning appears under 10 GB free.
-  - Preparing refuses a video that would leave under 5 GB. Both thresholds are settings.
+  - Copying refuses a file that would leave under 5 GB. Both thresholds are settings.
+- **Adding a video to the rotation** needs the T9 mounted: the original must exist, and its duration must be within 1 s of the
+  YouTube video's.
 
 ### 3.6 Encoder and supervision (request §F)
 - **Encoder (final flags from spike A).**
-  - Input: the concat demuxer over one pass of the rotation (`-re`). Shuffle draws a new order for each pass.
-  - Video: `fps=30` → `h264_videotoolbox`, CBR at the bitrate setting (default 6,000 kbit/s), 2 s GOP, no B-frames.
+  - Input: the concat demuxer over buffer files (`-re`). Shuffle draws a new order for each pass.
+  - **An early end is never a pass end.** ffmpeg exits with code 0 when a listed file is missing (§1.4). So the helper compares
+    the run's last `out_time` with the length of its list. A run that ended early counts as `source_missing`, never as the end of
+    a pass.
+  - Spike A picks how a run is listed:
+    - **only the files already in the buffer:** a reconnect of a few seconds every ~2 h at depth 2;
+    - **or the whole pass**, relying on lazy opening (§1.4): no reconnect between videos, if the next copy is always in place.
+  - Video: the original decoded → `fps=30` → `h264_videotoolbox`, CBR at the bitrate setting (default 6,000 kbit/s), 2 s GOP, no
+    B-frames.
   - Audio: copied.
   - Output: FLV to the stream's `rtmpsIngestionAddress`.
   - Progress: `-progress pipe:1` every 5 s.
@@ -264,7 +291,8 @@ files on the internal disk (30 GB free).
   1. re-reads the key (`liveStreams.list`, a read, which Live writes do not gate);
   2. starts the helper.
 
-  The prepared sources live on the internal disk, so the T9 is not needed.
+  The buffer is on the internal disk, so the stream resumes without the T9. The rest of the buffer is its runway until someone
+  logs in and the T9 mounts (§3.5).
 - **Intended: `stop.sh` and the server restarts after merges leave a running stream alone.** If spike A shows that launchd kills the
   helper with the job, the plist gains `AbandonProcessGroup` (one reinstall, one admin password).
 - **Recorded per stream:** restarts with cause and gap, bytes and bitrate, dropped frames.
@@ -302,7 +330,7 @@ files on the internal disk (30 GB free).
   - Preconditions:
     - Live writes on (the dialog links to the switch);
     - the identity check (`assertWriteChannel`);
-    - every rotation video ready and still public;
+    - every rotation video still public, and the first `depth` videos of the pass in the buffer;
     - ffmpeg checked;
     - free disk above the warning level.
   - The dialog is the dry run. It shows exactly what will be sent: title, description, privacy, made-for-kids, auto-stop off,
@@ -339,7 +367,8 @@ files on the internal disk (30 GB free).
     - stream `streamStatus`;
     - `healthStatus` with its `configurationIssues`;
     - viewers.
-- **States shown:** off / starting / live / reconnecting / ended by YouTube / error.
+- **States shown:** off / starting / live / live, replaying the buffer (the T9 or a file is missing) / reconnecting / ended by
+  YouTube / error.
 - **Quota.**
   - A running stream costs 2 units a poll: 288 polls × 2 = 576 a day.
   - The viewers call is one per poll for all channels, 288 a day.
@@ -347,13 +376,15 @@ files on the internal disk (30 GB free).
 - **History:** interruptions with start, end and cause.
 - **Bell notices:**
   - `live_stream_down`: the encoder or YouTube has not been live for more than 5 minutes (a setting);
-  - `live_stream_ended`: YouTube ended the broadcast.
+  - `live_stream_ended`: YouTube ended the broadcast;
+  - `live_stream_source_missing`: the next video could not be copied, and the stream is replaying the buffer (§3.5).
 
 ### 3.11 Two computers (request §I phase 1) and the Operator (request §J)
 - **New sync family `live-streams`** (per-device report v1, ADR 0028 pattern). The Mac publishes per channel:
   - state, since, uptime;
   - the video now playing and its index of N;
   - health, and issue types only;
+  - whether it is replaying the buffer;
   - the last interruption (times and a cause code);
   - viewers.
 
@@ -370,12 +401,12 @@ files on the internal disk (30 GB free).
   - State badge, uptime, now playing (N of M), health and viewers.
   - Start / Stop / Restart.
   - Texts and privacy.
-  - The rotation: list, order, add, remove, prepare, checks, disk.
+  - The rotation: list, order, add, remove, checks, the buffer and disk.
   - History.
 - **Settings → «Трансляции»** (this computer):
   - the module switch;
   - ffmpeg (detected path and features);
-  - storage folder and disk thresholds;
+  - buffer folder, buffer depth and disk thresholds;
   - bitrate;
   - alert minutes.
 - Every text in English and Russian.
@@ -422,6 +453,19 @@ files on the internal disk (30 GB free).
 **Alert**
 - With the down threshold at 5 min: down at 10:00:00 → no notice at 10:04:59, a notice at 10:05:00.
 
+**Buffer** (rotation A, B, C, depth 2)
+- While A plays, the buffer holds A and B.
+- After the encoder moves to B, A is deleted and C is copied. B is never deleted while it plays.
+- A copy is visible under its final name only after it is complete and checked. An interrupted copy leaves only a `.part` file,
+  which is never listed.
+- A copy that would leave less than the refuse level free is not started.
+- The T9 is missing when C is due:
+  - no YouTube write is made;
+  - the run's early end is recorded as `source_missing`, not as a pass end;
+  - the encoder goes on with the buffered videos;
+  - a `live_stream_source_missing` notice appears.
+- The T9 comes back → C is copied, and the rotation resumes at the next run.
+
 **Now playing**
 - Rotation 7,288 / 7,211 / 7,224 s; one pass is 21,723 s.
 - `out_time` 7,300 s → video 2 at 12 s.
@@ -441,7 +485,9 @@ files on the internal disk (30 GB free).
   - The stream comes back without the owner, and the interruption is in the history.
   - The record says whether the same broadcast continued.
 - **Server restart (`stop.sh`):** the stream keeps running.
-- **Planned Mac restart** (`fdesetup authrestart`): the stream comes back.
+- **Planned Mac restart** (`fdesetup authrestart`), no one logs in: the stream comes back from the buffer.
+- **T9 unplugged for longer than one video:** the stream stays live and replays the buffer; the history and the bell show it.
+  Plugged back in: the rotation resumes.
 - **Alert:** with the encoder stopped for more than 5 minutes, a notice appears in the bell.
 - **Key.** The key string is found nowhere outside the helper's memory and ffmpeg's command line. Searched:
   - the UI;
@@ -457,9 +503,11 @@ files on the internal disk (30 GB free).
 
 ## 5. Build order (one branch, `feature/live-streams`, merged once on the owner's yes)
 1. **Spike A, local only, no YouTube.** The helper and ffmpeg against a local RTMP listener. It checks:
+   - how a run is listed (§3.6), and that an early end is told apart from a pass end;
+   - copying into the buffer while the encoder plays, and deleting behind it;
    - the joins between videos and the pass wrap;
    - audio/video drift over a multi-hour run;
-   - CPU;
+   - CPU of two streams re-encoding originals;
    - restart and resume with `inpoint`;
    - whether the helper survives a service restart under launchd;
    - the scrubber.
@@ -473,7 +521,7 @@ files on the internal disk (30 GB free).
    - the quota in the Cloud Console.
 
    Results go into §6 here and into ADR 0036.
-4. **Data, sources map, preparing, rotation and the guard.**
+4. **Data, sources map, the buffer, rotation and the guard.**
 5. **Helper supervision, boot restore, recovery** (§3.8 with the spike B results).
 6. **Screens, Settings and the bell.**
 7. **Sync family and the Windows view; the MCP status and map tools; Factory API 1.14.0.**
@@ -495,5 +543,4 @@ files on the internal disk (30 GB free).
   - the standing approval of §3.8, if needed.
 - **Phase 3:**
   - a stream composed live (a looping clip, "now playing" on screen);
-  - scheduled one-off streams and premieres;
-  - videos whose picture moves.
+  - scheduled one-off streams and premieres.
