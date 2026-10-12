@@ -131,7 +131,8 @@ export async function collectLiveStreamEntries(now: number = Date.now()): Promis
           helper: status
             ? { state: status.state, updatedAt: status.updatedAt, position: { index: status.position.index, videoId: status.position.videoId }, lastExit: status.lastExit ? { at: status.lastExit.at, cause: status.lastExit.cause } : null, missingVideoId: status.missingVideoId ?? null }
             : null,
-          rotationSize: videos.length,
+          // "N of M": the pass's length (only playable videos), not the rotation's.
+          rotationSize: status?.passVideoIds?.length ?? (stream.passOrderJson ? (JSON.parse(stream.passOrderJson) as string[]).length : videos.length),
           youtube: poll ? { lifeCycleStatus: poll.lifeCycleStatus, streamStatus: poll.streamStatus, healthStatus: poll.healthStatus, issueTypes: poll.configurationIssues.map((i) => i.type), viewers: poll.viewers } : null,
           lastEndOrStart: last ? (last.kind as "youtube_ended" | "encoder_start") : null,
         },

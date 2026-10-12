@@ -84,10 +84,12 @@ export function LiveStreamsSettings() {
   }, []);
 
   const load = useCallback(
-    () =>
+    (options: { resetDrafts?: boolean } = {}) =>
       requestJson<Settings>("/api/live-streams/settings", undefined, t("settings.loadFailed"), t).then(
         (data) => {
-          apply(data);
+          // A toggle reloads the switch only: unsaved number, encoder and folder edits stay (independent review).
+          if (options.resetDrafts === false) setSettings(data);
+          else apply(data);
           setError(null);
         },
         (err: unknown) => setError(err instanceof Error ? err.message : t("settings.loadFailed"))
@@ -106,7 +108,7 @@ export function LiveStreamsSettings() {
     try {
       await requestJson("/api/live-streams/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(patch) }, t("settings.saveFailed"), t);
       setNotice(done);
-      await load();
+      await load({ resetDrafts: !(Object.keys(patch).length === 1 && "enabled" in patch) });
     } catch (err) {
       setError(err instanceof Error ? err.message : t("settings.saveFailed"));
     } finally {

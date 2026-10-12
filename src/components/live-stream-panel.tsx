@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { errorText } from "@/lib/ui-text";
 import type { UiTextKey } from "@/lib/ui-text";
 import { ConfirmDialog } from "./confirm-dialog";
@@ -30,6 +30,7 @@ type RotationVideo = {
 type HelperStatus = {
   state: string;
   passNumber: number;
+  passVideoIds?: string[];
   position: { index: number; videoId: string | null; offset: number };
   lastExit: { at: number; cause: string; code: number | null } | null;
   progress: { bitrate?: string | null };
@@ -67,6 +68,30 @@ const primaryClass = "rounded-lg bg-zinc-100 px-3 py-1 text-xs font-medium text-
 const dangerClass = "rounded-lg bg-red-600 px-3 py-1 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50";
 
 const PRIVACY_KEYS: Record<Privacy, UiTextKey> = { public: "live.privacy.public", unlisted: "live.privacy.unlisted", private: "live.privacy.private" };
+
+/** Why the encoder stopped, or why the app stopped it, in the owner's words (codes come from the helper and the server). */
+const CAUSE_KEYS: Record<string, UiTextKey> = {
+  encoder_exit: "live.cause.encoderExit",
+  source_missing: "live.cause.sourceMissing",
+  pass_end: "live.cause.passEnd",
+  replay_end: "live.cause.replayEnd",
+  owner_stop: "live.cause.ownerStop",
+  owner_restart: "live.cause.ownerRestart",
+  owner_encoder_only: "live.cause.ownerEncoderOnly",
+  module_off: "live.cause.moduleOff",
+  intent_off: "live.cause.intentOff",
+  hung: "live.cause.hung",
+  youtube_complete: "live.cause.youtubeEnded",
+  youtube_revoked: "live.cause.youtubeEnded",
+  youtube_not_found: "live.cause.youtubeNotFound",
+  liveBroadcastNotFound: "live.cause.youtubeNotFound",
+  invalidTransition: "live.cause.neverLive",
+};
+
+function causeText(t: ReturnType<typeof useT>, code: string): string {
+  const key = CAUSE_KEYS[code];
+  return key ? t(key) : code;
+}
 
 function clock(seconds: number): string {
   const s = Math.max(0, Math.floor(seconds));
@@ -206,7 +231,8 @@ function StatusCard({ overview, base, onChanged }: { overview: Overview; base: s
     try {
       const result = await action();
       const encoderError = (result as { encoderError?: string } | null)?.encoderError;
-      setNotice(encoderError ? t("live.start.encoderLater", { error: encoderError }) : done);
+      const youtubeRefusal = (result as { youtubeRefusal?: string } | null)?.youtubeRefusal;
+      setNotice(encoderError ? t("live.start.encoderLater", { error: encoderError }) : youtubeRefusal ? t("live.stop.noBroadcast", { reason: causeText(t, youtubeRefusal) }) : done);
       await onChanged();
     } catch (err) {
       setError(err instanceof Error ? err.message : t("live.actionFailed"));
@@ -228,12 +254,12 @@ function StatusCard({ overview, base, onChanged }: { overview: Overview; base: s
             {t("live.status.nowPlaying", {
               title: playing?.title ?? status.position.videoId ?? "—",
               n: String(status.position.index + 1),
-              total: String(overview.rotation.length),
+              total: String(status.passVideoIds?.length ?? overview.rotation.length),
               at: clock(status.position.offset),
             })}
           </p>
           {status.missingVideoId && <p className="text-xs text-amber-300">{t("live.status.missing", { videoId: status.missingVideoId })}</p>}
-          {status.lastExit && <p className="text-xs text-zinc-500">{t("live.status.lastExit", { at: new Date(status.lastExit.at).toLocaleString(t.language), cause: status.lastExit.cause })}</p>}
+          {status.lastExit && <p className="text-xs text-zinc-500">{t("live.status.lastExit", { at: new Date(status.lastExit.at).toLocaleString(t.language), cause: causeText(t, status.lastExit.cause) })}</p>}
           {status.progress.bitrate && <p className="text-xs text-zinc-500">{t("live.status.bitrate", { bitrate: status.progress.bitrate })}</p>}
         </div>
       )}
@@ -350,9 +376,18 @@ function SettingsCard({ overview, base, onChanged }: { overview: Overview; base:
   const [notice, setNotice] = useState<string | null>(null);
   const [editPreview, setEditPreview] = useState<{ before: { title: string; description: string; privacyStatus: Privacy }; after: { title: string; description: string; privacyStatus: Privacy } } | null>(null);
 
-  // Reset only when the SAVED values change (each poll builds a new object and would wipe unsaved edits).
+  // When the SAVED values change (each poll builds a new object), only the fields that changed are taken over: an unsaved
+  // edit of another field stays (independent review).
+  const previousSaved = useRef(savedKey);
   useEffect(() => {
-    setDraft(JSON.parse(savedKey) as Settings);
+    const before = JSON.parse(previousSaved.current) as Settings;
+    const after = JSON.parse(savedKey) as Settings;
+    previousSaved.current = savedKey;
+    setDraft((current) => {
+      const next = { ...current } as Record<keyof Settings, unknown>;
+      for (const key of Object.keys(after) as Array<keyof Settings>) if (before[key] !== after[key]) next[key] = after[key];
+      return next as Settings;
+    });
   }, [savedKey]);
 
   const dirty = JSON.stringify(draft) !== savedKey;
@@ -668,6 +703,10 @@ const EVENT_KEYS: Record<string, UiTextKey> = {
   buffer_restored: "live.event.bufferRestored",
   youtube_ended: "live.event.youtubeEnded",
   stopped_by_owner: "live.event.stoppedByOwner",
+  youtube_status: "live.event.youtubeStatus",
+  encoder_replay_end: "live.event.replayEnd",
+  encoder_starting: "live.event.encoderStart",
+  stream_forgotten: "live.event.streamForgotten",
   settings_saved: "live.event.settingsSaved",
   rotation_add: "live.event.rotationAdd",
   rotation_remove: "live.event.rotationRemove",
@@ -690,7 +729,18 @@ function HistoryCard({ overview }: { overview: Overview }) {
           {overview.events.map((event) => {
             const key = EVENT_KEYS[event.kind];
             const detail = event.detail;
-            const what = typeof detail.method === "string" ? detail.method : typeof detail.videoId === "string" ? detail.videoId : typeof detail.cause === "string" ? detail.cause : typeof detail.reason === "string" ? detail.reason : "";
+            const what =
+              typeof detail.method === "string"
+                ? detail.method
+                : typeof detail.videoId === "string"
+                  ? detail.videoId
+                  : typeof detail.cause === "string"
+                    ? causeText(t, detail.cause)
+                    : typeof detail.reason === "string"
+                      ? causeText(t, detail.reason)
+                      : typeof detail.lifeCycleStatus === "string"
+                        ? detail.lifeCycleStatus
+                        : "";
             return (
               <li key={event.id} className="flex gap-3">
                 <span className="shrink-0 text-zinc-500">{new Date(event.at).toLocaleString(t.language)}</span>
