@@ -223,6 +223,7 @@ function createHarness(options: {
   let counter = 0;
 
   const backupWrites: Array<{ videoId: string; snapshot: unknown }> = [];
+  const auditEvents: Array<{ videoId: string; eventType: string; detail: Record<string, unknown> }> = [];
   const fetchFreshCalls: string[] = [];
   const fetchPreliminaryCalls: string[][] = [];
 
@@ -276,10 +277,11 @@ function createHarness(options: {
       },
     },
     audit: {
-      async record(input: { videoId: string }) {
+      async record(input: { videoId: string; eventType: string; detail: unknown }) {
         if (input.videoId === options.auditFailsForVideoId) {
           throw new Error("simulated audit-store failure");
         }
+        auditEvents.push({ videoId: input.videoId, eventType: input.eventType, detail: (input.detail ?? {}) as Record<string, unknown> });
       },
     },
     clock: { async wait() {} },
@@ -287,7 +289,7 @@ function createHarness(options: {
     logger: { info() {}, error() {} },
   });
 
-  return { store, services, backupWrites, fetchFreshCalls, fetchPreliminaryCalls };
+  return { store, services, backupWrites, auditEvents, fetchFreshCalls, fetchPreliminaryCalls };
 }
 
 async function createApprovedBatch(
@@ -585,16 +587,21 @@ test("channel baseline: no baseline configured -> still blocked exactly as befor
   }
 });
 
-test("channel baseline (owner decision 2026-10-04, replaces 'baseline never overrides'): a video whose own defaultLanguage differs from the channel default fails closed and nothing is backed up or sent", async () => {
+// Changed 2026-10-12 (BL-178), with justification (AGENTS.md §L): this test encoded the 2026-10-04 rule "a video whose own
+// defaultLanguage differs from the channel default fails closed". The requirement itself changed: the owner's exception of
+// 2026-10-12 (Telegram msg 2665, FO-REQ-0022 В1; PROJECT_SPEC §14) makes the batch align it instead. The fail-closed cases that
+// remain are tested below (no language baseline; a row in the baseline language; a non-mirror entry).
+test("channel baseline (owner exception 2026-10-12, replaces the 2026-10-04 fail-closed rule): a video whose own defaultLanguage differs from the channel default is aligned to it", async () => {
   const harness = createHarness({
     channelBaseline: "en",
+    channelBaselineAudio: "en",
     freshByVideoId: { v1: { snippet: { title: "T", description: "D", defaultLanguage: "ja" }, localizations: {} } },
   });
   const batch = await createApprovedBatch(harness, { channelId: "UC_TEST", dryRun: true, selections: [{ videoId: "v1", changeIds: ["c1"] }] });
-  const result = await harness.services.prepareBatchExecution({ batchId: batch.id, credentialRef: { userId: "user-1" } });
-  assert.equal(result.rows[0].status, "FAILED");
-  assert.match((result.rows[0] as { error: string }).error, /"ja".*"en"|Language defaults/);
-  assert.equal(harness.backupWrites.length, 0);
+  const row = (await harness.services.prepareBatchExecution({ batchId: batch.id, credentialRef: { userId: "user-1" } })).rows[0];
+  assert.equal(row.status, "DRY_RUN_COMPLETE");
+  assert.equal(row.status === "DRY_RUN_COMPLETE" && row.payload.snippet.defaultLanguage, "en");
+  assert.deepEqual(row.status === "DRY_RUN_COMPLETE" && row.alignedDefaultLanguage, { from: "ja", to: "en" });
 });
 
 test("channel baseline: a video whose defaultLanguage equals the channel default is written with it (nothing 'applied')", async () => {
@@ -665,4 +672,113 @@ test("channel baseline: an existing remote localization under the baseline code 
   const result = await harness.services.prepareBatchExecution({ batchId: batch.id, credentialRef: { userId: "user-1" } });
   assert.equal(result.rows[0].status, "FAILED");
   assert.match((result.rows[0] as { error: string }).error, /collide/);
+});
+
+// ---------------------------------------------------------------------------
+// BL-178 (owner exception 2026-10-12, Telegram msg 2665; PROJECT_SPEC §14; FO-REQ-0022). Expected values stated by hand from
+// the request's case: two Tropico videos labelled `es` whose text is English; YouTube's mirror `localizations.es` equals the
+// snippet; the channel baseline is en/en. A batch must keep the English snippet byte for byte, set defaultLanguage en, and put
+// the Spanish translation into `localizations.es`.
+// ---------------------------------------------------------------------------
+const EN_TITLE = "Cuban Jazz Morning Coffee ☕ Tropical Conservatory | 2 Hours";
+const EN_DESCRIPTION = "Two hours of relaxing Cuban jazz for your morning coffee.";
+const PT = { title: "Jazz cubano para o cafezinho da manhã", description: "Duas horas de jazz cubano relaxante." };
+const MISLABELLED_ES = (extra: Record<string, { title: string; description: string }> = {}) => ({
+  snippet: { title: EN_TITLE, description: EN_DESCRIPTION, defaultLanguage: "es", defaultAudioLanguage: "en", categoryId: "10" },
+  localizations: { es: { title: EN_TITLE, description: EN_DESCRIPTION }, "pt-BR": PT, ...extra },
+});
+
+async function dryRunOne(
+  harness: ReturnType<typeof createHarness>,
+  changes: Record<string, Partial<PendingChangeRecord>>
+) {
+  const batch = await createApprovedBatch(harness, { channelId: "UC_TEST", dryRun: true, selections: [{ videoId: "v1", changeIds: Object.keys(changes) }] }, changes);
+  return (await harness.services.prepareBatchExecution({ batchId: batch.id, credentialRef: { userId: "user-1" } })).rows[0];
+}
+
+test("BL-178 hole: an audio baseline without a language baseline fails closed -- an es row on an es-labelled video would replace the English title", async () => {
+  const harness = createHarness({ channelBaseline: null, channelBaselineAudio: "en", freshByVideoId: { v1: MISLABELLED_ES() } });
+  const row = await dryRunOne(harness, { c1: { language: "es", field: "title", baselineValue: EN_TITLE, proposedValue: "Jazz cubano para el café de la mañana" } });
+  assert.equal(row.status, "FAILED");
+  assert.match((row as { error: string }).error, /no default language|Language defaults/);
+  assert.equal(harness.backupWrites.length, 0);
+});
+
+test("BL-178 align: translation rows made against the aligned reading (baseline empty) -> English snippet kept, defaultLanguage en, Spanish in localizations.es", async () => {
+  const harness = createHarness({ channelBaseline: "en", channelBaselineAudio: "en", freshByVideoId: { v1: MISLABELLED_ES() } });
+  const row = await dryRunOne(harness, {
+    c1: { language: "es", field: "title", baselineValue: "", proposedValue: "Jazz cubano para el café de la mañana" },
+    c2: { language: "es", field: "description", baselineValue: "", proposedValue: "Dos horas de jazz cubano relajante." },
+  });
+  assert.equal(row.status, "DRY_RUN_COMPLETE");
+  if (row.status !== "DRY_RUN_COMPLETE") return;
+  assert.equal(row.payload.snippet.title, EN_TITLE);
+  assert.equal(row.payload.snippet.description, EN_DESCRIPTION);
+  assert.equal(row.payload.snippet.defaultLanguage, "en");
+  assert.equal(row.payload.snippet.defaultAudioLanguage, "en");
+  assert.equal(row.payload.snippet.categoryId, "10");
+  assert.deepEqual(row.payload.localizations, {
+    es: { title: "Jazz cubano para el café de la mañana", description: "Dos horas de jazz cubano relajante." },
+    "pt-BR": PT,
+  });
+  assert.deepEqual(row.alignedDefaultLanguage, { from: "es", to: "en" });
+  assert.equal(row.appliedDefaultLanguage, "en");
+});
+
+test("BL-178 align: a row made earlier against the mirror (set 66cbf969: modify, baseline = the English title) is written as a translation, never into the snippet", async () => {
+  const harness = createHarness({ channelBaseline: "en", channelBaselineAudio: "en", freshByVideoId: { v1: MISLABELLED_ES() } });
+  const row = await dryRunOne(harness, {
+    c1: { language: "es", field: "title", baselineValue: EN_TITLE, proposedValue: "Jazz cubano para el café de la mañana", changeType: "modify" },
+  });
+  assert.equal(row.status, "DRY_RUN_COMPLETE");
+  if (row.status !== "DRY_RUN_COMPLETE") return;
+  assert.equal(row.payload.snippet.title, EN_TITLE);
+  // The mirror is not carried over: a title-only row never leaves the English description labelled es.
+  assert.deepEqual(row.payload.localizations.es, { title: "Jazz cubano para el café de la mañana", description: "" });
+});
+
+test("BL-178 align: the snippet changed since the row was made -> CONFLICT, as for any stale baseline", async () => {
+  const harness = createHarness({ channelBaseline: "en", channelBaselineAudio: "en", freshByVideoId: { v1: MISLABELLED_ES() } });
+  const row = await dryRunOne(harness, { c1: { language: "es", field: "title", baselineValue: "An older English title", proposedValue: "Jazz cubano" } });
+  assert.equal(row.status, "CONFLICT");
+});
+
+test("BL-178 align: a row in the baseline language itself on an es-labelled video fails closed (it would edit the original)", async () => {
+  const harness = createHarness({ channelBaseline: "en", channelBaselineAudio: "en", freshByVideoId: { v1: MISLABELLED_ES() } });
+  const row = await dryRunOne(harness, { c1: { language: "en", field: "title", baselineValue: "", proposedValue: "New English title" } });
+  assert.equal(row.status, "FAILED");
+  assert.equal(harness.backupWrites.length, 0);
+});
+
+test("BL-178 align: an es entry that is not the mirror, or an en entry that differs from the snippet, fails closed -- nothing guessed", async () => {
+  for (const fresh of [
+    { snippet: MISLABELLED_ES().snippet, localizations: { es: { title: "Jazz cubano", description: "Dos horas" } } },
+    MISLABELLED_ES({ en: { title: "Another English title", description: EN_DESCRIPTION } }),
+  ]) {
+    const harness = createHarness({ channelBaseline: "en", channelBaselineAudio: "en", freshByVideoId: { v1: fresh } });
+    const row = await dryRunOne(harness, { c1: { language: "pt-BR", field: "title", baselineValue: PT.title, proposedValue: "Novo título" } });
+    assert.equal(row.status, "FAILED");
+    assert.equal(harness.backupWrites.length, 0);
+  }
+});
+
+test("BL-178 align: an en entry equal to the snippet is a mirror too and is left out of the payload", async () => {
+  const harness = createHarness({ channelBaseline: "en", channelBaselineAudio: "en", freshByVideoId: { v1: MISLABELLED_ES({ en: { title: EN_TITLE, description: EN_DESCRIPTION } }) } });
+  const row = await dryRunOne(harness, { c1: { language: "pt-BR", field: "title", baselineValue: PT.title, proposedValue: "Novo título" } });
+  assert.equal(row.status, "DRY_RUN_COMPLETE");
+  if (row.status !== "DRY_RUN_COMPLETE") return;
+  assert.deepEqual(Object.keys(row.payload.localizations).sort(), ["pt-BR"]);
+  assert.equal(row.payload.snippet.defaultLanguage, "en");
+});
+
+test("BL-178 align: the backup keeps the original snippet text and language; the dry-run audit records es -> en", async () => {
+  const harness = createHarness({ channelBaseline: "en", channelBaselineAudio: "en", freshByVideoId: { v1: MISLABELLED_ES() } });
+  await dryRunOne(harness, { c1: { language: "es", field: "title", baselineValue: "", proposedValue: "Jazz cubano" } });
+  const snapshot = harness.backupWrites[0].snapshot as Record<string, unknown>;
+  assert.equal(snapshot.defaultLanguage, "es");
+  assert.equal(snapshot.snippetTitle, EN_TITLE);
+  assert.equal(snapshot.snippetDescription, EN_DESCRIPTION);
+  assert.deepEqual((snapshot.existingLocalizations as Record<string, unknown>).es, { title: EN_TITLE, description: EN_DESCRIPTION });
+  const dryRun = harness.auditEvents.find((e) => e.eventType === "DRY_RUN");
+  assert.deepEqual(dryRun?.detail.defaultLanguageAligned, { from: "es", to: "en" });
 });

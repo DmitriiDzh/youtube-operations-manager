@@ -19,6 +19,9 @@ export type LocalizationBackupSnapshot = {
   kind: "localization";
   defaultLanguage: string | null;
   existingLocalizations: Record<string, { title: string; description: string }>;
+  /** BL-178: the snippet title/description at backup time (absent in backups taken before 2026-10-12). */
+  snippetTitle?: string;
+  snippetDescription?: string;
 };
 
 export type VideoFieldsBackupSnapshot = {

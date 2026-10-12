@@ -10,6 +10,7 @@
 //     RISK-03-affected behavior, see docs/TECHNICAL_DEBT.md RISK-03)
 //   - AC-MERGE-01/02/03/04, AC-MULTI-01 (buildSafeLocalizationsPayload)
 
+import { baselineValueStillHolds, readAgainstBaseline, type VideoLanguageView } from "@/lib/shared-language-baseline";
 import { pickWritableSnippetFields } from "@/lib/youtube-write-gateway";
 
 export type FreshVideoLocale = { title: string; description: string };
@@ -91,13 +92,32 @@ export type ConflictResult =
  * AC-CONFLICT-02) is the backstop for a race landing in the gap between this check and
  * the eventual write.
  */
-export function detectPreWriteConflict(changes: PendingChange[], fresh: FreshVideoContext): ConflictResult {
-  const conflicting = changes.filter(
-    (change) => readCurrentValue(fresh, change.language, change.field) !== change.baselineValue
-  );
+export function detectPreWriteConflict(
+  changes: PendingChange[],
+  fresh: FreshVideoContext,
+  options: { channelBaseline?: string | null } = {}
+): ConflictResult {
+  const conflicting = changes.filter((change) => !baselineHolds(change, fresh, options.channelBaseline ?? null));
 
   if (conflicting.length === 0) return { status: "none" };
   return { status: "conflict", conflictingChangeIds: conflicting.map((c) => c.id) };
+}
+
+/** The fresh fetch in the shape the shared language-baseline rule reads (`@/lib/shared-language-baseline`). */
+export function toLanguageView(fresh: FreshVideoContext): VideoLanguageView {
+  return { defaultLanguage: fresh.snippet.defaultLanguage, title: fresh.snippet.title, description: fresh.snippet.description, localizations: fresh.localizations };
+}
+
+/**
+ * Whether a change's baseline still matches the fresh fetch. Without a channel baseline: the plain current value
+ * (`readCurrentValue`). With one (BL-178, PROJECT_SPEC §14 2026-10-12), a video whose own language differs from it is read
+ * aligned: a change in the old default language holds when its baseline is empty or the snippet text (made against YouTube's
+ * mirror) -- both mean "no translation existed".
+ */
+function baselineHolds(change: PendingChange, fresh: FreshVideoContext, channelBaseline: string | null): boolean {
+  if (!channelBaseline) return readCurrentValue(fresh, change.language, change.field) === change.baselineValue;
+  const video = toLanguageView(fresh);
+  return baselineValueStillHolds(video, readAgainstBaseline(video, channelBaseline), change);
 }
 
 export type SafeLocalizationsPayload = {
@@ -216,16 +236,16 @@ export type ReconciliationReadClassification = "matches_requested" | "matches_ba
  */
 export function classifyFreshStateAgainstAttempt(
   changes: PendingChange[],
-  fresh: FreshVideoContext
+  fresh: FreshVideoContext,
+  options: { channelBaseline?: string | null } = {}
 ): ReconciliationReadClassification {
   const allMatchRequested = changes.every(
     (change) => readCurrentValue(fresh, change.language, change.field) === change.proposedValue
   );
   if (allMatchRequested) return "matches_requested";
 
-  const allMatchBaseline = changes.every(
-    (change) => readCurrentValue(fresh, change.language, change.field) === change.baselineValue
-  );
+  // An aligning write (BL-178) that did not land leaves the video in its old language: its rows still hold (see baselineHolds).
+  const allMatchBaseline = changes.every((change) => baselineHolds(change, fresh, options.channelBaseline ?? null));
   if (allMatchBaseline) return "matches_baseline";
 
   return "diverged";

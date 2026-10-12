@@ -218,6 +218,7 @@ function createHarness(options: {
   backupHealthy?: boolean;
   verifyRetryDelaysMs?: number[];
   channelBaseline?: string | null;
+  channelBaselineAudio?: string | null;
   assertWriteChannel?: (args: {
     expectedChannelId?: string;
   }) => Promise<{ expectedChannelId: string; shouldPersistSelection: boolean; userId: string | null }>;
@@ -253,7 +254,13 @@ function createHarness(options: {
         options.assertWriteChannel ??
         (async (args) => ({ expectedChannelId: args.expectedChannelId ?? "UC_TEST", shouldPersistSelection: false, userId: "user-1" })),
     },
-    channelLanguageBaseline: options.channelBaseline === undefined ? undefined : { getExpectedDefaultLanguage: async () => options.channelBaseline ?? null },
+    channelLanguageBaseline:
+      options.channelBaseline === undefined
+        ? undefined
+        : {
+            getExpectedDefaultLanguage: async () => options.channelBaseline ?? null,
+            ...(options.channelBaselineAudio !== undefined ? { getExpectedDefaultAudioLanguage: async () => options.channelBaselineAudio ?? null } : {}),
+          },
     youtubeApi: {
       async fetchFreshVideoContext(args: { videoId: string }) {
         const sequence = options.freshSequenceByVideoId?.[args.videoId];
@@ -1468,4 +1475,68 @@ test("local copy: a read-back that still shows the pre-write state (lag) or some
     assert.notEqual(summary.results[0].status, "SUCCESS");
     assert.deepEqual(applied, []);
   }
+});
+
+// ---------------------------------------------------------------------------
+// BL-178 (owner exception 2026-10-12, Telegram msg 2665; PROJECT_SPEC §14; FO-REQ-0022), the live write. Expected values by hand
+// from the requirement: the English snippet stays byte for byte, defaultLanguage becomes en, the Spanish row lands in
+// localizations.es; a read-back whose snippet differs fails the row AND stops the batch; an aligning write whose outcome is
+// unknown and that did not land reads as "still the baseline" (UNKNOWN), not as a conflict.
+// ---------------------------------------------------------------------------
+const EN_T = "Cuban Jazz After the Rain 🌤️ Relaxing Plaza Café | 2 Hours";
+const EN_D = "Two hours of relaxing Cuban jazz after the rain.";
+const MISLABELLED: Fixture = {
+  snippet: { title: EN_T, description: EN_D, defaultLanguage: "es", defaultAudioLanguage: "en" },
+  localizations: { es: { title: EN_T, description: EN_D } },
+};
+const ALIGNED_AFTER = (title = EN_T): Fixture => ({
+  snippet: { title, description: EN_D, defaultLanguage: "en", defaultAudioLanguage: "en" },
+  localizations: { en: { title, description: EN_D }, es: { title: "Jazz cubano después de la lluvia", description: "" } },
+});
+const ES_ROW = { c1: { language: "es", field: "title" as const, baselineValue: "", proposedValue: "Jazz cubano después de la lluvia" } };
+
+test("BL-178 live: an aligning write keeps the English snippet, sends defaultLanguage en, and is confirmed by the read-back; ATTEMPT audit records es -> en", async () => {
+  const harness = createHarness({ channelBaseline: "en", channelBaselineAudio: "en", freshSequenceByVideoId: { v1: [MISLABELLED, MISLABELLED, ALIGNED_AFTER()] } });
+  const batch = await createApprovedBatch(harness, { channelId: "UC_TEST", dryRun: false, selections: [{ videoId: "v1", changeIds: ["c1"] }] }, ES_ROW);
+  const sent: Array<{ snippet: Record<string, unknown>; localizations: Record<string, unknown> }> = [];
+  const executor = { async attemptWrite(payload: { snippet: Record<string, unknown>; localizations: Record<string, unknown> }) { sent.push(payload); return { outcome: "SUCCESS" as const }; } };
+
+  const summary = await harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, executor: executor as never });
+
+  assert.equal(summary.results[0].status, "SUCCESS");
+  assert.deepEqual([sent[0].snippet.title, sent[0].snippet.description, sent[0].snippet.defaultLanguage, sent[0].snippet.defaultAudioLanguage], [EN_T, EN_D, "en", "en"]);
+  assert.deepEqual(sent[0].localizations, { es: { title: "Jazz cubano después de la lluvia", description: "" } });
+  const attempt = harness.auditEvents.find((e) => e.eventType === "ATTEMPT")?.detail as Record<string, unknown>;
+  assert.deepEqual(attempt.defaultLanguageAligned, { from: "es", to: "en" });
+});
+
+test("BL-178 live: a read-back whose English title differs by one character fails the row and stops the batch (no further write)", async () => {
+  const harness = createHarness({
+    channelBaseline: "en",
+    channelBaselineAudio: "en",
+    freshSequenceByVideoId: { v1: [MISLABELLED, MISLABELLED, ALIGNED_AFTER(`${EN_T}.`)], v2: [MISLABELLED, MISLABELLED, ALIGNED_AFTER()] },
+  });
+  const batch = await createApprovedBatch(
+    harness,
+    { channelId: "UC_TEST", dryRun: false, selections: [{ videoId: "v1", changeIds: ["c1"] }, { videoId: "v2", changeIds: ["c2"] }] },
+    { ...ES_ROW, c2: { ...ES_ROW.c1 } }
+  );
+  let writes = 0;
+  const executor = { async attemptWrite() { writes += 1; return { outcome: "SUCCESS" as const }; } };
+
+  const summary = await harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, executor: executor as never });
+
+  const byVideo = Object.fromEntries(summary.results.map((r) => [r.videoId, r.status]));
+  assert.equal(byVideo.v1, "FAILED");
+  assert.notEqual(byVideo.v2, "SUCCESS");
+  assert.equal(writes, 1);
+});
+
+test("BL-178 live: an aligning write with an unknown outcome that did not land reads as the baseline twice -> UNKNOWN, never a conflict", async () => {
+  const harness = createHarness({ channelBaseline: "en", channelBaselineAudio: "en", freshSequenceByVideoId: { v1: [MISLABELLED, MISLABELLED, MISLABELLED, MISLABELLED] } });
+  const batch = await createApprovedBatch(harness, { channelId: "UC_TEST", dryRun: false, selections: [{ videoId: "v1", changeIds: ["c1"] }] }, ES_ROW);
+
+  const summary = await harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, executor: scriptedExecutor([{ outcome: "UNKNOWN", detail: "timeout" }]) });
+
+  assert.equal(summary.results[0].status, "UNKNOWN");
 });
