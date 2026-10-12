@@ -178,7 +178,7 @@ export function createStreamSupervisor(deps: SupervisorDependencies) {
      * Starts the encoder for a stream whose intent is on (after Start, at boot, or on Restart). Reads the key from
      * YouTube (a read), never stores it. Refuses, without any YouTube write, when something it needs is missing.
      */
-    async startEncoder(channelId: string, options: { freshPass: boolean }): Promise<{ pid: number }> {
+    async startEncoder(channelId: string, options: { freshPass: boolean; playable?: readonly string[] }): Promise<{ pid: number }> {
       const settings = await deps.settings();
       if (!settings.enabled || !settings.host.ok) throw new DomainError({ code: "live_streams_host_unsupported", message: settings.host.ok ? "The live-streams module is switched off in Settings" : settings.host.reason });
       const stream = await deps.streams.get(channelId);
@@ -191,7 +191,8 @@ export function createStreamSupervisor(deps: SupervisorDependencies) {
         throw new DomainError({ code: "validation_failed", message: `ffmpeg with rtmps and ${settings.encoder} is not installed on this computer`, details: { channelId } });
       }
 
-      const playable = await deps.streams.recheck(channelId);
+      // Start has just re-read the rotation (§3.9 counts one videos.list); a restart re-reads it here (§3.4).
+      const playable = options.playable ? [...options.playable] : await deps.streams.recheck(channelId);
       if (playable.length === 0) throw new DomainError({ code: "live_stream_video_refused", message: "No video in the rotation is playable (public, with its file)", details: { channelId, reason: "empty" } });
 
       const storedOrder = parseJson<string[]>(stream.passOrderJson);

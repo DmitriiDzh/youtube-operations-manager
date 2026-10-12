@@ -2,6 +2,7 @@ import { randomBytes, randomInt, randomUUID } from "node:crypto";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import {
   getLiveStream,
+  getLiveWritesEnabled,
   getLiveStreamsSettingsJson,
   getStoredVideo,
   insertLiveStreamEvent,
@@ -11,6 +12,8 @@ import {
   updateLiveStream,
 } from "@/lib/db";
 import { detectFfmpeg } from "@/lib/ffmpeg-host";
+import { resolveGoogleCredentials } from "@/lib/google-credentials";
+import { createWriteContextCore } from "@/lib/write-context";
 import { getProductionAppPaths } from "@/lib/platform-paths";
 import { createBufferFs } from "./adapters/buffer-fs";
 import { createLiveStreamsFiles } from "./adapters/files";
@@ -18,6 +21,8 @@ import { createHelperProcess, createSupervisorFiles } from "./adapters/helper-pr
 import { createLiveStreamsStore } from "./adapters/store";
 import { createLiveStreamsYoutubeReads } from "./adapters/youtube-api";
 import { createLiveStreamBuffer } from "./buffer";
+import { createLiveBroadcasts } from "./broadcasts";
+import { createLiveStreamsYoutubeWrites } from "./adapters/youtube-writes";
 import { createLiveStreamsRunner } from "./runner";
 import { createLiveStreamsServices } from "./services";
 import { createLiveStreamsSettings, liveStreamsHost } from "./settings";
@@ -78,6 +83,25 @@ export function createStreamSupervisorCore() {
     clock: () => new Date(),
     newToken: () => randomBytes(16).toString("hex"),
     random: (n) => randomInt(n),
+  });
+}
+
+/** The owner's attended actions: Start, Go live, Stop, Edit -- the only live-stream code that writes to YouTube. */
+export function createLiveBroadcastsCore() {
+  return createLiveBroadcasts({
+    settings: () => createLiveStreamsSettingsCore().get(),
+    liveWritesEnabled: () => getLiveWritesEnabled(),
+    auth: { resolve: (args) => resolveGoogleCredentials(args as Parameters<typeof resolveGoogleCredentials>[0]) },
+    writeContext: { assertWriteChannel: (args) => createWriteContextCore().assertWriteChannel(args as Parameters<ReturnType<typeof createWriteContextCore>["assertWriteChannel"]>[0]) },
+    streams: {
+      get: (channelId) => getLiveStream(channelId),
+      update: (channelId, set) => updateLiveStream(channelId, { ...set, updatedAt: new Date() }),
+      event: async (channelId, kind, detail) => insertLiveStreamEvent({ id: randomUUID(), channelId, at: new Date(), kind, detailJson: JSON.stringify(detail) }),
+    },
+    rotation: { recheck: async (channelId) => (await createLiveStreamsCore().recheckRotation(channelId)).playable },
+    youtube: createLiveStreamsYoutubeWrites(),
+    supervisor: createStreamSupervisorCore(),
+    clock: () => new Date(),
   });
 }
 
