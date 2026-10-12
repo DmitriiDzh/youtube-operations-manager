@@ -232,7 +232,7 @@ Details (proposed in msg 2577, accepted in msg 2578):
   - A video that stops being public leaves the next pass, and an event records it.
   - The owner's explicit override, with a reason, is allowed and audited.
 - **The Operator's map.**
-  - Factory MCP tool `factory_live_sources_set { channelId, items: [{ videoId, file }] }`, where `file` is relative to the
+  - Factory MCP tool `factory_live_map_sources { channelId, items: [{ videoId, file }] }`, where `file` is relative to the
     channel workspace.
   - The app checks each item:
     - the file exists inside the workspace;
@@ -372,10 +372,10 @@ Details (proposed in msg 2577, accepted in msg 2578):
     - viewers.
 - **States shown:** off / starting / live / live, replaying the buffer (the T9 or a file is missing) / reconnecting / ended by
   YouTube / error.
-- **Quota.**
-  - A running stream costs 2 units a poll: 288 polls × 2 = 576 a day.
-  - The viewers call is one per poll for all channels, 288 a day.
-  - Two channels: 2 × 576 + 288 = 1,440 units a day, out of 10,000.
+- **Quota (as built).**
+  - A running stream costs 3 units a poll (broadcast, stream status, viewers while live): 288 polls × 3 = 864 a day.
+  - Two channels: about 1,728 units a day, out of 10,000. (The plan first had one viewers call for all channels; it is one per
+    channel, which keeps each stream's poll independent.)
 - **History:** interruptions with start, end and cause.
 - **Bell notices:**
   - `live_stream_down`: the encoder or YouTube has not been live for more than 5 minutes (a setting);
@@ -394,13 +394,15 @@ Details (proposed in msg 2577, accepted in msg 2578):
   It never carries a key, a URL, an ingestion address or error text.
 - **Windows** shows the same page read-only, about 1–2 minutes behind, with "на <Mac>" in place of the buttons.
   - A new family needs no lockstep update. Windows sees streams once it updates.
-- **Factory MCP `factory_live_streams_status`** (read-only, in phase 1): the same fields.
+- **Factory MCP `factory_live_get_status`** (read-only, in phase 1): the same fields. (Named `get` like the other reads; the map
+  tool of §3.4 is `factory_live_map_sources`.)
   - The app cannot reach Telegram, so this is how the Operator learns at night that a stream is down.
   - Factory API 1.14.0, additive.
 
 ### 3.12 Screens (as a UX designer: audit first, then build)
 - **Content gets sub-tabs, «Видео» (today's list) and «Трансляции».** `/content` keeps opening «Видео».
-- **«Трансляции»: one card per channel.**
+- **«Трансляции»: the active channel's stream** (channel routes are scoped to the active channel, ADR 0004; the bell's notices
+  switch to the channel). A computer that cannot host streams shows only the other computers' reports, read-only.
   - State badge, uptime, now playing (N of M), health and viewers.
   - Start / Stop / Restart.
   - Texts and privacy.

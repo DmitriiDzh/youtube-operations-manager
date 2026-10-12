@@ -39,7 +39,8 @@ disconnected by itself.
    scrubber removes it from every log, event, status file, report and MCP output. If YouTube does not return the key on read
    (spike B), it is stored encrypted with the device key file, like the Gemini key.
 9. **Other computers see streams read-only** through a new per-device sync family `live-streams` (ADR 0028 pattern), and the
-   Operator through the read-only Factory MCP tool `factory_live_streams_status`. Neither carries a key, a URL or error text.
+   Operator through the read-only Factory MCP tool `factory_live_get_status` (Factory API 1.14.0; it maps files with the local write
+   `factory_live_map_sources`). Neither carries a key, a URL or error text.
 
 ## Consequences
 
