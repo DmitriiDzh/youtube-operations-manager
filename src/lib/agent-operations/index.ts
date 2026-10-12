@@ -1,7 +1,7 @@
 import { getAgentSession } from "@/lib/agent-session";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { getChannelTargetLanguages, SCHEMA_CURRENT_VERSION } from "@/lib/db";
+import { getChannelExpectedLanguages, getChannelTargetLanguages, SCHEMA_CURRENT_VERSION } from "@/lib/db";
 import { createChannelVideoStoreAdapter } from "@/lib/channel-video-store";
 import { createAiLocalizationCore } from "@/lib/ai-localization";
 import { createAnalyticsCore } from "@/lib/analytics";
@@ -54,6 +54,7 @@ export function createAgentOperationsCore() {
     // simpler `(channelId: string)` dependency shape.
     getEditorialProfile: (channelId: string) => aiLocalizationCore.getEditorialProfile({ channelId }),
     getTrackedLanguages: getChannelTargetLanguages,
+    getChannelLanguageBaseline: getChannelExpectedLanguages,
     // Slice C -- delegates unchanged to `analyticsCore`'s own already-existing, already-tested
     // functions (AGENTS.md §D). Both accept `input: unknown` and do their own internal
     // validation/credential-resolution/active-channel check.

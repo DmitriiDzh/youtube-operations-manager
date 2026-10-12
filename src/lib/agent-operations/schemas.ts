@@ -123,6 +123,11 @@ export const channelContextOutputSchema = z
     syncedVideoCount: z.number().int().nonnegative(),
     editorialProfile: agentEditorialProfileContextSchema.nullable(),
     trackedLanguages: z.array(z.string()),
+    /** BL-178: the channel's language baseline, and the videos whose own language fields differ from it. */
+    languageBaseline: z.object({ defaultLanguage: z.string().nullable(), defaultAudioLanguage: z.string().nullable() }).strict().nullable().optional(),
+    languageDeviations: z
+      .array(z.object({ videoId: z.string().min(1), defaultLanguage: z.string().nullable(), defaultAudioLanguage: z.string().nullable() }).strict())
+      .optional(),
   })
   .strict();
 

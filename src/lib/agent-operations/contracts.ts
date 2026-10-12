@@ -213,6 +213,11 @@ export type ChannelContext = {
    * Web UI's own Languages tab, `src/lib/localization/`); this is the raw tracked-language
    * intent, kept simple for an agent-context payload. */
   trackedLanguages: string[];
+  /** BL-178 (FO-REQ-0022): the channel's language baseline (Languages -> Language defaults); `null` when neither field is set. */
+  languageBaseline?: { defaultLanguage: string | null; defaultAudioLanguage: string | null } | null;
+  /** BL-178: synced videos whose own language fields differ from the baseline (only fields the baseline sets; case-insensitive;
+   * a missing value deviates). Empty without a baseline. A Batch aligns such a video's `defaultLanguage` when it writes it. */
+  languageDeviations?: Array<{ videoId: string; defaultLanguage: string | null; defaultAudioLanguage: string | null }>;
 };
 
 export type AgentLocalizationEntry = {

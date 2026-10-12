@@ -85,21 +85,29 @@ export const WRITABLE_SNIPPET_FIELDS = [
 /**
  * `defaultAudioLanguage` is NOT in the official `videos.update` settable list, yet the owner
  * (2026-10-02) states it can be changed, and the earlier live rejection may have been caused by the
- * `zxx` value rather than the field. So it is sent ONLY when a caller explicitly asks to write it
- * (`src/lib/video-details/`, owner-initiated, read-back verified) -- never echoed back by the batch
- * path, which keeps using the default (documented-settable-only) whitelist. Experimental until one
- * live write confirms it (docs/SYSTEM_MAP.md).
+ * `zxx` value rather than the field. `videos.update` resets a snippet field that is left out
+ * (Tropico 2026-10-04: audio became `en-US`), so:
+ * - `true`: a caller writing it on purpose (`src/lib/video-details/` with the field in its patch);
+ * - `"keep"` (RISK-102, BL-178, PROJECT_SPEC §14 2026-10-12): a single-item edit of other snippet fields
+ *   (video-details, "Fix all", video-metadata) sends back the value it read from YouTube just before
+ *   the write -- never a stored copy -- so the edit does not reset it; `zxx`, rejected when echoed, is
+ *   left out as before;
+ * - omitted: not sent (the default whitelist). Batches set the channel baseline themselves.
  */
 export function pickWritableSnippetFields(
   snippet: Record<string, unknown>,
-  options: { includeDefaultAudioLanguage?: boolean } = {}
+  options: { includeDefaultAudioLanguage?: boolean | "keep" } = {}
 ): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const field of WRITABLE_SNIPPET_FIELDS) {
     if (field in snippet) result[field] = snippet[field];
   }
-  if (options.includeDefaultAudioLanguage && "defaultAudioLanguage" in snippet) {
+  if (options.includeDefaultAudioLanguage === true && "defaultAudioLanguage" in snippet) {
     result.defaultAudioLanguage = snippet.defaultAudioLanguage;
+  }
+  const audio = snippet.defaultAudioLanguage;
+  if (options.includeDefaultAudioLanguage === "keep" && typeof audio === "string" && audio.length > 0 && audio.toLowerCase() !== "zxx") {
+    result.defaultAudioLanguage = audio;
   }
   return result;
 }

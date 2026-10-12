@@ -152,6 +152,7 @@ function createFixture(
     videosByChannel: Record<string, FakeVideo[]>;
     profilesByChannel: Record<string, FakeProfile | null>;
     trackedLanguagesByChannel: Record<string, string[]>;
+    languageBaselineByChannel: Record<string, { defaultLanguage: string | null; defaultAudioLanguage: string | null }>;
     getChannelOverview: (input: unknown) => Promise<FakeChannelOverview>;
     listMetrics: (input: unknown) => Promise<FakeListMetricsResult>;
     now: () => Date;
@@ -193,6 +194,9 @@ function createFixture(
     },
     async getTrackedLanguages(channelId: string) {
       return overrides.trackedLanguagesByChannel?.[channelId] ?? [];
+    },
+    async getChannelLanguageBaseline(channelId: string) {
+      return overrides.languageBaselineByChannel?.[channelId] ?? { defaultLanguage: null, defaultAudioLanguage: null };
     },
     getChannelOverview: overrides.getChannelOverview ?? (async () => { throw new Error("getChannelOverview not stubbed"); }),
     listMetrics: overrides.listMetrics ?? (async () => { throw new Error("listMetrics not stubbed"); }),
@@ -1367,4 +1371,40 @@ test("queryChannelAnalytics passes through viewCountingChangeInComparison from t
     });
     assert.equal(result.viewCountingChangeInComparison, flag);
   }
+});
+
+// BL-178 (FO-REQ-0022 item 3; PROJECT_SPEC §14 2026-10-12): agents read the channel's language baseline and the videos whose own
+// language fields differ from it. Expected values by hand: a field is compared only when the baseline sets it, case does not
+// matter (EN = en), a missing value counts as a deviation once a baseline exists.
+test("BL-178: getChannelContext lists the channel's language baseline and the videos that deviate from it", async () => {
+  const { services } = createFixture({
+    channels: { UC_A: { channelId: "UC_A", title: "Tropico Jazz", lastSyncedAt: null } },
+    videosByChannel: {
+      UC_A: [
+        fakeVideo({ videoId: "v1" }),
+        fakeVideo({ videoId: "v2", defaultLanguage: "es" }),
+        fakeVideo({ videoId: "v3", defaultAudioLanguage: "en-US" }),
+        fakeVideo({ videoId: "v4", defaultLanguage: "EN" }),
+        fakeVideo({ videoId: "v5", defaultLanguage: null }),
+      ],
+    },
+    languageBaselineByChannel: { UC_A: { defaultLanguage: "en", defaultAudioLanguage: "en" } },
+  });
+  const result = await services.getChannelContext({ channelId: "UC_A" });
+  assert.deepEqual(result.languageBaseline, { defaultLanguage: "en", defaultAudioLanguage: "en" });
+  assert.deepEqual(result.languageDeviations, [
+    { videoId: "v2", defaultLanguage: "es", defaultAudioLanguage: "en" },
+    { videoId: "v3", defaultLanguage: "en", defaultAudioLanguage: "en-US" },
+    { videoId: "v5", defaultLanguage: null, defaultAudioLanguage: "en" },
+  ]);
+});
+
+test("BL-178: without a baseline the context says so (null) and lists no deviations", async () => {
+  const { services } = createFixture({
+    channels: { UC_A: { channelId: "UC_A", title: "T", lastSyncedAt: null } },
+    videosByChannel: { UC_A: [fakeVideo({ videoId: "v2", defaultLanguage: "es" })] },
+  });
+  const result = await services.getChannelContext({ channelId: "UC_A" });
+  assert.equal(result.languageBaseline, null);
+  assert.deepEqual(result.languageDeviations, []);
 });

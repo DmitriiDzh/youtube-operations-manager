@@ -452,7 +452,7 @@ Changing default language is a YouTube write operation and must follow the same 
 
 Fails closed (the row FAILS, nothing is sent): no language baseline configured -- also when an audio baseline is set; a change in the baseline language itself; `localizations[<baseline>]` or `localizations[<old>]` present and different from the snippet (a real translation cannot be told from the mirror). The backup also keeps the snippet title and description; the DRY_RUN and ATTEMPT audit details record `defaultLanguageAligned: {from, to}`; the read-back must show the baseline `defaultLanguage` and the snippet title and description exactly as sent, otherwise the row FAILS and the batch stops. Change Sets, the Languages overview and AI localization treat the configured baseline (never a hard-coded language) as the original's language and the old-default mirror as absent; AI localization's `sourceLanguage` is the baseline when one is set.
 
-Single-item snippet writes (`video-details`, including "Fix all", and `video-metadata`) send the `defaultAudioLanguage` read from YouTube just before the write, so an edit of another field never resets it (RISK-102). Bulk writes use the channel baseline; a single edit keeps what the video has.
+Single-item snippet writes (`video-details`, including "Fix all", and `video-metadata`) send the `defaultAudioLanguage` read from YouTube just before the write, so an edit of another field never resets it (RISK-102) -- except `zxx` ("Not applicable"), which YouTube rejected when echoed (2026-10-02) and stays out as before. Bulk writes use the channel baseline; a single edit keeps what the video has.
 
 ---
 

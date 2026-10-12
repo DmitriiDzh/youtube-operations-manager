@@ -83,3 +83,17 @@ test("an unsynchronized channel fails closed with not_found", async () => {
   await assert.rejects(() => services.getDeviations({ channelId: "ch" }), (e: { code?: string }) => e.code === "not_found");
   await assert.rejects(() => services.setDefaults({ channelId: "ch", defaultLanguage: "en", defaultAudioLanguage: null }), (e: { code?: string }) => e.code === "not_found");
 });
+
+// BL-178 (review of FO-REQ-0022): the report, the Batch write and the agent context share one rule -- language codes compare
+// case-insensitively (a video `EN` under baseline `en` is not "deviating"; the Batch already treats them as equal).
+test("BL-178: a different letter case is no deviation (EN vs en), a different code still is (en-US vs en)", async () => {
+  const { services } = makeServices({
+    videos: [
+      { videoId: "x", title: "X", defaultLanguage: "EN", defaultAudioLanguage: "En" },
+      { videoId: "y", title: "Y", defaultLanguage: "en-US", defaultAudioLanguage: "en" },
+    ],
+    defaults: { defaultLanguage: "en", defaultAudioLanguage: "en" },
+  });
+  const report = await services.getDeviations({ channelId: "ch" });
+  assert.deepEqual(report.deviations.map((d) => [d.videoId, d.defaultLanguageDeviates, d.defaultAudioLanguageDeviates]), [["y", true, false]]);
+});
