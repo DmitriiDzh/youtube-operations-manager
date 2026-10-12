@@ -273,8 +273,10 @@ Details (proposed in msg 2577, accepted in msg 2578):
     a pass.
   - **A run lists the whole pass** and relies on lazy opening (§1.4, §6): no reconnect between videos. The next copy is made
     right after the encoder enters a video, about 2 h before it is needed; a copy takes 1–2 s.
-  - Video: the original decoded → `fps=30` → `h264_videotoolbox`, CBR at the bitrate setting (default 6,000 kbit/s), 2 s GOP, no
-    B-frames.
+  - Video: the original decoded → `fps=30` → H.264, 2 s GOP, no B-frames. **The encoder and bitrate wait for spike B (§6.1):**
+    `h264_videotoolbox` does not pad to CBR (≈ 2.2 Mbit/s), and libx264 CBR at 6 Mbit/s costs ≈ 52 % of one core.
+  - **Resume:** `inpoint` is set to the source keyframe at or before the resume point (found with ffprobe), so the run starts
+    exactly at its `inpoint` and the now-playing arithmetic of §4.1 holds.
   - Audio: copied.
   - Output: FLV to the stream's `rtmpsIngestionAddress`.
   - Progress: `-progress pipe:1` every 5 s.
