@@ -25,6 +25,12 @@ export const RESEARCH_TABS = [
   { value: "topics", labelKey: "tabs.research.topics" },
 ] as const;
 
+// BL-176 (LIVE_STREAMS_PLAN.md §3.12): Content gets sub-tabs -- today's videos list and the channel's live stream.
+export const CONTENT_TABS = [
+  { value: "videos", labelKey: "tabs.content.videos" },
+  { value: "streams", labelKey: "tabs.content.streams" },
+] as const;
+
 export const ANALYTICS_SUB_TABS = [
   { key: "overview", labelKey: "tabs.analytics.overview" },
   { key: "content", labelKey: "tabs.analytics.content" },
@@ -47,11 +53,14 @@ export const SETTINGS_SUB_TABS = [
   { value: "runpod", labelKey: "tabs.settings.runpod" },
   // BL-174 (GEMINI_MEDIA_PLAN.md §2.8): Google's Gemini API key, the operator's switch and limits, the spend, recent jobs.
   { value: "gemini", labelKey: "tabs.settings.gemini" },
+  // BL-176 (LIVE_STREAMS_PLAN.md §3.12): this computer's live-streams settings (the module switch, buffer, encoder).
+  { value: "live-streams", labelKey: "tabs.settings.liveStreams" },
   { value: "about", labelKey: "tabs.settings.about" },
 ] as const;
 
 export type ServersTab = (typeof SERVERS_TABS)[number]["value"];
 export type MediaTab = (typeof MEDIA_TABS)[number]["value"];
+export type ContentTab = (typeof CONTENT_TABS)[number]["value"];
 export type ResearchSubTab = (typeof RESEARCH_TABS)[number]["value"];
 export type AnalyticsSubTab = (typeof ANALYTICS_SUB_TABS)[number]["key"];
 export type SettingsSubTab = (typeof SETTINGS_SUB_TABS)[number]["value"];
@@ -59,6 +68,7 @@ export type SettingsSubTab = (typeof SETTINGS_SUB_TABS)[number]["value"];
 const SUB_TABS_BY_SECTION: Record<string, readonly string[]> = {
   servers: SERVERS_TABS.map((t) => t.value),
   media: MEDIA_TABS.map((t) => t.value),
+  content: CONTENT_TABS.map((t) => t.value),
   research: RESEARCH_TABS.map((t) => t.value),
   analytics: ANALYTICS_SUB_TABS.map((t) => t.key),
   settings: SETTINGS_SUB_TABS.map((t) => t.value),

@@ -20,6 +20,7 @@ import { content } from "./ru/content";
 import { decisions } from "./ru/decisions";
 import { errors } from "./ru/errors";
 import { languages } from "./ru/languages";
+import { liveStreams } from "./ru/liveStreams";
 import { media } from "./ru/media";
 import { merge } from "./ru/merge";
 import { production } from "./ru/production";
@@ -29,6 +30,6 @@ import { settings } from "./ru/settings";
 import { settingsCards } from "./ru/settingsCards";
 import { shell } from "./ru/shell";
 
-export const ruAreas = { common, shell, settings, production, media, languages, batches, decisions, research, researchData, analytics, content, merge, settingsCards, errors, analyticsLabels } as const;
+export const ruAreas = { common, shell, settings, production, media, languages, batches, decisions, research, researchData, analytics, content, merge, settingsCards, errors, analyticsLabels, liveStreams } as const;
 
-export const ru: Record<UiTextKey, string> = { ...common, ...shell, ...settings, ...production, ...media, ...languages, ...batches, ...decisions, ...research, ...researchData, ...analytics, ...content, ...merge, ...settingsCards, ...errors, ...analyticsLabels };
+export const ru: Record<UiTextKey, string> = { ...common, ...shell, ...settings, ...production, ...media, ...languages, ...batches, ...decisions, ...research, ...researchData, ...analytics, ...content, ...merge, ...settingsCards, ...errors, ...analyticsLabels, ...liveStreams };

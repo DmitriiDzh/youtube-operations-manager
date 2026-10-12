@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { useT } from "./ui-text-provider";
 
 type ConfirmDialogProps = {
@@ -13,6 +13,10 @@ type ConfirmDialogProps = {
   confirmVariant?: "default" | "danger";
   onCancel: () => void;
   onConfirm: () => void;
+  /** BL-176: richer content under the description (e.g. exactly what a YouTube write will send, or a reason field). */
+  children?: ReactNode;
+  /** BL-176: the confirm button stays disabled until the content is complete (e.g. a reason long enough). */
+  confirmDisabled?: boolean;
 };
 
 /**
@@ -37,6 +41,8 @@ export function ConfirmDialog({
   confirmVariant = "default",
   onCancel,
   onConfirm,
+  children,
+  confirmDisabled = false,
 }: ConfirmDialogProps) {
   const t = useT();
   // BL-157 (review round 3): the keyboard belongs to the dialog -- focus moves to Cancel (so Enter or Space never presses a
@@ -58,9 +64,10 @@ export function ConfirmDialog({
   }, []);
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4" role="presentation">
-      <div className="w-full max-w-sm space-y-4 rounded-lg border border-zinc-700 bg-zinc-900 p-5 shadow-xl" role="alertdialog" aria-modal="true" aria-label={title}>
+      <div className={`w-full ${children ? "max-w-lg" : "max-w-sm"} space-y-4 rounded-lg border border-zinc-700 bg-zinc-900 p-5 shadow-xl`} role="alertdialog" aria-modal="true" aria-label={title}>
         <p className="text-sm font-medium text-zinc-100">{title}</p>
         {description && <p className="text-xs text-zinc-400">{description}</p>}
+        {children}
         <div className="flex justify-end gap-2">
           <button
             ref={cancelRef}
@@ -71,11 +78,12 @@ export function ConfirmDialog({
           </button>
           <button
             onClick={onConfirm}
-            className={
+            disabled={confirmDisabled}
+            className={`disabled:opacity-50 ${
               confirmVariant === "danger"
                 ? "rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700"
                 : "rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500"
-            }
+            }`}
           >
             {confirmLabel}
           </button>
