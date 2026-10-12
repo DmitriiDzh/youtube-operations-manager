@@ -1542,6 +1542,11 @@ export const analyticsCollectionRuns = sqliteTable(
     // Additive, SCHEMA_MIGRATIONS version 45 (BL-118): 1 when this run also collected the CHANNEL-level daily totals
     // (`channel_metrics_daily`); NULL/0 for every earlier run.
     channelLevel: integer("channel_level"),
+    // Additive, SCHEMA_MIGRATIONS version 87 (BL-181, FO-REQ-0020 §2.4): the newest date the YouTube Analytics API actually
+    // returned in this run -- per video (max over every video's rows) and for the channel totals. NULL = nothing returned, or a
+    // run recorded before v87, or one imported from another computer (these stay device-local measurements).
+    newestVideoDate: text("newest_video_date"),
+    newestChannelDate: text("newest_channel_date"),
     ranAt: integer("ran_at", { mode: "timestamp" })
       .notNull()
       .$defaultFn(() => new Date()),
@@ -4725,6 +4730,20 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         set_at INTEGER NOT NULL,
         PRIMARY KEY (channel_id, video_id)
       )`);
+    },
+  },
+  {
+    version: 87,
+    description:
+      "analytics_collection_runs.newest_video_date / newest_channel_date -- BL-181 (FO-REQ-0020 §2.4): the newest date the YouTube Analytics API actually returned in each collection run, so its lag can be measured. Additive, nullable, device-local",
+    apply: async (client) => {
+      for (const column of ["newest_video_date", "newest_channel_date"]) {
+        try {
+          await client.execute(`ALTER TABLE analytics_collection_runs ADD COLUMN ${column} TEXT`);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
     },
   },
 ];
@@ -8784,6 +8803,9 @@ export type StoredAnalyticsCollectionRun = {
   skippedVideoIds: string[];
   /** BL-118: this run also collected the channel-level daily totals. */
   channelLevel: boolean;
+  /** BL-181: the newest date the Analytics API returned in this run (videos / channel totals); null = none, or not recorded. */
+  newestVideoDate: string | null;
+  newestChannelDate: string | null;
   ranAt: Date;
 };
 
@@ -8804,11 +8826,15 @@ export async function recordAnalyticsCollectionRun(
     upsertsIssued: number;
     skippedVideoIds: string[];
     channelLevel?: boolean;
+    newestVideoDate?: string | null;
+    newestChannelDate?: string | null;
   },
   database: AppDb = db
 ): Promise<void> {
   await database.insert(analyticsCollectionRuns).values({
     channelLevel: input.channelLevel ? 1 : null,
+    newestVideoDate: input.newestVideoDate ?? null,
+    newestChannelDate: input.newestChannelDate ?? null,
     channelId: input.channelId,
     requestedStartDate: input.requestedStartDate,
     requestedEndDate: input.requestedEndDate,
@@ -8847,6 +8873,8 @@ export async function listAnalyticsCollectionRunsByChannel(
       }
     })(),
     channelLevel: row.channelLevel === 1,
+    newestVideoDate: row.newestVideoDate ?? null,
+    newestChannelDate: row.newestChannelDate ?? null,
     ranAt: row.ranAt,
   }));
 }

@@ -522,6 +522,23 @@ test("analytics_collection_runs: records a run and reads it back with skippedVid
     assert.ok(runs[0].ranAt instanceof Date);
   }));
 
+// BL-181 (FO-REQ-0020 §2.4, schema v87): the newest dates the API returned round-trip; a run that recorded none reads back null.
+test("analytics_collection_runs: the newest dates returned round-trip; a run without them reads back null", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await recordAnalyticsCollectionRun(
+      { channelId: "UC_A", requestedStartDate: "2026-10-04", requestedEndDate: "2026-10-11", videoCount: 2, upsertsIssued: 3, skippedVideoIds: [], channelLevel: true, newestVideoDate: "2026-10-09", newestChannelDate: "2026-10-08" },
+      isolatedDb
+    );
+    await recordAnalyticsCollectionRun(
+      { channelId: "UC_A", requestedStartDate: "2026-10-12", requestedEndDate: "2026-10-12", videoCount: 1, upsertsIssued: 0, skippedVideoIds: [] },
+      isolatedDb
+    );
+    const runs = await listAnalyticsCollectionRunsByChannel("UC_A", isolatedDb);
+    assert.deepEqual(runs.map((r) => [r.newestVideoDate, r.newestChannelDate]), [["2026-10-09", "2026-10-08"], [null, null]]);
+  }));
+
 test("analytics_collection_runs: a run with no skipped videos round-trips as an empty array, not null/undefined", () =>
   withTempClient(async (client) => {
     await initializeDatabaseSchema(client);

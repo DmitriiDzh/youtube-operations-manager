@@ -177,6 +177,9 @@ type ServiceDependencies = {
   collectionRunStore: {
     record(args: {
       channelLevel?: boolean;
+      /** BL-181 (FO-REQ-0020 §2.4): the newest date the Analytics API returned (videos / channel totals); null = none. */
+      newestVideoDate?: string | null;
+      newestChannelDate?: string | null;
       channelId: string;
       requestedStartDate: string;
       requestedEndDate: string;
@@ -192,6 +195,8 @@ type ServiceDependencies = {
         upsertsIssued: number;
         skippedVideoIds: string[];
         channelLevel?: boolean;
+        newestVideoDate?: string | null;
+        newestChannelDate?: string | null;
         ranAt: Date;
       }>
     >;
@@ -299,13 +304,25 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
    * BL-118 -- fetches and stores the channel-level daily totals for a window (one Analytics query). Returns whether it succeeded; never
    * throws (a failed channel query must not fail or hide the per-video collection that already happened).
    */
+  /**
+   * BL-181 (FO-REQ-0020 §2.4): what the Analytics API last actually returned on this computer -- the newest video and channel dates
+   * of the latest run that recorded any (a run only asks for a range; this is what came back). Null before any such run.
+   */
+  function newestReturnedOf(runs: Array<{ newestVideoDate?: string | null; newestChannelDate?: string | null; ranAt: Date }>) {
+    const latest = [...runs]
+      .filter((run) => (run.newestVideoDate ?? null) !== null || (run.newestChannelDate ?? null) !== null)
+      .sort((a, b) => b.ranAt.getTime() - a.ranAt.getTime())[0];
+    return latest ? { videoDate: latest.newestVideoDate ?? null, channelDate: latest.newestChannelDate ?? null, ranAt: latest.ranAt.toISOString() } : null;
+  }
+
+  /** BL-118: the channel totals of a window; BL-181: also the newest date Google returned (null = none, or not collected). */
   async function collectChannelLevel(args: {
     credentials: ResolvedCredentials;
     channelId: string;
     startDate: string;
     endDate: string;
-  }): Promise<boolean> {
-    if (!deps.channelMetricStore) return false;
+  }): Promise<{ collected: boolean; newestDate: string | null }> {
+    if (!deps.channelMetricStore) return { collected: false, newestDate: null };
     try {
       const rows = await deps.youtubeApi.queryChannelAnalyticsReport({
         credentials: args.credentials,
@@ -314,18 +331,20 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
         endDate: args.endDate,
         metricNames: CHANNEL_OVERVIEW_METRIC_NAMES,
       });
+      let newestDate: string | null = null;
       for (const row of rows) {
+        if (newestDate === null || row.date > newestDate) newestDate = row.date;
         for (const [metricName, metricValue] of Object.entries(row.metrics)) {
           await deps.channelMetricStore.upsert({ channelId: args.channelId, metricDate: row.date, metricName, metricValue });
         }
       }
-      return true;
+      return { collected: true, newestDate };
     } catch (error) {
       deps.logger.error({
         event: "analytics.collect_metrics.channel_level_failed",
         context: { channelId: args.channelId, message: error instanceof Error ? error.message : "Unknown error" },
       });
-      return false;
+      return { collected: false, newestDate: null };
     }
   }
 
@@ -562,6 +581,8 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
 
         let upsertsIssued = 0;
         const skippedVideoIds: string[] = [];
+        // BL-181 (FO-REQ-0020 §2.4): the newest date any video's rows came back for -- what the API had, not what was asked.
+        let newestVideoDate: string | null = null;
 
         progress?.stage("Querying the YouTube Analytics API (one query per video)");
         let finished = 0;
@@ -582,6 +603,7 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
             });
 
             for (const row of rows) {
+              if (newestVideoDate === null || row.date > newestVideoDate) newestVideoDate = row.date;
               for (const [metricName, metricValue] of Object.entries(row.metrics)) {
                 await deps.metricStore.upsertMetric({
                   channelId: parsedInput.channelId,
@@ -620,7 +642,8 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
 
         // BL-118: the CHANNEL-level daily totals for the same window (one extra query), so the agent's channel analytics can be read
         // locally. A failure here never fails the run: the run is simply recorded as not having collected channel totals.
-        const channelLevel = await collectChannelLevel({ credentials, channelId: parsedInput.channelId, startDate: parsedInput.startDate, endDate: parsedInput.endDate });
+        const channelTotals = await collectChannelLevel({ credentials, channelId: parsedInput.channelId, startDate: parsedInput.startDate, endDate: parsedInput.endDate });
+        const channelLevel = channelTotals.collected;
 
         const output = {
           channelId: parsedInput.channelId,
@@ -629,6 +652,8 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
           videoCount: videos.length,
           upsertsIssued,
           skippedVideoIds,
+          newestVideoDate,
+          newestChannelDate: channelTotals.newestDate,
         };
 
         // Mark AFTER the loop, and only on a run that actually accomplished something -- not
@@ -665,6 +690,8 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
             upsertsIssued: output.upsertsIssued,
             skippedVideoIds: output.skippedVideoIds,
             channelLevel,
+            newestVideoDate,
+            newestChannelDate: channelTotals.newestDate,
           });
         } else if (channelLevel) {
           // Only the channel totals were collected (no video existed yet): record exactly that, no per-video claim.
@@ -676,6 +703,7 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
             upsertsIssued: 0,
             skippedVideoIds: [],
             channelLevel: true,
+            newestChannelDate: channelTotals.newestDate,
           });
         }
 
@@ -902,9 +930,12 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
         progress?.counts(done, batch.length);
 
         let channelLevel = false;
+        let channelNewestDate: string | null = null;
         if (plan.channelRange) {
           progress?.stage("Collecting earlier channel totals");
-          channelLevel = await collectChannelLevel({ credentials, channelId: parsedInput.channelId, ...plan.channelRange });
+          const totals = await collectChannelLevel({ credentials, channelId: parsedInput.channelId, ...plan.channelRange });
+          channelLevel = totals.collected;
+          channelNewestDate = totals.newestDate;
           if (!channelLevel) catchUpFailedAt.set(`${parsedInput.channelId}|channel`, deps.clock.now().getTime());
         }
 
@@ -922,6 +953,7 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
             upsertsIssued: 0,
             skippedVideoIds: [],
             channelLevel: true,
+            newestChannelDate: channelNewestDate,
           });
         }
         const startDate = [...batch.map((r) => r.from), ...(plan.channelRange ? [plan.channelRange.startDate] : [])].sort()[0];
@@ -1317,6 +1349,7 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
             endDate: parsedInput.endDate,
             ...report,
             ...extras,
+            newestReturned: newestReturnedOf(runs),
           },
           "get data quality report output"
         );

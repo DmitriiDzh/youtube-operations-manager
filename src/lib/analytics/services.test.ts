@@ -2190,3 +2190,55 @@ test("collectMetrics reports per-video progress, counting a skipped video as fin
   assert.deepEqual(events.filter((e) => e.startsWith("counts:")), ["counts:0/3", "counts:1/3", "counts:2/3", "counts:3/3"]);
   assert.ok(events.some((e) => e.startsWith("stage:") && /Analytics/.test(e)));
 });
+
+// ---------------------------------------------------------------------------
+// BL-181 (FO-REQ-0020 §2.4, "Record what came back"): each collection run records the newest date the Analytics API actually
+// returned -- for the videos (the newest over every video's rows) and for the channel totals -- not the requested range; the
+// data quality report says what the latest such run got. Expected dates are read off the fixture's rows by hand.
+// ---------------------------------------------------------------------------
+test("BL-181: a run records the newest dates the API returned, not the end of the requested range", async () => {
+  const { services, channelAccess, collectionRuns } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }, { videoId: "v2", channelId: "UC_A" }] },
+    analyticsResponses: {
+      v1: [
+        { date: "2026-10-04", metrics: { views: 10 } },
+        { date: "2026-10-09", metrics: { views: 12 } },
+      ],
+      v2: [{ date: "2026-10-08", metrics: { views: 3 } }],
+    },
+    channelAnalyticsResponses: { "2026-10-04|2026-10-11": [{ date: "2026-10-04", metrics: { views: 13 } }, { date: "2026-10-08", metrics: { views: 15 } }] },
+    now: new Date("2026-10-12T12:00:00Z"),
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  const result = await services.collectMetrics({ credentialRef: { userId: "user-1" }, channelId: "UC_A", startDate: "2026-10-04", endDate: "2026-10-11" });
+  assert.deepEqual([result.newestVideoDate, result.newestChannelDate], ["2026-10-09", "2026-10-08"]);
+  const run = collectionRuns[collectionRuns.length - 1] as { requestedEndDate: string; newestVideoDate?: string | null; newestChannelDate?: string | null };
+  assert.deepEqual([run.requestedEndDate, run.newestVideoDate, run.newestChannelDate], ["2026-10-11", "2026-10-09", "2026-10-08"]);
+
+  const report = await services.getDataQualityReport({ credentialRef: { userId: "user-1" }, channelId: "UC_A", startDate: "2026-10-04", endDate: "2026-10-11" });
+  assert.deepEqual(report.newestReturned, { videoDate: "2026-10-09", channelDate: "2026-10-08", ranAt: "2026-10-12T12:00:00.000Z" });
+});
+
+test("BL-181: a run that got no rows records no dates; the report keeps the latest run that did", async () => {
+  const responses: Record<string, Array<{ date: string; metrics: Record<string, number> }>> = { v1: [{ date: "2026-10-09", metrics: { views: 12 } }] };
+  const fixture = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: responses,
+    now: new Date("2026-10-12T12:00:00Z"),
+  });
+  await fixture.channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  await fixture.services.collectMetrics({ credentialRef: { userId: "user-1" }, channelId: "UC_A", startDate: "2026-10-04", endDate: "2026-10-11" });
+
+  // The next day YouTube returns nothing for the window asked (a quiet video, or a day not reported yet).
+  fixture.setNow(new Date("2026-10-13T12:00:00Z"));
+  responses.v1 = [];
+  const runs = fixture.collectionRuns as Array<{ newestVideoDate?: string | null; newestChannelDate?: string | null }>;
+  const before = runs.length;
+  await fixture.services.collectMetrics({ credentialRef: { userId: "user-1" }, channelId: "UC_A", startDate: "2026-10-12", endDate: "2026-10-12" });
+  assert.equal(runs.length, before + 1);
+  assert.deepEqual([runs[before].newestVideoDate ?? null, runs[before].newestChannelDate ?? null], [null, null]);
+
+  const report = await fixture.services.getDataQualityReport({ credentialRef: { userId: "user-1" }, channelId: "UC_A", startDate: "2026-10-04", endDate: "2026-10-12" });
+  assert.deepEqual(report.newestReturned, { videoDate: "2026-10-09", channelDate: null, ranAt: "2026-10-12T12:00:00.000Z" });
+});

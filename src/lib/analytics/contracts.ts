@@ -76,6 +76,9 @@ export type CollectMetricsResult = {
    * fails the whole channel's collection run.
    */
   skippedVideoIds: string[];
+  /** BL-181 (FO-REQ-0020 §2.4): the newest date the Analytics API actually returned (videos / channel totals); null = none. */
+  newestVideoDate?: string | null;
+  newestChannelDate?: string | null;
 };
 
 export type StoredVideoMetricRow = {
@@ -253,6 +256,9 @@ export type DataQualityReportResult = {
   /** Covered dates inside the re-collection window: the next automatic run is expected to refresh them. */
   provisionalDates?: string[];
   coveredMeans?: string;
+  /** BL-181 (FO-REQ-0020 §2.4): the newest dates the Analytics API actually returned in this computer's latest run that recorded
+   * them, and when; null before any such run. A date after `videoDate` is not yet reported by YouTube, whatever the clock says. */
+  newestReturned?: { videoDate: string | null; channelDate: string | null; ranAt: string } | null;
 };
 
 export type ComparableAgeVideoSeries = {

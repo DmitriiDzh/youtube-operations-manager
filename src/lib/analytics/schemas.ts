@@ -47,6 +47,9 @@ export const collectMetricsOutputSchema = z
     videoCount: z.number().int().nonnegative(),
     upsertsIssued: z.number().int().nonnegative(),
     skippedVideoIds: z.array(z.string()),
+    // BL-181 (FO-REQ-0020 §2.4): the newest date the API actually returned (videos / channel totals); null = none.
+    newestVideoDate: z.string().nullable().optional(),
+    newestChannelDate: z.string().nullable().optional(),
   })
   .strict();
 
@@ -257,6 +260,8 @@ export const getDataQualityReportOutputSchema = dataQualityReportShapeSchema
     coveredWithoutData: z.array(z.string()),
     provisionalDates: z.array(z.string()),
     coveredMeans: z.string(),
+    // BL-181 (FO-REQ-0020 §2.4): the newest dates the Analytics API actually returned in this computer's latest run that recorded them.
+    newestReturned: z.object({ videoDate: z.string().nullable(), channelDate: z.string().nullable(), ranAt: z.string() }).strict().nullable(),
   })
   .strict();
 

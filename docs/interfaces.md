@@ -697,7 +697,10 @@ Key MCP tools:
     in the range were actually covered by a collection run vs. never collected vs. too recent for
     the API to have reported yet, plus which videos had a recorded collection failure. Local read
     only (reads `analytics_collection_runs`, never calls YouTube) — see
-    `docs/ARCHITECTURE.md` §14.9.
+    `docs/ARCHITECTURE.md` §14.9. BL-181 (2026-10-13, additive): also `newestReturned { videoDate, channelDate, ranAt } | null`
+    -- the newest dates the Analytics API actually returned in this computer's latest run that recorded them (a date after
+    `videoDate` was not reported yet, whatever the clock says); a collection's result also carries `newestVideoDate` /
+    `newestChannelDate`.
   - `analytics_comparable_age` — `{ channelId, videoIds (2-10), metricName? (default "views",
     additive metrics only), maxDays? (default 30), credentialRef? }` → per-video raw daily points
     and a running cumulative total, aligned by each video's own days-since-publish (Pacific-Time

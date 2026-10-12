@@ -943,6 +943,13 @@ Exposed via `GET .../analytics/data-quality`, the MCP tool `analytics_data_quali
 out of `SNAPSHOT_TRANSFERRED_TABLES`, the same as `video_metrics_daily` itself (§14.7) -- a
 re-derivable, device-local history, not data that needs to survive a device handoff.
 
+**BL-181 (FO-REQ-0020 §2.4, schema v87).** A run also records `newest_video_date` / `newest_channel_date`: the newest date the
+API actually returned (the maximum over every video's rows, and over the channel totals). The requested range says what was
+asked; these columns say what came back. The report gives the latest run's dates as `newestReturned`. "Too recent" stays
+clock-based (now minus 2 days): the new dates measure the lag, they do not redefine coverage. The columns are device-local:
+the cross-computer analytics file carries runs by an explicit field list (unchanged), so a peer on an older build is
+unaffected, and runs imported from a peer have no dates.
+
 ### 14.10 Comparable-age video comparison (`getComparableAgeComparison`) — Phase 8 follow-up, slice 3 of 4
 
 `docs/roadmap/FUTURE_PHASES.md` §4's "comparing videos at comparable ages" line item. Given 2-10
