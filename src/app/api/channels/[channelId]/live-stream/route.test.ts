@@ -1,0 +1,72 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { DomainError } from "@/lib/live-streams";
+import { createLiveStreamGetHandler } from "./route";
+import { createRotationPostHandler } from "./rotation/route";
+import { createStartPostHandler } from "./start/route";
+import { createStopPostHandler } from "./stop/route";
+import type { LiveStreamRouteCore, LiveStreamRouteDeps } from "./shared";
+
+// BL-176 (LIVE_STREAMS_PLAN.md §3.9/§3.12; DEVELOPMENT_PLAYBOOK §6.6): every route needs a Web session (401) and the channel
+// must be the active one (403, ADR 0004) before the module is reached; errors keep their codes; the session's user is the
+// credential the writes run under.
+
+const calls: string[] = [];
+
+function deps(opts: { session?: boolean; activeChannel?: string; fail?: DomainError } = {}): LiveStreamRouteDeps {
+  const record = (name: string) => async (...args: unknown[]) => {
+    calls.push(`${name}:${JSON.stringify(args)}`);
+    if (opts.fail) throw opts.fail;
+    return { ok: name };
+  };
+  const core = new Proxy({}, { get: (_t, name: string) => record(name) }) as unknown as LiveStreamRouteCore;
+  return {
+    getSession: async () => (opts.session === false ? null : { user: { id: "u1" } }),
+    assertActiveChannel: async ({ channelId }) => {
+      if (channelId !== (opts.activeChannel ?? "UC1")) throw new DomainError({ code: "CHANNEL_NOT_ACTIVE", message: "not the active channel" });
+    },
+    core,
+  };
+}
+
+const ctx = (channelId = "UC1") => ({ params: Promise.resolve({ channelId }) });
+const post = (body: unknown) => new Request("http://localhost/x", { method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json" } });
+
+test("401 without a Web session; the module is not reached", async () => {
+  calls.length = 0;
+  const response = await createStartPostHandler(deps({ session: false }))(post({}), ctx());
+  assert.equal(response.status, 401);
+  assert.deepEqual(calls, []);
+});
+
+test("403 for a channel that is not the active one; the module is not reached", async () => {
+  calls.length = 0;
+  for (const handler of [createLiveStreamGetHandler, createStartPostHandler, createRotationPostHandler]) {
+    const response = await handler(deps({ activeChannel: "UC2" }))(post({ videoId: "AAAAAAAAAA1" }), ctx("UC1"));
+    assert.equal(response.status, 403);
+  }
+  assert.deepEqual(calls, []);
+});
+
+test("Start runs under the session's user; Stop passes the encoder-only choice through", async () => {
+  calls.length = 0;
+  assert.equal((await createStartPostHandler(deps())(post({}), ctx())).status, 200);
+  assert.equal((await createStopPostHandler(deps())(post({ encoderOnly: true }), ctx())).status, 200);
+  assert.deepEqual(calls, ['start:["UC1",{"userId":"u1"}]', 'stop:["UC1",{"userId":"u1"},{"encoderOnly":true}]']);
+});
+
+test("a DomainError keeps its code and status (Live writes off -> 503, a refused video -> 422)", async () => {
+  const off = await createStartPostHandler(deps({ fail: new DomainError({ code: "live_writes_disabled", message: "off" }) }))(post({}), ctx());
+  assert.equal(off.status, 503);
+  assert.equal((await off.json()).error, "live_writes_disabled");
+  const refused = await createRotationPostHandler(deps({ fail: new DomainError({ code: "live_stream_video_refused", message: "private", details: { reason: "private" } }) }))(post({ videoId: "AAAAAAAAAA1" }), ctx());
+  assert.equal(refused.status, 422);
+  assert.deepEqual((await refused.json()).details, { reason: "private" });
+});
+
+test("a body that is not JSON is a 400 before the module", async () => {
+  calls.length = 0;
+  const bad = new Request("http://localhost/x", { method: "POST", body: "{nope" });
+  assert.equal((await createRotationPostHandler(deps())(bad, ctx())).status, 400);
+  assert.deepEqual(calls, []);
+});
