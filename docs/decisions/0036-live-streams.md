@@ -51,7 +51,7 @@ disconnected by itself.
   channels' Google sign-in (ADR 0032), so it gains no new capability; the risk is recorded in TECHNICAL_DEBT.
 - Spike B (2026-10-12, the owner's "да", unlisted Tropico broadcast): with auto-stop off the broadcast stayed live across gaps
   of 2, 10 and 30 minutes and resumed on the same link. So recovery needs no YouTube write. If YouTube ends a broadcast after a
-  longer outage, the app stops and tells the owner (§5 of this ADR's decision 4); an automatic new broadcast would still need its
+  longer outage, the app stops and tells the owner (decision 4); an automatic new broadcast would still need its
   own scoped approval and ADR.
 - The encoder default is the Mac's hardware H.264 (≈ 2.2 Mbit/s, YouTube's health `ok` with a low-bitrate warning). A 6 Mbit/s
   x264 stream starved over the Mac's Wi-Fi (spike B).
