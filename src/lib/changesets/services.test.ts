@@ -58,7 +58,7 @@ async function buildWorkbookBuffer(rows: Array<Record<string, string>>, channelI
   return Buffer.from(await workbook.xlsx.writeBuffer());
 }
 
-function createFixture() {
+function createFixture(options: { channelBaseline?: string | null } = {}) {
   let channel = makeChannel();
   let videos: StoredVideoRecord[] = [makeVideo()];
   const changeSets = new Map<string, StoredChangeSetRecord>();
@@ -145,6 +145,7 @@ function createFixture() {
     channelStore,
     changeSetStore,
     crdtConflicts,
+    ...(options.channelBaseline !== undefined ? { channelLanguageBaseline: { getExpectedDefaultLanguage: async () => options.channelBaseline ?? null } } : {}),
     idGenerator: () => `id-${++idCounter}`,
     logger: { info() {}, error() {} },
   });
@@ -630,4 +631,50 @@ test("owner report 2026-10-04: an approved change whose value then became live (
   assert.equal(after.changes[0]!.conflictStatus, "none");
   assert.equal(after.changes[0]!.approvalStatus, "approved");
   assert.equal(after.changeSet.status, "approved");
+});
+
+// ---------------------------------------------------------------------------
+// BL-178 (PROJECT_SPEC §14, owner exception 2026-10-12, msg 2665; FO-REQ-0022). Expected values by hand from the request's case:
+// a video labelled `es` whose text is English, YouTube's mirror `localizations.es` equal to the snippet, channel baseline `en`.
+// An `es` row is a translation (add, against nothing), never an edit of the original; a row made earlier against the mirror
+// still holds (no conflict) and stays approvable.
+// ---------------------------------------------------------------------------
+const EN_T = "Cuban Jazz Morning Coffee";
+const EN_D = "Two hours of relaxing Cuban jazz";
+const MISLABELLED = () => makeVideo({ title: EN_T, description: EN_D, defaultLanguage: "es", existingLocalizations: { es: { title: EN_T, description: EN_D } } });
+
+test("BL-178: with baseline en, an es row for a video labelled es is a translation (add), not an edit of the original", async () => {
+  const { services, setVideos } = createFixture({ channelBaseline: "en" });
+  setVideos([MISLABELLED()]);
+  const buffer = await buildWorkbookBuffer([{ video_id: "v1", language: "es", title: "Jazz cubano", description: "", remote_title: "", remote_description: "" }]);
+  const created = await services.createChangeSetFromImport({ channelId: "UC_TEST", filename: "import.xlsx", buffer });
+  const detail = await services.getChangeSet({ channelId: "UC_TEST", changeSetId: created.changeSet.id });
+  assert.equal(detail.changes[0]!.changeType, "add");
+  assert.equal(detail.changes[0]!.conflictStatus, "none");
+  const approved = await services.approveChange({ channelId: "UC_TEST", changeSetId: created.changeSet.id, changeId: detail.changes[0]!.id });
+  assert.equal(approved.change.approvalStatus, "approved");
+});
+
+test("BL-178: a row made against the mirror (remote = the English title, set 66cbf969's shape) does not become a conflict and stays approvable", async () => {
+  const { services, setVideos } = createFixture({ channelBaseline: "en" });
+  setVideos([MISLABELLED()]);
+  const buffer = await buildWorkbookBuffer([{ video_id: "v1", language: "es", title: "Jazz cubano", description: "", remote_title: EN_T, remote_description: "" }]);
+  const created = await services.createChangeSetFromImport({ channelId: "UC_TEST", filename: "import.xlsx", buffer });
+  const detail = await services.getChangeSet({ channelId: "UC_TEST", changeSetId: created.changeSet.id });
+  assert.equal(detail.changes[0]!.conflictStatus, "none");
+  await services.approveChange({ channelId: "UC_TEST", changeSetId: created.changeSet.id, changeId: detail.changes[0]!.id });
+  // The snippet changed afterwards: now it is a real conflict and the approval is withdrawn.
+  setVideos([makeVideo({ title: "A new English title", description: EN_D, defaultLanguage: "es", existingLocalizations: { es: { title: "A new English title", description: EN_D } } })]);
+  const after = await services.getChangeSet({ channelId: "UC_TEST", changeSetId: created.changeSet.id });
+  assert.equal(after.changes[0]!.conflictStatus, "conflict");
+  assert.equal(after.changes[0]!.approvalStatus, "pending");
+});
+
+test("BL-178: without a baseline the video is read as it is (the es row compares with the snippet, as before)", async () => {
+  const { services, setVideos } = createFixture({ channelBaseline: null });
+  setVideos([MISLABELLED()]);
+  const buffer = await buildWorkbookBuffer([{ video_id: "v1", language: "es", title: "Jazz cubano", description: "", remote_title: EN_T, remote_description: "" }]);
+  const created = await services.createChangeSetFromImport({ channelId: "UC_TEST", filename: "import.xlsx", buffer });
+  const detail = await services.getChangeSet({ channelId: "UC_TEST", changeSetId: created.changeSet.id });
+  assert.equal(detail.changes[0]!.changeType, "modify");
 });

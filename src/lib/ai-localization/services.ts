@@ -138,6 +138,14 @@ type ServiceDependencies = {
    * external AI provider. Optional so mock-provider-only test fixtures are unaffected; called
    * only on the real-connection path (`connectionId` set), never for the mock provider. */
   assertDeviceAvailable?(): Promise<void>;
+  /**
+   * BL-178 (FO-REQ-0022 В2, owner msg 2665; PROJECT_SPEC §14): the channel's configured language (Languages -> Language
+   * defaults). When set it is the provider's source language and a video whose own language differs is read as its original
+   * (`currentRemoteValueFor`'s baseline). Optional: absent = the video's own language, as before.
+   */
+  channelLanguageBaseline?: {
+    getExpectedDefaultLanguage(channelId: string): Promise<string | null>;
+  };
   changeSetServices: {
     createChangeSetFromProposals(input: {
       channelId: string;
@@ -277,6 +285,7 @@ export function createAiLocalizationServices(deps: ServiceDependencies) {
         }
 
         const profile = await deps.profileStore.getProfile(channel.channelId);
+        const channelBaseline = (await deps.channelLanguageBaseline?.getExpectedDefaultLanguage(channel.channelId)) ?? null;
         const effectiveContext = mergeEditorialContext(profile, parsedInput.editorialBrief);
         const generationContext: GenerationProvenance = {
           profileVersion: profile?.version ?? null,
@@ -347,7 +356,8 @@ export function createAiLocalizationServices(deps: ServiceDependencies) {
             outcome = await provider.generate({
               videoId: target.videoId,
               targetLanguage: target.language,
-              sourceLanguage: target.video.defaultLanguage,
+              // The channel's configured language, never a hard-coded one (owner, msg 2665); the video's own only without it.
+              sourceLanguage: channelBaseline ?? target.video.defaultLanguage,
               sourceTitle: target.video.title,
               sourceDescription: target.video.description,
               ...(effectiveContext ? { editorialBrief: effectiveContext } : {}),
@@ -374,7 +384,7 @@ export function createAiLocalizationServices(deps: ServiceDependencies) {
               { field: "description" as const, proposedValue: outcome.description },
             ]
           ).map(({ field, proposedValue }) => {
-            const currentRemoteValue = currentRemoteValueFor(target.video, target.language, field);
+            const currentRemoteValue = currentRemoteValueFor(target.video, target.language, field, channelBaseline);
             const classified = classifyAndValidateField(currentRemoteValue, proposedValue, field);
             return {
               videoId: target.videoId,
@@ -448,6 +458,7 @@ export function createAiLocalizationServices(deps: ServiceDependencies) {
         const channel = await requireChannel(deps, parsedInput.channelId);
         const videos = await deps.channelStore.listVideosByChannel(channel.channelId);
         const videoMap = new Map(videos.map((v) => [v.videoId, v]));
+        const channelBaseline = (await deps.channelLanguageBaseline?.getExpectedDefaultLanguage(channel.channelId)) ?? null;
 
         const seenTargets = new Set<string>();
         const changesToPersist: ChangeToPersist[] = [];
@@ -490,7 +501,7 @@ export function createAiLocalizationServices(deps: ServiceDependencies) {
             // rule as XLSX import (docs/PROJECT_SPEC.md §8) -- never a deletion.
             if (proposedValue === undefined) continue;
 
-            const currentRemoteValue = currentRemoteValueFor(video, proposal.language, field);
+            const currentRemoteValue = currentRemoteValueFor(video, proposal.language, field, channelBaseline);
             const classified = classifyAndValidateField(currentRemoteValue, proposedValue, field);
 
             if (classified.changeType === "unchanged" && classified.validationStatus === "valid") continue;

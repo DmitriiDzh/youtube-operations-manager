@@ -36,7 +36,7 @@ function makeVideo(overrides: Partial<StoredVideoRecord> = {}): StoredVideoRecor
   };
 }
 
-function createFixture(videos: StoredVideoRecord[], channel = makeChannel()) {
+function createFixture(videos: StoredVideoRecord[], channel = makeChannel(), channelBaseline?: string | null) {
   const buildWorkbookCalls: Array<{ channel: StoredChannelRecord; videos: StoredVideoRecord[] }> = [];
   const trackedLanguagesByChannel = new Map<string, string[]>();
 
@@ -50,6 +50,7 @@ function createFixture(videos: StoredVideoRecord[], channel = makeChannel()) {
         trackedLanguagesByChannel.set(channelId, languages);
       },
     },
+    ...(channelBaseline !== undefined ? { channelLanguageBaseline: { getExpectedDefaultLanguage: async () => channelBaseline } } : {}),
     xlsxBuilder: {
       buildWorkbook: async (args) => {
         buildWorkbookCalls.push(args);
@@ -349,4 +350,34 @@ test("getLocalizationOverview passes privacyStatus and the scheduled publishAt t
   const pub = overview.videos.find((v) => v.videoId === "pub");
   assert.equal(pub?.privacyStatus, "public");
   assert.equal(pub?.publishAt, null);
+});
+
+// BL-178 (PROJECT_SPEC §14, owner exception 2026-10-12; FO-REQ-0022): with the channel's language set, a video YouTube labelled
+// es whose text is English has its original in en; its es entry is the mirror, so es is MISSING, not translated. Expected values
+// by hand from the request's case.
+test("BL-178: under baseline en, a video labelled es lists es as missing (its es entry is the mirror) and en as its original", async () => {
+  const mislabelled = makeVideo({
+    title: "Cuban Jazz",
+    description: "Two hours",
+    defaultLanguage: "es",
+    existingLocalizations: { es: { title: "Cuban Jazz", description: "Two hours" }, "pt-BR": { title: "Jazz", description: "Duas" } },
+  });
+  const { services, trackedLanguagesByChannel } = createFixture([mislabelled], makeChannel(), "en");
+  trackedLanguagesByChannel.set("UC_TEST", ["es", "pt-BR"]);
+  const overview = await services.getLocalizationOverview({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST" });
+  const row = overview.videos[0];
+  assert.deepEqual(row.missingLanguages, ["es"]);
+  assert.deepEqual(row.presentLanguages, ["pt-BR"]);
+  assert.equal(row.originalLanguage, "en");
+  assert.equal(row.defaultLanguage, "es", "YouTube's own value is still shown as it is");
+  assert.equal(row.status, "missing");
+});
+
+test("BL-178: without a channel language the overview reads the video as it is (originalLanguage = its own language)", async () => {
+  const video = makeVideo({ defaultLanguage: "es", existingLocalizations: { es: { title: "Video 1", description: "Description 1" } } });
+  const { services, trackedLanguagesByChannel } = createFixture([video], makeChannel(), null);
+  trackedLanguagesByChannel.set("UC_TEST", ["es"]);
+  const row = (await services.getLocalizationOverview({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST" })).videos[0];
+  assert.equal(row.originalLanguage, "es");
+  assert.deepEqual(row.missingLanguages, []);
 });

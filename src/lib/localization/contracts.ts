@@ -27,7 +27,10 @@ export type LocalizationOverviewRow = {
   // the real `publishedAt` only once public, else the scheduled `publishAt`.
   privacyStatus: string;
   publishAt: string | null;
+  /** YouTube's own value, as synced. */
   defaultLanguage: string | null;
+  /** BL-178: the language of the original title/description -- the channel's language when the video is mislabelled. */
+  originalLanguage: string | null;
   presentLanguages: string[];
   missingLanguages: string[];
   status: LocalizationVideoStatus;

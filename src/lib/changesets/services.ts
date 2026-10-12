@@ -11,7 +11,7 @@ import {
   type StoredChannelRecord,
   type StoredVideoRecord,
 } from "./contracts";
-import { computeChangeSetStatus, currentRemoteValueFor, revalidateChangeAgainstCurrentRemote } from "./diff";
+import { computeChangeSetStatus, currentRemoteValueFor, readWithChannelBaseline, revalidateChangeAgainstCurrentRemote } from "./diff";
 import { classifyRowForSummary, parseAndValidateWorkbook, summarizeParsedWorkbook } from "./import";
 import {
   changeActionInputSchema,
@@ -93,6 +93,14 @@ type ServiceDependencies = {
   crdtConflicts: {
     listConflictedChangeIds(channelId: string): Promise<Set<string>>;
   };
+  /**
+   * BL-178 (PROJECT_SPEC §14, owner exception 2026-10-12): the channel's language baseline (Languages -> Language defaults).
+   * With it, a video whose own language differs is read as the baseline's original (`readWithChannelBaseline`). Optional:
+   * absent = every video read as it is (the earlier behaviour).
+   */
+  channelLanguageBaseline?: {
+    getExpectedDefaultLanguage(channelId: string): Promise<string | null>;
+  };
   idGenerator: () => string;
   logger: {
     info(payload: { event: string; context?: Record<string, unknown> }): void;
@@ -152,15 +160,15 @@ function toChangeSetRecord(stored: StoredChangeSetRecord, changeList: Change[]):
   };
 }
 
-/** Builds a `(videoId, language, field) -> current remote value` lookup from the
- * latest channel-sync snapshot, or `null` per video if it is no longer synced. */
-function buildCurrentRemoteLookup(videos: StoredVideoRecord[]) {
-  const byVideoId = new Map(videos.map((v) => [v.videoId, v]));
-  return (videoId: string, language: string, field: "title" | "description"): string | null => {
-    const video = byVideoId.get(videoId);
-    if (!video) return null;
-    return currentRemoteValueFor(video, language, field);
-  };
+/** Per video of the latest channel-sync snapshot, read against the channel's language baseline (BL-178); `null` when a video is
+ * no longer synced. */
+function buildCurrentRemoteLookup(videos: StoredVideoRecord[], channelBaseline: string | null) {
+  const byVideoId = new Map(videos.map((v) => [v.videoId, readWithChannelBaseline(v, channelBaseline)]));
+  return (videoId: string) => byVideoId.get(videoId) ?? null;
+}
+
+async function channelBaselineOf(deps: ServiceDependencies, channelId: string): Promise<string | null> {
+  return (await deps.channelLanguageBaseline?.getExpectedDefaultLanguage(channelId)) ?? null;
 }
 
 async function requireChannel(deps: ServiceDependencies, channelId: string): Promise<StoredChannelRecord> {
@@ -207,11 +215,12 @@ async function loadRevalidated(
   const changeSet = await requireChangeSet(deps, channelId, changeSetId);
   const storedChanges = await deps.changeSetStore.listChangesByChangeSet(changeSetId);
   const videos = await deps.channelStore.listVideosByChannel(channelId);
-  const currentRemote = buildCurrentRemoteLookup(videos);
+  const videoRead = buildCurrentRemoteLookup(videos, await channelBaselineOf(deps, channelId));
 
   const revalidated = storedChanges.map((change) => {
-    const current = currentRemote(change.videoId, change.language, change.field);
-    const updated = revalidateChangeAgainstCurrentRemote(toChangeRecord(change), current);
+    const read = videoRead(change.videoId);
+    const current = read ? read.current(change.language, change.field) : null;
+    const updated = revalidateChangeAgainstCurrentRemote(toChangeRecord(change), current, read ? read.holds(change) : undefined);
     return { original: change, updated };
   });
 
@@ -570,6 +579,7 @@ export function createChangeSetServices(deps: ServiceDependencies) {
           buffer: parsedInput.buffer,
           channelId: channel.channelId,
           syncedVideos: videos,
+          channelBaseline: await channelBaselineOf(deps, channel.channelId),
         });
 
         return {
@@ -594,6 +604,7 @@ export function createChangeSetServices(deps: ServiceDependencies) {
           buffer: parsedInput.buffer,
           channelId: channel.channelId,
           syncedVideos: videos,
+          channelBaseline: await channelBaselineOf(deps, channel.channelId),
         });
 
         const summary = summarizeParsedWorkbook(parsed);

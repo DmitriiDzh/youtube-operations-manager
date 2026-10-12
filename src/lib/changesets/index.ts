@@ -1,6 +1,7 @@
 import { createDefaultLogger } from "@/lib/shared-logger";
 import { createChangeDraftsCoreForProduction, isDomainError } from "@/lib/sync-gateway";
 import { createChannelVideoStoreAdapter } from "@/lib/channel-video-store";
+import { getChannelExpectedLanguages } from "@/lib/db";
 import { createIdGenerator } from "./adapters/store";
 import { createAutomergeBackedChangeSetStoreAdapter } from "./adapters/change-drafts-store";
 import { createChangeSetServices } from "./services";
@@ -30,6 +31,8 @@ export function createChangeSetCore() {
         }
       },
     },
+    // BL-178 (PROJECT_SPEC §14, 2026-10-12): rows are compared with the video read against the channel's language baseline.
+    channelLanguageBaseline: { getExpectedDefaultLanguage: async (channelId) => (await getChannelExpectedLanguages(channelId)).defaultLanguage },
     idGenerator: createIdGenerator(),
     logger: createDefaultLogger(),
   });

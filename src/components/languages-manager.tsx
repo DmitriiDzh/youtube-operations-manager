@@ -25,6 +25,8 @@ type OverviewRow = {
   privacyStatus: string;
   publishAt: string | null;
   defaultLanguage: string | null;
+  /** BL-178: the original's language (the channel's when the video is mislabelled); absent from an older server. */
+  originalLanguage?: string | null;
   presentLanguages: string[];
   missingLanguages: string[];
   status: "complete" | "missing";
@@ -681,7 +683,7 @@ export function LanguagesManager() {
     setLoadingDetail(true);
     setDetail(null);
     const video = overview?.videos.find((v) => v.videoId === videoId);
-    const candidates = (overview?.languages ?? []).filter((l) => l !== video?.defaultLanguage);
+    const candidates = (overview?.languages ?? []).filter((l) => l !== (video?.originalLanguage ?? video?.defaultLanguage));
     setReviewLanguage((current) => (candidates.includes(current) ? current : (candidates[0] ?? "")));
     try {
       const res = await fetch(
@@ -1195,7 +1197,7 @@ export function LanguagesManager() {
    * this lets the operator pick a language the video is still MISSING and generate straight from
    * the resulting empty state, not only browse what already exists. */
   function renderVideoLocalizationDetail(video: OverviewRow) {
-    const languageOptions = (overview?.languages ?? []).filter((l) => l !== video.defaultLanguage);
+    const languageOptions = (overview?.languages ?? []).filter((l) => l !== (video.originalLanguage ?? video.defaultLanguage));
     const selectedLocale = detail?.locales.find((l) => l.language === reviewLanguage) ?? null;
 
     return (
@@ -1582,7 +1584,7 @@ export function LanguagesManager() {
                             <span className="text-emerald-400" title={t("languages.table.translated", { language: lang })}>
                               &#10003;
                             </span>
-                          ) : video.defaultLanguage === lang ? (
+                          ) : (video.originalLanguage ?? video.defaultLanguage) === lang ? (
                             <span className="text-[10px] uppercase tracking-wide text-sky-400" title={t("languages.table.originalTitle", { language: lang })}>
                               {t("languages.table.original")}
                             </span>
