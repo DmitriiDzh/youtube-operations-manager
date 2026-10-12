@@ -3648,7 +3648,7 @@ Plan: `docs/roadmap/plans/LIVE_STREAMS_PLAN.md` (FO-REQ-0019). Schema v86, Facto
   `factory_live_get_status` and maps files with `factory_live_map_sources`. Bell notices: down, ended by YouTube, next video missing.
 - **Risks:** RISK-125 (the key in ffmpeg's argv), RISK-126 (the T9 every ~2 h).
 
-## 46. The channel's language is the truth for localization (BL-178 part A, FO-REQ-0022)
+## 46. The channel's language is the truth for localization (BL-178, FO-REQ-0022)
 
 Owner exception 2026-10-12 (msg 2665), recorded in `docs/PROJECT_SPEC.md` §14 and AGENTS.md §F. Plan:
 `docs/roadmap/plans/LOCALIZATION_BASELINE_PLAN.md`.
@@ -3696,6 +3696,36 @@ Owner exception 2026-10-12 (msg 2665), recorded in `docs/PROJECT_SPEC.md` §14 a
   - This closes RISK-102.
 - **Agents:** `agent_get_channel_context` gains `languageBaseline` and `languageDeviations`. These are additive, with no version
   bump.
-- **Not in part A:**
-  - syncing the baseline and tracked languages between computers (part B; they are still per computer);
-  - refresh after a send, and alerts (part C).
+- **Part B — the same settings on every computer** (`src/lib/sync-gateway/channel-language-settings/` + `-sync/`):
+  - One Automerge document per channel: `defaultLanguage`, `defaultAudioLanguage`, `trackedLanguages`. It is the only writer of
+    `channels.expected_default_*` and `channels.target_languages_json`. `channel-language-defaults` and `localization` save
+    through it, and every reader keeps reading those columns.
+  - The genesis is shared, as in `media-settings`: same actor, time 0, content keyed by channel. Documents two computers started
+    on their own merge field by field and are never refused as `divergent_document_lineage`.
+  - The first sync seeds each computer's earlier values: only set values, only fields the document lacks, and before the
+    peer's document is merged (the runner exports before it merges). An unset value never conflicts with a set one, so the Mac
+    with nothing received Windows' `en`/`en`.
+  - A field set to different values is a conflict. Tracked languages compare as a set. While a field conflicts, each computer
+    keeps its own value. The owner picks a computer's version on the startup screen or in Merge (`/api/channels/[id]/
+    language-settings/conflicts`, by actor, re-derived server-side); saving the field also settles it.
+  - Batches refuse a row before any YouTube call while `defaultLanguage` or `defaultAudioLanguage` conflicts. A
+    tracked-languages conflict does not stop them: no write reads the tracked list. The Languages page says when the defaults
+    differ.
+  - Load, change, merge and save run one at a time per process, the `media-settings` review finding.
+- **Part C — refresh and alerts:**
+  - Reconciliation that confirms a write also updates the local copy, as the ordinary success path does.
+  - `GET /api/channels/[id]/localizations/version` is a fingerprint of the channel's local video copy, tracked languages and
+    baseline. A fingerprint, not a counter, sees a change made by any process (a Batch run by an agent or the CLI, a sync, a
+    setting from the other computer) without a schema change. The Languages page and the Change Set view poll it every 15 s
+    while visible (`use-localization-version.ts`) and reload quietly when it moves.
+  - `localization.getTranslationAlerts` covers public or scheduled (`publishAt` set) videos that lack a tracked language: no
+    entry, an empty title, or an empty description where the original has one. It is read against the baseline (a mirror is not
+    a translation), and the original's language never counts.
+  - `GET /api/localization-alerts` returns every connected channel's counts plus its deviation count (the "Fix all" list). It
+    feeds:
+    - the «Языки» badge for the active channel (missing + deviating, with the split on hover);
+    - bell entries for the other channels (the BL-157 rule: the active channel has its badge).
+
+    The entries are derived on every poll, so they clear once the translations are applied.
+  - `agent_get_channel_context` gains `missingTranslations` `{videoCount, byLanguage, videos[{videoId, missingLanguages}]}`,
+    additive.
