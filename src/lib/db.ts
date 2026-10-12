@@ -13207,3 +13207,14 @@ export async function upsertLiveStreamSource(row: typeof liveStreamSources.$infe
 export async function listLiveStreamSources(channelId: string, database: AppDb = db): Promise<StoredLiveStreamSource[]> {
   return database.select().from(liveStreamSources).where(eq(liveStreamSources.channelId, channelId)).orderBy(asc(liveStreamSources.videoId));
 }
+
+const LIVE_STREAMS_SETTINGS_KEY = "live_streams_settings";
+
+/** BL-176: the live-streams module's settings on this computer (JSON), `null` before the first save. */
+export async function getLiveStreamsSettingsJson(database: AppDb = db): Promise<string | null> {
+  return getAppSetting(LIVE_STREAMS_SETTINGS_KEY, database);
+}
+
+export async function setLiveStreamsSettingsJson(json: string, database: AppDb = db): Promise<void> {
+  await setAppSetting(LIVE_STREAMS_SETTINGS_KEY, json, database);
+}

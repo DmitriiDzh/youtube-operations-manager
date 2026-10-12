@@ -187,6 +187,8 @@ export type DomainErrorCode =
   | "live_stream_video_refused"
   | "live_stream_workspace_unavailable"
   | "live_stream_video_not_found"
+  // HOST_UNSUPPORTED: the module can be switched on only on the Mac running as the system service (ADR 0036 §1).
+  | "live_streams_host_unsupported"
   // Research export (docs/roadmap/plans/RESEARCH_EXPORT_PLAN.md) -- NOT_CONFIGURED: the channel has no workspace folder on this
   // device (the operator sets it in Settings). UNAVAILABLE: the folder (or its exports/ subfolder) failed re-validation at export
   // time. WRITE_FAILED: a file could not be written; nothing from that call is left behind.

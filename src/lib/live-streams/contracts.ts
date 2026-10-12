@@ -78,3 +78,36 @@ export type LiveStreamEventKind =
   | "sources_set";
 
 export type ProbeResult = MediaProbe;
+
+/** The H.264 encoders the stream can use. Which is the default waits for spike B (plan §6.1): videotoolbox does not pad to CBR. */
+export const LIVE_ENCODERS = ["h264_videotoolbox", "libx264"] as const;
+export type LiveEncoder = (typeof LIVE_ENCODERS)[number];
+
+/** This computer's live-streams settings (plan §3.12 "Settings → Трансляции"). */
+export type LiveStreamsSettings = {
+  /** The module switch (§M): off = no timer, no process. Can be on only where streams can be hosted (ADR 0036 §1). */
+  enabled: boolean;
+  /** Videos kept in the buffer: the one playing and the next ones (owner, msg 2575: 2). */
+  bufferDepth: number;
+  /** A warning below this much free disk (GB). */
+  warnBelowGb: number;
+  /** A copy into the buffer is refused if it would leave less than this (GB). */
+  refuseBelowGb: number;
+  bitrateKbps: number;
+  encoder: LiveEncoder;
+  /** A bell notice when a stream has not been live for this many minutes. */
+  alertMinutes: number;
+  /** A folder holding ffmpeg and ffprobe, tried before the usual install folders; `null` = search. */
+  ffmpegDir: string | null;
+};
+
+export const DEFAULT_LIVE_STREAMS_SETTINGS: LiveStreamsSettings = Object.freeze({
+  enabled: false,
+  bufferDepth: 2,
+  warnBelowGb: 10,
+  refuseBelowGb: 5,
+  bitrateKbps: 6000,
+  encoder: "h264_videotoolbox",
+  alertMinutes: 5,
+  ffmpegDir: null,
+});

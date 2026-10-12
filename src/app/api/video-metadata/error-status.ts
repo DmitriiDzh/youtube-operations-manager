@@ -133,6 +133,7 @@ const DOMAIN_ERROR_STATUS = {
   live_stream_video_refused: 422,
   live_stream_workspace_unavailable: 409,
   live_stream_video_not_found: 404,
+  live_streams_host_unsupported: 409,
   change_set_incomplete: 500,
   RESEARCH_EXPORT_WORKSPACE_NOT_CONFIGURED: 409,
   RESEARCH_EXPORT_WORKSPACE_UNAVAILABLE: 409,
