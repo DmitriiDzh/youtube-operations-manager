@@ -11,6 +11,9 @@ import type { StreamSupervisor } from "./supervisor";
 // ---------------------------------------------------------------------------
 
 export const BROADCAST_CHECK_INTERVAL_MS = 5 * 60_000;
+/** §3.10: every minute for the first 10 minutes after an encoder (re)start, then every 5 minutes. */
+export const BROADCAST_CHECK_FAST_MS = 60_000;
+export const BROADCAST_FAST_WINDOW_MS = 10 * 60_000;
 /** Waits between failed encoder starts of one stream (each start reads YouTube: the key, the rotation). */
 export const START_RETRY_DELAYS_MS = [60_000, 2 * 60_000, 5 * 60_000, 10 * 60_000] as const;
 
@@ -31,13 +34,14 @@ export function createLiveStreamsRunner(deps: RunnerDependencies) {
 
   async function tendStream(channelId: string): Promise<void> {
     const now = deps.now();
-    if (!(await deps.supervisor.runningHelper(channelId))) {
+    const running = await deps.supervisor.runningHelper(channelId);
+    if (!running) {
       const failure = startFailures.get(channelId);
       if (failure && now < failure.retryAt) return;
       try {
         await deps.supervisor.startEncoder(channelId, { freshPass: false });
         startFailures.delete(channelId);
-        lastBroadcastCheck.set(channelId, 0); // read the broadcast at the next tick (§3.8: after every (re)start)
+        lastBroadcastCheck.delete(channelId); // read the broadcast at the next tick (§3.8: after every (re)start)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const count = (failure?.count ?? 0) + 1;
@@ -48,7 +52,12 @@ export function createLiveStreamsRunner(deps: RunnerDependencies) {
       return;
     }
     await deps.supervisor.tick(channelId);
-    if (now - (lastBroadcastCheck.get(channelId) ?? 0) >= BROADCAST_CHECK_INTERVAL_MS) {
+    // §3.8/§3.10: the broadcast is read right after every encoder (re)start -- the owner's Start included -- then every
+    // minute for 10 minutes, then every 5 minutes.
+    const startedAt = running.record.startedAt;
+    const last = lastBroadcastCheck.get(channelId);
+    const interval = now - startedAt < BROADCAST_FAST_WINDOW_MS ? BROADCAST_CHECK_FAST_MS : BROADCAST_CHECK_INTERVAL_MS;
+    if (last === undefined || last < startedAt || now - last >= interval) {
       lastBroadcastCheck.set(channelId, now);
       await deps.supervisor.checkBroadcast(channelId);
     }

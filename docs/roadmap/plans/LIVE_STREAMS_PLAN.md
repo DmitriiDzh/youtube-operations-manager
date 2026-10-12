@@ -347,6 +347,9 @@ Details (proposed in msg 2577, accepted in msg 2578):
   - The app then polls every 15 s until the broadcast is `live`.
   - If the stream is `active` but the broadcast is not live after 3 minutes, the app calls `transition live`. That is still the
     owner's action, with Live writes still on.
+  - **As built (2026-10-12):** this is a «В эфир» button the owner presses, with its own dialog, not a call the app makes by itself
+    three minutes later: a delayed background write would happen after the owner's click, maybe after Live writes changed. Spike B
+    shows whether auto-start makes it needed at all.
 - **Stop.**
   1. `transition complete` (a write);
   2. the encoder stops;
@@ -365,7 +368,8 @@ Details (proposed in msg 2577, accepted in msg 2578):
 ### 3.10 Status, history, alert (request §G)
 - **State** comes from:
   - the helper (running, restarting, last exit);
-  - YouTube, every 5 minutes, and every minute for 10 minutes after a restart:
+  - YouTube, every 5 minutes, and every minute for 10 minutes after a restart (the owner's Start included; about 30 units more per
+    restart):
     - broadcast `lifeCycleStatus`;
     - stream `streamStatus`;
     - `healthStatus` with its `configurationIssues`;

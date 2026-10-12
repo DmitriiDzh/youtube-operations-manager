@@ -9,6 +9,7 @@ import { BROADCAST_CHECK_INTERVAL_MS, createLiveStreamsRunner } from "./runner";
 function harness(opts: { enabled?: boolean; hostOk?: boolean; streams?: Array<{ channelId: string; intent: "on" | "off" }>; startFails?: string } = {}) {
   const calls: string[] = [];
   let running = new Set<string>();
+  const startedAt = new Map<string, number>();
   let clock = 0;
   const events: string[] = [];
   const runner = createLiveStreamsRunner({
@@ -17,12 +18,13 @@ function harness(opts: { enabled?: boolean; hostOk?: boolean; streams?: Array<{ 
     supervisor: {
       runningHelper: async (c) => {
         calls.push(`running:${c}`);
-        return running.has(c) ? ({} as never) : null;
+        return running.has(c) ? ({ record: { startedAt: startedAt.get(c) ?? 0 } } as never) : null;
       },
       startEncoder: async (c) => {
         calls.push(`start:${c}`);
         if (opts.startFails) throw new Error(opts.startFails);
         running = new Set([...running, c]);
+        startedAt.set(c, clock);
         return { pid: 1 };
       },
       tick: async (c) => {
@@ -37,7 +39,17 @@ function harness(opts: { enabled?: boolean; hostOk?: boolean; streams?: Array<{ 
     event: async (_c, kind, detail) => void events.push(`${kind}:${String(detail.message)}`),
     now: () => clock,
   });
-  return { runner, calls, events, advance: (ms: number) => void (clock += ms), kill: (c: string) => void running.delete(c) };
+  return {
+    runner,
+    calls,
+    events,
+    advance: (ms: number) => void (clock += ms),
+    kill: (c: string) => void running.delete(c),
+    ownerStarted: (c: string) => {
+      running = new Set([...running, c]);
+      startedAt.set(c, clock);
+    },
+  };
 }
 
 test("switched off, or on a computer that cannot host streams, a tick touches nothing", async () => {
@@ -54,19 +66,40 @@ test("a stream that is on gets its encoder started when none runs (boot / after 
   assert.deepEqual(h.calls, ["running:UC1", "start:UC1"]);
 });
 
-test("after a (re)start the broadcast is read at the next tick, then every 5 minutes", async () => {
+test("after a (re)start the broadcast is read at once, every minute for 10 minutes, then every 5 minutes", async () => {
   const h = harness();
-  await h.runner.tick(); // start
-  h.advance(BROADCAST_CHECK_INTERVAL_MS + 1); // clock past the first window
+  await h.runner.tick(); // the encoder starts at 0
+  h.calls.length = 0;
   await h.runner.tick();
-  assert.deepEqual(h.calls.slice(2), ["running:UC1", "tick:UC1", "check:UC1"]);
+  assert.deepEqual(h.calls, ["running:UC1", "tick:UC1", "check:UC1"], "read right after the start");
+  h.calls.length = 0;
+  h.advance(30_000);
+  await h.runner.tick();
+  assert.ok(!h.calls.includes("check:UC1"), "not again within the minute");
+  h.advance(30_000);
+  await h.runner.tick();
+  assert.ok(h.calls.includes("check:UC1"), "every minute in the first 10");
+  h.advance(10 * 60_000);
+  await h.runner.tick();
   h.calls.length = 0;
   h.advance(60_000);
   await h.runner.tick();
-  assert.deepEqual(h.calls, ["running:UC1", "tick:UC1"], "no read before 5 minutes");
+  assert.ok(!h.calls.includes("check:UC1"), "after 10 minutes: not every minute");
   h.advance(BROADCAST_CHECK_INTERVAL_MS);
   await h.runner.tick();
-  assert.deepEqual(h.calls.slice(-1), ["check:UC1"]);
+  assert.ok(h.calls.includes("check:UC1"), "every 5 minutes");
+});
+
+test("an encoder the owner's Start launched is read at the next tick too", async () => {
+  const h = harness({ streams: [{ channelId: "UC1", intent: "on" }] });
+  h.ownerStarted("UC1");
+  h.advance(BROADCAST_CHECK_INTERVAL_MS * 3);
+  await h.runner.tick();
+  h.calls.length = 0;
+  h.advance(60_000);
+  h.ownerStarted("UC1"); // a new Start (or restart) after the last read
+  await h.runner.tick();
+  assert.ok(h.calls.includes("check:UC1"));
 });
 
 test("a failing start is retried after 1, 2, 5 then 10 minutes, and recorded once per distinct message", async () => {
