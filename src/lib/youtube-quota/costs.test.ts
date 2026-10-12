@@ -32,6 +32,33 @@ test("write methods are insert/update/delete/rate, reads are not", () => {
   for (const m of ["videos.list", "reports.query", "search.list"]) assert.equal(isWriteMethod(m), false, m);
 });
 
+// BL-176: the Quota Calculator (version of 2026-10-08, read 2026-10-11) lists every liveBroadcasts and liveStreams
+// method at 1 unit.
+test("every live streaming method costs 1 unit", () => {
+  const live = [
+    "liveBroadcasts.list",
+    "liveBroadcasts.insert",
+    "liveBroadcasts.update",
+    "liveBroadcasts.delete",
+    "liveBroadcasts.bind",
+    "liveBroadcasts.transition",
+    "liveBroadcasts.insertCuepoint",
+    "liveStreams.list",
+    "liveStreams.insert",
+    "liveStreams.update",
+    "liveStreams.delete",
+  ];
+  assert.equal(live.length, 11);
+  for (const method of live) assert.equal(quotaUnitsForCall("data", method), 1, method);
+});
+
+test("live writes count as writes (bind, transition, insertCuepoint included); live lists do not", () => {
+  for (const m of ["liveBroadcasts.bind", "liveBroadcasts.transition", "liveBroadcasts.insert", "liveBroadcasts.update", "liveBroadcasts.insertCuepoint", "liveStreams.insert"]) {
+    assert.equal(isWriteMethod(m), true, m);
+  }
+  for (const m of ["liveBroadcasts.list", "liveStreams.list"]) assert.equal(isWriteMethod(m), false, m);
+});
+
 // Pacific time is UTC-8 in winter (PST) and UTC-7 in summer (PDT). DST ends 2026-11-01 02:00 PDT and starts 2026-03-08 02:00 PST.
 test("next reset is the next Pacific midnight (hand-computed instants, summer time)", () => {
   // 2026-10-03 18:00 UTC = 11:00 PDT; next Pacific midnight is 2026-10-04 00:00 PDT = 07:00 UTC.

@@ -283,3 +283,6 @@ export async function deletePlaylistItemById(
 ): Promise<void> {
   await youtube.playlistItems.delete({ id: playlistItemId });
 }
+
+// BL-176 (ADR 0036): live-streaming primitives, same rules as the functions above.
+export * from "./live";

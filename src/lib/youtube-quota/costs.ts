@@ -38,6 +38,19 @@ export const DATA_API_UNIT_COSTS: Readonly<Record<string, number>> = {
   "videoCategories.list": 1,
   "i18nLanguages.list": 1,
   "i18nRegions.list": 1,
+  // BL-176: live streaming. The Quota Calculator first lists these in its 2026-10-08 version, every one at 1 unit
+  // (read 2026-10-11); check the Cloud Console after the first real calls.
+  "liveBroadcasts.list": 1,
+  "liveBroadcasts.insert": 1,
+  "liveBroadcasts.update": 1,
+  "liveBroadcasts.delete": 1,
+  "liveBroadcasts.bind": 1,
+  "liveBroadcasts.transition": 1,
+  "liveBroadcasts.insertCuepoint": 1,
+  "liveStreams.list": 1,
+  "liveStreams.insert": 1,
+  "liveStreams.update": 1,
+  "liveStreams.delete": 1,
 };
 
 /** YouTube Analytics API. This repo's own live evidence (2026-09-22): a 28-query collection moved usage by exactly 28. */
@@ -59,7 +72,7 @@ export function countsAgainstPool(service: QuotaLedgerService, method: string): 
   return !(service === "data" && method === "search.list");
 }
 
-/** Methods that change channel content (50+ units): the history says "changed", not just "called". */
+/** Methods that change channel content: the history says "changed", not just "called". Live methods change it at 1 unit. */
 export function isWriteMethod(method: string): boolean {
-  return /\.(insert|update|delete|rate)$/.test(method);
+  return /\.(insert|update|delete|rate|bind|transition|insertCuepoint)$/.test(method);
 }
