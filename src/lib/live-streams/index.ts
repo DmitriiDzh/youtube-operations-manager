@@ -6,6 +6,7 @@ import {
   getStoredVideo,
   insertLiveStreamEvent,
   listLiveStreamVideos,
+  listLiveStreams,
   setLiveStreamsSettingsJson,
   updateLiveStream,
 } from "@/lib/db";
@@ -17,6 +18,7 @@ import { createHelperProcess, createSupervisorFiles } from "./adapters/helper-pr
 import { createLiveStreamsStore } from "./adapters/store";
 import { createLiveStreamsYoutubeReads } from "./adapters/youtube-api";
 import { createLiveStreamBuffer } from "./buffer";
+import { createLiveStreamsRunner } from "./runner";
 import { createLiveStreamsServices } from "./services";
 import { createLiveStreamsSettings, liveStreamsHost } from "./settings";
 import { createStreamSupervisor } from "./supervisor";
@@ -79,5 +81,17 @@ export function createStreamSupervisorCore() {
   });
 }
 
+/** What the server does for live streams by itself (instrumentation's loop): restore, tend, read the broadcast. */
+export function createLiveStreamsRunnerCore() {
+  return createLiveStreamsRunner({
+    settings: () => createLiveStreamsSettingsCore().get(),
+    listStreams: () => listLiveStreams(),
+    supervisor: createStreamSupervisorCore(),
+    event: async (channelId, kind, detail) => insertLiveStreamEvent({ id: randomUUID(), channelId, at: new Date(), kind, detailJson: JSON.stringify(detail) }),
+    now: () => Date.now(),
+  });
+}
+
+export type { LiveStreamsRunner } from "./runner";
 export * from "./contracts";
 export { checkOriginal, checkPublicOnly, classifyRunEnd, locatePlayback, passLength, planBuffer, canCopyIntoBuffer } from "./rotation";

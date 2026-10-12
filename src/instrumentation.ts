@@ -371,6 +371,31 @@ async function startServerSession() {
   };
   setTimeout(() => void geminiLoop(), 10_000).unref();
 
+  // BL-176 (LIVE_STREAMS_PLAN.md §3.1/§3.6/§3.8, ADR 0036): live streams, in their own loop (AGENTS.md §M). Switched off
+  // (the default) or on a computer that is not the Mac's system service, a tick only reads the settings: no process, no
+  // YouTube call. Otherwise a stream whose intent is on gets its encoder adopted or started again (the key is read from
+  // YouTube -- a read; nothing here writes to YouTube), and every running stream is tended every 15 s. A running stream is
+  // deliberately NOT "busy" for the idle watcher below (plan §3.1): Live writes still reset after 10 idle minutes.
+  let liveStreams: import("@/lib/live-streams").LiveStreamsRunner | null = null;
+  try {
+    liveStreams = (await import("@/lib/live-streams")).createLiveStreamsRunnerCore();
+  } catch (error) {
+    console.warn(`[live-streams] not started: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const LIVE_STREAMS_TICK_MS = 15_000;
+  const liveStreamsLoop = async () => {
+    if (!liveStreams) return;
+    try {
+      await assertDeviceAvailableForMutation(rawSqlClient);
+      await liveStreams.tick();
+    } catch (error) {
+      const paused = error instanceof Error && (error.name === "OperationLockError" || error.name === "RecoveryModeError");
+      if (!paused) console.warn(`[live-streams] ${error instanceof Error ? error.message : String(error)}`);
+    }
+    setTimeout(() => void liveStreamsLoop(), LIVE_STREAMS_TICK_MS).unref();
+  };
+  setTimeout(() => void liveStreamsLoop(), 20_000).unref();
+
   if (process.env.NODE_ENV !== "production") return;
   // Idle auto-shutdown: no request is in flight by definition, so reset, publish any unexported
   // local changes, then exit. Deliberately NOT raced against a timeout: exiting while the export
