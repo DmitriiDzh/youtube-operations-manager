@@ -132,6 +132,7 @@ function harness(rows: StoredPublishingUpload[], over: Partial<UploadRunnerDeps>
   const clock = { at: NOW };
   const records: Array<{ path: string; record: Record<string, unknown> }> = [];
   const publishAtWrites: string[] = [];
+  let paidPromotionDropped = false;
   let processing: string = "processed";
   let readBack: Partial<VideoReadBack> = {};
   const deps: UploadRunnerDeps = {
@@ -156,7 +157,13 @@ function harness(rows: StoredPublishingUpload[], over: Partial<UploadRunnerDeps>
     liveWritesEnabled: async () => yt.liveWrites(),
     gateway: yt.gateway,
     reads: {
-      uploadState: async () => ({ uploadStatus: processing, rejectionReason: processing === "rejected" ? "duplicate" : null, failureReason: null }),
+      // «Прямая реклама» as YouTube keeps it: what the insert sent, unless a test says YouTube dropped it.
+      uploadState: async () => ({
+        uploadStatus: processing,
+        rejectionReason: processing === "rejected" ? "duplicate" : null,
+        failureReason: null,
+        hasPaidProductPlacement: paidPromotionDropped ? false : (yt.videos[0]?.resource.paidProductPlacementDetails?.hasPaidProductPlacement ?? null),
+      }),
       recentUploads: async () => yt.videos.map((v) => ({ videoId: v.videoId, title: v.title })),
       playlistHasVideo: async () => false,
       snapshot: async ({ videoId }) => {
@@ -207,7 +214,7 @@ function harness(rows: StoredPublishingUpload[], over: Partial<UploadRunnerDeps>
       if ([...store.values()].every((r) => !["queued", "uploading", "processing", "finishing"].includes(r.status))) return;
     }
   }
-  return { yt, store, row, runner, deps, clock, records, publishAtWrites, runAll, setProcessing: (s: string) => (processing = s), setReadBack: (r: Partial<VideoReadBack>) => (readBack = r) };
+  return { yt, store, row, runner, deps, clock, records, publishAtWrites, runAll, setProcessing: (s: string) => (processing = s), setReadBack: (r: Partial<VideoReadBack>) => (readBack = r), dropPaidPromotion: () => (paidPromotionDropped = true) };
 }
 
 test("the whole way: one session, the bytes in order, processing, then thumbnail, playlist, read-back, record, sync -- done", async () => {
@@ -610,4 +617,30 @@ test("after a sending pass the lease is short again: a restarted process takes t
   h.clock.at = new Date(NOW.getTime() + 2 * 60_000 + 1);
   await restarted.tick();
   assert.equal(h.row().leaseOwner, "runner-after-restart");
+});
+
+// Owner msgs 2751/2753: «Прямая реклама» is sent as the `paidProductPlacementDetails` part at insert. The docs accept the part on
+// videos.insert but do not list the property as settable, so the read-back checks it: a value YouTube did not keep is a mismatch.
+test("paid promotion: sent at insert as its own part only when on; YouTube keeping it verifies, dropping it is a mismatch; off or older sends none", async () => {
+  const on = harness([job({ settingsJson: JSON.stringify({ ...SETTINGS, paidProductPlacement: true }) })]);
+  await on.runAll();
+  assert.deepEqual(on.yt.videos[0].resource.paidProductPlacementDetails, { hasPaidProductPlacement: true });
+  assert.equal(JSON.parse(on.row().stepsJson).verify.result, "verified");
+
+  const dropped = harness([job({ settingsJson: JSON.stringify({ ...SETTINGS, paidProductPlacement: true }) })]);
+  dropped.dropPaidPromotion();
+  await dropped.runAll();
+  assert.deepEqual(JSON.parse(dropped.row().stepsJson).verify, { result: "mismatch", mismatches: ["paidProductPlacement"] });
+
+  const off = harness([job({ settingsJson: JSON.stringify({ ...SETTINGS, paidProductPlacement: false }) })]);
+  await off.runAll();
+  assert.equal(off.yt.videos[0].resource.paidProductPlacementDetails, undefined, "off: the insert is exactly as before");
+  assert.equal(JSON.parse(off.row().stepsJson).verify.result, "verified");
+
+  const { paidProductPlacement: _unused, channelTags: _tags, ...older } = SETTINGS;
+  void _unused;
+  void _tags;
+  const before = harness([job({ settingsJson: JSON.stringify(older) })]);
+  await before.runAll();
+  assert.equal(before.yt.videos[0].resource.paidProductPlacementDetails, undefined, "an approval from before this setting sends no part");
 });

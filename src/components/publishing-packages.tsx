@@ -325,7 +325,10 @@ export function PublishingPackages({ channelId, visible }: { channelId: string |
                 {settings.containsSyntheticMedia ? t("publishingApproval.on") : t("publishingApproval.off")} · {t("publishingSettings.field.madeForKids")}:{" "}
                 {settings.madeForKids ? t("publishingApproval.on") : t("publishingApproval.off")} · {t("publishingSettings.field.license")}: {t(`publishingSettings.license.${settings.license}` as UiTextKey)} ·{" "}
                 {t("publishingSettings.field.embeddable")}: {settings.embeddable ? t("publishingApproval.on") : t("publishingApproval.off")} · {t("publishingSettings.field.notifySubscribers")}:{" "}
-                {settings.notifySubscribers ? t("publishingApproval.on") : t("publishingApproval.off")} · {t("publishingSettings.field.playlistId")}: {settings.playlistId ?? t("publishingSettings.playlistNone")}
+                {settings.notifySubscribers ? t("publishingApproval.on") : t("publishingApproval.off")} · {t("publishingSettings.field.playlistId")}: {settings.playlistId ?? t("publishingSettings.playlistNone")} ·{" "}
+                {t("publishingSettings.field.paidProductPlacement")}: {settings.paidProductPlacement ? t("publishingApproval.on") : t("publishingApproval.off")}
+                {/* ui-text-ignore: the channel's own tags (data) */}
+                {(settings.channelTags ?? []).length > 0 ? ` · ${t("publishingApproval.channelTags", { tags: (settings.channelTags ?? []).join(", ") })}` : ""}
               </p>
               {chosen[0]?.pkg && <p className="mt-1">{t("publishingApproval.languages", { language: chosen[0].pkg.defaultLanguage, audio: chosen[0].pkg.defaultAudioLanguage })}</p>}
             </div>

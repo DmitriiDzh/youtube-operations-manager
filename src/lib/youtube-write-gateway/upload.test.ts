@@ -96,3 +96,13 @@ test("status: PUT with bytes */total and no body; 308 without Range = nothing st
   assert.equal(calls[0].headers["Content-Range"], "bytes */99");
   assert.equal(calls[0].body, undefined);
 });
+
+// Owner msgs 2751/2753: «Прямая реклама» -- `paidProductPlacementDetails` is a part of its own (YouTube Data API videos resource),
+// named in `part` only when the resource carries it.
+test("start: paid promotion goes as the paidProductPlacementDetails part, named in part=", async () => {
+  const { http, calls } = fake([{ status: 200, headers: { location: SESSION } }]);
+  const resource = { ...RESOURCE, paidProductPlacementDetails: { hasPaidProductPlacement: true } };
+  await beginResumableVideoUpload({ accessToken: "tok", resource, contentLength: 10, contentType: "video/mp4", notifySubscribers: true }, http);
+  assert.equal(calls[0].url, "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status,paidProductPlacementDetails&notifySubscribers=true");
+  assert.deepEqual(JSON.parse(String(calls[0].body)).paidProductPlacementDetails, { hasPaidProductPlacement: true });
+});

@@ -3939,7 +3939,11 @@ is already set everywhere), 2734 (one merge for the whole stage).
 - **Publishing defaults per channel** (`publishing/settings.ts`; sync family `channel-publishing-settings`, one Automerge document
   per channel, an opaque map of values like `media-settings`). Fields and defaults: `publishTimeUtc` 12:00, `playlistId` none,
   `categoryId` 10 (Music), `madeForKids` false, `containsSyntheticMedia` true, `license` youtube, `embeddable` true,
-  `notifySubscribers` true. A stored value this build cannot use falls back to the default. Saved fields only (the panel sends
+  `notifySubscribers` true; since owner msgs 2751/2753 also `paidProductPlacement` false (Studio's «Прямая реклама», sent as the
+  `paidProductPlacementDetails` part at insert -- accepted on videos.insert but not in the docs' settable list, so the read-back
+  checks it) and `channelTags` [] (added after the package's tags, none twice; the approval refuses a package whose whole list would
+  pass YouTube's 500 characters). Studio's automatic chapters, places and concept explanations have no Data API property: they stay
+  as YouTube sets them (on), changeable only in Studio. A stored value this build cannot use falls back to the default. Saved fields only (the panel sends
   what the owner changed); a conflict is chosen in Merge (actor-based, like the language settings). Routes:
   `GET/PUT /api/channels/[id]/publishing-settings`, `GET/POST .../publishing-settings/conflicts`. Panel: Content → «Публикация»,
   the time as `UtcTimeField`.

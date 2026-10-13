@@ -109,3 +109,21 @@ test("a save that changes nothing writes nothing", async () => {
   assert.equal(mac.saves(), before);
   assert.deepEqual(await mac.core.save(CH, { madeForKids: true }), { changed: ["madeForKids"] });
 });
+
+// Independent review (owner msg 2753): the channel's own tags are a list. Through the real core: saved as the list, read back as
+// the list on both computers, an equal list again is no change, two different lists are a conflict like any other value.
+test("a list value (the channel tags) is kept, synced and compared by value", async () => {
+  const mac = computer();
+  const windows = computer();
+  assert.deepEqual(await mac.core.save(CH, { channelTags: ["tropical jazz", "bossa"], paidProductPlacement: true }), { changed: ["channelTags", "paidProductPlacement"] });
+  assert.deepEqual((await mac.core.read(CH)).values, { channelTags: ["tropical jazz", "bossa"], paidProductPlacement: true });
+  await cycle(mac, windows);
+  assert.deepEqual((await windows.core.read(CH)).values.channelTags, ["tropical jazz", "bossa"]);
+  assert.deepEqual(await windows.core.save(CH, { channelTags: ["tropical jazz", "bossa"] }), { changed: [] });
+  await mac.core.save(CH, { channelTags: ["a"] });
+  await windows.core.save(CH, { channelTags: ["b"] });
+  await cycle(mac, windows);
+  const read = await mac.core.read(CH);
+  assert.equal(read.conflicts.length, 1);
+  assert.deepEqual(read.conflicts[0].values.map((v) => JSON.stringify(v)).sort(), ['["a"]', '["b"]']);
+});

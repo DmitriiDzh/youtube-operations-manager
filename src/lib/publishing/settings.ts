@@ -4,6 +4,7 @@
 // set in UTC, 12:00 by default. Pure: the fields, their defaults and their validation, shared by the routes and the Content panel.
 // The values travel between computers in the sync-gateway `channel-publishing-settings` family, which knows nothing of them.
 import { isValidLocalTimeOfDay } from "@/lib/zoned-time";
+import { tagsLength } from "./packages";
 
 export const PUBLISHING_SETTING_FIELDS = [
   "publishTimeUtc",
@@ -14,6 +15,9 @@ export const PUBLISHING_SETTING_FIELDS = [
   "license",
   "embeddable",
   "notifySubscribers",
+  // Owner msgs 2751/2753: «Прямая реклама» and the channel's own tags.
+  "paidProductPlacement",
+  "channelTags",
 ] as const;
 export type PublishingSettingField = (typeof PUBLISHING_SETTING_FIELDS)[number];
 
@@ -42,7 +46,17 @@ export type PublishingSettings = {
   embeddable: boolean;
   /** `notifySubscribers` of videos.insert. */
   notifySubscribers: boolean;
+  /**
+   * `paidProductPlacementDetails.hasPaidProductPlacement` -- Studio's «Прямая реклама» (paid promotion). The part is accepted on
+   * videos.insert, but the docs do not list it as settable: the read-back says whether YouTube kept it.
+   */
+  paidProductPlacement: boolean;
+  /** Tags every upload of the channel gets after the package's own (one tag each; the package's come first, none twice). */
+  channelTags: string[];
 };
+
+/** The channel's own tags: at most this many, each 1-100 characters without `<`, `>` or a comma. */
+export const CHANNEL_TAGS_MAX = 30;
 
 /** What a channel gets until a computer saves its own value (FO-REQ-0023 §4 A3; owner msgs 1114, 2725). */
 export const DEFAULT_PUBLISHING_SETTINGS: PublishingSettings = {
@@ -54,7 +68,24 @@ export const DEFAULT_PUBLISHING_SETTINGS: PublishingSettings = {
   license: "youtube",
   embeddable: true,
   notifySubscribers: true,
+  paidProductPlacement: false,
+  channelTags: [],
 };
+
+/**
+ * The tags an upload sends: the package's, then the channel's own that are not already there (case-insensitive). YouTube counts the
+ * whole list against its 500-character limit (`tagsLength`); the approval refuses a package whose list would go over.
+ */
+export function uploadTags(packageTags: readonly string[], channelTags: readonly string[]): string[] {
+  const seen = new Set(packageTags.map((t) => t.toLowerCase()));
+  const out = [...packageTags];
+  for (const tag of channelTags) {
+    if (seen.has(tag.toLowerCase())) continue;
+    seen.add(tag.toLowerCase());
+    out.push(tag);
+  }
+  return out;
+}
 
 const PLAYLIST_ID_PATTERN = /^[A-Za-z0-9_-]{2,64}$/;
 
@@ -73,7 +104,15 @@ export function publishingSettingProblem(field: PublishingSettingField, value: u
     case "containsSyntheticMedia":
     case "embeddable":
     case "notifySubscribers":
+    case "paidProductPlacement":
       return typeof value === "boolean" ? null : `${field} must be true or false`;
+    case "channelTags": {
+      if (!Array.isArray(value) || value.length > CHANNEL_TAGS_MAX) return `channelTags must be a list of at most ${CHANNEL_TAGS_MAX} tags`;
+      const bad = value.find((tag) => typeof tag !== "string" || tag.trim() !== tag || tag.length < 1 || tag.length > 100 || /[<>,]/.test(tag));
+      if (bad !== undefined) return "each channel tag is 1-100 characters, without leading or trailing spaces, <, > or a comma";
+      if (new Set(value.map((tag: string) => tag.toLowerCase())).size !== value.length) return "a channel tag is listed twice";
+      return tagsLength(value as string[]) > 500 ? "the channel tags alone are over YouTube's 500 characters" : null;
+    }
   }
 }
 
