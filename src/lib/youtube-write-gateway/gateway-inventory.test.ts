@@ -132,6 +132,8 @@ const WRITE_PRIMITIVE_NAMES = [
   "putVideoUploadChunk",
   "queryVideoUploadOffset",
   "deleteVideoById",
+  // BL-182 stage 2: the uploaded video's thumbnail.
+  "setVideoThumbnail",
 ];
 
 test("youtube-write-gateway inventory: every file that imports a real write primitive also calls assertLiveWritesAuthorized", async () => {

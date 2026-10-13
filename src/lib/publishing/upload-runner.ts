@@ -76,7 +76,7 @@ export type UploadRunnerDeps = {
   };
   audit(args: { channelId: string; videoId: string | null; detail: Record<string, unknown> }): Promise<void>;
   syncChannel(args: { channelId: string } & UploadCredentials): Promise<void>;
-  device(): Promise<{ deviceId: string; name: string }>;
+  device(): Promise<{ deviceId: string | null; hostname: string | null }>;
   clock: { now(): Date };
   /** The next YouTube quota day (midnight Pacific). */
   nextQuotaReset(now: Date): Date;

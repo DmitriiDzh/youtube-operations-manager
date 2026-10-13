@@ -1,22 +1,43 @@
-import { open } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { open, realpath, rename, writeFile } from "node:fs/promises";
+import { hostname } from "node:os";
 import path from "node:path";
 import { YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { createChannelVideoStoreAdapter } from "@/lib/channel-video-store";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { createChannelPublishingSettingsCoreForProduction } from "@/lib/sync-gateway";
-import { clearPublishingG1Probe, getChannelExpectedLanguages, getPublishingG1Probe, insertVideoEditAuditEvent, rawSqlClient, removeLocalVideoRowIfUnreferenced, savePublishingG1Probe } from "@/lib/db";
+import {
+  clearPublishingG1Probe,
+  getChannelExpectedLanguages,
+  getLiveWritesEnabled,
+  getPublishingG1Probe,
+  insertVideoEditAuditEvent,
+  listPublishingUploads,
+  rawSqlClient,
+  removeLocalVideoRowIfUnreferenced,
+  savePublishingG1Probe,
+  updatePublishingUpload,
+} from "@/lib/db";
+import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
+import { createChannelSyncCore } from "@/lib/channel-sync";
+import { getProductionAppPaths } from "@/lib/platform-paths/runtime";
+import type { ResolvedCredentials } from "@/lib/shared-domain";
+import { createVideoDetailsCore } from "@/lib/video-details";
+import { nextYoutubeQuotaReset } from "@/lib/youtube-quota";
 import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
 import { detectFfmpeg, probeMedia, type FfmpegTools } from "@/lib/ffmpeg-host";
 import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
 import { createWriteContextCore } from "@/lib/write-context";
-import { createYoutubeClient, getVideoUploadState } from "@/lib/youtube-read-gateway";
+import { createYoutubeClient, getVideoUploadState, listPlaylistItemIdsByVideo, listUploadsPlaylistFirstPage } from "@/lib/youtube-read-gateway";
 import { createWorkspaceExchangeFsForPublishing, resolveWorkspaceFileForPublishing } from "./adapters/files";
 import { createPackageFiles } from "./adapters/package-files";
 import { createPackageScan, isPackageThumbnailPath, type PackageScanDeps } from "./package-scan";
 import { imageKindOf } from "./packages";
-import { authorizedOAuth, createPublishingYoutubeWrites, freshAccessToken } from "./adapters/youtube-writes";
+import { authorizedOAuth, createPublishingFinishWrites, createPublishingYoutubeWrites, freshAccessToken } from "./adapters/youtube-writes";
+import { ACTIVE_UPLOAD_STATUSES, createUploadRunner, type UploadRunnerDeps } from "./upload-runner";
 import type { G1ProbeRecord } from "./contracts";
 import { createPublishingCalendarReads } from "./calendar-reads";
 import { createG1Probe } from "./g1-probe";
@@ -214,3 +235,128 @@ export type { G1DeleteReport, G1ProbeRecord, G1UploadReport } from "./contracts"
 export type { CalendarEntry, CalendarEntryKind, PublishingCoverage } from "./calendar";
 export type { AgentPublishingCalendar, PublishingAlert, PublishingCalendarResult } from "./calendar-reads";
 export { PUBLISHING_REMINDER_DAYS } from "./calendar";
+
+/** This computer's id (bootstrap config) and host name, for the upload record; unreadable is "unknown", never a reason to stop. */
+async function thisDevice(): Promise<{ deviceId: string | null; hostname: string | null }> {
+  const deviceId = await createBootstrapConfigStore(getProductionAppPaths().bootstrapConfigPath)
+    .read()
+    .then((config) => config?.deviceId ?? null)
+    .catch(() => null);
+  let host: string | null = null;
+  try {
+    host = hostname() || null;
+  } catch {
+    host = null;
+  }
+  return { deviceId, hostname: host };
+}
+
+/** A channel's uploads playlist: its id with "UC" replaced by "UU" (the documented convention for a channel's uploads). */
+const uploadsPlaylistOf = (channelId: string) => (channelId.startsWith("UC") ? `UU${channelId.slice(2)}` : channelId);
+
+/**
+ * BL-182 stage 2 (ADR 0037): the background upload runner of this computer. Every write goes through the write gateway right after
+ * the Live writes check; every read through the read gateway; the deferred publish time through video-details' own write path.
+ */
+export function createUploadRunnerCore() {
+  const workspaces = createChannelWorkspacesCore();
+  const writeContext = createWriteContextCore();
+  const uploads = createPublishingYoutubeWrites();
+  const finish = createPublishingFinishWrites();
+  const videoDetails = createVideoDetailsCore();
+  const workspaceOf = async (channelId: string) => {
+    const workspace = await workspaces.getWorkspace({ channelId });
+    if (!workspace.configured) throw new Error("This channel has no workspace folder on this computer (Settings → Channels).");
+    return workspace.path;
+  };
+  const deps: UploadRunnerDeps = {
+    store: {
+      listActive: () => listPublishingUploads({ statuses: ACTIVE_UPLOAD_STATUSES, limit: 500 }),
+      update: (id, from, set) => updatePublishingUpload(id, from, set),
+    },
+    async credentials(job) {
+      const credentialRef = { userId: job.approvedBy };
+      return { credentialRef, credentials: await resolveGoogleCredentials({ credentialRef, requiredScopes: [YOUTUBE_WRITE_SCOPE] }) };
+    },
+    async assertWriteChannel({ channelId, credentialRef, credentials }) {
+      await writeContext.assertWriteChannel({ credentialRef, credentials: credentials as ResolvedCredentials, expectedChannelId: channelId });
+    },
+    accessToken: (credentials) => freshAccessToken(credentials as ResolvedCredentials),
+    liveWritesEnabled: () => getLiveWritesEnabled(),
+    gateway: {
+      begin: (args) => uploads.begin(args),
+      putChunk: (args) => uploads.putChunk(args),
+      queryOffset: (args) => uploads.queryOffset(args),
+      setThumbnail: (credentials, videoId, image) => finish.setThumbnail(credentials as ResolvedCredentials, videoId, image),
+      addToPlaylist: (credentials, videoId, playlistId) => finish.addToPlaylist(credentials as ResolvedCredentials, videoId, playlistId),
+    },
+    reads: {
+      uploadState: async (credentials, videoId) => getVideoUploadState(await createYoutubeClient(authorizedOAuth(credentials as ResolvedCredentials)), videoId),
+      recentUploads: async (credentials, channelId) => listUploadsPlaylistFirstPage(await createYoutubeClient(authorizedOAuth(credentials as ResolvedCredentials)), uploadsPlaylistOf(channelId)),
+      playlistHasVideo: async (credentials, playlistId, videoId) =>
+        (await listPlaylistItemIdsByVideo(await createYoutubeClient(authorizedOAuth(credentials as ResolvedCredentials)), playlistId)).has(videoId),
+      snapshot: async ({ channelId, videoId, credentialRef }) => videoDetails.getSnapshot({ credentialRef, expectedChannelId: channelId, videoId }),
+    },
+    async setPublishAt({ channelId, videoId, publishAt, containsSyntheticMedia, credentialRef }) {
+      await videoDetails.applyFieldsUpdate({ credentialRef, expectedChannelId: channelId, videoId, patch: { privacyStatus: "private", publishAt, containsSyntheticMedia } });
+    },
+    files: {
+      async resolve(channelId, relativePath) {
+        try {
+          const file = await resolveWorkspaceFileForPublishing({
+            workspace: await workspaceOf(channelId),
+            relativePath,
+            fs: createWorkspaceExchangeFsForPublishing(),
+            validateWorkspacePath: validateOperatorDirectoryPath,
+            isPathInsideOrEqual,
+            unavailable: (reason) => new Error(reason),
+          });
+          return { path: file.path, bytes: file.bytes };
+        } catch {
+          return null;
+        }
+      },
+      async readChunk(filePath, start, length) {
+        const handle = await open(filePath, "r");
+        try {
+          const buffer = Buffer.alloc(length);
+          const { bytesRead } = await handle.read(buffer, 0, length, start);
+          if (bytesRead !== length) throw new Error(`Read ${bytesRead} of ${length} bytes at ${start}.`);
+          return buffer;
+        } finally {
+          await handle.close();
+        }
+      },
+      sha256: (filePath) =>
+        new Promise((resolve, reject) => {
+          const hash = createHash("sha256");
+          createReadStream(filePath)
+            .on("data", (chunk) => hash.update(chunk))
+            .on("error", reject)
+            .on("end", () => resolve(hash.digest("hex")));
+        }),
+      /** Next to the package, inside the workspace (its real folder checked), written whole or not at all. */
+      async writeRecord(channelId, relativePath, record) {
+        const name = relativePath.slice(relativePath.lastIndexOf("/") + 1);
+        if (!/^V\d+_youtube\.json$/.test(name)) throw new Error(`Not an upload record name: ${name}`);
+        const workspace = await realpath(await workspaceOf(channelId));
+        const folder = await realpath(path.join(workspace, ...relativePath.slice(0, relativePath.lastIndexOf("/")).split("/")));
+        if (folder === workspace || !isPathInsideOrEqual(workspace, folder)) throw new Error("The package folder is outside the channel workspace.");
+        const target = path.join(folder, name);
+        const temporary = path.join(folder, `.${name}.${randomUUID()}.tmp`);
+        await writeFile(temporary, `${JSON.stringify(record, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+        await rename(temporary, target);
+      },
+    },
+    audit: ({ channelId, videoId, detail }) => insertVideoEditAuditEvent({ channelId, videoId: videoId ?? `upload:${String(detail.uploadId ?? "")}`, eventType: "RESULT", detail }),
+    async syncChannel({ channelId, credentialRef }) {
+      await createChannelSyncCore().syncChannel({ credentialRef, channelId });
+    },
+    device: () => thisDevice(),
+    clock: { now: () => new Date() },
+    nextQuotaReset: (now) => nextYoutubeQuotaReset(now),
+    chunkBytes: 32 * 256 * 1024, // 8 MB
+    sliceMs: 50_000,
+  };
+  return createUploadRunner(deps);
+}

@@ -181,7 +181,7 @@ function harness(rows: StoredPublishingUpload[], over: Partial<UploadRunnerDeps>
     },
     audit: async () => undefined,
     syncChannel: async () => undefined,
-    device: async () => ({ deviceId: "mac-1", name: "Mac" }),
+    device: async () => ({ deviceId: "mac-1", hostname: "Mac" }),
     clock: { now: () => new Date(clock.at) },
     nextQuotaReset: () => new Date("2026-10-14T07:00:00Z"),
     chunkBytes: 4,
