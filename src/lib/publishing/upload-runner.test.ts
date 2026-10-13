@@ -600,3 +600,14 @@ test("re-check 3: processing whose state stays unreadable keeps polling slowly i
   await h.runAll();
   assert.equal(h.row().status, "done", "readable again: it finishes");
 });
+
+test("after a sending pass the lease is short again: a restarted process takes the upload over within 2 minutes", async () => {
+  const h = harness([job()]);
+  h.yt.setFaults([undefined as never, undefined as never, "network_before"]); // stops mid-upload
+  await h.runner.tick();
+  assert.equal(h.row().leaseUntil?.getTime(), NOW.getTime() + 2 * 60_000);
+  const restarted = createUploadRunner({ ...h.deps, runnerId: "runner-after-restart" });
+  h.clock.at = new Date(NOW.getTime() + 2 * 60_000 + 1);
+  await restarted.tick();
+  assert.equal(h.row().leaseOwner, "runner-after-restart");
+});

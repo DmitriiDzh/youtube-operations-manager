@@ -393,6 +393,9 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
       }
     } catch (error) {
       await onError(current, error);
+    } finally {
+      // Back to a short lease after the pass (a chunk holds it 12 minutes): a restarted process resumes within LEASE_MS.
+      await deps.store.claim(job.id, deps.runnerId, new Date(now().getTime() + LEASE_MS), now()).catch(() => undefined);
     }
   }
 
