@@ -273,3 +273,48 @@ test("a history marker is taken over only when it closes onto B's own history; a
       b.client.close();
     }
   }));
+
+// BL-181 (FO-REQ-0020, plan REPORTING_BASIC_PLAN.md §2 item 4): only Reach travels between computers. The peer importer knows Reach
+// rows only, so a basic or traffic-source file shared through it would be recorded as imported there with no rows, and that computer
+// would never download it itself. Each computer downloads those types on its own; the share format does not change.
+test("BL-181: the basic and traffic-source files, attempts and jobs stay out of the shared rows; Reach's still go", () =>
+  withTempDir("analytics-share-", async (root) => {
+    const a = await computer(root, "a");
+    try {
+      await collectOnA(a.database);
+      for (const type of ["channel_basic_a3", "channel_traffic_source_a3"]) {
+        await a.database.run(sql`INSERT INTO reporting_report_files (report_id, channel_id, report_type_id, job_id, start_time, end_time, create_time, row_count, status, imported_at) VALUES (${`f-${type}`}, 'UC1', ${type}, ${`job-${type}`}, '2026-10-05T07:00:00Z', '2026-10-06T07:00:00Z', '2026-10-06T09:00:00Z', 3, 'imported', ${T - 300})`);
+        await a.database.run(sql`INSERT INTO reporting_sync_attempts (channel_id, report_type_id, attempted_at, outcome, error, files_listed, files_imported, failures_json) VALUES ('UC1', ${type}, ${T - 300}, 'ok', NULL, 1, 1, NULL)`);
+        await a.database.run(sql`INSERT INTO reporting_jobs (channel_id, report_type_id, job_id, job_name, job_created_at, last_checked_at) VALUES ('UC1', ${type}, ${`job-${type}`}, 'YTOM', '2026-10-01T00:00:00Z', ${T - 300})`);
+      }
+      await a.database.run(sql`INSERT INTO reporting_jobs (channel_id, report_type_id, job_id, job_name, job_created_at, last_checked_at) VALUES ('UC1', 'channel_reach_basic_a1', 'job1', 'YTOM reach basic', '2026-10-01T00:00:00Z', ${T - 300})`);
+      const shared = await exportAnalyticsShareRows(0, T + 1, a.database);
+      assert.deepEqual(shared.reportFiles.map((f) => f.reportId), ["r1"]);
+      assert.deepEqual(shared.syncAttempts.map((s) => s.reportTypeId), ["channel_reach_basic_a1"]);
+      assert.deepEqual(shared.jobs.map((j) => j.reportTypeId), ["channel_reach_basic_a1"]);
+    } finally {
+      a.client.close();
+    }
+  }));
+
+test("BL-181: a peer's file of another type (a newer build that shared it by mistake) is not recorded as imported on this computer", () =>
+  withTempDir("analytics-share-", async (root) => {
+    const b = await computer(root, "b");
+    try {
+      const empty = { videoMetrics: [], channelMetrics: [], videoHistory: [], collectionRuns: [], channelStamps: [], reachRows: [] };
+      await importAnalyticsShareRows(
+        {
+          ...empty,
+          reportFiles: [{ reportId: "f-basic", channelId: "UC1", reportTypeId: "channel_basic_a3", jobId: "jb", startTime: "2026-10-05T07:00:00Z", endTime: "2026-10-06T07:00:00Z", createTime: "2026-10-06T09:00:00Z", rowCount: 3, status: "imported", importedAt: T - 300 }],
+          syncAttempts: [{ channelId: "UC1", reportTypeId: "channel_basic_a3", attemptedAt: T - 300, outcome: "ok", filesListed: 1, filesImported: 1 }],
+          jobs: [{ channelId: "UC1", reportTypeId: "channel_basic_a3", jobId: "jb", jobName: "YTOM basic", jobCreatedAt: "2026-10-01T00:00:00Z", lastCheckedAt: T - 300 }],
+        },
+        b.database
+      );
+      assert.equal(await count(b.database, "reporting_report_files"), 0, "B downloads that file itself, so it must not count as seen");
+      assert.equal(await count(b.database, "reporting_sync_attempts"), 0);
+      assert.equal(await count(b.database, "reporting_jobs"), 0);
+    } finally {
+      b.client.close();
+    }
+  }));

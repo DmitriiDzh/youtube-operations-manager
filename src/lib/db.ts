@@ -2346,6 +2346,60 @@ export const channelReachDaily = sqliteTable(
 );
 
 /**
+ * BL-181 (FO-REQ-0020) -- `channel_basic_a3` rows summed per video and day on import (country, subscribed status and live/on-demand
+ * rows, anonymised ones included). `video_id` "" is the channel-level and deleted-video remainder. A metric no row carried is NULL,
+ * never 0. Replaced as Reach is: a newer file for the same period replaces the older file's rows. Device-local: each computer
+ * downloads its own (not in the cross-computer analytics file).
+ */
+export const channelBasicDaily = sqliteTable(
+  "channel_basic_daily",
+  {
+    channelId: text("channel_id").notNull(),
+    /** YYYY-MM-DD, the report's own Pacific-Time day. */
+    date: text("date").notNull(),
+    videoId: text("video_id").notNull(),
+    views: real("views"),
+    engagedViews: real("engaged_views"),
+    redViews: real("red_views"),
+    watchTimeMinutes: real("watch_time_minutes"),
+    redWatchTimeMinutes: real("red_watch_time_minutes"),
+    likes: real("likes"),
+    dislikes: real("dislikes"),
+    comments: real("comments"),
+    shares: real("shares"),
+    subscribersGained: real("subscribers_gained"),
+    subscribersLost: real("subscribers_lost"),
+    videosAddedToPlaylists: real("videos_added_to_playlists"),
+    videosRemovedFromPlaylists: real("videos_removed_from_playlists"),
+    sourceReportId: text("source_report_id").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.channelId, table.date, table.videoId] }),
+    index("channel_basic_daily_source_idx").on(table.sourceReportId),
+  ]
+);
+
+/** BL-181 -- `channel_traffic_source_a3` rows summed per video, day and traffic source code (every detail included). Device-local. */
+export const channelTrafficSourceDaily = sqliteTable(
+  "channel_traffic_source_daily",
+  {
+    channelId: text("channel_id").notNull(),
+    date: text("date").notNull(),
+    videoId: text("video_id").notNull(),
+    /** Google's numeric code (3 browse features, 5 YouTube search, 7 suggested videos, ...), stored as given. */
+    trafficSourceType: integer("traffic_source_type").notNull(),
+    views: real("views"),
+    engagedViews: real("engaged_views"),
+    watchTimeMinutes: real("watch_time_minutes"),
+    sourceReportId: text("source_report_id").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.channelId, table.date, table.videoId, table.trafficSourceType] }),
+    index("channel_traffic_source_daily_source_idx").on(table.sourceReportId),
+  ]
+);
+
+/**
  * Links a topic to a watchlisted channel or a video (owner spec §13's "manual associations").
  * `subjectId` is NOT a foreign key -- a single column can't conditionally reference two different
  * tables depending on `subjectType`, and a video has no canonical one-row-per-video table to
@@ -4746,6 +4800,30 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       }
     },
   },
+  {
+    version: 88,
+    description:
+      "channel_basic_daily + channel_traffic_source_daily -- BL-181 (FO-REQ-0020): the Reporting API basic user-activity and traffic-source reports summed per video and day on import, so their lag behind the Analytics API can be measured. Device-local",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS channel_basic_daily (" +
+          "channel_id TEXT NOT NULL, date TEXT NOT NULL, video_id TEXT NOT NULL, views REAL, engaged_views REAL, red_views REAL, " +
+          "watch_time_minutes REAL, red_watch_time_minutes REAL, likes REAL, dislikes REAL, comments REAL, shares REAL, " +
+          "subscribers_gained REAL, subscribers_lost REAL, videos_added_to_playlists REAL, videos_removed_from_playlists REAL, " +
+          "source_report_id TEXT NOT NULL, PRIMARY KEY (channel_id, date, video_id))"
+      );
+      await client.execute("CREATE INDEX IF NOT EXISTS channel_basic_daily_source_idx ON channel_basic_daily(source_report_id)");
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS channel_traffic_source_daily (" +
+          "channel_id TEXT NOT NULL, date TEXT NOT NULL, video_id TEXT NOT NULL, traffic_source_type INTEGER NOT NULL, views REAL, " +
+          "engaged_views REAL, watch_time_minutes REAL, source_report_id TEXT NOT NULL, " +
+          "PRIMARY KEY (channel_id, date, video_id, traffic_source_type))"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS channel_traffic_source_daily_source_idx ON channel_traffic_source_daily(source_report_id)"
+      );
+    },
+  },
 ];
 
 /**
@@ -5900,6 +5978,13 @@ export async function listTopicWikipediaArticles(
 
 // --- BL-114: YouTube Reporting API storage ------------------------------------------------------
 
+/**
+ * The Reach report type (`reach-reports` REACH_BASIC_REPORT_TYPE_ID; reach-reports/store.test.ts checks they match). BL-181: the
+ * Reach coverage counts only its own files, and only Reach rows travel in the cross-computer analytics file -- the peer importer
+ * (`importAnalyticsShareRows`) knows Reach rows only, so another type's file would be marked imported there with no rows.
+ */
+export const SHARED_REPORTING_REPORT_TYPE_ID = "channel_reach_basic_a1";
+
 export type StoredReportingJob = {
   channelId: string;
   reportTypeId: string;
@@ -5947,7 +6032,8 @@ export async function listSeenReportingReportIds(
   return new Set(rows.map((row) => row.reportId));
 }
 
-export type ReachReportImport = {
+/** The fields every Reporting file import has, whatever its report type (BL-181: one ledger and one replacement rule). */
+type ReportingFileMeta = {
   channelId: string;
   reportTypeId: string;
   jobId: string;
@@ -5955,6 +6041,9 @@ export type ReachReportImport = {
   startTime: string;
   endTime: string;
   createTime: string;
+};
+
+export type ReachReportImport = ReportingFileMeta & {
   rows: Array<{ date: string; videoId: string; impressions: number; ctr: number | null }>;
 };
 
@@ -5962,26 +6051,129 @@ export type ReachReportImportResult =
   | { outcome: "imported"; replacedReports: number }
   | { outcome: "superseded_by_newer" };
 
+/** BL-181: a `channel_basic_a3` file, already summed per video and day (reach-reports/basic-csv.ts). */
+export type BasicReportImport = ReportingFileMeta & {
+  rows: Array<{
+    date: string;
+    videoId: string;
+    views: number | null;
+    engagedViews: number | null;
+    redViews: number | null;
+    watchTimeMinutes: number | null;
+    redWatchTimeMinutes: number | null;
+    likes: number | null;
+    dislikes: number | null;
+    comments: number | null;
+    shares: number | null;
+    subscribersGained: number | null;
+    subscribersLost: number | null;
+    videosAddedToPlaylists: number | null;
+    videosRemovedFromPlaylists: number | null;
+  }>;
+};
+
+/** BL-181: a `channel_traffic_source_a3` file, already summed per video, day and traffic source code. */
+export type TrafficSourceReportImport = ReportingFileMeta & {
+  rows: Array<{ date: string; videoId: string; trafficSourceType: number; views: number | null; engagedViews: number | null; watchTimeMinutes: number | null }>;
+};
+
 /**
- * Imports one Reach report file in a single transaction. **Replacement, not addition:** when an
- * already-imported file covers the SAME period, the one with the later `createTime` wins -- a newer file
- * replaces the older file's rows (including a video the regenerated file no longer lists), and an older
- * file arriving after a newer one is recorded as superseded without touching the data.
+ * How one report type's rows are written: removing an older file's rows by its report id, and inserting this file's rows (all
+ * tagged with this file's report id).
  */
-// One reach report import at a time in this process (re-review): between reading the period's reports and writing, another import
-// of the same period (the local sync and a peer's file) could otherwise record both as imported and let the older one's rows win.
-let reachImportQueue: Promise<unknown> = Promise.resolve();
-export function importReachReport(input: ReachReportImport, database: AppDb = db): Promise<ReachReportImportResult> {
-  const run = reachImportQueue.then(
-    () => importReachReportUnlocked(input, database),
-    () => importReachReportUnlocked(input, database)
+type ReportingRowWriter = {
+  rowCount: number;
+  deleteBySource(database: AppDb, reportIds: string[]): BatchItem<"sqlite">;
+  inserts(database: AppDb, reportId: string): Array<BatchItem<"sqlite">>;
+};
+
+/**
+ * Imports one Reporting report file in a single transaction. **Replacement, not addition:** when an already-imported file of the
+ * same type covers the SAME period, the one with the later `createTime` wins -- a newer file replaces the older file's rows
+ * (including a video the regenerated file no longer lists), and an older file arriving after a newer one is recorded as superseded
+ * without touching the data.
+ */
+// One Reporting import at a time in this process, for every report type (re-review): between reading the period's reports and
+// writing, another import of the same period (the local sync and a peer's file) could otherwise record both as imported and let the
+// older one's rows win.
+let reportingImportQueue: Promise<unknown> = Promise.resolve();
+function queueReportingImport(meta: ReportingFileMeta, writer: ReportingRowWriter, database: AppDb): Promise<ReachReportImportResult> {
+  const run = reportingImportQueue.then(
+    () => importReportingFileUnlocked(meta, writer, database),
+    () => importReportingFileUnlocked(meta, writer, database)
   );
-  reachImportQueue = run.catch(() => undefined);
+  reportingImportQueue = run.catch(() => undefined);
   return run;
 }
 
-async function importReachReportUnlocked(
-  input: ReachReportImport,
+export function importReachReport(input: ReachReportImport, database: AppDb = db): Promise<ReachReportImportResult> {
+  return queueReportingImport(
+    input,
+    {
+      rowCount: input.rows.length,
+      deleteBySource: (database, ids) => database.delete(channelReachDaily).where(inArray(channelReachDaily.sourceReportId, ids)),
+      inserts: (database, reportId) =>
+        input.rows.map((row) =>
+          database
+            .insert(channelReachDaily)
+            .values({ channelId: input.channelId, date: row.date, videoId: row.videoId, impressions: row.impressions, ctr: row.ctr, sourceReportId: reportId })
+            .onConflictDoUpdate({
+              target: [channelReachDaily.channelId, channelReachDaily.date, channelReachDaily.videoId],
+              set: { impressions: row.impressions, ctr: row.ctr, sourceReportId: reportId },
+            })
+        ),
+    },
+    database
+  );
+}
+
+/** BL-181: same replacement rule and the same queue as Reach. */
+export function importBasicReport(input: BasicReportImport, database: AppDb = db): Promise<ReachReportImportResult> {
+  return queueReportingImport(
+    input,
+    {
+      rowCount: input.rows.length,
+      deleteBySource: (database, ids) => database.delete(channelBasicDaily).where(inArray(channelBasicDaily.sourceReportId, ids)),
+      inserts: (database, reportId) =>
+        input.rows.map(({ date, videoId, ...metrics }) =>
+          database
+            .insert(channelBasicDaily)
+            .values({ channelId: input.channelId, date, videoId, ...metrics, sourceReportId: reportId })
+            .onConflictDoUpdate({
+              target: [channelBasicDaily.channelId, channelBasicDaily.date, channelBasicDaily.videoId],
+              set: { ...metrics, sourceReportId: reportId },
+            })
+        ),
+    },
+    database
+  );
+}
+
+/** BL-181: same replacement rule and the same queue as Reach. */
+export function importTrafficSourceReport(input: TrafficSourceReportImport, database: AppDb = db): Promise<ReachReportImportResult> {
+  return queueReportingImport(
+    input,
+    {
+      rowCount: input.rows.length,
+      deleteBySource: (database, ids) => database.delete(channelTrafficSourceDaily).where(inArray(channelTrafficSourceDaily.sourceReportId, ids)),
+      inserts: (database, reportId) =>
+        input.rows.map(({ date, videoId, trafficSourceType, ...metrics }) =>
+          database
+            .insert(channelTrafficSourceDaily)
+            .values({ channelId: input.channelId, date, videoId, trafficSourceType, ...metrics, sourceReportId: reportId })
+            .onConflictDoUpdate({
+              target: [channelTrafficSourceDaily.channelId, channelTrafficSourceDaily.date, channelTrafficSourceDaily.videoId, channelTrafficSourceDaily.trafficSourceType],
+              set: { ...metrics, sourceReportId: reportId },
+            })
+        ),
+    },
+    database
+  );
+}
+
+async function importReportingFileUnlocked(
+  input: ReportingFileMeta,
+  writer: ReportingRowWriter,
   database: AppDb = db
 ): Promise<ReachReportImportResult> {
   const newCreate = Date.parse(input.createTime);
@@ -6022,21 +6214,11 @@ async function importReachReportUnlocked(
   const olderIds = samePeriod.map((file) => file.reportId);
   const writes: Array<BatchItem<"sqlite">> = [];
   if (olderIds.length > 0) {
-    writes.push(database.delete(channelReachDaily).where(inArray(channelReachDaily.sourceReportId, olderIds)));
+    writes.push(writer.deleteBySource(database, olderIds));
     writes.push(database.update(reportingReportFiles).set({ status: "superseded" }).where(inArray(reportingReportFiles.reportId, olderIds)));
   }
-  for (const row of input.rows) {
-    writes.push(
-      database
-        .insert(channelReachDaily)
-        .values({ channelId: input.channelId, date: row.date, videoId: row.videoId, impressions: row.impressions, ctr: row.ctr, sourceReportId: input.reportId })
-        .onConflictDoUpdate({
-          target: [channelReachDaily.channelId, channelReachDaily.date, channelReachDaily.videoId],
-          set: { impressions: row.impressions, ctr: row.ctr, sourceReportId: input.reportId },
-        })
-    );
-  }
-  writes.push(fileRow("imported", input.rows.length));
+  writes.push(...writer.inserts(database, input.reportId));
+  writes.push(fileRow("imported", writer.rowCount));
   await database.batch(writes as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
   return { outcome: "imported", replacedReports: olderIds.length } as const;
 }
@@ -6087,12 +6269,64 @@ export async function getChannelReachCoverage(
   const [files] = await database
     .select({ count: sql<number>`COUNT(*)` })
     .from(reportingReportFiles)
-    .where(and(eq(reportingReportFiles.channelId, channelId), eq(reportingReportFiles.status, "imported")));
+    .where(
+      and(
+        eq(reportingReportFiles.channelId, channelId),
+        eq(reportingReportFiles.reportTypeId, SHARED_REPORTING_REPORT_TYPE_ID),
+        eq(reportingReportFiles.status, "imported")
+      )
+    );
   return {
     firstDate: days?.firstDate ?? null,
     lastDate: days?.lastDate ?? null,
     importedFiles: Number(files?.count ?? 0),
   };
+}
+
+/** BL-181: how many files of one report type are imported for the channel (the status read of the non-Reach types). */
+export async function countImportedReportingFiles(channelId: string, reportTypeId: string, database: AppDb = db): Promise<number> {
+  const [row] = await database
+    .select({ count: sql<number>`COUNT(*)` })
+    .from(reportingReportFiles)
+    .where(
+      and(eq(reportingReportFiles.channelId, channelId), eq(reportingReportFiles.reportTypeId, reportTypeId), eq(reportingReportFiles.status, "imported"))
+    );
+  return Number(row?.count ?? 0);
+}
+
+export type StoredChannelBasicRow = typeof channelBasicDaily.$inferSelect;
+export type StoredChannelTrafficSourceRow = typeof channelTrafficSourceDaily.$inferSelect;
+
+/** BL-181: the stored basic rows of a date range, oldest day first (stage 1 stores them; stage 2 would read them). */
+export async function listChannelBasicDaily(
+  channelId: string,
+  range: { startDate: string; endDate: string },
+  database: AppDb = db
+): Promise<StoredChannelBasicRow[]> {
+  return database
+    .select()
+    .from(channelBasicDaily)
+    .where(and(eq(channelBasicDaily.channelId, channelId), gte(channelBasicDaily.date, range.startDate), sql`${channelBasicDaily.date} <= ${range.endDate}`))
+    .orderBy(asc(channelBasicDaily.date), asc(channelBasicDaily.videoId));
+}
+
+/** BL-181: the stored traffic-source rows of a date range, oldest day first. */
+export async function listChannelTrafficSourceDaily(
+  channelId: string,
+  range: { startDate: string; endDate: string },
+  database: AppDb = db
+): Promise<StoredChannelTrafficSourceRow[]> {
+  return database
+    .select()
+    .from(channelTrafficSourceDaily)
+    .where(
+      and(
+        eq(channelTrafficSourceDaily.channelId, channelId),
+        gte(channelTrafficSourceDaily.date, range.startDate),
+        sql`${channelTrafficSourceDaily.date} <= ${range.endDate}`
+      )
+    )
+    .orderBy(asc(channelTrafficSourceDaily.date), asc(channelTrafficSourceDaily.videoId), asc(channelTrafficSourceDaily.trafficSourceType));
 }
 
 // --- BL-117 slice 2: quota reserve setting ---------------------------------------------------------
@@ -12894,9 +13128,10 @@ export async function exportAnalyticsShareRows(fromSec: number, toSec: number, d
     all(sql`SELECT video_id, channel_id, history_through, updated_at FROM analytics_video_history WHERE updated_at >= ${fromSec} AND updated_at < ${toSec}`),
     all(sql`SELECT channel_id, requested_start_date, requested_end_date, video_count, upserts_issued, skipped_video_ids_json, ran_at, channel_level FROM analytics_collection_runs WHERE ran_at >= ${fromSec} AND ran_at < ${toSec}`),
     all(sql`SELECT id AS channel_id, analytics_last_auto_collected_at AS at FROM channels WHERE analytics_last_auto_collected_at >= ${fromSec} AND analytics_last_auto_collected_at < ${toSec}`),
-    all(sql`SELECT report_id, channel_id, report_type_id, job_id, start_time, end_time, create_time, row_count, status, imported_at FROM reporting_report_files WHERE imported_at >= ${fromSec} AND imported_at < ${toSec}`),
-    all(sql`SELECT channel_id, report_type_id, attempted_at, outcome, files_listed, files_imported FROM reporting_sync_attempts WHERE attempted_at >= ${fromSec} AND attempted_at < ${toSec}`),
-    all(sql`SELECT channel_id, report_type_id, job_id, job_name, job_created_at, last_checked_at FROM reporting_jobs WHERE last_checked_at >= ${fromSec} AND last_checked_at < ${toSec}`),
+    // BL-181: Reach only -- each computer downloads the other report types itself (SHARED_REPORTING_REPORT_TYPE_ID).
+    all(sql`SELECT report_id, channel_id, report_type_id, job_id, start_time, end_time, create_time, row_count, status, imported_at FROM reporting_report_files WHERE imported_at >= ${fromSec} AND imported_at < ${toSec} AND report_type_id = ${SHARED_REPORTING_REPORT_TYPE_ID}`),
+    all(sql`SELECT channel_id, report_type_id, attempted_at, outcome, files_listed, files_imported FROM reporting_sync_attempts WHERE attempted_at >= ${fromSec} AND attempted_at < ${toSec} AND report_type_id = ${SHARED_REPORTING_REPORT_TYPE_ID}`),
+    all(sql`SELECT channel_id, report_type_id, job_id, job_name, job_created_at, last_checked_at FROM reporting_jobs WHERE last_checked_at >= ${fromSec} AND last_checked_at < ${toSec} AND report_type_id = ${SHARED_REPORTING_REPORT_TYPE_ID}`),
   ]);
   const reportIds = files.map((f) => String(f.report_id));
   const reach = reportIds.length > 0 ? await all(sql`SELECT channel_id, date, video_id, impressions, ctr, source_report_id FROM channel_reach_daily WHERE source_report_id IN ${reportIds}`) : [];
@@ -13055,7 +13290,7 @@ export async function importAnalyticsShareRows(t: AnalyticsShareTables, database
   // Only a SUCCESSFUL check counts here (review M4): another device's failure (its token, its scope) says nothing about this one,
   // and must never overwrite this device's own newer result.
   for (const a of t.syncAttempts) {
-    if (a.outcome !== "ok") continue;
+    if (a.outcome !== "ok" || a.reportTypeId !== SHARED_REPORTING_REPORT_TYPE_ID) continue;
     items.push(
       database.run(
         sql`INSERT INTO reporting_sync_attempts (channel_id, report_type_id, attempted_at, outcome, error, files_listed, files_imported, failures_json)
@@ -13066,6 +13301,7 @@ export async function importAnalyticsShareRows(t: AnalyticsShareTables, database
     );
   }
   for (const j of t.jobs) {
+    if (j.reportTypeId !== SHARED_REPORTING_REPORT_TYPE_ID) continue;
     items.push(
       database.run(
         sql`INSERT INTO reporting_jobs (channel_id, report_type_id, job_id, job_name, job_created_at, last_checked_at) VALUES (${j.channelId}, ${j.reportTypeId}, ${j.jobId}, ${j.jobName}, ${j.jobCreatedAt}, ${j.lastCheckedAt})
@@ -13080,13 +13316,14 @@ export async function importAnalyticsShareRows(t: AnalyticsShareTables, database
   }
 
   // A peer's report: imported once, through the same rule as a download here (a restated report replaces the older one's rows).
-  const fileIds = t.reportFiles.filter((f) => f.status === "imported").map((f) => f.reportId);
+  // BL-181: only Reach files -- the rows below are Reach rows, so another type's file would be recorded imported with none.
+  const fileIds = t.reportFiles.filter((f) => f.status === "imported" && f.reportTypeId === SHARED_REPORTING_REPORT_TYPE_ID).map((f) => f.reportId);
   const present = new Set<string>();
   for (let i = 0; i < fileIds.length; i += IMPORT_BATCH_SIZE) {
     for (const r of await database.all<{ report_id: string }>(sql`SELECT report_id FROM reporting_report_files WHERE report_id IN ${fileIds.slice(i, i + IMPORT_BATCH_SIZE)}`)) present.add(String(r.report_id));
   }
   for (const f of t.reportFiles) {
-    if (f.status !== "imported" || present.has(f.reportId)) continue;
+    if (f.status !== "imported" || f.reportTypeId !== SHARED_REPORTING_REPORT_TYPE_ID || present.has(f.reportId)) continue;
     await importReachReport(
       {
         channelId: f.channelId,

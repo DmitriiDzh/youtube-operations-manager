@@ -124,6 +124,8 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
   video_search_terms: authorized("YouTube Analytics API data for our channels (BL-169: the search terms of each own video's first 90 days)"),
   channel_search_terms_weekly: authorized("YouTube Analytics API data for our channels (BL-169: the channel's search terms per week)"),
   channel_reach_daily: authorized("YouTube Reporting API Reach data for our channels (III.E.4.b: Reporting API data)"),
+  channel_basic_daily: authorized("YouTube Reporting API basic user-activity data for our channels (BL-181, III.E.4.b: Reporting API data)"),
+  channel_traffic_source_daily: authorized("YouTube Reporting API traffic-source data for our channels (BL-181, III.E.4.b: Reporting API data)"),
   reporting_report_files: authorized("Reporting API file ledger for our channels: ids and timestamps, no content"),
   channel_metrics_daily: authorized("YouTube Analytics API channel-level totals for our channels (III.E.4.b)"),
   analytics_video_history: authorized("bookkeeping of our own analytics collection: video ids and dates, no YouTube content"),

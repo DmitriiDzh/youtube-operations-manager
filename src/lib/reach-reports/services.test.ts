@@ -392,6 +392,8 @@ test("onlyIfDue: a recent FAILED attempt does not throttle (its cause is fixable
   assert.ok(!(await due.services.syncReachReports({ ...SYNC, onlyIfDue: true })).skipped);
 });
 
+// BL-181 (FO-REQ-0020 §2.4, owner msg 2687): the status read now also carries each file's lag and the first file per day; the two
+// tests below gain exactly those fields (the requirement changed), nothing else in their expectations moved.
 test("getReachStatus with no job: everything null/empty, never overdue", async () => {
   const { services } = createFixture();
   assert.deepEqual(await services.getReachStatus(SYNC), {
@@ -403,6 +405,7 @@ test("getReachStatus with no job: everything null/empty, never overdue", async (
     nextAutoCheckAt: null,
     importedFiles: 0,
     files: [],
+    firstFileLag: [],
   });
 });
 
@@ -445,9 +448,11 @@ test("getReachStatus: once a file is imported it is never 'overdue'; next auto c
     filesImported: 1,
     failures: [{ reportId: "b", error: "HTTP 503" }],
   });
+  // Lag by hand: created 2026-10-03T03:00Z, the Pacific day ended 2026-10-02T07:00Z -> 20 h. The day ended after the job was created.
   assert.deepEqual(status.files, [
-    { reportId: "a", startTime: "2026-10-01T07:00:00Z", endTime: "2026-10-02T07:00:00Z", createTime: "2026-10-03T03:00:00Z", rowCount: 7, status: "imported", importedAt: "2026-10-03T12:00:01.000Z" },
+    { reportId: "a", startTime: "2026-10-01T07:00:00Z", endTime: "2026-10-02T07:00:00Z", createTime: "2026-10-03T03:00:00Z", rowCount: 7, status: "imported", importedAt: "2026-10-03T12:00:01.000Z", lagHours: 20 },
   ]);
+  assert.deepEqual(status.firstFileLag, [{ date: "2026-10-01", createTime: "2026-10-03T03:00:00Z", lagHours: 20 }]);
 });
 
 test("getReachStatus rejects a channel that is not the active one", async () => {

@@ -1,4 +1,5 @@
 import {
+  countImportedReportingFiles,
   getChannelReachCoverage,
   getReportingSyncAttempt,
   listReportingReportFiles,
@@ -32,5 +33,6 @@ export function createReachReportsStoreAdapter(): ReachReportsDependencies["stor
     listChannelConnections,
     getAttempt: (channelId, reportTypeId) => getReportingSyncAttempt(channelId, reportTypeId),
     listFiles: (channelId, reportTypeId, limit) => listReportingReportFiles(channelId, reportTypeId, limit),
+    countImportedFiles: (channelId, reportTypeId) => countImportedReportingFiles(channelId, reportTypeId),
   };
 }
