@@ -198,7 +198,7 @@ export const content: Record<keyof typeof en, string> = {
   "publishingSettings.category.28": "Наука и техника",
   "publishingSettings.category.29": "Некоммерческие организации",
   "publishingPackages.title": "Пакеты релизов",
-  "publishingPackages.intro": "Готовые видео из папки «04 Videos» рабочей папки канала: пакет Vn_release.json, который пишет фабрика рядом с видео. Здесь каждый пакет проверяется ещё раз; загрузка на YouTube появится следующим шагом.",
+  "publishingPackages.intro": "Готовые видео из папки «04 Videos» рабочей папки канала: пакет Vn_release.json, который фабрика пишет рядом с видео. Каждый пакет проверяется ещё раз. Отметьте готовые, проверьте даты и нажмите «Загрузить выбранные» — перед загрузкой покажется экран подтверждения.",
   "publishingPackages.refresh": "Обновить",
   "publishingPackages.loading": "Ищем пакеты…",
   "publishingPackages.loadFailed": "Не удалось прочитать пакеты.",
