@@ -195,7 +195,7 @@ export const content = {
   "publishingSettings.category.28": "Science & Technology",
   "publishingSettings.category.29": "Nonprofits & Activism",
   "publishingPackages.title": "Release packages",
-  "publishingPackages.intro": "Finished videos from the channel workspace's \"04 Videos\" folder: the Vn_release.json package the factory writes next to each video. Each package is checked again here; uploading to YouTube comes in the next step.",
+  "publishingPackages.intro": "Finished videos from the channel workspace's \"04 Videos\" folder: the Vn_release.json package the factory writes next to each video. Each package is checked again. Tick the ready ones, check the dates and press \"Upload selected\" — a confirmation screen comes first.",
   "publishingPackages.refresh": "Refresh",
   "publishingPackages.loading": "Looking for packages…",
   "publishingPackages.loadFailed": "Could not read the packages.",
