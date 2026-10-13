@@ -644,3 +644,26 @@ test("paid promotion: sent at insert as its own part only when on; YouTube keepi
   await before.runAll();
   assert.equal(before.yt.videos[0].resource.paidProductPlacementDetails, undefined, "an approval from before this setting sends no part");
 });
+
+// The first real uploads (2026-10-13, V50-V57, read through the app's own Details read): YouTube returned the package's tags in
+// alphabetical order and the description without its final line break. Those are the same values, not a mismatch; a changed tag or
+// changed text still is.
+test("read-back: YouTube's sorted tags and trimmed trailing line breaks are no mismatch; a different tag or text is", () => {
+  const pkg = { ...PKG, tags: ["japanese music", "ambient music", "study music"], description: "Line one\n\nLine two\n" };
+  const after: VideoReadBack = {
+    title: pkg.title,
+    description: "Line one\n\nLine two",
+    tags: ["ambient music", "japanese music", "study music"],
+    categoryId: "10",
+    defaultLanguage: "en",
+    defaultAudioLanguage: "en",
+    privacyStatus: "private",
+    publishAt: "2026-10-24T12:00:00Z",
+    selfDeclaredMadeForKids: false,
+    license: "youtube",
+    embeddable: true,
+  };
+  assert.deepEqual(readBackMismatches(after, pkg, SETTINGS, "2026-10-24T12:00:00.000Z", NOW.getTime()), []);
+  assert.deepEqual(readBackMismatches({ ...after, tags: ["ambient music", "japanese music"] }, pkg, SETTINGS, "2026-10-24T12:00:00.000Z", NOW.getTime()), ["tags"]);
+  assert.deepEqual(readBackMismatches({ ...after, description: "Line one\nLine two" }, pkg, SETTINGS, "2026-10-24T12:00:00.000Z", NOW.getTime()), ["description"]);
+});

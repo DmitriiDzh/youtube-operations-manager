@@ -211,8 +211,10 @@ const sameInstant = (a: string | null, b: string | null) => (a === null || b ===
 export function readBackMismatches(after: VideoReadBack, pkg: ApprovedPackage, settings: PublishingSettings, publishAt: string | null, nowMs: number): string[] {
   const mismatches: string[] = [];
   if (after.title !== pkg.title) mismatches.push("title");
-  if (normalizeLineEndings(after.description ?? "") !== normalizeLineEndings(pkg.description)) mismatches.push("description");
-  if (JSON.stringify(after.tags ?? []) !== JSON.stringify(pkg.tags)) mismatches.push("tags");
+  // Seen on the first real uploads (2026-10-13, V50-V57): YouTube drops a description's trailing line breaks and returns the tags
+  // sorted -- the same text and the same tags are no mismatch.
+  if (normalizeLineEndings(after.description ?? "").trimEnd() !== normalizeLineEndings(pkg.description).trimEnd()) mismatches.push("description");
+  if (JSON.stringify([...(after.tags ?? [])].sort()) !== JSON.stringify([...pkg.tags].sort())) mismatches.push("tags");
   if (after.categoryId !== settings.categoryId) mismatches.push("categoryId");
   if (after.defaultLanguage !== pkg.defaultLanguage) mismatches.push("defaultLanguage");
   if (after.defaultAudioLanguage !== pkg.defaultAudioLanguage) mismatches.push("defaultAudioLanguage");
