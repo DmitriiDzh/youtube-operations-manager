@@ -55,7 +55,10 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 // BL-179 (FO-REQ-0021, GEMINI_OMNI_PLAN.md): 1.15.0 -- the video model gemini-omni-1.1-flash (text-to-video, first frame, first +
 // last frame; priced by Google's token counts); the catalog's video entries gain frames, retiresOn and (Omni)
 // usdPerMillionTokens; frames on a Veo model are refused before any call (gemini_invalid_params). Additive.
-export const FACTORY_API_VERSION = "1.15.0";
+// BL-184 (FO-REQ-0024, STORYBOARD_PLAN.md §2.6): 1.16.0 -- storyboards reviewed before video: factory_storyboard_create /
+// factory_storyboard_update / factory_storyboard_submit / factory_storyboard_reply (WRITE) and factory_storyboard_get /
+// factory_storyboard_list (READ). The owner comments, requests changes and approves in the Web UI only. Additive.
+export const FACTORY_API_VERSION = "1.16.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -111,6 +114,13 @@ export const FACTORY_TOOL_NAMES = [
   // BL-176: live streams -- their status (read) and the map of videos to their original files (a local write).
   "factory_live_get_status",
   "factory_live_map_sources",
+  // BL-184: storyboards -- versions, submitting for the owner's review, answers to the owner's comments; reads.
+  "factory_storyboard_create",
+  "factory_storyboard_update",
+  "factory_storyboard_get",
+  "factory_storyboard_list",
+  "factory_storyboard_submit",
+  "factory_storyboard_reply",
 ] as const;
 
 /**
@@ -147,6 +157,11 @@ export const FACTORY_WRITE_TOOL_NAMES = [
   "factory_gemini_create_job",
   // BL-176: the map of videos to original files (local only; nothing reaches YouTube, nothing starts a stream).
   "factory_live_map_sources",
+  // BL-184: storyboard versions, submissions and answers (synced to the other computers; nothing is generated or charged).
+  "factory_storyboard_create",
+  "factory_storyboard_update",
+  "factory_storyboard_submit",
+  "factory_storyboard_reply",
 ] as const;
 
 export type FactoryChannelEntry = {
@@ -219,6 +234,15 @@ export type FactoryToolDeps = {
   live: {
     getStatus(input: { channelId?: string }): Promise<Record<string, unknown>>;
     mapSources(input: { channelId: string; items: Array<{ videoId: string; file: string }> }): Promise<Record<string, unknown>>;
+  };
+  /** BL-184: storyboards (the module validates every input strictly itself; every write is the Operator's). */
+  storyboards: {
+    create(input: unknown): Promise<Record<string, unknown>>;
+    update(input: unknown): Promise<Record<string, unknown>>;
+    get(input: unknown): Promise<Record<string, unknown>>;
+    list(input: unknown): Promise<Record<string, unknown>>;
+    submit(input: unknown): Promise<Record<string, unknown>>;
+    reply(input: unknown): Promise<Record<string, unknown>>;
   };
   /** The same local gate every mutating channel tool passes (operation lock, recovery mode); throws when not allowed. */
   assertMutationAllowed(): Promise<void>;
@@ -923,6 +947,66 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
       await deps.assertMutationAllowed();
       return successResult(await deps.live.mapSources(input));
     }
+  );
+
+  // -- BL-184 (FO-REQ-0024, STORYBOARD_PLAN.md §2.6): storyboards. The schemas here name the fields; the storyboards module checks
+  // every bound and rule (ids, the chain of segments, the files). Writes pass the device mutation gate.
+  const storyboardContent = {
+    title: z.string(),
+    loop: z.boolean(),
+    keyframes: z.array(z.object({}).passthrough()),
+    segments: z.array(z.object({}).passthrough()),
+    props: z.array(z.object({}).passthrough()).optional(),
+    notes: z.string().nullable().optional(),
+  };
+  const storyboardRef = z.object({ channelId: z.string(), storyboardId: z.string() }).strict();
+  const storyboardWrite = (name: (typeof FACTORY_TOOL_NAMES)[number], description: string, schema: z.ZodTypeAny, call: (input: unknown) => Promise<Record<string, unknown>>) =>
+    registerTool(name, { description, inputSchema: schema }, async (args) => {
+      const input = parseInput(schema, args);
+      await deps.assertMutationAllowed();
+      return successResult(await call(input));
+    });
+  const STORYBOARD_SHAPE =
+    "Storyboard: { storyboardId, channelId, title, planId, state: draft | in_review | changes_requested | approved, latestVersion, keyframes, segments (counts of the latest version), loop, createdAt, createdBy, submittedAt (of the latest version, or null), lastDecision ({ kind: approved | changes_requested, versionNumber, at, by, device, note } on the latest version, or null), openComments, updatedAt, versions: [{ number, createdAt, title, loop, keyframes: [{ id, file, sha256, bytes, caption, parentKeyframeId }], segments: [{ id, fromKeyframeId, toKeyframeId, action, durationSeconds, model, settings, estimateUsd }], props: [{ id, name, kind, cells }], notes }], submissions: [{ versionNumber, at }], decisions: [...], comments: [{ id, versionNumber, target: { kind: storyboard } | { kind: keyframe, keyframeId, region ({ x, y, r } 0..1, a pin) or null } | { kind: segment, segmentId } | { kind: prop, propId, keyframeId }, author: owner | operator, device, text, createdAt, state: open | resolved, stateChangedAt, stateChangedBy, replies: [{ id, author, device, text, createdAt }] }] }.";
+
+  storyboardWrite(
+    "factory_storyboard_create",
+    `Create a storyboard (1.16.0): the keyframes of a video loop, the segment of video between each two of them and a prop table, for the owner to review and approve BEFORE any video is generated. { channelId (connected here, with a workspace folder), storyboardId? (yours, 1-40 letters/digits/'_'/'-'; default sb_<random>), planId? (a generation plan it belongs to), title (<= 200), loop (true: the last keyframe goes back to the first), keyframes: [{ id (1-40 letters/digits/'_'/'-'), file (a path relative to the channel's '99 Data Exchange/': 'Sent to YTM/...' or a job's output in place, 'From YTM/gemini/<jobId>/...' or 'From YTM/media/<jobId>/...'), caption? (<= 200), parentKeyframeId? (another keyframe it was made from) }] (2-24, in order), segments: [{ id, fromKeyframeId, toKeyframeId, action (what happens; <= 4000), durationSeconds (> 0, <= 600), model? (<= 200), settings? ({ name: string | number | boolean }), estimateUsd? }] -- exactly one for each neighbouring pair K0->K1, K1->K2, ... and, with loop, the last back to the first; props?: [{ id, name (<= 200), kind: object | character, cells: { keyframeId: its state there (<= 200) } }] (<= 40), notes? (<= 4000) } -> { storyboard } (version 1, state draft). Each file must exist in the channel's exchange folders on this computer; its sha256 and size are frozen in the version. Keep a version's files unchanged once it uses them: write a new version's images to a new folder (e.g. bar/v2/). Nothing is generated or charged. Refusals: validation_failed (details.field and the id), storyboard_file_unavailable (details.keyframeId, reason), storyboard_channel_unavailable. ${STORYBOARD_SHAPE}`,
+    z.object({ channelId: z.string(), storyboardId: z.string().optional(), planId: z.string().nullable().optional(), ...storyboardContent }).strict(),
+    (input) => deps.storyboards.create(input)
+  );
+  storyboardWrite(
+    "factory_storyboard_update",
+    "Change a storyboard (1.16.0): { channelId, storyboardId, and the whole content again as in factory_storyboard_create (title, loop, keyframes, segments, props?, notes?) } -> { storyboard, changed, versionNumber }. A content change -- a text, a cell, a keyframe file, or a file's bytes -- makes the next version (v2, v3, ...); the same content again changes nothing (changed: false). Older versions stay readable with their comments. A new version is not approved: it is a draft until you submit it, so an approval never carries over to edited content. Refusals: as factory_storyboard_create, and storyboard_not_found.",
+    z.object({ channelId: z.string(), storyboardId: z.string(), ...storyboardContent }).strict(),
+    (input) => deps.storyboards.update(input)
+  );
+  storyboardWrite(
+    "factory_storyboard_submit",
+    "Put the latest version of a storyboard in the owner's review (1.16.0): { channelId, storyboardId } -> { storyboard, alreadySubmitted }. The state becomes in_review and the owner sees it in Media. Submitting the same version again changes nothing. The owner then comments (on the storyboard, a keyframe with a pin, a segment or a prop cell) and requests changes or approves -- in the Web UI only, on the latest version only. Refusals: storyboard_not_found, storyboard_channel_unavailable.",
+    storyboardRef,
+    (input) => deps.storyboards.submit(input)
+  );
+  storyboardWrite(
+    "factory_storyboard_reply",
+    "Answer an owner's comment on a storyboard and/or resolve it (1.16.0): { channelId, storyboardId, commentId, text? (<= 4000; your reply in its thread), resolve? (true: resolved, false: open again) } (text or resolve required) -> { storyboard, replyId (or null) }. Refusals: storyboard_not_found, storyboard_comment_not_found, validation_failed.",
+    z.object({ channelId: z.string(), storyboardId: z.string(), commentId: z.string(), text: z.string().optional(), resolve: z.boolean().optional() }).strict(),
+    (input) => deps.storyboards.reply(input)
+  );
+  const storyboardListInput = z.object({ channelId: z.string(), state: z.enum(["draft", "in_review", "changes_requested", "approved"]).optional() }).strict();
+  registerTool(
+    "factory_storyboard_get",
+    { description: `One storyboard with every version, the owner's comments (with pins and threads), submissions and decisions (1.16.0): { channelId, storyboardId } -> { storyboard }. The storyboards are synced between the computers, so comments and decisions made on another computer appear here after a sync (a minute or two). Read-only. ${STORYBOARD_SHAPE}`, inputSchema: storyboardRef },
+    async (args) => successResult(await deps.storyboards.get(parseInput(storyboardRef, args)))
+  );
+  registerTool(
+    "factory_storyboard_list",
+    {
+      description:
+        "A channel's storyboards, newest activity first (1.16.0): { channelId, state? } -> { storyboards: [the storyboard's summary fields, without versions, submissions, decisions and comments] }. state: draft (not submitted yet), in_review (waiting for the owner), changes_requested (read the open comments with factory_storyboard_get, then factory_storyboard_update and factory_storyboard_submit), approved (the latest version may be rendered). Read-only.",
+      inputSchema: storyboardListInput,
+    },
+    async (args) => successResult(await deps.storyboards.list(parseInput(storyboardListInput, args)))
   );
 
   return server;

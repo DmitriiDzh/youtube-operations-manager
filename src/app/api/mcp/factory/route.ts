@@ -9,6 +9,7 @@ import { collectLiveStreamEntries, createLiveStreamsCore, getLiveStreamsDeviceId
 import { createLogicalPathsCore } from "@/lib/logical-paths";
 import { createGenerationPlansCore, withPlanLock } from "@/lib/generation-plans";
 import { createMediaGenerationCore, DomainError, withJobErrorCode } from "@/lib/media-generation";
+import { createStoryboardsServiceForProduction } from "@/lib/storyboards";
 import { createFactoryMcpServer, type FactoryToolDeps } from "@/mcp/factory-server";
 
 // Never cached or prerendered: every call is an authenticated, per-request Factory Operator session.
@@ -207,6 +208,15 @@ function createToolDeps(): FactoryToolDeps {
         return { streams };
       },
       mapSources: async (input) => ({ results: await createLiveStreamsCore().setSources(input.channelId, { items: input.items }, "factory") }),
+    },
+    // BL-184 (STORYBOARD_PLAN.md §2.6): storyboards; every write is the Operator's (the owner decides in the Web UI only).
+    storyboards: {
+      create: async (input) => ({ ...(await createStoryboardsServiceForProduction().create(input)) }),
+      update: async (input) => ({ ...(await createStoryboardsServiceForProduction().update(input)) }),
+      get: async (input) => ({ ...(await createStoryboardsServiceForProduction().get(input)) }),
+      list: async (input) => ({ ...(await createStoryboardsServiceForProduction().list(input)) }),
+      submit: async (input) => ({ ...(await createStoryboardsServiceForProduction().submit(input)) }),
+      reply: async (input) => ({ ...(await createStoryboardsServiceForProduction().operatorReply(input)) }),
     },
     assertMutationAllowed: () => assertDeviceAvailableForMutation(rawSqlClient),
   };
