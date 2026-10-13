@@ -1,6 +1,6 @@
 "use client";
 
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useAppChannel } from "@/components/app-channel";
 import { FeatureErrorBoundary } from "@/components/feature-error-boundary";
 import { StoryboardReviewScreen } from "@/components/storyboard-review-screen";
@@ -12,11 +12,12 @@ export default function StoryboardReviewPage() {
   const { storyboardId } = useParams<{ storyboardId: string }>();
   const router = useRouter();
   const { channel } = useAppChannel();
+  const query = useSearchParams();
   const t = useT();
   if (!channel) return null;
   return (
     <FeatureErrorBoundary label={t("page.storyboardReview")}>
-      <StoryboardReviewScreen key={`${channel.id}:${storyboardId}`} channelId={channel.id} storyboardId={decodeURIComponent(storyboardId)} onClose={() => router.push("/media/storyboards")} />
+      <StoryboardReviewScreen key={`${channel.id}:${storyboardId}`} channelId={channel.id} storyboardId={decodeURIComponent(storyboardId)} initialView={query.get("view") === "video" ? "video" : "frames"} onClose={() => router.push("/media/storyboards")} />
     </FeatureErrorBoundary>
   );
 }

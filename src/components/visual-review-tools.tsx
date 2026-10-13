@@ -35,14 +35,18 @@ export function FeedPreview({ src }: { src: string }) {
   );
 }
 
-/** §F: a loop clip's last frame and first frame, side by side or blended into their difference (black = the same). */
-export function SeamFrames({ src, fps }: { src: string; fps: number | null }) {
+/**
+ * §F: a loop clip's last frame and first frame, side by side or blended into their difference (black = the same). BL-184 (B5): with
+ * `nextSrc`, the joint between two clips -- the last frame of `src` against the first frame of `nextSrc` (a storyboard's segments in
+ * order); `hint` and `labels` then say which clips they are.
+ */
+export function SeamFrames({ src, nextSrc, fps, hint, labels }: { src: string; nextSrc?: string; fps: number | null; hint?: string; labels?: { last: string; first: string } }) {
   const { t } = useUiText();
   const [difference, setDifference] = useState(false);
   const [failed, setFailed] = useState(false);
   const frame = (which: "last" | "first") => (
     <video
-      src={src}
+      src={which === "first" && nextSrc ? nextSrc : src}
       muted
       playsInline
       preload="auto"
@@ -57,7 +61,7 @@ export function SeamFrames({ src, fps }: { src: string; fps: number | null }) {
   return (
     <div className="space-y-2 rounded-lg border border-zinc-800 p-3">
       <div className="flex flex-wrap items-center gap-2 text-xs">
-        <span className="text-zinc-400">{t("review.loop.framesHint")}</span>
+        <span className="text-zinc-400">{hint ?? t("review.loop.framesHint")}</span>
         <span className="ml-auto inline-flex gap-1 rounded-lg bg-zinc-900 p-1" role="group" aria-label={t("review.compare.view")}>
           {[false, true].map((d) => (
             <button key={String(d)} type="button" onClick={() => setDifference(d)} aria-pressed={difference === d} className={`rounded-md px-2.5 py-1 ${difference === d ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`}>
@@ -78,7 +82,7 @@ export function SeamFrames({ src, fps }: { src: string; fps: number | null }) {
           {(["last", "first"] as const).map((which) => (
             <figure key={which} className="space-y-1">
               <div className="h-48 overflow-hidden rounded-md bg-black">{frame(which)}</div>
-              <figcaption className="text-[11px] text-zinc-400">{which === "last" ? t("review.loop.lastFrame") : t("review.loop.firstFrame")}</figcaption>
+              <figcaption className="text-[11px] text-zinc-400">{which === "last" ? (labels?.last ?? t("review.loop.lastFrame")) : (labels?.first ?? t("review.loop.firstFrame"))}</figcaption>
             </figure>
           ))}
         </div>

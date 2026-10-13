@@ -85,3 +85,48 @@ test("the list puts what waits for the owner first, then changes requested, draf
 test("a keyframe's image address escapes its parts", () => {
   assert.equal(keyframeSrc("UC_x", "bar loop", 2, "K/0"), "/api/channels/UC_x/storyboards/bar%20loop/keyframes/2/K%2F0");
 });
+
+// BL-184 stage 3 -- FO-REQ-0024 B5 / §5 step 5: "S1–S4 takes appear between their keyframes; the owner picks one take per segment,
+// checks the four joints with the seam tools, and plays the assembled 30 s loop".
+const take = (jobId: string, segmentId: string, over: Partial<import("./storyboard-model").TakeView> = {}) => ({
+  source: "gemini" as const,
+  jobId,
+  segmentId,
+  versionNumber: 2,
+  status: "done",
+  createdAt: `2026-10-13T12:0${jobId.length}:00Z`,
+  label: "omni",
+  error: null,
+  hasVideo: true,
+  ...over,
+});
+
+test("B5: takes grouped per segment of the version shown; a take's state for its card", async () => {
+  const { takesBySegment, takeState } = await import("./storyboard-model");
+  const takes = [take("a", "S1"), take("b", "S1"), take("c", "S2"), take("old", "S1", { versionNumber: 1 })];
+  assert.deepEqual([...takesBySegment(takes, 2)].map(([s, list]) => [s, list.map((t) => t.jobId)]), [["S1", ["a", "b"]], ["S2", ["c"]]]);
+  assert.deepEqual(
+    [take("x", "S1"), take("x", "S1", { status: "generating", hasVideo: false }), take("x", "S1", { status: "failed", hasVideo: false }), take("x", "S1", { status: "done", hasVideo: false })].map(takeState),
+    ["ready", "working", "failed", "failed"]
+  );
+});
+
+test("§5 step 5: the four joints of the looped bar chain, each with the picked takes on both sides; the assembled loop once all four are picked", async () => {
+  const { jointsOf, assembledLoop } = await import("./storyboard-model");
+  const v = { ...version(true), number: 2 };
+  const takes = [take("s1", "S1"), take("s2", "S2"), take("s3", "S3"), take("s4", "S4"), take("s4b", "S4", { status: "generating", hasVideo: false })];
+  const picks = { S1: { source: "gemini" as const, jobId: "s1" }, S2: { source: "gemini" as const, jobId: "s2" }, S3: { source: "gemini" as const, jobId: "s3" } };
+  const joints = jointsOf(v, takes, picks);
+  assert.deepEqual(joints.map((j) => [j.from.id, j.to.id, j.fromTake?.jobId ?? null, j.toTake?.jobId ?? null, j.closing]), [
+    ["S1", "S2", "s1", "s2", false],
+    ["S2", "S3", "s2", "s3", false],
+    ["S3", "S4", "s3", null, false],
+    ["S4", "S1", null, "s1", true],
+  ]);
+  assert.deepEqual(assembledLoop(v, takes, picks), { takes: [], missing: ["S4"] });
+  // A pick of a take still being made does not count; once S4's playable take is picked, the loop plays S1..S4 in order.
+  assert.deepEqual(assembledLoop(v, takes, { ...picks, S4: { source: "gemini", jobId: "s4b" } }).missing, ["S4"]);
+  assert.deepEqual(assembledLoop(v, takes, { ...picks, S4: { source: "gemini", jobId: "s4" } }).takes.map((t) => t.jobId), ["s1", "s2", "s3", "s4"]);
+  // Without loop there is no closing joint.
+  assert.deepEqual(jointsOf({ ...version(false), number: 2 }, takes, picks).map((j) => `${j.from.id}>${j.to.id}`), ["S1>S2", "S2>S3"]);
+});

@@ -22,6 +22,7 @@ import {
   targetKey,
   type DetailComment,
 } from "./storyboard-model";
+import { StoryboardVideoView } from "./storyboard-video-view";
 import { useT, useUiText } from "./ui-text-provider";
 import { FIT, type ViewState } from "./visual-review-model";
 
@@ -45,7 +46,7 @@ async function send<T>(t: ReturnType<typeof useT>, url: string, method: string, 
   return json as T;
 }
 
-export function StoryboardReviewScreen({ channelId, storyboardId, onClose }: { channelId: string; storyboardId: string; onClose: () => void }) {
+export function StoryboardReviewScreen({ channelId, storyboardId, onClose, initialView = "frames" }: { channelId: string; storyboardId: string; onClose: () => void; initialView?: "frames" | "video" }) {
   const t = useT();
   const { formatNumber } = useUiText();
   const base = `/api/channels/${encodeURIComponent(channelId)}/storyboards/${encodeURIComponent(storyboardId)}`;
@@ -63,6 +64,8 @@ export function StoryboardReviewScreen({ channelId, storyboardId, onClose }: { c
   const [busy, setBusy] = useState(false);
   const [dialog, setDialog] = useState<"approve" | "changes" | null>(null);
   const [note, setNote] = useState("");
+  // BL-184 stage 3 (B5): «Кадры» -- the storyboard's review; «Видео» -- the takes of its segments, the joints, the assembled loop.
+  const [screenView, setScreenView] = useState<"frames" | "video">(initialView);
   const composer = useRef<HTMLTextAreaElement | null>(null);
 
   /** `keepError`: after a refusal, the screen catches up without wiping the refusal's message. */
@@ -299,6 +302,17 @@ export function StoryboardReviewScreen({ channelId, storyboardId, onClose }: { c
                   {n.id}
                 </button>
               ))}
+              {k.parentKeyframeId && keyframeById.has(k.parentKeyframeId) ? (
+                <button
+                  type="button"
+                  aria-pressed={compare?.keyframeId === k.parentKeyframeId}
+                  onClick={() => setCompare((c) => (c?.keyframeId === k.parentKeyframeId ? null : { keyframeId: k.parentKeyframeId!, mode: c?.mode ?? "side" }))}
+                  className={`rounded-md px-2 py-0.5 ${compare?.keyframeId === k.parentKeyframeId ? "bg-zinc-700 text-white" : "text-sky-200 hover:bg-zinc-800"}`}
+                  title={t("storyboards.compare.parentHelp")}
+                >
+                  {t("storyboards.compare.parent", { id: k.parentKeyframeId })}
+                </button>
+              ) : null}
               {compare
                 ? (["side", "wipe", "difference"] as const).map((mode) => (
                     <button key={mode} type="button" aria-pressed={compare.mode === mode} onClick={() => setCompare({ ...compare, mode })} className={`rounded-md px-2 py-0.5 ${compare.mode === mode ? "bg-zinc-700 text-white" : "text-zinc-300 hover:bg-zinc-800"}`}>
@@ -601,12 +615,26 @@ export function StoryboardReviewScreen({ channelId, storyboardId, onClose }: { c
       ) : null}
       {error ? <p className="rounded-lg border border-rose-800 bg-rose-950/40 p-3 text-sm text-rose-200">{error}</p> : null}
 
-      {filmstrip}
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr),22rem]">
-        <div className="min-w-0">{inspector}</div>
-        {comments}
-      </div>
-      {propTable}
+      <span className="inline-flex gap-1 rounded-lg bg-zinc-900 p-1" role="group" aria-label={t("storyboards.view.label")}>
+        {(["frames", "video"] as const).map((v) => (
+          <button key={v} type="button" aria-pressed={screenView === v} onClick={() => setScreenView(v)} className={`rounded-md px-3 py-1 text-sm ${screenView === v ? "bg-zinc-700 text-white" : "text-zinc-300 hover:text-white"}`}>
+            {t(v === "frames" ? "storyboards.view.frames" : "storyboards.view.video")}
+          </button>
+        ))}
+      </span>
+
+      {screenView === "video" ? (
+        <StoryboardVideoView channelId={channelId} storyboard={sb} version={version} onPicked={() => void load(asked)} />
+      ) : (
+        <>
+          {filmstrip}
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr),22rem]">
+            <div className="min-w-0">{inspector}</div>
+            {comments}
+          </div>
+          {propTable}
+        </>
+      )}
 
       {dialog === "approve" ? (
         <ConfirmDialog

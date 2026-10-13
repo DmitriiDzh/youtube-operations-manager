@@ -118,3 +118,74 @@ export function decisionsOffered(detail: Pick<StoryboardDetail, "latestVersion" 
 export function keyframeSrc(channelId: string, storyboardId: string, versionNumber: number, keyframeId: string): string {
   return `/api/channels/${encodeURIComponent(channelId)}/storyboards/${encodeURIComponent(storyboardId)}/keyframes/${versionNumber}/${encodeURIComponent(keyframeId)}`;
 }
+
+// ---- BL-184 stage 3 (FO-REQ-0024 B5): the video of a storyboard -- takes per segment, the joints, the assembled loop ------------
+
+/** A take as the takes route sends it (no file path; `hasVideo` = this computer can play it). */
+export type TakeView = { source: "media" | "gemini"; jobId: string; segmentId: string; versionNumber: number; status: string; createdAt: string; label: string; error: string | null; hasVideo: boolean };
+
+export const takeKey = (take: Pick<TakeView, "source" | "jobId">) => `${take.source}:${take.jobId}`;
+
+/** A take's state for its card: playable, still being made, or failed (the video modules' statuses differ; this is what matters). */
+export function takeState(take: Pick<TakeView, "status" | "hasVideo">): "ready" | "working" | "failed" {
+  if (take.status === "failed" || take.status === "cancelled") return "failed";
+  return take.status === "done" && take.hasVideo ? "ready" : take.status === "done" ? "failed" : "working";
+}
+
+/** The version's takes, by segment, in the order they were made. */
+export function takesBySegment(takes: readonly TakeView[], versionNumber: number): Map<string, TakeView[]> {
+  const out = new Map<string, TakeView[]>();
+  for (const take of takes) {
+    if (take.versionNumber !== versionNumber) continue;
+    out.set(take.segmentId, [...(out.get(take.segmentId) ?? []), take]);
+  }
+  return out;
+}
+
+type Picks = Record<string, { source: "media" | "gemini"; jobId: string }>;
+
+/** The picked take of a segment, if it is still one of the takes (and playable here). */
+export function pickedTake(takes: readonly TakeView[], picks: Picks | undefined, segmentId: string): TakeView | null {
+  const pick = picks?.[segmentId];
+  if (!pick) return null;
+  return takes.find((t) => t.segmentId === segmentId && t.source === pick.source && t.jobId === pick.jobId) ?? null;
+}
+
+/** The segments in the chain's order (the filmstrip's), so joints and the assembled loop follow K0 -> K1 -> ... */
+export function segmentsInOrder(version: StoryboardVersion): StoryboardSegment[] {
+  return filmstripOf(version).flatMap((item) => (item.kind === "segment" ? [item.segment] : []));
+}
+
+export type Joint = { from: StoryboardSegment; to: StoryboardSegment; fromTake: TakeView | null; toTake: TakeView | null; closing: boolean };
+
+/** Every joint: segment n's last frame into segment n + 1's first frame, and with loop the last segment into the first (B5). */
+export function jointsOf(version: StoryboardVersion, takes: readonly TakeView[], picks: Picks | undefined): Joint[] {
+  const ordered = segmentsInOrder(version);
+  const joints: Joint[] = [];
+  for (let i = 0; i < ordered.length; i += 1) {
+    const next = ordered[i + 1] ?? (version.loop && ordered.length > 1 ? ordered[0] : null);
+    if (!next) continue;
+    const take = (s: StoryboardSegment) => {
+      const t = pickedTake(takes, picks, s.id);
+      return t && takeState(t) === "ready" ? t : null;
+    };
+    joints.push({ from: ordered[i], to: next, fromTake: take(ordered[i]), toTake: take(next), closing: i === ordered.length - 1 });
+  }
+  return joints;
+}
+
+/** The picked takes in order for the assembled loop, or the segments still missing a playable pick. */
+export function assembledLoop(version: StoryboardVersion, takes: readonly TakeView[], picks: Picks | undefined): { takes: TakeView[]; missing: string[] } {
+  const ordered = segmentsInOrder(version);
+  const picked = ordered.map((s) => {
+    const t = pickedTake(takes, picks, s.id);
+    return t && takeState(t) === "ready" ? t : null;
+  });
+  const missing = ordered.filter((_, i) => !picked[i]).map((s) => s.id);
+  return { takes: missing.length === 0 ? (picked as TakeView[]) : [], missing };
+}
+
+/** A take's video address (this computer's copy, with Range). */
+export function takeSrc(channelId: string, storyboardId: string, take: Pick<TakeView, "source" | "jobId">): string {
+  return `/api/channels/${encodeURIComponent(channelId)}/storyboards/${encodeURIComponent(storyboardId)}/takes/${take.source}/${encodeURIComponent(take.jobId)}`;
+}
