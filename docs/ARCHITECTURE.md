@@ -4010,3 +4010,73 @@ is already set everywhere), 2734 (one merge for the whole stage).
 - Deferred from stage 2: the AI-use
   fix for published videos was dropped (owner msg 2725); Details still starts an unreadable AI use checked rather than from the
   channel default; ffprobe on Windows depends on `ffmpeg-host`'s Mac/Linux lookup (`ffprobe_missing` there).
+
+## 48. Storyboards reviewed before video, and Media's tabs by kind (BL-184, ADR 0038, FO-REQ-0024)
+
+Plan: `docs/roadmap/plans/STORYBOARD_PLAN.md`. Owner instructions 1178 (four tabs, a storyboard approved before video), 1183 (the
+gate's scope), Telegram msgs 2739 (go), 2741/2743 (the layout: Music | Images | Storyboard | Video, plans and jobs inside them).
+
+### 48.1 The storyboard (stage 1)
+
+- **A feature module of its own, `src/lib/storyboards/`** (AGENTS.md §M; `boundaries.test.ts`: no other feature module, no Google
+  client, no network). Store: the sync family `storyboards` (`sync-gateway/storyboards`, one Automerge document per channel, the
+  twelfth family; genesis actor "storyboards-doc1"). A record holds `versions` (by number, assigned whole, never edited), `submissions`
+  (by version), `decisions`, `comments` (by id, with `replies` by id), `picks` (by version, then segment) and the channel's `gate`
+  setting. Appends use fresh ids as map keys, so the two computers' writes merge without conflicts; a comment's state and a pick are
+  whole values (the last writer wins).
+- **Content rules** (`services.ts checkContent`): unique ids; the segments are exactly the chain of neighbouring keyframes (and the
+  last back to the first with `loop`), stored in chain order; a prop cell names a keyframe of the version; a parent is another
+  keyframe. Keyframe files are paths relative to the channel's `99 Data Exchange/` (`Sent to YTM/...`, or a Gemini / GPU job's own
+  `From YTM/<gemini|media>/<jobId>/...`), still images only, resolved by the workspace-exchange rules; the sha256 and size are frozen in
+  the version. A content change (a file's bytes included) makes the next version; the same content is no new version.
+- **State is derived** (`model.ts`): draft until the Operator submits the latest version; then the owner's newest decision on that
+  version (approved / changes requested) or in review. A decision names the version on the owner's screen and is refused unless it is
+  the latest and submitted (`storyboard_version_not_latest`, `storyboard_not_submitted`). A new version is a draft until submitted --
+  this corrects DEV-RESP-0029 ("back in review by itself").
+- **Factory API 1.16.0:** `factory_storyboard_create/update/submit/reply` (writes, device mutation gate first) and `_get/_list`. The
+  owner's actions are Web only: `/api/channels/[id]/storyboards/...` (list, detail with this computer's copy of each keyframe and the
+  diff to the version before, the keyframe image, comments, replies, open/resolved, decisions), all on the active channel.
+- **Screen:** Media → «Раскадровка». The filmstrip K0 → [S1] → K1 … → ↺K0; a keyframe large (zoom, pins by Shift + drag) and against a
+  neighbour or its parent (side by side / wipe / difference); a segment's card; the prop table with a cell lit where it differs from the
+  keyframe before; comments on the storyboard, a keyframe, a segment or a prop cell, with threads; the version switcher with "changed
+  since"; «Запросить изменения» / «Одобрить эту версию» through `ConfirmDialog`. Notices: `GET /api/storyboard-alerts` -- the active
+  channel's storyboards in review on the Media badge, the other channels' in the bell.
+
+### 48.2 The gate (stage 2)
+
+- **Rule** (`storyboards/gate.ts`, FO-REQ-0024 B4, owner 1183): a video job whose first and last frames are two different images (by
+  sha256) is refused with `storyboard_not_approved` unless it names `storyboardId` + `segmentId` of the approved latest version and the
+  segment's from / to keyframes are exactly those frames. A job that names a segment is always checked. Without a link, the refusal
+  applies only while the channel's setting is on (`gate.requireApproved` in the synced document; absent = on; Media → «Раскадровка»,
+  turning it off asks first). One image (a first frame only, or the same file twice) is never gated. A gate that cannot read the
+  document refuses nothing silently: the error propagates and no job is created.
+- **Where it runs.** The port is injected into `gemini-media` and `media-generation` in their `index.ts` (they know only the port).
+  Gemini: right after `readInputs` (the frames' sha256 as read), before the estimate, the limits and any charge; a dry-run reports
+  the refusal; the link is part of the request hash only when given. GPU jobs: a template's image parameters may carry `role:
+  first_frame | last_frame` (the Operator sets it in the registry; only on an image input, each role once; an untagged template is not
+  seen as first/last-frame); the two files are hashed on this computer before any upload to the volume. Plan runs pass an item's
+  `storyboard` to every job they create.
+- **Record.** A job let through with a link stores `storyboard_id`, `storyboard_version`, `segment_id` (schema v90, nullable columns
+  on `media_jobs` and `gemini_media_jobs`) and shows `storyboard`.
+
+### 48.3 The video and the tabs (stage 3)
+
+- **Takes** (`/storyboards/[id]/takes`, composed in the route layer from both video modules' `listJobsByStoryboard`): each linked job
+  with its state and whether this computer has its video; `takes/[source]/[jobId]` streams it with Range, only from that job's own
+  folder (`resolveFromYtmJobFile`); `picks` stores the owner's take per segment of a version (only a take of that segment and version).
+  Screen «Видео»: each segment's takes between its keyframes, «Выбрать», the joints with `SeamFrames` (the last frame of segment n
+  against the first of n + 1, and the loop's closure), and the whole video -- the picked takes played one after another in one player.
+- **Shared Range streaming** moved to `src/lib/local-file-response/` (the plan audition route uses it too).
+- **Media's tabs** (`section-tabs.ts MEDIA_TABS`): «Музыка» (audio) | «Изображения» (image) | «Раскадровка» | «Видео» (video). One plans
+  list and one job log, filtered by the tab's kind: a template's kind comes from its save nodes (`templateMediaKind`: video before audio
+  before image; parsed once per template version), a plan's from its results' files and its items' templates (`progress.mediaKinds`,
+  carried in the plans report's loose `progress`); a plan or job of unknown kind shows under every tab. Badges per tab: tracks waiting
+  by kind, storyboards in review. `/media` and the former `/media/plans`, `/media/jobs` lead to «Музыка»; a plan's review keeps its
+  address and returns to the tab it was opened from (`?from=`). «Видео» lists the approved storyboards, each opening on its video.
+
+### 48.4 Not built yet
+
+- `storyboardId` / `segmentId` on `factory_plan_report` rows (placing a file the Operator rendered outside the app on a segment): the
+  linked jobs cover acceptance step 5; a follow-up item.
+- Lineage beyond keyframes (A4: `sourceRef` on a plan result, "made from" for scene images): only a keyframe's parent compare is built.
+- Blind A/B (A5), storyboard drafts by the Producer, and an Agent / Producer API read of storyboards.

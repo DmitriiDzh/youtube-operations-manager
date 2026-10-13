@@ -1,7 +1,8 @@
 # Storyboards reviewed before video, and Media's review tabs (FO-REQ-0024, BL-184)
 
-- **Status:** PROPOSED 2026-10-13. Started on the owner's go (Telegram msg 2739: "Можешь начинать следующий таск FO-REQ-0024").
-  The tab layout (§4) waits for the owner's choice.
+- **Status:** BUILT 2026-10-13 on `feature/bl-184-storyboards`, all three stages; not merged (waits for review and the owner's yes).
+  Started on the owner's go (Telegram msg 2739: "Можешь начинать следующий таск FO-REQ-0024"). Layout (§4) chosen by the owner
+  (msgs 2741/2743): neither A nor B -- see §4. As built: `docs/ARCHITECTURE.md` §48.
 - **Request:** FO-REQ-0024 (Operator, 2026-10-13; owner instruction 1178, gate scope 1183).
 - **Sources:**
   - `dev` f535431 (schema v89, Factory API 1.15.0);
@@ -126,6 +127,11 @@
 
 ## 4. The owner's decision: Media's first level
 
+**Decided (Telegram msgs 2741, 2743):** «Музыка | Изображения | Раскадровка | Видео», with no «Служебное» tab -- plans and jobs are
+the content of these tabs ("в этих 4 разделах мы и будем проверять все типы медиа"). As built: one plans list and one job log filtered
+by the tab's kind (a plan or job of unknown kind shows under every tab), per-tab waiting badges, the former `/media/plans` and
+`/media/jobs` addresses lead to «Музыка». The options below were what the owner was shown.
+
 - **Option A (recommended; what 1178 asks for):** «Музыка | Изображения сцены | Раскадровка | Видео | Служебное».
   - «Служебное» holds today's Планы and Задания.
   - Each kind tab lists the plans with items of that kind (and, for Раскадровка, the storyboards), and opens the review filtered
@@ -134,6 +140,11 @@
   Изображения / Видео) at its top.
 
 ## 5. Not in this plan
+
+Deferred while building (2026-10-13), each to a follow-up item: `storyboardId` / `segmentId` on `factory_plan_report` rows (the
+linked jobs already place takes on segments, acceptance step 5); lineage beyond a keyframe's parent (A4 `sourceRef` on plan results);
+the Agent / Producer API read of storyboards (§2.6).
+
 
 - Blind A/B comparison (A5, nice to have): a later item.
 - Storyboard drafts created by the Producer.
