@@ -7516,6 +7516,38 @@ export async function recordAnalyticsEveningAttempt(channelId: string, at: Date,
   await setAppSetting(ANALYTICS_EVENING_ATTEMPTS_KEY, JSON.stringify(attempts), database);
 }
 
+const PUBLISHING_G1_PROBE_KEY = "publishing_g1_probe";
+
+/** BL-182 (ADR 0037 §7): the G1 probe's one test upload on this computer, or null before it ran. */
+export async function getPublishingG1Probe(database: AppDb = db): Promise<{ channelId: string; videoId: string; uploadedAt: string; deletedAt: string | null } | null> {
+  const raw = await getAppSetting(PUBLISHING_G1_PROBE_KEY, database);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as { channelId?: unknown; videoId?: unknown; uploadedAt?: unknown; deletedAt?: unknown };
+    if (typeof parsed.channelId !== "string" || typeof parsed.videoId !== "string" || typeof parsed.uploadedAt !== "string") return null;
+    return { channelId: parsed.channelId, videoId: parsed.videoId, uploadedAt: parsed.uploadedAt, deletedAt: typeof parsed.deletedAt === "string" ? parsed.deletedAt : null };
+  } catch {
+    return null;
+  }
+}
+
+export async function savePublishingG1Probe(record: { channelId: string; videoId: string; uploadedAt: string; deletedAt: string | null }, database: AppDb = db): Promise<void> {
+  await setAppSetting(PUBLISHING_G1_PROBE_KEY, JSON.stringify(record), database);
+}
+
+/**
+ * BL-182: removes a video's local row after the video was deleted on YouTube (channel sync never removes rows). Only when nothing
+ * else refers to it: a foreign-key refusal leaves the row and returns false.
+ */
+export async function removeLocalVideoRowIfUnreferenced(channelId: string, videoId: string, database: AppDb = db): Promise<boolean> {
+  try {
+    const deleted = await database.delete(videos).where(and(eq(videos.id, videoId), eq(videos.channelId, channelId))).returning({ id: videos.id });
+    return deleted.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 export async function upsertVideos(
   entries: Array<{
     videoId: string;

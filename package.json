@@ -12,6 +12,7 @@
     "lint": "eslint",
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
     "cli:video-metadata": "node --import tsx src/cli/video-metadata.ts",
+    "cli:publishing-g1": "node --import tsx src/cli/publishing-g1.ts",
     "operation-lock": "node --import tsx src/cli/operation-lock.ts",
     "media": "node --import tsx src/cli/media.ts",
     "publish:snapshot": "node scripts/publish-snapshot.mjs"

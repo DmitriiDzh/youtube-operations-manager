@@ -294,3 +294,5 @@ export async function deletePlaylistItemById(
 
 // BL-176 (ADR 0036): live-streaming primitives, same rules as the functions above.
 export * from "./live";
+// BL-182 (ADR 0037): resumable video upload and the G1 probe's delete.
+export * from "./upload";
