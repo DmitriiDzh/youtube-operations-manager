@@ -1,5 +1,5 @@
-import { evaluateWriteRun, backgroundReadAllowed } from "./guard";
-import { MONITORING_LAG_SECONDS, type GuardVerdict, type QuotaSnapshot } from "./contracts";
+import { evaluateUnits, evaluateWriteRun, backgroundReadAllowed } from "./guard";
+import { MONITORING_LAG_SECONDS, type GuardVerdict, type QuotaSnapshot, type UnitsVerdict } from "./contracts";
 
 export type QuotaGuardDependencies = {
   /** Data API quota status from Cloud Monitoring; `null` status = not connected / lookup failed. */
@@ -38,6 +38,10 @@ export function createQuotaGuardServices(deps: QuotaGuardDependencies) {
     /** The verdict for writing `videos` videos now (BL-117 slice 2). */
     async checkWriteRun(videos: number): Promise<GuardVerdict> {
       return evaluateWriteRun(videos, await getSnapshot());
+    },
+    /** BL-182: the verdict for a run that needs `units` units of the pool (an upload's thumbnail, playlist item, reads). */
+    async checkUnits(units: number): Promise<UnitsVerdict> {
+      return evaluateUnits(units, await getSnapshot());
     },
     /** False while less than the configured reserve of the quota is left: background reads wait so writes keep headroom. */
     async isBackgroundReadAllowed(service: "data" | "analytics" = "data"): Promise<boolean> {

@@ -56,6 +56,10 @@ export type AppPaths = {
   channelLanguageSettingsDocDir: string;
   channelLanguageSettingsSyncFallbackDir: string;
   channelLanguageSettingsDiscardedBackupsDir: string;
+  /** BL-182 stage 2: the per-channel publishing defaults documents (sync-gateway `channel-publishing-settings`). */
+  channelPublishingSettingsDocDir: string;
+  channelPublishingSettingsSyncFallbackDir: string;
+  channelPublishingSettingsDiscardedBackupsDir: string;
   /** Directory holding the per-channel editorial-profile Automerge documents
    * (`src/lib/sync-gateway/editorial-profile/`, added 2026-09-22, `docs/roadmap/plans/
    * FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4/M3 -- its own document family, separate from
@@ -92,6 +96,9 @@ export type AppPaths = {
   liveStreamsShareDir: string;
   /** BL-176: the live-streams family's local fallback when no sync folder is configured. */
   liveStreamsSyncFallbackDir: string;
+  /** BL-182 stage 2: the publishing-uploads family -- this device's uploads report and the peers' latest reports. */
+  publishingUploadsShareDir: string;
+  publishingUploadsSyncFallbackDir: string;
   /** Path to the device-local bootstrap config JSON file. */
   bootstrapConfigPath: string;
   /** Path to the CLI/MCP active-user auth-context JSON file. */

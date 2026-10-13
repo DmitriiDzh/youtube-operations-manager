@@ -206,6 +206,7 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
   gemini_credentials: notApiData("the Gemini API key (credentials, BL-174)"),
   gemini_media_jobs: notApiData("images and video generated through Google's Gemini API for a channel, with their prompts and costs (BL-174)"),
   live_streams: authorized("our channels' live broadcast ids and texts, set by the owner (BL-176)"),
+  publishing_uploads: authorized("our channels' uploads: the video ids YouTube returned and the titles and descriptions the owner approved (BL-182)"),
   live_stream_videos: authorized("our own public videos in a live-stream rotation, with their privacy re-read from YouTube (BL-176)"),
   live_stream_events: authorized("our channels' live-broadcast audit trail and YouTube status changes (BL-176)"),
   live_stream_sources: notApiData("the Operator's map of our videos to local files (BL-176)"),

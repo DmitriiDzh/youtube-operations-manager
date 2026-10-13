@@ -1259,6 +1259,50 @@ export const geminiMediaJobs = sqliteTable(
 );
 
 /**
+ * Schema v89 (BL-182 stage 2, PUBLISHING_PLAN.md §2 stage 2 item 5, ADR 0037): the upload queue of this computer -- one row per
+ * approved release package, frozen as the owner approved it (package, publishing settings, publish time), with each step's
+ * outcome, so a restart continues at the step and never uploads twice. At most one live row per channel and video (the unique
+ * index): one that is not failed or cancelled, or one whose video exists -- a failed upload that made a video still blocks a
+ * second one (review B1). Device-local: a package uploads from the computer that has its files. Times in ms.
+ */
+export const publishingUploads = sqliteTable(
+  "publishing_uploads",
+  {
+    id: text("id").primaryKey(),
+    channelId: text("channel_id").notNull(),
+    video: text("video").notNull(),
+    manifestPath: text("manifest_path").notNull(),
+    manifestSha256: text("manifest_sha256").notNull(),
+    packageJson: text("package_json").notNull(),
+    settingsJson: text("settings_json").notNull(),
+    publishAt: text("publish_at"),
+    approvedBy: text("approved_by").notNull(),
+    approvedAt: integer("approved_at", { mode: "timestamp_ms" }).notNull(),
+    status: text("status", { enum: ["queued", "uploading", "processing", "finishing", "paused", "done", "failed", "cancelled"] }).notNull(),
+    resumeStatus: text("resume_status"),
+    pausedReason: text("paused_reason"),
+    pausedUntil: integer("paused_until", { mode: "timestamp_ms" }),
+    sessionUri: text("session_uri"),
+    totalBytes: integer("total_bytes").notNull(),
+    storedBytes: integer("stored_bytes").notNull(),
+    videoId: text("video_id"),
+    publishAtAtInsert: integer("publish_at_at_insert", { mode: "boolean" }).notNull(),
+    stepsJson: text("steps_json").notNull(),
+    errorCode: text("error_code"),
+    errorMessage: text("error_message"),
+    attempts: integer("attempts").notNull(),
+    nextAttemptAt: integer("next_attempt_at", { mode: "timestamp_ms" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+    finishedAt: integer("finished_at", { mode: "timestamp_ms" }),
+    /** Which runner works on the row until when: two processes on one database never both send it (review should-fix 6). */
+    leaseOwner: text("lease_owner"),
+    leaseUntil: integer("lease_until", { mode: "timestamp_ms" }),
+  },
+  (table) => [index("publishing_uploads_status_idx").on(table.status, table.nextAttemptAt), index("publishing_uploads_channel_idx").on(table.channelId, table.createdAt)]
+);
+
+/**
  * Schema v86 (BL-176, docs/roadmap/plans/LIVE_STREAMS_PLAN.md §3.3, ADR 0036): one channel's 24/7 live stream on this
  * computer -- the owner's intent (`on|off`), the YouTube stream and broadcast ids, the broadcast texts, the order and the
  * current pass. Never the stream key. Device-local: the stream runs from this computer. Times in ms.
@@ -4825,6 +4869,30 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       );
     },
   },
+  {
+    version: 89,
+    description:
+      "publishing_uploads -- BL-182 stage 2 (ADR 0037): this computer's upload queue of approved release packages, each step's outcome kept so a restart continues at its step; at most one live row per channel and video. Device-local",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS publishing_uploads (" +
+          "id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, video TEXT NOT NULL, manifest_path TEXT NOT NULL, manifest_sha256 TEXT NOT NULL, " +
+          "package_json TEXT NOT NULL, settings_json TEXT NOT NULL, publish_at TEXT, approved_by TEXT NOT NULL, approved_at INTEGER NOT NULL, " +
+          "status TEXT NOT NULL, resume_status TEXT, paused_reason TEXT, paused_until INTEGER, session_uri TEXT, total_bytes INTEGER NOT NULL, " +
+          "stored_bytes INTEGER NOT NULL, video_id TEXT, publish_at_at_insert INTEGER NOT NULL, steps_json TEXT NOT NULL, error_code TEXT, " +
+          "error_message TEXT, attempts INTEGER NOT NULL, next_attempt_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, " +
+          "finished_at INTEGER, lease_owner TEXT, lease_until INTEGER)"
+      );
+      await client.execute("CREATE INDEX IF NOT EXISTS publishing_uploads_status_idx ON publishing_uploads(status, next_attempt_at)");
+      await client.execute("CREATE INDEX IF NOT EXISTS publishing_uploads_channel_idx ON publishing_uploads(channel_id, created_at)");
+      // Never twice (ADR 0037 §4): one row per channel and video unless it failed or was cancelled before YouTube had a video --
+      // an unknown outcome (the last chunk went, no answer) holds until the owner releases it after looking in Studio.
+      await client.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS publishing_uploads_live_idx ON publishing_uploads(channel_id, video) " +
+          "WHERE status NOT IN ('failed', 'cancelled') OR video_id IS NOT NULL OR error_code = 'unknown_outcome'"
+      );
+    },
+  },
 ];
 
 /**
@@ -5286,6 +5354,7 @@ export const rawSqlClient: Client = client;
 
 const dbSchema = {
   users,
+  publishingUploads,
   channels,
   videos,
   changeSets,
@@ -7372,9 +7441,9 @@ export async function getGatewayTrafficLast24h(
   }));
 }
 
-export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens" | "live_streams" | "channel_language_settings";
+export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens" | "live_streams" | "channel_language_settings" | "channel_publishing_settings" | "publishing_uploads";
 
-const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings", "agent_tokens", "live_streams", "channel_language_settings"];
+const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings", "agent_tokens", "live_streams", "channel_language_settings", "channel_publishing_settings", "publishing_uploads"];
 
 export type SyncFamilyStatusRow = {
   family: SyncFamily;
@@ -10456,6 +10525,75 @@ export async function updateGeminiMediaJob(
     .set({ ...set, updatedAt: set.updatedAt ?? new Date() })
     .where(and(eq(geminiMediaJobs.jobId, jobId), eq(geminiMediaJobs.status, fromStatus)))
     .returning({ jobId: geminiMediaJobs.jobId });
+  return rows.length > 0;
+}
+
+export type StoredPublishingUpload = typeof publishingUploads.$inferSelect;
+export type PublishingUploadStatus = StoredPublishingUpload["status"];
+
+/**
+ * BL-182 stage 2: queues the approved uploads, all or none -- false (nothing written) when one of the videos already has a live
+ * row (the unique index: queued, uploading, finishing, paused or done).
+ */
+export async function insertPublishingUploads(rows: Array<typeof publishingUploads.$inferInsert>, database: AppDb = db): Promise<boolean> {
+  try {
+    await database.transaction(async (tx) => {
+      for (const row of rows) await tx.insert(publishingUploads).values(row);
+    });
+    return true;
+  } catch (error) {
+    if (error instanceof Error && /UNIQUE constraint failed/i.test(`${error.message} ${String((error as { cause?: unknown }).cause ?? "")}`)) return false;
+    throw error;
+  }
+}
+
+export async function getPublishingUpload(id: string, database: AppDb = db): Promise<StoredPublishingUpload | null> {
+  const [row] = await database.select().from(publishingUploads).where(eq(publishingUploads.id, id));
+  return row ?? null;
+}
+
+/** Newest first; optional channel and status filters. */
+export async function listPublishingUploads(
+  filter: { channelId?: string; statuses?: readonly PublishingUploadStatus[]; limit: number },
+  database: AppDb = db
+): Promise<StoredPublishingUpload[]> {
+  const conditions = [
+    filter.channelId === undefined ? undefined : eq(publishingUploads.channelId, filter.channelId),
+    filter.statuses === undefined ? undefined : inArray(publishingUploads.status, [...filter.statuses]),
+  ].filter((c) => c !== undefined);
+  return database
+    .select()
+    .from(publishingUploads)
+    .where(conditions.length > 0 ? and(...conditions) : undefined)
+    .orderBy(desc(publishingUploads.createdAt), desc(publishingUploads.id))
+    .limit(filter.limit);
+}
+
+/**
+ * Takes the row for one runner until `until` (compare-and-set on the lease): false while another runner holds an unexpired lease.
+ * Two processes on one database (e.g. a dev server beside the service) therefore never both send one upload.
+ */
+export async function claimPublishingUpload(id: string, owner: string, until: Date, now: Date, database: AppDb = db): Promise<boolean> {
+  const rows = await database
+    .update(publishingUploads)
+    .set({ leaseOwner: owner, leaseUntil: until })
+    .where(and(eq(publishingUploads.id, id), or(isNull(publishingUploads.leaseUntil), lte(publishingUploads.leaseUntil, now), eq(publishingUploads.leaseOwner, owner))))
+    .returning({ id: publishingUploads.id });
+  return rows.length > 0;
+}
+
+/** Updates a row only while it is in `fromStatus` (compare-and-set); false when it was not (nothing written). */
+export async function updatePublishingUpload(
+  id: string,
+  fromStatus: PublishingUploadStatus,
+  set: Partial<Omit<typeof publishingUploads.$inferInsert, "id" | "channelId" | "video" | "createdAt">>,
+  database: AppDb = db
+): Promise<boolean> {
+  const rows = await database
+    .update(publishingUploads)
+    .set({ ...set, updatedAt: set.updatedAt ?? new Date() })
+    .where(and(eq(publishingUploads.id, id), eq(publishingUploads.status, fromStatus)))
+    .returning({ id: publishingUploads.id });
   return rows.length > 0;
 }
 

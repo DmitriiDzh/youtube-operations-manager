@@ -46,3 +46,11 @@ test("gaps: the next 14 days without a published or scheduled video; an overdue 
   assert.ok(gaps.has("2026-10-15"), "the overdue day is a gap");
   assert.ok(gaps.has("2026-10-26") && !gaps.has("2026-10-27"), "13.10 + 13 days is the last one");
 });
+
+// BL-182 stage 2 (FO-REQ-0023 §4 C1): a ready package shows on its planned day, but it is not scheduled yet, so the day stays a gap.
+test("a ready package on its planned day does not fill the gap", () => {
+  const now = new Date(2026, 9, 13, 14, 0);
+  const byDay = entriesByDay([{ videoId: "04 Videos/x/V65_release.json", title: "V65", kind: "package", at: at(2026, 9, 16, 15) }]);
+  assert.equal(byDay.get("2026-10-16")?.length, 1);
+  assert.ok(gapDays(now, byDay).has("2026-10-16"));
+});

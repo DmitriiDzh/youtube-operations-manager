@@ -38,6 +38,7 @@ export const shell: Record<keyof typeof en, string> = {
   "tabs.content.videos": "Видео",
   "tabs.content.streams": "Трансляции",
   "tabs.content.calendar": "Календарь",
+  "tabs.content.publishing": "Публикация",
   "tabs.settings.about": "О программе",
 
   "shell.productName": "Operations Manager",
@@ -173,6 +174,8 @@ export const shell: Record<keyof typeof en, string> = {
   "conflicts.subject.editorialProfile": "Редакционный профиль",
   "conflicts.group.channelLanguages": "Языки канала — {channel}",
   "conflicts.subject.languageSettings": "Языки",
+  "conflicts.group.channelPublishing": "Публикация канала — {channel}",
+  "conflicts.subject.publishingSettings": "Настройки публикации",
   "conflicts.field.defaultLanguage": "Язык названия и описания",
   "conflicts.field.defaultAudioLanguage": "Язык видео",
   "conflicts.field.trackedLanguages": "Отслеживаемые языки",

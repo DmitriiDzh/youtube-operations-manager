@@ -1,3 +1,4 @@
+import { Readable } from "node:stream";
 import { request as httpsRequest } from "node:https";
 import type { youtube_v3 } from "googleapis";
 import { noteYoutubeQuotaCall } from "@/lib/youtube-read-gateway";
@@ -209,4 +210,14 @@ function progressOf(response: UploadHttpResponse, step: string): UploadProgress 
 export async function deleteVideoById(youtube: youtube_v3.Youtube, videoId: string): Promise<void> {
   if (!videoId) throw new DomainError({ code: "validation_failed", message: "No video id to delete." });
   await youtube.videos.delete({ id: videoId });
+}
+
+/**
+ * Real `thumbnails.set` (BL-182 stage 2, ADR 0037): a JPEG or PNG of at most 2 MB as the video's custom thumbnail (50 units). The
+ * caller checks the file and calls `assertLiveWritesAuthorized()` first.
+ */
+export async function setVideoThumbnail(youtube: youtube_v3.Youtube, videoId: string, image: { mimeType: "image/jpeg" | "image/png"; bytes: Buffer }): Promise<void> {
+  if (!videoId) throw new DomainError({ code: "validation_failed", message: "No video id for the thumbnail." });
+  if (image.bytes.length === 0 || image.bytes.length > 2 * 1024 * 1024) throw new DomainError({ code: "validation_failed", message: "A thumbnail must be 1 byte to 2 MB." });
+  await youtube.thumbnails.set({ videoId, media: { mimeType: image.mimeType, body: Readable.from(image.bytes) } });
 }

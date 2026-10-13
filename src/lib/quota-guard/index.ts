@@ -38,5 +38,5 @@ export {
   QUOTA_SAFETY_MARGIN_UNITS,
   UNITS_PER_WRITTEN_VIDEO,
 } from "./contracts";
-export type { GuardVerdict, QuotaSnapshot } from "./contracts";
-export { evaluateWriteRun, videosThatFit } from "./guard";
+export type { GuardVerdict, QuotaSnapshot, UnitsVerdict } from "./contracts";
+export { evaluateUnits, evaluateWriteRun, videosThatFit } from "./guard";

@@ -1,7 +1,15 @@
 import { createGoogleOAuthClient } from "@/lib/auth";
 import type { ResolvedCredentials } from "@/lib/shared-domain";
 import { createYoutubeClient } from "@/lib/youtube-read-gateway";
-import { assertLiveWritesAuthorized, beginResumableVideoUpload, deleteVideoById, putVideoUploadChunk, queryVideoUploadOffset } from "@/lib/youtube-write-gateway";
+import {
+  addVideoToPlaylistForAuthenticated,
+  assertLiveWritesAuthorized,
+  beginResumableVideoUpload,
+  deleteVideoById,
+  putVideoUploadChunk,
+  queryVideoUploadOffset,
+  setVideoThumbnail,
+} from "@/lib/youtube-write-gateway";
 import type { G1ProbeDependencies } from "../g1-probe";
 
 // BL-182 (ADR 0037): every YouTube write of this module, each right after the Live writes check (AGENTS.md §G; enforced by
@@ -43,6 +51,22 @@ export function createPublishingYoutubeWrites(): G1ProbeDependencies["gateway"] 
       const youtube = await createYoutubeClient(authorizedOAuth(credentials));
       await assertLiveWritesAuthorized();
       await deleteVideoById(youtube, videoId);
+    },
+  };
+}
+
+/** BL-182 stage 2: the upload runner's writes after the upload, each right after the Live writes check. */
+export function createPublishingFinishWrites() {
+  return {
+    async setThumbnail(credentials: ResolvedCredentials, videoId: string, image: { mimeType: string; bytes: Buffer }) {
+      const youtube = await createYoutubeClient(authorizedOAuth(credentials));
+      await assertLiveWritesAuthorized();
+      await setVideoThumbnail(youtube, videoId, { mimeType: image.mimeType === "image/png" ? "image/png" : "image/jpeg", bytes: image.bytes });
+    },
+    async addToPlaylist(credentials: ResolvedCredentials, videoId: string, playlistId: string) {
+      const youtube = await createYoutubeClient(authorizedOAuth(credentials));
+      await assertLiveWritesAuthorized();
+      await addVideoToPlaylistForAuthenticated(youtube, videoId, playlistId);
     },
   };
 }

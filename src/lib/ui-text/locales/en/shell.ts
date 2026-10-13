@@ -38,6 +38,7 @@ export const shell = {
   "tabs.content.videos": "Videos",
   "tabs.content.streams": "Live streams",
   "tabs.content.calendar": "Calendar",
+  "tabs.content.publishing": "Publishing",
   "tabs.settings.about": "About",
 
   "shell.productName": "Operations Manager",
@@ -173,6 +174,8 @@ export const shell = {
   "conflicts.subject.editorialProfile": "Editorial profile",
   "conflicts.group.channelLanguages": "Channel languages — {channel}",
   "conflicts.subject.languageSettings": "Languages",
+  "conflicts.group.channelPublishing": "Channel publishing — {channel}",
+  "conflicts.subject.publishingSettings": "Publishing settings",
   "conflicts.field.defaultLanguage": "Title and description language",
   "conflicts.field.defaultAudioLanguage": "Video language",
   "conflicts.field.trackedLanguages": "Tracked languages",

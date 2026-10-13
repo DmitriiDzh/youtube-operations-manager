@@ -55,3 +55,27 @@ test("alert: a channel never synced gives no alert; a synced one gives its cover
   const alert = await reads().getAlert({ channelId: "UC_A" });
   assert.deepEqual([alert?.coveredThrough, alert?.due, alert?.lastSyncedAt], ["2026-11-30T12:00:00Z", false, "2026-10-13T10:00:00.000Z"]);
 });
+
+// BL-182 stage 2 (FO-REQ-0023 §4 C4: "published / scheduled / ready packages / gaps"; PUBLISHING_PLAN.md §2 stage 2 item 8: agents
+// read the package and job states, never write them): the agent calendar carries the packages and this computer's uploads; a
+// package read that fails says "unavailable" rather than failing the calendar.
+test("agent calendar: the release packages and this computer's uploads ride along; a failed package read is 'unavailable'", async () => {
+  const base = {
+    listVideos: async () => VIDEOS,
+    getChannel: async () => ({ lastSyncedAt: new Date("2026-10-13T10:00:00Z") }),
+    assertActiveChannel: async () => undefined,
+    clock: { now: () => NOW },
+  };
+  const items = [{ video: "V65", title: "T", plannedPublishDate: "2026-10-24", state: "not_ready", problems: ["thumbnail_missing"], videoId: null }];
+  const uploads = [{ video: "V64", status: "paused", publishAt: "2026-10-23T12:00:00.000Z", videoId: null, pausedReason: "live_writes_off", errorCode: null }];
+  const ok = await createPublishingCalendarReads({ ...base, packages: async () => ({ status: "ok", items }), uploads: async () => uploads }).getAgentCalendar({ credentialRef: { userId: "u1" }, channelId: "UC_A" });
+  assert.deepEqual(ok.packages, { status: "ok", items });
+  assert.deepEqual(ok.uploads, uploads);
+  const failed = await createPublishingCalendarReads({
+    ...base,
+    packages: async () => {
+      throw new Error("drive not mounted");
+    },
+  }).getAgentCalendar({ credentialRef: { userId: "u1" }, channelId: "UC_A" });
+  assert.deepEqual([failed.packages, failed.uploads], [{ status: "unavailable" }, []]);
+});

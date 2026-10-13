@@ -721,7 +721,7 @@ Key MCP tools:
     files[{ date, createTime, lagHours }], videoId?, videoDaily?, videoDailyTruncated? }`. The stored `channel_traffic_source_a3`
     rows: per day and code the channel's videos summed (the channel-level / deleted-video remainder included); a metric no row
     carried is `null`; `label` is Google's name for the code, `null` for an unknown one. A local read, never a Google call.
-  - `agent_get_publishing_calendar` (BL-182 stage 1, Agent API 3.16.0, Producer API 1.7.0, capability
+  - `agent_get_publishing_calendar` (BL-182 stage 1, Agent API 3.16.0, Producer API 1.7.0; packages and uploads since 3.17.0 / 1.8.0, capability
     `video_context.query_publishing_calendar`, READ, channel-scoped) — `{ channelId, credentialRef? }` → `{ channelId, lastSyncedAt,
     window { from, to } (UTC dates, today ∓14), coverage { coveredThrough, scheduledCount, unscheduledCount, daysCovered, due,
     thresholdDays }, entries[{ videoId, title, kind: published | scheduled | overdue, privacyStatus, at }], unscheduled[...],
@@ -730,6 +730,20 @@ Key MCP tools:
     coverage, local), `POST /api/publishing/refresh-stale` (once per dashboard load: syncs the other channels whose copy is older than
     6 h). `video-details` preview/apply now also accept `publishAt` on a private video whose current publish time is still ahead
     (rescheduling; the new time must be in the future) -- otherwise `publish_at_already_published` as before.
+  - BL-182 stage 2 (Agent API 3.17.0, Producer API 1.8.0): `agent_get_publishing_calendar` also returns `packages` (`{ status: ok |
+    no_workspace | unavailable, items?[{ video, title, plannedPublishDate, state: not_ready | ready | uploaded_private | scheduled |
+    published | uploaded_unknown, problems[] (codes), videoId }] }`, from this computer's copy of the workspace) and `uploads[{ video,
+    status: queued | uploading | processing | finishing | paused | done | failed | cancelled, publishAt, videoId, pausedReason,
+    errorCode }]` (this computer's queue). Still read-only: no agent tool uploads, schedules or cancels (ADR 0037 §1).
+  - Web only (BL-182 stage 2): `GET/PUT /api/channels/[id]/publishing-settings` (the channel's publishing defaults, synced; PUT the
+    changed fields), `GET/POST .../publishing-settings/conflicts` (choose a computer's value), `GET .../publishing/packages` (the
+    release packages with state and problems), `GET .../publishing/packages/thumbnail?path=`, `GET/POST .../publishing/uploads` (the
+    uploads of this computer; approve a selection `{ items[{ manifestPath, manifestSha256, publishAt | null }], shownSettings,
+    acknowledgeUnknownQuota? }`), `POST .../publishing/uploads/[uploadId]/cancel` (before YouTube only, else 409
+    `upload_not_cancellable`), `POST .../publishing/uploads/[uploadId]/release` (an `unknown_outcome` upload the owner found
+    absent in Studio; else 409 `upload_not_releasable`). New refusals: `upload_package_not_ready`, `upload_package_changed`, `upload_already_queued`,
+    `publishing_settings_changed`, `upload_daily_limit` (409); `publish_at_too_soon` (400); `quota_insufficient` / `quota_unknown`.
+    `/api/settings` since BL-183: `analyticsSyncUtcTime`, `analyticsEveningUtcTime`, `userTimezone`.
   - `POST /api/analytics/evening-collect` (BL-181, Web only) — the dashboard's 5-minute evening check: `{ due: false }`,
     `{ due: false, done: true }`, `{ due: true, inProgress | importPending: true }` or `{ due: true, channels: [the active channel's
     outcome: collected | skipped (reason) | failed] }`. `GET/POST /api/settings` gain `analyticsEveningLocalTime` ("HH:MM", `""` =

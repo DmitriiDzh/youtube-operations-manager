@@ -50,6 +50,9 @@ export function resolveAppPaths(input: ResolveAppPathsInput): AppPaths {
     channelLanguageSettingsDocDir: path.join(appDataDir, "channel-language-settings-doc"),
     channelLanguageSettingsSyncFallbackDir: path.join(appDataDir, "channel-language-settings-sync-local"),
     channelLanguageSettingsDiscardedBackupsDir: path.join(appDataDir, "channel-language-settings-discarded-backups"),
+    channelPublishingSettingsDocDir: path.join(appDataDir, "channel-publishing-settings-doc"),
+    channelPublishingSettingsSyncFallbackDir: path.join(appDataDir, "channel-publishing-settings-sync-local"),
+    channelPublishingSettingsDiscardedBackupsDir: path.join(appDataDir, "channel-publishing-settings-discarded-backups"),
     editorialProfileDraftsDir: path.join(appDataDir, "editorial-profile-drafts"),
     editorialProfileSyncFallbackDir: path.join(appDataDir, "editorial-profile-sync-local"),
     editorialProfileDiscardedBackupsDir: path.join(appDataDir, "editorial-profile-discarded-backups"),
@@ -65,6 +68,8 @@ export function resolveAppPaths(input: ResolveAppPathsInput): AppPaths {
     liveStreamsBufferDir: path.join(appDataDir, "live-streams"),
     liveStreamsShareDir: path.join(appDataDir, "live-streams-share"),
     liveStreamsSyncFallbackDir: path.join(appDataDir, "live-streams-sync-local"),
+    publishingUploadsShareDir: path.join(appDataDir, "publishing-uploads-share"),
+    publishingUploadsSyncFallbackDir: path.join(appDataDir, "publishing-uploads-sync-local"),
     bootstrapConfigPath: path.join(appDataDir, "bootstrap-config.json"),
     authContextPath: path.join(appDataDir, "auth-context.json"),
   };

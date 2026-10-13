@@ -79,6 +79,12 @@ export type DomainErrorCode =
   | "publish_at_requires_private"
   | "publish_at_already_published"
   | "publish_at_too_soon"
+  // BL-182 stage 2: approving release-package uploads.
+  | "upload_package_not_ready"
+  | "upload_package_changed"
+  | "upload_already_queued"
+  | "publishing_settings_changed"
+  | "upload_daily_limit"
   | "video_details_conflict"
   | "device_unavailable"
   | "deletion_targets_default_language"
