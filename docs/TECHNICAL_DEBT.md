@@ -1982,3 +1982,16 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
   estimate (`unknown_outcome`), as before.
 - **Re-evaluate:** after the first paid Omni job. Then correct the format or the 1080p estimate if needed, and close this entry.
 - **Gate(s):** none. **Status:** open.
+
+## RISK-128 — The storyboard gate sees a GPU first/last-frame job only through its template's frame roles — OPEN, 2026-10-13
+
+- **What:** BL-184 (ADR 0038 §4) refuses a video from two different first and last frames without an approved storyboard. Gemini's
+  frames are explicit, so every Gemini job is checked. A GPU (RunPod) template's image inputs are only names and nodes: the gate
+  recognises a first/last-frame template only by `role: first_frame / last_frame`, which the Operator sets in the template registry.
+  Until the Operator tags a template (LTX FLF, Wan 2.2 FLF), its jobs are not gated. The owner can also turn the gate off per channel
+  (Media → Раскадровка, with a confirmation).
+- **Bounds:** a job that names a storyboard segment is always checked, roles or not. Turning the gate off is synced and shown with
+  who changed it and when.
+- **Re-evaluate:** once the Operator has tagged the FLF templates (DEV-RESP-0029 / the BL-184 release note ask for it); then check the
+  registry's templates and close this entry, or detect FLF templates by their graph if tagging proves unreliable.
+- **Gate(s):** none. **Status:** open.

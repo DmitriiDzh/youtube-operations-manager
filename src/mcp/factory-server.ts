@@ -55,7 +55,10 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 // BL-179 (FO-REQ-0021, GEMINI_OMNI_PLAN.md): 1.15.0 -- the video model gemini-omni-1.1-flash (text-to-video, first frame, first +
 // last frame; priced by Google's token counts); the catalog's video entries gain frames, retiresOn and (Omni)
 // usdPerMillionTokens; frames on a Veo model are refused before any call (gemini_invalid_params). Additive.
-export const FACTORY_API_VERSION = "1.15.0";
+// BL-184 (FO-REQ-0024, STORYBOARD_PLAN.md §2.6): 1.16.0 -- storyboards reviewed before video: factory_storyboard_create /
+// factory_storyboard_update / factory_storyboard_submit / factory_storyboard_reply (WRITE) and factory_storyboard_get /
+// factory_storyboard_list (READ). The owner comments, requests changes and approves in the Web UI only. Additive.
+export const FACTORY_API_VERSION = "1.16.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -111,6 +114,13 @@ export const FACTORY_TOOL_NAMES = [
   // BL-176: live streams -- their status (read) and the map of videos to their original files (a local write).
   "factory_live_get_status",
   "factory_live_map_sources",
+  // BL-184: storyboards -- versions, submitting for the owner's review, answers to the owner's comments; reads.
+  "factory_storyboard_create",
+  "factory_storyboard_update",
+  "factory_storyboard_get",
+  "factory_storyboard_list",
+  "factory_storyboard_submit",
+  "factory_storyboard_reply",
 ] as const;
 
 /**
@@ -147,6 +157,11 @@ export const FACTORY_WRITE_TOOL_NAMES = [
   "factory_gemini_create_job",
   // BL-176: the map of videos to original files (local only; nothing reaches YouTube, nothing starts a stream).
   "factory_live_map_sources",
+  // BL-184: storyboard versions, submissions and answers (synced to the other computers; nothing is generated or charged).
+  "factory_storyboard_create",
+  "factory_storyboard_update",
+  "factory_storyboard_submit",
+  "factory_storyboard_reply",
 ] as const;
 
 export type FactoryChannelEntry = {
@@ -183,7 +198,7 @@ export type FactoryToolDeps = {
     startSession(input: { channelId: string; maxMinutes?: number; maxUsd?: number; templateId?: string; gpu?: { candidates: string[]; minVramGb?: number | null; maxPricePerHr?: number | null }; releaseWhenDone?: boolean; planId?: string; minCudaVersion?: string }): Promise<Record<string, unknown>>;
     getSession(input: { sessionId?: string }): Promise<Record<string, unknown>>;
     endSession(input: { sessionId: string }): Promise<Record<string, unknown>>;
-    createJob(input: { sessionId: string; templateId: string; params: Record<string, string | number | boolean>; planId?: string; itemKey?: string; seed?: number }): Promise<Record<string, unknown>>;
+    createJob(input: { sessionId: string; templateId: string; params: Record<string, string | number | boolean>; planId?: string; itemKey?: string; seed?: number; storyboardId?: string; segmentId?: string }): Promise<Record<string, unknown>>;
     getJob(input: { jobId?: string; sessionId?: string }): Promise<Record<string, unknown>>;
     cancelJob(input: { jobId: string }): Promise<Record<string, unknown>>;
     capacityLog(input: { since?: string; gpuTypeId?: string; limit?: number }): Promise<Record<string, unknown>>;
@@ -219,6 +234,15 @@ export type FactoryToolDeps = {
   live: {
     getStatus(input: { channelId?: string }): Promise<Record<string, unknown>>;
     mapSources(input: { channelId: string; items: Array<{ videoId: string; file: string }> }): Promise<Record<string, unknown>>;
+  };
+  /** BL-184: storyboards (the module validates every input strictly itself; every write is the Operator's). */
+  storyboards: {
+    create(input: unknown): Promise<Record<string, unknown>>;
+    update(input: unknown): Promise<Record<string, unknown>>;
+    get(input: unknown): Promise<Record<string, unknown>>;
+    list(input: unknown): Promise<Record<string, unknown>>;
+    submit(input: unknown): Promise<Record<string, unknown>>;
+    reply(input: unknown): Promise<Record<string, unknown>>;
   };
   /** The same local gate every mutating channel tool passes (operation lock, recovery mode); throws when not allowed. */
   assertMutationAllowed(): Promise<void>;
@@ -321,6 +345,9 @@ const createJobInput = z
     planId: z.string().min(2).max(80).optional(),
     itemKey: z.string().min(1).max(120).optional(),
     seed: z.number().int().min(0).optional(),
+    /** BL-184 stage 2: the storyboard segment this video renders (both, or neither). */
+    storyboardId: z.string().min(1).max(40).optional(),
+    segmentId: z.string().min(1).max(40).optional(),
   })
   .strict();
 const getJobInput = z.object({ jobId: z.string().min(1).max(64).optional(), sessionId: z.string().min(1).max(64).optional() }).strict();
@@ -628,7 +655,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_media_create_job",
     {
       description:
-        "Submit a generation job to one of YOUR running sessions: { sessionId, templateId, params }. The same contract as the channel agents' agent_create_media_job (parameters validated first; image/audio/video inputs are paths relative to the session channel's 99 Data Exchange/Sent to YTM/; outputs and manifest.json land in that channel's From YTM/media/<jobId>/). A template whose minCudaVersion is above the session host's known CUDA is refused with media_gpu_host_incompatible before anything runs (1.9.0). Poll factory_media_get_job.",
+        "Submit a generation job to one of YOUR running sessions: { sessionId, templateId, params }. The same contract as the channel agents' agent_create_media_job (parameters validated first; image/audio/video inputs are paths relative to the session channel's 99 Data Exchange/Sent to YTM/; outputs and manifest.json land in that channel's From YTM/media/<jobId>/). A template whose minCudaVersion is above the session host's known CUDA is refused with media_gpu_host_incompatible before anything runs (1.9.0). Poll factory_media_get_job. BL-184 (1.16.0): a video whose first and last frames are two different images needs an approved storyboard: give storyboardId + segmentId of the approved latest version, its segment's from/to keyframes being exactly the two frames (same files by sha256); otherwise storyboard_not_approved (details.reason: no_link | not_found | not_approved | segment_not_found | frames_mismatch) and nothing is sent or charged. One image (a first frame only, or the same file as both) never needs one. A template's first/last frames are its image parameters tagged role: first_frame / last_frame in the registry (a template without roles is not seen as first/last-frame). The job shows storyboard { storyboardId, versionNumber, segmentId } or null.",
       inputSchema: createJobInput,
     },
     async (args) => {
@@ -705,7 +732,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
   const loose = z.array(z.object({}).passthrough());
   planWrite(
     "factory_plan_create",
-    "Create a generation plan on this computer: { planId (2-80 letters, digits, '.', '_', '-'; yours, unique here), title, channelId (a connected channel; its workspace gets the outputs), budget?: { usd?, gpuMinutes? } (a warning only), note?, stages: [{ stageId, title, kind: in_app | external | owner_review }] (at most one in_app -- fed by the plan's jobs -- and one owner_review), groups?: [{ groupId, title?, dependsOn?, note? }] (waves), items?: [{ itemKey, groupId?, templateId?, templateLabel?, variant?, targetCount, mode?: fixed | until_accepted, maxAttempts?, params? (job params as in create_job), seeds? }], references?: [{ id, label, file (relative to the channel's '99 Data Exchange/Sent to YTM/', e.g. 'reference/koto-01.mp3'), lufs?, lra?, truePeak? }] (reference tracks for the owner's A/B listening, up to 50; 1.13.0: also pictures and clips -- png/jpg/webp/mp4/webm, e.g. a cast sheet, a style plate, a base frame -- which the owner compares with a picture or clip side by side, as a wipe or as the difference; a file may also be 'From YTM/gemini/<jobId>/<file>', a Gemini output in place), reviewRejected?: boolean (1.6.0: validator-rejected attempts that can be played -- an auditionFile or a job of the plan -- also wait for the owner's review; default false), reviewReasons?: [string] (1.13.0: the reason chips the owner's review offers, <= 20, each <= 60 characters, recorded as written; a wave's own groups[].reviewReasons win; without a list the screen offers its defaults for the media kind: images, video or music) } -> { plan, progress }. 1.13.0: items[].pickTarget (1..targetCount) = how many attempts the owner picks for the item; default 1 for fixed, targetCount for until_accepted. Errors: plan_invalid (id taken, unknown channel, duplicate ids, unknown group, pickTarget outside 1..targetCount), validation_failed.",
+    "Create a generation plan on this computer: { planId (2-80 letters, digits, '.', '_', '-'; yours, unique here), title, channelId (a connected channel; its workspace gets the outputs), budget?: { usd?, gpuMinutes? } (a warning only), note?, stages: [{ stageId, title, kind: in_app | external | owner_review }] (at most one in_app -- fed by the plan's jobs -- and one owner_review), groups?: [{ groupId, title?, dependsOn?, note? }] (waves), items?: [{ itemKey, groupId?, templateId?, templateLabel?, variant?, targetCount, mode?: fixed | until_accepted, maxAttempts?, params? (job params as in create_job), seeds?, storyboard? ({ storyboardId, segmentId }, 1.16.0: the storyboard segment the item's videos render; every job a run creates from it names it to the storyboard gate, as factory_media_create_job does) }], references?: [{ id, label, file (relative to the channel's '99 Data Exchange/Sent to YTM/', e.g. 'reference/koto-01.mp3'), lufs?, lra?, truePeak? }] (reference tracks for the owner's A/B listening, up to 50; 1.13.0: also pictures and clips -- png/jpg/webp/mp4/webm, e.g. a cast sheet, a style plate, a base frame -- which the owner compares with a picture or clip side by side, as a wipe or as the difference; a file may also be 'From YTM/gemini/<jobId>/<file>', a Gemini output in place), reviewRejected?: boolean (1.6.0: validator-rejected attempts that can be played -- an auditionFile or a job of the plan -- also wait for the owner's review; default false), reviewReasons?: [string] (1.13.0: the reason chips the owner's review offers, <= 20, each <= 60 characters, recorded as written; a wave's own groups[].reviewReasons win; without a list the screen offers its defaults for the media kind: images, video or music) } -> { plan, progress }. 1.13.0: items[].pickTarget (1..targetCount) = how many attempts the owner picks for the item; default 1 for fixed, targetCount for until_accepted. Errors: plan_invalid (id taken, unknown channel, duplicate ids, unknown group, pickTarget outside 1..targetCount), validation_failed.",
     z.object({ planId: z.string(), title: z.string(), channelId: z.string(), budget: z.object({}).passthrough().optional(), note: z.string().nullable().optional(), stages: loose, groups: loose.optional(), items: loose.optional(), references: loose.optional(), reviewRejected: z.boolean().optional(), reviewReasons: z.array(z.string()).optional() }).strict(),
     (input) => deps.plans.create(input)
   );
@@ -847,6 +874,9 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
         })
         .strict()
         .optional(),
+      /** BL-184 stage 2: the storyboard segment this video renders (both, or neither). */
+      storyboardId: z.string().min(1).max(40).optional(),
+      segmentId: z.string().min(1).max(40).optional(),
     })
     .strict();
   const geminiGetJobInput = z
@@ -872,7 +902,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_gemini_create_job",
     {
       description:
-        "Generate ONE image (Nano Banana) or ONE video (Gemini Omni, or Veo 3.1 until 2026-10-22) for a channel through Google's Gemini API, paid per result (1.12.0; Omni 1.15.0): { channelId, kind: 'image' | 'video', model, prompt, requestId? (yours, <= 120 letters/digits/'.'/'_'/'-': the same id with the same content returns the first job -- use it to retry safely; with other content gemini_request_exists), dryRun? (true: only { dryRun, estimateUsd, allowed, refusal, spend } -- nothing stored, no gate), image?: { size: '1K' | '2K' | '4K' (uppercase K; Nano Banana 2 Lite: 1K only), aspectRatio: 1:1 2:3 3:2 3:4 4:3 4:5 5:4 9:16 16:9 21:9, inputs?: { images: [up to 14 reference/edit images] } }, video?: { resolution: '720p' | '1080p' (Omni, Veo) | '4k' (Veo 3.1 and Fast), aspectRatio: '16:9' | '9:16', durationSeconds: 4 | 6 | 8 (Veo 1080p/4k: 8), personGeneration?: 'allow_all' | 'allow_adult' (Veo only; omit unless needed; EU/UK/CH/MENA allow only allow_adult), inputs?: { firstFrame?, lastFrame? (needs firstFrame; frames: Omni only -- a Veo model refuses them before any call), referenceImages? (<= 3, Veo 3.1 and Fast, 8 s, not with firstFrame) } } } -> { job } (status 'queued'; the app sends it within seconds). ONE image or video per job: the estimate and the per-job limit assume one image, so do not ask for several in one prompt (Google would make and charge each). Image models: gemini-nano-banana-2.1, gemini-3.1-flash-lite-image, gemini-3-pro-image; video: gemini-omni-1.1-flash (text-to-video, first frame, first + last frame -- a loop: the same file as both; one synchronous call, priced by Google's token counts, about $0.10 per second at 720p), veo-3.1-generate-preview, veo-3.1-fast-generate-preview, veo-3.1-lite-generate-preview (text only; Google shuts them down 2026-10-22) -- see factory_gemini_get_status for prices. Input images are paths relative to the channel's 99 Data Exchange/Sent to YTM/ (png, jpg, jpeg, webp; <= 7 MB each, <= 12 MB together). Outputs and manifest.json land in the channel's 99 Data Exchange/From YTM/gemini/<jobId>/. Refusals: gemini_disabled (the owner's switch is off), gemini_key_missing, gemini_limit_exceeded (details.limit: per_job | per_day | per_month | active_jobs, with limitUsd, spentUsd, estimateUsd), gemini_invalid_params (details.field), gemini_input_unavailable, gemini_workspace_unavailable, gemini_request_exists, validation_failed. Poll factory_gemini_get_job. Recorded as done by the Factory Operator.",
+        "Generate ONE image (Nano Banana) or ONE video (Gemini Omni, or Veo 3.1 until 2026-10-22) for a channel through Google's Gemini API, paid per result (1.12.0; Omni 1.15.0): { channelId, kind: 'image' | 'video', model, prompt, requestId? (yours, <= 120 letters/digits/'.'/'_'/'-': the same id with the same content returns the first job -- use it to retry safely; with other content gemini_request_exists), dryRun? (true: only { dryRun, estimateUsd, allowed, refusal, spend } -- nothing stored, no gate), image?: { size: '1K' | '2K' | '4K' (uppercase K; Nano Banana 2 Lite: 1K only), aspectRatio: 1:1 2:3 3:2 3:4 4:3 4:5 5:4 9:16 16:9 21:9, inputs?: { images: [up to 14 reference/edit images] } }, video?: { resolution: '720p' | '1080p' (Omni, Veo) | '4k' (Veo 3.1 and Fast), aspectRatio: '16:9' | '9:16', durationSeconds: 4 | 6 | 8 (Veo 1080p/4k: 8), personGeneration?: 'allow_all' | 'allow_adult' (Veo only; omit unless needed; EU/UK/CH/MENA allow only allow_adult), inputs?: { firstFrame?, lastFrame? (needs firstFrame; frames: Omni only -- a Veo model refuses them before any call), referenceImages? (<= 3, Veo 3.1 and Fast, 8 s, not with firstFrame) } } } -> { job } (status 'queued'; the app sends it within seconds). ONE image or video per job: the estimate and the per-job limit assume one image, so do not ask for several in one prompt (Google would make and charge each). Image models: gemini-nano-banana-2.1, gemini-3.1-flash-lite-image, gemini-3-pro-image; video: gemini-omni-1.1-flash (text-to-video, first frame, first + last frame -- a loop: the same file as both; one synchronous call, priced by Google's token counts, about $0.10 per second at 720p), veo-3.1-generate-preview, veo-3.1-fast-generate-preview, veo-3.1-lite-generate-preview (text only; Google shuts them down 2026-10-22) -- see factory_gemini_get_status for prices. Input images are paths relative to the channel's 99 Data Exchange/Sent to YTM/ (png, jpg, jpeg, webp; <= 7 MB each, <= 12 MB together). Outputs and manifest.json land in the channel's 99 Data Exchange/From YTM/gemini/<jobId>/. Refusals: gemini_disabled (the owner's switch is off), gemini_key_missing, gemini_limit_exceeded (details.limit: per_job | per_day | per_month | active_jobs, with limitUsd, spentUsd, estimateUsd), gemini_invalid_params (details.field), gemini_input_unavailable, gemini_workspace_unavailable, gemini_request_exists, validation_failed. Poll factory_gemini_get_job. Recorded as done by the Factory Operator. BL-184 (1.16.0): a video whose first and last frames are two different images needs an approved storyboard: give storyboardId + segmentId of the approved latest version, its segment's from/to keyframes being exactly the two frames (same files by sha256); otherwise storyboard_not_approved (details.reason: no_link | not_found | not_approved | segment_not_found | frames_mismatch) and nothing is sent or charged. One image (a first frame only, or the same file as both) never needs one. Checked after the inputs are read and before the estimate; a dryRun reports it as refusal. The job shows storyboard { storyboardId, versionNumber, segmentId } or null.",
       inputSchema: geminiCreateInput,
     },
     async (args) => {
@@ -923,6 +953,66 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
       await deps.assertMutationAllowed();
       return successResult(await deps.live.mapSources(input));
     }
+  );
+
+  // -- BL-184 (FO-REQ-0024, STORYBOARD_PLAN.md §2.6): storyboards. The schemas here name the fields; the storyboards module checks
+  // every bound and rule (ids, the chain of segments, the files). Writes pass the device mutation gate.
+  const storyboardContent = {
+    title: z.string(),
+    loop: z.boolean(),
+    keyframes: z.array(z.object({}).passthrough()),
+    segments: z.array(z.object({}).passthrough()),
+    props: z.array(z.object({}).passthrough()).optional(),
+    notes: z.string().nullable().optional(),
+  };
+  const storyboardRef = z.object({ channelId: z.string(), storyboardId: z.string() }).strict();
+  const storyboardWrite = (name: (typeof FACTORY_TOOL_NAMES)[number], description: string, schema: z.ZodTypeAny, call: (input: unknown) => Promise<Record<string, unknown>>) =>
+    registerTool(name, { description, inputSchema: schema }, async (args) => {
+      const input = parseInput(schema, args);
+      await deps.assertMutationAllowed();
+      return successResult(await call(input));
+    });
+  const STORYBOARD_SHAPE =
+    "Storyboard: { storyboardId, channelId, title, planId, state: draft | in_review | changes_requested | approved, latestVersion, keyframes, segments (counts of the latest version), loop, createdAt, createdBy, submittedAt (of the latest version, or null), lastDecision ({ kind: approved | changes_requested, versionNumber, at, by, device, note } on the latest version, or null), openComments, updatedAt, versions: [{ number, createdAt, title, loop, keyframes: [{ id, file, sha256, bytes, caption, parentKeyframeId }], segments: [{ id, fromKeyframeId, toKeyframeId, action, durationSeconds, model, settings, estimateUsd }], props: [{ id, name, kind, cells }], notes }], submissions: [{ versionNumber, at }], decisions: [...], comments: [{ id, versionNumber, target: { kind: storyboard } | { kind: keyframe, keyframeId, region ({ x, y, r } 0..1, a pin) or null } | { kind: segment, segmentId } | { kind: prop, propId, keyframeId }, author: owner | operator, device, text, createdAt, state: open | resolved, stateChangedAt, stateChangedBy, replies: [{ id, author, device, text, createdAt }] }] }.";
+
+  storyboardWrite(
+    "factory_storyboard_create",
+    `Create a storyboard (1.16.0): the keyframes of a video loop, the segment of video between each two of them and a prop table, for the owner to review and approve BEFORE any video is generated. { channelId (connected here, with a workspace folder), storyboardId? (yours, 1-40 letters/digits/'_'/'-'; default sb_<random>), planId? (a generation plan it belongs to), title (<= 200), loop (true: the last keyframe goes back to the first), keyframes: [{ id (1-40 letters/digits/'_'/'-'), file (a path relative to the channel's '99 Data Exchange/': 'Sent to YTM/...' or a job's output in place, 'From YTM/gemini/<jobId>/...' or 'From YTM/media/<jobId>/...'), caption? (<= 200), parentKeyframeId? (another keyframe it was made from) }] (2-24, in order), segments: [{ id, fromKeyframeId, toKeyframeId, action (what happens; <= 4000), durationSeconds (> 0, <= 600), model? (<= 200), settings? ({ name: string | number | boolean }), estimateUsd? }] -- exactly one for each neighbouring pair K0->K1, K1->K2, ... and, with loop, the last back to the first; props?: [{ id, name (<= 200), kind: object | character, cells: { keyframeId: its state there (<= 200) } }] (<= 40), notes? (<= 4000) } -> { storyboard } (version 1, state draft). Each file must exist in the channel's exchange folders on this computer; its sha256 and size are frozen in the version. Keep a version's files unchanged once it uses them: write a new version's images to a new folder (e.g. bar/v2/). Nothing is generated or charged. Refusals: validation_failed (details.field and the id), storyboard_file_unavailable (details.keyframeId, reason), storyboard_channel_unavailable. ${STORYBOARD_SHAPE}`,
+    z.object({ channelId: z.string(), storyboardId: z.string().optional(), planId: z.string().nullable().optional(), ...storyboardContent }).strict(),
+    (input) => deps.storyboards.create(input)
+  );
+  storyboardWrite(
+    "factory_storyboard_update",
+    "Change a storyboard (1.16.0): { channelId, storyboardId, and the whole content again as in factory_storyboard_create (title, loop, keyframes, segments, props?, notes?) } -> { storyboard, changed, versionNumber }. A content change -- a text, a cell, a keyframe file, or a file's bytes -- makes the next version (v2, v3, ...); the same content again changes nothing (changed: false). Older versions stay readable with their comments. A new version is not approved: it is a draft until you submit it, so an approval never carries over to edited content. Refusals: as factory_storyboard_create, and storyboard_not_found.",
+    z.object({ channelId: z.string(), storyboardId: z.string(), ...storyboardContent }).strict(),
+    (input) => deps.storyboards.update(input)
+  );
+  storyboardWrite(
+    "factory_storyboard_submit",
+    "Put the latest version of a storyboard in the owner's review (1.16.0): { channelId, storyboardId } -> { storyboard, alreadySubmitted }. The state becomes in_review and the owner sees it in Media. Submitting the same version again changes nothing. The owner then comments (on the storyboard, a keyframe with a pin, a segment or a prop cell) and requests changes or approves -- in the Web UI only, on the latest version only. Refusals: storyboard_not_found, storyboard_channel_unavailable.",
+    storyboardRef,
+    (input) => deps.storyboards.submit(input)
+  );
+  storyboardWrite(
+    "factory_storyboard_reply",
+    "Answer an owner's comment on a storyboard and/or resolve it (1.16.0): { channelId, storyboardId, commentId, text? (<= 4000; your reply in its thread), resolve? (true: resolved, false: open again) } (text or resolve required) -> { storyboard, replyId (or null) }. Refusals: storyboard_not_found, storyboard_comment_not_found, validation_failed.",
+    z.object({ channelId: z.string(), storyboardId: z.string(), commentId: z.string(), text: z.string().optional(), resolve: z.boolean().optional() }).strict(),
+    (input) => deps.storyboards.reply(input)
+  );
+  const storyboardListInput = z.object({ channelId: z.string(), state: z.enum(["draft", "in_review", "changes_requested", "approved"]).optional() }).strict();
+  registerTool(
+    "factory_storyboard_get",
+    { description: `One storyboard with every version, the owner's comments (with pins and threads), submissions and decisions (1.16.0): { channelId, storyboardId } -> { storyboard }. The storyboards are synced between the computers, so comments and decisions made on another computer appear here after a sync (a minute or two). Read-only. ${STORYBOARD_SHAPE}`, inputSchema: storyboardRef },
+    async (args) => successResult(await deps.storyboards.get(parseInput(storyboardRef, args)))
+  );
+  registerTool(
+    "factory_storyboard_list",
+    {
+      description:
+        "A channel's storyboards, newest activity first (1.16.0): { channelId, state? } -> { storyboards: [the storyboard's summary fields, without versions, submissions, decisions and comments] }. state: draft (not submitted yet), in_review (waiting for the owner), changes_requested (read the open comments with factory_storyboard_get, then factory_storyboard_update and factory_storyboard_submit), approved (the latest version may be rendered). Read-only.",
+      inputSchema: storyboardListInput,
+    },
+    async (args) => successResult(await deps.storyboards.list(parseInput(storyboardListInput, args)))
   );
 
   return server;

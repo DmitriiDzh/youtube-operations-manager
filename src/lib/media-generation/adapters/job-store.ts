@@ -45,6 +45,9 @@ function jobFromDb(row: StoredMediaJob): StoredJobRow {
     planStageId: row.planStageId ?? null,
     planItemKey: row.planItemKey ?? null,
     planSeed: row.planSeed ?? null,
+    storyboardId: row.storyboardId ?? null,
+    storyboardVersion: row.storyboardVersion ?? null,
+    segmentId: row.segmentId ?? null,
   };
 }
 

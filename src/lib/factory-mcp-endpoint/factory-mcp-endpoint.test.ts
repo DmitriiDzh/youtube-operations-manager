@@ -79,7 +79,7 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
       startSession: async (input) => (mediaCalls.push(`startSession:${input.channelId}`), { session: { sessionId: "s1" }, approved: true, heldBy: null }),
       getSession: async (input) => (mediaCalls.push(`getSession:${input.sessionId ?? ""}`), { sessions: [] }),
       endSession: async (input) => (mediaCalls.push(`stopSession:${input.sessionId}`), { session: { sessionId: input.sessionId } }),
-      createJob: async (input) => (mediaCalls.push(`createJob:${input.sessionId}`), { job: { jobId: "j1" } }),
+      createJob: async (input) => (mediaCalls.push(`createJob:${input.sessionId}${input.storyboardId ? `:${input.storyboardId}/${input.segmentId}` : ""}`), { job: { jobId: "j1" } }),
       getJob: async (input) => (mediaCalls.push(`getJob:${input.jobId ?? ""}`), { job: { jobId: "j1" } }),
       cancelJob: async (input) => (mediaCalls.push(`cancelJob:${input.jobId}`), { job: { jobId: input.jobId } }),
       capacityLog: async () => (mediaCalls.push("capacityLog"), { attempts: [] }),
@@ -115,6 +115,15 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
     live: {
       getStatus: async (input) => (mediaCalls.push(`live.status:${input.channelId ?? ""}`), { streams: [] }),
       mapSources: async (input) => (mediaCalls.push(`live.map:${input.channelId}:${input.items.length}`), { results: [] }),
+    },
+    // BL-184: the storyboards module is a fake that records what reached it.
+    storyboards: {
+      create: async (input) => (mediaCalls.push(`sb.create:${(input as { channelId: string }).channelId}`), { storyboard: {} }),
+      update: async (input) => (mediaCalls.push(`sb.update:${(input as { storyboardId: string }).storyboardId}`), { storyboard: {}, changed: true }),
+      get: async (input) => (mediaCalls.push(`sb.get:${(input as { storyboardId: string }).storyboardId}`), { storyboard: {} }),
+      list: async (input) => (mediaCalls.push(`sb.list:${(input as { channelId: string }).channelId}`), { storyboards: [] }),
+      submit: async (input) => (mediaCalls.push(`sb.submit:${(input as { storyboardId: string }).storyboardId}`), { storyboard: {} }),
+      reply: async (input) => (mediaCalls.push(`sb.reply:${(input as { commentId: string }).commentId}`), { storyboard: {}, replyId: null }),
     },
     async assertMutationAllowed() {
       mediaCalls.push("gate");
@@ -303,6 +312,12 @@ test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exact
     "factory_plan_todo",
     "factory_plan_update",
     "factory_plan_withdraw_recheck",
+    "factory_storyboard_create",
+    "factory_storyboard_get",
+    "factory_storyboard_list",
+    "factory_storyboard_reply",
+    "factory_storyboard_submit",
+    "factory_storyboard_update",
   ]);
   assert.equal(names.some((n) => /approve|reject/.test(n)), false, "no tool approves or rejects a session for anyone");
   assert.deepEqual([...FACTORY_TOOL_NAMES].sort(), names);
@@ -331,14 +346,15 @@ test("AC-FO-07: a channel tool name is not callable on the factory endpoint", as
 // BL-175 (VISUAL_REVIEW_PLAN.md AC-VR-13): 1.13.0, no new tool.
 // BL-176 (LIVE_STREAMS_PLAN.md §3.11): 1.14.0 and the two live-stream tools, last (declaration order); the map is a write.
 // BL-179 (GEMINI_OMNI_PLAN.md): 1.15.0, no new tool.
-test("factory_get_capabilities reports the factory API version 1.15.0 (BL-179), READ and WRITE, the tool list and the write tools", async () => {
+// BL-184 (STORYBOARD_PLAN.md §2.6): 1.16.0 and the six storyboard tools, last (declaration order); four of them writes.
+test("factory_get_capabilities reports the factory API version 1.16.0 (BL-184), READ and WRITE, the tool list and the write tools", async () => {
   const { endpoint, tokenServices } = setup();
   const { token } = await tokenServices.issueToken({});
   const result = await toolResult(await endpoint.handle(rpc(call("factory_get_capabilities"), withToken(token))));
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.15.0",
+    factoryApiVersion: "1.16.0",
     tools: [
       "factory_get_capabilities",
       "factory_list_logical_paths",
@@ -383,6 +399,12 @@ test("factory_get_capabilities reports the factory API version 1.15.0 (BL-179), 
       "factory_gemini_get_job",
       "factory_live_get_status",
       "factory_live_map_sources",
+      "factory_storyboard_create",
+      "factory_storyboard_update",
+      "factory_storyboard_get",
+      "factory_storyboard_list",
+      "factory_storyboard_submit",
+      "factory_storyboard_reply",
     ],
     permissions: ["READ", "WRITE"],
     writeTools: [
@@ -409,6 +431,10 @@ test("factory_get_capabilities reports the factory API version 1.15.0 (BL-179), 
       "factory_plan_withdraw_recheck",
       "factory_gemini_create_job",
       "factory_live_map_sources",
+      "factory_storyboard_create",
+      "factory_storyboard_update",
+      "factory_storyboard_submit",
+      "factory_storyboard_reply",
     ],
   });
 });
@@ -917,4 +943,66 @@ test("BL-176: factory_live_map_sources passes the gate first; factory_live_get_s
     assert.equal(Boolean(body.result?.isError ?? body.error), true, JSON.stringify(bad));
   }
   assert.deepEqual(toolDeps.mediaCalls, [], "an invalid input reaches neither the gate nor the module");
+});
+
+// BL-184 (STORYBOARD_PLAN.md §2.6): the four storyboard writes pass the device mutation gate first and reach nothing behind a closed
+// one; the two reads need no gate; an unknown field is refused before the module is reached.
+test("BL-184: factory_storyboard_* writes pass the gate first, reads do not; strict schemas", async () => {
+  const { endpoint, tokenServices, toolDeps } = setupWithDeps();
+  const { token } = await tokenServices.issueToken({});
+  const content = { title: "Bar loop", loop: true, keyframes: [{ id: "K0", file: "Sent to YTM/a.jpg" }], segments: [] };
+  const writes: Array<[string, Record<string, unknown>, string]> = [
+    ["factory_storyboard_create", { channelId: "UC_A", ...content }, "sb.create:UC_A"],
+    ["factory_storyboard_update", { channelId: "UC_A", storyboardId: "sb1", ...content }, "sb.update:sb1"],
+    ["factory_storyboard_submit", { channelId: "UC_A", storyboardId: "sb1" }, "sb.submit:sb1"],
+    ["factory_storyboard_reply", { channelId: "UC_A", storyboardId: "sb1", commentId: "c1", resolve: true }, "sb.reply:c1"],
+  ];
+  for (const [name, args, reached] of writes) {
+    toolDeps.mediaCalls.length = 0;
+    assert.equal((await toolResult(await endpoint.handle(rpc(call(name, args), withToken(token))))).isError, false, name);
+    assert.deepEqual(toolDeps.mediaCalls, ["gate", reached], name);
+  }
+  for (const [name, args, reached] of [
+    ["factory_storyboard_get", { channelId: "UC_A", storyboardId: "sb1" }, "sb.get:sb1"],
+    ["factory_storyboard_list", { channelId: "UC_A", state: "in_review" }, "sb.list:UC_A"],
+  ] as const) {
+    toolDeps.mediaCalls.length = 0;
+    assert.equal((await toolResult(await endpoint.handle(rpc(call(name, { ...args }), withToken(token))))).isError, false, name);
+    assert.deepEqual(toolDeps.mediaCalls, [reached], `${name} is not gated`);
+  }
+  toolDeps.gateClosed.value = true;
+  for (const [name, args] of writes) {
+    toolDeps.mediaCalls.length = 0;
+    assert.equal((await toolResult(await endpoint.handle(rpc(call(name, args), withToken(token))))).isError, true, name);
+    assert.deepEqual(toolDeps.mediaCalls, ["gate"], `${name} reached nothing behind a closed gate`);
+  }
+  toolDeps.gateClosed.value = false;
+  toolDeps.mediaCalls.length = 0;
+  for (const [name, bad] of [
+    ["factory_storyboard_submit", { channelId: "UC_A", storyboardId: "sb1", approve: true }],
+    ["factory_storyboard_list", { channelId: "UC_A", state: "generating" }],
+    ["factory_storyboard_create", { channelId: "UC_A", ...content, approved: true }],
+  ] as const) {
+    const body = await (await endpoint.handle(rpc(call(name, bad), withToken(token)))).json();
+    assert.equal(Boolean(body.result?.isError ?? body.error), true, JSON.stringify(bad));
+  }
+  assert.deepEqual(toolDeps.mediaCalls, [], "an invalid input reaches neither the gate nor the module");
+});
+
+// BL-184 stage 2 (STORYBOARD_PLAN.md §2.6): the job tools take the storyboard segment a video renders; the fields reach the modules
+// (which check them with the storyboard gate); an unknown field next to them is still refused.
+test("BL-184: storyboardId / segmentId on factory_media_create_job and factory_gemini_create_job reach the modules", async () => {
+  const { endpoint, tokenServices, toolDeps } = setupWithDeps();
+  const { token } = await tokenServices.issueToken({});
+  const link = { storyboardId: "bar-loop", segmentId: "S1" };
+  assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_media_create_job", { sessionId: "s1", templateId: "t1", params: { prompt: "x" }, ...link }), withToken(token))))).isError, false);
+  assert.deepEqual(toolDeps.mediaCalls, ["gate", "createJob:s1:bar-loop/S1"]);
+  toolDeps.mediaCalls.length = 0;
+  const gemini = { channelId: "UC_A", kind: "video", model: "gemini-omni-1.1-flash", prompt: "bar", video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 8, inputs: { firstFrame: "bar/v2/K0.jpg", lastFrame: "bar/v2/K1.jpg" } }, ...link };
+  assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_gemini_create_job", gemini), withToken(token))))).isError, false);
+  assert.deepEqual(toolDeps.mediaCalls, ["gate", "gemini.create:UC_A"]);
+  toolDeps.mediaCalls.length = 0;
+  const body = await (await endpoint.handle(rpc(call("factory_media_create_job", { sessionId: "s1", templateId: "t1", params: {}, ...link, approved: true }), withToken(token)))).json();
+  assert.equal(Boolean(body.result?.isError ?? body.error), true);
+  assert.deepEqual(toolDeps.mediaCalls, []);
 });

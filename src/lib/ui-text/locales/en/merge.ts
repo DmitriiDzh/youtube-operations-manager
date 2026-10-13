@@ -11,6 +11,7 @@ export const merge = {
   "handoff.family.channelLanguageSettings": "Channel languages",
   "handoff.family.channelPublishingSettings": "Channel publishing",
   "handoff.family.publishingUploads": "Video uploads",
+  "handoff.family.storyboards": "Storyboards",
 
   "handoff.requestFailed": "Request to {url} failed ({status})",
   "handoff.justNow": "just now",

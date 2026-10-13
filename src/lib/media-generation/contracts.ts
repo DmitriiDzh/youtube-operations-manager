@@ -284,6 +284,21 @@ export type MediaTemplateParameter = {
   accept?: string[] | null;
   /** BL-132 input types only: size limit in bytes (≤ 500 MB); absent = 500 MB. */
   maxBytes?: number | null;
+  /** BL-184 stage 2: an image input that is the video's first or last frame (set by the Operator); absent = neither. */
+  role?: MediaFrameRole | null;
+};
+
+export type MediaFrameRole = "first_frame" | "last_frame";
+
+/** BL-184 stage 2 (ADR 0038 §4): what a video job records once the storyboard gate let it through with a link. */
+export type MediaStoryboardLink = { storyboardId: string; versionNumber: number; segmentId: string };
+
+/**
+ * BL-184 stage 2: the storyboard gate, injected (`./index.ts` wires the storyboards module's; this module knows nothing else about
+ * storyboards, AGENTS.md §M). It lets a job through -- with the link to record, or null -- or throws `storyboard_not_approved`.
+ */
+export type MediaStoryboardGate = {
+  check(input: { channelId: string; firstFrameSha256: string | null; lastFrameSha256: string | null; link: { storyboardId: string; segmentId: string } | null }): Promise<MediaStoryboardLink | null>;
 };
 
 /** The model folders on the network volume (`models/<folder>/`), the ComfyUI `extra_model_paths.yaml` names. */
@@ -312,7 +327,11 @@ export type MediaWorkflowTemplate = {
   nodeCount: number;
   createdAt: string;
   updatedAt: string;
+  /** BL-184 stage 3: what the template makes, by its save nodes (video before audio before image); null = not recognised. */
+  mediaKind: MediaKind | null;
 };
+
+export type MediaKind = "audio" | "image" | "video";
 
 /** BL-132 (plan §2.5): one audit row as shown in the Web UI and the factory tools. */
 export type MediaControlEventView = { at: string; actor: "owner" | "factory" | "sync"; action: string; subject: string; details: Record<string, unknown> | null };
@@ -412,6 +431,8 @@ export type MediaJob = {
   progress?: JobLiveProgress;
   /** BL-143 (ADR 0029): the generation plan attempt this job is; null = not part of a plan. */
   plan: { planId: string; stageId: string | null; itemKey: string | null; seed: number | null } | null;
+  /** BL-184 stage 2: the storyboard segment this video renders and the approved version it was let through on (null = none). */
+  storyboard: MediaStoryboardLink | null;
 };
 
 /** Where this job's outputs are written locally, relative to the From YTM folder. */

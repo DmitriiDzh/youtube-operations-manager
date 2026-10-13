@@ -1069,7 +1069,7 @@ test("recordGatewayCallOutcome: prunes events older than the retention window on
 // BL-178 part B (2026-10-13) a ninth, channel_language_settings: the requirement "every known family has a row" is unchanged.
 // BL-182 stage 2 (PUBLISHING_PLAN.md §2 stage 2 items 2 and 5): the channel publishing defaults are a tenth family, synced like the
 // languages, and the uploads under way an eleventh, a per-device report like the live streams.
-test("getSyncFamilyStatuses: every family (eleven since BL-182 stage 2) reports a never-synced row before any cycle completes", () =>
+test("getSyncFamilyStatuses: every family (twelve since BL-184) reports a never-synced row before any cycle completes", () =>
   withTempClient(async (client) => {
     await initializeDatabaseSchema(client);
     const isolatedDb = createIsolatedDb(client);
@@ -1078,7 +1078,7 @@ test("getSyncFamilyStatuses: every family (eleven since BL-182 stage 2) reports 
 
     assert.deepEqual(
       statuses.map((s) => s.family).sort(),
-      ["agent_tokens", "ai_connections", "change_drafts", "channel_language_settings", "channel_publishing_settings", "editorial_profile", "generation_plans", "live_streams", "media_sessions", "media_settings", "publishing_uploads"]
+      ["agent_tokens", "ai_connections", "change_drafts", "channel_language_settings", "channel_publishing_settings", "editorial_profile", "generation_plans", "live_streams", "media_sessions", "media_settings", "publishing_uploads", "storyboards"]
     );
     for (const s of statuses) {
       assert.equal(s.lastSyncedAt, null);

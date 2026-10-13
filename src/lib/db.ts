@@ -903,6 +903,11 @@ export const mediaJobs = sqliteTable(
     planStageId: text("plan_stage_id"),
     planItemKey: text("plan_item_key"),
     planSeed: integer("plan_seed"),
+    // Schema v90 (BL-184 stage 2, ADR 0038 §4): the storyboard segment this video renders, and the approved version the gate let it
+    // through on (all null = no storyboard).
+    storyboardId: text("storyboard_id"),
+    storyboardVersion: integer("storyboard_version"),
+    segmentId: text("segment_id"),
   },
   (table) => [index("media_jobs_session_idx").on(table.sessionId), index("media_jobs_status_idx").on(table.status), index("media_jobs_plan_idx").on(table.planId)]
 );
@@ -1250,6 +1255,10 @@ export const geminiMediaJobs = sqliteTable(
     submittedAt: integer("submitted_at", { mode: "timestamp_ms" }),
     finishedAt: integer("finished_at", { mode: "timestamp_ms" }),
     updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+    // Schema v90 (BL-184 stage 2, ADR 0038 §4): the storyboard segment this video renders, and its approved version (null = none).
+    storyboardId: text("storyboard_id"),
+    storyboardVersion: integer("storyboard_version"),
+    segmentId: text("segment_id"),
   },
   (table) => [
     uniqueIndex("gemini_media_jobs_request_idx").on(table.createdBy, table.requestId),
@@ -4893,6 +4902,23 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       );
     },
   },
+  {
+    version: 90,
+    description:
+      "media_jobs + gemini_media_jobs .storyboard_id/.storyboard_version/.segment_id -- BL-184 stage 2 (ADR 0038 §4): the storyboard segment a video job renders and the approved version the gate let it through on. Additive, nullable, device-local",
+    apply: async (client) => {
+      for (const table of ["media_jobs", "gemini_media_jobs"]) {
+        for (const column of ["storyboard_id TEXT", "storyboard_version INTEGER", "segment_id TEXT"]) {
+          try {
+            await client.execute(`ALTER TABLE ${table} ADD COLUMN ${column}`);
+          } catch (error) {
+            if (!isDuplicateColumnError(error)) throw error;
+          }
+        }
+        await client.execute(`CREATE INDEX IF NOT EXISTS ${table}_storyboard_idx ON ${table} (storyboard_id, segment_id)`);
+      }
+    },
+  },
 ];
 
 /**
@@ -7441,9 +7467,9 @@ export async function getGatewayTrafficLast24h(
   }));
 }
 
-export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens" | "live_streams" | "channel_language_settings" | "channel_publishing_settings" | "publishing_uploads";
+export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens" | "live_streams" | "channel_language_settings" | "channel_publishing_settings" | "publishing_uploads" | "storyboards";
 
-const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings", "agent_tokens", "live_streams", "channel_language_settings", "channel_publishing_settings", "publishing_uploads"];
+const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings", "agent_tokens", "live_streams", "channel_language_settings", "channel_publishing_settings", "publishing_uploads", "storyboards"];
 
 export type SyncFamilyStatusRow = {
   family: SyncFamily;
@@ -10191,10 +10217,12 @@ export async function getMediaJobById(id: string, database: AppDb = db): Promise
   return row ?? null;
 }
 
-export async function listMediaJobs(filter: { sessionId?: string; channelId?: string; limit?: number }, database: AppDb = db): Promise<StoredMediaJob[]> {
+export async function listMediaJobs(filter: { sessionId?: string; channelId?: string; storyboardId?: string; limit?: number }, database: AppDb = db): Promise<StoredMediaJob[]> {
   const conditions = [];
   if (filter.sessionId) conditions.push(eq(mediaJobs.sessionId, filter.sessionId));
   if (filter.channelId) conditions.push(eq(mediaJobs.channelId, filter.channelId));
+  // BL-184 stage 3: a storyboard's takes (schema v90).
+  if (filter.storyboardId) conditions.push(eq(mediaJobs.storyboardId, filter.storyboardId));
   const query = database.select().from(mediaJobs);
   const filtered = conditions.length > 0 ? query.where(and(...conditions)) : query;
   return filtered.orderBy(desc(mediaJobs.createdAt)).limit(filter.limit ?? 50);
@@ -10497,11 +10525,13 @@ export async function getGeminiMediaJobByRequest(createdBy: string, requestId: s
 
 /** Newest first; optional channel and status filters. */
 export async function listGeminiMediaJobs(
-  filter: { channelId?: string; statuses?: readonly GeminiMediaJobStatusValue[]; createdSince?: Date; limit: number },
+  filter: { channelId?: string; statuses?: readonly GeminiMediaJobStatusValue[]; createdSince?: Date; storyboardId?: string; limit: number },
   database: AppDb = db
 ): Promise<StoredGeminiMediaJob[]> {
   const conditions = [
     filter.channelId === undefined ? undefined : eq(geminiMediaJobs.channelId, filter.channelId),
+    // BL-184 stage 3: a storyboard's takes (schema v90).
+    filter.storyboardId === undefined ? undefined : eq(geminiMediaJobs.storyboardId, filter.storyboardId),
     filter.statuses === undefined ? undefined : inArray(geminiMediaJobs.status, [...filter.statuses]),
     filter.createdSince === undefined ? undefined : gte(geminiMediaJobs.createdAt, filter.createdSince),
   ].filter((c) => c !== undefined);

@@ -320,6 +320,7 @@ function job(jobId: string, status: MediaJob["status"], createdAt: string, over:
     submittedAt: status === "queued" ? null : createdAt,
     finishedAt: null,
     plan: null,
+    storyboard: null,
     ...over,
   };
 }

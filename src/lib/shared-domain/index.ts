@@ -196,6 +196,20 @@ export type DomainErrorCode =
   | "live_stream_video_not_found"
   // HOST_UNSUPPORTED: the module can be switched on only on the Mac running as the system service (ADR 0036 §1).
   | "live_streams_host_unsupported"
+  // BL-184 (docs/roadmap/plans/STORYBOARD_PLAN.md, ADR 0038) -- storyboards. NOT_FOUND: no storyboard with this id in the
+  // channel. COMMENT_NOT_FOUND: no comment with this id in it. FILE_UNAVAILABLE: a keyframe file is not in the channel's exchange
+  // folders on this computer (details.keyframeId, reason). CHANNEL_UNAVAILABLE: the channel is not connected here or has no
+  // workspace folder. VERSION_NOT_LATEST: an owner action names a version that is no longer the latest (reload).
+  // NOT_SUBMITTED: a decision on a version the Operator has not submitted yet.
+  | "storyboard_not_found"
+  | "storyboard_comment_not_found"
+  | "storyboard_file_unavailable"
+  | "storyboard_channel_unavailable"
+  | "storyboard_version_not_latest"
+  | "storyboard_not_submitted"
+  // NOT_APPROVED (stage 2, the gate): a first/last-frame video from two different images without an approved storyboard, or one
+  // naming a storyboard segment that is not approved or whose keyframes are not the job's frames (details.reason).
+  | "storyboard_not_approved"
   // Research export (docs/roadmap/plans/RESEARCH_EXPORT_PLAN.md) -- NOT_CONFIGURED: the channel has no workspace folder on this
   // device (the operator sets it in Settings). UNAVAILABLE: the folder (or its exports/ subfolder) failed re-validation at export
   // time. WRITE_FAILED: a file could not be written; nothing from that call is left behind.

@@ -84,6 +84,7 @@ export function DeviceSyncBell({
   channelWork = [],
   languageEntries = [],
   publishingEntries = [],
+  storyboardEntries = [],
   onOpenChannelWork,
 }: {
   onReviewDivergence?: () => void;
@@ -93,6 +94,8 @@ export function DeviceSyncBell({
   languageEntries?: readonly ChannelWorkEntry[];
   /** BL-182: the other channels' "nothing scheduled within 7 days" reminders. */
   publishingEntries?: readonly ChannelWorkEntry[];
+  /** BL-184: the other channels' storyboards waiting for review. */
+  storyboardEntries?: readonly ChannelWorkEntry[];
   onOpenChannelWork?: (channelId: string, href: string) => void;
 }) {
   const t = useT();
@@ -194,7 +197,7 @@ export function DeviceSyncBell({
     ? "bg-red-500"
     : status?.state === "waiting" || status?.state === "busy" || status?.state === "folder_unreachable"
       ? "bg-amber-400"
-      : entries.length > 0 || liveNotices.length > 0 || languageEntries.length > 0 || publishingEntries.length > 0
+      : entries.length > 0 || liveNotices.length > 0 || languageEntries.length > 0 || publishingEntries.length > 0 || storyboardEntries.length > 0
         ? "bg-sky-400"
         : null;
 
@@ -221,6 +224,12 @@ export function DeviceSyncBell({
             <div className="space-y-2 border-b border-zinc-800 pb-3">
               <h3 className="text-sm font-semibold text-zinc-100">{t("languageAlerts.bellTitle")}</h3>
               {languageEntries.map(entryRow)}
+            </div>
+          )}
+          {storyboardEntries.length > 0 && (
+            <div className="space-y-2 border-b border-zinc-800 pb-3">
+              <h3 className="text-sm font-semibold text-zinc-100">{t("storyboards.alert.bellTitle")}</h3>
+              {storyboardEntries.map(entryRow)}
             </div>
           )}
           {publishingEntries.length > 0 && (

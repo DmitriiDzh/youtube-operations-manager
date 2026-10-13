@@ -99,6 +99,10 @@ export type AppPaths = {
   /** BL-182 stage 2: the publishing-uploads family -- this device's uploads report and the peers' latest reports. */
   publishingUploadsShareDir: string;
   publishingUploadsSyncFallbackDir: string;
+  /** BL-184: the per-channel storyboards documents (sync-gateway `storyboards`). */
+  storyboardsDocDir: string;
+  storyboardsSyncFallbackDir: string;
+  storyboardsDiscardedBackupsDir: string;
   /** Path to the device-local bootstrap config JSON file. */
   bootstrapConfigPath: string;
   /** Path to the CLI/MCP active-user auth-context JSON file. */

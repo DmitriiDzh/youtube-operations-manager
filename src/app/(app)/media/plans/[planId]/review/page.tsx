@@ -4,6 +4,7 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { PlanReviewScreen } from "@/components/plan-review-screen";
 import { FeatureErrorBoundary } from "@/components/feature-error-boundary";
 import { useT } from "@/components/ui-text-provider";
+import { MEDIA_DEFAULT_TAB, MEDIA_TABS } from "@/components/section-tabs";
 
 // BL-149 (docs/roadmap/plans/APP_ROUTES_PLAN.md, AC-RT-07): a plan's review screen at its own address, so it can be reloaded,
 // bookmarked or opened in another browser tab. `?device=` (and `host=` for its name) = another device's plan (phase 2);
@@ -20,7 +21,8 @@ export default function PlanReviewPage() {
         planId={planId}
         source={deviceId ? { deviceId, hostname: query.get("host") } : undefined}
         initialWave={query.get("wave")}
-        onClose={() => router.push("/media/plans")}
+        // BL-184 stage 3: back to the kind tab it was opened from (`?from=`), else Media's first tab.
+        onClose={() => router.push(`/media/${MEDIA_TABS.find((item) => item.value === query.get("from"))?.value ?? MEDIA_DEFAULT_TAB}`)}
       />
     </FeatureErrorBoundary>
   );

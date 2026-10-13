@@ -56,6 +56,8 @@ export type PlanItem = {
   seeds: number[];
   /** BL-175 (§2.2): how many attempts the owner picks for this item; absent = `pickTargetOf`'s default. */
   pickTarget?: number;
+  /** BL-184 stage 2: the storyboard segment this item's videos render; every job it creates names it (the storyboard gate). */
+  storyboard?: { storyboardId: string; segmentId: string };
 };
 /** BL-143 phase 3 (FO-MSG-0009): a reference track for A/B listening, copied by the factory into the channel's Sent to YTM. */
 export type PlanReference = { id: string; label: string; file: string; lufs: number | null; lra: number | null; truePeak: number | null };
@@ -350,6 +352,11 @@ export type PlanProgress = {
   rechecksOpen: number;
   /** BL-173: every re-check of the plan with its attempt's current file -- in `factory_plan_get` only. */
   rechecks?: PlanRecheckView[];
+  /**
+   * BL-184 stage 3 (FO-REQ-0024 A): what the plan makes -- the kinds of its results' files and of its items' templates. Media's
+   * kind tabs list it under each; empty = not known yet (it shows under every kind). Absent in a report from an older computer.
+   */
+  mediaKinds?: PlanMediaKind[];
 };
 
 export type PlanNotice =

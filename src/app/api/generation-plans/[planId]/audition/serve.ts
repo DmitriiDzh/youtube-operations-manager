@@ -1,7 +1,6 @@
-import { createReadStream } from "node:fs";
 import path from "node:path";
-import { Readable } from "node:stream";
 import { NextResponse } from "next/server";
+import { parseRange, streamLocalFile } from "@/lib/local-file-response";
 import { isLoopbackRequest } from "@/lib/loopback-guard";
 import { AUDITION_CONTENT_TYPES, auditionContentType } from "@/lib/generation-plans/contracts";
 import { planErrorResponse } from "../../shared";
@@ -13,28 +12,12 @@ import { planErrorResponse } from "../../shared";
 /** The types the review screen plays or shows; anything else is refused (415). BL-173: the list lives in the plans contracts. */
 export { AUDITION_CONTENT_TYPES };
 
+// Range parsing and streaming live in `@/lib/local-file-response` (shared with the storyboard takes, BL-184); re-exported for this
+// route's own tests.
+export { parseRange };
+
 export function contentTypeFor(filePath: string): string | null {
   return auditionContentType(filePath);
-}
-
-/**
- * One `bytes=` range (RFC 9110 §14.1.2): `a-b`, `a-` or `-n`. `null` = serve the whole file (no Range header, or a
- * multi-range request, which RFC 9110 lets a server ignore); `"invalid"` = not satisfiable.
- */
-export function parseRange(header: string | null, size: number): { start: number; end: number } | "invalid" | null {
-  if (!header) return null;
-  if (header.includes(",")) return null;
-  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
-  if (!match || (match[1] === "" && match[2] === "") || size === 0) return "invalid";
-  if (match[1] === "") {
-    const suffix = Number(match[2]);
-    if (suffix === 0) return "invalid";
-    return { start: Math.max(0, size - suffix), end: size - 1 };
-  }
-  const start = Number(match[1]);
-  const end = match[2] === "" ? size - 1 : Math.min(Number(match[2]), size - 1);
-  if (start >= size || end < start) return "invalid";
-  return { start, end };
 }
 
 export type AuditionDeps = {
@@ -85,20 +68,7 @@ export function createPreviewGetHandler(deps: AuditionDeps & { preview(path: str
   );
 }
 
-/** The file itself, with HTTP Range (the player seeks without loading the whole file). */
-function streamFile(file: { path: string; bytes: number }, type: string, request: Request): Response {
-  const range = parseRange(request.headers.get("range"), file.bytes);
-  const headers: Record<string, string> = { "content-type": type, "accept-ranges": "bytes", "cache-control": "no-store", "x-content-type-options": "nosniff" };
-  if (range === "invalid") return new Response(null, { status: 416, headers: { ...headers, "content-range": `bytes */${file.bytes}` } });
-  const start = range?.start ?? 0;
-  const end = range?.end ?? Math.max(0, file.bytes - 1);
-  const length = file.bytes === 0 ? 0 : end - start + 1;
-  const body = length === 0 ? null : (Readable.toWeb(createReadStream(file.path, { start, end })) as ReadableStream<Uint8Array>);
-  return new Response(body, {
-    status: range ? 206 : 200,
-    headers: { ...headers, "content-length": String(length), ...(range ? { "content-range": `bytes ${start}-${end}/${file.bytes}` } : {}) },
-  });
-}
+const streamFile = streamLocalFile;
 
 type Responder = (file: { path: string; bytes: number }, type: string, request: Request) => Response | Promise<Response>;
 

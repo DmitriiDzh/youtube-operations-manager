@@ -15,10 +15,12 @@ import {
   type MediaJobManifest,
   type MediaJobOutput,
   type MediaGpuPlan,
+  type MediaKind,
   type MediaJobInput,
   type MediaJobStatus,
   type MediaModelReference,
   type MediaModelUsage,
+  type MediaStoryboardGate,
   type MediaTemplateParameter,
   type MediaTemplateSyncResult,
   type MediaTemplateSyncTrigger,
@@ -102,6 +104,10 @@ export type StoredJobRow = {
   planStageId?: string | null;
   planItemKey?: string | null;
   planSeed?: number | null;
+  // Schema v90 (BL-184 stage 2): the storyboard segment and its approved version (absent = none).
+  storyboardId?: string | null;
+  storyboardVersion?: number | null;
+  segmentId?: string | null;
 };
 
 export type ExchangeLedgerRow = { remoteKey: string; jobId: string; localPath: string; bytes: number; sha256: string; pulledAt: Date; remoteDeletedAt: Date | null };
@@ -119,7 +125,7 @@ export type MediaJobStore = {
   jobs: {
     insert(row: Omit<StoredJobRow, "createdAt"> & { createdAt?: Date }): Promise<StoredJobRow>;
     get(id: string): Promise<StoredJobRow | null>;
-    list(filter: { sessionId?: string; channelId?: string; limit?: number }): Promise<StoredJobRow[]>;
+    list(filter: { sessionId?: string; channelId?: string; storyboardId?: string; limit?: number }): Promise<StoredJobRow[]>;
     listNonTerminal(): Promise<StoredJobRow[]>;
     /** BL-148: job count per status of one session (absent = this store cannot say). */
     countBySession?(sessionId: string): Promise<Record<string, number>>;
@@ -196,6 +202,8 @@ export type JobServiceDependencies = {
   syncState?: { get(): Promise<string | null>; set(json: string): Promise<void> };
   /** FO-REQ-0005: the pending adoptions of local templates into the registry (`parseTemplateAdoptions`); absent = none kept. */
   adoptions?: { get(): Promise<string | null>; set(json: string): Promise<void> };
+  /** BL-184 stage 2: no first/last-frame video from two different images without an approved storyboard (ADR 0038 §4). */
+  storyboardGate: MediaStoryboardGate;
 };
 
 export type TemplateActor = "owner" | "factory";
@@ -247,6 +255,8 @@ function normalizeParameter(p: ReturnType<typeof importTemplateInputSchema.parse
     // BL-132: only input parameters carry these keys (the other types' JSON shape is unchanged); given on another type they
     // are kept so the template check can refuse them, never silently dropped.
     ...(isInputParameterType(p.type) || p.accept != null || p.maxBytes != null ? { accept: p.accept ?? null, maxBytes: p.maxBytes ?? null } : {}),
+    // BL-184: only a tagged parameter carries `role` (an untagged template's JSON -- and the registry comparison -- is unchanged).
+    ...(p.role != null ? { role: p.role } : {}),
   };
 }
 
@@ -271,6 +281,9 @@ export function validateTemplateShape(graph: Graph, parameters: MediaTemplatePar
     // BL-132: an input file is always the job's own (a default path would be the same file for every job).
     if (isInputParameterType(p.type) && p.default !== null && p.default !== undefined) problems.push(`parameter "${p.name}": an ${p.type} input cannot have a default`);
     if (!isInputParameterType(p.type) && (p.accept != null || p.maxBytes != null)) problems.push(`parameter "${p.name}": accept/maxBytes apply only to image, audio and video inputs`);
+    // BL-184: a frame role belongs to an image input, and each role to one parameter only.
+    if (p.role != null && p.type !== "image") problems.push(`parameter "${p.name}": role ${p.role} applies only to an image input`);
+    if (p.role != null && parameters.filter((q) => q.role === p.role).length > 1) problems.push(`parameter "${p.name}": only one parameter can be the ${p.role}`);
     // A default that cannot pass the parameter's own type/bounds/enum would fail every job that omits the parameter
     // (blaming the caller's params); refuse it at import instead (review round 8).
     if (p.default !== null && p.default !== undefined) {
@@ -307,6 +320,22 @@ function templateModels(row: StoredTemplateRow): MediaModelReference[] {
   }
 }
 
+/**
+ * BL-184 stage 3 (FO-REQ-0024 A: Media's tabs by kind): what a template makes, from its save nodes' class types -- `SaveVideo` /
+ * `VHS_VideoCombine` / animated output -> video, `SaveAudio` / mp3 / flac -> audio, `SaveImage` -> image. A template that saves a
+ * video and a still (a first/last-frame template's preview) is a video template: video wins, then audio, then image.
+ */
+export function templateMediaKind(graph: Graph, outputIds: readonly string[]): MediaKind | null {
+  const kinds = new Set<MediaKind>();
+  for (const id of outputIds) {
+    const type = graph[id]?.class_type ?? "";
+    if (/video|vhs|webm|mp4|gif|animat/i.test(type)) kinds.add("video");
+    else if (/audio|mp3|flac|wav|ogg/i.test(type)) kinds.add("audio");
+    else if (/image|png|jpe?g|webp/i.test(type)) kinds.add("image");
+  }
+  return kinds.has("video") ? "video" : kinds.has("audio") ? "audio" : kinds.has("image") ? "image" : null;
+}
+
 export function toPublicTemplate(row: StoredTemplateRow): MediaWorkflowTemplate {
   // The graph is parsed only for a row written before schema v55 recorded these two facts.
   const shape =
@@ -330,7 +359,28 @@ export function toPublicTemplate(row: StoredTemplateRow): MediaWorkflowTemplate 
     nodeCount: shape.nodeCount,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
+    mediaKind: cachedMediaKind(row, shape.outputNodeIds),
   };
+}
+
+/**
+ * The graph is parsed for the kind once per template version (review 8: a listing does not parse every graph on every call); a
+ * graph that cannot be read has no kind.
+ */
+const mediaKindCache = new Map<string, MediaKind | null>();
+function cachedMediaKind(row: StoredTemplateRow, outputIds: readonly string[]): MediaKind | null {
+  const key = `${row.id}@${row.version}@${row.updatedAt.getTime()}`;
+  if (!mediaKindCache.has(key)) {
+    let kind: MediaKind | null = null;
+    try {
+      kind = templateMediaKind(JSON.parse(row.workflowJson) as Graph, outputIds);
+    } catch {
+      kind = null;
+    }
+    if (mediaKindCache.size > 500) mediaKindCache.clear();
+    mediaKindCache.set(key, kind);
+  }
+  return mediaKindCache.get(key) ?? null;
 }
 
 export function toPublicJob(row: StoredJobRow): MediaJob {
@@ -351,6 +401,7 @@ export function toPublicJob(row: StoredJobRow): MediaJob {
     submittedAt: row.submittedAt ? row.submittedAt.toISOString() : null,
     finishedAt: row.finishedAt ? row.finishedAt.toISOString() : null,
     plan: row.planId ? { planId: row.planId, stageId: row.planStageId ?? null, itemKey: row.planItemKey ?? null, seed: row.planSeed ?? null } : null,
+    storyboard: row.storyboardId && row.segmentId && row.storyboardVersion != null ? { storyboardId: row.storyboardId, versionNumber: row.storyboardVersion, segmentId: row.segmentId } : null,
   };
 }
 
@@ -1528,6 +1579,25 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         }
         inputs.push({ parameter: p, relativePath, maxBytes: limit, file });
       }
+      // BL-184 stage 2 (FO-REQ-0024 B4): the storyboard gate, with the sha256 of the template's first / last frame inputs as they are
+      // on this computer -- before anything is uploaded to the volume or sent to ComfyUI. A template whose image inputs carry no role
+      // is not a first/last-frame template to the gate (the Operator tags them).
+      // The hashes are kept: the upload's own sha256 must match them (independent review: a frame overwritten between this check and
+      // the upload would otherwise send bytes the gate never saw).
+      const checkedFrames = new Map<string, string>();
+      const frameSha = async (role: "first_frame" | "last_frame") => {
+        const input = inputs.find((i) => i.parameter.role === role);
+        if (!input) return null;
+        const sha = await deps.fs.sha256File(input.file.path);
+        checkedFrames.set(input.parameter.name, sha);
+        return sha;
+      };
+      const storyboard = await deps.storyboardGate.check({
+        channelId: parsed.channelId,
+        firstFrameSha256: await frameSha("first_frame"),
+        lastFrameSha256: await frameSha("last_frame"),
+        link: parsed.storyboard ?? null,
+      });
       const jobId = deps.generateId();
       // Each input goes to the ROOT of ComfyUI's input folder under a job-unique flat name (`<jobId>-<param>-<name>`), and
       // the targeted loader input is given that name; the job's params keep the path the caller gave.
@@ -1551,6 +1621,8 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
             await deps.sessions.touchActivity(parsed.sessionId);
             const sent = await s3.putObjectFromFile(upload.remoteKey, upload.file.path, inputContentType(upload.name), { maxBytes: upload.maxBytes, expectedIdentity: upload.file.identity });
             uploaded.push(upload.remoteKey);
+            const checked = checkedFrames.get(upload.parameter.name);
+            if (checked !== undefined && sent.sha256 !== checked) throw new Error("the frame changed after the storyboard check");
             await deps.store.inputs!.insert({ remoteKey: upload.remoteKey, jobId, parameter: upload.parameter.name, sourcePath: upload.relativePath, bytes: sent.bytes, sha256: sent.sha256, uploadedAt: deps.clock.now() });
           } catch (error) {
             for (const key of uploaded) {
@@ -1583,6 +1655,7 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         submittedAt: null,
         finishedAt: null,
         ...(parsed.plan ? { planId: parsed.plan.planId, planStageId: parsed.plan.stageId, planItemKey: parsed.plan.itemKey, planSeed: parsed.plan.seed ?? null } : {}),
+        ...(storyboard ? { storyboardId: storyboard.storyboardId, storyboardVersion: storyboard.versionNumber, segmentId: storyboard.segmentId } : {}),
       });
       let comfy: ComfyUiClient;
       try {
@@ -1671,6 +1744,11 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     async listJobs(input: unknown = {}): Promise<MediaJob[]> {
       const filter = parseWithSchema(listJobsInputSchema, input, "list jobs");
       return Promise.all((await deps.store.jobs.list(filter)).map((row) => withInputs(toPublicJob(row))));
+    },
+
+    /** BL-184 stage 3 (B5): the channel's jobs that render a storyboard's segments (its takes), newest first. */
+    async listJobsByStoryboard(channelId: string, storyboardId: string): Promise<MediaJob[]> {
+      return (await deps.store.jobs.list({ channelId, storyboardId, limit: 500 })).map(toPublicJob);
     },
 
     /** queued/submitted/generating -> cancelled; ComfyUI's current execution is interrupted (best effort). */

@@ -14,7 +14,10 @@ test("AC-RT-04: /dashboard goes to Home; a Google Cloud OAuth result goes to Set
 test("AC-RT-01: the sub-tab addresses of the plan's table are pages; anything else is not", () => {
   // BL-157 (SERVERS_MEDIA_PLAN.md AC-SM-01): Production's sub-tabs are now Servers' and Media's.
   for (const sub of ["sessions", "models", "templates", "setup"]) assert.ok(isSectionSubTab("servers", sub), sub);
-  for (const sub of ["plans", "jobs"]) assert.ok(isSectionSubTab("media", sub), sub);
+  // BL-184 stage 3 (FO-REQ-0024 §4 A; owner msgs 2741/2743): Media's tabs are the four kinds; Plans and Jobs are no longer tabs
+  // (their old addresses redirect, see the pages under media/plans and media/jobs).
+  for (const sub of ["music", "images", "storyboards", "video"]) assert.ok(isSectionSubTab("media", sub), sub);
+  for (const sub of ["plans", "jobs"]) assert.equal(isSectionSubTab("media", sub), false, sub);
   assert.equal(isSectionSubTab("servers", "plans"), false);
   assert.equal(isSectionSubTab("media", "sessions"), false);
   assert.equal(isSectionSubTab("production", "sessions"), false, "Production is no longer a section (its addresses redirect)");
@@ -41,7 +44,12 @@ test("review finding: a sidebar item leads back to its section's last sub-tab; a
 test("only a real sub-tab address is remembered; a review counts as Plans; anything else is not remembered", () => {
   assert.deepEqual(rememberablePath("/settings/sync"), { section: "/settings", path: "/settings/sync" });
   assert.deepEqual(rememberablePath("/research/videos"), { section: "/research", path: "/research/videos" });
-  assert.deepEqual(rememberablePath("/media/plans/R-0001/review"), { section: "/media", path: "/media/plans" });
+  // BL-184 stage 3: a plan's review counts as Media's first tab (the Plans tab is gone).
+  assert.deepEqual(rememberablePath("/media/plans/R-0001/review"), { section: "/media", path: "/media/music" });
+  // BL-184: a storyboard's review counts as «Раскадровка».
+  assert.deepEqual(rememberablePath("/media/storyboards/bar-loop"), { section: "/media", path: "/media/storyboards" });
+  assert.deepEqual(rememberablePath("/media/storyboards"), { section: "/media", path: "/media/storyboards" });
+  assert.equal(rememberablePath("/media/storyboards/bar-loop/more"), null);
   assert.deepEqual(rememberablePath("/servers/setup"), { section: "/servers", path: "/servers/setup" });
   assert.equal(rememberablePath("/settings/bogus"), null);
   assert.equal(rememberablePath("/media/plans/x"), null);

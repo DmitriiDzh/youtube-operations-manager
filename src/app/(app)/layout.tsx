@@ -17,6 +17,7 @@ import { planReloginPrompt } from "@/lib/channel-connections/relogin-prompt";
 import { ConflictCenter, useConflictCenter } from "@/components/conflict-center";
 import { languagesBadge, otherChannelLanguageEntries, type LanguageAlertChannel } from "@/components/language-alerts";
 import { contentBadge, otherChannelPublishingEntries, type PublishingAlertChannel } from "@/components/publishing-alerts";
+import { activeStoryboardsWaiting, mediaBadgeTitle, otherChannelStoryboardEntries, type StoryboardAlertChannel } from "@/components/storyboard-alerts";
 import {
   INITIAL_STARTUP,
   STARTUP_STEPS,
@@ -134,6 +135,9 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   const [languageAlertsActiveId, setLanguageAlertsActiveId] = useState<string | null>(null);
   const [publishingAlerts, setPublishingAlerts] = useState<PublishingAlertChannel[]>([]);
   const [publishingAlertsActiveId, setPublishingAlertsActiveId] = useState<string | null>(null);
+  // BL-184: storyboards waiting for the owner, per channel.
+  const [storyboardAlerts, setStoryboardAlerts] = useState<StoryboardAlertChannel[]>([]);
+  const [storyboardAlertsActiveId, setStoryboardAlertsActiveId] = useState<string | null>(null);
   // Owner, msg 2004: a blurred loading window while the app loads its data on open and while the channel switches.
   const [startup, setStartup] = useState<StartupProgress>(INITIAL_STARTUP);
   const [startupDismissed, setStartupDismissed] = useState(false);
@@ -473,10 +477,38 @@ export default function AppLayout({ children }: { children: ReactNode }) {
     };
   }, [userId, activeChannelId]);
 
+  // BL-184 stage 1 (FO-REQ-0024 §4 D): storyboards waiting for the owner -- added to the Media badge for the active channel, bell
+  // entries for the others. A local read of the synced document, at the plans' cadence.
+  useEffect(() => {
+    if (!userId) return;
+    let cancelled = false;
+    async function refreshStoryboardAlerts() {
+      try {
+        const res = await fetch("/api/storyboard-alerts");
+        if (!res.ok || cancelled) return;
+        const data = (await res.json()) as { activeChannelId?: string | null; channels?: StoryboardAlertChannel[] };
+        if (cancelled) return;
+        setStoryboardAlerts(data.channels ?? []);
+        setStoryboardAlertsActiveId(data.activeChannelId ?? null);
+      } catch {
+        // Non-fatal -- the next poll tries again.
+      }
+    }
+    void refreshStoryboardAlerts();
+    const id = setInterval(() => void refreshStoryboardAlerts(), PLANS_REVIEW_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+      setStoryboardAlerts([]);
+      setStoryboardAlertsActiveId(null);
+    };
+  }, [userId, activeChannelId]);
+  const storyboardsWaiting = activeStoryboardsWaiting(storyboardAlerts, storyboardAlertsActiveId);
+
   // With agent requests waiting, Research leads to plain `/research`, where its first-open rule opens Inbox (AC-R1-2),
   // as every visit did before BL-149 (re-review).
   const navItemsWithBadges = NAV_ITEMS.map(({ labelKey, ...item }) => ({ ...item, label: t(labelKey), href: item.value === "research" && researchPending > 0 ? item.href : sectionHref(item.href, lastPathBySection) })).map((item) =>
-    item.value === "merge" ? { ...item, badge: conflictCount } : item.value === "research" ? { ...item, badge: researchPending } : item.value === "media" ? { ...item, badge: plansWaiting, badgeTitle: plansWaitingRejected > 0 ? t("plans.badgeSplit", { passed: plansWaiting - plansWaitingRejected, rejected: plansWaitingRejected }) : undefined } : item.value === "languages" ? { ...item, ...languagesBadge(t, languageAlerts.find((a) => a.channelId === languageAlertsActiveId)) } : item.value === "content" ? { ...item, ...contentBadge(t, publishingAlerts.find((a) => a.channelId === publishingAlertsActiveId)) } : item
+    item.value === "merge" ? { ...item, badge: conflictCount } : item.value === "research" ? { ...item, badge: researchPending } : item.value === "media" ? { ...item, badge: plansWaiting + storyboardsWaiting, badgeTitle: mediaBadgeTitle(t, plansWaiting, plansWaitingRejected, storyboardsWaiting) } : item.value === "languages" ? { ...item, ...languagesBadge(t, languageAlerts.find((a) => a.channelId === languageAlertsActiveId)) } : item.value === "content" ? { ...item, ...contentBadge(t, publishingAlerts.find((a) => a.channelId === publishingAlertsActiveId)) } : item
   );
 
   if (status === "loading") {
@@ -501,6 +533,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       channelWork={channelWork}
       languageEntries={otherChannelLanguageEntries(t, languageAlerts, languageAlertsActiveId)}
       publishingEntries={otherChannelPublishingEntries(t, publishingAlerts, publishingAlertsActiveId)}
+      storyboardEntries={otherChannelStoryboardEntries(t, storyboardAlerts, storyboardAlertsActiveId)}
       onOpenChannelWork={(channelId, href) => void openChannelWork(channelId, href)}
       channelUnavailable={channelUnavailable}
       onSignOut={() => signOut()}

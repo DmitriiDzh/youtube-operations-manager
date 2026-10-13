@@ -1,12 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { RECHECKS_WAVE, type PlanEvent, type PlanNotice, type PlanStageCounts, type PlanStageKind, type PlanView } from "@/lib/generation-plans/contracts";
+import { RECHECKS_WAVE, type PlanEvent, type PlanMediaKind, type PlanNotice, type PlanStageCounts, type PlanStageKind, type PlanView } from "@/lib/generation-plans/contracts";
 import type { SharedPlan } from "@/lib/sync-gateway";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import type { Translate, UiTextKey } from "@/lib/ui-text";
 import { ConfirmDialog } from "./confirm-dialog";
-import { ownPlanModel, peerPlanModel, waveRows, type OutgoingNoteRef, type OutgoingPickRef, type OutgoingVerdictRef, type PlanCardDevice, type PlanCardModel, type WaveRow } from "./plan-card-model";
+import { ownPlanModel, peerPlanModel, planShownUnder, waitingPerKind, waveRows, type OutgoingNoteRef, type OutgoingPickRef, type OutgoingVerdictRef, type PlanCardDevice, type PlanCardModel, type WaveRow } from "./plan-card-model";
 import { useChannelNames } from "./use-channel-names";
 import { InfoTooltip } from "./info-tooltip";
 import { PlanReviewScreen, resultLabel, type PeerReviewSource } from "./plan-review-screen";
@@ -193,8 +193,14 @@ function generatedOf(t: Translate, stages: PlanView["progress"]["stages"]): List
 export function PlansPanel({
   active,
   onReview,
+  kind = null,
+  onWaitingByKind,
 }: {
   active: boolean;
+  /** BL-184 stage 3 (FO-REQ-0024 A): the kind tab this list is under -- plans of that kind, and plans whose kind is not known yet. */
+  kind?: PlanMediaKind | null;
+  /** BL-184 stage 3: the tracks waiting for the owner under each kind tab (a plan of unknown kind counts under every one). */
+  onWaitingByKind?: (waiting: Partial<Record<PlanMediaKind, number>>) => void;
   /** BL-149: open the review screen at its own address; BL-162: `source` = another device's plan, `wave` = open on that wave. Absent = in place. */
   onReview?: (planId: string, source?: PeerReviewSource, wave?: string) => void;
 }) {
@@ -269,13 +275,24 @@ export function PlansPanel({
   const peerModels = peers.flatMap((d) => d.plans.map((p) => peerPlanModel(p, { deviceId: d.deviceId, hostname: d.hostname, updatedAt: d.updatedAt, stale: d.stale, version: d.version }, outgoing, outgoingNotes, outgoingPicks)));
   const rows: ListRow[] = [
     ...(plans ?? [])
-      .filter((p) => inFilter(p.plan.status))
+      .filter((p) => inFilter(p.plan.status) && planShownUnder(kind, p.progress.mediaKinds))
       .map((p) => ({ key: keyOf(null, p.plan.planId), planId: p.plan.planId, title: p.plan.title, status: p.plan.status, spendUsd: p.progress.spend.usd, budgetUsd: p.plan.budget.usd, waiting: waitingCount(p), rechecks: p.progress.rechecksOpen ?? 0, generated: generatedOf(t, p.progress.stages), device: null })),
     ...peerModels
-      .filter((m) => inFilter(m.status))
+      .filter((m) => inFilter(m.status) && planShownUnder(kind, m.progress.mediaKinds))
       .map((m) => ({ key: keyOf(m.device, m.planId), planId: m.planId, title: m.title, status: m.status, spendUsd: m.progress.spend.usd, budgetUsd: m.progress.budget.usd, waiting: m.waiting, rechecks: m.rechecks, generated: generatedOf(t, m.progress.stages), device: m.device })),
   ];
   const anyPeer = rows.some((r) => r.device !== null);
+  // BL-184 stage 3: every active plan's waiting tracks, counted under each kind tab it shows under (the tab bar's badges).
+  const waitingByKind = waitingPerKind([
+    ...(plans ?? []).filter((p) => p.plan.status === "active").map((p) => ({ waiting: waitingCount(p), kinds: p.progress.mediaKinds })),
+    ...peerModels.filter((m) => m.status === "active").map((m) => ({ waiting: m.waiting, kinds: m.progress.mediaKinds })),
+  ]);
+  const waitingKey = `${waitingByKind.audio}|${waitingByKind.image}|${waitingByKind.video}`;
+  // Reported when the counts change, not on every render (the counts object is new each time; its key is not).
+  useEffect(() => {
+    const [audio, image, video] = waitingKey.split("|").map(Number);
+    onWaitingByKind?.({ audio, image, video });
+  }, [waitingKey, onWaitingByKind]);
   const selectedModel: PlanCardModel | null = !selected
     ? null
     : selected.includes("\u0000")

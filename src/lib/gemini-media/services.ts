@@ -26,6 +26,8 @@ import {
   type GeminiMediaSettings,
   type GeminiRefusal,
   type GeminiSpend,
+  type GeminiStoryboardGate,
+  type GeminiStoryboardLink,
   type GeminiVideoParams,
 } from "./contracts";
 import { estimateImageUsd, estimateVideoUsd, modelCatalog } from "./pricing";
@@ -46,7 +48,7 @@ export type GeminiStore = {
   insertJob(row: StoredGeminiMediaJob): Promise<boolean>;
   getJob(jobId: string): Promise<StoredGeminiMediaJob | null>;
   getJobByRequest(createdBy: string, requestId: string): Promise<StoredGeminiMediaJob | null>;
-  listJobs(filter: { channelId?: string; statuses?: readonly GeminiMediaJobStatusValue[]; createdSince?: Date; limit: number }): Promise<StoredGeminiMediaJob[]>;
+  listJobs(filter: { channelId?: string; statuses?: readonly GeminiMediaJobStatusValue[]; createdSince?: Date; storyboardId?: string; limit: number }): Promise<StoredGeminiMediaJob[]>;
   updateJob(jobId: string, fromStatus: GeminiMediaJobStatusValue, set: Partial<StoredGeminiMediaJob>): Promise<boolean>;
 };
 
@@ -87,6 +89,8 @@ export type GeminiMediaDeps = {
   generateId(): string;
   /** Serializes job creation process-wide (held on `globalThis` by `./index.ts`): two creates never both pass a limit. */
   withCreateLock<T>(run: () => Promise<T>): Promise<T>;
+  /** BL-184 stage 2: no first/last-frame video from two different images without an approved storyboard (ADR 0038 §4). */
+  storyboardGate: GeminiStoryboardGate;
 };
 
 const round4 = (value: number) => Math.round(value * 10_000) / 10_000;
@@ -141,6 +145,7 @@ export function jobView(row: StoredGeminiMediaJob): GeminiJobView {
     createdAt: row.createdAt.toISOString(),
     submittedAt: row.submittedAt ? row.submittedAt.toISOString() : null,
     finishedAt: row.finishedAt ? row.finishedAt.toISOString() : null,
+    storyboard: row.storyboardId && row.segmentId && row.storyboardVersion !== null ? { storyboardId: row.storyboardId, versionNumber: row.storyboardVersion, segmentId: row.segmentId } : null,
   };
 }
 
@@ -161,6 +166,8 @@ function requestHash(input: CreateJobInput): string {
           firstFrame: input.video?.inputs?.firstFrame ?? null,
           lastFrame: input.video?.inputs?.lastFrame ?? null,
           referenceImages: input.video?.inputs?.referenceImages ?? [],
+          // BL-184: only when given, so a job asked for before the storyboards keeps its hash (a replay still matches).
+          ...(input.storyboardId ? { storyboardId: input.storyboardId, segmentId: input.segmentId } : {}),
         };
   return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
 }
@@ -373,11 +380,28 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
         }
         await deps.workspace.resolveOutputRoot(input.channelId);
         const inputs = await readInputs(input.channelId, namedInputs(input));
+        // BL-184 stage 2 (FO-REQ-0024 B4): the storyboard gate, with the frames' sha256 just read -- before the estimate, the limits
+        // and any charge. A refusal ends a real create here; a dry-run reports it with the estimate (the Operator can probe).
+        let storyboard: GeminiStoryboardLink | null = null;
+        let storyboardRefusal: GeminiRefusal | null = null;
+        if (input.kind === "video") {
+          try {
+            storyboard = await deps.storyboardGate.check({
+              channelId: input.channelId,
+              firstFrameSha256: inputs.find((i) => i.role === "first_frame")?.sha256 ?? null,
+              lastFrameSha256: inputs.find((i) => i.role === "last_frame")?.sha256 ?? null,
+              link: input.storyboardId && input.segmentId ? { storyboardId: input.storyboardId, segmentId: input.segmentId } : null,
+            });
+          } catch (error) {
+            if (!input.dryRun || !isDomainError(error) || error.code !== "storyboard_not_approved") throw error;
+            storyboardRefusal = { code: "storyboard_not_approved", message: error.message, details: error.details as Record<string, unknown> | undefined };
+          }
+        }
         const estimateUsd = estimateOf(input, inputs.length);
         // Never compare a non-number against a limit: every comparison with NaN is false, so it would pass all of them.
         if (!Number.isFinite(estimateUsd) || estimateUsd <= 0) throw new DomainError({ code: "gemini_invalid_params", message: "No price is known for these settings.", details: { field: "model" } });
         const current = await spend();
-        const refusal = preconditionRefusal ?? limitRefusal(settings, current, estimateUsd);
+        const refusal = preconditionRefusal ?? storyboardRefusal ?? limitRefusal(settings, current, estimateUsd);
         if (input.dryRun) return { dryRun: true, estimateUsd, allowed: refusal === null, refusal, spend: current };
         if (refusal) throw new DomainError({ code: refusal.code, message: refusal.message, details: refusal.details });
         const at = now();
@@ -415,6 +439,9 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
           submittedAt: null,
           finishedAt: null,
           updatedAt: at,
+          storyboardId: storyboard?.storyboardId ?? null,
+          storyboardVersion: storyboard?.versionNumber ?? null,
+          segmentId: storyboard?.segmentId ?? null,
         };
         if (!(await deps.store.insertJob(row))) {
           // Only a concurrent create with the same request id can get here (the lock makes it a cross-process race).
@@ -422,6 +449,11 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
         }
         return { job: jobView(row) };
       });
+    },
+
+    /** BL-184 stage 3 (B5): the channel's video jobs that render a storyboard's segments (its takes), newest first. */
+    async listJobsByStoryboard(channelId: string, storyboardId: string): Promise<GeminiJobView[]> {
+      return (await deps.store.listJobs({ channelId, storyboardId, limit: 500 })).map(jobView);
     },
 
     /** One job by id, or the newest jobs (≤ 50) with optional channel / status filters. */

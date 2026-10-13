@@ -164,3 +164,19 @@ test("BL-173: another device's plan counts its open re-checks, minus the ones an
   assert.equal(m.waiting, 3, "a kept answer is no verdict: the track still waits");
   assert.equal(peerPlanModel(v1Plan(), device, []).rechecks, 0, "a report before version 4 has none");
 });
+
+// BL-184 stage 3 (FO-REQ-0024 A; owner msgs 2741/2743): plans live under Media's kind tabs -- a plan shows under the kinds it makes,
+// and while its kind is not known yet (no results, no recognised template) under every one, so nothing is hidden.
+test("BL-184: a plan under the kind tabs -- by its kinds, or everywhere while unknown; waiting tracks counted per tab", async () => {
+  const { planShownUnder, waitingPerKind, sharedProgress } = await import("./plan-card-model");
+  assert.equal(planShownUnder("audio", ["audio"]), true);
+  assert.equal(planShownUnder("video", ["audio"]), false);
+  assert.equal(planShownUnder("image", ["image", "video"]), true);
+  assert.equal(planShownUnder("video", []), true, "not known yet: everywhere");
+  assert.equal(planShownUnder("video", undefined), true, "an older computer's report: everywhere");
+  assert.equal(planShownUnder(null, ["audio"]), true, "no kind filter");
+  assert.deepEqual(waitingPerKind([{ waiting: 3, kinds: ["audio"] }, { waiting: 2, kinds: ["video"] }, { waiting: 1, kinds: [] }]), { audio: 4, image: 1, video: 3 });
+  // Another computer's report carries the kinds in its loose progress; an unknown value is dropped, an older report has none.
+  assert.deepEqual(sharedProgress({ mediaKinds: ["video", "bogus"] }).mediaKinds, ["video"]);
+  assert.equal("mediaKinds" in sharedProgress({}), false);
+});

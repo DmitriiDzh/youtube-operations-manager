@@ -11,6 +11,7 @@ import { createFactoryMcpServer, FACTORY_API_VERSION, FACTORY_TOOL_NAMES, FACTOR
 // (FACTORY_GPU_SESSIONS_PLAN.md, ADR 0026): seven more -- its own sessions, jobs in them, the capacity log.
 // BL-174 (GEMINI_MEDIA_PLAN.md §2.7): three Gemini tools (two reads, one write).
 // BL-176 (LIVE_STREAMS_PLAN.md §3.4/§3.11): two live-stream tools (a status read, a local map write).
+// BL-184 (STORYBOARD_PLAN.md §2.6): six storyboard tools (four writes, two reads).
 const EXPECTED_TOOLS = [
   "factory_gemini_create_job",
   "factory_gemini_get_job",
@@ -55,6 +56,12 @@ const EXPECTED_TOOLS = [
   "factory_plan_todo",
   "factory_plan_update",
   "factory_plan_withdraw_recheck",
+  "factory_storyboard_create",
+  "factory_storyboard_get",
+  "factory_storyboard_list",
+  "factory_storyboard_reply",
+  "factory_storyboard_submit",
+  "factory_storyboard_update",
 ];
 
 function registeredNames(): string[] {
@@ -68,6 +75,7 @@ function registeredNames(): string[] {
       plans: {} as never,
       gemini: {} as never,
       live: {} as never,
+      storyboards: {} as never,
       async assertMutationAllowed() {},
     },
     { connectionEnabled: true, session: { tokenId: "t", async reverify() {} } }
@@ -123,11 +131,16 @@ test("AC-FO-09 (amended by ADR 0025/0026): writes are exactly the named media/se
     "factory_plan_run_stage",
     "factory_plan_update",
     "factory_plan_withdraw_recheck",
+    "factory_storyboard_create",
+    "factory_storyboard_reply",
+    "factory_storyboard_submit",
+    "factory_storyboard_update",
   ]);
   const writes = new Set<string>(FACTORY_WRITE_TOOL_NAMES);
   for (const name of FACTORY_TOOL_NAMES) {
-    // BL-174: the Gemini reads are factory_gemini_get_*; BL-176: the live-stream read is factory_live_get_status.
-    if (!writes.has(name)) assert.match(name, /^factory_(get|list|media_(get|list|storage|capacity)|plan_(get|list|todo)|gemini_(get|list)|live_(get|list))_?/, `${name} must be a read`);
+    // BL-174: the Gemini reads are factory_gemini_get_*; BL-176: the live-stream read is factory_live_get_status; BL-184: the
+    // storyboard reads are factory_storyboard_get / factory_storyboard_list.
+    if (!writes.has(name)) assert.match(name, /^factory_(get|list|media_(get|list|storage|capacity)|plan_(get|list|todo)|gemini_(get|list)|live_(get|list)|storyboard_(get|list))_?/, `${name} must be a read`);
     assert.doesNotMatch(name, /_(set|issue|revoke)_|workspace|token|approve|reject/, `${name} must not touch paths, workspaces or tokens, or approve for anyone`);
   }
 });
@@ -162,6 +175,8 @@ test("§2.5(3): the factory route and endpoint reach only the allowlisted module
     "@/lib/gemini-media",
     // BL-176 (LIVE_STREAMS_PLAN.md §3.11): the live-streams module for factory_live_get_status / factory_live_map_sources.
     "@/lib/live-streams",
+    // BL-184 (STORYBOARD_PLAN.md §2.6): the storyboards module for the factory_storyboard_* tools.
+    "@/lib/storyboards",
     "@/mcp/factory-server",
   ]);
   assert.deepEqual(route.filter((spec) => !routeAllowed.has(spec)), []);
@@ -184,7 +199,7 @@ test("§2.5(4): none of the factory files reads channel-scope state (agent-sessi
   }
 });
 
-test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.15.0 since BL-179), separate from the channel agents' version", async () => {
+test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.16.0 since BL-184), separate from the channel agents' version", async () => {
   // BL-153 (FO-REQ-0008): reviewRejected, split waiting counts and overridesValidator are additive -> a minor version.
   // BL-155 (FO-REQ-0007, CUDA_HOSTS_PLAN.md "Contract"): the jobs' errorCode, the error media_gpu_host_incompatible and the
   // stopReason "all jobs failed (release when done)" are additive -> 1.7.0, as the plan states.
@@ -197,7 +212,8 @@ test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.15.0 
   // BL-175 (VISUAL_REVIEW_PLAN.md AC-VR-13): picks, marker regions, reason lists and pick targets, all additive -> 1.13.0.
   // BL-176 (LIVE_STREAMS_PLAN.md §3.11): two new tools (a read, a local write), additive -> 1.14.0.
   // BL-179 (GEMINI_OMNI_PLAN.md): a new video model and additive catalog fields -> 1.15.0.
-  assert.equal(FACTORY_API_VERSION, "1.15.0");
+  // BL-184 (STORYBOARD_PLAN.md §2.6): six new storyboard tools, additive -> 1.16.0.
+  assert.equal(FACTORY_API_VERSION, "1.16.0");
   const agentOperations = await readFile("src/lib/agent-operations/contracts.ts", "utf8");
   assert.equal(agentOperations.includes("FACTORY_API_VERSION"), false);
 });

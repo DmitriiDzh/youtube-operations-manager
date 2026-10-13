@@ -17,9 +17,10 @@ import { researchData } from "./en/researchData";
 import { settings } from "./en/settings";
 import { settingsCards } from "./en/settingsCards";
 import { shell } from "./en/shell";
+import { storyboards } from "./en/storyboards";
 
-export const enAreas = { common, shell, settings, production, media, languages, batches, decisions, research, researchData, analytics, content, merge, settingsCards, errors, analyticsLabels, liveStreams } as const;
+export const enAreas = { common, shell, settings, production, media, languages, batches, decisions, research, researchData, analytics, content, merge, settingsCards, errors, analyticsLabels, liveStreams, storyboards } as const;
 
-export const en = { ...common, ...shell, ...settings, ...production, ...media, ...languages, ...batches, ...decisions, ...research, ...researchData, ...analytics, ...content, ...merge, ...settingsCards, ...errors, ...analyticsLabels, ...liveStreams } as const;
+export const en = { ...common, ...shell, ...settings, ...production, ...media, ...languages, ...batches, ...decisions, ...research, ...researchData, ...analytics, ...content, ...merge, ...settingsCards, ...errors, ...analyticsLabels, ...liveStreams, ...storyboards } as const;
 
 export type UiTextKey = keyof typeof en;
