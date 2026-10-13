@@ -43,7 +43,8 @@ export type ReleasePackage = {
 export type PackageProblem = { code: string; params?: Record<string, string | number> };
 
 export type PackageFacts = {
-  video: { exists: boolean; sizeBytes: number | null; durationSeconds: number | null; probeFailed?: boolean };
+  /** `noProbe`: ffprobe is not installed on this computer, so the duration cannot be checked here. */
+  video: { exists: boolean; sizeBytes: number | null; durationSeconds: number | null; probeFailed?: boolean; noProbe?: boolean };
   thumbnail: { exists: boolean; sizeBytes: number | null; kind: "jpeg" | "png" | "other" | null };
   /** `Vn_youtube.json` exists next to the package: it was uploaded from one of the computers. */
   youtubeRecordExists: boolean;
@@ -166,7 +167,8 @@ export function packageProblems(pkg: ReleasePackage, facts: PackageFacts, channe
   if (!facts.video.exists) problems.push({ code: "video_missing", params: { file: pkg.files.video } });
   else {
     if (facts.video.sizeBytes !== pkg.sizeBytes) problems.push({ code: "video_size_differs", params: { actual: facts.video.sizeBytes ?? 0, expected: pkg.sizeBytes } });
-    if (facts.video.probeFailed || facts.video.durationSeconds === null) problems.push({ code: "video_unreadable" });
+    if (facts.video.noProbe) problems.push({ code: "ffprobe_missing" });
+    else if (facts.video.probeFailed || facts.video.durationSeconds === null) problems.push({ code: "video_unreadable" });
     else if (Math.abs(facts.video.durationSeconds - pkg.durationSeconds) > DURATION_TOLERANCE_SECONDS) {
       problems.push({ code: "video_duration_differs", params: { actual: Math.round(facts.video.durationSeconds), expected: Math.round(pkg.durationSeconds) } });
     }

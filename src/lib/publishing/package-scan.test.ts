@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createPackageScan, type DirEntry, type PackageScanDeps, type ScannedPackage } from "./package-scan";
+import { createPackageScan, isPackageThumbnailPath, type DirEntry, type PackageScanDeps, type ScannedPackage } from "./package-scan";
 
 // BL-182 stage 2 (FO-REQ-0023 §4 A1/A2, §4 B1, §6 question 1). Requirements:
 // - packages are found by scanning `04 Videos/**/V*_release.json` in the channel workspace (the factory's layout is
@@ -158,4 +158,12 @@ test("no workspace set, or one that cannot be used now", async () => {
     status: "workspace_unavailable",
     reason: "drive not mounted",
   });
+});
+
+test("the preview serves only an image under 04 Videos", () => {
+  assert.equal(isPackageThumbnailPath("04 Videos/10 October/1024 V65/Thumbnail_V65_A.jpg"), true);
+  assert.equal(isPackageThumbnailPath("04 Videos/x/t.PNG"), true);
+  for (const bad of ["03 Audio/t.jpg", "04 Videos/../secrets/t.jpg", "04 Videos/x/t.txt", "04 Videos//t.jpg", "04 Videos\\x\\t.jpg", "/04 Videos/t.jpg"]) {
+    assert.equal(isPackageThumbnailPath(bad), false, bad);
+  }
 });

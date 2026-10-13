@@ -18,6 +18,12 @@ const MAX_DEPTH = 3;
 /** A manifest is a few kilobytes; anything far larger is not one. */
 const MANIFEST_MAX_BYTES = 1024 * 1024;
 
+/** A path the preview may serve: an image (by name) under `04 Videos/`, relative, with no `..`; the content is checked too. */
+export function isPackageThumbnailPath(relativePath: string): boolean {
+  const parts = relativePath.split("/");
+  return relativePath.startsWith(`${VIDEOS_FOLDER}/`) && /\.(jpe?g|png)$/i.test(relativePath) && !relativePath.includes("\\") && parts.every((part) => part !== "" && part !== "." && part !== "..");
+}
+
 export type PackageState = "not_ready" | "ready" | "uploaded_private" | "scheduled" | "published" | "uploaded_unknown";
 
 export type ScannedPackage = {
@@ -54,8 +60,8 @@ export type PackageScanDeps = {
   resolveFile(workspace: string, relativePath: string): Promise<{ path: string; bytes: number } | null>;
   readText(absolutePath: string, maxBytes: number): Promise<string>;
   readHead(absolutePath: string, bytes: number): Promise<Uint8Array>;
-  /** ffprobe's duration in seconds; null when the file cannot be read as a video. */
-  probeDuration(absolutePath: string, bytes: number): Promise<number | null>;
+  /** ffprobe's duration in seconds; null when the file cannot be read as a video; "no_ffprobe" when ffprobe is not installed. */
+  probeDuration(absolutePath: string, bytes: number): Promise<number | null | "no_ffprobe">;
   channel(channelId: string): Promise<ChannelExpectations>;
   /** The channel's synced videos (the local copy). */
   videos(channelId: string): Promise<Array<{ videoId: string; title: string; privacyStatus: string; publishAt: string | null }>>;
@@ -111,7 +117,8 @@ export function createPackageScan(deps: PackageScanDeps) {
     const pkg = parsed.pkg;
 
     const videoFile = await deps.resolveFile(workspace, `${folder}/${pkg.files.video}`);
-    const durationSeconds = videoFile ? await deps.probeDuration(videoFile.path, videoFile.bytes) : null;
+    const probed = videoFile ? await deps.probeDuration(videoFile.path, videoFile.bytes) : null;
+    const durationSeconds = typeof probed === "number" ? probed : null;
     const thumbnailFile = await deps.resolveFile(workspace, `${folder}/${pkg.files.thumbnail}`);
     const thumbnailKind = thumbnailFile ? imageKindOf(await deps.readHead(thumbnailFile.path, 8)) : null;
     const recordFile = await deps.resolveFile(workspace, `${folder}/${youtubeRecordFileName(pkg.video)}`);
@@ -125,7 +132,7 @@ export function createPackageScan(deps: PackageScanDeps) {
     const problems = packageProblems(
       pkg,
       {
-        video: { exists: videoFile !== null, sizeBytes: videoFile?.bytes ?? null, durationSeconds, probeFailed: videoFile !== null && durationSeconds === null },
+        video: { exists: videoFile !== null, sizeBytes: videoFile?.bytes ?? null, durationSeconds, probeFailed: videoFile !== null && probed === null, noProbe: probed === "no_ffprobe" },
         thumbnail: { exists: thumbnailFile !== null, sizeBytes: thumbnailFile?.bytes ?? null, kind: thumbnailKind },
         youtubeRecordExists: recordFile !== null,
         sameTitleVideoId: sameTitle?.videoId ?? null,

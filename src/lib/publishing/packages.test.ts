@@ -113,6 +113,7 @@ test("the files: missing, another size (an unfinished copy), another duration, a
   assert.deepEqual(codes(pkg(), { video: { exists: true, sizeBytes: 839640730, durationSeconds: 7225 } }), ["video_duration_differs"], "1.34 s off");
   assert.deepEqual(codes(pkg(), { video: { exists: true, sizeBytes: 839640730, durationSeconds: 7224.6 } }), [], "0.94 s off is rounding");
   assert.deepEqual(codes(pkg(), { video: { exists: true, sizeBytes: 839640730, durationSeconds: null, probeFailed: true } }), ["video_unreadable"]);
+  assert.deepEqual(codes(pkg(), { video: { exists: true, sizeBytes: 839640730, durationSeconds: null, noProbe: true } }), ["ffprobe_missing"], "not the file's fault");
   assert.deepEqual(codes(pkg(), { thumbnail: { exists: false, sizeBytes: null, kind: null } }), ["thumbnail_missing"]);
   assert.deepEqual(codes(pkg(), { thumbnail: { exists: true, sizeBytes: 1000, kind: "other" } }), ["thumbnail_not_image"]);
   assert.deepEqual(codes(pkg(), { thumbnail: { exists: true, sizeBytes: 2 * 1024 * 1024 + 1, kind: "png" } }), ["thumbnail_too_large"]);
