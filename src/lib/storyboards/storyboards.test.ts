@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
-import { CH, V1, V1_GLASS, V2_GLASS, barLoop, code, segments, setup, sha } from "@/test-support/storyboards-harness";
+import { CH, V1, V2_GLASS, barLoop, code, segments, setup, sha } from "@/test-support/storyboards-harness";
 import { approvedVersion, changedPropCells } from "./model";
 
 // BL-184 stage 1 -- acceptance FO-REQ-0024 §5 steps 1-3 (B1 content, B2 review, B3 versions), on the REAL workspace-exchange rules
