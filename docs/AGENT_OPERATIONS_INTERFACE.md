@@ -1167,3 +1167,10 @@ idle / minutes / USD; every job submit or poll counts as activity. Contract: `do
   the channel's own videos, as stored: text, times, likes, reply count and whether the channel wrote it; no author data.
 - Read once a day per channel for videos whose comment count changed, and weekly; kept at most 30 days (YouTube API policy). A local read.
   Contract: `docs/interfaces.md`.
+
+**Reporting status and lag (BL-181, Agent API 3.14.0, `docs/roadmap/plans/REPORTING_BASIC_PLAN.md`):**
+- `agent_get_reporting_status` (capability `analytics.query_reporting_status`, READ) returns the channel's Reporting jobs and files: Reach,
+  and in `otherReports` the basic user-activity and traffic-source reports. Each comes with its last sync attempt, imported file count,
+  each file's `lagHours` (hours after its Pacific day ended) and the first file per day. A local read.
+- `analytics_data_quality` gains `returnLag`: per date, when this computer's collection first got it back from the Analytics API, and
+  the lag. Contract: `docs/interfaces.md`.

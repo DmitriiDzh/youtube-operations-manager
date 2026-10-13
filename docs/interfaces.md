@@ -703,7 +703,19 @@ Key MCP tools:
     `docs/ARCHITECTURE.md` §14.9. BL-181 (2026-10-13, additive): also `newestReturned { videoDate, channelDate, ranAt } | null`
     -- the newest dates the Analytics API actually returned in this computer's latest run that recorded them (a date after
     `videoDate` was not reported yet, whatever the clock says); a collection's result also carries `newestVideoDate` /
-    `newestChannelDate`.
+    `newestChannelDate`. BL-181 stage 1 (additive): `returnLag: [{ date, videoFirstReturnedAt, videoLagHours, channelFirstReturnedAt,
+    channelLagHours }]`, newest first -- per date of the range, the first collection run on this computer that got it back and the
+    hours after its Pacific day ended (an upper bound; the first recorded run is only a baseline). ARCHITECTURE §14.13.1.
+  - `agent_get_reporting_status` (BL-181, Agent API 3.14.0, capability `analytics.query_reporting_status`, READ, channel-scoped) —
+    `{ channelId, credentialRef? }` → Reach's status block (`job`, `firstFileExpectedBy`, `firstFileOverdue`, `lastAttempt`,
+    `nextAutoCheckAt`, `importedFiles`, `files[]` with `lagHours` = createTime − endTime, `firstFileLag[{ date, createTime, lagHours }]`)
+    plus `otherReports[]` for `channel_basic_a3` and `channel_traffic_source_a3` (`reportTypeId`, `job`, `lastAttempt`,
+    `importedFiles`, `files`, `firstFileLag`). A local read, never a Google call. `GET /api/channels/[id]/reach/status` returns the
+    same fields.
+  - `POST /api/analytics/evening-collect` (BL-181, Web only) — the dashboard's 5-minute evening check: `{ due: false }`,
+    `{ due: false, done: true }`, `{ due: true, inProgress | importPending: true }` or `{ due: true, channels: [the active channel's
+    outcome: collected | skipped (reason) | failed] }`. `GET/POST /api/settings` gain `analyticsEveningLocalTime` ("HH:MM", `""` =
+    off; must be later than `analyticsSyncLocalTime`).
   - `analytics_comparable_age` — `{ channelId, videoIds (2-10), metricName? (default "views",
     additive metrics only), maxDays? (default 30), credentialRef? }` → per-video raw daily points
     and a running cumulative total, aligned by each video's own days-since-publish (Pacific-Time

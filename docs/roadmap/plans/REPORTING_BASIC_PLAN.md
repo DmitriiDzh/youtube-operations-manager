@@ -1,8 +1,8 @@
 # Fresher daily analytics: Reporting basic reports + an evening re-collect (FO-REQ-0020, BL-181)
 
-- **Status:** DRAFT 2026-10-13. Waiting for the owner's answers (§5, Telegram msg 2682).
-  - Stage 1 item 5 (newest date returned) is BUILT on `feature/bl-181-reporting-freshness`. It needs no owner decision.
-  - The rest waits for the owner.
+- **Status:** APPROVED 2026-10-13 (owner msg 2687: Q1 yes, Q2 ok; Q3 answered with "does it cost anything?" -- no, only the free
+  Analytics API's quota; the default 22:05 kept). **Stage 1 BUILT** on `feature/bl-181-reporting-freshness` (items 1-7, §6), not
+  merged yet. Stage 2 waits for a week of stage-1 numbers.
 - **Request:** FO-REQ-0020, from the Operator, 2026-10-12. The owner's "ok" is Telegram 1036; the queue was set in msgs 2660 and 2677.
 - **Sources:**
   - the `dev` code (f785700, schema v86);
@@ -100,3 +100,16 @@
 1. May the app create the two new Reporting jobs per channel? This is read-only data with the same scope, a precedent from BL-114.
 2. The two stages: measure for a week first, then decide on the provisional values. Agreed?
 3. The evening re-collect: is a default of 22:05 local right? Is it enough that it runs while the dashboard is open, checked every 5 minutes, with no server timer?
+
+## 6. Built (stage 1, 2026-10-13) and deviations
+
+- Items 1-7 as above; ARCHITECTURE §14.13.1 has the details.
+- **Deviation, item 1.** There is no separate registry table. The two types are `OtherReportType` entries (job name and import)
+  synced after Reach in the same call. Reach keeps its own code path and results.
+- **Addition, item 6.** The lag is readable by the Operator: `agent_get_reporting_status` (Agent API 3.14.0), and
+  `analytics_data_quality.returnLag` for the Analytics API (the first run that got each date back, an upper bound).
+- **Addition, item 7.** The evening run asks only the 3 days ending yesterday, at most once per evening per channel (the attempt is
+  recorded before the call). It is the only exception to `collectMetrics`'s once-a-day rule, and no tool input can reach it. It
+  runs only when yesterday is still missing.
+- **Measurement start.** The jobs are created on the first dashboard load after the merge. Google then posts 30 history days within
+  a couple of days, and the first daily file within 48 h. The week of stage-1 numbers starts from that first daily file.

@@ -1190,6 +1190,65 @@ Decision record: `docs/decisions/0014-youtube-reporting-api-gateway-child.md`.
 - **Unverified until real data exists:** the report's `date` format (both `YYYYMMDD` and `YYYY-MM-DD` are accepted) and the CTR scale (ratio assumed, `reach-format.ts` is the one place to change).
 - **Not in this slice:** `channel_reach_combined_a1` (by traffic source / device), an agent tool that triggers a sync, video titles beside the ids in the UI table.
 
+#### 14.13.1 Basic and traffic-source reports, lag, evening re-collect — BL-181 stage 1 (FO-REQ-0020)
+
+Plan: `docs/roadmap/plans/REPORTING_BASIC_PLAN.md`. Owner msg 2687: yes to the two new jobs per channel, and agreement to two
+stages. Stage 1 collects and measures. Stage 2 would show provisional values, and is decided after a week of measurements.
+
+- **Two more report types,** `channel_basic_a3` and `channel_traffic_source_a3`.
+  - Sync: `OtherReportType` entries built in `reach-reports/index.ts`.
+    - `syncReachReports` runs them after Reach in the same call, under the same `onlyIfDue` throttle and in-flight guard.
+    - Each type has its own job, its own ledger rows and its own `reporting_sync_attempts` row.
+    - A type that fails is recorded as failed and never changes Reach's result. Reach failing does not stop the other types: the
+      call still throws Reach's error afterwards.
+    - A core built without these types (the older tests) syncs Reach only.
+  - Import: `basic-csv.ts` sums rows on import.
+    - Basic rows are summed per (date, video); traffic-source rows per (date, video, traffic source code).
+    - Anonymised rows count: `ZZ`, and an empty `video_id`, which is the channel-level and deleted-video remainder (Google's
+      "Report characteristics").
+    - An empty metric cell is `null`, never 0.
+    - The whole file is refused for another channel's id (an empty `channel_id` is accepted), an unreadable date, a value that is
+      not a number >= 0, or a missing required column. Only the stored columns are required, so a column Google drops does not
+      fail every file.
+- **Storage (schema v88, device-local):** `channel_basic_daily` and `channel_traffic_source_daily`.
+  - Replacement works as for Reach: `importReportingFile` is generic, and one import queue serves every type.
+  - `getChannelReachCoverage` now counts Reach files only. Before this, the first basic file would have made Reach "ready" with no
+    Reach rows.
+- **Not shared between computers.** `exportAnalyticsShareRows` / `importAnalyticsShareRows` pass only Reach files, attempts and
+  jobs (`SHARED_REPORTING_REPORT_TYPE_ID`).
+  - The peer importer stores Reach rows only. A basic file shared through it would be marked imported there with no rows, and that
+    computer would never download the file itself.
+  - Each computer downloads these types itself. The share format is unchanged.
+- **Lag.**
+  - **Reporting.** `getReachStatus` gives every file `lagHours` = `createTime` − `endTime` (the end of its Pacific day).
+    - `firstFileLag` gives, per day, the first file created after the job existed. The 30 history days Google makes right after a
+      job is created are left out.
+    - `otherReports` carries the same block for the new types.
+    - MCP: `agent_get_reporting_status` (Agent API 3.14.0).
+  - **Analytics API.** `analytics_data_quality.returnLag` gives, per date, the first run on this computer whose newest returned
+    date reached it.
+    - The first recorded run is only a baseline.
+    - The value is an upper bound: it is when this app asked, not when Google published.
+    - `pacificDayEnd` uses the DST-aware `zonedInstant` (`staleness.ts`).
+- **Evening re-collect** (§14.6's daily boundary gets a second one).
+  - Setting `analytics_evening_local_time`: default `22:05`, `""` = off. It must be later than the daily boundary, which the
+    Settings API checks.
+  - `runEveningCollectionIfDue` runs only when all four hold:
+    - the evening boundary has passed;
+    - the channel was not collected since it;
+    - no evening attempt was recorded since it (`analytics_evening_attempts`, an app setting of this device);
+    - the newest video date the API returned is older than yesterday.
+  - It asks the 3 days ending yesterday. It bypasses `collectMetrics`'s `analytics_data_current` refusal through an internal
+    option that no tool input can set, so a manual collection in the evening is still refused.
+  - The attempt is recorded before the call, so a run that gets nothing back is not retried that evening.
+  - `POST /api/analytics/evening-collect` is called by the dashboard every 5 minutes while visible.
+    - It answers from local settings before the boundary, and once every channel's evening is settled (an in-process memo).
+    - Otherwise it imports the peer's rows, takes the daily run's process-wide lock, and goes through every connected channel with
+      its own credentials (`runEveningCollectionForChannels`).
+  - There is no server timer: an evening with the dashboard closed is not re-collected (FO-REQ-0020 §2.3 allows this: "check on
+    mount, no hidden daemon").
+- **Not in stage 1:** reading the basic rows anywhere (overview, agent, Producer). That is stage 2's provisional values.
+
 ## 15. Cloud connection (`src/lib/cloud-connection/`) — slice 1 of 3, not yet in `dev`
 
 ### 15.1 Status and scope
