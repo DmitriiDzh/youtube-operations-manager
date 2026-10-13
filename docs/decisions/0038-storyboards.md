@@ -20,7 +20,8 @@ take only verdicts from the others, and have no versions, comments or approval.
    Operator's Factory API, comments and approvals from the owner on either computer.
    - Versions are frozen snapshots keyed by id.
    - Comments and replies are maps by id.
-   - An approval names a version and counts only while that version is the latest.
+   - An approval names a version and counts only while that version is the latest. A new version is a draft until the Operator
+     submits it; the owner decides on the latest submitted version only.
    - The state is derived, never stored twice.
 3. **Keyframes are channel-workspace paths with a frozen sha256.** Each computer shows them from its own copy of the workspace,
    as peer plan media are. A copy that differs is reported, not blocked.

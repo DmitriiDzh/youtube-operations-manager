@@ -151,6 +151,9 @@ test("B1 refusals: the chain of segments, ids, prop cells, file locations and th
     // A file named without its exchange folder, outside it, through `..`, or not there at all.
     const withFile = (file: string) => ({ ...base, keyframes: base.keyframes.map((k) => (k.id === "K2" ? { ...k, file } : k)) });
     await code(service.create(withFile("H-0004/bar/K2.jpg")), "validation_failed", { keyframeId: "K2" });
+    // A keyframe is a still image (png, jpg, jpeg, webp), whatever else the folder holds.
+    await writeFile(path.join(root, "Tropico Jazz", "99 Data Exchange", "Sent to YTM", "H-0004", "bar", "clip.mp4"), "video");
+    await code(service.create(withFile("Sent to YTM/H-0004/bar/clip.mp4")), "validation_failed", { keyframeId: "K2" });
     await code(service.create(withFile("Sent to YTM/../../outside.jpg")), "storyboard_file_unavailable", { keyframeId: "K2" });
     await code(service.create(withFile(path.join(root, "outside.jpg"))), "validation_failed", { keyframeId: "K2" });
     await code(service.create(withFile("Sent to YTM/H-0004/bar/K9.jpg")), "storyboard_file_unavailable", { keyframeId: "K2" });

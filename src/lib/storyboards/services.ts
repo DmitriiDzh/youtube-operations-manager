@@ -9,7 +9,7 @@ import type {
   StoryboardSegment,
   StoryboardVersion,
 } from "@/lib/sync-gateway";
-import { DomainError, FROM_YTM_PREFIX, SENT_TO_YTM_PREFIX, type KeyframeFileStatus, type StoryboardActor, type StoryboardsPorts } from "./contracts";
+import { DomainError, FROM_YTM_PREFIX, SENT_TO_YTM_PREFIX, STORYBOARD_IMAGE_EXTENSIONS, type KeyframeFileStatus, type StoryboardActor, type StoryboardsPorts } from "./contracts";
 import { diffVersions, latestVersion, latestVersionNumber, storyboardState, type StoryboardState, type VersionDiff } from "./model";
 import {
   createStoryboardInputSchema,
@@ -212,6 +212,10 @@ export function createStoryboardsService(ports: StoryboardsPorts) {
       const relative = exchangeRelativePath(keyframe.file);
       if (!relative) {
         throw invalid(`Keyframe ${keyframe.id}: file must be a path relative to 99 Data Exchange that starts with "Sent to YTM/" or "From YTM/"`, { field: "keyframes", keyframeId: keyframe.id, file: keyframe.file });
+      }
+      const extension = keyframe.file.slice(keyframe.file.lastIndexOf(".")).toLowerCase();
+      if (!keyframe.file.includes(".") || !STORYBOARD_IMAGE_EXTENSIONS.includes(extension)) {
+        throw invalid(`Keyframe ${keyframe.id}: only ${STORYBOARD_IMAGE_EXTENSIONS.join(", ")} images can be keyframes`, { field: "keyframes", keyframeId: keyframe.id, file: keyframe.file });
       }
       let found: { path: string; bytes: number };
       try {

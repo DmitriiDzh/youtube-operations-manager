@@ -16,6 +16,9 @@ export const FROM_YTM_PREFIX = "From YTM/";
 /** The `From YTM/<subdir>/<jobId>/` job folders a keyframe may be read from in place: Gemini's and the GPU media jobs'. */
 export const STORYBOARD_JOB_OUTPUT_SUBDIRS: readonly string[] = ["gemini", "media"];
 
+/** A keyframe is a still image the review screen shows as it is (the Gemini inputs' list). */
+export const STORYBOARD_IMAGE_EXTENSIONS: readonly string[] = [".png", ".jpg", ".jpeg", ".webp"];
+
 /** This computer's copy of a keyframe against the sha256 frozen in the version (plan §2.3): review is never blocked by it. */
 export type KeyframeFileStatus = "ok" | "missing" | "differs";
 

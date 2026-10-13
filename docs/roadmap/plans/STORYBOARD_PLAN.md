@@ -45,10 +45,13 @@
      optional pin (`PlanMarker.region`), author (owner or operator), text, state (open or resolved), the version it was made on,
      and replies (a map by `replyId`). Ids as map keys and whole-value fields keep the two computers' appends from colliding.
    - **The approval is `{ versionId, by, at }`.** It counts only while `versionId` is the latest version. A new version therefore
-     resets the state to "in review" without anything being edited; an approval of v2 made on Windows while the Mac adds v3
-     approves nothing current.
+     ends the approval without anything being edited; an approval of v2 made on Windows while the Mac adds v3 approves nothing
+     current.
+   - **A new version is a draft until the Operator submits it** (as built, 2026-10-13; acceptance §5 step 3 submits v2
+     explicitly). This corrects DEV-RESP-0029, which said a new version goes back to "in review" by itself: the Operator uploads
+     v2, answers the comments, then submits, and the owner is asked only then.
    - **State is derived, never stored twice:**
-     - draft: no version submitted;
+     - draft: the latest version is not submitted;
      - in review: the latest version submitted, no newer request or approval;
      - changes requested: the owner requested changes on the latest version;
      - approved: an approval names the latest version;
