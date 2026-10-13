@@ -181,8 +181,12 @@ export function createGeminiWorker(deps: GeminiMediaDeps) {
   /** Claims a queued job (CAS) and resolves what every kind needs before calling Google: key, inputs, output folder. */
   async function claim(job: StoredGeminiMediaJob) {
     const attempts = job.attempts + 1;
-    const claimed = await deps.store.updateJob(job.jobId, "queued", { status: "submitting", attempts, submittedAt: job.submittedAt ?? now(), nextAttemptAt: null, updatedAt: now() });
+    const submittedAt = job.submittedAt ?? now();
+    const claimed = await deps.store.updateJob(job.jobId, "queued", { status: "submitting", attempts, submittedAt, nextAttemptAt: null, updatedAt: now() });
     if (!claimed) return null;
+    // The job carries on with what was stored: an answer that comes back in this same call writes the manifest from this object,
+    // which otherwise kept the submission time it was read with -- null (FO-MSG-0016).
+    job.submittedAt = submittedAt;
     let apiKey: string | null;
     try {
       apiKey = await services.readApiKey();
