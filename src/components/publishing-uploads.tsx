@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { isCancellable } from "@/lib/publishing/upload-runner";
 import { formatDisplayDateTime, formatDisplayDateUtc } from "@/lib/shared-formatting";
 import { errorText, type UiTextKey } from "@/lib/ui-text";
+import { ConfirmDialog } from "./confirm-dialog";
 import { useT } from "./ui-text-provider";
 import { useUtcLocalHint } from "./utc-time-field";
 
@@ -62,6 +63,7 @@ export function PublishingUploads({ channelId, visible, refreshKey }: { channelI
   const t = useT();
   const [rows, setRows] = useState<UploadRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [releasing, setReleasing] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!channelId) return;
@@ -93,6 +95,19 @@ export function PublishingUploads({ channelId, visible, refreshKey }: { channelI
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : t("publishingUploads.cancelFailed"));
+    }
+  }
+
+  async function release(id: string) {
+    if (!channelId) return;
+    setReleasing(null);
+    try {
+      const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/publishing/uploads/${encodeURIComponent(id)}/release`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(errorText(t, data, t("publishingUploads.releaseFailed")));
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t("publishingUploads.releaseFailed"));
     }
   }
 
@@ -151,11 +166,26 @@ export function PublishingUploads({ channelId, visible, refreshKey }: { channelI
                   {t("publishingUploads.cancel")}
                 </button>
               )}
+              {row.status === "failed" && row.errorCode === "unknown_outcome" && (
+                <button type="button" onClick={() => setReleasing(row.id)} className="ml-auto rounded border border-amber-800 px-2 py-0.5 text-amber-200 hover:bg-amber-950/40">
+                  {t("publishingUploads.release")}
+                </button>
+              )}
               {text && <p className={`w-full ${row.status === "failed" || row.errorCode ? "text-amber-200" : "text-zinc-400"}`}>{text}</p>}
             </li>
           );
         })}
       </ul>
+      {releasing && (
+        <ConfirmDialog
+          title={t("publishingUploads.releaseTitle")}
+          description={t("publishingUploads.releaseBody")}
+          confirmLabel={t("publishingUploads.releaseConfirm")}
+          confirmVariant="danger"
+          onCancel={() => setReleasing(null)}
+          onConfirm={() => void release(releasing)}
+        />
+      )}
     </div>
   );
 }

@@ -28,8 +28,8 @@ export type UploadApprovalDeps = {
   settings(channelId: string): Promise<PublishingSettingsView>;
   /** The videos of the channel that already have a live upload row on this computer. */
   liveVideos(channelId: string): Promise<Set<string>>;
-  /** The videos of the channel another computer reports as uploading, with that computer's name (ADR 0037 §4). */
-  peerUploads(channelId: string): Promise<Map<string, string | null>>;
+  /** The videos of the channel another computer reports as uploading or uploaded, with that computer's name (ADR 0037 §4). */
+  peerUploads(channelId: string): Promise<Map<string, { host: string | null; uploaded: boolean }>>;
   /** `videos.insert` calls since the quota day began (this computer's log and the shared one). */
   insertsToday(now: Date): Promise<number>;
   /** What this computer's queued and unfinished uploads will still spend: inserts not made yet, and their pool units (review). */
@@ -77,9 +77,10 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
         if (!found || !found.pkg) throw refuse("upload_package_not_ready", `${item.manifestPath} is not a package that can be uploaded.`, { manifestPath: item.manifestPath });
         if (found.manifestSha256 !== item.manifestSha256) throw refuse("upload_package_changed", `${found.pkg.video}: the package changed after it was shown.`, { video: found.pkg.video });
         if (found.youtube !== null || live.has(found.pkg.video)) throw refuse("upload_already_queued", `${found.pkg.video} is already queued or uploaded.`, { video: found.pkg.video });
-        if (elsewhere.has(found.pkg.video)) {
-          const host = elsewhere.get(found.pkg.video) ?? "another computer";
-          throw refuse("upload_already_queued", `${found.pkg.video} is being uploaded on ${host}.`, { video: found.pkg.video, host });
+        const peer = elsewhere.get(found.pkg.video);
+        if (peer) {
+          const host = peer.host ?? "another computer";
+          throw refuse("upload_already_queued", peer.uploaded ? `${found.pkg.video} was already uploaded from ${host}.` : `${found.pkg.video} is being uploaded on ${host}.`, { video: found.pkg.video, host });
         }
         if (found.state !== "ready" || !found.thumbnailPath) throw refuse("upload_package_not_ready", `${found.pkg.video} is not ready to upload.`, { video: found.pkg.video, problems: found.problems });
         if (item.publishAt !== null) {

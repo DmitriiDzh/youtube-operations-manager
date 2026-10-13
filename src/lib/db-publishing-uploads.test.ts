@@ -89,3 +89,13 @@ test("the lease: one runner holds a row until its lease ends; the holder renews 
     assert.equal(await claimPublishingUpload("a", "runner-1", new Date("2026-10-13T12:03:00Z"), new Date("2026-10-13T12:01:00Z"), db), true, "the holder renews");
     assert.equal(await claimPublishingUpload("a", "runner-2", until, new Date("2026-10-13T12:03:00Z"), db), true, "an expired lease is taken over");
   }));
+
+// Re-check 1: an unknown outcome (the last chunk went, no answer) holds the package until the owner releases it.
+test("an unknown outcome holds the package until released", () =>
+  withDb(async (db) => {
+    await insertPublishingUploads([row("a", "V65")], db);
+    assert.equal(await updatePublishingUpload("a", "queued", { status: "failed", errorCode: "unknown_outcome" }, db), true);
+    assert.equal(await insertPublishingUploads([row("b", "V65")], db), false);
+    assert.equal(await updatePublishingUpload("a", "failed", { errorCode: "unknown_outcome_released" }, db), true);
+    assert.equal(await insertPublishingUploads([row("c", "V65")], db), true);
+  }));

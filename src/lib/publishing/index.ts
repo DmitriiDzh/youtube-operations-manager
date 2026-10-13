@@ -48,7 +48,7 @@ import { createPackageFiles } from "./adapters/package-files";
 import { createPackageScan, isPackageThumbnailPath, VIDEOS_FOLDER, type PackageScanDeps } from "./package-scan";
 import { imageKindOf } from "./packages";
 import { authorizedOAuth, createPublishingFinishWrites, createPublishingYoutubeWrites, freshAccessToken } from "./adapters/youtube-writes";
-import { ACTIVE_UPLOAD_STATUSES, createUploadRunner, holdsPackage, isCancellable, type UploadRunnerDeps } from "./upload-runner";
+import { ACTIVE_UPLOAD_STATUSES, createUploadRunner, holdsPackage, isCancellable, UNKNOWN_OUTCOME_RELEASED, type UploadRunnerDeps } from "./upload-runner";
 import { createUploadApproval } from "./upload-approval";
 import { estimateUploadUnits, isDeferredPublishAt } from "./publish-dates";
 import type { G1ProbeRecord } from "./contracts";
@@ -444,9 +444,11 @@ export function createUploadApprovalCore() {
     settings: (channelId) => settings.read(channelId),
     liveVideos: async (channelId) => new Set((await listPublishingUploads({ channelId, limit: 5000 })).filter(holdsPackage).map((row) => row.video)),
     async peerUploads(channelId) {
-      const peers = new Map<string, string | null>();
+      const peers = new Map<string, { host: string | null; uploaded: boolean }>();
       for (const report of await createPublishingUploadsShareCoreForProduction().listPeerReports().catch(() => [])) {
-        for (const upload of report.uploads) if (upload.channelId === channelId && !peers.has(upload.video)) peers.set(upload.video, report.hostName);
+        for (const upload of report.uploads) {
+          if (upload.channelId === channelId && !peers.has(upload.video)) peers.set(upload.video, { host: report.hostName, uploaded: upload.state === "uploaded" });
+        }
       }
       return peers;
     },
@@ -492,3 +494,15 @@ export async function cancelUpload(channelId: string, uploadId: string): Promise
   return done;
 }
 export type { UploadRunner, UploadSteps, ApprovedPackage } from "./upload-runner";
+
+/**
+ * The owner looked in Studio after an `unknown_outcome` and found no video: the row stops holding its package, which can then be
+ * approved again (re-check 1). Only such a row, and only on the owner's own action in the Web UI.
+ */
+export async function releaseUnknownOutcome(channelId: string, uploadId: string): Promise<boolean> {
+  const row = await getPublishingUpload(uploadId);
+  if (!row || row.channelId !== channelId || row.status !== "failed" || row.errorCode !== "unknown_outcome" || row.videoId !== null) return false;
+  const done = await updatePublishingUpload(uploadId, "failed", { errorCode: UNKNOWN_OUTCOME_RELEASED, updatedAt: new Date() });
+  if (done) await insertVideoEditAuditEvent({ channelId, videoId: `upload:${uploadId}`, eventType: "RESULT", detail: { event: "publishing.unknown_outcome_released", uploadId, video: row.video } });
+  return done;
+}

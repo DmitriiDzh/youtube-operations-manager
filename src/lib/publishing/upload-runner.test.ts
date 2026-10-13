@@ -511,11 +511,15 @@ test("AC-UP-09: a video YouTube stops returning for 30 minutes after its upload 
 });
 
 test("review B1: which rows hold their package -- under way, done, or ended with a video; not one cancelled or failed before YouTube", () => {
-  assert.equal(holdsPackage({ status: "queued", videoId: null }), true);
-  assert.equal(holdsPackage({ status: "done", videoId: "v" }), true);
-  assert.equal(holdsPackage({ status: "failed", videoId: "v" }), true);
-  assert.equal(holdsPackage({ status: "failed", videoId: null }), false);
-  assert.equal(holdsPackage({ status: "cancelled", videoId: null }), false);
+  const none = { errorCode: null };
+  assert.equal(holdsPackage({ ...none, status: "queued", videoId: null }), true);
+  assert.equal(holdsPackage({ ...none, status: "done", videoId: "v" }), true);
+  assert.equal(holdsPackage({ ...none, status: "failed", videoId: "v" }), true);
+  assert.equal(holdsPackage({ ...none, status: "failed", videoId: null }), false);
+  assert.equal(holdsPackage({ ...none, status: "cancelled", videoId: null }), false);
+  // Re-check 1: an unknown outcome (the last chunk went, no answer) holds until the owner releases it after looking in Studio.
+  assert.equal(holdsPackage({ status: "failed", videoId: null, errorCode: "unknown_outcome" }), true);
+  assert.equal(holdsPackage({ status: "failed", videoId: null, errorCode: "unknown_outcome_released" }), false);
 });
 
 test("review B2: once the last chunk went, the upload cannot be cancelled even when paused short of its stored bytes", () => {
@@ -556,4 +560,43 @@ test("review should-fix 6: a row another runner holds is left alone until its le
   h.clock.at = new Date(NOW.getTime() + 61_000);
   await h.runAll();
   assert.equal(h.row().status, "done");
+});
+
+test("re-check 2: network errors with an underscore are asked again, not failed", () => {
+  for (const code of ["EAI_AGAIN", "UND_ERR_SOCKET", "ERR_STREAM_PREMATURE_CLOSE", "ECONNRESET"]) {
+    assert.equal(classifyUploadError(Object.assign(new Error(code), { code }), NOW, () => NOW).kind, "retry", code);
+  }
+});
+
+test("re-check 1: after the last chunk, answers that stay unknown keep the job asking its session slowly -- never 'approvable again'", async () => {
+  const h = harness([job()]);
+  h.yt.setFaults([undefined as never, undefined as never, undefined as never, "lose_answer"]); // the last answer is lost
+  await h.runner.tick();
+  const down = { ...h.deps.gateway, queryOffset: async () => Promise.reject(Object.assign(new Error("dns"), { code: "EAI_AGAIN" })) };
+  const runner = createUploadRunner({ ...h.deps, gateway: down });
+  for (let i = 0; i < 30; i += 1) {
+    h.clock.at = new Date(h.clock.at.getTime() + 31 * 60_000);
+    await runner.tick();
+  }
+  assert.equal(h.row().status, "uploading", "15 hours of unknown answers: still asking, not failed");
+  assert.equal(holdsPackage(h.row()), true);
+  // The session answers again: the video YouTube made is adopted.
+  h.clock.at = new Date(h.clock.at.getTime() + 31 * 60_000);
+  await h.runner.tick();
+  assert.deepEqual([h.row().status, h.row().videoId], ["processing", "vid1"]);
+});
+
+test("re-check 3: processing whose state stays unreadable keeps polling slowly instead of failing the uploaded video", async () => {
+  const h = harness([job()]);
+  await h.runner.tick(); // uploaded
+  const unreadable = { ...h.deps.reads, uploadState: async () => Promise.reject(Object.assign(new Error("timeout"), { code: "TimeoutError" })) };
+  const runner = createUploadRunner({ ...h.deps, reads: unreadable });
+  for (let i = 0; i < 20; i += 1) {
+    h.clock.at = new Date(h.clock.at.getTime() + 6 * 60_000);
+    await runner.tick();
+  }
+  assert.deepEqual([h.row().status, h.row().videoId], ["processing", "vid1"]);
+  h.clock.at = new Date(h.clock.at.getTime() + 6 * 60_000);
+  await h.runAll();
+  assert.equal(h.row().status, "done", "readable again: it finishes");
 });

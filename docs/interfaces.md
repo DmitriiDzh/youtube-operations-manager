@@ -740,7 +740,8 @@ Key MCP tools:
     release packages with state and problems), `GET .../publishing/packages/thumbnail?path=`, `GET/POST .../publishing/uploads` (the
     uploads of this computer; approve a selection `{ items[{ manifestPath, manifestSha256, publishAt | null }], shownSettings,
     acknowledgeUnknownQuota? }`), `POST .../publishing/uploads/[uploadId]/cancel` (before YouTube only, else 409
-    `upload_not_cancellable`). New refusals: `upload_package_not_ready`, `upload_package_changed`, `upload_already_queued`,
+    `upload_not_cancellable`), `POST .../publishing/uploads/[uploadId]/release` (an `unknown_outcome` upload the owner found
+    absent in Studio; else 409 `upload_not_releasable`). New refusals: `upload_package_not_ready`, `upload_package_changed`, `upload_already_queued`,
     `publishing_settings_changed`, `upload_daily_limit` (409); `publish_at_too_soon` (400); `quota_insufficient` / `quota_unknown`.
     `/api/settings` since BL-183: `analyticsSyncUtcTime`, `analyticsEveningUtcTime`, `userTimezone`.
   - `POST /api/analytics/evening-collect` (BL-181, Web only) — the dashboard's 5-minute evening check: `{ due: false }`,

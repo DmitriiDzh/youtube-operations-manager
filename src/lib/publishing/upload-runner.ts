@@ -127,6 +127,9 @@ const UPLOAD_LIMIT_PAUSE_MS = 24 * 3_600_000;
 const AUTH_RETRY_MS = 15 * 60_000;
 /** Unknown answers in a row before a step gives up (about 40 minutes with the growing wait). */
 const MAX_RETRIES = 10;
+/** After the last chunk, an unanswered session is asked again this often, for as long as a session lives (about a week). */
+const AFTER_LAST_CHUNK_RETRY_MS = 30 * 60_000;
+const SESSION_LIFETIME_MS = 7 * 24 * 3_600_000;
 const LEASE_MS = 2 * 60_000;
 const ACTIVE: ReadonlyArray<StoredPublishingUpload["status"]> = ["queued", "uploading", "processing", "finishing", "paused"];
 
@@ -192,7 +195,8 @@ export function classifyUploadError(error: unknown, now: Date, nextQuotaReset: (
     if (info.status >= 500 || info.status === 429 || info.reasons.some((r) => /rateLimitExceeded|backendError/.test(r))) return { kind: "retry", message: info.message };
     return { kind: "fail", code: info.reasons[0] ?? info.code ?? `http_${info.status}`, message: info.message };
   }
-  if (info.code === null || /^E[A-Z]+$/.test(info.code) || AMBIGUOUS_CODES.has(info.code)) return { kind: "retry", message: info.message };
+  // ECONNRESET, EAI_AGAIN (DNS on a dropped Wi-Fi), ERR_STREAM_PREMATURE_CLOSE, UND_ERR_SOCKET, ... (re-check item 2).
+  if (info.code === null || /^(E[A-Z_]+|ERR_[A-Z_]+|UND_ERR_[A-Z_]+)$/.test(info.code) || AMBIGUOUS_CODES.has(info.code)) return { kind: "retry", message: info.message };
   return { kind: "fail", code: info.code, message: info.message };
 }
 
@@ -251,7 +255,16 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
     if (outcome.kind === "fail") return giveUp && job.status === "finishing" ? giveUp(outcome.message) : failAfterError(job, outcome.code, outcome.message);
     const steps = stepsOf(job);
     const retries = (steps.retries ?? 0) + 1;
-    if (retries > MAX_RETRIES) return giveUp ? giveUp(outcome.message) : failAfterError(job, "retries_exhausted", outcome.message);
+    if (retries > MAX_RETRIES) {
+      if (giveUp) return giveUp(outcome.message);
+      // After the last chunk the video may exist: the session keeps being asked, slowly, while it can still answer (re-check 1).
+      if (job.status === "uploading" && steps.finalChunkSentAt) {
+        if (now().getTime() - Date.parse(steps.finalChunkSentAt) > SESSION_LIFETIME_MS) return failAfterError(job, "retries_exhausted", outcome.message);
+        await deps.store.update(job.id, job.status, { errorMessage: outcome.message.slice(0, 2000), nextAttemptAt: new Date(now().getTime() + AFTER_LAST_CHUNK_RETRY_MS), stepsJson: JSON.stringify({ ...steps, retries }), updatedAt: now() });
+        return;
+      }
+      return failAfterError(job, "retries_exhausted", outcome.message);
+    }
     const waitMs = Math.min(10 * 60_000, 30_000 * retries);
     await deps.store.update(job.id, job.status, { errorMessage: outcome.message.slice(0, 2000), nextAttemptAt: new Date(now().getTime() + waitMs), stepsJson: JSON.stringify({ ...steps, retries }), updatedAt: now() });
   }
@@ -367,6 +380,8 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
           if (!(await deps.store.update(current.id, "uploading", { stepsJson, updatedAt: now() }))) return;
           current = { ...current, stepsJson };
         }
+        // The lease is renewed before every chunk: a slow chunk never lets another process take the upload (re-check nit).
+        if (!(await deps.store.claim(current.id, deps.runnerId, new Date(now().getTime() + LEASE_MS + 10 * 60_000), now()))) return;
         const chunk = await deps.files.readChunk(videoFile.path, stored, length);
         const progress = await deps.gateway.putChunk({ accessToken: token, sessionUri: current.sessionUri as string, chunk, start: stored, total: current.totalBytes, contentType });
         if ("expired" in progress) return onExpired(current, pkg, creds);
@@ -401,7 +416,11 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
       if (elapsed > PROCESSING_GIVE_UP_MS) return fail(job, "processing_timeout", "YouTube was still processing the video after 24 hours.");
       await deps.store.update(job.id, "processing", { nextAttemptAt: new Date(now().getTime() + (elapsed > 30 * 60_000 ? PROCESSING_SLOW_POLL_MS : PROCESSING_POLL_MS)), updatedAt: now() });
     } catch (error) {
-      await onError(job, error);
+      // The video exists: answers that stay unknown never strand it -- it is polled again slowly until processing's own limit.
+      await onError(job, error, async (message) => {
+        if (now().getTime() - since > PROCESSING_GIVE_UP_MS) return fail(job, "processing_timeout", `YouTube's processing state could not be read for 24 hours: ${message}`);
+        await deps.store.update(job.id, "processing", { errorMessage: message.slice(0, 2000), nextAttemptAt: new Date(now().getTime() + PROCESSING_SLOW_POLL_MS), stepsJson: JSON.stringify({ ...stepsOf(job), retries: 0 }), updatedAt: now() });
+      });
     }
   }
 
@@ -569,9 +588,15 @@ export function isCancellable(row: Pick<StoredPublishingUpload, "status" | "resu
   );
 }
 
-/** A row that holds its package: under way, or one whose video exists whatever became of the job (review B1). */
-export function holdsPackage(row: Pick<StoredPublishingUpload, "status" | "videoId">): boolean {
-  return (ACTIVE as readonly string[]).includes(row.status) || row.status === "done" || row.videoId !== null;
+/** The owner looked in Studio and found no video: the `unknown_outcome` row stops holding its package (re-check 1). */
+export const UNKNOWN_OUTCOME_RELEASED = "unknown_outcome_released";
+
+/**
+ * A row that holds its package: under way, done, one whose video exists whatever became of the job (review B1), or one whose
+ * outcome is unknown (its last chunk went) until the owner releases it after looking in Studio (re-check 1).
+ */
+export function holdsPackage(row: Pick<StoredPublishingUpload, "status" | "videoId" | "errorCode">): boolean {
+  return (ACTIVE as readonly string[]).includes(row.status) || row.status === "done" || row.videoId !== null || row.errorCode === "unknown_outcome";
 }
 
 export type UploadRunner = ReturnType<typeof createUploadRunner>;

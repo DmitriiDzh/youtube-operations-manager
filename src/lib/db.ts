@@ -4885,10 +4885,11 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       );
       await client.execute("CREATE INDEX IF NOT EXISTS publishing_uploads_status_idx ON publishing_uploads(status, next_attempt_at)");
       await client.execute("CREATE INDEX IF NOT EXISTS publishing_uploads_channel_idx ON publishing_uploads(channel_id, created_at)");
-      // Never twice (ADR 0037 §4): one row per channel and video unless it failed or was cancelled before YouTube had a video.
+      // Never twice (ADR 0037 §4): one row per channel and video unless it failed or was cancelled before YouTube had a video --
+      // an unknown outcome (the last chunk went, no answer) holds until the owner releases it after looking in Studio.
       await client.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS publishing_uploads_live_idx ON publishing_uploads(channel_id, video) " +
-          "WHERE status NOT IN ('failed', 'cancelled') OR video_id IS NOT NULL"
+          "WHERE status NOT IN ('failed', 'cancelled') OR video_id IS NOT NULL OR error_code = 'unknown_outcome'"
       );
     },
   },

@@ -3985,6 +3985,12 @@ is already set everywhere), 2734 (one merge for the whole stage).
   returns for 30 minutes ends it as `video_missing`. The writes after the upload check the channel first, like the upload.
   Descriptions are sent and compared with LF line endings. The approval counts the uploads already queued here against the day's
   inserts and units. Cancel only before YouTube (queued, or paused before its last chunk went).
+- **Re-check fixes.** After the last chunk, answers that stay unknown never fail the job: the session is asked again every 30
+  minutes for as long as a session lives (a week). An `unknown_outcome` row holds its package (index, approval, per-device report)
+  until the owner, having looked in Studio, presses «Видео нет — разрешить загрузить снова» (`POST .../uploads/[id]/release`,
+  `unknown_outcome_released`). Processing whose state stays unreadable is polled slowly until its 24-hour limit. Network errors with
+  an underscore (`EAI_AGAIN`, `ERR_*`, `UND_ERR_*`) are transient. The lease is renewed before every chunk. Migration v89 was edited
+  in place before it reached any database (the service and the other computer ran v88).
 - **UI** (Content → «Публикация»): the package list with checkboxes, a date per chosen package (DD.MM.YYYY UTC day; empty = private
   without a date), «Загрузить выбранные» → the approval dialog (rows, times in UTC and the owner's time, the shared settings, the
   units estimate, the Live-writes note), then the uploads list (state, share sent, pause reason and when it continues, the

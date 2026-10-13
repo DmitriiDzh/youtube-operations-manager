@@ -163,7 +163,7 @@ test("a listed package twice, two rows of one video, an empty or too large selec
 });
 
 test("AC-UP-12: a package another computer reports as uploading cannot be started here", async () => {
-  const h = harness([scanned("V65"), scanned("V66")], { peerUploads: async () => new Map([["V65", "Windows-PC"]]) });
+  const h = harness([scanned("V65"), scanned("V66")], { peerUploads: async () => new Map([["V65", { host: "Windows-PC", uploaded: false }]]) });
   await assert.rejects(
     h.approval.approve({ channelId: "UC_t", userId: "u", items: [item("V66"), item("V65")], shownSettings: SETTINGS }),
     (error: unknown) => isDomainError(error) && error.code === "upload_already_queued" && /Windows-PC/.test(error.message)
@@ -179,4 +179,12 @@ test("quota: uploads already queued count against the day's inserts and units", 
   const units = harness([scanned("V65")], { pending: async () => ({ inserts: 3, units: 500 }) });
   await units.approval.approve({ channelId: "UC_t", userId: "u", items: [item("V65")], shownSettings: SETTINGS });
   assert.deepEqual(units.unitsAsked, [146 + 500], "this upload's 146 units and the queued ones' 500");
+});
+
+test("AC-UP-12: a package another computer already uploaded is refused with that said", async () => {
+  const h = harness([scanned("V65")], { peerUploads: async () => new Map([["V65", { host: "Windows-PC", uploaded: true }]]) });
+  await assert.rejects(
+    h.approval.approve({ channelId: "UC_t", userId: "u", items: [item("V65")], shownSettings: SETTINGS }),
+    (error: unknown) => isDomainError(error) && error.code === "upload_already_queued" && /already uploaded from Windows-PC/.test(error.message)
+  );
 });

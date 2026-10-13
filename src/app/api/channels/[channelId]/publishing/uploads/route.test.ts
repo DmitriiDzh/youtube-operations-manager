@@ -57,3 +57,12 @@ test("cancel: only the active channel; 409 when the upload already reached YouTu
   assert.equal((await handler(new Request("http://x/", { method: "POST" }), ctx2("UC_active", "sent-1"))).status, 409);
   assert.notEqual((await handler(new Request("http://x/", { method: "POST" }), ctx2("UC_other", "queued-1"))).status, 200);
 });
+
+test("release: only the active channel; 409 for an upload whose outcome is not unknown", async () => {
+  const { createReleaseUploadHandler } = await import("./[uploadId]/release/route");
+  const handler = createReleaseUploadHandler({ getSession: async () => ({ user: { id: "u" } }), assertActiveChannel, release: async (_c, id) => id === "unknown-1" });
+  const ctx2 = (channelId: string, uploadId: string) => ({ params: Promise.resolve({ channelId, uploadId }) });
+  assert.equal((await handler(new Request("http://x/", { method: "POST" }), ctx2("UC_active", "unknown-1"))).status, 200);
+  assert.equal((await handler(new Request("http://x/", { method: "POST" }), ctx2("UC_active", "done-1"))).status, 409);
+  assert.notEqual((await handler(new Request("http://x/", { method: "POST" }), ctx2("UC_other", "unknown-1"))).status, 200);
+});
