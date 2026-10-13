@@ -91,6 +91,7 @@ export function createPublishingCalendarCore() {
         publishedAt: video.publishedAt,
         publishAt: video.publishAt,
         liveBroadcastContent: video.liveBroadcastContent ?? null,
+        syncedAtMs: video.lastSyncedAt.getTime(),
       }));
     },
     getChannel: (channelId) => store.getChannel(channelId),

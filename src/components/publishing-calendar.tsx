@@ -38,9 +38,10 @@ function timeOf(iso: string): string {
   return `${pad2(at.getHours())}:${pad2(at.getMinutes())}`;
 }
 
+/** The UTC date and time (the date can differ from the local one near midnight). */
 function utcTimeOf(iso: string): string {
   const at = new Date(iso);
-  return `${pad2(at.getUTCHours())}:${pad2(at.getUTCMinutes())}`;
+  return `${pad2(at.getUTCDate())}.${pad2(at.getUTCMonth() + 1)} ${pad2(at.getUTCHours())}:${pad2(at.getUTCMinutes())}`;
 }
 
 export function PublishingCalendar({ channelId, visible }: { channelId: string | null; visible: boolean }) {
@@ -72,8 +73,13 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
     }
   }, [channelId, t]);
 
+  // While visible: load, then every minute (a local read) -- so the copy «Видео» refreshes in the background, a date changed
+  // elsewhere and the day turning over all show without a reload (review).
   useEffect(() => {
-    if (visible) void load();
+    if (!visible) return;
+    void load();
+    const id = setInterval(() => void load(), 60_000);
+    return () => clearInterval(id);
   }, [visible, load]);
 
   async function sync() {
@@ -82,6 +88,11 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
     setSyncError(null);
     try {
       const res = await fetch("/api/channels/sync", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ channelId }) });
+      if (res.status === 409) {
+        // A sync of this channel is already running (e.g. «Видео» refreshing in the background): the minute refresh picks it up.
+        setSyncError(t("publishingCalendar.syncAlreadyRunning"));
+        return;
+      }
       if (!res.ok) throw new Error(String(res.status));
       await load();
     } catch {
@@ -121,6 +132,18 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
   }
 
   const { coverage } = data;
+  if (!data.lastSyncedAt) {
+    // Never synced on this computer: "nothing is scheduled" would be a false alarm (the reminder route gives no alert here either).
+    return (
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4 text-sm text-zinc-300">
+        <span>{t("publishingCalendar.notSynced")}</span>
+        <button type="button" onClick={() => void sync()} disabled={syncing} className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-50">
+          {syncing ? t("publishingCalendar.syncing") : t("publishingCalendar.sync")}
+        </button>
+        {syncError && <p className="w-full text-sm text-red-400">{syncError}</p>}
+      </div>
+    );
+  }
   return (
     <div className="space-y-4">
       <section className={`rounded-xl border p-4 ${coverage.due ? "border-amber-700 bg-amber-950/30" : "border-zinc-800 bg-zinc-900"}`}>
@@ -198,7 +221,8 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
             return (
               <div
                 key={key}
-                className={`min-h-24 rounded-md border p-1 ${isGap ? "border-dashed border-red-700/80" : "border-zinc-800"} ${inMonth ? "bg-zinc-950" : "bg-zinc-950/40 opacity-60"}`}
+                aria-current={isToday ? "date" : undefined}
+                className={`min-h-24 rounded-md border p-1 ${isGap ? "border-dashed border-red-700/80" : "border-zinc-800"} ${inMonth ? "bg-zinc-950" : "bg-zinc-950/40 opacity-60"} ${isToday ? "ring-1 ring-sky-700" : ""}`}
               >
                 <div className={`mb-1 text-right text-[11px] ${isToday ? "font-semibold text-sky-300" : "text-zinc-500"}`}>{day.getDate()}</div>
                 <div className="space-y-1">
@@ -208,6 +232,7 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
                       type="button"
                       onClick={() => setOpen({ videoId: entry.videoId, title: entry.title })}
                       title={entry.at ? `${entry.title}\n${t("publishingCalendar.timeHint", { local: timeOf(entry.at), utc: utcTimeOf(entry.at) })}` : entry.title}
+                      aria-label={entry.at ? `${entry.title}. ${t("publishingCalendar.timeHint", { local: timeOf(entry.at), utc: utcTimeOf(entry.at) })}` : entry.title}
                       className={`block w-full truncate rounded border px-1 py-0.5 text-left text-[11px] ${KIND_STYLES[entry.kind]}`}
                     >
                       {entry.at ? `${timeOf(entry.at)} ` : ""}

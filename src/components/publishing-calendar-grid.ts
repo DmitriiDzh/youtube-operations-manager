@@ -40,7 +40,8 @@ export function entriesByDay(entries: readonly GridEntry[]): Map<string, GridEnt
     const key = localDayKey(at);
     byDay.set(key, [...(byDay.get(key) ?? []), entry]);
   }
-  for (const list of byDay.values()) list.sort((a, b) => (a.at ?? "").localeCompare(b.at ?? ""));
+  // By instant, not by string: `...:00Z` and `...:00.000Z` are the same time (review).
+  for (const list of byDay.values()) list.sort((a, b) => Date.parse(a.at ?? "") - Date.parse(b.at ?? ""));
   return byDay;
 }
 

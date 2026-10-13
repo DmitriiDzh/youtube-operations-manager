@@ -151,4 +151,7 @@ export const content = {
   "publishingCalendar.month.10": "October",
   "publishingCalendar.month.11": "November",
   "publishingCalendar.month.12": "December",
+  "video.syntheticMedia.unreadableHint": "YouTube does not return this mark when read, so it cannot be shown as it is. A change of access or publish time sends it as checked here.",
+  "publishingCalendar.notSynced": "This channel's videos have not been synced on this computer yet.",
+  "publishingCalendar.syncAlreadyRunning": "A sync of this channel is already running; the calendar updates by itself within a minute.",
 } as const;

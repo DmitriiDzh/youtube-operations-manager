@@ -1,3 +1,5 @@
+import { isScheduledVideo } from "@/lib/shared-formatting";
+
 // ---------------------------------------------------------------------------
 // BL-182 stage 1 (PUBLISHING_PLAN.md §2 stage 1; FO-REQ-0023 §4 C, D). The publishing calendar and the "nothing scheduled within
 // N days" reminder, built only from the locally synced videos -- no YouTube call. YouTube has no "scheduled" status: a scheduled
@@ -16,7 +18,19 @@ export type CalendarSourceVideo = {
   publishedAt: string;
   publishAt: string | null;
   liveBroadcastContent?: string | null;
+  /** When the channel sync last returned this row (ms); see `currentRows`. */
+  syncedAtMs?: number;
 };
+
+/**
+ * BL-182 review S5: the channel sync never deletes a row, so a video deleted (or replaced) in Studio would stay "scheduled" and keep
+ * the reminder quiet. Every row the latest sync returned carries that sync's time, so a row older than the channel's last sync is
+ * one YouTube no longer lists: it is left out. A second of slack covers the two stamps being written separately.
+ */
+export function currentRows(videos: readonly CalendarSourceVideo[], channelSyncedAtMs: number | null): CalendarSourceVideo[] {
+  if (channelSyncedAtMs === null) return [...videos];
+  return videos.filter((video) => video.syncedAtMs === undefined || video.syncedAtMs >= channelSyncedAtMs - 1000);
+}
 
 /**
  * - `published`: public (or unlisted), at its publish time.
@@ -49,10 +63,8 @@ export function classifyCalendarVideo(video: CalendarSourceVideo, now: Date): Ca
   if (isLive(video)) return null;
   const base = { videoId: video.videoId, title: video.title, privacyStatus: video.privacyStatus };
   if (video.privacyStatus === "public" || video.privacyStatus === "unlisted") return { ...base, kind: "published", at: video.publishedAt };
-  if (video.publishAt) {
-    const at = Date.parse(video.publishAt);
-    if (!Number.isNaN(at)) return { ...base, kind: at > now.getTime() ? "scheduled" : "overdue", at: video.publishAt };
-  }
+  if (isScheduledVideo(video, now.getTime())) return { ...base, kind: "scheduled", at: video.publishAt };
+  if (video.publishAt && !Number.isNaN(Date.parse(video.publishAt))) return { ...base, kind: "overdue", at: video.publishAt };
   return { ...base, kind: "unscheduled", at: null };
 }
 

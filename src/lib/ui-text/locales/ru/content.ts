@@ -154,4 +154,7 @@ export const content: Record<keyof typeof en, string> = {
   "publishingCalendar.month.10": "Октябрь",
   "publishingCalendar.month.11": "Ноябрь",
   "publishingCalendar.month.12": "Декабрь",
+  "video.syntheticMedia.unreadableHint": "YouTube не отдаёт эту отметку при чтении, поэтому её нельзя показать как есть. При изменении доступа или даты публикации она отправляется так, как стоит здесь.",
+  "publishingCalendar.notSynced": "Видео этого канала на этом компьютере ещё не синхронизированы.",
+  "publishingCalendar.syncAlreadyRunning": "Синхронизация этого канала уже идёт; календарь обновится сам в течение минуты.",
 };

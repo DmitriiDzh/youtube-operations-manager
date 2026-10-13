@@ -13,9 +13,23 @@ test("a scheduled, still-private video with its date ahead can be moved to anoth
   assert.equal(publishAtWriteRefusal("v", { privacyStatus: "private", publishAt: "2026-10-14T12:00:00Z" }, { publishAt: "2026-10-16T12:00:00Z" }, NOW), null);
 });
 
-test("a video without a date is unaffected by this rule (the patch schema already requires private)", () => {
+test("a private video without a date can get a future one; a patch without publishAt is not this rule's business", () => {
   assert.equal(publishAtWriteRefusal("v", { privacyStatus: "private", publishAt: null }, { publishAt: "2026-10-16T12:00:00Z" }, NOW), null);
   assert.equal(publishAtWriteRefusal("v", { privacyStatus: "public", publishAt: null }, {}, NOW), null, "no publishAt in the patch");
+});
+
+// Independent review S2 (2026-10-13): the rule applies to every publishAt write, a public video is refused even without a date (the
+// patch would make it private again), and both times need a 15-minute margin -- inside it YouTube may publish the video between our
+// read and the write, which would then take it back to private.
+test("review S2: a public video is refused even without a date; an undated private video still needs a future time", () => {
+  assert.equal(publishAtWriteRefusal("v", { privacyStatus: "public", publishAt: null }, { publishAt: "2026-10-16T12:00:00Z" }, NOW)?.code, "publish_at_already_published");
+  assert.equal(publishAtWriteRefusal("v", { privacyStatus: "private", publishAt: null }, { publishAt: "2026-10-12T12:00:00Z" }, NOW)?.code, "validation_failed");
+});
+
+test("review S2: the 15-minute margin -- a current time 14 minutes ahead is too close; a new time 15 minutes ahead is too close, 16 is fine", () => {
+  assert.equal(publishAtWriteRefusal("v", { privacyStatus: "private", publishAt: "2026-10-13T12:14:00Z" }, { publishAt: "2026-10-16T12:00:00Z" }, NOW)?.code, "publish_at_already_published");
+  assert.equal(publishAtWriteRefusal("v", { privacyStatus: "private", publishAt: null }, { publishAt: "2026-10-13T12:15:00Z" }, NOW)?.code, "validation_failed");
+  assert.equal(publishAtWriteRefusal("v", { privacyStatus: "private", publishAt: null }, { publishAt: "2026-10-13T12:16:00Z" }, NOW), null);
 });
 
 test("refused: the current date has passed, the video is not private, or the new date is not ahead", () => {

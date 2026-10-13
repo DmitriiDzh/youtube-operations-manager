@@ -1,4 +1,4 @@
-import { buildPublishingCalendar, PUBLISHING_REMINDER_DAYS, type CalendarEntry, type CalendarSourceVideo, type PublishingCoverage } from "./calendar";
+import { buildPublishingCalendar, currentRows, PUBLISHING_REMINDER_DAYS, type CalendarEntry, type CalendarSourceVideo, type PublishingCoverage } from "./calendar";
 
 // BL-182 stage 1: the calendar and the reminder read from the local copy of the channel's videos -- never a YouTube call. The data
 // age (`lastSyncedAt`) always comes with them, so a stale copy is never shown as current (FO-REQ-0023 §4 C3, D4).
@@ -40,7 +40,7 @@ export function createPublishingCalendarReads(deps: PublishingCalendarDeps) {
   return {
     async getCalendar(input: { channelId: string }): Promise<PublishingCalendarResult> {
       const [videos, channel] = await Promise.all([deps.listVideos(input.channelId), deps.getChannel(input.channelId)]);
-      const { entries, coverage } = buildPublishingCalendar(videos, deps.clock.now(), threshold);
+      const { entries, coverage } = buildPublishingCalendar(currentRows(videos, channel?.lastSyncedAt?.getTime() ?? null), deps.clock.now(), threshold);
       return { channelId: input.channelId, lastSyncedAt: channel?.lastSyncedAt?.toISOString() ?? null, entries, coverage };
     },
     /**
@@ -82,7 +82,7 @@ export function createPublishingCalendarReads(deps: PublishingCalendarDeps) {
     async getAlert(input: { channelId: string }): Promise<PublishingAlert | null> {
       const channel = await deps.getChannel(input.channelId);
       if (!channel?.lastSyncedAt) return null;
-      const { coverage } = buildPublishingCalendar(await deps.listVideos(input.channelId), deps.clock.now(), threshold);
+      const { coverage } = buildPublishingCalendar(currentRows(await deps.listVideos(input.channelId), channel.lastSyncedAt.getTime()), deps.clock.now(), threshold);
       return { channelId: input.channelId, lastSyncedAt: channel.lastSyncedAt.toISOString(), ...coverage };
     },
   };

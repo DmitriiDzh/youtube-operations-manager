@@ -2,7 +2,15 @@
 
 - **Status:** APPROVED 2026-10-13 (owner, Telegram msg 2707, "да для всего": the order in §7.1, rescheduling while private, the
   AI-use fix). **Stage 0 (G1) DONE 2026-10-13: uploads are NOT locked** (§2 stage 0, result). **Stage 1 BUILT** on
-  `feature/bl-182-publishing` (ARCHITECTURE §47.2), not merged yet; stages 0 and 1 merge together on the owner's yes.
+  `feature/bl-182-publishing` (ARCHITECTURE §47.2), reviewed (findings fixed), not merged yet; stages 0 and 1 merge together on the
+  owner's yes.
+- **Stage 1 deviations:**
+  - The tool is named `agent_get_publishing_calendar` (agent prefix and capability check), not `channel_publishing_calendar`.
+  - The refresh of other channels is a full channel sync (about 7 units), not a targeted read.
+  - The threshold is a constant (7), not yet a setting.
+  - There is no "both channels" view and no separate 14-day list.
+  - Rescheduling needs both times more than 15 minutes ahead.
+  - Any status write from Details sends "AI use" explicitly (it cannot be read).
 - **The owner's go:** for this work, msg 2698 ("check the Operator's new messages"); for the G1 test, msg 2702 (one private test
   upload, then its deletion). The Operator's quotes of 1110 / 1114 are the Operator's record, not the authorisation here.
 - **Request:** FO-REQ-0023 (Operator, 2026-10-12; owner instruction 1110, answers 1114), relayed by the owner on 2026-10-13

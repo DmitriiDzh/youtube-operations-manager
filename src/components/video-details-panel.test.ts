@@ -97,3 +97,21 @@ test("buildPatch converts an edited publishAt back to the correct UTC wire value
     assert.equal(patch.privacyStatus, "private");
   });
 });
+
+// BL-182 review S1 (G1, 2026-10-13: YouTube sets "AI use" -- status.containsSyntheticMedia -- but returns null on read; videos.update
+// replaces the whole status part it is sent). So with the value unreadable, a status write must send it explicitly, as the form
+// shows it; an unreadable value starts checked (the owner sets it on every upload); a snippet-only write leaves the status part alone.
+test("BL-182: rescheduling a video whose AI-use mark is unreadable sends it explicitly (checked by default) with private + the new date", () => {
+  withTimezone("UTC", () => {
+    const snapshot = baseSnapshot({ privacyStatus: "private", publishAt: "2099-10-14T12:00:00Z", containsSyntheticMedia: null });
+    const form = { ...toFormValues(snapshot), publishAt: "16.10.2099 12:00" };
+    assert.equal(form.containsSyntheticMedia, true);
+    assert.deepEqual(buildPatch(form, snapshot), { privacyStatus: "private", publishAt: "2099-10-16T12:00:00.000Z", containsSyntheticMedia: true });
+  });
+});
+
+test("BL-182: a snippet-only edit with the mark unreadable does not touch it; unchecking it sends false", () => {
+  const snapshot = baseSnapshot({ containsSyntheticMedia: null });
+  assert.deepEqual(buildPatch({ ...toFormValues(snapshot), title: "New" }, snapshot), { title: "New" });
+  assert.deepEqual(buildPatch({ ...toFormValues(snapshot), containsSyntheticMedia: false }, snapshot), { containsSyntheticMedia: false });
+});

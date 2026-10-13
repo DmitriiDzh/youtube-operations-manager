@@ -3491,6 +3491,49 @@ test("BL-181: MCP agent_get_reporting_traffic_sources forwards the range and the
   assert.equal(capture.input, undefined);
 });
 
+// BL-182 stage 1: the publishing calendar read -- the resolved credentialRef and the channel go to the core (which checks the active
+// channel); an unknown input field never reaches it.
+test("BL-182: MCP agent_get_publishing_calendar forwards the resolved credentialRef; an unknown field is refused before the core", async () => {
+  const capture: { input?: unknown } = {};
+  const answer = { channelId: "UC_1", lastSyncedAt: null, window: { from: "2026-09-29", to: "2026-10-27" }, entries: [], unscheduled: [], gapDates: [] };
+  const calendarStub = {
+    async getAgentCalendar(input: { credentialRef: unknown; channelId: string }) {
+      capture.input = input;
+      return answer as never;
+    },
+  };
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    makeReachCoreStub({}),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    calendarStub
+  );
+  const result = await handlers.agentGetPublishingCalendar({ channelId: "UC_1" });
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(capture.input, { channelId: "UC_1", credentialRef: { userId: "active-user" } });
+  capture.input = undefined;
+  const bad = await handlers.agentGetPublishingCalendar({ channelId: "UC_1", upload: true });
+  assert.equal(bad.isError, true);
+  assert.equal(capture.input, undefined);
+});
+
 test("BL-118: MCP agent_query_channel_breakdown forwards the resolved credentialRef, labels every row, and says the read is live", async () => {
   const capture: { input?: unknown } = {};
   const breakdownStub = {

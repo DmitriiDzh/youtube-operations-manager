@@ -2,9 +2,10 @@ import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { createChannelAccessCore } from "@/lib/channel-access";
-import { listChannelConnections } from "@/lib/channel-fanout";
+import { createBackgroundFailureBackoff, credentialUserIdFor, errorCodeOf, listChannelConnections, type BackgroundFailureBackoff } from "@/lib/channel-fanout";
 import { createChannelSyncCore } from "@/lib/channel-sync";
 import { createChannelVideoStoreAdapter } from "@/lib/channel-video-store";
+import { getOperationRegistry, isOperationAlreadyRunning, runTrackedOperation } from "@/lib/operation-progress";
 
 /** A channel's videos are refreshed for the calendar and the reminder when its last sync is older than this. */
 export const PUBLISHING_REFRESH_AFTER_MS = 6 * 3_600_000;
@@ -14,11 +15,20 @@ export type RefreshStaleDeps = {
   activeChannelId: (userId: string) => Promise<string | null>;
   connections: () => Promise<Array<{ channelId: string; connectedUserId: string | null }>>;
   lastSyncedAt: (channelId: string) => Promise<Date | null>;
+  /** The channel's own user must have that channel selected (the BL-141 rule): otherwise it is not synced with that token. */
+  assertActiveChannel: (args: { userId: string; channelId: string }) => Promise<void>;
+  /** Runs the sync as the shared `channel-sync` operation: refused (409) while the owner's own sync of that channel runs. */
   sync: (input: { userId: string; channelId: string }) => Promise<void>;
+  /** The shared background backoff (channel-fanout): a channel whose refresh failed waits 6 h instead of retrying on every load. */
+  backoff: BackgroundFailureBackoff;
   clock: { now(): Date };
   /** In-process single flight (a reload or a second tab while a refresh still runs does nothing). */
   flag: { running: boolean };
 };
+
+const processBackoff: BackgroundFailureBackoff = ((globalThis as unknown as Record<symbol, BackgroundFailureBackoff | undefined>)[
+  Symbol.for("youtube-operations-manager.publishing-refresh-backoff")
+] ??= createBackgroundFailureBackoff());
 
 const processFlag: { running: boolean } = ((globalThis as unknown as Record<symbol, { running: boolean } | undefined>)[
   Symbol.for("youtube-operations-manager.publishing-refresh-stale")
@@ -37,9 +47,20 @@ export function createRefreshStaleHandler(
     activeChannelId: (userId) => createChannelAccessCore().getActiveChannelId(userId),
     connections: () => listChannelConnections(),
     lastSyncedAt: async (channelId) => (await createChannelVideoStoreAdapter().getChannel(channelId))?.lastSyncedAt ?? null,
-    sync: async ({ userId, channelId }) => {
-      await createChannelSyncCore().syncChannel({ credentialRef: { userId }, channelId });
+    assertActiveChannel: async (args) => {
+      await createChannelAccessCore().assertActiveChannel(args);
     },
+    sync: async ({ userId, channelId }) => {
+      await runTrackedOperation({
+        registry: getOperationRegistry(),
+        kind: "channel-sync",
+        channelId,
+        title: "Syncing the channel from YouTube",
+        cancellable: false,
+        work: (progress) => createChannelSyncCore().syncChannel({ credentialRef: { userId }, channelId }, { progress }),
+      });
+    },
+    backoff: processBackoff,
     clock: { now: () => new Date() },
     flag: processFlag,
   }
@@ -55,14 +76,24 @@ export function createRefreshStaleHandler(
     try {
       const [activeChannelId, connections] = await Promise.all([deps.activeChannelId(sessionUserId), deps.connections()]);
       for (const connection of connections) {
-        if (connection.channelId === activeChannelId || !connection.connectedUserId) continue;
+        if (connection.channelId === activeChannelId) continue;
+        // The shared rule (channel-fanout): a background channel uses its own connected user, never the session's.
+        const userId = credentialUserIdFor(connection, { activeChannelId, sessionUserId });
+        if (!userId || deps.backoff.blocking(connection.channelId)) continue;
         const last = await deps.lastSyncedAt(connection.channelId);
         if (last && deps.clock.now().getTime() - last.getTime() <= PUBLISHING_REFRESH_AFTER_MS) continue;
         try {
-          await deps.sync({ userId: connection.connectedUserId, channelId: connection.channelId });
+          await deps.assertActiveChannel({ userId, channelId: connection.channelId });
+          await deps.sync({ userId, channelId: connection.channelId });
+          deps.backoff.recordSuccess(connection.channelId);
           refreshed.push(connection.channelId);
         } catch (error) {
-          // One channel failing never stops the others (AGENTS.md §M); its bell entry keeps showing the data age.
+          // The owner's own sync of that channel is running: it refreshes the copy anyway; nothing to hold back.
+          if (isOperationAlreadyRunning(error)) continue;
+          // One channel failing never stops the others (AGENTS.md §M); it waits 6 h (the shared backoff) and its bell entry keeps
+          // showing the data age.
+          const reason = errorCodeOf(error) ?? (error instanceof Error ? error.message : String(error));
+          deps.backoff.recordFailure(connection.channelId, reason);
           failed.push({ channelId: connection.channelId, error: error instanceof Error ? error.message : String(error) });
         }
       }

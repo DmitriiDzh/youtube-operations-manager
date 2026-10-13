@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildPublishingCalendar, classifyCalendarVideo, type CalendarSourceVideo } from "./calendar";
+import { buildPublishingCalendar, classifyCalendarVideo, currentRows, type CalendarSourceVideo } from "./calendar";
 
 // BL-182 stage 1 (FO-REQ-0023 §4 C and D; PUBLISHING_PLAN.md §2 stage 1). Requirements:
 // - YouTube has no "scheduled" status: a scheduled video is non-public with a future `status.publishAt` (YouTube Data API videos
@@ -80,4 +80,16 @@ test("entries come in time order, the ones without a date last", () => {
     NOW
   );
   assert.deepEqual(entries.map((entry) => entry.videoId), ["p", "s1", "s2", "u"]);
+});
+
+// Review S5: a row the latest channel sync did not return (deleted or replaced in Studio) must not keep the channel "covered".
+test("rows the latest sync did not return are left out; without a channel sync time every row stays", () => {
+  const synced = Date.parse("2026-10-13T10:00:00Z");
+  const rows = [
+    v({ videoId: "kept", publishAt: "2026-10-20T12:00:00Z", syncedAtMs: synced }),
+    v({ videoId: "deleted", publishAt: "2026-10-30T12:00:00Z", syncedAtMs: synced - 3_600_000 }),
+  ];
+  assert.deepEqual(currentRows(rows, synced).map((row) => row.videoId), ["kept"]);
+  assert.equal(buildPublishingCalendar(currentRows(rows, synced), NOW).coverage.coveredThrough, "2026-10-20T12:00:00Z");
+  assert.deepEqual(currentRows(rows, null).map((row) => row.videoId), ["kept", "deleted"]);
 });

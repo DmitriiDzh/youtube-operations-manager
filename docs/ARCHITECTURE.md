@@ -3882,10 +3882,19 @@ Plan: `docs/roadmap/plans/PUBLISHING_PLAN.md`. Owner: msgs 2698, 2702 and 2707.
   - Each video is one of: published (public or unlisted), scheduled, overdue (the date has passed but the copy is not public yet)
     or unscheduled (private without a date). Live broadcasts are left out.
   - The coverage is the latest future `publishAt`. The reminder is due when that is less than 7 days away, or when there is none.
+  - The shared rule `isScheduledVideo` (`shared-formatting`) also drives «Видео».
+  - Rows the latest channel sync did not return are left out (`currentRows`: row sync time older than the channel's). The sync
+    never deletes rows, so a video deleted in Studio would otherwise keep the channel "covered".
 - **Routes.** `GET /api/channels/[id]/publishing/calendar` (the active channel) and `GET /api/publishing-alerts` (every connected
   channel; a channel never synced gives no alert) are local reads.
   - `POST /api/publishing/refresh-stale` runs once per dashboard load. It syncs each other channel whose copy is older than 6 h,
-    with that channel's own user. The active channel is already synced on every load.
+    with the shared fan-out rules (`channel-fanout`):
+    - the channel's own user (`credentialUserIdFor`), after `assertActiveChannel` for that user;
+    - the shared 6 h backoff after a failure;
+    - as the tracked `channel-sync` operation, so it never runs beside the owner's own sync of that channel (409 is skipped).
+
+    It is a full channel sync (about 7 units for ~110 videos), not a targeted read. The active channel is already synced on every
+    load.
   - The 60 s poll never calls YouTube.
 - **UI.**
   - **Content → «Календарь»** (`publishing-calendar.tsx`, `publishing-calendar-grid.ts`):
@@ -3896,9 +3905,15 @@ Plan: `docs/roadmap/plans/PUBLISHING_PLAN.md`. Owner: msgs 2698, 2702 and 2707.
   - **«Видео»** shows «Запланировано», and has a filter for it.
   - **Badge and bell.** The «Контент» badge shows the days missing to a week of coverage. The other channels' reminders are in
     the bell's «Публикации» section. These form one family with the BL-178 translation alerts.
-- **Rescheduling** (owner msg 2707). `video-details/publish-at-rule.ts` is one rule for the preview and the write: `publishAt` may
-  change while the video is private and its current date is still ahead, and the new date must be in the future. A public
-  video, or one whose date has passed, keeps `publish_at_already_published`.
+- **Rescheduling** (owner msg 2707). `video-details/publish-at-rule.ts` is one rule for the preview, the write and the card's field.
+  `publishAt` may be written only on a private video. A date it already has must be more than 15 minutes ahead, and so must the
+  new date: inside that margin YouTube may publish between the read and the write, and the write would take the video back to
+  private. A public or unlisted video is refused even without a date.
+  - The read-back and the verification compare instants as instants (`sameFieldValue`). YouTube echoes `...:00Z` for a written
+    `...:00.000Z`; before the review this real write was reported as a failure.
+  - "AI use" (`containsSyntheticMedia`) cannot be read (G1), and `videos.update` replaces the status part. So any status write from
+    the card sends it explicitly: an unreadable value starts checked, and the card says why. Its read-back is "unverifiable"
+    (recorded in the VERIFICATION audit), not a mismatch.
 - **`agent_get_publishing_calendar`** (READ; Agent API 3.16.0, Producer API 1.7.0): a ±14-day window in UTC days, plus the undated
   uploads, the coverage and the gap dates. Agents get no upload or schedule tool.
 
@@ -3906,3 +3921,7 @@ Plan: `docs/roadmap/plans/PUBLISHING_PLAN.md`. Owner: msgs 2698, 2702 and 2707.
 
 - Stage 2: release packages, upload and schedule, per-channel publishing defaults, the AI-use decision.
 - Stage 3: Batches → History.
+- Deferred from stage 1 (FO-REQ-0023 C1 and D1):
+  - the reminder threshold is the constant 7 (`PUBLISHING_REMINDER_DAYS`), not yet a setting;
+  - the calendar shows the active channel's month, with no "both channels" view and no separate "next 14 days" list. The gaps of
+    the next 2 weeks are marked on the grid; at month end, part of them is on the next month's page.

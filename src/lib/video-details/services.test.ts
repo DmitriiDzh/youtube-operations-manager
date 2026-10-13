@@ -6,8 +6,10 @@
 //
 // AC-SVC-01: previewFieldsUpdate never calls backup/audit-of-a-write/writeContext -- it is
 //   read-only, and records only a DRY_RUN audit event.
-// AC-SVC-02: previewFieldsUpdate rejects a publishAt patch when the video already has one,
-//   before computing any diff.
+// AC-SVC-02: previewFieldsUpdate rejects a publishAt patch when the video already has one whose time has passed (or that is not
+//   private), before computing any diff. Requirement changed 2026-10-13 (BL-182, owner msg 2707: "rescheduling while private: yes"):
+//   a private video whose current time is still ahead may get a new future time (AC-SVC-02b); the old blanket refusal was the old
+//   requirement, not a property of YouTube's API.
 // AC-SVC-03: applyFieldsUpdate calls, in order: writeContext.assertWriteChannel (identity) ->
 //   backup infra health -> getSnapshot (before) -> captureBackup -> applyPatch (the write) ->
 //   localCache.refreshVideoFields -- a wrong-channel guardrail failure means NONE of the later
@@ -174,7 +176,7 @@ test("AC-SVC-01: previewFieldsUpdate is read-only -- no backup/write-identity ca
   assert.deepEqual(calls.auditEvents, ["DRY_RUN"]);
 });
 
-test("AC-SVC-02: previewFieldsUpdate rejects publishAt when the video already has one", async () => {
+test("AC-SVC-02: previewFieldsUpdate rejects publishAt when the video's current time has passed", async () => {
   const { deps } = makeDeps({
     youtubeApi: { getSnapshot: async () => makeSnapshot({ publishAt: "2026-01-01T00:00:00Z" }) },
   });
@@ -437,4 +439,53 @@ test("defaultAudioLanguage patch: YouTube silently ignoring it (read-back unchan
     () => createVideoDetailsServices(deps).applyFieldsUpdate(baseInput({ defaultAudioLanguage: "ja" })),
     (error: unknown) => error instanceof DomainError && error.code === "update_failed"
   );
+});
+
+// AC-SVC-02b (BL-182 stage 1, owner msg 2707; independent review B1/S3): a private video scheduled more than 15 minutes ahead gets a
+// new future time. The write sends privacyStatus private + publishAt, and verification accepts YouTube's own echo of the instant
+// (`...:00Z` for a written `...:00.000Z`) -- before the fix this real write was reported as a failure.
+test("AC-SVC-02b: rescheduling a private video: preview allowed, the write is verified against YouTube's own instant format", async () => {
+  const day = 86_400_000;
+  const current = new Date(Date.now() + 2 * day).toISOString().replace(".000Z", "Z").replace(/\.\d{3}Z$/, "Z");
+  const nextWritten = new Date(Math.floor((Date.now() + 4 * day) / 1000) * 1000).toISOString(); // "...:ss.000Z", as parseDisplayDateTime sends
+  const nextEchoed = nextWritten.replace(".000Z", "Z");
+  const scheduled = makeSnapshot({ privacyStatus: "private", publishAt: current, containsSyntheticMedia: null });
+  const sent: unknown[] = [];
+  const { deps, calls } = makeDeps({
+    youtubeApi: {
+      getSnapshot: async () => scheduled,
+      applyPatch: async ({ patch }) => {
+        sent.push(patch);
+        // YouTube echoes the instant without milliseconds and never returns containsSyntheticMedia.
+        return { before: scheduled, after: { ...scheduled, privacyStatus: "private", publishAt: nextEchoed, containsSyntheticMedia: null } };
+      },
+    },
+  });
+  const services = createVideoDetailsServices(deps);
+  const patch = { privacyStatus: "private", publishAt: nextWritten, containsSyntheticMedia: true };
+
+  const preview = await services.previewFieldsUpdate(baseInput(patch));
+  assert.ok(preview.diff.some((entry: { field: string }) => entry.field === "publishAt"));
+
+  await services.applyFieldsUpdate(baseInput(patch));
+  assert.deepEqual(sent, [patch]);
+  assert.equal(calls.refreshVideoFields.length, 1, "verified: the local copy takes the new date");
+});
+
+test("AC-SVC-02c: refused -- a public video, a current time within 15 minutes, a new time in the past", async () => {
+  const soon = new Date(Date.now() + 5 * 60_000).toISOString();
+  const later = new Date(Date.now() + 3 * 86_400_000).toISOString();
+  const cases: Array<[Partial<VideoDetailsSnapshot>, string, string]> = [
+    [{ privacyStatus: "public", publishAt: null }, later, "publish_at_already_published"],
+    [{ privacyStatus: "private", publishAt: soon }, later, "publish_at_already_published"],
+    [{ privacyStatus: "private", publishAt: null }, new Date(Date.now() - 60_000).toISOString(), "validation_failed"],
+  ];
+  for (const [snapshot, next, code] of cases) {
+    const { deps } = makeDeps({ youtubeApi: { getSnapshot: async () => makeSnapshot(snapshot) } });
+    await assert.rejects(
+      () => createVideoDetailsServices(deps).previewFieldsUpdate(baseInput({ privacyStatus: "private", publishAt: next })),
+      (error: unknown) => error instanceof DomainError && error.code === code,
+      JSON.stringify(snapshot)
+    );
+  }
 });

@@ -134,6 +134,16 @@ export function resolvePublishDate(video: {
 }
 
 /**
+ * BL-182: YouTube has no "scheduled" status -- a scheduled video is a non-public one with a future `status.publishAt` (videos
+ * reference). The one rule for the «Видео» table and the publishing calendar.
+ */
+export function isScheduledVideo(video: { privacyStatus: string; publishAt: string | null }, nowMs: number = Date.now()): boolean {
+  if (video.privacyStatus === "public" || !video.publishAt) return false;
+  const at = Date.parse(video.publishAt);
+  return !Number.isNaN(at) && at > nowMs;
+}
+
+/**
  * Renders a timestamp as "DD.MM.YYYY HH:MM" (24-hour) in an explicit IANA time zone (e.g. the operator's
  * configured Analytics timezone), in the same fixed format as `formatDisplayDateTime` regardless of the
  * viewer's locale. An unknown/invalid zone falls back to the viewer's local time.

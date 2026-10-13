@@ -2,7 +2,7 @@
 
 import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { formatDisplayDate, formatDisplayDateTime, resolvePublishDate } from "@/lib/shared-formatting";
+import { formatDisplayDate, formatDisplayDateTime, isScheduledVideo, resolvePublishDate } from "@/lib/shared-formatting";
 import type { UiTextKey } from "@/lib/ui-text";
 import { useUiText } from "./ui-text-provider";
 import { postChannelSync } from "./channel-sync-client";
@@ -42,13 +42,8 @@ export type SyncedVideo = {
 
 type PrivacyFilter = "all" | "public" | "unlisted" | "private" | "scheduled";
 
-/**
- * BL-182 (PUBLISHING_PLAN.md §2 stage 1): YouTube has no "scheduled" status -- a scheduled video is a non-public one with a future
- * `publishAt`. Shown and filtered as «Запланировано» (as Studio does), so it is no longer mistaken for a plain private video.
- */
-function isScheduled(video: { privacyStatus: string; publishAt: string | null }, now: number = Date.now()): boolean {
-  return video.privacyStatus !== "public" && video.publishAt !== null && Date.parse(video.publishAt) > now;
-}
+/** BL-182 (PUBLISHING_PLAN.md §2 stage 1): «Запланировано» is shown and filtered as Studio does (the shared rule). */
+const isScheduled = (video: { privacyStatus: string; publishAt: string | null }) => isScheduledVideo(video);
 
 function accessFilterOf(video: { privacyStatus: string; publishAt: string | null }): Exclude<PrivacyFilter, "all"> {
   return isScheduled(video) ? "scheduled" : (video.privacyStatus as Exclude<PrivacyFilter, "all">);

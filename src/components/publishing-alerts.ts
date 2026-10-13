@@ -1,4 +1,4 @@
-import { formatDisplayDate } from "@/lib/shared-formatting";
+import { formatDisplayDate, formatDisplayDateTime } from "@/lib/shared-formatting";
 import type { Translate } from "@/lib/ui-text";
 import type { ChannelWorkEntry } from "./channel-work";
 
@@ -20,7 +20,8 @@ export type PublishingAlertChannel = {
 export const CALENDAR_HREF = "/content/calendar";
 
 function coverageText(t: Translate, alert: PublishingAlertChannel): string {
-  const age = alert.lastSyncedAt ? formatDisplayDate(alert.lastSyncedAt) : "—";
+  // Date and time (review): "data from 13.10.2026" would hide an 18-hour-old copy.
+  const age = alert.lastSyncedAt ? formatDisplayDateTime(alert.lastSyncedAt) : "—";
   return alert.coveredThrough
     ? t("publishingAlerts.coveredThrough", { date: formatDisplayDate(alert.coveredThrough), days: alert.daysCovered, age })
     : t("publishingAlerts.nothingScheduled", { age });
