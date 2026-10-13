@@ -42,6 +42,8 @@ export type ScannedPackage = {
   youtube: { videoId: string; privacyStatus: string | null; publishAt: string | null } | null;
   /** The parsed manifest, for the approval screen (null when it is not a valid one). */
   pkg: ReleasePackage | null;
+  /** The manifest file's SHA-256: an approval names it, so a package changed after the owner saw it is refused. */
+  manifestSha256: string | null;
 };
 
 export type PackageScanResult =
@@ -60,6 +62,7 @@ export type PackageScanDeps = {
   resolveFile(workspace: string, relativePath: string): Promise<{ path: string; bytes: number } | null>;
   readText(absolutePath: string, maxBytes: number): Promise<string>;
   readHead(absolutePath: string, bytes: number): Promise<Uint8Array>;
+  sha256(absolutePath: string): Promise<string>;
   /** ffprobe's duration in seconds; null when the file cannot be read as a video; "no_ffprobe" when ffprobe is not installed. */
   probeDuration(absolutePath: string, bytes: number): Promise<number | null | "no_ffprobe">;
   channel(channelId: string): Promise<ChannelExpectations>;
@@ -105,7 +108,21 @@ export function createPackageScan(deps: PackageScanDeps) {
     const manifest = await deps.resolveFile(workspace, manifestPath);
     if (!manifest) return null;
     const folder = manifestPath.slice(0, manifestPath.lastIndexOf("/"));
-    const base: ScannedPackage = { manifestPath, folder, video: null, title: null, plannedPublishDate: null, thumbnailPath: null, sizeBytes: null, durationSeconds: null, state: "not_ready", problems: [], youtube: null, pkg: null };
+    const base: ScannedPackage = {
+      manifestPath,
+      folder,
+      video: null,
+      title: null,
+      plannedPublishDate: null,
+      thumbnailPath: null,
+      sizeBytes: null,
+      durationSeconds: null,
+      state: "not_ready",
+      problems: [],
+      youtube: null,
+      pkg: null,
+      manifestSha256: await deps.sha256(manifest.path).catch(() => null),
+    };
     let raw: unknown;
     try {
       raw = await readJson(manifest.path);

@@ -33,3 +33,9 @@ export type GuardVerdict =
   | { decision: "allow"; estimatedUnits: number; remainingUnits: number; fitVideos: number }
   | { decision: "insufficient"; estimatedUnits: number; remainingUnits: number; fitVideos: number; resetsAt: string | null }
   | { decision: "unknown"; estimatedUnits: number; cloudConnected: boolean };
+
+/** The verdict for a number of units rather than of written videos (BL-182 uploads). */
+export type UnitsVerdict =
+  | { decision: "allow"; estimatedUnits: number; remainingUnits: number }
+  | { decision: "insufficient"; estimatedUnits: number; remainingUnits: number; resetsAt: string | null }
+  | { decision: "unknown"; estimatedUnits: number; cloudConnected: boolean };

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { backgroundReadAllowed, evaluateWriteRun, remainingWriteUnits, videosThatFit } from "./guard";
+import { backgroundReadAllowed, evaluateUnits, evaluateWriteRun, remainingWriteUnits, videosThatFit } from "./guard";
 import { QUOTA_SAFETY_MARGIN_UNITS, UNITS_PER_WRITTEN_VIDEO, type QuotaSnapshot } from "./contracts";
 
 // Hand-computed from the requirement: a written video costs 1 (fresh list) + 50 (update) + 1 (read-back) = 52 units;
@@ -78,4 +78,14 @@ test("background reads: allowed while at least the reserve percent of the limit 
   assert.equal(backgroundReadAllowed(known(10000, 8001, 0), 0), true); // reserve 0 never blocks
   assert.equal(backgroundReadAllowed(known(10000, 7000, 1500), 20), false); // 1500 left after local lag
   assert.equal(backgroundReadAllowed({ known: false, cloudConnected: false }, 90), true);
+});
+
+// BL-182 stage 2: a run measured in units (an upload's thumbnail, playlist item and reads) follows the same rule -- equal to what
+// is left is allowed, one unit over is not; an unknown quota is "unknown", never a silent yes or no.
+test("evaluateUnits: equal to what is left is allowed, one over is not, unknown stays unknown", () => {
+  // 10 000 - 9 000 used - 300 recent - 100 margin = 600 left.
+  const snapshot = { known: true as const, limit: 10_000, used: 9_000, recentLocalUnits: 300, resetsAt: "2026-10-14T07:00:00Z" };
+  assert.deepEqual(evaluateUnits(600, snapshot), { decision: "allow", estimatedUnits: 600, remainingUnits: 600 });
+  assert.deepEqual(evaluateUnits(601, snapshot), { decision: "insufficient", estimatedUnits: 601, remainingUnits: 600, resetsAt: "2026-10-14T07:00:00Z" });
+  assert.deepEqual(evaluateUnits(10, { known: false, cloudConnected: false }), { decision: "unknown", estimatedUnits: 10, cloudConnected: false });
 });

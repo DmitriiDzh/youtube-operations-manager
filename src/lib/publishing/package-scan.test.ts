@@ -65,6 +65,7 @@ function deps(files: Record<string, FakeFile>, extra: Partial<PackageScanDeps> =
     },
     readText: async (abs) => all.get(abs)?.text ?? "",
     readHead: async (abs) => all.get(abs)?.head ?? new Uint8Array(),
+    sha256: async (abs) => `sha:${abs.split("/").pop()}`,
     probeDuration: async () => 7200.2,
     channel: async () => ({ channelId: "UC_t", defaultLanguage: "en", defaultAudioLanguage: "en" }),
     videos: async () => [],
@@ -89,6 +90,7 @@ test("finds the packages in the factory's layout, by planned date then number; o
   assert.deepEqual(result.packages.map((p) => [p.video, p.state]), [["V64", "ready"], ["V65", "ready"], ["V66", "ready"]]);
   assert.equal(result.packages[1].manifestPath, "04 Videos/10 October/1024 V65/V65_release.json");
   assert.equal(result.packages[1].thumbnailPath, "04 Videos/10 October/1024 V65/Thumbnail_V65_A.jpg");
+  assert.equal(result.packages[1].manifestSha256, "sha:V65_release.json", "the manifest's own hash, for the approval");
 });
 
 test("a package deeper than the factory's layout or behind a symlinked folder is not scanned", async () => {

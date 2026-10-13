@@ -193,6 +193,7 @@ function createPackageScanReads() {
     },
     readText: (absolutePath, maxBytes) => files.readText(absolutePath, maxBytes),
     readHead: (absolutePath, length) => files.readHead(absolutePath, length),
+    sha256: (absolutePath) => sha256OfFile(absolutePath),
     async probeDuration(absolutePath, bytes) {
       const key = `${absolutePath}|${bytes}`;
       if (probeCache.has(key)) return probeCache.get(key) ?? null;
@@ -235,6 +236,17 @@ export type { G1DeleteReport, G1ProbeRecord, G1UploadReport } from "./contracts"
 export type { CalendarEntry, CalendarEntryKind, PublishingCoverage } from "./calendar";
 export type { AgentPublishingCalendar, PublishingAlert, PublishingCalendarResult } from "./calendar-reads";
 export { PUBLISHING_REMINDER_DAYS } from "./calendar";
+
+/** A file's SHA-256, read as a stream (the same hash for the scan and for the upload's check that the package did not change). */
+function sha256OfFile(filePath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = createHash("sha256");
+    createReadStream(filePath)
+      .on("data", (chunk) => hash.update(chunk))
+      .on("error", reject)
+      .on("end", () => resolve(hash.digest("hex")));
+  });
+}
 
 /** This computer's id (bootstrap config) and host name, for the upload record; unreadable is "unknown", never a reason to stop. */
 async function thisDevice(): Promise<{ deviceId: string | null; hostname: string | null }> {
@@ -327,14 +339,7 @@ export function createUploadRunnerCore() {
           await handle.close();
         }
       },
-      sha256: (filePath) =>
-        new Promise((resolve, reject) => {
-          const hash = createHash("sha256");
-          createReadStream(filePath)
-            .on("data", (chunk) => hash.update(chunk))
-            .on("error", reject)
-            .on("end", () => resolve(hash.digest("hex")));
-        }),
+      sha256: (filePath) => sha256OfFile(filePath),
       /** Next to the package, inside the workspace (its real folder checked), written whole or not at all. */
       async writeRecord(channelId, relativePath, record) {
         const name = relativePath.slice(relativePath.lastIndexOf("/") + 1);

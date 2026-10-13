@@ -3,6 +3,7 @@ import {
   UNITS_PER_WRITTEN_VIDEO,
   type GuardVerdict,
   type QuotaSnapshot,
+  type UnitsVerdict,
 } from "./contracts";
 
 /** Units left that a write run may spend: limit - used - not-yet-reflected local calls - the safety margin; never negative. */
@@ -28,6 +29,18 @@ export function evaluateWriteRun(videos: number, snapshot: QuotaSnapshot): Guard
   const fitVideos = videosThatFit(remainingUnits);
   if (estimatedUnits <= remainingUnits) return { decision: "allow", estimatedUnits, remainingUnits, fitVideos };
   return { decision: "insufficient", estimatedUnits, remainingUnits, fitVideos, resetsAt: snapshot.resetsAt };
+}
+
+/**
+ * The pre-flight verdict for a write run that needs `units` units of the pool (BL-182: an upload's thumbnail, playlist item,
+ * deferred publish time and its reads). The same rule as `evaluateWriteRun`, for work that is not "one write per video".
+ */
+export function evaluateUnits(units: number, snapshot: QuotaSnapshot): UnitsVerdict {
+  const estimatedUnits = Math.max(0, units);
+  if (!snapshot.known) return { decision: "unknown", estimatedUnits, cloudConnected: snapshot.cloudConnected };
+  const remainingUnits = remainingWriteUnits(snapshot);
+  if (estimatedUnits <= remainingUnits) return { decision: "allow", estimatedUnits, remainingUnits };
+  return { decision: "insufficient", estimatedUnits, remainingUnits, resetsAt: snapshot.resetsAt };
 }
 
 /**
