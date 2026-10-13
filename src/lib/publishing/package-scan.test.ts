@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createPackageScan, type DirEntry, type PackageScanDeps } from "./package-scan";
+import { createPackageScan, type DirEntry, type PackageScanDeps, type ScannedPackage } from "./package-scan";
 
 // BL-182 stage 2 (FO-REQ-0023 §4 A1/A2, §4 B1, §6 question 1). Requirements:
 // - packages are found by scanning `04 Videos/**/V*_release.json` in the channel workspace (the factory's layout is
@@ -110,7 +110,7 @@ test("not ready, with its reasons: a broken manifest, a missing thumbnail, an un
   files["04 Videos/10 October/1022 V63/V63 Tropico Jazz.mp4"] = { bytes: 400 };
   const result = await createPackageScan(deps(files)).scan("UC_t");
   if (result.status !== "ok") return assert.fail(result.status);
-  const byPath = Object.fromEntries(result.packages.map((p) => [p.manifestPath.split("/").pop(), p]));
+  const byPath: Record<string, ScannedPackage> = Object.fromEntries(result.packages.map((p) => [p.manifestPath.split("/").pop(), p]));
   assert.deepEqual(byPath["V61_release.json"].problems.map((p) => p.code), ["invalid_json"]);
   assert.equal(byPath["V61_release.json"].state, "not_ready");
   assert.deepEqual(byPath["V62_release.json"].problems.map((p) => p.code), ["thumbnail_missing"]);

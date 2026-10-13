@@ -7,11 +7,12 @@ import { ContentManager } from "@/components/content-manager";
 import { FeatureErrorBoundary } from "@/components/feature-error-boundary";
 import { LiveStreamPanel } from "@/components/live-stream-panel";
 import { PublishingCalendar } from "@/components/publishing-calendar";
+import { PublishingSettingsPanel } from "@/components/publishing-settings-panel";
 import { CONTENT_TABS } from "@/components/section-tabs";
 import { useT } from "@/components/ui-text-provider";
 
 // BL-149 (docs/roadmap/plans/APP_ROUTES_PLAN.md): the section's own address. BL-176 (LIVE_STREAMS_PLAN.md §3.12): Content has
-// two sub-tabs -- «Видео» (the list it always was) and «Трансляции» (the active channel's live stream). BL-182 adds «Календарь». Both stay mounted once
+// two sub-tabs -- «Видео» (the list it always was) and «Трансляции» (the active channel's live stream). BL-182 adds «Календарь» and «Публикация». Both stay mounted once
 // shown and are only hidden, like the other sections' sub-tabs; both remount when the channel changes.
 export default function ContentLayout({ children }: { children: ReactNode }) {
   const { channel } = useAppChannel();
@@ -41,6 +42,11 @@ export default function ContentLayout({ children }: { children: ReactNode }) {
           <FeatureErrorBoundary label={t("nav.content")}>
             <p className="mb-4 text-sm text-zinc-400">{t("page.content.intro")}</p>
             <ContentManager />
+          </FeatureErrorBoundary>
+        </div>
+        <div className={tab === "publishing" ? undefined : "hidden"}>
+          <FeatureErrorBoundary label={t("tabs.content.publishing")}>
+            <PublishingSettingsPanel channelId={channel?.id ?? null} visible={tab === "publishing"} />
           </FeatureErrorBoundary>
         </div>
         <div className={tab === "calendar" ? undefined : "hidden"}>
