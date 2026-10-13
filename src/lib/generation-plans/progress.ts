@@ -1,4 +1,4 @@
-import { pickTargetOf } from "./contracts";
+import { mediaKindOf, pickTargetOf, type PlanMediaKind } from "./contracts";
 import type {
   GenerationPlan,
   PlanAttempt,
@@ -411,6 +411,23 @@ export function planProgress(
     notices: noticesOf(plan, stages, d, warnings),
     rechecksOpen: open.length,
   };
+}
+
+/**
+ * BL-184 stage 3 (FO-REQ-0024 A): the kinds a plan makes -- each result's audition file by its extension, and each item's template
+ * by what it saves (`templateKinds`: template id -> kind, from the media module). Sorted; empty when nothing is known yet.
+ */
+export function planMediaKinds(plan: Pick<GenerationPlan, "items">, results: ReadonlyArray<Pick<PlanResultRow, "auditionFile">>, templateKinds: Readonly<Record<string, PlanMediaKind | null>>): PlanMediaKind[] {
+  const kinds = new Set<PlanMediaKind>();
+  for (const r of results) {
+    const kind = mediaKindOf(r.auditionFile);
+    if (kind) kinds.add(kind);
+  }
+  for (const item of plan.items) {
+    const kind = item.templateId ? templateKinds[item.templateId] : null;
+    if (kind) kinds.add(kind);
+  }
+  return (["audio", "image", "video"] as const).filter((k) => kinds.has(k));
 }
 
 /** AC-GP3-01: stage complete (its done/accepted count reached the plan's target), budget, plan complete, reviews waiting. */

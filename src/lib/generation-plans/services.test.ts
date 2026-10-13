@@ -523,6 +523,21 @@ test("BL-184: a plan item's storyboard segment goes with every job its run creat
   await assert.rejects(m.services.createPlan({ ...plan, planId: "R-0002-S1-music", items: [{ ...plan.items[0], storyboard: { storyboardId: "bar loop", segmentId: "S1" } }] }), (e: unknown) => (e as { code?: string }).code === "validation_failed" || (e as { code?: string }).code === "plan_invalid");
 });
 
+// BL-184 stage 3 (FO-REQ-0024 A): a plan is listed under Media's kind tabs by what it makes -- its results' files (by extension) and
+// its items' templates (the media module says what each saves); nothing known yet = no kind (it shows under every tab).
+test("BL-184: a plan's media kinds -- from its results' files and its items' templates", async () => {
+  const { planMediaKinds } = await import("./progress");
+  const items = [{ templateId: "tpl-ace" }, { templateId: "tpl-unknown" }, { templateId: null }] as never;
+  assert.deepEqual(planMediaKinds({ items }, [], {}), []);
+  assert.deepEqual(planMediaKinds({ items }, [], { "tpl-ace": "audio" }), ["audio"]);
+  assert.deepEqual(planMediaKinds({ items }, [{ auditionFile: "H-0004/still.png" }, { auditionFile: "loops/a.mp4" }, { auditionFile: null }], { "tpl-ace": "audio" }), ["audio", "image", "video"]);
+  // Through the plans core: the kinds come with the plan's progress.
+  const m = withMedia([running()]);
+  await m.services.createPlan(basePlan());
+  const [listed] = await m.services.listPlans({});
+  assert.deepEqual(listed.progress.mediaKinds, [], "no templates' kinds offered and no results yet");
+});
+
 test("AC-GP-09: until_accepted counts accepted and pending attempts and stops at maxAttempts", async () => {
   const m = withMedia([running()]);
   await m.services.createPlan({ ...basePlan(), items: [{ itemKey: "C2/F1", groupId: "C2", templateId: "tpl-noseed", targetCount: 2, mode: "until_accepted", maxAttempts: 3, params: { prompt: "x" } }] });

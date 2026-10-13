@@ -352,6 +352,11 @@ export type PlanProgress = {
   rechecksOpen: number;
   /** BL-173: every re-check of the plan with its attempt's current file -- in `factory_plan_get` only. */
   rechecks?: PlanRecheckView[];
+  /**
+   * BL-184 stage 3 (FO-REQ-0024 A): what the plan makes -- the kinds of its results' files and of its items' templates. Media's
+   * kind tabs list it under each; empty = not known yet (it shows under every kind). Absent in a report from an older computer.
+   */
+  mediaKinds?: PlanMediaKind[];
 };
 
 export type PlanNotice =

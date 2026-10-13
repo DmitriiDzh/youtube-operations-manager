@@ -63,6 +63,8 @@ export function createGenerationPlansCore() {
       validateJobParams: (input) => createMediaGenerationCore().validateJobParams(input),
       getJobOutputs: async (jobId) => (await createMediaGenerationCore().getJob({ jobId })).outputs.map((o) => ({ kind: o.kind, localPath: o.localPath ?? null, filename: o.filename })),
       createJob: async (input) => ({ jobId: (await createMediaGenerationCore().createJob(input)).jobId }),
+      // BL-184 stage 3: what each template makes, for Media's kind tabs.
+      templateKinds: async () => Object.fromEntries((await createMediaGenerationCore().listWorkflowTemplates()).map((t) => [t.templateId, t.mediaKind])),
     },
   });
 }

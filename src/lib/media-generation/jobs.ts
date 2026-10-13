@@ -15,6 +15,7 @@ import {
   type MediaJobManifest,
   type MediaJobOutput,
   type MediaGpuPlan,
+  type MediaKind,
   type MediaJobInput,
   type MediaJobStatus,
   type MediaModelReference,
@@ -319,6 +320,22 @@ function templateModels(row: StoredTemplateRow): MediaModelReference[] {
   }
 }
 
+/**
+ * BL-184 stage 3 (FO-REQ-0024 A: Media's tabs by kind): what a template makes, from its save nodes' class types -- `SaveVideo` /
+ * `VHS_VideoCombine` / animated output -> video, `SaveAudio` / mp3 / flac -> audio, `SaveImage` -> image. A template that saves a
+ * video and a still (a first/last-frame template's preview) is a video template: video wins, then audio, then image.
+ */
+export function templateMediaKind(graph: Graph, outputIds: readonly string[]): MediaKind | null {
+  const kinds = new Set<MediaKind>();
+  for (const id of outputIds) {
+    const type = graph[id]?.class_type ?? "";
+    if (/video|vhs|webm|mp4|gif|animat/i.test(type)) kinds.add("video");
+    else if (/audio|mp3|flac|wav|ogg/i.test(type)) kinds.add("audio");
+    else if (/image|png|jpe?g|webp/i.test(type)) kinds.add("image");
+  }
+  return kinds.has("video") ? "video" : kinds.has("audio") ? "audio" : kinds.has("image") ? "image" : null;
+}
+
 export function toPublicTemplate(row: StoredTemplateRow): MediaWorkflowTemplate {
   // The graph is parsed only for a row written before schema v55 recorded these two facts.
   const shape =
@@ -342,7 +359,28 @@ export function toPublicTemplate(row: StoredTemplateRow): MediaWorkflowTemplate 
     nodeCount: shape.nodeCount,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
+    mediaKind: cachedMediaKind(row, shape.outputNodeIds),
   };
+}
+
+/**
+ * The graph is parsed for the kind once per template version (review 8: a listing does not parse every graph on every call); a
+ * graph that cannot be read has no kind.
+ */
+const mediaKindCache = new Map<string, MediaKind | null>();
+function cachedMediaKind(row: StoredTemplateRow, outputIds: readonly string[]): MediaKind | null {
+  const key = `${row.id}@${row.version}@${row.updatedAt.getTime()}`;
+  if (!mediaKindCache.has(key)) {
+    let kind: MediaKind | null = null;
+    try {
+      kind = templateMediaKind(JSON.parse(row.workflowJson) as Graph, outputIds);
+    } catch {
+      kind = null;
+    }
+    if (mediaKindCache.size > 500) mediaKindCache.clear();
+    mediaKindCache.set(key, kind);
+  }
+  return mediaKindCache.get(key) ?? null;
 }
 
 export function toPublicJob(row: StoredJobRow): MediaJob {

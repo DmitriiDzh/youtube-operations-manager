@@ -327,7 +327,11 @@ export type MediaWorkflowTemplate = {
   nodeCount: number;
   createdAt: string;
   updatedAt: string;
+  /** BL-184 stage 3: what the template makes, by its save nodes (video before audio before image); null = not recognised. */
+  mediaKind: MediaKind | null;
 };
+
+export type MediaKind = "audio" | "image" | "video";
 
 /** BL-132 (plan §2.5): one audit row as shown in the Web UI and the factory tools. */
 export type MediaControlEventView = { at: string; actor: "owner" | "factory" | "sync"; action: string; subject: string; details: Record<string, unknown> | null };

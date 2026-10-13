@@ -2068,3 +2068,17 @@ test("BL-184: a link the gate lets through is recorded on the job; an untagged t
   assert.deepEqual(await f.services.listJobsByStoryboard("UC1", "other"), []);
   assert.deepEqual(await f.services.listJobsByStoryboard("UC2", "bar-loop"), []);
 });
+
+// BL-184 stage 3 (FO-REQ-0024 A): a template's kind by its save nodes -- the class types of this computer's real templates
+// (read 2026-10-13: ACE music SaveAudio; Wan 2.2 FLF SaveVideo + SaveImage; Qwen edit SaveImage; LTX FLF SaveVideo).
+test("BL-184: a template's media kind -- video before audio before image; nothing recognised is null", async () => {
+  const { templateMediaKind } = await import("./jobs");
+  const graph = (...types: string[]) => Object.fromEntries(types.map((type, i) => [String(i + 1), { class_type: type, inputs: {} }]));
+  const ids = (n: number) => Array.from({ length: n }, (_, i) => String(i + 1));
+  assert.equal(templateMediaKind(graph("SaveAudio"), ids(1)), "audio");
+  assert.equal(templateMediaKind(graph("SaveVideo", "SaveImage"), ids(2)), "video");
+  assert.equal(templateMediaKind(graph("SaveImage"), ids(1)), "image");
+  assert.equal(templateMediaKind(graph("VHS_VideoCombine"), ids(1)), "video");
+  assert.equal(templateMediaKind(graph("PreviewAny"), ids(1)), null);
+  assert.equal(templateMediaKind(graph("SaveImage"), []), null, "only the template's own output nodes count");
+});

@@ -52,11 +52,12 @@ import {
   type PlanTodo,
   type PlanView,
   sharedNotices,
+  type PlanMediaKind,
 } from "./contracts";
 import { createHash } from "node:crypto";
 import type { GenerationPlansReport, SharedClaim, SharedGroupNote, SharedPickAction, SharedPlan, SharedRecheck, SharedVerdict } from "@/lib/sync-gateway";
 import { applyPickAction, coveredRefs, pickFlagsOf, pickStateOf, settledRefs, withdrawPickOnReject, withSentPicks, type PickEvent, type PickOutcome } from "./picks";
-import { inAppAttempts, pickableRefs, planEvents, planProgress, planTodo, reviewBatches, reviewCandidates, secondFloor, type PlanJobRow, type PlanSessionRow } from "./progress";
+import { inAppAttempts, pickableRefs, planEvents, planMediaKinds, planProgress, planTodo, reviewBatches, reviewCandidates, secondFloor, type PlanJobRow, type PlanSessionRow } from "./progress";
 import {
   cloneGroupInputSchema,
   closePlanInputSchema,
@@ -170,6 +171,8 @@ export type PlanMediaPort = {
   validateJobParams(input: { templateId: string; params: Record<string, string | number | boolean>; sessionId?: string }): Promise<{ parameterNames: string[] }>;
   /** The job's output files as recorded by the media core (`localPath` on this device). */
   getJobOutputs(jobId: string): Promise<Array<{ kind: string; localPath: string | null; filename: string }>>;
+  /** BL-184 stage 3: what each workflow template makes (template id -> kind; null = not recognised). */
+  templateKinds?(): Promise<Record<string, PlanMediaKind | null>>;
   createJob(input: {
     sessionId: string;
     channelId: string;
@@ -489,8 +492,19 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
 
   async function view(row: StoredPlan): Promise<PlanView> {
     const plan = toPublicPlan(row);
-    const [jobs, results, sessions, rechecks, picks] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id), deps.store.listSessions(row.id), deps.store.listRechecks(row.id), deps.store.listPicks(row.id)]);
-    return { plan, progress: planProgress(plan, jobs, results, sessions, now(), rechecks, picks) };
+    const [jobs, results, sessions, rechecks, picks, kinds] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id), deps.store.listSessions(row.id), deps.store.listRechecks(row.id), deps.store.listPicks(row.id), templateKinds()]);
+    return { plan, progress: { ...planProgress(plan, jobs, results, sessions, now(), rechecks, picks), mediaKinds: planMediaKinds(plan, results, kinds) } };
+  }
+
+  // BL-184 stage 3: the templates' kinds, read once for a few seconds (a list of plans asks for every plan at once); without the
+  // media module, or when it cannot answer, only the results' files tell a plan's kind.
+  let kindsCache: { at: number; value: Promise<Record<string, PlanMediaKind | null>> } | null = null;
+  function templateKinds(): Promise<Record<string, PlanMediaKind | null>> {
+    const at = now().getTime();
+    if (!kindsCache || at - kindsCache.at > 5_000) {
+      kindsCache = { at, value: (deps.media?.templateKinds?.() ?? Promise.resolve({})).catch(() => ({})) };
+    }
+    return kindsCache.value;
   }
 
   function checkRowsFit(row: StoredPlan, rows: ReportRowInput[]): void {
@@ -2701,7 +2715,8 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
           deps.store.listRechecks(row.id),
           deps.store.listPicks(row.id),
         ]);
-        const progress = planProgress(plan, jobs, results, sessions, now(), rechecks, picks);
+        // BL-184 stage 3: the kinds travel with the progress (a loose record in the report), so the other computer's tabs list it.
+        const progress = { ...planProgress(plan, jobs, results, sessions, now(), rechecks, picks), mediaKinds: planMediaKinds(plan, results, await templateKinds()) };
         const currentFiles = currentFilesOf(rechecks);
         // A job's error text can name local paths: other devices get the event without it (independent review, AC-GP2-01).
         const events = planEvents(jobs, sessions, results, recorded, null, 100_000, history)
