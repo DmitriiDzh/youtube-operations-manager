@@ -21,6 +21,7 @@ import {
   type MediaVolumeUsage,
   type MediaWorkflowTemplate,
 } from "@/lib/media-generation/contracts";
+import { jobMediaKind } from "@/lib/media-generation/contracts";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { ConfirmDialog } from "./confirm-dialog";
 import { useChannelNames } from "./use-channel-names";
@@ -790,7 +791,8 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
   // BL-184 stage 3 (FO-REQ-0024 A): under a kind tab, the jobs of templates that make that kind (or whose kind is not known).
   const kindOfTemplate = new Map(templates.map((tpl) => [tpl.templateId, tpl.mediaKind]));
   const shownJobs = kind === null ? jobs : jobs.filter((j) => {
-    const of = kindOfTemplate.get(j.templateId);
+    // A removed template's jobs are placed by the files they made.
+    const of = jobMediaKind(kindOfTemplate.get(j.templateId), j.outputs.map((o) => o.filename));
     return !of || of === kind;
   });
   const hasActive = jobs.some((j) => !["done", "failed", "cancelled"].includes(j.status));

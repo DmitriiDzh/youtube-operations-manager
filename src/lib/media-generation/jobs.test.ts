@@ -2099,3 +2099,15 @@ test("BL-184: a frame that changed after the storyboard check fails the job befo
   assert.equal(f.comfy.submits.length, 0);
   assert.ok(f.s3.calls.some((c) => c.startsWith("delete:exchange/in/")), "the inputs already uploaded are removed again");
 });
+
+// BL-184 stage 3 follow-up (seen live 2026-10-13: image jobs of removed templates listed under «Музыка»): a job whose template is gone
+// is placed by the files it produced.
+test("BL-184: a job's kind -- its template's, else its outputs' (video before audio before image), else unknown", async () => {
+  const { jobMediaKind } = await import("./contracts");
+  assert.equal(jobMediaKind("audio", ["x.png"]), "audio");
+  assert.equal(jobMediaKind(undefined, ["H0004_qwen_t2i_00001_.png"]), "image");
+  assert.equal(jobMediaKind(null, ["a.mp4", "a.png"]), "video");
+  assert.equal(jobMediaKind(null, ["track.FLAC"]), "audio");
+  assert.equal(jobMediaKind(null, []), null);
+  assert.equal(jobMediaKind(null, ["notes.txt"]), null);
+});

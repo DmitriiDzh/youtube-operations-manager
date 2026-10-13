@@ -1,6 +1,6 @@
 # Storyboards reviewed before video, and Media's review tabs (FO-REQ-0024, BL-184)
 
-- **Status:** BUILT 2026-10-13 on `feature/bl-184-storyboards`, all three stages; not merged (waits for review and the owner's yes).
+- **Status:** MERGED into `dev` 2026-10-13 (9b63975, owner msg 2750), all three stages; acceptance (FO-REQ-0024 §5) pending.
   Started on the owner's go (Telegram msg 2739: "Можешь начинать следующий таск FO-REQ-0024"). Layout (§4) chosen by the owner
   (msgs 2741/2743): neither A nor B -- see §4. As built: `docs/ARCHITECTURE.md` §48.
 - **Request:** FO-REQ-0024 (Operator, 2026-10-13; owner instruction 1178, gate scope 1183).
