@@ -18,7 +18,7 @@ export type StoryboardRouteDeps = {
   assertActiveChannel: (args: { userId: string; channelId: string }) => Promise<void>;
   service: () => Pick<
     StoryboardsService,
-    "listForOwner" | "getForOwner" | "keyframeFiles" | "versionDiff" | "keyframeFile" | "ownerComment" | "ownerReply" | "ownerSetCommentState" | "ownerDecide"
+    "listForOwner" | "getForOwner" | "keyframeFiles" | "versionDiff" | "keyframeFile" | "ownerComment" | "ownerReply" | "ownerSetCommentState" | "ownerDecide" | "gateSetting" | "setGateSetting"
   >;
   readFile: (filePath: string) => Promise<Uint8Array>;
 };
@@ -98,6 +98,13 @@ export function createStoryboardRouteHandlers(deps: StoryboardRouteDeps = defaul
     /** POST `{ kind: approved | changes_requested, versionNumber, note? }`. */
     decide: (request: Request, context: Params<Base & { storyboardId: string }>) =>
       guarded(context, async ({ channelId, storyboardId }) => NextResponse.json(await deps.service().ownerDecide(channelId, storyboardId, await body(request)))),
+
+    /** BL-184 stage 2 (B4): the channel's "first/last-frame video needs an approved storyboard" setting. */
+    gate: (_request: Request, context: Params<Base>) => guarded(context, async ({ channelId }) => NextResponse.json(await deps.service().gateSetting(channelId))),
+
+    /** PUT `{ requireApproved }`. */
+    setGate: (request: Request, context: Params<Base>) =>
+      guarded(context, async ({ channelId }) => NextResponse.json(await deps.service().setGateSetting(channelId, await body(request)))),
 
     /** The keyframe's image as this computer has it (even when it differs from the frozen sha256: review is not blocked). */
     keyframe: (_request: Request, context: Params<Base & { storyboardId: string; version: string; keyframeId: string }>) =>

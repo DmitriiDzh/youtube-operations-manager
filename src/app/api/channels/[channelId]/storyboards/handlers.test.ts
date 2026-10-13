@@ -25,6 +25,8 @@ function make(options: { session?: { user: { id: string } } | null; refuse?: Dom
     },
     ownerReply: async (...args) => (calls.push(["reply", ...args]), { replyId: "r_1" }),
     ownerSetCommentState: async (...args) => void calls.push(["state", ...args]),
+    gateSetting: async (...args) => (calls.push(["gate", ...args]), { requireApproved: true, changedAt: null, changedBy: null }),
+    setGateSetting: async (...args) => (calls.push(["setGate", ...args]), { requireApproved: false, changedAt: "2026-10-13T12:00:00.000Z", changedBy: "Mac" }),
     ownerDecide: async (...args) => {
       calls.push(["decide", ...args]);
       if (options.refuse) throw options.refuse;
@@ -55,6 +57,8 @@ test("a session and the active channel are required; another channel reaches not
     await handlers.setState(json("PATCH", { state: "resolved" }), ctx(other)),
     await handlers.decide(json("POST", { kind: "approved", versionNumber: 1 }), ctx(other)),
     await handlers.keyframe(new Request("http://x/"), ctx(other)),
+    await handlers.gate(new Request("http://x/"), ctx(other)),
+    await handlers.setGate(json("PUT", { requireApproved: false }), ctx(other)),
   ]) {
     assert.notEqual(response.status, 200);
   }
@@ -96,4 +100,12 @@ test("keyframe image: served with its type and no caching; 404 without a copy he
   assert.equal((await handlers.keyframe(new Request("http://x/"), at("K9"))).status, 404);
   assert.equal((await handlers.keyframe(new Request("http://x/"), at("TXT"))).status, 415);
   assert.equal((await handlers.keyframe(new Request("http://x/"), at("K0", "0"))).status, 400);
+});
+
+test("BL-184 stage 2: the gate setting is read and changed for the active channel only, the body passed on as given", async () => {
+  const { handlers, calls } = make();
+  const base = { channelId: "UC_active" };
+  assert.deepEqual(await (await handlers.gate(new Request("http://x/"), ctx(base))).json(), { requireApproved: true, changedAt: null, changedBy: null });
+  assert.equal((await handlers.setGate(json("PUT", { requireApproved: false }), ctx(base))).status, 200);
+  assert.deepEqual(calls, [["gate", "UC_active"], ["setGate", "UC_active", { requireApproved: false }]]);
 });
