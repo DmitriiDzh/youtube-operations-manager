@@ -33,6 +33,7 @@ import { PlansPanel } from "./generation-plans-panel";
 // Media (the active channel's). The Servers header shows the RunPod balance and today's spend; the keys stay in Settings.
 
 import { MEDIA_TABS, SERVERS_TABS, type MediaTab, type ServersTab } from "./section-tabs";
+import { StoryboardsPanel } from "./storyboards-panel";
 export { MEDIA_TABS, SERVERS_TABS };
 
 /** The balance is a RunPod call: on open, on demand, and once a minute while Production is open. */
@@ -213,6 +214,7 @@ export function MediaPanel({
   tab: routeTab,
   onTabChange,
   onReviewPlan,
+  onOpenStoryboard,
   paused = false,
   sessionsHref = "/servers/sessions",
 }: {
@@ -224,6 +226,8 @@ export function MediaPanel({
   paused?: boolean;
   /** BL-149: where the review screen of a plan opens (its own address); absent = in place. BL-162: `wave` = open on that wave. */
   onReviewPlan?: (planId: string, source?: PeerReviewSource, wave?: string) => void;
+  /** BL-184: open a storyboard's review screen (its own address). */
+  onOpenStoryboard?: (storyboardId: string) => void;
   /** Where "now running" leads: Servers → Sessions. */
   sessionsHref?: string;
 }) {
@@ -236,6 +240,9 @@ export function MediaPanel({
       <TabBar tabs={MEDIA_TABS} current={tab} onSelect={setTab} />
       <div className={tab === "plans" ? "space-y-6" : "hidden"}>
         <PlansPanel active={tab === "plans" && !paused} onReview={onReviewPlan} />
+      </div>
+      <div className={tab === "storyboards" ? "space-y-6" : "hidden"}>
+        <StoryboardsPanel channelId={activeChannelId} active={tab === "storyboards" && !paused} onOpen={(id) => onOpenStoryboard?.(id)} />
       </div>
       <div className={tab === "jobs" ? "space-y-6" : "hidden"}>
         <JobsCard activeChannelId={activeChannelId} />

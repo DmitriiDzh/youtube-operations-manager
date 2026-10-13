@@ -43,6 +43,8 @@ export function AppShell<T extends string>(props: {
   languageEntries?: readonly ChannelWorkEntry[];
   /** BL-182: the other channels' publishing-coverage reminders. */
   publishingEntries?: readonly ChannelWorkEntry[];
+  /** BL-184: the other channels' storyboards waiting for review. */
+  storyboardEntries?: readonly ChannelWorkEntry[];
   /** A bell entry's button: switch to that channel, then open `href`. */
   onOpenChannelWork?: (channelId: string, href: string) => void;
   children: ReactNode;
@@ -116,6 +118,7 @@ export function AppShell<T extends string>(props: {
                 channelWork={props.channelWork}
                 languageEntries={props.languageEntries}
                 publishingEntries={props.publishingEntries}
+                storyboardEntries={props.storyboardEntries}
                 onOpenChannelWork={props.onOpenChannelWork}
               />
             </FeatureErrorBoundary>

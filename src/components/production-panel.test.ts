@@ -25,7 +25,8 @@ test("AC-SM-01: Servers' tabs are Sessions, Models, Workflow templates (work, le
   );
   assert.deepEqual(
     MEDIA_TABS.map((tab) => translate("en", tab.labelKey)),
-    ["Plans", "Jobs"]
+    // BL-184 (FO-REQ-0024 §4 B2): «Раскадровка» between Plans and Jobs.
+    ["Plans", "Storyboards", "Jobs"]
   );
 });
 

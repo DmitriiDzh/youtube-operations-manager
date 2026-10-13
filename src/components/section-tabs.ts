@@ -14,6 +14,8 @@ export const SERVERS_TABS = [
 export const MEDIA_TABS = [
   // BL-143 (ADR 0029): generation plans and their review; the jobs they are made of next to them.
   { value: "plans", labelKey: "tabs.media.plans" },
+  // BL-184 (FO-REQ-0024 §4 B2): storyboards reviewed and approved before any video is made from them.
+  { value: "storyboards", labelKey: "tabs.media.storyboards" },
   { value: "jobs", labelKey: "tabs.media.jobs" },
 ] as const;
 
@@ -113,6 +115,8 @@ export function rememberablePath(pathname: string): { section: string; path: str
   const [, section, sub, planId, last, ...rest] = pathname.split("/");
   if (!section || !sub) return null;
   if (section === "media" && sub === "plans" && planId && last === "review" && rest.length === 0) return { section: "/media", path: "/media/plans" };
+  // BL-184: a storyboard's review counts as the «Раскадровка» tab.
+  if (section === "media" && sub === "storyboards" && planId && last === undefined) return { section: "/media", path: "/media/storyboards" };
   if (planId !== undefined || !isSectionSubTab(section, sub)) return null;
   return { section: `/${section}`, path: pathname };
 }

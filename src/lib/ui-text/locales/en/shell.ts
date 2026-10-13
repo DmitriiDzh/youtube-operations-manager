@@ -18,6 +18,7 @@ export const shell = {
   "tabs.servers.templates": "Workflow templates",
   "tabs.servers.setup": "Setup",
   "tabs.media.plans": "Plans",
+  "tabs.media.storyboards": "Storyboards",
   "tabs.media.jobs": "Jobs",
   "tabs.research.inbox": "Inbox",
   "tabs.research.channels": "Channels",
@@ -204,6 +205,7 @@ export const shell = {
   "page.merge.intro": "Handoff data (Batches history, audit, Research, Decisions) now syncs automatically while the app runs (Settings → Sync; the bell in the header shows its state and asks you if both computers changed data). The manual export/import below remains as a fallback. Change drafts (Change Sets/AI proposals) are different: they now sync continuously in the background between devices sharing the same Syncthing folder, and any conflicting concurrent edit is listed here for you to review — nothing is ever silently resolved by picking one side. Syncthing only ever carries files — it is never treated as a database, and no OAuth token or AI connection credential ever leaves this device.",
   "page.analytics.intro": "Overview numbers come from the data this app collects and stores (daily automatic collection or “Collect now”); “Refresh live” reads them from YouTube directly. Percentages are computed facts (period-over-period deltas from real numbers, same as Studio's own cards) — AI-generated recommendations remain Phase 10's own, separate scope.",
   "page.planReview": "Plan review",
+  "page.storyboardReview": "Storyboard review",
   "operation.gone": "The operation is no longer available (the server may have restarted).",
   "conflicts.requestFailed": "Request to {url} failed ({status})",
   // BL-157 (SERVERS_MEDIA_PLAN.md §D): the other channels' open Media work in the channel switcher and the bell.

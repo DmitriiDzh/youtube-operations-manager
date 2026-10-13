@@ -21,7 +21,8 @@ export default function MediaLayout({ children }: { children: ReactNode }) {
   // An unknown sub-path renders nothing here; its [sub] page answers 404.
   // `/media/plans/<planId>/review` (AC-RT-07): the review screen is shown in place of the panel, which stays mounted and
   // hidden meanwhile (review finding: the selected plan and the other sub-tab survive opening and closing a review).
-  const reviewing = segment === "plans" && segments[2] === "review";
+  // BL-184: `/media/storyboards/<storyboardId>` -- a storyboard's review screen, shown the same way.
+  const reviewing = (segment === "plans" && segments[2] === "review") || (segment === "storyboards" && segments.length > 1);
   // AC-SM-04 (review round 1): a review open when the channel changes was the other channel's plan -- back to Plans. A bell
   // entry that switches and opens a review navigates after this (the parent layout's effect runs later), so it still lands.
   const channelId = channel?.id ?? null;
@@ -29,8 +30,8 @@ export default function MediaLayout({ children }: { children: ReactNode }) {
   useEffect(() => {
     const before = shownChannel.current;
     shownChannel.current = channelId;
-    if (before !== null && channelId !== null && before !== channelId && reviewing) router.replace("/media/plans");
-  }, [channelId, reviewing, router]);
+    if (before !== null && channelId !== null && before !== channelId && reviewing) router.replace(segment === "storyboards" ? "/media/storyboards" : "/media/plans");
+  }, [channelId, reviewing, router, segment]);
   return (
     <>
       {tab && (
@@ -42,6 +43,7 @@ export default function MediaLayout({ children }: { children: ReactNode }) {
               paused={reviewing}
               onTabChange={(next) => router.push(`/media/${next}`)}
               onReviewPlan={(planId, source, wave) => router.push(planReviewHref(planId, source, wave))}
+              onOpenStoryboard={(storyboardId) => router.push(`/media/storyboards/${encodeURIComponent(storyboardId)}`)}
             />
           </div>
         </FeatureErrorBoundary>
