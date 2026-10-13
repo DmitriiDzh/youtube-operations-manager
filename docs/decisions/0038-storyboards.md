@@ -1,6 +1,6 @@
 # 0038. Storyboards: keyframe chains reviewed and approved before first/last-frame video is generated
 
-Status: Proposed (FO-REQ-0024; owner instructions 1178 and 1183, relayed 2026-10-13, go msg 2739).
+Status: Accepted 2026-10-13 (merged into `dev` at 9b63975, owner msg 2750; FO-REQ-0024; owner instructions 1178 and 1183, go msg 2739).
 
 **Date:** 2026-10-13. **Plan:** `docs/roadmap/plans/STORYBOARD_PLAN.md` (BL-184).
 
