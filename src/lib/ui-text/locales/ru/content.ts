@@ -130,6 +130,8 @@ export const content: Record<keyof typeof en, string> = {
   "publishingCalendar.legend.published": "Опубликовано",
   "publishingCalendar.legend.scheduled": "Запланировано",
   "publishingCalendar.legend.overdue": "Дата прошла",
+  "publishingCalendar.legend.package": "готовый пакет (ещё не загружен)",
+  "publishingCalendar.packageHint": "Готовый пакет релиза на его плановый день — ещё не загружен. Загрузка — во вкладке «Публикация».",
   "publishingCalendar.legend.gap": "День без видео (ближайшие 2 недели)",
   "publishingCalendar.undated.title": "Загружены без даты",
   "publishingCalendar.overdue.title": "Дата прошла",

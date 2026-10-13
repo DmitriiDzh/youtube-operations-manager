@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatDisplayDate, formatDisplayDateTime } from "@/lib/shared-formatting";
 import type { UiTextKey } from "@/lib/ui-text";
 import { LoadingIndicator } from "./operation-progress";
@@ -27,7 +27,11 @@ const KIND_STYLES: Record<GridEntry["kind"], string> = {
   scheduled: "border-sky-800 bg-sky-950/60 text-sky-200",
   overdue: "border-amber-700 bg-amber-950/60 text-amber-200",
   unscheduled: "border-zinc-700 bg-zinc-900 text-zinc-300",
+  package: "border-dashed border-violet-700 bg-violet-950/30 text-violet-200",
 };
+
+/** A ready package on its planned day: shown for planning, not a video yet (its id is the manifest path). */
+type PackageEntry = GridEntry & { kind: "package" };
 
 function pad2(value: number): string {
   return String(value).padStart(2, "0");
@@ -57,6 +61,8 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
     return { year: now.getFullYear(), month: now.getMonth() };
   });
   const [open, setOpen] = useState<{ videoId: string; title: string } | null>(null);
+  const [packageEntries, setPackageEntries] = useState<PackageEntry[]>([]);
+  const packagesReadAt = useRef(0);
   const [detailsDirty, setDetailsDirty] = useState(false);
 
   const load = useCallback(async () => {
@@ -67,6 +73,22 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
       const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/publishing/calendar`);
       if (!res.ok) throw new Error(String(res.status));
       setData((await res.json()) as CalendarResponse);
+      // BL-182 stage 2: the ready packages on their planned days (the folder is read at most every 5 minutes; a failed read only
+      // leaves them out).
+      if (Date.now() - packagesReadAt.current > 5 * 60_000) {
+        packagesReadAt.current = Date.now();
+        const base = `/api/channels/${encodeURIComponent(channelId)}`;
+        const [packagesRes, settingsRes] = await Promise.all([fetch(`${base}/publishing/packages`), fetch(`${base}/publishing-settings`)]);
+        if (packagesRes.ok && settingsRes.ok) {
+          const scanned = (await packagesRes.json()) as { status: string; packages?: Array<{ manifestPath: string; video: string | null; title: string | null; plannedPublishDate: string | null; state: string }> };
+          const time = ((await settingsRes.json()) as { settings?: { publishTimeUtc?: string } }).settings?.publishTimeUtc ?? "12:00";
+          setPackageEntries(
+            (scanned.packages ?? [])
+              .filter((p) => p.state === "ready" && p.plannedPublishDate)
+              .map((p) => ({ videoId: p.manifestPath, title: `${p.video ?? ""} ${p.title ?? ""}`.trim(), kind: "package" as const, at: `${p.plannedPublishDate}T${time}:00Z` }))
+          );
+        }
+      }
     } catch {
       setError(t("publishingCalendar.loadFailed"));
     } finally {
@@ -105,7 +127,7 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
   }
 
   const now = useMemo(() => new Date(), [data]); // eslint-disable-line react-hooks/exhaustive-deps -- "now" moves with each load
-  const byDay = useMemo(() => entriesByDay(data?.entries ?? []), [data]);
+  const byDay = useMemo(() => entriesByDay([...(data?.entries ?? []), ...packageEntries]), [data, packageEntries]);
   const gaps = useMemo(() => gapDays(now, byDay), [now, byDay]);
   const weeks = useMemo(() => monthWeeks(cursor.year, cursor.month), [cursor]);
   const todayKey = localDayKey(now);
@@ -206,6 +228,7 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
             <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-sm bg-emerald-600" />{t("publishingCalendar.legend.published")}</span>
             <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-sm bg-sky-600" />{t("publishingCalendar.legend.scheduled")}</span>
             <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-sm bg-amber-600" />{t("publishingCalendar.legend.overdue")}</span>
+            <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-sm border border-dashed border-violet-600" />{t("publishingCalendar.legend.package")}</span>
             <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-sm border border-dashed border-red-600" />{t("publishingCalendar.legend.gap")}</span>
           </div>
         </div>
@@ -230,7 +253,17 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
               >
                 <div className={`mb-1 text-right text-[11px] ${isToday ? "font-semibold text-sky-300" : "text-zinc-500"}`}>{day.getDate()}</div>
                 <div className="space-y-1">
-                  {entries.map((entry) => (
+                  {entries.map((entry) =>
+                    entry.kind === "package" ? (
+                      <span
+                        key={entry.videoId}
+                        title={`${entry.title}\n${t("publishingCalendar.packageHint")}`}
+                        className={`block w-full truncate rounded border px-1 py-0.5 text-left text-[11px] ${KIND_STYLES.package}`}
+                      >
+                        {entry.at ? `${timeOf(entry.at)} ` : ""}
+                        {entry.title}
+                      </span>
+                    ) : (
                     <button
                       key={entry.videoId}
                       type="button"
@@ -242,7 +275,8 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
                       {entry.at ? `${timeOf(entry.at)} ` : ""}
                       {entry.title}
                     </button>
-                  ))}
+                    )
+                  )}
                   {isGap && entries.length === 0 && <div className="text-center text-[10px] text-red-400/80">{t("publishingCalendar.gap")}</div>}
                 </div>
               </div>

@@ -1183,3 +1183,6 @@ idle / minutes / USD; every job submit or poll counts as activity. Contract: `do
   returns the channel's published, scheduled and overdue videos of the past and next 14 UTC days, the private uploads without a date,
   how far ahead the channel is covered (and whether that is under 7 days) and the days without a video. A local read. Uploading and
   scheduling stay with the owner in the Web UI; no agent tool does either. Contract: `docs/interfaces.md`.
+- Since Agent API 3.17.0 (Producer 1.8.0, BL-182 stage 2) it also lists the release packages in this computer's copy of the channel
+  workspace (state and the codes of why one is not ready) and this computer's upload queue, so a channel worker can see which
+  packages are ready, uploading or done. Still read-only.

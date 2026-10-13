@@ -3931,11 +3931,64 @@ Plan: `docs/roadmap/plans/PUBLISHING_PLAN.md`. Owner: msgs 2698, 2702 and 2707.
 - **`agent_get_publishing_calendar`** (READ; Agent API 3.16.0, Producer API 1.7.0): a ±14-day window in UTC days, plus the undated
   uploads, the coverage and the gap dates. Agents get no upload or schedule tool.
 
-### 47.3 Not built yet
+### 47.3 Stage 2 — publishing defaults, release packages, upload and schedule
 
-- Stage 2: release packages, upload and schedule, per-channel publishing defaults, the AI-use decision.
+Owner msgs 2715 (defaults chosen once), 2717 (scheduled at insert), 2725/2727 (UTC publish time, BL-183), 2725 (no AI-use fix: it
+is already set everywhere), 2734 (one merge for the whole stage).
+
+- **Publishing defaults per channel** (`publishing/settings.ts`; sync family `channel-publishing-settings`, one Automerge document
+  per channel, an opaque map of values like `media-settings`). Fields and defaults: `publishTimeUtc` 12:00, `playlistId` none,
+  `categoryId` 10 (Music), `madeForKids` false, `containsSyntheticMedia` true, `license` youtube, `embeddable` true,
+  `notifySubscribers` true. A stored value this build cannot use falls back to the default. Saved fields only (the panel sends
+  what the owner changed); a conflict is chosen in Merge (actor-based, like the language settings). Routes:
+  `GET/PUT /api/channels/[id]/publishing-settings`, `GET/POST .../publishing-settings/conflicts`. Panel: Content → «Публикация»,
+  the time as `UtcTimeField`.
+- **Release packages** (`publishing/packages.ts`, `package-scan.ts`). The scan walks `04 Videos/` of the channel workspace on this
+  computer, at most three levels, never through a symlinked folder, for `V*_release.json` (`yt-release-package/1`, FO-REQ-0023 §4 A);
+  every file is reached through the workspace rule (`resolveWorkspaceFile`). Checks: the manifest's shape, the channel, the
+  factory's own verdict, title ≤ 100 characters without `<`/`>`, description ≤ 5000 bytes without `<`/`>`, tags ≤ 500 by YouTube's
+  count (commas, quotes around a tag with a space), chapters (first 0:00, at least three, each ≥ 10 s), the channel's language
+  baseline, the video's size and ffprobe duration (`ffprobe_missing` apart from an unreadable file), a JPEG/PNG thumbnail ≤ 2 MB,
+  and the same title already on the channel. State: not ready / ready / uploaded private / scheduled / published (by
+  `Vn_youtube.json` and the synced copy). The manifest's SHA-256 travels to the approval. Routes: `GET .../publishing/packages`,
+  `GET .../publishing/packages/thumbnail?path=` (an image under `04 Videos/` only, its type by its first bytes).
+- **Approval** (`publishing/upload-approval.ts`, `POST .../publishing/uploads`). It binds to what the owner saw: each manifest's hash
+  and the settings shown; anything changed refuses the whole approval. Also refused: a package not ready, already uploaded, queued
+  here or reported as uploading by another computer (sync family `publishing-uploads`, a per-device report: channel, video, state);
+  settings that differ between the computers; a publish time 15 minutes away or less; more uploads than are left of the 100-a-day
+  `videos.insert` bucket (this computer's ledger and the shared one); pool units the quota guard cannot carry (`checkUnits`; an
+  unknown quota only with the owner's yes). A dated row approves UPLOAD_PRIVATE and PUBLISH, an undated one only UPLOAD_PRIVATE.
+  The UI suggests dates: the planned date at the channel's UTC time, the next free day when taken or too soon (`publish-dates.ts`).
+- **Upload runner** (`publishing/upload-runner.ts`, table `publishing_uploads`, schema v89, device-local, at most one live row per
+  channel and video). A 5 s loop in `instrumentation.ts`, one byte stream at a time (8 MB chunks, a 50 s slice per pass) and one step
+  per pass for the uploads already sent. The approver's Google user and `assertWriteChannel` before the first byte; the files must
+  still match the approval. The session URI is stored before the first byte; a resumed upload asks the session how much it holds; a
+  lost answer is resolved by a status query (done → the video is adopted); an expired session restarts only when no video with the
+  title is among the channel's newest uploads (found → adopted). `publishAt` goes in at insert when it is at least 6 h ahead,
+  otherwise after processing through video-details' own write (private, AI use explicit, backup, read-back, audit); 15 minutes or
+  less is not written (`publish_at_too_soon` on the job). Then `thumbnails.set` (new gateway primitive), `playlistItems.insert` unless
+  the video is already in the playlist, a read-back against the approval (`verify_mismatch` names the fields; AI use is not
+  readable), `Vn_youtube.json` next to the package (atomic, inside the workspace's real folder), an audit row, a channel sync.
+  Live writes off pauses a job and it resumes by itself; `quotaExceeded` pauses until the quota day resets, `uploadLimitExceeded`
+  for 24 h (the channel's other queued uploads wait too); a refusal fails the job; a 5xx or network error is retried, asking the
+  session first. An upload being sent or finished is busy for the idle watcher. Cancel only before YouTube (queued, or paused
+  before its last byte).
+- **UI** (Content → «Публикация»): the package list with checkboxes, a date per chosen package (DD.MM.YYYY UTC day; empty = private
+  without a date), «Загрузить выбранные» → the approval dialog (rows, times in UTC and the owner's time, the shared settings, the
+  units estimate, the Live-writes note), then the uploads list (state, share sent, pause reason and when it continues, the
+  read-back result) polled while one is active.
+- **Calendar:** a ready package shows on its planned day at the channel's time (dashed violet, not clickable); it is not scheduled
+  yet, so its day stays a gap. The folder is read at most every 5 minutes.
+- **Agents** (Agent API 3.17.0, Producer API 1.8.0): `agent_get_publishing_calendar` also lists the packages (state, problem codes,
+  video id) and this computer's uploads. No tool uploads, schedules or cancels (`no-agent-upload-tool.test.ts`).
+
+### 47.4 Not built yet
+
 - Stage 3: Batches → History.
 - Deferred from stage 1 (FO-REQ-0023 C1 and D1):
   - the reminder threshold is the constant 7 (`PUBLISHING_REMINDER_DAYS`), not yet a setting;
   - the calendar shows the active channel's month, with no "both channels" view and no separate "next 14 days" list. The gaps of
     the next 2 weeks are marked on the grid; at month end, part of them is on the next month's page.
+- Deferred from stage 2: the AI-use
+  fix for published videos was dropped (owner msg 2725); Details still starts an unreadable AI use checked rather than from the
+  channel default; ffprobe on Windows depends on `ffmpeg-host`'s Mac/Linux lookup (`ffprobe_missing` there).

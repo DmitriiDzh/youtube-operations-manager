@@ -3,7 +3,8 @@
 - **Status:** APPROVED 2026-10-13 (owner, Telegram msg 2707, "да для всего": the order in §7.1, rescheduling while private, the
   AI-use fix). **Stage 0 (G1) DONE 2026-10-13: uploads are NOT locked** (§2 stage 0, result). **Stage 1 BUILT** on
   `feature/bl-182-publishing` (ARCHITECTURE §47.2), reviewed (findings fixed); stages 0 and 1 merged into `dev` 2026-10-13 (owner msg
-  2722). Stage 2 (packages, upload and schedule, publishing defaults) next.
+  2722). **Stage 2 BUILT** on `feature/bl-182-stage-2` (ARCHITECTURE §47.3), one merge for the whole stage (owner msg 2734); its
+  acceptance is the first real upload, from the merged build, on the owner's "да".
 - **Stage 1 deviations:**
   - The tool is named `agent_get_publishing_calendar` (agent prefix and capability check), not `channel_publishing_calendar`.
   - The refresh of other channels is a full channel sync (about 7 units), not a targeted read.
@@ -11,6 +12,16 @@
   - There is no "both channels" view and no separate 14-day list.
   - Rescheduling needs both times more than 15 minutes ahead.
   - Any status write from Details sends "AI use" explicitly (it cannot be read).
+- **Stage 2 deviations and decisions:**
+  - The publish time is a UTC time, 12:00 by default, with the owner's time in parentheses (msgs 2725/2727; the shared field and
+    module came with BL-183), not "15:00 local".
+  - The AI-use fix for published videos is dropped: AI use is already set on every video (msg 2725).
+  - Sync does not read `containsSyntheticMedia` (the API returns null, G1).
+  - The per-device "uploading on <device>" record is the sync family `publishing-uploads` (a per-device report: channel, video,
+    state); the approval on the other computer refuses such a video.
+  - The approval checks the 100-a-day `videos.insert` bucket and the pool units through `quota-guard.checkUnits` (new).
+  - Agents also get the packages and this computer's uploads in `agent_get_publishing_calendar` (Agent API 3.17.0, Producer 1.8.0).
+  - Ready packages show on the calendar's planned days (dashed, they fill no gap). Not yet: Details' AI use from the channel default.
 - **The owner's go:** for this work, msg 2698 ("check the Operator's new messages"); for the G1 test, msg 2702 (one private test
   upload, then its deletion). The Operator's quotes of 1110 / 1114 are the Operator's record, not the authorisation here.
 - **Request:** FO-REQ-0023 (Operator, 2026-10-12; owner instruction 1110, answers 1114), relayed by the owner on 2026-10-13

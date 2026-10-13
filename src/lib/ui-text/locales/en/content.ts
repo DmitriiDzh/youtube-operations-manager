@@ -127,6 +127,8 @@ export const content = {
   "publishingCalendar.legend.published": "Published",
   "publishingCalendar.legend.scheduled": "Scheduled",
   "publishingCalendar.legend.overdue": "Past its date",
+  "publishingCalendar.legend.package": "ready package (not uploaded yet)",
+  "publishingCalendar.packageHint": "A ready release package on its planned day — not uploaded yet. Upload it from the Publishing tab.",
   "publishingCalendar.legend.gap": "Day without a video (next 2 weeks)",
   "publishingCalendar.undated.title": "Uploaded without a date",
   "publishingCalendar.overdue.title": "Past their date",

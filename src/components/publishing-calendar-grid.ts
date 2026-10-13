@@ -1,7 +1,8 @@
 // BL-182 stage 1 (FO-REQ-0023 §4 C1): the calendar's month grid, in the viewer's local time zone -- pure, so it is tested on its own.
 // Weeks start on Monday (the owner's locale); a day's key is its local YYYY-MM-DD.
 
-export type GridEntry = { videoId: string; title: string; kind: "published" | "scheduled" | "overdue" | "unscheduled"; at: string | null };
+// BL-182 stage 2: "package" -- a ready release package on its planned day, not uploaded yet (FO-REQ-0023 §4 C1); it fills no gap.
+export type GridEntry = { videoId: string; title: string; kind: "published" | "scheduled" | "overdue" | "unscheduled" | "package"; at: string | null };
 
 function pad2(value: number): string {
   return String(value).padStart(2, "0");
