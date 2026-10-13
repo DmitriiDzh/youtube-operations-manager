@@ -1,6 +1,7 @@
 # Publishing from YT Manager: upload and schedule, calendar, 7-day reminder, History (FO-REQ-0023, BL-182)
 
-- **Status:** DRAFT 2026-10-13. Waiting for the owner's answers (§7).
+- **Status:** APPROVED 2026-10-13 (owner, Telegram msg 2707, "да для всего": the order in §7.1, rescheduling while private, the
+  AI-use fix). Stage 0 (G1) in progress on `feature/bl-182-publishing`.
 - **The owner's go:** for this work, msg 2698 ("check the Operator's new messages"); for the G1 test, msg 2702 (one private test
   upload, then its deletion). The Operator's quotes of 1110 / 1114 are the Operator's record, not the authorisation here.
 - **Request:** FO-REQ-0023 (Operator, 2026-10-12; owner instruction 1110, answers 1114), relayed by the owner on 2026-10-13

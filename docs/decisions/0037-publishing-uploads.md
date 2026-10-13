@@ -1,7 +1,7 @@
 # 0037. Uploads and scheduling of the owner's own release packages, from the Web UI, on the owner's approval only
 
-Status: Proposed. The G1 probe part is accepted (owner, Telegram msg 2702); the rest is accepted with the answers to
-`docs/roadmap/plans/PUBLISHING_PLAN.md` §7.
+Status: Accepted (owner, Telegram msg 2702 for the G1 probe; msg 2707 for the plan's answers: order, rescheduling while private,
+the AI-use fix).
 
 **Date:** 2026-10-13.
 - **Request:** FO-REQ-0023 (the Operator, from the owner's instruction 1110), relayed by the owner here on 2026-10-13 (msg 2698).
