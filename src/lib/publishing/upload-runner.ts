@@ -461,5 +461,14 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
   };
 }
 
+/**
+ * Whether the owner may cancel an upload: only before it reached YouTube -- queued, or paused while sending with bytes still to
+ * send. Once every byte is sent the video exists (or may), so it is finished instead; the owner deletes it in Studio if needed.
+ */
+export function isCancellable(row: Pick<StoredPublishingUpload, "status" | "resumeStatus" | "videoId" | "storedBytes" | "totalBytes">): boolean {
+  if (row.status === "queued") return true;
+  return row.status === "paused" && (row.resumeStatus === "queued" || row.resumeStatus === "uploading") && row.videoId === null && row.storedBytes < row.totalBytes;
+}
+
 export type UploadRunner = ReturnType<typeof createUploadRunner>;
 export const ACTIVE_UPLOAD_STATUSES = ACTIVE;

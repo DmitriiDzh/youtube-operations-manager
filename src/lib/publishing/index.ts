@@ -14,7 +14,10 @@ import {
   getLiveWritesEnabled,
   getPublishingG1Probe,
   insertVideoEditAuditEvent,
+  getPublishingUpload,
+  insertPublishingUploads,
   listPublishingUploads,
+  listQuotaCalls,
   rawSqlClient,
   removeLocalVideoRowIfUnreferenced,
   savePublishingG1Probe,
@@ -25,7 +28,9 @@ import { createChannelSyncCore } from "@/lib/channel-sync";
 import { getProductionAppPaths } from "@/lib/platform-paths/runtime";
 import type { ResolvedCredentials } from "@/lib/shared-domain";
 import { createVideoDetailsCore } from "@/lib/video-details";
-import { nextYoutubeQuotaReset } from "@/lib/youtube-quota";
+import { createQuotaGuardCore } from "@/lib/quota-guard";
+import { getQuotaLedgerSyncCore } from "@/lib/quota-ledger-sync";
+import { nextYoutubeQuotaReset, startOfYoutubeQuotaDay } from "@/lib/youtube-quota";
 import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
 import { detectFfmpeg, probeMedia, type FfmpegTools } from "@/lib/ffmpeg-host";
 import { resolveGoogleCredentials } from "@/lib/google-credentials";
@@ -37,7 +42,8 @@ import { createPackageFiles } from "./adapters/package-files";
 import { createPackageScan, isPackageThumbnailPath, type PackageScanDeps } from "./package-scan";
 import { imageKindOf } from "./packages";
 import { authorizedOAuth, createPublishingFinishWrites, createPublishingYoutubeWrites, freshAccessToken } from "./adapters/youtube-writes";
-import { ACTIVE_UPLOAD_STATUSES, createUploadRunner, type UploadRunnerDeps } from "./upload-runner";
+import { ACTIVE_UPLOAD_STATUSES, createUploadRunner, isCancellable, type UploadRunnerDeps } from "./upload-runner";
+import { createUploadApproval } from "./upload-approval";
 import type { G1ProbeRecord } from "./contracts";
 import { createPublishingCalendarReads } from "./calendar-reads";
 import { createG1Probe } from "./g1-probe";
@@ -364,4 +370,53 @@ export function createUploadRunnerCore() {
     sliceMs: 50_000,
   };
   return createUploadRunner(deps);
+}
+
+/** `videos.insert` calls since the YouTube quota day began: this computer's log and the log shared by the others. */
+async function videosInsertCallsSince(since: Date): Promise<number> {
+  const sinceSeconds = Math.floor(since.getTime() / 1000);
+  const inserts = (calls: ReadonlyArray<{ method: string }>) => calls.filter((call) => call.method === "videos.insert").length;
+  let peers = 0;
+  try {
+    peers = inserts(await getQuotaLedgerSyncCore().readPeerCalls({ sinceSeconds, service: "data" }));
+  } catch {
+    // the shared log is a correction only
+  }
+  return inserts(await listQuotaCalls({ sinceSeconds, service: "data" })) + peers;
+}
+
+/** BL-182 stage 2: the owner's approval of release-package uploads (queued here; the runner sends them). */
+export function createUploadApprovalCore() {
+  const scan = createPackageScanCore();
+  const settings = createPublishingSettingsCore();
+  return createUploadApproval({
+    scan: (channelId) => scan.scan(channelId),
+    settings: (channelId) => settings.read(channelId),
+    liveVideos: async (channelId) =>
+      new Set((await listPublishingUploads({ channelId, statuses: [...ACTIVE_UPLOAD_STATUSES, "done"], limit: 500 })).map((row) => row.video)),
+    insertsToday: (now) => videosInsertCallsSince(startOfYoutubeQuotaDay(now)),
+    checkUnits: (units) => createQuotaGuardCore().checkUnits(units),
+    insert: (rows) => insertPublishingUploads(rows),
+    newId: () => randomUUID(),
+    audit: ({ channelId, detail }) => insertVideoEditAuditEvent({ channelId, videoId: `upload:${String(detail.uploadId ?? "")}`, eventType: "RESULT", detail }),
+    clock: { now: () => new Date() },
+  });
+}
+
+/** The channel's uploads on this computer, newest first (the progress list in Content → «Публикация»). */
+export async function listChannelUploads(channelId: string) {
+  return listPublishingUploads({ channelId, limit: 100 });
+}
+
+/**
+ * The owner cancels an upload that has not reached YouTube: a queued one, or one paused before its last byte. One whose video
+ * exists (or may exist: every byte sent) is not cancelled -- it is finished, and the owner deletes the video in Studio if needed.
+ */
+export async function cancelUpload(channelId: string, uploadId: string): Promise<boolean> {
+  const row = await getPublishingUpload(uploadId);
+  if (!row || row.channelId !== channelId) return false;
+  if (!isCancellable(row)) return false;
+  const done = await updatePublishingUpload(uploadId, row.status, { status: "cancelled", finishedAt: new Date(), updatedAt: new Date() });
+  if (done) await insertVideoEditAuditEvent({ channelId, videoId: `upload:${uploadId}`, eventType: "RESULT", detail: { event: "publishing.upload_cancelled", uploadId, video: row.video } });
+  return done;
 }

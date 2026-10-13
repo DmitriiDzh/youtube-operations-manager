@@ -63,6 +63,7 @@ export const errors = {
   "errors.upload_already_queued": "This video is already queued or already uploaded.",
   "errors.publishing_settings_changed": "The publishing settings changed after you looked at them (perhaps on the other computer). Check them and approve again.",
   "errors.upload_daily_limit": "Not enough uploads left today: YouTube allows the project 100 uploads a day. It resets at midnight Pacific time.",
+  "errors.upload_not_cancellable": "Only an upload that has not reached YouTube can be cancelled: queued, or paused before its last byte. Pause one that is sending first (turn Live writes off).",
   "errors.video_details_conflict": "The video changed on YouTube since you opened it. Preview again before saving.",
   "errors.device_unavailable": "This computer cannot write right now; nothing was written.",
   "errors.deletion_targets_default_language": "The video's default language cannot be deleted.",

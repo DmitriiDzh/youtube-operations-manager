@@ -3,7 +3,7 @@ import test from "node:test";
 import type { StoredPublishingUpload } from "@/lib/db";
 import { DomainError } from "@/lib/shared-domain";
 import { DEFAULT_PUBLISHING_SETTINGS, type PublishingSettings } from "./settings";
-import { createUploadRunner, readBackMismatches, type ApprovedPackage, type InsertResource, type UploadRunnerDeps, type VideoReadBack } from "./upload-runner";
+import { createUploadRunner, isCancellable, readBackMismatches, type ApprovedPackage, type InsertResource, type UploadRunnerDeps, type VideoReadBack } from "./upload-runner";
 
 // BL-182 stage 2 -- the upload runner against fakes (no real YouTube call, DEVELOPMENT_PLAYBOOK §6.11). Requirements: the
 // acceptance list in upload-runner.acceptance.test.ts (FO-REQ-0023 §4 B5–B7 and §5; ADR 0037; owner msgs 2717, 2725/2727) and
@@ -397,4 +397,14 @@ test("AC-UP-13: busy while an upload is sent or finished, not while it only wait
   h.yt.setFaults([undefined as never, undefined as never, "network_before"]);
   await h.runner.tick();
   assert.equal(await h.runner.isBusy(), true);
+});
+
+test("cancel only before YouTube: queued, or paused while sending with bytes left; never once every byte is sent", () => {
+  const base = { videoId: null, storedBytes: 4, totalBytes: 10, resumeStatus: null };
+  assert.equal(isCancellable({ ...base, status: "queued" }), true);
+  assert.equal(isCancellable({ ...base, status: "paused", resumeStatus: "uploading" }), true);
+  assert.equal(isCancellable({ ...base, status: "paused", resumeStatus: "uploading", storedBytes: 10 }), false, "the last byte is in: the video may exist");
+  assert.equal(isCancellable({ ...base, status: "paused", resumeStatus: "processing", videoId: "v" }), false);
+  assert.equal(isCancellable({ ...base, status: "uploading" }), false, "sending right now: pause it first (Live writes off)");
+  assert.equal(isCancellable({ ...base, status: "done", videoId: "v" }), false);
 });
