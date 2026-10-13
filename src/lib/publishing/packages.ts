@@ -61,10 +61,10 @@ export type ChannelExpectations = {
 const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 const isDate = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().startsWith(value);
 
-/** A path relative to the package folder that stays inside it: no absolute path, no "..", no empty part. */
+/** A path relative to the package folder that stays inside it: `/` between folders, no absolute path, no "..", no empty part. */
 export function isSafeRelativePath(value: string): boolean {
-  if (value === "" || value.startsWith("/") || value.startsWith("\\") || /^[A-Za-z]:/.test(value)) return false;
-  return value.split(/[\\/]/).every((part) => part !== "" && part !== "." && part !== "..");
+  if (value === "" || value.startsWith("/") || value.includes("\\") || /^[A-Za-z]:/.test(value)) return false;
+  return value.split("/").every((part) => part !== "" && part !== "." && part !== "..");
 }
 
 /** The manifest's own shape (FO-REQ-0023 §4 A). Null with the problems when it is not one. */

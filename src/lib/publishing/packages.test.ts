@@ -133,7 +133,7 @@ test("the factory's own verdict and the channel: not ready, its problems, or ano
 test("paths and image types", () => {
   assert.equal(isSafeRelativePath("V65 Tropico Jazz.mp4"), true);
   assert.equal(isSafeRelativePath("sub/thumb.jpg"), true);
-  for (const bad of ["", "../x", "a/../b", "/abs", "C:\\x", "a//b", "./x"]) assert.equal(isSafeRelativePath(bad), false, bad);
+  for (const bad of ["", "../x", "a/../b", "/abs", "C:\\x", "a\\b", "a//b", "./x"]) assert.equal(isSafeRelativePath(bad), false, bad);
   assert.equal(imageKindOf(new Uint8Array([0xff, 0xd8, 0xff, 0xe0])), "jpeg");
   assert.equal(imageKindOf(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])), "png");
   assert.equal(imageKindOf(new Uint8Array([0x47, 0x49, 0x46, 0x38])), "other");
