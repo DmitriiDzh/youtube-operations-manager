@@ -2,14 +2,15 @@
 
 import { useEffect, useState } from "react";
 
-// The operator's own time zone is the Analytics "Timezone (IANA name)" setting. Cached for the page's lifetime so the
-// several quota widgets on one screen share a single /api/settings read.
+// The operator's own time zone: Settings → "Your time zone" (`userTimezone`). The quota widgets show the reset time in it, and
+// `UtcTimeField` the local time next to a UTC time. Cached for the page's lifetime so the widgets on one screen share a single
+// /api/settings read.
 let cached: Promise<string | null> | null = null;
 
 function loadUserTimezone(): Promise<string | null> {
   cached ??= fetch("/api/settings")
     .then((res) => (res.ok ? res.json() : null))
-    .then((data: { analyticsSyncTimezone?: string | null } | null) => data?.analyticsSyncTimezone ?? null)
+    .then((data: { userTimezone?: string | null } | null) => data?.userTimezone ?? null)
     .catch(() => null);
   return cached;
 }

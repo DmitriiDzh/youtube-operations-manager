@@ -37,6 +37,11 @@ export const common = {
   "duration.hoursMinutes": "{h} h {m} min",
 
   "format.timePlaceholder": "HH:MM",
+  "utcTime.utc": "UTC",
+  "utcTime.localHint": "({time} your time)",
+  "utcTime.localHintNextDay": "({time} the next day, your time)",
+  "utcTime.localHintPreviousDay": "({time} the previous day, your time)",
+  "utcTime.localHintTitle": "Your time zone: {zone}. Summer and winter time are taken into account for {date}.",
 
   "errorBoundary.title": "Something went wrong in {label}.",
   "errorBoundary.body": "The rest of the app is unaffected. You can try again, or switch to another tab.",
