@@ -34,8 +34,18 @@ export const runTool: RunTool = (file, args, options) =>
     });
   });
 
-/** Where Homebrew and the usual installers put ffmpeg, tried after a configured path and before PATH. */
+/** Where Homebrew and the usual installers put ffmpeg on a Mac or Linux, tried after a configured path and before PATH. */
 const COMMON_DIRS = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"];
+
+/**
+ * The two programs' file names and path rules on this platform. The Mac and Linux keep plain names and their install folders;
+ * Windows needs `.exe`, its own separators, and a PATH entry may be quoted there.
+ */
+function platformFiles(platform: NodeJS.Platform) {
+  return platform === "win32"
+    ? { paths: path.win32, ffmpeg: "ffmpeg.exe", ffprobe: "ffprobe.exe", commonDirs: [] as string[], unquote: true }
+    : { paths: path.posix, ffmpeg: "ffmpeg", ffprobe: "ffprobe", commonDirs: COMMON_DIRS, unquote: false };
+}
 
 async function isExecutable(file: string): Promise<boolean> {
   try {
@@ -68,19 +78,29 @@ export function parseFeatures(protocolsOutput: string, encodersOutput: string): 
 }
 
 /**
- * Finds ffmpeg and ffprobe (the configured folder first, then the common install folders, then PATH) and reads their
- * version and features. `null` when either tool is missing or does not run.
+ * Finds ffmpeg and ffprobe (the configured folder first, then the common install folders, then PATH; `ffmpeg.exe` and
+ * `ffprobe.exe` on Windows) and reads their version and features. `null` when either tool is missing or does not run.
  */
 export async function detectFfmpeg(
-  options: { configuredDir?: string | null; pathEnv?: string; run?: RunTool; exists?: (file: string) => Promise<boolean> } = {}
+  options: {
+    configuredDir?: string | null;
+    pathEnv?: string;
+    platform?: NodeJS.Platform;
+    run?: RunTool;
+    exists?: (file: string) => Promise<boolean>;
+  } = {}
 ): Promise<FfmpegTools | null> {
   const run = options.run ?? runTool;
   const exists = options.exists ?? isExecutable;
-  const pathDirs = (options.pathEnv ?? process.env.PATH ?? "").split(path.delimiter).filter(Boolean);
-  const dirs = [...(options.configuredDir ? [options.configuredDir] : []), ...COMMON_DIRS, ...pathDirs];
+  const files = platformFiles(options.platform ?? process.platform);
+  const pathDirs = (options.pathEnv ?? process.env.PATH ?? "")
+    .split(files.paths.delimiter)
+    .map((dir) => (files.unquote ? dir.trim().replace(/^"(.*)"$/, "$1") : dir))
+    .filter(Boolean);
+  const dirs = [...(options.configuredDir ? [options.configuredDir] : []), ...files.commonDirs, ...pathDirs];
   for (const dir of [...new Set(dirs)]) {
-    const ffmpegPath = path.join(dir, "ffmpeg");
-    const ffprobePath = path.join(dir, "ffprobe");
+    const ffmpegPath = files.paths.join(dir, files.ffmpeg);
+    const ffprobePath = files.paths.join(dir, files.ffprobe);
     if (!(await exists(ffmpegPath)) || !(await exists(ffprobePath))) continue;
     try {
       const versionOutput = await run(ffmpegPath, ["-hide_banner", "-version"], { timeoutMs: 15_000 });

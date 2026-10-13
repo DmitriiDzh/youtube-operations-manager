@@ -4009,7 +4009,8 @@ is already set everywhere), 2734 (one merge for the whole stage).
     the next 2 weeks are marked on the grid; at month end, part of them is on the next month's page.
 - Deferred from stage 2: the AI-use
   fix for published videos was dropped (owner msg 2725); Details still starts an unreadable AI use checked rather than from the
-  channel default; ffprobe on Windows depends on `ffmpeg-host`'s Mac/Linux lookup (`ffprobe_missing` there).
+  channel default. (ffprobe on Windows, deferred here at first, is fixed: `ffmpeg-host` looks for `ffmpeg.exe`/`ffprobe.exe`
+  in PATH there, and publishing looks again after a miss instead of keeping it until a restart.)
 
 ## 48. Storyboards reviewed before video, and Media's tabs by kind (BL-184, ADR 0038, FO-REQ-0024)
 
