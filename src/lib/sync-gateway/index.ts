@@ -89,4 +89,9 @@ export type { ChannelLanguageSettingsCore, LanguageSettingConflict, LanguageSett
 export { LANGUAGE_SETTING_FIELDS } from "./channel-language-settings";
 export { createChannelLanguageSettingsSyncRunnerForProduction } from "./channel-language-settings-sync";
 
+// BL-182 stage 2: a channel's publishing defaults (an opaque map of values; publishing owns the fields), one document per channel.
+export { createChannelPublishingSettingsCoreForProduction } from "./channel-publishing-settings";
+export type { ChannelPublishingSettingsCore, PublishingSettingConflict, PublishingSettingValue } from "./channel-publishing-settings";
+export { createChannelPublishingSettingsSyncRunnerForProduction } from "./channel-publishing-settings-sync";
+
 export { runAllSyncFamiliesOnce } from "./run-all-families";
