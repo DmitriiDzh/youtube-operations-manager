@@ -76,7 +76,8 @@ test("detectFfmpeg: the configured folder is tried first; a folder without ffpro
     if (args.includes("-version")) return "ffmpeg version 9.0.2 Copyright";
     return args.includes("-protocols") ? PROTOCOLS : ENCODERS;
   };
-  const tools = await detectFfmpeg({ configuredDir: "/custom", pathEnv: "", run, exists: async (f) => present.has(f) });
+  // The platform is fixed: the Mac's paths are the same whichever computer runs this test.
+  const tools = await detectFfmpeg({ configuredDir: "/custom", pathEnv: "", platform: "darwin", run, exists: async (f) => present.has(f) });
   assert.deepEqual(tools, {
     ffmpegPath: "/opt/homebrew/bin/ffmpeg",
     ffprobePath: "/opt/homebrew/bin/ffprobe",
@@ -84,7 +85,41 @@ test("detectFfmpeg: the configured folder is tried first; a folder without ffpro
     features: { rtmps: true, h264Videotoolbox: true, libx264: true },
   });
   assert.ok(!calls.includes("/custom/ffmpeg"), "a folder with ffmpeg but no ffprobe is not used");
-  assert.equal(await detectFfmpeg({ pathEnv: "", run, exists: async () => false }), null);
+  assert.equal(await detectFfmpeg({ pathEnv: "", platform: "darwin", run, exists: async () => false }), null);
+});
+
+test("detectFfmpeg on Windows: finds ffmpeg.exe and ffprobe.exe in PATH (also a quoted entry); names without .exe are not used", async () => {
+  // ffmpeg installed by winget: its bin folder is in PATH, the programs are `.exe` files.
+  const present = new Set([
+    "C:\\plain\\ffmpeg",
+    "C:\\plain\\ffprobe",
+    "C:\\only-ffmpeg\\ffmpeg.exe",
+    "C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe",
+    "C:\\Program Files\\ffmpeg\\bin\\ffprobe.exe",
+  ]);
+  const checked: string[] = [];
+  const run = async (_file: string, args: readonly string[]) => {
+    if (args.includes("-version")) return "ffmpeg version 9.0.1-full_build-www.gyan.dev Copyright";
+    return args.includes("-protocols") ? PROTOCOLS : ENCODERS;
+  };
+  const exists = async (f: string) => {
+    checked.push(f);
+    return present.has(f);
+  };
+  const tools = await detectFfmpeg({
+    pathEnv: 'C:\\plain;C:\\only-ffmpeg;"C:\\Program Files\\ffmpeg\\bin";',
+    platform: "win32",
+    run,
+    exists,
+  });
+  assert.deepEqual(tools, {
+    ffmpegPath: "C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe",
+    ffprobePath: "C:\\Program Files\\ffmpeg\\bin\\ffprobe.exe",
+    version: "9.0.1-full_build-www.gyan.dev",
+    features: { rtmps: true, h264Videotoolbox: true, libx264: true },
+  });
+  assert.ok(!checked.some((f) => f.includes("homebrew")), "the Mac's install folders are not looked at on Windows");
+  assert.equal(await detectFfmpeg({ pathEnv: "C:\\plain", platform: "win32", run, exists }), null);
 });
 
 // With a real ffmpeg on this computer (skipped where there is none, e.g. a Windows machine without it).

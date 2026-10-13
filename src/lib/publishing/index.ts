@@ -156,7 +156,8 @@ export function createPublishingCalendarCore() {
 
 export type PublishingCalendarCore = ReturnType<typeof createPublishingCalendarCore>;
 
-// ffprobe is looked up once per process; a probed duration is kept per file and size (a finished video does not change).
+// ffprobe is looked up once per process once found (until then, on every check); a probed duration is kept per file and
+// size (a finished video does not change).
 const scanHolder = globalThis as typeof globalThis & { [key: symbol]: unknown };
 const FFMPEG_KEY = Symbol.for("ytom.publishing.ffmpeg");
 const PROBE_CACHE_KEY = Symbol.for("ytom.publishing.probeCache");
@@ -192,7 +193,11 @@ function createPackageScanReads() {
   const files = createPackageFiles();
   const videoStore = createChannelVideoStoreAdapter();
   const probeCache = (scanHolder[PROBE_CACHE_KEY] ??= new Map<string, number | null>()) as Map<string, number | null>;
-  const ffmpeg = () => (scanHolder[FFMPEG_KEY] ??= detectFfmpeg()) as Promise<FfmpegTools | null>;
+  const ffmpeg = async () => {
+    const found = await ((scanHolder[FFMPEG_KEY] ??= detectFfmpeg()) as Promise<FfmpegTools | null>);
+    if (!found) scanHolder[FFMPEG_KEY] = undefined; // look again next time (ffmpeg may be installed meanwhile)
+    return found;
+  };
   const deps: PackageScanDeps = {
     async workspace(channelId) {
       const workspace = await workspaces.getWorkspace({ channelId });
