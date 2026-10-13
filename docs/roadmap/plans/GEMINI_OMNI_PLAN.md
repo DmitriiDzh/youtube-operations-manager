@@ -1,9 +1,9 @@
 # Gemini video: Omni replaces Veo 3.1 preview (FO-REQ-0021, FO-MSG-0014, BL-179)
 
-- **Status:** BUILT 2026-10-13 on `feature/bl-179-gemini-omni` (items 1-3 of §2). Item 4 (the "Google did not charge" action) waits
-  for the owner's answer (Telegram msg 2679, question 3). The paid acceptance test (§3) needs the owner's explicit "да" (question 1).
-  Veo is handled per the recommended option (a), frames refused before any call (question 2, not yet answered; option (b) would
-  re-test one other frame shape).
+- **Status:** DONE 2026-10-13. Items 1-3 of §2 built on `feature/bl-179-gemini-omni`, reviewed, merged into `dev` (owner,
+  Telegram msg 2684). Item 4 (the "Google did not charge" action) is dropped: the owner answers the Operator directly (msg 2686).
+  The paid acceptance test (§3) is run by the Operator itself through the Factory API, within the owner's Gemini limits (msg 2686).
+  Veo is handled per the recommended option (a): frames are refused before any call.
 - **Request:** FO-REQ-0021 (high priority; Google shuts the Veo 3.1 previews on 2026-10-22) and FO-MSG-0014. Both were created by the Operator on 2026-10-12.
 - **Sources:** Google's docs, read 2026-10-13:
   - https://ai.google.dev/gemini-api/docs/omni
@@ -55,13 +55,13 @@
    - After 2026-10-22 the models are removed from the catalog (BL-180, a follow-up).
 3. **A lost answer** keeps its current behaviour: the job fails, the estimate is counted, and there is no automatic retry (it could bill twice).
    - The job's `error` gains the transport cause code, for example `UND_ERR_SOCKET`.
-4. **The owner's "Google did not charge"** action for an `unknown_outcome` job, in Settings → Gemini → recent jobs.
+4. **Dropped (owner, msg 2686).** ~~The owner's "Google did not charge" action for an `unknown_outcome` job, in Settings → Gemini → recent jobs.~~
    - The cost becomes 0 with `costBasis: owner_released`, and an audit row records it.
    - The month's spend recounts.
 
 ## 3. Acceptance
 
-- The owner-approved test: Omni, 8 s, 720p, with first frame = last frame = `pick_still01.jpg`.
+- The Operator's first Omni job (owner, msg 2686): 8 s, 720p, with first frame = last frame = `pick_still01.jpg`.
   - It completes, costs about $0.80, and lands in `From YTM/gemini/<jobId>/` with a manifest.
 - Veo with frames → `gemini_invalid_params` before any call. The status lists the retirement date.
 - A 400 keeps Google's message in the job's `error`.

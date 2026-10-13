@@ -1973,7 +1973,7 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 ## RISK-127 — Omni's video request is built from Google's docs, not yet from a paid call — OPEN, 2026-10-13
 
 - **What:** BL-179 (FO-REQ-0021) sends Omni's video request as Google's Omni page and Interactions reference show it. Three details
-  are not shown there and wait for the owner-approved paid test:
+  are not shown there and wait for the first paid Omni job, which the Operator runs itself (owner, Telegram msg 2686):
   - the `duration` format (`"8s"`, sent in `response_format`);
   - whether the answer is the inline video (we ask for `delivery: "inline"`);
   - the token count of 1080p (estimated at 2.25 x 720p).
