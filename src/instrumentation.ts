@@ -371,6 +371,29 @@ async function startServerSession() {
   };
   setTimeout(() => void geminiLoop(), 10_000).unref();
 
+  // BL-182 stage 2 (PUBLISHING_PLAN.md §2 stage 2 item 5, ADR 0037): the upload queue, in its own loop (AGENTS.md §M). With nothing
+  // queued or sent a tick only reads the local table: no YouTube call. Each write checks Live writes right before it; while they are
+  // off an upload pauses. Never during a snapshot import/migration or in recovery mode (it writes rows and the upload record).
+  let uploads: import("@/lib/publishing").UploadRunner | null = null;
+  try {
+    uploads = (await import("@/lib/publishing")).createUploadRunnerCore();
+  } catch (error) {
+    console.warn(`[publishing] uploads not started: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const UPLOADS_TICK_MS = 5_000;
+  const uploadsLoop = async () => {
+    if (!uploads) return;
+    try {
+      await assertDeviceAvailableForMutation(rawSqlClient);
+      await uploads.tick();
+    } catch (error) {
+      const paused = error instanceof Error && (error.name === "OperationLockError" || error.name === "RecoveryModeError");
+      if (!paused) console.warn(`[publishing] ${error instanceof Error ? error.message : String(error)}`);
+    }
+    setTimeout(() => void uploadsLoop(), UPLOADS_TICK_MS).unref();
+  };
+  setTimeout(() => void uploadsLoop(), 15_000).unref();
+
   // BL-176 (LIVE_STREAMS_PLAN.md §3.1/§3.6/§3.8, ADR 0036): live streams, in their own loop (AGENTS.md §M). Switched off
   // (the default) or on a computer that is not the Mac's system service, a tick only reads the settings: no process, no
   // YouTube call. Otherwise a stream whose intent is on gets its encoder adopted or started again (the key is read from
@@ -437,6 +460,8 @@ async function startServerSession() {
       if (await media.hasInFlightJobs().catch(() => false)) return true;
       // BL-174: a Gemini job queued, being sent, or a video Google is still making.
       if (gemini && (await gemini.worker.hasActiveJobs().catch(() => false))) return true;
+      // BL-182 stage 2 (ADR 0037 §6): an upload being sent or finished keeps the session (and so Live writes) going.
+      if (uploads && (await uploads.isBusy().catch(() => false))) return true;
       const running = await rawSqlClient.execute("SELECT 1 FROM batches WHERE status = 'RUNNING' LIMIT 1");
       return running.rows.length > 0;
     },

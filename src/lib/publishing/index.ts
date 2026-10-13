@@ -420,3 +420,4 @@ export async function cancelUpload(channelId: string, uploadId: string): Promise
   if (done) await insertVideoEditAuditEvent({ channelId, videoId: `upload:${uploadId}`, eventType: "RESULT", detail: { event: "publishing.upload_cancelled", uploadId, video: row.video } });
   return done;
 }
+export type { UploadRunner, UploadSteps, ApprovedPackage } from "./upload-runner";
