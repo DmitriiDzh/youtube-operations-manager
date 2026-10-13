@@ -871,15 +871,28 @@ test("collection times: saved local times convert with the zone's offset on 2026
     assert.deepEqual(await getAnalyticsCollectionTimes(createIsolatedDb(client)), { dailyUtc: "03:30", eveningUtc: "" });
   }));
 
-test("collection times: a Helsinki computer updated after the winter change still gets the summer offset of 13.10", () =>
+test("collection times: the conversion uses the offset of 13.10, not of the day it runs (Helsinki 12:05 -> 09:05Z, not 10:05Z)", () =>
   withTempClient(async (client) => {
     await initializeDatabaseSchema(client);
-    // The conversion has no clock: whatever day it runs, 12:05 Helsinki means 09:05Z (13.10, UTC+3), not 10:05Z (UTC+2).
+    // The conversion reads no clock, so a computer updated after 25.10 (UTC+2) gets the same values as one updated before it.
     await putLegacy(client, { analytics_sync_timezone: "Europe/Helsinki", analytics_sync_local_time: "12:05", analytics_evening_local_time: "22:05" });
     assert.deepEqual(await getAnalyticsCollectionTimes(createIsolatedDb(client)), { dailyUtc: "09:05", eveningUtc: "19:05" });
-    await putLegacy(client, { analytics_sync_timezone: "America/Los_Angeles", analytics_sync_local_time: "12:05" });
-    await client.execute({ sql: "DELETE FROM app_settings WHERE key = 'analytics_sync_utc_time'", args: [] });
-    assert.equal((await getAnalyticsCollectionTimes(createIsolatedDb(client))).dailyUtc, "19:05", "PDT on 13.10 is UTC-7");
+  }));
+
+test("collection times: west of UTC the old pair crosses UTC midnight -- the evening run is turned off, never saved inverted", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    // Los Angeles on 13.10 is UTC-7: 12:05 -> 19:05Z, 22:05 -> 05:05Z, which is not later than 19:05 in the UTC day.
+    await putLegacy(client, { analytics_sync_timezone: "America/Los_Angeles", analytics_sync_local_time: "12:05", analytics_evening_local_time: "22:05" });
+    assert.deepEqual(await getAnalyticsCollectionTimes(createIsolatedDb(client)), { dailyUtc: "19:05", eveningUtc: "" });
+  }));
+
+test("collection times: New York with the old defaults (nothing saved) -- 16:05Z, and the evening run off", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    // EDT on 13.10 is UTC-4: 12:05 -> 16:05Z; 22:05 -> 02:05Z is earlier in the UTC day.
+    await putLegacy(client, { analytics_sync_timezone: "America/New_York" });
+    assert.deepEqual(await getAnalyticsCollectionTimes(createIsolatedDb(client)), { dailyUtc: "16:05", eveningUtc: "" });
   }));
 
 test("setAnalyticsCollectionTimes: updates only the given time, and a saved UTC time is never converted again", () =>

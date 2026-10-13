@@ -18,7 +18,7 @@ import {
 // 2026-10-13, since the times are UTC (owner, msgs 2725/2727) -- "" turns it off and stays off; the last evening attempt is kept
 // per channel on this computer.
 
-test("evening boundary: 22:05 until set, '' stays off; attempts are per channel and replace the older one", async () => {
+test("evening boundary: 22:05 Helsinki (19:05 UTC) until set, '' stays off; attempts are per channel and replace the older one", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "evening-store-test-"));
   const client = createLibsqlClient({ url: `file:${path.join(dir, "test.db")}` });
   try {

@@ -33,6 +33,7 @@ import {
   recordAnalyticsEveningAttempt,
   getNewestVideoMetricDate,
 } from "@/lib/db";
+import { utcCollectionSettingsStore } from "../utc-settings";
 
 // Deliberately thin: only wraps the db.ts functions this module actually needs
 // (upsertVideoMetric + a channel-scoped metrics read + a read of already-synced videos +
@@ -151,12 +152,8 @@ export function createAnalyticsStoreAdapter() {
         return (await getStoredChannel(channelId))?.publishedAt ?? null;
       },
     },
-    // Owner, Telegram msgs 2725/2727 (2026-10-13): the collection times are set in UTC, so every boundary here is computed in
-    // UTC -- the services themselves work with any zone.
-    settingsStore: {
-      getAnalyticsSyncSettings: async () => ({ localTime: (await getAnalyticsCollectionTimes()).dailyUtc, timezone: "UTC" }),
-      getAnalyticsEveningLocalTime: async () => (await getAnalyticsCollectionTimes()).eveningUtc,
-    },
+    // Owner, Telegram msgs 2725/2727 (2026-10-13): the collection times are set in UTC (`utc-settings.ts`).
+    settingsStore: utcCollectionSettingsStore(() => getAnalyticsCollectionTimes()),
     eveningAttemptStore: {
       get: (channelId: string) => getAnalyticsEveningAttempt(channelId),
       record: (channelId: string, at: Date) => recordAnalyticsEveningAttempt(channelId, at),

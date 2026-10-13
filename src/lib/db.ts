@@ -6679,7 +6679,7 @@ const ANALYTICS_READS_ENABLED_SETTING_KEY = "analytics_reads_enabled";
  * defaults to **enabled** when never set, and persists across restarts once changed (matching
  * `getMcpConnectionEnabled`'s persistence model, not `getLiveWritesEnabled`'s per-boot reset).
  */
-// Takes an injectable `database` (like `getAnalyticsSyncSettings`, unlike
+// Takes an injectable `database` (like `getUserTimezone`, unlike
 // `getLiveWritesEnabled`/`getMcpConnectionEnabled`) so the default-true-when-unset inversion --
 // the one genuinely regressable bit of this pair -- can be exercised against an isolated temp
 // database (docs/DEVELOPMENT_PLAYBOOK.md §6.11) rather than asserted only by reasoning.
@@ -7490,6 +7490,13 @@ export async function getAnalyticsCollectionTimes(database: AppDb = db): Promise
     }
     if (eveningUtc === null) {
       eveningUtc = legacyLocalTimeToUtc((await getAppSetting(LEGACY_ANALYTICS_EVENING_LOCAL_TIME_SETTING_KEY, database)) ?? LEGACY_DEFAULT_EVENING_LOCAL_TIME, zone);
+      // The evening run needs its time later in the UTC day than the daily one. West of about UTC-2 (or far east) the two old
+      // local times land on either side of UTC midnight (New York: 16:05 and 02:05); such a pair would leave the evening run off
+      // anyway and the Settings card unsaveable, so the evening run is turned off, visibly, and the owner can set it again.
+      if (eveningUtc !== "" && isValidLocalTimeOfDay(eveningUtc) && isValidLocalTimeOfDay(dailyUtc) && eveningUtc <= dailyUtc) {
+        process.stderr.write(`[settings] the evening re-collect was turned off: ${zone} gives ${eveningUtc} UTC, not later than the daily ${dailyUtc} UTC\n`);
+        eveningUtc = "";
+      }
       await setAppSetting(ANALYTICS_EVENING_UTC_TIME_SETTING_KEY, eveningUtc, database);
     }
   }
@@ -11814,7 +11821,7 @@ export async function getMarketIntelligenceDailyQuotaBudgetUnits(database: AppDb
 }
 
 /** `null` clears the setting (equivalent to "off"); validation of the range is the caller's job
- * (the API route boundary), same convention `setAnalyticsSyncSettings` already uses. */
+ * (the API route boundary), same convention `setAnalyticsCollectionTimes` already uses. */
 export async function setMarketIntelligenceDailyQuotaBudgetUnits(units: number | null, database: AppDb = db): Promise<void> {
   await setAppSetting(MARKET_INTELLIGENCE_DAILY_QUOTA_BUDGET_SETTING_KEY, units === null ? "" : String(units), database);
 }

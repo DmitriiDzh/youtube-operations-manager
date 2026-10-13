@@ -931,7 +931,7 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
 
     /**
      * BL-181 (FO-REQ-0020 §2.3; plan REPORTING_BASIC_PLAN.md §2 item 7): the evening re-collect -- a second daily boundary
-     * (default 22:05 local, "" = off). It is the one exception to the once-a-day rule `collectMetrics` documents, and only when
+     * (UTC since 2026-10-13: 19:05 for the owner's Helsinki, "" = off). It is the one exception to the once-a-day rule `collectMetrics` documents, and only when
      * there can be something new: the evening boundary has passed, the channel was not collected since it, no evening attempt
      * started since it on this computer, and the Analytics API has not yet returned yesterday (the newest date over every run and
      * every stored row, the other computer's included). It asks only the 3 days ending yesterday. When today's daily run has not

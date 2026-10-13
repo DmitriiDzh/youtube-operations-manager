@@ -15,11 +15,12 @@
 
 import { formatZonedDateAndTime, zonedInstant } from "@/lib/zoned-time";
 
-// BL-182 stage 2: the zone helpers moved to `@/lib/zoned-time` (publishing needs them too); re-exported so callers keep their import.
+// BL-183: the zone helpers moved to `@/lib/zoned-time` (Settings and publishing need them too); re-exported so callers keep their import.
 export { formatZonedDateAndTime, isValidIanaTimezone, isValidLocalTimeOfDay, zonedInstant } from "@/lib/zoned-time";
 
-/** BL-181: what the evening switch turns back on with when no evening time was ever saved -- 22:05 in Helsinki summer time, in UTC
- * since 2026-10-13 (owner, msgs 2725/2727). Pure, so the Settings card and the store share it. */
+/** BL-181: what the Settings card's evening switch turns on with when this computer has no evening time saved (it was off since
+ * the first read) -- 22:05 in Helsinki summer time, in UTC since 2026-10-13 (owner, msgs 2725/2727). Pure, so the client card can
+ * import it. A daily time at or after it shows the evening field as invalid until the owner picks a later one. */
 export const DEFAULT_ANALYTICS_EVENING_UTC_TIME = "19:05";
 
 export function isAnalyticsCollectionStale(args: {

@@ -1,6 +1,6 @@
 // Civil time in an IANA zone: "HH:MM" times of day, zone names, and the instant of a local date and time. Pure, no I/O.
-// Moved out of `analytics/staleness.ts` (Phase 8, BL-059; BL-181) in BL-182 stage 2, because publishing needs the same
-// rules for a channel's publish time -- one owner for them (AGENTS.md §M). `Intl` applies each zone's real DST rules.
+// Moved out of `analytics/staleness.ts` (Phase 8, BL-059; BL-181) in BL-183 (owner msgs 2725/2727: times set in UTC with the
+// owner's own time in parentheses), because Settings and publishing need the same rules -- one owner for them (AGENTS.md §M). `Intl` applies each zone's real DST rules.
 
 const LOCAL_TIME_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
