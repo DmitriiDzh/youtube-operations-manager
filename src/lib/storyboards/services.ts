@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { parseWithSchema } from "@/lib/shared-domain";
 import type {
   StoryboardComment,
@@ -53,7 +54,7 @@ export type StoryboardSummary = {
 
 export type StoryboardDetail = StoryboardSummary & {
   versions: StoryboardVersion[];
-  submissions: Array<{ versionNumber: number; at: string }>;
+  submissions: Array<{ versionNumber: number; at: string; contentHash: string }>;
   decisions: StoryboardDecision[];
   comments: Array<Omit<StoryboardComment, "replies"> & { replies: Array<StoryboardComment["replies"][string]> }>;
   /** BL-184 stage 3: the owner's take per segment, by version number then segment id. */
@@ -87,7 +88,7 @@ function summaryOf(channelId: string, record: StoryboardRecord): StoryboardSumma
     loop: latest.loop,
     createdAt: record.createdAt,
     createdBy: record.createdBy,
-    submittedAt: record.submissions[String(latestNumber)]?.at ?? null,
+    submittedAt: isSubmitted(record, latestNumber) ? record.submissions[String(latestNumber)].at : null,
     lastDecision: last ? { kind: last.kind, versionNumber: last.versionNumber, at: last.at, by: last.by, device: last.device, note: last.note } : null,
     openComments: comments.filter((c) => c.state === "open").length,
     updatedAt: times.reduce((a, b) => (Date.parse(b) > Date.parse(a) ? b : a)),
@@ -99,7 +100,7 @@ function detailOf(channelId: string, record: StoryboardRecord): StoryboardDetail
     ...summaryOf(channelId, record),
     versions: Object.values(record.versions).sort((a, b) => a.number - b.number),
     submissions: Object.entries(record.submissions)
-      .map(([versionNumber, s]) => ({ versionNumber: Number(versionNumber), at: s.at }))
+      .map(([versionNumber, s]) => ({ versionNumber: Number(versionNumber), at: s.at, contentHash: s.contentHash }))
       .sort((a, b) => a.versionNumber - b.versionNumber),
     decisions: Object.values(record.decisions).sort(byTime((d) => d.at, (d) => d.id)),
     comments: Object.values(record.comments)
@@ -172,10 +173,22 @@ function canonical(value: unknown): string {
   return JSON.stringify(value);
 }
 
-/** Two versions hold the same content (the title, loop, keyframes with their frozen sha256, segments, props and notes). */
-function sameContent(a: Omit<StoryboardVersion, "number" | "createdAt">, b: StoryboardVersion): boolean {
-  const content = (v: Omit<StoryboardVersion, "number" | "createdAt">) => canonical([v.title, v.loop, v.keyframes, v.segments, v.props, v.notes]);
-  return content(a) === content(b);
+type VersionContent = Omit<StoryboardVersion, "number" | "createdAt" | "contentHash">;
+
+/** The sha256 of a version's content (the title, loop, keyframes with their frozen sha256, segments, props and notes). */
+export function contentHashOf(v: VersionContent): string {
+  return createHash("sha256").update(canonical([v.title, v.loop, v.keyframes, v.segments, v.props, v.notes])).digest("hex");
+}
+
+/** Two versions hold the same content. */
+function sameContent(a: VersionContent, b: StoryboardVersion): boolean {
+  return contentHashOf(a) === contentHashOf(b);
+}
+
+/** The version was submitted as it is now (its submission names this content). */
+function isSubmitted(record: StoryboardRecord, versionNumber: number): boolean {
+  const version = record.versions[String(versionNumber)];
+  return !!version && record.submissions[String(versionNumber)]?.contentHash === version.contentHash;
 }
 
 /** The comment's target exists in the version it is made on. */
@@ -212,7 +225,7 @@ export function createStoryboardsService(ports: StoryboardsPorts) {
   }
 
   /** The version's content with every keyframe file found in the channel's exchange folders and its sha256 frozen (B1). */
-  async function buildContent(channelId: string, workspace: string, content: StoryboardContentInput): Promise<Omit<StoryboardVersion, "number" | "createdAt">> {
+  async function buildContent(channelId: string, workspace: string, content: StoryboardContentInput): Promise<VersionContent> {
     const segments = checkContent(content);
     const keyframes: StoryboardKeyframe[] = [];
     for (const keyframe of content.keyframes) {
@@ -261,6 +274,11 @@ export function createStoryboardsService(ports: StoryboardsPorts) {
     };
   }
 
+  async function buildVersion(channelId: string, workspace: string, input: StoryboardContentInput): Promise<Omit<StoryboardVersion, "number" | "createdAt">> {
+    const content = await buildContent(channelId, workspace, input);
+    return { ...content, contentHash: contentHashOf(content) };
+  }
+
   /** The owner's actions name the version on their screen: it must still be the latest (another computer may have added one). */
   function assertLatest(record: StoryboardRecord, versionNumber: number): StoryboardVersion {
     const latest = latestVersionNumber(record);
@@ -295,7 +313,7 @@ export function createStoryboardsService(ports: StoryboardsPorts) {
       const { channelId, storyboardId, planId, ...content } = parseWithSchema(createStoryboardInputSchema, input, "storyboard");
       return ports.withLock(async () => {
         const workspace = await assertChannel(channelId);
-        const built = await buildContent(channelId, workspace, content);
+        const built = await buildVersion(channelId, workspace, content);
         const id = storyboardId ?? newId("sb");
         const createdAt = stamp();
         await ports.store.create(channelId, { id, createdAt, createdBy: "operator", planId: planId ?? null }, { ...built, number: 1, createdAt });
@@ -309,7 +327,7 @@ export function createStoryboardsService(ports: StoryboardsPorts) {
       return ports.withLock(async () => {
         const workspace = await assertChannel(channelId);
         const record = await findRecord(channelId, storyboardId);
-        const built = await buildContent(channelId, workspace, content);
+        const built = await buildVersion(channelId, workspace, content);
         const latest = latestVersion(record)!;
         if (sameContent(built, latest)) return { storyboard: detailOf(channelId, record), changed: false, versionNumber: latest.number };
         const versionNumber = await ports.store.addVersion(channelId, storyboardId, { ...built, createdAt: stamp() });
@@ -324,7 +342,7 @@ export function createStoryboardsService(ports: StoryboardsPorts) {
         await assertChannel(channelId);
         const record = await findRecord(channelId, storyboardId);
         const latest = latestVersionNumber(record);
-        if (record.submissions[String(latest)]) return { storyboard: detailOf(channelId, record), alreadySubmitted: true };
+        if (isSubmitted(record, latest)) return { storyboard: detailOf(channelId, record), alreadySubmitted: true };
         await ports.store.submit(channelId, storyboardId, latest, stamp());
         return { storyboard: detailOf(channelId, await findRecord(channelId, storyboardId)), alreadySubmitted: false };
       });
@@ -474,12 +492,12 @@ export function createStoryboardsService(ports: StoryboardsPorts) {
       const { kind, versionNumber, note } = parseWithSchema(ownerDecisionInputSchema, input, "decision");
       return ports.withLock(async () => {
         const record = await findRecord(channelId, storyboardId);
-        assertLatest(record, versionNumber);
-        if (!record.submissions[String(versionNumber)]) {
+        const version = assertLatest(record, versionNumber);
+        if (!isSubmitted(record, versionNumber)) {
           throw new DomainError({ code: "storyboard_not_submitted", message: `Version ${versionNumber} is still a draft: the Operator has not submitted it`, details: { storyboardId, versionNumber } });
         }
         const id = newId("d");
-        await ports.store.addDecision(channelId, storyboardId, { id, kind, versionNumber, by: "owner", device: await ports.deviceLabel(), at: stamp(), note: note ?? null });
+        await ports.store.addDecision(channelId, storyboardId, { id, kind, versionNumber, contentHash: version.contentHash, by: "owner", device: await ports.deviceLabel(), at: stamp(), note: note ?? null });
         return { decisionId: id, state: storyboardState(await findRecord(channelId, storyboardId)) };
       });
     },

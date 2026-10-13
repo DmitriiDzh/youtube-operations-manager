@@ -38,6 +38,7 @@ const version = (title: string): StoryboardVersion => ({
   segments: [{ id: "S1", fromKeyframeId: "K0", toKeyframeId: "K1", action: "puts the glass away", durationSeconds: 8, model: "ltx", settings: { frames: 193 }, estimateUsd: null }],
   props: [{ id: "glass", name: "Glass", kind: "object", cells: { K0: "in his hand", K1: "under the counter" } }],
   notes: null,
+  contentHash: "h1",
 });
 const comment = (id: string, text: string): StoryboardComment => ({
   id,
@@ -73,7 +74,7 @@ test("comments and decisions from both computers at once are all kept; a new ver
   await cycle(mac, windows);
   await windows.addComment(CH, "sb1", comment("c-win", "where is the glass?"));
   await mac.addComment(CH, "sb1", comment("c-mac", "towel position"));
-  await windows.addDecision(CH, "sb1", { id: "d1", kind: "changes_requested", versionNumber: 1, by: "owner", device: "Windows", at: "2026-10-13T12:06:00Z", note: null });
+  await windows.addDecision(CH, "sb1", { id: "d1", kind: "changes_requested", versionNumber: 1, contentHash: "h1", by: "owner", device: "Windows", at: "2026-10-13T12:06:00Z", note: null });
   assert.equal(await mac.addVersion(CH, "sb1", { ...version("Bar loop"), createdAt: "2026-10-13T12:10:00Z" }), 2);
   await mac.addReply(CH, "sb1", "c-mac", { id: "r1", author: "operator", device: null, text: "fixed in v2", createdAt: "2026-10-13T12:11:00Z" });
   await cycle(mac, windows);
@@ -125,4 +126,36 @@ test("BL-184 stage 3: a take picked for a segment on one computer is on the othe
   await cycle(mac, windows);
   assert.deepEqual((await windows.read(CH))[0].picks, { "1": {} });
   await assert.rejects(mac.setPick(CH, "sb1", 9, "S1", null), (e: unknown) => isDomainError(e) && e.code === "not_found");
+});
+
+// Independent review (BL-184): both computers' first picks merge -- the picks map exists from the start.
+test("picks made on both computers before a sync are both kept", async () => {
+  const mac = computer();
+  const windows = computer();
+  await mac.create(CH, { id: "sb1", createdAt: "2026-10-13T12:00:00Z", createdBy: "operator", planId: null }, version("Bar loop"));
+  await cycle(mac, windows);
+  await mac.setPick(CH, "sb1", 1, "S1", { source: "gemini", jobId: "gm_1", device: "Mac", at: "2026-10-13T14:00:00Z" });
+  await windows.setPick(CH, "sb1", 1, "S2", { source: "media", jobId: "job-2", device: "Windows", at: "2026-10-13T14:00:01Z" });
+  await cycle(mac, windows);
+  for (const c of [mac, windows]) assert.deepEqual(Object.keys((await c.read(CH))[0].picks?.["1"] ?? {}).sort(), ["S1", "S2"]);
+});
+
+// Independent review (BL-184): two computers that both write "version 2" before a sync keep one body; the owner's approval of the
+// other body must not approve it. Decisions and submissions name the content hash they were made on.
+test("an approval of one computer's version 2 never approves the other computer's version 2", async () => {
+  const { storyboardState } = await import("@/lib/storyboards/model");
+  const mac = computer();
+  const windows = computer();
+  await mac.create(CH, { id: "sb1", createdAt: "2026-10-13T12:00:00Z", createdBy: "operator", planId: null }, version("Bar loop"));
+  await cycle(mac, windows);
+  await mac.addVersion(CH, "sb1", { ...version("A content"), contentHash: "hash-A" });
+  await mac.submit(CH, "sb1", 2, "2026-10-13T12:10:00Z");
+  await mac.addDecision(CH, "sb1", { id: "d1", kind: "approved", versionNumber: 2, contentHash: "hash-A", by: "owner", device: "Mac", at: "2026-10-13T12:11:00Z", note: null });
+  await windows.addVersion(CH, "sb1", { ...version("B content"), contentHash: "hash-B" });
+  await cycle(mac, windows);
+  for (const c of [mac, windows]) {
+    const [sb] = await c.read(CH);
+    const survivor = sb.versions["2"].contentHash;
+    assert.equal(storyboardState(sb) === "approved", survivor === "hash-A", `the surviving body ${survivor} is approved only if it is the approved one`);
+  }
 });

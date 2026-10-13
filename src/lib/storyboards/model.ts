@@ -12,10 +12,12 @@ export const latestVersion = (record: Pick<StoryboardRecord, "versions">): Story
  * puts the storyboard back in review (or draft, until submitted).
  */
 export function storyboardState(record: Pick<StoryboardRecord, "versions" | "submissions" | "decisions">): StoryboardState {
-  const latest = latestVersionNumber(record);
-  if (!record.submissions[String(latest)]) return "draft";
+  const latest = latestVersion(record);
+  if (!latest) return "draft";
+  // A submission or a decision counts only for the content it was made on (the version's hash): see `contentHash`.
+  if (record.submissions[String(latest.number)]?.contentHash !== latest.contentHash) return "draft";
   const decisions = Object.values(record.decisions)
-    .filter((d) => d.versionNumber === latest)
+    .filter((d) => d.versionNumber === latest.number && d.contentHash === latest.contentHash)
     .sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.id.localeCompare(b.id));
   const last = decisions[decisions.length - 1];
   return last ? (last.kind === "approved" ? "approved" : "changes_requested") : "in_review";
@@ -35,6 +37,11 @@ export type VersionDiff = {
   segmentsRemoved: string[];
   propCellsChanged: Array<{ propId: string; keyframeId: string }>;
   notesChanged: boolean;
+  /** Independent review: every content change shows -- a caption or a parent edited on the same image, the order, the title, loop. */
+  keyframesEdited: string[];
+  orderChanged: boolean;
+  titleChanged: boolean;
+  loopChanged: boolean;
 };
 
 function sameSettings(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
@@ -73,6 +80,18 @@ export function diffVersions(previous: StoryboardVersion, next: StoryboardVersio
     segmentsRemoved: previous.segments.filter((s) => !nextS.has(s.id)).map((s) => s.id),
     propCellsChanged,
     notesChanged: (previous.notes ?? "") !== (next.notes ?? ""),
+    keyframesEdited: next.keyframes
+      .filter((k) => {
+        const before = prevK.get(k.id);
+        return !!before && before.sha256 === k.sha256 && ((before.caption ?? null) !== (k.caption ?? null) || (before.parentKeyframeId ?? null) !== (k.parentKeyframeId ?? null));
+      })
+      .map((k) => k.id),
+    orderChanged: (() => {
+      const kept = (list: StoryboardVersion["keyframes"], other: Map<string, unknown>) => list.filter((k) => other.has(k.id)).map((k) => k.id).join("|");
+      return kept(previous.keyframes, nextK) !== kept(next.keyframes, prevK);
+    })(),
+    titleChanged: previous.title !== next.title,
+    loopChanged: previous.loop !== next.loop,
   };
 }
 

@@ -19,6 +19,7 @@ const version = (loop: boolean): StoryboardVersion => ({
   segments: loop ? [seg("S4", "K3", "K0"), seg("S1", "K0", "K1"), seg("S3", "K2", "K3"), seg("S2", "K1", "K2")] : [seg("S1", "K0", "K1"), seg("S2", "K1", "K2"), seg("S3", "K2", "K3")],
   props: [],
   notes: null,
+  contentHash: "h1",
 });
 const label = (item: ReturnType<typeof filmstripOf>[number]) => (item.kind === "segment" ? item.segment.id : item.closing ? `↺${item.keyframe.id}` : item.keyframe.id);
 
@@ -64,14 +65,14 @@ test("B2 comments: one target key per keyframe, segment, prop cell or the whole 
 });
 
 test("B2/B3 decisions: offered on the latest version once submitted -- never on a draft or an older version", () => {
-  const sb = { latestVersion: 2, submissions: [{ versionNumber: 1, at: "x" }, { versionNumber: 2, at: "y" }] };
+  const sb = { latestVersion: 2, submittedAt: "2026-10-13T12:00:00Z" };
   assert.equal(decisionsOffered(sb, 2), true);
   assert.equal(decisionsOffered(sb, 1), false);
-  assert.equal(decisionsOffered({ latestVersion: 3, submissions: sb.submissions }, 3), false);
+  assert.equal(decisionsOffered({ latestVersion: 3, submittedAt: null }, 3), false);
 });
 
 test("B3 marks: replaced and added keyframes, edited and added segments, and changed cells are marked", () => {
-  const marks = changedMarks({ keyframesReplaced: ["K1"], keyframesAdded: ["K4"], keyframesRemoved: ["K9"], segmentsChanged: ["S3"], segmentsAdded: ["S5"], segmentsRemoved: [], propCellsChanged: [{ propId: "glass", keyframeId: "K2" }], notesChanged: false });
+  const marks = changedMarks({ keyframesReplaced: ["K1"], keyframesAdded: ["K4"], keyframesRemoved: ["K9"], segmentsChanged: ["S3"], segmentsAdded: ["S5"], segmentsRemoved: [], propCellsChanged: [{ propId: "glass", keyframeId: "K2" }], notesChanged: false, keyframesEdited: [], orderChanged: false, titleChanged: false, loopChanged: false });
   assert.deepEqual([[...marks.keyframes], [...marks.segments], [...marks.cells]], [["K1", "K4"], ["S3", "S5"], ["glass|K2"]]);
   assert.deepEqual([...changedMarks(null).keyframes], []);
 });

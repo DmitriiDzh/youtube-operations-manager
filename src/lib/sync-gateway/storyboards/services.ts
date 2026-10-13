@@ -73,7 +73,8 @@ export function createStoryboardsCore(deps: ServiceDependencies) {
         const doc = await loadOrGenesis(channelId);
         if (doc.storyboards?.[record.id]) throw new DomainError({ code: "validation_failed", message: "A storyboard with this id exists", details: { storyboardId: record.id } });
         const next = Automerge.change(doc, `create storyboard ${record.id}`, (draft) => {
-          draft.storyboards[record.id] = { ...clone(record), versions: { [String(first.number)]: clone(first) }, submissions: {}, decisions: {}, comments: {} };
+          // `picks` and its version entry exist from the start, so two computers' first picks merge instead of one replacing the other.
+          draft.storyboards[record.id] = { ...clone(record), versions: { [String(first.number)]: clone(first) }, submissions: {}, decisions: {}, comments: {}, picks: { [String(first.number)]: {} } };
         });
         await deps.core.save(channelId, next);
       });
@@ -85,14 +86,17 @@ export function createStoryboardsCore(deps: ServiceDependencies) {
       await changeStoryboard(channelId, storyboardId, `version ${storyboardId}`, (record) => {
         number = Math.max(0, ...Object.keys(record.versions).map(Number)) + 1;
         record.versions[String(number)] = clone({ ...version, number });
+        if (!record.picks) record.picks = {};
+        record.picks[String(number)] = {};
       });
       return number;
     },
 
     submit(channelId: string, storyboardId: string, versionNumber: number, at: string): Promise<void> {
       return changeStoryboard(channelId, storyboardId, `submit ${storyboardId} v${versionNumber}`, (record) => {
-        if (!record.versions[String(versionNumber)]) throw notFound("Version", { storyboardId, versionNumber });
-        record.submissions[String(versionNumber)] = { at };
+        const version = record.versions[String(versionNumber)];
+        if (!version) throw notFound("Version", { storyboardId, versionNumber });
+        record.submissions[String(versionNumber)] = { at, contentHash: version.contentHash };
       });
     },
 

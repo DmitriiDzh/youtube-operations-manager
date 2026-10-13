@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
-import { CH, V1, V2_GLASS, barLoop, code, segments, setup, sha } from "./storyboards-harness.test";
+import { CH, V1, V2_GLASS, barLoop, code, keyframes, segments, setup, sha } from "./storyboards-harness.test";
 import { approvedVersion, changedPropCells } from "./model";
 
 // BL-184 stage 1 -- acceptance FO-REQ-0024 §5 steps 1-3 (B1 content, B2 review, B3 versions), on the REAL workspace-exchange rules
@@ -175,6 +175,10 @@ test("§5 step 3 (B3): v2 from bar/v2/, the Operator answers and resolves, submi
         { propId: "glass", keyframeId: "K3" },
       ],
       notesChanged: false,
+      keyframesEdited: [],
+      orderChanged: false,
+      titleChanged: false,
+      loopChanged: false,
     });
     assert.equal(await service.versionDiff(CH, "bar-loop", 1), null);
 
@@ -188,6 +192,10 @@ test("§5 step 3 (B3): v2 from bar/v2/, the Operator answers and resolves, submi
     const edited = await service.update({ ...barLoop("bar/v2", V2_GLASS), segments: segments().map((s) => (s.id === "S3" ? { ...s, action: "he folds the towel" } : s)) });
     assert.deepEqual([edited.changed, edited.versionNumber, edited.storyboard.state], [true, 3, "draft"]);
     assert.deepEqual((await service.versionDiff(CH, "bar-loop", 3))?.segmentsChanged, ["S3"]);
+    // Independent review: a caption-only edit is a new version, and its diff says what changed (B3: "texts edited").
+    const captioned = await service.update({ ...barLoop("bar/v2", V2_GLASS), segments: segments().map((s) => (s.id === "S3" ? { ...s, action: "he folds the towel" } : s)), keyframes: keyframes("bar/v2").map((k) => (k.id === "K2" ? { ...k, caption: "the glass is under the counter" } : k)) });
+    const captionDiff = await service.versionDiff(CH, "bar-loop", captioned.versionNumber);
+    assert.deepEqual([captioned.changed, captionDiff?.keyframesEdited, captionDiff?.keyframesReplaced, captionDiff?.titleChanged], [true, ["K2"], [], false]);
     await service.submit({ channelId: CH, storyboardId: "bar-loop" });
     assert.equal((await service.getForOwner(CH, "bar-loop")).state, "in_review");
   } finally {
@@ -238,7 +246,7 @@ test("ADR 0038 §4: the approved version is the latest one only while its newest
         createdBy: detail.createdBy,
         planId: detail.planId,
         versions: Object.fromEntries(detail.versions.map((v) => [String(v.number), v])),
-        submissions: Object.fromEntries(detail.submissions.map((s) => [String(s.versionNumber), { at: s.at }])),
+        submissions: Object.fromEntries(detail.submissions.map((s) => [String(s.versionNumber), { at: s.at, contentHash: s.contentHash }])),
         decisions: Object.fromEntries(detail.decisions.map((d) => [d.id, d])),
         comments: {},
       };

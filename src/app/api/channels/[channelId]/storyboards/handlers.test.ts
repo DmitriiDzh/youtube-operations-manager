@@ -57,6 +57,7 @@ function make(options: { session?: { user: { id: string } } | null; refuse?: Dom
     readFile: async () => new Uint8Array([1, 2, 3]),
     takes: async () => TAKES,
     takeFile: async (_channelId, take) => (take.localPath ? { path: VIDEO_FILE, bytes: 10 } : null),
+    isLoopback: (request) => request.headers.get("x-test-remote") === null,
   });
   return { handlers, calls };
 }
@@ -149,4 +150,11 @@ test("BL-184 stage 3 (B5): a pick is checked against the storyboard's own takes 
   await handlers.pick(json("POST", { versionNumber: 2, segmentId: "S2", take: { source: "gemini", jobId: "gm_1" } }), ctx(base));
   await handlers.pick(json("POST", { versionNumber: 1, segmentId: "S1", take: { source: "gemini", jobId: "gm_1" } }), ctx(base));
   assert.deepEqual(calls.filter((c) => c[0] === "pick").map((c) => c[3]), [true, false, false]);
+});
+
+test("ADR 0029 decision 5: keyframe images and take videos are sent only to a request from this computer", async () => {
+  const { handlers } = make();
+  const remote = new Request("http://x/", { headers: { "x-test-remote": "1" } });
+  assert.equal((await handlers.keyframe(remote, ctx({ channelId: "UC_active", storyboardId: "sb", version: "1", keyframeId: "K0" }))).status, 403);
+  assert.equal((await handlers.takeVideo(remote, ctx({ channelId: "UC_active", storyboardId: "sb", source: "gemini", jobId: "gm_1" }))).status, 403);
 });

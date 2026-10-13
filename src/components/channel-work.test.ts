@@ -47,7 +47,8 @@ test("AC-BL-04/06: only channels that are not active get entries; one review ent
   const fromJapan = otherChannelEntries(t, [japan, tropico], "UC_japan");
   assert.deepEqual(fromJapan, [
     { key: "UC_tropico:review", channelId: "UC_tropico", text: "Media: 5 tracks waiting for review", href: "/media/plans" },
-    { key: "UC_tropico:here:T-1:stage_complete", channelId: "UC_tropico", text: "Media: plan Jazz wave 1, stage complete: Generate", href: "/media/plans" },
+    // BL-184 stage 3: a plan's notice opens that plan (Media's kind tabs could hide it under the first tab).
+    { key: "UC_tropico:here:T-1:stage_complete", channelId: "UC_tropico", text: "Media: plan Jazz wave 1, stage complete: Generate", href: "/media/plans/T-1/review" },
   ]);
   assert.deepEqual(otherChannelEntries(t, [japan, tropico], null).map((e) => e.key), ["UC_japan:review", "UC_tropico:review", "UC_tropico:here:T-1:stage_complete"], "no active channel: every channel");
   assert.deepEqual(otherChannelEntries(t, [work({ channelId: "UC_quiet" })], null), [], "nothing open, no entry");

@@ -42,6 +42,12 @@ export type StoryboardVersion = {
   segments: StoryboardSegment[];
   props: StoryboardProp[];
   notes: string | null;
+  /**
+   * The sha256 of the version's content. Submissions and decisions carry the hash of the content they were made on and count only
+   * while it matches: two computers that both wrote "version N" before a sync keep one body, and an approval of the other body
+   * approves nothing (independent review, BL-184).
+   */
+  contentHash: string;
 };
 
 export type StoryboardCommentTarget =
@@ -74,6 +80,8 @@ export type StoryboardDecision = {
   id: string;
   kind: "approved" | "changes_requested";
   versionNumber: number;
+  /** The content hash of the version the owner decided on (`StoryboardVersion.contentHash`). */
+  contentHash: string;
   by: string;
   device: string | null;
   at: string;
@@ -94,7 +102,7 @@ export type StoryboardRecord = {
   /** By version number as a string ("1", "2", ...). */
   versions: Record<string, StoryboardVersion>;
   /** By version number: when the Operator put that version in review. */
-  submissions: Record<string, { at: string }>;
+  submissions: Record<string, { at: string; contentHash: string }>;
   decisions: Record<string, StoryboardDecision>;
   comments: Record<string, StoryboardComment>;
   /** BL-184 stage 3: by version number, then segment id (absent = no pick yet). */

@@ -27,7 +27,10 @@ test("§5 step 4 / AC-SG-04, AC-SG-05: a link is refused before approval and acc
   try {
     const gate = createStoryboardGate(env.sync);
     const s1v1 = { channelId: CH, firstFrameSha256: sha(V1.K0), lastFrameSha256: sha(V1.K1), link: { storyboardId: "bar-loop", segmentId: "S1" } };
+    // v1 is submitted and waits for the owner (in review): not approved.
     await code(gate.check(s1v1), "storyboard_not_approved", { reason: "not_approved" });
+    // The same storyboard id named for another channel: it is not there.
+    await code(gate.check({ ...s1v1, channelId: "UC_other" }), "storyboard_not_approved", { reason: "not_found" });
     await env.service.ownerDecide(CH, "bar-loop", { kind: "changes_requested", versionNumber: 1 });
     await env.service.update(barLoop("bar/v2", V2_GLASS));
     await env.service.submit({ channelId: CH, storyboardId: "bar-loop" });

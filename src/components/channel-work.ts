@@ -84,7 +84,8 @@ export function otherChannelEntries(t: Translate, channels: readonly PlanChannel
               : notice.kind === "budget_100"
                 ? t("channelWork.budget100", { plan })
                 : t("channelWork.budget80", { plan });
-      entries.push({ key: `${work.channelId}:${planKey}:${notice.kind}`, channelId: work.channelId, text, href: "/media/plans" });
+      // BL-184 stage 3 (independent review): to the plan itself -- Media's kind tabs could hide it under the first tab.
+      entries.push({ key: `${work.channelId}:${planKey}:${notice.kind}`, channelId: work.channelId, text, href: planReviewHref(planId, device ?? undefined) });
     }
   }
   return entries;

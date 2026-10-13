@@ -2011,9 +2011,10 @@ const K1 = "/ws/99 Data Exchange/Sent to YTM/bar/v2/K1.png";
 
 function flfFixture() {
   const f = fixture({ sentToYtm: new Map([["bar/v2/K0.png", { path: K0, bytes: 4 }], ["bar/v2/K1.png", { path: K1, bytes: 4 }]]) });
-  // The fixture's local file hashing reads this map (the frames' bytes on "this computer").
-  f.s3.files.set(K0, new Uint8Array([0, 0, 0, 0]));
-  f.s3.files.set(K1, new Uint8Array([1, 1, 1, 1]));
+  // The fixture's local file hashing reads this map (the frames' bytes on "this computer"); the fake upload stores "contents of
+  // <path>", so these are the bytes the upload sends too.
+  f.s3.files.set(K0, new TextEncoder().encode(`contents of ${K0}`));
+  f.s3.files.set(K1, new TextEncoder().encode(`contents of ${K1}`));
   return f;
 }
 
@@ -2042,7 +2043,7 @@ test("BL-184 §5 step 4: two different frames are hashed and the gate refuses be
     f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x", first: "bar/v2/K0.png", last: "bar/v2/K1.png" }, createdBy: "factory" }),
     (e: unknown) => isDomainError(e) && e.code === "storyboard_not_approved"
   );
-  assert.deepEqual(f.gate.calls, [{ channelId: "UC1", firstFrameSha256: sha256(new Uint8Array([0, 0, 0, 0])), lastFrameSha256: sha256(new Uint8Array([1, 1, 1, 1])), link: null }]);
+  assert.deepEqual(f.gate.calls, [{ channelId: "UC1", firstFrameSha256: sha256(new TextEncoder().encode(`contents of ${K0}`)), lastFrameSha256: sha256(new TextEncoder().encode(`contents of ${K1}`)), link: null }]);
   assert.equal(f.mem.jobs.size, 0);
   assert.equal(f.s3.calls.filter((c) => c.startsWith("put:")).length, 0, "nothing uploaded to the volume");
   assert.equal(f.comfy.submits.length, 0, "nothing sent to ComfyUI");
@@ -2081,4 +2082,20 @@ test("BL-184: a template's media kind -- video before audio before image; nothin
   assert.equal(templateMediaKind(graph("VHS_VideoCombine"), ids(1)), "video");
   assert.equal(templateMediaKind(graph("PreviewAny"), ids(1)), null);
   assert.equal(templateMediaKind(graph("SaveImage"), []), null, "only the template's own output nodes count");
+});
+
+// Independent review (BL-184): a frame overwritten between the storyboard check and the upload is not sent as if it were checked --
+// the upload's own sha256 must be the one the gate saw; otherwise the uploads are removed and no job exists.
+test("BL-184: a frame that changed after the storyboard check fails the job before anything reaches ComfyUI", async () => {
+  const f = flfFixture();
+  f.s3.files.set(K1, new TextEncoder().encode("the bytes the gate saw, overwritten before the upload"));
+  const t = await f.services.importWorkflowTemplate({ name: "flf", workflow: FLF_GRAPH, parameters: FLF_PARAMS });
+  f.gate.answer = async () => ({ storyboardId: "bar-loop", versionNumber: 2, segmentId: "S1" });
+  await assert.rejects(
+    f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x", first: "bar/v2/K0.png", last: "bar/v2/K1.png" }, createdBy: "factory", storyboard: { storyboardId: "bar-loop", segmentId: "S1" } }),
+    (e: unknown) => isDomainError(e) && e.code === "media_input_unavailable" && /changed after the storyboard check/.test(e.message)
+  );
+  assert.equal(f.mem.jobs.size, 0);
+  assert.equal(f.comfy.submits.length, 0);
+  assert.ok(f.s3.calls.some((c) => c.startsWith("delete:exchange/in/")), "the inputs already uploaded are removed again");
 });

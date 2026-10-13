@@ -7,6 +7,7 @@ import { createChannelAccessCore } from "@/lib/channel-access";
 import { DomainError } from "@/lib/shared-domain";
 import { createStoryboardsServiceForProduction, type StoryboardsService } from "@/lib/storyboards";
 import { streamLocalFile } from "@/lib/local-file-response";
+import { isLoopbackRequest } from "@/lib/loopback-guard";
 import { getVideoMetadataErrorStatus } from "../../../video-metadata/error-status";
 import { listStoryboardTakes, resolveTakeFile, videoTypeOf, type StoryboardTake } from "./takes";
 
@@ -26,6 +27,8 @@ export type StoryboardRouteDeps = {
   /** BL-184 stage 3: the storyboard's takes (the video modules' linked jobs) and a take's file on this computer. */
   takes: (channelId: string, storyboardId: string) => Promise<StoryboardTake[]>;
   takeFile: (channelId: string, take: StoryboardTake) => Promise<{ path: string; bytes: number } | null>;
+  /** ADR 0029 decision 5: a local file is sent only to a request from this computer (a second layer behind the 127.0.0.1 bind). */
+  isLoopback: (request: Request) => boolean;
 };
 
 const defaultDeps = (): StoryboardRouteDeps => ({
@@ -37,6 +40,7 @@ const defaultDeps = (): StoryboardRouteDeps => ({
   readFile: (filePath) => readFile(filePath),
   takes: listStoryboardTakes,
   takeFile: resolveTakeFile,
+  isLoopback: (request) => isLoopbackRequest(request.headers),
 });
 
 /** The image types a keyframe may be (the viewer shows them as they are). */
@@ -124,6 +128,7 @@ export function createStoryboardRouteHandlers(deps: StoryboardRouteDeps = defaul
     /** B5: a take's video, with HTTP Range (the player seeks, the seam tools read the last and first frames). */
     takeVideo: (request: Request, context: Params<Base & { storyboardId: string; source: string; jobId: string }>) =>
       guarded(context, async ({ channelId, storyboardId, source, jobId }) => {
+        if (!deps.isLoopback(request)) return NextResponse.json({ error: "forbidden", message: "Local files are served to this computer only" }, { status: 403 });
         const take = (await deps.takes(channelId, storyboardId)).find((t) => t.source === source && t.jobId === jobId);
         if (!take) return NextResponse.json({ error: "storyboard_not_found", message: "Not a take of this storyboard" }, { status: 404 });
         const file = await deps.takeFile(channelId, take);
@@ -141,8 +146,9 @@ export function createStoryboardRouteHandlers(deps: StoryboardRouteDeps = defaul
       }),
 
     /** The keyframe's image as this computer has it (even when it differs from the frozen sha256: review is not blocked). */
-    keyframe: (_request: Request, context: Params<Base & { storyboardId: string; version: string; keyframeId: string }>) =>
+    keyframe: (request: Request, context: Params<Base & { storyboardId: string; version: string; keyframeId: string }>) =>
       guarded(context, async ({ channelId, storyboardId, version, keyframeId }) => {
+        if (!deps.isLoopback(request)) return NextResponse.json({ error: "forbidden", message: "Local files are served to this computer only" }, { status: 403 });
         const number = Number(version);
         if (!Number.isInteger(number) || number < 1) return NextResponse.json({ error: "validation_failed", message: "version must be a whole number" }, { status: 400 });
         const found = await deps.service().keyframeFile(channelId, storyboardId, number, keyframeId);

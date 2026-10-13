@@ -45,6 +45,9 @@
    - **Comments are a map by `commentId`.** Each comment has a target (the storyboard, a keyframe, a segment or a prop cell), an
      optional pin (`PlanMarker.region`), author (owner or operator), text, state (open or resolved), the version it was made on,
      and replies (a map by `replyId`). Ids as map keys and whole-value fields keep the two computers' appends from colliding.
+     Version numbers are not random ids: two computers that both write "version N" before a sync keep one body. So every version
+     carries the sha256 of its content, and submissions and decisions name that hash -- they count only for the content they
+     were made on (independent review, 2026-10-13).
    - **The approval is `{ versionId, by, at }`.** It counts only while `versionId` is the latest version. A new version therefore
      ends the approval without anything being edited; an approval of v2 made on Windows while the Mac adds v3 approves nothing
      current.

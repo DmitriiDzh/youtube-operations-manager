@@ -1582,9 +1582,15 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       // BL-184 stage 2 (FO-REQ-0024 B4): the storyboard gate, with the sha256 of the template's first / last frame inputs as they are
       // on this computer -- before anything is uploaded to the volume or sent to ComfyUI. A template whose image inputs carry no role
       // is not a first/last-frame template to the gate (the Operator tags them).
+      // The hashes are kept: the upload's own sha256 must match them (independent review: a frame overwritten between this check and
+      // the upload would otherwise send bytes the gate never saw).
+      const checkedFrames = new Map<string, string>();
       const frameSha = async (role: "first_frame" | "last_frame") => {
         const input = inputs.find((i) => i.parameter.role === role);
-        return input ? deps.fs.sha256File(input.file.path) : null;
+        if (!input) return null;
+        const sha = await deps.fs.sha256File(input.file.path);
+        checkedFrames.set(input.parameter.name, sha);
+        return sha;
       };
       const storyboard = await deps.storyboardGate.check({
         channelId: parsed.channelId,
@@ -1615,6 +1621,8 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
             await deps.sessions.touchActivity(parsed.sessionId);
             const sent = await s3.putObjectFromFile(upload.remoteKey, upload.file.path, inputContentType(upload.name), { maxBytes: upload.maxBytes, expectedIdentity: upload.file.identity });
             uploaded.push(upload.remoteKey);
+            const checked = checkedFrames.get(upload.parameter.name);
+            if (checked !== undefined && sent.sha256 !== checked) throw new Error("the frame changed after the storyboard check");
             await deps.store.inputs!.insert({ remoteKey: upload.remoteKey, jobId, parameter: upload.parameter.name, sourcePath: upload.relativePath, bytes: sent.bytes, sha256: sent.sha256, uploadedAt: deps.clock.now() });
           } catch (error) {
             for (const key of uploaded) {

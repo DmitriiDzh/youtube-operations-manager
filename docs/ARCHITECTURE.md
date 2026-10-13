@@ -4023,7 +4023,10 @@ gate's scope), Telegram msgs 2739 (go), 2741/2743 (the layout: Music | Images | 
   twelfth family; genesis actor "storyboards-doc1"). A record holds `versions` (by number, assigned whole, never edited), `submissions`
   (by version), `decisions`, `comments` (by id, with `replies` by id), `picks` (by version, then segment) and the channel's `gate`
   setting. Appends use fresh ids as map keys, so the two computers' writes merge without conflicts; a comment's state and a pick are
-  whole values (the last writer wins).
+  whole values (the last writer wins). Version numbers are counted locally, so two computers can both write "version N" before a
+  sync and one body survives: each version carries `contentHash` (sha256 of its content), and a submission or a decision counts only
+  while it names the surviving content's hash -- an approval never lands on content the owner did not see. `picks` and its version
+  entry exist from a version's creation, so first picks from both computers merge.
 - **Content rules** (`services.ts checkContent`): unique ids; the segments are exactly the chain of neighbouring keyframes (and the
   last back to the first with `loop`), stored in chain order; a prop cell names a keyframe of the version; a parent is another
   keyframe. Keyframe files are paths relative to the channel's `99 Data Exchange/` (`Sent to YTM/...`, or a Gemini / GPU job's own
@@ -4061,6 +4064,8 @@ gate's scope), Telegram msgs 2739 (go), 2741/2743 (the layout: Music | Images | 
 
 ### 48.3 The video and the tabs (stage 3)
 
+- **Local files** (the keyframe image, a take's video) are sent only to a loopback request (ADR 0029 decision 5), as plan auditions.
+  A GPU job's uploaded frame must hash as the gate saw it; a frame overwritten in between fails the job before ComfyUI.
 - **Takes** (`/storyboards/[id]/takes`, composed in the route layer from both video modules' `listJobsByStoryboard`): each linked job
   with its state and whether this computer has its video; `takes/[source]/[jobId]` streams it with Range, only from that job's own
   folder (`resolveFromYtmJobFile`); `picks` stores the owner's take per segment of a version (only a take of that segment and version).

@@ -554,6 +554,10 @@ export function StoryboardReviewScreen({ channelId, storyboardId, onClose, initi
           data.diff.segmentsRemoved.length ? t("storyboards.diff.segmentsRemoved", { ids: data.diff.segmentsRemoved.join(", ") }) : null,
           data.diff.propCellsChanged.length ? t("storyboards.diff.cells", { count: data.diff.propCellsChanged.length }) : null,
           data.diff.notesChanged ? t("storyboards.diff.notes") : null,
+          data.diff.keyframesEdited?.length ? t("storyboards.diff.keyframesEdited", { ids: data.diff.keyframesEdited.join(", ") }) : null,
+          data.diff.orderChanged ? t("storyboards.diff.order") : null,
+          data.diff.titleChanged ? t("storyboards.diff.title2") : null,
+          data.diff.loopChanged ? t("storyboards.diff.loop") : null,
         ].filter(Boolean)
       : [];
 

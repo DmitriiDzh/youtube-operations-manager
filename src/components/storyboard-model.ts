@@ -101,8 +101,11 @@ export function changedMarks(diff: VersionDiff | null): { keyframes: Set<string>
 /** Whether the diff has anything to say (a version identical in content is never stored, but its notes may be all that changed). */
 export function diffIsEmpty(diff: VersionDiff): boolean {
   return (
-    diff.keyframesReplaced.length + diff.keyframesAdded.length + diff.keyframesRemoved.length + diff.segmentsChanged.length + diff.segmentsAdded.length + diff.segmentsRemoved.length + diff.propCellsChanged.length === 0 &&
-    !diff.notesChanged
+    diff.keyframesReplaced.length + diff.keyframesAdded.length + diff.keyframesRemoved.length + diff.segmentsChanged.length + diff.segmentsAdded.length + diff.segmentsRemoved.length + diff.propCellsChanged.length + (diff.keyframesEdited?.length ?? 0) === 0 &&
+    !diff.notesChanged &&
+    !diff.orderChanged &&
+    !diff.titleChanged &&
+    !diff.loopChanged
   );
 }
 
@@ -110,8 +113,9 @@ export function diffIsEmpty(diff: VersionDiff): boolean {
  * Whether «Запросить изменения» / «Одобрить эту версию» are offered for the version shown: only the latest, only once the Operator
  * has submitted it (ADR 0038 §2). The module refuses the rest anyway; this keeps the buttons honest.
  */
-export function decisionsOffered(detail: Pick<StoryboardDetail, "latestVersion" | "submissions">, versionShown: number): boolean {
-  return versionShown === detail.latestVersion && detail.submissions.some((s) => s.versionNumber === versionShown);
+export function decisionsOffered(detail: Pick<StoryboardDetail, "latestVersion" | "submittedAt">, versionShown: number): boolean {
+  // `submittedAt` is the latest version's submission, and only when it names the content shown (its hash).
+  return versionShown === detail.latestVersion && detail.submittedAt !== null;
 }
 
 /** The image route of a keyframe of a version (this computer's copy). */
