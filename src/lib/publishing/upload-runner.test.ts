@@ -351,11 +351,11 @@ test("AC-UP-09: processing rejected stops the job with the reason, no retry", as
 test("AC-UP-03 and approval binding: a wrong channel or a package changed on disk fails before any upload call", async () => {
   const wrong = harness([job()], {
     assertWriteChannel: async () => {
-      throw new DomainError({ code: "WRONG_CHANNEL", message: "The token belongs to another channel" });
+      throw new DomainError({ code: "WRITE_CHANNEL_MISMATCH", message: "The token belongs to another channel" });
     },
   });
   await wrong.runner.tick();
-  assert.deepEqual([wrong.row().status, wrong.row().errorCode], ["failed", "WRONG_CHANNEL"]);
+  assert.deepEqual([wrong.row().status, wrong.row().errorCode], ["failed", "WRITE_CHANNEL_MISMATCH"]);
   assert.equal(wrong.yt.log.length, 0);
   const changed = harness([job()]);
   changed.deps.files.sha256 = async () => "sha-edited";
