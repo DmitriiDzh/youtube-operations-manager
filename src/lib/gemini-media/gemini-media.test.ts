@@ -525,6 +525,8 @@ test("AC-GM-07: an image job makes one call, writes the image under From YTM/gem
     const manifest = JSON.parse(await readFile(path.join(dir, "manifest.json"), "utf8"));
     assert.deepEqual([manifest.schema, manifest.schemaVersion, manifest.jobId, manifest.status, manifest.costUsd, manifest.costBasis, manifest.device.deviceId], ["ytm.gemini-job-manifest", 1, job.jobId, "done", 0.0542, "usage", "dev-1"]);
     assert.ok(!JSON.stringify(manifest).includes(KEY), "no key in the manifest");
+    assert.equal(manifest.submittedAt, row.submittedAt?.toISOString(), "the submission time, as the job shows it (FO-MSG-0016)");
+    assert.notEqual(manifest.submittedAt, null);
     assert.deepEqual([h.registered[0].assetType, h.registered[0].referenceKind, h.registered[0].referenceValue], ["generated_image", "local_path", path.join(dir, "image-1.png")]);
   } finally {
     await h.cleanup();
@@ -994,6 +996,9 @@ test("BL-179: the acceptance case -- Omni 8 s 720p with first = last frame is es
     assert.deepEqual(await readFile(path.join(dir, "video-1.mp4")), Buffer.from("OMNI-MP4"));
     const manifest = JSON.parse(await readFile(path.join(dir, "manifest.json"), "utf8"));
     assert.deepEqual([manifest.status, manifest.costUsd, manifest.costBasis, manifest.outputs[0].path], ["done", 0.8199, "usage", `gemini/${job.jobId}/video-1.mp4`]);
+    // FO-MSG-0016: the manifest carries the submission time `factory_gemini_get_job` shows (it was null for an inline answer).
+    assert.equal(manifest.submittedAt, h.clock.at.toISOString());
+    assert.equal(manifest.submittedAt, row.submittedAt?.toISOString());
     assert.equal(h.registered[0].assetType, "generated_video");
   } finally {
     await h.cleanup();
