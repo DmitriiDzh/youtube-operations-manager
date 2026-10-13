@@ -85,6 +85,8 @@ export type DomainErrorCode =
   | "upload_already_queued"
   | "publishing_settings_changed"
   | "upload_daily_limit"
+  // Owner msg 2753: a package's tags and the channel's own tags together pass YouTube's 500 characters (details.video).
+  | "upload_tags_too_long"
   | "video_details_conflict"
   | "device_unavailable"
   | "deletion_targets_default_language"

@@ -264,7 +264,7 @@ export const content = {
   "publishingApproval.liveWrites": "Sending runs only while Live writes is on; turning it off pauses the upload, which continues later.",
   "publishingApproval.confirm": "Upload",
   "publishingApproval.on": "yes",
-  "publishingApproval.channelTags": "channel tags added: {tags}",
+  "publishingApproval.channelTags": "channel tags (not already in the package): {tags}",
   "publishingApproval.off": "no",
   "publishingApproval.failed": "Could not queue the uploads.",
   "publishingUploads.title": "Uploads",

@@ -9,7 +9,8 @@ export { DomainError, isDomainError };
 // only carries the values and reports conflicts. It imports nothing from publishing (AGENTS.md §M).
 
 /** A stored value: the publishing fields are strings ("15:00", a zone, an id), booleans, or null (no playlist). */
-export type PublishingSettingValue = string | boolean | null;
+/** A setting's value; a list of strings since the channel's own tags (owner msg 2753), assigned whole. */
+export type PublishingSettingValue = string | boolean | string[] | null;
 
 export type ChannelPublishingSettingsDocument = {
   format: "ytm-channel-publishing-settings";

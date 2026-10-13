@@ -621,7 +621,7 @@ test("after a sending pass the lease is short again: a restarted process takes t
 
 // Owner msgs 2751/2753: «Прямая реклама» is sent as the `paidProductPlacementDetails` part at insert. The docs accept the part on
 // videos.insert but do not list the property as settable, so the read-back checks it: a value YouTube did not keep is a mismatch.
-test("paid promotion: sent at insert as its own part; YouTube keeping it verifies, dropping it is a mismatch; an older approval sends none", async () => {
+test("paid promotion: sent at insert as its own part only when on; YouTube keeping it verifies, dropping it is a mismatch; off or older sends none", async () => {
   const on = harness([job({ settingsJson: JSON.stringify({ ...SETTINGS, paidProductPlacement: true }) })]);
   await on.runAll();
   assert.deepEqual(on.yt.videos[0].resource.paidProductPlacementDetails, { hasPaidProductPlacement: true });
@@ -631,6 +631,11 @@ test("paid promotion: sent at insert as its own part; YouTube keeping it verifie
   dropped.dropPaidPromotion();
   await dropped.runAll();
   assert.deepEqual(JSON.parse(dropped.row().stepsJson).verify, { result: "mismatch", mismatches: ["paidProductPlacement"] });
+
+  const off = harness([job({ settingsJson: JSON.stringify({ ...SETTINGS, paidProductPlacement: false }) })]);
+  await off.runAll();
+  assert.equal(off.yt.videos[0].resource.paidProductPlacementDetails, undefined, "off: the insert is exactly as before");
+  assert.equal(JSON.parse(off.row().stepsJson).verify.result, "verified");
 
   const { paidProductPlacement: _unused, channelTags: _tags, ...older } = SETTINGS;
   void _unused;

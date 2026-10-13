@@ -26,7 +26,10 @@ export function emptyDocument(channelId: string): ChannelPublishingSettingsDocum
 }
 
 function plain(value: unknown): PublishingSettingValue {
-  return typeof value === "string" || typeof value === "boolean" ? value : null;
+  if (typeof value === "string" || typeof value === "boolean") return value;
+  // A list (the channel tags) comes back from Automerge as its own list type: a plain copy of strings, or nothing.
+  if (Array.isArray(value) && value.every((item) => typeof item === "string")) return [...value] as string[];
+  return null;
 }
 const canonical = (value: unknown) => JSON.stringify(plain(value));
 

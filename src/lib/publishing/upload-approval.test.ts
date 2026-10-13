@@ -206,6 +206,6 @@ test("channel tags: added after the package's (none twice); a list over YouTube'
   await fits.approval.approve({ channelId: "UC_t", userId: "u-owner", items: [item("V66")], shownSettings: { ...withTags, channelTags: ["0".repeat(99)] } });
   assert.equal(fits.inserted.length, 1, "499 characters fit");
   const over = harness([long], { settings: async () => ({ ...(await settings()), settings: { ...withTags, channelTags: ["x"] } }) });
-  await refusedWith(over.approval.approve({ channelId: "UC_t", userId: "u-owner", items: [item("V66")], shownSettings: { ...withTags, channelTags: ["x"] } }), "upload_package_not_ready");
+  await refusedWith(over.approval.approve({ channelId: "UC_t", userId: "u-owner", items: [item("V66")], shownSettings: { ...withTags, channelTags: ["x"] } }), "upload_tags_too_long");
   assert.equal(over.inserted.length, 0);
 });

@@ -120,7 +120,7 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
       // Owner msg 2753: the channel's own tags go after the package's; YouTube counts the whole list against 500 characters.
       const tooLong = chosen.find((c) => tagsLength(uploadTags(c.pkg.tags, view.settings.channelTags ?? [])) > 500);
       if (tooLong) {
-        throw refuse("upload_package_not_ready", `${tooLong.pkg.video}: its tags and the channel's tags together are over YouTube's 500 characters.`, { video: tooLong.pkg.video, problem: "tags_too_long" });
+        throw refuse("upload_tags_too_long", `${tooLong.pkg.video}: its tags and the channel's tags together are over YouTube's 500 characters.`, { video: tooLong.pkg.video });
       }
 
       const rows: StoredPublishingUpload[] = chosen.map(({ item, found, pkg }) => {

@@ -360,8 +360,9 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
             license: settings.license,
             embeddable: settings.embeddable,
           },
-          // An approval made before this setting existed has none: nothing is sent for it.
-          ...(typeof settings.paidProductPlacement === "boolean" ? { paidProductPlacementDetails: { hasPaidProductPlacement: settings.paidProductPlacement } } : {}),
+          // Only when the owner turned it on (independent review): with it off -- and for an approval from before the setting -- the
+          // insert is exactly as before, so a YouTube that refused the part could never stop ordinary uploads.
+          ...(settings.paidProductPlacement === true ? { paidProductPlacementDetails: { hasPaidProductPlacement: true } } : {}),
         };
         const { sessionUri } = await deps.gateway.begin({ accessToken: token, resource, contentLength: current.totalBytes, contentType, notifySubscribers: settings.notifySubscribers });
         // The session is stored before the first byte: a restart resumes it rather than starting another.
@@ -492,10 +493,11 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
         const after = await deps.reads.snapshot({ channelId: job.channelId, videoId, ...creds });
         const publishAt = steps.publishAt === "at_insert" || steps.publishAt === "set" ? job.publishAt : null;
         const mismatches = readBackMismatches(after, pkg, settings, publishAt, now().getTime());
-        // «Прямая реклама» is not in the snapshot; the upload state read shows it (null = YouTube did not say).
-        if (typeof settings.paidProductPlacement === "boolean") {
+        // «Прямая реклама» is not in the snapshot; the upload state read shows it. Checked only when it was sent: YouTube must say
+        // true (not returned, or false, is a mismatch the owner sees).
+        if (settings.paidProductPlacement === true) {
           const state = await deps.reads.uploadState(creds.credentials, videoId);
-          if ((state?.hasPaidProductPlacement ?? false) !== settings.paidProductPlacement) mismatches.push("paidProductPlacement");
+          if (state?.hasPaidProductPlacement !== true) mismatches.push("paidProductPlacement");
         }
         steps.verify = { result: mismatches.length === 0 ? "verified" : "mismatch", mismatches };
         return void (await saveSteps(job, steps));

@@ -3,7 +3,7 @@ import { effectivePublishingSettings, DEFAULT_PUBLISHING_SETTINGS, type Publishi
 /** The synced values of one channel (the sync-gateway `channel-publishing-settings` family, injected). */
 export type PublishingSettingsStore = {
   read(channelId: string): Promise<{ values: Record<string, unknown>; conflicts: Array<{ field: string; values: unknown[] }> }>;
-  save(channelId: string, patch: Record<string, string | boolean | null>): Promise<{ changed: string[] }>;
+  save(channelId: string, patch: Record<string, string | boolean | string[] | null>): Promise<{ changed: string[] }>;
 };
 
 export type PublishingSettingsView = {
@@ -27,7 +27,7 @@ export function createPublishingSettingsService(deps: { store: PublishingSetting
     read,
     /** `patch` is already validated (`parsePublishingSettingsPatch`); only the fields the owner changed are sent. */
     async save(channelId: string, patch: Partial<PublishingSettings>): Promise<PublishingSettingsView> {
-      await deps.store.save(channelId, patch as Record<string, string | boolean | null>);
+      await deps.store.save(channelId, patch as Record<string, string | boolean | string[] | null>);
       return read(channelId);
     },
   };

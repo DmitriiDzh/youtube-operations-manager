@@ -267,7 +267,7 @@ export const content: Record<keyof typeof en, string> = {
   "publishingApproval.liveWrites": "Отправка идёт, только пока включена «Запись в YouTube»; если её выключить, загрузка встанет на паузу и продолжится потом.",
   "publishingApproval.confirm": "Загрузить",
   "publishingApproval.on": "да",
-  "publishingApproval.channelTags": "добавятся общие теги: {tags}",
+  "publishingApproval.channelTags": "общие теги канала (кроме уже имеющихся в пакете): {tags}",
   "publishingApproval.off": "нет",
   "publishingApproval.failed": "Не удалось поставить загрузки в очередь.",
   "publishingUploads.title": "Загрузки",
