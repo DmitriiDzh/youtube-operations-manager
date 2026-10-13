@@ -2,8 +2,8 @@ import type { ProgressReporter } from "@/lib/operation-progress";
 import { rangesStraddleViewCountingChange } from "@/lib/youtube-quota";
 import { YOUTUBE_ANALYTICS_READ_SCOPE } from "@/lib/auth";
 import type { ChannelAccessService } from "@/lib/channel-access";
-import { computeDefaultAutoCollectionRange, computeNextRefreshAt, isAnalyticsCollectionStale } from "./staleness";
-import { assertValidDateRange, assertValidIsoDate, computePreviousPeriod, zeroFillDailySeries } from "./period";
+import { computeDefaultAutoCollectionRange, computeNextRefreshAt, isAnalyticsCollectionStale, pacificDayEnd } from "./staleness";
+import { assertValidDateRange, assertValidIsoDate, computePreviousPeriod, enumerateDates, zeroFillDailySeries } from "./period";
 import { computeComparableAgeSeries } from "./comparable-age";
 import { computeDataQualityReport, extendDataQualityReport, isRangeFullyCovered } from "./data-quality";
 import { nextVideoHistoryThrough, perVideoQueryRange, planChannelCatchUp, planVideoHistoryCatchUp, resolveHistoryStart } from "./catch-up";
@@ -288,6 +288,51 @@ function mapStoredWeeklyReport(row: {
     generatedAt: row.generatedAt.toISOString(),
     report,
   };
+}
+
+/**
+ * BL-181 (FO-REQ-0020 §2.4 and criterion 5): for each date of the range, the first collection run on this computer that got the date
+ * back from the Analytics API, and how many hours after the date's Pacific day ended that run was. Built from each run's newest
+ * returned dates (recorded since schema v87): a date counts once a run's newest date reaches it and the previous run's did not. The
+ * first recorded run is only the baseline (earlier dates came back before anything was recorded). An UPPER bound: the run shows when
+ * this app asked, not when Google published -- runs happen at the daily boundaries (12:05 and the evening one).
+ */
+export function returnLagOf(
+  runs: ReadonlyArray<{ newestVideoDate?: string | null; newestChannelDate?: string | null; ranAt: Date }>,
+  startDate: string,
+  endDate: string
+): Array<{ date: string; videoFirstReturnedAt: string | null; videoLagHours: number | null; channelFirstReturnedAt: string | null; channelLagHours: number | null }> {
+  const firstSeen = (pick: (run: (typeof runs)[number]) => string | null | undefined) => {
+    const seen = new Map<string, Date>();
+    let newestSoFar: string | null = null;
+    for (const run of [...runs].sort((a, b) => a.ranAt.getTime() - b.ranAt.getTime())) {
+      const newest = pick(run) ?? null;
+      if (newest === null) continue;
+      if (newestSoFar !== null && newest > newestSoFar) {
+        for (const date of enumerateDates(nextDate(newestSoFar), newest)) seen.set(date, run.ranAt);
+      }
+      if (newestSoFar === null || newest > newestSoFar) newestSoFar = newest;
+    }
+    return seen;
+  };
+  const video = firstSeen((run) => run.newestVideoDate);
+  const channel = firstSeen((run) => run.newestChannelDate);
+  const lag = (date: string, at: Date | undefined) => (at ? Math.round(((at.getTime() - pacificDayEnd(date).getTime()) / 3_600_000) * 10) / 10 : null);
+  return [...new Set([...video.keys(), ...channel.keys()])]
+    .filter((date) => date >= startDate && date <= endDate)
+    .sort((a, b) => b.localeCompare(a))
+    .map((date) => ({
+      date,
+      videoFirstReturnedAt: video.get(date)?.toISOString() ?? null,
+      videoLagHours: lag(date, video.get(date)),
+      channelFirstReturnedAt: channel.get(date)?.toISOString() ?? null,
+      channelLagHours: lag(date, channel.get(date)),
+    }));
+}
+
+function nextDate(date: string): string {
+  const [year, month, day] = date.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day + 1)).toISOString().slice(0, 10);
 }
 
 export function createAnalyticsServices(deps: ServiceDependencies) {
@@ -1350,6 +1395,7 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
             ...report,
             ...extras,
             newestReturned: newestReturnedOf(runs),
+            returnLag: returnLagOf(runs, parsedInput.startDate, parsedInput.endDate),
           },
           "get data quality report output"
         );

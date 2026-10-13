@@ -72,7 +72,7 @@ import { createMarketIntelligenceCore, type MarketIntelligenceCore } from "@/lib
 import { createMediaGenerationCore, type MediaGenerationCore } from "@/lib/media-generation";
 import { createGenerationPlansCore, type GenerationPlan, type GenerationPlanServices } from "@/lib/generation-plans";
 import { createReachReportsCore, type ReachReportsCore } from "@/lib/reach-reports";
-import { getChannelReachInputObjectSchema } from "@/lib/reach-reports/schemas";
+import { getChannelReachInputObjectSchema, getReachStatusInputSchema } from "@/lib/reach-reports/schemas";
 import { createMarketAssignmentCore, type MarketAssignmentCore } from "@/lib/market-assignments";
 import { assertAgentSession, runInAgentSession } from "@/lib/agent-session";
 import { MCP_TOOL_CLASSIFICATION } from "./tool-classification";
@@ -356,6 +356,7 @@ type McpToolHandlers = {
   agentGetVideoContext: (input: unknown) => Promise<ToolResponse>;
   agentQueryChannelAnalytics: (input: unknown) => Promise<ToolResponse>;
   agentQueryChannelReach: (input: unknown) => Promise<ToolResponse>;
+  agentGetReportingStatus: (input: unknown) => Promise<ToolResponse>;
   agentGetVideoMilestones: (input: unknown) => Promise<ToolResponse>;
   agentGetStoredBreakdowns: (input: unknown) => Promise<ToolResponse>;
   agentGetStoredSearchTerms: (input: unknown) => Promise<ToolResponse>;
@@ -715,7 +716,8 @@ export function createMcpToolHandlers(
   // BL-114 (ADR 0014) -- thumbnail impressions/CTR from the Reporting API, registered directly here (not through
   // `agentOperationsCore`) so `agent-operations` and `analytics` gain no dependency on it (AGENTS.md §M). Read-only
   // subset: the sync that talks to Google is the app's own (dashboard/Sync now), never an agent tool.
-  reachReportsCore: Pick<ReachReportsCore, "getChannelReach"> = createReachReportsCore(),
+  // `getReachStatus` (BL-181) is optional only so older test doubles that read Reach data still type-check; production passes the core.
+  reachReportsCore: Pick<ReachReportsCore, "getChannelReach"> & Partial<Pick<ReachReportsCore, "getReachStatus">> = createReachReportsCore(),
   // BL-118 -- the channel breakdown (traffic sources, devices, ...) the Content tab already computes; a LIVE Analytics API read.
   breakdownCore: Pick<AnalyticsCore, "getChannelBreakdown"> = createAnalyticsCore(),
   // Research export (ADR 0019) -- the Manager writes flat CSV/JSON files into the channel's workspace `99 Data Exchange/From YTM/` folder (fixed name, owner-approved exception).
@@ -1719,6 +1721,26 @@ export function createMcpToolHandlers(
     },
 
     /**
+     * BL-181 (FO-REQ-0020 §2.4) -- the Reporting jobs and files this app holds for the channel, with each file's lag. A LOCAL read, no
+     * Google call; `getReachStatus` does the active-channel check itself.
+     */
+    async agentGetReportingStatus(input: unknown): Promise<ToolResponse> {
+      const parsedInput = getReachStatusInputSchema.partial({ credentialRef: true }).safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        if (!reachReportsCore.getReachStatus) throw new Error("The Reporting status read is not available in this server.");
+        const credentialRef = await resolveCredentialRef(parsedInput.data.credentialRef);
+        const result = await reachReportsCore.getReachStatus({ ...parsedInput.data, credentialRef });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /**
      * BL-166 (docs/roadmap/plans/VIDEO_MILESTONES_PLAN.md) -- the stored day-7 / day-28 milestones of the channel's videos. A LOCAL read,
      * no Google call; `listVideoMilestones` checks the active channel itself, and a video of another channel is simply not listed.
      */
@@ -2524,6 +2546,8 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     agentQueryChannelAnalytics: handlers.agentQueryChannelAnalytics,
     // BL-114 -- a pure local read, ungated.
     agentQueryChannelReach: handlers.agentQueryChannelReach,
+    // BL-181 -- a pure local read, ungated.
+    agentGetReportingStatus: handlers.agentGetReportingStatus,
     // BL-166 -- a pure local read, ungated.
     agentGetVideoMilestones: handlers.agentGetVideoMilestones,
     // BL-168 -- a pure local read, ungated.
@@ -3182,7 +3206,7 @@ export function createMcpServer(
     "analytics_data_quality",
     {
       description:
-        "Data-quality diagnostics for a channel's collected Analytics data over a date range. `covered` means a completed collection run's window included the date (or a metric row exists) -- NOT that data is present: see `coveredWithoutData` (covered dates with no stored row: zero-activity days or data YouTube had not reported yet) and `provisionalDates` (covered dates inside the re-collection window, expected to be refreshed by the next automatic run). Dates before the channel was created (`channelStartDate`) are `notApplicableRange`, never uncovered; `coveredRanges`/`uncoveredRanges` give compact ranges, and missing history is back-filled automatically. Details: which dates were actually covered by a completed collection run (`collectMetrics`), which were requested but never collected, which are too recent for the Analytics API to have reported yet (its own 1-2 day lag), and which videos had a collection failure recorded against them (`videosWithSkips`: `{ videoId, skipCount, lastSkippedAt, lastSkippedRange: { startDate, endDate } }` -- listed only when the LATEST run overlapping the range skipped the video; a skip is per video and run, never per day, so `lastSkippedRange` is that run's whole window). A local read only -- never a live YouTube call. Absence of a `video_metrics_daily` row for a date does NOT by itself mean data is missing (the API omits zero-activity days entirely) -- use this tool, not a raw scan of analytics_list's rows, to tell genuine gaps from real zero-activity days. credentialRef is OPTIONAL and falls back to active local auth context.",
+        "Data-quality diagnostics for a channel's collected Analytics data over a date range. `covered` means a completed collection run's window included the date (or a metric row exists) -- NOT that data is present: see `coveredWithoutData` (covered dates with no stored row: zero-activity days or data YouTube had not reported yet) and `provisionalDates` (covered dates inside the re-collection window, expected to be refreshed by the next automatic run). Dates before the channel was created (`channelStartDate`) are `notApplicableRange`, never uncovered; `coveredRanges`/`uncoveredRanges` give compact ranges, and missing history is back-filled automatically. Details: which dates were actually covered by a completed collection run (`collectMetrics`), which were requested but never collected, which are too recent for the Analytics API to have reported yet (its own 1-2 day lag), and which videos had a collection failure recorded against them (`videosWithSkips`: `{ videoId, skipCount, lastSkippedAt, lastSkippedRange: { startDate, endDate } }` -- listed only when the LATEST run overlapping the range skipped the video; a skip is per video and run, never per day, so `lastSkippedRange` is that run's whole window). A local read only -- never a live YouTube call. Absence of a `video_metrics_daily` row for a date does NOT by itself mean data is missing (the API omits zero-activity days entirely) -- use this tool, not a raw scan of analytics_list's rows, to tell genuine gaps from real zero-activity days. credentialRef is OPTIONAL and falls back to active local auth context. `newestReturned` (BL-181): the newest video and channel dates the Analytics API actually returned in this computer's latest run that recorded them, and when. `returnLag` (BL-181): per date of the range, newest first, the first run on this computer that got the date back (`videoFirstReturnedAt` / `channelFirstReturnedAt`) and the hours after the date's Pacific day ended (`videoLagHours` / `channelLagHours`) -- an upper bound, since it is when this app asked, not when Google published; compare with agent_get_reporting_status for the Reporting API files.",
       inputSchema: getDataQualityReportInputSchema.partial({ credentialRef: true }),
     },
     (args) => handlers.analyticsDataQuality(args)
@@ -3296,6 +3320,16 @@ export function createMcpServer(
       inputSchema: getChannelReachInputObjectSchema.partial({ credentialRef: true }),
     },
     (args) => handlers.agentQueryChannelReach(args)
+  );
+
+  registerTool(
+    "agent_get_reporting_status",
+    {
+      description:
+        "The YouTube Reporting API jobs and report files this app holds for the channel (BL-181): Reach (`channel_reach_basic_a1`) at the top level and, in `otherReports`, the basic user-activity (`channel_basic_a3`) and traffic-source (`channel_traffic_source_a3`) reports. Per type: `job` (id, Google's creation time), `lastAttempt` (time, outcome ok | partial | failed, error), `importedFiles`, `files` (newest period first, at most 90: Google's startTime/endTime/createTime, rowCount, status imported | superseded -- a reissue replaced it) with `lagHours` = createTime minus endTime, i.e. hours after the file's Pacific day ended, and `firstFileLag` -- per day (newest first) the first file Google created and its lag, leaving out days that ended before the job existed (Google makes those 30 history days right after a job is created). Compare with `returnLag` of analytics_data_quality for the Analytics API. Files are fetched when the app's dashboard is opened (at most every 6 hours per channel); each computer downloads the basic and traffic-source files itself. A LOCAL read, never a live YouTube call. Requires channelId to be the caller's currently-active channel.",
+      inputSchema: getReachStatusInputSchema.partial({ credentialRef: true }),
+    },
+    (args) => handlers.agentGetReportingStatus(args)
   );
 
   registerTool(

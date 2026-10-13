@@ -259,6 +259,16 @@ export type DataQualityReportResult = {
   /** BL-181 (FO-REQ-0020 §2.4): the newest dates the Analytics API actually returned in this computer's latest run that recorded
    * them, and when; null before any such run. A date after `videoDate` is not yet reported by YouTube, whatever the clock says. */
   newestReturned?: { videoDate: string | null; channelDate: string | null; ranAt: string } | null;
+  /** BL-181: per date of the range (newest first), the first run on this computer that got it back and its lag (`returnLagOf`). */
+  returnLag?: DataQualityReturnLag[];
+};
+
+export type DataQualityReturnLag = {
+  date: string;
+  videoFirstReturnedAt: string | null;
+  videoLagHours: number | null;
+  channelFirstReturnedAt: string | null;
+  channelLagHours: number | null;
 };
 
 export type ComparableAgeVideoSeries = {
