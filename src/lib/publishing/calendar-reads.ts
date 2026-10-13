@@ -24,7 +24,18 @@ export type AgentPublishingCalendar = {
   unscheduled: CalendarEntry[];
   /** UTC dates from today through the next 13 days with no published or scheduled video. */
   gapDates: string[];
+  /** BL-182 stage 2 (FO-REQ-0023 §4 C4): the release packages in this computer's copy of the workspace, and this computer's uploads. */
+  packages: AgentPackages;
+  uploads: AgentUpload[];
 };
+
+export type AgentPackages =
+  | { status: "no_workspace" | "unavailable" }
+  | {
+      status: "ok";
+      items: Array<{ video: string | null; title: string | null; plannedPublishDate: string | null; state: string; problems: string[]; videoId: string | null }>;
+    };
+export type AgentUpload = { video: string; status: string; publishAt: string | null; videoId: string | null; pausedReason: string | null; errorCode: string | null };
 
 export type PublishingCalendarDeps = {
   listVideos(channelId: string): Promise<CalendarSourceVideo[]>;
@@ -33,6 +44,9 @@ export type PublishingCalendarDeps = {
   getChannel(channelId: string): Promise<{ lastSyncedAt: Date | null } | null>;
   clock: { now(): Date };
   thresholdDays?: number;
+  /** BL-182 stage 2: the agent read's packages and uploads (absent: none listed). */
+  packages?(channelId: string): Promise<AgentPackages>;
+  uploads?(channelId: string): Promise<AgentUpload[]>;
 };
 
 export function createPublishingCalendarReads(deps: PublishingCalendarDeps) {
@@ -75,6 +89,8 @@ export function createPublishingCalendarReads(deps: PublishingCalendarDeps) {
         entries: dated,
         unscheduled: entries.filter((entry) => entry.kind === "unscheduled"),
         gapDates,
+        packages: deps.packages ? await deps.packages(channelId).catch((): AgentPackages => ({ status: "unavailable" })) : { status: "unavailable" },
+        uploads: deps.uploads ? await deps.uploads(channelId) : [],
       };
     },
 

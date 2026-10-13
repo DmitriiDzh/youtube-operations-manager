@@ -138,6 +138,17 @@ export function createPublishingCalendarCore() {
       await createChannelAccessCore().assertActiveChannel(args);
     },
     clock: { now: () => new Date() },
+    async packages(channelId) {
+      const result = await createPackageScanCore().scan(channelId);
+      if (result.status !== "ok") return { status: result.status === "no_workspace" ? "no_workspace" : "unavailable" };
+      return {
+        status: "ok",
+        items: result.packages.map((p) => ({ video: p.video, title: p.title, plannedPublishDate: p.plannedPublishDate, state: p.state, problems: p.problems.map((problem) => problem.code), videoId: p.youtube?.videoId ?? null })),
+      };
+    },
+    async uploads(channelId) {
+      return (await listChannelUploads(channelId)).map((row) => ({ video: row.video, status: row.status, publishAt: row.publishAt, videoId: row.videoId, pausedReason: row.pausedReason, errorCode: row.errorCode }));
+    },
   });
 }
 
