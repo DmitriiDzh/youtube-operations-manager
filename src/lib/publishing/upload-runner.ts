@@ -67,7 +67,7 @@ export type UploadRunnerDeps = {
   };
   reads: {
     /** `videos.list` status and processing of one video; null when YouTube does not return it. */
-    uploadState(credentials: unknown, videoId: string): Promise<{ uploadStatus: string | null; rejectionReason: string | null; failureReason: string | null } | null>;
+    uploadState(credentials: unknown, videoId: string): Promise<{ uploadStatus: string | null; rejectionReason: string | null; failureReason: string | null; hasPaidProductPlacement?: boolean | null } | null>;
     /** The channel's newest uploads (first page of its uploads playlist, private ones included for its own user). */
     recentUploads(credentials: unknown, channelId: string): Promise<Array<{ videoId: string; title: string }>>;
     playlistHasVideo(credentials: unknown, playlistId: string, videoId: string): Promise<boolean>;
@@ -100,6 +100,7 @@ export type UploadRunnerDeps = {
 export type InsertResource = {
   snippet: { title: string; description: string; tags?: string[]; categoryId?: string; defaultLanguage?: string; defaultAudioLanguage?: string };
   status: { privacyStatus: "private"; publishAt?: string; selfDeclaredMadeForKids: boolean; containsSyntheticMedia?: boolean; license?: "youtube" | "creativeCommon"; embeddable?: boolean };
+  paidProductPlacementDetails?: { hasPaidProductPlacement: boolean };
 };
 
 export type VideoReadBack = {
@@ -359,6 +360,8 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
             license: settings.license,
             embeddable: settings.embeddable,
           },
+          // An approval made before this setting existed has none: nothing is sent for it.
+          ...(typeof settings.paidProductPlacement === "boolean" ? { paidProductPlacementDetails: { hasPaidProductPlacement: settings.paidProductPlacement } } : {}),
         };
         const { sessionUri } = await deps.gateway.begin({ accessToken: token, resource, contentLength: current.totalBytes, contentType, notifySubscribers: settings.notifySubscribers });
         // The session is stored before the first byte: a restart resumes it rather than starting another.
@@ -489,6 +492,11 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
         const after = await deps.reads.snapshot({ channelId: job.channelId, videoId, ...creds });
         const publishAt = steps.publishAt === "at_insert" || steps.publishAt === "set" ? job.publishAt : null;
         const mismatches = readBackMismatches(after, pkg, settings, publishAt, now().getTime());
+        // «Прямая реклама» is not in the snapshot; the upload state read shows it (null = YouTube did not say).
+        if (typeof settings.paidProductPlacement === "boolean") {
+          const state = await deps.reads.uploadState(creds.credentials, videoId);
+          if ((state?.hasPaidProductPlacement ?? false) !== settings.paidProductPlacement) mismatches.push("paidProductPlacement");
+        }
         steps.verify = { result: mismatches.length === 0 ? "verified" : "mismatch", mismatches };
         return void (await saveSteps(job, steps));
       }

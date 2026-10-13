@@ -44,6 +44,8 @@ export type VideoInsertResource = {
     license?: "youtube" | "creativeCommon";
     embeddable?: boolean;
   };
+  /** Owner msgs 2751/2753: Studio's «Прямая реклама»; sent as its own part (the read-back says whether YouTube kept it). */
+  paidProductPlacementDetails?: { hasPaidProductPlacement: boolean };
 };
 
 export type UploadHttpResponse = { status: number; headers: Record<string, string | string[] | undefined>; body: string };
@@ -122,7 +124,8 @@ export async function beginResumableVideoUpload(
     throw new DomainError({ code: "validation_failed", message: "publishAt is only allowed with privacyStatus private." });
   }
   const body = Buffer.from(JSON.stringify(args.resource), "utf8");
-  const url = `${UPLOAD_ENDPOINT}?uploadType=resumable&part=snippet,status&notifySubscribers=${args.notifySubscribers ? "true" : "false"}`;
+  const parts = ["snippet", "status", ...(args.resource.paidProductPlacementDetails ? ["paidProductPlacementDetails"] : [])].join(",");
+  const url = `${UPLOAD_ENDPOINT}?uploadType=resumable&part=${parts}&notifySubscribers=${args.notifySubscribers ? "true" : "false"}`;
   const response = await http({
     method: "POST",
     url,

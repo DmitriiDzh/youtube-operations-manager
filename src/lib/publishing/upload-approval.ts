@@ -9,7 +9,8 @@ import type { UnitsVerdict } from "@/lib/quota-guard";
 import { DomainError } from "@/lib/shared-domain";
 import type { PackageScanResult } from "./package-scan";
 import type { PublishingSettingsView } from "./settings-service";
-import type { PublishingSettings } from "./settings";
+import { uploadTags, type PublishingSettings } from "./settings";
+import { tagsLength } from "./packages";
 import { estimateUploadUnits, isDeferredPublishAt } from "./publish-dates";
 import { normalizeLineEndings, type ApprovedPackage } from "./upload-runner";
 
@@ -42,7 +43,8 @@ export type UploadApprovalDeps = {
 };
 
 const sameSettings = (a: PublishingSettings, b: PublishingSettings) =>
-  (Object.keys(a) as Array<keyof PublishingSettings>).every((key) => a[key] === b[key]) && Object.keys(a).length === Object.keys(b).length;
+  // By value: `channelTags` is a list (owner msg 2753), so two equal lists are the same setting.
+  (Object.keys(a) as Array<keyof PublishingSettings>).every((key) => JSON.stringify(a[key]) === JSON.stringify(b[key])) && Object.keys(a).length === Object.keys(b).length;
 
 export function createUploadApproval(deps: UploadApprovalDeps) {
   return {
@@ -115,6 +117,12 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
         throw refuse("quota_unknown", "Today's quota cannot be read (Google Cloud is not connected or did not answer).", { estimatedUnits: estimatedUnits + pending.units, rowsToWrite: chosen.length, cloudConnected: verdict.cloudConnected });
       }
 
+      // Owner msg 2753: the channel's own tags go after the package's; YouTube counts the whole list against 500 characters.
+      const tooLong = chosen.find((c) => tagsLength(uploadTags(c.pkg.tags, view.settings.channelTags ?? [])) > 500);
+      if (tooLong) {
+        throw refuse("upload_package_not_ready", `${tooLong.pkg.video}: its tags and the channel's tags together are over YouTube's 500 characters.`, { video: tooLong.pkg.video, problem: "tags_too_long" });
+      }
+
       const rows: StoredPublishingUpload[] = chosen.map(({ item, found, pkg }) => {
         const folder = found.folder;
         const approved: ApprovedPackage = {
@@ -122,7 +130,7 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
           // Lines end in LF on YouTube; the factory's Windows text may carry CRLF (review question).
           title: pkg.title,
           description: normalizeLineEndings(pkg.description),
-          tags: pkg.tags,
+          tags: uploadTags(pkg.tags, view.settings.channelTags ?? []),
           defaultLanguage: pkg.defaultLanguage,
           defaultAudioLanguage: pkg.defaultAudioLanguage,
           manifestPath: found.manifestPath,

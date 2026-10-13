@@ -4,7 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import { errorText, type UiTextKey } from "@/lib/ui-text";
 import { isValidLocalTimeOfDay } from "@/lib/zoned-time";
 // The pure fields module (no server code): the same lists and types the server validates with.
-import { PUBLISHING_LICENSES, VIDEO_CATEGORY_IDS, type PublishingSettings as Settings } from "@/lib/publishing/settings";
+import { CHANNEL_TAGS_MAX, PUBLISHING_LICENSES, VIDEO_CATEGORY_IDS, type PublishingSettings as Settings } from "@/lib/publishing/settings";
+import { tagsLength } from "@/lib/publishing/packages";
 import { InfoTooltip } from "./info-tooltip";
 import { LoadingIndicator } from "./operation-progress";
 import { ToggleSwitch } from "./toggle-switch";
@@ -14,12 +15,27 @@ import { UtcTimeField } from "./utc-time-field";
 type View = { settings: Settings; saved: string[]; conflictedFields: string[] };
 type Playlist = { id: string; title: string };
 
-const FLAGS: Array<{ field: "containsSyntheticMedia" | "madeForKids" | "embeddable" | "notifySubscribers"; label: UiTextKey }> = [
+const FLAGS: Array<{ field: "containsSyntheticMedia" | "madeForKids" | "embeddable" | "notifySubscribers" | "paidProductPlacement"; label: UiTextKey }> = [
   { field: "containsSyntheticMedia", label: "publishingSettings.field.containsSyntheticMedia" },
   { field: "madeForKids", label: "publishingSettings.field.madeForKids" },
   { field: "embeddable", label: "publishingSettings.field.embeddable" },
   { field: "notifySubscribers", label: "publishingSettings.field.notifySubscribers" },
+  // Owner msgs 2751/2753: Studio's «Прямая реклама».
+  { field: "paidProductPlacement", label: "publishingSettings.field.paidProductPlacement" },
 ];
+
+/** The channel tags as typed: comma-separated, trimmed, empty ones dropped, each once (case-insensitive). */
+export function parseChannelTags(text: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of text.split(",")) {
+    const tag = raw.trim();
+    if (!tag || seen.has(tag.toLowerCase())) continue;
+    seen.add(tag.toLowerCase());
+    out.push(tag);
+  }
+  return out;
+}
 
 /**
  * BL-182 stage 2 (PUBLISHING_PLAN.md §2 stage 2 item 2; owner msg 2715: "дефолтные значения для метаданных ... достаточно выбрать
@@ -37,6 +53,7 @@ export function PublishingSettingsPanel({ channelId, visible }: { channelId: str
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedNotice, setSavedNotice] = useState(false);
+  const [tagsText, setTagsText] = useState("");
 
   const load = useCallback(async () => {
     if (!channelId) return;
@@ -46,6 +63,7 @@ export function PublishingSettingsPanel({ channelId, visible }: { channelId: str
       if (!res.ok) throw new Error(errorText(t, data, t("publishingSettings.loadFailed")));
       setView(data);
       setDraft(data.settings);
+      setTagsText((data.settings.channelTags ?? []).join(", "));
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : t("publishingSettings.loadFailed"));
@@ -87,8 +105,18 @@ export function PublishingSettingsPanel({ channelId, visible }: { channelId: str
     );
   }
 
-  const changed = (Object.keys(draft) as Array<keyof Settings>).filter((field) => draft[field] !== view.settings[field]);
+  const changed = (Object.keys(draft) as Array<keyof Settings>).filter((field) => JSON.stringify(draft[field]) !== JSON.stringify(view.settings[field]));
   const timeValid = isValidLocalTimeOfDay(draft.publishTimeUtc);
+  const channelTags = draft.channelTags ?? [];
+  const tagsChars = tagsLength(channelTags);
+  const tagsProblem =
+    channelTags.length > CHANNEL_TAGS_MAX
+      ? t("publishingSettings.channelTags.tooMany", { max: CHANNEL_TAGS_MAX })
+      : channelTags.some((tag) => tag.length > 100 || /[<>]/.test(tag))
+        ? t("publishingSettings.channelTags.badTag")
+        : tagsChars > 500
+          ? t("publishingSettings.channelTags.tooLong")
+          : null;
 
   async function save() {
     if (!draft || !view || !channelId) return;
@@ -106,6 +134,7 @@ export function PublishingSettingsPanel({ channelId, visible }: { channelId: str
       if (!res.ok) throw new Error(errorText(t, data, t("publishingSettings.saveFailed")));
       setView(data);
       setDraft(data.settings);
+      setTagsText((data.settings.channelTags ?? []).join(", "));
       setSavedNotice(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : t("publishingSettings.saveFailed"));
@@ -185,11 +214,27 @@ export function PublishingSettingsPanel({ channelId, visible }: { channelId: str
         ))}
       </div>
 
+      <label className="flex max-w-3xl flex-col gap-1 text-xs text-zinc-400">
+        {t("publishingSettings.channelTags.label")}
+        <input
+          type="text"
+          value={tagsText}
+          onChange={(e) => {
+            setTagsText(e.target.value);
+            setDraft({ ...draft, channelTags: parseChannelTags(e.target.value) });
+          }}
+          className="rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-100"
+        />
+        <span className={tagsProblem ? "text-red-400" : "text-zinc-500"}>
+          {tagsProblem ?? t("publishingSettings.channelTags.hint", { count: channelTags.length, chars: tagsChars })}
+        </span>
+      </label>
+
       <div className="flex flex-wrap items-center gap-3">
         <button
           type="button"
           onClick={() => void save()}
-          disabled={saving || changed.length === 0 || !timeValid}
+          disabled={saving || changed.length === 0 || !timeValid || tagsProblem !== null}
           className="rounded-lg bg-zinc-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-zinc-600 disabled:opacity-50"
         >
           {saving ? t("common.saving") : t("publishingSettings.save")}

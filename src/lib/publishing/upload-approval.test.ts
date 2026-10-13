@@ -188,3 +188,24 @@ test("AC-UP-12: a package another computer already uploaded is refused with that
     (error: unknown) => isDomainError(error) && error.code === "upload_already_queued" && /already uploaded from Windows-PC/.test(error.message)
   );
 });
+
+// Owner msgs 2751/2753: the channel's own tags go after the package's in what is uploaded; YouTube's snippet.tags limit is 500
+// characters for the whole list (commas and the quotes around a tag with a space counted), so an approval over it is refused.
+test("channel tags: added after the package's (none twice); a list over YouTube's 500 characters refuses the approval", async () => {
+  const withTags = { ...SETTINGS, channelTags: ["Jazz", "tropical jazz"] };
+  const settings = async () => ({ channelId: "UC_t", settings: withTags, defaults: DEFAULT_PUBLISHING_SETTINGS, saved: ["channelTags" as const], conflictedFields: [] });
+  const h = harness([scanned("V65")], { settings });
+  await h.approval.approve({ channelId: "UC_t", userId: "u-owner", items: [item("V65")], shownSettings: withTags });
+  assert.deepEqual(JSON.parse(h.inserted[0].packageJson).tags, ["jazz", "tropical jazz"]);
+
+  // By hand: 5 tags of 99 characters = 495, plus 4 commas = 499. A channel tag equal to one of them (case-insensitive) adds nothing;
+  // "x" makes 499 + a comma + 1 = 501.
+  const base = scanned("V66");
+  const long: ScannedPackage = { ...base, pkg: { ...base.pkg!, tags: Array.from({ length: 5 }, (_, i) => `${i}`.repeat(99)) } };
+  const fits = harness([long], { settings: async () => ({ ...(await settings()), settings: { ...withTags, channelTags: ["0".repeat(99)] } }) });
+  await fits.approval.approve({ channelId: "UC_t", userId: "u-owner", items: [item("V66")], shownSettings: { ...withTags, channelTags: ["0".repeat(99)] } });
+  assert.equal(fits.inserted.length, 1, "499 characters fit");
+  const over = harness([long], { settings: async () => ({ ...(await settings()), settings: { ...withTags, channelTags: ["x"] } }) });
+  await refusedWith(over.approval.approve({ channelId: "UC_t", userId: "u-owner", items: [item("V66")], shownSettings: { ...withTags, channelTags: ["x"] } }), "upload_package_not_ready");
+  assert.equal(over.inserted.length, 0);
+});

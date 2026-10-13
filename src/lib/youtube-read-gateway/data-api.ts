@@ -837,11 +837,13 @@ export type VideoUploadState = {
   selfDeclaredMadeForKids: boolean | null;
   containsSyntheticMedia: boolean | null;
   processingStatus: string | null;
+  /** Studio's «Прямая реклама» (paidProductPlacementDetails); null = not returned. */
+  hasPaidProductPlacement: boolean | null;
 };
 
 /** `videos.list part=snippet,status,processingDetails` for one video; null when YouTube does not return it (deleted, or not ours). */
 export async function getVideoUploadState(youtube: youtube_v3.Youtube, videoId: string): Promise<VideoUploadState | null> {
-  const res = await youtube.videos.list({ part: ["snippet", "status", "processingDetails"], id: [videoId] });
+  const res = await youtube.videos.list({ part: ["snippet", "status", "processingDetails", "paidProductPlacementDetails"], id: [videoId] });
   const item = res.data.items?.[0];
   if (!item) return null;
   return {
@@ -856,6 +858,7 @@ export async function getVideoUploadState(youtube: youtube_v3.Youtube, videoId: 
     selfDeclaredMadeForKids: item.status?.selfDeclaredMadeForKids ?? null,
     containsSyntheticMedia: item.status?.containsSyntheticMedia ?? null,
     processingStatus: item.processingDetails?.processingStatus ?? null,
+    hasPaidProductPlacement: item.paidProductPlacementDetails?.hasPaidProductPlacement ?? null,
   };
 }
 
