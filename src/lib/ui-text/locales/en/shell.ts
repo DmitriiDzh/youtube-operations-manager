@@ -37,6 +37,7 @@ export const shell = {
   "tabs.settings.liveStreams": "Live streams",
   "tabs.content.videos": "Videos",
   "tabs.content.streams": "Live streams",
+  "tabs.content.calendar": "Calendar",
   "tabs.settings.about": "About",
 
   "shell.productName": "Operations Manager",
@@ -193,7 +194,7 @@ export const shell = {
 
   "page.home.intro": "Channel dashboard. Comments and Recent-subscribers feeds are still open questions (the public API may not allow them) — everything else Studio's own Home shows from already-available data is below.",
   "page.home.dashboard": "Dashboard",
-  "page.content.intro": "Your synchronized videos, Studio-style. Read-only: no metadata is written to YouTube from this tab.",
+  "page.content.intro": "Your synchronized videos, Studio-style. A video's Details can change it on YouTube — every change is shown first and needs your approval.",
   "page.languages.intro": "Generating with AI is the primary way to add a language — review and edit the agent's proposals before creating a Change Set. Importing an edited XLSX workbook remains available as a secondary, bulk action. No metadata is written to YouTube anywhere in this tab — approval here is a local decision only, and “Approved” never means a real YouTube write happened.",
   "page.batches.intro": "Select approved changes into a Batch and preview it in dry-run mode. A real, non-dry-run write is only possible when “Live writes” is turned on in Settings — off by default every session.",
   "page.decisions.intro": "Hypotheses, experiments, their videos by arm, and recorded outcomes. The Producer can propose a hypothesis or a video for an arm (Research → Inbox); an approved experiment is never run automatically.",
@@ -219,4 +220,7 @@ export const shell = {
   "channelWork.attemptsExhausted": "Media: plan {plan}, attempts used up for {count, plural, one {# item} other {# items}}",
   "channelWork.budget80": "Media: plan {plan} has used 80% of its budget",
   "channelWork.budget100": "Media: plan {plan} has reached its budget",
+  "publishingAlerts.coveredThrough": "Scheduled only through {date} ({days, plural, one {# day} other {# days}} ahead; data from {age})",
+  "publishingAlerts.nothingScheduled": "Nothing is scheduled (data from {age})",
+  "publishingAlerts.bellTitle": "Publishing",
 } as const;

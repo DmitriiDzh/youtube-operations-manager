@@ -40,7 +40,19 @@ export type SyncedVideo = {
   publishAt: string | null;
 };
 
-type PrivacyFilter = "all" | "public" | "unlisted" | "private";
+type PrivacyFilter = "all" | "public" | "unlisted" | "private" | "scheduled";
+
+/**
+ * BL-182 (PUBLISHING_PLAN.md §2 stage 1): YouTube has no "scheduled" status -- a scheduled video is a non-public one with a future
+ * `publishAt`. Shown and filtered as «Запланировано» (as Studio does), so it is no longer mistaken for a plain private video.
+ */
+function isScheduled(video: { privacyStatus: string; publishAt: string | null }, now: number = Date.now()): boolean {
+  return video.privacyStatus !== "public" && video.publishAt !== null && Date.parse(video.publishAt) > now;
+}
+
+function accessFilterOf(video: { privacyStatus: string; publishAt: string | null }): Exclude<PrivacyFilter, "all"> {
+  return isScheduled(video) ? "scheduled" : (video.privacyStatus as Exclude<PrivacyFilter, "all">);
+}
 
 // Owner instruction, 2026-09-26: the "Publish" column shows the video's real publish date once
 // it's actually public; while it's still private and scheduled, it shows YouTube's own
@@ -267,7 +279,7 @@ export function ContentManager() {
   const filteredVideos = useMemo(() => {
     const query = search.trim().toLowerCase();
     const matching = videos.filter((video) => {
-      if (privacyFilter !== "all" && video.privacyStatus !== privacyFilter) return false;
+      if (privacyFilter !== "all" && accessFilterOf(video) !== privacyFilter) return false;
       if (query && !video.title.toLowerCase().includes(query)) return false;
       return true;
     });
@@ -355,6 +367,7 @@ export function ContentManager() {
               <option value="public">{t("content.privacy.public")}</option>
               <option value="unlisted">{t("content.privacy.unlisted")}</option>
               <option value="private">{t("content.privacy.private")}</option>
+              <option value="scheduled">{t("content.privacy.scheduled")}</option>
             </select>
             <span className="text-sm text-zinc-400">
               {loadingVideos
@@ -424,7 +437,11 @@ export function ContentManager() {
                       </div>
                     </td>
                     <td className="truncate px-4 py-3 text-zinc-400">
-                      {PRIVACY_LABELS[video.privacyStatus] ? t(PRIVACY_LABELS[video.privacyStatus]) : video.privacyStatus}
+                      {isScheduled(video)
+                        ? t("content.privacy.scheduled")
+                        : PRIVACY_LABELS[video.privacyStatus]
+                          ? t(PRIVACY_LABELS[video.privacyStatus])
+                          : video.privacyStatus}
                     </td>
                     <td className="truncate px-4 py-3 text-zinc-400">{formatPublishColumn(video)}</td>
                     <td className="truncate px-4 py-3 text-right text-zinc-400">

@@ -285,7 +285,9 @@ export function VideoDetailsPanel({
   if (loading) return <p className="text-sm text-zinc-500">{t("video.loading")}</p>;
   if (!form || !snapshot) return <p className="text-sm text-red-400">{t("video.loadFailed")}</p>;
 
-  const canSetPublishAt = snapshot.privacyStatus === "private" && !snapshot.publishAt;
+  // BL-182 (owner msg 2707): a scheduled video's date can be changed while it is still private and that date is still ahead.
+  const canSetPublishAt =
+    snapshot.privacyStatus === "private" && (!snapshot.publishAt || Date.parse(snapshot.publishAt) > Date.now());
   const recordingDateValid = form.recordingDate === "" || parseDisplayDate(form.recordingDate) !== null;
   const publishAtValid = form.publishAt === "" || parseDisplayDateTime(form.publishAt) !== null;
 

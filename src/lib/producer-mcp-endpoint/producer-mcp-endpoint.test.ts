@@ -617,7 +617,10 @@ test("AC-PR-07 / AC-PR-10: the Producer's own tools -- its channels with their f
   // experiment.link_video, and -- owner's choice, msg 2485, ADR 0034 Amendment 5 -- the channel agent's DRAFT tool create_experiment_proposal
   // (an experiment that stays `proposed` until the owner approves it), so the DRAFT list has three tools now.
   // BL-171 (VIDEO_COMMENTS_PLAN.md AC-VC-12): 1.6.0 adds the READ channel tool agent_get_video_comments.
-  assert.equal(PRODUCER_API_VERSION, "1.6.0");
+  // BL-182 stage 1 (PUBLISHING_PLAN.md §2 stage 1 item 4, FO-REQ-0023 §4 C4): 1.7.0 adds the READ channel tool
+  // agent_get_publishing_calendar; no upload or schedule tool (ADR 0037).
+  assert.equal(PRODUCER_API_VERSION, "1.7.0");
+  assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_publishing_calendar"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_video_comments"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_experiment_results"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_stored_breakdowns"));

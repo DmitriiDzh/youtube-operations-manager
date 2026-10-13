@@ -1,5 +1,6 @@
 import { open } from "node:fs/promises";
 import { YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
+import { createChannelAccessCore } from "@/lib/channel-access";
 import { createChannelVideoStoreAdapter } from "@/lib/channel-video-store";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { clearPublishingG1Probe, getPublishingG1Probe, insertVideoEditAuditEvent, rawSqlClient, removeLocalVideoRowIfUnreferenced, savePublishingG1Probe } from "@/lib/db";
@@ -93,11 +94,15 @@ export function createPublishingCalendarCore() {
       }));
     },
     getChannel: (channelId) => store.getChannel(channelId),
+    assertActiveChannel: async (args) => {
+      await createChannelAccessCore().assertActiveChannel(args);
+    },
     clock: { now: () => new Date() },
   });
 }
 
+export type PublishingCalendarCore = ReturnType<typeof createPublishingCalendarCore>;
 export type { G1DeleteReport, G1ProbeRecord, G1UploadReport } from "./contracts";
 export type { CalendarEntry, CalendarEntryKind, PublishingCoverage } from "./calendar";
-export type { PublishingAlert, PublishingCalendarResult } from "./calendar-reads";
+export type { AgentPublishingCalendar, PublishingAlert, PublishingCalendarResult } from "./calendar-reads";
 export { PUBLISHING_REMINDER_DAYS } from "./calendar";

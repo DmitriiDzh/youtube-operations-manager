@@ -1,4 +1,5 @@
 import { YOUTUBE_READ_SCOPE, YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
+import { publishAtWriteRefusal } from "./publish-at-rule";
 import type { ResolvedCredentials } from "@/lib/shared-domain";
 import {
   DomainError,
@@ -112,13 +113,8 @@ export function createVideoDetailsServices(deps: ServiceDependencies) {
 
         const before = await deps.youtubeApi.getSnapshot({ credentials, videoId: parsedInput.videoId });
 
-        if (parsedInput.patch.publishAt !== undefined && before.publishAt) {
-          throw new DomainError({
-            code: "publish_at_already_published",
-            message: "publishAt can only be set on a video that has never been published",
-            details: { videoId: parsedInput.videoId, currentPublishAt: before.publishAt },
-          });
-        }
+        const publishAtRefusal = publishAtWriteRefusal(parsedInput.videoId, before, parsedInput.patch, Date.now());
+        if (publishAtRefusal) throw publishAtRefusal;
 
         const diff = computeDiff(before, parsedInput.patch);
 

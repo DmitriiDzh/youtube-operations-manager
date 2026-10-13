@@ -26,8 +26,10 @@ export const RESEARCH_TABS = [
 ] as const;
 
 // BL-176 (LIVE_STREAMS_PLAN.md §3.12): Content gets sub-tabs -- today's videos list and the channel's live stream.
+// BL-182 (PUBLISHING_PLAN.md §2 stage 1): «Календарь» -- the publishing calendar and the coverage reminder.
 export const CONTENT_TABS = [
   { value: "videos", labelKey: "tabs.content.videos" },
+  { value: "calendar", labelKey: "tabs.content.calendar" },
   { value: "streams", labelKey: "tabs.content.streams" },
 ] as const;
 

@@ -37,6 +37,7 @@ export const shell: Record<keyof typeof en, string> = {
   "tabs.settings.liveStreams": "Трансляции",
   "tabs.content.videos": "Видео",
   "tabs.content.streams": "Трансляции",
+  "tabs.content.calendar": "Календарь",
   "tabs.settings.about": "О программе",
 
   "shell.productName": "Operations Manager",
@@ -193,7 +194,7 @@ export const shell: Record<keyof typeof en, string> = {
 
   "page.home.intro": "Панель канала. Ленты комментариев и новых подписчиков пока под вопросом (публичный API может их не позволять) — всё остальное, что показывает главная страница Studio по уже доступным данным, ниже.",
   "page.home.dashboard": "Панель",
-  "page.content.intro": "Ваши синхронизированные видео в стиле Studio. Только чтение: из этой вкладки в YouTube ничего не записывается.",
+  "page.content.intro": "Ваши синхронизированные видео в стиле Studio. В карточке видео можно изменить его на YouTube — каждое изменение сначала показывается и выполняется только после вашего одобрения.",
   "page.languages.intro": "Основной способ добавить язык — ИИ-перевод: проверьте и поправьте предложения агента, прежде чем создавать набор изменений. Импорт отредактированной книги XLSX остаётся запасным, массовым способом. Из этой вкладки в YouTube ничего не записывается — одобрение здесь только локальное решение, и «Одобрено» никогда не значит, что запись в YouTube уже произошла.",
   "page.batches.intro": "Соберите одобренные изменения в пакет и проверьте его в пробном режиме. Настоящая запись возможна, только когда в Настройках включена «Запись в YouTube» — в каждой новой сессии она выключена.",
   "page.decisions.intro": "Гипотезы, эксперименты, их ролики по вариантам и итоги. Producer может предложить гипотезу или ролик для варианта (Исследования → Входящие); одобренный эксперимент сам не запускается.",
@@ -219,4 +220,7 @@ export const shell: Record<keyof typeof en, string> = {
   "channelWork.attemptsExhausted": "Медиа: план {plan}, попытки исчерпаны у {count, plural, one {# позиции} few {# позиций} many {# позиций} other {# позиции}}",
   "channelWork.budget80": "Медиа: план {plan} израсходовал 80% бюджета",
   "channelWork.budget100": "Медиа: план {plan} исчерпал бюджет",
+  "publishingAlerts.coveredThrough": "Запланировано только до {date} ({days, plural, one {# день} few {# дня} many {# дней} other {# дня}} вперёд; данные на {age})",
+  "publishingAlerts.nothingScheduled": "Ничего не запланировано (данные на {age})",
+  "publishingAlerts.bellTitle": "Публикации",
 };

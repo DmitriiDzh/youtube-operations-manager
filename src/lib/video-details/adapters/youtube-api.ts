@@ -8,6 +8,7 @@ import {
   pickWritableStatusFields,
 } from "@/lib/youtube-write-gateway";
 import { DomainError, type ResolvedCredentials } from "@/lib/shared-domain";
+import { publishAtWriteRefusal } from "../publish-at-rule";
 import { readBackUntilApplied } from "../read-back";
 import type { VideoDetailsPatch, VideoDetailsSnapshot } from "../contracts";
 
@@ -92,13 +93,8 @@ export function createVideoDetailsYoutubeApiAdapter() {
       }
       const before = toSnapshot(args.videoId, context);
 
-      if (args.patch.publishAt !== undefined && before.publishAt) {
-        throw new DomainError({
-          code: "publish_at_already_published",
-          message: "publishAt can only be set on a video that has never been published",
-          details: { videoId: args.videoId, currentPublishAt: before.publishAt },
-        });
-      }
+      const publishAtRefusal = publishAtWriteRefusal(args.videoId, before, args.patch, Date.now());
+      if (publishAtRefusal) throw publishAtRefusal;
 
       const touchesSnippet = SNIPPET_PATCH_KEYS.some((key) => key in args.patch);
       const touchesStatus = STATUS_PATCH_KEYS.some((key) => key in args.patch);

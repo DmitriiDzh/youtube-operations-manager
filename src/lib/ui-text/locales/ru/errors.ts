@@ -55,7 +55,7 @@ export const errors: Record<keyof typeof en, string> = {
   "errors.connection_disabled": "Это подключение отключено.",
   "errors.no_fields_to_update": "Изменять нечего.",
   "errors.publish_at_requires_private": "Для отложенной публикации видео должно быть с ограниченным доступом.",
-  "errors.publish_at_already_published": "Время публикации можно задать только для видео, которое ещё ни разу не публиковалось.",
+  "errors.publish_at_already_published": "Время публикации можно изменить, только пока видео приватное и его дата ещё не наступила.",
   "errors.video_details_conflict": "Видео изменилось в YouTube после того, как вы его открыли. Перед сохранением проверьте ещё раз.",
   "errors.device_unavailable": "Этот компьютер сейчас не может выполнять запись; ничего не записано.",
   "errors.deletion_targets_default_language": "Язык видео по умолчанию нельзя удалить.",

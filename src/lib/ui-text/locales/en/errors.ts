@@ -56,7 +56,7 @@ export const errors = {
   "errors.connection_disabled": "This connection is disabled.",
   "errors.no_fields_to_update": "There is nothing to change.",
   "errors.publish_at_requires_private": "A scheduled publication requires the video to be private.",
-  "errors.publish_at_already_published": "A publication time can only be set on a video that has never been published.",
+  "errors.publish_at_already_published": "A publication time can only be changed while the video is still private and its date is still ahead.",
   "errors.video_details_conflict": "The video changed on YouTube since you opened it. Preview again before saving.",
   "errors.device_unavailable": "This computer cannot write right now; nothing was written.",
   "errors.deletion_targets_default_language": "The video's default language cannot be deleted.",
