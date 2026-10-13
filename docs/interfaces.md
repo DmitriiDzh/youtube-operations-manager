@@ -448,6 +448,9 @@ Key MCP tools:
     defaultAudioLanguage }]`: synced videos whose language fields differ from the baseline, case-insensitive; a Batch aligns
     such a video's `defaultLanguage` when it writes it, PROJECT_SPEC §14). `get_change_set` (Web and MCP) also returns
     `languageAlignments` `[{ videoId, from, to }]`.
+  - BL-178 part C (2026-10-13, additive, no version bump): `agent_get_channel_context` also returns `missingTranslations`
+    `{ videoCount, byLanguage, videos: [{ videoId, missingLanguages }] }` -- public or scheduled videos lacking a tracked
+    language (no title, or no description where the original has one), measured against the channel's language.
   - `agent_get_channel_context` — `{ channelId }` → `ChannelContext` (title, `lastSyncedAt`
     — `null` if never synced, never fabricated — synced video count, the channel's editorial
     profile or `null` if none was ever saved, and its explicitly tracked languages). Requires

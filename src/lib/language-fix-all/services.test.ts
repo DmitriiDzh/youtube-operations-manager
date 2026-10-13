@@ -24,6 +24,8 @@ function setup(opts: {
   apply?: (call: Call, index: number) => Promise<{ verified: boolean }>;
   assertMutationAllowed?: () => Promise<void>;
   quotaGuard?: FixAllDependencies["quotaGuard"];
+  conflictedFields?: string[];
+  conflictedFieldsUnknown?: true;
 } = {}) {
   const calls: Call[] = [];
   const registry = createOperationRegistry();
@@ -44,6 +46,8 @@ function setup(opts: {
         defaultLanguageDeviates: d.lang ?? false,
         defaultAudioLanguageDeviates: d.audio ?? false,
       })),
+      ...(opts.conflictedFields ? { conflictedFields: opts.conflictedFields } : {}),
+      ...(opts.conflictedFieldsUnknown ? { conflictedFieldsUnknown: true as const } : {}),
     }),
     applyFieldsUpdate: async (call) => {
       calls.push(call);
@@ -316,4 +320,26 @@ test("BL-117 AC-G4 (Fix all): an unreadable quota refuses with quota_unknown, un
   const { run } = await second.service.start({ ...request(["v1", "v2", "v3"]), acknowledgeUnknownQuota: true });
   await run();
   assert.equal(second.calls.length, 3);
+});
+
+// BL-178 part B (review item 1; PROJECT_SPEC §14 "One baseline on every computer"): while the baseline differs between the
+// owner's computers nobody has chosen the value a run would write -- refused before anything is registered or written.
+test("BL-178 B: a run is refused while the channel's defaults differ between the computers; nothing is written", async () => {
+  const { service, calls, registry } = setup({ conflictedFields: ["defaultLanguage"] });
+  await assert.rejects(
+    () => service.start(request(["v1", "v2"])),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed" && /set differently on your computers/.test(error.message)
+  );
+  assert.equal(calls.length, 0);
+  assert.equal(registry.list({ channelId: "UC1" }).length, 0);
+});
+
+test("BL-178 B: a run is refused when the shared settings cannot be read (agreement unknown); nothing is written", async () => {
+  const { service, calls, registry } = setup({ conflictedFieldsUnknown: true });
+  await assert.rejects(
+    () => service.start(request(["v1"])),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed" && /could not be read/.test(error.message)
+  );
+  assert.equal(calls.length, 0);
+  assert.equal(registry.list({ channelId: "UC1" }).length, 0);
 });

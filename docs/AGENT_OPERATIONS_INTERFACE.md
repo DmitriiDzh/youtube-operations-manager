@@ -106,7 +106,8 @@ editorialProfile (the channel's saved editorial profile via `ai-localization`'s 
 `getEditorialProfile`, or `null` if none was ever saved), trackedLanguages, languageBaseline,
 languageDeviations }`. `languageBaseline` is the channel's configured language pair (Languages -> Language defaults) or `null`;
 `languageDeviations` lists the synced videos whose `defaultLanguage`/`defaultAudioLanguage` differ from it (BL-178, 2026-10-12,
-additive). Throws `DATA_NOT_SYNCED` if `channelId` has no local record at all.
+additive); `missingTranslations` (BL-178 part C, 2026-10-13, additive) gives `{ videoCount, byLanguage, videos: [{ videoId,
+missingLanguages }] }` for the public or scheduled videos lacking a tracked language, measured against the channel's language. Throws `DATA_NOT_SYNCED` if `channelId` has no local record at all.
 
 `getVideoContext({ channelId, videoId, include? })` returns `{ videoId, channelId,
 includedSections, metadata?, localizations? }`. `include` selects which of `"metadata"` /

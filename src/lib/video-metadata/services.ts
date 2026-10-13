@@ -86,19 +86,6 @@ type ServiceDependencies = {
 
 export type { ServiceDependencies };
 
-/**
- * RISK-11 (extended to this legacy single-item write path, 2026-09-18): previously
- * stripped only `.localized`, leaving five other documented read-only `snippet`
- * sub-properties (`publishedAt`, `channelId`, `channelTitle`, `thumbnails`,
- * `liveBroadcastContent`) echoed back unchanged on every real `videos.update` call this
- * function's callers make. Now delegates to the shared, canonical whitelist
- * (`src/lib/youtube-write-gateway/index.ts`'s `pickWritableSnippetFields`) instead of keeping
- * its own, narrower copy -- the exact same fix already applied to `src/lib/batches/merge.ts`.
- */
-function removeReadOnlySnippetFields(snippet: Record<string, unknown>) {
-  return pickWritableSnippetFields(snippet);
-}
-
 function resolveTargetLanguage(context: VideoMetadataContext): {
   targetLanguage: string;
   languageSource: MetadataLanguageSource;

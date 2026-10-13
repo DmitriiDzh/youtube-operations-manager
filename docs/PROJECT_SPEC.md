@@ -454,6 +454,8 @@ Fails closed (the row FAILS, nothing is sent): no language baseline configured -
 
 Single-item snippet writes (`video-details`, including "Fix all", and `video-metadata`) send the `defaultAudioLanguage` read from YouTube just before the write, so an edit of another field never resets it (RISK-102) -- except `zxx` ("Not applicable"), which YouTube rejected when echoed (2026-10-02) and stays out as before. Bulk writes use the channel baseline; a single edit keeps what the video has.
 
+**One baseline on every computer (2026-10-13, BL-178 part B; owner В3 "да", msg 2665).** The channel's language baseline and its tracked languages are shared between the owner's computers (sync-gateway `channel-language-settings`). A field set to different values on two computers before they met is a conflict the owner resolves on the startup screen or in Merge; until then each computer keeps its own value, and a Batch row **fails closed before any YouTube call** while the baseline language or baseline audio language is in conflict -- nobody has chosen the value the write would set.
+
 ---
 
 # 15. XLSX Export

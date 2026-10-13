@@ -128,6 +128,15 @@ export const channelContextOutputSchema = z
     languageDeviations: z
       .array(z.object({ videoId: z.string().min(1), defaultLanguage: z.string().nullable(), defaultAudioLanguage: z.string().nullable() }).strict())
       .optional(),
+    /** BL-178 part C: public or scheduled videos lacking a tracked language, measured against the channel's language. */
+    missingTranslations: z
+      .object({
+        videoCount: z.number().int().nonnegative(),
+        byLanguage: z.record(z.string(), z.number().int().nonnegative()),
+        videos: z.array(z.object({ videoId: z.string().min(1), missingLanguages: z.array(z.string()) }).strict()),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 

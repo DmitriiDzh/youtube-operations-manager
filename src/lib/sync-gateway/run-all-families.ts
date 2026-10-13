@@ -7,6 +7,7 @@ import { createLiveStreamsSyncRunnerForProduction } from "./live-streams-sync";
 import { createGenerationPlansSyncRunnerForProduction } from "./generation-plans-sync";
 import { createMediaSettingsSyncRunnerForProduction } from "./media-settings-sync";
 import { createAgentTokensSyncRunnerForProduction } from "./agent-tokens-sync";
+import { createChannelLanguageSettingsSyncRunnerForProduction } from "./channel-language-settings-sync";
 
 /** Runs one family's cycle and unconditionally records its outcome to `sync_family_status`
  * (2026-09-23, Merge-tab redesign) -- regardless of whether it resolved or threw, so the
@@ -37,7 +38,7 @@ async function runAndRecord<T>(
  * process-wide guard in `runAllSyncFamiliesOnce` below.
  */
 async function runAllOnce() {
-  const [changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams] = await Promise.all([
+  const [changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings] = await Promise.all([
     runAndRecord("change_drafts", () => createChangeDraftsSyncCoreForProduction().runSyncCycle()),
     runAndRecord("editorial_profile", () => createEditorialProfileSyncRunnerForProduction().runSyncCycle()),
     runAndRecord("ai_connections", () => createAiConnectionsCatalogSyncRunnerForProduction().runSyncCycle()),
@@ -51,8 +52,10 @@ async function runAllOnce() {
     runAndRecord("agent_tokens", () => createAgentTokensSyncRunnerForProduction().runSyncCycle()),
     // BL-176: this computer's live streams report out (the Mac hosts them), the other devices' in (shown read-only).
     runAndRecord("live_streams", () => createLiveStreamsSyncRunnerForProduction().runSyncCycle()),
+    // BL-178 part B: each channel's language baseline and tracked languages, the same on every computer.
+    runAndRecord("channel_language_settings", () => createChannelLanguageSettingsSyncRunnerForProduction().runSyncCycle()),
   ]);
-  return { changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams };
+  return { changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings };
 }
 
 type AllFamiliesResult = Awaited<ReturnType<typeof runAllOnce>>;
