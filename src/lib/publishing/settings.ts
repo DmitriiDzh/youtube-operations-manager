@@ -3,7 +3,7 @@
 // (плюс thumbnail). Остальные же параметры достаточно выбрать один раз как дефолтные." Owner msgs 2725/2727: the publish time is
 // set in UTC, 12:00 by default. Pure: the fields, their defaults and their validation, shared by the routes and the Content panel.
 // The values travel between computers in the sync-gateway `channel-publishing-settings` family, which knows nothing of them.
-import { isValidLocalTimeOfDay } from "@/lib/analytics/staleness";
+import { isValidLocalTimeOfDay } from "@/lib/zoned-time";
 
 export const PUBLISHING_SETTING_FIELDS = [
   "publishTimeUtc",
