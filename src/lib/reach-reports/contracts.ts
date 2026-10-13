@@ -286,14 +286,14 @@ export const TRAFFIC_SOURCE_TYPE_LABELS: Readonly<Record<number, string>> = {
   20: "Interactive video endscreen",
   23: "Stories",
   24: "Shorts",
-  25: "Product pages",
-  26: "Hashtag pages",
-  27: "Sound pages",
+  25: "Product Pages",
+  26: "Hashtag Pages",
+  27: "Sound Pages",
   28: "Live redirect",
   29: "Podcasts",
   30: "Remixed video",
   31: "Vertical live feed",
-  32: "Related video (Shorts player)",
+  32: "Related video",
 };
 
 export type TrafficSourceMetrics = { views: number | null; engagedViews: number | null; watchTimeMinutes: number | null };

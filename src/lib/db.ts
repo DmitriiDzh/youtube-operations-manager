@@ -6345,7 +6345,8 @@ export async function getChannelTrafficSourceCoverage(channelId: string, databas
 export async function listChannelTrafficSourceDaily(
   channelId: string,
   range: { startDate: string; endDate: string },
-  database: AppDb = db
+  database: AppDb = db,
+  videoId?: string
 ): Promise<StoredChannelTrafficSourceRow[]> {
   return database
     .select()
@@ -6354,7 +6355,8 @@ export async function listChannelTrafficSourceDaily(
       and(
         eq(channelTrafficSourceDaily.channelId, channelId),
         gte(channelTrafficSourceDaily.date, range.startDate),
-        sql`${channelTrafficSourceDaily.date} <= ${range.endDate}`
+        sql`${channelTrafficSourceDaily.date} <= ${range.endDate}`,
+        ...(videoId !== undefined ? [eq(channelTrafficSourceDaily.videoId, videoId)] : [])
       )
     )
     .orderBy(asc(channelTrafficSourceDaily.date), asc(channelTrafficSourceDaily.videoId), asc(channelTrafficSourceDaily.trafficSourceType));

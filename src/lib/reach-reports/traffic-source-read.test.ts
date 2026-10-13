@@ -14,7 +14,7 @@ import { createReachReportsServices, type ReachReportsDependencies } from "./ser
 const TRAFFIC = "channel_traffic_source_a3";
 const IN = { credentialRef: { userId: "u1" }, channelId: "UC_X", startDate: "2026-10-10", endDate: "2026-10-11" };
 
-const ROWS = [
+const ROWS: Array<{ date: string; videoId: string; trafficSourceType: number; views: number | null; engagedViews: number | null; watchTimeMinutes: number | null }> = [
   { date: "2026-10-10", videoId: "vidA", trafficSourceType: 5, views: 12, engagedViews: 12, watchTimeMinutes: 5.5 },
   { date: "2026-10-10", videoId: "vidB", trafficSourceType: 5, views: 3, engagedViews: null, watchTimeMinutes: 1 },
   { date: "2026-10-10", videoId: "", trafficSourceType: 0, views: 2, engagedViews: 2, watchTimeMinutes: 0.5 },
@@ -23,7 +23,9 @@ const ROWS = [
   { date: "2026-10-11", videoId: "vidA", trafficSourceType: 5, views: 6, engagedViews: 6, watchTimeMinutes: 3 },
 ];
 
-function setup(opts: { job?: boolean; importedFiles?: number; activeChannelId?: string } = {}) {
+type Row = { date: string; videoId: string; trafficSourceType: number; views: number | null; engagedViews: number | null; watchTimeMinutes: number | null };
+
+function setup(opts: { job?: boolean; importedFiles?: number; activeChannelId?: string; rows?: Row[] } = {}) {
   const ranges: Array<{ startDate: string; endDate: string }> = [];
   const deps = {
     authResolver: { resolve: async () => ({ credentialRef: { userId: "u1" }, accessToken: "t", scopeSet: new Set<string>() }) },
@@ -41,7 +43,7 @@ function setup(opts: { job?: boolean; importedFiles?: number; activeChannelId?: 
     trafficSourceStore: {
       async listDaily(_channelId: string, range: { startDate: string; endDate: string }) {
         ranges.push(range);
-        return opts.importedFiles === 0 ? [] : ROWS;
+        return opts.importedFiles === 0 ? [] : (opts.rows ?? ROWS);
       },
       async getCoverage() {
         return { firstDate: "2026-09-13", lastDate: "2026-10-11" };
@@ -115,4 +117,34 @@ test("another channel than the active one is refused; a bad range is refused bef
   await assert.rejects(bad.services.getReportingTrafficSources({ ...IN, startDate: "2026-10-12", endDate: "2026-10-11" }));
   await assert.rejects(bad.services.getReportingTrafficSources({ ...IN, startDate: "2025-01-01", endDate: "2026-10-11" }));
   assert.equal(bad.ranges.length, 0);
+});
+
+// Review findings (minor 4): the boundaries the requirements name.
+test("a code whose rows all lack a metric reports null for it, never 0", async () => {
+  const rows = [
+    { date: "2026-10-10", videoId: "vidA", trafficSourceType: 9, views: 2, engagedViews: null, watchTimeMinutes: null },
+    { date: "2026-10-10", videoId: "vidB", trafficSourceType: 9, views: 1, engagedViews: null, watchTimeMinutes: null },
+  ];
+  const result = await setup({ rows }).services.getReportingTrafficSources(IN);
+  assert.deepEqual(result.daily, [{ date: "2026-10-10", trafficSourceType: 9, label: "External", views: 3, engagedViews: null, watchTimeMinutes: null }]);
+  assert.deepEqual(result.totals, [{ trafficSourceType: 9, label: "External", views: 3, engagedViews: null, watchTimeMinutes: null }]);
+});
+
+test("videoDaily holds at most 5000 rows: 5000 is complete, 5001 says truncated", async () => {
+  const many = (count: number) =>
+    Array.from({ length: count }, (_, index) => ({ date: "2026-10-10", videoId: "vidA", trafficSourceType: index, views: 1, engagedViews: 1, watchTimeMinutes: 1 }));
+  const exact = await setup({ rows: many(5000) }).services.getReportingTrafficSources({ ...IN, videoId: "vidA", groupBy: "video_day" });
+  assert.equal(exact.videoDaily?.length, 5000);
+  assert.equal(exact.videoDailyTruncated, false);
+  const over = await setup({ rows: many(5001) }).services.getReportingTrafficSources({ ...IN, videoId: "vidA", groupBy: "video_day" });
+  assert.equal(over.videoDaily?.length, 5000);
+  assert.equal(over.videoDailyTruncated, true);
+});
+
+test("the range: 400 days apart is allowed, 401 is not; an impossible calendar date is refused", async () => {
+  const { services } = setup();
+  await services.getReportingTrafficSources({ ...IN, startDate: "2025-09-08", endDate: "2026-10-13" }); // 400 days apart
+  await assert.rejects(services.getReportingTrafficSources({ ...IN, startDate: "2025-09-07", endDate: "2026-10-13" }));
+  await assert.rejects(services.getReportingTrafficSources({ ...IN, startDate: "2026-02-30", endDate: "2026-03-05" }));
+  await assert.rejects(services.getReportingTrafficSources({ ...IN, startDate: "2026-10-01", endDate: "2026-10-32" }));
 });

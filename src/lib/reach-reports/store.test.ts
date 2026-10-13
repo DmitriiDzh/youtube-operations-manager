@@ -386,3 +386,16 @@ test("BL-181: the traffic-source read's files are the imported ones of that type
     );
     assert.deepEqual(await getChannelTrafficSourceCoverage("UC_X", db), { firstDate: "2026-10-09", lastDate: "2026-10-10" });
   }));
+
+test("BL-181 review: the files of the range end at its last day (a file of endDate + 1 is out); listDaily narrows to one video in SQL", () =>
+  withDb(async (db) => {
+    const meta = { channelId: "UC_X", reportTypeId: "channel_traffic_source_a3", jobId: "job-t" };
+    const row = (date: string, videoId: string) => ({ date, videoId, trafficSourceType: 5, views: 1, engagedViews: 1, watchTimeMinutes: 1 });
+    await importTrafficSourceReport({ ...meta, reportId: "t12", startTime: "2026-10-12T07:00:00Z", endTime: "2026-10-13T07:00:00Z", createTime: "2026-10-14T05:00:00Z", rows: [row("2026-10-12", "vidA"), row("2026-10-12", "vidB")] }, db);
+    await importTrafficSourceReport({ ...meta, reportId: "t13", startTime: "2026-10-13T07:00:00Z", endTime: "2026-10-14T07:00:00Z", createTime: "2026-10-15T05:00:00Z", rows: [row("2026-10-13", "vidA")] }, db);
+    assert.deepEqual(
+      (await listImportedReportingFilesInRange("UC_X", "channel_traffic_source_a3", { startDate: "2026-10-01", endDate: "2026-10-12" }, db)).map((f) => f.startTime),
+      ["2026-10-12T07:00:00Z"]
+    );
+    assert.deepEqual((await listChannelTrafficSourceDaily("UC_X", RANGE, db, "vidB")).map((r) => [r.date, r.videoId]), [["2026-10-12", "vidB"]]);
+  }));

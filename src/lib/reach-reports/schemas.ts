@@ -96,7 +96,9 @@ export const getReportingTrafficSourcesInputObjectSchema = z
 export const getReportingTrafficSourcesInputSchema = getReportingTrafficSourcesInputObjectSchema.superRefine((value, ctx) => {
   const start = Date.parse(`${value.startDate}T00:00:00Z`);
   const end = Date.parse(`${value.endDate}T00:00:00Z`);
-  if (Number.isNaN(start) || Number.isNaN(end)) {
+  // A real calendar date only: Date.parse rolls 2026-02-30 over to 03-02 (review minor 2), so the date must survive a round trip.
+  const roundTrips = (time: number, date: string) => !Number.isNaN(time) && new Date(time).toISOString().slice(0, 10) === date;
+  if (!roundTrips(start, value.startDate) || !roundTrips(end, value.endDate)) {
     ctx.addIssue({ code: "custom", message: "startDate/endDate must be real calendar dates" });
     return;
   }

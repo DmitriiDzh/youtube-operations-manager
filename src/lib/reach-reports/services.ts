@@ -193,7 +193,8 @@ export type ReachReportsDependencies = {
   trafficSourceStore?: {
     listDaily(
       channelId: string,
-      range: { startDate: string; endDate: string }
+      range: { startDate: string; endDate: string },
+      videoId?: string
     ): Promise<Array<{ date: string; videoId: string; trafficSourceType: number; views: number | null; engagedViews: number | null; watchTimeMinutes: number | null }>>;
     getCoverage(channelId: string): Promise<{ firstDate: string | null; lastDate: string | null }>;
     listFiles(channelId: string, range: { startDate: string; endDate: string }): Promise<Array<{ startTime: string; endTime: string; createTime: string }>>;
@@ -566,10 +567,6 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
     },
 
     /**
-     * Local read of the Reporting job and its files -- no Google call. Powers the Analytics card's status
-     * block; every value is stored data or arithmetic on it, nothing is fabricated.
-     */
-    /**
      * BL-181 (owner msg 2702, FO-MSG-0015): the stored traffic-source rows of a range -- a local read, no Google call. `state` is the
      * traffic-source job's, so an empty result is never read as zero traffic. Per day and code the channel's videos are summed, the
      * channel-level and deleted-video remainder (`videoId` "") included; with `videoId`, only that video's rows count.
@@ -584,17 +581,22 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
         deps.store.getJob(parsed.channelId, TRAFFIC_SOURCE_REPORT_TYPE_ID),
         deps.store.countImportedFiles ? deps.store.countImportedFiles(parsed.channelId, TRAFFIC_SOURCE_REPORT_TYPE_ID) : Promise.resolve(0),
         store.getCoverage(parsed.channelId),
-        store.listDaily(parsed.channelId, range),
+        store.listDaily(parsed.channelId, range, parsed.videoId),
         store.listFiles(parsed.channelId, range),
       ]);
+      // Review S1: the SQL already narrows to `videoId`; grouping appends in place (a year of a large channel is ~600k rows).
       const rows = parsed.videoId ? stored.filter((row) => row.videoId === parsed.videoId) : stored;
 
       const byDayAndCode = new Map<string, typeof rows>();
       const byCode = new Map<number, typeof rows>();
+      const push = <K>(map: Map<K, typeof rows>, key: K, row: (typeof rows)[number]) => {
+        const group = map.get(key);
+        if (group) group.push(row);
+        else map.set(key, [row]);
+      };
       for (const row of rows) {
-        const key = `${row.date}\u0000${row.trafficSourceType}`;
-        byDayAndCode.set(key, [...(byDayAndCode.get(key) ?? []), row]);
-        byCode.set(row.trafficSourceType, [...(byCode.get(row.trafficSourceType) ?? []), row]);
+        push(byDayAndCode, `${row.date}\u0000${row.trafficSourceType}`, row);
+        push(byCode, row.trafficSourceType, row);
       }
       const daily = [...byDayAndCode.values()]
         .map((group) => ({ date: group[0].date, trafficSourceType: group[0].trafficSourceType, label: labelOf(group[0].trafficSourceType), ...summed(group) }))
@@ -624,6 +626,10 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
       };
     },
 
+    /**
+     * Local read of the Reporting job and its files -- no Google call. Powers the Analytics card's status
+     * block; every value is stored data or arithmetic on it, nothing is fabricated.
+     */
     async getReachStatus(input: unknown): Promise<GetReachStatusResult> {
       const parsed = parseWithSchema(getReachStatusInputSchema, input, "get reach status input");
       await assertChannel(parsed.credentialRef, parsed.channelId);
