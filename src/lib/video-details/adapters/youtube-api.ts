@@ -9,7 +9,7 @@ import {
 } from "@/lib/youtube-write-gateway";
 import { DomainError, type ResolvedCredentials } from "@/lib/shared-domain";
 import { publishAtWriteRefusal } from "../publish-at-rule";
-import { readBackUntilApplied } from "../read-back";
+import { missingWriteOnlyStatusFields, readBackUntilApplied } from "../read-back";
 import type { VideoDetailsPatch, VideoDetailsSnapshot } from "../contracts";
 
 function createAuthorizedClient(credentials: ResolvedCredentials) {
@@ -98,6 +98,16 @@ export function createVideoDetailsYoutubeApiAdapter() {
 
       const touchesSnippet = SNIPPET_PATCH_KEYS.some((key) => key in args.patch);
       const touchesStatus = STATUS_PATCH_KEYS.some((key) => key in args.patch);
+      // BL-182 review: `videos.update` replaces the whole status part, and YouTube never returns "AI use" on read -- a status write
+      // without it in the patch would silently reset it. Fail closed: the caller must send it explicitly (the Details card does).
+      const missing = missingWriteOnlyStatusFields(touchesStatus, context.status as Record<string, unknown>, args.patch as Record<string, unknown>);
+      if (missing.length > 0) {
+        throw new DomainError({
+          code: "validation_failed",
+          message: `A status change must include ${missing.join(", ")}: YouTube does not return it on read, so it would be reset`,
+          details: { videoId: args.videoId, missing },
+        });
+      }
       const touchesRecordingDetails = "recordingDate" in args.patch;
 
       await applyVideoDetailsUpdate({

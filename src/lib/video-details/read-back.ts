@@ -16,6 +16,15 @@ const INSTANT_FIELDS = new Set<string>(["publishAt", "recordingDate"]);
  */
 export const WRITE_ONLY_FIELDS = new Set<string>(["containsSyntheticMedia"]);
 
+/**
+ * BL-182 review: `videos.update` replaces the whole status part, so a status write must carry every write-only status field the read
+ * could not supply -- otherwise it is silently reset. Returns the missing ones (empty = safe to write).
+ */
+export function missingWriteOnlyStatusFields(touchesStatus: boolean, readStatus: Record<string, unknown>, patch: Record<string, unknown>): string[] {
+  if (!touchesStatus) return [];
+  return [...WRITE_ONLY_FIELDS].filter((field) => (readStatus[field] === null || readStatus[field] === undefined) && !(field in patch));
+}
+
 export function isUnverifiable(field: string, readBack: unknown): boolean {
   return WRITE_ONLY_FIELDS.has(field) && (readBack === null || readBack === undefined);
 }

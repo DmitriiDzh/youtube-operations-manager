@@ -51,6 +51,7 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
   const [error, setError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const [syncNotice, setSyncNotice] = useState<string | null>(null);
   const [cursor, setCursor] = useState(() => {
     const now = new Date();
     return { year: now.getFullYear(), month: now.getMonth() };
@@ -86,11 +87,12 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
     if (!channelId) return;
     setSyncing(true);
     setSyncError(null);
+    setSyncNotice(null);
     try {
       const res = await fetch("/api/channels/sync", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ channelId }) });
       if (res.status === 409) {
         // A sync of this channel is already running (e.g. «Видео» refreshing in the background): the minute refresh picks it up.
-        setSyncError(t("publishingCalendar.syncAlreadyRunning"));
+        setSyncNotice(t("publishingCalendar.syncAlreadyRunning"));
         return;
       }
       if (!res.ok) throw new Error(String(res.status));
@@ -141,6 +143,7 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
           {syncing ? t("publishingCalendar.syncing") : t("publishingCalendar.sync")}
         </button>
         {syncError && <p className="w-full text-sm text-red-400">{syncError}</p>}
+        {syncNotice && <p className="w-full text-sm text-zinc-400">{syncNotice}</p>}
       </div>
     );
   }
@@ -176,6 +179,7 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
           </div>
         </div>
         {syncError && <p className="mt-2 text-sm text-red-400">{syncError}</p>}
+        {syncNotice && <p className="mt-2 text-sm text-zinc-400">{syncNotice}</p>}
       </section>
 
       <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">

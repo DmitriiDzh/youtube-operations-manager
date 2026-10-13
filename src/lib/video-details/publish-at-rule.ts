@@ -32,7 +32,7 @@ export function publishAtWriteRefusal(
   const nextMs = Date.parse(patch.publishAt);
   if (Number.isNaN(nextMs) || nextMs <= nowMs + PUBLISH_AT_MARGIN_MS) {
     return new DomainError({
-      code: "validation_failed",
+      code: "publish_at_too_soon",
       message: "A publish time must be more than 15 minutes in the future (a past time would publish the video at once)",
       details: { videoId, publishAt: patch.publishAt },
     });

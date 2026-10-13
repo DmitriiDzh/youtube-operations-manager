@@ -3912,8 +3912,12 @@ Plan: `docs/roadmap/plans/PUBLISHING_PLAN.md`. Owner: msgs 2698, 2702 and 2707.
   - The read-back and the verification compare instants as instants (`sameFieldValue`). YouTube echoes `...:00Z` for a written
     `...:00.000Z`; before the review this real write was reported as a failure.
   - "AI use" (`containsSyntheticMedia`) cannot be read (G1), and `videos.update` replaces the status part. So any status write from
-    the card sends it explicitly: an unreadable value starts checked, and the card says why. Its read-back is "unverifiable"
-    (recorded in the VERIFICATION audit), not a mismatch.
+    the card sends it explicitly: an unreadable value starts checked, and the card says why.
+    - The adapter fails closed on a status write that does not carry it.
+    - Its read-back is "unverifiable" (recorded in the VERIFICATION audit), not a mismatch.
+    - Known limit: an owner's explicit "no" is not remembered. The next load reads null again and shows it checked. Showing the last
+      audited value is left for stage 2's publishing defaults.
+  - A new time within the margin is refused as `publish_at_too_soon` (en/ru text).
 - **`agent_get_publishing_calendar`** (READ; Agent API 3.16.0, Producer API 1.7.0): a ±14-day window in UTC days, plus the undated
   uploads, the coverage and the gap dates. Agents get no upload or schedule tool.
 

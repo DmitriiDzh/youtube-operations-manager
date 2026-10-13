@@ -478,7 +478,7 @@ test("AC-SVC-02c: refused -- a public video, a current time within 15 minutes, a
   const cases: Array<[Partial<VideoDetailsSnapshot>, string, string]> = [
     [{ privacyStatus: "public", publishAt: null }, later, "publish_at_already_published"],
     [{ privacyStatus: "private", publishAt: soon }, later, "publish_at_already_published"],
-    [{ privacyStatus: "private", publishAt: null }, new Date(Date.now() - 60_000).toISOString(), "validation_failed"],
+    [{ privacyStatus: "private", publishAt: null }, new Date(Date.now() - 60_000).toISOString(), "publish_at_too_soon"],
   ];
   for (const [snapshot, next, code] of cases) {
     const { deps } = makeDeps({ youtubeApi: { getSnapshot: async () => makeSnapshot(snapshot) } });

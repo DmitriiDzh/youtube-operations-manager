@@ -56,6 +56,7 @@ const DOMAIN_ERROR_STATUS = {
   no_fields_to_update: 400,
   publish_at_requires_private: 400,
   publish_at_already_published: 409,
+  publish_at_too_soon: 400,
   video_details_conflict: 409,
   device_unavailable: 503,
   deletion_targets_default_language: 422,
