@@ -1174,3 +1174,6 @@ idle / minutes / USD; every job submit or poll counts as activity. Contract: `do
   each file's `lagHours` (hours after its Pacific day ended) and the first file per day. A local read.
 - `analytics_data_quality` gains `returnLag`: per date, when this computer's collection first got it back from the Analytics API, and
   the lag. Contract: `docs/interfaces.md`.
+- `agent_get_reporting_traffic_sources` (Agent API 3.15.0, capability `analytics.query_reporting_traffic_sources`, READ; owner msg
+  2702) returns the stored traffic-source report: views and watch time per day and traffic source code, for the channel or one video,
+  with the file each day comes from and its lag. A local read. Contract: `docs/interfaces.md`.

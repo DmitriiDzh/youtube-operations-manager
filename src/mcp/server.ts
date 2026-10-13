@@ -72,7 +72,7 @@ import { createMarketIntelligenceCore, type MarketIntelligenceCore } from "@/lib
 import { createMediaGenerationCore, type MediaGenerationCore } from "@/lib/media-generation";
 import { createGenerationPlansCore, type GenerationPlan, type GenerationPlanServices } from "@/lib/generation-plans";
 import { createReachReportsCore, type ReachReportsCore } from "@/lib/reach-reports";
-import { getChannelReachInputObjectSchema, getReachStatusInputSchema } from "@/lib/reach-reports/schemas";
+import { getChannelReachInputObjectSchema, getReachStatusInputSchema, getReportingTrafficSourcesInputObjectSchema } from "@/lib/reach-reports/schemas";
 import { createMarketAssignmentCore, type MarketAssignmentCore } from "@/lib/market-assignments";
 import { assertAgentSession, runInAgentSession } from "@/lib/agent-session";
 import { MCP_TOOL_CLASSIFICATION } from "./tool-classification";
@@ -357,6 +357,7 @@ type McpToolHandlers = {
   agentQueryChannelAnalytics: (input: unknown) => Promise<ToolResponse>;
   agentQueryChannelReach: (input: unknown) => Promise<ToolResponse>;
   agentGetReportingStatus: (input: unknown) => Promise<ToolResponse>;
+  agentGetReportingTrafficSources: (input: unknown) => Promise<ToolResponse>;
   agentGetVideoMilestones: (input: unknown) => Promise<ToolResponse>;
   agentGetStoredBreakdowns: (input: unknown) => Promise<ToolResponse>;
   agentGetStoredSearchTerms: (input: unknown) => Promise<ToolResponse>;
@@ -717,7 +718,7 @@ export function createMcpToolHandlers(
   // `agentOperationsCore`) so `agent-operations` and `analytics` gain no dependency on it (AGENTS.md §M). Read-only
   // subset: the sync that talks to Google is the app's own (dashboard/Sync now), never an agent tool.
   // `getReachStatus` (BL-181) is optional only so older test doubles that read Reach data still type-check; production passes the core.
-  reachReportsCore: Pick<ReachReportsCore, "getChannelReach"> & Partial<Pick<ReachReportsCore, "getReachStatus">> = createReachReportsCore(),
+  reachReportsCore: Pick<ReachReportsCore, "getChannelReach"> & Partial<Pick<ReachReportsCore, "getReachStatus" | "getReportingTrafficSources">> = createReachReportsCore(),
   // BL-118 -- the channel breakdown (traffic sources, devices, ...) the Content tab already computes; a LIVE Analytics API read.
   breakdownCore: Pick<AnalyticsCore, "getChannelBreakdown"> = createAnalyticsCore(),
   // Research export (ADR 0019) -- the Manager writes flat CSV/JSON files into the channel's workspace `99 Data Exchange/From YTM/` folder (fixed name, owner-approved exception).
@@ -1741,6 +1742,26 @@ export function createMcpToolHandlers(
     },
 
     /**
+     * BL-181 (owner msg 2702) -- the stored Reporting traffic-source rows of a range. A LOCAL read, no Google call; the core does the
+     * active-channel check itself.
+     */
+    async agentGetReportingTrafficSources(input: unknown): Promise<ToolResponse> {
+      const parsedInput = getReportingTrafficSourcesInputObjectSchema.partial({ credentialRef: true }).safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        if (!reachReportsCore.getReportingTrafficSources) throw new Error("The Reporting traffic-source read is not available in this server.");
+        const credentialRef = await resolveCredentialRef(parsedInput.data.credentialRef);
+        const result = await reachReportsCore.getReportingTrafficSources({ ...parsedInput.data, credentialRef });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /**
      * BL-166 (docs/roadmap/plans/VIDEO_MILESTONES_PLAN.md) -- the stored day-7 / day-28 milestones of the channel's videos. A LOCAL read,
      * no Google call; `listVideoMilestones` checks the active channel itself, and a video of another channel is simply not listed.
      */
@@ -2548,6 +2569,8 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     agentQueryChannelReach: handlers.agentQueryChannelReach,
     // BL-181 -- a pure local read, ungated.
     agentGetReportingStatus: handlers.agentGetReportingStatus,
+    // BL-181 (owner msg 2702) -- a pure local read, ungated.
+    agentGetReportingTrafficSources: handlers.agentGetReportingTrafficSources,
     // BL-166 -- a pure local read, ungated.
     agentGetVideoMilestones: handlers.agentGetVideoMilestones,
     // BL-168 -- a pure local read, ungated.
@@ -3330,6 +3353,16 @@ export function createMcpServer(
       inputSchema: getReachStatusInputSchema.partial({ credentialRef: true }),
     },
     (args) => handlers.agentGetReportingStatus(args)
+  );
+
+  registerTool(
+    "agent_get_reporting_traffic_sources",
+    {
+      description:
+        "Views and watch time by traffic source per day, from the YouTube Reporting API report `channel_traffic_source_a3` that this app downloads and stores (BL-181) -- a LOCAL read, no live YouTube call. Often available a day earlier than the Analytics API (measure with agent_get_reporting_status). `state` is the traffic-source job's: `no_job`, `waiting_for_first_report` (NOT zero traffic) or `ready`. `daily`: per day and `trafficSourceType` (Google's numeric code; `label` is Google's name, null for a code this app does not know) the channel's videos summed, the channel-level and deleted-video remainder included -- views, engagedViews, watchTimeMinutes (minutes; null when no stored row carried the metric, never 0). `totals`: per code over the range, most views first. Days without a stored file are absent, never zero-filled. `files`: per day the Google file the rows come from (`createTime`) and `lagHours` after the day's Pacific end; a reissue replaces a day's rows. Optional `videoId` limits everything to that video; `groupBy: video_day` adds `videoDaily` (per video, day and code; at most 5000 rows, `videoDailyTruncated`). Each computer downloads these files itself when its dashboard is opened. Dates YYYY-MM-DD (Pacific days), at most 400 days. Requires channelId to be the caller's currently-active channel.",
+      inputSchema: getReportingTrafficSourcesInputObjectSchema.partial({ credentialRef: true }),
+    },
+    (args) => handlers.agentGetReportingTrafficSources(args)
   );
 
   registerTool(

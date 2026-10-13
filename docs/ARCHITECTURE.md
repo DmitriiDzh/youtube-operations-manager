@@ -1258,6 +1258,12 @@ stages. Stage 1 collects and measures. Stage 2 would show provisional values, an
   - There is no server timer: an evening with the dashboard closed is not re-collected (FO-REQ-0020 §2.3 allows this: "check on
     mount, no hidden daemon").
 - **Not in stage 1:** reading the basic rows anywhere (overview, agent, Producer). That is stage 2's provisional values.
+- **Traffic-source read (owner msg 2702, FO-MSG-0015).** The Operator reads the stored traffic-source rows through
+  `agent_get_reporting_traffic_sources` (Agent API 3.15.0, `getReportingTrafficSources`).
+  - Per day and code it sums the channel's videos, including the remainder; with `videoId`, only that video.
+  - Labels are Google's code names.
+  - Each day comes with its file's `createTime` and lag.
+  - It is a local read; `state` is the traffic-source job's.
 
 ## 15. Cloud connection (`src/lib/cloud-connection/`) — slice 1 of 3, not yet in `dev`
 

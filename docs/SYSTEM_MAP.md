@@ -783,6 +783,8 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
     - покрытие Reach считает только файлы Reach.
   - **Задержка.**
     - Reporting: `lagHours` и `firstFileLag` в статусе Reach, `otherReports`, MCP `agent_get_reporting_status` (Agent API 3.14.0).
+    - Чтение источников трафика из отчёта Reporting: `agent_get_reporting_traffic_sources` (Agent API 3.15.0, по дням и кодам,
+      для канала или одного видео; локально).
     - Analytics API: `returnLag` в `analytics_data_quality` (схема v87: `newest_*_date`).
   - **Вечерний досбор.**
     - Настройка «Вечерний досбор», по умолчанию 22:05, `""` — выключено.

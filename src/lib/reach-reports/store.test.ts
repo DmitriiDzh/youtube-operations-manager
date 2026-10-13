@@ -13,6 +13,8 @@ import {
   importTrafficSourceReport,
   listChannelBasicDaily,
   listChannelTrafficSourceDaily,
+  getChannelTrafficSourceCoverage,
+  listImportedReportingFilesInRange,
   SHARED_REPORTING_REPORT_TYPE_ID,
   type BasicReportImport,
   getReportingJob,
@@ -367,4 +369,20 @@ test("BL-181: Reach's coverage counts only Reach files, and a basic file of the 
     );
     assert.deepEqual(reach, { outcome: "imported", replacedReports: 0 }, "an older createTime of ANOTHER type is not a newer file of this period");
     assert.deepEqual(await getChannelReachCoverage("UC_X", db), { firstDate: "2026-10-10", lastDate: "2026-10-10", importedFiles: 1 });
+  }));
+
+test("BL-181: the traffic-source read's files are the imported ones of that type starting inside the range; coverage spans the rows", () =>
+  withDb(async (db) => {
+    const meta = { channelId: "UC_X", reportTypeId: "channel_traffic_source_a3", jobId: "job-t" };
+    const row = (date: string) => ({ date, videoId: "vidA", trafficSourceType: 5, views: 1, engagedViews: 1, watchTimeMinutes: 1 });
+    await importTrafficSourceReport({ ...meta, reportId: "t9", startTime: "2026-10-09T07:00:00Z", endTime: "2026-10-10T07:00:00Z", createTime: "2026-10-11T05:00:00Z", rows: [row("2026-10-09")] }, db);
+    await importTrafficSourceReport({ ...meta, reportId: "t10", startTime: "2026-10-10T07:00:00Z", endTime: "2026-10-11T07:00:00Z", createTime: "2026-10-12T05:00:00Z", rows: [row("2026-10-10")] }, db);
+    // A reissue of 10-10: the older file is superseded and must not be listed.
+    await importTrafficSourceReport({ ...meta, reportId: "t10b", startTime: "2026-10-10T07:00:00Z", endTime: "2026-10-11T07:00:00Z", createTime: "2026-10-14T05:00:00Z", rows: [row("2026-10-10")] }, db);
+    await importReachReport(report({ reportId: "r10", startTime: "2026-10-10T07:00:00Z", endTime: "2026-10-11T07:00:00Z", createTime: "2026-10-11T05:00:00Z", rows: [] }), db);
+    assert.deepEqual(
+      (await listImportedReportingFilesInRange("UC_X", "channel_traffic_source_a3", { startDate: "2026-10-10", endDate: "2026-10-31" }, db)).map((f) => f.createTime),
+      ["2026-10-14T05:00:00Z"]
+    );
+    assert.deepEqual(await getChannelTrafficSourceCoverage("UC_X", db), { firstDate: "2026-10-09", lastDate: "2026-10-10" });
   }));

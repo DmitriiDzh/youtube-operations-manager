@@ -185,6 +185,14 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
       "The YouTube Reporting API jobs and report files this app holds for the channel (BL-181): Reach, basic user activity and traffic sources, each with its last sync attempt, imported file count, files and each file's lag after its Pacific day ended, plus the first file per day. A LOCAL read, no live YouTube call. Requires channelId to be the caller's currently-active channel.",
   },
   {
+    id: "analytics.query_reporting_traffic_sources",
+    mcpTools: ["agent_get_reporting_traffic_sources"],
+    domain: "analytics",
+    permission: "READ",
+    description:
+      "Views and watch time by traffic source per day from the stored YouTube Reporting API traffic-source report (BL-181): the channel's videos summed per day and source code, or one video's, with the file each day comes from and its lag. A LOCAL read, no live YouTube call. Requires channelId to be the caller's currently-active channel.",
+  },
+  {
     id: "analytics.query_video_milestones",
     mcpTools: ["agent_get_video_milestones"],
     domain: "analytics",
