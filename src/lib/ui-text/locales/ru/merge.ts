@@ -10,6 +10,7 @@ export const merge: Record<keyof typeof en, string> = {
   "handoff.family.agentTokens": "Токены агентов",
   "handoff.family.liveStreams": "Трансляции",
   "handoff.family.channelLanguageSettings": "Языки каналов",
+  "handoff.family.channelPublishingSettings": "Публикация каналов",
 
   "handoff.requestFailed": "Запрос к {url} не выполнен ({status})",
   "handoff.justNow": "только что",

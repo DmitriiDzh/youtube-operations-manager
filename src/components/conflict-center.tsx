@@ -14,7 +14,7 @@ import { errorText, uiMessageText } from "@/lib/ui-text";
 
 type SettingConflict = { field: string; values: unknown[]; thisComputer: unknown };
 type ActorConflict = {
-  family: "change_drafts" | "editorial_profile" | "ai_connections" | "channel_language_settings";
+  family: "change_drafts" | "editorial_profile" | "ai_connections" | "channel_language_settings" | "channel_publishing_settings";
   key: string;
   group: UiMessage;
   subject: UiMessage;
@@ -42,6 +42,15 @@ const FIELD_LABELS: Record<string, UiTextKey> = {
   defaultLanguage: "conflicts.field.defaultLanguage",
   defaultAudioLanguage: "conflicts.field.defaultAudioLanguage",
   trackedLanguages: "conflicts.field.trackedLanguages",
+  // BL-182 stage 2: the channel's publishing defaults -- the same captions as the Content → «Публикация» panel.
+  publishTimeUtc: "publishingSettings.field.publishTimeUtc",
+  playlistId: "publishingSettings.field.playlistId",
+  categoryId: "publishingSettings.field.categoryId",
+  madeForKids: "publishingSettings.field.madeForKids",
+  containsSyntheticMedia: "publishingSettings.field.containsSyntheticMedia",
+  license: "publishingSettings.field.license",
+  embeddable: "publishingSettings.field.embeddable",
+  notifySubscribers: "publishingSettings.field.notifySubscribers",
 };
 
 async function fetchJson<T>(t: Translate, url: string, init?: RequestInit): Promise<T> {
@@ -95,13 +104,15 @@ export function useConflictCenter(enabled: boolean): ConflictCenterState {
       // Each family is read on its own (BL-178 review item 5): one that fails never hides another's conflicts.
       const perChannel = await Promise.all(
         channelsRes.value.channels.filter((ch) => ch.isActive).map(async (ch) => {
-          const [drafts, profile, languages] = await Promise.allSettled([
+          const [drafts, profile, languages, publishing] = await Promise.allSettled([
             fetchJson<{ conflicts: Array<{ changeId: string; field: string; valuesByActor: Record<string, unknown> }> }>(t, `/api/channels/${ch.channelId}/change-drafts/conflicts`),
             fetchJson<{ conflicts: Array<{ field: string; valuesByActor: Record<string, unknown> }> }>(t, `/api/channels/${ch.channelId}/editorial-profile/conflicts`),
             // BL-178 part B: the channel's language baseline and tracked languages (Batches refuse while the baseline differs).
             fetchJson<{ conflicts: Array<{ field: string; valuesByActor: Record<string, unknown>; thisComputer: unknown }> }>(t, `/api/channels/${ch.channelId}/language-settings/conflicts`),
+            // BL-182 stage 2: the channel's publishing defaults (time, playlist, category, status flags).
+            fetchJson<{ conflicts: Array<{ field: string; valuesByActor: Record<string, unknown> }> }>(t, `/api/channels/${ch.channelId}/publishing-settings/conflicts`),
           ]);
-          for (const r of [drafts, profile, languages]) {
+          for (const r of [drafts, profile, languages, publishing]) {
             if (r.status === "rejected") errors.push(r.reason instanceof Error ? r.reason.message : t("conflicts.unavailable.channel"));
           }
           return {
@@ -109,11 +120,12 @@ export function useConflictCenter(enabled: boolean): ConflictCenterState {
             drafts: drafts.status === "fulfilled" ? drafts.value.conflicts : [],
             profile: profile.status === "fulfilled" ? profile.value.conflicts : [],
             languages: languages.status === "fulfilled" ? languages.value.conflicts : [],
+            publishing: publishing.status === "fulfilled" ? publishing.value.conflicts : [],
           };
         })
       );
       for (const r of perChannel) {
-        const { ch, drafts, profile, languages } = r;
+        const { ch, drafts, profile, languages, publishing } = r;
         for (const c of drafts) {
           next.push({ family: "change_drafts", key: `drafts.${ch.channelId}.${c.changeId}.${c.field}`, group: { key: "conflicts.group.changeDrafts", params: { channel: ch.title } }, subject: { key: "conflicts.subject.change", params: { id: c.changeId.slice(0, 8) } }, field: c.field, channelId: ch.channelId, changeId: c.changeId, valuesByActor: c.valuesByActor, resolvable: RESOLVABLE_CHANGE_DRAFT_FIELDS.has(c.field) });
         }
@@ -123,6 +135,9 @@ export function useConflictCenter(enabled: boolean): ConflictCenterState {
         for (const c of languages) {
           const mineActor = Object.entries(c.valuesByActor).find(([, value]) => JSON.stringify(value) === JSON.stringify(c.thisComputer))?.[0];
           next.push({ family: "channel_language_settings", key: `languages.${ch.channelId}.${c.field}`, group: { key: "conflicts.group.channelLanguages", params: { channel: ch.title } }, subject: { key: "conflicts.subject.languageSettings" }, field: c.field, channelId: ch.channelId, valuesByActor: c.valuesByActor, resolvable: true, mineActor });
+        }
+        for (const c of publishing) {
+          next.push({ family: "channel_publishing_settings", key: `publishing.${ch.channelId}.${c.field}`, group: { key: "conflicts.group.channelPublishing", params: { channel: ch.title } }, subject: { key: "conflicts.subject.publishingSettings" }, field: c.field, channelId: ch.channelId, valuesByActor: c.valuesByActor, resolvable: true });
         }
       }
     } else errors.push(channelsRes.reason instanceof Error ? channelsRes.reason.message : t("conflicts.unavailable.channels"));
@@ -253,7 +268,9 @@ export function ConflictCenter({
           ? post(`/api/channels/${c.channelId}/editorial-profile/conflicts`, { field: c.field, winningActorId: actor })
           : c.family === "channel_language_settings"
             ? post(`/api/channels/${c.channelId}/language-settings/conflicts`, { field: c.field, winningActorId: actor })
-            : post("/api/ai-connections/conflicts", { connectionId: c.connectionId, field: c.field, winningActorId: actor })
+            : c.family === "channel_publishing_settings"
+              ? post(`/api/channels/${c.channelId}/publishing-settings/conflicts`, { field: c.field, winningActorId: actor })
+              : post("/api/ai-connections/conflicts", { connectionId: c.connectionId, field: c.field, winningActorId: actor })
     );
 
   const groups = new Map<string, ActorConflict[]>();

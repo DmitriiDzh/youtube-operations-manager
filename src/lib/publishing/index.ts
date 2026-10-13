@@ -3,6 +3,7 @@ import { YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { createChannelVideoStoreAdapter } from "@/lib/channel-video-store";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
+import { createChannelPublishingSettingsCoreForProduction } from "@/lib/sync-gateway";
 import { clearPublishingG1Probe, getPublishingG1Probe, insertVideoEditAuditEvent, rawSqlClient, removeLocalVideoRowIfUnreferenced, savePublishingG1Probe } from "@/lib/db";
 import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
 import { resolveGoogleCredentials } from "@/lib/google-credentials";
@@ -14,6 +15,7 @@ import { authorizedOAuth, createPublishingYoutubeWrites, freshAccessToken } from
 import type { G1ProbeRecord } from "./contracts";
 import { createPublishingCalendarReads } from "./calendar-reads";
 import { createG1Probe } from "./g1-probe";
+import { createPublishingSettingsService } from "./settings-service";
 
 /** The stored record, only when it has this module's shape (an older or damaged value counts as "started": it blocks). */
 function asProbeRecord(value: unknown): G1ProbeRecord | null {
@@ -103,6 +105,21 @@ export function createPublishingCalendarCore() {
 }
 
 export type PublishingCalendarCore = ReturnType<typeof createPublishingCalendarCore>;
+
+/** BL-182 stage 2: the channel's publishing defaults, synced between computers (Content → «Публикация»). */
+export function createPublishingSettingsCore() {
+  return createPublishingSettingsService({ store: createChannelPublishingSettingsCoreForProduction() });
+}
+export type { PublishingSettingsService, PublishingSettingsView } from "./settings-service";
+export type { PublishingLicense, PublishingSettingField, PublishingSettings } from "./settings";
+export {
+  DEFAULT_PUBLISHING_SETTINGS,
+  isPublishingSettingField,
+  parsePublishingSettingsPatch,
+  PUBLISHING_LICENSES,
+  PUBLISHING_SETTING_FIELDS,
+  VIDEO_CATEGORY_IDS,
+} from "./settings";
 export type { G1DeleteReport, G1ProbeRecord, G1UploadReport } from "./contracts";
 export type { CalendarEntry, CalendarEntryKind, PublishingCoverage } from "./calendar";
 export type { AgentPublishingCalendar, PublishingAlert, PublishingCalendarResult } from "./calendar-reads";

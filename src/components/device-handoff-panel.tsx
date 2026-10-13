@@ -30,7 +30,7 @@ type SnapshotSummary = {
  * FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4) -- mirrors `src/lib/db.ts`'s own `SyncFamily` type,
  * kept as a local structural type rather than importing a server-only module into a client
  * component. */
-type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens" | "live_streams" | "channel_language_settings";
+type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens" | "live_streams" | "channel_language_settings" | "channel_publishing_settings";
 
 const FAMILY_LABELS: Record<SyncFamily, UiTextKey> = {
   change_drafts: "handoff.family.changeDrafts",
@@ -42,6 +42,7 @@ const FAMILY_LABELS: Record<SyncFamily, UiTextKey> = {
   agent_tokens: "handoff.family.agentTokens",
   live_streams: "handoff.family.liveStreams",
   channel_language_settings: "handoff.family.channelLanguageSettings",
+  channel_publishing_settings: "handoff.family.channelPublishingSettings",
 };
 
 type SyncFamilyStatusView = {
@@ -525,8 +526,8 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
                     ? aiConnectionConflicts.length
                     : s.family === "media_settings"
                       ? conflictCenter.settings.length
-                      : s.family === "channel_language_settings"
-                        ? conflictCenter.others.filter((c) => c.family === "channel_language_settings").length
+                      : s.family === "channel_language_settings" || s.family === "channel_publishing_settings"
+                        ? conflictCenter.others.filter((c) => c.family === s.family).length
                         : 0;
             return (
               <li key={s.family} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-sm">
