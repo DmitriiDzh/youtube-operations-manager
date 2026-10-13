@@ -8,7 +8,8 @@ import {
   pickWritableStatusFields,
 } from "@/lib/youtube-write-gateway";
 import { DomainError, type ResolvedCredentials } from "@/lib/shared-domain";
-import { readBackUntilApplied } from "../read-back";
+import { publishAtWriteRefusal } from "../publish-at-rule";
+import { missingWriteOnlyStatusFields, readBackUntilApplied } from "../read-back";
 import type { VideoDetailsPatch, VideoDetailsSnapshot } from "../contracts";
 
 function createAuthorizedClient(credentials: ResolvedCredentials) {
@@ -92,16 +93,21 @@ export function createVideoDetailsYoutubeApiAdapter() {
       }
       const before = toSnapshot(args.videoId, context);
 
-      if (args.patch.publishAt !== undefined && before.publishAt) {
-        throw new DomainError({
-          code: "publish_at_already_published",
-          message: "publishAt can only be set on a video that has never been published",
-          details: { videoId: args.videoId, currentPublishAt: before.publishAt },
-        });
-      }
+      const publishAtRefusal = publishAtWriteRefusal(args.videoId, before, args.patch, Date.now());
+      if (publishAtRefusal) throw publishAtRefusal;
 
       const touchesSnippet = SNIPPET_PATCH_KEYS.some((key) => key in args.patch);
       const touchesStatus = STATUS_PATCH_KEYS.some((key) => key in args.patch);
+      // BL-182 review: `videos.update` replaces the whole status part, and YouTube never returns "AI use" on read -- a status write
+      // without it in the patch would silently reset it. Fail closed: the caller must send it explicitly (the Details card does).
+      const missing = missingWriteOnlyStatusFields(touchesStatus, context.status as Record<string, unknown>, args.patch as Record<string, unknown>);
+      if (missing.length > 0) {
+        throw new DomainError({
+          code: "validation_failed",
+          message: `A status change must include ${missing.join(", ")}: YouTube does not return it on read, so it would be reset`,
+          details: { videoId: args.videoId, missing },
+        });
+      }
       const touchesRecordingDetails = "recordingDate" in args.patch;
 
       await applyVideoDetailsUpdate({

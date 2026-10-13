@@ -1,4 +1,6 @@
 import { YOUTUBE_READ_SCOPE, YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
+import { publishAtWriteRefusal } from "./publish-at-rule";
+import { isUnverifiable, sameFieldValue } from "./read-back";
 import type { ResolvedCredentials } from "@/lib/shared-domain";
 import {
   DomainError,
@@ -112,13 +114,8 @@ export function createVideoDetailsServices(deps: ServiceDependencies) {
 
         const before = await deps.youtubeApi.getSnapshot({ credentials, videoId: parsedInput.videoId });
 
-        if (parsedInput.patch.publishAt !== undefined && before.publishAt) {
-          throw new DomainError({
-            code: "publish_at_already_published",
-            message: "publishAt can only be set on a video that has never been published",
-            details: { videoId: parsedInput.videoId, currentPublishAt: before.publishAt },
-          });
-        }
+        const publishAtRefusal = publishAtWriteRefusal(parsedInput.videoId, before, parsedInput.patch, Date.now());
+        if (publishAtRefusal) throw publishAtRefusal;
 
         const diff = computeDiff(before, parsedInput.patch);
 
@@ -225,15 +222,20 @@ export function createVideoDetailsServices(deps: ServiceDependencies) {
 
         // Verification (AGENTS.md §G): confirm every patched field actually reads back as sent,
         // never assumed from a 200 response alone.
-        const verified = (Object.keys(parsedInput.patch) as Array<keyof VideoDetailsPatch>).every(
-          (field) => after[field as keyof VideoDetailsSnapshot] === parsedInput.patch[field]
+        // The same comparison as the read-back's (review B1): an instant read back as `...:00Z` is the `...:00.000Z` written.
+        const verified = (Object.keys(parsedInput.patch) as Array<keyof VideoDetailsPatch>).every((field) =>
+          sameFieldValue(field, after[field as keyof VideoDetailsSnapshot], parsedInput.patch[field])
+        );
+
+        const unverifiable = (Object.keys(parsedInput.patch) as Array<keyof VideoDetailsPatch>).filter((field) =>
+          isUnverifiable(field, after[field as keyof VideoDetailsSnapshot])
         );
 
         await deps.auditStore.record({
           channelId: guardrail.expectedChannelId,
           videoId: parsedInput.videoId,
           eventType: "VERIFICATION",
-          detail: { verified },
+          detail: unverifiable.length > 0 ? { verified, unverifiable } : { verified },
         });
 
         if (!verified) {

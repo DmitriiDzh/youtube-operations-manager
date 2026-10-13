@@ -31,3 +31,5 @@ export * from "./reporting-api";
 export * from "./feed";
 // BL-171: what a failed background read means for its run (stop / defer / attempt), shared by the analytics steps and the comments.
 export * from "./read-failure";
+// BL-182: the quota ledger record for a call made without a wrapped client (the write gateway's resumable upload).
+export { noteYoutubeQuotaCall } from "./error-classification";

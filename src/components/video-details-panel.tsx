@@ -1,5 +1,6 @@
 "use client";
 
+import { canWritePublishAt } from "@/lib/video-details/publish-at-rule";
 import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useState } from "react";
 import { OperationOverlay, useOperation } from "./operation-progress";
@@ -68,7 +69,9 @@ export function toFormValues(s: VideoDetailsSnapshot): FormValues {
     embeddable: s.embeddable ?? true,
     publicStatsViewable: s.publicStatsViewable ?? true,
     selfDeclaredMadeForKids: s.selfDeclaredMadeForKids ?? false,
-    containsSyntheticMedia: s.containsSyntheticMedia ?? false,
+    // BL-182 (G1, 2026-10-13): YouTube sets "AI use" but never returns it on read (null). Both channels are AI music and the owner
+    // sets it on every upload, so an unreadable value starts checked; it is sent with any status write (see buildPatch).
+    containsSyntheticMedia: s.containsSyntheticMedia ?? true,
     // UTC-anchored, not `formatDisplayDate` -- `recordingDate` is a pure calendar date with no
     // real time-of-day (paired with `parseDisplayDate`'s own UTC-midnight write direction below);
     // reading it back with local-time components would shift the displayed day for any viewer in
@@ -118,7 +121,14 @@ export function buildPatch(form: FormValues, original: VideoDetailsSnapshot): Pa
   if (form.selfDeclaredMadeForKids !== (original.selfDeclaredMadeForKids ?? false)) {
     patch.selfDeclaredMadeForKids = form.selfDeclaredMadeForKids;
   }
-  if (form.containsSyntheticMedia !== (original.containsSyntheticMedia ?? false)) {
+  // `videos.update` replaces the whole status part it is sent (BL-182 review S1): with "AI use" unreadable, the read-modify-write
+  // cannot carry it over, so any status write sends it explicitly -- as the checkbox shows, and the preview lists it.
+  const statusTouched = (["privacyStatus", "publishAt", "license", "embeddable", "publicStatsViewable", "selfDeclaredMadeForKids"] as const).some(
+    (field) => field in patch
+  );
+  if (original.containsSyntheticMedia === null) {
+    if (statusTouched || !form.containsSyntheticMedia) patch.containsSyntheticMedia = form.containsSyntheticMedia;
+  } else if (form.containsSyntheticMedia !== original.containsSyntheticMedia) {
     patch.containsSyntheticMedia = form.containsSyntheticMedia;
   }
   const originalRecordingDateDisplay = original.recordingDate ? formatDisplayDateUtc(original.recordingDate) : "";
@@ -285,7 +295,9 @@ export function VideoDetailsPanel({
   if (loading) return <p className="text-sm text-zinc-500">{t("video.loading")}</p>;
   if (!form || !snapshot) return <p className="text-sm text-red-400">{t("video.loadFailed")}</p>;
 
-  const canSetPublishAt = snapshot.privacyStatus === "private" && !snapshot.publishAt;
+  // BL-182 (owner msg 2707): a scheduled video's date can be changed while it is still private and that date is still ahead (the
+  // server's own rule, `publish-at-rule.ts`).
+  const canSetPublishAt = canWritePublishAt(snapshot, Date.now());
   const recordingDateValid = form.recordingDate === "" || parseDisplayDate(form.recordingDate) !== null;
   const publishAtValid = form.publishAt === "" || parseDisplayDateTime(form.publishAt) !== null;
 
@@ -462,6 +474,7 @@ export function VideoDetailsPanel({
             />
             {t("video.field.syntheticMedia")}
           </label>
+          {snapshot.containsSyntheticMedia === null && <p className="text-[11px] text-zinc-500">{t("video.syntheticMedia.unreadableHint")}</p>}
         </div>
       )}
 

@@ -193,6 +193,14 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
       "Views and watch time by traffic source per day from the stored YouTube Reporting API traffic-source report (BL-181): the channel's videos summed per day and source code, or one video's, with the file each day comes from and its lag. A LOCAL read, no live YouTube call. Requires channelId to be the caller's currently-active channel.",
   },
   {
+    id: "video_context.query_publishing_calendar",
+    mcpTools: ["agent_get_publishing_calendar"],
+    domain: "video_context",
+    permission: "READ",
+    description:
+      "The channel's publishing calendar from the synced copy (BL-182): published, scheduled and overdue videos of the past and next 14 days, private uploads without a date, how far ahead the channel is covered (and whether that is under 7 days) and the days without a video. A LOCAL read; uploading and scheduling stay with the owner in the Web UI. Requires channelId to be the caller's currently-active channel.",
+  },
+  {
     id: "analytics.query_video_milestones",
     mcpTools: ["agent_get_video_milestones"],
     domain: "analytics",

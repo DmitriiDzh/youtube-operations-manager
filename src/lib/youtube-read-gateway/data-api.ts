@@ -824,6 +824,41 @@ export async function getVideoDetailsContext(
   };
 }
 
+/** BL-182 (ADR 0037): what YouTube says about an uploaded video -- the G1 probe's and the upload job's read-back. */
+export type VideoUploadState = {
+  title: string | null;
+  defaultLanguage: string | null;
+  defaultAudioLanguage: string | null;
+  privacyStatus: string | null;
+  publishAt: string | null;
+  uploadStatus: string | null;
+  failureReason: string | null;
+  rejectionReason: string | null;
+  selfDeclaredMadeForKids: boolean | null;
+  containsSyntheticMedia: boolean | null;
+  processingStatus: string | null;
+};
+
+/** `videos.list part=snippet,status,processingDetails` for one video; null when YouTube does not return it (deleted, or not ours). */
+export async function getVideoUploadState(youtube: youtube_v3.Youtube, videoId: string): Promise<VideoUploadState | null> {
+  const res = await youtube.videos.list({ part: ["snippet", "status", "processingDetails"], id: [videoId] });
+  const item = res.data.items?.[0];
+  if (!item) return null;
+  return {
+    title: item.snippet?.title ?? null,
+    defaultLanguage: item.snippet?.defaultLanguage ?? null,
+    defaultAudioLanguage: item.snippet?.defaultAudioLanguage ?? null,
+    privacyStatus: item.status?.privacyStatus ?? null,
+    publishAt: item.status?.publishAt ?? null,
+    uploadStatus: item.status?.uploadStatus ?? null,
+    failureReason: item.status?.failureReason ?? null,
+    rejectionReason: item.status?.rejectionReason ?? null,
+    selfDeclaredMadeForKids: item.status?.selfDeclaredMadeForKids ?? null,
+    containsSyntheticMedia: item.status?.containsSyntheticMedia ?? null,
+    processingStatus: item.processingDetails?.processingStatus ?? null,
+  };
+}
+
 export type PlaylistPrivacyStatus = "private" | "public" | "unlisted";
 
 export type PlaylistMetadata = {

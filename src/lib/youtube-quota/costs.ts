@@ -7,6 +7,9 @@ export type QuotaLedgerService = "data" | "analytics";
 /** YouTube Data API v3, units per call, keyed `resource.method`. */
 export const DATA_API_UNIT_COSTS: Readonly<Record<string, number>> = {
   "videos.list": 1,
+  // BL-182: since 2026-06-01 `videos.insert` has its own bucket (100 calls/day per project), not the 10,000-unit pool; one ledger
+  // row per finished upload.
+  "videos.insert": 1,
   "videos.update": 50,
   "videos.rate": 50,
   "videos.delete": 50,
@@ -32,6 +35,7 @@ export const DATA_API_UNIT_COSTS: Readonly<Record<string, number>> = {
   "captions.insert": 400,
   "captions.update": 450,
   "captions.delete": 50,
+  "thumbnails.set": 50,
   "activities.list": 1,
   // Since 2026-06-01 `search.list` has its own bucket (100 calls/day, 1 unit each), not the 10,000-unit pool.
   "search.list": 1,
@@ -69,10 +73,11 @@ export function quotaUnitsForCall(service: QuotaLedgerService, method: string): 
  * quota history), so they cannot disagree.
  */
 export function countsAgainstPool(service: QuotaLedgerService, method: string): boolean {
-  return !(service === "data" && method === "search.list");
+  // BL-182: `videos.insert` has its own bucket too (100 calls/day since 2026-06-01).
+  return !(service === "data" && (method === "search.list" || method === "videos.insert"));
 }
 
 /** Methods that change channel content: the history says "changed", not just "called". Live methods change it at 1 unit. */
 export function isWriteMethod(method: string): boolean {
-  return /\.(insert|update|delete|rate|bind|transition|insertCuepoint)$/.test(method);
+  return /\.(insert|update|delete|rate|bind|transition|insertCuepoint|set)$/.test(method);
 }

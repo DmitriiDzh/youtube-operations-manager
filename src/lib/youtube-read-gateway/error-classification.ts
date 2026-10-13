@@ -51,6 +51,14 @@ function isQuotaExceededError(error: unknown): boolean {
  * costs its table price (NULL if the method is unknown), a failed one at least 1 (Google: "every API request, even if
  * invalid, will cost at least one quota point"), a 403 quotaExceeded nothing.
  */
+/**
+ * BL-182: the same ledger record for a call made outside a wrapped googleapis client -- the write gateway's resumable upload,
+ * which speaks HTTPS itself. Never throws.
+ */
+export function noteYoutubeQuotaCall(service: QuotaLedgerService, method: string, outcome: "ok" | "error" | "quota_exceeded"): void {
+  noteQuotaCall(service, method, outcome);
+}
+
 function noteQuotaCall(service: QuotaLedgerService, method: string, outcome: "ok" | "error" | "quota_exceeded"): void {
   try {
     const context = currentQuotaContext();

@@ -73,6 +73,8 @@ import { createMediaGenerationCore, type MediaGenerationCore } from "@/lib/media
 import { createGenerationPlansCore, type GenerationPlan, type GenerationPlanServices } from "@/lib/generation-plans";
 import { createReachReportsCore, type ReachReportsCore } from "@/lib/reach-reports";
 import { getChannelReachInputObjectSchema, getReachStatusInputSchema, getReportingTrafficSourcesInputObjectSchema } from "@/lib/reach-reports/schemas";
+import { createPublishingCalendarCore, type PublishingCalendarCore } from "@/lib/publishing";
+import { getAgentPublishingCalendarInputSchema } from "@/lib/publishing/schemas";
 import { createMarketAssignmentCore, type MarketAssignmentCore } from "@/lib/market-assignments";
 import { assertAgentSession, runInAgentSession } from "@/lib/agent-session";
 import { MCP_TOOL_CLASSIFICATION } from "./tool-classification";
@@ -358,6 +360,7 @@ type McpToolHandlers = {
   agentQueryChannelReach: (input: unknown) => Promise<ToolResponse>;
   agentGetReportingStatus: (input: unknown) => Promise<ToolResponse>;
   agentGetReportingTrafficSources: (input: unknown) => Promise<ToolResponse>;
+  agentGetPublishingCalendar: (input: unknown) => Promise<ToolResponse>;
   agentGetVideoMilestones: (input: unknown) => Promise<ToolResponse>;
   agentGetStoredBreakdowns: (input: unknown) => Promise<ToolResponse>;
   agentGetStoredSearchTerms: (input: unknown) => Promise<ToolResponse>;
@@ -739,7 +742,9 @@ export function createMcpToolHandlers(
   // the decision engine with analytics and Reach (AGENTS.md §M). Read-only.
   experimentResultsCore: Pick<ExperimentResultsCore, "getExperimentResults"> = createExperimentResultsCore(),
   // BL-171 (docs/roadmap/plans/VIDEO_COMMENTS_PLAN.md) -- the stored comments of the channel's own videos; its own module. Read-only.
-  videoCommentsCore: Pick<VideoCommentsCore, "listStoredComments"> = createVideoCommentsCore()
+  videoCommentsCore: Pick<VideoCommentsCore, "listStoredComments"> = createVideoCommentsCore(),
+  // BL-182 stage 1 (FO-REQ-0023 §4 C4) -- the publishing calendar, a local read; registered directly (AGENTS.md §M).
+  publishingCalendarCore: Pick<PublishingCalendarCore, "getAgentCalendar"> = createPublishingCalendarCore()
 ) {
   async function resolveCredentialRef(explicitCredentialRef: unknown) {
     return auth.resolveEffectiveCredentialRef({
@@ -1761,6 +1766,21 @@ export function createMcpToolHandlers(
       }
     },
 
+    /** BL-182 stage 1 -- the channel's publishing calendar from the local copy. A LOCAL read; the core checks the active channel. */
+    async agentGetPublishingCalendar(input: unknown): Promise<ToolResponse> {
+      const parsedInput = getAgentPublishingCalendarInputSchema.partial({ credentialRef: true }).safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+      try {
+        const credentialRef = await resolveCredentialRef(parsedInput.data.credentialRef);
+        const result = await publishingCalendarCore.getAgentCalendar({ ...parsedInput.data, credentialRef });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
     /**
      * BL-166 (docs/roadmap/plans/VIDEO_MILESTONES_PLAN.md) -- the stored day-7 / day-28 milestones of the channel's videos. A LOCAL read,
      * no Google call; `listVideoMilestones` checks the active channel itself, and a video of another channel is simply not listed.
@@ -2571,6 +2591,8 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     agentGetReportingStatus: handlers.agentGetReportingStatus,
     // BL-181 (owner msg 2702) -- a pure local read, ungated.
     agentGetReportingTrafficSources: handlers.agentGetReportingTrafficSources,
+    // BL-182 -- a pure local read, ungated.
+    agentGetPublishingCalendar: handlers.agentGetPublishingCalendar,
     // BL-166 -- a pure local read, ungated.
     agentGetVideoMilestones: handlers.agentGetVideoMilestones,
     // BL-168 -- a pure local read, ungated.
@@ -3363,6 +3385,16 @@ export function createMcpServer(
       inputSchema: getReportingTrafficSourcesInputObjectSchema.partial({ credentialRef: true }),
     },
     (args) => handlers.agentGetReportingTrafficSources(args)
+  );
+
+  registerTool(
+    "agent_get_publishing_calendar",
+    {
+      description:
+        "The channel's publishing calendar from this app's synced copy of its videos (BL-182) -- a LOCAL read, never a live YouTube call; publishing itself is the owner's, from the Web UI (no agent tool uploads or schedules). YouTube has no 'scheduled' status: a scheduled video is a private one with a future publishAt. `entries` (oldest first) are the videos dated inside `window` (the past 14 and the next 14 UTC days): kind published (public or unlisted, at its publish time), scheduled (private, publishAt ahead) or overdue (publishAt passed but this copy still shows it not public -- the copy is older than the publication, or YouTube did not publish it); `unscheduled` are private uploads without a date. `coverage`: coveredThrough (the latest future publishAt, null when nothing is scheduled), scheduledCount, unscheduledCount, daysCovered (whole days from now), due (coverage ends within thresholdDays, 7 -- the owner's reminder). `gapDates`: UTC dates from today through the next 13 days with no published or scheduled video. `lastSyncedAt` is the copy's age: check it before trusting the calendar (the app refreshes on dashboard load). Requires channelId to be the caller's currently-active channel.",
+      inputSchema: getAgentPublishingCalendarInputSchema.partial({ credentialRef: true }),
+    },
+    (args) => handlers.agentGetPublishingCalendar(args)
   );
 
   registerTool(

@@ -127,6 +127,11 @@ const WRITE_PRIMITIVE_NAMES = [
   "bindLiveBroadcast",
   "transitionLiveBroadcast",
   "updateLiveBroadcast",
+  // BL-182 (ADR 0037): video upload and the G1 probe's delete.
+  "beginResumableVideoUpload",
+  "putVideoUploadChunk",
+  "queryVideoUploadOffset",
+  "deleteVideoById",
 ];
 
 test("youtube-write-gateway inventory: every file that imports a real write primitive also calls assertLiveWritesAuthorized", async () => {

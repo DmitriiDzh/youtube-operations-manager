@@ -11,6 +11,8 @@
 
 /** Google's default `search.list` bucket: calls per quota day. */
 export const SEARCH_LIST_DAILY_CALL_LIMIT = 100;
+/** BL-182 (ADR 0037): `videos.insert` has its own daily bucket per project since 2026-06-01 (Google's quota page, read 2026-10-12). */
+export const VIDEOS_INSERT_DAILY_CALL_LIMIT = 100;
 /** One `search.list` call costs 1 unit of its own bucket (not of the 10k pool). */
 export const SEARCH_LIST_UNIT_COST = 1;
 

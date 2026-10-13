@@ -16,6 +16,7 @@ import { useT } from "@/components/ui-text-provider";
 import { planReloginPrompt } from "@/lib/channel-connections/relogin-prompt";
 import { ConflictCenter, useConflictCenter } from "@/components/conflict-center";
 import { languagesBadge, otherChannelLanguageEntries, type LanguageAlertChannel } from "@/components/language-alerts";
+import { contentBadge, otherChannelPublishingEntries, type PublishingAlertChannel } from "@/components/publishing-alerts";
 import {
   INITIAL_STARTUP,
   STARTUP_STEPS,
@@ -131,6 +132,8 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   // «Языки» badge, the others' in the bell -- and which channel the server counted as active.
   const [languageAlerts, setLanguageAlerts] = useState<LanguageAlertChannel[]>([]);
   const [languageAlertsActiveId, setLanguageAlertsActiveId] = useState<string | null>(null);
+  const [publishingAlerts, setPublishingAlerts] = useState<PublishingAlertChannel[]>([]);
+  const [publishingAlertsActiveId, setPublishingAlertsActiveId] = useState<string | null>(null);
   // Owner, msg 2004: a blurred loading window while the app loads its data on open and while the channel switches.
   const [startup, setStartup] = useState<StartupProgress>(INITIAL_STARTUP);
   const [startupDismissed, setStartupDismissed] = useState(false);
@@ -435,10 +438,45 @@ export default function AppLayout({ children }: { children: ReactNode }) {
     };
   }, [userId, activeChannelId]);
 
+  // BL-182 stage 1 (FO-REQ-0023 §4 D): the "nothing scheduled within 7 days" reminder -- the same family and cadence as the
+  // translation alerts above (a local read every minute). Once per load, the other channels' videos are refreshed when their copy
+  // is older than 6 h (`refresh-stale`); the poll itself never calls YouTube.
+  const publishingRefreshTriggeredRef = useRef(false);
+  useEffect(() => {
+    if (!userId) return;
+    let cancelled = false;
+    async function refreshPublishingAlerts() {
+      try {
+        const res = await fetch("/api/publishing-alerts");
+        if (!res.ok || cancelled) return;
+        const data = (await res.json()) as { activeChannelId?: string | null; channels?: PublishingAlertChannel[] };
+        if (cancelled) return;
+        setPublishingAlerts(data.channels ?? []);
+        setPublishingAlertsActiveId(data.activeChannelId ?? null);
+      } catch {
+        // Non-fatal -- the next poll tries again.
+      }
+    }
+    if (!publishingRefreshTriggeredRef.current) {
+      publishingRefreshTriggeredRef.current = true;
+      fetch("/api/publishing/refresh-stale", { method: "POST" })
+        .then(() => (cancelled ? undefined : refreshPublishingAlerts()))
+        .catch(() => undefined);
+    }
+    void refreshPublishingAlerts();
+    const id = setInterval(() => void refreshPublishingAlerts(), LANGUAGE_ALERTS_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+      setPublishingAlerts([]);
+      setPublishingAlertsActiveId(null);
+    };
+  }, [userId, activeChannelId]);
+
   // With agent requests waiting, Research leads to plain `/research`, where its first-open rule opens Inbox (AC-R1-2),
   // as every visit did before BL-149 (re-review).
   const navItemsWithBadges = NAV_ITEMS.map(({ labelKey, ...item }) => ({ ...item, label: t(labelKey), href: item.value === "research" && researchPending > 0 ? item.href : sectionHref(item.href, lastPathBySection) })).map((item) =>
-    item.value === "merge" ? { ...item, badge: conflictCount } : item.value === "research" ? { ...item, badge: researchPending } : item.value === "media" ? { ...item, badge: plansWaiting, badgeTitle: plansWaitingRejected > 0 ? t("plans.badgeSplit", { passed: plansWaiting - plansWaitingRejected, rejected: plansWaitingRejected }) : undefined } : item.value === "languages" ? { ...item, ...languagesBadge(t, languageAlerts.find((a) => a.channelId === languageAlertsActiveId)) } : item
+    item.value === "merge" ? { ...item, badge: conflictCount } : item.value === "research" ? { ...item, badge: researchPending } : item.value === "media" ? { ...item, badge: plansWaiting, badgeTitle: plansWaitingRejected > 0 ? t("plans.badgeSplit", { passed: plansWaiting - plansWaitingRejected, rejected: plansWaitingRejected }) : undefined } : item.value === "languages" ? { ...item, ...languagesBadge(t, languageAlerts.find((a) => a.channelId === languageAlertsActiveId)) } : item.value === "content" ? { ...item, ...contentBadge(t, publishingAlerts.find((a) => a.channelId === publishingAlertsActiveId)) } : item
   );
 
   if (status === "loading") {
@@ -462,6 +500,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       activeChannelId={summaryActiveChannelId}
       channelWork={channelWork}
       languageEntries={otherChannelLanguageEntries(t, languageAlerts, languageAlertsActiveId)}
+      publishingEntries={otherChannelPublishingEntries(t, publishingAlerts, publishingAlertsActiveId)}
       onOpenChannelWork={(channelId, href) => void openChannelWork(channelId, href)}
       channelUnavailable={channelUnavailable}
       onSignOut={() => signOut()}

@@ -78,6 +78,7 @@ export type DomainErrorCode =
   | "no_fields_to_update"
   | "publish_at_requires_private"
   | "publish_at_already_published"
+  | "publish_at_too_soon"
   | "video_details_conflict"
   | "device_unavailable"
   | "deletion_targets_default_language"
