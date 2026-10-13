@@ -78,3 +78,32 @@ export const getVideoWindowsReachInputSchema = z
       ctx.addIssue({ code: "custom", message: `the windows must not span more than ${MAX_REACH_RANGE_DAYS} days` });
     }
   });
+
+/** BL-181 (owner msg 2702): the stored traffic-source rows of a range -- the same shape and range rules as the Reach read. */
+export const getReportingTrafficSourcesInputObjectSchema = z
+  .object({
+    credentialRef: credentialRefSchema,
+    channelId: z.string().min(1),
+    startDate: isoDateSchema,
+    endDate: isoDateSchema,
+    /** Only this video's rows (`daily`, `totals` are then over that one video). */
+    videoId: z.string().min(1).max(64).optional(),
+    /** `video_day`: also return the stored rows per video, day and code (`videoDaily`). */
+    groupBy: z.enum(["video_day"]).optional(),
+  })
+  .strict();
+
+export const getReportingTrafficSourcesInputSchema = getReportingTrafficSourcesInputObjectSchema.superRefine((value, ctx) => {
+  const start = Date.parse(`${value.startDate}T00:00:00Z`);
+  const end = Date.parse(`${value.endDate}T00:00:00Z`);
+  // A real calendar date only: Date.parse rolls 2026-02-30 over to 03-02 (review minor 2), so the date must survive a round trip.
+  const roundTrips = (time: number, date: string) => !Number.isNaN(time) && new Date(time).toISOString().slice(0, 10) === date;
+  if (!roundTrips(start, value.startDate) || !roundTrips(end, value.endDate)) {
+    ctx.addIssue({ code: "custom", message: "startDate/endDate must be real calendar dates" });
+    return;
+  }
+  if (start > end) ctx.addIssue({ code: "custom", message: "startDate must not be after endDate" });
+  if ((end - start) / 86_400_000 > MAX_REACH_RANGE_DAYS) {
+    ctx.addIssue({ code: "custom", message: `range must not exceed ${MAX_REACH_RANGE_DAYS} days` });
+  }
+});

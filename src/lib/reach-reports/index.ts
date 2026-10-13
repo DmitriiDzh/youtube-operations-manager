@@ -2,7 +2,7 @@ import { YOUTUBE_ANALYTICS_READ_SCOPE } from "@/lib/auth";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { createReachReportsApiAdapter } from "./adapters/reporting-api";
-import { createOtherReportStoreAdapter, createReachReportsStoreAdapter } from "./adapters/store";
+import { createOtherReportStoreAdapter, createReachReportsStoreAdapter, createTrafficSourceReadAdapter } from "./adapters/store";
 import { mapBasicRows, mapTrafficSourceRows } from "./basic-csv";
 import { BASIC_JOB_NAME, BASIC_REPORT_TYPE_ID, TRAFFIC_SOURCE_JOB_NAME, TRAFFIC_SOURCE_REPORT_TYPE_ID } from "./contracts";
 import { createReachReportsServices, type OtherReportType } from "./services";
@@ -43,6 +43,7 @@ export function createReachReportsCore() {
     requiredScope: YOUTUBE_ANALYTICS_READ_SCOPE,
     clock: { now: () => new Date() },
     otherReportTypes: OTHER_REPORT_TYPES,
+    trafficSourceStore: createTrafficSourceReadAdapter(),
   });
 }
 
@@ -54,6 +55,7 @@ export type {
   VideoWindowReach,
   GetReachStatusResult,
   FirstFileLagView,
+  GetReportingTrafficSourcesResult,
   OtherReportSyncResult,
   ReachFileView,
   ReportTypeStatusView,

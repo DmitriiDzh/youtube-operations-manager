@@ -263,3 +263,60 @@ export type ReportTypeStatusView = {
   /** Newest day first. */
   firstFileLag: FirstFileLagView[];
 };
+
+/**
+ * BL-181 (owner msg 2702, FO-MSG-0015): Google's `traffic_source_type` codes for channel reports
+ * (developers.google.com/youtube/reporting/v1/reports/dimensions, read 2026-10-13). A code not listed here is returned with a
+ * `null` label, never guessed.
+ */
+export const TRAFFIC_SOURCE_TYPE_LABELS: Readonly<Record<number, string>> = {
+  0: "Direct or unknown",
+  1: "YouTube advertising",
+  3: "Browse features",
+  4: "YouTube channels",
+  5: "YouTube search",
+  7: "Suggested videos",
+  8: "Other YouTube features",
+  9: "External",
+  11: "Video cards and annotations",
+  14: "Playlists",
+  17: "Notifications",
+  18: "Playlist pages",
+  19: "Programming from claimed content",
+  20: "Interactive video endscreen",
+  23: "Stories",
+  24: "Shorts",
+  25: "Product Pages",
+  26: "Hashtag Pages",
+  27: "Sound Pages",
+  28: "Live redirect",
+  29: "Podcasts",
+  30: "Remixed video",
+  31: "Vertical live feed",
+  32: "Related video",
+};
+
+export type TrafficSourceMetrics = { views: number | null; engagedViews: number | null; watchTimeMinutes: number | null };
+
+export type TrafficSourcePoint = { trafficSourceType: number; label: string | null } & TrafficSourceMetrics;
+
+/**
+ * BL-181: the stored `channel_traffic_source_a3` rows of a range -- a local read, no Google call. `daily` sums every video of the
+ * channel per day and code, the channel-level and deleted-video remainder included; a metric no stored row carried is `null`. Days
+ * without a stored file are absent, never zero-filled. `files` says, per day, which Google file the rows come from and how long
+ * after the day ended Google made it.
+ */
+export type GetReportingTrafficSourcesResult = {
+  channelId: string;
+  state: ReachState;
+  jobCreatedAt: string | null;
+  coverage: { firstDate: string | null; lastDate: string | null; importedFiles: number };
+  startDate: string;
+  endDate: string;
+  daily: Array<{ date: string } & TrafficSourcePoint>;
+  totals: TrafficSourcePoint[];
+  files: Array<{ date: string; createTime: string; lagHours: number | null }>;
+  videoId?: string;
+  videoDaily?: Array<{ videoId: string; date: string; trafficSourceType: number } & TrafficSourceMetrics>;
+  videoDailyTruncated?: boolean;
+};

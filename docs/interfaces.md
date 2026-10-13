@@ -713,6 +713,14 @@ Key MCP tools:
     plus `otherReports[]` for `channel_basic_a3` and `channel_traffic_source_a3` (`reportTypeId`, `job`, `lastAttempt`,
     `importedFiles`, `files`, `firstFileLag`). A local read, never a Google call. `GET /api/channels/[id]/reach/status` returns the
     same fields.
+  - `agent_get_reporting_traffic_sources` (BL-181, owner msg 2702, Agent API 3.15.0, capability
+    `analytics.query_reporting_traffic_sources`, READ, channel-scoped) — `{ channelId, startDate, endDate, videoId?, groupBy?:
+    "video_day", credentialRef? }` (Pacific days, at most 400) → `{ channelId, state (no_job | waiting_for_first_report | ready),
+    jobCreatedAt, coverage { firstDate, lastDate, importedFiles }, startDate, endDate, daily[{ date, trafficSourceType, label, views,
+    engagedViews, watchTimeMinutes }], totals[{ trafficSourceType, label, views, engagedViews, watchTimeMinutes }] (most views first),
+    files[{ date, createTime, lagHours }], videoId?, videoDaily?, videoDailyTruncated? }`. The stored `channel_traffic_source_a3`
+    rows: per day and code the channel's videos summed (the channel-level / deleted-video remainder included); a metric no row
+    carried is `null`; `label` is Google's name for the code, `null` for an unknown one. A local read, never a Google call.
   - `POST /api/analytics/evening-collect` (BL-181, Web only) — the dashboard's 5-minute evening check: `{ due: false }`,
     `{ due: false, done: true }`, `{ due: true, inProgress | importPending: true }` or `{ due: true, channels: [the active channel's
     outcome: collected | skipped (reason) | failed] }`. `GET/POST /api/settings` gain `analyticsEveningLocalTime` ("HH:MM", `""` =

@@ -4,6 +4,10 @@ import type { ReportingJob, ReportingReport } from "@/lib/youtube-read-gateway";
 import type { ParsedReportingCsv } from "@/lib/youtube-read-gateway";
 import {
   DomainError,
+  TRAFFIC_SOURCE_REPORT_TYPE_ID,
+  TRAFFIC_SOURCE_TYPE_LABELS,
+  type GetReportingTrafficSourcesResult,
+  type TrafficSourceMetrics,
   type FirstFileLagView,
   type OtherReportSyncResult,
   type ReachFileView,
@@ -27,7 +31,14 @@ import {
 } from "./contracts";
 import { aggregateReach, weightedCtr } from "./reach-aggregate";
 import { mapReachBasicRows } from "./reach-csv";
-import { getChannelReachInputSchema, getReachStatusInputSchema, getVideoWindowsReachInputSchema, parseWithSchema, syncReachReportsInputSchema } from "./schemas";
+import {
+  getChannelReachInputSchema,
+  getReachStatusInputSchema,
+  getReportingTrafficSourcesInputSchema,
+  getVideoWindowsReachInputSchema,
+  parseWithSchema,
+  syncReachReportsInputSchema,
+} from "./schemas";
 
 function toVideoDayPoints(rows: readonly ReachRow[]): { points: ReachVideoDayPoint[]; truncated: boolean } {
   const sorted = rows
@@ -97,6 +108,24 @@ export function firstFileLagOf(
     .map(([date, first]) => ({ date, createTime: first.createTime, lagHours: hoursBetween(first.endTime, first.createTime) as number }));
 }
 
+/** Sums one metric over rows: `null` only when no row carried it (never fabricated as 0). */
+function sumMetric(rows: ReadonlyArray<TrafficSourceMetrics>, metric: keyof TrafficSourceMetrics): number | null {
+  let total: number | null = null;
+  for (const row of rows) {
+    const value = row[metric];
+    if (value !== null) total = Math.round(((total ?? 0) + value) * 1e6) / 1e6;
+  }
+  return total;
+}
+
+function summed(rows: ReadonlyArray<TrafficSourceMetrics>): TrafficSourceMetrics {
+  return { views: sumMetric(rows, "views"), engagedViews: sumMetric(rows, "engagedViews"), watchTimeMinutes: sumMetric(rows, "watchTimeMinutes") };
+}
+
+function labelOf(code: number): string | null {
+  return TRAFFIC_SOURCE_TYPE_LABELS[code] ?? null;
+}
+
 export type ReachReportsDependencies = {
   authResolver: {
     resolve(args: { credentialRef: unknown; requiredScopes: readonly string[] }): Promise<ResolvedCredentials>;
@@ -160,6 +189,16 @@ export type ReachReportsDependencies = {
   clock: { now(): Date };
   /** BL-181: report types synced after Reach in the same call; none by default. */
   otherReportTypes?: readonly OtherReportType[];
+  /** BL-181 (owner msg 2702): the stored traffic-source rows, for `getReportingTrafficSources`. */
+  trafficSourceStore?: {
+    listDaily(
+      channelId: string,
+      range: { startDate: string; endDate: string },
+      videoId?: string
+    ): Promise<Array<{ date: string; videoId: string; trafficSourceType: number; views: number | null; engagedViews: number | null; watchTimeMinutes: number | null }>>;
+    getCoverage(channelId: string): Promise<{ firstDate: string | null; lastDate: string | null }>;
+    listFiles(channelId: string, range: { startDate: string; endDate: string }): Promise<Array<{ startTime: string; endTime: string; createTime: string }>>;
+  };
 };
 
 /**
@@ -524,6 +563,66 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
             ctr: weightedCtr(inWindow),
           };
         }),
+      };
+    },
+
+    /**
+     * BL-181 (owner msg 2702, FO-MSG-0015): the stored traffic-source rows of a range -- a local read, no Google call. `state` is the
+     * traffic-source job's, so an empty result is never read as zero traffic. Per day and code the channel's videos are summed, the
+     * channel-level and deleted-video remainder (`videoId` "") included; with `videoId`, only that video's rows count.
+     */
+    async getReportingTrafficSources(input: unknown): Promise<GetReportingTrafficSourcesResult> {
+      const parsed = parseWithSchema(getReportingTrafficSourcesInputSchema, input, "get reporting traffic sources input");
+      await assertChannel(parsed.credentialRef, parsed.channelId);
+      const store = deps.trafficSourceStore;
+      if (!store) throw new DomainError({ code: "not_found", message: "The traffic-source read is not available in this build." });
+      const range = { startDate: parsed.startDate, endDate: parsed.endDate };
+      const [job, importedFiles, coverage, stored, files] = await Promise.all([
+        deps.store.getJob(parsed.channelId, TRAFFIC_SOURCE_REPORT_TYPE_ID),
+        deps.store.countImportedFiles ? deps.store.countImportedFiles(parsed.channelId, TRAFFIC_SOURCE_REPORT_TYPE_ID) : Promise.resolve(0),
+        store.getCoverage(parsed.channelId),
+        store.listDaily(parsed.channelId, range, parsed.videoId),
+        store.listFiles(parsed.channelId, range),
+      ]);
+      // Review S1: the SQL already narrows to `videoId`; grouping appends in place (a year of a large channel is ~600k rows).
+      const rows = parsed.videoId ? stored.filter((row) => row.videoId === parsed.videoId) : stored;
+
+      const byDayAndCode = new Map<string, typeof rows>();
+      const byCode = new Map<number, typeof rows>();
+      const push = <K>(map: Map<K, typeof rows>, key: K, row: (typeof rows)[number]) => {
+        const group = map.get(key);
+        if (group) group.push(row);
+        else map.set(key, [row]);
+      };
+      for (const row of rows) {
+        push(byDayAndCode, `${row.date}\u0000${row.trafficSourceType}`, row);
+        push(byCode, row.trafficSourceType, row);
+      }
+      const daily = [...byDayAndCode.values()]
+        .map((group) => ({ date: group[0].date, trafficSourceType: group[0].trafficSourceType, label: labelOf(group[0].trafficSourceType), ...summed(group) }))
+        .sort((a, b) => a.date.localeCompare(b.date) || a.trafficSourceType - b.trafficSourceType);
+      const totals = [...byCode.entries()]
+        .map(([code, group]) => ({ trafficSourceType: code, label: labelOf(code), ...summed(group) }))
+        .sort((a, b) => (b.views ?? -1) - (a.views ?? -1) || a.trafficSourceType - b.trafficSourceType);
+      const videoDaily =
+        parsed.groupBy === "video_day"
+          ? [...rows]
+              .sort((a, b) => a.videoId.localeCompare(b.videoId) || a.date.localeCompare(b.date) || a.trafficSourceType - b.trafficSourceType)
+              .map(({ videoId, date, trafficSourceType, views, engagedViews, watchTimeMinutes }) => ({ videoId, date, trafficSourceType, views, engagedViews, watchTimeMinutes }))
+          : null;
+
+      return {
+        channelId: parsed.channelId,
+        state: !job ? "no_job" : importedFiles === 0 ? "waiting_for_first_report" : "ready",
+        jobCreatedAt: job?.jobCreatedAt ?? null,
+        coverage: { ...coverage, importedFiles },
+        startDate: parsed.startDate,
+        endDate: parsed.endDate,
+        daily,
+        totals,
+        files: files.map((file) => ({ date: file.startTime.slice(0, 10), createTime: file.createTime, lagHours: hoursBetween(file.endTime, file.createTime) })),
+        ...(parsed.videoId ? { videoId: parsed.videoId } : {}),
+        ...(videoDaily ? { videoDaily: videoDaily.slice(0, MAX_VIDEO_DAY_ROWS), videoDailyTruncated: videoDaily.length > MAX_VIDEO_DAY_ROWS } : {}),
       };
     },
 
