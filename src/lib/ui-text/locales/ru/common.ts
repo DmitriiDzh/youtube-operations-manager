@@ -38,6 +38,11 @@ export const common: Record<keyof typeof en, string> = {
   "duration.hoursMinutes": "{h} ч {m} мин",
 
   "format.timePlaceholder": "ЧЧ:ММ",
+  "utcTime.utc": "UTC",
+  "utcTime.localHint": "({time} по вашему времени)",
+  "utcTime.localHintNextDay": "({time} следующего дня по вашему времени)",
+  "utcTime.localHintPreviousDay": "({time} предыдущего дня по вашему времени)",
+  "utcTime.localHintTitle": "Ваш часовой пояс: {zone}. Летнее и зимнее время учтены для даты {date}.",
 
   "errorBoundary.title": "Сбой в разделе «{label}».",
   "errorBoundary.body": "Остальное приложение работает. Попробуйте ещё раз или перейдите на другую вкладку.",

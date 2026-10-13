@@ -9,9 +9,10 @@
 type Readers = {
   liveWritesEnabled: () => Promise<boolean>;
   mcpConnectionEnabled: () => Promise<boolean>;
-  analyticsSync: () => Promise<{ localTime: string; timezone: string }>;
-  /** BL-181: the evening re-collect boundary, "" when off. */
-  analyticsEveningLocalTime: () => Promise<string>;
+  /** The daily collection boundary and BL-181's evening re-collect boundary ("" when off), "HH:MM" in UTC (owner, msgs 2725/2727). */
+  analyticsTimes: () => Promise<{ dailyUtc: string; eveningUtc: string }>;
+  /** The owner's own zone: the local times shown next to UTC times, the quota reset time. */
+  userTimezone: () => Promise<string>;
   dataApiReadsEnabled: () => Promise<boolean>;
   analyticsReadsEnabled: () => Promise<boolean>;
   youtubeFeedReadsEnabled: () => Promise<boolean>;
@@ -46,13 +47,13 @@ export async function buildSettingsSnapshot(readers: Readers) {
     }
   });
 
-  const analyticsSync = values.analyticsSync as { localTime: string; timezone: string } | null;
+  const analyticsTimes = values.analyticsTimes as { dailyUtc: string; eveningUtc: string } | null;
   return {
     liveWritesEnabled: values.liveWritesEnabled as boolean | null,
     mcpConnectionEnabled: values.mcpConnectionEnabled as boolean | null,
-    analyticsSyncLocalTime: analyticsSync?.localTime ?? null,
-    analyticsSyncTimezone: analyticsSync?.timezone ?? null,
-    analyticsEveningLocalTime: values.analyticsEveningLocalTime as string | null,
+    analyticsSyncUtcTime: analyticsTimes?.dailyUtc ?? null,
+    analyticsEveningUtcTime: analyticsTimes?.eveningUtc ?? null,
+    userTimezone: values.userTimezone as string | null,
     dataApiReadsEnabled: values.dataApiReadsEnabled as boolean | null,
     analyticsReadsEnabled: values.analyticsReadsEnabled as boolean | null,
     youtubeFeedReadsEnabled: values.youtubeFeedReadsEnabled as boolean | null,

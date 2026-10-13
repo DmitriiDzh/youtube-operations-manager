@@ -289,7 +289,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 
 - **Статус:** owner instruction, 2026-09-22, Telegram («Сколько было попыток пройти через шлюз за последние сутки... сколько попыток... увенчались успехом»). Реализовано на ветке `feature/gateway-traffic-counters` — по явному решению владельца объединена в одну фичу вместе с §2.9j (Cloud connection) и §2.9l, мердж всех трёх состоялся вместе в `4be1f29`.
 - **Файлы:** `src/lib/db.ts` (`gatewayCallEvents`, SCHEMA_MIGRATIONS версия 10, скользящее окно 24ч через `recordGatewayCallOutcome`/`getGatewayTrafficLast24h`, ретеншен 7 дней); вызовы записи из `assertDataApiReadsAuthorized`/`assertAnalyticsReadsAuthorized` (`youtube-read-gateway`), `assertLiveWritesAuthorized` (`youtube-write-gateway`), и обёртки `registerTool()` в `src/mcp/server.ts` (изначально только `allowed` — незарегистрированный при выключенном MCP-connection инструмент просто отсутствует, для этого случая понятия «заблокировано» действительно нет; **с BL-091 (2026-09-25) появился реальный источник `blocked`** — отказ по зоне ответственности агента, см. §2.9s и doc-комментарий к `gatewayCallEvents` в `src/lib/db.ts`). UI: `src/components/gateway-traffic-stats.tsx`, встроен в `ReadGatewaySettings`/`LiveWritesSettings`.
-- **Суточный гейт свежести Analytics** (тот же owner instruction, тот же день): `collectMetrics` (`src/lib/analytics/services.ts`) отказывает в повторном сборе за тот же «день» (граница — `analyticsSyncLocalTime` из настроек) кодом `analytics_data_current`, без единого реального вызова API; UI показывает тикающий обратный отсчёт до следующего доступного обновления вместо ошибки. Гейт применяется **только** к Analytics — Data API v3 (`Sync now`) им не ограничен, для него — только счётчики трафика выше. Помечает канал собранным только ПОСЛЕ успешного `authResolver.resolve()` (не до) — иначе сбой авторизации блокировал бы кнопку на сутки без единого реального запроса (найдено независимым ревью, исправлено до мерджа).
+- **Суточный гейт свежести Analytics** (тот же owner instruction, тот же день): `collectMetrics` (`src/lib/analytics/services.ts`) отказывает в повторном сборе за тот же «день» (граница — время сбора из настроек; с 2026-10-13 это время UTC, `analyticsSyncUtcTime`, owner msgs 2725/2727) кодом `analytics_data_current`, без единого реального вызова API; UI показывает тикающий обратный отсчёт до следующего доступного обновления вместо ошибки. Гейт применяется **только** к Analytics — Data API v3 (`Sync now`) им не ограничен, для него — только счётчики трафика выше. Помечает канал собранным только ПОСЛЕ успешного `authResolver.resolve()` (не до) — иначе сбой авторизации блокировал бы кнопку на сутки без единого реального запроса (найдено независимым ревью, исправлено до мерджа).
 
 ### 2.9l Cloud Quotas — реальные числа лимита/использования (`src/lib/cloud-quotas/`) — **IMPLEMENTED**, в `dev`
 
@@ -802,7 +802,8 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
       для канала или одного видео; локально).
     - Analytics API: `returnLag` в `analytics_data_quality` (схема v87: `newest_*_date`).
   - **Вечерний досбор.**
-    - Настройка «Вечерний досбор», по умолчанию 22:05, `""` — выключено.
+    - Настройка «Вечерний досбор», по умолчанию 22:05, `""` — выключено. С 2026-10-13 время задаётся в UTC (19:05 = 22:05 по
+      Хельсинки летом), рядом в скобках — местное время (`UtcTimeField`, `src/lib/zoned-time/`).
     - `POST /api/analytics/evening-collect` раз в 5 минут, пока виден дашборд.
     - Срабатывает раз за вечер и только если API ещё не вернул вчерашний день. Запрашивает 3 дня.
 

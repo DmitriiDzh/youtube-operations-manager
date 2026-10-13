@@ -7,14 +7,16 @@ import { createLibsqlClient } from "@/lib/libsql-client";
 import {
   createIsolatedDb,
   getAnalyticsEveningAttempt,
-  getAnalyticsEveningLocalTime,
+  getAnalyticsCollectionTimes,
   initializeDatabaseSchema,
   recordAnalyticsEveningAttempt,
-  setAnalyticsEveningLocalTime,
+  setAnalyticsCollectionTimes,
+  setUserTimezone,
 } from "@/lib/db";
 
-// BL-181 (FO-REQ-0020 §2.3): the evening boundary starts at 22:05 on a fresh install, "" turns it off and stays off; the last
-// evening attempt is kept per channel on this computer.
+// BL-181 (FO-REQ-0020 §2.3): the evening boundary starts at 22:05 local on a fresh install -- 19:05 UTC for the owner's Helsinki on
+// 2026-10-13, since the times are UTC (owner, msgs 2725/2727) -- "" turns it off and stays off; the last evening attempt is kept
+// per channel on this computer.
 
 test("evening boundary: 22:05 until set, '' stays off; attempts are per channel and replace the older one", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "evening-store-test-"));
@@ -22,11 +24,12 @@ test("evening boundary: 22:05 until set, '' stays off; attempts are per channel 
   try {
     await initializeDatabaseSchema(client);
     const db = createIsolatedDb(client);
-    assert.equal(await getAnalyticsEveningLocalTime(db), "22:05");
-    await setAnalyticsEveningLocalTime("", db);
-    assert.equal(await getAnalyticsEveningLocalTime(db), "");
-    await setAnalyticsEveningLocalTime("21:30", db);
-    assert.equal(await getAnalyticsEveningLocalTime(db), "21:30");
+    await setUserTimezone("Europe/Helsinki", db);
+    assert.equal((await getAnalyticsCollectionTimes(db)).eveningUtc, "19:05");
+    await setAnalyticsCollectionTimes({ eveningUtc: "" }, db);
+    assert.equal((await getAnalyticsCollectionTimes(db)).eveningUtc, "");
+    await setAnalyticsCollectionTimes({ eveningUtc: "18:30" }, db);
+    assert.equal((await getAnalyticsCollectionTimes(db)).eveningUtc, "18:30");
 
     assert.equal(await getAnalyticsEveningAttempt("UC_A", db), null);
     await recordAnalyticsEveningAttempt("UC_A", new Date("2026-10-13T19:10:00Z"), db);

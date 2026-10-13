@@ -1,5 +1,5 @@
 import {
-  getAnalyticsSyncSettings,
+  getAnalyticsCollectionTimes,
   getStoredChannel,
   getWeeklyReportByWeek,
   advanceVideoHistory,
@@ -29,7 +29,6 @@ import {
   listVideoSearchTerms,
   saveCollectedChannelSearchTermsWeek,
   listChannelSearchTermsWeekly,
-  getAnalyticsEveningLocalTime,
   getAnalyticsEveningAttempt,
   recordAnalyticsEveningAttempt,
   getNewestVideoMetricDate,
@@ -152,9 +151,11 @@ export function createAnalyticsStoreAdapter() {
         return (await getStoredChannel(channelId))?.publishedAt ?? null;
       },
     },
+    // Owner, Telegram msgs 2725/2727 (2026-10-13): the collection times are set in UTC, so every boundary here is computed in
+    // UTC -- the services themselves work with any zone.
     settingsStore: {
-      getAnalyticsSyncSettings,
-      getAnalyticsEveningLocalTime,
+      getAnalyticsSyncSettings: async () => ({ localTime: (await getAnalyticsCollectionTimes()).dailyUtc, timezone: "UTC" }),
+      getAnalyticsEveningLocalTime: async () => (await getAnalyticsCollectionTimes()).eveningUtc,
     },
     eveningAttemptStore: {
       get: (channelId: string) => getAnalyticsEveningAttempt(channelId),

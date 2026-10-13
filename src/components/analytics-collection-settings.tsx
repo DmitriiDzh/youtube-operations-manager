@@ -5,10 +5,11 @@ import { ownSettingsUnavailable } from "./settings-unavailable";
 import { useCallback, useEffect, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
 import { resetUserTimezoneCache } from "./use-user-timezone";
-import { isValidIanaTimezone, isValidLocalTimeOfDay } from "@/lib/analytics/staleness";
+import { DEFAULT_ANALYTICS_EVENING_UTC_TIME, isValidIanaTimezone, isValidLocalTimeOfDay } from "@/lib/analytics/staleness";
 import { LoadingIndicator } from "./operation-progress";
 import { ToggleSwitch } from "./toggle-switch";
 import { useT } from "./ui-text-provider";
+import { UtcTimeField } from "./utc-time-field";
 
 // `Intl.supportedValuesOf` (ES2022) -- the real, canonical IANA timezone database this runtime
 // ships, not a hand-maintained list that could drift from it. Backing a <datalist> rather than a
@@ -19,24 +20,20 @@ import { useT } from "./ui-text-provider";
 const IANA_TIMEZONES: string[] = typeof Intl.supportedValuesOf === "function" ? Intl.supportedValuesOf("timeZone") : [];
 
 type SyncSettings = {
-  analyticsSyncLocalTime: string;
-  analyticsSyncTimezone: string;
-  /** BL-181: the evening re-collect boundary, "" when off. */
-  analyticsEveningLocalTime: string;
+  /** "HH:MM" in UTC (owner, Telegram msgs 2725/2727, 2026-10-13). */
+  analyticsSyncUtcTime: string;
+  /** BL-181: the evening re-collect boundary in UTC, "" when off. */
+  analyticsEveningUtcTime: string;
+  /** The owner's own zone: the local times in parentheses, the quota reset time. */
+  userTimezone: string;
 };
 
-/** BL-181: what the time field shows when the owner turns the evening re-collect back on. */
-const DEFAULT_EVENING_TIME = "22:05";
-
 /**
- * Settings-tab section for BL-059's daily auto-collection boundary
- * (docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-4), and BL-181's evening re-collect (a ToggleSwitch with its time). The two
- * boundary times and the timezone are text values, validated server-side before being saved
- * (`isValidLocalTimeOfDay`/`isValidIanaTimezone`, `/api/settings`). The timezone defaults to this
- * machine's own OS timezone the first time it's ever read, then persists -- this field lets the
- * owner override that, e.g. after moving, per their own "может меняться в зимнее/летнее время"
- * concern (which the underlying IANA-zone-aware check already handles automatically; this field
- * is only for picking the zone itself, never a manual seasonal offset).
+ * Settings-tab section for BL-059's daily auto-collection boundary (docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-4) and
+ * BL-181's evening re-collect (a ToggleSwitch with its time). Since 2026-10-13 both times are set in UTC, with the owner's own
+ * time in parentheses (`UtcTimeField`, owner msgs 2725/2727); the zone field is the owner's own zone, which those parentheses
+ * and the quota reset time use. It defaults to this machine's OS zone the first time it is read, then persists. Every value is
+ * validated server-side before being saved (`isValidLocalTimeOfDay`/`isValidIanaTimezone`, `/api/settings`).
  */
 export function AnalyticsCollectionSettings() {
   const t = useT();
@@ -50,7 +47,7 @@ export function AnalyticsCollectionSettings() {
     const res = await fetch("/api/settings");
     if (!res.ok) return;
     const data = (await res.json()) as SyncSettings;
-    if (ownSettingsUnavailable(data, ["analyticsSync", "analyticsEveningLocalTime"])) return;
+    if (ownSettingsUnavailable(data, ["analyticsTimes", "userTimezone"])) return;
     setSettings(data);
     setDraft(data);
   }, []);
@@ -70,9 +67,9 @@ export function AnalyticsCollectionSettings() {
         headers: { "content-type": "application/json" },
         // Only this card's own fields -- never the whole snapshot (see read-gateway-settings.tsx).
         body: JSON.stringify({
-          analyticsSyncLocalTime: draft.analyticsSyncLocalTime,
-          analyticsSyncTimezone: draft.analyticsSyncTimezone,
-          analyticsEveningLocalTime: draft.analyticsEveningLocalTime,
+          analyticsSyncUtcTime: draft.analyticsSyncUtcTime,
+          analyticsEveningUtcTime: draft.analyticsEveningUtcTime,
+          userTimezone: draft.userTimezone,
         }),
       });
       const data = await res.json();
@@ -100,16 +97,16 @@ export function AnalyticsCollectionSettings() {
   }
 
   const dirty =
-    draft.analyticsSyncLocalTime !== settings.analyticsSyncLocalTime ||
-    draft.analyticsSyncTimezone !== settings.analyticsSyncTimezone ||
-    draft.analyticsEveningLocalTime !== settings.analyticsEveningLocalTime;
+    draft.analyticsSyncUtcTime !== settings.analyticsSyncUtcTime ||
+    draft.userTimezone !== settings.userTimezone ||
+    draft.analyticsEveningUtcTime !== settings.analyticsEveningUtcTime;
 
-  const timeValid = isValidLocalTimeOfDay(draft.analyticsSyncLocalTime);
-  const timezoneValid = isValidIanaTimezone(draft.analyticsSyncTimezone);
-  const eveningOn = draft.analyticsEveningLocalTime !== "";
-  const eveningFormatValid = !eveningOn || isValidLocalTimeOfDay(draft.analyticsEveningLocalTime);
-  // Same rule the server enforces: the evening boundary is later in the day than the collection time.
-  const eveningOrderValid = !eveningOn || !eveningFormatValid || !timeValid || draft.analyticsEveningLocalTime > draft.analyticsSyncLocalTime;
+  const timeValid = isValidLocalTimeOfDay(draft.analyticsSyncUtcTime);
+  const timezoneValid = isValidIanaTimezone(draft.userTimezone);
+  const eveningOn = draft.analyticsEveningUtcTime !== "";
+  const eveningFormatValid = !eveningOn || isValidLocalTimeOfDay(draft.analyticsEveningUtcTime);
+  // Same rule the server enforces: the evening boundary is later in the (UTC) day than the collection time.
+  const eveningOrderValid = !eveningOn || !eveningFormatValid || !timeValid || draft.analyticsEveningUtcTime > draft.analyticsSyncUtcTime;
   const eveningValid = eveningFormatValid && eveningOrderValid;
 
   return (
@@ -122,32 +119,23 @@ export function AnalyticsCollectionSettings() {
       </div>
 
       <div className="flex flex-wrap items-end gap-3">
+        <UtcTimeField
+          label={t("analyticsCollection.time")}
+          value={draft.analyticsSyncUtcTime}
+          onChange={(value) => setDraft({ ...draft, analyticsSyncUtcTime: value })}
+          invalid={!timeValid}
+          timezone={timezoneValid ? draft.userTimezone : null}
+        />
         <label className="flex flex-col gap-1 text-xs text-zinc-400">
-          {t("analyticsCollection.time")}
-          <input
-            type="text"
-            inputMode="numeric"
-            placeholder={t("format.timePlaceholder")}
-            value={draft.analyticsSyncLocalTime}
-            onChange={(e) => setDraft({ ...draft, analyticsSyncLocalTime: e.target.value })}
-            // A plain text input, not `type="time"` -- the native time widget renders its value
-            // using the browser/OS locale's own separator (e.g. "12.05" under a Finnish locale),
-            // which the owner explicitly flagged as confusing (2026-09-25: "время должно
-            // отображать как 12:05, а не точка"). A controlled text field always shows exactly
-            // what's stored (`HH:MM`, the same format `isValidLocalTimeOfDay` validates below and
-            // the server itself expects), independent of the viewer's locale.
-            className={`w-24 rounded-lg border bg-zinc-800 px-3 py-1.5 text-sm text-zinc-100 ${
-              timeValid ? "border-zinc-700" : "border-red-700"
-            }`}
-          />
-        </label>
-        <label className="flex flex-col gap-1 text-xs text-zinc-400">
-          {t("analyticsCollection.timezone")}
+          <span className="flex items-center gap-1.5">
+            {t("analyticsCollection.timezone")}
+            <InfoTooltip>{t("analyticsCollection.timezoneInfo")}</InfoTooltip>
+          </span>
           <input
             type="text"
             list="analytics-sync-iana-timezones"
-            value={draft.analyticsSyncTimezone}
-            onChange={(e) => setDraft({ ...draft, analyticsSyncTimezone: e.target.value })}
+            value={draft.userTimezone}
+            onChange={(e) => setDraft({ ...draft, userTimezone: e.target.value })}
             placeholder={t("analyticsCollection.timezonePlaceholder")}
             className={`min-w-56 rounded-lg border bg-zinc-800 px-3 py-1.5 text-sm text-zinc-100 ${
               timezoneValid ? "border-zinc-700" : "border-red-700"
@@ -167,7 +155,7 @@ export function AnalyticsCollectionSettings() {
           <ToggleSwitch
             label={t("analyticsCollection.evening")}
             checked={eveningOn}
-            onChange={(checked) => setDraft({ ...draft, analyticsEveningLocalTime: checked ? settings.analyticsEveningLocalTime || DEFAULT_EVENING_TIME : "" })}
+            onChange={(checked) => setDraft({ ...draft, analyticsEveningUtcTime: checked ? settings.analyticsEveningUtcTime || DEFAULT_ANALYTICS_EVENING_UTC_TIME : "" })}
           />
           <span className="flex items-center gap-1.5 text-sm text-zinc-300">
             {t("analyticsCollection.evening")}
@@ -175,17 +163,13 @@ export function AnalyticsCollectionSettings() {
           </span>
         </div>
         {eveningOn && (
-          <label className="flex flex-col gap-1 text-xs text-zinc-400">
-            {t("analyticsCollection.eveningTime")}
-            <input
-              type="text"
-              inputMode="numeric"
-              placeholder={t("format.timePlaceholder")}
-              value={draft.analyticsEveningLocalTime}
-              onChange={(e) => setDraft({ ...draft, analyticsEveningLocalTime: e.target.value })}
-              className={`w-24 rounded-lg border bg-zinc-800 px-3 py-1.5 text-sm text-zinc-100 ${eveningValid ? "border-zinc-700" : "border-red-700"}`}
-            />
-          </label>
+          <UtcTimeField
+            label={t("analyticsCollection.eveningTime")}
+            value={draft.analyticsEveningUtcTime}
+            onChange={(value) => setDraft({ ...draft, analyticsEveningUtcTime: value })}
+            invalid={!eveningValid}
+            timezone={timezoneValid ? draft.userTimezone : null}
+          />
         )}
         <button
           onClick={handleSave}
