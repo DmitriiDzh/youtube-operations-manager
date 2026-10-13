@@ -13,6 +13,7 @@ import {
   type MediaSessionLimits,
   type MediaCapacityAttempt,
   type MediaControlEventView,
+  type MediaKind,
   type MediaModelEntry,
   type MediaSettings,
   type MediaStorageStatus,
@@ -742,7 +743,7 @@ type Job = MediaJob;
 
 // Phase 14 slice 3: the operator's own manual job (an agent's arrives through MCP in slice 5) and the
 // job list; the exchange janitor is run by hand here (dry run first) and daily by the server.
-export function JobsCard({ activeChannelId }: { activeChannelId: string | null }) {
+export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: string | null; kind?: MediaKind | null }) {
   const { t } = useUiText();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
@@ -786,6 +787,12 @@ export function JobsCard({ activeChannelId }: { activeChannelId: string | null }
     fetchAll();
   }, [fetchAll]);
 
+  // BL-184 stage 3 (FO-REQ-0024 A): under a kind tab, the jobs of templates that make that kind (or whose kind is not known).
+  const kindOfTemplate = new Map(templates.map((tpl) => [tpl.templateId, tpl.mediaKind]));
+  const shownJobs = kind === null ? jobs : jobs.filter((j) => {
+    const of = kindOfTemplate.get(j.templateId);
+    return !of || of === kind;
+  });
   const hasActive = jobs.some((j) => !["done", "failed", "cancelled"].includes(j.status));
   // BL-144: while a job generates, its live ComfyUI progress is refreshed every 2 s; otherwise every 5 s as before.
   const generating = jobs.some((j) => j.status === "generating" || j.status === "submitted");
@@ -894,7 +901,7 @@ export function JobsCard({ activeChannelId }: { activeChannelId: string | null }
         </div>
       )}
 
-      {jobs.length > 0 && (
+      {shownJobs.length > 0 && (
         <div className="overflow-x-auto">
           <table className="min-w-[640px] w-full text-left text-xs text-zinc-400">
             <thead>
@@ -909,7 +916,7 @@ export function JobsCard({ activeChannelId }: { activeChannelId: string | null }
               </tr>
             </thead>
             <tbody>
-              {jobs.slice(0, 12).map((j) => (
+              {shownJobs.slice(0, 12).map((j) => (
                 <tr key={j.jobId} className="border-t border-zinc-800 align-top">
                   <td className="py-1 pr-3 whitespace-nowrap">{formatDisplayDateTime(j.createdAt)}</td>
                   <td className="py-1 pr-3">

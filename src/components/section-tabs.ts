@@ -11,13 +11,18 @@ export const SERVERS_TABS = [
   { value: "setup", labelKey: "tabs.servers.setup", side: "setup" },
 ] as const;
 
+// BL-184 stage 3 (FO-REQ-0024 §4 A; owner, Telegram msgs 2741/2743): Media's first level is what is reviewed -- music, images,
+// storyboards, video. The generation plans and jobs (BL-143: the former «Планы» / «Задания» tabs) are the content of the kind tabs,
+// each listing those of its kind; `/media/plans` and `/media/jobs` lead to «Музыка», and a plan's review keeps its address.
 export const MEDIA_TABS = [
-  // BL-143 (ADR 0029): generation plans and their review; the jobs they are made of next to them.
-  { value: "plans", labelKey: "tabs.media.plans" },
-  // BL-184 (FO-REQ-0024 §4 B2): storyboards reviewed and approved before any video is made from them.
-  { value: "storyboards", labelKey: "tabs.media.storyboards" },
-  { value: "jobs", labelKey: "tabs.media.jobs" },
+  { value: "music", labelKey: "tabs.media.music", kind: "audio" },
+  { value: "images", labelKey: "tabs.media.images", kind: "image" },
+  { value: "storyboards", labelKey: "tabs.media.storyboards", kind: null },
+  { value: "video", labelKey: "tabs.media.video", kind: "video" },
 ] as const;
+
+/** Where `/media` and the former Plans / Jobs addresses lead. */
+export const MEDIA_DEFAULT_TAB = "music";
 
 export const RESEARCH_TABS = [
   { value: "inbox", labelKey: "tabs.research.inbox" },
@@ -114,7 +119,8 @@ export function sectionHref(sectionHref: string, lastPathBySection: Readonly<Rec
 export function rememberablePath(pathname: string): { section: string; path: string } | null {
   const [, section, sub, planId, last, ...rest] = pathname.split("/");
   if (!section || !sub) return null;
-  if (section === "media" && sub === "plans" && planId && last === "review" && rest.length === 0) return { section: "/media", path: "/media/plans" };
+  // BL-184 stage 3: a plan's review is remembered as Media's first tab (the former Plans tab is gone).
+  if (section === "media" && sub === "plans" && planId && last === "review" && rest.length === 0) return { section: "/media", path: `/media/${MEDIA_DEFAULT_TAB}` };
   // BL-184: a storyboard's review counts as the «Раскадровка» tab.
   if (section === "media" && sub === "storyboards" && planId && last === undefined) return { section: "/media", path: "/media/storyboards" };
   if (planId !== undefined || !isSectionSubTab(section, sub)) return null;

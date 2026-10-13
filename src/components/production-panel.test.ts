@@ -13,7 +13,7 @@ import { describeBalance, MEDIA_TABS, SERVERS_TABS } from "./production-panel";
 // Changed requirement (BL-157, SERVERS_MEDIA_PLAN.md AC-SM-01; FO-REQ-0009 §1–§2, owner msgs 2119/2125): Production is split
 // in two -- Servers (shared: Sessions, Models, Workflow templates; Setup on the right) and Media (the active channel's:
 // Plans, Jobs). The order of the remaining tabs is the AC-P14-26 order.
-test("AC-SM-01: Servers' tabs are Sessions, Models, Workflow templates (work, left) then Setup (right); Media's are Plans, Jobs", () => {
+test("AC-SM-01: Servers' tabs are Sessions, Models, Workflow templates (work, left) then Setup (right); Media's are Music, Images, Storyboards, Video (BL-184 stage 3)", () => {
   assert.deepEqual(
     SERVERS_TABS.map((tab) => [translate("en", tab.labelKey), tab.side]),
     [
@@ -25,8 +25,9 @@ test("AC-SM-01: Servers' tabs are Sessions, Models, Workflow templates (work, le
   );
   assert.deepEqual(
     MEDIA_TABS.map((tab) => translate("en", tab.labelKey)),
-    // BL-184 (FO-REQ-0024 §4 B2): «Раскадровка» between Plans and Jobs.
-    ["Plans", "Storyboards", "Jobs"]
+    // BL-184 stage 3 (FO-REQ-0024 §4 A): the owner's layout (Telegram msgs 2741/2743) replaces Plans / Jobs with the four kind tabs;
+    // plans and jobs are their content.
+    ["Music", "Images", "Storyboards", "Video"]
   );
 });
 

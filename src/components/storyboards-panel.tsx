@@ -15,7 +15,7 @@ import { useT } from "./ui-text-provider";
 
 const POLL_MS = 30_000;
 
-export function StoryboardsPanel({ channelId, active, onOpen }: { channelId: string | null; active: boolean; onOpen: (storyboardId: string) => void }) {
+export function StoryboardsPanel({ channelId, active, onOpen, onWaiting }: { channelId: string | null; active: boolean; onOpen: (storyboardId: string) => void; onWaiting?: (count: number) => void }) {
   const t = useT();
   const [list, setList] = useState<StoryboardSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -35,13 +35,14 @@ export function StoryboardsPanel({ channelId, active, onOpen }: { channelId: str
         (data) => {
           setList(sortForOwner(data.storyboards));
           setError(null);
+          onWaiting?.(data.storyboards.filter((s) => s.state === "in_review").length);
         },
         (err: unknown) => setError(err instanceof Error ? err.message : t("storyboards.loadFailed"))
       );
     void fetch(`/api/channels/${encodeURIComponent(channelId)}/storyboard-settings`)
       .then((response) => (response.ok ? response.json() : null))
       .then((data) => data && setGate(data), () => undefined);
-  }, [channelId, t]);
+  }, [channelId, t, onWaiting]);
 
   const saveGate = (requireApproved: boolean) => {
     if (!channelId) return;
@@ -58,8 +59,10 @@ export function StoryboardsPanel({ channelId, active, onOpen }: { channelId: str
   };
 
   useEffect(() => {
-    if (!active || !channelId) return;
+    if (!channelId) return;
+    // Read once even while another tab is shown (the tab bar's badge), then kept fresh only while this tab is open.
     load();
+    if (!active) return;
     const id = setInterval(load, POLL_MS);
     return () => clearInterval(id);
   }, [active, channelId, load]);
@@ -119,6 +122,55 @@ export function StoryboardsPanel({ channelId, active, onOpen }: { channelId: str
           ))}
         </ul>
       ) : null}
+    </section>
+  );
+}
+
+/**
+ * BL-184 stage 3 (FO-REQ-0024 A/B5): on «Видео», the channel's approved storyboards -- each opens straight on its «Видео» view (the
+ * takes of its segments, the joints, the assembled loop). Nothing is shown when there is none.
+ */
+export function StoryboardVideoLinks({ channelId, active, onOpen }: { channelId: string | null; active: boolean; onOpen: (storyboardId: string) => void }) {
+  const t = useT();
+  const [list, setList] = useState<StoryboardSummary[]>([]);
+
+  useEffect(() => {
+    if (!active || !channelId) return;
+    let cancelled = false;
+    const load = () =>
+      void fetch(`/api/channels/${encodeURIComponent(channelId)}/storyboards`)
+        .then((response) => (response.ok ? (response.json() as Promise<{ storyboards: StoryboardSummary[] }>) : null))
+        .then(
+          (data) => {
+            if (!cancelled && data) setList(sortForOwner(data.storyboards).filter((s) => s.state === "approved"));
+          },
+          () => undefined
+        );
+    load();
+    const id = setInterval(load, POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [active, channelId]);
+
+  if (list.length === 0) return null;
+  return (
+    <section className="space-y-2 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+      <h3 className="text-base font-semibold text-zinc-100">{t("storyboards.videoLinks.title")}</h3>
+      <p className="text-xs text-zinc-400">{t("storyboards.videoLinks.help")}</p>
+      <ul className="space-y-2">
+        {list.map((s) => (
+          <li key={s.storyboardId}>
+            <button type="button" onClick={() => onOpen(s.storyboardId)} className="flex w-full flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-left hover:border-zinc-700">
+              {/* ui-text-ignore: the storyboard's own title (data) */}
+              <span className="min-w-0 flex-1 truncate text-sm font-medium text-zinc-100">{s.title}</span>
+              <span className="text-xs text-zinc-400">{t("storyboards.row.summary", { version: s.latestVersion, keyframes: s.keyframes, segments: s.segments })}</span>
+              <span className="text-xs text-indigo-300">{t("storyboards.videoLinks.open")}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }

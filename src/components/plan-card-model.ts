@@ -1,4 +1,4 @@
-import { entryWaits, sharedNotices, validatorOfEntry, type PlanEvent, type PlanItemProgress, type PlanNotice, type PlanProgress, type PlanStageCounts, type PlanStageKind, type PlanView } from "@/lib/generation-plans/contracts";
+import { entryWaits, sharedNotices, validatorOfEntry, type PlanEvent, type PlanItemProgress, type PlanMediaKind, type PlanNotice, type PlanProgress, type PlanStageCounts, type PlanStageKind, type PlanView } from "@/lib/generation-plans/contracts";
 import { withSentPicks, type SentPickAction } from "@/lib/generation-plans/picks";
 import type { SharedPlan } from "@/lib/sync-gateway";
 
@@ -151,7 +151,14 @@ export function sharedProgress(raw: Record<string, unknown>): PlanProgress {
     eta: { seconds: numOrNull(eta.seconds), gpuTypeId: strOrNull(eta.gpuTypeId), samples: num(eta.samples) },
     notices: sharedNotices(raw),
     rechecksOpen: num(raw.rechecksOpen),
+    // BL-184 stage 3: absent in an older build's report (the plan then shows under every kind tab).
+    ...(Array.isArray(raw.mediaKinds) ? { mediaKinds: raw.mediaKinds.filter((k): k is PlanMediaKind => k === "audio" || k === "image" || k === "video") } : {}),
   };
+}
+
+/** BL-184 stage 3 (FO-REQ-0024 A): whether a plan belongs under a kind tab -- it makes that kind, or its kind is not known yet. */
+export function planShownUnder(kind: PlanMediaKind | null, mediaKinds: readonly PlanMediaKind[] | undefined): boolean {
+  return kind === null || !mediaKinds || mediaKinds.length === 0 || mediaKinds.includes(kind);
 }
 
 /**
@@ -213,4 +220,13 @@ export function waveRows(model: Pick<PlanCardModel, "groups" | "progress">, show
   if (showAll) return { shown: rows, folded: 0 };
   const shown = rows.filter(keep);
   return { shown, folded: rows.length - shown.length };
+}
+
+/** BL-184 stage 3: the waiting tracks of the given plans under each kind tab; a plan of unknown kind counts under all three. */
+export function waitingPerKind(plans: ReadonlyArray<{ waiting: number; kinds: readonly PlanMediaKind[] | undefined }>): Record<PlanMediaKind, number> {
+  const out: Record<PlanMediaKind, number> = { audio: 0, image: 0, video: 0 };
+  for (const plan of plans) {
+    for (const kind of ["audio", "image", "video"] as const) if (planShownUnder(kind, plan.kinds)) out[kind] += plan.waiting;
+  }
+  return out;
 }

@@ -33,7 +33,8 @@ import { PlansPanel } from "./generation-plans-panel";
 // Media (the active channel's). The Servers header shows the RunPod balance and today's spend; the keys stay in Settings.
 
 import { MEDIA_TABS, SERVERS_TABS, type MediaTab, type ServersTab } from "./section-tabs";
-import { StoryboardsPanel } from "./storyboards-panel";
+import type { PlanMediaKind } from "@/lib/generation-plans/contracts";
+import { StoryboardsPanel, StoryboardVideoLinks } from "./storyboards-panel";
 export { MEDIA_TABS, SERVERS_TABS };
 
 /** The balance is a RunPod call: on open, on demand, and once a minute while Production is open. */
@@ -126,7 +127,7 @@ function BalanceHeader({ configured, limits, activeElsewhere = 0 }: { configured
 }
 
 /** The tab bar of a section: work tabs on the left, a setup tab (if any) on the right. */
-function TabBar<V extends string>({ tabs, current, onSelect }: { tabs: ReadonlyArray<{ value: V; labelKey: UiTextKey; side?: "work" | "setup" }>; current: V; onSelect: (tab: V) => void }) {
+function TabBar<V extends string>({ tabs, current, onSelect, badges }: { tabs: ReadonlyArray<{ value: V; labelKey: UiTextKey; side?: "work" | "setup" }>; current: V; onSelect: (tab: V) => void; badges?: Partial<Record<V, number>> }) {
   const t = useT();
   const button = (item: (typeof tabs)[number]) => (
     <button
@@ -136,6 +137,8 @@ function TabBar<V extends string>({ tabs, current, onSelect }: { tabs: ReadonlyA
       className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${current === item.value ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`}
     >
       {t(item.labelKey)}
+      {/* BL-184 stage 3: what waits for the owner under this tab. */}
+      {(badges?.[item.value] ?? 0) > 0 ? <span className="ml-1.5 rounded-full bg-amber-400/90 px-1.5 text-[11px] font-semibold text-zinc-950">{badges?.[item.value]}</span> : null}
     </button>
   );
   const setup = tabs.filter((item) => item.side === "setup");
@@ -226,26 +229,32 @@ export function MediaPanel({
   paused?: boolean;
   /** BL-149: where the review screen of a plan opens (its own address); absent = in place. BL-162: `wave` = open on that wave. */
   onReviewPlan?: (planId: string, source?: PeerReviewSource, wave?: string) => void;
-  /** BL-184: open a storyboard's review screen (its own address). */
-  onOpenStoryboard?: (storyboardId: string) => void;
+  /** BL-184: open a storyboard's review screen (its own address); `video` = on its «Видео» view. */
+  onOpenStoryboard?: (storyboardId: string, view?: "video") => void;
   /** Where "now running" leads: Servers → Sessions. */
   sessionsHref?: string;
 }) {
-  const [ownTab, setOwnTab] = useState<MediaTab>("plans");
+  const [ownTab, setOwnTab] = useState<MediaTab>("music");
   const tab = routeTab ?? ownTab;
   const setTab = onTabChange ?? setOwnTab;
+  // BL-184 stage 3: one plans list and one job log, filtered by the kind of the tab shown (switching kind tabs keeps them mounted).
+  const kind = MEDIA_TABS.find((item) => item.value === tab)?.kind ?? null;
+  const kindTab = tab !== "storyboards";
+  // What waits for the owner under each tab: plans' tracks by kind (from the one plans list), storyboards in review.
+  const [plansWaiting, setPlansWaiting] = useState<Partial<Record<PlanMediaKind, number>>>({});
+  const [storyboardsWaiting, setStoryboardsWaiting] = useState(0);
+  const badges: Partial<Record<MediaTab, number>> = { music: plansWaiting.audio ?? 0, images: plansWaiting.image ?? 0, video: plansWaiting.video ?? 0, storyboards: storyboardsWaiting };
   return (
     <div className="max-w-5xl space-y-6">
       <NowRunningLine activeChannelId={activeChannelId} sessionsHref={sessionsHref} />
-      <TabBar tabs={MEDIA_TABS} current={tab} onSelect={setTab} />
-      <div className={tab === "plans" ? "space-y-6" : "hidden"}>
-        <PlansPanel active={tab === "plans" && !paused} onReview={onReviewPlan} />
-      </div>
+      <TabBar tabs={MEDIA_TABS} current={tab} onSelect={setTab} badges={badges} />
       <div className={tab === "storyboards" ? "space-y-6" : "hidden"}>
-        <StoryboardsPanel channelId={activeChannelId} active={tab === "storyboards" && !paused} onOpen={(id) => onOpenStoryboard?.(id)} />
+        <StoryboardsPanel channelId={activeChannelId} active={tab === "storyboards" && !paused} onOpen={(id) => onOpenStoryboard?.(id)} onWaiting={setStoryboardsWaiting} />
       </div>
-      <div className={tab === "jobs" ? "space-y-6" : "hidden"}>
-        <JobsCard activeChannelId={activeChannelId} />
+      <div className={kindTab ? "space-y-6" : "hidden"}>
+        {tab === "video" ? <StoryboardVideoLinks channelId={activeChannelId} active={!paused} onOpen={(id) => onOpenStoryboard?.(id, "video")} /> : null}
+        <PlansPanel kind={kind} active={kindTab && !paused} onReview={onReviewPlan} onWaitingByKind={setPlansWaiting} />
+        <JobsCard activeChannelId={activeChannelId} kind={kind} />
       </div>
     </div>
   );
