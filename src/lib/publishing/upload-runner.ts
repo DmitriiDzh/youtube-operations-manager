@@ -6,6 +6,7 @@
 // the package's title. Live writes off pauses a job (never fails it); quota and the channel's upload cap pause it until they reset.
 
 import type { StoredPublishingUpload } from "@/lib/db";
+import { PUBLISH_AT_AT_INSERT_MIN_MS } from "./publish-dates";
 import type { PublishingSettings } from "./settings";
 
 /** The package as the owner approved it (frozen in `package_json`). Paths are relative to the channel workspace. */
@@ -104,8 +105,6 @@ export type VideoReadBack = {
   embeddable: boolean | null;
 };
 
-/** A publish time at least this far ahead is sent at insert (owner msg 2717; FO-REQ-0023 §4 B5.4); a nearer one after processing. */
-export const PUBLISH_AT_AT_INSERT_MIN_MS = 6 * 3_600_000;
 /** video-details' own rule: a publish time 15 minutes ahead or less is not written (the video could publish before the write). */
 const PUBLISH_AT_MARGIN_MS = 15 * 60_000;
 const PROCESSING_POLL_MS = 30_000;

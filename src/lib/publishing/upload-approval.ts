@@ -10,7 +10,10 @@ import { DomainError } from "@/lib/shared-domain";
 import type { PackageScanResult } from "./package-scan";
 import type { PublishingSettingsView } from "./settings-service";
 import type { PublishingSettings } from "./settings";
-import { PUBLISH_AT_AT_INSERT_MIN_MS, type ApprovedPackage } from "./upload-runner";
+import { estimateUploadUnits, isDeferredPublishAt } from "./publish-dates";
+import type { ApprovedPackage } from "./upload-runner";
+
+export { estimateUploadUnits };
 
 /** YouTube's own daily bucket for `videos.insert` (since 2026-06-01): 100 per project. */
 export const UPLOADS_PER_DAY = 100;
@@ -19,15 +22,6 @@ export const MAX_UPLOADS_PER_APPROVAL = 25;
 const PUBLISH_AT_MARGIN_MS = 15 * 60_000;
 
 export type ApprovalItem = { manifestPath: string; manifestSha256: string; publishAt: string | null };
-
-/**
- * The pool units one upload needs: the thumbnail (50), a playlist item (50 + 1 to check it is not there yet), a deferred publish
- * time (videos.update 50 + its reads), and about 45 reads (the identity check per pass, the processing polls, the read-back, the
- * sync after it). `videos.insert` itself comes from its own bucket, not the pool.
- */
-export function estimateUploadUnits(args: { playlist: boolean; deferredPublishAt: boolean }): number {
-  return 50 + 45 + (args.playlist ? 51 : 0) + (args.deferredPublishAt ? 53 : 0);
-}
 
 export type UploadApprovalDeps = {
   scan(channelId: string): Promise<PackageScanResult>;
@@ -97,7 +91,7 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
           sum +
           estimateUploadUnits({
             playlist: view.settings.playlistId !== null,
-            deferredPublishAt: c.item.publishAt !== null && Date.parse(c.item.publishAt) - now.getTime() < PUBLISH_AT_AT_INSERT_MIN_MS,
+            deferredPublishAt: isDeferredPublishAt(c.item.publishAt, now),
           }),
         0
       );
