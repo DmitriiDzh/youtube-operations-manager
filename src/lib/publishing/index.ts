@@ -1,5 +1,6 @@
 import { open } from "node:fs/promises";
 import { YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
+import { createChannelVideoStoreAdapter } from "@/lib/channel-video-store";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { clearPublishingG1Probe, getPublishingG1Probe, insertVideoEditAuditEvent, rawSqlClient, removeLocalVideoRowIfUnreferenced, savePublishingG1Probe } from "@/lib/db";
 import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
@@ -10,6 +11,7 @@ import { createYoutubeClient, getVideoUploadState } from "@/lib/youtube-read-gat
 import { createWorkspaceExchangeFsForPublishing, resolveWorkspaceFileForPublishing } from "./adapters/files";
 import { authorizedOAuth, createPublishingYoutubeWrites, freshAccessToken } from "./adapters/youtube-writes";
 import type { G1ProbeRecord } from "./contracts";
+import { createPublishingCalendarReads } from "./calendar-reads";
 import { createG1Probe } from "./g1-probe";
 
 /** The stored record, only when it has this module's shape (an older or damaged value counts as "started": it blocks). */
@@ -76,4 +78,26 @@ export function createG1ProbeCore(options: { announce?: (videoId: string) => voi
   });
 }
 
+/** BL-182 stage 1: the publishing calendar and the 7-day reminder, from the local copy only. */
+export function createPublishingCalendarCore() {
+  const store = createChannelVideoStoreAdapter();
+  return createPublishingCalendarReads({
+    async listVideos(channelId) {
+      return (await store.listVideosByChannel(channelId)).map((video) => ({
+        videoId: video.videoId,
+        title: video.title,
+        privacyStatus: video.privacyStatus,
+        publishedAt: video.publishedAt,
+        publishAt: video.publishAt,
+        liveBroadcastContent: video.liveBroadcastContent ?? null,
+      }));
+    },
+    getChannel: (channelId) => store.getChannel(channelId),
+    clock: { now: () => new Date() },
+  });
+}
+
 export type { G1DeleteReport, G1ProbeRecord, G1UploadReport } from "./contracts";
+export type { CalendarEntry, CalendarEntryKind, PublishingCoverage } from "./calendar";
+export type { PublishingAlert, PublishingCalendarResult } from "./calendar-reads";
+export { PUBLISHING_REMINDER_DAYS } from "./calendar";
