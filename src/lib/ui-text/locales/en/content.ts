@@ -280,4 +280,9 @@ export const content = {
   "publishingUploads.publishAt": "Goes public: {time} UTC",
   "publishingUploads.cancel": "Cancel",
   "publishingUploads.cancelFailed": "Could not cancel the upload.",
+  "publishingUploads.failed.unknown_outcome": "Every byte was sent, but YouTube's answer was lost and the session expired; no video with this title is among the newest uploads yet. Check Studio before uploading the package again, or it may end up twice.",
+  "publishingUploads.failed.package_changed": "The package or its video file changed after the approval, so the upload stopped. Check the package and approve again.",
+  "publishingUploads.failed.processing_rejected": "YouTube rejected the video while processing it: {reason}",
+  "publishingUploads.failed.processing_failed": "YouTube failed to process the video: {reason}",
+  "publishingUploads.failed.WRITE_CHANNEL_MISMATCH": "The Google sign-in now belongs to another channel, so the upload did not start.",
 } as const;

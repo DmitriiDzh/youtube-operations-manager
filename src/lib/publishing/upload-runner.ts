@@ -24,6 +24,8 @@ export type ApprovedPackage = {
 };
 
 export type UploadSteps = {
+  /** When the last chunk was first sent: from then on the video may exist even if no answer said so (never restarted blindly). */
+  finalChunkSentAt?: string;
   publishAt?: "at_insert" | "set" | "skipped_too_soon" | "failed";
   thumbnail?: "set" | "failed";
   playlist?: "added" | "already_there" | "none" | "failed";
@@ -220,12 +222,20 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
     if (ok) await deps.audit({ channelId: job.channelId, videoId, detail: { event: how === "uploaded" ? "publishing.uploaded" : "publishing.adopted_after_lost_answer", uploadId: job.id, video: job.video } });
   }
 
-  /** An expired session: a video with this title among the newest uploads is this upload (adopted); otherwise a new session. */
-  async function onExpired(job: StoredPublishingUpload, pkg: ApprovedPackage, creds: UploadCredentials): Promise<"adopted" | "restart"> {
+  /**
+   * An expired session: a video with this title among the newest uploads is this upload (adopted). Otherwise a new session -- but
+   * only when the last chunk was never sent. Once it was, YouTube may have made the video and the uploads list may not show it
+   * yet, so the job stops as `unknown_outcome` for the owner to look in Studio (ADR 0037 §4: "adopts it, or asks the owner").
+   */
+  async function onExpired(job: StoredPublishingUpload, pkg: ApprovedPackage, creds: UploadCredentials): Promise<"adopted" | "restart" | "unknown"> {
     const found = (await deps.reads.recentUploads(creds.credentials, job.channelId)).find((video) => video.title === pkg.title);
     if (found) {
       await adopt(job, found.videoId, "found");
       return "adopted";
+    }
+    if (parseJson<UploadSteps>(job.stepsJson, {}).finalChunkSentAt) {
+      await fail(job, "unknown_outcome", "Every byte was sent but the upload session expired before YouTube's answer was read, and no video with this title is among the channel's newest uploads yet. Look in Studio before approving this package again: a second upload could make a duplicate.");
+      return "unknown";
     }
     await deps.store.update(job.id, "uploading", { sessionUri: null, storedBytes: 0, updatedAt: now() });
     return "restart";
@@ -284,6 +294,12 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
       const deadline = now().getTime() + deps.sliceMs;
       while (stored < current.totalBytes && now().getTime() < deadline) {
         const length = Math.min(deps.chunkBytes, current.totalBytes - stored);
+        if (stored + length === current.totalBytes && !parseJson<UploadSteps>(current.stepsJson, {}).finalChunkSentAt) {
+          // Stored before the last chunk goes: if its answer is lost and the session then expires, the job never restarts blindly.
+          const stepsJson = JSON.stringify({ ...parseJson<UploadSteps>(current.stepsJson, {}), finalChunkSentAt: now().toISOString() });
+          await deps.store.update(current.id, "uploading", { stepsJson, updatedAt: now() });
+          current = { ...current, stepsJson };
+        }
         const chunk = await deps.files.readChunk(videoFile.path, stored, length);
         const progress = await deps.gateway.putChunk({ accessToken: token, sessionUri: current.sessionUri as string, chunk, start: stored, total: current.totalBytes, contentType });
         if ("expired" in progress) {

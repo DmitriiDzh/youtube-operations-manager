@@ -25,6 +25,7 @@ type UploadRow = {
 };
 
 const ACTIVE = new Set(["queued", "uploading", "processing", "finishing", "paused"]);
+const FAILED_KEYS = new Set(["unknown_outcome", "package_changed", "processing_rejected", "processing_failed", "WRITE_CHANNEL_MISMATCH"]);
 const STATUS_STYLE: Record<UploadRow["status"], string> = {
   queued: "bg-zinc-800 text-zinc-300",
   uploading: "bg-indigo-950/60 text-indigo-200",
@@ -110,7 +111,11 @@ export function PublishingUploads({ channelId, visible, refreshKey }: { channelI
     if (row.status === "paused" && row.pausedReason) {
       return t(`publishingUploads.pause.${row.pausedReason}` as UiTextKey, { time: row.pausedUntil ? formatDisplayDateTime(row.pausedUntil) : "" });
     }
-    if (row.status === "failed") return row.errorMessage;
+    if (row.status === "failed") {
+      // The known reasons in the interface language; anything else as the server said it.
+      const reason = row.errorMessage?.replace(/^YouTube \w+ the video: /, "") ?? "";
+      return row.errorCode && FAILED_KEYS.has(row.errorCode) ? t(`publishingUploads.failed.${row.errorCode}` as UiTextKey, { reason }) : row.errorMessage;
+    }
     if (row.status === "done" && row.errorCode === "verify_mismatch") return t("publishingUploads.result.verify_mismatch", { fields: (steps.verify?.mismatches ?? []).join(", ") });
     if (row.status === "done" && row.errorCode === "step_failed") return t("publishingUploads.result.step_failed", { notes: (steps.notes ?? []).join("; ") });
     if (row.status === "done" && row.errorCode === "publish_at_too_soon") return t("publishingUploads.result.publish_at_too_soon");

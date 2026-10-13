@@ -408,3 +408,18 @@ test("cancel only before YouTube: queued, or paused while sending with bytes lef
   assert.equal(isCancellable({ ...base, status: "uploading" }), false, "sending right now: pause it first (Live writes off)");
   assert.equal(isCancellable({ ...base, status: "done", videoId: "v" }), false);
 });
+
+test("AC-UP-06: the last chunk was sent, its answer lost, the session expired and the new video is not listed yet -- the job stops as unknown_outcome, never a second upload", async () => {
+  const h = harness([job()]);
+  // The uploads list lags: the new video is not in it yet.
+  h.deps.reads = { ...h.deps.reads, recentUploads: async () => [] };
+  const runner = createUploadRunner(h.deps);
+  h.yt.setFaults([undefined as never, undefined as never, undefined as never, "lose_answer"]); // [begin, 0-3, 4-7, 8-9]
+  await runner.tick();
+  [...h.yt.sessions.values()][0].expired = true;
+  h.clock.at = new Date(h.clock.at.getTime() + 60_000);
+  await runner.tick();
+  assert.deepEqual([h.row().status, h.row().errorCode], ["failed", "unknown_outcome"]);
+  assert.equal(h.yt.log.filter((l) => l.startsWith("begin")).length, 1, "no second session");
+  assert.equal(h.yt.videos.length, 1);
+});

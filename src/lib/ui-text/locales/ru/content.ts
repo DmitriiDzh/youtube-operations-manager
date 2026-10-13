@@ -283,4 +283,9 @@ export const content: Record<keyof typeof en, string> = {
   "publishingUploads.publishAt": "Публикация: {time} UTC",
   "publishingUploads.cancel": "Отменить",
   "publishingUploads.cancelFailed": "Не удалось отменить загрузку.",
+  "publishingUploads.failed.unknown_outcome": "Все байты отправлены, но ответ YouTube потерян и сессия истекла; видео с таким названием среди новых загрузок пока нет. Проверьте Studio, прежде чем загружать пакет снова: иначе может получиться дубликат.",
+  "publishingUploads.failed.package_changed": "Пакет или файл видео изменился после подтверждения — загрузка остановлена. Проверьте пакет и подтвердите снова.",
+  "publishingUploads.failed.processing_rejected": "YouTube отклонил видео при обработке: {reason}",
+  "publishingUploads.failed.processing_failed": "Обработка видео на YouTube не удалась: {reason}",
+  "publishingUploads.failed.WRITE_CHANNEL_MISMATCH": "Вход в Google сейчас относится к другому каналу — загрузка не началась.",
 };
