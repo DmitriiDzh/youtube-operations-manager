@@ -2,8 +2,9 @@
 // advanced by a background tick: one byte stream at a time, and the steps after it (processing, the deferred publish time, the
 // thumbnail, the playlist, the read-back, the upload record, a sync) for the uploads already sent. Every step's outcome is stored
 // before the next one starts, so a restart continues at its step. Never twice (ADR 0037 §4): an upload whose answer was lost asks
-// its session where it stands, and an expired session starts again only when the channel's recent uploads show no video with
-// the package's title. Live writes off pauses a job (never fails it); quota and the channel's upload cap pause it until they reset.
+// its session where it stands; an expired session starts again only while its last chunk was never sent and the channel's recent
+// uploads show no video with the package's title; once a video exists its row keeps blocking the package, failed or not. Live
+// writes off pauses a job (never fails it); quota and the channel's upload cap pause it until they reset.
 
 import type { StoredPublishingUpload } from "@/lib/db";
 import { PUBLISH_AT_AT_INSERT_MIN_MS } from "./publish-dates";
@@ -26,6 +27,10 @@ export type ApprovedPackage = {
 export type UploadSteps = {
   /** When the last chunk was first sent: from then on the video may exist even if no answer said so (never restarted blindly). */
   finalChunkSentAt?: string;
+  /** When YouTube's answer gave the video id: the upload's own time (the record) and the start of the processing wait. */
+  uploadedAt?: string;
+  /** Unknown answers in a row at the current step (a 5xx, a timeout, a network failure); reset by progress. */
+  retries?: number;
   publishAt?: "at_insert" | "set" | "skipped_too_soon" | "failed";
   thumbnail?: "set" | "failed";
   playlist?: "added" | "already_there" | "none" | "failed";
@@ -45,6 +50,8 @@ export type UploadRunnerDeps = {
   store: {
     listActive(): Promise<StoredPublishingUpload[]>;
     update(id: string, from: StoredPublishingUpload["status"], set: Partial<StoredPublishingUpload>): Promise<boolean>;
+    /** Takes the row for this runner until `until`; false while another runner's lease runs (review should-fix 6). */
+    claim(id: string, owner: string, until: Date, now: Date): Promise<boolean>;
   };
   /** The approver's Google user for the channel, with the upload scope; and the identity check (write-context). */
   credentials(job: StoredPublishingUpload): Promise<UploadCredentials>;
@@ -86,6 +93,8 @@ export type UploadRunnerDeps = {
   /** Bytes per request (a multiple of 256 KB) and how long one tick keeps sending. */
   chunkBytes: number;
   sliceMs: number;
+  /** This runner's name for its leases (one per process). */
+  runnerId: string;
 };
 
 export type InsertResource = {
@@ -110,8 +119,15 @@ export type VideoReadBack = {
 /** video-details' own rule: a publish time 15 minutes ahead or less is not written (the video could publish before the write). */
 const PUBLISH_AT_MARGIN_MS = 15 * 60_000;
 const PROCESSING_POLL_MS = 30_000;
+const PROCESSING_SLOW_POLL_MS = 5 * 60_000;
+/** A video YouTube stops returning for this long after its upload was deleted (in Studio); processing longer than a day stops. */
+const VIDEO_MISSING_AFTER_MS = 30 * 60_000;
+const PROCESSING_GIVE_UP_MS = 24 * 3_600_000;
 const UPLOAD_LIMIT_PAUSE_MS = 24 * 3_600_000;
 const AUTH_RETRY_MS = 15 * 60_000;
+/** Unknown answers in a row before a step gives up (about 40 minutes with the growing wait). */
+const MAX_RETRIES = 10;
+const LEASE_MS = 2 * 60_000;
 const ACTIVE: ReadonlyArray<StoredPublishingUpload["status"]> = ["queued", "uploading", "processing", "finishing", "paused"];
 
 function parseJson<T>(text: string, fallback: T): T {
@@ -122,45 +138,66 @@ function parseJson<T>(text: string, fallback: T): T {
   }
 }
 
-/** The parts of an error that decide what happens next: a domain error's code and details, or a Google API error's status and reason. */
-function errorInfo(error: unknown): { code: string | null; reason: string | null; status: number | null; message: string } {
+const stepsOf = (job: Pick<StoredPublishingUpload, "stepsJson">) => parseJson<UploadSteps>(job.stepsJson, {});
+
+/**
+ * The parts of an error that decide what happens next, whatever its shape: a domain error (its code, `details.status`,
+ * `details.reason`, `details.reasons`), a googleapis/gaxios error (`response.status`, `response.data.error.errors[].reason`, or a
+ * top-level `errors[]` in older gaxios), or a plain network error (`code` such as ECONNRESET, TimeoutError).
+ */
+function errorInfo(error: unknown): { code: string | null; reasons: string[]; status: number | null; message: string } {
   const e = error as {
     code?: unknown;
     status?: unknown;
-    details?: { reason?: unknown; status?: unknown };
+    name?: unknown;
+    details?: { reason?: unknown; reasons?: unknown; status?: unknown };
     errors?: Array<{ reason?: unknown }>;
-    response?: { status?: unknown };
+    response?: { status?: unknown; data?: { error?: { errors?: Array<{ reason?: unknown }> } } };
   } | null;
-  const status = [e?.details?.status, e?.status, e?.response?.status, e?.code].find((value): value is number => typeof value === "number") ?? null;
-  const reason = [e?.details?.reason, e?.errors?.[0]?.reason].find((value): value is string => typeof value === "string") ?? null;
-  return { code: typeof e?.code === "string" ? e.code : null, reason, status, message: error instanceof Error ? error.message : String(error) };
+  const status = [e?.details?.status, e?.response?.status, e?.status, e?.code].find((value): value is number => typeof value === "number") ?? null;
+  const reasons = [
+    e?.details?.reason,
+    ...(Array.isArray(e?.details?.reasons) ? e.details.reasons : []),
+    ...(Array.isArray(e?.response?.data?.error?.errors) ? e.response.data.error.errors.map((x) => x?.reason) : []),
+    ...(Array.isArray(e?.errors) ? e.errors.map((x) => x?.reason) : []),
+  ].filter((value): value is string => typeof value === "string");
+  const code = typeof e?.code === "string" ? e.code : typeof e?.name === "string" && /^(TimeoutError|AbortError)$/.test(e.name) ? e.name : null;
+  return { code, reasons, status, message: error instanceof Error ? error.message : String(error) };
 }
 
-/** A network failure, a timeout or a 5xx: nothing says the request was refused, so it is asked again. */
-function isTransient(info: ReturnType<typeof errorInfo>): boolean {
-  if (info.status !== null) return info.status >= 500;
-  if (info.code !== null && /^E[A-Z]+$/.test(info.code)) return true; // ECONNRESET, ETIMEDOUT, ...
-  return info.code === null;
-}
+/** Codes that only say "it did not work" without saying it was refused (video-details wraps a lost answer into these). */
+const AMBIGUOUS_CODES = new Set(["update_failed", "not_found", "backup_infrastructure_unavailable", "internal_error", "TimeoutError", "AbortError"]);
 
-type Outcome =
+export type UploadErrorOutcome =
   | { kind: "pause"; reason: "live_writes_off" | "quota_exceeded" | "upload_limit" | "auth"; until: Date | null }
   | { kind: "retry"; message: string }
   | { kind: "fail"; code: string; message: string };
 
-/** What an error means for a job: Live writes and quota pause it, an unknown answer is retried, a refusal fails it. */
-export function classifyUploadError(error: unknown, now: Date, nextQuotaReset: (now: Date) => Date): Outcome {
+/**
+ * What an error means for a job (review B3): Live writes off, quota and the upload cap pause it until they come back; a 5xx, a
+ * 429, a timeout, a network failure or an answer that does not say "refused" is asked again (a bounded number of times); a
+ * refusal (a 4xx, a validation, a wrong channel) fails it.
+ */
+export function classifyUploadError(error: unknown, now: Date, nextQuotaReset: (now: Date) => Date): UploadErrorOutcome {
   const info = errorInfo(error);
   if (info.code === "live_writes_disabled") return { kind: "pause", reason: "live_writes_off", until: null };
-  if (info.reason === "quotaExceeded") return { kind: "pause", reason: "quota_exceeded", until: nextQuotaReset(now) };
-  if (info.reason === "uploadLimitExceeded") return { kind: "pause", reason: "upload_limit", until: new Date(now.getTime() + UPLOAD_LIMIT_PAUSE_MS) };
+  if (info.code === "youtube_quota_exceeded" || info.reasons.some((r) => r === "quotaExceeded" || r === "dailyLimitExceeded")) {
+    return { kind: "pause", reason: "quota_exceeded", until: nextQuotaReset(now) };
+  }
+  if (info.reasons.includes("uploadLimitExceeded")) return { kind: "pause", reason: "upload_limit", until: new Date(now.getTime() + UPLOAD_LIMIT_PAUSE_MS) };
   if (info.code === "unauthorized" || info.code === "AUTH_SCOPE_INSUFFICIENT" || /invalid_grant/i.test(info.message)) {
     return { kind: "pause", reason: "auth", until: new Date(now.getTime() + AUTH_RETRY_MS) };
   }
-  // A 5xx, a network failure or a timeout: the outcome is unknown, so the next attempt asks the session where it stands.
-  if (isTransient(info)) return { kind: "retry", message: info.message };
-  return { kind: "fail", code: info.reason ?? info.code ?? "upload_refused", message: info.message };
+  if (info.status !== null) {
+    if (info.status >= 500 || info.status === 429 || info.reasons.some((r) => /rateLimitExceeded|backendError/.test(r))) return { kind: "retry", message: info.message };
+    return { kind: "fail", code: info.reasons[0] ?? info.code ?? `http_${info.status}`, message: info.message };
+  }
+  if (info.code === null || /^E[A-Z]+$/.test(info.code) || AMBIGUOUS_CODES.has(info.code)) return { kind: "retry", message: info.message };
+  return { kind: "fail", code: info.code, message: info.message };
 }
+
+/** Line endings the factory's Windows files may carry; YouTube keeps a description's lines, not their CR (review question). */
+export const normalizeLineEndings = (text: string) => text.replace(/\r\n?/g, "\n");
 
 /** The UTC instant two read-backs both mean (`...:00Z` and `...:00.000Z` are the same time). */
 const sameInstant = (a: string | null, b: string | null) => (a === null || b === null ? a === b : Date.parse(a) === Date.parse(b));
@@ -169,7 +206,7 @@ const sameInstant = (a: string | null, b: string | null) => (a === null || b ===
 export function readBackMismatches(after: VideoReadBack, pkg: ApprovedPackage, settings: PublishingSettings, publishAt: string | null, nowMs: number): string[] {
   const mismatches: string[] = [];
   if (after.title !== pkg.title) mismatches.push("title");
-  if (after.description !== pkg.description) mismatches.push("description");
+  if (normalizeLineEndings(after.description ?? "") !== normalizeLineEndings(pkg.description)) mismatches.push("description");
   if (JSON.stringify(after.tags ?? []) !== JSON.stringify(pkg.tags)) mismatches.push("tags");
   if (after.categoryId !== settings.categoryId) mismatches.push("categoryId");
   if (after.defaultLanguage !== pkg.defaultLanguage) mismatches.push("defaultLanguage");
@@ -183,10 +220,12 @@ export function readBackMismatches(after: VideoReadBack, pkg: ApprovedPackage, s
   return mismatches;
 }
 
+const recordPath = (pkg: ApprovedPackage) => `${pkg.manifestPath.slice(0, pkg.manifestPath.lastIndexOf("/"))}/${pkg.video}_youtube.json`;
+
 export function createUploadRunner(deps: UploadRunnerDeps) {
   const now = () => deps.clock.now();
 
-  async function pause(job: StoredPublishingUpload, outcome: Extract<Outcome, { kind: "pause" }>): Promise<void> {
+  async function pause(job: StoredPublishingUpload, outcome: Extract<UploadErrorOutcome, { kind: "pause" }>): Promise<void> {
     await deps.store.update(job.id, job.status, {
       status: "paused",
       resumeStatus: job.status === "paused" ? job.resumeStatus : job.status,
@@ -196,18 +235,33 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
     });
   }
 
+  /** A terminal failure. A row whose video exists keeps it, so the package stays blocked (review B1). */
   async function fail(job: StoredPublishingUpload, code: string, message: string): Promise<void> {
     await deps.store.update(job.id, job.status, { status: "failed", errorCode: code, errorMessage: message.slice(0, 2000), finishedAt: now(), updatedAt: now() });
     await deps.audit({ channelId: job.channelId, videoId: job.videoId, detail: { event: "publishing.upload_failed", uploadId: job.id, video: job.video, code, message: message.slice(0, 500) } });
   }
 
-  /** Applies what an error means; a retry is due again after a short wait that grows with the attempts. */
-  async function onError(job: StoredPublishingUpload, error: unknown): Promise<void> {
+  /**
+   * Applies what an error means. A retry is due again after a wait that grows with the retries in a row; after MAX_RETRIES the step
+   * gives up through `giveUp` (a finishing step is noted as failed; an upload or the processing wait fails the job).
+   */
+  async function onError(job: StoredPublishingUpload, error: unknown, giveUp?: (message: string) => Promise<void>): Promise<void> {
     const outcome = classifyUploadError(error, now(), deps.nextQuotaReset);
     if (outcome.kind === "pause") return pause(job, outcome);
-    if (outcome.kind === "fail") return fail(job, outcome.code, outcome.message);
-    const waitMs = Math.min(10 * 60_000, 30_000 * Math.max(1, job.attempts));
-    await deps.store.update(job.id, job.status, { errorMessage: outcome.message.slice(0, 2000), nextAttemptAt: new Date(now().getTime() + waitMs), attempts: job.attempts + 1, updatedAt: now() });
+    if (outcome.kind === "fail") return giveUp && job.status === "finishing" ? giveUp(outcome.message) : failAfterError(job, outcome.code, outcome.message);
+    const steps = stepsOf(job);
+    const retries = (steps.retries ?? 0) + 1;
+    if (retries > MAX_RETRIES) return giveUp ? giveUp(outcome.message) : failAfterError(job, "retries_exhausted", outcome.message);
+    const waitMs = Math.min(10 * 60_000, 30_000 * retries);
+    await deps.store.update(job.id, job.status, { errorMessage: outcome.message.slice(0, 2000), nextAttemptAt: new Date(now().getTime() + waitMs), stepsJson: JSON.stringify({ ...steps, retries }), updatedAt: now() });
+  }
+
+  /** While sending, a job whose last chunk may have arrived is never failed into "approvable again" without saying so. */
+  async function failAfterError(job: StoredPublishingUpload, code: string, message: string): Promise<void> {
+    if (job.status === "uploading" && job.videoId === null && stepsOf(job).finalChunkSentAt) {
+      return fail(job, "unknown_outcome", `Every byte was sent, then: ${message}. Look in Studio before approving this package again.`);
+    }
+    return fail(job, code, message);
   }
 
   async function identity(job: StoredPublishingUpload): Promise<UploadCredentials> {
@@ -216,10 +270,19 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
     return creds;
   }
 
-  /** The video exists: its id is stored before anything else happens to it. */
-  async function adopt(job: StoredPublishingUpload, videoId: string, how: "uploaded" | "found"): Promise<void> {
-    const ok = await deps.store.update(job.id, "uploading", { status: "processing", videoId, storedBytes: job.totalBytes, nextAttemptAt: now(), errorMessage: null, updatedAt: now() });
-    if (ok) await deps.audit({ channelId: job.channelId, videoId, detail: { event: how === "uploaded" ? "publishing.uploaded" : "publishing.adopted_after_lost_answer", uploadId: job.id, video: job.video } });
+  /**
+   * The video exists: its id is stored before anything else happens to it, and a first `Vn_youtube.json` names it next to the
+   * package at once -- so the package reads "uploaded" on every computer that sees the folder, whatever happens next (review B1).
+   */
+  async function adopt(job: StoredPublishingUpload, pkg: ApprovedPackage, videoId: string, how: "uploaded" | "found"): Promise<void> {
+    const uploadedAt = now().toISOString();
+    const stepsJson = JSON.stringify({ ...stepsOf(job), uploadedAt, retries: 0 });
+    const ok = await deps.store.update(job.id, "uploading", { status: "processing", videoId, storedBytes: job.totalBytes, stepsJson, nextAttemptAt: now(), errorMessage: null, updatedAt: now() });
+    if (!ok) return;
+    await deps.audit({ channelId: job.channelId, videoId, detail: { event: how === "uploaded" ? "publishing.uploaded" : "publishing.adopted_after_lost_answer", uploadId: job.id, video: job.video } });
+    await deps.files
+      .writeRecord(job.channelId, recordPath(pkg), { schema: "yt-release-upload/1", channelId: job.channelId, video: pkg.video, videoId, uploadedAt, device: await deps.device(), result: "uploaded" })
+      .catch(() => undefined); // the record step writes it again, and notes it if it still cannot
   }
 
   /**
@@ -227,18 +290,18 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
    * only when the last chunk was never sent. Once it was, YouTube may have made the video and the uploads list may not show it
    * yet, so the job stops as `unknown_outcome` for the owner to look in Studio (ADR 0037 §4: "adopts it, or asks the owner").
    */
-  async function onExpired(job: StoredPublishingUpload, pkg: ApprovedPackage, creds: UploadCredentials): Promise<"adopted" | "restart" | "unknown"> {
+  async function onExpired(job: StoredPublishingUpload, pkg: ApprovedPackage, creds: UploadCredentials): Promise<void> {
     const found = (await deps.reads.recentUploads(creds.credentials, job.channelId)).find((video) => video.title === pkg.title);
-    if (found) {
-      await adopt(job, found.videoId, "found");
-      return "adopted";
-    }
-    if (parseJson<UploadSteps>(job.stepsJson, {}).finalChunkSentAt) {
-      await fail(job, "unknown_outcome", "Every byte was sent but the upload session expired before YouTube's answer was read, and no video with this title is among the channel's newest uploads yet. Look in Studio before approving this package again: a second upload could make a duplicate.");
-      return "unknown";
+    if (found) return adopt(job, pkg, found.videoId, "found");
+    if (stepsOf(job).finalChunkSentAt) {
+      return fail(job, "unknown_outcome", "Every byte was sent but the upload session expired before YouTube's answer was read, and no video with this title is among the channel's newest uploads yet. Look in Studio before approving this package again: a second upload could make a duplicate.");
     }
     await deps.store.update(job.id, "uploading", { sessionUri: null, storedBytes: 0, updatedAt: now() });
-    return "restart";
+  }
+
+  /** A publish time set at insert that comes within the margin before the last chunk: nothing is made, the owner picks a new date. */
+  function publishTimePassed(job: StoredPublishingUpload): boolean {
+    return job.publishAtAtInsert && job.publishAt !== null && Date.parse(job.publishAt) - now().getTime() <= PUBLISH_AT_MARGIN_MS;
   }
 
   async function upload(job: StoredPublishingUpload): Promise<void> {
@@ -258,11 +321,19 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
         current = { ...job, status: "uploading", attempts: job.attempts + 1, sessionUri: null, storedBytes: 0 };
       }
       const creds = await identity(current);
-      const videoFile = await deps.files.resolve(current.channelId, pkg.videoFile);
-      if (!videoFile || videoFile.bytes !== current.totalBytes) return fail(current, "package_changed", "The video file changed or is missing during the upload.");
       const token = await deps.accessToken(creds.credentials);
       const contentType = "video/*";
       let stored = current.storedBytes;
+      if (current.sessionUri) {
+        // Resuming (a restart, a cut connection, a lost answer): the session is asked first, before anything can fail the job --
+        // its last chunk may already have made the video (review B2).
+        const progress = await deps.gateway.queryOffset({ accessToken: token, sessionUri: current.sessionUri, total: current.totalBytes });
+        if ("expired" in progress) return onExpired(current, pkg, creds);
+        if (progress.done) return adopt(current, pkg, progress.videoId, "uploaded");
+        stored = progress.storedBytes;
+      }
+      const videoFile = await deps.files.resolve(current.channelId, pkg.videoFile);
+      if (!videoFile || videoFile.bytes !== current.totalBytes) return failAfterError(current, "package_changed", "The video file changed or is missing during the upload.");
       if (!current.sessionUri) {
         const publishAtAtInsert = current.publishAt !== null && Date.parse(current.publishAt) - now().getTime() >= PUBLISH_AT_AT_INSERT_MIN_MS;
         const resource: InsertResource = {
@@ -278,37 +349,32 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
         };
         const { sessionUri } = await deps.gateway.begin({ accessToken: token, resource, contentLength: current.totalBytes, contentType, notifySubscribers: settings.notifySubscribers });
         // The session is stored before the first byte: a restart resumes it rather than starting another.
-        await deps.store.update(current.id, "uploading", { sessionUri, storedBytes: 0, publishAtAtInsert, updatedAt: now() });
+        if (!(await deps.store.update(current.id, "uploading", { sessionUri, storedBytes: 0, publishAtAtInsert, updatedAt: now() }))) return;
         current = { ...current, sessionUri, storedBytes: 0, publishAtAtInsert };
         stored = 0;
-      } else {
-        // Resuming (a restart, a cut connection, a lost answer): the session says how much it holds.
-        const progress = await deps.gateway.queryOffset({ accessToken: token, sessionUri: current.sessionUri, total: current.totalBytes });
-        if ("expired" in progress) {
-          await onExpired(current, pkg, creds);
-          return;
-        }
-        if (progress.done) return adopt(current, progress.videoId, "uploaded");
-        stored = progress.storedBytes;
       }
       const deadline = now().getTime() + deps.sliceMs;
       while (stored < current.totalBytes && now().getTime() < deadline) {
         const length = Math.min(deps.chunkBytes, current.totalBytes - stored);
-        if (stored + length === current.totalBytes && !parseJson<UploadSteps>(current.stepsJson, {}).finalChunkSentAt) {
-          // Stored before the last chunk goes: if its answer is lost and the session then expires, the job never restarts blindly.
-          const stepsJson = JSON.stringify({ ...parseJson<UploadSteps>(current.stepsJson, {}), finalChunkSentAt: now().toISOString() });
-          await deps.store.update(current.id, "uploading", { stepsJson, updatedAt: now() });
+        const last = stored + length === current.totalBytes;
+        if (!stepsOf(current).finalChunkSentAt && publishTimePassed(current)) {
+          // Review should-fix 2: the video would go public the moment it is made, before its thumbnail and playlist.
+          return fail(current, "publish_at_passed", "The publish time came within 15 minutes before the upload finished, so it was stopped before its last chunk: nothing was published. Approve the package again with a new date.");
+        }
+        if (last && !stepsOf(current).finalChunkSentAt) {
+          // Stored before the last chunk goes: from now on the video may exist, so the job is never cancelled or restarted blindly.
+          const stepsJson = JSON.stringify({ ...stepsOf(current), finalChunkSentAt: now().toISOString() });
+          if (!(await deps.store.update(current.id, "uploading", { stepsJson, updatedAt: now() }))) return;
           current = { ...current, stepsJson };
         }
         const chunk = await deps.files.readChunk(videoFile.path, stored, length);
         const progress = await deps.gateway.putChunk({ accessToken: token, sessionUri: current.sessionUri as string, chunk, start: stored, total: current.totalBytes, contentType });
-        if ("expired" in progress) {
-          await onExpired(current, pkg, creds);
-          return;
-        }
-        if (progress.done) return adopt(current, progress.videoId, "uploaded");
+        if ("expired" in progress) return onExpired(current, pkg, creds);
+        if (progress.done) return adopt(current, pkg, progress.videoId, "uploaded");
         stored = progress.storedBytes;
-        await deps.store.update(current.id, "uploading", { storedBytes: stored, errorMessage: null, updatedAt: now() });
+        const stepsJson = JSON.stringify({ ...stepsOf(current), retries: 0 });
+        if (!(await deps.store.update(current.id, "uploading", { storedBytes: stored, stepsJson, errorMessage: null, updatedAt: now() }))) return;
+        current = { ...current, storedBytes: stored, stepsJson };
       }
     } catch (error) {
       await onError(current, error);
@@ -316,25 +382,31 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
   }
 
   async function processing(job: StoredPublishingUpload): Promise<void> {
+    const steps = stepsOf(job);
+    const since = Date.parse(steps.uploadedAt ?? job.updatedAt.toISOString());
     try {
       const creds = await deps.credentials(job);
       const state = await deps.reads.uploadState(creds.credentials, job.videoId as string);
       const status = state?.uploadStatus ?? null;
       if (status === "processed") {
-        await deps.store.update(job.id, "processing", { status: "finishing", nextAttemptAt: now(), updatedAt: now() });
+        await deps.store.update(job.id, "processing", { status: "finishing", nextAttemptAt: now(), stepsJson: JSON.stringify({ ...steps, retries: 0 }), updatedAt: now() });
         return;
       }
       if (status === "rejected" || status === "failed" || status === "deleted") {
         return fail(job, `processing_${status}`, `YouTube ${status} the video: ${state?.rejectionReason ?? state?.failureReason ?? "no reason given"}`);
       }
-      await deps.store.update(job.id, "processing", { nextAttemptAt: new Date(now().getTime() + PROCESSING_POLL_MS), updatedAt: now() });
+      const elapsed = now().getTime() - since;
+      // Review should-fix 3: a video YouTube no longer returns (deleted in Studio) or processing that never ends stops the wait.
+      if (state === null && elapsed > VIDEO_MISSING_AFTER_MS) return fail(job, "video_missing", "YouTube no longer returns the uploaded video (deleted in Studio?).");
+      if (elapsed > PROCESSING_GIVE_UP_MS) return fail(job, "processing_timeout", "YouTube was still processing the video after 24 hours.");
+      await deps.store.update(job.id, "processing", { nextAttemptAt: new Date(now().getTime() + (elapsed > 30 * 60_000 ? PROCESSING_SLOW_POLL_MS : PROCESSING_POLL_MS)), updatedAt: now() });
     } catch (error) {
       await onError(job, error);
     }
   }
 
   async function saveSteps(job: StoredPublishingUpload, steps: UploadSteps): Promise<boolean> {
-    return deps.store.update(job.id, "finishing", { stepsJson: JSON.stringify(steps), updatedAt: now() });
+    return deps.store.update(job.id, "finishing", { stepsJson: JSON.stringify({ ...steps, retries: 0 }), errorMessage: null, updatedAt: now() });
   }
 
   /** One step after the upload, in order; each outcome is stored before the next. A failed step is noted, the others still run. */
@@ -342,12 +414,21 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
     const pkg = parseJson<ApprovedPackage | null>(job.packageJson, null);
     const settings = parseJson<PublishingSettings | null>(job.settingsJson, null);
     if (!pkg || !settings || !job.videoId) return fail(job, "job_damaged", "The approved package of this upload cannot be read.");
-    const steps = parseJson<UploadSteps>(job.stepsJson, {});
+    const steps = stepsOf(job);
     const note = (text: string) => (steps.notes = [...(steps.notes ?? []), text.slice(0, 300)]);
     const videoId = job.videoId;
     let step: "publishAt" | "thumbnail" | "playlist" | "verify" | "record" | "sync" = "publishAt";
+    const giveUp = async (message: string) => {
+      if (step === "publishAt" || step === "thumbnail" || step === "playlist") steps[step] = "failed";
+      else if (step === "verify") steps.verify = { result: "mismatch", mismatches: ["unreadable"] };
+      else if (step === "record") steps.record = "failed";
+      else steps.sync = "failed";
+      note(`${step}: ${message}`);
+      await saveSteps(job, steps);
+    };
     try {
-      const creds = await deps.credentials(job);
+      // The writes below check the channel first, like the upload (review should-fix 1; PUBLISHING_PLAN §3).
+      const creds = steps.publishAt === undefined || steps.thumbnail === undefined || steps.playlist === undefined ? await identity(job) : await deps.credentials(job);
       if (job.publishAt !== null && steps.publishAt === undefined) {
         if (job.publishAtAtInsert) steps.publishAt = "at_insert";
         else if (Date.parse(job.publishAt) - now().getTime() <= PUBLISH_AT_MARGIN_MS) steps.publishAt = "skipped_too_soon";
@@ -391,17 +472,15 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
       }
       step = "record";
       if (steps.record === undefined) {
-        const device = await deps.device();
-        const folder = pkg.manifestPath.slice(0, pkg.manifestPath.lastIndexOf("/"));
         try {
-          await deps.files.writeRecord(job.channelId, `${folder}/${pkg.video}_youtube.json`, {
+          await deps.files.writeRecord(job.channelId, recordPath(pkg), {
             schema: "yt-release-upload/1",
             channelId: job.channelId,
             video: pkg.video,
             videoId,
             publishAt: steps.publishAt === "at_insert" || steps.publishAt === "set" ? job.publishAt : null,
-            uploadedAt: now().toISOString(),
-            device,
+            uploadedAt: steps.uploadedAt ?? now().toISOString(),
+            device: await deps.device(),
             result: steps.verify.result,
             mismatches: steps.verify.mismatches,
           });
@@ -427,15 +506,9 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
         await deps.audit({ channelId: job.channelId, videoId, detail: { event: "publishing.upload_done", uploadId: job.id, video: job.video, steps } });
       }
     } catch (error) {
-      const outcome = classifyUploadError(error, now(), deps.nextQuotaReset);
-      if (outcome.kind === "fail" && (step === "publishAt" || step === "thumbnail" || step === "playlist")) {
-        // A refused write does not undo the upload: it is noted and the next step runs.
-        steps[step] = "failed";
-        note(`${step}: ${outcome.message}`);
-        await saveSteps(job, steps);
-        return;
-      }
-      await onError(job, error);
+      // A refused write does not undo the upload: it is noted and the next step runs; a pause waits; an unknown answer is asked
+      // again a bounded number of times.
+      await onError(job, error, giveUp);
     }
   }
 
@@ -451,10 +524,13 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
     }
   }
 
+  /** This runner's lease on a row for the pass; a row another process works on is left alone (review should-fix 6). */
+  const claim = (job: StoredPublishingUpload) => deps.store.claim(job.id, deps.runnerId, new Date(now().getTime() + LEASE_MS), now());
+
   return {
     /**
      * One pass: resume what can resume, advance one sent upload by one step, then keep one upload's bytes flowing for a slice.
-     * A quota or upload-cap pause holds every queued upload of that channel back too, so they do not each hit it again.
+     * A quota pause holds every queued upload back (the quota is the project's); an upload-cap pause holds that channel's.
      */
     async tick(): Promise<void> {
       await resumePaused(await deps.store.listActive());
@@ -462,12 +538,14 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
       const at = now().getTime();
       const due = (job: StoredPublishingUpload) => job.nextAttemptAt === null || job.nextAttemptAt.getTime() <= at;
       const afterUpload = jobs.find((job) => (job.status === "processing" || job.status === "finishing") && due(job));
-      if (afterUpload) await (afterUpload.status === "processing" ? processing(afterUpload) : finishing(afterUpload));
-      const held = new Set(jobs.filter((job) => job.status === "paused" && (job.pausedReason === "quota_exceeded" || job.pausedReason === "upload_limit")).map((job) => job.channelId));
-      const liveWritesHeld = jobs.some((job) => job.status === "paused" && job.pausedReason === "live_writes_off" && job.resumeStatus === "uploading");
+      if (afterUpload && (await claim(afterUpload))) await (afterUpload.status === "processing" ? processing(afterUpload) : finishing(afterUpload));
+      const pausedFor = (reason: string) => jobs.filter((job) => job.status === "paused" && job.pausedReason === reason);
+      const quotaHeld = pausedFor("quota_exceeded").length > 0;
+      const capHeld = new Set(pausedFor("upload_limit").map((job) => job.channelId));
+      const liveWritesHeld = pausedFor("live_writes_off").some((job) => job.resumeStatus === "uploading");
       const sending = jobs.find((job) => job.status === "uploading");
-      const next = sending ?? (liveWritesHeld ? undefined : jobs.find((job) => job.status === "queued" && !held.has(job.channelId)));
-      if (next && due(next)) await upload(next);
+      const next = sending ?? (quotaHeld || liveWritesHeld ? undefined : jobs.find((job) => job.status === "queued" && !capHeld.has(job.channelId) && due(job)));
+      if (next && due(next) && (await claim(next))) await upload(next);
     },
     /** Whether an upload is being sent or finished now (the idle watcher keeps the session while it is). */
     async isBusy(): Promise<boolean> {
@@ -477,12 +555,23 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
 }
 
 /**
- * Whether the owner may cancel an upload: only before it reached YouTube -- queued, or paused while sending with bytes still to
- * send. Once every byte is sent the video exists (or may), so it is finished instead; the owner deletes it in Studio if needed.
+ * Whether the owner may cancel an upload: only before it can have reached YouTube -- queued, or paused while sending with its last
+ * chunk never sent. Once the last chunk went the video may exist (an answer can be lost), so it is finished instead (review B2).
  */
-export function isCancellable(row: Pick<StoredPublishingUpload, "status" | "resumeStatus" | "videoId" | "storedBytes" | "totalBytes">): boolean {
+export function isCancellable(row: Pick<StoredPublishingUpload, "status" | "resumeStatus" | "videoId" | "storedBytes" | "totalBytes" | "stepsJson">): boolean {
   if (row.status === "queued") return true;
-  return row.status === "paused" && (row.resumeStatus === "queued" || row.resumeStatus === "uploading") && row.videoId === null && row.storedBytes < row.totalBytes;
+  return (
+    row.status === "paused" &&
+    (row.resumeStatus === "queued" || row.resumeStatus === "uploading") &&
+    row.videoId === null &&
+    row.storedBytes < row.totalBytes &&
+    !stepsOf(row).finalChunkSentAt
+  );
+}
+
+/** A row that holds its package: under way, or one whose video exists whatever became of the job (review B1). */
+export function holdsPackage(row: Pick<StoredPublishingUpload, "status" | "videoId">): boolean {
+  return (ACTIVE as readonly string[]).includes(row.status) || row.status === "done" || row.videoId !== null;
 }
 
 export type UploadRunner = ReturnType<typeof createUploadRunner>;

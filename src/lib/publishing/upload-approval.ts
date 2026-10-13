@@ -11,7 +11,7 @@ import type { PackageScanResult } from "./package-scan";
 import type { PublishingSettingsView } from "./settings-service";
 import type { PublishingSettings } from "./settings";
 import { estimateUploadUnits, isDeferredPublishAt } from "./publish-dates";
-import type { ApprovedPackage } from "./upload-runner";
+import { normalizeLineEndings, type ApprovedPackage } from "./upload-runner";
 
 export { estimateUploadUnits };
 
@@ -32,6 +32,8 @@ export type UploadApprovalDeps = {
   peerUploads(channelId: string): Promise<Map<string, string | null>>;
   /** `videos.insert` calls since the quota day began (this computer's log and the shared one). */
   insertsToday(now: Date): Promise<number>;
+  /** What this computer's queued and unfinished uploads will still spend: inserts not made yet, and their pool units (review). */
+  pending(now: Date): Promise<{ inserts: number; units: number }>;
   checkUnits(units: number): Promise<UnitsVerdict>;
   insert(rows: StoredPublishingUpload[]): Promise<boolean>;
   newId(): string;
@@ -91,7 +93,9 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
       });
       if (new Set(chosen.map((c) => c.pkg.video)).size !== chosen.length) throw refuse("validation_failed", "Two of the packages are the same video.");
 
-      const insertsLeft = UPLOADS_PER_DAY - (await deps.insertsToday(now));
+      // The uploads already queued here spend the same bucket and pool: a second approval the same day counts them (review).
+      const pending = await deps.pending(now);
+      const insertsLeft = UPLOADS_PER_DAY - (await deps.insertsToday(now)) - pending.inserts;
       if (chosen.length > insertsLeft) throw refuse("upload_daily_limit", `${chosen.length} uploads chosen, ${Math.max(0, insertsLeft)} left today.`, { left: Math.max(0, insertsLeft), chosen: chosen.length });
       const estimatedUnits = chosen.reduce(
         (sum, c) =>
@@ -102,20 +106,21 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
           }),
         0
       );
-      const verdict = await deps.checkUnits(estimatedUnits);
+      const verdict = await deps.checkUnits(estimatedUnits + pending.units);
       if (verdict.decision === "insufficient") {
-        throw refuse("quota_insufficient", "Not enough of today's quota is left for these uploads.", { estimatedUnits, remainingUnits: verdict.remainingUnits, rowsToWrite: chosen.length, fitVideos: 0, resetsAt: verdict.resetsAt, canSplit: false });
+        throw refuse("quota_insufficient", "Not enough of today's quota is left for these uploads.", { estimatedUnits: estimatedUnits + pending.units, remainingUnits: verdict.remainingUnits, rowsToWrite: chosen.length, fitVideos: 0, resetsAt: verdict.resetsAt, canSplit: false });
       }
       if (verdict.decision === "unknown" && !input.acknowledgeUnknownQuota) {
-        throw refuse("quota_unknown", "Today's quota cannot be read (Google Cloud is not connected or did not answer).", { estimatedUnits, rowsToWrite: chosen.length, cloudConnected: verdict.cloudConnected });
+        throw refuse("quota_unknown", "Today's quota cannot be read (Google Cloud is not connected or did not answer).", { estimatedUnits: estimatedUnits + pending.units, rowsToWrite: chosen.length, cloudConnected: verdict.cloudConnected });
       }
 
       const rows: StoredPublishingUpload[] = chosen.map(({ item, found, pkg }) => {
         const folder = found.folder;
         const approved: ApprovedPackage = {
           video: pkg.video,
+          // Lines end in LF on YouTube; the factory's Windows text may carry CRLF (review question).
           title: pkg.title,
-          description: pkg.description,
+          description: normalizeLineEndings(pkg.description),
           tags: pkg.tags,
           defaultLanguage: pkg.defaultLanguage,
           defaultAudioLanguage: pkg.defaultAudioLanguage,
@@ -152,6 +157,8 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
           createdAt: now,
           updatedAt: now,
           finishedAt: null,
+          leaseOwner: null,
+          leaseUntil: null,
         };
       });
       if (!(await deps.insert(rows))) throw refuse("upload_already_queued", "One of the videos was queued meanwhile.");

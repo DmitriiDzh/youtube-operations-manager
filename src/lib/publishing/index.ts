@@ -19,6 +19,7 @@ import {
   getLiveWritesEnabled,
   getPublishingG1Probe,
   insertVideoEditAuditEvent,
+  claimPublishingUpload,
   getPublishingUpload,
   insertPublishingUploads,
   listPublishingUploads,
@@ -44,11 +45,12 @@ import { createWriteContextCore } from "@/lib/write-context";
 import { createYoutubeClient, getVideoUploadState, listPlaylistItemIdsByVideo, listUploadsPlaylistFirstPage } from "@/lib/youtube-read-gateway";
 import { createWorkspaceExchangeFsForPublishing, resolveWorkspaceFileForPublishing } from "./adapters/files";
 import { createPackageFiles } from "./adapters/package-files";
-import { createPackageScan, isPackageThumbnailPath, type PackageScanDeps } from "./package-scan";
+import { createPackageScan, isPackageThumbnailPath, VIDEOS_FOLDER, type PackageScanDeps } from "./package-scan";
 import { imageKindOf } from "./packages";
 import { authorizedOAuth, createPublishingFinishWrites, createPublishingYoutubeWrites, freshAccessToken } from "./adapters/youtube-writes";
-import { ACTIVE_UPLOAD_STATUSES, createUploadRunner, isCancellable, type UploadRunnerDeps } from "./upload-runner";
+import { ACTIVE_UPLOAD_STATUSES, createUploadRunner, holdsPackage, isCancellable, type UploadRunnerDeps } from "./upload-runner";
 import { createUploadApproval } from "./upload-approval";
+import { estimateUploadUnits, isDeferredPublishAt } from "./publish-dates";
 import type { G1ProbeRecord } from "./contracts";
 import { createPublishingCalendarReads } from "./calendar-reads";
 import { createG1Probe } from "./g1-probe";
@@ -175,6 +177,9 @@ export function createPackageScanCore() {
       if (!workspace) return null;
       const file = await scan.resolveFile(workspace, relativePath);
       if (!file || file.bytes > 10 * 1024 * 1024) return null;
+      // The file's real path must be inside the real `04 Videos/`: a symlink there must not serve another workspace image (review).
+      const videosRoot = await realpath(path.join(workspace, VIDEOS_FOLDER)).catch(() => null);
+      if (!videosRoot || !isPathInsideOrEqual(videosRoot, file.path)) return null;
       const bytes = await files.readHead(file.path, file.bytes);
       const kind = imageKindOf(bytes);
       return kind === "other" ? null : { bytes, contentType: kind === "png" ? "image/png" : "image/jpeg" };
@@ -307,6 +312,7 @@ export function createUploadRunnerCore() {
     store: {
       listActive: () => listPublishingUploads({ statuses: ACTIVE_UPLOAD_STATUSES, limit: 500 }),
       update: (id, from, set) => updatePublishingUpload(id, from, set),
+      claim: (id, owner, until, now) => claimPublishingUpload(id, owner, until, now),
     },
     async credentials(job) {
       const credentialRef = { userId: job.approvedBy };
@@ -384,17 +390,21 @@ export function createUploadRunnerCore() {
     nextQuotaReset: (now) => nextYoutubeQuotaReset(now),
     chunkBytes: 32 * 256 * 1024, // 8 MB
     sliceMs: 50_000,
+    runnerId: `${hostname()}:${process.pid}:${randomUUID()}`,
   };
   const runner = createUploadRunner(deps);
   const share = createPublishingUploadsShareCoreForProduction();
   let published = { key: "", at: 0 };
   /** This computer's uploads under way, for the other computer (ADR 0037 §4); written when they change, refreshed every 5 minutes. */
   async function publishReport(): Promise<void> {
-    const uploads = (await listPublishingUploads({ statuses: ACTIVE_UPLOAD_STATUSES, limit: 500 })).map((row) => ({
-      channelId: row.channelId,
-      video: row.video,
-      state: row.status as "queued" | "uploading" | "processing" | "finishing" | "paused",
-    }));
+    // Every row that holds its package: under way, or done / failed with a video (review B1) -- the other computer must refuse those too.
+    const uploads = (await listPublishingUploads({ limit: 500 }))
+      .filter(holdsPackage)
+      .map((row) => ({
+        channelId: row.channelId,
+        video: row.video,
+        state: (ACTIVE_UPLOAD_STATUSES as readonly string[]).includes(row.status) ? (row.status as "queued" | "uploading" | "processing" | "finishing" | "paused") : ("uploaded" as const),
+      }));
     const key = JSON.stringify(uploads);
     if (key === published.key && Date.now() - published.at < 5 * 60_000) return;
     const device = await thisDevice();
@@ -432,8 +442,7 @@ export function createUploadApprovalCore() {
   return createUploadApproval({
     scan: (channelId) => scan.scan(channelId),
     settings: (channelId) => settings.read(channelId),
-    liveVideos: async (channelId) =>
-      new Set((await listPublishingUploads({ channelId, statuses: [...ACTIVE_UPLOAD_STATUSES, "done"], limit: 500 })).map((row) => row.video)),
+    liveVideos: async (channelId) => new Set((await listPublishingUploads({ channelId, limit: 5000 })).filter(holdsPackage).map((row) => row.video)),
     async peerUploads(channelId) {
       const peers = new Map<string, string | null>();
       for (const report of await createPublishingUploadsShareCoreForProduction().listPeerReports().catch(() => [])) {
@@ -442,6 +451,21 @@ export function createUploadApprovalCore() {
       return peers;
     },
     insertsToday: (now) => videosInsertCallsSince(startOfYoutubeQuotaDay(now)),
+    async pending(now) {
+      const rows = await listPublishingUploads({ statuses: ACTIVE_UPLOAD_STATUSES, limit: 500 });
+      let units = 0;
+      for (const row of rows) {
+        const settings = (() => {
+          try {
+            return JSON.parse(row.settingsJson) as { playlistId?: string | null };
+          } catch {
+            return {};
+          }
+        })();
+        units += estimateUploadUnits({ playlist: Boolean(settings.playlistId), deferredPublishAt: !row.publishAtAtInsert && isDeferredPublishAt(row.publishAt, now) });
+      }
+      return { inserts: rows.filter((row) => row.videoId === null).length, units };
+    },
     checkUnits: (units) => createQuotaGuardCore().checkUnits(units),
     insert: (rows) => insertPublishingUploads(rows),
     newId: () => randomUUID(),

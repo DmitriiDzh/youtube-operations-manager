@@ -3,7 +3,7 @@ import test from "node:test";
 import type { StoredPublishingUpload } from "@/lib/db";
 import { DomainError } from "@/lib/shared-domain";
 import { DEFAULT_PUBLISHING_SETTINGS, type PublishingSettings } from "./settings";
-import { createUploadRunner, isCancellable, readBackMismatches, type ApprovedPackage, type InsertResource, type UploadRunnerDeps, type VideoReadBack } from "./upload-runner";
+import { classifyUploadError, createUploadRunner, holdsPackage, isCancellable, readBackMismatches, type ApprovedPackage, type InsertResource, type UploadRunnerDeps, type VideoReadBack } from "./upload-runner";
 
 // BL-182 stage 2 -- the upload runner against fakes (no real YouTube call, DEVELOPMENT_PLAYBOOK §6.11). Requirements: the
 // acceptance list in upload-runner.acceptance.test.ts (FO-REQ-0023 §4 B5–B7 and §5; ADR 0037; owner msgs 2717, 2725/2727) and
@@ -55,6 +55,8 @@ function job(over: Partial<StoredPublishingUpload> = {}): StoredPublishingUpload
     createdAt: NOW,
     updatedAt: NOW,
     finishedAt: null,
+    leaseOwner: null,
+    leaseUntil: null,
     ...over,
   };
 }
@@ -141,6 +143,12 @@ function harness(rows: StoredPublishingUpload[], over: Partial<UploadRunnerDeps>
         store.set(id, { ...row, ...set });
         return true;
       },
+      claim: async (id, owner, until, at) => {
+        const row = store.get(id);
+        if (!row || (row.leaseUntil && row.leaseUntil.getTime() > at.getTime() && row.leaseOwner !== owner)) return false;
+        store.set(id, { ...row, leaseOwner: owner, leaseUntil: until });
+        return true;
+      },
     },
     credentials: async (j) => ({ credentialRef: { userId: j.approvedBy }, credentials: { token: "t" } }),
     assertWriteChannel: async () => undefined,
@@ -186,6 +194,7 @@ function harness(rows: StoredPublishingUpload[], over: Partial<UploadRunnerDeps>
     nextQuotaReset: () => new Date("2026-10-14T07:00:00Z"),
     chunkBytes: 4,
     sliceMs: 60_000,
+    runnerId: "runner-1",
     ...over,
   };
   const runner = createUploadRunner(deps);
@@ -210,8 +219,11 @@ test("the whole way: one session, the bytes in order, processing, then thumbnail
   assert.deepEqual(h.yt.log, ["begin https://www.googleapis.com/upload/youtube/v3/videos?s=1", "put 0-3", "put 4-7", "put 8-9", "thumbnail vid1", "playlist PL_jazz vid1"]);
   const steps = JSON.parse(h.row().stepsJson);
   assert.deepEqual([steps.publishAt, steps.thumbnail, steps.playlist, steps.verify.result, steps.record, steps.sync], ["at_insert", "set", "added", "verified", "written", "synced"]);
-  assert.equal(h.records[0].path, "04 Videos/10 October/1024 V65/V65_youtube.json");
-  assert.deepEqual([h.records[0].record.videoId, h.records[0].record.publishAt, h.records[0].record.result], ["vid1", "2026-10-24T12:00:00.000Z", "verified"]);
+  // Review B1: the record names the video as soon as YouTube gives its id, then the record step writes it in full.
+  assert.deepEqual(h.records.map((r) => r.path), ["04 Videos/10 October/1024 V65/V65_youtube.json", "04 Videos/10 October/1024 V65/V65_youtube.json"]);
+  assert.deepEqual([h.records[0].record.videoId, h.records[0].record.result], ["vid1", "uploaded"]);
+  assert.deepEqual([h.records[1].record.videoId, h.records[1].record.publishAt, h.records[1].record.result], ["vid1", "2026-10-24T12:00:00.000Z", "verified"]);
+  assert.equal(h.records[1].record.uploadedAt, h.records[0].record.uploadedAt, "the upload's own time, not the record step's");
 });
 
 test("AC-UP-02b, AC-UP-02c: at least 6 h ahead -> publishAt at insert; nearer -> after processing through video-details; no date -> never", async () => {
@@ -400,7 +412,7 @@ test("AC-UP-13: busy while an upload is sent or finished, not while it only wait
 });
 
 test("cancel only before YouTube: queued, or paused while sending with bytes left; never once every byte is sent", () => {
-  const base = { videoId: null, storedBytes: 4, totalBytes: 10, resumeStatus: null };
+  const base = { videoId: null, storedBytes: 4, totalBytes: 10, resumeStatus: null, stepsJson: "{}" };
   assert.equal(isCancellable({ ...base, status: "queued" }), true);
   assert.equal(isCancellable({ ...base, status: "paused", resumeStatus: "uploading" }), true);
   assert.equal(isCancellable({ ...base, status: "paused", resumeStatus: "uploading", storedBytes: 10 }), false, "the last byte is in: the video may exist");
@@ -422,4 +434,126 @@ test("AC-UP-06: the last chunk was sent, its answer lost, the session expired an
   assert.deepEqual([h.row().status, h.row().errorCode], ["failed", "unknown_outcome"]);
   assert.equal(h.yt.log.filter((l) => l.startsWith("begin")).length, 1, "no second session");
   assert.equal(h.yt.videos.length, 1);
+});
+
+// Review B3: what an error means, in the shapes the real clients throw. Sources: Google's Data API errors (403 quotaExceeded /
+// dailyLimitExceeded, 400 uploadLimitExceeded, 429 rateLimitExceeded, 5xx backendError), gaxios 7 (`response.status`,
+// `response.data.error.errors[].reason`), the read gateway's wrapped client (`youtube_quota_exceeded` with `details.reasons`), Node's
+// network errors (ECONNRESET, TimeoutError, AbortError), video-details' wrapped failures (update_failed without a status).
+test("error shapes: quota and the upload cap pause, an unknown answer is asked again, a refusal fails", () => {
+  const reset = () => new Date("2026-10-14T07:00:00Z");
+  const kind = (error: unknown) => {
+    const outcome = classifyUploadError(error, NOW, reset);
+    return outcome.kind === "pause" ? `pause:${outcome.reason}` : outcome.kind === "fail" ? `fail:${outcome.code}` : "retry";
+  };
+  const gaxios = (status: number, reason: string) => Object.assign(new Error(reason), { response: { status, data: { error: { errors: [{ reason }] } } } });
+  assert.equal(kind(gaxios(403, "quotaExceeded")), "pause:quota_exceeded");
+  assert.equal(kind(new DomainError({ code: "youtube_quota_exceeded", message: "q", details: { reasons: ["quotaExceeded"] } })), "pause:quota_exceeded");
+  assert.equal(kind(gaxios(400, "uploadLimitExceeded")), "pause:upload_limit");
+  assert.equal(kind(gaxios(429, "rateLimitExceeded")), "retry");
+  assert.equal(kind(gaxios(503, "backendError")), "retry");
+  assert.equal(kind(Object.assign(new Error("timeout"), { code: "TimeoutError" })), "retry");
+  assert.equal(kind(Object.assign(new Error("aborted"), { name: "AbortError" })), "retry");
+  assert.equal(kind(Object.assign(new Error("reset"), { code: "ECONNRESET" })), "retry");
+  assert.equal(kind(new DomainError({ code: "update_failed", message: "video-details lost the answer" })), "retry");
+  assert.equal(kind(new DomainError({ code: "live_writes_disabled", message: "off" })), "pause:live_writes_off");
+  assert.equal(kind(gaxios(400, "invalidTitle")), "fail:invalidTitle");
+  assert.equal(kind(new DomainError({ code: "validation_failed", message: "bad" })), "fail:validation_failed");
+  assert.equal(kind(new DomainError({ code: "update_failed", message: "refused", details: { status: 403, reason: "forbidden" } })), "fail:forbidden");
+});
+
+test("AC-UP-08: quota at the thumbnail step pauses the job until the quota day resets; the thumbnail is set afterwards", async () => {
+  const h = harness([job()]);
+  let quotaLeft = false;
+  const setThumbnail = h.deps.gateway.setThumbnail;
+  h.deps.gateway.setThumbnail = async (c, v, i) => {
+    if (!quotaLeft) throw new DomainError({ code: "youtube_quota_exceeded", message: "q", details: { reasons: ["quotaExceeded"] } });
+    return setThumbnail(c, v, i);
+  };
+  const runner = createUploadRunner(h.deps);
+  for (let i = 0; i < 6 && h.row().status !== "paused"; i += 1) {
+    await runner.tick();
+    h.clock.at = new Date(h.clock.at.getTime() + 31_000);
+  }
+  assert.deepEqual([h.row().status, h.row().pausedReason, h.row().resumeStatus], ["paused", "quota_exceeded", "finishing"]);
+  assert.equal(JSON.parse(h.row().stepsJson).thumbnail, undefined, "not marked failed");
+  quotaLeft = true;
+  h.clock.at = new Date("2026-10-14T07:00:01Z");
+  for (let i = 0; i < 10 && h.row().status !== "done"; i += 1) {
+    await runner.tick();
+    h.clock.at = new Date(h.clock.at.getTime() + 31_000);
+  }
+  assert.deepEqual([h.row().status, JSON.parse(h.row().stepsJson).thumbnail], ["done", "set"]);
+});
+
+test("a step whose answers stay unknown gives up after the retries: the step is noted failed, the job still finishes", async () => {
+  const h = harness([job()]);
+  h.deps.reads = { ...h.deps.reads, playlistHasVideo: async () => Promise.reject(Object.assign(new Error("timeout"), { code: "TimeoutError" })) };
+  const runner = createUploadRunner(h.deps);
+  for (let i = 0; i < 60 && h.row().status !== "done"; i += 1) {
+    await runner.tick();
+    h.clock.at = new Date(h.clock.at.getTime() + 11 * 60_000);
+  }
+  assert.deepEqual([h.row().status, h.row().errorCode, JSON.parse(h.row().stepsJson).playlist], ["done", "step_failed", "failed"]);
+});
+
+test("AC-UP-09: a video YouTube stops returning for 30 minutes after its upload ends the wait as video_missing; the package stays taken", async () => {
+  const h = harness([job()], {});
+  h.deps.reads = { ...h.deps.reads, uploadState: async () => null };
+  const runner = createUploadRunner(h.deps);
+  await runner.tick(); // uploaded
+  for (let i = 0; i < 10 && h.row().status === "processing"; i += 1) {
+    h.clock.at = new Date(h.clock.at.getTime() + 6 * 60_000);
+    await runner.tick();
+  }
+  assert.deepEqual([h.row().status, h.row().errorCode, h.row().videoId], ["failed", "video_missing", "vid1"]);
+  assert.equal(holdsPackage(h.row()), true, "its video existed: approving the package again stays refused");
+});
+
+test("review B1: which rows hold their package -- under way, done, or ended with a video; not one cancelled or failed before YouTube", () => {
+  assert.equal(holdsPackage({ status: "queued", videoId: null }), true);
+  assert.equal(holdsPackage({ status: "done", videoId: "v" }), true);
+  assert.equal(holdsPackage({ status: "failed", videoId: "v" }), true);
+  assert.equal(holdsPackage({ status: "failed", videoId: null }), false);
+  assert.equal(holdsPackage({ status: "cancelled", videoId: null }), false);
+});
+
+test("review B2: once the last chunk went, the upload cannot be cancelled even when paused short of its stored bytes", () => {
+  const paused = { status: "paused" as const, resumeStatus: "uploading", videoId: null, storedBytes: 8, totalBytes: 10 };
+  assert.equal(isCancellable({ ...paused, stepsJson: "{}" }), true);
+  assert.equal(isCancellable({ ...paused, stepsJson: JSON.stringify({ finalChunkSentAt: "2026-10-13T12:00:00Z" }) }), false);
+});
+
+test("review B2: resuming asks the session first -- a moved video file does not fail an upload YouTube already finished", async () => {
+  const h = harness([job()]);
+  h.yt.setFaults([undefined as never, undefined as never, undefined as never, "lose_answer"]); // the final answer is lost
+  await h.runner.tick();
+  h.deps.files.resolve = async (_c, rel) => (rel.endsWith(".mp4") ? null : { path: `/ws/${rel}`, bytes: 100 }); // the folder moved
+  const runner = createUploadRunner(h.deps);
+  h.clock.at = new Date(h.clock.at.getTime() + 60_000);
+  await runner.tick();
+  assert.deepEqual([h.row().status, h.row().videoId], ["processing", "vid1"]);
+});
+
+test("review should-fix 2: a publish time set at insert that comes within 15 minutes before the last chunk stops the upload, nothing is made", async () => {
+  // 6 h 1 min ahead: set at insert; then a pause of Live writes holds the upload for 6 hours.
+  const h = harness([job({ publishAt: "2026-10-13T18:01:00.000Z" })]);
+  h.yt.setFaults([undefined as never, undefined as never, "live_writes_off"]);
+  await h.runner.tick();
+  assert.equal(h.row().status, "paused");
+  h.clock.at = new Date("2026-10-13T17:50:00Z");
+  h.yt.setLiveWrites(true);
+  await h.runner.tick();
+  assert.deepEqual([h.row().status, h.row().errorCode, h.row().videoId], ["failed", "publish_at_passed", null]);
+  assert.equal(h.yt.videos.length, 0, "the last chunk never went");
+  assert.equal(holdsPackage(h.row()), false, "nothing exists: the owner can approve it again with a new date");
+});
+
+test("review should-fix 6: a row another runner holds is left alone until its lease ends", async () => {
+  const h = harness([job({ leaseOwner: "runner-other", leaseUntil: new Date(NOW.getTime() + 60_000) })]);
+  await h.runner.tick();
+  assert.deepEqual([h.row().status, h.yt.log.length], ["queued", 0]);
+  h.clock.at = new Date(NOW.getTime() + 61_000);
+  await h.runAll();
+  assert.equal(h.row().status, "done");
 });

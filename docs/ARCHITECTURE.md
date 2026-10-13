@@ -3969,10 +3969,22 @@ is already set everywhere), 2734 (one merge for the whole stage).
   less is not written (`publish_at_too_soon` on the job). Then `thumbnails.set` (new gateway primitive), `playlistItems.insert` unless
   the video is already in the playlist, a read-back against the approval (`verify_mismatch` names the fields; AI use is not
   readable), `Vn_youtube.json` next to the package (atomic, inside the workspace's real folder), an audit row, a channel sync.
-  Live writes off pauses a job and it resumes by itself; `quotaExceeded` pauses until the quota day resets, `uploadLimitExceeded`
-  for 24 h (the channel's other queued uploads wait too); a refusal fails the job; a 5xx or network error is retried, asking the
-  session first. An upload being sent or finished is busy for the idle watcher. Cancel only before YouTube (queued, or paused
-  before its last byte).
+  Live writes off pauses a job and it resumes by itself; `quotaExceeded` (in any client's error shape: the upload's own, the read
+  gateway's `youtube_quota_exceeded`, a gaxios 7 `response.data.error.errors[]`) pauses every queued upload until the quota day
+  resets, `uploadLimitExceeded` that channel's for 24 h; a 5xx, 429, timeout, network failure or an answer that does not say
+  "refused" is asked again (at most 10 times in a row, then a finishing step is noted failed and the next one runs); a refusal
+  fails the job. An upload being sent or finished is busy for the idle watcher.
+- **Never twice, after the independent review.** The last chunk is marked as sent before it goes (`finalChunkSentAt`): from then on
+  the job is never cancelled, never restarted on an expired session (it fails as `unknown_outcome` unless the title is found among
+  the channel's newest uploads, then it is adopted) and never failed into "approvable again". A resumed upload asks its session
+  before any file check. As soon as YouTube gives the video id, a first `Vn_youtube.json` names it. A row whose video exists keeps
+  its package taken whatever became of the job: the unique index covers it, the approval and the per-device report count it
+  (`holdsPackage`). A lease (`lease_owner`, `lease_until`, 2 minutes per pass) keeps a second process on the same database (a dev
+  server) away from a row. A publish time set at insert that comes within 15 minutes before the last chunk (a long pause) stops
+  the upload before that chunk (`publish_at_passed`, nothing made). Processing waits at most 24 h, and a video YouTube no longer
+  returns for 30 minutes ends it as `video_missing`. The writes after the upload check the channel first, like the upload.
+  Descriptions are sent and compared with LF line endings. The approval counts the uploads already queued here against the day's
+  inserts and units. Cancel only before YouTube (queued, or paused before its last chunk went).
 - **UI** (Content → «Публикация»): the package list with checkboxes, a date per chosen package (DD.MM.YYYY UTC day; empty = private
   without a date), «Загрузить выбранные» → the approval dialog (rows, times in UTC and the owner's time, the shared settings, the
   units estimate, the Live-writes note), then the uploads list (state, share sent, pause reason and when it continues, the

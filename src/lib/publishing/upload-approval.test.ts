@@ -63,6 +63,7 @@ function harness(packages: ScannedPackage[], over: Partial<UploadApprovalDeps> =
     liveVideos: async () => new Set(),
     peerUploads: async () => new Map(),
     insertsToday: async () => 0,
+    pending: async () => ({ inserts: 0, units: 0 }),
     checkUnits: async (units) => {
       unitsAsked.push(units);
       return { decision: "allow", estimatedUnits: units, remainingUnits: 9000 };
@@ -168,4 +169,14 @@ test("AC-UP-12: a package another computer reports as uploading cannot be starte
     (error: unknown) => isDomainError(error) && error.code === "upload_already_queued" && /Windows-PC/.test(error.message)
   );
   assert.deepEqual(h.inserted, [], "nothing of the approval is queued");
+});
+
+// Review should-fix 4: the uploads already queued here have not spent their insert or units yet; a second approval the same day
+// counts them, so two approvals cannot together pass the 100-a-day bucket or the pool.
+test("quota: uploads already queued count against the day's inserts and units", async () => {
+  const bucket = harness([scanned("V65"), scanned("V66")], { insertsToday: async () => 90, pending: async () => ({ inserts: 9, units: 0 }) });
+  await refusedWith(bucket.approval.approve({ channelId: "UC_t", userId: "u", items: [item("V65"), item("V66")], shownSettings: SETTINGS }), "upload_daily_limit");
+  const units = harness([scanned("V65")], { pending: async () => ({ inserts: 3, units: 500 }) });
+  await units.approval.approve({ channelId: "UC_t", userId: "u", items: [item("V65")], shownSettings: SETTINGS });
+  assert.deepEqual(units.unitsAsked, [146 + 500], "this upload's 146 units and the queued ones' 500");
 });

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createLibsqlClient } from "@/lib/libsql-client";
-import { createIsolatedDb, getPublishingUpload, initializeDatabaseSchema, insertPublishingUploads, listPublishingUploads, updatePublishingUpload } from "@/lib/db";
+import { claimPublishingUpload, createIsolatedDb, getPublishingUpload, initializeDatabaseSchema, insertPublishingUploads, listPublishingUploads, updatePublishingUpload } from "@/lib/db";
 
 // BL-182 stage 2 (ADR 0037 §4, "never twice"; PUBLISHING_PLAN.md §2 stage 2 items 5–6): the upload queue keeps at most one live row
 // per channel and video -- a second approval of the same package is refused whole -- and a failed or cancelled row lets the package
@@ -64,4 +64,28 @@ test("updates are compare-and-set on the status; the list is newest first and fi
     assert.equal(await updatePublishingUpload("a", "queued", { status: "uploading", sessionUri: "https://www.googleapis.com/upload/x" }, db), true);
     assert.deepEqual((await listPublishingUploads({ channelId: "UC_t", limit: 10 }, db)).map((r) => r.id), ["b", "a"]);
     assert.deepEqual((await listPublishingUploads({ statuses: ["uploading"], limit: 10 }, db)).map((r) => r.id), ["a"]);
+  }));
+
+// Review B1: a failed (or cancelled) upload whose video exists on YouTube still blocks the package -- only one that never made a
+// video lets it be approved again.
+test("a failed upload that made a video still blocks the package; one without a video does not", () =>
+  withDb(async (db) => {
+    assert.equal(await insertPublishingUploads([row("a", "V65")], db), true);
+    assert.equal(await updatePublishingUpload("a", "queued", { status: "failed", videoId: "vid1" }, db), true);
+    assert.equal(await insertPublishingUploads([row("b", "V65")], db), false, "the failed row has a video");
+    assert.equal(await insertPublishingUploads([row("c", "V66")], db), true);
+    assert.equal(await updatePublishingUpload("c", "queued", { status: "cancelled" }, db), true);
+    assert.equal(await insertPublishingUploads([row("d", "V66")], db), true, "cancelled before YouTube: approvable again");
+  }));
+
+// Review should-fix 6: two runners on one database never both work on a row.
+test("the lease: one runner holds a row until its lease ends; the holder renews it", () =>
+  withDb(async (db) => {
+    await insertPublishingUploads([row("a", "V65")], db);
+    const t0 = new Date("2026-10-13T12:00:00Z");
+    const until = new Date("2026-10-13T12:02:00Z");
+    assert.equal(await claimPublishingUpload("a", "runner-1", until, t0, db), true);
+    assert.equal(await claimPublishingUpload("a", "runner-2", until, new Date("2026-10-13T12:01:00Z"), db), false);
+    assert.equal(await claimPublishingUpload("a", "runner-1", new Date("2026-10-13T12:03:00Z"), new Date("2026-10-13T12:01:00Z"), db), true, "the holder renews");
+    assert.equal(await claimPublishingUpload("a", "runner-2", until, new Date("2026-10-13T12:03:00Z"), db), true, "an expired lease is taken over");
   }));

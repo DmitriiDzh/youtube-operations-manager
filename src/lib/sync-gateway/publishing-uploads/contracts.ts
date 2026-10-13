@@ -18,7 +18,8 @@ export const sharedUploadSchema = z
   .object({
     channelId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/),
     video: z.string().regex(/^V\d{1,6}$/),
-    state: z.enum(["queued", "uploading", "processing", "finishing", "paused"]),
+    /** "uploaded": finished (or failed) with a video on YouTube -- the package stays taken. */
+    state: z.enum(["queued", "uploading", "processing", "finishing", "paused", "uploaded"]),
   })
   .strict();
 
