@@ -721,6 +721,15 @@ Key MCP tools:
     files[{ date, createTime, lagHours }], videoId?, videoDaily?, videoDailyTruncated? }`. The stored `channel_traffic_source_a3`
     rows: per day and code the channel's videos summed (the channel-level / deleted-video remainder included); a metric no row
     carried is `null`; `label` is Google's name for the code, `null` for an unknown one. A local read, never a Google call.
+  - `agent_get_publishing_calendar` (BL-182 stage 1, Agent API 3.16.0, Producer API 1.7.0, capability
+    `video_context.query_publishing_calendar`, READ, channel-scoped) — `{ channelId, credentialRef? }` → `{ channelId, lastSyncedAt,
+    window { from, to } (UTC dates, today ∓14), coverage { coveredThrough, scheduledCount, unscheduledCount, daysCovered, due,
+    thresholdDays }, entries[{ videoId, title, kind: published | scheduled | overdue, privacyStatus, at }], unscheduled[...],
+    gapDates[] }`. A local read from the synced copy; no agent tool uploads or schedules (ADR 0037).
+  - Web only (BL-182 stage 1): `GET /api/channels/[id]/publishing/calendar`, `GET /api/publishing-alerts` (every connected channel's
+    coverage, local), `POST /api/publishing/refresh-stale` (once per dashboard load: syncs the other channels whose copy is older than
+    6 h). `video-details` preview/apply now also accept `publishAt` on a private video whose current publish time is still ahead
+    (rescheduling; the new time must be in the future) -- otherwise `publish_at_already_published` as before.
   - `POST /api/analytics/evening-collect` (BL-181, Web only) — the dashboard's 5-minute evening check: `{ due: false }`,
     `{ due: false, done: true }`, `{ due: true, inProgress | importPending: true }` or `{ due: true, channels: [the active channel's
     outcome: collected | skipped (reason) | failed] }`. `GET/POST /api/settings` gain `analyticsEveningLocalTime` ("HH:MM", `""` =

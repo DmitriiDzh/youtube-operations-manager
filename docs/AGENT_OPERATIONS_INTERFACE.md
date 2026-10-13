@@ -1177,3 +1177,9 @@ idle / minutes / USD; every job submit or poll counts as activity. Contract: `do
 - `agent_get_reporting_traffic_sources` (Agent API 3.15.0, capability `analytics.query_reporting_traffic_sources`, READ; owner msg
   2702) returns the stored traffic-source report: views and watch time per day and traffic source code, for the channel or one video,
   with the file each day comes from and its lag. A local read. Contract: `docs/interfaces.md`.
+
+**Publishing calendar (BL-182 stage 1, Agent API 3.16.0, `docs/roadmap/plans/PUBLISHING_PLAN.md`, ADR 0037):**
+- `agent_get_publishing_calendar` (capability `video_context.query_publishing_calendar`, READ; the Producer has it too, API 1.7.0)
+  returns the channel's published, scheduled and overdue videos of the past and next 14 UTC days, the private uploads without a date,
+  how far ahead the channel is covered (and whether that is under 7 days) and the days without a video. A local read. Uploading and
+  scheduling stay with the owner in the Web UI; no agent tool does either. Contract: `docs/interfaces.md`.

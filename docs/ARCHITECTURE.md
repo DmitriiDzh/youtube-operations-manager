@@ -3843,3 +3843,66 @@ Owner exception 2026-10-12 (msg 2665), recorded in `docs/PROJECT_SPEC.md` §14 a
     The entries are derived on every poll, so they clear once the translations are applied.
   - `agent_get_channel_context` gains `missingTranslations` `{videoCount, byLanguage, videos[{videoId, missingLanguages}]}`,
     additive.
+
+## 47. Publishing from YT Manager: uploads, calendar, reminder (BL-182, ADR 0037, FO-REQ-0023)
+
+Plan: `docs/roadmap/plans/PUBLISHING_PLAN.md`. Owner: msgs 2698, 2702 and 2707.
+
+### 47.1 Stage 0 — the write gateway's resumable upload and the G1 probe
+
+- **`youtube-write-gateway/upload.ts`** implements Google's resumable protocol over `node:https`:
+  - `beginResumableVideoUpload`: a POST with `uploadType=resumable` and `X-Upload-Content-*`; the session URI comes back in
+    `Location`.
+  - `putVideoUploadChunk`: chunks in multiples of 256 KB, sent with `Content-Range`. A 308 with `Range` gives the bytes stored;
+    200/201 is done; 404 means the session expired.
+  - `queryVideoUploadOffset`: a status query, `bytes */total`.
+  - `deleteVideoById`, for the probe only.
+  - The token is sent only to `https://www.googleapis.com`, and the session URI is checked before every request.
+  - A 5xx is reported as "outcome unknown", never as a refusal.
+  - googleapis is not used for the media: it cannot resume a session after a restart.
+- **Quota.** `videos.insert` has its own daily bucket (100 calls), so `countsAgainstPool` excludes it. `thumbnails.set` costs 50.
+  An upload is recorded in the ledger once, when it finishes (`noteYoutubeQuotaCall`).
+- **The G1 probe** is `publishing/g1-probe.ts` with the developer-only CLI `npm run cli:publishing-g1`. Before any byte goes out it
+  runs the recovery gate, the identity check (`assertWriteChannel`, the channel's own connected user) and the metadata limits.
+  - A `started` record is saved before the first request, and while it is there no new upload starts.
+  - A lost answer is resolved with a status query.
+  - The video id is printed as soon as YouTube returns it.
+  - The read-back is polled until processing ends.
+  - Only the probe's own video can be deleted, once.
+  - Live writes are checked before every gateway call (`adapters/youtube-writes.ts`).
+- **The 2026-10-13 run:**
+  - **Not locked.** Studio shows «Ограниченный» (Private), and its change button works.
+  - `defaultAudioLanguage` is accepted at insert.
+  - `containsSyntheticMedia` is set at insert, but the API does not return it on read, so it cannot be verified or detected.
+
+### 47.2 Stage 1 — calendar, 7-day reminder, rescheduling, agent read
+
+- **Calendar logic.** `publishing/calendar.ts` reads only the local copy.
+  - YouTube has no "scheduled" status: a scheduled video is a non-public video with a future `publishAt`.
+  - Each video is one of: published (public or unlisted), scheduled, overdue (the date has passed but the copy is not public yet)
+    or unscheduled (private without a date). Live broadcasts are left out.
+  - The coverage is the latest future `publishAt`. The reminder is due when that is less than 7 days away, or when there is none.
+- **Routes.** `GET /api/channels/[id]/publishing/calendar` (the active channel) and `GET /api/publishing-alerts` (every connected
+  channel; a channel never synced gives no alert) are local reads.
+  - `POST /api/publishing/refresh-stale` runs once per dashboard load. It syncs each other channel whose copy is older than 6 h,
+    with that channel's own user. The active channel is already synced on every load.
+  - The 60 s poll never calls YouTube.
+- **UI.**
+  - **Content → «Календарь»** (`publishing-calendar.tsx`, `publishing-calendar-grid.ts`):
+    - a summary: covered through, the days left, the data age and Sync;
+    - a Monday-first month grid with the gaps of the next 2 weeks marked;
+    - the undated and overdue lists;
+    - an entry opens the video's Details.
+  - **«Видео»** shows «Запланировано», and has a filter for it.
+  - **Badge and bell.** The «Контент» badge shows the days missing to a week of coverage. The other channels' reminders are in
+    the bell's «Публикации» section. These form one family with the BL-178 translation alerts.
+- **Rescheduling** (owner msg 2707). `video-details/publish-at-rule.ts` is one rule for the preview and the write: `publishAt` may
+  change while the video is private and its current date is still ahead, and the new date must be in the future. A public
+  video, or one whose date has passed, keeps `publish_at_already_published`.
+- **`agent_get_publishing_calendar`** (READ; Agent API 3.16.0, Producer API 1.7.0): a ±14-day window in UTC days, plus the undated
+  uploads, the coverage and the gap dates. Agents get no upload or schedule tool.
+
+### 47.3 Not built yet
+
+- Stage 2: release packages, upload and schedule, per-channel publishing defaults, the AI-use decision.
+- Stage 3: Batches → History.
