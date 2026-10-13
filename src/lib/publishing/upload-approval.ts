@@ -28,6 +28,8 @@ export type UploadApprovalDeps = {
   settings(channelId: string): Promise<PublishingSettingsView>;
   /** The videos of the channel that already have a live upload row on this computer. */
   liveVideos(channelId: string): Promise<Set<string>>;
+  /** The videos of the channel another computer reports as uploading, with that computer's name (ADR 0037 §4). */
+  peerUploads(channelId: string): Promise<Map<string, string | null>>;
   /** `videos.insert` calls since the quota day began (this computer's log and the shared one). */
   insertsToday(now: Date): Promise<number>;
   checkUnits(units: number): Promise<UnitsVerdict>;
@@ -66,12 +68,17 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
       const scanned = await deps.scan(input.channelId);
       if (scanned.status !== "ok") throw refuse("validation_failed", scanned.status === "no_workspace" ? "This channel has no workspace folder on this computer." : `The workspace cannot be used: ${scanned.reason}`);
       const live = await deps.liveVideos(input.channelId);
+      const elsewhere = await deps.peerUploads(input.channelId);
 
       const chosen = input.items.map((item) => {
         const found = scanned.packages.find((p) => p.manifestPath === item.manifestPath);
         if (!found || !found.pkg) throw refuse("upload_package_not_ready", `${item.manifestPath} is not a package that can be uploaded.`, { manifestPath: item.manifestPath });
         if (found.manifestSha256 !== item.manifestSha256) throw refuse("upload_package_changed", `${found.pkg.video}: the package changed after it was shown.`, { video: found.pkg.video });
         if (found.youtube !== null || live.has(found.pkg.video)) throw refuse("upload_already_queued", `${found.pkg.video} is already queued or uploaded.`, { video: found.pkg.video });
+        if (elsewhere.has(found.pkg.video)) {
+          const host = elsewhere.get(found.pkg.video) ?? "another computer";
+          throw refuse("upload_already_queued", `${found.pkg.video} is being uploaded on ${host}.`, { video: found.pkg.video, host });
+        }
         if (found.state !== "ready" || !found.thumbnailPath) throw refuse("upload_package_not_ready", `${found.pkg.video} is not ready to upload.`, { video: found.pkg.video, problems: found.problems });
         if (item.publishAt !== null) {
           const at = Date.parse(item.publishAt);

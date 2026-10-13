@@ -7,7 +7,12 @@ import { YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { createChannelVideoStoreAdapter } from "@/lib/channel-video-store";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
-import { createChannelPublishingSettingsCoreForProduction } from "@/lib/sync-gateway";
+import {
+  createChannelPublishingSettingsCoreForProduction,
+  createPublishingUploadsShareCoreForProduction,
+  PUBLISHING_UPLOADS_REPORT_FORMAT,
+  PUBLISHING_UPLOADS_REPORT_VERSION,
+} from "@/lib/sync-gateway";
 import {
   clearPublishingG1Probe,
   getChannelExpectedLanguages,
@@ -369,7 +374,31 @@ export function createUploadRunnerCore() {
     chunkBytes: 32 * 256 * 1024, // 8 MB
     sliceMs: 50_000,
   };
-  return createUploadRunner(deps);
+  const runner = createUploadRunner(deps);
+  const share = createPublishingUploadsShareCoreForProduction();
+  let published = { key: "", at: 0 };
+  /** This computer's uploads under way, for the other computer (ADR 0037 §4); written when they change, refreshed every 5 minutes. */
+  async function publishReport(): Promise<void> {
+    const uploads = (await listPublishingUploads({ statuses: ACTIVE_UPLOAD_STATUSES, limit: 500 })).map((row) => ({
+      channelId: row.channelId,
+      video: row.video,
+      state: row.status as "queued" | "uploading" | "processing" | "finishing" | "paused",
+    }));
+    const key = JSON.stringify(uploads);
+    if (key === published.key && Date.now() - published.at < 5 * 60_000) return;
+    const device = await thisDevice();
+    const deviceId = (await createBootstrapConfigStore(getProductionAppPaths().bootstrapConfigPath).ensureExists()).deviceId;
+    const hostName = (device.hostname ?? "").replace(/[^\p{L}\p{N} ._'-]/gu, "").slice(0, 64) || null;
+    await share.publishLocalReport({ format: PUBLISHING_UPLOADS_REPORT_FORMAT, version: PUBLISHING_UPLOADS_REPORT_VERSION, deviceId, hostName, updatedAt: new Date().toISOString(), uploads });
+    published = { key, at: Date.now() };
+  }
+  return {
+    ...runner,
+    async tick(): Promise<void> {
+      await runner.tick();
+      await publishReport().catch((error) => console.warn(`[publishing] uploads report not published: ${error instanceof Error ? error.message : String(error)}`));
+    },
+  };
 }
 
 /** `videos.insert` calls since the YouTube quota day began: this computer's log and the log shared by the others. */
@@ -394,6 +423,13 @@ export function createUploadApprovalCore() {
     settings: (channelId) => settings.read(channelId),
     liveVideos: async (channelId) =>
       new Set((await listPublishingUploads({ channelId, statuses: [...ACTIVE_UPLOAD_STATUSES, "done"], limit: 500 })).map((row) => row.video)),
+    async peerUploads(channelId) {
+      const peers = new Map<string, string | null>();
+      for (const report of await createPublishingUploadsShareCoreForProduction().listPeerReports().catch(() => [])) {
+        for (const upload of report.uploads) if (upload.channelId === channelId && !peers.has(upload.video)) peers.set(upload.video, report.hostName);
+      }
+      return peers;
+    },
     insertsToday: (now) => videosInsertCallsSince(startOfYoutubeQuotaDay(now)),
     checkUnits: (units) => createQuotaGuardCore().checkUnits(units),
     insert: (rows) => insertPublishingUploads(rows),

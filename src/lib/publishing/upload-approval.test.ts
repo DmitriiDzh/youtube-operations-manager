@@ -61,6 +61,7 @@ function harness(packages: ScannedPackage[], over: Partial<UploadApprovalDeps> =
     scan: async () => ({ status: "ok", packages }),
     settings: async () => ({ channelId: "UC_t", settings: SETTINGS, defaults: DEFAULT_PUBLISHING_SETTINGS, saved: ["playlistId"], conflictedFields: [] }),
     liveVideos: async () => new Set(),
+    peerUploads: async () => new Map(),
     insertsToday: async () => 0,
     checkUnits: async (units) => {
       unitsAsked.push(units);
@@ -158,4 +159,13 @@ test("a listed package twice, two rows of one video, an empty or too large selec
   await refusedWith(h.approval.approve({ channelId: "UC_t", userId: "u", items: [item("V65"), item("V65")], shownSettings: SETTINGS }), "validation_failed");
   const many = Array.from({ length: 26 }, (_, i) => item(`V${i}`));
   await refusedWith(h.approval.approve({ channelId: "UC_t", userId: "u", items: many, shownSettings: SETTINGS }), "validation_failed");
+});
+
+test("AC-UP-12: a package another computer reports as uploading cannot be started here", async () => {
+  const h = harness([scanned("V65"), scanned("V66")], { peerUploads: async () => new Map([["V65", "Windows-PC"]]) });
+  await assert.rejects(
+    h.approval.approve({ channelId: "UC_t", userId: "u", items: [item("V66"), item("V65")], shownSettings: SETTINGS }),
+    (error: unknown) => isDomainError(error) && error.code === "upload_already_queued" && /Windows-PC/.test(error.message)
+  );
+  assert.deepEqual(h.inserted, [], "nothing of the approval is queued");
 });

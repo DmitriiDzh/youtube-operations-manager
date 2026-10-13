@@ -96,6 +96,9 @@ export type AppPaths = {
   liveStreamsShareDir: string;
   /** BL-176: the live-streams family's local fallback when no sync folder is configured. */
   liveStreamsSyncFallbackDir: string;
+  /** BL-182 stage 2: the publishing-uploads family -- this device's uploads report and the peers' latest reports. */
+  publishingUploadsShareDir: string;
+  publishingUploadsSyncFallbackDir: string;
   /** Path to the device-local bootstrap config JSON file. */
   bootstrapConfigPath: string;
   /** Path to the CLI/MCP active-user auth-context JSON file. */

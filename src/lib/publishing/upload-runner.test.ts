@@ -214,7 +214,7 @@ test("the whole way: one session, the bytes in order, processing, then thumbnail
   assert.deepEqual([h.records[0].record.videoId, h.records[0].record.publishAt, h.records[0].record.result], ["vid1", "2026-10-24T12:00:00.000Z", "verified"]);
 });
 
-test("AC-UP-02b/c: at least 6 h ahead -> publishAt at insert; nearer -> after processing through video-details; no date -> never", async () => {
+test("AC-UP-02b, AC-UP-02c: at least 6 h ahead -> publishAt at insert; nearer -> after processing through video-details; no date -> never", async () => {
   const far = harness([job()]);
   await far.runAll();
   assert.equal(far.yt.videos[0].resource.status.publishAt, "2026-10-24T12:00:00.000Z");

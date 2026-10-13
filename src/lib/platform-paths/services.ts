@@ -68,6 +68,8 @@ export function resolveAppPaths(input: ResolveAppPathsInput): AppPaths {
     liveStreamsBufferDir: path.join(appDataDir, "live-streams"),
     liveStreamsShareDir: path.join(appDataDir, "live-streams-share"),
     liveStreamsSyncFallbackDir: path.join(appDataDir, "live-streams-sync-local"),
+    publishingUploadsShareDir: path.join(appDataDir, "publishing-uploads-share"),
+    publishingUploadsSyncFallbackDir: path.join(appDataDir, "publishing-uploads-sync-local"),
     bootstrapConfigPath: path.join(appDataDir, "bootstrap-config.json"),
     authContextPath: path.join(appDataDir, "auth-context.json"),
   };
