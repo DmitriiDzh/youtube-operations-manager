@@ -6,7 +6,17 @@ import path from "node:path";
 import test from "node:test";
 import { createKeyFile, type KeyFileAccess } from "@/lib/device-key-file";
 import type { StoredGeminiCredentials, StoredGeminiMediaJob } from "@/lib/db";
-import { GEMINI_IMAGE_TIMEOUT_MS, GEMINI_VIDEO_START_TIMEOUT_MS, type GeminiImageRequest, type GeminiImageResult, type GeminiVideoOperation, type GeminiVideoRequest } from "@/lib/media-gateway";
+import {
+  GEMINI_IMAGE_TIMEOUT_MS,
+  GEMINI_INTERACTIONS_VIDEO_TIMEOUT_MS,
+  GEMINI_VIDEO_START_TIMEOUT_MS,
+  type GeminiImageRequest,
+  type GeminiImageResult,
+  type GeminiInteractionsVideoRequest,
+  type GeminiInteractionsVideoResult,
+  type GeminiVideoOperation,
+  type GeminiVideoRequest,
+} from "@/lib/media-gateway";
 import { ceil4 } from "@/lib/shared-money";
 import { DomainError, isDomainError } from "@/lib/shared-domain";
 import { createGeminiFiles } from "./adapters/files";
@@ -84,6 +94,13 @@ function fakeApi() {
       status: "completed",
       blockReason: null,
     }),
+    // BL-179: an Omni answer -- an 8-second 720p video (5,792 tokens per second), 3,000 input tokens, 500 thought tokens.
+    generateVideo: async (): Promise<GeminiInteractionsVideoResult> => ({
+      video: { mimeType: "video/mp4", data: Buffer.from("OMNI-MP4") },
+      usage: { inputTokens: 3000, outputTokens: 46336, thoughtTokens: 500, outputByModality: { video: 46336 } },
+      status: "completed",
+      blockReason: null,
+    }),
     startVideo: async (): Promise<string> => "models/veo-3.1-fast-generate-preview/operations/op1",
     getVideoOperation: async (): Promise<GeminiVideoOperation> => ({ done: true, videoUri: "https://generativelanguage.googleapis.com/v1beta/files/f:download?alt=media", error: null, blockReason: null }),
     downloadVideo: async (_uri: string, dest: string) => {
@@ -101,6 +118,10 @@ function fakeApi() {
     async generateImage(apiKey: string, request: GeminiImageRequest) {
       calls.push({ method: "generateImage", apiKey, request });
       return behaviour.generateImage();
+    },
+    async generateVideo(apiKey: string, request: GeminiInteractionsVideoRequest) {
+      calls.push({ method: "generateVideo", apiKey, request });
+      return behaviour.generateVideo();
     },
     async startVideo(apiKey: string, request: GeminiVideoRequest) {
       calls.push({ method: "startVideo", apiKey, request });
@@ -512,16 +533,18 @@ test("AC-GM-07: an image job makes one call, writes the image under From YTM/gem
 
 // ---------------------------------------------------------------------------------------------------------------- AC-GM-08
 
+// Changed 2026-10-13 (BL-179), with justification (AGENTS.md §L): this test sent first/last frames to Veo. Google rejects them on
+// `predictLongRunning` (HTTP 400 "`inlineData` isn't supported by this model", job gm_7d1d80b2; Veo page: frames only through
+// generateContent), so FO-REQ-0021 refuses Veo frames before any call -- the operation flow this test proves is unchanged and
+// now runs without frames; frames are Omni's (the BL-179 tests below).
 test("AC-GM-08: a video job starts the operation, stays running while Google works, then downloads video-1.mp4 and costs its table price", async () => {
   const h = await harness();
   try {
-    await writeFile(path.join(h.sent, "first.png"), "F");
-    await writeFile(path.join(h.sent, "last.jpg"), "L");
-    const { job } = (await h.services.createJob(videoJob({ video: { resolution: "1080p", aspectRatio: "9:16", durationSeconds: 8, inputs: { firstFrame: "first.png", lastFrame: "last.jpg" } } }), "factory")) as { job: { jobId: string } };
+    const { job } = (await h.services.createJob(videoJob({ video: { resolution: "1080p", aspectRatio: "9:16", durationSeconds: 8 } }), "factory")) as { job: { jobId: string } };
     await h.runTick();
     const started = h.calls[0].request as GeminiVideoRequest;
     assert.deepEqual([started.model, started.resolution, started.aspectRatio, started.durationSeconds], ["veo-3.1-fast-generate-preview", "1080p", "9:16", 8]);
-    assert.deepEqual([started.firstFrame, started.lastFrame], [{ mimeType: "image/png", dataBase64: Buffer.from("F").toString("base64") }, { mimeType: "image/jpeg", dataBase64: Buffer.from("L").toString("base64") }]);
+    assert.deepEqual([started.firstFrame, started.lastFrame], [undefined, undefined]);
     let row = h.store.jobs.get(job.jobId)!;
     assert.deepEqual([row.status, row.remoteName], ["running", "models/veo-3.1-fast-generate-preview/operations/op1"]);
     h.behaviour.getVideoOperation = async () => ({ done: false });
@@ -826,11 +849,14 @@ test("review 1: an image that cannot be written keeps its cost (it was paid)", a
   }
 });
 
-test("review 1: a job left `submitting` by a failed write is failed at its estimate after 15 minutes; a recent one is left alone", async () => {
+// Changed 2026-10-13 (BL-179 review item 3), with justification (AGENTS.md §L): the rule "swept well after the longest call"
+// is unchanged; the longest call is now Omni's 15-minute video, so the threshold moved from 15 to 20 minutes.
+test("review 1: a job left `submitting` by a failed write is failed at its estimate after 20 minutes; a recent one is left alone", async () => {
   const h = await harness();
   try {
-    seedJob(h.store, "gm_stale", { status: "submitting", estimateUsd: 0.96, costUsd: null, costBasis: null, updatedAt: new Date(h.clock.at.getTime() - 16 * 60_000) });
-    seedJob(h.store, "gm_recent", { status: "submitting", estimateUsd: 0.96, costUsd: null, costBasis: null, updatedAt: new Date(h.clock.at.getTime() - 60_000) });
+    seedJob(h.store, "gm_stale", { status: "submitting", estimateUsd: 0.96, costUsd: null, costBasis: null, updatedAt: new Date(h.clock.at.getTime() - 21 * 60_000) });
+    // 16 minutes: past the Omni call's own timeout, still inside the margin -- left alone.
+    seedJob(h.store, "gm_recent", { status: "submitting", estimateUsd: 0.96, costUsd: null, costBasis: null, updatedAt: new Date(h.clock.at.getTime() - 16 * 60_000) });
     await h.runTick();
     const stale = h.store.jobs.get("gm_stale")!;
     assert.deepEqual([stale.status, stale.errorCode, stale.costUsd, stale.costBasis], ["failed", "gemini_interrupted", 0.96, "unknown_outcome"]);
@@ -930,8 +956,271 @@ test("review 2: a key with an invisible character is refused before Google is ca
   }
 });
 
+// Extended 2026-10-13 (BL-179 review item 3), with justification (AGENTS.md §L): the requirement is unchanged -- the sweep comes
+// well after the longest call -- and Omni's synchronous video call (15 min) is now the longest call.
 test("review 2: an abandoned `submitting` job is only swept well after the longest call could still be running", () => {
-  // The sweep must never fail a job whose image or video-start call can still be in flight in another bundle.
-  assert.ok(GEMINI_LIMITS.staleSubmittingMs >= Math.max(GEMINI_IMAGE_TIMEOUT_MS, GEMINI_VIDEO_START_TIMEOUT_MS) + 5 * 60_000);
+  // The sweep must never fail a job whose image, video-start or Omni video call can still be in flight in another bundle.
+  assert.ok(GEMINI_LIMITS.staleSubmittingMs >= Math.max(GEMINI_IMAGE_TIMEOUT_MS, GEMINI_VIDEO_START_TIMEOUT_MS, GEMINI_INTERACTIONS_VIDEO_TIMEOUT_MS) + 5 * 60_000);
   assert.ok(Object.is(ceil4(0), 0));
+});
+
+// ---------------------------------------------------------------------------------------------------------------- BL-179
+// FO-REQ-0021 (docs/roadmap/plans/GEMINI_OMNI_PLAN.md). Facts the expectations come from, not from the code:
+// - Omni (`gemini-omni-1.1-flash`) is called through the Interactions API and answers with the video; its pricing page gives
+//   input $1.50 / 1M tokens, video output $17.50 / 1M, text and thinking output $9.00 / 1M, and 5,792 tokens per second of 720p;
+// - the Veo 3.1 previews reject first/last frames on `predictLongRunning` (HTTP 400, job gm_7d1d80b2) and shut down 2026-10-22;
+// - the Operator's acceptance case: 8 s, 720p, 16:9, first frame = last frame = pick_still01.jpg, about $0.80.
+const omniJob = (overrides: Record<string, unknown> = {}) =>
+  videoJob({ model: "gemini-omni-1.1-flash", video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 8, inputs: { firstFrame: "pick_still01.jpg", lastFrame: "pick_still01.jpg" } }, ...overrides });
+
+test("BL-179: the acceptance case -- Omni 8 s 720p with first = last frame is estimated, sent with both frames in order, saved and priced by Google's counts", async () => {
+  const h = await harness();
+  try {
+    await writeFile(path.join(h.sent, "pick_still01.jpg"), "STILL");
+    // Estimate by hand: video 5,792 x 8 = 46,336 tokens x $17.50/1M = $0.81088; input ceil(5/3) = 2 + 2 frames x 1,120 = 2,242
+    // tokens x $1.50/1M = $0.003363; thinking allowance 2,000 x $9/1M = $0.018 -> $0.832243 -> $0.8323 (rounded up).
+    const dry = (await h.services.createJob(omniJob({ dryRun: true }), "factory")) as { estimateUsd: number };
+    assert.equal(dry.estimateUsd, 0.8323);
+    const { job } = (await h.services.createJob(omniJob(), "factory")) as { job: { jobId: string } };
+    await h.runTick();
+    assert.deepEqual(h.calls.map((c) => c.method), ["generateVideo"], "one synchronous call, no operation to poll");
+    const sentRequest = h.calls[0].request as GeminiInteractionsVideoRequest;
+    const still = { mimeType: "image/jpeg", dataBase64: Buffer.from("STILL").toString("base64") };
+    assert.deepEqual(sentRequest, { model: "gemini-omni-1.1-flash", prompt: "waves", frames: [still, still], aspectRatio: "16:9", resolution: "720p", durationSeconds: 8 });
+    const row = h.store.jobs.get(job.jobId)!;
+    // Cost by hand from the fake's counts: 3,000 x $1.50/1M + 46,336 x $17.50/1M + 500 x $9/1M = $0.81988 -> $0.8199.
+    assert.deepEqual([row.status, row.costUsd, row.costBasis], ["done", 0.8199, "usage"]);
+    const dir = path.join(h.fromYtm, "gemini", job.jobId);
+    assert.deepEqual(await readFile(path.join(dir, "video-1.mp4")), Buffer.from("OMNI-MP4"));
+    const manifest = JSON.parse(await readFile(path.join(dir, "manifest.json"), "utf8"));
+    assert.deepEqual([manifest.status, manifest.costUsd, manifest.costBasis, manifest.outputs[0].path], ["done", 0.8199, "usage", `gemini/${job.jobId}/video-1.mp4`]);
+    assert.equal(h.registered[0].assetType, "generated_video");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("BL-179: frames on a Veo model are refused before anything is stored or sent (free), naming the model that takes them", async () => {
+  const h = await harness();
+  try {
+    await writeFile(path.join(h.sent, "a.png"), "A");
+    for (const model of ["veo-3.1-generate-preview", "veo-3.1-fast-generate-preview", "veo-3.1-lite-generate-preview"]) {
+      const details = await expectCode(
+        h.services.createJob(videoJob({ model, video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 8, inputs: { firstFrame: "a.png" } } }), "factory"),
+        "gemini_invalid_params"
+      );
+      assert.equal(details.field, "video.inputs.firstFrame", model);
+    }
+    assert.equal(h.store.jobs.size, 0);
+    assert.deepEqual(h.calls, []);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("BL-179: Omni's own rules -- 720p/1080p only, no personGeneration, no reference images", async () => {
+  const h = await harness();
+  try {
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [omniJob({ video: { resolution: "4k", aspectRatio: "16:9", durationSeconds: 8 } }), "video.resolution"],
+      [omniJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 8, personGeneration: "allow_adult" } }), "video.personGeneration"],
+      [omniJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 8, inputs: { referenceImages: ["a.png"] } } }), "video.inputs.referenceImages"],
+    ];
+    for (const [input, field] of cases) {
+      const details = await expectCode(h.services.createJob(input, "factory"), "gemini_invalid_params");
+      assert.equal(details.field, field, JSON.stringify(input));
+    }
+    assert.deepEqual(h.calls, []);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("BL-179: an Omni video delivered as a URI is collected by the next poll and keeps Google's cost", async () => {
+  const h = await harness();
+  try {
+    const uri = "https://generativelanguage.googleapis.com/v1beta/files/omni1:download?alt=media";
+    h.behaviour.generateVideo = async () => ({ video: { mimeType: "video/mp4", uri }, usage: { inputTokens: 3000, outputTokens: 46336, thoughtTokens: 500, outputByModality: { video: 46336 } }, status: "completed", blockReason: null });
+    const { job } = (await h.services.createJob(omniJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 8 } }), "factory")) as { job: { jobId: string } };
+    await h.runTick();
+    let row = h.store.jobs.get(job.jobId)!;
+    assert.deepEqual([row.status, row.remoteName, row.costUsd, row.costBasis], ["running", uri, 0.8199, "usage"]);
+    await h.runTick();
+    assert.deepEqual(h.calls.map((c) => c.method), ["generateVideo", "downloadVideo"], "no Veo operation is polled");
+    row = h.store.jobs.get(job.jobId)!;
+    assert.deepEqual([row.status, row.costUsd, row.costBasis], ["done", 0.8199, "usage"]);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("BL-179: Omni with no video -- a block is gemini_blocked at Google's counted cost; an answer still in progress counts its estimate", async () => {
+  const blocked = await harness();
+  try {
+    blocked.behaviour.generateVideo = async () => ({ video: null, usage: { inputTokens: 2000, outputTokens: 0, thoughtTokens: 100, outputByModality: {} }, status: "completed", blockReason: "safety" });
+    const { job } = (await blocked.services.createJob(omniJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 4 } }), "factory")) as { job: { jobId: string } };
+    await blocked.runTick();
+    const row = blocked.store.jobs.get(job.jobId)!;
+    // 2,000 x $1.50/1M + 100 x $9/1M = $0.0039.
+    assert.deepEqual([row.status, row.errorCode, row.costUsd, row.costBasis], ["failed", "gemini_blocked", 0.0039, "usage"]);
+  } finally {
+    await blocked.cleanup();
+  }
+  const pending = await harness();
+  try {
+    pending.behaviour.generateVideo = async () => ({ video: null, usage: null, status: "in_progress", blockReason: null });
+    const { job } = (await pending.services.createJob(omniJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 4 } }), "factory")) as { job: { jobId: string } };
+    await pending.runTick();
+    const row = pending.store.jobs.get(job.jobId)!;
+    // Its estimate by hand: 5,792 x 4 x $17.50/1M = $0.40544 + 2 input tokens x $1.50/1M + 2,000 x $9/1M = $0.423443 -> $0.4235.
+    assert.deepEqual([row.status, row.errorCode, row.costUsd, row.costBasis], ["failed", "gemini_unavailable", 0.4235, "unknown_outcome"]);
+  } finally {
+    await pending.cleanup();
+  }
+});
+
+// BL-179 independent review: money rules on the Omni path (GEMINI_MEDIA_PLAN.md §2.4 "never under-count"; a lost answer counts
+// its estimate and is never re-sent; a paid video is never dropped for a file that can still be collected).
+test("BL-179 review: a saved video costs at least its table price even when Google's counts are incomplete", async () => {
+  const h = await harness();
+  try {
+    h.behaviour.generateVideo = async () => ({ video: { mimeType: "video/mp4", data: Buffer.from("V") }, usage: { inputTokens: 3000, outputTokens: 0, thoughtTokens: 0, outputByModality: {} }, status: "completed", blockReason: null });
+    const { job } = (await h.services.createJob(omniJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 8 } }), "factory")) as { job: { jobId: string } };
+    await h.runTick();
+    // Floor by hand: 5,792 x 8 = 46,336 video tokens x $17.50/1M = $0.81088 -> $0.8109 (the counts alone said $0.0045).
+    const row = h.store.jobs.get(job.jobId)!;
+    assert.deepEqual([row.status, row.costUsd, row.costBasis], ["done", 0.8109, "usage"]);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("BL-179 review: audio and other non-text output are priced at the video rate", async () => {
+  const h = await harness();
+  try {
+    h.behaviour.generateVideo = async () => ({
+      video: { mimeType: "video/mp4", data: Buffer.from("V") },
+      usage: { inputTokens: 0, outputTokens: 50000, thoughtTokens: 0, outputByModality: { video: 46336, audio: 3000, text: 664 } },
+      status: "completed",
+      blockReason: null,
+    });
+    const { job } = (await h.services.createJob(omniJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 8 } }), "factory")) as { job: { jobId: string } };
+    await h.runTick();
+    // (46,336 + 3,000) x $17.50/1M + 664 x $9/1M = $0.86338 + $0.005976 = $0.869356 -> $0.8694.
+    assert.equal(h.store.jobs.get(job.jobId)!.costUsd, 0.8694);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("BL-179 review: a lost Omni answer counts its estimate and is not re-sent; a 429 is re-queued", async () => {
+  const lost = await harness();
+  try {
+    lost.behaviour.generateVideo = async () => {
+      throw gatewayError("gemini_unavailable", { outcome: "unknown", timedOut: true });
+    };
+    const { job } = (await lost.services.createJob(omniJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 4 } }), "factory")) as { job: { jobId: string } };
+    await lost.runTick();
+    lost.clock.at = new Date(lost.clock.at.getTime() + 10 * 60_000);
+    await lost.runTick();
+    const row = lost.store.jobs.get(job.jobId)!;
+    assert.deepEqual([row.status, row.errorCode, row.costUsd, row.costBasis], ["failed", "gemini_timeout", 0.4235, "unknown_outcome"]);
+    assert.equal(lost.calls.filter((c) => c.method === "generateVideo").length, 1, "never re-sent");
+  } finally {
+    await lost.cleanup();
+  }
+  const limited = await harness();
+  try {
+    limited.behaviour.generateVideo = async () => {
+      throw gatewayError("gemini_rate_limited", { status: 429 });
+    };
+    const { job } = (await limited.services.createJob(omniJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 4 } }), "factory")) as { job: { jobId: string } };
+    await limited.runTick();
+    const row = limited.store.jobs.get(job.jobId)!;
+    assert.deepEqual([row.status, row.errorCode, row.attempts], ["queued", "gemini_rate_limited", 1]);
+  } finally {
+    await limited.cleanup();
+  }
+});
+
+test("BL-179 review: a video that cannot be written keeps its cost", async () => {
+  const h = await harness();
+  try {
+    const { job } = (await h.services.createJob(omniJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 8 } }), "factory")) as { job: { jobId: string } };
+    h.failWrites.value = true;
+    await h.runTick();
+    const row = h.store.jobs.get(job.jobId)!;
+    assert.deepEqual([row.status, row.errorCode, row.costUsd, row.costBasis], ["failed", "gemini_output_failed", 0.8199, "usage"]);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("BL-179 review: a link-delivered video Google no longer has, or one never collected, fails at its known cost; a link that cannot be followed is never polled", async () => {
+  const usage = { inputTokens: 3000, outputTokens: 46336, thoughtTokens: 500, outputByModality: { video: 46336 } };
+  const gone = await harness();
+  try {
+    gone.behaviour.generateVideo = async () => ({ video: { mimeType: "video/mp4", uri: "https://generativelanguage.googleapis.com/v1beta/files/x:download?alt=media" }, usage, status: "completed", blockReason: null });
+    gone.behaviour.downloadVideo = async () => {
+      throw gatewayError("gemini_request_rejected", { status: 404 });
+    };
+    const { job } = (await gone.services.createJob(omniJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 8 } }), "factory")) as { job: { jobId: string } };
+    await gone.runTick();
+    await gone.runTick();
+    const row = gone.store.jobs.get(job.jobId)!;
+    assert.deepEqual([row.status, row.errorCode, row.costUsd, row.costBasis], ["failed", "gemini_expired", 0.8199, "usage"]);
+  } finally {
+    await gone.cleanup();
+  }
+  const late = await harness();
+  try {
+    seedJob(late.store, "gm_late", {
+      kind: "video",
+      model: "gemini-omni-1.1-flash",
+      status: "running",
+      remoteName: "https://generativelanguage.googleapis.com/v1beta/files/y:download?alt=media",
+      estimateUsd: 0.8323,
+      costUsd: 0.8199,
+      costBasis: "usage",
+      submittedAt: new Date(late.clock.at.getTime() - 48 * 3600_000),
+      paramsJson: JSON.stringify({ resolution: "720p", aspectRatio: "16:9", durationSeconds: 8 }),
+    });
+    await late.runTick();
+    const row = late.store.jobs.get("gm_late")!;
+    assert.deepEqual([row.status, row.errorCode, row.costUsd, row.costBasis], ["failed", "gemini_expired", 0.8199, "usage"]);
+  } finally {
+    await late.cleanup();
+  }
+  const notVideo = await harness();
+  try {
+    notVideo.behaviour.generateVideo = async () => ({ video: { mimeType: "video/mp4", uri: "https://generativelanguage.googleapis.com/v1beta/files/z:download?alt=media" }, usage, status: "completed", blockReason: null });
+    notVideo.behaviour.downloadVideo = async () => {
+      throw gatewayError("gemini_unavailable", { status: 200, notAVideo: true });
+    };
+    const { job } = (await notVideo.services.createJob(omniJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 8 } }), "factory")) as { job: { jobId: string } };
+    await notVideo.runTick();
+    await notVideo.runTick();
+    const row = notVideo.store.jobs.get(job.jobId)!;
+    assert.deepEqual([row.status, row.errorCode, row.costUsd, row.costBasis], ["failed", "gemini_output_failed", 0.8199, "usage"], "a link that gives no video is not retried for 47 h");
+  } finally {
+    await notVideo.cleanup();
+  }
+  const odd = await harness();
+  try {
+    odd.behaviour.generateVideo = async () => ({ video: { mimeType: "video/mp4", uri: "gs://bucket/x.mp4" }, usage, status: "completed", blockReason: null });
+    const { job } = (await odd.services.createJob(omniJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 8 } }), "factory")) as { job: { jobId: string } };
+    await odd.runTick();
+    const row = odd.store.jobs.get(job.jobId)!;
+    assert.deepEqual([row.status, row.errorCode, row.costUsd, row.costBasis], ["failed", "gemini_output_failed", 0.8199, "usage"]);
+    assert.deepEqual(odd.calls.map((c) => c.method), ["generateVideo"]);
+  } finally {
+    await odd.cleanup();
+  }
+});
+
+test("BL-179 review: the 1080p estimate (2.25 x 720p tokens) -- 8 s is over the default $1 per-job limit, 4 s fits", () => {
+  // 8 s: 13,032 x 8 = 104,256 x $17.50/1M = $1.82448 + 2 input tokens x $1.50/1M + 2,000 x $9/1M = $1.842483 -> $1.8425.
+  assert.equal(estimateVideoUsd({ model: "gemini-omni-1.1-flash", resolution: "1080p", durationSeconds: 8, promptChars: 5, inputImages: 0 }), 1.8425);
+  // 4 s: 52,128 x $17.50/1M = $0.91224 + $0.000003 + $0.018 = $0.930243 -> $0.9303.
+  assert.equal(estimateVideoUsd({ model: "gemini-omni-1.1-flash", resolution: "1080p", durationSeconds: 4, promptChars: 5, inputImages: 0 }), 0.9303);
 });
