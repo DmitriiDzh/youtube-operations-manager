@@ -97,5 +97,21 @@ export { createChannelPublishingSettingsSyncRunnerForProduction } from "./channe
 export { createPublishingUploadsShareCoreForProduction, PUBLISHING_UPLOADS_REPORT_FORMAT, PUBLISHING_UPLOADS_REPORT_VERSION } from "./publishing-uploads";
 export type { PublishingUploadsReport, SharedUpload } from "./publishing-uploads";
 export { createPublishingUploadsSyncRunnerForProduction } from "./publishing-uploads-sync";
+// BL-184: a channel's storyboards (versions from the Operator, comments and decisions from the owner), one document per channel.
+export { createStoryboardsCoreForProduction } from "./storyboards";
+export type {
+  StoryboardAuthor,
+  StoryboardComment,
+  StoryboardCommentTarget,
+  StoryboardDecision,
+  StoryboardKeyframe,
+  StoryboardProp,
+  StoryboardRecord,
+  StoryboardReply,
+  StoryboardSegment,
+  StoryboardsCore,
+  StoryboardVersion,
+} from "./storyboards";
+export { createStoryboardsSyncRunnerForProduction } from "./storyboards-sync";
 
 export { runAllSyncFamiliesOnce } from "./run-all-families";

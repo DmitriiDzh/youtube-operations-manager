@@ -10,6 +10,7 @@ import { createAgentTokensSyncRunnerForProduction } from "./agent-tokens-sync";
 import { createChannelLanguageSettingsSyncRunnerForProduction } from "./channel-language-settings-sync";
 import { createChannelPublishingSettingsSyncRunnerForProduction } from "./channel-publishing-settings-sync";
 import { createPublishingUploadsSyncRunnerForProduction } from "./publishing-uploads-sync";
+import { createStoryboardsSyncRunnerForProduction } from "./storyboards-sync";
 
 /** Runs one family's cycle and unconditionally records its outcome to `sync_family_status`
  * (2026-09-23, Merge-tab redesign) -- regardless of whether it resolved or threw, so the
@@ -40,7 +41,7 @@ async function runAndRecord<T>(
  * process-wide guard in `runAllSyncFamiliesOnce` below.
  */
 async function runAllOnce() {
-  const [changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads] = await Promise.all([
+  const [changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards] = await Promise.all([
     runAndRecord("change_drafts", () => createChangeDraftsSyncCoreForProduction().runSyncCycle()),
     runAndRecord("editorial_profile", () => createEditorialProfileSyncRunnerForProduction().runSyncCycle()),
     runAndRecord("ai_connections", () => createAiConnectionsCatalogSyncRunnerForProduction().runSyncCycle()),
@@ -60,8 +61,10 @@ async function runAllOnce() {
     runAndRecord("channel_publishing_settings", () => createChannelPublishingSettingsSyncRunnerForProduction().runSyncCycle()),
     // BL-182 stage 2: this computer's uploads under way out, the other devices' in (a package one computer uploads is refused on the other).
     runAndRecord("publishing_uploads", () => createPublishingUploadsSyncRunnerForProduction().runSyncCycle()),
+    // BL-184: each channel's storyboards (the Operator's versions, the owner's comments and decisions), the same on every computer.
+    runAndRecord("storyboards", () => createStoryboardsSyncRunnerForProduction().runSyncCycle()),
   ]);
-  return { changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads };
+  return { changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards };
 }
 
 type AllFamiliesResult = Awaited<ReturnType<typeof runAllOnce>>;
