@@ -15,6 +15,7 @@ import { LoadingOverlay } from "@/components/loading-overlay";
 import { useT } from "@/components/ui-text-provider";
 import { planReloginPrompt } from "@/lib/channel-connections/relogin-prompt";
 import { ConflictCenter, useConflictCenter } from "@/components/conflict-center";
+import { languagesBadge, otherChannelLanguageEntries, type LanguageAlertChannel } from "@/components/language-alerts";
 import {
   INITIAL_STARTUP,
   STARTUP_STEPS,
@@ -94,6 +95,7 @@ const SYNC_CYCLE_POLL_MS = 60_000;
 const RESEARCH_PENDING_POLL_MS = 60_000;
 // BL-143 phase 3 (AC-GP3-02): how often the sidebar re-reads the generation plan attempts waiting for the owner (a local read).
 const PLANS_REVIEW_POLL_MS = 60_000;
+const LANGUAGE_ALERTS_POLL_MS = 60_000;
 
 type Tab = (typeof NAV_ITEMS)[number]["value"];
 
@@ -125,6 +127,10 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   const [plansWaitingRejected, setPlansWaitingRejected] = useState(0);
   const [channelWork, setChannelWork] = useState<PlanChannelWork[]>([]);
   const [summaryActiveChannelId, setSummaryActiveChannelId] = useState<string | null>(null);
+  // BL-178 part C (LOCALIZATION_BASELINE_PLAN §3.3 C2): every connected channel's translation alerts -- the active one's on the
+  // «Языки» badge, the others' in the bell -- and which channel the server counted as active.
+  const [languageAlerts, setLanguageAlerts] = useState<LanguageAlertChannel[]>([]);
+  const [languageAlertsActiveId, setLanguageAlertsActiveId] = useState<string | null>(null);
   // Owner, msg 2004: a blurred loading window while the app loads its data on open and while the channel switches.
   const [startup, setStartup] = useState<StartupProgress>(INITIAL_STARTUP);
   const [startupDismissed, setStartupDismissed] = useState(false);
@@ -390,10 +396,36 @@ export default function AppLayout({ children }: { children: ReactNode }) {
     // BL-157: read again when the active channel changes -- the badge is that channel's.
   }, [userId, activeChannelId]);
 
+  // BL-178 part C: translation alerts. Read again when the active channel changes -- the badge is that channel's.
+  useEffect(() => {
+    if (!userId) return;
+    let cancelled = false;
+    async function refreshLanguageAlerts() {
+      try {
+        const res = await fetch("/api/localization-alerts");
+        if (!res.ok || cancelled) return;
+        const data = (await res.json()) as { activeChannelId?: string | null; channels?: LanguageAlertChannel[] };
+        if (cancelled) return;
+        setLanguageAlerts(data.channels ?? []);
+        setLanguageAlertsActiveId(data.activeChannelId ?? null);
+      } catch {
+        // Non-fatal -- the next poll tries again.
+      }
+    }
+    void refreshLanguageAlerts();
+    const id = setInterval(() => void refreshLanguageAlerts(), LANGUAGE_ALERTS_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+      setLanguageAlerts([]);
+      setLanguageAlertsActiveId(null);
+    };
+  }, [userId, activeChannelId]);
+
   // With agent requests waiting, Research leads to plain `/research`, where its first-open rule opens Inbox (AC-R1-2),
   // as every visit did before BL-149 (re-review).
   const navItemsWithBadges = NAV_ITEMS.map(({ labelKey, ...item }) => ({ ...item, label: t(labelKey), href: item.value === "research" && researchPending > 0 ? item.href : sectionHref(item.href, lastPathBySection) })).map((item) =>
-    item.value === "merge" ? { ...item, badge: conflictCount } : item.value === "research" ? { ...item, badge: researchPending } : item.value === "media" ? { ...item, badge: plansWaiting, badgeTitle: plansWaitingRejected > 0 ? t("plans.badgeSplit", { passed: plansWaiting - plansWaitingRejected, rejected: plansWaitingRejected }) : undefined } : item
+    item.value === "merge" ? { ...item, badge: conflictCount } : item.value === "research" ? { ...item, badge: researchPending } : item.value === "media" ? { ...item, badge: plansWaiting, badgeTitle: plansWaitingRejected > 0 ? t("plans.badgeSplit", { passed: plansWaiting - plansWaitingRejected, rejected: plansWaitingRejected }) : undefined } : item.value === "languages" ? { ...item, ...languagesBadge(t, languageAlerts.find((a) => a.channelId === languageAlertsActiveId)) } : item
   );
 
   if (status === "loading") {
@@ -416,6 +448,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       channel={channel}
       activeChannelId={summaryActiveChannelId}
       channelWork={channelWork}
+      languageEntries={otherChannelLanguageEntries(t, languageAlerts, languageAlertsActiveId)}
       onOpenChannelWork={(channelId, href) => void openChannelWork(channelId, href)}
       channelUnavailable={channelUnavailable}
       onSignOut={() => signOut()}

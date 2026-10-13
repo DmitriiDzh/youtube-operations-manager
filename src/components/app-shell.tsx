@@ -10,6 +10,7 @@ import type { ChannelInfo } from "@/components/app-channel";
 import type { PlanChannelWork } from "@/lib/generation-plans/contracts";
 import { ChannelSwitcher } from "./channel-switcher";
 import { DeviceSyncBell } from "./device-sync-bell";
+import type { ChannelWorkEntry } from "./channel-work";
 import { FeatureErrorBoundary } from "./feature-error-boundary";
 import { useT } from "./ui-text-provider";
 
@@ -38,6 +39,8 @@ export function AppShell<T extends string>(props: {
   /** BL-157 (SERVERS_MEDIA_PLAN.md §D): every connected channel's open Media work -- the switcher's counts, the bell's entries. */
   activeChannelId?: string | null;
   channelWork?: readonly PlanChannelWork[];
+  /** BL-178 part C: the other channels' translation alerts, shown in the bell. */
+  languageEntries?: readonly ChannelWorkEntry[];
   /** A bell entry's button: switch to that channel, then open `href`. */
   onOpenChannelWork?: (channelId: string, href: string) => void;
   children: ReactNode;
@@ -109,6 +112,7 @@ export function AppShell<T extends string>(props: {
                 onReviewDivergence={props.onReviewDeviceSyncDivergence}
                 activeChannelId={props.activeChannelId ?? null}
                 channelWork={props.channelWork}
+                languageEntries={props.languageEntries}
                 onOpenChannelWork={props.onOpenChannelWork}
               />
             </FeatureErrorBoundary>

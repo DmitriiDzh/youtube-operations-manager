@@ -13,8 +13,10 @@ type ServiceDependencies = {
   store: {
     getChannel(channelId: string): Promise<StoredChannelRef | null>;
     getDefaults(channelId: string): Promise<ChannelLanguageDefaults>;
-    setDefaults(channelId: string, value: ChannelLanguageDefaults): Promise<void>;
+    /** Only the given fields change (BL-178 part B). */
+    setDefaults(channelId: string, value: Partial<ChannelLanguageDefaults>): Promise<void>;
     listVideos(channelId: string): Promise<StoredVideoLanguageRow[]>;
+    getConflictedFields?(channelId: string): Promise<string[]>;
   };
 };
 
@@ -24,6 +26,19 @@ async function requireChannel(deps: ServiceDependencies, channelId: string) {
     throw new DomainError({ code: "not_found", message: "Channel has not been synchronized yet", details: { channelId } });
   }
   return channel;
+}
+
+/**
+ * BL-178 part B: an unreadable shared document never breaks this report (review item 5), but it is flagged -- a write that
+ * needs the computers to agree ("Fix all") refuses on the flag, as a Batch does (review re-check).
+ */
+async function conflictedFieldsOf(deps: ServiceDependencies, channelId: string): Promise<{ conflictedFields?: string[]; conflictedFieldsUnknown?: true }> {
+  if (!deps.store.getConflictedFields) return {};
+  try {
+    return { conflictedFields: await deps.store.getConflictedFields(channelId) };
+  } catch {
+    return { conflictedFieldsUnknown: true };
+  }
 }
 
 export function createChannelLanguageDefaultsServices(deps: ServiceDependencies) {
@@ -38,14 +53,17 @@ export function createChannelLanguageDefaultsServices(deps: ServiceDependencies)
       }
     },
 
-    /** Full replace of the baseline; `null` clears a field. Local preference only -- no YouTube call. */
+    /** Sets the given baseline fields (a field left out is unchanged; `null` clears it) and returns the whole baseline. Shared
+     * with the owner's other computers since BL-178 part B; never a YouTube call. */
     async setDefaults(input: unknown): Promise<ChannelLanguageDefaults> {
       const parsed = parseWithSchema(setDefaultsInputSchema, input, "set language defaults input");
       try {
         await requireChannel(deps, parsed.channelId);
-        const value = { defaultLanguage: parsed.defaultLanguage, defaultAudioLanguage: parsed.defaultAudioLanguage };
+        const value: Partial<ChannelLanguageDefaults> = {};
+        if (parsed.defaultLanguage !== undefined) value.defaultLanguage = parsed.defaultLanguage;
+        if (parsed.defaultAudioLanguage !== undefined) value.defaultAudioLanguage = parsed.defaultAudioLanguage;
         await deps.store.setDefaults(parsed.channelId, value);
-        return value;
+        return await deps.store.getDefaults(parsed.channelId);
       } catch (error) {
         throw mapUnknownError(error, "validation_failed");
       }
@@ -76,6 +94,7 @@ export function createChannelLanguageDefaultsServices(deps: ServiceDependencies)
           defaultLanguageWritableViaApi: true,
           defaultAudioLanguageWritableViaApi: true,
           deviations,
+          ...(await conflictedFieldsOf(deps, channelId)),
         };
       } catch (error) {
         throw mapUnknownError(error, "validation_failed");

@@ -1,8 +1,9 @@
 # Localization: the channel's language is the truth (FO-REQ-0022, BL-178)
 
-- **Status:** APPROVED 2026-10-12 (owner, Telegram msg 2665: В1 yes, В2 yes, В3 yes, В4 ok). Part A is built first, then B,
+- **Status:** DONE 2026-10-13. APPROVED 2026-10-12 (owner, Telegram msg 2665: В1 yes, В2 yes, В3 yes, В4 ok). Part A is built first, then B,
   then C; each is merged on its own. **Part A DONE**: built on `feature/bl-178-localization-safety`, reviewed, merged into `dev`
-  2026-10-12 (owner, Telegram msg 2674). Parts B and C are not started. Deviation from §3.1 A5: `channel_video_list` gets no `languageDeviates` flag; the list is in
+  2026-10-12 (owner, Telegram msg 2674). **Parts B and C BUILT** together on `feature/bl-178-baseline-sync-alerts`
+  (2026-10-13; owner msg 2677: related tasks may share a branch), reviewed, merged into `dev` 2026-10-13 (owner, Telegram msg 2684). **BL-178 DONE.** Deviations, §6. Deviation from §3.1 A5: `channel_video_list` gets no `languageDeviates` flag; the list is in
   `agent_get_channel_context` (`languageDeviations`), which serves the same need.
 - **Request:** FO-REQ-0022, created by the Operator on 2026-10-12 and relayed by the owner on 2026-10-12.
 - **Owner's rule:** decision 1078, quoted in the request:
@@ -216,3 +217,24 @@ The Producer gets both through the shared handlers.
 - The Change Set field authority stays title and description (§21). Alignment writes only the two language fields, and only in a Batch, as §14's exceptions already allow.
 - No write without the approval flow and Live writes.
 - No blind round-trip of a cached value: echoed values come from the fresh read.
+
+## 6. Deviations from §3 found while building B and C (2026-10-13)
+
+- **B, Batches refuse only on a baseline conflict.** §3.2 says Batches refuse while the channel's language settings conflict. They
+  refuse while `defaultLanguage` or `defaultAudioLanguage` conflicts. A tracked-languages conflict does not stop them, because no
+  write reads the tracked list. It still shows on the startup screen and in Merge.
+- **B, shared genesis and seeding.** The family follows `media-settings`, not `editorial-profile`. The genesis is the same on
+  every computer, so documents started separately merge field by field. The first sync seeds only set values, before the peer's
+  document is merged. An empty Mac therefore receives Windows' `en`/`en` without a conflict.
+- **C1, a fingerprint instead of a counter.** The page polls a fingerprint of the channel's local video copy, its tracked
+  languages and its baseline. It is not a counter that a Batch bumps. The fingerprint sees changes from any process (agent, CLI,
+  sync, the other computer's settings) with no schema change.
+- **B, edits during a conflict.** These rules came from the independent review:
+  - re-saving this computer's value of a conflicted field does not settle it;
+  - the defaults form sends only changed fields;
+  - tracked-language edits and "Fix all" are refused while the field conflicts.
+
+  A value cleared before the first sync is not shared (ARCHITECTURE §46, known limit).
+- **C2, the bell lists the other channels.** The active channel's alert is the «Языки» badge (the BL-157 rule, owner msg 2119).
+  The badge counts distinct videos missing a translation or deviating, and shows the split on hover. The bell's "Open" switches the channel and opens
+  «Языки». The overview has no URL filter yet.

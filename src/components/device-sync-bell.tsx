@@ -6,7 +6,7 @@ import type { Translate, UiTextKey } from "@/lib/ui-text";
 import { useT } from "./ui-text-provider";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PlanChannelWork } from "@/lib/generation-plans/contracts";
-import { otherChannelEntries } from "./channel-work";
+import { otherChannelEntries, type ChannelWorkEntry } from "./channel-work";
 import { useChannelNames } from "./use-channel-names";
 
 /**
@@ -82,11 +82,14 @@ export function DeviceSyncBell({
   onReviewDivergence,
   activeChannelId = null,
   channelWork = [],
+  languageEntries = [],
   onOpenChannelWork,
 }: {
   onReviewDivergence?: () => void;
   activeChannelId?: string | null;
   channelWork?: readonly PlanChannelWork[];
+  /** BL-178 part C (LOCALIZATION_BASELINE_PLAN §3.3 C2): the other channels' translation alerts (`otherChannelLanguageEntries`). */
+  languageEntries?: readonly ChannelWorkEntry[];
   onOpenChannelWork?: (channelId: string, href: string) => void;
 }) {
   const t = useT();
@@ -151,13 +154,44 @@ export function DeviceSyncBell({
     }
   }
 
+  // One row of another channel's open work (Media, translations): its avatar and name, the text, and "Open" (switch, then go).
+  const entryRow = (entry: ChannelWorkEntry) => {
+    const thumbnail = channelLabels?.find((c) => c.channelId === entry.channelId)?.thumbnailUrl ?? null;
+    return (
+      <div key={entry.key} className="flex items-start gap-2 rounded-lg border border-zinc-700 bg-zinc-950 p-2.5">
+        {thumbnail ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={thumbnail} alt="" className="mt-0.5 h-7 w-7 shrink-0 rounded-full" />
+        ) : (
+          <div className="mt-0.5 h-7 w-7 shrink-0 rounded-full bg-zinc-700" />
+        )}
+        <div className="min-w-0 flex-1">
+          {/* ui-text-ignore: a channel's own name (data) */}
+          <p className="truncate text-xs font-medium text-zinc-100">{nameOf(entry.channelId)}</p>
+          <p className="text-xs text-zinc-300">{entry.text}</p>
+        </div>
+        {onOpenChannelWork && (
+          <button
+            onClick={() => {
+              setOpen(false);
+              onOpenChannelWork(entry.channelId, entry.href);
+            }}
+            className="shrink-0 rounded-md bg-indigo-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-indigo-500"
+          >
+            {t("channelWork.open")}
+          </button>
+        )}
+      </div>
+    );
+  };
+
   const notices = status?.notices ?? [];
   const attention = notices.length > 0 || liveNotices.some((n) => n.kind !== "live_stream_source_missing");
   const dotClass = attention
     ? "bg-red-500"
     : status?.state === "waiting" || status?.state === "busy" || status?.state === "folder_unreachable"
       ? "bg-amber-400"
-      : entries.length > 0 || liveNotices.length > 0
+      : entries.length > 0 || liveNotices.length > 0 || languageEntries.length > 0
         ? "bg-sky-400"
         : null;
 
@@ -177,35 +211,13 @@ export function DeviceSyncBell({
           {entries.length > 0 && (
             <div className="space-y-2 border-b border-zinc-800 pb-3">
               <h3 className="text-sm font-semibold text-zinc-100">{t("channelWork.title")}</h3>
-              {entries.map((entry) => {
-                const thumbnail = channelLabels?.find((c) => c.channelId === entry.channelId)?.thumbnailUrl ?? null;
-                return (
-                  <div key={entry.key} className="flex items-start gap-2 rounded-lg border border-zinc-700 bg-zinc-950 p-2.5">
-                    {thumbnail ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={thumbnail} alt="" className="mt-0.5 h-7 w-7 shrink-0 rounded-full" />
-                    ) : (
-                      <div className="mt-0.5 h-7 w-7 shrink-0 rounded-full bg-zinc-700" />
-                    )}
-                    <div className="min-w-0 flex-1">
-                      {/* ui-text-ignore: a channel's own name (data) */}
-                      <p className="truncate text-xs font-medium text-zinc-100">{nameOf(entry.channelId)}</p>
-                      <p className="text-xs text-zinc-300">{entry.text}</p>
-                    </div>
-                    {onOpenChannelWork && (
-                      <button
-                        onClick={() => {
-                          setOpen(false);
-                          onOpenChannelWork(entry.channelId, entry.href);
-                        }}
-                        className="shrink-0 rounded-md bg-indigo-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-indigo-500"
-                      >
-                        {t("channelWork.open")}
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
+              {entries.map(entryRow)}
+            </div>
+          )}
+          {languageEntries.length > 0 && (
+            <div className="space-y-2 border-b border-zinc-800 pb-3">
+              <h3 className="text-sm font-semibold text-zinc-100">{t("languageAlerts.bellTitle")}</h3>
+              {languageEntries.map(entryRow)}
             </div>
           )}
           {liveNotices.length > 0 && (

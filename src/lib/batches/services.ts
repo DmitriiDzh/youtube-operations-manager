@@ -167,6 +167,8 @@ type BackupDeps = {
 type ChannelLanguageBaselineDeps = {
   getExpectedDefaultLanguage(channelId: string): Promise<string | null>;
   getExpectedDefaultAudioLanguage?(channelId: string): Promise<string | null>;
+  /** BL-178 part B: the baseline fields set differently on the owner's computers (each keeps its own until the owner picks). */
+  getConflictedBaselineFields?(channelId: string): Promise<string[]>;
 };
 
 type ServiceDependencies = {
@@ -646,6 +648,22 @@ export function createBatchServices(deps: ServiceDependencies) {
       for (const change of changeRecords) assertApprovalStillValid(change);
     } catch (error) {
       return { outcome: "FAILED", error: error instanceof DomainError ? error.message : String(error) };
+    }
+
+    // BL-178 part B (LOCALIZATION_BASELINE_PLAN §3.2): while the channel's baseline differs between the owner's computers,
+    // nobody has picked the language this write would set -- refuse before any YouTube call.
+    let conflictedBaseline: string[];
+    try {
+      conflictedBaseline = (await deps.channelLanguageBaseline?.getConflictedBaselineFields?.(batch.channelId)) ?? [];
+    } catch (error) {
+      // Cannot tell whether the computers agree: fail closed, with the cause on the row (review item 6).
+      return { outcome: "FAILED", error: `The channel's language settings could not be read (${error instanceof Error ? error.message : String(error)}); nothing was sent.` };
+    }
+    if (conflictedBaseline.length > 0) {
+      return {
+        outcome: "FAILED",
+        error: `The channel's language defaults (${conflictedBaseline.join(", ")}) were set differently on your computers. Choose one in Merge (or on the startup screen), then retry.`,
+      };
     }
 
     const rawFresh = await deps.youtubeApi.fetchFreshVideoContext({ credentials, videoId: row.videoId });
@@ -1176,7 +1194,9 @@ export function createBatchServices(deps: ServiceDependencies) {
       return { ledgerRowId: row.id, videoId: row.videoId, status: "FAILED", detail, systemic: true };
     };
 
-    const finalizeSuccess = async (): Promise<ExecutionResult> => {
+    // BL-178 part C (LOCALIZATION_BASELINE_PLAN §3.3 C1): the confirming read updates the local copy here too, as on the
+    // ordinary success path -- the Languages page then shows the row done without a Sync Now.
+    const finalizeSuccess = async (confirmingRead: Parameters<typeof confirmLocalMirror>[2]): Promise<ExecutionResult> => {
       await transitionLedgerStatus(row.id, "SUCCESS", {
         verificationResult: { resolvedVia: "reconciliation", ownResponseObserved: false, confirmedAt: new Date().toISOString() },
       });
@@ -1187,6 +1207,7 @@ export function createBatchServices(deps: ServiceDependencies) {
         eventType: "VERIFICATION",
         detail: { resolvedVia: "reconciliation", ownResponseObserved: false },
       });
+      await confirmLocalMirror(batch, row, confirmingRead);
       await releaseVideoLock({ batchId: batch.id, videoId: row.videoId });
       return { ledgerRowId: row.id, videoId: row.videoId, status: "SUCCESS", ownResponseObserved: false };
     };
@@ -1227,7 +1248,7 @@ export function createBatchServices(deps: ServiceDependencies) {
     const classification1 = freshContext1 ? classifyFreshStateAgainstAttempt(pendingChanges, freshContext1, { channelBaseline }) : "diverged";
     await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "RECONCILIATION", detail: { step: 1, classification: classification1 } });
 
-    if (classification1 === "matches_requested") return freshContext1 && readBackMatchesSentSnippet(freshContext1, sentPayload) ? finalizeSuccess() : finalizeSnippetMismatch();
+    if (classification1 === "matches_requested") return freshContext1 && readBackMatchesSentSnippet(freshContext1, sentPayload) ? finalizeSuccess(read1) : finalizeSnippetMismatch();
     if (classification1 === "diverged") return finalizeConflict(freshContext1);
 
     // matches_baseline -- inconclusive by itself (§0.F Step 1), proceed to Step 2.
@@ -1237,7 +1258,7 @@ export function createBatchServices(deps: ServiceDependencies) {
     const classification2 = read2 ? classifyFreshStateAgainstAttempt(pendingChanges, toFreshVideoContext(read2), { channelBaseline }) : "diverged";
     await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "RECONCILIATION", detail: { step: 2, classification: classification2 } });
 
-    if (classification2 === "matches_requested") return read2 && readBackMatchesSentSnippet(toFreshVideoContext(read2), sentPayload) ? finalizeSuccess() : finalizeSnippetMismatch();
+    if (classification2 === "matches_requested") return read2 && readBackMatchesSentSnippet(toFreshVideoContext(read2), sentPayload) ? finalizeSuccess(read2) : finalizeSnippetMismatch();
 
     // Both a consistent-negative (matches_baseline again) and a diverged/inconsistent
     // second read land here -- §0.F Step 3: neither, by itself or together, ever

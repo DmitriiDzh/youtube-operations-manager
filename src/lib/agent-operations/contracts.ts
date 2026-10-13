@@ -218,6 +218,9 @@ export type ChannelContext = {
   /** BL-178: synced videos whose own language fields differ from the baseline (only fields the baseline sets; case-insensitive;
    * a missing value deviates). Empty without a baseline. A Batch aligns such a video's `defaultLanguage` when it writes it. */
   languageDeviations?: Array<{ videoId: string; defaultLanguage: string | null; defaultAudioLanguage: string | null }>;
+  /** BL-178 part C (FO-REQ-0022 §6): the channel's public or scheduled videos lacking a tracked language -- no title, or no
+   * description where the original has one -- measured against the channel's language (the same list as the Languages badge). */
+  missingTranslations?: { videoCount: number; byLanguage: Record<string, number>; videos: Array<{ videoId: string; missingLanguages: string[] }> };
 };
 
 export type AgentLocalizationEntry = {

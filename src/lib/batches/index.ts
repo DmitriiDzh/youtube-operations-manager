@@ -7,6 +7,7 @@ import { createBatchStoreAdapter, createChangeSetReaderAdapter, createChangeSetS
 import { createBatchYoutubeApiAdapter } from "./adapters/youtube-api";
 import { applyConfirmedWriteToStoredVideo, getChannelExpectedLanguages, getLiveWritesEnabled, rawSqlClient, splitPendingBatchForQuota } from "@/lib/db";
 import { createQuotaGuardCore } from "@/lib/quota-guard";
+import { createChannelLanguageSettingsCoreForProduction } from "@/lib/sync-gateway";
 import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
 import { createBatchServices } from "./services";
 import { createSendApprovedServices } from "./send-approved";
@@ -40,6 +41,7 @@ export function createBatchCore() {
     channelLanguageBaseline: {
       getExpectedDefaultLanguage: async (channelId) => (await getChannelExpectedLanguages(channelId)).defaultLanguage,
       getExpectedDefaultAudioLanguage: async (channelId) => (await getChannelExpectedLanguages(channelId)).defaultAudioLanguage,
+      getConflictedBaselineFields: (channelId) => createChannelLanguageSettingsCoreForProduction().conflictedBaselineFields(channelId),
     },
     localMirror: { applyConfirmedWrite: (input) => applyConfirmedWriteToStoredVideo(input) },
     backup: createBackupCore(),

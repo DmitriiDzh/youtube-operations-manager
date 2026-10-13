@@ -43,6 +43,11 @@ export type LanguageDeviationReport = {
   /** Owner 2026-10-02: written via video-details (not in the official settable list -- experimental until one live write confirms it). */
   defaultAudioLanguageWritableViaApi: true;
   deviations: LanguageDeviationRow[];
+  /** BL-178 part B: baseline fields set differently on the owner's computers (each keeps its own until the owner chooses in
+   * Merge or on the startup screen; Batches refuse meanwhile). Absent when the store cannot tell. */
+  conflictedFields?: string[];
+  /** The shared language settings could not be read: whether the computers agree is unknown (writes refuse, review re-check). */
+  conflictedFieldsUnknown?: true;
 };
 
 export type StoredChannelRef = { channelId: string };

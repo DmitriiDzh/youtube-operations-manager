@@ -52,6 +52,10 @@ export type AppPaths = {
   mediaSettingsDocDir: string;
   mediaSettingsSyncFallbackDir: string;
   mediaSettingsDiscardedBackupsDir: string;
+  /** BL-178 part B: the per-channel language settings documents (sync-gateway `channel-language-settings`). */
+  channelLanguageSettingsDocDir: string;
+  channelLanguageSettingsSyncFallbackDir: string;
+  channelLanguageSettingsDiscardedBackupsDir: string;
   /** Directory holding the per-channel editorial-profile Automerge documents
    * (`src/lib/sync-gateway/editorial-profile/`, added 2026-09-22, `docs/roadmap/plans/
    * FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4/M3 -- its own document family, separate from

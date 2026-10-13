@@ -2,6 +2,7 @@
 
 import { errorText } from "@/lib/ui-text";
 import { LanguageDefaultsPanel } from "@/components/language-defaults-panel";
+import { useLocalizationVersion } from "@/components/use-localization-version";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatDisplayDate, formatDisplayDateTime, resolvePublishDate } from "@/lib/shared-formatting";
 import { VideoDetailModal } from "./video-detail-modal";
@@ -321,27 +322,36 @@ export function LanguagesManager() {
   const [previewing, setPreviewing] = useState(false);
   const [creatingChangeSet, setCreatingChangeSet] = useState(false);
 
-  const fetchOverview = useCallback(async (id: string) => {
+  // `quiet` (BL-178 part C): a background reload after a change made elsewhere keeps the open video, the error line and no
+  // loading state -- only the rows update. Only the newest request's answer is applied (review item 7: a slow answer for the
+  // previous channel never lands after a switch).
+  const overviewRequestRef = useRef(0);
+  const fetchOverview = useCallback(async (id: string, options?: { quiet?: boolean }) => {
+    const request = ++overviewRequestRef.current;
     if (!id) {
       setOverview(null);
       return;
     }
-    setLoadingOverview(true);
-    setError(null);
-    setExpandedVideoId(null);
-    setDetail(null);
+    const quiet = options?.quiet === true;
+    if (!quiet) {
+      setLoadingOverview(true);
+      setError(null);
+      setExpandedVideoId(null);
+      setDetail(null);
+    }
     try {
       const res = await fetch(`/api/channels/${encodeURIComponent(id)}/localizations`);
       const data = await res.json();
+      if (request !== overviewRequestRef.current) return;
       if (!res.ok) {
-        setError(errorText(t, data, t("common.errorStatus", { status: res.status })));
+        if (!quiet) setError(errorText(t, data, t("common.errorStatus", { status: res.status })));
         return;
       }
       setOverview(data);
     } catch (e) {
-      setError(String(e));
+      if (!quiet) setError(String(e));
     } finally {
-      setLoadingOverview(false);
+      if (!quiet) setLoadingOverview(false);
     }
   }, [t]);
 
@@ -608,6 +618,15 @@ export function LanguagesManager() {
       setOpenChangeSetId(null);
     }
   }, [channelId, fetchOverview, fetchChangeSets]);
+
+  // BL-178 part C (§3.3 C1): a Batch sent from the Batches page or by an agent, a sync, or a language setting from the other
+  // computer shows here within ~15 s, without a manual sync.
+  const refreshAfterOutsideChange = useCallback(() => {
+    if (!channelId) return;
+    void fetchOverview(channelId, { quiet: true });
+    fetchChangeSets(channelId).catch(() => undefined);
+  }, [channelId, fetchOverview, fetchChangeSets]);
+  useLocalizationVersion(channelId, refreshAfterOutsideChange);
 
   /** Invalidates whatever `handleGenerate()` request is currently in flight -- a response that
    * arrives after this is bumped is recognized as stale and never applied. Deliberately does
