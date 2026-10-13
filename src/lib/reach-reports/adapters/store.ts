@@ -5,7 +5,9 @@ import {
   listReportingReportFiles,
   recordReportingSyncAttempt,
   getReportingJob,
+  importBasicReport,
   importReachReport,
+  importTrafficSourceReport,
   listChannelReachDaily,
   listSeenReportingReportIds,
   upsertReportingJob,
@@ -34,5 +36,13 @@ export function createReachReportsStoreAdapter(): ReachReportsDependencies["stor
     getAttempt: (channelId, reportTypeId) => getReportingSyncAttempt(channelId, reportTypeId),
     listFiles: (channelId, reportTypeId, limit) => listReportingReportFiles(channelId, reportTypeId, limit),
     countImportedFiles: (channelId, reportTypeId) => countImportedReportingFiles(channelId, reportTypeId),
+  };
+}
+
+/** BL-181: the storage of the basic and traffic-source report files (the module's one db boundary, like the store above). */
+export function createOtherReportStoreAdapter() {
+  return {
+    importBasicReport: (input: Parameters<typeof importBasicReport>[0]) => importBasicReport(input),
+    importTrafficSourceReport: (input: Parameters<typeof importTrafficSourceReport>[0]) => importTrafficSourceReport(input),
   };
 }

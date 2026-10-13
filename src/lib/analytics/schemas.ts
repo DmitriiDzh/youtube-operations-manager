@@ -260,7 +260,7 @@ export const getDataQualityReportOutputSchema = dataQualityReportShapeSchema
     coveredWithoutData: z.array(z.string()),
     provisionalDates: z.array(z.string()),
     coveredMeans: z.string(),
-    // BL-181 (FO-REQ-0020 §2.4): the newest dates the Analytics API actually returned in this computer's latest run that recorded them.
+    // BL-181 (FO-REQ-0020 §2.4): the newest dates the Analytics API has returned to this computer (the maximum over its runs).
     newestReturned: z.object({ videoDate: z.string().nullable(), channelDate: z.string().nullable(), ranAt: z.string() }).strict().nullable(),
     // BL-181: the first run that got each date back, and how long after the Pacific day ended.
     returnLag: z.array(

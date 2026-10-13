@@ -32,6 +32,7 @@ import {
   getAnalyticsEveningLocalTime,
   getAnalyticsEveningAttempt,
   recordAnalyticsEveningAttempt,
+  getNewestVideoMetricDate,
 } from "@/lib/db";
 
 // Deliberately thin: only wraps the db.ts functions this module actually needs
@@ -128,6 +129,7 @@ export function createAnalyticsStoreAdapter() {
     metricStore: {
       upsertMetric: upsertVideoMetric,
       listMetricsByChannel: listVideoMetricsByChannel,
+      getNewestMetricDate: (channelId: string) => getNewestVideoMetricDate(channelId),
     },
     // BL-118: channel-level daily totals stored locally.
     channelMetricStore: {

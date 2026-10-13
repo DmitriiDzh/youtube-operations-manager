@@ -154,6 +154,8 @@ type ServiceDependencies = {
       metricValue: number;
     }): Promise<void>;
     listMetricsByChannel(channelId: string): Promise<StoredVideoMetricRow[]>;
+    /** BL-181: the newest stored metric date of the channel's videos, the other computer's rows included (the evening gate). */
+    getNewestMetricDate?(channelId: string): Promise<string | null>;
   };
   /** BL-118: channel-level daily totals stored locally (optional so older wiring keeps its behavior). */
   channelMetricStore?: {
@@ -309,48 +311,48 @@ function mapStoredWeeklyReport(row: {
 
 /**
  * BL-181 (FO-REQ-0020 §2.4 and criterion 5): for each date of the range, the first collection run on this computer that got the date
- * back from the Analytics API, and how many hours after the date's Pacific day ended that run was. Built from each run's newest
- * returned dates (recorded since schema v87): a date counts once a run's newest date reaches it and the previous run's did not. The
- * first recorded run is only the baseline (earlier dates came back before anything was recorded). An UPPER bound: the run shows when
- * this app asked, not when Google published -- runs happen at the daily boundaries (12:05 and the evening one).
+ * back from the Analytics API, and how many hours after the date's Pacific day ended that run was. Built from each run's requested
+ * range and newest returned dates (recorded since schema v87). A date D counts as first returned at run R only when R asked for D
+ * and its newest date reached D, AND an earlier run that also asked for D got a newest date before D -- the proof that D was not
+ * available yet. Otherwise D's first return is unknown (`null`): a run that asked for another range (a history catch-up, a backfill)
+ * says nothing about D, and neither does the first run after the upgrade (review finding 1). An UPPER bound: the run shows when this
+ * app asked, not when Google published -- runs happen at the daily boundaries (12:05 and the evening one).
  */
 export function returnLagOf(
-  runs: ReadonlyArray<{ newestVideoDate?: string | null; newestChannelDate?: string | null; ranAt: Date }>,
+  runs: ReadonlyArray<{ requestedStartDate: string; requestedEndDate: string; newestVideoDate?: string | null; newestChannelDate?: string | null; ranAt: Date }>,
   startDate: string,
   endDate: string
 ): Array<{ date: string; videoFirstReturnedAt: string | null; videoLagHours: number | null; channelFirstReturnedAt: string | null; channelLagHours: number | null }> {
-  const firstSeen = (pick: (run: (typeof runs)[number]) => string | null | undefined) => {
-    const seen = new Map<string, Date>();
-    let newestSoFar: string | null = null;
-    for (const run of [...runs].sort((a, b) => a.ranAt.getTime() - b.ranAt.getTime())) {
+  const ordered = [...runs].sort((a, b) => a.ranAt.getTime() - b.ranAt.getTime());
+  const firstReturn = (date: string, pick: (run: (typeof ordered)[number]) => string | null | undefined): Date | null => {
+    let seenMissing = false;
+    for (const run of ordered) {
       const newest = pick(run) ?? null;
-      if (newest === null) continue;
-      if (newestSoFar !== null && newest > newestSoFar) {
-        for (const date of enumerateDates(nextDate(newestSoFar), newest)) seen.set(date, run.ranAt);
-      }
-      if (newestSoFar === null || newest > newestSoFar) newestSoFar = newest;
+      if (newest === null || run.requestedStartDate > date || run.requestedEndDate < date) continue;
+      if (newest < date) seenMissing = true;
+      else return seenMissing ? run.ranAt : null;
     }
-    return seen;
+    return null;
   };
-  const video = firstSeen((run) => run.newestVideoDate);
-  const channel = firstSeen((run) => run.newestChannelDate);
-  const lag = (date: string, at: Date | undefined) => (at ? Math.round(((at.getTime() - pacificDayEnd(date).getTime()) / 3_600_000) * 10) / 10 : null);
-  return [...new Set([...video.keys(), ...channel.keys()])]
-    .filter((date) => date >= startDate && date <= endDate)
-    .sort((a, b) => b.localeCompare(a))
-    .map((date) => ({
+  const lag = (date: string, at: Date | null) => (at ? Math.round(((at.getTime() - pacificDayEnd(date).getTime()) / 3_600_000) * 10) / 10 : null);
+  const rows: ReturnType<typeof returnLagOf> = [];
+  const firstDate = ordered.reduce<string | null>((min, run) => (min === null || run.requestedStartDate < min ? run.requestedStartDate : min), null);
+  if (firstDate === null) return rows;
+  for (const date of enumerateDates(startDate > firstDate ? startDate : firstDate, endDate).reverse()) {
+    const video = firstReturn(date, (run) => run.newestVideoDate);
+    const channel = firstReturn(date, (run) => run.newestChannelDate);
+    if (video === null && channel === null) continue;
+    rows.push({
       date,
-      videoFirstReturnedAt: video.get(date)?.toISOString() ?? null,
-      videoLagHours: lag(date, video.get(date)),
-      channelFirstReturnedAt: channel.get(date)?.toISOString() ?? null,
-      channelLagHours: lag(date, channel.get(date)),
-    }));
+      videoFirstReturnedAt: video?.toISOString() ?? null,
+      videoLagHours: lag(date, video),
+      channelFirstReturnedAt: channel?.toISOString() ?? null,
+      channelLagHours: lag(date, channel),
+    });
+  }
+  return rows;
 }
 
-function nextDate(date: string): string {
-  const [year, month, day] = date.split("-").map(Number);
-  return new Date(Date.UTC(year, month - 1, day + 1)).toISOString().slice(0, 10);
-}
 
 export function createAnalyticsServices(deps: ServiceDependencies) {
   // BL-118: items whose catch-up query failed are not retried for a while (a removed/private video would otherwise be re-queried on every
@@ -367,14 +369,28 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
    * throws (a failed channel query must not fail or hide the per-video collection that already happened).
    */
   /**
-   * BL-181 (FO-REQ-0020 §2.4): what the Analytics API last actually returned on this computer -- the newest video and channel dates
-   * of the latest run that recorded any (a run only asks for a range; this is what came back). Null before any such run.
+   * BL-181 (FO-REQ-0020 §2.4): the newest video and channel dates the Analytics API has returned to this computer -- the maximum over
+   * every recorded run, never just the latest run (a history catch-up or a manual backfill of an old range runs after the daily run
+   * and returns older dates; review finding 1). `ranAt` is when the newest video date (or, without any, channel date) first came
+   * back. Null before any run recorded a date.
    */
   function newestReturnedOf(runs: Array<{ newestVideoDate?: string | null; newestChannelDate?: string | null; ranAt: Date }>) {
-    const latest = [...runs]
+    const recorded = [...runs]
       .filter((run) => (run.newestVideoDate ?? null) !== null || (run.newestChannelDate ?? null) !== null)
-      .sort((a, b) => b.ranAt.getTime() - a.ranAt.getTime())[0];
-    return latest ? { videoDate: latest.newestVideoDate ?? null, channelDate: latest.newestChannelDate ?? null, ranAt: latest.ranAt.toISOString() } : null;
+      .sort((a, b) => a.ranAt.getTime() - b.ranAt.getTime());
+    if (recorded.length === 0) return null;
+    const maxOf = (pick: (run: (typeof recorded)[number]) => string | null | undefined) =>
+      recorded.reduce<string | null>((max, run) => {
+        const date = pick(run) ?? null;
+        return date !== null && (max === null || date > max) ? date : max;
+      }, null);
+    const videoDate = maxOf((run) => run.newestVideoDate);
+    const channelDate = maxOf((run) => run.newestChannelDate);
+    const firstWith =
+      videoDate !== null
+        ? recorded.find((run) => run.newestVideoDate === videoDate)
+        : recorded.find((run) => run.newestChannelDate === channelDate);
+    return { videoDate, channelDate, ranAt: (firstWith ?? recorded[recorded.length - 1]).ranAt.toISOString() };
   }
 
   /** BL-118: the channel totals of a window; BL-181: also the newest date Google returned (null = none, or not collected). */
@@ -915,8 +931,10 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
      * BL-181 (FO-REQ-0020 §2.3; plan REPORTING_BASIC_PLAN.md §2 item 7): the evening re-collect -- a second daily boundary
      * (default 22:05 local, "" = off). It is the one exception to the once-a-day rule `collectMetrics` documents, and only when
      * there can be something new: the evening boundary has passed, the channel was not collected since it, no evening attempt
-     * started since it on this computer, and the Analytics API has not yet returned yesterday. It asks only the 3 days ending
-     * yesterday. The attempt is recorded before the call, so it runs at most once per evening whatever comes back.
+     * started since it on this computer, and the Analytics API has not yet returned yesterday (the newest date over every run and
+     * every stored row, the other computer's included). It asks only the 3 days ending yesterday. When today's daily run has not
+     * happened (a dashboard left open since before its boundary) it is that daily run instead, with the daily range. The attempt
+     * is recorded before the call, so it runs at most once per evening whatever comes back.
      */
     async getEveningWindow(): Promise<{ open: boolean; localDate: string | null }> {
       const evening = deps.settingsStore.getAnalyticsEveningLocalTime ? await deps.settingsStore.getAnalyticsEveningLocalTime() : "";
@@ -949,15 +967,26 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
         if (lastCollectedAt && lastCollectedAt.getTime() >= boundary.getTime()) return { ranCollection: false, reason: "already_ran" };
         if (lastAttemptAt && lastAttemptAt.getTime() >= boundary.getTime()) return { ranCollection: false, reason: "already_ran" };
 
-        const { startDate, endDate: yesterday } = computeDefaultAutoCollectionRange({ now, timezone, rangeDays: EVENING_COLLECTION_RANGE_DAYS - 1 });
-        const newest = newestReturnedOf(await deps.collectionRunStore.listByChannel(parsedInput.channelId));
-        if (newest?.videoDate && newest.videoDate >= yesterday) return { ranCollection: false, reason: "data_current" };
         if ((await deps.videoStore.listVideosByChannel(parsedInput.channelId)).length === 0) return { ranCollection: false, reason: "no_videos" };
+
+        // Review finding 3: a dashboard left open since before the daily boundary never ran today's daily collection (it runs on a
+        // page load). Then the evening run is that daily run -- the daily range, allowed by the once-a-day rule anyway.
+        const dailyDue = isAnalyticsCollectionStale({ now, lastAutoCollectedAt: lastCollectedAt, timezone, localTime: morning });
+        const range = computeDefaultAutoCollectionRange({ now, timezone, rangeDays: dailyDue ? AUTO_COLLECTION_RANGE_DAYS : EVENING_COLLECTION_RANGE_DAYS - 1 });
+        if (!dailyDue) {
+          // Review findings 1 and 4: the newest date the API ever returned for this channel -- the maximum over this computer's
+          // runs and over the stored rows (which include the other computer's) -- never just the latest run's.
+          const newest = [
+            newestReturnedOf(await deps.collectionRunStore.listByChannel(parsedInput.channelId))?.videoDate ?? null,
+            deps.metricStore.getNewestMetricDate ? await deps.metricStore.getNewestMetricDate(parsedInput.channelId) : null,
+          ].reduce<string | null>((max, date) => (date !== null && (max === null || date > max) ? date : max), null);
+          if (newest !== null && newest >= range.endDate) return { ranCollection: false, reason: "data_current" };
+        }
 
         await deps.eveningAttemptStore.record(parsedInput.channelId, now);
         const result = await services.collectMetrics(
-          { credentialRef: parsedInput.credentialRef, channelId: parsedInput.channelId, startDate, endDate: yesterday },
-          { eveningRun: true }
+          { credentialRef: parsedInput.credentialRef, channelId: parsedInput.channelId, startDate: range.startDate, endDate: range.endDate },
+          { eveningRun: !dailyDue }
         );
         return { ranCollection: true, result };
       } catch (error) {

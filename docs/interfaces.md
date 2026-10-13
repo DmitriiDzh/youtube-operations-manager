@@ -701,11 +701,12 @@ Key MCP tools:
     the API to have reported yet, plus which videos had a recorded collection failure. Local read
     only (reads `analytics_collection_runs`, never calls YouTube) — see
     `docs/ARCHITECTURE.md` §14.9. BL-181 (2026-10-13, additive): also `newestReturned { videoDate, channelDate, ranAt } | null`
-    -- the newest dates the Analytics API actually returned in this computer's latest run that recorded them (a date after
-    `videoDate` was not reported yet, whatever the clock says); a collection's result also carries `newestVideoDate` /
+    -- the newest dates the Analytics API has returned to this computer (the maximum over its runs; `ranAt` = when the newest video
+    date first came back; a date after `videoDate` was not reported to this computer yet); a collection's result also carries `newestVideoDate` /
     `newestChannelDate`. BL-181 stage 1 (additive): `returnLag: [{ date, videoFirstReturnedAt, videoLagHours, channelFirstReturnedAt,
-    channelLagHours }]`, newest first -- per date of the range, the first collection run on this computer that got it back and the
-    hours after its Pacific day ended (an upper bound; the first recorded run is only a baseline). ARCHITECTURE §14.13.1.
+    channelLagHours }]`, newest first -- per date of the range, the first collection run on this computer that asked for it and got it
+    back after an earlier run had asked and not got it, and the hours after its Pacific day ended (an upper bound; a date without
+    that proof is left out). ARCHITECTURE §14.13.1.
   - `agent_get_reporting_status` (BL-181, Agent API 3.14.0, capability `analytics.query_reporting_status`, READ, channel-scoped) —
     `{ channelId, credentialRef? }` → Reach's status block (`job`, `firstFileExpectedBy`, `firstFileOverdue`, `lastAttempt`,
     `nextAutoCheckAt`, `importedFiles`, `files[]` with `lagHours` = createTime − endTime, `firstFileLag[{ date, createTime, lagHours }]`)

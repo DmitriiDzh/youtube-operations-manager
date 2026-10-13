@@ -141,7 +141,8 @@ export type OtherReportSyncResult = {
 
 /** `onlyIfDue` and the job was checked less than `MIN_SYNC_INTERVAL_HOURS` ago: nothing was called. */
 export type SyncReachReportsSkipped =
-  | { skipped: true; reason: "checked_recently"; lastCheckedAt: string }
+  /** BL-181: `otherReports` -- the other report types that were due by their own checks and synced in this call. */
+  | { skipped: true; reason: "checked_recently"; lastCheckedAt: string; otherReports?: OtherReportSyncResult[] }
   /** BL-141: an automatic sync of the same channel is already running in this process. */
   | { skipped: true; reason: "in_progress" };
 

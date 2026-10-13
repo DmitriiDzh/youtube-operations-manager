@@ -8951,6 +8951,18 @@ export async function listVideoMetricsByVideo(
 
 // BL-058 (docs/roadmap/plans/PHASE_8_PLAN.md §6 slice 4) -- the Web UI's read-only display needs
 // every metric row for a channel at once, not one video at a time.
+/**
+ * BL-181: the newest metric date stored for the channel's videos, whichever computer collected it (rows imported from the other
+ * computer included); null without any row.
+ */
+export async function getNewestVideoMetricDate(channelId: string, database: AppDb = db): Promise<string | null> {
+  const [row] = await database
+    .select({ newest: sql<string | null>`MAX(${videoMetricsDaily.metricDate})` })
+    .from(videoMetricsDaily)
+    .where(eq(videoMetricsDaily.channelId, channelId));
+  return row?.newest ?? null;
+}
+
 export async function listVideoMetricsByChannel(
   channelId: string,
   database: AppDb = db

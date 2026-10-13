@@ -340,11 +340,10 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
       const parsed = parseWithSchema(syncReachReportsInputSchema, input, "sync reach reports input");
       await assertChannel(parsed.credentialRef, parsed.channelId);
 
-      if (parsed.onlyIfDue) {
-        const [known, attempt] = await Promise.all([
-          deps.store.getJob(parsed.channelId, REACH_BASIC_REPORT_TYPE_ID),
-          deps.store.getAttempt(parsed.channelId, REACH_BASIC_REPORT_TYPE_ID),
-        ]);
+      const otherTypes = deps.otherReportTypes ?? [];
+      // The time a type was checked within the last MIN_SYNC_INTERVAL_HOURS (so it is not due), or null when it is due.
+      const checkedRecentlyAt = async (reportTypeId: string): Promise<Date | null> => {
+        const [known, attempt] = await Promise.all([deps.store.getJob(parsed.channelId, reportTypeId), deps.store.getAttempt(parsed.channelId, reportTypeId)]);
         // A FAILED attempt does not throttle: its cause is usually fixable (toggle back on, scope re-granted,
         // API enabled) and the automatic sync must pick that up on the next dashboard open, not 6 hours later.
         const lastChecked = [
@@ -353,13 +352,21 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
         ]
           .filter((d): d is Date => d !== null)
           .sort((a, b) => b.getTime() - a.getTime())[0];
-        if (lastChecked) {
-          const dueAt = lastChecked.getTime() + MIN_SYNC_INTERVAL_HOURS * 3_600_000;
-          if (deps.clock.now().getTime() < dueAt) {
-            return { skipped: true, reason: "checked_recently", lastCheckedAt: lastChecked.toISOString() };
-          }
+        return lastChecked && deps.clock.now().getTime() < lastChecked.getTime() + MIN_SYNC_INTERVAL_HOURS * 3_600_000 ? lastChecked : null;
+      };
+      let reachCheckedAt: Date | null = null;
+      let dueOtherTypes = otherTypes;
+      if (parsed.onlyIfDue) {
+        reachCheckedAt = await checkedRecentlyAt(REACH_BASIC_REPORT_TYPE_ID);
+        // BL-181 (review finding 2): each other type by its OWN checks. Reach's are shared with the other computer (BL-151), these
+        // types' are device-local, so the other computer checking Reach must not hold back this computer's own downloads.
+        const othersCheckedAt = await Promise.all(otherTypes.map((type) => checkedRecentlyAt(type.reportTypeId)));
+        dueOtherTypes = otherTypes.filter((_, index) => othersCheckedAt[index] === null);
+        if (reachCheckedAt && dueOtherTypes.length === 0) {
+          return { skipped: true, reason: "checked_recently", lastCheckedAt: reachCheckedAt.toISOString() };
         }
       }
+      const reachDue = reachCheckedAt === null;
 
       // BL-141: two automatic syncs of one channel (two tabs, two dashboards) must not run side by side -- both would
       // pass the due check above, create the job twice on a first run and import the same files twice.
@@ -367,7 +374,6 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
         if (inFlightAutoSyncs.has(parsed.channelId)) return { skipped: true, reason: "in_progress" };
         inFlightAutoSyncs.add(parsed.channelId);
       }
-      const otherTypes = deps.otherReportTypes ?? [];
       let othersRecorded = false;
       try {
         const credentials = await deps.authResolver.resolve({
@@ -377,38 +383,42 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
 
         let reach: SyncReachReportsResult | null = null;
         let reachError: unknown = null;
-        try {
-          const synced = await syncFilesOfType(credentials, parsed.channelId, REACH_BASIC_REPORT_TYPE_ID, REACH_JOB_NAME, async (meta, csv) => {
-            const rows = mapReachBasicRows(csv, parsed.channelId);
-            return { outcome: await deps.store.importReport({ ...meta, rows }), rowCount: rows.length };
-          });
-          reach = { skipped: false, ...synced.result };
-          await deps.store.recordAttempt({
-            channelId: parsed.channelId,
-            reportTypeId: REACH_BASIC_REPORT_TYPE_ID,
-            outcome: reach.failures.length > 0 ? "partial" : "ok",
-            error: null,
-            filesListed: reach.filesListed,
-            filesImported: reach.filesImported,
-            failures: reach.failures,
-          });
-        } catch (error) {
-          reachError = error;
+        if (reachDue) {
+          try {
+            const synced = await syncFilesOfType(credentials, parsed.channelId, REACH_BASIC_REPORT_TYPE_ID, REACH_JOB_NAME, async (meta, csv) => {
+              const rows = mapReachBasicRows(csv, parsed.channelId);
+              return { outcome: await deps.store.importReport({ ...meta, rows }), rowCount: rows.length };
+            });
+            reach = { skipped: false, ...synced.result };
+            await deps.store.recordAttempt({
+              channelId: parsed.channelId,
+              reportTypeId: REACH_BASIC_REPORT_TYPE_ID,
+              outcome: reach.failures.length > 0 ? "partial" : "ok",
+              error: null,
+              filesListed: reach.filesListed,
+              filesImported: reach.filesImported,
+              failures: reach.failures,
+            });
+          } catch (error) {
+            reachError = error;
+          }
         }
 
         // BL-181: each other type after Reach, on its own (AGENTS.md §M) -- its failure is recorded in its own attempt row and
         // never changes Reach's outcome; Reach failing does not stop them either.
         const otherReports: OtherReportSyncResult[] = [];
-        for (const type of otherTypes) otherReports.push(await syncOtherType(credentials, parsed.channelId, type));
+        for (const type of dueOtherTypes) otherReports.push(await syncOtherType(credentials, parsed.channelId, type));
         othersRecorded = true;
 
+        if (reachCheckedAt) return { skipped: true, reason: "checked_recently", lastCheckedAt: reachCheckedAt.toISOString(), otherReports };
         if (reachError !== null || reach === null) throw reachError;
         return otherTypes.length > 0 ? { ...reach, otherReports } : reach;
       } catch (error) {
         // The sync stopped before it could import anything (auth/scope, API disabled, toggle off, listing
         // failed): record it so the Analytics card can say why, then let the caller see the same error.
         const message = error instanceof Error ? error.message : String(error);
-        for (const reportTypeId of [REACH_BASIC_REPORT_TYPE_ID, ...(othersRecorded ? [] : otherTypes.map((type) => type.reportTypeId))]) {
+        const attempted = [...(reachDue ? [REACH_BASIC_REPORT_TYPE_ID] : []), ...(othersRecorded ? [] : dueOtherTypes.map((type) => type.reportTypeId))];
+        for (const reportTypeId of attempted) {
           try {
             await deps.store.recordAttempt({
               channelId: parsed.channelId,

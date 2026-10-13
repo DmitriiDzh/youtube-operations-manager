@@ -1197,7 +1197,12 @@ stages. Stage 1 collects and measures. Stage 2 would show provisional values, an
 
 - **Two more report types,** `channel_basic_a3` and `channel_traffic_source_a3`.
   - Sync: `OtherReportType` entries built in `reach-reports/index.ts`.
-    - `syncReachReports` runs them after Reach in the same call, under the same `onlyIfDue` throttle and in-flight guard.
+    - `syncReachReports` runs them after Reach in the same call, under the same in-flight guard. The `onlyIfDue` throttle (6 h) is
+      per type: Reach's checks come from both computers (BL-151), these types' are device-local. So the other computer checking
+      Reach never holds back this computer's own downloads. When only these types are due, the call returns
+      `checked_recently` with `otherReports`.
+    - The first sync after the merge downloads about 30 history files per type per channel inside the dashboard's Reach step, so
+      that one load is slower.
     - Each type has its own job, its own ledger rows and its own `reporting_sync_attempts` row.
     - A type that fails is recorded as failed and never changes Reach's result. Reach failing does not stop the other types: the
       call still throws Reach's error afterwards.
@@ -1225,10 +1230,12 @@ stages. Stage 1 collects and measures. Stage 2 would show provisional values, an
       job is created are left out.
     - `otherReports` carries the same block for the new types.
     - MCP: `agent_get_reporting_status` (Agent API 3.14.0).
-  - **Analytics API.** `analytics_data_quality.returnLag` gives, per date, the first run on this computer whose newest returned
-    date reached it.
-    - The first recorded run is only a baseline.
+  - **Analytics API.** `analytics_data_quality.returnLag` gives, per date D, the first run on this computer that asked for D and got
+    it back.
+    - It counts only when an earlier run also asked for D and did not get it. Otherwise D is unknown and left out, for example on
+      the upgrade day, or after a history catch-up or backfill of another range.
     - The value is an upper bound: it is when this app asked, not when Google published.
+    - `newestReturned` is the maximum over all runs, so a catch-up or backfill recorded later cannot lower it.
     - `pacificDayEnd` uses the DST-aware `zonedInstant` (`staleness.ts`).
 - **Evening re-collect** (§14.6's daily boundary gets a second one).
   - Setting `analytics_evening_local_time`: default `22:05`, `""` = off. It must be later than the daily boundary, which the
@@ -1237,9 +1244,12 @@ stages. Stage 1 collects and measures. Stage 2 would show provisional values, an
     - the evening boundary has passed;
     - the channel was not collected since it;
     - no evening attempt was recorded since it (`analytics_evening_attempts`, an app setting of this device);
-    - the newest video date the API returned is older than yesterday.
+    - the newest video date the API returned is older than yesterday. That date is the maximum over this computer's runs and over
+      the stored rows, which include the other computer's.
   - It asks the 3 days ending yesterday. It bypasses `collectMetrics`'s `analytics_data_current` refusal through an internal
     option that no tool input can set, so a manual collection in the evening is still refused.
+  - If today's daily run has not happened (a dashboard left open since before its boundary), the evening run is that daily run,
+    with the daily range.
   - The attempt is recorded before the call, so a run that gets nothing back is not retried that evening.
   - `POST /api/analytics/evening-collect` is called by the dashboard every 5 minutes while visible.
     - It answers from local settings before the boundary, and once every channel's evening is settled (an in-process memo).

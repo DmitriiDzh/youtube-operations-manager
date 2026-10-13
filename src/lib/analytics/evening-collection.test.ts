@@ -38,6 +38,12 @@ async function setup(opts: {
   morningNewestVideoDate?: string | null;
   rows?: Array<{ date: string; metrics: Record<string, number> }>;
   videos?: string[];
+  /** Runs recorded after the morning run (a history catch-up, a manual backfill). */
+  laterRuns?: Run[];
+  /** The newest metric date stored for the channel, the other computer's rows included. */
+  storedNewestMetricDate?: string | null;
+  /** When the channel was last collected, if not by the morning run of 2026-10-13. */
+  lastCollectedAt?: string;
 }) {
   let now = new Date(opts.now);
   const calls: Array<{ videoId: string; startDate: string; endDate: string }> = [];
@@ -59,6 +65,8 @@ async function setup(opts: {
       ranAt: new Date("2026-10-13T09:10:00Z"),
     });
   }
+  runs.push(...(opts.laterRuns ?? []));
+  if (opts.lastCollectedAt) lastCollected.set("UC_A", new Date(opts.lastCollectedAt));
   const selections = new Map<string, string>([["user-1", "UC_A"]]);
   const channelAccess = createChannelAccessService({
     async getSelectedChannelId(userId: string) {
@@ -99,6 +107,9 @@ async function setup(opts: {
       async upsertMetric() {},
       async listMetricsByChannel() {
         return [];
+      },
+      async getNewestMetricDate() {
+        return opts.storedNewestMetricDate ?? null;
       },
     } as never,
     channelStore: {
@@ -146,6 +157,7 @@ async function setup(opts: {
     calls,
     attempts,
     lastCollected,
+    runs,
     setNow(value: string) {
       now = new Date(value);
     },
@@ -190,8 +202,12 @@ test("it runs once per evening: the next check that evening does nothing, even w
 });
 
 test("the next evening it is due again", async () => {
-  const { services, calls, setNow } = await setup({ now: "2026-10-13T19:10:00Z", morningNewestVideoDate: "2026-10-10", rows: ROWS });
+  const { services, calls, setNow, lastCollected, runs } = await setup({ now: "2026-10-13T19:10:00Z", morningNewestVideoDate: "2026-10-10", rows: ROWS });
   await services.runEveningCollectionIfDue(INPUT);
+  // The daily run of 2026-10-14 (12:10 local): the API had videos through 10-11. (Without it the evening would be that day's daily
+  // run -- see the test at the end; review finding 3.)
+  lastCollected.set("UC_A", new Date("2026-10-14T09:10:00Z"));
+  runs.push({ channelId: "UC_A", requestedStartDate: "2026-10-06", requestedEndDate: "2026-10-13", videoCount: 1, upsertsIssued: 6, skippedVideoIds: [], newestVideoDate: "2026-10-11", newestChannelDate: "2026-10-11", ranAt: new Date("2026-10-14T09:10:00Z") });
   setNow("2026-10-14T19:10:00Z");
   const result = await services.runEveningCollectionIfDue(INPUT);
   assert.equal(result.ranCollection, true);
@@ -241,4 +257,28 @@ test("another channel than the caller's active one is refused before anything el
   const { services, calls } = await setup({ now: "2026-10-13T19:10:00Z", morningNewestVideoDate: "2026-10-10" });
   await assert.rejects(services.runEveningCollectionIfDue({ credentialRef: USER, channelId: "UC_OTHER" }), (error: unknown) => error instanceof DomainError);
   assert.equal(calls.length, 0);
+});
+
+// Review findings 1, 3 and 4 of the BL-181 independent review.
+test("a history catch-up or a manual backfill run after the daily run does not reopen the gate once yesterday came back", async () => {
+  const catchUp = { channelId: "UC_A", requestedStartDate: "2020-01-01", requestedEndDate: "2020-12-31", videoCount: 0, upsertsIssued: 12, skippedVideoIds: [], channelLevel: true, newestVideoDate: null, newestChannelDate: "2020-12-31", ranAt: new Date("2026-10-13T09:30:00Z") };
+  const backfill = { channelId: "UC_A", requestedStartDate: "2026-08-01", requestedEndDate: "2026-08-31", videoCount: 1, upsertsIssued: 30, skippedVideoIds: [], newestVideoDate: "2026-08-31", newestChannelDate: null, ranAt: new Date("2026-10-13T15:00:00Z") };
+  const fixture = await setup({ now: "2026-10-13T19:10:00Z", morningNewestVideoDate: "2026-10-12", laterRuns: [catchUp, backfill] });
+  assert.deepEqual(await fixture.services.runEveningCollectionIfDue(INPUT), { ranCollection: false, reason: "data_current" });
+  assert.equal(fixture.calls.length, 0);
+});
+
+test("yesterday stored from the other computer's collection counts: no evening call here", async () => {
+  const fixture = await setup({ now: "2026-10-13T19:10:00Z", morningNewestVideoDate: "2026-10-10", storedNewestMetricDate: "2026-10-12" });
+  assert.deepEqual(await fixture.services.runEveningCollectionIfDue(INPUT), { ranCollection: false, reason: "data_current" });
+  assert.equal(fixture.calls.length, 0);
+});
+
+test("a dashboard open since before the daily boundary: the evening run is today's daily run, with the daily 8-day range", async () => {
+  // Last collected yesterday evening; today's 12:05 run never happened (the daily run starts on a page load).
+  const fixture = await setup({ now: "2026-10-13T19:10:00Z", lastCollectedAt: "2026-10-12T19:10:00Z", rows: ROWS });
+  const result = await fixture.services.runEveningCollectionIfDue(INPUT);
+  assert.equal(result.ranCollection, true);
+  assert.deepEqual(fixture.calls, [{ videoId: "v1", startDate: "2026-10-05", endDate: "2026-10-12" }]);
+  assert.equal(fixture.lastCollected.get("UC_A")?.toISOString(), "2026-10-13T19:10:00.000Z");
 });

@@ -28,7 +28,7 @@ function file(id: string, jobId: string, day: string, createTime: string): Repor
   };
 }
 
-function setup(opts: { failEnsureFor?: string[]; failResolve?: boolean; importFails?: string[] } = {}) {
+function setup(opts: { failEnsureFor?: string[]; failResolve?: boolean; importFails?: string[]; checkedAt?: Record<string, string> } = {}) {
   const calls = {
     ensureJob: [] as Array<{ reportTypeId: string; name: string }>,
     attempts: [] as Array<{ reportTypeId: string; outcome: string; error: string | null; filesImported: number }>,
@@ -63,7 +63,8 @@ function setup(opts: { failEnsureFor?: string[]; failResolve?: boolean; importFa
     store: {
       async upsertJob() {},
       async getJob(_channelId, reportTypeId) {
-        return { jobId: `job-${reportTypeId}`, jobCreatedAt: "2026-10-01T21:05:54Z", lastCheckedAt: null };
+        const checked = opts.checkedAt?.[reportTypeId];
+        return { jobId: `job-${reportTypeId}`, jobCreatedAt: "2026-10-01T21:05:54Z", lastCheckedAt: checked ? new Date(checked) : null };
       },
       async listSeenReportIds() {
         return new Set<string>();
@@ -253,4 +254,37 @@ test("firstFileLagOf: the earliest file per day counts (a reissue never), newest
 
 test("firstFileLagOf: without a known job creation time nothing is reported (history and fresh days cannot be told apart)", () => {
   assert.deepEqual(firstFileLagOf([{ startTime: "2026-10-10T07:00:00Z", endTime: "2026-10-11T07:00:00Z", createTime: "2026-10-12T05:00:00Z" }], null), []);
+});
+
+// Review finding 2 of the BL-181 independent review: Reach's last check is shared with the other computer (BL-151), the other types'
+// are this computer's own. The automatic sync (`onlyIfDue`, at most every 6 hours per type) must therefore not let the other
+// computer's Reach check hold back this computer's own basic and traffic-source downloads. The clock is 2026-10-11T12:00Z.
+test("automatic sync: Reach checked 1 h ago (by the other computer) is skipped, the other types still sync by their own checks", async () => {
+  const { services, calls } = setup({ checkedAt: { [REACH]: "2026-10-11T11:00:00Z" } });
+  const result = await services.syncReachReports({ ...SYNC, onlyIfDue: true });
+  assert.equal(result.skipped, true);
+  if (!result.skipped || result.reason !== "checked_recently") throw new Error("expected checked_recently");
+  assert.equal(result.lastCheckedAt, "2026-10-11T11:00:00.000Z");
+  assert.deepEqual(result.otherReports?.map((r) => [r.reportTypeId, r.outcome]), [
+    [BASIC, "ok"],
+    [TRAFFIC, "ok"],
+  ]);
+  assert.deepEqual(calls.ensureJob.map((c) => c.reportTypeId), [BASIC, TRAFFIC], "no Reach call");
+  assert.deepEqual(calls.attempts.map((a) => a.reportTypeId), [BASIC, TRAFFIC], "Reach's attempt row is untouched");
+});
+
+test("automatic sync: a type checked within 6 hours waits; when every type was, nothing is called at all", async () => {
+  const one = setup({ checkedAt: { [BASIC]: "2026-10-11T07:00:00Z" } });
+  const result = await one.services.syncReachReports({ ...SYNC, onlyIfDue: true });
+  if (result.skipped) throw new Error("Reach was due");
+  assert.deepEqual(one.calls.ensureJob.map((c) => c.reportTypeId), [REACH, TRAFFIC]);
+  assert.deepEqual(result.otherReports?.map((r) => r.reportTypeId), [TRAFFIC]);
+
+  const all = setup({ checkedAt: { [REACH]: "2026-10-11T07:00:00Z", [BASIC]: "2026-10-11T08:00:00Z", [TRAFFIC]: "2026-10-11T09:00:00Z" } });
+  assert.deepEqual(await all.services.syncReachReports({ ...SYNC, onlyIfDue: true }), {
+    skipped: true,
+    reason: "checked_recently",
+    lastCheckedAt: "2026-10-11T07:00:00.000Z",
+  });
+  assert.equal(all.calls.ensureJob.length, 0);
 });

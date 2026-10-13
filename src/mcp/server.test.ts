@@ -3405,6 +3405,56 @@ test("MCP agent_query_channel_reach forwards the resolved credentialRef and the 
   assert.equal((result.structuredContent as { state?: string } | undefined)?.state, "waiting_for_first_report");
 });
 
+// BL-181 (FO-REQ-0020 §2.4): the Reporting status read for the Operator -- the resolved credentialRef and the channel are forwarded
+// to the core (which does the active-channel check), its answer is returned as it is; a bad input never reaches the core.
+test("BL-181: MCP agent_get_reporting_status forwards the resolved credentialRef and returns the status with the lag fields", async () => {
+  const capture: { input?: unknown } = {};
+  const status = {
+    channelId: "UC_1",
+    job: { jobId: "job-1", createdAt: "2026-10-01T21:05:54Z" },
+    firstFileExpectedBy: "2026-10-03T21:05:54.000Z",
+    firstFileOverdue: false,
+    lastAttempt: null,
+    nextAutoCheckAt: null,
+    importedFiles: 1,
+    files: [],
+    firstFileLag: [{ date: "2026-10-10", createTime: "2026-10-11T05:00:00Z", lagHours: 22 }],
+    otherReports: [{ reportTypeId: "channel_basic_a3", job: null, lastAttempt: null, importedFiles: 0, files: [], firstFileLag: [] }],
+  };
+  const reachStub = {
+    ...makeReachCoreStub({}),
+    async getReachStatus(input: unknown) {
+      capture.input = input;
+      return status;
+    },
+  };
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    reachStub
+  );
+
+  const result = await handlers.agentGetReportingStatus({ channelId: "UC_1" });
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(capture.input, { channelId: "UC_1", credentialRef: { userId: "active-user" } });
+  assert.deepEqual(result.structuredContent, status);
+
+  capture.input = undefined;
+  const bad = await handlers.agentGetReportingStatus({ channelId: "UC_1", startDate: "2026-10-01" });
+  assert.equal(bad.isError, true, "an unknown input field is refused");
+  assert.equal(capture.input, undefined, "the core is never reached");
+});
+
 test("BL-118: MCP agent_query_channel_breakdown forwards the resolved credentialRef, labels every row, and says the read is live", async () => {
   const capture: { input?: unknown } = {};
   const breakdownStub = {

@@ -30,8 +30,8 @@ const DEFAULT_EVENING_TIME = "22:05";
 
 /**
  * Settings-tab section for BL-059's daily auto-collection boundary
- * (docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-4). Not a boolean toggle (no ToggleSwitch
- * here) -- these are two text values, validated server-side before being saved
+ * (docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-4), and BL-181's evening re-collect (a ToggleSwitch with its time). The two
+ * boundary times and the timezone are text values, validated server-side before being saved
  * (`isValidLocalTimeOfDay`/`isValidIanaTimezone`, `/api/settings`). The timezone defaults to this
  * machine's own OS timezone the first time it's ever read, then persists -- this field lets the
  * owner override that, e.g. after moving, per their own "может меняться в зимнее/летнее время"
@@ -163,19 +163,16 @@ export function AnalyticsCollectionSettings() {
             ))}
           </datalist>
         </label>
-        <div className="flex flex-col gap-1 text-xs text-zinc-400">
-          <span className="flex items-center gap-1.5">
+        <div className="flex items-center gap-2 pb-1.5">
+          <ToggleSwitch
+            label={t("analyticsCollection.evening")}
+            checked={eveningOn}
+            onChange={(checked) => setDraft({ ...draft, analyticsEveningLocalTime: checked ? settings.analyticsEveningLocalTime || DEFAULT_EVENING_TIME : "" })}
+          />
+          <span className="flex items-center gap-1.5 text-sm text-zinc-300">
             {t("analyticsCollection.evening")}
             <InfoTooltip>{t("analyticsCollection.eveningInfo")}</InfoTooltip>
           </span>
-          <div className="flex items-center gap-2">
-            <ToggleSwitch
-              label={t("analyticsCollection.evening")}
-              checked={eveningOn}
-              onChange={(checked) => setDraft({ ...draft, analyticsEveningLocalTime: checked ? settings.analyticsEveningLocalTime || DEFAULT_EVENING_TIME : "" })}
-            />
-            <span className="text-sm text-zinc-300">{t("analyticsCollection.evening")}</span>
-          </div>
         </div>
         {eveningOn && (
           <label className="flex flex-col gap-1 text-xs text-zinc-400">

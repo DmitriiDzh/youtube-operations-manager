@@ -2,6 +2,7 @@ import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { isValidIanaTimezone, isValidLocalTimeOfDay } from "@/lib/analytics/staleness";
+import { checkAnalyticsBoundaries } from "./analytics-boundaries";
 import { createCloudQuotasCore } from "@/lib/cloud-quotas";
 import { createMarketIntelligenceCore } from "@/lib/market-intelligence";
 import {
@@ -218,31 +219,17 @@ export async function POST(request: Request) {
     analyticsSyncTimezoneToSet = body.analyticsSyncTimezone;
   }
 
-  // BL-181 (FO-REQ-0020 §2.3): the evening re-collect boundary -- "" turns it off; otherwise HH:MM, later than the daily boundary
-  // (checked against the daily boundary this same request sets, if any; a pair the evening run would ignore is refused instead).
+  // BL-181 (FO-REQ-0020 §2.3): the evening re-collect boundary (analytics-boundaries.ts) -- read the stored values only when needed.
   let analyticsEveningLocalTimeToSet: string | undefined;
-  if (
-    (body.analyticsEveningLocalTime !== undefined && body.analyticsEveningLocalTime !== null) ||
-    analyticsSyncLocalTimeToSet !== undefined
-  ) {
-    const evening =
-      body.analyticsEveningLocalTime !== undefined && body.analyticsEveningLocalTime !== null
-        ? body.analyticsEveningLocalTime
-        : await getAnalyticsEveningLocalTime();
-    if (typeof evening !== "string" || (evening !== "" && !isValidLocalTimeOfDay(evening))) {
-      return NextResponse.json(
-        { error: "validation_failed", message: 'analyticsEveningLocalTime must be "" (off) or a valid 24-hour HH:MM string' },
-        { status: 400 }
-      );
-    }
-    const morning = analyticsSyncLocalTimeToSet ?? (await getAnalyticsSyncSettings()).localTime;
-    if (evening !== "" && evening <= morning) {
-      return NextResponse.json(
-        { error: "validation_failed", message: "analyticsEveningLocalTime must be later than analyticsSyncLocalTime (the daily boundary)" },
-        { status: 400 }
-      );
-    }
-    if (body.analyticsEveningLocalTime !== undefined && body.analyticsEveningLocalTime !== null) analyticsEveningLocalTimeToSet = evening;
+  if ((body.analyticsEveningLocalTime !== undefined && body.analyticsEveningLocalTime !== null) || analyticsSyncLocalTimeToSet !== undefined) {
+    const checked = checkAnalyticsBoundaries({
+      eveningInput: body.analyticsEveningLocalTime,
+      morningToSet: analyticsSyncLocalTimeToSet,
+      currentEvening: await getAnalyticsEveningLocalTime(),
+      currentMorning: (await getAnalyticsSyncSettings()).localTime,
+    });
+    if (!checked.ok) return NextResponse.json({ error: "validation_failed", message: checked.message }, { status: 400 });
+    analyticsEveningLocalTimeToSet = checked.eveningToSet;
   }
 
   let marketIntelligenceQuotaToSet: { present: true; value: number | null } | { present: false } = { present: false };

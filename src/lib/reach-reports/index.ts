@@ -1,9 +1,8 @@
 import { YOUTUBE_ANALYTICS_READ_SCOPE } from "@/lib/auth";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { resolveGoogleCredentials } from "@/lib/google-credentials";
-import { importBasicReport, importTrafficSourceReport } from "@/lib/db";
 import { createReachReportsApiAdapter } from "./adapters/reporting-api";
-import { createReachReportsStoreAdapter } from "./adapters/store";
+import { createOtherReportStoreAdapter, createReachReportsStoreAdapter } from "./adapters/store";
 import { mapBasicRows, mapTrafficSourceRows } from "./basic-csv";
 import { BASIC_JOB_NAME, BASIC_REPORT_TYPE_ID, TRAFFIC_SOURCE_JOB_NAME, TRAFFIC_SOURCE_REPORT_TYPE_ID } from "./contracts";
 import { createReachReportsServices, type OtherReportType } from "./services";
@@ -12,13 +11,14 @@ import { createReachReportsServices, type OtherReportType } from "./services";
  * BL-181 (FO-REQ-0020, owner msg 2687): the basic user-activity and traffic-source reports, synced after Reach in the same call so
  * their lag can be measured. Stored per device; never in the cross-computer analytics file.
  */
+const otherReportStore = createOtherReportStoreAdapter();
 const OTHER_REPORT_TYPES: readonly OtherReportType[] = [
   {
     reportTypeId: BASIC_REPORT_TYPE_ID,
     jobName: BASIC_JOB_NAME,
     async importFile({ meta, csv }) {
       const rows = mapBasicRows(csv, meta.channelId);
-      return { outcome: await importBasicReport({ ...meta, rows }), rowCount: rows.length };
+      return { outcome: await otherReportStore.importBasicReport({ ...meta, rows }), rowCount: rows.length };
     },
   },
   {
@@ -26,7 +26,7 @@ const OTHER_REPORT_TYPES: readonly OtherReportType[] = [
     jobName: TRAFFIC_SOURCE_JOB_NAME,
     async importFile({ meta, csv }) {
       const rows = mapTrafficSourceRows(csv, meta.channelId);
-      return { outcome: await importTrafficSourceReport({ ...meta, rows }), rowCount: rows.length };
+      return { outcome: await otherReportStore.importTrafficSourceReport({ ...meta, rows }), rowCount: rows.length };
     },
   },
 ];

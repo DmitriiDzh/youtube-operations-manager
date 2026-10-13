@@ -50,7 +50,7 @@
    - Average view duration is derived as watch time × 60 / views, never averaged per row.
    - `channel_traffic_source_daily (channel_id, date, video_id, traffic_source_type)` holds views and watch time.
    - Supersession works as for reach: the newest `createTime` for the same start/end wins, and the older rows are replaced in one batch.
-   - Schema v87.
+   - Schema v88 (v87 is the newest-date columns of item 5).
 4. **Exchange between computers.**
    - The new types are left out of the shared file. Each computer downloads its own, as the BL-168 breakdowns already do.
    - Reach keeps its exchange.
