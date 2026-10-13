@@ -1,0 +1,99 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { DomainError } from "@/lib/shared-domain";
+import { createStoryboardRouteHandlers, type StoryboardRouteDeps } from "./handlers";
+
+// BL-184 stage 1: the owner's storyboard routes need a Web session and the ACTIVE channel (AGENTS.md §F) -- another channel reaches
+// nothing; the module's refusals keep their codes and statuses; a keyframe image is served with its type, or 404 when this
+// computer has no copy, or 415 when it is not an image.
+
+const ctx = <T extends Record<string, string>>(params: T) => ({ params: Promise.resolve(params) });
+const json = (method: string, body: unknown) => new Request("http://x/", { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+function make(options: { session?: { user: { id: string } } | null; refuse?: DomainError } = {}) {
+  const calls: unknown[][] = [];
+  const service: ReturnType<StoryboardRouteDeps["service"]> = {
+    listForOwner: async (...args) => (calls.push(["list", ...args]), []),
+    getForOwner: async (...args) => (calls.push(["get", ...args]), { latestVersion: 2 } as never),
+    keyframeFiles: async (...args) => (calls.push(["files", ...args]), { K0: "ok" }),
+    versionDiff: async (...args) => (calls.push(["diff", ...args]), null),
+    keyframeFile: async (_c, _s, _v, keyframeId) => (keyframeId === "K0" ? { path: "/ws/K0.jpg", bytes: 3, file: "Sent to YTM/bar/K0.jpg" } : keyframeId === "TXT" ? { path: "/ws/a.txt", bytes: 1, file: "Sent to YTM/a.txt" } : null),
+    ownerComment: async (...args) => {
+      calls.push(["comment", ...args]);
+      if (options.refuse) throw options.refuse;
+      return { commentId: "c_1" };
+    },
+    ownerReply: async (...args) => (calls.push(["reply", ...args]), { replyId: "r_1" }),
+    ownerSetCommentState: async (...args) => void calls.push(["state", ...args]),
+    ownerDecide: async (...args) => {
+      calls.push(["decide", ...args]);
+      if (options.refuse) throw options.refuse;
+      return { decisionId: "d_1", state: "approved" as const };
+    },
+  };
+  const handlers = createStoryboardRouteHandlers({
+    getSession: async () => (options.session === undefined ? { user: { id: "owner" } } : options.session),
+    assertActiveChannel: async ({ channelId }) => {
+      if (channelId !== "UC_active") throw new DomainError({ code: "CHANNEL_NOT_ACTIVE", message: "Not the active channel" });
+    },
+    service: () => service,
+    readFile: async () => new Uint8Array([1, 2, 3]),
+  });
+  return { handlers, calls };
+}
+
+test("a session and the active channel are required; another channel reaches nothing", async () => {
+  const anonymous = make({ session: null });
+  assert.equal((await anonymous.handlers.list(new Request("http://x/"), ctx({ channelId: "UC_active" }))).status, 401);
+  const { handlers, calls } = make();
+  const other = { channelId: "UC_other", storyboardId: "sb", commentId: "c", version: "1", keyframeId: "K0" };
+  for (const response of [
+    await handlers.list(new Request("http://x/"), ctx(other)),
+    await handlers.detail(new Request("http://x/"), ctx(other)),
+    await handlers.comment(json("POST", { versionNumber: 1, target: { kind: "storyboard" }, text: "x" }), ctx(other)),
+    await handlers.reply(json("POST", { text: "x" }), ctx(other)),
+    await handlers.setState(json("PATCH", { state: "resolved" }), ctx(other)),
+    await handlers.decide(json("POST", { kind: "approved", versionNumber: 1 }), ctx(other)),
+    await handlers.keyframe(new Request("http://x/"), ctx(other)),
+  ]) {
+    assert.notEqual(response.status, 200);
+  }
+  assert.deepEqual(calls, []);
+});
+
+test("detail: the latest version by default, ?version=N otherwise, a malformed one is a 400", async () => {
+  const { handlers, calls } = make();
+  const base = { channelId: "UC_active", storyboardId: "sb" };
+  const latest = await handlers.detail(new Request("http://x/"), ctx(base));
+  assert.equal(latest.status, 200);
+  assert.deepEqual(await latest.json(), { storyboard: { latestVersion: 2 }, version: 2, files: { K0: "ok" }, diff: null });
+  assert.equal((await (await handlers.detail(new Request("http://x/?version=1"), ctx(base))).json()).version, 1);
+  assert.equal((await handlers.detail(new Request("http://x/?version=abc"), ctx(base))).status, 400);
+  assert.deepEqual(
+    calls.filter((c) => c[0] === "files").map((c) => c[3]),
+    [2, 1]
+  );
+});
+
+test("the comment's id comes from the address, never from the body; a refusal keeps its code and status", async () => {
+  const { handlers, calls } = make({ refuse: new DomainError({ code: "storyboard_version_not_latest", message: "reload" }) });
+  const base = { channelId: "UC_active", storyboardId: "sb", commentId: "c_path" };
+  assert.equal((await handlers.reply(json("POST", { text: "ok", commentId: "c_body" }), ctx(base))).status, 200);
+  assert.equal((await handlers.setState(json("PATCH", { state: "resolved", commentId: "c_body" }), ctx(base))).status, 200);
+  assert.deepEqual(calls.map((c) => [c[0], (c[3] as { commentId: string }).commentId]), [["reply", "c_path"], ["state", "c_path"]]);
+  const refused = await handlers.decide(json("POST", { kind: "approved", versionNumber: 1 }), ctx(base));
+  assert.equal(refused.status, 409);
+  assert.equal((await refused.json()).error, "storyboard_version_not_latest");
+});
+
+test("keyframe image: served with its type and no caching; 404 without a copy here; 415 for a non-image; 400 for a bad version", async () => {
+  const { handlers } = make();
+  const at = (keyframeId: string, version = "1") => ctx({ channelId: "UC_active", storyboardId: "sb", version, keyframeId });
+  const image = await handlers.keyframe(new Request("http://x/"), at("K0"));
+  assert.equal(image.status, 200);
+  assert.deepEqual([image.headers.get("content-type"), image.headers.get("cache-control")], ["image/jpeg", "no-store"]);
+  assert.deepEqual([...new Uint8Array(await image.arrayBuffer())], [1, 2, 3]);
+  assert.equal((await handlers.keyframe(new Request("http://x/"), at("K9"))).status, 404);
+  assert.equal((await handlers.keyframe(new Request("http://x/"), at("TXT"))).status, 415);
+  assert.equal((await handlers.keyframe(new Request("http://x/"), at("K0", "0"))).status, 400);
+});
