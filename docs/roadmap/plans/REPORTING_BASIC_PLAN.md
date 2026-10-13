@@ -1,8 +1,8 @@
 # Fresher daily analytics: Reporting basic reports + an evening re-collect (FO-REQ-0020, BL-181)
 
 - **Status:** APPROVED 2026-10-13 (owner msg 2687: Q1 yes, Q2 ok; Q3 answered with "does it cost anything?" -- no, only the free
-  Analytics API's quota; the default 22:05 kept). **Stage 1 BUILT** on `feature/bl-181-reporting-freshness` (items 1-7, §6), not
-  merged yet. Stage 2 waits for a week of stage-1 numbers.
+  Analytics API's quota; the default 22:05 kept). **Stage 1 DONE:** built on `feature/bl-181-reporting-freshness` (items 1-7, §6),
+  reviewed, merged into `dev` 2026-10-13 (owner msg 2694). Stage 2 waits for a week of stage-1 numbers.
 - **Request:** FO-REQ-0020, from the Operator, 2026-10-12. The owner's "ok" is Telegram 1036; the queue was set in msgs 2660 and 2677.
 - **Sources:**
   - the `dev` code (f785700, schema v86);
