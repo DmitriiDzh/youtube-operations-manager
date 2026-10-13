@@ -10,9 +10,11 @@ import type {
   StoryboardVersion,
 } from "@/lib/sync-gateway";
 import { DomainError, FROM_YTM_PREFIX, SENT_TO_YTM_PREFIX, STORYBOARD_IMAGE_EXTENSIONS, type KeyframeFileStatus, type StoryboardActor, type StoryboardsPorts } from "./contracts";
+import { requireApprovedOf } from "./gate";
 import { diffVersions, latestVersion, latestVersionNumber, storyboardState, type StoryboardState, type VersionDiff } from "./model";
 import {
   createStoryboardInputSchema,
+  gateSettingInputSchema,
   listStoryboardsInputSchema,
   operatorReplyInputSchema,
   ownerCommentInputSchema,
@@ -425,6 +427,21 @@ export function createStoryboardsService(ports: StoryboardsPorts) {
       await ports.withLock(async () => {
         findComment(await findRecord(channelId, storyboardId), commentId);
         await ports.store.setCommentState(channelId, storyboardId, commentId, state, "owner", stamp());
+      });
+    },
+
+    /** The channel's gate setting (B4): on unless the owner turned it off. */
+    async gateSetting(channelId: string): Promise<{ requireApproved: boolean; changedAt: string | null; changedBy: string | null }> {
+      const stored = await ports.store.readGate(channelId);
+      return { requireApproved: requireApprovedOf(stored), changedAt: stored?.changedAt ?? null, changedBy: stored?.changedBy ?? null };
+    },
+
+    async setGateSetting(channelId: string, input: unknown): Promise<{ requireApproved: boolean; changedAt: string | null; changedBy: string | null }> {
+      const { requireApproved } = parseWithSchema(gateSettingInputSchema, input, "storyboard setting");
+      return ports.withLock(async () => {
+        await ports.store.setGate(channelId, { requireApproved, changedAt: stamp(), changedBy: await ports.deviceLabel() });
+        const stored = await ports.store.readGate(channelId);
+        return { requireApproved: requireApprovedOf(stored), changedAt: stored?.changedAt ?? null, changedBy: stored?.changedBy ?? null };
       });
     },
 

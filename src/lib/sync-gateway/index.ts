@@ -104,6 +104,7 @@ export type {
   StoryboardComment,
   StoryboardCommentTarget,
   StoryboardDecision,
+  StoryboardGateSetting,
   StoryboardKeyframe,
   StoryboardProp,
   StoryboardRecord,

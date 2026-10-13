@@ -5,6 +5,7 @@ import {
   type MergeResult,
   type StoryboardComment,
   type StoryboardDecision,
+  type StoryboardGateSetting,
   type StoryboardRecord,
   type StoryboardReply,
   type StoryboardsDocument,
@@ -122,6 +123,24 @@ export function createStoryboardsCore(deps: ServiceDependencies) {
         comment.state = state;
         comment.stateChangedAt = at;
         comment.stateChangedBy = by;
+      });
+    },
+
+    /** The channel's gate setting as stored, or null when it was never changed (the caller's default applies). */
+    readGate(channelId: string): Promise<StoryboardGateSetting | null> {
+      return serialized(async () => {
+        const gate = (await loadOrGenesis(channelId)).gate;
+        return gate ? clone(gate) : null;
+      });
+    },
+
+    setGate(channelId: string, setting: StoryboardGateSetting): Promise<void> {
+      return serialized(async () => {
+        const doc = await loadOrGenesis(channelId);
+        const next = Automerge.change(doc, `gate ${setting.requireApproved ? "on" : "off"}`, (draft) => {
+          draft.gate = clone(setting);
+        });
+        await deps.core.save(channelId, next);
       });
     },
 

@@ -207,6 +207,9 @@ export type DomainErrorCode =
   | "storyboard_channel_unavailable"
   | "storyboard_version_not_latest"
   | "storyboard_not_submitted"
+  // NOT_APPROVED (stage 2, the gate): a first/last-frame video from two different images without an approved storyboard, or one
+  // naming a storyboard segment that is not approved or whose keyframes are not the job's frames (details.reason).
+  | "storyboard_not_approved"
   // Research export (docs/roadmap/plans/RESEARCH_EXPORT_PLAN.md) -- NOT_CONFIGURED: the channel has no workspace folder on this
   // device (the operator sets it in Settings). UNAVAILABLE: the folder (or its exports/ subfolder) failed re-validation at export
   // time. WRITE_FAILED: a file could not be written; nothing from that call is left behind.

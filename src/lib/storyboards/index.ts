@@ -4,6 +4,7 @@ import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { createStoryboardsCoreForProduction } from "@/lib/sync-gateway";
 import { createStoryboardFiles } from "./adapters/files";
+import { createStoryboardGate, type StoryboardGate } from "./gate";
 import { createStoryboardsService, type StoryboardsService } from "./services";
 
 // BL-184 (ADR 0038): the storyboards module of THIS server process. One instance per process (keyed on globalThis: the Factory
@@ -17,6 +18,11 @@ function hostLabel(): string | null {
   } catch {
     return null;
   }
+}
+
+/** BL-184 stage 2: the gate the video modules are given (it reads the same synced document). */
+export function createStoryboardGateForProduction(): StoryboardGate {
+  return createStoryboardGate(createStoryboardsCoreForProduction());
 }
 
 export function createStoryboardsServiceForProduction(): StoryboardsService {
@@ -43,6 +49,8 @@ export function createStoryboardsServiceForProduction(): StoryboardsService {
 export { createStoryboardsService, checkContent, exchangeRelativePath } from "./services";
 export type { StoryboardsService, StoryboardSummary, StoryboardDetail } from "./services";
 export { createStoryboardFiles, sha256OfFile } from "./adapters/files";
+export { createStoryboardGate, requireApprovedOf, DEFAULT_REQUIRE_APPROVED } from "./gate";
+export type { StoryboardGate, StoryboardLink, StoryboardJobLink, FramePairCheck, StoryboardNotApprovedReason } from "./gate";
 export { storyboardState, approvedVersion, diffVersions, changedPropCells, latestVersion, latestVersionNumber } from "./model";
 export type { StoryboardState, VersionDiff } from "./model";
 export * from "./contracts";

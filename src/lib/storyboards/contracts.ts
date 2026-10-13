@@ -25,7 +25,7 @@ export type KeyframeFileStatus = "ok" | "missing" | "differs";
 export type StoryboardActor = "owner" | "operator";
 
 /** The sync family's operations the module uses (one document per channel, merged between the computers). */
-export type StoryboardStorePort = Pick<StoryboardsCore, "read" | "create" | "addVersion" | "submit" | "addDecision" | "addComment" | "addReply" | "setCommentState">;
+export type StoryboardStorePort = Pick<StoryboardsCore, "read" | "create" | "addVersion" | "submit" | "addDecision" | "addComment" | "addReply" | "setCommentState" | "readGate" | "setGate">;
 
 export type StoryboardFilesPort = {
   /** The channel's workspace folder on this computer, or null when none is set. */

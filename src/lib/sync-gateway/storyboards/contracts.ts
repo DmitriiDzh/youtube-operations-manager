@@ -93,11 +93,18 @@ export type StoryboardRecord = {
   comments: Record<string, StoryboardComment>;
 };
 
+/**
+ * BL-184 stage 2 (FO-REQ-0024 B4, owner 1183): the channel's setting "a first/last-frame video from two different images needs an
+ * approved storyboard". Absent = on (the default); assigned whole, so the last change from either computer wins.
+ */
+export type StoryboardGateSetting = { requireApproved: boolean; changedAt: string; changedBy: string | null };
+
 export type StoryboardsDocument = {
   format: "ytm-storyboards";
   version: 1;
   channelId: string;
   storyboards: Record<string, StoryboardRecord>;
+  gate?: StoryboardGateSetting;
 };
 
 export type MergeResult = { newConflicts: [] };

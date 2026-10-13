@@ -71,3 +71,5 @@ export const ownerCommentStateInputSchema = z.object({ commentId: id, state: z.e
 export const ownerDecisionInputSchema = z
   .object({ kind: z.enum(["approved", "changes_requested"]), versionNumber: z.number().int().min(1), note: z.string().max(STORYBOARD_LIMITS.comment).nullable().optional() })
   .strict();
+/** BL-184 stage 2 (B4): the owner's per-channel setting. */
+export const gateSettingInputSchema = z.object({ requireApproved: z.boolean() }).strict();

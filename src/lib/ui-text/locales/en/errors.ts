@@ -66,6 +66,7 @@ export const errors = {
   "errors.storyboard_channel_unavailable": "This channel is not connected here or has no workspace folder on this computer.",
   "errors.storyboard_version_not_latest": "A newer version of this storyboard has arrived. The screen shows it now; look at it before you decide.",
   "errors.storyboard_not_submitted": "The Factory Operator has not sent this version for review yet.",
+  "errors.storyboard_not_approved": "A video from two different first and last frames needs an approved storyboard (Media → Storyboards).",
   "errors.upload_already_queued": "This video is already queued or already uploaded.",
   "errors.publishing_settings_changed": "The publishing settings changed after you looked at them (perhaps on the other computer). Check them and approve again.",
   "errors.upload_daily_limit": "Not enough uploads left today: YouTube allows the project 100 uploads a day. It resets at midnight Pacific time.",

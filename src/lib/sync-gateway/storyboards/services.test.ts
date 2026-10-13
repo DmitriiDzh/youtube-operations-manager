@@ -100,3 +100,15 @@ test("refusals: an existing id, a missing storyboard, version or comment change 
   const [sb] = await mac.read(CH);
   assert.deepEqual([Object.keys(sb.versions), Object.keys(sb.submissions)], [["1"], []]);
 });
+
+test("BL-184 stage 2: the channel's gate setting -- absent until changed, then the same on both computers after a cycle", async () => {
+  const mac = computer();
+  const windows = computer();
+  assert.equal(await mac.readGate(CH), null);
+  await windows.setGate(CH, { requireApproved: false, changedAt: "2026-10-13T13:00:00Z", changedBy: "Windows" });
+  await cycle(mac, windows);
+  assert.deepEqual(await mac.readGate(CH), { requireApproved: false, changedAt: "2026-10-13T13:00:00Z", changedBy: "Windows" });
+  await mac.setGate(CH, { requireApproved: true, changedAt: "2026-10-13T13:05:00Z", changedBy: "Mac" });
+  await cycle(mac, windows);
+  assert.equal((await windows.readGate(CH))?.requireApproved, true);
+});

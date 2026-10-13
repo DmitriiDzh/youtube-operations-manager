@@ -146,6 +146,7 @@ const DOMAIN_ERROR_STATUS = {
   storyboard_channel_unavailable: 409,
   storyboard_version_not_latest: 409,
   storyboard_not_submitted: 409,
+  storyboard_not_approved: 409,
   change_set_incomplete: 500,
   RESEARCH_EXPORT_WORKSPACE_NOT_CONFIGURED: 409,
   RESEARCH_EXPORT_WORKSPACE_UNAVAILABLE: 409,
