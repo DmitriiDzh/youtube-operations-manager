@@ -684,6 +684,8 @@ type ServiceDependencies = {
   getTrackedLanguages(channelId: string): Promise<string[]>;
   /** BL-178: the channel's language baseline (Languages -> Language defaults; `db.getChannelExpectedLanguages`). Optional. */
   getChannelLanguageBaseline?(channelId: string): Promise<{ defaultLanguage: string | null; defaultAudioLanguage: string | null }>;
+  /** BL-178 part C: `localization`'s translation alerts for the channel (the Languages badge's list). Optional. */
+  getTranslationAlerts?(channelId: string): Promise<{ byLanguage: Record<string, number>; videos: Array<{ videoId: string; missingLanguages: string[] }> }>;
   // Slice C -- delegates to `analyticsCore`'s own `getChannelOverview`/`listMetrics` unchanged
   // (AGENTS.md §D: no parallel analytics read path, no new YouTube call of this module's own).
   // Both take `input: unknown` and do their OWN internal validation/credential-resolution/
@@ -800,11 +802,12 @@ export function createAgentOperationsServices(deps: ServiceDependencies) {
         });
       }
 
-      const [videos, profile, trackedLanguages, baseline] = await Promise.all([
+      const [videos, profile, trackedLanguages, baseline, alerts] = await Promise.all([
         deps.channelStore.listVideosByChannel(channel.channelId),
         deps.getEditorialProfile(channel.channelId),
         deps.getTrackedLanguages(channel.channelId),
         deps.getChannelLanguageBaseline?.(channel.channelId) ?? Promise.resolve({ defaultLanguage: null, defaultAudioLanguage: null }),
+        deps.getTranslationAlerts?.(channel.channelId) ?? Promise.resolve(null),
       ]);
       // BL-178 (FO-REQ-0022 item 3): the same rule as Languages -> Language defaults and the Batch write -- a field is compared only
       // when the baseline sets it, case-insensitively; a missing value deviates once a baseline exists.
@@ -838,6 +841,15 @@ export function createAgentOperationsServices(deps: ServiceDependencies) {
         trackedLanguages,
         languageBaseline: hasBaseline ? baseline : null,
         languageDeviations,
+        ...(alerts
+          ? {
+              missingTranslations: {
+                videoCount: alerts.videos.length,
+                byLanguage: alerts.byLanguage,
+                videos: alerts.videos.map((video) => ({ videoId: video.videoId, missingLanguages: video.missingLanguages })),
+              },
+            }
+          : {}),
       };
 
       return parseWithSchema(channelContextOutputSchema, output, "get channel context output");

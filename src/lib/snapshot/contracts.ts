@@ -184,7 +184,7 @@ export const SNAPSHOT_DEVICE_LOCAL_TABLES: Readonly<Record<string, string>> = Ob
   content_proposals: "accepted limitation (RISK-52)",
   content_proposal_artifacts: "accepted limitation (RISK-52), child of content_proposals",
   rules: "retired feature, table kept inert",
-  channels: "cache of YouTube; re-synced per device",
+  channels: "cache of YouTube; re-synced per device -- its language settings (expected_default_*, target_languages_json) propagate continuously by sync-gateway channel-language-settings instead (BL-178)",
   videos: "cache of YouTube; re-synced per device",
   change_sets: "propagated continuously by sync-gateway instead",
   changes: "propagated continuously by sync-gateway instead",

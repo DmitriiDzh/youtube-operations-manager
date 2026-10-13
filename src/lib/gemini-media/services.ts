@@ -50,7 +50,7 @@ export type GeminiStore = {
   updateJob(jobId: string, fromStatus: GeminiMediaJobStatusValue, set: Partial<StoredGeminiMediaJob>): Promise<boolean>;
 };
 
-export type GeminiApiPort = Pick<GeminiApiClient, "checkKey" | "generateImage" | "startVideo" | "getVideoOperation" | "downloadVideo">;
+export type GeminiApiPort = Pick<GeminiApiClient, "checkKey" | "generateImage" | "generateVideo" | "startVideo" | "getVideoOperation" | "downloadVideo">;
 
 export type ResolvedInputFile = { path: string; bytes: number; identity?: { dev: number; ino: number } };
 
@@ -212,8 +212,9 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
       deps.store.listJobs({ statuses: GEMINI_ACTIVE_STATUSES, limit: 100_000 }),
     ]);
     const isActive = (row: StoredGeminiMediaJob) => (GEMINI_ACTIVE_STATUSES as readonly string[]).includes(row.status);
-    // An active job reserves its estimate; a finished one counts what it cost (0 when Google charged nothing).
-    const amount = (row: StoredGeminiMediaJob) => (isActive(row) ? row.estimateUsd : (row.costUsd ?? 0));
+    // An active job reserves its estimate -- or, once Google's counts are in (an Omni video still being downloaded, BL-179), what
+    // it cost; a finished one counts what it cost (0 when Google charged nothing).
+    const amount = (row: StoredGeminiMediaJob) => (isActive(row) ? (row.costUsd ?? row.estimateUsd) : (row.costUsd ?? 0));
     const sum = (rows: StoredGeminiMediaJob[]) => round4(rows.reduce((total, row) => total + amount(row), 0));
     return {
       todayUsd: sum(thisMonth.filter((row) => row.createdAt.getTime() >= dayStart.getTime())),
@@ -265,7 +266,7 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
   function estimateOf(input: CreateJobInput, inputCount: number): number {
     return input.kind === "image"
       ? estimateImageUsd({ model: input.model, size: input.image!.size, promptChars: input.prompt.length, inputImages: inputCount })
-      : estimateVideoUsd({ model: input.model, resolution: input.video!.resolution, durationSeconds: input.video!.durationSeconds });
+      : estimateVideoUsd({ model: input.model, resolution: input.video!.resolution, durationSeconds: input.video!.durationSeconds, promptChars: input.prompt.length, inputImages: inputCount });
   }
 
   return {

@@ -21,7 +21,9 @@ export const channelRefInputSchema = z.object({ channelId: z.string().min(1) }).
 export const setDefaultsInputSchema = z
   .object({
     channelId: z.string().min(1),
-    defaultLanguage: nullableCode(false),
-    defaultAudioLanguage: nullableCode(true),
+    // BL-178 part B (review item 3): a field left out is left unchanged -- a form sends only what the owner changed, so a
+    // stale value on this screen never overwrites one that arrived from the other computer meanwhile.
+    defaultLanguage: nullableCode(false).optional(),
+    defaultAudioLanguage: nullableCode(true).optional(),
   })
   .strict();

@@ -83,4 +83,10 @@ export { createMediaSettingsCoreForProduction } from "./media-settings";
 export type { MediaSettingsCore, SettingConflict as MediaSettingConflict, SettingValue as MediaSettingValue } from "./media-settings";
 export { createMediaSettingsSyncRunnerForProduction } from "./media-settings-sync";
 
+// BL-178 part B: a channel's language settings (baseline + tracked languages), one Automerge document per channel.
+export { createChannelLanguageSettingsCoreForProduction } from "./channel-language-settings";
+export type { ChannelLanguageSettingsCore, LanguageSettingConflict, LanguageSettingField, LanguageSettingValues } from "./channel-language-settings";
+export { LANGUAGE_SETTING_FIELDS } from "./channel-language-settings";
+export { createChannelLanguageSettingsSyncRunnerForProduction } from "./channel-language-settings-sync";
+
 export { runAllSyncFamiliesOnce } from "./run-all-families";

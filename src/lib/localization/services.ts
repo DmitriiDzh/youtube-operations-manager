@@ -4,11 +4,14 @@ import {
   type LocalizationExportResult,
   type LocalizationOverview,
   type LocalizationOverviewRow,
+  type LocalizationVersion,
   type StoredChannelRecord,
   type StoredVideoRecord,
+  type TranslationAlerts,
   type VideoLocalizationDetail,
 } from "./contracts";
 import {
+  channelOnlyInputSchema,
   exportLocalizationsInputSchema,
   localizationOverviewInputSchema,
   localizationOverviewOutputSchema,
@@ -21,7 +24,8 @@ import {
 // language-code-accepting entrypoint in this app (XLSX import, AI localization) still uses the
 // looser `isValidLanguageCode` BCP-47-ish regex from `@/lib/changesets/diff`, unchanged.
 import { isSupportedYoutubeLanguageCode } from "@/lib/youtube-supported-languages";
-import { readAgainstBaseline } from "@/lib/shared-language-baseline";
+import { createHash } from "node:crypto";
+import { readAgainstBaseline, sameLanguage } from "@/lib/shared-language-baseline";
 
 type ServiceDependencies = {
   channelStore: {
@@ -29,10 +33,14 @@ type ServiceDependencies = {
     listVideosByChannel(channelId: string): Promise<StoredVideoRecord[]>;
     getTargetLanguages(channelId: string): Promise<string[]>;
     setTargetLanguages(channelId: string, languages: string[]): Promise<void>;
+    /** BL-178 part B: the language settings set differently on the owner's computers (optional; absent = none). */
+    getConflictedLanguageSettings?(channelId: string): Promise<string[]>;
   };
   /** BL-178 (PROJECT_SPEC §14, 2026-10-12): the channel's language; optional (absent = every video read as it is). */
   channelLanguageBaseline?: {
     getExpectedDefaultLanguage(channelId: string): Promise<string | null>;
+    /** Only the refresh fingerprint reads it (review item 3: an audio baseline from the other computer reloads the page too). */
+    getExpectedDefaultAudioLanguage?(channelId: string): Promise<string | null>;
   };
   xlsxBuilder: {
     buildWorkbook(args: {
@@ -74,6 +82,36 @@ function computeOverviewRow(video: StoredVideoRecord, languages: string[], chann
   };
 }
 
+/**
+ * BL-178 part C (§3.3 C2): the tracked languages this video lacks, read against the channel's language -- no entry, an empty
+ * title, or an empty description where the original has one. The original's own language is never "missing".
+ */
+export function missingTrackedTranslations(video: StoredVideoRecord, trackedLanguages: string[], channelBaseline: string | null): string[] {
+  const reading = readAgainstBaseline(
+    { defaultLanguage: video.defaultLanguage, title: video.title, description: video.description, localizations: video.existingLocalizations },
+    channelBaseline
+  );
+  // Measured against the channel's language (plan §3.3 C2): an ambiguous video's own label is a recognition error too -- its
+  // original is the baseline's; its entries are kept as they are (one of them may be a real translation). Review item 7.
+  const original = reading.kind === "as_is" ? (video.defaultLanguage ?? channelBaseline) : reading.to;
+  const localizations = reading.kind === "aligned" ? reading.view.localizations : video.existingLocalizations;
+  const originalHasDescription = video.description.trim() !== "";
+  return trackedLanguages
+    .filter((language) => !sameLanguage(language, original))
+    .filter((language) => {
+      const key = Object.keys(localizations).find((k) => sameLanguage(k, language));
+      if (!key) return true;
+      const entry = localizations[key];
+      return entry.title.trim() === "" || (originalHasDescription && entry.description.trim() === "");
+    })
+    .sort();
+}
+
+/** Public, or scheduled to become public (`publishAt` set): what viewers see or are about to see. */
+function isPublicOrScheduled(video: StoredVideoRecord): boolean {
+  return video.privacyStatus === "public" || video.publishAt !== null;
+}
+
 function collectChannelLanguages(videos: StoredVideoRecord[]): string[] {
   const languages = new Set<string>();
   for (const video of videos) {
@@ -94,6 +132,21 @@ async function requireChannel(deps: ServiceDependencies, channelId: string): Pro
     });
   }
   return channel;
+}
+
+/**
+ * BL-178 part B (review item 2): adding or removing one language edits this computer's list; while the lists differ between the
+ * computers that edit would silently drop the other computer's languages. The owner chooses a list in Merge first.
+ */
+async function assertTrackedLanguagesSettled(deps: ServiceDependencies, channelId: string): Promise<void> {
+  const conflicted = (await deps.channelStore.getConflictedLanguageSettings?.(channelId)) ?? [];
+  if (conflicted.includes("trackedLanguages")) {
+    throw new DomainError({
+      code: "validation_failed",
+      message: "The tracked languages were set differently on your computers -- choose one list in Merge (or on the startup screen) first",
+      details: { channelId },
+    });
+  }
 }
 
 async function requireChannelAndVideos(
@@ -141,6 +194,52 @@ export function createLocalizationServices(deps: ServiceDependencies) {
       }
     },
 
+    /** BL-178 part C (§3.3 C2): the alert for this channel -- see `TranslationAlerts`. A local read. */
+    async getTranslationAlerts(input: unknown): Promise<TranslationAlerts> {
+      const { channelId } = parseWithSchema(channelOnlyInputSchema, input, "translation alerts input");
+      try {
+        const { channel, videos } = await requireChannelAndVideos(deps, channelId);
+        const trackedLanguages = await deps.channelStore.getTargetLanguages(channel.channelId);
+        const channelBaseline = (await deps.channelLanguageBaseline?.getExpectedDefaultLanguage(channel.channelId)) ?? null;
+        const missing = videos
+          .filter(isPublicOrScheduled)
+          .map((video) => ({ videoId: video.videoId, title: video.title, missingLanguages: missingTrackedTranslations(video, trackedLanguages, channelBaseline) }))
+          .filter((row) => row.missingLanguages.length > 0);
+        const byLanguage: Record<string, number> = {};
+        for (const row of missing) for (const language of row.missingLanguages) byLanguage[language] = (byLanguage[language] ?? 0) + 1;
+        return { channelId: channel.channelId, trackedLanguages, videos: missing, byLanguage };
+      } catch (error) {
+        throw mapUnknownError(error, "not_found");
+      }
+    },
+
+    /**
+     * BL-178 part C (§3.3 C1): a fingerprint of everything the Languages page and a Change Set read for the channel -- the
+     * videos' local copy (a verified Batch write or a sync changes it), the tracked languages, the channel's language and audio
+     * language, and which of these differ between the computers. An open page polls it and reloads when it moves, whoever made
+     * the change (this page, the Batches page, an agent, the other computer).
+     */
+    async getLocalizationVersion(input: unknown): Promise<LocalizationVersion> {
+      const { channelId } = parseWithSchema(channelOnlyInputSchema, input, "localization version input");
+      try {
+        const { channel, videos } = await requireChannelAndVideos(deps, channelId);
+        const trackedLanguages = await deps.channelStore.getTargetLanguages(channel.channelId);
+        const channelBaseline = (await deps.channelLanguageBaseline?.getExpectedDefaultLanguage(channel.channelId)) ?? null;
+        const channelBaselineAudio = (await deps.channelLanguageBaseline?.getExpectedDefaultAudioLanguage?.(channel.channelId)) ?? null;
+        const conflicted = (await deps.channelStore.getConflictedLanguageSettings?.(channel.channelId).catch(() => null)) ?? null;
+        const hash = createHash("sha256");
+        hash.update(JSON.stringify({ trackedLanguages, channelBaseline, channelBaselineAudio, conflicted }));
+        for (const video of [...videos].sort((a, b) => a.videoId.localeCompare(b.videoId))) {
+          hash.update(
+            JSON.stringify([video.videoId, video.title, video.description, video.defaultLanguage, video.existingLocalizations, video.privacyStatus, video.publishAt, video.lastSyncedAt.toISOString()])
+          );
+        }
+        return { channelId: channel.channelId, version: hash.digest("hex").slice(0, 16) };
+      } catch (error) {
+        throw mapUnknownError(error, "not_found");
+      }
+    },
+
     /** Adds a language to the channel's tracked list, so it appears as a Languages-tab column
      * even before any video has a real translation in it -- solves the "you can't propose a
      * translation into a language that doesn't already show up as a column" chicken-and-egg gap
@@ -164,6 +263,7 @@ export function createLocalizationServices(deps: ServiceDependencies) {
             details: { language: parsedInput.language },
           });
         }
+        await assertTrackedLanguagesSettled(deps, channel.channelId);
         const current = await deps.channelStore.getTargetLanguages(channel.channelId);
         const next = current.includes(parsedInput.language) ? current : [...current, parsedInput.language].sort();
         await deps.channelStore.setTargetLanguages(channel.channelId, next);
@@ -183,6 +283,7 @@ export function createLocalizationServices(deps: ServiceDependencies) {
       const parsedInput = parseWithSchema(manageTrackedLanguageInputSchema, input, "remove tracked language input");
       try {
         const channel = await requireChannel(deps, parsedInput.channelId);
+        await assertTrackedLanguagesSettled(deps, channel.channelId);
         const current = await deps.channelStore.getTargetLanguages(channel.channelId);
         const next = current.filter((l) => l !== parsedInput.language);
         await deps.channelStore.setTargetLanguages(channel.channelId, next);

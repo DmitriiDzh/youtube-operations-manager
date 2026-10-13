@@ -3550,7 +3550,26 @@ Plan: `docs/roadmap/plans/GEMINI_MEDIA_PLAN.md` (AC-GM-01..16). Schema v83, Fact
   failure retries in 30 s until 47 h after the start (`gemini_expired` at the estimate); a finished operation with an error or no sample
   costs 0. At startup a job left `submitting` fails `gemini_interrupted` at its estimate; `running` videos resume. With the switch off,
   queued jobs fail `gemini_disabled` unsent; running videos are still collected.
-- **Restarts.** `operation-lock media-idle` refuses `stop.sh` while a job is `submitting` (an image call takes up to 5 minutes); idle
+- **Omni (BL-179, FO-REQ-0021, `docs/roadmap/plans/GEMINI_OMNI_PLAN.md`; Factory API 1.15.0).** Google shuts the Veo 3.1 previews
+  down on 2026-10-22, and `predictLongRunning` rejects first/last frames (HTTP 400; Google: frames only through generateContent).
+  - `gemini-omni-1.1-flash` (`transport: "interactions"`) is one synchronous `POST /v1beta/interactions` call (15-min timeout,
+    `store:false`, `delivery:"inline"`). The frames come first, in order, with `video_config.task = "image_to_video"`.
+  - The call goes through `http.ts`'s `createLongWaitFetch` (`node:http(s)`): fetch itself gives up after 300 s without response
+    headers whatever the signal (undici, probed). The transport never follows a redirect, caps the body (the video limit in
+    base64 + 1 MB) and keeps transport codes. undici's own waits count as timeouts (outcome `unknown`).
+  - The worker runs it like an image job. Its cost is Google's token counts (`videoCostFromUsage`: input at the input rate, text
+    output and thinking at the text rate, all other output, audio included, at the video rate), never below the saved video's
+    table price (`videoCostFloor`), else the estimate. The estimate is 5,792 video tokens per second at 720p, 2.25 x for
+    1080p, plus input and the thinking allowance.
+  - A video delivered as a Files API URI (normalised to its download link) becomes `running` with the URI as `remoteName` and its
+    known cost. The poll downloads it without a Veo operation; a 404 or the 47-h give-up keeps the known cost. A link that
+    cannot be followed fails the job at its cost, and a JSON answer to a download is refused. The stale-`submitting` sweep is 20
+    min, above the 15-min call.
+  - The model table gains `transport`, `frames` and `retiresOn`. Frames on a Veo model are refused at create time
+    (`gemini_invalid_params`), before any call.
+  - A transport error names its inner cause (FO-MSG-0014).
+  - The request details the paid test still has to confirm are listed in RISK-127.
+- **Restarts.** `operation-lock media-idle` refuses `stop.sh` while a job is `submitting` (an image call takes up to 5 minutes, an Omni video up to 15); idle
   shutdown waits while any job is queued, submitting or running.
 - **Web.** Settings → Gemini (`gemini-media-settings.tsx`) and `/api/gemini-media` (overview), `/settings`, `/key`, `/key/test`: the
   owner's side only; no MCP tool sets the key, the switch or the limits.
@@ -3655,7 +3674,7 @@ Plan: `docs/roadmap/plans/LIVE_STREAMS_PLAN.md` (FO-REQ-0019). Schema v86, Facto
   `factory_live_get_status` and maps files with `factory_live_map_sources`. Bell notices: down, ended by YouTube, next video missing.
 - **Risks:** RISK-125 (the key in ffmpeg's argv), RISK-126 (the T9 every ~2 h).
 
-## 46. The channel's language is the truth for localization (BL-178 part A, FO-REQ-0022)
+## 46. The channel's language is the truth for localization (BL-178, FO-REQ-0022)
 
 Owner exception 2026-10-12 (msg 2665), recorded in `docs/PROJECT_SPEC.md` §14 and AGENTS.md §F. Plan:
 `docs/roadmap/plans/LOCALIZATION_BASELINE_PLAN.md`.
@@ -3703,6 +3722,48 @@ Owner exception 2026-10-12 (msg 2665), recorded in `docs/PROJECT_SPEC.md` §14 a
   - This closes RISK-102.
 - **Agents:** `agent_get_channel_context` gains `languageBaseline` and `languageDeviations`. These are additive, with no version
   bump.
-- **Not in part A:**
-  - syncing the baseline and tracked languages between computers (part B; they are still per computer);
-  - refresh after a send, and alerts (part C).
+- **Part B — the same settings on every computer** (`src/lib/sync-gateway/channel-language-settings/` + `-sync/`):
+  - One Automerge document per channel: `defaultLanguage`, `defaultAudioLanguage`, `trackedLanguages`. It is the only writer of
+    `channels.expected_default_*` and `channels.target_languages_json`. `channel-language-defaults` and `localization` save
+    through it, and every reader keeps reading those columns.
+  - The genesis is shared, as in `media-settings`: same actor, time 0, content keyed by channel. Documents two computers started
+    on their own merge field by field and are never refused as `divergent_document_lineage`.
+  - The first sync seeds each computer's earlier values: only set values, only fields the document lacks, and before the
+    peer's document is merged (the runner exports before it merges). An unset value never conflicts with a set one, so the Mac
+    with nothing received Windows' `en`/`en`.
+  - A field set to different values is a conflict. Tracked languages compare as a set. While a field conflicts, each computer
+    keeps its own value.
+  - The owner picks a computer's version on the startup screen or in Merge (`/api/channels/[id]/language-settings/conflicts`,
+    by actor, re-derived server-side). Saving the field with a value other than this computer's own also settles it. Re-sending
+    this computer's value does not: a form that saves every field never decides by itself.
+  - The Language defaults form sends only the fields the owner changed. A field left out keeps a value that arrived from the
+    other computer after the form loaded. The form also reloads when the refresh fingerprint moves, unless the owner is
+    editing.
+  - Adding or removing a tracked language is refused while the tracked lists conflict, because it would drop the other
+    computer's languages.
+  - Batches refuse a row before any YouTube call while `defaultLanguage` or `defaultAudioLanguage` conflicts. So does "Fix
+    all", which also refuses when the shared document cannot be read. Per-video alignment (a `video-details` preview/apply of the
+    panel's value) is disabled in the panel only: `video-details` is the owner's single-video edit and has no channel-baseline
+    check of its own (low risk, accepted). If the conflict state cannot be read, a Batch row fails closed with the cause. A tracked-languages conflict does not stop Batches, since no write reads the tracked list. The Languages page says
+    when the defaults differ.
+  - **Known limit:** a value an owner clears before the first sync is not shared, because an empty value is never seeded.
+    The other computer's set value then arrives and takes its place. A value cleared after it was shared reaches the other
+    computer as cleared.
+  - Load, change, merge and save run one at a time per process, the `media-settings` review finding.
+- **Part C — refresh and alerts:**
+  - Reconciliation that confirms a write also updates the local copy, as the ordinary success path does.
+  - `GET /api/channels/[id]/localizations/version` is a fingerprint of the channel's local video copy, tracked languages,
+    baseline language and audio language, and which language settings conflict. A fingerprint, not a counter, sees a change made by any process (a Batch run by an agent or the CLI, a sync, a
+    setting from the other computer) without a schema change. The Languages page and the Change Set view poll it every 15 s
+    while visible (`use-localization-version.ts`) and reload quietly when it moves. Only the newest request's answer is applied.
+  - `localization.getTranslationAlerts` covers public or scheduled (`publishAt` set) videos that lack a tracked language: no
+    entry, an empty title, or an empty description where the original has one. It is read against the baseline: a mirror is not
+    a translation, and an ambiguous video's original is in the baseline language too. The original's language never counts.
+  - `GET /api/localization-alerts` returns every connected channel's counts plus its deviation count (the "Fix all" list). It
+    feeds:
+    - the «Языки» badge for the active channel (distinct videos missing a translation or deviating, with the split on hover);
+    - bell entries for the other channels (the BL-157 rule: the active channel has its badge).
+
+    The entries are derived on every poll, so they clear once the translations are applied.
+  - `agent_get_channel_context` gains `missingTranslations` `{videoCount, byLanguage, videos[{videoId, missingLanguages}]}`,
+    additive.

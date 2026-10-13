@@ -330,14 +330,15 @@ test("AC-FO-07: a channel tool name is not callable on the factory endpoint", as
 // BL-174 (GEMINI_MEDIA_PLAN.md AC-GM-13): 1.12.0 and the three Gemini tools, last (declaration order); one of them a write.
 // BL-175 (VISUAL_REVIEW_PLAN.md AC-VR-13): 1.13.0, no new tool.
 // BL-176 (LIVE_STREAMS_PLAN.md §3.11): 1.14.0 and the two live-stream tools, last (declaration order); the map is a write.
-test("factory_get_capabilities reports the factory API version 1.14.0 (BL-176), READ and WRITE, the tool list and the write tools", async () => {
+// BL-179 (GEMINI_OMNI_PLAN.md): 1.15.0, no new tool.
+test("factory_get_capabilities reports the factory API version 1.15.0 (BL-179), READ and WRITE, the tool list and the write tools", async () => {
   const { endpoint, tokenServices } = setup();
   const { token } = await tokenServices.issueToken({});
   const result = await toolResult(await endpoint.handle(rpc(call("factory_get_capabilities"), withToken(token))));
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.14.0",
+    factoryApiVersion: "1.15.0",
     tools: [
       "factory_get_capabilities",
       "factory_list_logical_paths",

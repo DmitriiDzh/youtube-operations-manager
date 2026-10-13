@@ -6,7 +6,7 @@ import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { DomainError, isDomainError } from "@/lib/shared-domain";
 import { assertMediaGatewayAuthorized, type Authorize } from "./authorization";
-import { jsonRequest, type JsonResponse } from "./http";
+import { createLongWaitFetch, jsonRequest, type JsonResponse } from "./http";
 import { asNumber, asRecord, asString } from "./json";
 
 // ---------------------------------------------------------------------------
@@ -26,6 +26,8 @@ const KEY_CHECK_TIMEOUT_MS = 30_000;
 export const GEMINI_IMAGE_TIMEOUT_MS = 5 * 60_000;
 /** The start call uploads the frames (up to ~16 MB in base64): the same 5 minutes as an image, never a phantom timeout on a slow uplink. */
 export const GEMINI_VIDEO_START_TIMEOUT_MS = 5 * 60_000;
+/** BL-179: an Omni video is generated within the one call -- Google documents no time; 8 s of video took minutes in its demos. */
+export const GEMINI_INTERACTIONS_VIDEO_TIMEOUT_MS = 15 * 60_000;
 const VIDEO_POLL_TIMEOUT_MS = 60_000;
 const DOWNLOAD_TIMEOUT_MS = 10 * 60_000;
 const MAX_REDIRECTS = 5;
@@ -121,6 +123,24 @@ export type GeminiVideoRequest = {
   personGeneration?: string;
 };
 
+/** BL-179: one Omni video through the Interactions API (synchronous). `frames` in order: the start frame, then the end frame. */
+export type GeminiInteractionsVideoRequest = {
+  model: string;
+  prompt: string;
+  frames: GeminiInlineImage[];
+  aspectRatio: string;
+  resolution: string;
+  durationSeconds: number;
+};
+
+export type GeminiInteractionsVideoResult = {
+  /** The final video: inline bytes, or a Files API URI to download (Google may deliver either). `null` = none came back. */
+  video: { mimeType: string; data: Buffer } | { mimeType: string; uri: string } | null;
+  usage: GeminiUsage | null;
+  status: string | null;
+  blockReason: string | null;
+};
+
 export type GeminiVideoOperation =
   | { done: false }
   | { done: true; videoUri: string | null; error: { code: string | null; message: string } | null; blockReason: string | null };
@@ -134,10 +154,28 @@ function errorCodeOf(error: unknown): string | null {
   return record.cause ? errorCodeOf(record.cause) : null;
 }
 
+/** The innermost transport cause, for the job's error text (FO-MSG-0014 Q3: "fetch failed" alone says nothing). */
+function causeText(error: unknown): string | null {
+  let current: unknown = error;
+  let text: string | null = null;
+  for (let depth = 0; depth < 5 && current && typeof current === "object"; depth += 1) {
+    const record = current as { code?: unknown; message?: unknown; cause?: unknown };
+    const code = typeof record.code === "string" ? record.code : null;
+    const message = typeof record.message === "string" ? record.message : null;
+    if (depth > 0 && (code || message)) text = [code, message].filter(Boolean).join(": ");
+    current = record.cause;
+  }
+  return text ? text.slice(0, 200) : null;
+}
+
+/** undici's own waits (headers, body) are timeouts too -- they fire after 300 s whatever the AbortSignal (BL-179 review). */
+const TIMEOUT_CODES = new Set(["UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT", "ETIMEDOUT"]);
+
 function isTimeout(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
-  const record = error as { name?: unknown; cause?: unknown };
+  const record = error as { name?: unknown; code?: unknown; cause?: unknown };
   if (record.name === "TimeoutError" || record.name === "AbortError") return true;
+  if (typeof record.code === "string" && TIMEOUT_CODES.has(record.code)) return true;
   return record.cause ? isTimeout(record.cause) : false;
 }
 
@@ -166,8 +204,12 @@ function safeUrlForError(url: string): string {
   }
 }
 
-export function createGeminiApiClient(args: { fetchImpl?: Fetch; authorize?: Authorize; baseUrl?: string } = {}) {
+export function createGeminiApiClient(args: { fetchImpl?: Fetch; longWaitFetchImpl?: Fetch; authorize?: Authorize; baseUrl?: string } = {}) {
   const fetchImpl = args.fetchImpl ?? fetch;
+  // BL-179 (review blocker): fetch gives up after 300 s without response headers whatever the signal; the Omni call (minutes)
+  // goes through `node:https` instead. Its answer is the base64 video: bounded at the video cap's base64 size plus 1 MB.
+  const longWaitFetchImpl =
+    args.longWaitFetchImpl ?? args.fetchImpl ?? createLongWaitFetch({ maxBodyBytes: Math.ceil((GEMINI_MAX_VIDEO_BYTES * 4) / 3) + 1024 * 1024 });
   const authorize = args.authorize ?? assertMediaGatewayAuthorized;
   const baseUrl = (args.baseUrl ?? GEMINI_API_BASE_URL).replace(/\/$/, "");
   // The key goes to this exact origin only (scheme, host and port): an http:// hop to the same host never carries it.
@@ -184,8 +226,10 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; authorize?: Aut
   }
 
   function unavailable(context: Record<string, unknown>) {
-    return (stage: "request" | "read", detail: string, status?: number, cause?: unknown) => {
+    return (stage: "request" | "read", rawDetail: string, status?: number, cause?: unknown) => {
       const outcome = transportOutcome(stage, cause);
+      const inner = causeText(cause);
+      const detail = inner && !rawDetail.includes(inner) ? `${rawDetail}; cause ${inner}` : rawDetail;
       return new DomainError({
         code: "gemini_unavailable",
         message:
@@ -227,11 +271,11 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; authorize?: Aut
     method: string,
     pathAndQuery: string,
     context: Record<string, unknown>,
-    options: { body?: unknown; timeoutMs: number; keyCheck?: boolean }
+    options: { body?: unknown; timeoutMs: number; keyCheck?: boolean; longWait?: boolean }
   ): Promise<unknown> {
     await authorized(context);
     const response = await jsonRequest({
-      fetchImpl,
+      fetchImpl: options.longWait ? longWaitFetchImpl : fetchImpl,
       url: `${baseUrl}${pathAndQuery}`,
       method,
       headers: { accept: "application/json", "x-goog-api-key": apiKey, ...(options.body === undefined ? {} : { "content-type": "application/json" }) },
@@ -293,6 +337,46 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; authorize?: Aut
     return images;
   }
 
+  /**
+   * A Files API reference as a download URL (review item 4): `files/<id>` or `…/v1beta/files/<id>` (the file's metadata) become
+   * `<base>/v1beta/files/<id>:download?alt=media`; anything else is kept as given (the worker refuses a non-http(s) one).
+   */
+  function downloadUriOf(uri: string): string {
+    const bare = /^files\/([A-Za-z0-9_-]+)$/.exec(uri);
+    if (bare) return `${baseUrl}/v1beta/files/${bare[1]}:download?alt=media`;
+    try {
+      const parsed = new URL(uri);
+      const metadata = /^\/v1beta\/files\/([A-Za-z0-9_-]+)$/.exec(parsed.pathname);
+      if (parsed.origin === geminiOrigin && metadata) return `${geminiOrigin}/v1beta/files/${metadata[1]}:download?alt=media`;
+    } catch {
+      // not an absolute URL: kept as given
+    }
+    return uri;
+  }
+
+  /** The final video block of an Interactions answer (`steps[]` model output; legacy `outputs[]`): inline data, or a URI. */
+  function finalVideo(body: Record<string, unknown>): GeminiInteractionsVideoResult["video"] {
+    const blocks: Array<Record<string, unknown>> = [];
+    const steps = Array.isArray(body.steps) ? body.steps.map(asRecord) : null;
+    if (steps) {
+      for (const step of steps) {
+        if (asString(step.type) !== "model_output") continue;
+        for (const block of Array.isArray(step.content) ? step.content.map(asRecord) : []) blocks.push(block);
+      }
+    } else if (Array.isArray(body.outputs)) {
+      for (const block of body.outputs.map(asRecord)) blocks.push(block);
+    }
+    for (const block of blocks) {
+      if (asString(block.type) !== "video") continue;
+      const mimeType = (asString(block.mime_type) ?? "video/mp4").toLowerCase();
+      const data = asString(block.data);
+      if (data) return { mimeType, data: Buffer.from(data, "base64") };
+      const uri = asString(block.uri);
+      if (uri) return { mimeType, uri: downloadUriOf(uri) };
+    }
+    return null;
+  }
+
   function inline(image: GeminiInlineImage) {
     return { inlineData: { mimeType: image.mimeType, data: image.dataBase64 } };
   }
@@ -325,6 +409,41 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; authorize?: Aut
       const errors = Array.isArray(body.errors) ? body.errors.map(asRecord) : [];
       const blockCode = errors.map((e) => asString(e.code)?.toLowerCase() ?? null).find((c) => c !== null && GEMINI_BLOCKED_CODES.has(c)) ?? null;
       return { images: finalImages(body), usage: usageOf(body.usage), status: asString(body.status), blockReason: blockCode };
+    },
+
+    /**
+     * BL-179 (FO-REQ-0021): one Omni video, synchronous -- the answer carries it (https://ai.google.dev/gemini-api/docs/omni).
+     * Frames go first, in order (start, then end) with `video_config.task = image_to_video`: Google's reference reads the first
+     * image as the starting frame and an optional second one as the ending frame. `store:false` (as for images): Google keeps
+     * nothing; `delivery: inline`, so the answer itself is the video.
+     */
+    async generateVideo(apiKey: string, request: GeminiInteractionsVideoRequest): Promise<GeminiInteractionsVideoResult> {
+      const context = { call: "interactions.create", model: request.model };
+      const body = asRecord(
+        await call(apiKey, "POST", "/v1beta/interactions", context, {
+          timeoutMs: GEMINI_INTERACTIONS_VIDEO_TIMEOUT_MS,
+          longWait: true,
+          body: {
+            model: request.model,
+            input: [
+              ...request.frames.map((image) => ({ type: "image", mime_type: image.mimeType, data: image.dataBase64 })),
+              { type: "text", text: request.prompt },
+            ],
+            ...(request.frames.length > 0 ? { generation_config: { video_config: { task: "image_to_video" } } } : {}),
+            response_format: {
+              type: "video",
+              aspect_ratio: request.aspectRatio,
+              resolution: request.resolution,
+              duration: `${request.durationSeconds}s`,
+              delivery: "inline",
+            },
+            store: false,
+          },
+        })
+      );
+      const errors = Array.isArray(body.errors) ? body.errors.map(asRecord) : [];
+      const blockCode = errors.map((e) => asString(e.code)?.toLowerCase() ?? null).find((c) => c !== null && GEMINI_BLOCKED_CODES.has(c)) ?? null;
+      return { video: finalVideo(body), usage: usageOf(body.usage), status: asString(body.status), blockReason: blockCode };
     },
 
     /** Starts a Veo job; returns the long-running operation's name. */
@@ -426,6 +545,11 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; authorize?: Aut
           throw new DomainError({ code: "gemini_unavailable", message: `The video's storage host refused the download (HTTP ${response.status}).`, details: { ...context, outcome: "answered", status: response.status } });
         }
         throw failure({ status: response.status, ok: false, body }, context);
+      }
+      // A JSON answer is a metadata page or an error, never the video (review item 4: it would be saved as video-1.mp4).
+      if ((response.headers.get("content-type") ?? "").toLowerCase().includes("application/json")) {
+        await response.body.cancel().catch(() => undefined);
+        throw new DomainError({ code: "gemini_unavailable", message: "The video download answered with JSON, not a video file.", details: { ...context, outcome: "answered", status: response.status, notAVideo: true } });
       }
       const declared = Number(response.headers.get("content-length") ?? "");
       if (Number.isFinite(declared) && declared > GEMINI_MAX_VIDEO_BYTES) {

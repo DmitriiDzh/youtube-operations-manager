@@ -218,6 +218,8 @@ function createHarness(options: {
   auditFailsForVideoId?: string;
   channelBaseline?: string | null;
   channelBaselineAudio?: string | null;
+  /** BL-178 part B: the baseline fields set differently on the owner's computers; `"unreadable"` = the read throws. */
+  conflictedBaselineFields?: string[] | "unreadable";
 } = {}) {
   const store = createFakeStore();
   let counter = 0;
@@ -243,7 +245,21 @@ function createHarness(options: {
         return { expectedChannelId: args.expectedChannelId ?? "UC_TEST", shouldPersistSelection: false, userId: "user-1" };
       },
     },
-    channelLanguageBaseline: options.channelBaseline === undefined ? undefined : { getExpectedDefaultLanguage: async () => options.channelBaseline ?? null, getExpectedDefaultAudioLanguage: async () => options.channelBaselineAudio ?? null },
+    channelLanguageBaseline:
+      options.channelBaseline === undefined
+        ? undefined
+        : {
+            getExpectedDefaultLanguage: async () => options.channelBaseline ?? null,
+            getExpectedDefaultAudioLanguage: async () => options.channelBaselineAudio ?? null,
+            ...(options.conflictedBaselineFields
+              ? {
+                  getConflictedBaselineFields: async () => {
+                    if (options.conflictedBaselineFields === "unreadable") throw new Error("corrupt document");
+                    return options.conflictedBaselineFields ?? [];
+                  },
+                }
+              : {}),
+          },
     youtubeApi: {
       async fetchFreshVideoContext(args: { videoId: string }) {
         fetchFreshCalls.push(args.videoId);
@@ -781,4 +797,34 @@ test("BL-178 align: the backup keeps the original snippet text and language; the
   assert.deepEqual((snapshot.existingLocalizations as Record<string, unknown>).es, { title: EN_TITLE, description: EN_DESCRIPTION });
   const dryRun = harness.auditEvents.find((e) => e.eventType === "DRY_RUN");
   assert.deepEqual(dryRun?.detail.defaultLanguageAligned, { from: "es", to: "en" });
+});
+
+// ---------------------------------------------------------------------------
+// BL-178 part B (LOCALIZATION_BASELINE_PLAN §3.2/§4 B: "Different values saved on both computers -> a conflict on the startup
+// screen; Batches refuse until it is resolved"). Nobody has picked the language the write would set, so nothing is read from
+// or written to YouTube; once the conflict is gone the same batch proceeds.
+// ---------------------------------------------------------------------------
+test("BL-178 B: while the channel's baseline differs between the computers, a batch row fails before any YouTube call", async () => {
+  const harness = createHarness({ channelBaseline: "en", channelBaselineAudio: "en", conflictedBaselineFields: ["defaultLanguage"] });
+  const row = await dryRunOne(harness, { c1: { language: "es", field: "title", baselineValue: "", proposedValue: "Hola" } });
+  assert.equal(row.status, "FAILED");
+  assert.match((row as { error: string }).error, /set differently on your computers/);
+  assert.match((row as { error: string }).error, /defaultLanguage/);
+  assert.deepEqual(harness.fetchFreshCalls, []);
+  assert.equal(harness.backupWrites.length, 0);
+});
+
+test("BL-178 B: with no baseline conflict (a tracked-languages one never reaches the batch) the same row proceeds", async () => {
+  const harness = createHarness({ channelBaseline: "en", channelBaselineAudio: "en", conflictedBaselineFields: [] });
+  const row = await dryRunOne(harness, { c1: { language: "es", field: "title", baselineValue: "", proposedValue: "Hola" } });
+  assert.notEqual(row.status, "FAILED");
+  assert.deepEqual(harness.fetchFreshCalls, ["v1"]);
+});
+
+test("BL-178 B: when the shared language settings cannot be read, the row fails closed with the cause, before any YouTube call", async () => {
+  const harness = createHarness({ channelBaseline: "en", channelBaselineAudio: "en", conflictedBaselineFields: "unreadable" });
+  const row = await dryRunOne(harness, { c1: { language: "es", field: "title", baselineValue: "", proposedValue: "Hola" } });
+  assert.equal(row.status, "FAILED");
+  assert.match((row as { error: string }).error, /could not be read \(corrupt document\)/);
+  assert.deepEqual(harness.fetchFreshCalls, []);
 });

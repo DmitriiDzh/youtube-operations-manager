@@ -190,6 +190,7 @@ export const languages = {
 
   // --- Channel language defaults (language-defaults-panel.tsx) ---
   "languageDefaults.loadFailed": "Failed to load language defaults",
+  "languageDefaults.differsBetweenComputers": "These defaults were set differently on your computers. Each keeps its own until you choose one in Merge (or on the startup screen); until then Batches refuse to send.",
   "languageDefaults.saveFailed": "Failed to save",
   "languageDefaults.checkingTitle": "Checking videos",
   "languageDefaults.checkingStage": "Reading current values from YouTube — nothing is changed",
