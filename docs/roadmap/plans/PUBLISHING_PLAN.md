@@ -1,7 +1,7 @@
 # Publishing from YT Manager: upload and schedule, calendar, 7-day reminder, History (FO-REQ-0023, BL-182)
 
 - **Status:** APPROVED 2026-10-13 (owner, Telegram msg 2707, "да для всего": the order in §7.1, rescheduling while private, the
-  AI-use fix). Stage 0 (G1) in progress on `feature/bl-182-publishing`.
+  AI-use fix). **Stage 0 (G1) DONE 2026-10-13: uploads are NOT locked** (§2 stage 0, result). Stage 1 next.
 - **The owner's go:** for this work, msg 2698 ("check the Operator's new messages"); for the G1 test, msg 2702 (one private test
   upload, then its deletion). The Operator's quotes of 1110 / 1114 are the Operator's record, not the authorisation here.
 - **Request:** FO-REQ-0023 (Operator, 2026-10-12; owner instruction 1110, answers 1114), relayed by the owner on 2026-10-13
@@ -117,6 +117,20 @@
    - not locked → as planned;
    - `publishAt` refused → private uploads only;
    - locked → the audit form; uploads wait.
+
+**G1 result (2026-10-13).**
+- Upload: video `KuCwWYI2pmE`, Rural Japan Music, at 11:30 UTC (run from `90ed9fb`). It was deleted at 11:36 after the owner's Studio check
+  (msg 2715).
+- **Not locked.** Studio shows «Ограниченный» (Private), the change button works, and there is no lock notice.
+- Processing: processed / succeeded in 31 s; not rejected as a duplicate of V39.
+- **`defaultAudioLanguage` is accepted at insert:** `en` read back.
+- **`containsSyntheticMedia` is set at insert** (the owner saw "AI use" in Studio), **but the API does not return it on read.**
+  Consequences:
+  - the upload cannot verify it by read-back, and the approval screen says so;
+  - which published videos lack it cannot be detected, so the AI-use fix can only set it on every published video, at 50 units
+    each. The owner decides at stage 2.
+- Owner, msg 2715: per-channel publishing defaults in Content, set once. Only the title, description and thumbnail change per video
+  (stage 2 item 2).
 
 ### Stage 1 — Calendar + 7-day reminder (does not depend on G1; mostly reads)
 
