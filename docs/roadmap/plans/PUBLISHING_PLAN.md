@@ -2,8 +2,8 @@
 
 - **Status:** APPROVED 2026-10-13 (owner, Telegram msg 2707, "да для всего": the order in §7.1, rescheduling while private, the
   AI-use fix). **Stage 0 (G1) DONE 2026-10-13: uploads are NOT locked** (§2 stage 0, result). **Stage 1 BUILT** on
-  `feature/bl-182-publishing` (ARCHITECTURE §47.2), reviewed (findings fixed), not merged yet; stages 0 and 1 merge together on the
-  owner's yes.
+  `feature/bl-182-publishing` (ARCHITECTURE §47.2), reviewed (findings fixed); stages 0 and 1 merged into `dev` 2026-10-13 (owner msg
+  2722). Stage 2 (packages, upload and schedule, publishing defaults) next.
 - **Stage 1 deviations:**
   - The tool is named `agent_get_publishing_calendar` (agent prefix and capability check), not `channel_publishing_calendar`.
   - The refresh of other channels is a full channel sync (about 7 units), not a targeted read.
