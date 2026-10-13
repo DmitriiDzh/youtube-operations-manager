@@ -113,3 +113,5 @@
   runs only when yesterday is still missing.
 - **Measurement start.** The jobs are created on the first dashboard load after the merge. Google then posts 30 history days within
   a couple of days, and the first daily file within 48 h. The week of stage-1 numbers starts from that first daily file.
+- **Addition after the merge (owner msg 2702, FO-MSG-0015).** `agent_get_reporting_traffic_sources` (Agent API 3.15.0) reads the
+  stored traffic-source rows. The Operator is reading a Tropico reach drop with it.

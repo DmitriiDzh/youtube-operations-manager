@@ -6310,11 +6310,43 @@ export async function listChannelBasicDaily(
     .orderBy(asc(channelBasicDaily.date), asc(channelBasicDaily.videoId));
 }
 
+/** BL-181: the imported files of one report type whose period starts inside a date range (the freshness of the stored days). */
+export async function listImportedReportingFilesInRange(
+  channelId: string,
+  reportTypeId: string,
+  range: { startDate: string; endDate: string },
+  database: AppDb = db
+): Promise<Array<{ startTime: string; endTime: string; createTime: string }>> {
+  return database
+    .select({ startTime: reportingReportFiles.startTime, endTime: reportingReportFiles.endTime, createTime: reportingReportFiles.createTime })
+    .from(reportingReportFiles)
+    .where(
+      and(
+        eq(reportingReportFiles.channelId, channelId),
+        eq(reportingReportFiles.reportTypeId, reportTypeId),
+        eq(reportingReportFiles.status, "imported"),
+        gte(reportingReportFiles.startTime, `${range.startDate}T00:00:00`),
+        sql`${reportingReportFiles.startTime} <= ${`${range.endDate}T23:59:59Z`}`
+      )
+    )
+    .orderBy(asc(reportingReportFiles.startTime));
+}
+
+/** BL-181: the first and last stored day of the channel's traffic-source rows. */
+export async function getChannelTrafficSourceCoverage(channelId: string, database: AppDb = db): Promise<{ firstDate: string | null; lastDate: string | null }> {
+  const [row] = await database
+    .select({ firstDate: sql<string | null>`MIN(${channelTrafficSourceDaily.date})`, lastDate: sql<string | null>`MAX(${channelTrafficSourceDaily.date})` })
+    .from(channelTrafficSourceDaily)
+    .where(eq(channelTrafficSourceDaily.channelId, channelId));
+  return { firstDate: row?.firstDate ?? null, lastDate: row?.lastDate ?? null };
+}
+
 /** BL-181: the stored traffic-source rows of a date range, oldest day first. */
 export async function listChannelTrafficSourceDaily(
   channelId: string,
   range: { startDate: string; endDate: string },
-  database: AppDb = db
+  database: AppDb = db,
+  videoId?: string
 ): Promise<StoredChannelTrafficSourceRow[]> {
   return database
     .select()
@@ -6323,7 +6355,8 @@ export async function listChannelTrafficSourceDaily(
       and(
         eq(channelTrafficSourceDaily.channelId, channelId),
         gte(channelTrafficSourceDaily.date, range.startDate),
-        sql`${channelTrafficSourceDaily.date} <= ${range.endDate}`
+        sql`${channelTrafficSourceDaily.date} <= ${range.endDate}`,
+        ...(videoId !== undefined ? [eq(channelTrafficSourceDaily.videoId, videoId)] : [])
       )
     )
     .orderBy(asc(channelTrafficSourceDaily.date), asc(channelTrafficSourceDaily.videoId), asc(channelTrafficSourceDaily.trafficSourceType));
