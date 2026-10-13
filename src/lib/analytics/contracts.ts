@@ -309,3 +309,11 @@ export type GetWeeklyReportResult = {
 export type RunWeeklyReportIfDueResult =
   | { generated: false }
   | { generated: true; report: WeeklyReportSummary };
+
+/** BL-181 (FO-REQ-0020 §2.3): the evening re-collect asks this many days, ending yesterday (local). */
+export const EVENING_COLLECTION_RANGE_DAYS = 3;
+
+/** BL-181: what one channel's evening check did. `reason` says why nothing ran. */
+export type EveningCollectResult =
+  | { ranCollection: true; result: CollectMetricsResult }
+  | { ranCollection: false; reason: "off" | "not_yet" | "already_ran" | "data_current" | "no_videos" | "quota_reserve" };

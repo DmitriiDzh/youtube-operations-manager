@@ -7,6 +7,7 @@ import { InfoTooltip } from "./info-tooltip";
 import { resetUserTimezoneCache } from "./use-user-timezone";
 import { isValidIanaTimezone, isValidLocalTimeOfDay } from "@/lib/analytics/staleness";
 import { LoadingIndicator } from "./operation-progress";
+import { ToggleSwitch } from "./toggle-switch";
 import { useT } from "./ui-text-provider";
 
 // `Intl.supportedValuesOf` (ES2022) -- the real, canonical IANA timezone database this runtime
@@ -20,7 +21,12 @@ const IANA_TIMEZONES: string[] = typeof Intl.supportedValuesOf === "function" ? 
 type SyncSettings = {
   analyticsSyncLocalTime: string;
   analyticsSyncTimezone: string;
+  /** BL-181: the evening re-collect boundary, "" when off. */
+  analyticsEveningLocalTime: string;
 };
+
+/** BL-181: what the time field shows when the owner turns the evening re-collect back on. */
+const DEFAULT_EVENING_TIME = "22:05";
 
 /**
  * Settings-tab section for BL-059's daily auto-collection boundary
@@ -44,7 +50,7 @@ export function AnalyticsCollectionSettings() {
     const res = await fetch("/api/settings");
     if (!res.ok) return;
     const data = (await res.json()) as SyncSettings;
-    if (ownSettingsUnavailable(data, ["analyticsSync"])) return;
+    if (ownSettingsUnavailable(data, ["analyticsSync", "analyticsEveningLocalTime"])) return;
     setSettings(data);
     setDraft(data);
   }, []);
@@ -62,10 +68,11 @@ export function AnalyticsCollectionSettings() {
       const res = await fetch("/api/settings", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        // Only this card's own two fields -- never the whole snapshot (see read-gateway-settings.tsx).
+        // Only this card's own fields -- never the whole snapshot (see read-gateway-settings.tsx).
         body: JSON.stringify({
           analyticsSyncLocalTime: draft.analyticsSyncLocalTime,
           analyticsSyncTimezone: draft.analyticsSyncTimezone,
+          analyticsEveningLocalTime: draft.analyticsEveningLocalTime,
         }),
       });
       const data = await res.json();
@@ -94,10 +101,16 @@ export function AnalyticsCollectionSettings() {
 
   const dirty =
     draft.analyticsSyncLocalTime !== settings.analyticsSyncLocalTime ||
-    draft.analyticsSyncTimezone !== settings.analyticsSyncTimezone;
+    draft.analyticsSyncTimezone !== settings.analyticsSyncTimezone ||
+    draft.analyticsEveningLocalTime !== settings.analyticsEveningLocalTime;
 
   const timeValid = isValidLocalTimeOfDay(draft.analyticsSyncLocalTime);
   const timezoneValid = isValidIanaTimezone(draft.analyticsSyncTimezone);
+  const eveningOn = draft.analyticsEveningLocalTime !== "";
+  const eveningFormatValid = !eveningOn || isValidLocalTimeOfDay(draft.analyticsEveningLocalTime);
+  // Same rule the server enforces: the evening boundary is later in the day than the collection time.
+  const eveningOrderValid = !eveningOn || !eveningFormatValid || !timeValid || draft.analyticsEveningLocalTime > draft.analyticsSyncLocalTime;
+  const eveningValid = eveningFormatValid && eveningOrderValid;
 
   return (
     <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
@@ -150,19 +163,47 @@ export function AnalyticsCollectionSettings() {
             ))}
           </datalist>
         </label>
+        <div className="flex flex-col gap-1 text-xs text-zinc-400">
+          <span className="flex items-center gap-1.5">
+            {t("analyticsCollection.evening")}
+            <InfoTooltip>{t("analyticsCollection.eveningInfo")}</InfoTooltip>
+          </span>
+          <div className="flex items-center gap-2">
+            <ToggleSwitch
+              label={t("analyticsCollection.evening")}
+              checked={eveningOn}
+              onChange={(checked) => setDraft({ ...draft, analyticsEveningLocalTime: checked ? settings.analyticsEveningLocalTime || DEFAULT_EVENING_TIME : "" })}
+            />
+            <span className="text-sm text-zinc-300">{t("analyticsCollection.evening")}</span>
+          </div>
+        </div>
+        {eveningOn && (
+          <label className="flex flex-col gap-1 text-xs text-zinc-400">
+            {t("analyticsCollection.eveningTime")}
+            <input
+              type="text"
+              inputMode="numeric"
+              placeholder={t("format.timePlaceholder")}
+              value={draft.analyticsEveningLocalTime}
+              onChange={(e) => setDraft({ ...draft, analyticsEveningLocalTime: e.target.value })}
+              className={`w-24 rounded-lg border bg-zinc-800 px-3 py-1.5 text-sm text-zinc-100 ${eveningValid ? "border-zinc-700" : "border-red-700"}`}
+            />
+          </label>
+        )}
         <button
           onClick={handleSave}
-          disabled={saving || !dirty || !timeValid || !timezoneValid}
+          disabled={saving || !dirty || !timeValid || !timezoneValid || !eveningValid}
           className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50"
         >
           {saving ? t("common.saving") : t("common.save")}
         </button>
       </div>
 
-      {(!timeValid || !timezoneValid) && (
+      {(!timeValid || !timezoneValid || !eveningValid) && (
         <p className="text-xs text-red-400">
-          {!timeValid && `${t("analyticsCollection.invalidTime")} `}
-          {!timezoneValid && t("analyticsCollection.invalidTimezone")}
+          {(!timeValid || !eveningFormatValid) && `${t("analyticsCollection.invalidTime")} `}
+          {!timezoneValid && `${t("analyticsCollection.invalidTimezone")} `}
+          {!eveningOrderValid && t("analyticsCollection.eveningMustBeLater")}
         </p>
       )}
       {savedNotice && <p className="text-sm font-medium text-green-500">{savedNotice}</p>}

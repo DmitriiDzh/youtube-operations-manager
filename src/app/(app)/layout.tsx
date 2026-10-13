@@ -249,6 +249,19 @@ export default function AppLayout({ children }: { children: ReactNode }) {
     );
   }, [channel, setStep]);
 
+  // BL-181 (FO-REQ-0020 §2.3): the evening re-collect. While the dashboard is open and visible it asks every 5 minutes; the server
+  // answers at once (local settings only) before the evening boundary and once every channel's evening is settled, and otherwise
+  // re-collects each channel whose newest day the Analytics API has not returned yet -- once per evening. Not part of the startup
+  // steps: nothing waits on it. No server timer: a closed dashboard does not re-collect (the next day's run does).
+  useEffect(() => {
+    if (!channel?.id) return;
+    const timer = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      fetch("/api/analytics/evening-collect", { method: "POST" }).catch(() => undefined);
+    }, 5 * 60_000);
+    return () => clearInterval(timer);
+  }, [channel?.id]);
+
   // BL-157 (AC-BL-05): a bell entry switches to its channel, waits until the switch has landed, then opens its place.
   const [openAfterSwitch, setOpenAfterSwitch] = useState<{ channelId: string; href: string } | null>(null);
   const openChannelWork = useCallback(async (channelId: string, href: string) => {

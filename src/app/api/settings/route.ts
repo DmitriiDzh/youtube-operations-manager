@@ -10,6 +10,7 @@ import {
   getWikipediaReadsEnabled,
   getYoutubeFeedReadsEnabled,
   getAnalyticsSyncSettings,
+  getAnalyticsEveningLocalTime,
   getDataApiReadsEnabled,
   getDeviceAutoSyncEnabled,
   getGatewayTrafficLast24h,
@@ -30,6 +31,7 @@ import {
   setWikipediaReadsEnabled,
   setYoutubeFeedReadsEnabled,
   setAnalyticsSyncSettings,
+  setAnalyticsEveningLocalTime,
   setDataApiReadsEnabled,
   setDeviceAutoSyncEnabled,
   setLiveWritesEnabled,
@@ -141,6 +143,7 @@ async function getSettingsSnapshot() {
     liveWritesEnabled: () => getLiveWritesEnabled(),
     mcpConnectionEnabled: () => getMcpConnectionEnabled(),
     analyticsSync: () => getAnalyticsSyncSettings(),
+    analyticsEveningLocalTime: () => getAnalyticsEveningLocalTime(),
     dataApiReadsEnabled: () => getDataApiReadsEnabled(),
     analyticsReadsEnabled: () => getAnalyticsReadsEnabled(),
     youtubeFeedReadsEnabled: () => getYoutubeFeedReadsEnabled(),
@@ -213,6 +216,33 @@ export async function POST(request: Request) {
       );
     }
     analyticsSyncTimezoneToSet = body.analyticsSyncTimezone;
+  }
+
+  // BL-181 (FO-REQ-0020 §2.3): the evening re-collect boundary -- "" turns it off; otherwise HH:MM, later than the daily boundary
+  // (checked against the daily boundary this same request sets, if any; a pair the evening run would ignore is refused instead).
+  let analyticsEveningLocalTimeToSet: string | undefined;
+  if (
+    (body.analyticsEveningLocalTime !== undefined && body.analyticsEveningLocalTime !== null) ||
+    analyticsSyncLocalTimeToSet !== undefined
+  ) {
+    const evening =
+      body.analyticsEveningLocalTime !== undefined && body.analyticsEveningLocalTime !== null
+        ? body.analyticsEveningLocalTime
+        : await getAnalyticsEveningLocalTime();
+    if (typeof evening !== "string" || (evening !== "" && !isValidLocalTimeOfDay(evening))) {
+      return NextResponse.json(
+        { error: "validation_failed", message: 'analyticsEveningLocalTime must be "" (off) or a valid 24-hour HH:MM string' },
+        { status: 400 }
+      );
+    }
+    const morning = analyticsSyncLocalTimeToSet ?? (await getAnalyticsSyncSettings()).localTime;
+    if (evening !== "" && evening <= morning) {
+      return NextResponse.json(
+        { error: "validation_failed", message: "analyticsEveningLocalTime must be later than analyticsSyncLocalTime (the daily boundary)" },
+        { status: 400 }
+      );
+    }
+    if (body.analyticsEveningLocalTime !== undefined && body.analyticsEveningLocalTime !== null) analyticsEveningLocalTimeToSet = evening;
   }
 
   let marketIntelligenceQuotaToSet: { present: true; value: number | null } | { present: false } = { present: false };
@@ -331,6 +361,9 @@ export async function POST(request: Request) {
   }
   if (analyticsSyncTimezoneToSet !== undefined) {
     await setAnalyticsSyncSettings({ timezone: analyticsSyncTimezoneToSet });
+  }
+  if (analyticsEveningLocalTimeToSet !== undefined) {
+    await setAnalyticsEveningLocalTime(analyticsEveningLocalTimeToSet);
   }
   if (marketIntelligenceQuotaToSet.present) {
     await marketIntelligenceCore.setDailyQuotaBudgetUnits(marketIntelligenceQuotaToSet.value);

@@ -2,7 +2,15 @@ import type { ProgressReporter } from "@/lib/operation-progress";
 import { rangesStraddleViewCountingChange } from "@/lib/youtube-quota";
 import { YOUTUBE_ANALYTICS_READ_SCOPE } from "@/lib/auth";
 import type { ChannelAccessService } from "@/lib/channel-access";
-import { computeDefaultAutoCollectionRange, computeNextRefreshAt, isAnalyticsCollectionStale, pacificDayEnd } from "./staleness";
+import {
+  computeDefaultAutoCollectionRange,
+  computeNextRefreshAt,
+  formatZonedDateAndTime,
+  isAnalyticsCollectionStale,
+  isValidLocalTimeOfDay,
+  pacificDayEnd,
+  zonedInstant,
+} from "./staleness";
 import { assertValidDateRange, assertValidIsoDate, computePreviousPeriod, enumerateDates, zeroFillDailySeries } from "./period";
 import { computeComparableAgeSeries } from "./comparable-age";
 import { computeDataQualityReport, extendDataQualityReport, isRangeFullyCovered } from "./data-quality";
@@ -12,6 +20,7 @@ import {
   ANALYTICS_METRIC_NAMES,
   AUTO_COLLECTION_RANGE_DAYS,
   CHANNEL_BREAKDOWN_PRESETS,
+  EVENING_COLLECTION_RANGE_DAYS,
   CHANNEL_OVERVIEW_METRIC_NAMES,
   DomainError,
   isDomainError,
@@ -20,6 +29,7 @@ import {
   type ChannelOverviewTotals,
   type CollectMetricsResult,
   type DataQualityReportResult,
+  type EveningCollectResult,
   type GetChannelBreakdownResult,
   type GetChannelOverviewResult,
   type GetComparableAgeComparisonResult,
@@ -171,6 +181,13 @@ type ServiceDependencies = {
   };
   settingsStore: {
     getAnalyticsSyncSettings(): Promise<{ localTime: string; timezone: string }>;
+    /** BL-181: the evening boundary "HH:MM" ("" = off). Without it the evening re-collect is off. */
+    getAnalyticsEveningLocalTime?(): Promise<string>;
+  };
+  /** BL-181: when the evening re-collect last started per channel on this computer, so it runs once per evening whatever it got. */
+  eveningAttemptStore?: {
+    get(channelId: string): Promise<Date | null>;
+    record(channelId: string, at: Date): Promise<void>;
   };
   // Phase 8 follow-up, slice 2 (data-quality diagnostics) -- append-only history of each
   // collectMetrics run, read by getDataQualityReport.
@@ -512,7 +529,18 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
      *    (logged as `mark_disagrees_with_run_history`, a real, reportable inconsistency, not a
      *    silent override).
      */
-    async collectMetrics(input: unknown, options: { progress?: ProgressReporter } = {}): Promise<CollectMetricsResult> {
+    async collectMetrics(
+      input: unknown,
+      options: {
+        progress?: ProgressReporter;
+        /**
+         * BL-181: set only by `runEveningCollectionIfDue`, which has already checked that the evening boundary passed, that this
+         * channel was not collected since, and that the Analytics API has not yet returned yesterday. Never reachable from a tool
+         * input (it is not part of the schema).
+         */
+        eveningRun?: boolean;
+      } = {}
+    ): Promise<CollectMetricsResult> {
       const parsedInput = parseWithSchema(collectMetricsInputSchema, input, "collect metrics input");
       const progress = options.progress;
       const metricNames = parsedInput.metricNames ?? ANALYTICS_METRIC_NAMES;
@@ -586,6 +614,7 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
         const channelHasVideos =
           markedFresh && genuineRunCoversExpectedDate ? (await deps.videoStore.listVideosByChannel(parsedInput.channelId)).length > 0 : false;
         if (
+          !options.eveningRun &&
           markedFresh &&
           genuineRunCoversExpectedDate &&
           isRangeFullyCovered({
@@ -877,6 +906,60 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
           { ranCollection: true, result },
           "run auto collection output"
         );
+      } catch (error) {
+        throw mapUnknownError(error, "unauthorized");
+      }
+    },
+
+    /**
+     * BL-181 (FO-REQ-0020 §2.3; plan REPORTING_BASIC_PLAN.md §2 item 7): the evening re-collect -- a second daily boundary
+     * (default 22:05 local, "" = off). It is the one exception to the once-a-day rule `collectMetrics` documents, and only when
+     * there can be something new: the evening boundary has passed, the channel was not collected since it, no evening attempt
+     * started since it on this computer, and the Analytics API has not yet returned yesterday. It asks only the 3 days ending
+     * yesterday. The attempt is recorded before the call, so it runs at most once per evening whatever comes back.
+     */
+    async getEveningWindow(): Promise<{ open: boolean; localDate: string | null }> {
+      const evening = deps.settingsStore.getAnalyticsEveningLocalTime ? await deps.settingsStore.getAnalyticsEveningLocalTime() : "";
+      if (!evening || !isValidLocalTimeOfDay(evening) || !deps.eveningAttemptStore) return { open: false, localDate: null };
+      const { localTime: morning, timezone } = await deps.settingsStore.getAnalyticsSyncSettings();
+      if (evening <= morning) return { open: false, localDate: null };
+      const today = formatZonedDateAndTime(deps.clock.now(), timezone);
+      return { open: today.localTime >= evening, localDate: today.localDate };
+    },
+
+    async runEveningCollectionIfDue(input: unknown): Promise<EveningCollectResult> {
+      const parsedInput = parseWithSchema(runAutoCollectionInputSchema, input, "run evening collection input");
+      try {
+        await deps.channelAccess.assertActiveChannel({ userId: getCredentialUserId(parsedInput.credentialRef), channelId: parsedInput.channelId });
+
+        const evening = deps.settingsStore.getAnalyticsEveningLocalTime ? await deps.settingsStore.getAnalyticsEveningLocalTime() : "";
+        if (!evening || !isValidLocalTimeOfDay(evening) || !deps.eveningAttemptStore) return { ranCollection: false, reason: "off" };
+        const { localTime: morning, timezone } = await deps.settingsStore.getAnalyticsSyncSettings();
+        if (evening <= morning) return { ranCollection: false, reason: "off" };
+
+        const now = deps.clock.now();
+        const today = formatZonedDateAndTime(now, timezone);
+        if (today.localTime < evening) return { ranCollection: false, reason: "not_yet" };
+        const boundary = zonedInstant({ localDate: today.localDate, localTime: evening, timezone });
+
+        const [lastCollectedAt, lastAttemptAt] = await Promise.all([
+          deps.channelStore.getAnalyticsLastAutoCollectedAt(parsedInput.channelId),
+          deps.eveningAttemptStore.get(parsedInput.channelId),
+        ]);
+        if (lastCollectedAt && lastCollectedAt.getTime() >= boundary.getTime()) return { ranCollection: false, reason: "already_ran" };
+        if (lastAttemptAt && lastAttemptAt.getTime() >= boundary.getTime()) return { ranCollection: false, reason: "already_ran" };
+
+        const { startDate, endDate: yesterday } = computeDefaultAutoCollectionRange({ now, timezone, rangeDays: EVENING_COLLECTION_RANGE_DAYS - 1 });
+        const newest = newestReturnedOf(await deps.collectionRunStore.listByChannel(parsedInput.channelId));
+        if (newest?.videoDate && newest.videoDate >= yesterday) return { ranCollection: false, reason: "data_current" };
+        if ((await deps.videoStore.listVideosByChannel(parsedInput.channelId)).length === 0) return { ranCollection: false, reason: "no_videos" };
+
+        await deps.eveningAttemptStore.record(parsedInput.channelId, now);
+        const result = await services.collectMetrics(
+          { credentialRef: parsedInput.credentialRef, channelId: parsedInput.channelId, startDate, endDate: yesterday },
+          { eveningRun: true }
+        );
+        return { ranCollection: true, result };
       } catch (error) {
         throw mapUnknownError(error, "unauthorized");
       }

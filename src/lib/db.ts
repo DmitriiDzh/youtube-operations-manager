@@ -7439,6 +7439,50 @@ export async function setAnalyticsSyncSettings(
   }
 }
 
+const ANALYTICS_EVENING_LOCAL_TIME_SETTING_KEY = "analytics_evening_local_time";
+/** BL-181 (FO-REQ-0020 §2.3): the evening re-collect boundary a fresh install starts with. */
+export const DEFAULT_ANALYTICS_EVENING_LOCAL_TIME = "22:05";
+
+/**
+ * BL-181 (FO-REQ-0020 §2.3, plan REPORTING_BASIC_PLAN.md §2 item 7): the second daily boundary, "HH:MM" local to the analytics
+ * timezone, or "" when the owner turned the evening re-collect off. Never set -> the default.
+ */
+export async function getAnalyticsEveningLocalTime(database: AppDb = db): Promise<string> {
+  return (await getAppSetting(ANALYTICS_EVENING_LOCAL_TIME_SETTING_KEY, database)) ?? DEFAULT_ANALYTICS_EVENING_LOCAL_TIME;
+}
+
+/** "" turns it off. Validation (HH:MM, later than the morning boundary) is the caller's, as for `setAnalyticsSyncSettings`. */
+export async function setAnalyticsEveningLocalTime(value: string, database: AppDb = db): Promise<void> {
+  await setAppSetting(ANALYTICS_EVENING_LOCAL_TIME_SETTING_KEY, value, database);
+}
+
+const ANALYTICS_EVENING_ATTEMPTS_KEY = "analytics_evening_attempts";
+
+/** BL-181: when this computer last started an evening re-collect for the channel (whatever came of it); null = never. */
+export async function getAnalyticsEveningAttempt(channelId: string, database: AppDb = db): Promise<Date | null> {
+  const raw = await getAppSetting(ANALYTICS_EVENING_ATTEMPTS_KEY, database);
+  if (!raw) return null;
+  try {
+    const at = (JSON.parse(raw) as Record<string, unknown>)[channelId];
+    return typeof at === "string" && !Number.isNaN(Date.parse(at)) ? new Date(at) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function recordAnalyticsEveningAttempt(channelId: string, at: Date, database: AppDb = db): Promise<void> {
+  const raw = await getAppSetting(ANALYTICS_EVENING_ATTEMPTS_KEY, database);
+  let attempts: Record<string, string> = {};
+  try {
+    const parsed = raw ? (JSON.parse(raw) as unknown) : {};
+    if (parsed && typeof parsed === "object") attempts = parsed as Record<string, string>;
+  } catch {
+    // A damaged value is replaced.
+  }
+  attempts[channelId] = at.toISOString();
+  await setAppSetting(ANALYTICS_EVENING_ATTEMPTS_KEY, JSON.stringify(attempts), database);
+}
+
 export async function upsertVideos(
   entries: Array<{
     videoId: string;
