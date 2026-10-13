@@ -333,6 +333,22 @@ export type MediaWorkflowTemplate = {
 
 export type MediaKind = "audio" | "image" | "video";
 
+/**
+ * BL-184 stage 3 (follow-up): a job's kind for Media's kind tabs -- its template's kind, or, when the template is gone or not
+ * recognised, the kind of the files it produced (video before audio before image); null = not known (shown under every tab).
+ */
+export function jobMediaKind(templateKind: MediaKind | null | undefined, outputFilenames: readonly string[]): MediaKind | null {
+  if (templateKind) return templateKind;
+  const kinds = new Set<MediaKind>();
+  for (const name of outputFilenames) {
+    const ext = name.slice(name.lastIndexOf(".") + 1).toLowerCase();
+    if (["mp4", "webm", "mov", "mkv", "gif", "m4v"].includes(ext)) kinds.add("video");
+    else if (["wav", "mp3", "flac", "ogg", "m4a", "opus", "aac"].includes(ext)) kinds.add("audio");
+    else if (["png", "jpg", "jpeg", "webp"].includes(ext)) kinds.add("image");
+  }
+  return kinds.has("video") ? "video" : kinds.has("audio") ? "audio" : kinds.has("image") ? "image" : null;
+}
+
 /** BL-132 (plan §2.5): one audit row as shown in the Web UI and the factory tools. */
 export type MediaControlEventView = { at: string; actor: "owner" | "factory" | "sync"; action: string; subject: string; details: Record<string, unknown> | null };
 
