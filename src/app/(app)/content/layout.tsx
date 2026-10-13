@@ -7,6 +7,7 @@ import { ContentManager } from "@/components/content-manager";
 import { FeatureErrorBoundary } from "@/components/feature-error-boundary";
 import { LiveStreamPanel } from "@/components/live-stream-panel";
 import { PublishingCalendar } from "@/components/publishing-calendar";
+import { PublishingPackages } from "@/components/publishing-packages";
 import { PublishingSettingsPanel } from "@/components/publishing-settings-panel";
 import { CONTENT_TABS } from "@/components/section-tabs";
 import { useT } from "@/components/ui-text-provider";
@@ -46,7 +47,10 @@ export default function ContentLayout({ children }: { children: ReactNode }) {
         </div>
         <div className={tab === "publishing" ? undefined : "hidden"}>
           <FeatureErrorBoundary label={t("tabs.content.publishing")}>
-            <PublishingSettingsPanel channelId={channel?.id ?? null} visible={tab === "publishing"} />
+            <div className="space-y-4">
+              <PublishingPackages channelId={channel?.id ?? null} visible={tab === "publishing"} />
+              <PublishingSettingsPanel channelId={channel?.id ?? null} visible={tab === "publishing"} />
+            </div>
           </FeatureErrorBoundary>
         </div>
         <div className={tab === "calendar" ? undefined : "hidden"}>
