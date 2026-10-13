@@ -1817,7 +1817,8 @@ Do not implement yet:
 - YouTube Analytics;
 - autonomous metadata optimization;
 - automatic video publishing;
-- video upload;
+- video upload (being lifted for one case, 2026-10-13, ADR 0037 (proposed; G1 probe accepted): the owner's own release packages,
+  uploaded and scheduled from the Web UI on the owner's approval only -- never by an agent);
 - thumbnail generation;
 - image generation;
 - music generation;
