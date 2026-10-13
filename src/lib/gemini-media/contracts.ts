@@ -191,6 +191,19 @@ export type GeminiJobView = {
   createdAt: string;
   submittedAt: string | null;
   finishedAt: string | null;
+  /** BL-184 stage 2: the storyboard segment this video renders and the approved version it was let through on (null = none). */
+  storyboard: GeminiStoryboardLink | null;
+};
+
+/** BL-184 stage 2 (ADR 0038 §4): what a video job records once the storyboard gate let it through with a link. */
+export type GeminiStoryboardLink = { storyboardId: string; versionNumber: number; segmentId: string };
+
+/**
+ * BL-184 stage 2: the storyboard gate, injected (`./index.ts` wires the storyboards module's; this module knows nothing else about
+ * storyboards, AGENTS.md §M). It lets a video job through -- with the link to record, or null -- or throws `storyboard_not_approved`.
+ */
+export type GeminiStoryboardGate = {
+  check(input: { channelId: string; firstFrameSha256: string | null; lastFrameSha256: string | null; link: { storyboardId: string; segmentId: string } | null }): Promise<GeminiStoryboardLink | null>;
 };
 
 export type GeminiSpend = { todayUsd: number; monthUsd: number; activeUsd: number; activeJobs: number };
@@ -199,7 +212,7 @@ export type GeminiKeyView = { configured: boolean; keyHint: string | null; statu
 
 export type GeminiLimitName = "per_job" | "per_day" | "per_month" | "active_jobs";
 
-export type GeminiRefusal = { code: "gemini_limit_exceeded" | "gemini_disabled" | "gemini_key_missing"; message: string; details?: Record<string, unknown> };
+export type GeminiRefusal = { code: "gemini_limit_exceeded" | "gemini_disabled" | "gemini_key_missing" | "storyboard_not_approved"; message: string; details?: Record<string, unknown> };
 
 /** The manifest written last into the job's folder (§2.4); every field copied explicitly, no key, no billing data. */
 export type GeminiJobManifest = {

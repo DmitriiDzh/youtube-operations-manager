@@ -903,6 +903,11 @@ export const mediaJobs = sqliteTable(
     planStageId: text("plan_stage_id"),
     planItemKey: text("plan_item_key"),
     planSeed: integer("plan_seed"),
+    // Schema v90 (BL-184 stage 2, ADR 0038 §4): the storyboard segment this video renders, and the approved version the gate let it
+    // through on (all null = no storyboard).
+    storyboardId: text("storyboard_id"),
+    storyboardVersion: integer("storyboard_version"),
+    segmentId: text("segment_id"),
   },
   (table) => [index("media_jobs_session_idx").on(table.sessionId), index("media_jobs_status_idx").on(table.status), index("media_jobs_plan_idx").on(table.planId)]
 );
@@ -1250,6 +1255,10 @@ export const geminiMediaJobs = sqliteTable(
     submittedAt: integer("submitted_at", { mode: "timestamp_ms" }),
     finishedAt: integer("finished_at", { mode: "timestamp_ms" }),
     updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+    // Schema v90 (BL-184 stage 2, ADR 0038 §4): the storyboard segment this video renders, and its approved version (null = none).
+    storyboardId: text("storyboard_id"),
+    storyboardVersion: integer("storyboard_version"),
+    segmentId: text("segment_id"),
   },
   (table) => [
     uniqueIndex("gemini_media_jobs_request_idx").on(table.createdBy, table.requestId),
@@ -4891,6 +4900,23 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         "CREATE UNIQUE INDEX IF NOT EXISTS publishing_uploads_live_idx ON publishing_uploads(channel_id, video) " +
           "WHERE status NOT IN ('failed', 'cancelled') OR video_id IS NOT NULL OR error_code = 'unknown_outcome'"
       );
+    },
+  },
+  {
+    version: 90,
+    description:
+      "media_jobs + gemini_media_jobs .storyboard_id/.storyboard_version/.segment_id -- BL-184 stage 2 (ADR 0038 §4): the storyboard segment a video job renders and the approved version the gate let it through on. Additive, nullable, device-local",
+    apply: async (client) => {
+      for (const table of ["media_jobs", "gemini_media_jobs"]) {
+        for (const column of ["storyboard_id TEXT", "storyboard_version INTEGER", "segment_id TEXT"]) {
+          try {
+            await client.execute(`ALTER TABLE ${table} ADD COLUMN ${column}`);
+          } catch (error) {
+            if (!isDuplicateColumnError(error)) throw error;
+          }
+        }
+        await client.execute(`CREATE INDEX IF NOT EXISTS ${table}_storyboard_idx ON ${table} (storyboard_id, segment_id)`);
+      }
     },
   },
 ];

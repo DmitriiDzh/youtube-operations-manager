@@ -168,6 +168,10 @@ async function harness(options: { now?: Date; enabled?: boolean; withKey?: boole
   const registered: Array<Record<string, unknown>> = [];
   const order: string[] = [];
   const failWrites = { value: false };
+  const gate = {
+    calls: [] as Array<Parameters<GeminiMediaDeps["storyboardGate"]["check"]>[0]>,
+    answer: (async () => null) as (input: Parameters<GeminiMediaDeps["storyboardGate"]["check"]>[0]) => Promise<Awaited<ReturnType<GeminiMediaDeps["storyboardGate"]["check"]>>>,
+  };
   let id = 0;
   const files = createGeminiFiles();
   const deps: GeminiMediaDeps = {
@@ -215,6 +219,14 @@ async function harness(options: { now?: Date; enabled?: boolean; withKey?: boole
     generateId: () => `id${++id}`,
     // The module's own lock (review round 1: the concurrency test must exercise the real one).
     withCreateLock: createSerialLock(),
+    // BL-184 stage 2: a fake storyboard gate that records what it was asked and answers as the test sets it (the real gate is
+    // tested in src/lib/storyboards/gate.test.ts).
+    storyboardGate: {
+      async check(input) {
+        gate.calls.push(input);
+        return gate.answer(input);
+      },
+    },
   };
   const services = createGeminiMediaServices(deps);
   const worker = createGeminiWorker(deps);
@@ -237,6 +249,7 @@ async function harness(options: { now?: Date; enabled?: boolean; withKey?: boole
     services,
     worker,
     runTick,
+    gate,
     keyFileText: () => keyFileText,
     failWrites,
     cleanup: () => rm(root, { recursive: true, force: true }),
@@ -299,6 +312,9 @@ function seedJob(store: ReturnType<typeof memoryStore>, jobId: string, fields: P
     submittedAt: at,
     finishedAt: at,
     updatedAt: at,
+    storyboardId: null,
+    storyboardVersion: null,
+    segmentId: null,
     ...fields,
   });
 }
@@ -1228,4 +1244,65 @@ test("BL-179 review: the 1080p estimate (2.25 x 720p tokens) -- 8 s is over the 
   assert.equal(estimateVideoUsd({ model: "gemini-omni-1.1-flash", resolution: "1080p", durationSeconds: 8, promptChars: 5, inputImages: 0 }), 1.8425);
   // 4 s: 52,128 x $17.50/1M = $0.91224 + $0.000003 + $0.018 = $0.930243 -> $0.9303.
   assert.equal(estimateVideoUsd({ model: "gemini-omni-1.1-flash", resolution: "1080p", durationSeconds: 4, promptChars: 5, inputImages: 0 }), 0.9303);
+});
+
+// ---------------------------------------------------------------------------------------------------------------- BL-184
+// FO-REQ-0024 §4 B4 / §5 step 4 (STORYBOARD_PLAN.md §3 stage 2 item 2): the storyboard gate is asked right after the inputs are
+// read -- with the sha256 of the frames as read -- and before the estimate, the limits and any charge; a refusal leaves nothing
+// stored and nothing sent; a dry-run reports it; a link the gate returns is recorded on the job.
+
+const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
+const flfJob = (overrides: Record<string, unknown> = {}) =>
+  videoJob({ model: "gemini-omni-1.1-flash", video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 8, inputs: { firstFrame: "bar/v2/K0.jpg", lastFrame: "bar/v2/K1.jpg" } }, ...overrides });
+
+test("BL-184: the gate gets the frames' sha256; its refusal stores nothing and sends nothing; a dry-run reports it with the estimate", async () => {
+  const h = await harness();
+  try {
+    await mkdir(path.join(h.sent, "bar", "v2"), { recursive: true });
+    await writeFile(path.join(h.sent, "bar", "v2", "K0.jpg"), "K0 bytes");
+    await writeFile(path.join(h.sent, "bar", "v2", "K1.jpg"), "K1 bytes");
+    h.gate.answer = async () => {
+      throw new DomainError({ code: "storyboard_not_approved", message: "needs an approved storyboard", details: { reason: "no_link" } });
+    };
+    await assert.rejects(h.services.createJob(flfJob(), "factory"), (e: unknown) => isDomainError(e) && e.code === "storyboard_not_approved");
+    assert.deepEqual(h.gate.calls, [{ channelId: "UC1", firstFrameSha256: sha256("K0 bytes"), lastFrameSha256: sha256("K1 bytes"), link: null }]);
+    assert.equal(h.store.jobs.size, 0, "nothing stored");
+    await h.runTick();
+    assert.deepEqual(h.calls, [], "nothing sent to Google");
+    const dry = (await h.services.createJob(flfJob({ dryRun: true }), "factory")) as unknown as { allowed: boolean; refusal: { code: string; details: { reason: string } }; estimateUsd: number };
+    assert.deepEqual([dry.allowed, dry.refusal.code, dry.refusal.details.reason, dry.estimateUsd > 0], [false, "storyboard_not_approved", "no_link", true]);
+    // Any other failure of the gate is not a dry-run answer: it propagates.
+    h.gate.answer = async () => {
+      throw new Error("document unreadable");
+    };
+    await assert.rejects(h.services.createJob(flfJob({ dryRun: true }), "factory"), /document unreadable/);
+    // An image job never asks the gate.
+    h.gate.calls.length = 0;
+    await h.services.createJob({ channelId: "UC1", kind: "image", model: "gemini-nano-banana-2.1", prompt: "p", image: { size: "1K", aspectRatio: "1:1" } }, "factory");
+    assert.deepEqual(h.gate.calls, []);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("BL-184: a link the gate lets through is passed on and recorded on the job; a link without its segment, or on an image, is refused first", async () => {
+  const h = await harness();
+  try {
+    await mkdir(path.join(h.sent, "bar", "v2"), { recursive: true });
+    await writeFile(path.join(h.sent, "bar", "v2", "K0.jpg"), "K0 bytes");
+    await writeFile(path.join(h.sent, "bar", "v2", "K1.jpg"), "K1 bytes");
+    h.gate.answer = async (input) => (input.link ? { storyboardId: input.link.storyboardId, versionNumber: 2, segmentId: input.link.segmentId } : null);
+    const { job } = (await h.services.createJob(flfJob({ storyboardId: "bar-loop", segmentId: "S1", requestId: "r-s1" }), "factory")) as { job: { jobId: string; storyboard: unknown } };
+    assert.deepEqual(h.gate.calls[0].link, { storyboardId: "bar-loop", segmentId: "S1" });
+    assert.deepEqual(job.storyboard, { storyboardId: "bar-loop", versionNumber: 2, segmentId: "S1" });
+    const row = h.store.jobs.get(job.jobId)!;
+    assert.deepEqual([row.storyboardId, row.storyboardVersion, row.segmentId], ["bar-loop", 2, "S1"]);
+    // The same request id with another segment is another job, not a replay.
+    await assert.rejects(h.services.createJob(flfJob({ storyboardId: "bar-loop", segmentId: "S2", requestId: "r-s1" }), "factory"), (e: unknown) => isDomainError(e) && e.code === "gemini_request_exists");
+    for (const bad of [flfJob({ storyboardId: "bar-loop" }), flfJob({ segmentId: "S1" }), { channelId: "UC1", kind: "image", model: "gemini-nano-banana-2.1", prompt: "p", image: { size: "1K", aspectRatio: "1:1" }, storyboardId: "bar-loop", segmentId: "S1" }]) {
+      await assert.rejects(h.services.createJob(bad, "factory"), (e: unknown) => isDomainError(e) && e.code === "gemini_invalid_params");
+    }
+  } finally {
+    await h.cleanup();
+  }
 });

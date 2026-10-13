@@ -19,6 +19,7 @@ import {
   type MediaJobStatus,
   type MediaModelReference,
   type MediaModelUsage,
+  type MediaStoryboardGate,
   type MediaTemplateParameter,
   type MediaTemplateSyncResult,
   type MediaTemplateSyncTrigger,
@@ -102,6 +103,10 @@ export type StoredJobRow = {
   planStageId?: string | null;
   planItemKey?: string | null;
   planSeed?: number | null;
+  // Schema v90 (BL-184 stage 2): the storyboard segment and its approved version (absent = none).
+  storyboardId?: string | null;
+  storyboardVersion?: number | null;
+  segmentId?: string | null;
 };
 
 export type ExchangeLedgerRow = { remoteKey: string; jobId: string; localPath: string; bytes: number; sha256: string; pulledAt: Date; remoteDeletedAt: Date | null };
@@ -196,6 +201,8 @@ export type JobServiceDependencies = {
   syncState?: { get(): Promise<string | null>; set(json: string): Promise<void> };
   /** FO-REQ-0005: the pending adoptions of local templates into the registry (`parseTemplateAdoptions`); absent = none kept. */
   adoptions?: { get(): Promise<string | null>; set(json: string): Promise<void> };
+  /** BL-184 stage 2: no first/last-frame video from two different images without an approved storyboard (ADR 0038 §4). */
+  storyboardGate: MediaStoryboardGate;
 };
 
 export type TemplateActor = "owner" | "factory";
@@ -247,6 +254,8 @@ function normalizeParameter(p: ReturnType<typeof importTemplateInputSchema.parse
     // BL-132: only input parameters carry these keys (the other types' JSON shape is unchanged); given on another type they
     // are kept so the template check can refuse them, never silently dropped.
     ...(isInputParameterType(p.type) || p.accept != null || p.maxBytes != null ? { accept: p.accept ?? null, maxBytes: p.maxBytes ?? null } : {}),
+    // BL-184: only a tagged parameter carries `role` (an untagged template's JSON -- and the registry comparison -- is unchanged).
+    ...(p.role != null ? { role: p.role } : {}),
   };
 }
 
@@ -271,6 +280,9 @@ export function validateTemplateShape(graph: Graph, parameters: MediaTemplatePar
     // BL-132: an input file is always the job's own (a default path would be the same file for every job).
     if (isInputParameterType(p.type) && p.default !== null && p.default !== undefined) problems.push(`parameter "${p.name}": an ${p.type} input cannot have a default`);
     if (!isInputParameterType(p.type) && (p.accept != null || p.maxBytes != null)) problems.push(`parameter "${p.name}": accept/maxBytes apply only to image, audio and video inputs`);
+    // BL-184: a frame role belongs to an image input, and each role to one parameter only.
+    if (p.role != null && p.type !== "image") problems.push(`parameter "${p.name}": role ${p.role} applies only to an image input`);
+    if (p.role != null && parameters.filter((q) => q.role === p.role).length > 1) problems.push(`parameter "${p.name}": only one parameter can be the ${p.role}`);
     // A default that cannot pass the parameter's own type/bounds/enum would fail every job that omits the parameter
     // (blaming the caller's params); refuse it at import instead (review round 8).
     if (p.default !== null && p.default !== undefined) {
@@ -351,6 +363,7 @@ export function toPublicJob(row: StoredJobRow): MediaJob {
     submittedAt: row.submittedAt ? row.submittedAt.toISOString() : null,
     finishedAt: row.finishedAt ? row.finishedAt.toISOString() : null,
     plan: row.planId ? { planId: row.planId, stageId: row.planStageId ?? null, itemKey: row.planItemKey ?? null, seed: row.planSeed ?? null } : null,
+    storyboard: row.storyboardId && row.segmentId && row.storyboardVersion != null ? { storyboardId: row.storyboardId, versionNumber: row.storyboardVersion, segmentId: row.segmentId } : null,
   };
 }
 
@@ -1528,6 +1541,19 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         }
         inputs.push({ parameter: p, relativePath, maxBytes: limit, file });
       }
+      // BL-184 stage 2 (FO-REQ-0024 B4): the storyboard gate, with the sha256 of the template's first / last frame inputs as they are
+      // on this computer -- before anything is uploaded to the volume or sent to ComfyUI. A template whose image inputs carry no role
+      // is not a first/last-frame template to the gate (the Operator tags them).
+      const frameSha = async (role: "first_frame" | "last_frame") => {
+        const input = inputs.find((i) => i.parameter.role === role);
+        return input ? deps.fs.sha256File(input.file.path) : null;
+      };
+      const storyboard = await deps.storyboardGate.check({
+        channelId: parsed.channelId,
+        firstFrameSha256: await frameSha("first_frame"),
+        lastFrameSha256: await frameSha("last_frame"),
+        link: parsed.storyboard ?? null,
+      });
       const jobId = deps.generateId();
       // Each input goes to the ROOT of ComfyUI's input folder under a job-unique flat name (`<jobId>-<param>-<name>`), and
       // the targeted loader input is given that name; the job's params keep the path the caller gave.
@@ -1583,6 +1609,7 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         submittedAt: null,
         finishedAt: null,
         ...(parsed.plan ? { planId: parsed.plan.planId, planStageId: parsed.plan.stageId, planItemKey: parsed.plan.itemKey, planSeed: parsed.plan.seed ?? null } : {}),
+        ...(storyboard ? { storyboardId: storyboard.storyboardId, storyboardVersion: storyboard.versionNumber, segmentId: storyboard.segmentId } : {}),
       });
       let comfy: ComfyUiClient;
       try {

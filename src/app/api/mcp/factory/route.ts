@@ -133,13 +133,16 @@ function createToolDeps(): FactoryToolDeps {
         return { session: await factorySession(sessionId) };
       },
       endSession: async ({ sessionId }) => ({ session: await createMediaGenerationCore().factoryStopSession({ sessionId }) }),
-      createJob: async ({ sessionId, templateId, params, planId, itemKey, seed }) => {
+      createJob: async ({ sessionId, templateId, params, planId, itemKey, seed, storyboardId, segmentId }) => {
         const session = await factorySession(sessionId);
         // BL-143: a job that names a plan attempt -- all checked by the plans module before the job exists.
         if ((planId === undefined) !== (itemKey === undefined)) throw new DomainError({ code: "validation_failed", message: "Give planId and itemKey together (seed is optional)." });
+        // BL-184 stage 2: the storyboard segment it renders -- checked by the media module's storyboard gate.
+        if ((storyboardId === undefined) !== (segmentId === undefined)) throw new DomainError({ code: "validation_failed", message: "Give storyboardId and segmentId together." });
+        const storyboard = storyboardId && segmentId ? { storyboard: { storyboardId, segmentId } } : {};
         const create = async () => {
           const plan = planId && itemKey ? await createGenerationPlansCore().checkJobLink({ planId, itemKey, seed: seed ?? null, sessionId, channelId: session.channelId }) : undefined;
-          return { job: withJobErrorCode(await createMediaGenerationCore().createJob({ sessionId, channelId: session.channelId, templateId, params, createdBy: "factory", ...(plan ? { plan } : {}) })) };
+          return { job: withJobErrorCode(await createMediaGenerationCore().createJob({ sessionId, channelId: session.channelId, templateId, params, createdBy: "factory", ...(plan ? { plan } : {}), ...storyboard })) };
         };
         // BL-157 (review round 2): a plan-linked job is checked and created under the plan's lock, so a plan move cannot
         // pass between them and leave the moved plan with a job still running on the old channel.

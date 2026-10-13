@@ -177,6 +177,8 @@ export type PlanMediaPort = {
     params: Record<string, string | number | boolean>;
     createdBy: "factory";
     plan: { planId: string; stageId: string; itemKey: string; seed: number | null };
+    /** BL-184 stage 2: the item's storyboard segment, for the media module's storyboard gate. */
+    storyboard?: { storyboardId: string; segmentId: string };
   }): Promise<{ jobId: string }>;
 };
 
@@ -319,6 +321,7 @@ function normalizeItem(item: {
   params?: PlanItem["params"];
   seeds?: number[];
   pickTarget?: number | null;
+  storyboard?: { storyboardId: string; segmentId: string } | null;
 }): PlanItem {
   return {
     itemKey: item.itemKey,
@@ -333,6 +336,8 @@ function normalizeItem(item: {
     seeds: item.seeds ?? [],
     // BL-175 (VISUAL_REVIEW_PLAN.md §2.2): only when set -- an item without it keeps exactly its old shape.
     ...(typeof item.pickTarget === "number" ? { pickTarget: item.pickTarget } : {}),
+    // BL-184: only when set, like pickTarget.
+    ...(item.storyboard ? { storyboard: { storyboardId: item.storyboard.storyboardId, segmentId: item.storyboard.segmentId } } : {}),
   };
 }
 
@@ -573,6 +578,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
           params: job.params,
           createdBy: "factory",
           plan: { planId: row.id, stageId, itemKey: job.item.itemKey, seed: job.seed },
+          ...(job.item.storyboard ? { storyboard: job.item.storyboard } : {}),
         });
         created.push({ itemKey: job.item.itemKey, jobId, seed: job.seed });
       } catch (error) {

@@ -79,7 +79,7 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
       startSession: async (input) => (mediaCalls.push(`startSession:${input.channelId}`), { session: { sessionId: "s1" }, approved: true, heldBy: null }),
       getSession: async (input) => (mediaCalls.push(`getSession:${input.sessionId ?? ""}`), { sessions: [] }),
       endSession: async (input) => (mediaCalls.push(`stopSession:${input.sessionId}`), { session: { sessionId: input.sessionId } }),
-      createJob: async (input) => (mediaCalls.push(`createJob:${input.sessionId}`), { job: { jobId: "j1" } }),
+      createJob: async (input) => (mediaCalls.push(`createJob:${input.sessionId}${input.storyboardId ? `:${input.storyboardId}/${input.segmentId}` : ""}`), { job: { jobId: "j1" } }),
       getJob: async (input) => (mediaCalls.push(`getJob:${input.jobId ?? ""}`), { job: { jobId: "j1" } }),
       cancelJob: async (input) => (mediaCalls.push(`cancelJob:${input.jobId}`), { job: { jobId: input.jobId } }),
       capacityLog: async () => (mediaCalls.push("capacityLog"), { attempts: [] }),
@@ -987,4 +987,22 @@ test("BL-184: factory_storyboard_* writes pass the gate first, reads do not; str
     assert.equal(Boolean(body.result?.isError ?? body.error), true, JSON.stringify(bad));
   }
   assert.deepEqual(toolDeps.mediaCalls, [], "an invalid input reaches neither the gate nor the module");
+});
+
+// BL-184 stage 2 (STORYBOARD_PLAN.md §2.6): the job tools take the storyboard segment a video renders; the fields reach the modules
+// (which check them with the storyboard gate); an unknown field next to them is still refused.
+test("BL-184: storyboardId / segmentId on factory_media_create_job and factory_gemini_create_job reach the modules", async () => {
+  const { endpoint, tokenServices, toolDeps } = setupWithDeps();
+  const { token } = await tokenServices.issueToken({});
+  const link = { storyboardId: "bar-loop", segmentId: "S1" };
+  assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_media_create_job", { sessionId: "s1", templateId: "t1", params: { prompt: "x" }, ...link }), withToken(token))))).isError, false);
+  assert.deepEqual(toolDeps.mediaCalls, ["gate", "createJob:s1:bar-loop/S1"]);
+  toolDeps.mediaCalls.length = 0;
+  const gemini = { channelId: "UC_A", kind: "video", model: "gemini-omni-1.1-flash", prompt: "bar", video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 8, inputs: { firstFrame: "bar/v2/K0.jpg", lastFrame: "bar/v2/K1.jpg" } }, ...link };
+  assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_gemini_create_job", gemini), withToken(token))))).isError, false);
+  assert.deepEqual(toolDeps.mediaCalls, ["gate", "gemini.create:UC_A"]);
+  toolDeps.mediaCalls.length = 0;
+  const body = await (await endpoint.handle(rpc(call("factory_media_create_job", { sessionId: "s1", templateId: "t1", params: {}, ...link, approved: true }), withToken(token)))).json();
+  assert.equal(Boolean(body.result?.isError ?? body.error), true);
+  assert.deepEqual(toolDeps.mediaCalls, []);
 });

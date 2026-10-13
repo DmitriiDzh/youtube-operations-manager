@@ -56,6 +56,8 @@ export type PlanItem = {
   seeds: number[];
   /** BL-175 (§2.2): how many attempts the owner picks for this item; absent = `pickTargetOf`'s default. */
   pickTarget?: number;
+  /** BL-184 stage 2: the storyboard segment this item's videos render; every job it creates names it (the storyboard gate). */
+  storyboard?: { storyboardId: string; segmentId: string };
 };
 /** BL-143 phase 3 (FO-MSG-0009): a reference track for A/B listening, copied by the factory into the channel's Sent to YTM. */
 export type PlanReference = { id: string; label: string; file: string; lufs: number | null; lra: number | null; truePeak: number | null };

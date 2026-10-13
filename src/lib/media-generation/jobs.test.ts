@@ -4,7 +4,7 @@ import test from "node:test";
 import type { ComfyHistoryEntry, ComfyProgressEvent, ComfyUiClient, RunpodS3Client, S3ObjectSummary } from "@/lib/media-gateway";
 import { createJobProgressRegistry, type JobProgressRegistry } from "./job-progress";
 import { isDomainError, type MediaTemplateParameter } from "./contracts";
-import { buildPrompt, createMediaJobServices, describeComfyRejection, outputNodeIds, resolveParams, type ExchangeInputRow, type ExchangeLedgerRow, type MediaJobStore, type StoredJobRow, type StoredTemplateRow } from "./jobs";
+import { buildPrompt, createMediaJobServices, describeComfyRejection, outputNodeIds, resolveParams, type ExchangeInputRow, type ExchangeLedgerRow, type JobServiceDependencies, type MediaJobStore, type StoredJobRow, type StoredTemplateRow } from "./jobs";
 
 // Expected behaviour from docs/roadmap/plans/PHASE_14_PLAN.md §2.4 and §4 (AC-P14-10..15), written
 // before this module. Hashes are computed with node:crypto over fixed byte strings, independently of
@@ -229,9 +229,19 @@ function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<t
   let now = new Date("2026-10-05T12:00:00Z");
   let ids = 0;
   const scheduled: Array<() => Promise<void>> = [];
+  // BL-184 stage 2: a fake storyboard gate that records what it was asked and answers as a test sets it (the real gate is tested
+  // in src/lib/storyboards/gate.test.ts).
+  type GateInput = Parameters<JobServiceDependencies["storyboardGate"]["check"]>[0];
+  const gate = { calls: [] as GateInput[], answer: (async () => null) as (input: GateInput) => Promise<Awaited<ReturnType<JobServiceDependencies["storyboardGate"]["check"]>>> };
   const services = createMediaJobServices({
     store: mem.store,
     ...(opts.progress ? { progress: opts.progress } : {}),
+    storyboardGate: {
+      async check(input) {
+        gate.calls.push(input);
+        return gate.answer(input);
+      },
+    },
     sessions: {
       getRunningSession: async (sessionId) => (opts.sessionRunning === false ? null : { sessionId, channelId: "UC1", podId: "pod1", gpuTypeId: "RTX 4090", costPerHr: 0.69, hostCudaVersion: opts.hostCudaVersion ?? null }),
       comfyClientForSession: async () => comfy.client,
@@ -307,7 +317,7 @@ function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<t
     registered.push(input);
     return { assetId: `asset-${registered.length}` };
   };
-  return { services, mem, comfy, s3, registered, removed, activity, runScheduled, registerAsset, manifests, resolvedInputs, setManifestWriteFails: (v: boolean) => void (manifestWriteFails = v), setS3Fails: (v: boolean) => void (s3Fails = v), setOutputRoot: (v: string) => void (outputRoot = v), setWorkspaceFails: (v: boolean) => void (workspaceFails = v), advance: (ms: number) => void (now = new Date(now.getTime() + ms)) };
+  return { services, mem, comfy, s3, registered, removed, activity, runScheduled, registerAsset, manifests, resolvedInputs, gate, setManifestWriteFails: (v: boolean) => void (manifestWriteFails = v), setS3Fails: (v: boolean) => void (s3Fails = v), setOutputRoot: (v: string) => void (outputRoot = v), setWorkspaceFails: (v: boolean) => void (workspaceFails = v), advance: (ms: number) => void (now = new Date(now.getTime() + ms)) };
 }
 
 async function importDefault(services: ReturnType<typeof fixture>["services"]) {
@@ -669,6 +679,7 @@ function fixtureWithFailingRegister() {
       scheduled.push(run);
     },
     timeouts: { pollMs: 1_000, maxGenerationMs: 10_000 },
+    storyboardGate: { check: async () => null },
   });
   void f;
   return {
@@ -1355,6 +1366,7 @@ test("review 13: createJob refuses to submit when the S3 transport is not config
     clock: { now: () => new Date() },
     sleep: async () => {},
     schedule: () => {},
+    storyboardGate: { check: async () => null },
   });
   await assert.rejects(services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" }), (e: unknown) => isDomainError(e) && e.code === "media_generation_not_configured");
   assert.equal(f.comfy.submits.length, 0);
@@ -1976,4 +1988,78 @@ test("AC-SC-04: validateJobParams with a session refuses the same way (what a pl
   await assert.rejects(f.services.validateJobParams({ templateId: t.templateId, params: { prompt: "x" }, sessionId: "s1" }), (e: unknown) => isDomainError(e) && e.code === "media_gpu_host_incompatible");
   const checked = await f.services.validateJobParams({ templateId: t.templateId, params: { prompt: "x" } });
   assert.equal(checked.templateId, t.templateId);
+});
+
+// -- BL-184 stage 2 (FO-REQ-0024 B4 / §5 step 4; STORYBOARD_PLAN.md §2.4): first/last-frame templates and the storyboard gate ------
+// Expected from the request: the Operator tags a template's image inputs `first_frame` / `last_frame`; such a job's two frames are
+// hashed on this computer and the storyboard gate decides BEFORE anything is uploaded or sent ("nothing sent, nothing charged"); the
+// job records the storyboard version and segment; a template without roles reaches the gate with no frames; a role belongs to one
+// image input only.
+
+const FLF_GRAPH = {
+  ...GRAPH,
+  "10": { class_type: "LoadImage", inputs: { image: "first.png" } },
+  "11": { class_type: "LoadImage", inputs: { image: "last.png" } },
+};
+const FLF_PARAMS = [
+  ...PARAMETERS,
+  { name: "first", type: "image", nodeId: "10", input: "image", required: true, role: "first_frame" },
+  { name: "last", type: "image", nodeId: "11", input: "image", required: true, role: "last_frame" },
+] as const;
+const K0 = "/ws/99 Data Exchange/Sent to YTM/bar/v2/K0.png";
+const K1 = "/ws/99 Data Exchange/Sent to YTM/bar/v2/K1.png";
+
+function flfFixture() {
+  const f = fixture({ sentToYtm: new Map([["bar/v2/K0.png", { path: K0, bytes: 4 }], ["bar/v2/K1.png", { path: K1, bytes: 4 }]]) });
+  // The fixture's local file hashing reads this map (the frames' bytes on "this computer").
+  f.s3.files.set(K0, new Uint8Array([0, 0, 0, 0]));
+  f.s3.files.set(K1, new Uint8Array([1, 1, 1, 1]));
+  return f;
+}
+
+test("BL-184: a template's frame roles -- only on an image input, each role once; kept on a tagged template, absent on an untagged one", async () => {
+  const f = fixture();
+  const tagged = await f.services.importWorkflowTemplate({ name: "flf", workflow: FLF_GRAPH, parameters: FLF_PARAMS });
+  assert.deepEqual(tagged.parameters.filter((p) => p.role).map((p) => [p.name, p.role]), [["first", "first_frame"], ["last", "last_frame"]]);
+  const untagged = await importDefault(f.services);
+  assert.equal(untagged.parameters.some((p) => "role" in p), false, "an untagged template's parameters are as before");
+  for (const parameters of [
+    [...PARAMETERS.slice(1), { ...PARAMETERS[0], role: "first_frame" }],
+    [...PARAMETERS, { ...FLF_PARAMS[4], role: "first_frame" }, { ...FLF_PARAMS[5], role: "first_frame" }],
+  ]) {
+    await assert.rejects(f.services.importWorkflowTemplate({ name: "bad", workflow: FLF_GRAPH, parameters }), (e: unknown) => isDomainError(e) && e.code === "media_template_invalid");
+  }
+});
+
+test("BL-184 §5 step 4: two different frames are hashed and the gate refuses before any job, upload or prompt", async () => {
+  const f = flfFixture();
+  const t = await f.services.importWorkflowTemplate({ name: "flf", workflow: FLF_GRAPH, parameters: FLF_PARAMS });
+  f.gate.answer = async () => {
+    const { DomainError } = await import("./contracts");
+    throw new DomainError({ code: "storyboard_not_approved", message: "needs an approved storyboard", details: { reason: "no_link" } });
+  };
+  await assert.rejects(
+    f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x", first: "bar/v2/K0.png", last: "bar/v2/K1.png" }, createdBy: "factory" }),
+    (e: unknown) => isDomainError(e) && e.code === "storyboard_not_approved"
+  );
+  assert.deepEqual(f.gate.calls, [{ channelId: "UC1", firstFrameSha256: sha256(new Uint8Array([0, 0, 0, 0])), lastFrameSha256: sha256(new Uint8Array([1, 1, 1, 1])), link: null }]);
+  assert.equal(f.mem.jobs.size, 0);
+  assert.equal(f.s3.calls.filter((c) => c.startsWith("put:")).length, 0, "nothing uploaded to the volume");
+  assert.equal(f.comfy.submits.length, 0, "nothing sent to ComfyUI");
+});
+
+test("BL-184: a link the gate lets through is recorded on the job; an untagged template reaches the gate with no frames", async () => {
+  const f = flfFixture();
+  const t = await f.services.importWorkflowTemplate({ name: "flf", workflow: FLF_GRAPH, parameters: FLF_PARAMS });
+  f.gate.answer = async (input) => (input.link ? { storyboardId: input.link.storyboardId, versionNumber: 2, segmentId: input.link.segmentId } : null);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x", first: "bar/v2/K0.png", last: "bar/v2/K1.png" }, createdBy: "factory", storyboard: { storyboardId: "bar-loop", segmentId: "S1" } });
+  assert.deepEqual(f.gate.calls[0].link, { storyboardId: "bar-loop", segmentId: "S1" });
+  assert.deepEqual(job.storyboard, { storyboardId: "bar-loop", versionNumber: 2, segmentId: "S1" });
+  assert.deepEqual((await f.services.getJob({ jobId: job.jobId })).storyboard, { storyboardId: "bar-loop", versionNumber: 2, segmentId: "S1" });
+
+  const g = fixture({ sentToYtm: new Map([["refs/frame 1.png", { path: "/ws/99 Data Exchange/Sent to YTM/refs/frame 1.png", bytes: 2048 }]]) });
+  const plain = await importImg2Img(g.services);
+  const other = await g.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: plain.templateId, params: { prompt: "a cat", ref: "refs/frame 1.png" }, createdBy: "agent" });
+  assert.deepEqual(g.gate.calls, [{ channelId: "UC1", firstFrameSha256: null, lastFrameSha256: null, link: null }]);
+  assert.equal(other.storyboard, null);
 });

@@ -75,6 +75,8 @@ export const itemSchema = z
     seeds: z.array(seedSchema).max(PLAN_LIMITS.seedsPerItem).optional(),
     /** BL-175: how many attempts the owner picks for this item (1..targetCount; default by mode, `pickTargetOf`). */
     pickTarget: z.number().int().min(1).max(10_000).nullable().optional(),
+    /** BL-184 stage 2 (FO-REQ-0024 B4): the storyboard segment this item's videos render (passed to every job it creates). */
+    storyboard: z.object({ storyboardId: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/), segmentId: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/) }).strict().nullable().optional(),
   })
   .strict();
 

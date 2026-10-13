@@ -8,6 +8,7 @@ import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { appDataPaths } from "@/lib/db";
 import { createKeyFile, createKeyFileFsAccess } from "@/lib/device-key-file";
 import { createGeminiApiClient, isMediaGatewayEnabled } from "@/lib/media-gateway";
+import { createStoryboardGateForProduction } from "@/lib/storyboards";
 import { createGeminiFiles } from "./adapters/files";
 import { createGeminiWorkspace } from "./adapters/workspace";
 import { createGeminiStore } from "./adapters/store";
@@ -80,6 +81,8 @@ function buildDeps(): GeminiMediaDeps {
     clock: { now: () => new Date() },
     generateId: () => randomUUID(),
     withCreateLock: createSerialLock(),
+    // BL-184 stage 2 (ADR 0038 §4): the storyboards module's gate, over the same synced document the owner approves in.
+    storyboardGate: createStoryboardGateForProduction(),
   };
 }
 

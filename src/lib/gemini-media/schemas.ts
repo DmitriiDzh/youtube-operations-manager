@@ -58,6 +58,9 @@ export const createJobInputSchema = z
     dryRun: z.boolean().optional(),
     image: imageBlockSchema.optional(),
     video: videoBlockSchema.optional(),
+    /** BL-184 stage 2 (FO-REQ-0024 B4): the storyboard segment a video renders (both or neither; checked by the storyboard gate). */
+    storyboardId: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/).optional(),
+    segmentId: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/).optional(),
   })
   .strict();
 
@@ -91,6 +94,8 @@ export const setKeyInputSchema = z
 
 /** The per-model rules (§2.5), checked before anything is read, stored or sent. */
 export function checkJobRules(input: CreateJobInput): void {
+  if ((input.storyboardId === undefined) !== (input.segmentId === undefined)) throw geminiInvalidParams("storyboardId", "storyboardId and segmentId go together (the storyboard segment this video renders).");
+  if (input.kind === "image" && input.storyboardId !== undefined) throw geminiInvalidParams("storyboardId", "A storyboard segment is rendered as a video, not an image.");
   if (input.kind === "image") {
     const spec = ownEntry(GEMINI_IMAGE_MODELS, input.model);
     if (!spec) throw geminiInvalidParams("model", `${input.model} is not an image model here (${Object.keys(GEMINI_IMAGE_MODELS).join(", ")}).`);

@@ -96,6 +96,7 @@ function harness() {
     events: { record: async (e) => void events.push(e) },
     syncState: { get: async () => lastSync, set: async (json) => void (lastSync = json) },
     adoptions: { get: async () => adoptions, set: async (json) => void (adoptions = json) },
+    storyboardGate: { check: async () => null },
   });
   const publish = (entries: Array<{ templateId: string; version: number; overrides?: Record<string, unknown> }>) => {
     folder.set("index.json", indexFile(entries.map(({ templateId, version }) => ({ templateId, version }))));

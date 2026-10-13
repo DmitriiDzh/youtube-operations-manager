@@ -444,7 +444,7 @@ function withMedia(
   const s = setup();
   const sessions = new Map(seedSessions.map((x) => [x.sessionId, { ...x }]));
   const templates = opts.templates ?? { "tpl-ace": ["prompt", "duration", "seed"], "tpl-noseed": ["prompt"] };
-  const createdJobs: Array<{ jobId: string; params: Record<string, unknown>; plan: unknown; sessionId: string }> = [];
+  const createdJobs: Array<{ jobId: string; params: Record<string, unknown>; plan: unknown; sessionId: string; storyboard?: unknown }> = [];
   const validatedWithSession: Array<string | null> = [];
   let n = 0;
   const services = createGenerationPlanServices({
@@ -475,7 +475,7 @@ function withMedia(
       async createJob(input) {
         if (opts.failCreateAfter !== undefined && createdJobs.length >= opts.failCreateAfter) throw Object.assign(new Error("ComfyUI unreachable"), { code: "comfyui_unreachable" });
         const jobId = `job-${++n}`;
-        createdJobs.push({ jobId, params: input.params, plan: input.plan, sessionId: input.sessionId });
+        createdJobs.push({ jobId, params: input.params, plan: input.plan, sessionId: input.sessionId, ...(input.storyboard ? { storyboard: input.storyboard } : {}) });
         s.jobs.push({ id: jobId, sessionId: input.sessionId, stageId: input.plan.stageId, itemKey: input.plan.itemKey, seed: input.plan.seed, status: "queued", error: null, createdAt: new Date(clockMs), submittedAt: null, finishedAt: null, planId: input.plan.planId, channelId: input.channelId });
         return { jobId };
       },
@@ -503,6 +503,24 @@ test("AC-GP-09: run_stage creates exactly the missing jobs -- fixed: one per unu
   m.jobs[0].error = "interrupted by a server restart";
   const again = await m.services.runStage({ planId: "R-0001-S1-music", sessionId: "s1", groupId: "C1" });
   assert.deepEqual(again.created.map((c) => [c.itemKey, c.seed]), [["C1/F1", 1001]]);
+});
+
+// BL-184 stage 2 (STORYBOARD_PLAN.md §2.4, §3 stage 2 item 4): a plan item that renders a storyboard segment names it, and every
+// job a run creates from it carries that name to the media module's storyboard gate; an item without one passes nothing.
+test("BL-184: a plan item's storyboard segment goes with every job its run creates; other items pass none", async () => {
+  const m = withMedia([running()]);
+  const plan = basePlan();
+  await m.services.createPlan({ ...plan, items: plan.items.map((item, i) => (i === 0 ? { ...item, storyboard: { storyboardId: "bar-loop", segmentId: "S1" } } : item)) });
+  const stored = (await m.services.getPlan({ planId: "R-0001-S1-music" })) as { plan: { items: Array<{ itemKey: string; storyboard?: unknown }> } };
+  assert.deepEqual(stored.plan.items.map((i) => i.storyboard ?? null), [{ storyboardId: "bar-loop", segmentId: "S1" }, null]);
+  await m.services.runStage({ planId: "R-0001-S1-music", sessionId: "s1" });
+  assert.deepEqual(m.createdJobs.map((j) => [(j.plan as { itemKey: string }).itemKey, j.storyboard ?? null]), [
+    ["C1/F1", { storyboardId: "bar-loop", segmentId: "S1" }],
+    ["C1/F1", { storyboardId: "bar-loop", segmentId: "S1" }],
+    ["C2/F1", null],
+    ["C2/F1", null],
+  ]);
+  await assert.rejects(m.services.createPlan({ ...plan, planId: "R-0002-S1-music", items: [{ ...plan.items[0], storyboard: { storyboardId: "bar loop", segmentId: "S1" } }] }), (e: unknown) => (e as { code?: string }).code === "validation_failed" || (e as { code?: string }).code === "plan_invalid");
 });
 
 test("AC-GP-09: until_accepted counts accepted and pending attempts and stops at maxAttempts", async () => {

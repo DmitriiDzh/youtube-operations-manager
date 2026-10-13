@@ -116,6 +116,8 @@ export const templateParameterSchema = z
     // BL-132 input types (image/audio/video) only.
     accept: z.array(z.string().toLowerCase().regex(/^\.[a-z0-9]{1,10}$/, "an extension like .png")).min(1).max(20).nullable().optional(),
     maxBytes: z.number().int().min(1).max(500 * 1024 * 1024).nullable().optional(),
+    // BL-184 stage 2 (FO-REQ-0024 B4): an image input that is the video's first or last frame -- what the storyboard gate checks.
+    role: z.enum(["first_frame", "last_frame"]).nullable().optional(),
   })
   .strict();
 
@@ -157,6 +159,8 @@ export const createJobInputSchema = z
       .object({ planId: z.string().min(2).max(80), stageId: z.string().min(1).max(40), itemKey: z.string().min(1).max(120), seed: z.number().int().min(0).nullable().optional() })
       .strict()
       .optional(),
+    /** BL-184 stage 2 (FO-REQ-0024 B4): the storyboard segment this video renders; checked by the storyboard gate. */
+    storyboard: z.object({ storyboardId: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/), segmentId: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/) }).strict().optional(),
   })
   .strict();
 
