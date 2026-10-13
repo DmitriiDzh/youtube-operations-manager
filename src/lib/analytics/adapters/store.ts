@@ -29,6 +29,10 @@ import {
   listVideoSearchTerms,
   saveCollectedChannelSearchTermsWeek,
   listChannelSearchTermsWeekly,
+  getAnalyticsEveningLocalTime,
+  getAnalyticsEveningAttempt,
+  recordAnalyticsEveningAttempt,
+  getNewestVideoMetricDate,
 } from "@/lib/db";
 
 // Deliberately thin: only wraps the db.ts functions this module actually needs
@@ -125,6 +129,7 @@ export function createAnalyticsStoreAdapter() {
     metricStore: {
       upsertMetric: upsertVideoMetric,
       listMetricsByChannel: listVideoMetricsByChannel,
+      getNewestMetricDate: (channelId: string) => getNewestVideoMetricDate(channelId),
     },
     // BL-118: channel-level daily totals stored locally.
     channelMetricStore: {
@@ -149,6 +154,11 @@ export function createAnalyticsStoreAdapter() {
     },
     settingsStore: {
       getAnalyticsSyncSettings,
+      getAnalyticsEveningLocalTime,
+    },
+    eveningAttemptStore: {
+      get: (channelId: string) => getAnalyticsEveningAttempt(channelId),
+      record: (channelId: string, at: Date) => recordAnalyticsEveningAttempt(channelId, at),
     },
     // Phase 8 follow-up, slice 2 (data-quality diagnostics) -- append-only history of each
     // collectMetrics run, the ground truth `getDataQualityReport` reads (video_metrics_daily

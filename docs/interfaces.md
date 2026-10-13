@@ -700,7 +700,23 @@ Key MCP tools:
     in the range were actually covered by a collection run vs. never collected vs. too recent for
     the API to have reported yet, plus which videos had a recorded collection failure. Local read
     only (reads `analytics_collection_runs`, never calls YouTube) — see
-    `docs/ARCHITECTURE.md` §14.9.
+    `docs/ARCHITECTURE.md` §14.9. BL-181 (2026-10-13, additive): also `newestReturned { videoDate, channelDate, ranAt } | null`
+    -- the newest dates the Analytics API has returned to this computer (the maximum over its runs; `ranAt` = when the newest video
+    date first came back; a date after `videoDate` was not reported to this computer yet); a collection's result also carries `newestVideoDate` /
+    `newestChannelDate`. BL-181 stage 1 (additive): `returnLag: [{ date, videoFirstReturnedAt, videoLagHours, channelFirstReturnedAt,
+    channelLagHours }]`, newest first -- per date of the range, the first collection run on this computer that asked for it and got it
+    back after an earlier run had asked and not got it, and the hours after its Pacific day ended (an upper bound; a date without
+    that proof is left out). ARCHITECTURE §14.13.1.
+  - `agent_get_reporting_status` (BL-181, Agent API 3.14.0, capability `analytics.query_reporting_status`, READ, channel-scoped) —
+    `{ channelId, credentialRef? }` → Reach's status block (`job`, `firstFileExpectedBy`, `firstFileOverdue`, `lastAttempt`,
+    `nextAutoCheckAt`, `importedFiles`, `files[]` with `lagHours` = createTime − endTime, `firstFileLag[{ date, createTime, lagHours }]`)
+    plus `otherReports[]` for `channel_basic_a3` and `channel_traffic_source_a3` (`reportTypeId`, `job`, `lastAttempt`,
+    `importedFiles`, `files`, `firstFileLag`). A local read, never a Google call. `GET /api/channels/[id]/reach/status` returns the
+    same fields.
+  - `POST /api/analytics/evening-collect` (BL-181, Web only) — the dashboard's 5-minute evening check: `{ due: false }`,
+    `{ due: false, done: true }`, `{ due: true, inProgress | importPending: true }` or `{ due: true, channels: [the active channel's
+    outcome: collected | skipped (reason) | failed] }`. `GET/POST /api/settings` gain `analyticsEveningLocalTime` ("HH:MM", `""` =
+    off; must be later than `analyticsSyncLocalTime`).
   - `analytics_comparable_age` — `{ channelId, videoIds (2-10), metricName? (default "views",
     additive metrics only), maxDays? (default 30), credentialRef? }` → per-video raw daily points
     and a running cumulative total, aligned by each video's own days-since-publish (Pacific-Time

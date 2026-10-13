@@ -2,8 +2,16 @@ import type { ProgressReporter } from "@/lib/operation-progress";
 import { rangesStraddleViewCountingChange } from "@/lib/youtube-quota";
 import { YOUTUBE_ANALYTICS_READ_SCOPE } from "@/lib/auth";
 import type { ChannelAccessService } from "@/lib/channel-access";
-import { computeDefaultAutoCollectionRange, computeNextRefreshAt, isAnalyticsCollectionStale } from "./staleness";
-import { assertValidDateRange, assertValidIsoDate, computePreviousPeriod, zeroFillDailySeries } from "./period";
+import {
+  computeDefaultAutoCollectionRange,
+  computeNextRefreshAt,
+  formatZonedDateAndTime,
+  isAnalyticsCollectionStale,
+  isValidLocalTimeOfDay,
+  pacificDayEnd,
+  zonedInstant,
+} from "./staleness";
+import { assertValidDateRange, assertValidIsoDate, computePreviousPeriod, enumerateDates, zeroFillDailySeries } from "./period";
 import { computeComparableAgeSeries } from "./comparable-age";
 import { computeDataQualityReport, extendDataQualityReport, isRangeFullyCovered } from "./data-quality";
 import { nextVideoHistoryThrough, perVideoQueryRange, planChannelCatchUp, planVideoHistoryCatchUp, resolveHistoryStart } from "./catch-up";
@@ -12,6 +20,7 @@ import {
   ANALYTICS_METRIC_NAMES,
   AUTO_COLLECTION_RANGE_DAYS,
   CHANNEL_BREAKDOWN_PRESETS,
+  EVENING_COLLECTION_RANGE_DAYS,
   CHANNEL_OVERVIEW_METRIC_NAMES,
   DomainError,
   isDomainError,
@@ -20,6 +29,7 @@ import {
   type ChannelOverviewTotals,
   type CollectMetricsResult,
   type DataQualityReportResult,
+  type EveningCollectResult,
   type GetChannelBreakdownResult,
   type GetChannelOverviewResult,
   type GetComparableAgeComparisonResult,
@@ -144,6 +154,8 @@ type ServiceDependencies = {
       metricValue: number;
     }): Promise<void>;
     listMetricsByChannel(channelId: string): Promise<StoredVideoMetricRow[]>;
+    /** BL-181: the newest stored metric date of the channel's videos, the other computer's rows included (the evening gate). */
+    getNewestMetricDate?(channelId: string): Promise<string | null>;
   };
   /** BL-118: channel-level daily totals stored locally (optional so older wiring keeps its behavior). */
   channelMetricStore?: {
@@ -171,12 +183,22 @@ type ServiceDependencies = {
   };
   settingsStore: {
     getAnalyticsSyncSettings(): Promise<{ localTime: string; timezone: string }>;
+    /** BL-181: the evening boundary "HH:MM" ("" = off). Without it the evening re-collect is off. */
+    getAnalyticsEveningLocalTime?(): Promise<string>;
+  };
+  /** BL-181: when the evening re-collect last started per channel on this computer, so it runs once per evening whatever it got. */
+  eveningAttemptStore?: {
+    get(channelId: string): Promise<Date | null>;
+    record(channelId: string, at: Date): Promise<void>;
   };
   // Phase 8 follow-up, slice 2 (data-quality diagnostics) -- append-only history of each
   // collectMetrics run, read by getDataQualityReport.
   collectionRunStore: {
     record(args: {
       channelLevel?: boolean;
+      /** BL-181 (FO-REQ-0020 §2.4): the newest date the Analytics API returned (videos / channel totals); null = none. */
+      newestVideoDate?: string | null;
+      newestChannelDate?: string | null;
       channelId: string;
       requestedStartDate: string;
       requestedEndDate: string;
@@ -192,6 +214,8 @@ type ServiceDependencies = {
         upsertsIssued: number;
         skippedVideoIds: string[];
         channelLevel?: boolean;
+        newestVideoDate?: string | null;
+        newestChannelDate?: string | null;
         ranAt: Date;
       }>
     >;
@@ -285,6 +309,53 @@ function mapStoredWeeklyReport(row: {
   };
 }
 
+/**
+ * BL-181 (FO-REQ-0020 §2.4 and criterion 5): for each date of the range, the first collection run on this computer that got the date
+ * back from the Analytics API, and how many hours after the date's Pacific day ended that run was. Built from each run's requested
+ * range and newest returned dates (recorded since schema v87). A date D counts as first returned at run R only when R asked for D
+ * and its newest date reached D, AND an earlier run that also asked for D got a newest date before D -- the proof that D was not
+ * available yet. Otherwise D's first return is unknown (`null`): a run that asked for another range (a history catch-up, a backfill)
+ * says nothing about D, and neither does the first run after the upgrade (review finding 1). An UPPER bound: the run shows when this
+ * app asked, not when Google published -- runs happen at the daily boundaries (12:05 and the evening one).
+ */
+export function returnLagOf(
+  runs: ReadonlyArray<{ requestedStartDate: string; requestedEndDate: string; newestVideoDate?: string | null; newestChannelDate?: string | null; ranAt: Date }>,
+  startDate: string,
+  endDate: string
+): Array<{ date: string; videoFirstReturnedAt: string | null; videoLagHours: number | null; channelFirstReturnedAt: string | null; channelLagHours: number | null }> {
+  const ordered = [...runs].sort((a, b) => a.ranAt.getTime() - b.ranAt.getTime());
+  const firstReturn = (date: string, pick: (run: (typeof ordered)[number]) => string | null | undefined): Date | null => {
+    let seenMissing = false;
+    for (const run of ordered) {
+      const newest = pick(run) ?? null;
+      if (newest === null || run.requestedStartDate > date || run.requestedEndDate < date) continue;
+      if (newest < date) seenMissing = true;
+      else return seenMissing ? run.ranAt : null;
+    }
+    return null;
+  };
+  const lag = (date: string, at: Date | null) => (at ? Math.round(((at.getTime() - pacificDayEnd(date).getTime()) / 3_600_000) * 10) / 10 : null);
+  const rows: ReturnType<typeof returnLagOf> = [];
+  const firstDate = ordered.reduce<string | null>((min, run) => (min === null || run.requestedStartDate < min ? run.requestedStartDate : min), null);
+  const from = firstDate !== null && firstDate > startDate ? firstDate : startDate;
+  // A range that ends before every run (or no run at all) has no date any run asked for (re-check finding).
+  if (firstDate === null || from > endDate) return rows;
+  for (const date of enumerateDates(from, endDate).reverse()) {
+    const video = firstReturn(date, (run) => run.newestVideoDate);
+    const channel = firstReturn(date, (run) => run.newestChannelDate);
+    if (video === null && channel === null) continue;
+    rows.push({
+      date,
+      videoFirstReturnedAt: video?.toISOString() ?? null,
+      videoLagHours: lag(date, video),
+      channelFirstReturnedAt: channel?.toISOString() ?? null,
+      channelLagHours: lag(date, channel),
+    });
+  }
+  return rows;
+}
+
+
 export function createAnalyticsServices(deps: ServiceDependencies) {
   // BL-118: items whose catch-up query failed are not retried for a while (a removed/private video would otherwise be re-queried on every
   // dashboard open). In-process only: a restart simply tries again.
@@ -299,13 +370,39 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
    * BL-118 -- fetches and stores the channel-level daily totals for a window (one Analytics query). Returns whether it succeeded; never
    * throws (a failed channel query must not fail or hide the per-video collection that already happened).
    */
+  /**
+   * BL-181 (FO-REQ-0020 §2.4): the newest video and channel dates the Analytics API has returned to this computer -- the maximum over
+   * every recorded run, never just the latest run (a history catch-up or a manual backfill of an old range runs after the daily run
+   * and returns older dates; review finding 1). `ranAt` is when the newest video date (or, without any, channel date) first came
+   * back. Null before any run recorded a date.
+   */
+  function newestReturnedOf(runs: Array<{ newestVideoDate?: string | null; newestChannelDate?: string | null; ranAt: Date }>) {
+    const recorded = [...runs]
+      .filter((run) => (run.newestVideoDate ?? null) !== null || (run.newestChannelDate ?? null) !== null)
+      .sort((a, b) => a.ranAt.getTime() - b.ranAt.getTime());
+    if (recorded.length === 0) return null;
+    const maxOf = (pick: (run: (typeof recorded)[number]) => string | null | undefined) =>
+      recorded.reduce<string | null>((max, run) => {
+        const date = pick(run) ?? null;
+        return date !== null && (max === null || date > max) ? date : max;
+      }, null);
+    const videoDate = maxOf((run) => run.newestVideoDate);
+    const channelDate = maxOf((run) => run.newestChannelDate);
+    const firstWith =
+      videoDate !== null
+        ? recorded.find((run) => run.newestVideoDate === videoDate)
+        : recorded.find((run) => run.newestChannelDate === channelDate);
+    return { videoDate, channelDate, ranAt: (firstWith ?? recorded[recorded.length - 1]).ranAt.toISOString() };
+  }
+
+  /** BL-118: the channel totals of a window; BL-181: also the newest date Google returned (null = none, or not collected). */
   async function collectChannelLevel(args: {
     credentials: ResolvedCredentials;
     channelId: string;
     startDate: string;
     endDate: string;
-  }): Promise<boolean> {
-    if (!deps.channelMetricStore) return false;
+  }): Promise<{ collected: boolean; newestDate: string | null }> {
+    if (!deps.channelMetricStore) return { collected: false, newestDate: null };
     try {
       const rows = await deps.youtubeApi.queryChannelAnalyticsReport({
         credentials: args.credentials,
@@ -314,18 +411,20 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
         endDate: args.endDate,
         metricNames: CHANNEL_OVERVIEW_METRIC_NAMES,
       });
+      let newestDate: string | null = null;
       for (const row of rows) {
+        if (newestDate === null || row.date > newestDate) newestDate = row.date;
         for (const [metricName, metricValue] of Object.entries(row.metrics)) {
           await deps.channelMetricStore.upsert({ channelId: args.channelId, metricDate: row.date, metricName, metricValue });
         }
       }
-      return true;
+      return { collected: true, newestDate };
     } catch (error) {
       deps.logger.error({
         event: "analytics.collect_metrics.channel_level_failed",
         context: { channelId: args.channelId, message: error instanceof Error ? error.message : "Unknown error" },
       });
-      return false;
+      return { collected: false, newestDate: null };
     }
   }
 
@@ -448,7 +547,18 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
      *    (logged as `mark_disagrees_with_run_history`, a real, reportable inconsistency, not a
      *    silent override).
      */
-    async collectMetrics(input: unknown, options: { progress?: ProgressReporter } = {}): Promise<CollectMetricsResult> {
+    async collectMetrics(
+      input: unknown,
+      options: {
+        progress?: ProgressReporter;
+        /**
+         * BL-181: set only by `runEveningCollectionIfDue`, which has already checked that the evening boundary passed, that this
+         * channel was not collected since, and that the Analytics API has not yet returned yesterday. Never reachable from a tool
+         * input (it is not part of the schema).
+         */
+        eveningRun?: boolean;
+      } = {}
+    ): Promise<CollectMetricsResult> {
       const parsedInput = parseWithSchema(collectMetricsInputSchema, input, "collect metrics input");
       const progress = options.progress;
       const metricNames = parsedInput.metricNames ?? ANALYTICS_METRIC_NAMES;
@@ -522,6 +632,7 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
         const channelHasVideos =
           markedFresh && genuineRunCoversExpectedDate ? (await deps.videoStore.listVideosByChannel(parsedInput.channelId)).length > 0 : false;
         if (
+          !options.eveningRun &&
           markedFresh &&
           genuineRunCoversExpectedDate &&
           isRangeFullyCovered({
@@ -562,6 +673,8 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
 
         let upsertsIssued = 0;
         const skippedVideoIds: string[] = [];
+        // BL-181 (FO-REQ-0020 §2.4): the newest date any video's rows came back for -- what the API had, not what was asked.
+        let newestVideoDate: string | null = null;
 
         progress?.stage("Querying the YouTube Analytics API (one query per video)");
         let finished = 0;
@@ -582,6 +695,7 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
             });
 
             for (const row of rows) {
+              if (newestVideoDate === null || row.date > newestVideoDate) newestVideoDate = row.date;
               for (const [metricName, metricValue] of Object.entries(row.metrics)) {
                 await deps.metricStore.upsertMetric({
                   channelId: parsedInput.channelId,
@@ -620,7 +734,8 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
 
         // BL-118: the CHANNEL-level daily totals for the same window (one extra query), so the agent's channel analytics can be read
         // locally. A failure here never fails the run: the run is simply recorded as not having collected channel totals.
-        const channelLevel = await collectChannelLevel({ credentials, channelId: parsedInput.channelId, startDate: parsedInput.startDate, endDate: parsedInput.endDate });
+        const channelTotals = await collectChannelLevel({ credentials, channelId: parsedInput.channelId, startDate: parsedInput.startDate, endDate: parsedInput.endDate });
+        const channelLevel = channelTotals.collected;
 
         const output = {
           channelId: parsedInput.channelId,
@@ -629,6 +744,8 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
           videoCount: videos.length,
           upsertsIssued,
           skippedVideoIds,
+          newestVideoDate,
+          newestChannelDate: channelTotals.newestDate,
         };
 
         // Mark AFTER the loop, and only on a run that actually accomplished something -- not
@@ -665,6 +782,8 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
             upsertsIssued: output.upsertsIssued,
             skippedVideoIds: output.skippedVideoIds,
             channelLevel,
+            newestVideoDate,
+            newestChannelDate: channelTotals.newestDate,
           });
         } else if (channelLevel) {
           // Only the channel totals were collected (no video existed yet): record exactly that, no per-video claim.
@@ -676,6 +795,7 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
             upsertsIssued: 0,
             skippedVideoIds: [],
             channelLevel: true,
+            newestChannelDate: channelTotals.newestDate,
           });
         }
 
@@ -809,6 +929,73 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
       }
     },
 
+    /**
+     * BL-181 (FO-REQ-0020 §2.3; plan REPORTING_BASIC_PLAN.md §2 item 7): the evening re-collect -- a second daily boundary
+     * (default 22:05 local, "" = off). It is the one exception to the once-a-day rule `collectMetrics` documents, and only when
+     * there can be something new: the evening boundary has passed, the channel was not collected since it, no evening attempt
+     * started since it on this computer, and the Analytics API has not yet returned yesterday (the newest date over every run and
+     * every stored row, the other computer's included). It asks only the 3 days ending yesterday. When today's daily run has not
+     * happened (a dashboard left open since before its boundary) it is that daily run instead, with the daily range. The attempt
+     * is recorded before the call, so it runs at most once per evening whatever comes back.
+     */
+    async getEveningWindow(): Promise<{ open: boolean; localDate: string | null }> {
+      const evening = deps.settingsStore.getAnalyticsEveningLocalTime ? await deps.settingsStore.getAnalyticsEveningLocalTime() : "";
+      if (!evening || !isValidLocalTimeOfDay(evening) || !deps.eveningAttemptStore) return { open: false, localDate: null };
+      const { localTime: morning, timezone } = await deps.settingsStore.getAnalyticsSyncSettings();
+      if (evening <= morning) return { open: false, localDate: null };
+      const today = formatZonedDateAndTime(deps.clock.now(), timezone);
+      return { open: today.localTime >= evening, localDate: today.localDate };
+    },
+
+    async runEveningCollectionIfDue(input: unknown): Promise<EveningCollectResult> {
+      const parsedInput = parseWithSchema(runAutoCollectionInputSchema, input, "run evening collection input");
+      try {
+        await deps.channelAccess.assertActiveChannel({ userId: getCredentialUserId(parsedInput.credentialRef), channelId: parsedInput.channelId });
+
+        const evening = deps.settingsStore.getAnalyticsEveningLocalTime ? await deps.settingsStore.getAnalyticsEveningLocalTime() : "";
+        if (!evening || !isValidLocalTimeOfDay(evening) || !deps.eveningAttemptStore) return { ranCollection: false, reason: "off" };
+        const { localTime: morning, timezone } = await deps.settingsStore.getAnalyticsSyncSettings();
+        if (evening <= morning) return { ranCollection: false, reason: "off" };
+
+        const now = deps.clock.now();
+        const today = formatZonedDateAndTime(now, timezone);
+        if (today.localTime < evening) return { ranCollection: false, reason: "not_yet" };
+        const boundary = zonedInstant({ localDate: today.localDate, localTime: evening, timezone });
+
+        const [lastCollectedAt, lastAttemptAt] = await Promise.all([
+          deps.channelStore.getAnalyticsLastAutoCollectedAt(parsedInput.channelId),
+          deps.eveningAttemptStore.get(parsedInput.channelId),
+        ]);
+        if (lastCollectedAt && lastCollectedAt.getTime() >= boundary.getTime()) return { ranCollection: false, reason: "already_ran" };
+        if (lastAttemptAt && lastAttemptAt.getTime() >= boundary.getTime()) return { ranCollection: false, reason: "already_ran" };
+
+        if ((await deps.videoStore.listVideosByChannel(parsedInput.channelId)).length === 0) return { ranCollection: false, reason: "no_videos" };
+
+        // Review finding 3: a dashboard left open since before the daily boundary never ran today's daily collection (it runs on a
+        // page load). Then the evening run is that daily run -- the daily range, allowed by the once-a-day rule anyway.
+        const dailyDue = isAnalyticsCollectionStale({ now, lastAutoCollectedAt: lastCollectedAt, timezone, localTime: morning });
+        const range = computeDefaultAutoCollectionRange({ now, timezone, rangeDays: dailyDue ? AUTO_COLLECTION_RANGE_DAYS : EVENING_COLLECTION_RANGE_DAYS - 1 });
+        if (!dailyDue) {
+          // Review findings 1 and 4: the newest date the API ever returned for this channel -- the maximum over this computer's
+          // runs and over the stored rows (which include the other computer's) -- never just the latest run's.
+          const newest = [
+            newestReturnedOf(await deps.collectionRunStore.listByChannel(parsedInput.channelId))?.videoDate ?? null,
+            deps.metricStore.getNewestMetricDate ? await deps.metricStore.getNewestMetricDate(parsedInput.channelId) : null,
+          ].reduce<string | null>((max, date) => (date !== null && (max === null || date > max) ? date : max), null);
+          if (newest !== null && newest >= range.endDate) return { ranCollection: false, reason: "data_current" };
+        }
+
+        await deps.eveningAttemptStore.record(parsedInput.channelId, now);
+        const result = await services.collectMetrics(
+          { credentialRef: parsedInput.credentialRef, channelId: parsedInput.channelId, startDate: range.startDate, endDate: range.endDate },
+          { eveningRun: !dailyDue }
+        );
+        return { ranCollection: true, result };
+      } catch (error) {
+        throw mapUnknownError(error, "unauthorized");
+      }
+    },
+
     /** The channel's creation date (`YYYY-MM-DD`) for the Web UI's coverage display, `null` until a sync recorded it. Active-channel checked. */
     async getChannelStartDate(input: unknown): Promise<string | null> {
       const parsedInput = parseWithSchema(runAutoCollectionInputSchema, input, "channel start date input");
@@ -902,9 +1089,12 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
         progress?.counts(done, batch.length);
 
         let channelLevel = false;
+        let channelNewestDate: string | null = null;
         if (plan.channelRange) {
           progress?.stage("Collecting earlier channel totals");
-          channelLevel = await collectChannelLevel({ credentials, channelId: parsedInput.channelId, ...plan.channelRange });
+          const totals = await collectChannelLevel({ credentials, channelId: parsedInput.channelId, ...plan.channelRange });
+          channelLevel = totals.collected;
+          channelNewestDate = totals.newestDate;
           if (!channelLevel) catchUpFailedAt.set(`${parsedInput.channelId}|channel`, deps.clock.now().getTime());
         }
 
@@ -922,6 +1112,7 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
             upsertsIssued: 0,
             skippedVideoIds: [],
             channelLevel: true,
+            newestChannelDate: channelNewestDate,
           });
         }
         const startDate = [...batch.map((r) => r.from), ...(plan.channelRange ? [plan.channelRange.startDate] : [])].sort()[0];
@@ -1317,6 +1508,8 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
             endDate: parsedInput.endDate,
             ...report,
             ...extras,
+            newestReturned: newestReturnedOf(runs),
+            returnLag: returnLagOf(runs, parsedInput.startDate, parsedInput.endDate),
           },
           "get data quality report output"
         );

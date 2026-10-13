@@ -2888,7 +2888,8 @@ test("MCP agent_get_capabilities returns version/capabilities/permission-model w
   // Bumped 0.14.0 -> 0.15.0, Phase 11: new channel_workspace.get_channel_workspace capability
   // (docs/roadmap/plans/PHASE_11_PLAN.md AC-P11-11).
   // Bumped 0.15.0 -> 1.0.0, Phase 12 (AC-P12-13): breaking agent-contract change -> MAJOR.
-  assert.equal(payload.agentApiVersion, "3.13.0"); // MINOR 3.13.0 (BL-171, VIDEO_COMMENTS_PLAN.md §2): new READ capability video_context.query_video_comments; MINOR 3.12.0 (BL-170, EXPERIMENT_ARMS_PLAN.md §2 "Reads"): new READ capability decision_engine.query_experiment_results, experiment arms in the hypothesis trail; MINOR 3.11.0 (BL-169, VIDEO_SEARCH_TERMS_PLAN.md §2): new READ capability analytics.query_stored_search_terms; MINOR 3.10.0 (BL-168, VIDEO_BREAKDOWNS_PLAN.md §2 "Reads"): new READ capability analytics.query_stored_breakdowns; MINOR 3.9.0 (BL-166, VIDEO_MILESTONES_PLAN.md §2 "Versions"): new READ capability analytics.query_video_milestones; MINOR 3.6.0 (BL-135): agent_release_media_session + releaseWhenDone; MINOR 3.5.0 (BL-132): media template input parameters (image/audio/video), job inputs[], template source/models; before that 3.3.0 (Factory Operator access, logical path registry tools) on top of 3.2.0 + MINOR 3.4.0: the seven media_generation capabilities (Phase 14 slice 5) and agent_get_media_limits openSessions/maxConcurrentSessions/activeSessionCount (slice 6)
+  // MINOR 3.14.0 (BL-181, REPORTING_BASIC_PLAN.md stage 1): new READ capability analytics.query_reporting_status. Previously:
+  assert.equal(payload.agentApiVersion, "3.14.0"); // MINOR 3.13.0 (BL-171, VIDEO_COMMENTS_PLAN.md §2): new READ capability video_context.query_video_comments; MINOR 3.12.0 (BL-170, EXPERIMENT_ARMS_PLAN.md §2 "Reads"): new READ capability decision_engine.query_experiment_results, experiment arms in the hypothesis trail; MINOR 3.11.0 (BL-169, VIDEO_SEARCH_TERMS_PLAN.md §2): new READ capability analytics.query_stored_search_terms; MINOR 3.10.0 (BL-168, VIDEO_BREAKDOWNS_PLAN.md §2 "Reads"): new READ capability analytics.query_stored_breakdowns; MINOR 3.9.0 (BL-166, VIDEO_MILESTONES_PLAN.md §2 "Versions"): new READ capability analytics.query_video_milestones; MINOR 3.6.0 (BL-135): agent_release_media_session + releaseWhenDone; MINOR 3.5.0 (BL-132): media template input parameters (image/audio/video), job inputs[], template source/models; before that 3.3.0 (Factory Operator access, logical path registry tools) on top of 3.2.0 + MINOR 3.4.0: the seven media_generation capabilities (Phase 14 slice 5) and agent_get_media_limits openSessions/maxConcurrentSessions/activeSessionCount (slice 6)
   assert.ok(
     payload.capabilities.some(
       (c: { id: string; permission: string }) => c.id === "channel_workspace.get_channel_workspace" && c.permission === "READ"
@@ -3402,6 +3403,56 @@ test("MCP agent_query_channel_reach forwards the resolved credentialRef and the 
     credentialRef: { userId: "active-user" },
   });
   assert.equal((result.structuredContent as { state?: string } | undefined)?.state, "waiting_for_first_report");
+});
+
+// BL-181 (FO-REQ-0020 §2.4): the Reporting status read for the Operator -- the resolved credentialRef and the channel are forwarded
+// to the core (which does the active-channel check), its answer is returned as it is; a bad input never reaches the core.
+test("BL-181: MCP agent_get_reporting_status forwards the resolved credentialRef and returns the status with the lag fields", async () => {
+  const capture: { input?: unknown } = {};
+  const status = {
+    channelId: "UC_1",
+    job: { jobId: "job-1", createdAt: "2026-10-01T21:05:54Z" },
+    firstFileExpectedBy: "2026-10-03T21:05:54.000Z",
+    firstFileOverdue: false,
+    lastAttempt: null,
+    nextAutoCheckAt: null,
+    importedFiles: 1,
+    files: [],
+    firstFileLag: [{ date: "2026-10-10", createTime: "2026-10-11T05:00:00Z", lagHours: 22 }],
+    otherReports: [{ reportTypeId: "channel_basic_a3", job: null, lastAttempt: null, importedFiles: 0, files: [], firstFileLag: [] }],
+  };
+  const reachStub = {
+    ...makeReachCoreStub({}),
+    async getReachStatus(input: unknown) {
+      capture.input = input;
+      return status;
+    },
+  };
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    reachStub
+  );
+
+  const result = await handlers.agentGetReportingStatus({ channelId: "UC_1" });
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(capture.input, { channelId: "UC_1", credentialRef: { userId: "active-user" } });
+  assert.deepEqual(result.structuredContent, status);
+
+  capture.input = undefined;
+  const bad = await handlers.agentGetReportingStatus({ channelId: "UC_1", startDate: "2026-10-01" });
+  assert.equal(bad.isError, true, "an unknown input field is refused");
+  assert.equal(capture.input, undefined, "the core is never reached");
 });
 
 test("BL-118: MCP agent_query_channel_breakdown forwards the resolved credentialRef, labels every row, and says the read is live", async () => {

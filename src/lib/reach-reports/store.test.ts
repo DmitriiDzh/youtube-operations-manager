@@ -6,8 +6,15 @@ import test from "node:test";
 import { type Client } from "@libsql/client";
 import { createLibsqlClient } from "@/lib/libsql-client";
 import {
+  countImportedReportingFiles,
   createIsolatedDb,
   getChannelReachCoverage,
+  importBasicReport,
+  importTrafficSourceReport,
+  listChannelBasicDaily,
+  listChannelTrafficSourceDaily,
+  SHARED_REPORTING_REPORT_TYPE_ID,
+  type BasicReportImport,
   getReportingJob,
   getReportingSyncAttempt,
   listReportingReportFiles,
@@ -19,6 +26,7 @@ import {
   upsertReportingJob,
   type ReachReportImport,
 } from "@/lib/db";
+import { REACH_BASIC_REPORT_TYPE_ID } from "./contracts";
 
 async function withDb(fn: (db: ReturnType<typeof createIsolatedDb>, client: Client) => Promise<void>) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "reach-store-test-"));
@@ -270,3 +278,93 @@ test("listReportingReportFiles returns this channel's files newest period first,
     assert.deepEqual((await listReportingReportFiles("UC_X", TYPE, 2, db)).map((f) => f.reportId), ["r3", "r2"]);
   });
 });
+
+// --- BL-181 (FO-REQ-0020; plan REPORTING_BASIC_PLAN.md stage 1): the basic and traffic-source report rows -------------------------
+// Google's backfill rule (developers.google.com/youtube/reporting/v1/reports, "Get Bulk Data Reports"): a report with the same
+// startTime/endTime and a newer createTime replaces the previous data of that period. Expected values are written by hand.
+
+const BASIC_NULLS = {
+  engagedViews: null,
+  redViews: null,
+  redWatchTimeMinutes: null,
+  likes: null,
+  dislikes: null,
+  comments: null,
+  shares: null,
+  subscribersGained: null,
+  subscribersLost: null,
+  videosAddedToPlaylists: null,
+  videosRemovedFromPlaylists: null,
+};
+
+function basicFile(reportId: string, createTime: string, rows: BasicReportImport["rows"]): BasicReportImport {
+  return { channelId: "UC_X", reportTypeId: "channel_basic_a3", jobId: "job-b", reportId, startTime: "2026-10-10T07:00:00Z", endTime: "2026-10-11T07:00:00Z", createTime, rows };
+}
+
+test("BL-181: the db's shared Reporting type is Reach's own id", () => {
+  assert.equal(SHARED_REPORTING_REPORT_TYPE_ID, REACH_BASIC_REPORT_TYPE_ID);
+});
+
+test("BL-181: a basic file's reissue replaces its rows (the channel remainder included); an older file arriving later changes nothing", () =>
+  withDb(async (db) => {
+    await importBasicReport(
+      basicFile("b-old", "2026-10-11T06:00:00Z", [
+        { date: "2026-10-10", videoId: "", ...BASIC_NULLS, views: null, watchTimeMinutes: null, subscribersGained: 2, subscribersLost: 0 },
+        { date: "2026-10-10", videoId: "vidA", ...BASIC_NULLS, views: 10, watchTimeMinutes: 12.5 },
+        { date: "2026-10-10", videoId: "vidB", ...BASIC_NULLS, views: 4, watchTimeMinutes: 3 },
+      ]),
+      db
+    );
+    assert.deepEqual(
+      await importBasicReport(basicFile("b-new", "2026-10-15T06:00:00Z", [{ date: "2026-10-10", videoId: "vidA", ...BASIC_NULLS, views: 11, watchTimeMinutes: 13 }]), db),
+      { outcome: "imported", replacedReports: 1 }
+    );
+    assert.deepEqual(
+      await importBasicReport(basicFile("b-older", "2026-10-12T06:00:00Z", [{ date: "2026-10-10", videoId: "vidA", ...BASIC_NULLS, views: 99, watchTimeMinutes: 99 }]), db),
+      { outcome: "superseded_by_newer" }
+    );
+    const rows = await listChannelBasicDaily("UC_X", RANGE, db);
+    assert.deepEqual(rows.map((r) => [r.videoId, r.views, r.watchTimeMinutes, r.subscribersGained, r.sourceReportId]), [["vidA", 11, 13, null, "b-new"]]);
+    assert.equal(await countImportedReportingFiles("UC_X", "channel_basic_a3", db), 1);
+  }));
+
+test("BL-181: traffic-source rows are kept per traffic source code; a reissue replaces them all", () =>
+  withDb(async (db) => {
+    const meta = { channelId: "UC_X", reportTypeId: "channel_traffic_source_a3", jobId: "job-t", startTime: "2026-10-10T07:00:00Z", endTime: "2026-10-11T07:00:00Z" };
+    await importTrafficSourceReport(
+      {
+        ...meta,
+        reportId: "t-old",
+        createTime: "2026-10-11T06:00:00Z",
+        rows: [
+          { date: "2026-10-10", videoId: "vidA", trafficSourceType: 5, views: 12, engagedViews: 12, watchTimeMinutes: 5.5 },
+          { date: "2026-10-10", videoId: "vidA", trafficSourceType: 7, views: 3, engagedViews: null, watchTimeMinutes: 1.5 },
+        ],
+      },
+      db
+    );
+    assert.deepEqual(
+      (await listChannelTrafficSourceDaily("UC_X", RANGE, db)).map((r) => [r.trafficSourceType, r.views, r.engagedViews]),
+      [
+        [5, 12, 12],
+        [7, 3, null],
+      ]
+    );
+    await importTrafficSourceReport(
+      { ...meta, reportId: "t-new", createTime: "2026-10-14T06:00:00Z", rows: [{ date: "2026-10-10", videoId: "vidA", trafficSourceType: 3, views: 1, engagedViews: 1, watchTimeMinutes: 0.25 }] },
+      db
+    );
+    assert.deepEqual((await listChannelTrafficSourceDaily("UC_X", RANGE, db)).map((r) => [r.trafficSourceType, r.views]), [[3, 1]]);
+  }));
+
+test("BL-181: Reach's coverage counts only Reach files, and a basic file of the same period never supersedes a Reach file", () =>
+  withDb(async (db) => {
+    await importBasicReport(basicFile("b1", "2026-10-11T06:00:00Z", [{ date: "2026-10-10", videoId: "vidA", ...BASIC_NULLS, views: 10, watchTimeMinutes: 12.5 }]), db);
+    assert.deepEqual(await getChannelReachCoverage("UC_X", db), { firstDate: null, lastDate: null, importedFiles: 0 }, "no Reach file yet: Reach is still waiting");
+    const reach = await importReachReport(
+      report({ reportId: "r1", startTime: "2026-10-10T07:00:00Z", endTime: "2026-10-11T07:00:00Z", createTime: "2026-10-11T05:00:00Z", rows: [{ date: "2026-10-10", videoId: "vidA", impressions: 300, ctr: 0.05 }] }),
+      db
+    );
+    assert.deepEqual(reach, { outcome: "imported", replacedReports: 0 }, "an older createTime of ANOTHER type is not a newer file of this period");
+    assert.deepEqual(await getChannelReachCoverage("UC_X", db), { firstDate: "2026-10-10", lastDate: "2026-10-10", importedFiles: 1 });
+  }));

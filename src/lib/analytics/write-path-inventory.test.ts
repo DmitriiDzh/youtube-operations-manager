@@ -100,6 +100,7 @@ const ALLOWED_DB_WRITE_IMPORTS = new Set([
   "deferVideoMilestone", // BL-166: the same table -- puts a milestone back without counting an attempt
   "saveChannelDailyMetric", // this module's own channel-level daily totals table (BL-118)
   "advanceVideoHistory", // this module's own per-video history-coverage bookkeeping (BL-118)
+  "recordAnalyticsEveningAttempt", // BL-181: this module's own evening re-collect bookkeeping (a setting of this device), never a video/channel row
 ]);
 
 test("analytics write-path-inventory: adapters/store.ts imports no db.ts write function beyond its own allowlisted ones", async () => {

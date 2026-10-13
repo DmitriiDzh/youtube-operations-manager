@@ -9,7 +9,7 @@ import { createDefaultLogger } from "@/lib/shared-logger";
 import { createQuotaGuardCore } from "@/lib/quota-guard";
 import { quotaScoped } from "@/lib/youtube-quota";
 import { createAnalyticsServices } from "./services";
-import { runAutoCollectionForChannels } from "./auto-collect-all";
+import { runAutoCollectionForChannels, runEveningCollectionForChannels } from "./auto-collect-all";
 import { createBackgroundFailureBackoff, listChannelConnections } from "@/lib/channel-fanout";
 
 function defaultAuthResolver() {
@@ -40,6 +40,7 @@ export function createAnalyticsCore() {
     historyStore: store.historyStore,
     channelStore: store.channelStore,
     settingsStore: store.settingsStore,
+    eveningAttemptStore: store.eveningAttemptStore,
     collectionRunStore: store.collectionRunStore,
     weeklyReportStore: store.weeklyReportStore,
     clock: { now: () => new Date() },
@@ -62,6 +63,11 @@ export function createAnalyticsCore() {
     runAutoCollectionIfStale: quotaScoped(async (input: unknown) => {
       if (!(await guard.isBackgroundReadAllowed("analytics"))) return { ranCollection: false } as const;
       return services.runAutoCollectionIfStale(input);
+    }, context),
+    // BL-181: the evening re-collect is a background read too (same reserve, same work context).
+    runEveningCollectionIfDue: quotaScoped(async (input: unknown) => {
+      if (!(await guard.isBackgroundReadAllowed("analytics"))) return { ranCollection: false, reason: "quota_reserve" } as const;
+      return services.runEveningCollectionIfDue(input);
     }, context),
   };
   // BL-166 (docs/roadmap/plans/VIDEO_MILESTONES_PLAN.md): day-7 / day-28 milestones, a background read like the catch-up -- same
@@ -119,11 +125,21 @@ export function createAnalyticsCore() {
         },
         input
       ),
+    // BL-181: the evening re-collect for every connected channel, each with its own credentials (auto-collect-all.ts).
+    runEveningCollectionForChannels: (input: { sessionUserId: string; activeChannelId: string | null }) =>
+      runEveningCollectionForChannels(
+        {
+          listChannelConnections,
+          runEveningCollectionIfDue: core.runEveningCollectionIfDue,
+          onBackgroundIssue: (channelId, message) => backgroundLogger.info({ event: "analytics.evening_collect.background", context: { channelId, message } }),
+        },
+        input
+      ),
   };
 }
 
 export type AnalyticsCore = ReturnType<typeof createAnalyticsCore>;
-export type { AutoCollectAllResult, AutoCollectChannelOutcome } from "./auto-collect-all";
+export type { AutoCollectAllResult, AutoCollectChannelOutcome, EveningChannelOutcome } from "./auto-collect-all";
 export { beginAllChannelsRun, endAllChannelsRun } from "./auto-collect-all";
 export { ANALYTICS_METRIC_NAMES, AUTO_COLLECTION_RANGE_DAYS, CHANNEL_BREAKDOWN_PRESETS, CHANNEL_OVERVIEW_METRIC_NAMES } from "./contracts";
 export type { ChannelBreakdownKind, ChannelBreakdownRow, GetChannelBreakdownResult } from "./contracts";

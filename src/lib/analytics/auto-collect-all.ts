@@ -1,5 +1,5 @@
 import { credentialUserIdFor, errorCodeOf, type BackgroundFailureBackoff, type ChannelConnection } from "@/lib/channel-fanout/policy";
-import type { AutoCollectResult } from "./contracts";
+import type { AutoCollectResult, EveningCollectResult } from "./contracts";
 
 /**
  * BL-142 (owner, Telegram 2026-10-06, msgs 1867/1868/1874): the dashboard's automatic Analytics collection for EVERY
@@ -133,4 +133,48 @@ export async function runAutoCollectionForChannels(
   }
 
   return { channels, catchUps, milestones };
+}
+
+export type EveningChannelOutcome =
+  | { channelId: string; outcome: "collected" }
+  | { channelId: string; outcome: "skipped"; reason: Extract<EveningCollectResult, { ranCollection: false }>["reason"] | "no_connected_user" }
+  | { channelId: string; outcome: "failed"; error: string; code?: string };
+
+/**
+ * BL-181 (FO-REQ-0020 §2.3): the evening re-collect for every connected channel -- the session's active channel first with the
+ * session's credentials, then every other one with its OWN Google user's (the same rule as the daily run above). Each channel decides
+ * for itself whether anything is due (`runEveningCollectionIfDue`); one channel failing never stops the others (AGENTS.md §M).
+ */
+export async function runEveningCollectionForChannels(
+  deps: {
+    listChannelConnections(): Promise<ChannelConnection[]>;
+    runEveningCollectionIfDue(input: unknown): Promise<EveningCollectResult>;
+    onBackgroundIssue?(channelId: string, message: string): void;
+  },
+  input: { sessionUserId: string; activeChannelId: string | null }
+): Promise<{ channels: EveningChannelOutcome[] }> {
+  const connections = await deps.listChannelConnections();
+  const ordered = [
+    ...connections.filter((c) => c.channelId === input.activeChannelId),
+    ...connections.filter((c) => c.channelId !== input.activeChannelId),
+  ];
+  const channels: EveningChannelOutcome[] = [];
+  for (const connection of ordered) {
+    const { channelId } = connection;
+    const userId = credentialUserIdFor(connection, { activeChannelId: input.activeChannelId, sessionUserId: input.sessionUserId });
+    if (!userId) {
+      channels.push({ channelId, outcome: "skipped", reason: "no_connected_user" });
+      continue;
+    }
+    try {
+      const result = await deps.runEveningCollectionIfDue({ credentialRef: { userId }, channelId });
+      channels.push(result.ranCollection ? { channelId, outcome: "collected" } : { channelId, outcome: "skipped", reason: result.reason });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const code = errorCodeOf(error);
+      channels.push({ channelId, outcome: "failed", error: message, ...(code ? { code } : {}) });
+      if (channelId !== input.activeChannelId) deps.onBackgroundIssue?.(channelId, `evening re-collect failed: ${code ?? message}`);
+    }
+  }
+  return { channels };
 }

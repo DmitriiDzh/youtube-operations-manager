@@ -96,8 +96,15 @@ function utcMillisFromLocalParts(localDate: string, localTime: string): number {
 export function computeNextRefreshAt(args: { now: Date; timezone: string; localTime: string }): Date {
   const { localDate } = formatZonedDateAndTime(args.now, args.timezone);
   const [year, month, day] = localDate.split("-").map(Number);
-  const [hour, minute] = args.localTime.split(":").map(Number);
-  const targetMillis = Date.UTC(year, month - 1, day + 1, hour, minute);
+  return zonedInstant({ localDate: new Date(Date.UTC(year, month - 1, day + 1)).toISOString().slice(0, 10), localTime: args.localTime, timezone: args.timezone });
+}
+
+/**
+ * The absolute instant of a civil (zone, Y-M-D, H:M), by the fixed-point correction described on `computeNextRefreshAt` (its one
+ * implementation, shared since BL-181: the evening boundary and the end of a Pacific day use it too).
+ */
+export function zonedInstant(args: { localDate: string; localTime: string; timezone: string }): Date {
+  const targetMillis = utcMillisFromLocalParts(args.localDate, args.localTime);
 
   let guessMillis = targetMillis;
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -109,6 +116,12 @@ export function computeNextRefreshAt(args: { now: Date; timezone: string; localT
   }
 
   return new Date(guessMillis);
+}
+
+/** BL-181: the instant a YouTube reporting day ends -- midnight Pacific Time after `date` (07:00Z in summer, 08:00Z in winter). */
+export function pacificDayEnd(date: string): Date {
+  const [year, month, day] = date.split("-").map(Number);
+  return zonedInstant({ localDate: new Date(Date.UTC(year, month - 1, day + 1)).toISOString().slice(0, 10), localTime: "00:00", timezone: "America/Los_Angeles" });
 }
 
 /**

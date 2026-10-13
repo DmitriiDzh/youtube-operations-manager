@@ -4,6 +4,10 @@ import type { ReportingJob, ReportingReport } from "@/lib/youtube-read-gateway";
 import type { ParsedReportingCsv } from "@/lib/youtube-read-gateway";
 import {
   DomainError,
+  type FirstFileLagView,
+  type OtherReportSyncResult,
+  type ReachFileView,
+  type ReportTypeStatusView,
   REACH_BASIC_REPORT_TYPE_ID,
   REACH_JOB_NAME,
   type GetChannelReachResult,
@@ -36,6 +40,62 @@ function toVideoDayPoints(rows: readonly ReachRow[]): { points: ReachVideoDayPoi
 const MAX_FILES_PER_SYNC = 120;
 
 type ReachImportOutcome = { outcome: "imported"; replacedReports: number } | { outcome: "superseded_by_newer" };
+
+/** The ledger fields of one report file, whatever its type. */
+export type ReportFileMeta = {
+  channelId: string;
+  reportTypeId: string;
+  jobId: string;
+  reportId: string;
+  startTime: string;
+  endTime: string;
+  createTime: string;
+};
+
+/**
+ * BL-181: a report type synced after Reach (basic user activity, traffic sources): its job name and how one parsed file becomes
+ * stored rows. Built in `index.ts`; a core without them syncs Reach only.
+ */
+export type OtherReportType = {
+  reportTypeId: string;
+  jobName: string;
+  importFile(args: { meta: ReportFileMeta; csv: ParsedReportingCsv }): Promise<{ outcome: ReachImportOutcome; rowCount: number }>;
+};
+
+function hoursBetween(fromIso: string, toIso: string): number | null {
+  const from = Date.parse(fromIso);
+  const to = Date.parse(toIso);
+  if (Number.isNaN(from) || Number.isNaN(to)) return null;
+  return Math.round(((to - from) / 3_600_000) * 10) / 10;
+}
+
+function fileView(file: { reportId: string; startTime: string; endTime: string; createTime: string; rowCount: number; status: string; importedAt: Date }): ReachFileView {
+  return { ...file, importedAt: file.importedAt.toISOString(), lagHours: hoursBetween(file.endTime, file.createTime) };
+}
+
+/**
+ * BL-181 (FO-REQ-0020 §2.4): per day, the first file Google created and how long after the day's end. Days that ended before the
+ * job was created are left out: Google makes those history files right after the job exists, so their lag measures nothing.
+ */
+export function firstFileLagOf(
+  files: ReadonlyArray<{ startTime: string; endTime: string; createTime: string }>,
+  jobCreatedAt: string | null
+): FirstFileLagView[] {
+  const jobCreatedMs = jobCreatedAt ? Date.parse(jobCreatedAt) : NaN;
+  const firstByDay = new Map<string, { createTime: string; createMs: number; endTime: string }>();
+  for (const file of files) {
+    const createMs = Date.parse(file.createTime);
+    const endMs = Date.parse(file.endTime);
+    if (Number.isNaN(createMs) || Number.isNaN(endMs)) continue;
+    if (Number.isNaN(jobCreatedMs) || endMs <= jobCreatedMs) continue;
+    const date = file.startTime.slice(0, 10);
+    const known = firstByDay.get(date);
+    if (!known || createMs < known.createMs) firstByDay.set(date, { createTime: file.createTime, createMs, endTime: file.endTime });
+  }
+  return [...firstByDay.entries()]
+    .sort(([a], [b]) => b.localeCompare(a))
+    .map(([date, first]) => ({ date, createTime: first.createTime, lagHours: hoursBetween(first.endTime, first.createTime) as number }));
+}
 
 export type ReachReportsDependencies = {
   authResolver: {
@@ -84,6 +144,8 @@ export type ReachReportsDependencies = {
       filesImported: number;
       failures: SyncReachFailure[];
     } | null>;
+    /** BL-181: imported files of one report type (the status of the non-Reach types). */
+    countImportedFiles?(channelId: string, reportTypeId: string): Promise<number>;
     /** BL-141: every stored channel and the Google user whose token belongs to it (`channels.connected_user_id`). */
     listChannelConnections(): Promise<Array<{ channelId: string; connectedUserId: string | null }>>;
     listFiles(
@@ -96,6 +158,8 @@ export type ReachReportsDependencies = {
   /** The scope the Reporting API needs (`yt-analytics.readonly`). */
   requiredScope: string;
   clock: { now(): Date };
+  /** BL-181: report types synced after Reach in the same call; none by default. */
+  otherReportTypes?: readonly OtherReportType[];
 };
 
 /**
@@ -127,6 +191,145 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
     await deps.channelAccess.assertActiveChannel({ userId: getCredentialUserId(credentialRef), channelId });
   }
 
+  /**
+   * Makes sure the channel's job of one report type exists (reusing an existing one) and imports every file not seen before,
+   * oldest generation first. One bad file does not stop the others; it is reported in `failures` and retried on the next call.
+   */
+  async function syncFilesOfType(
+    credentials: ResolvedCredentials,
+    channelId: string,
+    reportTypeId: string,
+    jobName: string,
+    importOne: (meta: ReportFileMeta, csv: ParsedReportingCsv) => Promise<{ outcome: ReachImportOutcome; rowCount: number }>
+  ): Promise<{ result: Omit<SyncReachReportsResult, "skipped"> }> {
+    const { job, created } = await deps.reportingApi.ensureJob({ credentials, reportTypeId, name: jobName });
+    await deps.store.upsertJob({ channelId, reportTypeId, jobId: job.id, jobName: job.name, jobCreatedAt: job.createTime });
+
+    const [listed, seen] = await Promise.all([
+      deps.reportingApi.listReports({ credentials, jobId: job.id }),
+      deps.store.listSeenReportIds(channelId, reportTypeId),
+    ]);
+    // Oldest generation first, so a regenerated file is always applied after the one it replaces.
+    const pending = listed
+      .filter((report) => !seen.has(report.id))
+      .sort((a, b) => Date.parse(a.createTime) - Date.parse(b.createTime))
+      .slice(0, MAX_FILES_PER_SYNC);
+
+    const result: Omit<SyncReachReportsResult, "skipped"> = {
+      jobId: job.id,
+      jobCreated: created,
+      filesListed: listed.length,
+      filesImported: 0,
+      filesSuperseded: 0,
+      rowsImported: 0,
+      failures: [],
+    };
+
+    for (const report of pending) {
+      try {
+        const csv = await deps.reportingApi.downloadAndParse({ credentials, downloadUrl: report.downloadUrl });
+        const imported = await importOne(
+          {
+            channelId,
+            reportTypeId,
+            jobId: job.id,
+            reportId: report.id,
+            startTime: report.startTime,
+            endTime: report.endTime,
+            createTime: report.createTime,
+          },
+          csv
+        );
+        if (imported.outcome.outcome === "imported") {
+          result.filesImported += 1;
+          result.rowsImported += imported.rowCount;
+        } else {
+          result.filesSuperseded += 1;
+        }
+      } catch (error) {
+        result.failures.push({ reportId: report.id, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    return { result };
+  }
+
+  /** BL-181: one other report type's sync, with its own attempt row; never throws. */
+  async function syncOtherType(credentials: ResolvedCredentials, channelId: string, type: OtherReportType): Promise<OtherReportSyncResult> {
+    try {
+      const { result } = await syncFilesOfType(credentials, channelId, type.reportTypeId, type.jobName, (meta, csv) => type.importFile({ meta, csv }));
+      const outcome = result.failures.length > 0 ? "partial" : "ok";
+      try {
+        await deps.store.recordAttempt({
+          channelId,
+          reportTypeId: type.reportTypeId,
+          outcome,
+          error: null,
+          filesListed: result.filesListed,
+          filesImported: result.filesImported,
+          failures: result.failures,
+        });
+      } catch {
+        // Informational only.
+      }
+      return {
+        reportTypeId: type.reportTypeId,
+        outcome,
+        error: null,
+        jobCreated: result.jobCreated,
+        filesListed: result.filesListed,
+        filesImported: result.filesImported,
+        filesSuperseded: result.filesSuperseded,
+        rowsImported: result.rowsImported,
+        failures: result.failures,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      try {
+        await deps.store.recordAttempt({ channelId, reportTypeId: type.reportTypeId, outcome: "failed", error: message, filesListed: 0, filesImported: 0, failures: [] });
+      } catch {
+        // Informational only.
+      }
+      return {
+        reportTypeId: type.reportTypeId,
+        outcome: "failed",
+        error: message,
+        jobCreated: false,
+        filesListed: 0,
+        filesImported: 0,
+        filesSuperseded: 0,
+        rowsImported: 0,
+        failures: [],
+      };
+    }
+  }
+
+  /** BL-181: a non-Reach type's status block -- local data only. */
+  async function otherTypeStatus(channelId: string, reportTypeId: string): Promise<ReportTypeStatusView> {
+    const [job, attempt, files, importedFiles] = await Promise.all([
+      deps.store.getJob(channelId, reportTypeId),
+      deps.store.getAttempt(channelId, reportTypeId),
+      deps.store.listFiles(channelId, reportTypeId, STATUS_FILES_LIMIT),
+      deps.store.countImportedFiles ? deps.store.countImportedFiles(channelId, reportTypeId) : Promise.resolve(0),
+    ]);
+    return {
+      reportTypeId,
+      job: job ? { jobId: job.jobId, createdAt: job.jobCreatedAt } : null,
+      lastAttempt: attempt
+        ? {
+            at: attempt.attemptedAt.toISOString(),
+            outcome: attempt.outcome,
+            error: attempt.error,
+            filesListed: attempt.filesListed,
+            filesImported: attempt.filesImported,
+            failures: attempt.failures,
+          }
+        : null,
+      importedFiles,
+      files: files.map(fileView),
+      firstFileLag: firstFileLagOf(files, job?.jobCreatedAt ?? null),
+    };
+  }
+
   const services = {
     /**
      * Makes sure the channel's Reach job exists (reusing an existing one) and imports every report file not
@@ -137,11 +340,10 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
       const parsed = parseWithSchema(syncReachReportsInputSchema, input, "sync reach reports input");
       await assertChannel(parsed.credentialRef, parsed.channelId);
 
-      if (parsed.onlyIfDue) {
-        const [known, attempt] = await Promise.all([
-          deps.store.getJob(parsed.channelId, REACH_BASIC_REPORT_TYPE_ID),
-          deps.store.getAttempt(parsed.channelId, REACH_BASIC_REPORT_TYPE_ID),
-        ]);
+      const otherTypes = deps.otherReportTypes ?? [];
+      // The time a type was checked within the last MIN_SYNC_INTERVAL_HOURS (so it is not due), or null when it is due.
+      const checkedRecentlyAt = async (reportTypeId: string): Promise<Date | null> => {
+        const [known, attempt] = await Promise.all([deps.store.getJob(parsed.channelId, reportTypeId), deps.store.getAttempt(parsed.channelId, reportTypeId)]);
         // A FAILED attempt does not throttle: its cause is usually fixable (toggle back on, scope re-granted,
         // API enabled) and the automatic sync must pick that up on the next dashboard open, not 6 hours later.
         const lastChecked = [
@@ -150,13 +352,21 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
         ]
           .filter((d): d is Date => d !== null)
           .sort((a, b) => b.getTime() - a.getTime())[0];
-        if (lastChecked) {
-          const dueAt = lastChecked.getTime() + MIN_SYNC_INTERVAL_HOURS * 3_600_000;
-          if (deps.clock.now().getTime() < dueAt) {
-            return { skipped: true, reason: "checked_recently", lastCheckedAt: lastChecked.toISOString() };
-          }
+        return lastChecked && deps.clock.now().getTime() < lastChecked.getTime() + MIN_SYNC_INTERVAL_HOURS * 3_600_000 ? lastChecked : null;
+      };
+      let reachCheckedAt: Date | null = null;
+      let dueOtherTypes = otherTypes;
+      if (parsed.onlyIfDue) {
+        reachCheckedAt = await checkedRecentlyAt(REACH_BASIC_REPORT_TYPE_ID);
+        // BL-181 (review finding 2): each other type by its OWN checks. Reach's are shared with the other computer (BL-151), these
+        // types' are device-local, so the other computer checking Reach must not hold back this computer's own downloads.
+        const othersCheckedAt = await Promise.all(otherTypes.map((type) => checkedRecentlyAt(type.reportTypeId)));
+        dueOtherTypes = otherTypes.filter((_, index) => othersCheckedAt[index] === null);
+        if (reachCheckedAt && dueOtherTypes.length === 0) {
+          return { skipped: true, reason: "checked_recently", lastCheckedAt: reachCheckedAt.toISOString() };
         }
       }
+      const reachDue = reachCheckedAt === null;
 
       // BL-141: two automatic syncs of one channel (two tabs, two dashboards) must not run side by side -- both would
       // pass the due check above, create the job twice on a first run and import the same files twice.
@@ -164,100 +374,91 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
         if (inFlightAutoSyncs.has(parsed.channelId)) return { skipped: true, reason: "in_progress" };
         inFlightAutoSyncs.add(parsed.channelId);
       }
+      let othersRecorded = false;
       try {
         const credentials = await deps.authResolver.resolve({
           credentialRef: parsed.credentialRef,
           requiredScopes: [deps.requiredScope],
         });
 
-        const { job, created } = await deps.reportingApi.ensureJob({
-          credentials,
-          reportTypeId: REACH_BASIC_REPORT_TYPE_ID,
-          name: REACH_JOB_NAME,
-        });
-        await deps.store.upsertJob({
-          channelId: parsed.channelId,
-          reportTypeId: REACH_BASIC_REPORT_TYPE_ID,
-          jobId: job.id,
-          jobName: job.name,
-          jobCreatedAt: job.createTime,
-        });
-
-        const [listed, seen] = await Promise.all([
-          deps.reportingApi.listReports({ credentials, jobId: job.id }),
-          deps.store.listSeenReportIds(parsed.channelId, REACH_BASIC_REPORT_TYPE_ID),
-        ]);
-        // Oldest generation first, so a regenerated file is always applied after the one it replaces.
-        const pending = listed
-          .filter((report) => !seen.has(report.id))
-          .sort((a, b) => Date.parse(a.createTime) - Date.parse(b.createTime))
-          .slice(0, MAX_FILES_PER_SYNC);
-
-        const result: SyncReachReportsResult = {
-          skipped: false,
-          jobId: job.id,
-          jobCreated: created,
-          filesListed: listed.length,
-          filesImported: 0,
-          filesSuperseded: 0,
-          rowsImported: 0,
-          failures: [],
-        };
-
-        for (const report of pending) {
+        let reach: SyncReachReportsResult | null = null;
+        let reachError: unknown = null;
+        if (reachDue) {
           try {
-            const csv = await deps.reportingApi.downloadAndParse({ credentials, downloadUrl: report.downloadUrl });
-            const rows = mapReachBasicRows(csv, parsed.channelId);
-            const imported = await deps.store.importReport({
+            const synced = await syncFilesOfType(credentials, parsed.channelId, REACH_BASIC_REPORT_TYPE_ID, REACH_JOB_NAME, async (meta, csv) => {
+              const rows = mapReachBasicRows(csv, parsed.channelId);
+              return { outcome: await deps.store.importReport({ ...meta, rows }), rowCount: rows.length };
+            });
+            reach = { skipped: false, ...synced.result };
+            await deps.store.recordAttempt({
               channelId: parsed.channelId,
               reportTypeId: REACH_BASIC_REPORT_TYPE_ID,
-              jobId: job.id,
-              reportId: report.id,
-              startTime: report.startTime,
-              endTime: report.endTime,
-              createTime: report.createTime,
-              rows,
+              outcome: reach.failures.length > 0 ? "partial" : "ok",
+              error: null,
+              filesListed: reach.filesListed,
+              filesImported: reach.filesImported,
+              failures: reach.failures,
             });
-            if (imported.outcome === "imported") {
-              result.filesImported += 1;
-              result.rowsImported += rows.length;
-            } else {
-              result.filesSuperseded += 1;
-            }
           } catch (error) {
-            const failure: SyncReachFailure = {
-              reportId: report.id,
-              error: error instanceof Error ? error.message : String(error),
-            };
-            result.failures.push(failure);
+            reachError = error;
           }
         }
 
-        await deps.store.recordAttempt({
-          channelId: parsed.channelId,
-          reportTypeId: REACH_BASIC_REPORT_TYPE_ID,
-          outcome: result.failures.length > 0 ? "partial" : "ok",
-          error: null,
-          filesListed: result.filesListed,
-          filesImported: result.filesImported,
-          failures: result.failures,
-        });
-        return result;
+        // BL-181: each other type after Reach, on its own (AGENTS.md §M) -- its failure is recorded in its own attempt row and
+        // never changes Reach's outcome; Reach failing does not stop them either.
+        const otherReports: OtherReportSyncResult[] = [];
+        for (const type of dueOtherTypes) otherReports.push(await syncOtherType(credentials, parsed.channelId, type));
+        othersRecorded = true;
+
+        if (reachCheckedAt) return { skipped: true, reason: "checked_recently", lastCheckedAt: reachCheckedAt.toISOString(), otherReports };
+        if (reachError !== null || reach === null) throw reachError;
+        return otherTypes.length > 0 ? { ...reach, otherReports } : reach;
       } catch (error) {
         // The sync stopped before it could import anything (auth/scope, API disabled, toggle off, listing
         // failed): record it so the Analytics card can say why, then let the caller see the same error.
-        try {
-          await deps.store.recordAttempt({
-            channelId: parsed.channelId,
-            reportTypeId: REACH_BASIC_REPORT_TYPE_ID,
-            outcome: "failed",
-            error: error instanceof Error ? error.message : String(error),
-            filesListed: 0,
-            filesImported: 0,
-            failures: [],
-          });
-        } catch {
-          // Recording is informational; never mask the original error.
+        const message = error instanceof Error ? error.message : String(error);
+        if (!reachDue && reachCheckedAt) {
+          // Only the other types were due (re-check finding): Reach was not attempted, so its outcome stays "checked recently";
+          // their failure is in their own attempt rows.
+          for (const type of othersRecorded ? [] : dueOtherTypes) {
+            try {
+              await deps.store.recordAttempt({ channelId: parsed.channelId, reportTypeId: type.reportTypeId, outcome: "failed", error: message, filesListed: 0, filesImported: 0, failures: [] });
+            } catch {
+              // Informational only.
+            }
+          }
+          return {
+            skipped: true,
+            reason: "checked_recently",
+            lastCheckedAt: reachCheckedAt.toISOString(),
+            otherReports: dueOtherTypes.map((type) => ({
+              reportTypeId: type.reportTypeId,
+              outcome: "failed" as const,
+              error: message,
+              jobCreated: false,
+              filesListed: 0,
+              filesImported: 0,
+              filesSuperseded: 0,
+              rowsImported: 0,
+              failures: [],
+            })),
+          };
+        }
+        const attempted = [...(reachDue ? [REACH_BASIC_REPORT_TYPE_ID] : []), ...(othersRecorded ? [] : dueOtherTypes.map((type) => type.reportTypeId))];
+        for (const reportTypeId of attempted) {
+          try {
+            await deps.store.recordAttempt({
+              channelId: parsed.channelId,
+              reportTypeId,
+              outcome: "failed",
+              error: message,
+              filesListed: 0,
+              filesImported: 0,
+              failures: [],
+            });
+          } catch {
+            // Recording is informational; never mask the original error.
+          }
         }
         throw error;
       } finally {
@@ -333,6 +534,7 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
     async getReachStatus(input: unknown): Promise<GetReachStatusResult> {
       const parsed = parseWithSchema(getReachStatusInputSchema, input, "get reach status input");
       await assertChannel(parsed.credentialRef, parsed.channelId);
+      const otherTypes = deps.otherReportTypes ?? [];
 
       const [job, attempt, coverage, files] = await Promise.all([
         deps.store.getJob(parsed.channelId, REACH_BASIC_REPORT_TYPE_ID),
@@ -364,7 +566,9 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
           : null,
         nextAutoCheckAt: lastChecked ? new Date(lastChecked.getTime() + MIN_SYNC_INTERVAL_HOURS * 3_600_000).toISOString() : null,
         importedFiles: coverage.importedFiles,
-        files: files.map((f) => ({ ...f, importedAt: f.importedAt.toISOString() })),
+        files: files.map(fileView),
+        firstFileLag: firstFileLagOf(files, job?.jobCreatedAt ?? null),
+        ...(otherTypes.length > 0 ? { otherReports: await Promise.all(otherTypes.map((type) => otherTypeStatus(parsed.channelId, type.reportTypeId))) } : {}),
       };
     },
   };

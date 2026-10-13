@@ -774,6 +774,21 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Квота в Settings:** `cloud-quotas` получил `reporting` (`youtubereporting.googleapis.com`, суточный лимит/использование через Cloud Monitoring) — полоса рядом с тумблером Reporting reads; `null` показывается как «нет данных», не как 0. **Не подтверждено вживую**, какие limit-имена отдаёт Monitoring для этого сервиса.
 - **Точки входа:** `POST /api/channels/[id]/reach/sync`, `GET /api/channels/[id]/reach`; карточка в Analytics → Content (`reach-panel.tsx`); автозапуск при входе в дашборд (независимо от автосбора Analytics) — с BL-141 (2026-10-06) для **всех** подключённых каналов: `POST /api/reach/sync-all` → `syncAllReachReports`, каждый канал со своим токеном (`channels.connected_user_id`) через тот же `syncReachReports` и его `assertActiveChannel` (если владелец токена переключился на другой канал — отказ, без синка); активный канал — с токеном сессии; сбой одного канала не мешает остальным; у фоновых каналов неудачная попытка тоже откладывает следующую на 6 ч, причина «не проверен» пишется в их `reporting_sync_attempts`; ответ показывает только активный канал сессии (ADR 0004); риск — RISK-112; MCP `agent_query_channel_reach` (только чтение).
 - **Чего нет:** Reach combined (разбивка по источникам/устройствам); MCP-инструмента, запускающего синхронизацию (её делает приложение); названий видео в таблице (только `videoId`). **Не подтверждено на реальных данных:** формат даты и масштаб CTR (доля или проценты) — первые файлы ожидаются ~2026-10-03.
+- **BL-181, этап 1 (FO-REQ-0020, `docs/roadmap/plans/REPORTING_BASIC_PLAN.md`, ARCHITECTURE §14.13.1) — на ветке `feature/bl-181-reporting-freshness`.**
+  - **Отчёты.** Рядом с Reach синхронизируются `channel_basic_a3` и `channel_traffic_source_a3`:
+    - строки суммируются при импорте (`basic-csv.ts`);
+    - схема v88: `channel_basic_daily`, `channel_traffic_source_daily`;
+    - у каждого типа своя попытка, и сбой типа не трогает Reach;
+    - каждый компьютер скачивает их сам, в общий файл аналитики они не попадают;
+    - покрытие Reach считает только файлы Reach.
+  - **Задержка.**
+    - Reporting: `lagHours` и `firstFileLag` в статусе Reach, `otherReports`, MCP `agent_get_reporting_status` (Agent API 3.14.0).
+    - Analytics API: `returnLag` в `analytics_data_quality` (схема v87: `newest_*_date`).
+  - **Вечерний досбор.**
+    - Настройка «Вечерний досбор», по умолчанию 22:05, `""` — выключено.
+    - `POST /api/analytics/evening-collect` раз в 5 минут, пока виден дашборд.
+    - Срабатывает раз за вечер и только если API ещё не вернул вчерашний день. Запрашивает 3 дня.
+
 
 ---
 

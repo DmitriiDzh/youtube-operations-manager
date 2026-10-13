@@ -10,6 +10,7 @@ function readers(overrides: Partial<Parameters<typeof buildSettingsSnapshot>[0]>
     liveWritesEnabled: async () => true,
     mcpConnectionEnabled: async () => false,
     analyticsSync: async () => ({ localTime: "12:05", timezone: "Europe/Helsinki" }),
+    analyticsEveningLocalTime: async () => "22:05",
     dataApiReadsEnabled: async () => true,
     analyticsReadsEnabled: async () => true,
     youtubeFeedReadsEnabled: async () => true,
@@ -66,4 +67,20 @@ test("a failing analytics-sync read nulls both of its derived fields only", asyn
   assert.equal(snapshot.analyticsSyncLocalTime, null);
   assert.equal(snapshot.analyticsSyncTimezone, null);
   assert.equal(snapshot.liveWritesEnabled, true);
+});
+
+// BL-181 (FO-REQ-0020 §2.3): the evening re-collect boundary is its own field; "" means off, null means it could not be read.
+test("BL-181: the evening boundary is returned as stored ('' = off) and its failure nulls only that field", async () => {
+  assert.equal((await buildSettingsSnapshot(readers())).analyticsEveningLocalTime, "22:05");
+  assert.equal((await buildSettingsSnapshot(readers({ analyticsEveningLocalTime: async () => "" }))).analyticsEveningLocalTime, "");
+  const failed = await buildSettingsSnapshot(
+    readers({
+      analyticsEveningLocalTime: async () => {
+        throw new Error("x");
+      },
+    })
+  );
+  assert.equal(failed.analyticsEveningLocalTime, null);
+  assert.equal(failed.analyticsSyncLocalTime, "12:05");
+  assert.deepEqual(failed.unavailable, ["analyticsEveningLocalTime"]);
 });

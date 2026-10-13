@@ -45,6 +45,10 @@ export const settings = {
   "analyticsCollection.timezonePlaceholder": "e.g. America/New_York",
   "analyticsCollection.invalidTime": "Time must be HH:MM, 24h.",
   "analyticsCollection.invalidTimezone": "Timezone must be a valid IANA name (e.g. Europe/Helsinki).",
+  "analyticsCollection.evening": "Evening re-collect",
+  "analyticsCollection.eveningTime": "Evening time (local, 24h)",
+  "analyticsCollection.eveningInfo": "YouTube often returns the newest day only later in the day. While the dashboard is open, after this time the app asks once more for the last 3 days — only for a channel whose newest day has not come back yet, and at most once an evening. The Analytics API is free; this uses its quota only.",
+  "analyticsCollection.eveningMustBeLater": "The evening time must be later than the collection time.",
 
   "aiProviders.title": "AI provider connections",
   "aiProviders.info": "Configure AI provider connections for AI Localization. No specific vendor is built into this app — every connection is a Base URL, model id, and optional credential you supply. Credentials are encrypted at rest and never shown again once saved. Testing a connection is an explicit action and may incur cost for a real (non-mock) connection. Unrelated to the MCP connection above (that's an external agent connecting TO this app; this is this app connecting OUT to an AI provider) — grouped here for convenience.",

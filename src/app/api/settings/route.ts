@@ -2,6 +2,7 @@ import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { isValidIanaTimezone, isValidLocalTimeOfDay } from "@/lib/analytics/staleness";
+import { checkAnalyticsBoundaries } from "./analytics-boundaries";
 import { createCloudQuotasCore } from "@/lib/cloud-quotas";
 import { createMarketIntelligenceCore } from "@/lib/market-intelligence";
 import {
@@ -10,6 +11,7 @@ import {
   getWikipediaReadsEnabled,
   getYoutubeFeedReadsEnabled,
   getAnalyticsSyncSettings,
+  getAnalyticsEveningLocalTime,
   getDataApiReadsEnabled,
   getDeviceAutoSyncEnabled,
   getGatewayTrafficLast24h,
@@ -30,6 +32,7 @@ import {
   setWikipediaReadsEnabled,
   setYoutubeFeedReadsEnabled,
   setAnalyticsSyncSettings,
+  setAnalyticsEveningLocalTime,
   setDataApiReadsEnabled,
   setDeviceAutoSyncEnabled,
   setLiveWritesEnabled,
@@ -141,6 +144,7 @@ async function getSettingsSnapshot() {
     liveWritesEnabled: () => getLiveWritesEnabled(),
     mcpConnectionEnabled: () => getMcpConnectionEnabled(),
     analyticsSync: () => getAnalyticsSyncSettings(),
+    analyticsEveningLocalTime: () => getAnalyticsEveningLocalTime(),
     dataApiReadsEnabled: () => getDataApiReadsEnabled(),
     analyticsReadsEnabled: () => getAnalyticsReadsEnabled(),
     youtubeFeedReadsEnabled: () => getYoutubeFeedReadsEnabled(),
@@ -213,6 +217,19 @@ export async function POST(request: Request) {
       );
     }
     analyticsSyncTimezoneToSet = body.analyticsSyncTimezone;
+  }
+
+  // BL-181 (FO-REQ-0020 §2.3): the evening re-collect boundary (analytics-boundaries.ts) -- read the stored values only when needed.
+  let analyticsEveningLocalTimeToSet: string | undefined;
+  if ((body.analyticsEveningLocalTime !== undefined && body.analyticsEveningLocalTime !== null) || analyticsSyncLocalTimeToSet !== undefined) {
+    const checked = checkAnalyticsBoundaries({
+      eveningInput: body.analyticsEveningLocalTime,
+      morningToSet: analyticsSyncLocalTimeToSet,
+      currentEvening: await getAnalyticsEveningLocalTime(),
+      currentMorning: (await getAnalyticsSyncSettings()).localTime,
+    });
+    if (!checked.ok) return NextResponse.json({ error: "validation_failed", message: checked.message }, { status: 400 });
+    analyticsEveningLocalTimeToSet = checked.eveningToSet;
   }
 
   let marketIntelligenceQuotaToSet: { present: true; value: number | null } | { present: false } = { present: false };
@@ -331,6 +348,9 @@ export async function POST(request: Request) {
   }
   if (analyticsSyncTimezoneToSet !== undefined) {
     await setAnalyticsSyncSettings({ timezone: analyticsSyncTimezoneToSet });
+  }
+  if (analyticsEveningLocalTimeToSet !== undefined) {
+    await setAnalyticsEveningLocalTime(analyticsEveningLocalTimeToSet);
   }
   if (marketIntelligenceQuotaToSet.present) {
     await marketIntelligenceCore.setDailyQuotaBudgetUnits(marketIntelligenceQuotaToSet.value);

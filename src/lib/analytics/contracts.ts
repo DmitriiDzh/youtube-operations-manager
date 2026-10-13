@@ -76,6 +76,9 @@ export type CollectMetricsResult = {
    * fails the whole channel's collection run.
    */
   skippedVideoIds: string[];
+  /** BL-181 (FO-REQ-0020 §2.4): the newest date the Analytics API actually returned (videos / channel totals); null = none. */
+  newestVideoDate?: string | null;
+  newestChannelDate?: string | null;
 };
 
 export type StoredVideoMetricRow = {
@@ -253,6 +256,19 @@ export type DataQualityReportResult = {
   /** Covered dates inside the re-collection window: the next automatic run is expected to refresh them. */
   provisionalDates?: string[];
   coveredMeans?: string;
+  /** BL-181 (FO-REQ-0020 §2.4): the newest dates the Analytics API has returned to this computer (the maximum over its runs), and
+   * when the newest video date first came back; null before any such run. A date after `videoDate` was not reported here yet. */
+  newestReturned?: { videoDate: string | null; channelDate: string | null; ranAt: string } | null;
+  /** BL-181: per date of the range (newest first), the first run on this computer that got it back and its lag (`returnLagOf`). */
+  returnLag?: DataQualityReturnLag[];
+};
+
+export type DataQualityReturnLag = {
+  date: string;
+  videoFirstReturnedAt: string | null;
+  videoLagHours: number | null;
+  channelFirstReturnedAt: string | null;
+  channelLagHours: number | null;
 };
 
 export type ComparableAgeVideoSeries = {
@@ -293,3 +309,11 @@ export type GetWeeklyReportResult = {
 export type RunWeeklyReportIfDueResult =
   | { generated: false }
   | { generated: true; report: WeeklyReportSummary };
+
+/** BL-181 (FO-REQ-0020 §2.3): the evening re-collect asks this many days, ending yesterday (local). */
+export const EVENING_COLLECTION_RANGE_DAYS = 3;
+
+/** BL-181: what one channel's evening check did. `reason` says why nothing ran. */
+export type EveningCollectResult =
+  | { ranCollection: true; result: CollectMetricsResult }
+  | { ranCollection: false; reason: "off" | "not_yet" | "already_ran" | "data_current" | "no_videos" | "quota_reserve" };
