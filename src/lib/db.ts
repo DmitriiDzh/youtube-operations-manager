@@ -7,6 +7,7 @@ import { drizzle } from "drizzle-orm/libsql";
 import { sqliteTable, text, integer, real, primaryKey, index, uniqueIndex } from "drizzle-orm/sqlite-core";
 import path from "path";
 import { API_DATA_RETENTION_DAYS, YOUTUBE_API_SNAPSHOT_SOURCES } from "@/lib/youtube-data-policy/contracts";
+import { isValidLocalTimeOfDay, zonedInstant } from "@/lib/zoned-time";
 import { GPU_AVAILABILITY_LOG_RETENTION_DAYS, MEDIA_SESSION_ACTIVE_STATUSES, MEDIA_SESSION_STATUSES, MEDIA_SESSION_TERMINAL_STATUSES, type MediaSessionStatus } from "@/lib/media-generation/contracts";
 import type { BatchItem } from "drizzle-orm/batch";
 import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
@@ -6678,7 +6679,7 @@ const ANALYTICS_READS_ENABLED_SETTING_KEY = "analytics_reads_enabled";
  * defaults to **enabled** when never set, and persists across restarts once changed (matching
  * `getMcpConnectionEnabled`'s persistence model, not `getLiveWritesEnabled`'s per-boot reset).
  */
-// Takes an injectable `database` (like `getAnalyticsSyncSettings`, unlike
+// Takes an injectable `database` (like `getUserTimezone`, unlike
 // `getLiveWritesEnabled`/`getMcpConnectionEnabled`) so the default-true-when-unset inversion --
 // the one genuinely regressable bit of this pair -- can be exercised against an isolated temp
 // database (docs/DEVELOPMENT_PLAYBOOK.md §6.11) rather than asserted only by reasoning.
@@ -7427,66 +7428,85 @@ export async function getSyncFamilyStatuses(database: AppDb = db): Promise<SyncF
   });
 }
 
-const ANALYTICS_SYNC_LOCAL_TIME_SETTING_KEY = "analytics_sync_local_time";
-const ANALYTICS_SYNC_TIMEZONE_SETTING_KEY = "analytics_sync_timezone";
-const DEFAULT_ANALYTICS_SYNC_LOCAL_TIME = "12:05";
+// The analytics collection times (owner, Telegram msgs 2725/2727, 2026-10-13): set in UTC since that day, with the owner's own
+// time shown next to them. Before, they were local to `analytics_sync_timezone` (Phase 8 BL-059: "12:05"; BL-181: "22:05").
+const LEGACY_ANALYTICS_SYNC_LOCAL_TIME_SETTING_KEY = "analytics_sync_local_time";
+const LEGACY_ANALYTICS_EVENING_LOCAL_TIME_SETTING_KEY = "analytics_evening_local_time";
+const ANALYTICS_SYNC_UTC_TIME_SETTING_KEY = "analytics_sync_utc_time";
+const ANALYTICS_EVENING_UTC_TIME_SETTING_KEY = "analytics_evening_utc_time";
+const USER_TIMEZONE_SETTING_KEY = "analytics_sync_timezone";
+/** Before 2026-10-13 a computer that never saved the times used these, local to the owner's zone. */
+const LEGACY_DEFAULT_SYNC_LOCAL_TIME = "12:05";
+const LEGACY_DEFAULT_EVENING_LOCAL_TIME = "22:05";
+/**
+ * A local time saved before the switch is converted with its zone's offset on this day, not on the day the conversion happens:
+ * each computer keeps its own settings and converts when it first reads them after the update, so a computer updated after a
+ * daylight-saving change still lands on the same UTC time as one updated before it.
+ */
+const UTC_SWITCH_DATE = "2026-10-13";
 
 /**
- * BL-059 (docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-4) -- the daily auto-collection
- * boundary. `timezone` defaults to this machine's own OS timezone (`Intl.DateTimeFormat().
- * resolvedOptions().timeZone`), detected once on first read and persisted immediately, never
- * re-detected on later reads -- so an explicit override the owner later saves in Settings is
- * never silently clobbered by a fresh OS read. This is safe specifically because this app's
- * server and the operator's browser are the same machine (the established "local-first
- * single-operator tool" model, AGENTS.md) -- the OS timezone genuinely is the operator's own.
+ * The owner's own time zone: the times shown in parentheses next to a UTC time, and the quota reset time. Defaults to this
+ * machine's OS zone (`Intl.DateTimeFormat().resolvedOptions().timeZone`), detected once on first read and persisted immediately,
+ * never re-detected on later reads -- so an override the owner later saves in Settings is never clobbered by a fresh OS read.
+ * Safe because this app's server and the operator's browser are the same machine (the local-first single-operator model).
+ * Until 2026-10-13 it was also the zone of the analytics collection times.
  */
-// Takes an injectable `database` (unlike getLiveWritesEnabled/getMcpConnectionEnabled) so the
-// detect-and-persist-once behavior -- the one thing here with real, silently-regressable
-// state -- can be exercised against an isolated temp database (docs/DEVELOPMENT_PLAYBOOK.md
-// §6.11) rather than asserted only by reasoning.
-export async function getAnalyticsSyncSettings(
-  database: AppDb = db
-): Promise<{ localTime: string; timezone: string }> {
-  const localTime =
-    (await getAppSetting(ANALYTICS_SYNC_LOCAL_TIME_SETTING_KEY, database)) ?? DEFAULT_ANALYTICS_SYNC_LOCAL_TIME;
-  let timezone = await getAppSetting(ANALYTICS_SYNC_TIMEZONE_SETTING_KEY, database);
+// Takes an injectable `database` so the detect-and-persist-once behavior -- the one thing here with real, silently-regressable
+// state -- can be exercised against an isolated temp database (docs/DEVELOPMENT_PLAYBOOK.md §6.11).
+export async function getUserTimezone(database: AppDb = db): Promise<string> {
+  let timezone = await getAppSetting(USER_TIMEZONE_SETTING_KEY, database);
   if (!timezone) {
     timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    await setAppSetting(ANALYTICS_SYNC_TIMEZONE_SETTING_KEY, timezone, database);
+    await setAppSetting(USER_TIMEZONE_SETTING_KEY, timezone, database);
   }
-  return { localTime, timezone };
+  return timezone;
 }
 
-// Validation (valid HH:MM, valid IANA zone) is the caller's responsibility
-// (src/lib/analytics/staleness.ts's isValidLocalTimeOfDay/isValidIanaTimezone) -- this function
-// persists whatever it is given, same division of labor as every other setter in this file.
-export async function setAnalyticsSyncSettings(
-  input: { localTime?: string; timezone?: string },
-  database: AppDb = db
-): Promise<void> {
-  if (input.localTime !== undefined) {
-    await setAppSetting(ANALYTICS_SYNC_LOCAL_TIME_SETTING_KEY, input.localTime, database);
-  }
-  if (input.timezone !== undefined) {
-    await setAppSetting(ANALYTICS_SYNC_TIMEZONE_SETTING_KEY, input.timezone, database);
-  }
+// Validation (a valid IANA zone, `@/lib/zoned-time`) is the caller's responsibility, as for every other setter in this file.
+export async function setUserTimezone(timezone: string, database: AppDb = db): Promise<void> {
+  await setAppSetting(USER_TIMEZONE_SETTING_KEY, timezone, database);
 }
 
-const ANALYTICS_EVENING_LOCAL_TIME_SETTING_KEY = "analytics_evening_local_time";
-/** BL-181 (FO-REQ-0020 §2.3): the evening re-collect boundary a fresh install starts with. */
-export const DEFAULT_ANALYTICS_EVENING_LOCAL_TIME = "22:05";
+/** A legacy local "HH:MM" as the UTC "HH:MM" it meant on `UTC_SWITCH_DATE`; "" (the evening run off) stays "". */
+function legacyLocalTimeToUtc(localTime: string, timezone: string): string {
+  if (localTime === "" || !isValidLocalTimeOfDay(localTime)) return localTime;
+  return zonedInstant({ localDate: UTC_SWITCH_DATE, localTime, timezone }).toISOString().slice(11, 16);
+}
 
 /**
- * BL-181 (FO-REQ-0020 §2.3, plan REPORTING_BASIC_PLAN.md §2 item 7): the second daily boundary, "HH:MM" local to the analytics
- * timezone, or "" when the owner turned the evening re-collect off. Never set -> the default.
+ * The daily collection boundary and BL-181's evening re-collect boundary, "HH:MM" in UTC (`eveningUtc` "" = off). A computer
+ * without the UTC values yet converts what it used before -- its saved local time, or the old default 12:05 / 22:05 local -- from
+ * the owner's zone on `UTC_SWITCH_DATE`, and saves the result on this first read, so the collection keeps its time of day.
  */
-export async function getAnalyticsEveningLocalTime(database: AppDb = db): Promise<string> {
-  return (await getAppSetting(ANALYTICS_EVENING_LOCAL_TIME_SETTING_KEY, database)) ?? DEFAULT_ANALYTICS_EVENING_LOCAL_TIME;
+export async function getAnalyticsCollectionTimes(database: AppDb = db): Promise<{ dailyUtc: string; eveningUtc: string }> {
+  let dailyUtc = await getAppSetting(ANALYTICS_SYNC_UTC_TIME_SETTING_KEY, database);
+  let eveningUtc = await getAppSetting(ANALYTICS_EVENING_UTC_TIME_SETTING_KEY, database);
+  if (dailyUtc === null || eveningUtc === null) {
+    const zone = await getUserTimezone(database);
+    if (dailyUtc === null) {
+      dailyUtc = legacyLocalTimeToUtc((await getAppSetting(LEGACY_ANALYTICS_SYNC_LOCAL_TIME_SETTING_KEY, database)) ?? LEGACY_DEFAULT_SYNC_LOCAL_TIME, zone);
+      await setAppSetting(ANALYTICS_SYNC_UTC_TIME_SETTING_KEY, dailyUtc, database);
+    }
+    if (eveningUtc === null) {
+      eveningUtc = legacyLocalTimeToUtc((await getAppSetting(LEGACY_ANALYTICS_EVENING_LOCAL_TIME_SETTING_KEY, database)) ?? LEGACY_DEFAULT_EVENING_LOCAL_TIME, zone);
+      // The evening run needs its time later in the UTC day than the daily one. West of about UTC-2 (or far east) the two old
+      // local times land on either side of UTC midnight (New York: 16:05 and 02:05); such a pair would leave the evening run off
+      // anyway and the Settings card unsaveable, so the evening run is turned off, visibly, and the owner can set it again.
+      if (eveningUtc !== "" && isValidLocalTimeOfDay(eveningUtc) && isValidLocalTimeOfDay(dailyUtc) && eveningUtc <= dailyUtc) {
+        process.stderr.write(`[settings] the evening re-collect was turned off: ${zone} gives ${eveningUtc} UTC, not later than the daily ${dailyUtc} UTC\n`);
+        eveningUtc = "";
+      }
+      await setAppSetting(ANALYTICS_EVENING_UTC_TIME_SETTING_KEY, eveningUtc, database);
+    }
+  }
+  return { dailyUtc, eveningUtc };
 }
 
-/** "" turns it off. Validation (HH:MM, later than the morning boundary) is the caller's, as for `setAnalyticsSyncSettings`. */
-export async function setAnalyticsEveningLocalTime(value: string, database: AppDb = db): Promise<void> {
-  await setAppSetting(ANALYTICS_EVENING_LOCAL_TIME_SETTING_KEY, value, database);
+/** Validation (HH:MM, the evening later than the daily boundary or "") is the caller's (`/api/settings`). */
+export async function setAnalyticsCollectionTimes(input: { dailyUtc?: string; eveningUtc?: string }, database: AppDb = db): Promise<void> {
+  if (input.dailyUtc !== undefined) await setAppSetting(ANALYTICS_SYNC_UTC_TIME_SETTING_KEY, input.dailyUtc, database);
+  if (input.eveningUtc !== undefined) await setAppSetting(ANALYTICS_EVENING_UTC_TIME_SETTING_KEY, input.eveningUtc, database);
 }
 
 const ANALYTICS_EVENING_ATTEMPTS_KEY = "analytics_evening_attempts";
@@ -11801,7 +11821,7 @@ export async function getMarketIntelligenceDailyQuotaBudgetUnits(database: AppDb
 }
 
 /** `null` clears the setting (equivalent to "off"); validation of the range is the caller's job
- * (the API route boundary), same convention `setAnalyticsSyncSettings` already uses. */
+ * (the API route boundary), same convention `setAnalyticsCollectionTimes` already uses. */
 export async function setMarketIntelligenceDailyQuotaBudgetUnits(units: number | null, database: AppDb = db): Promise<void> {
   await setAppSetting(MARKET_INTELLIGENCE_DAILY_QUOTA_BUDGET_SETTING_KEY, units === null ? "" : String(units), database);
 }

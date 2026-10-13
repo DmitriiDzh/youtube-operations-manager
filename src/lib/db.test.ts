@@ -48,7 +48,8 @@ import {
   setChannelWorkspacePath,
   gatewayCallEvents,
   getAnalyticsReadsEnabled,
-  getAnalyticsSyncSettings,
+  getAnalyticsCollectionTimes,
+  getUserTimezone,
   getContentProposalArtifactLinkById,
   getContentProposalById,
   getCreativeAssetById,
@@ -76,7 +77,8 @@ import {
   SCHEMA_CURRENT_VERSION,
   SCHEMA_MIGRATIONS,
   setAnalyticsReadsEnabled,
-  setAnalyticsSyncSettings,
+  setAnalyticsCollectionTimes,
+  setUserTimezone,
   setDataApiReadsEnabled,
   type AppDb,
   upsertStoredCloudConnection,
@@ -828,36 +830,80 @@ test("channels.analyticsLastAutoCollectedAt: starts NULL, and markAnalyticsAutoC
     assert.equal(afterB.analyticsLastAutoCollectedAt, null, "must never touch a different channel's row");
   }));
 
-// Phase 8 (BL-059): the one piece of getAnalyticsSyncSettings with real, silently-regressable
-// state -- detect the OS timezone once, persist it, and never re-detect on a later read (so a
-// later owner override in Settings is never clobbered by a fresh OS read).
-test("getAnalyticsSyncSettings: detects and persists the OS timezone once, never re-detects on a later read", () =>
+// Phase 8 (BL-059): the owner's zone is detected from the OS once, persisted, and never re-detected on a later read (so a later
+// owner override in Settings is never clobbered by a fresh OS read). Since 2026-10-13 it is "your time zone" (the local times shown
+// next to UTC times, the quota reset time), no longer the zone of the collection times.
+test("getUserTimezone: detects and persists the OS timezone once, never re-detects on a later read", () =>
   withTempClient(async (client) => {
     await initializeDatabaseSchema(client);
     const isolatedDb = createIsolatedDb(client);
 
-    const first = await getAnalyticsSyncSettings(isolatedDb);
-    assert.equal(first.localTime, "12:05", "default local time before anything is saved");
-    assert.equal(first.timezone, Intl.DateTimeFormat().resolvedOptions().timeZone);
-
-    // Simulate the owner overriding the timezone in Settings after the first-read detection.
-    await setAnalyticsSyncSettings({ timezone: "Europe/Moscow" }, isolatedDb);
-
-    const second = await getAnalyticsSyncSettings(isolatedDb);
-    assert.equal(second.timezone, "Europe/Moscow", "a later read must return the saved override, never re-detect the OS zone");
+    assert.equal(await getUserTimezone(isolatedDb), Intl.DateTimeFormat().resolvedOptions().timeZone);
+    await setUserTimezone("Europe/Moscow", isolatedDb);
+    assert.equal(await getUserTimezone(isolatedDb), "Europe/Moscow", "a later read must return the saved override, never re-detect the OS zone");
   }));
 
-test("setAnalyticsSyncSettings: updates only the given field(s), never touches the other", () =>
+// Owner, Telegram msgs 2725/2727 (2026-10-13): the collection times are set in UTC. A computer converts what it used before --
+// its saved local times, or the old defaults 12:05 / 22:05 local -- from the owner's zone with that zone's offset ON 2026-10-13, so
+// the Mac and the Windows computer land on the same UTC times whichever day each is updated. Expected values by hand:
+// Helsinki UTC+3 on 13.10 (12:05 -> 09:05, 22:05 -> 19:05); Tokyo UTC+9 (12:30 -> 03:30); Los Angeles UTC-7 on 13.10 (12:05 -> 19:05).
+async function putLegacy(client: Client, values: Record<string, string>) {
+  for (const [key, value] of Object.entries(values)) {
+    await client.execute({ sql: "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)", args: [key, value] });
+  }
+}
+
+test("collection times: nothing saved -> the old local defaults in the owner's zone, converted and kept", () =>
   withTempClient(async (client) => {
     await initializeDatabaseSchema(client);
     const isolatedDb = createIsolatedDb(client);
+    await setUserTimezone("Europe/Helsinki", isolatedDb);
+    assert.deepEqual(await getAnalyticsCollectionTimes(isolatedDb), { dailyUtc: "09:05", eveningUtc: "19:05" });
+    // Kept: a later zone change never moves them (they are UTC times now).
+    await setUserTimezone("America/Los_Angeles", isolatedDb);
+    assert.deepEqual(await getAnalyticsCollectionTimes(isolatedDb), { dailyUtc: "09:05", eveningUtc: "19:05" });
+  }));
 
-    await setAnalyticsSyncSettings({ localTime: "09:30", timezone: "Asia/Tokyo" }, isolatedDb);
-    await setAnalyticsSyncSettings({ localTime: "18:00" }, isolatedDb);
+test("collection times: saved local times convert with the zone's offset on 2026-10-13; an evening turned off stays off", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    await putLegacy(client, { analytics_sync_timezone: "Asia/Tokyo", analytics_sync_local_time: "12:30", analytics_evening_local_time: "" });
+    assert.deepEqual(await getAnalyticsCollectionTimes(createIsolatedDb(client)), { dailyUtc: "03:30", eveningUtc: "" });
+  }));
 
-    const settings = await getAnalyticsSyncSettings(isolatedDb);
-    assert.equal(settings.localTime, "18:00");
-    assert.equal(settings.timezone, "Asia/Tokyo", "updating localTime alone must not touch timezone");
+test("collection times: the conversion uses the offset of 13.10, not of the day it runs (Helsinki 12:05 -> 09:05Z, not 10:05Z)", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    // The conversion reads no clock, so a computer updated after 25.10 (UTC+2) gets the same values as one updated before it.
+    await putLegacy(client, { analytics_sync_timezone: "Europe/Helsinki", analytics_sync_local_time: "12:05", analytics_evening_local_time: "22:05" });
+    assert.deepEqual(await getAnalyticsCollectionTimes(createIsolatedDb(client)), { dailyUtc: "09:05", eveningUtc: "19:05" });
+  }));
+
+test("collection times: west of UTC the old pair crosses UTC midnight -- the evening run is turned off, never saved inverted", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    // Los Angeles on 13.10 is UTC-7: 12:05 -> 19:05Z, 22:05 -> 05:05Z, which is not later than 19:05 in the UTC day.
+    await putLegacy(client, { analytics_sync_timezone: "America/Los_Angeles", analytics_sync_local_time: "12:05", analytics_evening_local_time: "22:05" });
+    assert.deepEqual(await getAnalyticsCollectionTimes(createIsolatedDb(client)), { dailyUtc: "19:05", eveningUtc: "" });
+  }));
+
+test("collection times: New York with the old defaults (nothing saved) -- 16:05Z, and the evening run off", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    // EDT on 13.10 is UTC-4: 12:05 -> 16:05Z; 22:05 -> 02:05Z is earlier in the UTC day.
+    await putLegacy(client, { analytics_sync_timezone: "America/New_York" });
+    assert.deepEqual(await getAnalyticsCollectionTimes(createIsolatedDb(client)), { dailyUtc: "16:05", eveningUtc: "" });
+  }));
+
+test("setAnalyticsCollectionTimes: updates only the given time, and a saved UTC time is never converted again", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await setUserTimezone("Europe/Helsinki", isolatedDb);
+    await setAnalyticsCollectionTimes({ dailyUtc: "08:00", eveningUtc: "18:30" }, isolatedDb);
+    await setAnalyticsCollectionTimes({ eveningUtc: "" }, isolatedDb);
+    await putLegacy(client, { analytics_sync_local_time: "12:05" });
+    assert.deepEqual(await getAnalyticsCollectionTimes(isolatedDb), { dailyUtc: "08:00", eveningUtc: "" });
   }));
 
 // The read-gateway toggles' one genuinely regressable bit (2026-09-22, owner instruction --

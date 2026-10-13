@@ -733,7 +733,9 @@ Key MCP tools:
   - `POST /api/analytics/evening-collect` (BL-181, Web only) — the dashboard's 5-minute evening check: `{ due: false }`,
     `{ due: false, done: true }`, `{ due: true, inProgress | importPending: true }` or `{ due: true, channels: [the active channel's
     outcome: collected | skipped (reason) | failed] }`. `GET/POST /api/settings` gain `analyticsEveningLocalTime` ("HH:MM", `""` =
-    off; must be later than `analyticsSyncLocalTime`).
+    off; must be later than `analyticsSyncLocalTime`). Since 2026-10-13 (owner msgs 2725/2727) the fields are
+    `analyticsSyncUtcTime` / `analyticsEveningUtcTime` (UTC) and `userTimezone` (the owner's zone, formerly
+    `analyticsSyncTimezone`).
   - `analytics_comparable_age` — `{ channelId, videoIds (2-10), metricName? (default "views",
     additive metrics only), maxDays? (default 30), credentialRef? }` → per-video raw daily points
     and a running cumulative total, aligned by each video's own days-since-publish (Pacific-Time

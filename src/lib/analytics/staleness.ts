@@ -13,45 +13,15 @@
 // without any manual seasonal-offset code (see staleness.test.ts's dedicated DST test) -- exactly
 // the owner's own "зимнее/летнее время" concern (docs/roadmap/plans/PHASE_8_PLAN.md §10 item 4).
 
-const LOCAL_TIME_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)$/;
+import { formatZonedDateAndTime, zonedInstant } from "@/lib/zoned-time";
 
-export function isValidLocalTimeOfDay(localTime: string): boolean {
-  return LOCAL_TIME_PATTERN.test(localTime);
-}
+// BL-183: the zone helpers moved to `@/lib/zoned-time` (Settings and publishing need them too); re-exported so callers keep their import.
+export { formatZonedDateAndTime, isValidIanaTimezone, isValidLocalTimeOfDay, zonedInstant } from "@/lib/zoned-time";
 
-/**
- * `Intl.DateTimeFormat` throws `RangeError` on an unrecognized `timeZone`. The value is user
- * input (a Settings-tab field the owner can edit) -- validate it here, at the write boundary,
- * rather than letting a bad value throw inside `isAnalyticsCollectionStale` on every dashboard
- * load (advisor review).
- */
-export function isValidIanaTimezone(timezone: string): boolean {
-  try {
-    new Intl.DateTimeFormat("en-CA", { timeZone: timezone });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** Exported for reuse by `weekly-report.ts`'s own zoned-string boundary comparison (same
- * technique, different cadence) -- one implementation, not a second copy (AGENTS.md §D). */
-export function formatZonedDateAndTime(date: Date, timezone: string): { localDate: string; localTime: string } {
-  const formatter = new Intl.DateTimeFormat("en-CA", {
-    timeZone: timezone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  });
-  const parts = Object.fromEntries(formatter.formatToParts(date).map((part) => [part.type, part.value]));
-  return {
-    localDate: `${parts.year}-${parts.month}-${parts.day}`,
-    localTime: `${parts.hour}:${parts.minute}`,
-  };
-}
+/** BL-181: what the Settings card's evening switch turns on with when this computer has no evening time saved (it was off since
+ * the first read) -- 22:05 in Helsinki summer time, in UTC since 2026-10-13 (owner, msgs 2725/2727). Pure, so the client card can
+ * import it. A daily time at or after it shows the evening field as invalid until the owner picks a later one. */
+export const DEFAULT_ANALYTICS_EVENING_UTC_TIME = "19:05";
 
 export function isAnalyticsCollectionStale(args: {
   now: Date;
@@ -68,12 +38,6 @@ export function isAnalyticsCollectionStale(args: {
   if (lastZoned.localDate < nowZoned.localDate) return true; // last run was on an earlier local day
   if (lastZoned.localDate > nowZoned.localDate) return false; // clock-skew guard -- never treat as stale
   return lastZoned.localTime < args.localTime; // same local day -- stale only if before today's boundary
-}
-
-function utcMillisFromLocalParts(localDate: string, localTime: string): number {
-  const [year, month, day] = localDate.split("-").map(Number);
-  const [hour, minute] = localTime.split(":").map(Number);
-  return Date.UTC(year, month - 1, day, hour, minute);
 }
 
 /**
@@ -97,25 +61,6 @@ export function computeNextRefreshAt(args: { now: Date; timezone: string; localT
   const { localDate } = formatZonedDateAndTime(args.now, args.timezone);
   const [year, month, day] = localDate.split("-").map(Number);
   return zonedInstant({ localDate: new Date(Date.UTC(year, month - 1, day + 1)).toISOString().slice(0, 10), localTime: args.localTime, timezone: args.timezone });
-}
-
-/**
- * The absolute instant of a civil (zone, Y-M-D, H:M), by the fixed-point correction described on `computeNextRefreshAt` (its one
- * implementation, shared since BL-181: the evening boundary and the end of a Pacific day use it too).
- */
-export function zonedInstant(args: { localDate: string; localTime: string; timezone: string }): Date {
-  const targetMillis = utcMillisFromLocalParts(args.localDate, args.localTime);
-
-  let guessMillis = targetMillis;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const observed = formatZonedDateAndTime(new Date(guessMillis), args.timezone);
-    const observedMillis = utcMillisFromLocalParts(observed.localDate, observed.localTime);
-    const diff = targetMillis - observedMillis;
-    if (diff === 0) break;
-    guessMillis += diff;
-  }
-
-  return new Date(guessMillis);
 }
 
 /** BL-181: the instant a YouTube reporting day ends -- midnight Pacific Time after `date` (07:00Z in summer, 08:00Z in winter). */

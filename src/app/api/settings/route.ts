@@ -1,7 +1,7 @@
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
-import { isValidIanaTimezone, isValidLocalTimeOfDay } from "@/lib/analytics/staleness";
+import { isValidIanaTimezone, isValidLocalTimeOfDay } from "@/lib/zoned-time";
 import { checkAnalyticsBoundaries } from "./analytics-boundaries";
 import { createCloudQuotasCore } from "@/lib/cloud-quotas";
 import { createMarketIntelligenceCore } from "@/lib/market-intelligence";
@@ -10,8 +10,8 @@ import {
   getReportingReadsEnabled,
   getWikipediaReadsEnabled,
   getYoutubeFeedReadsEnabled,
-  getAnalyticsSyncSettings,
-  getAnalyticsEveningLocalTime,
+  getAnalyticsCollectionTimes,
+  getUserTimezone,
   getDataApiReadsEnabled,
   getDeviceAutoSyncEnabled,
   getGatewayTrafficLast24h,
@@ -31,8 +31,8 @@ import {
   setReportingReadsEnabled,
   setWikipediaReadsEnabled,
   setYoutubeFeedReadsEnabled,
-  setAnalyticsSyncSettings,
-  setAnalyticsEveningLocalTime,
+  setAnalyticsCollectionTimes,
+  setUserTimezone,
   setDataApiReadsEnabled,
   setDeviceAutoSyncEnabled,
   setLiveWritesEnabled,
@@ -64,11 +64,12 @@ const marketIntelligenceCore = createMarketIntelligenceCore();
  *   "по началу MCP / агент от всего отключен"). Unlike `liveWritesEnabled`, this persists across
  *   process boots -- a one-time setup toggle, not reset every session. Read on every request
  *   by the in-app MCP endpoint, so it takes effect on the very next agent call.
- * - `analyticsSyncLocalTime`/`analyticsSyncTimezone` -- BL-059's daily auto-collection boundary
- *   (docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-4). Unlike the two booleans above, these are
- *   validated before being persisted (`isValidLocalTimeOfDay`/`isValidIanaTimezone`) -- a bad
- *   timezone string would otherwise only surface as a thrown `RangeError` deep inside the
- *   staleness check on a later dashboard load, not at the point the owner actually typed it.
+ * - `analyticsSyncUtcTime`/`analyticsEveningUtcTime` -- BL-059's daily auto-collection boundary
+ *   (docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-4) and BL-181's evening re-collect boundary, "HH:MM" in UTC since
+ *   2026-10-13 (owner, msgs 2725/2727); `userTimezone` -- the owner's own zone, for the local time shown next to a UTC time and
+ *   the quota reset time. Unlike the two booleans above, these are validated before being persisted
+ *   (`isValidLocalTimeOfDay`/`isValidIanaTimezone`) -- a bad timezone string would otherwise only surface as a thrown
+ *   `RangeError` on a later read, not at the point the owner actually typed it.
  * - `youtubeFeedReadsEnabled`/`wikipediaReadsEnabled` -- Phase 13 read categories (RSS feeds, Wikipedia
  *   Pageviews); same semantics as the two below: on by default, persistent. `reportingReadsEnabled`
  *   (BL-114, YouTube Reporting API bulk reports) is the same kind of toggle.
@@ -113,8 +114,9 @@ const marketIntelligenceCore = createMarketIntelligenceCore();
  *   на Data reads один и тот же счетчик"); `analytics` is a separate quota pool. Each is `null`
  *   when Cloud isn't connected yet or the real query failed -- never a fabricated number.
  *
- * **`GET` here is not purely read-only**: `getAnalyticsSyncSettings()` persists the OS-detected
- * timezone the first time it is ever read (`src/lib/db.ts`'s own doc comment). Two concurrent
+ * **`GET` here is not purely read-only**: `getUserTimezone()` persists the OS-detected timezone the first time it is ever
+ * read, and `getAnalyticsCollectionTimes()` saves the UTC times converted from the legacy local ones (`src/lib/db.ts`'s own doc
+ * comments). Two concurrent
  * first-ever `GET`s (e.g. this route's two consuming components both mounting at once) can both
  * detect-and-write -- benign, since `setAppSetting` is an upsert and both writes carry the same
  * value, but a `GET` with a real side effect is worth stating plainly rather than discovering
@@ -143,8 +145,8 @@ async function getSettingsSnapshot() {
   return buildSettingsSnapshot({
     liveWritesEnabled: () => getLiveWritesEnabled(),
     mcpConnectionEnabled: () => getMcpConnectionEnabled(),
-    analyticsSync: () => getAnalyticsSyncSettings(),
-    analyticsEveningLocalTime: () => getAnalyticsEveningLocalTime(),
+    analyticsTimes: () => getAnalyticsCollectionTimes(),
+    userTimezone: () => getUserTimezone(),
     dataApiReadsEnabled: () => getDataApiReadsEnabled(),
     analyticsReadsEnabled: () => getAnalyticsReadsEnabled(),
     youtubeFeedReadsEnabled: () => getYoutubeFeedReadsEnabled(),
@@ -197,39 +199,42 @@ export async function POST(request: Request) {
   // writing anything), then apply every write only once all of them have passed. No field's
   // validation or write depends on another field's write already having landed, so this reordering
   // changes nothing about what a fully-valid request ends up persisting.
-  let analyticsSyncLocalTimeToSet: string | undefined;
-  if (body.analyticsSyncLocalTime !== undefined && body.analyticsSyncLocalTime !== null) {
-    if (typeof body.analyticsSyncLocalTime !== "string" || !isValidLocalTimeOfDay(body.analyticsSyncLocalTime)) {
+  // Owner, Telegram msgs 2725/2727 (2026-10-13): the analytics collection times are "HH:MM" in UTC; `userTimezone` is the owner's
+  // own zone, for the local times shown next to them and the quota reset time.
+  let analyticsSyncUtcTimeToSet: string | undefined;
+  if (body.analyticsSyncUtcTime !== undefined && body.analyticsSyncUtcTime !== null) {
+    if (typeof body.analyticsSyncUtcTime !== "string" || !isValidLocalTimeOfDay(body.analyticsSyncUtcTime)) {
       return NextResponse.json(
-        { error: "validation_failed", message: "analyticsSyncLocalTime must be a valid 24-hour HH:MM string" },
+        { error: "validation_failed", message: "analyticsSyncUtcTime must be a valid 24-hour HH:MM string (UTC)" },
         { status: 400 }
       );
     }
-    analyticsSyncLocalTimeToSet = body.analyticsSyncLocalTime;
+    analyticsSyncUtcTimeToSet = body.analyticsSyncUtcTime;
   }
 
-  let analyticsSyncTimezoneToSet: string | undefined;
-  if (body.analyticsSyncTimezone !== undefined && body.analyticsSyncTimezone !== null) {
-    if (typeof body.analyticsSyncTimezone !== "string" || !isValidIanaTimezone(body.analyticsSyncTimezone)) {
+  let userTimezoneToSet: string | undefined;
+  if (body.userTimezone !== undefined && body.userTimezone !== null) {
+    if (typeof body.userTimezone !== "string" || !isValidIanaTimezone(body.userTimezone)) {
       return NextResponse.json(
-        { error: "validation_failed", message: "analyticsSyncTimezone must be a valid IANA timezone name" },
+        { error: "validation_failed", message: "userTimezone must be a valid IANA timezone name" },
         { status: 400 }
       );
     }
-    analyticsSyncTimezoneToSet = body.analyticsSyncTimezone;
+    userTimezoneToSet = body.userTimezone;
   }
 
   // BL-181 (FO-REQ-0020 §2.3): the evening re-collect boundary (analytics-boundaries.ts) -- read the stored values only when needed.
-  let analyticsEveningLocalTimeToSet: string | undefined;
-  if ((body.analyticsEveningLocalTime !== undefined && body.analyticsEveningLocalTime !== null) || analyticsSyncLocalTimeToSet !== undefined) {
+  let analyticsEveningUtcTimeToSet: string | undefined;
+  if ((body.analyticsEveningUtcTime !== undefined && body.analyticsEveningUtcTime !== null) || analyticsSyncUtcTimeToSet !== undefined) {
+    const current = await getAnalyticsCollectionTimes();
     const checked = checkAnalyticsBoundaries({
-      eveningInput: body.analyticsEveningLocalTime,
-      morningToSet: analyticsSyncLocalTimeToSet,
-      currentEvening: await getAnalyticsEveningLocalTime(),
-      currentMorning: (await getAnalyticsSyncSettings()).localTime,
+      eveningInput: body.analyticsEveningUtcTime,
+      dailyToSet: analyticsSyncUtcTimeToSet,
+      currentEvening: current.eveningUtc,
+      currentDaily: current.dailyUtc,
     });
     if (!checked.ok) return NextResponse.json({ error: "validation_failed", message: checked.message }, { status: 400 });
-    analyticsEveningLocalTimeToSet = checked.eveningToSet;
+    analyticsEveningUtcTimeToSet = checked.eveningToSet;
   }
 
   let marketIntelligenceQuotaToSet: { present: true; value: number | null } | { present: false } = { present: false };
@@ -343,14 +348,11 @@ export async function POST(request: Request) {
   if (typeof body.reportingReadsEnabled === "boolean") {
     await setReportingReadsEnabled(body.reportingReadsEnabled);
   }
-  if (analyticsSyncLocalTimeToSet !== undefined) {
-    await setAnalyticsSyncSettings({ localTime: analyticsSyncLocalTimeToSet });
+  if (analyticsSyncUtcTimeToSet !== undefined || analyticsEveningUtcTimeToSet !== undefined) {
+    await setAnalyticsCollectionTimes({ dailyUtc: analyticsSyncUtcTimeToSet, eveningUtc: analyticsEveningUtcTimeToSet });
   }
-  if (analyticsSyncTimezoneToSet !== undefined) {
-    await setAnalyticsSyncSettings({ timezone: analyticsSyncTimezoneToSet });
-  }
-  if (analyticsEveningLocalTimeToSet !== undefined) {
-    await setAnalyticsEveningLocalTime(analyticsEveningLocalTimeToSet);
+  if (userTimezoneToSet !== undefined) {
+    await setUserTimezone(userTimezoneToSet);
   }
   if (marketIntelligenceQuotaToSet.present) {
     await marketIntelligenceCore.setDailyQuotaBudgetUnits(marketIntelligenceQuotaToSet.value);

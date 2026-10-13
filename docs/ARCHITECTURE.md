@@ -764,6 +764,16 @@ write boundary (`isValidLocalTimeOfDay`/`isValidIanaTimezone`) rather than letti
 throw inside the staleness check on a later dashboard load. UI: `src/components/analytics-sync-settings.tsx`
 (Settings tab) — plain text/time inputs, not `ToggleSwitch` (these aren't booleans).
 
+**UTC times (2026-10-13, owner, Telegram msgs 2725/2727).** The two collection times are now set in UTC, with the owner's own
+time shown in parentheses for the date (summer or winter), the same rule as the channel publish time (BL-182). Keys
+`analytics_sync_utc_time` and `analytics_evening_utc_time`; the analytics adapter hands the services `timezone: "UTC"`, so every
+boundary above (staleness, the evening window, the weekly report, the "yesterday" of the auto-collection range) is computed in
+UTC while the services themselves stay zone-generic. A computer that has only the legacy local keys converts them (or the old
+defaults 12:05 / 22:05 local) on first read with the zone's offset on 2026-10-13, not on the conversion day, so two computers
+updated on either side of a DST change get the same UTC times (Helsinki: 09:05 and 19:05; after 25.10 that is 11:05 and 21:05
+local). `analytics_sync_timezone` stays as the owner's own zone (`userTimezone` in `/api/settings`): the parentheses and the quota
+reset time use it. The zone helpers live in `src/lib/zoned-time/`; the field is `src/components/utc-time-field.tsx`.
+
 **Concurrency (advisor review):** `runAutoCollectionIfStale` marks
 `channels.analyticsLastAutoCollectedAt` **before** calling `collectMetrics`, not after. Two
 browser tabs mounting the dashboard at the same moment would otherwise both see "stale" and both
@@ -788,9 +798,9 @@ just failed is not planned. Reasons a background channel was not collected are l
 response shows only the active channel (ADR 0004). Shared rules with BL-141 live in `src/lib/channel-fanout/`
 (credential choice, error code, backoff, channel list). Cross-account token use: RISK-112. The per-channel routes remain.
 
-**`GET /api/settings` is not purely read-only**: `getAnalyticsSyncSettings`'s detect-and-persist
-behavior means a plain `GET` can write the OS-detected timezone on first read (stated in that
-route's own doc comment, not left as a surprise).
+**`GET /api/settings` is not purely read-only**: `getUserTimezone`'s detect-and-persist behavior means a plain `GET` can write
+the OS-detected timezone on first read, and `getAnalyticsCollectionTimes` saves the UTC times converted from the legacy local
+ones (stated in that route's own doc comment, not left as a surprise).
 
 **Live-verified against the real "Tropico Jazz" channel (2026-09-22, `claude-in-chrome`):** the
 dashboard-mount effect fires exactly once and reaches the real `runAutoCollectionIfStale` →
@@ -1239,7 +1249,7 @@ stages. Stage 1 collects and measures. Stage 2 would show provisional values, an
     - `pacificDayEnd` uses the DST-aware `zonedInstant` (`staleness.ts`).
 - **Evening re-collect** (§14.6's daily boundary gets a second one).
   - Setting `analytics_evening_local_time`: default `22:05`, `""` = off. It must be later than the daily boundary, which the
-    Settings API checks.
+    Settings API checks. Since 2026-10-13 it is `analytics_evening_utc_time` in UTC (§14.6, "UTC times").
   - `runEveningCollectionIfDue` runs only when all four hold:
     - the evening boundary has passed;
     - the channel was not collected since it;
@@ -2293,8 +2303,8 @@ low-severity divergences, recorded here as the actual rules rather than changed.
 - **"Analytics day" (A8).** YouTube Analytics reports days in Pacific time; `metricDate` is a
   Pacific calendar day.
   - `comparable-age` aligns on Pacific days.
-  - The staleness / daily-collection boundary uses the operator's configured timezone
-    (`analyticsSyncTimezone`).
+  - The staleness / daily-collection boundary is a UTC time of a UTC day since 2026-10-13 (§14.6, "UTC times"); before, it
+    used the operator's configured timezone.
   - The data-quality "too recent" cutoff (`ANALYTICS_REPORTING_LAG_DAYS`) is computed in UTC. It
     can therefore differ from a Pacific-day boundary by one day at the edges. This is acceptable
     for a "probably not yet reported" hint, but it is not an exact reporting-day computation.
