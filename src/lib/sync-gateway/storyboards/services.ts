@@ -6,6 +6,7 @@ import {
   type StoryboardComment,
   type StoryboardDecision,
   type StoryboardGateSetting,
+  type StoryboardPick,
   type StoryboardRecord,
   type StoryboardReply,
   type StoryboardsDocument,
@@ -123,6 +124,18 @@ export function createStoryboardsCore(deps: ServiceDependencies) {
         comment.state = state;
         comment.stateChangedAt = at;
         comment.stateChangedBy = by;
+      });
+    },
+
+    /** BL-184 stage 3: the owner's take for a segment of a version, or null to clear it. */
+    setPick(channelId: string, storyboardId: string, versionNumber: number, segmentId: string, pick: StoryboardPick | null): Promise<void> {
+      return changeStoryboard(channelId, storyboardId, `pick ${storyboardId} v${versionNumber} ${segmentId}`, (record) => {
+        if (!record.versions[String(versionNumber)]) throw notFound("Version", { storyboardId, versionNumber });
+        if (!record.picks) record.picks = {};
+        const key = String(versionNumber);
+        if (!record.picks[key]) record.picks[key] = {};
+        if (pick) record.picks[key][segmentId] = clone(pick);
+        else delete record.picks[key][segmentId];
       });
     },
 

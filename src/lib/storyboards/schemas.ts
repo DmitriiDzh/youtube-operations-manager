@@ -71,5 +71,14 @@ export const ownerCommentStateInputSchema = z.object({ commentId: id, state: z.e
 export const ownerDecisionInputSchema = z
   .object({ kind: z.enum(["approved", "changes_requested"]), versionNumber: z.number().int().min(1), note: z.string().max(STORYBOARD_LIMITS.comment).nullable().optional() })
   .strict();
+/** BL-184 stage 3 (B5): the owner's take for a segment of a version (null clears it). */
+export const ownerPickInputSchema = z
+  .object({
+    versionNumber: z.number().int().min(1),
+    segmentId: id,
+    take: z.object({ source: z.enum(["media", "gemini"]), jobId: z.string().min(1).max(80) }).strict().nullable(),
+  })
+  .strict();
+
 /** BL-184 stage 2 (B4): the owner's per-channel setting. */
 export const gateSettingInputSchema = z.object({ requireApproved: z.boolean() }).strict();

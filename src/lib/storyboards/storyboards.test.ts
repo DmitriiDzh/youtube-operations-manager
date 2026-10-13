@@ -253,3 +253,24 @@ test("ADR 0038 §4: the approved version is the latest one only while its newest
     await cleanup();
   }
 });
+
+test("B5: the owner picks one take per segment of a version -- only a job the video modules say is that segment's take; cleared again", async () => {
+  const { service, cleanup } = await setup();
+  try {
+    await service.create(barLoop());
+    const takes = new Set(["media:job-1|1|S1", "gemini:gm_2|1|S1"]);
+    const isTake = async (take: { source: string; jobId: string }, versionNumber: number, segmentId: string) => takes.has(`${take.source}:${take.jobId}|${versionNumber}|${segmentId}`);
+    const { picks } = await service.ownerPick(CH, "bar-loop", { versionNumber: 1, segmentId: "S1", take: { source: "gemini", jobId: "gm_2" } }, isTake);
+    assert.deepEqual(Object.keys(picks), ["1"]);
+    assert.deepEqual([picks["1"].S1.source, picks["1"].S1.jobId, picks["1"].S1.device], ["gemini", "gm_2", "Mac"]);
+    // Another take replaces it; a job that is not this segment's take, an unknown segment or version are refused.
+    assert.equal((await service.ownerPick(CH, "bar-loop", { versionNumber: 1, segmentId: "S1", take: { source: "media", jobId: "job-1" } }, isTake)).picks["1"].S1.jobId, "job-1");
+    await code(service.ownerPick(CH, "bar-loop", { versionNumber: 1, segmentId: "S2", take: { source: "media", jobId: "job-1" } }, isTake), "validation_failed");
+    await code(service.ownerPick(CH, "bar-loop", { versionNumber: 1, segmentId: "S9", take: null }, isTake), "validation_failed");
+    await code(service.ownerPick(CH, "bar-loop", { versionNumber: 4, segmentId: "S1", take: null }, isTake), "storyboard_not_found");
+    assert.deepEqual((await service.ownerPick(CH, "bar-loop", { versionNumber: 1, segmentId: "S1", take: null }, isTake)).picks, { "1": {} });
+    assert.deepEqual((await service.getForOwner(CH, "bar-loop")).picks, { "1": {} });
+  } finally {
+    await cleanup();
+  }
+});

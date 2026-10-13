@@ -106,6 +106,7 @@ export type {
   StoryboardDecision,
   StoryboardGateSetting,
   StoryboardKeyframe,
+  StoryboardPick,
   StoryboardProp,
   StoryboardRecord,
   StoryboardReply,

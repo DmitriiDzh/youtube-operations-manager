@@ -75,7 +75,7 @@ function memoryStore() {
         return jobs.get(id) ?? null;
       },
       async list(filter) {
-        return [...jobs.values()].filter((j) => (!filter.sessionId || j.sessionId === filter.sessionId) && (!filter.channelId || j.channelId === filter.channelId));
+        return [...jobs.values()].filter((j) => (!filter.sessionId || j.sessionId === filter.sessionId) && (!filter.channelId || j.channelId === filter.channelId) && (!filter.storyboardId || j.storyboardId === filter.storyboardId));
       },
       async listNonTerminal() {
         return [...jobs.values()].filter((j) => !TERMINAL.has(j.status));
@@ -2062,4 +2062,9 @@ test("BL-184: a link the gate lets through is recorded on the job; an untagged t
   const other = await g.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: plain.templateId, params: { prompt: "a cat", ref: "refs/frame 1.png" }, createdBy: "agent" });
   assert.deepEqual(g.gate.calls, [{ channelId: "UC1", firstFrameSha256: null, lastFrameSha256: null, link: null }]);
   assert.equal(other.storyboard, null);
+
+  // B5: the storyboard's takes are exactly its linked jobs on that channel.
+  assert.deepEqual((await f.services.listJobsByStoryboard("UC1", "bar-loop")).map((j) => [j.jobId, j.storyboard?.segmentId]), [[job.jobId, "S1"]]);
+  assert.deepEqual(await f.services.listJobsByStoryboard("UC1", "other"), []);
+  assert.deepEqual(await f.services.listJobsByStoryboard("UC2", "bar-loop"), []);
 });

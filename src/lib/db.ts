@@ -10217,10 +10217,12 @@ export async function getMediaJobById(id: string, database: AppDb = db): Promise
   return row ?? null;
 }
 
-export async function listMediaJobs(filter: { sessionId?: string; channelId?: string; limit?: number }, database: AppDb = db): Promise<StoredMediaJob[]> {
+export async function listMediaJobs(filter: { sessionId?: string; channelId?: string; storyboardId?: string; limit?: number }, database: AppDb = db): Promise<StoredMediaJob[]> {
   const conditions = [];
   if (filter.sessionId) conditions.push(eq(mediaJobs.sessionId, filter.sessionId));
   if (filter.channelId) conditions.push(eq(mediaJobs.channelId, filter.channelId));
+  // BL-184 stage 3: a storyboard's takes (schema v90).
+  if (filter.storyboardId) conditions.push(eq(mediaJobs.storyboardId, filter.storyboardId));
   const query = database.select().from(mediaJobs);
   const filtered = conditions.length > 0 ? query.where(and(...conditions)) : query;
   return filtered.orderBy(desc(mediaJobs.createdAt)).limit(filter.limit ?? 50);
@@ -10523,11 +10525,13 @@ export async function getGeminiMediaJobByRequest(createdBy: string, requestId: s
 
 /** Newest first; optional channel and status filters. */
 export async function listGeminiMediaJobs(
-  filter: { channelId?: string; statuses?: readonly GeminiMediaJobStatusValue[]; createdSince?: Date; limit: number },
+  filter: { channelId?: string; statuses?: readonly GeminiMediaJobStatusValue[]; createdSince?: Date; storyboardId?: string; limit: number },
   database: AppDb = db
 ): Promise<StoredGeminiMediaJob[]> {
   const conditions = [
     filter.channelId === undefined ? undefined : eq(geminiMediaJobs.channelId, filter.channelId),
+    // BL-184 stage 3: a storyboard's takes (schema v90).
+    filter.storyboardId === undefined ? undefined : eq(geminiMediaJobs.storyboardId, filter.storyboardId),
     filter.statuses === undefined ? undefined : inArray(geminiMediaJobs.status, [...filter.statuses]),
     filter.createdSince === undefined ? undefined : gte(geminiMediaJobs.createdAt, filter.createdSince),
   ].filter((c) => c !== undefined);

@@ -4,6 +4,7 @@ import type {
   StoryboardCommentTarget,
   StoryboardDecision,
   StoryboardKeyframe,
+  StoryboardPick,
   StoryboardProp,
   StoryboardRecord,
   StoryboardSegment,
@@ -20,6 +21,7 @@ import {
   ownerCommentInputSchema,
   ownerCommentStateInputSchema,
   ownerDecisionInputSchema,
+  ownerPickInputSchema,
   ownerReplyInputSchema,
   storyboardRefSchema,
   updateStoryboardInputSchema,
@@ -54,6 +56,8 @@ export type StoryboardDetail = StoryboardSummary & {
   submissions: Array<{ versionNumber: number; at: string }>;
   decisions: StoryboardDecision[];
   comments: Array<Omit<StoryboardComment, "replies"> & { replies: Array<StoryboardComment["replies"][string]> }>;
+  /** BL-184 stage 3: the owner's take per segment, by version number then segment id. */
+  picks: Record<string, Record<string, StoryboardPick>>;
 };
 
 const byTime = <T>(at: (item: T) => string, id: (item: T) => string) => (a: T, b: T) => Date.parse(at(a)) - Date.parse(at(b)) || id(a).localeCompare(id(b));
@@ -101,6 +105,7 @@ function detailOf(channelId: string, record: StoryboardRecord): StoryboardDetail
     comments: Object.values(record.comments)
       .sort(byTime((c) => c.createdAt, (c) => c.id))
       .map((c) => ({ ...c, replies: Object.values(c.replies).sort(byTime((r) => r.createdAt, (r) => r.id)) })),
+    picks: record.picks ?? {},
   };
 }
 
@@ -427,6 +432,25 @@ export function createStoryboardsService(ports: StoryboardsPorts) {
       await ports.withLock(async () => {
         findComment(await findRecord(channelId, storyboardId), commentId);
         await ports.store.setCommentState(channelId, storyboardId, commentId, state, "owner", stamp());
+      });
+    },
+
+    /**
+     * B5: the owner picks one take for a segment of a version (or clears it). `isTake` (the route's: it knows the video modules) says
+     * whether that job is a take of this storyboard's segment and version; anything else is refused.
+     */
+    async ownerPick(channelId: string, storyboardId: string, input: unknown, isTake: (take: { source: "media" | "gemini"; jobId: string }, versionNumber: number, segmentId: string) => Promise<boolean>): Promise<{ picks: Record<string, Record<string, StoryboardPick>> }> {
+      const { versionNumber, segmentId, take } = parseWithSchema(ownerPickInputSchema, input, "pick");
+      return ports.withLock(async () => {
+        const record = await findRecord(channelId, storyboardId);
+        const version = record.versions[String(versionNumber)];
+        if (!version) throw new DomainError({ code: "storyboard_not_found", message: `No version ${versionNumber}`, details: { storyboardId, versionNumber } });
+        if (!version.segments.some((s) => s.id === segmentId)) throw invalid(`Version ${versionNumber} has no segment ${segmentId}`, { field: "segmentId", segmentId });
+        if (take && !(await isTake(take, versionNumber, segmentId))) {
+          throw invalid(`Job ${take.jobId} is not a take of segment ${segmentId} of version ${versionNumber}`, { field: "take", ...take });
+        }
+        await ports.store.setPick(channelId, storyboardId, versionNumber, segmentId, take ? { ...take, device: await ports.deviceLabel(), at: stamp() } : null);
+        return { picks: (await findRecord(channelId, storyboardId)).picks ?? {} };
       });
     },
 

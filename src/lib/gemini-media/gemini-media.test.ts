@@ -66,9 +66,9 @@ function memoryStore(): GeminiStore & { jobs: Map<string, StoredGeminiMediaJob>;
     async getJobByRequest(createdBy: string, requestId: string) {
       return [...state.jobs.values()].find((j) => j.createdBy === createdBy && j.requestId === requestId) ?? null;
     },
-    async listJobs(filter: { channelId?: string; statuses?: readonly string[]; createdSince?: Date; limit: number }) {
+    async listJobs(filter: { channelId?: string; statuses?: readonly string[]; createdSince?: Date; storyboardId?: string; limit: number }) {
       return [...state.jobs.values()]
-        .filter((j) => (filter.channelId === undefined || j.channelId === filter.channelId) && (filter.statuses === undefined || filter.statuses.includes(j.status)) && (filter.createdSince === undefined || j.createdAt >= filter.createdSince))
+        .filter((j) => (filter.channelId === undefined || j.channelId === filter.channelId) && (filter.statuses === undefined || filter.statuses.includes(j.status)) && (filter.createdSince === undefined || j.createdAt >= filter.createdSince) && (filter.storyboardId === undefined || j.storyboardId === filter.storyboardId))
         .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || (a.jobId < b.jobId ? 1 : -1))
         .slice(0, filter.limit)
         .map((j) => ({ ...j }));
@@ -1297,6 +1297,9 @@ test("BL-184: a link the gate lets through is passed on and recorded on the job;
     assert.deepEqual(job.storyboard, { storyboardId: "bar-loop", versionNumber: 2, segmentId: "S1" });
     const row = h.store.jobs.get(job.jobId)!;
     assert.deepEqual([row.storyboardId, row.storyboardVersion, row.segmentId], ["bar-loop", 2, "S1"]);
+    // B5: the storyboard's takes are exactly its linked jobs on that channel.
+    assert.deepEqual((await h.services.listJobsByStoryboard("UC1", "bar-loop")).map((j) => [j.jobId, j.storyboard?.segmentId]), [[job.jobId, "S1"]]);
+    assert.deepEqual(await h.services.listJobsByStoryboard("UC1", "other"), []);
     // The same request id with another segment is another job, not a replay.
     await assert.rejects(h.services.createJob(flfJob({ storyboardId: "bar-loop", segmentId: "S2", requestId: "r-s1" }), "factory"), (e: unknown) => isDomainError(e) && e.code === "gemini_request_exists");
     for (const bad of [flfJob({ storyboardId: "bar-loop" }), flfJob({ segmentId: "S1" }), { channelId: "UC1", kind: "image", model: "gemini-nano-banana-2.1", prompt: "p", image: { size: "1K", aspectRatio: "1:1" }, storyboardId: "bar-loop", segmentId: "S1" }]) {

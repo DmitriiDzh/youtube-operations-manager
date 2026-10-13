@@ -6,7 +6,9 @@ import { authOptions } from "@/lib/auth";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { DomainError } from "@/lib/shared-domain";
 import { createStoryboardsServiceForProduction, type StoryboardsService } from "@/lib/storyboards";
+import { streamLocalFile } from "@/lib/local-file-response";
 import { getVideoMetadataErrorStatus } from "../../../video-metadata/error-status";
+import { listStoryboardTakes, resolveTakeFile, videoTypeOf, type StoryboardTake } from "./takes";
 
 // BL-184 stage 1 (FO-REQ-0024 §4 B2; STORYBOARD_PLAN.md §3 stage 1 item 3): the owner's side of a storyboard -- the list, one
 // storyboard with this computer's copy of its keyframes and what changed against the version before, comments (with pins), replies,
@@ -18,9 +20,12 @@ export type StoryboardRouteDeps = {
   assertActiveChannel: (args: { userId: string; channelId: string }) => Promise<void>;
   service: () => Pick<
     StoryboardsService,
-    "listForOwner" | "getForOwner" | "keyframeFiles" | "versionDiff" | "keyframeFile" | "ownerComment" | "ownerReply" | "ownerSetCommentState" | "ownerDecide" | "gateSetting" | "setGateSetting"
+    "listForOwner" | "getForOwner" | "keyframeFiles" | "versionDiff" | "keyframeFile" | "ownerComment" | "ownerReply" | "ownerSetCommentState" | "ownerDecide" | "gateSetting" | "setGateSetting" | "ownerPick"
   >;
   readFile: (filePath: string) => Promise<Uint8Array>;
+  /** BL-184 stage 3: the storyboard's takes (the video modules' linked jobs) and a take's file on this computer. */
+  takes: (channelId: string, storyboardId: string) => Promise<StoryboardTake[]>;
+  takeFile: (channelId: string, take: StoryboardTake) => Promise<{ path: string; bytes: number } | null>;
 };
 
 const defaultDeps = (): StoryboardRouteDeps => ({
@@ -30,6 +35,8 @@ const defaultDeps = (): StoryboardRouteDeps => ({
   },
   service: createStoryboardsServiceForProduction,
   readFile: (filePath) => readFile(filePath),
+  takes: listStoryboardTakes,
+  takeFile: resolveTakeFile,
 });
 
 /** The image types a keyframe may be (the viewer shows them as they are). */
@@ -105,6 +112,33 @@ export function createStoryboardRouteHandlers(deps: StoryboardRouteDeps = defaul
     /** PUT `{ requireApproved }`. */
     setGate: (request: Request, context: Params<Base>) =>
       guarded(context, async ({ channelId }) => NextResponse.json(await deps.service().setGateSetting(channelId, await body(request)))),
+
+    /** B5: the storyboard's takes (without file paths: `hasVideo` says whether this computer can play one). */
+    takes: (_request: Request, context: Params<Base & { storyboardId: string }>) =>
+      guarded(context, async ({ channelId, storyboardId }) => {
+        await deps.service().getForOwner(channelId, storyboardId);
+        const takes = await deps.takes(channelId, storyboardId);
+        return NextResponse.json({ takes: takes.map(({ localPath, ...take }) => ({ ...take, hasVideo: localPath !== null })) });
+      }),
+
+    /** B5: a take's video, with HTTP Range (the player seeks, the seam tools read the last and first frames). */
+    takeVideo: (request: Request, context: Params<Base & { storyboardId: string; source: string; jobId: string }>) =>
+      guarded(context, async ({ channelId, storyboardId, source, jobId }) => {
+        const take = (await deps.takes(channelId, storyboardId)).find((t) => t.source === source && t.jobId === jobId);
+        if (!take) return NextResponse.json({ error: "storyboard_not_found", message: "Not a take of this storyboard" }, { status: 404 });
+        const file = await deps.takeFile(channelId, take);
+        const type = file ? videoTypeOf(file.path) : null;
+        if (!file || !type) return NextResponse.json({ error: "storyboard_file_unavailable", message: "This take's video is not on this computer" }, { status: 404 });
+        return streamLocalFile(file, type, request);
+      }),
+
+    /** B5: POST `{ versionNumber, segmentId, take: { source, jobId } | null }` -- the owner's take for a segment. */
+    pick: (request: Request, context: Params<Base & { storyboardId: string }>) =>
+      guarded(context, async ({ channelId, storyboardId }) => {
+        const isTake = async (take: { source: string; jobId: string }, versionNumber: number, segmentId: string) =>
+          (await deps.takes(channelId, storyboardId)).some((t) => t.source === take.source && t.jobId === take.jobId && t.versionNumber === versionNumber && t.segmentId === segmentId);
+        return NextResponse.json(await deps.service().ownerPick(channelId, storyboardId, await body(request), isTake));
+      }),
 
     /** The keyframe's image as this computer has it (even when it differs from the frozen sha256: review is not blocked). */
     keyframe: (_request: Request, context: Params<Base & { storyboardId: string; version: string; keyframeId: string }>) =>

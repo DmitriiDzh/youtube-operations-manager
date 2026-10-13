@@ -80,6 +80,12 @@ export type StoryboardDecision = {
   note: string | null;
 };
 
+/**
+ * BL-184 stage 3 (FO-REQ-0024 B5): the owner's pick of one take (a video job) for a segment of a version -- a media (GPU) job or a
+ * Gemini job that rendered that segment. Assigned whole; the last pick from either computer wins.
+ */
+export type StoryboardPick = { source: "media" | "gemini"; jobId: string; device: string | null; at: string };
+
 export type StoryboardRecord = {
   id: string;
   createdAt: string;
@@ -91,6 +97,8 @@ export type StoryboardRecord = {
   submissions: Record<string, { at: string }>;
   decisions: Record<string, StoryboardDecision>;
   comments: Record<string, StoryboardComment>;
+  /** BL-184 stage 3: by version number, then segment id (absent = no pick yet). */
+  picks?: Record<string, Record<string, StoryboardPick>>;
 };
 
 /**

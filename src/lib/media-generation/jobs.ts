@@ -124,7 +124,7 @@ export type MediaJobStore = {
   jobs: {
     insert(row: Omit<StoredJobRow, "createdAt"> & { createdAt?: Date }): Promise<StoredJobRow>;
     get(id: string): Promise<StoredJobRow | null>;
-    list(filter: { sessionId?: string; channelId?: string; limit?: number }): Promise<StoredJobRow[]>;
+    list(filter: { sessionId?: string; channelId?: string; storyboardId?: string; limit?: number }): Promise<StoredJobRow[]>;
     listNonTerminal(): Promise<StoredJobRow[]>;
     /** BL-148: job count per status of one session (absent = this store cannot say). */
     countBySession?(sessionId: string): Promise<Record<string, number>>;
@@ -1698,6 +1698,11 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     async listJobs(input: unknown = {}): Promise<MediaJob[]> {
       const filter = parseWithSchema(listJobsInputSchema, input, "list jobs");
       return Promise.all((await deps.store.jobs.list(filter)).map((row) => withInputs(toPublicJob(row))));
+    },
+
+    /** BL-184 stage 3 (B5): the channel's jobs that render a storyboard's segments (its takes), newest first. */
+    async listJobsByStoryboard(channelId: string, storyboardId: string): Promise<MediaJob[]> {
+      return (await deps.store.jobs.list({ channelId, storyboardId, limit: 500 })).map(toPublicJob);
     },
 
     /** queued/submitted/generating -> cancelled; ComfyUI's current execution is interrupted (best effort). */

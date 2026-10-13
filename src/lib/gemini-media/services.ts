@@ -48,7 +48,7 @@ export type GeminiStore = {
   insertJob(row: StoredGeminiMediaJob): Promise<boolean>;
   getJob(jobId: string): Promise<StoredGeminiMediaJob | null>;
   getJobByRequest(createdBy: string, requestId: string): Promise<StoredGeminiMediaJob | null>;
-  listJobs(filter: { channelId?: string; statuses?: readonly GeminiMediaJobStatusValue[]; createdSince?: Date; limit: number }): Promise<StoredGeminiMediaJob[]>;
+  listJobs(filter: { channelId?: string; statuses?: readonly GeminiMediaJobStatusValue[]; createdSince?: Date; storyboardId?: string; limit: number }): Promise<StoredGeminiMediaJob[]>;
   updateJob(jobId: string, fromStatus: GeminiMediaJobStatusValue, set: Partial<StoredGeminiMediaJob>): Promise<boolean>;
 };
 
@@ -449,6 +449,11 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
         }
         return { job: jobView(row) };
       });
+    },
+
+    /** BL-184 stage 3 (B5): the channel's video jobs that render a storyboard's segments (its takes), newest first. */
+    async listJobsByStoryboard(channelId: string, storyboardId: string): Promise<GeminiJobView[]> {
+      return (await deps.store.listJobs({ channelId, storyboardId, limit: 500 })).map(jobView);
     },
 
     /** One job by id, or the newest jobs (≤ 50) with optional channel / status filters. */

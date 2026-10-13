@@ -112,3 +112,17 @@ test("BL-184 stage 2: the channel's gate setting -- absent until changed, then t
   await cycle(mac, windows);
   assert.equal((await windows.readGate(CH))?.requireApproved, true);
 });
+
+test("BL-184 stage 3: a take picked for a segment on one computer is on the other after a cycle; clearing it too", async () => {
+  const mac = computer();
+  const windows = computer();
+  await mac.create(CH, { id: "sb1", createdAt: "2026-10-13T12:00:00Z", createdBy: "operator", planId: null }, version("Bar loop"));
+  await cycle(mac, windows);
+  await windows.setPick(CH, "sb1", 1, "S1", { source: "gemini", jobId: "gm_1", device: "Windows", at: "2026-10-13T14:00:00Z" });
+  await cycle(mac, windows);
+  assert.deepEqual((await mac.read(CH))[0].picks, { "1": { S1: { source: "gemini", jobId: "gm_1", device: "Windows", at: "2026-10-13T14:00:00Z" } } });
+  await mac.setPick(CH, "sb1", 1, "S1", null);
+  await cycle(mac, windows);
+  assert.deepEqual((await windows.read(CH))[0].picks, { "1": {} });
+  await assert.rejects(mac.setPick(CH, "sb1", 9, "S1", null), (e: unknown) => isDomainError(e) && e.code === "not_found");
+});

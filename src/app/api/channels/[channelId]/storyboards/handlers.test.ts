@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { DomainError } from "@/lib/shared-domain";
 import { createStoryboardRouteHandlers, type StoryboardRouteDeps } from "./handlers";
 
@@ -9,6 +12,13 @@ import { createStoryboardRouteHandlers, type StoryboardRouteDeps } from "./handl
 
 const ctx = <T extends Record<string, string>>(params: T) => ({ params: Promise.resolve(params) });
 const json = (method: string, body: unknown) => new Request("http://x/", { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+// BL-184 stage 3: two takes of S1 in v2 -- a Gemini one with its video here, a GPU one still generating.
+const VIDEO_FILE = path.join(tmpdir(), `storyboard-take-${process.pid}.mp4`);
+const TAKES = [
+  { source: "gemini" as const, jobId: "gm_1", segmentId: "S1", versionNumber: 2, status: "done", createdAt: "2026-10-13T12:00:00.000Z", label: "gemini-omni-1.1-flash", error: null, localPath: "/ws/99 Data Exchange/From YTM/gemini/gm_1/video-1.mp4" },
+  { source: "media" as const, jobId: "job-1", segmentId: "S1", versionNumber: 2, status: "generating", createdAt: "2026-10-13T12:01:00.000Z", label: "ltx-flf · seed 7", error: null, localPath: null },
+];
 
 function make(options: { session?: { user: { id: string } } | null; refuse?: DomainError } = {}) {
   const calls: unknown[][] = [];
@@ -27,6 +37,11 @@ function make(options: { session?: { user: { id: string } } | null; refuse?: Dom
     ownerSetCommentState: async (...args) => void calls.push(["state", ...args]),
     gateSetting: async (...args) => (calls.push(["gate", ...args]), { requireApproved: true, changedAt: null, changedBy: null }),
     setGateSetting: async (...args) => (calls.push(["setGate", ...args]), { requireApproved: false, changedAt: "2026-10-13T12:00:00.000Z", changedBy: "Mac" }),
+    ownerPick: async (channelId, storyboardId, input, isTake) => {
+      const { take, versionNumber, segmentId } = input as { take: { source: "media" | "gemini"; jobId: string }; versionNumber: number; segmentId: string };
+      calls.push(["pick", channelId, storyboardId, await isTake(take, versionNumber, segmentId)]);
+      return { picks: {} };
+    },
     ownerDecide: async (...args) => {
       calls.push(["decide", ...args]);
       if (options.refuse) throw options.refuse;
@@ -40,6 +55,8 @@ function make(options: { session?: { user: { id: string } } | null; refuse?: Dom
     },
     service: () => service,
     readFile: async () => new Uint8Array([1, 2, 3]),
+    takes: async () => TAKES,
+    takeFile: async (_channelId, take) => (take.localPath ? { path: VIDEO_FILE, bytes: 10 } : null),
   });
   return { handlers, calls };
 }
@@ -58,6 +75,9 @@ test("a session and the active channel are required; another channel reaches not
     await handlers.decide(json("POST", { kind: "approved", versionNumber: 1 }), ctx(other)),
     await handlers.keyframe(new Request("http://x/"), ctx(other)),
     await handlers.gate(new Request("http://x/"), ctx(other)),
+    await handlers.takes(new Request("http://x/"), ctx(other)),
+    await handlers.takeVideo(new Request("http://x/"), ctx({ ...other, source: "gemini", jobId: "gm_1" })),
+    await handlers.pick(json("POST", { versionNumber: 2, segmentId: "S1", take: { source: "gemini", jobId: "gm_1" } }), ctx(other)),
     await handlers.setGate(json("PUT", { requireApproved: false }), ctx(other)),
   ]) {
     assert.notEqual(response.status, 200);
@@ -108,4 +128,25 @@ test("BL-184 stage 2: the gate setting is read and changed for the active channe
   assert.deepEqual(await (await handlers.gate(new Request("http://x/"), ctx(base))).json(), { requireApproved: true, changedAt: null, changedBy: null });
   assert.equal((await handlers.setGate(json("PUT", { requireApproved: false }), ctx(base))).status, 200);
   assert.deepEqual(calls, [["gate", "UC_active"], ["setGate", "UC_active", { requireApproved: false }]]);
+});
+
+test("BL-184 stage 3 (B5): takes list without file paths; a take's video with Range; 404 for a job that is not a take or has no video here", async () => {
+  await writeFile(VIDEO_FILE, "0123456789");
+  const { handlers } = make();
+  const base = { channelId: "UC_active", storyboardId: "sb" };
+  const list = await (await handlers.takes(new Request("http://x/"), ctx(base))).json();
+  assert.deepEqual(list.takes.map((t: Record<string, unknown>) => [t.jobId, t.hasVideo, "localPath" in t]), [["gm_1", true, false], ["job-1", false, false]]);
+  const ranged = await handlers.takeVideo(new Request("http://x/", { headers: { range: "bytes=2-5" } }), ctx({ ...base, source: "gemini", jobId: "gm_1" }));
+  assert.deepEqual([ranged.status, ranged.headers.get("content-type"), ranged.headers.get("content-range"), await ranged.text()], [206, "video/mp4", "bytes 2-5/10", "2345"]);
+  assert.equal((await handlers.takeVideo(new Request("http://x/"), ctx({ ...base, source: "media", jobId: "job-1" }))).status, 404, "no video yet");
+  assert.equal((await handlers.takeVideo(new Request("http://x/"), ctx({ ...base, source: "media", jobId: "gm_1" }))).status, 404, "not a take");
+});
+
+test("BL-184 stage 3 (B5): a pick is checked against the storyboard's own takes (segment and version included)", async () => {
+  const { handlers, calls } = make();
+  const base = { channelId: "UC_active", storyboardId: "sb" };
+  await handlers.pick(json("POST", { versionNumber: 2, segmentId: "S1", take: { source: "gemini", jobId: "gm_1" } }), ctx(base));
+  await handlers.pick(json("POST", { versionNumber: 2, segmentId: "S2", take: { source: "gemini", jobId: "gm_1" } }), ctx(base));
+  await handlers.pick(json("POST", { versionNumber: 1, segmentId: "S1", take: { source: "gemini", jobId: "gm_1" } }), ctx(base));
+  assert.deepEqual(calls.filter((c) => c[0] === "pick").map((c) => c[3]), [true, false, false]);
 });
