@@ -417,6 +417,33 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
         // The sync stopped before it could import anything (auth/scope, API disabled, toggle off, listing
         // failed): record it so the Analytics card can say why, then let the caller see the same error.
         const message = error instanceof Error ? error.message : String(error);
+        if (!reachDue && reachCheckedAt) {
+          // Only the other types were due (re-check finding): Reach was not attempted, so its outcome stays "checked recently";
+          // their failure is in their own attempt rows.
+          for (const type of othersRecorded ? [] : dueOtherTypes) {
+            try {
+              await deps.store.recordAttempt({ channelId: parsed.channelId, reportTypeId: type.reportTypeId, outcome: "failed", error: message, filesListed: 0, filesImported: 0, failures: [] });
+            } catch {
+              // Informational only.
+            }
+          }
+          return {
+            skipped: true,
+            reason: "checked_recently",
+            lastCheckedAt: reachCheckedAt.toISOString(),
+            otherReports: dueOtherTypes.map((type) => ({
+              reportTypeId: type.reportTypeId,
+              outcome: "failed" as const,
+              error: message,
+              jobCreated: false,
+              filesListed: 0,
+              filesImported: 0,
+              filesSuperseded: 0,
+              rowsImported: 0,
+              failures: [],
+            })),
+          };
+        }
         const attempted = [...(reachDue ? [REACH_BASIC_REPORT_TYPE_ID] : []), ...(othersRecorded ? [] : dueOtherTypes.map((type) => type.reportTypeId))];
         for (const reportTypeId of attempted) {
           try {

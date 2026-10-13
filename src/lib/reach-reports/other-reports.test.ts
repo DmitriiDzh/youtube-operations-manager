@@ -288,3 +288,17 @@ test("automatic sync: a type checked within 6 hours waits; when every type was, 
   });
   assert.equal(all.calls.ensureJob.length, 0);
 });
+
+test("automatic sync: only the other types due and the credentials fail -- Reach stays 'checked recently', their failure is recorded", async () => {
+  const { services, calls } = setup({ failResolve: true, checkedAt: { [REACH]: "2026-10-11T11:00:00Z" } });
+  const result = await services.syncReachReports({ ...SYNC, onlyIfDue: true });
+  if (!result.skipped || result.reason !== "checked_recently") throw new Error("expected checked_recently");
+  assert.deepEqual(result.otherReports?.map((r) => [r.reportTypeId, r.outcome]), [
+    [BASIC, "failed"],
+    [TRAFFIC, "failed"],
+  ]);
+  assert.deepEqual(calls.attempts.map((a) => [a.reportTypeId, a.outcome]), [
+    [BASIC, "failed"],
+    [TRAFFIC, "failed"],
+  ]);
+});

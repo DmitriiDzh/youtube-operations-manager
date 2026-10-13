@@ -77,3 +77,12 @@ test("returnLagOf: only the requested range; a backfill of another range changes
   ]);
   assert.deepEqual(returnLagOf([runs[0]], "2026-11-01", "2026-11-30"), [], "one run proves nothing");
 });
+
+test("returnLagOf: a range that ends before every run (a period the history back-fill has not reached) is empty, never an error", () => {
+  const runs = [
+    run("2026-10-10T09:05:00Z", ["2026-10-02", "2026-10-09"], "2026-10-07", "2026-10-07"),
+    run("2026-10-11T09:05:00Z", ["2026-10-03", "2026-10-10"], "2026-10-08", "2026-10-08"),
+  ];
+  assert.deepEqual(returnLagOf(runs, "2025-01-01", "2025-01-31"), []);
+  assert.deepEqual(returnLagOf([], "2026-10-01", "2026-10-31"), []);
+});

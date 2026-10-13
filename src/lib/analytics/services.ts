@@ -337,8 +337,10 @@ export function returnLagOf(
   const lag = (date: string, at: Date | null) => (at ? Math.round(((at.getTime() - pacificDayEnd(date).getTime()) / 3_600_000) * 10) / 10 : null);
   const rows: ReturnType<typeof returnLagOf> = [];
   const firstDate = ordered.reduce<string | null>((min, run) => (min === null || run.requestedStartDate < min ? run.requestedStartDate : min), null);
-  if (firstDate === null) return rows;
-  for (const date of enumerateDates(startDate > firstDate ? startDate : firstDate, endDate).reverse()) {
+  const from = firstDate !== null && firstDate > startDate ? firstDate : startDate;
+  // A range that ends before every run (or no run at all) has no date any run asked for (re-check finding).
+  if (firstDate === null || from > endDate) return rows;
+  for (const date of enumerateDates(from, endDate).reverse()) {
     const video = firstReturn(date, (run) => run.newestVideoDate);
     const channel = firstReturn(date, (run) => run.newestChannelDate);
     if (video === null && channel === null) continue;
