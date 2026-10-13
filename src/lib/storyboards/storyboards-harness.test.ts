@@ -6,11 +6,11 @@ import path from "node:path";
 import { createAutomergeCore, type DiscardedDocumentBackupStore, type DocumentByteStore } from "@/lib/sync-gateway/automerge-core";
 import type { StoryboardsDocument } from "@/lib/sync-gateway/storyboards/contracts";
 import { createStoryboardsCore, emptyDocument } from "@/lib/sync-gateway/storyboards/services";
-import { isDomainError } from "@/lib/storyboards/contracts";
-import { createStoryboardFiles } from "@/lib/storyboards/adapters/files";
-import { createStoryboardsService } from "@/lib/storyboards/services";
+import { isDomainError } from "./contracts";
+import { createStoryboardFiles } from "./adapters/files";
+import { createStoryboardsService } from "./services";
 
-// BL-184: the storyboards tests' shared harness -- the bar case of FO-REQ-0024 §5 in a temporary channel folder, on the REAL
+// BL-184: the storyboards tests' shared harness (named *.test.ts so the inventory scans treat it as test code; it holds no test) -- the bar case of FO-REQ-0024 §5 in a temporary channel folder, on the REAL
 // workspace-exchange rules, with an in-memory synced document. Expected sha256 values are computed here with node:crypto over the
 // bytes this harness writes, never read back from the module.
 

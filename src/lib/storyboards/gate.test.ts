@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CH, V1, V2, V2_GLASS, barLoop, code, segments, setup, sha } from "@/test-support/storyboards-harness";
+import { CH, V1, V2, V2_GLASS, barLoop, code, segments, setup, sha } from "./storyboards-harness.test";
 import { createStoryboardGate } from "./gate";
 
 // BL-184 stage 2 -- acceptance FO-REQ-0024 §5 step 4 and B4 (owner 1183), written before the gate was wired:
