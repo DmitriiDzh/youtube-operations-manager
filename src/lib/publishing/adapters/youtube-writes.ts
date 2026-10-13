@@ -1,7 +1,7 @@
 import { createGoogleOAuthClient } from "@/lib/auth";
 import type { ResolvedCredentials } from "@/lib/shared-domain";
 import { createYoutubeClient } from "@/lib/youtube-read-gateway";
-import { assertLiveWritesAuthorized, beginResumableVideoUpload, deleteVideoById, putVideoUploadChunk } from "@/lib/youtube-write-gateway";
+import { assertLiveWritesAuthorized, beginResumableVideoUpload, deleteVideoById, putVideoUploadChunk, queryVideoUploadOffset } from "@/lib/youtube-write-gateway";
 import type { G1ProbeDependencies } from "../g1-probe";
 
 // BL-182 (ADR 0037): every YouTube write of this module, each right after the Live writes check (AGENTS.md §G; enforced by
@@ -13,6 +13,18 @@ export function authorizedOAuth(credentials: ResolvedCredentials) {
   return oauth2;
 }
 
+/**
+ * A fresh access token for the upload's own HTTPS requests (review minor): the stored token's expiry is not passed to the client,
+ * so it would never refresh; marking it expired makes the client trade the refresh token for a new one.
+ */
+export async function freshAccessToken(credentials: ResolvedCredentials): Promise<string> {
+  const oauth2 = createGoogleOAuthClient();
+  oauth2.setCredentials({ access_token: credentials.accessToken, refresh_token: credentials.refreshToken, expiry_date: 1 });
+  const { token } = await oauth2.getAccessToken();
+  if (!token) throw new Error("Could not get an access token for the upload.");
+  return token;
+}
+
 export function createPublishingYoutubeWrites(): G1ProbeDependencies["gateway"] {
   return {
     async begin(args) {
@@ -22,6 +34,10 @@ export function createPublishingYoutubeWrites(): G1ProbeDependencies["gateway"] 
     async putChunk(args) {
       await assertLiveWritesAuthorized();
       return putVideoUploadChunk(args);
+    },
+    async queryOffset(args) {
+      await assertLiveWritesAuthorized();
+      return queryVideoUploadOffset(args);
     },
     async deleteVideo(credentials, videoId) {
       const youtube = await createYoutubeClient(authorizedOAuth(credentials));

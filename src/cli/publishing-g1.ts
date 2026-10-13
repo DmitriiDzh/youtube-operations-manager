@@ -6,8 +6,8 @@ import { createG1ProbeCore } from "@/lib/publishing";
 
 // BL-182 stage 0 (ADR 0037 §7): the developer-only G1 probe. Not reachable from the Web UI, MCP or the Producer. It runs once, on
 // the owner's yes (Telegram msg 2702):
-//   upload --channel <channelId> --file "<path relative to the channel workspace>" --i-understand-this-uploads
-//   delete --video <videoId> --i-understand-this-deletes
+//   upload --channel <channelId> --file "<path relative to the channel workspace>" --i-understand-this-uploads [--retry-after-duplicate]
+//   delete --channel <channelId> --video <videoId> --i-understand-this-deletes
 // The channel's own connected Google user is the credential; the identity check, the recovery gate and Live writes apply as for
 // every write. Output is JSON on stdout.
 
@@ -31,7 +31,8 @@ async function userIdOf(channelId: string): Promise<string> {
 
 async function main(argv: string[]): Promise<number> {
   const [command, ...args] = argv;
-  const probe = createG1ProbeCore();
+  // The video id goes to stderr the moment YouTube returns it, before anything else can fail (review S3).
+  const probe = createG1ProbeCore({ announce: (videoId) => process.stderr.write(`uploaded: ${videoId}\n`) });
   if (command === "upload") {
     if (!args.includes("--i-understand-this-uploads")) throw new Error("Refusing: pass --i-understand-this-uploads (a real YouTube upload).");
     const channelId = flag(args, "--channel");
@@ -41,6 +42,7 @@ async function main(argv: string[]): Promise<number> {
       credentialRef: { userId: await userIdOf(channelId) },
       channelId,
       relativePath,
+      retryAfterDuplicate: args.includes("--retry-after-duplicate"),
       resource: {
         snippet: { ...G1_METADATA, defaultLanguage: "en", defaultAudioLanguage: "en" },
         status: { privacyStatus: "private", selfDeclaredMadeForKids: false, containsSyntheticMedia: true },

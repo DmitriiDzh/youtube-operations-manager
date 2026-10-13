@@ -82,17 +82,19 @@ function headerOf(headers: UploadHttpResponse["headers"], name: string): string 
 }
 
 function uploadError(response: UploadHttpResponse, step: string): DomainError {
+  // A 5xx is not a refusal: Google's guide says the outcome is unknown and the session should be asked where it stands.
+  const verb = response.status >= 500 ? "answered with an error, outcome unknown" : "refused the upload";
   let reason: string | null = null;
   try {
     const parsed = JSON.parse(response.body) as { error?: { errors?: Array<{ reason?: string }>; message?: string } };
     reason = parsed.error?.errors?.[0]?.reason ?? null;
     return new DomainError({
       code: "update_failed",
-      message: `YouTube refused the upload (${step}): HTTP ${response.status}${reason ? ` ${reason}` : ""}${parsed.error?.message ? ` -- ${parsed.error.message}` : ""}`,
+      message: `YouTube ${verb} (${step}): HTTP ${response.status}${reason ? ` ${reason}` : ""}${parsed.error?.message ? ` -- ${parsed.error.message}` : ""}`,
       details: { status: response.status, reason },
     });
   } catch {
-    return new DomainError({ code: "update_failed", message: `YouTube refused the upload (${step}): HTTP ${response.status}`, details: { status: response.status, reason } });
+    return new DomainError({ code: "update_failed", message: `YouTube ${verb} (${step}): HTTP ${response.status}`, details: { status: response.status, reason } });
   }
 }
 

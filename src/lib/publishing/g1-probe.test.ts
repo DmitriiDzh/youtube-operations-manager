@@ -32,13 +32,27 @@ const STATE = (over: Partial<VideoUploadStateView>): VideoUploadStateView => ({
   ...over,
 });
 
-function setup(opts: { bytes?: number; identityFails?: boolean; recovery?: boolean; record?: G1ProbeRecord; states?: Array<VideoUploadStateView | null>; deletedState?: VideoUploadStateView | null } = {}) {
+function setup(
+  opts: {
+    bytes?: number;
+    identityFails?: boolean;
+    recovery?: boolean;
+    record?: G1ProbeRecord;
+    states?: Array<VideoUploadStateView | null>;
+    deletedState?: VideoUploadStateView | null;
+    beginError?: DomainError;
+    loseFinalAnswer?: boolean;
+    queryFails?: boolean;
+    readFails?: boolean;
+  } = {}
+) {
   const bytes = opts.bytes ?? 3_832_961;
   const log: string[] = [];
   let record: G1ProbeRecord | null = opts.record ?? null;
   let now = new Date("2026-10-13T12:00:00Z").getTime();
   const states = [...(opts.states ?? [STATE({ uploadStatus: "processed", processingStatus: "succeeded" })])];
   const audits: unknown[] = [];
+  const announced: string[] = [];
   let deleted = false;
   const deps: G1ProbeDependencies = {
     async assertDeviceAvailable() {
@@ -66,12 +80,19 @@ function setup(opts: { bytes?: number; identityFails?: boolean; recovery?: boole
     gateway: {
       async begin(args) {
         log.push(`begin:${args.contentLength}:${args.notifySubscribers}`);
+        if (opts.beginError) throw opts.beginError;
         return { sessionUri: "https://www.googleapis.com/upload/youtube/v3/videos?upload_id=1" };
       },
       async putChunk(args) {
         log.push(`chunk:${args.start}+${args.chunk.length}`);
         const end = args.start + args.chunk.length;
+        if (end >= args.total && opts.loseFinalAnswer) throw new Error("socket hang up");
         return end >= args.total ? { done: true, videoId: "vidG1" } : { done: false, storedBytes: end };
+      },
+      async queryOffset() {
+        log.push("query");
+        if (opts.queryFails) throw new Error("network down");
+        return { done: true, videoId: "vidG1" };
       },
       async deleteVideo(_credentials, videoId) {
         log.push(`delete:${videoId}`);
@@ -80,6 +101,7 @@ function setup(opts: { bytes?: number; identityFails?: boolean; recovery?: boole
     },
     async readState() {
       if (deleted) return opts.deletedState === undefined ? null : opts.deletedState;
+      if (opts.readFails) throw new Error("HTTP 503");
       return states.length > 1 ? (states.shift() ?? null) : (states[0] ?? null);
     },
     record: {
@@ -89,6 +111,12 @@ function setup(opts: { bytes?: number; identityFails?: boolean; recovery?: boole
       async save(next) {
         record = next;
       },
+      async clear() {
+        record = null;
+      },
+    },
+    announce(videoId) {
+      announced.push(videoId);
     },
     async audit(event) {
       audits.push(event);
@@ -101,7 +129,7 @@ function setup(opts: { bytes?: number; identityFails?: boolean; recovery?: boole
       now += ms;
     },
   };
-  return { probe: createG1Probe(deps), log, audits, getRecord: () => record };
+  return { probe: createG1Probe(deps), log, audits, announced, getRecord: () => record };
 }
 
 test("upload: gate, identity and file come first; the file goes up in 8 MB chunks; the result is recorded and audited", async () => {
@@ -120,7 +148,7 @@ test("upload: gate, identity and file come first; the file goes up in 8 MB chunk
   ]);
   assert.equal(report.videoId, "vidG1");
   assert.deepEqual(report.defaultAudioLanguage, { sent: "en", readBack: "en" });
-  assert.equal(getRecord()?.videoId, "vidG1");
+  assert.deepEqual([getRecord()?.status, getRecord()?.videoId, getRecord()?.attempt], ["uploaded", "vidG1", 1]);
   assert.equal(audits.length, 2, "the upload and the read-back are audited");
 });
 
@@ -144,7 +172,7 @@ test("upload: an identity mismatch, recovery mode or bad metadata sends nothing"
 });
 
 test("upload: it runs once -- a second probe is refused before anything is sent", async () => {
-  const { probe, log } = setup({ record: { channelId: CH, videoId: "vidOld", uploadedAt: "2026-10-13T11:00:00Z", deletedAt: null } });
+  const { probe, log } = setup({ record: { channelId: CH, status: "uploaded", attempt: 1, startedAt: "2026-10-13T10:59:00Z", videoId: "vidOld", uploadedAt: "2026-10-13T11:00:00Z", deletedAt: null, rejectionReason: null } });
   await assert.rejects(probe.upload({ credentialRef: REF, channelId: CH, relativePath: "a.mp4", resource: RESOURCE }), /runs once/);
   assert.deepEqual(log, ["gate"]);
 });
@@ -163,7 +191,7 @@ test("upload: a rejected upload (e.g. a duplicate) ends the wait and is reported
 });
 
 test("delete: only the probe's own video, once; the deletion is verified on YouTube and recorded", async () => {
-  const record = { channelId: CH, videoId: "vidG1", uploadedAt: "2026-10-13T12:00:00Z", deletedAt: null };
+  const record: G1ProbeRecord = { channelId: CH, status: "uploaded", attempt: 1, startedAt: "x", videoId: "vidG1", uploadedAt: "2026-10-13T12:00:00Z", deletedAt: null, rejectionReason: null };
   const other = setup({ record });
   await assert.rejects(other.probe.remove({ credentialRef: REF, videoId: "someoneElse" }), /Only the video the G1 probe uploaded/);
   assert.ok(!other.log.some((entry) => entry.startsWith("delete")));
@@ -180,6 +208,66 @@ test("delete: only the probe's own video, once; the deletion is verified on YouT
 });
 
 test("delete: if YouTube still returns the video afterwards, the report says so", async () => {
-  const { probe } = setup({ record: { channelId: CH, videoId: "vidG1", uploadedAt: "x", deletedAt: null }, deletedState: STATE({}) });
+  const { probe } = setup({ record: { channelId: CH, status: "uploaded", attempt: 1, startedAt: "x", videoId: "vidG1", uploadedAt: "x", deletedAt: null, rejectionReason: null }, deletedState: STATE({}) });
   assert.equal((await probe.remove({ credentialRef: REF, videoId: "vidG1" })).goneOnYouTube, false);
+});
+
+// Independent review of the G1 code (S1-S3): never a second video after an unknown outcome; the id is never lost; the one duplicate
+// retry the plan allows (§2 stage 0, 4a).
+test("an unknown outcome blocks every new upload: a 'started' record left by a crash refuses before anything is sent", async () => {
+  const { probe, log } = setup({ record: { channelId: CH, status: "started", attempt: 1, startedAt: "2026-10-13T11:00:00Z", videoId: null, uploadedAt: null, deletedAt: null, rejectionReason: null } });
+  await assert.rejects(probe.upload({ credentialRef: REF, channelId: CH, relativePath: "a.mp4", resource: RESOURCE }), /unknown outcome/);
+  assert.deepEqual(log, ["gate"]);
+});
+
+test("'started' is saved before the first request; a start Google refused with a 4xx sends nothing and is forgotten, a 5xx is not", async () => {
+  const refused = setup({ beginError: new DomainError({ code: "update_failed", message: "refused", details: { status: 400, reason: "invalidVideoMetadata" } }) });
+  await assert.rejects(refused.probe.upload({ credentialRef: REF, channelId: CH, relativePath: "a.mp4", resource: RESOURCE }));
+  assert.equal(refused.getRecord(), null);
+  const failed = setup({ beginError: new DomainError({ code: "update_failed", message: "HTTP 503", details: { status: 503, reason: null } }) });
+  await assert.rejects(failed.probe.upload({ credentialRef: REF, channelId: CH, relativePath: "a.mp4", resource: RESOURCE }));
+  assert.equal(failed.getRecord()?.status, "started");
+});
+
+test("a lost answer to the last chunk: the session is asked, the video is recovered, never uploaded again", async () => {
+  const { probe, log, announced } = setup({ loseFinalAnswer: true });
+  const report = await probe.upload({ credentialRef: REF, channelId: CH, relativePath: "a.mp4", resource: RESOURCE });
+  assert.equal(report.videoId, "vidG1");
+  assert.deepEqual(announced, ["vidG1"]);
+  assert.equal(log.filter((entry) => entry.startsWith("begin")).length, 1);
+  assert.ok(log.includes("query"));
+});
+
+test("a lost answer and an unanswered status query: the outcome is reported unknown and the record stays 'started'", async () => {
+  const { probe, getRecord } = setup({ loseFinalAnswer: true, queryFails: true });
+  await assert.rejects(probe.upload({ credentialRef: REF, channelId: CH, relativePath: "a.mp4", resource: RESOURCE }), /outcome is unknown/);
+  assert.equal(getRecord()?.status, "started");
+});
+
+test("a failing read-back does not lose the id: it is announced first, recorded, and the error is reported", async () => {
+  const { probe, announced, getRecord } = setup({ readFails: true });
+  const report = await probe.upload({ credentialRef: REF, channelId: CH, relativePath: "a.mp4", resource: RESOURCE });
+  assert.deepEqual(announced, ["vidG1"]);
+  assert.equal(report.readError, "HTTP 503");
+  assert.equal(getRecord()?.status, "uploaded");
+});
+
+test("one retry only after a duplicate rejection whose video was deleted; not otherwise, and never a third", async () => {
+  const rejectedDeleted: G1ProbeRecord = { channelId: CH, status: "uploaded", attempt: 1, startedAt: "x", videoId: "vidDup", uploadedAt: "x", deletedAt: "y", rejectionReason: "duplicate" };
+  const retry = setup({ record: rejectedDeleted });
+  await assert.rejects(retry.probe.upload({ credentialRef: REF, channelId: CH, relativePath: "a.mp4", resource: RESOURCE }), /runs once/);
+  await retry.probe.upload({ credentialRef: REF, channelId: CH, relativePath: "synthetic.mp4", resource: RESOURCE, retryAfterDuplicate: true });
+  assert.equal(retry.getRecord()?.attempt, 2);
+  await assert.rejects(retry.probe.upload({ credentialRef: REF, channelId: CH, relativePath: "a.mp4", resource: RESOURCE, retryAfterDuplicate: true }), /runs once/);
+
+  const notDeleted = setup({ record: { ...rejectedDeleted, deletedAt: null } });
+  await assert.rejects(notDeleted.probe.upload({ credentialRef: REF, channelId: CH, relativePath: "a.mp4", resource: RESOURCE, retryAfterDuplicate: true }));
+  const notDuplicate = setup({ record: { ...rejectedDeleted, rejectionReason: null } });
+  await assert.rejects(notDuplicate.probe.upload({ credentialRef: REF, channelId: CH, relativePath: "a.mp4", resource: RESOURCE, retryAfterDuplicate: true }));
+});
+
+test("delete refuses a record that is only 'started' (no known video)", async () => {
+  const { probe, log } = setup({ record: { channelId: CH, status: "started", attempt: 1, startedAt: "x", videoId: "vidG1", uploadedAt: null, deletedAt: null, rejectionReason: null } });
+  await assert.rejects(probe.remove({ credentialRef: REF, videoId: "vidG1" }));
+  assert.ok(!log.some((entry) => entry.startsWith("delete")));
 });

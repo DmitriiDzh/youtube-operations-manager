@@ -1,19 +1,37 @@
 import { open } from "node:fs/promises";
 import { YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
-import { getPublishingG1Probe, insertVideoEditAuditEvent, rawSqlClient, removeLocalVideoRowIfUnreferenced, savePublishingG1Probe } from "@/lib/db";
+import { clearPublishingG1Probe, getPublishingG1Probe, insertVideoEditAuditEvent, rawSqlClient, removeLocalVideoRowIfUnreferenced, savePublishingG1Probe } from "@/lib/db";
 import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
 import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
 import { createWriteContextCore } from "@/lib/write-context";
 import { createYoutubeClient, getVideoUploadState } from "@/lib/youtube-read-gateway";
 import { createWorkspaceExchangeFsForPublishing, resolveWorkspaceFileForPublishing } from "./adapters/files";
-import { authorizedOAuth, createPublishingYoutubeWrites } from "./adapters/youtube-writes";
+import { authorizedOAuth, createPublishingYoutubeWrites, freshAccessToken } from "./adapters/youtube-writes";
+import type { G1ProbeRecord } from "./contracts";
 import { createG1Probe } from "./g1-probe";
+
+/** The stored record, only when it has this module's shape (an older or damaged value counts as "started": it blocks). */
+function asProbeRecord(value: unknown): G1ProbeRecord | null {
+  if (value === null || typeof value !== "object") return null;
+  const record = value as Partial<G1ProbeRecord>;
+  if (typeof record.channelId !== "string") return null;
+  return {
+    channelId: record.channelId,
+    status: record.status === "uploaded" ? "uploaded" : "started",
+    attempt: typeof record.attempt === "number" ? record.attempt : 1,
+    startedAt: typeof record.startedAt === "string" ? record.startedAt : "unknown",
+    videoId: typeof record.videoId === "string" ? record.videoId : null,
+    uploadedAt: typeof record.uploadedAt === "string" ? record.uploadedAt : null,
+    deletedAt: typeof record.deletedAt === "string" ? record.deletedAt : null,
+    rejectionReason: typeof record.rejectionReason === "string" ? record.rejectionReason : null,
+  };
+}
 
 // BL-182 (ADR 0037). A feature module of its own (AGENTS.md §M): only the developer-only G1 probe for now (stage 0).
 
-export function createG1ProbeCore() {
+export function createG1ProbeCore(options: { announce?: (videoId: string) => void } = {}) {
   const writeContext = createWriteContextCore();
   const workspaces = createChannelWorkspacesCore();
   return createG1Probe({
@@ -46,14 +64,11 @@ export function createG1ProbeCore() {
         await handle.close();
       }
     },
-    async accessTokenOf(credentials) {
-      const { token } = await authorizedOAuth(credentials).getAccessToken();
-      if (!token) throw new Error("Could not get an access token for the upload.");
-      return token;
-    },
+    accessTokenOf: (credentials) => freshAccessToken(credentials),
     gateway: createPublishingYoutubeWrites(),
     readState: async (credentials, videoId) => getVideoUploadState(await createYoutubeClient(authorizedOAuth(credentials)), videoId),
-    record: { get: () => getPublishingG1Probe(), save: (record) => savePublishingG1Probe(record) },
+    record: { get: async () => asProbeRecord(await getPublishingG1Probe()), save: (record) => savePublishingG1Probe(record), clear: () => clearPublishingG1Probe() },
+    announce: (videoId) => options.announce?.(videoId),
     audit: ({ channelId, videoId, detail }) => insertVideoEditAuditEvent({ channelId, videoId, eventType: "RESULT", detail }),
     removeLocalVideoRow: (channelId, videoId) => removeLocalVideoRowIfUnreferenced(channelId, videoId),
     clock: { now: () => new Date() },

@@ -99,13 +99,20 @@
 4a. **Before the run:**
    - **Unmerged code.** The command runs from the unmerged stage-0 branch in the development worktree, against the Mac's real
      database and tokens. The schema is the same (v88), so nothing is migrated. The owner is told this before the run.
-   - **Identity.** `assertWriteChannel` checks the signed-in user's active channel, so the owner switches the active channel to
-     Rural Japan Music. Otherwise the command fails closed.
+   - **Identity.** Each channel has its own connected Google user. The command uses Rural Japan Music's user, and
+     `assertWriteChannel` checks that this token's channel is the expected one (it fails closed otherwise). No switch in the UI is
+     needed.
+   - **Unknown outcome (review S1).**
+     - A `started` record is saved before the first request.
+     - A lost answer is resolved by asking the session where it stands.
+     - While the outcome is unknown, no new upload starts; the owner looks in Studio first.
+     - The video id is printed the moment YouTube returns it.
    - **Live writes.** «Запись в YouTube» must be on. The toggle is a lease renewed by the web server, so it stays on only while the
      owner's session keeps it on.
    - **The clip.** The Operator's clip is the first 25 s of V39, which is public on the same channel. YouTube may reject it as a
      duplicate (`rejectionReason: duplicate`), and a rejected video cannot show whether uploads are locked. Then a synthetic
-     25 s clip is used instead: an ffmpeg test pattern plus a tone, with the same metadata.
+     25 s clip is used instead: an ffmpeg test pattern plus a tone, with the same metadata. This is the probe's one allowed retry
+     (`--retry-after-duplicate`), only once the rejected video is deleted, and only after telling the owner.
 5. **The result goes to the Operator.** It decides stage 2:
    - not locked → as planned;
    - `publishAt` refused → private uploads only;

@@ -7518,21 +7518,24 @@ export async function recordAnalyticsEveningAttempt(channelId: string, at: Date,
 
 const PUBLISHING_G1_PROBE_KEY = "publishing_g1_probe";
 
-/** BL-182 (ADR 0037 §7): the G1 probe's one test upload on this computer, or null before it ran. */
-export async function getPublishingG1Probe(database: AppDb = db): Promise<{ channelId: string; videoId: string; uploadedAt: string; deletedAt: string | null } | null> {
+/** BL-182 (ADR 0037 §7): the G1 probe's record on this computer as stored (the publishing module validates it), or null. */
+export async function getPublishingG1Probe(database: AppDb = db): Promise<unknown> {
   const raw = await getAppSetting(PUBLISHING_G1_PROBE_KEY, database);
   if (!raw) return null;
   try {
-    const parsed = JSON.parse(raw) as { channelId?: unknown; videoId?: unknown; uploadedAt?: unknown; deletedAt?: unknown };
-    if (typeof parsed.channelId !== "string" || typeof parsed.videoId !== "string" || typeof parsed.uploadedAt !== "string") return null;
-    return { channelId: parsed.channelId, videoId: parsed.videoId, uploadedAt: parsed.uploadedAt, deletedAt: typeof parsed.deletedAt === "string" ? parsed.deletedAt : null };
+    return JSON.parse(raw) as unknown;
   } catch {
     return null;
   }
 }
 
-export async function savePublishingG1Probe(record: { channelId: string; videoId: string; uploadedAt: string; deletedAt: string | null }, database: AppDb = db): Promise<void> {
+export async function savePublishingG1Probe(record: object, database: AppDb = db): Promise<void> {
   await setAppSetting(PUBLISHING_G1_PROBE_KEY, JSON.stringify(record), database);
+}
+
+/** BL-182: forgets a probe whose start Google refused (no bytes sent, no video created). */
+export async function clearPublishingG1Probe(database: AppDb = db): Promise<void> {
+  await setAppSetting(PUBLISHING_G1_PROBE_KEY, "", database);
 }
 
 /**

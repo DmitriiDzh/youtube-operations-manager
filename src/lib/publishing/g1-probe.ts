@@ -37,10 +37,14 @@ export type G1ProbeDependencies = {
   gateway: {
     begin(args: { accessToken: string; resource: VideoInsertResource; contentLength: number; contentType: string; notifySubscribers: boolean }): Promise<{ sessionUri: string }>;
     putChunk(args: { accessToken: string; sessionUri: string; chunk: Buffer; start: number; total: number; contentType: string }): Promise<UploadProgress>;
+    /** Where the session stands (a status query): after a lost answer, it tells whether YouTube has the whole video. */
+    queryOffset(args: { accessToken: string; sessionUri: string; total: number }): Promise<UploadProgress>;
     deleteVideo(credentials: ResolvedCredentials, videoId: string): Promise<void>;
   };
   readState(credentials: ResolvedCredentials, videoId: string): Promise<VideoUploadStateView | null>;
-  record: { get(): Promise<G1ProbeRecord | null>; save(record: G1ProbeRecord): Promise<void> };
+  record: { get(): Promise<G1ProbeRecord | null>; save(record: G1ProbeRecord): Promise<void>; clear(): Promise<void> };
+  /** Shown as soon as YouTube returns the id, before anything else can fail (review S3). */
+  announce(videoId: string): void;
   audit(event: { channelId: string; videoId: string; detail: unknown }): Promise<void>;
   removeLocalVideoRow(channelId: string, videoId: string): Promise<boolean>;
   clock: { now(): Date };
@@ -62,10 +66,17 @@ export function createG1Probe(deps: G1ProbeDependencies) {
       validateResource(input.resource);
       await deps.assertDeviceAvailable();
       const previous = await deps.record.get();
-      if (previous) {
+      if (previous?.status === "started") {
         throw new DomainError({
           code: "validation_failed",
-          message: `The G1 probe already uploaded ${previous.videoId}${previous.deletedAt ? " (deleted)" : ""}; it runs once.`,
+          message: `An earlier G1 upload (started ${previous.startedAt}) has an unknown outcome. Look for the test video in Studio before anything else; no new upload starts.`,
+        });
+      }
+      const retry = previous !== null && input.retryAfterDuplicate === true && previous.attempt === 1 && previous.rejectionReason === "duplicate" && previous.deletedAt !== null;
+      if (previous && !retry) {
+        throw new DomainError({
+          code: "validation_failed",
+          message: `The G1 probe already uploaded ${previous.videoId}${previous.deletedAt ? " (deleted)" : ""}; it runs once (one retry only after a duplicate rejection, once that video is deleted).`,
         });
       }
 
@@ -75,42 +86,96 @@ export function createG1Probe(deps: G1ProbeDependencies) {
       const contentType = "video/mp4";
 
       const accessToken = await deps.accessTokenOf(credentials);
-      const { sessionUri } = await deps.gateway.begin({ accessToken, resource: input.resource, contentLength: file.bytes, contentType, notifySubscribers: false });
+      const started: G1ProbeRecord = {
+        channelId: input.channelId,
+        status: "started",
+        attempt: retry ? 2 : 1,
+        startedAt: deps.clock.now().toISOString(),
+        videoId: null,
+        uploadedAt: null,
+        deletedAt: null,
+        rejectionReason: null,
+      };
+      // Saved before the first request: from here on a crash or a lost answer leaves "started", which blocks a second upload.
+      await deps.record.save(started);
+      let sessionUri: string;
+      try {
+        ({ sessionUri } = await deps.gateway.begin({ accessToken, resource: input.resource, contentLength: file.bytes, contentType, notifySubscribers: false }));
+      } catch (error) {
+        // A refused start sends no bytes and creates no video (Google's guide): the record goes back to what it was.
+        if (error instanceof DomainError && typeof (error.details as { status?: unknown } | undefined)?.status === "number") {
+          const status = (error.details as { status: number }).status;
+          if (status >= 400 && status < 500) {
+            if (previous) await deps.record.save(previous);
+            else await deps.record.clear();
+          }
+        }
+        throw error;
+      }
 
       let start = 0;
       let videoId: string | null = null;
       while (videoId === null) {
         const chunk = await deps.readChunk(file.path, start, Math.min(G1_CHUNK_BYTES, file.bytes - start));
-        const progress = await deps.gateway.putChunk({ accessToken, sessionUri, chunk, start, total: file.bytes, contentType });
+        let progress: UploadProgress;
+        try {
+          progress = await deps.gateway.putChunk({ accessToken, sessionUri, chunk, start, total: file.bytes, contentType });
+        } catch (error) {
+          // A lost answer or a 5xx: Google's guide says to ask where the session stands before anything else (review S1).
+          progress = await deps.gateway.queryOffset({ accessToken, sessionUri, total: file.bytes }).catch(() => {
+            throw new DomainError({
+              code: "update_failed",
+              message: `The upload's outcome is unknown after: ${error instanceof Error ? error.message : String(error)}. Look in Studio before anything else.`,
+            });
+          });
+        }
         if ("expired" in progress) throw new DomainError({ code: "update_failed", message: "The upload session expired before the upload finished." });
         if (progress.done) videoId = progress.videoId;
         else if (progress.storedBytes <= start) throw new DomainError({ code: "update_failed", message: `The upload made no progress at byte ${start}.` });
-        else start = progress.storedBytes;
+        else if (progress.storedBytes >= file.bytes) {
+          const status = await deps.gateway.queryOffset({ accessToken, sessionUri, total: file.bytes });
+          if ("done" in status && status.done) videoId = status.videoId;
+          else throw new DomainError({ code: "update_failed", message: "YouTube holds every byte but did not return the video. Look in Studio." });
+        } else start = progress.storedBytes;
       }
 
+      deps.announce(videoId);
       const uploadedAt = deps.clock.now().toISOString();
-      await deps.record.save({ channelId: input.channelId, videoId, uploadedAt, deletedAt: null });
-      await deps.audit({ channelId: input.channelId, videoId, detail: { action: "g1_upload", bytes: file.bytes, resource: input.resource, uploadedAt } });
+      const uploaded: G1ProbeRecord = { ...started, status: "uploaded", videoId, uploadedAt };
+      await deps.record.save(uploaded);
+      await deps.audit({ channelId: input.channelId, videoId, detail: { action: "g1_upload", attempt: started.attempt, bytes: file.bytes, resource: input.resource, uploadedAt } });
 
       const startedMs = deps.clock.now().getTime();
-      let state = await deps.readState(credentials, videoId);
-      while (
-        state &&
-        !TERMINAL_UPLOAD_STATUSES.has(state.uploadStatus ?? "") &&
-        !TERMINAL_PROCESSING_STATUSES.has(state.processingStatus ?? "") &&
-        deps.clock.now().getTime() - startedMs < POLL_FOR_MS
-      ) {
+      let state: VideoUploadStateView | null = null;
+      let readError: string | null = null;
+      const read = async () => {
+        try {
+          state = await deps.readState(credentials, videoId as string);
+          readError = null;
+        } catch (error) {
+          readError = error instanceof Error ? error.message : String(error);
+        }
+      };
+      await read();
+      const finished = () =>
+        state !== null &&
+        (TERMINAL_UPLOAD_STATUSES.has((state as VideoUploadStateView).uploadStatus ?? "") ||
+          TERMINAL_PROCESSING_STATUSES.has((state as VideoUploadStateView).processingStatus ?? ""));
+      while (!finished() && deps.clock.now().getTime() - startedMs < POLL_FOR_MS) {
         await deps.sleep(POLL_EVERY_MS);
-        state = await deps.readState(credentials, videoId);
+        await read();
       }
+      const finalState = state as VideoUploadStateView | null;
       const waitedSeconds = Math.round((deps.clock.now().getTime() - startedMs) / 1000);
-      await deps.audit({ channelId: input.channelId, videoId, detail: { action: "g1_read_back", state, waitedSeconds } });
+      await deps.record.save({ ...uploaded, rejectionReason: finalState?.rejectionReason ?? null });
+      await deps.audit({ channelId: input.channelId, videoId, detail: { action: "g1_read_back", state: finalState, waitedSeconds, readError } });
       return {
         videoId,
         bytes: file.bytes,
-        state,
+        state: finalState,
         waitedSeconds,
-        defaultAudioLanguage: { sent: input.resource.snippet.defaultAudioLanguage ?? null, readBack: state?.defaultAudioLanguage ?? null },
+        readError,
+        defaultAudioLanguage: { sent: input.resource.snippet.defaultAudioLanguage ?? null, readBack: finalState?.defaultAudioLanguage ?? null },
       };
     },
 
@@ -118,21 +183,22 @@ export function createG1Probe(deps: G1ProbeDependencies) {
     async remove(input: { credentialRef: CredentialRef; videoId: string }): Promise<G1DeleteReport> {
       await deps.assertDeviceAvailable();
       const record = await deps.record.get();
-      if (!record || record.videoId !== input.videoId) {
+      if (!record || record.status !== "uploaded" || record.videoId !== input.videoId) {
         throw new DomainError({ code: "validation_failed", message: "Only the video the G1 probe uploaded can be deleted here." });
       }
       if (record.deletedAt) throw new DomainError({ code: "validation_failed", message: `The G1 video was already deleted at ${record.deletedAt}.` });
 
       const credentials = await deps.resolveWriteCredentials(input.credentialRef);
       await deps.assertWriteChannel({ credentialRef: input.credentialRef, credentials, expectedChannelId: record.channelId });
-      await deps.gateway.deleteVideo(credentials, record.videoId);
+      const videoId = record.videoId as string;
+      await deps.gateway.deleteVideo(credentials, videoId);
 
-      const goneOnYouTube = (await deps.readState(credentials, record.videoId)) === null;
+      const goneOnYouTube = (await deps.readState(credentials, videoId).catch(() => undefined)) === null;
       const deletedAt = deps.clock.now().toISOString();
       await deps.record.save({ ...record, deletedAt });
-      await deps.audit({ channelId: record.channelId, videoId: record.videoId, detail: { action: "g1_delete", goneOnYouTube, deletedAt } });
-      const localRowRemoved = await deps.removeLocalVideoRow(record.channelId, record.videoId);
-      return { videoId: record.videoId, goneOnYouTube, localRowRemoved };
+      await deps.audit({ channelId: record.channelId, videoId, detail: { action: "g1_delete", goneOnYouTube, deletedAt } });
+      const localRowRemoved = await deps.removeLocalVideoRow(record.channelId, videoId);
+      return { videoId, goneOnYouTube, localRowRemoved };
     },
   };
 }
