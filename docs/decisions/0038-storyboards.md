@@ -40,3 +40,12 @@ take only verdicts from the others, and have no versions, comments or approval.
   the Operator.
 - An untagged RunPod FLF template is not recognised. The Operator tags them.
 - Media's first level changes (FO-REQ-0024 A, layout chosen by the owner).
+
+## Amendment 1 (BL-189, FO-REQ-0025, 2026-10-14; owner msgs 2813/2814)
+
+- **Takes come from every computer.** A storyboard's takes are this computer's linked jobs and the other computers' linked jobs from
+  their `media-jobs` reports (BL-188, ADR 0028 pattern). Files are not streamed: each computer plays its own copy of the channel
+  folder, or says where the take was made.
+- **The Operator's final file is a render of the approved version** (`renders`, `renderDecisions` in the same document; Factory API
+  1.18.0 `factory_storyboard_attach_render`). It records the take of each segment it uses; the owner approves it or requests changes
+  in the Web UI on either computer. A render is never edited; a new file is a new render.

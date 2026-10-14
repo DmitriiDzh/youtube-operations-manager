@@ -159,3 +159,24 @@ test("an approval of one computer's version 2 never approves the other computer'
     assert.equal(storyboardState(sb) === "approved", survivor === "hash-A", `the surviving body ${survivor} is approved only if it is the approved one`);
   }
 });
+
+test("BL-189 (FO-REQ-0025 §3 step 3): a final file attached on the Mac and the owner's verdicts from both computers are all on both after a cycle", async () => {
+  const mac = computer();
+  const windows = computer();
+  await mac.create(CH, { id: "bar_loop", createdAt: "2026-10-13T12:00:00Z", createdBy: "operator", planId: null }, version("Bar"));
+  await cycle(mac, windows);
+  const render = { id: "rn_1", versionNumber: 1, contentHash: "h1", file: "Sent to YTM/H-0004/bar/v3/loop_s8.mp4", sha256: "f", bytes: 9, picks: { S1: { source: "media" as const, jobId: "j1" } }, notes: "s8", createdAt: "2026-10-14T16:00:00Z", device: "Mac" };
+  await mac.addRender(CH, "bar_loop", render);
+  await cycle(mac, windows);
+  // The owner decides on both computers before the next sync: both verdicts are kept (one map, made with the render).
+  await windows.addRenderDecision(CH, "bar_loop", { id: "rd_w", renderId: "rn_1", kind: "changes_requested", by: "owner", device: "Windows", at: "2026-10-14T16:05:00Z", note: "S3 joint" });
+  await mac.addRenderDecision(CH, "bar_loop", { id: "rd_m", renderId: "rn_1", kind: "approved", by: "owner", device: "Mac", at: "2026-10-14T16:06:00Z", note: null });
+  await cycle(mac, windows);
+  for (const side of [mac, windows]) {
+    const [record] = await side.read(CH);
+    assert.deepEqual(record.renders, { rn_1: render });
+    assert.deepEqual(Object.keys(record.renderDecisions ?? {}).sort(), ["rd_m", "rd_w"]);
+  }
+  await assert.rejects(windows.addRenderDecision(CH, "bar_loop", { id: "rd_x", renderId: "rn_nope", kind: "approved", by: "owner", device: null, at: "2026-10-14T16:07:00Z", note: null }), (e: unknown) => isDomainError(e) && e.code === "not_found");
+  await assert.rejects(mac.addRender(CH, "bar_loop", { ...render, id: "rn_2", versionNumber: 9 }), (e: unknown) => isDomainError(e) && e.code === "not_found");
+});

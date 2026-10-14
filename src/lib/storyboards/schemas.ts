@@ -82,3 +82,23 @@ export const ownerPickInputSchema = z
 
 /** BL-184 stage 2 (B4): the owner's per-channel setting. */
 export const gateSettingInputSchema = z.object({ requireApproved: z.boolean() }).strict();
+
+/**
+ * BL-189 (FO-REQ-0025 B): `factory_storyboard_attach_render` -- the Operator's final file of an approved version, with the take of
+ * each segment it uses (omitted: the owner's current picks are recorded).
+ */
+const takeRef = z.object({ source: z.enum(["media", "gemini"]), jobId: z.string().min(1).max(80) }).strict();
+export const attachRenderInputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    storyboardId: id,
+    versionNumber: z.number().int().min(1),
+    file: exchangeFile,
+    picks: z.record(id, takeRef).optional(),
+    notes: z.string().max(STORYBOARD_LIMITS.text).nullable().optional(),
+  })
+  .strict();
+/** BL-189: the owner's verdict on a render. */
+export const ownerRenderDecisionInputSchema = z
+  .object({ kind: z.enum(["approved", "changes_requested"]), note: z.string().max(STORYBOARD_LIMITS.comment).nullable().optional() })
+  .strict();

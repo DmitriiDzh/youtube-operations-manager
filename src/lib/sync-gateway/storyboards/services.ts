@@ -8,6 +8,8 @@ import {
   type StoryboardGateSetting,
   type StoryboardPick,
   type StoryboardRecord,
+  type StoryboardRender,
+  type StoryboardRenderDecision,
   type StoryboardReply,
   type StoryboardsDocument,
   type StoryboardVersion,
@@ -140,6 +142,28 @@ export function createStoryboardsCore(deps: ServiceDependencies) {
         if (!record.picks[key]) record.picks[key] = {};
         if (pick) record.picks[key][segmentId] = clone(pick);
         else delete record.picks[key][segmentId];
+      });
+    },
+
+    /**
+     * BL-189 (FO-REQ-0025 B): a render of a version. Both maps are made with the first render, in the same change, so the owner's
+     * verdicts (from either computer, always after the render arrived) land in one existing map instead of two competing ones.
+     */
+    addRender(channelId: string, storyboardId: string, render: StoryboardRender): Promise<void> {
+      return changeStoryboard(channelId, storyboardId, `render ${storyboardId} v${render.versionNumber}`, (record) => {
+        if (!record.versions[String(render.versionNumber)]) throw notFound("Version", { storyboardId, versionNumber: render.versionNumber });
+        if (!record.renders) record.renders = {};
+        if (!record.renderDecisions) record.renderDecisions = {};
+        record.renders[render.id] = clone(render);
+      });
+    },
+
+    /** BL-189: the owner's verdict on a render. */
+    addRenderDecision(channelId: string, storyboardId: string, decision: StoryboardRenderDecision): Promise<void> {
+      return changeStoryboard(channelId, storyboardId, `render ${decision.renderId} ${decision.kind}`, (record) => {
+        if (!record.renders?.[decision.renderId]) throw notFound("Render", { storyboardId, renderId: decision.renderId });
+        if (!record.renderDecisions) record.renderDecisions = {};
+        record.renderDecisions[decision.id] = clone(decision);
       });
     },
 

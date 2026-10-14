@@ -130,6 +130,8 @@ export type {
   StoryboardPick,
   StoryboardProp,
   StoryboardRecord,
+  StoryboardRender,
+  StoryboardRenderDecision,
   StoryboardReply,
   StoryboardSegment,
   StoryboardsCore,

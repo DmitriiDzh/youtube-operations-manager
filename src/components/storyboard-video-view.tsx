@@ -5,6 +5,7 @@ import type { StoryboardVersion } from "@/lib/sync-gateway";
 import type { StoryboardDetail } from "@/lib/storyboards";
 import { errorText } from "@/lib/ui-text";
 import { MediaVideoPlayer } from "./media-video-player";
+import { StoryboardRenders } from "./storyboard-renders";
 import { assembledLoop, jointsOf, keyframeSrc, segmentsInOrder, takeKey, takeSrc, takesBySegment, takeState, type TakeView } from "./storyboard-model";
 import { useT, useUiText } from "./ui-text-provider";
 import { SeamFrames } from "./visual-review-tools";
@@ -187,6 +188,9 @@ export function StoryboardVideoView({ channelId, storyboard, version, onPicked }
 
       <section className="space-y-2">
         <h3 className="text-sm font-semibold text-white">{t("storyboards.video.assembled")}</h3>
+        {/* BL-189 (FO-REQ-0025 B): the Operator's final files first; the in-browser preview of the picks below. */}
+        <StoryboardRenders channelId={channelId} storyboard={storyboard} version={version} onDecided={onPicked} />
+        <h4 className="pt-2 text-xs font-semibold uppercase tracking-wide text-zinc-400">{t("storyboards.render.preview")}</h4>
         {loop.takes.length > 0 ? (
           <AssembledLoop key={loop.takes.map(takeKey).join("|")} sources={loop.takes.map((take) => ({ key: takeKey(take), segmentId: take.segmentId, src: takeSrc(channelId, storyboard.storyboardId, take) }))} loop={version.loop} />
         ) : (

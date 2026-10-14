@@ -46,8 +46,8 @@ export function createStoryboardsServiceForProduction(): StoryboardsService {
   return holder[PRODUCTION_KEY];
 }
 
-export { createStoryboardsService, checkContent, exchangeRelativePath } from "./services";
-export type { StoryboardsService, StoryboardSummary, StoryboardDetail } from "./services";
+export { createStoryboardsService, checkContent, exchangeRelativePath, renderStateOf } from "./services";
+export type { StoryboardsService, StoryboardSummary, StoryboardDetail, RenderState, RenderView } from "./services";
 export { createStoryboardFiles, sha256OfFile } from "./adapters/files";
 export { createStoryboardGate, requireApprovedOf, DEFAULT_REQUIRE_APPROVED } from "./gate";
 export type { StoryboardGate, StoryboardLink, StoryboardJobLink, FramePairCheck, StoryboardNotApprovedReason } from "./gate";

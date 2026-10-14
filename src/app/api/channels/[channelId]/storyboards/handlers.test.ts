@@ -49,6 +49,13 @@ function make(options: { session?: { user: { id: string } } | null; refuse?: Dom
       if (options.refuse) throw options.refuse;
       return { decisionId: "d_1", state: "approved" as const };
     },
+    // BL-189: render "rn_here" has its file on this computer, "rn_away" does not.
+    ownerRenderDecision: async (...args) => (calls.push(["renderDecide", ...args]), { decisionId: "rd_1", state: "approved" as const }),
+    renderFile: async (_channelId, _storyboardId, renderId) => {
+      if (renderId === "rn_here") return { status: "ok" as const, path: VIDEO_FILE, bytes: 10, file: "Sent to YTM/bar/v3/loop.mp4" };
+      if (renderId === "rn_away") return { status: "missing" as const, path: null, bytes: null, file: "Sent to YTM/bar/v3/loop.mp4" };
+      throw new DomainError({ code: "storyboard_render_not_found", message: "No such final file" });
+    },
   };
   const handlers = createStoryboardRouteHandlers({
     getSession: async () => (options.session === undefined ? { user: { id: "owner" } } : options.session),
@@ -164,4 +171,21 @@ test("ADR 0029 decision 5: keyframe images and take videos are sent only to a re
   const remote = new Request("http://x/", { headers: { "x-test-remote": "1" } });
   assert.equal((await handlers.keyframe(remote, ctx({ channelId: "UC_active", storyboardId: "sb", version: "1", keyframeId: "K0" }))).status, 403);
   assert.equal((await handlers.takeVideo(remote, ctx({ channelId: "UC_active", storyboardId: "sb", source: "gemini", jobId: "gm_1" }))).status, 403);
+});
+
+test("BL-189 (FO-REQ-0025 B): a final file's status, the file with Range for this computer only, and the owner's verdict with the id from the address", async () => {
+  await writeFile(VIDEO_FILE, "0123456789");
+  const { handlers, calls } = make();
+  const base = { channelId: "UC_active", storyboardId: "sb" };
+  assert.deepEqual(await (await handlers.renderStatus(new Request("http://x/"), ctx({ ...base, renderId: "rn_here" }))).json(), { status: "ok" });
+  assert.deepEqual(await (await handlers.renderStatus(new Request("http://x/"), ctx({ ...base, renderId: "rn_away" }))).json(), { status: "missing" });
+  assert.equal((await handlers.renderStatus(new Request("http://x/"), ctx({ ...base, renderId: "rn_nope" }))).status, 404);
+  const ranged = await handlers.renderVideo(new Request("http://x/", { headers: { range: "bytes=0-3" } }), ctx({ ...base, renderId: "rn_here" }));
+  assert.deepEqual([ranged.status, ranged.headers.get("content-type"), await ranged.text()], [206, "video/mp4", "0123"]);
+  assert.equal((await handlers.renderVideo(new Request("http://x/"), ctx({ ...base, renderId: "rn_away" }))).status, 404);
+  assert.equal((await handlers.renderVideo(new Request("http://x/", { headers: { "x-test-remote": "1" } }), ctx({ ...base, renderId: "rn_here" }))).status, 403);
+  await handlers.renderDecide(json("POST", { kind: "approved", renderId: "rn_other" }), ctx({ ...base, renderId: "rn_here" }));
+  assert.deepEqual(calls.filter((c) => c[0] === "renderDecide"), [["renderDecide", "UC_active", "sb", "rn_here", { kind: "approved", renderId: "rn_other" }]]);
+  // Another channel reaches nothing.
+  assert.equal((await handlers.renderDecide(json("POST", { kind: "approved" }), ctx({ channelId: "UC_other", storyboardId: "sb", renderId: "rn_here" }))).status, 403);
 });

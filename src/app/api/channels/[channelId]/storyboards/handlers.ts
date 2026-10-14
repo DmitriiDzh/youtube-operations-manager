@@ -21,7 +21,7 @@ export type StoryboardRouteDeps = {
   assertActiveChannel: (args: { userId: string; channelId: string }) => Promise<void>;
   service: () => Pick<
     StoryboardsService,
-    "listForOwner" | "getForOwner" | "keyframeFiles" | "versionDiff" | "keyframeFile" | "ownerComment" | "ownerReply" | "ownerSetCommentState" | "ownerDecide" | "gateSetting" | "setGateSetting" | "ownerPick"
+    "listForOwner" | "getForOwner" | "keyframeFiles" | "versionDiff" | "keyframeFile" | "ownerComment" | "ownerReply" | "ownerSetCommentState" | "ownerDecide" | "gateSetting" | "setGateSetting" | "ownerPick" | "ownerRenderDecision" | "renderFile"
   >;
   readFile: (filePath: string) => Promise<Uint8Array>;
   /** BL-184 stage 3: the storyboard's takes (the video modules' linked jobs) and a take's file on this computer. */
@@ -126,7 +126,18 @@ export function createStoryboardRouteHandlers(deps: StoryboardRouteDeps = defaul
         await deps.service().getForOwner(channelId, storyboardId);
         const takes = await deps.takes(channelId, storyboardId);
         return NextResponse.json({
-          takes: takes.map(({ localPath, exchangePath: _exchangePath, device, ...take }) => ({ ...take, device: device ? { hostName: device.hostName } : null, hasVideo: localPath !== null })),
+          takes: takes.map((take) => ({
+            source: take.source,
+            jobId: take.jobId,
+            segmentId: take.segmentId,
+            versionNumber: take.versionNumber,
+            status: take.status,
+            createdAt: take.createdAt,
+            label: take.label,
+            error: take.error,
+            device: take.device ? { hostName: take.device.hostName } : null,
+            hasVideo: take.localPath !== null,
+          })),
         });
       }),
 
@@ -149,6 +160,27 @@ export function createStoryboardRouteHandlers(deps: StoryboardRouteDeps = defaul
           (await deps.takes(channelId, storyboardId)).some((t) => t.source === take.source && t.jobId === take.jobId && t.versionNumber === versionNumber && t.segmentId === segmentId);
         return NextResponse.json(await deps.service().ownerPick(channelId, storyboardId, await body(request), isTake));
       }),
+
+    /** BL-189 (FO-REQ-0025 B): this computer's copy of an attached final file -- ok, missing or differs (never its path). */
+    renderStatus: (_request: Request, context: Params<Base & { storyboardId: string; renderId: string }>) =>
+      guarded(context, async ({ channelId, storyboardId, renderId }) => {
+        const found = await deps.service().renderFile(channelId, storyboardId, renderId);
+        return NextResponse.json({ status: found.status });
+      }),
+
+    /** BL-189: the final file itself, with HTTP Range (this computer's copy, even when it differs: review is not blocked). */
+    renderVideo: (request: Request, context: Params<Base & { storyboardId: string; renderId: string }>) =>
+      guarded(context, async ({ channelId, storyboardId, renderId }) => {
+        if (!deps.isLoopback(request)) return NextResponse.json({ error: "forbidden", message: "Local files are served to this computer only" }, { status: 403 });
+        const found = await deps.service().renderFile(channelId, storyboardId, renderId);
+        const type = found.path ? videoTypeOf(found.path) : null;
+        if (!found.path || found.bytes === null || !type) return NextResponse.json({ error: "storyboard_file_unavailable", message: "This final file is not on this computer" }, { status: 404 });
+        return streamLocalFile({ path: found.path, bytes: found.bytes }, type, request);
+      }),
+
+    /** BL-189: POST `{ kind: approved | changes_requested, note? }` -- the owner's verdict on an attached final file. */
+    renderDecide: (request: Request, context: Params<Base & { storyboardId: string; renderId: string }>) =>
+      guarded(context, async ({ channelId, storyboardId, renderId }) => NextResponse.json(await deps.service().ownerRenderDecision(channelId, storyboardId, renderId, await body(request)))),
 
     /** The keyframe's image as this computer has it (even when it differs from the frozen sha256: review is not blocked). */
     keyframe: (request: Request, context: Params<Base & { storyboardId: string; version: string; keyframeId: string }>) =>

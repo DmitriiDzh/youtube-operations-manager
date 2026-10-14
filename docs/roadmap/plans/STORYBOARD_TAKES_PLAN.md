@@ -1,7 +1,7 @@
 # Storyboard takes on every computer, the attached final loop, version on the cards (FO-REQ-0025, BL-189)
 
-- **Status:** IN PROGRESS on `feature/fo-req-0025-storyboard-takes` (from `dev` 5ee13a2). Owner go: Telegram msgs 2813/2814
-  (2026-10-14).
+- **Status:** BUILT on `feature/fo-req-0025-storyboard-takes` (from `dev` 5ee13a2), both stages; not merged. Owner go: Telegram
+  msgs 2813/2814 (2026-10-14). As built: `docs/ARCHITECTURE.md` §48.4.
 - **Request:** FO-REQ-0025 (Operator, 2026-10-14). Reply: DEV-RESP-0030.
 - **Builds on:** BL-184 (`STORYBOARD_PLAN.md`, ADR 0038; storyboards sync family, picks) and BL-188 (`SHARED_MEDIA_JOBS_PLAN.md`;
   the per-device `media-jobs` report that already carries every job's `storyboard` link and its output paths).

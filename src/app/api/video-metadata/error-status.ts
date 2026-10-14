@@ -145,6 +145,7 @@ const DOMAIN_ERROR_STATUS = {
   upload_tags_too_long: 422,
   storyboard_not_found: 404,
   storyboard_comment_not_found: 404,
+  storyboard_render_not_found: 404,
   storyboard_file_unavailable: 422,
   storyboard_channel_unavailable: 409,
   storyboard_version_not_latest: 409,
