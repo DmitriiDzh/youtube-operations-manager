@@ -3780,6 +3780,19 @@ Plan: `docs/roadmap/plans/LIVE_STREAMS_PLAN.md` (FO-REQ-0019). Schema v86, Facto
   cached by path, size and mtime). Nothing is ticked for the owner. `POST .../rotation/batch` runs `addVideo` for each item in
   order (all its checks, a fresh YouTube read each); a refusal is reported and does not stop the rest; a missing workspace stops
   the batch. Read-only on disk; no YouTube write.
+- **The stream's YouTube settings** (BL-186 stage 2, `LIVE_STREAMS_FIELDS_PLAN.md` §2.1/§3.2; `fields.ts`, `video-settings.ts`,
+  `adapters/thumbnail-fs.ts`, `src/components/live-stream-video-settings.tsx`). Schema v92 `live_streams.video_settings_json` holds
+  every field the API can set: tags (500 characters as YouTube counts them), category, title/description and audio languages (the
+  app's YouTube list; `zxx` for audio), recording date (midnight UTC), license, synthetic-media and paid-promotion marks, public like
+  count, up to 10 playlists, the thumbnail's facts (kind, size, SHA-256; the JPEG/PNG of at most 2 MB, checked by its bytes, is
+  kept in `<appData>/live-streams-thumbnails/<channelId>.jpg|png`), and the broadcast's latency, DVR, embedding and captions type
+  (`closedCaptionsDisabled` only: no caption source). `PUT .../live-stream/video-settings` and `PUT|DELETE .../thumbnail` are local;
+  the thumbnail route refuses a body over 2 MB before reading it all. A stored value that fails the schema is reported on the page
+  and refuses Start before any call (never read as defaults). Start sends the four broadcast fields inside the same
+  `liveBroadcasts.insert` (no new call or unit; never saved = not sent, YouTube's defaults). The video-level fields are shown in the
+  Start dialog as "not sent yet": applying them (`videos.update`, `thumbnails.set`, `playlistItems.insert`) is stage 3, after spike
+  C. The field limits and lists live in the shared `src/lib/youtube-video-fields/` (publishing re-exports them). Translations of
+  the broadcast's title/description go through the normal localization screens (plan §2.3), never these settings.
 - **Risks:** RISK-125 (the key in ffmpeg's argv), RISK-126 (the T9 every ~2 h).
 
 ## 46. The channel's language is the truth for localization (BL-178, FO-REQ-0022)

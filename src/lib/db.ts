@@ -1338,6 +1338,9 @@ export const liveStreams = sqliteTable("live_streams", {
   positionOffsetSeconds: real("position_offset_seconds").notNull(),
   positionUpdatedAt: integer("position_updated_at", { mode: "timestamp_ms" }),
   onSince: integer("on_since", { mode: "timestamp_ms" }),
+  /** Schema v92 (BL-186, LIVE_STREAMS_FIELDS_PLAN.md §3.2): the stream's own video and broadcast settings, JSON validated by the
+   * live-streams module on read and write; null = never saved (Start sends only what it sent before BL-186). */
+  videoSettingsJson: text("video_settings_json"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
 });
@@ -4930,6 +4933,18 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     apply: async (client) => {
       try {
         await client.execute("ALTER TABLE videos ADD COLUMN removed_on_youtube_at INTEGER");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
+    },
+  },
+  {
+    version: 92,
+    description:
+      "live_streams.video_settings_json -- BL-186 (docs/roadmap/plans/LIVE_STREAMS_FIELDS_PLAN.md §3.2; owner msgs 2782/2785): the stream's own video and broadcast settings (tags, category, languages, thumbnail, playlists, latency, DVR, embedding...). Additive, nullable, device-local",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE live_streams ADD COLUMN video_settings_json TEXT");
       } catch (error) {
         if (!isDuplicateColumnError(error)) throw error;
       }

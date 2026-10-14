@@ -12,6 +12,7 @@ import {
   createLiveStreamsSettingsCore,
   createRotationPickerCore,
   createStreamSupervisorCore,
+  createStreamVideoSettingsCore,
   isDomainError,
 } from "@/lib/live-streams";
 
@@ -23,6 +24,11 @@ import {
 export type LiveStreamRouteCore = {
   overview(channelId: string): Promise<unknown>;
   saveSettings(channelId: string, body: unknown): Promise<unknown>;
+  /** BL-186: the stream's video and broadcast settings and its thumbnail -- local only, never a YouTube write. */
+  saveVideoSettings(channelId: string, body: unknown): Promise<unknown>;
+  setThumbnail(channelId: string, bytes: Uint8Array): Promise<unknown>;
+  clearThumbnail(channelId: string): Promise<void>;
+  readThumbnail(channelId: string): Promise<{ kind: "jpeg" | "png"; bytes: Uint8Array } | null>;
   addVideo(channelId: string, body: unknown): Promise<unknown>;
   addVideos(channelId: string, body: unknown): Promise<unknown>;
   listCandidates(channelId: string, options: { showAll: boolean }): Promise<unknown>;
@@ -54,9 +60,10 @@ export function createLiveStreamRouteCore(): LiveStreamRouteCore {
   const broadcasts = createLiveBroadcastsCore();
   const supervisor = createStreamSupervisorCore();
   const settings = createLiveStreamsSettingsCore();
+  const videoSettings = createStreamVideoSettingsCore();
   return {
     async overview(channelId) {
-      const [view, module, running, events, preview, youtube, entries, peers] = await Promise.all([
+      const [view, module, running, events, preview, youtube, entries, peers, video] = await Promise.all([
         rotation.getOverview(channelId),
         settings.get(),
         supervisor.runningHelper(channelId),
@@ -65,9 +72,13 @@ export function createLiveStreamRouteCore(): LiveStreamRouteCore {
         supervisor.lastYoutubePoll(channelId),
         collectLiveStreamEntries(),
         listPeerLiveStreams().catch(() => []),
+        videoSettings.get(channelId),
       ]);
       return {
         ...view,
+        // BL-186: null = never saved; a stored value that fails the schema is reported, never replaced by defaults.
+        videoSettings: video.ok ? video.settings : null,
+        videoSettingsProblem: video.ok ? null : video.problem,
         module,
         // §3.10: the state in the one vocabulary the report and the Operator use.
         state: entries.find((e) => e.channelId === channelId)?.state ?? "off",
@@ -80,6 +91,10 @@ export function createLiveStreamRouteCore(): LiveStreamRouteCore {
       };
     },
     saveSettings: (channelId, body) => rotation.saveSettings(channelId, body),
+    saveVideoSettings: (channelId, body) => videoSettings.save(channelId, body),
+    setThumbnail: (channelId, bytes) => videoSettings.setThumbnail(channelId, bytes),
+    clearThumbnail: (channelId) => videoSettings.clearThumbnail(channelId),
+    readThumbnail: (channelId) => videoSettings.readThumbnail(channelId),
     addVideo: (channelId, body) => rotation.addVideo(channelId, body),
     addVideos: (channelId, body) => rotation.addVideos(channelId, body),
     listCandidates: (channelId, options) => createRotationPickerCore().listCandidates(channelId, options),

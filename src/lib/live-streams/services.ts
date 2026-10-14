@@ -1,4 +1,5 @@
 import {
+  DEFAULT_STREAM_SETTINGS,
   DomainError,
   DURATION_TOLERANCE_SECONDS,
   isDomainError,
@@ -47,6 +48,8 @@ export type StoredStreamRow = {
   positionOffsetSeconds: number;
   positionUpdatedAt: Date | null;
   onSince: Date | null;
+  /** Schema v92 (BL-186): the stream's video and broadcast settings as stored JSON; null = never saved. */
+  videoSettingsJson?: string | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -72,7 +75,7 @@ export type LiveStreamsDependencies = {
     getStream(channelId: string): Promise<StoredStreamRow | null>;
     upsertStream(row: Omit<StoredStreamRow, "positionUpdatedAt" | "onSince" | "passOrderJson" | "nextPassOrderJson" | "streamId" | "broadcastId"> & Partial<StoredStreamRow>): Promise<void>;
     /** Some columns of an existing row only (never the stream's ids, intent or position). */
-    updateStream(channelId: string, set: Partial<Pick<StoredStreamRow, "title" | "description" | "privacyStatus" | "madeForKids" | "orderMode" | "updatedAt">>): Promise<boolean>;
+    updateStream(channelId: string, set: Partial<Pick<StoredStreamRow, "title" | "description" | "privacyStatus" | "madeForKids" | "orderMode" | "videoSettingsJson" | "updatedAt">>): Promise<boolean>;
     listVideos(channelId: string): Promise<StoredVideoRow[]>;
     upsertVideo(row: StoredVideoRow): Promise<void>;
     updateVideo(channelId: string, videoId: string, set: Partial<Omit<StoredVideoRow, "channelId" | "videoId" | "addedAt">>): Promise<boolean>;
@@ -94,7 +97,6 @@ export type LiveStreamsDependencies = {
   newId: () => string;
 };
 
-const DEFAULT_SETTINGS: StreamSettingsInput = { title: "", description: "", privacyStatus: "unlisted", madeForKids: false, orderMode: "sequence" };
 
 function refused(reason: VideoRefusal, detail: string, videoId: string): DomainError {
   return new DomainError({ code: "live_stream_video_refused", message: `The video cannot be streamed: ${detail}`, details: { videoId, reason } });
@@ -191,7 +193,7 @@ export function createLiveStreamsServices(deps: LiveStreamsDependencies) {
       // or a YouTube-ended stop that landed between the read and the write.
       const updated = await deps.store.updateStream(channelId, { ...settings, updatedAt: now });
       if (!updated) {
-        await deps.store.upsertStream({ channelId, intent: "off", passNumber: 0, positionIndex: 0, positionOffsetSeconds: 0, createdAt: now, ...DEFAULT_SETTINGS, ...settings, updatedAt: now });
+        await deps.store.upsertStream({ channelId, intent: "off", passNumber: 0, positionIndex: 0, positionOffsetSeconds: 0, createdAt: now, ...DEFAULT_STREAM_SETTINGS, ...settings, updatedAt: now });
       }
       await event(channelId, "settings_saved", { ...settings });
       return settings;

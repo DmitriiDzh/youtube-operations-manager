@@ -6,7 +6,9 @@ import { errorText } from "@/lib/ui-text";
 import type { UiTextKey } from "@/lib/ui-text";
 import { ConfirmDialog } from "./confirm-dialog";
 import { InfoTooltip } from "./info-tooltip";
+import type { LiveLatency, LiveVideoSettings } from "@/lib/live-streams/fields";
 import { LiveStreamAddVideosDialog } from "./live-stream-add-videos-dialog";
+import { LiveStreamVideoSettingsCard } from "./live-stream-video-settings";
 import { LoadingIndicator } from "./operation-progress";
 import { ToggleSwitch } from "./toggle-switch";
 import { useT } from "./ui-text-provider";
@@ -52,7 +54,20 @@ type Overview = {
     configurationIssues: Array<{ type: string; severity: string | null }>;
     viewers: number | null;
   } | null;
-  startPreview: { createsStream: boolean; units: number; liveWritesEnabled: boolean; moduleReady: boolean } | null;
+  startPreview: {
+    createsStream: boolean;
+    units: number;
+    liveWritesEnabled: boolean;
+    moduleReady: boolean;
+    /** BL-186: the broadcast settings the insert carries (null = never saved: YouTube's defaults). */
+    broadcast?: { settings: LiveVideoSettings["broadcast"] | null };
+    /** BL-186: the saved video-level settings -- shown, not sent by this Start yet. */
+    videoSettings?: Omit<LiveVideoSettings, "broadcast"> | null;
+    videoSettingsApplied?: boolean;
+    videoSettingsProblem?: string | null;
+  } | null;
+  videoSettings: LiveVideoSettings | null;
+  videoSettingsProblem: string | null;
   events: Array<{ id: string; at: string; kind: string; detail: Record<string, unknown> }>;
   state: StreamState;
   peers: Array<{ deviceId: string; hostName: string | null; updatedAt: string; stream: { state: StreamState; since: string | null; playing: { index: number; total: number; videoId: string } | null; viewers: number | null } }>;
@@ -201,6 +216,7 @@ export function LiveStreamPanel({ channelId, visible }: { channelId: string | nu
         <>
           <StatusCard overview={overview} base={base!} onChanged={load} />
           <SettingsCard overview={overview} base={base!} onChanged={load} />
+          <LiveStreamVideoSettingsCard base={base!} saved={overview.videoSettings} problem={overview.videoSettingsProblem} onChanged={load} />
           <RotationCard overview={overview} base={base!} onChanged={load} />
           <HistoryCard overview={overview} />
         </>
@@ -329,9 +345,24 @@ function StatusCard({ overview, base, onChanged }: { overview: Overview; base: s
             <dd className="text-zinc-200">{t("live.start.autoStopValue")}</dd>
             <dt className="text-zinc-500">{t("live.start.recording")}</dt>
             <dd className="text-zinc-200">{t("live.start.recordingValue")}</dd>
+            {preview.broadcast?.settings && (
+              <>
+                <dt className="text-zinc-500">{t("live.video.field.latency")}</dt>
+                <dd className="text-zinc-200">{t(LATENCY_KEYS[preview.broadcast.settings.latencyPreference])}</dd>
+                <dt className="text-zinc-500">{t("live.video.field.dvr")}</dt>
+                <dd className="text-zinc-200">{preview.broadcast.settings.enableDvr ? t("live.yes") : t("live.no")}</dd>
+                <dt className="text-zinc-500">{t("live.video.field.embed")}</dt>
+                <dd className="text-zinc-200">{preview.broadcast.settings.enableEmbed ? t("live.yes") : t("live.no")}</dd>
+                <dt className="text-zinc-500">{t("live.video.field.captions")}</dt>
+                <dd className="text-zinc-200">{t("live.video.captionsOff")}</dd>
+              </>
+            )}
             <dt className="text-zinc-500">{t("live.start.units")}</dt>
             <dd className="text-zinc-200">{t("live.start.unitsValue", { units: String(preview.units) })}</dd>
           </dl>
+          {!preview.broadcast?.settings && <p className="text-xs text-zinc-400">{t("live.start.broadcastDefaults")}</p>}
+          {preview.videoSettings && <StartVideoSettingsSummary settings={preview.videoSettings} />}
+          {preview.videoSettingsProblem && <p className="text-xs text-amber-300">{t("live.video.problem", { problem: preview.videoSettingsProblem })}</p>}
           {preview.createsStream && <p className="text-xs text-zinc-400">{t("live.start.createsStream")}</p>}
           {!preview.liveWritesEnabled && <p className="text-xs text-amber-300">{t("live.liveWritesOff")}</p>}
         </ConfirmDialog>
@@ -365,6 +396,43 @@ function StatusCard({ overview, base, onChanged }: { overview: Overview; base: s
           {!preview?.liveWritesEnabled && <p className="text-xs text-amber-300">{t("live.liveWritesOff")}</p>}
         </ConfirmDialog>
       )}
+    </div>
+  );
+}
+
+const LATENCY_KEYS: Record<LiveLatency, UiTextKey> = {
+  normal: "live.video.latency.normal",
+  low: "live.video.latency.low",
+  ultraLow: "live.video.latency.ultraLow",
+};
+
+/** BL-186 (LIVE_STREAMS_FIELDS_PLAN.md §5 stage 2): the saved video-level settings in the Start dialog, marked as not sent yet. */
+function StartVideoSettingsSummary({ settings }: { settings: Omit<LiveVideoSettings, "broadcast"> }) {
+  const t = useT();
+  const marks = [
+    settings.containsSyntheticMedia && t("live.video.field.synthetic"),
+    settings.paidProductPlacement && t("live.video.field.paidPromotion"),
+  ].filter(Boolean);
+  return (
+    <div className="space-y-1 rounded-lg border border-zinc-800 p-2 text-xs">
+      <p className="text-zinc-300">{t("live.start.videoSettingsTitle")}</p>
+      <p className="text-amber-300">{t("live.start.videoSettingsNotSent")}</p>
+      <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1">
+        <dt className="text-zinc-500">{t("live.video.field.tags")}</dt>
+        <dd className="text-zinc-200">{settings.tags.length > 0 ? settings.tags.join(", ") : "—"}</dd>
+        <dt className="text-zinc-500">{t("live.video.field.category")}</dt>
+        <dd className="text-zinc-200">{settings.categoryId ? t(`publishingSettings.category.${settings.categoryId}` as UiTextKey) : "—"}</dd>
+        <dt className="text-zinc-500">{t("live.video.field.defaultLanguage")}</dt>
+        <dd className="text-zinc-200">{settings.defaultLanguage ?? "—"}</dd>
+        <dt className="text-zinc-500">{t("live.video.field.audioLanguage")}</dt>
+        <dd className="text-zinc-200">{settings.defaultAudioLanguage ?? "—"}</dd>
+        <dt className="text-zinc-500">{t("live.video.section.marks")}</dt>
+        <dd className="text-zinc-200">{marks.length > 0 ? marks.join(", ") : "—"}</dd>
+        <dt className="text-zinc-500">{t("live.video.section.playlists")}</dt>
+        <dd className="text-zinc-200">{settings.playlists.length > 0 ? settings.playlists.map((p) => p.title || p.id).join(", ") : "—"}</dd>
+        <dt className="text-zinc-500">{t("live.video.section.thumbnail")}</dt>
+        <dd className="text-zinc-200">{settings.thumbnail ? t("live.yes") : t("live.no")}</dd>
+      </dl>
     </div>
   );
 }

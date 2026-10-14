@@ -1,6 +1,7 @@
 # Live streams: every API field in the stream's settings, and adding videos by checkboxes (BL-186, BL-187)
 
-**Status:** stage 1 (BL-187, the picker) built on `feature/live-streams-fields-and-picker`; stages 2–3 not started. Owner's "ок"
+**Status:** stage 1 (BL-187, the picker) and stage 2 (BL-186 offline part: settings, v92, Start's broadcast fields and dry run)
+built on `feature/live-streams-fields-and-picker`; stage 3 waits for spike C. Owner's "ок"
 to the plan and its proposed answers to §8 Q1–Q3: Telegram msg 2788 (2026-10-14); Q4 (spike C) is asked again before stage 3.
 
 - Owner's requests: Telegram 2026-10-14, msgs 2780 (both items), 2782 (the field list), 2785 (the go):

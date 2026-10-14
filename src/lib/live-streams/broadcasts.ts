@@ -1,10 +1,19 @@
 import { YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
 import type { ResolvedCredentials } from "@/lib/shared-domain";
 import { z } from "zod";
-import { DomainError, LIVE_PRIVACY_STATUSES, type LivePrivacy, type LiveStreamsSettings } from "./contracts";
+import {
+  DomainError,
+  LIVE_PRIVACY_STATUSES,
+  type LiveClosedCaptions,
+  type LiveLatency,
+  type LivePrivacy,
+  type LiveStreamsSettings,
+  type LiveVideoSettings,
+} from "./contracts";
 import { isRedundantTransition, liveErrorReason, toLiveDomainError } from "./errors";
 import { parseWithSchema } from "./schemas";
 import { withChannelLock as withLock } from "./supervisor";
+import { readStoredVideoSettings } from "./video-settings";
 
 // ---------------------------------------------------------------------------
 // BL-176 (LIVE_STREAMS_PLAN.md §3.9, ADR 0036 §3) -- the owner's attended actions, the only code that writes to YouTube
@@ -43,6 +52,8 @@ export type BroadcastsDependencies = {
       description: string;
       privacyStatus: LivePrivacy;
       madeForKids: boolean;
+      /** Schema v92 (BL-186): the stream's video and broadcast settings; null = never saved. */
+      videoSettingsJson?: string | null;
     } | null>;
     update(channelId: string, set: Record<string, unknown>): Promise<boolean>;
     event(channelId: string, kind: string, detail: Record<string, unknown>): Promise<void>;
@@ -52,7 +63,21 @@ export type BroadcastsDependencies = {
     insertStream(credentials: ResolvedCredentials, args: { title: string }): Promise<{ streamId: string }>;
     insertBroadcast(
       credentials: ResolvedCredentials,
-      args: { title: string; description: string; scheduledStartTime: string; privacyStatus: LivePrivacy; selfDeclaredMadeForKids: boolean; enableAutoStart: boolean; enableAutoStop: boolean; enableMonitorStream: boolean; recordFromStart: boolean }
+      args: {
+        title: string;
+        description: string;
+        scheduledStartTime: string;
+        privacyStatus: LivePrivacy;
+        selfDeclaredMadeForKids: boolean;
+        enableAutoStart: boolean;
+        enableAutoStop: boolean;
+        enableMonitorStream: boolean;
+        recordFromStart: boolean;
+        latencyPreference?: LiveLatency;
+        enableDvr?: boolean;
+        enableEmbed?: boolean;
+        closedCaptionsType?: LiveClosedCaptions;
+      }
     ): Promise<{ broadcastId: string; lifeCycleStatus: string | null }>;
     bind(credentials: ResolvedCredentials, args: { broadcastId: string; streamId: string }): Promise<{ boundStreamId: string | null }>;
     transition(credentials: ResolvedCredentials, args: { broadcastId: string; broadcastStatus: "live" | "complete" }): Promise<{ lifeCycleStatus: string | null }>;
@@ -101,6 +126,16 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
     return stream;
   }
 
+  /**
+   * BL-186: the stream's saved video settings. A stored value that does not pass the schema refuses Start before any write
+   * (fail closed: never a silent fallback to defaults the owner did not choose).
+   */
+  function savedVideoSettings(stream: { videoSettingsJson?: string | null }): LiveVideoSettings | null {
+    const stored = readStoredVideoSettings(stream.videoSettingsJson);
+    if (!stored.ok) throw new DomainError({ code: "validation_failed", message: `${stored.problem}. Save the stream's video settings again.` });
+    return stored.settings;
+  }
+
   async function written(channelId: string, method: string, detail: Record<string, unknown>) {
     await deps.streams.event(channelId, "youtube_write", { method, ...detail });
   }
@@ -111,6 +146,7 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
     const stream = await requireStream(channelId);
     // A second Start (a stale page, a repeated request) must not create another broadcast and lose track of the live one.
     if (stream.intent === "on") throw new DomainError({ code: "validation_failed", message: "The stream is already on: stop it first", details: { channelId } });
+    const videoSettings = savedVideoSettings(stream);
     const credentials = await authorize(channelId, credentialRef);
     const playable = await deps.rotation.recheck(channelId);
     if (playable.length === 0) {
@@ -134,6 +170,8 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
         enableAutoStop: false,
         enableMonitorStream: false,
         recordFromStart: false,
+        // BL-186: the owner's broadcast settings, set at insert (DVR and captions cannot change once live). Never saved: not sent.
+        ...(videoSettings ? videoSettings.broadcast : {}),
       };
       const { broadcastId, lifeCycleStatus } = await deps.youtube.insertBroadcast(credentials, sent);
       await written(channelId, "liveBroadcasts.insert", { broadcastId, sent, lifeCycleStatus });
@@ -179,6 +217,8 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
     async previewStart(channelId: string) {
       const stream = await requireStream(channelId);
       const settings = await deps.settings();
+      const stored = readStoredVideoSettings(stream.videoSettingsJson);
+      const videoSettings = stored.ok ? stored.settings : null;
       return {
         createsStream: !stream.streamId,
         broadcast: {
@@ -190,7 +230,16 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
           enableAutoStop: false,
           enableMonitorStream: false,
           recordFromStart: false,
+          // BL-186: sent with the insert (no extra units); null = never saved, YouTube's defaults apply.
+          settings: videoSettings ? videoSettings.broadcast : null,
         },
+        /**
+         * BL-186: the saved video-level settings (tags, category, languages, thumbnail, playlists...). Shown so the owner sees them,
+         * but NOT sent by this Start: applying them waits for spike C (LIVE_STREAMS_FIELDS_PLAN.md §5 stage 3). No units counted.
+         */
+        videoSettings: videoSettings ? { ...videoSettings, broadcast: undefined } : null,
+        videoSettingsApplied: false,
+        videoSettingsProblem: stored.ok ? null : stored.problem,
         units: stream.streamId ? 4 : 5,
         liveWritesEnabled: await deps.liveWritesEnabled(),
         moduleReady: settings.enabled && settings.host.ok,

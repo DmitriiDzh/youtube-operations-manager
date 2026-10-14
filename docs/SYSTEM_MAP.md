@@ -789,6 +789,16 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   `GET .../live-stream/rotation/candidates(?all=1)`, `POST .../live-stream/rotation/batch`. Только чтение диска, в YouTube не пишет.
 - **Общий модуль `src/lib/workspace-videos/`** (BL-187, §M): обход `04 Videos/`, разбор `Vn_youtube.json` и реестра, чтения файлов;
   им пользуются публикация (`package-scan.ts`) и трансляции.
+- **BL-186 этап 2 (тот же план и ветка, не в `dev`):** карточка «На YouTube» (`src/components/live-stream-video-settings.tsx`) —
+  все поля, которые API даёт задать: обложка (JPEG/PNG ≤ 2 МБ, файл на этом компьютере в `live-streams-thumbnails/`), теги,
+  категория, языки, дата записи, лицензия, ИИ, платное продвижение, счётчик лайков, плейлисты; трансляция — задержка, DVR,
+  встраивание, субтитры (только «выкл»); список «Только в YouTube Studio». Схема **v92** `live_streams.video_settings_json`
+  (`video-settings.ts`, `fields.ts`, проверки в `schemas.ts`); API `PUT .../live-stream/video-settings`,
+  `GET|PUT|DELETE .../live-stream/thumbnail`. Сохранение в YouTube не пишет. Старт отправляет только настройки трансляции
+  (в том же `liveBroadcasts.insert`, без новых единиц); настройки видео показываются в окне «Запустить» как «пока не
+  отправляются» — их применение (этап 3) ждёт пробного эфира (spike C).
+- **Общий модуль `src/lib/youtube-video-fields/`** (BL-186, §M): лимиты и списки полей видео (500 символов тегов, 2 МБ обложки,
+  категории, лицензии, тип картинки по байтам); публикация реэкспортирует их без изменений.
 - **Риски:** RISK-125 (ключ в командной строке ffmpeg), RISK-126 (T9 нужен раз в ~2 ч).
 
 ### 2.9ak Картинки и видео через Gemini API под управлением оператора (BL-174, ADR 0035, `docs/roadmap/plans/GEMINI_MEDIA_PLAN.md`) — **IMPLEMENTED, влито в `dev` (`e72502e`)**

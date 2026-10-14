@@ -25,6 +25,7 @@ import { createLiveStreamsFiles } from "./adapters/files";
 import { createPickerFiles } from "./adapters/picker-files";
 import { createHelperProcess, createSupervisorFiles } from "./adapters/helper-process";
 import { createLiveStreamsStore } from "./adapters/store";
+import { createThumbnailFs } from "./adapters/thumbnail-fs";
 import { createLiveStreamsYoutubeReads } from "./adapters/youtube-api";
 import { createLiveStreamBuffer } from "./buffer";
 import { createLiveBroadcasts } from "./broadcasts";
@@ -36,6 +37,7 @@ import { streamReportEntry, type StreamReportEntry } from "./report";
 import { createLiveStreamsServices } from "./services";
 import { createLiveStreamsSettings, liveStreamsHost } from "./settings";
 import { createStreamSupervisor } from "./supervisor";
+import { createStreamVideoSettings } from "./video-settings";
 
 // BL-176 (docs/roadmap/plans/LIVE_STREAMS_PLAN.md, ADR 0036): the live-streams module wired to its real adapters.
 
@@ -57,6 +59,16 @@ export function createLiveStreamsCore() {
 }
 
 export type LiveStreamsCore = ReturnType<typeof createLiveStreamsCore>;
+
+/** BL-186: the stream's own video and broadcast settings and its thumbnail, saved on this computer. Local only. */
+export function createStreamVideoSettingsCore() {
+  return createStreamVideoSettings({
+    store: createLiveStreamsStore(),
+    thumbnails: createThumbnailFs(getProductionAppPaths().liveStreamsThumbnailsDir),
+    clock: () => new Date(),
+    newId: () => randomUUID(),
+  });
+}
 
 /** BL-187: the «Добавить видео…» dialog's list -- `04 Videos/` of the channel workspace matched to the channel's videos. Read-only. */
 export function createRotationPickerCore() {

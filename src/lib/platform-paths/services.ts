@@ -66,6 +66,7 @@ export function resolveAppPaths(input: ResolveAppPathsInput): AppPaths {
     agentTokensShareDir: path.join(appDataDir, "agent-tokens-share"),
     agentTokensSyncFallbackDir: path.join(appDataDir, "agent-tokens-sync-local"),
     liveStreamsBufferDir: path.join(appDataDir, "live-streams"),
+    liveStreamsThumbnailsDir: path.join(appDataDir, "live-streams-thumbnails"),
     liveStreamsShareDir: path.join(appDataDir, "live-streams-share"),
     liveStreamsSyncFallbackDir: path.join(appDataDir, "live-streams-sync-local"),
     publishingUploadsShareDir: path.join(appDataDir, "publishing-uploads-share"),

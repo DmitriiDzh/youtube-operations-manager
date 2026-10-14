@@ -3,6 +3,8 @@ import type { MediaProbe } from "@/lib/ffmpeg-host";
 import type { GuardRefusal } from "./rotation";
 
 export { DomainError, isDomainError };
+// BL-186: the stream's video settings -- a pure file the Web UI can import (no server code).
+export * from "./fields";
 
 // ---------------------------------------------------------------------------
 // BL-176 (docs/roadmap/plans/LIVE_STREAMS_PLAN.md, ADR 0036) -- a channel's 24/7 live stream of its own public videos,
@@ -41,6 +43,9 @@ export type StreamSettingsInput = {
   orderMode: LiveOrderMode;
 };
 
+/** A new stream row's texts and order, until the owner saves them. */
+export const DEFAULT_STREAM_SETTINGS: StreamSettingsInput = Object.freeze({ title: "", description: "", privacyStatus: "unlisted", madeForKids: false, orderMode: "sequence" }) as StreamSettingsInput;
+
 export type RotationVideoView = {
   videoId: string;
   title: string | null;
@@ -75,7 +80,10 @@ export type LiveStreamEventKind =
   | "guard_refused"
   | "guard_override"
   | "guard_override_cleared"
-  | "sources_set";
+  | "sources_set"
+  | "video_settings_saved"
+  | "thumbnail_saved"
+  | "thumbnail_removed";
 
 export type ProbeResult = MediaProbe;
 
