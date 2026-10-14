@@ -144,6 +144,14 @@ function productionExecutors(log: (line: string) => void): CommandExecutors {
       const job = await createMediaGenerationCore().createJob({ sessionId, channelId, templateId, params, createdBy: "operator" });
       return { jobId: job.jobId };
     },
+    async createGeminiJob({ commandId, channelId, request }) {
+      // The owner's job (actor "owner", like a create from Media here); the request id comes from the command, so a create that
+      // ran but whose ledger row was not finished returns the same job instead of a second paid one.
+      const created = await createGeminiMediaCore().createJob({ ...request, channelId, requestId: `cmd-${commandId}` }, "owner");
+      // Never a dry run here, so a job always comes back; anything else is reported as `command_failed`.
+      if (!("job" in created) || !created.job) throw new Error("The Gemini create returned no job.");
+      return { jobId: created.job.jobId };
+    },
     async approveSession({ sessionId }) {
       const { started } = await createMediaGenerationCore().approveSession({ sessionId, approvedByUserId: null });
       void started.catch((error: unknown) => log(`[media-jobs] session ${sessionId} (approved from another computer) failed to start: ${error instanceof Error ? error.message : String(error)}`));

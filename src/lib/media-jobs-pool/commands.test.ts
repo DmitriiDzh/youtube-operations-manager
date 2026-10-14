@@ -73,6 +73,10 @@ function fakeExecutors(overrides: Partial<CommandExecutors> = {}) {
     async rejectSession(args) {
       calls.push({ action: "rejectSession", args });
     },
+    async createGeminiJob(args) {
+      calls.push({ action: "createGeminiJob", args });
+      return { jobId: "gm_new" };
+    },
     ...overrides,
   };
   return { executors, calls };
@@ -237,7 +241,7 @@ test("approve and reject a session request: each reaches the executor's own appr
   ]);
 });
 
-test("the report schema (version 2): commands and results are strict; a version 1 report is still read", () => {
+test("the report schema (versions 1-3): commands and results are strict; a version 1 report is still read", () => {
   const base = { format: "ytm-media-jobs", deviceId: B, hostName: "Windows PC", updatedAt: iso(T0), jobs: [] };
   assert.ok(mediaJobsReportSchema.safeParse({ ...base, version: 1 }).success);
   assert.ok(mediaJobsReportSchema.safeParse({ ...base, version: 2, commands: [cancel("cmd-ok-12")], commandResults: [] }).success);
@@ -250,8 +254,9 @@ test("the report schema (version 2): commands and results are strict; a version 
   assert.ok(
     !mediaJobsReportSchema.safeParse({ ...base, version: 2, commandResults: [{ commandId: "cmd-res-01", issuerDeviceId: A, kind: "cancel_job", status: "refused", code: "it failed at https://x", jobId: null, at: iso(T0) }] }).success
   );
-  // A version 3 report is not this build's.
-  assert.ok(!mediaJobsReportSchema.safeParse({ ...base, version: 3 }).success);
+  // Stage 4 (owner msg 2806 Q3) made version 3 this build's (Gemini creates); a version 4 report is not.
+  assert.ok(mediaJobsReportSchema.safeParse({ ...base, version: 3 }).success);
+  assert.ok(!mediaJobsReportSchema.safeParse({ ...base, version: 4 }).success);
 });
 
 test("toReportCommands: a stored command that no longer fits the schema is left out, the others go", () => {
@@ -400,4 +405,105 @@ test("issuing approve / reject: only a PENDING request whose channel is connecte
   assert.equal(reject.reason, "too expensive");
   await expectCode(issue({ kind: "approve_session", targetDeviceId: A, sessionId: "ms_1" }), "media_job_command_invalid");
   await expectCode(issue({ kind: "approve_session", targetDeviceId: A, sessionId: "ms_pending" }, { connected: false }), "channel_not_connected");
+});
+
+// ---------------------------------------------------------------------------
+// BL-188 stage 4 (SHARED_MEDIA_JOBS_PLAN.md §5 item 4, §2.3/§2.4; owner msg 2806 Q3): a Gemini job launched on another computer.
+// Expected from the plan: the request crosses as a create_job with source "gemini" (no session, no template), the executor runs
+// its OWN Gemini create (its switch, key, limits; a refusal carries its code and makes nothing), the request id is derived from
+// the command so a replay cannot pay twice, a run first seen after 15 minutes is command_expired, and only the shape is checked
+// on the issuing computer (the channel is the active one, the target must report).
+// ---------------------------------------------------------------------------
+
+const geminiRequest = { kind: "image" as const, model: "gemini-nano-banana-2.1", prompt: "a quiet tea house", image: { size: "1K", aspectRatio: "16:9" } };
+const geminiCreate = (commandId: string, extra: Partial<SharedJobCommand> = {}) =>
+  command({ commandId, kind: "create_job", source: "gemini", channelId: "UC1", gemini: geminiRequest, ...extra });
+
+test("stage 4: a Gemini run from B is applied once on A through A's own Gemini create, with a request id from the command", async () => {
+  const { store, received } = memoryStore();
+  const { executors, calls } = fakeExecutors();
+  const peers = [report(B, [geminiCreate("cmd-gemini-01")], { version: 3 })];
+  const out = await applyIncomingCommands({ ownDeviceId: A, peers, store, executors, now: clockAt(T0 + 60_000) });
+  assert.deepEqual(out, [{ commandId: "cmd-gemini-01", kind: "create_job", status: "applied", code: null }]);
+  assert.deepEqual(calls, [{ action: "createGeminiJob", args: { commandId: "cmd-gemini-01", channelId: "UC1", request: geminiRequest } }]);
+  assert.equal(received.get("cmd-gemini-01")!.jobId, "gm_new");
+  // The ledger keeps what was asked, never the prompt.
+  assert.equal(received.get("cmd-gemini-01")!.targetJson.includes("tea house"), false);
+  assert.deepEqual(await applyIncomingCommands({ ownDeviceId: A, peers, store, executors, now: clockAt(T0 + 120_000) }), []);
+  assert.equal(calls.length, 1, "a replay never creates (or pays for) a second job");
+});
+
+test("stage 4: A's own Gemini checks refuse with their code (limit, switch off, no key, bad settings) and nothing is made", async () => {
+  for (const [i, code] of ["gemini_limit_exceeded", "gemini_disabled", "gemini_key_missing", "gemini_invalid_params", "storyboard_not_approved"].entries()) {
+    const { store, received } = memoryStore();
+    const { executors } = fakeExecutors({
+      createGeminiJob: async () => {
+        throw new DomainError({ code: code as never, message: `refused: ${code}` });
+      },
+    });
+    const id = `cmd-gemini-ref-${i}`;
+    const out = await applyIncomingCommands({ ownDeviceId: A, peers: [report(B, [geminiCreate(id)], { version: 3 })], store, executors, now: clockAt(T0 + 1000) });
+    assert.deepEqual(out, [{ commandId: id, kind: "create_job", status: "refused", code }]);
+    assert.equal(received.get(id)!.jobId, null);
+  }
+});
+
+test("stage 4: a Gemini run first seen more than 15 minutes after it was issued is command_expired and never reaches Gemini", async () => {
+  const { store } = memoryStore();
+  const { executors, calls } = fakeExecutors();
+  const late = await applyIncomingCommands({ ownDeviceId: A, peers: [report(B, [geminiCreate("cmd-gemini-late")], { version: 3 })], store, executors, now: clockAt(T0 + 15 * 60_000 + 1) });
+  assert.deepEqual(late, [{ commandId: "cmd-gemini-late", kind: "create_job", status: "refused", code: "command_expired" }]);
+  assert.equal(calls.length, 0);
+  const onTime = await applyIncomingCommands({ ownDeviceId: A, peers: [report(B, [geminiCreate("cmd-gemini-15m")], { version: 3 })], store, executors, now: clockAt(T0 + 15 * 60_000) });
+  assert.equal(onTime[0].status, "applied");
+});
+
+test("stage 4: the schema -- a Gemini run needs the request and no session or template; a RunPod run carries no Gemini request", () => {
+  const base = { format: "ytm-media-jobs", version: 3, deviceId: B, hostName: "Windows PC", updatedAt: iso(T0), jobs: [], commandResults: [] };
+  const ok = (commands: unknown[]) => mediaJobsReportSchema.safeParse({ ...base, commands }).success;
+  assert.ok(ok([geminiCreate("cmd-g-ok-01")]));
+  assert.ok(!ok([geminiCreate("cmd-g-nogem", { gemini: undefined })]));
+  assert.ok(!ok([geminiCreate("cmd-g-sess1", { sessionId: "ms_1" })]));
+  assert.ok(!ok([geminiCreate("cmd-g-tmpl1", { create: { templateId: "t", params: {} } })]));
+  assert.ok(!ok([geminiCreate("cmd-g-noch1", { channelId: null })]));
+  assert.ok(!ok([create("cmd-rp-gem01", { gemini: geminiRequest })]));
+  assert.ok(!ok([cancel("cmd-cn-gem01", { gemini: geminiRequest })]));
+  // The request's own shape: an image request takes `image`, paths are relative, no extra field (a key, a URL).
+  assert.ok(!ok([geminiCreate("cmd-g-mix01", { gemini: { ...geminiRequest, video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 8 } } })]));
+  assert.ok(!ok([geminiCreate("cmd-g-abs01", { gemini: { ...geminiRequest, image: { size: "1K", aspectRatio: "1:1", inputs: { images: ["/Users/owner/x.png"] } } } })]));
+  assert.ok(!ok([geminiCreate("cmd-g-dot01", { gemini: { ...geminiRequest, image: { size: "1K", aspectRatio: "1:1", inputs: { images: ["a/../../x.png"] } } } })]));
+  assert.ok(!ok([geminiCreate("cmd-g-key01", { gemini: { ...geminiRequest, apiKey: "AIza..." } as never })]));
+  assert.ok(!ok([geminiCreate("cmd-g-long1", { gemini: { ...geminiRequest, prompt: "x".repeat(10_001) } })]));
+  assert.ok(ok([geminiCreate("cmd-g-max01", { gemini: { ...geminiRequest, prompt: "x".repeat(10_000) } })]));
+});
+
+test("stage 4 issuing: a Gemini run becomes a create_job for the active channel addressed to a computer that reports", async () => {
+  const c = await issue({ kind: "create_job", targetDeviceId: A, source: "gemini", gemini: geminiRequest });
+  assert.deepEqual(c, {
+    commandId: "11111111-2222-3333-4444-555555555555",
+    kind: "create_job",
+    targetDeviceId: A,
+    source: "gemini",
+    jobId: null,
+    sessionId: null,
+    channelId: "UC1",
+    create: null,
+    reason: null,
+    gemini: geminiRequest,
+    issuedAt: iso(T0),
+    issuedOn: "Windows PC",
+  });
+  assert.deepEqual(commandViews({ ownDeviceId: B, outgoing: [c], peers: [], now: new Date(T0) })[0].label, "gemini-nano-banana-2.1");
+});
+
+test("stage 4 issuing refuses: no active channel, an unknown computer, this computer, a bad request, a session or template beside it", async () => {
+  await expectCode(issue({ kind: "create_job", targetDeviceId: A, source: "gemini", gemini: geminiRequest }, { activeChannelId: null }), "media_job_command_invalid");
+  await expectCode(issue({ kind: "create_job", targetDeviceId: "device-C", source: "gemini", gemini: geminiRequest }), "media_job_command_invalid");
+  await expectCode(issue({ kind: "create_job", targetDeviceId: B, source: "gemini", gemini: geminiRequest }), "validation_failed");
+  await expectCode(issue({ kind: "create_job", targetDeviceId: A, source: "gemini" }), "validation_failed");
+  await expectCode(issue({ kind: "create_job", targetDeviceId: A, source: "gemini", gemini: { ...geminiRequest, prompt: "" } }), "validation_failed");
+  await expectCode(issue({ kind: "create_job", targetDeviceId: A, source: "gemini", gemini: geminiRequest, sessionId: "ms_1" }), "validation_failed");
+  await expectCode(issue({ kind: "create_job", targetDeviceId: A, source: "gemini", gemini: geminiRequest, templateId: "tpl_music" }), "validation_failed");
+  await expectCode(issue({ kind: "cancel_job", targetDeviceId: A, source: "runpod", jobId: "mj_1", gemini: geminiRequest }), "validation_failed");
+  await expectCode(issue({ kind: "create_job", targetDeviceId: A, sessionId: "ms_1", templateId: "tpl_music", gemini: geminiRequest }), "validation_failed");
 });

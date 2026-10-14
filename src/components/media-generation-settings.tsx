@@ -25,6 +25,7 @@ import type { PoolDevice, PoolJob, PoolView } from "@/lib/media-jobs-pool/contra
 import type { CommandView } from "@/lib/media-jobs-pool/commands";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { ConfirmDialog } from "./confirm-dialog";
+import { MEDIA_JOBS_CHANGED_EVENT } from "./gemini-media-create";
 import { useChannelNames } from "./use-channel-names";
 import { GatewayTrafficStats, type GatewayTrafficWindowView } from "./gateway-traffic-stats";
 import { InfoTooltip } from "./info-tooltip";
@@ -779,6 +780,15 @@ const REFUSAL_TEXT: Record<string, UiTextKey> = {
   gemini_cancel_too_late: "media.pool.refusal.too_late",
   media_limit_exceeded: "media.pool.refusal.limit",
   storyboard_not_approved: "media.pool.refusal.storyboard",
+  // BL-188 stage 4: a Gemini job sent to another computer, refused by that computer's own Gemini checks.
+  gemini_disabled: "media.pool.refusal.gemini_disabled",
+  gemini_key_missing: "media.pool.refusal.gemini_key_missing",
+  gemini_payment_required: "media.pool.refusal.gemini_payment_required",
+  gemini_limit_exceeded: "media.pool.refusal.limit",
+  gemini_invalid_params: "media.pool.refusal.gemini_invalid_params",
+  gemini_input_unavailable: "media.pool.refusal.gemini_input_unavailable",
+  gemini_workspace_unavailable: "media.pool.refusal.channel_not_connected",
+  validation_failed: "media.pool.refusal.gemini_invalid_params",
 };
 
 /**
@@ -872,6 +882,13 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
   useEffect(() => {
     fetchAll();
   }, [fetchAll]);
+
+  // BL-188 stage 4: the Gemini form (same tab) created a job here or sent one to another computer -- show it at once.
+  useEffect(() => {
+    const onChanged = () => void fetchJobs();
+    window.addEventListener(MEDIA_JOBS_CHANGED_EVENT, onChanged);
+    return () => window.removeEventListener(MEDIA_JOBS_CHANGED_EVENT, onChanged);
+  }, [fetchJobs]);
 
   const commands = pool.commands ?? [];
   const hasActive = pool.jobs.some(poolJobUnderWay) || commands.some(commandPending);

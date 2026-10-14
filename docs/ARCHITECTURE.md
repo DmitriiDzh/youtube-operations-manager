@@ -3132,6 +3132,18 @@ nothing while a node works before its first step, so such a stretch shows only t
   (the same window as its report) plus every peer's report, deduplicated, filtered (channel, source, kind, status, plan), newest
   first, `limit` 1-500 (default 100) with `total`/`truncated`, and per device `reportAgeSeconds`/`stale` (> 5 min). Codes only for
   every computer, this one included; the Operator's actions stay local (owner msg 2806, Q4).
+- **BL-188 stage 4 (Gemini launch from Media, report v3; owner msg 2806 Q3):**
+  - **Here:** `GeminiCreateCard` (`src/components/gemini-media-create.tsx`) in Media's Images / Video tabs -> `POST /api/gemini-media/jobs`,
+    the Gemini module's own `createJob(..., "owner")` -- the same switch, key, model rules, inputs, storyboard gate and limits as
+    `factory_gemini_create_job` -- with the active channel from the session (a body naming a channel is refused). "Оценить" is the
+    module's dry run. The form's request is built by the pure `buildGeminiRequest` (`gemini-media-create-request.ts`).
+  - **Elsewhere:** the same request as a `create_job` command with `source: "gemini"` and `gemini` (report v3; a v2 build refuses a
+    v3 report, so both computers update). The executor runs `createGeminiMediaCore().createJob({ ...request, channelId, requestId:
+    "cmd-<commandId>" }, "owner")`: the request id from the command means a create that ran but was not recorded as finished
+    returns the same job, never a second paid one; the 15-minute expiry and the ledger apply as for RunPod runs; refusals come
+    back as codes (`gemini_disabled`, `gemini_key_missing`, `gemini_limit_exceeded`, ...). The form shows the price-list figure
+    for another computer (that computer computes its own estimate and limits).
+  - The job list refreshes on the window event `media-jobs:changed` the form fires after a create or a send.
 
 ## 30. Shared Production settings and the conflict screen (BL-150, ADR 0030)
 

@@ -19,7 +19,12 @@ export const MEDIA_JOBS_REPORT_FORMAT = "ytm-media-jobs";
  * device's jobs or sessions) and `commandResults` (what this device did with the commands it received). Read: 1-2. A version 1
  * build refuses a version 2 report (every level is strict), so both computers update.
  */
-export const MEDIA_JOBS_REPORT_VERSION = 2;
+/**
+ * Version 3 (BL-188 stage 4, owner msg 2806 Q3): a `create_job` may be a Gemini job (`source: "gemini"` with the `gemini`
+ * request: model, prompt, image or video settings, inputs) for the computer whose key and limits will run it. Read: 1-3. A
+ * version 2 build refuses a version 3 report, so both computers update together (as for version 2).
+ */
+export const MEDIA_JOBS_REPORT_VERSION = 3;
 /** Finished jobs older than this are left out of the report (owner msg 2806: 7 days); unfinished ones are always in. */
 export const MEDIA_JOBS_FINISHED_WINDOW_MS = 7 * 24 * 60 * 60_000;
 /** At most this many jobs per device (newest first; unfinished ones are kept before finished ones). */
@@ -74,6 +79,45 @@ export const MEDIA_JOB_COMMANDS_MAX = 500;
 export const MEDIA_JOB_COMMAND_RESULTS_MAX = 1000;
 
 const commandId = z.string().regex(/^[A-Za-z0-9-]{8,64}$/);
+/** A file named relative to the channel's `99 Data Exchange/Sent to YTM/` on the executing computer (its own copy). */
+const sentPath = z
+  .string()
+  .min(1)
+  .max(500)
+  .refine((p) => !p.includes("\\") && !p.startsWith("/") && !/^[A-Za-z]:/.test(p) && p.split("/").every((s) => s !== "" && s !== "." && s !== ".."), "a relative path with / separators");
+
+/**
+ * BL-188 stage 4: the owner's Gemini request relayed to the computer that runs it. The shape only (bounded, no URL or key); the
+ * executor's Gemini module checks the model, the settings, the inputs, the storyboard gate and its own limits like a local create.
+ */
+export const sharedGeminiCreateSchema = z
+  .object({
+    kind: z.enum(["image", "video"]),
+    model: z.string().regex(/^[a-z0-9][a-z0-9.-]{0,79}$/),
+    prompt: z.string().min(1).max(10_000),
+    image: z
+      .object({
+        size: z.string().min(1).max(10),
+        aspectRatio: z.string().min(1).max(10),
+        inputs: z.object({ images: z.array(sentPath).max(14).optional() }).strict().optional(),
+      })
+      .strict()
+      .optional(),
+    video: z
+      .object({
+        resolution: z.string().min(1).max(10),
+        aspectRatio: z.string().min(1).max(10),
+        durationSeconds: z.number().int().min(1).max(60),
+        personGeneration: z.enum(["allow_all", "allow_adult"]).optional(),
+        inputs: z.object({ firstFrame: sentPath.optional(), lastFrame: sentPath.optional(), referenceImages: z.array(sentPath).max(3).optional() }).strict().optional(),
+      })
+      .strict()
+      .optional(),
+    storyboardId: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/).optional(),
+    segmentId: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/).optional(),
+  })
+  .strict()
+  .refine((g) => (g.kind === "image" ? g.image !== undefined && g.video === undefined : g.video !== undefined && g.image === undefined), "an image request takes `image`, a video request `video`");
 const paramValue = z.union([z.string().max(20_000), z.number().finite(), z.boolean()]);
 
 /**
@@ -85,7 +129,7 @@ export const sharedJobCommandSchema = z
     commandId,
     kind: z.enum(MEDIA_JOB_COMMAND_KINDS),
     targetDeviceId: z.string().min(1).max(128),
-    /** cancel_job: which module's job. */
+    /** cancel_job: which module's job; create_job: null or "runpod" (a run on a session) or "gemini" (version 3). */
     source: z.enum(["runpod", "gemini"]).nullable(),
     jobId: id.nullable(),
     sessionId: z.string().min(1).max(64).nullable(),
@@ -100,6 +144,8 @@ export const sharedJobCommandSchema = z
       .nullable(),
     /** reject_session: the owner's reason. */
     reason: z.string().max(500).nullable(),
+    /** Version 3: create_job with `source: "gemini"` -- the request the executor's Gemini module runs. */
+    gemini: sharedGeminiCreateSchema.optional(),
     issuedAt: z.string().datetime(),
     /** The issuing computer's name, as the executor's audit shows it. */
     issuedOn: z.string().max(64).nullable(),
@@ -110,7 +156,11 @@ export const sharedJobCommandSchema = z
       if (!ok) ctx.addIssue({ code: "custom", message });
     };
     if (c.kind === "cancel_job") need(c.source !== null && c.jobId !== null, "cancel_job needs source and jobId");
-    if (c.kind === "create_job") need(c.sessionId !== null && c.channelId !== null && c.create !== null, "create_job needs sessionId, channelId and create");
+    if (c.kind === "create_job") {
+      if (c.source === "gemini") need(c.channelId !== null && c.gemini !== undefined && c.create === null && c.sessionId === null, "a Gemini create_job needs channelId and gemini (no session, no template)");
+      else need(c.sessionId !== null && c.channelId !== null && c.create !== null && c.gemini === undefined, "create_job needs sessionId, channelId and create");
+    }
+    if (c.kind !== "create_job") need(c.gemini === undefined, "only a create_job carries a Gemini request");
     if (c.kind === "approve_session" || c.kind === "reject_session") need(c.sessionId !== null, `${c.kind} needs sessionId`);
   });
 
@@ -132,7 +182,7 @@ export const sharedCommandResultSchema = z
 export const mediaJobsReportSchema = z
   .object({
     format: z.literal(MEDIA_JOBS_REPORT_FORMAT),
-    version: z.union([z.literal(1), z.literal(2)]),
+    version: z.union([z.literal(1), z.literal(2), z.literal(3)]),
     deviceId: z.string().min(1).max(128),
     /** The computer's own name, shown in the "Компьютер" column. */
     hostName: z.string().regex(/^[\p{L}\p{N} ._'-]{1,64}$/u).nullable(),
@@ -149,3 +199,4 @@ export type SharedMediaJob = z.infer<typeof sharedMediaJobSchema>;
 export type MediaJobsReport = z.infer<typeof mediaJobsReportSchema>;
 export type SharedJobCommand = z.infer<typeof sharedJobCommandSchema>;
 export type SharedCommandResult = z.infer<typeof sharedCommandResultSchema>;
+export type SharedGeminiCreate = z.infer<typeof sharedGeminiCreateSchema>;

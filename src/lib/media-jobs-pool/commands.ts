@@ -5,10 +5,12 @@ import {
   MEDIA_JOB_COMMANDS_KEEP_MS,
   MEDIA_JOB_COMMANDS_MAX,
   MEDIA_JOB_CREATE_COMMAND_MAX_AGE_MS,
+  sharedGeminiCreateSchema,
   sharedJobCommandSchema,
   type MediaJobCommandKind,
   type MediaJobsReport,
   type SharedCommandResult,
+  type SharedGeminiCreate,
   type SharedJobCommand,
 } from "@/lib/sync-gateway";
 import { POOL_PEER_STALE_AFTER_MS } from "./contracts";
@@ -55,6 +57,12 @@ export type CommandExecutors = {
   /** Resolves `already_finished` when the job had ended (nothing to cancel); throws a DomainError when refused. */
   cancelJob(input: { source: "runpod" | "gemini"; jobId: string; channelId: string | null }): Promise<"cancelled" | "already_finished">;
   createJob(input: { sessionId: string; channelId: string; templateId: string; params: Record<string, string | number | boolean> }): Promise<{ jobId: string }>;
+  /**
+   * Stage 4: the owner's Gemini job, through the executor's own Gemini create (switch, key, model rules, inputs, storyboard
+   * gate, its per-job/day/month/active limits). `commandId` makes the request id, so even a create that ran but was not recorded
+   * as finished can never become a second paid job.
+   */
+  createGeminiJob(input: { commandId: string; channelId: string; request: SharedGeminiCreate }): Promise<{ jobId: string }>;
   approveSession(input: { sessionId: string }): Promise<void>;
   rejectSession(input: { sessionId: string; reason: string }): Promise<void>;
 };
@@ -73,6 +81,7 @@ function targetOf(command: SharedJobCommand): string {
     sessionId: command.sessionId,
     channelId: command.channelId,
     ...(command.create ? { templateId: command.create.templateId, parameterNames: Object.keys(command.create.params).sort() } : {}),
+    ...(command.gemini ? { geminiKind: command.gemini.kind, model: command.gemini.model } : {}),
   });
 }
 
@@ -141,6 +150,10 @@ async function execute(command: SharedJobCommand, executors: CommandExecutors): 
       return { status: "applied", code: done === "already_finished" ? "already_finished" : null, jobId: command.jobId };
     }
     case "create_job": {
+      if (command.source === "gemini") {
+        const { jobId } = await executors.createGeminiJob({ commandId: command.commandId, channelId: command.channelId!, request: command.gemini! });
+        return { status: "applied", code: null, jobId };
+      }
       const { jobId } = await executors.createJob({ sessionId: command.sessionId!, channelId: command.channelId!, templateId: command.create!.templateId, params: command.create!.params });
       return { status: "applied", code: null, jobId };
     }
@@ -230,7 +243,7 @@ export function commandViews(input: { ownDeviceId: string; outgoing: readonly Sh
       jobId: command.jobId,
       sessionId: command.sessionId,
       channelId: command.channelId,
-      label: command.create?.templateId ?? null,
+      label: command.create?.templateId ?? command.gemini?.model ?? null,
       issuedAt: command.issuedAt,
       state,
       code: result?.code ?? null,
@@ -260,6 +273,8 @@ export const issueCommandInputSchema = z
     templateId: z.string().min(1).max(128).optional(),
     params: z.record(z.string().max(128), z.union([z.string().max(20_000), z.number().finite(), z.boolean()])).optional(),
     reason: z.string().max(500).optional(),
+    /** Stage 4: create_job with source "gemini" -- the Gemini request (its shape is checked against the report's schema). */
+    gemini: z.unknown().optional(),
   })
   .strict();
 export type IssueCommandInput = z.infer<typeof issueCommandInputSchema>;
@@ -306,6 +321,9 @@ export async function prepareCommand(input: {
     issuedAt: input.now.toISOString(),
     issuedOn: input.ownHostName,
   } satisfies SharedJobCommand;
+  if (req.gemini !== undefined && !(req.kind === "create_job" && req.source === "gemini")) {
+    throw new DomainError({ code: "validation_failed", message: "Only a Gemini create_job carries a Gemini request.", details: {} });
+  }
   let command: SharedJobCommand;
   if (req.kind === "cancel_job") {
     if (!req.source || !req.jobId) throw new DomainError({ code: "validation_failed", message: "cancel_job needs source and jobId", details: {} });
@@ -316,6 +334,7 @@ export async function prepareCommand(input: {
     if (!cancellable) throw invalid(`The job is ${job.status}; it cannot be cancelled.`, { jobId: req.jobId, status: job.status });
     command = { ...base, source: job.source, jobId: job.jobId, channelId: job.channelId };
   } else {
+    if (req.kind === "create_job" && req.source === "gemini") return prepareGeminiCreate(req, base, input);
     if (!req.sessionId) throw new DomainError({ code: "validation_failed", message: `${req.kind} needs sessionId`, details: {} });
     const session = input.peerSessions.find((s) => s.deviceId === req.targetDeviceId && s.sessionId === req.sessionId);
     if (!session) throw invalid("That session is not in the other computer's report.", { sessionId: req.sessionId });
@@ -333,4 +352,24 @@ export async function prepareCommand(input: {
     }
   }
   return sharedJobCommandSchema.parse(command);
+}
+
+/**
+ * Stage 4 (owner msg 2806 Q3): a Gemini job on another computer -- its key, its switch and its limits. Only the request's shape
+ * is checked here (and that the computer reports at all); everything else is the executor's own Gemini create. The channel is the
+ * active one (ADR 0004 (b)), never one from the request.
+ */
+function prepareGeminiCreate(
+  req: IssueCommandInput,
+  base: SharedJobCommand,
+  input: { activeChannelId: string | null; jobReports: readonly MediaJobsReport[] }
+): SharedJobCommand {
+  if (req.sessionId !== undefined || req.templateId !== undefined || req.params !== undefined) {
+    throw new DomainError({ code: "validation_failed", message: "A Gemini create_job takes no session, template or parameters.", details: {} });
+  }
+  const parsed = sharedGeminiCreateSchema.safeParse(req.gemini);
+  if (!parsed.success) throw new DomainError({ code: "validation_failed", message: parsed.error.issues.map((i) => i.message).join("; "), details: { field: "gemini" } });
+  if (!input.activeChannelId) throw invalid("Choose a channel first: a Gemini job is made for the active channel.", {});
+  if (!input.jobReports.some((r) => r.deviceId === req.targetDeviceId)) throw invalid("That computer does not report its media jobs here.", { targetDeviceId: req.targetDeviceId });
+  return sharedJobCommandSchema.parse({ ...base, source: "gemini", channelId: input.activeChannelId, gemini: parsed.data });
 }

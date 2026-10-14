@@ -114,8 +114,9 @@ export {
   sharedMediaJobSchema,
   sharedJobCommandSchema,
   sharedCommandResultSchema,
+  sharedGeminiCreateSchema,
 } from "./media-jobs";
-export type { MediaJobsReport, SharedMediaJob, SharedJobCommand, SharedCommandResult, MediaJobCommandKind } from "./media-jobs";
+export type { MediaJobsReport, SharedMediaJob, SharedJobCommand, SharedCommandResult, SharedGeminiCreate, MediaJobCommandKind } from "./media-jobs";
 export { createMediaJobsSyncRunnerForProduction } from "./media-jobs-sync";
 // BL-184: a channel's storyboards (versions from the Operator, comments and decisions from the owner), one document per channel.
 export { createStoryboardsCoreForProduction } from "./storyboards";

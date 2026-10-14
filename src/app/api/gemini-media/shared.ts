@@ -9,7 +9,7 @@ import { createGeminiMediaCore, isDomainError, type GeminiMediaCore } from "@/li
 // ever returns the key (the core's shapes carry only its last 4 characters). Mutating methods pass `src/proxy.ts`'s
 // device-availability gate like every /api route.
 
-export type GeminiRouteCore = Pick<GeminiMediaCore, "getKey" | "setKey" | "testKey" | "clearKey" | "getSettings" | "updateSettings" | "getStatus" | "getJobs" | "cancelJob">;
+export type GeminiRouteCore = Pick<GeminiMediaCore, "getKey" | "setKey" | "testKey" | "clearKey" | "getSettings" | "updateSettings" | "getStatus" | "getJobs" | "cancelJob" | "createJob">;
 
 export type GeminiRouteDeps = {
   getSession: () => Promise<{ user?: { id?: string | null } } | null>;

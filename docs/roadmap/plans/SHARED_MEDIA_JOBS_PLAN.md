@@ -11,6 +11,8 @@
   computer. Not in stage 2: the "Перезапустить на …" one-click (a run on another computer's session covers it) and the warning
   about a similar pending run from another computer (§7).
   Stage 3 built (Factory API 1.17.0): `factory_jobs_list`, read-only, every computer's jobs in the shared shape.
+  Stage 4 built (report v3): the owner's Gemini form in Media's Images / Video tabs, here (`POST /api/gemini-media/jobs`) or on
+  another computer (a `create_job` command with `source: "gemini"`, request id from the command).
 - **Owner's answers (msg 2806):** Q1 yes (session approve/reject from any computer, stage 2); Q2 7 days of finished jobs;
   Q3 yes (Gemini launch from Media, stage 4); Q4 ok (Operator reads every device's jobs, sends no commands).
 - **Amends:** ADR 0028 (sessions across devices) and ADR 0035 (Gemini media, "jobs are device-local"). The amendment is written
