@@ -328,7 +328,8 @@ function StatusCard({ overview, base, onChanged }: { overview: Overview; base: s
           title={t("live.start.title")}
           description={t("live.start.description")}
           confirmLabel={t("live.action.start")}
-          confirmDisabled={!preview.liveWritesEnabled}
+          // BL-186: unusable saved settings refuse Start on the server before any call -- the dialog does not offer it.
+          confirmDisabled={!preview.liveWritesEnabled || Boolean(preview.videoSettingsProblem)}
           onCancel={() => setDialog(null)}
           onConfirm={() => void run(() => requestJson(`${base}/start`, json("POST", {}), t("live.actionFailed"), t), t("live.start.done"))}
         >
@@ -360,7 +361,7 @@ function StatusCard({ overview, base, onChanged }: { overview: Overview; base: s
             <dt className="text-zinc-500">{t("live.start.units")}</dt>
             <dd className="text-zinc-200">{t("live.start.unitsValue", { units: String(preview.units) })}</dd>
           </dl>
-          {!preview.broadcast?.settings && <p className="text-xs text-zinc-400">{t("live.start.broadcastDefaults")}</p>}
+          {!preview.broadcast?.settings && !preview.videoSettingsProblem && <p className="text-xs text-zinc-400">{t("live.start.broadcastDefaults")}</p>}
           {preview.videoSettings && <StartVideoSettingsSummary settings={preview.videoSettings} />}
           {preview.videoSettingsProblem && <p className="text-xs text-amber-300">{t("live.video.problem", { problem: preview.videoSettingsProblem })}</p>}
           {preview.createsStream && <p className="text-xs text-zinc-400">{t("live.start.createsStream")}</p>}

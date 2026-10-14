@@ -43,6 +43,7 @@ const REFUSAL_KEYS: Record<string, UiTextKey> = {
   unlisted: "live.picker.refusal.unlisted",
   scheduled: "live.picker.refusal.scheduled",
   not_found: "live.picker.refusal.not_found",
+  unknown: "live.picker.refusal.unknown",
 };
 
 const buttonClass = "rounded-lg border border-zinc-700 px-3 py-1 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-50";
@@ -204,6 +205,10 @@ export function LiveStreamAddVideosDialog({
       await load();
     } catch (error) {
       setAddError(error instanceof Error ? error.message : t("live.actionFailed"));
+      // A batch that stopped midway (the disk went away, an unexpected error) may already have added some videos: show the
+      // rotation and the list as they are now, not as they were before «Добавить».
+      await onAdded().catch(() => undefined);
+      await load();
     } finally {
       setAdding(false);
     }

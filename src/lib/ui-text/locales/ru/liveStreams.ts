@@ -139,6 +139,7 @@ export const liveStreams: Record<keyof typeof en, string> = {
   "live.picker.refusal.unlisted": "YouTube сейчас называет его доступным по ссылке",
   "live.picker.refusal.scheduled": "оно запланировано, ещё не публичное",
   "live.picker.refusal.not_found": "YouTube его не вернул",
+  "live.picker.refusal.unknown": "YouTube не подтвердил, что оно публичное",
   "live.picker.refusal.already": "уже в ротации",
   "live.refusal.private": "YouTube сейчас называет это видео видео с ограниченным доступом: оно пропускается.",
   "live.refusal.unlisted": "YouTube сейчас называет это видео доступным по ссылке: оно пропускается.",
@@ -306,4 +307,6 @@ export const liveStreams: Record<keyof typeof en, string> = {
   "live.video.studioOnly.concepts": "Объяснения понятий",
   "live.video.studioOnly.comments": "Включение и выключение комментариев",
   "live.video.studioOnly.chat": "Настройки чата (медленный режим, кто может писать, запрещённые слова)",
+  "live.video.studioOnly.promotion": "Продвижение трансляции («Продвигать»)",
+  "live.video.studioOnly.remixing": "Разрешение ремиксов",
 };

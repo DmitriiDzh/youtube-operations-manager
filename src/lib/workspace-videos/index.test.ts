@@ -78,3 +78,14 @@ test("the walk lists files under `04 Videos/` three levels deep, never through a
   const listed = await walkVideosFolder({ listDir: async (p) => tree[p] ?? [], join: (...parts) => parts.join("/") }, "/ws", isVideoFileName);
   assert.deepEqual(listed, ["04 Videos/09 September/0928 V39/V39 Tropico Jazz.mp4", "04 Videos/top.mp4"]);
 });
+
+// Independent review (LIVE_STREAMS_FIELDS_PLAN.md §2.4 item 3: the registry row "whose `Folder` equals the file's folder", read
+// tolerantly -- its format is not a contract): a folder written relative to the workspace, i.e. the file's own folder
+// `04 Videos/<MM Month>/<MMDD Vn>`, names the same release folder as one written relative to `04 Videos/`.
+test("a registry folder written as the workspace-relative `04 Videos/...` path names the same folder", () => {
+  const csv = "YouTubeVideoId,Folder\njSYuVT-HJlE,04 Videos/08 August/0805 V1\nU8DAksN-QEU,04 Videos\\08 August\\0807 V2\\\n";
+  assert.deepEqual(
+    parseVideoRegistry(csv).map((r) => r.folder),
+    ["08 August/0805 V1", "08 August/0807 V2"],
+  );
+});

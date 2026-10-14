@@ -137,6 +137,7 @@ export const liveStreams = {
   "live.picker.refusal.unlisted": "YouTube says it is unlisted now",
   "live.picker.refusal.scheduled": "it is scheduled, not public yet",
   "live.picker.refusal.not_found": "YouTube did not return it",
+  "live.picker.refusal.unknown": "YouTube could not confirm it is public",
   "live.picker.refusal.already": "already in the rotation",
   "live.refusal.private": "YouTube says this video is private now: it is skipped.",
   "live.refusal.unlisted": "YouTube says this video is unlisted now: it is skipped.",
@@ -304,4 +305,6 @@ export const liveStreams = {
   "live.video.studioOnly.concepts": "Concepts explained",
   "live.video.studioOnly.comments": "Comments on or off",
   "live.video.studioOnly.chat": "Live chat settings (slow mode, who can chat, blocked words)",
+  "live.video.studioOnly.promotion": "Promoting the stream (\"Promote\")",
+  "live.video.studioOnly.remixing": "Allow remixing",
 } as const;

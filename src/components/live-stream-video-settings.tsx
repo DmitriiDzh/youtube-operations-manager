@@ -50,6 +50,8 @@ const STUDIO_ONLY_KEYS: Record<(typeof LIVE_STUDIO_ONLY_FIELDS)[number], UiTextK
   concepts: "live.video.studioOnly.concepts",
   comments: "live.video.studioOnly.comments",
   chat: "live.video.studioOnly.chat",
+  promotion: "live.video.studioOnly.promotion",
+  remixing: "live.video.studioOnly.remixing",
 };
 
 const FLAGS: Array<{ field: "containsSyntheticMedia" | "paidProductPlacement" | "publicStatsViewable"; label: UiTextKey; hint: UiTextKey }> = [

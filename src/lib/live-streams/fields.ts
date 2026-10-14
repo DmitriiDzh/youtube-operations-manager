@@ -20,7 +20,7 @@ export const MAX_STREAM_PLAYLISTS = 10;
  * Settings YouTube offers only in Studio (no API sets them; LIVE_STREAMS_FIELDS_PLAN.md §2.1) -- shown in the stream's settings
  * as a labelled, read-only list, so the owner knows to set them there.
  */
-export const LIVE_STUDIO_ONLY_FIELDS = ["ageRestriction", "adBreaks", "autoChapters", "featuredPlaces", "concepts", "comments", "chat"] as const;
+export const LIVE_STUDIO_ONLY_FIELDS = ["ageRestriction", "adBreaks", "autoChapters", "featuredPlaces", "concepts", "comments", "chat", "promotion", "remixing"] as const;
 export type LiveStudioOnlyField = (typeof LIVE_STUDIO_ONLY_FIELDS)[number];
 
 /** The stream's thumbnail, chosen in its settings and kept on this computer (`liveStreamsThumbnailsDir`). */

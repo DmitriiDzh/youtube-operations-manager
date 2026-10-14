@@ -117,7 +117,12 @@ export function parseVideoRegistry(text: string): VideoRegistryRow[] {
   for (const line of lines.slice(1)) {
     const fields = csvFields(line);
     const videoId = (fields[idColumn] ?? "").trim();
-    const folder = (fields[folderColumn] ?? "").trim().replace(/\\/g, "/").replace(/\/+$/, "");
+    // Relative to `04 Videos/`; a value written relative to the workspace (`04 Videos/<MM Month>/<MMDD Vn>`) is read the same.
+    const folder = (fields[folderColumn] ?? "")
+      .trim()
+      .replace(/\\/g, "/")
+      .replace(/\/+$/, "")
+      .replace(new RegExp(`^${VIDEOS_FOLDER}/`), "");
     if (!/^[A-Za-z0-9_-]{11}$/.test(videoId) || folder === "") continue;
     const vNumber = numberColumn >= 0 ? (fields[numberColumn] ?? "").trim().toUpperCase() || null : null;
     rows.push({ vNumber, videoId, folder });
