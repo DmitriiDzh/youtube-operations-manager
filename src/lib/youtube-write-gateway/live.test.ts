@@ -58,7 +58,7 @@ test("insertLiveStream: a response without an id is an error, not an empty id", 
   await assert.rejects(() => insertLiveStream(youtube, { title: "t", format: { resolution: "1080p", frameRate: "30fps" } }));
 });
 
-test("insertLiveBroadcast: sends the three required properties and the plan's auto-start on, auto-stop off, monitor stream off", async () => {
+test("insertLiveBroadcast: sends the three required properties and the plan's auto-start on, auto-stop off, monitor stream off, recording off", async () => {
   const { youtube, calls } = fakeClient({ "liveBroadcasts.insert": { id: "BC1", status: { lifeCycleStatus: "created" } } });
   const result = await insertLiveBroadcast(youtube, {
     title: "Tropico Jazz Radio",
@@ -69,6 +69,7 @@ test("insertLiveBroadcast: sends the three required properties and the plan's au
     enableAutoStart: true,
     enableAutoStop: false,
     enableMonitorStream: false,
+    recordFromStart: false,
   });
 
   const params = calls[0].params as youtube_v3.Params$Resource$Livebroadcasts$Insert;
@@ -76,7 +77,7 @@ test("insertLiveBroadcast: sends the three required properties and the plan's au
   assert.deepEqual(params.requestBody, {
     snippet: { title: "Tropico Jazz Radio", description: "Live 24/7", scheduledStartTime: "2026-10-12T12:02:00.000Z" },
     status: { privacyStatus: "unlisted", selfDeclaredMadeForKids: false },
-    contentDetails: { enableAutoStart: true, enableAutoStop: false, monitorStream: { enableMonitorStream: false } },
+    contentDetails: { enableAutoStart: true, enableAutoStop: false, monitorStream: { enableMonitorStream: false }, recordFromStart: false },
   });
   assert.deepEqual(result, { broadcastId: "BC1", lifeCycleStatus: "created" });
 });

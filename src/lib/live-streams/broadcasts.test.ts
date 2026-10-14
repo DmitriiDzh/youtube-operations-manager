@@ -113,7 +113,7 @@ test("quota: a first Start makes exactly the 5 calls of 1 unit each; a later Sta
   assert.deepEqual(YOUTUBE_CALLS(later.calls), ["videos.list", "liveBroadcasts.insert", "liveBroadcasts.bind", "liveStreams.list"]);
 });
 
-test("Start sends auto-start on, auto-stop off, monitor stream off, the saved texts, a start 2 minutes ahead; the intent goes on", async () => {
+test("Start sends auto-start on, auto-stop off, monitor stream off, recording off, the saved texts, a start 2 minutes ahead; the intent goes on", async () => {
   const h = harness();
   await h.broadcasts.start("UC1", { userId: "u1" });
   assert.deepEqual(h.sent.broadcast, {
@@ -125,6 +125,7 @@ test("Start sends auto-start on, auto-stop off, monitor stream off, the saved te
     enableAutoStart: true,
     enableAutoStop: false,
     enableMonitorStream: false,
+    recordFromStart: false,
   });
   assert.equal(h.stream().intent, "on");
   assert.deepEqual(h.events.filter((e) => e.kind === "youtube_write").map((e) => e.detail.method), ["liveStreams.insert", "liveBroadcasts.insert", "liveBroadcasts.bind"]);
@@ -215,7 +216,7 @@ test("Edit: a read-back that differs is reported as a failure, with the event re
 test("previewStart: no YouTube call; 5 units the first time, 4 after", async () => {
   const first = harness();
   const preview = await first.broadcasts.previewStart("UC1");
-  assert.deepEqual([preview.units, preview.createsStream, preview.broadcast.enableAutoStop], [5, true, false]);
+  assert.deepEqual([preview.units, preview.createsStream, preview.broadcast.enableAutoStop, preview.broadcast.recordFromStart], [5, true, false, false]);
   assert.deepEqual(first.calls, []);
   assert.equal((await harness({ streamId: "STREAM1" }).broadcasts.previewStart("UC1")).units, 4);
 });

@@ -52,7 +52,7 @@ export type BroadcastsDependencies = {
     insertStream(credentials: ResolvedCredentials, args: { title: string }): Promise<{ streamId: string }>;
     insertBroadcast(
       credentials: ResolvedCredentials,
-      args: { title: string; description: string; scheduledStartTime: string; privacyStatus: LivePrivacy; selfDeclaredMadeForKids: boolean; enableAutoStart: boolean; enableAutoStop: boolean; enableMonitorStream: boolean }
+      args: { title: string; description: string; scheduledStartTime: string; privacyStatus: LivePrivacy; selfDeclaredMadeForKids: boolean; enableAutoStart: boolean; enableAutoStop: boolean; enableMonitorStream: boolean; recordFromStart: boolean }
     ): Promise<{ broadcastId: string; lifeCycleStatus: string | null }>;
     bind(credentials: ResolvedCredentials, args: { broadcastId: string; streamId: string }): Promise<{ boundStreamId: string | null }>;
     transition(credentials: ResolvedCredentials, args: { broadcastId: string; broadcastStatus: "live" | "complete" }): Promise<{ lifeCycleStatus: string | null }>;
@@ -133,6 +133,7 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
         enableAutoStart: true,
         enableAutoStop: false,
         enableMonitorStream: false,
+        recordFromStart: false,
       };
       const { broadcastId, lifeCycleStatus } = await deps.youtube.insertBroadcast(credentials, sent);
       await written(channelId, "liveBroadcasts.insert", { broadcastId, sent, lifeCycleStatus });
@@ -188,6 +189,7 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
           enableAutoStart: true,
           enableAutoStop: false,
           enableMonitorStream: false,
+          recordFromStart: false,
         },
         units: stream.streamId ? 4 : 5,
         liveWritesEnabled: await deps.liveWritesEnabled(),

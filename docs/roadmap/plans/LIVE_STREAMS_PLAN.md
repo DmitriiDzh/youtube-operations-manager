@@ -337,10 +337,11 @@ Details (proposed in msg 2577, accepted in msg 2578):
     - ffmpeg checked;
     - free disk above the warning level.
   - The dialog is the dry run. It shows exactly what will be sent: title, description, privacy, made-for-kids, auto-stop off,
-    and the units (5 on the first Start, 4 after).
+    recording off, and the units (5 on the first Start, 4 after).
   - On confirm:
     1. `liveStreams.insert`, first time only;
-    2. `liveBroadcasts.insert` (auto-start on, auto-stop off, monitor stream off, start time now + 2 min);
+    2. `liveBroadcasts.insert` (auto-start on, auto-stop off, monitor stream off, recording off — `recordFromStart: false`, owner 2026-10-14;
+       a channel not allowed to disable recordings gets `Forbidden` — start time now + 2 min);
     3. `bind`;
     4. key read;
     5. the helper starts.

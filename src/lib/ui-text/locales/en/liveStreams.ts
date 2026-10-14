@@ -30,6 +30,8 @@ export const liveStreams = {
   "live.start.description": "YouTube gets a new broadcast with these settings, bound to this channel's stream; then the Mac starts sending the rotation.",
   "live.start.autoStop": "Auto-stop",
   "live.start.autoStopValue": "off (a short break does not end the broadcast)",
+  "live.start.recording": "Recording",
+  "live.start.recordingValue": "off (YouTube keeps no video of the broadcast)",
   "live.start.units": "Quota",
   "live.start.unitsValue": "{units} units",
   "live.start.createsStream": "The channel's reusable stream is created first (once).",
