@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as Automerge from "@automerge/automerge";
 import { createAutomergeCore, type DiscardedDocumentBackupStore, type DocumentByteStore } from "../automerge-core";
 import { isDomainError, type StoryboardComment, type StoryboardsDocument, type StoryboardVersion } from "./contracts";
 import { createStoryboardsCore, emptyDocument } from "./services";
@@ -14,7 +15,17 @@ function computer() {
   const bytes = new Map<string, Uint8Array>();
   const store: DocumentByteStore = { loadDocumentBytes: async (k) => bytes.get(k) ?? null, saveDocumentBytes: async (k, b) => void bytes.set(k, b) };
   const backups = { backup: async () => ({ path: "/backup", capturedAt: "" }) } as DiscardedDocumentBackupStore;
-  return createStoryboardsCore({ core: createAutomergeCore<StoryboardsDocument>({ store, discardedBackupStore: backups, emptyDocument }), store });
+  const core = createStoryboardsCore({ core: createAutomergeCore<StoryboardsDocument>({ store, discardedBackupStore: backups, emptyDocument }), store });
+  /** A storyboard as a build before BL-189 made it: without the `renders` / `renderDecisions` maps. */
+  const makeLegacy = async (storyboardId: string) => {
+    const doc = Automerge.load<StoryboardsDocument>(bytes.get(CH)!);
+    const next = Automerge.change(doc, (draft) => {
+      delete draft.storyboards[storyboardId].renders;
+      delete draft.storyboards[storyboardId].renderDecisions;
+    });
+    bytes.set(CH, Automerge.save(next));
+  };
+  return Object.assign(core, { makeLegacy });
 }
 type Computer = ReturnType<typeof computer>;
 
@@ -179,4 +190,49 @@ test("BL-189 (FO-REQ-0025 §3 step 3): a final file attached on the Mac and the 
   }
   await assert.rejects(windows.addRenderDecision(CH, "bar_loop", { id: "rd_x", renderId: "rn_nope", kind: "approved", by: "owner", device: null, at: "2026-10-14T16:07:00Z", note: null }), (e: unknown) => isDomainError(e) && e.code === "not_found");
   await assert.rejects(mac.addRender(CH, "bar_loop", { ...render, id: "rn_2", versionNumber: 9 }), (e: unknown) => isDomainError(e) && e.code === "not_found");
+});
+
+// Independent review (BL-189): the Operator may attach on either computer; two first renders attached before a sync are both kept
+// (STORYBOARD_TAKES_PLAN.md §2.4: every attach adds a render, none is lost or edited) -- the maps must not be made by each computer.
+test("BL-189: first final files attached on both computers before a sync are both kept, with a verdict on each", async () => {
+  const mac = computer();
+  const windows = computer();
+  await mac.create(CH, { id: "bar_loop", createdAt: "2026-10-13T12:00:00Z", createdBy: "operator", planId: null }, version("Bar"));
+  await cycle(mac, windows);
+  const base = { versionNumber: 1, contentHash: "h1", sha256: "f", bytes: 9, picks: {}, notes: null, createdAt: "2026-10-14T16:00:00Z" };
+  await mac.addRender(CH, "bar_loop", { ...base, id: "rn_mac", file: "Sent to YTM/a.mp4", device: "Mac" });
+  await windows.addRender(CH, "bar_loop", { ...base, id: "rn_win", file: "Sent to YTM/b.mp4", device: "Windows" });
+  await mac.addRenderDecision(CH, "bar_loop", { id: "rd_mac", renderId: "rn_mac", kind: "approved", by: "owner", device: "Mac", at: "2026-10-14T16:05:00Z", note: null });
+  await windows.addRenderDecision(CH, "bar_loop", { id: "rd_win", renderId: "rn_win", kind: "changes_requested", by: "owner", device: "Windows", at: "2026-10-14T16:05:00Z", note: "x" });
+  await cycle(mac, windows);
+  for (const side of [mac, windows]) {
+    const [record] = await side.read(CH);
+    assert.deepEqual(Object.keys(record.renders ?? {}).sort(), ["rn_mac", "rn_win"]);
+    assert.deepEqual(Object.keys(record.renderDecisions ?? {}).sort(), ["rd_mac", "rd_win"]);
+  }
+});
+
+// Independent review (BL-189): a storyboard made before BL-189 (bar_loop v3) gets its maps with its first render. Two computers that
+// each attach a first render (and give a verdict) before a sync made two maps: every render and verdict is still read.
+test("BL-189: a storyboard made before BL-189 keeps first final files attached on both computers before a sync, and their verdicts", async () => {
+  const mac = computer();
+  const windows = computer();
+  await mac.create(CH, { id: "bar_loop", createdAt: "2026-10-13T12:00:00Z", createdBy: "operator", planId: null }, version("Bar"));
+  await mac.makeLegacy("bar_loop");
+  await cycle(mac, windows);
+  assert.equal((await windows.read(CH))[0].renders, undefined);
+  const base = { versionNumber: 1, contentHash: "h1", sha256: "f", bytes: 9, picks: {}, notes: null, createdAt: "2026-10-14T16:00:00Z" };
+  await mac.addRender(CH, "bar_loop", { ...base, id: "rn_mac", file: "Sent to YTM/a.mp4", device: "Mac" });
+  await windows.addRender(CH, "bar_loop", { ...base, id: "rn_win", file: "Sent to YTM/b.mp4", device: "Windows" });
+  await mac.addRenderDecision(CH, "bar_loop", { id: "rd_mac", renderId: "rn_mac", kind: "approved", by: "owner", device: "Mac", at: "2026-10-14T16:05:00Z", note: null });
+  await cycle(mac, windows);
+  // After the sync, a verdict on either render is accepted on either computer.
+  await windows.addRenderDecision(CH, "bar_loop", { id: "rd_w1", renderId: "rn_mac", kind: "changes_requested", by: "owner", device: "Windows", at: "2026-10-14T16:06:00Z", note: "x" });
+  await mac.addRenderDecision(CH, "bar_loop", { id: "rd_m2", renderId: "rn_win", kind: "approved", by: "owner", device: "Mac", at: "2026-10-14T16:07:00Z", note: null });
+  await cycle(mac, windows);
+  for (const side of [mac, windows]) {
+    const [record] = await side.read(CH);
+    assert.deepEqual(Object.keys(record.renders ?? {}).sort(), ["rn_mac", "rn_win"]);
+    assert.deepEqual(Object.keys(record.renderDecisions ?? {}).sort(), ["rd_m2", "rd_mac", "rd_w1"]);
+  }
 });

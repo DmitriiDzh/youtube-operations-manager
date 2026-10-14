@@ -146,3 +146,15 @@ test("BL-189 (FO-REQ-0025 A): a take done on another computer without its file h
     ["elsewhere", "ready", "working", "failed", "failed"]
   );
 });
+
+// Independent review (BL-189): "Ролик целиком" shows the final files of the version shown -- its number and its content (hash).
+test("BL-189: a render is shown under the version of its number and content only", async () => {
+  const { rendersOfVersion } = await import("./storyboard-model");
+  const renders = [
+    { renderId: "r1", versionNumber: 2, contentHash: "hash-A" },
+    { renderId: "r2", versionNumber: 2, contentHash: "hash-B" },
+    { renderId: "r3", versionNumber: 1, contentHash: "hash-B" },
+  ];
+  assert.deepEqual(rendersOfVersion(renders, { number: 2, contentHash: "hash-B" }).map((r) => r.renderId), ["r2"]);
+  assert.deepEqual(rendersOfVersion(renders, { number: 3, contentHash: "hash-B" }), []);
+});

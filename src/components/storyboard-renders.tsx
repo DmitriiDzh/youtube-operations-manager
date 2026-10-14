@@ -7,6 +7,7 @@ import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { errorText } from "@/lib/ui-text";
 import { ConfirmDialog } from "./confirm-dialog";
 import { MediaVideoPlayer } from "./media-video-player";
+import { rendersOfVersion } from "./storyboard-model";
 import { useT } from "./ui-text-provider";
 
 // BL-189 (FO-REQ-0025 B, §3 step 3): the Operator's final files of the version shown -- the loop it assembled from one take per
@@ -29,7 +30,7 @@ const STATE_TONE: Record<RenderState, string> = {
 
 export function StoryboardRenders({ channelId, storyboard, version, onDecided }: { channelId: string; storyboard: StoryboardDetail; version: StoryboardVersion; onDecided: () => void }) {
   const t = useT();
-  const renders = storyboard.renders.filter((r) => r.versionNumber === version.number);
+  const renders = rendersOfVersion(storyboard.renders, version);
   if (renders.length === 0) return <p className="rounded-lg border border-zinc-800 p-3 text-xs text-zinc-500">{t("storyboards.render.none")}</p>;
   return (
     <div className="space-y-3">

@@ -201,3 +201,11 @@ export function assembledLoop(version: StoryboardVersion, takes: readonly TakeVi
 export function takeSrc(channelId: string, storyboardId: string, take: Pick<TakeView, "source" | "jobId">): string {
   return `/api/channels/${encodeURIComponent(channelId)}/storyboards/${encodeURIComponent(storyboardId)}/takes/${take.source}/${encodeURIComponent(take.jobId)}`;
 }
+
+/**
+ * BL-189 independent review: the Operator's final files of the version shown -- of that number AND that content (its hash): after
+ * two computers wrote the same version number, a render of the body that was not kept is never shown as this one's.
+ */
+export function rendersOfVersion<R extends { versionNumber: number; contentHash: string }>(renders: readonly R[], version: { number: number; contentHash: string }): R[] {
+  return renders.filter((r) => r.versionNumber === version.number && r.contentHash === version.contentHash);
+}

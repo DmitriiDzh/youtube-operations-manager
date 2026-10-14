@@ -225,8 +225,13 @@ function createToolDeps(): FactoryToolDeps {
       // BL-189 (FO-REQ-0025 B): each pick is checked against the storyboard's takes on every computer (storyboard-takes).
       attachRender: async (input) => {
         const ref = (input ?? {}) as { channelId?: unknown; storyboardId?: unknown };
-        const isTake = async (take: { source: "media" | "gemini"; jobId: string }, versionNumber: number, segmentId: string) =>
-          typeof ref.channelId === "string" && typeof ref.storyboardId === "string" && (await listStoryboardTakes(ref.channelId, ref.storyboardId)).some((t) => t.source === take.source && t.jobId === take.jobId && t.versionNumber === versionNumber && t.segmentId === segmentId);
+        // Read once per call (independent review): every pick is checked against the same list.
+        let takes: ReturnType<typeof listStoryboardTakes> | null = null;
+        const isTake = async (take: { source: "media" | "gemini"; jobId: string }, versionNumber: number, segmentId: string) => {
+          if (typeof ref.channelId !== "string" || typeof ref.storyboardId !== "string") return false;
+          takes ??= listStoryboardTakes(ref.channelId, ref.storyboardId);
+          return (await takes).some((t) => t.source === take.source && t.jobId === take.jobId && t.versionNumber === versionNumber && t.segmentId === segmentId);
+        };
         return { ...(await createStoryboardsServiceForProduction().attachRender(input, isTake)) };
       },
     },

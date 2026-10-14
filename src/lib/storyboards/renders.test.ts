@@ -108,3 +108,17 @@ test("a channel that is not connected here takes no render; this computer's copy
     await cleanup();
   }
 });
+
+// Independent review (BL-189): two computers that wrote the same version number keep one body after a sync; a render attached to
+// the other body (its contentHash) takes no verdict -- like a version decision, a verdict counts for the content it was made on.
+test("a render of another content of that version number takes no verdict", async () => {
+  const { service, sync, cleanup } = await approvedBar();
+  try {
+    await sync.addRender(CH, "bar-loop", { id: "rn_other", versionNumber: 1, contentHash: "the-body-not-kept", file: LOOP_FILE, sha256: sha(LOOP), bytes: 1, picks: {}, notes: null, createdAt: "2026-10-14T16:00:00Z", device: "Windows" });
+    await code(service.ownerRenderDecision(CH, "bar-loop", "rn_other", { kind: "approved" }), "storyboard_render_not_found", { reason: "other_version_content" });
+    const { renderId } = await service.attachRender({ channelId: CH, storyboardId: "bar-loop", versionNumber: 1, file: LOOP_FILE, picks: PICKS }, isTake);
+    assert.equal((await service.ownerRenderDecision(CH, "bar-loop", renderId, { kind: "approved" })).state, "approved");
+  } finally {
+    await cleanup();
+  }
+});

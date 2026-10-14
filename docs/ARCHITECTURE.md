@@ -4183,7 +4183,10 @@ gate's scope), Telegram msgs 2739 (go), 2741/2743 (the layout: Music | Images | 
   from THIS computer's copy (`resolveExchangeFile`); without a copy the card says «Сделан на <computer>; файла на этом компьютере
   пока нет» (`takeState` "elsewhere"). Picks of a peer's take pass the same `isTake` check; picks were already synced.
 - **The final file (renders).** `StoryboardRecord.renders` (by id, assigned whole) and `renderDecisions` (by id); both maps are made
-  with the first render in one change, so verdicts from either computer land in one map. `factory_storyboard_attach_render`
+  by `create` (a storyboard from before BL-189 gets them with its first render; when two computers each made them before a sync,
+  `read` unions every concurrent map via `Automerge.getConflicts`, so no render or verdict is lost). A render counts for the content
+  it was attached to (`contentHash`, like a version decision): the screen shows it under that version body only and a verdict on a
+  render of a body that lost a concurrent edit is refused (`storyboard_render_not_found`, reason `other_version_content`). `factory_storyboard_attach_render`
   (Factory API 1.18.0) accepts only the approved latest version, a video in the exchange folders (sha256 frozen) and picks that are
   takes of their segment and version on any computer (the Factory route passes `isTake` from `storyboard-takes`). A render's state
   is the owner's newest verdict (`in_review` without one). Owner routes: `renders/[renderId]` (this computer's copy: ok, missing,

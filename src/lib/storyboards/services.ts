@@ -585,7 +585,17 @@ export function createStoryboardsService(ports: StoryboardsPorts) {
       const { kind, note } = parseWithSchema(ownerRenderDecisionInputSchema, input, "render decision");
       return ports.withLock(async () => {
         const record = await findRecord(channelId, storyboardId);
-        if (!record.renders?.[renderId]) throw new DomainError({ code: "storyboard_render_not_found", message: "No such final file in this storyboard", details: { storyboardId, renderId } });
+        const render = record.renders?.[renderId];
+        if (!render) throw new DomainError({ code: "storyboard_render_not_found", message: "No such final file in this storyboard", details: { storyboardId, renderId } });
+        // Independent review (BL-189): a verdict counts only for the content the render was attached to (like a version decision's
+        // contentHash) -- after two computers wrote the same version number, a render of the body that was not kept is not this one's.
+        if (record.versions[String(render.versionNumber)]?.contentHash !== render.contentHash) {
+          throw new DomainError({
+            code: "storyboard_render_not_found",
+            message: "This final file was attached to another content of that version (two computers wrote it at the same time)",
+            details: { storyboardId, renderId, reason: "other_version_content", versionNumber: render.versionNumber },
+          });
+        }
         const id = newId("rd");
         await ports.store.addRenderDecision(channelId, storyboardId, { id, renderId, kind, by: "owner", device: await ports.deviceLabel(), at: stamp(), note: note ?? null });
         const view = rendersOf(await findRecord(channelId, storyboardId)).find((r) => r.renderId === renderId);
