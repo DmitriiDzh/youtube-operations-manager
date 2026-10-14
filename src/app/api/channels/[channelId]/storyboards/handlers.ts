@@ -9,7 +9,7 @@ import { createStoryboardsServiceForProduction, type StoryboardsService } from "
 import { streamLocalFile } from "@/lib/local-file-response";
 import { isLoopbackRequest } from "@/lib/loopback-guard";
 import { getVideoMetadataErrorStatus } from "../../../video-metadata/error-status";
-import { listStoryboardTakes, resolveTakeFile, videoTypeOf, type StoryboardTake } from "./takes";
+import { listStoryboardTakes, resolveTakeFile, videoTypeOf, type StoryboardTake } from "@/lib/storyboard-takes";
 
 // BL-184 stage 1 (FO-REQ-0024 §4 B2; STORYBOARD_PLAN.md §3 stage 1 item 3): the owner's side of a storyboard -- the list, one
 // storyboard with this computer's copy of its keyframes and what changed against the version before, comments (with pins), replies,
@@ -117,12 +117,17 @@ export function createStoryboardRouteHandlers(deps: StoryboardRouteDeps = defaul
     setGate: (request: Request, context: Params<Base>) =>
       guarded(context, async ({ channelId }) => NextResponse.json(await deps.service().setGateSetting(channelId, await body(request)))),
 
-    /** B5: the storyboard's takes (without file paths: `hasVideo` says whether this computer can play one). */
+    /**
+     * B5: the storyboard's takes on every computer (BL-189), without file paths: `hasVideo` says whether this computer can play
+     * one, `device` names the other computer that made it (null: this one).
+     */
     takes: (_request: Request, context: Params<Base & { storyboardId: string }>) =>
       guarded(context, async ({ channelId, storyboardId }) => {
         await deps.service().getForOwner(channelId, storyboardId);
         const takes = await deps.takes(channelId, storyboardId);
-        return NextResponse.json({ takes: takes.map(({ localPath, ...take }) => ({ ...take, hasVideo: localPath !== null })) });
+        return NextResponse.json({
+          takes: takes.map(({ localPath, exchangePath: _exchangePath, device, ...take }) => ({ ...take, device: device ? { hostName: device.hostName } : null, hasVideo: localPath !== null })),
+        });
       }),
 
     /** B5: a take's video, with HTTP Range (the player seeks, the seam tools read the last and first frames). */

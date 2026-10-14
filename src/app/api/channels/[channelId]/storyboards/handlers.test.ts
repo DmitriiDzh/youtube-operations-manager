@@ -16,8 +16,10 @@ const json = (method: string, body: unknown) => new Request("http://x/", { metho
 // BL-184 stage 3: two takes of S1 in v2 -- a Gemini one with its video here, a GPU one still generating.
 const VIDEO_FILE = path.join(tmpdir(), `storyboard-take-${process.pid}.mp4`);
 const TAKES = [
-  { source: "gemini" as const, jobId: "gm_1", segmentId: "S1", versionNumber: 2, status: "done", createdAt: "2026-10-13T12:00:00.000Z", label: "gemini-omni-1.1-flash", error: null, localPath: "/ws/99 Data Exchange/From YTM/gemini/gm_1/video-1.mp4" },
-  { source: "media" as const, jobId: "job-1", segmentId: "S1", versionNumber: 2, status: "generating", createdAt: "2026-10-13T12:01:00.000Z", label: "ltx-flf · seed 7", error: null, localPath: null },
+  { source: "gemini" as const, jobId: "gm_1", segmentId: "S1", versionNumber: 2, status: "done", createdAt: "2026-10-13T12:00:00.000Z", label: "gemini-omni-1.1-flash", error: null, device: null, localPath: "/ws/99 Data Exchange/From YTM/gemini/gm_1/video-1.mp4", exchangePath: null },
+  { source: "media" as const, jobId: "job-1", segmentId: "S1", versionNumber: 2, status: "generating", createdAt: "2026-10-13T12:01:00.000Z", label: "ltx-flf · seed 7", error: null, device: null, localPath: null, exchangePath: null },
+  // BL-189 (FO-REQ-0025 A): another computer's take of S2 -- made on the Mac, its file not in this computer's copy yet.
+  { source: "media" as const, jobId: "mac-1", segmentId: "S2", versionNumber: 2, status: "done", createdAt: "2026-10-13T12:02:00.000Z", label: "h0004-ltx25-flf v3 · seed 8", error: null, device: { deviceId: "dev-mac", hostName: "Mac-mini" }, localPath: null, exchangePath: "From YTM/media/mac-1/ltx.mp4" },
 ];
 
 function make(options: { session?: { user: { id: string } } | null; refuse?: DomainError } = {}) {
@@ -136,7 +138,9 @@ test("BL-184 stage 3 (B5): takes list without file paths; a take's video with Ra
   const { handlers } = make();
   const base = { channelId: "UC_active", storyboardId: "sb" };
   const list = await (await handlers.takes(new Request("http://x/"), ctx(base))).json();
-  assert.deepEqual(list.takes.map((t: Record<string, unknown>) => [t.jobId, t.hasVideo, "localPath" in t]), [["gm_1", true, false], ["job-1", false, false]]);
+  assert.deepEqual(list.takes.map((t: Record<string, unknown>) => [t.jobId, t.hasVideo, "localPath" in t]), [["gm_1", true, false], ["job-1", false, false], ["mac-1", false, false]]);
+  // BL-189: another computer's take names that computer and never carries a path (neither this computer's nor the report's).
+  assert.deepEqual(list.takes.map((t: Record<string, unknown>) => [t.device, "exchangePath" in t]), [[null, false], [null, false], [{ hostName: "Mac-mini" }, false]]);
   const ranged = await handlers.takeVideo(new Request("http://x/", { headers: { range: "bytes=2-5" } }), ctx({ ...base, source: "gemini", jobId: "gm_1" }));
   assert.deepEqual([ranged.status, ranged.headers.get("content-type"), ranged.headers.get("content-range"), await ranged.text()], [206, "video/mp4", "bytes 2-5/10", "2345"]);
   assert.equal((await handlers.takeVideo(new Request("http://x/"), ctx({ ...base, source: "media", jobId: "job-1" }))).status, 404, "no video yet");
@@ -149,7 +153,10 @@ test("BL-184 stage 3 (B5): a pick is checked against the storyboard's own takes 
   await handlers.pick(json("POST", { versionNumber: 2, segmentId: "S1", take: { source: "gemini", jobId: "gm_1" } }), ctx(base));
   await handlers.pick(json("POST", { versionNumber: 2, segmentId: "S2", take: { source: "gemini", jobId: "gm_1" } }), ctx(base));
   await handlers.pick(json("POST", { versionNumber: 1, segmentId: "S1", take: { source: "gemini", jobId: "gm_1" } }), ctx(base));
-  assert.deepEqual(calls.filter((c) => c[0] === "pick").map((c) => c[3]), [true, false, false]);
+  // BL-189 (FO-REQ-0025 §3 step 2): another computer's take is a take too -- of its own segment only.
+  await handlers.pick(json("POST", { versionNumber: 2, segmentId: "S2", take: { source: "media", jobId: "mac-1" } }), ctx(base));
+  await handlers.pick(json("POST", { versionNumber: 2, segmentId: "S1", take: { source: "media", jobId: "mac-1" } }), ctx(base));
+  assert.deepEqual(calls.filter((c) => c[0] === "pick").map((c) => c[3]), [true, false, false, true, false]);
 });
 
 test("ADR 0029 decision 5: keyframe images and take videos are sent only to a request from this computer", async () => {

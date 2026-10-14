@@ -67,6 +67,8 @@ export function StoryboardVideoView({ channelId, storyboard, version, onPicked }
     }
   }
 
+  const hostOf = (take: TakeView) => take.device?.hostName ?? t("storyboards.video.anotherComputer");
+
   const thumb = (keyframeId: string) => (
     // eslint-disable-next-line @next/next/no-img-element -- a local file served by our route, shown as it is
     <img src={keyframeSrc(channelId, storyboard.storyboardId, version.number, keyframeId)} alt={keyframeId} className="h-20 w-32 shrink-0 rounded object-cover" />
@@ -113,8 +115,14 @@ export function StoryboardVideoView({ channelId, storyboard, version, onPicked }
                       {state === "ready" ? (
                         <video src={takeSrc(channelId, storyboard.storyboardId, take)} muted loop playsInline controls preload="metadata" className="h-32 w-full rounded bg-black object-contain" />
                       ) : (
-                        <div className={`flex h-32 items-center justify-center rounded bg-zinc-900 px-2 text-center text-xs ${state === "failed" ? "text-rose-300" : "text-zinc-400"}`}>
-                          {state === "working" ? t("storyboards.video.inProgress") : take.status === "done" && !take.hasVideo ? t("storyboards.video.noVideoHere") : t("storyboards.video.failed")}
+                        <div className={`flex h-32 items-center justify-center rounded bg-zinc-900 px-2 text-center text-xs ${state === "failed" ? "text-rose-300" : state === "elsewhere" ? "text-sky-200" : "text-zinc-400"}`}>
+                          {state === "working"
+                            ? t("storyboards.video.inProgress")
+                            : state === "elsewhere"
+                              ? t("storyboards.video.elsewhere", { host: hostOf(take) })
+                              : take.status === "done" && !take.hasVideo
+                                ? t("storyboards.video.noVideoHere")
+                                : t("storyboards.video.failed")}
                         </div>
                       )}
                       <figcaption className="flex flex-wrap items-center gap-1 text-[11px]">
@@ -122,6 +130,8 @@ export function StoryboardVideoView({ channelId, storyboard, version, onPicked }
                         <span className="min-w-0 flex-1 truncate text-zinc-300" title={take.error ?? take.label}>
                           {take.label}
                         </span>
+                        {/* BL-189 (FO-REQ-0025 A): a take another computer made says which one. */}
+                        {take.device ? <span className="w-full truncate text-sky-300">{t("storyboards.video.madeOn", { host: hostOf(take) })}</span> : null}
                         {state === "ready" ? (
                           <button type="button" onClick={() => setLarge((l) => (l === takeKey(take) ? null : takeKey(take)))} className="rounded px-1.5 py-0.5 text-zinc-300 hover:bg-zinc-800">
                             {t(large === takeKey(take) ? "storyboards.video.closeLarge" : "storyboards.video.enlarge")}

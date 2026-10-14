@@ -131,3 +131,18 @@ test("§5 step 5: the four joints of the looped bar chain, each with the picked 
   // Without loop there is no closing joint.
   assert.deepEqual(jointsOf({ ...version(false), number: 2 }, takes, picks).map((j) => `${j.from.id}>${j.to.id}`), ["S1>S2", "S2>S3"]);
 });
+
+test("BL-189 (FO-REQ-0025 A): a take done on another computer without its file here is located, not failed; a failed one stays failed", async () => {
+  const { takeState } = await import("./storyboard-model");
+  const mac = { hostName: "Mac-mini-Violetta.local" };
+  assert.deepEqual(
+    [
+      take("m1", "S1", { status: "done", hasVideo: false, device: mac }),
+      take("m2", "S1", { status: "done", hasVideo: true, device: mac }),
+      take("m3", "S1", { status: "generating", hasVideo: false, device: mac }),
+      take("m4", "S1", { status: "failed", hasVideo: false, device: mac }),
+      take("own", "S1", { status: "done", hasVideo: false, device: null }),
+    ].map(takeState),
+    ["elsewhere", "ready", "working", "failed", "failed"]
+  );
+});

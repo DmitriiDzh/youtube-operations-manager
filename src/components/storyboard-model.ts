@@ -125,15 +125,23 @@ export function keyframeSrc(channelId: string, storyboardId: string, versionNumb
 
 // ---- BL-184 stage 3 (FO-REQ-0024 B5): the video of a storyboard -- takes per segment, the joints, the assembled loop ------------
 
-/** A take as the takes route sends it (no file path; `hasVideo` = this computer can play it). */
-export type TakeView = { source: "media" | "gemini"; jobId: string; segmentId: string; versionNumber: number; status: string; createdAt: string; label: string; error: string | null; hasVideo: boolean };
+/**
+ * A take as the takes route sends it (no file path; `hasVideo` = this computer can play it). BL-189: `device` names the other
+ * computer that made it (null: this one) -- its file reaches this computer only by the workspace sync.
+ */
+export type TakeView = { source: "media" | "gemini"; jobId: string; segmentId: string; versionNumber: number; status: string; createdAt: string; label: string; error: string | null; hasVideo: boolean; device?: { hostName: string | null } | null };
 
 export const takeKey = (take: Pick<TakeView, "source" | "jobId">) => `${take.source}:${take.jobId}`;
 
-/** A take's state for its card: playable, still being made, or failed (the video modules' statuses differ; this is what matters). */
-export function takeState(take: Pick<TakeView, "status" | "hasVideo">): "ready" | "working" | "failed" {
+/**
+ * A take's state for its card: playable, still being made, failed -- or (BL-189) done on another computer whose file is not in
+ * this computer's copy yet ("elsewhere": not a failure, the file comes with the workspace sync).
+ */
+export function takeState(take: Pick<TakeView, "status" | "hasVideo" | "device">): "ready" | "working" | "failed" | "elsewhere" {
   if (take.status === "failed" || take.status === "cancelled") return "failed";
-  return take.status === "done" && take.hasVideo ? "ready" : take.status === "done" ? "failed" : "working";
+  if (take.status !== "done") return "working";
+  if (take.hasVideo) return "ready";
+  return take.device ? "elsewhere" : "failed";
 }
 
 /** The version's takes, by segment, in the order they were made. */
