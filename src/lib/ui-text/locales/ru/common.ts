@@ -18,6 +18,10 @@ export const common: Record<keyof typeof en, string> = {
   "common.success": "Готово",
   "common.syncNow": "Синхронизировать",
   "common.syncing": "Синхронизация…",
+  "common.syncRecent.title": "Канал недавно синхронизирован",
+  "common.syncRecent.description":
+    "{minutes, plural, =0 {Последняя синхронизация была меньше минуты назад.} one {Последняя синхронизация была # минуту назад.} few {Последняя синхронизация была # минуты назад.} many {Последняя синхронизация была # минут назад.} other {Последняя синхронизация была # минуты назад.}} Синхронизировать снова?",
+  "common.syncRecent.confirm": "Синхронизировать снова",
   "common.moreInfo": "Подробнее",
   "common.errorStatus": "Ошибка {status}",
   "common.errorDetail": "{text} Подробности: {detail}",

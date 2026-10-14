@@ -93,4 +93,8 @@ export type SyncChannelResult = {
   channel: SyncedChannel;
   videoCount: number;
   syncedAt: string;
+  /** Videos this sync newly hid because they are no longer in the channel's uploads on YouTube (owner, 2026-10-14). */
+  hiddenRemovedVideoIds: string[];
+  /** Whether that check ran: skipped when the uploads list came back empty or the reader is not the channel's recorded owner. */
+  removedCheck: "done" | "skipped_empty_list" | "skipped_not_owner";
 };

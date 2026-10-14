@@ -8,6 +8,8 @@ export const content: Record<keyof typeof en, string> = {
     "{count, plural, one {Синхронизировано # видео} few {Синхронизировано # видео} many {Синхронизировано # видео} other {Синхронизировано # видео}}.",
   "content.sync.summary":
     "Канал «{channel}» синхронизирован — {count, plural, one {# видео} few {# видео} many {# видео} other {# видео}}",
+  "content.sync.hiddenRemoved":
+    "{count, plural, one {# видео скрыто} few {# видео скрыто} many {# видео скрыто} other {# видео скрыто}}: их больше нет на YouTube.",
   "content.sync.otherStillRunning": "Другая синхронизация ещё идёт и не успела завершиться. Повторите через минуту.",
   "content.searchPlaceholder": "Поиск по названию…",
   "content.privacy.all": "Все",

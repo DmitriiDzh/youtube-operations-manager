@@ -17,6 +17,10 @@ export const common = {
   "common.success": "Success",
   "common.syncNow": "Sync now",
   "common.syncing": "Syncing…",
+  "common.syncRecent.title": "The channel was synced recently",
+  "common.syncRecent.description":
+    "{minutes, plural, =0 {The last sync was less than a minute ago.} one {The last sync was # minute ago.} other {The last sync was # minutes ago.}} Sync again?",
+  "common.syncRecent.confirm": "Sync again",
   "common.moreInfo": "More info",
   "common.errorStatus": "Error {status}",
   "common.errorDetail": "{text} Details: {detail}",

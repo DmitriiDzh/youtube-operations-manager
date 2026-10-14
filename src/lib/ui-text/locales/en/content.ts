@@ -5,6 +5,7 @@ export const content = {
   "content.sync.overlayTitle": "Syncing the channel from YouTube",
   "content.sync.videosSynced": "{count, plural, one {# video} other {# videos}} synced.",
   "content.sync.summary": "Synced “{channel}” — {count, plural, one {# video} other {# videos}}",
+  "content.sync.hiddenRemoved": "{count, plural, one {# video hidden} other {# videos hidden}}: no longer on YouTube.",
   "content.sync.otherStillRunning": "Another sync is still running and did not finish in time. Try again in a moment.",
   "content.searchPlaceholder": "Search by title…",
   "content.privacy.all": "All",

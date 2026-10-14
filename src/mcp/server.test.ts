@@ -1953,6 +1953,8 @@ function makeChannelSyncCoreStub(): Pick<
       channel: makeSyncedChannel(),
       videoCount: 1,
       syncedAt: "2026-09-01T00:00:00.000Z",
+      hiddenRemovedVideoIds: [],
+      removedCheck: "done" as const,
     }),
     listChannels: async () => ({ channels: [makeSyncedChannel()] }),
     listSyncedVideos: async () => ({ channelId: "UC_1", videos: [] }),
@@ -1964,7 +1966,7 @@ test("MCP channel_sync forwards the resolved credentialRef and channelId", async
   const channelSyncCore = makeChannelSyncCoreStub();
   channelSyncCore.syncChannel = async (input: unknown) => {
     seenArgs.push(input);
-    return { channel: makeSyncedChannel(), videoCount: 1, syncedAt: "2026-09-01T00:00:00.000Z" };
+    return { channel: makeSyncedChannel(), videoCount: 1, syncedAt: "2026-09-01T00:00:00.000Z", hiddenRemovedVideoIds: [], removedCheck: "done" as const };
   };
 
   const handlers = createMcpToolHandlers(

@@ -6,6 +6,7 @@ import { formatDisplayDate, formatDisplayDateTime, isScheduledVideo, resolvePubl
 import type { UiTextKey } from "@/lib/ui-text";
 import { useUiText } from "./ui-text-provider";
 import { postChannelSync } from "./channel-sync-client";
+import { useRecentSyncConfirm } from "./recent-sync-confirm";
 import { OperationOverlay, useOperation, LoadingIndicator } from "./operation-progress";
 import { DEFAULT_SORT, nextSortState, sortVideos, type SortKey, type SortState } from "./content-sort";
 import { VideoDetailModal } from "./video-detail-modal";
@@ -193,7 +194,9 @@ export function ContentManager() {
       }
       void waitedForOther;
       const channel = data.channel as SyncedChannel;
-      setLastSyncSummary(t("content.sync.summary", { channel: channel.title, count: Number(data.videoCount) }));
+      const hidden = Array.isArray(data.hiddenRemovedVideoIds) ? data.hiddenRemovedVideoIds.length : 0;
+      const summary = t("content.sync.summary", { channel: channel.title, count: Number(data.videoCount) });
+      setLastSyncSummary(hidden > 0 ? `${summary}. ${t("content.sync.hiddenRemoved", { count: hidden })}` : summary);
       setChannels([channel]);
       setSelectedChannelId(channel.channelId);
       await fetchVideos(channel.channelId);
@@ -203,6 +206,7 @@ export function ContentManager() {
       setSyncing(false);
     }
   }, [fetchVideos, runBlocking, t]);
+  const recentSync = useRecentSyncConfirm(channels.find((c) => c.channelId === selectedChannelId)?.lastSyncedAt, () => void handleSync(selectedChannelId ?? undefined));
 
   // After a reload, follow a sync the server is still running for this channel (ADR 0015). Only syncs:
   // their result is the saved data, which a refresh picks up. (An AI generation's proposals exist only in
@@ -296,6 +300,7 @@ export function ContentManager() {
 
   return (
     <div className="space-y-4">
+      {recentSync.dialog}
       <OperationOverlay state={op.state} onCancel={op.requestCancel} onClose={op.reset} />
       <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
         <div className="flex flex-wrap items-center gap-3">
@@ -307,7 +312,7 @@ export function ContentManager() {
 
           {selectedChannelId && (
             <button
-              onClick={() => handleSync(selectedChannelId)}
+              onClick={recentSync.request}
               disabled={syncing}
               className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50"
             >

@@ -72,9 +72,18 @@ Web UI / API → core.syncChannel({ credentialRef, channelId? })
   5. youtubeApi.getVideosMetadataBatch({ videoIds })                — videos.list in chunks of ≤50 ids
                                                                        (part: snippet, status, localizations)
   6. channelStore.upsertVideos(entries, syncedAt)                   — upsert every video row for this channel
+                                                                       (clears removed_on_youtube_at)
+  6a. channelStore.markVideosRemovedOnYoutube(channelId, playlistIds) — owner 2026-10-14: stored videos missing from the
+                                                                       step-4 ids get removed_on_youtube_at; skipped when
+                                                                       the list is empty or the reader is not the channel's
+                                                                       recorded owner (connectedUserId)
   7. channelStore.markChannelSynced(channelId, syncedAt)
-  8. return { channel, videoCount, syncedAt }
+  8. return { channel, videoCount, syncedAt, hiddenRemovedVideoIds, removedCheck }
 ```
+
+Hidden rows are never deleted: `listStoredVideosByChannel` (the one list every module reads) leaves out rows with
+`removed_on_youtube_at` set, while `getStoredVideo` and the analytics raw-SQL reads still see them (foreign keys from
+`video_metrics_daily` keep pointing at a real row). `docs/PROJECT_SPEC.md` §9.
 
 Steps 4–5 are the two YouTube-quota-relevant calls. Step 4 uses the **uploads-playlist enumeration strategy** (never `search.list`), matching `docs/PROJECT_SPEC.md` §9. Step 5 batches up to 50 video IDs per `videos.list` call — for a channel with, say, 420 videos, this is **9 API calls total for full metadata**, not 420. See `src/lib/youtube-read-gateway/data-api.ts` (the single read-side child module for the YouTube Data API v3, reached only through the `@/lib/youtube-read-gateway` barrel — `docs/decisions/0007-youtube-read-gateway.md`; this file was `src/lib/youtube.ts` before that refactor):
 

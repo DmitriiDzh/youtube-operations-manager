@@ -3,6 +3,7 @@ import {
   listStoredChannels,
   listStoredVideosByChannel,
   markChannelSynced,
+  markVideosRemovedOnYoutube,
   upsertChannel,
   upsertVideos,
 } from "@/lib/db";
@@ -15,5 +16,6 @@ export function createChannelSyncStoreAdapter() {
     getChannel: getStoredChannel,
     upsertVideos,
     listVideosByChannel: listStoredVideosByChannel,
+    markVideosRemovedOnYoutube,
   };
 }

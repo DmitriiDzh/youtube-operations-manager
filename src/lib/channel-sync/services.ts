@@ -117,6 +117,8 @@ type ServiceDependencies = {
       syncedAt: Date
     ): Promise<void>;
     listVideosByChannel(channelId: string): Promise<StoredVideoRecord[]>;
+    /** Marks this channel's unmarked stored videos whose ids are not in `presentVideoIds`; returns the ids it marked. */
+    markVideosRemovedOnYoutube(channelId: string, presentVideoIds: string[], at: Date): Promise<string[]>;
   };
   logger: {
     info(payload: { event: string; context?: Record<string, unknown> }): void;
@@ -265,6 +267,17 @@ export function createChannelSyncServices(deps: ServiceDependencies) {
           syncedAt
         );
 
+        // Owner instruction 2026-10-14 (Telegram msgs 2770/2775, option "б"): a stored video no longer in the uploads is hidden
+        // with a "removed on YouTube" mark, never deleted. Only from a complete read (any failed page threw above), only against
+        // the playlist ids (an id `videos.list` left out still exists), never from an empty list (fail closed), and only when the
+        // reading identity is the channel's recorded owner: anyone else's read of the uploads lacks the private and scheduled videos.
+        const owner = (await deps.channelStore.getChannel(channel.channelId))?.connectedUserId ?? null;
+        let removedCheck: SyncChannelResult["removedCheck"] = "done";
+        let hiddenRemovedVideoIds: string[] = [];
+        if (!connectedUserId || owner !== connectedUserId) removedCheck = "skipped_not_owner";
+        else if (videoIds.length === 0) removedCheck = "skipped_empty_list";
+        else hiddenRemovedVideoIds = await deps.channelStore.markVideosRemovedOnYoutube(channel.channelId, videoIds, syncedAt);
+
         await deps.channelStore.markChannelSynced(channel.channelId, syncedAt);
         progress?.counts(videoMetadata.length, videoMetadata.length);
 
@@ -283,13 +296,15 @@ export function createChannelSyncServices(deps: ServiceDependencies) {
             channel: mapStoredChannel(storedChannel),
             videoCount: videoMetadata.length,
             syncedAt: syncedAt.toISOString(),
+            hiddenRemovedVideoIds,
+            removedCheck,
           },
           "sync channel output"
         );
 
         deps.logger.info({
           event: "channel_sync.sync.success",
-          context: { channelId: channel.channelId, videoCount: videoMetadata.length },
+          context: { channelId: channel.channelId, videoCount: videoMetadata.length, removedCheck, hiddenRemovedVideoIds },
         });
 
         return output;

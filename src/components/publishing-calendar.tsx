@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatDisplayDate, formatDisplayDateTime } from "@/lib/shared-formatting";
 import type { UiTextKey } from "@/lib/ui-text";
 import { LoadingIndicator } from "./operation-progress";
+import { useRecentSyncConfirm } from "./recent-sync-confirm";
 import { entriesByDay, gapDays, localDayKey, monthWeeks, type GridEntry } from "./publishing-calendar-grid";
 import { useT } from "./ui-text-provider";
 import { VideoDetailModal } from "./video-detail-modal";
@@ -126,6 +127,7 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
     }
   }
 
+  const recentSync = useRecentSyncConfirm(data?.lastSyncedAt, () => void sync());
   const now = useMemo(() => new Date(), [data]); // eslint-disable-line react-hooks/exhaustive-deps -- "now" moves with each load
   const byDay = useMemo(() => entriesByDay([...(data?.entries ?? []), ...packageEntries]), [data, packageEntries]);
   const gaps = useMemo(() => gapDays(now, byDay), [now, byDay]);
@@ -190,9 +192,10 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
           </div>
           <div className="flex items-center gap-3 text-xs text-zinc-500">
             {data.lastSyncedAt && <span>{t("publishingCalendar.dataAge", { time: formatDisplayDateTime(data.lastSyncedAt) })}</span>}
+            {recentSync.dialog}
             <button
               type="button"
-              onClick={() => void sync()}
+              onClick={recentSync.request}
               disabled={syncing || loading}
               className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
             >
