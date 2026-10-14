@@ -10,6 +10,7 @@
   (schema v93, report v2): commands, the ledger, the status line, Gemini cancel before sending, session approve/reject from any
   computer. Not in stage 2: the "Перезапустить на …" one-click (a run on another computer's session covers it) and the warning
   about a similar pending run from another computer (§7).
+  Stage 3 built (Factory API 1.17.0): `factory_jobs_list`, read-only, every computer's jobs in the shared shape.
 - **Owner's answers (msg 2806):** Q1 yes (session approve/reject from any computer, stage 2); Q2 7 days of finished jobs;
   Q3 yes (Gemini launch from Media, stage 4); Q4 ok (Operator reads every device's jobs, sends no commands).
 - **Amends:** ADR 0028 (sessions across devices) and ADR 0035 (Gemini media, "jobs are device-local"). The amendment is written

@@ -230,3 +230,69 @@ export async function mergePool(input: MergeInput): Promise<PoolView> {
   }
   return { jobs: shown, devices };
 }
+
+// ---------------------------------------------------------------------------
+// BL-188 stage 3 (SHARED_MEDIA_JOBS_PLAN.md §2.7, owner msg 2806 item 4): the Factory Operator's read of every computer's jobs
+// (`factory_jobs_list`). Read-only, and in the report's shape for every computer -- this one's own jobs too -- so the Operator
+// sees codes, never a prompt, parameters, an input path or a provider's error text, wherever the job runs.
+// ---------------------------------------------------------------------------
+
+export const AGENT_JOBS_LIST_DEFAULT = 100;
+export const AGENT_JOBS_LIST_MAX = 500;
+
+export type AgentJobsFilter = {
+  channelId?: string;
+  source?: "runpod" | "gemini";
+  mediaKind?: PoolMediaKind;
+  status?: string;
+  planId?: string;
+  /** Default 100, at most 500. */
+  limit?: number;
+};
+
+export type AgentJobsDevice = { deviceId: string; hostName: string | null; thisComputer: boolean; updatedAt: string; reportAgeSeconds: number; stale: boolean };
+export type AgentJobsRow = SharedMediaJob & { device: { deviceId: string; hostName: string | null; thisComputer: boolean }; reportAgeSeconds: number; stale: boolean };
+export type AgentJobsList = { devices: AgentJobsDevice[]; jobs: AgentJobsRow[]; total: number; truncated: boolean };
+
+/**
+ * Every computer's jobs for the Operator, newest first: this computer's (as its own report would carry them, age 0) and every
+ * peer's reported jobs, with the computer and how old its report is ("stale" after 5 minutes). A peer report naming this
+ * computer is ignored, and the same job reported twice keeps the first (this computer's, then the newest report's). A filter
+ * on `mediaKind` keeps jobs of no known kind out (the Operator asked for that kind).
+ */
+export function agentJobsList(input: {
+  own: { deviceId: string; hostName: string | null; jobs: readonly SharedMediaJob[] };
+  peers: readonly MediaJobsReport[];
+  now: Date;
+  filter: AgentJobsFilter;
+}): AgentJobsList {
+  const limit = Math.min(AGENT_JOBS_LIST_MAX, Math.max(1, Math.trunc(input.filter.limit ?? AGENT_JOBS_LIST_DEFAULT)));
+  const nowIso = input.now.toISOString();
+  const devices: AgentJobsDevice[] = [{ deviceId: input.own.deviceId, hostName: input.own.hostName, thisComputer: true, updatedAt: nowIso, reportAgeSeconds: 0, stale: false }];
+  const sources: Array<{ device: AgentJobsDevice; jobs: readonly SharedMediaJob[] }> = [{ device: devices[0], jobs: selectReportJobs(input.own.jobs, input.now) }];
+  const peers = input.peers.filter((r) => r.deviceId !== input.own.deviceId).sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  for (const report of peers) {
+    const ageMs = Math.max(0, input.now.getTime() - Date.parse(report.updatedAt));
+    const device: AgentJobsDevice = { deviceId: report.deviceId, hostName: report.hostName, thisComputer: false, updatedAt: report.updatedAt, reportAgeSeconds: Math.round(ageMs / 1000), stale: ageMs > POOL_PEER_STALE_AFTER_MS };
+    devices.push(device);
+    sources.push({ device, jobs: report.jobs });
+  }
+  const f = input.filter;
+  const seen = new Set<string>();
+  const rows: AgentJobsRow[] = [];
+  for (const { device, jobs } of sources) {
+    for (const job of jobs) {
+      const key = `${job.source}:${job.jobId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (f.channelId !== undefined && job.channelId !== f.channelId) continue;
+      if (f.source !== undefined && job.source !== f.source) continue;
+      if (f.mediaKind !== undefined && job.mediaKind !== f.mediaKind) continue;
+      if (f.status !== undefined && job.status !== f.status) continue;
+      if (f.planId !== undefined && job.plan?.planId !== f.planId) continue;
+      rows.push({ ...job, device: { deviceId: device.deviceId, hostName: device.hostName, thisComputer: device.thisComputer }, reportAgeSeconds: device.reportAgeSeconds, stale: device.stale });
+    }
+  }
+  rows.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || (a.jobId < b.jobId ? 1 : -1));
+  return { devices, jobs: rows.slice(0, limit), total: rows.length, truncated: rows.length > limit };
+}

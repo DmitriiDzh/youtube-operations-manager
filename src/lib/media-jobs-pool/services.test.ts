@@ -5,7 +5,7 @@ import test from "node:test";
 import type { GeminiJobView } from "@/lib/gemini-media";
 import type { JobLiveProgress } from "@/lib/media-generation/job-progress";
 import { MEDIA_JOBS_REPORT_FORMAT, mediaJobsReportSchema, type MediaJobsReport, type SharedMediaJob } from "@/lib/sync-gateway";
-import { buildMediaJobsReport, geminiOutputPath, mergePool, runpodOutputPath, selectReportJobs, toSharedGeminiJob, toSharedRunpodJob, type LocalRunpodJob, type MergeInput } from "./services";
+import { agentJobsList, buildMediaJobsReport, geminiOutputPath, mergePool, runpodOutputPath, selectReportJobs, toSharedGeminiJob, toSharedRunpodJob, type LocalRunpodJob, type MergeInput } from "./services";
 
 // BL-188 (owner, Telegram 2026-10-14, msgs 2801/2803/2806; SHARED_MEDIA_JOBS_PLAN.md §2.1 and acceptance §4.1 items 1–3, 7):
 // - nothing secret crosses (no ComfyUI URL, parameters, prompt, input paths or provider error text -- a code only);
@@ -273,4 +273,78 @@ test("the shared-list module is one-way: media-generation and gemini-media never
     }
   }
   assert.deepEqual(offenders, []);
+});
+
+// BL-188 stage 3 (SHARED_MEDIA_JOBS_PLAN.md §2.7 and acceptance §4.1 item 9; owner msg 2806 item 4): factory_jobs_list returns
+// every computer's jobs, read-only, with the computer and its report's age -- the same picture the owner sees, codes only.
+function peer(deviceId: string, updatedAt: string, jobs: SharedMediaJob[], hostName: string | null = "Windows-PC"): MediaJobsReport {
+  return { format: MEDIA_JOBS_REPORT_FORMAT, version: 2, deviceId, hostName, updatedAt, jobs, commands: [], commandResults: [] };
+}
+
+test("factory_jobs_list: both computers' jobs, newest first, with the computer and its report's age", () => {
+  const own = [shared({ jobId: "mac-old", createdAt: "2026-10-14T09:00:00.000Z" }), shared({ jobId: "mac-new", source: "gemini", sessionId: null, createdAt: "2026-10-14T11:30:00.000Z" })];
+  const win = peer("win", "2026-10-14T11:58:00.000Z", [shared({ jobId: "win-1", createdAt: "2026-10-14T10:30:00.000Z" })]);
+  const list = agentJobsList({ own: { deviceId: "mac", hostName: "Mac", jobs: own }, peers: [win], now: NOW, filter: {} });
+  assert.deepEqual(list.jobs.map((j) => [j.jobId, j.device.deviceId, j.device.thisComputer]), [["mac-new", "mac", true], ["win-1", "win", false], ["mac-old", "mac", true]]);
+  assert.equal(list.jobs[1].reportAgeSeconds, 120);
+  assert.equal(list.jobs[1].stale, false);
+  assert.equal(list.jobs[0].reportAgeSeconds, 0);
+  assert.deepEqual(list.devices.map((d) => [d.deviceId, d.thisComputer, d.reportAgeSeconds, d.stale]), [["mac", true, 0, false], ["win", false, 120, false]]);
+  assert.deepEqual([list.total, list.truncated], [3, false]);
+});
+
+test("factory_jobs_list: a report older than 5 minutes is stale; exactly 5 minutes is not", () => {
+  const exactly = peer("a", "2026-10-14T11:55:00.000Z", [shared({ jobId: "a1" })]);
+  const older = peer("b", "2026-10-14T11:54:59.000Z", [shared({ jobId: "b1" })]);
+  const list = agentJobsList({ own: { deviceId: "mac", hostName: null, jobs: [] }, peers: [exactly, older], now: NOW, filter: {} });
+  assert.equal(list.devices.find((d) => d.deviceId === "a")?.stale, false);
+  assert.equal(list.devices.find((d) => d.deviceId === "b")?.stale, true);
+  assert.equal(list.jobs.find((j) => j.jobId === "b1")?.stale, true);
+});
+
+test("factory_jobs_list: filters by channel, source, kind, status and plan; a job of no known kind is not of the asked kind", () => {
+  const jobs = [
+    shared({ jobId: "img", mediaKind: "image" }),
+    shared({ jobId: "vid", mediaKind: "video", source: "gemini", sessionId: null, status: "running", finishedAt: null }),
+    shared({ jobId: "nokind", mediaKind: null }),
+    shared({ jobId: "other-channel", channelId: "UC2" }),
+    shared({ jobId: "planned", plan: { planId: "plan-a", itemKey: "t1", seed: 1 } }),
+  ];
+  const ids = (filter: Parameters<typeof agentJobsList>[0]["filter"]) =>
+    agentJobsList({ own: { deviceId: "mac", hostName: null, jobs }, peers: [], now: NOW, filter }).jobs.map((j) => j.jobId).sort();
+  assert.deepEqual(ids({ channelId: "UC2" }), ["other-channel"]);
+  assert.deepEqual(ids({ source: "gemini" }), ["vid"]);
+  assert.deepEqual(ids({ mediaKind: "video" }), ["vid"]);
+  assert.deepEqual(ids({ status: "running" }), ["vid"]);
+  assert.deepEqual(ids({ planId: "plan-a" }), ["planned"]);
+  assert.deepEqual(ids({ planId: "plan-b" }), []);
+});
+
+test("factory_jobs_list: limit 1..500 (default 100), newest kept, total and truncated tell the rest", () => {
+  const many = Array.from({ length: 120 }, (_, i) => shared({ jobId: `j${String(i).padStart(3, "0")}`, createdAt: new Date(Date.parse("2026-10-14T10:00:00.000Z") + i * 1000).toISOString() }));
+  const byDefault = agentJobsList({ own: { deviceId: "mac", hostName: null, jobs: many }, peers: [], now: NOW, filter: {} });
+  assert.equal(byDefault.jobs.length, 100);
+  assert.equal(byDefault.jobs[0].jobId, "j119");
+  assert.deepEqual([byDefault.total, byDefault.truncated], [120, true]);
+  const two = agentJobsList({ own: { deviceId: "mac", hostName: null, jobs: many }, peers: [], now: NOW, filter: { limit: 2 } });
+  assert.deepEqual(two.jobs.map((j) => j.jobId), ["j119", "j118"]);
+  assert.equal(agentJobsList({ own: { deviceId: "mac", hostName: null, jobs: many }, peers: [], now: NOW, filter: { limit: 10_000 } }).jobs.length, 120);
+});
+
+test("factory_jobs_list: this computer's own jobs keep the report's window (finished > 7 days left out) and never carry secrets", () => {
+  const ancient = shared({ jobId: "ancient", createdAt: "2026-10-01T10:00:00.000Z", finishedAt: "2026-10-01T10:01:00.000Z" });
+  const failed = toSharedRunpodJob(runpodJob({ jobId: "rp-failed", status: "failed", error: SECRETS[3], progress }), shareProgress, errorCode);
+  const list = agentJobsList({ own: { deviceId: "mac", hostName: null, jobs: [ancient, failed] }, peers: [], now: NOW, filter: {} });
+  assert.deepEqual(list.jobs.map((j) => j.jobId), ["rp-failed"]);
+  const text = JSON.stringify(list);
+  for (const secret of [...SECRETS, "prompt-123"]) assert.equal(text.includes(secret), false, `${secret} must not reach the Operator's list`);
+  assert.equal(list.jobs[0].errorCode, "media_gpu_host_incompatible");
+});
+
+test("factory_jobs_list: a peer report naming this computer is ignored; a job reported twice is listed once (this computer's first)", () => {
+  const echo = peer("mac", "2026-10-14T11:59:00.000Z", [shared({ jobId: "echo" })]);
+  const dup = peer("win", "2026-10-14T11:59:00.000Z", [shared({ jobId: "same", status: "failed" })]);
+  const list = agentJobsList({ own: { deviceId: "mac", hostName: null, jobs: [shared({ jobId: "same" })] }, peers: [echo, dup], now: NOW, filter: {} });
+  assert.deepEqual(list.jobs.map((j) => [j.jobId, j.device.deviceId, j.status]), [["same", "mac", "done"]]);
+  assert.deepEqual(list.devices.map((d) => d.deviceId), ["mac", "win"]);
 });

@@ -3127,6 +3127,11 @@ nothing while a node works before its first step, so such a stretch shows only t
     computer; the row shows «отправлено на … · ждёт подтверждения» (or «… не на связи с …»), then «выполнено» / «отказано — причина»;
     an unanswered run is shown as expired after 15 minutes. Other Devices offers Approve / Reject on a peer's pending request.
   - A version 1 build refuses a version 2 report: both computers update together.
+- **BL-188 stage 3 (Factory read, Factory API 1.17.0):** `factory_jobs_list` (READ, no gate) calls `listMediaJobsForAgent`
+  (`media-jobs-pool/index.ts`) over the pure `agentJobsList` (`services.ts`): this computer's jobs converted to the shared shape
+  (the same window as its report) plus every peer's report, deduplicated, filtered (channel, source, kind, status, plan), newest
+  first, `limit` 1-500 (default 100) with `total`/`truncated`, and per device `reportAgeSeconds`/`stale` (> 5 min). Codes only for
+  every computer, this one included; the Operator's actions stay local (owner msg 2806, Q4).
 
 ## 30. Shared Production settings and the conflict screen (BL-150, ADR 0030)
 

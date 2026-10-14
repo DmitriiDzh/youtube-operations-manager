@@ -24,7 +24,7 @@ import {
 } from "./commands";
 import { createExchangeFs, resolveExchangeFile } from "@/lib/workspace-exchange";
 import { POOL_JOB_OUTPUT_SUBDIRS, type PoolMediaKind, type PoolView } from "./contracts";
-import { buildMediaJobsReport, mergePool, reportHostName, toSharedGeminiJob, toSharedRunpodJob, type LocalRunpodJob } from "./services";
+import { agentJobsList, buildMediaJobsReport, mergePool, reportHostName, toSharedGeminiJob, toSharedRunpodJob, type AgentJobsFilter, type AgentJobsList, type LocalRunpodJob } from "./services";
 import type { GeminiJobView } from "@/lib/gemini-media";
 
 // BL-188 (SHARED_MEDIA_JOBS_PLAN.md): the shared list wired to the real modules. It reads both feature modules and the
@@ -34,7 +34,8 @@ import type { GeminiJobView } from "@/lib/gemini-media";
 export * from "./contracts";
 export { applyIncomingCommands, commandViews, prepareCommand, toCommandResults, toReportCommands, issueCommandInputSchema, COMMAND_INTERRUPTED_AFTER_MS, COMMAND_LEDGER_KEEP_MS } from "./commands";
 export type { CommandExecutors, CommandState, CommandStore, CommandView, IssueCommandInput, PeerSessionRef } from "./commands";
-export { buildMediaJobsReport, isFinished, mergePool, runpodOutputPath, geminiOutputPath, selectReportJobs, toSharedGeminiJob, toSharedRunpodJob } from "./services";
+export { agentJobsList, AGENT_JOBS_LIST_DEFAULT, AGENT_JOBS_LIST_MAX, buildMediaJobsReport, isFinished, mergePool, runpodOutputPath, geminiOutputPath, selectReportJobs, toSharedGeminiJob, toSharedRunpodJob } from "./services";
+export type { AgentJobsDevice, AgentJobsFilter, AgentJobsList, AgentJobsRow } from "./services";
 
 const errorCode = (error: string | null) => jobErrorCode(error);
 
@@ -261,4 +262,19 @@ export async function listMediaJobsPool(input: { channelId: string; kind: PoolMe
       .filter((s) => s.channelId === input.channelId && s.status === "running")
       .map((s) => ({ deviceId: s.deviceId, hostName: s.hostName, sessionId: s.sessionId, gpuTypeId: s.gpuTypeId, startedAt: s.startedAt })),
   };
+}
+
+/**
+ * BL-188 stage 3 (SHARED_MEDIA_JOBS_PLAN.md §2.7): `factory_jobs_list` -- every computer's jobs, read-only, in the shared shape
+ * (codes only), with the computer and its report's age. The Operator still acts only on this computer's jobs, through its own
+ * tools (owner msg 2806: read-only).
+ */
+export async function listMediaJobsForAgent(filter: AgentJobsFilter, now: Date = new Date()): Promise<AgentJobsList> {
+  const [device, jobs, peers] = await Promise.all([thisDevice(), localJobs(), peerJobReports()]);
+  return agentJobsList({
+    own: { ...device, jobs: [...jobs.runpod.map((job) => toSharedRunpodJob(job, toSharedJobProgress, errorCode)), ...jobs.gemini.map(toSharedGeminiJob)] },
+    peers,
+    now,
+    filter,
+  });
 }

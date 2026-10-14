@@ -58,7 +58,10 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 // BL-184 (FO-REQ-0024, STORYBOARD_PLAN.md §2.6): 1.16.0 -- storyboards reviewed before video: factory_storyboard_create /
 // factory_storyboard_update / factory_storyboard_submit / factory_storyboard_reply (WRITE) and factory_storyboard_get /
 // factory_storyboard_list (READ). The owner comments, requests changes and approves in the Web UI only. Additive.
-export const FACTORY_API_VERSION = "1.16.0";
+// BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.7, owner msg 2806): 1.17.0 -- factory_jobs_list (READ): every computer's media jobs
+// (RunPod and Gemini) in one list, with the computer and its report's age; codes only. The Operator still acts only on this
+// computer's jobs. Additive.
+export const FACTORY_API_VERSION = "1.17.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -121,6 +124,8 @@ export const FACTORY_TOOL_NAMES = [
   "factory_storyboard_list",
   "factory_storyboard_submit",
   "factory_storyboard_reply",
+  // BL-188: every computer's media jobs in one read-only list.
+  "factory_jobs_list",
 ] as const;
 
 /**
@@ -243,6 +248,10 @@ export type FactoryToolDeps = {
     list(input: unknown): Promise<Record<string, unknown>>;
     submit(input: unknown): Promise<Record<string, unknown>>;
     reply(input: unknown): Promise<Record<string, unknown>>;
+  };
+  /** BL-188: every computer's media jobs, read-only (the pool module filters and bounds them). */
+  jobs: {
+    list(input: { channelId?: string; source?: "runpod" | "gemini"; mediaKind?: "audio" | "image" | "video"; status?: string; planId?: string; limit?: number }): Promise<Record<string, unknown>>;
   };
   /** The same local gate every mutating channel tool passes (operation lock, recovery mode); throws when not allowed. */
   assertMutationAllowed(): Promise<void>;
@@ -1013,6 +1022,27 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
       inputSchema: storyboardListInput,
     },
     async (args) => successResult(await deps.storyboards.list(parseInput(storyboardListInput, args)))
+  );
+
+  // -- BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.7): every computer's media jobs, read-only.
+  const jobsListInput = z
+    .object({
+      channelId: z.string().min(1).max(64).optional(),
+      source: z.enum(["runpod", "gemini"]).optional(),
+      mediaKind: z.enum(["audio", "image", "video"]).optional(),
+      status: z.string().regex(/^[a-z_]{1,32}$/).optional(),
+      planId: z.string().min(1).max(80).optional(),
+      limit: z.number().int().min(1).max(500).optional(),
+    })
+    .strict();
+  registerTool(
+    "factory_jobs_list",
+    {
+      description:
+        "Every computer's media jobs in one list (1.17.0): this computer's and the ones other computers report (about 1-2 minutes behind) -- RunPod/ComfyUI jobs and Gemini jobs. { channelId?, source?: runpod | gemini, mediaKind?: audio | image | video, status? (runpod: queued | submitted | generating | done | failed | cancelled; gemini: queued | submitting | running | done | failed), planId?, limit? (1-500, default 100) } -> { devices: [{ deviceId, hostName, thisComputer, updatedAt, reportAgeSeconds, stale (no report for over 5 minutes) }], jobs: [{ jobId, source, channelId, mediaKind, status, createdBy, label (template and version, or the Gemini model), sessionId, progress, plan: { planId, itemKey, seed } | null, storyboard: { storyboardId, versionNumber, segmentId } | null, costUsd (Gemini; null for RunPod), costIsEstimate, errorCode, createdAt, submittedAt, finishedAt, outputs (paths relative to the channel's 99 Data Exchange/), device: { deviceId, hostName, thisComputer }, reportAgeSeconds, stale }] (newest first), total, truncated }. Unfinished jobs and jobs finished in the last 7 days. Codes only: never a prompt, parameters, input paths or a provider's error text (read this computer's own job in full with factory_media_get_job / factory_gemini_get_job). Another computer's job is shown, not controlled: its own computer runs, cancels and charges it. Read-only, local.",
+      inputSchema: jobsListInput,
+    },
+    async (args) => successResult(await deps.jobs.list(parseInput(jobsListInput, args)))
   );
 
   return server;
