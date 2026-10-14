@@ -4030,8 +4030,8 @@ is already set everywhere), 2734 (one merge for the whole stage).
   `categoryId` 10 (Music), `madeForKids` false, `containsSyntheticMedia` true, `license` youtube, `embeddable` true,
   `notifySubscribers` true; since owner msgs 2751/2753 also `paidProductPlacement` false (Studio's «Прямая реклама», sent as the
   `paidProductPlacementDetails` part at insert -- accepted on videos.insert but not in the docs' settable list, so the read-back
-  checks it) and `channelTags` [] (added after the package's tags, none twice; the approval refuses a package whose whole list would
-  pass YouTube's 500 characters; FO-MSG-0017 / BL-190: the approval dialog shows each row's tag count, characters and source -- the package's, the channel's when the package has `tags: []`, or both -- and a package tag with `<` or `>` is the problem `tags_angle_brackets`). Studio's automatic chapters, places and concept explanations have no Data API property: they stay
+  checks it) and `channelTags` [] (owner msg 2817: used only for a package with `tags: []`; a package's own tags replace them; the approval refuses a
+  list over YouTube's 500 characters; FO-MSG-0017 / BL-190: the approval dialog shows each row's tag count, characters and source -- the package's, or the channel's when the package has `tags: []` -- and a package tag with `<` or `>` is the problem `tags_angle_brackets`). Studio's automatic chapters, places and concept explanations have no Data API property: they stay
   as YouTube sets them (on), changeable only in Studio. A stored value this build cannot use falls back to the default. Saved fields only (the panel sends
   what the owner changed); a conflict is chosen in Merge (actor-based, like the language settings). Routes:
   `GET/PUT /api/channels/[id]/publishing-settings`, `GET/POST .../publishing-settings/conflicts`. Panel: Content → «Публикация»,

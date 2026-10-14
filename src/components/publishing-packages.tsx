@@ -310,16 +310,15 @@ export function PublishingPackages({ channelId, visible }: { channelId: string |
             <ul className="space-y-1">
               {chosen.map((p) => {
                 const day = dateOf(p);
-                // FO-MSG-0017: each row's own tags as they will be sent, and where they come from (the package, the channel or both).
+                // FO-MSG-0017 (owner msg 2817): each row's tags as they will be sent, and where they come from (the package's own, or the
+                // channel's when the package has none).
                 const tags = uploadTagsSummary(p.pkg?.tags ?? [], settings.channelTags ?? []);
                 const source =
                   tags.tags.length === 0
                     ? t("publishingApproval.tagsSource.none")
-                    : tags.fromChannel === 0
+                    : tags.fromPackage > 0
                       ? t("publishingApproval.tagsSource.package")
-                      : tags.fromPackage === 0
-                        ? t("publishingApproval.tagsSource.channel")
-                        : t("publishingApproval.tagsSource.both", { fromPackage: tags.fromPackage, fromChannel: tags.fromChannel });
+                      : t("publishingApproval.tagsSource.channel");
                 return (
                   <li key={p.manifestPath}>
                     <div className="flex gap-2">

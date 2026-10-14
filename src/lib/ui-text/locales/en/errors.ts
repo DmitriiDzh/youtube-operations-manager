@@ -60,7 +60,7 @@ export const errors = {
   "errors.publish_at_too_soon": "The publication time must be more than 15 minutes from now — an earlier time would publish the video at once.",
   "errors.upload_package_not_ready": "The package is not ready to upload now — the package list shows why.",
   "errors.upload_package_changed": "The package changed after you looked at it. Refresh the list and approve again.",
-  "errors.upload_tags_too_long": "A package's tags and the channel's own tags together are over YouTube's 500 characters. Shorten the channel tags (Content → Publishing) or the package's tags.",
+  "errors.upload_tags_too_long": "The tags this upload would send are over YouTube's 500 characters. Shorten the package's tags, or the channel tags (Content → Publishing) if the package has none.",
   "errors.storyboard_not_found": "This storyboard (or this version of it) is not here.",
   "errors.storyboard_comment_not_found": "This comment is not in the storyboard any more.",
   "errors.storyboard_file_unavailable": "A keyframe file is not in the channel’s exchange folders on this computer.",

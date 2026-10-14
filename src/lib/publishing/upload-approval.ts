@@ -117,10 +117,10 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
         throw refuse("quota_unknown", "Today's quota cannot be read (Google Cloud is not connected or did not answer).", { estimatedUnits: estimatedUnits + pending.units, rowsToWrite: chosen.length, cloudConnected: verdict.cloudConnected });
       }
 
-      // Owner msg 2753: the channel's own tags go after the package's; YouTube counts the whole list against 500 characters.
+      // Owner msg 2817: the package's own tags, or the channel's when it has none; YouTube counts the list against 500 characters.
       const tooLong = chosen.find((c) => tagsLength(uploadTags(c.pkg.tags, view.settings.channelTags ?? [])) > 500);
       if (tooLong) {
-        throw refuse("upload_tags_too_long", `${tooLong.pkg.video}: its tags and the channel's tags together are over YouTube's 500 characters.`, { video: tooLong.pkg.video });
+        throw refuse("upload_tags_too_long", `${tooLong.pkg.video}: its tags are over YouTube's 500 characters.`, { video: tooLong.pkg.video });
       }
 
       const rows: StoredPublishingUpload[] = chosen.map(({ item, found, pkg }) => {

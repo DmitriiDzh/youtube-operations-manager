@@ -73,8 +73,11 @@ test("paid promotion is true/false; channel tags: a list of distinct tags, each 
   for (const bad of ["jazz", ["a,b"], ["<b>"], [" jazz"], [""], ["x".repeat(101)], ["Jazz", "jazz"], Array.from({ length: CHANNEL_TAGS_MAX + 1 }, (_, i) => `t${i}`), Array.from({ length: 6 }, (_, i) => `${i}`.repeat(90))]) {
     assert.notEqual(publishingSettingProblem("channelTags", bad), null, JSON.stringify(bad).slice(0, 60));
   }
-  // The package's tags first, then the channel's that are not there yet (case-insensitive).
-  assert.deepEqual(uploadTags(["cuban jazz", "Piano"], ["piano", "tropical jazz"]), ["cuban jazz", "Piano", "tropical jazz"]);
+  // Requirement changed by the owner (msg 2817, FO-MSG-0017 option «б»; was msg 2753 "added after the package's"): a package with
+  // its own tags sends only those, a package with none sends the channel's common tags.
+  assert.deepEqual(uploadTags(["cuban jazz", "Piano"], ["piano", "tropical jazz"]), ["cuban jazz", "Piano"]);
+  assert.deepEqual(uploadTags([], ["piano", "tropical jazz"]), ["piano", "tropical jazz"]);
+  assert.deepEqual(uploadTags(["jazz"], []), ["jazz"]);
   assert.deepEqual(uploadTags([], []), []);
 });
 
@@ -89,10 +92,11 @@ test("channel tags: exactly 500 characters by YouTube's count is accepted, 501 i
 });
 
 // FO-MSG-0017 §2: the approval screen shows each row's tags with where they come from. By hand (YouTube's count: a tag with a space
-// counts two quotes, commas count): "cuban jazz" 12 + "Piano" 5 + "tropical jazz" 15 + 2 commas = 34; "tropical jazz" alone = 15.
-test("an upload's tags: the package's, the channel's when the package has none, and both counted for the approval row", async () => {
+// counts two quotes, commas count): "cuban jazz" 12 + "Piano" 5 + 1 comma = 18; "tropical jazz" alone = 15.
+test("an upload's tags: the package's, or the channel's when the package has none, counted for the approval row", async () => {
   const { uploadTagsSummary } = await import("./settings");
-  assert.deepEqual(uploadTagsSummary(["cuban jazz", "Piano"], ["piano", "tropical jazz"]), { tags: ["cuban jazz", "Piano", "tropical jazz"], fromPackage: 2, fromChannel: 1, characters: 34 });
+  // Owner msg 2817: the package's own tags replace the channel's -- "cuban jazz" 12 + "Piano" 5 + 1 comma = 18.
+  assert.deepEqual(uploadTagsSummary(["cuban jazz", "Piano"], ["piano", "tropical jazz"]), { tags: ["cuban jazz", "Piano"], fromPackage: 2, fromChannel: 0, characters: 18 });
   // tags: [] in the package -> the channel's tags (FO-MSG-0017 §2 rule).
   assert.deepEqual(uploadTagsSummary([], ["tropical jazz"]), { tags: ["tropical jazz"], fromPackage: 0, fromChannel: 1, characters: 15 });
   assert.deepEqual(uploadTagsSummary(["jazz"], []), { tags: ["jazz"], fromPackage: 1, fromChannel: 0, characters: 4 });
