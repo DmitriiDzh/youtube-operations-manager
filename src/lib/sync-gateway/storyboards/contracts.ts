@@ -94,6 +94,38 @@ export type StoryboardDecision = {
  */
 export type StoryboardPick = { source: "media" | "gemini"; jobId: string; device: string | null; at: string };
 
+/**
+ * BL-189 (FO-REQ-0025 B): the Operator's final file of a version -- the loop assembled from one take per segment outside the app --
+ * attached for the owner's verdict. Assigned whole and never edited; a second attach is another render.
+ */
+export type StoryboardRender = {
+  id: string;
+  versionNumber: number;
+  /** The content hash of the version it was attached to (the version was the approved latest then). */
+  contentHash: string;
+  /** Relative to the channel's `99 Data Exchange` folder (`Sent to YTM/...` or `From YTM/<media|gemini>/<jobId>/...`). */
+  file: string;
+  /** Frozen when attached: each computer's copy is checked against it. */
+  sha256: string;
+  bytes: number;
+  /** The take of each segment the file uses, by segment id. */
+  picks: Record<string, { source: "media" | "gemini"; jobId: string }>;
+  notes: string | null;
+  createdAt: string;
+  device: string | null;
+};
+
+/** BL-189 (FO-REQ-0025 B): the owner's verdict on a render; its newest verdict is its state. */
+export type StoryboardRenderDecision = {
+  id: string;
+  renderId: string;
+  kind: "approved" | "changes_requested";
+  by: string;
+  device: string | null;
+  at: string;
+  note: string | null;
+};
+
 export type StoryboardRecord = {
   id: string;
   createdAt: string;
@@ -107,6 +139,10 @@ export type StoryboardRecord = {
   comments: Record<string, StoryboardComment>;
   /** BL-184 stage 3: by version number, then segment id (absent = no pick yet). */
   picks?: Record<string, Record<string, StoryboardPick>>;
+  /** BL-189: the attached final files, by render id (absent until the first one). */
+  renders?: Record<string, StoryboardRender>;
+  /** BL-189: the owner's verdicts on them, by decision id. */
+  renderDecisions?: Record<string, StoryboardRenderDecision>;
 };
 
 /**

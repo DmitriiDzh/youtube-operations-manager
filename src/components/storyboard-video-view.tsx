@@ -5,6 +5,7 @@ import type { StoryboardVersion } from "@/lib/sync-gateway";
 import type { StoryboardDetail } from "@/lib/storyboards";
 import { errorText } from "@/lib/ui-text";
 import { MediaVideoPlayer } from "./media-video-player";
+import { StoryboardRenders } from "./storyboard-renders";
 import { assembledLoop, jointsOf, keyframeSrc, segmentsInOrder, takeKey, takeSrc, takesBySegment, takeState, type TakeView } from "./storyboard-model";
 import { useT, useUiText } from "./ui-text-provider";
 import { SeamFrames } from "./visual-review-tools";
@@ -67,6 +68,8 @@ export function StoryboardVideoView({ channelId, storyboard, version, onPicked }
     }
   }
 
+  const hostOf = (take: TakeView) => take.device?.hostName ?? t("storyboards.video.anotherComputer");
+
   const thumb = (keyframeId: string) => (
     // eslint-disable-next-line @next/next/no-img-element -- a local file served by our route, shown as it is
     <img src={keyframeSrc(channelId, storyboard.storyboardId, version.number, keyframeId)} alt={keyframeId} className="h-20 w-32 shrink-0 rounded object-cover" />
@@ -113,8 +116,14 @@ export function StoryboardVideoView({ channelId, storyboard, version, onPicked }
                       {state === "ready" ? (
                         <video src={takeSrc(channelId, storyboard.storyboardId, take)} muted loop playsInline controls preload="metadata" className="h-32 w-full rounded bg-black object-contain" />
                       ) : (
-                        <div className={`flex h-32 items-center justify-center rounded bg-zinc-900 px-2 text-center text-xs ${state === "failed" ? "text-rose-300" : "text-zinc-400"}`}>
-                          {state === "working" ? t("storyboards.video.inProgress") : take.status === "done" && !take.hasVideo ? t("storyboards.video.noVideoHere") : t("storyboards.video.failed")}
+                        <div className={`flex h-32 items-center justify-center rounded bg-zinc-900 px-2 text-center text-xs ${state === "failed" ? "text-rose-300" : state === "elsewhere" ? "text-sky-200" : "text-zinc-400"}`}>
+                          {state === "working"
+                            ? t("storyboards.video.inProgress")
+                            : state === "elsewhere"
+                              ? t("storyboards.video.elsewhere", { host: hostOf(take) })
+                              : take.status === "done" && !take.hasVideo
+                                ? t("storyboards.video.noVideoHere")
+                                : t("storyboards.video.failed")}
                         </div>
                       )}
                       <figcaption className="flex flex-wrap items-center gap-1 text-[11px]">
@@ -122,6 +131,8 @@ export function StoryboardVideoView({ channelId, storyboard, version, onPicked }
                         <span className="min-w-0 flex-1 truncate text-zinc-300" title={take.error ?? take.label}>
                           {take.label}
                         </span>
+                        {/* BL-189 (FO-REQ-0025 A): a take another computer made says which one. */}
+                        {take.device ? <span className="w-full truncate text-sky-300">{t("storyboards.video.madeOn", { host: hostOf(take) })}</span> : null}
                         {state === "ready" ? (
                           <button type="button" onClick={() => setLarge((l) => (l === takeKey(take) ? null : takeKey(take)))} className="rounded px-1.5 py-0.5 text-zinc-300 hover:bg-zinc-800">
                             {t(large === takeKey(take) ? "storyboards.video.closeLarge" : "storyboards.video.enlarge")}
@@ -177,6 +188,9 @@ export function StoryboardVideoView({ channelId, storyboard, version, onPicked }
 
       <section className="space-y-2">
         <h3 className="text-sm font-semibold text-white">{t("storyboards.video.assembled")}</h3>
+        {/* BL-189 (FO-REQ-0025 B): the Operator's final files first; the in-browser preview of the picks below. */}
+        <StoryboardRenders channelId={channelId} storyboard={storyboard} version={version} onDecided={onPicked} />
+        <h4 className="pt-2 text-xs font-semibold uppercase tracking-wide text-zinc-400">{t("storyboards.render.preview")}</h4>
         {loop.takes.length > 0 ? (
           <AssembledLoop key={loop.takes.map(takeKey).join("|")} sources={loop.takes.map((take) => ({ key: takeKey(take), segmentId: take.segmentId, src: takeSrc(channelId, storyboard.storyboardId, take) }))} loop={version.loop} />
         ) : (

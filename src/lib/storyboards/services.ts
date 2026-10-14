@@ -8,13 +8,26 @@ import type {
   StoryboardPick,
   StoryboardProp,
   StoryboardRecord,
+  StoryboardRender,
+  StoryboardRenderDecision,
   StoryboardSegment,
   StoryboardVersion,
 } from "@/lib/sync-gateway";
-import { DomainError, FROM_YTM_PREFIX, SENT_TO_YTM_PREFIX, STORYBOARD_IMAGE_EXTENSIONS, type KeyframeFileStatus, type StoryboardActor, type StoryboardsPorts } from "./contracts";
-import { requireApprovedOf } from "./gate";
-import { diffVersions, latestVersion, latestVersionNumber, storyboardState, type StoryboardState, type VersionDiff } from "./model";
 import {
+  DomainError,
+  FROM_YTM_PREFIX,
+  SENT_TO_YTM_PREFIX,
+  STORYBOARD_IMAGE_EXTENSIONS,
+  STORYBOARD_RENDER_EXTENSIONS,
+  type IsTake,
+  type KeyframeFileStatus,
+  type StoryboardActor,
+  type StoryboardsPorts,
+} from "./contracts";
+import { requireApprovedOf } from "./gate";
+import { approvedVersion, diffVersions, latestVersion, latestVersionNumber, storyboardState, type StoryboardState, type VersionDiff } from "./model";
+import {
+  attachRenderInputSchema,
   createStoryboardInputSchema,
   gateSettingInputSchema,
   listStoryboardsInputSchema,
@@ -23,6 +36,7 @@ import {
   ownerCommentStateInputSchema,
   ownerDecisionInputSchema,
   ownerPickInputSchema,
+  ownerRenderDecisionInputSchema,
   ownerReplyInputSchema,
   storyboardRefSchema,
   updateStoryboardInputSchema,
@@ -59,7 +73,28 @@ export type StoryboardDetail = StoryboardSummary & {
   comments: Array<Omit<StoryboardComment, "replies"> & { replies: Array<StoryboardComment["replies"][string]> }>;
   /** BL-184 stage 3: the owner's take per segment, by version number then segment id. */
   picks: Record<string, Record<string, StoryboardPick>>;
+  /** BL-189 (FO-REQ-0025 B): the Operator's attached final files, newest first, each with the owner's verdicts. */
+  renders: RenderView[];
 };
+
+export type RenderState = "in_review" | "approved" | "changes_requested";
+export type RenderView = Omit<StoryboardRender, "id"> & { renderId: string; state: RenderState; decisions: Array<Omit<StoryboardRenderDecision, "renderId">> };
+
+/** A render's state is the owner's newest verdict on it (none yet: in review). */
+export function renderStateOf(decisions: readonly Pick<StoryboardRenderDecision, "kind" | "at" | "id">[]): RenderState {
+  const last = [...decisions].sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.id.localeCompare(b.id)).at(-1);
+  return last ? last.kind : "in_review";
+}
+
+function rendersOf(record: StoryboardRecord): RenderView[] {
+  const decisions = Object.values(record.renderDecisions ?? {});
+  return Object.values(record.renders ?? {})
+    .map(({ id, ...render }): RenderView => {
+      const own = decisions.filter((d) => d.renderId === id).sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.id.localeCompare(b.id));
+      return { renderId: id, ...render, state: renderStateOf(own), decisions: own.map((d) => ({ id: d.id, kind: d.kind, by: d.by, device: d.device, at: d.at, note: d.note })) };
+    })
+    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.renderId.localeCompare(a.renderId));
+}
 
 const byTime = <T>(at: (item: T) => string, id: (item: T) => string) => (a: T, b: T) => Date.parse(at(a)) - Date.parse(at(b)) || id(a).localeCompare(id(b));
 
@@ -75,6 +110,8 @@ function summaryOf(channelId: string, record: StoryboardRecord): StoryboardSumma
     ...Object.values(record.submissions).map((s) => s.at),
     ...decisions.map((d) => d.at),
     ...comments.flatMap((c) => [c.createdAt, c.stateChangedAt ?? c.createdAt, ...Object.values(c.replies).map((r) => r.createdAt)]),
+    ...Object.values(record.renders ?? {}).map((r) => r.createdAt),
+    ...Object.values(record.renderDecisions ?? {}).map((d) => d.at),
   ];
   return {
     storyboardId: record.id,
@@ -107,6 +144,7 @@ function detailOf(channelId: string, record: StoryboardRecord): StoryboardDetail
       .sort(byTime((c) => c.createdAt, (c) => c.id))
       .map((c) => ({ ...c, replies: Object.values(c.replies).sort(byTime((r) => r.createdAt, (r) => r.id)) })),
     picks: record.picks ?? {},
+    renders: rendersOf(record),
   };
 }
 
@@ -367,6 +405,61 @@ export function createStoryboardsService(ports: StoryboardsPorts) {
       return { storyboard: detailOf(channelId, await findRecord(channelId, storyboardId)) };
     },
 
+    /**
+     * BL-189 (FO-REQ-0025 B) `factory_storyboard_attach_render`: the Operator's final file of the APPROVED LATEST version, its sha256
+     * frozen, with the take of each segment it uses -- each checked by `isTake` (a take of exactly that segment and version, on any
+     * computer). Without `picks`, the owner's current picks of that version are recorded.
+     */
+    async attachRender(input: unknown, isTake: IsTake): Promise<{ storyboard: StoryboardDetail; renderId: string }> {
+      const { channelId, storyboardId, versionNumber, file, picks, notes } = parseWithSchema(attachRenderInputSchema, input, "render");
+      return ports.withLock(async () => {
+        const workspace = await assertChannel(channelId);
+        const record = await findRecord(channelId, storyboardId);
+        const version = record.versions[String(versionNumber)];
+        if (!version) throw new DomainError({ code: "storyboard_not_found", message: `No version ${versionNumber}`, details: { storyboardId, versionNumber } });
+        const approved = approvedVersion(record);
+        if (!approved || approved.number !== versionNumber) {
+          throw new DomainError({
+            code: "storyboard_not_approved",
+            message: `Version ${versionNumber} is not the approved latest version: a final file is attached to the version the owner approved`,
+            details: { reason: "not_approved", channelId, storyboardId, versionNumber, latestVersion: latestVersionNumber(record), state: storyboardState(record) },
+          });
+        }
+        const relative = exchangeRelativePath(file);
+        if (!relative) throw invalid(`file must be a path relative to 99 Data Exchange that starts with "Sent to YTM/" or "From YTM/"`, { field: "file", file });
+        const extension = file.includes(".") ? file.slice(file.lastIndexOf(".")).toLowerCase() : "";
+        if (!STORYBOARD_RENDER_EXTENSIONS.includes(extension)) throw invalid(`Only ${STORYBOARD_RENDER_EXTENSIONS.join(", ")} videos can be attached`, { field: "file", file });
+        let found: { path: string; bytes: number };
+        try {
+          found = await ports.files.resolve(workspace, relative);
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          throw new DomainError({ code: "storyboard_file_unavailable", message: `The file: ${reason}`, details: { channelId, file, reason } });
+        }
+        const recorded: StoryboardRender["picks"] = {};
+        const given = picks ?? Object.fromEntries(Object.entries(record.picks?.[String(versionNumber)] ?? {}).map(([segmentId, p]) => [segmentId, { source: p.source, jobId: p.jobId }]));
+        for (const [segmentId, take] of Object.entries(given)) {
+          if (!version.segments.some((s) => s.id === segmentId)) throw invalid(`Version ${versionNumber} has no segment ${segmentId}`, { field: "picks", segmentId });
+          if (!(await isTake(take, versionNumber, segmentId))) throw invalid(`Job ${take.jobId} is not a take of segment ${segmentId} of version ${versionNumber}`, { field: "picks", segmentId, ...take });
+          recorded[segmentId] = { source: take.source, jobId: take.jobId };
+        }
+        const id = newId("rn");
+        await ports.store.addRender(channelId, storyboardId, {
+          id,
+          versionNumber,
+          contentHash: version.contentHash,
+          file,
+          sha256: await ports.files.sha256(found.path),
+          bytes: found.bytes,
+          picks: recorded,
+          notes: notes ?? null,
+          createdAt: stamp(),
+          device: await ports.deviceLabel(),
+        });
+        return { storyboard: detailOf(channelId, await findRecord(channelId, storyboardId)), renderId: id };
+      });
+    },
+
     /** `factory_storyboard_list`: the channel's storyboards, newest activity first, optionally in one state. */
     async list(input: unknown): Promise<{ storyboards: StoryboardSummary[] }> {
       const { channelId, state } = parseWithSchema(listStoryboardsInputSchema, input, "storyboard list");
@@ -485,6 +578,40 @@ export function createStoryboardsService(ports: StoryboardsPorts) {
         const stored = await ports.store.readGate(channelId);
         return { requireApproved: requireApprovedOf(stored), changedAt: stored?.changedAt ?? null, changedBy: stored?.changedBy ?? null };
       });
+    },
+
+    /** BL-189 (FO-REQ-0025 B): «Одобрить ролик» / «Запросить изменения» on an attached render. */
+    async ownerRenderDecision(channelId: string, storyboardId: string, renderId: string, input: unknown): Promise<{ decisionId: string; state: RenderState }> {
+      const { kind, note } = parseWithSchema(ownerRenderDecisionInputSchema, input, "render decision");
+      return ports.withLock(async () => {
+        const record = await findRecord(channelId, storyboardId);
+        const render = record.renders?.[renderId];
+        if (!render) throw new DomainError({ code: "storyboard_render_not_found", message: "No such final file in this storyboard", details: { storyboardId, renderId } });
+        // Independent review (BL-189): a verdict counts only for the content the render was attached to (like a version decision's
+        // contentHash) -- after two computers wrote the same version number, a render of the body that was not kept is not this one's.
+        if (record.versions[String(render.versionNumber)]?.contentHash !== render.contentHash) {
+          throw new DomainError({
+            code: "storyboard_render_not_found",
+            message: "This final file was attached to another content of that version (two computers wrote it at the same time)",
+            details: { storyboardId, renderId, reason: "other_version_content", versionNumber: render.versionNumber },
+          });
+        }
+        const id = newId("rd");
+        await ports.store.addRenderDecision(channelId, storyboardId, { id, renderId, kind, by: "owner", device: await ports.deviceLabel(), at: stamp(), note: note ?? null });
+        const view = rendersOf(await findRecord(channelId, storyboardId)).find((r) => r.renderId === renderId);
+        return { decisionId: id, state: view?.state ?? kind };
+      });
+    },
+
+    /** BL-189: this computer's copy of a render's file against its frozen sha256, and the file to play (null when not here). */
+    async renderFile(channelId: string, storyboardId: string, renderId: string): Promise<{ status: KeyframeFileStatus; path: string | null; bytes: number | null; file: string }> {
+      const record = await findRecord(channelId, storyboardId);
+      const render = record.renders?.[renderId];
+      if (!render) throw new DomainError({ code: "storyboard_render_not_found", message: "No such final file in this storyboard", details: { storyboardId, renderId } });
+      const workspace = await ports.files.workspaceOf(channelId);
+      const found = workspace ? await locate(workspace, render.file) : null;
+      if (!found) return { status: "missing", path: null, bytes: null, file: render.file };
+      return { status: (await ports.files.sha256(found.path)) === render.sha256 ? "ok" : "differs", path: found.path, bytes: found.bytes, file: render.file };
     },
 
     /** «Одобрить эту версию» / «Запросить изменения» (B2): on the latest version, once the Operator has submitted it. */

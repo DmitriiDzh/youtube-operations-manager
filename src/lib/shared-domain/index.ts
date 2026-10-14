@@ -210,6 +210,7 @@ export type DomainErrorCode =
   // NOT_SUBMITTED: a decision on a version the Operator has not submitted yet.
   | "storyboard_not_found"
   | "storyboard_comment_not_found"
+  | "storyboard_render_not_found"
   | "storyboard_file_unavailable"
   | "storyboard_channel_unavailable"
   | "storyboard_version_not_latest"

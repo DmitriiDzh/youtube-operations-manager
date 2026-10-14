@@ -61,7 +61,10 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 // BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.7, owner msg 2806): 1.17.0 -- factory_jobs_list (READ): every computer's media jobs
 // (RunPod and Gemini) in one list, with the computer and its report's age; codes only. The Operator still acts only on this
 // computer's jobs. Additive.
-export const FACTORY_API_VERSION = "1.17.0";
+// BL-189 (FO-REQ-0025 B, STORYBOARD_TAKES_PLAN.md §2.4): 1.18.0 -- factory_storyboard_attach_render (WRITE): the final file of the
+// approved version with the take of each segment it uses, for the owner's verdict; factory_storyboard_get returns `renders`.
+// Additive.
+export const FACTORY_API_VERSION = "1.18.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -124,6 +127,8 @@ export const FACTORY_TOOL_NAMES = [
   "factory_storyboard_list",
   "factory_storyboard_submit",
   "factory_storyboard_reply",
+  // BL-189: the final file of an approved version, for the owner's verdict.
+  "factory_storyboard_attach_render",
   // BL-188: every computer's media jobs in one read-only list.
   "factory_jobs_list",
 ] as const;
@@ -167,6 +172,8 @@ export const FACTORY_WRITE_TOOL_NAMES = [
   "factory_storyboard_update",
   "factory_storyboard_submit",
   "factory_storyboard_reply",
+  // BL-189: the Operator's final file of an approved version (a record; nothing is generated or charged).
+  "factory_storyboard_attach_render",
 ] as const;
 
 export type FactoryChannelEntry = {
@@ -248,6 +255,8 @@ export type FactoryToolDeps = {
     list(input: unknown): Promise<Record<string, unknown>>;
     submit(input: unknown): Promise<Record<string, unknown>>;
     reply(input: unknown): Promise<Record<string, unknown>>;
+    /** BL-189: the final file of the approved version (the route checks each pick against the takes on every computer). */
+    attachRender(input: unknown): Promise<Record<string, unknown>>;
   };
   /** BL-188: every computer's media jobs, read-only (the pool module filters and bounds them). */
   jobs: {
@@ -982,7 +991,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
       return successResult(await call(input));
     });
   const STORYBOARD_SHAPE =
-    "Storyboard: { storyboardId, channelId, title, planId, state: draft | in_review | changes_requested | approved, latestVersion, keyframes, segments (counts of the latest version), loop, createdAt, createdBy, submittedAt (of the latest version, or null), lastDecision ({ kind: approved | changes_requested, versionNumber, at, by, device, note } on the latest version, or null), openComments, updatedAt, versions: [{ number, createdAt, title, loop, keyframes: [{ id, file, sha256, bytes, caption, parentKeyframeId }], segments: [{ id, fromKeyframeId, toKeyframeId, action, durationSeconds, model, settings, estimateUsd }], props: [{ id, name, kind, cells }], notes }], submissions: [{ versionNumber, at }], decisions: [...], comments: [{ id, versionNumber, target: { kind: storyboard } | { kind: keyframe, keyframeId, region ({ x, y, r } 0..1, a pin) or null } | { kind: segment, segmentId } | { kind: prop, propId, keyframeId }, author: owner | operator, device, text, createdAt, state: open | resolved, stateChangedAt, stateChangedBy, replies: [{ id, author, device, text, createdAt }] }] }.";
+    "Storyboard: { storyboardId, channelId, title, planId, state: draft | in_review | changes_requested | approved, latestVersion, keyframes, segments (counts of the latest version), loop, createdAt, createdBy, submittedAt (of the latest version, or null), lastDecision ({ kind: approved | changes_requested, versionNumber, at, by, device, note } on the latest version, or null), openComments, updatedAt, picks ({ <versionNumber>: { <segmentId>: { source: media | gemini, jobId, device, at } } }: the owner's take per segment, made on any computer), renders (1.18.0: [{ renderId, versionNumber, file, sha256, bytes, picks: { segmentId: { source, jobId } }, notes, createdAt, device, state: in_review | approved | changes_requested, decisions: [{ id, kind, by, device, at, note }] }], newest first; get only), versions: [{ number, createdAt, title, loop, keyframes: [{ id, file, sha256, bytes, caption, parentKeyframeId }], segments: [{ id, fromKeyframeId, toKeyframeId, action, durationSeconds, model, settings, estimateUsd }], props: [{ id, name, kind, cells }], notes }], submissions: [{ versionNumber, at }], decisions: [...], comments: [{ id, versionNumber, target: { kind: storyboard } | { kind: keyframe, keyframeId, region ({ x, y, r } 0..1, a pin) or null } | { kind: segment, segmentId } | { kind: prop, propId, keyframeId }, author: owner | operator, device, text, createdAt, state: open | resolved, stateChangedAt, stateChangedBy, replies: [{ id, author, device, text, createdAt }] }] }.";
 
   storyboardWrite(
     "factory_storyboard_create",
@@ -1007,6 +1016,12 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "Answer an owner's comment on a storyboard and/or resolve it (1.16.0): { channelId, storyboardId, commentId, text? (<= 4000; your reply in its thread), resolve? (true: resolved, false: open again) } (text or resolve required) -> { storyboard, replyId (or null) }. Refusals: storyboard_not_found, storyboard_comment_not_found, validation_failed.",
     z.object({ channelId: z.string(), storyboardId: z.string(), commentId: z.string(), text: z.string().optional(), resolve: z.boolean().optional() }).strict(),
     (input) => deps.storyboards.reply(input)
+  );
+  storyboardWrite(
+    "factory_storyboard_attach_render",
+    "Attach your final file of a storyboard version for the owner's verdict (1.18.0; FO-REQ-0025 B): { channelId, storyboardId, versionNumber (the APPROVED LATEST version), file (a video -- .mp4, .mov, .m4v, .webm -- relative to the channel's '99 Data Exchange/': 'Sent to YTM/...' or a job's output 'From YTM/media/<jobId>/...' / 'From YTM/gemini/<jobId>/...'; on this computer), picks? ({ <segmentId>: { source: media | gemini, jobId } }: the take of each segment the file uses -- each a take of exactly that segment and version, made on any computer; omitted: the owner's current picks of that version are recorded), notes? (<= 4000) } -> { storyboard, renderId }. The file's sha256 and size are frozen; keep it unchanged afterwards (a re-render goes to a new file and a new attach). Each call adds a render; none is edited. The owner plays it under «Ролик целиком» on either computer and approves it or requests changes; read the verdict in factory_storyboard_get's renders[].state and decisions. Nothing is generated or charged. Refusals: storyboard_not_approved (details.reason not_approved, state, latestVersion), storyboard_not_found, storyboard_file_unavailable (details.reason), storyboard_channel_unavailable, validation_failed (details.field: file | picks, with segmentId).",
+    z.object({ channelId: z.string(), storyboardId: z.string(), versionNumber: z.number(), file: z.string(), picks: z.record(z.string(), z.object({}).passthrough()).optional(), notes: z.string().nullable().optional() }).strict(),
+    (input) => deps.storyboards.attachRender(input)
   );
   const storyboardListInput = z.object({ channelId: z.string(), state: z.enum(["draft", "in_review", "changes_requested", "approved"]).optional() }).strict();
   registerTool(

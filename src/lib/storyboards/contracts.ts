@@ -19,13 +19,21 @@ export const STORYBOARD_JOB_OUTPUT_SUBDIRS: readonly string[] = ["gemini", "medi
 /** A keyframe is a still image the review screen shows as it is (the Gemini inputs' list). */
 export const STORYBOARD_IMAGE_EXTENSIONS: readonly string[] = [".png", ".jpg", ".jpeg", ".webp"];
 
+/** BL-189 (FO-REQ-0025 B): what an attached final file may be -- a video the review screen plays. */
+export const STORYBOARD_RENDER_EXTENSIONS: readonly string[] = [".mp4", ".mov", ".m4v", ".webm"];
+
+/** BL-189: a take as the Operator or the owner names it (the module never reads the video modules itself). */
+export type StoryboardTakeRef = { source: "media" | "gemini"; jobId: string };
+/** Whether a job is a take of exactly that segment and version, on any computer (the composition layer answers). */
+export type IsTake = (take: StoryboardTakeRef, versionNumber: number, segmentId: string) => Promise<boolean>;
+
 /** This computer's copy of a keyframe against the sha256 frozen in the version (plan §2.3): review is never blocked by it. */
 export type KeyframeFileStatus = "ok" | "missing" | "differs";
 
 export type StoryboardActor = "owner" | "operator";
 
 /** The sync family's operations the module uses (one document per channel, merged between the computers). */
-export type StoryboardStorePort = Pick<StoryboardsCore, "read" | "create" | "addVersion" | "submit" | "addDecision" | "addComment" | "addReply" | "setCommentState" | "readGate" | "setGate" | "setPick">;
+export type StoryboardStorePort = Pick<StoryboardsCore, "read" | "create" | "addVersion" | "submit" | "addDecision" | "addComment" | "addReply" | "setCommentState" | "readGate" | "setGate" | "setPick" | "addRender" | "addRenderDecision">;
 
 export type StoryboardFilesPort = {
   /** The channel's workspace folder on this computer, or null when none is set. */

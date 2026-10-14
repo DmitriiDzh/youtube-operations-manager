@@ -62,6 +62,7 @@ export const errors: Record<keyof typeof en, string> = {
   "errors.upload_tags_too_long": "Теги пакета вместе с общими тегами канала длиннее 500 символов YouTube. Сократите общие теги («Контент → Публикация») или теги пакета.",
   "errors.storyboard_not_found": "Этой раскадровки (или этой её версии) здесь нет.",
   "errors.storyboard_comment_not_found": "Этого комментария в раскадровке больше нет.",
+  "errors.storyboard_render_not_found": "Этого ролика в раскадровке нет.",
   "errors.storyboard_file_unavailable": "Файла кадра нет в папках обмена канала на этом компьютере.",
   "errors.storyboard_channel_unavailable": "Канал не подключён здесь или у него нет рабочей папки на этом компьютере.",
   "errors.storyboard_version_not_latest": "Пришла более новая версия раскадровки. Экран уже показывает её — посмотрите, прежде чем решать.",

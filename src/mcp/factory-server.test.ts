@@ -58,6 +58,7 @@ const EXPECTED_TOOLS = [
   "factory_plan_todo",
   "factory_plan_update",
   "factory_plan_withdraw_recheck",
+  "factory_storyboard_attach_render",
   "factory_storyboard_create",
   "factory_storyboard_get",
   "factory_storyboard_list",
@@ -134,6 +135,7 @@ test("AC-FO-09 (amended by ADR 0025/0026): writes are exactly the named media/se
     "factory_plan_run_stage",
     "factory_plan_update",
     "factory_plan_withdraw_recheck",
+    "factory_storyboard_attach_render",
     "factory_storyboard_create",
     "factory_storyboard_reply",
     "factory_storyboard_submit",
@@ -182,6 +184,8 @@ test("§2.5(3): the factory route and endpoint reach only the allowlisted module
     "@/lib/storyboards",
     // BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.7): the shared jobs pool for factory_jobs_list (read-only).
     "@/lib/media-jobs-pool",
+    // BL-189 (STORYBOARD_TAKES_PLAN.md §2.8): a storyboard's takes on every computer, to check factory_storyboard_attach_render's picks.
+    "@/lib/storyboard-takes",
     "@/mcp/factory-server",
   ]);
   assert.deepEqual(route.filter((spec) => !routeAllowed.has(spec)), []);
@@ -204,7 +208,7 @@ test("§2.5(4): none of the factory files reads channel-scope state (agent-sessi
   }
 });
 
-test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.17.0 since BL-188), separate from the channel agents' version", async () => {
+test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.18.0 since BL-189), separate from the channel agents' version", async () => {
   // BL-153 (FO-REQ-0008): reviewRejected, split waiting counts and overridesValidator are additive -> a minor version.
   // BL-155 (FO-REQ-0007, CUDA_HOSTS_PLAN.md "Contract"): the jobs' errorCode, the error media_gpu_host_incompatible and the
   // stopReason "all jobs failed (release when done)" are additive -> 1.7.0, as the plan states.
@@ -219,7 +223,8 @@ test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.17.0 
   // BL-179 (GEMINI_OMNI_PLAN.md): a new video model and additive catalog fields -> 1.15.0.
   // BL-184 (STORYBOARD_PLAN.md §2.6): six new storyboard tools, additive -> 1.16.0.
   // BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.7): one new READ tool, factory_jobs_list, additive -> 1.17.0.
-  assert.equal(FACTORY_API_VERSION, "1.17.0");
+  // BL-189 (STORYBOARD_TAKES_PLAN.md §2.4): one new WRITE tool, factory_storyboard_attach_render, additive -> 1.18.0.
+  assert.equal(FACTORY_API_VERSION, "1.18.0");
   const agentOperations = await readFile("src/lib/agent-operations/contracts.ts", "utf8");
   assert.equal(agentOperations.includes("FACTORY_API_VERSION"), false);
 });
