@@ -265,6 +265,19 @@
 | AI-use fix | same | — | fresh read | list | owner | preview | History | read-back |
 | delete (G1 only) | same | the G1 video id only | — | — | owner msg 2702 | — | audit | `videos.list` empty |
 
+### Addendum — channel default tags (FO-MSG-0017, BL-190; owner msgs 2813/2814, 2026-10-14)
+
+- The setting the request asks for already exists since owner msgs 2751/2753: `channelTags` in Content → «Публикация», synced by
+  `channel-publishing-settings`, checked as YouTube counts (500 characters, no `<`/`>`/comma, at most 30 tags).
+- The rule as built: a package with `tags: []` gets the channel's tags (the request's rule); a package with tags keeps them and
+  gets the channel's tags after them, none twice (owner msg 2753's "added after the package's tags"), not a replacement. The
+  approval refuses a list over 500.
+- Added now: the approval dialog shows each row's tags (count, characters, source: package / channel / both); a package tag with
+  `<` or `>` is the problem `tags_angle_brackets`. The read-back already compares the sent list (order ignored, f5e3dc2).
+- Acceptance: `settings.test.ts` (500 accepted / 501 refused, the row summary), `packages.test.ts` (`<`/`>` in a tag),
+  `upload-approval.test.ts` (merge, 500 refusal), `upload-runner.test.ts` (tags read-back mismatch),
+  `channel-publishing-settings/services.test.ts` (the setting syncs).
+
 ## 4. Not in this plan
 
 - Premieres: the API cannot create them.

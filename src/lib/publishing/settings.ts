@@ -81,6 +81,15 @@ export function uploadTags(packageTags: readonly string[], channelTags: readonly
   return out;
 }
 
+/**
+ * FO-MSG-0017 (owner msgs 2813/2814): where an upload's tags come from, for the approval screen's row -- the list `uploadTags`
+ * sends, how many of them are the package's and how many the channel's, and YouTube's character count of the whole list.
+ */
+export function uploadTagsSummary(packageTags: readonly string[], channelTags: readonly string[]): { tags: string[]; fromPackage: number; fromChannel: number; characters: number } {
+  const tags = uploadTags(packageTags, channelTags);
+  return { tags, fromPackage: packageTags.length, fromChannel: tags.length - packageTags.length, characters: tagsLength(tags) };
+}
+
 const PLAYLIST_ID_PATTERN = /^[A-Za-z0-9_-]{2,64}$/;
 
 /** Why `value` is not a valid value of `field`, or null when it is. */

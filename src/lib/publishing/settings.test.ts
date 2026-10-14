@@ -77,3 +77,24 @@ test("paid promotion is true/false; channel tags: a list of distinct tags, each 
   assert.deepEqual(uploadTags(["cuban jazz", "Piano"], ["piano", "tropical jazz"]), ["cuban jazz", "Piano", "tropical jazz"]);
   assert.deepEqual(uploadTags([], []), []);
 });
+
+// FO-MSG-0017 (owner msgs 2813/2814): the channel's tags are checked like a package's -- YouTube's 500 characters, counted as YouTube
+// counts them (videos resource, snippet.tags: commas between tags count). By hand: four tags of 100 letters and one of 96 = 496 + 4
+// commas = 500, accepted; one more letter = 501, refused.
+test("channel tags: exactly 500 characters by YouTube's count is accepted, 501 is refused", async () => {
+  const { publishingSettingProblem } = await import("./settings");
+  const at500 = ["a", "b", "c", "d"].map((c) => c.repeat(100)).concat("e".repeat(96));
+  assert.equal(publishingSettingProblem("channelTags", at500), null);
+  assert.notEqual(publishingSettingProblem("channelTags", [...at500.slice(0, 4), "e".repeat(97)]), null);
+});
+
+// FO-MSG-0017 §2: the approval screen shows each row's tags with where they come from. By hand (YouTube's count: a tag with a space
+// counts two quotes, commas count): "cuban jazz" 12 + "Piano" 5 + "tropical jazz" 15 + 2 commas = 34; "tropical jazz" alone = 15.
+test("an upload's tags: the package's, the channel's when the package has none, and both counted for the approval row", async () => {
+  const { uploadTagsSummary } = await import("./settings");
+  assert.deepEqual(uploadTagsSummary(["cuban jazz", "Piano"], ["piano", "tropical jazz"]), { tags: ["cuban jazz", "Piano", "tropical jazz"], fromPackage: 2, fromChannel: 1, characters: 34 });
+  // tags: [] in the package -> the channel's tags (FO-MSG-0017 §2 rule).
+  assert.deepEqual(uploadTagsSummary([], ["tropical jazz"]), { tags: ["tropical jazz"], fromPackage: 0, fromChannel: 1, characters: 15 });
+  assert.deepEqual(uploadTagsSummary(["jazz"], []), { tags: ["jazz"], fromPackage: 1, fromChannel: 0, characters: 4 });
+  assert.deepEqual(uploadTagsSummary([], []), { tags: [], fromPackage: 0, fromChannel: 0, characters: 0 });
+});

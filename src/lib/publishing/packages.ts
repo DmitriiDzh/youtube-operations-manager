@@ -146,6 +146,8 @@ export function packageProblems(pkg: ReleasePackage, facts: PackageFacts, channe
   if (/[<>]/.test(pkg.description)) problems.push({ code: "description_angle_brackets" });
   const tags = tagsLength(pkg.tags);
   if (tags > TAGS_MAX_CHARACTERS) problems.push({ code: "tags_too_long", params: { length: tags, max: TAGS_MAX_CHARACTERS } });
+  // FO-MSG-0017: the package's tags get the same check as the channel's -- YouTube does not accept < or > in a tag.
+  if (pkg.tags.some((tag) => /[<>]/.test(tag))) problems.push({ code: "tags_angle_brackets" });
   problems.push(...chapterProblems(pkg.description, facts.video.durationSeconds ?? pkg.durationSeconds));
 
   if (channel.defaultLanguage === null) problems.push({ code: "no_channel_baseline" });
