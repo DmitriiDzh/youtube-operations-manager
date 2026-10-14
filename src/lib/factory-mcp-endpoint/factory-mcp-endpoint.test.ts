@@ -124,6 +124,7 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
       list: async (input) => (mediaCalls.push(`sb.list:${(input as { channelId: string }).channelId}`), { storyboards: [] }),
       submit: async (input) => (mediaCalls.push(`sb.submit:${(input as { storyboardId: string }).storyboardId}`), { storyboard: {} }),
       reply: async (input) => (mediaCalls.push(`sb.reply:${(input as { commentId: string }).commentId}`), { storyboard: {}, replyId: null }),
+      attachRender: async (input) => (mediaCalls.push(`sb.render:${(input as { file: string }).file}`), { storyboard: {}, renderId: "rn_1" }),
     },
     // BL-188: the shared jobs pool is a fake that records what reached it.
     jobs: {
@@ -317,6 +318,7 @@ test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exact
     "factory_plan_todo",
     "factory_plan_update",
     "factory_plan_withdraw_recheck",
+    "factory_storyboard_attach_render",
     "factory_storyboard_create",
     "factory_storyboard_get",
     "factory_storyboard_list",
@@ -353,14 +355,15 @@ test("AC-FO-07: a channel tool name is not callable on the factory endpoint", as
 // BL-179 (GEMINI_OMNI_PLAN.md): 1.15.0, no new tool.
 // BL-184 (STORYBOARD_PLAN.md §2.6): 1.16.0 and the six storyboard tools, last (declaration order); four of them writes.
 // BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.7): 1.17.0 and the read tool factory_jobs_list, last (declaration order).
-test("factory_get_capabilities reports the factory API version 1.17.0 (BL-188), READ and WRITE, the tool list and the write tools", async () => {
+// BL-189 (STORYBOARD_TAKES_PLAN.md §2.4): 1.18.0 and the write tool factory_storyboard_attach_render after the other storyboard tools.
+test("factory_get_capabilities reports the factory API version 1.18.0 (BL-189), READ and WRITE, the tool list and the write tools", async () => {
   const { endpoint, tokenServices } = setup();
   const { token } = await tokenServices.issueToken({});
   const result = await toolResult(await endpoint.handle(rpc(call("factory_get_capabilities"), withToken(token))));
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.17.0",
+    factoryApiVersion: "1.18.0",
     tools: [
       "factory_get_capabilities",
       "factory_list_logical_paths",
@@ -411,6 +414,7 @@ test("factory_get_capabilities reports the factory API version 1.17.0 (BL-188), 
       "factory_storyboard_list",
       "factory_storyboard_submit",
       "factory_storyboard_reply",
+      "factory_storyboard_attach_render",
       "factory_jobs_list",
     ],
     permissions: ["READ", "WRITE"],
@@ -442,6 +446,7 @@ test("factory_get_capabilities reports the factory API version 1.17.0 (BL-188), 
       "factory_storyboard_update",
       "factory_storyboard_submit",
       "factory_storyboard_reply",
+      "factory_storyboard_attach_render",
     ],
   });
 });
@@ -963,6 +968,8 @@ test("BL-184: factory_storyboard_* writes pass the gate first, reads do not; str
     ["factory_storyboard_update", { channelId: "UC_A", storyboardId: "sb1", ...content }, "sb.update:sb1"],
     ["factory_storyboard_submit", { channelId: "UC_A", storyboardId: "sb1" }, "sb.submit:sb1"],
     ["factory_storyboard_reply", { channelId: "UC_A", storyboardId: "sb1", commentId: "c1", resolve: true }, "sb.reply:c1"],
+    // BL-189 (FO-REQ-0025 B): the final file of an approved version.
+    ["factory_storyboard_attach_render", { channelId: "UC_A", storyboardId: "sb1", versionNumber: 3, file: "Sent to YTM/bar/v3/loop.mp4", picks: { S1: { source: "media", jobId: "j1" } }, notes: "s8" }, "sb.render:Sent to YTM/bar/v3/loop.mp4"],
   ];
   for (const [name, args, reached] of writes) {
     toolDeps.mediaCalls.length = 0;
@@ -989,6 +996,9 @@ test("BL-184: factory_storyboard_* writes pass the gate first, reads do not; str
     ["factory_storyboard_submit", { channelId: "UC_A", storyboardId: "sb1", approve: true }],
     ["factory_storyboard_list", { channelId: "UC_A", state: "generating" }],
     ["factory_storyboard_create", { channelId: "UC_A", ...content, approved: true }],
+    // BL-189: the owner's verdict is never the Operator's to send.
+    ["factory_storyboard_attach_render", { channelId: "UC_A", storyboardId: "sb1", versionNumber: 3, file: "Sent to YTM/a.mp4", approved: true }],
+    ["factory_storyboard_attach_render", { channelId: "UC_A", storyboardId: "sb1", file: "Sent to YTM/a.mp4" }],
   ] as const) {
     const body = await (await endpoint.handle(rpc(call(name, bad), withToken(token)))).json();
     assert.equal(Boolean(body.result?.isError ?? body.error), true, JSON.stringify(bad));

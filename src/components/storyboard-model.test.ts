@@ -131,3 +131,30 @@ test("§5 step 5: the four joints of the looped bar chain, each with the picked 
   // Without loop there is no closing joint.
   assert.deepEqual(jointsOf({ ...version(false), number: 2 }, takes, picks).map((j) => `${j.from.id}>${j.to.id}`), ["S1>S2", "S2>S3"]);
 });
+
+test("BL-189 (FO-REQ-0025 A): a take done on another computer without its file here is located, not failed; a failed one stays failed", async () => {
+  const { takeState } = await import("./storyboard-model");
+  const mac = { hostName: "Mac-mini-Violetta.local" };
+  assert.deepEqual(
+    [
+      take("m1", "S1", { status: "done", hasVideo: false, device: mac }),
+      take("m2", "S1", { status: "done", hasVideo: true, device: mac }),
+      take("m3", "S1", { status: "generating", hasVideo: false, device: mac }),
+      take("m4", "S1", { status: "failed", hasVideo: false, device: mac }),
+      take("own", "S1", { status: "done", hasVideo: false, device: null }),
+    ].map(takeState),
+    ["elsewhere", "ready", "working", "failed", "failed"]
+  );
+});
+
+// Independent review (BL-189): "Ролик целиком" shows the final files of the version shown -- its number and its content (hash).
+test("BL-189: a render is shown under the version of its number and content only", async () => {
+  const { rendersOfVersion } = await import("./storyboard-model");
+  const renders = [
+    { renderId: "r1", versionNumber: 2, contentHash: "hash-A" },
+    { renderId: "r2", versionNumber: 2, contentHash: "hash-B" },
+    { renderId: "r3", versionNumber: 1, contentHash: "hash-B" },
+  ];
+  assert.deepEqual(rendersOfVersion(renders, { number: 2, contentHash: "hash-B" }).map((r) => r.renderId), ["r2"]);
+  assert.deepEqual(rendersOfVersion(renders, { number: 3, contentHash: "hash-B" }), []);
+});

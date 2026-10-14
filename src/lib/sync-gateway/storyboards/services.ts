@@ -8,6 +8,8 @@ import {
   type StoryboardGateSetting,
   type StoryboardPick,
   type StoryboardRecord,
+  type StoryboardRender,
+  type StoryboardRenderDecision,
   type StoryboardReply,
   type StoryboardsDocument,
   type StoryboardVersion,
@@ -35,6 +37,17 @@ export function emptyDocument(channelId: string): StoryboardsDocument {
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 const notFound = (what: string, details: Record<string, unknown>) => new DomainError({ code: "not_found", message: `${what} not found`, details });
 
+/**
+ * BL-189 independent review: a storyboard made before BL-189 has no `renders` / `renderDecisions` maps; when two computers each
+ * attached its first render before a sync, each made its own map, and Automerge keeps one of them at the key. Every entry of every
+ * concurrent map is read (the others' entries are kept, not edited: each is assigned whole), so no render or verdict is lost.
+ */
+function renderMapOf<K extends "renders" | "renderDecisions">(record: Automerge.Doc<StoryboardRecord>, field: K): NonNullable<StoryboardRecord[K]> {
+  const maps = Object.values(Automerge.getConflicts(record, field) ?? {}) as Array<NonNullable<StoryboardRecord[K]>>;
+  const winner = record[field];
+  return Object.assign({}, ...maps.filter((m) => m && typeof m === "object"), winner ?? {}) as NonNullable<StoryboardRecord[K]>;
+}
+
 export function createStoryboardsCore(deps: ServiceDependencies) {
   // Every load -> change/merge -> save runs one at a time (the `media-settings` review finding): a merge that loaded the document
   // before a save would otherwise write over that save.
@@ -52,11 +65,16 @@ export function createStoryboardsCore(deps: ServiceDependencies) {
   }
 
   /** One change to one storyboard, saved; `fn` throws (nothing saved) when the storyboard or its parts are not there. */
-  function changeStoryboard(channelId: string, storyboardId: string, message: string, fn: (record: StoryboardRecord) => void): Promise<void> {
+  function changeStoryboard(
+    channelId: string,
+    storyboardId: string,
+    message: string,
+    fn: (record: StoryboardRecord, current: Automerge.Doc<StoryboardRecord>) => void
+  ): Promise<void> {
     return serialized(async () => {
       const doc = await loadOrGenesis(channelId);
       if (!doc.storyboards?.[storyboardId]) throw notFound("Storyboard", { channelId, storyboardId });
-      const next = Automerge.change(doc, message, (draft) => fn(draft.storyboards[storyboardId]));
+      const next = Automerge.change(doc, message, (draft) => fn(draft.storyboards[storyboardId], doc.storyboards[storyboardId] as Automerge.Doc<StoryboardRecord>));
       await deps.core.save(channelId, next);
     });
   }
@@ -64,7 +82,15 @@ export function createStoryboardsCore(deps: ServiceDependencies) {
   return {
     /** The channel's storyboards as plain data (an empty list for a channel without a document yet). */
     read(channelId: string): Promise<StoryboardRecord[]> {
-      return serialized(async () => Object.values(clone((await loadOrGenesis(channelId)).storyboards ?? {})));
+      return serialized(async () => {
+        const storyboards = (await loadOrGenesis(channelId)).storyboards ?? {};
+        return Object.values(storyboards).map((record) => {
+          const plain = clone(record);
+          if (record.renders) plain.renders = clone(renderMapOf(record, "renders"));
+          if (record.renderDecisions) plain.renderDecisions = clone(renderMapOf(record, "renderDecisions"));
+          return plain;
+        });
+      });
     },
 
     /** A new storyboard with its first version (number 1). Refused when the id is taken. */
@@ -73,8 +99,18 @@ export function createStoryboardsCore(deps: ServiceDependencies) {
         const doc = await loadOrGenesis(channelId);
         if (doc.storyboards?.[record.id]) throw new DomainError({ code: "validation_failed", message: "A storyboard with this id exists", details: { storyboardId: record.id } });
         const next = Automerge.change(doc, `create storyboard ${record.id}`, (draft) => {
-          // `picks` and its version entry exist from the start, so two computers' first picks merge instead of one replacing the other.
-          draft.storyboards[record.id] = { ...clone(record), versions: { [String(first.number)]: clone(first) }, submissions: {}, decisions: {}, comments: {}, picks: { [String(first.number)]: {} } };
+          // `picks` and its version entry exist from the start, so two computers' first picks merge instead of one replacing the other;
+          // so do the BL-189 `renders` / `renderDecisions` maps (two computers' first renders merge).
+          draft.storyboards[record.id] = {
+            ...clone(record),
+            versions: { [String(first.number)]: clone(first) },
+            submissions: {},
+            decisions: {},
+            comments: {},
+            picks: { [String(first.number)]: {} },
+            renders: {},
+            renderDecisions: {},
+          };
         });
         await deps.core.save(channelId, next);
       });
@@ -140,6 +176,28 @@ export function createStoryboardsCore(deps: ServiceDependencies) {
         if (!record.picks[key]) record.picks[key] = {};
         if (pick) record.picks[key][segmentId] = clone(pick);
         else delete record.picks[key][segmentId];
+      });
+    },
+
+    /**
+     * BL-189 (FO-REQ-0025 B): a render of a version. A storyboard made by this build has both maps from `create`; one made before it
+     * gets them with its first render (both maps in the same change, so the owner's verdicts land in the map that came with it).
+     */
+    addRender(channelId: string, storyboardId: string, render: StoryboardRender): Promise<void> {
+      return changeStoryboard(channelId, storyboardId, `render ${storyboardId} v${render.versionNumber}`, (record) => {
+        if (!record.versions[String(render.versionNumber)]) throw notFound("Version", { storyboardId, versionNumber: render.versionNumber });
+        if (!record.renders) record.renders = {};
+        if (!record.renderDecisions) record.renderDecisions = {};
+        record.renders[render.id] = clone(render);
+      });
+    },
+
+    /** BL-189: the owner's verdict on a render. */
+    addRenderDecision(channelId: string, storyboardId: string, decision: StoryboardRenderDecision): Promise<void> {
+      return changeStoryboard(channelId, storyboardId, `render ${decision.renderId} ${decision.kind}`, (record, current) => {
+        if (!renderMapOf(current, "renders")[decision.renderId]) throw notFound("Render", { storyboardId, renderId: decision.renderId });
+        if (!record.renderDecisions) record.renderDecisions = {};
+        record.renderDecisions[decision.id] = clone(decision);
       });
     },
 

@@ -63,6 +63,7 @@ export const errors = {
   "errors.upload_tags_too_long": "The tags this upload would send are over YouTube's 500 characters. Shorten the package's tags, or the channel tags (Content → Publishing) if the package has none.",
   "errors.storyboard_not_found": "This storyboard (or this version of it) is not here.",
   "errors.storyboard_comment_not_found": "This comment is not in the storyboard any more.",
+  "errors.storyboard_render_not_found": "This final video is not in the storyboard.",
   "errors.storyboard_file_unavailable": "A keyframe file is not in the channel’s exchange folders on this computer.",
   "errors.storyboard_channel_unavailable": "This channel is not connected here or has no workspace folder on this computer.",
   "errors.storyboard_version_not_latest": "A newer version of this storyboard has arrived. The screen shows it now; look at it before you decide.",

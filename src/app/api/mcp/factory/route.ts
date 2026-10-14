@@ -10,6 +10,7 @@ import { createLogicalPathsCore } from "@/lib/logical-paths";
 import { createGenerationPlansCore, withPlanLock } from "@/lib/generation-plans";
 import { createMediaGenerationCore, DomainError, withJobErrorCode } from "@/lib/media-generation";
 import { createStoryboardsServiceForProduction } from "@/lib/storyboards";
+import { listStoryboardTakes } from "@/lib/storyboard-takes";
 import { listMediaJobsForAgent } from "@/lib/media-jobs-pool";
 import { createFactoryMcpServer, type FactoryToolDeps } from "@/mcp/factory-server";
 
@@ -221,6 +222,18 @@ function createToolDeps(): FactoryToolDeps {
       list: async (input) => ({ ...(await createStoryboardsServiceForProduction().list(input)) }),
       submit: async (input) => ({ ...(await createStoryboardsServiceForProduction().submit(input)) }),
       reply: async (input) => ({ ...(await createStoryboardsServiceForProduction().operatorReply(input)) }),
+      // BL-189 (FO-REQ-0025 B): each pick is checked against the storyboard's takes on every computer (storyboard-takes).
+      attachRender: async (input) => {
+        const ref = (input ?? {}) as { channelId?: unknown; storyboardId?: unknown };
+        // Read once per call (independent review): every pick is checked against the same list.
+        let takes: ReturnType<typeof listStoryboardTakes> | null = null;
+        const isTake = async (take: { source: "media" | "gemini"; jobId: string }, versionNumber: number, segmentId: string) => {
+          if (typeof ref.channelId !== "string" || typeof ref.storyboardId !== "string") return false;
+          takes ??= listStoryboardTakes(ref.channelId, ref.storyboardId);
+          return (await takes).some((t) => t.source === take.source && t.jobId === take.jobId && t.versionNumber === versionNumber && t.segmentId === segmentId);
+        };
+        return { ...(await createStoryboardsServiceForProduction().attachRender(input, isTake)) };
+      },
     },
     // BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.7): every computer's media jobs, read-only, in the shared shape (codes only).
     jobs: {

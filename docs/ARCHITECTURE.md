@@ -4173,9 +4173,32 @@ gate's scope), Telegram msgs 2739 (go), 2741/2743 (the layout: Music | Images | 
   by kind, storyboards in review. `/media` and the former `/media/plans`, `/media/jobs` lead to «Музыка»; a plan's review keeps its
   address and returns to the tab it was opened from (`?from=`). «Видео» lists the approved storyboards, each opening on its video.
 
-### 48.4 Not built yet
+### 48.4 Takes on every computer and the final file (BL-189, FO-REQ-0025, `docs/roadmap/plans/STORYBOARD_TAKES_PLAN.md`)
 
-- `storyboardId` / `segmentId` on `factory_plan_report` rows (placing a file the Operator rendered outside the app on a segment): the
-  linked jobs cover acceptance step 5; a follow-up item.
+- **Takes from every computer.** The take lister moved from the route layer to a composition module, `src/lib/storyboard-takes/`
+  (it reads `media-generation`, `gemini-media` and `media-jobs-pool`; no feature module imports it -- the storyboard routes and the
+  Factory route do). It adds the other computers' jobs whose `storyboard` link names the storyboard, from their `media-jobs` reports
+  (BL-188): a RunPod job is a `media` take, a Gemini job a `gemini` take, each with the computer that ran it. A peer's video is used
+  only when its output path is a video inside that job's own `From YTM/<subdir>/<jobId>/` folder (`jobOutputPathOf`), and is played
+  from THIS computer's copy (`resolveExchangeFile`); without a copy the card says «Сделан на <computer>; файла на этом компьютере
+  пока нет» (`takeState` "elsewhere"). Picks of a peer's take pass the same `isTake` check; picks were already synced.
+- **The final file (renders).** `StoryboardRecord.renders` (by id, assigned whole) and `renderDecisions` (by id); both maps are made
+  by `create` (a storyboard from before BL-189 gets them with its first render; when two computers each made them before a sync,
+  `read` unions every concurrent map via `Automerge.getConflicts`, so no render or verdict is lost). A render counts for the content
+  it was attached to (`contentHash`, like a version decision): the screen shows it under that version body only and a verdict on a
+  render of a body that lost a concurrent edit is refused (`storyboard_render_not_found`, reason `other_version_content`). `factory_storyboard_attach_render`
+  (Factory API 1.18.0) accepts only the approved latest version, a video in the exchange folders (sha256 frozen) and picks that are
+  takes of their segment and version on any computer (the Factory route passes `isTake` from `storyboard-takes`). A render's state
+  is the owner's newest verdict (`in_review` without one). Owner routes: `renders/[renderId]` (this computer's copy: ok, missing,
+  differs), `renders/[renderId]/file` (Range, loopback only), `renders/[renderId]/decision` (POST `{ kind, note? }`; the id comes
+  from the address). Screen: «Ролик целиком» lists the version's renders (player or location, takes, notes, verdict buttons), then
+  the in-browser preview from the picks.
+- **List cards** show the version as a `v{n}` chip after the title (FO-REQ-0025 C).
+
+### 48.5 Not built yet
+
+- `storyboardId` / `segmentId` on `factory_plan_report` rows: the linked jobs cover acceptance step 5, and a file rendered outside the
+  app is attached as a render (BL-189); still a follow-up item if wanted.
+- Streaming a take or a render between computers (files come by the workspace sync), and a notice for a new render.
 - Lineage beyond keyframes (A4: `sourceRef` on a plan result, "made from" for scene images): only a keyframe's parent compare is built.
 - Blind A/B (A5), storyboard drafts by the Producer, and an Agent / Producer API read of storyboards.

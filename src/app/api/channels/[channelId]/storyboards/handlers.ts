@@ -9,7 +9,7 @@ import { createStoryboardsServiceForProduction, type StoryboardsService } from "
 import { streamLocalFile } from "@/lib/local-file-response";
 import { isLoopbackRequest } from "@/lib/loopback-guard";
 import { getVideoMetadataErrorStatus } from "../../../video-metadata/error-status";
-import { listStoryboardTakes, resolveTakeFile, videoTypeOf, type StoryboardTake } from "./takes";
+import { listStoryboardTakes, resolveTakeFile, videoTypeOf, type StoryboardTake } from "@/lib/storyboard-takes";
 
 // BL-184 stage 1 (FO-REQ-0024 §4 B2; STORYBOARD_PLAN.md §3 stage 1 item 3): the owner's side of a storyboard -- the list, one
 // storyboard with this computer's copy of its keyframes and what changed against the version before, comments (with pins), replies,
@@ -21,7 +21,7 @@ export type StoryboardRouteDeps = {
   assertActiveChannel: (args: { userId: string; channelId: string }) => Promise<void>;
   service: () => Pick<
     StoryboardsService,
-    "listForOwner" | "getForOwner" | "keyframeFiles" | "versionDiff" | "keyframeFile" | "ownerComment" | "ownerReply" | "ownerSetCommentState" | "ownerDecide" | "gateSetting" | "setGateSetting" | "ownerPick"
+    "listForOwner" | "getForOwner" | "keyframeFiles" | "versionDiff" | "keyframeFile" | "ownerComment" | "ownerReply" | "ownerSetCommentState" | "ownerDecide" | "gateSetting" | "setGateSetting" | "ownerPick" | "ownerRenderDecision" | "renderFile"
   >;
   readFile: (filePath: string) => Promise<Uint8Array>;
   /** BL-184 stage 3: the storyboard's takes (the video modules' linked jobs) and a take's file on this computer. */
@@ -117,12 +117,28 @@ export function createStoryboardRouteHandlers(deps: StoryboardRouteDeps = defaul
     setGate: (request: Request, context: Params<Base>) =>
       guarded(context, async ({ channelId }) => NextResponse.json(await deps.service().setGateSetting(channelId, await body(request)))),
 
-    /** B5: the storyboard's takes (without file paths: `hasVideo` says whether this computer can play one). */
+    /**
+     * B5: the storyboard's takes on every computer (BL-189), without file paths: `hasVideo` says whether this computer can play
+     * one, `device` names the other computer that made it (null: this one).
+     */
     takes: (_request: Request, context: Params<Base & { storyboardId: string }>) =>
       guarded(context, async ({ channelId, storyboardId }) => {
         await deps.service().getForOwner(channelId, storyboardId);
         const takes = await deps.takes(channelId, storyboardId);
-        return NextResponse.json({ takes: takes.map(({ localPath, ...take }) => ({ ...take, hasVideo: localPath !== null })) });
+        return NextResponse.json({
+          takes: takes.map((take) => ({
+            source: take.source,
+            jobId: take.jobId,
+            segmentId: take.segmentId,
+            versionNumber: take.versionNumber,
+            status: take.status,
+            createdAt: take.createdAt,
+            label: take.label,
+            error: take.error,
+            device: take.device ? { hostName: take.device.hostName } : null,
+            hasVideo: take.localPath !== null,
+          })),
+        });
       }),
 
     /** B5: a take's video, with HTTP Range (the player seeks, the seam tools read the last and first frames). */
@@ -144,6 +160,27 @@ export function createStoryboardRouteHandlers(deps: StoryboardRouteDeps = defaul
           (await deps.takes(channelId, storyboardId)).some((t) => t.source === take.source && t.jobId === take.jobId && t.versionNumber === versionNumber && t.segmentId === segmentId);
         return NextResponse.json(await deps.service().ownerPick(channelId, storyboardId, await body(request), isTake));
       }),
+
+    /** BL-189 (FO-REQ-0025 B): this computer's copy of an attached final file -- ok, missing or differs (never its path). */
+    renderStatus: (_request: Request, context: Params<Base & { storyboardId: string; renderId: string }>) =>
+      guarded(context, async ({ channelId, storyboardId, renderId }) => {
+        const found = await deps.service().renderFile(channelId, storyboardId, renderId);
+        return NextResponse.json({ status: found.status });
+      }),
+
+    /** BL-189: the final file itself, with HTTP Range (this computer's copy, even when it differs: review is not blocked). */
+    renderVideo: (request: Request, context: Params<Base & { storyboardId: string; renderId: string }>) =>
+      guarded(context, async ({ channelId, storyboardId, renderId }) => {
+        if (!deps.isLoopback(request)) return NextResponse.json({ error: "forbidden", message: "Local files are served to this computer only" }, { status: 403 });
+        const found = await deps.service().renderFile(channelId, storyboardId, renderId);
+        const type = found.path ? videoTypeOf(found.path) : null;
+        if (!found.path || found.bytes === null || !type) return NextResponse.json({ error: "storyboard_file_unavailable", message: "This final file is not on this computer" }, { status: 404 });
+        return streamLocalFile({ path: found.path, bytes: found.bytes }, type, request);
+      }),
+
+    /** BL-189: POST `{ kind: approved | changes_requested, note? }` -- the owner's verdict on an attached final file. */
+    renderDecide: (request: Request, context: Params<Base & { storyboardId: string; renderId: string }>) =>
+      guarded(context, async ({ channelId, storyboardId, renderId }) => NextResponse.json(await deps.service().ownerRenderDecision(channelId, storyboardId, renderId, await body(request)))),
 
     /** The keyframe's image as this computer has it (even when it differs from the frozen sha256: review is not blocked). */
     keyframe: (request: Request, context: Params<Base & { storyboardId: string; version: string; keyframeId: string }>) =>

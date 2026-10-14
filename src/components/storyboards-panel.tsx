@@ -107,10 +107,14 @@ export function StoryboardsPanel({ channelId, active, onOpen, onWaiting }: { cha
             <li key={s.storyboardId}>
               <button type="button" onClick={() => onOpen(s.storyboardId)} className="flex w-full flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 text-left hover:bg-zinc-800/60">
                 <span className="min-w-0 flex-1">
-                  {/* ui-text-ignore: the storyboard's own title (data) */}
-                  <span className="block truncate font-medium text-white">{s.title}</span>
+                  {/* BL-189 (FO-REQ-0025 C): the version as its own chip right after the title, so a title such as "(v2 от 13.10)" is not read as it. */}
+                  <span className="flex min-w-0 items-baseline gap-2">
+                    {/* ui-text-ignore: the storyboard's own title (data) */}
+                    <span className="truncate font-medium text-white">{s.title}</span>
+                    <VersionChip version={s.latestVersion} />
+                  </span>
                   <span className="block text-xs text-zinc-400">
-                    {t("storyboards.row.summary", { version: s.latestVersion, keyframes: s.keyframes, segments: s.segments })}
+                    {t("storyboards.row.summary", { keyframes: s.keyframes, segments: s.segments })}
                     {s.loop ? ` · ${t("storyboards.loop")}` : ""}
                   </span>
                 </span>
@@ -164,8 +168,9 @@ export function StoryboardVideoLinks({ channelId, active, onOpen }: { channelId:
           <li key={s.storyboardId}>
             <button type="button" onClick={() => onOpen(s.storyboardId)} className="flex w-full flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-left hover:border-zinc-700">
               {/* ui-text-ignore: the storyboard's own title (data) */}
-              <span className="min-w-0 flex-1 truncate text-sm font-medium text-zinc-100">{s.title}</span>
-              <span className="text-xs text-zinc-400">{t("storyboards.row.summary", { version: s.latestVersion, keyframes: s.keyframes, segments: s.segments })}</span>
+              <span className="min-w-0 truncate text-sm font-medium text-zinc-100">{s.title}</span>
+              <VersionChip version={s.latestVersion} />
+              <span className="min-w-0 flex-1 text-xs text-zinc-400">{t("storyboards.row.summary", { keyframes: s.keyframes, segments: s.segments })}</span>
               <span className="text-xs text-indigo-300">{t("storyboards.videoLinks.open")}</span>
             </button>
           </li>
@@ -173,4 +178,10 @@ export function StoryboardVideoLinks({ channelId, active, onOpen }: { channelId:
       </ul>
     </section>
   );
+}
+
+/** BL-189 (FO-REQ-0025 C): the latest version's number, shown apart from the Operator's title text. */
+function VersionChip({ version }: { version: number }) {
+  const t = useT();
+  return <span className="shrink-0 rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-zinc-200">{t("storyboards.row.version", { version })}</span>;
 }

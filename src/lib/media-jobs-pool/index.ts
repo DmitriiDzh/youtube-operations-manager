@@ -196,6 +196,9 @@ async function peerJobReports(): Promise<MediaJobsReport[]> {
     .catch(() => []);
 }
 
+/** BL-189 (FO-REQ-0025 A): the other computers' latest job reports, as received (none when they cannot be read now). */
+export const listPeerMediaJobReports = (): Promise<MediaJobsReport[]> => peerJobReports();
+
 /** This computer's outgoing commands with what the other computers answered, newest first. */
 export async function listMediaJobCommands(now: Date = new Date()): Promise<CommandView[]> {
   const [device, peers, outgoing] = await Promise.all([thisDevice(), peerJobReports(), commandStore.listOutgoing(outgoingSince(now), MEDIA_JOB_COMMANDS_MAX)]);
