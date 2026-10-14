@@ -210,3 +210,22 @@ test("channel tags: used only for a package without tags; a package's own tags r
   await fits.approval.approve({ channelId: "UC_t", userId: "u-owner", items: [item("V66")], shownSettings: { ...withTags, channelTags: ["x"] } });
   assert.deepEqual(JSON.parse(fits.inserted[0].packageJson).tags, long.pkg!.tags);
 });
+
+// Independent review (FO-MSG-0017, owner msg 2817 + AC-UP-01): for a package with tags: [] the channel's tags are what the owner
+// approves, so they bind like any shown setting -- a change after they were shown refuses the approval whole. And the 500-character
+// refusal still guards the channel's list when it is the one sent (a stored list that never passed the settings check). By hand: six
+// tags of 90 digits = 540 + 5 commas = 545 > 500.
+test("channel tags for a package with tags: []: bound to what was shown, and refused over YouTube's 500 characters", async () => {
+  const base = scanned("V67");
+  const empty: ScannedPackage = { ...base, pkg: { ...base.pkg!, tags: [] } };
+  const shown = { ...SETTINGS, channelTags: ["jazz"] };
+  const now = { ...SETTINGS, channelTags: ["jazz", "piano"] };
+  const changed = harness([empty], { settings: async () => ({ channelId: "UC_t", settings: now, defaults: DEFAULT_PUBLISHING_SETTINGS, saved: ["channelTags" as const], conflictedFields: [] }) });
+  await refusedWith(changed.approval.approve({ channelId: "UC_t", userId: "u-owner", items: [item("V67")], shownSettings: shown }), "publishing_settings_changed");
+  assert.equal(changed.inserted.length, 0);
+
+  const huge = { ...SETTINGS, channelTags: Array.from({ length: 6 }, (_, i) => `${i}`.repeat(90)) };
+  const over = harness([empty], { settings: async () => ({ channelId: "UC_t", settings: huge, defaults: DEFAULT_PUBLISHING_SETTINGS, saved: ["channelTags" as const], conflictedFields: [] }) });
+  await refusedWith(over.approval.approve({ channelId: "UC_t", userId: "u-owner", items: [item("V67")], shownSettings: huge }), "upload_tags_too_long");
+  assert.equal(over.inserted.length, 0);
+});
