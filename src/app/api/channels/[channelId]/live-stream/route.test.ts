@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { DomainError } from "@/lib/live-streams";
 import { createLiveStreamGetHandler } from "./route";
+import { createRotationBatchPostHandler } from "./rotation/batch/route";
+import { createRotationCandidatesGetHandler } from "./rotation/candidates/route";
 import { createRotationPostHandler } from "./rotation/route";
 import { createStartPostHandler } from "./start/route";
 import { createStopPostHandler } from "./stop/route";
@@ -69,4 +71,23 @@ test("a body that is not JSON is a 400 before the module", async () => {
   const bad = new Request("http://localhost/x", { method: "POST", body: "{nope" });
   assert.equal((await createRotationPostHandler(deps())(bad, ctx())).status, 400);
   assert.deepEqual(calls, []);
+});
+
+// BL-187 (LIVE_STREAMS_FIELDS_PLAN.md §2.4): the picker's list and its batch add are behind the same session and
+// active-channel checks; «show all files» is the `all=1` query.
+test("the picker's list and batch add: 401/403 before the module; `all=1` asks for every file", async () => {
+  calls.length = 0;
+  const get = (url: string) => new Request(url, { method: "GET" });
+  assert.equal((await createRotationCandidatesGetHandler(deps({ session: false }))(get("http://localhost/x"), ctx())).status, 401);
+  assert.equal((await createRotationCandidatesGetHandler(deps({ activeChannel: "UC2" }))(get("http://localhost/x"), ctx())).status, 403);
+  assert.equal((await createRotationBatchPostHandler(deps({ activeChannel: "UC2" }))(post({ items: [] }), ctx())).status, 403);
+  assert.deepEqual(calls, []);
+  assert.equal((await createRotationCandidatesGetHandler(deps())(get("http://localhost/x?all=1"), ctx())).status, 200);
+  assert.equal((await createRotationCandidatesGetHandler(deps())(get("http://localhost/x"), ctx())).status, 200);
+  assert.equal((await createRotationBatchPostHandler(deps())(post({ items: [{ videoId: "AAAAAAAAAA1", originalPath: "04 Videos/a.mp4" }] }), ctx())).status, 200);
+  assert.deepEqual(calls, [
+    'listCandidates:["UC1",{"showAll":true}]',
+    'listCandidates:["UC1",{"showAll":false}]',
+    'addVideos:["UC1",{"items":[{"videoId":"AAAAAAAAAA1","originalPath":"04 Videos/a.mp4"}]}]',
+  ]);
 });

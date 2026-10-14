@@ -287,3 +287,66 @@ test("saveSettings changes only the five settings of an existing stream -- never
   const after = h.streamRow("UC1")!;
   assert.deepEqual([after.title, after.orderMode, after.intent, after.streamId, after.broadcastId, after.positionIndex], ["Second", "shuffle", "on", "STREAM1", "BC1", 3]);
 });
+
+// BL-187 (LIVE_STREAMS_FIELDS_PLAN.md §2.4 "Adding", §4.1 "Adding"): the picker's «Добавить N видео» adds each item as
+// `addVideo` would, in order; one refusal does not stop the others; nothing is added twice.
+test("addVideos: a batch of 3 with one file 5 s off adds 2 in order and reports the refusal with its reason", async () => {
+  const third = "SCHEDULED01";
+  const h = harness({
+    facts: [
+      { videoId: PUBLIC_A, title: "A", privacyStatus: "public", publishAt: null, durationSeconds: 7382 },
+      { videoId: PUBLIC_B, title: "B", privacyStatus: "public", publishAt: null, durationSeconds: 7377 },
+      { videoId: third, title: "S", privacyStatus: "public", publishAt: null, durationSeconds: 7382 },
+    ],
+    files: { "04 Videos/a.mp4": 1, "04 Videos/b.mp4": 2, "04 Videos/c.mp4": 3 },
+  });
+  const result = await h.services.addVideos("UC1", {
+    items: [
+      { videoId: PUBLIC_A, originalPath: "04 Videos/a.mp4" },
+      { videoId: PUBLIC_B, originalPath: "04 Videos/b.mp4" },
+      { videoId: third, originalPath: "04 Videos/c.mp4" },
+    ],
+  });
+  assert.deepEqual(result.added.map((v) => [v.videoId, v.rotationIndex]), [[PUBLIC_A, 0], [third, 1]]);
+  assert.equal(result.refused.length, 1);
+  assert.deepEqual([result.refused[0].videoId, result.refused[0].code, result.refused[0].reason], [PUBLIC_B, "live_stream_video_refused", "duration_mismatch"]);
+  assert.deepEqual(h.videos.map((v) => v.videoId), [PUBLIC_A, third]);
+});
+
+test("addVideos: an item repeated in the list, or already in the rotation, is not added twice", async () => {
+  const h = harness();
+  await h.services.addVideo("UC1", { videoId: PUBLIC_A, originalPath: "04 Videos/a.mp4" });
+  const result = await h.services.addVideos("UC1", {
+    items: [
+      { videoId: PUBLIC_B, originalPath: "04 Videos/b.mp4" },
+      { videoId: PUBLIC_B, originalPath: "04 Videos/b.mp4" },
+      { videoId: PUBLIC_A, originalPath: "04 Videos/a.mp4" },
+    ],
+  });
+  assert.deepEqual(result.added.map((v) => v.videoId), [PUBLIC_B]);
+  assert.deepEqual(result.refused.map((r) => [r.videoId, r.code]), [[PUBLIC_A, "validation_failed"]]);
+  assert.equal(h.videos.length, 2);
+});
+
+test("addVideos: a video not of the channel and a private one are refused; an empty or malformed list is a validation error", async () => {
+  const h = harness();
+  const result = await h.services.addVideos("UC1", {
+    items: [
+      { videoId: OTHER_CHANNEL, originalPath: "04 Videos/a.mp4" },
+      { videoId: PRIVATE_V55, originalPath: "04 Videos/a.mp4" },
+    ],
+  });
+  assert.deepEqual(result.added, []);
+  assert.deepEqual(result.refused.map((r) => r.reason), ["not_channel_video", "private"]);
+  await assert.rejects(() => h.services.addVideos("UC1", { items: [] }), (e: unknown) => e instanceof DomainError && e.code === "validation_failed");
+  await assert.rejects(() => h.services.addVideos("UC1", { items: [{ videoId: PUBLIC_A }] }), (e: unknown) => e instanceof DomainError && e.code === "validation_failed");
+  assert.equal(h.videos.length, 0);
+});
+
+test("addVideos: a missing workspace stops the batch with its own error (every file would fail the same way)", async () => {
+  const h = harness({ workspaceMissing: true });
+  await assert.rejects(
+    () => h.services.addVideos("UC1", { items: [{ videoId: PUBLIC_A, originalPath: "04 Videos/a.mp4" }] }),
+    (e: unknown) => e instanceof DomainError && e.code === "live_stream_workspace_unavailable"
+  );
+});

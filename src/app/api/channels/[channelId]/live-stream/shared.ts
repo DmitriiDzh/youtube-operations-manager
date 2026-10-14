@@ -10,6 +10,7 @@ import {
   createLiveBroadcastsCore,
   createLiveStreamsCore,
   createLiveStreamsSettingsCore,
+  createRotationPickerCore,
   createStreamSupervisorCore,
   isDomainError,
 } from "@/lib/live-streams";
@@ -23,6 +24,8 @@ export type LiveStreamRouteCore = {
   overview(channelId: string): Promise<unknown>;
   saveSettings(channelId: string, body: unknown): Promise<unknown>;
   addVideo(channelId: string, body: unknown): Promise<unknown>;
+  addVideos(channelId: string, body: unknown): Promise<unknown>;
+  listCandidates(channelId: string, options: { showAll: boolean }): Promise<unknown>;
   removeVideo(channelId: string, videoId: string): Promise<void>;
   reorder(channelId: string, body: unknown): Promise<void>;
   overrideGuard(channelId: string, videoId: string, body: unknown): Promise<void>;
@@ -78,6 +81,8 @@ export function createLiveStreamRouteCore(): LiveStreamRouteCore {
     },
     saveSettings: (channelId, body) => rotation.saveSettings(channelId, body),
     addVideo: (channelId, body) => rotation.addVideo(channelId, body),
+    addVideos: (channelId, body) => rotation.addVideos(channelId, body),
+    listCandidates: (channelId, options) => createRotationPickerCore().listCandidates(channelId, options),
     removeVideo: (channelId, videoId) => rotation.removeVideo(channelId, { videoId }),
     reorder: (channelId, body) => rotation.reorder(channelId, body),
     overrideGuard: (channelId, videoId, body) => rotation.overrideGuard(channelId, { ...objectBody(body), videoId }),

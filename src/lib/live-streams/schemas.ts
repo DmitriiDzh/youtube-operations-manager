@@ -22,6 +22,8 @@ export const streamSettingsSchema = z
   .strict();
 
 export const addVideoSchema = z.object({ videoId, originalPath: relativeFile.optional() }).strict();
+/** BL-187: the picker's «Добавить N видео» -- each item is added as one `addVideo` would be, in the given order. */
+export const addVideosSchema = z.object({ items: z.array(z.object({ videoId, originalPath: relativeFile }).strict()).min(1).max(200) }).strict();
 export const removeVideoSchema = z.object({ videoId }).strict();
 export const reorderSchema = z.object({ videoIds: z.array(videoId).min(1).max(500) }).strict();
 export const overrideGuardSchema = z.object({ videoId, reason: z.string().trim().min(MIN_OVERRIDE_REASON_LENGTH).max(500) }).strict();

@@ -766,7 +766,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   - Дефолты публикации канала: `publishing/settings.ts`, семейство синхронизации `channel-publishing-settings` (документ на
     канал), конфликты в «Слиянии»; Контент → «Публикация», время — `UtcTimeField` (12:00 UTC по умолчанию).
   - Пакеты релизов: `publishing/packages.ts`, `package-scan.ts` (`04 Videos/**/V*_release.json`, проверки по правилам YouTube,
-    состояние по `Vn_youtube.json`).
+    состояние по `Vn_youtube.json`; обход и чтения — общий `src/lib/workspace-videos/`, BL-187).
   - Подтверждение: `upload-approval.ts` (хеш манифеста и показанные настройки, квота: корзина `videos.insert` 100 в день и
     `quota-guard.checkUnits`, другой компьютер — семейство `publishing-uploads`).
   - Загрузка: `upload-runner.ts`, таблица `publishing_uploads` (схема v89, только этот компьютер), цикл раз в 5 с в
@@ -774,7 +774,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   - API: `/api/channels/[id]/publishing-settings(/conflicts)`, `/publishing/packages(/thumbnail)`, `/publishing/uploads(/[uploadId]/cancel)`.
   - Агенты: `agent_get_publishing_calendar` отдаёт пакеты и загрузки (Agent API 3.17.0, Producer API 1.8.0); инструментов загрузки нет.
 
-### 2.9am Круглосуточная трансляция своих открытых видео канала (BL-176, FO-REQ-0019, ADR 0036, `docs/roadmap/plans/LIVE_STREAMS_PLAN.md`) — **IMPLEMENTED на ветке `feature/live-streams`, не в `dev`; реальные записи в YouTube (spike B) и приёмка §4.2 ещё не проводились**
+### 2.9am Круглосуточная трансляция своих открытых видео канала (BL-176, FO-REQ-0019, ADR 0036, `docs/roadmap/plans/LIVE_STREAMS_PLAN.md`) — **IMPLEMENTED, влито в `dev` (`1c102a2`); реальные записи в YouTube (spike B) и приёмка §4.2 ещё не проводились**
 
 - **Модуль `src/lib/live-streams/`** (отдельный, §M, выключен по умолчанию; работает только на Mac как системный сервис): ротация с проверкой «только открытые» (свежее чтение YouTube), карта файлов оператора, буфер оригиналов на диске Mac (текущее + следующее), процесс эфира `helper/encoder-helper.mjs` (отдельный node, переживает перезапуски), надзор и цикл раз в 15 с в `instrumentation.ts`, опрос YouTube раз в 5 мин, уведомления колокольчика.
 - **Запись в YouTube** только по кнопкам владельца (Старт / В эфир / Стоп / Изменить) через `youtube-write-gateway/live.ts` (5 примитивов в инвентаре), Live writes + `assertWriteChannel`; чтения — `getLiveBroadcasts`, `getLiveStreamStatuses` (без ключа), `readLiveStreamIngestion` (единственное чтение ключа), `getLiveViewerCounts`. Квота: 11 live-методов по 1 ед.
@@ -782,6 +782,13 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Схема v86:** `live_streams`, `live_stream_videos`, `live_stream_events`, `live_stream_sources` (только этот компьютер); настройки — `app_settings.live_streams_settings`.
 - **Web:** Контент → «Видео» | «Трансляции» (`/content/streams`, активный канал; на Windows — только чтение из отчёта), Настройки → «Трансляции»; API `/api/channels/[channelId]/live-stream/**`, `/api/live-streams/settings`, `/api/live-streams/notices`.
 - **Оператор (Factory API 1.14.0):** `factory_live_get_status`, `factory_live_map_sources`.
+- **BL-187 (этап 1 `docs/roadmap/plans/LIVE_STREAMS_FIELDS_PLAN.md`, ветка `feature/live-streams-fields-and-picker`, не в `dev`):**
+  окно «Добавить видео…» — итоговые файлы `Vn` из `04 Videos/` с галочками (`picker.ts`, `picker-service.ts`,
+  `adapters/picker-files.ts`). Совпадение файла с видео: карта оператора → `Vn_youtube.json` → `video_registry.csv`; иначе
+  владелец выбирает из видео той же длительности. Добавление — `addVideos` (каждое как одиночное, с теми же проверками). API:
+  `GET .../live-stream/rotation/candidates(?all=1)`, `POST .../live-stream/rotation/batch`. Только чтение диска, в YouTube не пишет.
+- **Общий модуль `src/lib/workspace-videos/`** (BL-187, §M): обход `04 Videos/`, разбор `Vn_youtube.json` и реестра, чтения файлов;
+  им пользуются публикация (`package-scan.ts`) и трансляции.
 - **Риски:** RISK-125 (ключ в командной строке ffmpeg), RISK-126 (T9 нужен раз в ~2 ч).
 
 ### 2.9ak Картинки и видео через Gemini API под управлением оператора (BL-174, ADR 0035, `docs/roadmap/plans/GEMINI_MEDIA_PLAN.md`) — **IMPLEMENTED, влито в `dev` (`e72502e`)**

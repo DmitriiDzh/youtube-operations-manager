@@ -1,12 +1,12 @@
-import { open, readdir } from "node:fs/promises";
-import type { DirEntry } from "../package-scan";
+import { open, readdir, stat } from "node:fs/promises";
+import type { DirEntry } from "../index";
 
 /**
- * BL-182 stage 2: the scan's reads of the workspace. `readdir` with file types does not follow symlinks, so a symlinked folder
- * is "other" and the walk never leaves the workspace through one; every file is then reached through the workspace rule
- * (`resolveWorkspaceFile`), which proves its real path is inside. Read-only.
+ * BL-182 stage 2, shared since BL-187: the reads of a channel workspace's `04 Videos/`. `readdir` with file types does not
+ * follow symlinks, so a symlinked folder is "other" and a walk never leaves the workspace through one; every file is then
+ * reached through the workspace rule (`resolveWorkspaceFile`), which proves its real path is inside. Read-only.
  */
-export function createPackageFiles() {
+export function createWorkspaceVideoFiles() {
   async function readUpTo(absolutePath: string, maxBytes: number): Promise<Buffer> {
     const handle = await open(absolutePath, "r");
     try {
@@ -21,7 +21,10 @@ export function createPackageFiles() {
     async listDir(absolutePath: string): Promise<DirEntry[]> {
       try {
         const entries = await readdir(absolutePath, { withFileTypes: true });
-        return entries.map((entry) => ({ name: entry.name, kind: entry.isSymbolicLink() ? "other" : entry.isDirectory() ? "dir" : entry.isFile() ? "file" : "other" }));
+        return entries.map((entry) => ({
+          name: entry.name,
+          kind: entry.isSymbolicLink() ? "other" : entry.isDirectory() ? "dir" : entry.isFile() ? "file" : "other",
+        }));
       } catch {
         return [];
       }
@@ -34,6 +37,12 @@ export function createPackageFiles() {
     },
     async readHead(absolutePath: string, length: number): Promise<Uint8Array> {
       return new Uint8Array(await readUpTo(absolutePath, length));
+    },
+    /** The file's last modification time in milliseconds; null when it cannot be read. */
+    async modifiedMs(absolutePath: string): Promise<number | null> {
+      return stat(absolutePath)
+        .then((s) => s.mtimeMs)
+        .catch(() => null);
     },
   };
 }

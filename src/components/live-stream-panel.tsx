@@ -6,6 +6,7 @@ import { errorText } from "@/lib/ui-text";
 import type { UiTextKey } from "@/lib/ui-text";
 import { ConfirmDialog } from "./confirm-dialog";
 import { InfoTooltip } from "./info-tooltip";
+import { LiveStreamAddVideosDialog } from "./live-stream-add-videos-dialog";
 import { LoadingIndicator } from "./operation-progress";
 import { ToggleSwitch } from "./toggle-switch";
 import { useT } from "./ui-text-provider";
@@ -528,6 +529,7 @@ function RotationCard({ overview, base, onChanged }: { overview: Overview; base:
   const [overrideFor, setOverrideFor] = useState<string | null>(null);
   const [reason, setReason] = useState("");
   const [removeFor, setRemoveFor] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const rotation = overview.rotation;
   const inRotation = useMemo(() => new Set(rotation.map((v) => v.videoId)), [rotation]);
   const offered = overview.sources.filter((s) => !inRotation.has(s.videoId));
@@ -607,50 +609,58 @@ function RotationCard({ overview, base, onChanged }: { overview: Overview; base:
         </ol>
       )}
       <div className="space-y-2 border-t border-zinc-800 pt-3">
-        <p className="text-sm text-zinc-300">{t("live.rotation.add")}</p>
-        {offered.length > 0 && (
-          <label className="flex flex-wrap items-center gap-2 text-sm text-zinc-400">
-            <span>{t("live.rotation.fromMap")}</span>
-            <select
-              value=""
-              onChange={(e) => {
-                const source = offered.find((s) => s.videoId === e.target.value);
-                if (source) {
-                  setVideoId(source.videoId);
-                  setFile(source.file);
+        <button onClick={() => setPickerOpen(true)} disabled={busy} className={primaryClass}>
+          {t("live.picker.open")}
+        </button>
+        <details className="text-sm">
+          <summary className="cursor-pointer text-xs text-zinc-400 hover:text-zinc-200">{t("live.picker.manual")}</summary>
+          <div className="mt-2 space-y-2">
+            {offered.length > 0 && (
+              <label className="flex flex-wrap items-center gap-2 text-sm text-zinc-400">
+                <span>{t("live.rotation.fromMap")}</span>
+                <select
+                  value=""
+                  onChange={(e) => {
+                    const source = offered.find((s) => s.videoId === e.target.value);
+                    if (source) {
+                      setVideoId(source.videoId);
+                      setFile(source.file);
+                    }
+                  }}
+                  disabled={busy}
+                  className={`${inputClass} max-w-md`}
+                >
+                  <option value="">{t("live.rotation.pick")}</option>
+                  {offered.map((s) => (
+                    <option key={s.videoId} value={s.videoId}>
+                      {s.videoId} — {s.file}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <div className="flex flex-wrap items-center gap-2">
+              <input type="text" value={videoId} onChange={(e) => setVideoId(e.target.value.trim())} placeholder={t("live.rotation.videoIdPlaceholder")} aria-label={t("live.rotation.videoId")} disabled={busy} className={`${inputClass} w-40 font-mono`} />
+              <input type="text" value={file} onChange={(e) => setFile(e.target.value)} placeholder={t("live.rotation.filePlaceholder")} aria-label={t("live.rotation.file")} disabled={busy} className={`${inputClass} min-w-64 flex-1`} />
+              <button
+                onClick={() =>
+                  void run(async () => {
+                    await requestJson(`${base}/rotation`, json("POST", file.trim() ? { videoId, originalPath: file.trim() } : { videoId }), t("live.actionFailed"), t);
+                    setVideoId("");
+                    setFile("");
+                  }, t("live.rotation.added"))
                 }
-              }}
-              disabled={busy}
-              className={`${inputClass} max-w-md`}
-            >
-              <option value="">{t("live.rotation.pick")}</option>
-              {offered.map((s) => (
-                <option key={s.videoId} value={s.videoId}>
-                  {s.videoId} — {s.file}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-        <div className="flex flex-wrap items-center gap-2">
-          <input type="text" value={videoId} onChange={(e) => setVideoId(e.target.value.trim())} placeholder={t("live.rotation.videoIdPlaceholder")} aria-label={t("live.rotation.videoId")} disabled={busy} className={`${inputClass} w-40 font-mono`} />
-          <input type="text" value={file} onChange={(e) => setFile(e.target.value)} placeholder={t("live.rotation.filePlaceholder")} aria-label={t("live.rotation.file")} disabled={busy} className={`${inputClass} min-w-64 flex-1`} />
-          <button
-            onClick={() =>
-              void run(async () => {
-                await requestJson(`${base}/rotation`, json("POST", file.trim() ? { videoId, originalPath: file.trim() } : { videoId }), t("live.actionFailed"), t);
-                setVideoId("");
-                setFile("");
-              }, t("live.rotation.added"))
-            }
-            disabled={busy || !/^[A-Za-z0-9_-]{11}$/.test(videoId)}
-            className={primaryClass}
-          >
-            {t("live.rotation.addButton")}
-          </button>
-        </div>
-        <p className="text-xs text-zinc-500">{t("live.rotation.addHint")}</p>
+                disabled={busy || !/^[A-Za-z0-9_-]{11}$/.test(videoId)}
+                className={primaryClass}
+              >
+                {t("live.rotation.addButton")}
+              </button>
+            </div>
+            <p className="text-xs text-zinc-500">{t("live.rotation.addHint")}</p>
+          </div>
+        </details>
       </div>
+      {pickerOpen && <LiveStreamAddVideosDialog base={base} rotationIds={inRotation} onClose={() => setPickerOpen(false)} onAdded={onChanged} />}
       {busy && <LoadingIndicator className="text-xs text-zinc-400" />}
       {error && <p className="text-xs text-red-400">{error}</p>}
       {notice && <p className="text-xs text-emerald-400">{notice}</p>}
