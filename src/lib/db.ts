@@ -255,6 +255,10 @@ export const videos = sqliteTable("videos", {
   lastSyncedAt: integer("last_synced_at", { mode: "timestamp" })
     .notNull()
     .$defaultFn(() => new Date()),
+  // Additive, SCHEMA_MIGRATIONS version 91 (owner, 2026-10-14, Telegram msgs 2770/2775): when a complete owner sync last found
+  // this video missing from the channel's uploads on YouTube. Set = hidden from every list; the row stays; NULL again when the
+  // video reappears in a sync.
+  removedOnYoutubeAt: integer("removed_on_youtube_at", { mode: "timestamp" }),
 });
 
 export const changeSets = sqliteTable("change_sets", {
@@ -4919,6 +4923,18 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       }
     },
   },
+  {
+    version: 91,
+    description:
+      "videos.removed_on_youtube_at -- owner 2026-10-14 (Telegram msgs 2770/2775): a video a complete owner sync no longer finds in the channel's uploads is hidden from every list, never deleted. Additive, nullable",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE videos ADD COLUMN removed_on_youtube_at INTEGER");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
+    },
+  },
 ];
 
 /**
@@ -7708,6 +7724,8 @@ export async function upsertVideos(
       liveBroadcastContent: entry.liveBroadcastContent ?? null,
       publishAt: entry.publishAt ?? null,
       lastSyncedAt: syncedAt,
+      // YouTube just returned this video, so it is not removed (clears a mark left by an earlier sync).
+      removedOnYoutubeAt: null,
     };
 
     await db
@@ -7745,14 +7763,50 @@ export async function applyConfirmedWriteToStoredVideo(input: {
   return updated.length > 0;
 }
 
+/** The channel's stored videos, without the ones a sync found removed on YouTube (owner, 2026-10-14). */
 export async function listStoredVideosByChannel(channelId: string): Promise<StoredVideo[]> {
   const rows = await db
     .select()
     .from(videos)
-    .where(eq(videos.channelId, channelId))
+    .where(and(eq(videos.channelId, channelId), isNull(videos.removedOnYoutubeAt)))
     .orderBy(videos.publishedAt);
 
   return rows.map(mapStoredVideo).reverse();
+}
+
+/**
+ * Owner, 2026-10-14 (Telegram msgs 2770/2775, option "б"): marks this channel's not-yet-marked videos whose ids are not in
+ * `presentVideoIds` (a complete read of the channel's uploads) as removed on YouTube, and clears the mark of every listed
+ * id (a listed video exists even when `videos.list` left it out). Rows are never deleted. Only rows last synced before
+ * `listedAt` (when this read of the uploads began) can be marked: a row another, overlapping sync just saved is newer than
+ * this read (independent review). Returns the ids it marked.
+ */
+export async function markVideosRemovedOnYoutube(
+  channelId: string,
+  presentVideoIds: string[],
+  at: Date,
+  listedAt: Date,
+  database: AppDb = db
+): Promise<string[]> {
+  for (let i = 0; i < presentVideoIds.length; i += 500) {
+    await database
+      .update(videos)
+      .set({ removedOnYoutubeAt: null })
+      .where(and(eq(videos.channelId, channelId), isNotNull(videos.removedOnYoutubeAt), inArray(videos.id, presentVideoIds.slice(i, i + 500))));
+  }
+  const present = new Set(presentVideoIds);
+  const stored = await database
+    .select({ id: videos.id })
+    .from(videos)
+    .where(and(eq(videos.channelId, channelId), isNull(videos.removedOnYoutubeAt), lt(videos.lastSyncedAt, listedAt)));
+  const missing = stored.map((row) => row.id).filter((id) => !present.has(id));
+  for (let i = 0; i < missing.length; i += 500) {
+    await database
+      .update(videos)
+      .set({ removedOnYoutubeAt: at })
+      .where(and(eq(videos.channelId, channelId), inArray(videos.id, missing.slice(i, i + 500))));
+  }
+  return missing;
 }
 
 /** `src/lib/video-details/` (2026-09-20) needs a single stored video's current cached fields to

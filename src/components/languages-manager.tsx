@@ -8,6 +8,7 @@ import { formatDisplayDate, formatDisplayDateTime, resolvePublishDate } from "@/
 import { VideoDetailModal } from "./video-detail-modal";
 import { ChangeSetReview } from "./change-set-review";
 import { ConfirmDialog } from "./confirm-dialog";
+import { useRecentSyncConfirm } from "./recent-sync-confirm";
 import { postChannelSync } from "./channel-sync-client";
 import { OperationOverlay, useOperation } from "./operation-progress";
 import type { UiTextKey } from "@/lib/ui-text";
@@ -521,6 +522,7 @@ export function LanguagesManager() {
       setSyncing(false);
     }
   }, [channelId, fetchOverview, fetchChangeSets, runBlocking, t]);
+  const recentSync = useRecentSyncConfirm(lastSyncedAt, () => void handleSync());
 
   // After a reload, follow a sync the server is still running for this channel (ADR 0015). Syncs only --
   // see the same note in content-manager.tsx for why an AI generation is not re-attached.
@@ -1316,8 +1318,9 @@ export function LanguagesManager() {
 
       {channelId && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+          {recentSync.dialog}
           <button
-            onClick={handleSync}
+            onClick={recentSync.request}
             disabled={syncing}
             className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50"
           >

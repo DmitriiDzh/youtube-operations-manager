@@ -65,6 +65,8 @@ export const syncChannelOutputSchema = z
     channel: syncedChannelSchema,
     videoCount: z.number().int().nonnegative(),
     syncedAt: z.string(),
+    hiddenRemovedVideoIds: z.array(z.string()),
+    removedCheck: z.enum(["done", "skipped_empty_list", "skipped_not_owner"]),
   })
   .strict();
 

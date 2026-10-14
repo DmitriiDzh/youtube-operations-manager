@@ -402,7 +402,9 @@ Key MCP tools:
   (`docs/TECHNICAL_DEBT.md`), tracked separately and unaffected by this slice.
 - Channel-sync tools (`BL-008`, `docs/roadmap/BACKLOG.md`) — closes the rest of RISK-04's MCP
   portion:
-  - `channel_sync` — `{ channelId?, credentialRef? }` → `{ channel, videoCount, syncedAt }`.
+  - `channel_sync` — `{ channelId?, credentialRef? }` → `{ channel, videoCount, syncedAt, hiddenRemovedVideoIds, removedCheck }`
+    (2026-10-14, additive: the ids this sync newly hid as no longer on YouTube; `removedCheck` is `"done"`,
+    `"skipped_empty_list"` or `"skipped_not_owner"`). Hidden videos are left out of every video list.
     Reads from YouTube, writes to the local `channels`/`videos` tables only — never a YouTube
     write. **Mutating**: gated by the same device-availability check as `apply`/`playlist_create`
     (it mutates local state even though it never touches YouTube).

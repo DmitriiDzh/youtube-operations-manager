@@ -283,6 +283,14 @@ etag when useful
 
 Synchronization must support channels with hundreds or thousands of videos.
 
+**Videos removed on YouTube (owner, 2026-10-14, Telegram msgs 2770/2775 — option "б", "пока что").** A video a sync no longer
+finds in the channel's uploads is hidden from every list of the channel's videos (Content, Languages and its language columns,
+publishing calendar, MCP/agent reads) with a "removed on YouTube" mark; the local row and everything attached to it stay. The
+mark is set only from a complete, error-free read of the uploads, compared against the playlist ids (a listed id that
+`videos.list` leaves out still exists), never from an empty list, and only when the reading identity is the channel's recorded
+owner (anyone else's read of the uploads lacks private and scheduled videos). The mark clears when the video reappears in a sync.
+A manual sync started less than 10 minutes after the last one asks for confirmation first (never blocked); automatic syncs do not ask.
+
 ---
 
 # 10. Remote State vs Draft State

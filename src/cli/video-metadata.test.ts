@@ -1965,7 +1965,7 @@ function makeChannelSyncCoreStub(): Pick<
     lastSyncedAt: "2026-09-01T00:00:00.000Z",
   };
   return {
-    syncChannel: async () => ({ channel, videoCount: 1, syncedAt: "2026-09-01T00:00:00.000Z" }),
+    syncChannel: async () => ({ channel, videoCount: 1, syncedAt: "2026-09-01T00:00:00.000Z", hiddenRemovedVideoIds: [], removedCheck: "done" as const }),
     listChannels: async () => ({ channels: [channel] }),
     listSyncedVideos: async () => ({ channelId: "UC_1", videos: [] }),
   };
@@ -2172,6 +2172,8 @@ test("CLI channel sync forwards resolved credentialRef and optional channelId", 
       },
       videoCount: 1,
       syncedAt: "2026-09-01T00:00:00.000Z",
+      hiddenRemovedVideoIds: [],
+      removedCheck: "done" as const,
     };
   };
 
@@ -2199,7 +2201,7 @@ test("CLI channel sync rejects a --channelId flag with no value instead of silen
   let called = false;
   channelSyncCore.syncChannel = async () => {
     called = true;
-    return { channel: null as never, videoCount: 0, syncedAt: "" };
+    return { channel: null as never, videoCount: 0, syncedAt: "", hiddenRemovedVideoIds: [], removedCheck: "done" as const };
   };
 
   const stderr: string[] = [];
