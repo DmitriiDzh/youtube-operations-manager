@@ -125,6 +125,10 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
       submit: async (input) => (mediaCalls.push(`sb.submit:${(input as { storyboardId: string }).storyboardId}`), { storyboard: {} }),
       reply: async (input) => (mediaCalls.push(`sb.reply:${(input as { commentId: string }).commentId}`), { storyboard: {}, replyId: null }),
     },
+    // BL-188: the shared jobs pool is a fake that records what reached it.
+    jobs: {
+      list: async (input) => (mediaCalls.push(`jobs.list:${input.channelId ?? ""}:${input.source ?? ""}:${input.limit ?? ""}`), { devices: [], jobs: [], total: 0, truncated: false }),
+    },
     async assertMutationAllowed() {
       mediaCalls.push("gate");
       if (gateClosed.value) throw new DomainError({ code: "OPERATION_LOCKED" as never, message: "an import is running" });
@@ -274,6 +278,7 @@ test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exact
     "factory_gemini_get_status",
     "factory_get_capabilities",
     "factory_get_logical_path",
+    "factory_jobs_list",
     "factory_list_channels",
     "factory_list_logical_paths",
     "factory_live_get_status",
@@ -347,14 +352,15 @@ test("AC-FO-07: a channel tool name is not callable on the factory endpoint", as
 // BL-176 (LIVE_STREAMS_PLAN.md §3.11): 1.14.0 and the two live-stream tools, last (declaration order); the map is a write.
 // BL-179 (GEMINI_OMNI_PLAN.md): 1.15.0, no new tool.
 // BL-184 (STORYBOARD_PLAN.md §2.6): 1.16.0 and the six storyboard tools, last (declaration order); four of them writes.
-test("factory_get_capabilities reports the factory API version 1.16.0 (BL-184), READ and WRITE, the tool list and the write tools", async () => {
+// BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.7): 1.17.0 and the read tool factory_jobs_list, last (declaration order).
+test("factory_get_capabilities reports the factory API version 1.17.0 (BL-188), READ and WRITE, the tool list and the write tools", async () => {
   const { endpoint, tokenServices } = setup();
   const { token } = await tokenServices.issueToken({});
   const result = await toolResult(await endpoint.handle(rpc(call("factory_get_capabilities"), withToken(token))));
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.16.0",
+    factoryApiVersion: "1.17.0",
     tools: [
       "factory_get_capabilities",
       "factory_list_logical_paths",
@@ -405,6 +411,7 @@ test("factory_get_capabilities reports the factory API version 1.16.0 (BL-184), 
       "factory_storyboard_list",
       "factory_storyboard_submit",
       "factory_storyboard_reply",
+      "factory_jobs_list",
     ],
     permissions: ["READ", "WRITE"],
     writeTools: [
@@ -1005,4 +1012,26 @@ test("BL-184: storyboardId / segmentId on factory_media_create_job and factory_g
   const body = await (await endpoint.handle(rpc(call("factory_media_create_job", { sessionId: "s1", templateId: "t1", params: {}, ...link, approved: true }), withToken(token)))).json();
   assert.equal(Boolean(body.result?.isError ?? body.error), true);
   assert.deepEqual(toolDeps.mediaCalls, []);
+});
+
+// BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.7, AC 9; owner msg 2806 item 4): factory_jobs_list is a read -- no device gate -- and passes
+// its filters to the pool; an unknown field (e.g. a command) or an out-of-range limit is refused before the pool is reached.
+test("BL-188: factory_jobs_list is a read without the gate; strict filters; nothing invalid reaches the pool", async () => {
+  const { endpoint, tokenServices, toolDeps } = setupWithDeps();
+  const { token } = await tokenServices.issueToken({});
+  const ok = await toolResult(await endpoint.handle(rpc(call("factory_jobs_list", { channelId: "UC_A", source: "gemini", limit: 500 }), withToken(token))));
+  assert.equal(ok.isError, false);
+  assert.deepEqual(ok.payload, { devices: [], jobs: [], total: 0, truncated: false });
+  assert.deepEqual(toolDeps.mediaCalls, ["jobs.list:UC_A:gemini:500"], "a read is not gated");
+  toolDeps.gateClosed.value = true;
+  toolDeps.mediaCalls.length = 0;
+  assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_jobs_list", {}), withToken(token))))).isError, false, "a closed gate does not stop a read");
+  assert.deepEqual(toolDeps.mediaCalls, ["jobs.list:::"]);
+  toolDeps.gateClosed.value = false;
+  toolDeps.mediaCalls.length = 0;
+  for (const bad of [{ limit: 501 }, { limit: 0 }, { source: "comfy" }, { mediaKind: "music" }, { status: "Done!" }, { cancel: "rp1" }, { targetDeviceId: "mac" }]) {
+    const body = await (await endpoint.handle(rpc(call("factory_jobs_list", bad), withToken(token)))).json();
+    assert.equal(Boolean(body.result?.isError ?? body.error), true, JSON.stringify(bad));
+  }
+  assert.deepEqual(toolDeps.mediaCalls, [], "an invalid input never reaches the pool");
 });

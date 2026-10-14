@@ -42,3 +42,15 @@ Owner, Telegram 2026-10-07, msg 1976. The report goes to **version 2**. Each ope
 
 "Other devices" shows them about a minute behind. A device on this build still reads version 1 reports. An older build refuses
 version 2 with "newer… update the app", so both devices must be updated. Plan: `docs/roadmap/plans/CROSS_DEVICE_JOB_PROGRESS_PLAN.md`.
+
+## Amendment (2026-10-14, BL-188): every job in one shared list
+
+Owner, Telegram 2026-10-14, msgs 2801/2803/2806. A separate per-device family, `media-jobs`, carries each computer's jobs (RunPod
+and Gemini): unfinished ones and finished ones of the last 7 days, at most 1000, with an error code but never its text. Media
+shows one list on every computer. The `media-sessions` report is unchanged. Relayed job and session actions come in stage 2 of
+`docs/roadmap/plans/SHARED_MEDIA_JOBS_PLAN.md`; a job still runs only on the computer that owns its session.
+
+**Stage 2 (2026-10-14).** Approve / reject of a pending session request is no longer limited to the owning device (owner msg
+2806): another computer sends a command in its `media-jobs` report, and the owning device applies it once through its own
+`approveSession` / `rejectSession` (every device limit still checked there). Cancelling a job and running a job on another
+computer's running session work the same way. Spend is still decided only by the computer that runs the session.

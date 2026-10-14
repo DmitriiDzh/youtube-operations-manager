@@ -3092,6 +3092,60 @@ nothing while a node works before its first step, so such a stretch shows only t
   - A peer's audition is resolved by `resolvePeerAudition` from that peer's report, then proven inside this device's workspace
     by the same `workspace-exchange` resolvers.
 
+- **BL-188 stage 1 (one shared list of media jobs, `docs/roadmap/plans/SHARED_MEDIA_JOBS_PLAN.md`):**
+  - Family `sync-gateway/media-jobs` (+ `media-jobs-sync`), report `ytm-media-jobs` v1 on `per-device-report`: this computer's
+    RunPod and Gemini jobs -- every unfinished one and finished ones of the last 7 days, at most 1000. Strict allowlist: ids,
+    status, progress without `detail`, template/model label, plan/storyboard links, Gemini cost, times, an error **code**, and
+    output paths relative to `99 Data Exchange/`. Never parameters, prompts, inputs, URLs or provider text.
+  - Module `src/lib/media-jobs-pool/` reads both feature modules (`listJobsForShare` in `media-generation/jobs.ts` and
+    `gemini-media/services.ts`) and the family; neither feature module imports it (tests in both directions). `publishMediaJobsShare`
+    runs in its own 30 s loop in `instrumentation.ts` and writes only when the jobs changed (or every 5 minutes).
+  - `GET /api/media-jobs?kind=&limit=` (active channel from the session) merges own jobs (full detail) with peers' (codes only),
+    marks a peer silent for 5 minutes stale, and checks a peer's outputs in this computer's workspace copy with
+    `resolveExchangeFile` (subdirs `media`, `gemini`) for the returned rows only.
+  - Media's kind tabs show the list (`JobsCard`): a "Компьютер" column and filter when there are several computers. No schema
+    change in stage 1.
+- **BL-188 stage 2 (the same actions everywhere, schema v93, report v2):**
+  - **Commands.** A click on another computer's job or session is stored on the clicking computer (`media_job_commands_out`) and
+    carried in its report (`commands`, kept 7 days, ≤ 500): `cancel_job` (RunPod, or a Gemini job not yet sent), `create_job` (a
+    RunPod run on that computer's running session of the active channel, with the template and parameters), `approve_session` /
+    `reject_session` (a pending request). `POST /api/media-jobs/commands` checks the target against that computer's own report
+    (job: active channel, still cancellable; session: from its `media-sessions` report, running for a run, pending for a
+    decision, its channel connected here) -- `media_job_command_invalid` (409) otherwise; the computer itself is never a target.
+  - **Applying** (`media-jobs-pool/commands.ts` `applyIncomingCommands`, on the pool tick in `instrumentation.ts`, skipped while
+    an import/migration holds the lock or in recovery mode): commands addressed to this computer, oldest first; each is taken in
+    the ledger `media_job_peer_commands` (`applying`) before anything happens, so a replay, a duplicate in two reports or a
+    restart never applies it twice (a row left `applying` is reported as `command_interrupted` after 30 minutes, never retried;
+    the ledger is kept 30 days, longer than any command stays in a report). A `create_job` or `approve_session` (both start spending)
+    first seen more than 15 minutes after it was issued, or dated more than 5 minutes ahead, is `command_expired`; a
+    `cancel_job` naming no channel is refused (`CHANNEL_NOT_AUTHORIZED`). Each command runs the service a local click runs: `media-generation` `cancelJob` /
+    `createJob` (all its checks and limits, the storyboard gate) / `approveSession` (every device limit) / `rejectSession`,
+    `gemini-media` `cancelJob`; a job of another channel than the command names is refused. The answer (`commandResults`, ≤ 1000)
+    is a status and a code only, never an error text.
+  - **Gemini cancel:** `queued` → `failed` `cancelled_by_owner`, nothing charged, by the same compare-and-set the worker's claim
+    uses; `submitting` / `running` / finished → `gemini_cancel_too_late`. `POST /api/gemini-media/jobs/[jobId]/cancel` for own jobs.
+  - **UI:** the row's Cancel and the run form's session list (own running sessions first, then other computers') work on every
+    computer; the row shows «отправлено на … · ждёт подтверждения» (or «… не на связи с …»), then «выполнено» / «отказано — причина»;
+    an unanswered run is shown as expired after 15 minutes. Other Devices offers Approve / Reject on a peer's pending request.
+  - A version 1 build refuses a version 2 report: both computers update together.
+- **BL-188 stage 3 (Factory read, Factory API 1.17.0):** `factory_jobs_list` (READ, no gate) calls `listMediaJobsForAgent`
+  (`media-jobs-pool/index.ts`) over the pure `agentJobsList` (`services.ts`): this computer's jobs converted to the shared shape
+  (the same window as its report) plus every peer's report, deduplicated, filtered (channel, source, kind, status, plan), newest
+  first, `limit` 1-500 (default 100) with `total`/`truncated`, and per device `reportAgeSeconds`/`stale` (> 5 min). Codes only for
+  every computer, this one included; the Operator's actions stay local (owner msg 2806, Q4).
+- **BL-188 stage 4 (Gemini launch from Media, report v3; owner msg 2806 Q3):**
+  - **Here:** `GeminiCreateCard` (`src/components/gemini-media-create.tsx`) in Media's Images / Video tabs -> `POST /api/gemini-media/jobs`,
+    the Gemini module's own `createJob(..., "owner")` -- the same switch, key, model rules, inputs, storyboard gate and limits as
+    `factory_gemini_create_job` -- with the active channel from the session (a body naming a channel is refused). "Оценить" is the
+    module's dry run. The form's request is built by the pure `buildGeminiRequest` (`gemini-media-create-request.ts`).
+  - **Elsewhere:** the same request as a `create_job` command with `source: "gemini"` and `gemini` (report v3; a v2 build refuses a
+    v3 report, so both computers update). The executor runs `createGeminiMediaCore().createJob({ ...request, channelId, requestId:
+    "cmd-<commandId>" }, "owner")`: the request id from the command means a create that ran but was not recorded as finished
+    returns the same job, never a second paid one; the 15-minute expiry and the ledger apply as for RunPod runs; refusals come
+    back as codes (`gemini_disabled`, `gemini_key_missing`, `gemini_limit_exceeded`, ...). The form shows the price-list figure
+    for another computer (that computer computes its own estimate and limits).
+  - The job list refreshes on the window event `media-jobs:changed` the form fires after a create or a send.
+
 ## 30. Shared Production settings and the conflict screen (BL-150, ADR 0030)
 
 - **Sync family.** `src/lib/sync-gateway/media-settings/` holds one global Automerge document, `{ format, version, settings: map }`.

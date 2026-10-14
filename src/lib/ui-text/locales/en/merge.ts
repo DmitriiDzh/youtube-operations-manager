@@ -12,6 +12,7 @@ export const merge = {
   "handoff.family.channelPublishingSettings": "Channel publishing",
   "handoff.family.publishingUploads": "Video uploads",
   "handoff.family.storyboards": "Storyboards",
+  "handoff.family.mediaJobs": "Media jobs",
 
   "handoff.requestFailed": "Request to {url} failed ({status})",
   "handoff.justNow": "just now",

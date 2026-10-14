@@ -12,12 +12,14 @@ import { createFactoryMcpServer, FACTORY_API_VERSION, FACTORY_TOOL_NAMES, FACTOR
 // BL-174 (GEMINI_MEDIA_PLAN.md §2.7): three Gemini tools (two reads, one write).
 // BL-176 (LIVE_STREAMS_PLAN.md §3.4/§3.11): two live-stream tools (a status read, a local map write).
 // BL-184 (STORYBOARD_PLAN.md §2.6): six storyboard tools (four writes, two reads).
+// BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.7): factory_jobs_list, a read (owner msg 2806: the Operator only sees other computers' jobs).
 const EXPECTED_TOOLS = [
   "factory_gemini_create_job",
   "factory_gemini_get_job",
   "factory_gemini_get_status",
   "factory_get_capabilities",
   "factory_get_logical_path",
+  "factory_jobs_list",
   "factory_list_channels",
   "factory_list_logical_paths",
   "factory_live_get_status",
@@ -76,6 +78,7 @@ function registeredNames(): string[] {
       gemini: {} as never,
       live: {} as never,
       storyboards: {} as never,
+      jobs: {} as never,
       async assertMutationAllowed() {},
     },
     { connectionEnabled: true, session: { tokenId: "t", async reverify() {} } }
@@ -139,8 +142,8 @@ test("AC-FO-09 (amended by ADR 0025/0026): writes are exactly the named media/se
   const writes = new Set<string>(FACTORY_WRITE_TOOL_NAMES);
   for (const name of FACTORY_TOOL_NAMES) {
     // BL-174: the Gemini reads are factory_gemini_get_*; BL-176: the live-stream read is factory_live_get_status; BL-184: the
-    // storyboard reads are factory_storyboard_get / factory_storyboard_list.
-    if (!writes.has(name)) assert.match(name, /^factory_(get|list|media_(get|list|storage|capacity)|plan_(get|list|todo)|gemini_(get|list)|live_(get|list)|storyboard_(get|list))_?/, `${name} must be a read`);
+    // storyboard reads are factory_storyboard_get / factory_storyboard_list; BL-188: factory_jobs_list.
+    if (!writes.has(name)) assert.match(name, /^factory_(get|list|media_(get|list|storage|capacity)|plan_(get|list|todo)|gemini_(get|list)|live_(get|list)|storyboard_(get|list)|jobs_list)_?/, `${name} must be a read`);
     assert.doesNotMatch(name, /_(set|issue|revoke)_|workspace|token|approve|reject/, `${name} must not touch paths, workspaces or tokens, or approve for anyone`);
   }
 });
@@ -177,6 +180,8 @@ test("§2.5(3): the factory route and endpoint reach only the allowlisted module
     "@/lib/live-streams",
     // BL-184 (STORYBOARD_PLAN.md §2.6): the storyboards module for the factory_storyboard_* tools.
     "@/lib/storyboards",
+    // BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.7): the shared jobs pool for factory_jobs_list (read-only).
+    "@/lib/media-jobs-pool",
     "@/mcp/factory-server",
   ]);
   assert.deepEqual(route.filter((spec) => !routeAllowed.has(spec)), []);
@@ -199,7 +204,7 @@ test("§2.5(4): none of the factory files reads channel-scope state (agent-sessi
   }
 });
 
-test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.16.0 since BL-184), separate from the channel agents' version", async () => {
+test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.17.0 since BL-188), separate from the channel agents' version", async () => {
   // BL-153 (FO-REQ-0008): reviewRejected, split waiting counts and overridesValidator are additive -> a minor version.
   // BL-155 (FO-REQ-0007, CUDA_HOSTS_PLAN.md "Contract"): the jobs' errorCode, the error media_gpu_host_incompatible and the
   // stopReason "all jobs failed (release when done)" are additive -> 1.7.0, as the plan states.
@@ -213,7 +218,8 @@ test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.16.0 
   // BL-176 (LIVE_STREAMS_PLAN.md §3.11): two new tools (a read, a local write), additive -> 1.14.0.
   // BL-179 (GEMINI_OMNI_PLAN.md): a new video model and additive catalog fields -> 1.15.0.
   // BL-184 (STORYBOARD_PLAN.md §2.6): six new storyboard tools, additive -> 1.16.0.
-  assert.equal(FACTORY_API_VERSION, "1.16.0");
+  // BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.7): one new READ tool, factory_jobs_list, additive -> 1.17.0.
+  assert.equal(FACTORY_API_VERSION, "1.17.0");
   const agentOperations = await readFile("src/lib/agent-operations/contracts.ts", "utf8");
   assert.equal(agentOperations.includes("FACTORY_API_VERSION"), false);
 });

@@ -10,6 +10,7 @@ import { createLogicalPathsCore } from "@/lib/logical-paths";
 import { createGenerationPlansCore, withPlanLock } from "@/lib/generation-plans";
 import { createMediaGenerationCore, DomainError, withJobErrorCode } from "@/lib/media-generation";
 import { createStoryboardsServiceForProduction } from "@/lib/storyboards";
+import { listMediaJobsForAgent } from "@/lib/media-jobs-pool";
 import { createFactoryMcpServer, type FactoryToolDeps } from "@/mcp/factory-server";
 
 // Never cached or prerendered: every call is an authenticated, per-request Factory Operator session.
@@ -220,6 +221,10 @@ function createToolDeps(): FactoryToolDeps {
       list: async (input) => ({ ...(await createStoryboardsServiceForProduction().list(input)) }),
       submit: async (input) => ({ ...(await createStoryboardsServiceForProduction().submit(input)) }),
       reply: async (input) => ({ ...(await createStoryboardsServiceForProduction().operatorReply(input)) }),
+    },
+    // BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.7): every computer's media jobs, read-only, in the shared shape (codes only).
+    jobs: {
+      list: async (input) => ({ ...(await listMediaJobsForAgent(input)) }),
     },
     assertMutationAllowed: () => assertDeviceAvailableForMutation(rawSqlClient),
   };

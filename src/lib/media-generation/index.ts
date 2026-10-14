@@ -431,3 +431,5 @@ export type {
 } from "./contracts";
 export { DEFAULT_MEDIA_SETTINGS, NETWORK_VOLUME_USD_PER_GB_MONTH } from "./contracts";
 export { jobErrorCode, withJobErrorCode } from "./cuda-host";
+// BL-188: the shared jobs list carries a job's live progress in the shape the other devices may see (no `detail`).
+export { toSharedJobProgress } from "./cross-device";

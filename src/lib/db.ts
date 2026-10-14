@@ -1067,6 +1067,46 @@ export const generationPlanPeerVerdicts = sqliteTable(
 );
 
 /**
+ * Schema v93 (BL-188 stage 2, SHARED_MEDIA_JOBS_PLAN.md §2.3/§3): actions the owner took on THIS device for another device's
+ * media job or session (cancel, run, approve, reject). They travel in this device's media jobs report until that device applies
+ * them; the result comes back in its report. `command_json` is the command as sent (the report's strict shape). Device-local.
+ */
+export const mediaJobCommandsOut = sqliteTable(
+  "media_job_commands_out",
+  {
+    commandId: text("command_id").primaryKey(),
+    targetDeviceId: text("target_device_id").notNull(),
+    kind: text("kind").notNull(),
+    commandJson: text("command_json").notNull(),
+    issuedAt: text("issued_at").notNull(),
+  },
+  (table) => [index("media_job_commands_out_issued_idx").on(table.issuedAt)]
+);
+
+/**
+ * Schema v93 (BL-188 stage 2): the ledger of commands THIS device received from other devices -- one row per command id, taken
+ * (`applying`) before anything is done, so a command is never applied twice, even across a restart (a row left `applying` is
+ * reported as interrupted, never retried). Device-local; it is also the executor's audit of relayed actions.
+ */
+export const mediaJobPeerCommands = sqliteTable(
+  "media_job_peer_commands",
+  {
+    commandId: text("command_id").primaryKey(),
+    issuerDeviceId: text("issuer_device_id").notNull(),
+    issuedOn: text("issued_on"),
+    kind: text("kind").notNull(),
+    targetJson: text("target_json").notNull(),
+    status: text("status").notNull(),
+    code: text("code"),
+    jobId: text("job_id"),
+    issuedAt: text("issued_at").notNull(),
+    receivedAt: text("received_at").notNull(),
+    finishedAt: text("finished_at"),
+  },
+  (table) => [index("media_job_peer_commands_received_idx").on(table.receivedAt)]
+);
+
+/**
  * Schema v73 (BL-162, FO-REQ-0013 §2.3): wave notes the owner wrote on THIS device for plans owned by ANOTHER device. They
  * travel in this device's generation plans report (version 3); the owning device applies them. `note` null = cleared.
  */
@@ -4950,6 +4990,35 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       }
     },
   },
+  {
+    version: 93,
+    description:
+      "media_job_commands_out, media_job_peer_commands -- BL-188 stage 2 (docs/roadmap/plans/SHARED_MEDIA_JOBS_PLAN.md §3; owner msgs 2803/2806): actions on another computer's media jobs and sessions, sent and received. Additive, device-local",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS media_job_commands_out (
+        command_id TEXT PRIMARY KEY NOT NULL,
+        target_device_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        command_json TEXT NOT NULL,
+        issued_at TEXT NOT NULL
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS media_job_commands_out_issued_idx ON media_job_commands_out (issued_at)");
+      await client.execute(`CREATE TABLE IF NOT EXISTS media_job_peer_commands (
+        command_id TEXT PRIMARY KEY NOT NULL,
+        issuer_device_id TEXT NOT NULL,
+        issued_on TEXT,
+        kind TEXT NOT NULL,
+        target_json TEXT NOT NULL,
+        status TEXT NOT NULL,
+        code TEXT,
+        job_id TEXT,
+        issued_at TEXT NOT NULL,
+        received_at TEXT NOT NULL,
+        finished_at TEXT
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS media_job_peer_commands_received_idx ON media_job_peer_commands (received_at)");
+    },
+  },
 ];
 
 /**
@@ -7498,9 +7567,9 @@ export async function getGatewayTrafficLast24h(
   }));
 }
 
-export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens" | "live_streams" | "channel_language_settings" | "channel_publishing_settings" | "publishing_uploads" | "storyboards";
+export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens" | "live_streams" | "channel_language_settings" | "channel_publishing_settings" | "publishing_uploads" | "storyboards" | "media_jobs";
 
-const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings", "agent_tokens", "live_streams", "channel_language_settings", "channel_publishing_settings", "publishing_uploads", "storyboards"];
+const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings", "agent_tokens", "live_streams", "channel_language_settings", "channel_publishing_settings", "publishing_uploads", "storyboards", "media_jobs"];
 
 export type SyncFamilyStatusRow = {
   family: SyncFamily;
@@ -10420,6 +10489,55 @@ export async function listGenerationPlanPeerVerdicts(sinceIso: string, database:
   await database.delete(generationPlanPeerVerdicts).where(lt(generationPlanPeerVerdicts.at, sinceIso));
   const rows = await database.select().from(generationPlanPeerVerdicts).orderBy(desc(generationPlanPeerVerdicts.at)).limit(1000);
   return rows.reverse();
+}
+
+export type StoredMediaJobCommandOut = typeof mediaJobCommandsOut.$inferSelect;
+export type StoredMediaJobPeerCommand = typeof mediaJobPeerCommands.$inferSelect;
+
+/** BL-188: one command given here for another device's job or session. */
+export async function insertMediaJobCommandOut(row: StoredMediaJobCommandOut, database: AppDb = db): Promise<void> {
+  await database.insert(mediaJobCommandsOut).values(row);
+}
+
+/** The commands given since `sinceIso` (newest `limit`), newest first; older ones are deleted. */
+export async function listMediaJobCommandsOut(sinceIso: string, limit: number, database: AppDb = db): Promise<StoredMediaJobCommandOut[]> {
+  await database.delete(mediaJobCommandsOut).where(lt(mediaJobCommandsOut.issuedAt, sinceIso));
+  return database.select().from(mediaJobCommandsOut).orderBy(desc(mediaJobCommandsOut.issuedAt), desc(mediaJobCommandsOut.commandId)).limit(limit);
+}
+
+/** Takes a received command (status `applying`); false when it was taken before -- the one guard against applying it twice. */
+export async function claimMediaJobPeerCommand(row: Omit<StoredMediaJobPeerCommand, "status" | "code" | "jobId" | "finishedAt">, database: AppDb = db): Promise<boolean> {
+  const inserted = await database
+    .insert(mediaJobPeerCommands)
+    .values({ ...row, status: "applying", code: null, jobId: null, finishedAt: null })
+    .onConflictDoNothing()
+    .returning({ commandId: mediaJobPeerCommands.commandId });
+  return inserted.length > 0;
+}
+
+/** Records what was done with a taken command (only from `applying`). */
+export async function finishMediaJobPeerCommand(
+  commandId: string,
+  set: { status: "applied" | "refused"; code: string | null; jobId: string | null; finishedAt: string },
+  database: AppDb = db
+): Promise<void> {
+  await database
+    .update(mediaJobPeerCommands)
+    .set(set)
+    .where(and(eq(mediaJobPeerCommands.commandId, commandId), eq(mediaJobPeerCommands.status, "applying")));
+}
+
+/** Whether these command ids were received before (taken or finished). */
+export async function knownMediaJobPeerCommandIds(commandIds: readonly string[], database: AppDb = db): Promise<Set<string>> {
+  if (commandIds.length === 0) return new Set();
+  const rows = await database.select({ commandId: mediaJobPeerCommands.commandId }).from(mediaJobPeerCommands).where(inArray(mediaJobPeerCommands.commandId, [...commandIds]));
+  return new Set(rows.map((r) => r.commandId));
+}
+
+/** The newest received commands (for the report), newest first. Rows received before `sinceIso` are deleted. */
+export async function listMediaJobPeerCommands(sinceIso: string, limit: number, database: AppDb = db): Promise<StoredMediaJobPeerCommand[]> {
+  await database.delete(mediaJobPeerCommands).where(lt(mediaJobPeerCommands.receivedAt, sinceIso));
+  return database.select().from(mediaJobPeerCommands).orderBy(desc(mediaJobPeerCommands.receivedAt), desc(mediaJobPeerCommands.commandId)).limit(limit);
 }
 
 export type StoredGenerationPlanPeerGroupNote = typeof generationPlanPeerGroupNotes.$inferSelect;

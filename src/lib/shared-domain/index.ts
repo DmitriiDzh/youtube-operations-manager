@@ -184,6 +184,11 @@ export type DomainErrorCode =
   | "gemini_limit_exceeded"
   | "gemini_request_exists"
   | "gemini_job_not_found"
+  // BL-188 stage 2: a Gemini job already sent to Google (or finished) cannot be cancelled.
+  | "gemini_cancel_too_late"
+  // BL-188 stage 2: an action on another computer's job or session that cannot be sent (the computer, job or session is not
+  // in its report, or the job has ended).
+  | "media_job_command_invalid"
   | "gemini_input_unavailable"
   | "gemini_workspace_unavailable"
   | "gemini_invalid_params"

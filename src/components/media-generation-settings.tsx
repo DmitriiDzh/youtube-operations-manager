@@ -21,9 +21,11 @@ import {
   type MediaVolumeUsage,
   type MediaWorkflowTemplate,
 } from "@/lib/media-generation/contracts";
-import { jobMediaKind } from "@/lib/media-generation/contracts";
+import type { PoolDevice, PoolJob, PoolView } from "@/lib/media-jobs-pool/contracts";
+import type { CommandView } from "@/lib/media-jobs-pool/commands";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { ConfirmDialog } from "./confirm-dialog";
+import { MEDIA_JOBS_CHANGED_EVENT } from "./gemini-media-create";
 import { useChannelNames } from "./use-channel-names";
 import { GatewayTrafficStats, type GatewayTrafficWindowView } from "./gateway-traffic-stats";
 import { InfoTooltip } from "./info-tooltip";
@@ -740,13 +742,106 @@ export function WorkflowTemplatesCard() {
   );
 }
 
-type Job = MediaJob;
+type PoolRow = PoolJob;
 
-// Phase 14 slice 3: the operator's own manual job (an agent's arrives through MCP in slice 5) and the
-// job list; the exchange janitor is run by hand here (dry run first) and daily by the server.
+/** BL-188: the "Компьютер" filter's value -- every computer, or one by its device id. */
+const ALL_DEVICES = "";
+
+/** A computer's name as shown; this computer is marked. Exported for its test. */
+export function poolDeviceLabel(t: Translate, device: Pick<PoolDevice, "hostName" | "own">): string {
+  const name = device.hostName ?? t("media.pool.unnamedDevice");
+  return device.own ? t("media.pool.thisDevice", { name }) : name;
+}
+
+/** Whether a job of the shared list is still under way (it keeps the list polling). Exported for its test. */
+export function poolJobUnderWay(job: Pick<PoolRow, "source" | "status">): boolean {
+  return !(job.source === "runpod" ? ["done", "failed", "cancelled"] : ["done", "failed"]).includes(job.status);
+}
+
+const COMMAND_ACTION: Record<CommandView["kind"], UiTextKey> = {
+  cancel_job: "media.pool.command.cancel_job",
+  create_job: "media.pool.command.create_job",
+  approve_session: "media.pool.command.approve_session",
+  reject_session: "media.pool.command.reject_session",
+};
+
+/** A refusal's code in words where it is one of ours; any other code is shown as it came. */
+const REFUSAL_TEXT: Record<string, UiTextKey> = {
+  command_expired: "media.pool.refusal.command_expired",
+  command_interrupted: "media.pool.refusal.command_interrupted",
+  command_failed: "media.pool.refusal.command_failed",
+  channel_not_connected: "media.pool.refusal.channel_not_connected",
+  CHANNEL_NOT_AUTHORIZED: "media.pool.refusal.channel_mismatch",
+  media_session_invalid_state: "media.pool.refusal.session_state",
+  media_session_not_found: "media.pool.refusal.not_found",
+  media_job_invalid_state: "media.pool.refusal.job_state",
+  media_job_not_found: "media.pool.refusal.not_found",
+  gemini_job_not_found: "media.pool.refusal.not_found",
+  gemini_cancel_too_late: "media.pool.refusal.too_late",
+  media_limit_exceeded: "media.pool.refusal.limit",
+  storyboard_not_approved: "media.pool.refusal.storyboard",
+  // BL-188 stage 4: a Gemini job sent to another computer, refused by that computer's own Gemini checks.
+  gemini_disabled: "media.pool.refusal.gemini_disabled",
+  gemini_key_missing: "media.pool.refusal.gemini_key_missing",
+  gemini_payment_required: "media.pool.refusal.gemini_payment_required",
+  gemini_limit_exceeded: "media.pool.refusal.limit",
+  gemini_invalid_params: "media.pool.refusal.gemini_invalid_params",
+  gemini_input_unavailable: "media.pool.refusal.gemini_input_unavailable",
+  gemini_workspace_unavailable: "media.pool.refusal.channel_not_connected",
+  validation_failed: "media.pool.refusal.gemini_invalid_params",
+};
+
+/**
+ * BL-188 stage 2 (SHARED_MEDIA_JOBS_PLAN.md §2.3): an action sent to another computer, in words -- sent and waiting (or that
+ * computer is not reporting), in progress, done, refused with the reason, or a run that expired unanswered. Exported for its test.
+ */
+export function commandStatusText(t: Translate, command: CommandView): string {
+  const action = t(COMMAND_ACTION[command.kind]);
+  const name = command.targetHostName ?? t("media.pool.unnamedDevice");
+  switch (command.state) {
+    case "waiting":
+      return command.targetOffline
+        ? t("media.pool.commandOffline", { action, name, when: command.targetUpdatedAt ? formatDisplayDateTime(command.targetUpdatedAt) : "—" })
+        : t("media.pool.commandWaiting", { action, name, when: formatDisplayDateTime(command.issuedAt) });
+    case "applying":
+      return t("media.pool.commandApplying", { action, name });
+    case "applied":
+      return command.code === "already_finished" ? t("media.pool.commandAlreadyFinished", { name }) : t("media.pool.commandApplied", { action, name, when: formatDisplayDateTime(command.resultAt ?? command.issuedAt) });
+    case "refused": {
+      const known = command.code ? REFUSAL_TEXT[command.code] : undefined;
+      const reason = known ? t(known) : t("media.pool.refusal.code", { code: command.code ?? "—" });
+      return t("media.pool.commandRefused", { action, name, reason });
+    }
+    case "expired":
+      return t("media.pool.commandExpired", { action, name });
+  }
+}
+
+/** A command still on its way (it keeps the list polling, and hides a second click on the same action). */
+export function commandPending(command: Pick<CommandView, "state">): boolean {
+  return command.state === "waiting" || command.state === "applying";
+}
+
+/** Whether a job of the shared list can be cancelled: a RunPod job not finished, a Gemini job not yet sent to Google. */
+export function poolJobCancellable(job: Pick<PoolRow, "source" | "status">): boolean {
+  return job.source === "runpod" ? ["queued", "submitted", "generating"].includes(job.status) : job.status === "queued";
+}
+
+function CommandLine({ command }: { command: CommandView }) {
+  const { t } = useUiText();
+  const tone = command.state === "refused" || command.state === "expired" ? "text-amber-300" : command.state === "applied" ? "text-emerald-400" : "text-sky-300";
+  return <span className={`block ${tone}`}>{commandStatusText(t, command)}</span>;
+}
+
+// Phase 14 slice 3: the operator's own manual job (an agent's arrives through MCP in slice 5) and the job list. BL-188
+// (owner msgs 2801/2803/2806): the list is the shared one -- RunPod and Gemini jobs of this computer AND of every other computer,
+// for the active channel and the tab's kind, with the computer each runs on. Stage 2: the same actions on every computer -- a
+// cancel of another computer's job, or a run on another computer's running session, is sent to that computer, which applies it
+// with its own checks and limits; the row says it was sent and then what that computer answered.
 export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: string | null; kind?: MediaKind | null }) {
   const { t } = useUiText();
-  const [jobs, setJobs] = useState<Job[]>([]);
+  const [pool, setPool] = useState<PoolView>({ jobs: [], devices: [] });
+  const [deviceFilter, setDeviceFilter] = useState(ALL_DEVICES);
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
   // Slice 6: several sessions may run at once; a job goes to one RUNNING session of the active channel, chosen here.
   const [openSessions, setOpenSessions] = useState<Array<{ sessionId: string; status: string; channelId: string; podId: string | null; createdAt: string }>>([]);
@@ -761,12 +856,12 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
   // needless requests per hour each).
   const fetchJobs = useCallback(
     () =>
-      // BL-157 (AC-SM-03): Media → Jobs is the active channel's (the server resolves the channel).
-      requestJson<{ jobs: Job[] }>("/api/media-generation/jobs?scope=active").then(
-        (j) => setJobs(j.jobs),
+      // BL-157 (AC-SM-03): the active channel's (the server resolves the channel). BL-188: every computer's, of the tab's kind.
+      requestJson<PoolView>(`/api/media-jobs?limit=${POOL_LIST_LIMIT}${kind ? `&kind=${kind}` : ""}`).then(
+        (view) => setPool(view),
         (err: unknown) => setError(err instanceof Error ? err.message : t("media.jobs.loadFailed"))
       ),
-    [t]
+    [t, kind]
   );
   const fetchContext = useCallback(
     () =>
@@ -788,16 +883,17 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
     fetchAll();
   }, [fetchAll]);
 
-  // BL-184 stage 3 (FO-REQ-0024 A): under a kind tab, the jobs of templates that make that kind (or whose kind is not known).
-  const kindOfTemplate = new Map(templates.map((tpl) => [tpl.templateId, tpl.mediaKind]));
-  const shownJobs = kind === null ? jobs : jobs.filter((j) => {
-    // A removed template's jobs are placed by the files they made.
-    const of = jobMediaKind(kindOfTemplate.get(j.templateId), j.outputs.map((o) => o.filename));
-    return !of || of === kind;
-  });
-  const hasActive = jobs.some((j) => !["done", "failed", "cancelled"].includes(j.status));
+  // BL-188 stage 4: the Gemini form (same tab) created a job here or sent one to another computer -- show it at once.
+  useEffect(() => {
+    const onChanged = () => void fetchJobs();
+    window.addEventListener(MEDIA_JOBS_CHANGED_EVENT, onChanged);
+    return () => window.removeEventListener(MEDIA_JOBS_CHANGED_EVENT, onChanged);
+  }, [fetchJobs]);
+
+  const commands = pool.commands ?? [];
+  const hasActive = pool.jobs.some(poolJobUnderWay) || commands.some(commandPending);
   // BL-144: while a job generates, its live ComfyUI progress is refreshed every 2 s; otherwise every 5 s as before.
-  const generating = jobs.some((j) => j.status === "generating" || j.status === "submitted");
+  const generating = pool.jobs.some((j) => j.status === "generating" || j.status === "submitted");
   useEffect(() => {
     if (!hasActive) return;
     const jobsTimer = setInterval(() => void fetchJobs(), generating ? 2_000 : 5_000);
@@ -808,8 +904,13 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
     };
   }, [hasActive, generating, fetchJobs, fetchContext]);
 
+  /** BL-188 stage 2: an action on another computer's job or session, sent to it (the answer comes back in its report). */
+  async function sendCommand(body: Record<string, unknown>) {
+    await requestJson("/api/media-jobs/commands", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  }
+
   async function run() {
-    if (!activeChannelId || !targetSession) return;
+    if (!activeChannelId || !target) return;
     setBusy(true);
     setError(null);
     try {
@@ -819,11 +920,15 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
       } catch {
         throw new Error(t("media.jobs.invalidJson"));
       }
-      await requestJson("/api/media-generation/jobs", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sessionId: targetSession.sessionId, channelId: activeChannelId, templateId, params }),
-      });
+      if (target.deviceId === null) {
+        await requestJson("/api/media-generation/jobs", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ sessionId: target.sessionId, channelId: activeChannelId, templateId, params }),
+        });
+      } else {
+        await sendCommand({ kind: "create_job", targetDeviceId: target.deviceId, sessionId: target.sessionId, templateId, params });
+      }
       await fetchAll();
     } catch (err) {
       setError(err instanceof Error ? err.message : t("media.jobs.submitFailed"));
@@ -832,10 +937,13 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
     }
   }
 
-  async function cancel(job: Job) {
+  async function cancel(job: PoolRow) {
     setBusy(true);
+    setError(null);
     try {
-      await requestJson(`/api/media-generation/jobs/${encodeURIComponent(job.jobId)}/cancel`, { method: "POST" });
+      if (!job.own) await sendCommand({ kind: "cancel_job", targetDeviceId: job.deviceId, source: job.source, jobId: job.jobId });
+      else if (job.source === "gemini") await requestJson(`/api/gemini-media/jobs/${encodeURIComponent(job.jobId)}/cancel`, { method: "POST" });
+      else await requestJson(`/api/media-generation/jobs/${encodeURIComponent(job.jobId)}/cancel`, { method: "POST" });
       await fetchAll();
     } catch (err) {
       setError(err instanceof Error ? err.message : t("media.jobs.cancelFailed"));
@@ -845,10 +953,25 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
   }
 
   // A job is submitted for the active channel, to one of ITS running sessions (review round 16; slice 6: several may run).
+  // BL-188 stage 2: this computer's running sessions first, then the other computers' (the run is sent there).
   const runningHere = openSessions.filter((s) => s.status === "running" && s.channelId === activeChannelId);
-  const targetSession = runningHere.find((s) => s.sessionId === chosenSessionId) ?? runningHere[0] ?? null;
+  const targets: Array<{ key: string; sessionId: string; deviceId: string | null; hostName: string | null; label: string }> = [
+    ...runningHere.map((s) => ({ key: `own:${s.sessionId}`, sessionId: s.sessionId, deviceId: null, hostName: null, label: t("media.jobs.sessionOption", { pod: s.podId ?? s.sessionId, date: formatDisplayDateTime(s.createdAt) }) })),
+    ...(pool.peerSessions ?? []).map((s) => {
+      const name = s.hostName ?? t("media.pool.unnamedDevice");
+      return { key: `${s.deviceId}:${s.sessionId}`, sessionId: s.sessionId, deviceId: s.deviceId, hostName: name, label: t("media.pool.peerSessionOption", { name, gpu: s.gpuTypeId ?? "GPU", date: s.startedAt ? formatDisplayDateTime(s.startedAt) : "—" }) };
+    }),
+  ];
+  const target = targets.find((x) => x.key === chosenSessionId) ?? targets[0] ?? null;
   const runningElsewhere = openSessions.some((s) => s.status === "running" && s.channelId !== activeChannelId);
-  const canRun = Boolean(activeChannelId) && targetSession !== null && templates.length > 0;
+  const canRun = Boolean(activeChannelId) && target !== null && templates.length > 0;
+  const recentRuns = commands.filter((c) => c.kind === "create_job").slice(0, 5);
+
+  const severalDevices = pool.devices.length > 1;
+  // A computer chosen in the filter that no longer reports falls back to every computer.
+  const filter = pool.devices.some((d) => d.deviceId === deviceFilter) ? deviceFilter : ALL_DEVICES;
+  const shownJobs = filter === ALL_DEVICES ? pool.jobs : pool.jobs.filter((j) => j.deviceId === filter);
+  const staleDevices = pool.devices.filter((d) => d.stale);
 
   return (
     <Card
@@ -859,7 +982,7 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
         <p className="text-xs text-zinc-500">
           {!activeChannelId
             ? t("media.jobs.selectChannel")
-            : targetSession === null
+            : target === null
               ? runningElsewhere
                 ? t("media.jobs.runningElsewhere")
                 : t("media.jobs.startSessionFirst")
@@ -868,16 +991,17 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
       ) : (
         <div className="space-y-2">
           <div className="grid gap-2 sm:grid-cols-2">
-            {runningHere.length > 1 && (
+            {(targets.length > 1 || target?.deviceId) && (
               <label className="block text-xs text-zinc-400 sm:col-span-2">
                 {t("media.jobs.session")}
-                <select value={targetSession?.sessionId ?? ""} onChange={(e) => setChosenSessionId(e.target.value)} className={inputClass}>
-                  {runningHere.map((s) => (
-                    <option key={s.sessionId} value={s.sessionId}>
-                      {t("media.jobs.sessionOption", { pod: s.podId ?? s.sessionId, date: formatDisplayDateTime(s.createdAt) })}
+                <select value={target?.key ?? ""} onChange={(e) => setChosenSessionId(e.target.value)} className={inputClass}>
+                  {targets.map((x) => (
+                    <option key={x.key} value={x.key}>
+                      {x.label}
                     </option>
                   ))}
                 </select>
+                {target?.deviceId && <span className="mt-1 block text-zinc-500">{t("media.pool.runOnPeerNote", { name: target.hostName ?? t("media.pool.unnamedDevice") })}</span>}
               </label>
             )}
             <label className="block text-xs text-zinc-400">
@@ -902,14 +1026,48 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
           </button>
         </div>
       )}
+      {recentRuns.length > 0 && (
+        <div className="space-y-1 text-xs">
+          <p className="text-zinc-500">{t("media.pool.recentRuns")}</p>
+          {recentRuns.map((c) => (
+            <CommandLine key={c.commandId} command={c} />
+          ))}
+        </div>
+      )}
 
-      {shownJobs.length > 0 && (
+      {severalDevices && (
+        <div className="flex flex-wrap items-center gap-3 border-t border-zinc-800 pt-3">
+          <label className="flex items-center gap-2 text-xs text-zinc-400">
+            {t("media.pool.deviceFilter")}
+            <select value={filter} onChange={(e) => setDeviceFilter(e.target.value)} className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-100 focus:border-zinc-500 focus:outline-none">
+              <option value={ALL_DEVICES}>{t("media.pool.allDevices")}</option>
+              {pool.devices.map((d) => (
+                <option key={d.deviceId} value={d.deviceId}>
+                  {poolDeviceLabel(t, d)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <span className="text-xs text-zinc-500">{t("media.pool.delayNote")}</span>
+        </div>
+      )}
+      {staleDevices.map((d) => (
+        <p key={d.deviceId} className="text-xs text-amber-300">
+          {t("media.pool.staleDevice", { name: poolDeviceLabel(t, d), when: d.updatedAt ? formatDisplayDateTime(d.updatedAt) : "—" })}
+        </p>
+      ))}
+
+      {shownJobs.length === 0 ? (
+        activeChannelId ? <p className="text-xs text-zinc-500">{t("media.pool.empty")}</p> : null
+      ) : (
         <div className="overflow-x-auto">
-          <table className="min-w-[640px] w-full text-left text-xs text-zinc-400">
+          <table className="min-w-[760px] w-full text-left text-xs text-zinc-400">
             <thead>
               <tr className="text-zinc-500">
                 <th className="py-1 pr-3">{t("media.common.colWhen")}</th>
+                {severalDevices && <th className="py-1 pr-3">{t("media.pool.colDevice")}</th>}
                 <th className="py-1 pr-3">{t("media.common.colStatus")}</th>
+                <th className="py-1 pr-3">{t("media.pool.colWhat")}</th>
                 <th className="py-1 pr-3">{t("media.common.colBy")}</th>
                 <th className="py-1 pr-3">{t("media.jobs.colPlan")}</th>
                 <th className="py-1 pr-3">{t("media.jobs.colOutputs")}</th>
@@ -918,12 +1076,24 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
               </tr>
             </thead>
             <tbody>
-              {shownJobs.slice(0, 12).map((j) => (
-                <tr key={j.jobId} className="border-t border-zinc-800 align-top">
+              {shownJobs.map((j) => (
+                <tr key={`${j.source}:${j.jobId}`} className="border-t border-zinc-800 align-top">
                   <td className="py-1 pr-3 whitespace-nowrap">{formatDisplayDateTime(j.createdAt)}</td>
+                  {severalDevices && (
+                    <td className={`py-1 pr-3 whitespace-nowrap ${j.own ? "text-zinc-300" : "text-sky-300"}`}>
+                      {poolDeviceLabel(t, { hostName: j.hostName, own: j.own })}
+                    </td>
+                  )}
                   <td className="py-1 pr-3">
                     {mediaStatusLabel(t, j.status)}
-                    {j.progress && <JobProgress progress={j.progress} />}
+                    {j.liveProgress ? <JobProgress progress={j.liveProgress} /> : j.progress ? <JobProgress progress={fromSharedProgress(j.progress)} /> : null}
+                  </td>
+                  <td className="py-1 pr-3">
+                    <span className="mr-1 rounded bg-zinc-800 px-1 text-[10px] uppercase text-zinc-400">{t(j.source === "gemini" ? "media.pool.sourceGemini" : "media.pool.sourceRunpod")}</span>
+                    <span className="text-zinc-300">{j.label}</span>
+                    {j.costUsd !== null && (
+                      <span className="block text-zinc-500">{t(j.costIsEstimate ? "media.pool.costEstimate" : "media.pool.cost", { usd: j.costUsd.toFixed(2) })}</span>
+                    )}
                   </td>
                   <td className="py-1 pr-3">{j.createdBy}</td>
                   {/* BL-162 (AC-UX-11): which plan attempt the job is, instead of ids alone. */}
@@ -938,12 +1108,38 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
                       "—"
                     )}
                   </td>
-                  <td className="py-1 pr-3 font-mono" title={`${j.jobId}${j.outputs.length > 0 ? `\n${j.outputs.map((o) => o.localPath ?? o.filename).join("\n")}` : ""}`}>
-                    {j.outputs.length === 0 ? "—" : j.outputs.map((o) => (o.localPath ? (o.localPath.split(/[\\/]/).pop() ?? o.filename) : `${o.filename} (${o.note ?? t("media.jobs.outputPending")})`)).join(", ")}
+                  <td className="py-1 pr-3 font-mono" title={`${j.jobId}${j.outputs.length > 0 ? `\n${j.outputs.map((o) => o.path).join("\n")}` : ""}`}>
+                    {j.outputs.length === 0 && j.pendingOutputs === 0 ? (
+                      "—"
+                    ) : (
+                      <>
+                        {j.outputs.map((o) => (
+                          <span key={o.path} className="block">
+                            {o.name}
+                            {!o.available && <span className="font-sans text-amber-300"> ({t("media.pool.fileNotHereYet", { name: poolDeviceLabel(t, { hostName: j.hostName, own: false }) })})</span>}
+                          </span>
+                        ))}
+                        {j.pendingOutputs > 0 && <span className="block font-sans text-zinc-500">{t("media.pool.outputsPending", { count: j.pendingOutputs })}</span>}
+                      </>
+                    )}
                   </td>
-                  <td className="py-1 pr-3">{j.error ?? ""}</td>
+                  <td className="py-1 pr-3">
+                    {(() => {
+                      const sent = commands.find((c) => c.kind === "cancel_job" && c.jobId === j.jobId && c.source === j.source);
+                      return sent ? <CommandLine command={sent} /> : null;
+                    })()}
+                    {j.source === "gemini" && (j.status === "submitting" || j.status === "running") && <span className="block text-zinc-500">{t("media.pool.geminiTooLate")}</span>}
+                    {j.own ? (j.error ?? "") : j.status === "failed" ? (
+                      <span>
+                        {t("media.pool.failedElsewhere", { name: poolDeviceLabel(t, { hostName: j.hostName, own: false }) })}
+                        {j.errorCode && <span className="block font-mono text-zinc-500">{j.errorCode}</span>}
+                      </span>
+                    ) : (
+                      ""
+                    )}
+                  </td>
                   <td className="py-1">
-                    {["queued", "submitted", "generating"].includes(j.status) && (
+                    {poolJobCancellable(j) && !commands.some((c) => c.kind === "cancel_job" && c.jobId === j.jobId && c.source === j.source && commandPending(c)) && (
                       <button type="button" onClick={() => cancel(j)} disabled={busy} className={secondaryButton}>
                         {t("common.cancel")}
                       </button>
@@ -953,6 +1149,7 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
               ))}
             </tbody>
           </table>
+          {pool.jobs.length >= POOL_LIST_LIMIT && <p className="mt-1 text-xs text-zinc-500">{t("media.pool.newestOnly", { count: POOL_LIST_LIMIT })}</p>}
         </div>
       )}
 
@@ -960,6 +1157,9 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
     </Card>
   );
 }
+
+/** BL-188: how many of the newest jobs Media's list shows (every computer's, after the channel and kind filter). */
+const POOL_LIST_LIMIT = 50;
 
 /**
  * The exchange janitor (Phase 14 slice 3), run by hand here (dry run first) and daily by the server. BL-162 (AC-UX-11): it is
@@ -1472,7 +1672,8 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
 
 // BL-138 (owner, Telegram 2026-10-06; ADR 0028): the RunPod sessions of the owner's other devices, as each last reported them
 // through the sync folder (about a minute behind), checked against RunPod's live pod list; and live session pods no device
-// reports. Stop works from here too (owner, msg 1739): it terminates the pod through RunPod; approve/reject stay on the owner device.
+// reports. Stop works from here too (owner, msg 1739): it terminates the pod through RunPod. BL-188 stage 2 (owner msg 2806):
+// approve / reject a pending request works from here too -- sent to the owning computer, which applies its own limits.
 type OtherDevicesResponse = {
   devices: Array<{
     deviceId: string;
@@ -1550,6 +1751,29 @@ export function OtherDevicesCard({ ready, onActiveElsewhere }: { ready: boolean;
   const [stopTarget, setStopTarget] = useState<{ deviceId: string; hostname: string | null; sessionId: string; channelId: string } | null>(null);
   const [stopping, setStopping] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [commands, setCommands] = useState<CommandView[]>([]);
+  const [decideTarget, setDecideTarget] = useState<{ kind: "approve_session" | "reject_session"; deviceId: string; hostname: string | null; sessionId: string; channelId: string } | null>(null);
+
+  async function decide() {
+    const target = decideTarget;
+    if (!target) return;
+    setDecideTarget(null);
+    setStopping(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await requestJson("/api/media-jobs/commands", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ kind: target.kind, targetDeviceId: target.deviceId, sessionId: target.sessionId }),
+      });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("media.pool.commandFailed"));
+    } finally {
+      setStopping(false);
+    }
+  }
 
   async function stop() {
     const target = stopTarget;
@@ -1581,15 +1805,22 @@ export function OtherDevicesCard({ ready, onActiveElsewhere }: { ready: boolean;
 
   const load = useCallback(
     () =>
-      requestJson<OtherDevicesResponse>("/api/media-generation/sessions/devices").then(
-        (data) => {
-          setView(data);
-          setError(null);
-          setNowMs(Date.now());
-          onActiveElsewhere?.(countActiveElsewhere(data));
-        },
-        (err: unknown) => setError(err instanceof Error ? err.message : t("media.devices.loadFailed"))
-      ),
+      Promise.all([
+        requestJson<OtherDevicesResponse>("/api/media-generation/sessions/devices").then(
+          (data) => {
+            setView(data);
+            setError(null);
+            setNowMs(Date.now());
+            onActiveElsewhere?.(countActiveElsewhere(data));
+          },
+          (err: unknown) => setError(err instanceof Error ? err.message : t("media.devices.loadFailed"))
+        ),
+        // BL-188 stage 2: the approve / reject actions sent from here, with the other computers' answers.
+        requestJson<{ commands: CommandView[] }>("/api/media-jobs/commands").then(
+          (data) => setCommands(data.commands.filter((c) => c.kind === "approve_session" || c.kind === "reject_session")),
+          () => undefined
+        ),
+      ]).then(() => undefined),
     [onActiveElsewhere, t]
   );
 
@@ -1647,6 +1878,16 @@ export function OtherDevicesCard({ ready, onActiveElsewhere }: { ready: boolean;
                       <td className="py-1 pr-3">{s.startedAt ? formatDisplayDateTime(s.startedAt) : "—"}</td>
                       <td className="py-1 pr-3">{s.usdCharged !== null ? t("unit.usd", { value: usd(s.usdCharged) }) : "—"}</td>
                       <td className="py-1 text-right">
+                        {s.status === "pending" && !commands.some((c) => c.sessionId === s.sessionId && c.targetDeviceId === d.deviceId && commandPending(c)) && (
+                          <span className="inline-flex gap-2">
+                            <button type="button" onClick={() => setDecideTarget({ kind: "approve_session", deviceId: d.deviceId, hostname: d.hostname, sessionId: s.sessionId, channelId: s.channelId })} disabled={stopping} className={primaryButton}>
+                              {t("media.sessions.approve")}
+                            </button>
+                            <button type="button" onClick={() => setDecideTarget({ kind: "reject_session", deviceId: d.deviceId, hostname: d.hostname, sessionId: s.sessionId, channelId: s.channelId })} disabled={stopping} className={secondaryButton}>
+                              {t("media.sessions.reject")}
+                            </button>
+                          </span>
+                        )}
                         {s.live === "pod_running" && d.sameAccount && (
                           <button
                             type="button"
@@ -1659,6 +1900,16 @@ export function OtherDevicesCard({ ready, onActiveElsewhere }: { ready: boolean;
                         )}
                       </td>
                     </tr>
+                    {(() => {
+                      const sent = commands.find((c) => c.sessionId === s.sessionId && c.targetDeviceId === d.deviceId);
+                      return sent ? (
+                        <tr>
+                          <td colSpan={7} className="pb-1 pl-3 text-xs">
+                            <CommandLine command={sent} />
+                          </td>
+                        </tr>
+                      ) : null;
+                    })()}
                     {s.jobs && <PeerSessionJobsRow jobs={s.jobs} nowMs={nowMs} />}
                     </Fragment>
                   ))}
@@ -1677,6 +1928,16 @@ export function OtherDevicesCard({ ready, onActiveElsewhere }: { ready: boolean;
           confirmVariant="danger"
           onCancel={() => setStopTarget(null)}
           onConfirm={stop}
+        />
+      )}
+      {decideTarget && (
+        <ConfirmDialog
+          title={t(decideTarget.kind === "approve_session" ? "media.devices.approveTitle" : "media.devices.rejectTitle", { device: decideTarget.hostname ?? t("media.devices.thatDevice") })}
+          description={t(decideTarget.kind === "approve_session" ? "media.devices.approveDescription" : "media.devices.rejectDescription", { channel: nameOf(decideTarget.channelId), device: decideTarget.hostname ?? t("media.devices.thatDevice") })}
+          confirmLabel={t(decideTarget.kind === "approve_session" ? "media.sessions.approve" : "media.sessions.reject")}
+          confirmVariant={decideTarget.kind === "approve_session" ? "default" : "danger"}
+          onCancel={() => setDecideTarget(null)}
+          onConfirm={decide}
         />
       )}
       {view?.unknownPods && view.unknownPods.length > 0 && (

@@ -35,6 +35,7 @@ import { PlansPanel } from "./generation-plans-panel";
 import { MEDIA_TABS, SERVERS_TABS, type MediaTab, type ServersTab } from "./section-tabs";
 import type { PlanMediaKind } from "@/lib/generation-plans/contracts";
 import { StoryboardsPanel, StoryboardVideoLinks } from "./storyboards-panel";
+import { GeminiCreateCard } from "./gemini-media-create";
 export { MEDIA_TABS, SERVERS_TABS };
 
 /** The balance is a RunPod call: on open, on demand, and once a minute while Production is open. */
@@ -254,6 +255,7 @@ export function MediaPanel({
       <div className={kindTab ? "space-y-6" : "hidden"}>
         {tab === "video" ? <StoryboardVideoLinks channelId={activeChannelId} active={!paused} onOpen={(id) => onOpenStoryboard?.(id, "video")} /> : null}
         <PlansPanel kind={kind} active={kindTab && !paused} onReview={onReviewPlan} onWaitingByKind={setPlansWaiting} />
+        {kind === "image" || kind === "video" ? <GeminiCreateCard key={kind} activeChannelId={activeChannelId} kind={kind} /> : null}
         <JobsCard activeChannelId={activeChannelId} kind={kind} />
       </div>
     </div>

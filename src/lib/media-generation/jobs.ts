@@ -6,6 +6,7 @@ import {
   EXCHANGE_INPUT_PREFIX,
   EXCHANGE_PREFIX,
   isInputParameterType,
+  jobMediaKind,
   MEDIA_INPUT_DEFAULT_ACCEPT,
   MEDIA_INPUT_MAX_BYTES,
   MEDIA_JOB_MANIFEST_FILE,
@@ -1744,6 +1745,31 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     async listJobs(input: unknown = {}): Promise<MediaJob[]> {
       const filter = parseWithSchema(listJobsInputSchema, input, "list jobs");
       return Promise.all((await deps.store.jobs.list(filter)).map((row) => withInputs(toPublicJob(row))));
+    },
+
+    /**
+     * BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.1): this computer's jobs for the shared list -- every unfinished job plus the newest
+     * `limit` (all channels), each with its template's name and media kind (by the template, else by its outputs' files) and its
+     * live progress. Newest first; the shared list cuts it to its own window.
+     */
+    async listJobsForShare(limit: number): Promise<Array<MediaJob & { mediaKind: MediaKind | null; templateName: string | null }>> {
+      const [recent, open, templateRows] = await Promise.all([deps.store.jobs.list({ limit }), deps.store.jobs.listNonTerminal(), deps.store.templates.list()]);
+      const templates = new Map(templateRows.map((row) => [row.id, toPublicTemplate(row)]));
+      const byId = new Map<string, StoredJobRow>();
+      for (const row of [...open, ...recent]) byId.set(row.id, row);
+      return [...byId.values()]
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+        .map((row) => {
+          const job = toPublicJob(row);
+          const progress = deps.progress?.get(job.jobId) ?? null;
+          const template = templates.get(job.templateId);
+          return {
+            ...job,
+            ...(progress ? { progress } : {}),
+            mediaKind: jobMediaKind(template?.mediaKind, job.outputs.map((o) => o.filename)),
+            templateName: template ? template.name : null,
+          };
+        });
     },
 
     /** BL-184 stage 3 (B5): the channel's jobs that render a storyboard's segments (its takes), newest first. */

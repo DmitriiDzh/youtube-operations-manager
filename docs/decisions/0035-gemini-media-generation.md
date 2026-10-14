@@ -42,3 +42,19 @@ Operator should be able to use it over MCP, and the owner must keep control of t
 - Prices are code constants: a Google price change needs a code change; costs are estimates, not Google's bill.
 - The Veo models are previews; Gemini Omni Flash, the Batch API, Veo extension and plan integration are later items.
 - Countries: the Gemini API does not serve Russia or Belarus; the account and billing must be in a supported country.
+
+## Amendment (2026-10-14, BL-188): Gemini jobs visible on every computer
+
+Owner, Telegram 2026-10-14, msgs 2801/2803/2806. A Gemini job still runs only on the computer that created it (its key and its
+limits). Its status, model, cost, storyboard link, error code and output paths are now published in the `media-jobs` report, so
+every computer lists it in Media. The prompt, the inputs and Google's error text never leave the computer.
+
+**Stage 2 (2026-10-14):** the owner can cancel a Gemini job that has not been sent to Google yet (`queued` → `failed`,
+`cancelled_by_owner`, nothing charged), on this computer or from another one through a relayed command. A job already sent
+cannot be withdrawn here (`gemini_cancel_too_late`); whether Veo's `operations.cancel` works is not verified, so it is not used.
+
+**Stage 4 (2026-10-14, owner msg 2806 Q3):** the owner can launch a Gemini image or video from Media (Images / Video tabs), not
+only the Factory Operator. On this computer it is the same `createJob` with the same switch, key, rules and limits, recorded as
+the owner's. On another computer it is a relayed `create_job` command (report v3) that the executing computer runs with its own
+key and limits; the request id comes from the command, so a replay never makes a second paid job, and a run first seen more
+than 15 minutes later is refused (`command_expired`).

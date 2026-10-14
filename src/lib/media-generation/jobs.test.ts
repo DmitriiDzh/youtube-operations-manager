@@ -2111,3 +2111,26 @@ test("BL-184: a job's kind -- its template's, else its outputs' (video before au
   assert.equal(jobMediaKind(null, []), null);
   assert.equal(jobMediaKind(null, ["notes.txt"]), null);
 });
+
+// BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.1): this computer's jobs for the shared list -- the newest `limit` plus every unfinished one,
+// each with its template's name and kind (by the template, else by its outputs' files).
+test("BL-188: listJobsForShare adds the template's name and kind and keeps unfinished jobs beyond the limit", async () => {
+  const f = fixture();
+  const template = await importDefault(f.services);
+  const store = f.mem.store;
+  const at = (minute: number) => new Date(Date.UTC(2026, 9, 5, 12, minute));
+  const base = { sessionId: "s1", channelId: "UC1", templateId: template.templateId, templateVersion: template.version, paramsJson: "{}", createdBy: "operator" as const, promptId: null, outputsJson: null, assetIdsJson: "[]", error: null, submittedAt: null, finishedAt: null };
+  await store.jobs.insert({ ...base, id: "old-queued", status: "queued", createdAt: at(1) } as Parameters<typeof store.jobs.insert>[0]);
+  await store.jobs.insert({ ...base, id: "new-done", status: "done", createdAt: at(30) } as Parameters<typeof store.jobs.insert>[0]);
+  await store.jobs.insert({ ...base, id: "gone-template", templateId: "removed", status: "done", createdAt: at(20), outputsJson: JSON.stringify([{ nodeId: "9", kind: "gifs", filename: "clip.mp4", subfolder: "", remoteKey: "k", localPath: null, bytes: null, sha256: null, remoteDeleted: false, assetId: null }]) } as Parameters<typeof store.jobs.insert>[0]);
+  // The store returns the newest first and honours the limit, as db.ts does.
+  const list = store.jobs.list;
+  store.jobs.list = async (filter) => (await list(filter)).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()).slice(0, filter.limit ?? 50);
+  const jobs = await f.services.listJobsForShare(2);
+  assert.deepEqual(jobs.map((j) => j.jobId), ["new-done", "gone-template", "old-queued"]);
+  assert.equal(jobs[0].templateName, template.name);
+  assert.equal(jobs[0].mediaKind, template.mediaKind);
+  // A removed template: no name, the kind from its output's file.
+  assert.equal(jobs[1].templateName, null);
+  assert.equal(jobs[1].mediaKind, "video");
+});

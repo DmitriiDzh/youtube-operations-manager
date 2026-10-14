@@ -71,6 +71,8 @@ export function resolveAppPaths(input: ResolveAppPathsInput): AppPaths {
     liveStreamsSyncFallbackDir: path.join(appDataDir, "live-streams-sync-local"),
     publishingUploadsShareDir: path.join(appDataDir, "publishing-uploads-share"),
     publishingUploadsSyncFallbackDir: path.join(appDataDir, "publishing-uploads-sync-local"),
+    mediaJobsShareDir: path.join(appDataDir, "media-jobs-share"),
+    mediaJobsSyncFallbackDir: path.join(appDataDir, "media-jobs-sync-local"),
     storyboardsDocDir: path.join(appDataDir, "storyboards-doc"),
     storyboardsSyncFallbackDir: path.join(appDataDir, "storyboards-sync-local"),
     storyboardsDiscardedBackupsDir: path.join(appDataDir, "storyboards-discarded-backups"),

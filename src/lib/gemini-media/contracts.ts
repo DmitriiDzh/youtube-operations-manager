@@ -149,7 +149,9 @@ export type GeminiJobErrorCode =
   | "gemini_input_changed"
   | "gemini_timeout"
   | "gemini_output_failed"
-  | "media_gateway_disabled";
+  | "media_gateway_disabled"
+  /** BL-188 stage 2: the owner cancelled the job before it was sent to Google (nothing was charged). */
+  | "cancelled_by_owner";
 
 export type GeminiInputRole = "image" | "first_frame" | "last_frame" | "reference";
 
