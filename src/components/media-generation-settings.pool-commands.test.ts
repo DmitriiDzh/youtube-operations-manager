@@ -41,7 +41,9 @@ test("each state of a sent action reads as the plan's status line (ru)", () => {
   assert.equal(commandStatusText(ru, view({ state: "refused", code: "media_limit_exceeded", kind: "create_job" })), "Запуск: отказано на Mac — превышен лимит того компьютера");
   // A code with no wording of its own is shown as it came, never dropped.
   assert.equal(commandStatusText(ru, view({ state: "refused", code: "media_template_not_found" })), "Отмена: отказано на Mac — код media_template_not_found");
-  assert.match(commandStatusText(ru, view({ state: "expired", kind: "create_job" })), /^Запуск: Mac не принял его за 15 минут/);
+  assert.match(commandStatusText(ru, view({ state: "expired", kind: "create_job" })), /^Запуск: Mac не принял команду за 15 минут/);
+  // Independent review: an approve expires the same way (it starts a pod), and its line names the approve, not a run.
+  assert.match(commandStatusText(ru, view({ state: "expired", kind: "approve_session" })), /^Одобрение сессии: Mac не принял команду за 15 минут/);
   assert.match(commandStatusText(ru, view({ targetHostName: null })), /на Без имени/);
 });
 

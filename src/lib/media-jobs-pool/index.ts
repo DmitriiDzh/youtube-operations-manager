@@ -112,7 +112,7 @@ function productionExecutors(log: (line: string) => void): CommandExecutors {
       if (source === "runpod") {
         const core = createMediaGenerationCore();
         const job = await core.getJob({ jobId });
-        if (channelId !== null && job.channelId !== channelId) throw new DomainError({ code: "CHANNEL_NOT_AUTHORIZED", message: "The job belongs to another channel.", details: { jobId } });
+        if (job.channelId !== channelId) throw new DomainError({ code: "CHANNEL_NOT_AUTHORIZED", message: "The job belongs to another channel.", details: { jobId } });
         if (TERMINAL_RUNPOD.has(job.status)) return "already_finished";
         try {
           await core.cancelJob({ jobId });
@@ -129,7 +129,7 @@ function productionExecutors(log: (line: string) => void): CommandExecutors {
         return found.job;
       };
       const job = await read();
-      if (channelId !== null && job.channelId !== channelId) throw new DomainError({ code: "CHANNEL_NOT_AUTHORIZED", message: "The job belongs to another channel.", details: { jobId } });
+      if (job.channelId !== channelId) throw new DomainError({ code: "CHANNEL_NOT_AUTHORIZED", message: "The job belongs to another channel.", details: { jobId } });
       if (TERMINAL_GEMINI.has(job.status)) return "already_finished";
       try {
         await gemini.cancelJob(jobId);

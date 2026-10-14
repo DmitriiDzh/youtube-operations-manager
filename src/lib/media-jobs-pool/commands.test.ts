@@ -507,3 +507,75 @@ test("stage 4 issuing refuses: no active channel, an unknown computer, this comp
   await expectCode(issue({ kind: "cancel_job", targetDeviceId: A, source: "runpod", jobId: "mj_1", gemini: geminiRequest }), "validation_failed");
   await expectCode(issue({ kind: "create_job", targetDeviceId: A, sessionId: "ms_1", templateId: "tpl_music", gemini: geminiRequest }), "validation_failed");
 });
+
+// ---------------------------------------------------------------------------------------------------------------- independent review
+// SHARED_MEDIA_JOBS_PLAN.md §2.3/§2.4: "a stale run must not start spending later, for example after the device wakes up", and
+// "no command can ... approve spend by itself" beyond what the owner asked for then. An approve starts a pod (spend) exactly like
+// a run, and a pending request has no expiry of its own, so the 15-minute rule covers it too. A reject or a cancel stops spend and
+// keeps no such limit.
+
+test("review: an approve first seen more than 15 minutes after it was issued is command_expired and never reaches the approve", async () => {
+  const late = memoryStore();
+  const lateExec = fakeExecutors();
+  const approve = (commandId: string) => command({ commandId, kind: "approve_session", sessionId: "ms_pending", channelId: "UC1" });
+  const out = await applyIncomingCommands({ ownDeviceId: A, peers: [report(B, [approve("cmd-approve-late")])], store: late.store, executors: lateExec.executors, now: clockAt(T0 + 16 * 60_000) });
+  assert.deepEqual(out, [{ commandId: "cmd-approve-late", kind: "approve_session", status: "refused", code: "command_expired" }]);
+  assert.deepEqual(lateExec.calls, [], "no pod started");
+
+  const onTime = memoryStore();
+  const onTimeExec = fakeExecutors();
+  const ok = await applyIncomingCommands({ ownDeviceId: A, peers: [report(B, [approve("cmd-approve-ok")])], store: onTime.store, executors: onTimeExec.executors, now: clockAt(T0 + 14 * 60_000) });
+  assert.equal(ok[0].status, "applied");
+  assert.deepEqual(onTimeExec.calls, [{ action: "approveSession", args: { sessionId: "ms_pending" } }]);
+
+  // A reject stops spend: it is applied however late it arrives.
+  const reject = memoryStore();
+  const rejectExec = fakeExecutors();
+  const rejected = await applyIncomingCommands({
+    ownDeviceId: A,
+    peers: [report(B, [command({ commandId: "cmd-reject-late", kind: "reject_session", sessionId: "ms_pending", channelId: "UC1" })])],
+    store: reject.store,
+    executors: rejectExec.executors,
+    now: clockAt(T0 + 2 * 60 * 60_000),
+  });
+  assert.equal(rejected[0].status, "applied");
+});
+
+test("review: the issuer's status line shows an unanswered approve as expired after 15 minutes", () => {
+  const views = commandViews({
+    ownDeviceId: B,
+    outgoing: [command({ commandId: "cmd-v-approve", kind: "approve_session", sessionId: "ms_pending", channelId: "UC1" }), command({ commandId: "cmd-v-reject", kind: "reject_session", sessionId: "ms_p2", channelId: "UC1" })],
+    peers: [report(A, [], { updatedAt: iso(T0 + 19 * 60_000) })],
+    now: new Date(T0 + 20 * 60_000),
+  });
+  assert.equal(views.find((v) => v.commandId === "cmd-v-approve")!.state, "expired");
+  assert.equal(views.find((v) => v.commandId === "cmd-v-reject")!.state, "waiting");
+});
+
+test("review: a run or approve dated more than 5 minutes ahead of the executor's clock is refused (it would dodge the 15-minute rule)", async () => {
+  const { store } = memoryStore();
+  const { executors, calls } = fakeExecutors();
+  const ahead = T0 + 60 * 60_000;
+  const peers = [
+    report(B, [create("cmd-create-future", { issuedAt: iso(ahead) }), command({ commandId: "cmd-approve-future", kind: "approve_session", sessionId: "ms_pending", channelId: "UC1", issuedAt: iso(ahead) })], {
+      updatedAt: iso(T0),
+    }),
+  ];
+  const out = await applyIncomingCommands({ ownDeviceId: A, peers, store, executors, now: clockAt(T0) });
+  assert.deepEqual(
+    out.map((o) => [o.commandId, o.status, o.code]).sort(),
+    [
+      ["cmd-approve-future", "refused", "command_expired"],
+      ["cmd-create-future", "refused", "command_expired"],
+    ]
+  );
+  assert.deepEqual(calls, []);
+});
+
+test("review: a cancel naming no channel is refused and never reaches the executor's cancel (the channel check cannot be skipped)", async () => {
+  const { store } = memoryStore();
+  const { executors, calls } = fakeExecutors();
+  const out = await applyIncomingCommands({ ownDeviceId: A, peers: [report(B, [cancel("cmd-cancel-nochannel", { channelId: null })])], store, executors, now: clockAt(T0 + 1000) });
+  assert.deepEqual(out, [{ commandId: "cmd-cancel-nochannel", kind: "cancel_job", status: "refused", code: "CHANNEL_NOT_AUTHORIZED" }]);
+  assert.deepEqual(calls, []);
+});

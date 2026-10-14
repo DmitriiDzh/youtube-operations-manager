@@ -813,7 +813,7 @@ export function commandStatusText(t: Translate, command: CommandView): string {
       return t("media.pool.commandRefused", { action, name, reason });
     }
     case "expired":
-      return t("media.pool.commandExpired", { name });
+      return t("media.pool.commandExpired", { action, name });
   }
 }
 

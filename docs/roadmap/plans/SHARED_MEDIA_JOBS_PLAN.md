@@ -116,7 +116,9 @@
 - **Expiry:**
   - a `create_job` older than **15 min** when the executor first sees it is refused (`command_expired`): a stale "run" must not
     start spending later, for example after the device wakes up;
-  - a `cancel_job` never expires while the job is unfinished.
+  - an `approve_session` expires the same way (independent review: an approve starts a pod, and a pending request has no
+    expiry of its own); a `create_job` or `approve_session` dated more than 5 min ahead of the executor's clock is refused too;
+  - a `cancel_job` never expires while the job is unfinished; it must name the job's channel, or it is refused.
 - **Honest latency in the UI:** «Отправлено на Mac 14:05 · ждёт подтверждения» → «Выполнено на Mac 14:06» or «Отказано: <reason>».
   If the executor's report is older than 5 min: «Mac не на связи с 13:40 — команда выполнится, когда он появится» (a create
   expires as above).

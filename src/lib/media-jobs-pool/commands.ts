@@ -55,7 +55,7 @@ export type CommandStore = {
 /** What a relayed action does on the executing computer -- each one the same service call a local click makes. */
 export type CommandExecutors = {
   /** Resolves `already_finished` when the job had ended (nothing to cancel); throws a DomainError when refused. */
-  cancelJob(input: { source: "runpod" | "gemini"; jobId: string; channelId: string | null }): Promise<"cancelled" | "already_finished">;
+  cancelJob(input: { source: "runpod" | "gemini"; jobId: string; channelId: string }): Promise<"cancelled" | "already_finished">;
   createJob(input: { sessionId: string; channelId: string; templateId: string; params: Record<string, string | number | boolean> }): Promise<{ jobId: string }>;
   /**
    * Stage 4: the owner's Gemini job, through the executor's own Gemini create (switch, key, model rules, inputs, storyboard
@@ -85,12 +85,23 @@ function targetOf(command: SharedJobCommand): string {
   });
 }
 
+/**
+ * The commands that start spending: a run (`create_job`) and an approve (`approve_session` starts a pod). Each is refused when
+ * first seen more than 15 minutes after it was issued (independent review: the plan's §2.3 reason -- "a stale run must not start
+ * spending later, e.g. after the device wakes up" -- holds for an approve as much as for a run; a pending request never expires on
+ * its own), and when dated more than 5 minutes ahead of this computer's clock (such a date would dodge the 15-minute rule).
+ */
+const SPENDING_KINDS: ReadonlySet<MediaJobCommandKind> = new Set(["create_job", "approve_session"]);
+/** The same tolerance the per-device report allows a peer's `updatedAt`. */
+const COMMAND_FUTURE_SKEW_MS = 5 * 60_000;
+
 export type ApplyOutcome = { commandId: string; kind: MediaJobCommandKind; status: "applied" | "refused" | "skipped"; code: string | null };
 
 /**
  * Applies the commands other computers sent to this one, oldest first: each is taken in the ledger BEFORE anything is done, so a
  * command is applied at most once (a replay, the same command in two reports, or a restart never repeats it). A `create_job`
- * first seen more than 15 minutes after it was issued is refused (`command_expired`): a stale "run" never starts spending.
+ * or `approve_session` first seen more than 15 minutes after it was issued is refused (`command_expired`): a stale "run" or
+ * approve never starts spending.
  */
 export async function applyIncomingCommands(input: {
   ownDeviceId: string;
@@ -128,7 +139,7 @@ export async function applyIncomingCommands(input: {
     }
     const age = receivedAt.getTime() - Date.parse(command.issuedAt);
     let result: { status: "applied" | "refused"; code: string | null; jobId: string | null };
-    if (age > MEDIA_JOB_COMMANDS_KEEP_MS || (command.kind === "create_job" && age > MEDIA_JOB_CREATE_COMMAND_MAX_AGE_MS)) {
+    if (age > MEDIA_JOB_COMMANDS_KEEP_MS || (SPENDING_KINDS.has(command.kind) && (age > MEDIA_JOB_CREATE_COMMAND_MAX_AGE_MS || age < -COMMAND_FUTURE_SKEW_MS))) {
       result = { status: "refused", code: "command_expired", jobId: null };
     } else {
       try {
@@ -146,6 +157,8 @@ export async function applyIncomingCommands(input: {
 async function execute(command: SharedJobCommand, executors: CommandExecutors): Promise<{ status: "applied"; code: string | null; jobId: string | null }> {
   switch (command.kind) {
     case "cancel_job": {
+      // The executor checks the job is of this channel; a cancel naming no channel is refused, never applied unchecked.
+      if (command.channelId === null) throw new DomainError({ code: "CHANNEL_NOT_AUTHORIZED", message: "A cancel must name the job's channel.", details: { jobId: command.jobId } });
       const done = await executors.cancelJob({ source: command.source!, jobId: command.jobId!, channelId: command.channelId });
       return { status: "applied", code: done === "already_finished" ? "already_finished" : null, jobId: command.jobId };
     }
@@ -222,8 +235,8 @@ export type CommandView = {
 };
 
 /**
- * Matches this computer's outgoing commands with the results in the target computers' reports. A `create_job` with no answer
- * after 15 minutes is shown as expired: the target refuses it when it sees it (it never starts late).
+ * Matches this computer's outgoing commands with the results in the target computers' reports. A `create_job` or
+ * `approve_session` with no answer after 15 minutes is shown as expired: the target refuses it when it sees it (it never starts late).
  */
 export function commandViews(input: { ownDeviceId: string; outgoing: readonly SharedJobCommand[]; peers: readonly MediaJobsReport[]; now: Date }): CommandView[] {
   const reports = new Map(input.peers.filter((r) => r.deviceId !== input.ownDeviceId).map((r) => [r.deviceId, r]));
@@ -231,7 +244,7 @@ export function commandViews(input: { ownDeviceId: string; outgoing: readonly Sh
     const target = reports.get(command.targetDeviceId) ?? null;
     const result = target?.commandResults?.find((r) => r.commandId === command.commandId && r.issuerDeviceId === input.ownDeviceId) ?? null;
     const waitedMs = input.now.getTime() - Date.parse(command.issuedAt);
-    const state: CommandState = result ? result.status : command.kind === "create_job" && waitedMs > MEDIA_JOB_CREATE_COMMAND_MAX_AGE_MS ? "expired" : "waiting";
+    const state: CommandState = result ? result.status : SPENDING_KINDS.has(command.kind) && waitedMs > MEDIA_JOB_CREATE_COMMAND_MAX_AGE_MS ? "expired" : "waiting";
     return {
       commandId: command.commandId,
       kind: command.kind,

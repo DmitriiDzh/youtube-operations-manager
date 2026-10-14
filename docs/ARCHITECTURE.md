@@ -3116,8 +3116,9 @@ nothing while a node works before its first step, so such a stretch shows only t
     an import/migration holds the lock or in recovery mode): commands addressed to this computer, oldest first; each is taken in
     the ledger `media_job_peer_commands` (`applying`) before anything happens, so a replay, a duplicate in two reports or a
     restart never applies it twice (a row left `applying` is reported as `command_interrupted` after 30 minutes, never retried;
-    the ledger is kept 30 days, longer than any command stays in a report). A `create_job` first seen more than 15 minutes after
-    it was issued is `command_expired`. Each command runs the service a local click runs: `media-generation` `cancelJob` /
+    the ledger is kept 30 days, longer than any command stays in a report). A `create_job` or `approve_session` (both start spending)
+    first seen more than 15 minutes after it was issued, or dated more than 5 minutes ahead, is `command_expired`; a
+    `cancel_job` naming no channel is refused (`CHANNEL_NOT_AUTHORIZED`). Each command runs the service a local click runs: `media-generation` `cancelJob` /
     `createJob` (all its checks and limits, the storyboard gate) / `approveSession` (every device limit) / `rejectSession`,
     `gemini-media` `cancelJob`; a job of another channel than the command names is refused. The answer (`commandResults`, ≤ 1000)
     is a status and a code only, never an error text.
