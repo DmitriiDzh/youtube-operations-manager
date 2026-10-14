@@ -67,18 +67,21 @@ export const DEFAULT_PUBLISHING_SETTINGS: PublishingSettings = {
 };
 
 /**
- * The tags an upload sends: the package's, then the channel's own that are not already there (case-insensitive). YouTube counts the
- * whole list against its 500-character limit (`tagsLength`); the approval refuses a package whose list would go over.
+ * The tags an upload sends (owner msg 2817, FO-MSG-0017 option «б», replacing msg 2753's "added after the package's"): a package
+ * with its own tags sends only those; a package with no tags sends the channel's common tags. YouTube counts the list against its
+ * 500-character limit (`tagsLength`); the approval refuses a package whose list would go over.
  */
 export function uploadTags(packageTags: readonly string[], channelTags: readonly string[]): string[] {
-  const seen = new Set(packageTags.map((t) => t.toLowerCase()));
-  const out = [...packageTags];
-  for (const tag of channelTags) {
-    if (seen.has(tag.toLowerCase())) continue;
-    seen.add(tag.toLowerCase());
-    out.push(tag);
-  }
-  return out;
+  return packageTags.length > 0 ? [...packageTags] : [...channelTags];
+}
+
+/**
+ * FO-MSG-0017 (owner msgs 2813/2814): where an upload's tags come from, for the approval screen's row -- the list `uploadTags`
+ * sends, how many of them are the package's and how many the channel's (one of the two, owner msg 2817), and YouTube's character count of the whole list.
+ */
+export function uploadTagsSummary(packageTags: readonly string[], channelTags: readonly string[]): { tags: string[]; fromPackage: number; fromChannel: number; characters: number } {
+  const tags = uploadTags(packageTags, channelTags);
+  return { tags, fromPackage: packageTags.length, fromChannel: tags.length - packageTags.length, characters: tagsLength(tags) };
 }
 
 const PLAYLIST_ID_PATTERN = /^[A-Za-z0-9_-]{2,64}$/;

@@ -80,6 +80,13 @@ test("description: limited in BYTES -- 5000 ASCII bytes pass, 2501 Cyrillic lett
   assert.deepEqual(codes(pkg({ description: "a > b" })), ["description_angle_brackets"]);
 });
 
+// FO-MSG-0017 §2: a package's tags get the same checks as the channel's -- YouTube does not accept < or > in a tag.
+test("tags: a tag with < or > is a problem; ordinary tags are not", () => {
+  assert.deepEqual(codes(pkg({ tags: ["jazz", "<b>bold</b>"] })), ["tags_angle_brackets"]);
+  assert.deepEqual(codes(pkg({ tags: ["a > b"] })), ["tags_angle_brackets"]);
+  assert.deepEqual(codes(pkg({ tags: ["cuban jazz", "piano"] })), []);
+});
+
 test("tags as YouTube counts them: commas count, and a tag with a space counts its two quotes", () => {
   // "cuban jazz" = 10 + 2 quotes, "jazz" = 4, one comma: 17.
   assert.equal(tagsLength(["cuban jazz", "jazz"]), 17);

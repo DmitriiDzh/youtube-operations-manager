@@ -770,6 +770,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   - `agent_get_publishing_calendar` (Agent API 3.16.0, Producer API 1.7.0).
   - Опрос раз в минуту только локальный. Другие каналы обновляются при загрузке дашборда, если данные старше 6 ч.
 - **Этап 2** (`docs/ARCHITECTURE.md` §47.3).
+  - Общие теги канала (`channelTags`, FO-MSG-0017 / BL-190): пакет с `tags: []` получает теги канала, с непустыми — только свои (сообщение владельца 2817, вариант «б»); окно подтверждения показывает теги каждой строки и их источник; тег с `<`/`>` в пакете — проблема `tags_angle_brackets`.
   - Дефолты публикации канала: `publishing/settings.ts`, семейство синхронизации `channel-publishing-settings` (документ на
     канал), конфликты в «Слиянии»; Контент → «Публикация», время — `UtcTimeField` (12:00 UTC по умолчанию).
   - Пакеты релизов: `publishing/packages.ts`, `package-scan.ts` (`04 Videos/**/V*_release.json`, проверки по правилам YouTube,

@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { assignPublishDates, estimateUploadUnits, isDeferredPublishAt, publishInstant } from "@/lib/publishing/publish-dates";
-import type { PublishingSettings } from "@/lib/publishing/settings";
+import { uploadTagsSummary, type PublishingSettings } from "@/lib/publishing/settings";
 import { formatDisplayDateUtc, parseDisplayDate } from "@/lib/shared-formatting";
+import { TAGS_MAX_CHARACTERS } from "@/lib/youtube-video-fields";
 import { errorText, type UiTextKey } from "@/lib/ui-text";
 import { ConfirmDialog } from "./confirm-dialog";
 import { LoadingIndicator } from "./operation-progress";
@@ -26,7 +27,7 @@ type PackageRow = {
   problems: Problem[];
   youtube: { videoId: string } | null;
   manifestSha256: string | null;
-  pkg: { defaultLanguage: string; defaultAudioLanguage: string } | null;
+  pkg: { defaultLanguage: string; defaultAudioLanguage: string; tags: string[] } | null;
 };
 type ScanResult = { status: "no_workspace" } | { status: "workspace_unavailable"; reason: string } | { status: "ok"; packages: PackageRow[] };
 
@@ -309,11 +310,25 @@ export function PublishingPackages({ channelId, visible }: { channelId: string |
             <ul className="space-y-1">
               {chosen.map((p) => {
                 const day = dateOf(p);
+                // FO-MSG-0017 (owner msg 2817): each row's tags as they will be sent, and where they come from (the package's own, or the
+                // channel's when the package has none).
+                const tags = uploadTagsSummary(p.pkg?.tags ?? [], settings.channelTags ?? []);
+                const source =
+                  tags.tags.length === 0
+                    ? t("publishingApproval.tagsSource.none")
+                    : tags.fromPackage > 0
+                      ? t("publishingApproval.tagsSource.package")
+                      : t("publishingApproval.tagsSource.channel");
                 return (
-                  <li key={p.manifestPath} className="flex gap-2">
-                    <span className="font-mono text-zinc-500">{p.video}</span>
-                    <span className="min-w-0 flex-1 truncate">{p.title}</span>
-                    <span className="shrink-0 text-zinc-400">{day ? <PlannedTime date={day} publishTimeUtc={settings.publishTimeUtc} /> : t("publishingApproval.noDate")}</span>
+                  <li key={p.manifestPath}>
+                    <div className="flex gap-2">
+                      <span className="font-mono text-zinc-500">{p.video}</span>
+                      <span className="min-w-0 flex-1 truncate">{p.title}</span>
+                      <span className="shrink-0 text-zinc-400">{day ? <PlannedTime date={day} publishTimeUtc={settings.publishTimeUtc} /> : t("publishingApproval.noDate")}</span>
+                    </div>
+                    <p className={`pl-2 ${tags.characters > TAGS_MAX_CHARACTERS ? "text-red-400" : "text-zinc-500"}`} title={tags.tags.join(", ")}>
+                      {t("publishingApproval.rowTags", { count: tags.tags.length, chars: tags.characters, source })}
+                    </p>
                   </li>
                 );
               })}
