@@ -22,6 +22,7 @@ import {
   type MediaWorkflowTemplate,
 } from "@/lib/media-generation/contracts";
 import type { PoolDevice, PoolJob, PoolView } from "@/lib/media-jobs-pool/contracts";
+import type { CommandView } from "@/lib/media-jobs-pool/commands";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { ConfirmDialog } from "./confirm-dialog";
 import { useChannelNames } from "./use-channel-names";
@@ -756,10 +757,77 @@ export function poolJobUnderWay(job: Pick<PoolRow, "source" | "status">): boolea
   return !(job.source === "runpod" ? ["done", "failed", "cancelled"] : ["done", "failed"]).includes(job.status);
 }
 
+const COMMAND_ACTION: Record<CommandView["kind"], UiTextKey> = {
+  cancel_job: "media.pool.command.cancel_job",
+  create_job: "media.pool.command.create_job",
+  approve_session: "media.pool.command.approve_session",
+  reject_session: "media.pool.command.reject_session",
+};
+
+/** A refusal's code in words where it is one of ours; any other code is shown as it came. */
+const REFUSAL_TEXT: Record<string, UiTextKey> = {
+  command_expired: "media.pool.refusal.command_expired",
+  command_interrupted: "media.pool.refusal.command_interrupted",
+  command_failed: "media.pool.refusal.command_failed",
+  channel_not_connected: "media.pool.refusal.channel_not_connected",
+  CHANNEL_NOT_AUTHORIZED: "media.pool.refusal.channel_mismatch",
+  media_session_invalid_state: "media.pool.refusal.session_state",
+  media_session_not_found: "media.pool.refusal.not_found",
+  media_job_invalid_state: "media.pool.refusal.job_state",
+  media_job_not_found: "media.pool.refusal.not_found",
+  gemini_job_not_found: "media.pool.refusal.not_found",
+  gemini_cancel_too_late: "media.pool.refusal.too_late",
+  media_limit_exceeded: "media.pool.refusal.limit",
+  storyboard_not_approved: "media.pool.refusal.storyboard",
+};
+
+/**
+ * BL-188 stage 2 (SHARED_MEDIA_JOBS_PLAN.md §2.3): an action sent to another computer, in words -- sent and waiting (or that
+ * computer is not reporting), in progress, done, refused with the reason, or a run that expired unanswered. Exported for its test.
+ */
+export function commandStatusText(t: Translate, command: CommandView): string {
+  const action = t(COMMAND_ACTION[command.kind]);
+  const name = command.targetHostName ?? t("media.pool.unnamedDevice");
+  switch (command.state) {
+    case "waiting":
+      return command.targetOffline
+        ? t("media.pool.commandOffline", { action, name, when: command.targetUpdatedAt ? formatDisplayDateTime(command.targetUpdatedAt) : "—" })
+        : t("media.pool.commandWaiting", { action, name, when: formatDisplayDateTime(command.issuedAt) });
+    case "applying":
+      return t("media.pool.commandApplying", { action, name });
+    case "applied":
+      return command.code === "already_finished" ? t("media.pool.commandAlreadyFinished", { name }) : t("media.pool.commandApplied", { action, name, when: formatDisplayDateTime(command.resultAt ?? command.issuedAt) });
+    case "refused": {
+      const known = command.code ? REFUSAL_TEXT[command.code] : undefined;
+      const reason = known ? t(known) : t("media.pool.refusal.code", { code: command.code ?? "—" });
+      return t("media.pool.commandRefused", { action, name, reason });
+    }
+    case "expired":
+      return t("media.pool.commandExpired", { name });
+  }
+}
+
+/** A command still on its way (it keeps the list polling, and hides a second click on the same action). */
+export function commandPending(command: Pick<CommandView, "state">): boolean {
+  return command.state === "waiting" || command.state === "applying";
+}
+
+/** Whether a job of the shared list can be cancelled: a RunPod job not finished, a Gemini job not yet sent to Google. */
+export function poolJobCancellable(job: Pick<PoolRow, "source" | "status">): boolean {
+  return job.source === "runpod" ? ["queued", "submitted", "generating"].includes(job.status) : job.status === "queued";
+}
+
+function CommandLine({ command }: { command: CommandView }) {
+  const { t } = useUiText();
+  const tone = command.state === "refused" || command.state === "expired" ? "text-amber-300" : command.state === "applied" ? "text-emerald-400" : "text-sky-300";
+  return <span className={`block ${tone}`}>{commandStatusText(t, command)}</span>;
+}
+
 // Phase 14 slice 3: the operator's own manual job (an agent's arrives through MCP in slice 5) and the job list. BL-188
 // (owner msgs 2801/2803/2806): the list is the shared one -- RunPod and Gemini jobs of this computer AND of every other computer,
-// for the active channel and the tab's kind, with the computer each runs on. Stage 1: a peer's job is shown, its actions stay on
-// its own computer (stage 2 relays them).
+// for the active channel and the tab's kind, with the computer each runs on. Stage 2: the same actions on every computer -- a
+// cancel of another computer's job, or a run on another computer's running session, is sent to that computer, which applies it
+// with its own checks and limits; the row says it was sent and then what that computer answered.
 export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: string | null; kind?: MediaKind | null }) {
   const { t } = useUiText();
   const [pool, setPool] = useState<PoolView>({ jobs: [], devices: [] });
@@ -805,7 +873,8 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
     fetchAll();
   }, [fetchAll]);
 
-  const hasActive = pool.jobs.some(poolJobUnderWay);
+  const commands = pool.commands ?? [];
+  const hasActive = pool.jobs.some(poolJobUnderWay) || commands.some(commandPending);
   // BL-144: while a job generates, its live ComfyUI progress is refreshed every 2 s; otherwise every 5 s as before.
   const generating = pool.jobs.some((j) => j.status === "generating" || j.status === "submitted");
   useEffect(() => {
@@ -818,8 +887,13 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
     };
   }, [hasActive, generating, fetchJobs, fetchContext]);
 
+  /** BL-188 stage 2: an action on another computer's job or session, sent to it (the answer comes back in its report). */
+  async function sendCommand(body: Record<string, unknown>) {
+    await requestJson("/api/media-jobs/commands", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  }
+
   async function run() {
-    if (!activeChannelId || !targetSession) return;
+    if (!activeChannelId || !target) return;
     setBusy(true);
     setError(null);
     try {
@@ -829,11 +903,15 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
       } catch {
         throw new Error(t("media.jobs.invalidJson"));
       }
-      await requestJson("/api/media-generation/jobs", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sessionId: targetSession.sessionId, channelId: activeChannelId, templateId, params }),
-      });
+      if (target.deviceId === null) {
+        await requestJson("/api/media-generation/jobs", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ sessionId: target.sessionId, channelId: activeChannelId, templateId, params }),
+        });
+      } else {
+        await sendCommand({ kind: "create_job", targetDeviceId: target.deviceId, sessionId: target.sessionId, templateId, params });
+      }
       await fetchAll();
     } catch (err) {
       setError(err instanceof Error ? err.message : t("media.jobs.submitFailed"));
@@ -844,8 +922,11 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
 
   async function cancel(job: PoolRow) {
     setBusy(true);
+    setError(null);
     try {
-      await requestJson(`/api/media-generation/jobs/${encodeURIComponent(job.jobId)}/cancel`, { method: "POST" });
+      if (!job.own) await sendCommand({ kind: "cancel_job", targetDeviceId: job.deviceId, source: job.source, jobId: job.jobId });
+      else if (job.source === "gemini") await requestJson(`/api/gemini-media/jobs/${encodeURIComponent(job.jobId)}/cancel`, { method: "POST" });
+      else await requestJson(`/api/media-generation/jobs/${encodeURIComponent(job.jobId)}/cancel`, { method: "POST" });
       await fetchAll();
     } catch (err) {
       setError(err instanceof Error ? err.message : t("media.jobs.cancelFailed"));
@@ -855,10 +936,19 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
   }
 
   // A job is submitted for the active channel, to one of ITS running sessions (review round 16; slice 6: several may run).
+  // BL-188 stage 2: this computer's running sessions first, then the other computers' (the run is sent there).
   const runningHere = openSessions.filter((s) => s.status === "running" && s.channelId === activeChannelId);
-  const targetSession = runningHere.find((s) => s.sessionId === chosenSessionId) ?? runningHere[0] ?? null;
+  const targets: Array<{ key: string; sessionId: string; deviceId: string | null; hostName: string | null; label: string }> = [
+    ...runningHere.map((s) => ({ key: `own:${s.sessionId}`, sessionId: s.sessionId, deviceId: null, hostName: null, label: t("media.jobs.sessionOption", { pod: s.podId ?? s.sessionId, date: formatDisplayDateTime(s.createdAt) }) })),
+    ...(pool.peerSessions ?? []).map((s) => {
+      const name = s.hostName ?? t("media.pool.unnamedDevice");
+      return { key: `${s.deviceId}:${s.sessionId}`, sessionId: s.sessionId, deviceId: s.deviceId, hostName: name, label: t("media.pool.peerSessionOption", { name, gpu: s.gpuTypeId ?? "GPU", date: s.startedAt ? formatDisplayDateTime(s.startedAt) : "—" }) };
+    }),
+  ];
+  const target = targets.find((x) => x.key === chosenSessionId) ?? targets[0] ?? null;
   const runningElsewhere = openSessions.some((s) => s.status === "running" && s.channelId !== activeChannelId);
-  const canRun = Boolean(activeChannelId) && targetSession !== null && templates.length > 0;
+  const canRun = Boolean(activeChannelId) && target !== null && templates.length > 0;
+  const recentRuns = commands.filter((c) => c.kind === "create_job").slice(0, 5);
 
   const severalDevices = pool.devices.length > 1;
   // A computer chosen in the filter that no longer reports falls back to every computer.
@@ -875,7 +965,7 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
         <p className="text-xs text-zinc-500">
           {!activeChannelId
             ? t("media.jobs.selectChannel")
-            : targetSession === null
+            : target === null
               ? runningElsewhere
                 ? t("media.jobs.runningElsewhere")
                 : t("media.jobs.startSessionFirst")
@@ -884,16 +974,17 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
       ) : (
         <div className="space-y-2">
           <div className="grid gap-2 sm:grid-cols-2">
-            {runningHere.length > 1 && (
+            {(targets.length > 1 || target?.deviceId) && (
               <label className="block text-xs text-zinc-400 sm:col-span-2">
                 {t("media.jobs.session")}
-                <select value={targetSession?.sessionId ?? ""} onChange={(e) => setChosenSessionId(e.target.value)} className={inputClass}>
-                  {runningHere.map((s) => (
-                    <option key={s.sessionId} value={s.sessionId}>
-                      {t("media.jobs.sessionOption", { pod: s.podId ?? s.sessionId, date: formatDisplayDateTime(s.createdAt) })}
+                <select value={target?.key ?? ""} onChange={(e) => setChosenSessionId(e.target.value)} className={inputClass}>
+                  {targets.map((x) => (
+                    <option key={x.key} value={x.key}>
+                      {x.label}
                     </option>
                   ))}
                 </select>
+                {target?.deviceId && <span className="mt-1 block text-zinc-500">{t("media.pool.runOnPeerNote", { name: target.hostName ?? t("media.pool.unnamedDevice") })}</span>}
               </label>
             )}
             <label className="block text-xs text-zinc-400">
@@ -916,6 +1007,14 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
           <button type="button" onClick={run} disabled={busy || !templateId} className={primaryButton}>
             {busy ? t("media.common.working") : t("media.jobs.run")}
           </button>
+        </div>
+      )}
+      {recentRuns.length > 0 && (
+        <div className="space-y-1 text-xs">
+          <p className="text-zinc-500">{t("media.pool.recentRuns")}</p>
+          {recentRuns.map((c) => (
+            <CommandLine key={c.commandId} command={c} />
+          ))}
         </div>
       )}
 
@@ -1008,6 +1107,11 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
                     )}
                   </td>
                   <td className="py-1 pr-3">
+                    {(() => {
+                      const sent = commands.find((c) => c.kind === "cancel_job" && c.jobId === j.jobId && c.source === j.source);
+                      return sent ? <CommandLine command={sent} /> : null;
+                    })()}
+                    {j.source === "gemini" && (j.status === "submitting" || j.status === "running") && <span className="block text-zinc-500">{t("media.pool.geminiTooLate")}</span>}
                     {j.own ? (j.error ?? "") : j.status === "failed" ? (
                       <span>
                         {t("media.pool.failedElsewhere", { name: poolDeviceLabel(t, { hostName: j.hostName, own: false }) })}
@@ -1018,7 +1122,7 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
                     )}
                   </td>
                   <td className="py-1">
-                    {j.own && j.source === "runpod" && ["queued", "submitted", "generating"].includes(j.status) && (
+                    {poolJobCancellable(j) && !commands.some((c) => c.kind === "cancel_job" && c.jobId === j.jobId && c.source === j.source && commandPending(c)) && (
                       <button type="button" onClick={() => cancel(j)} disabled={busy} className={secondaryButton}>
                         {t("common.cancel")}
                       </button>
@@ -1551,7 +1655,8 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
 
 // BL-138 (owner, Telegram 2026-10-06; ADR 0028): the RunPod sessions of the owner's other devices, as each last reported them
 // through the sync folder (about a minute behind), checked against RunPod's live pod list; and live session pods no device
-// reports. Stop works from here too (owner, msg 1739): it terminates the pod through RunPod; approve/reject stay on the owner device.
+// reports. Stop works from here too (owner, msg 1739): it terminates the pod through RunPod. BL-188 stage 2 (owner msg 2806):
+// approve / reject a pending request works from here too -- sent to the owning computer, which applies its own limits.
 type OtherDevicesResponse = {
   devices: Array<{
     deviceId: string;
@@ -1629,6 +1734,29 @@ export function OtherDevicesCard({ ready, onActiveElsewhere }: { ready: boolean;
   const [stopTarget, setStopTarget] = useState<{ deviceId: string; hostname: string | null; sessionId: string; channelId: string } | null>(null);
   const [stopping, setStopping] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [commands, setCommands] = useState<CommandView[]>([]);
+  const [decideTarget, setDecideTarget] = useState<{ kind: "approve_session" | "reject_session"; deviceId: string; hostname: string | null; sessionId: string; channelId: string } | null>(null);
+
+  async function decide() {
+    const target = decideTarget;
+    if (!target) return;
+    setDecideTarget(null);
+    setStopping(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await requestJson("/api/media-jobs/commands", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ kind: target.kind, targetDeviceId: target.deviceId, sessionId: target.sessionId }),
+      });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("media.pool.commandFailed"));
+    } finally {
+      setStopping(false);
+    }
+  }
 
   async function stop() {
     const target = stopTarget;
@@ -1660,15 +1788,22 @@ export function OtherDevicesCard({ ready, onActiveElsewhere }: { ready: boolean;
 
   const load = useCallback(
     () =>
-      requestJson<OtherDevicesResponse>("/api/media-generation/sessions/devices").then(
-        (data) => {
-          setView(data);
-          setError(null);
-          setNowMs(Date.now());
-          onActiveElsewhere?.(countActiveElsewhere(data));
-        },
-        (err: unknown) => setError(err instanceof Error ? err.message : t("media.devices.loadFailed"))
-      ),
+      Promise.all([
+        requestJson<OtherDevicesResponse>("/api/media-generation/sessions/devices").then(
+          (data) => {
+            setView(data);
+            setError(null);
+            setNowMs(Date.now());
+            onActiveElsewhere?.(countActiveElsewhere(data));
+          },
+          (err: unknown) => setError(err instanceof Error ? err.message : t("media.devices.loadFailed"))
+        ),
+        // BL-188 stage 2: the approve / reject actions sent from here, with the other computers' answers.
+        requestJson<{ commands: CommandView[] }>("/api/media-jobs/commands").then(
+          (data) => setCommands(data.commands.filter((c) => c.kind === "approve_session" || c.kind === "reject_session")),
+          () => undefined
+        ),
+      ]).then(() => undefined),
     [onActiveElsewhere, t]
   );
 
@@ -1726,6 +1861,16 @@ export function OtherDevicesCard({ ready, onActiveElsewhere }: { ready: boolean;
                       <td className="py-1 pr-3">{s.startedAt ? formatDisplayDateTime(s.startedAt) : "—"}</td>
                       <td className="py-1 pr-3">{s.usdCharged !== null ? t("unit.usd", { value: usd(s.usdCharged) }) : "—"}</td>
                       <td className="py-1 text-right">
+                        {s.status === "pending" && !commands.some((c) => c.sessionId === s.sessionId && c.targetDeviceId === d.deviceId && commandPending(c)) && (
+                          <span className="inline-flex gap-2">
+                            <button type="button" onClick={() => setDecideTarget({ kind: "approve_session", deviceId: d.deviceId, hostname: d.hostname, sessionId: s.sessionId, channelId: s.channelId })} disabled={stopping} className={primaryButton}>
+                              {t("media.sessions.approve")}
+                            </button>
+                            <button type="button" onClick={() => setDecideTarget({ kind: "reject_session", deviceId: d.deviceId, hostname: d.hostname, sessionId: s.sessionId, channelId: s.channelId })} disabled={stopping} className={secondaryButton}>
+                              {t("media.sessions.reject")}
+                            </button>
+                          </span>
+                        )}
                         {s.live === "pod_running" && d.sameAccount && (
                           <button
                             type="button"
@@ -1738,6 +1883,16 @@ export function OtherDevicesCard({ ready, onActiveElsewhere }: { ready: boolean;
                         )}
                       </td>
                     </tr>
+                    {(() => {
+                      const sent = commands.find((c) => c.sessionId === s.sessionId && c.targetDeviceId === d.deviceId);
+                      return sent ? (
+                        <tr>
+                          <td colSpan={7} className="pb-1 pl-3 text-xs">
+                            <CommandLine command={sent} />
+                          </td>
+                        </tr>
+                      ) : null;
+                    })()}
                     {s.jobs && <PeerSessionJobsRow jobs={s.jobs} nowMs={nowMs} />}
                     </Fragment>
                   ))}
@@ -1756,6 +1911,16 @@ export function OtherDevicesCard({ ready, onActiveElsewhere }: { ready: boolean;
           confirmVariant="danger"
           onCancel={() => setStopTarget(null)}
           onConfirm={stop}
+        />
+      )}
+      {decideTarget && (
+        <ConfirmDialog
+          title={t(decideTarget.kind === "approve_session" ? "media.devices.approveTitle" : "media.devices.rejectTitle", { device: decideTarget.hostname ?? t("media.devices.thatDevice") })}
+          description={t(decideTarget.kind === "approve_session" ? "media.devices.approveDescription" : "media.devices.rejectDescription", { channel: nameOf(decideTarget.channelId), device: decideTarget.hostname ?? t("media.devices.thatDevice") })}
+          confirmLabel={t(decideTarget.kind === "approve_session" ? "media.sessions.approve" : "media.sessions.reject")}
+          confirmVariant={decideTarget.kind === "approve_session" ? "default" : "danger"}
+          onCancel={() => setDecideTarget(null)}
+          onConfirm={decide}
         />
       )}
       {view?.unknownPods && view.unknownPods.length > 0 && (

@@ -42,9 +42,9 @@ async function withDb(run: (client: Client) => Promise<void>): Promise<void> {
 }
 
 // Bumped with each new migration (v68: BL-143 phase 3 reference ids; v69/v70: BL-157 verdict history and review claims;
-// v71: BL-159 per-session minimum and host CUDA columns; v72: BL-161 producer token and call log; v73: BL-162 peer wave notes; v74: BL-163 watchlist pause and agent proposals; v75: BL-166 video milestones; v76: BL-166 fix, milestones without a curve collected again; v77: BL-168 stored traffic and device breakdowns; v78: BL-169 stored search terms; v79: BL-170 experiment arms; v80: BL-171 own-video comments; v81: BL-172 GPU availability log; v82: BL-173 plan re-checks; v83: BL-174 Gemini key and jobs; v84: BL-175 picks and peer picks; v85: BL-175 phase 3 review seconds; v86: BL-176 live streams; v87: BL-181 newest dates returned per collection run; v88: BL-181 basic and traffic-source report rows; v89: BL-182 stage 2 upload queue; v90: BL-184 stage 2 storyboard links on video jobs; v91: removed-on-YouTube mark; v92: BL-186 stream video settings).
+// v71: BL-159 per-session minimum and host CUDA columns; v72: BL-161 producer token and call log; v73: BL-162 peer wave notes; v74: BL-163 watchlist pause and agent proposals; v75: BL-166 video milestones; v76: BL-166 fix, milestones without a curve collected again; v77: BL-168 stored traffic and device breakdowns; v78: BL-169 stored search terms; v79: BL-170 experiment arms; v80: BL-171 own-video comments; v81: BL-172 GPU availability log; v82: BL-173 plan re-checks; v83: BL-174 Gemini key and jobs; v84: BL-175 picks and peer picks; v85: BL-175 phase 3 review seconds; v86: BL-176 live streams; v87: BL-181 newest dates returned per collection run; v88: BL-181 basic and traffic-source report rows; v89: BL-182 stage 2 upload queue; v90: BL-184 stage 2 storyboard links on video jobs; v91: removed-on-YouTube mark; v92: BL-186 stream video settings; v93: BL-188 stage 2 media job commands sent and received).
 test("merge numbering: the current schema is 90 with both branches' tables", async () => {
-  assert.equal(SCHEMA_CURRENT_VERSION, 92);
+  assert.equal(SCHEMA_CURRENT_VERSION, 93);
   await withDb(async (client) => {
     await initializeDatabaseSchema(client);
     const t = await tables(client);

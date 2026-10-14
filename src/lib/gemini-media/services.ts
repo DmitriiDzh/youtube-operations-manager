@@ -467,6 +467,31 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
       return [...byId.values()].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || (a.jobId < b.jobId ? 1 : -1)).map(jobView);
     },
 
+    /**
+     * BL-188 stage 2 (SHARED_MEDIA_JOBS_PLAN.md §2.5): the owner cancels a job that has not been sent to Google yet -- `queued`
+     * becomes `failed` (`cancelled_by_owner`, nothing charged) by the same compare-and-set the worker uses to claim it, so a job is
+     * either cancelled or sent, never both. Once sent (`submitting`, `running`) Google's work cannot be withdrawn here:
+     * `gemini_cancel_too_late`; a finished job is left as it is.
+     */
+    async cancelJob(jobId: string): Promise<{ job: GeminiJobView }> {
+      const row = await deps.store.getJob(jobId);
+      if (!row) throw geminiJobNotFound(jobId);
+      const at = now();
+      const cancelled =
+        row.status === "queued" &&
+        (await deps.store.updateJob(jobId, "queued", { status: "failed", errorCode: "cancelled_by_owner", error: "Cancelled by the owner before it was sent to Google.", costUsd: 0, costBasis: "not_charged", nextAttemptAt: null, finishedAt: at, updatedAt: at }));
+      if (!cancelled) {
+        const current = (await deps.store.getJob(jobId)) ?? row;
+        throw new DomainError({
+          code: "gemini_cancel_too_late",
+          message: current.status === "done" || current.status === "failed" ? `Job ${jobId} is already ${current.status}.` : `Job ${jobId} was already sent to Google; it cannot be cancelled now.`,
+          details: { jobId, status: current.status },
+        });
+      }
+      const after = await deps.store.getJob(jobId);
+      return { job: jobView(after ?? row) };
+    },
+
     /** One job by id, or the newest jobs (≤ 50) with optional channel / status filters. */
     async getJobs(raw: unknown) {
       const input = parseWithSchema(getJobsInputSchema, raw, "Gemini job query");

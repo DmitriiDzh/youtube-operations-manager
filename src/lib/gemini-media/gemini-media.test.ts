@@ -1330,3 +1330,71 @@ test("BL-188: listJobsForShare gives every unfinished job plus the newest `limit
     await h.cleanup();
   }
 });
+
+// ---------------------------------------------------------------------------------------------------------------- BL-188 stage 2
+// SHARED_MEDIA_JOBS_PLAN.md §2.5 / §4.1 item 8: a `queued` job becomes `failed` with `cancelled_by_owner` and is never sent;
+// `submitting` / `running` → `gemini_cancel_too_late`; nothing is charged for a cancelled job.
+
+test("BL-188 AC 8: a queued Gemini job is cancelled before anything is sent to Google, at no cost", async () => {
+  const h = await harness();
+  try {
+    const created = await h.services.createJob(imageJob(), "factory");
+    assert.ok("job" in created && created.job);
+    const job = created.job;
+    assert.equal(job.status, "queued");
+    const cancelled = await h.services.cancelJob(job.jobId);
+    assert.equal(cancelled.job.status, "failed");
+    assert.equal(cancelled.job.errorCode, "cancelled_by_owner");
+    const row = h.store.jobs.get(job.jobId)!;
+    assert.equal(row.costUsd, 0);
+    assert.equal(row.costBasis, "not_charged");
+    assert.ok(row.finishedAt);
+    // The worker never picks it up: no request reaches Google.
+    await h.runTick();
+    assert.deepEqual(
+      h.calls.filter((c) => c.method !== "checkKey"),
+      []
+    );
+    assert.equal(h.store.jobs.get(job.jobId)!.status, "failed");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("BL-188 AC 8: a Gemini job already sent (submitting, running) or finished cannot be cancelled; an unknown one is not found", async () => {
+  const h = await harness();
+  try {
+    seedJob(h.store, "gm_submitting", { status: "submitting" });
+    seedJob(h.store, "gm_running", { status: "running" });
+    seedJob(h.store, "gm_done", { status: "done" });
+    for (const id of ["gm_submitting", "gm_running", "gm_done"]) {
+      const before = { ...h.store.jobs.get(id)! };
+      const details = await expectCode(h.services.cancelJob(id), "gemini_cancel_too_late");
+      assert.equal(details.status, before.status);
+      assert.deepEqual(h.store.jobs.get(id), before, `${id} unchanged`);
+    }
+    await expectCode(h.services.cancelJob("gm_missing"), "gemini_job_not_found");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("BL-188 AC 8: a cancel that loses the race to the worker's claim is refused, the job stays the worker's", async () => {
+  const h = await harness();
+  try {
+    seedJob(h.store, "gm_race", { status: "queued" });
+    // The worker claims the job (queued -> submitting) between the cancel's read and its compare-and-set.
+    const realGet = h.store.getJob.bind(h.store);
+    let reads = 0;
+    h.store.getJob = async (jobId: string) => {
+      const row = await realGet(jobId);
+      reads += 1;
+      if (reads === 1 && row) h.store.jobs.set(jobId, { ...row, status: "submitting" });
+      return row;
+    };
+    await expectCode(h.services.cancelJob("gm_race"), "gemini_cancel_too_late");
+    assert.equal(h.store.jobs.get("gm_race")!.status, "submitting");
+  } finally {
+    await h.cleanup();
+  }
+});

@@ -14,7 +14,12 @@ export { DomainError, isDomainError };
 
 export const GLOBAL_DOCUMENT_KEY = "global";
 export const MEDIA_JOBS_REPORT_FORMAT = "ytm-media-jobs";
-export const MEDIA_JOBS_REPORT_VERSION = 1;
+/**
+ * Version 2 (BL-188 stage 2, SHARED_MEDIA_JOBS_PLAN.md §2.3): adds `commands` (actions this device's owner took on another
+ * device's jobs or sessions) and `commandResults` (what this device did with the commands it received). Read: 1-2. A version 1
+ * build refuses a version 2 report (every level is strict), so both computers update.
+ */
+export const MEDIA_JOBS_REPORT_VERSION = 2;
 /** Finished jobs older than this are left out of the report (owner msg 2806: 7 days); unfinished ones are always in. */
 export const MEDIA_JOBS_FINISHED_WINDOW_MS = 7 * 24 * 60 * 60_000;
 /** At most this many jobs per device (newest first; unfinished ones are kept before finished ones). */
@@ -58,17 +63,89 @@ export const sharedMediaJobSchema = z
   })
   .strict();
 
+/** The actions relayed to the computer that runs the job or owns the session (§2.3). */
+export const MEDIA_JOB_COMMAND_KINDS = ["cancel_job", "create_job", "approve_session", "reject_session"] as const;
+export type MediaJobCommandKind = (typeof MEDIA_JOB_COMMAND_KINDS)[number];
+/** A `create_job` seen first later than this after it was issued is refused (`command_expired`): a stale "run" never spends. */
+export const MEDIA_JOB_CREATE_COMMAND_MAX_AGE_MS = 15 * 60_000;
+/** Outgoing commands stay in the report this long (the executor may be switched off for a while); at most this many. */
+export const MEDIA_JOB_COMMANDS_KEEP_MS = 7 * 24 * 60 * 60_000;
+export const MEDIA_JOB_COMMANDS_MAX = 500;
+export const MEDIA_JOB_COMMAND_RESULTS_MAX = 1000;
+
+const commandId = z.string().regex(/^[A-Za-z0-9-]{8,64}$/);
+const paramValue = z.union([z.string().max(20_000), z.number().finite(), z.boolean()]);
+
+/**
+ * One action this device's owner took on another device's job or session, carried to that device in this device's report. A
+ * `create_job` carries the request the owner typed (template and parameters): the executor validates it like a local create.
+ */
+export const sharedJobCommandSchema = z
+  .object({
+    commandId,
+    kind: z.enum(MEDIA_JOB_COMMAND_KINDS),
+    targetDeviceId: z.string().min(1).max(128),
+    /** cancel_job: which module's job. */
+    source: z.enum(["runpod", "gemini"]).nullable(),
+    jobId: id.nullable(),
+    sessionId: z.string().min(1).max(64).nullable(),
+    /** The channel the job or session belongs to, as the issuing device saw it; the executor checks it again. */
+    channelId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).nullable(),
+    create: z
+      .object({
+        templateId: z.string().min(1).max(128),
+        params: z.record(z.string().max(128), paramValue).refine((p) => Object.keys(p).length <= 100, "at most 100 parameters"),
+      })
+      .strict()
+      .nullable(),
+    /** reject_session: the owner's reason. */
+    reason: z.string().max(500).nullable(),
+    issuedAt: z.string().datetime(),
+    /** The issuing computer's name, as the executor's audit shows it. */
+    issuedOn: z.string().max(64).nullable(),
+  })
+  .strict()
+  .superRefine((c, ctx) => {
+    const need = (ok: boolean, message: string) => {
+      if (!ok) ctx.addIssue({ code: "custom", message });
+    };
+    if (c.kind === "cancel_job") need(c.source !== null && c.jobId !== null, "cancel_job needs source and jobId");
+    if (c.kind === "create_job") need(c.sessionId !== null && c.channelId !== null && c.create !== null, "create_job needs sessionId, channelId and create");
+    if (c.kind === "approve_session" || c.kind === "reject_session") need(c.sessionId !== null, `${c.kind} needs sessionId`);
+  });
+
+/** What the executing device did with a command it received (its own codes and texts only, never a provider's text). */
+export const sharedCommandResultSchema = z
+  .object({
+    commandId,
+    issuerDeviceId: z.string().min(1).max(128),
+    kind: z.enum(MEDIA_JOB_COMMAND_KINDS),
+    /** `applying`: taken, not finished yet (a create may upload inputs for a while). */
+    status: z.enum(["applied", "refused", "applying"]),
+    code: z.string().regex(/^[A-Za-z0-9_]{1,64}$/).nullable(),
+    /** create_job: the job it made. */
+    jobId: id.nullable(),
+    at: z.string().datetime(),
+  })
+  .strict();
+
 export const mediaJobsReportSchema = z
   .object({
     format: z.literal(MEDIA_JOBS_REPORT_FORMAT),
-    version: z.literal(MEDIA_JOBS_REPORT_VERSION),
+    version: z.union([z.literal(1), z.literal(2)]),
     deviceId: z.string().min(1).max(128),
     /** The computer's own name, shown in the "Компьютер" column. */
     hostName: z.string().regex(/^[\p{L}\p{N} ._'-]{1,64}$/u).nullable(),
     updatedAt: z.string().datetime(),
     jobs: z.array(sharedMediaJobSchema).max(MEDIA_JOBS_REPORT_MAX),
+    /** Version 2: this device's commands to other devices (absent in a version 1 report). */
+    commands: z.array(sharedJobCommandSchema).max(MEDIA_JOB_COMMANDS_MAX).optional(),
+    /** Version 2: the results of the commands this device received, newest first. */
+    commandResults: z.array(sharedCommandResultSchema).max(MEDIA_JOB_COMMAND_RESULTS_MAX).optional(),
   })
   .strict();
 
 export type SharedMediaJob = z.infer<typeof sharedMediaJobSchema>;
 export type MediaJobsReport = z.infer<typeof mediaJobsReportSchema>;
+export type SharedJobCommand = z.infer<typeof sharedJobCommandSchema>;
+export type SharedCommandResult = z.infer<typeof sharedCommandResultSchema>;

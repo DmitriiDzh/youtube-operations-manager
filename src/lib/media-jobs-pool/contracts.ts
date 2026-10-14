@@ -1,5 +1,6 @@
 import type { MediaJobsReport, SharedMediaJob } from "@/lib/sync-gateway";
 import type { JobLiveProgress } from "@/lib/media-generation/job-progress";
+import type { CommandView } from "./commands";
 
 // BL-188 (owner, Telegram 2026-10-14, msgs 2801/2803/2806; SHARED_MEDIA_JOBS_PLAN.md): one list of media jobs -- RunPod and
 // Gemini, this computer's and every other computer's -- the same on every computer. This module only reads and merges: the
@@ -43,6 +44,15 @@ export type PoolJob = Omit<SharedMediaJob, "outputs" | "progress"> & {
 
 export type PoolDevice = { deviceId: string; hostName: string | null; own: boolean; updatedAt: string | null; stale: boolean };
 
-export type PoolView = { jobs: PoolJob[]; devices: PoolDevice[] };
+/** BL-188 stage 2: another computer's running session of the active channel, where a job can be run from here. */
+export type PoolPeerSession = { deviceId: string; hostName: string | null; sessionId: string; gpuTypeId: string | null; startedAt: string | null };
+
+export type PoolView = {
+  jobs: PoolJob[];
+  devices: PoolDevice[];
+  /** Stage 2: this computer's actions on the other computers' jobs of the active channel (cancel, run), with their answers. */
+  commands?: CommandView[];
+  peerSessions?: PoolPeerSession[];
+};
 
 export type { MediaJobsReport, SharedMediaJob };

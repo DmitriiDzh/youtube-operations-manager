@@ -98,8 +98,24 @@ export { createPublishingUploadsShareCoreForProduction, PUBLISHING_UPLOADS_REPOR
 export type { PublishingUploadsReport, SharedUpload } from "./publishing-uploads";
 export { createPublishingUploadsSyncRunnerForProduction } from "./publishing-uploads-sync";
 // BL-188: every computer's media jobs (RunPod and Gemini), as a per-device report -- one shared list on every computer.
-export { createMediaJobsShareCoreForProduction, MEDIA_JOBS_FINISHED_WINDOW_MS, MEDIA_JOBS_REPORT_FORMAT, MEDIA_JOBS_REPORT_MAX, MEDIA_JOBS_REPORT_VERSION, MEDIA_JOB_OUTPUTS_MAX, mediaJobsReportSchema, sharedMediaJobSchema } from "./media-jobs";
-export type { MediaJobsReport, SharedMediaJob } from "./media-jobs";
+export {
+  createMediaJobsShareCoreForProduction,
+  MEDIA_JOBS_FINISHED_WINDOW_MS,
+  MEDIA_JOBS_REPORT_FORMAT,
+  MEDIA_JOBS_REPORT_MAX,
+  MEDIA_JOBS_REPORT_VERSION,
+  MEDIA_JOB_OUTPUTS_MAX,
+  MEDIA_JOB_COMMAND_KINDS,
+  MEDIA_JOB_CREATE_COMMAND_MAX_AGE_MS,
+  MEDIA_JOB_COMMANDS_KEEP_MS,
+  MEDIA_JOB_COMMANDS_MAX,
+  MEDIA_JOB_COMMAND_RESULTS_MAX,
+  mediaJobsReportSchema,
+  sharedMediaJobSchema,
+  sharedJobCommandSchema,
+  sharedCommandResultSchema,
+} from "./media-jobs";
+export type { MediaJobsReport, SharedMediaJob, SharedJobCommand, SharedCommandResult, MediaJobCommandKind } from "./media-jobs";
 export { createMediaJobsSyncRunnerForProduction } from "./media-jobs-sync";
 // BL-184: a channel's storyboards (versions from the Operator, comments and decisions from the owner), one document per channel.
 export { createStoryboardsCoreForProduction } from "./storyboards";

@@ -6,7 +6,10 @@
   - "Одинаковый функционал везде"
   - the viewing computer "should not matter"
 - **Status:** plan accepted (owner msg 2806, 2026-10-14). Branch `feature/shared-media-jobs` from `dev` d46a535. Stage 1 built
-  (no schema change: the command tables of §3 come with stage 2, the first stage that stores anything).
+  (no schema change: the command tables of §3 come with stage 2, the first stage that stores anything). Stage 2 built
+  (schema v93, report v2): commands, the ledger, the status line, Gemini cancel before sending, session approve/reject from any
+  computer. Not in stage 2: the "Перезапустить на …" one-click (a run on another computer's session covers it) and the warning
+  about a similar pending run from another computer (§7).
 - **Owner's answers (msg 2806):** Q1 yes (session approve/reject from any computer, stage 2); Q2 7 days of finished jobs;
   Q3 yes (Gemini launch from Media, stage 4); Q4 ok (Operator reads every device's jobs, sends no commands).
 - **Amends:** ADR 0028 (sessions across devices) and ADR 0035 (Gemini media, "jobs are device-local"). The amendment is written

@@ -3103,8 +3103,30 @@ nothing while a node works before its first step, so such a stretch shows only t
   - `GET /api/media-jobs?kind=&limit=` (active channel from the session) merges own jobs (full detail) with peers' (codes only),
     marks a peer silent for 5 minutes stale, and checks a peer's outputs in this computer's workspace copy with
     `resolveExchangeFile` (subdirs `media`, `gemini`) for the returned rows only.
-  - Media's kind tabs show the list (`JobsCard`): a "Компьютер" column and filter when there are several computers. Peers' jobs
-    have no actions yet (stage 2 relays them). No schema change.
+  - Media's kind tabs show the list (`JobsCard`): a "Компьютер" column and filter when there are several computers. No schema
+    change in stage 1.
+- **BL-188 stage 2 (the same actions everywhere, schema v93, report v2):**
+  - **Commands.** A click on another computer's job or session is stored on the clicking computer (`media_job_commands_out`) and
+    carried in its report (`commands`, kept 7 days, ≤ 500): `cancel_job` (RunPod, or a Gemini job not yet sent), `create_job` (a
+    RunPod run on that computer's running session of the active channel, with the template and parameters), `approve_session` /
+    `reject_session` (a pending request). `POST /api/media-jobs/commands` checks the target against that computer's own report
+    (job: active channel, still cancellable; session: from its `media-sessions` report, running for a run, pending for a
+    decision, its channel connected here) -- `media_job_command_invalid` (409) otherwise; the computer itself is never a target.
+  - **Applying** (`media-jobs-pool/commands.ts` `applyIncomingCommands`, on the pool tick in `instrumentation.ts`, skipped while
+    an import/migration holds the lock or in recovery mode): commands addressed to this computer, oldest first; each is taken in
+    the ledger `media_job_peer_commands` (`applying`) before anything happens, so a replay, a duplicate in two reports or a
+    restart never applies it twice (a row left `applying` is reported as `command_interrupted` after 30 minutes, never retried;
+    the ledger is kept 30 days, longer than any command stays in a report). A `create_job` first seen more than 15 minutes after
+    it was issued is `command_expired`. Each command runs the service a local click runs: `media-generation` `cancelJob` /
+    `createJob` (all its checks and limits, the storyboard gate) / `approveSession` (every device limit) / `rejectSession`,
+    `gemini-media` `cancelJob`; a job of another channel than the command names is refused. The answer (`commandResults`, ≤ 1000)
+    is a status and a code only, never an error text.
+  - **Gemini cancel:** `queued` → `failed` `cancelled_by_owner`, nothing charged, by the same compare-and-set the worker's claim
+    uses; `submitting` / `running` / finished → `gemini_cancel_too_late`. `POST /api/gemini-media/jobs/[jobId]/cancel` for own jobs.
+  - **UI:** the row's Cancel and the run form's session list (own running sessions first, then other computers') work on every
+    computer; the row shows «отправлено на … · ждёт подтверждения» (or «… не на связи с …»), then «выполнено» / «отказано — причина»;
+    an unanswered run is shown as expired after 15 minutes. Other Devices offers Approve / Reject on a peer's pending request.
+  - A version 1 build refuses a version 2 report: both computers update together.
 
 ## 30. Shared Production settings and the conflict screen (BL-150, ADR 0030)
 

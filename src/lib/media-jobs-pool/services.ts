@@ -10,6 +10,8 @@ import {
   MEDIA_JOBS_REPORT_VERSION,
   sharedMediaJobSchema,
   type MediaJobsReport,
+  type SharedCommandResult,
+  type SharedJobCommand,
   type SharedMediaJob,
 } from "@/lib/sync-gateway";
 import { POOL_PEER_STALE_AFTER_MS, type PoolDevice, type PoolJob, type PoolJobOutput, type PoolMediaKind, type PoolView } from "./contracts";
@@ -122,7 +124,15 @@ export function selectReportJobs(jobs: readonly SharedMediaJob[], now: Date): Sh
   return kept.sort(byNewest);
 }
 
-export function buildMediaJobsReport(input: { deviceId: string; hostName: string | null; now: Date; jobs: readonly SharedMediaJob[] }): MediaJobsReport {
+export function buildMediaJobsReport(input: {
+  deviceId: string;
+  hostName: string | null;
+  now: Date;
+  jobs: readonly SharedMediaJob[];
+  /** Stage 2: this computer's commands to other computers, and the results of those it received. */
+  commands?: readonly SharedJobCommand[];
+  commandResults?: readonly SharedCommandResult[];
+}): MediaJobsReport {
   return {
     format: MEDIA_JOBS_REPORT_FORMAT,
     version: MEDIA_JOBS_REPORT_VERSION,
@@ -130,6 +140,8 @@ export function buildMediaJobsReport(input: { deviceId: string; hostName: string
     hostName: input.hostName,
     updatedAt: input.now.toISOString(),
     jobs: selectReportJobs(input.jobs, input.now),
+    commands: [...(input.commands ?? [])],
+    commandResults: [...(input.commandResults ?? [])],
   };
 }
 

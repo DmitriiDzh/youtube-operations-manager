@@ -48,3 +48,7 @@ Operator should be able to use it over MCP, and the owner must keep control of t
 Owner, Telegram 2026-10-14, msgs 2801/2803/2806. A Gemini job still runs only on the computer that created it (its key and its
 limits). Its status, model, cost, storyboard link, error code and output paths are now published in the `media-jobs` report, so
 every computer lists it in Media. The prompt, the inputs and Google's error text never leave the computer.
+
+**Stage 2 (2026-10-14):** the owner can cancel a Gemini job that has not been sent to Google yet (`queued` → `failed`,
+`cancelled_by_owner`, nothing charged), on this computer or from another one through a relayed command. A job already sent
+cannot be withdrawn here (`gemini_cancel_too_late`); whether Veo's `operations.cancel` works is not verified, so it is not used.
