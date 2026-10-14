@@ -29,11 +29,13 @@ function createFakeStore() {
     videos,
     upsertCalls,
     removedAt,
-    async markVideosRemovedOnYoutube(channelId: string, presentVideoIds: string[], at: Date) {
+    async markVideosRemovedOnYoutube(channelId: string, presentVideoIds: string[], at: Date, listedAt: Date) {
       const present = new Set(presentVideoIds);
+      for (const id of present) removedAt.delete(id);
       const marked: string[] = [];
       for (const video of videos.get(channelId) ?? []) {
         if (present.has(video.videoId) || removedAt.has(video.videoId)) continue;
+        if (video.lastSyncedAt.getTime() >= listedAt.getTime()) continue; // saved by an overlapping sync after this read began
         removedAt.set(video.videoId, at);
         marked.push(video.videoId);
       }
@@ -178,7 +180,11 @@ function createServicesFixture(
     channelAccess,
   });
 
-  return { services, store, channelAccess, videoMetadataCalls, playlist };
+  /** Moves every stored row's last sync an hour back, as if the previous sync ran long ago. */
+  const age = () => {
+    for (const list of store.videos.values()) for (const v of list) v.lastSyncedAt = new Date(v.lastSyncedAt.getTime() - 3_600_000);
+  };
+  return { services, store, channelAccess, videoMetadataCalls, playlist, age };
 }
 
 test("BL-118: syncChannel hands the channel's YouTube creation time to the store (the analytics channel start date)", async () => {
@@ -512,9 +518,10 @@ test("listSyncedVideos rejects an unknown field name and a limit above 500", asy
 // ---------------------------------------------------------------------------
 
 test("removed on YouTube: after a complete read, a stored video missing from the uploads is hidden, and the rest stay", async () => {
-  const { services, store, playlist } = createServicesFixture({ videoIds: ["v1", "v2", "v3"] });
+  const { services, store, playlist, age } = createServicesFixture({ videoIds: ["v1", "v2", "v3"] });
   await services.syncChannel({ credentialRef: { userId: "u1" } });
 
+  age();
   playlist.videoIds = ["v1", "v3"];
   const result = await services.syncChannel({ credentialRef: { userId: "u1" } });
 
@@ -526,8 +533,9 @@ test("removed on YouTube: after a complete read, a stored video missing from the
 });
 
 test("removed on YouTube: an already hidden video is not reported again by the next sync", async () => {
-  const { services, playlist } = createServicesFixture({ videoIds: ["v1", "v2"] });
+  const { services, playlist, age } = createServicesFixture({ videoIds: ["v1", "v2"] });
   await services.syncChannel({ credentialRef: { userId: "u1" } });
+  age();
   playlist.videoIds = ["v1"];
   await services.syncChannel({ credentialRef: { userId: "u1" } });
   const again = await services.syncChannel({ credentialRef: { userId: "u1" } });
@@ -544,8 +552,9 @@ test("removed on YouTube: a failed uploads read hides nothing and the channel is
 });
 
 test("removed on YouTube: an empty uploads list while the channel has videos hides nothing (fail closed) and says so", async () => {
-  const { services, store, playlist } = createServicesFixture({ videoIds: ["v1", "v2"] });
+  const { services, store, playlist, age } = createServicesFixture({ videoIds: ["v1", "v2"] });
   await services.syncChannel({ credentialRef: { userId: "u1" } });
+  age();
   playlist.videoIds = [];
   const result = await services.syncChannel({ credentialRef: { userId: "u1" } });
   assert.equal(result.removedCheck, "skipped_empty_list");
@@ -554,8 +563,9 @@ test("removed on YouTube: an empty uploads list while the channel has videos hid
 });
 
 test("removed on YouTube: a video in the uploads that videos.list left out is not hidden (it still exists)", async () => {
-  const { services, store, playlist } = createServicesFixture({ videoIds: ["v1", "v2"] });
+  const { services, store, playlist, age } = createServicesFixture({ videoIds: ["v1", "v2"] });
   await services.syncChannel({ credentialRef: { userId: "u1" } });
+  age();
   playlist.drops = ["v2"];
   const result = await services.syncChannel({ credentialRef: { userId: "u1" } });
   assert.deepEqual(result.hiddenRemovedVideoIds, []);
@@ -563,10 +573,12 @@ test("removed on YouTube: a video in the uploads that videos.list left out is no
 });
 
 test("removed on YouTube: a hidden video that comes back in the uploads is shown again", async () => {
-  const { services, store, playlist } = createServicesFixture({ videoIds: ["v1", "v2"] });
+  const { services, store, playlist, age } = createServicesFixture({ videoIds: ["v1", "v2"] });
   await services.syncChannel({ credentialRef: { userId: "u1" } });
+  age();
   playlist.videoIds = ["v1"];
   await services.syncChannel({ credentialRef: { userId: "u1" } });
+  age();
   playlist.videoIds = ["v1", "v2"];
   await services.syncChannel({ credentialRef: { userId: "u1" } });
   assert.deepEqual((await store.listVideosByChannel("UC_MINE")).map((v) => v.videoId).sort(), ["v1", "v2"]);
@@ -574,8 +586,9 @@ test("removed on YouTube: a hidden video that comes back in the uploads is shown
 });
 
 test("removed on YouTube: an explicit-id sync by someone who is not the channel's recorded owner hides nothing (private videos are invisible to them)", async () => {
-  const { services, store, playlist } = createServicesFixture({ videoIds: ["v1", "v2"] });
+  const { services, store, playlist, age } = createServicesFixture({ videoIds: ["v1", "v2"] });
   await services.syncChannel({ credentialRef: { userId: "owner" } }); // implicit: records "owner" for UC_MINE
+  age();
   playlist.videoIds = ["v1"];
   const stranger = await services.syncChannel({ credentialRef: { userId: "someone-else" }, channelId: "UC_MINE" });
   assert.equal(stranger.removedCheck, "skipped_not_owner");
@@ -587,10 +600,35 @@ test("removed on YouTube: an explicit-id sync by someone who is not the channel'
 });
 
 test("removed on YouTube: a channel with no recorded owner hides nothing", async () => {
-  const { services, store, playlist } = createServicesFixture({ videoIds: ["v1", "v2"] });
+  const { services, store, playlist, age } = createServicesFixture({ videoIds: ["v1", "v2"] });
   await services.syncChannel({ credentialRef: { userId: "u1" }, channelId: "UC_OTHER" });
+  age();
   playlist.videoIds = ["v1"];
   const result = await services.syncChannel({ credentialRef: { userId: "u1" }, channelId: "UC_OTHER" });
   assert.equal(result.removedCheck, "skipped_not_owner");
+  assert.equal(store.removedAt.size, 0);
+});
+
+test("removed on YouTube: a video an overlapping sync saved after this read of the uploads began is not hidden (independent review)", async () => {
+  const { services, store, age } = createServicesFixture({ videoIds: ["v1"] });
+  await services.syncChannel({ credentialRef: { userId: "u1" } });
+  age();
+  // While this sync reads an older uploads list, another sync stores the brand-new v2.
+  const stored = store.videos.get("UC_MINE") ?? [];
+  stored.push({ ...stored[0], videoId: "v2", lastSyncedAt: new Date(Date.now() + 5_000) });
+  const result = await services.syncChannel({ credentialRef: { userId: "u1" } });
+  assert.deepEqual(result.hiddenRemovedVideoIds, []);
+  assert.deepEqual((await store.listVideosByChannel("UC_MINE")).map((v) => v.videoId).sort(), ["v1", "v2"]);
+});
+
+test("removed on YouTube: a hidden video back in the uploads is shown again even while videos.list still leaves it out", async () => {
+  const { services, store, playlist, age } = createServicesFixture({ videoIds: ["v1", "v2"] });
+  await services.syncChannel({ credentialRef: { userId: "u1" } });
+  age();
+  playlist.videoIds = ["v1"];
+  await services.syncChannel({ credentialRef: { userId: "u1" } });
+  playlist.videoIds = ["v1", "v2"];
+  playlist.drops = ["v2"];
+  await services.syncChannel({ credentialRef: { userId: "u1" } });
   assert.equal(store.removedAt.size, 0);
 });

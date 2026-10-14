@@ -7776,15 +7776,29 @@ export async function listStoredVideosByChannel(channelId: string): Promise<Stor
 
 /**
  * Owner, 2026-10-14 (Telegram msgs 2770/2775, option "б"): marks this channel's not-yet-marked videos whose ids are not in
- * `presentVideoIds` (a complete read of the channel's uploads) as removed on YouTube. Rows are never deleted. Returns the
- * ids it marked.
+ * `presentVideoIds` (a complete read of the channel's uploads) as removed on YouTube, and clears the mark of every listed
+ * id (a listed video exists even when `videos.list` left it out). Rows are never deleted. Only rows last synced before
+ * `listedAt` (when this read of the uploads began) can be marked: a row another, overlapping sync just saved is newer than
+ * this read (independent review). Returns the ids it marked.
  */
-export async function markVideosRemovedOnYoutube(channelId: string, presentVideoIds: string[], at: Date, database: AppDb = db): Promise<string[]> {
+export async function markVideosRemovedOnYoutube(
+  channelId: string,
+  presentVideoIds: string[],
+  at: Date,
+  listedAt: Date,
+  database: AppDb = db
+): Promise<string[]> {
+  for (let i = 0; i < presentVideoIds.length; i += 500) {
+    await database
+      .update(videos)
+      .set({ removedOnYoutubeAt: null })
+      .where(and(eq(videos.channelId, channelId), isNotNull(videos.removedOnYoutubeAt), inArray(videos.id, presentVideoIds.slice(i, i + 500))));
+  }
   const present = new Set(presentVideoIds);
   const stored = await database
     .select({ id: videos.id })
     .from(videos)
-    .where(and(eq(videos.channelId, channelId), isNull(videos.removedOnYoutubeAt)));
+    .where(and(eq(videos.channelId, channelId), isNull(videos.removedOnYoutubeAt), lt(videos.lastSyncedAt, listedAt)));
   const missing = stored.map((row) => row.id).filter((id) => !present.has(id));
   for (let i = 0; i < missing.length; i += 500) {
     await database

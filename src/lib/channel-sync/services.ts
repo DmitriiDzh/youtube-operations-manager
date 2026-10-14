@@ -117,8 +117,11 @@ type ServiceDependencies = {
       syncedAt: Date
     ): Promise<void>;
     listVideosByChannel(channelId: string): Promise<StoredVideoRecord[]>;
-    /** Marks this channel's unmarked stored videos whose ids are not in `presentVideoIds`; returns the ids it marked. */
-    markVideosRemovedOnYoutube(channelId: string, presentVideoIds: string[], at: Date): Promise<string[]>;
+    /**
+     * Marks this channel's unmarked stored videos whose ids are not in `presentVideoIds` and that were last synced before
+     * `listedAt`; clears the mark of every listed id. Returns the ids it marked.
+     */
+    markVideosRemovedOnYoutube(channelId: string, presentVideoIds: string[], at: Date, listedAt: Date): Promise<string[]>;
   };
   logger: {
     info(payload: { event: string; context?: Record<string, unknown> }): void;
@@ -226,6 +229,8 @@ export function createChannelSyncServices(deps: ServiceDependencies) {
         });
 
         progress?.stage("Listing uploads");
+        // Whole seconds (the column's precision): a row saved in this second by an overlapping sync is never taken for older.
+        const listedAt = new Date(Math.floor(Date.now() / 1000) * 1000);
         const videoIds = await deps.youtubeApi.listUploadsPlaylistVideoIds({
           credentials,
           uploadsPlaylistId: channel.uploadsPlaylistId,
@@ -276,7 +281,7 @@ export function createChannelSyncServices(deps: ServiceDependencies) {
         let hiddenRemovedVideoIds: string[] = [];
         if (!connectedUserId || owner !== connectedUserId) removedCheck = "skipped_not_owner";
         else if (videoIds.length === 0) removedCheck = "skipped_empty_list";
-        else hiddenRemovedVideoIds = await deps.channelStore.markVideosRemovedOnYoutube(channel.channelId, videoIds, syncedAt);
+        else hiddenRemovedVideoIds = await deps.channelStore.markVideosRemovedOnYoutube(channel.channelId, videoIds, syncedAt, listedAt);
 
         await deps.channelStore.markChannelSynced(channel.channelId, syncedAt);
         progress?.counts(videoMetadata.length, videoMetadata.length);

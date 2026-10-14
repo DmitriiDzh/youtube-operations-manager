@@ -73,10 +73,13 @@ Web UI / API → core.syncChannel({ credentialRef, channelId? })
                                                                        (part: snippet, status, localizations)
   6. channelStore.upsertVideos(entries, syncedAt)                   — upsert every video row for this channel
                                                                        (clears removed_on_youtube_at)
-  6a. channelStore.markVideosRemovedOnYoutube(channelId, playlistIds) — owner 2026-10-14: stored videos missing from the
-                                                                       step-4 ids get removed_on_youtube_at; skipped when
-                                                                       the list is empty or the reader is not the channel's
-                                                                       recorded owner (connectedUserId)
+  6a. channelStore.markVideosRemovedOnYoutube(channelId, playlistIds, syncedAt, listedAt)
+                                                                     — owner 2026-10-14: stored videos missing from the
+                                                                       step-4 ids and last synced before step 4 began get
+                                                                       removed_on_youtube_at (a row an overlapping sync just
+                                                                       saved is never marked); every listed id loses its mark;
+                                                                       skipped when the list is empty or the reader is not
+                                                                       the channel's recorded owner (connectedUserId)
   7. channelStore.markChannelSynced(channelId, syncedAt)
   8. return { channel, videoCount, syncedAt, hiddenRemovedVideoIds, removedCheck }
 ```
