@@ -5,7 +5,9 @@
   - both RunPod and Gemini jobs
   - "Одинаковый функционал везде"
   - the viewing computer "should not matter"
-- **Status:** plan (proposed). Branch `feature/shared-media-jobs` from `dev` d46a535. Nothing is built.
+- **Status:** plan accepted (owner msg 2806, 2026-10-14). Branch `feature/shared-media-jobs` from `dev` d46a535.
+- **Owner's answers (msg 2806):** Q1 yes (session approve/reject from any computer, stage 2); Q2 7 days of finished jobs;
+  Q3 yes (Gemini launch from Media, stage 4); Q4 ok (Operator reads every device's jobs, sends no commands).
 - **Amends:** ADR 0028 (sessions across devices) and ADR 0035 (Gemini media, "jobs are device-local"). The amendment is written
   with stage 1.
 
@@ -58,8 +60,8 @@
     status, live progress, channel, template or model, plan/storyboard link, cost, times, `createdBy`.
   - A column "Компьютер" (host name) plus a filter.
   - Nothing distinguishes "mine" from "theirs" except that column and a freshness note when a peer's report is older than 5 min.
-- **History:** every unfinished job, plus finished jobs of the last **30 days**, capped at **1,000 per device** (newest first).
-  Older history stays on its device (Q2).
+- **History:** every unfinished job, plus finished jobs of the last **7 days** (owner msg 2806), capped at **1,000 per device**
+  (newest first). Older history stays on its device.
 - **Outputs** open from the **viewer's own copy of the channel workspace**, the same rule as plan audition.
   - The file arrives there by the existing workspace sync.
   - Until then the row says «файл ещё не пришёл с <компьютер>».
@@ -96,8 +98,8 @@
   - `issuedAt`;
   - `issuedOn` (host name);
   - `actor` (`owner`, only from a Web session).
-- **Kinds in this plan:** `cancel_job` (RunPod, and Gemini once a Gemini cancel exists, §2.5) and `create_job` (RunPod).
-  `approve_session` and `reject_session` are added only on the owner's yes (Q1).
+- **Kinds in this plan:** `cancel_job` (RunPod, and Gemini once a Gemini cancel exists, §2.5), `create_job` (RunPod; Gemini
+  in stage 4), and `approve_session` / `reject_session` (owner's yes, msg 2806).
 - **Idempotent:**
   - The executor keeps a ledger `media_job_peer_commands` (`commandId` primary key, result, applied time).
   - The same `commandId` twice changes nothing.
@@ -117,7 +119,8 @@
 - **The executor alone decides spend.**
   - A relayed `create_job` goes through **the same service call** as a local one: session open and owned, template valid,
     storyboard gate (ADR 0038), factory/plan limits, the session's own approval.
-  - Gemini: the per-job, day, month and active-job limits of the executing device (Gemini create stays Factory-only, Q3).
+  - Gemini: the per-job, day, month and active-job limits of the executing device (the owner's Gemini create from Media,
+    stage 4, goes through the same checks).
   - A refusal comes back with its code.
 - **A remote device never** holds the session URL, the Gemini key or a RunPod key for this, and no command can raise a limit or
   approve spend by itself.
@@ -173,7 +176,7 @@
    secret-string scan.
 2. On device B, the pool view lists A's RunPod and Gemini jobs with host and status. A report older than 5 min is marked stale;
    one older than 7 days is not listed.
-3. A history beyond 30 days or 1,000 jobs is cut, newest kept. Unfinished jobs are always kept.
+3. A history beyond 7 days or 1,000 jobs is cut, newest kept. Unfinished jobs are always kept.
 4. A `cancel_job` from B for A's running job:
    - A cancels it through the same service as a local cancel;
    - the same `commandId` twice gives one cancel;
@@ -205,13 +208,15 @@
 2. **Same actions everywhere:**
    - outgoing and incoming commands (`cancel_job`, `create_job`), the ledger, the honest status line, expiry;
    - Gemini cancel for `queued` jobs.
-   - Session approve/reject only if the owner says yes (Q1).
+   - Session approve/reject from any computer (owner msg 2806).
 3. **Factory read:** `factory_jobs_list` and docs.
+4. **Gemini launch from Media** (owner msg 2806): a create form in Media's Images/Video tabs for the owner, the same
+   service and limits as the Factory create; from another computer it is a relayed `create_job` (§2.3/§2.4).
 
 ## 6. Not in this plan
 - A job moving silently to another computer, or a shared queue picked up by whichever device is free (§2.2).
 - File transfer through the report.
-- Relayed commands for the Operator (Q4).
+- Relayed commands for the Operator (owner msg 2806: read-only).
 - The volume janitor stays per device: it acts on its own download journal.
 
 ## 7. Risks
@@ -223,9 +228,4 @@
 - **Both computers must update together**, as with BL-148/BL-162.
 
 ## 8. Questions for the owner
-1. Approve and reject of a requested GPU session from any computer too, or only the job actions?
-2. History: are 30 days of finished jobs per computer enough in the shared list?
-3. Gemini jobs are created only by the Factory Operator today. Should the owner also be able to start one from the Media screen,
-   on any computer? That is a new feature beyond "same functions".
-4. Should the Factory Operator see the other computer's jobs (read-only, proposed: yes)? Should it also send commands there
-   (proposed: no)?
+Answered in msg 2806 (see the header).
