@@ -11,6 +11,7 @@ import { createChannelLanguageSettingsSyncRunnerForProduction } from "./channel-
 import { createChannelPublishingSettingsSyncRunnerForProduction } from "./channel-publishing-settings-sync";
 import { createPublishingUploadsSyncRunnerForProduction } from "./publishing-uploads-sync";
 import { createStoryboardsSyncRunnerForProduction } from "./storyboards-sync";
+import { createMediaJobsSyncRunnerForProduction } from "./media-jobs-sync";
 
 /** Runs one family's cycle and unconditionally records its outcome to `sync_family_status`
  * (2026-09-23, Merge-tab redesign) -- regardless of whether it resolved or threw, so the
@@ -41,7 +42,7 @@ async function runAndRecord<T>(
  * process-wide guard in `runAllSyncFamiliesOnce` below.
  */
 async function runAllOnce() {
-  const [changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards] = await Promise.all([
+  const [changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards, mediaJobs] = await Promise.all([
     runAndRecord("change_drafts", () => createChangeDraftsSyncCoreForProduction().runSyncCycle()),
     runAndRecord("editorial_profile", () => createEditorialProfileSyncRunnerForProduction().runSyncCycle()),
     runAndRecord("ai_connections", () => createAiConnectionsCatalogSyncRunnerForProduction().runSyncCycle()),
@@ -63,8 +64,10 @@ async function runAllOnce() {
     runAndRecord("publishing_uploads", () => createPublishingUploadsSyncRunnerForProduction().runSyncCycle()),
     // BL-184: each channel's storyboards (the Operator's versions, the owner's comments and decisions), the same on every computer.
     runAndRecord("storyboards", () => createStoryboardsSyncRunnerForProduction().runSyncCycle()),
+    // BL-188: this computer's media jobs (RunPod and Gemini) out, the other devices' in -- one shared list everywhere.
+    runAndRecord("media_jobs", () => createMediaJobsSyncRunnerForProduction().runSyncCycle()),
   ]);
-  return { changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards };
+  return { changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards, mediaJobs };
 }
 
 type AllFamiliesResult = Awaited<ReturnType<typeof runAllOnce>>;

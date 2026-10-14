@@ -371,6 +371,22 @@ async function startServerSession() {
   };
   setTimeout(() => void geminiLoop(), 10_000).unref();
 
+  // BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.1): this computer's media jobs (RunPod and Gemini) for the other computers, in its own
+  // loop (AGENTS.md §M: a slow or broken jobs module never delays the others). It only reads the local tables and writes the
+  // report file the sync-gateway `media-jobs` family carries; written when the jobs changed, and at least every 5 minutes.
+  const MEDIA_JOBS_SHARE_TICK_MS = 30_000;
+  const mediaJobsShareLoop = async () => {
+    try {
+      const { publishMediaJobsShare } = await import("@/lib/media-jobs-pool");
+      await publishMediaJobsShare();
+    } catch (error) {
+      // Logged: a report that cannot be published would freeze what the other computers see. Retried next tick.
+      console.warn(`[media-jobs] the jobs report was not published: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    setTimeout(() => void mediaJobsShareLoop(), MEDIA_JOBS_SHARE_TICK_MS).unref();
+  };
+  setTimeout(() => void mediaJobsShareLoop(), 40_000).unref();
+
   // BL-182 stage 2 (PUBLISHING_PLAN.md §2 stage 2 item 5, ADR 0037): the upload queue, in its own loop (AGENTS.md §M). With nothing
   // queued or sent a tick only reads the local table: no YouTube call. Each write checks Live writes right before it; while they are
   // off an upload pauses. Never during a snapshot import/migration or in recovery mode (it writes rows and the upload record).

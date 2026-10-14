@@ -456,6 +456,17 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
       return (await deps.store.listJobs({ channelId, storyboardId, limit: 500 })).map(jobView);
     },
 
+    /**
+     * BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.1): this computer's jobs for the shared list -- every unfinished job plus the newest
+     * `limit` (all channels), newest first; the shared list cuts it to its own window.
+     */
+    async listJobsForShare(limit: number): Promise<GeminiJobView[]> {
+      const [recent, open] = await Promise.all([deps.store.listJobs({ limit }), deps.store.listJobs({ statuses: GEMINI_ACTIVE_STATUSES, limit: 10_000 })]);
+      const byId = new Map<string, StoredGeminiMediaJob>();
+      for (const row of [...open, ...recent]) byId.set(row.jobId, row);
+      return [...byId.values()].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || (a.jobId < b.jobId ? 1 : -1)).map(jobView);
+    },
+
     /** One job by id, or the newest jobs (≤ 50) with optional channel / status filters. */
     async getJobs(raw: unknown) {
       const input = parseWithSchema(getJobsInputSchema, raw, "Gemini job query");

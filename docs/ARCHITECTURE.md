@@ -3092,6 +3092,20 @@ nothing while a node works before its first step, so such a stretch shows only t
   - A peer's audition is resolved by `resolvePeerAudition` from that peer's report, then proven inside this device's workspace
     by the same `workspace-exchange` resolvers.
 
+- **BL-188 stage 1 (one shared list of media jobs, `docs/roadmap/plans/SHARED_MEDIA_JOBS_PLAN.md`):**
+  - Family `sync-gateway/media-jobs` (+ `media-jobs-sync`), report `ytm-media-jobs` v1 on `per-device-report`: this computer's
+    RunPod and Gemini jobs -- every unfinished one and finished ones of the last 7 days, at most 1000. Strict allowlist: ids,
+    status, progress without `detail`, template/model label, plan/storyboard links, Gemini cost, times, an error **code**, and
+    output paths relative to `99 Data Exchange/`. Never parameters, prompts, inputs, URLs or provider text.
+  - Module `src/lib/media-jobs-pool/` reads both feature modules (`listJobsForShare` in `media-generation/jobs.ts` and
+    `gemini-media/services.ts`) and the family; neither feature module imports it (tests in both directions). `publishMediaJobsShare`
+    runs in its own 30 s loop in `instrumentation.ts` and writes only when the jobs changed (or every 5 minutes).
+  - `GET /api/media-jobs?kind=&limit=` (active channel from the session) merges own jobs (full detail) with peers' (codes only),
+    marks a peer silent for 5 minutes stale, and checks a peer's outputs in this computer's workspace copy with
+    `resolveExchangeFile` (subdirs `media`, `gemini`) for the returned rows only.
+  - Media's kind tabs show the list (`JobsCard`): a "Компьютер" column and filter when there are several computers. Peers' jobs
+    have no actions yet (stage 2 relays them). No schema change.
+
 ## 30. Shared Production settings and the conflict screen (BL-150, ADR 0030)
 
 - **Sync family.** `src/lib/sync-gateway/media-settings/` holds one global Automerge document, `{ format, version, settings: map }`.

@@ -101,6 +101,9 @@ export type AppPaths = {
   /** BL-182 stage 2: the publishing-uploads family -- this device's uploads report and the peers' latest reports. */
   publishingUploadsShareDir: string;
   publishingUploadsSyncFallbackDir: string;
+  /** BL-188: the media-jobs family -- this device's jobs report and the peers' latest reports. */
+  mediaJobsShareDir: string;
+  mediaJobsSyncFallbackDir: string;
   /** BL-184: the per-channel storyboards documents (sync-gateway `storyboards`). */
   storyboardsDocDir: string;
   storyboardsSyncFallbackDir: string;

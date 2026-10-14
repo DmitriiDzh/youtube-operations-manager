@@ -34,6 +34,9 @@ test("resolveAppPaths: Windows resolves under APPDATA", () => {
   assert.equal(result.agentTokensSyncFallbackDir, path.join(result.appDataDir, "agent-tokens-sync-local"));
   assert.equal(result.liveStreamsBufferDir, path.join(result.appDataDir, "live-streams"));
   assert.equal(result.liveStreamsThumbnailsDir, path.join(result.appDataDir, "live-streams-thumbnails"));
+  // BL-188: the media-jobs report family keeps its own folders, like every per-device family.
+  assert.equal(result.mediaJobsShareDir, path.join(result.appDataDir, "media-jobs-share"));
+  assert.equal(result.mediaJobsSyncFallbackDir, path.join(result.appDataDir, "media-jobs-sync-local"));
   assert.equal(result.liveStreamsShareDir, path.join(result.appDataDir, "live-streams-share"));
   assert.equal(result.liveStreamsSyncFallbackDir, path.join(result.appDataDir, "live-streams-sync-local"));
   assert.equal(result.aiConnectionsCatalogDiscardedBackupsDir, path.join(result.appDataDir, "ai-connections-catalog-discarded-backups"));

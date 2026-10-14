@@ -1309,3 +1309,24 @@ test("BL-184: a link the gate lets through is passed on and recorded on the job;
     await h.cleanup();
   }
 });
+
+// ---------------------------------------------------------------------------------------------------------------- BL-188
+
+test("BL-188: listJobsForShare gives every unfinished job plus the newest `limit`, newest first, across channels", async () => {
+  const h = await harness();
+  try {
+    const at = (day: number) => new Date(2026, 9, day, 9, 0, 0);
+    seedJob(h.store, "gm_old_queued", { status: "queued", createdAt: at(1), channelId: "UC2" });
+    seedJob(h.store, "gm_old_running", { status: "running", createdAt: at(2) });
+    seedJob(h.store, "gm_old_done", { status: "done", createdAt: at(3) });
+    seedJob(h.store, "gm_new_done", { status: "done", createdAt: at(9) });
+    seedJob(h.store, "gm_new_failed", { status: "failed", createdAt: at(8), channelId: "UC2" });
+    // The newest 2 are the two recent ones; the old unfinished ones are added; the old finished one is left out.
+    assert.deepEqual(
+      (await h.services.listJobsForShare(2)).map((j) => j.jobId),
+      ["gm_new_done", "gm_new_failed", "gm_old_running", "gm_old_queued"]
+    );
+  } finally {
+    await h.cleanup();
+  }
+});

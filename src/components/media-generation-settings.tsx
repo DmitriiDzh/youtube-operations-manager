@@ -21,7 +21,7 @@ import {
   type MediaVolumeUsage,
   type MediaWorkflowTemplate,
 } from "@/lib/media-generation/contracts";
-import { jobMediaKind } from "@/lib/media-generation/contracts";
+import type { PoolDevice, PoolJob, PoolView } from "@/lib/media-jobs-pool/contracts";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { ConfirmDialog } from "./confirm-dialog";
 import { useChannelNames } from "./use-channel-names";
@@ -740,13 +740,30 @@ export function WorkflowTemplatesCard() {
   );
 }
 
-type Job = MediaJob;
+type PoolRow = PoolJob;
 
-// Phase 14 slice 3: the operator's own manual job (an agent's arrives through MCP in slice 5) and the
-// job list; the exchange janitor is run by hand here (dry run first) and daily by the server.
+/** BL-188: the "Компьютер" filter's value -- every computer, or one by its device id. */
+const ALL_DEVICES = "";
+
+/** A computer's name as shown; this computer is marked. Exported for its test. */
+export function poolDeviceLabel(t: Translate, device: Pick<PoolDevice, "hostName" | "own">): string {
+  const name = device.hostName ?? t("media.pool.unnamedDevice");
+  return device.own ? t("media.pool.thisDevice", { name }) : name;
+}
+
+/** Whether a job of the shared list is still under way (it keeps the list polling). Exported for its test. */
+export function poolJobUnderWay(job: Pick<PoolRow, "source" | "status">): boolean {
+  return !(job.source === "runpod" ? ["done", "failed", "cancelled"] : ["done", "failed"]).includes(job.status);
+}
+
+// Phase 14 slice 3: the operator's own manual job (an agent's arrives through MCP in slice 5) and the job list. BL-188
+// (owner msgs 2801/2803/2806): the list is the shared one -- RunPod and Gemini jobs of this computer AND of every other computer,
+// for the active channel and the tab's kind, with the computer each runs on. Stage 1: a peer's job is shown, its actions stay on
+// its own computer (stage 2 relays them).
 export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: string | null; kind?: MediaKind | null }) {
   const { t } = useUiText();
-  const [jobs, setJobs] = useState<Job[]>([]);
+  const [pool, setPool] = useState<PoolView>({ jobs: [], devices: [] });
+  const [deviceFilter, setDeviceFilter] = useState(ALL_DEVICES);
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
   // Slice 6: several sessions may run at once; a job goes to one RUNNING session of the active channel, chosen here.
   const [openSessions, setOpenSessions] = useState<Array<{ sessionId: string; status: string; channelId: string; podId: string | null; createdAt: string }>>([]);
@@ -761,12 +778,12 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
   // needless requests per hour each).
   const fetchJobs = useCallback(
     () =>
-      // BL-157 (AC-SM-03): Media → Jobs is the active channel's (the server resolves the channel).
-      requestJson<{ jobs: Job[] }>("/api/media-generation/jobs?scope=active").then(
-        (j) => setJobs(j.jobs),
+      // BL-157 (AC-SM-03): the active channel's (the server resolves the channel). BL-188: every computer's, of the tab's kind.
+      requestJson<PoolView>(`/api/media-jobs?limit=${POOL_LIST_LIMIT}${kind ? `&kind=${kind}` : ""}`).then(
+        (view) => setPool(view),
         (err: unknown) => setError(err instanceof Error ? err.message : t("media.jobs.loadFailed"))
       ),
-    [t]
+    [t, kind]
   );
   const fetchContext = useCallback(
     () =>
@@ -788,16 +805,9 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
     fetchAll();
   }, [fetchAll]);
 
-  // BL-184 stage 3 (FO-REQ-0024 A): under a kind tab, the jobs of templates that make that kind (or whose kind is not known).
-  const kindOfTemplate = new Map(templates.map((tpl) => [tpl.templateId, tpl.mediaKind]));
-  const shownJobs = kind === null ? jobs : jobs.filter((j) => {
-    // A removed template's jobs are placed by the files they made.
-    const of = jobMediaKind(kindOfTemplate.get(j.templateId), j.outputs.map((o) => o.filename));
-    return !of || of === kind;
-  });
-  const hasActive = jobs.some((j) => !["done", "failed", "cancelled"].includes(j.status));
+  const hasActive = pool.jobs.some(poolJobUnderWay);
   // BL-144: while a job generates, its live ComfyUI progress is refreshed every 2 s; otherwise every 5 s as before.
-  const generating = jobs.some((j) => j.status === "generating" || j.status === "submitted");
+  const generating = pool.jobs.some((j) => j.status === "generating" || j.status === "submitted");
   useEffect(() => {
     if (!hasActive) return;
     const jobsTimer = setInterval(() => void fetchJobs(), generating ? 2_000 : 5_000);
@@ -832,7 +842,7 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
     }
   }
 
-  async function cancel(job: Job) {
+  async function cancel(job: PoolRow) {
     setBusy(true);
     try {
       await requestJson(`/api/media-generation/jobs/${encodeURIComponent(job.jobId)}/cancel`, { method: "POST" });
@@ -849,6 +859,12 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
   const targetSession = runningHere.find((s) => s.sessionId === chosenSessionId) ?? runningHere[0] ?? null;
   const runningElsewhere = openSessions.some((s) => s.status === "running" && s.channelId !== activeChannelId);
   const canRun = Boolean(activeChannelId) && targetSession !== null && templates.length > 0;
+
+  const severalDevices = pool.devices.length > 1;
+  // A computer chosen in the filter that no longer reports falls back to every computer.
+  const filter = pool.devices.some((d) => d.deviceId === deviceFilter) ? deviceFilter : ALL_DEVICES;
+  const shownJobs = filter === ALL_DEVICES ? pool.jobs : pool.jobs.filter((j) => j.deviceId === filter);
+  const staleDevices = pool.devices.filter((d) => d.stale);
 
   return (
     <Card
@@ -903,13 +919,39 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
         </div>
       )}
 
-      {shownJobs.length > 0 && (
+      {severalDevices && (
+        <div className="flex flex-wrap items-center gap-3 border-t border-zinc-800 pt-3">
+          <label className="flex items-center gap-2 text-xs text-zinc-400">
+            {t("media.pool.deviceFilter")}
+            <select value={filter} onChange={(e) => setDeviceFilter(e.target.value)} className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-100 focus:border-zinc-500 focus:outline-none">
+              <option value={ALL_DEVICES}>{t("media.pool.allDevices")}</option>
+              {pool.devices.map((d) => (
+                <option key={d.deviceId} value={d.deviceId}>
+                  {poolDeviceLabel(t, d)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <span className="text-xs text-zinc-500">{t("media.pool.delayNote")}</span>
+        </div>
+      )}
+      {staleDevices.map((d) => (
+        <p key={d.deviceId} className="text-xs text-amber-300">
+          {t("media.pool.staleDevice", { name: poolDeviceLabel(t, d), when: d.updatedAt ? formatDisplayDateTime(d.updatedAt) : "—" })}
+        </p>
+      ))}
+
+      {shownJobs.length === 0 ? (
+        activeChannelId ? <p className="text-xs text-zinc-500">{t("media.pool.empty")}</p> : null
+      ) : (
         <div className="overflow-x-auto">
-          <table className="min-w-[640px] w-full text-left text-xs text-zinc-400">
+          <table className="min-w-[760px] w-full text-left text-xs text-zinc-400">
             <thead>
               <tr className="text-zinc-500">
                 <th className="py-1 pr-3">{t("media.common.colWhen")}</th>
+                {severalDevices && <th className="py-1 pr-3">{t("media.pool.colDevice")}</th>}
                 <th className="py-1 pr-3">{t("media.common.colStatus")}</th>
+                <th className="py-1 pr-3">{t("media.pool.colWhat")}</th>
                 <th className="py-1 pr-3">{t("media.common.colBy")}</th>
                 <th className="py-1 pr-3">{t("media.jobs.colPlan")}</th>
                 <th className="py-1 pr-3">{t("media.jobs.colOutputs")}</th>
@@ -918,12 +960,24 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
               </tr>
             </thead>
             <tbody>
-              {shownJobs.slice(0, 12).map((j) => (
-                <tr key={j.jobId} className="border-t border-zinc-800 align-top">
+              {shownJobs.map((j) => (
+                <tr key={`${j.source}:${j.jobId}`} className="border-t border-zinc-800 align-top">
                   <td className="py-1 pr-3 whitespace-nowrap">{formatDisplayDateTime(j.createdAt)}</td>
+                  {severalDevices && (
+                    <td className={`py-1 pr-3 whitespace-nowrap ${j.own ? "text-zinc-300" : "text-sky-300"}`}>
+                      {poolDeviceLabel(t, { hostName: j.hostName, own: j.own })}
+                    </td>
+                  )}
                   <td className="py-1 pr-3">
                     {mediaStatusLabel(t, j.status)}
-                    {j.progress && <JobProgress progress={j.progress} />}
+                    {j.liveProgress ? <JobProgress progress={j.liveProgress} /> : j.progress ? <JobProgress progress={fromSharedProgress(j.progress)} /> : null}
+                  </td>
+                  <td className="py-1 pr-3">
+                    <span className="mr-1 rounded bg-zinc-800 px-1 text-[10px] uppercase text-zinc-400">{t(j.source === "gemini" ? "media.pool.sourceGemini" : "media.pool.sourceRunpod")}</span>
+                    <span className="text-zinc-300">{j.label}</span>
+                    {j.costUsd !== null && (
+                      <span className="block text-zinc-500">{t(j.costIsEstimate ? "media.pool.costEstimate" : "media.pool.cost", { usd: j.costUsd.toFixed(2) })}</span>
+                    )}
                   </td>
                   <td className="py-1 pr-3">{j.createdBy}</td>
                   {/* BL-162 (AC-UX-11): which plan attempt the job is, instead of ids alone. */}
@@ -938,12 +992,33 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
                       "—"
                     )}
                   </td>
-                  <td className="py-1 pr-3 font-mono" title={`${j.jobId}${j.outputs.length > 0 ? `\n${j.outputs.map((o) => o.localPath ?? o.filename).join("\n")}` : ""}`}>
-                    {j.outputs.length === 0 ? "—" : j.outputs.map((o) => (o.localPath ? (o.localPath.split(/[\\/]/).pop() ?? o.filename) : `${o.filename} (${o.note ?? t("media.jobs.outputPending")})`)).join(", ")}
+                  <td className="py-1 pr-3 font-mono" title={`${j.jobId}${j.outputs.length > 0 ? `\n${j.outputs.map((o) => o.path).join("\n")}` : ""}`}>
+                    {j.outputs.length === 0 && j.pendingOutputs === 0 ? (
+                      "—"
+                    ) : (
+                      <>
+                        {j.outputs.map((o) => (
+                          <span key={o.path} className="block">
+                            {o.name}
+                            {!o.available && <span className="font-sans text-amber-300"> ({t("media.pool.fileNotHereYet", { name: poolDeviceLabel(t, { hostName: j.hostName, own: false }) })})</span>}
+                          </span>
+                        ))}
+                        {j.pendingOutputs > 0 && <span className="block font-sans text-zinc-500">{t("media.pool.outputsPending", { count: j.pendingOutputs })}</span>}
+                      </>
+                    )}
                   </td>
-                  <td className="py-1 pr-3">{j.error ?? ""}</td>
+                  <td className="py-1 pr-3">
+                    {j.own ? (j.error ?? "") : j.status === "failed" ? (
+                      <span>
+                        {t("media.pool.failedElsewhere", { name: poolDeviceLabel(t, { hostName: j.hostName, own: false }) })}
+                        {j.errorCode && <span className="block font-mono text-zinc-500">{j.errorCode}</span>}
+                      </span>
+                    ) : (
+                      ""
+                    )}
+                  </td>
                   <td className="py-1">
-                    {["queued", "submitted", "generating"].includes(j.status) && (
+                    {j.own && j.source === "runpod" && ["queued", "submitted", "generating"].includes(j.status) && (
                       <button type="button" onClick={() => cancel(j)} disabled={busy} className={secondaryButton}>
                         {t("common.cancel")}
                       </button>
@@ -953,6 +1028,7 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
               ))}
             </tbody>
           </table>
+          {pool.jobs.length >= POOL_LIST_LIMIT && <p className="mt-1 text-xs text-zinc-500">{t("media.pool.newestOnly", { count: POOL_LIST_LIMIT })}</p>}
         </div>
       )}
 
@@ -960,6 +1036,9 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
     </Card>
   );
 }
+
+/** BL-188: how many of the newest jobs Media's list shows (every computer's, after the channel and kind filter). */
+const POOL_LIST_LIMIT = 50;
 
 /**
  * The exchange janitor (Phase 14 slice 3), run by hand here (dry run first) and daily by the server. BL-162 (AC-UX-11): it is

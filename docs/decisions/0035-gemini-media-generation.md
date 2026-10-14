@@ -42,3 +42,9 @@ Operator should be able to use it over MCP, and the owner must keep control of t
 - Prices are code constants: a Google price change needs a code change; costs are estimates, not Google's bill.
 - The Veo models are previews; Gemini Omni Flash, the Batch API, Veo extension and plan integration are later items.
 - Countries: the Gemini API does not serve Russia or Belarus; the account and billing must be in a supported country.
+
+## Amendment (2026-10-14, BL-188): Gemini jobs visible on every computer
+
+Owner, Telegram 2026-10-14, msgs 2801/2803/2806. A Gemini job still runs only on the computer that created it (its key and its
+limits). Its status, model, cost, storyboard link, error code and output paths are now published in the `media-jobs` report, so
+every computer lists it in Media. The prompt, the inputs and Google's error text never leave the computer.
