@@ -44,7 +44,7 @@ import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-
 import { createWriteContextCore } from "@/lib/write-context";
 import { createYoutubeClient, getVideoUploadState, listPlaylistItemIdsByVideo, listUploadsPlaylistFirstPage } from "@/lib/youtube-read-gateway";
 import { createWorkspaceExchangeFsForPublishing, resolveWorkspaceFileForPublishing } from "./adapters/files";
-import { createPackageFiles } from "./adapters/package-files";
+import { createWorkspaceVideoFiles } from "@/lib/workspace-videos";
 import { createPackageScan, isPackageThumbnailPath, VIDEOS_FOLDER, type PackageScanDeps } from "./package-scan";
 import { imageKindOf } from "./packages";
 import { authorizedOAuth, createPublishingFinishWrites, createPublishingYoutubeWrites, freshAccessToken } from "./adapters/youtube-writes";
@@ -165,7 +165,7 @@ const PROBE_CACHE_KEY = Symbol.for("ytom.publishing.probeCache");
 /** BL-182 stage 2: the channel's release packages under `04 Videos/`, checked again (Content → «Публикация»). Read-only. */
 export function createPackageScanCore() {
   const scan = createPackageScanReads();
-  const files = createPackageFiles();
+  const files = createWorkspaceVideoFiles();
   return {
     scan: (channelId: string) => scan.reads.scan(channelId),
     /**
@@ -190,7 +190,7 @@ export function createPackageScanCore() {
 
 function createPackageScanReads() {
   const workspaces = createChannelWorkspacesCore();
-  const files = createPackageFiles();
+  const files = createWorkspaceVideoFiles();
   const videoStore = createChannelVideoStoreAdapter();
   const probeCache = (scanHolder[PROBE_CACHE_KEY] ??= new Map<string, number | null>()) as Map<string, number | null>;
   const ffmpeg = async () => {

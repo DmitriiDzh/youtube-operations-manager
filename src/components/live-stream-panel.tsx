@@ -6,6 +6,9 @@ import { errorText } from "@/lib/ui-text";
 import type { UiTextKey } from "@/lib/ui-text";
 import { ConfirmDialog } from "./confirm-dialog";
 import { InfoTooltip } from "./info-tooltip";
+import type { LiveLatency, LiveVideoSettings } from "@/lib/live-streams/fields";
+import { LiveStreamAddVideosDialog } from "./live-stream-add-videos-dialog";
+import { LiveStreamVideoSettingsCard } from "./live-stream-video-settings";
 import { LoadingIndicator } from "./operation-progress";
 import { ToggleSwitch } from "./toggle-switch";
 import { useT } from "./ui-text-provider";
@@ -51,7 +54,20 @@ type Overview = {
     configurationIssues: Array<{ type: string; severity: string | null }>;
     viewers: number | null;
   } | null;
-  startPreview: { createsStream: boolean; units: number; liveWritesEnabled: boolean; moduleReady: boolean } | null;
+  startPreview: {
+    createsStream: boolean;
+    units: number;
+    liveWritesEnabled: boolean;
+    moduleReady: boolean;
+    /** BL-186: the broadcast settings the insert carries (null = never saved: YouTube's defaults). */
+    broadcast?: { settings: LiveVideoSettings["broadcast"] | null };
+    /** BL-186: the saved video-level settings -- shown, not sent by this Start yet. */
+    videoSettings?: Omit<LiveVideoSettings, "broadcast"> | null;
+    videoSettingsApplied?: boolean;
+    videoSettingsProblem?: string | null;
+  } | null;
+  videoSettings: LiveVideoSettings | null;
+  videoSettingsProblem: string | null;
   events: Array<{ id: string; at: string; kind: string; detail: Record<string, unknown> }>;
   state: StreamState;
   peers: Array<{ deviceId: string; hostName: string | null; updatedAt: string; stream: { state: StreamState; since: string | null; playing: { index: number; total: number; videoId: string } | null; viewers: number | null } }>;
@@ -200,6 +216,7 @@ export function LiveStreamPanel({ channelId, visible }: { channelId: string | nu
         <>
           <StatusCard overview={overview} base={base!} onChanged={load} />
           <SettingsCard overview={overview} base={base!} onChanged={load} />
+          <LiveStreamVideoSettingsCard base={base!} saved={overview.videoSettings} problem={overview.videoSettingsProblem} onChanged={load} />
           <RotationCard overview={overview} base={base!} onChanged={load} />
           <HistoryCard overview={overview} />
         </>
@@ -311,7 +328,8 @@ function StatusCard({ overview, base, onChanged }: { overview: Overview; base: s
           title={t("live.start.title")}
           description={t("live.start.description")}
           confirmLabel={t("live.action.start")}
-          confirmDisabled={!preview.liveWritesEnabled}
+          // BL-186: unusable saved settings refuse Start on the server before any call -- the dialog does not offer it.
+          confirmDisabled={!preview.liveWritesEnabled || Boolean(preview.videoSettingsProblem)}
           onCancel={() => setDialog(null)}
           onConfirm={() => void run(() => requestJson(`${base}/start`, json("POST", {}), t("live.actionFailed"), t), t("live.start.done"))}
         >
@@ -328,9 +346,24 @@ function StatusCard({ overview, base, onChanged }: { overview: Overview; base: s
             <dd className="text-zinc-200">{t("live.start.autoStopValue")}</dd>
             <dt className="text-zinc-500">{t("live.start.recording")}</dt>
             <dd className="text-zinc-200">{t("live.start.recordingValue")}</dd>
+            {preview.broadcast?.settings && (
+              <>
+                <dt className="text-zinc-500">{t("live.video.field.latency")}</dt>
+                <dd className="text-zinc-200">{t(LATENCY_KEYS[preview.broadcast.settings.latencyPreference])}</dd>
+                <dt className="text-zinc-500">{t("live.video.field.dvr")}</dt>
+                <dd className="text-zinc-200">{preview.broadcast.settings.enableDvr ? t("live.yes") : t("live.no")}</dd>
+                <dt className="text-zinc-500">{t("live.video.field.embed")}</dt>
+                <dd className="text-zinc-200">{preview.broadcast.settings.enableEmbed ? t("live.yes") : t("live.no")}</dd>
+                <dt className="text-zinc-500">{t("live.video.field.captions")}</dt>
+                <dd className="text-zinc-200">{t("live.video.captionsOff")}</dd>
+              </>
+            )}
             <dt className="text-zinc-500">{t("live.start.units")}</dt>
             <dd className="text-zinc-200">{t("live.start.unitsValue", { units: String(preview.units) })}</dd>
           </dl>
+          {!preview.broadcast?.settings && !preview.videoSettingsProblem && <p className="text-xs text-zinc-400">{t("live.start.broadcastDefaults")}</p>}
+          {preview.videoSettings && <StartVideoSettingsSummary settings={preview.videoSettings} />}
+          {preview.videoSettingsProblem && <p className="text-xs text-amber-300">{t("live.video.problem", { problem: preview.videoSettingsProblem })}</p>}
           {preview.createsStream && <p className="text-xs text-zinc-400">{t("live.start.createsStream")}</p>}
           {!preview.liveWritesEnabled && <p className="text-xs text-amber-300">{t("live.liveWritesOff")}</p>}
         </ConfirmDialog>
@@ -364,6 +397,43 @@ function StatusCard({ overview, base, onChanged }: { overview: Overview; base: s
           {!preview?.liveWritesEnabled && <p className="text-xs text-amber-300">{t("live.liveWritesOff")}</p>}
         </ConfirmDialog>
       )}
+    </div>
+  );
+}
+
+const LATENCY_KEYS: Record<LiveLatency, UiTextKey> = {
+  normal: "live.video.latency.normal",
+  low: "live.video.latency.low",
+  ultraLow: "live.video.latency.ultraLow",
+};
+
+/** BL-186 (LIVE_STREAMS_FIELDS_PLAN.md §5 stage 2): the saved video-level settings in the Start dialog, marked as not sent yet. */
+function StartVideoSettingsSummary({ settings }: { settings: Omit<LiveVideoSettings, "broadcast"> }) {
+  const t = useT();
+  const marks = [
+    settings.containsSyntheticMedia && t("live.video.field.synthetic"),
+    settings.paidProductPlacement && t("live.video.field.paidPromotion"),
+  ].filter(Boolean);
+  return (
+    <div className="space-y-1 rounded-lg border border-zinc-800 p-2 text-xs">
+      <p className="text-zinc-300">{t("live.start.videoSettingsTitle")}</p>
+      <p className="text-amber-300">{t("live.start.videoSettingsNotSent")}</p>
+      <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1">
+        <dt className="text-zinc-500">{t("live.video.field.tags")}</dt>
+        <dd className="text-zinc-200">{settings.tags.length > 0 ? settings.tags.join(", ") : "—"}</dd>
+        <dt className="text-zinc-500">{t("live.video.field.category")}</dt>
+        <dd className="text-zinc-200">{settings.categoryId ? t(`publishingSettings.category.${settings.categoryId}` as UiTextKey) : "—"}</dd>
+        <dt className="text-zinc-500">{t("live.video.field.defaultLanguage")}</dt>
+        <dd className="text-zinc-200">{settings.defaultLanguage ?? "—"}</dd>
+        <dt className="text-zinc-500">{t("live.video.field.audioLanguage")}</dt>
+        <dd className="text-zinc-200">{settings.defaultAudioLanguage ?? "—"}</dd>
+        <dt className="text-zinc-500">{t("live.video.section.marks")}</dt>
+        <dd className="text-zinc-200">{marks.length > 0 ? marks.join(", ") : "—"}</dd>
+        <dt className="text-zinc-500">{t("live.video.section.playlists")}</dt>
+        <dd className="text-zinc-200">{settings.playlists.length > 0 ? settings.playlists.map((p) => p.title || p.id).join(", ") : "—"}</dd>
+        <dt className="text-zinc-500">{t("live.video.section.thumbnail")}</dt>
+        <dd className="text-zinc-200">{settings.thumbnail ? t("live.yes") : t("live.no")}</dd>
+      </dl>
     </div>
   );
 }
@@ -528,6 +598,7 @@ function RotationCard({ overview, base, onChanged }: { overview: Overview; base:
   const [overrideFor, setOverrideFor] = useState<string | null>(null);
   const [reason, setReason] = useState("");
   const [removeFor, setRemoveFor] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const rotation = overview.rotation;
   const inRotation = useMemo(() => new Set(rotation.map((v) => v.videoId)), [rotation]);
   const offered = overview.sources.filter((s) => !inRotation.has(s.videoId));
@@ -607,50 +678,58 @@ function RotationCard({ overview, base, onChanged }: { overview: Overview; base:
         </ol>
       )}
       <div className="space-y-2 border-t border-zinc-800 pt-3">
-        <p className="text-sm text-zinc-300">{t("live.rotation.add")}</p>
-        {offered.length > 0 && (
-          <label className="flex flex-wrap items-center gap-2 text-sm text-zinc-400">
-            <span>{t("live.rotation.fromMap")}</span>
-            <select
-              value=""
-              onChange={(e) => {
-                const source = offered.find((s) => s.videoId === e.target.value);
-                if (source) {
-                  setVideoId(source.videoId);
-                  setFile(source.file);
+        <button onClick={() => setPickerOpen(true)} disabled={busy} className={primaryClass}>
+          {t("live.picker.open")}
+        </button>
+        <details className="text-sm">
+          <summary className="cursor-pointer text-xs text-zinc-400 hover:text-zinc-200">{t("live.picker.manual")}</summary>
+          <div className="mt-2 space-y-2">
+            {offered.length > 0 && (
+              <label className="flex flex-wrap items-center gap-2 text-sm text-zinc-400">
+                <span>{t("live.rotation.fromMap")}</span>
+                <select
+                  value=""
+                  onChange={(e) => {
+                    const source = offered.find((s) => s.videoId === e.target.value);
+                    if (source) {
+                      setVideoId(source.videoId);
+                      setFile(source.file);
+                    }
+                  }}
+                  disabled={busy}
+                  className={`${inputClass} max-w-md`}
+                >
+                  <option value="">{t("live.rotation.pick")}</option>
+                  {offered.map((s) => (
+                    <option key={s.videoId} value={s.videoId}>
+                      {s.videoId} — {s.file}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <div className="flex flex-wrap items-center gap-2">
+              <input type="text" value={videoId} onChange={(e) => setVideoId(e.target.value.trim())} placeholder={t("live.rotation.videoIdPlaceholder")} aria-label={t("live.rotation.videoId")} disabled={busy} className={`${inputClass} w-40 font-mono`} />
+              <input type="text" value={file} onChange={(e) => setFile(e.target.value)} placeholder={t("live.rotation.filePlaceholder")} aria-label={t("live.rotation.file")} disabled={busy} className={`${inputClass} min-w-64 flex-1`} />
+              <button
+                onClick={() =>
+                  void run(async () => {
+                    await requestJson(`${base}/rotation`, json("POST", file.trim() ? { videoId, originalPath: file.trim() } : { videoId }), t("live.actionFailed"), t);
+                    setVideoId("");
+                    setFile("");
+                  }, t("live.rotation.added"))
                 }
-              }}
-              disabled={busy}
-              className={`${inputClass} max-w-md`}
-            >
-              <option value="">{t("live.rotation.pick")}</option>
-              {offered.map((s) => (
-                <option key={s.videoId} value={s.videoId}>
-                  {s.videoId} — {s.file}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-        <div className="flex flex-wrap items-center gap-2">
-          <input type="text" value={videoId} onChange={(e) => setVideoId(e.target.value.trim())} placeholder={t("live.rotation.videoIdPlaceholder")} aria-label={t("live.rotation.videoId")} disabled={busy} className={`${inputClass} w-40 font-mono`} />
-          <input type="text" value={file} onChange={(e) => setFile(e.target.value)} placeholder={t("live.rotation.filePlaceholder")} aria-label={t("live.rotation.file")} disabled={busy} className={`${inputClass} min-w-64 flex-1`} />
-          <button
-            onClick={() =>
-              void run(async () => {
-                await requestJson(`${base}/rotation`, json("POST", file.trim() ? { videoId, originalPath: file.trim() } : { videoId }), t("live.actionFailed"), t);
-                setVideoId("");
-                setFile("");
-              }, t("live.rotation.added"))
-            }
-            disabled={busy || !/^[A-Za-z0-9_-]{11}$/.test(videoId)}
-            className={primaryClass}
-          >
-            {t("live.rotation.addButton")}
-          </button>
-        </div>
-        <p className="text-xs text-zinc-500">{t("live.rotation.addHint")}</p>
+                disabled={busy || !/^[A-Za-z0-9_-]{11}$/.test(videoId)}
+                className={primaryClass}
+              >
+                {t("live.rotation.addButton")}
+              </button>
+            </div>
+            <p className="text-xs text-zinc-500">{t("live.rotation.addHint")}</p>
+          </div>
+        </details>
       </div>
+      {pickerOpen && <LiveStreamAddVideosDialog base={base} rotationIds={inRotation} onClose={() => setPickerOpen(false)} onAdded={onChanged} />}
       {busy && <LoadingIndicator className="text-xs text-zinc-400" />}
       {error && <p className="text-xs text-red-400">{error}</p>}
       {notice && <p className="text-xs text-emerald-400">{notice}</p>}

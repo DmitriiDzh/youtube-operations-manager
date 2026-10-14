@@ -1,3 +1,4 @@
+import { parseUploadRecord, stripBom, VIDEOS_FOLDER, walkVideosFolder, type DirEntry } from "@/lib/workspace-videos";
 import {
   imageKindOf,
   packageProblems,
@@ -12,9 +13,8 @@ import {
 // BL-182 stage 2 (PUBLISHING_PLAN.md §2 stage 2 items 1 and 3; FO-REQ-0023 §6 question 1, "the scan"): the channel's release
 // packages, found under `<workspace>/04 Videos/`, each checked again and given its state. Read-only: nothing on disk is changed.
 
-export const VIDEOS_FOLDER = "04 Videos";
-/** `04 Videos/<MM Month>/<MMDD Vn>/Vn_release.json`: three levels below the folder at most. */
-const MAX_DEPTH = 3;
+export { VIDEOS_FOLDER };
+export type { DirEntry };
 /** A manifest is a few kilobytes; anything far larger is not one. */
 const MANIFEST_MAX_BYTES = 1024 * 1024;
 
@@ -51,8 +51,6 @@ export type PackageScanResult =
   | { status: "workspace_unavailable"; reason: string }
   | { status: "ok"; packages: ScannedPackage[] };
 
-export type DirEntry = { name: string; kind: "dir" | "file" | "other" };
-
 export type PackageScanDeps = {
   /** The channel's workspace path on this computer, or null when not set (`channel-workspaces`). */
   workspace(channelId: string): Promise<string | null>;
@@ -74,18 +72,9 @@ export type PackageScanDeps = {
   clock: { now(): Date };
 };
 
-async function findManifests(deps: PackageScanDeps, workspace: string): Promise<string[]> {
-  const found: string[] = [];
-  const walk = async (relative: string, depth: number) => {
-    const entries = await deps.listDir(deps.join(workspace, ...relative.split("/")));
-    for (const entry of entries) {
-      const child = `${relative}/${entry.name}`;
-      if (entry.kind === "file" && RELEASE_PACKAGE_FILE_PATTERN.test(entry.name)) found.push(child);
-      else if (entry.kind === "dir" && depth < MAX_DEPTH && !entry.name.startsWith(".")) await walk(child, depth + 1);
-    }
-  };
-  await walk(VIDEOS_FOLDER, 1);
-  return found.sort();
+/** `04 Videos/<MM Month>/<MMDD Vn>/Vn_release.json` (the shared `workspace-videos` walk). */
+function findManifests(deps: PackageScanDeps, workspace: string): Promise<string[]> {
+  return walkVideosFolder(deps, workspace, (name) => RELEASE_PACKAGE_FILE_PATTERN.test(name));
 }
 
 function stateOf(record: { videoId: string } | null, video: { privacyStatus: string; publishAt: string | null } | undefined, problems: PackageProblem[], nowMs: number): PackageState {
@@ -101,7 +90,7 @@ function stateOf(record: { videoId: string } | null, video: { privacyStatus: str
 export function createPackageScan(deps: PackageScanDeps) {
   async function readJson(path: string): Promise<unknown> {
     // The factory's text files carry a BOM; JSON.parse does not accept one.
-    return JSON.parse((await deps.readText(path, MANIFEST_MAX_BYTES)).replace(/^﻿/, ""));
+    return JSON.parse(stripBom(await deps.readText(path, MANIFEST_MAX_BYTES)));
   }
 
   async function scanOne(workspace: string, manifestPath: string, channel: ChannelExpectations, videos: Awaited<ReturnType<PackageScanDeps["videos"]>>): Promise<ScannedPackage | null> {
@@ -141,9 +130,7 @@ export function createPackageScan(deps: PackageScanDeps) {
     const recordFile = await deps.resolveFile(workspace, `${folder}/${youtubeRecordFileName(pkg.video)}`);
     let record: { videoId: string } | null = null;
     if (recordFile) {
-      const value = await readJson(recordFile.path).catch(() => null);
-      const videoId = value && typeof value === "object" ? (value as { videoId?: unknown }).videoId : undefined;
-      record = typeof videoId === "string" && videoId !== "" ? { videoId } : null;
+      record = await deps.readText(recordFile.path, MANIFEST_MAX_BYTES).then(parseUploadRecord, () => null);
     }
     const sameTitle = videos.find((video) => video.title === pkg.title);
     const problems = packageProblems(

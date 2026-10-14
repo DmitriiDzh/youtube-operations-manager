@@ -57,6 +57,15 @@ disconnected by itself.
   x264 stream starved over the Mac's Wi-Fi (spike B).
 - Quota: each live method costs 1 unit; two running streams cost about 1,440 units a day in status polls.
 
+## Amendment 2026-10-14 (BL-186 stage 2, `docs/roadmap/plans/LIVE_STREAMS_FIELDS_PLAN.md`)
+
+The owner asked for every API-settable field of the broadcast in the stream's settings (Telegram msgs 2782/2785, "ок" to the plan
+msg 2788). Start's `liveBroadcasts.insert` may now also carry the owner's saved `latencyPreference`, `enableDvr`, `enableEmbed`
+and `closedCaptionsType` (only `closedCaptionsDisabled`). It is the same attended write as before -- one call, no new unit, Live
+writes and the identity check unchanged -- and a stream whose settings were never saved sends exactly what it sent before. The
+video-level settings (tags, category, languages, marks, thumbnail, playlists) are saved and shown, but writing them is a later
+stage that waits for a real test broadcast (spike C) and the owner's separate "да".
+
 ## Alternatives rejected
 
 - **All originals on the internal disk:** 47 GB does not fit in 30 GB free.

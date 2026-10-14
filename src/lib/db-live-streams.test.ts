@@ -125,3 +125,20 @@ test("live_stream_events newest first per channel; live_stream_sources replaced 
     await upsertLiveStreamSource({ channelId: "UC1", videoId: "A", originalPath: "04 Videos/a2.mp4", setBy: "operator", setAt: T }, database);
     assert.deepEqual((await listLiveStreamSources("UC1", database)).map((s) => s.originalPath), ["04 Videos/a2.mp4"]);
   }));
+
+// BL-186 (LIVE_STREAMS_FIELDS_PLAN.md §3.2): schema v92 adds the stream's video settings -- null until saved, and a later write of
+// other columns (or the whole row without it) never clears it.
+test("v92: video_settings_json is null on a new row, set by an update, kept by other writes", async () => {
+  await withDb(async (database, client) => {
+    const columns = await client.execute("PRAGMA table_info(live_streams)");
+    assert.ok(columns.rows.some((row) => row.name === "video_settings_json"));
+    await upsertLiveStream(stream(), database);
+    assert.equal((await getLiveStream("UC1", database))?.videoSettingsJson, null);
+    assert.equal(await updateLiveStream("UC1", { videoSettingsJson: '{"v":1}' }, database), true);
+    await updateLiveStream("UC1", { title: "Other", updatedAt: T }, database);
+    await upsertLiveStream(stream({ title: "Again" }), database);
+    const row = await getLiveStream("UC1", database);
+    assert.equal(row?.title, "Again");
+    assert.equal(row?.videoSettingsJson, '{"v":1}');
+  });
+});

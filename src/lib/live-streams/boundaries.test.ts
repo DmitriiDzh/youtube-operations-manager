@@ -17,7 +17,7 @@ async function sourceFiles(dir: string): Promise<string[]> {
 }
 
 const lib = path.join(process.cwd(), "src", "lib");
-const FEATURE_MODULES = ["media-generation", "generation-plans", "gemini-media", "batches", "changesets", "video-details", "playlist-management", "video-comments"];
+const FEATURE_MODULES = ["media-generation", "generation-plans", "gemini-media", "batches", "changesets", "video-details", "playlist-management", "video-comments", "publishing"];
 
 test("live-streams imports no other feature module and no Google client directly", async () => {
   const offenders: string[] = [];

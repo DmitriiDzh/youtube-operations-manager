@@ -3,19 +3,15 @@
 // Pure: the facts about the files (exists, size, type, duration) are gathered by the scan and passed in. The package is never
 // edited; a problem is reported, not fixed.
 
+// The YouTube field limits live in the shared `youtube-video-fields` module (also used by live-streams); re-exported unchanged.
+export { DESCRIPTION_MAX_BYTES, imageKindOf, TAGS_MAX_CHARACTERS, tagsLength, THUMBNAIL_MAX_BYTES, TITLE_MAX_CHARACTERS } from "@/lib/youtube-video-fields";
+import { DESCRIPTION_MAX_BYTES, TAGS_MAX_CHARACTERS, tagsLength, THUMBNAIL_MAX_BYTES, TITLE_MAX_CHARACTERS } from "@/lib/youtube-video-fields";
+
 export const RELEASE_PACKAGE_SCHEMA = "yt-release-package/1";
 export const RELEASE_PACKAGE_FILE_PATTERN = /^V\d+_release\.json$/;
 /** Written next to the package after an upload (FO-REQ-0023 §4 A2). */
 export const youtubeRecordFileName = (video: string) => `${video}_youtube.json`;
 
-/** YouTube Data API videos resource: snippet.title "maximum length of 100 characters ... all valid UTF-8 characters except < and >". */
-export const TITLE_MAX_CHARACTERS = 100;
-/** snippet.description "maximum length of 5000 bytes ... all valid UTF-8 characters except < and >". */
-export const DESCRIPTION_MAX_BYTES = 5000;
-/** snippet.tags "maximum length of 500 characters": the commas between tags count, and a tag with a space counts its quotes. */
-export const TAGS_MAX_CHARACTERS = 500;
-/** thumbnails.set: "Maximum file size: 2MB", image/jpeg or image/png. */
-export const THUMBNAIL_MAX_BYTES = 2 * 1024 * 1024;
 /** The package's own duration and ffprobe's may differ by rounding, not by a different file. */
 const DURATION_TOLERANCE_SECONDS = 1;
 /** YouTube chapters: the first starts at 0:00, at least three, each at least 10 seconds long. */
@@ -110,12 +106,6 @@ export function parseReleasePackage(raw: unknown): { pkg: ReleasePackage | null;
   };
 }
 
-/** snippet.tags as YouTube counts it: each tag, its quotes when it has a space, and a comma between tags. */
-export function tagsLength(tags: readonly string[]): number {
-  if (tags.length === 0) return 0;
-  return tags.reduce((sum, tag) => sum + [...tag].length + (/\s/.test(tag) ? 2 : 0), 0) + (tags.length - 1);
-}
-
 /** The chapter timestamps of a description: lines that start with m:ss, mm:ss or h:mm:ss. */
 export function chapterStarts(description: string): number[] {
   const starts: number[] = [];
@@ -180,12 +170,4 @@ export function packageProblems(pkg: ReleasePackage, facts: PackageFacts, channe
   }
   if (!facts.youtubeRecordExists && facts.sameTitleVideoId !== null) problems.push({ code: "same_title_on_channel", params: { videoId: facts.sameTitleVideoId } });
   return problems;
-}
-
-/** JPEG starts with FF D8 FF; PNG with 89 50 4E 47 0D 0A 1A 0A. */
-export function imageKindOf(head: Uint8Array): "jpeg" | "png" | "other" {
-  if (head.length >= 3 && head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) return "jpeg";
-  const png = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
-  if (head.length >= 8 && png.every((byte, i) => head[i] === byte)) return "png";
-  return "other";
 }

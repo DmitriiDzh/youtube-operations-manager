@@ -13,7 +13,7 @@ function googleError(reason: string) {
   return Object.assign(new Error(reason), { response: { status: 403, data: { error: { errors: [{ reason }] } } } });
 }
 
-function harness(opts: { liveWrites?: boolean; streamId?: string | null; broadcastId?: string | null; intent?: "on" | "off"; wrongChannel?: boolean; transitionError?: string; bindError?: string; readBack?: Partial<{ title: string }>; encoderFails?: boolean } = {}) {
+function harness(opts: { liveWrites?: boolean; streamId?: string | null; broadcastId?: string | null; intent?: "on" | "off"; wrongChannel?: boolean; transitionError?: string; bindError?: string; readBack?: Partial<{ title: string }>; encoderFails?: boolean; videoSettingsJson?: string | null } = {}) {
   const calls: string[] = [];
   const events: Array<{ kind: string; detail: Record<string, unknown> }> = [];
   let stream = {
@@ -25,6 +25,7 @@ function harness(opts: { liveWrites?: boolean; streamId?: string | null; broadca
     description: "24/7",
     privacyStatus: "unlisted" as LivePrivacy,
     madeForKids: false,
+    videoSettingsJson: opts.videoSettingsJson ?? null,
   };
   let broadcast = { broadcastId: "BC1", title: "Tropico Jazz Radio", description: "24/7", scheduledStartTime: "2026-10-12T12:02:00.000Z", scheduledEndTime: null, lifeCycleStatus: "live", privacyStatus: "unlisted", categoryId: "10" };
   const sent: Record<string, unknown> = {};
@@ -280,4 +281,75 @@ test("two Starts at the same moment make ONE set of YouTube writes; the second i
   const results = await Promise.allSettled([h.broadcasts.start("UC1", { userId: "u1" }), h.broadcasts.start("UC1", { userId: "u1" })]);
   assert.deepEqual(results.map((r) => r.status).sort(), ["fulfilled", "rejected"]);
   assert.equal(h.calls.filter((c) => c === "liveBroadcasts.insert").length, 1);
+});
+
+// BL-186 (LIVE_STREAMS_FIELDS_PLAN.md §2.1/§4.1 "Start"; stage 2): the saved broadcast settings ride on the insert -- no extra call,
+// no extra unit; never saved, the insert is exactly what it was before; a stored value that fails the schema refuses Start before
+// any call. The video-level settings are shown by the dry run but not sent yet (stage 3, after spike C).
+const SAVED_SETTINGS = JSON.stringify({
+  v: 1,
+  tags: ["jazz", "lofi radio"],
+  categoryId: "10",
+  defaultLanguage: "en",
+  defaultAudioLanguage: "zxx",
+  license: "youtube",
+  publicStatsViewable: true,
+  containsSyntheticMedia: true,
+  paidProductPlacement: false,
+  recordingDate: null,
+  playlists: [{ id: "PL0123456789abcdefghijklmnopqrstuv", title: "Radio" }],
+  thumbnail: null,
+  broadcast: { latencyPreference: "low", enableDvr: false, enableEmbed: true, closedCaptionsType: "closedCaptionsDisabled" },
+});
+
+test("Start: saved broadcast settings go into the insert, with the same 5 calls", async () => {
+  const h = harness({ videoSettingsJson: SAVED_SETTINGS });
+  await h.broadcasts.start("UC1", { userId: "u1" });
+  assert.deepEqual(YOUTUBE_CALLS(h.calls), ["videos.list", "liveStreams.insert", "liveBroadcasts.insert", "liveBroadcasts.bind", "liveStreams.list"]);
+  const insert = h.sent.broadcast as Record<string, unknown>;
+  assert.equal(insert.latencyPreference, "low");
+  assert.equal(insert.enableDvr, false);
+  assert.equal(insert.enableEmbed, true);
+  assert.equal(insert.closedCaptionsType, "closedCaptionsDisabled");
+  assert.equal(insert.recordFromStart, false, "the fixed values stay");
+  assert.equal(insert.enableAutoStop, false);
+  assert.equal("tags" in insert, false, "video-level fields are not part of the broadcast insert");
+});
+
+test("Start: never-saved settings leave the insert exactly as before BL-186", async () => {
+  const h = harness();
+  await h.broadcasts.start("UC1", { userId: "u1" });
+  assert.deepEqual(Object.keys(h.sent.broadcast as object).sort(), [
+    "description",
+    "enableAutoStart",
+    "enableAutoStop",
+    "enableMonitorStream",
+    "privacyStatus",
+    "recordFromStart",
+    "scheduledStartTime",
+    "selfDeclaredMadeForKids",
+    "title",
+  ]);
+});
+
+test("Start: a stored value that fails the schema is refused before the identity check or any call", async () => {
+  for (const bad of ["{not json", JSON.stringify({ ...JSON.parse(SAVED_SETTINGS), broadcast: { latencyPreference: "fast", enableDvr: true, enableEmbed: true, closedCaptionsType: "closedCaptionsDisabled" } })]) {
+    const h = harness({ videoSettingsJson: bad });
+    await assert.rejects(h.broadcasts.start("UC1", { userId: "u1" }), (error: unknown) => error instanceof DomainError && error.code === "validation_failed");
+    assert.deepEqual(h.calls, []);
+  }
+});
+
+test("previewStart: shows the broadcast settings sent and the saved video settings as not sent, units unchanged", async () => {
+  const preview = await harness({ videoSettingsJson: SAVED_SETTINGS }).broadcasts.previewStart("UC1");
+  assert.deepEqual(preview.broadcast.settings, { latencyPreference: "low", enableDvr: false, enableEmbed: true, closedCaptionsType: "closedCaptionsDisabled" });
+  assert.deepEqual(preview.videoSettings?.tags, ["jazz", "lofi radio"]);
+  assert.equal(preview.videoSettingsApplied, false);
+  assert.equal(preview.videoSettingsProblem, null);
+  assert.equal(preview.units, 5);
+  const never = await harness().broadcasts.previewStart("UC1");
+  assert.equal(never.broadcast.settings, null);
+  assert.equal(never.videoSettings, null);
+  const corrupt = await harness({ videoSettingsJson: "{" }).broadcasts.previewStart("UC1");
+  assert.match(String(corrupt.videoSettingsProblem), /not valid JSON/);
 });

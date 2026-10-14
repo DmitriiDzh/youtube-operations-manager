@@ -10,6 +10,7 @@ import {
   insertLiveStreamEvent,
   listLiveStreamVideos,
   listLiveStreams,
+  listStoredVideosByChannel,
   setLiveStreamsSettingsJson,
   updateLiveStream,
 } from "@/lib/db";
@@ -21,18 +22,22 @@ import { createLiveStreamsShareCoreForProduction, LIVE_STREAMS_REPORT_FORMAT, LI
 import { getBootstrapDeviceId } from "./adapters/device-id";
 import { createBufferFs } from "./adapters/buffer-fs";
 import { createLiveStreamsFiles } from "./adapters/files";
+import { createPickerFiles } from "./adapters/picker-files";
 import { createHelperProcess, createSupervisorFiles } from "./adapters/helper-process";
 import { createLiveStreamsStore } from "./adapters/store";
+import { createThumbnailFs } from "./adapters/thumbnail-fs";
 import { createLiveStreamsYoutubeReads } from "./adapters/youtube-api";
 import { createLiveStreamBuffer } from "./buffer";
 import { createLiveBroadcasts } from "./broadcasts";
 import { createLiveStreamsYoutubeWrites } from "./adapters/youtube-writes";
 import { createLiveStreamsRunner } from "./runner";
 import { liveNotices, type LiveNotice } from "./notices";
+import { createRotationPicker } from "./picker-service";
 import { streamReportEntry, type StreamReportEntry } from "./report";
 import { createLiveStreamsServices } from "./services";
 import { createLiveStreamsSettings, liveStreamsHost } from "./settings";
 import { createStreamSupervisor } from "./supervisor";
+import { createStreamVideoSettings } from "./video-settings";
 
 // BL-176 (docs/roadmap/plans/LIVE_STREAMS_PLAN.md, ADR 0036): the live-streams module wired to its real adapters.
 
@@ -54,6 +59,40 @@ export function createLiveStreamsCore() {
 }
 
 export type LiveStreamsCore = ReturnType<typeof createLiveStreamsCore>;
+
+/** BL-186: the stream's own video and broadcast settings and its thumbnail, saved on this computer. Local only. */
+export function createStreamVideoSettingsCore() {
+  return createStreamVideoSettings({
+    store: createLiveStreamsStore(),
+    thumbnails: createThumbnailFs(getProductionAppPaths().liveStreamsThumbnailsDir),
+    clock: () => new Date(),
+    newId: () => randomUUID(),
+  });
+}
+
+/** BL-187: the «Добавить видео…» dialog's list -- `04 Videos/` of the channel workspace matched to the channel's videos. Read-only. */
+export function createRotationPickerCore() {
+  const workspaces = createChannelWorkspacesCore();
+  const store = createLiveStreamsStore();
+  return createRotationPicker({
+    ...createPickerFiles(),
+    workspace: (channelId) => workspaces.getWorkspace({ channelId }),
+    async channelVideos(channelId) {
+      return (await listStoredVideosByChannel(channelId)).map((v) => ({
+        videoId: v.videoId,
+        title: v.title,
+        privacyStatus: v.privacyStatus,
+        publishAt: v.publishAt,
+        publishedAt: v.publishedAt || null,
+        durationSeconds: v.durationSeconds,
+        thumbnailUrl: (v.thumbnails.medium ?? v.thumbnails.default ?? Object.values(v.thumbnails)[0])?.url ?? null,
+      }));
+    },
+    rotation: async (channelId) => (await store.listVideos(channelId)).map((v) => ({ videoId: v.videoId, originalPath: v.originalPath })),
+    sources: async (channelId) => (await store.listSources(channelId)).map((s) => ({ videoId: s.videoId, originalPath: s.originalPath })),
+    clock: () => new Date(),
+  });
+}
 
 /** This computer's live-streams settings; the switch turns on only on the Mac's system service. */
 export function createLiveStreamsSettingsCore() {
@@ -209,4 +248,6 @@ export type { LiveNotice } from "./notices";
 export type { StreamReportEntry, LiveStreamState } from "./report";
 export type { LiveStreamsRunner } from "./runner";
 export * from "./contracts";
+export type { PickerRow, PickerRowState, PickerVideo, MatchSource } from "./picker";
+export type { PickerResult } from "./picker-service";
 export { checkOriginal, checkPublicOnly, classifyRunEnd, locatePlayback, passLength, planBuffer, canCopyIntoBuffer } from "./rotation";

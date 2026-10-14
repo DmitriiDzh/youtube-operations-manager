@@ -56,6 +56,15 @@ export type LiveBroadcastInsert = {
   enableMonitorStream: boolean;
   /** `false`: YouTube keeps no recording of the broadcast (owner, 2026-10-14). Only a channel allowed to disable recordings may send it; otherwise `Forbidden`. */
   recordFromStart: boolean;
+  /**
+   * BL-186 (LIVE_STREAMS_FIELDS_PLAN.md §2.1): the stream's own broadcast settings, sent only when the owner saved them (left out,
+   * YouTube applies its defaults, exactly as before). `enableDvr` and `closedCaptionsType` cannot change once the broadcast is
+   * testing or live, so they are set here, at insert. `enableClosedCaptions` is deprecated: only `closedCaptionsType` is sent.
+   */
+  latencyPreference?: "normal" | "low" | "ultraLow";
+  enableDvr?: boolean;
+  enableEmbed?: boolean;
+  closedCaptionsType?: "closedCaptionsDisabled" | "closedCaptionsHttpPost" | "closedCaptionsEmbedded";
 };
 
 /** Real `liveBroadcasts.insert`. Caller calls `assertLiveWritesAuthorized()` first. */
@@ -80,6 +89,10 @@ export async function insertLiveBroadcast(
         enableAutoStop: broadcast.enableAutoStop,
         monitorStream: { enableMonitorStream: broadcast.enableMonitorStream },
         recordFromStart: broadcast.recordFromStart,
+        ...(broadcast.latencyPreference !== undefined ? { latencyPreference: broadcast.latencyPreference } : {}),
+        ...(broadcast.enableDvr !== undefined ? { enableDvr: broadcast.enableDvr } : {}),
+        ...(broadcast.enableEmbed !== undefined ? { enableEmbed: broadcast.enableEmbed } : {}),
+        ...(broadcast.closedCaptionsType !== undefined ? { closedCaptionsType: broadcast.closedCaptionsType } : {}),
       },
     },
   });

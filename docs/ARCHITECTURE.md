@@ -3770,6 +3770,29 @@ Plan: `docs/roadmap/plans/LIVE_STREAMS_PLAN.md` (FO-REQ-0019). Schema v86, Facto
   write. A running stream is not "busy" for the idle watcher.
 - **Other computers** see the `live-streams` per-device report (`sync-gateway/live-streams`, strict fixed codes); the Operator reads
   `factory_live_get_status` and maps files with `factory_live_map_sources`. Bell notices: down, ended by YouTube, next video missing.
+- **Adding by checkboxes** (BL-187, `docs/roadmap/plans/LIVE_STREAMS_FIELDS_PLAN.md` §2.4; `picker.ts`, `picker-service.ts`,
+  `adapters/picker-files.ts`, `src/components/live-stream-add-videos-dialog.tsx`). `GET .../live-stream/rotation/candidates`
+  lists the video files under `04 Videos/` (the shared `workspace-videos` walk; `?all=1` adds source clips and folders without a
+  V-number). A release file is the one file in a `MMDD Vn` folder named after its Vn; two such files: neither is matched by the
+  folder. Match sources, strongest first: the Operator's map (exact file), `Vn_youtube.json`, `video_registry.csv`'s row for the
+  folder (read tolerantly; its format is not a contract); only the channel's own videos count, and sources naming different
+  videos give a conflict and no match. Otherwise the owner picks from the channel's videos within 1 s of the file (ffprobe,
+  cached by path, size and mtime). Nothing is ticked for the owner. `POST .../rotation/batch` runs `addVideo` for each item in
+  order (all its checks, a fresh YouTube read each); a refusal is reported and does not stop the rest; a missing workspace stops
+  the batch. Read-only on disk; no YouTube write.
+- **The stream's YouTube settings** (BL-186 stage 2, `LIVE_STREAMS_FIELDS_PLAN.md` §2.1/§3.2; `fields.ts`, `video-settings.ts`,
+  `adapters/thumbnail-fs.ts`, `src/components/live-stream-video-settings.tsx`). Schema v92 `live_streams.video_settings_json` holds
+  every field the API can set: tags (500 characters as YouTube counts them), category, title/description and audio languages (the
+  app's YouTube list; `zxx` for audio), recording date (midnight UTC), license, synthetic-media and paid-promotion marks, public like
+  count, up to 10 playlists, the thumbnail's facts (kind, size, SHA-256; the JPEG/PNG of at most 2 MB, checked by its bytes, is
+  kept in `<appData>/live-streams-thumbnails/<channelId>.jpg|png`), and the broadcast's latency, DVR, embedding and captions type
+  (`closedCaptionsDisabled` only: no caption source). `PUT .../live-stream/video-settings` and `PUT|DELETE .../thumbnail` are local;
+  the thumbnail route refuses a body over 2 MB before reading it all. A stored value that fails the schema is reported on the page
+  and refuses Start before any call (never read as defaults). Start sends the four broadcast fields inside the same
+  `liveBroadcasts.insert` (no new call or unit; never saved = not sent, YouTube's defaults). The video-level fields are shown in the
+  Start dialog as "not sent yet": applying them (`videos.update`, `thumbnails.set`, `playlistItems.insert`) is stage 3, after spike
+  C. The field limits and lists live in the shared `src/lib/youtube-video-fields/` (publishing re-exports them). Translations of
+  the broadcast's title/description go through the normal localization screens (plan §2.3), never these settings.
 - **Risks:** RISK-125 (the key in ffmpeg's argv), RISK-126 (the T9 every ~2 h).
 
 ## 46. The channel's language is the truth for localization (BL-178, FO-REQ-0022)
@@ -3960,7 +3983,7 @@ is already set everywhere), 2734 (one merge for the whole stage).
   `GET/PUT /api/channels/[id]/publishing-settings`, `GET/POST .../publishing-settings/conflicts`. Panel: Content → «Публикация»,
   the time as `UtcTimeField`.
 - **Release packages** (`publishing/packages.ts`, `package-scan.ts`). The scan walks `04 Videos/` of the channel workspace on this
-  computer, at most three levels, never through a symlinked folder, for `V*_release.json` (`yt-release-package/1`, FO-REQ-0023 §4 A);
+  computer (the shared `src/lib/workspace-videos/` walk and reads since BL-187), at most three levels, never through a symlinked folder, for `V*_release.json` (`yt-release-package/1`, FO-REQ-0023 §4 A);
   every file is reached through the workspace rule (`resolveWorkspaceFile`). Checks: the manifest's shape, the channel, the
   factory's own verdict, title ≤ 100 characters without `<`/`>`, description ≤ 5000 bytes without `<`/`>`, tags ≤ 500 by YouTube's
   count (commas, quotes around a tag with a space), chapters (first 0:00, at least three, each ≥ 10 s), the channel's language

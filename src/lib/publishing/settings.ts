@@ -4,7 +4,7 @@
 // set in UTC, 12:00 by default. Pure: the fields, their defaults and their validation, shared by the routes and the Content panel.
 // The values travel between computers in the sync-gateway `channel-publishing-settings` family, which knows nothing of them.
 import { isValidLocalTimeOfDay } from "@/lib/zoned-time";
-import { tagsLength } from "./packages";
+import { tagsLength, VIDEO_CATEGORY_IDS, VIDEO_LICENSES, type VideoLicense } from "@/lib/youtube-video-fields";
 
 export const PUBLISHING_SETTING_FIELDS = [
   "publishTimeUtc",
@@ -21,16 +21,10 @@ export const PUBLISHING_SETTING_FIELDS = [
 ] as const;
 export type PublishingSettingField = (typeof PUBLISHING_SETTING_FIELDS)[number];
 
-/** `status.license` (YouTube Data API videos resource): the standard YouTube license or Creative Commons. */
-export const PUBLISHING_LICENSES = ["youtube", "creativeCommon"] as const;
-export type PublishingLicense = (typeof PUBLISHING_LICENSES)[number];
-
-/**
- * The video categories a video can be assigned to (videoCategories.list `assignable: true`; the ids are stable): Film &
- * Animation, Autos & Vehicles, Music, Pets & Animals, Sports, Travel & Events, Gaming, People & Blogs, Comedy, Entertainment,
- * News & Politics, Howto & Style, Education, Science & Technology, Nonprofits & Activism.
- */
-export const VIDEO_CATEGORY_IDS = ["1", "2", "10", "15", "17", "19", "20", "22", "23", "24", "25", "26", "27", "28", "29"] as const;
+/** `status.license` and the assignable categories: the shared `youtube-video-fields` lists, under this module's own names. */
+export const PUBLISHING_LICENSES = VIDEO_LICENSES;
+export type PublishingLicense = VideoLicense;
+export { VIDEO_CATEGORY_IDS };
 
 export type PublishingSettings = {
   /** "HH:MM" in UTC: the time of day a dated upload is scheduled for. */

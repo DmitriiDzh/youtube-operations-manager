@@ -82,6 +82,39 @@ test("insertLiveBroadcast: sends the three required properties and the plan's au
   assert.deepEqual(result, { broadcastId: "BC1", lifeCycleStatus: "created" });
 });
 
+// BL-186 (LIVE_STREAMS_FIELDS_PLAN.md §2.1, liveBroadcasts resource): latency, DVR, embedding and the captions type are
+// contentDetails properties; `enableClosedCaptions` is deprecated, so only `closedCaptionsType` may appear.
+test("insertLiveBroadcast: the stream's broadcast settings go into contentDetails next to the fixed ones", async () => {
+  const { youtube, calls } = fakeClient({ "liveBroadcasts.insert": { id: "BC2", status: { lifeCycleStatus: "created" } } });
+  await insertLiveBroadcast(youtube, {
+    title: "T",
+    description: "",
+    scheduledStartTime: "2026-10-14T12:02:00.000Z",
+    privacyStatus: "public",
+    selfDeclaredMadeForKids: false,
+    enableAutoStart: true,
+    enableAutoStop: false,
+    enableMonitorStream: false,
+    recordFromStart: false,
+    latencyPreference: "low",
+    enableDvr: false,
+    enableEmbed: true,
+    closedCaptionsType: "closedCaptionsDisabled",
+  });
+  const params = calls[0].params as youtube_v3.Params$Resource$Livebroadcasts$Insert;
+  assert.deepEqual(params.requestBody?.contentDetails, {
+    enableAutoStart: true,
+    enableAutoStop: false,
+    monitorStream: { enableMonitorStream: false },
+    recordFromStart: false,
+    latencyPreference: "low",
+    enableDvr: false,
+    enableEmbed: true,
+    closedCaptionsType: "closedCaptionsDisabled",
+  });
+  assert.equal("enableClosedCaptions" in (params.requestBody?.contentDetails ?? {}), false);
+});
+
 test("bindLiveBroadcast: sends the broadcast id and the stream id, no request body", async () => {
   const { youtube, calls } = fakeClient({ "liveBroadcasts.bind": { id: "BC1", contentDetails: { boundStreamId: "STREAM1" } } });
   const result = await bindLiveBroadcast(youtube, { broadcastId: "BC1", streamId: "STREAM1" });

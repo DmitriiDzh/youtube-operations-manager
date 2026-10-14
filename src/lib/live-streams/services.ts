@@ -1,6 +1,8 @@
 import {
+  DEFAULT_STREAM_SETTINGS,
   DomainError,
   DURATION_TOLERANCE_SECONDS,
+  isDomainError,
   MAX_AUDIO_CHANNELS,
   SUPPORTED_AUDIO_SAMPLE_RATES,
   type LiveStreamEventKind,
@@ -15,6 +17,7 @@ import {
 import { checkOriginal, checkPublicOnly } from "./rotation";
 import {
   addVideoSchema,
+  addVideosSchema,
   overrideGuardSchema,
   parseWithSchema,
   removeVideoSchema,
@@ -45,6 +48,8 @@ export type StoredStreamRow = {
   positionOffsetSeconds: number;
   positionUpdatedAt: Date | null;
   onSince: Date | null;
+  /** Schema v92 (BL-186): the stream's video and broadcast settings as stored JSON; null = never saved. */
+  videoSettingsJson?: string | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -70,7 +75,7 @@ export type LiveStreamsDependencies = {
     getStream(channelId: string): Promise<StoredStreamRow | null>;
     upsertStream(row: Omit<StoredStreamRow, "positionUpdatedAt" | "onSince" | "passOrderJson" | "nextPassOrderJson" | "streamId" | "broadcastId"> & Partial<StoredStreamRow>): Promise<void>;
     /** Some columns of an existing row only (never the stream's ids, intent or position). */
-    updateStream(channelId: string, set: Partial<Pick<StoredStreamRow, "title" | "description" | "privacyStatus" | "madeForKids" | "orderMode" | "updatedAt">>): Promise<boolean>;
+    updateStream(channelId: string, set: Partial<Pick<StoredStreamRow, "title" | "description" | "privacyStatus" | "madeForKids" | "orderMode" | "videoSettingsJson" | "updatedAt">>): Promise<boolean>;
     listVideos(channelId: string): Promise<StoredVideoRow[]>;
     upsertVideo(row: StoredVideoRow): Promise<void>;
     updateVideo(channelId: string, videoId: string, set: Partial<Omit<StoredVideoRow, "channelId" | "videoId" | "addedAt">>): Promise<boolean>;
@@ -92,7 +97,6 @@ export type LiveStreamsDependencies = {
   newId: () => string;
 };
 
-const DEFAULT_SETTINGS: StreamSettingsInput = { title: "", description: "", privacyStatus: "unlisted", madeForKids: false, orderMode: "sequence" };
 
 function refused(reason: VideoRefusal, detail: string, videoId: string): DomainError {
   return new DomainError({ code: "live_stream_video_refused", message: `The video cannot be streamed: ${detail}`, details: { videoId, reason } });
@@ -161,7 +165,7 @@ export function createLiveStreamsServices(deps: LiveStreamsDependencies) {
     return new Map(facts.map((f) => [f.videoId, f]));
   }
 
-  return {
+  const services = {
     async getOverview(channelId: string): Promise<{ stream: StreamView | null; rotation: RotationVideoView[]; sources: Array<{ videoId: string; file: string; setBy: string; setAt: string }> }> {
       const [row, videos, sources] = await Promise.all([deps.store.getStream(channelId), deps.store.listVideos(channelId), deps.store.listSources(channelId)]);
       const rotation = await Promise.all(videos.map(async (v) => toView(v, await deps.channelVideos.titleOf(channelId, v.videoId))));
@@ -189,7 +193,7 @@ export function createLiveStreamsServices(deps: LiveStreamsDependencies) {
       // or a YouTube-ended stop that landed between the read and the write.
       const updated = await deps.store.updateStream(channelId, { ...settings, updatedAt: now });
       if (!updated) {
-        await deps.store.upsertStream({ channelId, intent: "off", passNumber: 0, positionIndex: 0, positionOffsetSeconds: 0, createdAt: now, ...DEFAULT_SETTINGS, ...settings, updatedAt: now });
+        await deps.store.upsertStream({ channelId, intent: "off", passNumber: 0, positionIndex: 0, positionOffsetSeconds: 0, createdAt: now, ...DEFAULT_STREAM_SETTINGS, ...settings, updatedAt: now });
       }
       await event(channelId, "settings_saved", { ...settings });
       return settings;
@@ -237,6 +241,33 @@ export function createLiveStreamsServices(deps: LiveStreamsDependencies) {
       await deps.store.upsertVideo(row);
       await event(channelId, "rotation_add", { videoId, file });
       return toView(row, title);
+    },
+
+    /**
+     * BL-187 (LIVE_STREAMS_FIELDS_PLAN.md §2.4): the picker's «Добавить N видео». Each item goes through `addVideo` with all
+     * its checks, one by one in the given order, so a refusal adds nothing for that item and does not stop the others. An
+     * item repeated in the list is added once.
+     */
+    async addVideos(
+      channelId: string,
+      input: unknown
+    ): Promise<{ added: RotationVideoView[]; refused: Array<{ videoId: string; originalPath: string; code: string; reason: string | null; message: string }> }> {
+      const { items } = parseWithSchema(addVideosSchema, input, "live stream videos");
+      const added: RotationVideoView[] = [];
+      const refusedItems: Array<{ videoId: string; originalPath: string; code: string; reason: string | null; message: string }> = [];
+      const seen = new Set<string>();
+      for (const item of items) {
+        if (seen.has(item.videoId)) continue;
+        seen.add(item.videoId);
+        try {
+          added.push(await services.addVideo(channelId, item));
+        } catch (error) {
+          if (!isDomainError(error) || error.code === "live_stream_workspace_unavailable") throw error;
+          const reason = (error.details as { reason?: unknown } | undefined)?.reason;
+          refusedItems.push({ ...item, code: error.code, reason: typeof reason === "string" ? reason : null, message: error.message });
+        }
+      }
+      return { added, refused: refusedItems };
     },
 
     async removeVideo(channelId: string, input: unknown): Promise<void> {
@@ -337,6 +368,7 @@ export function createLiveStreamsServices(deps: LiveStreamsDependencies) {
       return results;
     },
   };
+  return services;
 }
 
 export type LiveStreamsServices = ReturnType<typeof createLiveStreamsServices>;
