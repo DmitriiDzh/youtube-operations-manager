@@ -54,6 +54,8 @@ export type LiveBroadcastInsert = {
   enableAutoStop: boolean;
   /** `false` skips the testing stage: the broadcast can go straight to `live`. */
   enableMonitorStream: boolean;
+  /** `false`: YouTube keeps no recording of the broadcast (owner, 2026-10-14). Only a channel allowed to disable recordings may send it; otherwise `Forbidden`. */
+  recordFromStart: boolean;
 };
 
 /** Real `liveBroadcasts.insert`. Caller calls `assertLiveWritesAuthorized()` first. */
@@ -77,6 +79,7 @@ export async function insertLiveBroadcast(
         enableAutoStart: broadcast.enableAutoStart,
         enableAutoStop: broadcast.enableAutoStop,
         monitorStream: { enableMonitorStream: broadcast.enableMonitorStream },
+        recordFromStart: broadcast.recordFromStart,
       },
     },
   });

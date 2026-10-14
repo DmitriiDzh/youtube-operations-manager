@@ -32,6 +32,8 @@ export const liveStreams: Record<keyof typeof en, string> = {
   "live.start.description": "В YouTube появится новая трансляция с этими настройками, привязанная к потоку канала; затем Mac начнёт отправлять ротацию.",
   "live.start.autoStop": "Автоостановка",
   "live.start.autoStopValue": "выключена (короткий перерыв не завершает трансляцию)",
+  "live.start.recording": "Запись",
+  "live.start.recordingValue": "выключена (YouTube не сохраняет трансляцию как видео)",
   "live.start.units": "Квота",
   "live.start.unitsValue": "{units} ед.",
   "live.start.createsStream": "Сначала один раз создаётся постоянный поток канала.",

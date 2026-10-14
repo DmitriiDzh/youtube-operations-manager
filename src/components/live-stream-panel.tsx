@@ -326,6 +326,8 @@ function StatusCard({ overview, base, onChanged }: { overview: Overview; base: s
             <dd className="text-zinc-200">{settings.madeForKids ? t("live.yes") : t("live.no")}</dd>
             <dt className="text-zinc-500">{t("live.start.autoStop")}</dt>
             <dd className="text-zinc-200">{t("live.start.autoStopValue")}</dd>
+            <dt className="text-zinc-500">{t("live.start.recording")}</dt>
+            <dd className="text-zinc-200">{t("live.start.recordingValue")}</dd>
             <dt className="text-zinc-500">{t("live.start.units")}</dt>
             <dd className="text-zinc-200">{t("live.start.unitsValue", { units: String(preview.units) })}</dd>
           </dl>
