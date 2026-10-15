@@ -1,6 +1,8 @@
 import { createGoogleOAuthClient } from "@/lib/auth";
 import {
+  createYoutubeClient,
   createYoutubeAnalyticsClient,
+  getPublicVideoTitles,
   queryChannelAnalyticsReport,
   queryChannelBreakdownReport,
   queryVideoAnalyticsReport,
@@ -19,6 +21,13 @@ async function createAuthorizedClient(credentials: ResolvedCredentials) {
 
 export function createAnalyticsYoutubeApiAdapter() {
   return {
+    /** BL-191: titles of other people's videos that suggested ours (Data API `videos.list`, through the read gateway). */
+    async getPublicVideoTitles(args: { credentials: ResolvedCredentials; videoIds: string[] }) {
+      const oauth2 = createGoogleOAuthClient();
+      oauth2.setCredentials({ access_token: args.credentials.accessToken, refresh_token: args.credentials.refreshToken });
+      return getPublicVideoTitles(await createYoutubeClient(oauth2), args.videoIds);
+    },
+
     async queryVideoAnalyticsReport(args: {
       credentials: ResolvedCredentials;
       channelId: string;

@@ -97,6 +97,9 @@ const ALLOWED_DB_WRITE_IMPORTS = new Set([
   "recordAnalyticsBreakdownFailure", // BL-168: the same state table's attempt bookkeeping
   "saveCollectedVideoSearchTerms", // BL-169: this module's own search-term rows and their state (the same state table), never a video/channel row
   "saveCollectedChannelSearchTermsWeek", // BL-169: the same for the channel's weekly search terms
+  "saveCollectedVideoSuggestedSources", // BL-191: this module's own suggesting-video rows and their state (the same state table), never a video/channel row
+  "saveCollectedChannelSuggestedSourcesWeek", // BL-191: the same for the channel's weekly suggesting videos
+  "saveSuggestedVideoTitles", // BL-191: this module's own 30-day title rows of other people's suggesting videos, never a video/channel row
   "deferVideoMilestone", // BL-166: the same table -- puts a milestone back without counting an attempt
   "saveChannelDailyMetric", // this module's own channel-level daily totals table (BL-118)
   "advanceVideoHistory", // this module's own per-video history-coverage bookkeeping (BL-118)

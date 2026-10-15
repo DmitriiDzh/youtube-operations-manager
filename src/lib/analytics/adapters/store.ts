@@ -29,6 +29,14 @@ import {
   listVideoSearchTerms,
   saveCollectedChannelSearchTermsWeek,
   listChannelSearchTermsWeekly,
+  saveCollectedVideoSuggestedSources,
+  listVideoSuggestedSources,
+  saveCollectedChannelSuggestedSourcesWeek,
+  listChannelSuggestedSourcesWeekly,
+  listStoredSuggestedSourceIds,
+  listOwnVideosByIds,
+  listSuggestedVideoTitles,
+  saveSuggestedVideoTitles,
   getAnalyticsEveningAttempt,
   recordAnalyticsEveningAttempt,
   getNewestVideoMetricDate,
@@ -103,6 +111,29 @@ export function createSearchTermStoreAdapter() {
       listVideoTerms: (channelId: string, videoIds: string[]) => listVideoSearchTerms(channelId, videoIds),
       saveWeekTerms: (row: Parameters<typeof saveCollectedChannelSearchTermsWeek>[0]) => saveCollectedChannelSearchTermsWeek(row),
       listWeekTerms: (channelId: string, firstWeekStart: string, lastWeekStart: string) => listChannelSearchTermsWeekly(channelId, firstWeekStart, lastWeekStart),
+    },
+  };
+}
+
+/** BL-191: the stored suggesting videos, on the breakdowns' video list and state rows, plus our own videos and the external titles. */
+export function createSuggestedSourceStoreAdapter() {
+  const breakdowns = createBreakdownStoreAdapter();
+  return {
+    videoStore: breakdowns.videoStore,
+    store: {
+      listStates: breakdowns.store.listStates,
+      saveVideoRows: (row: Parameters<typeof saveCollectedVideoSuggestedSources>[0]) => saveCollectedVideoSuggestedSources(row),
+      defer: breakdowns.store.defer,
+      recordFailure: breakdowns.store.recordFailure,
+      listVideoRows: (channelId: string, videoIds: string[]) => listVideoSuggestedSources(channelId, videoIds),
+      saveWeekRows: (row: Parameters<typeof saveCollectedChannelSuggestedSourcesWeek>[0]) => saveCollectedChannelSuggestedSourcesWeek(row),
+      listWeekRows: (channelId: string, firstWeekStart: string, lastWeekStart: string) => listChannelSuggestedSourcesWeekly(channelId, firstWeekStart, lastWeekStart),
+    },
+    ownVideos: { findByIds: (videoIds: string[]) => listOwnVideosByIds(videoIds) },
+    titles: {
+      listStoredSourceIds: (channelId: string) => listStoredSuggestedSourceIds(channelId),
+      listFresh: (videoIds: string[], since: Date) => listSuggestedVideoTitles(videoIds, since),
+      save: (rows: Parameters<typeof saveSuggestedVideoTitles>[0], at: Date) => saveSuggestedVideoTitles(rows, at),
     },
   };
 }

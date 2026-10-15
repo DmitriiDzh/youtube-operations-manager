@@ -2183,11 +2183,13 @@ function makeAnalyticsCoreStub(): Pick<
   | "listVideoMilestones"
   | "listStoredBreakdowns"
   | "listStoredSearchTerms"
+  | "listStoredSuggestedSources"
 > {
   return {
     listVideoMilestones: async () => ({ channelId: "UC_1", milestones: [] }),
     listStoredBreakdowns: async () => ({ channelId: "UC_1", startDate: "2026-10-01", endDate: "2026-10-02", groupBy: "total", channel: undefined }),
     listStoredSearchTerms: async () => ({ channelId: "UC_1", videos: [] }),
+    listStoredSuggestedSources: async () => ({ channelId: "UC_1", videos: [] }),
     listMetrics: async () => ({
       channelId: "UC_1",
       rows: [{ videoId: "v1", metricDate: "2026-09-01", metricName: "views", metricValue: 100 }],
@@ -2891,7 +2893,7 @@ test("MCP agent_get_capabilities returns version/capabilities/permission-model w
   // (docs/roadmap/plans/PHASE_11_PLAN.md AC-P11-11).
   // Bumped 0.15.0 -> 1.0.0, Phase 12 (AC-P12-13): breaking agent-contract change -> MAJOR.
   // MINOR 3.16.0 (BL-182 stage 1): new READ capability video_context.query_publishing_calendar. Previously 3.15.0 (BL-181).
-  assert.equal(payload.agentApiVersion, "3.17.0"); // MINOR 3.17.0 (BL-182 stage 2): agent_get_publishing_calendar lists the release packages and this computer's uploads; MINOR 3.13.0 (BL-171, VIDEO_COMMENTS_PLAN.md §2): new READ capability video_context.query_video_comments; MINOR 3.12.0 (BL-170, EXPERIMENT_ARMS_PLAN.md §2 "Reads"): new READ capability decision_engine.query_experiment_results, experiment arms in the hypothesis trail; MINOR 3.11.0 (BL-169, VIDEO_SEARCH_TERMS_PLAN.md §2): new READ capability analytics.query_stored_search_terms; MINOR 3.10.0 (BL-168, VIDEO_BREAKDOWNS_PLAN.md §2 "Reads"): new READ capability analytics.query_stored_breakdowns; MINOR 3.9.0 (BL-166, VIDEO_MILESTONES_PLAN.md §2 "Versions"): new READ capability analytics.query_video_milestones; MINOR 3.6.0 (BL-135): agent_release_media_session + releaseWhenDone; MINOR 3.5.0 (BL-132): media template input parameters (image/audio/video), job inputs[], template source/models; before that 3.3.0 (Factory Operator access, logical path registry tools) on top of 3.2.0 + MINOR 3.4.0: the seven media_generation capabilities (Phase 14 slice 5) and agent_get_media_limits openSessions/maxConcurrentSessions/activeSessionCount (slice 6)
+  assert.equal(payload.agentApiVersion, "3.18.0"); // MINOR 3.18.0 (BL-191, SUGGESTED_SOURCES_PLAN.md §2): new READ capability analytics.query_stored_suggested_sources; MINOR 3.17.0 (BL-182 stage 2): agent_get_publishing_calendar lists the release packages and this computer's uploads; MINOR 3.13.0 (BL-171, VIDEO_COMMENTS_PLAN.md §2): new READ capability video_context.query_video_comments; MINOR 3.12.0 (BL-170, EXPERIMENT_ARMS_PLAN.md §2 "Reads"): new READ capability decision_engine.query_experiment_results, experiment arms in the hypothesis trail; MINOR 3.11.0 (BL-169, VIDEO_SEARCH_TERMS_PLAN.md §2): new READ capability analytics.query_stored_search_terms; MINOR 3.10.0 (BL-168, VIDEO_BREAKDOWNS_PLAN.md §2 "Reads"): new READ capability analytics.query_stored_breakdowns; MINOR 3.9.0 (BL-166, VIDEO_MILESTONES_PLAN.md §2 "Versions"): new READ capability analytics.query_video_milestones; MINOR 3.6.0 (BL-135): agent_release_media_session + releaseWhenDone; MINOR 3.5.0 (BL-132): media template input parameters (image/audio/video), job inputs[], template source/models; before that 3.3.0 (Factory Operator access, logical path registry tools) on top of 3.2.0 + MINOR 3.4.0: the seven media_generation capabilities (Phase 14 slice 5) and agent_get_media_limits openSessions/maxConcurrentSessions/activeSessionCount (slice 6)
   assert.ok(
     payload.capabilities.some(
       (c: { id: string; permission: string }) => c.id === "channel_workspace.get_channel_workspace" && c.permission === "READ"

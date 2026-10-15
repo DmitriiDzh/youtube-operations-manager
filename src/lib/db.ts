@@ -1800,6 +1800,49 @@ export const channelSearchTermsWeekly = sqliteTable(
 );
 
 /**
+ * v94 (BL-191, FO-REQ-0026, docs/roadmap/plans/SUGGESTED_SOURCES_PLAN.md): the videos that suggested each own video ("Suggested videos",
+ * traffic source `RELATED_VIDEO`) over its 90-day window so far, top 25 by views as YouTube returned them. The ids come from our own
+ * channel's Analytics report (Authorized, III.E.4.b). Replaced as a whole on each read; state subject `suggested:<video id>`. Device-local.
+ */
+export const videoSuggestedSources = sqliteTable(
+  "video_suggested_sources",
+  {
+    videoId: text("video_id").notNull(),
+    sourceVideoId: text("source_video_id").notNull(),
+    channelId: text("channel_id").notNull(),
+    views: real("views"),
+    estimatedMinutesWatched: real("estimated_minutes_watched"),
+  },
+  (table) => [primaryKey({ columns: [table.videoId, table.sourceVideoId] }), index("video_suggested_sources_channel_idx").on(table.channelId, table.videoId)]
+);
+
+/** v94 (BL-191): the channel's suggesting videos per Monday-Sunday week (Pacific), top 25; state subject `suggested-week:<Monday>`. */
+export const channelSuggestedSourcesWeekly = sqliteTable(
+  "channel_suggested_sources_weekly",
+  {
+    channelId: text("channel_id").notNull(),
+    weekStart: text("week_start").notNull(),
+    sourceVideoId: text("source_video_id").notNull(),
+    views: real("views"),
+    estimatedMinutesWatched: real("estimated_minutes_watched"),
+  },
+  (table) => [primaryKey({ columns: [table.channelId, table.weekStart, table.sourceVideoId] })]
+);
+
+/**
+ * v94 (BL-191): title and channel of a suggesting video that is not ours, from Data API `videos.list` -- another channel's data
+ * (III.E.4.d), so Non-Authorized with the clock `fetched_at`: the retention purge deletes it 30 days after it was fetched, and a read
+ * ignores an older row. An id `videos.list` did not return is kept with null fields, so it is not looked up again within the 30 days.
+ */
+export const suggestedVideoTitles = sqliteTable("suggested_video_titles", {
+  videoId: text("video_id").primaryKey(),
+  title: text("title"),
+  channelId: text("channel_id"),
+  channelTitle: text("channel_title"),
+  fetchedAt: integer("fetched_at", { mode: "timestamp" }).notNull(),
+});
+
+/**
  * SCHEMA_MIGRATIONS version 80 (BL-171, FO-REQ-0015 item 7, docs/roadmap/plans/VIDEO_COMMENTS_PLAN.md): the newest top-level comments of
  * our own videos, as YouTube returned them -- text, times, likes, reply count and whether the channel itself wrote it; no author name,
  * photo or id. Our own Authorized Data that is not analytics (III.E.4.c): kept at most 30 days by `fetched_at` (the retention job), each
@@ -5017,6 +5060,37 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         finished_at TEXT
       )`);
       await client.execute("CREATE INDEX IF NOT EXISTS media_job_peer_commands_received_idx ON media_job_peer_commands (received_at)");
+    },
+  },
+  {
+    version: 94,
+    description:
+      "video_suggested_sources, channel_suggested_sources_weekly, suggested_video_titles -- BL-191 (FO-REQ-0026, docs/roadmap/plans/SUGGESTED_SOURCES_PLAN.md): the videos that suggested each own video (RELATED_VIDEO, top 25) over its 90-day window so far and per channel week; titles of other people's suggesting videos kept 30 days. State in analytics_breakdown_state (subjects suggested:<video id>, suggested-week:<Monday>). Additive, device-local",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS video_suggested_sources (
+        video_id TEXT NOT NULL,
+        source_video_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        views REAL,
+        estimated_minutes_watched REAL,
+        PRIMARY KEY (video_id, source_video_id)
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS video_suggested_sources_channel_idx ON video_suggested_sources (channel_id, video_id)");
+      await client.execute(`CREATE TABLE IF NOT EXISTS channel_suggested_sources_weekly (
+        channel_id TEXT NOT NULL,
+        week_start TEXT NOT NULL,
+        source_video_id TEXT NOT NULL,
+        views REAL,
+        estimated_minutes_watched REAL,
+        PRIMARY KEY (channel_id, week_start, source_video_id)
+      )`);
+      await client.execute(`CREATE TABLE IF NOT EXISTS suggested_video_titles (
+        video_id TEXT PRIMARY KEY NOT NULL,
+        title TEXT,
+        channel_id TEXT,
+        channel_title TEXT,
+        fetched_at INTEGER NOT NULL
+      )`);
     },
   },
 ];
@@ -11565,6 +11639,144 @@ export async function listChannelSearchTermsWeekly(
       )
     );
   return rows.map((r) => ({ weekStart: r.weekStart, term: r.term, views: r.views, estimatedMinutesWatched: r.estimatedMinutesWatched }));
+}
+
+type SuggestedSourceInput = { detail: string; views: number | null; estimatedMinutesWatched: number | null };
+
+/**
+ * BL-191: one video's suggesting videos for its window so far, in one atomic batch -- every stored row of the video is replaced by the
+ * answer and its state (`suggested:<video id>`) records the range as collected.
+ */
+export async function saveCollectedVideoSuggestedSources(
+  row: { channelId: string; subject: string; videoId: string; rangeStart: string; to: string; rows: SuggestedSourceInput[]; collectedOn: string; at: Date },
+  database: AppDb = db
+): Promise<void> {
+  const writes: Array<BatchItem<"sqlite">> = [database.delete(videoSuggestedSources).where(eq(videoSuggestedSources.videoId, row.videoId))];
+  const values = row.rows.map((r) => ({ videoId: row.videoId, sourceVideoId: r.detail, channelId: row.channelId, views: r.views, estimatedMinutesWatched: r.estimatedMinutesWatched }));
+  for (let i = 0; i < values.length; i += BREAKDOWN_INSERT_CHUNK) {
+    writes.push(database.insert(videoSuggestedSources).values(values.slice(i, i + BREAKDOWN_INSERT_CHUNK)).onConflictDoNothing());
+  }
+  writes.push(collectedBreakdownStateWrite(row, database));
+  await database.batch(writes as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
+}
+
+/** BL-191: the stored suggesting videos of the channel's videos (always within the channel). */
+export async function listVideoSuggestedSources(
+  channelId: string,
+  videoIds: string[],
+  database: AppDb = db
+): Promise<Array<{ videoId: string; detail: string; views: number | null; estimatedMinutesWatched: number | null }>> {
+  if (videoIds.length === 0) return [];
+  const rows = await database
+    .select()
+    .from(videoSuggestedSources)
+    .where(and(eq(videoSuggestedSources.channelId, channelId), inArray(videoSuggestedSources.videoId, videoIds)));
+  return rows.map((r) => ({ videoId: r.videoId, detail: r.sourceVideoId, views: r.views, estimatedMinutesWatched: r.estimatedMinutesWatched }));
+}
+
+/** BL-191: one channel week's suggesting videos, in one atomic batch -- the week's rows replaced, its state recorded. */
+export async function saveCollectedChannelSuggestedSourcesWeek(
+  row: { channelId: string; subject: string; weekStart: string; to: string; rows: SuggestedSourceInput[]; collectedOn: string; at: Date },
+  database: AppDb = db
+): Promise<void> {
+  const writes: Array<BatchItem<"sqlite">> = [
+    database
+      .delete(channelSuggestedSourcesWeekly)
+      .where(and(eq(channelSuggestedSourcesWeekly.channelId, row.channelId), eq(channelSuggestedSourcesWeekly.weekStart, row.weekStart))),
+  ];
+  const values = row.rows.map((r) => ({ channelId: row.channelId, weekStart: row.weekStart, sourceVideoId: r.detail, views: r.views, estimatedMinutesWatched: r.estimatedMinutesWatched }));
+  for (let i = 0; i < values.length; i += BREAKDOWN_INSERT_CHUNK) {
+    writes.push(database.insert(channelSuggestedSourcesWeekly).values(values.slice(i, i + BREAKDOWN_INSERT_CHUNK)).onConflictDoNothing());
+  }
+  writes.push(collectedBreakdownStateWrite({ ...row, rangeStart: row.weekStart }, database));
+  await database.batch(writes as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
+}
+
+/** BL-191: the channel's stored weekly suggesting videos for the weeks starting firstWeekStart .. lastWeekStart. */
+export async function listChannelSuggestedSourcesWeekly(
+  channelId: string,
+  firstWeekStart: string,
+  lastWeekStart: string,
+  database: AppDb = db
+): Promise<Array<{ weekStart: string; detail: string; views: number | null; estimatedMinutesWatched: number | null }>> {
+  const rows = await database
+    .select()
+    .from(channelSuggestedSourcesWeekly)
+    .where(
+      and(
+        eq(channelSuggestedSourcesWeekly.channelId, channelId),
+        gte(channelSuggestedSourcesWeekly.weekStart, firstWeekStart),
+        lte(channelSuggestedSourcesWeekly.weekStart, lastWeekStart)
+      )
+    );
+  return rows.map((r) => ({ weekStart: r.weekStart, detail: r.sourceVideoId, views: r.views, estimatedMinutesWatched: r.estimatedMinutesWatched }));
+}
+
+/** BL-191: every distinct suggesting video id stored for the channel (its videos and its weeks), sorted. */
+export async function listStoredSuggestedSourceIds(channelId: string, database: AppDb = db): Promise<string[]> {
+  const [videoRows, weekRows] = await Promise.all([
+    database.selectDistinct({ id: videoSuggestedSources.sourceVideoId }).from(videoSuggestedSources).where(eq(videoSuggestedSources.channelId, channelId)),
+    database
+      .selectDistinct({ id: channelSuggestedSourcesWeekly.sourceVideoId })
+      .from(channelSuggestedSourcesWeekly)
+      .where(eq(channelSuggestedSourcesWeekly.channelId, channelId)),
+  ]);
+  return [...new Set([...videoRows, ...weekRows].map((r) => r.id))].sort();
+}
+
+/**
+ * BL-191: the synced videos (of any channel connected on this computer) among `videoIds`, with their title and channel -- our own data,
+ * so a suggesting video found here is `ours`.
+ */
+export async function listOwnVideosByIds(
+  videoIds: string[],
+  database: AppDb = db
+): Promise<Array<{ videoId: string; title: string; channelId: string; channelTitle: string | null }>> {
+  if (videoIds.length === 0) return [];
+  const found: Array<{ videoId: string; title: string; channelId: string; channelTitle: string | null }> = [];
+  for (let i = 0; i < videoIds.length; i += 500) {
+    const rows = await database
+      .select({ videoId: videos.id, title: videos.title, channelId: videos.channelId, channelTitle: channels.title })
+      .from(videos)
+      .leftJoin(channels, eq(channels.id, videos.channelId))
+      .where(inArray(videos.id, videoIds.slice(i, i + 500)));
+    found.push(...rows);
+  }
+  return found;
+}
+
+/** BL-191: the title rows of `videoIds` fetched at or after `since` (an older row is past its 30 days and never returned). */
+export async function listSuggestedVideoTitles(
+  videoIds: string[],
+  since: Date,
+  database: AppDb = db
+): Promise<Array<{ videoId: string; title: string | null; channelId: string | null; channelTitle: string | null; fetchedAt: Date }>> {
+  if (videoIds.length === 0) return [];
+  const found: Array<{ videoId: string; title: string | null; channelId: string | null; channelTitle: string | null; fetchedAt: Date }> = [];
+  for (let i = 0; i < videoIds.length; i += 500) {
+    found.push(
+      ...(await database
+        .select()
+        .from(suggestedVideoTitles)
+        .where(and(inArray(suggestedVideoTitles.videoId, videoIds.slice(i, i + 500)), gte(suggestedVideoTitles.fetchedAt, since))))
+    );
+  }
+  return found;
+}
+
+/** BL-191: stores what `videos.list` returned for these ids (null fields for an id it did not return), fetched `at`. */
+export async function saveSuggestedVideoTitles(
+  rows: Array<{ videoId: string; title: string | null; channelId: string | null; channelTitle: string | null }>,
+  at: Date,
+  database: AppDb = db
+): Promise<void> {
+  for (const row of rows) {
+    const values = { title: row.title, channelId: row.channelId, channelTitle: row.channelTitle, fetchedAt: at };
+    await database
+      .insert(suggestedVideoTitles)
+      .values({ videoId: row.videoId, ...values })
+      .onConflictDoUpdate({ target: suggestedVideoTitles.videoId, set: values });
+  }
 }
 
 export type StoredVideoCommentState = typeof videoCommentState.$inferSelect;

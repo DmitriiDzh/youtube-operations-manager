@@ -11,6 +11,9 @@ import {
   insertResearchChannel,
   saveCollectedAnalyticsBreakdown,
   saveCollectedChannelSearchTermsWeek,
+  saveCollectedChannelSuggestedSourcesWeek,
+  saveCollectedVideoSuggestedSources,
+  saveSuggestedVideoTitles,
   saveCollectedVideoMilestone,
   saveCollectedVideoSearchTerms,
   saveVideoCommentsRead,
@@ -368,6 +371,96 @@ test("BL-168 AC-VB-13/16: agent_get_stored_breakdowns via the Producer reads onl
 
 // BL-169 AC-ST-12/15 (docs/roadmap/plans/VIDEO_SEARCH_TERMS_PLAN.md): the Producer reads a channel's stored search terms through the
 // channel tool, in that channel's scope only; another channel's video is not listed. Real handlers on the real (isolated) database.
+test("BL-191 AC-SS-04/06/08: agent_get_stored_suggested_sources via the Producer marks ours / external and keeps external titles 30 days", async () => {
+  await seedTwoChannels();
+  const now = Date.now();
+  // vid-y-1 is a synced video of the other connected channel (ours); ext-fresh has a title row from yesterday, ext-old one from 31 days
+  // ago (past its 30 days), ext-none has none.
+  await saveSuggestedVideoTitles([{ videoId: "ext-fresh", title: "Fresh title", channelId: "UC_EXT", channelTitle: "External" }], new Date(now - 86_400_000));
+  await saveSuggestedVideoTitles([{ videoId: "ext-old", title: "Old title", channelId: "UC_OLD", channelTitle: "Old" }], new Date(now - 31 * 86_400_000));
+  const rows = [
+    { detail: "vid-y-1", views: 7, estimatedMinutesWatched: 9 },
+    { detail: "ext-fresh", views: 5, estimatedMinutesWatched: 4 },
+    { detail: "ext-old", views: 3, estimatedMinutesWatched: 2 },
+    { detail: "ext-none", views: 1, estimatedMinutesWatched: 1 },
+  ];
+  await saveCollectedVideoSuggestedSources({
+    channelId: "UC_PR_X",
+    subject: "suggested:vid-x-1",
+    videoId: "vid-x-1",
+    rangeStart: "2026-10-01",
+    to: "2026-10-08",
+    rows,
+    collectedOn: "2026-10-09",
+    at: new Date("2026-10-09T17:00:00Z"),
+  });
+  await saveCollectedVideoSuggestedSources({
+    channelId: "UC_PR_Y",
+    subject: "suggested:vid-y-1",
+    videoId: "vid-y-1",
+    rangeStart: "2026-10-01",
+    to: "2026-10-08",
+    rows: [{ detail: "other-channel-row", views: 99, estimatedMinutesWatched: 1 }],
+    collectedOn: "2026-10-09",
+    at: new Date("2026-10-09T17:00:00Z"),
+  });
+  const { endpoint, tokens } = setup();
+  const token = (await tokens.issueToken({})).token;
+  const listed = await toolResult(await endpoint.handle(rpc(call("producer_get_capabilities", {}), bearer(token))));
+  assert.ok((payloadOf(listed.text).tools as string[]).includes("agent_get_stored_suggested_sources"));
+  const result = await toolResult(await endpoint.handle(rpc(call("agent_get_stored_suggested_sources", { channelId: "UC_PR_X", videoIds: ["vid-x-1", "vid-y-1"] }), bearer(token))));
+  assert.equal(result.isError, false, result.text);
+  const payload = payloadOf(result.text) as { forChannelId: string; videos: Array<Record<string, unknown>> };
+  assert.equal(payload.forChannelId, "UC_PR_X");
+  assert.deepEqual(payload.videos, [
+    {
+      videoId: "vid-x-1",
+      publishedAt: "2026-10-01T10:00:00Z",
+      window: { start: "2026-10-01", end: "2026-12-29" },
+      coverage: { from: "2026-10-01", through: "2026-10-08", collectedAt: "2026-10-09T17:00:00.000Z" },
+      status: "collected",
+      lastError: null,
+      sources: [
+        { videoId: "vid-y-1", views: 7, estimatedMinutesWatched: 9, source: "ours", title: "Title vid-y-1", channelId: "UC_PR_Y", channelTitle: "Channel UC_PR_Y" },
+        { videoId: "ext-fresh", views: 5, estimatedMinutesWatched: 4, source: "external", title: "Fresh title", channelId: "UC_EXT", channelTitle: "External" },
+        { videoId: "ext-old", views: 3, estimatedMinutesWatched: 2, source: "external", title: null, channelId: null, channelTitle: null },
+        { videoId: "ext-none", views: 1, estimatedMinutesWatched: 1, source: "external", title: null, channelId: null, channelTitle: null },
+      ],
+    },
+  ]);
+  // The channel form, per week: each named channel's own weeks only.
+  for (const [channelId, detail] of [["UC_PR_X", "vid-x-2"], ["UC_PR_Y", "other-week-row"]] as const) {
+    await saveCollectedChannelSuggestedSourcesWeek({
+      channelId,
+      subject: "suggested-week:2026-09-28",
+      weekStart: "2026-09-28",
+      to: "2026-10-04",
+      rows: [{ detail, views: 4, estimatedMinutesWatched: 2 }],
+      collectedOn: "2026-10-09",
+      at: new Date("2026-10-09T17:00:00Z"),
+    });
+  }
+  const weekly = await toolResult(
+    await endpoint.handle(rpc(call("agent_get_stored_suggested_sources", { channelId: "UC_PR_X", startDate: "2026-09-28", endDate: "2026-10-11", groupBy: "week" }), bearer(token)))
+  );
+  assert.equal(weekly.isError, false, weekly.text);
+  const weeks = payloadOf(weekly.text) as { weeks: Array<{ weekStart: string; status: string; sources?: unknown }> };
+  assert.deepEqual(
+    weeks.weeks.map((w) => [w.weekStart, w.status, w.sources]),
+    [
+      ["2026-09-28", "collected", [{ videoId: "vid-x-2", views: 4, estimatedMinutesWatched: 2, source: "ours", title: "Title vid-x-2", channelId: "UC_PR_X", channelTitle: "Channel UC_PR_X" }]],
+      ["2026-10-05", "not_collected", []],
+    ]
+  );
+  // The forms do not mix, and the search-term rows are not these.
+  const mixed = await toolResult(
+    await endpoint.handle(rpc(call("agent_get_stored_suggested_sources", { channelId: "UC_PR_X", videoIds: ["vid-x-1"], startDate: "2026-09-28", endDate: "2026-10-04" }), bearer(token)))
+  );
+  assert.equal(mixed.isError, true);
+  const refused = await toolResult(await endpoint.handle(rpc(call("agent_get_stored_suggested_sources", { channelId: "UC_PR_ELSEWHERE", videoIds: ["vid-x-1"] }), bearer(token))));
+  assert.equal((payloadOf(refused.text).error as { code: string }).code, "CHANNEL_NOT_ACTIVE");
+});
+
 test("BL-169 AC-ST-12/15: agent_get_stored_search_terms via the Producer reads only the named channel's stored terms and weeks", async () => {
   await seedTwoChannels();
   // seedTwoChannels publishes every video 2026-10-01T10:00:00Z (03:00 PDT): window 10-01 .. 12-29.
@@ -619,7 +712,9 @@ test("AC-PR-07 / AC-PR-10: the Producer's own tools -- its channels with their f
   // BL-171 (VIDEO_COMMENTS_PLAN.md AC-VC-12): 1.6.0 adds the READ channel tool agent_get_video_comments.
   // BL-182 stage 1 (PUBLISHING_PLAN.md §2 stage 1 item 4, FO-REQ-0023 §4 C4): 1.7.0 adds the READ channel tool
   // agent_get_publishing_calendar; no upload or schedule tool (ADR 0037).
-  assert.equal(PRODUCER_API_VERSION, "1.8.0"); // 1.8.0 (BL-182 stage 2): the calendar read lists packages and uploads
+  // BL-191 (SUGGESTED_SOURCES_PLAN.md AC-SS-08, FO-REQ-0026 §4.1): 1.9.0 adds the READ channel tool agent_get_stored_suggested_sources.
+  assert.equal(PRODUCER_API_VERSION, "1.9.0"); // 1.8.0 (BL-182 stage 2): the calendar read lists packages and uploads
+  assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_stored_suggested_sources"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_publishing_calendar"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_video_comments"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_experiment_results"));

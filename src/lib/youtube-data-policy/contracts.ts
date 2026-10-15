@@ -92,6 +92,7 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
     "public statistics of watchlist channels from channels.list",
     { apiRowsWhere: apiSourceWhere }
   ),
+  suggested_video_titles: nonAuthorized("fetched_at", "titles and channels of other people's videos that suggested ours (BL-191, Data API videos.list)"),
   market_video_snapshots: nonAuthorized(
     "observed_at",
     "public statistics of watchlist channels' videos from videos.list / batchGetStats",
@@ -123,6 +124,8 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
   analytics_breakdown_state: authorized("collection bookkeeping of the two tables above and of the two search-term tables: dates, status, attempts, no API values"),
   video_search_terms: authorized("YouTube Analytics API data for our channels (BL-169: the search terms of each own video's first 90 days)"),
   channel_search_terms_weekly: authorized("YouTube Analytics API data for our channels (BL-169: the channel's search terms per week)"),
+  video_suggested_sources: authorized("YouTube Analytics API data for our channels (BL-191: the ids of the videos that suggested each own video in its first 90 days)"),
+  channel_suggested_sources_weekly: authorized("YouTube Analytics API data for our channels (BL-191: the ids of the videos that suggested the channel's videos per week)"),
   channel_reach_daily: authorized("YouTube Reporting API Reach data for our channels (III.E.4.b: Reporting API data)"),
   channel_basic_daily: authorized("YouTube Reporting API basic user-activity data for our channels (BL-181, III.E.4.b: Reporting API data)"),
   channel_traffic_source_daily: authorized("YouTube Reporting API traffic-source data for our channels (BL-181, III.E.4.b: Reporting API data)"),
