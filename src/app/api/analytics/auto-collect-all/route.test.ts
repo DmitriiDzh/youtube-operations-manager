@@ -5,7 +5,7 @@ import { createAutoCollectAllHandler, type AutoCollectAllDeps } from "./route";
 
 // BL-142: the route gates on a session, collects the active channel before answering and everything else after it,
 // shows only the active channel (ADR 0004), and lets one all-channels run go at a time.
-function setup(opts: { activeCatchUp?: boolean; backgroundCatchUp?: boolean; failActive?: Error; failMilestonesFor?: string; failBreakdownsFor?: string; failSearchTermsFor?: string; failCommentsFor?: string } = {}) {
+function setup(opts: { activeCatchUp?: boolean; backgroundCatchUp?: boolean; failActive?: Error; failMilestonesFor?: string; failBreakdownsFor?: string; failSearchTermsFor?: string; failSuggestedFor?: string; failCommentsFor?: string } = {}) {
   const calls: unknown[] = [];
   const deferred: Array<() => Promise<void>> = [];
   let running = false;
@@ -42,6 +42,12 @@ function setup(opts: { activeCatchUp?: boolean; backgroundCatchUp?: boolean; fai
       calls.push(["searchTerms", i.channelId, i.credentialRef.userId]);
       if (opts.failSearchTermsFor === i.channelId) throw new Error("youtube 503 (test)");
       return { attempted: 0, collected: 0, failed: 0 };
+    },
+    collectDueSuggestedSources: async (input: unknown) => {
+      const i = input as { channelId: string; credentialRef: { userId: string } };
+      calls.push(["suggested", i.channelId, i.credentialRef.userId]);
+      if (opts.failSuggestedFor === i.channelId) throw new Error("youtube 503 (test)");
+      return { attempted: 0, collected: 0, failed: 0, titlesLookedUp: 0 };
     },
     runHistoryCatchUp: async (input: unknown) => {
       const i = input as { channelId: string; credentialRef: { userId: string } };
@@ -96,6 +102,8 @@ test("BL-142: the active channel is collected before the answer, which shows onl
     ["breakdowns", "UC_C", "uC"],
     ["searchTerms", "UC_A", "uS"],
     ["searchTerms", "UC_C", "uC"],
+    ["suggested", "UC_A", "uS"],
+    ["suggested", "UC_C", "uC"],
     ["comments", "UC_A", "uS"],
     ["comments", "UC_C", "uC"],
   ]);
@@ -125,6 +133,8 @@ test("AC-VB-15: one channel's breakdowns failing never stops the next channel's;
     ["breakdowns", "UC_C", "uC"],
     ["searchTerms", "UC_A", "uS"],
     ["searchTerms", "UC_C", "uC"],
+    ["suggested", "UC_A", "uS"],
+    ["suggested", "UC_C", "uC"],
     ["comments", "UC_A", "uS"],
     ["comments", "UC_C", "uC"],
   ]);
@@ -143,6 +153,23 @@ test("AC-ST-14: one channel's search terms failing never stops the next channel'
     ["breakdowns", "UC_C", "uC"],
     ["searchTerms", "UC_A", "uS"],
     ["searchTerms", "UC_C", "uC"],
+    ["suggested", "UC_A", "uS"],
+    ["suggested", "UC_C", "uC"],
+    ["comments", "UC_A", "uS"],
+    ["comments", "UC_C", "uC"],
+  ]);
+  assert.equal(isRunning(), false);
+});
+
+test("BL-191: one channel's suggested sources failing never stops the next channel's; the search terms ran before, the comments after", async () => {
+  const { calls, deferred, deps, isRunning } = setup({ failSuggestedFor: "UC_A" });
+  await createAutoCollectAllHandler(deps)();
+  await deferred[0]();
+  assert.deepEqual(calls.slice(6), [
+    ["searchTerms", "UC_A", "uS"],
+    ["searchTerms", "UC_C", "uC"],
+    ["suggested", "UC_A", "uS"],
+    ["suggested", "UC_C", "uC"],
     ["comments", "UC_A", "uS"],
     ["comments", "UC_C", "uC"],
   ]);
@@ -161,6 +188,8 @@ test("AC-VC-11: one channel's comments failing never stops the next channel's; t
     ["breakdowns", "UC_C", "uC"],
     ["searchTerms", "UC_A", "uS"],
     ["searchTerms", "UC_C", "uC"],
+    ["suggested", "UC_A", "uS"],
+    ["suggested", "UC_C", "uC"],
     ["comments", "UC_A", "uS"],
     ["comments", "UC_C", "uC"],
   ]);
@@ -209,6 +238,8 @@ test("BL-151: peers' rows are imported before collecting; this device's rows are
     ["breakdowns", "UC_C", "uC"],
     ["searchTerms", "UC_A", "uS"],
     ["searchTerms", "UC_C", "uC"],
+    ["suggested", "UC_A", "uS"],
+    ["suggested", "UC_C", "uC"],
     ["comments", "UC_A", "uS"],
     ["comments", "UC_C", "uC"],
     ["publishLocal"],

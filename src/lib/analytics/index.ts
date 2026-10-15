@@ -1,8 +1,9 @@
 import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { createChannelAccessCore } from "@/lib/channel-access";
-import { createAnalyticsStoreAdapter, createBreakdownStoreAdapter, createSearchTermStoreAdapter, createVideoMilestoneStoreAdapter } from "./adapters/store";
+import { createAnalyticsStoreAdapter, createBreakdownStoreAdapter, createSearchTermStoreAdapter, createSuggestedSourceStoreAdapter, createVideoMilestoneStoreAdapter } from "./adapters/store";
 import { createBreakdownServices, gateBreakdownCollection } from "./breakdowns";
 import { createSearchTermServices, gateSearchTermCollection } from "./search-terms";
+import { createSuggestedSourceServices, gateSuggestedSourceCollection } from "./suggested-sources";
 import { createVideoMilestoneServices, gateMilestoneCollection } from "./milestones";
 import { createAnalyticsYoutubeApiAdapter } from "./adapters/youtube-api";
 import { createDefaultLogger } from "@/lib/shared-logger";
@@ -102,6 +103,21 @@ export function createAnalyticsCore() {
     youtubeApi: createAnalyticsYoutubeApiAdapter(),
     store: searchTermStore.store,
   });
+  // BL-191 (docs/roadmap/plans/SUGGESTED_SOURCES_PLAN.md): the videos that suggested ours -- the same background read rules, plus the
+  // titles of the external ones within the Data API background reserve.
+  const suggestedStore = createSuggestedSourceStoreAdapter();
+  const suggestedSources = createSuggestedSourceServices({
+    clock: { now: () => new Date() },
+    authResolver: defaultAuthResolver(),
+    channelAccess: createChannelAccessCore(),
+    videoStore: suggestedStore.videoStore,
+    youtubeApi: createAnalyticsYoutubeApiAdapter(),
+    store: suggestedStore.store,
+    ownVideos: suggestedStore.ownVideos,
+    titles: suggestedStore.titles,
+    dataReserve: guard,
+    dataApi: createAnalyticsYoutubeApiAdapter(),
+  });
   return {
     ...core,
     collectDueMilestones: quotaScoped(gateMilestoneCollection(guard, milestones.collectDueMilestones), context),
@@ -110,6 +126,9 @@ export function createAnalyticsCore() {
     listStoredBreakdowns: breakdowns.listStoredBreakdowns,
     collectDueSearchTerms: quotaScoped(gateSearchTermCollection(guard, searchTerms.collectDueSearchTerms), context),
     listStoredSearchTerms: searchTerms.listStoredSearchTerms,
+    // The run's few videos.list title lookups (Data API units, classified "data" by the client) are listed under this Analytics context too.
+    collectDueSuggestedSources: quotaScoped(gateSuggestedSourceCollection(guard, suggestedSources.collectDueSuggestedSources), context),
+    listStoredSuggestedSources: suggestedSources.listStoredSuggestedSources,
     // BL-142: the dashboard's automatic collection for every connected channel (auto-collect-all.ts). It is handed the
     // quota-guarded functions above, never the raw services, so background channels keep the same reserve and quota
     // attribution.
@@ -150,6 +169,8 @@ export { listStoredBreakdownsInputSchema } from "./breakdowns";
 export type { ListStoredBreakdownsResult } from "./breakdowns";
 export { listStoredSearchTermsInputSchema } from "./search-terms";
 export type { ListStoredSearchTermsResult } from "./search-terms";
+export { listStoredSuggestedSourcesInputSchema } from "./suggested-sources";
+export type { ListStoredSuggestedSourcesResult } from "./suggested-sources";
 export type { ChannelOverviewView } from "./overview-view";
 export type { Granularity } from "./granularity";
 export { CUMULATIVE_COMPARISON_METRIC_NAMES } from "./comparable-age";

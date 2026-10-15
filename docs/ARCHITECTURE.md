@@ -4202,3 +4202,29 @@ gate's scope), Telegram msgs 2739 (go), 2741/2743 (the layout: Music | Images | 
 - Streaming a take or a render between computers (files come by the workspace sync), and a notice for a new render.
 - Lineage beyond keyframes (A4: `sourceRef` on a plan result, "made from" for scene images): only a keyframe's parent compare is built.
 - Blind A/B (A5), storyboard drafts by the Producer, and an Agent / Producer API read of storyboards.
+
+## 49. Stored "Suggested videos" sources per video and per channel week (BL-191, FO-REQ-0026)
+
+Plan: `docs/roadmap/plans/SUGGESTED_SOURCES_PLAN.md` (AC-SS-01..09). Schema v94.
+
+- **One engine for both details.** `src/lib/analytics/traffic-source-details.ts` owns what §38 described for the search terms: the planner
+  (`planDueTrafficDetails`, pure), the collection loop (`collectDue`) with its failure rules, and the stored read (`listStored`), all
+  parameterised by a `TrafficDetailSpec` (`sourceType`, the two state-subject prefixes, a label) and a store whose rows are
+  `{ detail, views, estimatedMinutesWatched }`. `search-terms.ts` is the `YT_SEARCH` spec (`search:` / `search-week:`) and maps `detail` to
+  `term`, keeping BL-169's exported names and shapes; its tests run unchanged. Each spec sees only its own subjects in
+  `analytics_breakdown_state`, so the two schedules never affect each other.
+- **The `RELATED_VIDEO` spec** (`suggested-sources.ts`, subjects `suggested:<video id>` / `suggested-week:<Monday>`): the same report with
+  `insightTrafficSourceType==RELATED_VIDEO`; each row's detail is the suggesting video's id. `/api/analytics/auto-collect-all` runs
+  `collectDueSuggestedSources` after every channel's search terms, gated by the Analytics background reserve like §38.
+- **Titles of external videos.** After the Analytics part of a run (not after a run it stopped), the channel's stored ids
+  (`listStoredSuggestedSourceIds`) minus our own videos (`listOwnVideosByIds`: the `videos` table, any channel) minus ids with a title row
+  fetched in the last 30 days are looked up, at most 500 per run, only while `isBackgroundReadAllowed("data")`, with
+  `getPublicVideoTitles` (read gateway, `videos.list part=snippet`, 50 ids per call). Every looked-up id is saved, with nulls when YouTube
+  did not return it. Any error ends the lookups silently; the ids stay and are tried on a later run.
+- **Storage.** `video_suggested_sources` (key `video_id, source_video_id`), `channel_suggested_sources_weekly` (key `channel_id,
+  week_start, source_video_id`), both `authorized` (the ids are our channel's Analytics answer). `suggested_video_titles` (key `video_id`;
+  `title`, `channel_id`, `channel_title`, `fetched_at`) is `non_authorized` with clock `fetched_at`, so `purgeExpiredApiData` deletes it
+  after 30 days (live database, imports, backups). All three are device-local.
+- **Reads.** `listStoredSuggestedSources` backs `agent_get_stored_suggested_sources`: the engine's read, then each row is classified --
+  `ours` with the title and channel from `videos` / `channels`, else `external` with the title row only when fetched at or after now − 30
+  days (so a row the purge has not reached yet is never served).

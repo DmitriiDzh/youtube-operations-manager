@@ -109,3 +109,10 @@ every channel's reads without a worker per channel, and nothing else.
 - Producer API 1.6.0 adds one READ channel tool to the closed list: `agent_get_video_comments` (capability
   `video_context.query_video_comments`), stored data only, in the named channel's scope like every other channel tool.
 - **Not changed:** the Producer-only tools, the DRAFT tools, the permissions, the per-call channel scope.
+
+## Amendment 7 — stored "Suggested videos" sources (BL-191, FO-REQ-0026 / PRD-REQ-0013, owner 2026-10-15, Telegram msg 2824)
+
+- Producer API 1.9.0 adds one READ channel tool to the closed list: `agent_get_stored_suggested_sources` (capability
+  `analytics.query_stored_suggested_sources`), stored data only, in the named channel's scope like every other channel tool. Its rows mark
+  each suggesting video `ours` (any channel connected on the computer) or `external`; an external title is at most 30 days old.
+- **Not changed:** the Producer-only tools, the DRAFT tools, the permissions, the per-call channel scope.

@@ -11,6 +11,7 @@ import {
   getPublicChannelStats,
   searchPublicMusicVideos,
   getPublicVideoSnapshots,
+  getPublicVideoTitles,
   getVideoDetailsContext,
   getVideosMetadataContextBatch,
   listSupportedLanguages,
@@ -1012,4 +1013,36 @@ test("listOwnVideoComments asks for the 100 newest threads as plain text and kee
     { commentId: "c2", text: "Beautiful music!", likeCount: 3, publishedAt: "2026-09-27T19:16:28Z", updatedAt: "2026-09-28T08:00:00Z", replyCount: 2, byChannelOwner: false },
   ]);
   assert.ok(!JSON.stringify(comments).includes("Someone") && !JSON.stringify(comments).includes("UC_someone"), "no author data");
+});
+
+// BL-191 (docs/roadmap/plans/SUGGESTED_SOURCES_PLAN.md): titles of other people's suggesting videos -- snippet only, 50 ids per call.
+test("getPublicVideoTitles asks for snippet only in calls of at most 50 ids, and leaves out an id YouTube did not return", async () => {
+  const calls: Array<{ part: string[]; id: string[] }> = [];
+  const youtube = fakeYoutubeClient({
+    videosList: (async (args: { part: string[]; id: string[] }) => {
+      calls.push(args);
+      return {
+        data: {
+          items: args.id
+            .filter((id) => id !== "x7")
+            .map((id) => (id === "x3" ? { id, snippet: { title: "Three" } } : { id, snippet: { title: `T ${id}`, channelId: `UC_${id}`, channelTitle: `C ${id}` } })),
+        },
+      };
+    }) as unknown as youtube_v3.Youtube["videos"]["list"],
+  });
+  const ids = Array.from({ length: 60 }, (_, i) => `x${i}`);
+  const titles = await getPublicVideoTitles(youtube, ids);
+  assert.deepEqual(
+    calls.map((c) => [c.part, c.id.length, c.id[0]]),
+    [
+      [["snippet"], 50, "x0"],
+      [["snippet"], 10, "x50"],
+    ]
+  );
+  assert.equal(titles.length, 59);
+  assert.equal(titles.some((t) => t.videoId === "x7"), false, "absent, never a placeholder");
+  assert.deepEqual(titles.find((t) => t.videoId === "x1"), { videoId: "x1", title: "T x1", channelId: "UC_x1", channelTitle: "C x1" });
+  assert.deepEqual(titles.find((t) => t.videoId === "x3"), { videoId: "x3", title: "Three", channelId: null, channelTitle: null });
+  assert.deepEqual(await getPublicVideoTitles(youtube, []), []);
+  assert.equal(calls.length, 2, "no call for an empty list");
 });

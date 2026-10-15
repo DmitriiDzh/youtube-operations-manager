@@ -113,6 +113,8 @@ test("AC-P13-01/07: API-sourced competitor rows older than 30 days are deleted; 
       result.map((r) => [r.table, r.deleted, r.blanked]),
       [
         ["market_channel_snapshots", 1, 0],
+        // BL-191 (SUGGESTED_SOURCES_PLAN.md §2): a new expiring table, the titles of other people's suggesting videos (none seeded here).
+        ["suggested_video_titles", 0, 0],
         ["market_video_snapshots", 1, 0],
         ["market_discovery_candidates", 1, 2],
         ["research_evidence", 1, 0],

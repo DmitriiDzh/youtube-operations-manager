@@ -11,7 +11,7 @@ import { createVideoCommentsCore } from "@/lib/video-comments";
 
 export type AutoCollectAllDeps = {
   getSession: () => Promise<{ user?: { id?: string | null } } | null>;
-  core: Pick<ReturnType<typeof createAnalyticsCore>, "runAutoCollectionForChannels" | "runHistoryCatchUp" | "collectDueMilestones" | "collectDueBreakdowns" | "collectDueSearchTerms">;
+  core: Pick<ReturnType<typeof createAnalyticsCore>, "runAutoCollectionForChannels" | "runHistoryCatchUp" | "collectDueMilestones" | "collectDueBreakdowns" | "collectDueSearchTerms" | "collectDueSuggestedSources">;
   getActiveChannelId: (userId: string) => Promise<string | null>;
   /** Runs work after the response is sent (Next's `after`); injectable for tests. */
   runAfter: (work: () => Promise<void>) => void;
@@ -105,6 +105,15 @@ export function createAutoCollectAllHandler(
           for (const { channelId, credentialRef } of [...active.milestones, ...background.milestones]) {
             try {
               await deps.core.collectDueSearchTerms({ credentialRef, channelId });
+            } catch {
+              // Reads off, quota, sign-in, an outage: nothing was counted; the next dashboard open tries again.
+            }
+          }
+          // BL-191: then each such channel's stored "Suggested videos" sources and the titles of the external ones (the same rules; one
+          // channel failing never stops the next one).
+          for (const { channelId, credentialRef } of [...active.milestones, ...background.milestones]) {
+            try {
+              await deps.core.collectDueSuggestedSources({ credentialRef, channelId });
             } catch {
               // Reads off, quota, sign-in, an outage: nothing was counted; the next dashboard open tries again.
             }

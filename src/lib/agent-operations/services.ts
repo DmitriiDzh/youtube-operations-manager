@@ -225,6 +225,14 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
       "YouTube search terms as stored by YT Manager (BL-169): the top 25 terms of traffic source YT_SEARCH with views and watch minutes, as YouTube returned them, for each public video's first 90 days so far and for the channel per Monday-Sunday week (summed over a date range or listed by week). YouTube names terms for only part of the search views and gives no day split. Read weekly in the background with the Analytics collection -- a LOCAL read, never a live YouTube call. Requires channelId to be the caller's currently-active channel.",
   },
   {
+    id: "analytics.query_stored_suggested_sources",
+    mcpTools: ["agent_get_stored_suggested_sources"],
+    domain: "analytics",
+    permission: "READ",
+    description:
+      "\"Suggested videos\" sources as stored by YT Manager (BL-191): the top 25 videos that suggested ours (traffic source RELATED_VIDEO) with views and watch minutes, as YouTube returned them, for each public video's first 90 days so far and for the channel per Monday-Sunday week (summed over a date range or listed by week). Each row says whether the suggesting video is ours (any channel connected to YT Manager) or external; an external video's title and channel are kept at most 30 days. Partial lists (top 25 per query). Read weekly in the background with the Analytics collection -- a LOCAL read, never a live YouTube call. Requires channelId to be the caller's currently-active channel.",
+  },
+  {
     id: "analytics.query_video_analytics",
     mcpTools: ["agent_query_video_analytics", "analytics_list"],
     domain: "analytics",

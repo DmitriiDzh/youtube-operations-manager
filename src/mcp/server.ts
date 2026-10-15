@@ -30,7 +30,7 @@ import {
   listSyncedVideosInputSchema,
   syncChannelInputSchema,
 } from "@/lib/channel-sync/schemas";
-import { createAnalyticsCore, listStoredBreakdownsInputSchema, listStoredSearchTermsInputSchema, listVideoMilestonesInputSchema, type AnalyticsCore } from "@/lib/analytics";
+import { createAnalyticsCore, listStoredBreakdownsInputSchema, listStoredSearchTermsInputSchema, listStoredSuggestedSourcesInputSchema, listVideoMilestonesInputSchema, type AnalyticsCore } from "@/lib/analytics";
 import { createAiLocalizationCore, type AiLocalizationCore } from "@/lib/ai-localization";
 import {
   createChangeSetFromGenerationInputSchema,
@@ -168,6 +168,7 @@ type AnalyticsCoreSubset = Pick<
   | "listVideoMilestones"
   | "listStoredBreakdowns"
   | "listStoredSearchTerms"
+  | "listStoredSuggestedSources"
 >;
 
 // Phase 9 slice 4 (docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md): registered directly here, not
@@ -364,6 +365,7 @@ type McpToolHandlers = {
   agentGetVideoMilestones: (input: unknown) => Promise<ToolResponse>;
   agentGetStoredBreakdowns: (input: unknown) => Promise<ToolResponse>;
   agentGetStoredSearchTerms: (input: unknown) => Promise<ToolResponse>;
+  agentGetStoredSuggestedSources: (input: unknown) => Promise<ToolResponse>;
   agentGetExperimentResults: (input: unknown) => Promise<ToolResponse>;
   agentGetVideoComments: (input: unknown) => Promise<ToolResponse>;
   agentQueryChannelBreakdown: (input: unknown) => Promise<ToolResponse>;
@@ -1877,6 +1879,25 @@ export function createMcpToolHandlers(
     },
 
     /**
+     * BL-191 (docs/roadmap/plans/SUGGESTED_SOURCES_PLAN.md) -- the stored videos that suggested the channel's videos. A LOCAL read, no
+     * Google call; `listStoredSuggestedSources` checks the active channel itself, and a video of another channel is not listed.
+     */
+    async agentGetStoredSuggestedSources(input: unknown): Promise<ToolResponse> {
+      const parsedInput = listStoredSuggestedSourcesInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(parsedInput.data.credentialRef);
+        const result = await analyticsCore.listStoredSuggestedSources({ ...parsedInput.data, credentialRef });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /**
      * BL-118 -- traffic sources / devices / audience / geography / subscribed status / content format for a date range: the same
      * `getChannelBreakdown` the Content tab uses (a LIVE YouTube Analytics API read, 1 quota unit), with each raw API value also given a
      * readable label. Same forwarding pattern as `agentQueryChannelAnalytics`; the service checks the active channel itself.
@@ -2599,6 +2620,8 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     agentGetStoredBreakdowns: handlers.agentGetStoredBreakdowns,
     // BL-169 -- a pure local read, ungated.
     agentGetStoredSearchTerms: handlers.agentGetStoredSearchTerms,
+    // BL-191 -- a pure local read, ungated.
+    agentGetStoredSuggestedSources: handlers.agentGetStoredSuggestedSources,
     // BL-170 -- a pure local read, ungated.
     agentGetExperimentResults: handlers.agentGetExperimentResults,
     // BL-171 -- a pure local read, ungated.
@@ -3425,6 +3448,16 @@ export function createMcpServer(
       inputSchema: listStoredSearchTermsInputSchema,
     },
     (args) => handlers.agentGetStoredSearchTerms(args)
+  );
+
+  registerTool(
+    "agent_get_stored_suggested_sources",
+    {
+      description:
+        "Stored \"Suggested videos\" sources (BL-191): which videos suggested the channel's videos (YouTube Analytics `insightTrafficSourceDetail` of traffic source RELATED_VIDEO), top 25 by views per query, each row `{ videoId, views, estimatedMinutesWatched, source, title, channelId, channelTitle }`, most views first. `source` is `ours` when the suggesting video is a synced video of any channel connected to YT Manager on this computer (its title and channel come from our own data), else `external`. An external video's title and channel are looked up after each collection and kept at most 30 days; without a fresh lookup (or for a video YouTube no longer returns) they are null while the row itself stays. THE LISTS ARE PARTIAL: YouTube returns only the top 25 suggesting videos per query, so the rows never add up to all suggested views; the suggested-views total is the RELATED_VIDEO row of agent_get_stored_breakdowns. Two forms, as agent_get_stored_search_terms. (1) `videoIds` (1-20, no dates): `videos`, each with its `sources` over its first 90 days so far (`coverage.from` = its Pacific publish date .. `coverage.through`, see `window`); YT Manager reads a video once it has 7 days, then every 7 days while its 90 days run, and once more 7 days after they end, each read replacing its rows. (2) `startDate` + `endDate` (YYYY-MM-DD, at most 92 days, no videoIds) and optional `groupBy`: the channel's suggesting videos per Monday-Sunday week (Pacific dates), for the complete weeks lying fully inside the range (`weeks`, oldest first, each with `status` and `collectedAt`); `groupBy: total` (default) adds `sources`, each video summed over the weeks that were read (a sum of weekly top-25 lists), `groupBy: week` gives each week its own `sources`. YT Manager reads the last 13 complete weeks: each once it is complete and once more 7 days after its Sunday; an older week never read stays `not_collected`. `status` is collected | retry (a query failed, tried again later; `lastError`) | failed (given up after 3 attempts) | not_collected (`coverage` null for a video). Reads happen during the dashboard's Analytics collection, at most 100 queries per channel per run (the weeks first, then the least recently read videos). A videoId of another channel, or of a private, unlisted, scheduled or never-synced video, is not listed. A LOCAL read, never a live YouTube call; each computer collects the channels connected on it. Requires channelId to be the caller's currently-active channel.",
+      inputSchema: listStoredSuggestedSourcesInputSchema,
+    },
+    (args) => handlers.agentGetStoredSuggestedSources(args)
   );
 
   registerTool(
