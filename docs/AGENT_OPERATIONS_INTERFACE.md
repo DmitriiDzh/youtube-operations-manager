@@ -1153,6 +1153,13 @@ idle / minutes / USD; every job submit or poll counts as activity. Contract: `do
   collection (1 Analytics API query per video or week, at most 100 per channel per run); a local read, never a live call. Contract:
   `docs/interfaces.md`.
 
+**Stored "Suggested videos" sources (BL-191, Agent API 3.18.0, `docs/roadmap/plans/SUGGESTED_SOURCES_PLAN.md`):**
+- `agent_get_stored_suggested_sources` (capability `analytics.query_stored_suggested_sources`, READ) returns the top 25 videos that
+  suggested the channel's videos (traffic source `RELATED_VIDEO`) with views and watch minutes, in the same two forms as the search terms.
+- Each row says `source: ours` (a synced video of any channel connected on this computer) or `external`; an external video's title and
+  channel are kept 30 days, then `null`. The lists are partial. Same schedule as the search terms; a local read, never a live call.
+  Contract: `docs/interfaces.md`.
+
 
 **Experiment arms (BL-170, Agent API 3.12.0, `docs/roadmap/plans/EXPERIMENT_ARMS_PLAN.md`):**
 - An own video can be linked to an arm (`control`, `A`, ...) of an experiment of the Decisions list -- by the owner in the Decisions tab, or by
