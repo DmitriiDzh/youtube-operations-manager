@@ -1,6 +1,6 @@
 # Stored "Suggested videos" sources per video and per channel week (BL-191, FO-REQ-0026)
 
-**Status: IN PROGRESS** on `feature/fo-req-0026-suggested-sources`. Request: FO-REQ-0026 (Operator, relaying PRD-REQ-0013, 2026-10-15).
+**Status: DONE, merged into `dev` (f5fe622, owner Telegram msg 2838); AC-SS-09 weeks confirmed live 2026-10-15, `kB8OuwCcgnM` from 2026-10-18.** Request: FO-REQ-0026 (Operator, relaying PRD-REQ-0013, 2026-10-15).
 Owner go: Telegram 2026-10-15, msg 2824 («Да») on the assessment in msg 2823. Reply: DEV-RESP-0032.
 
 ## 1. Facts
