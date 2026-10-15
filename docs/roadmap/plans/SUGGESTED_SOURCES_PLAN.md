@@ -37,7 +37,7 @@ shapes and becomes the `YT_SEARCH` configuration; its existing tests stay unchan
 ### `source: ours | external`
 
 Decided when the rows are read, not stored: `ours` when the suggesting id is a synced video of any channel connected to YT Manager on
-this computer (Tropico and Japan both count), else `external`. A channel synced later turns its rows into `ours` without a re-read.
+this computer (Tropico and Japan both count; the local `videos` table, including a video since removed from YouTube), else `external`. A channel synced later turns its rows into `ours` without a re-read.
 An `ours` row carries the title and channel from the local `videos` / `channels` tables (our own data).
 
 ### Titles of external videos (30 days)
@@ -49,7 +49,7 @@ An `ours` row carries the title and channel from the local `videos` / `channels`
   the Data API background reserve allows (`isBackgroundReadAllowed("data")`); any failure ends the lookups of that run and never fails
   the collection (the ids stay, the titles come on a later run).
 - On read, a title row older than 30 days is ignored even before the purge runs. An id YouTube does not return (deleted, private) gets
-  no title.
+  no title: it is saved with null fields, so it is not asked again within the 30 days. A run's titles are saved in one atomic batch.
 - A stored row is never re-fetched only to refresh its title; after the purge, an id that is still in the stored rows is looked up again
   on the next run.
 

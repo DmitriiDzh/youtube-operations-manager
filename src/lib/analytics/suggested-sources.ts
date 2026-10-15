@@ -74,7 +74,7 @@ export type SuggestedSourceDependencies = TrafficDetailDependencies & {
   };
   /** The Data API background reserve (`isBackgroundReadAllowed("data")`). */
   dataReserve: { isBackgroundReadAllowed(service: "data"): Promise<boolean> };
-  dataApi: { getPublicVideoTitles(args: { credentials: ResolvedCredentials; videoIds: string[] }): Promise<Array<{ videoId: string; title: string; channelId: string | null; channelTitle: string | null }>> };
+  dataApi: { getPublicVideoTitles(args: { credentials: ResolvedCredentials; videoIds: string[] }): Promise<Array<{ videoId: string; title: string | null; channelId: string | null; channelTitle: string | null }>> };
 };
 
 export function createSuggestedSourceServices(deps: SuggestedSourceDependencies) {

@@ -11770,13 +11770,16 @@ export async function saveSuggestedVideoTitles(
   at: Date,
   database: AppDb = db
 ): Promise<void> {
-  for (const row of rows) {
+  if (rows.length === 0) return;
+  const writes = rows.map((row) => {
     const values = { title: row.title, channelId: row.channelId, channelTitle: row.channelTitle, fetchedAt: at };
-    await database
+    return database
       .insert(suggestedVideoTitles)
       .values({ videoId: row.videoId, ...values })
       .onConflictDoUpdate({ target: suggestedVideoTitles.videoId, set: values });
-  }
+  });
+  // One atomic batch (review of BL-191): all of a run's titles or none.
+  await database.batch(writes as unknown as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
 }
 
 export type StoredVideoCommentState = typeof videoCommentState.$inferSelect;

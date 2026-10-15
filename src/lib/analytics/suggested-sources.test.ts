@@ -295,12 +295,10 @@ test("AC-SS-05: after a run, only the 60 external ids without a title are looked
     ["v1", [["own1", 5, 5], ["known", 4, 4], ...externals.slice(0, 20)]],
     ["channel|2026-09-28", externals.slice(20)],
   ]);
-  const gatewayCalls: string[][] = [];
   const { services, titleCalls, reserveChecks } = setup(db, {
     truth,
-    // Mimic the gateway: 50 ids per videos.list call (getPublicVideoTitles itself is tested in data-api.test.ts).
+    // The 50-id calls are getPublicVideoTitles' own (data-api.test.ts, 60 ids → 50 + 10).
     titles: (ids) => {
-      for (let i = 0; i < ids.length; i += 50) gatewayCalls.push(ids.slice(i, i + 50));
       return ids.filter((id) => id !== "x07").map((id) => ({ videoId: id, title: `T ${id}`, channelId: `UC_${id}`, channelTitle: `C ${id}` }));
     },
   });
@@ -309,7 +307,6 @@ test("AC-SS-05: after a run, only the 60 external ids without a title are looked
   assert.deepEqual(reserveChecks, ["data"]);
   const expected = externals.map(([id]) => id).sort();
   assert.deepEqual(titleCalls, [expected], "one lookup of exactly the external ids without a title");
-  assert.deepEqual(gatewayCalls.map((ids) => ids.length), [50, 10]);
   const stored = await services.listStoredSuggestedSources({ channelId: "UC_ours", videoIds: ["v1"] });
   assert.ok("videos" in stored);
   const byId = new Map(stored.videos[0].sources.map((row) => [row.videoId, row]));

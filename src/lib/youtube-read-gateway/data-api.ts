@@ -426,7 +426,7 @@ export async function getPublicVideoSnapshots(youtube: youtube_v3.Youtube, video
   return results;
 }
 
-export type PublicVideoTitle = { videoId: string; title: string; channelId: string | null; channelTitle: string | null };
+export type PublicVideoTitle = { videoId: string; title: string | null; channelId: string | null; channelTitle: string | null };
 
 /**
  * BL-191 (docs/roadmap/plans/SUGGESTED_SOURCES_PLAN.md): the title and channel of public videos by id (`part=snippet` only, 50 ids per
@@ -438,7 +438,7 @@ export async function getPublicVideoTitles(youtube: youtube_v3.Youtube, videoIds
     const res = await youtube.videos.list({ part: ["snippet"], id: batch });
     for (const item of res.data.items ?? []) {
       if (!item.id) continue;
-      results.push({ videoId: item.id, title: item.snippet?.title ?? "", channelId: item.snippet?.channelId ?? null, channelTitle: item.snippet?.channelTitle ?? null });
+      results.push({ videoId: item.id, title: item.snippet?.title || null, channelId: item.snippet?.channelId ?? null, channelTitle: item.snippet?.channelTitle ?? null });
     }
   }
   return results;
