@@ -126,6 +126,7 @@ export function createAnalyticsCore() {
     listStoredBreakdowns: breakdowns.listStoredBreakdowns,
     collectDueSearchTerms: quotaScoped(gateSearchTermCollection(guard, searchTerms.collectDueSearchTerms), context),
     listStoredSearchTerms: searchTerms.listStoredSearchTerms,
+    // The run's few videos.list title lookups (Data API units, classified "data" by the client) are listed under this Analytics context too.
     collectDueSuggestedSources: quotaScoped(gateSuggestedSourceCollection(guard, suggestedSources.collectDueSuggestedSources), context),
     listStoredSuggestedSources: suggestedSources.listStoredSuggestedSources,
     // BL-142: the dashboard's automatic collection for every connected channel (auto-collect-all.ts). It is handed the

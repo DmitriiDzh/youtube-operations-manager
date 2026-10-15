@@ -217,20 +217,27 @@ test("AC-SS-01: a due video and a due week are read for RELATED_VIDEO with BL-16
   assert.deepEqual([state?.rangeStart, state?.collectedThrough, state?.status], ["2026-09-01", "2026-10-09", "collected"]);
 });
 
-test("AC-SS-02 (AC-ST-10, failures): a video's 'no answer' ends the run and no titles are looked up; a 400 counts an attempt", async () => {
+test("AC-SS-02 (AC-ST-10, failures): a 400 counts an attempt; a video's 'no answer' ends the run and no titles are looked up", async () => {
   const { db } = await freshDb();
   // Weeks only: every week answers 400.
   const failing = createSuggestedSourceServicesWithFailure(db, googleError(400, "badRequest"));
-  const result = await failing.collectDueSuggestedSources(RUN);
+  const result = await failing.services.collectDueSuggestedSources(RUN);
   assert.deepEqual([result.attempted, result.collected, result.failed], [13, 0, 13]);
   const states = await listAnalyticsBreakdownStates("UC_ours", db);
   assert.ok(states.every((s) => s.subject.startsWith("suggested-week:") && s.status === "retry" && s.attempts === 1));
+  // A stored external id is waiting for a title, but the run is stopped by the video's 503 before any lookup.
+  await saveCollectedChannelSuggestedSourcesWeek(
+    { channelId: "UC_ours", subject: "suggested-week:2026-09-28", weekStart: "2026-09-28", to: "2026-10-04", rows: [{ detail: "ext1", views: 1, estimatedMinutesWatched: 1 }], collectedOn: "2026-10-10", at: NOW },
+    db
+  );
   const unavailable = createSuggestedSourceServicesWithFailure(db, googleError(503, "backendError"), [V1], NOW);
-  await assert.rejects(() => unavailable.collectDueSuggestedSources(RUN));
+  await assert.rejects(() => unavailable.services.collectDueSuggestedSources(RUN));
+  assert.deepEqual(unavailable.titleCalls, []);
 });
 
 function createSuggestedSourceServicesWithFailure(db: AppDb, error: Error, videos: MilestoneVideo[] = [], now: Date = NOW) {
-  return createSuggestedSourceServices({
+  const titleCalls: string[][] = [];
+  const services = createSuggestedSourceServices({
     clock: { now: () => now },
     authResolver: { resolve: async () => ({ accessToken: "a", refreshToken: "r" }) as never },
     channelAccess: { assertActiveChannel: async ({ channelId }) => channelId },
@@ -257,11 +264,13 @@ function createSuggestedSourceServicesWithFailure(db: AppDb, error: Error, video
     },
     dataReserve: { isBackgroundReadAllowed: async () => true },
     dataApi: {
-      getPublicVideoTitles: async () => {
-        throw new Error("must not be called");
+      getPublicVideoTitles: async ({ videoIds }) => {
+        titleCalls.push(videoIds);
+        return [];
       },
     },
   });
+  return { services, titleCalls };
 }
 
 test("AC-SS-04: a synced video of another connected channel is ours with its title and channel; an unknown id is external", async () => {
