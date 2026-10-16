@@ -533,3 +533,18 @@ test("an upcoming live broadcast (a stream slot) is left out of the Languages pa
   const alerts = await services.getTranslationAlerts({ channelId: "UC_TEST" });
   assert.deepEqual(alerts.videos.map((v) => v.videoId).sort(), ["past-stream", "unknown"]);
 });
+
+test("the channel's language is the first column of the Languages table; the others stay alphabetical; an absent baseline adds no column", async () => {
+  const videos = [
+    makeVideo({ videoId: "v1", defaultLanguage: "ru", existingLocalizations: { ru: { title: "RU", description: "RU d" }, de: { title: "DE", description: "DE d" } } }),
+  ];
+  const withBaseline = createFixture(videos, undefined, "ru");
+  withBaseline.trackedLanguagesByChannel.set("UC_TEST", ["en", "es"]);
+  const overview = await withBaseline.services.getLocalizationOverview({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST" });
+  assert.deepEqual(overview.languages, ["ru", "de", "en", "es"]);
+
+  const absent = createFixture(videos, undefined, "ja");
+  absent.trackedLanguagesByChannel.set("UC_TEST", ["en"]);
+  const plain = await absent.services.getLocalizationOverview({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST" });
+  assert.deepEqual(plain.languages, ["de", "en", "ru"]);
+});
