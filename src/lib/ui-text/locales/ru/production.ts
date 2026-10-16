@@ -23,6 +23,11 @@ export const production: Record<keyof typeof en, string> = {
   "setupField.factoryMaxUsdPerMonth": "Factory: максимум в месяц",
   "setupField.ownerReleaseWhenDone": "Освобождать сессию после последнего задания",
   "setupField.minCudaVersion": "Минимальная версия CUDA на GPU-сервере",
+  // BL-193: the shared Gemini limits, as the conflict screen names them.
+  "geminiField.maxUsdPerJob": "Gemini: максимум за задание",
+  "geminiField.maxUsdPerDay": "Gemini: лимит расходов в день",
+  "geminiField.maxUsdPerMonth": "Gemini: лимит расходов в месяц",
+  "geminiField.maxActiveJobs": "Gemini: заданий в очереди или в работе одновременно",
 
   "settingsSync.intro": "Эти настройки одинаковы на всех ваших компьютерах: изменение здесь доходит до остальных примерно за минуту (ключи RunPod остаются на каждом компьютере свои).",
   "settingsSync.fromOther": "С другого компьютера: {fields} ({time}).",
@@ -32,6 +37,8 @@ export const production: Record<keyof typeof en, string> = {
   "production.balance.title": "Баланс RunPod",
   "production.balance.titleLegacy": "Баланс RunPod (старый API)",
   "production.balance.connect": "Подключите RunPod в «Настройки → Облачные API».",
+  "production.geminiToday": "Gemini сегодня",
+  "production.todayThisComputer": "этот компьютер {value}",
   "production.balance.lastRefreshFailed": "Последнее обновление не удалось: {error}",
   "production.balance.requestFailed": "Не удалось запросить баланс",
   "production.balance.requestFailedStatus": "Не удалось запросить баланс ({status})",

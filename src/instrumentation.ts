@@ -371,6 +371,31 @@ async function startServerSession() {
   };
   setTimeout(() => void geminiLoop(), 10_000).unref();
 
+  // BL-193 (ADR 0039): this computer's Gemini spend for the other computers on the same key (the sync-gateway `gemini-spend`
+  // report: written when it changed, at least every 5 minutes), and the shared Gemini limits applied here (the `gemini-settings`
+  // document: seed, then apply what the other computers saved). In its own loop, so a slow worker tick never delays it and a
+  // failure here never stops the worker (AGENTS.md §M). Applying a limit writes this computer's settings, so it waits while an
+  // import / migration holds the lock or in recovery mode, like the worker; publishing the report only writes the report file.
+  const GEMINI_SHARE_TICK_MS = 30_000;
+  const geminiShareLoop = async () => {
+    if (!gemini) return;
+    try {
+      await gemini.publishSpendShare();
+    } catch (error) {
+      console.warn(`[gemini-spend] the spend report was not published: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    try {
+      await assertDeviceAvailableForMutation(rawSqlClient);
+      const status = await gemini.syncSharedSettings();
+      if (status.error) console.warn(`[gemini-settings] ${status.error}`);
+    } catch (error) {
+      const paused = error instanceof Error && (error.name === "OperationLockError" || error.name === "RecoveryModeError");
+      if (!paused) console.warn(`[gemini-settings] ${error instanceof Error ? error.message : String(error)}`);
+    }
+    setTimeout(() => void geminiShareLoop(), GEMINI_SHARE_TICK_MS).unref();
+  };
+  setTimeout(() => void geminiShareLoop(), 45_000).unref();
+
   // BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.1/§2.3): this computer's media jobs (RunPod and Gemini) for the other computers, and the
   // actions they sent for them (stage 2: applied here through the same services and limits as a local click), in its own
   // loop (AGENTS.md §M: a slow or broken jobs module never delays the others). The report file the sync-gateway `media-jobs`

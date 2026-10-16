@@ -160,6 +160,7 @@ export const shell = {
   "conflicts.blockingNote": "The app opens once everything is decided; the server, syncing and the operator keep working meanwhile.",
   "conflicts.decideLater": "Decide later — the differences stay listed in Merge",
   "conflicts.productionSettings": "Servers settings",
+  "conflicts.geminiSettings": "Gemini limits",
   "conflicts.snapshotGroup": "Batches, audit, Research and Decisions",
   "conflicts.thisComputer": "This computer",
   "conflicts.otherComputer": "The other computer",

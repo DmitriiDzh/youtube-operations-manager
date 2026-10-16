@@ -1499,7 +1499,7 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
     >
       {limits && (
         <p className="text-xs text-zinc-500">
-          {t("media.sessions.limitsLine", { active: activeCount, max: maxConcurrent, spent: usd(limits.spentTodayUsd), cap: usd(limits.maxUsdPerDay), idle: limits.idleMinutes })}
+          {t("media.sessions.limitsLine", { active: activeCount, max: maxConcurrent, spent: usd(limits.accountSpentTodayUsd ?? limits.spentTodayUsd), cap: usd(limits.maxUsdPerDay), idle: limits.idleMinutes })}
         </p>
       )}
 

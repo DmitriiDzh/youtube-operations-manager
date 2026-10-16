@@ -64,7 +64,11 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 // BL-189 (FO-REQ-0025 B, STORYBOARD_TAKES_PLAN.md §2.4): 1.18.0 -- factory_storyboard_attach_render (WRITE): the final file of the
 // approved version with the take of each segment it uses, for the owner's verdict; factory_storyboard_get returns `renders`.
 // Additive.
-export const FACTORY_API_VERSION = "1.18.0";
+// BL-193 (ADR 0039, owner msgs 2864/2867): 1.19.0 -- the Gemini limits are shared by every computer on one Gemini key:
+// factory_gemini_get_status's spend gains `account` (every computer on the key), and a create's per-day / per-month check counts the
+// other computers' spend (a refusal's details gain `otherComputersUsd` when they spent something). The limits themselves are the
+// same on every computer (synced). Additive in shape; a create that fitted this computer alone can now be refused.
+export const FACTORY_API_VERSION = "1.19.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -910,7 +914,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_gemini_get_status",
     {
       description:
-        "Images and video through Google's Gemini API (1.12.0; no server is rented, each result is paid): what you may do now. -> { enabled (the owner's switch, off by default), keyConfigured, keyHint (last 4 characters only), keyStatus ('ok' | 'payment_required': the Google prepaid balance is empty), gatewayEnabled (the owner's 'Media gateway' toggle), limits: { maxUsdPerJob, maxUsdPerDay, maxUsdPerMonth, maxActiveJobs }, spend: { todayUsd, monthUsd (finished jobs' costs + active jobs' estimates, this computer's local day/month), activeUsd, activeJobs }, pricesAsOf, models: [image: { model, label, sizes, usdPerImage, usdPerMillionTokens } | video: { model, label, resolutions, usdPerSecond (Omni: an estimate, billed by tokens), referenceImages, frames (first/last frames accepted), retiresOn (Google's shutdown date, YYYY-MM-DD, or null), usdPerMillionTokens? (Omni) }] }. Since 1.15.0 the video models are gemini-omni-1.1-flash (frames) and the Veo 3.1 previews (no frames; shut down 2026-10-22). Limits and spend are per computer. Read-only.",
+        "Images and video through Google's Gemini API (1.12.0; no server is rented, each result is paid): what you may do now. -> { enabled (the owner's switch, off by default), keyConfigured, keyHint (last 4 characters only), keyStatus ('ok' | 'payment_required': the Google prepaid balance is empty), gatewayEnabled (the owner's 'Media gateway' toggle), limits: { maxUsdPerJob, maxUsdPerDay, maxUsdPerMonth, maxActiveJobs }, spend: { todayUsd, monthUsd (finished jobs' costs + active jobs' estimates, this computer's local day/month), activeUsd, activeJobs, account (1.19.0): { todayUsd, monthUsd (this computer plus every other computer that uses the SAME Gemini key, from their spend reports -- what the per-day and per-month limits are checked against), keyKnown (false = no usable key here: only this computer counts), otherComputers: [{ deviceId, hostname, todayUsd, monthUsd, updatedAt, stale }] } }, pricesAsOf, models: [image: { model, label, sizes, usdPerImage, usdPerMillionTokens } | video: { model, label, resolutions, usdPerSecond (Omni: an estimate, billed by tokens), referenceImages, frames (first/last frames accepted), retiresOn (Google's shutdown date, YYYY-MM-DD, or null), usdPerMillionTokens? (Omni) }] }. Since 1.15.0 the video models are gemini-omni-1.1-flash (frames) and the Veo 3.1 previews (no frames; shut down 2026-10-22). Limits and spend are per computer. Read-only.",
       inputSchema: emptyInput,
     },
     async () => successResult(await deps.gemini.getStatus())

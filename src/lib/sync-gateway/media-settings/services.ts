@@ -1,6 +1,6 @@
 import * as Automerge from "@automerge/automerge";
 import type { AutomergeCore, ConflictLike, DocumentByteStore } from "../automerge-core";
-import { DomainError, GLOBAL_DOCUMENT_KEY, type MediaSettingsDocument, type MergeResult, type SettingConflict, type SettingValue } from "./contracts";
+import { DomainError, GLOBAL_DOCUMENT_KEY, MEDIA_SETTINGS_KIND, type MediaSettingsDocument, type MergeResult, type SettingConflict, type SettingsMapKind, type SettingValue } from "./contracts";
 
 export type ServiceDependencies = {
   core: AutomergeCore<MediaSettingsDocument>;
@@ -13,16 +13,19 @@ export type ServiceDependencies = {
  * merge field by field, instead of being refused as `divergent_document_lineage` (which would need a manual "adopt" in Merge
  * for something as small as a settings map).
  */
-const GENESIS_ACTOR = "6d656469612d73657474696e67733031"; // hex of "media-settings01"
-export function genesisDocument(): Automerge.Doc<MediaSettingsDocument> {
-  return Automerge.change(Automerge.init<MediaSettingsDocument>({ actor: GENESIS_ACTOR }), { message: "genesis", time: 0 }, (draft) => {
-    draft.format = "ytm-media-settings";
+export function genesisDocument(kind: SettingsMapKind = MEDIA_SETTINGS_KIND): Automerge.Doc<MediaSettingsDocument> {
+  return Automerge.change(Automerge.init<MediaSettingsDocument>({ actor: kind.genesisActor }), { message: "genesis", time: 0 }, (draft) => {
+    draft.format = kind.format;
     draft.version = 1;
     draft.settings = {};
   });
 }
+/** The Servers → Setup document's empty shape (the automerge core calls it with the document key, so it takes no kind). */
 export function emptyDocument(): MediaSettingsDocument {
-  return { format: "ytm-media-settings", version: 1, settings: {} };
+  return emptyDocumentOf(MEDIA_SETTINGS_KIND);
+}
+export function emptyDocumentOf(kind: SettingsMapKind): MediaSettingsDocument {
+  return { format: kind.format, version: 1, settings: {} };
 }
 
 /** Order-preserving canonical JSON of one value (arrays keep their order: the fallback GPU list is ordered). */
@@ -49,7 +52,8 @@ function scanConflictsGeneric(doc: Automerge.Doc<MediaSettingsDocument>): Confli
   return scanForConflicts(doc).map((c) => ({ key: c.field, valuesByActor: c.valuesByActor }));
 }
 
-export function createMediaSettingsCore(deps: ServiceDependencies) {
+/** BL-193: `kind` picks the document (default: the Servers → Setup one); the Gemini limits use the same engine on their own document. */
+export function createMediaSettingsCore(deps: ServiceDependencies, kind: SettingsMapKind = MEDIA_SETTINGS_KIND) {
   // Every load → change/merge → save runs one at a time (independent review): otherwise a merge that loaded the document before
   // an owner's save would write its result over that save, and the owner's edit would vanish from every history -- and then be
   // "applied back" from the document, reverting a lowered spend limit.
@@ -64,7 +68,7 @@ export function createMediaSettingsCore(deps: ServiceDependencies) {
     const bytes = await deps.store.loadDocumentBytes(GLOBAL_DOCUMENT_KEY);
     // Loaded from bytes, so this device writes with its own fresh actor -- never with the genesis actor, which every device
     // shares (its next change would collide with another device's: "duplicate seq").
-    return Automerge.load<MediaSettingsDocument>(bytes ?? Automerge.save(genesisDocument()));
+    return Automerge.load<MediaSettingsDocument>(bytes ?? Automerge.save(genesisDocument(kind)));
   }
 
   function write(values: Record<string, SettingValue>, shouldWrite: (current: unknown, value: SettingValue) => boolean): Promise<{ changed: string[] }> {

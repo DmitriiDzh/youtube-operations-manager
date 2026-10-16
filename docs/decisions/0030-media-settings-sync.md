@@ -43,3 +43,8 @@ These are not simple preferences. They hold spend limits, factory limits, the GP
 - RunPod/S3 keys stay per device (ADR 0027).
 - A field a newer build adds is seeded by the first device that runs that build.
 - The Merge tab's old conflict list is replaced by the same screen (same scope: the active channel's drafts and profile, plus device-wide conflicts).
+
+## Amendment (2026-10-16, BL-193)
+
+The same engine carries the Gemini limits on their own document (`gemini-settings`, ADR 0039 §5); their conflicts appear on the same
+startup screen in their own group.

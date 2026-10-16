@@ -435,7 +435,7 @@ export const media = {
   "media.pool.refusal.gemini_input_unavailable": "an input image is not in that computer's Sent to YTM folder",
   "media.gemini.titleImage": "New image in Gemini",
   "media.gemini.titleVideo": "New video in Gemini",
-  "media.gemini.help": "One image or one video through Google's Gemini API, paid per result. It runs on the chosen computer, with that computer's Gemini key, switch and limits (Settings → Cloud APIs). Input images are paths in the channel's 99 Data Exchange/Sent to YTM folder on that computer. The result lands in From YTM/gemini/<job>/ and appears in the list below.",
+  "media.gemini.help": "One image or one video through Google's Gemini API, paid per result. It runs on the chosen computer, with that computer's Gemini key and switch, within the limits shared by every computer on that key (Settings → Cloud APIs). Input images are paths in the channel's 99 Data Exchange/Sent to YTM folder on that computer. The result lands in From YTM/gemini/<job>/ and appears in the list below.",
   "media.gemini.show": "Create…",
   "media.gemini.hide": "Hide",
   "media.gemini.noChannel": "Choose a channel first.",

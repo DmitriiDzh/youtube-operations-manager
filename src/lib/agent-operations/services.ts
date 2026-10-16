@@ -532,7 +532,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     domain: "media_generation",
     permission: "READ",
     description:
-      "The owner's media limits in USD (maxUsdPerDay, spentTodayUsd, remainingTodayUsd), defaultMaxMinutes, idleMinutes, whether the setup is complete (ready/missing), this channel's open sessions (openSessions; openSession = the first), maxConcurrentSessions, activeSessionCount and deviceHasOpenSession. Local read only. Implemented as the `agent_get_media_limits` MCP tool. Requires channelId to be the caller's currently-active channel.",
+      "The owner's media limits in USD (maxUsdPerDay, spentTodayUsd, remainingTodayUsd; since 3.19.0 accountSpentTodayUsd and otherDevicesSpentTodayUsd -- today's spend on the whole RunPod account), defaultMaxMinutes, idleMinutes, whether the setup is complete (ready/missing), this channel's open sessions (openSessions; openSession = the first), maxConcurrentSessions, activeSessionCount and deviceHasOpenSession. Local read only. Implemented as the `agent_get_media_limits` MCP tool. Requires channelId to be the caller's currently-active channel.",
   },
   // BL-143 phase 3 (ADR 0029): the Factory Operator's generation plans for this channel, read-only.
   {

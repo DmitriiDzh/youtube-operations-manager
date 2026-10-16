@@ -160,6 +160,7 @@ export const shell: Record<keyof typeof en, string> = {
   "conflicts.blockingNote": "Приложение откроется, когда всё будет решено; сервер, синхронизация и оператор тем временем продолжают работать.",
   "conflicts.decideLater": "Решить позже — различия останутся на вкладке «Слияние»",
   "conflicts.productionSettings": "Настройки серверов",
+  "conflicts.geminiSettings": "Лимиты Gemini",
   "conflicts.snapshotGroup": "Пакеты, журнал, исследования и решения",
   "conflicts.thisComputer": "Этот компьютер",
   "conflicts.otherComputer": "Другой компьютер",

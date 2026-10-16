@@ -37,6 +37,12 @@ test("resolveAppPaths: Windows resolves under APPDATA", () => {
   // BL-188: the media-jobs report family keeps its own folders, like every per-device family.
   assert.equal(result.mediaJobsShareDir, path.join(result.appDataDir, "media-jobs-share"));
   assert.equal(result.mediaJobsSyncFallbackDir, path.join(result.appDataDir, "media-jobs-sync-local"));
+  // BL-193: the Gemini spend report and the Gemini limits' shared document.
+  assert.equal(result.geminiSpendShareDir, path.join(result.appDataDir, "gemini-spend-share"));
+  assert.equal(result.geminiSpendSyncFallbackDir, path.join(result.appDataDir, "gemini-spend-sync-local"));
+  assert.equal(result.geminiSettingsDocDir, path.join(result.appDataDir, "gemini-settings-doc"));
+  assert.equal(result.geminiSettingsSyncFallbackDir, path.join(result.appDataDir, "gemini-settings-sync-local"));
+  assert.equal(result.geminiSettingsDiscardedBackupsDir, path.join(result.appDataDir, "gemini-settings-discarded-backups"));
   assert.equal(result.liveStreamsShareDir, path.join(result.appDataDir, "live-streams-share"));
   assert.equal(result.liveStreamsSyncFallbackDir, path.join(result.appDataDir, "live-streams-sync-local"));
   assert.equal(result.aiConnectionsCatalogDiscardedBackupsDir, path.join(result.appDataDir, "ai-connections-catalog-discarded-backups"));

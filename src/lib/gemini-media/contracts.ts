@@ -208,7 +208,27 @@ export type GeminiStoryboardGate = {
   check(input: { channelId: string; firstFrameSha256: string | null; lastFrameSha256: string | null; link: { storyboardId: string; segmentId: string } | null }): Promise<GeminiStoryboardLink | null>;
 };
 
-export type GeminiSpend = { todayUsd: number; monthUsd: number; activeUsd: number; activeJobs: number };
+/**
+ * BL-193 (ADR 0039): another computer that uses the SAME Gemini key (same key fingerprint), as its latest spend report shows it.
+ * `todayUsd` is 0 when that report was written before this computer's local day began (its "today" is over).
+ */
+export type GeminiPeerSpend = { deviceId: string; hostname: string | null; todayUsd: number; monthUsd: number; updatedAt: string; stale: boolean };
+
+/**
+ * BL-193: the spend on this Gemini key across every computer that reported it -- what the daily and monthly limits are checked
+ * against. `keyKnown` is false when this computer has no usable key: then nothing can be matched and only its own spend counts.
+ */
+export type GeminiAccountSpend = { todayUsd: number; monthUsd: number; keyKnown: boolean; otherComputers: GeminiPeerSpend[] };
+
+/** `todayUsd`/`monthUsd`/`activeUsd`/`activeJobs`: THIS computer (unchanged since BL-174). `account` (BL-193): every computer on the key. */
+export type GeminiSpend = { todayUsd: number; monthUsd: number; activeUsd: number; activeJobs: number; account: GeminiAccountSpend };
+
+/** BL-193 (owner msg 2867: the limits are shared): the settings every computer shares. The switch stays per computer. */
+export const GEMINI_SHARED_LIMIT_FIELDS = ["maxUsdPerJob", "maxUsdPerDay", "maxUsdPerMonth", "maxActiveJobs"] as const satisfies readonly (keyof GeminiMediaSettings)[];
+export type GeminiSharedLimitField = (typeof GEMINI_SHARED_LIMIT_FIELDS)[number];
+
+/** BL-193: a peer's spend report as gemini-media reads it (the sync-gateway `gemini-spend` report, structurally). */
+export type GeminiPeerSpendReport = { deviceId: string; hostname: string | null; keyFingerprint: string | null; updatedAt: string; spentTodayUsd: number; spentMonthUsd: number };
 
 export type GeminiKeyView = { configured: boolean; keyHint: string | null; status: "ok" | "payment_required" | null; verifiedAt: string | null; updatedAt: string | null };
 

@@ -36,6 +36,9 @@ import { MEDIA_TABS, SERVERS_TABS, type MediaTab, type ServersTab } from "./sect
 import type { PlanMediaKind } from "@/lib/generation-plans/contracts";
 import { StoryboardsPanel, StoryboardVideoLinks } from "./storyboards-panel";
 import { GeminiCreateCard } from "./gemini-media-create";
+import { GeminiServersCard, type GeminiTodayFigure } from "./gemini-servers-card";
+import { usd as geminiUsd } from "./gemini-media-settings";
+import { FeatureErrorBoundary } from "./feature-error-boundary";
 export { MEDIA_TABS, SERVERS_TABS };
 
 /** The balance is a RunPod call: on open, on demand, and once a minute while Production is open. */
@@ -57,7 +60,7 @@ export function describeBalance(t: Translate, balance: RunpodAccountBalance): { 
   };
 }
 
-function BalanceHeader({ configured, limits, activeElsewhere = 0 }: { configured: boolean; limits: MediaSessionLimits | null; activeElsewhere?: number }) {
+function BalanceHeader({ configured, limits, activeElsewhere = 0, gemini = null }: { configured: boolean; limits: MediaSessionLimits | null; activeElsewhere?: number; gemini?: GeminiTodayFigure | null }) {
   const t = useT();
   const [balance, setBalance] = useState<RunpodAccountBalance | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -103,14 +106,25 @@ function BalanceHeader({ configured, limits, activeElsewhere = 0 }: { configured
       {limits && (
         <div>
           <p className="text-xs text-zinc-500">{t("production.today")}</p>
+          {/* BL-193 (owner msgs 2864/2867): today on the whole RunPod account -- every computer on it -- with this computer's part. */}
           <p className="text-2xl font-semibold text-zinc-100">
-            {t("unit.usd", { value: limits.spentTodayUsd.toFixed(2) })} <span className="text-sm font-normal text-zinc-500">{t("production.todayOf", { max: limits.maxUsdPerDay.toFixed(2) })}</span>
+            {t("unit.usd", { value: (limits.accountSpentTodayUsd ?? limits.spentTodayUsd).toFixed(2) })} <span className="text-sm font-normal text-zinc-500">{t("production.todayOf", { max: limits.maxUsdPerDay.toFixed(2) })}</span>
           </p>
+          {(limits.otherDevicesSpentTodayUsd ?? 0) > 0 && <p className="text-xs text-zinc-500">{t("production.todayThisComputer", { value: t("unit.usd", { value: limits.spentTodayUsd.toFixed(2) }) })}</p>}
           <p className="text-xs text-zinc-500">
             {activeElsewhere > 0
               ? t("production.sessionsActiveElsewhere", { active: limits.activeSessionCount, max: limits.maxConcurrentSessions, elsewhere: activeElsewhere })
               : t("production.sessionsActive", { active: limits.activeSessionCount, max: limits.maxConcurrentSessions })}{" "}
             · {t("production.waitingApproval", { count: limits.openSessions.filter((s) => s.status === "pending").length })}
+          </p>
+        </div>
+      )}
+      {/* BL-193: Gemini's spend today on the key (every computer on it); absent while Gemini cannot be read. */}
+      {gemini && (
+        <div>
+          <p className="text-xs text-zinc-500">{t("production.geminiToday")}</p>
+          <p className="text-2xl font-semibold text-zinc-100">
+            {geminiUsd(gemini.todayUsd)} <span className="text-sm font-normal text-zinc-500">{t("production.todayOf", { max: gemini.maxUsdPerDay.toFixed(2) })}</span>
           </p>
         </div>
       )}
@@ -172,6 +186,7 @@ export function ServersPanel({
   const setTab = onTabChange ?? setOwnTab;
   const [limits, setLimits] = useState<MediaSessionLimits | null>(null);
   const [activeElsewhere, setActiveElsewhere] = useState(0);
+  const [geminiToday, setGeminiToday] = useState<GeminiTodayFigure | null>(null);
   const { overview, loadError, gatewayTraffic, refresh } = useMediaOverview();
 
   if (loadError) return <p className="text-sm text-red-400">{loadError}</p>;
@@ -181,11 +196,15 @@ export function ServersPanel({
   // and an agent's new request stay current whichever tab is open.
   return (
     <div className="max-w-5xl space-y-6">
-      <BalanceHeader configured={overview.credentials.configured} limits={limits} activeElsewhere={activeElsewhere} />
+      <BalanceHeader configured={overview.credentials.configured} limits={limits} activeElsewhere={activeElsewhere} gemini={geminiToday} />
       <TabBar tabs={SERVERS_TABS} current={tab} onSelect={setTab} />
       <div className={tab === "sessions" ? "space-y-6" : "hidden"}>
         <SessionsCard ready={overview.ready} activeChannelId={activeChannelId} onLimits={setLimits} />
         <OtherDevicesCard ready={overview.credentials.configured} onActiveElsewhere={setActiveElsewhere} />
+        {/* BL-193 (owner msgs 2864/2867): Gemini next to RunPod, failing on its own (AGENTS.md §M). */}
+        <FeatureErrorBoundary label={`${t("nav.servers")} — ${t("gemini.servers.title")}`}>
+          <GeminiServersCard onToday={setGeminiToday} />
+        </FeatureErrorBoundary>
       </div>
       <div className={tab === "models" ? "space-y-6" : "hidden"}>
         <ModelsCard configured={overview.credentials.configured && Boolean(overview.settings.networkVolumeId)} active={tab === "models"} />

@@ -436,7 +436,7 @@ export const media: Record<keyof typeof en, string> = {
   "media.pool.refusal.gemini_input_unavailable": "входной картинки нет в папке Sent to YTM на том компьютере",
   "media.gemini.titleImage": "Новое изображение в Gemini",
   "media.gemini.titleVideo": "Новое видео в Gemini",
-  "media.gemini.help": "Одно изображение или одно видео через Gemini API от Google, оплата за каждый результат. Задание выполняется на выбранном компьютере, с его ключом Gemini, переключателем и лимитами (Настройки → Облачные API). Входные картинки — пути в папке канала 99 Data Exchange/Sent to YTM на том компьютере. Результат появится в From YTM/gemini/<задание>/ и в списке ниже.",
+  "media.gemini.help": "Одно изображение или одно видео через Gemini API от Google, оплата за каждый результат. Задание выполняется на выбранном компьютере, с его ключом Gemini и переключателем, в пределах лимитов, общих для всех компьютеров с этим ключом (Настройки → Облачные API). Входные картинки — пути в папке канала 99 Data Exchange/Sent to YTM на том компьютере. Результат появится в From YTM/gemini/<задание>/ и в списке ниже.",
   "media.gemini.show": "Создать…",
   "media.gemini.hide": "Скрыть",
   "media.gemini.noChannel": "Сначала выберите канал.",

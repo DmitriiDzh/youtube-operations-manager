@@ -24,12 +24,14 @@ import {
   type GeminiKeyView,
   type GeminiLimitName,
   type GeminiMediaSettings,
+  type GeminiPeerSpendReport,
   type GeminiRefusal,
   type GeminiSpend,
   type GeminiStoryboardGate,
   type GeminiStoryboardLink,
   type GeminiVideoParams,
 } from "./contracts";
+import { accountWideSpend, geminiKeyFingerprint } from "./account";
 import { estimateImageUsd, estimateVideoUsd, modelCatalog } from "./pricing";
 import { checkJobRules, createJobInputSchema, getJobsInputSchema, parseWithSchema, setKeyInputSchema, updateSettingsInputSchema, type CreateJobInput } from "./schemas";
 
@@ -91,6 +93,12 @@ export type GeminiMediaDeps = {
   withCreateLock<T>(run: () => Promise<T>): Promise<T>;
   /** BL-184 stage 2: no first/last-frame video from two different images without an approved storyboard (ADR 0038 §4). */
   storyboardGate: GeminiStoryboardGate;
+  /**
+   * BL-193 (ADR 0039): the other computers' latest Gemini spend reports (the sync-gateway `gemini-spend` family). Absent = no other
+   * computer is known (tests); a read that fails counts the others as 0 and is logged, as RunPod's shared cap does (ADR 0028 §5).
+   */
+  peerSpendReports?(): Promise<GeminiPeerSpendReport[]>;
+  log?(line: string): void;
 };
 
 const round4 = (value: number) => Math.round(value * 10_000) / 10_000;
@@ -212,7 +220,46 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
     }
   }
 
+  // BL-193: the fingerprint of the stored key, recomputed only when the stored key changes (its ciphertext).
+  let fingerprintCache: { ciphertext: string; value: string } | null = null;
+  /** The stored key's fingerprint (ADR 0039), or null when no usable key is stored here (then nothing is shared). Never throws. */
+  async function keyFingerprint(): Promise<string | null> {
+    try {
+      const row = await deps.store.getCredentials();
+      if (!row) return null;
+      if (fingerprintCache?.ciphertext === row.ciphertext) return fingerprintCache.value;
+      const apiKey = await readApiKey();
+      if (!apiKey) return null;
+      const value = geminiKeyFingerprint(apiKey);
+      fingerprintCache = { ciphertext: row.ciphertext, value };
+      return value;
+    } catch {
+      return null;
+    }
+  }
+
+  /** BL-193: the same-key computers' spend added to this computer's (`local`); the others count 0 when they cannot be read. */
+  async function accountSpend(local: { todayUsd: number; monthUsd: number }, at: Date): Promise<GeminiSpend["account"]> {
+    const fingerprint = await keyFingerprint();
+    let others: ReturnType<typeof accountWideSpend> = { otherTodayUsd: 0, otherMonthUsd: 0, otherComputers: [] };
+    if (fingerprint && deps.peerSpendReports) {
+      try {
+        const [peers, device] = await Promise.all([deps.peerSpendReports(), deps.device()]);
+        others = accountWideSpend({ peers, ownDeviceId: device.deviceId, ownFingerprint: fingerprint, dayStart: startOfLocalDay(at), monthStart: startOfLocalMonth(at), now: at });
+      } catch (error) {
+        deps.log?.(`[gemini-media] other computers' Gemini spend unknown, counted as 0: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    return { todayUsd: round4(local.todayUsd + others.otherTodayUsd), monthUsd: round4(local.monthUsd + others.otherMonthUsd), keyKnown: fingerprint !== null, otherComputers: others.otherComputers };
+  }
+
   async function spend(at: Date = now()): Promise<GeminiSpend> {
+    const local = await localSpend(at);
+    return { ...local, account: await accountSpend(local, at) };
+  }
+
+  /** This computer's own spend (what its spend report publishes for the others). */
+  async function localSpend(at: Date = now()): Promise<Omit<GeminiSpend, "account">> {
     const dayStart = startOfLocalDay(at);
     const [thisMonth, active] = await Promise.all([
       deps.store.listJobs({ createdSince: startOfLocalMonth(at), limit: 100_000 }),
@@ -234,11 +281,17 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
   function limitRefusal(settings: GeminiMediaSettings, current: GeminiSpend, estimateUsd: number): GeminiRefusal | null {
     const refuse = (limit: GeminiLimitName, message: string, details: Record<string, unknown>): GeminiRefusal => ({ code: "gemini_limit_exceeded", message, details: { limit, ...details, estimateUsd } });
     if (estimateUsd > settings.maxUsdPerJob) return refuse("per_job", `The job's estimate $${estimateUsd} is over the per-job limit $${settings.maxUsdPerJob}.`, { limitUsd: settings.maxUsdPerJob });
-    if (round4(current.todayUsd + estimateUsd) > settings.maxUsdPerDay) {
-      return refuse("per_day", `$${current.todayUsd} spent or reserved today + $${estimateUsd} is over the daily limit $${settings.maxUsdPerDay}.`, { limitUsd: settings.maxUsdPerDay, spentUsd: current.todayUsd });
+    // BL-193 (ADR 0039): the daily and monthly limits hold for the key -- every computer on it -- not for this computer alone.
+    const today = current.account.todayUsd;
+    const month = current.account.monthUsd;
+    const otherToday = round4(today - current.todayUsd);
+    const otherMonth = round4(month - current.monthUsd);
+    const elsewhere = (amount: number) => (amount > 0 ? ` ($${amount} of it on your other computers)` : "");
+    if (round4(today + estimateUsd) > settings.maxUsdPerDay) {
+      return refuse("per_day", `$${today} spent or reserved today${elsewhere(otherToday)} + $${estimateUsd} is over the daily limit $${settings.maxUsdPerDay}.`, { limitUsd: settings.maxUsdPerDay, spentUsd: today, ...(otherToday > 0 ? { otherComputersUsd: otherToday } : {}) });
     }
-    if (round4(current.monthUsd + estimateUsd) > settings.maxUsdPerMonth) {
-      return refuse("per_month", `$${current.monthUsd} spent or reserved this month + $${estimateUsd} is over the monthly limit $${settings.maxUsdPerMonth}.`, { limitUsd: settings.maxUsdPerMonth, spentUsd: current.monthUsd });
+    if (round4(month + estimateUsd) > settings.maxUsdPerMonth) {
+      return refuse("per_month", `$${month} spent or reserved this month${elsewhere(otherMonth)} + $${estimateUsd} is over the monthly limit $${settings.maxUsdPerMonth}.`, { limitUsd: settings.maxUsdPerMonth, spentUsd: month, ...(otherMonth > 0 ? { otherComputersUsd: otherMonth } : {}) });
     }
     if (current.activeJobs + 1 > settings.maxActiveJobs) {
       return refuse("active_jobs", `${current.activeJobs} Gemini jobs are already queued or running (limit ${settings.maxActiveJobs}).`, { maxActiveJobs: settings.maxActiveJobs, activeJobs: current.activeJobs });
@@ -280,6 +333,8 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
     readApiKey,
     getSettings,
     spend,
+    localSpend,
+    keyFingerprint,
 
     async getKey(): Promise<GeminiKeyView> {
       return keyViewOf(await deps.store.getCredentials());
