@@ -36,6 +36,37 @@ export async function walkVideosFolder(deps: WalkDeps, workspace: string, includ
   return found.sort();
 }
 
+/** A `MMDD Vn` folder of `04 Videos/` (BL-194): its workspace-relative path, its release number and the names of its files. */
+export type VideoFolder = { folder: string; video: string; files: string[] };
+
+/**
+ * BL-194 (VIDEO_COST_PLAN.md §2 stage 1): every `MMDD Vn` folder under `<workspace>/04 Videos/` -- `04 Videos/<MM Month>/<MMDD Vn>`,
+ * or one directly under `04 Videos/` -- with the regular files directly inside it, an empty folder included (the release
+ * packages' listing counts only folders with a video). Hidden folders and symlinks are skipped; sorted by path.
+ */
+export async function listVideoFolders(deps: WalkDeps, workspace: string): Promise<VideoFolder[]> {
+  const found: VideoFolder[] = [];
+  const visit = async (relative: string, name: string) => {
+    const video = videoNumberOfFolder(name);
+    if (!video) return false;
+    const entries = await deps.listDir(deps.join(workspace, ...relative.split("/")));
+    found.push({ folder: relative, video, files: entries.filter((e) => e.kind === "file").map((e) => e.name).sort() });
+    return true;
+  };
+  for (const top of await deps.listDir(deps.join(workspace, VIDEOS_FOLDER))) {
+    if (top.kind !== "dir" || top.name.startsWith(".")) continue;
+    const topPath = `${VIDEOS_FOLDER}/${top.name}`;
+    if (await visit(topPath, top.name)) continue;
+    for (const child of await deps.listDir(deps.join(workspace, VIDEOS_FOLDER, top.name))) {
+      if (child.kind === "dir" && !child.name.startsWith(".")) await visit(`${topPath}/${child.name}`, child.name);
+    }
+  }
+  return found.sort((a, b) => (a.folder < b.folder ? -1 : a.folder > b.folder ? 1 : 0));
+}
+
+/** Written next to the video by the factory or the owner's «Новый пакет» (FO-REQ-0023): the release package. */
+export const releaseManifestFileName = (video: string) => `${video}_release.json`;
+
 /** Written next to a release package after an upload by YT Manager (FO-REQ-0023 §4 A2). */
 export const uploadRecordFileName = (video: string) => `${video}_youtube.json`;
 

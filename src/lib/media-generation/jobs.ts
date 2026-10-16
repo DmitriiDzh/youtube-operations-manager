@@ -22,6 +22,7 @@ import {
   type MediaModelReference,
   type MediaModelUsage,
   type MediaStoryboardGate,
+  type MediaVideoLink,
   type MediaTemplateParameter,
   type MediaTemplateSyncResult,
   type MediaTemplateSyncTrigger,
@@ -109,6 +110,8 @@ export type StoredJobRow = {
   storyboardId?: string | null;
   storyboardVersion?: number | null;
   segmentId?: string | null;
+  // Schema v95 (BL-194 stage 1): the channel's video number this job is made for (absent = none).
+  video?: string | null;
 };
 
 export type ExchangeLedgerRow = { remoteKey: string; jobId: string; localPath: string; bytes: number; sha256: string; pulledAt: Date; remoteDeletedAt: Date | null };
@@ -205,6 +208,8 @@ export type JobServiceDependencies = {
   adoptions?: { get(): Promise<string | null>; set(json: string): Promise<void> };
   /** BL-184 stage 2: no first/last-frame video from two different images without an approved storyboard (ADR 0038 §4). */
   storyboardGate: MediaStoryboardGate;
+  /** BL-194: which video a job is made for (absent: jobs are not linked to videos here, and a `videoNumber` is refused). */
+  videoLink?: MediaVideoLink;
 };
 
 export type TemplateActor = "owner" | "factory";
@@ -403,6 +408,7 @@ export function toPublicJob(row: StoredJobRow): MediaJob {
     finishedAt: row.finishedAt ? row.finishedAt.toISOString() : null,
     plan: row.planId ? { planId: row.planId, stageId: row.planStageId ?? null, itemKey: row.planItemKey ?? null, seed: row.planSeed ?? null } : null,
     storyboard: row.storyboardId && row.segmentId && row.storyboardVersion != null ? { storyboardId: row.storyboardId, versionNumber: row.storyboardVersion, segmentId: row.segmentId } : null,
+    video: row.video ?? null,
   };
 }
 
@@ -629,6 +635,13 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
   const pollMs = deps.timeouts?.pollMs ?? DEFAULT_POLL_MS;
   const maxGenerationMs = deps.timeouts?.maxGenerationMs ?? DEFAULT_MAX_GENERATION_MS;
   const log = deps.log ?? (() => undefined);
+
+  /** BL-194: the video a new job is made for (see `MediaVideoLink`); without the port a given number is refused. */
+  async function resolveVideo(input: { channelId: string; videoNumber: string | null; storyboardId: string | null; planId: string | null }): Promise<string | null> {
+    if (deps.videoLink) return deps.videoLink.resolve(input);
+    if (input.videoNumber) throw new DomainError({ code: "video_not_found", message: "Video numbers are not available on this server", details: { videoNumber: input.videoNumber } });
+    return null;
+  }
 
   /** BL-132: a job's uploaded inputs from the ledger (`[]` when it has none). */
   async function withInputs(job: MediaJob): Promise<MediaJob> {
@@ -1599,6 +1612,9 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         lastFrameSha256: await frameSha("last_frame"),
         link: parsed.storyboard ?? null,
       });
+      // BL-194 (ADR 0040): the video this job is made for -- given, else its storyboard's, else its plan's. A given number that
+      // cannot be linked refuses the job here, before anything is uploaded or sent.
+      const video = await resolveVideo({ channelId: parsed.channelId, videoNumber: parsed.videoNumber ?? null, storyboardId: storyboard?.storyboardId ?? parsed.storyboard?.storyboardId ?? null, planId: parsed.plan?.planId ?? null });
       const jobId = deps.generateId();
       // Each input goes to the ROOT of ComfyUI's input folder under a job-unique flat name (`<jobId>-<param>-<name>`), and
       // the targeted loader input is given that name; the job's params keep the path the caller gave.
@@ -1657,6 +1673,7 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         finishedAt: null,
         ...(parsed.plan ? { planId: parsed.plan.planId, planStageId: parsed.plan.stageId, planItemKey: parsed.plan.itemKey, planSeed: parsed.plan.seed ?? null } : {}),
         ...(storyboard ? { storyboardId: storyboard.storyboardId, storyboardVersion: storyboard.versionNumber, segmentId: storyboard.segmentId } : {}),
+        video,
       });
       let comfy: ComfyUiClient;
       try {

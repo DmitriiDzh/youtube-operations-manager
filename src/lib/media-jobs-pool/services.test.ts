@@ -94,6 +94,7 @@ function geminiJob(extra: Partial<GeminiJobView> = {}): GeminiJobView {
     submittedAt: "2026-10-14T09:00:01.000Z",
     finishedAt: "2026-10-14T09:03:00.000Z",
     storyboard: { storyboardId: "sb1", versionNumber: 2, segmentId: "seg3" },
+    video: null,
     ...extra,
   };
 }

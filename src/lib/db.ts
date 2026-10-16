@@ -912,6 +912,8 @@ export const mediaJobs = sqliteTable(
     storyboardId: text("storyboard_id"),
     storyboardVersion: integer("storyboard_version"),
     segmentId: text("segment_id"),
+    // Schema v95 (BL-194 stage 1, ADR 0040): the channel's video number (`V49`) this job is made for, null = not linked.
+    video: text("video"),
   },
   (table) => [index("media_jobs_session_idx").on(table.sessionId), index("media_jobs_status_idx").on(table.status), index("media_jobs_plan_idx").on(table.planId)]
 );
@@ -993,6 +995,8 @@ export const generationPlans = sqliteTable(
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
     closedAt: integer("closed_at", { mode: "timestamp" }),
+    /** Schema v95 (BL-194 stage 1, ADR 0040): the channel's video number (`V49`) the plan works for; null = none. */
+    video: text("video"),
   },
   (table) => [index("generation_plans_status_idx").on(table.status)]
 );
@@ -1303,6 +1307,8 @@ export const geminiMediaJobs = sqliteTable(
     storyboardId: text("storyboard_id"),
     storyboardVersion: integer("storyboard_version"),
     segmentId: text("segment_id"),
+    // Schema v95 (BL-194 stage 1, ADR 0040): the channel's video number (`V49`) this job is made for, null = not linked.
+    video: text("video"),
   },
   (table) => [
     uniqueIndex("gemini_media_jobs_request_idx").on(table.createdBy, table.requestId),
@@ -1353,6 +1359,25 @@ export const publishingUploads = sqliteTable(
     leaseUntil: integer("lease_until", { mode: "timestamp_ms" }),
   },
   (table) => [index("publishing_uploads_status_idx").on(table.status, table.nextAttemptAt), index("publishing_uploads_channel_idx").on(table.channelId, table.createdAt)]
+);
+
+/**
+ * Schema v95 (BL-194 stage 1, docs/roadmap/plans/VIDEO_COST_PLAN.md §2, ADR 0040): the video numbers (`Vn`) THIS computer reserved
+ * for a channel ("Новый ролик", `factory_video_create`). Device-local: the other computers learn them from this computer's
+ * `video-reservations` report. A number is never deleted or reused; a given-up one is `cancelled`. Times are ISO strings.
+ */
+export const videoReservations = sqliteTable(
+  "video_reservations",
+  {
+    channelId: text("channel_id").notNull(),
+    video: text("video").notNull(),
+    workingTitle: text("working_title"),
+    reservedAt: text("reserved_at").notNull(),
+    state: text("state", { enum: ["in_work", "cancelled"] }).notNull(),
+    cancelledAt: text("cancelled_at"),
+    replacedBy: text("replaced_by"),
+  },
+  (table) => [primaryKey({ columns: [table.channelId, table.video] })]
 );
 
 /**
@@ -5093,6 +5118,32 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       )`);
     },
   },
+  {
+    version: 95,
+    description:
+      "video_reservations; media_jobs/gemini_media_jobs/generation_plans .video -- BL-194 stage 1 (docs/roadmap/plans/VIDEO_COST_PLAN.md §2, ADR 0040): the video numbers this computer reserved, and the video a job or plan is made for. Additive, nullable, device-local",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS video_reservations (
+        channel_id TEXT NOT NULL,
+        video TEXT NOT NULL,
+        working_title TEXT,
+        reserved_at TEXT NOT NULL,
+        state TEXT NOT NULL,
+        cancelled_at TEXT,
+        replaced_by TEXT,
+        PRIMARY KEY (channel_id, video)
+      )`);
+      for (const table of ["media_jobs", "gemini_media_jobs", "generation_plans"]) {
+        try {
+          await client.execute(`ALTER TABLE ${table} ADD COLUMN video TEXT`);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
+      await client.execute("CREATE INDEX IF NOT EXISTS media_jobs_video_idx ON media_jobs (video)");
+      await client.execute("CREATE INDEX IF NOT EXISTS gemini_media_jobs_video_idx ON gemini_media_jobs (video)");
+    },
+  },
 ];
 
 /**
@@ -7641,9 +7692,9 @@ export async function getGatewayTrafficLast24h(
   }));
 }
 
-export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens" | "live_streams" | "channel_language_settings" | "channel_publishing_settings" | "publishing_uploads" | "storyboards" | "media_jobs";
+export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens" | "live_streams" | "channel_language_settings" | "channel_publishing_settings" | "publishing_uploads" | "storyboards" | "media_jobs" | "video_reservations";
 
-const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings", "agent_tokens", "live_streams", "channel_language_settings", "channel_publishing_settings", "publishing_uploads", "storyboards", "media_jobs"];
+const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings", "agent_tokens", "live_streams", "channel_language_settings", "channel_publishing_settings", "publishing_uploads", "storyboards", "media_jobs", "video_reservations"];
 
 export type SyncFamilyStatusRow = {
   family: SyncFamily;
@@ -14196,4 +14247,43 @@ export async function getLiveStreamsSettingsJson(database: AppDb = db): Promise<
 
 export async function setLiveStreamsSettingsJson(json: string, database: AppDb = db): Promise<void> {
   await setAppSetting(LIVE_STREAMS_SETTINGS_KEY, json, database);
+}
+
+// ---------------------------------------------------------------------------
+// BL-194 stage 1 (ADR 0040): this computer's video reservations, and the video numbers other tables already know.
+// ---------------------------------------------------------------------------
+
+export type StoredVideoReservation = typeof videoReservations.$inferSelect;
+
+/** Every reservation of this computer (optionally of one channel), oldest first. */
+export async function listVideoReservations(filter: { channelId?: string } = {}, database: AppDb = db): Promise<StoredVideoReservation[]> {
+  const query = database.select().from(videoReservations);
+  return (filter.channelId ? query.where(eq(videoReservations.channelId, filter.channelId)) : query).orderBy(asc(videoReservations.reservedAt), asc(videoReservations.video));
+}
+
+/** false (nothing written) when this computer already holds that number for the channel. */
+export async function insertVideoReservation(row: typeof videoReservations.$inferInsert, database: AppDb = db): Promise<boolean> {
+  const rows = await database.insert(videoReservations).values(row).onConflictDoNothing().returning({ video: videoReservations.video });
+  return rows.length > 0;
+}
+
+/** Marks a reservation given up (and, after a lost duplicate, the number taken instead); false when there is no such row. */
+export async function cancelVideoReservation(channelId: string, video: string, set: { cancelledAt: string; replacedBy: string | null }, database: AppDb = db): Promise<boolean> {
+  const rows = await database
+    .update(videoReservations)
+    .set({ state: "cancelled", cancelledAt: set.cancelledAt, replacedBy: set.replacedBy })
+    .where(and(eq(videoReservations.channelId, channelId), eq(videoReservations.video, video), eq(videoReservations.state, "in_work")))
+    .returning({ video: videoReservations.video });
+  return rows.length > 0;
+}
+
+/** The video numbers this computer's upload queue knows for a channel, with each upload's status. */
+export async function listPublishingUploadVideos(channelId: string, database: AppDb = db): Promise<Array<{ video: string; status: PublishingUploadStatus }>> {
+  return database.select({ video: publishingUploads.video, status: publishingUploads.status }).from(publishingUploads).where(eq(publishingUploads.channelId, channelId));
+}
+
+/** The video a plan of this computer is made for, with its channel; null when there is no such plan. */
+export async function getGenerationPlanVideo(planId: string, database: AppDb = db): Promise<{ channelId: string; video: string | null } | null> {
+  const [row] = await database.select({ channelId: generationPlans.channelId, video: generationPlans.video }).from(generationPlans).where(eq(generationPlans.id, planId));
+  return row ?? null;
 }

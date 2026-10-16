@@ -139,4 +139,17 @@ export type {
 } from "./storyboards";
 export { createStoryboardsSyncRunnerForProduction } from "./storyboards-sync";
 
+// BL-194 (ADR 0040): the video numbers each computer reserved, as a per-device report (the list and its conflicts: video-projects).
+export {
+  createVideoReservationsShareCoreForProduction,
+  createVideoReservationsShareCore,
+  VIDEO_RESERVATIONS_REPORT_FORMAT,
+  VIDEO_RESERVATIONS_REPORT_VERSION,
+  VIDEO_RESERVATIONS_REPORT_MAX,
+  VIDEO_NUMBER_PATTERN,
+  videoReservationsReportSchema,
+} from "./video-reservations";
+export type { VideoReservationsReport, SharedVideoReservation, VideoReservationsShareCore, VideoReservationsReportStore } from "./video-reservations";
+export { createVideoReservationsSyncRunnerForProduction } from "./video-reservations-sync";
+
 export { runAllSyncFamiliesOnce } from "./run-all-families";

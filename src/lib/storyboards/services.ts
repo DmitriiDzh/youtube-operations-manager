@@ -38,6 +38,7 @@ import {
   ownerPickInputSchema,
   ownerRenderDecisionInputSchema,
   ownerReplyInputSchema,
+  ownerVideoInputSchema,
   storyboardRefSchema,
   updateStoryboardInputSchema,
   type StoryboardContentInput,
@@ -52,6 +53,8 @@ export type StoryboardSummary = {
   channelId: string;
   title: string;
   planId: string | null;
+  /** BL-194: the channel's video number this storyboard is for, or null. */
+  video: string | null;
   state: StoryboardState;
   latestVersion: number;
   keyframes: number;
@@ -118,6 +121,7 @@ function summaryOf(channelId: string, record: StoryboardRecord): StoryboardSumma
     channelId,
     title: latest.title,
     planId: record.planId,
+    video: record.video ?? null,
     state: storyboardState(record),
     latestVersion: latestNumber,
     keyframes: latest.keyframes.length,
@@ -343,28 +347,40 @@ export function createStoryboardsService(ports: StoryboardsPorts) {
     return id;
   }
 
+  /** BL-194: a video number the channel can link to now (video-projects decides), or a refusal. */
+  async function attachableVideo(channelId: string, video: string): Promise<string> {
+    if (!ports.videos) throw new DomainError({ code: "video_not_found", message: "Video numbers are not available on this server", details: { channelId, video } });
+    return ports.videos.assertAttachable(channelId, video);
+  }
+
   return {
     // ---- the Operator (Factory API) -------------------------------------------------------------------------------------
 
     /** `factory_storyboard_create`: a new storyboard with version 1 (a draft until submitted). */
     async create(input: unknown): Promise<{ storyboard: StoryboardDetail }> {
-      const { channelId, storyboardId, planId, ...content } = parseWithSchema(createStoryboardInputSchema, input, "storyboard");
+      const { channelId, storyboardId, planId, videoNumber, ...content } = parseWithSchema(createStoryboardInputSchema, input, "storyboard");
       return ports.withLock(async () => {
         const workspace = await assertChannel(channelId);
+        const video = videoNumber ? await attachableVideo(channelId, videoNumber) : null;
         const built = await buildVersion(channelId, workspace, content);
         const id = storyboardId ?? newId("sb");
         const createdAt = stamp();
-        await ports.store.create(channelId, { id, createdAt, createdBy: "operator", planId: planId ?? null }, { ...built, number: 1, createdAt });
+        await ports.store.create(channelId, { id, createdAt, createdBy: "operator", planId: planId ?? null, ...(video ? { video } : {}) }, { ...built, number: 1, createdAt });
         return { storyboard: detailOf(channelId, await findRecord(channelId, id)) };
       });
     },
 
     /** `factory_storyboard_update`: a content change (a file's bytes included) makes the next version; the same content changes nothing. */
     async update(input: unknown): Promise<{ storyboard: StoryboardDetail; changed: boolean; versionNumber: number }> {
-      const { channelId, storyboardId, ...content } = parseWithSchema(updateStoryboardInputSchema, input, "storyboard");
+      const { channelId, storyboardId, videoNumber, ...content } = parseWithSchema(updateStoryboardInputSchema, input, "storyboard");
       return ports.withLock(async () => {
         const workspace = await assertChannel(channelId);
-        const record = await findRecord(channelId, storyboardId);
+        let record = await findRecord(channelId, storyboardId);
+        // BL-194: the video link is not content -- it changes without a new version (absent: kept; null: removed).
+        if (videoNumber !== undefined && videoNumber !== (record.video ?? null)) {
+          await ports.store.setVideo(channelId, storyboardId, videoNumber ? await attachableVideo(channelId, videoNumber) : null);
+          record = await findRecord(channelId, storyboardId);
+        }
         const built = await buildVersion(channelId, workspace, content);
         const latest = latestVersion(record)!;
         if (sameContent(built, latest)) return { storyboard: detailOf(channelId, record), changed: false, versionNumber: latest.number };
@@ -507,6 +523,17 @@ export function createStoryboardsService(ports: StoryboardsPorts) {
       const workspace = await ports.files.workspaceOf(channelId);
       const found = workspace ? await locate(workspace, keyframe.file) : null;
       return found ? { ...found, file: keyframe.file } : null;
+    },
+
+    /** BL-194 (ADR 0040): the owner's video picker -- links the storyboard to a video of its channel, or to none (null). */
+    async ownerSetVideo(channelId: string, storyboardId: string, input: unknown): Promise<{ storyboard: StoryboardSummary }> {
+      const { videoNumber } = parseWithSchema(ownerVideoInputSchema, input, "storyboard video");
+      return ports.withLock(async () => {
+        await assertChannel(channelId);
+        const record = await findRecord(channelId, storyboardId);
+        if (videoNumber !== (record.video ?? null)) await ports.store.setVideo(channelId, storyboardId, videoNumber ? await attachableVideo(channelId, videoNumber) : null);
+        return { storyboard: summaryOf(channelId, await findRecord(channelId, storyboardId)) };
+      });
     },
 
     async ownerComment(channelId: string, storyboardId: string, input: unknown): Promise<{ commentId: string }> {

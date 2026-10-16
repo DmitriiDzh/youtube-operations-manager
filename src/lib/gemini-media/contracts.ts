@@ -195,6 +195,8 @@ export type GeminiJobView = {
   finishedAt: string | null;
   /** BL-184 stage 2: the storyboard segment this video renders and the approved version it was let through on (null = none). */
   storyboard: GeminiStoryboardLink | null;
+  /** BL-194 (ADR 0040): the channel's video number this job is made for (given, or its storyboard's); null = not linked. */
+  video: string | null;
 };
 
 /** BL-184 stage 2 (ADR 0038 §4): what a video job records once the storyboard gate let it through with a link. */
@@ -206,6 +208,14 @@ export type GeminiStoryboardLink = { storyboardId: string; versionNumber: number
  */
 export type GeminiStoryboardGate = {
   check(input: { channelId: string; firstFrameSha256: string | null; lastFrameSha256: string | null; link: { storyboardId: string; segmentId: string } | null }): Promise<GeminiStoryboardLink | null>;
+};
+
+/**
+ * BL-194 (ADR 0040): which video a new job is made for, injected (`./index.ts` wires the shared video-projects module). A given
+ * number that cannot be linked throws (nothing is created or charged); an inherited one that cannot be linked gives null.
+ */
+export type GeminiVideoLink = {
+  resolve(input: { channelId: string; videoNumber?: string | null; storyboardId?: string | null }): Promise<string | null>;
 };
 
 export type GeminiSpend = { todayUsd: number; monthUsd: number; activeUsd: number; activeJobs: number };

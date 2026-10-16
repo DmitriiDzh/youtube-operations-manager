@@ -9,6 +9,7 @@ import { appDataPaths } from "@/lib/db";
 import { createKeyFile, createKeyFileFsAccess } from "@/lib/device-key-file";
 import { createGeminiApiClient, isMediaGatewayEnabled } from "@/lib/media-gateway";
 import { createStoryboardGateForProduction } from "@/lib/storyboards";
+import { createVideoProjectsServiceForProduction } from "@/lib/video-projects";
 import { createGeminiFiles } from "./adapters/files";
 import { createGeminiWorkspace } from "./adapters/workspace";
 import { createGeminiStore } from "./adapters/store";
@@ -83,6 +84,8 @@ function buildDeps(): GeminiMediaDeps {
     withCreateLock: createSerialLock(),
     // BL-184 stage 2 (ADR 0038 §4): the storyboards module's gate, over the same synced document the owner approves in.
     storyboardGate: createStoryboardGateForProduction(),
+    // BL-194 (ADR 0040): the video a job is made for (the shared video-projects module; an inherited one never blocks a job).
+    videoLink: { resolve: (input) => createVideoProjectsServiceForProduction().resolveJobVideo(input) },
   };
 }
 

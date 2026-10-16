@@ -19,6 +19,7 @@ const plan: GenerationPlan = {
   createdAt: "2026-10-07T08:00:00.000Z",
   updatedAt: "2026-10-07T08:00:00.000Z",
   closedAt: null,
+  video: null,
   stages: [{ stageId: "generate", title: "G", kind: "in_app" }],
   groups: [],
   items: [{ itemKey: "A/1", groupId: null, templateLabel: null, templateId: "t", variant: null, targetCount: 10, mode: "fixed", maxAttempts: null, params: {}, seeds: [] }],

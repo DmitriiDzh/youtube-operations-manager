@@ -1,4 +1,5 @@
 import {
+  DomainError,
   auditionContentType,
   currentFilesOf,
   entryWaits,
@@ -110,6 +111,8 @@ export type StoredPlan = {
   createdAt: Date;
   updatedAt: Date;
   closedAt: Date | null;
+  /** Schema v95 (BL-194): the video the plan works for (absent on rows read before it). */
+  video?: string | null;
 };
 
 export type PlanStore = {
@@ -206,6 +209,8 @@ export type PlanServiceDependencies = {
    * they change, the other devices' read straight from disk (absent = claims travel only in the plans report).
    */
   presence?: { publish(claims: SharedClaim[]): Promise<void>; readPeers(): Promise<Array<{ deviceId: string; hostname: string | null; updatedAt: string; claims: SharedClaim[] }>> };
+  /** BL-194 (ADR 0040): the check a plan's video passes (the shared video-projects module); absent = a `videoNumber` is refused. */
+  videos?: { assertAttachable(channelId: string, video: string): Promise<string> };
 };
 
 /** BL-143 phase 2: a peer report older than this is shown as stale (the same 5 minutes as the sessions of other devices). */
@@ -308,6 +313,7 @@ function toPublicPlan(row: StoredPlan): GenerationPlan {
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     closedAt: row.closedAt?.toISOString() ?? null,
+    video: row.video ?? null,
     ...row.definition,
   };
 }
@@ -479,6 +485,12 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
   }
 
   /** A change of the definition/header as a compare-and-swap, re-read and re-applied when another writer won. */
+  /** BL-194: a video number the plan's channel can link to now, or a refusal. */
+  async function attachableVideo(channelId: string, video: string): Promise<string> {
+    if (!deps.videos) throw new DomainError({ code: "video_not_found", message: "Video numbers are not available on this server", details: { channelId, video } });
+    return deps.videos.assertAttachable(channelId, video);
+  }
+
   async function mutate(planId: string, change: (row: StoredPlan) => Partial<Omit<StoredPlan, "id" | "revision" | "createdAt">>): Promise<StoredPlan> {
     for (let attempt = 0; attempt < CAS_RETRIES; attempt++) {
       const row = await requireActive(planId);
@@ -1297,6 +1309,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
     async createPlan(input: unknown, actor: PlanActor = "factory"): Promise<PlanView> {
       const parsed = parseWithSchema(createPlanInputSchema, input, "generation plan");
       await requireConnected(parsed.channelId);
+      const video = parsed.videoNumber ? await attachableVideo(parsed.channelId, parsed.videoNumber) : null;
       const definition: PlanDefinition = {
         stages: parsed.stages as PlanStage[],
         groups: (parsed.groups ?? []).map(normalizeGroup),
@@ -1321,6 +1334,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         createdAt: at,
         updatedAt: at,
         closedAt: null,
+        video,
       });
       if (!row) throw planInvalid(`A plan with id ${parsed.planId} already exists on this device`, { planId: parsed.planId });
       await record(row.id, "plan_created", actor);
@@ -1400,6 +1414,8 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       // withdrawal of picks it takes out of the queue.
       return serializedPerPlan(parsed.planId, async () => {
       const [jobs, results] = await Promise.all([deps.store.listJobs(parsed.planId), deps.store.listResults(parsed.planId)]);
+      // BL-194: the video is checked against the plan's channel before anything changes (a plan moves only under this lock).
+      const video = parsed.videoNumber ? await attachableVideo((await requireActive(parsed.planId)).channelId, parsed.videoNumber) : null;
       const updated = await mutate(parsed.planId, (row) => {
         const d = row.definition;
         const attempts = inAppAttempts(d, jobs, results);
@@ -1430,6 +1446,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
           references = references.some((x) => x.id === r.id) ? references.map((x) => (x.id === r.id ? next : x)) : [...references, next];
         }
         return {
+          ...(parsed.videoNumber !== undefined ? { video } : {}),
           ...(parsed.title !== undefined ? { title: parsed.title } : {}),
           ...(parsed.note !== undefined ? { note: parsed.note ?? null } : {}),
           ...(parsed.budget !== undefined
@@ -1500,7 +1517,8 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
           if (current.channelId !== from) throw planInvalid(`Plan ${row.id} moved to channel ${current.channelId} meanwhile`, { planId: row.id, channelId: current.channelId });
           // The files were checked against this revision; a plan changed meanwhile (e.g. a new reference) is checked again.
           if (current.revision !== row.revision) throw planInvalid(`Plan ${row.id} changed while its files were checked; move it again`, { planId: row.id });
-          return { channelId: to };
+          // BL-194: a video belongs to its channel -- a moved plan is no longer linked to the old channel's video.
+          return { channelId: to, video: null };
         });
         await record(row.id, "plan_moved", actor, { from, to, checked: files.length });
         return { ...answer, moved: true };

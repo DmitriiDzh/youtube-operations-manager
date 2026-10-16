@@ -321,6 +321,7 @@ function job(jobId: string, status: MediaJob["status"], createdAt: string, over:
     finishedAt: null,
     plan: null,
     storyboard: null,
+    video: null,
     ...over,
   };
 }

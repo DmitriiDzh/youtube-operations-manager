@@ -297,6 +297,14 @@ export type MediaStoryboardLink = { storyboardId: string; versionNumber: number;
  * BL-184 stage 2: the storyboard gate, injected (`./index.ts` wires the storyboards module's; this module knows nothing else about
  * storyboards, AGENTS.md §M). It lets a job through -- with the link to record, or null -- or throws `storyboard_not_approved`.
  */
+/**
+ * BL-194 (ADR 0040): which video a new job is made for, injected (`./index.ts` wires the shared video-projects module). An explicit
+ * number that cannot be linked throws (nothing is created); an inherited one that cannot be linked gives null.
+ */
+export type MediaVideoLink = {
+  resolve(input: { channelId: string; videoNumber?: string | null; storyboardId?: string | null; planId?: string | null }): Promise<string | null>;
+};
+
 export type MediaStoryboardGate = {
   check(input: { channelId: string; firstFrameSha256: string | null; lastFrameSha256: string | null; link: { storyboardId: string; segmentId: string } | null }): Promise<MediaStoryboardLink | null>;
 };
@@ -449,6 +457,8 @@ export type MediaJob = {
   plan: { planId: string; stageId: string | null; itemKey: string | null; seed: number | null } | null;
   /** BL-184 stage 2: the storyboard segment this video renders and the approved version it was let through on (null = none). */
   storyboard: MediaStoryboardLink | null;
+  /** BL-194 (ADR 0040): the channel's video number this job is made for (given, or its storyboard's / plan's); null = not linked. */
+  video: string | null;
 };
 
 /** Where this job's outputs are written locally, relative to the From YTM folder. */

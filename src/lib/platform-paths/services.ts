@@ -73,6 +73,8 @@ export function resolveAppPaths(input: ResolveAppPathsInput): AppPaths {
     publishingUploadsSyncFallbackDir: path.join(appDataDir, "publishing-uploads-sync-local"),
     mediaJobsShareDir: path.join(appDataDir, "media-jobs-share"),
     mediaJobsSyncFallbackDir: path.join(appDataDir, "media-jobs-sync-local"),
+    videoReservationsShareDir: path.join(appDataDir, "video-reservations-share"),
+    videoReservationsSyncFallbackDir: path.join(appDataDir, "video-reservations-sync-local"),
     storyboardsDocDir: path.join(appDataDir, "storyboards-doc"),
     storyboardsSyncFallbackDir: path.join(appDataDir, "storyboards-sync-local"),
     storyboardsDiscardedBackupsDir: path.join(appDataDir, "storyboards-discarded-backups"),

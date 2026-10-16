@@ -6,7 +6,7 @@ import path from "node:path";
 import { createAutomergeCore, type DiscardedDocumentBackupStore, type DocumentByteStore } from "@/lib/sync-gateway/automerge-core";
 import type { StoryboardsDocument } from "@/lib/sync-gateway/storyboards/contracts";
 import { createStoryboardsCore, emptyDocument } from "@/lib/sync-gateway/storyboards/services";
-import { isDomainError } from "./contracts";
+import { DomainError, isDomainError } from "./contracts";
 import { createStoryboardFiles } from "./adapters/files";
 import { createStoryboardsService } from "./services";
 
@@ -21,7 +21,7 @@ export const sha = (text: string) => createHash("sha256").update(text).digest("h
 export const V1 = { K0: "bar K0 bytes", K1: "bar K1: glass handed over", K2: "bar K2: glass missing", K3: "bar K3: glass back on the counter" };
 export const V2 = { K0: "bar K0 bytes", K1: "bar K1 v2: glass under the counter", K2: "bar K2 v2: glass under the counter", K3: "bar K3 v2: glass under the counter" };
 
-export async function setup(options: { connected?: boolean; workspace?: boolean } = {}) {
+export async function setup(options: { connected?: boolean; workspace?: boolean; videos?: Record<string, string[]> } = {}) {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "storyboards-")));
   const ws = path.join(root, "Tropico Jazz");
   const bar = path.join(ws, "99 Data Exchange", "Sent to YTM", "H-0004", "bar");
@@ -46,6 +46,13 @@ export async function setup(options: { connected?: boolean; workspace?: boolean 
     now: () => new Date((clock += 60_000)),
     randomId: () => `id${++ids}`,
     withLock: (fn) => fn(),
+    // BL-194: the attachable videos per channel (the real rule is tested in src/lib/video-projects).
+    videos: {
+      async assertAttachable(channelId, video) {
+        if (!(options.videos?.[channelId] ?? []).includes(video)) throw new DomainError({ code: "video_not_found", message: `${video} is not a video of ${channelId}` });
+        return video;
+      },
+    },
   });
   return { root, ws, bar, service, sync, cleanup: () => rm(root, { recursive: true, force: true }) };
 }

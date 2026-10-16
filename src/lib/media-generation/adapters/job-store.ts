@@ -48,6 +48,7 @@ function jobFromDb(row: StoredMediaJob): StoredJobRow {
     storyboardId: row.storyboardId ?? null,
     storyboardVersion: row.storyboardVersion ?? null,
     segmentId: row.segmentId ?? null,
+    video: row.video ?? null,
   };
 }
 

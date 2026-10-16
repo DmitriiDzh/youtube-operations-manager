@@ -44,8 +44,15 @@ export const storyboardContentSchema = z
   .strict();
 export type StoryboardContentInput = z.infer<typeof storyboardContentSchema>;
 
-export const createStoryboardInputSchema = storyboardContentSchema.extend({ channelId: z.string().min(1), storyboardId: id.optional(), planId: z.string().max(80).nullable().optional() }).strict();
-export const updateStoryboardInputSchema = storyboardContentSchema.extend({ channelId: z.string().min(1), storyboardId: id }).strict();
+/** BL-194 (ADR 0040): the channel's video number this storyboard is for (`V49`); checked against the channel by video-projects. */
+const videoNumber = z.string().regex(/^V[1-9][0-9]{0,5}$/, "a video number such as V49");
+export const createStoryboardInputSchema = storyboardContentSchema
+  .extend({ channelId: z.string().min(1), storyboardId: id.optional(), planId: z.string().max(80).nullable().optional(), videoNumber: videoNumber.nullable().optional() })
+  .strict();
+/** `videoNumber` absent keeps the storyboard's video; null removes it. */
+export const updateStoryboardInputSchema = storyboardContentSchema.extend({ channelId: z.string().min(1), storyboardId: id, videoNumber: videoNumber.nullable().optional() }).strict();
+/** BL-194: the owner's video picker on the storyboard screen (null: none). */
+export const ownerVideoInputSchema = z.object({ videoNumber: videoNumber.nullable() }).strict();
 export const storyboardRefSchema = z.object({ channelId: z.string().min(1), storyboardId: id }).strict();
 export const listStoryboardsInputSchema = z
   .object({ channelId: z.string().min(1), state: z.enum(["draft", "in_review", "changes_requested", "approved"]).optional() })

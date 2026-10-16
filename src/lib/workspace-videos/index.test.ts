@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isNamedAfterRelease, isVideoFileName, parseUploadRecord, parseVideoRegistry, videoNumberOfFolder, walkVideosFolder, type DirEntry } from "./index";
+import { isNamedAfterRelease, isVideoFileName, listVideoFolders, parseUploadRecord, parseVideoRegistry, videoNumberOfFolder, walkVideosFolder, type DirEntry } from "./index";
 
 // BL-187 (LIVE_STREAMS_FIELDS_PLAN.md §1.2, §2.4). Expected values come from the factory's layout read on the Mac
 // (2026-10-14): `04 Videos/<MM Month>/<MMDD Vn>/Vn Tropico Jazz.mp4`, source clips beside it, folders without a V-number
@@ -89,3 +89,28 @@ test("a registry folder written as the workspace-relative `04 Videos/...` path n
     ["08 August/0805 V1", "08 August/0807 V2"],
   );
 });
+
+// BL-194 (VIDEO_COST_PLAN.md §2 stage 1): every `MMDD Vn` folder, an empty one included, with the files directly in it.
+test("BL-194: listVideoFolders finds every MMDD Vn folder (empty ones too) under the month folders, never other folders", async () => {
+  const tree: Record<string, DirEntryForTest[]> = {
+    "/ws/04 Videos": [dir("09 September"), dir("10 October"), dir(".trash"), file("video_registry.csv"), dir("0101 V1")],
+    "/ws/04 Videos/09 September": [dir("0928 V39"), dir("notes")],
+    "/ws/04 Videos/09 September/0928 V39": [file("V39 Tropico.mp4"), file("V39_release.json"), file("V39_youtube.json"), dir("extras")],
+    "/ws/04 Videos/10 October": [dir("1016 V50"), { name: "1017 V51", kind: "other" }],
+    "/ws/04 Videos/10 October/1016 V50": [],
+    "/ws/04 Videos/0101 V1": [file("V1.mp4")],
+  };
+  const found = await listVideoFolders({ listDir: async (p) => tree[p] ?? [], join: (...parts) => parts.join("/") }, "/ws");
+  assert.deepEqual(found, [
+    { folder: "04 Videos/0101 V1", video: "V1", files: ["V1.mp4"] },
+    { folder: "04 Videos/09 September/0928 V39", video: "V39", files: ["V39 Tropico.mp4", "V39_release.json", "V39_youtube.json"] },
+    { folder: "04 Videos/10 October/1016 V50", video: "V50", files: [] },
+  ]);
+});
+type DirEntryForTest = { name: string; kind: "dir" | "file" | "other" };
+function dir(name: string): DirEntryForTest {
+  return { name, kind: "dir" };
+}
+function file(name: string): DirEntryForTest {
+  return { name, kind: "file" };
+}

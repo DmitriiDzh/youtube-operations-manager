@@ -233,6 +233,9 @@ function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<t
   // in src/lib/storyboards/gate.test.ts).
   type GateInput = Parameters<JobServiceDependencies["storyboardGate"]["check"]>[0];
   const gate = { calls: [] as GateInput[], answer: (async () => null) as (input: GateInput) => Promise<Awaited<ReturnType<JobServiceDependencies["storyboardGate"]["check"]>>> };
+  // BL-194: a fake video link that records what it was asked (the real rule is tested in src/lib/video-projects).
+  type VideoInput = Parameters<NonNullable<JobServiceDependencies["videoLink"]>["resolve"]>[0];
+  const video = { calls: [] as VideoInput[], answer: (async () => null) as (input: VideoInput) => Promise<string | null> };
   const services = createMediaJobServices({
     store: mem.store,
     ...(opts.progress ? { progress: opts.progress } : {}),
@@ -240,6 +243,12 @@ function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<t
       async check(input) {
         gate.calls.push(input);
         return gate.answer(input);
+      },
+    },
+    videoLink: {
+      async resolve(input) {
+        video.calls.push(input);
+        return video.answer(input);
       },
     },
     sessions: {
@@ -317,7 +326,7 @@ function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<t
     registered.push(input);
     return { assetId: `asset-${registered.length}` };
   };
-  return { services, mem, comfy, s3, registered, removed, activity, runScheduled, registerAsset, manifests, resolvedInputs, gate, setManifestWriteFails: (v: boolean) => void (manifestWriteFails = v), setS3Fails: (v: boolean) => void (s3Fails = v), setOutputRoot: (v: string) => void (outputRoot = v), setWorkspaceFails: (v: boolean) => void (workspaceFails = v), advance: (ms: number) => void (now = new Date(now.getTime() + ms)) };
+  return { services, mem, comfy, s3, registered, removed, activity, runScheduled, registerAsset, manifests, resolvedInputs, gate, video, setManifestWriteFails: (v: boolean) => void (manifestWriteFails = v), setS3Fails: (v: boolean) => void (s3Fails = v), setOutputRoot: (v: string) => void (outputRoot = v), setWorkspaceFails: (v: boolean) => void (workspaceFails = v), advance: (ms: number) => void (now = new Date(now.getTime() + ms)) };
 }
 
 async function importDefault(services: ReturnType<typeof fixture>["services"]) {
@@ -2133,4 +2142,52 @@ test("BL-188: listJobsForShare adds the template's name and kind and keeps unfin
   // A removed template: no name, the kind from its output's file.
   assert.equal(jobs[1].templateName, null);
   assert.equal(jobs[1].mediaKind, "video");
+});
+
+// -- BL-194 stage 1 (VIDEO_COST_PLAN.md §2, criteria 2 and 8): the video a job is made for ---------------------------------------
+
+test("BL-194: a job's video is resolved from the given number, its storyboard and its plan, and stored on the job", async () => {
+  const f = flfFixture();
+  const t = await f.services.importWorkflowTemplate({ name: "flf", workflow: FLF_GRAPH, parameters: FLF_PARAMS });
+  f.gate.answer = async (input) => (input.link ? { storyboardId: input.link.storyboardId, versionNumber: 2, segmentId: input.link.segmentId } : null);
+  f.video.answer = async (input) => (input.storyboardId === "bar-loop" ? "V49" : null);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x", first: "bar/v2/K0.png", last: "bar/v2/K1.png" }, createdBy: "factory", storyboard: { storyboardId: "bar-loop", segmentId: "S1" } });
+  assert.deepEqual(f.video.calls, [{ channelId: "UC1", videoNumber: null, storyboardId: "bar-loop", planId: null }]);
+  assert.equal(job.video, "V49");
+  assert.equal((await f.services.getJob({ jobId: job.jobId })).video, "V49", "stored on the row");
+
+  const g = fixture();
+  const plain = await importDefault(g.services);
+  g.video.answer = async (input) => input.videoNumber ?? null;
+  const named = await g.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: plain.templateId, params: { prompt: "a cat" }, createdBy: "factory", videoNumber: "V50" });
+  assert.equal(named.video, "V50");
+  assert.equal(g.video.calls[0].videoNumber, "V50");
+  await assert.rejects(
+    g.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: plain.templateId, params: { prompt: "a cat" }, createdBy: "factory", videoNumber: "50" }),
+    (e: unknown) => isDomainError(e) && e.code === "validation_failed"
+  );
+});
+
+test("BL-194: a given video the channel cannot link to refuses the job before any upload, row or prompt", async () => {
+  const f = fixture({ sentToYtm: new Map([["refs/frame 1.png", { path: "/ws/99 Data Exchange/Sent to YTM/refs/frame 1.png", bytes: 2048 }]]) });
+  const t = await importImg2Img(f.services);
+  f.video.answer = async () => {
+    const { DomainError } = await import("./contracts");
+    throw new DomainError({ code: "video_not_found", message: "V77 is not a video of UC1" });
+  };
+  const jobsBefore = f.mem.jobs.size;
+  await assert.rejects(
+    f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "a cat", ref: "refs/frame 1.png" }, createdBy: "factory", videoNumber: "V77" }),
+    (e: unknown) => isDomainError(e) && e.code === "video_not_found"
+  );
+  assert.equal(f.mem.jobs.size, jobsBefore);
+  assert.equal(f.s3.calls.filter((c) => c.startsWith("put:")).length, 0, "nothing uploaded to the volume");
+  assert.equal(f.comfy.submits.length, 0, "nothing sent to ComfyUI");
+});
+
+test("BL-194: a job with no number, storyboard or plan is not linked (video null, «не привязано»)", async () => {
+  const f = fixture();
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "a cat" }, createdBy: "factory" });
+  assert.equal(job.video, null);
 });

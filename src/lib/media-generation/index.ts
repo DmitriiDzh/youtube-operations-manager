@@ -30,6 +30,7 @@ import { podNameFor } from "./sessions";
 import { createMediaSessionsShareCoreForProduction, createMediaSettingsCoreForProduction, SHARED_CURRENT_JOBS_MAX, type MediaSettingValue } from "@/lib/sync-gateway";
 import { changedSharedFields, createSettingsSync } from "./settings-sync";
 import { createStoryboardGateForProduction } from "@/lib/storyboards";
+import { createVideoProjectsServiceForProduction } from "@/lib/video-projects";
 
 type JobScheduling = "background" | "detached";
 
@@ -244,6 +245,8 @@ function buildCore(jobScheduling: JobScheduling) {
     adoptions: { get: () => getMediaTemplateAdoptionsJson(), set: (json) => setMediaTemplateAdoptionsJson(json) },
     // BL-184 stage 2 (ADR 0038 §4): the storyboards module's gate, over the same synced document the owner approves in.
     storyboardGate: createStoryboardGateForProduction(),
+    // BL-194 (ADR 0040): the video a job is made for (the shared video-projects module; an inherited one never blocks a job).
+    videoLink: { resolve: (input) => createVideoProjectsServiceForProduction().resolveJobVideo(input) },
   });
   jobsRef = jobs;
   /** BL-132 audit (plan §2.5): newest first. */

@@ -12,6 +12,7 @@ import { createChannelPublishingSettingsSyncRunnerForProduction } from "./channe
 import { createPublishingUploadsSyncRunnerForProduction } from "./publishing-uploads-sync";
 import { createStoryboardsSyncRunnerForProduction } from "./storyboards-sync";
 import { createMediaJobsSyncRunnerForProduction } from "./media-jobs-sync";
+import { createVideoReservationsSyncRunnerForProduction } from "./video-reservations-sync";
 
 /** Runs one family's cycle and unconditionally records its outcome to `sync_family_status`
  * (2026-09-23, Merge-tab redesign) -- regardless of whether it resolved or threw, so the
@@ -42,7 +43,7 @@ async function runAndRecord<T>(
  * process-wide guard in `runAllSyncFamiliesOnce` below.
  */
 async function runAllOnce() {
-  const [changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards, mediaJobs] = await Promise.all([
+  const [changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards, mediaJobs, videoReservations] = await Promise.all([
     runAndRecord("change_drafts", () => createChangeDraftsSyncCoreForProduction().runSyncCycle()),
     runAndRecord("editorial_profile", () => createEditorialProfileSyncRunnerForProduction().runSyncCycle()),
     runAndRecord("ai_connections", () => createAiConnectionsCatalogSyncRunnerForProduction().runSyncCycle()),
@@ -66,8 +67,10 @@ async function runAllOnce() {
     runAndRecord("storyboards", () => createStoryboardsSyncRunnerForProduction().runSyncCycle()),
     // BL-188: this computer's media jobs (RunPod and Gemini) out, the other devices' in -- one shared list everywhere.
     runAndRecord("media_jobs", () => createMediaJobsSyncRunnerForProduction().runSyncCycle()),
+    // BL-194 (ADR 0040): the video numbers this computer reserved out, the other devices' in (one list of videos everywhere).
+    runAndRecord("video_reservations", () => createVideoReservationsSyncRunnerForProduction().runSyncCycle()),
   ]);
-  return { changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards, mediaJobs };
+  return { changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards, mediaJobs, videoReservations };
 }
 
 type AllFamiliesResult = Awaited<ReturnType<typeof runAllOnce>>;

@@ -104,6 +104,9 @@ export type AppPaths = {
   /** BL-188: the media-jobs family -- this device's jobs report and the peers' latest reports. */
   mediaJobsShareDir: string;
   mediaJobsSyncFallbackDir: string;
+  /** BL-194 (ADR 0040): the video-reservations family -- this device's reserved video numbers and the peers' latest reports. */
+  videoReservationsShareDir: string;
+  videoReservationsSyncFallbackDir: string;
   /** BL-184: the per-channel storyboards documents (sync-gateway `storyboards`). */
   storyboardsDocDir: string;
   storyboardsSyncFallbackDir: string;

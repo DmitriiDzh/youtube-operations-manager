@@ -1079,7 +1079,7 @@ test("getSyncFamilyStatuses: every family (thirteen since BL-188) reports a neve
 
     assert.deepEqual(
       statuses.map((s) => s.family).sort(),
-      ["agent_tokens", "ai_connections", "change_drafts", "channel_language_settings", "channel_publishing_settings", "editorial_profile", "generation_plans", "live_streams", "media_jobs", "media_sessions", "media_settings", "publishing_uploads", "storyboards"]
+      ["agent_tokens", "ai_connections", "change_drafts", "channel_language_settings", "channel_publishing_settings", "editorial_profile", "generation_plans", "live_streams", "media_jobs", "media_sessions", "media_settings", "publishing_uploads", "storyboards", "video_reservations"]
     );
     for (const s of statuses) {
       assert.equal(s.lastSyncedAt, null);
