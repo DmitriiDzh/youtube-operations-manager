@@ -116,6 +116,15 @@ function isUpcomingBroadcast(video: StoredVideoRecord): boolean {
   return video.liveBroadcastContent === "upcoming";
 }
 
+/**
+ * The channel's language first, the rest alphabetical: its column always leads the Languages table (owner, Telegram 2026-10-16,
+ * msg 2883). Only reorders -- a baseline that is neither tracked nor present on any video adds no column.
+ */
+function baselineFirst(languages: string[], channelBaseline: string | null): string[] {
+  const lead = channelBaseline ? languages.find((language) => sameLanguage(language, channelBaseline)) : undefined;
+  return lead ? [lead, ...languages.filter((language) => language !== lead)] : languages;
+}
+
 /** Public, or scheduled to become public (`publishAt` set): what viewers see or are about to see. */
 function isPublicOrScheduled(video: StoredVideoRecord): boolean {
   return video.privacyStatus === "public" || video.publishAt !== null;
@@ -182,7 +191,7 @@ export function createLocalizationServices(deps: ServiceDependencies) {
         const trackedLanguages = await deps.channelStore.getTargetLanguages(channel.channelId);
         const channelBaseline = (await deps.channelLanguageBaseline?.getExpectedDefaultLanguage(channel.channelId)) ?? null;
         const realLanguages = collectChannelLanguages(videos);
-        const languages = [...new Set([...trackedLanguages, ...realLanguages])].sort();
+        const languages = baselineFirst([...new Set([...trackedLanguages, ...realLanguages])].sort(), channelBaseline);
 
         const output = parseWithSchema(
           localizationOverviewOutputSchema,
