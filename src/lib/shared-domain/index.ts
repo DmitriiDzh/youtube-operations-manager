@@ -83,6 +83,18 @@ export type DomainErrorCode =
   | "upload_package_not_ready"
   | "upload_package_changed"
   | "upload_already_queued"
+  // BL-192: the owner's own release package (Content → «Публикация» → «Новый пакет»).
+  | "package_no_workspace"
+  | "package_workspace_unavailable"
+  | "package_folder_invalid"
+  | "package_file_invalid"
+  | "package_no_video"
+  | "package_no_thumbnail"
+  | "package_duration_unknown"
+  | "package_no_baseline"
+  | "package_title_empty"
+  | "package_exists"
+  | "package_held"
   | "publishing_settings_changed"
   | "upload_daily_limit"
   // Owner msg 2753: a package's tags and the channel's own tags together pass YouTube's 500 characters (details.video).

@@ -43,10 +43,11 @@ import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
 import { createWriteContextCore } from "@/lib/write-context";
 import { createYoutubeClient, getVideoUploadState, listPlaylistItemIdsByVideo, listUploadsPlaylistFirstPage } from "@/lib/youtube-read-gateway";
-import { createWorkspaceExchangeFsForPublishing, resolveWorkspaceFileForPublishing } from "./adapters/files";
+import { createWorkspaceExchangeFsForPublishing, isRealVideoFolder, resolveWorkspaceFileForPublishing, writeVideoFolderFile } from "./adapters/files";
 import { createWorkspaceVideoFiles } from "@/lib/workspace-videos";
 import { createPackageScan, isPackageThumbnailPath, VIDEOS_FOLDER, type PackageScanDeps } from "./package-scan";
 import { imageKindOf } from "./packages";
+import { createPackageComposer } from "./package-composer";
 import { authorizedOAuth, createPublishingFinishWrites, createPublishingYoutubeWrites, freshAccessToken } from "./adapters/youtube-writes";
 import { ACTIVE_UPLOAD_STATUSES, createUploadRunner, holdsPackage, isCancellable, UNKNOWN_OUTCOME_RELEASED, type UploadRunnerDeps } from "./upload-runner";
 import { createUploadApproval } from "./upload-approval";
@@ -245,7 +246,7 @@ function createPackageScanReads() {
     join: (...parts) => path.join(...parts),
     clock: { now: () => new Date() },
   };
-  return { reads: createPackageScan(deps), workspace: deps.workspace, resolveFile: deps.resolveFile };
+  return { reads: createPackageScan(deps), workspace: deps.workspace, resolveFile: deps.resolveFile, deps };
 }
 export type { PackageScanResult, PackageState, ScannedPackage } from "./package-scan";
 export type { PackageProblem, ReleasePackage } from "./packages";
@@ -440,6 +441,49 @@ async function videosInsertCallsSince(since: Date): Promise<number> {
   return inserts(await listQuotaCalls({ sinceSeconds, service: "data" })) + peers;
 }
 
+/** The release numbers an upload on this computer holds (queued, running, done, or of unknown outcome): their package is taken. */
+async function localHeldVideos(channelId: string): Promise<Set<string>> {
+  return new Set((await listPublishingUploads({ channelId, limit: 5000 })).filter(holdsPackage).map((row) => row.video));
+}
+
+/** The release numbers another computer reports as uploading or uploaded, with that computer's name (ADR 0037 §4). */
+async function peerUploadsOf(channelId: string): Promise<Map<string, { host: string | null; uploaded: boolean }>> {
+  const peers = new Map<string, { host: string | null; uploaded: boolean }>();
+  for (const report of await createPublishingUploadsShareCoreForProduction().listPeerReports().catch(() => [])) {
+    for (const upload of report.uploads) {
+      if (upload.channelId === channelId && !peers.has(upload.video)) peers.set(upload.video, { host: report.hostName, uploaded: upload.state === "uploaded" });
+    }
+  }
+  return peers;
+}
+
+/**
+ * BL-192 (docs/roadmap/plans/NEW_RELEASE_PACKAGE_PLAN.md): the owner's own release package, made from a video folder's files
+ * (Content → «Публикация» → «Новый пакет»). The package scan's reads; a package held by an upload here or on another computer is
+ * never replaced (the approval's rule). Writes only `<folder>/Vn_release.json`, inside the workspace's real folder.
+ */
+export function createPackageComposerCore() {
+  const { deps } = createPackageScanReads();
+  return createPackageComposer({
+    workspace: deps.workspace,
+    validateWorkspace: deps.validateWorkspace,
+    listDir: deps.listDir,
+    resolveFile: deps.resolveFile,
+    readText: deps.readText,
+    readHead: deps.readHead,
+    probeDuration: deps.probeDuration,
+    channel: deps.channel,
+    videos: deps.videos,
+    async heldVideos(channelId) {
+      return new Set([...(await localHeldVideos(channelId)), ...(await peerUploadsOf(channelId)).keys()]);
+    },
+    isVideoFolder: (workspace, folder) => isRealVideoFolder(workspace, folder),
+    writeManifest: (workspace, folder, name, text) => writeVideoFolderFile(workspace, folder, name, text),
+    join: deps.join,
+  });
+}
+export type { ComposerFolder, PackageDraft } from "./package-composer";
+
 /** BL-182 stage 2: the owner's approval of release-package uploads (queued here; the runner sends them). */
 export function createUploadApprovalCore() {
   const scan = createPackageScanCore();
@@ -447,16 +491,8 @@ export function createUploadApprovalCore() {
   return createUploadApproval({
     scan: (channelId) => scan.scan(channelId),
     settings: (channelId) => settings.read(channelId),
-    liveVideos: async (channelId) => new Set((await listPublishingUploads({ channelId, limit: 5000 })).filter(holdsPackage).map((row) => row.video)),
-    async peerUploads(channelId) {
-      const peers = new Map<string, { host: string | null; uploaded: boolean }>();
-      for (const report of await createPublishingUploadsShareCoreForProduction().listPeerReports().catch(() => [])) {
-        for (const upload of report.uploads) {
-          if (upload.channelId === channelId && !peers.has(upload.video)) peers.set(upload.video, { host: report.hostName, uploaded: upload.state === "uploaded" });
-        }
-      }
-      return peers;
-    },
+    liveVideos: (channelId) => localHeldVideos(channelId),
+    peerUploads: (channelId) => peerUploadsOf(channelId),
     insertsToday: (now) => videosInsertCallsSince(startOfYoutubeQuotaDay(now)),
     async pending(now) {
       const rows = await listPublishingUploads({ statuses: ACTIVE_UPLOAD_STATUSES, limit: 500 });
