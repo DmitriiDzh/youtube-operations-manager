@@ -57,3 +57,44 @@ test("no fingerprint on this computer (no usable key): nothing is matched", () =
   const result = accountWideSpend({ peers: [report("a", { spentTodayUsd: 1, spentMonthUsd: 1 })], ownDeviceId: "me", ownFingerprint: null, dayStart: new Date(2026, 9, 16), monthStart: new Date(2026, 9, 1), now });
   assert.deepEqual(result, { otherTodayUsd: 0, otherMonthUsd: 0, otherComputers: [] });
 });
+
+test("boundaries: exactly 5 minutes ahead still counts, a second more does not; a report written at local midnight counts toward today", () => {
+  const result = accountWideSpend({
+    peers: [
+      report("a", { updatedAt: at(16, 15, 5), spentTodayUsd: 0.5, spentMonthUsd: 0.5 }), // exactly +5 min: counted
+      report("b", { updatedAt: new Date(2026, 9, 16, 15, 5, 1).toISOString(), spentTodayUsd: 9, spentMonthUsd: 9 }), // +5 min 1 s: not
+      report("c", { updatedAt: at(16, 0), spentTodayUsd: 0.75, spentMonthUsd: 2 }), // midnight sharp, 15 h old: today and month
+      report("d", { updatedAt: new Date(2026, 9, 15, 23, 59, 59).toISOString(), spentTodayUsd: 4, spentMonthUsd: 6 }), // a second before: month only
+    ],
+    ownDeviceId: "me",
+    ownFingerprint: FP,
+    dayStart: new Date(2026, 9, 16),
+    monthStart: new Date(2026, 9, 1),
+    now,
+  });
+  assert.equal(result.otherTodayUsd, 1.25); // 0.5 + 0.75
+  assert.equal(result.otherMonthUsd, 8.5); // 0.5 + 2 + 6
+  assert.deepEqual(
+    result.otherComputers.map((p) => [p.deviceId, p.stale]),
+    [
+      ["a", false],
+      ["c", true],
+      ["d", true],
+    ]
+  );
+});
+
+test("two computers on the same key are both summed; a computer with no key of its own (null) never matches, even another null", () => {
+  const sameKey = accountWideSpend({
+    peers: [report("a", { spentTodayUsd: 1.1, spentMonthUsd: 2.2 }), report("b", { spentTodayUsd: 0.4, spentMonthUsd: 0.8 })],
+    ownDeviceId: "me",
+    ownFingerprint: FP,
+    dayStart: new Date(2026, 9, 16),
+    monthStart: new Date(2026, 9, 1),
+    now,
+  });
+  assert.equal(sameKey.otherTodayUsd, 1.5);
+  assert.equal(sameKey.otherMonthUsd, 3);
+  const bothNull = accountWideSpend({ peers: [report("a", { keyFingerprint: null, spentTodayUsd: 1, spentMonthUsd: 1 })], ownDeviceId: "me", ownFingerprint: null, dayStart: new Date(2026, 9, 16), monthStart: new Date(2026, 9, 1), now });
+  assert.deepEqual(bothNull, { otherTodayUsd: 0, otherMonthUsd: 0, otherComputers: [] });
+});
