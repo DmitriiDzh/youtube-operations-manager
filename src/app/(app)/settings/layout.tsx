@@ -152,13 +152,12 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
         </FeatureErrorBoundary>
       </div>
 
-      <div className={settingsSubTab === "runpod" ? "space-y-6" : "hidden"}>
+      {/* BL-193 (owner msgs 2864/2867): the paid cloud APIs on one sub-tab -- RunPod's keys, Gemini's key and the operator's
+          switch and limits, and one file carrying every cloud key to another computer. Each card fails on its own (AGENTS.md §M). */}
+      <div className={settingsSubTab === "cloud-apis" ? "space-y-6" : "hidden"}>
         <FeatureErrorBoundary label={section("settingsCard.runpod")}>
           <RunpodConnectionSettings />
         </FeatureErrorBoundary>
-      </div>
-
-      <div className={settingsSubTab === "gemini" ? "space-y-6" : "hidden"}>
         <FeatureErrorBoundary label={section("settingsCard.gemini")}>
           <GeminiMediaSettings />
         </FeatureErrorBoundary>

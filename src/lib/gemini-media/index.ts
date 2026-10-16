@@ -50,7 +50,7 @@ function buildDeps(): GeminiMediaDeps {
       (detail) =>
         new DomainError({
           code: "encryption_key_not_configured",
-          message: `The Gemini key file exists but is unusable (${detail}). Remove the stored key and enter it again (Settings → Gemini).`,
+          message: `The Gemini key file exists but is unusable (${detail}). Remove the stored key and enter it again (Settings → Cloud APIs).`,
         })
     ),
     workspace: createGeminiWorkspace(async (channelId) => workspaces.getWorkspace({ channelId })),

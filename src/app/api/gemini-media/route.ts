@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { defaultGeminiRouteDeps, geminiHandler, type GeminiRouteDeps } from "./shared";
 
-// BL-174: everything Settings → Gemini shows in one read -- the key's public view, the switch and limits, the spend (this
+// BL-174: everything Settings → Cloud APIs shows in one read -- the key's public view, the switch and limits, the spend (this
 // computer), the gateway toggle and the 20 newest jobs.
 export function createGeminiOverviewGetHandler(deps: GeminiRouteDeps = defaultGeminiRouteDeps()) {
   return geminiHandler(deps, async ({ core }) => {

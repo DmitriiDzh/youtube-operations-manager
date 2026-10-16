@@ -31,7 +31,7 @@ test("AC-SM-01: Servers' tabs are Sessions, Models, Workflow templates (work, le
   );
 });
 
-test("AC-P14-26 / AC-SM-01: the sidebar has Media right after Content, then Servers; Settings has a RunPod sub-tab rendering only the connection", async () => {
+test("AC-P14-26 / AC-SM-01 / BL-193: the sidebar has Media right after Content, then Servers; Settings has one Cloud APIs sub-tab rendering only the connections", async () => {
   // BL-149: the sidebar lives in the (app) layout and Settings on its own page (the single dashboard page is gone; the
   // requirement this test checks is unchanged).
   const layout = await readFile(path.join(process.cwd(), "src", "app", "(app)", "layout.tsx"), "utf8");
@@ -45,14 +45,17 @@ test("AC-P14-26 / AC-SM-01: the sidebar has Media right after Content, then Serv
   // BL-157: the slice ends at the first type after the Settings list (it was ProductionTab); the requirement -- Settings has
   // no Media sub-tab -- is unchanged.
   const subTabs = tabs.slice(tabs.indexOf("export const SETTINGS_SUB_TABS"), tabs.indexOf("export type ServersTab"));
-  // BL-152: the sub-tab name is an interface-text key; its English text is still "RunPod".
-  assert.match(subTabs, /\{ value: "runpod", labelKey: "tabs\.settings\.runpod" \}/);
-  assert.equal(translate("en", "tabs.settings.runpod"), "RunPod");
+  // BL-193 (owner msgs 2864/2867, a changed requirement): the separate RunPod and Gemini sub-tabs became one, "Cloud APIs".
+  assert.match(subTabs, /\{ value: "cloud-apis", labelKey: "tabs\.settings\.cloudApis" \}/);
+  assert.doesNotMatch(subTabs, /value: "runpod"|value: "gemini"/);
+  assert.equal(translate("en", "tabs.settings.cloudApis"), "Cloud APIs");
+  assert.equal(translate("ru", "tabs.settings.cloudApis"), "Облачные API");
   assert.doesNotMatch(subTabs, /"media"/);
-  const runpodBlock = page.slice(page.indexOf('settingsSubTab === "runpod"'), page.indexOf('settingsSubTab === "about"'));
-  assert.match(runpodBlock, /<RunpodConnectionSettings \/>/);
+  const cloudBlock = page.slice(page.indexOf('settingsSubTab === "cloud-apis"'), page.indexOf('settingsSubTab === "live-streams"'));
+  assert.match(cloudBlock, /<RunpodConnectionSettings \/>/);
+  assert.match(cloudBlock, /<GeminiMediaSettings \/>/);
   for (const card of ["SessionsCard", "JobsCard", "ModelsCard", "WorkflowTemplatesCard", "ComputeCard", "VolumeCard", "LimitsCard", "ServersPanel", "MediaPanel"]) {
-    assert.ok(!runpodBlock.includes(card), `${card} must not render under Settings → RunPod`);
+    assert.ok(!cloudBlock.includes(card), `${card} must not render under Settings → Cloud APIs`);
   }
 });
 

@@ -10,7 +10,7 @@ export const DATACENTER_ID_PATTERN = RUNPOD_DATACENTER_ID_PATTERN;
 const trimmedSecret = (max: number) => z.string().trim().min(1).max(max);
 
 /**
- * Operator-only (Settings → RunPod). The S3 pair is optional as a pair: both or
+ * Operator-only (Settings → Cloud APIs). The S3 pair is optional as a pair: both or
  * neither. Secrets arrive only here and leave only as an encrypted blob.
  */
 export const setCredentialsInputSchema = z

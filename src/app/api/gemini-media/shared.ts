@@ -4,7 +4,7 @@ import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-stat
 import { authOptions } from "@/lib/auth";
 import { createGeminiMediaCore, isDomainError, type GeminiMediaCore } from "@/lib/gemini-media";
 
-// BL-174 (GEMINI_MEDIA_PLAN.md §2.8) -- the owner's routes for Settings → Gemini: the key, the switch and limits, the spend and
+// BL-174 (GEMINI_MEDIA_PLAN.md §2.8) -- the owner's routes for Settings → Cloud APIs: the key, the switch and limits, the spend and
 // the recent jobs. Every handler: Web session required (401), a thin call into the one core, DomainError -> status. No route
 // ever returns the key (the core's shapes carry only its last 4 characters). Mutating methods pass `src/proxy.ts`'s
 // device-availability gate like every /api route.

@@ -204,11 +204,11 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
     const row = await deps.store.getCredentials();
     if (!row) return null;
     const key = await deps.keyFile.readKey();
-    if (!key) throw new DomainError({ code: "encryption_key_not_configured", message: "The Gemini key file is missing on this computer; enter the API key again (Settings → Gemini)." });
+    if (!key) throw new DomainError({ code: "encryption_key_not_configured", message: "The Gemini key file is missing on this computer; enter the API key again (Settings → Cloud APIs)." });
     try {
       return decryptSecret({ ciphertext: row.ciphertext, iv: row.iv, authTag: row.authTag }, key);
     } catch {
-      throw new DomainError({ code: "encryption_key_not_configured", message: "The stored Gemini API key cannot be decrypted with this computer's key file; enter it again (Settings → Gemini)." });
+      throw new DomainError({ code: "encryption_key_not_configured", message: "The stored Gemini API key cannot be decrypted with this computer's key file; enter it again (Settings → Cloud APIs)." });
     }
   }
 
@@ -370,9 +370,9 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
         }
         const settings = await getSettings();
         const preconditionRefusal: GeminiRefusal | null = !settings.enabled
-          ? { code: "gemini_disabled", message: "Generation through Gemini is turned off on this computer (Settings → Gemini)." }
+          ? { code: "gemini_disabled", message: "Generation through Gemini is turned off on this computer (Settings → Cloud APIs)." }
           : !(await deps.store.getCredentials())
-            ? { code: "gemini_key_missing", message: "No Gemini API key is stored on this computer (Settings → Gemini)." }
+            ? { code: "gemini_key_missing", message: "No Gemini API key is stored on this computer (Settings → Cloud APIs)." }
             : null;
         if (preconditionRefusal && !input.dryRun) throw new DomainError({ code: preconditionRefusal.code, message: preconditionRefusal.message });
         if (!(await deps.isChannelConnected(input.channelId))) {

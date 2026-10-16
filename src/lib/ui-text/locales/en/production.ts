@@ -30,7 +30,7 @@ export const production = {
 
   "production.balance.title": "RunPod balance",
   "production.balance.titleLegacy": "RunPod balance (legacy API)",
-  "production.balance.connect": "Connect RunPod in Settings → RunPod.",
+  "production.balance.connect": "Connect RunPod in Settings → Cloud APIs.",
   "production.balance.lastRefreshFailed": "Last refresh failed: {error}",
   "production.balance.requestFailed": "Balance request failed",
   "production.balance.requestFailedStatus": "Balance request failed ({status})",

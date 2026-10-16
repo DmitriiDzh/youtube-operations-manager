@@ -31,7 +31,7 @@ export const production: Record<keyof typeof en, string> = {
 
   "production.balance.title": "Баланс RunPod",
   "production.balance.titleLegacy": "Баланс RunPod (старый API)",
-  "production.balance.connect": "Подключите RunPod в «Настройки → RunPod».",
+  "production.balance.connect": "Подключите RunPod в «Настройки → Облачные API».",
   "production.balance.lastRefreshFailed": "Последнее обновление не удалось: {error}",
   "production.balance.requestFailed": "Не удалось запросить баланс",
   "production.balance.requestFailedStatus": "Не удалось запросить баланс ({status})",

@@ -8,7 +8,7 @@ import { LoadingIndicator } from "./operation-progress";
 import { ToggleSwitch } from "./toggle-switch";
 import { useT } from "./ui-text-provider";
 
-// BL-174 (docs/roadmap/plans/GEMINI_MEDIA_PLAN.md §2.8): Settings → Gemini. The owner's side of the module the Factory Operator
+// BL-174 (docs/roadmap/plans/GEMINI_MEDIA_PLAN.md §2.8): Settings → Cloud APIs. The owner's side of the module the Factory Operator
 // drives over MCP: the API key (checked with Google, stored encrypted, shown only by its last 4 characters), the switch that lets
 // the operator spend, the limits, this computer's spend and the newest jobs. Text inputs (not native number widgets), so the
 // stored digits read the same in every locale.

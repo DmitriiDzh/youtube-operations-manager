@@ -54,7 +54,7 @@ function podStatusLabel(t: Translate, status: string): string {
 // volume / template from RunPod's live lists, and sets the spend and watcher limits. Every RunPod
 // call behind the setup cards is an explicit click ("Load", "Test", "Create"), never on mount.
 //
-// Slice 6 (owner, Telegram 2026-10-05, msg 1549): Settings → RunPod keeps ONLY the connection (`RunpodConnectionSettings`);
+// Slice 6 (owner, Telegram 2026-10-05, msg 1549): Settings → Cloud APIs keeps ONLY the connection (`RunpodConnectionSettings`);
 // everything else is the Production section (`production-panel.tsx`), which uses the cards exported below.
 
 // The core's own public shapes (review round 16): never a hand copy that drifts when contracts.ts changes.
@@ -139,7 +139,7 @@ function Card({ title, help, children }: { title: string; help: string; children
   );
 }
 
-/** The media overview (credentials, settings, readiness) and the gateway traffic, shared by Settings → RunPod and Production. */
+/** The media overview (credentials, settings, readiness) and the gateway traffic, shared by Settings → Cloud APIs and Production. */
 /**
  * BL-150 review: a card sends only the fields that differ from the settings it shows -- never a field the owner did not touch.
  * Setup is shared with the other computers: re-sending a field's old value (a form opened before the other computer changed it)
@@ -194,7 +194,7 @@ export function useMediaOverview() {
   return { overview, loadError, gatewayTraffic, refresh };
 }
 
-/** Settings → RunPod (slice 6): only the connection -- the API keys and their test. */
+/** Settings → Cloud APIs (slice 6): only the connection -- the API keys and their test. */
 export function RunpodConnectionSettings() {
   const { t } = useUiText();
   const { overview, loadError, refresh } = useMediaOverview();

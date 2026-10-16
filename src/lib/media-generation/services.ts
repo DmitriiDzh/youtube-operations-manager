@@ -163,7 +163,7 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
       throw new DomainError({
         code: "media_generation_not_configured",
         message: !row
-          ? "No RunPod credentials are configured on this device (Settings → RunPod)."
+          ? "No RunPod credentials are configured on this device (Settings → Cloud APIs)."
           : "The stored RunPod credentials cannot be read on this device: the key file is missing. Enter the credentials again.",
       });
     }

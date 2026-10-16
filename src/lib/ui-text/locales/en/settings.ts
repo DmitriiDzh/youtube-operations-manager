@@ -54,7 +54,7 @@ export const settings = {
   "aiProviders.title": "AI provider connections",
   "aiProviders.info": "Configure AI provider connections for AI Localization. No specific vendor is built into this app — every connection is a Base URL, model id, and optional credential you supply. Credentials are encrypted at rest and never shown again once saved. Testing a connection is an explicit action and may incur cost for a real (non-mock) connection. Unrelated to the MCP connection above (that's an external agent connecting TO this app; this is this app connecting OUT to an AI provider) — grouped here for convenience.",
 
-  // BL-174: Settings → Gemini.
+  // BL-174: Settings → Cloud APIs.
   "gemini.key.title": "Google Gemini API key",
   "gemini.key.info": "A key from Google AI Studio (aistudio.google.com → Get API key), on a project with billing linked and prepaid credit. The app checks the key with Google before saving it and stores it encrypted on this computer only; it is never shown again, only its last 4 characters. Also set a monthly spend cap in AI Studio (Spend): it guards the whole Google account, while the limits here apply to this computer.",
   "gemini.key.stored": "Key stored:",
