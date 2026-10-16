@@ -9,13 +9,14 @@ import { appDataPaths } from "@/lib/db";
 import { createKeyFile, createKeyFileFsAccess } from "@/lib/device-key-file";
 import { createGeminiApiClient, isMediaGatewayEnabled } from "@/lib/media-gateway";
 import { createStoryboardGateForProduction } from "@/lib/storyboards";
-import { createGeminiSettingsCoreForProduction, createGeminiSpendShareCoreForProduction, GEMINI_SPEND_REPORT_FORMAT, GEMINI_SPEND_REPORT_VERSION } from "@/lib/sync-gateway";
+import { createGeminiSettingsCoreForProduction, createGeminiSpendShareCoreForProduction } from "@/lib/sync-gateway";
 import { createGeminiFiles } from "./adapters/files";
 import { createGeminiWorkspace } from "./adapters/workspace";
 import { createGeminiStore } from "./adapters/store";
 import { DomainError, GEMINI_KEY_FILE_NAME } from "./contracts";
 import { createGeminiMediaServices, type GeminiMediaDeps } from "./services";
 import { changedSharedLimits, createGeminiSettingsSync, type GeminiSharedValue } from "./settings-sync";
+import { createGeminiSpendSharePublisher } from "./spend-share";
 import { createGeminiWorker } from "./worker";
 
 // ---------------------------------------------------------------------------
@@ -29,6 +30,7 @@ export { estimateImageUsd, estimateVideoUsd, imageCostFromTable, imageCostFromUs
 export { createGeminiMediaServices, settingsFromJson, type GeminiMediaDeps, type GeminiStore } from "./services";
 export { createGeminiWorker } from "./worker";
 export { accountWideSpend, geminiKeyFingerprint, GEMINI_FINGERPRINT_LABEL, GEMINI_PEER_STALE_AFTER_MS } from "./account";
+export { createGeminiSpendSharePublisher, GEMINI_SPEND_REPUBLISH_MS } from "./spend-share";
 export { changedSharedLimits, createGeminiSettingsSync, planGeminiPeerApply, sharedLimitValues } from "./settings-sync";
 export type { GeminiSettingsSyncStatus, GeminiSettingsConflictView, GeminiPendingSetting, GeminiSharedValue } from "./settings-sync";
 
@@ -133,27 +135,15 @@ function buildCore() {
   };
 
   // -- BL-193: this computer's spend for the other computers (sync-gateway `gemini-spend`, ADR 0039) --------------------------
-  let lastPublished = { key: "", at: 0 };
   /** Written when the figures or the key changed, and at least every 5 minutes (so the others can tell this computer is alive). */
-  async function publishSpendShare(at: Date = deps.clock.now()): Promise<void> {
-    const [local, keyFingerprint, device] = await Promise.all([services.localSpend(at), services.keyFingerprint(), deps.device()]);
-    if (!device.deviceId) return;
-    const clamp = (value: number, max: number) => Math.min(max, Math.max(0, Number.isFinite(value) ? value : 0));
-    const report = {
-      format: GEMINI_SPEND_REPORT_FORMAT,
-      version: GEMINI_SPEND_REPORT_VERSION,
-      deviceId: device.deviceId,
-      hostname: hostName(),
-      keyFingerprint,
-      updatedAt: at.toISOString(),
-      spentTodayUsd: clamp(local.todayUsd, 100_000),
-      spentMonthUsd: clamp(local.monthUsd, 1_000_000),
-    } as const;
-    const key = JSON.stringify([report.hostname, report.keyFingerprint, report.spentTodayUsd, report.spentMonthUsd, at.toDateString()]);
-    if (key === lastPublished.key && at.getTime() - lastPublished.at < 5 * 60_000) return;
-    await createGeminiSpendShareCoreForProduction().publishLocalReport(report);
-    lastPublished = { key, at: at.getTime() };
-  }
+  const publishSpendShare = createGeminiSpendSharePublisher({
+    localSpend: (at) => services.localSpend(at),
+    keyFingerprint: () => services.keyFingerprint(),
+    deviceId: async () => (await deps.device()).deviceId,
+    hostname: hostName,
+    publish: (report) => createGeminiSpendShareCoreForProduction().publishLocalReport(report),
+    now: () => deps.clock.now(),
+  });
 
   return {
     ...services,
