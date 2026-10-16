@@ -142,6 +142,7 @@ export const errors: Record<keyof typeof en, string> = {
   "errors.plan_recheck_closed": "Эта повторная проверка уже закрыта.",
   "errors.gemini_disabled": "Генерация через Gemini выключена на этом компьютере (Настройки → Облачные API).",
   "errors.gemini_key_missing": "На этом компьютере не сохранён ключ Gemini API (Настройки → Облачные API).",
+  "errors.cloud_credentials_not_configured": "На этом компьютере не сохранено ни ключа RunPod, ни ключа Gemini: экспортировать нечего.",
   "errors.gemini_key_invalid": "Google не принял ключ Gemini API.",
   "errors.gemini_payment_required": "На платёжном аккаунте Google закончился предоплаченный баланс.",
   "errors.gemini_limit_exceeded": "Запрос превышает лимит расходов на Gemini.",

@@ -253,6 +253,27 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
     return { todayUsd: round4(local.todayUsd + others.otherTodayUsd), monthUsd: round4(local.monthUsd + others.otherMonthUsd), keyKnown: fingerprint !== null, otherComputers: others.otherComputers };
   }
 
+  type CheckedGeminiKey = { apiKey: string; status: "ok" | "payment_required" };
+  /** The key's format, then one free call to Google: a refused key throws; an empty prepaid balance (402) is accepted with its status. */
+  async function checkKeyForImport(input: unknown): Promise<CheckedGeminiKey> {
+    const { apiKey } = parseWithSchema(setKeyInputSchema, input, "Gemini API key");
+    let status: "ok" | "payment_required" = "ok";
+    try {
+      await deps.api.checkKey(apiKey);
+    } catch (error) {
+      if (!(isDomainError(error) && error.code === "gemini_payment_required")) throw error;
+      status = "payment_required";
+    }
+    return { apiKey, status };
+  }
+  async function storeCheckedKey(checked: CheckedGeminiKey): Promise<GeminiKeyView> {
+    const { apiKey } = parseWithSchema(setKeyInputSchema, { apiKey: checked.apiKey }, "Gemini API key");
+    const key = await deps.keyFile.readOrCreateKey();
+    const sealed = encryptSecret(apiKey, key);
+    await deps.store.upsertCredentials({ ...sealed, keyHint: apiKey.slice(-4), status: checked.status, verifiedAt: now() });
+    return keyViewOf(await deps.store.getCredentials());
+  }
+
   async function spend(at: Date = now()): Promise<GeminiSpend> {
     const local = await localSpend(at);
     return { ...local, account: await accountSpend(local, at) };
@@ -342,19 +363,20 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
 
     /** Checks the key with Google first (AC-GM-01): a refused key is never stored; an empty balance (402) is stored with that status. */
     async setKey(input: unknown): Promise<GeminiKeyView> {
-      const { apiKey } = parseWithSchema(setKeyInputSchema, input, "Gemini API key");
-      let status: "ok" | "payment_required" = "ok";
-      try {
-        await deps.api.checkKey(apiKey);
-      } catch (error) {
-        if (!(isDomainError(error) && error.code === "gemini_payment_required")) throw error;
-        status = "payment_required";
-      }
-      const key = await deps.keyFile.readOrCreateKey();
-      const sealed = encryptSecret(apiKey, key);
-      await deps.store.upsertCredentials({ ...sealed, keyHint: apiKey.slice(-4), status, verifiedAt: now() });
-      return keyViewOf(await deps.store.getCredentials());
+      const checked = await checkKeyForImport(input);
+      return storeCheckedKey(checked);
     },
+
+    /**
+     * BL-193 (ADR 0039 §6): the stored key in clear for the shared cloud-credentials file (`src/lib/cloud-credentials-transfer`,
+     * which encrypts it under the owner's password at once), or null when none is stored. Never returned by any route; a key
+     * that cannot be decrypted here throws (`encryption_key_not_configured`).
+     */
+    exportKeyForTransfer: readApiKey,
+    /** BL-193: an imported key, validated and checked with Google BEFORE anything is stored (a refused key throws). Stores nothing. */
+    checkKeyForImport,
+    /** BL-193: stores a key `checkKeyForImport` accepted, exactly like a typed one. */
+    storeImportedKey: storeCheckedKey,
 
     async testKey(): Promise<GeminiKeyView> {
       const row = await deps.store.getCredentials();

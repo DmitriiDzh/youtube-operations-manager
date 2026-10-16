@@ -1,7 +1,8 @@
 "use client";
 
+import { CLOUD_CREDENTIALS_IMPORTED_EVENT } from "./cloud-credentials-transfer";
 import Link from "next/link";
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import {
   MAX_CONCURRENT_SESSIONS_RANGE,
   MEDIA_CUDA_VERSIONS,
@@ -194,10 +195,16 @@ export function useMediaOverview() {
   return { overview, loadError, gatewayTraffic, refresh };
 }
 
-/** Settings → Cloud APIs (slice 6): only the connection -- the API keys and their test. */
+/** Settings → Cloud APIs (slice 6; BL-193 the shared tab): only the RunPod connection -- the API keys and their test. */
 export function RunpodConnectionSettings() {
   const { t } = useUiText();
   const { overview, loadError, refresh } = useMediaOverview();
+  // BL-193: keys imported from the cloud-keys file (its own card on Settings → Cloud APIs) show here at once.
+  useEffect(() => {
+    const onImported = () => void refresh();
+    window.addEventListener(CLOUD_CREDENTIALS_IMPORTED_EVENT, onImported);
+    return () => window.removeEventListener(CLOUD_CREDENTIALS_IMPORTED_EVENT, onImported);
+  }, [refresh]);
   if (loadError) return <p className="text-sm text-red-400">{loadError}</p>;
   if (!overview) return <p className="text-sm text-zinc-500">{t("common.loading")}</p>;
   return (
@@ -2114,8 +2121,6 @@ export function CredentialsCard({ status, onChanged }: { status: CredentialsStat
         </div>
       )}
 
-      <CredentialsTransfer configured={status.configured} disabled={busy} onImported={onChanged} />
-
       {testResult && (
         <div className="space-y-1 text-xs">
           <p className={testResult.runpod.ok ? "text-emerald-400" : "text-red-400"}>
@@ -2146,141 +2151,6 @@ export function CredentialsCard({ status, onChanged }: { status: CredentialsStat
         />
       )}
     </Card>
-  );
-}
-
-/** The file name an export downloads as: the date keeps several exports apart, `.ytmkeys` says what it is. */
-export function credentialsFileName(now: Date): string {
-  return `runpod-credentials-${now.toISOString().slice(0, 10)}.ytmkeys`;
-}
-
-// BL-137 (owner, Telegram 2026-10-06, variant A): carry the credentials to another device as a file encrypted under a password
-// typed on both ends. The password lives only in these fields; the server never stores it.
-function CredentialsTransfer({ configured, disabled, onImported }: { configured: boolean; disabled: boolean; onImported: () => Promise<void> }) {
-  const { t } = useUiText();
-  const [mode, setMode] = useState<"idle" | "export" | "import">("idle");
-  const [password, setPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
-  const [file, setFile] = useState<File | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  function reset(next: "idle" | "export" | "import") {
-    setMode(next);
-    setPassword("");
-    setConfirmPassword("");
-    setFile(null);
-    setError(null);
-    if (fileInputRef.current) fileInputRef.current.value = "";
-  }
-
-  async function doExport() {
-    setBusy(true);
-    setError(null);
-    setNotice(null);
-    try {
-      const { file: exported } = await requestJson<{ file: unknown }>("/api/media-generation/credentials/export", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ password }),
-      });
-      const url = URL.createObjectURL(new Blob([JSON.stringify(exported, null, 2)], { type: "application/json" }));
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = credentialsFileName(new Date());
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      // Some WebKit versions drop the download when the blob URL is revoked in the same tick (review).
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
-      reset("idle");
-      setNotice(t("media.transfer.downloaded", { file: link.download }));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t("media.transfer.exportFailed"));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function doImport() {
-    if (!file) return;
-    setBusy(true);
-    setError(null);
-    setNotice(null);
-    try {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(await file.text());
-      } catch {
-        throw new Error(t("media.transfer.notAFile"));
-      }
-      await requestJson("/api/media-generation/credentials/import", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ file: parsed, password }),
-      });
-      reset("idle");
-      setNotice(t("media.transfer.imported"));
-      await onImported();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t("media.transfer.importFailed"));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const tooShort = password.length < 12;
-  return (
-    <div className="mt-3 space-y-2 border-t border-zinc-800 pt-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-xs text-zinc-400">{t("media.transfer.anotherDevice")}</span>
-        {configured && (
-          <button type="button" onClick={() => reset(mode === "export" ? "idle" : "export")} disabled={disabled || busy} className={secondaryButton}>
-            {t("media.transfer.export")}
-          </button>
-        )}
-        <button type="button" onClick={() => reset(mode === "import" ? "idle" : "import")} disabled={disabled || busy} className={secondaryButton}>
-          {t("media.transfer.import")}
-        </button>
-      </div>
-      {mode === "export" && (
-        <div className="space-y-2">
-          <p className="text-xs text-zinc-500">
-            {t("media.transfer.exportExplanation")}
-          </p>
-          <div className="grid gap-2 sm:grid-cols-2">
-            <input type="password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} className={inputClass} placeholder={t("media.transfer.passwordPlaceholder")} />
-            <input type="password" autoComplete="new-password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className={inputClass} placeholder={t("media.transfer.repeatPlaceholder")} />
-          </div>
-          {confirmPassword && confirmPassword !== password && <p className="text-xs text-amber-400">{t("media.transfer.passwordsDiffer")}</p>}
-          <button type="button" onClick={doExport} disabled={busy || tooShort || password !== confirmPassword} className={primaryButton}>
-            {busy ? t("media.transfer.encrypting") : t("media.transfer.download")}
-          </button>
-        </div>
-      )}
-      {mode === "import" && (
-        <div className="space-y-2">
-          <p className="text-xs text-zinc-500">
-            {t("media.transfer.importExplanation")}
-          </p>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".ytmkeys,application/json"
-            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-            className="text-xs text-zinc-400 file:mr-3 file:rounded-lg file:border file:border-zinc-700 file:bg-zinc-800 file:px-3 file:py-1.5 file:text-xs file:text-zinc-300"
-          />
-          <input type="password" autoComplete="off" value={password} onChange={(e) => setPassword(e.target.value)} className={inputClass} placeholder={t("media.transfer.importPasswordPlaceholder")} />
-          <button type="button" onClick={doImport} disabled={busy || !file || !password} className={primaryButton}>
-            {busy ? t("media.common.importing") : t("media.common.import")}
-          </button>
-        </div>
-      )}
-      {notice && <p className="text-xs text-emerald-400">{notice}</p>}
-      {error && <p className="text-xs text-red-400">{error}</p>}
-    </div>
   );
 }
 

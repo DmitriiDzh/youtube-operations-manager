@@ -22,6 +22,7 @@ import { ChannelConnectionsSettings } from "@/components/channel-connections-set
 import { SyncFolderSettings } from "@/components/sync-folder-settings";
 import { RunpodConnectionSettings } from "@/components/media-generation-settings";
 import { GeminiMediaSettings } from "@/components/gemini-media-settings";
+import { CloudCredentialsTransfer } from "@/components/cloud-credentials-transfer";
 import { LiveStreamsSettings } from "@/components/live-streams-settings";
 import { DeviceAutoSyncSettings } from "@/components/device-auto-sync-settings";
 import { AppVersionInfo } from "@/components/app-version-info";
@@ -160,6 +161,9 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
         </FeatureErrorBoundary>
         <FeatureErrorBoundary label={section("settingsCard.gemini")}>
           <GeminiMediaSettings />
+        </FeatureErrorBoundary>
+        <FeatureErrorBoundary label={section("cloudKeys.title")}>
+          <CloudCredentialsTransfer />
         </FeatureErrorBoundary>
       </div>
 

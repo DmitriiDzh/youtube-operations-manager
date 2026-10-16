@@ -143,6 +143,7 @@ export const errors = {
   "errors.plan_recheck_closed": "This re-check is no longer open.",
   "errors.gemini_disabled": "Generation through Gemini is turned off on this computer (Settings → Cloud APIs).",
   "errors.gemini_key_missing": "No Gemini API key is stored on this computer (Settings → Cloud APIs).",
+  "errors.cloud_credentials_not_configured": "No RunPod or Gemini key is stored on this computer: there is nothing to export.",
   "errors.gemini_key_invalid": "Google refused the Gemini API key.",
   "errors.gemini_payment_required": "The Google billing account has no prepaid balance left.",
   "errors.gemini_limit_exceeded": "The request is over a Gemini spending limit.",

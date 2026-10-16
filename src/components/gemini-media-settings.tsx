@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { errorText } from "@/lib/ui-text";
+import { CLOUD_CREDENTIALS_IMPORTED_EVENT } from "./cloud-credentials-transfer";
 import { ConfirmDialog } from "./confirm-dialog";
 import { InfoTooltip } from "./info-tooltip";
 import { LoadingIndicator } from "./operation-progress";
@@ -67,6 +68,10 @@ export function GeminiMediaSettings() {
 
   useEffect(() => {
     void load();
+    // BL-193: a key imported from the cloud-keys file shows here at once.
+    const onImported = () => void load();
+    window.addEventListener(CLOUD_CREDENTIALS_IMPORTED_EVENT, onImported);
+    return () => window.removeEventListener(CLOUD_CREDENTIALS_IMPORTED_EVENT, onImported);
   }, [load]);
 
   if (!overview) {
