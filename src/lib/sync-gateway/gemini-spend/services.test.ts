@@ -66,3 +66,10 @@ test("the report is strict: a key-shaped field, a non-hex or wrong-length finger
 test("nothing to push before this device's first report: not_found", async () => {
   await assert.rejects(core().exportBytes(), (error: unknown) => (error as { code?: string }).code === "not_found");
 });
+
+test("a peer that went silent 10 days ago still counts toward the shared monthly limit; one silent for 33 days is forgotten", async () => {
+  const c = core();
+  await c.mergeIncoming(bytes(report("laptop", { updatedAt: "2026-10-06T12:00:00Z", spentMonthUsd: 40 })), "laptop");
+  await c.mergeIncoming(bytes(report("old-pc", { updatedAt: "2026-09-13T11:59:00Z", spentMonthUsd: 5 })), "old-pc");
+  assert.deepEqual((await c.listPeerReports()).map((r) => r.deviceId), ["laptop"]);
+});

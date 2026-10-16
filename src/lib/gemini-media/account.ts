@@ -20,7 +20,7 @@ export function geminiKeyFingerprint(apiKey: string): string {
 }
 
 /** A peer report older than this is shown as stale (its device may be off); its spend still counts -- spend is history. */
-export const GEMINI_PEER_STALE_AFTER_MS = 5 * 60_000;
+export const GEMINI_PEER_STALE_AFTER_MS = 12 * 60_000;
 /** A report dated further ahead than this (a peer clock running fast) is not counted at all. */
 const FUTURE_SKEW_MS = 5 * 60_000;
 
