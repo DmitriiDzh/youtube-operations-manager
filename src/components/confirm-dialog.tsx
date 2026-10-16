@@ -17,6 +17,8 @@ type ConfirmDialogProps = {
   children?: ReactNode;
   /** BL-176: the confirm button stays disabled until the content is complete (e.g. a reason long enough). */
   confirmDisabled?: boolean;
+  /** BL-192: "wide" for a form inside the dialog (e.g. a whole release package). */
+  size?: "default" | "wide";
 };
 
 /**
@@ -43,6 +45,7 @@ export function ConfirmDialog({
   onConfirm,
   children,
   confirmDisabled = false,
+  size = "default",
 }: ConfirmDialogProps) {
   const t = useT();
   // BL-157 (review round 3): the keyboard belongs to the dialog -- focus moves to Cancel (so Enter or Space never presses a
@@ -64,7 +67,7 @@ export function ConfirmDialog({
   }, []);
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4" role="presentation">
-      <div className={`w-full ${children ? "max-w-lg" : "max-w-sm"} space-y-4 rounded-lg border border-zinc-700 bg-zinc-900 p-5 shadow-xl`} role="alertdialog" aria-modal="true" aria-label={title}>
+      <div className={`w-full ${size === "wide" ? "max-w-2xl" : children ? "max-w-lg" : "max-w-sm"} space-y-4 rounded-lg border border-zinc-700 bg-zinc-900 p-5 shadow-xl`} role="alertdialog" aria-modal="true" aria-label={title}>
         <p className="text-sm font-medium text-zinc-100">{title}</p>
         {description && <p className="text-xs text-zinc-400">{description}</p>}
         {children}

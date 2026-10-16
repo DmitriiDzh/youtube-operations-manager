@@ -4084,6 +4084,17 @@ is already set everywhere), 2734 (one merge for the whole stage).
   `unknown_outcome_released`). Processing whose state stays unreadable is polled slowly until its 24-hour limit. Network errors with
   an underscore (`EAI_AGAIN`, `ERR_*`, `UND_ERR_*`) are transient. The lease is renewed before every chunk. Migration v89 was edited
   in place before it reached any database (the service and the other computer ran v88).
+- **The owner's own package** (BL-192, `docs/roadmap/plans/NEW_RELEASE_PACKAGE_PLAN.md`, `publishing/package-composer.ts`). «Новый пакет»
+  lists the `04 Videos/<month>/<MMDD Vn>` folders that hold a video directly inside (the `workspace-videos` walk). A draft takes the
+  folder's direct children only: the one video (or the one named after Vn), the one `Thumbnail_*` (else the one image), the one
+  `*Title_Description*.txt` parsed by `parseTitleDescription` (BOM and CRLF removed; the title is the lines between a `TITLE` line and a
+  `DESCRIPTION` line, the description everything after it, trailing blanks trimmed), the size, ffprobe's duration (the scan's cached
+  probe) and the channel baseline; the owner's picks and edits override them, and the draft carries `packageProblems` for the result.
+  Saving rebuilds it on the server and writes `Vn_release.json` through `writeVideoFolderFile` (temporary file + rename, the folder's
+  real path strictly inside the real `04 Videos/`), with `ready: true`, `problems: []`, `mix: null`, `createdBy: "owner"`. Refused with
+  nothing written: no video or thumbnail, an unreadable length, no baseline, an empty title, bad input; an existing package without
+  `replace`; one with `Vn_youtube.json` or held by an upload (`localHeldVideos`, `peerUploadsOf` -- shared with the approval). Problems
+  the scan reports do not refuse: the package shows as not ready with them.
 - **UI** (Content → «Публикация»): the package list with checkboxes, a date per chosen package (DD.MM.YYYY UTC day; empty = private
   without a date), «Загрузить выбранные» → the approval dialog (rows, times in UTC and the owner's time, the shared settings, the
   units estimate, the Live-writes note), then the uploads list (state, share sent, pause reason and when it continues, the

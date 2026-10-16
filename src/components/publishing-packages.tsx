@@ -8,6 +8,7 @@ import { TAGS_MAX_CHARACTERS } from "@/lib/youtube-video-fields";
 import { errorText, type UiTextKey } from "@/lib/ui-text";
 import { ConfirmDialog } from "./confirm-dialog";
 import { LoadingIndicator } from "./operation-progress";
+import { PublishingNewPackage } from "./publishing-new-package";
 import { PublishingUploads } from "./publishing-uploads";
 import { parseQuotaBlock, QuotaBlockDialog, type QuotaBlock } from "./quota-block-dialog";
 import { useUiText } from "./ui-text-provider";
@@ -79,6 +80,8 @@ export function PublishingPackages({ channelId, visible }: { channelId: string |
   const [sending, setSending] = useState(false);
   const [quotaBlock, setQuotaBlock] = useState<QuotaBlock | null>(null);
   const [uploadsKey, setUploadsKey] = useState(0);
+  /** BL-192: «Новый пакет» is open. */
+  const [composing, setComposing] = useState(false);
 
   const load = useCallback(async () => {
     if (!channelId) return;
@@ -196,9 +199,16 @@ export function PublishingPackages({ channelId, visible }: { channelId: string |
           <h3 className="text-base font-medium text-zinc-100">{t("publishingPackages.title")}</h3>
           <p className="mt-1 max-w-3xl text-xs text-zinc-400">{t("publishingPackages.intro")}</p>
         </div>
-        <button type="button" onClick={() => void load()} disabled={loading} className="rounded-lg bg-zinc-800 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-700 disabled:opacity-50">
-          {t("publishingPackages.refresh")}
-        </button>
+        <div className="flex shrink-0 gap-2">
+          {result?.status === "ok" && (
+            <button type="button" onClick={() => setComposing(true)} className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500">
+              {t("publishingNewPackage.open")}
+            </button>
+          )}
+          <button type="button" onClick={() => void load()} disabled={loading} className="rounded-lg bg-zinc-800 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-700 disabled:opacity-50">
+            {t("publishingPackages.refresh")}
+          </button>
+        </div>
       </div>
 
       {error && <p className="text-xs text-red-400">{error}</p>}
@@ -295,6 +305,17 @@ export function PublishingPackages({ channelId, visible }: { channelId: string |
       )}
 
       <PublishingUploads channelId={channelId} visible={visible} refreshKey={uploadsKey} />
+
+      {composing && (
+        <PublishingNewPackage
+          channelId={channelId}
+          onClose={() => setComposing(false)}
+          onSaved={() => {
+            setComposing(false);
+            void load();
+          }}
+        />
+      )}
 
       {approving && settings && (
         <ConfirmDialog
