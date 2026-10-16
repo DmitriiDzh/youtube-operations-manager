@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import { errorText } from "@/lib/ui-text";
 import { InfoTooltip } from "./info-tooltip";
+import { MaskedSecretInput } from "./masked-secret-input";
 import { useT } from "./ui-text-provider";
 
 // BL-193 (owner, Telegram 2026-10-16, msgs 2864/2867, variant 1; ADR 0039 §6, extending BL-137 / ADR 0027): every cloud key of
@@ -125,8 +126,8 @@ export function CloudCredentialsTransfer() {
         <div className="space-y-2">
           <p className="text-xs text-zinc-500">{t("cloudKeys.exportExplanation")}</p>
           <div className="grid gap-2 sm:grid-cols-2">
-            <input type="password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} className={inputClass} placeholder={t("cloudKeys.passwordPlaceholder")} />
-            <input type="password" autoComplete="new-password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className={inputClass} placeholder={t("cloudKeys.repeatPlaceholder")} />
+            <MaskedSecretInput name="cloud-keys-file-password" value={password} onChange={(e) => setPassword(e.target.value)} className={inputClass} placeholder={t("cloudKeys.passwordPlaceholder")} />
+            <MaskedSecretInput name="cloud-keys-file-password-repeat" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className={inputClass} placeholder={t("cloudKeys.repeatPlaceholder")} />
           </div>
           {confirmPassword && confirmPassword !== password && <p className="text-xs text-amber-400">{t("cloudKeys.passwordsDiffer")}</p>}
           <button type="button" onClick={doExport} disabled={busy || tooShort || password !== confirmPassword} className={primaryButton}>
@@ -144,7 +145,7 @@ export function CloudCredentialsTransfer() {
             onChange={(e) => setFile(e.target.files?.[0] ?? null)}
             className="text-xs text-zinc-400 file:mr-3 file:rounded-lg file:border file:border-zinc-700 file:bg-zinc-800 file:px-3 file:py-1.5 file:text-xs file:text-zinc-300"
           />
-          <input type="password" autoComplete="off" value={password} onChange={(e) => setPassword(e.target.value)} className={inputClass} placeholder={t("cloudKeys.importPasswordPlaceholder")} />
+          <MaskedSecretInput name="cloud-keys-import-password" value={password} onChange={(e) => setPassword(e.target.value)} className={inputClass} placeholder={t("cloudKeys.importPasswordPlaceholder")} />
           <button type="button" onClick={doImport} disabled={busy || !file || !password} className={primaryButton}>
             {busy ? t("cloudKeys.importing") : t("cloudKeys.importNow")}
           </button>

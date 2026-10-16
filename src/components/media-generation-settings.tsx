@@ -1,6 +1,7 @@
 "use client";
 
 import { CLOUD_CREDENTIALS_IMPORTED_EVENT } from "./cloud-credentials-transfer";
+import { MaskedSecretInput } from "./masked-secret-input";
 import Link from "next/link";
 import { Fragment, useCallback, useEffect, useState } from "react";
 import {
@@ -2096,7 +2097,7 @@ export function CredentialsCard({ status, onChanged }: { status: CredentialsStat
         <div className="space-y-2">
           <label className="block text-xs text-zinc-400">
             {t("media.credentials.runpodApiKey")}
-            <input type="password" autoComplete="off" value={runpodApiKey} onChange={(e) => setRunpodApiKey(e.target.value)} className={inputClass} placeholder="rpa_…" />
+            <MaskedSecretInput name="runpod-api-key" value={runpodApiKey} onChange={(e) => setRunpodApiKey(e.target.value)} className={inputClass} placeholder="rpa_…" />
           </label>
           <div className="grid gap-2 sm:grid-cols-2">
             <label className="block text-xs text-zinc-400">
@@ -2105,7 +2106,7 @@ export function CredentialsCard({ status, onChanged }: { status: CredentialsStat
             </label>
             <label className="block text-xs text-zinc-400">
               {t("media.credentials.s3Secret")}
-              <input type="password" autoComplete="off" value={s3SecretAccessKey} onChange={(e) => setS3SecretAccessKey(e.target.value)} className={inputClass} placeholder="rps_…" />
+              <MaskedSecretInput name="runpod-s3-secret" value={s3SecretAccessKey} onChange={(e) => setS3SecretAccessKey(e.target.value)} className={inputClass} placeholder="rps_…" />
             </label>
           </div>
           <div className="flex gap-2">
