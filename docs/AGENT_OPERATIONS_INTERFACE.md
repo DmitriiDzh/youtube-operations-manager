@@ -1101,6 +1101,9 @@ MINOR bump 3.3.0 -> 3.4.0 (`dev`'s 3.3.0 is Factory Operator access, §4p; this 
 `openSessions` (this channel's non-terminal sessions, oldest first), `maxConcurrentSessions` and `activeSessionCount` (device-wide);
 `openSession` (= the first of `openSessions`) and `deviceHasOpenSession` (informational) stay. `media_session_conflict` now comes only
 from a human's approve (the concurrency limit, or a model pull holding the volume) -- the request then stays `pending`.
+**BL-193 (Agent API 3.19.0, ADR 0039, additive):** `agent_get_media_limits` adds `accountSpentTodayUsd` (today's spend on the whole
+RunPod account -- this computer plus the other computers on the same account, from their reports; the figure the daily cap is checked
+against at approve) and `otherDevicesSpentTodayUsd`; `spentTodayUsd` and `remainingTodayUsd` keep meaning this computer.
 
 
 Seven capabilities in the new `media_generation` domain (`src/lib/media-generation/`, registered directly in
