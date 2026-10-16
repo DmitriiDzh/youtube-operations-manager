@@ -101,6 +101,8 @@ export type StoredVideoRecord = {
   thumbnails: Record<string, { url: string; width: number | null; height: number | null }>;
   existingLocalizations: Record<string, LocaleMetadata>;
   etag: string | null;
+  /** YouTube's `snippet.liveBroadcastContent` (`none` | `live` | `upcoming`) from the last sync; absent/null = unknown. */
+  liveBroadcastContent?: string | null;
   lastSyncedAt: Date;
 };
 
