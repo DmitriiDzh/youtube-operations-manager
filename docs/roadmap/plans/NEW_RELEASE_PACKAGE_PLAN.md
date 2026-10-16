@@ -1,6 +1,6 @@
 # A release package made by the owner in Content → «Публикация» (BL-192)
 
-**Status: IN PROGRESS** on `feature/bl-192-new-release-package`. Owner, Telegram 2026-10-16: the question (msg 2842), "pick the text file
+**Status: DONE, merged into `dev` (c16be6c, owner Telegram msg 2862); the dialog checked live 2026-10-16 (Japan V48, nothing saved).** Owner, Telegram 2026-10-16: the question (msg 2842), "pick the text file
 instead of typing" (msg 2844), the plan (msg 2847) accepted with «ок» (msgs 2846, 2848).
 
 ## 1. Why
