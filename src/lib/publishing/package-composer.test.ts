@@ -7,7 +7,7 @@ import { DomainError } from "@/lib/shared-domain";
 import type { DirEntry } from "@/lib/workspace-videos";
 import { writeVideoFolderFile } from "./adapters/files";
 import { createPackageComposer, defaultPicks, parseTitleDescription, type ComposerDeps } from "./package-composer";
-import { parseReleasePackage } from "./packages";
+import { packageProblems, parseReleasePackage } from "./packages";
 
 // BL-192 (docs/roadmap/plans/NEW_RELEASE_PACKAGE_PLAN.md §3, AC-NP-01..05). The folder contents are the real ones of Tropico V41 and
 // Japan V56 (listed 2026-10-16); the expected values are read off the plan, not off the code.
@@ -75,7 +75,7 @@ function workspace(): Fs {
   return fs;
 }
 
-function setup(options: { baseline?: string | null; held?: string[]; probe?: number | null | "no_ffprobe"; fs?: Fs } = {}) {
+function setup(options: { baseline?: string | null; audioBaseline?: string | null; held?: string[]; probe?: number | null | "no_ffprobe"; fs?: Fs; outsideFolders?: string[] } = {}) {
   const fs = options.fs ?? workspace();
   const writes: Array<{ folder: string; name: string; text: string }> = [];
   const rel = (abs: string) => abs.replace(/^\/ws\/?/, "");
@@ -104,9 +104,14 @@ function setup(options: { baseline?: string | null; held?: string[]; probe?: num
       return node?.kind === "file" ? (node.head ?? new Uint8Array([0x89, 0x50, 0x4e, 0x47])) : new Uint8Array();
     },
     probeDuration: async () => (options.probe === undefined ? 7200.5 : options.probe),
-    channel: async (channelId) => ({ channelId, defaultLanguage: options.baseline === undefined ? "en" : options.baseline, defaultAudioLanguage: options.baseline === undefined ? "en" : options.baseline }),
+    channel: async (channelId) => ({
+      channelId,
+      defaultLanguage: options.baseline === undefined ? "en" : options.baseline,
+      defaultAudioLanguage: options.audioBaseline !== undefined ? options.audioBaseline : options.baseline === undefined ? "en" : options.baseline,
+    }),
     videos: async () => [{ videoId: "old1", title: "Something else" }],
     heldVideos: async () => new Set(options.held ?? []),
+    isVideoFolder: async (_ws, folder) => !(options.outsideFolders ?? []).includes(folder),
     async writeManifest(_ws, folder, name, text) {
       writes.push({ folder, name, text });
       fs.set(`${folder}/${name}`, { kind: "file", bytes: text.length, text });
@@ -185,6 +190,24 @@ test("AC-NP-03: saving V56 writes V56_release.json with exactly the plan's field
   });
   const parsed = parseReleasePackage(manifest);
   assert.deepEqual([parsed.problems, parsed.pkg?.ready], [[], true]);
+  // "and the scan then lists it" ready: the scan's own checks on the saved manifest and these files find nothing.
+  const problems = packageProblems(
+    parsed.pkg!,
+    {
+      video: { exists: true, sizeBytes: 860_000_000, durationSeconds: 7200.5 },
+      thumbnail: { exists: true, sizeBytes: 400_000, kind: "jpeg" },
+      youtubeRecordExists: false,
+      sameTitleVideoId: null,
+    },
+    { channelId: CHANNEL, defaultLanguage: "en", defaultAudioLanguage: "en" }
+  );
+  assert.deepEqual(problems, []);
+});
+
+test("save: a typed title is trimmed (YouTube trims it and the upload compares the read-back)", async () => {
+  const { composer, writes } = setup();
+  await composer.save(CHANNEL, { folder: V56_FOLDER, title: "  Foo bar  " });
+  assert.equal(JSON.parse(writes[0].text).title, "Foo bar");
 });
 
 test("AC-NP-04: each refusal writes nothing", async () => {
@@ -193,6 +216,11 @@ test("AC-NP-04: each refusal writes nothing", async () => {
     ["package_folder_invalid", {}, { folder: "05 Other/10 October/1022 V56" }],
     ["package_folder_invalid", {}, { folder: "04 Videos/10 October/../1022 V56" }],
     ["package_no_baseline", { baseline: null }, { folder: V56_FOLDER }],
+    // Review of BL-192: the upload sends the package's audio language as is, so none is invented when the channel has no audio baseline.
+    ["package_no_baseline", { audioBaseline: null }, { folder: V56_FOLDER }],
+    ["package_folder_invalid", { outsideFolders: [V56_FOLDER] }, { folder: V56_FOLDER }],
+    ["package_file_invalid", {}, { folder: V56_FOLDER, files: { video: "../x.mp4" } }],
+    ["package_no_video", {}, { folder: V56_FOLDER, files: { video: null } }],
     ["package_title_empty", {}, { folder: V56_FOLDER, title: "   " }],
     ["validation_failed", {}, { folder: V56_FOLDER, plannedPublishDate: "2026-02-30" }],
     ["validation_failed", {}, { folder: V56_FOLDER, tags: [1] }],
@@ -251,4 +279,17 @@ test("writeVideoFolderFile: writes inside 04 Videos only, whole, and refuses a s
   await assert.rejects(() => writeVideoFolderFile(ws, "04 Videos", "V1_release.json", "{}"), "not the 04 Videos folder itself");
   await writeFile(path.join(ws, "x.txt"), "");
   await assert.rejects(() => writeVideoFolderFile(ws, V56_FOLDER, "../x.txt", "{}"));
+});
+
+test("isRealVideoFolder: a folder inside 04 Videos yes; 04 Videos itself, a symlink out, a missing folder no", async () => {
+  const { isRealVideoFolder } = await import("./adapters/files");
+  const root = await mkdtemp(path.join(os.tmpdir(), "bl192r-"));
+  const ws = path.join(root, "ws");
+  await mkdir(path.join(ws, "04 Videos", "10 October", "1022 V56"), { recursive: true });
+  await mkdir(path.join(ws, "06 Other", "1023 V57"), { recursive: true });
+  await symlink(path.join(ws, "06 Other", "1023 V57"), path.join(ws, "04 Videos", "10 October", "1023 V57"));
+  assert.equal(await isRealVideoFolder(ws, V56_FOLDER), true);
+  assert.equal(await isRealVideoFolder(ws, "04 Videos"), false);
+  assert.equal(await isRealVideoFolder(ws, "04 Videos/10 October/1023 V57"), false, "a symlink to elsewhere in the workspace");
+  assert.equal(await isRealVideoFolder(ws, "04 Videos/10 October/1024 V58"), false);
 });

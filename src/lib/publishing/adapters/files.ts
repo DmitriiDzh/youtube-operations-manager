@@ -7,6 +7,18 @@ import { VIDEOS_FOLDER } from "@/lib/workspace-videos";
 // The shared workspace rule (`workspace-exchange`): a path relative to the channel workspace, proven inside it after symlinks.
 export { createExchangeFs as createWorkspaceExchangeFsForPublishing, resolveWorkspaceFile as resolveWorkspaceFileForPublishing } from "@/lib/workspace-exchange";
 
+/** BL-192: whether `<workspace>/<folder>` is a real folder strictly inside the workspace's real `04 Videos/` (symlinks resolved). */
+export async function isRealVideoFolder(workspace: string, folder: string): Promise<boolean> {
+  try {
+    const root = await realpath(workspace);
+    const videosRoot = await realpath(path.join(root, VIDEOS_FOLDER));
+    const target = await realpath(path.join(root, ...folder.split("/")));
+    return target !== videosRoot && isPathInsideOrEqual(videosRoot, target);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * BL-192: writes `<workspace>/<folder>/<name>` whole or not at all (a temporary file, then a rename), only when the folder's real path
  * is strictly inside the workspace's real `04 Videos/` (a symlinked folder pointing elsewhere is refused). Overwrites an existing file.

@@ -105,6 +105,8 @@ export type ComposerDeps = {
   videos(channelId: string): Promise<Array<{ videoId: string; title: string }>>;
   /** The release numbers held by an upload here (queued, running, done) or reported by another computer (the approval's rule). */
   heldVideos(channelId: string): Promise<Set<string>>;
+  /** Whether the folder's real path (symlinks resolved) is strictly inside the workspace's real `04 Videos/`. */
+  isVideoFolder(workspace: string, folder: string): Promise<boolean>;
   /** Writes `<folder>/<name>` whole or not at all; the folder's real path must be inside the workspace. */
   writeManifest(workspace: string, folder: string, name: string, text: string): Promise<void>;
   join(...parts: string[]): string;
@@ -142,7 +144,13 @@ export function createPackageComposer(deps: ComposerDeps) {
     return workspace;
   }
 
-  /** `04 Videos/<month>/<MMDD Vn>` exactly, with a safe path; its release number. */
+  /** `04 Videos/<month>/<MMDD Vn>` exactly, with a safe path, whose real folder is inside the real `04 Videos/`; its release number. */
+  async function checkedRelease(workspace: string, folder: string): Promise<string> {
+    const video = releaseOf(folder);
+    if (!(await deps.isVideoFolder(workspace, folder))) throw refuse("package_folder_invalid", `${folder} is not a video folder of this channel.`, { folder });
+    return video;
+  }
+
   function releaseOf(folder: string): string {
     const parts = folder.split("/");
     const video = parts.length === 3 && parts[0] === VIDEOS_FOLDER && isSafeRelativePath(folder) ? videoNumberOfFolder(parts[2]) : null;
@@ -178,7 +186,7 @@ export function createPackageComposer(deps: ComposerDeps) {
 
   async function build(channelId: string, input: DraftInput) {
     const workspace = await usableWorkspace(channelId);
-    const video = releaseOf(input.folder);
+    const video = await checkedRelease(workspace, input.folder);
     const files = await filesOf(workspace, input.folder, video);
     if (files.videos.length === 0) throw refuse("package_no_video", `${input.folder} holds no video file.`, { folder: input.folder });
     const defaults = defaultPicks(video, files);
@@ -194,7 +202,8 @@ export function createPackageComposer(deps: ComposerDeps) {
       fromText = textFile ? await deps.readText(textFile.path, TEXT_MAX_BYTES).then(parseTitleDescription, () => null) : null;
       textUnreadable = fromText === null;
     }
-    const title = input.title ?? fromText?.title ?? "";
+    // Trimmed like the text file's lines (review of BL-192): YouTube trims a title, and the upload compares the read-back with it.
+    const title = (input.title ?? fromText?.title ?? "").trim();
     const description = input.description ?? fromText?.description ?? "";
     const tags = input.tags ?? [];
     if (!Array.isArray(tags) || tags.some((tag) => typeof tag !== "string")) throw refuse("validation_failed", "tags must be a list of strings.", { field: "tags" });
@@ -221,7 +230,8 @@ export function createPackageComposer(deps: ComposerDeps) {
       description,
       tags,
       defaultLanguage: channel.defaultLanguage ?? "",
-      defaultAudioLanguage: channel.defaultAudioLanguage ?? channel.defaultLanguage ?? "",
+      // Never invented (review of BL-192): the upload sends exactly this value, so without an audio baseline the save is refused.
+      defaultAudioLanguage: channel.defaultAudioLanguage ?? "",
       ready: true,
       problems: [],
     };
@@ -289,7 +299,9 @@ export function createPackageComposer(deps: ComposerDeps) {
       if (!draft.picks.video) throw refuse("package_no_video", "Choose the video file.", { folder: input.folder });
       if (!draft.picks.thumbnail) throw refuse("package_no_thumbnail", "Choose the thumbnail.", { folder: input.folder });
       if (draft.durationSeconds === null) throw refuse("package_duration_unknown", "The video's length could not be read (is ffprobe installed?).", { folder: input.folder });
-      if (channel.defaultLanguage === null) throw refuse("package_no_baseline", "The channel has no language baseline (Languages → Language defaults).");
+      if (channel.defaultLanguage === null || channel.defaultAudioLanguage === null) {
+        throw refuse("package_no_baseline", "The channel has no language or audio-language baseline (Languages → Language defaults).");
+      }
       if (pkg.title.trim() === "") throw refuse("package_title_empty", "The title is empty.");
       if (draft.existing.exists && !input.replace) throw refuse("package_exists", `${pkg.video}_release.json is there already.`, { video: pkg.video });
       if (!draft.existing.replaceable) throw refuse("package_held", `${pkg.video} is already uploaded or queued: its package cannot be changed.`, { video: pkg.video, reason: draft.existing.reason });

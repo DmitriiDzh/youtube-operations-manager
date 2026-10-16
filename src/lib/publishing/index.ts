@@ -43,7 +43,7 @@ import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
 import { createWriteContextCore } from "@/lib/write-context";
 import { createYoutubeClient, getVideoUploadState, listPlaylistItemIdsByVideo, listUploadsPlaylistFirstPage } from "@/lib/youtube-read-gateway";
-import { createWorkspaceExchangeFsForPublishing, resolveWorkspaceFileForPublishing, writeVideoFolderFile } from "./adapters/files";
+import { createWorkspaceExchangeFsForPublishing, isRealVideoFolder, resolveWorkspaceFileForPublishing, writeVideoFolderFile } from "./adapters/files";
 import { createWorkspaceVideoFiles } from "@/lib/workspace-videos";
 import { createPackageScan, isPackageThumbnailPath, VIDEOS_FOLDER, type PackageScanDeps } from "./package-scan";
 import { imageKindOf } from "./packages";
@@ -477,6 +477,7 @@ export function createPackageComposerCore() {
     async heldVideos(channelId) {
       return new Set([...(await localHeldVideos(channelId)), ...(await peerUploadsOf(channelId)).keys()]);
     },
+    isVideoFolder: (workspace, folder) => isRealVideoFolder(workspace, folder),
     writeManifest: (workspace, folder, name, text) => writeVideoFolderFile(workspace, folder, name, text),
     join: deps.join,
   });

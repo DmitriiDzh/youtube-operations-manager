@@ -101,7 +101,7 @@ export function PublishingNewPackage({ channelId, onClose, onSaved }: { channelI
       } finally {
         if (id === requestRef.current) setChecking(false);
       }
-    }, edits.title !== undefined || edits.description !== undefined || edits.tags !== undefined ? 500 : 0);
+    }, Object.keys(edits).length > 0 ? 500 : 0);
     return () => clearTimeout(timer);
   }, [folder, base, body, edits, t]);
 
@@ -116,7 +116,11 @@ export function PublishingNewPackage({ channelId, onClose, onSaved }: { channelI
     try {
       const res = await fetch(`${base}/package`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body({ replace: draft.existing.exists })) });
       const data = await res.json();
-      if (!res.ok) throw new Error(errorText(t, data, t("publishingNewPackage.saveFailed")));
+      if (!res.ok) {
+        // The folder changed meanwhile (a package written or taken elsewhere): read it again so the form shows what is there now.
+        if (data?.error === "package_exists" || data?.error === "package_held") setPicks((prev) => ({ ...prev }));
+        throw new Error(errorText(t, data, t("publishingNewPackage.saveFailed")));
+      }
       onSaved();
     } catch (e) {
       setConfirmReplace(false);
@@ -127,6 +131,7 @@ export function PublishingNewPackage({ channelId, onClose, onSaved }: { channelI
   }
 
   const pickFolder = (value: string | null) => {
+    requestRef.current += 1; // a draft still on its way for the previous folder is dropped
     setFolder(value);
     setPicks({});
     setEdits({});
@@ -269,7 +274,7 @@ export function PublishingNewPackage({ channelId, onClose, onSaved }: { channelI
                   </label>
                 </div>
                 <p className="text-[11px] text-zinc-500">
-                  {t("publishingNewPackage.languages", { language: draft.languages.defaultLanguage ?? "—", audio: draft.languages.defaultAudioLanguage ?? draft.languages.defaultLanguage ?? "—" })}
+                  {t("publishingNewPackage.languages", { language: draft.languages.defaultLanguage ?? "—", audio: draft.languages.defaultAudioLanguage ?? "—" })}
                 </p>
 
                 <div className="rounded-md border border-zinc-800 px-2 py-1.5">
