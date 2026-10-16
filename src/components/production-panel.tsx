@@ -60,7 +60,20 @@ export function describeBalance(t: Translate, balance: RunpodAccountBalance): { 
   };
 }
 
-function BalanceHeader({ configured, limits, activeElsewhere = 0, gemini = null }: { configured: boolean; limits: MediaSessionLimits | null; activeElsewhere?: number; gemini?: GeminiTodayFigure | null }) {
+function BalanceHeader({
+  configured,
+  limits,
+  activeElsewhere = 0,
+  gemini = null,
+  runpodNotice = null,
+}: {
+  configured: boolean;
+  limits: MediaSessionLimits | null;
+  activeElsewhere?: number;
+  gemini?: GeminiTodayFigure | null;
+  /** BL-193: RunPod's overview is still loading or failed -- shown in RunPod's place; Gemini's figure stays (AGENTS.md §M). */
+  runpodNotice?: { text: string; error: boolean } | null;
+}) {
   const t = useT();
   const [balance, setBalance] = useState<RunpodAccountBalance | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -91,7 +104,9 @@ function BalanceHeader({ configured, limits, activeElsewhere = 0, gemini = null 
     <div className="flex flex-wrap items-start gap-x-8 gap-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
       <div>
         <p className="text-xs text-zinc-500">{balance?.source === "graphql" ? t("production.balance.titleLegacy") : t("production.balance.title")}</p>
-        {!configured ? (
+        {runpodNotice ? (
+          <p className={`text-sm ${runpodNotice.error ? "text-red-400" : "text-zinc-500"}`}>{runpodNotice.text}</p>
+        ) : !configured ? (
           <p className="text-sm text-zinc-400">{t("production.balance.connect")}</p>
         ) : described ? (
           <>
@@ -189,37 +204,52 @@ export function ServersPanel({
   const [geminiToday, setGeminiToday] = useState<GeminiTodayFigure | null>(null);
   const { overview, loadError, gatewayTraffic, refresh } = useMediaOverview();
 
-  if (loadError) return <p className="text-sm text-red-400">{loadError}</p>;
-  if (!overview) return <p className="text-sm text-zinc-500">{t("common.loading")}</p>;
+  // BL-193 (AGENTS.md §M): while RunPod's overview loads, or when it failed, only RunPod's parts wait or show the error; the
+  // Gemini card and its figure in the header render regardless (a RunPod outage must not hide Gemini, and the other way round).
+  const runpodNotice = overview ? null : { text: loadError ?? t("common.loading"), error: loadError !== null };
+  const runpodPlaceholder = runpodNotice ? <p className={`text-sm ${runpodNotice.error ? "text-red-400" : "text-zinc-500"}`}>{runpodNotice.text}</p> : null;
+  const runpodLabel = `${t("nav.servers")} — ${t("settingsCard.runpod")}`;
 
   // Every tab stays mounted and is only hidden (like Settings' sub-tabs): Sessions keeps polling -- the header's counts
   // and an agent's new request stay current whichever tab is open.
   return (
     <div className="max-w-5xl space-y-6">
-      <BalanceHeader configured={overview.credentials.configured} limits={limits} activeElsewhere={activeElsewhere} gemini={geminiToday} />
+      <BalanceHeader configured={overview?.credentials.configured ?? false} limits={overview ? limits : null} activeElsewhere={activeElsewhere} gemini={geminiToday} runpodNotice={runpodNotice} />
       <TabBar tabs={SERVERS_TABS} current={tab} onSelect={setTab} />
       <div className={tab === "sessions" ? "space-y-6" : "hidden"}>
-        <SessionsCard ready={overview.ready} activeChannelId={activeChannelId} onLimits={setLimits} />
-        <OtherDevicesCard ready={overview.credentials.configured} onActiveElsewhere={setActiveElsewhere} />
+        {overview ? (
+          <FeatureErrorBoundary label={runpodLabel}>
+            <SessionsCard ready={overview.ready} activeChannelId={activeChannelId} onLimits={setLimits} />
+            <OtherDevicesCard ready={overview.credentials.configured} onActiveElsewhere={setActiveElsewhere} />
+          </FeatureErrorBoundary>
+        ) : (
+          runpodPlaceholder
+        )}
         {/* BL-193 (owner msgs 2864/2867): Gemini next to RunPod, failing on its own (AGENTS.md §M). */}
         <FeatureErrorBoundary label={`${t("nav.servers")} — ${t("gemini.servers.title")}`}>
           <GeminiServersCard onToday={setGeminiToday} />
         </FeatureErrorBoundary>
       </div>
       <div className={tab === "models" ? "space-y-6" : "hidden"}>
-        <ModelsCard configured={overview.credentials.configured && Boolean(overview.settings.networkVolumeId)} active={tab === "models"} />
+        {overview ? <ModelsCard configured={overview.credentials.configured && Boolean(overview.settings.networkVolumeId)} active={tab === "models"} /> : runpodPlaceholder}
       </div>
       <div className={tab === "templates" ? "space-y-6" : "hidden"}>
         <WorkflowTemplatesCard />
       </div>
       <div className={tab === "setup" ? "max-w-3xl space-y-6" : "hidden"}>
         <SettingsSyncNotice onApplied={() => void refresh()} />
-        <ReadinessBanner overview={overview} />
-        <ComputeCard overview={overview} gatewayTraffic={gatewayTraffic} onChanged={refresh} />
-        <VolumeCard overview={overview} onChanged={refresh} />
-        <LimitsCard settings={overview.settings} onChanged={refresh} />
-        <GpuFallbackCard settings={overview.settings} onChanged={refresh} />
-        <FactoryLimitsCard settings={overview.settings} onChanged={refresh} />
+        {overview ? (
+          <>
+            <ReadinessBanner overview={overview} />
+            <ComputeCard overview={overview} gatewayTraffic={gatewayTraffic} onChanged={refresh} />
+            <VolumeCard overview={overview} onChanged={refresh} />
+            <LimitsCard settings={overview.settings} onChanged={refresh} />
+            <GpuFallbackCard settings={overview.settings} onChanged={refresh} />
+            <FactoryLimitsCard settings={overview.settings} onChanged={refresh} />
+          </>
+        ) : (
+          runpodPlaceholder
+        )}
         <CapacityLogCard />
         <ExchangeCleanupCard />
       </div>

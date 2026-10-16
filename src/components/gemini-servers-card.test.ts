@@ -20,3 +20,18 @@ test("Servers → Sessions renders the Gemini card inside its own FeatureErrorBo
   assert.match(sessions, /<FeatureErrorBoundary[^>]*>\s*<GeminiServersCard /);
   assert.ok(sessions.indexOf("<SessionsCard") < sessions.indexOf("<GeminiServersCard"));
 });
+
+test("a failed or loading RunPod overview degrades only RunPod's parts: the panel never returns early, Gemini's card is not gated on it", async () => {
+  const panel = await readFile(path.join(process.cwd(), "src", "components", "production-panel.tsx"), "utf8");
+  const servers = panel.slice(panel.indexOf("export function ServersPanel"), panel.indexOf("export function MediaPanel"));
+  // No early return on the overview's state (it hid the Gemini card along with RunPod's).
+  assert.doesNotMatch(servers, /if \(loadError\) return|if \(!overview\) return/);
+  const sessions = servers.slice(servers.indexOf('tab === "sessions"'), servers.indexOf('tab === "models"'));
+  // The Gemini card sits outside the `overview ? ... : ...` that holds RunPod's cards, and RunPod's cards have their own boundary.
+  const runpodBranch = sessions.slice(sessions.indexOf("{overview ?"), sessions.indexOf("runpodPlaceholder"));
+  assert.match(runpodBranch, /<FeatureErrorBoundary label=\{runpodLabel\}>\s*<SessionsCard /);
+  assert.ok(!runpodBranch.includes("<GeminiServersCard"));
+  assert.ok(sessions.indexOf("<GeminiServersCard") > sessions.indexOf("runpodPlaceholder"));
+  // The header keeps Gemini's figure and shows RunPod's loading/error in RunPod's place.
+  assert.match(servers, /<BalanceHeader [^>]*gemini=\{geminiToday\}[^>]*runpodNotice=\{runpodNotice\}/);
+});
