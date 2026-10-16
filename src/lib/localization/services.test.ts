@@ -516,3 +516,20 @@ test("BL-178 C2: an ambiguous video (labelled es, its es entry not the mirror) i
   // en is the original (never missing); es has an entry; only pt-BR is missing.
   assert.deepEqual(alerts.videos.map((v) => [v.videoId, v.missingLanguages]), [["ambiguous", ["pt-BR"]]]);
 });
+
+test("an upcoming live broadcast (a stream slot) is left out of the Languages page and its alert; a finished broadcast and an unknown one stay", async () => {
+  const videos = [
+    makeVideo({ videoId: "slot", title: "Прямая трансляция пользователя Tropico Jazz", liveBroadcastContent: "upcoming" }),
+    makeVideo({ videoId: "past-stream", liveBroadcastContent: "none" }),
+    makeVideo({ videoId: "unknown", liveBroadcastContent: null }),
+  ];
+  const { services, trackedLanguagesByChannel } = createFixture(videos);
+  trackedLanguagesByChannel.set("UC_TEST", ["de"]);
+
+  const overview = await services.getLocalizationOverview({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST" });
+  assert.deepEqual(overview.videos.map((v) => v.videoId).sort(), ["past-stream", "unknown"]);
+  assert.equal(overview.totalVideos, 2);
+
+  const alerts = await services.getTranslationAlerts({ channelId: "UC_TEST" });
+  assert.deepEqual(alerts.videos.map((v) => v.videoId).sort(), ["past-stream", "unknown"]);
+});
