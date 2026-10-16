@@ -79,7 +79,7 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
       startSession: async (input) => (mediaCalls.push(`startSession:${input.channelId}`), { session: { sessionId: "s1" }, approved: true, heldBy: null }),
       getSession: async (input) => (mediaCalls.push(`getSession:${input.sessionId ?? ""}`), { sessions: [] }),
       endSession: async (input) => (mediaCalls.push(`stopSession:${input.sessionId}`), { session: { sessionId: input.sessionId } }),
-      createJob: async (input) => (mediaCalls.push(`createJob:${input.sessionId}${input.storyboardId ? `:${input.storyboardId}/${input.segmentId}` : ""}`), { job: { jobId: "j1" } }),
+      createJob: async (input) => (mediaCalls.push(`createJob:${input.sessionId}${input.storyboardId ? `:${input.storyboardId}/${input.segmentId}` : ""}${input.videoNumber ? `:${input.videoNumber}` : ""}`), { job: { jobId: "j1" } }),
       getJob: async (input) => (mediaCalls.push(`getJob:${input.jobId ?? ""}`), { job: { jobId: "j1" } }),
       cancelJob: async (input) => (mediaCalls.push(`cancelJob:${input.jobId}`), { job: { jobId: input.jobId } }),
       capacityLog: async () => (mediaCalls.push("capacityLog"), { attempts: [] }),
@@ -109,7 +109,7 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
     // BL-174: the Gemini module is a fake that records what reached it.
     gemini: {
       getStatus: async () => (mediaCalls.push("gemini.status"), { enabled: false }),
-      createJob: async (input) => (mediaCalls.push(`gemini.create:${(input as { channelId: string; dryRun?: boolean }).channelId}${(input as { dryRun?: boolean }).dryRun ? ":dry" : ""}`), { job: { jobId: "gm_1" } }),
+      createJob: async (input) => (mediaCalls.push(`gemini.create:${(input as { channelId: string; dryRun?: boolean }).channelId}${(input as { dryRun?: boolean }).dryRun ? ":dry" : ""}${(input as { videoNumber?: string }).videoNumber ? `:${(input as { videoNumber?: string }).videoNumber}` : ""}`), { job: { jobId: "gm_1" } }),
       getJobs: async (input) => (mediaCalls.push(`gemini.get:${(input as { jobId?: string }).jobId ?? ""}`), { jobs: [] }),
     },
     live: {
@@ -125,6 +125,11 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
       submit: async (input) => (mediaCalls.push(`sb.submit:${(input as { storyboardId: string }).storyboardId}`), { storyboard: {} }),
       reply: async (input) => (mediaCalls.push(`sb.reply:${(input as { commentId: string }).commentId}`), { storyboard: {}, replyId: null }),
       attachRender: async (input) => (mediaCalls.push(`sb.render:${(input as { file: string }).file}`), { storyboard: {}, renderId: "rn_1" }),
+    },
+    // BL-194: the video-projects module is a fake that records what reached it.
+    videos: {
+      create: async (input) => (mediaCalls.push(`video.create:${(input as { channelId: string }).channelId}`), { video: { video: "V50" } }),
+      list: async (input) => (mediaCalls.push(`video.list:${(input as { channelId: string }).channelId}`), { videos: [] }),
     },
     // BL-188: the shared jobs pool is a fake that records what reached it.
     jobs: {
@@ -325,6 +330,8 @@ test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exact
     "factory_storyboard_reply",
     "factory_storyboard_submit",
     "factory_storyboard_update",
+    "factory_video_create",
+    "factory_video_list",
   ]);
   assert.equal(names.some((n) => /approve|reject/.test(n)), false, "no tool approves or rejects a session for anyone");
   assert.deepEqual([...FACTORY_TOOL_NAMES].sort(), names);
@@ -356,14 +363,15 @@ test("AC-FO-07: a channel tool name is not callable on the factory endpoint", as
 // BL-184 (STORYBOARD_PLAN.md §2.6): 1.16.0 and the six storyboard tools, last (declaration order); four of them writes.
 // BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.7): 1.17.0 and the read tool factory_jobs_list, last (declaration order).
 // BL-189 (STORYBOARD_TAKES_PLAN.md §2.4): 1.18.0 and the write tool factory_storyboard_attach_render after the other storyboard tools.
-test("factory_get_capabilities reports the factory API version 1.18.0 (BL-189), READ and WRITE, the tool list and the write tools", async () => {
+// BL-194 (VIDEO_COST_PLAN.md §2 stage 1): 1.19.0 and the two video tools, last (declaration order); factory_video_create a write.
+test("factory_get_capabilities reports the factory API version 1.19.0 (BL-194), READ and WRITE, the tool list and the write tools", async () => {
   const { endpoint, tokenServices } = setup();
   const { token } = await tokenServices.issueToken({});
   const result = await toolResult(await endpoint.handle(rpc(call("factory_get_capabilities"), withToken(token))));
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.18.0",
+    factoryApiVersion: "1.19.0",
     tools: [
       "factory_get_capabilities",
       "factory_list_logical_paths",
@@ -416,6 +424,8 @@ test("factory_get_capabilities reports the factory API version 1.18.0 (BL-189), 
       "factory_storyboard_reply",
       "factory_storyboard_attach_render",
       "factory_jobs_list",
+      "factory_video_create",
+      "factory_video_list",
     ],
     permissions: ["READ", "WRITE"],
     writeTools: [
@@ -447,6 +457,7 @@ test("factory_get_capabilities reports the factory API version 1.18.0 (BL-189), 
       "factory_storyboard_submit",
       "factory_storyboard_reply",
       "factory_storyboard_attach_render",
+      "factory_video_create",
     ],
   });
 });
@@ -1044,4 +1055,36 @@ test("BL-188: factory_jobs_list is a read without the gate; strict filters; noth
     assert.equal(Boolean(body.result?.isError ?? body.error), true, JSON.stringify(bad));
   }
   assert.deepEqual(toolDeps.mediaCalls, [], "an invalid input never reaches the pool");
+});
+
+// BL-194 (VIDEO_COST_PLAN.md §2 stage 1): factory_video_create is a write behind the device mutation gate, factory_video_list a read;
+// both strict; videoNumber on the job tools reaches the modules (which check it against the channel).
+test("BL-194: factory_video_create passes the gate first, factory_video_list does not; strict schemas; videoNumber reaches the job modules", async () => {
+  const { endpoint, tokenServices, toolDeps } = setupWithDeps();
+  const { token } = await tokenServices.issueToken({});
+  const created = await toolResult(await endpoint.handle(rpc(call("factory_video_create", { channelId: "UC_A", workingTitle: "Jazz bar" }), withToken(token))));
+  assert.equal(created.isError, false);
+  assert.deepEqual(created.payload, { video: { video: "V50" } });
+  assert.deepEqual(toolDeps.mediaCalls, ["gate", "video.create:UC_A"]);
+  toolDeps.mediaCalls.length = 0;
+  assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_video_list", { channelId: "UC_A", state: "in_work" }), withToken(token))))).isError, false);
+  assert.deepEqual(toolDeps.mediaCalls, ["video.list:UC_A"], "a read is not gated");
+  toolDeps.gateClosed.value = true;
+  toolDeps.mediaCalls.length = 0;
+  assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_video_create", { channelId: "UC_A" }), withToken(token))))).isError, true);
+  assert.deepEqual(toolDeps.mediaCalls, ["gate"], "nothing reserved behind a closed gate");
+  toolDeps.gateClosed.value = false;
+  toolDeps.mediaCalls.length = 0;
+  for (const [name, bad] of [
+    ["factory_video_create", { channelId: "UC_A", video: "V60" }],
+    ["factory_video_create", {}],
+    ["factory_video_list", { channelId: "UC_A", state: "draft" }],
+  ] as const) {
+    const body = await (await endpoint.handle(rpc(call(name, bad), withToken(token)))).json();
+    assert.equal(Boolean(body.result?.isError ?? body.error), true, JSON.stringify(bad));
+  }
+  assert.deepEqual(toolDeps.mediaCalls, [], "an invalid input reaches neither the gate nor the module");
+  assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_media_create_job", { sessionId: "s1", templateId: "t1", params: {}, videoNumber: "V49" }), withToken(token))))).isError, false);
+  assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_gemini_create_job", { channelId: "UC_A", kind: "image", model: "m", prompt: "p", videoNumber: "V49" }), withToken(token))))).isError, false);
+  assert.deepEqual(toolDeps.mediaCalls, ["gate", "createJob:s1:V49", "gate", "gemini.create:UC_A:V49"]);
 });

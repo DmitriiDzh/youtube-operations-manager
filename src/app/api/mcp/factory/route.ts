@@ -10,6 +10,7 @@ import { createLogicalPathsCore } from "@/lib/logical-paths";
 import { createGenerationPlansCore, withPlanLock } from "@/lib/generation-plans";
 import { createMediaGenerationCore, DomainError, withJobErrorCode } from "@/lib/media-generation";
 import { createStoryboardsServiceForProduction } from "@/lib/storyboards";
+import { createVideoProjectsServiceForProduction } from "@/lib/video-projects";
 import { listStoryboardTakes } from "@/lib/storyboard-takes";
 import { listMediaJobsForAgent } from "@/lib/media-jobs-pool";
 import { createFactoryMcpServer, type FactoryToolDeps } from "@/mcp/factory-server";
@@ -135,7 +136,7 @@ function createToolDeps(): FactoryToolDeps {
         return { session: await factorySession(sessionId) };
       },
       endSession: async ({ sessionId }) => ({ session: await createMediaGenerationCore().factoryStopSession({ sessionId }) }),
-      createJob: async ({ sessionId, templateId, params, planId, itemKey, seed, storyboardId, segmentId }) => {
+      createJob: async ({ sessionId, templateId, params, planId, itemKey, seed, storyboardId, segmentId, videoNumber }) => {
         const session = await factorySession(sessionId);
         // BL-143: a job that names a plan attempt -- all checked by the plans module before the job exists.
         if ((planId === undefined) !== (itemKey === undefined)) throw new DomainError({ code: "validation_failed", message: "Give planId and itemKey together (seed is optional)." });
@@ -144,7 +145,7 @@ function createToolDeps(): FactoryToolDeps {
         const storyboard = storyboardId && segmentId ? { storyboard: { storyboardId, segmentId } } : {};
         const create = async () => {
           const plan = planId && itemKey ? await createGenerationPlansCore().checkJobLink({ planId, itemKey, seed: seed ?? null, sessionId, channelId: session.channelId }) : undefined;
-          return { job: withJobErrorCode(await createMediaGenerationCore().createJob({ sessionId, channelId: session.channelId, templateId, params, createdBy: "factory", ...(plan ? { plan } : {}), ...storyboard })) };
+          return { job: withJobErrorCode(await createMediaGenerationCore().createJob({ sessionId, channelId: session.channelId, templateId, params, createdBy: "factory", ...(plan ? { plan } : {}), ...storyboard, ...(videoNumber !== undefined ? { videoNumber } : {}) })) };
         };
         // BL-157 (review round 2): a plan-linked job is checked and created under the plan's lock, so a plan move cannot
         // pass between them and leave the moved plan with a job still running on the old channel.
@@ -234,6 +235,11 @@ function createToolDeps(): FactoryToolDeps {
         };
         return { ...(await createStoryboardsServiceForProduction().attachRender(input, isTake)) };
       },
+    },
+    // BL-194 (ADR 0040): video numbers -- reserved on this computer, listed from every computer, the workspace and the uploads.
+    videos: {
+      create: async (input) => ({ ...(await createVideoProjectsServiceForProduction().createVideo(input)) }),
+      list: async (input) => ({ ...(await createVideoProjectsServiceForProduction().listVideos(input)) }),
     },
     // BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.7): every computer's media jobs, read-only, in the shared shape (codes only).
     jobs: {
