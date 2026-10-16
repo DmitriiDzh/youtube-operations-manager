@@ -11,6 +11,7 @@ import { useChannelNames } from "./use-channel-names";
 import { InfoTooltip } from "./info-tooltip";
 import { PlanReviewScreen, resultLabel, type PeerReviewSource } from "./plan-review-screen";
 import { ToggleSwitch } from "./toggle-switch";
+import { VideoPicker } from "./video-picker";
 import { Popover } from "./popover";
 import { useT } from "./ui-text-provider";
 
@@ -573,12 +574,26 @@ function PlanDetailCard({ model, onChanged, onReview }: { model: PlanCardModel; 
                   <span>{t("plans.reviewRejectedOn", { device: elsewhere })}</span>
                 </span>
               ) : (
-                <span className="flex items-center gap-1.5 text-xs text-zinc-300">
-                  <label className="flex cursor-pointer items-center gap-2">
-                    <ToggleSwitch tone="violet" label={t("plans.reviewRejected")} checked={model.reviewRejected === true} disabled={savingReviewRejected} onChange={(on) => void setReviewRejected(on)} />
-                    <span>{t("plans.reviewRejected")}</span>
-                  </label>
-                  <InfoTooltip>{t("plans.reviewRejectedInfo")}</InfoTooltip>
+                <span className="flex flex-wrap items-center gap-3 text-xs text-zinc-300">
+                  {/* BL-194 (ADR 0040): the channel's video this plan works for; its jobs take it. */}
+                  {model.channelId && (
+                    <VideoPicker
+                      channelId={model.channelId}
+                      value={model.video ?? null}
+                      onChange={async (video) => {
+                        const response = await fetch(`${base}/video`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ videoNumber: video }) });
+                        if (response.ok) onChanged();
+                        return response;
+                      }}
+                    />
+                  )}
+                  <span className="flex items-center gap-1.5">
+                    <label className="flex cursor-pointer items-center gap-2">
+                      <ToggleSwitch tone="violet" label={t("plans.reviewRejected")} checked={model.reviewRejected === true} disabled={savingReviewRejected} onChange={(on) => void setReviewRejected(on)} />
+                      <span>{t("plans.reviewRejected")}</span>
+                    </label>
+                    <InfoTooltip>{t("plans.reviewRejectedInfo")}</InfoTooltip>
+                  </span>
                 </span>
               )}
             </span>

@@ -9,6 +9,7 @@ import { LiveStreamPanel } from "@/components/live-stream-panel";
 import { PublishingCalendar } from "@/components/publishing-calendar";
 import { PublishingPackages } from "@/components/publishing-packages";
 import { PublishingSettingsPanel } from "@/components/publishing-settings-panel";
+import { VideoProjectsPanel } from "@/components/video-projects-panel";
 import { CONTENT_TABS } from "@/components/section-tabs";
 import { useT } from "@/components/ui-text-provider";
 
@@ -48,6 +49,10 @@ export default function ContentLayout({ children }: { children: ReactNode }) {
         <div className={tab === "publishing" ? undefined : "hidden"}>
           <FeatureErrorBoundary label={t("tabs.content.publishing")}>
             <div className="space-y-4">
+              {/* BL-194 (ADR 0040): the videos in work come first; their own boundary keeps Publishing working if they fail (§M). */}
+              <FeatureErrorBoundary label={t("videoProjects.title")}>
+                <VideoProjectsPanel channelId={channel?.id ?? null} visible={tab === "publishing"} />
+              </FeatureErrorBoundary>
               <PublishingPackages channelId={channel?.id ?? null} visible={tab === "publishing"} />
               <PublishingSettingsPanel channelId={channel?.id ?? null} visible={tab === "publishing"} />
             </div>

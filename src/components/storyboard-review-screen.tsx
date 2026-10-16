@@ -24,6 +24,7 @@ import {
 } from "./storyboard-model";
 import { StoryboardVideoView } from "./storyboard-video-view";
 import { useT, useUiText } from "./ui-text-provider";
+import { VideoPicker } from "./video-picker";
 import { FIT, type ViewState } from "./visual-review-model";
 
 // BL-184 stage 1 (FO-REQ-0024 §4 B2/B3, §5 steps 2-3): one storyboard's review -- the filmstrip (keyframes and the segment of video
@@ -586,6 +587,17 @@ export function StoryboardReviewScreen({ channelId, storyboardId, onClose, initi
             </button>
           ))}
         </span>
+        {/* BL-194 (ADR 0040): the channel's video this storyboard is for; its segments' jobs take it. */}
+        <VideoPicker
+          channelId={channelId}
+          value={sb.video ?? null}
+          disabled={busy}
+          onChange={async (video) => {
+            const response = await fetch(`${base}/video`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ videoNumber: video }) });
+            if (response.ok) void load(asked, true);
+            return response;
+          }}
+        />
         {offered ? (
           <span className="ml-auto flex gap-2">
             <button type="button" disabled={busy} onClick={() => setDialog("changes")} className="rounded-md border border-rose-700 px-3 py-1.5 text-sm text-rose-200 hover:bg-rose-950/50 disabled:opacity-40">
