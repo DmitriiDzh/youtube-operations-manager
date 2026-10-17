@@ -3,7 +3,7 @@ import { hostname } from "node:os";
 import { createAssetCatalogCore } from "@/lib/asset-catalog";
 import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
-import { appDataPaths, getLatestMediaGpuAvailabilityAt, getMediaSessionJobSummary, insertMediaCapacityAttempt, insertMediaGpuAvailabilitySnapshot, listMediaCapacityAttempts, listMediaGpuAvailabilityLog, setMediaCapacityAttemptHostCuda, summarizeMediaGpuAvailabilityLog, getMediaTemplateAdoptionsJson, getMediaTemplateSyncLastJson, listMediaControlEvents, setMediaTemplateAdoptionsJson, setMediaTemplateSyncLastJson } from "@/lib/db";
+import { appDataPaths, getLatestMediaGpuAvailabilityAt, listMediaSessionsNeedingCostSplit, setMediaJobCostShare, getMediaSessionJobSummary, insertMediaCapacityAttempt, insertMediaGpuAvailabilitySnapshot, listMediaCapacityAttempts, listMediaGpuAvailabilityLog, setMediaCapacityAttemptHostCuda, summarizeMediaGpuAvailabilityLog, getMediaTemplateAdoptionsJson, getMediaTemplateSyncLastJson, listMediaControlEvents, setMediaTemplateAdoptionsJson, setMediaTemplateSyncLastJson } from "@/lib/db";
 import { createLogicalPathsCore } from "@/lib/logical-paths";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
 import { comfyUiProxyBaseUrl, createComfyUiClient, createHuggingFaceClient, createRunpodApiClient, createRunpodS3Client } from "@/lib/media-gateway";
@@ -17,6 +17,7 @@ import { createTemplateRegistryReader } from "./adapters/template-registry-fs";
 import { createMediaControlEventSink, createMediaGenerationStore, createModelPullStore, createVolumeLockStore } from "./adapters/store";
 import { DomainError, MEDIA_SESSION_TERMINAL_STATUSES, type MediaCapacityAttempt, type MediaControlEventView, type MediaModelUsage } from "./contracts";
 import { createJobProgressRegistry } from "./job-progress";
+import { splitEndedSessionCosts } from "./cost-split";
 import { createMediaJobServices } from "./jobs";
 import { createMediaModelServices } from "./models";
 import { findLivePodByName } from "./pod-lifecycle";
@@ -414,6 +415,20 @@ function buildCore(jobScheduling: JobScheduling) {
     getSettingsSyncStatus: () => settingsSync.status(),
     peekSettingsSync: () => settingsSync.peek(),
     resolveSettingConflict,
+    /**
+     * BL-194 stage 2 (ADR 0041): splits every ended session's RunPod charge across its jobs (GPU seconds, pod start / idle time
+     * shared in proportion), old sessions included as estimates. Run by its own loop in `instrumentation.ts`.
+     */
+    splitEndedSessionCosts: () =>
+      splitEndedSessionCosts({
+        pending: async () =>
+          (await listMediaSessionsNeedingCostSplit()).map(({ session, jobs }) => ({
+            session: { id: session.id, usdCharged: session.usdCharged ?? null, costPerHr: session.costPerHr ?? null },
+            jobs: jobs.map((j) => ({ id: j.id, status: j.status, createdAt: j.createdAt, submittedAt: j.submittedAt ?? null, startedAt: j.startedAt ?? null, gpuFinishedAt: j.gpuFinishedAt ?? null, finishedAt: j.finishedAt ?? null })),
+          })),
+        store: (jobId, share) => setMediaJobCostShare(jobId, share),
+        log: (line) => console.warn(line),
+      }),
   };
 }
 
@@ -435,5 +450,7 @@ export type {
 } from "./contracts";
 export { DEFAULT_MEDIA_SETTINGS, NETWORK_VOLUME_USD_PER_GB_MONTH } from "./contracts";
 export { jobErrorCode, withJobErrorCode } from "./cuda-host";
+export { splitSessionCost } from "./cost-split";
+export type { CostShare, CostSplitJob } from "./cost-split";
 // BL-188: the shared jobs list carries a job's live progress in the shape the other devices may see (no `detail`).
 export { toSharedJobProgress } from "./cross-device";

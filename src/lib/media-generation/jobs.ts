@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { JobProgressRegistry } from "./job-progress";
-import type { ComfyUiClient, ProgressStream, RunpodS3Client } from "@/lib/media-gateway";
+import type { ComfyProgressEvent, ComfyUiClient, ProgressStream, RunpodS3Client } from "@/lib/media-gateway";
 import {
   DomainError,
   EXCHANGE_INPUT_PREFIX,
@@ -136,6 +136,11 @@ export type MediaJobStore = {
     /** BL-148: one session's unfinished jobs, running first, then the queue oldest first. */
     listOpenBySession?(sessionId: string, limit: number): Promise<StoredJobRow[]>;
     transition(id: string, from: readonly MediaJobStatus[], set: Partial<Omit<StoredJobRow, "id" | "status">> & { status: MediaJobStatus }): Promise<StoredJobRow | null>;
+    /**
+     * BL-194 stage 2 (ADR 0041): records when ComfyUI really started / finished the job's prompt (the first time of each kind only;
+     * absent = this store does not keep them).
+     */
+    recordTiming?(id: string, set: { startedAt?: Date; gpuFinishedAt?: Date }): Promise<void>;
   };
   ledger: {
     upsert(row: Omit<ExchangeLedgerRow, "remoteDeletedAt">): Promise<void>;
@@ -545,6 +550,7 @@ export function buildJobManifest(input: {
     submittedAt: job.submittedAt ? job.submittedAt.toISOString() : null,
     finishedAt: input.finishedAt.toISOString(),
     device: { deviceId: input.device.deviceId, hostname: input.device.hostname },
+    video: job.video ?? null,
     // `/` on every platform: the folder is read on the other OS too (Syncthing between the Mac and Windows).
     outputs: delivered.map((o) => ({
       path: relativePath(o.localPath).split(path.sep).join("/"),
@@ -1113,7 +1119,11 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
           registry.connected(jobId, deps.clock.now());
           settle();
         },
-        onEvent: (event) => registry.apply(jobId, event, deps.clock.now()),
+        onEvent: (event) => {
+          const at = deps.clock.now();
+          registry.apply(jobId, event, at);
+          recordTiming(jobId, event, at);
+        },
         onClosed: (reason) => {
           entry.stream = null;
           registry.unavailable(jobId, reason, deps.clock.now());
@@ -1135,6 +1145,24 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         }),
       ]);
     }
+  }
+
+  /**
+   * BL-194 stage 2 (ADR 0041): ComfyUI's own start and end of the job's prompt, stored on the job for the split of the session's
+   * charge. Only `execution_start` is a start (a re-sent `executing` after a late connect is not); the end is its success, error
+   * or interruption. Written once each, in the background: a failed write only makes that job's share an estimate.
+   */
+  function recordTiming(jobId: string, event: ComfyProgressEvent, at: Date): void {
+    const record = deps.store.jobs.recordTiming;
+    if (!record) return;
+    const set =
+      event.type === "execution_start"
+        ? { startedAt: at }
+        : event.type === "execution_success" || event.type === "execution_error" || event.type === "execution_interrupted"
+          ? { gpuFinishedAt: at }
+          : null;
+    if (!set) return;
+    void record(jobId, set).catch((error: unknown) => deps.log?.(`[media] job ${jobId}: GPU time not recorded (${error instanceof Error ? error.message : String(error)})`));
   }
 
   /** Called on every poll: opens the stream of a job picked up without one, or reopens a dropped one (throttled). */

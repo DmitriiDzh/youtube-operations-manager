@@ -266,6 +266,8 @@ export type GeminiJobManifest = {
   submittedAt: string | null;
   finishedAt: string;
   device: { deviceId: string | null; hostname: string | null };
+  /** BL-194 (ADR 0040/0041): the channel's video number this job is made for (`V49`), null = not linked; its cost is `costUsd`. */
+  video: string | null;
   outputs: Array<{ path: string; kind: "image" | "video"; mimeType: string; bytes: number; sha256: string; assetId: string | null; note: string | null }>;
 };
 

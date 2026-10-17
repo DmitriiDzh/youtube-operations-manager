@@ -493,6 +493,11 @@ export type MediaJobManifest = {
   submittedAt: string | null;
   finishedAt: string;
   device: { deviceId: string | null; hostname: string | null };
+  /**
+   * BL-194 (ADR 0040/0041): the channel's video number this job is made for (`V49`), null = not linked. Its share of the session's
+   * RunPod charge is known only once the session has ended, so it is not here: `Vn_cost.json` next to the release package has it.
+   */
+  video: string | null;
   /** Delivered files; `path` is relative to `media/<jobId>/`, always with `/` separators. */
   outputs: Array<{ path: string; kind: "image" | "audio" | "video" | "other"; comfyKind: string; nodeId: string; bytes: number; sha256: string; assetId: string | null; note: string | null }>;
   /** Outputs ComfyUI produced that are NOT in the folder, with the reason. */

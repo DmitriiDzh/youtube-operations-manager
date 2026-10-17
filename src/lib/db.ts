@@ -914,6 +914,17 @@ export const mediaJobs = sqliteTable(
     segmentId: text("segment_id"),
     // Schema v95 (BL-194 stage 1, ADR 0040): the channel's video number (`V49`) this job is made for, null = not linked.
     video: text("video"),
+    // Schema v95 (BL-194 stage 2, ADR 0041): when ComfyUI really started and finished this prompt (its websocket's execution_start and
+    // execution_success / _error / _interrupted; null = the event was not seen), and the job's share of its session's RunPod charge,
+    // computed when the session has ended: GPU seconds, the share in USD (the session's jobs add up to its charge exactly), the part
+    // of it that is pod start / idle time, whether the times were measured or estimated, and the session charge it was split from.
+    startedAt: integer("started_at", { mode: "timestamp_ms" }),
+    gpuFinishedAt: integer("gpu_finished_at", { mode: "timestamp_ms" }),
+    gpuSeconds: real("gpu_seconds"),
+    allocatedUsd: real("allocated_usd"),
+    overheadUsd: real("overhead_usd"),
+    allocationBasis: text("allocation_basis", { enum: ["measured", "estimated"] }),
+    allocationSessionUsd: real("allocation_session_usd"),
   },
   (table) => [index("media_jobs_session_idx").on(table.sessionId), index("media_jobs_status_idx").on(table.status), index("media_jobs_plan_idx").on(table.planId)]
 );
@@ -5121,7 +5132,7 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
   {
     version: 95,
     description:
-      "video_reservations; media_jobs/gemini_media_jobs/generation_plans .video -- BL-194 stage 1 (docs/roadmap/plans/VIDEO_COST_PLAN.md §2, ADR 0040): the video numbers this computer reserved, and the video a job or plan is made for. Additive, nullable, device-local",
+      "video_reservations; media_jobs/gemini_media_jobs/generation_plans .video; media_jobs started_at/gpu_finished_at/gpu_seconds/allocated_usd/overhead_usd/allocation_basis/allocation_session_usd -- BL-194 stages 1-2 (docs/roadmap/plans/VIDEO_COST_PLAN.md §2, ADR 0040/0041): the video numbers this computer reserved, the video a job or plan is made for, a RunPod job's real GPU times and its share of the session's charge. Additive, nullable, device-local",
     apply: async (client) => {
       await client.execute(`CREATE TABLE IF NOT EXISTS video_reservations (
         channel_id TEXT NOT NULL,
@@ -5136,6 +5147,14 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       for (const table of ["media_jobs", "gemini_media_jobs", "generation_plans"]) {
         try {
           await client.execute(`ALTER TABLE ${table} ADD COLUMN video TEXT`);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
+      // Stage 2 (ADR 0041): the real start / finish of a RunPod job and its share of the session's charge.
+      for (const column of ["started_at INTEGER", "gpu_finished_at INTEGER", "gpu_seconds REAL", "allocated_usd REAL", "overhead_usd REAL", "allocation_basis TEXT", "allocation_session_usd REAL"]) {
+        try {
+          await client.execute(`ALTER TABLE media_jobs ADD COLUMN ${column}`);
         } catch (error) {
           if (!isDuplicateColumnError(error)) throw error;
         }
@@ -14280,6 +14299,51 @@ export async function cancelVideoReservation(channelId: string, video: string, s
 /** The video numbers this computer's upload queue knows for a channel, with each upload's status. */
 export async function listPublishingUploadVideos(channelId: string, database: AppDb = db): Promise<Array<{ video: string; status: PublishingUploadStatus }>> {
   return database.select({ video: publishingUploads.video, status: publishingUploads.status }).from(publishingUploads).where(eq(publishingUploads.channelId, channelId));
+}
+
+// ---------------------------------------------------------------------------
+// BL-194 stage 2 (ADR 0041): a RunPod job's real GPU times and its share of the session's charge.
+// ---------------------------------------------------------------------------
+
+/** Records a time ComfyUI reported for a job -- only the first one of each kind (a later event never moves it). */
+export async function recordMediaJobTiming(id: string, set: { startedAt?: Date; gpuFinishedAt?: Date }, database: AppDb = db): Promise<void> {
+  if (set.startedAt) await database.update(mediaJobs).set({ startedAt: set.startedAt }).where(and(eq(mediaJobs.id, id), isNull(mediaJobs.startedAt)));
+  if (set.gpuFinishedAt) await database.update(mediaJobs).set({ gpuFinishedAt: set.gpuFinishedAt }).where(and(eq(mediaJobs.id, id), isNull(mediaJobs.gpuFinishedAt)));
+}
+
+/**
+ * The ended sessions whose charge is not (or no longer) split across their jobs: a job without a share, or a share computed from
+ * another charge than the session's current one. Each with every one of its jobs.
+ */
+export async function listMediaSessionsNeedingCostSplit(limit = 200, database: AppDb = db): Promise<Array<{ session: typeof mediaSessions.$inferSelect; jobs: StoredMediaJob[] }>> {
+  const pending = await database
+    .selectDistinct({ sessionId: mediaJobs.sessionId })
+    .from(mediaJobs)
+    .innerJoin(mediaSessions, eq(mediaSessions.id, mediaJobs.sessionId))
+    .where(
+      and(
+        inArray(mediaSessions.status, [...MEDIA_SESSION_TERMINAL_STATUSES]),
+        isNotNull(mediaSessions.usdCharged),
+        or(isNull(mediaJobs.allocationSessionUsd), sql`${mediaJobs.allocationSessionUsd} <> ${mediaSessions.usdCharged}`)
+      )
+    )
+    .limit(limit);
+  const out: Array<{ session: typeof mediaSessions.$inferSelect; jobs: StoredMediaJob[] }> = [];
+  for (const { sessionId } of pending) {
+    const [session] = await database.select().from(mediaSessions).where(eq(mediaSessions.id, sessionId));
+    if (!session) continue;
+    out.push({ session, jobs: await database.select().from(mediaJobs).where(eq(mediaJobs.sessionId, sessionId)) });
+  }
+  return out;
+}
+
+/** Stores one job's share of its session's charge. */
+export async function setMediaJobCostShare(
+  id: string,
+  set: { gpuSeconds: number; allocatedUsd: number; overheadUsd: number | null; allocationBasis: "measured" | "estimated"; allocationSessionUsd: number },
+  database: AppDb = db
+): Promise<void> {
+  await database.update(mediaJobs).set(set).where(eq(mediaJobs.id, id));
 }
 
 /** The video a plan of this computer is made for, with its channel; null when there is no such plan. */

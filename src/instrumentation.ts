@@ -425,6 +425,22 @@ async function startServerSession() {
   };
   setTimeout(() => void mediaJobsShareLoop(), 40_000).unref();
 
+  // BL-194 (VIDEO_COST_PLAN.md §2 stages 2-3, ADR 0041): the cost of each video, in its own loop (AGENTS.md §M: a broken cost
+  // report never delays the media modules or the uploads). Stage 2: every ended RunPod session's charge split across its jobs
+  // (old sessions too, as estimates). It writes job rows, so it waits while an import / migration holds the lock or in recovery mode.
+  const VIDEO_COSTS_TICK_MS = 60_000;
+  const videoCostsLoop = async () => {
+    try {
+      await assertDeviceAvailableForMutation(rawSqlClient);
+      await media.splitEndedSessionCosts();
+    } catch (error) {
+      const paused = error instanceof Error && (error.name === "OperationLockError" || error.name === "RecoveryModeError");
+      if (!paused) console.warn(`[video-costs] RunPod session costs not split: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    setTimeout(() => void videoCostsLoop(), VIDEO_COSTS_TICK_MS).unref();
+  };
+  setTimeout(() => void videoCostsLoop(), 50_000).unref();
+
   // BL-182 stage 2 (PUBLISHING_PLAN.md §2 stage 2 item 5, ADR 0037): the upload queue, in its own loop (AGENTS.md §M). With nothing
   // queued or sent a tick only reads the local table: no YouTube call. Each write checks Live writes right before it; while they are
   // off an upload pauses. Never during a snapshot import/migration or in recovery mode (it writes rows and the upload record).

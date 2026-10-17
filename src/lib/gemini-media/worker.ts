@@ -152,6 +152,7 @@ export function createGeminiWorker(deps: GeminiMediaDeps) {
       submittedAt: job.submittedAt ? job.submittedAt.toISOString() : null,
       finishedAt: finishedAt.toISOString(),
       device: await deps.device(),
+      video: job.video ?? null,
       outputs: outputs.map((o) => ({ path: o.path, kind: o.kind, mimeType: o.mimeType, bytes: o.bytes, sha256: o.sha256, assetId: o.assetId, note: o.note })),
     };
     await deps.files.writeManifest(path.join(dir, GEMINI_MANIFEST_FILE), manifest);

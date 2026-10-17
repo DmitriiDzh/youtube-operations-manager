@@ -16,6 +16,7 @@ import {
   listOpenMediaJobsForSession,
   markMediaExchangeFileRemoteDeleted,
   transitionMediaJob,
+  recordMediaJobTiming,
   updateMediaWorkflowTemplate,
   upsertFactoryMediaWorkflowTemplate,
   upsertMediaExchangeFile,
@@ -84,6 +85,7 @@ export function createMediaJobStore(): MediaJobStore {
       countBySession: (sessionId) => countMediaJobsForSessionByStatus(sessionId),
       listOpenBySession: (sessionId, limit) => listOpenMediaJobsForSession(sessionId, limit).then((rows) => rows.map(jobFromDb)),
       transition: (id, from, set) => transitionMediaJob(id, from, set).then((r) => (r ? jobFromDb(r) : null)),
+      recordTiming: (id, set) => recordMediaJobTiming(id, set),
     },
     ledger: {
       upsert: (row) => upsertMediaExchangeFile(row),
