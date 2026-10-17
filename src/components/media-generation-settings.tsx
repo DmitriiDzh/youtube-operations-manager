@@ -26,6 +26,7 @@ import {
 import type { PoolDevice, PoolJob, PoolView } from "@/lib/media-jobs-pool/contracts";
 import type { CommandView } from "@/lib/media-jobs-pool/commands";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
+import { ActionButton, BusyOverlay, useBusyAction } from "./busy-feedback";
 import { ConfirmDialog } from "./confirm-dialog";
 import { MEDIA_JOBS_CHANGED_EVENT } from "./gemini-media-create";
 import { useChannelNames } from "./use-channel-names";
@@ -1321,6 +1322,9 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
   // BL-135: on by default -- a session you request stops by itself a minute after its last job.
   const [busyId, setBusyId] = useState<string | null>(null);
   const [requesting, setRequesting] = useState(false);
+  // BL-195 (UI_FEEDBACK_CLARITY_PLAN.md stage C): approving rents a pod (money), stopping and rejecting end one -- each runs
+  // behind the blocking window; asking for a session only turns its button into "working".
+  const busyAction = useBusyAction();
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState<{ sessionId: string; action: "approve" | "stop" } | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -1431,18 +1435,20 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
     setConfirming(null);
     setBusyId(target.sessionId);
     setError(null);
-    try {
-      const body = action === "reject" ? { reason: "rejected by operator" } : action === "stop" ? { reason: "stopped by operator" } : undefined;
-      await requestJson(`/api/media-generation/sessions/${encodeURIComponent(target.sessionId)}/${action}`, {
-        method: "POST",
-        ...(body ? { headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {}),
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t(action === "approve" ? "media.sessions.approveFailed" : action === "reject" ? "media.sessions.rejectFailed" : "media.sessions.stopFailed"));
-    } finally {
-      setBusyId(null);
-      await fetchAll();
-    }
+    await busyAction.run(t(action === "approve" ? "media.sessions.busy.approving" : action === "reject" ? "media.sessions.busy.rejecting" : "media.sessions.busy.stopping"), async () => {
+      try {
+        const body = action === "reject" ? { reason: "rejected by operator" } : action === "stop" ? { reason: "stopped by operator" } : undefined;
+        await requestJson(`/api/media-generation/sessions/${encodeURIComponent(target.sessionId)}/${action}`, {
+          method: "POST",
+          ...(body ? { headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {}),
+        });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : t(action === "approve" ? "media.sessions.approveFailed" : action === "reject" ? "media.sessions.rejectFailed" : "media.sessions.stopFailed"));
+      } finally {
+        setBusyId(null);
+        await fetchAll();
+      }
+    });
   }
 
   const activeCount = limits?.activeSessionCount ?? 0;
@@ -1631,9 +1637,9 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
               <input type="text" inputMode="decimal" value={maxUsd} onChange={(e) => setMaxUsd(e.target.value)} className={inputClass} placeholder={t("media.sessions.maxUsdPlaceholder")} />
             </label>
             <div className="flex items-end">
-              <button type="button" onClick={request} disabled={requesting} className={secondaryButton}>
-                {requesting ? t("media.sessions.requesting") : t("media.sessions.request")}
-              </button>
+              <ActionButton busy={requesting} busyLabel={t("media.sessions.requesting")} onClick={request} className={secondaryButton}>
+                {t("media.sessions.request")}
+              </ActionButton>
             </div>
           </div>
         )}
@@ -1673,6 +1679,7 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
         </div>
       )}
 
+      <BusyOverlay state={busyAction.overlay} />
       {error && <p className="text-xs text-red-400">{error}</p>}
     </Card>
   );

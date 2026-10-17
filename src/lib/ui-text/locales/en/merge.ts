@@ -107,6 +107,8 @@ export const merge = {
   "handoff.import.busy": "Importing…",
   "handoff.import.button": "Import",
 
+  "divergence.busy.keepMine": "Keeping this computer's data…",
+  "divergence.busy.takeTheirs": "Taking the other computer's data…",
   "divergence.title": "Data differs between the two computers",
   "divergence.intro":
     "This is the snapshot sync of Batches, the audit trail, Research and Decisions — whole copies, one history. Since the two computers last agreed, both changed this data, so one version has to be chosen. Change Sets, profiles and AI connections are not affected (their conflicts are listed below).",

@@ -171,6 +171,7 @@ export function PublishingNewPackage({ channelId, onClose, onSaved }: { channelI
       confirmLabel={confirmReplace ? t("publishingNewPackage.replaceConfirm") : t("publishingNewPackage.save")}
       confirmVariant={confirmReplace ? "danger" : "default"}
       confirmDisabled={!canSave}
+      confirmBusyLabel={saving ? t("common.saving") : null}
       onCancel={confirmReplace ? () => setConfirmReplace(false) : onClose}
       onConfirm={() => void save()}
     >

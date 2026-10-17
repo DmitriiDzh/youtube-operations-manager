@@ -310,6 +310,7 @@ export const content: Record<keyof typeof en, string> = {
   "publishingApproval.tagsSource.package": "из пакета",
   "publishingApproval.tagsSource.channel": "общие теги канала (в пакете тегов нет)",
   "publishingApproval.off": "нет",
+  "publishingApproval.busy.queueing": "Ставлю загрузки в очередь…",
   "publishingApproval.failed": "Не удалось поставить загрузки в очередь.",
   "publishingUploads.title": "Загрузки",
   "publishingUploads.empty": "Загрузок с этого компьютера пока не было.",
