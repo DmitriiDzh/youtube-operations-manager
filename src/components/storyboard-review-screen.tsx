@@ -6,6 +6,7 @@ import type { KeyframeFileStatus, StoryboardDetail, VersionDiff } from "@/lib/st
 import { changedPropCells } from "@/lib/storyboards/model";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { errorText } from "@/lib/ui-text";
+import { ActionButton, BusyOverlay, useBusyAction } from "./busy-feedback";
 import { ConfirmDialog } from "./confirm-dialog";
 import { MediaImageViewer, type ViewerPin } from "./media-image-viewer";
 import {
@@ -62,7 +63,12 @@ export function StoryboardReviewScreen({ channelId, storyboardId, onClose, initi
   const [draft, setDraft] = useState("");
   const [pendingPin, setPendingPin] = useState<{ x: number; y: number; r: number } | null>(null);
   const [replies, setReplies] = useState<Record<string, string>>({});
-  const [busy, setBusy] = useState(false);
+  // BL-195 (UI_FEEDBACK_CLARITY_PLAN.md stage B): a decision or a version switch runs behind the blocking window; a comment only
+  // turns its own button into "working" (`commenting` = which button).
+  const busyAction = useBusyAction();
+  const { run: runBusy, hold, release } = busyAction;
+  const [commenting, setCommenting] = useState<string | null>(null);
+  const busy = busyAction.busy || commenting !== null;
   const [dialog, setDialog] = useState<"approve" | "changes" | null>(null);
   const [note, setNote] = useState("");
   // BL-184 stage 3 (B5): «Кадры» -- the storyboard's review; «Видео» -- the takes of its segments, the joints, the assembled loop.
@@ -89,10 +95,11 @@ export function StoryboardReviewScreen({ channelId, storyboardId, onClose, initi
   );
 
   useEffect(() => {
-    void load(asked);
+    // A version switch holds the window until that version is shown.
+    void load(asked).finally(release);
     const id = setInterval(() => void load(asked), POLL_MS);
     return () => clearInterval(id);
-  }, [asked, load]);
+  }, [asked, load, release]);
 
   const sb = data?.storyboard ?? null;
   const version: StoryboardVersion | null = useMemo(() => (sb && data ? (sb.versions.find((v) => v.number === data.version) ?? null) : null), [sb, data]);
@@ -118,19 +125,26 @@ export function StoryboardReviewScreen({ channelId, storyboardId, onClose, initi
     setView(FIT);
   };
 
-  async function act(run: () => Promise<unknown>) {
-    setBusy(true);
+  /** `how`: the blocking window's text, or the comment button that turns into "working". */
+  async function act(run: () => Promise<unknown>, how: { window: string } | { button: string }) {
+    const go = async () => {
+      try {
+        await run();
+        await load(asked);
+        return true;
+      } catch (err) {
+        setError(err instanceof Error ? err.message : t("storyboards.actionFailed"));
+        // A refusal often means the storyboard moved on (a newer version, a comment gone): show what it is now.
+        void load(asked, true);
+        return false;
+      }
+    };
+    if ("window" in how) return runBusy(how.window, go);
+    setCommenting(how.button);
     try {
-      await run();
-      await load(asked);
-      return true;
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t("storyboards.actionFailed"));
-      // A refusal often means the storyboard moved on (a newer version, a comment gone): show what it is now.
-      void load(asked, true);
-      return false;
+      return await go();
     } finally {
-      setBusy(false);
+      setCommenting(null);
     }
   }
 
@@ -180,7 +194,7 @@ export function StoryboardReviewScreen({ channelId, storyboardId, onClose, initi
   async function addComment() {
     const text = draft.trim();
     if (!text) return;
-    const ok = await act(() => send(t, `${base}/comments`, "POST", { versionNumber: data!.version, target: selectionTarget(shownSelection, pendingPin), text }));
+    const ok = await act(() => send(t, `${base}/comments`, "POST", { versionNumber: data!.version, target: selectionTarget(shownSelection, pendingPin), text }), { button: "add" });
     if (ok) {
       setDraft("");
       setPendingPin(null);
@@ -434,24 +448,25 @@ export function StoryboardReviewScreen({ channelId, storyboardId, onClose, initi
           aria-label={t("storyboards.reply.placeholder")}
           className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm text-zinc-100"
         />
-        <button
-          type="button"
+        <ActionButton
+          busy={commenting === `reply:${c.id}`}
+          busyLabel={t("storyboards.busy.sending")}
           disabled={busy || !(replies[c.id] ?? "").trim()}
           onClick={() =>
-            void act(() => send(t, `${base}/comments/${encodeURIComponent(c.id)}`, "POST", { text: (replies[c.id] ?? "").trim() })).then((ok) => ok && setReplies((all) => ({ ...all, [c.id]: "" })))
+            void act(() => send(t, `${base}/comments/${encodeURIComponent(c.id)}`, "POST", { text: (replies[c.id] ?? "").trim() }), { button: `reply:${c.id}` }).then((ok) => ok && setReplies((all) => ({ ...all, [c.id]: "" })))
           }
           className="rounded-md bg-zinc-700 px-2.5 py-1 text-xs text-white hover:bg-zinc-600 disabled:opacity-40"
         >
           {t("storyboards.reply.send")}
-        </button>
-        <button
-          type="button"
+        </ActionButton>
+        <ActionButton
+          busy={commenting === `state:${c.id}`}
           disabled={busy}
-          onClick={() => void act(() => send(t, `${base}/comments/${encodeURIComponent(c.id)}`, "PATCH", { state: c.state === "open" ? "resolved" : "open" }))}
+          onClick={() => void act(() => send(t, `${base}/comments/${encodeURIComponent(c.id)}`, "PATCH", { state: c.state === "open" ? "resolved" : "open" }), { button: `state:${c.id}` })}
           className="rounded-md px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
         >
           {t(c.state === "open" ? "storyboards.comment.resolve" : "storyboards.comment.reopen")}
-        </button>
+        </ActionButton>
       </div>
     </li>
   );
@@ -486,9 +501,9 @@ export function StoryboardReviewScreen({ channelId, storyboardId, onClose, initi
                 </button>
               </span>
             ) : null}
-            <button type="button" disabled={busy || !draft.trim()} onClick={() => void addComment()} className="ml-auto rounded-md bg-indigo-600 px-3 py-1 font-medium text-white hover:bg-indigo-500 disabled:opacity-40">
+            <ActionButton busy={commenting === "add"} busyLabel={t("storyboards.busy.sending")} disabled={busy || !draft.trim()} onClick={() => void addComment()} className="ml-auto rounded-md bg-indigo-600 px-3 py-1 font-medium text-white hover:bg-indigo-500 disabled:opacity-40">
               {t("storyboards.comment.add")}
-            </button>
+            </ActionButton>
           </div>
         </div>
       ) : (
@@ -578,7 +593,9 @@ export function StoryboardReviewScreen({ channelId, storyboardId, onClose, initi
               type="button"
               aria-pressed={v.number === data.version}
               onClick={() => {
-                setAsked(v.number === sb.latestVersion ? null : v.number);
+                const next = v.number === sb.latestVersion ? null : v.number;
+                if (v.number !== data.version) hold(t("storyboards.busy.version", { number: v.number }));
+                setAsked(next);
                 setPendingPin(null);
               }}
               className={`rounded-md px-2 py-0.5 text-xs ${v.number === data.version ? "bg-zinc-700 text-white" : "text-zinc-300 hover:bg-zinc-800"}`}
@@ -660,7 +677,7 @@ export function StoryboardReviewScreen({ channelId, storyboardId, onClose, initi
           onCancel={() => setDialog(null)}
           onConfirm={() => {
             setDialog(null);
-            void act(() => send(t, `${base}/decisions`, "POST", { kind: "approved", versionNumber: data.version }));
+            void act(() => send(t, `${base}/decisions`, "POST", { kind: "approved", versionNumber: data.version }), { window: t("storyboards.busy.approving") });
           }}
         >
           {openOnVersion > 0 ? <p className="text-sm text-amber-200">{t("storyboards.decide.openWarning", { count: openOnVersion })}</p> : null}
@@ -677,7 +694,7 @@ export function StoryboardReviewScreen({ channelId, storyboardId, onClose, initi
           onConfirm={() => {
             setDialog(null);
             const text = note.trim();
-            void act(() => send(t, `${base}/decisions`, "POST", { kind: "changes_requested", versionNumber: data.version, note: text || null })).then((ok) => ok && setNote(""));
+            void act(() => send(t, `${base}/decisions`, "POST", { kind: "changes_requested", versionNumber: data.version, note: text || null }), { window: t("storyboards.busy.requestingChanges") }).then((ok) => ok && setNote(""));
           }}
         >
           <textarea
@@ -690,6 +707,7 @@ export function StoryboardReviewScreen({ channelId, storyboardId, onClose, initi
           />
         </ConfirmDialog>
       ) : null}
+      <BusyOverlay state={busyAction.overlay} />
     </div>
   );
 }

@@ -1,6 +1,11 @@
 // BL-184 (FO-REQ-0024): Media → «Раскадровка» -- storyboards the owner reviews and approves before any video is made from them.
 export const storyboards = {
   "storyboards.loadFailed": "Could not load the storyboards.",
+  "storyboards.busy.sending": "Sending…",
+  "storyboards.busy.version": "Opening version {number}…",
+  "storyboards.busy.approving": "Approving the version…",
+  "storyboards.busy.requestingChanges": "Sending the change request…",
+  "storyboards.busy.renderDecision": "Saving your verdict on the render…",
   "storyboards.actionFailed": "That did not work.",
   "storyboards.noChannel": "Choose a channel to see its storyboards.",
   "storyboards.title": "Storyboards",

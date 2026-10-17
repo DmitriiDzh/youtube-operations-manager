@@ -5,6 +5,7 @@ import type { StoryboardVersion } from "@/lib/sync-gateway";
 import type { RenderState, RenderView, StoryboardDetail } from "@/lib/storyboards";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { errorText } from "@/lib/ui-text";
+import { BusyOverlay, useBusyAction } from "./busy-feedback";
 import { ConfirmDialog } from "./confirm-dialog";
 import { MediaVideoPlayer } from "./media-video-player";
 import { rendersOfVersion } from "./storyboard-model";
@@ -47,7 +48,9 @@ function RenderCard({ channelId, storyboardId, render, onDecided }: { channelId:
   const [status, setStatus] = useState<FileStatus | null>(null);
   const [dialog, setDialog] = useState<"approve" | "changes" | null>(null);
   const [note, setNote] = useState("");
-  const [busy, setBusy] = useState(false);
+  // BL-195 (UI_FEEDBACK_CLARITY_PLAN.md stage B): the verdict on the render runs behind the blocking window.
+  const busyAction = useBusyAction();
+  const busy = busyAction.busy;
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -66,19 +69,18 @@ function RenderCard({ channelId, storyboardId, render, onDecided }: { channelId:
   }, [base, render.sha256]);
 
   async function decide(kind: "approved" | "changes_requested", text: string | null) {
-    setBusy(true);
-    try {
-      const response = await fetch(`${base}/decision`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind, note: text }) });
-      const body = await response.json().catch(() => null);
-      if (!response.ok) throw new Error(errorText(t, body, t("storyboards.actionFailed"), { showErrorField: false }));
-      setError(null);
-      setNote("");
-      onDecided();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t("storyboards.actionFailed"));
-    } finally {
-      setBusy(false);
-    }
+    await busyAction.run(t("storyboards.busy.renderDecision"), async () => {
+      try {
+        const response = await fetch(`${base}/decision`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind, note: text }) });
+        const body = await response.json().catch(() => null);
+        if (!response.ok) throw new Error(errorText(t, body, t("storyboards.actionFailed"), { showErrorField: false }));
+        setError(null);
+        setNote("");
+        onDecided();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : t("storyboards.actionFailed"));
+      }
+    });
   }
 
   const device = render.device ?? t("storyboards.video.anotherComputer");
@@ -156,6 +158,7 @@ function RenderCard({ channelId, storyboardId, render, onDecided }: { channelId:
           />
         </ConfirmDialog>
       ) : null}
+      <BusyOverlay state={busyAction.overlay} />
     </article>
   );
 }
