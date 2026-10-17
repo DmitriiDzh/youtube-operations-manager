@@ -915,6 +915,12 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
     - Срабатывает раз за вечер и только если API ещё не вернул вчерашний день. Запрашивает 3 дня.
 
 
+### 2.9ar Интерфейс всегда показывает, что происходит (BL-195, `docs/roadmap/plans/UI_FEEDBACK_CLARITY_PLAN.md`) — **IMPLEMENTED на `feature/ui-feedback-clarity`, не влито в `dev`**
+
+- **Модуль `src/components/busy-feedback/`** — единственный владелец обратной связи коротких действий: `useBusyAction` (`run`/`hold`/`release`) + `BusyOverlay` (окно через 300 мс, минимум 500 мс, перехват клавиш), `ActionButton` (крутилка → «✓»), `StatusNotice` (успех скрывается через 4 с, ошибка — до ×), `SkeletonTableRows`/`SkeletonLines`. Долгие отслеживаемые операции остаются в `operation-progress`.
+- **Где используется:** проверка аудио, раскадровки и рендеры; трансляции; выбор при расхождении синхронизации; сессии подов; создание задания Gemini; постановка загрузок в очередь; `ConfirmDialog.confirmBusyLabel` (сохранение пакета).
+- **Центр фоновых задач:** `GET /api/activity` (сессия, активный канал) — сводка `src/lib/activity-summary/` (чистая, источники подключает маршрут: операции, медиа-задания всех компьютеров, загрузки, трансляции; отказ источника → `unavailable`); `activity-indicator.tsx` в шапке, опрос раз в 10 с, пока вкладка видна.
+
 ---
 
 ## 3. Где вносить изменения
