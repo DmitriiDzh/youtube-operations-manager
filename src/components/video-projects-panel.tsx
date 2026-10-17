@@ -7,6 +7,8 @@ import { ConfirmDialog } from "./confirm-dialog";
 import { LoadingIndicator } from "./operation-progress";
 import { useUiText } from "./ui-text-provider";
 import { costUsd, VideoCostDialog, type CostTotalsView } from "./video-cost-dialog";
+import { VideoCostsBackfill } from "./video-costs-backfill";
+import { FeatureErrorBoundary } from "./feature-error-boundary";
 
 // BL-194 stage 1 (docs/roadmap/plans/VIDEO_COST_PLAN.md §2 "UI", ADR 0040): Content → «Публикация» starts with the channel's videos
 // in work. «Новый ролик» reserves the next number (with an optional working title); a number two computers took at once is shown
@@ -215,6 +217,12 @@ export function VideoProjectsPanel({ channelId, visible }: { channelId: string |
         </button>
       )}
 
+      {list && (
+        // BL-194 stage 4: older runs, in their own boundary (a failure there never hides the list).
+        <FeatureErrorBoundary label={t("videoCostsBackfill.title")}>
+          <VideoCostsBackfill channelId={channelId} videos={videos} onChanged={() => void loadCosts()} />
+        </FeatureErrorBoundary>
+      )}
       {costOf && <VideoCostDialog channelId={channelId} video={costOf.video} workingTitle={costOf.workingTitle} onClose={() => setCostOf(null)} />}
       {creating && list?.nextVideo && (
         <ConfirmDialog

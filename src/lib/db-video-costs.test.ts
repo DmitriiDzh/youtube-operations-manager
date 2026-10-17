@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { createLibsqlClient } from "@/lib/libsql-client";
 import { drizzle } from "drizzle-orm/libsql";
-import { getMediaJobById, initializeDatabaseSchema, insertMediaJob, insertMediaSession, listMediaSessionsNeedingCostSplit, recordMediaJobTiming, setMediaJobCostShare, type AppDb } from "@/lib/db";
+import { countUnlinkedJobsByOrigin, getMediaJobById, initializeDatabaseSchema, insertGeminiMediaJob, insertMediaJob, insertMediaSession, linkUnlinkedJobsToVideo, listMediaSessionsNeedingCostSplit, recordMediaJobTiming, setMediaJobCostShare, type AppDb } from "@/lib/db";
 
 // BL-194 stage 2 (VIDEO_COST_PLAN.md §2 stage 2, ADR 0041) on real libSQL, a throwaway database file: a job keeps the FIRST GPU
 // start and finish ComfyUI reported, and an ended session is listed for the split until each of its jobs carries a share computed
@@ -66,5 +66,32 @@ test("BL-194: an ended session is listed for the split until every job has a sha
     // A later correction of the session's charge (a pod found billing after the session ended) asks for a new split.
     await database.$client.execute("UPDATE media_sessions SET usd_charged = 1.25 WHERE id = 'ended'");
     assert.deepEqual((await listMediaSessionsNeedingCostSplit(200, database)).map((p) => p.session.id), ["ended"]);
+  });
+});
+
+// BL-194 stage 4 (criterion 7): runs not linked to a video are counted per storyboard and per plan, and only those are linked when the
+// owner confirms -- a job already linked to another video, or of another channel, is never moved.
+test("BL-194: older runs are counted per storyboard and plan, and linking moves only this channel's unlinked jobs", async () => {
+  await withDb(async (database) => {
+    const add = (id: string, over: Record<string, unknown>) => insertMediaJob({ ...job(id, "s1"), ...over }, database);
+    await add("sb-1", { storyboardId: "sb_bar" });
+    await add("sb-2", { storyboardId: "sb_bar", video: "V12" });
+    await add("plan-1", { planId: "plan-1" });
+    await add("other", { storyboardId: "sb_bar", channelId: "UC2" });
+    const at = new Date("2026-10-17T10:00:00Z");
+    await insertGeminiMediaJob({ jobId: "g1", channelId: "UC1", requestHash: "h", kind: "video", model: "m", prompt: "p", paramsJson: "{}", inputsJson: "[]", status: "done", estimateUsd: 0.5, attempts: 1, createdBy: "factory", createdAt: at, updatedAt: at, storyboardId: "sb_bar" }, database);
+    assert.deepEqual(
+      (await countUnlinkedJobsByOrigin("UC1", database)).sort((a, b) => a.id.localeCompare(b.id)),
+      [
+        { kind: "plan", id: "plan-1", runs: 1 },
+        { kind: "storyboard", id: "sb_bar", runs: 2 },
+      ]
+    );
+    assert.equal(await linkUnlinkedJobsToVideo("UC1", { storyboardId: "sb_bar" }, "V39", database), 2);
+    assert.equal((await getMediaJobById("sb-1", database))?.video, "V39");
+    assert.equal((await getMediaJobById("sb-2", database))?.video, "V12", "a job linked to another video stays");
+    assert.equal((await getMediaJobById("other", database))?.video, null, "another channel's job stays");
+    assert.equal(await linkUnlinkedJobsToVideo("UC1", { planId: "plan-1" }, "V40", database), 1);
+    assert.deepEqual(await countUnlinkedJobsByOrigin("UC1", database), []);
   });
 });

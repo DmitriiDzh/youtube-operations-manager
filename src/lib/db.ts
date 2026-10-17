@@ -14455,6 +14455,54 @@ export async function listVideoCostGeminiJobs(database: AppDb = db): Promise<Vid
   return rows.map((r) => ({ ...r, costUsd: r.costUsd ?? null, costBasis: r.costBasis ?? null, video: r.video ?? null, storyboardId: r.storyboardId ?? null, storyboardVersion: r.storyboardVersion ?? null, segmentId: r.segmentId ?? null, finishedAt: r.finishedAt ?? null }));
 }
 
+// ---------------------------------------------------------------------------
+// BL-194 stage 4 (ADR 0041): older runs -- this computer's jobs not linked to a video, by storyboard and by plan, and linking them
+// once the owner confirmed the storyboard's or plan's video.
+// ---------------------------------------------------------------------------
+
+/** This computer's jobs of a channel with no video, counted per storyboard (RunPod and Gemini) and per plan (RunPod, no storyboard). */
+export async function countUnlinkedJobsByOrigin(channelId: string, database: AppDb = db): Promise<Array<{ kind: "storyboard" | "plan"; id: string; runs: number }>> {
+  const runpodByStoryboard = await database
+    .select({ id: mediaJobs.storyboardId, n: sql<number>`count(*)` })
+    .from(mediaJobs)
+    .where(and(eq(mediaJobs.channelId, channelId), isNull(mediaJobs.video), isNotNull(mediaJobs.storyboardId)))
+    .groupBy(mediaJobs.storyboardId);
+  const geminiByStoryboard = await database
+    .select({ id: geminiMediaJobs.storyboardId, n: sql<number>`count(*)` })
+    .from(geminiMediaJobs)
+    .where(and(eq(geminiMediaJobs.channelId, channelId), isNull(geminiMediaJobs.video), isNotNull(geminiMediaJobs.storyboardId)))
+    .groupBy(geminiMediaJobs.storyboardId);
+  const byPlan = await database
+    .select({ id: mediaJobs.planId, n: sql<number>`count(*)` })
+    .from(mediaJobs)
+    .where(and(eq(mediaJobs.channelId, channelId), isNull(mediaJobs.video), isNull(mediaJobs.storyboardId), isNotNull(mediaJobs.planId)))
+    .groupBy(mediaJobs.planId);
+  const storyboards = new Map<string, number>();
+  for (const r of [...runpodByStoryboard, ...geminiByStoryboard]) if (r.id) storyboards.set(r.id, (storyboards.get(r.id) ?? 0) + Number(r.n));
+  return [
+    ...[...storyboards.entries()].map(([id, runs]) => ({ kind: "storyboard" as const, id, runs })),
+    ...byPlan.filter((r) => r.id).map((r) => ({ kind: "plan" as const, id: r.id!, runs: Number(r.n) })),
+  ];
+}
+
+/** Links this computer's unlinked jobs of a storyboard (RunPod and Gemini) or of a plan (RunPod jobs without a storyboard). */
+export async function linkUnlinkedJobsToVideo(channelId: string, target: { storyboardId: string } | { planId: string }, video: string, database: AppDb = db): Promise<number> {
+  if ("storyboardId" in target) {
+    const a = await database.update(mediaJobs).set({ video }).where(and(eq(mediaJobs.channelId, channelId), isNull(mediaJobs.video), eq(mediaJobs.storyboardId, target.storyboardId))).returning({ id: mediaJobs.id });
+    const b = await database.update(geminiMediaJobs).set({ video }).where(and(eq(geminiMediaJobs.channelId, channelId), isNull(geminiMediaJobs.video), eq(geminiMediaJobs.storyboardId, target.storyboardId))).returning({ id: geminiMediaJobs.jobId });
+    return a.length + b.length;
+  }
+  const rows = await database.update(mediaJobs).set({ video }).where(and(eq(mediaJobs.channelId, channelId), isNull(mediaJobs.video), isNull(mediaJobs.storyboardId), eq(mediaJobs.planId, target.planId))).returning({ id: mediaJobs.id });
+  return rows.length;
+}
+
+/** Plans of this computer by id (title, channel, video). */
+export async function listGenerationPlanVideos(ids: string[], database: AppDb = db): Promise<Array<{ id: string; channelId: string; title: string; video: string | null }>> {
+  if (ids.length === 0) return [];
+  const rows = await database.select({ id: generationPlans.id, channelId: generationPlans.channelId, title: generationPlans.title, video: generationPlans.video }).from(generationPlans).where(inArray(generationPlans.id, ids));
+  return rows.map((r) => ({ ...r, video: r.video ?? null }));
+}
+
 /** The video a plan of this computer is made for, with its channel; null when there is no such plan. */
 export async function getGenerationPlanVideo(planId: string, database: AppDb = db): Promise<{ channelId: string; video: string | null } | null> {
   const [row] = await database.select({ channelId: generationPlans.channelId, video: generationPlans.video }).from(generationPlans).where(eq(generationPlans.id, planId));
