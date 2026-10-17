@@ -32,8 +32,10 @@ import { useAppChannel } from "./app-channel";
 import { integratedLoudness, LOUDNESS_TARGET_LUFS, matchedVolume } from "./loudness";
 import { MediaReviewPlayer, formatPlayerTime, type FrequencyMark, type ReviewMarker, type ReviewPlayerHandle } from "./media-review-player";
 import { ToggleSwitch } from "./toggle-switch";
+import { BlockingDialog } from "./blocking-dialog";
 import { ConfirmDialog } from "./confirm-dialog";
 import { InfoTooltip } from "./info-tooltip";
+import { Spinner } from "./operation-progress/spinner";
 import { Popover } from "./popover";
 import { formatDisplayDate, formatDisplayDateTime } from "@/lib/shared-formatting";
 import type { Translate, UiTextKey } from "@/lib/ui-text";
@@ -569,6 +571,16 @@ export function countsReviewTime(state: { visible: boolean; idleMs: number; play
 }
 
 /** An attempt's key on the screen: its item and attempt. */
+/** BL-173: a re-check plays from its own route (the revised file, or the attempt's current one). */
+function playedSrc(base: string, entry: Pick<ScreenEntry, "itemKey" | "attemptRef" | "recheck">): string {
+  return entry.recheck
+    ? `${base}/recheck-audition?recheckId=${encodeURIComponent(entry.recheck.recheckId)}`
+    : `${base}/audition?itemKey=${encodeURIComponent(entry.itemKey)}&attemptRef=${encodeURIComponent(entry.attemptRef)}`;
+}
+
+/** Owner, msg 2916: the longest the screen waits, blocked, for the next track's waveform after a verdict. */
+const AWAIT_TRACK_MAX_MS = 20_000;
+
 function entryKey(e: { itemKey: string; attemptRef: string }): string {
   return `${e.itemKey}\u0000${e.attemptRef}`;
 }
@@ -656,6 +668,9 @@ export function PlanReviewScreen({
   const [onB, setOnB] = useState(false);
   const referenceAudio = useRef<HTMLAudioElement | null>(null);
   const [busy, setBusy] = useState(false);
+  // Owner, Telegram msg 2916: after a verdict the next track is loaded behind a blurred screen and a loading window.
+  const [awaitingSrc, setAwaitingSrc] = useState<string | null>(null);
+  const blocking = busy || awaitingSrc !== null;
   const [message, setMessage] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
   // BL-162: "copied" after the attempt's id went to the clipboard.
   const [copied, setCopied] = useState(false);
@@ -859,6 +874,14 @@ export function PlanReviewScreen({
    * BL-173 (PLAN_RECHECKS_PLAN.md §2.3): the answer to the open re-check on screen -- a verdict, or "keep" (a question only). No
    * "Replace?" question: the re-check is the request. Then on to the next open re-check.
    */
+  /** Owner, msg 2916: a verdict that moves to another audio track waits for its waveform behind the loading window. */
+  const awaitTrack = useCallback(
+    (from: ScreenEntry, to: ScreenEntry | undefined) => {
+      if (to && entryKey(to) !== entryKey(from) && to.playable && !isVisual(screenMedia(to))) setAwaitingSrc(playedSrc(base, to));
+    },
+    [base]
+  );
+
   const answerRecheck = useCallback(
     async (answer: "accepted" | "rejected" | "kept") => {
       const recheck = entry?.recheck;
@@ -895,6 +918,7 @@ export function PlanReviewScreen({
         const to = next >= 0 ? next : Math.max(0, Math.min(here >= 0 ? here : index, list.length - 1));
         setDraft(draftFor(list[to] as ScreenEntry | undefined));
         stopB();
+        awaitTrack(entry, list[to] as ScreenEntry | undefined);
         setIndex(to);
       } catch (error) {
         setMessage({ tone: "error", text: error instanceof Error ? error.message : t("review.saveFailed") });
@@ -902,7 +926,7 @@ export function PlanReviewScreen({
         setBusy(false);
       }
     },
-    [base, busy, draft, draftFor, entry, filter, index, load, onChanged, reviewSecondsOf, skipFresh, stopB, t, wave]
+    [awaitTrack, base, busy, draft, draftFor, entry, filter, index, load, onChanged, reviewSecondsOf, skipFresh, stopB, t, wave]
   );
 
   const submit = useCallback(
@@ -969,6 +993,7 @@ export function PlanReviewScreen({
         const to = next >= 0 ? next : Math.max(0, here);
         setDraft(draftFor(list[to] as ScreenEntry | undefined));
         stopB();
+        awaitTrack(entry, list[to] as ScreenEntry | undefined);
         setIndex(to);
       } catch (error) {
         // The screen's data was stale: the server found a verdict there -- ask now (AC-TC-04).
@@ -984,7 +1009,7 @@ export function PlanReviewScreen({
         setBusy(false);
       }
     },
-    [answerRecheck, base, busy, draft, draftFor, entry, filter, index, load, onChanged, reviewSecondsOf, skipFresh, stopB, t, wave]
+    [answerRecheck, awaitTrack, base, busy, draft, draftFor, entry, filter, index, load, onChanged, reviewSecondsOf, skipFresh, stopB, t, wave]
   );
 
   // BL-157 (AC-TC-01): this computer claims the waiting track on screen (and the wave it took), renewed every minute;
@@ -1066,6 +1091,23 @@ export function PlanReviewScreen({
   const chosenBatch = wave === null ? null : (batches.find((b) => b.groupId === wave) ?? null);
   // AC-WV-02: when the chosen wave has nothing waiting, the next wave (in plan order, wrapping) that still has something.
   const nextWave = useMemo(() => nextOpenWave(waves, chosenWave, allEntries ?? [], skipClaimed), [allEntries, chosenWave, skipClaimed, waves]);
+  // Owner, Telegram msgs 2918/2923: the moment the chosen wave's last waiting track is reviewed here, a window over the
+  // blurred screen gives its summary and offers the next wave; a quiet cross closes it (the summary stays above the queue).
+  // Opening a wave that was already done shows no window -- only the change from "something waits" to "nothing waits".
+  const [waveDoneFor, setWaveDoneFor] = useState<string | null>(null);
+  const waitingBefore = useRef<{ groupId: string; waiting: number } | null>(null);
+  useEffect(() => {
+    const waiting = chosenWave ? chosenWave.waitingPassed + chosenWave.waitingRejected : null;
+    const before = waitingBefore.current;
+    if (chosenWave && waiting === 0 && before && before.groupId === chosenWave.groupId && before.waiting > 0) setWaveDoneFor(chosenWave.groupId);
+    waitingBefore.current = chosenWave && waiting !== null ? { groupId: chosenWave.groupId, waiting } : null;
+  }, [chosenWave]);
+  const waveDone = waveDoneFor !== null && chosenWave?.groupId === waveDoneFor ? chosenWave : null;
+  /** AC-WV-05: a done wave's summary -- BL-175: a wave of pictures is looked at, and its picks are what it decided. */
+  const waveDoneText = (w: WaveSummary) =>
+    (allEntries ?? []).some((e) => e.groupId === w.groupId && isVisual(screenMedia(e)))
+      ? t("review.wave.doneVisual", { picked: (allEntries ?? []).filter((e) => e.groupId === w.groupId && e.picked).length, accepted: w.accepted, rejected: w.rejected })
+      : t("review.wave.done", { accepted: w.accepted, rejected: w.rejected, overrides: w.overridesValidator });
   const filterCounts = useMemo(() => {
     const list = wave === null ? (allEntries ?? []) : (allEntries ?? []).filter((e) => e.groupId === wave);
     const waitingIn = (f: ReviewFilter) => filterEntries(list, f).filter(entryWaits).length;
@@ -1211,7 +1253,12 @@ export function PlanReviewScreen({
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       // BL-157 (AC-TC-04): while "Replace?" is open, the dialog has the keyboard. BL-175: so do the other dialogs and a pin's note box.
-      if (confirmReplace || confirmRejectPicked || noneFitsDraft || draft.pending) return;
+      // Owner, msg 2916: nothing acts while a verdict is saved and the next track loads.
+      if (waveDone) {
+        if (event.key === "Escape") setWaveDoneFor(null);
+        return;
+      }
+      if (blocking || confirmReplace || confirmRejectPicked || noneFitsDraft || draft.pending) return;
       const target = event.target as HTMLElement | null;
       if (target && (target.tagName === "TEXTAREA" || target.tagName === "INPUT" || target.tagName === "SELECT" || target.isContentEditable)) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
@@ -1312,7 +1359,7 @@ export function PlanReviewScreen({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [against, answerRecheck, comparable, compareKey, confirmRejectPicked, confirmReplace, currentMedia, draft.pending, entries, entry, go, index, layer, layerBack, layerable, mark, noneFitsDraft, skipClaimed, submit, t, toggleAB, togglePick, onB, visualEntry]);
+  }, [against, answerRecheck, blocking, waveDone, comparable, compareKey, confirmRejectPicked, confirmReplace, currentMedia, draft.pending, entries, entry, go, index, layer, layerBack, layerable, mark, noneFitsDraft, skipClaimed, submit, t, toggleAB, togglePick, onB, visualEntry]);
   // Phase 2: compare against «Было» ends where the attempt on screen is no revision of a picture or clip (N/P moved on); a
   // closed layer forgets what it compared against.
   useEffect(() => {
@@ -1348,12 +1395,18 @@ export function PlanReviewScreen({
     [savedMarkers, draft.openMark, entry, t, language],
   );
 
-  // BL-173: a re-check plays from its own route (the revised file, or the attempt's current one).
-  const src = entry
-    ? entry.recheck
-      ? `${base}/recheck-audition?recheckId=${encodeURIComponent(entry.recheck.recheckId)}`
-      : `${base}/audition?itemKey=${encodeURIComponent(entry.itemKey)}&attemptRef=${encodeURIComponent(entry.attemptRef)}`
-    : null;
+  const src = entry ? playedSrc(base, entry) : null;
+  // Owner, msg 2916: the track a verdict moved to, until its waveform is ready -- the screen stays blocked meanwhile. The
+  // advance itself clears it when another track is on screen; the cap keeps a stalled load from blocking the screen for good.
+  useEffect(() => {
+    if (awaitingSrc === null) return;
+    if (awaitingSrc !== src) {
+      setAwaitingSrc(null);
+      return;
+    }
+    const timer = setTimeout(() => setAwaitingSrc(null), AWAIT_TRACK_MAX_MS);
+    return () => clearTimeout(timer);
+  }, [awaitingSrc, src]);
   const ownLufs = entry ? playedLufs(entry) : null;
   const lufsOf = entry ? (ownLufs ?? (measured && measured.src === src ? measured.lufs : null)) : null;
   const hideFindings = blind && entry !== null && entryWaits(entry);
@@ -1926,6 +1979,7 @@ export function PlanReviewScreen({
                       ref={player}
                       src={src}
                       height={160}
+                      onSettled={() => setAwaitingSrc((waiting) => (waiting === src ? null : waiting))}
                       markers={markers}
                       spectrogram={showSpectrogram}
                       onPlayStart={() => {
@@ -2250,12 +2304,7 @@ export function PlanReviewScreen({
             {/* AC-WV-05: the wave is done -- its summary, and the next wave that still waits. */}
             {chosenWave && chosenWave.waitingPassed + chosenWave.waitingRejected === 0 && (
               <div className="space-y-1.5 border-b border-zinc-800 bg-emerald-950/30 px-3 py-2 text-xs text-emerald-200">
-                <p>
-                  {/* BL-175: a wave of pictures is looked at, and its picks are what it decided. */}
-                  {(allEntries ?? []).some((e) => e.groupId === chosenWave.groupId && isVisual(screenMedia(e)))
-                    ? t("review.wave.doneVisual", { picked: (allEntries ?? []).filter((e) => e.groupId === chosenWave.groupId && e.picked).length, accepted: chosenWave.accepted, rejected: chosenWave.rejected })
-                    : t("review.wave.done", { accepted: chosenWave.accepted, rejected: chosenWave.rejected, overrides: chosenWave.overridesValidator })}
-                </p>
+                <p>{waveDoneText(chosenWave)}</p>
                 {nextWave && (
                   <button type="button" onClick={() => chooseWave(nextWave.groupId)} className="rounded-md bg-violet-600 px-2.5 py-1 font-medium text-white hover:bg-violet-500">
                     {t("review.wave.next", { wave: nextWave.groupId, count: nextWave.waitingPassed + nextWave.waitingRejected })}
@@ -2473,6 +2522,47 @@ export function PlanReviewScreen({
         />
       )}
       {layer !== null ? pendingNoteBox(true) : null}
+      {waveDone && !blocking && (
+        <BlockingDialog label={t("review.wave.doneTitle")} maxWidthClass="max-w-md">
+          <div className="relative space-y-3">
+            <button
+              type="button"
+              onClick={() => setWaveDoneFor(null)}
+              aria-label={t("common.close")}
+              title={t("common.close")}
+              className="absolute -right-2 -top-2 flex h-7 w-7 items-center justify-center rounded-md text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
+            >
+              <span aria-hidden>✕</span>
+            </button>
+            <h2 className="pr-8 text-base font-semibold text-zinc-100">{t("review.wave.doneTitle")}</h2>
+            <p className="text-sm text-zinc-400">{waveDone.title}</p>
+            <p className="text-sm text-zinc-200">{waveDoneText(waveDone)}</p>
+            {nextWave ? (
+              <button
+                type="button"
+                autoFocus
+                onClick={() => {
+                  setWaveDoneFor(null);
+                  chooseWave(nextWave.groupId);
+                }}
+                className="w-full rounded-md bg-violet-600 px-3 py-2 text-sm font-medium text-white hover:bg-violet-500"
+              >
+                {t("review.wave.next", { wave: nextWave.title, count: nextWave.waitingPassed + nextWave.waitingRejected })}
+              </button>
+            ) : (
+              <p className="text-sm text-zinc-400">{t("review.wave.noneLeft")}</p>
+            )}
+          </div>
+        </BlockingDialog>
+      )}
+      {blocking && (
+        <BlockingDialog label={t("review.advancing.title")} busy maxWidthClass="max-w-xs">
+          <div className="flex flex-col items-center gap-3 py-2 text-center">
+            <Spinner className="h-8 w-8 border-[3px]" />
+            <p className="text-sm font-medium text-zinc-100">{busy ? t("review.advancing.saving") : t("review.advancing.loading")}</p>
+          </div>
+        </BlockingDialog>
+      )}
     </div>
   );
 }
