@@ -1,6 +1,6 @@
 # Video numbers from YT Manager and the visual cost of each video (BL-194)
 
-**Status: PLAN, waiting for the owner's OK.** Owner, Telegram 2026-10-16: the request (msg 2867), the answers (msg 2870), YT Manager
+**Status: stage 1 built on branch `feature/bl-194-video-cost` (2026-10-17: ADR 0040, Factory API 1.19.0, schema v95; not merged). Stages 2-4 not started.** Deviation: the routes are `/api/channels/<id>/video-projects` (`/videos` is the channel's YouTube video list), and the link field on job, storyboard and plan inputs is `videoNumber` (Gemini's `video` is already the video settings); `factory_video_get_cost` comes with stage 3. Owner, Telegram 2026-10-16: the request (msg 2867), the answers (msg 2870), YT Manager
 numbers videos itself and may add MCP tools (msg 2872). Analysis sent as msgs 2869 and 2871.
 
 ## 1. Why

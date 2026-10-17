@@ -4239,3 +4239,39 @@ Plan: `docs/roadmap/plans/SUGGESTED_SOURCES_PLAN.md` (AC-SS-01..09). Schema v94.
 - **Reads.** `listStoredSuggestedSources` backs `agent_get_stored_suggested_sources`: the engine's read, then each row is classified --
   `ours` with the title and channel from `videos` / `channels`, else `external` with the title row only when fetched at or after now − 30
   days (so a row the purge has not reached yet is never served).
+
+## 50. Video numbers given by YT Manager (BL-194 stage 1, ADR 0040)
+
+Plan: `docs/roadmap/plans/VIDEO_COST_PLAN.md` §2 stage 1 (acceptance criteria 1, 2, 8, 9). Schema v95. On branch `feature/bl-194-video-cost`.
+
+- **Module.** `src/lib/video-projects/` is shared (AGENTS.md §M): storyboards, generation plans, `media-generation` and `gemini-media`
+  depend on it; it imports none of them. A storyboard's video is read from the synced storyboards document through the sync gateway, a
+  plan's from `generation_plans.video` (`db.getGenerationPlanVideo`). One instance per process on `globalThis`, so its lock serializes
+  every reservation of this server (Factory route, Web routes, media modules).
+- **Next number.** `numbering.nextVideoNumber(knownNumbers(...))`: highest Vn of the channel from the workspace's `MMDD Vn` folders
+  (`workspace-videos.listVideoFolders`: `04 Videos/<month>/<MMDD Vn>` or directly under `04 Videos`, empty folders included, never
+  through a symlink), `video_registry.csv` (`VNumber`), `publishing_uploads.video`, and every reservation of every computer (cancelled
+  included), plus one. Without a readable workspace `createVideo` refuses (`video_workspace_unavailable`); the list still answers from
+  reservations and uploads, with `workspace` saying why.
+- **Reservations.** `video_reservations` (key `channel_id, video`; `working_title`, `reserved_at`, `state in_work | cancelled`,
+  `cancelled_at`, `replaced_by`) holds THIS computer's; device-local (snapshot) and `notApiData` (data policy). After every change, and
+  on a list when it differs from the last one published, the whole set goes into this computer's `video-reservations` report
+  (`sync-gateway/video-reservations`, the ADR 0028 per-device pattern, `forgetAfterMs: null`), carried by the generic sync runner
+  (Syncthing subfolder `video-reservations`, family `video_reservations` in the Merge tab).
+- **List and conflicts.** `buildVideoList` unions every source per number. `state`: published (`Vn_youtube.json` in the folder, a
+  registry row, or a finished upload), packaged (`Vn_release.json`, or an upload not failed/cancelled), cancelled (only given-up
+  reservations), else in work. Two computers with the number in work = `conflict`: winner = earliest `reservedAt`, then the lower
+  device id; `suggestedVideo` only for the losing computer. `renumber` (losing computer only, under the lock) reserves the next number
+  with the same working title and cancels the old reservation with `replacedBy`.
+- **Links.** `assertAttachable(channelId, video)`: the pattern `^V[1-9][0-9]{0,5}$`; known for the channel, not cancelled, not in
+  dispute (`video_not_found` / `video_in_dispute`); a number reserved here with no peer holding it passes without reading the
+  workspace. Storyboards: `StoryboardRecord.video` (assigned whole by `setVideo`; not content, no new version); plans:
+  `generation_plans.video` (a move clears it). Jobs: `resolveJobVideo` -- an explicit `videoNumber` must pass (the job is refused
+  before uploads, the prompt, the Gemini estimate or any charge); otherwise the storyboard's video, else the plan's (same channel
+  only); an inherited video that cannot be linked or a failing lookup gives `null` and a log line. The ports are optional in the
+  media modules (`videoLink`), so they run without the module; a given number is then refused.
+- **Surfaces.** Factory API 1.19.0 (`factory_video_create` gated write, `factory_video_list` read); Web routes under
+  `/api/channels/[channelId]/video-projects` with session + active channel (ADR 0004); Content → «Публикация» → «Ролики в работе»
+  (own error boundary) and `VideoPicker` on the storyboard screen and the own-plan card.
+- **Limits.** A duplicate within the sync delay is resolved by hand; links made before it was seen stay (RISK-129). The cost per video
+  (stages 2-4) is not built.

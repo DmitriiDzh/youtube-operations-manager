@@ -762,6 +762,25 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
     изменения в «Ролик целиком» на любом компьютере.
   - Номер версии — отдельная метка после названия на карточках.
 
+### 2.9aq Номера роликов из YT Manager (BL-194 этап 1, ADR 0040, `docs/roadmap/plans/VIDEO_COST_PLAN.md`) — **IMPLEMENTED на ветке `feature/bl-194-video-cost`, не влито в `dev`**
+
+- **Общий модуль `src/lib/video-projects/`** (§M: не импортирует модули-фичи, `boundaries.test.ts`): `numbering.ts` (следующий номер,
+  список роликов, конфликты — чистые функции), `services.ts` (резерв, список, перенумерация проигравшего, отмена, `assertAttachable`,
+  `resolveJobVideo`), `adapters/{store,workspace}.ts`.
+- **Источники номера:** папки `04 Videos/<месяц>/<ММДД Vn>` (`workspace-videos.listVideoFolders`, пустые тоже), `video_registry.csv`,
+  `publishing_uploads`, резервы всех компьютеров (отменённые тоже).
+- **Между компьютерами:** таблица `video_reservations` (схема v95, только этот компьютер) и семейство синхронизации
+  `video-reservations` (отчёт по устройству `ytm-video-reservations` v1, пиры не забываются). Дубликат: раньше взятый резерв
+  выигрывает (при равенстве — меньший deviceId), проигравший берёт следующий номер только по выбору владельца; к спорному номеру
+  ничего не привязывается (`video_in_dispute`).
+- **Привязки:** `video` у раскадровки (документ Automerge), плана (`generation_plans.video`) и заданий (`media_jobs.video`,
+  `gemini_media_jobs.video`); `videoNumber` при создании; без него задание наследует видео раскадровки, иначе плана; сбой модуля при
+  наследовании — задание без привязки.
+- **Factory API 1.19.0:** `factory_video_create`, `factory_video_list`, `videoNumber` у инструментов заданий, раскадровок и планов.
+- **Web/API:** `/api/channels/[channelId]/video-projects` (+ `/[video]/renumber`, `/[video]/cancel`), `.../storyboards/[id]/video`,
+  `/api/generation-plans/[planId]/video`; Контент → «Публикация» → «Ролики в работе»; выбор ролика на экране раскадровки и в карточке плана.
+- Стоимость роликов (этапы 2–4) — **PLANNED**.
+
 ### 2.9an Публикация из YT Manager: загрузка, календарь, напоминание (BL-182, FO-REQ-0023, ADR 0037, `docs/roadmap/plans/PUBLISHING_PLAN.md`) — **этапы 0–1 IMPLEMENTED, влиты в `dev` 2026-10-13; этап 2 IMPLEMENTED, влит в `dev` 2026-10-13 (`3ad95cc`), первая настоящая загрузка ещё не проводилась; этап 3 впереди**
 
 - **Этап 0 (G1).**
