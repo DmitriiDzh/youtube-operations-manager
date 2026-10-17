@@ -923,7 +923,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 
 ---
 
-### 2.9as Перезагрузка страницы не повторяет работу старта (BL-196, `docs/roadmap/plans/FAST_STARTUP_PLAN.md`) — **IMPLEMENTED на `feature/bl-196-fast-startup`, не влито в `dev`**
+### 2.9as Перезагрузка страницы не повторяет работу старта (BL-196, `docs/roadmap/plans/FAST_STARTUP_PLAN.md`) — **IMPLEMENTED** (влито в `dev` 2026-10-17, 617dbf38)
 
 - **Окно «Загружаем ваши данные…»:** один раз на вкладку за запуск сервера. Корневой `layout.tsx` отдаёт `<meta name="ytom-boot">` (`src/lib/server-presence/boot-id.ts`). Вкладка помнит в `sessionStorage`, для какого запуска уже показала окно (`startupWindowWanted`, `startup-progress.ts`). Работа старта идёт на каждой загрузке. Центр конфликтов ждёт её завершения, а не окна. Шапка до живого ответа показывает последний канал вкладки, это только отображение.
 - **Аналитика:** `freshnessGate` — проверка свежести из `collectMetrics`, вынесена без изменений.
