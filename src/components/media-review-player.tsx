@@ -79,9 +79,11 @@ export type MediaReviewPlayerProps = {
   toolbar?: ReactNode;
   /** The waveform's height in px (default 128). */
   height?: number;
+  /** Called once the file is ready to play or failed to load (owner, msg 2916: the review screen waits for the next track). */
+  onSettled?: () => void;
 };
 
-export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlayerProps>(function MediaReviewPlayer({ src, markers, volume = 1, spectrogram = false, onDecoded, frequencyMarks = [], onPlayStart, toolbar, height = 128 }, ref) {
+export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlayerProps>(function MediaReviewPlayer({ src, markers, volume = 1, spectrogram = false, onDecoded, frequencyMarks = [], onPlayStart, toolbar, height = 128, onSettled }, ref) {
   const t = useT();
   const container = useRef<HTMLDivElement | null>(null);
   const spectrogramContainer = useRef<HTMLDivElement | null>(null);
@@ -93,6 +95,7 @@ export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlaye
   const loopRef = useRef(false);
   const onDecodedRef = useRef(onDecoded);
   const onPlayStartRef = useRef(onPlayStart);
+  const onSettledRef = useRef(onSettled);
   // The load errors are worded inside the per-file effect; a language change never rebuilds the player.
   const tRef = useRef(t);
   useEffect(() => {
@@ -100,6 +103,7 @@ export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlaye
     loopRef.current = loop;
     onDecodedRef.current = onDecoded;
     onPlayStartRef.current = onPlayStart;
+    onSettledRef.current = onSettled;
   });
 
   useImperativeHandle(ref, () => ({
@@ -153,6 +157,7 @@ export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlaye
       setState({ time: 0, duration: 0, playing: false, error: null, ready: false });
       instance.on("ready", () => {
         setState((s) => ({ ...s, ready: true, duration: instance?.getDuration() ?? 0 }));
+        onSettledRef.current?.();
         const audio = instance?.getDecodedData();
         if (audio && onDecodedRef.current) {
           onDecodedRef.current({ channels: Array.from({ length: Math.min(2, audio.numberOfChannels) }, (_, i) => audio.getChannelData(i)), sampleRate: audio.sampleRate });
@@ -182,9 +187,14 @@ export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlaye
       });
       instance.on("pause", () => setState((s) => ({ ...s, playing: false })));
       instance.on("finish", () => setState((s) => ({ ...s, playing: false })));
-      instance.on("error", (error) => setState((s) => ({ ...s, error: error instanceof Error ? error.message : tRef.current("review.player.couldNotPlay") })));
+      instance.on("error", (error) => {
+        setState((s) => ({ ...s, error: error instanceof Error ? error.message : tRef.current("review.player.couldNotPlay") }));
+        onSettledRef.current?.();
+      });
     })().catch((error: unknown) => {
-      if (!cancelled) setState((s) => ({ ...s, error: error instanceof Error ? error.message : tRef.current("review.player.couldNotLoad") }));
+      if (cancelled) return;
+      setState((s) => ({ ...s, error: error instanceof Error ? error.message : tRef.current("review.player.couldNotLoad") }));
+      onSettledRef.current?.();
     });
     return () => {
       cancelled = true;
