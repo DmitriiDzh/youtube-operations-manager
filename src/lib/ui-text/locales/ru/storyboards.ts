@@ -3,6 +3,11 @@ import type { storyboards as en } from "../en/storyboards";
 // BL-184 (FO-REQ-0024): Медиа → «Раскадровка».
 export const storyboards: Record<keyof typeof en, string> = {
   "storyboards.loadFailed": "Не удалось загрузить раскадровки.",
+  "storyboards.busy.sending": "Отправляю…",
+  "storyboards.busy.version": "Открываю версию {number}…",
+  "storyboards.busy.approving": "Одобряю версию…",
+  "storyboards.busy.requestingChanges": "Отправляю запрос на правки…",
+  "storyboards.busy.renderDecision": "Сохраняю решение по рендеру…",
   "storyboards.actionFailed": "Не получилось.",
   "storyboards.noChannel": "Выберите канал, чтобы увидеть его раскадровки.",
   "storyboards.title": "Раскадровки",

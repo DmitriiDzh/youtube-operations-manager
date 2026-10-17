@@ -306,6 +306,7 @@ export const content = {
   "publishingApproval.tagsSource.package": "the package's",
   "publishingApproval.tagsSource.channel": "the channel's (the package has none)",
   "publishingApproval.off": "no",
+  "publishingApproval.busy.queueing": "Queueing the uploads…",
   "publishingApproval.failed": "Could not queue the uploads.",
   "publishingUploads.title": "Uploads",
   "publishingUploads.empty": "No uploads from this computer yet.",

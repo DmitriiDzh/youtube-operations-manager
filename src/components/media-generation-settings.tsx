@@ -26,6 +26,7 @@ import {
 import type { PoolDevice, PoolJob, PoolView } from "@/lib/media-jobs-pool/contracts";
 import type { CommandView } from "@/lib/media-jobs-pool/commands";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
+import { ActionButton, BusyOverlay, StatusNotice, useBusyAction } from "./busy-feedback";
 import { ConfirmDialog } from "./confirm-dialog";
 import { MEDIA_JOBS_CHANGED_EVENT } from "./gemini-media-create";
 import { useChannelNames } from "./use-channel-names";
@@ -1321,6 +1322,9 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
   // BL-135: on by default -- a session you request stops by itself a minute after its last job.
   const [busyId, setBusyId] = useState<string | null>(null);
   const [requesting, setRequesting] = useState(false);
+  // BL-195 (UI_FEEDBACK_CLARITY_PLAN.md stage C): approving rents a pod (money), stopping and rejecting end one -- each runs
+  // behind the blocking window; asking for a session only turns its button into "working".
+  const busyAction = useBusyAction();
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState<{ sessionId: string; action: "approve" | "stop" } | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -1428,21 +1432,24 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
   }
 
   async function act(target: Session, action: "approve" | "reject" | "stop") {
+    if (busyAction.busy) return;
     setConfirming(null);
     setBusyId(target.sessionId);
     setError(null);
-    try {
-      const body = action === "reject" ? { reason: "rejected by operator" } : action === "stop" ? { reason: "stopped by operator" } : undefined;
-      await requestJson(`/api/media-generation/sessions/${encodeURIComponent(target.sessionId)}/${action}`, {
-        method: "POST",
-        ...(body ? { headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {}),
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t(action === "approve" ? "media.sessions.approveFailed" : action === "reject" ? "media.sessions.rejectFailed" : "media.sessions.stopFailed"));
-    } finally {
-      setBusyId(null);
-      await fetchAll();
-    }
+    await busyAction.run(t(action === "approve" ? "media.sessions.busy.approving" : action === "reject" ? "media.sessions.busy.rejecting" : "media.sessions.busy.stopping"), async () => {
+      try {
+        const body = action === "reject" ? { reason: "rejected by operator" } : action === "stop" ? { reason: "stopped by operator" } : undefined;
+        await requestJson(`/api/media-generation/sessions/${encodeURIComponent(target.sessionId)}/${action}`, {
+          method: "POST",
+          ...(body ? { headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {}),
+        });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : t(action === "approve" ? "media.sessions.approveFailed" : action === "reject" ? "media.sessions.rejectFailed" : "media.sessions.stopFailed"));
+      } finally {
+        setBusyId(null);
+        await fetchAll();
+      }
+    });
   }
 
   const activeCount = limits?.activeSessionCount ?? 0;
@@ -1456,7 +1463,8 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
   const recent = ofFilter(sessions.filter((s) => !OPEN_STATUSES.has(s.status))).slice(0, 10);
 
   function actions(s: Session) {
-    const busy = busyId === s.sessionId;
+    // One session action at a time: a second one before the window shows would overwrite busyId (review, BL-195).
+    const busy = busyId === s.sessionId || busyAction.busy;
     if (confirming?.sessionId === s.sessionId) {
       const approve = confirming.action === "approve";
       return (
@@ -1631,9 +1639,9 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
               <input type="text" inputMode="decimal" value={maxUsd} onChange={(e) => setMaxUsd(e.target.value)} className={inputClass} placeholder={t("media.sessions.maxUsdPlaceholder")} />
             </label>
             <div className="flex items-end">
-              <button type="button" onClick={request} disabled={requesting} className={secondaryButton}>
-                {requesting ? t("media.sessions.requesting") : t("media.sessions.request")}
-              </button>
+              <ActionButton busy={requesting} busyLabel={t("media.sessions.requesting")} onClick={request} className={secondaryButton}>
+                {t("media.sessions.request")}
+              </ActionButton>
             </div>
           </div>
         )}
@@ -1673,7 +1681,8 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
         </div>
       )}
 
-      {error && <p className="text-xs text-red-400">{error}</p>}
+      <BusyOverlay state={busyAction.overlay} />
+      <StatusNotice notice={error ? { tone: "error", text: error } : null} onClose={() => setError(null)} />
     </Card>
   );
 }
@@ -2335,6 +2344,8 @@ export function VolumeCard({ overview, onChanged }: { overview: Overview; onChan
   const { settings, credentials } = overview;
   const [volumes, setVolumes] = useState<Volume[] | null>(null);
   const [busy, setBusy] = useState(false);
+  // BL-195 stage C: creating, growing or deleting a volume changes what RunPod bills, so each shows the blocking window.
+  const busyAction = useBusyAction();
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [selected, setSelected] = useState(settings.networkVolumeId ?? "");
@@ -2386,20 +2397,22 @@ export function VolumeCard({ overview, onChanged }: { overview: Overview; onChan
     setBusy(true);
     setError(null);
     setNotice(null);
-    try {
-      const { volume } = await requestJson<{ volume: Volume }>("/api/media-generation/network-volumes", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: newName, datacenterId: settings.datacenterId, sizeGb: newSize }),
-      });
-      setNotice(t("media.volume.created", { name: volume.name, id: volume.id }));
-      await load();
-      setSelected(volume.id);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t("media.volume.createFailed"));
-    } finally {
-      setBusy(false);
-    }
+    await busyAction.run(t("media.volume.busy.creating"), async () => {
+      try {
+        const { volume } = await requestJson<{ volume: Volume }>("/api/media-generation/network-volumes", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: newName, datacenterId: settings.datacenterId, sizeGb: newSize }),
+        });
+        setNotice(t("media.volume.created", { name: volume.name, id: volume.id }));
+        await load();
+        setSelected(volume.id);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : t("media.volume.createFailed"));
+      } finally {
+        setBusy(false);
+      }
+    });
   }
 
   async function grow() {
@@ -2408,20 +2421,22 @@ export function VolumeCard({ overview, onChanged }: { overview: Overview; onChan
     setBusy(true);
     setError(null);
     setNotice(null);
-    try {
-      const { volume } = await requestJson<{ volume: Volume }>("/api/media-generation/network-volumes", {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ volumeId: selectedVolume.id, sizeGb: growSize }),
-      });
-      setNotice(t("media.volume.resized", { name: volume.name, size: volume.sizeGb }));
-      setGrowSizeText("");
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t("media.volume.resizeFailed"));
-    } finally {
-      setBusy(false);
-    }
+    await busyAction.run(t("media.volume.busy.resizing"), async () => {
+      try {
+        const { volume } = await requestJson<{ volume: Volume }>("/api/media-generation/network-volumes", {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ volumeId: selectedVolume.id, sizeGb: growSize }),
+        });
+        setNotice(t("media.volume.resized", { name: volume.name, size: volume.sizeGb }));
+        setGrowSizeText("");
+        await load();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : t("media.volume.resizeFailed"));
+      } finally {
+        setBusy(false);
+      }
+    });
   }
 
   async function removeVolume() {
@@ -2431,16 +2446,18 @@ export function VolumeCard({ overview, onChanged }: { overview: Overview; onChan
     setBusy(true);
     setError(null);
     setNotice(null);
-    try {
-      await requestJson("/api/media-generation/network-volumes", { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ volumeId: target.id }) });
-      setNotice(t("media.volume.deleted", { name: target.name, id: target.id }));
-      if (selected === target.id) setSelected(settings.networkVolumeId ?? "");
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t("media.volume.deleteFailed"));
-    } finally {
-      setBusy(false);
-    }
+    await busyAction.run(t("media.volume.busy.deleting"), async () => {
+      try {
+        await requestJson("/api/media-generation/network-volumes", { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ volumeId: target.id }) });
+        setNotice(t("media.volume.deleted", { name: target.name, id: target.id }));
+        if (selected === target.id) setSelected(settings.networkVolumeId ?? "");
+        await load();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : t("media.volume.deleteFailed"));
+      } finally {
+        setBusy(false);
+      }
+    });
   }
 
   const selectedVolume = volumes?.find((v) => v.id === selected);
@@ -2554,8 +2571,9 @@ export function VolumeCard({ overview, onChanged }: { overview: Overview; onChan
           )}
         </div>
       )}
-      {notice && <p className="text-xs text-emerald-400">{notice}</p>}
-      {error && <p className="text-xs text-red-400">{error}</p>}
+      <BusyOverlay state={busyAction.overlay} />
+      <StatusNotice notice={notice ? { tone: "ok", text: notice } : null} onClose={() => setNotice(null)} />
+      <StatusNotice notice={error ? { tone: "error", text: error } : null} onClose={() => setError(null)} />
       {confirmCreate && (
         <ConfirmDialog
           title={t("media.volume.createTitle", { size: newSize ?? 0, dc: settings.datacenterId ?? "" })}

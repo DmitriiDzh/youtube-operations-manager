@@ -251,7 +251,6 @@ export const production: Record<keyof typeof en, string> = {
   "review.loadFailed": "Не удалось загрузить очередь проверки",
   "review.loadFailedStatus": "Не удалось загрузить очередь проверки ({status})",
   "review.verdictSaved": "{item}: {result}",
-  "review.advancing.title": "Следующий трек",
   "review.advancing.saving": "Сохраняю отзыв…",
   "review.advancing.loading": "Загружаю следующий трек…",
   "review.saveFailed": "Не удалось сохранить вердикт",

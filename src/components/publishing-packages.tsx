@@ -6,6 +6,7 @@ import { uploadTagsSummary, type PublishingSettings } from "@/lib/publishing/set
 import { formatDisplayDateUtc, parseDisplayDate } from "@/lib/shared-formatting";
 import { TAGS_MAX_CHARACTERS } from "@/lib/youtube-video-fields";
 import { errorText, type UiTextKey } from "@/lib/ui-text";
+import { BusyOverlay, StatusNotice, useBusyAction } from "./busy-feedback";
 import { ConfirmDialog } from "./confirm-dialog";
 import { LoadingIndicator } from "./operation-progress";
 import { PublishingNewPackage } from "./publishing-new-package";
@@ -77,7 +78,10 @@ export function PublishingPackages({ channelId, visible }: { channelId: string |
   /** The date text the owner typed per package (DD.MM.YYYY, "" = no date); absent = the suggested date. */
   const [typedDates, setTypedDates] = useState<Record<string, string>>({});
   const [approving, setApproving] = useState(false);
-  const [sending, setSending] = useState(false);
+  // BL-195 (UI_FEEDBACK_CLARITY_PLAN.md stage C): queueing the uploads runs behind the blocking window (the uploads themselves then
+  // run in the background, listed below).
+  const busyAction = useBusyAction();
+  const sending = busyAction.busy;
   const [quotaBlock, setQuotaBlock] = useState<QuotaBlock | null>(null);
   const [uploadsKey, setUploadsKey] = useState(0);
   /** BL-192: «Новый пакет» is open. */
@@ -138,39 +142,39 @@ export function PublishingPackages({ channelId, visible }: { channelId: string |
 
   async function approve(acknowledgeUnknownQuota = false) {
     if (!channelId || !settings) return;
-    setSending(true);
     setError(null);
-    try {
-      const items = chosen.map((p) => {
-        const day = dateOf(p);
-        return { manifestPath: p.manifestPath, manifestSha256: p.manifestSha256 ?? "", publishAt: day ? publishInstant(day, settings.publishTimeUtc) : null };
-      });
-      const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/publishing/uploads`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ items, shownSettings: settings, ...(acknowledgeUnknownQuota ? { acknowledgeUnknownQuota: true } : {}) }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        const quota = parseQuotaBlock(data);
-        if (quota) {
-          setApproving(false);
-          setQuotaBlock(quota);
-          return;
+    await busyAction.run(t("publishingApproval.busy.queueing"), async () => {
+      try {
+        const items = chosen.map((p) => {
+          const day = dateOf(p);
+          return { manifestPath: p.manifestPath, manifestSha256: p.manifestSha256 ?? "", publishAt: day ? publishInstant(day, settings.publishTimeUtc) : null };
+        });
+        const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/publishing/uploads`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ items, shownSettings: settings, ...(acknowledgeUnknownQuota ? { acknowledgeUnknownQuota: true } : {}) }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          const quota = parseQuotaBlock(data);
+          if (quota) {
+            setApproving(false);
+            setQuotaBlock(quota);
+            return;
+          }
+          throw new Error(errorText(t, data, t("publishingApproval.failed")));
         }
-        throw new Error(errorText(t, data, t("publishingApproval.failed")));
+        setApproving(false);
+        setSelected([]);
+        setTypedDates({});
+        setUploadsKey((k) => k + 1);
+        await load();
+
+      } catch (e) {
+        setApproving(false);
+        setError(e instanceof Error ? e.message : t("publishingApproval.failed"));
       }
-      setApproving(false);
-      setSelected([]);
-      setTypedDates({});
-      setUploadsKey((k) => k + 1);
-      await load();
-    } catch (e) {
-      setApproving(false);
-      setError(e instanceof Error ? e.message : t("publishingApproval.failed"));
-    } finally {
-      setSending(false);
-    }
+    });
   }
 
   if (!channelId) return null;
@@ -211,7 +215,7 @@ export function PublishingPackages({ channelId, visible }: { channelId: string |
         </div>
       </div>
 
-      {error && <p className="text-xs text-red-400">{error}</p>}
+      <StatusNotice notice={error ? { tone: "error", text: error } : null} onClose={() => setError(null)} />
       {!result && !error && <LoadingIndicator className="text-xs text-zinc-400" />}
       {result?.status === "no_workspace" && <p className="text-xs text-amber-200">{t("publishingPackages.noWorkspace")}</p>}
       {result?.status === "workspace_unavailable" && <p className="text-xs text-amber-200">{t("publishingPackages.workspaceUnavailable", { reason: result.reason })}</p>}
@@ -389,6 +393,7 @@ export function PublishingPackages({ channelId, visible }: { channelId: string |
           }
         />
       )}
+      <BusyOverlay state={busyAction.overlay} />
     </div>
   );
 }

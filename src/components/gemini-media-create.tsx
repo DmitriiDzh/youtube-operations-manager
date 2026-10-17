@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { UiTextKey } from "@/lib/ui-text";
+import { ActionButton, BusyOverlay, StatusNotice, useBusyAction } from "./busy-feedback";
 import { ConfirmDialog } from "./confirm-dialog";
 import {
   buildGeminiRequest,
@@ -84,7 +85,11 @@ export function GeminiCreateCard({ activeChannelId, kind }: { activeChannelId: s
   const [form, setForm] = useState<GeminiFormState | null>(null);
   const [estimate, setEstimate] = useState<DryRun | null>(null);
   const [confirming, setConfirming] = useState<GeminiRequest | null>(null);
-  const [busy, setBusy] = useState(false);
+  // BL-195 (UI_FEEDBACK_CLARITY_PLAN.md stage C): creating a paid job runs behind the blocking window; the estimate only turns its
+  // button into "working".
+  const busyAction = useBusyAction();
+  const [estimating, setEstimating] = useState(false);
+  const busy = busyAction.busy || estimating;
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -131,40 +136,39 @@ export function GeminiCreateCard({ activeChannelId, kind }: { activeChannelId: s
   async function checkEstimate() {
     const request = built();
     if (!request) return;
-    setBusy(true);
+    setEstimating(true);
     setError(null);
     try {
       setEstimate(await requestJson<DryRun>("/api/gemini-media/jobs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...request, dryRun: true }) }));
     } catch (err) {
       setError(err instanceof Error ? err.message : t("media.gemini.submitFailed"));
     } finally {
-      setBusy(false);
+      setEstimating(false);
     }
   }
 
   async function launch(request: GeminiRequest) {
     setConfirming(null);
-    setBusy(true);
     setError(null);
-    try {
-      if (remote && peer) {
-        await requestJson("/api/media-jobs/commands", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ kind: "create_job", targetDeviceId: peer.deviceId, source: "gemini", gemini: request }),
-        });
-        setNotice(t("media.gemini.sent", { name: peer.hostName ?? t("media.pool.unnamedDevice") }));
-      } else {
-        await requestJson("/api/gemini-media/jobs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(request) });
-        setNotice(t("media.gemini.created"));
+    await busyAction.run(t(remote && peer ? "media.gemini.busy.sending" : "media.gemini.busy.creating"), async () => {
+      try {
+        if (remote && peer) {
+          await requestJson("/api/media-jobs/commands", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ kind: "create_job", targetDeviceId: peer.deviceId, source: "gemini", gemini: request }),
+          });
+          setNotice(t("media.gemini.sent", { name: peer.hostName ?? t("media.pool.unnamedDevice") }));
+        } else {
+          await requestJson("/api/gemini-media/jobs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(request) });
+          setNotice(t("media.gemini.created"));
+        }
+        setEstimate(null);
+        window.dispatchEvent(new Event(MEDIA_JOBS_CHANGED_EVENT));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : t("media.gemini.submitFailed"));
       }
-      setEstimate(null);
-      window.dispatchEvent(new Event(MEDIA_JOBS_CHANGED_EVENT));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t("media.gemini.submitFailed"));
-    } finally {
-      setBusy(false);
-    }
+    });
   }
 
   const title = t(kind === "image" ? "media.gemini.titleImage" : "media.gemini.titleVideo");
@@ -325,9 +329,9 @@ export function GeminiCreateCard({ activeChannelId, kind }: { activeChannelId: s
           )}
           <div className="flex flex-wrap gap-2">
             {!remote && (
-              <button type="button" onClick={() => void checkEstimate()} disabled={busy} className={secondaryButton}>
+              <ActionButton busy={estimating} busyLabel={t("media.gemini.busy.estimating")} onClick={() => void checkEstimate()} disabled={busy} className={secondaryButton}>
                 {t("media.gemini.estimateButton")}
-              </button>
+              </ActionButton>
             )}
             <button
               type="button"
@@ -341,11 +345,11 @@ export function GeminiCreateCard({ activeChannelId, kind }: { activeChannelId: s
               {t("media.gemini.run")}
             </button>
           </div>
-          {notice && <p className="text-xs text-emerald-400">{notice}</p>}
+          <StatusNotice notice={notice ? { tone: "ok", text: notice } : null} onClose={() => setNotice(null)} />
         </div>
       )}
       {open && activeChannelId && !status && !error && <p className="text-xs text-zinc-500">{t("media.gemini.loading")}</p>}
-      {error && <p className="text-xs text-red-400">{error}</p>}
+      <StatusNotice notice={error ? { tone: "error", text: error } : null} onClose={() => setError(null)} />
       {confirming && (
         <ConfirmDialog
           title={t(kind === "image" ? "media.gemini.confirmTitleImage" : "media.gemini.confirmTitleVideo")}
@@ -374,6 +378,7 @@ export function GeminiCreateCard({ activeChannelId, kind }: { activeChannelId: s
           </dl>
         </ConfirmDialog>
       )}
+      <BusyOverlay state={busyAction.overlay} />
     </div>
   );
 }

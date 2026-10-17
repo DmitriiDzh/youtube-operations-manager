@@ -250,7 +250,6 @@ export const production = {
   "review.loadFailed": "Failed to load the review queue",
   "review.loadFailedStatus": "Failed to load the review queue ({status})",
   "review.verdictSaved": "{item}: {result}",
-  "review.advancing.title": "Next track",
   "review.advancing.saving": "Saving your verdict…",
   "review.advancing.loading": "Loading the next track…",
   "review.saveFailed": "The verdict could not be saved",

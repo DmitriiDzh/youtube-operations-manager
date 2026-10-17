@@ -4,6 +4,7 @@ import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useState } from "react";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import type { Translate, UiTextKey } from "@/lib/ui-text";
+import { BusyOverlay, StatusNotice, useBusyAction } from "./busy-feedback";
 import { ConfirmDialog } from "./confirm-dialog";
 import { useT } from "./ui-text-provider";
 
@@ -64,7 +65,11 @@ export function DeviceSyncDivergenceCard() {
   const [preview, setPreview] = useState<Preview | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [working, setWorking] = useState(false);
+  const [loadingPreview, setLoadingPreview] = useState(false);
+  // BL-195 (UI_FEEDBACK_CLARITY_PLAN.md stage C): the choice replaces one computer's data with the other's -- it runs behind the
+  // blocking window, so nothing else can be clicked meanwhile.
+  const busyAction = useBusyAction();
+  const working = loadingPreview || busyAction.busy;
   const [confirm, setConfirm] = useState<"keep_mine" | "take_theirs" | null>(null);
 
   const refresh = useCallback(async () => {
@@ -113,30 +118,31 @@ export function DeviceSyncDivergenceCard() {
    * have changed since the card was first drawn (review round 1, #6). */
   async function openConfirm(choice: "keep_mine" | "take_theirs") {
     if (!snapshotId) return;
-    setWorking(true);
-    const fresh = await loadPreview(snapshotId);
-    setWorking(false);
-    if (fresh) setConfirm(choice);
+    setLoadingPreview(true);
+    try {
+      if (await loadPreview(snapshotId)) setConfirm(choice);
+    } finally {
+      setLoadingPreview(false);
+    }
   }
 
   async function resolve(choice: "keep_mine" | "take_theirs") {
     if (!snapshotId) return;
-    setWorking(true);
     setError(null);
-    try {
-      const res = await fetch("/api/device-sync/resolve", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ choice, snapshotId }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) setError(errorText(t, data, t("common.errorStatus", { status: String(res.status) })));
-      await refresh();
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setWorking(false);
-    }
+    await busyAction.run(t(choice === "keep_mine" ? "divergence.busy.keepMine" : "divergence.busy.takeTheirs"), async () => {
+      try {
+        const res = await fetch("/api/device-sync/resolve", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ choice, snapshotId }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) setError(errorText(t, data, t("common.errorStatus", { status: String(res.status) })));
+        await refresh();
+      } catch (e) {
+        setError(String(e));
+      }
+    });
   }
 
   if (!notice) return null;
@@ -235,7 +241,7 @@ export function DeviceSyncDivergenceCard() {
         )}
       </div>
 
-      {error && <p className="mt-2 text-sm text-red-300">{error}</p>}
+      <StatusNotice notice={error ? { tone: "error", text: error } : null} onClose={() => setError(null)} className="mt-2" />
 
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
         <div className="space-y-2">
@@ -286,6 +292,7 @@ export function DeviceSyncDivergenceCard() {
           }}
         />
       )}
+      <BusyOverlay state={busyAction.overlay} />
     </div>
   );
 }

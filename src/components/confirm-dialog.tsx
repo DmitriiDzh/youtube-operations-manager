@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, type ReactNode } from "react";
+import { Spinner } from "./operation-progress/spinner";
 import { useT } from "./ui-text-provider";
 
 type ConfirmDialogProps = {
@@ -19,6 +20,8 @@ type ConfirmDialogProps = {
   confirmDisabled?: boolean;
   /** BL-192: "wide" for a form inside the dialog (e.g. a whole release package). */
   size?: "default" | "wide";
+  /** BL-195: the confirmed action is running -- the confirm button shows a spinner and this text, and cannot be pressed again. */
+  confirmBusyLabel?: string | null;
 };
 
 /**
@@ -46,6 +49,7 @@ export function ConfirmDialog({
   children,
   confirmDisabled = false,
   size = "default",
+  confirmBusyLabel = null,
 }: ConfirmDialogProps) {
   const t = useT();
   // BL-157 (review round 3): the keyboard belongs to the dialog -- focus moves to Cancel (so Enter or Space never presses a
@@ -81,14 +85,22 @@ export function ConfirmDialog({
           </button>
           <button
             onClick={onConfirm}
-            disabled={confirmDisabled}
+            disabled={confirmDisabled || confirmBusyLabel !== null}
+            aria-busy={confirmBusyLabel !== null || undefined}
             className={`disabled:opacity-50 ${
               confirmVariant === "danger"
                 ? "rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700"
                 : "rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500"
             }`}
           >
-            {confirmLabel}
+            {confirmBusyLabel !== null ? (
+              <span className="inline-flex items-center gap-1.5">
+                <Spinner className="h-3.5 w-3.5" />
+                {confirmBusyLabel}
+              </span>
+            ) : (
+              confirmLabel
+            )}
           </button>
         </div>
       </div>
