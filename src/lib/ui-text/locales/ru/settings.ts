@@ -77,7 +77,7 @@ export const settings: Record<keyof typeof en, string> = {
   "gemini.key.removeTitle": "Удалить ключ Gemini API с этого компьютера?",
   "gemini.key.removeDescription": "Задания в очереди завершатся ошибкой, а начатые видео нельзя будет забрать, пока ключ не введут снова. Сам ключ в Google остаётся действующим.",
   "gemini.generation.title": "Генерация оператором",
-  "gemini.generation.info": "Когда включено, Factory Operator может через MCP генерировать картинки (Nano Banana) и видео (Veo 3.1) в Gemini API от Google. Каждый результат платный; запрос сверх любого лимита ниже отклоняется, и оператор видит, какой лимит превышен. По умолчанию выключено.",
+  "gemini.generation.info": "Когда включено, Factory Operator может через MCP генерировать картинки (Nano Banana) и видео (Gemini Omni) в Gemini API от Google. Каждый результат платный; запрос сверх любого лимита ниже отклоняется, и оператор видит, какой лимит превышен. По умолчанию выключено.",
   "gemini.generation.switch": "Оператор может генерировать картинки и видео (платно)",
   "gemini.generation.turnedOn": "Генерация включена.",
   "gemini.generation.turnedOff": "Генерация выключена: задания из очереди не будут отправлены.",

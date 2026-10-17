@@ -7620,7 +7620,7 @@ export type GatewayTrafficCategory =
   | "comfyui_api"
   // BL-132 -- the Hugging Face Hub metadata reads (`src/lib/media-gateway/huggingface.ts`).
   | "huggingface_api"
-  // BL-174 -- Google's Gemini API (Nano Banana images, Veo video), the media gateway's `gemini-api.ts` child.
+  // BL-174 -- Google's Gemini API (Nano Banana images, Omni video), the media gateway's `gemini-api.ts` child.
   | "gemini_api";
 
 export type GatewayTrafficWindow = {

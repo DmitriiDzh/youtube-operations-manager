@@ -3717,16 +3717,22 @@ Plan: `docs/roadmap/plans/GEMINI_MEDIA_PLAN.md` (AC-GM-01..16). Schema v83, Fact
     known cost. The poll downloads it without a Veo operation; a 404 or the 47-h give-up keeps the known cost. A link that
     cannot be followed fails the job at its cost, and a JSON answer to a download is refused. The stale-`submitting` sweep is 20
     min, above the 15-min call.
-  - The model table gains `transport`, `frames` and `retiresOn`. Frames on a Veo model are refused at create time
-    (`gemini_invalid_params`), before any call.
+  - The model table gains `frames` and `retiresOn` (and had `transport` until BL-180). Frames on a Veo model were refused at
+    create time (`gemini_invalid_params`), before any call.
   - A transport error names its inner cause (FO-MSG-0014).
   - The request details the paid test still has to confirm are listed in RISK-127.
+- **Veo removed (BL-180, owner msg 2902, 2026-10-17; Factory API 1.21.0).** The three Veo 3.1 previews left the model table ahead
+  of Google's 2026-10-22 shutdown, with their transport: the gateway's `startVideo` (`predictLongRunning`) and
+  `getVideoOperation`, and the worker's operation start and poll. Omni is the only video model. A Veo id is refused at create
+  time (`gemini_invalid_params`, field `model`). A Veo job left `queued` is failed unsent (`gemini_invalid_request`, cost 0); one
+  left `running` holds an operation name, not a link, so it is not polled and fails `gemini_expired` at its estimate. The
+  operation-flow paragraph above is history.
 - **Restarts.** `operation-lock media-idle` refuses `stop.sh` while a job is `submitting` (an image call takes up to 5 minutes, an Omni video up to 15); idle
   shutdown waits while any job is queued, submitting or running.
 - **Web.** Settings → Cloud APIs (`gemini-media-settings.tsx`; Settings → Gemini before BL-193) and `/api/gemini-media` (overview), `/settings`, `/key`, `/key/test`: the
   owner's side only; no MCP tool sets the key, the switch or the limits. BL-193: the recent jobs moved to the Gemini card in
   Servers → Sessions (§50).
-- **Limits.** The money limits were per computer until BL-193; since then they are shared by every computer on the key (§50, RISK-123); prices are code constants; the Veo models are previews. Not in this slice:
+- **Limits.** The money limits were per computer until BL-193; since then they are shared by every computer on the key (§50, RISK-123); prices are code constants; the Veo previews were removed by BL-180. Not in this slice:
   Gemini Omni Flash, the Batch API, Veo extension, multi-turn editing, generation-plan attempts from Gemini jobs.
 
 ## 44. Review of generated images and video: one of N, pins, reason chips (BL-175, FO-REQ-0018 §A-§D)

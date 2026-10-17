@@ -11,8 +11,8 @@ import { asNumber, asRecord, asString } from "./json";
 
 // ---------------------------------------------------------------------------
 // BL-174 (docs/roadmap/plans/GEMINI_MEDIA_PLAN.md §1.1, §2.1) -- the single funnel for Google's Gemini API
-// (`generativelanguage.googleapis.com`): Nano Banana images through the Interactions API, Veo 3.1 video through
-// `predictLongRunning` + its operation, the generated video's download, and a key check. Every request checks the
+// (`generativelanguage.googleapis.com`): Nano Banana images and Omni video through the Interactions API, the generated
+// video's download, and a key check (BL-180 removed Veo's `predictLongRunning` + operation polling). Every request checks the
 // "Media gateway" toggle and records a `gemini_api` traffic event first. The API key is a per-call argument (the
 // `gemini-media` module decrypts it), sent only in the `x-goog-api-key` header and only to the Gemini host -- a download
 // redirect to any other host is followed without it.
@@ -24,14 +24,11 @@ import { asNumber, asRecord, asString } from "./json";
 export const GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com";
 const KEY_CHECK_TIMEOUT_MS = 30_000;
 export const GEMINI_IMAGE_TIMEOUT_MS = 5 * 60_000;
-/** The start call uploads the frames (up to ~16 MB in base64): the same 5 minutes as an image, never a phantom timeout on a slow uplink. */
-export const GEMINI_VIDEO_START_TIMEOUT_MS = 5 * 60_000;
 /** BL-179: an Omni video is generated within the one call -- Google documents no time; 8 s of video took minutes in its demos. */
 export const GEMINI_INTERACTIONS_VIDEO_TIMEOUT_MS = 15 * 60_000;
-const VIDEO_POLL_TIMEOUT_MS = 60_000;
 const DOWNLOAD_TIMEOUT_MS = 10 * 60_000;
 const MAX_REDIRECTS = 5;
-/** A Veo clip is at most 8 s; 500 MB is far above any real one and stops an endless stream. */
+/** A video clip is at most 8 s; 500 MB is far above any real one and stops an endless stream. */
 export const GEMINI_MAX_VIDEO_BYTES = 500 * 1024 * 1024;
 
 /** Google's generation-blocked codes (Interactions API errors page) and Veo/generateContent block reasons, lower-cased. */
@@ -111,18 +108,6 @@ export type GeminiImageResult = {
   blockReason: string | null;
 };
 
-export type GeminiVideoRequest = {
-  model: string;
-  prompt: string;
-  firstFrame?: GeminiInlineImage;
-  lastFrame?: GeminiInlineImage;
-  referenceImages?: GeminiInlineImage[];
-  aspectRatio: string;
-  resolution: string;
-  durationSeconds: number;
-  personGeneration?: string;
-};
-
 /** BL-179: one Omni video through the Interactions API (synchronous). `frames` in order: the start frame, then the end frame. */
 export type GeminiInteractionsVideoRequest = {
   model: string;
@@ -140,10 +125,6 @@ export type GeminiInteractionsVideoResult = {
   status: string | null;
   blockReason: string | null;
 };
-
-export type GeminiVideoOperation =
-  | { done: false }
-  | { done: true; videoUri: string | null; error: { code: string | null; message: string } | null; blockReason: string | null };
 
 type Fetch = typeof fetch;
 
@@ -377,12 +358,6 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; longWaitFetchIm
     return null;
   }
 
-  function inline(image: GeminiInlineImage) {
-    return { inlineData: { mimeType: image.mimeType, data: image.dataBase64 } };
-  }
-
-  const OPERATION_NAME = /^models\/[A-Za-z0-9._-]+\/operations\/[A-Za-z0-9._-]+$/;
-
   return {
     /** The key check: one `models.list` page. 400/401/403 → `gemini_key_invalid`; 402 → `gemini_payment_required` (the key itself is valid). */
     async checkKey(apiKey: string): Promise<void> {
@@ -444,52 +419,6 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; longWaitFetchIm
       const errors = Array.isArray(body.errors) ? body.errors.map(asRecord) : [];
       const blockCode = errors.map((e) => asString(e.code)?.toLowerCase() ?? null).find((c) => c !== null && GEMINI_BLOCKED_CODES.has(c)) ?? null;
       return { video: finalVideo(body), usage: usageOf(body.usage), status: asString(body.status), blockReason: blockCode };
-    },
-
-    /** Starts a Veo job; returns the long-running operation's name. */
-    async startVideo(apiKey: string, request: GeminiVideoRequest): Promise<string> {
-      const context = { call: "predictLongRunning", model: request.model };
-      const instance: Record<string, unknown> = { prompt: request.prompt };
-      if (request.firstFrame) instance.image = inline(request.firstFrame);
-      if (request.lastFrame) instance.lastFrame = inline(request.lastFrame);
-      if (request.referenceImages && request.referenceImages.length > 0) {
-        instance.referenceImages = request.referenceImages.map((image) => ({ image: inline(image), referenceType: "asset" }));
-      }
-      const parameters: Record<string, unknown> = {
-        aspectRatio: request.aspectRatio,
-        resolution: request.resolution,
-        // Google's table gives the values as strings ("4" | "6" | "8"); proto3 JSON reads a string for an int field too.
-        durationSeconds: String(request.durationSeconds),
-      };
-      if (request.personGeneration) parameters.personGeneration = request.personGeneration;
-      const body = asRecord(
-        await call(apiKey, "POST", `/v1beta/models/${encodeURIComponent(request.model)}:predictLongRunning`, context, {
-          timeoutMs: GEMINI_VIDEO_START_TIMEOUT_MS,
-          body: { instances: [instance], parameters },
-        })
-      );
-      const name = asString(body.name);
-      if (!name || !OPERATION_NAME.test(name)) {
-        throw new DomainError({ code: "gemini_unavailable", message: "The Gemini API did not return a usable operation name.", details: { ...context, outcome: "unknown" } });
-      }
-      return name;
-    },
-
-    async getVideoOperation(apiKey: string, name: string): Promise<GeminiVideoOperation> {
-      if (!OPERATION_NAME.test(name)) throw new DomainError({ code: "validation_failed", message: "Not a Veo operation name.", details: { name } });
-      const body = asRecord(await call(apiKey, "GET", `/v1beta/${name}`, { call: "operations.get" }, { timeoutMs: VIDEO_POLL_TIMEOUT_MS }));
-      if (body.done !== true) return { done: false };
-      if (body.error !== undefined && body.error !== null) {
-        const error = asRecord(body.error);
-        const code = asString(error.status) ?? (asNumber(error.code) !== null ? String(asNumber(error.code)) : asString(error.code));
-        return { done: true, videoUri: null, error: { code: code ? code.toLowerCase() : null, message: asString(error.message) ?? "the operation failed" }, blockReason: null };
-      }
-      const videoResponse = asRecord(asRecord(body.response).generateVideoResponse);
-      const samples = Array.isArray(videoResponse.generatedSamples) ? videoResponse.generatedSamples.map(asRecord) : [];
-      const videoUri = asString(asRecord(samples[0]?.video).uri);
-      const reasons = Array.isArray(videoResponse.raiMediaFilteredReasons) ? videoResponse.raiMediaFilteredReasons.map((r) => String(r)) : [];
-      const filtered = (asNumber(videoResponse.raiMediaFilteredCount) ?? 0) > 0 || reasons.length > 0;
-      return { done: true, videoUri, error: null, blockReason: videoUri ? null : filtered ? reasons[0]?.slice(0, 300) || "filtered" : null };
     },
 
     /**

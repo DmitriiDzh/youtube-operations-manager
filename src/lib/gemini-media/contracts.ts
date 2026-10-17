@@ -3,7 +3,7 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 export { DomainError, isDomainError };
 
 // ---------------------------------------------------------------------------
-// BL-174 (docs/roadmap/plans/GEMINI_MEDIA_PLAN.md) -- images (Nano Banana) and video (Veo 3.1) through Google's Gemini API,
+// BL-174 (docs/roadmap/plans/GEMINI_MEDIA_PLAN.md) -- images (Nano Banana) and video (Omni since BL-179; Veo until BL-180) through Google's Gemini API,
 // driven by the Factory Operator within the owner's limits. A separate feature module (AGENTS.md §M): it depends on the
 // media gateway (its `gemini-api.ts` child), the workspace exchange and the asset catalog, never on `media-generation`
 // or `generation-plans`; switched off (the default) or without a key it makes no network call.
@@ -31,20 +31,16 @@ export const GEMINI_IMAGE_MODELS: Readonly<Record<string, GeminiImageModelSpec>>
 
 export type GeminiVideoModelSpec = {
   label: string;
-  /**
-   * How the model is called: `veo` = `predictLongRunning` + its operation (BL-174); `interactions` = one synchronous
-   * `POST /v1beta/interactions` whose answer carries the video (BL-179, Omni, https://ai.google.dev/gemini-api/docs/omni).
-   */
-  transport: "veo" | "interactions";
-  /** USD per second of video (with audio, the only output), by resolution; a missing resolution is not offered. For an
-   * `interactions` model this is the estimate (`tokenPricing`), its cost comes from Google's token counts. */
+  /** USD per second of video (with audio, the only output), by resolution; a missing resolution is not offered. This is the
+   * estimate (`tokenPricing`); the cost comes from Google's token counts. Every video model is called with one synchronous
+   * `POST /v1beta/interactions` whose answer carries the video (BL-179, Omni, https://ai.google.dev/gemini-api/docs/omni). */
   perSecond: Readonly<Record<string, number>>;
   referenceImages: boolean;
   /** Whether a first frame (and a last frame with it) can be given. */
   frames: boolean;
   /** Google's announced shutdown date (YYYY-MM-DD) -- https://ai.google.dev/gemini-api/docs/deprecations. */
   retiresOn?: string;
-  /** Token prices (USD per 1M) of an `interactions` model, and the video tokens per second by resolution, for the estimate. */
+  /** Token prices (USD per 1M), and the video tokens per second by resolution, for the estimate. */
   tokenPricing?: { inputPerM: number; textOutPerM: number; videoOutPerM: number; videoTokensPerSecond: Readonly<Record<string, number>> };
 };
 
@@ -58,18 +54,13 @@ const OMNI_VIDEO_OUT_PER_M = 17.5;
 export const GEMINI_VIDEO_MODELS: Readonly<Record<string, GeminiVideoModelSpec>> = Object.freeze({
   "gemini-omni-1.1-flash": {
     label: "Gemini Omni Flash",
-    transport: "interactions",
     perSecond: Object.fromEntries(Object.entries(OMNI_TOKENS).map(([resolution, tokens]) => [resolution, (tokens * OMNI_VIDEO_OUT_PER_M) / 1_000_000])),
     referenceImages: false,
     frames: true,
     tokenPricing: { inputPerM: 1.5, textOutPerM: 9, videoOutPerM: OMNI_VIDEO_OUT_PER_M, videoTokensPerSecond: OMNI_TOKENS },
   },
-  // FO-REQ-0021: Google shuts the three Veo 3.1 previews down on 2026-10-22 (replacement: Omni); first/last frames are refused
-  // by `predictLongRunning` ("`inlineData` isn't supported by this model", job gm_7d1d80b2) -- Google's Veo page: frames are
-  // "currently only available with the generateContent API".
-  "veo-3.1-generate-preview": { label: "Veo 3.1", transport: "veo", perSecond: { "720p": 0.4, "1080p": 0.4, "4k": 0.6 }, referenceImages: true, frames: false, retiresOn: "2026-10-22" },
-  "veo-3.1-fast-generate-preview": { label: "Veo 3.1 Fast", transport: "veo", perSecond: { "720p": 0.1, "1080p": 0.12, "4k": 0.3 }, referenceImages: true, frames: false, retiresOn: "2026-10-22" },
-  "veo-3.1-lite-generate-preview": { label: "Veo 3.1 Lite", transport: "veo", perSecond: { "720p": 0.05, "1080p": 0.08 }, referenceImages: false, frames: false, retiresOn: "2026-10-22" },
+  // BL-180: the three Veo 3.1 previews (veo-3.1-generate-preview, -fast-, -lite-) and their `predictLongRunning` transport are
+  // gone -- Google shuts them down on 2026-10-22 and names Omni as the replacement (owner, Telegram msg 2902: removed now).
 });
 
 export const GEMINI_IMAGE_ASPECT_RATIOS = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"] as const;
@@ -93,7 +84,6 @@ export const GEMINI_LIMITS = Object.freeze({
   maxAttempts: 3,
   /** Backoff before attempt 2 and 3 (ms). */
   retryBackoffMs: [30_000, 120_000],
-  videoPollMs: 10_000,
   videoRetryMs: 30_000,
   /** Google keeps a generated video 2 days; past this the job gives up. */
   videoGiveUpMs: 47 * 3600_000,
