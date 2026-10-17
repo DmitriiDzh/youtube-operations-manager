@@ -26,14 +26,14 @@ import { createGeminiMediaServices, jobView, type GeminiMediaDeps } from "./serv
 // status the job was read in, so a second runner can never move a job twice.
 //
 // Money rules: a request Google provably never received, or answered with an error, costs 0 ("not_charged"); a finished
-// image costs Google's own token counts ("usage") or the table price ("price_table"); a finished Veo video its table price, a
-// finished Omni video (BL-179) Google's token counts, else its estimate; a request that was sent and then lost (timeout,
+// image costs Google's own token counts ("usage") or the table price ("price_table"); a finished
+// video (Omni, BL-179) Google's token counts, else its estimate; a request that was sent and then lost (timeout,
 // restart mid-call, video never collected) counts its estimate ("unknown_outcome") so the spend is never under-counted.
 
 const EXTENSIONS: Readonly<Record<string, string>> = Object.freeze({ "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/heic": "heic", "image/heif": "heif" });
 const VIDEO_EXTENSIONS: Readonly<Record<string, string>> = Object.freeze({ "video/mp4": "mp4", "video/webm": "webm", "video/quicktime": "mov" });
 
-/** BL-179: an Omni video Google delivered as a Files API URI is collected like a Veo video, from `remoteName`. */
+/** BL-179: an Omni video Google delivered as a Files API URI is collected by the next poll, from `remoteName`. */
 const isDownloadUri = (remoteName: string) => remoteName.startsWith("https://") || remoteName.startsWith("http://");
 
 type Failure = { errorCode: GeminiJobErrorCode; error: string; costUsd: number; costBasis: GeminiCostBasis };
@@ -368,33 +368,6 @@ export function createGeminiWorker(deps: GeminiMediaDeps) {
     await finish(job, "submitting", claimed.dir, [output], costUsd, costBasis);
   }
 
-  async function startVideo(job: StoredGeminiMediaJob): Promise<void> {
-    const claimed = await claim(job);
-    if (!claimed) return;
-    const params = JSON.parse(job.paramsJson) as GeminiVideoParams;
-    const pick = (role: GeminiJobInput["role"]) => claimed.inputs.filter((i) => i.role === role).map((i) => claimed.loaded.get(`${i.role}:${i.path}`)!);
-    let name: string;
-    try {
-      name = await deps.api.startVideo(claimed.apiKey, {
-        model: job.model,
-        prompt: job.prompt,
-        firstFrame: pick("first_frame")[0],
-        lastFrame: pick("last_frame")[0],
-        referenceImages: pick("reference"),
-        aspectRatio: params.aspectRatio,
-        resolution: params.resolution,
-        durationSeconds: params.durationSeconds,
-        personGeneration: params.personGeneration,
-      });
-    } catch (error) {
-      const verdict = classify(job, error);
-      if (verdict.retry) await retryOrFail(job, claimed.attempts, verdict.errorCode, verdict.message);
-      else await fail(job, "submitting", verdict.failure);
-      return;
-    }
-    await deps.store.updateJob(job.jobId, "submitting", { status: "running", remoteName: name, error: null, errorCode: null, nextAttemptAt: new Date(now().getTime() + GEMINI_LIMITS.videoPollMs), updatedAt: now() });
-  }
-
   async function pollVideo(job: StoredGeminiMediaJob): Promise<void> {
     const later = (ms: number, note?: string) =>
       deps.store.updateJob(job.jobId, "running", { nextAttemptAt: new Date(now().getTime() + ms), ...(note ? { error: note.slice(0, 2000) } : {}), updatedAt: now() });
@@ -407,7 +380,12 @@ export function createGeminiWorker(deps: GeminiMediaDeps) {
       return;
     }
     if (!job.remoteName) {
-      await fail(job, "running", maybeCharged(job, "gemini_interrupted", "The video job has no operation name."));
+      await fail(job, "running", maybeCharged(job, "gemini_interrupted", "The video job has no download link."));
+      return;
+    }
+    // BL-180: a Veo job started before its models were removed has an operation name, which is no longer polled.
+    if (!isDownloadUri(job.remoteName)) {
+      await fail(job, "running", maybeCharged(job, "gemini_expired", "A Veo video is no longer collected here: the Veo 3.1 previews were removed (Google shuts them down on 2026-10-22)."));
       return;
     }
     let apiKey: string | null;
@@ -421,32 +399,7 @@ export function createGeminiWorker(deps: GeminiMediaDeps) {
       await later(GEMINI_LIMITS.videoRetryMs, "No Gemini API key on this computer: the started video cannot be collected until one is entered.");
       return;
     }
-    // BL-179: an Omni video delivered as a URI has no operation to poll -- straight to the download (cost already known).
-    const uriDelivered = isDownloadUri(job.remoteName);
-    let operation;
-    try {
-      operation = uriDelivered ? { done: true as const, videoUri: job.remoteName, error: null, blockReason: null } : await deps.api.getVideoOperation(apiKey, job.remoteName);
-    } catch (error) {
-      // Google no longer knows the operation: nothing left to collect; it may have been charged (review round 2).
-      if (isDomainError(error) && (error.details as { status?: number } | undefined)?.status === 404) {
-        await fail(job, "running", maybeCharged(job, "gemini_expired", `Google no longer has the video's operation: ${error.message}`));
-        return;
-      }
-      // Otherwise already paid for (or about to be): keep trying until Google drops it (47 h).
-      await later(GEMINI_LIMITS.videoRetryMs, error instanceof Error ? error.message : String(error));
-      return;
-    }
-    if (!operation.done) {
-      await later(GEMINI_LIMITS.videoPollMs);
-      return;
-    }
-    if (operation.error || !operation.videoUri) {
-      // Google charges a video only when it was generated.
-      const blocked = operation.blockReason !== null || operation.error === null || operation.error.code === null || /safety|block|filter|prohibit/i.test(`${operation.error.code} ${operation.error.message}`);
-      const message = operation.error ? `Veo failed: ${operation.error.message}` : `Veo returned no video (${operation.blockReason ?? "no sample"}).`;
-      await fail(job, "running", notCharged(blocked ? "gemini_blocked" : "gemini_invalid_request", message));
-      return;
-    }
+    const videoUri = job.remoteName;
     let dir: string;
     try {
       dir = path.join(await deps.workspace.resolveOutputRoot(job.channelId), GEMINI_OUTPUT_SUBDIR, job.jobId);
@@ -458,7 +411,7 @@ export function createGeminiWorker(deps: GeminiMediaDeps) {
     const localPath = path.join(dir, file);
     let written: { bytes: number; sha256: string };
     try {
-      written = await deps.api.downloadVideo(apiKey, operation.videoUri, localPath);
+      written = await deps.api.downloadVideo(apiKey, videoUri, localPath);
     } catch (error) {
       // Google answered that the file is gone (review item 4), or with something that is not a video (re-check): nothing left to
       // collect -- not retried for 47 h.
@@ -476,8 +429,8 @@ export function createGeminiWorker(deps: GeminiMediaDeps) {
     }
     const base = { path: relativeOutput(job, file), localPath, kind: "video" as const, mimeType: "video/mp4", bytes: written.bytes, sha256: written.sha256 };
     const output: GeminiJobOutput = { ...base, ...(await registerAsset(job, base)) };
-    // An Omni video's cost was recorded from Google's counts when it was delivered; a Veo video costs its table price.
-    if (uriDelivered && job.costUsd !== null && job.costBasis) await finish(job, "running", dir, [output], job.costUsd, job.costBasis as GeminiCostBasis);
+    // The cost was recorded from Google's counts when the link was delivered; without it, the table price.
+    if (job.costUsd !== null && job.costBasis) await finish(job, "running", dir, [output], job.costUsd, job.costBasis as GeminiCostBasis);
     else await finish(job, "running", dir, [output], job.estimateUsd, "price_table");
   }
 
@@ -512,8 +465,12 @@ export function createGeminiWorker(deps: GeminiMediaDeps) {
         }
         if (inFlight.size >= GEMINI_LIMITS.inFlightPerProcess) break;
         if (job.nextAttemptAt && job.nextAttemptAt.getTime() > at) continue;
-        const interactions = job.kind === "video" && ownEntry(GEMINI_VIDEO_MODELS, job.model)?.transport === "interactions";
-        started.push(track(job.jobId, () => (job.kind === "image" ? runImage(job) : interactions ? runInteractionsVideo(job) : startVideo(job))));
+        // BL-180: a video job queued for a model that has since been removed (a Veo preview) is never sent.
+        if (job.kind === "video" && !ownEntry(GEMINI_VIDEO_MODELS, job.model)) {
+          await fail(job, "queued", notCharged("gemini_invalid_request", `${job.model} is no longer offered here (removed with BL-180); the job was not sent.`));
+          continue;
+        }
+        started.push(track(job.jobId, () => (job.kind === "image" ? runImage(job) : runInteractionsVideo(job))));
       }
       const running = (await deps.store.listJobs({ statuses: ["running"], limit: 200 })).reverse();
       for (const job of running) {

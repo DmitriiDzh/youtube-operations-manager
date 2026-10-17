@@ -166,72 +166,7 @@ test("checkKey lists one model page; a 400 counts as a bad key on this path, 402
   await expectError(createGeminiApiClient({ fetchImpl: empty.fetchImpl, authorize: async () => undefined }).checkKey(KEY), "gemini_payment_required");
 });
 
-test("startVideo: predictLongRunning with instances[0] (prompt, image, lastFrame as inlineData) and parameters; returns the operation name", async () => {
-  const { fetchImpl, calls } = fakeFetch(() => ({ status: 200, body: { name: "models/veo-3.1-fast-generate-preview/operations/abc123" } }));
-  const name = await createGeminiApiClient({ fetchImpl, authorize: async () => undefined }).startVideo(KEY, {
-    model: "veo-3.1-fast-generate-preview",
-    prompt: "waves",
-    firstFrame: { mimeType: "image/png", dataBase64: "Zmlyc3Q=" },
-    lastFrame: { mimeType: "image/jpeg", dataBase64: "bGFzdA==" },
-    aspectRatio: "9:16",
-    resolution: "1080p",
-    durationSeconds: 8,
-  });
-  assert.equal(name, "models/veo-3.1-fast-generate-preview/operations/abc123");
-  assert.equal(calls[0].url, "https://generativelanguage.googleapis.com/v1beta/models/veo-3.1-fast-generate-preview:predictLongRunning");
-  assert.deepEqual(JSON.parse(String(calls[0].init.body)), {
-    instances: [
-      {
-        prompt: "waves",
-        image: { inlineData: { mimeType: "image/png", data: "Zmlyc3Q=" } },
-        lastFrame: { inlineData: { mimeType: "image/jpeg", data: "bGFzdA==" } },
-      },
-    ],
-    parameters: { aspectRatio: "9:16", resolution: "1080p", durationSeconds: "8" },
-  });
-});
-
-test("startVideo: reference images are sent as {image:{inlineData}, referenceType:'asset'}; personGeneration only when given", async () => {
-  const { fetchImpl, calls } = fakeFetch(() => ({ status: 200, body: { name: "models/veo-3.1-generate-preview/operations/r1" } }));
-  await createGeminiApiClient({ fetchImpl, authorize: async () => undefined }).startVideo(KEY, {
-    model: "veo-3.1-generate-preview",
-    prompt: "p",
-    referenceImages: [{ mimeType: "image/png", dataBase64: "QQ==" }],
-    aspectRatio: "16:9",
-    resolution: "720p",
-    durationSeconds: 8,
-    personGeneration: "allow_adult",
-  });
-  const body = JSON.parse(String(calls[0].init.body));
-  assert.deepEqual(body.instances[0].referenceImages, [{ image: { inlineData: { mimeType: "image/png", data: "QQ==" } }, referenceType: "asset" }]);
-  assert.equal(body.parameters.personGeneration, "allow_adult");
-});
-
-test("startVideo refuses an answer without a well-formed operation name (outcome unknown: the job may exist)", async () => {
-  const { fetchImpl } = fakeFetch(() => ({ status: 200, body: { name: "../../evil" } }));
-  const details = await expectError(createGeminiApiClient({ fetchImpl, authorize: async () => undefined }).startVideo(KEY, { model: "m", prompt: "p", aspectRatio: "16:9", resolution: "720p", durationSeconds: 4 }), "gemini_unavailable");
-  assert.equal(details.outcome, "unknown");
-});
-
-test("getVideoOperation: not done; done with a video uri; done with an error; done with no sample (filtered)", async () => {
-  const answers = [
-    { name: "models/v/operations/o", done: false },
-    { done: true, response: { generateVideoResponse: { generatedSamples: [{ video: { uri: "https://generativelanguage.googleapis.com/v1beta/files/f1:download?alt=media" } }] } } },
-    { done: true, error: { code: 3, status: "INVALID_ARGUMENT", message: "bad" } },
-    { done: true, response: { generateVideoResponse: { raiMediaFilteredCount: 1, raiMediaFilteredReasons: ["child safety"] } } },
-  ];
-  let i = 0;
-  const { fetchImpl, calls } = fakeFetch(() => ({ status: 200, body: answers[i++] }));
-  const client = createGeminiApiClient({ fetchImpl, authorize: async () => undefined });
-  assert.deepEqual(await client.getVideoOperation(KEY, "models/v/operations/o"), { done: false });
-  assert.equal(calls[0].url, "https://generativelanguage.googleapis.com/v1beta/models/v/operations/o");
-  assert.deepEqual(await client.getVideoOperation(KEY, "models/v/operations/o"), { done: true, videoUri: "https://generativelanguage.googleapis.com/v1beta/files/f1:download?alt=media", error: null, blockReason: null });
-  assert.deepEqual(await client.getVideoOperation(KEY, "models/v/operations/o"), { done: true, videoUri: null, error: { code: "invalid_argument", message: "bad" }, blockReason: null });
-  assert.deepEqual(await client.getVideoOperation(KEY, "models/v/operations/o"), { done: true, videoUri: null, error: null, blockReason: "child safety" });
-  await assert.rejects(client.getVideoOperation(KEY, "models/v/operations/o/../../x"));
-  assert.equal(calls.length, 4, "a malformed name is never requested");
-});
-
+// BL-180: the Veo `startVideo` / `getVideoOperation` tests went with the calls (the Veo 3.1 previews were removed).
 test("downloadVideo follows a redirect by hand: the key goes to the Gemini host only, the file lands via .part with its SHA-256", async () => {
   const video = Buffer.from("fake mp4 bytes ".repeat(1000));
   const { fetchImpl, calls } = fakeFetch((call) => {
@@ -388,7 +323,7 @@ test("FO-MSG-0014: a lost answer's error names the transport cause (code and mes
     throw reset;
   }) as typeof fetch;
   try {
-    await createGeminiApiClient({ fetchImpl, authorize: async () => undefined }).startVideo(KEY, { model: "veo-3.1-lite-generate-preview", prompt: "p", aspectRatio: "16:9", resolution: "720p", durationSeconds: 8 });
+    await createGeminiApiClient({ fetchImpl, authorize: async () => undefined }).generateImage(KEY, { model: "m", prompt: "p", images: [], aspectRatio: "1:1", imageSize: "1K" });
     assert.fail("expected an error");
   } catch (error) {
     assert.ok(isDomainError(error));

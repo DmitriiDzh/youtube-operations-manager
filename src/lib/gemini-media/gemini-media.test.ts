@@ -9,13 +9,10 @@ import type { StoredGeminiCredentials, StoredGeminiMediaJob } from "@/lib/db";
 import {
   GEMINI_IMAGE_TIMEOUT_MS,
   GEMINI_INTERACTIONS_VIDEO_TIMEOUT_MS,
-  GEMINI_VIDEO_START_TIMEOUT_MS,
   type GeminiImageRequest,
   type GeminiImageResult,
   type GeminiInteractionsVideoRequest,
   type GeminiInteractionsVideoResult,
-  type GeminiVideoOperation,
-  type GeminiVideoRequest,
 } from "@/lib/media-gateway";
 import { ceil4 } from "@/lib/shared-money";
 import { DomainError, isDomainError } from "@/lib/shared-domain";
@@ -101,8 +98,6 @@ function fakeApi() {
       status: "completed",
       blockReason: null,
     }),
-    startVideo: async (): Promise<string> => "models/veo-3.1-fast-generate-preview/operations/op1",
-    getVideoOperation: async (): Promise<GeminiVideoOperation> => ({ done: true, videoUri: "https://generativelanguage.googleapis.com/v1beta/files/f:download?alt=media", error: null, blockReason: null }),
     downloadVideo: async (_uri: string, dest: string) => {
       const data = Buffer.from("MP4DATA");
       await mkdir(path.dirname(dest), { recursive: true });
@@ -122,14 +117,6 @@ function fakeApi() {
     async generateVideo(apiKey: string, request: GeminiInteractionsVideoRequest) {
       calls.push({ method: "generateVideo", apiKey, request });
       return behaviour.generateVideo();
-    },
-    async startVideo(apiKey: string, request: GeminiVideoRequest) {
-      calls.push({ method: "startVideo", apiKey, request });
-      return behaviour.startVideo();
-    },
-    async getVideoOperation(apiKey: string, name: string) {
-      calls.push({ method: "getVideoOperation", apiKey, request: name });
-      return behaviour.getVideoOperation();
     },
     async downloadVideo(apiKey: string, uri: string, dest: string) {
       calls.push({ method: "downloadVideo", apiKey, request: { uri, dest } });
@@ -288,12 +275,16 @@ const imageJob = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
+// Changed 2026-10-17 (BL-180), with justification (AGENTS.md §L): this default was Veo 3.1 Fast 1080p 8 s ($0.96); Google shuts
+// the Veo previews down on 2026-10-22 and the owner had them removed (msg 2902), so the default is the one video model left:
+// Omni 1080p 4 s, "waves" -- 13,032 x 4 = 52,128 tokens x $17.50/1M = $0.91224 + 2 input tokens x $1.50/1M + 2,000 thinking
+// tokens x $9/1M = $0.930243 -> $0.9303 (the BL-179 review figure below). Each limit test keeps its own meaning with it.
 const videoJob = (overrides: Record<string, unknown> = {}) => ({
   channelId: "UC1",
   kind: "video",
-  model: "veo-3.1-fast-generate-preview",
+  model: "gemini-omni-1.1-flash",
   prompt: "waves",
-  video: { resolution: "1080p", aspectRatio: "16:9", durationSeconds: 8 },
+  video: { resolution: "1080p", aspectRatio: "16:9", durationSeconds: 4 },
   ...overrides,
 });
 
@@ -341,9 +332,10 @@ test("AC-GM-03: estimates from the price table (hand-computed)", () => {
   assert.equal(estimateImageUsd({ model: "gemini-3.1-flash-lite-image", size: "1K", promptChars: 30, inputImages: 1 }), 0.0369);
   // 2000×120e-6 + 10×2e-6 + 2000×12e-6 = 0.24 + 0.00002 + 0.024 = 0.26402 → 0.2641
   assert.equal(estimateImageUsd({ model: "gemini-3-pro-image", size: "4K", promptChars: 30, inputImages: 0 }), 0.2641);
-  assert.equal(estimateVideoUsd({ model: "veo-3.1-fast-generate-preview", resolution: "1080p", durationSeconds: 8 }), 0.96);
-  assert.equal(estimateVideoUsd({ model: "veo-3.1-lite-generate-preview", resolution: "720p", durationSeconds: 4 }), 0.2);
-  assert.equal(estimateVideoUsd({ model: "veo-3.1-generate-preview", resolution: "4k", durationSeconds: 8 }), 4.8);
+  // BL-180: the Veo table lines went with the Veo previews. Omni 720p 4 s: 5,792 x 4 = 23,168 x $17.50/1M = $0.40544 + 2 input
+  // tokens x $1.50/1M + 2,000 x $9/1M = $0.423443 -> $0.4235; 6 s: 34,752 x $17.50/1M = $0.60816 + $0.018003 = $0.626163 -> $0.6262.
+  assert.equal(estimateVideoUsd({ model: "gemini-omni-1.1-flash", resolution: "720p", durationSeconds: 4, promptChars: 5, inputImages: 0 }), 0.4235);
+  assert.equal(estimateVideoUsd({ model: "gemini-omni-1.1-flash", resolution: "720p", durationSeconds: 6, promptChars: 5, inputImages: 0 }), 0.6262);
   // AC-GM-07's usage: 1000×1.5e-6 + 1680×30e-6 + 300×7.5e-6 = 0.0015 + 0.0504 + 0.00225 = 0.05415 → 0.0542
   assert.equal(imageCostFromUsage("gemini-nano-banana-2.1", { inputTokens: 1000, outputTokens: 1680, thoughtTokens: 300, outputByModality: { image: 1680 } }), 0.0542);
 });
@@ -416,11 +408,11 @@ test("AC-GM-04: a request over the day's limit is refused naming it; a dry-run a
     seedJob(h.store, "gm_today", { costUsd: 4.5 });
     seedJob(h.store, "gm_yesterday", { createdAt: new Date(2026, 9, 9, 23, 0, 0), costUsd: 4.5 });
     const dry = (await h.services.createJob({ ...videoJob(), dryRun: true }, "factory")) as Record<string, unknown>;
-    assert.deepEqual([dry.estimateUsd, dry.allowed], [0.96, false]);
-    assert.deepEqual((dry.refusal as { details: unknown }).details, { limit: "per_day", limitUsd: 5, spentUsd: 4.5, estimateUsd: 0.96 });
+    assert.deepEqual([dry.estimateUsd, dry.allowed], [0.9303, false]);
+    assert.deepEqual((dry.refusal as { details: unknown }).details, { limit: "per_day", limitUsd: 5, spentUsd: 4.5, estimateUsd: 0.9303 });
     assert.equal(h.store.jobs.size, 2, "a dry-run stores nothing");
     const details = await expectCode(h.services.createJob(videoJob(), "factory"), "gemini_limit_exceeded");
-    assert.deepEqual(details, { limit: "per_day", limitUsd: 5, spentUsd: 4.5, estimateUsd: 0.96 });
+    assert.deepEqual(details, { limit: "per_day", limitUsd: 5, spentUsd: 4.5, estimateUsd: 0.9303 });
     const spend = await h.services.spend();
     assert.deepEqual([spend.todayUsd, spend.monthUsd], [4.5, 9], "yesterday's job counts toward the month only");
     assert.deepEqual(h.calls, []);
@@ -563,14 +555,15 @@ test("AC-GM-05: per-model rules refuse with gemini_invalid_params naming the fie
       [imageJob({ model: "gemini-3.1-flash-lite-image", image: { size: "2K", aspectRatio: "1:1" } }), "image.size"],
       [imageJob({ image: { size: "2k", aspectRatio: "1:1" } }), "image.size"],
       [imageJob({ image: { size: "1K", aspectRatio: "7:5" } }), "image.aspectRatio"],
-      [imageJob({ model: "veo-3.1-generate-preview" }), "model"],
-      [videoJob({ model: "veo-3.1-lite-generate-preview", video: { resolution: "4k", aspectRatio: "16:9", durationSeconds: 8 } }), "video.resolution"],
-      [videoJob({ video: { resolution: "1080p", aspectRatio: "16:9", durationSeconds: 6 } }), "video.durationSeconds"],
+      // Changed 2026-10-17 (BL-180, AGENTS.md §L): the Veo-only cases (4k, 1080p needing 8 s, reference images on 4 s) went with
+      // the Veo previews; a Veo id is now refused as a model.
+      [imageJob({ model: "gemini-omni-1.1-flash" }), "model"],
+      [videoJob({ model: "veo-3.1-fast-generate-preview" }), "model"],
+      [videoJob({ video: { resolution: "4k", aspectRatio: "16:9", durationSeconds: 8 } }), "video.resolution"],
       [videoJob({ video: { resolution: "720p", aspectRatio: "1:1", durationSeconds: 4 } }), "video.aspectRatio"],
       [videoJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 5 } }), "video.durationSeconds"],
       [videoJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 8, inputs: { lastFrame: "a.png" } } }), "video.inputs.lastFrame"],
-      [videoJob({ model: "veo-3.1-lite-generate-preview", video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 8, inputs: { referenceImages: ["a.png"] } } }), "video.inputs.referenceImages"],
-      [videoJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 4, inputs: { referenceImages: ["a.png"] } } }), "video.durationSeconds"],
+      [videoJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 8, inputs: { referenceImages: ["a.png"] } } }), "video.inputs.referenceImages"],
       [videoJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 8, inputs: { firstFrame: "a.png", referenceImages: ["b.png"] } } }), "video.inputs.referenceImages"],
       [videoJob({ prompt: "x".repeat(4001) }), "prompt"],
       [{ ...videoJob(), image: { size: "1K", aspectRatio: "1:1" } }, "image"],
@@ -661,40 +654,8 @@ test("AC-GM-07: an image job makes one call, writes the image under From YTM/gem
 
 // ---------------------------------------------------------------------------------------------------------------- AC-GM-08
 
-// Changed 2026-10-13 (BL-179), with justification (AGENTS.md §L): this test sent first/last frames to Veo. Google rejects them on
-// `predictLongRunning` (HTTP 400 "`inlineData` isn't supported by this model", job gm_7d1d80b2; Veo page: frames only through
-// generateContent), so FO-REQ-0021 refuses Veo frames before any call -- the operation flow this test proves is unchanged and
-// now runs without frames; frames are Omni's (the BL-179 tests below).
-test("AC-GM-08: a video job starts the operation, stays running while Google works, then downloads video-1.mp4 and costs its table price", async () => {
-  const h = await harness();
-  try {
-    const { job } = (await h.services.createJob(videoJob({ video: { resolution: "1080p", aspectRatio: "9:16", durationSeconds: 8 } }), "factory")) as { job: { jobId: string } };
-    await h.runTick();
-    const started = h.calls[0].request as GeminiVideoRequest;
-    assert.deepEqual([started.model, started.resolution, started.aspectRatio, started.durationSeconds], ["veo-3.1-fast-generate-preview", "1080p", "9:16", 8]);
-    assert.deepEqual([started.firstFrame, started.lastFrame], [undefined, undefined]);
-    let row = h.store.jobs.get(job.jobId)!;
-    assert.deepEqual([row.status, row.remoteName], ["running", "models/veo-3.1-fast-generate-preview/operations/op1"]);
-    h.behaviour.getVideoOperation = async () => ({ done: false });
-    await h.runTick();
-    assert.equal(h.calls.length, 1, "not polled before its next time");
-    h.clock.at = new Date(h.clock.at.getTime() + 11_000);
-    await h.runTick();
-    assert.deepEqual(h.calls.map((c) => c.method), ["startVideo", "getVideoOperation"]);
-    assert.equal(h.store.jobs.get(job.jobId)!.status, "running");
-    h.behaviour.getVideoOperation = async () => ({ done: true, videoUri: "https://generativelanguage.googleapis.com/v1beta/files/f:download?alt=media", error: null, blockReason: null });
-    h.clock.at = new Date(h.clock.at.getTime() + 11_000);
-    await h.runTick();
-    row = h.store.jobs.get(job.jobId)!;
-    assert.deepEqual([row.status, row.costUsd, row.costBasis], ["done", 0.96, "price_table"]);
-    const dir = path.join(h.fromYtm, "gemini", job.jobId);
-    assert.deepEqual(await readFile(path.join(dir, "video-1.mp4")), Buffer.from("MP4DATA"));
-    assert.equal(h.registered[0].assetType, "generated_video");
-    assert.equal(JSON.parse(await readFile(path.join(dir, "manifest.json"), "utf8")).outputs[0].path, `gemini/${job.jobId}/video-1.mp4`);
-  } finally {
-    await h.cleanup();
-  }
-});
+// BL-180 (AGENTS.md §L): this criterion's Veo operation flow (start, poll, download at the table price) went with the Veo
+// previews (owner, msg 2902). Omni's one-call flow and its link-delivered download are proven by the BL-179 tests below.
 
 // ---------------------------------------------------------------------------------------------------------------- AC-GM-09
 
@@ -778,41 +739,27 @@ test("AC-GM-09: a request that was sent and then timed out is gemini_timeout at 
   }
 });
 
-test("AC-GM-09: a finished Veo operation with an error, or with no video, is not charged", async () => {
-  for (const [operation, code] of [
-    [{ done: true, videoUri: null, error: null, blockReason: "child safety" }, "gemini_blocked"],
-    [{ done: true, videoUri: null, error: { code: "invalid_argument", message: "bad aspect" }, blockReason: null }, "gemini_invalid_request"],
-  ] as const) {
-    const h = await harness();
-    try {
-      h.behaviour.getVideoOperation = async () => operation;
-      const { job } = (await h.services.createJob(videoJob(), "factory")) as { job: { jobId: string } };
-      await h.runTick();
-      h.clock.at = new Date(h.clock.at.getTime() + 11_000);
-      await h.runTick();
-      const row = h.store.jobs.get(job.jobId)!;
-      assert.deepEqual([row.status, row.errorCode, row.costUsd, row.costBasis], ["failed", code, 0, "not_charged"]);
-    } finally {
-      await h.cleanup();
-    }
-  }
-});
+// BL-180: the "finished Veo operation with an error" case went with Veo; an Omni block is the BL-179 test below.
 
 // ---------------------------------------------------------------------------------------------------------------- AC-GM-10
+
+const OMNI_LINK = "https://generativelanguage.googleapis.com/v1beta/files/f9:download?alt=media";
 
 test("AC-GM-10: at startup a job cut mid-call fails at its estimate; a running video is polled again; an uncollected video gives up after 47 h", async () => {
   const h = await harness();
   try {
     seedJob(h.store, "gm_cut", { status: "submitting", estimateUsd: 0.0656, costUsd: null, costBasis: null });
-    seedJob(h.store, "gm_video", { kind: "video", model: "veo-3.1-fast-generate-preview", status: "running", remoteName: "models/veo-3.1-fast-generate-preview/operations/op9", estimateUsd: 0.96, costUsd: null, costBasis: null, submittedAt: new Date(h.clock.at.getTime() - 60_000), paramsJson: JSON.stringify({ resolution: "1080p", aspectRatio: "16:9", durationSeconds: 8 }) });
-    seedJob(h.store, "gm_old", { kind: "video", status: "running", remoteName: "models/v/operations/old", estimateUsd: 0.4, costUsd: null, costBasis: null, submittedAt: new Date(h.clock.at.getTime() - 48 * 3600_000) });
+    // Changed 2026-10-17 (BL-180): the running videos were Veo operations; since Veo was removed a running video is an Omni
+    // video Google delivered as a link, whose cost is already known from its counts.
+    seedJob(h.store, "gm_video", { kind: "video", model: "gemini-omni-1.1-flash", status: "running", remoteName: OMNI_LINK, estimateUsd: 0.9303, costUsd: 0.91, costBasis: "usage", submittedAt: new Date(h.clock.at.getTime() - 60_000), paramsJson: JSON.stringify({ resolution: "1080p", aspectRatio: "16:9", durationSeconds: 4 }) });
+    seedJob(h.store, "gm_old", { kind: "video", model: "gemini-omni-1.1-flash", status: "running", remoteName: OMNI_LINK, estimateUsd: 0.4, costUsd: null, costBasis: null, submittedAt: new Date(h.clock.at.getTime() - 48 * 3600_000) });
     assert.equal(await h.worker.bootSweep(), 1);
     const cut = h.store.jobs.get("gm_cut")!;
     assert.deepEqual([cut.status, cut.errorCode, cut.costUsd, cut.costBasis], ["failed", "gemini_interrupted", 0.0656, "unknown_outcome"]);
     assert.equal(h.store.jobs.get("gm_video")!.status, "running");
     await h.runTick();
-    assert.equal(h.store.jobs.get("gm_video")!.status, "done");
-    assert.deepEqual(h.calls.filter((c) => c.method === "getVideoOperation").map((c) => c.request), ["models/veo-3.1-fast-generate-preview/operations/op9"]);
+    assert.deepEqual([h.store.jobs.get("gm_video")!.status, h.store.jobs.get("gm_video")!.costUsd], ["done", 0.91]);
+    assert.deepEqual(h.calls.filter((c) => c.method === "downloadVideo").map((c) => (c.request as { uri: string }).uri), [OMNI_LINK]);
     const old = h.store.jobs.get("gm_old")!;
     assert.deepEqual([old.status, old.errorCode, old.costUsd, old.costBasis], ["failed", "gemini_expired", 0.4, "unknown_outcome"]);
     assert.equal(await h.worker.hasActiveJobs(), false);
@@ -847,7 +794,7 @@ test("AC-GM-12: switched off, a queued job fails gemini_disabled unsent at no co
   const h = await harness();
   try {
     const { job } = (await h.services.createJob(imageJob(), "factory")) as { job: { jobId: string } };
-    seedJob(h.store, "gm_video", { kind: "video", model: "veo-3.1-fast-generate-preview", status: "running", remoteName: "models/veo-3.1-fast-generate-preview/operations/op2", estimateUsd: 0.96, costUsd: null, costBasis: null, submittedAt: h.clock.at, paramsJson: JSON.stringify({ resolution: "1080p", aspectRatio: "16:9", durationSeconds: 8 }) });
+    seedJob(h.store, "gm_video", { kind: "video", model: "gemini-omni-1.1-flash", status: "running", remoteName: OMNI_LINK, estimateUsd: 0.9303, costUsd: 0.91, costBasis: "usage", submittedAt: h.clock.at, paramsJson: JSON.stringify({ resolution: "1080p", aspectRatio: "16:9", durationSeconds: 4 }) });
     await h.services.updateSettings({ enabled: false });
     await h.runTick();
     const row = h.store.jobs.get(job.jobId)!;
@@ -1057,22 +1004,7 @@ test("review 2: no image with a non-terminal status counts the estimate whatever
   }
 });
 
-test("review 2: a video whose operation Google no longer has (404) fails at its estimate instead of polling for 47 h", async () => {
-  const h = await harness();
-  try {
-    h.behaviour.getVideoOperation = async () => {
-      throw gatewayError("gemini_request_rejected", { status: 404, blocked: false });
-    };
-    const { job } = (await h.services.createJob(videoJob(), "factory")) as { job: { jobId: string } };
-    await h.runTick();
-    h.clock.at = new Date(h.clock.at.getTime() + 11_000);
-    await h.runTick();
-    const row = h.store.jobs.get(job.jobId)!;
-    assert.deepEqual([row.status, row.errorCode, row.costUsd, row.costBasis], ["failed", "gemini_expired", 0.96, "unknown_outcome"]);
-  } finally {
-    await h.cleanup();
-  }
-});
+// BL-180: "a Veo operation Google no longer has" went with Veo; a link Google no longer has is the BL-179 review test below.
 
 test("review 2: a key with an invisible character is refused before Google is called", async () => {
   const h = await harness({ withKey: false });
@@ -1088,7 +1020,7 @@ test("review 2: a key with an invisible character is refused before Google is ca
 // well after the longest call -- and Omni's synchronous video call (15 min) is now the longest call.
 test("review 2: an abandoned `submitting` job is only swept well after the longest call could still be running", () => {
   // The sweep must never fail a job whose image, video-start or Omni video call can still be in flight in another bundle.
-  assert.ok(GEMINI_LIMITS.staleSubmittingMs >= Math.max(GEMINI_IMAGE_TIMEOUT_MS, GEMINI_VIDEO_START_TIMEOUT_MS, GEMINI_INTERACTIONS_VIDEO_TIMEOUT_MS) + 5 * 60_000);
+  assert.ok(GEMINI_LIMITS.staleSubmittingMs >= Math.max(GEMINI_IMAGE_TIMEOUT_MS, GEMINI_INTERACTIONS_VIDEO_TIMEOUT_MS) + 5 * 60_000);
   assert.ok(Object.is(ceil4(0), 0));
 });
 
@@ -1131,19 +1063,39 @@ test("BL-179: the acceptance case -- Omni 8 s 720p with first = last frame is es
   }
 });
 
-test("BL-179: frames on a Veo model are refused before anything is stored or sent (free), naming the model that takes them", async () => {
+// ---------------------------------------------------------------------------------------------------------------- BL-180
+// Owner, Telegram msg 2902: the three Veo 3.1 previews are removed (Google shuts them down on 2026-10-22). Expected: a Veo id is
+// refused as a model before anything is stored or sent; the status lists Omni as the only video model; a Veo job left queued is
+// never sent (cost 0); a Veo job left running (an operation name, not a link) is not polled and fails at its estimate.
+const VEO_IDS = ["veo-3.1-generate-preview", "veo-3.1-fast-generate-preview", "veo-3.1-lite-generate-preview"];
+
+test("BL-180: a Veo id is refused as a model before anything is stored or sent; the status lists Omni as the only video model", async () => {
   const h = await harness();
   try {
-    await writeFile(path.join(h.sent, "a.png"), "A");
-    for (const model of ["veo-3.1-generate-preview", "veo-3.1-fast-generate-preview", "veo-3.1-lite-generate-preview"]) {
-      const details = await expectCode(
-        h.services.createJob(videoJob({ model, video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 8, inputs: { firstFrame: "a.png" } } }), "factory"),
-        "gemini_invalid_params"
-      );
-      assert.equal(details.field, "video.inputs.firstFrame", model);
+    for (const model of VEO_IDS) {
+      const details = await expectCode(h.services.createJob(videoJob({ model, video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 8 } }), "factory"), "gemini_invalid_params");
+      assert.equal(details.field, "model", model);
     }
     assert.equal(h.store.jobs.size, 0);
     assert.deepEqual(h.calls, []);
+    const status = (await h.services.getStatus()) as { models: Array<{ model: string; kind: string }> };
+    assert.deepEqual(status.models.filter((m) => m.kind === "video").map((m) => m.model), ["gemini-omni-1.1-flash"]);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("BL-180: a Veo job left queued is failed unsent at no cost; one left running is not polled and fails at its estimate", async () => {
+  const h = await harness();
+  try {
+    seedJob(h.store, "gm_veo_queued", { kind: "video", model: "veo-3.1-lite-generate-preview", status: "queued", estimateUsd: 0.4, costUsd: null, costBasis: null, submittedAt: null, finishedAt: null, paramsJson: JSON.stringify({ resolution: "720p", aspectRatio: "16:9", durationSeconds: 8 }) });
+    seedJob(h.store, "gm_veo_running", { kind: "video", model: "veo-3.1-fast-generate-preview", status: "running", remoteName: "models/veo-3.1-fast-generate-preview/operations/op9", estimateUsd: 0.96, costUsd: null, costBasis: null, submittedAt: h.clock.at, finishedAt: null, paramsJson: JSON.stringify({ resolution: "1080p", aspectRatio: "16:9", durationSeconds: 8 }) });
+    await h.runTick();
+    const queued = h.store.jobs.get("gm_veo_queued")!;
+    assert.deepEqual([queued.status, queued.errorCode, queued.costUsd, queued.costBasis], ["failed", "gemini_invalid_request", 0, "not_charged"]);
+    const running = h.store.jobs.get("gm_veo_running")!;
+    assert.deepEqual([running.status, running.errorCode, running.costUsd, running.costBasis], ["failed", "gemini_expired", 0.96, "unknown_outcome"]);
+    assert.deepEqual(h.calls, [], "nothing is sent to Google for either");
   } finally {
     await h.cleanup();
   }

@@ -120,10 +120,9 @@ export function checkJobRules(input: CreateJobInput): void {
     throw geminiInvalidParams("video.resolution", `${input.model} offers ${Object.keys(spec.perSecond).join(", ")}.`);
   }
   if (!(GEMINI_VIDEO_DURATIONS as readonly number[]).includes(video.durationSeconds)) throw geminiInvalidParams("video.durationSeconds", "Duration is 4, 6 or 8 seconds.");
-  if (spec.transport === "veo" && video.resolution !== "720p" && video.durationSeconds !== 8) throw geminiInvalidParams("video.durationSeconds", "1080p and 4k need an 8-second video.");
   const inputs = video.inputs ?? {};
   if (inputs.lastFrame && !inputs.firstFrame) throw geminiInvalidParams("video.inputs.lastFrame", "A last frame needs a first frame.");
-  if (spec.transport === "interactions" && video.personGeneration) {
+  if (video.personGeneration) {
     throw geminiInvalidParams("video.personGeneration", `${input.model} has no personGeneration setting (describe people in the prompt).`);
   }
   if (inputs.referenceImages && inputs.referenceImages.length > 0) {
@@ -131,10 +130,9 @@ export function checkJobRules(input: CreateJobInput): void {
     if (video.durationSeconds !== 8) throw geminiInvalidParams("video.durationSeconds", "Reference images need an 8-second video.");
     if (inputs.firstFrame) throw geminiInvalidParams("video.inputs.referenceImages", "Reference images are not combined with a first frame.");
   }
-  // BL-179 (FO-REQ-0021): refused before any call (free) -- Veo's `predictLongRunning` rejects frames with a 400, and its
-  // previews shut down on 2026-10-22; Omni takes them.
+  // BL-179 (FO-REQ-0021): a model without frames refuses them before any call (free). Since BL-180 every video model takes them.
   if ((inputs.firstFrame || inputs.lastFrame) && !spec.frames) {
     const withFrames = Object.entries(GEMINI_VIDEO_MODELS).filter(([, s]) => s.frames).map(([model]) => model);
-    throw geminiInvalidParams("video.inputs.firstFrame", `${input.model} does not take first/last frames here (Google accepts them for Veo only through generateContent); use ${withFrames.join(" or ")}.`);
+    throw geminiInvalidParams("video.inputs.firstFrame", `${input.model} does not take first/last frames; use ${withFrames.join(" or ")}.`);
   }
 }

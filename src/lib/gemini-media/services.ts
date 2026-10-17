@@ -55,7 +55,7 @@ export type GeminiStore = {
   updateJob(jobId: string, fromStatus: GeminiMediaJobStatusValue, set: Partial<StoredGeminiMediaJob>): Promise<boolean>;
 };
 
-export type GeminiApiPort = Pick<GeminiApiClient, "checkKey" | "generateImage" | "generateVideo" | "startVideo" | "getVideoOperation" | "downloadVideo">;
+export type GeminiApiPort = Pick<GeminiApiClient, "checkKey" | "generateImage" | "generateVideo" | "downloadVideo">;
 
 export type ResolvedInputFile = { path: string; bytes: number; identity?: { dev: number; ino: number } };
 
