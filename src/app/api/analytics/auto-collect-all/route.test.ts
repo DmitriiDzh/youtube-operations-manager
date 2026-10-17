@@ -255,3 +255,51 @@ test("BL-151: a still-running import of the peers' rows means no collection on t
   assert.deepEqual(calls, []);
   assert.equal(isRunning(), false);
 });
+
+// BL-196 AC-FS-03 (FAST_STARTUP_PLAN.md §2 B): a reload while the active channel is already current answers at once, before the other
+// computer's import or any collection; the import, the active channel's part and every other channel then run after the answer in
+// the same order as a collecting load, and the run is released at the end.
+test("AC-FS-03: an already-current active channel is answered at once; import and the rest run after the answer", async () => {
+  const { calls, deferred, deps, isRunning } = setup();
+  const checked: unknown[] = [];
+  const res = await createAutoCollectAllHandler({
+    ...deps,
+    isActiveCurrent: async (input) => (checked.push(input), true),
+    importPeers: async () => {
+      calls.push(["importPeers"]);
+      return { imported: 1, pending: false };
+    },
+    publishLocal: async () => void calls.push(["publishLocal"]),
+  })();
+  assert.deepEqual(await res.json(), { channels: [{ channelId: "UC_A", collection: "current" }], catchUpScheduled: false, importedFromPeers: 0 });
+  assert.deepEqual(checked, [{ credentialRef: { userId: "uS" }, channelId: "UC_A" }]);
+  assert.deepEqual(calls, [], "no import and no collection before the answer");
+  assert.equal(isRunning(), true);
+  await deferred[0]();
+  assert.deepEqual(calls.slice(0, 3), [["importPeers"], ["active", "uS", "UC_A"], ["background", "uS", "UC_A"]]);
+  assert.deepEqual(calls.at(-1), ["publishLocal"]);
+  assert.equal(isRunning(), false);
+});
+
+test("AC-FS-03: a due active channel (or a failing check) keeps the old path: import first, then the active collection", async () => {
+  for (const isActiveCurrent of [async () => false, async () => Promise.reject(new Error("db busy"))]) {
+    const { calls, deps } = setup();
+    await createAutoCollectAllHandler({
+      ...deps,
+      isActiveCurrent,
+      importPeers: async () => {
+        calls.push(["importPeers"]);
+        return { imported: 0, pending: false };
+      },
+    })();
+    assert.deepEqual(calls, [["importPeers"], ["active", "uS", "UC_A"]]);
+  }
+});
+
+test("AC-FS-03: on the fast path a still-running import means nothing else runs, and the run is released", async () => {
+  const { calls, deferred, deps, isRunning } = setup();
+  await createAutoCollectAllHandler({ ...deps, isActiveCurrent: async () => true, importPeers: async () => ({ imported: 0, pending: true }) })();
+  await deferred[0]();
+  assert.deepEqual(calls, []);
+  assert.equal(isRunning(), false);
+});

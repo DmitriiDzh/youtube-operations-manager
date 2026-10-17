@@ -24,6 +24,8 @@ export type AutoCollectAllDeps = {
   publishLocal?: () => Promise<unknown>;
   /** BL-171: the own-video comments (their own module, a Data API read), after the analytics steps. */
   collectDueComments?: (input: { credentialRef: { userId: string }; channelId: string }) => Promise<unknown>;
+  /** BL-196: whether the active channel's automatic collection would be refused as current (read-only, no import, no quota). */
+  isActiveCurrent?: (input: { credentialRef: { userId: string }; channelId: string }) => Promise<boolean>;
 };
 
 // BL-142 (owner, Telegram 2026-10-06, msgs 1867/1868/1874): the dashboard's automatic Analytics collection, once per
@@ -35,10 +37,16 @@ export type AutoCollectAllDeps = {
 //   not hold the dashboard).
 // - One all-channels run at a time per process: a reload or a second tab while one is still going does nothing.
 // - The active channel is resolved once and used throughout; the response holds only that channel (ADR 0004).
+let sharedCore: ReturnType<typeof createAnalyticsCore> | null = null;
+/** One analytics core for the route's default deps (the collection and the BL-196 "current?" check use the same one). */
+function defaultCore() {
+  return (sharedCore ??= createAnalyticsCore());
+}
+
 export function createAutoCollectAllHandler(
   deps: AutoCollectAllDeps = {
     getSession: () => getServerSession(authOptions),
-    core: createAnalyticsCore(),
+    core: defaultCore(),
     getActiveChannelId: (userId) => createChannelAccessCore().getActiveChannelId(userId),
     runAfter: (work) => after(work),
     beginRun: beginAllChannelsRun,
@@ -46,8 +54,72 @@ export function createAutoCollectAllHandler(
     importPeers: importPeersFirst,
     publishLocal: () => getAnalyticsDataSync().publishLocal(),
     collectDueComments: (input) => createVideoCommentsCore().collectDueComments(input),
+    isActiveCurrent: (input) => defaultCore().isAutoCollectionCurrent(input),
   }
 ) {
+  /** Everything after the active channel's part, in order (BL-196: shared by the collected and the already-current loads). */
+  async function runBackgroundPart(sessionUserId: string, activeChannelId: string | null, active: Awaited<ReturnType<AutoCollectAllDeps["core"]["runAutoCollectionForChannels"]>>) {
+    const background = await deps.core.runAutoCollectionForChannels({ sessionUserId, activeChannelId, which: "background" });
+    for (const { channelId, credentialRef } of [...active.catchUps, ...background.catchUps]) {
+      try {
+        await runTrackedOperation({
+          registry: getOperationRegistry(),
+          kind: "analytics-backfill",
+          channelId,
+          title: "Collecting earlier analytics history",
+          cancellable: false,
+          work: (progress) => deps.core.runHistoryCatchUp({ credentialRef, channelId }, { progress }),
+          messageFor: (done) => (done.ranCatchUp ? `${done.videosQueried} video(s) back-filled.` : "Nothing to back-fill."),
+        });
+      } catch {
+        // Already running, reads switched off, quota reserve: planned again on the next dashboard open.
+      }
+    }
+    // BL-166: each collected channel's due day-7 / day-28 milestones, after the history (both are background reads).
+    for (const { channelId, credentialRef } of [...active.milestones, ...background.milestones]) {
+      try {
+        await deps.core.collectDueMilestones({ credentialRef, channelId });
+      } catch {
+        // Reads off, quota, sign-in: nothing was counted against the milestones; the next dashboard open tries again.
+      }
+    }
+    // BL-168: then each such channel's stored traffic sources and devices (a background read too; one channel failing never
+    // stops the next one).
+    for (const { channelId, credentialRef } of [...active.milestones, ...background.milestones]) {
+      try {
+        await deps.core.collectDueBreakdowns({ credentialRef, channelId });
+      } catch {
+        // Reads off, quota, sign-in, an outage: nothing was counted; the next dashboard open tries again.
+      }
+    }
+    // BL-169: then each such channel's stored search terms (the same rules; one channel failing never stops the next one).
+    for (const { channelId, credentialRef } of [...active.milestones, ...background.milestones]) {
+      try {
+        await deps.core.collectDueSearchTerms({ credentialRef, channelId });
+      } catch {
+        // Reads off, quota, sign-in, an outage: nothing was counted; the next dashboard open tries again.
+      }
+    }
+    // BL-191: then each such channel's stored "Suggested videos" sources and the titles of the external ones (the same rules; one
+    // channel failing never stops the next one).
+    for (const { channelId, credentialRef } of [...active.milestones, ...background.milestones]) {
+      try {
+        await deps.core.collectDueSuggestedSources({ credentialRef, channelId });
+      } catch {
+        // Reads off, quota, sign-in, an outage: nothing was counted; the next dashboard open tries again.
+      }
+    }
+    // BL-171: then each such channel's own-video comments, once a Pacific day (a Data API read; one channel failing never stops
+    // the next one).
+    for (const { channelId, credentialRef } of [...active.milestones, ...background.milestones]) {
+      try {
+        await deps.collectDueComments?.({ credentialRef, channelId });
+      } catch {
+        // Reads off, quota, sign-in, an outage: the day is not marked; the next dashboard open tries again.
+      }
+    }
+  }
+
   return async function POST() {
     const session = await deps.getSession();
     const sessionUserId = session?.user?.id;
@@ -56,6 +128,33 @@ export function createAutoCollectAllHandler(
     if (!deps.beginRun()) return NextResponse.json({ channels: [], catchUpScheduled: false, inProgress: true });
     let handedOff = false;
     try {
+      const activeChannelId = await deps.getActiveChannelId(sessionUserId);
+      // BL-196 (FAST_STARTUP_PLAN.md §2 B): a reload while the active channel is already current answers at once; the other
+      // computer's import, the active channel's weekly report and catch-up plan and every other channel run after the answer, in the
+      // same order as a collecting load. A failing check falls back to the full path.
+      const activeCurrent =
+        activeChannelId && deps.isActiveCurrent
+          ? await deps.isActiveCurrent({ credentialRef: { userId: sessionUserId }, channelId: activeChannelId }).catch(() => false)
+          : false;
+      if (activeChannelId && activeCurrent) {
+        deps.runAfter(async () => {
+          try {
+            const peers = deps.importPeers ? await deps.importPeers() : { imported: 0, pending: false };
+            // Still importing: as on a collecting load, nothing runs on this load.
+            if (peers.pending) return;
+            const active = await deps.core.runAutoCollectionForChannels({ sessionUserId, activeChannelId, which: "active" });
+            await runBackgroundPart(sessionUserId, activeChannelId, active);
+          } catch {
+            // Background work is best-effort; the next dashboard load tries again.
+          } finally {
+            deps.endRun();
+            await deps.publishLocal?.().catch(() => undefined);
+          }
+        });
+        handedOff = true;
+        return NextResponse.json({ channels: [{ channelId: activeChannelId, collection: "current" }], catchUpScheduled: false, importedFromPeers: 0 });
+      }
+
       const peers = deps.importPeers ? await deps.importPeers() : { imported: 0, pending: false };
       if (peers.pending) {
         // The other computer's rows are still arriving: collecting now would race that import (plan: wait for the next load).
@@ -63,70 +162,11 @@ export function createAutoCollectAllHandler(
         return NextResponse.json({ channels: [], catchUpScheduled: false, importedFromPeers: 0, importPending: true });
       }
       const importedFromPeers = peers.imported;
-      const activeChannelId = await deps.getActiveChannelId(sessionUserId);
       const active = await deps.core.runAutoCollectionForChannels({ sessionUserId, activeChannelId, which: "active" });
 
       deps.runAfter(async () => {
         try {
-          const background = await deps.core.runAutoCollectionForChannels({ sessionUserId, activeChannelId, which: "background" });
-          for (const { channelId, credentialRef } of [...active.catchUps, ...background.catchUps]) {
-            try {
-              await runTrackedOperation({
-                registry: getOperationRegistry(),
-                kind: "analytics-backfill",
-                channelId,
-                title: "Collecting earlier analytics history",
-                cancellable: false,
-                work: (progress) => deps.core.runHistoryCatchUp({ credentialRef, channelId }, { progress }),
-                messageFor: (done) => (done.ranCatchUp ? `${done.videosQueried} video(s) back-filled.` : "Nothing to back-fill."),
-              });
-            } catch {
-              // Already running, reads switched off, quota reserve: planned again on the next dashboard open.
-            }
-          }
-          // BL-166: each collected channel's due day-7 / day-28 milestones, after the history (both are background reads).
-          for (const { channelId, credentialRef } of [...active.milestones, ...background.milestones]) {
-            try {
-              await deps.core.collectDueMilestones({ credentialRef, channelId });
-            } catch {
-              // Reads off, quota, sign-in: nothing was counted against the milestones; the next dashboard open tries again.
-            }
-          }
-          // BL-168: then each such channel's stored traffic sources and devices (a background read too; one channel failing never
-          // stops the next one).
-          for (const { channelId, credentialRef } of [...active.milestones, ...background.milestones]) {
-            try {
-              await deps.core.collectDueBreakdowns({ credentialRef, channelId });
-            } catch {
-              // Reads off, quota, sign-in, an outage: nothing was counted; the next dashboard open tries again.
-            }
-          }
-          // BL-169: then each such channel's stored search terms (the same rules; one channel failing never stops the next one).
-          for (const { channelId, credentialRef } of [...active.milestones, ...background.milestones]) {
-            try {
-              await deps.core.collectDueSearchTerms({ credentialRef, channelId });
-            } catch {
-              // Reads off, quota, sign-in, an outage: nothing was counted; the next dashboard open tries again.
-            }
-          }
-          // BL-191: then each such channel's stored "Suggested videos" sources and the titles of the external ones (the same rules; one
-          // channel failing never stops the next one).
-          for (const { channelId, credentialRef } of [...active.milestones, ...background.milestones]) {
-            try {
-              await deps.core.collectDueSuggestedSources({ credentialRef, channelId });
-            } catch {
-              // Reads off, quota, sign-in, an outage: nothing was counted; the next dashboard open tries again.
-            }
-          }
-          // BL-171: then each such channel's own-video comments, once a Pacific day (a Data API read; one channel failing never stops
-          // the next one).
-          for (const { channelId, credentialRef } of [...active.milestones, ...background.milestones]) {
-            try {
-              await deps.collectDueComments?.({ credentialRef, channelId });
-            } catch {
-              // Reads off, quota, sign-in, an outage: the day is not marked; the next dashboard open tries again.
-            }
-          }
+          await runBackgroundPart(sessionUserId, activeChannelId, active);
         } catch {
           // Background work is best-effort; the next dashboard load tries again.
         } finally {

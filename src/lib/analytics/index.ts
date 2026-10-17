@@ -61,10 +61,11 @@ export function createAnalyticsCore() {
       if (!(await guard.isBackgroundReadAllowed("analytics"))) return { ranCatchUp: false } as const;
       return services.runHistoryCatchUp(input, options);
     }, context),
-    runAutoCollectionIfStale: quotaScoped(async (input: unknown) => {
-      if (!(await guard.isBackgroundReadAllowed("analytics"))) return { ranCollection: false } as const;
-      return services.runAutoCollectionIfStale(input);
-    }, context),
+    // BL-196: the reserve is asked only once the freshness gate says a collection is due (it costs Cloud Monitoring calls).
+    runAutoCollectionIfStale: quotaScoped(
+      (input: unknown) => services.runAutoCollectionIfStale(input, { beforeCollect: () => guard.isBackgroundReadAllowed("analytics") }),
+      context
+    ),
     // BL-181: the evening re-collect is a background read too (same reserve, same work context).
     runEveningCollectionIfDue: quotaScoped(async (input: unknown) => {
       if (!(await guard.isBackgroundReadAllowed("analytics"))) return { ranCollection: false, reason: "quota_reserve" } as const;
