@@ -33,9 +33,9 @@ import { integratedLoudness, LOUDNESS_TARGET_LUFS, matchedVolume } from "./loudn
 import { MediaReviewPlayer, formatPlayerTime, type FrequencyMark, type ReviewMarker, type ReviewPlayerHandle } from "./media-review-player";
 import { ToggleSwitch } from "./toggle-switch";
 import { BlockingDialog } from "./blocking-dialog";
+import { BusyOverlay, useBusyAction } from "./busy-feedback";
 import { ConfirmDialog } from "./confirm-dialog";
 import { InfoTooltip } from "./info-tooltip";
-import { Spinner } from "./operation-progress/spinner";
 import { Popover } from "./popover";
 import { formatDisplayDate, formatDisplayDateTime } from "@/lib/shared-formatting";
 import type { Translate, UiTextKey } from "@/lib/ui-text";
@@ -578,9 +578,6 @@ function playedSrc(base: string, entry: Pick<ScreenEntry, "itemKey" | "attemptRe
     : `${base}/audition?itemKey=${encodeURIComponent(entry.itemKey)}&attemptRef=${encodeURIComponent(entry.attemptRef)}`;
 }
 
-/** Owner, msg 2916: the longest the screen waits, blocked, for the next track's waveform after a verdict. */
-const AWAIT_TRACK_MAX_MS = 20_000;
-
 function entryKey(e: { itemKey: string; attemptRef: string }): string {
   return `${e.itemKey}\u0000${e.attemptRef}`;
 }
@@ -667,10 +664,11 @@ export function PlanReviewScreen({
   const [referenceId, setReferenceId] = useState<string | null>(null);
   const [onB, setOnB] = useState(false);
   const referenceAudio = useRef<HTMLAudioElement | null>(null);
-  const [busy, setBusy] = useState(false);
-  // Owner, Telegram msg 2916: after a verdict the next track is loaded behind a blurred screen and a loading window.
+  // Owner, Telegram msg 2916; BL-195 (UI_FEEDBACK_CLARITY_PLAN.md stage B): a request runs behind the shared blocking window, and
+  // after a verdict the next track is awaited behind it too (`awaitingSrc`, held until its waveform is ready or 20 s).
+  const busyAction = useBusyAction();
+  const { busy, run: runBusy, hold, release } = busyAction;
   const [awaitingSrc, setAwaitingSrc] = useState<string | null>(null);
-  const blocking = busy || awaitingSrc !== null;
   const [message, setMessage] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
   // BL-162: "copied" after the attempt's id went to the clipboard.
   const [copied, setCopied] = useState(false);
@@ -892,41 +890,40 @@ export function PlanReviewScreen({
         setMessage({ tone: "error", text: t("review.pin.saveFirst") });
         return;
       }
-      setBusy(true);
-      try {
-        const marks = [...(draft.openMark !== null ? [...draft.marks, { start: draft.openMark, end: null, note: null }] : draft.marks), ...(pending ? [pending] : [])];
-        await postJson(t, `${base}/recheck`, {
-          recheckId: recheck.recheckId,
-          ...(answer === "kept" ? { kept: true } : { result: answer, ...(draft.rating !== null ? { rating: draft.rating } : {}), reasons: draft.reasons, markers: marks }),
-          ...(draft.note.trim() ? { note: draft.note.trim() } : {}),
-          ...secondsField(reviewSecondsOf([draftKeyOf(entry)])),
-        });
-        reviewMs.current.delete(draftKeyOf(entry));
-        setMessage({ tone: "ok", text: t("review.recheck.answered", { item: entry.itemKey }) });
-        onChanged?.();
-        const list = walkOf(await load(), filter, wave);
-        visualDrafts.current.delete(draftKeyOf(entry));
-        // The owner moved on while the answer was on its way: stay there, with its draft (review round 3).
-        if (onScreen.current !== entryKey(entry)) {
-          const there = list.findIndex((e) => entryKey(e) === onScreen.current);
-          if (there >= 0) setIndex(there);
-          return;
+      await runBusy(t("review.advancing.saving"), async () => {
+        try {
+          const marks = [...(draft.openMark !== null ? [...draft.marks, { start: draft.openMark, end: null, note: null }] : draft.marks), ...(pending ? [pending] : [])];
+          await postJson(t, `${base}/recheck`, {
+            recheckId: recheck.recheckId,
+            ...(answer === "kept" ? { kept: true } : { result: answer, ...(draft.rating !== null ? { rating: draft.rating } : {}), reasons: draft.reasons, markers: marks }),
+            ...(draft.note.trim() ? { note: draft.note.trim() } : {}),
+            ...secondsField(reviewSecondsOf([draftKeyOf(entry)])),
+          });
+          reviewMs.current.delete(draftKeyOf(entry));
+          setMessage({ tone: "ok", text: t("review.recheck.answered", { item: entry.itemKey }) });
+          onChanged?.();
+          const list = walkOf(await load(), filter, wave);
+          visualDrafts.current.delete(draftKeyOf(entry));
+          // The owner moved on while the answer was on its way: stay there, with its draft (review round 3).
+          if (onScreen.current !== entryKey(entry)) {
+            const there = list.findIndex((e) => entryKey(e) === onScreen.current);
+            if (there >= 0) setIndex(there);
+            return;
+          }
+          // An answered re-check leaves the list here (on another computer's plan it stays, "sent"): look on from where it was.
+          const here = list.findIndex((e) => (e as ScreenEntry).recheck?.recheckId === recheck.recheckId);
+          const next = nextWaitingIndex(list, here >= 0 ? here : index - 1, skipFresh);
+          const to = next >= 0 ? next : Math.max(0, Math.min(here >= 0 ? here : index, list.length - 1));
+          setDraft(draftFor(list[to] as ScreenEntry | undefined));
+          stopB();
+          awaitTrack(entry, list[to] as ScreenEntry | undefined);
+          setIndex(to);
+        } catch (error) {
+          setMessage({ tone: "error", text: error instanceof Error ? error.message : t("review.saveFailed") });
         }
-        // An answered re-check leaves the list here (on another computer's plan it stays, "sent"): look on from where it was.
-        const here = list.findIndex((e) => (e as ScreenEntry).recheck?.recheckId === recheck.recheckId);
-        const next = nextWaitingIndex(list, here >= 0 ? here : index - 1, skipFresh);
-        const to = next >= 0 ? next : Math.max(0, Math.min(here >= 0 ? here : index, list.length - 1));
-        setDraft(draftFor(list[to] as ScreenEntry | undefined));
-        stopB();
-        awaitTrack(entry, list[to] as ScreenEntry | undefined);
-        setIndex(to);
-      } catch (error) {
-        setMessage({ tone: "error", text: error instanceof Error ? error.message : t("review.saveFailed") });
-      } finally {
-        setBusy(false);
-      }
+      });
     },
-    [awaitTrack, base, busy, draft, draftFor, entry, filter, index, load, onChanged, reviewSecondsOf, skipFresh, stopB, t, wave]
+    [awaitTrack, base, busy, draft, draftFor, entry, filter, index, load, onChanged, reviewSecondsOf, runBusy, skipFresh, stopB, t, wave]
   );
 
   const submit = useCallback(
@@ -962,54 +959,53 @@ export function PlanReviewScreen({
         });
         return;
       }
-      setBusy(true);
-      try {
-        const marks = [...(draft.openMark !== null ? [...draft.marks, { start: draft.openMark, end: null, note: null }] : draft.marks), ...(pending ? [pending] : [])];
-        await postJson(t, `${base}/verdict`, {
-          itemKey: entry.itemKey,
-          attemptRef: entry.attemptRef,
-          result,
-          ...(replace ? { replace: true } : {}),
-          ...(draft.rating !== null ? { rating: draft.rating } : {}),
-          reasons: draft.reasons,
-          markers: marks,
-          ...(draft.note.trim() ? { note: draft.note.trim() } : {}),
-          ...secondsField(reviewSecondsOf([draftKeyOf(entry)])),
-        });
-        reviewMs.current.delete(draftKeyOf(entry));
-        setMessage({ tone: "ok", text: t("review.verdictSaved", { item: entry.itemKey, result: resultLabel(t, result) }) });
-        visualDrafts.current.delete(draftKeyOf(entry));
-        onChanged?.();
-        // Auto-advance: the next attempt still waiting after this one, in the refreshed queue.
-        const list = visibleEntries((await load()).entries, filter, wave);
-        // The owner moved on while the verdict was on its way: stay there, with its draft (review round 3).
-        if (onScreen.current !== entryKey(entry)) {
-          const there = list.findIndex((e) => entryKey(e) === onScreen.current);
-          if (there >= 0) setIndex(there);
-          return;
-        }
-        const here = list.findIndex((e) => e.itemKey === entry.itemKey && e.attemptRef === entry.attemptRef);
-        const next = nextWaitingIndex(list, here >= 0 ? here : index, skipFresh);
-        const to = next >= 0 ? next : Math.max(0, here);
-        setDraft(draftFor(list[to] as ScreenEntry | undefined));
-        stopB();
-        awaitTrack(entry, list[to] as ScreenEntry | undefined);
-        setIndex(to);
-      } catch (error) {
-        // The screen's data was stale: the server found a verdict there -- ask now (AC-TC-04).
-        if (error instanceof RequestError && error.code === "plan_verdict_exists") {
-          const existing = (error.details as { existing?: PlanExistingVerdict } | undefined)?.existing;
-          if (existing) {
-            setConfirmReplace({ result, existing, itemKey: entry.itemKey, attemptRef: entry.attemptRef, pickedConfirmed });
+      await runBusy(t("review.advancing.saving"), async () => {
+        try {
+          const marks = [...(draft.openMark !== null ? [...draft.marks, { start: draft.openMark, end: null, note: null }] : draft.marks), ...(pending ? [pending] : [])];
+          await postJson(t, `${base}/verdict`, {
+            itemKey: entry.itemKey,
+            attemptRef: entry.attemptRef,
+            result,
+            ...(replace ? { replace: true } : {}),
+            ...(draft.rating !== null ? { rating: draft.rating } : {}),
+            reasons: draft.reasons,
+            markers: marks,
+            ...(draft.note.trim() ? { note: draft.note.trim() } : {}),
+            ...secondsField(reviewSecondsOf([draftKeyOf(entry)])),
+          });
+          reviewMs.current.delete(draftKeyOf(entry));
+          setMessage({ tone: "ok", text: t("review.verdictSaved", { item: entry.itemKey, result: resultLabel(t, result) }) });
+          visualDrafts.current.delete(draftKeyOf(entry));
+          onChanged?.();
+          // Auto-advance: the next attempt still waiting after this one, in the refreshed queue.
+          const list = visibleEntries((await load()).entries, filter, wave);
+          // The owner moved on while the verdict was on its way: stay there, with its draft (review round 3).
+          if (onScreen.current !== entryKey(entry)) {
+            const there = list.findIndex((e) => entryKey(e) === onScreen.current);
+            if (there >= 0) setIndex(there);
             return;
           }
+          const here = list.findIndex((e) => e.itemKey === entry.itemKey && e.attemptRef === entry.attemptRef);
+          const next = nextWaitingIndex(list, here >= 0 ? here : index, skipFresh);
+          const to = next >= 0 ? next : Math.max(0, here);
+          setDraft(draftFor(list[to] as ScreenEntry | undefined));
+          stopB();
+          awaitTrack(entry, list[to] as ScreenEntry | undefined);
+          setIndex(to);
+        } catch (error) {
+          // The screen's data was stale: the server found a verdict there -- ask now (AC-TC-04).
+          if (error instanceof RequestError && error.code === "plan_verdict_exists") {
+            const existing = (error.details as { existing?: PlanExistingVerdict } | undefined)?.existing;
+            if (existing) {
+              setConfirmReplace({ result, existing, itemKey: entry.itemKey, attemptRef: entry.attemptRef, pickedConfirmed });
+              return;
+            }
+          }
+          setMessage({ tone: "error", text: error instanceof Error ? error.message : t("review.saveFailed") });
         }
-        setMessage({ tone: "error", text: error instanceof Error ? error.message : t("review.saveFailed") });
-      } finally {
-        setBusy(false);
-      }
+      });
     },
-    [answerRecheck, awaitTrack, base, busy, draft, draftFor, entry, filter, index, load, onChanged, reviewSecondsOf, skipFresh, stopB, t, wave]
+    [answerRecheck, awaitTrack, base, busy, draft, draftFor, entry, filter, index, load, onChanged, reviewSecondsOf, runBusy, skipFresh, stopB, t, wave]
   );
 
   // BL-157 (AC-TC-01): this computer claims the waiting track on screen (and the wave it took), renewed every minute;
@@ -1140,31 +1136,30 @@ export function PlanReviewScreen({
   const pickAction = useCallback(
     async (target: { itemKey: string; attemptRef?: string }, action: "pick" | "unpick" | "none_fits" | "clear_none_fits", note?: string | null): Promise<boolean> => {
       if (busy) return false;
-      setBusy(true);
-      try {
-        // A pick or "none fits" decides the item: it carries the seconds spent on the item's attempts since its last decision.
-        const decides = action === "pick" || action === "none_fits";
-        const clock = decides ? itemClockKeys(target.itemKey) : [];
-        await postJson(t, `${base}/pick`, { itemKey: target.itemKey, ...(target.attemptRef && (action === "pick" || action === "unpick") ? { attemptRef: target.attemptRef } : {}), action, ...(note && note.trim() ? { note: note.trim() } : {}), ...secondsField(reviewSecondsOf(clock)) });
-        for (const k of clock) reviewMs.current.delete(k);
-        const done = action === "pick" ? "review.pick.done" : action === "unpick" ? "review.pick.withdrawn" : action === "none_fits" ? "review.noneFits.done" : "review.noneFits.cleared";
-        setMessage({ tone: "ok", text: t(done, { item: target.itemKey }) });
-        onChanged?.();
-        const list = walkOf(await load(), filter, wave);
-        // The queue moved (a picked or not-chosen attempt no longer waits): keep the attempt that is on screen NOW on screen --
-        // the one the owner moved on to meanwhile, never back to the picked one (review round 1).
-        const now = onScreen.current;
-        const here = now !== null ? list.findIndex((e) => `${e.itemKey}\u0000${e.attemptRef}` === now) : -1;
-        if (here >= 0) setIndex(here);
-        return true;
-      } catch (error) {
-        setMessage({ tone: "error", text: error instanceof Error ? error.message : t("review.saveFailed") });
-        return false;
-      } finally {
-        setBusy(false);
-      }
+      return runBusy(t("common.saving"), async () => {
+        try {
+          // A pick or "none fits" decides the item: it carries the seconds spent on the item's attempts since its last decision.
+          const decides = action === "pick" || action === "none_fits";
+          const clock = decides ? itemClockKeys(target.itemKey) : [];
+          await postJson(t, `${base}/pick`, { itemKey: target.itemKey, ...(target.attemptRef && (action === "pick" || action === "unpick") ? { attemptRef: target.attemptRef } : {}), action, ...(note && note.trim() ? { note: note.trim() } : {}), ...secondsField(reviewSecondsOf(clock)) });
+          for (const k of clock) reviewMs.current.delete(k);
+          const done = action === "pick" ? "review.pick.done" : action === "unpick" ? "review.pick.withdrawn" : action === "none_fits" ? "review.noneFits.done" : "review.noneFits.cleared";
+          setMessage({ tone: "ok", text: t(done, { item: target.itemKey }) });
+          onChanged?.();
+          const list = walkOf(await load(), filter, wave);
+          // The queue moved (a picked or not-chosen attempt no longer waits): keep the attempt that is on screen NOW on screen --
+          // the one the owner moved on to meanwhile, never back to the picked one (review round 1).
+          const now = onScreen.current;
+          const here = now !== null ? list.findIndex((e) => `${e.itemKey}\u0000${e.attemptRef}` === now) : -1;
+          if (here >= 0) setIndex(here);
+          return true;
+        } catch (error) {
+          setMessage({ tone: "error", text: error instanceof Error ? error.message : t("review.saveFailed") });
+          return false;
+        }
+      });
     },
-    [base, busy, filter, itemClockKeys, load, onChanged, reviewSecondsOf, t, wave]
+    [base, busy, filter, itemClockKeys, load, onChanged, reviewSecondsOf, runBusy, t, wave]
   );
   /** S: the entry on screen picked, or its pick withdrawn. */
   const togglePick = useCallback(
@@ -1258,7 +1253,7 @@ export function PlanReviewScreen({
         if (event.key === "Escape") setWaveDoneFor(null);
         return;
       }
-      if (blocking || confirmReplace || confirmRejectPicked || noneFitsDraft || draft.pending) return;
+      if (busy || confirmReplace || confirmRejectPicked || noneFitsDraft || draft.pending) return;
       const target = event.target as HTMLElement | null;
       if (target && (target.tagName === "TEXTAREA" || target.tagName === "INPUT" || target.tagName === "SELECT" || target.isContentEditable)) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
@@ -1359,7 +1354,7 @@ export function PlanReviewScreen({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [against, answerRecheck, blocking, waveDone, comparable, compareKey, confirmRejectPicked, confirmReplace, currentMedia, draft.pending, entries, entry, go, index, layer, layerBack, layerable, mark, noneFitsDraft, skipClaimed, submit, t, toggleAB, togglePick, onB, visualEntry]);
+  }, [against, answerRecheck, busy, waveDone, comparable, compareKey, confirmRejectPicked, confirmReplace, currentMedia, draft.pending, entries, entry, go, index, layer, layerBack, layerable, mark, noneFitsDraft, skipClaimed, submit, t, toggleAB, togglePick, onB, visualEntry]);
   // Phase 2: compare against «Было» ends where the attempt on screen is no revision of a picture or clip (N/P moved on); a
   // closed layer forgets what it compared against.
   useEffect(() => {
@@ -1396,17 +1391,17 @@ export function PlanReviewScreen({
   );
 
   const src = entry ? playedSrc(base, entry) : null;
-  // Owner, msg 2916: the track a verdict moved to, until its waveform is ready -- the screen stays blocked meanwhile. The
-  // advance itself clears it when another track is on screen; the cap keeps a stalled load from blocking the screen for good.
+  // Owner, msg 2916: the track a verdict moved to is held behind the window until its waveform is ready (the shared hold's 20 s
+  // cap keeps a stalled load from blocking the screen for good); another track on screen ends the wait.
   useEffect(() => {
     if (awaitingSrc === null) return;
     if (awaitingSrc !== src) {
       setAwaitingSrc(null);
       return;
     }
-    const timer = setTimeout(() => setAwaitingSrc(null), AWAIT_TRACK_MAX_MS);
-    return () => clearTimeout(timer);
-  }, [awaitingSrc, src]);
+    hold(t("review.advancing.loading"));
+    return release;
+  }, [awaitingSrc, hold, release, src, t]);
   const ownLufs = entry ? playedLufs(entry) : null;
   const lufsOf = entry ? (ownLufs ?? (measured && measured.src === src ? measured.lufs : null)) : null;
   const hideFindings = blind && entry !== null && entryWaits(entry);
@@ -2522,7 +2517,7 @@ export function PlanReviewScreen({
         />
       )}
       {layer !== null ? pendingNoteBox(true) : null}
-      {waveDone && !blocking && (
+      {waveDone && !busy && (
         <BlockingDialog label={t("review.wave.doneTitle")} maxWidthClass="max-w-md">
           <div className="relative space-y-3">
             <button
@@ -2555,14 +2550,7 @@ export function PlanReviewScreen({
           </div>
         </BlockingDialog>
       )}
-      {blocking && (
-        <BlockingDialog label={t("review.advancing.title")} busy maxWidthClass="max-w-xs">
-          <div className="flex flex-col items-center gap-3 py-2 text-center">
-            <Spinner className="h-8 w-8 border-[3px]" />
-            <p className="text-sm font-medium text-zinc-100">{busy ? t("review.advancing.saving") : t("review.advancing.loading")}</p>
-          </div>
-        </BlockingDialog>
-      )}
+      <BusyOverlay state={busyAction.overlay} />
     </div>
   );
 }
