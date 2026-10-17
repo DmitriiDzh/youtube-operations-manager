@@ -39,14 +39,17 @@ expensive work before their own cheap freshness check.
 
 ### B. Analytics: quotas only when a collection is really due
 
-- `collectMetrics` gets an opt-in `beforeCollect` hook. It is called right after the `analytics_data_current` gate and before
-  credentials. When it returns false, the run ends with `ranCollection: false` and nothing is marked.
-- **Who passes it.** Only the automatic and evening wrappers in `index.ts` pass the quota guard as this hook. A manual
-  "Collect now" stays unguarded, as before.
+- The automatic collection gets an opt-in `beforeCollect` hook. It is called right after the freshness gate and before credentials.
+  When it returns false, the run ends with `ranCollection: false` and nothing is marked.
+- **Who passes it.** Only the automatic wrapper in `index.ts` passes the quota guard as this hook. A manual "Collect now" stays
+  unguarded, as before.
 - **Peer import.** `auto-collect-all` imports the other computer's rows only when the active channel is not current. The check
   is a new read-only `isAutoCollectionCurrent`, which applies the same rule as the gate.
-- **Inside `after()`.** The background channels, the weekly report, the catch-up plan and the milestones already run there.
-  They keep doing so.
+- **Inside `after()`.** On such a load the active channel's part also runs after the answer: its weekly report and catch-up plan.
+  So do the import, the background channels, the milestones and the rest, in the same order as on a collecting load. A failing
+  check falls back to the full path.
+- **As built:** the quota hook is `runAutoCollectionIfStale`'s own `beforeCollect` option, asked after `freshnessGate`, which was
+  moved out of `collectMetrics` unchanged. `collectMetrics` itself is unchanged, and the evening path keeps its guard.
 
 ### C. Market Intelligence: sync and credentials only when a channel is due
 

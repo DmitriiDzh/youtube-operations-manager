@@ -923,6 +923,16 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 
 ---
 
+### 2.9as Перезагрузка страницы не повторяет работу старта (BL-196, `docs/roadmap/plans/FAST_STARTUP_PLAN.md`) — **IMPLEMENTED на `feature/bl-196-fast-startup`, не влито в `dev`**
+
+- **Окно «Загружаем ваши данные…»:** один раз на вкладку за запуск сервера. Корневой `layout.tsx` отдаёт `<meta name="ytom-boot">` (`src/lib/server-presence/boot-id.ts`). Вкладка помнит в `sessionStorage`, для какого запуска уже показала окно (`startupWindowWanted`, `startup-progress.ts`). Работа старта идёт на каждой загрузке. Центр конфликтов ждёт её завершения, а не окна. Шапка до живого ответа показывает последний канал вкладки, это только отображение.
+- **Аналитика:** `freshnessGate` — проверка свежести из `collectMetrics`, вынесена без изменений.
+  - `runAutoCollectionIfStale` спрашивает резерв квоты (Cloud Monitoring) только для нужного сбора.
+  - `isAutoCollectionCurrent` отвечает только чтением.
+  - `auto-collect-all`: если активный канал свежий, ответ сразу. Импорт другого компьютера, недельный отчёт, план догрузки и остальные каналы идут после ответа.
+- **Исследования:** `countResearchChannelsDueForCollection` (`db.ts`, те же условия, что у захвата, без записи) и `hasChannelsDue`. Если ничего не пора, `collect-if-stale` отвечает без цикла синхронизации устройств и без tokeninfo.
+- **Охваты:** `dueState` — правило `onlyIfDue`, вынесено без изменений. `isAnyReachSyncDue`: если ничего не пора, `sync-all` отвечает до импорта другого компьютера.
+
 ## 3. Где вносить изменения
 
 | Задача | Где |
