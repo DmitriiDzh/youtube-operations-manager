@@ -136,7 +136,7 @@ export type SessionServiceDependencies = {
    * now -- session pods RunPod has that are not this device's, and the spend those devices reported for today. Counted in
    * the approve's concurrency and daily-cap checks and in the watcher's daily cap. Absent or failing = 0 (best effort).
    */
-  accountWide?: (now: Date, localPodIds: string[], options?: { fresh?: boolean }) => Promise<{ otherActiveSessions: number; otherSpentTodayUsd: number }>;
+  accountWide?: (now: Date, localPodIds: string[], options?: { fresh?: boolean; spendOnly?: boolean }) => Promise<{ otherActiveSessions: number; otherSpentTodayUsd: number }>;
   /** BL-133 audit (`media_control_events`): factory session starts/stops and limit holds. */
   events?: { record(event: { actor: "owner" | "factory"; action: string; subject: string; details?: Record<string, unknown> }): Promise<void> };
   /** Tests only: let a watcher tick wait for the capacity retry it fires (production fires it in the background). */
@@ -266,7 +266,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
   }
 
   /** BL-138: the other devices' use of the same RunPod account; never throws (unknown = 0, logged). */
-  async function otherDevicesUsage(now: Date, options: { fresh?: boolean } = {}): Promise<{ otherActiveSessions: number; otherSpentTodayUsd: number }> {
+  async function otherDevicesUsage(now: Date, options: { fresh?: boolean; spendOnly?: boolean } = {}): Promise<{ otherActiveSessions: number; otherSpentTodayUsd: number }> {
     if (!deps.accountWide) return { otherActiveSessions: 0, otherSpentTodayUsd: 0 };
     try {
       // Every pod this device had today, open or just stopped (independent review: a just-stopped session's pod can still be
@@ -1281,11 +1281,14 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
 
     async getLimits(): Promise<MediaSessionLimits> {
       const now = deps.clock.now();
-      const [settings, overview, open, spent] = await Promise.all([deps.base.getSettings(), deps.base.getOverview(), deps.store.listOpen(), spentTodayUsd(now)]);
+      // BL-193: the other devices' spend from their reports only (`spendOnly`: no RunPod pod list on a read the UI polls).
+      const [settings, overview, open, spent, others] = await Promise.all([deps.base.getSettings(), deps.base.getOverview(), deps.store.listOpen(), spentTodayUsd(now), otherDevicesUsage(now, { spendOnly: true })]);
       const openSessions = open.map((row) => toPublicSession(row, now));
       return {
         maxUsdPerDay: settings.maxUsdPerDay,
         spentTodayUsd: spent,
+        accountSpentTodayUsd: round2(spent + others.otherSpentTodayUsd),
+        otherDevicesSpentTodayUsd: others.otherSpentTodayUsd,
         remainingTodayUsd: round2(Math.max(0, settings.maxUsdPerDay - spent)),
         defaultMaxMinutes: settings.defaultMaxMinutes,
         idleMinutes: settings.idleMinutes,

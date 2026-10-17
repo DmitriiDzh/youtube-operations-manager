@@ -24,12 +24,14 @@ import {
   type GeminiKeyView,
   type GeminiLimitName,
   type GeminiMediaSettings,
+  type GeminiPeerSpendReport,
   type GeminiRefusal,
   type GeminiSpend,
   type GeminiStoryboardGate,
   type GeminiStoryboardLink,
   type GeminiVideoParams,
 } from "./contracts";
+import { accountWideSpend, geminiKeyFingerprint } from "./account";
 import { estimateImageUsd, estimateVideoUsd, modelCatalog } from "./pricing";
 import { checkJobRules, createJobInputSchema, getJobsInputSchema, parseWithSchema, setKeyInputSchema, updateSettingsInputSchema, type CreateJobInput } from "./schemas";
 
@@ -91,6 +93,12 @@ export type GeminiMediaDeps = {
   withCreateLock<T>(run: () => Promise<T>): Promise<T>;
   /** BL-184 stage 2: no first/last-frame video from two different images without an approved storyboard (ADR 0038 §4). */
   storyboardGate: GeminiStoryboardGate;
+  /**
+   * BL-193 (ADR 0039): the other computers' latest Gemini spend reports (the sync-gateway `gemini-spend` family). Absent = no other
+   * computer is known (tests); a read that fails counts the others as 0 and is logged, as RunPod's shared cap does (ADR 0028 §5).
+   */
+  peerSpendReports?(): Promise<GeminiPeerSpendReport[]>;
+  log?(line: string): void;
 };
 
 const round4 = (value: number) => Math.round(value * 10_000) / 10_000;
@@ -204,15 +212,75 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
     const row = await deps.store.getCredentials();
     if (!row) return null;
     const key = await deps.keyFile.readKey();
-    if (!key) throw new DomainError({ code: "encryption_key_not_configured", message: "The Gemini key file is missing on this computer; enter the API key again (Settings → Gemini)." });
+    if (!key) throw new DomainError({ code: "encryption_key_not_configured", message: "The Gemini key file is missing on this computer; enter the API key again (Settings → Cloud APIs)." });
     try {
       return decryptSecret({ ciphertext: row.ciphertext, iv: row.iv, authTag: row.authTag }, key);
     } catch {
-      throw new DomainError({ code: "encryption_key_not_configured", message: "The stored Gemini API key cannot be decrypted with this computer's key file; enter it again (Settings → Gemini)." });
+      throw new DomainError({ code: "encryption_key_not_configured", message: "The stored Gemini API key cannot be decrypted with this computer's key file; enter it again (Settings → Cloud APIs)." });
     }
   }
 
+  // BL-193: the fingerprint of the stored key, recomputed only when the stored key changes (its ciphertext).
+  let fingerprintCache: { ciphertext: string; value: string } | null = null;
+  /** The stored key's fingerprint (ADR 0039), or null when no usable key is stored here (then nothing is shared). Never throws. */
+  async function keyFingerprint(): Promise<string | null> {
+    try {
+      const row = await deps.store.getCredentials();
+      if (!row) return null;
+      if (fingerprintCache?.ciphertext === row.ciphertext) return fingerprintCache.value;
+      const apiKey = await readApiKey();
+      if (!apiKey) return null;
+      const value = geminiKeyFingerprint(apiKey);
+      fingerprintCache = { ciphertext: row.ciphertext, value };
+      return value;
+    } catch {
+      return null;
+    }
+  }
+
+  /** BL-193: the same-key computers' spend added to this computer's (`local`); the others count 0 when they cannot be read. */
+  async function accountSpend(local: { todayUsd: number; monthUsd: number }, at: Date): Promise<GeminiSpend["account"]> {
+    const fingerprint = await keyFingerprint();
+    let others: ReturnType<typeof accountWideSpend> = { otherTodayUsd: 0, otherMonthUsd: 0, otherComputers: [] };
+    if (fingerprint && deps.peerSpendReports) {
+      try {
+        const [peers, device] = await Promise.all([deps.peerSpendReports(), deps.device()]);
+        others = accountWideSpend({ peers, ownDeviceId: device.deviceId, ownFingerprint: fingerprint, dayStart: startOfLocalDay(at), monthStart: startOfLocalMonth(at), now: at });
+      } catch (error) {
+        deps.log?.(`[gemini-media] other computers' Gemini spend unknown, counted as 0: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    return { todayUsd: round4(local.todayUsd + others.otherTodayUsd), monthUsd: round4(local.monthUsd + others.otherMonthUsd), keyKnown: fingerprint !== null, otherComputers: others.otherComputers };
+  }
+
+  type CheckedGeminiKey = { apiKey: string; status: "ok" | "payment_required" };
+  /** The key's format, then one free call to Google: a refused key throws; an empty prepaid balance (402) is accepted with its status. */
+  async function checkKeyForImport(input: unknown): Promise<CheckedGeminiKey> {
+    const { apiKey } = parseWithSchema(setKeyInputSchema, input, "Gemini API key");
+    let status: "ok" | "payment_required" = "ok";
+    try {
+      await deps.api.checkKey(apiKey);
+    } catch (error) {
+      if (!(isDomainError(error) && error.code === "gemini_payment_required")) throw error;
+      status = "payment_required";
+    }
+    return { apiKey, status };
+  }
+  async function storeCheckedKey(checked: CheckedGeminiKey): Promise<GeminiKeyView> {
+    const { apiKey } = parseWithSchema(setKeyInputSchema, { apiKey: checked.apiKey }, "Gemini API key");
+    const key = await deps.keyFile.readOrCreateKey();
+    const sealed = encryptSecret(apiKey, key);
+    await deps.store.upsertCredentials({ ...sealed, keyHint: apiKey.slice(-4), status: checked.status, verifiedAt: now() });
+    return keyViewOf(await deps.store.getCredentials());
+  }
+
   async function spend(at: Date = now()): Promise<GeminiSpend> {
+    const local = await localSpend(at);
+    return { ...local, account: await accountSpend(local, at) };
+  }
+
+  /** This computer's own spend (what its spend report publishes for the others). */
+  async function localSpend(at: Date = now()): Promise<Omit<GeminiSpend, "account">> {
     const dayStart = startOfLocalDay(at);
     const [thisMonth, active] = await Promise.all([
       deps.store.listJobs({ createdSince: startOfLocalMonth(at), limit: 100_000 }),
@@ -234,11 +302,17 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
   function limitRefusal(settings: GeminiMediaSettings, current: GeminiSpend, estimateUsd: number): GeminiRefusal | null {
     const refuse = (limit: GeminiLimitName, message: string, details: Record<string, unknown>): GeminiRefusal => ({ code: "gemini_limit_exceeded", message, details: { limit, ...details, estimateUsd } });
     if (estimateUsd > settings.maxUsdPerJob) return refuse("per_job", `The job's estimate $${estimateUsd} is over the per-job limit $${settings.maxUsdPerJob}.`, { limitUsd: settings.maxUsdPerJob });
-    if (round4(current.todayUsd + estimateUsd) > settings.maxUsdPerDay) {
-      return refuse("per_day", `$${current.todayUsd} spent or reserved today + $${estimateUsd} is over the daily limit $${settings.maxUsdPerDay}.`, { limitUsd: settings.maxUsdPerDay, spentUsd: current.todayUsd });
+    // BL-193 (ADR 0039): the daily and monthly limits hold for the key -- every computer on it -- not for this computer alone.
+    const today = current.account.todayUsd;
+    const month = current.account.monthUsd;
+    const otherToday = round4(today - current.todayUsd);
+    const otherMonth = round4(month - current.monthUsd);
+    const elsewhere = (amount: number) => (amount > 0 ? ` ($${amount} of it on your other computers)` : "");
+    if (round4(today + estimateUsd) > settings.maxUsdPerDay) {
+      return refuse("per_day", `$${today} spent or reserved today${elsewhere(otherToday)} + $${estimateUsd} is over the daily limit $${settings.maxUsdPerDay}.`, { limitUsd: settings.maxUsdPerDay, spentUsd: today, ...(otherToday > 0 ? { otherComputersUsd: otherToday } : {}) });
     }
-    if (round4(current.monthUsd + estimateUsd) > settings.maxUsdPerMonth) {
-      return refuse("per_month", `$${current.monthUsd} spent or reserved this month + $${estimateUsd} is over the monthly limit $${settings.maxUsdPerMonth}.`, { limitUsd: settings.maxUsdPerMonth, spentUsd: current.monthUsd });
+    if (round4(month + estimateUsd) > settings.maxUsdPerMonth) {
+      return refuse("per_month", `$${month} spent or reserved this month${elsewhere(otherMonth)} + $${estimateUsd} is over the monthly limit $${settings.maxUsdPerMonth}.`, { limitUsd: settings.maxUsdPerMonth, spentUsd: month, ...(otherMonth > 0 ? { otherComputersUsd: otherMonth } : {}) });
     }
     if (current.activeJobs + 1 > settings.maxActiveJobs) {
       return refuse("active_jobs", `${current.activeJobs} Gemini jobs are already queued or running (limit ${settings.maxActiveJobs}).`, { maxActiveJobs: settings.maxActiveJobs, activeJobs: current.activeJobs });
@@ -280,6 +354,8 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
     readApiKey,
     getSettings,
     spend,
+    localSpend,
+    keyFingerprint,
 
     async getKey(): Promise<GeminiKeyView> {
       return keyViewOf(await deps.store.getCredentials());
@@ -287,19 +363,20 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
 
     /** Checks the key with Google first (AC-GM-01): a refused key is never stored; an empty balance (402) is stored with that status. */
     async setKey(input: unknown): Promise<GeminiKeyView> {
-      const { apiKey } = parseWithSchema(setKeyInputSchema, input, "Gemini API key");
-      let status: "ok" | "payment_required" = "ok";
-      try {
-        await deps.api.checkKey(apiKey);
-      } catch (error) {
-        if (!(isDomainError(error) && error.code === "gemini_payment_required")) throw error;
-        status = "payment_required";
-      }
-      const key = await deps.keyFile.readOrCreateKey();
-      const sealed = encryptSecret(apiKey, key);
-      await deps.store.upsertCredentials({ ...sealed, keyHint: apiKey.slice(-4), status, verifiedAt: now() });
-      return keyViewOf(await deps.store.getCredentials());
+      const checked = await checkKeyForImport(input);
+      return storeCheckedKey(checked);
     },
+
+    /**
+     * BL-193 (ADR 0039 §6): the stored key in clear for the shared cloud-credentials file (`src/lib/cloud-credentials-transfer`,
+     * which encrypts it under the owner's password at once), or null when none is stored. Never returned by any route; a key
+     * that cannot be decrypted here throws (`encryption_key_not_configured`).
+     */
+    exportKeyForTransfer: readApiKey,
+    /** BL-193: an imported key, validated and checked with Google BEFORE anything is stored (a refused key throws). Stores nothing. */
+    checkKeyForImport,
+    /** BL-193: stores a key `checkKeyForImport` accepted, exactly like a typed one. */
+    storeImportedKey: storeCheckedKey,
 
     async testKey(): Promise<GeminiKeyView> {
       const row = await deps.store.getCredentials();
@@ -370,9 +447,9 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
         }
         const settings = await getSettings();
         const preconditionRefusal: GeminiRefusal | null = !settings.enabled
-          ? { code: "gemini_disabled", message: "Generation through Gemini is turned off on this computer (Settings → Gemini)." }
+          ? { code: "gemini_disabled", message: "Generation through Gemini is turned off on this computer (Settings → Cloud APIs)." }
           : !(await deps.store.getCredentials())
-            ? { code: "gemini_key_missing", message: "No Gemini API key is stored on this computer (Settings → Gemini)." }
+            ? { code: "gemini_key_missing", message: "No Gemini API key is stored on this computer (Settings → Cloud APIs)." }
             : null;
         if (preconditionRefusal && !input.dryRun) throw new DomainError({ code: preconditionRefusal.code, message: preconditionRefusal.message });
         if (!(await deps.isChannelConnected(input.channelId))) {

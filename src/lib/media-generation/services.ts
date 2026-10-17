@@ -1,4 +1,4 @@
-import { decryptSecret, decryptWithPassword, encryptSecret, encryptWithPassword, type EncryptedPayload, type ScryptParams } from "@/lib/shared-crypto";
+import { decryptSecret, encryptSecret, type EncryptedPayload } from "@/lib/shared-crypto";
 import type { CreatePodInput, RunpodAccountBalance, RunpodApiClient, RunpodDataCenter, RunpodGpuType, RunpodNetworkVolume, RunpodPod, RunpodS3Client, RunpodS3Config } from "@/lib/media-gateway";
 import { comfyUiProxyBaseUrl } from "@/lib/media-gateway";
 import {
@@ -21,10 +21,6 @@ const PASSTHROUGH_STOP_TIMEOUT_MS = 90_000;
 const PASSTHROUGH_STOP_POLL_MS = 5_000;
 import {
   createNetworkVolumeInputSchema,
-  CREDENTIALS_FILE_FORMAT,
-  exportCredentialsInputSchema,
-  importCredentialsInputSchema,
-  type CredentialsFile,
   type SetCredentialsInput,
   resizeNetworkVolumeInputSchema,
   createPodPassthroughSchema,
@@ -56,13 +52,12 @@ export type MediaGenerationStore = {
   setGatewayEnabled(enabled: boolean): Promise<void>;
 };
 
-/** The decrypted blob -- lives only inside this module, for the duration of one call. */
-type SecretSet = { runpodApiKey: string; s3AccessKeyId: string | null; s3SecretAccessKey: string | null };
+/** The decrypted blob -- lives only inside this module for the duration of one call, or (BL-193) goes straight into the
+ * password-encrypted cloud-credentials file. */
+export type SecretSet = { runpodApiKey: string; s3AccessKeyId: string | null; s3SecretAccessKey: string | null };
 
 export type ServiceDependencies = {
   store: MediaGenerationStore;
-  /** BL-137: scrypt cost for an exported credentials file; omitted = `PASSWORD_SCRYPT_PARAMS` (tests pass a cheap one). */
-  passwordScrypt?: ScryptParams;
   keyFile: KeyFile;
   /** Gateway factories (`src/lib/media-gateway/`), injected so tests never touch the network. */
   gateway: {
@@ -163,7 +158,7 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
       throw new DomainError({
         code: "media_generation_not_configured",
         message: !row
-          ? "No RunPod credentials are configured on this device (Settings → RunPod)."
+          ? "No RunPod credentials are configured on this device (Settings → Cloud APIs)."
           : "The stored RunPod credentials cannot be read on this device: the key file is missing. Enter the credentials again.",
       });
     }
@@ -245,49 +240,26 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
     },
 
     /**
-     * BL-137: this device's credentials as a file encrypted under `password` (scrypt + AES-256-GCM, `shared-crypto`). The file
-     * carries only the public hints in clear (key prefix, S3 key id); the password is not stored anywhere.
+     * BL-193 (ADR 0039 §6; BL-137 before it): this device's RunPod/S3 credentials in clear, for the shared cloud-credentials file
+     * (`src/lib/cloud-credentials-transfer`, which encrypts them under the owner's password at once) -- or null when none are
+     * stored. Never returned by any route; an unreadable stored set throws (`media_generation_not_configured`).
      */
-    async exportCredentials(input: unknown): Promise<{ file: CredentialsFile }> {
-      const { password } = parseWithSchema(exportCredentialsInputSchema, input, "export credentials");
-      const secrets = await requireSecrets();
-      const encrypted = await encryptWithPassword(JSON.stringify(secrets), password, deps.passwordScrypt);
-      return {
-        file: {
-          format: CREDENTIALS_FILE_FORMAT,
-          version: 1,
-          createdAt: deps.clock.now().toISOString(),
-          hints: { runpodKeyPrefix: `${secrets.runpodApiKey.slice(0, RUNPOD_KEY_PREFIX_LENGTH)}…`, s3AccessKeyId: secrets.s3AccessKeyId },
-          encrypted,
-        },
-      };
+    async exportCredentialsForTransfer(): Promise<SecretSet | null> {
+      if (!(await deps.store.getCredentials())) return null;
+      return requireSecrets();
     },
 
     /**
-     * BL-137: imports an exported credentials file. A wrong password or a damaged file changes nothing; the RunPod key is
-     * checked with one read before anything is stored; then the keys are saved exactly like typed ones (this device's key
-     * file, the same "volume busy" refusal).
+     * BL-193 (BL-137's checks): an imported credential set, validated and checked BEFORE anything is stored -- the "volume busy"
+     * refusal, then one RunPod read with the key. A rejected key is `media_credentials_invalid`; the gateway toggle, a 403 scope,
+     * RunPod being down keep their own code. Stores nothing.
      */
-    async importCredentials(input: unknown): Promise<MediaCredentialsStatus> {
-      const { file, password } = parseWithSchema(importCredentialsInputSchema, input, "import credentials");
-      let plaintext: string;
-      try {
-        plaintext = await decryptWithPassword(file.encrypted, password);
-      } catch {
-        throw new DomainError({ code: "validation_failed", message: "Wrong password, or the credentials file is damaged. Nothing was changed." });
-      }
-      let decoded: unknown;
-      try {
-        decoded = JSON.parse(plaintext);
-      } catch {
-        throw new DomainError({ code: "validation_failed", message: "The credentials file is damaged. Nothing was changed." });
-      }
-      const parsed = parseWithSchema(setCredentialsInputSchema, decoded, "imported credentials");
+    async checkCredentialsForImport(input: unknown): Promise<SetCredentialsInput> {
+      const parsed = parseWithSchema(setCredentialsInputSchema, input, "imported credentials");
       await assertVolumeFree("change the RunPod credentials");
       try {
         await deps.gateway.createRunpodClient(parsed.runpodApiKey).verifyKey();
       } catch (error) {
-        // Only a rejected key is "invalid"; the gateway toggle, a 403 scope, RunPod being down keep their own code (review).
         if (error instanceof DomainError && error.code !== "media_credentials_invalid") {
           throw new DomainError({ code: error.code, message: `${error.message} The import was not saved.`, details: error.details });
         }
@@ -296,7 +268,12 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
           message: `RunPod did not accept the imported API key (${error instanceof Error ? error.message : String(error)}). Nothing was changed.`,
         });
       }
-      return storeCredentials(parsed);
+      return parsed;
+    },
+
+    /** BL-193: stores a set `checkCredentialsForImport` accepted, exactly like typed keys (this device's key file, "volume busy"). */
+    async storeImportedCredentials(checked: SetCredentialsInput): Promise<MediaCredentialsStatus> {
+      return storeCredentials(parseWithSchema(setCredentialsInputSchema, checked, "imported credentials"));
     },
 
     /**

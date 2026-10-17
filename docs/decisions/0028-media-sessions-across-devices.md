@@ -54,3 +54,8 @@ shows one list on every computer. The `media-sessions` report is unchanged. Rela
 2806): another computer sends a command in its `media-jobs` report, and the owning device applies it once through its own
 `approveSession` / `rejectSession` (every device limit still checked there). Cancelling a job and running a job on another
 computer's running session work the same way. Spend is still decided only by the computer that runs the session.
+
+## Amendment (2026-10-16, BL-193): the account's spend shown
+
+The Servers header shows today's spend on the whole RunPod account (`accountSpentTodayUsd`, the figure §5's cap already used), with
+this computer's part. Gemini follows the same rule through its own `gemini-spend` report. See ADR 0039.

@@ -2,33 +2,24 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { errorText } from "@/lib/ui-text";
+import { CLOUD_CREDENTIALS_IMPORTED_EVENT } from "./cloud-credentials-transfer";
+import { MaskedSecretInput } from "./masked-secret-input";
 import { ConfirmDialog } from "./confirm-dialog";
 import { InfoTooltip } from "./info-tooltip";
 import { LoadingIndicator } from "./operation-progress";
 import { ToggleSwitch } from "./toggle-switch";
 import { useT } from "./ui-text-provider";
 
-// BL-174 (docs/roadmap/plans/GEMINI_MEDIA_PLAN.md §2.8): Settings → Gemini. The owner's side of the module the Factory Operator
+// BL-174 (docs/roadmap/plans/GEMINI_MEDIA_PLAN.md §2.8): Settings → Cloud APIs. The owner's side of the module the Factory Operator
 // drives over MCP: the API key (checked with Google, stored encrypted, shown only by its last 4 characters), the switch that lets
-// the operator spend, the limits, this computer's spend and the newest jobs. Text inputs (not native number widgets), so the
-// stored digits read the same in every locale.
+// the operator spend, the limits and the spend. Text inputs (not native number widgets), so the stored digits read the same in
+// every locale. BL-193: the jobs moved to Servers (their own Gemini card); the limits are shared by every computer on the key and
+// the spend shown is the key's (ADR 0039).
 
 type KeyView = { configured: boolean; keyHint: string | null; status: "ok" | "payment_required" | null; verifiedAt: string | null };
 type Settings = { enabled: boolean; maxUsdPerJob: number; maxUsdPerDay: number; maxUsdPerMonth: number; maxActiveJobs: number };
-type Spend = { todayUsd: number; monthUsd: number; activeUsd: number; activeJobs: number };
-type Job = {
-  jobId: string;
-  kind: "image" | "video";
-  model: string;
-  status: "queued" | "submitting" | "running" | "done" | "failed";
-  estimateUsd: number;
-  costUsd: number | null;
-  outputs: Array<{ path: string }>;
-  error: string | null;
-  errorCode: string | null;
-  createdAt: string;
-};
-type Overview = { key: KeyView; settings: Settings; spend: Spend; gatewayEnabled: boolean; pricesAsOf: string; jobs: Job[] };
+type Spend = { todayUsd: number; monthUsd: number; activeUsd: number; activeJobs: number; account?: { todayUsd: number; monthUsd: number; keyKnown: boolean; otherComputers: unknown[] } };
+type Overview = { key: KeyView; settings: Settings; spend: Spend; gatewayEnabled: boolean; pricesAsOf: string };
 
 const LIMIT_FIELDS = ["maxUsdPerJob", "maxUsdPerDay", "maxUsdPerMonth", "maxActiveJobs"] as const;
 type LimitField = (typeof LIMIT_FIELDS)[number];
@@ -37,7 +28,8 @@ const inputClass = "w-24 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1
 const buttonClass = "rounded-lg border border-zinc-700 px-3 py-1 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-50";
 const primaryClass = "rounded-lg bg-zinc-100 px-3 py-1 text-xs font-medium text-zinc-900 hover:bg-white disabled:opacity-50";
 
-function usd(value: number): string {
+/** A Gemini amount in USD: 4 decimals below $1 (an image costs cents), trailing zeros dropped. Shared with the Servers card. */
+export function usd(value: number): string {
   return `$${value.toFixed(value < 1 ? 4 : 2).replace(/0+$/, "").replace(/\.$/, "")}`;
 }
 
@@ -77,6 +69,10 @@ export function GeminiMediaSettings() {
 
   useEffect(() => {
     void load();
+    // BL-193: a key imported from the cloud-keys file shows here at once.
+    const onImported = () => void load();
+    window.addEventListener(CLOUD_CREDENTIALS_IMPORTED_EVENT, onImported);
+    return () => window.removeEventListener(CLOUD_CREDENTIALS_IMPORTED_EVENT, onImported);
   }, [load]);
 
   if (!overview) {
@@ -108,7 +104,6 @@ export function GeminiMediaSettings() {
       )}
       <KeyCard view={overview.key} onChanged={load} />
       <GenerationCard overview={overview} onChanged={load} />
-      <JobsCard jobs={overview.jobs} onRefresh={load} />
     </div>
   );
 }
@@ -186,25 +181,15 @@ function KeyCard({ view, onChanged }: { view: KeyView; onChanged: () => Promise<
       {editing && (
         <div className="space-y-2">
           <div className="flex flex-wrap items-center gap-2">
-            {/* Not type="password": Chrome ignores autocomplete="off" there and filled a saved login password into this field (seen
-                live 2026-10-11), which "Check and save" would have sent to Google. A text field whose characters are hidden is never
-                offered saved passwords; the password-manager extensions are told to skip it too. */}
-            <input
-              type="text"
+            {/* MaskedSecretInput, never a password field (Chrome autofilled a saved login password here, 2026-10-11). */}
+            <MaskedSecretInput
               name="gemini-api-key"
-              autoComplete="off"
-              autoCorrect="off"
-              autoCapitalize="off"
-              spellCheck={false}
-              data-1p-ignore
-              data-lpignore="true"
-              data-form-type="other"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               disabled={busy}
               placeholder={t("gemini.key.placeholder")}
               aria-label={t("gemini.key.inputAria")}
-              className="w-80 max-w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 font-mono text-sm text-zinc-100 [-webkit-text-security:disc] disabled:opacity-50"
+              className="w-80 max-w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 font-mono text-sm text-zinc-100 disabled:opacity-50"
             />
             <button onClick={() => void save()} disabled={busy || apiKey.trim().length < 20} className={primaryClass}>
               {t("gemini.key.save")}
@@ -313,59 +298,14 @@ function GenerationCard({ overview, onChanged }: { overview: Overview; onChanged
         </button>
         {!valid && <span className="text-xs text-red-400">{t("gemini.limits.invalid")}</span>}
       </div>
+      <p className="text-xs text-zinc-500">{t("gemini.limits.shared")}</p>
       <p className="text-sm text-zinc-300">
-        {t("gemini.spend.line", { today: usd(spend.todayUsd), month: usd(spend.monthUsd) })}
+        {t("gemini.spend.line", { today: usd(spend.account?.todayUsd ?? spend.todayUsd), month: usd(spend.account?.monthUsd ?? spend.monthUsd) })}
         {spend.activeJobs > 0 && <span className="text-zinc-500"> · {t("gemini.spend.active", { count: spend.activeJobs, amount: usd(spend.activeUsd) })}</span>}
       </p>
       <p className="text-xs text-zinc-500">{t("gemini.spend.note", { date: overview.pricesAsOf })}</p>
       {error && <p className="text-xs text-red-400">{error}</p>}
       {notice && <p className="text-xs text-emerald-400">{notice}</p>}
-    </div>
-  );
-}
-
-function JobsCard({ jobs, onRefresh }: { jobs: Job[]; onRefresh: () => Promise<void> }) {
-  const t = useT();
-  const statusLabel: Record<Job["status"], string> = {
-    queued: t("gemini.jobs.status.queued"),
-    submitting: t("gemini.jobs.status.submitting"),
-    running: t("gemini.jobs.status.running"),
-    done: t("gemini.jobs.status.done"),
-    failed: t("gemini.jobs.status.failed"),
-  };
-  const statusTone: Record<Job["status"], string> = { queued: "text-zinc-300", submitting: "text-sky-300", running: "text-sky-300", done: "text-emerald-400", failed: "text-red-400" };
-  return (
-    <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-      <div className="flex items-center justify-between gap-2">
-        <h3 className="text-base font-medium text-zinc-100">{t("gemini.jobs.title")}</h3>
-        <button onClick={() => void onRefresh()} className={buttonClass}>
-          {t("gemini.jobs.refresh")}
-        </button>
-      </div>
-      {jobs.length === 0 ? (
-        <p className="text-sm text-zinc-500">{t("gemini.jobs.none")}</p>
-      ) : (
-        <ul className="divide-y divide-zinc-800">
-          {jobs.map((job) => (
-            <li key={job.jobId} className="space-y-0.5 py-2 text-sm">
-              <div className="flex flex-wrap items-baseline gap-x-2">
-                <span className="text-zinc-500">{new Date(job.createdAt).toLocaleString(t.language)}</span>
-                <span className="text-zinc-200">{job.model}</span>
-                <span className="text-zinc-500">{job.kind === "image" ? t("gemini.jobs.image") : t("gemini.jobs.video")}</span>
-                <span className={statusTone[job.status]}>{statusLabel[job.status]}</span>
-                <span className="text-zinc-400">{job.costUsd !== null ? usd(job.costUsd) : t("gemini.jobs.estimate", { amount: usd(job.estimateUsd) })}</span>
-              </div>
-              {job.outputs.length > 0 && <p className="break-all font-mono text-xs text-zinc-400">{t("gemini.jobs.output", { path: job.outputs[0].path })}</p>}
-              {job.status === "failed" && job.error && (
-                <p className="text-xs text-red-400">
-                  {job.errorCode ? `${job.errorCode}: ` : ""}
-                  {job.error}
-                </p>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
     </div>
   );
 }

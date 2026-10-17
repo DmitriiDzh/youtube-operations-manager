@@ -1,0 +1,19 @@
+import { NextResponse } from "next/server";
+import { z } from "zod";
+import { GEMINI_SHARED_LIMIT_FIELDS } from "@/lib/gemini-media";
+import { defaultGeminiRouteDeps, geminiHandler, readJsonBody, type GeminiRouteDeps } from "../../shared";
+
+const resolveSchema = z.object({ field: z.enum(GEMINI_SHARED_LIMIT_FIELDS), value: z.number() }).strict();
+
+/** BL-193 (ADR 0039, ADR 0030's rule): the owner picks one value of a Gemini limit that differs between the computers; it becomes the shared value. */
+export function createGeminiSettingsSyncResolveHandler(deps: GeminiRouteDeps = defaultGeminiRouteDeps()) {
+  return geminiHandler(deps, async ({ core, request }) => {
+    const body = await readJsonBody(request);
+    if (!body.ok) return body.response;
+    const parsed = resolveSchema.safeParse(body.body);
+    if (!parsed.success) return NextResponse.json({ error: "validation_failed", message: parsed.error.issues.map((i) => i.message).join("; ") }, { status: 400 });
+    return NextResponse.json(await core.resolveSettingConflict(parsed.data));
+  });
+}
+
+export const POST = createGeminiSettingsSyncResolveHandler();

@@ -24,6 +24,6 @@ export function createMediaSettingsCoreForProduction(): MediaSettingsCore {
   return holder[PRODUCTION_KEY];
 }
 
-export { createMediaSettingsCore, genesisDocument, scanForConflicts } from "./services";
+export { createMediaSettingsCore, emptyDocumentOf, genesisDocument, scanForConflicts } from "./services";
 export type { MediaSettingsCore, ServiceDependencies } from "./services";
 export * from "./contracts";

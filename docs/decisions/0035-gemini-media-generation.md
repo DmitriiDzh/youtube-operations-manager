@@ -58,3 +58,10 @@ only the Factory Operator. On this computer it is the same `createJob` with the 
 the owner's. On another computer it is a relayed `create_job` command (report v3) that the executing computer runs with its own
 key and limits; the request id comes from the command, so a replay never makes a second paid job, and a run first seen more
 than 15 minutes later is refused (`command_expired`).
+
+## Amendment (2026-10-16, BL-193): limits shared by every computer on one key
+
+Owner, Telegram 2026-10-16, msgs 2864/2867. "The limits are per computer" (Consequences above) no longer holds: the per-day and
+per-month limits are checked against the spend of every computer that uses the same Gemini key (recognised by a key fingerprint,
+never the key), and the four limits are the same on every computer (synced; the switch stays per computer). The key also travels
+in the one cloud-keys file. See ADR 0039.

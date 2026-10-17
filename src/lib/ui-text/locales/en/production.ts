@@ -22,6 +22,11 @@ export const production = {
   "setupField.factoryMaxUsdPerMonth": "Factory: max per month",
   "setupField.ownerReleaseWhenDone": "Release a session after its last job",
   "setupField.minCudaVersion": "Minimum CUDA version of the GPU host",
+  // BL-193: the shared Gemini limits, as the conflict screen names them.
+  "geminiField.maxUsdPerJob": "Gemini: most per job",
+  "geminiField.maxUsdPerDay": "Gemini: daily spend limit",
+  "geminiField.maxUsdPerMonth": "Gemini: monthly spend limit",
+  "geminiField.maxActiveJobs": "Gemini: jobs queued or running at once",
 
   "settingsSync.intro": "These settings are the same on all your computers: a change here reaches the others within about a minute (RunPod keys stay on each computer).",
   "settingsSync.fromOther": "From the other computer: {fields} ({time}).",
@@ -30,7 +35,9 @@ export const production = {
 
   "production.balance.title": "RunPod balance",
   "production.balance.titleLegacy": "RunPod balance (legacy API)",
-  "production.balance.connect": "Connect RunPod in Settings → RunPod.",
+  "production.balance.connect": "Connect RunPod in Settings → Cloud APIs.",
+  "production.geminiToday": "Gemini today",
+  "production.todayThisComputer": "this computer {value}",
   "production.balance.lastRefreshFailed": "Last refresh failed: {error}",
   "production.balance.requestFailed": "Balance request failed",
   "production.balance.requestFailedStatus": "Balance request failed ({status})",

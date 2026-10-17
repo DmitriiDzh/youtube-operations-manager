@@ -224,7 +224,7 @@ test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.18.0 
   // BL-184 (STORYBOARD_PLAN.md §2.6): six new storyboard tools, additive -> 1.16.0.
   // BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.7): one new READ tool, factory_jobs_list, additive -> 1.17.0.
   // BL-189 (STORYBOARD_TAKES_PLAN.md §2.4): one new WRITE tool, factory_storyboard_attach_render, additive -> 1.18.0.
-  assert.equal(FACTORY_API_VERSION, "1.18.0");
+  assert.equal(FACTORY_API_VERSION, "1.19.0"); // BL-193: the Gemini limits shared by every computer on one key
   const agentOperations = await readFile("src/lib/agent-operations/contracts.ts", "utf8");
   assert.equal(agentOperations.includes("FACTORY_API_VERSION"), false);
 });

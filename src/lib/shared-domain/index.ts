@@ -191,6 +191,8 @@ export type DomainErrorCode =
   // BL-174 (GEMINI_MEDIA_PLAN.md §2.6): Google's Gemini API through the `gemini-media` module.
   | "gemini_disabled"
   | "gemini_key_missing"
+  // BL-193 (ADR 0039 §6): an export of the cloud-keys file with no readable key on this computer.
+  | "cloud_credentials_not_configured"
   | "gemini_key_invalid"
   | "gemini_payment_required"
   | "gemini_limit_exceeded"
