@@ -721,3 +721,35 @@ test("two automatic syncs of the same channel at once: the second is skipped as 
   // The guard is released afterwards: a later automatic sync runs again.
   assert.equal((await services.syncReachReports({ ...SYNC, onlyIfDue: true })).skipped, false);
 });
+
+// BL-196 AC-FS-05 (FAST_STARTUP_PLAN.md §2 D): `isAnyReachSyncDue` gives the `onlyIfDue` answer for every connected channel without
+// syncing -- expected from the rule: checked within 6 h = not due; a recent FAILED attempt throttles a background channel but never the
+// active one; no call to credentials, jobs or reports.
+test("AC-FS-05: isAnyReachSyncDue follows the onlyIfDue rule per channel and calls nothing", async () => {
+  const connections = [
+    { channelId: "UC_A", connectedUserId: "uA" },
+    { channelId: "UC_B", connectedUserId: "uB" },
+  ];
+  const activeChannelByUser = { uS: "UC_A", uA: "UC_A", uB: "UC_B" };
+  const base = { error: null, filesListed: 1, filesImported: 1, failures: [] };
+  const now = new Date("2026-10-03T12:00:00Z");
+
+  const checked = createFixture({ connections, activeChannelByUser, now, storedAttempt: { ...base, attemptedAt: new Date("2026-10-03T08:00:00Z"), outcome: "ok" } });
+  assert.equal(await checked.services.isAnyReachSyncDue({ sessionUserId: "uS" }), false, "every channel checked 4 h ago");
+  assert.equal(checked.calls.resolve + checked.calls.ensureJob + checked.calls.listReports, 0);
+  assert.equal(checked.calls.attempts.length, 0, "nothing recorded");
+
+  const old = createFixture({ connections, activeChannelByUser, now, storedAttempt: { ...base, attemptedAt: new Date("2026-10-03T06:00:00Z"), outcome: "ok" } });
+  assert.equal(await old.services.isAnyReachSyncDue({ sessionUserId: "uS" }), true, "6 h passed");
+
+  const failed = createFixture({ connections, activeChannelByUser, now, storedAttempt: { ...base, attemptedAt: new Date("2026-10-03T11:00:00Z"), outcome: "failed", error: "x" } });
+  assert.equal(await failed.services.isAnyReachSyncDue({ sessionUserId: "uS" }), true, "the active channel's failed attempt does not throttle it");
+
+  const failedBackgroundOnly = createFixture({
+    connections: [{ channelId: "UC_B", connectedUserId: "uB" }],
+    activeChannelByUser,
+    now,
+    storedAttempt: { ...base, attemptedAt: new Date("2026-10-03T11:00:00Z"), outcome: "failed", error: "x" },
+  });
+  assert.equal(await failedBackgroundOnly.services.isAnyReachSyncDue({ sessionUserId: "uS" }), false, "a background channel's failed attempt throttles it");
+});

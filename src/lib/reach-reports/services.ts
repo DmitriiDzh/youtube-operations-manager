@@ -225,6 +225,32 @@ function getCredentialUserId(credentialRef: unknown): string | null {
 }
 
 export function createReachReportsServices(deps: ReachReportsDependencies) {
+  /**
+   * The `onlyIfDue` rule of `syncReachReports` for one channel (BL-196: shared with `isAnyReachSyncDue`): when Reach was last checked
+   * within MIN_SYNC_INTERVAL_HOURS (null = due), and which other report types are due. Read only.
+   */
+  async function dueState(channelId: string, throttleFailed: boolean): Promise<{ reachCheckedAt: Date | null; dueOtherTypes: NonNullable<ReachReportsDependencies["otherReportTypes"]> }> {
+    const otherTypes = deps.otherReportTypes ?? [];
+    // The time a type was checked within the last MIN_SYNC_INTERVAL_HOURS (so it is not due), or null when it is due.
+    const checkedRecentlyAt = async (reportTypeId: string): Promise<Date | null> => {
+      const [known, attempt] = await Promise.all([deps.store.getJob(channelId, reportTypeId), deps.store.getAttempt(channelId, reportTypeId)]);
+      // A FAILED attempt does not throttle: its cause is usually fixable (toggle back on, scope re-granted,
+      // API enabled) and the automatic sync must pick that up on the next dashboard open, not 6 hours later.
+      const lastChecked = [
+        known?.lastCheckedAt ?? null,
+        attempt && (attempt.outcome !== "failed" || throttleFailed) ? attempt.attemptedAt : null,
+      ]
+        .filter((d): d is Date => d !== null)
+        .sort((a, b) => b.getTime() - a.getTime())[0];
+      return lastChecked && deps.clock.now().getTime() < lastChecked.getTime() + MIN_SYNC_INTERVAL_HOURS * 3_600_000 ? lastChecked : null;
+    };
+    const reachCheckedAt = await checkedRecentlyAt(REACH_BASIC_REPORT_TYPE_ID);
+    // BL-181 (review finding 2): each other type by its OWN checks. Reach's are shared with the other computer (BL-151), these
+    // types' are device-local, so the other computer checking Reach must not hold back this computer's own downloads.
+    const othersCheckedAt = await Promise.all(otherTypes.map((type) => checkedRecentlyAt(type.reportTypeId)));
+    return { reachCheckedAt, dueOtherTypes: otherTypes.filter((_, index) => othersCheckedAt[index] === null) };
+  }
+
   async function assertChannel(credentialRef: unknown, channelId: string) {
     // Fails closed for any credentialRef without a `userId` (e.g. raw tokens): same rule as analytics.
     await deps.channelAccess.assertActiveChannel({ userId: getCredentialUserId(credentialRef), channelId });
@@ -380,27 +406,10 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
       await assertChannel(parsed.credentialRef, parsed.channelId);
 
       const otherTypes = deps.otherReportTypes ?? [];
-      // The time a type was checked within the last MIN_SYNC_INTERVAL_HOURS (so it is not due), or null when it is due.
-      const checkedRecentlyAt = async (reportTypeId: string): Promise<Date | null> => {
-        const [known, attempt] = await Promise.all([deps.store.getJob(parsed.channelId, reportTypeId), deps.store.getAttempt(parsed.channelId, reportTypeId)]);
-        // A FAILED attempt does not throttle: its cause is usually fixable (toggle back on, scope re-granted,
-        // API enabled) and the automatic sync must pick that up on the next dashboard open, not 6 hours later.
-        const lastChecked = [
-          known?.lastCheckedAt ?? null,
-          attempt && (attempt.outcome !== "failed" || parsed.throttleFailed) ? attempt.attemptedAt : null,
-        ]
-          .filter((d): d is Date => d !== null)
-          .sort((a, b) => b.getTime() - a.getTime())[0];
-        return lastChecked && deps.clock.now().getTime() < lastChecked.getTime() + MIN_SYNC_INTERVAL_HOURS * 3_600_000 ? lastChecked : null;
-      };
       let reachCheckedAt: Date | null = null;
       let dueOtherTypes = otherTypes;
       if (parsed.onlyIfDue) {
-        reachCheckedAt = await checkedRecentlyAt(REACH_BASIC_REPORT_TYPE_ID);
-        // BL-181 (review finding 2): each other type by its OWN checks. Reach's are shared with the other computer (BL-151), these
-        // types' are device-local, so the other computer checking Reach must not hold back this computer's own downloads.
-        const othersCheckedAt = await Promise.all(otherTypes.map((type) => checkedRecentlyAt(type.reportTypeId)));
-        dueOtherTypes = otherTypes.filter((_, index) => othersCheckedAt[index] === null);
+        ({ reachCheckedAt, dueOtherTypes } = await dueState(parsed.channelId, parsed.throttleFailed === true));
         if (reachCheckedAt && dueOtherTypes.length === 0) {
           return { skipped: true, reason: "checked_recently", lastCheckedAt: reachCheckedAt.toISOString() };
         }
@@ -687,6 +696,23 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
      * recorded in the channel's own attempt row, so its Analytics status block says why. Channels run concurrently;
      * one failing never stops the others (AGENTS.md §M).
      */
+    /**
+     * BL-196 (FAST_STARTUP_PLAN.md §2 D): whether `syncAllReachReports({ onlyIfDue: true })` would find any connected channel due --
+     * the same per-channel rule (a failed attempt throttles only a channel that is not the active one), read only. Lets the dashboard
+     * skip the other computer's import when nothing is due.
+     */
+    async isAnyReachSyncDue(input: { sessionUserId: string }): Promise<boolean> {
+      const [connections, activeChannelId] = await Promise.all([
+        deps.store.listChannelConnections(),
+        deps.channelAccess.getActiveChannelId(input.sessionUserId),
+      ]);
+      for (const { channelId } of connections) {
+        const { reachCheckedAt, dueOtherTypes } = await dueState(channelId, channelId !== activeChannelId);
+        if (reachCheckedAt === null || dueOtherTypes.length > 0) return true;
+      }
+      return false;
+    },
+
     async syncAllReachReports(input: { onlyIfDue: boolean; sessionUserId: string }): Promise<{ channels: SyncAllReachChannelOutcome[] }> {
       const [connections, activeChannelId] = await Promise.all([
         deps.store.listChannelConnections(),

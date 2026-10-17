@@ -47,3 +47,30 @@ test("BL-141: with no active channel the response lists nothing, though every ch
   assert.deepEqual(await res.json(), { channels: [] });
   assert.equal(calls.length, 1);
 });
+
+// BL-196 AC-FS-05 (FAST_STARTUP_PLAN.md §2 D): with onlyIfDue and nothing due, the answer comes before the other computer's import and
+// without a sync; something due (or a failing check) keeps the old order: import first, then the sync. A manual sync is unchanged.
+test("AC-FS-05: nothing due -> no import and no sync; due or a failing check -> import, then sync", async () => {
+  const order: string[] = [];
+  const { core } = setup();
+  const make = (isAnyDue: () => Promise<boolean>) =>
+    createReachSyncAllHandler({
+      getSession: async () => ({ user: { id: "u" } }),
+      core: { syncAllReachReports: async (input) => (order.push("sync"), core.syncAllReachReports(input)) },
+      getActiveChannelId: async () => "UC_A",
+      importPeers: async () => (order.push("import"), { imported: 0, pending: false }),
+      isAnyDue: async (userId) => (order.push(`isAnyDue:${userId}`), isAnyDue()),
+    });
+  const body = JSON.stringify({ onlyIfDue: true });
+  const idle = await make(async () => false)(new Request("http://x", { method: "POST", body }));
+  assert.deepEqual(await idle.json(), { channels: [] });
+  assert.deepEqual(order.splice(0), ["isAnyDue:u"]);
+
+  await make(async () => true)(new Request("http://x", { method: "POST", body }));
+  assert.deepEqual(order.splice(0), ["isAnyDue:u", "import", "sync"]);
+  await make(async () => Promise.reject(new Error("db busy")))(new Request("http://x", { method: "POST", body }));
+  assert.deepEqual(order.splice(0), ["isAnyDue:u", "import", "sync"]);
+
+  await make(async () => false)(new Request("http://x", { method: "POST" }));
+  assert.deepEqual(order.splice(0), ["sync"], "a manual sync never asks");
+});
