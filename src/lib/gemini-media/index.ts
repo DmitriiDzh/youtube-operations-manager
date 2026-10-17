@@ -9,6 +9,7 @@ import { appDataPaths } from "@/lib/db";
 import { createKeyFile, createKeyFileFsAccess } from "@/lib/device-key-file";
 import { createGeminiApiClient, isMediaGatewayEnabled } from "@/lib/media-gateway";
 import { createStoryboardGateForProduction } from "@/lib/storyboards";
+import { createVideoProjectsServiceForProduction } from "@/lib/video-projects";
 import { createGeminiSettingsCoreForProduction, createGeminiSpendShareCoreForProduction } from "@/lib/sync-gateway";
 import { createGeminiFiles } from "./adapters/files";
 import { createGeminiWorkspace } from "./adapters/workspace";
@@ -90,6 +91,8 @@ function buildDeps(): GeminiMediaDeps {
     withCreateLock: createSerialLock(),
     // BL-184 stage 2 (ADR 0038 §4): the storyboards module's gate, over the same synced document the owner approves in.
     storyboardGate: createStoryboardGateForProduction(),
+    // BL-194 (ADR 0040): the video a job is made for (the shared video-projects module; an inherited one never blocks a job).
+    videoLink: { resolve: (input) => createVideoProjectsServiceForProduction().resolveJobVideo(input) },
     // BL-193 (ADR 0039): the other computers' Gemini spend, for the limits shared by every computer on one key.
     peerSpendReports: () => createGeminiSpendShareCoreForProduction().listPeerReports(),
     log: (line) => console.warn(line),

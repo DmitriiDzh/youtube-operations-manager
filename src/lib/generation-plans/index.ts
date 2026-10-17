@@ -8,6 +8,7 @@ import { appDataPaths, linkMediaSessionToPlan } from "@/lib/db";
 import { randomUUID } from "node:crypto";
 import { createGenerationPlansShareCoreForProduction, createReviewPresenceForProduction, GENERATION_PLANS_REPORT_FORMAT, GENERATION_PLANS_REPORT_VERSION } from "@/lib/sync-gateway";
 import { createMediaGenerationCore, isDomainError } from "@/lib/media-generation";
+import { createVideoProjectsServiceForProduction } from "@/lib/video-projects";
 import { createPlanStore } from "./adapters/store";
 import { PLAN_JOB_OUTPUT_SUBDIRS } from "./contracts";
 import { createGenerationPlanServices } from "./services";
@@ -26,6 +27,8 @@ export function createGenerationPlansCore() {
     channels: { isConnected: async (channelId) => (await channels.listConnectedChannels()).some((c) => c.channelId === channelId) },
     clock: { now: () => new Date() },
     generateId: () => randomUUID(),
+    // BL-194 (ADR 0040): a plan's video is checked by the shared video-projects module.
+    videos: { assertAttachable: (channelId, video) => createVideoProjectsServiceForProduction().assertAttachable(channelId, video) },
     // BL-157 (AC-TC-04/05): this computer as a verdict's history names it.
     deviceLabel: async () => hostLabel() ?? (await createBootstrapConfigStore(appDataPaths.bootstrapConfigPath).ensureExists()).deviceId,
     peers: {

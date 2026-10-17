@@ -488,4 +488,8 @@ export const media = {
   "media.devices.approveDescription": "{device} checks its own limits and, if they allow it, starts the pod for the channel \"{channel}\". The answer arrives in about 1–2 minutes.",
   "media.devices.rejectTitle": "Reject the session request on {device}?",
   "media.devices.rejectDescription": "The request for the channel \"{channel}\" is rejected on {device}.",
+  "videoPicker.label": "Video",
+  "videoPicker.none": "Not linked",
+  "videoPicker.option": "{video} — {title}",
+  "videoPicker.saveFailed": "Could not link the video.",
 } as const;

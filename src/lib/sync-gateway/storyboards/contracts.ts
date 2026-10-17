@@ -131,6 +131,11 @@ export type StoryboardRecord = {
   createdAt: string;
   createdBy: "operator" | "producer";
   planId: string | null;
+  /**
+   * BL-194 (ADR 0040): the channel's video number (`V49`) this storyboard is for; absent or null = none. Assigned whole, so the last
+   * change from either computer wins; it is not content, so changing it never makes a new version.
+   */
+  video?: string | null;
   /** By version number as a string ("1", "2", ...). */
   versions: Record<string, StoryboardVersion>;
   /** By version number: when the Operator put that version in review. */

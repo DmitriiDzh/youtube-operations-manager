@@ -84,6 +84,8 @@ export type GenerationPlan = {
   createdAt: string;
   updatedAt: string;
   closedAt: string | null;
+  /** BL-194 (ADR 0040): the channel's video number the plan works for, or null. */
+  video: string | null;
 } & PlanDefinition;
 
 export type PlanCheck = {

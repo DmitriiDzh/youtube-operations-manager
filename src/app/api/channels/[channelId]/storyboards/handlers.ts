@@ -21,7 +21,7 @@ export type StoryboardRouteDeps = {
   assertActiveChannel: (args: { userId: string; channelId: string }) => Promise<void>;
   service: () => Pick<
     StoryboardsService,
-    "listForOwner" | "getForOwner" | "keyframeFiles" | "versionDiff" | "keyframeFile" | "ownerComment" | "ownerReply" | "ownerSetCommentState" | "ownerDecide" | "gateSetting" | "setGateSetting" | "ownerPick" | "ownerRenderDecision" | "renderFile"
+    "listForOwner" | "getForOwner" | "keyframeFiles" | "versionDiff" | "keyframeFile" | "ownerComment" | "ownerReply" | "ownerSetCommentState" | "ownerDecide" | "gateSetting" | "setGateSetting" | "ownerPick" | "ownerRenderDecision" | "renderFile" | "ownerSetVideo"
   >;
   readFile: (filePath: string) => Promise<Uint8Array>;
   /** BL-184 stage 3: the storyboard's takes (the video modules' linked jobs) and a take's file on this computer. */
@@ -109,6 +109,10 @@ export function createStoryboardRouteHandlers(deps: StoryboardRouteDeps = defaul
     /** POST `{ kind: approved | changes_requested, versionNumber, note? }`. */
     decide: (request: Request, context: Params<Base & { storyboardId: string }>) =>
       guarded(context, async ({ channelId, storyboardId }) => NextResponse.json(await deps.service().ownerDecide(channelId, storyboardId, await body(request)))),
+
+    /** BL-194 (ADR 0040): the owner's video picker -- PUT `{ videoNumber: "V49" | null }`. */
+    setVideo: (request: Request, context: Params<Base & { storyboardId: string }>) =>
+      guarded(context, async ({ channelId, storyboardId }) => NextResponse.json(await deps.service().ownerSetVideo(channelId, storyboardId, await body(request)))),
 
     /** BL-184 stage 2 (B4): the channel's "first/last-frame video needs an approved storyboard" setting. */
     gate: (_request: Request, context: Params<Base>) => guarded(context, async ({ channelId }) => NextResponse.json(await deps.service().gateSetting(channelId))),

@@ -37,6 +37,9 @@ export type PlanCardModel = {
   notes: "own" | "relay" | "update_required";
   /** Wave notes sent from here that the owning device has not shown applied yet, by wave. */
   pendingNotes: Record<string, { note: string | null; at: string }>;
+  /** BL-194 (ADR 0040): this device's plan -- its channel and the video it works for (absent on another device's plan). */
+  channelId?: string;
+  video?: string | null;
 };
 
 /** A verdict this computer sent to another device's plan, not yet shown applied there (BL-173: `recheckId` = an answer to a re-check). */
@@ -53,6 +56,8 @@ export function ownPlanModel(detail: PlanView & { events: PlanEvent[] }): PlanCa
     createdAt: plan.createdAt,
     note: plan.note,
     reviewRejected: plan.reviewRejected === true,
+    channelId: plan.channelId,
+    video: plan.video ?? null,
     groups: plan.groups.map((g) => ({ groupId: g.groupId, title: g.title, dependsOn: g.dependsOn ?? null, note: g.note ?? null, ownerNote: g.ownerNote ?? null })),
     progress,
     events: detail.events,

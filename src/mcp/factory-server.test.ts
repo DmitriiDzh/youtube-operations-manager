@@ -65,6 +65,9 @@ const EXPECTED_TOOLS = [
   "factory_storyboard_reply",
   "factory_storyboard_submit",
   "factory_storyboard_update",
+  "factory_video_create",
+  "factory_video_get_cost",
+  "factory_video_list",
 ];
 
 function registeredNames(): string[] {
@@ -80,6 +83,7 @@ function registeredNames(): string[] {
       live: {} as never,
       storyboards: {} as never,
       jobs: {} as never,
+      videos: {} as never,
       async assertMutationAllowed() {},
     },
     { connectionEnabled: true, session: { tokenId: "t", async reverify() {} } }
@@ -140,12 +144,14 @@ test("AC-FO-09 (amended by ADR 0025/0026): writes are exactly the named media/se
     "factory_storyboard_reply",
     "factory_storyboard_submit",
     "factory_storyboard_update",
+    "factory_video_create",
   ]);
   const writes = new Set<string>(FACTORY_WRITE_TOOL_NAMES);
   for (const name of FACTORY_TOOL_NAMES) {
     // BL-174: the Gemini reads are factory_gemini_get_*; BL-176: the live-stream read is factory_live_get_status; BL-184: the
-    // storyboard reads are factory_storyboard_get / factory_storyboard_list; BL-188: factory_jobs_list.
-    if (!writes.has(name)) assert.match(name, /^factory_(get|list|media_(get|list|storage|capacity)|plan_(get|list|todo)|gemini_(get|list)|live_(get|list)|storyboard_(get|list)|jobs_list)_?/, `${name} must be a read`);
+    // storyboard reads are factory_storyboard_get / factory_storyboard_list; BL-188: factory_jobs_list; BL-194: factory_video_list /
+    // factory_video_get_cost.
+    if (!writes.has(name)) assert.match(name, /^factory_(get|list|media_(get|list|storage|capacity)|plan_(get|list|todo)|gemini_(get|list)|live_(get|list)|storyboard_(get|list)|jobs_list|video_(list|get_cost))_?/, `${name} must be a read`);
     assert.doesNotMatch(name, /_(set|issue|revoke)_|workspace|token|approve|reject/, `${name} must not touch paths, workspaces or tokens, or approve for anyone`);
   }
 });
@@ -186,6 +192,10 @@ test("§2.5(3): the factory route and endpoint reach only the allowlisted module
     "@/lib/media-jobs-pool",
     // BL-189 (STORYBOARD_TAKES_PLAN.md §2.8): a storyboard's takes on every computer, to check factory_storyboard_attach_render's picks.
     "@/lib/storyboard-takes",
+    // BL-194 (VIDEO_COST_PLAN.md §2 stage 1): the video-projects module for factory_video_create / factory_video_list.
+    "@/lib/video-projects",
+    // BL-194 stage 3 (VIDEO_COST_PLAN.md §2 stage 3): the video-costs module for factory_video_get_cost (loaded on use).
+    "@/lib/video-costs",
     "@/mcp/factory-server",
   ]);
   assert.deepEqual(route.filter((spec) => !routeAllowed.has(spec)), []);
@@ -208,7 +218,7 @@ test("§2.5(4): none of the factory files reads channel-scope state (agent-sessi
   }
 });
 
-test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.18.0 since BL-189), separate from the channel agents' version", async () => {
+test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.20.0 since BL-194), separate from the channel agents' version", async () => {
   // BL-153 (FO-REQ-0008): reviewRejected, split waiting counts and overridesValidator are additive -> a minor version.
   // BL-155 (FO-REQ-0007, CUDA_HOSTS_PLAN.md "Contract"): the jobs' errorCode, the error media_gpu_host_incompatible and the
   // stopReason "all jobs failed (release when done)" are additive -> 1.7.0, as the plan states.
@@ -224,7 +234,9 @@ test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.18.0 
   // BL-184 (STORYBOARD_PLAN.md §2.6): six new storyboard tools, additive -> 1.16.0.
   // BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.7): one new READ tool, factory_jobs_list, additive -> 1.17.0.
   // BL-189 (STORYBOARD_TAKES_PLAN.md §2.4): one new WRITE tool, factory_storyboard_attach_render, additive -> 1.18.0.
-  assert.equal(FACTORY_API_VERSION, "1.19.0"); // BL-193: the Gemini limits shared by every computer on one key
+  // BL-194 (VIDEO_COST_PLAN.md §2 stages 1 and 3): three new tools (factory_video_create, factory_video_list, factory_video_get_cost)
+  // and optional videoNumber fields, additive -> 1.20.0 (1.19.0 = BL-193).
+  assert.equal(FACTORY_API_VERSION, "1.20.0");
   const agentOperations = await readFile("src/lib/agent-operations/contracts.ts", "utf8");
   assert.equal(agentOperations.includes("FACTORY_API_VERSION"), false);
 });

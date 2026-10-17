@@ -33,7 +33,7 @@ export type KeyframeFileStatus = "ok" | "missing" | "differs";
 export type StoryboardActor = "owner" | "operator";
 
 /** The sync family's operations the module uses (one document per channel, merged between the computers). */
-export type StoryboardStorePort = Pick<StoryboardsCore, "read" | "create" | "addVersion" | "submit" | "addDecision" | "addComment" | "addReply" | "setCommentState" | "readGate" | "setGate" | "setPick" | "addRender" | "addRenderDecision">;
+export type StoryboardStorePort = Pick<StoryboardsCore, "read" | "create" | "addVersion" | "submit" | "addDecision" | "addComment" | "addReply" | "setCommentState" | "readGate" | "setGate" | "setPick" | "addRender" | "addRenderDecision" | "setVideo">;
 
 export type StoryboardFilesPort = {
   /** The channel's workspace folder on this computer, or null when none is set. */
@@ -46,8 +46,13 @@ export type StoryboardFilesPort = {
   sha256(path: string): Promise<string>;
 };
 
+/** BL-194 (ADR 0040): the check a video link passes (the shared video-projects module): the number, or a refusal. */
+export type StoryboardVideoPort = { assertAttachable(channelId: string, video: string): Promise<string> };
+
 export type StoryboardsPorts = {
   store: StoryboardStorePort;
+  /** Absent: a storyboard cannot be linked to a video on this server (a `videoNumber` is refused). */
+  videos?: StoryboardVideoPort;
   files: StoryboardFilesPort;
   /** Whether the channel is connected on this computer. */
   isChannelConnected(channelId: string): Promise<boolean>;

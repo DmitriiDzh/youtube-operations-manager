@@ -36,6 +36,8 @@ export type UploadSteps = {
   playlist?: "added" | "already_there" | "none" | "failed";
   verify?: { result: "verified" | "mismatch"; mismatches: string[] };
   record?: "written" | "failed";
+  /** BL-194 stage 3 (ADR 0041): `Vn_cost.json` next to the package, written with the record (never a reason to fail the upload). */
+  cost?: "written" | "failed";
   sync?: "synced" | "failed";
   /** The reason a step failed (shown with the job; the video exists either way). */
   notes?: string[];
@@ -85,6 +87,11 @@ export type UploadRunnerDeps = {
     writeRecord(channelId: string, relativePath: string, record: unknown): Promise<void>;
   };
   audit(args: { channelId: string; videoId: string | null; detail: Record<string, unknown> }): Promise<void>;
+  /**
+   * BL-194 stage 3 (VIDEO_COST_PLAN.md §2 stage 3, ADR 0041): writes `Vn_cost.json` -- the video's visual cost -- into the package's
+   * folder (workspace-relative). Absent = not written. A failure is a note on the upload, never a failed step.
+   */
+  costFile?(args: { channelId: string; video: string; folder: string }): Promise<void>;
   syncChannel(args: { channelId: string } & UploadCredentials): Promise<void>;
   device(): Promise<{ deviceId: string | null; hostname: string | null }>;
   clock: { now(): Date };
@@ -522,6 +529,15 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
         } catch (error) {
           steps.record = "failed";
           note(`upload record not written: ${errorInfo(error).message}`);
+        }
+        if (deps.costFile) {
+          try {
+            await deps.costFile({ channelId: job.channelId, video: pkg.video, folder: pkg.manifestPath.slice(0, pkg.manifestPath.lastIndexOf("/")) });
+            steps.cost = "written";
+          } catch (error) {
+            steps.cost = "failed";
+            note(`${pkg.video}_cost.json not written: ${errorInfo(error).message}`);
+          }
         }
         return void (await saveSteps(job, steps));
       }

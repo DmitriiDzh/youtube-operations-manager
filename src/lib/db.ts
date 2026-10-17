@@ -912,6 +912,19 @@ export const mediaJobs = sqliteTable(
     storyboardId: text("storyboard_id"),
     storyboardVersion: integer("storyboard_version"),
     segmentId: text("segment_id"),
+    // Schema v95 (BL-194 stage 1, ADR 0040): the channel's video number (`V49`) this job is made for, null = not linked.
+    video: text("video"),
+    // Schema v95 (BL-194 stage 2, ADR 0041): when ComfyUI really started and finished this prompt (its websocket's execution_start and
+    // execution_success / _error / _interrupted; null = the event was not seen), and the job's share of its session's RunPod charge,
+    // computed when the session has ended: GPU seconds, the share in USD (the session's jobs add up to its charge exactly), the part
+    // of it that is pod start / idle time, whether the times were measured or estimated, and the session charge it was split from.
+    startedAt: integer("started_at", { mode: "timestamp_ms" }),
+    gpuFinishedAt: integer("gpu_finished_at", { mode: "timestamp_ms" }),
+    gpuSeconds: real("gpu_seconds"),
+    allocatedUsd: real("allocated_usd"),
+    overheadUsd: real("overhead_usd"),
+    allocationBasis: text("allocation_basis", { enum: ["measured", "estimated"] }),
+    allocationSessionUsd: real("allocation_session_usd"),
   },
   (table) => [index("media_jobs_session_idx").on(table.sessionId), index("media_jobs_status_idx").on(table.status), index("media_jobs_plan_idx").on(table.planId)]
 );
@@ -993,6 +1006,8 @@ export const generationPlans = sqliteTable(
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
     closedAt: integer("closed_at", { mode: "timestamp" }),
+    /** Schema v95 (BL-194 stage 1, ADR 0040): the channel's video number (`V49`) the plan works for; null = none. */
+    video: text("video"),
   },
   (table) => [index("generation_plans_status_idx").on(table.status)]
 );
@@ -1303,6 +1318,8 @@ export const geminiMediaJobs = sqliteTable(
     storyboardId: text("storyboard_id"),
     storyboardVersion: integer("storyboard_version"),
     segmentId: text("segment_id"),
+    // Schema v95 (BL-194 stage 1, ADR 0040): the channel's video number (`V49`) this job is made for, null = not linked.
+    video: text("video"),
   },
   (table) => [
     uniqueIndex("gemini_media_jobs_request_idx").on(table.createdBy, table.requestId),
@@ -1353,6 +1370,25 @@ export const publishingUploads = sqliteTable(
     leaseUntil: integer("lease_until", { mode: "timestamp_ms" }),
   },
   (table) => [index("publishing_uploads_status_idx").on(table.status, table.nextAttemptAt), index("publishing_uploads_channel_idx").on(table.channelId, table.createdAt)]
+);
+
+/**
+ * Schema v95 (BL-194 stage 1, docs/roadmap/plans/VIDEO_COST_PLAN.md §2, ADR 0040): the video numbers (`Vn`) THIS computer reserved
+ * for a channel ("Новый ролик", `factory_video_create`). Device-local: the other computers learn them from this computer's
+ * `video-reservations` report. A number is never deleted or reused; a given-up one is `cancelled`. Times are ISO strings.
+ */
+export const videoReservations = sqliteTable(
+  "video_reservations",
+  {
+    channelId: text("channel_id").notNull(),
+    video: text("video").notNull(),
+    workingTitle: text("working_title"),
+    reservedAt: text("reserved_at").notNull(),
+    state: text("state", { enum: ["in_work", "cancelled"] }).notNull(),
+    cancelledAt: text("cancelled_at"),
+    replacedBy: text("replaced_by"),
+  },
+  (table) => [primaryKey({ columns: [table.channelId, table.video] })]
 );
 
 /**
@@ -5093,6 +5129,40 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       )`);
     },
   },
+  {
+    version: 95,
+    description:
+      "video_reservations; media_jobs/gemini_media_jobs/generation_plans .video; media_jobs started_at/gpu_finished_at/gpu_seconds/allocated_usd/overhead_usd/allocation_basis/allocation_session_usd -- BL-194 stages 1-2 (docs/roadmap/plans/VIDEO_COST_PLAN.md §2, ADR 0040/0041): the video numbers this computer reserved, the video a job or plan is made for, a RunPod job's real GPU times and its share of the session's charge. Additive, nullable, device-local",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS video_reservations (
+        channel_id TEXT NOT NULL,
+        video TEXT NOT NULL,
+        working_title TEXT,
+        reserved_at TEXT NOT NULL,
+        state TEXT NOT NULL,
+        cancelled_at TEXT,
+        replaced_by TEXT,
+        PRIMARY KEY (channel_id, video)
+      )`);
+      for (const table of ["media_jobs", "gemini_media_jobs", "generation_plans"]) {
+        try {
+          await client.execute(`ALTER TABLE ${table} ADD COLUMN video TEXT`);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
+      // Stage 2 (ADR 0041): the real start / finish of a RunPod job and its share of the session's charge.
+      for (const column of ["started_at INTEGER", "gpu_finished_at INTEGER", "gpu_seconds REAL", "allocated_usd REAL", "overhead_usd REAL", "allocation_basis TEXT", "allocation_session_usd REAL"]) {
+        try {
+          await client.execute(`ALTER TABLE media_jobs ADD COLUMN ${column}`);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
+      await client.execute("CREATE INDEX IF NOT EXISTS media_jobs_video_idx ON media_jobs (video)");
+      await client.execute("CREATE INDEX IF NOT EXISTS gemini_media_jobs_video_idx ON gemini_media_jobs (video)");
+    },
+  },
 ];
 
 /**
@@ -7641,9 +7711,9 @@ export async function getGatewayTrafficLast24h(
   }));
 }
 
-export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens" | "live_streams" | "channel_language_settings" | "channel_publishing_settings" | "publishing_uploads" | "storyboards" | "media_jobs" | "gemini_spend" | "gemini_settings";
+export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens" | "live_streams" | "channel_language_settings" | "channel_publishing_settings" | "publishing_uploads" | "storyboards" | "media_jobs" | "gemini_spend" | "gemini_settings" | "video_reservations" | "video_costs";
 
-const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings", "agent_tokens", "live_streams", "channel_language_settings", "channel_publishing_settings", "publishing_uploads", "storyboards", "media_jobs", "gemini_spend", "gemini_settings"];
+const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings", "agent_tokens", "live_streams", "channel_language_settings", "channel_publishing_settings", "publishing_uploads", "storyboards", "media_jobs", "gemini_spend", "gemini_settings", "video_reservations", "video_costs"];
 
 export type SyncFamilyStatusRow = {
   family: SyncFamily;
@@ -14196,4 +14266,249 @@ export async function getLiveStreamsSettingsJson(database: AppDb = db): Promise<
 
 export async function setLiveStreamsSettingsJson(json: string, database: AppDb = db): Promise<void> {
   await setAppSetting(LIVE_STREAMS_SETTINGS_KEY, json, database);
+}
+
+// ---------------------------------------------------------------------------
+// BL-194 stage 1 (ADR 0040): this computer's video reservations, and the video numbers other tables already know.
+// ---------------------------------------------------------------------------
+
+export type StoredVideoReservation = typeof videoReservations.$inferSelect;
+
+/** Every reservation of this computer (optionally of one channel), oldest first. */
+export async function listVideoReservations(filter: { channelId?: string } = {}, database: AppDb = db): Promise<StoredVideoReservation[]> {
+  const query = database.select().from(videoReservations);
+  return (filter.channelId ? query.where(eq(videoReservations.channelId, filter.channelId)) : query).orderBy(asc(videoReservations.reservedAt), asc(videoReservations.video));
+}
+
+/** false (nothing written) when this computer already holds that number for the channel. */
+export async function insertVideoReservation(row: typeof videoReservations.$inferInsert, database: AppDb = db): Promise<boolean> {
+  const rows = await database.insert(videoReservations).values(row).onConflictDoNothing().returning({ video: videoReservations.video });
+  return rows.length > 0;
+}
+
+/** Marks a reservation given up (and, after a lost duplicate, the number taken instead); false when there is no such row. */
+export async function cancelVideoReservation(channelId: string, video: string, set: { cancelledAt: string; replacedBy: string | null }, database: AppDb = db): Promise<boolean> {
+  const rows = await database
+    .update(videoReservations)
+    .set({ state: "cancelled", cancelledAt: set.cancelledAt, replacedBy: set.replacedBy })
+    .where(and(eq(videoReservations.channelId, channelId), eq(videoReservations.video, video), eq(videoReservations.state, "in_work")))
+    .returning({ video: videoReservations.video });
+  return rows.length > 0;
+}
+
+/** The video numbers this computer's upload queue knows for a channel, with each upload's status. */
+export async function listPublishingUploadVideos(channelId: string, database: AppDb = db): Promise<Array<{ video: string; status: PublishingUploadStatus }>> {
+  return database.select({ video: publishingUploads.video, status: publishingUploads.status }).from(publishingUploads).where(eq(publishingUploads.channelId, channelId));
+}
+
+// ---------------------------------------------------------------------------
+// BL-194 stage 2 (ADR 0041): a RunPod job's real GPU times and its share of the session's charge.
+// ---------------------------------------------------------------------------
+
+/** Records a time ComfyUI reported for a job -- only the first one of each kind (a later event never moves it). */
+export async function recordMediaJobTiming(id: string, set: { startedAt?: Date; gpuFinishedAt?: Date }, database: AppDb = db): Promise<void> {
+  if (set.startedAt) await database.update(mediaJobs).set({ startedAt: set.startedAt }).where(and(eq(mediaJobs.id, id), isNull(mediaJobs.startedAt)));
+  if (set.gpuFinishedAt) await database.update(mediaJobs).set({ gpuFinishedAt: set.gpuFinishedAt }).where(and(eq(mediaJobs.id, id), isNull(mediaJobs.gpuFinishedAt)));
+}
+
+/**
+ * The ended sessions whose charge is not (or no longer) split across their jobs: a job without a share, or a share computed from
+ * another charge than the session's current one -- only sessions whose jobs are all final, by session id. Each with every one of its
+ * jobs.
+ */
+export async function listMediaSessionsNeedingCostSplit(limit = 200, database: AppDb = db): Promise<Array<{ session: typeof mediaSessions.$inferSelect; jobs: StoredMediaJob[] }>> {
+  const pending = await database
+    .selectDistinct({ sessionId: mediaJobs.sessionId })
+    .from(mediaJobs)
+    .innerJoin(mediaSessions, eq(mediaSessions.id, mediaJobs.sessionId))
+    .where(
+      and(
+        inArray(mediaSessions.status, [...MEDIA_SESSION_TERMINAL_STATUSES]),
+        isNotNull(mediaSessions.usdCharged),
+        or(isNull(mediaJobs.allocationSessionUsd), sql`${mediaJobs.allocationSessionUsd} <> ${mediaSessions.usdCharged}`),
+        // A session with a job still running cannot be split yet: left out here, so it never fills the batch ahead of the others.
+        sql`NOT EXISTS (SELECT 1 FROM media_jobs AS open_job WHERE open_job.session_id = ${mediaSessions.id} AND open_job.status NOT IN ('done', 'failed', 'cancelled'))`
+      )
+    )
+    .orderBy(asc(mediaJobs.sessionId))
+    .limit(limit);
+  const out: Array<{ session: typeof mediaSessions.$inferSelect; jobs: StoredMediaJob[] }> = [];
+  for (const { sessionId } of pending) {
+    const [session] = await database.select().from(mediaSessions).where(eq(mediaSessions.id, sessionId));
+    if (!session) continue;
+    out.push({ session, jobs: await database.select().from(mediaJobs).where(eq(mediaJobs.sessionId, sessionId)) });
+  }
+  return out;
+}
+
+/** Stores one job's share of its session's charge. */
+export async function setMediaJobCostShare(
+  id: string,
+  set: { gpuSeconds: number; allocatedUsd: number; overheadUsd: number | null; allocationBasis: "measured" | "estimated"; allocationSessionUsd: number },
+  database: AppDb = db
+): Promise<void> {
+  await database.update(mediaJobs).set(set).where(eq(mediaJobs.id, id));
+}
+
+// ---------------------------------------------------------------------------
+// BL-194 stage 3 (ADR 0041): what the video-costs module reads -- every paid run of this computer, with no prompt or parameter.
+// ---------------------------------------------------------------------------
+
+export type VideoCostRunpodJobRow = {
+  id: string;
+  sessionId: string;
+  channelId: string;
+  templateId: string;
+  templateName: string | null;
+  status: MediaJobStatusValue;
+  outputsJson: string | null;
+  video: string | null;
+  planId: string | null;
+  storyboardId: string | null;
+  storyboardVersion: number | null;
+  segmentId: string | null;
+  gpuSeconds: number | null;
+  allocatedUsd: number | null;
+  overheadUsd: number | null;
+  allocationBasis: "measured" | "estimated" | null;
+  createdAt: Date;
+  finishedAt: Date | null;
+};
+
+export async function listVideoCostRunpodJobs(database: AppDb = db): Promise<VideoCostRunpodJobRow[]> {
+  const rows = await database
+    .select({
+      id: mediaJobs.id,
+      sessionId: mediaJobs.sessionId,
+      channelId: mediaJobs.channelId,
+      templateId: mediaJobs.templateId,
+      templateName: mediaWorkflowTemplates.name,
+      status: mediaJobs.status,
+      outputsJson: mediaJobs.outputsJson,
+      video: mediaJobs.video,
+      planId: mediaJobs.planId,
+      storyboardId: mediaJobs.storyboardId,
+      storyboardVersion: mediaJobs.storyboardVersion,
+      segmentId: mediaJobs.segmentId,
+      gpuSeconds: mediaJobs.gpuSeconds,
+      allocatedUsd: mediaJobs.allocatedUsd,
+      overheadUsd: mediaJobs.overheadUsd,
+      allocationBasis: mediaJobs.allocationBasis,
+      createdAt: mediaJobs.createdAt,
+      finishedAt: mediaJobs.finishedAt,
+    })
+    .from(mediaJobs)
+    .leftJoin(mediaWorkflowTemplates, eq(mediaWorkflowTemplates.id, mediaJobs.templateId))
+    .orderBy(desc(mediaJobs.createdAt));
+  return rows.map((r) => ({ ...r, templateName: r.templateName ?? null, outputsJson: r.outputsJson ?? null, video: r.video ?? null, planId: r.planId ?? null, storyboardId: r.storyboardId ?? null, storyboardVersion: r.storyboardVersion ?? null, segmentId: r.segmentId ?? null, gpuSeconds: r.gpuSeconds ?? null, allocatedUsd: r.allocatedUsd ?? null, overheadUsd: r.overheadUsd ?? null, allocationBasis: r.allocationBasis ?? null, finishedAt: r.finishedAt ?? null }));
+}
+
+/** Ended RunPod sessions that ran no job but were charged: a session-level line, counted for their plan's video. */
+export async function listVideoCostSessionsWithoutJobs(database: AppDb = db): Promise<Array<{ id: string; channelId: string; planId: string | null; planVideo: string | null; usdCharged: number; createdAt: Date; stoppedAt: Date | null }>> {
+  const rows = await database
+    .select({ id: mediaSessions.id, channelId: mediaSessions.channelId, planId: mediaSessions.planId, planVideo: generationPlans.video, usdCharged: mediaSessions.usdCharged, createdAt: mediaSessions.createdAt, stoppedAt: mediaSessions.stoppedAt })
+    .from(mediaSessions)
+    .leftJoin(generationPlans, eq(generationPlans.id, mediaSessions.planId))
+    .where(
+      and(
+        inArray(mediaSessions.status, [...MEDIA_SESSION_TERMINAL_STATUSES]),
+        gt(mediaSessions.usdCharged, 0),
+        sql`NOT EXISTS (SELECT 1 FROM media_jobs WHERE media_jobs.session_id = ${mediaSessions.id})`
+      )
+    );
+  return rows.map((r) => ({ id: r.id, channelId: r.channelId, planId: r.planId ?? null, planVideo: r.planVideo ?? null, usdCharged: r.usdCharged ?? 0, createdAt: r.createdAt, stoppedAt: r.stoppedAt ?? null }));
+}
+
+export type VideoCostGeminiJobRow = {
+  jobId: string;
+  channelId: string;
+  kind: "image" | "video";
+  model: string;
+  status: "queued" | "submitting" | "running" | "done" | "failed";
+  estimateUsd: number;
+  costUsd: number | null;
+  costBasis: string | null;
+  video: string | null;
+  storyboardId: string | null;
+  storyboardVersion: number | null;
+  segmentId: string | null;
+  createdAt: Date;
+  finishedAt: Date | null;
+};
+
+export async function listVideoCostGeminiJobs(database: AppDb = db): Promise<VideoCostGeminiJobRow[]> {
+  const rows = await database
+    .select({
+      jobId: geminiMediaJobs.jobId,
+      channelId: geminiMediaJobs.channelId,
+      kind: geminiMediaJobs.kind,
+      model: geminiMediaJobs.model,
+      status: geminiMediaJobs.status,
+      estimateUsd: geminiMediaJobs.estimateUsd,
+      costUsd: geminiMediaJobs.costUsd,
+      costBasis: geminiMediaJobs.costBasis,
+      video: geminiMediaJobs.video,
+      storyboardId: geminiMediaJobs.storyboardId,
+      storyboardVersion: geminiMediaJobs.storyboardVersion,
+      segmentId: geminiMediaJobs.segmentId,
+      createdAt: geminiMediaJobs.createdAt,
+      finishedAt: geminiMediaJobs.finishedAt,
+    })
+    .from(geminiMediaJobs)
+    .orderBy(desc(geminiMediaJobs.createdAt));
+  return rows.map((r) => ({ ...r, costUsd: r.costUsd ?? null, costBasis: r.costBasis ?? null, video: r.video ?? null, storyboardId: r.storyboardId ?? null, storyboardVersion: r.storyboardVersion ?? null, segmentId: r.segmentId ?? null, finishedAt: r.finishedAt ?? null }));
+}
+
+// ---------------------------------------------------------------------------
+// BL-194 stage 4 (ADR 0041): older runs -- this computer's jobs not linked to a video, by storyboard and by plan, and linking them
+// once the owner confirmed the storyboard's or plan's video.
+// ---------------------------------------------------------------------------
+
+/** This computer's jobs of a channel with no video, counted per storyboard (RunPod and Gemini) and per plan (RunPod, no storyboard). */
+export async function countUnlinkedJobsByOrigin(channelId: string, database: AppDb = db): Promise<Array<{ kind: "storyboard" | "plan"; id: string; runs: number }>> {
+  const runpodByStoryboard = await database
+    .select({ id: mediaJobs.storyboardId, n: sql<number>`count(*)` })
+    .from(mediaJobs)
+    .where(and(eq(mediaJobs.channelId, channelId), isNull(mediaJobs.video), isNotNull(mediaJobs.storyboardId)))
+    .groupBy(mediaJobs.storyboardId);
+  const geminiByStoryboard = await database
+    .select({ id: geminiMediaJobs.storyboardId, n: sql<number>`count(*)` })
+    .from(geminiMediaJobs)
+    .where(and(eq(geminiMediaJobs.channelId, channelId), isNull(geminiMediaJobs.video), isNotNull(geminiMediaJobs.storyboardId)))
+    .groupBy(geminiMediaJobs.storyboardId);
+  const byPlan = await database
+    .select({ id: mediaJobs.planId, n: sql<number>`count(*)` })
+    .from(mediaJobs)
+    .where(and(eq(mediaJobs.channelId, channelId), isNull(mediaJobs.video), isNull(mediaJobs.storyboardId), isNotNull(mediaJobs.planId)))
+    .groupBy(mediaJobs.planId);
+  const storyboards = new Map<string, number>();
+  for (const r of [...runpodByStoryboard, ...geminiByStoryboard]) if (r.id) storyboards.set(r.id, (storyboards.get(r.id) ?? 0) + Number(r.n));
+  return [
+    ...[...storyboards.entries()].map(([id, runs]) => ({ kind: "storyboard" as const, id, runs })),
+    ...byPlan.filter((r) => r.id).map((r) => ({ kind: "plan" as const, id: r.id!, runs: Number(r.n) })),
+  ];
+}
+
+/** Links this computer's unlinked jobs of a storyboard (RunPod and Gemini) or of a plan (RunPod jobs without a storyboard). */
+export async function linkUnlinkedJobsToVideo(channelId: string, target: { storyboardId: string } | { planId: string }, video: string, database: AppDb = db): Promise<number> {
+  if ("storyboardId" in target) {
+    const a = await database.update(mediaJobs).set({ video }).where(and(eq(mediaJobs.channelId, channelId), isNull(mediaJobs.video), eq(mediaJobs.storyboardId, target.storyboardId))).returning({ id: mediaJobs.id });
+    const b = await database.update(geminiMediaJobs).set({ video }).where(and(eq(geminiMediaJobs.channelId, channelId), isNull(geminiMediaJobs.video), eq(geminiMediaJobs.storyboardId, target.storyboardId))).returning({ id: geminiMediaJobs.jobId });
+    return a.length + b.length;
+  }
+  const rows = await database.update(mediaJobs).set({ video }).where(and(eq(mediaJobs.channelId, channelId), isNull(mediaJobs.video), isNull(mediaJobs.storyboardId), eq(mediaJobs.planId, target.planId))).returning({ id: mediaJobs.id });
+  return rows.length;
+}
+
+/** Plans of this computer by id (title, channel, video). */
+export async function listGenerationPlanVideos(ids: string[], database: AppDb = db): Promise<Array<{ id: string; channelId: string; title: string; video: string | null }>> {
+  if (ids.length === 0) return [];
+  const rows = await database.select({ id: generationPlans.id, channelId: generationPlans.channelId, title: generationPlans.title, video: generationPlans.video }).from(generationPlans).where(inArray(generationPlans.id, ids));
+  return rows.map((r) => ({ ...r, video: r.video ?? null }));
+}
+
+/** The video a plan of this computer is made for, with its channel; null when there is no such plan. */
+export async function getGenerationPlanVideo(planId: string, database: AppDb = db): Promise<{ channelId: string; video: string | null } | null> {
+  const [row] = await database.select({ channelId: generationPlans.channelId, video: generationPlans.video }).from(generationPlans).where(eq(generationPlans.id, planId));
+  return row ?? null;
 }

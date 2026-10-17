@@ -167,6 +167,13 @@ export function createStoryboardsCore(deps: ServiceDependencies) {
       });
     },
 
+    /** BL-194 (ADR 0040): the video the storyboard is for, or null for none (checked by the caller; the last change wins). */
+    setVideo(channelId: string, storyboardId: string, video: string | null): Promise<void> {
+      return changeStoryboard(channelId, storyboardId, `video ${storyboardId} ${video ?? "none"}`, (record) => {
+        record.video = video;
+      });
+    },
+
     /** BL-184 stage 3: the owner's take for a segment of a version, or null to clear it. */
     setPick(channelId: string, storyboardId: string, versionNumber: number, segmentId: string, pick: StoryboardPick | null): Promise<void> {
       return changeStoryboard(channelId, storyboardId, `pick ${storyboardId} v${versionNumber} ${segmentId}`, (record) => {

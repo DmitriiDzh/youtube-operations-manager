@@ -104,6 +104,12 @@ export type AppPaths = {
   /** BL-188: the media-jobs family -- this device's jobs report and the peers' latest reports. */
   mediaJobsShareDir: string;
   mediaJobsSyncFallbackDir: string;
+  /** BL-194 (ADR 0040): the video-reservations family -- this device's reserved video numbers and the peers' latest reports. */
+  videoReservationsShareDir: string;
+  videoReservationsSyncFallbackDir: string;
+  /** BL-194 stage 3 (ADR 0041): the video-costs family -- this device's paid runs and the peers' latest reports. */
+  videoCostsShareDir: string;
+  videoCostsSyncFallbackDir: string;
   /** BL-193: the gemini-spend family -- this device's Gemini spend report and the peers' latest reports. */
   geminiSpendShareDir: string;
   geminiSpendSyncFallbackDir: string;

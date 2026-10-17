@@ -489,4 +489,8 @@ export const media: Record<keyof typeof en, string> = {
   "media.devices.approveDescription": "{device} проверит свои лимиты и, если всё в порядке, запустит под для канала «{channel}». Ответ придёт примерно через 1–2 минуты.",
   "media.devices.rejectTitle": "Отклонить запрос сессии на {device}?",
   "media.devices.rejectDescription": "Запрос для канала «{channel}» будет отклонён на {device}.",
+  "videoPicker.label": "Ролик",
+  "videoPicker.none": "Не привязано",
+  "videoPicker.option": "{video} — {title}",
+  "videoPicker.saveFailed": "Не удалось привязать ролик.",
 };

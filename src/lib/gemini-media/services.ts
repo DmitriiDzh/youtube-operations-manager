@@ -29,6 +29,7 @@ import {
   type GeminiSpend,
   type GeminiStoryboardGate,
   type GeminiStoryboardLink,
+  type GeminiVideoLink,
   type GeminiVideoParams,
 } from "./contracts";
 import { accountWideSpend, geminiKeyFingerprint } from "./account";
@@ -93,6 +94,8 @@ export type GeminiMediaDeps = {
   withCreateLock<T>(run: () => Promise<T>): Promise<T>;
   /** BL-184 stage 2: no first/last-frame video from two different images without an approved storyboard (ADR 0038 §4). */
   storyboardGate: GeminiStoryboardGate;
+  /** BL-194: which video a job is made for (absent: jobs are not linked to videos here, and a `videoNumber` is refused). */
+  videoLink?: GeminiVideoLink;
   /**
    * BL-193 (ADR 0039): the other computers' latest Gemini spend reports (the sync-gateway `gemini-spend` family). Absent = no other
    * computer is known (tests); a read that fails counts the others as 0 and is logged, as RunPod's shared cap does (ADR 0028 §5).
@@ -154,6 +157,7 @@ export function jobView(row: StoredGeminiMediaJob): GeminiJobView {
     submittedAt: row.submittedAt ? row.submittedAt.toISOString() : null,
     finishedAt: row.finishedAt ? row.finishedAt.toISOString() : null,
     storyboard: row.storyboardId && row.segmentId && row.storyboardVersion !== null ? { storyboardId: row.storyboardId, versionNumber: row.storyboardVersion, segmentId: row.segmentId } : null,
+    video: row.video ?? null,
   };
 }
 
@@ -161,7 +165,17 @@ export function jobView(row: StoredGeminiMediaJob): GeminiJobView {
 function requestHash(input: CreateJobInput): string {
   const canonical =
     input.kind === "image"
-      ? { channelId: input.channelId, kind: input.kind, model: input.model, prompt: input.prompt, size: input.image?.size, aspectRatio: input.image?.aspectRatio, images: input.image?.inputs?.images ?? [] }
+      ? {
+          channelId: input.channelId,
+          kind: input.kind,
+          model: input.model,
+          prompt: input.prompt,
+          size: input.image?.size,
+          aspectRatio: input.image?.aspectRatio,
+          images: input.image?.inputs?.images ?? [],
+          // BL-194: only when given, so a job asked for before video numbers keeps its hash.
+          ...(input.videoNumber ? { videoNumber: input.videoNumber } : {}),
+        }
       : {
           channelId: input.channelId,
           kind: input.kind,
@@ -176,6 +190,7 @@ function requestHash(input: CreateJobInput): string {
           referenceImages: input.video?.inputs?.referenceImages ?? [],
           // BL-184: only when given, so a job asked for before the storyboards keeps its hash (a replay still matches).
           ...(input.storyboardId ? { storyboardId: input.storyboardId, segmentId: input.segmentId } : {}),
+          ...(input.videoNumber ? { videoNumber: input.videoNumber } : {}),
         };
   return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
 }
@@ -193,6 +208,13 @@ export function namedInputs(input: Pick<CreateJobInput, "kind" | "image" | "vide
 
 export function createGeminiMediaServices(deps: GeminiMediaDeps) {
   const now = () => deps.clock.now();
+
+  /** BL-194: the video a new job is made for (see `GeminiVideoLink`); without the port a given number is refused. */
+  async function resolveVideo(input: { channelId: string; videoNumber: string | null; storyboardId: string | null }): Promise<string | null> {
+    if (deps.videoLink) return deps.videoLink.resolve(input);
+    if (input.videoNumber) throw new DomainError({ code: "video_not_found", message: "Video numbers are not available on this server", details: { videoNumber: input.videoNumber } });
+    return null;
+  }
 
   function inputUnavailable(relativePath: string, reason: string): DomainError {
     return new DomainError({ code: "gemini_input_unavailable", message: `Input ${relativePath}: ${reason}`, details: { path: relativePath, reason } });
@@ -474,6 +496,9 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
             storyboardRefusal = { code: "storyboard_not_approved", message: error.message, details: error.details as Record<string, unknown> | undefined };
           }
         }
+        // BL-194 (ADR 0040): the video this job is made for -- given, else its storyboard's. A given number that cannot be linked
+        // refuses the job here, before the estimate, the limits and any charge.
+        const video = await resolveVideo({ channelId: input.channelId, videoNumber: input.videoNumber ?? null, storyboardId: storyboard?.storyboardId ?? input.storyboardId ?? null });
         const estimateUsd = estimateOf(input, inputs.length);
         // Never compare a non-number against a limit: every comparison with NaN is false, so it would pass all of them.
         if (!Number.isFinite(estimateUsd) || estimateUsd <= 0) throw new DomainError({ code: "gemini_invalid_params", message: "No price is known for these settings.", details: { field: "model" } });
@@ -519,6 +544,7 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
           storyboardId: storyboard?.storyboardId ?? null,
           storyboardVersion: storyboard?.versionNumber ?? null,
           segmentId: storyboard?.segmentId ?? null,
+          video,
         };
         if (!(await deps.store.insertJob(row))) {
           // Only a concurrent create with the same request id can get here (the lock makes it a cross-process race).

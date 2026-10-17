@@ -97,9 +97,13 @@ export const referenceSchema = z
 
 const budgetSchema = z.object({ usd: z.number().min(0).max(100_000).nullable().optional(), gpuMinutes: z.number().min(0).max(1_000_000).nullable().optional() }).strict();
 
+/** BL-194 (ADR 0040): the channel's video number a plan works for (`V49`); checked against the channel by video-projects. */
+const videoNumberSchema = z.string().regex(/^V[1-9][0-9]{0,5}$/, "a video number such as V49");
+
 export const createPlanInputSchema = z
   .object({
     planId: planIdSchema,
+    videoNumber: videoNumberSchema.nullable().optional(),
     title: titleSchema,
     channelId: z.string().min(1).max(64),
     budget: budgetSchema.optional(),
@@ -119,6 +123,8 @@ export type CreatePlanInput = z.infer<typeof createPlanInputSchema>;
 export const updatePlanInputSchema = z
   .object({
     planId: planIdSchema,
+    /** BL-194: the video the plan works for; null removes it, absent keeps it. */
+    videoNumber: videoNumberSchema.nullable().optional(),
     title: titleSchema.optional(),
     note: noteSchema.nullable().optional(),
     budget: budgetSchema.optional(),

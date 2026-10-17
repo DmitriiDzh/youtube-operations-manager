@@ -4,7 +4,7 @@ import test from "node:test";
 import type { ComfyHistoryEntry, ComfyProgressEvent, ComfyUiClient, RunpodS3Client, S3ObjectSummary } from "@/lib/media-gateway";
 import { createJobProgressRegistry, type JobProgressRegistry } from "./job-progress";
 import { isDomainError, type MediaTemplateParameter } from "./contracts";
-import { buildPrompt, createMediaJobServices, describeComfyRejection, outputNodeIds, resolveParams, type ExchangeInputRow, type ExchangeLedgerRow, type JobServiceDependencies, type MediaJobStore, type StoredJobRow, type StoredTemplateRow } from "./jobs";
+import { buildJobManifest, buildPrompt, createMediaJobServices, describeComfyRejection, outputNodeIds, resolveParams, type ExchangeInputRow, type ExchangeLedgerRow, type JobServiceDependencies, type MediaJobStore, type StoredJobRow, type StoredTemplateRow } from "./jobs";
 
 // Expected behaviour from docs/roadmap/plans/PHASE_14_PLAN.md §2.4 and §4 (AC-P14-10..15), written
 // before this module. Hashes are computed with node:crypto over fixed byte strings, independently of
@@ -233,6 +233,9 @@ function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<t
   // in src/lib/storyboards/gate.test.ts).
   type GateInput = Parameters<JobServiceDependencies["storyboardGate"]["check"]>[0];
   const gate = { calls: [] as GateInput[], answer: (async () => null) as (input: GateInput) => Promise<Awaited<ReturnType<JobServiceDependencies["storyboardGate"]["check"]>>> };
+  // BL-194: a fake video link that records what it was asked (the real rule is tested in src/lib/video-projects).
+  type VideoInput = Parameters<NonNullable<JobServiceDependencies["videoLink"]>["resolve"]>[0];
+  const video = { calls: [] as VideoInput[], answer: (async () => null) as (input: VideoInput) => Promise<string | null> };
   const services = createMediaJobServices({
     store: mem.store,
     ...(opts.progress ? { progress: opts.progress } : {}),
@@ -240,6 +243,12 @@ function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<t
       async check(input) {
         gate.calls.push(input);
         return gate.answer(input);
+      },
+    },
+    videoLink: {
+      async resolve(input) {
+        video.calls.push(input);
+        return video.answer(input);
       },
     },
     sessions: {
@@ -317,7 +326,7 @@ function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<t
     registered.push(input);
     return { assetId: `asset-${registered.length}` };
   };
-  return { services, mem, comfy, s3, registered, removed, activity, runScheduled, registerAsset, manifests, resolvedInputs, gate, setManifestWriteFails: (v: boolean) => void (manifestWriteFails = v), setS3Fails: (v: boolean) => void (s3Fails = v), setOutputRoot: (v: string) => void (outputRoot = v), setWorkspaceFails: (v: boolean) => void (workspaceFails = v), advance: (ms: number) => void (now = new Date(now.getTime() + ms)) };
+  return { services, mem, comfy, s3, registered, removed, activity, runScheduled, registerAsset, manifests, resolvedInputs, gate, video, setManifestWriteFails: (v: boolean) => void (manifestWriteFails = v), setS3Fails: (v: boolean) => void (s3Fails = v), setOutputRoot: (v: string) => void (outputRoot = v), setWorkspaceFails: (v: boolean) => void (workspaceFails = v), advance: (ms: number) => void (now = new Date(now.getTime() + ms)) };
 }
 
 async function importDefault(services: ReturnType<typeof fixture>["services"]) {
@@ -1492,7 +1501,7 @@ test("review 19: a job resumed from the ledger ends `done` with NO error -- 'pul
 // bytes S3 served (hashed here independently), records a failed job's error, and carries no secrets.
 
 const MANIFEST_PATH = "/ws/99 Data Exchange/From YTM/media/job-1/manifest.json";
-const MANIFEST_KEYS = ["schema", "schemaVersion", "jobId", "sessionId", "channelId", "status", "error", "template", "params", "createdBy", "createdAt", "submittedAt", "finishedAt", "device", "outputs", "missing"];
+const MANIFEST_KEYS = ["schema", "schemaVersion", "jobId", "sessionId", "channelId", "status", "error", "template", "params", "createdBy", "createdAt", "submittedAt", "finishedAt", "device", "video", "outputs", "missing"]; // `video`: BL-194 (VIDEO_COST_PLAN.md §2), the job's video number
 
 function twoOutputFixture() {
   // An image at the job's top level and an audio file in a subfolder (a Save node with a subfolder prefix).
@@ -1527,6 +1536,7 @@ test("FO-REQ-0002 AC1/AC2/AC5: a done job's folder gets manifest.json, written a
     submittedAt: "2026-10-05T12:00:00.000Z",
     finishedAt: "2026-10-05T12:00:01.000Z",
     device: { deviceId: "device-1", hostname: "studio-mac" },
+    video: null,
     outputs: [
       { path: "ComfyUI_00001_.png", kind: "image", comfyKind: "images", nodeId: "9", bytes: 3, sha256: sha256(new Uint8Array([9, 9, 9])), assetId: "asset-1", note: null },
       { path: "music/song_00001_.flac", kind: "audio", comfyKind: "audio", nodeId: "12", bytes: 5, sha256: sha256(new Uint8Array([1, 2, 3, 4, 5])), assetId: "asset-2", note: null },
@@ -1877,6 +1887,50 @@ test("BL-144: a generating job shows ComfyUI's live progress; it is gone once th
   assert.equal(closed, 1);
 });
 
+// BL-194 stage 2 (VIDEO_COST_PLAN.md §2 stage 2, ADR 0041): the real start and finish of a job's prompt come only from ComfyUI's
+// websocket -- execution_start and execution_success -- and are stored on the job for the split of the session's charge. A
+// re-sent `executing` (a late connect) is not a start.
+test("BL-194: ComfyUI's execution_start and execution_success are stored as the job's GPU start and finish; a re-sent executing is not", async () => {
+  const progress = createJobProgressRegistry();
+  const comfy = fakeComfy([null, null, completed([{ nodeId: "9", kind: "images", filename: "ComfyUI_00001_.png", subfolder: "job-1" }])]);
+  let emit: ((e: ComfyProgressEvent) => void) | null = null;
+  const client = comfy.client as unknown as Record<string, unknown>;
+  client.openProgressStream = async (input: { onEvent: (e: ComfyProgressEvent) => void; onOpened?: () => void }) => {
+    emit = input.onEvent;
+    input.onOpened?.();
+    return { close: () => undefined };
+  };
+  let polls = 0;
+  const getHistory = client.getHistory as () => Promise<unknown>;
+  client.getHistory = async () => {
+    polls++;
+    if (emit && polls === 1) {
+      emit({ type: "executing", promptId: null, nodeId: "3" });
+      emit({ type: "execution_start", promptId: "prompt-1" });
+      emit({ type: "execution_start", promptId: "prompt-1" });
+    }
+    if (emit && polls === 2) emit({ type: "execution_success", promptId: "prompt-1" });
+    return getHistory();
+  };
+  const f = fixture({ comfy, progress });
+  const recorded: Array<{ id: string; set: { startedAt?: Date; gpuFinishedAt?: Date } }> = [];
+  f.mem.store.jobs.recordTiming = async (id, set) => {
+    recorded.push({ id, set });
+  };
+  const t = await importDefault(f.services);
+  await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "a cat" }, createdBy: "agent" });
+  await f.runScheduled();
+  assert.deepEqual(
+    recorded.map((r) => [r.id, Object.keys(r.set)]),
+    [
+      ["job-1", ["startedAt"]],
+      ["job-1", ["startedAt"]],
+      ["job-1", ["gpuFinishedAt"]],
+    ],
+    "every execution_start is handed to the store (which keeps only the first), the re-sent executing is not"
+  );
+});
+
 test("BL-144: when the progress stream cannot open, the job still runs to done exactly as before", async () => {
   const progress = createJobProgressRegistry();
   const comfy = fakeComfy([null, completed([{ nodeId: "9", kind: "images", filename: "ComfyUI_00001_.png", subfolder: "job-1" }])]);
@@ -2133,4 +2187,60 @@ test("BL-188: listJobsForShare adds the template's name and kind and keeps unfin
   // A removed template: no name, the kind from its output's file.
   assert.equal(jobs[1].templateName, null);
   assert.equal(jobs[1].mediaKind, "video");
+});
+
+// -- BL-194 stage 1 (VIDEO_COST_PLAN.md §2, criteria 2 and 8): the video a job is made for ---------------------------------------
+
+test("BL-194: a job's video is resolved from the given number, its storyboard and its plan, and stored on the job", async () => {
+  const f = flfFixture();
+  const t = await f.services.importWorkflowTemplate({ name: "flf", workflow: FLF_GRAPH, parameters: FLF_PARAMS });
+  f.gate.answer = async (input) => (input.link ? { storyboardId: input.link.storyboardId, versionNumber: 2, segmentId: input.link.segmentId } : null);
+  f.video.answer = async (input) => (input.storyboardId === "bar-loop" ? "V49" : null);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x", first: "bar/v2/K0.png", last: "bar/v2/K1.png" }, createdBy: "factory", storyboard: { storyboardId: "bar-loop", segmentId: "S1" } });
+  assert.deepEqual(f.video.calls, [{ channelId: "UC1", videoNumber: null, storyboardId: "bar-loop", planId: null }]);
+  assert.equal(job.video, "V49");
+  assert.equal((await f.services.getJob({ jobId: job.jobId })).video, "V49", "stored on the row");
+
+  const g = fixture();
+  const plain = await importDefault(g.services);
+  g.video.answer = async (input) => input.videoNumber ?? null;
+  const named = await g.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: plain.templateId, params: { prompt: "a cat" }, createdBy: "factory", videoNumber: "V50" });
+  assert.equal(named.video, "V50");
+  assert.equal(g.video.calls[0].videoNumber, "V50");
+  await assert.rejects(
+    g.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: plain.templateId, params: { prompt: "a cat" }, createdBy: "factory", videoNumber: "50" }),
+    (e: unknown) => isDomainError(e) && e.code === "validation_failed"
+  );
+});
+
+test("BL-194: a given video the channel cannot link to refuses the job before any upload, row or prompt", async () => {
+  const f = fixture({ sentToYtm: new Map([["refs/frame 1.png", { path: "/ws/99 Data Exchange/Sent to YTM/refs/frame 1.png", bytes: 2048 }]]) });
+  const t = await importImg2Img(f.services);
+  f.video.answer = async () => {
+    const { DomainError } = await import("./contracts");
+    throw new DomainError({ code: "video_not_found", message: "V77 is not a video of UC1" });
+  };
+  const jobsBefore = f.mem.jobs.size;
+  await assert.rejects(
+    f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "a cat", ref: "refs/frame 1.png" }, createdBy: "factory", videoNumber: "V77" }),
+    (e: unknown) => isDomainError(e) && e.code === "video_not_found"
+  );
+  assert.equal(f.mem.jobs.size, jobsBefore);
+  assert.equal(f.s3.calls.filter((c) => c.startsWith("put:")).length, 0, "nothing uploaded to the volume");
+  assert.equal(f.comfy.submits.length, 0, "nothing sent to ComfyUI");
+});
+
+test("BL-194: a job with no number, storyboard or plan is not linked (video null, «не привязано»)", async () => {
+  const f = fixture();
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "a cat" }, createdBy: "factory" });
+  assert.equal(job.video, null);
+});
+
+// BL-194 (VIDEO_COST_PLAN.md §2): the job's manifest names the video it was made for, so the folder alone says where it belongs.
+test("BL-194: a job's manifest.json carries its video number (null when not linked)", () => {
+  const job: StoredJobRow = { id: "j", sessionId: "s", channelId: "UC1", templateId: "t", templateVersion: 1, paramsJson: "{}", status: "done", createdBy: "factory", promptId: "p", outputsJson: null, assetIdsJson: null, error: null, createdAt: new Date("2026-10-17T10:00:00Z"), submittedAt: null, finishedAt: null, video: "V49" };
+  const base = { status: "done" as const, error: null, finishedAt: new Date("2026-10-17T10:01:00Z"), outputs: [], outputDir: "/x", templateName: null, device: { deviceId: null, hostname: null } };
+  assert.equal(buildJobManifest({ ...base, job }).video, "V49");
+  assert.equal(buildJobManifest({ ...base, job: { ...job, video: null } }).video, null);
 });

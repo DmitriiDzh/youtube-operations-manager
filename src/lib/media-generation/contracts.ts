@@ -305,6 +305,14 @@ export type MediaStoryboardLink = { storyboardId: string; versionNumber: number;
  * BL-184 stage 2: the storyboard gate, injected (`./index.ts` wires the storyboards module's; this module knows nothing else about
  * storyboards, AGENTS.md §M). It lets a job through -- with the link to record, or null -- or throws `storyboard_not_approved`.
  */
+/**
+ * BL-194 (ADR 0040): which video a new job is made for, injected (`./index.ts` wires the shared video-projects module). An explicit
+ * number that cannot be linked throws (nothing is created); an inherited one that cannot be linked gives null.
+ */
+export type MediaVideoLink = {
+  resolve(input: { channelId: string; videoNumber?: string | null; storyboardId?: string | null; planId?: string | null }): Promise<string | null>;
+};
+
 export type MediaStoryboardGate = {
   check(input: { channelId: string; firstFrameSha256: string | null; lastFrameSha256: string | null; link: { storyboardId: string; segmentId: string } | null }): Promise<MediaStoryboardLink | null>;
 };
@@ -457,6 +465,8 @@ export type MediaJob = {
   plan: { planId: string; stageId: string | null; itemKey: string | null; seed: number | null } | null;
   /** BL-184 stage 2: the storyboard segment this video renders and the approved version it was let through on (null = none). */
   storyboard: MediaStoryboardLink | null;
+  /** BL-194 (ADR 0040): the channel's video number this job is made for (given, or its storyboard's / plan's); null = not linked. */
+  video: string | null;
 };
 
 /** Where this job's outputs are written locally, relative to the From YTM folder. */
@@ -483,6 +493,11 @@ export type MediaJobManifest = {
   submittedAt: string | null;
   finishedAt: string;
   device: { deviceId: string | null; hostname: string | null };
+  /**
+   * BL-194 (ADR 0040/0041): the channel's video number this job is made for (`V49`), null = not linked. Its share of the session's
+   * RunPod charge is known only once the session has ended, so it is not here: `Vn_cost.json` next to the release package has it.
+   */
+  video: string | null;
   /** Delivered files; `path` is relative to `media/<jobId>/`, always with `/` separators. */
   outputs: Array<{ path: string; kind: "image" | "audio" | "video" | "other"; comfyKind: string; nodeId: string; bytes: number; sha256: string; assetId: string | null; note: string | null }>;
   /** Outputs ComfyUI produced that are NOT in the folder, with the reason. */

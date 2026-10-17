@@ -232,6 +232,14 @@ export type DomainErrorCode =
   // NOT_APPROVED (stage 2, the gate): a first/last-frame video from two different images without an approved storyboard, or one
   // naming a storyboard segment that is not approved or whose keyframes are not the job's frames (details.reason).
   | "storyboard_not_approved"
+  // BL-194 stage 1 (docs/roadmap/plans/VIDEO_COST_PLAN.md, ADR 0040) -- video numbers. NOT_FOUND: no such video of the channel
+  // that can be linked (unknown, or cancelled). IN_DISPUTE: two computers reserved the number; nothing is linked to it until the
+  // losing computer takes another. WORKSPACE_UNAVAILABLE: the channel is not connected here, or its workspace folder (where the
+  // factory's `MMDD Vn` folders are) cannot be read, so no number is given.
+  | "video_not_found"
+  | "video_in_dispute"
+  | "video_workspace_unavailable"
+  | "video_costs_unavailable"
   // Research export (docs/roadmap/plans/RESEARCH_EXPORT_PLAN.md) -- NOT_CONFIGURED: the channel has no workspace folder on this
   // device (the operator sets it in Settings). UNAVAILABLE: the folder (or its exports/ subfolder) failed re-validation at export
   // time. WRITE_FAILED: a file could not be written; nothing from that call is left behind.

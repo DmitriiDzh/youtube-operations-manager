@@ -3,6 +3,7 @@ import { hostname } from "node:os";
 import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { createStoryboardsCoreForProduction } from "@/lib/sync-gateway";
+import { createVideoProjectsServiceForProduction } from "@/lib/video-projects";
 import { createStoryboardFiles } from "./adapters/files";
 import { createStoryboardGate, type StoryboardGate } from "./gate";
 import { createStoryboardsService, type StoryboardsService } from "./services";
@@ -31,6 +32,8 @@ export function createStoryboardsServiceForProduction(): StoryboardsService {
     let queue: Promise<unknown> = Promise.resolve();
     holder[PRODUCTION_KEY] = createStoryboardsService({
       store: createStoryboardsCoreForProduction(),
+      // BL-194 (ADR 0040): a storyboard's video is checked by the shared video-projects module.
+      videos: { assertAttachable: (channelId, video) => createVideoProjectsServiceForProduction().assertAttachable(channelId, video) },
       files: createStoryboardFiles((channelId) => createChannelWorkspacesCore().getWorkspace({ channelId })),
       isChannelConnected: async (channelId) => (await createChannelConnectionsCore().listConnectedChannels()).some((c) => c.channelId === channelId),
       deviceLabel: async () => hostLabel(),

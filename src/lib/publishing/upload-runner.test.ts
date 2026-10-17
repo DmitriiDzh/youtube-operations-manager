@@ -667,3 +667,28 @@ test("read-back: YouTube's sorted tags and trimmed trailing line breaks are no m
   assert.deepEqual(readBackMismatches({ ...after, tags: ["ambient music", "japanese music"] }, pkg, SETTINGS, "2026-10-24T12:00:00.000Z", NOW.getTime()), ["tags"]);
   assert.deepEqual(readBackMismatches({ ...after, description: "Line one\nLine two" }, pkg, SETTINGS, "2026-10-24T12:00:00.000Z", NOW.getTime()), ["description"]);
 });
+
+// BL-194 stage 3 (VIDEO_COST_PLAN.md §2 stage 3, §4 criteria 6 and 8, ADR 0041): the upload writes Vn_cost.json into the package's
+// folder with the record; a cost that cannot be written is a note, never a failed upload.
+test("BL-194 criterion 6: the record step writes V65_cost.json into the package folder", async () => {
+  const written: unknown[] = [];
+  const h = harness([job()], { costFile: async (args) => void written.push(args) });
+  await h.runAll();
+  assert.equal(h.row().status, "done");
+  assert.deepEqual(written, [{ channelId: "UC_t", video: "V65", folder: "04 Videos/10 October/1024 V65" }]);
+  assert.equal(JSON.parse(h.row().stepsJson).cost, "written");
+});
+
+test("BL-194 criterion 8: a cost file that cannot be written leaves the upload done, with a note", async () => {
+  const h = harness([job()], {
+    costFile: async () => {
+      throw new Error("video-costs module failed");
+    },
+  });
+  await h.runAll();
+  assert.equal(h.row().status, "done");
+  assert.equal(h.row().errorCode, null, "not a failed step");
+  const steps = JSON.parse(h.row().stepsJson);
+  assert.equal(steps.cost, "failed");
+  assert.ok((steps.notes as string[]).some((n) => n.includes("V65_cost.json not written")));
+});

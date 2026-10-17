@@ -51,6 +51,8 @@ function make(options: { session?: { user: { id: string } } | null; refuse?: Dom
     },
     // BL-189: render "rn_here" has its file on this computer, "rn_away" does not.
     ownerRenderDecision: async (...args) => (calls.push(["renderDecide", ...args]), { decisionId: "rd_1", state: "approved" as const }),
+    // BL-194: the owner's video picker.
+    ownerSetVideo: async (...args) => (calls.push(["video", ...args]), { storyboard: { video: "V49" } as never }),
     renderFile: async (_channelId, _storyboardId, renderId) => {
       if (renderId === "rn_here") return { status: "ok" as const, path: VIDEO_FILE, bytes: 10, file: "Sent to YTM/bar/v3/loop.mp4" };
       if (renderId === "rn_away") return { status: "missing" as const, path: null, bytes: null, file: "Sent to YTM/bar/v3/loop.mp4" };
@@ -89,10 +91,18 @@ test("a session and the active channel are required; another channel reaches not
     await handlers.takeVideo(new Request("http://x/"), ctx({ ...other, source: "gemini", jobId: "gm_1" })),
     await handlers.pick(json("POST", { versionNumber: 2, segmentId: "S1", take: { source: "gemini", jobId: "gm_1" } }), ctx(other)),
     await handlers.setGate(json("PUT", { requireApproved: false }), ctx(other)),
+    await handlers.setVideo(json("PUT", { videoNumber: "V49" }), ctx(other)),
   ]) {
     assert.notEqual(response.status, 200);
   }
   assert.deepEqual(calls, []);
+});
+
+test("BL-194: the video picker names the storyboard from the address and passes the body to the module", async () => {
+  const { handlers, calls } = make();
+  const response = await handlers.setVideo(json("PUT", { videoNumber: "V49" }), ctx({ channelId: "UC_active", storyboardId: "bar-loop" }));
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls, [["video", "UC_active", "bar-loop", { videoNumber: "V49" }]]);
 });
 
 test("detail: the latest version by default, ?version=N otherwise, a malformed one is a 400", async () => {

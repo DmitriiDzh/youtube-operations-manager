@@ -387,6 +387,12 @@ export function createUploadRunnerCore() {
         await rename(temporary, target);
       },
     },
+    // BL-194 stage 3 (ADR 0041): the video's cost next to its package -- the video-costs module, loaded only here and only when used
+    // (AGENTS.md §M: uploads never depend on it; a failure is a note).
+    costFile: async (args) => {
+      const { createVideoCostsServiceForProduction } = await import("@/lib/video-costs");
+      await createVideoCostsServiceForProduction().writeCostFile(args);
+    },
     audit: ({ channelId, videoId, detail }) => insertVideoEditAuditEvent({ channelId, videoId: videoId ?? `upload:${String(detail.uploadId ?? "")}`, eventType: "RESULT", detail }),
     async syncChannel({ channelId, credentialRef }) {
       await createChannelSyncCore().syncChannel({ credentialRef, channelId });

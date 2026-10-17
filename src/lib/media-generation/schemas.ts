@@ -161,6 +161,8 @@ export const createJobInputSchema = z
       .optional(),
     /** BL-184 stage 2 (FO-REQ-0024 B4): the storyboard segment this video renders; checked by the storyboard gate. */
     storyboard: z.object({ storyboardId: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/), segmentId: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/) }).strict().optional(),
+    /** BL-194 (ADR 0040): the channel's video number this job is for; omitted = its storyboard's, else its plan's. */
+    videoNumber: z.string().regex(/^V[1-9][0-9]{0,5}$/, "a video number such as V49").optional(),
   })
   .strict();
 

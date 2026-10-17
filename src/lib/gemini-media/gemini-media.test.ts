@@ -168,6 +168,8 @@ async function harness(options: { now?: Date; enabled?: boolean; withKey?: boole
   const registered: Array<Record<string, unknown>> = [];
   const order: string[] = [];
   const failWrites = { value: false };
+  type VideoInput = Parameters<NonNullable<GeminiMediaDeps["videoLink"]>["resolve"]>[0];
+  const video = { calls: [] as VideoInput[], answer: (async () => null) as (input: VideoInput) => Promise<string | null> };
   const gate = {
     calls: [] as Array<Parameters<GeminiMediaDeps["storyboardGate"]["check"]>[0]>,
     answer: (async () => null) as (input: Parameters<GeminiMediaDeps["storyboardGate"]["check"]>[0]) => Promise<Awaited<ReturnType<GeminiMediaDeps["storyboardGate"]["check"]>>>,
@@ -227,6 +229,13 @@ async function harness(options: { now?: Date; enabled?: boolean; withKey?: boole
         return gate.answer(input);
       },
     },
+    // BL-194: a fake video link that records what it was asked (the real rule is tested in src/lib/video-projects).
+    videoLink: {
+      async resolve(input) {
+        video.calls.push(input);
+        return video.answer(input);
+      },
+    },
     // BL-193: the other computers' spend reports, when a test sets them.
     ...(options.peerSpendReports ? { peerSpendReports: options.peerSpendReports, log: () => undefined } : {}),
   };
@@ -252,6 +261,7 @@ async function harness(options: { now?: Date; enabled?: boolean; withKey?: boole
     worker,
     runTick,
     gate,
+    video,
     keyFileText: () => keyFileText,
     failWrites,
     cleanup: () => rm(root, { recursive: true, force: true }),
@@ -317,6 +327,7 @@ function seedJob(store: ReturnType<typeof memoryStore>, jobId: string, fields: P
     storyboardId: null,
     storyboardVersion: null,
     segmentId: null,
+    video: null,
     ...fields,
   });
 }
@@ -1404,6 +1415,44 @@ test("BL-184: a link the gate lets through is passed on and recorded on the job;
     for (const bad of [flfJob({ storyboardId: "bar-loop" }), flfJob({ segmentId: "S1" }), { channelId: "UC1", kind: "image", model: "gemini-nano-banana-2.1", prompt: "p", image: { size: "1K", aspectRatio: "1:1" }, storyboardId: "bar-loop", segmentId: "S1" }]) {
       await assert.rejects(h.services.createJob(bad, "factory"), (e: unknown) => isDomainError(e) && e.code === "gemini_invalid_params");
     }
+  } finally {
+    await h.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------------- BL-194
+
+test("BL-194: a Gemini job's video is the given number, else its storyboard's; it is stored; a given number the channel cannot link refuses before any charge", async () => {
+  const h = await harness();
+  try {
+    await mkdir(path.join(h.sent, "bar", "v2"), { recursive: true });
+    await writeFile(path.join(h.sent, "bar", "v2", "K0.jpg"), "K0 bytes");
+    await writeFile(path.join(h.sent, "bar", "v2", "K1.jpg"), "K1 bytes");
+    h.gate.answer = async (input) => (input.link ? { storyboardId: input.link.storyboardId, versionNumber: 2, segmentId: input.link.segmentId } : null);
+    h.video.answer = async (input) => input.videoNumber ?? (input.storyboardId === "bar-loop" ? "V49" : null);
+    const { job } = (await h.services.createJob(flfJob({ storyboardId: "bar-loop", segmentId: "S1", requestId: "r-v49" }), "factory")) as { job: { jobId: string; video: string | null } };
+    assert.deepEqual(h.video.calls[0], { channelId: "UC1", videoNumber: null, storyboardId: "bar-loop" });
+    assert.equal(job.video, "V49");
+    assert.equal(h.store.jobs.get(job.jobId)!.video, "V49");
+    const named = (await h.services.createJob({ channelId: "UC1", kind: "image", model: "gemini-nano-banana-2.1", prompt: "a still", image: { size: "1K", aspectRatio: "1:1" }, videoNumber: "V50" }, "factory")) as { job: { video: string | null } };
+    assert.equal(named.job.video, "V50");
+
+    h.video.answer = async () => {
+      const { DomainError } = await import("./contracts");
+      throw new DomainError({ code: "video_not_found", message: "V77 is not a video of UC1" });
+    };
+    const before = h.store.jobs.size;
+    const callsBefore = h.calls.length;
+    await assert.rejects(
+      h.services.createJob({ channelId: "UC1", kind: "image", model: "gemini-nano-banana-2.1", prompt: "a still", image: { size: "1K", aspectRatio: "1:1" }, videoNumber: "V77" }, "factory"),
+      (e: unknown) => isDomainError(e) && e.code === "video_not_found"
+    );
+    assert.equal(h.store.jobs.size, before, "nothing stored");
+    assert.equal(h.calls.length, callsBefore, "nothing sent to Google");
+    await assert.rejects(
+      h.services.createJob({ channelId: "UC1", kind: "image", model: "gemini-nano-banana-2.1", prompt: "a still", image: { size: "1K", aspectRatio: "1:1" }, videoNumber: "V049" }, "factory"),
+      (e: unknown) => isDomainError(e) && e.code === "validation_failed"
+    );
   } finally {
     await h.cleanup();
   }

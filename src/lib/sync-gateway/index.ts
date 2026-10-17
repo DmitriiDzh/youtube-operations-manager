@@ -147,4 +147,30 @@ export type {
 } from "./storyboards";
 export { createStoryboardsSyncRunnerForProduction } from "./storyboards-sync";
 
+// BL-194 (ADR 0040): the video numbers each computer reserved, as a per-device report (the list and its conflicts: video-projects).
+export {
+  createVideoReservationsShareCoreForProduction,
+  createVideoReservationsShareCore,
+  VIDEO_RESERVATIONS_REPORT_FORMAT,
+  VIDEO_RESERVATIONS_REPORT_VERSION,
+  VIDEO_RESERVATIONS_REPORT_MAX,
+  VIDEO_NUMBER_PATTERN,
+  videoReservationsReportSchema,
+} from "./video-reservations";
+export type { VideoReservationsReport, SharedVideoReservation, VideoReservationsShareCore, VideoReservationsReportStore } from "./video-reservations";
+export { createVideoReservationsSyncRunnerForProduction } from "./video-reservations-sync";
+// BL-194 stage 3 (ADR 0041): every computer's paid runs, for the cost of each video.
+export {
+  createVideoCostsShareCore,
+  createVideoCostsShareCoreForProduction,
+  COST_RUN_BASES,
+  VIDEO_COSTS_REPORT_FORMAT,
+  VIDEO_COSTS_REPORT_MAX,
+  VIDEO_COSTS_REPORT_VERSION,
+  sharedCostRunSchema,
+  videoCostsReportSchema,
+} from "./video-costs";
+export type { SharedCostRun, VideoCostsReport, VideoCostsShareCore, VideoCostsReportStore } from "./video-costs";
+export { createVideoCostsSyncRunnerForProduction } from "./video-costs-sync";
+
 export { runAllSyncFamiliesOnce } from "./run-all-families";

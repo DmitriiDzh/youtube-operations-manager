@@ -1997,3 +1997,31 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Re-evaluate:** once the Operator has tagged the FLF templates (DEV-RESP-0029 / the BL-184 release note ask for it); then check the
   registry's templates and close this entry, or detect FLF templates by their graph if tagging proves unreliable.
 - **Gate(s):** none. **Status:** open.
+
+## RISK-129 — A video number can be given twice within the sync delay; a link made before the duplicate was seen stays on it — OPEN, 2026-10-17
+
+- **What:** BL-194 stage 1 (ADR 0040) gives video numbers per computer: each reserves the next free Vn from what it knows, and the
+  other computers learn it from its `video-reservations` report a minute or two later. Two computers pressing «Новый ролик» within
+  that delay (or one offline) take the same number. Both then show the conflict; the earlier reservation keeps the number and the
+  other computer takes the next one only on the owner's choice. A storyboard, plan or job linked to the number on the losing computer
+  BEFORE it saw the conflict stays linked to the number the winner keeps; renumbering does not move such links.
+- **Bounds:** nothing can be linked to a number once the conflict is known (`video_in_dispute`), so the window is the sync delay
+  itself; an inherited link is simply left off (`video: null`) while in dispute. Since stage 3 such a link's runs count for the number the winner keeps (RISK-130 for the cost itself).
+- **Re-evaluate:** with BL-194 stage 3 (the cost totals per video): show such links in the conflict dialog and let the owner move
+  them, or refuse a reservation while a peer report is older than a few minutes.
+- **Gate(s):** none. **Status:** open.
+
+## RISK-130 — A video's visual cost rests on ComfyUI's events, on a 120-day report window and on the jobs each database still holds — OPEN, 2026-10-17
+
+- **What:** BL-194 stages 2-4 (ADR 0041). (1) A RunPod job's share of its session's charge needs ComfyUI's websocket start / finish;
+  a missed event is estimated (submit, previous job's finish, `finished_at` with the output transfer), marked `≈`, and a job counts
+  0 (`pending`) until its session ends. The session total is always exact; only its split between jobs can be off. (2) The
+  `video-costs` report keeps a published video's runs 120 days after the run; a video published without the app's upload has no
+  `Vn_cost.json`, so after that window the other computer no longer sees those runs. (3) Older runs exist only while the database
+  that made them still holds them; nothing before is recoverable. (4) The «chosen / rejected» result follows the storyboard picks;
+  a plan attempt outside any storyboard is shown as a test.
+- **Bounds:** no paid call or YouTube write; the totals are equal on both computers once the reports sync; `Vn_cost.json` is
+  rewritten (with `previous` and a note) only by the computer that wrote it.
+- **Re-evaluate:** if the owner sees `≈` on most RunPod lines (events lost), or wants costs of videos published outside the app kept
+  longer (a file written for any published video, or a longer window).
+- **Gate(s):** none. **Status:** open.

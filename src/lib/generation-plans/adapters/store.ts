@@ -60,6 +60,7 @@ function planFromDb(row: StoredGenerationPlan): StoredPlan {
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     closedAt: row.closedAt ?? null,
+    video: row.video ?? null,
   };
 }
 
@@ -142,6 +143,7 @@ export function createPlanStore(): PlanStore {
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
         closedAt: row.closedAt,
+        video: row.video ?? null,
       });
       return inserted ? planFromDb(inserted) : null;
     },
