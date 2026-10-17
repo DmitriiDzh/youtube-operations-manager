@@ -2623,7 +2623,7 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   There is deliberately no "stop pod" function anywhere: a stopped pod's disk is billed at twice the
   running rate, so the only idle state this app knows is "terminated".
 - **Credentials (`src/lib/media-generation/`, owner instruction 2026-10-05).** The RunPod API key and the
-  optional S3 key pair are entered only in Settings → RunPod (Settings → Media before slice 6), encrypted as one AES-256-GCM blob in
+  optional S3 key pair are entered only in Settings → Cloud APIs (Settings → RunPod before BL-193, Settings → Media before slice 6), encrypted as one AES-256-GCM blob in
   `media_credentials` (schema v50, singleton, device-local: not in `SNAPSHOT_TRANSFERRED_TABLES`, not in
   `sync-gateway`). **The encryption key is a file the app creates itself** (`media-generation.key` in the
   app-data directory, written through `writeJsonFileAtomic`, mode 0600), not an environment variable —
@@ -3723,9 +3723,10 @@ Plan: `docs/roadmap/plans/GEMINI_MEDIA_PLAN.md` (AC-GM-01..16). Schema v83, Fact
   - The request details the paid test still has to confirm are listed in RISK-127.
 - **Restarts.** `operation-lock media-idle` refuses `stop.sh` while a job is `submitting` (an image call takes up to 5 minutes, an Omni video up to 15); idle
   shutdown waits while any job is queued, submitting or running.
-- **Web.** Settings → Gemini (`gemini-media-settings.tsx`) and `/api/gemini-media` (overview), `/settings`, `/key`, `/key/test`: the
-  owner's side only; no MCP tool sets the key, the switch or the limits.
-- **Limits.** The money limits are per computer (RISK-123); prices are code constants; the Veo models are previews. Not in this slice:
+- **Web.** Settings → Cloud APIs (`gemini-media-settings.tsx`; Settings → Gemini before BL-193) and `/api/gemini-media` (overview), `/settings`, `/key`, `/key/test`: the
+  owner's side only; no MCP tool sets the key, the switch or the limits. BL-193: the recent jobs moved to the Gemini card in
+  Servers → Sessions (§50).
+- **Limits.** The money limits were per computer until BL-193; since then they are shared by every computer on the key (§50, RISK-123); prices are code constants; the Veo models are previews. Not in this slice:
   Gemini Omni Flash, the Batch API, Veo extension, multi-turn editing, generation-plan attempts from Gemini jobs.
 
 ## 44. Review of generated images and video: one of N, pins, reason chips (BL-175, FO-REQ-0018 §A-§D)
@@ -4240,7 +4241,44 @@ Plan: `docs/roadmap/plans/SUGGESTED_SOURCES_PLAN.md` (AC-SS-01..09). Schema v94.
   `ours` with the title and channel from `videos` / `channels`, else `external` with the title row only when fetched at or after now − 30
   days (so a row the purge has not reached yet is never served).
 
-## 50. Video numbers given by YT Manager (BL-194 stage 1, ADR 0040)
+## 50. Cloud APIs together: one Settings tab, a Gemini card in Servers, spend and limits per account, one keys file (BL-193, ADR 0039)
+
+Owner, Telegram 2026-10-16, msgs 2864/2867.
+
+- **Settings.** One sub-tab, `cloud-apis`: the RunPod card (keys, S3, test), the Gemini key, the Gemini switch and limits, and the
+  keys-file card. `/settings/runpod` and `/settings/gemini` are redirect pages (static segments win over `[sub]`). Each card has its
+  own `FeatureErrorBoundary`; after an import the RunPod and Gemini cards reload on a window event.
+- **Servers.** `gemini-servers-card.tsx` (Servers → Sessions, its own `FeatureErrorBoundary`) reads only `/api/gemini-media` every
+  30 s: this computer's 20 newest jobs with cost or `≈` estimate, the key's spend today and this month against the limits with the
+  other computers' part, the peers' lines (stale after 5 min). A failed read is a line in the card; RunPod's cards never depend on
+  it. The header adds "Gemini today" (via `onToday`) and shows RunPod's account-wide figure with this computer's part.
+- **RunPod spend.** `sessions.getLimits` adds `accountSpentTodayUsd` / `otherDevicesSpentTodayUsd` through `accountWide(..., { spendOnly:
+  true })`: the peers' `media-sessions` reports only, no RunPod pod list on a polled read. `spentTodayUsd` stays this computer's
+  because `publishSessionsShare` publishes it (an account figure there would double-count on every cycle).
+- **Gemini spend.** `sync-gateway/gemini-spend` is a per-device report family (`per-device-report`): `ytm-gemini-spend` v1, strict,
+  bounded (`spentTodayUsd` ≤ 100 000, `spentMonthUsd` ≤ 1 000 000, fingerprint `^[0-9a-f]{32}$` or null). `gemini-media/index.ts`
+  `publishSpendShare` writes it from the Gemini share loop in `instrumentation.ts` (30 s; written on change, at least every 5
+  min). `gemini-media/account.ts`: `geminiKeyFingerprint` = HMAC-SHA256 under the fixed label `ytm/gemini-key-fingerprint/v1`,
+  first 32 hex (cached per stored ciphertext); `accountWideSpend` adds same-fingerprint peers (today: written since local
+  midnight; month: since the 1st; not this device; not more than 5 min ahead). `services.spend()` returns `account`; `createJob`
+  checks per-day and per-month against it (`otherComputersUsd` in a refusal when others spent). Unreadable reports count 0 and
+  are logged (`deps.peerSpendReports` absent in unit tests).
+- **Gemini limits.** `sync-gateway/media-settings` takes a `SettingsMapKind` (format + genesis actor); `sync-gateway/gemini-settings`
+  is the same engine on `ytm-gemini-settings` with its own dirs and runner. `gemini-media/settings-sync.ts` owns the four shared
+  fields and ADR 0030's rules (seed, publish changed, apply via `updateSettings` validation, hold conflicts and invalid values);
+  `index.ts` wraps `updateSettings` to publish and exposes `syncSharedSettings` / `peekSettingsSync` / `resolveSettingConflict`;
+  the share loop ticks it behind the device-mutation gate. The conflict screen fetches `/api/gemini-media/settings-sync` and resolves
+  through `/api/gemini-media/settings-sync/resolve`, labelling fields `gemini.<field>`.
+- **Keys file.** `src/lib/cloud-credentials-transfer/`: `contracts.ts` (formats, schemas), `services.ts` (no provider; per-section
+  ports: `exportSecret`, `check`, `store`), `index.ts` (`cloudCredentialSections` wires `media-generation`'s
+  `exportCredentialsForTransfer` / `checkCredentialsForImport` / `storeImportedCredentials` and `gemini-media`'s
+  `exportKeyForTransfer` / `checkKeyForImport` / `storeImportedKey`, through their barrels, lazily). Export skips a section whose
+  stored key cannot be read (`skipped`), refuses with `cloud_credentials_not_configured` when nothing is exportable. Import: decrypt
+  (wrong password or damage changes nothing), the legacy file's ciphertext is the RunPod set, then every present section is checked
+  before any is stored, then RunPod then Gemini are stored. Routes `/api/cloud-credentials/export|import` (Web session only).
+- **Versions.** Agent API 3.19.0, Factory API 1.19.0; sync families `gemini_spend`, `gemini_settings` (15 in all).
+
+## 51. Video numbers given by YT Manager (BL-194 stage 1, ADR 0040)
 
 Plan: `docs/roadmap/plans/VIDEO_COST_PLAN.md` §2 stage 1 (acceptance criteria 1, 2, 8, 9). Schema v95. On branch `feature/bl-194-video-cost`.
 
@@ -4257,7 +4295,7 @@ Plan: `docs/roadmap/plans/VIDEO_COST_PLAN.md` §2 stage 1 (acceptance criteria 1
   `cancelled_at`, `replaced_by`) holds THIS computer's; device-local (snapshot) and `notApiData` (data policy). After every change, and
   on a list when it differs from the last one published, the whole set goes into this computer's `video-reservations` report
   (`sync-gateway/video-reservations`, the ADR 0028 per-device pattern, `forgetAfterMs: null`), carried by the generic sync runner
-  (Syncthing subfolder `video-reservations`, family `video_reservations` in the Merge tab).
+  (Syncthing subfolder `video-reservations`, family `video_reservations` in the Merge tab; 16 families in all).
 - **List and conflicts.** `buildVideoList` unions every source per number. `state`: published (`Vn_youtube.json` in the folder, a
   registry row, or a finished upload), packaged (`Vn_release.json`, or an upload not failed/cancelled), cancelled (only given-up
   reservations), else in work. Two computers with the number in work = `conflict`: winner = earliest `reservedAt`, then the lower
@@ -4270,7 +4308,7 @@ Plan: `docs/roadmap/plans/VIDEO_COST_PLAN.md` §2 stage 1 (acceptance criteria 1
   before uploads, the prompt, the Gemini estimate or any charge); otherwise the storyboard's video, else the plan's (same channel
   only); an inherited video that cannot be linked or a failing lookup gives `null` and a log line. The ports are optional in the
   media modules (`videoLink`), so they run without the module; a given number is then refused.
-- **Surfaces.** Factory API 1.19.0 (`factory_video_create` gated write, `factory_video_list` read); Web routes under
+- **Surfaces.** Factory API 1.20.0 (`factory_video_create` gated write, `factory_video_list` read); Web routes under
   `/api/channels/[channelId]/video-projects` with session + active channel (ADR 0004); Content → «Публикация» → «Ролики в работе»
   (own error boundary) and `VideoPicker` on the storyboard screen and the own-plan card.
 - **Limits.** A duplicate within the sync delay is resolved by hand; links made before it was seen stay (RISK-129). The cost per video

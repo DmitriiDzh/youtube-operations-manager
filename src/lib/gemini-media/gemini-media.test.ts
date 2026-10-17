@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -20,7 +20,7 @@ import {
 import { ceil4 } from "@/lib/shared-money";
 import { DomainError, isDomainError } from "@/lib/shared-domain";
 import { createGeminiFiles } from "./adapters/files";
-import { GEMINI_LIMITS } from "./contracts";
+import { GEMINI_LIMITS, type GeminiPeerSpendReport, type GeminiSpend } from "./contracts";
 import { createSerialLock } from "./index";
 import { estimateImageUsd, estimateVideoUsd, imageCostFromUsage } from "./pricing";
 import { createGeminiMediaServices, type GeminiMediaDeps, type GeminiStore } from "./services";
@@ -143,7 +143,7 @@ function gatewayError(code: "gemini_unavailable" | "gemini_rate_limited" | "gemi
   return new DomainError({ code, message: `fake ${code}`, details: { outcome: "answered", ...details } });
 }
 
-async function harness(options: { now?: Date; enabled?: boolean; withKey?: boolean; settings?: Record<string, unknown> } = {}) {
+async function harness(options: { now?: Date; enabled?: boolean; withKey?: boolean; settings?: Record<string, unknown>; peerSpendReports?: GeminiMediaDeps["peerSpendReports"] } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "gemini-media-"));
   const fromYtm = path.join(root, "ws", "99 Data Exchange", "From YTM");
   const sent = path.join(root, "ws", "99 Data Exchange", "Sent to YTM");
@@ -236,6 +236,8 @@ async function harness(options: { now?: Date; enabled?: boolean; withKey?: boole
         return video.answer(input);
       },
     },
+    // BL-193: the other computers' spend reports, when a test sets them.
+    ...(options.peerSpendReports ? { peerSpendReports: options.peerSpendReports, log: () => undefined } : {}),
   };
   const services = createGeminiMediaServices(deps);
   const worker = createGeminiWorker(deps);
@@ -422,6 +424,103 @@ test("AC-GM-04: a request over the day's limit is refused naming it; a dry-run a
     const spend = await h.services.spend();
     assert.deepEqual([spend.todayUsd, spend.monthUsd], [4.5, 9], "yesterday's job counts toward the month only");
     assert.deepEqual(h.calls, []);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------------- BL-193
+// ADR 0039 (owner msgs 2864/2867): the daily and monthly limits hold for the KEY -- every computer that reports the same key
+// fingerprint adds its spend -- and a computer with another key, its own stale-or-not report, or reports that cannot be read
+// never block a job. The fingerprint is the spec's HMAC-SHA256 under the fixed label, computed here independently.
+
+const fingerprintOf = (apiKey: string) => createHmac("sha256", "ytm/gemini-key-fingerprint/v1").update(apiKey, "utf8").digest("hex").slice(0, 32);
+const peerReport = (fields: Partial<GeminiPeerSpendReport>): GeminiPeerSpendReport => ({
+  deviceId: "dev-2",
+  hostname: "pc",
+  keyFingerprint: fingerprintOf(KEY),
+  updatedAt: new Date(2026, 9, 10, 14, 0, 0).toISOString(),
+  spentTodayUsd: 0,
+  spentMonthUsd: 0,
+  ...fields,
+});
+
+test("BL-193: another computer on the same key counts toward the daily limit -- a job that fits this computer's spend alone is refused", async () => {
+  // Local today $2 + the other computer's $3.5 + the estimate $0.0656 = $5.5656 > $5.55; locally alone $2.0656 would fit.
+  const h = await harness({ settings: { maxUsdPerDay: 5.55 }, peerSpendReports: async () => [peerReport({ spentTodayUsd: 3.5, spentMonthUsd: 3.5 })] });
+  try {
+    seedJob(h.store, "gm_today", { costUsd: 2 });
+    const dry = (await h.services.createJob({ ...imageJob(), dryRun: true }, "factory")) as { allowed: boolean; refusal: { details: unknown }; spend: GeminiSpend };
+    assert.equal(dry.allowed, false);
+    assert.deepEqual(dry.refusal.details, { limit: "per_day", limitUsd: 5.55, spentUsd: 5.5, otherComputersUsd: 3.5, estimateUsd: 0.0656 });
+    assert.deepEqual([dry.spend.todayUsd, dry.spend.account.todayUsd, dry.spend.account.monthUsd, dry.spend.account.keyKnown], [2, 5.5, 5.5, true]);
+    assert.deepEqual(dry.spend.account.otherComputers.map((p) => [p.deviceId, p.todayUsd, p.monthUsd]), [["dev-2", 3.5, 3.5]]);
+    await expectCode(h.services.createJob(imageJob(), "factory"), "gemini_limit_exceeded");
+    assert.equal(h.store.jobs.size, 1, "nothing was created");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("BL-193: the monthly limit adds the other computers' month; a report from earlier in the month counts toward the month, not today", async () => {
+  // The other computer last reported on Oct 2: $50 "today" then (not today now), $90 this month. Local month $2.
+  // Month: $2 + $90 + $0.0656 = $92.0656 > $92 → refused; today stays $2.
+  const h = await harness({ settings: { maxUsdPerDay: 100, maxUsdPerMonth: 92 }, peerSpendReports: async () => [peerReport({ updatedAt: new Date(2026, 9, 2, 12, 0, 0).toISOString(), spentTodayUsd: 50, spentMonthUsd: 90 })] });
+  try {
+    seedJob(h.store, "gm_today", { costUsd: 2 });
+    const details = await expectCode(h.services.createJob(imageJob(), "factory"), "gemini_limit_exceeded");
+    assert.deepEqual(details, { limit: "per_month", limitUsd: 92, spentUsd: 92, otherComputersUsd: 90, estimateUsd: 0.0656 });
+    const spend = await h.services.spend();
+    assert.deepEqual([spend.account.todayUsd, spend.account.monthUsd], [2, 92]);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("BL-193: another key, this computer's own report, and unreadable reports never count; without a key nothing is matched", async () => {
+  const otherKey = await harness({
+    settings: { maxUsdPerDay: 5.55 },
+    peerSpendReports: async () => [peerReport({ keyFingerprint: fingerprintOf("AIzaSyAnotherKey9876543210zz"), spentTodayUsd: 3.5 }), peerReport({ deviceId: "dev-1", spentTodayUsd: 3.5 })],
+  });
+  try {
+    seedJob(otherKey.store, "gm_today", { costUsd: 2 });
+    const dry = (await otherKey.services.createJob({ ...imageJob(), dryRun: true }, "factory")) as { allowed: boolean; spend: GeminiSpend };
+    assert.equal(dry.allowed, true);
+    assert.deepEqual([dry.spend.account.todayUsd, dry.spend.account.otherComputers.length], [2, 0]);
+  } finally {
+    await otherKey.cleanup();
+  }
+  const unreadable = await harness({
+    settings: { maxUsdPerDay: 5.55 },
+    peerSpendReports: async () => {
+      throw new Error("share folder unreadable");
+    },
+  });
+  try {
+    seedJob(unreadable.store, "gm_today", { costUsd: 2 });
+    const dry = (await unreadable.services.createJob({ ...imageJob(), dryRun: true }, "factory")) as { allowed: boolean; spend: GeminiSpend };
+    assert.deepEqual([dry.allowed, dry.spend.account.todayUsd, dry.spend.account.keyKnown], [true, 2, true]);
+  } finally {
+    await unreadable.cleanup();
+  }
+  const noKey = await harness({ withKey: false, peerSpendReports: async () => [peerReport({ spentTodayUsd: 3.5 })] });
+  try {
+    const spend = await noKey.services.spend();
+    assert.deepEqual([spend.account.keyKnown, spend.account.todayUsd, spend.account.otherComputers.length], [false, 0, 0]);
+    assert.equal(await noKey.services.keyFingerprint(), null);
+  } finally {
+    await noKey.cleanup();
+  }
+});
+
+test("BL-193: the published fingerprint is the key's HMAC under the fixed label -- never the key, its tail, or its plain SHA-256", async () => {
+  const h = await harness();
+  try {
+    const fingerprint = await h.services.keyFingerprint();
+    assert.equal(fingerprint, fingerprintOf(KEY));
+    assert.match(fingerprint ?? "", /^[0-9a-f]{32}$/);
+    assert.ok(!fingerprint!.includes(KEY), "the key never appears in its fingerprint");
+    assert.notEqual(fingerprint, createHash("sha256").update(KEY).digest("hex").slice(0, 32));
   } finally {
     await h.cleanup();
   }

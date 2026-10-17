@@ -136,6 +136,7 @@ const DOMAIN_ERROR_STATUS = {
   plan_recheck_closed: 409,
   gemini_disabled: 409,
   gemini_key_missing: 409,
+  cloud_credentials_not_configured: 409,
   gemini_key_invalid: 422,
   gemini_payment_required: 409,
   gemini_limit_exceeded: 409,

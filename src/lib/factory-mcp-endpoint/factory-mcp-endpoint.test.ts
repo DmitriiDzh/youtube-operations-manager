@@ -363,15 +363,15 @@ test("AC-FO-07: a channel tool name is not callable on the factory endpoint", as
 // BL-184 (STORYBOARD_PLAN.md §2.6): 1.16.0 and the six storyboard tools, last (declaration order); four of them writes.
 // BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.7): 1.17.0 and the read tool factory_jobs_list, last (declaration order).
 // BL-189 (STORYBOARD_TAKES_PLAN.md §2.4): 1.18.0 and the write tool factory_storyboard_attach_render after the other storyboard tools.
-// BL-194 (VIDEO_COST_PLAN.md §2 stage 1): 1.19.0 and the two video tools, last (declaration order); factory_video_create a write.
-test("factory_get_capabilities reports the factory API version 1.19.0 (BL-194), READ and WRITE, the tool list and the write tools", async () => {
+// BL-194 (VIDEO_COST_PLAN.md §2 stage 1): 1.20.0 and the two video tools, last (declaration order); factory_video_create a write.
+test("factory_get_capabilities reports the factory API version 1.20.0 (BL-194), READ and WRITE, the tool list and the write tools", async () => {
   const { endpoint, tokenServices } = setup();
   const { token } = await tokenServices.issueToken({});
   const result = await toolResult(await endpoint.handle(rpc(call("factory_get_capabilities"), withToken(token))));
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.19.0",
+    factoryApiVersion: "1.20.0",
     tools: [
       "factory_get_capabilities",
       "factory_list_logical_paths",

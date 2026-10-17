@@ -37,7 +37,7 @@ therefore hand out the same number within the sync delay, or while one is offlin
    resolved at creation and stored on the job row (`media_jobs.video`, `gemini_media_jobs.video`). An explicit number of another
    channel, a cancelled one or one in dispute refuses the job before anything is uploaded, sent or charged. An inherited video that
    cannot be linked, or a failing lookup, leaves the job unlinked -- the media modules keep working when this module fails.
-6. **Factory API 1.19.0, additive:** `factory_video_create` (write, gated), `factory_video_list` (read), `videoNumber` on the job,
+6. **Factory API 1.20.0, additive:** `factory_video_create` (write, gated), `factory_video_list` (read), `videoNumber` on the job,
    storyboard and plan tools. Web/API routes `/api/channels/[channelId]/video-projects` (`/videos` is the YouTube video list).
 
 ## Consequences

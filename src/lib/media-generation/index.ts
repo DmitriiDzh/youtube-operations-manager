@@ -309,11 +309,12 @@ function buildCore(jobScheduling: JobScheduling) {
     }
     return livePodsCache.pods;
   };
-  async function otherDevicesOnAccount(at: Date, localPodIds: string[], options: { fresh?: boolean } = {}) {
+  async function otherDevicesOnAccount(at: Date, localPodIds: string[], options: { fresh?: boolean; spendOnly?: boolean } = {}) {
     const ownAccountId = await runpodAccountId();
     if (!ownAccountId) return { otherActiveSessions: 0, otherSpentTodayUsd: 0 };
-    // The pod list failing leaves the reported spend in (it does not need RunPod).
-    const [pods, peers] = await Promise.all([livePodsForLimits(at, options.fresh ?? false).catch(() => null), createMediaSessionsShareCoreForProduction().listPeerReports()]);
+    // The pod list failing leaves the reported spend in (it does not need RunPod). BL-193: a spend-only read (the limits the UI
+    // polls) never asks RunPod for the pod list.
+    const [pods, peers] = await Promise.all([options.spendOnly ? Promise.resolve(null) : livePodsForLimits(at, options.fresh ?? false).catch(() => null), createMediaSessionsShareCoreForProduction().listPeerReports()]);
     return accountWideUsage({ peers, ownAccountId, livePods: pods, localPodIds, dayStart: new Date(at.getFullYear(), at.getMonth(), at.getDate()), now: at });
   }
   /** BL-138: hands this device's sessions report to the sync-gateway `media-sessions` family (run on every watcher tick). */

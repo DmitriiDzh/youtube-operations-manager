@@ -230,7 +230,7 @@ function fixture(opts: {
   comfy?: ReturnType<typeof fakeComfy>;
   now?: Date;
   jobSummary?: (sessionId: string) => Promise<{ total: number; open: number; failed: number; lastFinishedAt: Date | null }>;
-  accountWide?: (now: Date, localPodIds: string[], options?: { fresh?: boolean }) => Promise<{ otherActiveSessions: number; otherSpentTodayUsd: number }>;
+  accountWide?: (now: Date, localPodIds: string[], options?: { fresh?: boolean; spendOnly?: boolean }) => Promise<{ otherActiveSessions: number; otherSpentTodayUsd: number }>;
   /** BL-155 review 3: the proxy URL builder (default: a fixed test host). */
   proxyUrl?: (podId: string, port: number) => string;
 } = {}) {
@@ -472,6 +472,25 @@ test("BL-138 review: a pod of a session this device stopped today is passed as t
   assert.equal((await f.services.approveAndStartSession({ sessionId: b.sessionId })).status, "running");
   assert.ok(seen.length > 0 && seen[0].fresh, "the approve's check is fresh");
   assert.ok(seen[0].localPodIds.includes(podA), "the stopped session's pod is this device's, never another device's slot");
+});
+
+test("BL-193: the limits show today's spend on the whole RunPod account -- this device's plus the other devices' -- with this device's part kept", async () => {
+  // Owner msgs 2864/2867: the header's "today" is account-wide. Others reported $1.25; this device spent nothing yet → $1.25 / $0 / $1.25.
+  const asked: Array<{ fresh: boolean; spendOnly: boolean }> = [];
+  const f = fixture({
+    settings: { maxConcurrentSessions: 4, maxUsdPerDay: 10 },
+    accountWide: async (_now, _local, options) => {
+      asked.push({ fresh: options?.fresh ?? false, spendOnly: options?.spendOnly ?? false });
+      return { otherActiveSessions: 3, otherSpentTodayUsd: 1.25 };
+    },
+  });
+  const limits = await f.services.getLimits();
+  assert.deepEqual([limits.accountSpentTodayUsd, limits.spentTodayUsd, limits.otherDevicesSpentTodayUsd], [1.25, 0, 1.25]);
+  assert.deepEqual(asked, [{ fresh: false, spendOnly: true }], "a polled read asks only for the reported spend, never RunPod's pod list");
+  // Unreadable: the others count 0 and the read still answers (best effort, ADR 0028 §5).
+  const g = fixture({ settings: { maxConcurrentSessions: 4, maxUsdPerDay: 10 }, accountWide: async () => { throw new Error("reports unreadable"); } });
+  const fallback = await g.services.getLimits();
+  assert.deepEqual([fallback.accountSpentTodayUsd, fallback.otherDevicesSpentTodayUsd], [0, 0]);
 });
 
 test("BL-138: an unreadable other-devices figure counts as 0 (best effort), never blocks approves", async () => {

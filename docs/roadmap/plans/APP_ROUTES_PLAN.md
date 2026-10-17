@@ -29,7 +29,7 @@ No requirement depends on the single address. It is inherited from the original 
 | `/research` | Inbox when agent requests are waiting, else Channels (the existing first-open rule, AC-R1-2) |
 | `/research/<sub>` | `sub` is one of: inbox, channels, videos, discover, topics |
 | `/settings` | redirects to `/settings/general` |
-| `/settings/<sub>` | `sub` is one of: general, api, channels, ai-agent, sync, runpod, about |
+| `/settings/<sub>` | `sub` is one of: general, api, channels, ai-agent, sync, cloud-apis, live-streams, about (BL-193: `/settings/runpod` and `/settings/gemini` redirect to `cloud-apis`) |
 | `/dashboard` (old link) | redirects to `/home`, keeping the query. A `cloudConnection` result goes to `/settings/api`. |
 | `/` | the sign-in page, as now. Signed in → `/home`. |
 

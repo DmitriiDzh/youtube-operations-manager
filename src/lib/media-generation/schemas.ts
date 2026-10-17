@@ -10,7 +10,7 @@ export const DATACENTER_ID_PATTERN = RUNPOD_DATACENTER_ID_PATTERN;
 const trimmedSecret = (max: number) => z.string().trim().min(1).max(max);
 
 /**
- * Operator-only (Settings → RunPod). The S3 pair is optional as a pair: both or
+ * Operator-only (Settings → Cloud APIs). The S3 pair is optional as a pair: both or
  * neither. Secrets arrive only here and leave only as an encrypted blob.
  */
 export const setCredentialsInputSchema = z
@@ -250,25 +250,8 @@ export const createTemplatePassthroughSchema = z
 
 export type SetCredentialsInput = z.infer<typeof setCredentialsInputSchema>;
 
-// BL-137 (owner, Telegram 2026-10-06, msgs 1702-1704, variant A): the RunPod/S3 credentials carried to another device as a file
-// encrypted under a password the operator types on both ends; the password is never stored.
-export const CREDENTIALS_FILE_FORMAT = "ytm-runpod-credentials";
-export const CREDENTIALS_EXPORT_MIN_PASSWORD = 12;
-export const exportCredentialsInputSchema = z.object({ password: z.string().min(CREDENTIALS_EXPORT_MIN_PASSWORD, `use at least ${CREDENTIALS_EXPORT_MIN_PASSWORD} characters`).max(256) }).strict();
-const base64 = z.string().min(1).max(8192).regex(/^[A-Za-z0-9+/]+={0,2}$/);
-export const credentialsFileSchema = z
-  .object({
-    format: z.literal(CREDENTIALS_FILE_FORMAT),
-    version: z.literal(1),
-    createdAt: z.string().max(64),
-    hints: z.object({ runpodKeyPrefix: z.string().max(64).nullable(), s3AccessKeyId: z.string().max(256).nullable() }).strict(),
-    encrypted: z
-      .object({ kdf: z.literal("scrypt"), salt: base64, N: z.number().int(), r: z.number().int(), p: z.number().int(), ciphertext: base64, iv: base64, authTag: base64 })
-      .strict(),
-  })
-  .strict();
-export const importCredentialsInputSchema = z.object({ file: credentialsFileSchema, password: z.string().min(1).max(256) }).strict();
-export type CredentialsFile = z.infer<typeof credentialsFileSchema>;
+// BL-137's credentials file moved to the shared module `src/lib/cloud-credentials-transfer` (BL-193, ADR 0039 §6): one file for
+// every cloud key; this module only hands over and takes back its own credential set.
 export type CreateTemplatePassthroughInput = z.infer<typeof createTemplatePassthroughSchema>;
 export type UpdateSettingsInput = z.infer<typeof updateSettingsInputSchema>;
 export type CreateNetworkVolumeInput = z.infer<typeof createNetworkVolumeInputSchema>;

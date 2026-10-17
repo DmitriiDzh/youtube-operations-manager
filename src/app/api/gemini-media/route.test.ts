@@ -62,7 +62,13 @@ function deps(opts: { session?: boolean; googleRefuses?: boolean } = {}): Gemini
     isGatewayEnabled: async () => true,
     clock: { now: () => new Date("2026-10-10T12:00:00Z") },
   } as unknown as GeminiMediaDeps);
-  return { getSession: async () => (opts.session === false ? null : { user: { id: "owner" } }), core };
+  // BL-193: the shared-limits sync is the production wiring's (index.ts); these routes never reach it.
+  const sync = {
+    getSettingsSyncStatus: () => ({ checkedAt: null, lastApplied: null, pending: [], conflicts: [], error: null }),
+    peekSettingsSync: async () => ({ checkedAt: null, lastApplied: null, pending: [], conflicts: [], error: null }),
+    resolveSettingConflict: async () => ({ checkedAt: null, lastApplied: null, pending: [], conflicts: [], error: null }),
+  };
+  return { getSession: async () => (opts.session === false ? null : { user: { id: "owner" } }), core: { ...core, ...sync } };
 }
 
 const json = (method: string, body?: unknown) =>

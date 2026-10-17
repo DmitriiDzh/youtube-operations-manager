@@ -13,10 +13,19 @@ export const GLOBAL_DOCUMENT_KEY = "global";
 export type SettingValue = string | number | boolean | null | string[];
 
 export type MediaSettingsDocument = {
-  format: "ytm-media-settings";
+  /** "ytm-media-settings"; BL-193: "ytm-gemini-settings" for the Gemini limits' own document (the same opaque-map engine). */
+  format: string;
   version: 1;
   settings: Record<string, SettingValue>;
 };
+
+/**
+ * BL-193 (ADR 0039): which settings-map document a core works on. Each family has its own format and its own fixed genesis actor,
+ * so its genesis change is the same on every device (and never the same as another family's).
+ */
+export type SettingsMapKind = { format: string; genesisActor: string };
+export const MEDIA_SETTINGS_KIND: SettingsMapKind = Object.freeze({ format: "ytm-media-settings", genesisActor: "6d656469612d73657474696e67733031" }); // hex of "media-settings01"
+export const GEMINI_SETTINGS_KIND: SettingsMapKind = Object.freeze({ format: "ytm-gemini-settings", genesisActor: "67656d696e692d73657474696e677331" }); // hex of "gemini-settings1"
 
 /**
  * A field set to DIFFERENT values on two devices before they met. Two devices that wrote the same value are not a conflict

@@ -59,11 +59,11 @@ export const SETTINGS_SUB_TABS = [
   { value: "channels", labelKey: "tabs.settings.channels" },
   { value: "ai-agent", labelKey: "tabs.settings.aiAgent" },
   { value: "sync", labelKey: "tabs.settings.sync" },
-  // Phase 14 (docs/roadmap/plans/PHASE_14_PLAN.md §2.6, D5): the RunPod connection only since slice 6 (owner, msg 1549);
-  // everything else is the Production section.
-  { value: "runpod", labelKey: "tabs.settings.runpod" },
-  // BL-174 (GEMINI_MEDIA_PLAN.md §2.8): Google's Gemini API key, the operator's switch and limits, the spend, recent jobs.
-  { value: "gemini", labelKey: "tabs.settings.gemini" },
+  // BL-193 (owner, Telegram 2026-10-16, msgs 2864/2867): the paid cloud APIs on one sub-tab -- the RunPod connection (Phase 14
+  // slice 6: only the keys; everything else is Servers), Google's Gemini API key with the operator's switch and limits (BL-174),
+  // and one password-encrypted file carrying every cloud key to another computer. `/settings/runpod` and `/settings/gemini`
+  // redirect here.
+  { value: "cloud-apis", labelKey: "tabs.settings.cloudApis" },
   // BL-176 (LIVE_STREAMS_PLAN.md §3.12): this computer's live-streams settings (the module switch, buffer, encoder).
   { value: "live-streams", labelKey: "tabs.settings.liveStreams" },
   { value: "about", labelKey: "tabs.settings.about" },

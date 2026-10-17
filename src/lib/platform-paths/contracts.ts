@@ -107,6 +107,13 @@ export type AppPaths = {
   /** BL-194 (ADR 0040): the video-reservations family -- this device's reserved video numbers and the peers' latest reports. */
   videoReservationsShareDir: string;
   videoReservationsSyncFallbackDir: string;
+  /** BL-193: the gemini-spend family -- this device's Gemini spend report and the peers' latest reports. */
+  geminiSpendShareDir: string;
+  geminiSpendSyncFallbackDir: string;
+  /** BL-193: the Gemini limits' shared document (sync-gateway `gemini-settings`). */
+  geminiSettingsDocDir: string;
+  geminiSettingsSyncFallbackDir: string;
+  geminiSettingsDiscardedBackupsDir: string;
   /** BL-184: the per-channel storyboards documents (sync-gateway `storyboards`). */
   storyboardsDocDir: string;
   storyboardsSyncFallbackDir: string;

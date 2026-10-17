@@ -226,7 +226,15 @@ export type MediaFactorySettingsView = {
 
 export type MediaSessionLimits = {
   maxUsdPerDay: number;
+  /** THIS device's spend today (what its media-sessions report publishes; unchanged since Phase 14). */
   spentTodayUsd: number;
+  /**
+   * BL-193 (owner msgs 2864/2867): today's spend on the RunPod account -- this device plus the other devices on the same account
+   * (their reports, ADR 0028 §5): the figure the daily cap is checked against and the one the Servers header shows.
+   */
+  accountSpentTodayUsd: number;
+  /** BL-193: the part of `accountSpentTodayUsd` spent on the other devices (0 when the account is unknown or no report is readable). */
+  otherDevicesSpentTodayUsd: number;
   remainingTodayUsd: number;
   defaultMaxMinutes: number;
   idleMinutes: number;

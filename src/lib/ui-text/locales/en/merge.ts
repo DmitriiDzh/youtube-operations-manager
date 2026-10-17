@@ -14,6 +14,8 @@ export const merge = {
   "handoff.family.storyboards": "Storyboards",
   "handoff.family.mediaJobs": "Media jobs",
   "handoff.family.videoReservations": "Video numbers",
+  "handoff.family.geminiSpend": "Gemini spend",
+  "handoff.family.geminiSettings": "Gemini limits",
 
   "handoff.requestFailed": "Request to {url} failed ({status})",
   "handoff.justNow": "just now",

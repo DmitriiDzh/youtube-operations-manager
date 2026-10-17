@@ -118,6 +118,14 @@ export {
 } from "./media-jobs";
 export type { MediaJobsReport, SharedMediaJob, SharedJobCommand, SharedCommandResult, SharedGeminiCreate, MediaJobCommandKind } from "./media-jobs";
 export { createMediaJobsSyncRunnerForProduction } from "./media-jobs-sync";
+// BL-193 (ADR 0039): each computer's Gemini spend (today, this month) under a fingerprint of its key, so computers on one key add
+// their spend up; and the Gemini limits, one shared settings map (the media-settings engine on its own document).
+export { createGeminiSpendShareCoreForProduction, GEMINI_SPEND_REPORT_FORMAT, GEMINI_SPEND_REPORT_VERSION, geminiSpendReportSchema } from "./gemini-spend";
+export type { GeminiSpendReport, GeminiSpendShareCore } from "./gemini-spend";
+export { createGeminiSpendSyncRunnerForProduction } from "./gemini-spend-sync";
+export { createGeminiSettingsCoreForProduction } from "./gemini-settings";
+export type { GeminiSettingsCore } from "./gemini-settings";
+export { createGeminiSettingsSyncRunnerForProduction } from "./gemini-settings-sync";
 // BL-184: a channel's storyboards (versions from the Operator, comments and decisions from the owner), one document per channel.
 export { createStoryboardsCoreForProduction } from "./storyboards";
 export type {

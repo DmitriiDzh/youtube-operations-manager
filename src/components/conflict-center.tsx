@@ -12,7 +12,8 @@ import { errorText, uiMessageText } from "@/lib/ui-text";
 // side and a "Keep this" under each; the choice goes to both computers at once. Uses the families' own conflict and resolve
 // routes; adds no new way to resolve anything.
 
-type SettingConflict = { field: string; values: unknown[]; thisComputer: unknown };
+/** `source` (BL-193): which shared settings document -- Servers → Setup (media) or the Gemini limits -- and so which resolve route. */
+type SettingConflict = { field: string; values: unknown[]; thisComputer: unknown; source?: "media" | "gemini" };
 type ActorConflict = {
   family: "change_drafts" | "editorial_profile" | "ai_connections" | "channel_language_settings" | "channel_publishing_settings";
   key: string;
@@ -70,7 +71,7 @@ export type ConflictCenterState = {
   refresh: () => Promise<void>;
 };
 
-/** Every conflict this device knows of: Setup settings, the snapshot divergence, and every connected channel's drafts and profile. */
+/** Every conflict this device knows of: Setup settings, the Gemini limits (BL-193), the snapshot divergence, and the active channel's drafts and profile. */
 export function useConflictCenter(enabled: boolean): ConflictCenterState {
   const [settings, setSettings] = useState<SettingConflict[]>([]);
   const [others, setOthers] = useState<ActorConflict[]>([]);
@@ -86,9 +87,14 @@ export function useConflictCenter(enabled: boolean): ConflictCenterState {
       fetchJson<{ notices?: Array<{ kind: string; snapshotId?: string | null }> }>(t, "/api/device-sync/status"),
       fetchJson<{ conflicts: Array<{ connectionId: string; field: string; valuesByActor: Record<string, unknown> }> }>(t, "/api/ai-connections/conflicts"),
       fetchJson<{ channels: Array<{ channelId: string; title: string; isActive: boolean }> }>(t, "/api/channel-connections"),
+      // BL-193 (ADR 0039): the Gemini limits, shared like the Setup settings; unavailable (module off or broken) = none listed.
+      fetchJson<{ conflicts?: SettingConflict[] }>(t, "/api/gemini-media/settings-sync"),
     ]);
-    const [settingsRes, statusRes, aiRes, channelsRes] = settled;
-    if (settingsRes.status === "fulfilled") setSettings(settingsRes.value.conflicts ?? []);
+    const [settingsRes, statusRes, aiRes, channelsRes, geminiRes] = settled;
+    setSettings([
+      ...(settingsRes.status === "fulfilled" ? (settingsRes.value.conflicts ?? []).map((c) => ({ ...c, source: "media" as const })) : []),
+      ...(geminiRes.status === "fulfilled" ? (geminiRes.value.conflicts ?? []).map((c) => ({ ...c, source: "gemini" as const })) : []),
+    ]);
     // RunPod not set up on this device: Production has no settings to compare -- not an error worth showing.
     if (statusRes.status === "fulfilled") setDivergence((statusRes.value.notices ?? []).some((n) => n.kind === "divergence" && n.snapshotId));
     else errors.push(statusRes.reason instanceof Error ? statusRes.reason.message : t("conflicts.unavailable.deviceSync"));
@@ -259,7 +265,8 @@ export function ConflictCenter({
 
   const post = (url: string, body: unknown) => fetchJson(t, url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
-  const keepSetting = (c: SettingConflict, value: unknown) => act(() => post("/api/media-generation/settings-sync/resolve", { field: c.field, value }));
+  const keepSetting = (c: SettingConflict, value: unknown) =>
+    act(() => post(c.source === "gemini" ? "/api/gemini-media/settings-sync/resolve" : "/api/media-generation/settings-sync/resolve", { field: c.field, value }));
   const keepActor = (c: ActorConflict, actor: string) =>
     act(() =>
       c.family === "change_drafts"
@@ -295,30 +302,36 @@ export function ConflictCenter({
         </button>
       )}
 
-      {state.settings.length > 0 && (
-        <section className="space-y-3">
-          <h3 className="text-sm font-semibold text-zinc-200">{t("conflicts.productionSettings")}</h3>
-          {state.settings.map((c) => {
-            // Normally one of the two values is this computer's own (it keeps it until the choice); if not, both are shown as versions.
-            const mine = c.values.find((v) => JSON.stringify(v) === JSON.stringify(c.thisComputer));
-            const [left, right] = mine !== undefined ? [mine, c.values.find((v) => v !== mine) ?? c.values[1]] : [c.values[0], c.values[1]];
-            return (
-              <div key={c.field} className="space-y-2 rounded-xl border border-amber-800/60 bg-amber-950/10 p-3">
-                <p className="text-sm font-medium text-zinc-100">{settingLabel(t, c.field)}</p>
-                <VersionPair
-                  leftTitle={mine !== undefined ? t("conflicts.thisComputer") : t("conflicts.version", { n: 1 })}
-                  rightTitle={mine !== undefined ? t("conflicts.otherComputer") : t("conflicts.version", { n: 2 })}
-                  left={left}
-                  right={right}
-                  unit={SETTING_LABELS[c.field]?.unit}
-                  busy={busy}
-                  onKeep={(side) => void keepSetting(c, side === "left" ? left : right)}
-                />
-              </div>
-            );
-          })}
-        </section>
-      )}
+      {(["media", "gemini"] as const).map((source) => {
+        const list = state.settings.filter((c) => (c.source ?? "media") === source);
+        if (list.length === 0) return null;
+        return (
+          <section key={source} className="space-y-3">
+            <h3 className="text-sm font-semibold text-zinc-200">{t(source === "gemini" ? "conflicts.geminiSettings" : "conflicts.productionSettings")}</h3>
+            {list.map((c) => {
+              // Normally one of the two values is this computer's own (it keeps it until the choice); if not, both are shown as versions.
+              const mine = c.values.find((v) => JSON.stringify(v) === JSON.stringify(c.thisComputer));
+              const [left, right] = mine !== undefined ? [mine, c.values.find((v) => v !== mine) ?? c.values[1]] : [c.values[0], c.values[1]];
+              // BL-193: a Gemini limit is labelled as one (the Setup settings have a daily cap of the same field name).
+              const labelField = source === "gemini" ? `gemini.${c.field}` : c.field;
+              return (
+                <div key={`${source}.${c.field}`} className="space-y-2 rounded-xl border border-amber-800/60 bg-amber-950/10 p-3">
+                  <p className="text-sm font-medium text-zinc-100">{settingLabel(t, labelField)}</p>
+                  <VersionPair
+                    leftTitle={mine !== undefined ? t("conflicts.thisComputer") : t("conflicts.version", { n: 1 })}
+                    rightTitle={mine !== undefined ? t("conflicts.otherComputer") : t("conflicts.version", { n: 2 })}
+                    left={left}
+                    right={right}
+                    unit={SETTING_LABELS[labelField]?.unit}
+                    busy={busy}
+                    onKeep={(side) => void keepSetting(c, side === "left" ? left : right)}
+                  />
+                </div>
+              );
+            })}
+          </section>
+        );
+      })}
 
       {state.divergence && !hideDivergence && (
         <section className="space-y-2">

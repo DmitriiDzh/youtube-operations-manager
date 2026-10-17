@@ -29,3 +29,9 @@ the snapshot or in sync. Every device therefore needed the three keys typed in b
 - One RunPod key on several devices: a leak means rotating it everywhere (the owner's choice over C).
 - The file can be attacked offline; its strength is the password's (TECHNICAL_DEBT RISK-110).
 - Variant B (sync) stays out: it would keep a copy of the secrets in a shared folder and still needs a secret typed on each device.
+
+## Amendment (2026-10-16, BL-193)
+
+The file now carries every cloud key -- RunPod, S3 and the Gemini key -- as `ytm-cloud-credentials` v1, built by the shared module
+`src/lib/cloud-credentials-transfer/` (Settings → Cloud APIs, `POST /api/cloud-credentials/export|import`). An old
+`ytm-runpod-credentials` file still imports. Only the keys present in a file are applied. See ADR 0039 §6.

@@ -13,6 +13,8 @@ import { createPublishingUploadsSyncRunnerForProduction } from "./publishing-upl
 import { createStoryboardsSyncRunnerForProduction } from "./storyboards-sync";
 import { createMediaJobsSyncRunnerForProduction } from "./media-jobs-sync";
 import { createVideoReservationsSyncRunnerForProduction } from "./video-reservations-sync";
+import { createGeminiSpendSyncRunnerForProduction } from "./gemini-spend-sync";
+import { createGeminiSettingsSyncRunnerForProduction } from "./gemini-settings-sync";
 
 /** Runs one family's cycle and unconditionally records its outcome to `sync_family_status`
  * (2026-09-23, Merge-tab redesign) -- regardless of whether it resolved or threw, so the
@@ -43,7 +45,7 @@ async function runAndRecord<T>(
  * process-wide guard in `runAllSyncFamiliesOnce` below.
  */
 async function runAllOnce() {
-  const [changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards, mediaJobs, videoReservations] = await Promise.all([
+  const [changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards, mediaJobs, geminiSpend, geminiSettings, videoReservations] = await Promise.all([
     runAndRecord("change_drafts", () => createChangeDraftsSyncCoreForProduction().runSyncCycle()),
     runAndRecord("editorial_profile", () => createEditorialProfileSyncRunnerForProduction().runSyncCycle()),
     runAndRecord("ai_connections", () => createAiConnectionsCatalogSyncRunnerForProduction().runSyncCycle()),
@@ -67,10 +69,14 @@ async function runAllOnce() {
     runAndRecord("storyboards", () => createStoryboardsSyncRunnerForProduction().runSyncCycle()),
     // BL-188: this computer's media jobs (RunPod and Gemini) out, the other devices' in -- one shared list everywhere.
     runAndRecord("media_jobs", () => createMediaJobsSyncRunnerForProduction().runSyncCycle()),
+    // BL-193: this computer's Gemini spend (under its key's fingerprint) out, the other devices' in -- one spend per Gemini key.
+    runAndRecord("gemini_spend", () => createGeminiSpendSyncRunnerForProduction().runSyncCycle()),
+    // BL-193: the Gemini limits (one Automerge document; gemini-media applies it on its own tick).
+    runAndRecord("gemini_settings", () => createGeminiSettingsSyncRunnerForProduction().runSyncCycle()),
     // BL-194 (ADR 0040): the video numbers this computer reserved out, the other devices' in (one list of videos everywhere).
     runAndRecord("video_reservations", () => createVideoReservationsSyncRunnerForProduction().runSyncCycle()),
   ]);
-  return { changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards, mediaJobs, videoReservations };
+  return { changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards, mediaJobs, geminiSpend, geminiSettings, videoReservations };
 }
 
 type AllFamiliesResult = Awaited<ReturnType<typeof runAllOnce>>;

@@ -10,11 +10,14 @@ import { createKeyFile, createKeyFileFsAccess } from "@/lib/device-key-file";
 import { createGeminiApiClient, isMediaGatewayEnabled } from "@/lib/media-gateway";
 import { createStoryboardGateForProduction } from "@/lib/storyboards";
 import { createVideoProjectsServiceForProduction } from "@/lib/video-projects";
+import { createGeminiSettingsCoreForProduction, createGeminiSpendShareCoreForProduction } from "@/lib/sync-gateway";
 import { createGeminiFiles } from "./adapters/files";
 import { createGeminiWorkspace } from "./adapters/workspace";
 import { createGeminiStore } from "./adapters/store";
 import { DomainError, GEMINI_KEY_FILE_NAME } from "./contracts";
 import { createGeminiMediaServices, type GeminiMediaDeps } from "./services";
+import { changedSharedLimits, createGeminiSettingsSync, type GeminiSharedValue } from "./settings-sync";
+import { createGeminiSpendSharePublisher } from "./spend-share";
 import { createGeminiWorker } from "./worker";
 
 // ---------------------------------------------------------------------------
@@ -27,6 +30,10 @@ export * from "./contracts";
 export { estimateImageUsd, estimateVideoUsd, imageCostFromTable, imageCostFromUsage, modelCatalog } from "./pricing";
 export { createGeminiMediaServices, settingsFromJson, type GeminiMediaDeps, type GeminiStore } from "./services";
 export { createGeminiWorker } from "./worker";
+export { accountWideSpend, geminiKeyFingerprint, GEMINI_FINGERPRINT_LABEL, GEMINI_PEER_STALE_AFTER_MS } from "./account";
+export { createGeminiSpendSharePublisher, GEMINI_SPEND_REPUBLISH_MS } from "./spend-share";
+export { changedSharedLimits, createGeminiSettingsSync, planGeminiPeerApply, sharedLimitValues } from "./settings-sync";
+export type { GeminiSettingsSyncStatus, GeminiSettingsConflictView, GeminiPendingSetting, GeminiSharedValue } from "./settings-sync";
 
 const CORE_KEY = Symbol.for("youtube-operations-manager.gemini-media-core");
 
@@ -51,7 +58,7 @@ function buildDeps(): GeminiMediaDeps {
       (detail) =>
         new DomainError({
           code: "encryption_key_not_configured",
-          message: `The Gemini key file exists but is unusable (${detail}). Remove the stored key and enter it again (Settings → Gemini).`,
+          message: `The Gemini key file exists but is unusable (${detail}). Remove the stored key and enter it again (Settings → Cloud APIs).`,
         })
     ),
     workspace: createGeminiWorkspace(async (channelId) => workspaces.getWorkspace({ channelId })),
@@ -86,12 +93,71 @@ function buildDeps(): GeminiMediaDeps {
     storyboardGate: createStoryboardGateForProduction(),
     // BL-194 (ADR 0040): the video a job is made for (the shared video-projects module; an inherited one never blocks a job).
     videoLink: { resolve: (input) => createVideoProjectsServiceForProduction().resolveJobVideo(input) },
+    // BL-193 (ADR 0039): the other computers' Gemini spend, for the limits shared by every computer on one key.
+    peerSpendReports: () => createGeminiSpendShareCoreForProduction().listPeerReports(),
+    log: (line) => console.warn(line),
   };
+}
+
+function hostName(): string | null {
+  try {
+    return hostname().slice(0, 255) || null;
+  } catch {
+    return null;
+  }
 }
 
 function buildCore() {
   const deps = buildDeps();
-  return { ...createGeminiMediaServices(deps), worker: createGeminiWorker(deps) };
+  const services = createGeminiMediaServices(deps);
+
+  // -- BL-193: the limits shared with the other computers (sync-gateway `gemini-settings`, ADR 0039) ---------------------------
+  const settingsSync = createGeminiSettingsSync({
+    shared: createGeminiSettingsCoreForProduction(),
+    getSettings: () => services.getSettings(),
+    applyUpdate: (patch) => services.updateSettings(patch),
+    clock: deps.clock,
+  });
+  /** An owner's save: validated and stored as before, then the limits it changed are shared (a failure to share never fails the save). */
+  const updateSettings = (input: unknown) =>
+    settingsSync.exclusive(async () => {
+      const before = await services.getSettings();
+      const after = await services.updateSettings(input);
+      const changed = changedSharedLimits(before, after);
+      if (Object.keys(changed).length > 0) {
+        await createGeminiSettingsCoreForProduction()
+          .publishChanged(changed as Record<string, GeminiSharedValue>)
+          .catch((error: unknown) => console.warn(`[gemini-settings] the change was saved here but not shared: ${error instanceof Error ? error.message : String(error)}`));
+      }
+      return after;
+    });
+  /** The owner picked one value of a conflicted limit (Merge, or the startup window): shared at once, applied here at once. */
+  const resolveSettingConflict = async (input: { field: string; value: GeminiSharedValue }) => {
+    await settingsSync.exclusive(() => createGeminiSettingsCoreForProduction().resolveConflict(input));
+    return settingsSync.tick();
+  };
+
+  // -- BL-193: this computer's spend for the other computers (sync-gateway `gemini-spend`, ADR 0039) --------------------------
+  /** Written when the figures or the key changed, and at least every 5 minutes (so the others can tell this computer is alive). */
+  const publishSpendShare = createGeminiSpendSharePublisher({
+    localSpend: (at) => services.localSpend(at),
+    keyFingerprint: () => services.keyFingerprint(),
+    deviceId: async () => (await deps.device()).deviceId,
+    hostname: hostName,
+    publish: (report) => createGeminiSpendShareCoreForProduction().publishLocalReport(report),
+    now: () => deps.clock.now(),
+  });
+
+  return {
+    ...services,
+    updateSettings,
+    resolveSettingConflict,
+    syncSharedSettings: () => settingsSync.tick(),
+    getSettingsSyncStatus: () => settingsSync.status(),
+    peekSettingsSync: () => settingsSync.peek(),
+    publishSpendShare,
+    worker: createGeminiWorker(deps),
+  };
 }
 
 export type GeminiMediaCore = ReturnType<typeof buildCore>;

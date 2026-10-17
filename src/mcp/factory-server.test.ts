@@ -214,7 +214,7 @@ test("§2.5(4): none of the factory files reads channel-scope state (agent-sessi
   }
 });
 
-test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.19.0 since BL-194), separate from the channel agents' version", async () => {
+test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.20.0 since BL-194), separate from the channel agents' version", async () => {
   // BL-153 (FO-REQ-0008): reviewRejected, split waiting counts and overridesValidator are additive -> a minor version.
   // BL-155 (FO-REQ-0007, CUDA_HOSTS_PLAN.md "Contract"): the jobs' errorCode, the error media_gpu_host_incompatible and the
   // stopReason "all jobs failed (release when done)" are additive -> 1.7.0, as the plan states.
@@ -231,8 +231,8 @@ test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.19.0 
   // BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.7): one new READ tool, factory_jobs_list, additive -> 1.17.0.
   // BL-189 (STORYBOARD_TAKES_PLAN.md §2.4): one new WRITE tool, factory_storyboard_attach_render, additive -> 1.18.0.
   // BL-194 (VIDEO_COST_PLAN.md §2 stage 1): two new tools (factory_video_create, factory_video_list) and optional videoNumber fields,
-  // additive -> 1.19.0.
-  assert.equal(FACTORY_API_VERSION, "1.19.0");
+  // additive -> 1.20.0 (1.19.0 = BL-193).
+  assert.equal(FACTORY_API_VERSION, "1.20.0");
   const agentOperations = await readFile("src/lib/agent-operations/contracts.ts", "utf8");
   assert.equal(agentOperations.includes("FACTORY_API_VERSION"), false);
 });

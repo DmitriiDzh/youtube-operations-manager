@@ -22,6 +22,7 @@ import { ChannelConnectionsSettings } from "@/components/channel-connections-set
 import { SyncFolderSettings } from "@/components/sync-folder-settings";
 import { RunpodConnectionSettings } from "@/components/media-generation-settings";
 import { GeminiMediaSettings } from "@/components/gemini-media-settings";
+import { CloudCredentialsTransfer } from "@/components/cloud-credentials-transfer";
 import { LiveStreamsSettings } from "@/components/live-streams-settings";
 import { DeviceAutoSyncSettings } from "@/components/device-auto-sync-settings";
 import { AppVersionInfo } from "@/components/app-version-info";
@@ -152,15 +153,17 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
         </FeatureErrorBoundary>
       </div>
 
-      <div className={settingsSubTab === "runpod" ? "space-y-6" : "hidden"}>
+      {/* BL-193 (owner msgs 2864/2867): the paid cloud APIs on one sub-tab -- RunPod's keys, Gemini's key and the operator's
+          switch and limits, and one file carrying every cloud key to another computer. Each card fails on its own (AGENTS.md §M). */}
+      <div className={settingsSubTab === "cloud-apis" ? "space-y-6" : "hidden"}>
         <FeatureErrorBoundary label={section("settingsCard.runpod")}>
           <RunpodConnectionSettings />
         </FeatureErrorBoundary>
-      </div>
-
-      <div className={settingsSubTab === "gemini" ? "space-y-6" : "hidden"}>
         <FeatureErrorBoundary label={section("settingsCard.gemini")}>
           <GeminiMediaSettings />
+        </FeatureErrorBoundary>
+        <FeatureErrorBoundary label={section("cloudKeys.title")}>
+          <CloudCredentialsTransfer />
         </FeatureErrorBoundary>
       </div>
 

@@ -28,6 +28,11 @@ export const SETTING_LABELS: Record<string, { labelKey: UiTextKey; unit?: "usd" 
   factoryMaxUsdPerMonth: { labelKey: "setupField.factoryMaxUsdPerMonth", unit: "usd" },
   ownerReleaseWhenDone: { labelKey: "setupField.ownerReleaseWhenDone" },
   minCudaVersion: { labelKey: "setupField.minCudaVersion" },
+  // BL-193 (ADR 0039): the shared Gemini limits, named `gemini.<field>` on the conflict screen (their own document, their own route).
+  "gemini.maxUsdPerJob": { labelKey: "geminiField.maxUsdPerJob", unit: "usd" },
+  "gemini.maxUsdPerDay": { labelKey: "geminiField.maxUsdPerDay", unit: "usd" },
+  "gemini.maxUsdPerMonth": { labelKey: "geminiField.maxUsdPerMonth", unit: "usd" },
+  "gemini.maxActiveJobs": { labelKey: "geminiField.maxActiveJobs" },
 };
 
 export function settingLabel(t: Translate, field: string): string {
