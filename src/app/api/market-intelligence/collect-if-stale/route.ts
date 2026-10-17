@@ -38,6 +38,9 @@ export async function POST() {
   try {
     const userId = session.user.id;
     const result = await collectAfterDeviceSync({
+      isDue: () => core.hasChannelsDue(),
+      // The same answer a pass that claims nothing gives.
+      nothingDue: () => ({ attempted: 0, succeeded: 0, failed: 0, quotaLimited: 0, unitsSpent: 0 }),
       syncFirst: syncFirstWithTimeout,
       collect: () => core.runCollectionIfStale({ credentialRef: { userId } }),
     });

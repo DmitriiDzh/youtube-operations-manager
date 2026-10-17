@@ -12277,6 +12277,27 @@ export async function claimStaleResearchChannelsForCollection(
 }
 
 /**
+ * BL-196: how many watchlist channels `claimStaleResearchChannelsForCollection` would claim right now, without claiming them -- the
+ * same conditions (stale or never collected, not claimed or the claim expired, not paused, not in the caller's recently-failed list),
+ * read only. Lets the dashboard skip device sync and credentials on a reload when nothing is due.
+ */
+export async function countResearchChannelsDueForCollection(
+  args: { staleCutoff: Date; claimExpiryCutoff: Date; excludeResearchChannelIds: string[] },
+  database: AppDb = db
+): Promise<number> {
+  const conditions = [
+    or(isNull(researchChannels.lastAutoCollectedAt), lt(researchChannels.lastAutoCollectedAt, args.staleCutoff)),
+    or(isNull(researchChannels.collectionClaimedAt), lt(researchChannels.collectionClaimedAt, args.claimExpiryCutoff)),
+    isNull(researchChannels.pausedAt),
+  ];
+  if (args.excludeResearchChannelIds.length > 0) {
+    conditions.push(notInArray(researchChannels.id, args.excludeResearchChannelIds));
+  }
+  const rows = await database.select({ id: researchChannels.id }).from(researchChannels).where(and(...conditions));
+  return rows.length;
+}
+
+/**
  * Keeps a long run's claims alive: moves `collectionClaimedAt` from `expectedClaimedAt` (the value this run itself last wrote) to
  * `newClaimedAt` for the given channels, ONLY where they still carry that value -- a channel another run reclaimed (or that was released)
  * is left alone and is not returned. One atomic `UPDATE ... WHERE ... RETURNING`.
