@@ -9,6 +9,7 @@ import type { ComponentType, ReactNode, SVGProps } from "react";
 import type { ChannelInfo } from "@/components/app-channel";
 import type { PlanChannelWork } from "@/lib/generation-plans/contracts";
 import { ChannelSwitcher } from "./channel-switcher";
+import { ActivityIndicator } from "./activity-indicator";
 import { DeviceSyncBell } from "./device-sync-bell";
 import type { ChannelWorkEntry } from "./channel-work";
 import { FeatureErrorBoundary } from "./feature-error-boundary";
@@ -111,6 +112,10 @@ export function AppShell<T extends string>(props: {
             <ChannelSwitcher channelWork={props.channelWork} />
           </div>
           <div className="flex items-center gap-3">
+            {/* BL-195 stage D: what runs in the background now (UI_FEEDBACK_CLARITY_PLAN.md §3). */}
+            <FeatureErrorBoundary label={t("shell.activity")}>
+              <ActivityIndicator />
+            </FeatureErrorBoundary>
             <FeatureErrorBoundary label={t("shell.deviceSync")}>
               <DeviceSyncBell
                 onReviewDivergence={props.onReviewDeviceSyncDivergence}
