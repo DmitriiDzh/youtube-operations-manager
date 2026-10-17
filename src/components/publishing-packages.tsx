@@ -6,7 +6,7 @@ import { uploadTagsSummary, type PublishingSettings } from "@/lib/publishing/set
 import { formatDisplayDateUtc, parseDisplayDate } from "@/lib/shared-formatting";
 import { TAGS_MAX_CHARACTERS } from "@/lib/youtube-video-fields";
 import { errorText, type UiTextKey } from "@/lib/ui-text";
-import { BusyOverlay, useBusyAction } from "./busy-feedback";
+import { BusyOverlay, StatusNotice, useBusyAction } from "./busy-feedback";
 import { ConfirmDialog } from "./confirm-dialog";
 import { LoadingIndicator } from "./operation-progress";
 import { PublishingNewPackage } from "./publishing-new-package";
@@ -215,7 +215,7 @@ export function PublishingPackages({ channelId, visible }: { channelId: string |
         </div>
       </div>
 
-      {error && <p className="text-xs text-red-400">{error}</p>}
+      <StatusNotice notice={error ? { tone: "error", text: error } : null} onClose={() => setError(null)} />
       {!result && !error && <LoadingIndicator className="text-xs text-zinc-400" />}
       {result?.status === "no_workspace" && <p className="text-xs text-amber-200">{t("publishingPackages.noWorkspace")}</p>}
       {result?.status === "workspace_unavailable" && <p className="text-xs text-amber-200">{t("publishingPackages.workspaceUnavailable", { reason: result.reason })}</p>}

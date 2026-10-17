@@ -4,7 +4,7 @@ import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useState } from "react";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import type { Translate, UiTextKey } from "@/lib/ui-text";
-import { BusyOverlay, useBusyAction } from "./busy-feedback";
+import { BusyOverlay, StatusNotice, useBusyAction } from "./busy-feedback";
 import { ConfirmDialog } from "./confirm-dialog";
 import { useT } from "./ui-text-provider";
 
@@ -241,7 +241,7 @@ export function DeviceSyncDivergenceCard() {
         )}
       </div>
 
-      {error && <p className="mt-2 text-sm text-red-300">{error}</p>}
+      <StatusNotice notice={error ? { tone: "error", text: error } : null} onClose={() => setError(null)} className="mt-2" />
 
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
         <div className="space-y-2">

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatDisplayDate, formatDisplayDateTime } from "@/lib/shared-formatting";
 import type { UiTextKey } from "@/lib/ui-text";
-import { LoadingIndicator } from "./operation-progress";
+import { SkeletonLines } from "./busy-feedback";
 import { useRecentSyncConfirm } from "./recent-sync-confirm";
 import { entriesByDay, gapDays, localDayKey, monthWeeks, type GridEntry } from "./publishing-calendar-grid";
 import { useT } from "./ui-text-provider";
@@ -152,7 +152,7 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
   if (!data) {
     return (
       <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4 text-sm text-zinc-400">
-        {error ?? <LoadingIndicator className="text-sm text-zinc-400" />}
+        {error ?? <SkeletonLines lines={5} />}
       </div>
     );
   }

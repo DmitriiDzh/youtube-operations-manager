@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useT } from "../ui-text-provider";
 import { NOTICE_OK_MS } from "./busy-state";
 
@@ -19,8 +19,22 @@ export function useNotice() {
   return { notice, show, clear };
 }
 
+/**
+ * The message line itself. A success closes itself after 4 s (through `onClose`, so a screen with its own `notice` / `error`
+ * state needs no timer of its own); an error stays until its × is pressed.
+ */
 export function StatusNotice({ notice, onClose, className = "" }: { notice: Notice | null; onClose: () => void; className?: string }) {
   const t = useT();
+  const closeRef = useRef(onClose);
+  useEffect(() => {
+    closeRef.current = onClose;
+  });
+  const okText = notice?.tone === "ok" ? notice.text : null;
+  useEffect(() => {
+    if (okText === null) return;
+    const timer = setTimeout(() => closeRef.current(), NOTICE_OK_MS);
+    return () => clearTimeout(timer);
+  }, [okText]);
   if (!notice) return null;
   const error = notice.tone === "error";
   return (

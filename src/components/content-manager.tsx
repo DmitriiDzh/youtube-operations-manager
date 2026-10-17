@@ -8,6 +8,7 @@ import { useUiText } from "./ui-text-provider";
 import { postChannelSync } from "./channel-sync-client";
 import { useRecentSyncConfirm } from "./recent-sync-confirm";
 import { OperationOverlay, useOperation, LoadingIndicator } from "./operation-progress";
+import { SkeletonTableRows } from "./busy-feedback";
 import { DEFAULT_SORT, nextSortState, sortVideos, type SortKey, type SortState } from "./content-sort";
 import { VideoDetailModal } from "./video-detail-modal";
 import { VideoDetailsPanel } from "./video-details-panel";
@@ -395,6 +396,8 @@ export function ContentManager() {
               </tr>
             </thead>
             <tbody>
+              {/* BL-195 stage E: placeholder rows while the first list loads. */}
+              {loadingVideos && videos.length === 0 && <SkeletonTableRows rows={8} columns={5} />}
               {pageVideos.map((video) => (
                   <tr
                     key={video.videoId}

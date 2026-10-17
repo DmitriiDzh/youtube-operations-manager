@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { UiTextKey } from "@/lib/ui-text";
-import { ActionButton, BusyOverlay, useBusyAction } from "./busy-feedback";
+import { ActionButton, BusyOverlay, StatusNotice, useBusyAction } from "./busy-feedback";
 import { ConfirmDialog } from "./confirm-dialog";
 import {
   buildGeminiRequest,
@@ -345,11 +345,11 @@ export function GeminiCreateCard({ activeChannelId, kind }: { activeChannelId: s
               {t("media.gemini.run")}
             </button>
           </div>
-          {notice && <p className="text-xs text-emerald-400">{notice}</p>}
+          <StatusNotice notice={notice ? { tone: "ok", text: notice } : null} onClose={() => setNotice(null)} />
         </div>
       )}
       {open && activeChannelId && !status && !error && <p className="text-xs text-zinc-500">{t("media.gemini.loading")}</p>}
-      {error && <p className="text-xs text-red-400">{error}</p>}
+      <StatusNotice notice={error ? { tone: "error", text: error } : null} onClose={() => setError(null)} />
       {confirming && (
         <ConfirmDialog
           title={t(kind === "image" ? "media.gemini.confirmTitleImage" : "media.gemini.confirmTitleVideo")}

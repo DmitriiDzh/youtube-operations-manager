@@ -33,7 +33,7 @@ import { integratedLoudness, LOUDNESS_TARGET_LUFS, matchedVolume } from "./loudn
 import { MediaReviewPlayer, formatPlayerTime, type FrequencyMark, type ReviewMarker, type ReviewPlayerHandle } from "./media-review-player";
 import { ToggleSwitch } from "./toggle-switch";
 import { BlockingDialog } from "./blocking-dialog";
-import { BusyOverlay, useBusyAction } from "./busy-feedback";
+import { BusyOverlay, SkeletonLines, useBusyAction } from "./busy-feedback";
 import { ConfirmDialog } from "./confirm-dialog";
 import { InfoTooltip } from "./info-tooltip";
 import { Popover } from "./popover";
@@ -1730,7 +1730,12 @@ export function PlanReviewScreen({
 
       {/* Review: the first load still running, or failed -- said, not three empty columns. */}
       {entries === null ? (
-        <p className={`p-6 text-sm ${message?.tone === "error" ? "text-red-400" : "text-zinc-500"}`}>{message?.tone === "error" ? message.text : t("common.loading")}</p>
+        message?.tone === "error" ? (
+          <p className="p-6 text-sm text-red-400">{message.text}</p>
+        ) : (
+          // BL-195 stage E: placeholders where the player and the queue will be.
+          <SkeletonLines lines={6} className="p-6" />
+        )
       ) : entries.length === 0 ? (
         <p className="p-6 text-sm text-zinc-500">{wave === RECHECKS_WAVE ? t("review.rechecks.none") : t("review.empty")}</p>
       ) : (

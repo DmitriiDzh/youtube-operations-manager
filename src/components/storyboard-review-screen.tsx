@@ -6,7 +6,7 @@ import type { KeyframeFileStatus, StoryboardDetail, VersionDiff } from "@/lib/st
 import { changedPropCells } from "@/lib/storyboards/model";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { errorText } from "@/lib/ui-text";
-import { ActionButton, BusyOverlay, useBusyAction } from "./busy-feedback";
+import { ActionButton, BusyOverlay, StatusNotice, useBusyAction } from "./busy-feedback";
 import { ConfirmDialog } from "./confirm-dialog";
 import { MediaImageViewer, type ViewerPin } from "./media-image-viewer";
 import {
@@ -646,7 +646,7 @@ export function StoryboardReviewScreen({ channelId, storyboardId, onClose, initi
           {t("storyboards.diff.title", { previous: data.version - 1 })} {diffSummary.join(" · ")}
         </p>
       ) : null}
-      {error ? <p className="rounded-lg border border-rose-800 bg-rose-950/40 p-3 text-sm text-rose-200">{error}</p> : null}
+      <StatusNotice notice={error ? { tone: "error", text: error } : null} onClose={() => setError(null)} />
 
       <span className="inline-flex gap-1 rounded-lg bg-zinc-900 p-1" role="group" aria-label={t("storyboards.view.label")}>
         {(["frames", "video"] as const).map((v) => (

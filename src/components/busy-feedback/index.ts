@@ -5,3 +5,4 @@ export { useBusyAction, type BusyAction, type BusyOverlayState } from "./use-bus
 export { BusyOverlay } from "./busy-overlay";
 export { ActionButton } from "./action-button";
 export { StatusNotice, useNotice, type Notice } from "./status-notice";
+export { SkeletonLines, SkeletonTableRows } from "./skeleton";

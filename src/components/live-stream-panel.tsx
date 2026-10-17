@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { errorText } from "@/lib/ui-text";
 import type { UiTextKey } from "@/lib/ui-text";
-import { ActionButton, BusyOverlay, useBusyAction } from "./busy-feedback";
+import { ActionButton, BusyOverlay, StatusNotice, useBusyAction } from "./busy-feedback";
 import { ConfirmDialog } from "./confirm-dialog";
 import { InfoTooltip } from "./info-tooltip";
 import type { LiveLatency, LiveVideoSettings } from "@/lib/live-streams/fields";
@@ -253,7 +253,10 @@ function StatusCard({ overview, base, onChanged }: { overview: Overview; base: s
         const result = await action();
         const encoderError = (result as { encoderError?: string } | null)?.encoderError;
         const youtubeRefusal = (result as { youtubeRefusal?: string } | null)?.youtubeRefusal;
-        setNotice(encoderError ? t("live.start.encoderLater", { error: encoderError }) : youtubeRefusal ? t("live.stop.noBroadcast", { reason: causeText(t, youtubeRefusal) }) : done);
+        // BL-195: a partial result is kept on screen until closed (an error line); a plain success hides itself.
+        if (encoderError) setError(t("live.start.encoderLater", { error: encoderError }));
+        else if (youtubeRefusal) setError(t("live.stop.noBroadcast", { reason: causeText(t, youtubeRefusal) }));
+        else setNotice(done);
         await onChanged();
       } catch (err) {
         setError(err instanceof Error ? err.message : t("live.actionFailed"));
@@ -323,8 +326,13 @@ function StatusCard({ overview, base, onChanged }: { overview: Overview; base: s
       {!on && overview.rotation.length === 0 && <p className="text-xs text-zinc-500">{t("live.start.needRotation")}</p>}
       {!on && overview.rotation.length > 0 && !settings.title.trim() && <p className="text-xs text-zinc-500">{t("live.start.needTitle")}</p>}
       {busy && <LoadingIndicator className="text-xs text-zinc-400" />}
-      {error && <p className="text-xs text-red-400">{error}</p>}
-      {notice && <p className="text-xs text-emerald-400">{notice}</p>}
+      <StatusNotice
+        notice={error ? { tone: "error", text: error } : notice ? { tone: "ok", text: notice } : null}
+        onClose={() => {
+          setError(null);
+          setNotice(null);
+        }}
+      />
 
       {dialog === "start" && preview && (
         <ConfirmDialog
@@ -562,8 +570,13 @@ function SettingsCard({ overview, base, onChanged }: { overview: Overview; base:
         )}
       </div>
       {busy && <LoadingIndicator className="text-xs text-zinc-400" />}
-      {error && <p className="text-xs text-red-400">{error}</p>}
-      {notice && <p className="text-xs text-emerald-400">{notice}</p>}
+      <StatusNotice
+        notice={error ? { tone: "error", text: error } : notice ? { tone: "ok", text: notice } : null}
+        onClose={() => {
+          setError(null);
+          setNotice(null);
+        }}
+      />
       {editPreview && (
         <ConfirmDialog
           title={t("live.edit.title")}
@@ -750,8 +763,13 @@ function RotationCard({ overview, base, onChanged }: { overview: Overview; base:
       </div>
       {pickerOpen && <LiveStreamAddVideosDialog base={base} rotationIds={inRotation} onClose={() => setPickerOpen(false)} onAdded={onChanged} />}
       {busy && <LoadingIndicator className="text-xs text-zinc-400" />}
-      {error && <p className="text-xs text-red-400">{error}</p>}
-      {notice && <p className="text-xs text-emerald-400">{notice}</p>}
+      <StatusNotice
+        notice={error ? { tone: "error", text: error } : notice ? { tone: "ok", text: notice } : null}
+        onClose={() => {
+          setError(null);
+          setNotice(null);
+        }}
+      />
       {overrideFor && (
         <ConfirmDialog
           title={t("live.override.title")}
