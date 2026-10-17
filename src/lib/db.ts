@@ -7711,9 +7711,9 @@ export async function getGatewayTrafficLast24h(
   }));
 }
 
-export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens" | "live_streams" | "channel_language_settings" | "channel_publishing_settings" | "publishing_uploads" | "storyboards" | "media_jobs" | "gemini_spend" | "gemini_settings" | "video_reservations";
+export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens" | "live_streams" | "channel_language_settings" | "channel_publishing_settings" | "publishing_uploads" | "storyboards" | "media_jobs" | "gemini_spend" | "gemini_settings" | "video_reservations" | "video_costs";
 
-const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings", "agent_tokens", "live_streams", "channel_language_settings", "channel_publishing_settings", "publishing_uploads", "storyboards", "media_jobs", "gemini_spend", "gemini_settings", "video_reservations"];
+const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings", "agent_tokens", "live_streams", "channel_language_settings", "channel_publishing_settings", "publishing_uploads", "storyboards", "media_jobs", "gemini_spend", "gemini_settings", "video_reservations", "video_costs"];
 
 export type SyncFamilyStatusRow = {
   family: SyncFamily;
@@ -14344,6 +14344,115 @@ export async function setMediaJobCostShare(
   database: AppDb = db
 ): Promise<void> {
   await database.update(mediaJobs).set(set).where(eq(mediaJobs.id, id));
+}
+
+// ---------------------------------------------------------------------------
+// BL-194 stage 3 (ADR 0041): what the video-costs module reads -- every paid run of this computer, with no prompt or parameter.
+// ---------------------------------------------------------------------------
+
+export type VideoCostRunpodJobRow = {
+  id: string;
+  sessionId: string;
+  channelId: string;
+  templateId: string;
+  templateName: string | null;
+  status: MediaJobStatusValue;
+  outputsJson: string | null;
+  video: string | null;
+  planId: string | null;
+  storyboardId: string | null;
+  storyboardVersion: number | null;
+  segmentId: string | null;
+  gpuSeconds: number | null;
+  allocatedUsd: number | null;
+  overheadUsd: number | null;
+  allocationBasis: "measured" | "estimated" | null;
+  createdAt: Date;
+  finishedAt: Date | null;
+};
+
+export async function listVideoCostRunpodJobs(database: AppDb = db): Promise<VideoCostRunpodJobRow[]> {
+  const rows = await database
+    .select({
+      id: mediaJobs.id,
+      sessionId: mediaJobs.sessionId,
+      channelId: mediaJobs.channelId,
+      templateId: mediaJobs.templateId,
+      templateName: mediaWorkflowTemplates.name,
+      status: mediaJobs.status,
+      outputsJson: mediaJobs.outputsJson,
+      video: mediaJobs.video,
+      planId: mediaJobs.planId,
+      storyboardId: mediaJobs.storyboardId,
+      storyboardVersion: mediaJobs.storyboardVersion,
+      segmentId: mediaJobs.segmentId,
+      gpuSeconds: mediaJobs.gpuSeconds,
+      allocatedUsd: mediaJobs.allocatedUsd,
+      overheadUsd: mediaJobs.overheadUsd,
+      allocationBasis: mediaJobs.allocationBasis,
+      createdAt: mediaJobs.createdAt,
+      finishedAt: mediaJobs.finishedAt,
+    })
+    .from(mediaJobs)
+    .leftJoin(mediaWorkflowTemplates, eq(mediaWorkflowTemplates.id, mediaJobs.templateId))
+    .orderBy(desc(mediaJobs.createdAt));
+  return rows.map((r) => ({ ...r, templateName: r.templateName ?? null, outputsJson: r.outputsJson ?? null, video: r.video ?? null, planId: r.planId ?? null, storyboardId: r.storyboardId ?? null, storyboardVersion: r.storyboardVersion ?? null, segmentId: r.segmentId ?? null, gpuSeconds: r.gpuSeconds ?? null, allocatedUsd: r.allocatedUsd ?? null, overheadUsd: r.overheadUsd ?? null, allocationBasis: r.allocationBasis ?? null, finishedAt: r.finishedAt ?? null }));
+}
+
+/** Ended RunPod sessions that ran no job but were charged: a session-level line, counted for their plan's video. */
+export async function listVideoCostSessionsWithoutJobs(database: AppDb = db): Promise<Array<{ id: string; channelId: string; planId: string | null; planVideo: string | null; usdCharged: number; createdAt: Date; stoppedAt: Date | null }>> {
+  const rows = await database
+    .select({ id: mediaSessions.id, channelId: mediaSessions.channelId, planId: mediaSessions.planId, planVideo: generationPlans.video, usdCharged: mediaSessions.usdCharged, createdAt: mediaSessions.createdAt, stoppedAt: mediaSessions.stoppedAt })
+    .from(mediaSessions)
+    .leftJoin(generationPlans, eq(generationPlans.id, mediaSessions.planId))
+    .where(
+      and(
+        inArray(mediaSessions.status, [...MEDIA_SESSION_TERMINAL_STATUSES]),
+        gt(mediaSessions.usdCharged, 0),
+        sql`NOT EXISTS (SELECT 1 FROM media_jobs WHERE media_jobs.session_id = ${mediaSessions.id})`
+      )
+    );
+  return rows.map((r) => ({ id: r.id, channelId: r.channelId, planId: r.planId ?? null, planVideo: r.planVideo ?? null, usdCharged: r.usdCharged ?? 0, createdAt: r.createdAt, stoppedAt: r.stoppedAt ?? null }));
+}
+
+export type VideoCostGeminiJobRow = {
+  jobId: string;
+  channelId: string;
+  kind: "image" | "video";
+  model: string;
+  status: "queued" | "submitting" | "running" | "done" | "failed";
+  estimateUsd: number;
+  costUsd: number | null;
+  costBasis: string | null;
+  video: string | null;
+  storyboardId: string | null;
+  storyboardVersion: number | null;
+  segmentId: string | null;
+  createdAt: Date;
+  finishedAt: Date | null;
+};
+
+export async function listVideoCostGeminiJobs(database: AppDb = db): Promise<VideoCostGeminiJobRow[]> {
+  const rows = await database
+    .select({
+      jobId: geminiMediaJobs.jobId,
+      channelId: geminiMediaJobs.channelId,
+      kind: geminiMediaJobs.kind,
+      model: geminiMediaJobs.model,
+      status: geminiMediaJobs.status,
+      estimateUsd: geminiMediaJobs.estimateUsd,
+      costUsd: geminiMediaJobs.costUsd,
+      costBasis: geminiMediaJobs.costBasis,
+      video: geminiMediaJobs.video,
+      storyboardId: geminiMediaJobs.storyboardId,
+      storyboardVersion: geminiMediaJobs.storyboardVersion,
+      segmentId: geminiMediaJobs.segmentId,
+      createdAt: geminiMediaJobs.createdAt,
+      finishedAt: geminiMediaJobs.finishedAt,
+    })
+    .from(geminiMediaJobs)
+    .orderBy(desc(geminiMediaJobs.createdAt));
+  return rows.map((r) => ({ ...r, costUsd: r.costUsd ?? null, costBasis: r.costBasis ?? null, video: r.video ?? null, storyboardId: r.storyboardId ?? null, storyboardVersion: r.storyboardVersion ?? null, segmentId: r.segmentId ?? null, finishedAt: r.finishedAt ?? null }));
 }
 
 /** The video a plan of this computer is made for, with its channel; null when there is no such plan. */

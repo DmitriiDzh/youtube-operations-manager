@@ -75,6 +75,8 @@ export function resolveAppPaths(input: ResolveAppPathsInput): AppPaths {
     mediaJobsSyncFallbackDir: path.join(appDataDir, "media-jobs-sync-local"),
     videoReservationsShareDir: path.join(appDataDir, "video-reservations-share"),
     videoReservationsSyncFallbackDir: path.join(appDataDir, "video-reservations-sync-local"),
+    videoCostsShareDir: path.join(appDataDir, "video-costs-share"),
+    videoCostsSyncFallbackDir: path.join(appDataDir, "video-costs-sync-local"),
     geminiSpendShareDir: path.join(appDataDir, "gemini-spend-share"),
     geminiSpendSyncFallbackDir: path.join(appDataDir, "gemini-spend-sync-local"),
     geminiSettingsDocDir: path.join(appDataDir, "gemini-settings-doc"),

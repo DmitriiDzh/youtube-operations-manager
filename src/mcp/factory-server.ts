@@ -71,7 +71,8 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 // BL-194 stage 1 (VIDEO_COST_PLAN.md §2, ADR 0040): 1.20.0 -- video numbers from YT Manager: factory_video_create (WRITE: the next free
 // Vn of a channel, local + synced) and factory_video_list (READ: every computer's numbers, the workspace's MMDD Vn folders, the
 // registry and the uploads, with conflicts); an optional videoNumber on factory_media_create_job, factory_gemini_create_job,
-// factory_storyboard_create / _update and factory_plan_create / _update; jobs, storyboards and plans show `video`. Additive.
+// factory_storyboard_create / _update and factory_plan_create / _update; jobs, storyboards and plans show `video`. Stage 3:
+// factory_video_get_cost (READ: one video's visual cost -- every RunPod and Gemini run on every computer). Additive.
 export const FACTORY_API_VERSION = "1.20.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
@@ -139,9 +140,10 @@ export const FACTORY_TOOL_NAMES = [
   "factory_storyboard_attach_render",
   // BL-188: every computer's media jobs in one read-only list.
   "factory_jobs_list",
-  // BL-194: video numbers -- the next free Vn of a channel, and the channel's videos.
+  // BL-194: video numbers -- the next free Vn of a channel, and the channel's videos; stage 3: a video's visual cost.
   "factory_video_create",
   "factory_video_list",
+  "factory_video_get_cost",
 ] as const;
 
 /**
@@ -275,6 +277,8 @@ export type FactoryToolDeps = {
   videos: {
     create(input: unknown): Promise<Record<string, unknown>>;
     list(input: unknown): Promise<Record<string, unknown>>;
+    /** BL-194 stage 3 (ADR 0041): one video's visual cost on every computer (the video-costs module validates strictly itself). */
+    cost(input: unknown): Promise<Record<string, unknown>>;
   };
   /** BL-188: every computer's media jobs, read-only (the pool module filters and bounds them). */
   jobs: {
@@ -1018,7 +1022,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
 
   storyboardWrite(
     "factory_storyboard_create",
-    `Create a storyboard (1.16.0): the keyframes of a video loop, the segment of video between each two of them and a prop table, for the owner to review and approve BEFORE any video is generated. { channelId (connected here, with a workspace folder), storyboardId? (yours, 1-40 letters/digits/'_'/'-'; default sb_<random>), planId? (a generation plan it belongs to), title (<= 200), loop (true: the last keyframe goes back to the first), keyframes: [{ id (1-40 letters/digits/'_'/'-'), file (a path relative to the channel's '99 Data Exchange/': 'Sent to YTM/...' or a job's output in place, 'From YTM/gemini/<jobId>/...' or 'From YTM/media/<jobId>/...'), caption? (<= 200), parentKeyframeId? (another keyframe it was made from) }] (2-24, in order), segments: [{ id, fromKeyframeId, toKeyframeId, action (what happens; <= 4000), durationSeconds (> 0, <= 600), model? (<= 200), settings? ({ name: string | number | boolean }), estimateUsd? }] -- exactly one for each neighbouring pair K0->K1, K1->K2, ... and, with loop, the last back to the first; props?: [{ id, name (<= 200), kind: object | character, cells: { keyframeId: its state there (<= 200) } }] (<= 40), notes? (<= 4000), videoNumber? (1.19.0: the channel's video it is for, e.g. 'V49' from factory_video_create; jobs of its segments take it) } -> { storyboard } (version 1, state draft). Each file must exist in the channel's exchange folders on this computer; its sha256 and size are frozen in the version. Keep a version's files unchanged once it uses them: write a new version's images to a new folder (e.g. bar/v2/). Nothing is generated or charged. Refusals: validation_failed (details.field and the id), storyboard_file_unavailable (details.keyframeId, reason), storyboard_channel_unavailable, video_not_found / video_in_dispute (videoNumber). ${STORYBOARD_SHAPE}`,
+    `Create a storyboard (1.16.0): the keyframes of a video loop, the segment of video between each two of them and a prop table, for the owner to review and approve BEFORE any video is generated. { channelId (connected here, with a workspace folder), storyboardId? (yours, 1-40 letters/digits/'_'/'-'; default sb_<random>), planId? (a generation plan it belongs to), title (<= 200), loop (true: the last keyframe goes back to the first), keyframes: [{ id (1-40 letters/digits/'_'/'-'), file (a path relative to the channel's '99 Data Exchange/': 'Sent to YTM/...' or a job's output in place, 'From YTM/gemini/<jobId>/...' or 'From YTM/media/<jobId>/...'), caption? (<= 200), parentKeyframeId? (another keyframe it was made from) }] (2-24, in order), segments: [{ id, fromKeyframeId, toKeyframeId, action (what happens; <= 4000), durationSeconds (> 0, <= 600), model? (<= 200), settings? ({ name: string | number | boolean }), estimateUsd? }] -- exactly one for each neighbouring pair K0->K1, K1->K2, ... and, with loop, the last back to the first; props?: [{ id, name (<= 200), kind: object | character, cells: { keyframeId: its state there (<= 200) } }] (<= 40), notes? (<= 4000), videoNumber? (1.20.0: the channel's video it is for, e.g. 'V49' from factory_video_create; jobs of its segments take it) } -> { storyboard } (version 1, state draft). Each file must exist in the channel's exchange folders on this computer; its sha256 and size are frozen in the version. Keep a version's files unchanged once it uses them: write a new version's images to a new folder (e.g. bar/v2/). Nothing is generated or charged. Refusals: validation_failed (details.field and the id), storyboard_file_unavailable (details.keyframeId, reason), storyboard_channel_unavailable, video_not_found / video_in_dispute (videoNumber). ${STORYBOARD_SHAPE}`,
     z.object({ channelId: z.string(), storyboardId: z.string().optional(), planId: z.string().nullable().optional(), videoNumber: z.string().nullable().optional(), ...storyboardContent }).strict(),
     (input) => deps.storyboards.create(input)
   );
@@ -1086,6 +1090,16 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
       inputSchema: videoListInput,
     },
     async (args) => successResult(await deps.videos.list(parseInput(videoListInput, args)))
+  );
+  const videoCostInput = z.object({ channelId: z.string().min(1).max(64), video: z.string().regex(/^V[1-9][0-9]{0,5}$/) }).strict();
+  registerTool(
+    "factory_video_get_cost",
+    {
+      description:
+        "The visual cost of one video (1.20.0, BL-194 stage 3): { channelId (connected here), video ('V49') } -> { channelId, video, totals: { runpodUsd, geminiUsd, totalUsd, runs, estimated (true when any run's cost is not final) }, runs: [{ runId ('runpod:<jobId>' | 'gemini:<jobId>' | 'session:<sessionId>' -- a RunPod session that ran no job), source: runpod | gemini, kind: job | session, label (the template or the Gemini model), mediaKind, storyboardId, storyboardVersion, segmentId, planId, status: done | failed | cancelled | active, result: chosen (the owner's take of its storyboard segment, or a take a render uses) | rejected (another take of a segment) | failed | active | test (outside any storyboard segment) | session, usd, basis (RunPod: measured | estimated -- its share of the session's charge from ComfyUI's real GPU times or from estimated ones -- | pending, 0 while its session runs; Gemini: usage | price_table | not_charged | unknown_outcome | estimate while it runs), estimate, overheadUsd (RunPod: the part of the share that is pod start / idle time), gpuSeconds, createdAt, finishedAt, deviceId, hostName, thisComputer }] (newest first), computers: [{ deviceId, hostName, thisComputer, updatedAt (of its report; null for this computer) }] }. Every RunPod and Gemini run linked to the video on every computer (the others' about 1-2 minutes behind): a RunPod session's charge is split across its jobs in proportion to their GPU seconds, so the jobs add up to the charge. The same figure is written to Vn_cost.json next to Vn_release.json when the video is uploaded. Refusals: video_costs_unavailable (the channel is not connected here), validation_failed. Read-only, local; no prompt, path or key.",
+      inputSchema: videoCostInput,
+    },
+    async (args) => successResult(await deps.videos.cost(parseInput(videoCostInput, args)))
   );
 
   // -- BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.7): every computer's media jobs, read-only.

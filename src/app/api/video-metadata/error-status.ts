@@ -166,6 +166,7 @@ const DOMAIN_ERROR_STATUS = {
   video_not_found: 404,
   video_in_dispute: 409,
   video_workspace_unavailable: 409,
+  video_costs_unavailable: 409,
   change_set_incomplete: 500,
   RESEARCH_EXPORT_WORKSPACE_NOT_CONFIGURED: 409,
   RESEARCH_EXPORT_WORKSPACE_UNAVAILABLE: 409,

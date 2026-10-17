@@ -240,6 +240,8 @@ function createToolDeps(): FactoryToolDeps {
     videos: {
       create: async (input) => ({ ...(await createVideoProjectsServiceForProduction().createVideo(input)) }),
       list: async (input) => ({ ...(await createVideoProjectsServiceForProduction().listVideos(input)) }),
+      // BL-194 stage 3 (ADR 0041): loaded on use, so a broken cost module never takes the Factory endpoint down (AGENTS.md §M).
+      cost: async (input) => ({ ...(await (await import("@/lib/video-costs")).createVideoCostsServiceForProduction().videoCost(input)) }),
     },
     // BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.7): every computer's media jobs, read-only, in the shared shape (codes only).
     jobs: {

@@ -130,6 +130,7 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
     videos: {
       create: async (input) => (mediaCalls.push(`video.create:${(input as { channelId: string }).channelId}`), { video: { video: "V50" } }),
       list: async (input) => (mediaCalls.push(`video.list:${(input as { channelId: string }).channelId}`), { videos: [] }),
+      cost: async (input) => (mediaCalls.push(`video.cost:${JSON.stringify(input)}`), { video: "V49", totals: { totalUsd: 1.4088 } }),
     },
     // BL-188: the shared jobs pool is a fake that records what reached it.
     jobs: {
@@ -331,6 +332,7 @@ test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exact
     "factory_storyboard_submit",
     "factory_storyboard_update",
     "factory_video_create",
+    "factory_video_get_cost",
     "factory_video_list",
   ]);
   assert.equal(names.some((n) => /approve|reject/.test(n)), false, "no tool approves or rejects a session for anyone");
@@ -426,6 +428,7 @@ test("factory_get_capabilities reports the factory API version 1.20.0 (BL-194), 
       "factory_jobs_list",
       "factory_video_create",
       "factory_video_list",
+      "factory_video_get_cost",
     ],
     permissions: ["READ", "WRITE"],
     writeTools: [
@@ -1087,4 +1090,20 @@ test("BL-194: factory_video_create passes the gate first, factory_video_list doe
   assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_media_create_job", { sessionId: "s1", templateId: "t1", params: {}, videoNumber: "V49" }), withToken(token))))).isError, false);
   assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_gemini_create_job", { channelId: "UC_A", kind: "image", model: "m", prompt: "p", videoNumber: "V49" }), withToken(token))))).isError, false);
   assert.deepEqual(toolDeps.mediaCalls, ["gate", "createJob:s1:V49", "gate", "gemini.create:UC_A:V49"]);
+});
+
+// BL-194 stage 3 (VIDEO_COST_PLAN.md §2 stage 3, ADR 0041): factory_video_get_cost is a read (no mutation gate), strict, and passes
+// the channel and the video to the cost module as given.
+test("BL-194: factory_video_get_cost is a read with a strict schema that reaches the cost module", async () => {
+  const { endpoint, tokenServices, toolDeps } = setupWithDeps();
+  const { token } = await tokenServices.issueToken({});
+  const ok = await toolResult(await endpoint.handle(rpc(call("factory_video_get_cost", { channelId: "UC_A", video: "V49" }), withToken(token))));
+  assert.equal(ok.isError, false);
+  assert.deepEqual(toolDeps.mediaCalls, ['video.cost:{"channelId":"UC_A","video":"V49"}'], "a read is not gated");
+  toolDeps.mediaCalls.length = 0;
+  for (const bad of [{ channelId: "UC_A", video: "V049" }, { channelId: "UC_A", video: "V49", extra: 1 }, { channelId: "UC_A" }]) {
+    const body = await (await endpoint.handle(rpc(call("factory_video_get_cost", bad), withToken(token)))).json();
+    assert.equal(Boolean(body.result?.isError ?? body.error), true, JSON.stringify(bad));
+  }
+  assert.deepEqual(toolDeps.mediaCalls, [], "an invalid input never reaches the module");
 });

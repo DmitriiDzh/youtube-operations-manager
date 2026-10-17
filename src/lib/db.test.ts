@@ -1080,7 +1080,7 @@ test("getSyncFamilyStatuses: every family (fifteen since BL-193) reports a never
 
     assert.deepEqual(
       statuses.map((s) => s.family).sort(),
-      ["agent_tokens", "ai_connections", "change_drafts", "channel_language_settings", "channel_publishing_settings", "editorial_profile", "gemini_settings", "gemini_spend", "generation_plans", "live_streams", "media_jobs", "media_sessions", "media_settings", "publishing_uploads", "storyboards", "video_reservations"]
+      ["agent_tokens", "ai_connections", "change_drafts", "channel_language_settings", "channel_publishing_settings", "editorial_profile", "gemini_settings", "gemini_spend", "generation_plans", "live_streams", "media_jobs", "media_sessions", "media_settings", "publishing_uploads", "storyboards", "video_costs", "video_reservations"]
     );
     for (const s of statuses) {
       assert.equal(s.lastSyncedAt, null);

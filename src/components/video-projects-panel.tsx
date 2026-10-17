@@ -6,6 +6,7 @@ import { errorText, type UiTextKey } from "@/lib/ui-text";
 import { ConfirmDialog } from "./confirm-dialog";
 import { LoadingIndicator } from "./operation-progress";
 import { useUiText } from "./ui-text-provider";
+import { costUsd, VideoCostDialog, type CostTotalsView } from "./video-cost-dialog";
 
 // BL-194 stage 1 (docs/roadmap/plans/VIDEO_COST_PLAN.md §2 "UI", ADR 0040): Content → «Публикация» starts with the channel's videos
 // in work. «Новый ролик» reserves the next number (with an optional working title); a number two computers took at once is shown
@@ -24,6 +25,8 @@ export type VideoProjectView = {
   conflict: { reservations: VideoReservationView[]; winnerDeviceId: string; thisComputerInvolved: boolean; thisComputerLoses: boolean; suggestedVideo: string | null } | null;
 };
 export type VideoListView = { videos: VideoProjectView[]; workspace: "ok" | "not_configured" | "unavailable"; nextVideo: string | null };
+/** BL-194 stage 3: the cost summary of the channel's videos (its own route; the list works without it). */
+type VideoCostSummaryView = { videos: Array<{ video: string; totals: CostTotalsView }>; unlinked: CostTotalsView };
 
 const STATE_STYLE: Record<VideoProjectView["state"], string> = {
   in_work: "bg-indigo-950/60 text-indigo-200",
@@ -46,6 +49,9 @@ export function VideoProjectsPanel({ channelId, visible }: { channelId: string |
   const [busy, setBusy] = useState(false);
   const [renumbering, setRenumbering] = useState<VideoProjectView | null>(null);
   const [cancelling, setCancelling] = useState<VideoProjectView | null>(null);
+  const [costs, setCosts] = useState<VideoCostSummaryView | null>(null);
+  const [costsFailed, setCostsFailed] = useState(false);
+  const [costOf, setCostOf] = useState<VideoProjectView | null>(null);
 
   const base = channelId ? `/api/channels/${encodeURIComponent(channelId)}/video-projects` : null;
 
@@ -65,9 +71,25 @@ export function VideoProjectsPanel({ channelId, visible }: { channelId: string |
     }
   }, [base, t]);
 
+  // BL-194 stage 3: the costs come from their own route, after the list; a failure there is one line, never the list's error.
+  const loadCosts = useCallback(async () => {
+    if (!channelId) return;
+    try {
+      const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/video-costs`);
+      if (!res.ok) throw new Error("bad status"); // ui-text-ignore: internal, never shown
+      setCosts((await res.json()) as VideoCostSummaryView);
+      setCostsFailed(false);
+    } catch {
+      setCostsFailed(true);
+    }
+  }, [channelId]);
+
   useEffect(() => {
-    if (visible) void load();
-  }, [visible, load]);
+    if (visible) {
+      void load();
+      void loadCosts();
+    }
+  }, [visible, load, loadCosts]);
 
   async function act(url: string, body: unknown, success: (data: { video: VideoProjectView; replaced?: string }) => string) {
     setBusy(true);
@@ -112,7 +134,7 @@ export function VideoProjectsPanel({ channelId, visible }: { channelId: string |
           >
             {t("videoProjects.new")}
           </button>
-          <button type="button" onClick={() => void load()} disabled={loading} className="rounded-lg bg-zinc-800 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-700 disabled:opacity-50">
+          <button type="button" onClick={() => void Promise.all([load(), loadCosts()])} disabled={loading} className="rounded-lg bg-zinc-800 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-700 disabled:opacity-50">
             {t("videoProjects.refresh")}
           </button>
         </div>
@@ -126,6 +148,7 @@ export function VideoProjectsPanel({ channelId, visible }: { channelId: string |
           {t(list.workspace === "not_configured" ? "videoProjects.noWorkspace" : "videoProjects.workspaceUnavailable")}
         </p>
       )}
+      {costsFailed && <p className="text-xs text-amber-300/80">{t("videoCosts.loadFailed")}</p>}
       {list && shown.length === 0 && <p className="text-xs text-zinc-400">{t(showAll ? "videoProjects.emptyAll" : "videoProjects.empty")}</p>}
       {shown.length > 0 && (
         <ul className="divide-y divide-zinc-800 rounded-lg border border-zinc-800">
@@ -133,12 +156,23 @@ export function VideoProjectsPanel({ channelId, visible }: { channelId: string |
             const computer = computerName(v, t("videoProjects.unknownComputer"));
             const winner = v.conflict?.reservations.find((r) => r.deviceId === v.conflict?.winnerDeviceId);
             const others = v.conflict?.reservations.filter((r) => !r.thisComputer) ?? [];
+            const cost = costs?.videos.find((c) => c.video === v.video)?.totals ?? null;
             return (
               <li key={v.video} className="space-y-1.5 px-3 py-2">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-mono text-sm text-zinc-100">{v.video}</span>
                   <span className={`rounded px-1.5 py-0.5 text-[11px] ${STATE_STYLE[v.state]}`}>{t(`videoProjects.state.${v.state}` as UiTextKey)}</span>
                   <span className={v.workingTitle ? "truncate text-zinc-200" : "text-zinc-500"}>{v.workingTitle ?? t("videoProjects.untitled")}</span>
+                  {cost && (
+                    <button
+                      type="button"
+                      onClick={() => setCostOf(v)}
+                      title={t("videoCosts.chipTitle", { runpod: costUsd(cost.runpodUsd), gemini: costUsd(cost.geminiUsd), runs: cost.runs })}
+                      className="ml-auto shrink-0 rounded-md border border-zinc-700 px-2 py-0.5 font-mono text-[11px] text-zinc-200 hover:border-indigo-500 hover:bg-zinc-800"
+                    >
+                      {t(cost.estimated ? "videoCosts.chipEstimated" : "videoCosts.chip", { total: costUsd(cost.totalUsd) })}
+                    </button>
+                  )}
                 </div>
                 <p className="text-xs text-zinc-400">
                   {v.createdAt
@@ -174,12 +208,14 @@ export function VideoProjectsPanel({ channelId, visible }: { channelId: string |
           })}
         </ul>
       )}
+      {costs && costs.unlinked.runs > 0 && <p className="text-xs text-zinc-500">{t("videoCosts.unlinked", { total: `${costs.unlinked.estimated ? "≈" : ""}${costUsd(costs.unlinked.totalUsd)}`, runs: costs.unlinked.runs })}</p>}
       {videos.length > 0 && (
         <button type="button" onClick={() => setShowAll((x) => !x)} className="text-xs text-zinc-400 underline hover:text-zinc-200">
           {t(showAll ? "videoProjects.showInWork" : "videoProjects.showAll", { n: videos.length })}
         </button>
       )}
 
+      {costOf && <VideoCostDialog channelId={channelId} video={costOf.video} workingTitle={costOf.workingTitle} onClose={() => setCostOf(null)} />}
       {creating && list?.nextVideo && (
         <ConfirmDialog
           title={t("videoProjects.newTitle")}

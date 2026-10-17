@@ -239,6 +239,7 @@ export type DomainErrorCode =
   | "video_not_found"
   | "video_in_dispute"
   | "video_workspace_unavailable"
+  | "video_costs_unavailable"
   // Research export (docs/roadmap/plans/RESEARCH_EXPORT_PLAN.md) -- NOT_CONFIGURED: the channel has no workspace folder on this
   // device (the operator sets it in Settings). UNAVAILABLE: the folder (or its exports/ subfolder) failed re-validation at export
   // time. WRITE_FAILED: a file could not be written; nothing from that call is left behind.
