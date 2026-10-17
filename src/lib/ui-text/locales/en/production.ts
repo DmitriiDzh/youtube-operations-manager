@@ -182,6 +182,8 @@ export const production = {
   "review.wave.templates": "template: {templates}",
   "review.wave.passRate": "validator passed {passed} of {total} ({percent}%)",
   "review.wave.done": "Wave reviewed: {accepted} accepted, {rejected} rejected ({overrides} accepted although the validator rejected them).",
+  "review.wave.doneTitle": "Wave reviewed",
+  "review.wave.noneLeft": "No other wave is waiting for review.",
   "review.wave.next": "Next wave: {wave} ({count} waiting)",
   "review.beingApplied": "rated on {device}, being applied",
   "review.claimedBy": "Being reviewed on {device} since {time}.",

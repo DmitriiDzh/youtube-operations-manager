@@ -183,6 +183,8 @@ export const production: Record<keyof typeof en, string> = {
   "review.wave.templates": "шаблон: {templates}",
   "review.wave.passRate": "валидатор пропустил {passed} из {total} ({percent}%)",
   "review.wave.done": "Волна прослушана: принято — {accepted}, отклонено — {rejected} (принято вопреки валидатору — {overrides}).",
+  "review.wave.doneTitle": "Волна прослушана",
+  "review.wave.noneLeft": "Других волн, ждущих проверки, нет.",
   "review.wave.next": "Следующая волна: {wave} (ждут: {count})",
   "review.beingApplied": "оценено на {device}, применяется",
   "review.claimedBy": "Сейчас слушают на {device} (с {time}).",
