@@ -26,8 +26,8 @@ expensive work before their own cheap freshness check.
 ### A. The window: once per tab per server run
 
 - **When it shows.** The `(app)` layout shows the startup window only when this tab has not shown it yet for the running server.
-  The server id is a `globalThis`-held `randomUUID()`, given to the page as `<meta name="ytom-boot">` by the root layout's
-  `generateMetadata`. The tab remembers it in `sessionStorage`.
+  The server id is a `globalThis`-held `randomUUID()`, given to the page as a `<meta name="ytom-boot">` rendered by the root layout
+  (React hoists it into the head). The tab remembers it in `sessionStorage`.
 - **Opening the app or restarting the server.** A first open shows the window, and so does the first load after a restart.
   A reload in the same tab does not.
 - **Channel switch.** It keeps its own window, unchanged.
@@ -49,7 +49,9 @@ expensive work before their own cheap freshness check.
   So do the import, the background channels, the milestones and the rest, in the same order as on a collecting load. A failing
   check falls back to the full path.
 - **As built:** the quota hook is `runAutoCollectionIfStale`'s own `beforeCollect` option, asked after `freshnessGate`, which was
-  moved out of `collectMetrics` unchanged. `collectMetrics` itself is unchanged, and the evening path keeps its guard.
+  moved out of `collectMetrics` unchanged. `collectMetrics` itself is unchanged, and the evening path keeps its guard. The reserve is
+  now asked after the active-channel check. So a background channel whose user switched away while the reserve was low ends as
+  "failed" (6 h backoff) instead of "current".
 
 ### C. Market Intelligence: sync and credentials only when a channel is due
 

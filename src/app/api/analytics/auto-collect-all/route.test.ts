@@ -303,3 +303,12 @@ test("AC-FS-03: on the fast path a still-running import means nothing else runs,
   assert.deepEqual(calls, []);
   assert.equal(isRunning(), false);
 });
+
+test("AC-FS-03: on the fast path a failing active part after the answer still releases the run", async () => {
+  const { deferred, deps, isRunning } = setup({ failActive: new Error("db busy (test)") });
+  const res = await createAutoCollectAllHandler({ ...deps, isActiveCurrent: async () => true })();
+  assert.equal(res.status, 200);
+  assert.equal(isRunning(), true);
+  await deferred[0]();
+  assert.equal(isRunning(), false);
+});

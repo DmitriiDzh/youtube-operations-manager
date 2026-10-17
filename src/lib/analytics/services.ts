@@ -896,21 +896,6 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
     },
 
     /**
-     * BL-059 (docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-5) -- "on dashboard entry, check
-     * when the daily collection last ran; if it's stale, run it." Meant to be called once per
-     * dashboard mount (`src/app/(app)/layout.tsx, BL-149`), not on a repeating interval -- this is a
-     * once-a-day check, not a continuous poll.
-     *
-     * **The staleness check and mark-then-run now live entirely inside `collectMetrics` itself**
-     * (2026-09-22 daily-freshness-gate instruction, see that function's own doc comment) --
-     * this function no longer duplicates that logic; it only computes the auto-collection's own
-     * default date range and calls `collectMetrics`, treating that gate's `analytics_data_current`
-     * refusal as the expected "nothing to do today" outcome, not an error. Two callers racing
-     * (a manual click and this auto-trigger, or two browser tabs) are still safe for the same
-     * reason as before -- `collectMetrics`'s own mark-then-run is the single point that decides
-     * who actually gets to run the real collection.
-     */
-    /**
      * BL-196: whether the automatic collection of this channel would be refused as current right now -- the same gate and default
      * range as `runAutoCollectionIfStale`, without collecting, importing or asking the quota. Lets the dashboard skip the other
      * computer's import and the quota check on a reload when nothing is due. Active-channel checked.
@@ -928,6 +913,21 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
       }
     },
 
+    /**
+     * BL-059 (docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-5) -- "on dashboard entry, check
+     * when the daily collection last ran; if it's stale, run it." Meant to be called once per
+     * dashboard mount (`src/app/(app)/layout.tsx, BL-149`), not on a repeating interval -- this is a
+     * once-a-day check, not a continuous poll.
+     *
+     * **The staleness check and mark-then-run now live entirely inside `collectMetrics` itself**
+     * (2026-09-22 daily-freshness-gate instruction, see that function's own doc comment) --
+     * this function no longer duplicates that logic; it only computes the auto-collection's own
+     * default date range and calls `collectMetrics`, treating that gate's `analytics_data_current`
+     * refusal as the expected "nothing to do today" outcome, not an error. Two callers racing
+     * (a manual click and this auto-trigger, or two browser tabs) are still safe for the same
+     * reason as before -- `collectMetrics`'s own mark-then-run is the single point that decides
+     * who actually gets to run the real collection.
+     */
     async runAutoCollectionIfStale(input: unknown, options: { beforeCollect?: () => Promise<boolean> } = {}): Promise<AutoCollectResult> {
       const parsedInput = parseWithSchema(runAutoCollectionInputSchema, input, "run auto collection input");
 

@@ -2294,3 +2294,16 @@ test("AC-FS-03: isAutoCollectionCurrent fails closed for a channel that is not t
   await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_B" });
   await assert.rejects(() => services.isAutoCollectionCurrent({ credentialRef: { userId: "user-1" }, channelId: "UC_A" }));
 });
+
+// BL-196 review (a): the "mark says fresh, but no genuine run covers yesterday" rule (owner, 2026-09-25) must keep a channel due, so
+// the fast path never skips a collection the gate would have run.
+test("AC-FS-03: a fresh mark without a run covering yesterday is still due", async () => {
+  const { services, channelAccess, lastAutoCollectedAtByChannel } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: { v1: [{ date: "2026-09-21", metrics: { views: 100 } }] },
+    now: new Date("2026-09-22T13:00:00Z"),
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  lastAutoCollectedAtByChannel.set("UC_A", new Date("2026-09-22T12:30:00Z"));
+  assert.equal(await services.isAutoCollectionCurrent({ credentialRef: { userId: "user-1" }, channelId: "UC_A" }), false);
+});

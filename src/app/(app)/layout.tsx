@@ -151,6 +151,8 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   // startup work itself runs on every load. The header shows the tab's last channel until the live answer arrives.
   const [showStartupWindow, setShowStartupWindow] = useState<boolean | null>(null);
   const [cachedHeaderChannel, setCachedHeaderChannel] = useState<Pick<ChannelInfo, "title" | "thumbnail" | "videoCount"> | null>(null);
+  // Review (BL-196): the cached header channel is shown only until this load's channel request has any outcome.
+  const [channelSettled, setChannelSettled] = useState(false);
   useEffect(() => {
     let shownFor: string | null = null;
     let cached: Pick<ChannelInfo, "title" | "thumbnail" | "videoCount"> | null = null;
@@ -173,6 +175,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   const fetchChannel = useCallback(async () => {
     try {
       const res = await fetch("/api/youtube/channel-info");
+      setChannelSettled(true);
       if (!res.ok) {
         setChannelUnavailable(true);
         setStartup((prev) => (prev.channel.state === "running" ? startupWithoutChannel(prev) : prev));
@@ -185,6 +188,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       setChannel(data.channel);
       try {
         if (data.channel) sessionStorage.setItem(HEADER_CHANNEL_KEY, JSON.stringify({ title: data.channel.title, thumbnail: data.channel.thumbnail, videoCount: data.channel.videoCount }));
+        else sessionStorage.removeItem(HEADER_CHANNEL_KEY);
       } catch {
         // Only a convenience for the next reload's header.
       }
@@ -193,6 +197,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
         prev.channel.state !== "running" ? prev : data.channel ? { ...prev, channel: { state: "done", detail: data.channel.title ? { text: data.channel.title } : null } } : startupWithoutChannel(prev, { key: "startup.detail.noChannelYet" }, "skipped")
       );
     } catch {
+      setChannelSettled(true);
       // The loading window must not wait for it (review M6); the effect below still retries on the next session change.
       setStartup((prev) => (prev.channel.state === "running" ? startupWithoutChannel(prev, { key: "startup.detail.channelUnreadable" }) : prev));
       // Non-fatal -- can genuinely fail transiently right as the session cookie is swapping (e.g.
@@ -569,7 +574,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       navItems={navItemsWithBadges}
       activeTab={tab}
       onReviewDeviceSyncDivergence={() => router.push("/merge")}
-      channel={channel ?? (channelUnavailable ? null : cachedHeaderChannel)}
+      channel={channel ?? (channelSettled ? null : cachedHeaderChannel)}
       activeChannelId={summaryActiveChannelId}
       channelWork={channelWork}
       languageEntries={otherChannelLanguageEntries(t, languageAlerts, languageAlertsActiveId)}

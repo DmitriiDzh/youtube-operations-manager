@@ -5630,3 +5630,29 @@ test("details: a stream that is upcoming or live is read again on every run unti
   assert.deepEqual([newest.durationSeconds, newest.liveBroadcastContent], [5400, "none"]);
   assert.equal(store.videoSnapshots.length, 4);
 });
+
+// BL-196 review (b), AC-FS-04 (FAST_STARTUP_PLAN.md §2 C): `hasChannelsDue` asks the read-only count with the claim's own windows --
+// stale = 24 h, claim expiry = 15 min (values from the 9B plan) -- and excludes the channels that failed within the stale window.
+test("AC-FS-04: hasChannelsDue passes the claim's windows and the recently-failed list to the read-only count", async () => {
+  const now = new Date("2026-10-17T12:00:00.000Z");
+  const failedSince: Date[] = [];
+  const counted: unknown[] = [];
+  const make = (count: number) =>
+    createMarketIntelligenceServices({
+      ...createFakeStore(),
+      clock: { now: () => now },
+      listRecentlyFailedResearchChannelIds: async (since: Date) => (failedSince.push(since), ["UC_FAILED"]),
+      countResearchChannelsDueForCollection: async (args: unknown) => (counted.push(args), count),
+    } as unknown as Parameters<typeof createMarketIntelligenceServices>[0]);
+  assert.equal(await make(0).hasChannelsDue(), false);
+  assert.equal(await make(2).hasChannelsDue(), true);
+  assert.deepEqual(failedSince[0], new Date("2026-10-16T12:00:00.000Z"));
+  assert.deepEqual(counted[0], {
+    staleCutoff: new Date("2026-10-16T12:00:00.000Z"),
+    claimExpiryCutoff: new Date("2026-10-17T11:45:00.000Z"),
+    excludeResearchChannelIds: ["UC_FAILED"],
+  });
+  // Without the count (an older store), every pass counts as due: the safe path runs.
+  const legacy = createMarketIntelligenceServices({ ...createFakeStore(), clock: { now: () => now } } as unknown as Parameters<typeof createMarketIntelligenceServices>[0]);
+  assert.equal(await legacy.hasChannelsDue(), true);
+});
