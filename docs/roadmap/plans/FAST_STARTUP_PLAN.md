@@ -1,6 +1,6 @@
 # A page reload does not run the startup work again (BL-196)
 
-**Status: approved 2026-10-17 (owner, Telegram msgs 2969/2972), on `feature/bl-196-fast-startup`.**
+**Status: approved 2026-10-17 (owner, Telegram msgs 2969/2972); merged into `dev` 2026-10-17 (617dbf38, owner msg 2977).**
 
 The owner asked (msgs 2963/2967/2969): why does every reload show the long "Loading your data…" window, and why is the check slow when
 the data is known to be fresh? The window (owner msg 2004) waits for four requests. When nothing is due, two of them still do
