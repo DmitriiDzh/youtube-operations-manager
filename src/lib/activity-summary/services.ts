@@ -5,7 +5,7 @@ import { ACTIVITY_SOURCES, type ActivityItem, type ActivitySource, type Activity
 // down never hides the rest).
 
 export type ActivityOperation = { id: string; kind: string; status: string; startedAt: number; done: number; total: number };
-export type ActivityMediaJob = { jobId: string; source: "runpod" | "gemini"; status: string; label: string; hostName: string | null; own: boolean; createdAt: string; finished: boolean };
+export type ActivityMediaJob = { jobId: string; source: "runpod" | "gemini"; status: string; label: string; hostName: string | null; own: boolean; createdAt: string; finished: boolean; stale: boolean };
 export type ActivityUpload = { id: string; video: string; status: string; storedBytes: number; totalBytes: number; createdAt: Date };
 export type ActivityStream = { channelId: string; state: string; since: string | null };
 
@@ -46,7 +46,8 @@ export function createActivitySummary(deps: ActivityDeps) {
         ),
         read("media_jobs", true, () => deps.mediaJobs(channelId!), (jobs) =>
           jobs
-            .filter((j) => !j.finished)
+            // A computer silent past the pool's stale limit is not known to run anything; the Media tab shows it as stale.
+            .filter((j) => !j.finished && !j.stale)
             .map((j) => ({ source: "media_jobs" as const, id: j.jobId, provider: j.source, status: j.status, label: j.label, device: j.own ? null : j.hostName, own: j.own, createdAt: j.createdAt }))
         ),
         read("uploads", true, () => deps.uploads(channelId!), (uploads) =>

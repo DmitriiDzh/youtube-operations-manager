@@ -5,7 +5,8 @@ import { createActivitySummary, type ActivityDeps } from "./services";
 // BL-195 stage D (UI_FEEDBACK_CLARITY_PLAN.md §3, AC-FB-08). Expected from the plan: only unfinished work is listed (running or
 // cancelling operations, unfinished media jobs, uploads queued/uploading/processing/finishing/paused, streams that are on); a
 // source that fails is `unavailable` and the others are still listed; without an active channel the channel's sources are
-// `no_channel` and only this computer's streams are read; a peer's job names its computer, an own job does not.
+// `no_channel` and only this computer's streams are read; a peer's job names its computer, an own job does not; a job of a computer
+// whose report is stale (media-jobs-pool's own limit) is not known to run and is not listed.
 
 const NOW = new Date("2026-10-17T10:00:00.000Z");
 
@@ -18,9 +19,11 @@ function deps(overrides: Partial<ActivityDeps> = {}): ActivityDeps {
       { id: "op3", kind: "ai-generation", status: "cancelling", startedAt: Date.parse("2026-10-17T09:58:00.000Z"), done: 0, total: 0 },
     ],
     mediaJobs: async () => [
-      { jobId: "j1", source: "runpod", status: "running", label: "loop v3", hostName: "mac", own: true, createdAt: "2026-10-17T09:50:00.000Z", finished: false },
-      { jobId: "j2", source: "gemini", status: "running", label: "gemini-omni-1.1-flash", hostName: "win-pc", own: false, createdAt: "2026-10-17T09:55:00.000Z", finished: false },
-      { jobId: "j3", source: "gemini", status: "done", label: "gemini-omni-1.1-flash", hostName: "mac", own: true, createdAt: "2026-10-17T08:00:00.000Z", finished: true },
+      { jobId: "j1", source: "runpod", status: "running", label: "loop v3", hostName: "mac", own: true, createdAt: "2026-10-17T09:50:00.000Z", finished: false, stale: false },
+      { jobId: "j2", source: "gemini", status: "running", label: "gemini-omni-1.1-flash", hostName: "win-pc", own: false, createdAt: "2026-10-17T09:55:00.000Z", finished: false, stale: false },
+      { jobId: "j3", source: "gemini", status: "done", label: "gemini-omni-1.1-flash", hostName: "mac", own: true, createdAt: "2026-10-17T08:00:00.000Z", finished: true, stale: false },
+      // The PC went to sleep with a job still running in its last report, older than the pool's stale limit: not listed.
+      { jobId: "j4", source: "gemini", status: "running", label: "gemini-omni-1.1-flash", hostName: "win-pc", own: false, createdAt: "2026-10-17T07:00:00.000Z", finished: false, stale: true },
     ],
     uploads: async () => [
       { id: "u1", video: "V49", status: "uploading", storedBytes: 50, totalBytes: 200, createdAt: new Date("2026-10-17T09:40:00.000Z") },
@@ -37,7 +40,7 @@ function deps(overrides: Partial<ActivityDeps> = {}): ActivityDeps {
   };
 }
 
-test("only unfinished work is listed, each in its own shape", async () => {
+test("only unfinished work of computers still reporting is listed, each in its own shape", async () => {
   const summary = await createActivitySummary(deps()).summary("u1");
   assert.equal(summary.channelId, "UC1");
   assert.equal(summary.at, "2026-10-17T10:00:00.000Z");

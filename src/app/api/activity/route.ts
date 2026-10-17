@@ -7,6 +7,7 @@ import { collectLiveStreamEntries } from "@/lib/live-streams";
 import { isFinished, listMediaJobsPool } from "@/lib/media-jobs-pool";
 import { getOperationRegistry } from "@/lib/operation-progress";
 import { listChannelUploads } from "@/lib/publishing";
+import { createDefaultLogger } from "@/lib/shared-logger";
 
 // BL-195 stage D (UI_FEEDBACK_CLARITY_PLAN.md §3, AC-FB-08): what runs in the background now, for the header's Activity centre.
 // Session required (401). The channel is the session's ACTIVE one, resolved by the summary, never taken from the request
@@ -28,6 +29,7 @@ function activitySummaryCore() {
         own: j.own,
         createdAt: j.createdAt,
         finished: isFinished(j),
+        stale: j.stale,
       })),
     uploads: async (channelId) => (await listChannelUploads(channelId)).map((u) => ({ id: u.id, video: u.video, status: u.status, storedBytes: u.storedBytes, totalBytes: u.totalBytes, createdAt: u.createdAt })),
     streams: async () => (await collectLiveStreamEntries()).map((s) => ({ channelId: s.channelId, state: s.state, since: s.since })),
@@ -52,7 +54,9 @@ export function createActivityGetHandler(
     try {
       return NextResponse.json(await deps.summary(session.user.id), { headers: { "cache-control": "no-store" } });
     } catch (error) {
-      return NextResponse.json({ error: "internal_error", message: error instanceof Error ? error.message : "Unknown error" }, { status: 500 });
+      // No error text: it could carry a database path (AC-FB-08).
+      createDefaultLogger().error({ event: "activity.summary_failed", context: { message: error instanceof Error ? error.message : String(error) } });
+      return NextResponse.json({ error: "internal_error" }, { status: 500 });
     }
   };
 }

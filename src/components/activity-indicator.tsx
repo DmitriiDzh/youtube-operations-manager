@@ -132,7 +132,8 @@ export function ActivityIndicator() {
           // ui-text-ignore: the provider's name and the template/model label are data
           title: `${item.provider === "runpod" ? "RunPod" : "Gemini"} · ${item.label}`,
           detail: [JOB_WAITING.has(item.status) ? t("activity.state.waiting") : t("activity.state.running"), item.device ? t("activity.onDevice", { device: item.device }) : null, t("activity.since", { time: since(item.createdAt) })].filter(Boolean).join(" · "),
-          href: SOURCE_HREF.media_jobs,
+          // A Gemini job lives on its kind's Media tab, a RunPod job under its session.
+          href: item.provider === "gemini" ? "/media" : SOURCE_HREF.media_jobs,
         };
       case "uploads":
         return {

@@ -24,9 +24,9 @@ test("with a session: the session user's summary, not cached", async () => {
   assert.deepEqual(users, ["u1"]);
 });
 
-test("a failing summary is a 500 with its message", async () => {
-  const get = createActivityGetHandler({ getSession: async () => ({ user: { id: "u1" } }), summary: async () => Promise.reject(new Error("boom")) });
+test("a failing summary is a 500 without its error text (it could carry a path, AC-FB-08)", async () => {
+  const get = createActivityGetHandler({ getSession: async () => ({ user: { id: "u1" } }), summary: async () => Promise.reject(new Error("SQLITE_BUSY /Users/x/db")) });
   const response = await get();
   assert.equal(response.status, 500);
-  assert.equal((await response.json()).error, "internal_error");
+  assert.deepEqual(await response.json(), { error: "internal_error" });
 });

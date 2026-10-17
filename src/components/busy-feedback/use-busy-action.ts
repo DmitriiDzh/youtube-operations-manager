@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { BUSY_HOLD_MAX_MS, busyWindow } from "./busy-state";
+import { BUSY_HOLD_MAX_MS, busyHideAt, busyWindow } from "./busy-state";
 
 /** What `<BusyOverlay>` draws: shown or not, and the text of what is being done. */
 export type BusyOverlayState = { visible: boolean; label: string };
@@ -19,32 +19,35 @@ export function useBusyAction() {
   const [overlay, setOverlay] = useState<BusyOverlayState>({ visible: false, label: "" });
   const count = useRef(0);
   const startedAt = useRef<number | null>(null);
+  const shownAt = useRef<number | null>(null);
   const holdTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const busy = running !== null || held !== null;
   const label = running ?? held;
 
   useEffect(() => {
     const now = Date.now();
+    const show = (text: string) => {
+      if (shownAt.current === null) shownAt.current = Date.now();
+      setOverlay({ visible: true, label: text });
+    };
     if (busy) {
       if (startedAt.current === null) startedAt.current = now;
       const window = busyWindow(startedAt.current, null)!;
-      if (now >= window.showAt) {
-        setOverlay({ visible: true, label: label ?? "" });
+      // A window still shown from the wait just before stays up (with the new text) instead of blinking.
+      if (now >= window.showAt || shownAt.current !== null) {
+        show(label ?? "");
         return;
       }
-      // A window still shown from the wait just before stays up (with the new text) instead of blinking.
-      setOverlay((o) => (o.visible ? { visible: true, label: label ?? "" } : o));
-      const timer = setTimeout(() => setOverlay({ visible: true, label: label ?? "" }), window.showAt - now);
+      const timer = setTimeout(() => show(label ?? ""), window.showAt - now);
       return () => clearTimeout(timer);
     }
-    if (startedAt.current === null) return;
-    const window = busyWindow(startedAt.current, now);
     startedAt.current = null;
-    if (!window) {
-      setOverlay((o) => (o.visible ? { ...o, visible: false } : o));
-      return;
-    }
-    const timer = setTimeout(() => setOverlay((o) => ({ ...o, visible: false })), Math.max(0, window.hideAt! - now));
+    const hideAt = busyHideAt(shownAt.current, now);
+    if (hideAt === null) return;
+    const timer = setTimeout(() => {
+      shownAt.current = null;
+      setOverlay((o) => ({ ...o, visible: false }));
+    }, hideAt - now);
     return () => clearTimeout(timer);
   }, [busy, label]);
 

@@ -22,6 +22,15 @@ export function busyWindow(startedAt: number, endedAt: number | null): { showAt:
   return { showAt, hideAt: endedAt === null ? null : Math.max(endedAt, showAt + BUSY_MIN_VISIBLE_MS) };
 }
 
+/**
+ * When a window shown since `shownAt` (null = not shown yet) hides once its wait ends at `endedAt`: null when there is nothing to
+ * hide. Counted from when the window was first shown, not from when the last request or hold started, so a window carried over
+ * from one wait into a short next one still stays its full minimum.
+ */
+export function busyHideAt(shownAt: number | null, endedAt: number): number | null {
+  return shownAt === null ? null : Math.max(endedAt, shownAt + BUSY_MIN_VISIBLE_MS);
+}
+
 /** Whether that window is shown at `now`. */
 export function busyVisibleAt(startedAt: number, endedAt: number | null, now: number): boolean {
   const window = busyWindow(startedAt, endedAt);
