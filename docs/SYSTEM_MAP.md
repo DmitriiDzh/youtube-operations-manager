@@ -771,7 +771,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
     изменения в «Ролик целиком» на любом компьютере.
   - Номер версии — отдельная метка после названия на карточках.
 
-### 2.9aq Номера роликов из YT Manager (BL-194 этап 1, ADR 0040, `docs/roadmap/plans/VIDEO_COST_PLAN.md`) — **IMPLEMENTED на ветке `feature/bl-194-video-cost`, не влито в `dev`**
+### 2.9aq Номера роликов и стоимость визуала каждого ролика (BL-194 этапы 1–4, ADR 0040/0041, `docs/roadmap/plans/VIDEO_COST_PLAN.md`) — **IMPLEMENTED на ветке `feature/bl-194-video-cost`, не влито в `dev`**
 
 - **Общий модуль `src/lib/video-projects/`** (§M: не импортирует модули-фичи, `boundaries.test.ts`): `numbering.ts` (следующий номер,
   список роликов, конфликты — чистые функции), `services.ts` (резерв, список, перенумерация проигравшего, отмена, `assertAttachable`,
@@ -785,10 +785,26 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Привязки:** `video` у раскадровки (документ Automerge), плана (`generation_plans.video`) и заданий (`media_jobs.video`,
   `gemini_media_jobs.video`); `videoNumber` при создании; без него задание наследует видео раскадровки, иначе плана; сбой модуля при
   наследовании — задание без привязки.
-- **Factory API 1.20.0:** `factory_video_create`, `factory_video_list`, `videoNumber` у инструментов заданий, раскадровок и планов.
+- **Factory API 1.20.0:** `factory_video_create`, `factory_video_list`, `factory_video_get_cost` (чтение), `videoNumber` у инструментов
+  заданий, раскадровок и планов.
 - **Web/API:** `/api/channels/[channelId]/video-projects` (+ `/[video]/renumber`, `/[video]/cancel`), `.../storyboards/[id]/video`,
   `/api/generation-plans/[planId]/video`; Контент → «Публикация» → «Ролики в работе»; выбор ролика на экране раскадровки и в карточке плана.
-- Стоимость роликов (этапы 2–4) — **PLANNED**.
+- **Доля счёта RunPod (этап 2, ADR 0041):** `media_jobs.started_at` / `gpu_finished_at` из событий websocket ComfyUI
+  (`jobs.ts` `recordTiming`); `media-generation/cost-split.ts` делит счёт закончившейся сессии по заданиям пропорционально секундам
+  GPU (запуск и простой пода — в долях), в 1/10000 USD наибольшим остатком; пропущенное время оценивается (`estimated`). Хранится
+  `gpu_seconds`, `allocated_usd`, `overhead_usd`, `allocation_basis`, `allocation_session_usd`. Цикл `video-costs` в
+  `instrumentation.ts` раз в минуту, старые сессии тоже.
+- **Модуль `src/lib/video-costs/` (этап 3):** строки затрат этого компьютера (`db.ts`), отчёты других компьютеров, раскадровки
+  (через sync-gateway) и состояния роликов (`video-projects`); его не импортирует ни один медиа-модуль, раскадровки и Публикация
+  (`boundaries.test.ts`), Публикация и маршруты грузят его лениво. Семейство синхронизации `video-costs` (`ytm-video-costs` v1, по
+  устройству; окно: отменённые ролики выпадают, опубликованные — 120 дней от запуска, непривязанные — 90). Итог запуска: выбран /
+  отклонён / сбой / идёт / проба / только под. `Vn_cost.json` рядом с `Vn_release.json` на шаге записи загрузки; переписывает только
+  компьютер, который его записал (`writtenBy`), если поздний отчёт изменил итог.
+- **Старые запуски (этап 4):** предложение раскадровка→ролик, если её рендер — видеофайл папки «ММДД Vn» (имя и размер, затем
+  sha256); привязка только по подтверждению владельца (или выбору вручную), ролик раскадровке ставит модуль раскадровок, затем
+  привязываются непривязанные задания этого компьютера.
+- **Маршруты:** `/api/channels/[channelId]/video-costs` (+ `/[video]`, `/backfill`, `/backfill/storyboards/[storyboardId]`,
+  `/backfill/runs`); Контент → «Ролики в работе»: итог у ролика, окно запусков, «Старые запуски».
 
 ### 2.9an Публикация из YT Manager: загрузка, календарь, напоминание (BL-182, FO-REQ-0023, ADR 0037, `docs/roadmap/plans/PUBLISHING_PLAN.md`) — **этапы 0–1 IMPLEMENTED, влиты в `dev` 2026-10-13; этап 2 IMPLEMENTED, влит в `dev` 2026-10-13 (`3ad95cc`), первая настоящая загрузка ещё не проводилась; этап 3 впереди**
 

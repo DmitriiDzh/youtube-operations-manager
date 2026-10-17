@@ -2,8 +2,8 @@
 
 Status: Accepted for stage 1 on branch `feature/bl-194-video-cost` (not merged; owner msgs 2870/2872, 2026-10-16).
 
-**Date:** 2026-10-17. **Plan:** `docs/roadmap/plans/VIDEO_COST_PLAN.md` (BL-194) §2 stage 1. Stages 2-3 (the cost split per RunPod
-job, totals and `Vn_cost.json`) will amend this ADR.
+**Date:** 2026-10-17. **Plan:** `docs/roadmap/plans/VIDEO_COST_PLAN.md` (BL-194) §2 stage 1. Stages 2-4 (the cost split per RunPod
+job, totals, `Vn_cost.json`, older runs) are ADR 0041.
 
 ## Context
 

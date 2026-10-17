@@ -78,6 +78,11 @@ export type VideoCostFile = {
   computedAt: string;
   /** 1 when first written at upload; +1 each time a later report changed the total and the file was written again. */
   revision: number;
+  /**
+   * The computer that uploaded the video and owns the file: only it writes the file again (the folder is synced, and two computers
+   * writing one file would make a sync conflict).
+   */
+  writtenBy: { deviceId: string; hostName: string | null };
   totals: CostTotals;
   computers: Array<{ deviceId: string; hostName: string | null; reportUpdatedAt: string | null; runs: number }>;
   runs: Array<Omit<CostRun, "thisComputer" | "channelId" | "video">>;

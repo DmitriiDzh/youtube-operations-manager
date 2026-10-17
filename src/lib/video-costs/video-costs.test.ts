@@ -225,9 +225,11 @@ test("criterion 6: a late report that changes the total rewrites the file and sa
   // The other computer's Gemini run arrives after the upload.
   const win = computer("win", w, () => ({ ...none(), gemini: [gemini("g1")] }));
   await win.service.publishOwnReport();
+  assert.equal(await win.service.refreshCostFiles(), 0, "only the computer that uploaded rewrites the file (one writer in the synced folder)");
   assert.equal(await mac.service.refreshCostFiles(), 1);
   const file = w.files.get("04 Videos/10 October/1017 V49/V49_cost.json")!;
   assert.equal(file.revision, 2);
+  assert.deepEqual(file.writtenBy, { deviceId: "mac", hostName: "Mac" });
   assert.equal(file.totals.totalUsd, 1.4088);
   assert.deepEqual(file.previous, { totalUsd: 0.6667, computedAt: NOW.toISOString() });
   assert.match(file.note ?? "", /0\.6667.*1\.4088/);

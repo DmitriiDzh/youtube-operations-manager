@@ -258,7 +258,8 @@ export function createVideoCostsService(deps: VideoCostsDeps) {
     return { channelId: input.channelId, video: input.video, totals: totalsOf(mine), runs: mine, computers };
   }
 
-  function costFileOf(detail: VideoCostDetail, revision: number, previous: VideoCostFile["previous"], note: string | null): VideoCostFile {
+  async function costFileOf(detail: VideoCostDetail, revision: number, previous: VideoCostFile["previous"], note: string | null): Promise<VideoCostFile> {
+    const device = await deps.ownDevice();
     return {
       schema: COST_FILE_SCHEMA,
       schemaVersion: 1,
@@ -266,6 +267,7 @@ export function createVideoCostsService(deps: VideoCostsDeps) {
       video: detail.video,
       computedAt: deps.now().toISOString(),
       revision,
+      writtenBy: { deviceId: device.deviceId, hostName: device.hostName },
       totals: detail.totals,
       computers: detail.computers.map((c) => ({ deviceId: c.deviceId, hostName: c.hostName, reportUpdatedAt: c.updatedAt, runs: detail.runs.filter((r) => r.deviceId === c.deviceId).length })),
       runs: detail.runs.map((r) => ({
@@ -296,11 +298,16 @@ export function createVideoCostsService(deps: VideoCostsDeps) {
   }
 
   const costFilePath = (folder: string, video: string) => `${folder}/${video}_cost.json`;
-  const previousOf = (value: unknown): { totalUsd: number; computedAt: string; revision: number } | null => {
+  const previousOf = (value: unknown): { totalUsd: number; computedAt: string; revision: number; writtenBy: string | null } | null => {
     if (!value || typeof value !== "object") return null;
     const v = value as Partial<VideoCostFile>;
     if (v.schema !== COST_FILE_SCHEMA || !v.totals || typeof v.totals.totalUsd !== "number" || typeof v.computedAt !== "string") return null;
-    return { totalUsd: v.totals.totalUsd, computedAt: v.computedAt, revision: typeof v.revision === "number" && Number.isInteger(v.revision) && v.revision > 0 ? v.revision : 1 };
+    return {
+      totalUsd: v.totals.totalUsd,
+      computedAt: v.computedAt,
+      revision: typeof v.revision === "number" && Number.isInteger(v.revision) && v.revision > 0 ? v.revision : 1,
+      writtenBy: v.writtenBy && typeof v.writtenBy.deviceId === "string" ? v.writtenBy.deviceId : null,
+    };
   };
 
   return {
@@ -334,7 +341,7 @@ export function createVideoCostsService(deps: VideoCostsDeps) {
       const path = costFilePath(input.folder, input.video);
       const before = previousOf(await deps.costFiles.read(input.channelId, path).catch(() => null));
       const changed = before !== null && before.totalUsd !== detail.totals.totalUsd;
-      const file = costFileOf(
+      const file = await costFileOf(
         detail,
         before ? before.revision + (changed ? 1 : 0) : 1,
         changed ? { totalUsd: before.totalUsd, computedAt: before.computedAt } : null,
@@ -350,6 +357,7 @@ export function createVideoCostsService(deps: VideoCostsDeps) {
      */
     async refreshCostFiles(): Promise<number> {
       const [own, peers] = await Promise.all([ownReport(), peerReports()]);
+      const deviceId = own.deviceId;
       const channels = new Set<string>();
       for (const report of [own, ...peers]) for (const run of report.runs) if (run.video) channels.add(run.channelId);
       let rewritten = 0;
@@ -362,11 +370,12 @@ export function createVideoCostsService(deps: VideoCostsDeps) {
             if (!folderSchema.safeParse(info.folder).success) continue;
             const path = costFilePath(info.folder, video);
             const before = previousOf(await deps.costFiles.read(channelId, path).catch(() => null));
-            if (!before) continue;
+            // Only the computer that wrote it at the upload writes it again (one writer per file in the synced folder).
+            if (!before || before.writtenBy !== deviceId) continue;
             const detail = await videoCost({ channelId, video });
             if (detail.totals.totalUsd === before.totalUsd) continue;
             const note = `Written again: a later report changed the total from ${before.totalUsd} to ${detail.totals.totalUsd} USD.`;
-            await deps.costFiles.write(channelId, path, costFileOf(detail, before.revision + 1, { totalUsd: before.totalUsd, computedAt: before.computedAt }, note));
+            await deps.costFiles.write(channelId, path, await costFileOf(detail, before.revision + 1, { totalUsd: before.totalUsd, computedAt: before.computedAt }, note));
             rewritten++;
           }
         } catch (error) {
