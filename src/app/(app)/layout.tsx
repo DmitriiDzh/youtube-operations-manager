@@ -25,7 +25,10 @@ import {
   channelUnavailable as startupWithoutChannel,
   reachOutcome,
   researchOutcome,
+  SERVER_BOOT_META,
+  STARTUP_SHOWN_FOR_KEY,
   startupInProgress,
+  startupWindowWanted,
   type StartupProgress,
   type StartupStepKey,
   type StepStatus,
@@ -101,6 +104,9 @@ const LANGUAGE_ALERTS_POLL_MS = 60_000;
 
 type Tab = (typeof NAV_ITEMS)[number]["value"];
 
+/** BL-196: the tab's last live channel answer, shown in the header until this load's own answer arrives (display only). */
+const HEADER_CHANNEL_KEY = "ytom.headerChannel";
+
 export default function AppLayout({ children }: { children: ReactNode }) {
   const { data: session, status } = useSession();
   const router = useRouter();
@@ -141,6 +147,26 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   // Owner, msg 2004: a blurred loading window while the app loads its data on open and while the channel switches.
   const [startup, setStartup] = useState<StartupProgress>(INITIAL_STARTUP);
   const [startupDismissed, setStartupDismissed] = useState(false);
+  // BL-196 (FAST_STARTUP_PLAN.md §2 A): the window only on a tab's first load per server run (null until read on the client); the
+  // startup work itself runs on every load. The header shows the tab's last channel until the live answer arrives.
+  const [showStartupWindow, setShowStartupWindow] = useState<boolean | null>(null);
+  const [cachedHeaderChannel, setCachedHeaderChannel] = useState<Pick<ChannelInfo, "title" | "thumbnail" | "videoCount"> | null>(null);
+  useEffect(() => {
+    let shownFor: string | null = null;
+    let cached: Pick<ChannelInfo, "title" | "thumbnail" | "videoCount"> | null = null;
+    try {
+      shownFor = sessionStorage.getItem(STARTUP_SHOWN_FOR_KEY);
+      const raw = sessionStorage.getItem(HEADER_CHANNEL_KEY);
+      cached = raw ? (JSON.parse(raw) as Pick<ChannelInfo, "title" | "thumbnail" | "videoCount">) : null;
+    } catch {
+      // Storage blocked: the window shows, as on a first load.
+    }
+    const bootId = document.querySelector(`meta[name="${SERVER_BOOT_META}"]`)?.getAttribute("content") ?? null;
+    queueMicrotask(() => {
+      setShowStartupWindow(startupWindowWanted(shownFor, bootId));
+      setCachedHeaderChannel(cached);
+    });
+  }, []);
   const setStep = useCallback((key: StartupStepKey, status: StepStatus) => setStartup((prev) => ({ ...prev, [key]: status })), []);
   const [switchingTo, setSwitchingTo] = useState<string | null>(null);
 
@@ -157,6 +183,11 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       const data = (await res.json()) as { channel: (ChannelInfo & { title?: string | null }) | null };
       setChannelUnavailable(false);
       setChannel(data.channel);
+      try {
+        if (data.channel) sessionStorage.setItem(HEADER_CHANNEL_KEY, JSON.stringify({ title: data.channel.title, thumbnail: data.channel.thumbnail, videoCount: data.channel.videoCount }));
+      } catch {
+        // Only a convenience for the next reload's header.
+      }
       // Review M6: no channel at all (none connected yet) -- the collections waiting for one will not run this load.
       setStartup((prev) =>
         prev.channel.state !== "running" ? prev : data.channel ? { ...prev, channel: { state: "done", detail: data.channel.title ? { text: data.channel.title } : null } } : startupWithoutChannel(prev, { key: "startup.detail.noChannelYet" }, "skipped")
@@ -321,6 +352,16 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   // Owner, msgs 2011/2013: once the startup work is done, every difference between the two computers is decided before the
   // app opens (the browser waits; the server, syncing and the operator do not). Re-read every few seconds while it is shown.
   const startupDone = !startupInProgress(startup) || startupDismissed;
+  // BL-196: this tab has now shown (or did not need) the window for this server run.
+  useEffect(() => {
+    if (!startupDone) return;
+    try {
+      const bootId = document.querySelector(`meta[name="${SERVER_BOOT_META}"]`)?.getAttribute("content");
+      if (bootId) sessionStorage.setItem(STARTUP_SHOWN_FOR_KEY, bootId);
+    } catch {
+      // Storage blocked: the next reload shows the window again.
+    }
+  }, [startupDone]);
   const conflicts = useConflictCenter(Boolean(userId) && startupDone);
   const [conflictsDeferred, setConflictsDeferred] = useState(false);
   const conflictsBlocking = conflicts.loaded && conflicts.total > 0 && !conflictsDeferred;
@@ -528,7 +569,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       navItems={navItemsWithBadges}
       activeTab={tab}
       onReviewDeviceSyncDivergence={() => router.push("/merge")}
-      channel={channel}
+      channel={channel ?? (channelUnavailable ? null : cachedHeaderChannel)}
       activeChannelId={summaryActiveChannelId}
       channelWork={channelWork}
       languageEntries={otherChannelLanguageEntries(t, languageAlerts, languageAlertsActiveId)}
@@ -539,7 +580,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       onSignOut={() => signOut()}
     >
       <ConnectionHealthDialog health={connectionHealth.health} />
-      {startupInProgress(startup) && !startupDismissed && !reloginBlocking && (
+      {showStartupWindow === true && startupInProgress(startup) && !startupDismissed && !reloginBlocking && (
         <LoadingOverlay
           title={t("startup.title")}
           steps={STARTUP_STEPS.map((step) => ({ key: step.key, label: t(step.labelKey), status: startup[step.key] }))}
@@ -553,7 +594,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
           </div>
         </div>
       )}
-      {switching && !conflictsBlocking && !reloginBlocking && (!startupInProgress(startup) || startupDismissed) && (
+      {switching && !conflictsBlocking && !reloginBlocking && (!startupInProgress(startup) || startupDismissed || showStartupWindow !== true) && (
         <LoadingOverlay
           title={t("shell.switching.title")}
           steps={[{ key: "switch", label: t("shell.switching.step"), status: { state: "running", detail: null } }]}

@@ -71,3 +71,16 @@ export function reachOutcome(ok: boolean, body?: unknown): StepStatus {
   if ((body as { importPending?: boolean } | null)?.importPending) return { state: "skipped", detail: { key: "startup.detail.reachImportPending" } };
   return { state: "done", detail: null };
 }
+
+/** BL-196 (FAST_STARTUP_PLAN.md §2 A): the `<meta>` carrying this server run's id, and the tab's note of the run it showed the window for. */
+export const SERVER_BOOT_META = "ytom-boot";
+export const STARTUP_SHOWN_FOR_KEY = "ytom.startupShownFor";
+
+/**
+ * Whether this load shows the startup window: the first load in a tab, and the first after the server restarted (a new run id). A
+ * reload in the same tab during the same run does not -- the startup work still runs, only without the window. An unknown run id
+ * shows it (the safe side).
+ */
+export function startupWindowWanted(shownFor: string | null, bootId: string | null): boolean {
+  return bootId === null || shownFor !== bootId;
+}

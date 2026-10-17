@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createTranslator, uiMessageText } from "@/lib/ui-text";
-import { INITIAL_STARTUP, analyticsOutcome, channelUnavailable, reachOutcome, researchOutcome, startupInProgress, type StepStatus } from "./startup-progress";
+import { INITIAL_STARTUP, analyticsOutcome, channelUnavailable, reachOutcome, researchOutcome, startupInProgress, startupWindowWanted, type StepStatus } from "./startup-progress";
 
 // BL-152: a step's detail is a translatable message; the requirement checked here is its English wording.
 const en = createTranslator("en");
@@ -41,4 +41,13 @@ test("each collection's answer becomes its line: updated / up to date / skipped 
   assert.equal(analyticsOutcome(true, { channels: [], importPending: true }).state, "skipped");
   assert.equal(reachOutcome(true, { channels: [], importPending: true }).state, "skipped");
   assert.equal(reachOutcome(false).state, "failed");
+});
+
+// BL-196 AC-FS-01 (FAST_STARTUP_PLAN.md §2 A, owner msgs 2968/2969): the window shows on a tab's first load and on the first load after
+// the server restarted (a new run id); a reload in the same tab during the same run shows none; an unknown run id shows it.
+test("AC-FS-01: the startup window once per tab per server run", () => {
+  assert.equal(startupWindowWanted(null, "run-1"), true, "first load in this tab");
+  assert.equal(startupWindowWanted("run-1", "run-1"), false, "reload, same run");
+  assert.equal(startupWindowWanted("run-1", "run-2"), true, "first load after a restart");
+  assert.equal(startupWindowWanted("run-1", null), true, "run id unknown");
 });
