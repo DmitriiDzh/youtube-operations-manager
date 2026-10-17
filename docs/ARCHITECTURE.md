@@ -810,6 +810,15 @@ just failed is not planned. Reasons a background channel was not collected are l
 response shows only the active channel (ADR 0004). Shared rules with BL-141 live in `src/lib/channel-fanout/`
 (credential choice, error code, backoff, channel list). Cross-account token use: RISK-112. The per-channel routes remain.
 
+**A reload that finds nothing due (BL-196, `docs/roadmap/plans/FAST_STARTUP_PLAN.md`).** `runAutoCollectionIfStale` applies the
+freshness gate first. The gate is `freshnessGate`, moved out of `collectMetrics` unchanged. The quota reserve (`beforeCollect` from
+`index.ts`) is asked only for a due collection, because it costs 8 Cloud Monitoring calls. `collectMetrics` still applies the gate
+itself, so a racing second tab stays safe. `auto-collect-all` first asks `isAutoCollectionCurrent`, which only reads. When the
+active channel is current, the route answers at once. The other computer's import, the active channel's weekly report and catch-up
+plan, and every other channel then run in `after()`, in the same order as a collecting load. A failing check falls back to the full
+path. The research `collect-if-stale` and the automatic `reach/sync-all` likewise return before device sync and the peers' import
+when their own read-only due checks (`countResearchChannelsDueForCollection`, `isAnyReachSyncDue`) find nothing.
+
 **`GET /api/settings` is not purely read-only**: `getUserTimezone`'s detect-and-persist behavior means a plain `GET` can write
 the OS-detected timezone on first read, and `getAnalyticsCollectionTimes` saves the UTC times converted from the legacy local
 ones (stated in that route's own doc comment, not left as a surprise).
@@ -3183,7 +3192,7 @@ Plan: `docs/roadmap/plans/ANALYTICS_DATA_SHARING_PLAN.md`; owner msgs 2004/2008.
   - sync attempts: shared without error text.
 - **When it runs.**
   - Every 2 minutes on the server (`src/instrumentation.ts`).
-  - Before deciding what is stale: `auto-collect-all` and the automatic `reach/sync-all` first call `importPeersFirst()`, which waits at most 30 s and never fails the collection. Each publishes once its collection is done.
+  - Before deciding what is stale: `auto-collect-all` and the automatic `reach/sync-all` first call `importPeersFirst()`, which waits at most 30 s and never fails the collection. Each publishes once its collection is done. Since BL-196 a load with nothing due skips this. For `reach/sync-all`, nothing is due when no channel is due. For `auto-collect-all`, the active channel is current and the import moves after the response.
   - The existing staleness checks are unchanged. They now see the other device's runs and stamps, so a channel it collected today is current here. The startup window then says "collected on the other computer".
 - **Measured on a copy of the Mac's database (2026-10-07).**
   - Everything: 45,780 metric rows and 1,880 reach rows, 4.3 MB as JSON. One day: about 11,000 rows.

@@ -44,3 +44,31 @@ test("AC-FD-10: device sync itself failing never blocks the collection (§M)", a
   });
   assert.equal(ran, 1);
 });
+
+// BL-196 AC-FS-04 (FAST_STARTUP_PLAN.md §2 C): nothing due -> no device sync, no collection; due (or the check failing) -> sync first,
+// then collect, exactly as before.
+test("AC-FS-04: nothing due -> the idle answer, with no device sync and no collection", async () => {
+  const order: string[] = [];
+  const result = await collectAfterDeviceSync({
+    isDue: async () => (order.push("isDue"), false),
+    nothingDue: () => ({ attempted: 0 }),
+    syncFirst: async () => (order.push("sync"), { allowed: true }),
+    collect: async () => (order.push("collect"), { attempted: 1 }),
+  });
+  assert.deepEqual(result, { attempted: 0 });
+  assert.deepEqual(order, ["isDue"]);
+});
+
+test("AC-FS-04: something due, or a failing check -> sync first, then the collection", async () => {
+  for (const isDue of [async () => true, async () => Promise.reject(new Error("db busy"))]) {
+    const order: string[] = [];
+    const result = await collectAfterDeviceSync({
+      isDue,
+      nothingDue: () => ({ attempted: 0 }),
+      syncFirst: async () => (order.push("sync"), { allowed: true }),
+      collect: async () => (order.push("collect"), { attempted: 1 }),
+    });
+    assert.deepEqual(result, { attempted: 1 });
+    assert.deepEqual(order, ["sync", "collect"]);
+  }
+});

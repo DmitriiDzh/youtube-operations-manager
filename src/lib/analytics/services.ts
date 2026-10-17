@@ -457,6 +457,95 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
     };
   }
 
+  /**
+   * `collectMetrics`'s once-a-day freshness gate (BL-196: moved out unchanged, so the automatic collection can ask it before any
+   * peer import or quota check). Read-only apart from the mark-disagrees log. Null = a collection may run; otherwise the details of
+   * the `analytics_data_current` refusal.
+   */
+  async function freshnessGate(input: { now: Date; channelId: string; startDate: string; endDate: string; eveningRun?: boolean }): Promise<{
+    lastCollectedAt: string | null;
+    nextRefreshAt: string;
+    timezone: string;
+  } | null> {
+    const now = input.now;
+    const [lastCollectedAt, { localTime, timezone }] = await Promise.all([
+      deps.channelStore.getAnalyticsLastAutoCollectedAt(input.channelId),
+      deps.settingsStore.getAnalyticsSyncSettings(),
+    ]);
+
+    const markedFresh = !isAnalyticsCollectionStale({ now, lastAutoCollectedAt: lastCollectedAt, timezone, localTime });
+    // Owner's own proposed principle (2026-09-25): don't just trust the "already collected"
+    // mark -- verify a genuine run backs it up. Found necessary live: the mark-on-success fix
+    // above stops the bug going forward, but cannot retroactively correct a mark a PRIOR
+    // (pre-fix) run already set incorrectly, which would otherwise keep this gate blocking
+    // real attempts, with stale data on screen, until tomorrow's boundary purely on the
+    // strength of an internal flag that no longer matches reality.
+    //
+    // Checked against the *canonical* expected-fresh-through date (yesterday, local to
+    // `timezone` -- the same "yesterday" `computeDefaultAutoCollectionRange` itself picks for
+    // the unattended auto-trigger, i.e. exactly the day the owner's boundary setting promises
+    // will be ready), never against `input.endDate` as such -- a manual call is free to
+    // request any date range (a custom period selector, an MCP backfill, ...) and must still
+    // be refused once today's real collection genuinely happened, regardless of what range
+    // that specific call itself asked for (see the "manual call is refused if an
+    // auto-collection already ran today" test, a pre-existing, deliberate invariant this
+    // must not break).
+    //
+    // A run "covers" that date when the date falls inside its own requested window
+    // (`requestedStartDate`..`requestedEndDate`) and the run was not a total failure --
+    // deliberately NOT whether a raw metric row exists for that date, since a genuinely
+    // successful run can still leave zero rows for a specific day if activity was truly zero
+    // that day (the Analytics API silently omits zero-activity days from its own response,
+    // per `getDataQualityReport`'s own doc comment), which would otherwise misclassify a
+    // perfectly good "nothing happened that day" result as "the mark is lying."
+    const { endDate: expectedFreshThroughDate } = computeDefaultAutoCollectionRange({ now, timezone, rangeDays: 0 });
+    const runs = markedFresh ? await deps.collectionRunStore.listByChannel(input.channelId) : [];
+    const genuineRunCoversExpectedDate = markedFresh
+      ? runs.some(
+          (run) =>
+            run.requestedStartDate <= expectedFreshThroughDate &&
+            run.requestedEndDate >= expectedFreshThroughDate &&
+            (run.videoCount === 0 || run.upsertsIssued > 0)
+        )
+      : false;
+
+    if (markedFresh && !genuineRunCoversExpectedDate) {
+      deps.logger.error({
+        event: "analytics.collect_metrics.mark_disagrees_with_run_history",
+        context: {
+          channelId: input.channelId,
+          expectedFreshThroughDate,
+          lastCollectedAt: lastCollectedAt?.toISOString() ?? null,
+        },
+      });
+    }
+
+    // BL-118 (owner decision 2026-10-03, replacing "a manual call is refused once today's collection has run, whatever range it
+    // asks"): the refusal only protects against re-fetching data that is already collected. A request that contains at least one date
+    // no collection run has covered (an older range being backfilled) brings NEW data and is allowed. Dates still inside the
+    // reporting lag can never hold more data than the last run already got, so they count as covered for this decision.
+    // A run that attempted no videos still counts as coverage for a channel that has none (the old behaviour); for a channel WITH videos
+    // such a run is a channel-totals-only catch-up run, which says nothing about per-video data.
+    const channelHasVideos =
+      markedFresh && genuineRunCoversExpectedDate ? (await deps.videoStore.listVideosByChannel(input.channelId)).length > 0 : false;
+    if (
+      !input.eveningRun &&
+      markedFresh &&
+      genuineRunCoversExpectedDate &&
+      isRangeFullyCovered({
+        startDate: input.startDate,
+        endDate: input.endDate,
+        runs: channelHasVideos ? runs.filter((run) => !(run.videoCount === 0 && run.channelLevel === true)) : runs,
+        requireVideos: false,
+        now,
+      })
+    ) {
+      const nextRefreshAt = computeNextRefreshAt({ now, timezone, localTime });
+      return { lastCollectedAt: lastCollectedAt?.toISOString() ?? null, nextRefreshAt: nextRefreshAt.toISOString(), timezone };
+    }
+    return null;
+  }
+
   const services = {
     /**
      * Collects daily metrics for every locally-synced video under `channelId`, over
@@ -571,83 +660,18 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
         });
 
         const now = deps.clock.now();
-        const [lastCollectedAt, { localTime, timezone }] = await Promise.all([
-          deps.channelStore.getAnalyticsLastAutoCollectedAt(parsedInput.channelId),
-          deps.settingsStore.getAnalyticsSyncSettings(),
-        ]);
-
-        const markedFresh = !isAnalyticsCollectionStale({ now, lastAutoCollectedAt: lastCollectedAt, timezone, localTime });
-        // Owner's own proposed principle (2026-09-25): don't just trust the "already collected"
-        // mark -- verify a genuine run backs it up. Found necessary live: the mark-on-success fix
-        // above stops the bug going forward, but cannot retroactively correct a mark a PRIOR
-        // (pre-fix) run already set incorrectly, which would otherwise keep this gate blocking
-        // real attempts, with stale data on screen, until tomorrow's boundary purely on the
-        // strength of an internal flag that no longer matches reality.
-        //
-        // Checked against the *canonical* expected-fresh-through date (yesterday, local to
-        // `timezone` -- the same "yesterday" `computeDefaultAutoCollectionRange` itself picks for
-        // the unattended auto-trigger, i.e. exactly the day the owner's boundary setting promises
-        // will be ready), never against `parsedInput.endDate` as such -- a manual call is free to
-        // request any date range (a custom period selector, an MCP backfill, ...) and must still
-        // be refused once today's real collection genuinely happened, regardless of what range
-        // that specific call itself asked for (see the "manual call is refused if an
-        // auto-collection already ran today" test, a pre-existing, deliberate invariant this
-        // must not break).
-        //
-        // A run "covers" that date when the date falls inside its own requested window
-        // (`requestedStartDate`..`requestedEndDate`) and the run was not a total failure --
-        // deliberately NOT whether a raw metric row exists for that date, since a genuinely
-        // successful run can still leave zero rows for a specific day if activity was truly zero
-        // that day (the Analytics API silently omits zero-activity days from its own response,
-        // per `getDataQualityReport`'s own doc comment), which would otherwise misclassify a
-        // perfectly good "nothing happened that day" result as "the mark is lying."
-        const { endDate: expectedFreshThroughDate } = computeDefaultAutoCollectionRange({ now, timezone, rangeDays: 0 });
-        const runs = markedFresh ? await deps.collectionRunStore.listByChannel(parsedInput.channelId) : [];
-        const genuineRunCoversExpectedDate = markedFresh
-          ? runs.some(
-              (run) =>
-                run.requestedStartDate <= expectedFreshThroughDate &&
-                run.requestedEndDate >= expectedFreshThroughDate &&
-                (run.videoCount === 0 || run.upsertsIssued > 0)
-            )
-          : false;
-
-        if (markedFresh && !genuineRunCoversExpectedDate) {
-          deps.logger.error({
-            event: "analytics.collect_metrics.mark_disagrees_with_run_history",
-            context: {
-              channelId: parsedInput.channelId,
-              expectedFreshThroughDate,
-              lastCollectedAt: lastCollectedAt?.toISOString() ?? null,
-            },
-          });
-        }
-
-        // BL-118 (owner decision 2026-10-03, replacing "a manual call is refused once today's collection has run, whatever range it
-        // asks"): the refusal only protects against re-fetching data that is already collected. A request that contains at least one date
-        // no collection run has covered (an older range being backfilled) brings NEW data and is allowed. Dates still inside the
-        // reporting lag can never hold more data than the last run already got, so they count as covered for this decision.
-        // A run that attempted no videos still counts as coverage for a channel that has none (the old behaviour); for a channel WITH videos
-        // such a run is a channel-totals-only catch-up run, which says nothing about per-video data.
-        const channelHasVideos =
-          markedFresh && genuineRunCoversExpectedDate ? (await deps.videoStore.listVideosByChannel(parsedInput.channelId)).length > 0 : false;
-        if (
-          !options.eveningRun &&
-          markedFresh &&
-          genuineRunCoversExpectedDate &&
-          isRangeFullyCovered({
-            startDate: parsedInput.startDate,
-            endDate: parsedInput.endDate,
-            runs: channelHasVideos ? runs.filter((run) => !(run.videoCount === 0 && run.channelLevel === true)) : runs,
-            requireVideos: false,
-            now,
-          })
-        ) {
-          const nextRefreshAt = computeNextRefreshAt({ now, timezone, localTime });
+        const current = await freshnessGate({
+          now,
+          channelId: parsedInput.channelId,
+          startDate: parsedInput.startDate,
+          endDate: parsedInput.endDate,
+          eveningRun: options.eveningRun,
+        });
+        if (current) {
           throw new DomainError({
             code: "analytics_data_current",
-            message: `Analytics data is already up to date for today. YouTube itself only refreshes this data about once a day -- the next refresh is available at ${nextRefreshAt.toISOString()}.`,
-            details: { lastCollectedAt: lastCollectedAt?.toISOString() ?? null, nextRefreshAt: nextRefreshAt.toISOString(), timezone },
+            message: `Analytics data is already up to date for today. YouTube itself only refreshes this data about once a day -- the next refresh is available at ${current.nextRefreshAt}.`,
+            details: current,
           });
         }
 
@@ -872,6 +896,24 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
     },
 
     /**
+     * BL-196: whether the automatic collection of this channel would be refused as current right now -- the same gate and default
+     * range as `runAutoCollectionIfStale`, without collecting, importing or asking the quota. Lets the dashboard skip the other
+     * computer's import and the quota check on a reload when nothing is due. Active-channel checked.
+     */
+    async isAutoCollectionCurrent(input: unknown): Promise<boolean> {
+      const parsedInput = parseWithSchema(runAutoCollectionInputSchema, input, "auto collection current input");
+      try {
+        await deps.channelAccess.assertActiveChannel({ userId: getCredentialUserId(parsedInput.credentialRef), channelId: parsedInput.channelId });
+        const { timezone } = await deps.settingsStore.getAnalyticsSyncSettings();
+        const now = deps.clock.now();
+        const { startDate, endDate } = computeDefaultAutoCollectionRange({ now, timezone, rangeDays: AUTO_COLLECTION_RANGE_DAYS });
+        return (await freshnessGate({ now, channelId: parsedInput.channelId, startDate, endDate })) !== null;
+      } catch (error) {
+        throw mapUnknownError(error, "unauthorized");
+      }
+    },
+
+    /**
      * BL-059 (docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-5) -- "on dashboard entry, check
      * when the daily collection last ran; if it's stale, run it." Meant to be called once per
      * dashboard mount (`src/app/(app)/layout.tsx, BL-149`), not on a repeating interval -- this is a
@@ -886,7 +928,7 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
      * reason as before -- `collectMetrics`'s own mark-then-run is the single point that decides
      * who actually gets to run the real collection.
      */
-    async runAutoCollectionIfStale(input: unknown): Promise<AutoCollectResult> {
+    async runAutoCollectionIfStale(input: unknown, options: { beforeCollect?: () => Promise<boolean> } = {}): Promise<AutoCollectResult> {
       const parsedInput = parseWithSchema(runAutoCollectionInputSchema, input, "run auto collection input");
 
       try {
@@ -903,6 +945,15 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
           timezone,
           rangeDays: AUTO_COLLECTION_RANGE_DAYS,
         });
+
+        // BL-196: nothing due -> done, before the caller's `beforeCollect` (the quota reserve, which costs Cloud Monitoring calls) is
+        // asked. `collectMetrics` below still applies the same gate itself (a second tab racing this one stays safe).
+        if (await freshnessGate({ now, channelId: parsedInput.channelId, startDate, endDate })) {
+          return parseWithSchema(runAutoCollectionOutputSchema, { ranCollection: false }, "run auto collection output");
+        }
+        if (options.beforeCollect && !(await options.beforeCollect())) {
+          return parseWithSchema(runAutoCollectionOutputSchema, { ranCollection: false }, "run auto collection output");
+        }
 
         let result: CollectMetricsResult;
         try {

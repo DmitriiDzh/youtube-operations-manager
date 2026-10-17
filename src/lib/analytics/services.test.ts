@@ -2242,3 +2242,68 @@ test("BL-181: a run that got no rows records no dates; the report keeps the late
   const report = await fixture.services.getDataQualityReport({ credentialRef: { userId: "user-1" }, channelId: "UC_A", startDate: "2026-10-04", endDate: "2026-10-12" });
   assert.deepEqual(report.newestReturned, { videoDate: "2026-10-09", channelDate: null, ranAt: "2026-10-12T12:00:00.000Z" });
 });
+
+// BL-196 AC-FS-03 (FAST_STARTUP_PLAN.md §3): the automatic collection asks the quota reserve (`beforeCollect`, Cloud Monitoring calls)
+// only once the freshness gate says a collection is due; a reserve refusal fetches nothing and marks nothing; `isAutoCollectionCurrent`
+// gives the gate's answer without collecting.
+test("AC-FS-03: a current channel is answered without asking the quota reserve", async () => {
+  const { services, channelAccess, analyticsCalls } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: { v1: [{ date: "2026-09-21", metrics: { views: 100 } }] },
+    now: new Date("2026-09-22T13:00:00Z"),
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  assert.equal(await services.isAutoCollectionCurrent({ credentialRef: { userId: "user-1" }, channelId: "UC_A" }), false, "never collected: due");
+  await services.runAutoCollectionIfStale({ credentialRef: { userId: "user-1" }, channelId: "UC_A" });
+  assert.equal(analyticsCalls.length, 1);
+  assert.equal(await services.isAutoCollectionCurrent({ credentialRef: { userId: "user-1" }, channelId: "UC_A" }), true, "collected today: current");
+
+  let asked = 0;
+  const result = await services.runAutoCollectionIfStale(
+    { credentialRef: { userId: "user-1" }, channelId: "UC_A" },
+    { beforeCollect: async () => (asked++, true) }
+  );
+  assert.deepEqual(result, { ranCollection: false });
+  assert.equal(asked, 0, "the reserve is never asked for a current channel");
+  assert.equal(analyticsCalls.length, 1);
+});
+
+test("AC-FS-03: a due channel asks the reserve first; a refusal fetches nothing and marks nothing", async () => {
+  const { services, channelAccess, analyticsCalls, lastAutoCollectedAtByChannel, collectionRuns } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: { v1: [{ date: "2026-09-21", metrics: { views: 100 } }] },
+    now: new Date("2026-09-22T13:00:00Z"),
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  let asked = 0;
+  const held = await services.runAutoCollectionIfStale({ credentialRef: { userId: "user-1" }, channelId: "UC_A" }, { beforeCollect: async () => (asked++, false) });
+  assert.deepEqual(held, { ranCollection: false });
+  assert.equal(asked, 1);
+  assert.equal(analyticsCalls.length, 0);
+  assert.equal(lastAutoCollectedAtByChannel.get("UC_A") ?? null, null);
+  assert.equal(collectionRuns.length, 0);
+
+  const ran = await services.runAutoCollectionIfStale({ credentialRef: { userId: "user-1" }, channelId: "UC_A" }, { beforeCollect: async () => (asked++, true) });
+  assert.equal(ran.ranCollection, true);
+  assert.equal(asked, 2);
+  assert.equal(analyticsCalls.length, 1);
+});
+
+test("AC-FS-03: isAutoCollectionCurrent fails closed for a channel that is not the caller's active one", async () => {
+  const { services, channelAccess } = createServicesFixture({ videosByChannel: { UC_A: [] }, analyticsResponses: {}, now: new Date("2026-09-22T13:00:00Z") });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_B" });
+  await assert.rejects(() => services.isAutoCollectionCurrent({ credentialRef: { userId: "user-1" }, channelId: "UC_A" }));
+});
+
+// BL-196 review (a): the "mark says fresh, but no genuine run covers yesterday" rule (owner, 2026-09-25) must keep a channel due, so
+// the fast path never skips a collection the gate would have run.
+test("AC-FS-03: a fresh mark without a run covering yesterday is still due", async () => {
+  const { services, channelAccess, lastAutoCollectedAtByChannel } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: { v1: [{ date: "2026-09-21", metrics: { views: 100 } }] },
+    now: new Date("2026-09-22T13:00:00Z"),
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  lastAutoCollectedAtByChannel.set("UC_A", new Date("2026-09-22T12:30:00Z"));
+  assert.equal(await services.isAutoCollectionCurrent({ credentialRef: { userId: "user-1" }, channelId: "UC_A" }), false);
+});

@@ -54,6 +54,7 @@ import {
   listMarketTrendCandidates,
   listMarketVideoSnapshotsByChannel,
   listRecentlyFailedResearchChannelIds,
+  countResearchChannelsDueForCollection,
   listResearchChannels,
   listResearchEvidenceByChannel,
   listTopicsForSubject,
@@ -110,6 +111,7 @@ export function createMarketIntelligenceStoreAdapter() {
     releaseResearchChannelCollectionClaim,
     renewResearchChannelCollectionClaims,
     listRecentlyFailedResearchChannelIds,
+    countResearchChannelsDueForCollection,
     // Phase 9 slice 9C (docs/roadmap/plans/PHASE_9_SLICE_9C_PLAN.md).
     getMarketDiscoveryCandidateById,
     listMarketDiscoveryCandidates,

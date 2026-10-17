@@ -96,6 +96,7 @@ import {
   listResearchEvidenceByChannel,
   insertMarketVideoSnapshot,
   claimStaleResearchChannelsForCollection,
+  countResearchChannelsDueForCollection,
   releaseResearchChannelCollectionClaim,
   listRecentlyFailedResearchChannelIds,
   markResearchChannelAutoCollected,
@@ -3488,4 +3489,32 @@ test("getMarketIntelligenceUnitsSpentSince adds a search's pool units, not its s
     await insertMarketDiscoveryRun({ query: "q [genre]", status: "success", unitsSpent: 1, poolUnitsSpent: 2, ranAt: now }, isolatedDb);
     await insertMarketDiscoveryRun({ query: "old style", status: "success", unitsSpent: 1, ranAt: now }, isolatedDb);
     assert.equal(await getMarketIntelligenceUnitsSpentSince(new Date(now.getTime() - 3_600_000), isolatedDb), 5);
+  }));
+
+// BL-196 AC-FS-04 (FAST_STARTUP_PLAN.md §2 C): the read-only count uses the claim's own conditions -- expected by hand from those rules:
+// never collected and stale are due; collected within 24 h, paused, claimed within 15 min and recently failed are not. Counting never
+// claims anything, and right after a claim nothing is due.
+test("AC-FS-04: countResearchChannelsDueForCollection counts what the claim would take, without claiming", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    const now = new Date("2026-10-17T12:00:00.000Z");
+    const staleCutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const claimExpiryCutoff = new Date(now.getTime() - 15 * 60 * 1000);
+    const hoursAgo = (h: number) => new Date(now.getTime() - h * 60 * 60 * 1000);
+    await isolatedDb.insert(researchChannels).values([
+      { id: "UC_NEVER_COLLECTED_000000", reason: "r", createdVia: "web_ui" },
+      { id: "UC_STALE_30H_AGO_00000000", reason: "r", createdVia: "web_ui", lastAutoCollectedAt: hoursAgo(30) },
+      { id: "UC_FRESH_2H_AGO_000000000", reason: "r", createdVia: "web_ui", lastAutoCollectedAt: hoursAgo(2) },
+      { id: "UC_PAUSED_00000000000000", reason: "r", createdVia: "web_ui", pausedAt: hoursAgo(5) },
+      { id: "UC_CLAIMED_5MIN_AGO_00000", reason: "r", createdVia: "web_ui", collectionClaimedAt: new Date(now.getTime() - 5 * 60 * 1000) },
+      { id: "UC_RECENTLY_FAILED_000000", reason: "r", createdVia: "web_ui" },
+    ]);
+    const args = { staleCutoff, claimExpiryCutoff, excludeResearchChannelIds: ["UC_RECENTLY_FAILED_000000"] };
+
+    assert.equal(await countResearchChannelsDueForCollection(args, isolatedDb), 2);
+    assert.equal(await countResearchChannelsDueForCollection(args, isolatedDb), 2, "counting claims nothing");
+    const claimed = await claimStaleResearchChannelsForCollection({ now, ...args }, isolatedDb);
+    assert.deepEqual([...claimed].sort(), ["UC_NEVER_COLLECTED_000000", "UC_STALE_30H_AGO_00000000"]);
+    assert.equal(await countResearchChannelsDueForCollection(args, isolatedDb), 0);
   }));

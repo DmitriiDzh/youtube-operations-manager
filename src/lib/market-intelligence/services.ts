@@ -788,6 +788,8 @@ type ServiceDependencies = {
   /** Moves the claim of the given channels from `expectedClaimedAt` to `newClaimedAt` where they still carry it; returns the renewed ids. */
   renewResearchChannelCollectionClaims(ids: string[], expectedClaimedAt: Date, newClaimedAt: Date): Promise<string[]>;
   listRecentlyFailedResearchChannelIds(since: Date): Promise<string[]>;
+  /** BL-196: the claim's own count, read only (no claim is taken). Optional: without it every pass counts as due. */
+  countResearchChannelsDueForCollection?(args: { staleCutoff: Date; claimExpiryCutoff: Date; excludeResearchChannelIds: string[] }): Promise<number>;
   markResearchChannelAutoCollected(researchChannelId: string, at: Date): Promise<void>;
   insertMarketIntelligenceCollectionRun(input: {
     researchChannelId: string;
@@ -2953,6 +2955,20 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
      * applies to a crash mid-backfill: the ledger row is written at the end of a channel, so up to about
      * 2 units per page already fetched may go unrecorded (same RISK-103).
      */
+    /**
+     * BL-196 (FAST_STARTUP_PLAN.md §2 C): whether the automatic pass would find any channel to claim now -- the claim's own
+     * conditions and windows, read only. When false, `runCollectionIfStale` would claim nothing ("skipped_not_stale"), so the dashboard
+     * answers without device sync, credentials or the inactivity pass (the next due pass evaluates inactivity first, as always).
+     */
+    async hasChannelsDue(): Promise<boolean> {
+      if (!deps.countResearchChannelsDueForCollection) return true;
+      const now = deps.clock.now();
+      const staleCutoff = new Date(now.getTime() - MARKET_INTELLIGENCE_STALE_WINDOW_MS);
+      const claimExpiryCutoff = new Date(now.getTime() - MARKET_INTELLIGENCE_CLAIM_EXPIRY_MS);
+      const excludeResearchChannelIds = await deps.listRecentlyFailedResearchChannelIds(staleCutoff);
+      return (await deps.countResearchChannelsDueForCollection({ staleCutoff, claimExpiryCutoff, excludeResearchChannelIds })) > 0;
+    },
+
     async runCollectionIfStale(input: unknown): Promise<{
       attempted: number;
       succeeded: number;
