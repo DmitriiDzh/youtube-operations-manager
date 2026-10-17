@@ -95,3 +95,19 @@ test("BL-194: older runs are counted per storyboard and plan, and linking moves 
     assert.deepEqual(await countUnlinkedJobsByOrigin("UC1", database), []);
   });
 });
+
+// Independent review (2026-10-17): an ended session with a job still running is not listed (it cannot be split yet), so a batch of
+// such sessions can never hold the others back; the order is deterministic.
+test("BL-194: sessions with a job still running are left out of the split list, which is ordered by session id", async () => {
+  await withDb(async (database) => {
+    for (let i = 0; i < 3; i++) {
+      await insertMediaSession(session(`stuck-${i}`, "done", 1), database);
+      await insertMediaJob({ ...job(`open-${i}`, `stuck-${i}`), status: "generating" }, database);
+    }
+    await insertMediaSession(session("ready-b", "done", 1), database);
+    await insertMediaJob(job("b1", "ready-b"), database);
+    await insertMediaSession(session("ready-a", "done", 1), database);
+    await insertMediaJob(job("a1", "ready-a"), database);
+    assert.deepEqual((await listMediaSessionsNeedingCostSplit(2, database)).map((p) => p.session.id), ["ready-a", "ready-b"]);
+  });
+});

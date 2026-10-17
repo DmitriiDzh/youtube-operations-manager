@@ -14313,7 +14313,8 @@ export async function recordMediaJobTiming(id: string, set: { startedAt?: Date; 
 
 /**
  * The ended sessions whose charge is not (or no longer) split across their jobs: a job without a share, or a share computed from
- * another charge than the session's current one. Each with every one of its jobs.
+ * another charge than the session's current one -- only sessions whose jobs are all final, by session id. Each with every one of its
+ * jobs.
  */
 export async function listMediaSessionsNeedingCostSplit(limit = 200, database: AppDb = db): Promise<Array<{ session: typeof mediaSessions.$inferSelect; jobs: StoredMediaJob[] }>> {
   const pending = await database
@@ -14324,9 +14325,12 @@ export async function listMediaSessionsNeedingCostSplit(limit = 200, database: A
       and(
         inArray(mediaSessions.status, [...MEDIA_SESSION_TERMINAL_STATUSES]),
         isNotNull(mediaSessions.usdCharged),
-        or(isNull(mediaJobs.allocationSessionUsd), sql`${mediaJobs.allocationSessionUsd} <> ${mediaSessions.usdCharged}`)
+        or(isNull(mediaJobs.allocationSessionUsd), sql`${mediaJobs.allocationSessionUsd} <> ${mediaSessions.usdCharged}`),
+        // A session with a job still running cannot be split yet: left out here, so it never fills the batch ahead of the others.
+        sql`NOT EXISTS (SELECT 1 FROM media_jobs AS open_job WHERE open_job.session_id = ${mediaSessions.id} AND open_job.status NOT IN ('done', 'failed', 'cancelled'))`
       )
     )
+    .orderBy(asc(mediaJobs.sessionId))
     .limit(limit);
   const out: Array<{ session: typeof mediaSessions.$inferSelect; jobs: StoredMediaJob[] }> = [];
   for (const { sessionId } of pending) {

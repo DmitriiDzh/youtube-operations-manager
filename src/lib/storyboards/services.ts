@@ -376,12 +376,15 @@ export function createStoryboardsService(ports: StoryboardsPorts) {
       return ports.withLock(async () => {
         const workspace = await assertChannel(channelId);
         let record = await findRecord(channelId, storyboardId);
+        // Every check first (the new version's files, the video), then the writes: a refused call changes nothing (review 2026-10-17).
+        const built = await buildVersion(channelId, workspace, content);
         // BL-194: the video link is not content -- it changes without a new version (absent: kept; null: removed).
-        if (videoNumber !== undefined && videoNumber !== (record.video ?? null)) {
-          await ports.store.setVideo(channelId, storyboardId, videoNumber ? await attachableVideo(channelId, videoNumber) : null);
+        const videoChanges = videoNumber !== undefined && videoNumber !== (record.video ?? null);
+        const video = videoChanges && videoNumber ? await attachableVideo(channelId, videoNumber) : null;
+        if (videoChanges) {
+          await ports.store.setVideo(channelId, storyboardId, video);
           record = await findRecord(channelId, storyboardId);
         }
-        const built = await buildVersion(channelId, workspace, content);
         const latest = latestVersion(record)!;
         if (sameContent(built, latest)) return { storyboard: detailOf(channelId, record), changed: false, versionNumber: latest.number };
         const versionNumber = await ports.store.addVersion(channelId, storyboardId, { ...built, createdAt: stamp() });

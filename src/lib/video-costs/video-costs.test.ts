@@ -274,3 +274,76 @@ test("criterion 8: a peer report that cannot be read, or video states that canno
   await mac.service.publishOwnReport();
   assert.equal(w.reports.get("mac")!.runs.length, 1);
 });
+
+// Independent review (2026-10-17), VIDEO_COST_PLAN.md §2 stage 3 and ADR 0041 §6: Vn_cost.json is the DURABLE record -- a run once in
+// the file stays there when the report window drops it or the peers' reports cannot be read; only new runs and changed costs are
+// written in.
+test("Vn_cost.json is durable: the 120-day window never lowers it, a late new run of another computer still raises it", async () => {
+  const w = world();
+  w.states = new Map([["V49", { state: "published", folder: "04 Videos/10 October/1017 V49" }]]);
+  let now = NOW;
+  const clock = { now: () => now };
+  const mac = computer("mac", w, () => ({ ...none(), gemini: [gemini("g1")] }), clock);
+  await mac.service.writeCostFile({ channelId: "UC1", video: "V49", folder: "04 Videos/10 October/1017 V49" });
+  const path = "04 Videos/10 October/1017 V49/V49_cost.json";
+  assert.equal(w.files.get(path)!.totals.totalUsd, 0.7421);
+
+  now = new Date(NOW.getTime() + 130 * 24 * 60 * 60 * 1000); // g1 is now outside the published window of the reports
+  assert.equal((await mac.service.videoCost({ channelId: "UC1", video: "V49" })).totals.totalUsd, 0, "the window drops it from the report");
+  assert.equal(await mac.service.refreshCostFiles(), 0, "nothing new: the file is not touched");
+  assert.equal(w.files.get(path)!.totals.totalUsd, 0.7421);
+
+  const win = computer("win", w, () => ({ ...none(), gemini: [gemini("g5", { costUsd: 0.5, createdAt: now })] }), clock);
+  await win.service.publishOwnReport();
+  assert.equal(await mac.service.refreshCostFiles(), 1);
+  const file = w.files.get(path)!;
+  assert.equal(file.totals.totalUsd, 1.2421, "0.7421 kept + 0.5 added");
+  assert.deepEqual(file.runs.map((r) => r.runId).sort(), ["gemini:g1", "gemini:g5"]);
+  assert.equal(file.revision, 2);
+  assert.deepEqual(file.previous, { totalUsd: 0.7421, computedAt: NOW.toISOString() });
+});
+
+test("Vn_cost.json is not rewritten while the other computers' reports cannot be read", async () => {
+  const w = world();
+  w.states = new Map([["V49", { state: "published", folder: "04 Videos/10 October/1017 V49" }]]);
+  const win = computer("win", w, () => ({ ...none(), gemini: [gemini("g1")] }));
+  await win.service.publishOwnReport();
+  let rows = { ...none(), runpod: [runpod("a")] };
+  let peersFail = false;
+  const mac = computer("mac", w, () => rows, {
+    peers: async () => {
+      if (peersFail) throw new Error("sync folder unavailable");
+      return [...w.reports.values()].filter((r) => r.deviceId !== "mac");
+    },
+  });
+  await mac.service.writeCostFile({ channelId: "UC1", video: "V49", folder: "04 Videos/10 October/1017 V49" });
+  assert.equal(w.files.get("04 Videos/10 October/1017 V49/V49_cost.json")!.totals.totalUsd, 1.4088);
+  peersFail = true;
+  rows = { ...none(), runpod: [runpod("a"), runpod("b", { allocatedUsd: 0.3333 })] };
+  assert.equal(await mac.service.refreshCostFiles(), 0);
+  assert.equal(w.files.get("04 Videos/10 October/1017 V49/V49_cost.json")!.totals.totalUsd, 1.4088, "unchanged, not 0.6667 + 0.3333 alone");
+  peersFail = false;
+  assert.equal(await mac.service.refreshCostFiles(), 1);
+  assert.equal(w.files.get("04 Videos/10 October/1017 V49/V49_cost.json")!.totals.totalUsd, 1.7421, "the new RunPod run added once the reports are read");
+});
+
+test("a refresh tick reads this computer's rows, the peers' reports, the video list and the storyboards once, however many files", async () => {
+  const w = world();
+  const folders = ["04 Videos/10 October/1017 V49", "04 Videos/10 October/1018 V50"];
+  w.states = new Map([
+    ["V49", { state: "published", folder: folders[0] }],
+    ["V50", { state: "packaged", folder: folders[1] }],
+  ]);
+  const reads = { rows: 0, peers: 0, states: 0, storyboards: 0 };
+  const mac = computer("mac", w, () => (reads.rows++, { ...none(), gemini: [gemini("g1"), gemini("g2", { video: "V50" })] }), {
+    peers: async () => (reads.peers++, []),
+    videoStates: async () => (reads.states++, w.states),
+    storyboards: async () => (reads.storyboards++, []),
+  });
+  await mac.service.writeCostFile({ channelId: "UC1", video: "V49", folder: folders[0] });
+  await mac.service.writeCostFile({ channelId: "UC1", video: "V50", folder: folders[1] });
+  Object.assign(reads, { rows: 0, peers: 0, states: 0, storyboards: 0 });
+  await mac.service.refreshCostFiles();
+  // ownReport lists the videos once for its window; the refresh once more for the files.
+  assert.deepEqual(reads, { rows: 1, peers: 1, states: 2, storyboards: 1 });
+});

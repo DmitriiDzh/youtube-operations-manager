@@ -43,8 +43,9 @@ cross-device media-jobs report forgets finished jobs after 7 days.
    An estimate is marked `≈`.
 6. **`Vn_cost.json`.** Written next to `Vn_release.json` at the upload's record step (atomic temp + rename, the real folder inside
    the workspace): totals, every run, the computers counted with their report age, `computedAt`, `revision`, `writtenBy`. Only the
-   computer that wrote it rewrites it -- when a later report changes the total (`previous` + `note`), one writer per file in the
-   synced folder. A failure is a note on the upload, never a failed step.
+   computer that wrote it rewrites it (one writer per file in the synced folder), and only by merging: the file's runs are kept by
+   computer and run id -- a run is never removed because a report's window dropped it -- new runs are added and a run whose cost or
+   result changed is updated (`previous` + `note`); while the peers' reports cannot be read the file is not touched. A failure is a note on the upload, never a failed step.
 7. **Older runs (stage 4).** Each computer goes over the jobs its database still holds. A storyboard with no video whose render file
    is the video file of a `MMDD Vn` folder (same name and size, then sha256) is proposed for that video; the owner confirms it, or
    picks a video by hand, and only then the storyboards module sets the storyboard's video (it syncs) and this computer's unlinked

@@ -217,26 +217,31 @@ export function createVideoCostsService(deps: VideoCostsDeps) {
     return { format: VIDEO_COSTS_REPORT_FORMAT, version: VIDEO_COSTS_REPORT_VERSION, deviceId: device.deviceId, hostName: device.hostName, updatedAt: deps.now().toISOString(), runs: selectReportRuns(runs, deps.now(), states) };
   }
 
-  async function peerReports(): Promise<VideoCostsReport[]> {
+  /** The peers' reports; `ok: false` when they could not be read (then only this computer's runs are known). */
+  async function peerReports(): Promise<{ ok: boolean; reports: VideoCostsReport[] }> {
     try {
-      return await deps.peers();
+      return { ok: true, reports: await deps.peers() };
     } catch (error) {
       log(`[video-costs] the other computers' cost reports could not be read; this computer's runs only: ${error instanceof Error ? error.message : String(error)}`);
-      return [];
+      return { ok: false, reports: [] };
     }
   }
+
+  const storyboardsOf = (channelId: string) =>
+    deps.storyboards(channelId).catch((error: unknown) => {
+      log(`[video-costs] storyboards of ${channelId} not read; no take is shown as chosen: ${error instanceof Error ? error.message : String(error)}`);
+      return [] as StoryboardPicks[];
+    });
 
   /** Every computer's runs of one channel, with whose they are and what they came to. */
   async function channelRuns(channelId: string): Promise<{ runs: CostRun[]; computers: CostComputer[] }> {
     if (!(await deps.isChannelConnected(channelId))) throw noChannel(channelId);
-    const [own, peers, storyboards] = await Promise.all([
-      ownReport(),
-      peerReports(),
-      deps.storyboards(channelId).catch((error: unknown) => {
-        log(`[video-costs] storyboards of ${channelId} not read; no take is shown as chosen: ${error instanceof Error ? error.message : String(error)}`);
-        return [] as StoryboardPicks[];
-      }),
-    ]);
+    const [own, peers, storyboards] = await Promise.all([ownReport(), peerReports(), storyboardsOf(channelId)]);
+    return channelRunsFrom(channelId, own, peers.reports, storyboards);
+  }
+
+  /** The same, from inputs already read (one read per refresh tick, however many videos). */
+  function channelRunsFrom(channelId: string, own: VideoCostsReport, peers: VideoCostsReport[], storyboards: StoryboardPicks[]): { runs: CostRun[]; computers: CostComputer[] } {
     const chosen = chosenTakes(storyboards);
     const reports = [{ report: own, thisComputer: true }, ...peers.filter((p) => p.deviceId !== own.deviceId).map((report) => ({ report, thisComputer: false }))];
     const runs: CostRun[] = [];
@@ -258,57 +263,98 @@ export function createVideoCostsService(deps: VideoCostsDeps) {
     return { channelId: input.channelId, video: input.video, totals: totalsOf(mine), runs: mine, computers };
   }
 
-  async function costFileOf(detail: VideoCostDetail, revision: number, previous: VideoCostFile["previous"], note: string | null): Promise<VideoCostFile> {
-    const device = await deps.ownDevice();
-    return {
-      schema: COST_FILE_SCHEMA,
-      schemaVersion: 1,
-      channelId: detail.channelId,
-      video: detail.video,
-      computedAt: deps.now().toISOString(),
-      revision,
-      writtenBy: { deviceId: device.deviceId, hostName: device.hostName },
-      totals: detail.totals,
-      computers: detail.computers.map((c) => ({ deviceId: c.deviceId, hostName: c.hostName, reportUpdatedAt: c.updatedAt, runs: detail.runs.filter((r) => r.deviceId === c.deviceId).length })),
-      runs: detail.runs.map((r) => ({
-        runId: r.runId,
-        source: r.source,
-        kind: r.kind,
-        label: r.label,
-        mediaKind: r.mediaKind,
-        storyboardId: r.storyboardId,
-        storyboardVersion: r.storyboardVersion,
-        segmentId: r.segmentId,
-        planId: r.planId,
-        status: r.status,
-        result: r.result,
-        usd: r.usd,
-        basis: r.basis,
-        estimate: r.estimate,
-        overheadUsd: r.overheadUsd,
-        gpuSeconds: r.gpuSeconds,
-        createdAt: r.createdAt,
-        finishedAt: r.finishedAt,
-        deviceId: r.deviceId,
-        hostName: r.hostName,
-      })),
-      previous,
-      note,
-    };
-  }
+  const runKey = (r: { deviceId: string; runId: string }) => `${r.deviceId}:${r.runId}`;
+  type FileRun = VideoCostFile["runs"][number];
+  const toFileRun = (r: CostRun): FileRun => ({
+    runId: r.runId,
+    source: r.source,
+    kind: r.kind,
+    label: r.label,
+    mediaKind: r.mediaKind,
+    storyboardId: r.storyboardId,
+    storyboardVersion: r.storyboardVersion,
+    segmentId: r.segmentId,
+    planId: r.planId,
+    status: r.status,
+    result: r.result,
+    usd: r.usd,
+    basis: r.basis,
+    estimate: r.estimate,
+    overheadUsd: r.overheadUsd,
+    gpuSeconds: r.gpuSeconds,
+    createdAt: r.createdAt,
+    finishedAt: r.finishedAt,
+    deviceId: r.deviceId,
+    hostName: r.hostName,
+  });
+  /** What makes a run's line different: its cost and what it came to. */
+  const lineOf = (r: FileRun) => JSON.stringify([r.status, r.result, r.usd, r.basis, r.estimate, r.overheadUsd, r.gpuSeconds, r.finishedAt]);
 
-  const costFilePath = (folder: string, video: string) => `${folder}/${video}_cost.json`;
-  const previousOf = (value: unknown): { totalUsd: number; computedAt: string; revision: number; writtenBy: string | null } | null => {
+  /** An existing `Vn_cost.json`, read defensively; null when it is not one (never overwritten by a refresh then). */
+  const existingFile = (value: unknown): (Pick<VideoCostFile, "totals" | "computedAt" | "revision" | "computers" | "runs"> & { writtenBy: string | null }) | null => {
     if (!value || typeof value !== "object") return null;
     const v = value as Partial<VideoCostFile>;
-    if (v.schema !== COST_FILE_SCHEMA || !v.totals || typeof v.totals.totalUsd !== "number" || typeof v.computedAt !== "string") return null;
+    if (v.schema !== COST_FILE_SCHEMA || !v.totals || typeof v.totals.totalUsd !== "number" || typeof v.computedAt !== "string" || !Array.isArray(v.runs)) return null;
+    const runs = v.runs.filter(
+      (r): r is FileRun => Boolean(r) && typeof r === "object" && typeof r.runId === "string" && typeof r.deviceId === "string" && (r.source === "runpod" || r.source === "gemini") && typeof r.usd === "number" && Number.isFinite(r.usd) && typeof r.basis === "string"
+    );
+    if (runs.length !== v.runs.length) return null;
     return {
-      totalUsd: v.totals.totalUsd,
+      totals: v.totals,
       computedAt: v.computedAt,
       revision: typeof v.revision === "number" && Number.isInteger(v.revision) && v.revision > 0 ? v.revision : 1,
+      computers: Array.isArray(v.computers) ? v.computers : [],
+      runs,
       writtenBy: v.writtenBy && typeof v.writtenBy.deviceId === "string" ? v.writtenBy.deviceId : null,
     };
   };
+
+  /**
+   * The durable record (VIDEO_COST_PLAN.md §2 stage 3, ADR 0041 §6): the file's runs merged with the current ones by computer and run
+   * id. A run in the file is never removed because a report no longer carries it (the report window, a lost report); a new run is
+   * added, a run whose cost or result changed is updated. `changed` = something was added or updated.
+   */
+  function mergeIntoFile(before: ReturnType<typeof existingFile>, current: VideoCostDetail): { runs: FileRun[]; computers: VideoCostFile["computers"]; added: number; updated: number } {
+    const merged = new Map<string, FileRun>((before?.runs ?? []).map((r) => [runKey(r), r]));
+    let added = 0;
+    let updated = 0;
+    for (const run of current.runs) {
+      const line = toFileRun(run);
+      const old = merged.get(runKey(line));
+      if (!old) added++;
+      else if (lineOf(old) === lineOf(line)) continue;
+      else updated++;
+      merged.set(runKey(line), line);
+    }
+    const runs = [...merged.values()].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || (runKey(a) < runKey(b) ? -1 : 1));
+    const computers = new Map<string, VideoCostFile["computers"][number]>();
+    for (const c of before?.computers ?? []) if (c && typeof c.deviceId === "string") computers.set(c.deviceId, { ...c });
+    for (const c of current.computers) computers.set(c.deviceId, { deviceId: c.deviceId, hostName: c.hostName, reportUpdatedAt: c.updatedAt, runs: 0 });
+    for (const c of computers.values()) c.runs = runs.filter((r) => r.deviceId === c.deviceId).length;
+    return { runs, computers: [...computers.values()], added, updated };
+  }
+
+  async function writeMerged(channelId: string, path: string, video: string, before: ReturnType<typeof existingFile>, merged: ReturnType<typeof mergeIntoFile>, note: string | null): Promise<VideoCostFile> {
+    const device = await deps.ownDevice();
+    const file: VideoCostFile = {
+      schema: COST_FILE_SCHEMA,
+      schemaVersion: 1,
+      channelId,
+      video,
+      computedAt: deps.now().toISOString(),
+      revision: before ? before.revision + 1 : 1,
+      writtenBy: { deviceId: device.deviceId, hostName: device.hostName },
+      totals: totalsOf(merged.runs),
+      computers: merged.computers,
+      runs: merged.runs,
+      previous: before ? { totalUsd: before.totals.totalUsd, computedAt: before.computedAt } : null,
+      note,
+    };
+    await deps.costFiles.write(channelId, path, file);
+    return file;
+  }
+
+  const costFilePath = (folder: string, video: string) => `${folder}/${video}_cost.json`;
 
   return {
     /** Publishes this computer's report when it changed (and at least every 10 minutes). */
@@ -339,16 +385,11 @@ export function createVideoCostsService(deps: VideoCostsDeps) {
       const input = parseWithSchema(costFileInputSchema, raw, "cost file");
       const detail = await videoCost({ channelId: input.channelId, video: input.video });
       const path = costFilePath(input.folder, input.video);
-      const before = previousOf(await deps.costFiles.read(input.channelId, path).catch(() => null));
-      const changed = before !== null && before.totalUsd !== detail.totals.totalUsd;
-      const file = await costFileOf(
-        detail,
-        before ? before.revision + (changed ? 1 : 0) : 1,
-        changed ? { totalUsd: before.totalUsd, computedAt: before.computedAt } : null,
-        changed ? `Written again at the upload: the total changed from ${before.totalUsd} to ${detail.totals.totalUsd} USD.` : null
-      );
-      await deps.costFiles.write(input.channelId, path, file);
-      return file;
+      const before = existingFile(await deps.costFiles.read(input.channelId, path).catch(() => null));
+      const merged = mergeIntoFile(before, detail);
+      const total = totalsOf(merged.runs).totalUsd;
+      const note = before ? `Written again at the upload: ${merged.added} runs added, ${merged.updated} updated; the total went from ${before.totals.totalUsd} to ${total} USD.` : null;
+      return writeMerged(input.channelId, path, input.video, before, merged, note);
     },
 
     /**
@@ -356,26 +397,31 @@ export function createVideoCostsService(deps: VideoCostsDeps) {
      * upload, a session split later). Only files the upload wrote: a video without one is never given one here. Returns how many.
      */
     async refreshCostFiles(): Promise<number> {
+      // Read once per tick: this computer's report, the peers', and per channel its videos and storyboards.
       const [own, peers] = await Promise.all([ownReport(), peerReports()]);
-      const deviceId = own.deviceId;
+      // Without the other computers' reports a total could only be partial: the durable file is left as it is.
+      if (!peers.ok) return 0;
       const channels = new Set<string>();
-      for (const report of [own, ...peers]) for (const run of report.runs) if (run.video) channels.add(run.channelId);
+      for (const report of [own, ...peers.reports]) for (const run of report.runs) if (run.video) channels.add(run.channelId);
       let rewritten = 0;
       for (const channelId of channels) {
         try {
           if (!(await deps.isChannelConnected(channelId))) continue;
-          const states = await deps.videoStates(channelId);
+          const [states, storyboards] = await Promise.all([deps.videoStates(channelId), storyboardsOf(channelId)]);
+          const { runs, computers } = channelRunsFrom(channelId, own, peers.reports, storyboards);
           for (const [video, info] of states) {
             if (!info.folder || (info.state !== "packaged" && info.state !== "published")) continue;
             if (!folderSchema.safeParse(info.folder).success) continue;
             const path = costFilePath(info.folder, video);
-            const before = previousOf(await deps.costFiles.read(channelId, path).catch(() => null));
+            const before = existingFile(await deps.costFiles.read(channelId, path).catch(() => null));
             // Only the computer that wrote it at the upload writes it again (one writer per file in the synced folder).
-            if (!before || before.writtenBy !== deviceId) continue;
-            const detail = await videoCost({ channelId, video });
-            if (detail.totals.totalUsd === before.totalUsd) continue;
-            const note = `Written again: a later report changed the total from ${before.totalUsd} to ${detail.totals.totalUsd} USD.`;
-            await deps.costFiles.write(channelId, path, await costFileOf(detail, before.revision + 1, { totalUsd: before.totalUsd, computedAt: before.computedAt }, note));
+            if (!before || before.writtenBy !== own.deviceId) continue;
+            const mine = runs.filter((r) => r.video === video);
+            const merged = mergeIntoFile(before, { channelId, video, totals: totalsOf(mine), runs: mine, computers });
+            if (merged.added === 0 && merged.updated === 0) continue;
+            const total = totalsOf(merged.runs).totalUsd;
+            const note = `Written again: a later report added ${merged.added} runs and updated ${merged.updated}; the total went from ${before.totals.totalUsd} to ${total} USD.`;
+            await writeMerged(channelId, path, video, before, merged, note);
             rewritten++;
           }
         } catch (error) {

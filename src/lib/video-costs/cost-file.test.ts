@@ -35,3 +35,26 @@ test("BL-194: the cost file is written whole into the video folder and read back
     await rm(root, { recursive: true, force: true });
   }
 });
+
+// Independent review: the hash cache of older runs lives for the process, not per request (each request builds its own backfill).
+test("BL-194: two backfill file readers share one hash cache, so a video is read once per process", async () => {
+  const { createBackfillFiles, processHashCache } = await import("./adapters/backfill-files");
+  const root = await mkdtemp(path.join(os.tmpdir(), "video-cost-hash-"));
+  try {
+    const folder = path.join(root, "04 Videos", "0928 V39");
+    await mkdir(folder, { recursive: true });
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(path.join(folder, "bar.mp4"), "abc");
+    processHashCache().clear();
+    const first = await createBackfillFiles(async () => root).hashOf("UC1", "04 Videos/0928 V39/bar.mp4");
+    // sha256("abc"), worked out independently.
+    assert.equal(first, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    assert.equal(processHashCache().size, 1);
+    // Mark the cached value: a second reader that answers with the mark took it from the cache instead of reading the file.
+    const [key] = processHashCache().keys();
+    processHashCache().set(key, "cached");
+    assert.equal(await createBackfillFiles(async () => root).hashOf("UC1", "04 Videos/0928 V39/bar.mp4"), "cached");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

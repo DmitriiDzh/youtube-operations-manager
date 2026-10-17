@@ -47,3 +47,17 @@ test("BL-194: the owner's picker links the storyboard to a video of its channel 
     await cleanup();
   }
 });
+
+// Independent review (2026-10-17): an update refused for its content changes nothing -- the video link given with it included.
+test("BL-194: an update refused for a missing keyframe file leaves the storyboard's video as it was", async () => {
+  const { service, cleanup } = await setup({ videos: { [CH]: ["V49", "V51"] } });
+  try {
+    await service.create({ ...barLoop(), videoNumber: "V49" });
+    const broken = barLoop();
+    broken.keyframes[0] = { ...broken.keyframes[0], file: "Sent to YTM/storyboards/bar/missing.png" };
+    await code(service.update({ ...broken, videoNumber: "V51" }), "storyboard_file_unavailable");
+    assert.equal((await service.get({ channelId: CH, storyboardId: "bar-loop" })).storyboard.video, "V49");
+  } finally {
+    await cleanup();
+  }
+});

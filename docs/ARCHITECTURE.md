@@ -4342,7 +4342,9 @@ Plan: `docs/roadmap/plans/VIDEO_COST_PLAN.md` §2 stages 2-4 (criteria 3-9). Sch
   `video-costs`) with the package folder; `steps.cost` = written | failed (+ a note; never `step_failed`). `writeCostFile` builds the
   file (`ytm.video-cost` v1: totals, runs, computers, `revision`, `writtenBy`, `previous`, `note`); `adapters/cost-file.ts` checks
   the name `^V\d+_cost\.json$` and the real folder inside the workspace, writes a temp file then renames. `refreshCostFiles`
-  (the same loop) rewrites an existing file whose total changed, only on the computer named in `writtenBy`.
+  (the same loop; its own report, the peers', and per channel the video list and storyboards read once per tick) merges the current
+  runs into an existing file by computer + run id -- never removing one, adding new ones, updating a changed cost or result -- only
+  on the computer named in `writtenBy`, and not at all while the peers' reports cannot be read.
 - **Older runs.** `backfill.ts`: `proposals` (storyboards without a video whose render's basename and bytes match a video file of a
   `MMDD Vn` folder, then `hashOf` equals the render's sha256; `adapters/backfill-files.ts` caches hashes by path, size and mtime),
   `withoutVideo` (storyboards with unlinked runs here, for a hand pick) and `linkable` (storyboards / plans with a video and unlinked

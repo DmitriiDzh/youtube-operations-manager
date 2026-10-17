@@ -6,6 +6,16 @@ import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-
 import { createExchangeFs, resolveWorkspaceFile } from "@/lib/workspace-exchange";
 import { createWorkspaceVideoFiles, isVideoFileName, listVideoFolders } from "@/lib/workspace-videos";
 
+const HASH_CACHE_KEY = Symbol.for("ytom.videoCosts.backfillHashes");
+/** Bounded: a channel has a few hundred videos; past this the oldest entries go first. */
+export const BACKFILL_HASH_CACHE_MAX = 5_000;
+
+/** One cache for the whole process (on globalThis: every request builds its own backfill, the routes are compiled separately). */
+export function processHashCache(): Map<string, string> {
+  const holder = globalThis as typeof globalThis & { [HASH_CACHE_KEY]?: Map<string, string> };
+  return (holder[HASH_CACHE_KEY] ??= new Map<string, string>());
+}
+
 /**
  * BL-194 stage 4: the channel workspace's `MMDD Vn` folders with the size of each video file, and the sha256 of one workspace file
  * (reached through the workspace rule: its real path inside the workspace, a regular file). Read-only. A hash is kept for the life
@@ -13,7 +23,7 @@ import { createWorkspaceVideoFiles, isVideoFileName, listVideoFolders } from "@/
  */
 export function createBackfillFiles(workspaceOf: (channelId: string) => Promise<string>) {
   const files = createWorkspaceVideoFiles();
-  const hashes = new Map<string, string>();
+  const hashes = processHashCache();
   return {
     async videoFolders(channelId: string): Promise<Array<{ video: string; folder: string; files: Array<{ name: string; bytes: number }> }>> {
       const workspace = await workspaceOf(channelId);
@@ -53,6 +63,7 @@ export function createBackfillFiles(workspaceOf: (channelId: string) => Promise<
       });
       const digest = hash.digest("hex");
       hashes.set(key, digest);
+      while (hashes.size > BACKFILL_HASH_CACHE_MAX) hashes.delete(hashes.keys().next().value!);
       return digest;
     },
   };
