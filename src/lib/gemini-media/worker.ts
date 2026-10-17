@@ -4,6 +4,7 @@ import type { StoredGeminiMediaJob } from "@/lib/db";
 import type { GeminiImageResult, GeminiInlineImage, GeminiInteractionsVideoResult } from "@/lib/media-gateway";
 import {
   GEMINI_ACTIVE_STATUSES,
+  GEMINI_IMAGE_MODELS,
   GEMINI_LIMITS,
   GEMINI_MANIFEST_FILE,
   GEMINI_OUTPUT_SUBDIR,
@@ -463,13 +464,14 @@ export function createGeminiWorker(deps: GeminiMediaDeps) {
           await fail(job, "queued", notCharged("gemini_disabled", "Generation through Gemini was turned off before the job was sent."));
           continue;
         }
-        if (inFlight.size >= GEMINI_LIMITS.inFlightPerProcess) break;
-        if (job.nextAttemptAt && job.nextAttemptAt.getTime() > at) continue;
-        // BL-180: a video job queued for a model that has since been removed (a Veo preview) is never sent.
-        if (job.kind === "video" && !ownEntry(GEMINI_VIDEO_MODELS, job.model)) {
+        // BL-180: a job queued for a model that has since been removed (a Veo preview) is never sent -- before the in-flight
+        // cap, so it never waits behind running jobs (review).
+        if (!(job.kind === "image" ? ownEntry(GEMINI_IMAGE_MODELS, job.model) : ownEntry(GEMINI_VIDEO_MODELS, job.model))) {
           await fail(job, "queued", notCharged("gemini_invalid_request", `${job.model} is no longer offered here (removed with BL-180); the job was not sent.`));
           continue;
         }
+        if (inFlight.size >= GEMINI_LIMITS.inFlightPerProcess) break;
+        if (job.nextAttemptAt && job.nextAttemptAt.getTime() > at) continue;
         started.push(track(job.jobId, () => (job.kind === "image" ? runImage(job) : runInteractionsVideo(job))));
       }
       const running = (await deps.store.listJobs({ statuses: ["running"], limit: 200 })).reverse();

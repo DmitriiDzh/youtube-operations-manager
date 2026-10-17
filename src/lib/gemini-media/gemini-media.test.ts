@@ -1085,6 +1085,26 @@ test("BL-180: a Veo id is refused as a model before anything is stored or sent; 
   }
 });
 
+test("BL-180 review: a retry of a Veo job created before the removal (same requestId, same content) still returns that job", async () => {
+  const h = await harness();
+  try {
+    const veo = videoJob({ model: "veo-3.1-fast-generate-preview", requestId: "r1", video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 8 } });
+    // The documented idempotency content of a video create (AC-GM-11), in its fixed order.
+    const hash = createHash("sha256")
+      .update(JSON.stringify({ channelId: "UC1", kind: "video", model: "veo-3.1-fast-generate-preview", prompt: "waves", resolution: "720p", aspectRatio: "16:9", durationSeconds: 8, personGeneration: null, firstFrame: null, lastFrame: null, referenceImages: [] }))
+      .digest("hex");
+    seedJob(h.store, "gm_veo_first", { kind: "video", model: "veo-3.1-fast-generate-preview", requestId: "r1", requestHash: hash, status: "done", costUsd: 0.8, costBasis: "price_table" });
+    const again = (await h.services.createJob(veo, "factory")) as { job: { jobId: string }; replayed?: boolean };
+    assert.deepEqual([again.job.jobId, again.replayed], ["gm_veo_first", true]);
+    // A new Veo create (no matching request) is still refused as a model.
+    assert.equal((await expectCode(h.services.createJob({ ...veo, requestId: "r2" }, "factory"), "gemini_invalid_params")).field, "model");
+    assert.equal(h.store.jobs.size, 1);
+    assert.deepEqual(h.calls, []);
+  } finally {
+    await h.cleanup();
+  }
+});
+
 test("BL-180: a Veo job left queued is failed unsent at no cost; one left running is not polled and fails at its estimate", async () => {
   const h = await harness();
   try {

@@ -3,7 +3,7 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 export { DomainError, isDomainError };
 
 // ---------------------------------------------------------------------------
-// BL-174 (docs/roadmap/plans/GEMINI_MEDIA_PLAN.md) -- images (Nano Banana) and video (Veo 3.1) through Google's Gemini API,
+// BL-174 (docs/roadmap/plans/GEMINI_MEDIA_PLAN.md) -- images (Nano Banana) and video (Omni since BL-179; Veo until BL-180) through Google's Gemini API,
 // driven by the Factory Operator within the owner's limits. A separate feature module (AGENTS.md §M): it depends on the
 // media gateway (its `gemini-api.ts` child), the workspace exchange and the asset catalog, never on `media-generation`
 // or `generation-plans`; switched off (the default) or without a key it makes no network call.
@@ -84,7 +84,6 @@ export const GEMINI_LIMITS = Object.freeze({
   maxAttempts: 3,
   /** Backoff before attempt 2 and 3 (ms). */
   retryBackoffMs: [30_000, 120_000],
-  videoPollMs: 10_000,
   videoRetryMs: 30_000,
   /** Google keeps a generated video 2 days; past this the job gives up. */
   videoGiveUpMs: 47 * 3600_000,

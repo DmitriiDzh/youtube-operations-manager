@@ -455,7 +455,6 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
      */
     async createJob(raw: unknown, actor: string) {
       const input = parseWithSchema(createJobInputSchema, raw, "Gemini job");
-      checkJobRules(input);
       const hash = requestHash(input);
       return deps.withCreateLock(async () => {
         if (input.requestId && !input.dryRun) {
@@ -467,6 +466,8 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
             return { job: jobView(existing), replayed: true };
           }
         }
+        // After the replay (review, BL-180): a retry of a job whose model was removed since still returns that job.
+        checkJobRules(input);
         const settings = await getSettings();
         const preconditionRefusal: GeminiRefusal | null = !settings.enabled
           ? { code: "gemini_disabled", message: "Generation through Gemini is turned off on this computer (Settings → Cloud APIs)." }

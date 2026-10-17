@@ -76,7 +76,7 @@ export const settings = {
   "gemini.key.removeTitle": "Remove the Gemini API key from this computer?",
   "gemini.key.removeDescription": "Queued jobs will fail and running videos cannot be collected until a key is entered again. The key itself stays valid at Google.",
   "gemini.generation.title": "Generation by the operator",
-  "gemini.generation.info": "When this is on, the Factory Operator can generate images (Nano Banana) and video (Veo 3.1) through Google's Gemini API over MCP. Each result is paid; a request over any limit below is refused and the operator is told which limit. Off by default.",
+  "gemini.generation.info": "When this is on, the Factory Operator can generate images (Nano Banana) and video (Gemini Omni) through Google's Gemini API over MCP. Each result is paid; a request over any limit below is refused and the operator is told which limit. Off by default.",
   "gemini.generation.switch": "The operator may generate images and video (paid)",
   "gemini.generation.turnedOn": "Generation is on.",
   "gemini.generation.turnedOff": "Generation is off: queued jobs will not be sent.",
