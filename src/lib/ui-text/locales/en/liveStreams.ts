@@ -286,6 +286,7 @@ export const liveStreams = {
   "live.video.hint.publicStats": "Whether viewers see how many likes the broadcast has.",
   "live.video.playlistsFailed": "Could not read the channel's playlists",
   "live.video.playlistsUnavailable": "The channel's playlists could not be read: {message}",
+  "live.video.playlistsRefresh": "Refresh list",
   "live.video.playlistsNone": "The channel has no playlists.",
   "live.video.playlistMissing": "no longer in the channel",
   "live.video.playlistsHint": "The broadcast is added to each ticked playlist (at most {max}).",

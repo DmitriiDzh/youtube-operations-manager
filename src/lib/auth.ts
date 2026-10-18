@@ -475,6 +475,10 @@ export const authOptions: NextAuthOptions = {
         return true;
       }
 
+      // BL-197: a fresh Google sign-in may grant a different channel than the one remembered for this identity.
+      (await import("./channel-access")).forgetLiveChannel(user.id);
+      (await import("./playlist-management/playlist-list-memo")).forgetPlaylists(user.id);
+
       await upsertUserOAuthOnSignIn({
         userId: user.id,
         name: user.name ?? null,

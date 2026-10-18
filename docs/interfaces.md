@@ -492,7 +492,7 @@ Key MCP tools:
     over the requested days within the coverage, most views first. Collected once a day with the Analytics collection (latest day =
     yesterday; each read starts 6 days before its first new day; at most 100 subjects per channel per run, the channel first, then the
     least recently read videos; a video is failed after 3 attempts, the channel is never given up). A video of another channel, or one
-    that is private, scheduled or never synced, is not listed. Local read only (the live read is `agent_query_channel_breakdown`).
+    that is private, scheduled or never synced, is not listed. Local read only (`agent_query_channel_breakdown` answers trafficSources/deviceType from these same stored days when they cover the period, live otherwise -- BL-197).
   - `agent_get_video_comments` (BL-171, Agent API 3.13.0, `docs/roadmap/plans/VIDEO_COMMENTS_PLAN.md`) — `{ channelId, videoIds (1-20),
     limit? (1-100, default 20), credentialRef? }` → `{ channelId, videos: [{ videoId, title, commentCountAtRead, status (collected |
     disabled | retry | failed | not_collected), readAt, lastError, comments: [{ commentId, text, likeCount, publishedAt, updatedAt,
@@ -1239,8 +1239,10 @@ All routes are App Router handlers and require authenticated session user.
 ### Channel sync API (read-only)
 
 - `GET /api/channels` — list locally synchronized channels
-- `POST /api/channels/sync` — synchronize a channel (`{ "channelId"?: "UC..." }`; omitted = the
-  authenticated account's own channel)
+- `POST /api/channels/sync` — synchronize a channel (`{ "channelId"?: "UC...", "onlyIfStale"?: true }`; omitted = the
+  authenticated account's own channel). BL-197: `onlyIfStale` (the dashboard's automatic sync) answers
+  `{ skipped: true, reason: "fresh", channelId, lastSyncedAt }` without YouTube when the channel last read live for the identity has
+  an owned copy at most 6 h old
 - `GET /api/channels/[channelId]/videos` — list synchronized videos + existing localization languages
 
 ### Agent Operations API (Phase 7 slice A)
@@ -1392,7 +1394,7 @@ MCP/CLI contract: `agent_list_hypotheses`/`agent_get_hypothesis_trail` (read) an
 - `GET /api/channels/[channelId]/analytics/weekly-reports` — every stored weekly report snapshot for the channel, newest week first (read-only, no YouTube call; see `docs/ARCHITECTURE.md` §14.11)
 - `GET /api/channels/[channelId]/analytics/weekly-reports/[weekStartDate]` — one stored snapshot by its Monday start date, or `{ report: null }` if none exists yet (read-only, no YouTube call)
 - `POST /api/channels/[channelId]/analytics/weekly-reports/generate-if-due` — generates/replaces the current due week's snapshot if one isn't already `"final"`; real local-persistence mutation, gated by `src/proxy.ts` like `analytics/auto-collect`; triggered once per dashboard mount, chained after auto-collect
-- `GET /api/channels/[channelId]/analytics/breakdown?startDate=&endDate=&breakdown=` — live channel-level Analytics API read for one of six breakdown kinds (`trafficSources`/`deviceType`/`ageGender`/`geography`/`subscribedStatus`/`contentFormat`, see `CHANNEL_BREAKDOWN_PRESETS`); **never persisted**, not subject to the collection routes' freshness gate (see `docs/ARCHITECTURE.md` §14.12)
+- `GET /api/channels/[channelId]/analytics/breakdown?startDate=&endDate=&breakdown=` — channel-level breakdown for one of six kinds (`trafficSources`/`deviceType`/`ageGender`/`geography`/`subscribedStatus`/`contentFormat`, see `CHANNEL_BREAKDOWN_PRESETS`); since BL-197 `trafficSources`/`deviceType` are summed from the stored channel days (`analytics_breakdown_daily`) when they cover the period, every other case is a live Analytics API read that is **never persisted**, not subject to the collection routes' freshness gate (see `docs/ARCHITECTURE.md` §14.12)
 - `GET /api/channels/[channelId]/videos/[videoId]/analytics/retention?startDate=&endDate=` — live per-video Analytics API read: audience-retention curve (`elapsedVideoTimeRatio` dimension, "Intro" mode only — no "typical retention" comparison line); **never persisted** (see `docs/ARCHITECTURE.md` §14.12)
 
 ### Localization API (read-only)
@@ -1427,11 +1429,11 @@ An approved `Change` is never sent to YouTube by any of these routes — Phase 5
 ### Playlist / video API used by UI
 
 - `GET /api/youtube/videos`
-- `GET /api/youtube/playlists`
+- `GET /api/youtube/playlists[?refresh=1]` — the Web UI pickers' list, remembered 1 h per signed-in identity (BL-197); `refresh=1` reads live
 - `POST /api/youtube/create-playlist`
 - `POST /api/youtube/add-to-playlist`
 - `POST /api/youtube/remove-from-playlist`
-- `GET /api/youtube/channel-info`
+- `GET /api/youtube/channel-info` — the header's channel; read live once per signed-in identity, then remembered 6 h (BL-197)
 
 ### Cloud connection API (2026-09-22, `docs/decisions/0008-cloud-connection.md` — on `feature/gateway-traffic-counters`, not yet in `dev`)
 

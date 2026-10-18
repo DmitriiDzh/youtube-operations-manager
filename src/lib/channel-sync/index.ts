@@ -33,3 +33,4 @@ export function createChannelSyncCore() {
 }
 
 export type ChannelSyncCore = ReturnType<typeof createChannelSyncCore>;
+export { CHANNEL_COPY_FRESH_MS, isOwnedChannelCopyFresh } from "./freshness";

@@ -111,8 +111,9 @@ export function HomeDashboardPanel({
     setLoadingOverview(true);
     try {
       const { startDate, endDate } = computeDefaultPeriodRange(HOME_SUMMARY_PERIOD_DAYS);
+      // BL-197: answered from the stored daily totals once the collection covers the period (the Analytics tab's rule); live otherwise.
       const overviewRes = await fetch(
-        `/api/channels/${encodeURIComponent(channelId)}/analytics/overview?startDate=${startDate}&endDate=${endDate}&refresh=1`
+        `/api/channels/${encodeURIComponent(channelId)}/analytics/overview?startDate=${startDate}&endDate=${endDate}`
       );
       const overviewData = await overviewRes.json();
       if (overviewRes.ok) setOverview(overviewData as ChannelOverview);

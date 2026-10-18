@@ -178,6 +178,7 @@ export const content = {
   "publishingSettings.playlistNone": "No playlist",
   "publishingSettings.playlistUnknown": "Playlist {id} (not in the channel's list)",
   "publishingSettings.playlistsUnavailable": "The playlist list did not load: {message}",
+  "publishingSettings.playlistsRefresh": "Refresh list",
   "publishingSettings.license.youtube": "Standard YouTube License",
   "publishingSettings.license.creativeCommon": "Creative Commons — Attribution",
   "publishingSettings.notSavedYet": "Not saved yet: the defaults are shown.",

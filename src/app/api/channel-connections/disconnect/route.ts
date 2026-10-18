@@ -1,7 +1,9 @@
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
+import { forgetLiveChannel } from "@/lib/channel-access";
 import { createChannelConnectionsCore } from "@/lib/channel-connections";
+import { forgetPlaylists } from "@/lib/playlist-management";
 import { DomainError } from "@/lib/shared-domain";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
 
@@ -33,6 +35,11 @@ export async function POST(request: Request) {
     // shared between devices, so a revocation here would stop the token on every device. It stops working on THIS device anyway
     // (verifyToken requires the channel connected here under the account it was issued for) and works again if the channel is
     // reconnected under that account; Revoke in Settings is the one action that stops it everywhere.
+    // BL-197: the header and the playlist pickers must not keep showing a channel whose connection is gone.
+    if (result.disconnectedUserId) {
+      forgetLiveChannel(result.disconnectedUserId);
+      forgetPlaylists(result.disconnectedUserId);
+    }
     const forceSignOut = result.disconnectedUserId === session.user.id;
     return NextResponse.json({ ...result, forceSignOut });
   } catch (error) {

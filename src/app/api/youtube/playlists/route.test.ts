@@ -7,7 +7,7 @@ test("playlists route returns list payload on happy path", async () => {
   const handler = createPlaylistsGetHandler({
     getSession: async () => ({ user: { id: "user-1" } }),
     core: {
-      listPlaylists: async () => ({
+      listPlaylistsRemembered: async () => ({
         playlists: [
           {
             id: "p1",
@@ -38,7 +38,7 @@ test("playlists route returns unauthorized when session is missing", async () =>
   const handler = createPlaylistsGetHandler({
     getSession: async () => null,
     core: {
-      listPlaylists: async () => ({ playlists: [] }),
+      listPlaylistsRemembered: async () => ({ playlists: [] }),
     },
   });
 
@@ -57,7 +57,7 @@ test("playlists route surfaces a DomainError as a structured JSON error, not a b
   const handler = createPlaylistsGetHandler({
     getSession: async () => ({ user: { id: "user-1" } }),
     core: {
-      listPlaylists: async () => {
+      listPlaylistsRemembered: async () => {
         throw new DomainError({ code: "data_api_reads_disabled", message: "Data API reads are disabled" });
       },
     },

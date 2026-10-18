@@ -3374,7 +3374,7 @@ export function createMcpServer(
     "agent_query_channel_breakdown",
     {
       description:
-        "Channel-level breakdown for a date range: `breakdown` is one of trafficSources (views by traffic source), deviceType (watch minutes by device), ageGender (viewer percentage), geography (views by country), subscribedStatus, contentFormat. Each row carries the raw API `dimensionValues`, a readable `label`, and its metrics. A LIVE YouTube Analytics API read (counts against that API's quota; 1-2 day lag) -- unlike agent_query_channel_analytics there is no locally stored copy. Requires channelId to be the caller's currently-active channel.",
+        "Channel-level breakdown for a date range: `breakdown` is one of trafficSources (views by traffic source), deviceType (watch minutes by device), ageGender (viewer percentage), geography (views by country), subscribedStatus, contentFormat. Each row carries the raw API `dimensionValues`, a readable `label`, and its metrics. trafficSources and deviceType are answered from the stored channel days (agent_list_stored_breakdowns' data) when they cover the whole period (the newest 2 days, which YouTube may not have returned yet, count as covered with what is stored); otherwise, and for the other four kinds, it is a LIVE YouTube Analytics API read (counts against that API's quota; 1-2 day lag). Requires channelId to be the caller's currently-active channel.",
       inputSchema: getChannelBreakdownInputSchema.partial({ credentialRef: true }),
     },
     (args) => handlers.agentQueryChannelBreakdown(args)

@@ -2,6 +2,7 @@ import { setSelectedChannelId } from "@/lib/db";
 import { createWriteContextCore } from "@/lib/write-context";
 import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { createPlaylistYoutubeApiAdapter } from "./adapters/youtube-api";
+import { withPlaylistListMemo } from "./playlist-list-memo";
 import { createPlaylistManagementServices } from "./services";
 
 function defaultAuthResolver() {
@@ -13,7 +14,7 @@ function defaultAuthResolver() {
 export function createPlaylistManagementCore() {
   const writeContext = createWriteContextCore();
 
-  return createPlaylistManagementServices({
+  const services = createPlaylistManagementServices({
     authResolver: defaultAuthResolver(),
     youtubeApi: createPlaylistYoutubeApiAdapter(),
     writeContext,
@@ -21,6 +22,9 @@ export function createPlaylistManagementCore() {
       setSelectedChannelId,
     },
   });
+
+  return withPlaylistListMemo(services);
 }
 
 export type PlaylistManagementCore = ReturnType<typeof createPlaylistManagementCore>;
+export { forgetPlaylists } from "./playlist-list-memo";

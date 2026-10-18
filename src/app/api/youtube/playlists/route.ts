@@ -7,7 +7,7 @@ import { getVideoMetadataErrorStatus } from "../../video-metadata/error-status";
 
 type PlaylistsRouteDeps = {
   getSession: () => Promise<{ user?: { id?: string | null } } | null>;
-  core: Pick<ReturnType<typeof createPlaylistManagementCore>, "listPlaylists">;
+  core: Pick<ReturnType<typeof createPlaylistManagementCore>, "listPlaylistsRemembered">;
 };
 
 export function createPlaylistsGetHandler(
@@ -16,16 +16,16 @@ export function createPlaylistsGetHandler(
     core: createPlaylistManagementCore(),
   }
 ) {
-  return async function GET() {
+  // BL-197: the pickers' list is remembered for 1 h per identity (`playlist-list-memo.ts`); `?refresh=1` reads it live.
+  return async function GET(request?: Request) {
     const session = await deps.getSession();
     if (!session?.user?.id) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     try {
-      const result = await deps.core.listPlaylists({
-        credentialRef: { userId: session.user.id },
-      });
+      const refresh = request ? new URL(request.url).searchParams.get("refresh") === "1" : false;
+      const result = await deps.core.listPlaylistsRemembered({ credentialRef: { userId: session.user.id } }, { refresh });
 
       return NextResponse.json(result.playlists);
     } catch (error) {

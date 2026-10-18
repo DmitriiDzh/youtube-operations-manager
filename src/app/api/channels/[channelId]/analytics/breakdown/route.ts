@@ -10,8 +10,8 @@ const core = createAnalyticsCore();
 // Studio-Parity deep-parity plan (docs/roadmap/plans/ANALYTICS_TAB_DEEP_PARITY_PLAN.md §1's
 // cross-cutting note, slices C2/A2/A3/A4/A6) -- one shared route for every channel-level breakdown
 // card (traffic sources, device type, age/gender, geography, subscribed status, content format),
-// parameterized by `breakdown`. A real, live Analytics API read (same as `.../overview`), never
-// gated by src/proxy.ts's mutation check since GET is never a mutating method.
+// parameterized by `breakdown`. A live Analytics API read, except trafficSources/deviceType, which BL-197 answers from the stored
+// channel days when they cover the period. Never gated by src/proxy.ts's mutation check since GET is never a mutating method.
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ channelId: string }> }

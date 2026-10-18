@@ -9,3 +9,5 @@ export { assertAgentScopeChannel, assertAgentScopeVideo, readStringField } from 
 export type ChannelAccessCore = ReturnType<typeof createChannelAccessCore>;
 export { createChannelAccessService } from "./services";
 export type { ChannelAccessService } from "./services";
+export { LIVE_CHANNEL_MEMO_TTL_MS, recallLiveChannel, liveChannelEpoch, rememberLiveChannel, forgetLiveChannel } from "./live-channel-memo";
+export type { LiveChannelInfo } from "./live-channel-memo";

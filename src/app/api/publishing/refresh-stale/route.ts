@@ -3,12 +3,12 @@ import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { createBackgroundFailureBackoff, credentialUserIdFor, errorCodeOf, listChannelConnections, type BackgroundFailureBackoff } from "@/lib/channel-fanout";
-import { createChannelSyncCore } from "@/lib/channel-sync";
+import { CHANNEL_COPY_FRESH_MS, createChannelSyncCore } from "@/lib/channel-sync";
 import { createChannelVideoStoreAdapter } from "@/lib/channel-video-store";
 import { getOperationRegistry, isOperationAlreadyRunning, runTrackedOperation } from "@/lib/operation-progress";
 
-/** A channel's videos are refreshed for the calendar and the reminder when its last sync is older than this. */
-export const PUBLISHING_REFRESH_AFTER_MS = 6 * 3_600_000;
+/** A channel's videos are refreshed for the calendar and the reminder when its last sync is older than this (BL-197: the shared rule). */
+export const PUBLISHING_REFRESH_AFTER_MS = CHANNEL_COPY_FRESH_MS;
 
 export type RefreshStaleDeps = {
   getSession: () => Promise<{ user?: { id?: string | null } } | null>;
@@ -37,7 +37,7 @@ const processFlag: { running: boolean } = ((globalThis as unknown as Record<symb
 /**
  * BL-182 stage 1 (FO-REQ-0023 §4 D4; PUBLISHING_PLAN.md §2 stage 1 item 2): once per dashboard load, refresh the videos of every
  * connected channel OTHER than the active one whose last sync is older than 6 h, so the reminder in the bell does not rest on
- * stale data. The active channel is already synced on every load (`use-connected-channels`). Each channel is synced with its own
+ * stale data. The active channel is synced by the dashboard itself (`use-connected-channels`, BL-197: when its copy is older than 6 h too). Each channel is synced with its own
  * connected Google user (the BL-141 rule), one after another; the dashboard fires the request and does not wait for it. A channel
  * sync costs a few units (uploads playlist pages plus `videos.list` in fifties). The 60 s alert poll itself never calls YouTube.
  */

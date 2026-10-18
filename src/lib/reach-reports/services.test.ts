@@ -368,16 +368,36 @@ test("syncReachReports: a wrong-channel call records nothing (the channel check 
   assert.deepEqual(calls.attempts, []);
 });
 
-test("onlyIfDue: a recent FAILED attempt does not throttle (its cause is fixable); a recent partial/ok attempt does, until 6 hours have passed", async () => {
+// BL-197 changed this requirement (owner, Telegram 2026-10-18, msgs 2988/2989): a failed automatic sync of the active channel used to be
+// retried on every dashboard load; it now waits 1 hour (FAILED_ACTIVE_RETRY_AFTER_MINUTES) -- still far less than the 6 hours of a
+// checked one, because its cause is usually fixable.
+test("onlyIfDue: a FAILED attempt holds the retry for 1 hour (its cause is fixable); a recent partial/ok attempt holds it for 6 hours", async () => {
   const base = { error: null, filesListed: 1, filesImported: 1, failures: [] };
-  const failed = createFixture({
+  const failedOneMinuteAgo = createFixture({
     storedAttempt: { ...base, attemptedAt: new Date("2026-10-03T11:59:00Z"), outcome: "failed", error: "reads disabled" },
     now: new Date("2026-10-03T12:00:00Z"),
     reports: [],
   });
+  const heldAfterFailure = await failedOneMinuteAgo.services.syncReachReports({ ...SYNC, onlyIfDue: true });
+  assert.equal(heldAfterFailure.skipped, true, "a failed attempt one minute ago holds the automatic retry");
+  assert.equal(failedOneMinuteAgo.calls.ensureJob, 0);
+
+  const failed = createFixture({
+    storedAttempt: { ...base, attemptedAt: new Date("2026-10-03T10:59:00Z"), outcome: "failed", error: "reads disabled" },
+    now: new Date("2026-10-03T12:00:00Z"),
+    reports: [],
+  });
   const ranAfterFailure = await failed.services.syncReachReports({ ...SYNC, onlyIfDue: true });
-  assert.ok(!ranAfterFailure.skipped, "a failed attempt one minute ago must not block the retry");
+  assert.ok(!ranAfterFailure.skipped, "a failed attempt 61 minutes ago no longer blocks the retry");
   assert.equal(failed.calls.ensureJob, 1);
+
+  // A sync the operator starts (no onlyIfDue) is never held back by a failure.
+  const manual = createFixture({
+    storedAttempt: { ...base, attemptedAt: new Date("2026-10-03T11:59:00Z"), outcome: "failed", error: "reads disabled" },
+    now: new Date("2026-10-03T12:00:00Z"),
+    reports: [],
+  });
+  assert.ok(!(await manual.services.syncReachReports(SYNC)).skipped);
 
   const okAttempt = { ...base, attemptedAt: new Date("2026-10-03T08:00:00Z"), outcome: "partial" as const };
   const recent = createFixture({ storedAttempt: okAttempt, now: new Date("2026-10-03T13:59:00Z") });
@@ -743,7 +763,9 @@ test("AC-FS-05: isAnyReachSyncDue follows the onlyIfDue rule per channel and cal
   assert.equal(await old.services.isAnyReachSyncDue({ sessionUserId: "uS" }), true, "6 h passed");
 
   const failed = createFixture({ connections, activeChannelByUser, now, storedAttempt: { ...base, attemptedAt: new Date("2026-10-03T11:00:00Z"), outcome: "failed", error: "x" } });
-  assert.equal(await failed.services.isAnyReachSyncDue({ sessionUserId: "uS" }), true, "the active channel's failed attempt does not throttle it");
+  assert.equal(await failed.services.isAnyReachSyncDue({ sessionUserId: "uS" }), true, "the active channel's failed attempt an hour ago no longer holds it (BL-197: 1 h)");
+  const failedRecently = createFixture({ connections, activeChannelByUser, now, storedAttempt: { ...base, attemptedAt: new Date("2026-10-03T11:30:00Z"), outcome: "failed", error: "x" } });
+  assert.equal(await failedRecently.services.isAnyReachSyncDue({ sessionUserId: "uS" }), false, "a failed attempt 30 min ago holds every channel (BL-197)");
 
   const failedBackgroundOnly = createFixture({
     connections: [{ channelId: "UC_B", connectedUserId: "uB" }],
@@ -752,4 +774,23 @@ test("AC-FS-05: isAnyReachSyncDue follows the onlyIfDue rule per channel and cal
     storedAttempt: { ...base, attemptedAt: new Date("2026-10-03T11:00:00Z"), outcome: "failed", error: "x" },
   });
   assert.equal(await failedBackgroundOnly.services.isAnyReachSyncDue({ sessionUserId: "uS" }), false, "a background channel's failed attempt throttles it");
+});
+
+// BL-197 (owner, Telegram 2026-10-18, msgs 2988/2989): after a failed attempt the status names the end of the 1-hour hold, not "on the
+// next dashboard open"; when a 6-hour hold from an earlier check ends later, that one is named.
+test("getReachStatus: a failed attempt at 12:00 shows the next automatic check at 13:00; a check at 10:00 (until 16:00) wins over it", async () => {
+  const failedAt = { attemptedAt: new Date("2026-10-03T12:00:00Z"), outcome: "failed" as const, error: "token revoked", filesListed: 0, filesImported: 0, failures: [] };
+  const onlyFailure = await createFixture({ storedAttempt: failedAt, now: new Date("2026-10-03T12:10:00Z") }).services.getReachStatus(SYNC);
+  assert.equal(onlyFailure.nextAutoCheckAt, "2026-10-03T13:00:00.000Z");
+
+  const withCheck = await createFixture({
+    storedJob: { jobId: "job-1", jobCreatedAt: "2026-10-01T21:05:54Z", lastCheckedAt: new Date("2026-10-03T10:00:00Z") },
+    storedAttempt: failedAt,
+    now: new Date("2026-10-03T12:10:00Z"),
+  }).services.getReachStatus(SYNC);
+  assert.equal(withCheck.nextAutoCheckAt, "2026-10-03T16:00:00.000Z");
+
+  // Review of BL-197: once the hold is over (3 h later) it is not named; with no check it is "on the next open" (null) again.
+  const holdOver = await createFixture({ storedAttempt: failedAt, now: new Date("2026-10-03T15:00:00Z") }).services.getReachStatus(SYNC);
+  assert.equal(holdOver.nextAutoCheckAt, null);
 });
