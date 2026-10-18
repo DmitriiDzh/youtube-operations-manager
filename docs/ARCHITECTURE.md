@@ -4456,5 +4456,15 @@ Plan: `docs/roadmap/plans/VIDEO_COST_PLAN.md` §2 stages 2-4 (criteria 3-9). Sch
   create / validate, against the runtime's tested node list; an untested runtime and the built-in one are not checked. The graph's
   `class_type` values are the requirement; a separate `requiredNodes` field was not added (it would say nothing the API-format
   graph does not, and a strict registry schema would mark such files invalid on a build without it).
+- **Input check (BL-201, FO-REQ-0030).** The first real job on `comfy-0410-flux3` failed at `/prompt`: ComfyUI 0.41.0 made
+  `ImageScaleToTotalPixels.resolution_steps` required, and the node-presence test had passed.
+  - The test now reads the whole `/object_info` and checks each graph statically (`runtime-graph-check.ts`):
+    - a required input not set by value, link or parameter;
+    - a list value not allowed;
+    - an INT / FLOAT out of range or of the wrong type, or a non-boolean BOOLEAN;
+    - an undeclared input, as a warning.
+  - Linked, parameter-filled and file-list inputs are not value-checked.
+  - `templateRuntimeProblems` / `runtimeIncompatibleError` (`runtimes.ts`) are the single check used by both the job create and
+    the factory start, per template version.
 - **Not done.** Our own Docker image; pruning old runtimes from the volume (RISK-132); running a template's job in the test.
 

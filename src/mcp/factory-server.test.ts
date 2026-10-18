@@ -248,7 +248,7 @@ test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.23.0 
   // BL-180 (owner msg 2902): the three Veo 3.1 previews leave the Gemini catalog (a Veo create is refused) -> 1.21.0.
   // BL-134 (FO-REQ-0028): gated Hugging Face pulls, three hf_* errors, licence fields and settings.hfToken (additive) -> 1.22.0.
   // BL-200 (FO-REQ-0029, ADR 0043): pod runtime profiles -- four tools (list, get, list ComfyUI releases, create) -> 1.23.0.
-  assert.equal(FACTORY_API_VERSION, "1.23.0");
+  assert.equal(FACTORY_API_VERSION, "1.24.0");
   const agentOperations = await readFile("src/lib/agent-operations/contracts.ts", "utf8");
   assert.equal(agentOperations.includes("FACTORY_API_VERSION"), false);
 });

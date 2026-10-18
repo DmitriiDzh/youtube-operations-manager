@@ -545,4 +545,9 @@ export const media: Record<keyof typeof en, string> = {
   "media.runtimes.confirmTitle": "Проверить {id}?",
   "media.runtimes.confirmText": "Платно: если среда ещё не собрана, сначала её соберёт под на самом дешёвом GPU из вашего списка (около 10 минут, примерно $0.05–0.15; сам GPU не используется). Затем запустится GPU-сессия не дороже ${cap}, будет прочитан список нод, и сессия остановится.",
   "media.runtimes.confirm": "Запустить проверку",
+  "media.runtimes.templateInput": "{template}: нода {node}, вход {input} — {problem}",
+  "media.runtimes.problem.required_missing": "обязательный вход не задан",
+  "media.runtimes.problem.unknown_input": "у ноды нет такого входа",
+  "media.runtimes.problem.bad_value": "недопустимое значение",
+  "media.runtimes.problem.out_of_range": "значение вне границ",
 };

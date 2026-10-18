@@ -127,7 +127,8 @@ test("the client exposes exactly the calls the job pipeline makes -- no /view or
   // BL-144 (owner, Telegram 2026-10-06, msg 1887): the job pipeline now also reads ComfyUI's execution events
   // (`openProgressStream`, read-only websocket) -- the one addition; still no /view or /upload.
   // BL-200 (FO-REQ-0029 B, ADR 0043): a pod runtime's test reads its node types (`getNodeTypes`, GET /object_info, read-only).
-  assert.deepEqual(Object.keys(client).sort(), ["baseUrl", "deleteQueued", "getHistory", "getNodeTypes", "getQueue", "getSystemStats", "interrupt", "openProgressStream", "submitPrompt"]);
+  // FO-REQ-0030: the same read in full (`getObjectInfo`), to check a template's inputs against the runtime.
+  assert.deepEqual(Object.keys(client).sort(), ["baseUrl", "deleteQueued", "getHistory", "getNodeTypes", "getObjectInfo", "getQueue", "getSystemStats", "interrupt", "openProgressStream", "submitPrompt"]);
 });
 
 test("review: getQueue exposes the running and pending prompt ids; deleteQueued posts {delete:[...]} and skips an empty list", async () => {

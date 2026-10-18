@@ -2800,6 +2800,12 @@ const RUNTIME_STATUS_KEYS: Record<RuntimeView["status"], UiTextKey> = {
   test_failed: "media.runtimes.status.test_failed",
   tested: "media.runtimes.status.tested",
 };
+const RUNTIME_INPUT_PROBLEM_KEYS: Record<"required_missing" | "unknown_input" | "bad_value" | "out_of_range", UiTextKey> = {
+  required_missing: "media.runtimes.problem.required_missing",
+  unknown_input: "media.runtimes.problem.unknown_input",
+  bad_value: "media.runtimes.problem.bad_value",
+  out_of_range: "media.runtimes.problem.out_of_range",
+};
 const TEST_STATUS_KEYS: Record<RuntimeTestJob["status"], UiTextKey> = {
   building: "media.runtimes.test.building",
   starting: "media.runtimes.test.starting",
@@ -2963,7 +2969,16 @@ export function PodRuntimesCard({ settings, onChanged }: { settings: Settings; o
                 {failed.length > 0 && (
                   <ul className="space-y-0.5 text-xs text-amber-300">
                     {failed.map((x) => (
-                      <li key={x.templateId}>{t("media.runtimes.templateMissing", { template: `${x.templateId} v${x.version}`, nodes: x.missing.join(", ") })}</li>
+                      <li key={x.templateId}>
+                        {x.missing.length > 0 && t("media.runtimes.templateMissing", { template: `${x.templateId} v${x.version}`, nodes: x.missing.join(", ") })}
+                        {(x.invalid ?? [])
+                          .filter((i) => i.problem !== "unknown_input")
+                          .map((i) => (
+                            <span key={`${i.nodeId}.${i.input}`} className="block">
+                              {t("media.runtimes.templateInput", { template: `${x.templateId} v${x.version}`, node: `${i.nodeId} ${i.classType}`, input: i.input, problem: t(RUNTIME_INPUT_PROBLEM_KEYS[i.problem]) })}
+                            </span>
+                          ))}
+                      </li>
                     ))}
                   </ul>
                 )}

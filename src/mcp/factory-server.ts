@@ -90,7 +90,12 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 // on); a job or a factory session with templateId whose graph needs a node type the runtime's test did not find is refused with
 // media_runtime_incompatible before any pod / upload. Additive (with no active runtime every session runs the built-in ComfyUI,
 // as before).
-export const FACTORY_API_VERSION = "1.23.0";
+// FO-REQ-0030 (BL-201): 1.24.0 -- a runtime test also checks each template's inputs against the runtime's node definitions
+// (/object_info, no generation): test templates gain `invalid` [{ nodeId, classType, input, problem: required_missing |
+// unknown_input | bad_value | out_of_range, allowed? }]; a template fails on any but unknown_input (a warning); media_runtime_incompatible
+// also carries a template version's `invalid` from the runtime's last test. Additive in shape; a template that passed before can now
+// fail its test or be refused.
+export const FACTORY_API_VERSION = "1.24.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -602,7 +607,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_media_get_runtime",
     {
       description:
-        "One runtime profile with its test result per template ({ runtime: { ...profile, templates: [{ templateId, version, ok, missing: [node types] }] }, builds: [its builds on this computer: status running | built | failed | timeout, error], tests: [its tests: status building | starting | passed | failed, sessionId, error, costUsd, bootSeconds] }). Read-only.",
+        "One runtime profile with its test result per template ({ runtime: { ...profile, templates: [{ templateId, version, ok, missing: [node types], invalid: [{ nodeId, classType, input, problem, allowed? }] (1.24.0) }] }, builds: [its builds on this computer: status running | built | failed | timeout, error], tests: [its tests: status building | starting | passed | failed, sessionId, error, costUsd, bootSeconds] }). Read-only.",
       inputSchema: runtimeIdInput,
     },
     async (args) => successResult(await deps.media.getRuntime(parseInput(runtimeIdInput, args)))
@@ -635,7 +640,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_media_test_runtime",
     {
       description:
-        "Test a pod runtime profile (1.23.0): { runtimeId, templateIds? (default: every registry template), channelId? (the connected channel the test session is booked to; default: the first connected one) }. Returns at once with { test: { testId, status: building | starting | passed | failed, ... } }; the server advances it about once a minute -- poll factory_media_get_runtime (its `tests`). Steps: a runtime that is not built is built first on a pod of the cheapest GPU of the owner's list in the volume's datacenter (~10 min, about $0.05-0.15; the GPU is not used); then a short GPU session on the runtime under YOUR factory limits, its USD cap = the owner's runtimeTestMaxUsd ($0.5 by default) and its minutes what that buys at the GPU's price (3-15 min); once ComfyUI answers, its node types (/object_info) and version (/system_stats) are read, every template's graph is checked for node types the runtime lacks, the session is stopped, and the result is kept beside the profile (factory_media_get_runtime: templates [{ templateId, version, ok, missing }], comfyVersion, costUsd, bootSeconds). The test passes when every checked template has all its nodes. Only node presence is checked -- no generation is run. A session held by a limit fails the test (nothing is billed).",
+        "Test a pod runtime profile (1.23.0): { runtimeId, templateIds? (default: every registry template), channelId? (the connected channel the test session is booked to; default: the first connected one) }. Returns at once with { test: { testId, status: building | starting | passed | failed, ... } }; the server advances it about once a minute -- poll factory_media_get_runtime (its `tests`). Steps: a runtime that is not built is built first on a pod of the cheapest GPU of the owner's list in the volume's datacenter (~10 min, about $0.05-0.15; the GPU is not used); then a short GPU session on the runtime under YOUR factory limits, its USD cap = the owner's runtimeTestMaxUsd ($0.5 by default) and its minutes what that buys at the GPU's price (3-15 min); once ComfyUI answers, its node types (/object_info) and version (/system_stats) are read, every template's graph is checked for node types the runtime lacks and (1.24.0) for inputs its nodes do not accept -- a required input not set (by value, link or a template parameter), a list value not allowed, a number out of range or of the wrong type; an input the node does not declare is only a warning -- the session is stopped, and the result is kept beside the profile (factory_media_get_runtime: templates [{ templateId, version, ok, missing }], comfyVersion, costUsd, bootSeconds). The test passes when every checked template has all its nodes. Only node presence is checked -- no generation is run. A session held by a limit fails the test (nothing is billed).",
       inputSchema: testRuntimeInput,
     },
     async (args) => {

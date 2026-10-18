@@ -73,7 +73,18 @@ const testFileSchema = z
     testedAt: z.string(),
     comfyVersion: z.string().nullable(),
     nodes: z.array(z.string()),
-    templates: z.array(z.object({ templateId: z.string(), version: z.number(), ok: z.boolean(), missing: z.array(z.string()) }).strict()),
+    templates: z.array(
+      z
+        .object({
+          templateId: z.string(),
+          version: z.number(),
+          ok: z.boolean(),
+          missing: z.array(z.string()),
+          /** FO-REQ-0030: the graph's inputs against the runtime's node definitions (absent in tests before it). */
+          invalid: z.array(z.object({ nodeId: z.string(), classType: z.string(), input: z.string(), problem: z.enum(["required_missing", "unknown_input", "bad_value", "out_of_range"]), allowed: z.unknown().optional() }).strict()).optional(),
+        })
+        .strict()
+    ),
     /** Whether every registry template was checked (not a chosen subset): only such a passed test makes a runtime activatable. */
     allTemplates: z.boolean().optional(),
     costUsd: z.number().nullable(),
@@ -144,6 +155,33 @@ export function assertActiveRuntimeUnchanged(update: unknown, current: string | 
   if (requested !== undefined && requested !== current) {
     throw new DomainError({ code: "validation_failed", message: "The active pod runtime is set with its own action (Servers → Setup → Pod runtimes, or factory_media_activate_runtime), which checks its test.", details: { field: "activeRuntimeId" } });
   }
+}
+
+export type TestedRuntime = { nodes: Set<string>; comfyVersion: string | null; templates: RuntimeTestResult["templates"] };
+
+/**
+ * BL-200 AC-RT-07 + FO-REQ-0030: why a template cannot run on a tested runtime -- node types its graph needs that the runtime lacks,
+ * and the blocking input problems the runtime's last test found in THIS version of the template (another version's are not its).
+ */
+export function templateRuntimeProblems(template: { templateId: string; version: number; workflowJson: string }, tested: TestedRuntime): { missing: string[]; invalid: NonNullable<RuntimeTestResult["templates"][number]["invalid"]> } {
+  const missing = missingNodeTypes(template.workflowJson, tested.nodes);
+  const result = tested.templates.find((t) => t.templateId === template.templateId && t.version === template.version);
+  const invalid = (result?.invalid ?? []).filter((i) => i.problem !== "unknown_input");
+  return { missing, invalid };
+}
+
+/** The refusal for those problems, or null when there are none. */
+export function runtimeIncompatibleError(templateId: string, runtimeId: string, problems: ReturnType<typeof templateRuntimeProblems>, extra: Record<string, unknown> = {}): DomainError | null {
+  if (problems.missing.length === 0 && problems.invalid.length === 0) return null;
+  const parts = [
+    problems.missing.length > 0 ? `node types it lacks: ${problems.missing.join(", ")}` : null,
+    problems.invalid.length > 0 ? `inputs its test found wrong: ${problems.invalid.map((i) => `node ${i.nodeId} ${i.classType}.${i.input} ${i.problem}`).join("; ")}` : null,
+  ].filter(Boolean);
+  return new DomainError({
+    code: "media_runtime_incompatible",
+    message: `Template ${templateId} cannot run on runtime ${runtimeId} -- ${parts.join("; ")}. Fix the template (a new version) or use another runtime; no pod time was spent on it.`,
+    details: { ...extra, templateId, runtimeId, missing: problems.missing, invalid: problems.invalid },
+  });
 }
 
 export type RuntimeDeps = {
@@ -235,10 +273,10 @@ export function createRuntimeServices(deps: RuntimeDeps) {
     },
 
     /** The tested node list of a profile (null when it was never tested) -- for the pre-pod template check. */
-    async testedNodes(runtimeId: string): Promise<{ nodes: Set<string>; comfyVersion: string | null } | null> {
+    async testedNodes(runtimeId: string): Promise<TestedRuntime | null> {
       const s3 = await deps.s3();
       const test = parseJson(testFileSchema, await s3.getObjectText(runtimeKey(runtimeId, "test.json")));
-      return test ? { nodes: new Set(test.nodes), comfyVersion: test.comfyVersion } : null;
+      return test ? { nodes: new Set(test.nodes), comfyVersion: test.comfyVersion, templates: test.templates } : null;
     },
 
     /** Stage 3 (AC-RT-05): the test's result beside the profile (`test.json`); a newer test replaces it. */

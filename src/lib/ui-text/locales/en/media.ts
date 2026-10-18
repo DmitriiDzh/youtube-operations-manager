@@ -544,4 +544,9 @@ export const media = {
   "media.runtimes.confirmTitle": "Test {id}?",
   "media.runtimes.confirmText": "Billed: if the runtime is not built yet, a pod on the cheapest GPU of your list builds it first (about 10 min, roughly $0.05–0.15; the GPU itself is not used). Then a GPU session of at most ${cap} starts, its node list is read, and the session is stopped.",
   "media.runtimes.confirm": "Start the test",
+  "media.runtimes.templateInput": "{template}: node {node}, input {input} — {problem}",
+  "media.runtimes.problem.required_missing": "required input not set",
+  "media.runtimes.problem.unknown_input": "input the node does not have",
+  "media.runtimes.problem.bad_value": "value not allowed",
+  "media.runtimes.problem.out_of_range": "value out of range",
 } as const;

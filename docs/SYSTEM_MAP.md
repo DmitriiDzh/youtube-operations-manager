@@ -997,6 +997,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Активная среда:** `setActiveRuntime` (нужна пройденная проверка, Оператору — переключатель владельца); обычное сохранение настроек её не меняет. До пода: `media_runtime_incompatible` при запуске с шаблоном и при создании задачи.
 - **Factory API 1.23.0:** `factory_media_list_runtimes` / `_get_runtime` / `_list_comfy_releases` / `_create_runtime` / `_test_runtime` / `_activate_runtime`; `runtimeId` у `factory_media_start_session`.
 - **UI:** «Серверы» → «Настройка» → карточка «Среды пода» (`PodRuntimesCard`): список, «Проверить», «Сделать активной», «Вернуть встроенную», переключатель Оператора, лимит проверки, источники. Маршруты `/api/media-generation/runtimes` (+`/test`, `/activate`).
+- **Проверка входов (BL-201, FO-REQ-0030, Factory API 1.24.0):** `runtime-graph-check.ts` сверяет граф шаблона с `/object_info` среды (`getObjectInfo`): обязательные входы, списки, диапазоны и типы. Неизвестный вход — только предупреждение. Результат лежит в `test.json` → `templates[].invalid`, и отказ `media_runtime_incompatible` при запуске и при создании задачи учитывает его для той же версии шаблона.
 - Не входят: свой Docker-образ, удаление старых сред с тома (RISK-132), прогон генерации в проверке.
 
 ## 3. Где вносить изменения
