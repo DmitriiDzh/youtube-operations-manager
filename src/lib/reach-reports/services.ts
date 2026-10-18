@@ -24,6 +24,7 @@ import {
   type SyncReachFailure,
   type SyncReachReportsResult,
   type SyncReachReportsSkipped,
+  FAILED_ACTIVE_RETRY_AFTER_MINUTES,
   MIN_SYNC_INTERVAL_HOURS,
   FIRST_REPORT_EXPECTED_WITHIN_HOURS,
   STATUS_FILES_LIMIT,
@@ -234,15 +235,18 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
     // The time a type was checked within the last MIN_SYNC_INTERVAL_HOURS (so it is not due), or null when it is due.
     const checkedRecentlyAt = async (reportTypeId: string): Promise<Date | null> => {
       const [known, attempt] = await Promise.all([deps.store.getJob(channelId, reportTypeId), deps.store.getAttempt(channelId, reportTypeId)]);
-      // A FAILED attempt does not throttle: its cause is usually fixable (toggle back on, scope re-granted,
-      // API enabled) and the automatic sync must pick that up on the next dashboard open, not 6 hours later.
-      const lastChecked = [
-        known?.lastCheckedAt ?? null,
-        attempt && (attempt.outcome !== "failed" || throttleFailed) ? attempt.attemptedAt : null,
-      ]
+      const now = deps.clock.now().getTime();
+      const lastChecked = [known?.lastCheckedAt ?? null, attempt && attempt.outcome !== "failed" ? attempt.attemptedAt : null]
         .filter((d): d is Date => d !== null)
         .sort((a, b) => b.getTime() - a.getTime())[0];
-      return lastChecked && deps.clock.now().getTime() < lastChecked.getTime() + MIN_SYNC_INTERVAL_HOURS * 3_600_000 ? lastChecked : null;
+      if (lastChecked && now < lastChecked.getTime() + MIN_SYNC_INTERVAL_HOURS * 3_600_000) return lastChecked;
+      // A FAILED attempt's cause is usually fixable (toggle back on, scope re-granted, API enabled): the active channel tries again after
+      // FAILED_ACTIVE_RETRY_AFTER_MINUTES (BL-197: not on every load), a background channel after the full MIN_SYNC_INTERVAL_HOURS.
+      if (attempt && attempt.outcome === "failed") {
+        const waitMs = throttleFailed ? MIN_SYNC_INTERVAL_HOURS * 3_600_000 : FAILED_ACTIVE_RETRY_AFTER_MINUTES * 60_000;
+        if (now < attempt.attemptedAt.getTime() + waitMs) return attempt.attemptedAt;
+      }
+      return null;
     };
     const reachCheckedAt = await checkedRecentlyAt(REACH_BASIC_REPORT_TYPE_ID);
     // BL-181 (review finding 2): each other type by its OWN checks. Reach's are shared with the other computer (BL-151), these
@@ -657,6 +661,13 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
         .filter((d): d is Date => d !== null)
         .sort((a, b) => b.getTime() - a.getTime())[0];
 
+      // BL-197: a failed attempt holds the dashboard's own automatic retry for FAILED_ACTIVE_RETRY_AFTER_MINUTES -- the later of the two.
+      const holds = [
+        lastChecked ? lastChecked.getTime() + MIN_SYNC_INTERVAL_HOURS * 3_600_000 : null,
+        attempt && attempt.outcome === "failed" ? attempt.attemptedAt.getTime() + FAILED_ACTIVE_RETRY_AFTER_MINUTES * 60_000 : null,
+      ].filter((ms): ms is number => ms !== null);
+      const nextAutoCheckAt = holds.length > 0 ? Math.max(...holds) : null;
+
       return {
         channelId: parsed.channelId,
         job: job ? { jobId: job.jobId, createdAt: job.jobCreatedAt } : null,
@@ -672,7 +683,7 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
               failures: attempt.failures,
             }
           : null,
-        nextAutoCheckAt: lastChecked ? new Date(lastChecked.getTime() + MIN_SYNC_INTERVAL_HOURS * 3_600_000).toISOString() : null,
+        nextAutoCheckAt: nextAutoCheckAt === null ? null : new Date(nextAutoCheckAt).toISOString(),
         importedFiles: coverage.importedFiles,
         files: files.map(fileView),
         firstFileLag: firstFileLagOf(files, job?.jobCreatedAt ?? null),

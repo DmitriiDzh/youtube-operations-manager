@@ -149,6 +149,13 @@ export type SyncReachReportsSkipped =
 /** The automatic (dashboard-mount) sync calls Google at most this often per channel. */
 export const MIN_SYNC_INTERVAL_HOURS = 6;
 
+/**
+ * BL-197 (owner, Telegram 2026-10-18, msgs 2988/2989): after a FAILED automatic sync the dashboard's own (active) channel waits this long
+ * before the next automatic try, instead of retrying on every load; its cause is usually fixable, so not the full 6 hours. A background
+ * channel's failure still waits MIN_SYNC_INTERVAL_HOURS. A sync the operator starts is never held back.
+ */
+export const FAILED_ACTIVE_RETRY_AFTER_MINUTES = 60;
+
 export type ReachState =
   /** No reporting job exists for this channel yet. */
   | "no_job"
