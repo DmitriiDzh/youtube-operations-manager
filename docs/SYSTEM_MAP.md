@@ -933,6 +933,16 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Исследования:** `countResearchChannelsDueForCollection` (`db.ts`, те же условия, что у захвата, без записи) и `hasChannelsDue`. Если ничего не пора, `collect-if-stale` отвечает без цикла синхронизации устройств и без tokeninfo.
 - **Охваты:** `dueState` — правило `onlyIfDue`, вынесено без изменений. `isAnyReachSyncDue`: если ничего не пора, `sync-all` отвечает до импорта другого компьютера.
 
+### 2.9at Экраны не тратят квоту на уже сохранённые данные (BL-197) — **IMPLEMENTED** на `feature/bl-197-quota-from-db` (ещё не влито в `dev`)
+
+- **Шапка:** `GET /api/youtube/channel-info` читает `channels.list mine` один раз на вход. Дальше 6 ч отвечает из памяти процесса (`src/lib/channel-access/live-channel-memo.ts`, ключ — пользователь сессии). Память сбрасывается при входе через Google (`auth.ts` `signIn`), при отключении канала и при перезапуске. Каждый ответ по-прежнему вызывает `activateChannel` (ADR 0004). Живое чтение подписано в журнале квоты как `channel_header`. Проверку входа делает `/api/channel-connections/health`, она без квоты.
+- **Переключатель каналов:** `use-connected-channels` шлёт `POST /api/channels/sync { onlyIfStale: true }`. Ответ `{ skipped: true }` без YouTube, если у активного канала есть копия этого же входа моложе 6 ч (`channel-sync/freshness.ts`, общее правило с `publishing/refresh-stale`). Новый канал без своей копии синхронизируется сразу. Явный `channelId` и синхронизация без флага выполняются всегда.
+- **Главная:** сводка канала без `refresh=1` — то же правило `preferLocal`, что у вкладки Аналитики.
+- **Источники трафика и устройства канала:** `getChannelBreakdown` сначала пробует `answerChannelBreakdownFromStore` (`analytics/breakdowns.ts`): сумма сохранённых дней `analytics_breakdown_daily`, если они покрывают период (последние 2 дня — задержка Analytics). Иначе запрос живой. Остальные четыре разреза Аудитории не хранятся и остаются живыми.
+- **Плейлисты для выбора:** `GET /api/youtube/playlists` → `listPlaylistsRemembered` (`playlist-management/playlist-list-memo.ts`, 1 ч на вход). Любое изменение плейлистов через ядро сбрасывает память. `?refresh=1` — кнопка «Обновить список». `listPlaylists` для MCP и CLI остаётся живым.
+- **Охват:** после неудачной автоматической попытки активный канал ждёт `FAILED_ACTIVE_RETRY_AFTER_MINUTES` (60 мин), фоновый — 6 ч. `nextAutoCheckAt` в статусе учитывает эту паузу.
+- **Не входит:** окно видео (`videos.list` перед правкой) и четыре нехранимых разреза Аудитории. Схема не менялась.
+
 ## 3. Где вносить изменения
 
 | Задача | Где |

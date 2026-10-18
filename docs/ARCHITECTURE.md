@@ -819,6 +819,19 @@ plan, and every other channel then run in `after()`, in the same order as a coll
 path. The research `collect-if-stale` and the automatic `reach/sync-all` likewise return before device sync and the peers' import
 when their own read-only due checks (`countResearchChannelsDueForCollection`, `isAnyReachSyncDue`) find nothing.
 
+**Screens answer from stored data (BL-197, owner Telegram 2026-10-18).** The dashboard's own reads no longer spend quota on data the
+app already holds:
+- The header's `channel-info` reads `channels.list mine` once per signed-in identity and then answers for 6 h from an in-process memo
+  (`channel-access/live-channel-memo.ts`). Only a live answer is stored, so the channel it names is still what that identity's grant
+  resolved. The memo is cleared by a Google sign-in, by a disconnect and by a restart. Each answer still activates the channel
+  (ADR 0004). Grant liveness is checked by `channel-connections/health` (no quota).
+- The switcher's automatic sync (`onlyIfStale`) is skipped while the active channel's copy is owned by this identity and younger
+  than 6 h (`channel-sync/freshness.ts`, the same window as `publishing/refresh-stale`).
+- Home's summary uses `preferLocal`. Traffic-source and device cards are summed from `analytics_breakdown_daily` when the stored
+  range covers the period (`answerChannelBreakdownFromStore`).
+- The Web UI playlist pickers use a 1 h per-identity memo, which any playlist change made through the core clears; agents and the
+  CLI read live.
+
 **`GET /api/settings` is not purely read-only**: `getUserTimezone`'s detect-and-persist behavior means a plain `GET` can write
 the OS-detected timezone on first read, and `getAnalyticsCollectionTimes` saves the UTC times converted from the legacy local
 ones (stated in that route's own doc comment, not left as a surprise).
@@ -1206,7 +1219,7 @@ Decision record: `docs/decisions/0014-youtube-reporting-api-gateway-child.md`.
 - **Why a separate mechanism.** The Analytics `reports.query` endpoint rejects the thumbnail impressions / CTR metrics (§14.4's live probes); they exist only in the Reporting API v1's Reach reports. That API is bulk and scheduled: the app creates a **job** for a report type, Google generates one file per day, the app downloads and stores them. Google backfills 30 days before job creation, first files appear within ~48 h, backfill files expire after 30 days and regular ones after 60 -- so the app persists everything it downloads.
 - **Gateway.** `youtube-read-gateway/reporting-api.ts` is the third `googleapis` child. The client constructor (`createYoutubeReportingClient`) is the single choke point for the **Reporting reads** toggle and the `reporting_reads` traffic counter. `jobs.reports` is a nested resource that the quota-classification proxy does not wrap, so each call goes through `callYoutubeApi` explicitly. A report's `downloadUrl` comes from an API response, so the download refuses any host except `youtubereporting.googleapis.com` before any credential is sent. Creating a job is **not** a YouTube write (ADR 0014): no Live writes, no write gateway.
 - **Module.** `reach-reports` follows the usual layering and does not import `analytics` (AGENTS.md §M): turning Reporting off, or a failure here, never affects the Analytics tab or `agent_query_channel_analytics`.
-  - `syncReachReports`: `assertActiveChannel` (fail closed, before any credential use) -> `ensureReportingJob` (reuse an existing job, never duplicate) -> list files -> skip ids already in the ledger -> process oldest `createTime` first -> per file: download, parse by header name, map, import in one transaction. One bad file lands in `failures` and is retried next time. `onlyIfDue` skips the whole run if the job was checked, or a sync attempted with outcome `ok`/`partial`, less than 6 h ago (a `failed` attempt does not throttle: its cause is usually fixable). Every attempt after the channel check is recorded in `reporting_sync_attempts` (outcome `ok` / `partial` / `failed`, error text, failed files); a failure that stops the sync before any import is recorded and then rethrown. Failed files are deliberately **not** put in the file ledger, so they stay retryable.
+  - `syncReachReports`: `assertActiveChannel` (fail closed, before any credential use) -> `ensureReportingJob` (reuse an existing job, never duplicate) -> list files -> skip ids already in the ledger -> process oldest `createTime` first -> per file: download, parse by header name, map, import in one transaction. One bad file lands in `failures` and is retried next time. `onlyIfDue` skips the whole run if the job was checked, or a sync attempted with outcome `ok`/`partial`, less than 6 h ago (a `failed` attempt holds the active channel for 1 h, `FAILED_ACTIVE_RETRY_AFTER_MINUTES`, BL-197: its cause is usually fixable). Every attempt after the channel check is recorded in `reporting_sync_attempts` (outcome `ok` / `partial` / `failed`, error text, failed files); a failure that stops the sync before any import is recorded and then rethrown. Failed files are deliberately **not** put in the file ledger, so they stay retryable.
   - `syncAllReachReports` (BL-141, `POST /api/reach/sync-all`, once per dashboard load after the active channel is
     resolved): every stored channel, concurrently. The session's active channel uses the session's credentials; every
     other channel goes through `syncReachReports` with its own `connected_user_id`, so its `assertActiveChannel` still
@@ -1215,7 +1228,7 @@ Decision record: `docs/decisions/0014-youtube-reporting-api-gateway-child.md`.
     channel's `reporting_sync_attempts` row. An in-process guard skips a second automatic sync of a channel already
     running. The response shows only the active channel (ADR 0004). Cross-account token use: RISK-112.
   - **Import rules** (`reach-csv.ts`, `importReachReport`): a file is rejected whole for a missing documented column, a row naming another channel, an unreadable date/number, or two rows for one (video, day). A file for a period that already has an imported file replaces that file's rows only if its `createTime` is later (also dropping videos it no longer lists); an older file is recorded as superseded and changes nothing.
-  - `getReachStatus`: a local read for the Analytics card (`GET .../reach/status`): job, `createTime + 48 h` as the expected first file (`firstFileOverdue` only when no file is imported and that time has passed), last attempt, next automatic check (`last check + 6 h`), file list (period, rows, status). Settings shows only the quota (`cloud-quotas` `reporting`, `youtubereporting.googleapis.com`), never job/file status.
+  - `getReachStatus`: a local read for the Analytics card (`GET .../reach/status`): job, `createTime + 48 h` as the expected first file (`firstFileOverdue` only when no file is imported and that time has passed), last attempt, next automatic check (`last check + 6 h`, or the end of the 1 h hold after a failed attempt when later), file list (period, rows, status). Settings shows only the quota (`cloud-quotas` `reporting`, `youtubereporting.googleapis.com`), never job/file status.
   - `getChannelReach`: a local read. `state` separates no job / job but no file yet / data, so an empty result is never read as zero. CTR is a ratio, so totals are **impressions-weighted** (clicks = ctr x impressions); a row without a CTR contributes to neither side, and no CTR at all gives `null`, never 0.
 - **Storage (schema v38, plus `reporting_sync_attempts` in v40).** `reporting_jobs` (job per channel and report type; Google stays the source of truth), `reporting_report_files` (ledger + supersession status), `channel_reach_daily` (primary key channel/date/video, no FK to `videos`, nullable `ctr`). Classified device-local in `snapshot/contracts.ts` (same accepted limitation as `video_metrics_daily`, RISK-52) and `authorized` in `youtube-data-policy` (III.E.4.b names Reporting API data).
 - **Unverified until real data exists:** the report's `date` format (both `YYYYMMDD` and `YYYY-MM-DD` are accepted) and the CTR scale (ratio assumed, `reach-format.ts` is the one place to change).
@@ -2331,7 +2344,7 @@ low-severity divergences, recorded here as the actual rules rather than changed.
     for a "probably not yet reported" hint, but it is not an exact reporting-day computation.
 - **GET routes with a local side effect (A6).**
   - `GET /api/youtube/channel-info` persists the resolved channel as the session user's selected
-    channel (ADR 0004).
+    channel (ADR 0004). Since BL-197 it does so from its 6 h live-channel memo too.
   - `GET /api/cloud-connection/callback` stores the Google Cloud grant: an OAuth redirect must be
     a GET.
   - Both write device-local state only, which is never part of a snapshot. They are therefore not
