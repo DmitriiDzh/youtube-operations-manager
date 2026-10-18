@@ -3,7 +3,7 @@ import { createHfTokenServices } from "./hf-token";
 import { createRuntimeServices } from "./runtimes";
 import { createRuntimeBuildServices } from "./runtime-builds";
 import { createRuntimeTestServices } from "./runtime-tests";
-import { missingNodeTypes } from "./runtimes";
+import { assertActiveRuntimeUnchanged, missingNodeTypes } from "./runtimes";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -128,7 +128,8 @@ function buildCore(jobScheduling: JobScheduling) {
     store: createRuntimeBuildStore(),
     base: { getSettings: () => base.getSettings(), resolveRunpodClient: () => base.resolveRunpodClient(), s3: () => base.s3() },
     // The installed app's own copy (Mac and Windows both run from the repository checkout, `scripts/` included).
-    readPodScript: (name) => readFile(path.join(process.cwd(), "scripts", "media", "pod", name), "utf8"),
+    // LF only (review): a Windows checkout with autocrlf would otherwise upload a CRLF start script that bash cannot run.
+    readPodScript: async (name) => (await readFile(path.join(process.cwd(), "scripts", "media", "pod", name), "utf8")).replace(/\r\n/g, "\n"),
     events: createMediaControlEventSink(),
     generateId: () => randomUUID(),
     clock: { now },
@@ -485,10 +486,7 @@ function buildCore(jobScheduling: JobScheduling) {
     const before = await base.getSettings();
     // BL-200 (AC-RT-06): the active runtime changes only through setActiveRuntime (a passed test, the Operator's switch). A form
     // that resends every field unchanged is fine.
-    const requested = input && typeof input === "object" ? (input as Record<string, unknown>).activeRuntimeId : undefined;
-    if (!options.allowActiveRuntime && requested !== undefined && requested !== before.activeRuntimeId) {
-      throw new DomainError({ code: "validation_failed", message: "The active pod runtime is set with its own action (Servers → Runtimes, or factory_media_activate_runtime), which checks its test.", details: { field: "activeRuntimeId" } });
-    }
+    if (!options.allowActiveRuntime) assertActiveRuntimeUnchanged(input, before.activeRuntimeId);
     const after = await base.updateSettings(input);
     const changed = changedSharedFields(before, after);
     if (Object.keys(changed).length > 0) {

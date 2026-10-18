@@ -22,21 +22,27 @@ finish() {
   if [ -n "${2:-}" ]; then err=$(printf '%s' "$2" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()[:500]))'); fi
   printf '{"ok":%s,"seconds":%s,"error":%s,"finishedAt":"%s"}\n' "$1" "$(( $(date +%s) - t0 ))" "$err" "$(date -u +%FT%TZ)" > "$R/build.json.part"
   mv "$R/build.json.part" "$R/build.json"
-  rm -f "$R/.lock"
+  [ "$(cat "$R/.lock" 2>/dev/null)" = "${RUNPOD_POD_ID:-unknown}" ] && rm -f "$R/.lock"
   log "YTM_BUILD_DONE ok=$1"
   sleep infinity
 }
 [ -f "$R/runtime.json" ] || { log "no runtime.json"; finish false "runtime.json is missing on the volume"; }
 [ -f "$R/.ready" ] && finish true ""
 ME="${RUNPOD_POD_ID:-unknown}"
-if [ -f "$R/.lock" ] && [ "$(cat "$R/.lock" 2>/dev/null)" != "$ME" ] && [ $(( $(date +%s) - $(stat -c %Y "$R/.lock") )) -lt 7200 ]; then
-  log "another build ($(cat "$R/.lock" 2>/dev/null)) holds the lock"
-  sleep infinity
+# The lock is taken atomically (noclobber); one older than 2 h is a dead build's and is replaced. A pod that loses the lock EXITS
+# without writing build.json -- a verdict here would be read as the other, still running build's (review) -- and the app fails
+# its own build at once on "pod exited before build.json".
+if [ -f "$R/.lock" ] && [ "$(cat "$R/.lock" 2>/dev/null)" != "$ME" ] && [ $(( $(date +%s) - $(stat -c %Y "$R/.lock") )) -ge 7200 ]; then
+  log "replacing a stale lock ($(cat "$R/.lock" 2>/dev/null))"
+  rm -f "$R/.lock"
 fi
-printf '%s\n' "$ME" > "$R/.lock"
-rm -f "$R/build.json"
+if ! ( set -C; printf '%s\n' "$ME" > "$R/.lock" ) 2>/dev/null && [ "$(cat "$R/.lock" 2>/dev/null)" != "$ME" ]; then
+  log "another build ($(cat "$R/.lock" 2>/dev/null)) holds the lock; exiting"
+  exit 3
+fi
+rm -f "$R/build.json" "$R/build.json.part"
 log "build $ID start $(date -u +%FT%TZ)"
-rm -rf "$R/ComfyUI" "$R/venv" "$R/req.txt"
+rm -rf "$R/ComfyUI" "$R/venv" "$R/req.txt" "$R/constraints.txt"
 
 BASE=""
 for py in /usr/bin/python3 /usr/local/bin/python3 /opt/venv/bin/python; do
@@ -79,14 +85,26 @@ VSITE=$("$R/venv/bin/python" -c "import site;print(site.getsitepackages()[0])")
 "$BASE" -c "import site;print('\n'.join(site.getsitepackages()))" > "$VSITE/zz-image-site.pth"
 "$R/venv/bin/python" -c "import torch" || finish false "the image's torch is not visible from the venv"
 
-filter() { grep -viE '^[[:space:]]*(torch|torchvision|torchaudio)([<>=~ ;[]|$)' "$1" | grep -vE '^[[:space:]]*(#|-e |--)' ; }
+filter() { grep -viE '^[[:space:]]*(torch|torchvision|torchaudio)([<>=~!; [@]|$)' "$1" | grep -vE '^[[:space:]]*(#|-e |--)' ; }
+# The image's torch stack is pinned as a constraint, so no requirement (direct or transitive) can install another torch into the
+# venv; the build fails if pip cannot satisfy that, and again if the venv's torch is not the image's afterwards (review).
+"$BASE" - > "$R/constraints.txt" <<'PY'
+from importlib import metadata
+for name in ("torch", "torchvision", "torchaudio"):
+    try:
+        print(f"{name}=={metadata.version(name)}")
+    except metadata.PackageNotFoundError:
+        pass
+PY
+BASE_TORCH=$("$BASE" -c "import torch;print(torch.__version__)")
 : > "$R/req.txt"
 filter "$R/ComfyUI/requirements.txt" >> "$R/req.txt"
 for f in "$R"/ComfyUI/custom_nodes/*/requirements.txt; do [ -f "$f" ] && filter "$f" >> "$R/req.txt"; done
 spec pip >> "$R/req.txt"
 log "pip ($(grep -c . "$R/req.txt") lines)"
-"$R/venv/bin/python" -m pip install --disable-pip-version-check -q -r "$R/req.txt" || finish false "pip install failed (see build.log)"
-"$R/venv/bin/python" -c "import torch, sys; print('torch', torch.__version__)" || finish false "torch broken after pip"
+"$R/venv/bin/python" -m pip install --disable-pip-version-check -q -r "$R/req.txt" -c "$R/constraints.txt" || finish false "pip install failed (see build.log)"
+VENV_TORCH=$("$R/venv/bin/python" -c "import torch;print(torch.__version__)") || finish false "torch broken after pip"
+[ "$VENV_TORCH" = "$BASE_TORCH" ] || finish false "pip replaced the image's torch $BASE_TORCH with $VENV_TORCH"
 
 touch "$R/.ready"
 finish true ""

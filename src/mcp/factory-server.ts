@@ -621,7 +621,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_media_create_runtime",
     {
       description:
-        "Create a pod runtime profile (1.23.0): { runtimeId (3-63 lower-case letters, digits, '-'), name?, description?, comfy: { repo? (default https://github.com/comfyanonymous/ComfyUI), ref (a tag or branch, resolved to its exact commit now, or an exact 40-hex commit) }, customNodes?: [{ repo, commit (exactly 40 hex) }], pip?: ['name==version'] }. Every repository must be HTTPS and under the owner's allowed sources (Servers → Setup; settings.runtimeSourceAllowlist in factory_media_get_settings), otherwise validation_failed lists the refused ones. A profile is never edited: the same runtimeId twice is refused -- create a new one. Nothing is built, started or charged here. Recorded as created by the Factory Operator.",
+        "Create a pod runtime profile (1.23.0): { runtimeId (3-63 lower-case letters, digits, '-'), name?, description?, comfy: { repo? (default https://github.com/comfyanonymous/ComfyUI), ref (a tag or branch, resolved to its exact commit now, or an exact 40-hex commit) }, customNodes?: [{ repo, commit (exactly 40 hex) }], pip?: ['name==version'; torch, torchvision and torchaudio come from the pod image and cannot be pinned] }; two node packs may not share a folder (repository) name. Every repository must be HTTPS and under the owner's allowed sources (Servers → Setup; settings.runtimeSourceAllowlist in factory_media_get_settings), otherwise validation_failed lists the refused ones. A profile is never edited: the same runtimeId twice is refused -- create a new one. Nothing is built, started or charged here. Recorded as created by the Factory Operator.",
       inputSchema: createRuntimeInput,
     },
     async (args) => {
@@ -649,7 +649,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_media_activate_runtime",
     {
       description:
-        "Make a pod runtime the default for new sessions (1.23.0): { runtimeId } -- only a runtime whose test passed (status tested; otherwise media_runtime_not_ready), and only while the owner's switch 'The Operator may make a runtime active' is on (settings.factoryMayActivateRuntime; off = media_runtime_activation_disabled -- you can still create and test). { runtimeId: null } = the image's built-in ComfyUI. Rollback = set the previous runtimeId (returned as previousRuntimeId). Sessions already running keep their runtime. Recorded with who and when.",
+        "Make a pod runtime the default for new sessions (1.23.0): { runtimeId } -- only a runtime whose test against EVERY registry template passed (status tested, a test without templateIds; otherwise media_runtime_not_ready), and only while the owner's switch 'The Operator may make a runtime active' is on (settings.factoryMayActivateRuntime; off = media_runtime_activation_disabled -- you can still create and test). { runtimeId: null } = the image's built-in ComfyUI. Rollback = set the previous runtimeId (returned as previousRuntimeId). Sessions already running keep their runtime. Recorded with who and when.",
       inputSchema: setActiveRuntimeInput,
     },
     async (args) => {

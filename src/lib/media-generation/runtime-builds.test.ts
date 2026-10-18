@@ -184,3 +184,26 @@ test("the pod-side scripts are uploaded only when the volume's copy differs", as
   assert.equal(h.objects.get("ytm/runtime-build.sh"), "#!/bin/bash build v1");
   assert.deepEqual(await h.services.ensurePodScripts(), { uploaded: [] });
 });
+
+// Review findings (AC-RT-03 "build.json ok:false gives build_failed" is about THIS build's verdict, never an earlier one's).
+test("a rebuild after a failed build is not failed by the old build.json: it is removed before the new pod, and a verdict older than the build is ignored", async () => {
+  const h = harness();
+  h.objects.set(runtimeKey(RID, "build.json"), JSON.stringify({ ok: false, seconds: 30, error: "old failure", finishedAt: "2026-10-18T14:00:00Z" }));
+  await h.services.startRuntimeBuild({ runtimeId: RID });
+  assert.equal(h.objects.has(runtimeKey(RID, "build.json")), false, "the old verdict is gone before the pod");
+  // S3 lagging: the old verdict is still read once -- it predates the build and is not its answer.
+  h.objects.set(runtimeKey(RID, "build.json"), JSON.stringify({ ok: false, seconds: 30, error: "old failure", finishedAt: "2026-10-18T14:00:00Z" }));
+  const [job] = await h.services.pollRuntimeBuilds();
+  assert.equal(job.status, "running");
+  assert.deepEqual(h.terminated, []);
+});
+
+test("an ended build removes only its own lock file: another pod's lock (another computer's build) stays", async () => {
+  const h = harness();
+  await h.services.startRuntimeBuild({ runtimeId: RID });
+  h.objects.set(`ytm/runtimes/${RID}/.lock`, "other-pod\n");
+  h.pods.get("pod1")!.status = "EXITED"; // the loser of the lock exits
+  const [job] = await h.services.pollRuntimeBuilds();
+  assert.equal(job.status, "failed");
+  assert.equal(h.objects.get(`ytm/runtimes/${RID}/.lock`), "other-pod\n");
+});

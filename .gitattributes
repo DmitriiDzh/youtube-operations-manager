@@ -5,3 +5,7 @@
 # Without this, editing scripts/windows/*.bat from a macOS/Linux checkout (this project's usual
 # development environment) silently strips the CRLF on save/commit.
 *.bat text eol=crlf
+
+# BL-200 (review): the pod-side shell scripts run under bash on Linux pods and are uploaded from this checkout by the app itself;
+# a CRLF copy from a Windows checkout would break every pod's start.
+*.sh text eol=lf

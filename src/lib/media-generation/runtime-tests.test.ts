@@ -178,3 +178,16 @@ test("a test session that ends before ComfyUI answers fails the test; a second t
   const other = harness();
   await assert.rejects(other.services.testRuntime({ runtimeId: RID, channelId: "UC1", templateIds: ["nope"] }), (e: unknown) => isDomainError(e) && e.code === "media_template_not_found");
 });
+
+test("AC-RT-06 input: a test of every registry template records allTemplates; a chosen subset does not", async () => {
+  const all = harness();
+  await all.services.testRuntime({ runtimeId: RID, channelId: "UC1" });
+  all.setSession("running");
+  await all.services.pollRuntimeTests();
+  assert.equal(all.written[0].allTemplates, true);
+  const some = harness();
+  await some.services.testRuntime({ runtimeId: RID, channelId: "UC1", templateIds: ["p1-flux-schnell"] });
+  some.setSession("running");
+  await some.services.pollRuntimeTests();
+  assert.equal(some.written[0].allTemplates, false);
+});

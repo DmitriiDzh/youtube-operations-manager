@@ -2862,7 +2862,25 @@ export function PodRuntimesCard({ settings, onChanged }: { settings: Settings; o
   const activate = (runtimeId: string | null) => act(() => post("/api/media-generation/runtimes/activate", { runtimeId }), runtimeId ? t("media.runtimes.activated", { id: runtimeId }) : t("media.runtimes.builtInActivated"));
   const startTest = (runtimeId: string) => act(() => post("/api/media-generation/runtimes/test", { runtimeId }), t("media.runtimes.testStarted", { id: runtimeId }));
 
-  async function saveOwnerSettings(nextMayActivate = mayActivate) {
+  // The switch saves only itself, and goes back if the save is refused (review): it never sends the text fields' unsaved edits.
+  async function saveMayActivate(next: boolean) {
+    setMayActivate(next);
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await requestJson("/api/media-generation/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ factoryMayActivateRuntime: next }) });
+      setNotice(t("common.saved"));
+      await onChanged();
+    } catch (err) {
+      setMayActivate(!next);
+      setError(err instanceof Error ? err.message : t("media.common.saveFailed"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveOwnerSettings() {
     const runtimeTestMaxUsd = parseMoney(capText);
     const runtimeSourceAllowlist = allowlistText
       .split("\n")
@@ -2877,7 +2895,7 @@ export function PodRuntimesCard({ settings, onChanged }: { settings: Settings; o
         requestJson("/api/media-generation/settings", {
           method: "PUT",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify(onlyChangedSettings({ factoryMayActivateRuntime: nextMayActivate, runtimeTestMaxUsd, runtimeSourceAllowlist }, settings)),
+          body: JSON.stringify(onlyChangedSettings({ runtimeTestMaxUsd, runtimeSourceAllowlist }, settings)),
         }),
       t("common.saved")
     );
@@ -2967,10 +2985,7 @@ export function PodRuntimesCard({ settings, onChanged }: { settings: Settings; o
             label={t("media.runtimes.mayActivateToggle")}
             tone="violet"
             checked={mayActivate}
-            onChange={(next) => {
-              setMayActivate(next);
-              void saveOwnerSettings(next);
-            }}
+            onChange={(next) => void saveMayActivate(next)}
             disabled={busy}
           />
           <span className="text-sm text-zinc-300">{t("media.runtimes.mayActivateText")}</span>

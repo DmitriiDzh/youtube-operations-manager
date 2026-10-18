@@ -149,7 +149,7 @@ export function createRuntimeTestServices(deps: RuntimeTestDeps) {
     const stopped = await stopQuietly(job);
     const costUsd = stopped?.usdCharged ?? session.usdCharged ?? null;
     const ok = templates.every((t) => t.ok);
-    const result: RuntimeTestResult = { ok, testedAt: nowIso(), comfyVersion: session.comfyVersion ?? read.comfyVersion, nodes: [...nodes].sort(), templates, costUsd, bootSeconds, error: ok ? null : "some templates need node types this runtime lacks" };
+    const result: RuntimeTestResult = { ok, testedAt: nowIso(), comfyVersion: session.comfyVersion ?? read.comfyVersion, nodes: [...nodes].sort(), templates, costUsd, bootSeconds, error: ok ? null : "some templates need node types this runtime lacks", allTemplates: job.templateIds === null };
     await deps.runtimes.writeTestResult(job.runtimeId, result);
     const finished = await save({ ...job, status: ok ? "passed" : "failed", finishedAt: result.testedAt, error: result.error ?? null, costUsd, bootSeconds, templates });
     await audit({ actor: job.requestedBy, action: ok ? "runtime_tested" : "runtime_test_failed", subject: job.runtimeId, details: { testId: job.testId, sessionId: job.sessionId, comfyVersion: result.comfyVersion, nodes: nodes.size, failed: templates.filter((t) => !t.ok), costUsd, bootSeconds } });
@@ -186,7 +186,13 @@ export function createRuntimeTestServices(deps: RuntimeTestDeps) {
       } catch (error) {
         return fail(job, `the test session could not start: ${error instanceof Error ? error.message : String(error)}`, { maxMinutes });
       }
-      job = await save({ ...job, sessionId: started.sessionId, sessionRequestedAt: nowIso(), maxMinutes });
+      try {
+        job = await save({ ...job, sessionId: started.sessionId, sessionRequestedAt: nowIso(), maxMinutes });
+      } catch (error) {
+        // Unrecorded, the next tick would start a second session (review): this one is stopped, the next tick starts again.
+        await stopQuietly({ ...job, sessionId: started.sessionId });
+        throw error;
+      }
       // A held session would wait for the owner: the test withdraws it instead (nothing ran, nothing was billed).
       if (!started.approved) return fail(job, `the test session was held: ${started.heldBy ?? "a limit"}`);
       await audit({ actor: job.requestedBy, action: "runtime_test_session_started", subject: job.runtimeId, details: { testId: job.testId, sessionId: started.sessionId, maxMinutes, maxUsd: settings.runtimeTestMaxUsd } });

@@ -3,7 +3,7 @@ import test from "node:test";
 import type { RunpodS3Client } from "@/lib/media-gateway";
 import { DEFAULT_MEDIA_SETTINGS, isDomainError, type MediaSettings } from "./contracts";
 import type { MediaControlEvent } from "./models";
-import { createRuntimeServices, isAllowedSource, runtimeKey } from "./runtimes";
+import { assertActiveRuntimeUnchanged, createRuntimeServices, isAllowedSource, runtimeKey } from "./runtimes";
 import { SHARED_SETTING_FIELDS } from "./settings-sync";
 
 // BL-200 (docs/roadmap/plans/POD_RUNTIMES_PLAN.md AC-RT-01, -02, -08; ADR 0043): a profile is one immutable file on the volume;
@@ -178,4 +178,29 @@ test("AC-RT-05: the test result is written beside the profile as test.json and r
   await h.services.createRuntime(valid());
   await h.services.writeTestResult("comfy-0410-flux3", { ok: true, testedAt: "2026-10-18T16:00:00Z", comfyVersion: "0.41.0", nodes: ["SaveImage", "KSampler"], templates: [], costUsd: 0.04, bootSeconds: 30, error: null });
   assert.deepEqual([...(await h.services.testedNodes("comfy-0410-flux3"))!.nodes].sort(), ["KSampler", "SaveImage"]);
+});
+
+// Review findings: the build always keeps the image's torch (probe 1, ADR 0043); each pack has its own folder; AC-RT-06's guard.
+test("profiles cannot pin torch / torchvision / torchaudio, nor list two packs with the same folder name", async () => {
+  const h = harness();
+  for (const pip of [["torch==2.4.0"], ["torchvision==0.19.0"], ["TorchAudio==2.4.0"]]) {
+    await assert.rejects(h.services.createRuntime(valid({ runtimeId: "pin-torch", pip })), (e: unknown) => isDomainError(e) && e.code === "validation_failed", pip[0]);
+  }
+  await assert.rejects(
+    h.services.createRuntime(valid({ runtimeId: "two-same", customNodes: [{ repo: "https://github.com/kijai/ComfyUI-Foo", commit: NODE_SHA }, { repo: "https://github.com/ltdrdata/comfyui-foo", commit: NODE_SHA }] })),
+    (e: unknown) => isDomainError(e) && e.code === "validation_failed"
+  );
+  assert.equal(h.objects.size, 0, "nothing written");
+});
+
+test("AC-RT-06: a test of chosen templates only does not make a runtime activatable; a settings save can resend but never change activeRuntimeId", async () => {
+  const h = harness();
+  await h.services.createRuntime(valid());
+  h.objects.set("ytm/runtimes/comfy-0410-flux3/.ready", "");
+  h.objects.set(runtimeKey("comfy-0410-flux3", "test.json"), JSON.stringify({ ok: true, testedAt: "2026-10-18T16:00:00Z", comfyVersion: "0.41.0", nodes: ["KSampler"], templates: [], costUsd: 0.04, bootSeconds: 30, allTemplates: false }));
+  await assert.rejects(h.services.checkActivation("comfy-0410-flux3", "owner"), (e: unknown) => isDomainError(e) && e.code === "media_runtime_not_ready");
+  assert.doesNotThrow(() => assertActiveRuntimeUnchanged({ activeRuntimeId: "a-runtime", maxUsdPerDay: 5 }, "a-runtime"));
+  assert.doesNotThrow(() => assertActiveRuntimeUnchanged({ maxUsdPerDay: 5 }, "a-runtime"));
+  assert.throws(() => assertActiveRuntimeUnchanged({ activeRuntimeId: "other" }, "a-runtime"), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
+  assert.throws(() => assertActiveRuntimeUnchanged({ activeRuntimeId: null }, "a-runtime"), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
 });

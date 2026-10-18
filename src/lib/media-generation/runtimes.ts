@@ -29,7 +29,9 @@ const commitSchema = z.string().trim().toLowerCase().regex(COMMIT, "an exact com
 const pipSchema = z
   .string()
   .trim()
-  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}(\[[A-Za-z0-9,._-]{1,100}\])?==[A-Za-z0-9.!+_-]{1,64}$/, "a pinned package: name==version");
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}(\[[A-Za-z0-9,._-]{1,100}\])?==[A-Za-z0-9.!+_-]{1,64}$/, "a pinned package: name==version")
+  // The runtime always uses the pod image's own torch stack (probe 1; the build pins it as a constraint).
+  .refine((spec) => !/^(torch|torchvision|torchaudio)(\[|==)/i.test(spec), "torch, torchvision and torchaudio come from the pod image and cannot be pinned here");
 
 export const createRuntimeInputSchema = z
   .object({
@@ -72,6 +74,8 @@ const testFileSchema = z
     comfyVersion: z.string().nullable(),
     nodes: z.array(z.string()),
     templates: z.array(z.object({ templateId: z.string(), version: z.number(), ok: z.boolean(), missing: z.array(z.string()) }).strict()),
+    /** Whether every registry template was checked (not a chosen subset): only such a passed test makes a runtime activatable. */
+    allTemplates: z.boolean().optional(),
     costUsd: z.number().nullable(),
     bootSeconds: z.number().nullable(),
     error: z.string().nullable().optional(),
@@ -129,6 +133,17 @@ export function requiredNodeTypes(workflowJson: string): string[] | null {
 /** The node types of `workflowJson` that `nodes` lacks (sorted); an unreadable graph lacks nothing that can be named. */
 export function missingNodeTypes(workflowJson: string, nodes: ReadonlySet<string>): string[] {
   return (requiredNodeTypes(workflowJson) ?? []).filter((type) => !nodes.has(type));
+}
+
+/**
+ * AC-RT-06: a settings save may resend `activeRuntimeId` unchanged, but never change it -- that is the activation's own action, which
+ * checks the test (the settings sync applies a peer's value without this guard).
+ */
+export function assertActiveRuntimeUnchanged(update: unknown, current: string | null): void {
+  const requested = update && typeof update === "object" ? (update as Record<string, unknown>).activeRuntimeId : undefined;
+  if (requested !== undefined && requested !== current) {
+    throw new DomainError({ code: "validation_failed", message: "The active pod runtime is set with its own action (Servers → Setup → Pod runtimes, or factory_media_activate_runtime), which checks its test.", details: { field: "activeRuntimeId" } });
+  }
 }
 
 export type RuntimeDeps = {
@@ -246,10 +261,13 @@ export function createRuntimeServices(deps: RuntimeDeps) {
         const profile = await readProfile(s3, runtimeId);
         if (!profile) throw new DomainError({ code: "not_found", message: `No runtime profile ${runtimeId} on the network volume.`, details: { runtimeId } });
         const v = await view(s3, profile, settings);
-        if (v.status !== "tested") {
+        if (v.status !== "tested" || v.testDetail?.allTemplates === false) {
           throw new DomainError({
             code: "media_runtime_not_ready",
-            message: `Runtime ${runtimeId} is ${v.status}; only a runtime whose test passed can become active (factory_media_test_runtime).`,
+            message:
+              v.status === "tested"
+                ? `Runtime ${runtimeId} was tested against chosen templates only; test it against every registry template (factory_media_test_runtime without templateIds) before it can become active.`
+                : `Runtime ${runtimeId} is ${v.status}; only a runtime whose test passed can become active (factory_media_test_runtime).`,
             details: { runtimeId, status: v.status, templates: v.testDetail?.templates.filter((t) => !t.ok) ?? [] },
           });
         }
@@ -283,6 +301,10 @@ export function createRuntimeServices(deps: RuntimeDeps) {
       }
       const repos = (parsed.customNodes ?? []).map((n) => n.repo.toLowerCase());
       if (new Set(repos).size !== repos.length) throw new DomainError({ code: "validation_failed", message: "A node pack repository is listed twice.", details: { repos } });
+      // Each pack is cloned into custom_nodes/<repo name>: two packs of the same name (different owners) would overwrite (review).
+      const folders = repos.map((r) => r.split("/").pop()!);
+      const clashing = folders.filter((f, i) => folders.indexOf(f) !== i);
+      if (clashing.length > 0) throw new DomainError({ code: "validation_failed", message: `Two node packs share the folder name ${[...new Set(clashing)].join(", ")}; only one of them can be installed.`, details: { folders: [...new Set(clashing)] } });
 
       const s3 = await deps.s3();
       if (await s3.headObject(runtimeKey(parsed.runtimeId, "runtime.json"))) {

@@ -75,11 +75,11 @@ function trimJobs(jobs: RuntimeBuildJob[]): RuntimeBuildJob[] {
 }
 
 /** `build.json` as the build pod writes it, or null when it is not in that shape. */
-function parseBuildVerdict(text: string): { ok: boolean; seconds: number | null; error: string | null } | null {
+function parseBuildVerdict(text: string): { ok: boolean; seconds: number | null; error: string | null; finishedAt: string | null } | null {
   try {
-    const parsed = JSON.parse(text) as { ok?: unknown; seconds?: unknown; error?: unknown };
+    const parsed = JSON.parse(text) as { ok?: unknown; seconds?: unknown; error?: unknown; finishedAt?: unknown };
     if (typeof parsed.ok !== "boolean") return null;
-    return { ok: parsed.ok, seconds: typeof parsed.seconds === "number" ? parsed.seconds : null, error: typeof parsed.error === "string" ? parsed.error : null };
+    return { ok: parsed.ok, seconds: typeof parsed.seconds === "number" ? parsed.seconds : null, error: typeof parsed.error === "string" ? parsed.error : null, finishedAt: typeof parsed.finishedAt === "string" ? parsed.finishedAt : null };
   } catch {
     return null;
   }
@@ -155,8 +155,17 @@ export function createRuntimeBuildServices(deps: RuntimeBuildDeps) {
       await saveJob(stillRunning);
       return stillRunning;
     }
-    // A build that did not finish by itself leaves its lock file behind; the next build of this profile must not wait 2 h.
-    if (status !== "built") await deps.base.s3().then((s3) => s3.deleteObject(`${RUNTIMES_PREFIX}${job.runtimeId}/.lock`)).catch(() => undefined);
+    // A build that did not finish by itself leaves its lock file behind; the next build of this profile must not wait 2 h. Only
+    // THIS build's lock (it holds the pod id): another computer's build of the same profile may still be running (review).
+    if (status !== "built" && job.podId) {
+      const lockKey = `${RUNTIMES_PREFIX}${job.runtimeId}/.lock`;
+      await deps.base
+        .s3()
+        .then(async (s3) => {
+          if ((await s3.getObjectText(lockKey))?.trim() === job.podId) await s3.deleteObject(lockKey);
+        })
+        .catch(() => undefined);
+    }
     const finished: RuntimeBuildJob = { ...job, status, finishedAt: deps.clock.now().toISOString(), seconds: extra.seconds ?? null, error: extra.error ?? null };
     await saveJob(finished);
     await audit({
@@ -190,6 +199,10 @@ export function createRuntimeBuildServices(deps: RuntimeBuildDeps) {
       throw new DomainError({ code: "media_generation_not_configured", message: `The pod template ${settings.templateId} is not in this RunPod account or names no image; a runtime is built with that image.`, details: { templateId: settings.templateId } });
     }
     await ensurePodScripts(actor);
+    // The previous build's verdict goes first (review): the poll would otherwise read an old ok:false before the new pod has even
+    // booted and fail this build with the old error, every time.
+    await s3.deleteObject(runtimeKey(runtimeId, "build.json"));
+    await s3.deleteObject(`${runtimeKey(runtimeId, "build.json")}.part`);
 
     const jobId = deps.generateId();
     const podName = buildPodNameFor(jobId);
@@ -263,6 +276,8 @@ export function createRuntimeBuildServices(deps: RuntimeBuildDeps) {
       }
       if (typeof verdictText === "string") {
         const verdict = parseBuildVerdict(verdictText);
+        // A verdict that predates this build is a leftover (S3 lagging behind the delete), never this build's answer.
+        if (verdict?.finishedAt && Date.parse(verdict.finishedAt) < Date.parse(job.startedAt)) continue;
         if (!verdict) await finishJob(job, "failed", { error: "the build pod's build.json could not be read" });
         else if (!verdict.ok) await finishJob(job, "failed", { seconds: verdict.seconds, error: verdict.error ?? "the build failed (see ytm/runtimes/<id>/build.log)" });
         else {
