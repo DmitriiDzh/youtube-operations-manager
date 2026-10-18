@@ -93,7 +93,7 @@ type AuditDeps = {
     batchId: string;
     ledgerRowId: string;
     videoId: string;
-    eventType: "PREPARATION" | "ATTEMPT" | "RESULT" | "CONFLICT" | "VERIFICATION" | "DRY_RUN" | "RECONCILIATION" | "CANCELLED";
+    eventType: "PREPARATION" | "ATTEMPT" | "RESULT" | "CONFLICT" | "VERIFICATION" | "DRY_RUN" | "RECONCILIATION" | "CANCELLED" | "MERGE";
     detail: unknown;
   }): Promise<void>;
 };
@@ -365,6 +365,29 @@ function batchQuotaContext(batchId: string): QuotaContext {
   return { kind: "batch", id: batchId, label: `Batch ${batchId.slice(0, 8)}` };
 }
 
+/**
+ * BL-198 (AC-ST-11): one row must not carry two changes for the same (language, field), nor a delete of a language next to any
+ * other change of that language -- `buildSafeLocalizationsPayload` would silently let the last one (or the delete) win. Changes from
+ * several change sets reach one row since BL-198; the send service resolves such collisions with the owner first, and this guard
+ * keeps any other path (the Batches tab's manual selection) from writing an unresolved one.
+ */
+function assertNoDuplicateTargets(videoId: string, changes: PendingChangeRecord[]): void {
+  for (let i = 0; i < changes.length; i += 1) {
+    for (let j = i + 1; j < changes.length; j += 1) {
+      const a = changes[i];
+      const b = changes[j];
+      if (!sameLanguage(a.language, b.language)) continue;
+      if (a.field === b.field || a.changeType === "delete" || b.changeType === "delete") {
+        throw new DomainError({
+          code: "duplicate_target_in_row",
+          message: `Two selected changes for video ${videoId} target the same language "${a.language}" (${a.field} / ${b.field}); keep one of them.`,
+          details: { videoId, language: a.language, changeIds: [a.id, b.id] },
+        });
+      }
+    }
+  }
+}
+
 export function createBatchServices(deps: ServiceDependencies) {
   const { batchStore, changeSetStore, idGenerator, logger, audit } = deps;
   const retryConfig = deps.retryConfig ?? DEFAULT_RETRY_CONFIG;
@@ -406,10 +429,13 @@ export function createBatchServices(deps: ServiceDependencies) {
       // payload construction -- checked here at creation time (defense in depth; the
       // authoritative re-check immediately before send is assertApprovalStillValid,
       // reused in prepareLedgerRow below per AC-BATCH-03).
+      const rowChanges: PendingChangeRecord[] = [];
       for (const changeId of selection.changeIds) {
         const change = await requireChangeForVideo(changeId, selection.videoId);
         assertApprovalStillValid(change);
+        rowChanges.push(change);
       }
+      assertNoDuplicateTargets(selection.videoId, rowChanges);
     }
 
     const batchId = idGenerator();
@@ -2034,6 +2060,18 @@ export function createBatchServices(deps: ServiceDependencies) {
     return rows.map(toAttempt);
   }
 
+  /**
+   * BL-198: a batch made from several change sets records, on each row it concerns, which sets went in and -- where they
+   * collided -- which set's variant was kept and which changes were rejected for it. No write happens here.
+   */
+  async function recordMergeAudit(batchId: string, rows: Array<{ videoId: string; detail: unknown }>): Promise<void> {
+    const ledgerRows = await batchStore.listLedgerRowsByBatch(batchId);
+    for (const entry of rows) {
+      const row = ledgerRows.find((candidate) => candidate.videoId === entry.videoId);
+      if (row) await audit.record({ batchId, ledgerRowId: row.id, videoId: row.videoId, eventType: "MERGE", detail: entry.detail });
+    }
+  }
+
   return {
     createBatch,
     getBatch,
@@ -2062,6 +2100,7 @@ export function createBatchServices(deps: ServiceDependencies) {
     recoverLedgerRow,
     recoverBatch,
     getBatchErrorReport,
+    recordMergeAudit,
   };
 }
 

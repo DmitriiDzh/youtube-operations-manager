@@ -22,6 +22,8 @@ export const errors = {
   "errors.batch_not_found": "The batch was not found.",
   "errors.batch_already_running": "The batch is already running.",
   "errors.send_nothing_to_send": "There is nothing left to send in this change set.",
+  "errors.send_merge_conflicts": "The selected change sets change the same fields. Choose which variant to send.",
+  "errors.duplicate_target_in_row": "Two selected changes target the same field of one video — keep one of them.",
   "errors.send_already_in_progress": "These changes are already being sent.",
   "errors.ledger_row_not_found": "The batch entry was not found.",
   "errors.ledger_invalid_transition": "This batch entry cannot be changed in its current state.",

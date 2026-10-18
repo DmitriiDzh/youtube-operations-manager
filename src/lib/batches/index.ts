@@ -11,6 +11,8 @@ import { createChannelLanguageSettingsCoreForProduction } from "@/lib/sync-gatew
 import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
 import { createBatchServices } from "./services";
 import { createSendApprovedServices } from "./send-approved";
+import { createChangeSetCore, readWithChannelBaseline, remoteHoldsApprovedValue } from "@/lib/changesets";
+import { createChannelVideoStoreAdapter } from "@/lib/channel-video-store";
 
 function createRealClock() {
   return {
@@ -62,9 +64,40 @@ export type BatchCore = ReturnType<typeof createBatchCore>;
 /** BL-124 / ADR 0020: select a change set's sendable changes and create a LIVE batch from them (creates only, never executes). */
 export function createSendApprovedCore() {
   const batches = createBatchCore();
+  const reader = createChangeSetReaderAdapter();
+  const videoStore = createChannelVideoStoreAdapter();
+  // BL-198: the channel's synced copy, read against its language baseline, tells a change already on YouTube.
+  async function remoteReader(channelId: string) {
+    const baseline = (await getChannelExpectedLanguages(channelId)).defaultLanguage;
+    const byVideo = new Map((await videoStore.listVideosByChannel(channelId)).map((video) => [video.videoId, readWithChannelBaseline(video, baseline)]));
+    return (videoId: string) => byVideo.get(videoId) ?? null;
+  }
   return createSendApprovedServices({
     batches,
-    changeSets: createChangeSetReaderAdapter(),
+    changeSets: {
+      getChangeSet: (changeSetId) => reader.getChangeSet(changeSetId),
+      async listChanges(changeSetId) {
+        const [changeSet, changes] = await Promise.all([reader.getChangeSet(changeSetId), reader.listChanges(changeSetId)]);
+        if (!changeSet) return changes;
+        const read = await remoteReader(changeSet.channelId);
+        return changes.map((change) => ({
+          ...change,
+          remoteHolds: remoteHoldsApprovedValue(read(change.videoId), {
+            language: change.language ?? "",
+            field: change.field ?? "title",
+            changeType: change.changeType ?? "modify",
+            approvedValue: change.approvedValue,
+          }),
+        }));
+      },
+      // Through the change-set service, so the set's status is recomputed exactly as a rejection in the Languages tab does.
+      async rejectChange(input) {
+        await createChangeSetCore().rejectChange(input);
+      },
+      async videoTitles(channelId) {
+        return new Map((await videoStore.listVideosByChannel(channelId)).map((video) => [video.videoId, video.title]));
+      },
+    },
     isLiveWritesEnabled: () => getLiveWritesEnabled(),
   });
 }

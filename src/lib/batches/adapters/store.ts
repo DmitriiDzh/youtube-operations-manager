@@ -78,15 +78,18 @@ export function createChangeSetStoreAdapter() {
  */
 export function createChangeSetReaderAdapter() {
   return {
-    async getChangeSet(changeSetId: string): Promise<{ id: string; channelId: string } | null> {
+    async getChangeSet(changeSetId: string): Promise<{ id: string; channelId: string; source: string; createdAt: string } | null> {
       const changeSet = await getStoredChangeSet(changeSetId);
-      return changeSet ? { id: changeSet.id, channelId: changeSet.channelId } : null;
+      return changeSet ? { id: changeSet.id, channelId: changeSet.channelId, source: changeSet.source, createdAt: changeSet.createdAt.toISOString() } : null;
     },
     async listChanges(changeSetId: string): Promise<SendableChangeCandidate[]> {
       const stored = await listStoredChangesByChangeSet(changeSetId);
       return stored.map((change) => ({
         id: change.id,
         videoId: change.videoId,
+        language: change.language,
+        field: change.field,
+        changeType: change.changeType,
         approvalStatus: change.approvalStatus,
         validationStatus: change.validationStatus,
         conflictStatus: change.conflictStatus,
@@ -101,6 +104,12 @@ export function createChangeSetReaderAdapter() {
 export type SendableChangeCandidate = {
   id: string;
   videoId: string;
+  /** BL-198: the target, to find collisions between change sets (absent only in older test fixtures). */
+  language?: string;
+  field?: "title" | "description";
+  changeType?: string;
+  /** BL-198: the channel's last synced copy already holds the approved value (a delete: the language is gone). */
+  remoteHolds?: boolean;
   approvalStatus: string;
   validationStatus: string;
   conflictStatus: string;
