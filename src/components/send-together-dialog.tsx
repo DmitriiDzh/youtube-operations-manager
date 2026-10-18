@@ -9,7 +9,7 @@ type ConflictOption = {
   changeSetId: string;
   changes: Array<{ changeId: string; field: string; changeType: string; proposedValue: string }>;
 };
-type Conflict = { videoId: string; videoTitle: string | null; language: string; options: ConflictOption[] };
+type Conflict = { videoId: string; videoTitle: string | null; language: string; field: string | null; options: ConflictOption[] };
 type Plan = {
   videoCount: number;
   changeCount: number;
@@ -19,9 +19,13 @@ type Plan = {
   inFlightBatchId: string | null;
   inFlightCoversSelection: boolean;
 };
-export type MergeResolution = { videoId: string; language: string; changeSetId: string };
+/** The routes accept at most this many change sets in one request. */
+export const MAX_SETS_SENT_TOGETHER = 50;
 
-const unitKey = (videoId: string, language: string) => `${videoId}\u0000${language.toLowerCase()}`;
+export type MergeResolution = { videoId: string; language: string; field: string | null; changeSetId: string };
+
+const unitKey = (conflict: { videoId: string; language: string; field: string | null }) =>
+  `${conflict.videoId}\u0000${conflict.language.trim().toLowerCase()}\u0000${conflict.field ?? "*"}`;
 
 /**
  * BL-198 (docs/roadmap/plans/SEND_TOGETHER_PLAN.md): before several change sets are sent as one batch, shows what it will write
@@ -34,6 +38,7 @@ export function SendTogetherDialog({
   changeSetIds,
   setLabel,
   allowDryRun,
+  liveWritesEnabled = true,
   onConfirm,
   onClose,
 }: {
@@ -43,6 +48,8 @@ export function SendTogetherDialog({
   setLabel: (changeSetId: string) => string;
   /** The Batches tab offers a dry run; the Languages tab sends live. */
   allowDryRun?: boolean;
+  /** With Live writes off the Batches tab can only create a dry run (the choice is not offered). */
+  liveWritesEnabled?: boolean;
   onConfirm: (input: { resolutions: MergeResolution[]; dryRun: boolean }) => void;
   onClose: () => void;
 }) {
@@ -71,7 +78,7 @@ export function SendTogetherDialog({
     };
   }, [channelId, changeSetIds, t]);
 
-  const unresolved = plan ? plan.conflicts.filter((conflict) => !choices[unitKey(conflict.videoId, conflict.language)]).length : 0;
+  const unresolved = plan ? plan.conflicts.filter((conflict) => !choices[unitKey(conflict)]).length : 0;
   const blockedByPending = plan !== null && plan.inFlightBatchId !== null && !plan.inFlightCoversSelection;
   const canConfirm = plan !== null && plan.changeCount > 0 && unresolved === 0 && !blockedByPending;
 
@@ -80,9 +87,10 @@ export function SendTogetherDialog({
     const resolutions = plan.conflicts.map((conflict) => ({
       videoId: conflict.videoId,
       language: conflict.language,
-      changeSetId: choices[unitKey(conflict.videoId, conflict.language)],
+      field: conflict.field,
+      changeSetId: choices[unitKey(conflict)],
     }));
-    onConfirm({ resolutions, dryRun: allowDryRun ? dryRun : false });
+    onConfirm({ resolutions, dryRun: allowDryRun ? dryRun || !liveWritesEnabled : false });
   }
 
   function describeChange(change: ConflictOption["changes"][number]): string {
@@ -113,11 +121,18 @@ export function SendTogetherDialog({
           <p className="text-xs text-zinc-400">{t("sendTogether.conflicts.rejectNote")}</p>
           <ul className="max-h-80 space-y-2 overflow-y-auto pr-1">
             {plan.conflicts.map((conflict) => {
-              const key = unitKey(conflict.videoId, conflict.language);
+              const key = unitKey(conflict);
               return (
                 <li key={key} className="rounded-md border border-zinc-800 bg-zinc-950 p-2">
                   <p className="text-xs font-medium text-zinc-200">
-                    {t("sendTogether.conflict.unit", { video: conflict.videoTitle ?? conflict.videoId, language: conflict.language })}
+                    {t(
+                      conflict.field === "title"
+                        ? "sendTogether.conflict.unitTitle"
+                        : conflict.field === "description"
+                          ? "sendTogether.conflict.unitDescription"
+                          : "sendTogether.conflict.unit",
+                      { video: conflict.videoTitle ?? conflict.videoId, language: conflict.language }
+                    )}
                   </p>
                   <div className="mt-1 space-y-1">
                     {conflict.options.map((option) => (
@@ -147,12 +162,13 @@ export function SendTogetherDialog({
           {unresolved > 0 && <p className="text-xs text-zinc-500">{t("sendTogether.conflicts.left", { count: unresolved })}</p>}
         </div>
       )}
-      {allowDryRun && plan && plan.changeCount > 0 && (
+      {allowDryRun && plan && plan.changeCount > 0 && liveWritesEnabled && (
         <label className="flex items-center gap-2 text-xs text-zinc-300">
           <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} />
           {t("sendTogether.dryRun")}
         </label>
       )}
+      {allowDryRun && !liveWritesEnabled && <p className="text-xs text-zinc-500">{t("sendTogether.dryRunOnly")}</p>}
       <div className="flex justify-end gap-2">
         <button onClick={onClose} className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800">
           {t("common.cancel")}
@@ -162,7 +178,7 @@ export function SendTogetherDialog({
           disabled={!canConfirm}
           className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-40"
         >
-          {allowDryRun ? t(dryRun ? "sendTogether.createDryRun" : "sendTogether.createLive") : t("sendTogether.send")}
+          {allowDryRun ? t(dryRun || !liveWritesEnabled ? "sendTogether.createDryRun" : "sendTogether.createLive") : t("sendTogether.send")}
         </button>
       </div>
     </BlockingDialog>

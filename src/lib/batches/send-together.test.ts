@@ -148,6 +148,7 @@ test("AC-ST-02: the same target in two sets is refused with send_merge_conflicts
   assert.equal(plan.conflicts.length, 1);
   assert.equal(plan.conflicts[0].videoId, "v1");
   assert.equal(plan.conflicts[0].videoTitle, "Video one");
+  assert.equal(plan.conflicts[0].field, "title");
   assert.deepEqual(plan.conflicts[0].options.map((option) => option.changeSetId), ["A", "B"]);
 
   const error = await rejection(h.service.createBatchForChangeSets({ channelId: "UC_A", changeSetIds: ["A", "B"] }));
@@ -162,13 +163,13 @@ test("AC-ST-03: resolving with B sends B's change only and rejects A's colliding
   const result = await h.service.createBatchForChangeSets({
     channelId: "UC_A",
     changeSetIds: ["A", "B"],
-    resolutions: [{ videoId: "v1", language: "es", changeSetId: "B" }],
+    resolutions: [{ videoId: "v1", language: "es", field: "title", changeSetId: "B" }],
   });
   assert.deepEqual(h.rowsOf(result.batch.id), [{ videoId: "v1", changeIds: ["b1"] }]);
   assert.deepEqual(h.rejected, [{ changeSetId: "A", changeId: "a1" }]);
   assert.deepEqual(result.rejectedChangeIds, ["a1"]);
-  const detail = h.merges[0].rows[0].detail as { kept: Array<{ language: string; changeSetId: string }>; rejectedChangeIds: string[] };
-  assert.deepEqual(detail.kept, [{ language: "es", changeSetId: "B" }]);
+  const detail = h.merges[0].rows[0].detail as { kept: Array<{ language: string; field: string | null; changeSetId: string }>; rejectedChangeIds: string[] };
+  assert.deepEqual(detail.kept, [{ language: "es", field: "title", changeSetId: "B" }]);
   assert.deepEqual(detail.rejectedChangeIds, ["a1"]);
 });
 
@@ -178,12 +179,12 @@ test("AC-ST-04: a delete collides with any change of its language; keeping the d
     B: { channelId: "UC_A", changes: [change("b1", "v1", "de", "title")] },
   });
   const keepDelete = build(sets());
-  const r1 = await keepDelete.service.createBatchForChangeSets({ channelId: "UC_A", changeSetIds: ["A", "B"], resolutions: [{ videoId: "v1", language: "de", changeSetId: "A" }] });
+  const r1 = await keepDelete.service.createBatchForChangeSets({ channelId: "UC_A", changeSetIds: ["A", "B"], resolutions: [{ videoId: "v1", language: "de", field: null, changeSetId: "A" }] });
   assert.deepEqual(keepDelete.rowsOf(r1.batch.id), [{ videoId: "v1", changeIds: ["d1", "d2"] }]);
   assert.deepEqual(keepDelete.rejected, [{ changeSetId: "B", changeId: "b1" }]);
 
   const keepTitle = build(sets());
-  const r2 = await keepTitle.service.createBatchForChangeSets({ channelId: "UC_A", changeSetIds: ["A", "B"], resolutions: [{ videoId: "v1", language: "de", changeSetId: "B" }] });
+  const r2 = await keepTitle.service.createBatchForChangeSets({ channelId: "UC_A", changeSetIds: ["A", "B"], resolutions: [{ videoId: "v1", language: "de", field: null, changeSetId: "B" }] });
   assert.deepEqual(keepTitle.rowsOf(r2.batch.id), [{ videoId: "v1", changeIds: ["b1"] }]);
   assert.deepEqual(keepTitle.rejected, [
     { changeSetId: "A", changeId: "d1" },
@@ -201,7 +202,7 @@ test("AC-ST-05: different fields of the same language from two sets are not a co
 
 test("AC-ST-06: a dry run with a resolution rejects nothing and leaves the losing change out", async () => {
   const h = build({ A: { channelId: "UC_A", changes: [change("a1", "v1", "es", "title")] }, B: { channelId: "UC_A", changes: [change("b1", "v1", "es", "title")] } });
-  const result = await h.service.createBatchForChangeSets({ channelId: "UC_A", changeSetIds: ["A", "B"], resolutions: [{ videoId: "v1", language: "es", changeSetId: "A" }], dryRun: true });
+  const result = await h.service.createBatchForChangeSets({ channelId: "UC_A", changeSetIds: ["A", "B"], resolutions: [{ videoId: "v1", language: "es", field: "title", changeSetId: "A" }], dryRun: true });
   assert.equal(result.batch.dryRun, true);
   assert.deepEqual(h.rowsOf(result.batch.id), [{ videoId: "v1", changeIds: ["a1"] }]);
   assert.deepEqual(h.rejected, []);
@@ -211,13 +212,13 @@ test("AC-ST-06: a dry run with a resolution rejects nothing and leaves the losin
 test("AC-ST-07: Live writes off -- a live send creates and rejects nothing; a dry run is still allowed", async () => {
   const sets = () => ({ A: { channelId: "UC_A", changes: [change("a1", "v1", "es", "title")] }, B: { channelId: "UC_A", changes: [change("b1", "v1", "es", "title")] } });
   const off = build(sets(), { liveWrites: false });
-  const error = await rejection(off.service.createBatchForChangeSets({ channelId: "UC_A", changeSetIds: ["A", "B"], resolutions: [{ videoId: "v1", language: "es", changeSetId: "A" }] }));
+  const error = await rejection(off.service.createBatchForChangeSets({ channelId: "UC_A", changeSetIds: ["A", "B"], resolutions: [{ videoId: "v1", language: "es", field: "title", changeSetId: "A" }] }));
   assert.equal(error.code, "live_writes_disabled");
   assert.equal(off.batches.length, 0);
   assert.deepEqual(off.rejected, []);
 
   const dry = build(sets(), { liveWrites: false });
-  const result = await dry.service.createBatchForChangeSets({ channelId: "UC_A", changeSetIds: ["A", "B"], resolutions: [{ videoId: "v1", language: "es", changeSetId: "A" }], dryRun: true });
+  const result = await dry.service.createBatchForChangeSets({ channelId: "UC_A", changeSetIds: ["A", "B"], resolutions: [{ videoId: "v1", language: "es", field: "title", changeSetId: "A" }], dryRun: true });
   assert.equal(result.batch.dryRun, true);
 });
 
@@ -250,11 +251,11 @@ test("AC-ST-10: changes held by an unfinished live batch are refused with its id
   const h = build({ A: { channelId: "UC_A", changes: [change("a1", "v1", "es", "title")] }, B: { channelId: "UC_A", changes: [change("b1", "v1", "es", "title"), change("b2", "v2", "fr", "title")] } });
   await h.service.createBatchForChangeSets({ channelId: "UC_A", changeSetIds: ["A"] });
   const plan = await h.service.planSendTogether({ channelId: "UC_A", changeSetIds: ["A", "B"] });
-  assert.equal(plan.inFlightBatchId, "b1");
-  assert.equal(plan.inFlightCoversSelection, false, "b1 holds a1 only, not B's changes");
+  // a1 and b1 collide (they may still lose), so the plan's in-flight check looks only at b2, which no batch holds.
+  assert.equal(plan.inFlightBatchId, null);
 
   const error = await rejection(
-    h.service.createBatchForChangeSets({ channelId: "UC_A", changeSetIds: ["A", "B"], resolutions: [{ videoId: "v1", language: "es", changeSetId: "A" }] })
+    h.service.createBatchForChangeSets({ channelId: "UC_A", changeSetIds: ["A", "B"], resolutions: [{ videoId: "v1", language: "es", field: "title", changeSetId: "A" }] })
   );
   assert.equal(error.code, "send_already_in_progress");
   assert.deepEqual(error.details, { batchId: "b1", changeSetIds: ["A", "B"], coversSelection: false });
@@ -295,7 +296,7 @@ test("AC-ST-14: a resolution naming a set outside the unit, or a unit left unres
     wrongSet.service.createBatchForChangeSets({
       channelId: "UC_A",
       changeSetIds: ["A", "B", "C"],
-      resolutions: [{ videoId: "v1", language: "es", changeSetId: "C" }, { videoId: "v2", language: "es", changeSetId: "A" }],
+      resolutions: [{ videoId: "v1", language: "es", field: "title", changeSetId: "C" }, { videoId: "v2", language: "es", field: "title", changeSetId: "A" }],
     })
   );
   assert.equal(e1.code, "validation_failed");
@@ -304,10 +305,69 @@ test("AC-ST-14: a resolution naming a set outside the unit, or a unit left unres
 
   const partial = build(sets());
   const e2 = await rejection(
-    partial.service.createBatchForChangeSets({ channelId: "UC_A", changeSetIds: ["A", "B", "C"], resolutions: [{ videoId: "v1", language: "es", changeSetId: "A" }] })
+    partial.service.createBatchForChangeSets({ channelId: "UC_A", changeSetIds: ["A", "B", "C"], resolutions: [{ videoId: "v1", language: "es", field: "title", changeSetId: "A" }] })
   );
   assert.equal(e2.code, "send_merge_conflicts");
   assert.deepEqual((e2.details as { conflicts: Array<{ videoId: string }> }).conflicts.map((c) => c.videoId), ["v2"]);
   assert.equal(partial.batches.length, 0);
   assert.deepEqual(partial.rejected, []);
+});
+
+// Review of BL-198: one choice per (video, language) could not keep one set's title and another set's description. Units are per field
+// (a delete still makes the whole language one unit), and nothing is rejected before the final rows are known to be valid.
+test("review: A (es title + description), B (es title), C (es description) -- one unit per field; any combination makes a valid row", async () => {
+  const sets = () => ({
+    A: { channelId: "UC_A", changes: [change("a1", "v1", "es", "title"), change("a2", "v1", "es", "description")] },
+    B: { channelId: "UC_A", changes: [change("b1", "v1", "es", "title")] },
+    C: { channelId: "UC_A", changes: [change("c1", "v1", "es", "description")] },
+  });
+  const planned = build(sets());
+  const plan = await planned.service.planSendTogether({ channelId: "UC_A", changeSetIds: ["A", "B", "C"] });
+  assert.deepEqual(
+    plan.conflicts.map((c) => ({ field: c.field, options: c.options.map((o) => o.changeSetId) })),
+    [
+      { field: "title", options: ["A", "B"] },
+      { field: "description", options: ["A", "C"] },
+    ]
+  );
+
+  const mixed = build(sets());
+  const r1 = await mixed.service.createBatchForChangeSets({
+    channelId: "UC_A",
+    changeSetIds: ["A", "B", "C"],
+    resolutions: [
+      { videoId: "v1", language: "es", field: "title", changeSetId: "B" },
+      { videoId: "v1", language: "es", field: "description", changeSetId: "C" },
+    ],
+  });
+  assert.deepEqual(mixed.rowsOf(r1.batch.id), [{ videoId: "v1", changeIds: ["b1", "c1"] }]);
+  assert.deepEqual(mixed.rejected.map((r) => r.changeId).sort(), ["a1", "a2"]);
+
+  const keepA = build(sets());
+  const r2 = await keepA.service.createBatchForChangeSets({
+    channelId: "UC_A",
+    changeSetIds: ["A", "B", "C"],
+    resolutions: [
+      { videoId: "v1", language: "es", field: "title", changeSetId: "A" },
+      { videoId: "v1", language: "es", field: "description", changeSetId: "A" },
+    ],
+  });
+  assert.deepEqual(keepA.rowsOf(r2.batch.id), [{ videoId: "v1", changeIds: ["a1", "a2"] }]);
+  assert.deepEqual(keepA.rejected.map((r) => r.changeId).sort(), ["b1", "c1"]);
+});
+
+test("review: a set with no change in a unit's field is not an option for it, and naming it is refused before anything is rejected", async () => {
+  const h = build({
+    A: { channelId: "UC_A", changes: [change("a1", "v1", "es", "title")] },
+    B: { channelId: "UC_A", changes: [change("b1", "v1", "es", "title")] },
+    C: { channelId: "UC_A", changes: [change("c1", "v1", "es", "description")] },
+  });
+  const plan = await h.service.planSendTogether({ channelId: "UC_A", changeSetIds: ["A", "B", "C"] });
+  assert.deepEqual(plan.conflicts.map((c) => c.options.map((o) => o.changeSetId)), [["A", "B"]]);
+  const error = await rejection(
+    h.service.createBatchForChangeSets({ channelId: "UC_A", changeSetIds: ["A", "B", "C"], resolutions: [{ videoId: "v1", language: "es", field: "title", changeSetId: "C" }] })
+  );
+  assert.equal(error.code, "validation_failed");
+  assert.deepEqual(h.rejected, []);
+  assert.equal(h.batches.length, 0);
 });

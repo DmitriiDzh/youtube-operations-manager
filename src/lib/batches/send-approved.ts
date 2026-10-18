@@ -1,4 +1,5 @@
 import { sameLanguage } from "@/lib/shared-language-baseline";
+import { languageKey, mergeCollision } from "./targets";
 import { UNITS_PER_WRITTEN_VIDEO } from "@/lib/quota-guard";
 import { DomainError, TERMINAL_LEDGER_STATUSES, type Batch, type LedgerRow } from "./contracts";
 import { isApprovalStillValid } from "./services";
@@ -36,6 +37,11 @@ export type SendApprovedDeps = {
     rejectChange?(input: { channelId: string; changeSetId: string; changeId: string }): Promise<void>;
     /** BL-198: video titles for the conflict window. */
     videoTitles?(channelId: string): Promise<Map<string, string>>;
+    /**
+     * BL-198: read once per call -- whether the channel's synced copy already holds a change's approved value (a delete: the
+     * language is gone). Absent = no change counts as held.
+     */
+    remoteHolds?(channelId: string): Promise<(change: SendableChangeCandidate) => boolean>;
   };
 };
 
@@ -73,9 +79,13 @@ export type MergeConflictOption = {
   createdAt: string | null;
   changes: Array<{ changeId: string; field: string; changeType: string; proposedValue: string }>;
 };
-export type MergeConflict = { videoId: string; videoTitle: string | null; language: string; options: MergeConflictOption[] };
-/** For each conflict unit (`videoId` + `language`), the set whose variant is kept. */
-export type MergeResolution = { videoId: string; language: string; changeSetId: string };
+/**
+ * One decision for the owner: a field of a video's language (`field` set) changed by several sets, or -- when one of them deletes the
+ * language -- the whole language (`field` null).
+ */
+export type MergeConflict = { videoId: string; videoTitle: string | null; language: string; field: string | null; options: MergeConflictOption[] };
+/** For each conflict unit, the set whose variant is kept. */
+export type MergeResolution = { videoId: string; language: string; field?: string | null; changeSetId: string };
 
 export type SendTogetherPlan = {
   videoCount: number;
@@ -91,37 +101,45 @@ export type SendTogetherPlan = {
 
 export type SendTogetherResult = SendApprovedResult & { rejectedChangeIds: string[] };
 
-function languageKey(language: string | undefined): string {
-  return (language ?? "").trim().toLowerCase();
-}
-
-function unitKey(videoId: string, language: string | undefined): string {
-  return `${videoId}\u0000${languageKey(language)}`;
-}
-
-/** Two changes collide when they are for the same video and language and either share a field or one of them is a delete. */
-function collide(a: SendableChangeCandidate, b: SendableChangeCandidate): boolean {
-  if (a.videoId !== b.videoId || !a.language || !b.language || !sameLanguage(a.language, b.language)) return false;
-  return a.field === b.field || a.changeType === "delete" || b.changeType === "delete";
-}
-
 type Tagged = SendableChangeCandidate & { fromSet: string };
-type ConflictUnit = { videoId: string; language: string; changes: Tagged[] };
+type ConflictUnit = { videoId: string; language: string; field: string | null; changes: Tagged[] };
 
-/** The conflict units of a selection: per (video, language), changes of two or more sets of which at least one pair collides. */
+function unitKey(videoId: string, language: string | undefined, field: string | null | undefined): string {
+  return `${videoId}\u0000${languageKey(language)}\u0000${field ?? "*"}`;
+}
+
+/** Whether `change` is inside a unit's scope: its field, or anything of the language for a whole-language unit. */
+function inScope(unit: { field: string | null }, change: SendableChangeCandidate): boolean {
+  return unit.field === null || change.changeType === "delete" || change.field === unit.field;
+}
+
+/**
+ * The decisions a selection needs. Per (video, language): when a delete collides with another set's change, the whole language is one
+ * unit (a delete covers both fields); otherwise each field changed by two or more sets is its own unit, so the owner can keep one
+ * set's title and another set's description.
+ */
 function findConflictUnits(changes: Tagged[]): ConflictUnit[] {
-  const byUnit = new Map<string, Tagged[]>();
+  const byLanguage = new Map<string, Tagged[]>();
   for (const change of changes) {
     if (!change.language) continue;
-    const key = unitKey(change.videoId, change.language);
-    const list = byUnit.get(key) ?? [];
+    const key = unitKey(change.videoId, change.language, null);
+    const list = byLanguage.get(key) ?? [];
     list.push(change);
-    byUnit.set(key, list);
+    byLanguage.set(key, list);
   }
   const units: ConflictUnit[] = [];
-  for (const list of byUnit.values()) {
-    const hasCollision = list.some((a, i) => list.some((b, j) => j > i && a.fromSet !== b.fromSet && collide(a, b)));
-    if (hasCollision) units.push({ videoId: list[0].videoId, language: list[0].language as string, changes: list });
+  for (const list of byLanguage.values()) {
+    const crossSet = (filter: (a: Tagged, b: Tagged) => boolean) =>
+      list.some((a, i) => list.some((b, j) => j > i && a.fromSet !== b.fromSet && mergeCollision(a, b) && filter(a, b)));
+    const { videoId, language } = list[0] as { videoId: string; language: string };
+    if (crossSet((a, b) => a.changeType === "delete" || b.changeType === "delete")) {
+      units.push({ videoId, language, field: null, changes: list });
+      continue;
+    }
+    for (const field of ["title", "description"]) {
+      const inField = list.filter((change) => change.field === field);
+      if (new Set(inField.map((change) => change.fromSet)).size > 1) units.push({ videoId, language, field, changes: inField });
+    }
   }
   return units;
 }
@@ -173,6 +191,7 @@ export function createSendApprovedServices(deps: SendApprovedDeps) {
     const sets: SetInfo[] = [];
     const changes: Tagged[] = [];
     const written = await writtenAtByChangeId(channelId);
+    const holds = deps.changeSets.remoteHolds ? await deps.changeSets.remoteHolds(channelId) : null;
     for (const changeSetId of [...new Set(changeSetIds)]) {
       const changeSet = await deps.changeSets.getChangeSet(changeSetId);
       if (!changeSet || changeSet.channelId !== channelId) {
@@ -183,7 +202,8 @@ export function createSendApprovedServices(deps: SendApprovedDeps) {
         });
       }
       sets.push({ id: changeSet.id, source: changeSet.source ?? null, createdAt: changeSet.createdAt ?? null });
-      for (const change of excludeAlreadyWritten(selectSendableChanges(await deps.changeSets.listChanges(changeSetId)), written)) {
+      const listed = (await deps.changeSets.listChanges(changeSetId)).map((change) => (holds ? { ...change, remoteHolds: holds(change) } : change));
+      for (const change of excludeAlreadyWritten(selectSendableChanges(listed), written)) {
         changes.push({ ...change, fromSet: changeSetId });
       }
     }
@@ -197,6 +217,7 @@ export function createSendApprovedServices(deps: SendApprovedDeps) {
       videoId: unit.videoId,
       videoTitle: titles.get(unit.videoId) ?? null,
       language: unit.language,
+      field: unit.field,
       options: sets
         .filter((set) => unit.changes.some((change) => change.fromSet === set.id))
         .map((set) => ({
@@ -224,7 +245,10 @@ export function createSendApprovedServices(deps: SendApprovedDeps) {
   async function planSendTogether(input: { channelId: string; changeSetIds: string[] }): Promise<SendTogetherPlan> {
     const { sets, changes } = await gather(input.channelId, input.changeSetIds);
     const units = findConflictUnits(changes);
-    const inFlight = changes.length > 0 ? await findInFlightBatch(input.channelId, new Set(changes.map((change) => change.id))) : null;
+    // Changes in a conflict unit may still lose; the in-flight check (like the create path's) looks at the ones that surely go in.
+    const contested = new Set(units.flatMap((unit) => unit.changes.map((change) => change.id)));
+    const sure = changes.filter((change) => !contested.has(change.id));
+    const inFlight = sure.length > 0 ? await findInFlightBatch(input.channelId, new Set(sure.map((change) => change.id))) : null;
     const videoCount = new Set(changes.map((change) => change.videoId)).size;
     return {
       videoCount,
@@ -274,18 +298,20 @@ export function createSendApprovedServices(deps: SendApprovedDeps) {
       const units = findConflictUnits(changes);
       const kept = new Map<string, string>();
       for (const unit of units) {
-        const resolution = (input.resolutions ?? []).find((r) => r.videoId === unit.videoId && sameLanguage(r.language, unit.language));
+        const resolution = (input.resolutions ?? []).find(
+          (r) => r.videoId === unit.videoId && sameLanguage(r.language, unit.language) && (r.field ?? null) === unit.field
+        );
         if (!resolution) continue;
         if (!unit.changes.some((change) => change.fromSet === resolution.changeSetId)) {
           throw new DomainError({
             code: "validation_failed",
             message: `The resolution for video ${unit.videoId}, language ${unit.language} names a change set that has no change there.`,
-            details: { videoId: unit.videoId, language: unit.language, changeSetId: resolution.changeSetId },
+            details: { videoId: unit.videoId, language: unit.language, field: unit.field, changeSetId: resolution.changeSetId },
           });
         }
-        kept.set(unitKey(unit.videoId, unit.language), resolution.changeSetId);
+        kept.set(unitKey(unit.videoId, unit.language, unit.field), resolution.changeSetId);
       }
-      const unresolved = units.filter((unit) => !kept.has(unitKey(unit.videoId, unit.language)));
+      const unresolved = units.filter((unit) => !kept.has(unitKey(unit.videoId, unit.language, unit.field)));
       if (unresolved.length > 0) {
         throw new DomainError({
           code: "send_merge_conflicts",
@@ -295,16 +321,26 @@ export function createSendApprovedServices(deps: SendApprovedDeps) {
       }
 
       // The losers: in each unit, every change of another set that collides with a change of the kept set.
-      const losers: Tagged[] = [];
+      const loserIds = new Set<string>();
       for (const unit of units) {
-        const keptSet = kept.get(unitKey(unit.videoId, unit.language));
-        const keptChanges = unit.changes.filter((change) => change.fromSet === keptSet);
+        const keptSet = kept.get(unitKey(unit.videoId, unit.language, unit.field));
+        const keptChanges = unit.changes.filter((change) => change.fromSet === keptSet && inScope(unit, change));
         for (const change of unit.changes) {
-          if (change.fromSet !== keptSet && keptChanges.some((k) => collide(k, change))) losers.push(change);
+          if (change.fromSet !== keptSet && inScope(unit, change) && keptChanges.some((k) => mergeCollision(k, change))) loserIds.add(change.id);
         }
       }
-      const loserIds = new Set(losers.map((change) => change.id));
+      const losers = changes.filter((change) => loserIds.has(change.id));
       const selected = changes.filter((change) => !loserIds.has(change.id));
+      // Review of BL-198: nothing is rejected before the final selection is known to make a valid batch -- no two sets still
+      // colliding in one row.
+      const leftover = findConflictUnits(selected);
+      if (leftover.length > 0) {
+        throw new DomainError({
+          code: "send_merge_conflicts",
+          message: "These choices still leave two change sets changing the same place. Choose again.",
+          details: { conflicts: await describeConflicts(input.channelId, sets, leftover) },
+        });
+      }
 
       const inFlight = await findInFlightBatch(input.channelId, new Set(selected.map((change) => change.id)));
       if (inFlight) {
@@ -344,7 +380,7 @@ export function createSendApprovedServices(deps: SendApprovedDeps) {
                 changeSetIds: [...new Set(selected.filter((change) => change.videoId === videoId).map((change) => change.fromSet))],
                 kept: units
                   .filter((unit) => unit.videoId === videoId)
-                  .map((unit) => ({ language: unit.language, changeSetId: kept.get(unitKey(unit.videoId, unit.language)) })),
+                  .map((unit) => ({ language: unit.language, field: unit.field, changeSetId: kept.get(unitKey(unit.videoId, unit.language, unit.field)) })),
                 rejectedChangeIds: dryRun ? [] : videoLosers,
                 leftOutChangeIds: dryRun ? videoLosers : [],
               },
@@ -369,9 +405,12 @@ export function createSendApprovedServices(deps: SendApprovedDeps) {
    */
   async function writtenCountsByChangeSet(channelId: string, changeSetIds: string[]): Promise<Map<string, { approvedCount: number; writtenCount: number }>> {
     const written = await writtenAtByChangeId(channelId);
+    const holds = deps.changeSets.remoteHolds ? await deps.changeSets.remoteHolds(channelId) : null;
     const counts = new Map<string, { approvedCount: number; writtenCount: number }>();
     for (const changeSetId of changeSetIds) {
-      const approved = (await deps.changeSets.listChanges(changeSetId)).filter((change) => change.approvalStatus === "approved");
+      const approved = (await deps.changeSets.listChanges(changeSetId))
+        .filter((change) => change.approvalStatus === "approved")
+        .map((change) => (holds ? { ...change, remoteHolds: holds(change) } : change));
       counts.set(changeSetId, { approvedCount: approved.length, writtenCount: approved.filter((change) => isChangeWritten(change, written)).length });
     }
     return counts;

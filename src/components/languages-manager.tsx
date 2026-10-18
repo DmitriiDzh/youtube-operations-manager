@@ -15,7 +15,7 @@ import type { UiTextKey } from "@/lib/ui-text";
 import { useT } from "./ui-text-provider";
 import { CHANGE_SET_SOURCE_LABELS, CHANGE_SET_STATUS_LABELS } from "./change-set-review";
 import { useBatchSendRunner } from "./send-approved-button";
-import { SendTogetherDialog } from "./send-together-dialog";
+import { MAX_SETS_SENT_TOGETHER, SendTogetherDialog } from "./send-together-dialog";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1407,8 +1407,8 @@ export function LanguagesManager() {
               {subTab === "approved" && (
                 <button
                   onClick={() => setSendTogetherOpen(sendTogetherSelection)}
-                  disabled={sendRunner.busy || sendTogetherSelection.length < 2}
-                  title={t("sendTogether.hint")}
+                  disabled={sendRunner.busy || sendTogetherSelection.length < 2 || sendTogetherSelection.length > MAX_SETS_SENT_TOGETHER}
+                  title={sendTogetherSelection.length > MAX_SETS_SENT_TOGETHER ? t("sendTogether.tooMany", { max: MAX_SETS_SENT_TOGETHER }) : t("sendTogether.hint")}
                   className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-40"
                 >
                   {t("sendTogether.button", { count: sendTogetherSelection.length })}

@@ -263,4 +263,8 @@ export const languages: Record<keyof typeof en, string> = {
   "sendTogether.createDryRun": "Создать пробный пакет",
   "sendTogether.createLive": "Создать боевой пакет",
   "sendTogether.send": "Отправить в YouTube",
+  "sendTogether.conflict.unitTitle": "{video} · {language} · название",
+  "sendTogether.conflict.unitDescription": "{video} · {language} · описание",
+  "sendTogether.dryRunOnly": "Live writes выключен, поэтому можно создать только пробный пакет.",
+  "sendTogether.tooMany": "Не больше {max} наборов за раз",
 };

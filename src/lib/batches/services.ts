@@ -37,6 +37,7 @@ import {
   type PendingChange,
 } from "./merge";
 import { readAgainstBaseline, sameLanguage } from "@/lib/shared-language-baseline";
+import { sameTarget } from "./targets";
 import { YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
 import { runWithQuotaContext, type QuotaContext } from "@/lib/youtube-quota";
 import { beginBatchExecution, endBatchExecution, isBatchCancelRequested, requestBatchCancelFlag } from "./execution-control";
@@ -366,22 +367,21 @@ function batchQuotaContext(batchId: string): QuotaContext {
 }
 
 /**
- * BL-198 (AC-ST-11): one row must not carry two changes for the same (language, field), nor a delete of a language next to any
- * other change of that language -- `buildSafeLocalizationsPayload` would silently let the last one (or the delete) win. Changes from
- * several change sets reach one row since BL-198; the send service resolves such collisions with the owner first, and this guard
- * keeps any other path (the Batches tab's manual selection) from writing an unresolved one.
+ * BL-198 (AC-ST-11): one row must not carry two changes for the same (language, field) -- `buildSafeLocalizationsPayload` would
+ * silently let the last one win. Changes from several change sets reach one row since BL-198; the send service resolves such
+ * collisions with the owner first, and this guard keeps any other path (the Batches tab's manual selection) from writing an
+ * unresolved one. A delete next to a modify of its language stays allowed (PROJECT_SPEC §16: the delete is applied last).
  */
 function assertNoDuplicateTargets(videoId: string, changes: PendingChangeRecord[]): void {
   for (let i = 0; i < changes.length; i += 1) {
     for (let j = i + 1; j < changes.length; j += 1) {
       const a = changes[i];
       const b = changes[j];
-      if (!sameLanguage(a.language, b.language)) continue;
-      if (a.field === b.field || a.changeType === "delete" || b.changeType === "delete") {
+      if (sameTarget(a, b)) {
         throw new DomainError({
           code: "duplicate_target_in_row",
-          message: `Two selected changes for video ${videoId} target the same language "${a.language}" (${a.field} / ${b.field}); keep one of them.`,
-          details: { videoId, language: a.language, changeIds: [a.id, b.id] },
+          message: `Two selected changes for video ${videoId} target the same field (${a.language} ${a.field}); keep one of them.`,
+          details: { videoId, language: a.language, field: a.field, changeIds: [a.id, b.id] },
         });
       }
     }

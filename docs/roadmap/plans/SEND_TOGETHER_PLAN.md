@@ -35,10 +35,15 @@ cost two writes per video. The data model already allows one row per video holdi
   - one of them is a `delete` (a delete removes the whole language, so it collides with any change of that language).
   Changes from different sets for different fields of the same language, neither a delete, do not conflict. They go into the
   same row (the payload builder already merges them).
-- **Conflict unit** shown to the owner: one `(video, language)` with its options, one option per set. Each option is that set's
-  changes for that video and language (title / description / delete).
-- **Resolution**: for each unit, the chosen `changeSetId`. Every change of the other sets in that unit that conflicts with the
-  chosen option is rejected. A same-field change conflicts; with a delete on either side every change of that language conflicts.
+- **Conflict unit** shown to the owner (revised after review):
+  - When a delete in one set collides with another set's change of that language, the unit is the whole `(video, language)`,
+    because a delete covers both fields.
+  - Otherwise each field changed by two or more sets is its own unit `(video, language, field)`, so one set's title and another
+    set's description can both be kept.
+  - The options are the sets that have a change in the unit.
+- **Resolution**: for each unit, the chosen `changeSetId`. Every change of another set in the unit that collides with a change of
+  the chosen set is rejected. The final selection is then checked for any remaining collision **before** anything is rejected or
+  created.
 - **Written change set**: at least one approved change, and every approved change in it is written (as defined above).
 
 ## Server
@@ -62,9 +67,10 @@ cost two writes per video. The data model already allows one row per video holdi
     A dry run never rejects anything. Losers are left out of its selection instead.
   - `createLiveBatchForChangeSet` (one set) delegates to it with one id. Behaviour unchanged, since one set has no
     cross-set conflicts.
-- `createBatch` gains a defence-in-depth guard. A row whose change ids contain two changes for the same target, or a delete
-  plus any other change of the same language, fails with `duplicate_target_in_row`. This also covers the Batches tab's
-  manual checkbox path, where `buildSafeLocalizationsPayload` would otherwise let the last change win silently.
+- `createBatch` gains a defence-in-depth guard. A row holding two changes for the same `(language, field)`, neither a delete, fails
+  with `duplicate_target_in_row`. This also covers the Batches tab's manual checkbox path, where `buildSafeLocalizationsPayload`
+  would otherwise let the last change win silently. A delete next to a modify of its language stays allowed: PROJECT_SPEC §16
+  applies the delete last. Corrected after review; the first version refused that pair too.
 - Routes (session, `assertActiveChannel`, same error mapping as the single send route):
   - `POST /api/channels/[channelId]/change-sets/send-together/plan` with `{ changeSetIds }` returns the plan.
   - `POST /api/channels/[channelId]/change-sets/send-together` with `{ changeSetIds, resolutions?, dryRun? }` returns 201
@@ -107,8 +113,8 @@ Each expected value comes from the definitions above.
 - **AC-ST-09**: changes already written are not sent again. A selection with nothing left fails with `send_nothing_to_send`.
 - **AC-ST-10**: changes held by a live PENDING/RUNNING batch fail with `send_already_in_progress` and its `batchId`. No losers
   are rejected.
-- **AC-ST-11**: `createBatch` with a row holding two es-title changes, or a de delete plus a de title, fails with
-  `duplicate_target_in_row`.
+- **AC-ST-11**: `createBatch` with a row holding two es-title changes fails with `duplicate_target_in_row`. A de delete next to a de
+  title is still accepted (PROJECT_SPEC §16).
 - **AC-ST-12**: written-set classification:
   - 2 approved changes, both with a newer SUCCESS row of a real batch: written, shown under «Записаны в YouTube»;
   - 1 of 2 written: «Одобренные», written 1 of 2;

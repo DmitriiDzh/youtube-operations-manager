@@ -258,4 +258,8 @@ export const languages = {
   "sendTogether.createDryRun": "Create dry-run batch",
   "sendTogether.createLive": "Create live batch",
   "sendTogether.send": "Send to YouTube",
+  "sendTogether.conflict.unitTitle": "{video} · {language} · title",
+  "sendTogether.conflict.unitDescription": "{video} · {language} · description",
+  "sendTogether.dryRunOnly": "Live writes is off, so only a dry-run batch can be created.",
+  "sendTogether.tooMany": "At most {max} change sets at once",
 } as const;

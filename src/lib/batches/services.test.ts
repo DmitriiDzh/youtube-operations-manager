@@ -727,14 +727,15 @@ test("AC-ST-11: two es-title changes in one row are refused with duplicate_targe
   assert.equal((await harness.services.listBatchesByChannel("UC_TEST")).length, 0);
 });
 
-test("AC-ST-11: a de delete next to a de title in one row is refused; es title + es description is allowed", async () => {
+// Review of BL-198: the first version also refused a delete next to a modify of its language, which PROJECT_SPEC §16 (2026-09-20)
+// explicitly allows in one approved batch (the delete is applied last). The plan's AC-ST-11 was wrong about that case; corrected here.
+test("AC-ST-11: a de delete next to a de title in one row stays allowed (PROJECT_SPEC §16); es title + es description is allowed", async () => {
   const harness = createHarness();
   harness.store.registerApprovedChange({ id: "d1", videoId: "v1", language: "de", field: "description", changeType: "delete" });
+  harness.store.registerApprovedChange({ id: "d2", videoId: "v1", language: "de", field: "title", changeType: "delete" });
   harness.store.registerApprovedChange({ id: "t1", videoId: "v1", language: "de", field: "title" });
-  await assert.rejects(
-    () => harness.services.createBatch({ channelId: "UC_TEST", selections: [{ videoId: "v1", changeIds: ["d1", "t1"] }] }),
-    (error: unknown) => error instanceof DomainError && error.code === "duplicate_target_in_row"
-  );
+  const withDelete = await harness.services.createBatch({ channelId: "UC_TEST", selections: [{ videoId: "v1", changeIds: ["d1", "d2", "t1"] }] });
+  assert.deepEqual((await harness.services.listLedgerRows(withDelete.id))[0].changeIds, ["d1", "d2", "t1"]);
   harness.store.registerApprovedChange({ id: "e1", videoId: "v2", language: "es", field: "title" });
   harness.store.registerApprovedChange({ id: "e2", videoId: "v2", language: "es", field: "description" });
   const batch = await harness.services.createBatch({ channelId: "UC_TEST", selections: [{ videoId: "v2", changeIds: ["e1", "e2"] }] });

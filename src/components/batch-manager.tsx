@@ -7,7 +7,7 @@ import { runBatchWithProgress } from "./batch-run";
 import { ConfirmDialog } from "./confirm-dialog";
 import { OperationOverlay, useOperation } from "./operation-progress";
 import { QuotaBlockDialog, type QuotaBlock, type SplitOutcome } from "./quota-block-dialog";
-import { SendTogetherDialog, type MergeResolution } from "./send-together-dialog";
+import { MAX_SETS_SENT_TOGETHER, SendTogetherDialog, type MergeResolution } from "./send-together-dialog";
 import { translateWithSlots } from "./ui-text-provider";
 import { useT } from "./ui-text-provider";
 
@@ -452,8 +452,8 @@ export function BatchManager({
           <h3 className="text-sm font-semibold text-zinc-300">{t("batches.step1")}</h3>
           <button
             onClick={() => setMergeOpen(mergeIds)}
-            disabled={creatingBatch || mergeIds.length < 2}
-            title={t("batches.mergeHint")}
+            disabled={creatingBatch || mergeIds.length < 2 || mergeIds.length > MAX_SETS_SENT_TOGETHER}
+            title={mergeIds.length > MAX_SETS_SENT_TOGETHER ? t("sendTogether.tooMany", { max: MAX_SETS_SENT_TOGETHER }) : t("batches.mergeHint")}
             className="rounded-lg border border-zinc-600 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-40"
           >
             {t("batches.mergeButton", { count: mergeIds.length })}
@@ -468,6 +468,7 @@ export function BatchManager({
               return cs ? cs.importedFilename ?? cs.id.slice(0, 8) : id;
             }}
             allowDryRun
+            liveWritesEnabled={liveWritesEnabled}
             onClose={() => setMergeOpen(null)}
             onConfirm={({ resolutions, dryRun }) => {
               const ids = mergeOpen;

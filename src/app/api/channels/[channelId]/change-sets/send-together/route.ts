@@ -10,7 +10,14 @@ import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-stat
 const bodySchema = z
   .object({
     changeSetIds: z.array(z.string().min(1)).min(1).max(50),
-    resolutions: z.array(z.object({ videoId: z.string().min(1), language: z.string().min(1), changeSetId: z.string().min(1) }).strict()).max(5000).optional(),
+    resolutions: z
+      .array(
+        z
+          .object({ videoId: z.string().min(1), language: z.string().min(1), field: z.enum(["title", "description"]).nullable().optional(), changeSetId: z.string().min(1) })
+          .strict()
+      )
+      .max(5000)
+      .optional(),
     dryRun: z.boolean().optional(),
   })
   .strict();

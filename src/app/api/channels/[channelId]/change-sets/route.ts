@@ -26,9 +26,17 @@ export async function GET(
     const changeSets = await core.listChangeSets({ channelId });
     // BL-198 (AC-ST-12): how many approved changes of each set are already on YouTube -- «Записаны в YouTube» when all of them,
     // «Одобренные» (waiting to be sent) otherwise. Additive field.
-    const written = await sendCore.writtenCountsByChangeSet(channelId, changeSets.map((changeSet) => changeSet.id));
+    // Only decided sets can be written; a failure here never hides the list (AGENTS.md §M): the field is then left out.
+    const decided = changeSets.filter((changeSet) => changeSet.status === "approved" || changeSet.status === "partially_approved");
+    const written = await sendCore.writtenCountsByChangeSet(channelId, decided.map((changeSet) => changeSet.id)).catch((error: unknown) => {
+      console.error(JSON.stringify({ level: "error", event: "change_sets.written_count_failed", context: { channelId, error: error instanceof Error ? error.message : String(error) } }));
+      return null;
+    });
     return NextResponse.json({
-      changeSets: changeSets.map((changeSet) => ({ ...changeSet, writtenCount: written.get(changeSet.id)?.writtenCount ?? 0 })),
+      changeSets: changeSets.map((changeSet) => {
+        const counts = written?.get(changeSet.id);
+        return counts ? { ...changeSet, writtenCount: counts.writtenCount } : changeSet;
+      }),
     });
   } catch (error) {
     if (error instanceof DomainError) {
