@@ -74,6 +74,7 @@ export type DomainErrorCode =
   | "generation_invalid_target_language"
   | "generation_no_proposals"
   | "encryption_key_not_configured"
+  | "device_secret_unreadable"
   | "capability_not_supported"
   | "endpoint_not_allowed"
   | "connection_disabled"

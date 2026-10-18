@@ -52,6 +52,7 @@ const DOMAIN_ERROR_STATUS = {
   generation_invalid_target_language: 422,
   generation_no_proposals: 422,
   encryption_key_not_configured: 503,
+  device_secret_unreadable: 503,
   capability_not_supported: 422,
   endpoint_not_allowed: 422,
   connection_disabled: 409,

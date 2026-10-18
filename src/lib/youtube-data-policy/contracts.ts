@@ -209,6 +209,7 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
   generation_plan_picks: notApiData("the owner's picks of one generated attempt of several, and \"none fits\" (BL-175)"),
   generation_plan_peer_picks: notApiData("the owner's picks on another device's generation plans (BL-175)"),
   gemini_credentials: notApiData("the Gemini API key (credentials, BL-174)"),
+  device_secrets: notApiData("this computer's typed secrets: RunPod/S3, Gemini, Hugging Face (credentials, BL-199)"),
   gemini_media_jobs: notApiData("images and video generated through Google's Gemini API for a channel, with their prompts and costs (BL-174)"),
   live_streams: authorized("our channels' live broadcast ids and texts, set by the owner (BL-176)"),
   publishing_uploads: authorized("our channels' uploads: the video ids YouTube returned and the titles and descriptions the owner approved (BL-182)"),

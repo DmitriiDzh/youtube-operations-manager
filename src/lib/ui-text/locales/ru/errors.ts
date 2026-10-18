@@ -21,6 +21,7 @@ export const errors: Record<keyof typeof en, string> = {
   "errors.batch_not_found": "Пакет не найден.",
   "errors.batch_already_running": "Пакет уже выполняется.",
   "errors.send_nothing_to_send": "В этом наборе изменений больше нечего отправлять.",
+  "errors.device_secret_unreadable": "Сохранённый ключ не читается на этом компьютере. Введите его заново.",
   "errors.send_merge_conflicts": "Выбранные наборы меняют одни и те же поля. Выберите, какой вариант отправить.",
   "errors.duplicate_target_in_row": "Два выбранных изменения меняют одно и то же поле одного видео — оставьте одно.",
   "errors.send_already_in_progress": "Эти изменения уже отправляются.",
