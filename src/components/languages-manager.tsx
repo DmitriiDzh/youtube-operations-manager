@@ -14,6 +14,8 @@ import { OperationOverlay, useOperation } from "./operation-progress";
 import type { UiTextKey } from "@/lib/ui-text";
 import { useT } from "./ui-text-provider";
 import { CHANGE_SET_SOURCE_LABELS, CHANGE_SET_STATUS_LABELS } from "./change-set-review";
+import { useBatchSendRunner } from "./send-approved-button";
+import { SendTogetherDialog } from "./send-together-dialog";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -87,23 +89,34 @@ type ChangeSetSummary = {
   conflictCount: number;
   invalidCount: number;
   createdAt: string;
+  /** BL-198: approved changes of this set already on YouTube (the list route adds it). */
+  writtenCount?: number;
 };
 
-type SubTab = "in_progress" | "approved" | "rejected" | "all";
+type SubTab = "in_progress" | "approved" | "written" | "rejected" | "all";
 
 const SUB_TABS: Array<{ value: SubTab; label: UiTextKey }> = [
   { value: "in_progress", label: "languages.subTab.inProgress" },
   { value: "approved", label: "languages.subTab.approved" },
+  { value: "written", label: "languages.subTab.written" },
   { value: "rejected", label: "languages.subTab.rejected" },
   { value: "all", label: "languages.subTab.all" },
 ];
 
+/** BL-198: every approved change of the set is on YouTube. */
+function isFullyWritten(cs: ChangeSetSummary): boolean {
+  return cs.approvedCount > 0 && (cs.writtenCount ?? 0) >= cs.approvedCount;
+}
+
 function matchesSubTab(cs: ChangeSetSummary, subTab: SubTab): boolean {
   if (subTab === "all") return true;
-  // In progress = still needs a decision; Approved = fully decided with something to send (partially_approved included).
+  // In progress = still needs a decision; Approved = fully decided and waiting to be sent (partially_approved included);
+  // Written = every approved change is on YouTube (BL-198, owner msg 2999: «Одобренные = Ожидающие отправку»).
   if (subTab === "in_progress") return cs.status === "in_review";
   if (subTab === "rejected") return cs.status === "rejected";
-  return cs.status === "approved" || cs.status === "partially_approved";
+  const decided = cs.status === "approved" || cs.status === "partially_approved";
+  if (subTab === "written") return decided && isFullyWritten(cs);
+  return decided && !isFullyWritten(cs);
 }
 
 // --- AI generation types (moved from the former "AI Localization" tab) ---
@@ -274,6 +287,9 @@ export function LanguagesManager() {
 
   const [changeSets, setChangeSets] = useState<ChangeSetSummary[]>([]);
   const [subTab, setSubTab] = useState<SubTab>("in_progress");
+  // BL-198: approved sets ticked for «Отправить вместе», and the open summary/conflict window.
+  const [sendTogetherIds, setSendTogetherIds] = useState<string[]>([]);
+  const [sendTogetherOpen, setSendTogetherOpen] = useState<string[] | null>(null);
   const [openChangeSetId, setOpenChangeSetId] = useState<string | null>(null);
 
   // --- One shared row-selection set (E4/§4.5) -- drives both AI generation and XLSX export. ---
@@ -1074,6 +1090,32 @@ export function LanguagesManager() {
     () => changeSets.filter((cs) => matchesSubTab(cs, subTab)),
     [changeSets, subTab]
   );
+  const sendRunner = useBatchSendRunner({
+    channelId: channelId ?? "",
+    onFinished: () => {
+      if (!channelId) return;
+      setSendTogetherIds([]);
+      void fetchChangeSets(channelId);
+      void fetchOverview(channelId);
+    },
+  });
+  // A ticked set that left «Одобренные» (sent, rejected, deleted) is not sent with the next ones.
+  const sendTogetherSelection = useMemo(
+    () => sendTogetherIds.filter((id) => changeSets.some((cs) => cs.id === id && matchesSubTab(cs, "approved"))),
+    [sendTogetherIds, changeSets]
+  );
+  const changeSetLabel = useCallback(
+    (id: string) => {
+      const cs = changeSets.find((candidate) => candidate.id === id);
+      if (!cs) return id;
+      return t("languages.queue.item", {
+        source: cs.importedFilename ?? t(CHANGE_SET_SOURCE_LABELS[cs.source]),
+        count: cs.totalChanges,
+        date: formatDisplayDateTime(cs.createdAt),
+      });
+    },
+    [changeSets, t]
+  );
 
   const languages = overview?.languages ?? [];
   const tableMinWidth = Math.max(600, 420 + languages.length * 56);
@@ -1361,7 +1403,19 @@ export function LanguagesManager() {
                 </button>
               ))}
             </div>
-            <span className="text-xs text-zinc-500">{t("languages.queue.awaiting", { count: filteredChangeSets.length })}</span>
+            <div className="flex items-center gap-3">
+              {subTab === "approved" && (
+                <button
+                  onClick={() => setSendTogetherOpen(sendTogetherSelection)}
+                  disabled={sendRunner.busy || sendTogetherSelection.length < 2}
+                  title={t("sendTogether.hint")}
+                  className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-40"
+                >
+                  {t("sendTogether.button", { count: sendTogetherSelection.length })}
+                </button>
+              )}
+              <span className="text-xs text-zinc-500">{t("languages.queue.awaiting", { count: filteredChangeSets.length })}</span>
+            </div>
           </div>
           <div className="p-4">
             {filteredChangeSets.length === 0 ? (
@@ -1369,29 +1423,63 @@ export function LanguagesManager() {
             ) : (
               <div className="space-y-2">
                 {filteredChangeSets.map((cs) => (
-                  <button
-                    key={cs.id}
-                    onClick={() => setOpenChangeSetId(cs.id === openChangeSetId ? null : cs.id)}
-                    className={`flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left text-xs transition-colors ${
-                      openChangeSetId === cs.id
-                        ? "border-zinc-500 bg-zinc-800"
-                        : "border-zinc-800 bg-zinc-950 hover:border-zinc-700"
-                    }`}
-                  >
-                    <span>
-                      {t("languages.queue.item", {
-                        source: cs.importedFilename ?? t(CHANGE_SET_SOURCE_LABELS[cs.source]),
-                        count: cs.totalChanges,
-                        date: formatDisplayDateTime(cs.createdAt),
-                      })}
-                    </span>
-                    <span className="rounded bg-zinc-800 px-2 py-0.5 text-[10px] uppercase text-zinc-300">
-                      {t(CHANGE_SET_STATUS_LABELS[cs.status])}
-                    </span>
-                  </button>
+                  <div key={cs.id} className="flex items-center gap-2">
+                    {subTab === "approved" && (
+                      <input
+                        type="checkbox"
+                        aria-label={t("sendTogether.tick")}
+                        checked={sendTogetherSelection.includes(cs.id)}
+                        onChange={(e) =>
+                          setSendTogetherIds((prev) => (e.target.checked ? [...prev.filter((id) => id !== cs.id), cs.id] : prev.filter((id) => id !== cs.id)))
+                        }
+                      />
+                    )}
+                    <button
+                      onClick={() => setOpenChangeSetId(cs.id === openChangeSetId ? null : cs.id)}
+                      className={`flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left text-xs transition-colors ${
+                        openChangeSetId === cs.id
+                          ? "border-zinc-500 bg-zinc-800"
+                          : "border-zinc-800 bg-zinc-950 hover:border-zinc-700"
+                      }`}
+                    >
+                      <span>
+                        {t("languages.queue.item", {
+                          source: cs.importedFilename ?? t(CHANGE_SET_SOURCE_LABELS[cs.source]),
+                          count: cs.totalChanges,
+                          date: formatDisplayDateTime(cs.createdAt),
+                        })}
+                        {(cs.writtenCount ?? 0) > 0 && !isFullyWritten(cs) && (
+                          <span className="ml-2 text-zinc-500">{t("languages.queue.writtenOf", { written: cs.writtenCount ?? 0, total: cs.approvedCount })}</span>
+                        )}
+                      </span>
+                      <span className="rounded bg-zinc-800 px-2 py-0.5 text-[10px] uppercase text-zinc-300">
+                        {isFullyWritten(cs) ? t("languages.queue.writtenBadge") : t(CHANGE_SET_STATUS_LABELS[cs.status])}
+                      </span>
+                    </button>
+                  </div>
                 ))}
               </div>
             )}
+            {sendTogetherOpen && (
+              <SendTogetherDialog
+                channelId={channelId}
+                changeSetIds={sendTogetherOpen}
+                setLabel={changeSetLabel}
+                onClose={() => setSendTogetherOpen(null)}
+                onConfirm={({ resolutions }) => {
+                  const ids = sendTogetherOpen;
+                  setSendTogetherOpen(null);
+                  void sendRunner.start(() =>
+                    fetch(`/api/channels/${encodeURIComponent(channelId)}/change-sets/send-together`, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ changeSetIds: ids, resolutions }),
+                    })
+                  );
+                }}
+              />
+            )}
+            {sendRunner.dialogs}
             {openChangeSetId && (
               <div className="mt-3">
                 <ChangeSetReview

@@ -1,36 +1,26 @@
 "use client";
 
 import { errorText } from "@/lib/ui-text";
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { runBatchWithProgress } from "./batch-run";
 import { OperationOverlay, useOperation } from "./operation-progress";
 import { QuotaBlockDialog, type QuotaBlock, type SplitOutcome } from "./quota-block-dialog";
 import { useT } from "./ui-text-provider";
 
-type ApiError = { error?: string; message?: string; details?: { batchId?: string } };
+type ApiError = { error?: string; message?: string; details?: { batchId?: string; coversSelection?: boolean } };
 
 /**
- * ADR 0020 / BL-124: "Send approved to YouTube" for one change set, on the Languages tab. One click:
- *  1. `POST .../change-sets/[id]/send` -- the server picks the set's sendable changes and creates a LIVE batch
- *     (refused with `live_writes_disabled`, creating nothing, when the Settings toggle is off);
+ * ADR 0020 / BL-124, shared by BL-198: create a LIVE batch on the server, then run it.
+ *  1. `create()` posts to a route that picks the sendable changes and creates the batch (refused with `live_writes_disabled`,
+ *     creating nothing, when the Settings toggle is off) -- one change set (`.../change-sets/[id]/send`) or several
+ *     (`.../change-sets/send-together`);
  *  2. the EXISTING `batches/[id]/execute` route runs it -- identity check, backup, pre-write conflict check,
  *     read-back verification, quota guard, Live-writes Layer 1/2 are all unchanged;
  *  3. the shared progress pop-up (`runBatchWithProgress`) shows rows done/total, failures and Cancel.
- * A batch left PENDING by an earlier interrupted click is picked up (`send_already_in_progress` carries its id).
- * The resulting batch and its log stay on the Batches tab.
+ * A batch left PENDING by an earlier interrupted click is picked up (`send_already_in_progress` carries its id) -- for several
+ * sets only when that batch holds the whole selection (`coversSelection`); otherwise the pop-up says to finish it first.
  */
-export function SendApprovedButton({
-  channelId,
-  changeSetId,
-  approvedCount,
-  onFinished,
-}: {
-  channelId: string;
-  changeSetId: string;
-  approvedCount: number;
-  /** Called after a run ended, so the parent can refresh its view. */
-  onFinished?: () => void;
-}) {
+export function useBatchSendRunner({ channelId, onFinished }: { channelId: string; onFinished?: () => void }) {
   const t = useT();
   const op = useOperation();
   const [busy, setBusy] = useState(false);
@@ -65,7 +55,8 @@ export function SendApprovedButton({
     }
   }
 
-  async function send() {
+  /** Creates the batch with `create` and runs it. `create` must answer like the send routes (201 `{ batchId }` or an error body). */
+  async function start(create: () => Promise<Response>) {
     // A ref, not only state: two clicks in the same tick must still start one run.
     if (busyRef.current) return;
     busyRef.current = true;
@@ -75,9 +66,7 @@ export function SendApprovedButton({
       op.setStage(t("sendApproved.selecting"));
       let batchId: string | null = null;
       try {
-        const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/change-sets/${encodeURIComponent(changeSetId)}/send`, {
-          method: "POST",
-        });
+        const res = await create();
         const data = (await res.json()) as ApiError & { batchId?: string };
         if (res.ok) {
           batchId = data.batchId ?? null;
@@ -85,9 +74,12 @@ export function SendApprovedButton({
             op.finish({ error: true, message: t("sendApproved.noBatch") });
             return;
           }
-        } else if (data.error === "send_already_in_progress" && data.details?.batchId) {
+        } else if (data.error === "send_already_in_progress" && data.details?.batchId && data.details.coversSelection !== false) {
           // An earlier click created the batch but it never finished: continue that one, never create another.
           batchId = data.details.batchId;
+        } else if (data.error === "send_already_in_progress") {
+          op.finish({ error: true, message: t("sendTogether.finishPendingFirst") });
+          return;
         } else if (data.error === "live_writes_disabled") {
           op.finish({ error: true, message: t("sendApproved.liveWritesOff") });
           return;
@@ -122,16 +114,8 @@ export function SendApprovedButton({
     return outcome;
   }
 
-  return (
+  const dialogs: ReactNode = (
     <>
-      <button
-        onClick={() => void send()}
-        disabled={busy || approvedCount === 0}
-        title={approvedCount === 0 ? t("sendApproved.approveFirst") : t("sendApproved.hint")}
-        className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-40"
-      >
-        {t("sendApproved.button", { count: approvedCount })}
-      </button>
       <OperationOverlay state={op.state} onCancel={cancel} onClose={op.reset} />
       {quotaBlock && (
         <QuotaBlockDialog
@@ -153,6 +137,40 @@ export function SendApprovedButton({
           }
         />
       )}
+    </>
+  );
+
+  return { busy, start, dialogs };
+}
+
+/** ADR 0020 / BL-124: "Send approved to YouTube" for one change set, on the Languages tab. The resulting batch and its log stay on the Batches tab. */
+export function SendApprovedButton({
+  channelId,
+  changeSetId,
+  approvedCount,
+  onFinished,
+}: {
+  channelId: string;
+  changeSetId: string;
+  approvedCount: number;
+  /** Called after a run ended, so the parent can refresh its view. */
+  onFinished?: () => void;
+}) {
+  const t = useT();
+  const runner = useBatchSendRunner({ channelId, onFinished });
+  const sendUrl = `/api/channels/${encodeURIComponent(channelId)}/change-sets/${encodeURIComponent(changeSetId)}/send`;
+
+  return (
+    <>
+      <button
+        onClick={() => void runner.start(() => fetch(sendUrl, { method: "POST" }))}
+        disabled={runner.busy || approvedCount === 0}
+        title={approvedCount === 0 ? t("sendApproved.approveFirst") : t("sendApproved.hint")}
+        className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-40"
+      >
+        {t("sendApproved.button", { count: approvedCount })}
+      </button>
+      {runner.dialogs}
     </>
   );
 }
