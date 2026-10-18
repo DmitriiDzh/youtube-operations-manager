@@ -7,6 +7,7 @@ import { runBatchWithProgress } from "./batch-run";
 import { ConfirmDialog } from "./confirm-dialog";
 import { OperationOverlay, useOperation } from "./operation-progress";
 import { QuotaBlockDialog, type QuotaBlock, type SplitOutcome } from "./quota-block-dialog";
+import { SendTogetherDialog, type MergeResolution } from "./send-together-dialog";
 import { translateWithSlots } from "./ui-text-provider";
 import { useT } from "./ui-text-provider";
 
@@ -114,6 +115,9 @@ export function BatchManager({
   const [changes, setChanges] = useState<Change[]>([]);
   const [selectedChangeIds, setSelectedChangeIds] = useState<Set<string>>(new Set());
   const [creatingBatch, setCreatingBatch] = useState(false);
+  // BL-198: change sets ticked to become ONE batch (one row per video with all their languages), and the summary/conflict window.
+  const [mergeIds, setMergeIds] = useState<string[]>([]);
+  const [mergeOpen, setMergeOpen] = useState<string[] | null>(null);
   const [createAsLive, setCreateAsLive] = useState(false);
   const [liveWritesEnabled, setLiveWritesEnabled] = useState(false);
 
@@ -227,6 +231,31 @@ export function BatchManager({
 
   async function createBatch() {
     await createBatchFrom(selectedChangeIds, createAsLive);
+  }
+
+  /** BL-198: one batch from the ticked change sets, created on the server (same selection rules as «Отправить вместе»). */
+  async function createMergedBatch(changeSetIds: string[], resolutions: MergeResolution[], dryRun: boolean) {
+    if (!channelId) return;
+    setCreatingBatch(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/change-sets/send-together`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ changeSetIds, resolutions, dryRun: liveWritesEnabled ? dryRun : true }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(errorText(t, data as ApiError, t("batches.error.create"), { showErrorField: false }));
+      setMergeIds([]);
+      await fetchChangeSets(channelId);
+      await fetchBatches(channelId);
+      setSelectedBatchId(data.batchId);
+      await openBatch(data.batchId);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t("batches.error.create"));
+    } finally {
+      setCreatingBatch(false);
+    }
   }
 
   /** One-click path for a fully approved change set: a live batch of EVERY approved, valid,
@@ -419,25 +448,59 @@ export function BatchManager({
       )}
 
       <div>
-        <h3 className="mb-2 text-sm font-semibold text-zinc-300">{t("batches.step1")}</h3>
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold text-zinc-300">{t("batches.step1")}</h3>
+          <button
+            onClick={() => setMergeOpen(mergeIds)}
+            disabled={creatingBatch || mergeIds.length < 2}
+            title={t("batches.mergeHint")}
+            className="rounded-lg border border-zinc-600 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-40"
+          >
+            {t("batches.mergeButton", { count: mergeIds.length })}
+          </button>
+        </div>
+        {mergeOpen && channelId && (
+          <SendTogetherDialog
+            channelId={channelId}
+            changeSetIds={mergeOpen}
+            setLabel={(id) => {
+              const cs = changeSets.find((candidate) => candidate.id === id);
+              return cs ? cs.importedFilename ?? cs.id.slice(0, 8) : id;
+            }}
+            allowDryRun
+            onClose={() => setMergeOpen(null)}
+            onConfirm={({ resolutions, dryRun }) => {
+              const ids = mergeOpen;
+              setMergeOpen(null);
+              void createMergedBatch(ids, resolutions, dryRun);
+            }}
+          />
+        )}
         <div className="flex flex-wrap gap-2">
           {changeSets.map((cs) => (
-            <button
-              key={cs.id}
-              onClick={() => {
-                if (selectedChangeSetId === cs.id) {
-                  setSelectedChangeSetId(null);
-                  setSelectedChangeIds(new Set());
-                  return;
-                }
-                void openChangeSet(cs.id);
-              }}
-              className={`rounded-lg border px-3 py-1.5 text-xs ${
-                selectedChangeSetId === cs.id ? "border-zinc-400 bg-zinc-800 text-white" : "border-zinc-700 text-zinc-400 hover:border-zinc-500"
-              }`}
-            >
-              {t("batches.changeSetButton", { name: cs.importedFilename ?? cs.id.slice(0, 8), count: cs.approvedCount })}
-            </button>
+            <span key={cs.id} className="inline-flex items-center gap-1">
+              <input
+                type="checkbox"
+                aria-label={t("batches.mergeTick")}
+                checked={mergeIds.includes(cs.id)}
+                onChange={(e) => setMergeIds((prev) => (e.target.checked ? [...prev.filter((id) => id !== cs.id), cs.id] : prev.filter((id) => id !== cs.id)))}
+              />
+              <button
+                onClick={() => {
+                  if (selectedChangeSetId === cs.id) {
+                    setSelectedChangeSetId(null);
+                    setSelectedChangeIds(new Set());
+                    return;
+                  }
+                  void openChangeSet(cs.id);
+                }}
+                className={`rounded-lg border px-3 py-1.5 text-xs ${
+                  selectedChangeSetId === cs.id ? "border-zinc-400 bg-zinc-800 text-white" : "border-zinc-700 text-zinc-400 hover:border-zinc-500"
+                }`}
+              >
+                {t("batches.changeSetButton", { name: cs.importedFilename ?? cs.id.slice(0, 8), count: cs.approvedCount })}
+              </button>
+            </span>
           ))}
           {changeSets.length === 0 && <p className="text-sm text-zinc-500">{t("batches.noChangeSets")}</p>}
         </div>

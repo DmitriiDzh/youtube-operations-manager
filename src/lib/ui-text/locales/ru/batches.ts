@@ -158,4 +158,7 @@ export const batches: Record<keyof typeof en, string> = {
   "batches.status.ABORTED_SYSTEMIC": "Прервано (системная ошибка)",
   "batches.status.DRY_RUN_COMPLETE": "Пробный запуск завершён",
   "batches.status.CANCELLED": "Отменено",
+  "batches.mergeButton": "Один пакет из отмеченных наборов ({count})",
+  "batches.mergeHint": "Отметьте два и больше набора: один пакет, каждое видео записывается один раз со всеми их языками",
+  "batches.mergeTick": "Включить в один пакет с другими отмеченными наборами",
 };

@@ -156,4 +156,7 @@ export const batches = {
   "batches.status.ABORTED_SYSTEMIC": "Aborted (system error)",
   "batches.status.DRY_RUN_COMPLETE": "Dry run complete",
   "batches.status.CANCELLED": "Cancelled",
+  "batches.mergeButton": "One batch from ticked sets ({count})",
+  "batches.mergeHint": "Tick two or more change sets: one batch, each video written once with all their languages",
+  "batches.mergeTick": "Include in one batch with other ticked sets",
 } as const;
