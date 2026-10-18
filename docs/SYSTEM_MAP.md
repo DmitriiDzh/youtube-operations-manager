@@ -985,6 +985,20 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Factory API 1.22.0:** `factory_media_get_settings` → `hfToken: set | not set`. Файл `.ytmkeys` получил раздел `huggingface`: токен проверяется до сохранения любого раздела; подсказка `hfUser` есть только при наличии токена.
 - Не входят: OAuth и ключи AI-подключений / облачного подключения (ключи из env, RISK-07/48), ротация ключа (RISK-106).
 
+### 2.9aw Среды пода, которыми управляет Оператор (BL-200, FO-REQ-0029, `docs/roadmap/plans/POD_RUNTIMES_PLAN.md`, ADR 0043) — **IMPLEMENTED** (ветка `feature/fo-req-0029-runtimes`, не влито)
+
+- **Профиль** — неизменяемый `ytm/runtimes/<id>/runtime.json` на сетевом томе (ComfyUI и наборы нод на точных коммитах, pip с версиями); рядом `build.json`, `.ready`, `test.json`. Общий для компьютеров через сам том.
+  - `media-generation/runtimes.ts`: профили, статус (`.ready` обязателен для «собрана»), `requiredNodeTypes` (все `class_type` графа), `checkActivation`.
+  - Источник GitHub: дочерний модуль шлюза медиа `media-gateway/github.ts` (категория `github_api`).
+- **Сборка** (`runtime-builds.ts`): CPU-под `cpu3c` с образом GPU-шаблона, `bash /workspace/ytm/runtime-build.sh <id>`, без портов/env/секретов; цикл наблюдения читает `build.json`, удаляет под; 60 мин предел. Блокировку тома не берёт (ADR 0043). Задачи — `app_settings` `media_runtime_jobs`.
+  - `ensurePodScripts` кладёт `pod-start.sh` и `runtime-build.sh` в `ytm/`, если копия на томе другая.
+- **Сессии:** `runtimeId` (по умолчанию активная среда, `null` — встроенный ComfyUI); несобранная среда — `media_runtime_not_ready` до строки и до пода; под получает `YTM_RUNTIME_ID`; схема v97: `media_sessions.runtime_id`, `comfy_version`.
+- **Проверка** (`runtime-tests.ts`): сборка → GPU-сессия с лимитом `runtimeTestMaxUsd` и минутами, которые он покупает (3–15) → `/object_info` (клиент ComfyUI `getNodeTypes`) → `test.json` → сессия останавливается. Задачи — `app_settings` `media_runtime_tests`.
+- **Активная среда:** `setActiveRuntime` (нужна пройденная проверка, Оператору — переключатель владельца); обычное сохранение настроек её не меняет. До пода: `media_runtime_incompatible` при запуске с шаблоном и при создании задачи.
+- **Factory API 1.23.0:** `factory_media_list_runtimes` / `_get_runtime` / `_list_comfy_releases` / `_create_runtime` / `_test_runtime` / `_activate_runtime`; `runtimeId` у `factory_media_start_session`.
+- **UI:** «Серверы» → «Настройка» → карточка «Среды пода» (`PodRuntimesCard`): список, «Проверить», «Сделать активной», «Вернуть встроенную», переключатель Оператора, лимит проверки, источники. Маршруты `/api/media-generation/runtimes` (+`/test`, `/activate`).
+- Не входят: свой Docker-образ, удаление старых сред с тома (RISK-132), прогон генерации в проверке.
+
 ## 3. Где вносить изменения
 
 | Задача | Где |

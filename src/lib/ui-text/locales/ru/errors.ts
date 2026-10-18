@@ -28,6 +28,7 @@ export const errors: Record<keyof typeof en, string> = {
   "errors.github_unavailable": "GitHub недоступен или отклонил запрос. Попробуйте позже.",
   "errors.media_runtime_incompatible": "В среде пода нет узлов, нужных этому шаблону; ничего не запущено.",
   "errors.media_runtime_not_ready": "Эта среда пода ещё не собрана или не проверена.",
+  "errors.media_runtime_activation_disabled": "Владелец не разрешил Оператору менять активную среду пода.",
   "errors.send_merge_conflicts": "Выбранные наборы меняют одни и те же поля. Выберите, какой вариант отправить.",
   "errors.duplicate_target_in_row": "Два выбранных изменения меняют одно и то же поле одного видео — оставьте одно.",
   "errors.send_already_in_progress": "Эти изменения уже отправляются.",

@@ -126,7 +126,8 @@ test("the client exposes exactly the calls the job pipeline makes -- no /view or
   const client = createComfyUiClient({ baseUrl: "https://x", token: null, authorize: noAuth });
   // BL-144 (owner, Telegram 2026-10-06, msg 1887): the job pipeline now also reads ComfyUI's execution events
   // (`openProgressStream`, read-only websocket) -- the one addition; still no /view or /upload.
-  assert.deepEqual(Object.keys(client).sort(), ["baseUrl", "deleteQueued", "getHistory", "getQueue", "getSystemStats", "interrupt", "openProgressStream", "submitPrompt"]);
+  // BL-200 (FO-REQ-0029 B, ADR 0043): a pod runtime's test reads its node types (`getNodeTypes`, GET /object_info, read-only).
+  assert.deepEqual(Object.keys(client).sort(), ["baseUrl", "deleteQueued", "getHistory", "getNodeTypes", "getQueue", "getSystemStats", "interrupt", "openProgressStream", "submitPrompt"]);
 });
 
 test("review: getQueue exposes the running and pending prompt ids; deleteQueued posts {delete:[...]} and skips an empty list", async () => {
@@ -181,4 +182,15 @@ test("review 17: getQueue exposes each entry's client_id (extra_data) so a promp
     { promptId: "p-other", clientId: "ytm-job-2", state: "pending" },
   ]);
   assert.deepEqual(queue.runningPromptIds, ["p-run"]);
+});
+
+// BL-200 (ADR 0043): GET /object_info answers { <class_type>: { input, output, ... } } per node type (docs.comfy.org comms_routes).
+test("getNodeTypes: the class_type names of GET /object_info, sorted, with the bearer token; an empty answer is comfyui_unavailable", async () => {
+  const { fetchImpl, calls } = fakeFetch(() => ({ status: 200, body: { KSampler: { input: {} }, ReferenceMultiLatent: { input: {} }, CLIPLoader: { input: {} } } }));
+  const client = createComfyUiClient({ baseUrl: "https://x", token: "tok", fetchImpl, authorize: noAuth });
+  assert.deepEqual(await client.getNodeTypes(), ["CLIPLoader", "KSampler", "ReferenceMultiLatent"]);
+  assert.equal(calls[0].url, "https://x/object_info");
+  assert.equal(new Headers(calls[0].init.headers).get("authorization"), "Bearer tok");
+  const empty = createComfyUiClient({ baseUrl: "https://x", token: null, fetchImpl: fakeFetch(() => ({ status: 200, body: {} })).fetchImpl, authorize: noAuth });
+  await assert.rejects(empty.getNodeTypes(), (e: unknown) => isDomainError(e) && e.code === "comfyui_unavailable");
 });

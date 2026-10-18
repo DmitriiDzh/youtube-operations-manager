@@ -25,6 +25,9 @@ import {
 } from "@/lib/media-generation/contracts";
 import type { PoolDevice, PoolJob, PoolView } from "@/lib/media-jobs-pool/contracts";
 import type { CommandView } from "@/lib/media-jobs-pool/commands";
+import type { RuntimeView } from "@/lib/media-generation/runtimes";
+import type { RuntimeBuildJob } from "@/lib/media-generation/runtime-builds";
+import type { RuntimeTestJob } from "@/lib/media-generation/runtime-tests";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { ActionButton, BusyOverlay, StatusNotice, useBusyAction } from "./busy-feedback";
 import { ConfirmDialog } from "./confirm-dialog";
@@ -2780,6 +2783,225 @@ export function FactoryLimitsCard({ settings, onChanged }: { settings: Settings;
       </button>
       {notice && <p className="text-xs text-emerald-400">{notice}</p>}
       {error && <p className="text-xs text-red-400">{error}</p>}
+    </Card>
+  );
+}
+
+// BL-200 (FO-REQ-0029, ADR 0043, POD_RUNTIMES_PLAN.md): pod runtimes -- a ComfyUI version with node packs, pinned to commits and
+// built on the network volume. The owner sees every profile, tests one (billed: a CPU build, then a short GPU session within the
+// test cap), makes a tested one active or goes back to the image's built-in ComfyUI, and sets what the Operator may do.
+type RuntimesView = { runtimes: RuntimeView[]; activeRuntimeId: string | null; builds: RuntimeBuildJob[]; tests: RuntimeTestJob[] };
+
+const RUNTIME_STATUS_KEYS: Record<RuntimeView["status"], UiTextKey> = {
+  created: "media.runtimes.status.created",
+  building: "media.runtimes.status.building",
+  build_failed: "media.runtimes.status.build_failed",
+  built: "media.runtimes.status.built",
+  test_failed: "media.runtimes.status.test_failed",
+  tested: "media.runtimes.status.tested",
+};
+const TEST_STATUS_KEYS: Record<RuntimeTestJob["status"], UiTextKey> = {
+  building: "media.runtimes.test.building",
+  starting: "media.runtimes.test.starting",
+  passed: "media.runtimes.test.passed",
+  failed: "media.runtimes.test.failed",
+};
+
+export function PodRuntimesCard({ settings, onChanged }: { settings: Settings; onChanged: () => Promise<void> }) {
+  const { t, usd } = useMediaText();
+  const [view, setView] = useState<RuntimesView | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [confirmTest, setConfirmTest] = useState<string | null>(null);
+  const [mayActivate, setMayActivate] = useState(settings.factoryMayActivateRuntime);
+  const [capText, setCapText] = useState(String(settings.runtimeTestMaxUsd));
+  const allowlistKey = settings.runtimeSourceAllowlist.join("\n");
+  const [allowlistText, setAllowlistText] = useState(allowlistKey);
+  useEffect(() => {
+    setMayActivate(settings.factoryMayActivateRuntime);
+    setCapText(String(settings.runtimeTestMaxUsd));
+    setAllowlistText(allowlistKey);
+  }, [settings.factoryMayActivateRuntime, settings.runtimeTestMaxUsd, allowlistKey]);
+
+  const load = useCallback(async () => {
+    try {
+      setView(await requestJson<RuntimesView>("/api/media-generation/runtimes"));
+      setLoadError(null);
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : t("media.runtimes.loadFailed"));
+    }
+  }, [t]);
+  useEffect(() => {
+    void load();
+  }, [load]);
+  // While a build or a test runs, the server advances it about once a minute; the card follows.
+  const open = Boolean(view && (view.builds.some((b) => b.status === "running") || view.tests.some((x) => x.status === "building" || x.status === "starting")));
+  useEffect(() => {
+    if (!open) return;
+    const timer = setInterval(() => void load(), 15_000);
+    return () => clearInterval(timer);
+  }, [open, load]);
+
+  async function act(run: () => Promise<unknown>, done: string) {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await run();
+      setNotice(done);
+      await Promise.all([load(), onChanged()]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("media.common.saveFailed"));
+    } finally {
+      setBusy(false);
+    }
+  }
+  const post = (url: string, body: unknown) => requestJson(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const activate = (runtimeId: string | null) => act(() => post("/api/media-generation/runtimes/activate", { runtimeId }), runtimeId ? t("media.runtimes.activated", { id: runtimeId }) : t("media.runtimes.builtInActivated"));
+  const startTest = (runtimeId: string) => act(() => post("/api/media-generation/runtimes/test", { runtimeId }), t("media.runtimes.testStarted", { id: runtimeId }));
+
+  async function saveOwnerSettings(nextMayActivate = mayActivate) {
+    const runtimeTestMaxUsd = parseMoney(capText);
+    const runtimeSourceAllowlist = allowlistText
+      .split("\n")
+      .map((v) => v.trim())
+      .filter(Boolean);
+    if (runtimeTestMaxUsd === null || runtimeTestMaxUsd > 100 || runtimeSourceAllowlist.some((v) => !/^https:\/\/[A-Za-z0-9.-]+\/([A-Za-z0-9_.-]+\/)?$/.test(v))) {
+      setError(t("media.runtimes.settingsInvalid"));
+      return;
+    }
+    await act(
+      () =>
+        requestJson("/api/media-generation/settings", {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(onlyChangedSettings({ factoryMayActivateRuntime: nextMayActivate, runtimeTestMaxUsd, runtimeSourceAllowlist }, settings)),
+        }),
+      t("common.saved")
+    );
+  }
+
+  const latestTest = (runtimeId: string) => view?.tests.filter((x) => x.runtimeId === runtimeId).at(-1) ?? null;
+  const active = view?.runtimes.find((r) => r.active) ?? null;
+
+  return (
+    <Card title={t("media.runtimes.title")} help={t("media.runtimes.help")}>
+      <div className="flex flex-wrap items-center gap-3 rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm">
+        <span className="text-zinc-400">{t("media.runtimes.activeLabel")}</span>
+        <span className="font-medium text-zinc-100">
+          {active ? t("media.runtimes.activeValue", { id: active.runtimeId, version: active.test?.comfyVersion ?? active.comfy.ref ?? active.comfy.commit.slice(0, 8) }) : t("media.runtimes.builtIn")}
+        </span>
+        {active && (
+          <button type="button" onClick={() => void activate(null)} disabled={busy} className={secondaryButton}>
+            {t("media.runtimes.useBuiltIn")}
+          </button>
+        )}
+      </div>
+      {loadError && <p className="text-xs text-red-400">{loadError}</p>}
+      {view && view.runtimes.length === 0 && <p className="text-sm text-zinc-400">{t("media.runtimes.empty")}</p>}
+      {view && view.runtimes.length > 0 && (
+        <ul className="space-y-2">
+          {view.runtimes.map((runtime) => {
+            const test = latestTest(runtime.runtimeId);
+            const failed = runtime.test?.templates.filter((x) => !x.ok) ?? [];
+            const testOpen = test && (test.status === "building" || test.status === "starting");
+            return (
+              <li key={runtime.runtimeId} className="space-y-1.5 rounded-md border border-zinc-800 p-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-mono text-sm text-zinc-100">{runtime.runtimeId}</span>
+                  {runtime.active && <span className="rounded bg-emerald-950 px-1.5 py-0.5 text-xs text-emerald-300">{t("media.runtimes.activeBadge")}</span>}
+                  <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-zinc-300">{t(RUNTIME_STATUS_KEYS[runtime.status])}</span>
+                  <span className="ml-auto flex gap-2">
+                    <button type="button" onClick={() => setConfirmTest(runtime.runtimeId)} disabled={busy || Boolean(testOpen)} className={secondaryButton}>
+                      {runtime.ready ? t("media.runtimes.test") : t("media.runtimes.buildAndTest")}
+                    </button>
+                    {!runtime.active && (
+                      <button type="button" onClick={() => void activate(runtime.runtimeId)} disabled={busy || runtime.status !== "tested"} className={primaryButton} title={runtime.status === "tested" ? undefined : t("media.runtimes.activateNeedsTest")}>
+                        {t("media.runtimes.activate")}
+                      </button>
+                    )}
+                  </span>
+                </div>
+                {runtime.name && <p className="text-xs text-zinc-300">{runtime.name}</p>}
+                <p className="text-xs text-zinc-400">
+                  {t("media.runtimes.comfy", { ref: runtime.comfy.ref ?? "—", commit: runtime.comfy.commit.slice(0, 8) })} · {t("media.runtimes.nodePacks", { count: runtime.customNodes.length })} ·{" "}
+                  {t("media.runtimes.created", { when: formatDisplayDateTime(runtime.createdAt), by: runtime.createdBy === "factory" ? t("media.runtimes.byFactory") : t("media.runtimes.byOwner") })}
+                </p>
+                {runtime.test && (
+                  <p className="text-xs text-zinc-400">
+                    {t("media.runtimes.testSummary", {
+                      when: formatDisplayDateTime(runtime.test.testedAt),
+                      version: runtime.test.comfyVersion ?? "—",
+                      nodes: runtime.test.nodeCount,
+                      ok: runtime.test.templates.length - failed.length,
+                      total: runtime.test.templates.length,
+                      cost: runtime.test.costUsd === null ? "—" : usd(runtime.test.costUsd),
+                      boot: runtime.test.bootSeconds ?? "—",
+                    })}
+                  </p>
+                )}
+                {failed.length > 0 && (
+                  <ul className="space-y-0.5 text-xs text-amber-300">
+                    {failed.map((x) => (
+                      <li key={x.templateId}>{t("media.runtimes.templateMissing", { template: `${x.templateId} v${x.version}`, nodes: x.missing.join(", ") })}</li>
+                    ))}
+                  </ul>
+                )}
+                {runtime.build && !runtime.build.ok && runtime.build.error && <p className="text-xs text-red-400">{t("media.runtimes.buildError", { error: runtime.build.error })}</p>}
+                {test && (testOpen || test.status === "failed") && (
+                  <p className={`text-xs ${test.status === "failed" ? "text-red-400" : "text-zinc-300"}`}>
+                    {t(TEST_STATUS_KEYS[test.status])}
+                    {test.status === "failed" && test.error ? ` — ${test.error}` : ""}
+                  </p>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <div className="space-y-2 border-t border-zinc-800 pt-3">
+        <div className="flex items-center gap-3">
+          <ToggleSwitch
+            label={t("media.runtimes.mayActivateToggle")}
+            tone="violet"
+            checked={mayActivate}
+            onChange={(next) => {
+              setMayActivate(next);
+              void saveOwnerSettings(next);
+            }}
+            disabled={busy}
+          />
+          <span className="text-sm text-zinc-300">{t("media.runtimes.mayActivateText")}</span>
+        </div>
+        <label className="block text-xs text-zinc-400">
+          {t("media.runtimes.testCap")}
+          <input type="text" inputMode="decimal" value={capText} onChange={(e) => setCapText(e.target.value)} className={inputClass} />
+        </label>
+        <label className="block text-xs text-zinc-400">
+          {t("media.runtimes.allowlist")}
+          <textarea value={allowlistText} onChange={(e) => setAllowlistText(e.target.value)} className={`${inputClass} h-28 font-mono text-xs`} />
+        </label>
+        <button type="button" onClick={() => void saveOwnerSettings()} disabled={busy} className={primaryButton}>
+          {busy ? t("common.saving") : t("media.runtimes.saveSettings")}
+        </button>
+      </div>
+      {notice && <p className="text-xs text-emerald-400">{notice}</p>}
+      {error && <p className="text-xs text-red-400">{error}</p>}
+      {confirmTest && (
+        <ConfirmDialog
+          title={t("media.runtimes.confirmTitle", { id: confirmTest })}
+          description={t("media.runtimes.confirmText", { cap: usd(settings.runtimeTestMaxUsd) })}
+          confirmLabel={t("media.runtimes.confirm")}
+          onCancel={() => setConfirmTest(null)}
+          onConfirm={() => {
+            const id = confirmTest;
+            setConfirmTest(null);
+            void startTest(id);
+          }}
+        />
+      )}
     </Card>
   );
 }

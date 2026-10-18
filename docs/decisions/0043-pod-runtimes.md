@@ -39,8 +39,8 @@ New models need newer nodes (FLUX 3 Image Klein, 2026-10-15), and the Operator c
    - The allow-list and pinned commits are the owner's control over what code that is.
 5. **The Operator** may create and test profiles. It may also activate them while the owner's switch
    `factoryMayActivateRuntime` is on (default on, answer А). A test costs at most `runtimeTestMaxUsd` (default $0.5, answer В).
-6. **Templates are checked before any pod starts.** A template needs the node types of its graph (plus an optional
-   `requiredNodes`). A runtime whose tested node list lacks one refuses it with `media_runtime_incompatible`. The built-in runtime
+6. **Templates are checked before any pod starts.** A template needs the node types of its graph: the `class_type` values. No
+   separate `requiredNodes` field is added; the plan's stage 3 explains why. A runtime whose tested node list lacks one refuses it with `media_runtime_incompatible`. The built-in runtime
    has no tested list and is not checked.
 
 ## Consequences

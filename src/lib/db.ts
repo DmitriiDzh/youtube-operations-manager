@@ -10080,6 +10080,7 @@ const MEDIA_GENERATION_SETTINGS_KEY = "media_generation_settings";
 const MEDIA_GATEWAY_ENABLED_SETTING_KEY = "media_gateway_enabled";
 const MEDIA_MODEL_PULLS_KEY = "media_model_pulls";
 const MEDIA_RUNTIME_JOBS_KEY = "media_runtime_jobs";
+const MEDIA_RUNTIME_TESTS_KEY = "media_runtime_tests";
 
 /** Phase 14 slice 4: the model pulls in flight (CPU pods downloading onto the volume), as a JSON list; `null` = none ever. */
 export async function getMediaModelPullsJson(database: AppDb = db): Promise<string | null> {
@@ -10295,6 +10296,15 @@ export async function getMediaRuntimeJobsJson(database: AppDb = db): Promise<str
 /** BL-200: the same compare-and-swap writer as the model pulls list (one implementation, `updateAppSettingCas`). */
 export async function updateMediaRuntimeJobsJson(mutate: (current: string | null) => string, database: AppDb = db): Promise<string> {
   return updateAppSettingCas(MEDIA_RUNTIME_JOBS_KEY, mutate, "the runtime builds list", database);
+}
+
+/** BL-200 stage 3: the pod runtime tests in flight and recent (build → GPU session → node check), as a JSON list. */
+export async function getMediaRuntimeTestsJson(database: AppDb = db): Promise<string | null> {
+  return await getAppSetting(MEDIA_RUNTIME_TESTS_KEY, database);
+}
+
+export async function updateMediaRuntimeTestsJson(mutate: (current: string | null) => string, database: AppDb = db): Promise<string> {
+  return updateAppSettingCas(MEDIA_RUNTIME_TESTS_KEY, mutate, "the runtime tests list", database);
 }
 
 /** One app setting rewritten by `mutate` as a compare-and-swap; a lost race re-reads and re-applies (10 attempts). */

@@ -14,8 +14,8 @@ import {
 // ---------------------------------------------------------------------------
 // Phase 14 -- the single funnel for the ComfyUI server API on a pod
 // (docs.comfy.org/development/comfyui-server/comms_routes, checked 2026-10-05): POST /prompt,
-// GET /history/{id}, GET /queue, POST /queue {delete}, POST /interrupt, GET /system_stats -- exactly
-// the calls the job pipeline makes, nothing speculative (files travel over S3, never /view or
+// GET /history/{id}, GET /queue, POST /queue {delete}, POST /interrupt, GET /system_stats, GET /object_info (BL-200: the node
+// types a pod runtime has, for its test) -- exactly the calls the job pipeline and the runtime test make, nothing speculative (files travel over S3, never /view or
 // /upload). The base URL is built from the pod id (RunPod's HTTP proxy), never from operator input,
 // and every call carries the per-session bearer token the pod's reverse proxy checks (PHASE_14_PLAN.md §2.5).
 // ---------------------------------------------------------------------------
@@ -161,6 +161,18 @@ export function createComfyUiClient(args: {
         throw new DomainError({ code: "comfyui_unavailable", message: "GET /system_stats did not return ComfyUI's system stats (still booting, or another server answered).", details: { keys: Object.keys(stats).slice(0, 10) } });
       }
       return stats;
+    },
+
+    /**
+     * BL-200 (ADR 0043): the node types this ComfyUI knows -- the keys of `GET /object_info` (each key is a `class_type`). Only
+     * the names leave this call; the per-node input definitions (megabytes) are not kept.
+     */
+    async getNodeTypes(): Promise<string[]> {
+      const { body } = await request("GET", "/object_info");
+      const info = asRecord(body);
+      const names = Object.keys(info).filter((name) => name.length > 0 && name.length <= 200);
+      if (names.length === 0) throw new DomainError({ code: "comfyui_unavailable", message: "GET /object_info listed no node types (still booting, or another server answered)." });
+      return names.sort();
     },
 
     /**

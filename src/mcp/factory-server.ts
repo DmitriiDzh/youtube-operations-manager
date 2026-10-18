@@ -85,7 +85,11 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 // _list_comfy_releases (READ) and factory_media_create_runtime (WRITE: a profile file on the volume; nothing built or charged);
 // settings gain activeRuntimeId, factoryMayActivateRuntime, runtimeSourceAllowlist, runtimeTestMaxUsd. factory_media_start_session
 // takes runtimeId? (default the active runtime; not built = media_runtime_not_ready before any pod); a session shows runtimeId and
-// comfyVersion. Additive (with no active runtime every session runs the built-in ComfyUI, as before).
+// comfyVersion. factory_media_test_runtime (WRITE: a CPU build if needed, then a GPU session capped by runtimeTestMaxUsd, the node
+// list against every template) and factory_media_activate_runtime (WRITE: a tested runtime, or null, while the owner's switch is
+// on); a job or a factory session with templateId whose graph needs a node type the runtime's test did not find is refused with
+// media_runtime_incompatible before any pod / upload. Additive (with no active runtime every session runs the built-in ComfyUI,
+// as before).
 export const FACTORY_API_VERSION = "1.23.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
@@ -112,6 +116,8 @@ export const FACTORY_TOOL_NAMES = [
   "factory_media_get_runtime",
   "factory_media_list_comfy_releases",
   "factory_media_create_runtime",
+  "factory_media_test_runtime",
+  "factory_media_activate_runtime",
   // BL-133 (docs/roadmap/plans/FACTORY_GPU_SESSIONS_PLAN.md §2.2/§2.5): sessions it starts itself, jobs in them, the capacity log.
   "factory_media_start_session",
   "factory_media_get_session",
@@ -177,8 +183,11 @@ export const FACTORY_WRITE_TOOL_NAMES = [
   "factory_media_sync_templates",
   "factory_media_delete_template",
   "factory_media_adopt_template",
-  // BL-200: a new runtime profile (a file on the volume; nothing is built, started or charged).
+  // BL-200: a new runtime profile (a file on the volume; nothing is built, started or charged), its test (a CPU build and a
+  // short GPU session, within the owner's limits) and making it active (only with the owner's switch on).
   "factory_media_create_runtime",
+  "factory_media_test_runtime",
+  "factory_media_activate_runtime",
   "factory_media_start_session",
   "factory_media_stop_session",
   "factory_media_create_job",
@@ -246,6 +255,8 @@ export type FactoryToolDeps = {
     getRuntime(input: { runtimeId: string }): Promise<Record<string, unknown>>;
     listComfyReleases(): Promise<Record<string, unknown>>;
     createRuntime(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+    testRuntime(input: { runtimeId: string; templateIds?: string[]; channelId?: string }): Promise<Record<string, unknown>>;
+    setActiveRuntime(input: { runtimeId: string | null }): Promise<Record<string, unknown>>;
     // BL-133.
     startSession(input: { channelId: string; maxMinutes?: number; maxUsd?: number; templateId?: string; gpu?: { candidates: string[]; minVramGb?: number | null; maxPricePerHr?: number | null }; releaseWhenDone?: boolean; planId?: string; minCudaVersion?: string; runtimeId?: string | null }): Promise<Record<string, unknown>>;
     getSession(input: { sessionId?: string }): Promise<Record<string, unknown>>;
@@ -384,6 +395,14 @@ const createRuntimeInput = z
     pip: z.array(z.string().max(200)).max(100).optional(),
   })
   .strict();
+const testRuntimeInput = z
+  .object({
+    runtimeId: z.string().min(1).max(64),
+    templateIds: z.array(z.string().min(1).max(64)).max(200).optional(),
+    channelId: z.string().min(1).max(64).optional(),
+  })
+  .strict();
+const setActiveRuntimeInput = z.object({ runtimeId: z.string().min(1).max(64).nullable() }).strict();
 const modelKeyInput = z.object({ key: z.string().min(1).max(1000) }).strict();
 const syncInput = z.object({ dryRun: z.boolean().optional() }).strict();
 const templateIdInput = z.object({ templateId: z.string().min(1).max(64) }).strict();
@@ -583,7 +602,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_media_get_runtime",
     {
       description:
-        "One runtime profile with its test result per registry template ({ ...profile, templates: [{ templateId, version, ok, missing: [node types] }] }). Read-only.",
+        "One runtime profile with its test result per template ({ runtime: { ...profile, templates: [{ templateId, version, ok, missing: [node types] }] }, builds: [its CPU builds on this computer: status running | built | failed | timeout, error], tests: [its tests: status building | starting | passed | failed, sessionId, error, costUsd, bootSeconds] }). Read-only.",
       inputSchema: runtimeIdInput,
     },
     async (args) => successResult(await deps.media.getRuntime(parseInput(runtimeIdInput, args)))
@@ -609,6 +628,34 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
       const input = parseInput(createRuntimeInput, args);
       await deps.assertMutationAllowed();
       return successResult({ runtime: await deps.media.createRuntime(input) });
+    }
+  );
+
+  registerTool(
+    "factory_media_test_runtime",
+    {
+      description:
+        "Test a pod runtime profile (1.23.0): { runtimeId, templateIds? (default: every registry template), channelId? (the connected channel the test session is booked to; default: the first connected one) }. Returns at once with { test: { testId, status: building | starting | passed | failed, ... } }; the server advances it about once a minute -- poll factory_media_get_runtime (its `tests`). Steps: a runtime that is not built is built first on a CPU pod (~10 min, cents; no GPU); then a short GPU session on the runtime under YOUR factory limits, its USD cap = the owner's runtimeTestMaxUsd ($0.5 by default) and its minutes what that buys at the GPU's price (3-15 min); once ComfyUI answers, its node types (/object_info) and version (/system_stats) are read, every template's graph is checked for node types the runtime lacks, the session is stopped, and the result is kept beside the profile (factory_media_get_runtime: templates [{ templateId, version, ok, missing }], comfyVersion, costUsd, bootSeconds). The test passes when every checked template has all its nodes. Only node presence is checked -- no generation is run. A session held by a limit fails the test (nothing is billed).",
+      inputSchema: testRuntimeInput,
+    },
+    async (args) => {
+      const input = parseInput(testRuntimeInput, args);
+      await deps.assertMutationAllowed();
+      return successResult(await deps.media.testRuntime(input));
+    }
+  );
+
+  registerTool(
+    "factory_media_activate_runtime",
+    {
+      description:
+        "Make a pod runtime the default for new sessions (1.23.0): { runtimeId } -- only a runtime whose test passed (status tested; otherwise media_runtime_not_ready), and only while the owner's switch 'The Operator may make a runtime active' is on (settings.factoryMayActivateRuntime; off = media_runtime_activation_disabled -- you can still create and test). { runtimeId: null } = the image's built-in ComfyUI. Rollback = set the previous runtimeId (returned as previousRuntimeId). Sessions already running keep their runtime. Recorded with who and when.",
+      inputSchema: setActiveRuntimeInput,
+    },
+    async (args) => {
+      const input = parseInput(setActiveRuntimeInput, args);
+      await deps.assertMutationAllowed();
+      return successResult(await deps.media.setActiveRuntime(input));
     }
   );
 

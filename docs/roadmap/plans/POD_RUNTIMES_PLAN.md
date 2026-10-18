@@ -63,11 +63,13 @@ ADR 0043.
    The cost cap is `runtimeTestMaxUsd`, default $0.5 (answer В). The GPU minutes are capped from it at the session's price.
 6. **Active runtime.**
    - `activeRuntimeId` is a shared media setting.
-   - `factory_media_set_active_runtime` needs a passed test. The Operator may do it while `factoryMayActivateRuntime` is on
+   - `factory_media_activate_runtime` needs a passed test. The Operator may do it while `factoryMayActivateRuntime` is on
      (default on, answer А). The owner can always do it in the UI.
    - Rollback means activating the previous profile, or `null` for the built-in.
 7. **Refused before a pod starts.**
-   - The node types a template needs are its graph's `class_type` values plus an optional `requiredNodes`.
+   - The node types a template needs are its graph's `class_type` values. (Stage 3: no separate `requiredNodes` field. An
+     API-format graph already names every node type it uses, and the registry's strict schema would mark a file with a new field
+     invalid on a computer that is not yet updated.)
    - A job or factory session on a runtime whose tested node list lacks one is refused with `media_runtime_incompatible`,
      listing the missing nodes.
    - The built-in runtime has no tested list, so it is not checked, as before.
@@ -78,7 +80,9 @@ ADR 0043.
 1. Profiles on the volume, the GitHub child, the create / list / get / list-releases tools, the three settings, audit.
 2. The CPU build, the pod-side scripts and their upload, `runtimeId` on sessions, and the runtime and ComfyUI version on the
    session.
-3. Test, activation and rollback, the pre-pod refusal, the template's optional `requiredNodes`, and the Servers UI.
+3. Test, activation and rollback, the pre-pod refusal, and the Servers UI («Настройка» → «Среды пода»).
+   - The activation tool is `factory_media_activate_runtime`, not `_set_active_`: AC-FO-09 keeps `_set_` names off the factory
+     tool set.
 
 ## Acceptance criteria
 

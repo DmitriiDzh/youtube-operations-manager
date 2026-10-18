@@ -144,3 +144,38 @@ test("listRuntimes / getRuntime: profiles from the volume, newest first, with ac
   assert.deepEqual([...(await h.services.testedNodes("comfy-0410-flux3"))!.nodes].sort(), ["KSampler", "ReferenceMultiLatent"]);
   await assert.rejects(h.services.getRuntime("nope"), (e: unknown) => isDomainError(e) && e.code === "not_found");
 });
+
+// AC-RT-06: set-active needs a passed test; with factoryMayActivateRuntime off the Operator is refused while the owner still can;
+// rollback to the previous profile and to null (the built-in ComfyUI) both work.
+test("AC-RT-06: activation needs a passed test; the Operator needs the owner's switch; null (built-in) is always a valid target", async () => {
+  const tested = (ok: boolean) =>
+    JSON.stringify({ ok, testedAt: "2026-10-18T16:00:00Z", comfyVersion: "0.41.0", nodes: ["KSampler"], templates: [{ templateId: "p1", version: 1, ok, missing: ok ? [] : ["X"] }], costUsd: 0.04, bootSeconds: 30 });
+  const on = harness({ activeRuntimeId: "old-runtime" });
+  await on.services.createRuntime(valid());
+  // Built but not tested -> refused.
+  on.objects.set("ytm/runtimes/comfy-0410-flux3/.ready", "");
+  await assert.rejects(on.services.checkActivation("comfy-0410-flux3", "owner"), (e: unknown) => isDomainError(e) && e.code === "media_runtime_not_ready");
+  // A failed test -> refused.
+  on.objects.set(runtimeKey("comfy-0410-flux3", "test.json"), tested(false));
+  await assert.rejects(on.services.checkActivation("comfy-0410-flux3", "factory"), (e: unknown) => isDomainError(e) && e.code === "media_runtime_not_ready");
+  // A passed test -> allowed for both; the previous id is returned for the rollback.
+  on.objects.set(runtimeKey("comfy-0410-flux3", "test.json"), tested(true));
+  assert.deepEqual(await on.services.checkActivation("comfy-0410-flux3", "factory"), { from: "old-runtime", to: "comfy-0410-flux3" });
+  assert.deepEqual(await on.services.checkActivation(null, "factory"), { from: "old-runtime", to: null });
+  await assert.rejects(on.services.checkActivation("no-such-runtime", "owner"), (e: unknown) => isDomainError(e) && e.code === "not_found");
+
+  const off = harness({ factoryMayActivateRuntime: false });
+  await off.services.createRuntime(valid());
+  off.objects.set("ytm/runtimes/comfy-0410-flux3/.ready", "");
+  off.objects.set(runtimeKey("comfy-0410-flux3", "test.json"), tested(true));
+  await assert.rejects(off.services.checkActivation("comfy-0410-flux3", "factory"), (e: unknown) => isDomainError(e) && e.code === "media_runtime_activation_disabled");
+  await assert.rejects(off.services.checkActivation(null, "factory"), (e: unknown) => isDomainError(e) && e.code === "media_runtime_activation_disabled");
+  assert.deepEqual(await off.services.checkActivation("comfy-0410-flux3", "owner"), { from: null, to: "comfy-0410-flux3" });
+});
+
+test("AC-RT-05: the test result is written beside the profile as test.json and read back as the tested node list", async () => {
+  const h = harness();
+  await h.services.createRuntime(valid());
+  await h.services.writeTestResult("comfy-0410-flux3", { ok: true, testedAt: "2026-10-18T16:00:00Z", comfyVersion: "0.41.0", nodes: ["SaveImage", "KSampler"], templates: [], costUsd: 0.04, bootSeconds: 30, error: null });
+  assert.deepEqual([...(await h.services.testedNodes("comfy-0410-flux3"))!.nodes].sort(), ["KSampler", "SaveImage"]);
+});

@@ -30,6 +30,7 @@ import {
 } from "./contracts";
 import type { MediaControlEvent } from "./models";
 import { hostCudaTooOld } from "./cuda-host";
+import { missingNodeTypes } from "./runtimes";
 import {
   adoptTemplateInputSchema,
   checkDeclaredModels,
@@ -164,11 +165,13 @@ export type JobServiceDependencies = {
   progress?: JobProgressRegistry;
   sessions: {
     /** `hostCudaVersion` (BL-159): the current pod's host CUDA; absent/null = unknown (never refuses). */
-    getRunningSession(sessionId: string): Promise<{ sessionId: string; channelId: string; podId: string | null; gpuTypeId: string | null; costPerHr: number | null; hostCudaVersion?: string | null } | null>;
+    getRunningSession(sessionId: string): Promise<{ sessionId: string; channelId: string; podId: string | null; gpuTypeId: string | null; costPerHr: number | null; hostCudaVersion?: string | null; runtimeId?: string | null } | null>;
     comfyClientForSession(sessionId: string): Promise<ComfyUiClient>;
     touchActivity(sessionId: string): Promise<void>;
   };
   s3(): Promise<RunpodS3Client>;
+  /** BL-200 (AC-RT-07): a runtime's tested node list; null = never tested (then nothing is checked). Absent = no runtimes. */
+  runtimeNodes?(runtimeId: string): Promise<ReadonlySet<string> | null>;
   /** `<workspace>/99 Data Exchange/From YTM` for the channel (throws `media_workspace_unavailable`). */
   resolveOutputRoot(channelId: string): Promise<string>;
   fs: {
@@ -934,6 +937,23 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     });
   }
 
+  /**
+   * BL-200 (AC-RT-07): a template whose graph needs a node type the session's runtime was tested without is refused before
+   * anything is uploaded or queued. The image's built-in ComfyUI and an untested runtime have no list: nothing is checked.
+   */
+  async function assertRuntimeFitsTemplate(session: { sessionId: string; runtimeId?: string | null }, template: StoredTemplateRow): Promise<void> {
+    if (!session.runtimeId || !deps.runtimeNodes) return;
+    const nodes = await deps.runtimeNodes(session.runtimeId);
+    if (!nodes) return;
+    const missing = missingNodeTypes(template.workflowJson, nodes);
+    if (missing.length === 0) return;
+    throw new DomainError({
+      code: "media_runtime_incompatible",
+      message: `Template ${template.id} needs node types runtime ${session.runtimeId} does not have: ${missing.join(", ")}. Use a runtime that has them (factory_media_test_runtime shows each runtime's result per template).`,
+      details: { sessionId: session.sessionId, templateId: template.id, runtimeId: session.runtimeId, missing },
+    });
+  }
+
   async function requireTemplate(templateId: string): Promise<StoredTemplateRow> {
     const row = await deps.store.templates.get(templateId);
     if (!row) throw new DomainError({ code: "media_template_not_found", message: "No workflow template with this id", details: { templateId } });
@@ -1602,6 +1622,7 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       }
       const template = await requireTemplate(parsed.templateId);
       assertHostFitsTemplate(session, template);
+      await assertRuntimeFitsTemplate(session, template);
       const parameters = JSON.parse(template.parametersJson) as MediaTemplateParameter[];
       const values = resolveParams(parameters, parsed.params);
       // The outputs can only land in the channel's workspace folder, and only travel over the S3 API: without either,
@@ -1760,7 +1781,10 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       const template = await requireTemplate(input.templateId);
       if (input.sessionId) {
         const session = await deps.sessions.getRunningSession(input.sessionId);
-        if (session) assertHostFitsTemplate(session, template);
+        if (session) {
+          assertHostFitsTemplate(session, template);
+          await assertRuntimeFitsTemplate(session, template);
+        }
       }
       const parameters = JSON.parse(template.parametersJson) as MediaTemplateParameter[];
       return { templateId: template.id, templateVersion: template.version, values: resolveParams(parameters, input.params), parameterNames: parameters.map((p) => p.name) };

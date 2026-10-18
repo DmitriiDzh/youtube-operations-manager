@@ -328,6 +328,12 @@ async function startServerSession() {
     } catch (error) {
       console.warn(`[media] the runtime builds were not checked: ${error instanceof Error ? error.message : String(error)}`);
     }
+    try {
+      // BL-200 stage 3: a runtime test's next step (build → GPU session → node check → test.json).
+      await media.pollRuntimeTests();
+    } catch (error) {
+      console.warn(`[media] the runtime tests were not checked: ${error instanceof Error ? error.message : String(error)}`);
+    }
     let intervalMs = 60_000;
     try {
       const settings = await media.getSettings();

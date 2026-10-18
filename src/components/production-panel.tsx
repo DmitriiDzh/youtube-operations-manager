@@ -16,6 +16,7 @@ import {
   ExchangeCleanupCard,
   NowRunningLine,
   FactoryLimitsCard,
+  PodRuntimesCard,
   GpuFallbackCard,
   LimitsCard,
   ModelsCard,
@@ -246,6 +247,9 @@ export function ServersPanel({
             <LimitsCard settings={overview.settings} onChanged={refresh} />
             <GpuFallbackCard settings={overview.settings} onChanged={refresh} />
             <FactoryLimitsCard settings={overview.settings} onChanged={refresh} />
+            <FeatureErrorBoundary label={`${t("nav.servers")} — ${t("media.runtimes.title")}`}>
+              <PodRuntimesCard settings={overview.settings} onChanged={refresh} />
+            </FeatureErrorBoundary>
           </>
         ) : (
           runpodPlaceholder

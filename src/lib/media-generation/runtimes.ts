@@ -75,8 +75,9 @@ const testFileSchema = z
     costUsd: z.number().nullable(),
     bootSeconds: z.number().nullable(),
     error: z.string().nullable().optional(),
-  })
-  .passthrough();
+  });
+// Not `.passthrough()`: its index signature would erase the known keys from `Omit<RuntimeTestResult, ...>` below; a newer
+// version's extra fields are simply not read.
 export type RuntimeTestResult = z.infer<typeof testFileSchema>;
 
 export type RuntimeStatus = "created" | "building" | "build_failed" | "built" | "test_failed" | "tested";
@@ -103,6 +104,31 @@ export function isAllowedSource(repo: string, allowlist: readonly string[]): boo
 export function githubRepoOf(repo: string): { owner: string; repo: string } | null {
   const match = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/i.exec(repo);
   return match ? { owner: match[1], repo: match[2] } : null;
+}
+
+/**
+ * BL-200 (AC-RT-05/07): the node types an API-format graph needs -- the `class_type` of every node. The graph itself states
+ * exactly what it needs, so no separate `requiredNodes` field is kept (POD_RUNTIMES_PLAN.md stage 3); null = not a graph.
+ */
+export function requiredNodeTypes(workflowJson: string): string[] | null {
+  let graph: unknown;
+  try {
+    graph = JSON.parse(workflowJson);
+  } catch {
+    return null;
+  }
+  if (!graph || typeof graph !== "object" || Array.isArray(graph)) return null;
+  const types = new Set<string>();
+  for (const node of Object.values(graph as Record<string, unknown>)) {
+    const classType = node && typeof node === "object" ? (node as Record<string, unknown>).class_type : undefined;
+    if (typeof classType === "string" && classType) types.add(classType);
+  }
+  return [...types].sort();
+}
+
+/** The node types of `workflowJson` that `nodes` lacks (sorted); an unreadable graph lacks nothing that can be named. */
+export function missingNodeTypes(workflowJson: string, nodes: ReadonlySet<string>): string[] {
+  return (requiredNodeTypes(workflowJson) ?? []).filter((type) => !nodes.has(type));
 }
 
 export type RuntimeDeps = {
@@ -197,6 +223,38 @@ export function createRuntimeServices(deps: RuntimeDeps) {
       const s3 = await deps.s3();
       const test = parseJson(testFileSchema, await s3.getObjectText(runtimeKey(runtimeId, "test.json")));
       return test ? { nodes: new Set(test.nodes), comfyVersion: test.comfyVersion } : null;
+    },
+
+    /** Stage 3 (AC-RT-05): the test's result beside the profile (`test.json`); a newer test replaces it. */
+    async writeTestResult(runtimeId: string, result: RuntimeTestResult): Promise<void> {
+      const s3 = await deps.s3();
+      await s3.putObject(runtimeKey(runtimeId, "test.json"), JSON.stringify(testFileSchema.parse(result), null, 2), "application/json");
+    },
+
+    /**
+     * Stage 3 (AC-RT-06): whether `runtimeId` may become the active runtime. `null` (the image's built-in ComfyUI) always may --
+     * it is the rollback of last resort. A profile needs a passed test. The Factory Operator needs the owner's switch on; the
+     * owner never does. Returns the profile's id and the one it replaces.
+     */
+    async checkActivation(runtimeId: string | null, actor: PullActor): Promise<{ from: string | null; to: string | null }> {
+      const settings = await deps.getSettings();
+      if (actor === "factory" && !settings.factoryMayActivateRuntime) {
+        throw new DomainError({ code: "media_runtime_activation_disabled", message: "The owner has switched off \"The Operator may make a runtime active\" (Servers → Setup); the Operator can still create and test runtimes.", details: { runtimeId } });
+      }
+      if (runtimeId !== null) {
+        const s3 = await deps.s3();
+        const profile = await readProfile(s3, runtimeId);
+        if (!profile) throw new DomainError({ code: "not_found", message: `No runtime profile ${runtimeId} on the network volume.`, details: { runtimeId } });
+        const v = await view(s3, profile, settings);
+        if (v.status !== "tested") {
+          throw new DomainError({
+            code: "media_runtime_not_ready",
+            message: `Runtime ${runtimeId} is ${v.status}; only a runtime whose test passed can become active (factory_media_test_runtime).`,
+            details: { runtimeId, status: v.status, templates: v.testDetail?.templates.filter((t) => !t.ok) ?? [] },
+          });
+        }
+      }
+      return { from: settings.activeRuntimeId, to: runtimeId };
     },
 
     /** ComfyUI's newest releases on GitHub (for choosing a `comfy.ref`). */

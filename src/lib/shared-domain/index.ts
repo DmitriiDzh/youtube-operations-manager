@@ -81,6 +81,7 @@ export type DomainErrorCode =
   | "github_unavailable"
   | "media_runtime_incompatible"
   | "media_runtime_not_ready"
+  | "media_runtime_activation_disabled"
   | "capability_not_supported"
   | "endpoint_not_allowed"
   | "connection_disabled"
