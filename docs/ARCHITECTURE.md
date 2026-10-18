@@ -825,12 +825,15 @@ app already holds:
   (`channel-access/live-channel-memo.ts`). Only a live answer is stored, so the channel it names is still what that identity's grant
   resolved. The memo is cleared by a Google sign-in, by a disconnect and by a restart. Each answer still activates the channel
   (ADR 0004). Grant liveness is checked by `channel-connections/health` (no quota).
-- The switcher's automatic sync (`onlyIfStale`) is skipped while the active channel's copy is owned by this identity and younger
-  than 6 h (`channel-sync/freshness.ts`, the same window as `publishing/refresh-stale`).
-- Home's summary uses `preferLocal`. Traffic-source and device cards are summed from `analytics_breakdown_daily` when the stored
-  range covers the period (`answerChannelBreakdownFromStore`).
-- The Web UI playlist pickers use a 1 h per-identity memo, which any playlist change made through the core clears; agents and the
-  CLI read live.
+- The switcher's automatic sync (`onlyIfStale`) is skipped only while the channel this process last read live for the identity
+  (the header memo, never the stored selection, which may still name the previous channel right after a sign-in) has a copy owned
+  by this identity at most 6 h old (`channel-sync/freshness.ts`, the same window as `publishing/refresh-stale`).
+- Home's summary uses `preferLocal`. Traffic-source and device cards (and the MCP `agent_query_channel_breakdown`) are summed from
+  `analytics_breakdown_daily` when the stored range covers the period by `isRangeFullyCovered` (`answerChannelBreakdownFromStore`);
+  like the stored totals, the lag days count with what is stored. Any failure of that path falls back to the live read.
+- The Web UI playlist pickers use a 1 h per-identity memo, which any playlist change made through the core, a Google sign-in and a
+  disconnect clear; agents and the CLI read live. Both memos use `src/lib/user-ttl-memo/`, whose forget counter keeps a read that
+  started before a forget from storing its older answer.
 
 **`GET /api/settings` is not purely read-only**: `getUserTimezone`'s detect-and-persist behavior means a plain `GET` can write
 the OS-detected timezone on first read, and `getAnalyticsCollectionTimes` saves the UTC times converted from the legacy local

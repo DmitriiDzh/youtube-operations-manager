@@ -21,7 +21,7 @@ function harness(options: { live?: () => Promise<LiveChannelInfo | null>; userId
     activateChannel: async (args) => {
       activations.push(args);
     },
-    memo: { recall: (userId) => memo.get(userId) ?? null, remember: (userId, channel) => memo.set(userId, channel) },
+    memo: { recall: (userId) => memo.get(userId) ?? null, epoch: () => 0, remember: (userId, channel) => void memo.set(userId, channel) },
   });
   return { handler, liveReads, activations, memo };
 }
@@ -104,7 +104,7 @@ test("channel-info: no session answers 401 without any read", async () => {
       return CHANNEL;
     },
     activateChannel: async () => undefined,
-    memo: { recall: () => null, remember: () => undefined },
+    memo: { recall: () => null, epoch: () => 0, remember: () => undefined },
   });
   assert.equal((await handler()).status, 401);
   assert.deepEqual(liveReads, []);

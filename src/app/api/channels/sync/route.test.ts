@@ -7,11 +7,12 @@ import { createChannelSyncHandler } from "./route";
 
 const NOW = new Date("2026-10-18T12:00:00Z");
 
-function harness(stored: { connectedUserId: string | null; lastSyncedAt: Date | null } | null, active: string | null = "UC_own") {
+function harness(stored: { connectedUserId: string | null; lastSyncedAt: Date | null } | null, active: string | null = "UC_own", live: string | null = active) {
   const syncs: Array<{ userId: string; trackedChannelId: string; payload: Record<string, unknown> }> = [];
   const handler = createChannelSyncHandler({
     getSession: async () => ({ user: { id: "user-1" } }),
     activeChannelId: async () => active,
+    liveChannelId: () => live,
     storedChannel: async () => stored,
     sync: async (args) => {
       syncs.push(args);
@@ -60,4 +61,11 @@ test("channels/sync: an explicit channelId is never skipped, even with onlyIfSta
   const h = harness({ connectedUserId: "user-1", lastSyncedAt: new Date("2026-10-18T11:59:00Z") });
   await h.post({ onlyIfStale: true, channelId: "UC_other" });
   assert.deepEqual(h.syncs, [{ userId: "user-1", trackedChannelId: "UC_other", payload: { channelId: "UC_other" } }]);
+});
+
+test("channels/sync onlyIfStale: no live read yet for this identity (a fresh Google sign-in forgot it) -- the sync runs, even with a fresh owned copy of the stored selection", async () => {
+  // The stored selection still names UC_own (owned, synced 1 h ago) while channel-info has not answered for the new grant yet.
+  const h = harness({ connectedUserId: "user-1", lastSyncedAt: new Date("2026-10-18T11:00:00Z") }, "UC_own", null);
+  await h.post({ onlyIfStale: true });
+  assert.deepEqual(h.syncs, [{ userId: "user-1", trackedChannelId: "UC_own", payload: {} }]);
 });

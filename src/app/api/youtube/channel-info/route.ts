@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { getAuthenticatedYoutube } from "@/lib/youtube-read-gateway";
-import { createChannelAccessCore, recallLiveChannel, rememberLiveChannel, type LiveChannelInfo } from "@/lib/channel-access";
+import { createChannelAccessCore, liveChannelEpoch, recallLiveChannel, rememberLiveChannel, type LiveChannelInfo } from "@/lib/channel-access";
 import { runWithQuotaContext } from "@/lib/youtube-quota";
 
 const channelAccess = createChannelAccessCore();
@@ -12,7 +12,7 @@ type ChannelInfoDeps = {
   /** `channels.list mine` with this identity's own grant; null when the grant names no channel. */
   readLiveChannel: (userId: string) => Promise<LiveChannelInfo | null>;
   activateChannel: (args: { userId: string; channelId: string }) => Promise<void>;
-  memo: { recall(userId: string): LiveChannelInfo | null; remember(userId: string, channel: LiveChannelInfo): void };
+  memo: { recall(userId: string): LiveChannelInfo | null; epoch(userId: string): number; remember(userId: string, channel: LiveChannelInfo, epoch: number): void };
 };
 
 async function readLiveChannel(userId: string): Promise<LiveChannelInfo | null> {
@@ -48,7 +48,7 @@ export function createChannelInfoHandler(
     getSession: () => getServerSession(authOptions),
     readLiveChannel,
     activateChannel: (args) => channelAccess.activateChannel(args),
-    memo: { recall: (userId) => recallLiveChannel(userId), remember: (userId, channel) => rememberLiveChannel(userId, channel) },
+    memo: { recall: (userId) => recallLiveChannel(userId), epoch: liveChannelEpoch, remember: (userId, channel, epoch) => rememberLiveChannel(userId, channel, epoch) },
   }
 ) {
   return async function GET() {
@@ -60,6 +60,8 @@ export function createChannelInfoHandler(
 
     let channel = deps.memo.recall(userId);
     if (!channel) {
+      // A sign-in or disconnect while this read runs forgets the identity; the older answer is then not remembered.
+      const epoch = deps.memo.epoch(userId);
       try {
         channel = await deps.readLiveChannel(userId);
       } catch (error) {
@@ -96,7 +98,7 @@ export function createChannelInfoHandler(
       if (!channel) {
         return NextResponse.json({ channel: null });
       }
-      deps.memo.remember(userId, channel);
+      deps.memo.remember(userId, channel, epoch);
     }
 
     // This is the one place the Web UI learns, for free, which channel the live OAuth session

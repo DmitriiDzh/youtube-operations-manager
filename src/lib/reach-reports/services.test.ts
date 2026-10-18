@@ -789,4 +789,8 @@ test("getReachStatus: a failed attempt at 12:00 shows the next automatic check a
     now: new Date("2026-10-03T12:10:00Z"),
   }).services.getReachStatus(SYNC);
   assert.equal(withCheck.nextAutoCheckAt, "2026-10-03T16:00:00.000Z");
+
+  // Review of BL-197: once the hold is over (3 h later) it is not named; with no check it is "on the next open" (null) again.
+  const holdOver = await createFixture({ storedAttempt: failedAt, now: new Date("2026-10-03T15:00:00Z") }).services.getReachStatus(SYNC);
+  assert.equal(holdOver.nextAutoCheckAt, null);
 });

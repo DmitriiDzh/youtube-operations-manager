@@ -661,10 +661,12 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
         .filter((d): d is Date => d !== null)
         .sort((a, b) => b.getTime() - a.getTime())[0];
 
-      // BL-197: a failed attempt holds the dashboard's own automatic retry for FAILED_ACTIVE_RETRY_AFTER_MINUTES -- the later of the two.
+      // BL-197: a failed attempt holds the dashboard's own automatic retry for FAILED_ACTIVE_RETRY_AFTER_MINUTES -- the later of the two,
+      // that hold counted only while it lasts (once over, the next open retries, as before).
+      const failedHoldEnd = attempt && attempt.outcome === "failed" ? attempt.attemptedAt.getTime() + FAILED_ACTIVE_RETRY_AFTER_MINUTES * 60_000 : null;
       const holds = [
         lastChecked ? lastChecked.getTime() + MIN_SYNC_INTERVAL_HOURS * 3_600_000 : null,
-        attempt && attempt.outcome === "failed" ? attempt.attemptedAt.getTime() + FAILED_ACTIVE_RETRY_AFTER_MINUTES * 60_000 : null,
+        failedHoldEnd !== null && failedHoldEnd > deps.clock.now().getTime() ? failedHoldEnd : null,
       ].filter((ms): ms is number => ms !== null);
       const nextAutoCheckAt = holds.length > 0 ? Math.max(...holds) : null;
 

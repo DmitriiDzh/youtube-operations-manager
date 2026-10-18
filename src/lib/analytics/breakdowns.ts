@@ -3,8 +3,7 @@ import { z } from "zod";
 import { calendarDateSchema } from "@/lib/shared-domain";
 import { DomainError, type ChannelBreakdownKind, type GetChannelBreakdownResult, CHANNEL_BREAKDOWN_PRESETS, type ResolvedCredentials } from "./contracts";
 import { getChannelBreakdownInputSchema, getChannelBreakdownOutputSchema, parseWithSchema } from "./schemas";
-import { ANALYTICS_REPORTING_LAG_DAYS } from "./data-quality";
-import { enumerateDates } from "./period";
+import { isRangeFullyCovered } from "./data-quality";
 import { toPacificCalendarDate } from "./comparable-age";
 import { hasFinalPublishDate, type MilestoneVideo } from "./milestones";
 import { failureKind } from "./query-failure";
@@ -286,9 +285,9 @@ function shapeRows(rows: StoredBreakdownRow[], kind: BreakdownKind, groupBy: "to
 const STORED_CHANNEL_BREAKDOWNS: Partial<Record<ChannelBreakdownKind, BreakdownKind>> = { trafficSources: "traffic_source", deviceType: "device_type" };
 
 /**
- * BL-197: whether the channel's stored days answer the whole period. Every day must be inside the stored range (its start .. the last
- * collected day), except the newest `ANALYTICS_REPORTING_LAG_DAYS` days, which YouTube may not have returned yet -- the same rule the
- * stored channel totals follow (`isRangeFullyCovered`).
+ * BL-197: whether the channel's stored days answer the whole period -- the same rule as the stored channel totals
+ * (`isRangeFullyCovered`): every day inside the stored range (its start .. the last collected day), except the newest
+ * `ANALYTICS_REPORTING_LAG_DAYS` days, which YouTube may not have returned yet (those count as covered, with what is stored for them).
  */
 export function isChannelBreakdownPeriodStored(args: {
   state: { rangeStart: string; collectedThrough: string | null } | undefined;
@@ -297,11 +296,14 @@ export function isChannelBreakdownPeriodStored(args: {
   now: Date;
 }): boolean {
   const through = args.state?.collectedThrough;
-  if (!args.state || !through || args.startDate < args.state.rangeStart) return false;
-  const cutoff = new Date(args.now);
-  cutoff.setUTCDate(cutoff.getUTCDate() - ANALYTICS_REPORTING_LAG_DAYS);
-  const cutoffDate = cutoff.toISOString().slice(0, 10);
-  return enumerateDates(args.startDate, args.endDate).every((date) => date <= through || date > cutoffDate);
+  if (!args.state || !through) return false;
+  return isRangeFullyCovered({
+    startDate: args.startDate,
+    endDate: args.endDate,
+    runs: [{ requestedStartDate: args.state.rangeStart, requestedEndDate: through, videoCount: 0 }],
+    requireVideos: false,
+    now: args.now,
+  });
 }
 
 export function createBreakdownServices(deps: BreakdownDependencies) {

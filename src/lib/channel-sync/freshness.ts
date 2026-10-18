@@ -7,7 +7,7 @@ export const CHANNEL_COPY_FRESH_MS = 6 * 3_600_000;
 
 /**
  * Whether the automatic "my channel" sync may skip: the session's active channel has a stored copy owned by this same identity
- * (`connected_user_id`, set only by a "mine" sync) and synced less than `CHANNEL_COPY_FRESH_MS` ago. No row, a row owned by nobody or
+ * (`connected_user_id`, set only by a "mine" sync) and synced at most `CHANNEL_COPY_FRESH_MS` ago. No row, a row owned by nobody or
  * by another identity (a just-connected channel), or no sync time yet -- the sync runs.
  */
 export function isOwnedChannelCopyFresh(args: {
@@ -18,5 +18,6 @@ export function isOwnedChannelCopyFresh(args: {
   const { channel } = args;
   if (!channel || channel.connectedUserId !== args.userId || !channel.lastSyncedAt) return false;
   const age = args.now.getTime() - channel.lastSyncedAt.getTime();
-  return age >= 0 && age < CHANNEL_COPY_FRESH_MS;
+  // Exactly 6 h is still fresh, as `refresh-stale` has always counted it (its acceptance test).
+  return age >= 0 && age <= CHANNEL_COPY_FRESH_MS;
 }

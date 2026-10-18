@@ -125,8 +125,10 @@ export function createAnalyticsCore() {
     listVideoMilestones: milestones.listVideoMilestones,
     collectDueBreakdowns: quotaScoped(gateBreakdownCollection(guard, breakdowns.collectDueBreakdowns), context),
     listStoredBreakdowns: breakdowns.listStoredBreakdowns,
-    // BL-197: the traffic-sources and devices cards from the stored channel days when they cover the period; live otherwise.
-    getChannelBreakdown: async (input: unknown) => (await breakdowns.answerChannelBreakdownFromStore(input)) ?? core.getChannelBreakdown(input),
+    // BL-197: the traffic-sources and devices cards from the stored channel days when they cover the period; live otherwise. The store
+    // is only a shortcut: any failure in it (a bad date, a DB error) falls back to the live read, whose own checks and errors apply.
+    getChannelBreakdown: async (input: unknown) =>
+      (await breakdowns.answerChannelBreakdownFromStore(input).catch(() => null)) ?? core.getChannelBreakdown(input),
     collectDueSearchTerms: quotaScoped(gateSearchTermCollection(guard, searchTerms.collectDueSearchTerms), context),
     listStoredSearchTerms: searchTerms.listStoredSearchTerms,
     // The run's few videos.list title lookups (Data API units, classified "data" by the client) are listed under this Analytics context too.

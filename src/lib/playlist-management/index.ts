@@ -27,3 +27,4 @@ export function createPlaylistManagementCore() {
 }
 
 export type PlaylistManagementCore = ReturnType<typeof createPlaylistManagementCore>;
+export { forgetPlaylists } from "./playlist-list-memo";
