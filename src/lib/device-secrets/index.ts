@@ -16,6 +16,7 @@ import { createDeviceSecrets, type DeviceSecrets } from "./services";
 
 export * from "./contracts";
 export { createDeviceSecrets, type DeviceSecrets, type DeviceSecretSlot, type DeviceSecretsDeps } from "./services";
+export { createMemoryDeviceSecretStore } from "./memory-store";
 
 const store: DeviceSecretStorePort = {
   get: (name) => getStoredDeviceSecret(name),

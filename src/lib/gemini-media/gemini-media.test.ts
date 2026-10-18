@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createKeyFile, type KeyFileAccess } from "@/lib/device-key-file";
+import { createDeviceSecrets, createMemoryDeviceSecretStore } from "@/lib/device-secrets";
 import type { StoredGeminiCredentials, StoredGeminiMediaJob } from "@/lib/db";
 import {
   GEMINI_IMAGE_TIMEOUT_MS,
@@ -32,20 +33,6 @@ const KEY = "AIzaSyTestKey0123456789abcd";
 function memoryStore(): GeminiStore & { jobs: Map<string, StoredGeminiMediaJob>; creds: StoredGeminiCredentials | null; settings: string | null } {
   const state = { jobs: new Map<string, StoredGeminiMediaJob>(), creds: null as StoredGeminiCredentials | null, settings: null as string | null };
   return Object.assign(state, {
-    async getCredentials() {
-      return state.creds;
-    },
-    async upsertCredentials(input: Pick<StoredGeminiCredentials, "ciphertext" | "iv" | "authTag" | "keyHint" | "status" | "verifiedAt">) {
-      state.creds = { id: "default", ...input, updatedAt: new Date() };
-    },
-    async setCredentialsStatus(checked: string, input: Pick<StoredGeminiCredentials, "status" | "verifiedAt">) {
-      if (!state.creds || state.creds.ciphertext !== checked) return false;
-      state.creds = { ...state.creds, ...input };
-      return true;
-    },
-    async clearCredentials() {
-      state.creds = null;
-    },
     async getSettingsJson() {
       return state.settings;
     },
@@ -150,6 +137,7 @@ async function harness(options: { now?: Date; enabled?: boolean; withKey?: boole
     randomBytes: (size) => Buffer.alloc(size, 7),
   };
   const store = memoryStore();
+  const secretStore = createMemoryDeviceSecretStore();
   const { api, calls, behaviour } = fakeApi();
   const clock = { at: options.now ?? new Date(2026, 9, 10, 15, 0, 0) };
   const registered: Array<Record<string, unknown>> = [];
@@ -166,7 +154,8 @@ async function harness(options: { now?: Date; enabled?: boolean; withKey?: boole
   const deps: GeminiMediaDeps = {
     store,
     api,
-    keyFile: createKeyFile(keyAccess, (detail) => new DomainError({ code: "encryption_key_not_configured", message: detail })),
+    // BL-199 (ADR 0042): the key lives in the shared device-secret store; here an in-memory one over this harness's key file.
+    secret: createDeviceSecrets({ store: secretStore, keyFile: createKeyFile(keyAccess, (detail) => new DomainError({ code: "encryption_key_not_configured", message: detail })) }).slot("gemini"),
     workspace: {
       async resolveOutputRoot(channelId) {
         if (channelId === "UC_NOWS") throw new DomainError({ code: "gemini_workspace_unavailable", message: "no workspace" });
@@ -250,6 +239,7 @@ async function harness(options: { now?: Date; enabled?: boolean; withKey?: boole
     gate,
     video,
     keyFileText: () => keyFileText,
+    storedKey: () => secretStore.rows.get("gemini") ?? null,
     failWrites,
     cleanup: () => rm(root, { recursive: true, force: true }),
   };
@@ -342,20 +332,23 @@ test("AC-GM-03: estimates from the price table (hand-computed)", () => {
 
 // ---------------------------------------------------------------------------------------------------------------- AC-GM-01
 
-test("AC-GM-01: a key is checked with Google, stored encrypted, shown only by its last 4 characters, and removed with its key file", async () => {
+test("AC-GM-01: a key is checked with Google, stored encrypted, shown only by its last 4 characters, and removed (the shared key file stays, BL-199)", async () => {
   const h = await harness({ withKey: false });
   try {
     const view = await h.services.setKey({ apiKey: KEY });
     assert.deepEqual(h.calls.map((c) => [c.method, c.apiKey]), [["checkKey", KEY]]);
     assert.deepEqual([view.configured, view.keyHint, view.status], [true, "abcd", "ok"]);
     assert.ok(!JSON.stringify(view).includes(KEY.slice(0, 10)), "the view never carries the key");
-    assert.ok(h.store.creds && !h.store.creds.ciphertext.includes(KEY) && !Buffer.from(h.store.creds.ciphertext, "base64").toString("utf8").includes(KEY), "stored encrypted");
-    assert.ok(h.keyFileText(), "the module's key file was created");
+    const stored = h.storedKey();
+    assert.ok(stored && !stored.ciphertext.includes(KEY) && !Buffer.from(stored.ciphertext, "base64").toString("utf8").includes(KEY), "stored encrypted");
+    assert.ok(h.keyFileText(), "the key file was created");
     assert.equal(await h.services.readApiKey(), KEY);
     assert.ok(!JSON.stringify(await h.services.getStatus()).includes(KEY.slice(0, 10)));
     await h.services.clearKey();
-    assert.equal(h.store.creds, null);
-    assert.equal(h.keyFileText(), null, "its key file is removed too");
+    assert.equal(h.storedKey(), null);
+    // BL-199 changed this (ADR 0042 §4, owner msg 3007): the key file is now shared by every secret of this computer, so clearing
+    // the Gemini key keeps it (the RunPod rule, AC-P14-21); only the key's row goes.
+    assert.ok(h.keyFileText(), "the shared key file stays");
   } finally {
     await h.cleanup();
   }
@@ -368,7 +361,7 @@ test("AC-GM-01: a key Google refuses is never stored; a key with an empty balanc
       throw gatewayError("gemini_key_invalid", { status: 400 });
     };
     await expectCode(h.services.setKey({ apiKey: KEY }), "gemini_key_invalid");
-    assert.equal(h.store.creds, null);
+    assert.equal(h.storedKey(), null);
     assert.equal(h.keyFileText(), null, "no key file for a refused key");
     h.behaviour.checkKey = async () => {
       throw gatewayError("gemini_payment_required", { status: 402 });
