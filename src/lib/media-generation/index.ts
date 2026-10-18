@@ -1,5 +1,6 @@
 import { getDeviceSecrets } from "@/lib/device-secrets";
 import { createHfTokenServices } from "./hf-token";
+import { createRuntimeServices } from "./runtimes";
 import { randomBytes, randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { createAssetCatalogCore } from "@/lib/asset-catalog";
@@ -8,7 +9,7 @@ import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { appDataPaths, getLatestMediaGpuAvailabilityAt, listMediaSessionsNeedingCostSplit, setMediaJobCostShare, getMediaSessionJobSummary, insertMediaCapacityAttempt, insertMediaGpuAvailabilitySnapshot, listMediaCapacityAttempts, listMediaGpuAvailabilityLog, setMediaCapacityAttemptHostCuda, summarizeMediaGpuAvailabilityLog, getMediaTemplateAdoptionsJson, getMediaTemplateSyncLastJson, listMediaControlEvents, setMediaTemplateAdoptionsJson, setMediaTemplateSyncLastJson } from "@/lib/db";
 import { createLogicalPathsCore } from "@/lib/logical-paths";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
-import { comfyUiProxyBaseUrl, createComfyUiClient, createHuggingFaceClient, createRunpodApiClient, createRunpodS3Client } from "@/lib/media-gateway";
+import { comfyUiProxyBaseUrl, createComfyUiClient, createGithubClient, createHuggingFaceClient, createRunpodApiClient, createRunpodS3Client } from "@/lib/media-gateway";
 import { sleep as sharedSleep } from "@/lib/shared-async";
 import { createExchangeFs, resolveFromYtmDir, resolveSentToYtmFile } from "@/lib/workspace-exchange";
 import { createExchangeLocalFs } from "./adapters/exchange-fs";
@@ -117,6 +118,14 @@ function buildCore(jobScheduling: JobScheduling) {
   // BL-134 (FO-REQ-0028, ADR 0042): the Hugging Face read token lives in the shared device-secret store.
   const hub = createHuggingFaceClient();
   const hfToken = createHfTokenServices({ slot: getDeviceSecrets().slot("huggingface"), hub });
+  // BL-200 (FO-REQ-0029, ADR 0043): pod runtime profiles on the network volume.
+  const runtimes = createRuntimeServices({
+    s3: () => base.s3(),
+    github: createGithubClient(),
+    getSettings: () => base.getSettings(),
+    events: createMediaControlEventSink(),
+    clock: { now },
+  });
   const models = createMediaModelServices({
     store: createModelPullStore(),
     hub,
@@ -408,6 +417,11 @@ function buildCore(jobScheduling: JobScheduling) {
 
   return {
     ...base,
+    listRuntimes: runtimes.listRuntimes,
+    getRuntime: runtimes.getRuntime,
+    listComfyReleases: runtimes.listComfyReleases,
+    createRuntime: runtimes.createRuntime,
+    runtimeTestedNodes: runtimes.testedNodes,
     getHfToken: hfToken.getHfToken,
     setHfToken: hfToken.setHfToken,
     testHfToken: hfToken.testHfToken,

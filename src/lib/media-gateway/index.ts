@@ -8,6 +8,7 @@
 //                       websocket execution events, BL-144)
 //   - `huggingface.ts`  the Hugging Face Hub metadata a model pull is checked against (BL-132)
 //   - `gemini-api.ts`   Google's Gemini API: Nano Banana images, Omni video, the video download, a key check (BL-174)
+//   - `github.ts`       GitHub's public API: ComfyUI releases and tag -> commit for pod runtime profiles (BL-200)
 // Every child checks the one "Media gateway" toggle and records a traffic event
 // (`authorization.ts`); `inventory.test.ts` fails the suite if any other file reaches a
 // runpod.io host. Callers import only from this barrel.
@@ -19,4 +20,5 @@ export * from "./runpod-s3";
 export * from "./comfyui-api";
 export * from "./comfyui-progress";
 export * from "./huggingface";
+export * from "./github";
 export * from "./gemini-api";

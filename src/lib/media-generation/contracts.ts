@@ -88,7 +88,25 @@ export type MediaSettings = {
    * above it, and the start checks the host before `running`. null = no filter (the behaviour before BL-155).
    */
   minCudaVersion: MediaCudaVersion | null;
+  // -- BL-200 (FO-REQ-0029, ADR 0043, docs/roadmap/plans/POD_RUNTIMES_PLAN.md) -------------------------------------------
+  /** The pod runtime profile new sessions use; null = the image's built-in ComfyUI (the behaviour before BL-200). */
+  activeRuntimeId: string | null;
+  /** The Operator may make a tested profile active itself (owner answer А: on by default); off = only the owner does. */
+  factoryMayActivateRuntime: boolean;
+  /** Repo URL prefixes a profile's ComfyUI and node packs may come from (HTTPS, case-insensitive; owner answer Б). */
+  runtimeSourceAllowlist: string[];
+  /** The most one profile test (build + GPU check) may cost (owner answer В: $0.5). */
+  runtimeTestMaxUsd: number;
 };
+
+/** BL-200: the allow-list a fresh install starts with (owner answer Б, Telegram 2026-10-18 msg 3018). */
+export const DEFAULT_RUNTIME_SOURCE_ALLOWLIST: readonly string[] = Object.freeze([
+  "https://github.com/comfyanonymous/",
+  "https://github.com/Comfy-Org/",
+  "https://github.com/kijai/",
+  "https://github.com/ltdrdata/",
+  "https://huggingface.co/",
+]);
 
 /** BL-155: the CUDA versions RunPod's create-pod `allowedCudaVersions` accepts (docs.runpod.io POST /pods, 2026-10-08). */
 export const MEDIA_CUDA_VERSIONS = Object.freeze(["11.8", "12.0", "12.1", "12.2", "12.3", "12.4", "12.5", "12.6", "12.7", "12.8", "12.9", "13.0"] as const);
@@ -118,7 +136,14 @@ export const DEFAULT_MEDIA_SETTINGS: MediaSettings = Object.freeze({
   factoryMaxUsdPerMonth: 50,
   ownerReleaseWhenDone: true,
   minCudaVersion: "12.8",
+  activeRuntimeId: null,
+  factoryMayActivateRuntime: true,
+  runtimeSourceAllowlist: [...DEFAULT_RUNTIME_SOURCE_ALLOWLIST],
+  runtimeTestMaxUsd: 0.5,
 });
+
+/** BL-200: a pod runtime profile id (also its folder on the volume). */
+export const RUNTIME_ID_PATTERN = /^[a-z0-9][a-z0-9-]{2,62}$/;
 
 /** Bounds of `maxConcurrentSessions` (slice 6): at least one, at most four pods at a time. */
 export const MAX_CONCURRENT_SESSIONS_RANGE = Object.freeze({ min: 1, max: 4 });

@@ -964,13 +964,15 @@ test("getGatewayTrafficLast24h: every category reports a zeroed row before any c
 
     assert.deepEqual(
       windows.map((w) => w.category).sort(),
-      // BL-174 (GEMINI_MEDIA_PLAN.md §2.1): the media gateway's Gemini child adds its own counter, `gemini_api`.
+      // BL-174 (GEMINI_MEDIA_PLAN.md §2.1): the media gateway's Gemini child adds its own counter, `gemini_api`; BL-200 adds
+      // `github_api` (pod runtime profiles: ComfyUI releases, tag -> commit).
       [
         "analytics_reads",
         "cloud_monitoring_reads",
         "comfyui_api",
         "data_api_reads",
         "gemini_api",
+        "github_api",
         "huggingface_api",
         "live_writes",
         "mcp_tool_calls",

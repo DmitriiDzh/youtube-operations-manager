@@ -29,15 +29,19 @@ const EXPECTED_TOOLS = [
   "factory_media_cancel_pull",
   "factory_media_capacity_log",
   "factory_media_create_job",
+  "factory_media_create_runtime",
   "factory_media_delete_model",
   "factory_media_delete_template",
   "factory_media_get_gpu_availability",
   "factory_media_get_job",
   "factory_media_get_pull",
+  "factory_media_get_runtime",
   "factory_media_get_session",
   "factory_media_get_settings",
+  "factory_media_list_comfy_releases",
   "factory_media_list_gpu_availability_log",
   "factory_media_list_models",
+  "factory_media_list_runtimes",
   "factory_media_list_templates",
   "factory_media_pull_model",
   "factory_media_start_session",
@@ -122,6 +126,7 @@ test("AC-FO-09 (amended by ADR 0025/0026): writes are exactly the named media/se
     "factory_media_cancel_job",
     "factory_media_cancel_pull",
     "factory_media_create_job",
+    "factory_media_create_runtime",
     "factory_media_delete_model",
     "factory_media_delete_template",
     "factory_media_pull_model",
@@ -218,7 +223,7 @@ test("§2.5(4): none of the factory files reads channel-scope state (agent-sessi
   }
 });
 
-test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.22.0 since BL-134), separate from the channel agents' version", async () => {
+test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.23.0 since BL-200), separate from the channel agents' version", async () => {
   // BL-153 (FO-REQ-0008): reviewRejected, split waiting counts and overridesValidator are additive -> a minor version.
   // BL-155 (FO-REQ-0007, CUDA_HOSTS_PLAN.md "Contract"): the jobs' errorCode, the error media_gpu_host_incompatible and the
   // stopReason "all jobs failed (release when done)" are additive -> 1.7.0, as the plan states.
@@ -238,7 +243,8 @@ test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.22.0 
   // and optional videoNumber fields, additive -> 1.20.0 (1.19.0 = BL-193).
   // BL-180 (owner msg 2902): the three Veo 3.1 previews leave the Gemini catalog (a Veo create is refused) -> 1.21.0.
   // BL-134 (FO-REQ-0028): gated Hugging Face pulls, three hf_* errors, licence fields and settings.hfToken (additive) -> 1.22.0.
-  assert.equal(FACTORY_API_VERSION, "1.22.0");
+  // BL-200 (FO-REQ-0029, ADR 0043): pod runtime profiles -- four tools (list, get, list ComfyUI releases, create) -> 1.23.0.
+  assert.equal(FACTORY_API_VERSION, "1.23.0");
   const agentOperations = await readFile("src/lib/agent-operations/contracts.ts", "utf8");
   assert.equal(agentOperations.includes("FACTORY_API_VERSION"), false);
 });

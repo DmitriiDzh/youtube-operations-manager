@@ -19,7 +19,7 @@ async function listFiles(dir: string): Promise<string[]> {
 
 // BL-132: the Hugging Face Hub API joins the gateway (the pull pod's own `hf download` runs on RunPod, not here).
 // BL-174: Google's Gemini API (`gemini-api.ts`) too -- AC-GM-14.
-const HOST_PATTERN = /(api|rest)\.runpod\.io|s3api-[a-z0-9-]+\.runpod\.io|proxy\.runpod\.net|huggingface\.co\/api|generativelanguage\.googleapis\.com/;
+const HOST_PATTERN = /(api|rest)\.runpod\.io|s3api-[a-z0-9-]+\.runpod\.io|proxy\.runpod\.net|huggingface\.co\/api|generativelanguage\.googleapis\.com|api\.github\.com/;
 
 test("media-gateway inventory: no production file outside src/lib/media-gateway references a runpod.io host", async () => {
   const root = process.cwd();

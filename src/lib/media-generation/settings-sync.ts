@@ -30,6 +30,11 @@ export const SHARED_SETTING_FIELDS = [
   "factoryMaxUsdPerMonth",
   "ownerReleaseWhenDone",
   "minCudaVersion",
+  // BL-200 (ADR 0043): the active pod runtime and the owner's limits on runtimes, the same on every computer (one volume).
+  "activeRuntimeId",
+  "factoryMayActivateRuntime",
+  "runtimeSourceAllowlist",
+  "runtimeTestMaxUsd",
 ] as const satisfies readonly (keyof MediaSettings)[];
 export type SharedSettingField = (typeof SHARED_SETTING_FIELDS)[number];
 

@@ -79,6 +79,11 @@ function createToolDeps(): FactoryToolDeps {
         // BL-134 (FO-REQ-0028 E): whether a Hugging Face token is stored and readable here -- never the value.
         return { settings: { ...settings, hfToken: hf.state === "set" ? ("set" as const) : ("not set" as const) } };
       },
+      // BL-200: pod runtime profiles (every write recorded with actor `factory`).
+      listRuntimes: async () => createMediaGenerationCore().listRuntimes(),
+      getRuntime: async ({ runtimeId }) => ({ runtime: await createMediaGenerationCore().getRuntime(runtimeId) }),
+      listComfyReleases: async () => createMediaGenerationCore().listComfyReleases(),
+      createRuntime: async (input) => createMediaGenerationCore().createRuntime(input, { actor: "factory" }),
       listTemplates: async () => {
         const core = createMediaGenerationCore();
         const [templates, lastSync, onVolume] = await Promise.all([

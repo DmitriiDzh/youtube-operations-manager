@@ -88,6 +88,11 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
       deleteTemplate: async (input) => (mediaCalls.push(`deleteTemplate:${input.templateId}`), { deleted: true }),
       adoptTemplate: async (input) => (mediaCalls.push(`adoptTemplate:${input.templateId}>${input.newTemplateId}`), { status: "pending" }),
       getSettings: async () => (mediaCalls.push("getSettings"), { settings: {} }),
+      // BL-200: pod runtime profiles.
+      listRuntimes: async () => (mediaCalls.push("listRuntimes"), { runtimes: [], activeRuntimeId: null }),
+      getRuntime: async (input) => (mediaCalls.push(`getRuntime:${input.runtimeId}`), { runtime: { runtimeId: input.runtimeId } }),
+      listComfyReleases: async () => (mediaCalls.push("listComfyReleases"), { releases: [] }),
+      createRuntime: async (input) => (mediaCalls.push(`createRuntime:${String(input.runtimeId)}`), { runtimeId: input.runtimeId }),
     },
     // BL-143: the plans core is a fake that records what reached it.
     plans: {
@@ -295,15 +300,19 @@ test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exact
     "factory_media_cancel_pull",
     "factory_media_capacity_log",
     "factory_media_create_job",
+    "factory_media_create_runtime",
     "factory_media_delete_model",
     "factory_media_delete_template",
     "factory_media_get_gpu_availability",
     "factory_media_get_job",
     "factory_media_get_pull",
+    "factory_media_get_runtime",
     "factory_media_get_session",
     "factory_media_get_settings",
+    "factory_media_list_comfy_releases",
     "factory_media_list_gpu_availability_log",
     "factory_media_list_models",
+    "factory_media_list_runtimes",
     "factory_media_list_templates",
     "factory_media_pull_model",
     "factory_media_start_session",
@@ -368,14 +377,14 @@ test("AC-FO-07: a channel tool name is not callable on the factory endpoint", as
 // BL-194 (VIDEO_COST_PLAN.md §2 stage 1): 1.20.0 and the two video tools, last (declaration order); factory_video_create a write.
 // BL-180: 1.21.0 (the Veo 3.1 previews leave the Gemini catalog; no tool is added or removed). BL-134: 1.22.0 (gated HF pulls;
 // no tool is added or removed).
-test("factory_get_capabilities reports the factory API version 1.22.0 (BL-134), READ and WRITE, the tool list and the write tools", async () => {
+test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), READ and WRITE, the tool list and the write tools", async () => {
   const { endpoint, tokenServices } = setup();
   const { token } = await tokenServices.issueToken({});
   const result = await toolResult(await endpoint.handle(rpc(call("factory_get_capabilities"), withToken(token))));
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.22.0",
+    factoryApiVersion: "1.23.0",
     tools: [
       "factory_get_capabilities",
       "factory_list_logical_paths",
@@ -392,6 +401,10 @@ test("factory_get_capabilities reports the factory API version 1.22.0 (BL-134), 
       "factory_media_delete_template",
       "factory_media_adopt_template",
       "factory_media_get_settings",
+      "factory_media_list_runtimes",
+      "factory_media_get_runtime",
+      "factory_media_list_comfy_releases",
+      "factory_media_create_runtime",
       "factory_media_start_session",
       "factory_media_get_session",
       "factory_media_stop_session",
@@ -440,6 +453,7 @@ test("factory_get_capabilities reports the factory API version 1.22.0 (BL-134), 
       "factory_media_sync_templates",
       "factory_media_delete_template",
       "factory_media_adopt_template",
+      "factory_media_create_runtime",
       "factory_media_start_session",
       "factory_media_stop_session",
       "factory_media_create_job",
