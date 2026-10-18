@@ -943,7 +943,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Охват:** после неудачной автоматической попытки активный канал ждёт `FAILED_ACTIVE_RETRY_AFTER_MINUTES` (60 мин), фоновый — 6 ч. `nextAutoCheckAt` в статусе учитывает эту паузу.
 - **Не входит:** окно видео (`videos.list` перед правкой) и четыре нехранимых разреза Аудитории. Схема не менялась.
 
-### 2.9au Несколько наборов изменений одним пакетом, вкладка «Записаны в YouTube» (BL-198, `docs/roadmap/plans/SEND_TOGETHER_PLAN.md`, ADR 0020 Amendment 1) — **IMPLEMENTED** на `feature/bl-198-send-together` (не влито в `dev`)
+### 2.9au Несколько наборов изменений одним пакетом, вкладка «Записаны в YouTube» (BL-198, `docs/roadmap/plans/SEND_TOGETHER_PLAN.md`, ADR 0020 Amendment 1) — **IMPLEMENTED** (влито в `dev` 2026-10-18, de4c8596)
 
 - **Сервис:** `src/lib/batches/send-approved.ts`.
   - `planSendTogether` только читает.
