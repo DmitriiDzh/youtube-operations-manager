@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { RunpodS3Client } from "@/lib/media-gateway";
 import { DomainError, RUNTIME_ID_PATTERN, type MediaSettings } from "./contracts";
@@ -82,6 +83,9 @@ const testFileSchema = z
           missing: z.array(z.string()),
           /** FO-REQ-0030: the graph's inputs against the runtime's node definitions (absent in tests before it). */
           invalid: z.array(z.object({ nodeId: z.string(), classType: z.string(), input: z.string(), problem: z.enum(["required_missing", "unknown_input", "bad_value", "out_of_range"]), allowed: z.unknown().optional() }).strict()).optional(),
+          /** FO-REQ-0030 review: the graph that was checked (sha256 of its JSON) -- a template reinstalled with the same version but
+           * another graph is not judged by this result. */
+          graphSha256: z.string().optional(),
         })
         .strict()
     ),
@@ -157,6 +161,11 @@ export function assertActiveRuntimeUnchanged(update: unknown, current: string | 
   }
 }
 
+/** The sha256 of a template's graph JSON, as the runtime test recorded it. */
+export function graphSha256(workflowJson: string): string {
+  return createHash("sha256").update(workflowJson).digest("hex");
+}
+
 export type TestedRuntime = { nodes: Set<string>; comfyVersion: string | null; templates: RuntimeTestResult["templates"] };
 
 /**
@@ -165,7 +174,8 @@ export type TestedRuntime = { nodes: Set<string>; comfyVersion: string | null; t
  */
 export function templateRuntimeProblems(template: { templateId: string; version: number; workflowJson: string }, tested: TestedRuntime): { missing: string[]; invalid: NonNullable<RuntimeTestResult["templates"][number]["invalid"]> } {
   const missing = missingNodeTypes(template.workflowJson, tested.nodes);
-  const result = tested.templates.find((t) => t.templateId === template.templateId && t.version === template.version);
+  const graph = graphSha256(template.workflowJson);
+  const result = tested.templates.find((t) => t.templateId === template.templateId && t.version === template.version && (t.graphSha256 === undefined || t.graphSha256 === graph));
   const invalid = (result?.invalid ?? []).filter((i) => i.problem !== "unknown_input");
   return { missing, invalid };
 }

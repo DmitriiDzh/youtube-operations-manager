@@ -4,10 +4,12 @@
 //   required_missing  an input in the node's `input.required` that the graph does not set (by value or link) and no template
 //                     parameter fills at job time
 //   unknown_input     an input the node does not declare (required / optional / hidden) -- a warning: ComfyUI ignores it
-//   bad_value         a fixed value outside a list (COMBO), or of the wrong type for INT / FLOAT / BOOLEAN
-//   out_of_range      an INT / FLOAT fixed value outside the declared min / max
-// Linked inputs and inputs a parameter fills are never value-checked. A list of model or media files is not checked here (the
-// pod's list may not yet show the volume; `modelsMissing` covers model files).
+//   bad_value         a fixed value outside a list (COMBO), or an INT / FLOAT value ComfyUI cannot convert to a number
+//   out_of_range      an INT / FLOAT value (after ComfyUI's own int()/float() conversion) outside the declared min / max
+// Never stricter than ComfyUI's own `validate_inputs` (review, owner msg 3044: our checks must not get in the Operator's way):
+// "20" is a valid INT (converted), any BOOLEAN value is accepted (bool()), a V3 dynamic input set as sub-keys (`images.image0`)
+// counts as set. Linked inputs and inputs a parameter fills are never value-checked. A list of files (models, media, fonts, folders)
+// is not checked: the pod's list may not yet show the volume (`modelsMissing` covers model files).
 // `/object_info` shape (ComfyUI server routes): { <class_type>: { input: { required: { name: [TYPE | [values], {opts}] },
 // optional: {...}, hidden: {...} }, ... } }; newer builds also write a list as ["COMBO", { options: [values] }].
 // ---------------------------------------------------------------------------
@@ -25,7 +27,16 @@ export type GraphInputIssue = {
 /** Only the input definitions of each node type -- what the check needs from `/object_info`. */
 export type NodeInputInfo = Record<string, { required: Record<string, unknown>; optional: Record<string, unknown>; hidden: Record<string, unknown> }>;
 
-const FILE_VALUE = /\.(safetensors|ckpt|pt|pth|bin|gguf|sft|onnx|json|yaml|png|jpe?g|webp|gif|mp4|webm|mov|wav|mp3|flac|ogg)$/i;
+const FILE_VALUE = /\.(safetensors|ckpt|pt|pth|bin|gguf|sft|onnx|json|yaml|yml|txt|csv|cube|ttf|otf|png|jpe?g|webp|gif|bmp|tiff?|mp4|webm|mov|mkv|avi|wav|mp3|flac|ogg|m4a|opus|aac)$/i;
+/** LoadImage-style annotations ComfyUI accepts on a file name: `x.png [output]`. */
+const FILE_ANNOTATION = / \[(input|output|temp)\]$/;
+
+/** A file-like value: a known extension (after an annotation), or a path. */
+function looksLikeFile(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const name = value.replace(FILE_ANNOTATION, "");
+  return FILE_VALUE.test(name) || name.includes("/") || name.includes("\\");
+}
 const MAX_ALLOWED_SHOWN = 50;
 
 function record(value: unknown): Record<string, unknown> {
@@ -55,20 +66,23 @@ function valueProblem(spec: unknown, value: unknown): { problem: GraphInputProbl
   const list = listOf(spec);
   if (list) {
     if (list.includes(value)) return null;
-    // A file list (models, inputs) is the pod's view of its disk, not a contract of the node.
-    if ((typeof value === "string" && FILE_VALUE.test(value)) || list.some((v) => typeof v === "string" && FILE_VALUE.test(v))) return null;
+    // A file list (models, inputs, folders) is the pod's view of its disk, not a contract of the node; an empty list is one too.
+    if (list.length === 0 || looksLikeFile(value) || list.some(looksLikeFile)) return null;
     return { problem: "bad_value", allowed: list.slice(0, MAX_ALLOWED_SHOWN) };
   }
   const [type, rawOpts] = spec;
   const opts = record(rawOpts);
   if (type === "INT" || type === "FLOAT") {
-    if (typeof value !== "number" || !Number.isFinite(value) || (type === "INT" && !Number.isInteger(value))) return { problem: "bad_value", allowed: type };
+    // As ComfyUI: int(val) / float(val) -- a numeric string or a float for an INT is converted, not refused.
+    const number = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : NaN;
+    if (!Number.isFinite(number)) return { problem: "bad_value", allowed: type };
+    const converted = type === "INT" ? Math.trunc(number) : number;
     const min = typeof opts.min === "number" ? opts.min : null;
     const max = typeof opts.max === "number" ? opts.max : null;
-    if ((min !== null && value < min) || (max !== null && value > max)) return { problem: "out_of_range", allowed: { min, max } };
+    if ((min !== null && converted < min) || (max !== null && converted > max)) return { problem: "out_of_range", allowed: { min, max } };
     return null;
   }
-  if (type === "BOOLEAN" && typeof value !== "boolean") return { problem: "bad_value", allowed: "BOOLEAN" };
+  // BOOLEAN: ComfyUI takes bool(val) of anything -- never refused.
   return null;
 }
 
@@ -91,15 +105,20 @@ export function checkGraphInputs(workflowJson: string, info: NodeInputInfo, para
     if (!classType || !def) continue;
     const inputs = record(node.inputs);
     const filled = (name: string) => parameterInputs.has(`${nodeId}.${name}`);
+    // A V3 dynamic input (Autogrow, DynamicCombo) is set in the graph as `<name>.<sub>` keys.
+    const hasSubKeys = (name: string) => Object.keys(inputs).some((key) => key.startsWith(`${name}.`));
     for (const name of Object.keys(def.required)) {
-      if (!(name in inputs) && !filled(name)) issues.push({ nodeId, classType, input: name, problem: "required_missing" });
+      if (!(name in inputs) && !filled(name) && !hasSubKeys(name)) issues.push({ nodeId, classType, input: name, problem: "required_missing" });
     }
     for (const [name, value] of Object.entries(inputs)) {
       const spec = def.required[name] ?? def.optional[name];
       if (spec === undefined) {
-        if (!(name in def.hidden)) issues.push({ nodeId, classType, input: name, problem: "unknown_input" });
+        const parent = name.includes(".") ? name.slice(0, name.indexOf(".")) : null;
+        const declared = parent !== null && (parent in def.required || parent in def.optional);
+        if (!(name in def.hidden) && !declared) issues.push({ nodeId, classType, input: name, problem: "unknown_input" });
         continue;
       }
+      if (value === null) continue; // an optional input left empty
       if (Array.isArray(value) || filled(name)) continue; // a link, or a value the job sets
       const problem = valueProblem(spec, value);
       if (problem) issues.push({ nodeId, classType, input: name, ...problem });

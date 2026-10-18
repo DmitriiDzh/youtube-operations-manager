@@ -2,7 +2,7 @@ import { DomainError, MEDIA_SESSION_TERMINAL_STATUSES, RUNTIME_ID_PATTERN, type 
 import type { MediaControlEvent, PullActor } from "./models";
 import type { RuntimeBuildJob } from "./runtime-builds";
 import { blockingIssues, checkGraphInputs, compactNodeInfo } from "./runtime-graph-check";
-import { missingNodeTypes, type RuntimeTestResult } from "./runtimes";
+import { graphSha256, missingNodeTypes, type RuntimeTestResult } from "./runtimes";
 
 // ---------------------------------------------------------------------------
 // BL-200 stage 3 (ADR 0043, POD_RUNTIMES_PLAN.md §5, AC-RT-05/09): testing a pod runtime profile. A test is asynchronous and is
@@ -148,7 +148,7 @@ export function createRuntimeTestServices(deps: RuntimeTestDeps) {
       const missing = missingNodeTypes(t.workflowJson, nodes);
       // FO-REQ-0030: the graph's inputs against this runtime's node definitions; only blocking problems fail the template.
       const invalid = checkGraphInputs(t.workflowJson, nodeInfo, new Set(t.parameterInputs ?? []));
-      return { templateId: t.templateId, version: t.version, ok: missing.length === 0 && blockingIssues(invalid).length === 0, missing, invalid };
+      return { templateId: t.templateId, version: t.version, ok: missing.length === 0 && blockingIssues(invalid).length === 0, missing, invalid, graphSha256: graphSha256(t.workflowJson) };
     });
     const bootSeconds = session.startedAt && session.readyAt ? Math.round((Date.parse(session.readyAt) - Date.parse(session.startedAt)) / 1000) : null;
     const stopped = await stopQuietly(job);

@@ -2297,3 +2297,14 @@ test("FO-REQ-0030: a template version whose test found a missing required input 
     assert.equal(job.status, "submitted");
   }
 });
+
+// FO-REQ-0030 review: a result recorded for another graph (the template reinstalled at the same version with a fix) does not refuse.
+test("FO-REQ-0030: a test result for a different graph of the same template version does not refuse the job", async () => {
+  const nodes = new Set(["CheckpointLoaderSimple", "CLIPTextEncode", "KSampler", "SaveImage"]);
+  const holder = { templateId: "" };
+  const f = fixture({ runtimeId: "comfy-0410-flux3", runtimeTested: async () => ({ nodes, comfyVersion: "0.41.0", templates: [{ templateId: holder.templateId, version: 1, ok: false, missing: [], graphSha256: "0".repeat(64), invalid: [{ nodeId: "3", classType: "KSampler", input: "denoise", problem: "required_missing" as const }] }] }) });
+  const t = await importDefault(f.services);
+  holder.templateId = t.templateId;
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "a cat" }, createdBy: "agent" });
+  assert.equal(job.status, "submitted");
+});

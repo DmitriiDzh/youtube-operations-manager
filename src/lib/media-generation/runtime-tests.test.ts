@@ -4,7 +4,7 @@ import { DEFAULT_MEDIA_SETTINGS, isDomainError, type MediaSession, type MediaSet
 import type { MediaControlEvent } from "./models";
 import type { RuntimeBuildJob } from "./runtime-builds";
 import { createRuntimeTestServices, runtimeTestMinutes, type RuntimeTestTemplate } from "./runtime-tests";
-import { missingNodeTypes, requiredNodeTypes, type RuntimeTestResult } from "./runtimes";
+import { graphSha256, missingNodeTypes, requiredNodeTypes, type RuntimeTestResult } from "./runtimes";
 
 // BL-200 stage 3 (POD_RUNTIMES_PLAN.md §5, AC-RT-05 and AC-RT-09; ADR 0043). AC-RT-05: the test writes the per-template result; a
 // template using a class_type absent from the node list fails with that type. AC-RT-09: the test's GPU minutes never exceed
@@ -116,7 +116,7 @@ test("AC-RT-05/09: a built runtime -- a GPU session capped at runtimeTestMaxUsd,
   assert.deepEqual(result.templates, [
     { templateId: "p1-flux-schnell", version: 2, ok: true, missing: [], invalid: [] },
     { templateId: "p3-flux3-klein-edit", version: 1, ok: true, missing: [], invalid: [] },
-  ]);
+  ].map((t) => ({ ...t, graphSha256: graphSha256(TEMPLATES.find((x) => x.templateId === t.templateId)!.workflowJson) })));
   assert.ok(h.events.some((e) => e.action === "runtime_tested" && e.actor === "factory"));
 });
 
@@ -126,7 +126,9 @@ test("AC-RT-05: a template using a node type the runtime lacks fails with that t
   h.setSession("running");
   const [done] = await h.services.pollRuntimeTests();
   assert.equal(done.status, "failed");
-  assert.deepEqual(h.written[0].templates.find((t) => t.templateId === "p3-flux3-klein-edit"), { templateId: "p3-flux3-klein-edit", version: 1, ok: false, missing: ["Flux3LayoutPrompt", "ReferenceMultiLatent"], invalid: [] });
+  const { graphSha256: _hash, ...p3 } = h.written[0].templates.find((t) => t.templateId === "p3-flux3-klein-edit")!;
+  void _hash;
+  assert.deepEqual(p3, { templateId: "p3-flux3-klein-edit", version: 1, ok: false, missing: ["Flux3LayoutPrompt", "ReferenceMultiLatent"], invalid: [] });
   assert.equal(h.written[0].ok, false);
 });
 
@@ -215,7 +217,8 @@ test("FO-REQ-0030: the test reports each template's input problems; a required i
   h.setSession("running");
   const [done] = await h.services.pollRuntimeTests();
   assert.equal(done.status, "failed");
-  const [v2, v3] = h.written[0].templates;
+  const [{ graphSha256: _h, ...v2 }, v3] = h.written[0].templates;
+  void _h;
   assert.deepEqual(v2, { templateId: "p3-flux3-klein-edit", version: 2, ok: false, missing: [], invalid: [{ nodeId: "12", classType: "ImageScaleToTotalPixels", input: "resolution_steps", problem: "required_missing" }] });
   assert.equal(v3.ok, true, "an unknown input is a warning only");
   assert.deepEqual(v3.invalid, [{ nodeId: "9", classType: "SaveImage", input: "legacy_flag", problem: "unknown_input" }]);
