@@ -4466,5 +4466,14 @@ Plan: `docs/roadmap/plans/VIDEO_COST_PLAN.md` §2 stages 2-4 (criteria 3-9). Sch
   - Linked, parameter-filled and file-list inputs are not value-checked.
   - `templateRuntimeProblems` / `runtimeIncompatibleError` (`runtimes.ts`) are the single check used by both the job create and
     the factory start, per template version.
+- **Stuck container (BL-202, FO-REQ-0031, schema v98).** In the start loop (`sessions.ts`), a placed pod whose container reports no
+  uptime within `containerStartMinutes` (shared setting, default 3) of placement is terminated at that limit. The attempt is logged
+  `container_stuck` (with RunPod's `machineId` when the answer has one), and the session is placed again (`{ replace }`, as a
+  BL-155 incompatible host) up to `containerStuckRetries` (default 1); after that the start fails with `media_container_stuck`.
+  - The 8-min start budget stays for ComfyUI's boot.
+  - The row carries `start_stage` / `stage_since` (placed → pulling_image → comfy_booting → ready), and the `placed` capacity
+    entry gets `container_seconds` / `boot_seconds` once ready.
+  - Runtime build pods use the same limit and retry count (`runtime-builds.ts`).
+  - RunPod's REST API cannot exclude a machine, so "avoid a bad host" (request item 3) is not done; a retry may land anywhere.
 - **Not done.** Our own Docker image; pruning old runtimes from the volume (RISK-132); running a template's job in the test.
 

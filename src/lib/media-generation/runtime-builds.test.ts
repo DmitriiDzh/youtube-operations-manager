@@ -15,15 +15,16 @@ const RID = "comfy-0410-flux3";
 const SETTINGS: Partial<MediaSettings> = { datacenterId: "EU-RO-1", networkVolumeId: "vol1", templateId: "tpl1", gpuTypeId: "NVIDIA GeForce RTX 4090", gpuFallbackIds: ["NVIDIA RTX A5000", "NVIDIA L40S"] };
 const gpu = (id: string, price: number) => ({ id, displayName: id, memoryInGb: 24, secureCloud: true, communityCloud: false, onDemandPricePerHr: price, spotPricePerHr: null, estimatedAvailability: "High", dataCenters: [{ id: "EU-RO-1", countryCode: "RO", estimatedAvailability: "High" }], cudaVersions: [] });
 
-function harness(options: { settings?: Partial<MediaSettings>; templateRaw?: Record<string, unknown>; scripts?: Record<string, string>; noCapacity?: string[] } = {}) {
+function harness(options: { settings?: Partial<MediaSettings>; templateRaw?: Record<string, unknown>; scripts?: Record<string, string>; noCapacity?: string[]; stuckPods?: number } = {}) {
   let now = new Date("2026-10-18T15:00:00Z");
   const objects = new Map<string, string>();
   objects.set(runtimeKey(RID, "runtime.json"), "{}");
   const events: MediaControlEvent[] = [];
   const created: CreatePodInput[] = [];
-  const pods = new Map<string, { id: string; name: string; status: string }>();
+  const pods = new Map<string, { id: string; name: string; status: string; containerUptimeSec: number | null }>();
   const terminated: string[] = [];
   let jobsJson: string | null = null;
+  let ids = 0;
   const s3 = {
     async getObjectText(key: string) {
       return objects.get(key) ?? null;
@@ -51,7 +52,8 @@ function harness(options: { settings?: Partial<MediaSettings>; templateRaw?: Rec
         const { DomainError } = await import("./contracts");
         throw new DomainError({ code: "runpod_api_unavailable", message: "RunPod API returned HTTP 400: This GPU and data center combination could not be placed.", details: { status: 400 } });
       }
-      const pod = { id: `pod${created.length}`, name: input.name, status: "RUNNING" };
+      // A running container reports its uptime; FO-REQ-0031: the first `stuckPods` pods never start theirs.
+      const pod = { id: `pod${created.length}`, name: input.name, status: "RUNNING", containerUptimeSec: created.length <= (options.stuckPods ?? 0) ? null : 5 };
       pods.set(pod.id, pod);
       return pod;
     },
@@ -77,7 +79,8 @@ function harness(options: { settings?: Partial<MediaSettings>; templateRaw?: Rec
     base: { getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, ...SETTINGS, ...options.settings }), resolveRunpodClient: async () => client, s3: async () => s3 },
     readPodScript: async (name) => scripts[name],
     events: { record: async (e) => void events.push(e) },
-    generateId: () => "abcdef12-0000-0000-0000-000000000000",
+    // The first id is fixed (the pod name test); a retry gets its own.
+    generateId: () => (ids++ === 0 ? "abcdef12-0000-0000-0000-000000000000" : `retry${ids}0-0000-0000-0000-000000000000`),
     clock: { now: () => now },
     sleep: async () => undefined,
   });
@@ -228,4 +231,22 @@ test("probe 2: no capacity on the cheapest GPU moves the build to the next cheap
   await assert.rejects(none.services.startRuntimeBuild({ runtimeId: RID }), (e: unknown) => isDomainError(e) && e.code === "media_no_capacity");
   assert.equal(none.pods.size, 0);
   assert.equal((await none.services.listRuntimeBuilds())[0].status, "failed");
+});
+
+// FO-REQ-0031: a build pod whose container has not started within containerStartMinutes is given up (terminated, the build failed
+// container_stuck) and the build is started again on a new pod, up to containerStuckRetries times.
+test("FO-REQ-0031: a stuck build container is given up at the limit and the build is started again once; a second stuck one is not retried", async () => {
+  const h = harness({ stuckPods: 2, settings: { containerStartMinutes: 3, containerStuckRetries: 1 } });
+  await h.services.startRuntimeBuild({ runtimeId: RID });
+  h.advance(2 * 60_000);
+  assert.equal((await h.services.pollRuntimeBuilds()).find((j) => j.podId === "pod1")?.status, "running", "under the limit");
+  h.advance(60_000);
+  let jobs = await h.services.pollRuntimeBuilds();
+  assert.match(jobs.find((j) => j.podId === "pod1")?.error ?? "", /container_stuck/);
+  assert.deepEqual(h.terminated, ["pod1"]);
+  assert.equal(jobs.find((j) => j.podId === "pod2")?.status, "running", "started again on a new pod");
+  h.advance(3 * 60_000);
+  jobs = await h.services.pollRuntimeBuilds();
+  assert.equal(jobs.find((j) => j.podId === "pod2")?.status, "failed");
+  assert.equal(h.created.length, 2, "no third pod: one retry only");
 });

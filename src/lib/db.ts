@@ -839,6 +839,9 @@ export const mediaSessions = sqliteTable(
     // ComfyUI version its /system_stats reported once ready.
     runtimeId: text("runtime_id"),
     comfyVersion: text("comfy_version"),
+    // Schema v98 (FO-REQ-0031): where the start is (placed / pulling_image / comfy_booting / ready) and since when.
+    startStage: text("start_stage"),
+    stageSince: integer("stage_since", { mode: "timestamp" }),
   },
   (table) => [index("media_sessions_open_slot_idx").on(table.openSlot), index("media_sessions_status_idx").on(table.status)]
 );
@@ -965,6 +968,9 @@ export const mediaCapacityAttempts = sqliteTable(
     detail: text("detail"),
     /** Schema v71 (BL-159): on a `placed` entry, the host's CUDA version once known. */
     hostCudaVersion: text("host_cuda_version"),
+    /** Schema v98 (FO-REQ-0031): on a `placed` entry that got ready -- placement to running container, and container to ComfyUI. */
+    containerSeconds: integer("container_seconds"),
+    bootSeconds: integer("boot_seconds"),
   },
   (table) => [index("media_capacity_attempts_at_idx").on(table.at)]
 );
@@ -5211,6 +5217,25 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       "media_sessions.runtime_id/comfy_version -- BL-200 (FO-REQ-0029, ADR 0043): the pod runtime profile a session runs (null = the image's built-in ComfyUI) and the ComfyUI version its /system_stats reported. Additive nullable columns, device-local",
     apply: async (client) => {
       for (const statement of ["ALTER TABLE media_sessions ADD COLUMN runtime_id TEXT", "ALTER TABLE media_sessions ADD COLUMN comfy_version TEXT"]) {
+        try {
+          await client.execute(statement);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
+    },
+  },
+  {
+    version: 98,
+    description:
+      "media_sessions.start_stage/stage_since + media_capacity_attempts.container_seconds/boot_seconds -- FO-REQ-0031: a start's stage while it starts, and how long the container start and the ComfyUI boot took per placement. Additive nullable columns, device-local",
+    apply: async (client) => {
+      for (const statement of [
+        "ALTER TABLE media_sessions ADD COLUMN start_stage TEXT",
+        "ALTER TABLE media_sessions ADD COLUMN stage_since INTEGER",
+        "ALTER TABLE media_capacity_attempts ADD COLUMN container_seconds INTEGER",
+        "ALTER TABLE media_capacity_attempts ADD COLUMN boot_seconds INTEGER",
+      ]) {
         try {
           await client.execute(statement);
         } catch (error) {
@@ -10106,6 +10131,11 @@ export async function insertMediaCapacityAttempt(
 }
 
 /** BL-159: the host's CUDA version, once the host check reads it, on that placement's own capacity-log row. */
+/** FO-REQ-0031: how long a placement's container start and ComfyUI boot took, on its `placed` entry. */
+export async function setMediaCapacityAttemptTimings(id: number, timings: { containerSeconds: number | null; bootSeconds: number | null }, database: AppDb = db): Promise<void> {
+  await database.update(mediaCapacityAttempts).set(timings).where(eq(mediaCapacityAttempts.id, id));
+}
+
 export async function setMediaCapacityAttemptHostCuda(id: number, hostCudaVersion: string, database: AppDb = db): Promise<void> {
   await database.update(mediaCapacityAttempts).set({ hostCudaVersion }).where(eq(mediaCapacityAttempts.id, id));
 }

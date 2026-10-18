@@ -23,6 +23,8 @@ export const SHARED_SETTING_FIELDS = [
   "gpuMaxPricePerHr",
   "capacityRetrySeconds",
   "capacityWaitMinutes",
+  "containerStartMinutes",
+  "containerStuckRetries",
   "factorySessionsEnabled",
   "factoryMaxUsdPerSession",
   "factoryMaxMinutesPerSession",

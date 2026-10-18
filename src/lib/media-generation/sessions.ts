@@ -1,6 +1,7 @@
 import type { EncryptedPayload } from "@/lib/shared-crypto";
 import type { ComfyUiClient, RunpodApiClient, RunpodPod } from "@/lib/media-gateway";
 import {
+  type MediaCapacityResult,
   COMFY_PROXY_PORT,
   DomainError,
   MEDIA_CUDA_VERSIONS,
@@ -78,6 +79,9 @@ export type StoredSessionRow = {
   // Schema v97 (BL-200); absent on rows written before it.
   runtimeId?: string | null;
   comfyVersion?: string | null;
+  // Schema v98 (FO-REQ-0031); absent on rows written before it.
+  startStage?: string | null;
+  stageSince?: Date | null;
   /** When this app last saw the pod alive (schema v54): the billable window of a pod found already gone closes here. */
   lastSeenAliveAt: Date | null;
   /** When this app's terminate DELETE went through (schema v57): a retried stop that finds the pod gone bills to here. */
@@ -147,7 +151,9 @@ export type SessionServiceDependencies = {
   /** BL-133: the capacity log -- one call per createPod attempt (best effort: a failed record never fails a start). */
   capacityLog?: {
     /** Returns the entry's id when the log keeps one (BL-159: the placement's own row gets the host's CUDA later). */
-    record(attempt: { at: Date; sessionId: string; datacenterId: string | null; gpuTypeId: string; pricePerHr: number | null; result: "placed" | "no_capacity" | "error"; detail: string | null; hostCudaVersion?: string | null }): Promise<number | void>;
+    record(attempt: { at: Date; sessionId: string; datacenterId: string | null; gpuTypeId: string; pricePerHr: number | null; result: MediaCapacityResult; detail: string | null; hostCudaVersion?: string | null }): Promise<number | void>;
+    /** FO-REQ-0031: how long the placement's container start and ComfyUI boot took, once ready. */
+    setTimings?(attemptId: number, timings: { containerSeconds: number | null; bootSeconds: number | null }): Promise<void>;
     /** BL-159: the host's CUDA version, once the host check reads it, on that placement's `placed` entry. */
     setHostCuda?(attemptId: number, hostCudaVersion: string): Promise<void>;
   };
@@ -254,6 +260,8 @@ export function toPublicSession(row: StoredSessionRow, now: Date): MediaSession 
     hostCudaVersion: row.hostCudaVersion ?? null,
     runtimeId: row.runtimeId ?? null,
     comfyVersion: row.comfyVersion ?? null,
+    startStage: (row.startStage as MediaSession["startStage"]) ?? null,
+    stageSince: iso(row.stageSince ?? null),
     capacity:
       row.status === "waiting_capacity" || (row.capacityAttempts ?? 0) > 0
         ? { attempts: row.capacityAttempts ?? 0, nextAttemptAt: iso(row.capacityNextAttemptAt ?? null), waitUntil: iso(row.capacityWaitUntil ?? null) }
@@ -705,7 +713,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
   }
 
   /** BL-133: one capacity-log row (best effort). */
-  async function recordAttempt(sessionId: string, settings: MediaSettings, candidate: GpuCandidate, result: "placed" | "no_capacity" | "error", detail: string | null, hostCudaVersion: string | null = null): Promise<number | null> {
+  async function recordAttempt(sessionId: string, settings: MediaSettings, candidate: GpuCandidate, result: MediaCapacityResult, detail: string | null, hostCudaVersion: string | null = null): Promise<number | null> {
     try {
       const id = await deps.capacityLog?.record({ at: deps.clock.now(), sessionId, datacenterId: settings.datacenterId, gpuTypeId: candidate.gpuTypeId, pricePerHr: candidate.pricePerHr, result, detail: detail ? detail.slice(0, 500) : null, hostCudaVersion });
       return typeof id === "number" ? id : null;
@@ -779,6 +787,8 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     const retired = new Set<string>();
     let lastTerminatedAt: Date | null = null;
     let lastMismatch: string | null = null;
+    /** FO-REQ-0031: stuck-container re-placements used by this start (bounded by `containerStuckRetries`). */
+    let stuckRetries = 0;
 
     const placeOnce = async (row: StoredSessionRow, placement: number): Promise<MediaSession | { replace: string }> => {
       let pod: RunpodPod | null = null;
@@ -905,7 +915,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
           return { confirmed: false, lastStatus: `unknown (${error instanceof Error ? error.message : String(error)})`, alreadyGone: false };
         }
       };
-      const abortStart = async (lastDetail: string, code: "media_session_start_failed" | "media_gpu_host_incompatible" = "media_session_start_failed", alreadyTerminated?: TerminateOutcome): Promise<MediaSession> => {
+      const abortStart = async (lastDetail: string, code: "media_session_start_failed" | "media_gpu_host_incompatible" | "media_container_stuck" = "media_session_start_failed", alreadyTerminated?: TerminateOutcome): Promise<MediaSession> => {
         onStage("Terminating the pod");
         const terminated = alreadyTerminated ?? (await terminateStartPod());
         const prefix = code === "media_session_start_failed" ? "start failed" : code;
@@ -951,6 +961,33 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         if (placement >= MAX_EXTRA_PLACEMENTS) return abortStart(`${detail} (${placement + 1} placements, no compatible host)`, "media_gpu_host_incompatible", terminated);
         return { replace: detail };
       };
+      /**
+       * FO-REQ-0031: the container never started within `containerStartMinutes` (a host without the image cached, or a faulty one):
+       * terminated at the limit, logged `container_stuck`, and placed again up to `containerStuckRetries` times. RunPod's REST API
+       * cannot exclude a machine, so the next placement may land anywhere; the dead pod is never adopted again.
+       */
+      const containerStuck = async (detail: string): Promise<MediaSession | { replace: string }> => {
+        log(`[media] session ${sessionId}: pod ${pod.id} -- ${detail}; terminating it`);
+        onStage("Terminating the pod");
+        const terminated = await terminateStartPod();
+        const machine = typeof pod.raw.machineId === "string" ? ` (machine ${pod.raw.machineId})` : "";
+        await recordAttempt(sessionId, settings, used, "container_stuck", `${detail}${machine}`);
+        if (terminated.confirmed) {
+          retired.add(pod.id);
+          lastTerminatedAt = deps.clock.now();
+        }
+        if (!terminated.confirmed) return abortStart(detail, "media_container_stuck", terminated);
+        if (stuckRetries >= settings.containerStuckRetries) return abortStart(`${detail}; ${stuckRetries + 1} host(s) tried`, "media_container_stuck", terminated);
+        stuckRetries += 1;
+        return { replace: detail };
+      };
+      /** FO-REQ-0031: the start's stage on the row (best effort; a DB hiccup never aborts a start). */
+      let stage: MediaSession["startStage"] = null;
+      const setStage = async (next: NonNullable<MediaSession["startStage"]>): Promise<void> => {
+        if (stage === next) return;
+        stage = next;
+        await deps.store.transition(sessionId, ["starting"], { status: "starting", startStage: next, stageSince: deps.clock.now() }).catch(() => null);
+      };
 
       let comfyUiProxyUrl: string;
       let starting: StoredSessionRow | null;
@@ -972,7 +1009,10 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
           // BL-159 (AC-SC-01/02): the minimum this placement used, and the host's CUDA if the create answer named it.
           usedMinCudaVersion: minCudaVersion,
           hostCudaVersion: pod.cudaVersion ?? null,
+          startStage: "placed",
+          stageSince: placedAt,
         });
+        stage = "placed";
       } catch (error) {
         return abortStart(`could not record the pod: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -1024,6 +1064,10 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       // One RunPod 502 / 30 s timeout on getPod must not terminate a healthy, almost-ready pod (review round 17): a run of
       // consecutive failures is tolerated like the job poller's; the deadline still bounds the whole wait.
       let pollFailures = 0;
+      // FO-REQ-0031: the container must be running this long after placement at the latest; then only ComfyUI's boot is waited for.
+      const containerDeadline = placedAt.getTime() + settings.containerStartMinutes * 60_000;
+      let containerRunningAt: Date | null = null;
+      let stuck: string | null = null;
       const getPodTolerant = async (): Promise<{ ok: true; pod: RunpodPod | null } | { ok: false }> => {
         try {
           const current = await client.getPod(pod.id);
@@ -1095,10 +1139,19 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
             // (slice 0). Until then the honest stage is "downloading the image", and a timeout says the container never started.
             if (current.status === "RUNNING" && current.containerUptimeSec !== null) {
               phase = "comfy";
+              containerRunningAt = deps.clock.now();
+              await setStage("comfy_booting");
               onStage("Waiting for ComfyUI to answer");
-            } else if (current.status === "RUNNING") {
-              lastDetail = "the container never started on the host (image download or host problem)";
-              onStage("Downloading the image and starting the container");
+            } else {
+              if (current.status === "RUNNING") {
+                lastDetail = "the container never started on the host (image download or host problem)";
+                await setStage("pulling_image");
+                onStage("Downloading the image and starting the container");
+              }
+              if (deps.clock.now().getTime() >= containerDeadline) {
+                stuck = `container_stuck: the container did not start within ${settings.containerStartMinutes} min of placement (${current.status === "RUNNING" ? "image download or host problem" : `pod ${current.status}`})`;
+                break;
+              }
             }
           } else {
             // The pod can still die while ComfyUI boots (pod-start.sh failing, container ERROR): never wait the full budget for that.
@@ -1117,10 +1170,16 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
                 break;
               }
               const ready = deps.clock.now();
-              const running = await deps.store.transition(sessionId, ["starting"], { status: "running", readyAt: ready, lastActivityAt: ready, lastSeenAliveAt: ready, error: null, comfyVersion: comfyVersionOf(stats) });
+              const running = await deps.store.transition(sessionId, ["starting"], { status: "running", readyAt: ready, lastActivityAt: ready, lastSeenAliveAt: ready, error: null, comfyVersion: comfyVersionOf(stats), startStage: "ready", stageSince: ready });
               if (!running) {
                 lastDetail = `session was ${(await requireRow(sessionId)).status} when ComfyUI answered`;
                 break;
+              }
+              // FO-REQ-0031: how long this host took -- the container start, then ComfyUI's boot (best effort).
+              if (placedEntryId !== null && containerRunningAt) {
+                await deps.capacityLog
+                  ?.setTimings?.(placedEntryId, { containerSeconds: Math.round((containerRunningAt.getTime() - placedAt.getTime()) / 1000), bootSeconds: Math.round((ready.getTime() - containerRunningAt.getTime()) / 1000) })
+                  .catch(() => undefined);
               }
               return toPublicSession(running, ready);
             } catch (error) {
@@ -1139,6 +1198,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         return abortStart(`${error instanceof Error ? error.message : String(error)}`);
       }
       if (mismatch) return incompatible(mismatch);
+      if (stuck) return containerStuck(stuck);
       return abortStart(lastDetail);
     };
 
@@ -1150,7 +1210,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       // any start (a `starting` row would point at the dead pod and orphan the new one). `approvedAt` restarts the
       // abandoned-start clock for this placement; no `error` (that would mark the start abandoned while this request works).
       // BL-159: the dead pod's host CUDA goes with it -- the new host's is read once it runs.
-      const back = await deps.store.transition(sessionId, ["starting"], { status: "approved", podId: null, comfyUiProxyUrl: null, hostCudaVersion: null, approvedAt: deps.clock.now(), error: null });
+      const back = await deps.store.transition(sessionId, ["starting"], { status: "approved", podId: null, comfyUiProxyUrl: null, hostCudaVersion: null, approvedAt: deps.clock.now(), error: null, startStage: null, stageSince: null });
       // An operator Stop (or the watcher) took the row meanwhile: its outcome stands, nothing new is placed.
       if (!back) return toPublicSession(await requireRow(sessionId), deps.clock.now());
       current = back;
@@ -1312,7 +1372,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         spentOrReservedUsd: { today, thisMonth: month },
         device: { maxUsdPerDay: settings.maxUsdPerDay, spentTodayUsd: deviceSpent, maxConcurrentSessions: settings.maxConcurrentSessions, idleMinutes: settings.idleMinutes },
         gpu: { gpuTypeId: settings.gpuTypeId, fallbackIds: [...settings.gpuFallbackIds], minVramGb: settings.gpuMinVramGb, maxPricePerHr: settings.gpuMaxPricePerHr, onDemandPricePerHr: settings.gpuOnDemandPricePerHr, cloudType: settings.cloudType, minCudaVersion: settings.minCudaVersion, cudaVersions: [...MEDIA_CUDA_VERSIONS] },
-        capacity: { retrySeconds: settings.capacityRetrySeconds, waitMinutes: settings.capacityWaitMinutes },
+        capacity: { retrySeconds: settings.capacityRetrySeconds, waitMinutes: settings.capacityWaitMinutes, containerStartMinutes: settings.containerStartMinutes, containerStuckRetries: settings.containerStuckRetries },
       };
     },
 

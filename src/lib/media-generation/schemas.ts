@@ -53,6 +53,8 @@ export const mediaSettingsSchema = z
     gpuMaxPricePerHr: z.number().gt(0).max(1000).nullable(),
     capacityRetrySeconds: z.number().int().min(15).max(3600),
     capacityWaitMinutes: z.number().int().min(1).max(1440),
+    containerStartMinutes: z.number().int().min(1).max(30),
+    containerStuckRetries: z.number().int().min(0).max(3),
     factorySessionsEnabled: z.boolean(),
     factoryMaxUsdPerSession: z.number().gt(0).max(10_000),
     factoryMaxMinutesPerSession: z.number().int().min(1).max(1440),

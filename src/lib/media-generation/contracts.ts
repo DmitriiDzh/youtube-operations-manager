@@ -71,6 +71,13 @@ export type MediaSettings = {
   capacityRetrySeconds: number;
   /** ... for at most this long, then the session fails with `media_no_capacity`. */
   capacityWaitMinutes: number;
+  /**
+   * FO-REQ-0031: a placed pod whose container has not started within this many minutes (a host without the image cached, or a
+   * faulty one) is terminated -- not after the whole start budget -- and the session is placed again (also a runtime build pod).
+   */
+  containerStartMinutes: number;
+  /** FO-REQ-0031: how many times such a stuck start is placed again before the session fails with `media_container_stuck`. */
+  containerStuckRetries: number;
   /** Master switch for sessions the Factory Operator starts itself (on by default, owner 2026-10-06 msg 1683). */
   factorySessionsEnabled: boolean;
   /** A factory start is approved by itself only within ALL of these (owner defaults, O2); above them it waits for the owner. */
@@ -129,6 +136,8 @@ export const DEFAULT_MEDIA_SETTINGS: MediaSettings = Object.freeze({
   gpuMaxPricePerHr: null,
   capacityRetrySeconds: 30,
   capacityWaitMinutes: 30,
+  containerStartMinutes: 3,
+  containerStuckRetries: 1,
   factorySessionsEnabled: true,
   factoryMaxUsdPerSession: 2,
   factoryMaxMinutesPerSession: 60,
@@ -178,7 +187,13 @@ export type MediaSessionRequester = "operator" | "agent" | "factory";
 export type MediaGpuPlan = { candidates: string[]; minVramGb: number | null; maxPricePerHr: number | null };
 /** BL-133: one createPod attempt as the capacity log records it. */
 /** `hostCudaVersion` (BL-159): on a `placed` entry, the host's CUDA once known (from the create answer or the host check); else null. */
-export type MediaCapacityAttempt = { at: string; sessionId: string; datacenterId: string | null; gpuTypeId: string; pricePerHr: number | null; result: "placed" | "no_capacity" | "error"; detail: string | null; hostCudaVersion: string | null };
+/** `container_stuck` (FO-REQ-0031): placed, but its container never started within `containerStartMinutes`; terminated. */
+export type MediaCapacityResult = "placed" | "no_capacity" | "error" | "container_stuck";
+/** `containerSeconds` / `bootSeconds` (FO-REQ-0031): on a `placed` entry whose session got ready -- placement to a running container, and
+ * from there to ComfyUI answering; null otherwise. */
+export type MediaCapacityAttempt = { at: string; sessionId: string; datacenterId: string | null; gpuTypeId: string; pricePerHr: number | null; result: MediaCapacityResult; detail: string | null; hostCudaVersion: string | null; containerSeconds: number | null; bootSeconds: number | null };
+/** FO-REQ-0031: where a session's start is. */
+export type MediaStartStage = "placed" | "pulling_image" | "comfy_booting" | "ready";
 export const MEDIA_SESSION_TERMINAL_STATUSES: readonly MediaSessionStatus[] = ["done", "failed", "rejected", "interrupted"];
 export const MEDIA_SESSION_NON_TERMINAL_STATUSES: readonly MediaSessionStatus[] = MEDIA_SESSION_STATUSES.filter((s) => !MEDIA_SESSION_TERMINAL_STATUSES.includes(s));
 
@@ -200,6 +215,9 @@ export type MediaSession = {
   usedMinCudaVersion: string | null;
   /** BL-159: the CUDA version of the current pod's host (RunPod: the highest CUDA its driver supports); null = not known yet. */
   hostCudaVersion: string | null;
+  /** FO-REQ-0031: the start's stage while it starts (`ready` once running); null before a pod or for sessions before v98. */
+  startStage: MediaStartStage | null;
+  stageSince: string | null;
   /** BL-200 (ADR 0043): the pod runtime profile this session runs; null = the image's built-in ComfyUI. */
   runtimeId: string | null;
   /** BL-200: the ComfyUI version the session's /system_stats reported once ready; null until then (or not reported). */
@@ -249,7 +267,8 @@ export type MediaFactorySettingsView = {
   /** `minCudaVersion` since BL-155 (Factory API 1.7.0): the lowest host-driver CUDA a pod may land on; null = no filter.
    * `cudaVersions` since BL-159 (Factory API 1.9.0): the values a minimum may take, ascending. */
   gpu: { gpuTypeId: string | null; fallbackIds: string[]; minVramGb: number | null; maxPricePerHr: number | null; onDemandPricePerHr: number | null; cloudType: MediaCloudType; minCudaVersion: string | null; cudaVersions: string[] };
-  capacity: { retrySeconds: number; waitMinutes: number };
+  /** `containerStartMinutes` / `containerStuckRetries`: FO-REQ-0031 (Factory API 1.24.0). */
+  capacity: { retrySeconds: number; waitMinutes: number; containerStartMinutes: number; containerStuckRetries: number };
 };
 
 export type MediaSessionLimits = {

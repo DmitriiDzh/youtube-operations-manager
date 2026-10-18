@@ -60,6 +60,7 @@ const DOMAIN_ERROR_STATUS = {
   media_runtime_incompatible: 409,
   media_runtime_not_ready: 409,
   media_runtime_activation_disabled: 403,
+  media_container_stuck: 503,
   capability_not_supported: 422,
   endpoint_not_allowed: 422,
   connection_disabled: 409,

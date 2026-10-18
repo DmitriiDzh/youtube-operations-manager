@@ -45,6 +45,8 @@ export type RuntimeBuildJob = {
   image: string;
   /** The GPU the build pod was placed on (null for a pod that was never placed). */
   gpuTypeId?: string | null;
+  /** FO-REQ-0031: how many stuck-container builds of this profile came before this one in the same chain (0 = the first). */
+  stuckRetries?: number;
 };
 
 export type RuntimeBuildStore = {
@@ -182,7 +184,7 @@ export function createRuntimeBuildServices(deps: RuntimeBuildDeps) {
     return finished;
   }
 
-  async function startInner(runtimeId: string, actor: PullActor): Promise<{ job: RuntimeBuildJob | null; alreadyBuilt: boolean }> {
+  async function startInner(runtimeId: string, actor: PullActor, stuckRetries = 0): Promise<{ job: RuntimeBuildJob | null; alreadyBuilt: boolean }> {
     if (!RUNTIME_ID_PATTERN.test(runtimeId)) throw new DomainError({ code: "validation_failed", message: "A runtime id is 3-63 lower-case letters, digits or '-'.", details: { runtimeId } });
     const settings = await deps.base.getSettings();
     if (!settings.datacenterId || !settings.networkVolumeId || !settings.templateId) {
@@ -211,7 +213,7 @@ export function createRuntimeBuildServices(deps: RuntimeBuildDeps) {
 
     const jobId = deps.generateId();
     const podName = buildPodNameFor(jobId);
-    const reserved: RuntimeBuildJob = { jobId, runtimeId, podId: null, status: "running", startedAt: deps.clock.now().toISOString(), finishedAt: null, seconds: null, error: null, requestedBy: actor, image };
+    const reserved: RuntimeBuildJob = { jobId, runtimeId, podId: null, status: "running", startedAt: deps.clock.now().toISOString(), finishedAt: null, seconds: null, error: null, requestedBy: actor, image, stuckRetries };
     await saveJob(reserved);
     // Probe 2 (2026-10-18, owner msg 3035): on a CPU host the multi-GB CUDA image never started (45 min pulling); GPU hosts have it
     // cached and start in seconds. The build therefore runs on the CHEAPEST GPU of the owner's list offered in the volume's
@@ -322,7 +324,7 @@ export function createRuntimeBuildServices(deps: RuntimeBuildDeps) {
         }
         continue;
       }
-      let pod: { status: string } | null | undefined;
+      let pod: { status: string; containerUptimeSec?: number | null } | null | undefined;
       try {
         pod = client ? await client.getPod(job.podId) : undefined;
       } catch {
@@ -331,6 +333,19 @@ export function createRuntimeBuildServices(deps: RuntimeBuildDeps) {
       if (pod !== undefined && (!pod || pod.status === "TERMINATED" || pod.status === "EXITED" || pod.status === "ERROR")) {
         // Most likely the image could not start on a CPU host (too large for its disk, wrong architecture): see the pod's logs.
         await finishJob(job, "failed", { error: `the build pod was ${pod?.status ?? "gone"} before it wrote build.json` });
+        continue;
+      }
+      // FO-REQ-0031: a container that has not started within the owner's limit (a host without the image) is given up at once and
+      // the build is started again on another pod, up to containerStuckRetries times -- not left to bill until the cap.
+      const settings = await deps.base.getSettings().catch(() => null);
+      if (settings && pod && pod.containerUptimeSec == null && now - Date.parse(job.startedAt) >= settings.containerStartMinutes * 60_000) {
+        const ended = await finishJob(job, "failed", { error: `container_stuck: the build pod's container did not start within ${settings.containerStartMinutes} min` });
+        const used = job.stuckRetries ?? 0;
+        if (ended.status === "failed" && used < settings.containerStuckRetries) {
+          await startInner(job.runtimeId, job.requestedBy, used + 1).catch((error: unknown) => {
+            console.warn(`[media] the build of ${job.runtimeId} could not be started again after a stuck container: ${error instanceof Error ? error.message : String(error)}`);
+          });
+        }
         continue;
       }
       if (now - Date.parse(job.startedAt) > capMs) await finishJob(job, "timeout", { error: `no build.json after ${Math.round(capMs / 60_000)} min` });
