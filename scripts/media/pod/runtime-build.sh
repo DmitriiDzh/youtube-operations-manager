@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# BL-200 (ADR 0043): builds one pod runtime profile on the network volume, on a CPU pod with the GPU template's image.
+# BL-200 (ADR 0043): builds one pod runtime profile on the network volume, on a pod with the GPU template's image (the cheapest GPU of the list; the GPU is not used).
 # Usage (the pod's entrypoint): bash /workspace/ytm/runtime-build.sh <runtimeId>
 # Reads ytm/runtimes/<id>/runtime.json; clones ComfyUI and each node pack at their exact commits; creates a venv from the
 # image's Python with a .pth to the image's dist-packages (torch is never downloaded again -- probe 1, 2026-10-18); installs

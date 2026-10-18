@@ -12,9 +12,10 @@ import { runtimeKey } from "./runtimes";
 
 const IMAGE = "runpod/comfyui:1.4.0-comfyuiv0.35.0-cuda12.8";
 const RID = "comfy-0410-flux3";
-const SETTINGS: Partial<MediaSettings> = { datacenterId: "EU-RO-1", networkVolumeId: "vol1", templateId: "tpl1" };
+const SETTINGS: Partial<MediaSettings> = { datacenterId: "EU-RO-1", networkVolumeId: "vol1", templateId: "tpl1", gpuTypeId: "NVIDIA GeForce RTX 4090", gpuFallbackIds: ["NVIDIA RTX A5000", "NVIDIA L40S"] };
+const gpu = (id: string, price: number) => ({ id, displayName: id, memoryInGb: 24, secureCloud: true, communityCloud: false, onDemandPricePerHr: price, spotPricePerHr: null, estimatedAvailability: "High", dataCenters: [{ id: "EU-RO-1", countryCode: "RO", estimatedAvailability: "High" }], cudaVersions: [] });
 
-function harness(options: { settings?: Partial<MediaSettings>; templateRaw?: Record<string, unknown>; scripts?: Record<string, string> } = {}) {
+function harness(options: { settings?: Partial<MediaSettings>; templateRaw?: Record<string, unknown>; scripts?: Record<string, string>; noCapacity?: string[] } = {}) {
   let now = new Date("2026-10-18T15:00:00Z");
   const objects = new Map<string, string>();
   objects.set(runtimeKey(RID, "runtime.json"), "{}");
@@ -41,8 +42,15 @@ function harness(options: { settings?: Partial<MediaSettings>; templateRaw?: Rec
     async listTemplates() {
       return [{ id: "tpl1", name: "ytm-comfyui-v2", raw: options.templateRaw ?? { id: "tpl1", imageName: IMAGE } }];
     },
+    async listGpuTypes() {
+      return [gpu("NVIDIA GeForce RTX 4090", 0.89), gpu("NVIDIA RTX A5000", 0.29), gpu("NVIDIA L40S", 1.19)];
+    },
     async createPod(input: CreatePodInput) {
       created.push(input);
+      if (options.noCapacity?.includes(input.gpu?.id ?? "")) {
+        const { DomainError } = await import("./contracts");
+        throw new DomainError({ code: "runpod_api_unavailable", message: "RunPod API returned HTTP 400: This GPU and data center combination could not be placed.", details: { status: 400 } });
+      }
       const pod = { id: `pod${created.length}`, name: input.name, status: "RUNNING" };
       pods.set(pod.id, pod);
       return pod;
@@ -76,7 +84,9 @@ function harness(options: { settings?: Partial<MediaSettings>; templateRaw?: Rec
   return { services, objects, events, created, pods, terminated, advance: (ms: number) => (now = new Date(now.getTime() + ms)) };
 }
 
-test("AC-RT-03: the build pod is a CPU pod with the GPU template's image, the volume, and the command runtime-build.sh <id> -- no secret, no port", async () => {
+// Probe 2 (2026-10-18, owner msg 3035): a CPU host never started the CUDA image, so the build pod is the CHEAPEST GPU of the owner's
+// list in the volume's datacenter (the next one on no capacity). The rest of AC-RT-03 is unchanged.
+test("AC-RT-03: the build pod is the cheapest GPU of the owner's list with the template's image, the volume, and the command runtime-build.sh <id> -- no secret, no port", async () => {
   const h = harness();
   const { job, alreadyBuilt } = await h.services.startRuntimeBuild({ runtimeId: RID }, { actor: "factory" });
   assert.equal(alreadyBuilt, false);
@@ -84,8 +94,9 @@ test("AC-RT-03: the build pod is a CPU pod with the GPU template's image, the vo
   const pod = h.created[0];
   assert.equal(pod.image, IMAGE);
   assert.equal(pod.templateId, undefined);
-  assert.equal(pod.gpu, undefined);
-  assert.ok(pod.cpu, "a CPU pod");
+  assert.deepEqual(pod.gpu, { id: "NVIDIA RTX A5000", count: 1 }, "$0.29/h is the cheapest of the list");
+  assert.equal(pod.cpu, undefined);
+  assert.equal(job?.gpuTypeId, "NVIDIA RTX A5000");
   assert.deepEqual(pod.entrypoint, ["bash", "/workspace/ytm/runtime-build.sh", RID]);
   assert.deepEqual(pod.mounts, { network: [{ volumeId: "vol1", path: "/workspace" }] });
   assert.equal(pod.dataCenterId, "EU-RO-1");
@@ -143,7 +154,7 @@ test("a build pod that dies before build.json fails the build at once (not at th
 
   const silent = harness();
   await silent.services.startRuntimeBuild({ runtimeId: RID });
-  silent.advance(59 * 60_000);
+  silent.advance(29 * 60_000); // the cap is 30 min since probe 2 (a GPU-priced build pod)
   assert.equal((await silent.services.pollRuntimeBuilds())[0].status, "running");
   silent.advance(2 * 60_000);
   const [timedOut] = await silent.services.pollRuntimeBuilds();
@@ -206,4 +217,15 @@ test("an ended build removes only its own lock file: another pod's lock (another
   const [job] = await h.services.pollRuntimeBuilds();
   assert.equal(job.status, "failed");
   assert.equal(h.objects.get(`ytm/runtimes/${RID}/.lock`), "other-pod\n");
+});
+
+test("probe 2: no capacity on the cheapest GPU moves the build to the next cheapest; none at all fails the build with no pod", async () => {
+  const h = harness({ noCapacity: ["NVIDIA RTX A5000"] });
+  const { job } = await h.services.startRuntimeBuild({ runtimeId: RID });
+  assert.deepEqual(h.created.map((c) => c.gpu?.id), ["NVIDIA RTX A5000", "NVIDIA GeForce RTX 4090"]);
+  assert.equal(job?.gpuTypeId, "NVIDIA GeForce RTX 4090");
+  const none = harness({ noCapacity: ["NVIDIA RTX A5000", "NVIDIA GeForce RTX 4090", "NVIDIA L40S"] });
+  await assert.rejects(none.services.startRuntimeBuild({ runtimeId: RID }), (e: unknown) => isDomainError(e) && e.code === "media_no_capacity");
+  assert.equal(none.pods.size, 0);
+  assert.equal((await none.services.listRuntimeBuilds())[0].status, "failed");
 });

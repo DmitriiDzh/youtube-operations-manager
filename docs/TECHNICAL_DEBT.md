@@ -2043,8 +2043,8 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 
 - **What:** BL-200 / ADR 0043. (1) Every built runtime takes about 2.1 GB of the paid network volume and is never deleted
   automatically. (2) A runtime's venv points to the GPU template's image's Python and torch, so changing the template's image can
-  break every built runtime (its sessions refuse to start or ComfyUI fails to import). (3) The CPU build pod runs a CUDA image on a
-  `cpu3c` host; the first real build is the proof (a pod that cannot start fails the build at once). (4) The build does not take the
+  break every built runtime (its sessions refuse to start or ComfyUI fails to import). (3) The build runs on the cheapest GPU of the
+  owner's list (a CPU host never started the CUDA image, probe 2), so a build costs GPU time (~10 min) although the GPU is unused. (4) The build does not take the
   volume lock (a deliberate exception, ADR 0043).
 - **Bounds:** profiles are immutable; a session on an unbuilt runtime is refused before any pod; `.ready` is written last.
 - **Re-evaluate:** when the volume use passes 80 %, when the pod template's image changes (rebuild and retest the active runtime

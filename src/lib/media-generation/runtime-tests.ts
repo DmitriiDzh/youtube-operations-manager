@@ -6,7 +6,7 @@ import { missingNodeTypes, type RuntimeTestResult } from "./runtimes";
 // ---------------------------------------------------------------------------
 // BL-200 stage 3 (ADR 0043, POD_RUNTIMES_PLAN.md §5, AC-RT-05/09): testing a pod runtime profile. A test is asynchronous and is
 // advanced by the watch loop, one step per tick:
-//   building  the profile has no `.ready` yet: its CPU build runs (started by the test unless one already runs)
+//   building  the profile has no `.ready` yet: its build runs (started by the test unless one already runs)
 //   starting  a short GPU session on the runtime -- its USD cap is the owner's `runtimeTestMaxUsd`, its minutes are what that
 //             cap buys at the session's price (AC-RT-09) -- is started and waited for
 //   (check)   once running: `/object_info` and `/system_stats`; each template's graph against the node list; the session is

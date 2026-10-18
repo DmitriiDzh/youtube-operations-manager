@@ -2,12 +2,14 @@ import type { RunpodApiClient, RunpodS3Client } from "@/lib/media-gateway";
 import { sleep } from "@/lib/shared-async";
 import { DomainError, RUNTIME_ID_PATTERN, type MediaSettings } from "./contracts";
 import type { MediaControlEvent, PullActor } from "./models";
+import { classifyCreatePodFailure, resolveGpuCandidates } from "./gpu-plan";
 import { findLivePodByName, terminateAndConfirm } from "./pod-lifecycle";
 import { RUNTIMES_PREFIX, runtimeKey } from "./runtimes";
 
 // ---------------------------------------------------------------------------
-// BL-200 stage 2 (ADR 0043, POD_RUNTIMES_PLAN.md §3, AC-RT-03): a runtime profile is built on a CPU pod with the GPU
-// template's own image (the runtime's venv points to that image's Python and torch), never on a GPU. The pod runs
+// BL-200 stage 2 (ADR 0043, POD_RUNTIMES_PLAN.md §3, AC-RT-03): a runtime profile is built on a pod with the GPU template's own
+// image (the runtime's venv points to that image's Python and torch) -- on the cheapest GPU of the owner's list, because a CPU host
+// never started that CUDA image (probe 2, 2026-10-18); the GPU itself is not used. The pod runs
 // `ytm/runtime-build.sh <id>`, which writes `.ready` last and then `build.json`; the watch loop polls that file, like a model
 // pull's verdict, and terminates the pod. A build does NOT take the network-volume lock (ADR 0043): it writes only under
 // `ytm/runtimes/<id>/`, which nothing else reads until `.ready` exists, so sessions and pulls keep running during the ~9 min.
@@ -16,7 +18,8 @@ import { RUNTIMES_PREFIX, runtimeKey } from "./runtimes";
 
 export const POD_SCRIPTS = ["pod-start.sh", "runtime-build.sh"] as const;
 export type PodScriptName = (typeof POD_SCRIPTS)[number];
-const DEFAULT_BUILD_CAP_MS = 60 * 60_000;
+/** The build itself takes ~9 min on a GPU host (probe 1); the cap bounds a stuck one at the GPU's price. */
+const DEFAULT_BUILD_CAP_MS = 30 * 60_000;
 const TERMINATE_CONFIRM_MS = 60_000;
 const TERMINATE_POLL_MS = 5_000;
 /** A reserved build (podId null) older than this with no pod of its name is void (its createPod never returned). */
@@ -40,6 +43,8 @@ export type RuntimeBuildJob = {
   error: string | null;
   requestedBy: PullActor;
   image: string;
+  /** The GPU the build pod was placed on (null for a pod that was never placed). */
+  gpuTypeId?: string | null;
 };
 
 export type RuntimeBuildStore = {
@@ -208,21 +213,49 @@ export function createRuntimeBuildServices(deps: RuntimeBuildDeps) {
     const podName = buildPodNameFor(jobId);
     const reserved: RuntimeBuildJob = { jobId, runtimeId, podId: null, status: "running", startedAt: deps.clock.now().toISOString(), finishedAt: null, seconds: null, error: null, requestedBy: actor, image };
     await saveJob(reserved);
-    let podId: string;
+    // Probe 2 (2026-10-18, owner msg 3035): on a CPU host the multi-GB CUDA image never started (45 min pulling); GPU hosts have it
+    // cached and start in seconds. The build therefore runs on the CHEAPEST GPU of the owner's list offered in the volume's
+    // datacenter (the GPU itself is not used), the next one on "no capacity".
+    const catalog = await client.listGpuTypes({ cloud: "SECURE" }).catch(() => null);
+    const candidates = resolveGpuCandidates({ plan: null, settings, catalog }).candidates.sort((a, b) => (a.pricePerHr ?? Infinity) - (b.pricePerHr ?? Infinity));
+    if (candidates.length === 0) {
+      await saveJob({ ...reserved, status: "failed", finishedAt: deps.clock.now().toISOString(), error: "no GPU of the owner's list is offered in the volume's datacenter" });
+      throw new DomainError({ code: "media_no_capacity", message: "No GPU of your list (Servers → Setup) is offered in the network volume's datacenter, so the runtime cannot be built.", details: { runtimeId } });
+    }
+    let podId: string | null = null;
+    let gpuTypeId: string | null = null;
+    const failures: string[] = [];
     try {
-      const pod = await client.createPod({
-        name: podName,
-        image,
-        cpu: { id: "cpu3c", vcpuCount: 4 },
-        cloud: "SECURE",
-        dataCenterId: settings.datacenterId,
-        disk: BUILD_POD_DISK_GB,
-        mounts: { network: [{ volumeId: settings.networkVolumeId, path: "/workspace" }] },
-        // Replaces the image's own start: the pod runs the build script and nothing else (no ports, no token, no secret).
-        entrypoint: ["bash", "/workspace/ytm/runtime-build.sh", runtimeId],
-        startSsh: false,
-      });
-      podId = pod.id;
+      for (const candidate of candidates) {
+        try {
+          const pod = await client.createPod({
+            name: podName,
+            image,
+            gpu: { id: candidate.gpuTypeId, count: 1 },
+            cloud: "SECURE",
+            dataCenterId: settings.datacenterId,
+            disk: BUILD_POD_DISK_GB,
+            mounts: { network: [{ volumeId: settings.networkVolumeId, path: "/workspace" }] },
+            // Replaces the image's own start: the pod runs the build script and nothing else (no ports, no token, no secret).
+            entrypoint: ["bash", "/workspace/ytm/runtime-build.sh", runtimeId],
+            startSsh: false,
+          });
+          podId = pod.id;
+          gpuTypeId = candidate.gpuTypeId;
+          break;
+        } catch (error) {
+          if (classifyCreatePodFailure(error) === "fatal") throw error;
+          // The call may have failed after RunPod created the pod: the deterministic name settles it before the next GPU.
+          const orphan = await findLivePodByName(client, podName);
+          if (orphan) {
+            podId = orphan.id;
+            gpuTypeId = candidate.gpuTypeId;
+            break;
+          }
+          failures.push(`${candidate.gpuTypeId}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      if (!podId) throw new DomainError({ code: "media_no_capacity", message: `No GPU could be placed for the build: ${failures.join("; ")}`, details: { runtimeId } });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       let orphan: { id: string } | undefined;
@@ -235,13 +268,14 @@ export function createRuntimeBuildServices(deps: RuntimeBuildDeps) {
       }
       if (!orphan) {
         await saveJob({ ...reserved, status: "failed", finishedAt: deps.clock.now().toISOString(), error: `pod creation failed: ${message}` });
+        if (error instanceof DomainError && error.code === "media_no_capacity") throw error;
         throw new DomainError({ code: "media_session_start_failed", message: `The build pod could not be created: ${message}`, details: { runtimeId } });
       }
       podId = orphan.id;
     }
-    const job: RuntimeBuildJob = { ...reserved, podId };
+    const job: RuntimeBuildJob = { ...reserved, podId, gpuTypeId };
     await saveJob(job);
-    await audit({ actor, action: "runtime_build_started", subject: runtimeId, details: { jobId, podId, image } });
+    await audit({ actor, action: "runtime_build_started", subject: runtimeId, details: { jobId, podId, image, gpuTypeId } });
     return { job, alreadyBuilt: false };
   }
 

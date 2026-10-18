@@ -32,7 +32,7 @@ ADR 0043.
      child at create time, and only the commit is stored.
    - `pip` entries must be pinned `name==version`.
    - The owner edits the allow-list in Settings → Servers (a shared setting).
-3. **Build on a CPU pod** (owner msg 3022).
+3. **Build on a pod with the template's image** (owner msg 3022: a CPU pod; amended after probe 2, owner msg 3035: the cheapest GPU of the owner's list, because a CPU host never started the CUDA image).
    - The pod uses the same image as the GPU template (the venv points to the image's Python).
    - `ytm/runtime-build.sh <id>` clones ComfyUI and each node pack at their commits, then creates the venv and the `.pth` file.
    - It installs `requirements.txt` without torch / torchvision / torchaudio, the node packs' requirements filtered the same way,
@@ -40,8 +40,8 @@ ADR 0043.
    - A lock file (`.lock`, holding the pod id; stale after 2 h) stops two builds of one profile. The `.ready` marker is written
      last.
    - The build does not take the network-volume lock (ADR 0043), so sessions and pulls keep running during it.
-   - The build pod: `cpu3c` with 4 vCPU, 40 GB container disk, the template's `imageName`, entrypoint
-     `bash /workspace/ytm/runtime-build.sh <id>`, no ports, no env. The cap is 60 min. A pod that dies before `build.json`
+   - The build pod (since probe 2): the cheapest GPU of the owner's list in the volume's datacenter, the next on no capacity, 40 GB container disk, the template's `imageName`, entrypoint
+     `bash /workspace/ytm/runtime-build.sh <id>`, no ports, no env. The cap is 30 min. A pod that dies before `build.json`
      fails the build at once.
    - It writes `build.json` `{ ok, seconds, error }`. The app polls it like a model pull and terminates the pod.
    - A half-built directory never has `.ready`.
@@ -92,7 +92,7 @@ Expected values are derived from the rules above.
   or an `http://` URL is refused with `validation_failed`, and nothing is written.
 - **AC-RT-02**: a ComfyUI tag is resolved through GitHub to a 40-hex commit, and the stored `runtime.json` holds the commit.
   Profiles cannot be overwritten: the same id twice is refused.
-- **AC-RT-03**: the build pod is a CPU pod with the GPU template's image and the command `runtime-build.sh <id>`.
+- **AC-RT-03**: the build pod runs the GPU template's image (amended by probe 2: on the cheapest GPU of the owner's list, not a CPU pod) and the command `runtime-build.sh <id>`.
   - `build.json` `ok` gives the status built; `ok: false` gives build_failed with the error.
   - The pod is terminated in both cases.
   - No `.ready` means not built.
@@ -115,3 +115,9 @@ Expected values are derived from the rules above.
 - Pruning old runtimes from the volume (≈ 2.1 GB each). The owner deletes them with the Models-style delete later; listed as a
   RISK.
 - Running a template's smoke job in the test: only node presence is checked.
+
+## Probe 2 (2026-10-18, paid ~$0.12, owner-approved Г)
+
+The runtime build ran on a `cpu3c` pod with `runpod/comfyui:1.4.0-comfyuiv0.35.0-cuda12.8` and the container never started: after
+45 min it was still pulling, with no uptime. GPU hosts have this image cached and start it in seconds (probe 1). The owner chose
+to build on the cheapest GPU of the owner's list (msg 3035).

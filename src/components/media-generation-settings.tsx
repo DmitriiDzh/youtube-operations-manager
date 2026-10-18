@@ -2788,7 +2788,7 @@ export function FactoryLimitsCard({ settings, onChanged }: { settings: Settings;
 }
 
 // BL-200 (FO-REQ-0029, ADR 0043, POD_RUNTIMES_PLAN.md): pod runtimes -- a ComfyUI version with node packs, pinned to commits and
-// built on the network volume. The owner sees every profile, tests one (billed: a CPU build, then a short GPU session within the
+// built on the network volume. The owner sees every profile, tests one (billed: a build on the cheapest GPU, then a short GPU session within the
 // test cap), makes a tested one active or goes back to the image's built-in ComfyUI, and sets what the Operator may do.
 type RuntimesView = { runtimes: RuntimeView[]; activeRuntimeId: string | null; builds: RuntimeBuildJob[]; tests: RuntimeTestJob[] };
 
