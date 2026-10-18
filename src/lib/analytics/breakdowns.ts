@@ -1,8 +1,10 @@
 import { YOUTUBE_ANALYTICS_READ_SCOPE } from "@/lib/auth";
 import { z } from "zod";
 import { calendarDateSchema } from "@/lib/shared-domain";
-import { DomainError, type ResolvedCredentials } from "./contracts";
-import { parseWithSchema } from "./schemas";
+import { DomainError, type ChannelBreakdownKind, type GetChannelBreakdownResult, CHANNEL_BREAKDOWN_PRESETS, type ResolvedCredentials } from "./contracts";
+import { getChannelBreakdownInputSchema, getChannelBreakdownOutputSchema, parseWithSchema } from "./schemas";
+import { ANALYTICS_REPORTING_LAG_DAYS } from "./data-quality";
+import { enumerateDates } from "./period";
 import { toPacificCalendarDate } from "./comparable-age";
 import { hasFinalPublishDate, type MilestoneVideo } from "./milestones";
 import { failureKind } from "./query-failure";
@@ -280,8 +282,60 @@ function shapeRows(rows: StoredBreakdownRow[], kind: BreakdownKind, groupBy: "to
   return [...totals.values()].sort(byViews);
 }
 
+/** BL-197: the channel-level breakdown cards whose numbers are stored per day (the card's preset kind -> the stored kind). */
+const STORED_CHANNEL_BREAKDOWNS: Partial<Record<ChannelBreakdownKind, BreakdownKind>> = { trafficSources: "traffic_source", deviceType: "device_type" };
+
+/**
+ * BL-197: whether the channel's stored days answer the whole period. Every day must be inside the stored range (its start .. the last
+ * collected day), except the newest `ANALYTICS_REPORTING_LAG_DAYS` days, which YouTube may not have returned yet -- the same rule the
+ * stored channel totals follow (`isRangeFullyCovered`).
+ */
+export function isChannelBreakdownPeriodStored(args: {
+  state: { rangeStart: string; collectedThrough: string | null } | undefined;
+  startDate: string;
+  endDate: string;
+  now: Date;
+}): boolean {
+  const through = args.state?.collectedThrough;
+  if (!args.state || !through || args.startDate < args.state.rangeStart) return false;
+  const cutoff = new Date(args.now);
+  cutoff.setUTCDate(cutoff.getUTCDate() - ANALYTICS_REPORTING_LAG_DAYS);
+  const cutoffDate = cutoff.toISOString().slice(0, 10);
+  return enumerateDates(args.startDate, args.endDate).every((date) => date <= through || date > cutoffDate);
+}
+
 export function createBreakdownServices(deps: BreakdownDependencies) {
   return {
+    /**
+     * BL-197 (owner, Telegram 2026-10-18, msg 2988): a traffic-sources or devices card answered from the stored channel days, summed over
+     * the period, in the live answer's own shape -- or null when the card is not a stored kind or the stored days do not cover the
+     * period (the caller then reads live, as before).
+     */
+    async answerChannelBreakdownFromStore(input: unknown): Promise<GetChannelBreakdownResult | null> {
+      const parsed = parseWithSchema(getChannelBreakdownInputSchema, input, "get channel breakdown input");
+      const kind = STORED_CHANNEL_BREAKDOWNS[parsed.breakdown as ChannelBreakdownKind];
+      if (!kind || parsed.startDate > parsed.endDate) return null;
+      await deps.channelAccess.assertActiveChannel({ userId: userIdOf(parsed.credentialRef), channelId: parsed.channelId });
+      const state = (await deps.store.listStates(parsed.channelId)).find((row) => row.subject === CHANNEL_SUBJECT);
+      if (!state?.collectedThrough || !isChannelBreakdownPeriodStored({ state, startDate: parsed.startDate, endDate: parsed.endDate, now: deps.clock.now() })) return null;
+      const { rangeStart, collectedThrough } = state;
+
+      const metricName = CHANNEL_BREAKDOWN_PRESETS[parsed.breakdown as ChannelBreakdownKind].metricNames[0] as (typeof BREAKDOWN_METRICS)[number];
+      const totals = new Map<string, number>();
+      for (const row of await deps.store.listRows(parsed.channelId, [CHANNEL_SUBJECT], parsed.startDate, parsed.endDate)) {
+        if (row.breakdown !== kind || row.day < rangeStart || row.day > collectedThrough) continue;
+        totals.set(row.value, (totals.get(row.value) ?? 0) + (row[metricName] ?? 0));
+      }
+      const rows = [...totals.entries()]
+        .sort(([va, a], [vb, b]) => b - a || va.localeCompare(vb))
+        .map(([value, total]) => ({ dimensionValues: [value], metrics: { [metricName]: total } }));
+      return parseWithSchema(
+        getChannelBreakdownOutputSchema,
+        { channelId: parsed.channelId, breakdown: parsed.breakdown, startDate: parsed.startDate, endDate: parsed.endDate, rows },
+        "get channel breakdown output"
+      );
+    },
+
     /**
      * Collects the channel's due subjects (at most MAX_BREAKDOWN_SUBJECTS_PER_RUN, 2 queries each). A subject is saved only when both of
      * its queries answered. Failures follow the milestone rules (`query-failure.ts`): `stop` ends the run with nothing written, `defer`
