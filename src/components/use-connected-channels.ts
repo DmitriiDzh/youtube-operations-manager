@@ -51,7 +51,8 @@ export function useConnectedChannels() {
         await fetch("/api/channels/sync", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({}),
+          // BL-197: the server skips it (no YouTube call) while this identity's copy of the channel is younger than 6 h.
+          body: JSON.stringify({ onlyIfStale: true }),
         });
       } catch {
         // Non-fatal -- a pre-existing connection still lists correctly either way; this only
