@@ -79,11 +79,13 @@ const testFileSchema = z
   .passthrough();
 export type RuntimeTestResult = z.infer<typeof testFileSchema>;
 
-export type RuntimeStatus = "created" | "build_failed" | "built" | "test_failed" | "tested";
+export type RuntimeStatus = "created" | "building" | "build_failed" | "built" | "test_failed" | "tested";
 
 export type RuntimeView = RuntimeProfile & {
   status: RuntimeStatus;
   active: boolean;
+  /** AC-RT-03: `.ready` on the volume -- the build's own last step; without it the runtime is not built, whatever build.json says. */
+  ready: boolean;
   build: { ok: boolean; seconds: number | null; error: string | null; finishedAt: string | null } | null;
   test: Omit<RuntimeTestResult, "nodes"> & { nodeCount: number } | null;
 };
@@ -112,6 +114,8 @@ export type RuntimeDeps = {
   getSettings(): Promise<MediaSettings>;
   events: { record(event: MediaControlEvent): Promise<void> };
   clock: { now(): Date };
+  /** Stage 2: the runtime ids whose CPU build is running on this computer (the build module's job list). */
+  buildingRuntimeIds?: () => Promise<Set<string>>;
 };
 
 function parseJson<T>(schema: z.ZodType<T>, text: string | null): T | null {
@@ -129,15 +133,31 @@ export function createRuntimeServices(deps: RuntimeDeps) {
     return parseJson(runtimeFileSchema, await s3.getObjectText(runtimeKey(runtimeId, "runtime.json")));
   }
 
-  async function view(s3: RunpodS3Client, profile: RuntimeProfile, settings: MediaSettings): Promise<RuntimeView & { testDetail: RuntimeTestResult | null }> {
-    const [buildText, testText] = await Promise.all([s3.getObjectText(runtimeKey(profile.runtimeId, "build.json")), s3.getObjectText(runtimeKey(profile.runtimeId, "test.json"))]);
+  async function view(s3: RunpodS3Client, profile: RuntimeProfile, settings: MediaSettings, building: Set<string> = new Set()): Promise<RuntimeView & { testDetail: RuntimeTestResult | null }> {
+    const [buildText, testText, readyHead] = await Promise.all([
+      s3.getObjectText(runtimeKey(profile.runtimeId, "build.json")),
+      s3.getObjectText(runtimeKey(profile.runtimeId, "test.json")),
+      s3.headObject(`${RUNTIMES_PREFIX}${profile.runtimeId}/.ready`),
+    ]);
     const build = parseJson(buildFileSchema, buildText);
     const test = parseJson(testFileSchema, testText);
-    const status: RuntimeStatus = test ? (test.ok ? "tested" : "test_failed") : build ? (build.ok ? "built" : "build_failed") : "created";
+    const ready = readyHead !== null;
+    const status: RuntimeStatus = building.has(profile.runtimeId)
+      ? "building"
+      : !ready
+        ? build && !build.ok
+          ? "build_failed"
+          : "created"
+        : test
+          ? test.ok
+            ? "tested"
+            : "test_failed"
+          : "built";
     return {
       ...profile,
       status,
       active: settings.activeRuntimeId === profile.runtimeId,
+      ready,
       build: build ? { ok: build.ok, seconds: build.seconds ?? null, error: build.error ?? null, finishedAt: build.finishedAt ?? null } : null,
       test: test ? (({ nodes, ...rest }) => ({ ...rest, nodeCount: nodes.length }))(test) : null,
       testDetail: test,
@@ -153,22 +173,22 @@ export function createRuntimeServices(deps: RuntimeDeps) {
   return {
     /** Every profile on the volume, newest first, with its build / test state and whether it is the active one. */
     async listRuntimes(): Promise<{ runtimes: RuntimeView[]; activeRuntimeId: string | null }> {
-      const [s3, settings] = await Promise.all([deps.s3(), deps.getSettings()]);
+      const [s3, settings, building] = await Promise.all([deps.s3(), deps.getSettings(), deps.buildingRuntimeIds?.() ?? new Set<string>()]);
       const ids = (await s3.listAllObjects(RUNTIMES_PREFIX))
         .map((o) => new RegExp(`^${RUNTIMES_PREFIX}([^/]+)/runtime\\.json$`).exec(o.key)?.[1])
         .filter((id): id is string => Boolean(id && RUNTIME_ID_PATTERN.test(id)));
       const profiles = (await Promise.all(ids.map((id) => readProfile(s3, id)))).filter((p): p is RuntimeProfile => p !== null);
-      const views = await Promise.all(profiles.map((p) => view(s3, p, settings).then(stripDetail)));
+      const views = await Promise.all(profiles.map((p) => view(s3, p, settings, building).then(stripDetail)));
       views.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
       return { runtimes: views as RuntimeView[], activeRuntimeId: settings.activeRuntimeId };
     },
 
     /** One profile with its full test result (per template) -- the node list itself only as a count. */
     async getRuntime(runtimeId: string): Promise<RuntimeView & { templates: RuntimeTestResult["templates"] }> {
-      const [s3, settings] = await Promise.all([deps.s3(), deps.getSettings()]);
+      const [s3, settings, building] = await Promise.all([deps.s3(), deps.getSettings(), deps.buildingRuntimeIds?.() ?? new Set<string>()]);
       const profile = await readProfile(s3, runtimeId);
       if (!profile) throw new DomainError({ code: "not_found", message: `No runtime profile ${runtimeId} on the network volume.`, details: { runtimeId } });
-      const v = await view(s3, profile, settings);
+      const v = await view(s3, profile, settings, building);
       return { ...(stripDetail(v) as RuntimeView), templates: v.testDetail?.templates ?? [] };
     },
 

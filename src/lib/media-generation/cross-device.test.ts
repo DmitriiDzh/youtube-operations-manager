@@ -24,6 +24,8 @@ function session(over: Partial<MediaSession>): MediaSession {
     minCudaVersion: null,
     usedMinCudaVersion: null,
     hostCudaVersion: null,
+    runtimeId: null,
+    comfyVersion: null,
     capacity: null,
     reason: null,
     maxMinutes: 60,

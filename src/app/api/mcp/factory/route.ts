@@ -137,6 +137,7 @@ function createToolDeps(): FactoryToolDeps {
           ...(gpu ? { gpu } : {}),
           ...(input.releaseWhenDone !== undefined ? { releaseWhenDone: input.releaseWhenDone } : {}),
           ...(input.minCudaVersion ? { minCudaVersion: input.minCudaVersion } : {}),
+          ...(input.runtimeId !== undefined ? { runtimeId: input.runtimeId } : {}),
           templateMinCudaVersion,
         });
       },

@@ -127,6 +127,9 @@ test("listRuntimes / getRuntime: profiles from the volume, newest first, with ac
   const h = harness({ activeRuntimeId: "comfy-0410-flux3" });
   await h.services.createRuntime(valid());
   h.objects.set(runtimeKey("comfy-0410-flux3", "build.json"), JSON.stringify({ ok: true, seconds: 540 }));
+  // AC-RT-03 (stage 2): without `.ready` a runtime is not built, whatever build.json says.
+  assert.deepEqual([(await h.services.listRuntimes()).runtimes[0].status, (await h.services.listRuntimes()).runtimes[0].ready], ["created", false]);
+  h.objects.set("ytm/runtimes/comfy-0410-flux3/.ready", "");
   h.objects.set(
     runtimeKey("comfy-0410-flux3", "test.json"),
     JSON.stringify({ ok: true, testedAt: "2026-10-18T16:00:00Z", comfyVersion: "0.41.0", nodes: ["KSampler", "ReferenceMultiLatent"], templates: [{ templateId: "p3-flux3-klein-edit", version: 1, ok: true, missing: [] }], costUsd: 0.05, bootSeconds: 32 })

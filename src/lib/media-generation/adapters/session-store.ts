@@ -55,6 +55,8 @@ function fromDb(row: StoredMediaSession): StoredSessionRow {
     minCudaVersion: row.minCudaVersion ?? null,
     usedMinCudaVersion: row.usedMinCudaVersion ?? null,
     hostCudaVersion: row.hostCudaVersion ?? null,
+    runtimeId: row.runtimeId ?? null,
+    comfyVersion: row.comfyVersion ?? null,
   };
 }
 

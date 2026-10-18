@@ -22,6 +22,11 @@ New models need newer nodes (FLUX 3 Image Klein, 2026-10-15), and the Operator c
 2. **Build on a CPU pod with the GPU template's image** (owner msg 3022).
    - The venv refers to the image's Python, so the image must match.
    - A `.ready` marker is written last, under a per-profile lock.
+   - The build does **not** take the network-volume lock (`volume-lock.ts`), a deliberate exception to that lock's "every writer
+     takes it" rule. A build writes only `ytm/runtimes/<id>/`, which nothing reads before `.ready` exists. Taking the exclusive
+     lock would block every GPU session for the ~9 min build, and would refuse a build while any session runs. Two builds of one
+     profile are stopped by the app's job list and by the profile's own `.lock` file (it holds the pod id; after 2 h it counts as
+     a dead build's).
    - A session on a profile without `.ready` is refused: it never silently falls back to the built-in ComfyUI.
 3. **Sources (owner answer Б).**
    - Only HTTPS repos under an owner-set allow-list. The default is comfyanonymous, Comfy-Org, kijai and ltdrdata on GitHub,

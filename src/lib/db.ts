@@ -835,6 +835,10 @@ export const mediaSessions = sqliteTable(
     minCudaVersion: text("min_cuda_version"),
     usedMinCudaVersion: text("used_min_cuda_version"),
     hostCudaVersion: text("host_cuda_version"),
+    // Schema v97 (BL-200, ADR 0043): the pod runtime profile the session runs (null = the image's built-in ComfyUI) and the
+    // ComfyUI version its /system_stats reported once ready.
+    runtimeId: text("runtime_id"),
+    comfyVersion: text("comfy_version"),
   },
   (table) => [index("media_sessions_open_slot_idx").on(table.openSlot), index("media_sessions_status_idx").on(table.status)]
 );
@@ -5199,6 +5203,20 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
           "updated_at INTEGER NOT NULL, " +
           "revision INTEGER NOT NULL DEFAULT 1)"
       );
+    },
+  },
+  {
+    version: 97,
+    description:
+      "media_sessions.runtime_id/comfy_version -- BL-200 (FO-REQ-0029, ADR 0043): the pod runtime profile a session runs (null = the image's built-in ComfyUI) and the ComfyUI version its /system_stats reported. Additive nullable columns, device-local",
+    apply: async (client) => {
+      for (const statement of ["ALTER TABLE media_sessions ADD COLUMN runtime_id TEXT", "ALTER TABLE media_sessions ADD COLUMN comfy_version TEXT"]) {
+        try {
+          await client.execute(statement);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
     },
   },
 ];
@@ -10061,6 +10079,7 @@ export async function getStoredMediaCredentials(database: AppDb = db): Promise<S
 const MEDIA_GENERATION_SETTINGS_KEY = "media_generation_settings";
 const MEDIA_GATEWAY_ENABLED_SETTING_KEY = "media_gateway_enabled";
 const MEDIA_MODEL_PULLS_KEY = "media_model_pulls";
+const MEDIA_RUNTIME_JOBS_KEY = "media_runtime_jobs";
 
 /** Phase 14 slice 4: the model pulls in flight (CPU pods downloading onto the volume), as a JSON list; `null` = none ever. */
 export async function getMediaModelPullsJson(database: AppDb = db): Promise<string | null> {
@@ -10265,22 +10284,37 @@ export async function getMediaVolumeLockHolder(database: AppDb = db): Promise<{ 
  * overwrite each other's change (review rounds 6 and 12). A lost race re-reads and re-applies `mutate`.
  */
 export async function updateMediaModelPullsJson(mutate: (current: string | null) => string, database: AppDb = db): Promise<string> {
+  return updateAppSettingCas(MEDIA_MODEL_PULLS_KEY, mutate, "the model pulls list", database);
+}
+
+/** BL-200: the pod runtime builds in flight (CPU pods building a runtime profile on the volume), as a JSON list. */
+export async function getMediaRuntimeJobsJson(database: AppDb = db): Promise<string | null> {
+  return await getAppSetting(MEDIA_RUNTIME_JOBS_KEY, database);
+}
+
+/** BL-200: the same compare-and-swap writer as the model pulls list (one implementation, `updateAppSettingCas`). */
+export async function updateMediaRuntimeJobsJson(mutate: (current: string | null) => string, database: AppDb = db): Promise<string> {
+  return updateAppSettingCas(MEDIA_RUNTIME_JOBS_KEY, mutate, "the runtime builds list", database);
+}
+
+/** One app setting rewritten by `mutate` as a compare-and-swap; a lost race re-reads and re-applies (10 attempts). */
+async function updateAppSettingCas(key: string, mutate: (current: string | null) => string, what: string, database: AppDb): Promise<string> {
   for (let attempt = 0; attempt < 10; attempt++) {
-    const current = await getAppSetting(MEDIA_MODEL_PULLS_KEY, database);
+    const current = await getAppSetting(key, database);
     const next = mutate(current);
     if (current === null) {
-      await database.insert(appSettings).values({ key: MEDIA_MODEL_PULLS_KEY, value: next }).onConflictDoNothing();
-      if ((await getAppSetting(MEDIA_MODEL_PULLS_KEY, database)) === next) return next;
+      await database.insert(appSettings).values({ key, value: next }).onConflictDoNothing();
+      if ((await getAppSetting(key, database)) === next) return next;
       continue; // someone else inserted first: re-read and re-apply
     }
     const rows = await database
       .update(appSettings)
       .set({ value: next })
-      .where(and(eq(appSettings.key, MEDIA_MODEL_PULLS_KEY), eq(appSettings.value, current)))
+      .where(and(eq(appSettings.key, key), eq(appSettings.value, current)))
       .returning({ key: appSettings.key });
     if (rows.length > 0) return next;
   }
-  throw new Error("the model pulls list kept changing under this update (10 attempts); try again");
+  throw new Error(`${what} kept changing under this update (10 attempts); try again`);
 }
 
 /** The Settings → Media values as one JSON string (validated by `src/lib/media-generation/schemas.ts`); `null` = never saved. */

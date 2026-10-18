@@ -1,6 +1,9 @@
 import { getDeviceSecrets } from "@/lib/device-secrets";
 import { createHfTokenServices } from "./hf-token";
 import { createRuntimeServices } from "./runtimes";
+import { createRuntimeBuildServices } from "./runtime-builds";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { createAssetCatalogCore } from "@/lib/asset-catalog";
@@ -16,7 +19,7 @@ import { createExchangeLocalFs } from "./adapters/exchange-fs";
 import { createMediaJobStore } from "./adapters/job-store";
 import { createMediaSessionStore } from "./adapters/session-store";
 import { createTemplateRegistryReader } from "./adapters/template-registry-fs";
-import { createMediaControlEventSink, createMediaGenerationStore, createModelPullStore, createVolumeLockStore } from "./adapters/store";
+import { createMediaControlEventSink, createMediaGenerationStore, createModelPullStore, createRuntimeBuildStore, createVolumeLockStore } from "./adapters/store";
 import { DomainError, MEDIA_SESSION_TERMINAL_STATUSES, type MediaCapacityAttempt, type MediaControlEventView, type MediaModelUsage } from "./contracts";
 import { createJobProgressRegistry } from "./job-progress";
 import { splitEndedSessionCosts } from "./cost-split";
@@ -118,13 +121,24 @@ function buildCore(jobScheduling: JobScheduling) {
   // BL-134 (FO-REQ-0028, ADR 0042): the Hugging Face read token lives in the shared device-secret store.
   const hub = createHuggingFaceClient();
   const hfToken = createHfTokenServices({ slot: getDeviceSecrets().slot("huggingface"), hub });
-  // BL-200 (FO-REQ-0029, ADR 0043): pod runtime profiles on the network volume.
+  // BL-200 (FO-REQ-0029, ADR 0043): pod runtime profiles on the network volume, built on CPU pods (stage 2).
+  const runtimeBuilds = createRuntimeBuildServices({
+    store: createRuntimeBuildStore(),
+    base: { getSettings: () => base.getSettings(), resolveRunpodClient: () => base.resolveRunpodClient(), s3: () => base.s3() },
+    // The installed app's own copy (Mac and Windows both run from the repository checkout, `scripts/` included).
+    readPodScript: (name) => readFile(path.join(process.cwd(), "scripts", "media", "pod", name), "utf8"),
+    events: createMediaControlEventSink(),
+    generateId: () => randomUUID(),
+    clock: { now },
+    sleep,
+  });
   const runtimes = createRuntimeServices({
     s3: () => base.s3(),
     github: createGithubClient(),
     getSettings: () => base.getSettings(),
     events: createMediaControlEventSink(),
     clock: { now },
+    buildingRuntimeIds: async () => new Set((await runtimeBuilds.listRuntimeBuilds()).filter((j) => j.status === "running").map((j) => j.runtimeId)),
   });
   const models = createMediaModelServices({
     store: createModelPullStore(),
@@ -171,6 +185,11 @@ function buildCore(jobScheduling: JobScheduling) {
     log: (line) => console.warn(line),
     // BL-138: devices on the same RunPod account share the limits (late-bound: the helpers are defined below).
     accountWide: (at, localPodIds, options) => otherDevicesOnAccount(at, localPodIds, options),
+    // BL-200 (AC-RT-04): `.ready` on the volume is the build's own last step.
+    runtimes: {
+      isReady: async (runtimeId) => (await (await base.s3()).headObject(`ytm/runtimes/${runtimeId}/.ready`)) !== null,
+      ensurePodScripts: () => runtimeBuilds.ensurePodScripts(),
+    },
   });
   sessionsRef = sessions;
   const workspaces = createChannelWorkspacesCore();
@@ -422,6 +441,10 @@ function buildCore(jobScheduling: JobScheduling) {
     listComfyReleases: runtimes.listComfyReleases,
     createRuntime: runtimes.createRuntime,
     runtimeTestedNodes: runtimes.testedNodes,
+    startRuntimeBuild: runtimeBuilds.startRuntimeBuild,
+    pollRuntimeBuilds: runtimeBuilds.pollRuntimeBuilds,
+    listRuntimeBuilds: runtimeBuilds.listRuntimeBuilds,
+    ensurePodScripts: runtimeBuilds.ensurePodScripts,
     getHfToken: hfToken.getHfToken,
     setHfToken: hfToken.setHfToken,
     testHfToken: hfToken.testHfToken,

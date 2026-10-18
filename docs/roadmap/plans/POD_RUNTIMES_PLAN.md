@@ -37,7 +37,12 @@ ADR 0043.
    - `ytm/runtime-build.sh <id>` clones ComfyUI and each node pack at their commits, then creates the venv and the `.pth` file.
    - It installs `requirements.txt` without torch / torchvision / torchaudio, the node packs' requirements filtered the same way,
      and the pinned pip extras.
-   - A lock file stops two builds of one profile. The `.ready` marker is written last.
+   - A lock file (`.lock`, holding the pod id; stale after 2 h) stops two builds of one profile. The `.ready` marker is written
+     last.
+   - The build does not take the network-volume lock (ADR 0043), so sessions and pulls keep running during it.
+   - The build pod: `cpu3c` with 4 vCPU, 40 GB container disk, the template's `imageName`, entrypoint
+     `bash /workspace/ytm/runtime-build.sh <id>`, no ports, no env. The cap is 60 min. A pod that dies before `build.json`
+     fails the build at once.
    - It writes `build.json` `{ ok, seconds, error }`. The app polls it like a model pull and terminates the pod.
    - A half-built directory never has `.ready`.
 4. **Sessions on a runtime.**

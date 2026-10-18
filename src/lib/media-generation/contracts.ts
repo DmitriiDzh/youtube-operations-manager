@@ -200,6 +200,10 @@ export type MediaSession = {
   usedMinCudaVersion: string | null;
   /** BL-159: the CUDA version of the current pod's host (RunPod: the highest CUDA its driver supports); null = not known yet. */
   hostCudaVersion: string | null;
+  /** BL-200 (ADR 0043): the pod runtime profile this session runs; null = the image's built-in ComfyUI. */
+  runtimeId: string | null;
+  /** BL-200: the ComfyUI version the session's /system_stats reported once ready; null until then (or not reported). */
+  comfyVersion: string | null;
   /** BL-133: while `waiting_capacity` -- when the next start attempt is due and when the wait ends. */
   capacity: { attempts: number; nextAttemptAt: string | null; waitUntil: string | null } | null;
   reason: string | null;

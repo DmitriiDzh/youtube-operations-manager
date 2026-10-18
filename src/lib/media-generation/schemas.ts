@@ -98,6 +98,8 @@ export const requestSessionInputSchema = z
     planId: z.string().min(2).max(80).optional(),
     /** BL-159: the session's own minimum host CUDA version; it may only raise the owner's setting (applied at placement). */
     minCudaVersion: z.enum(MEDIA_CUDA_VERSIONS).optional(),
+    /** BL-200 (ADR 0043): the pod runtime profile to run; absent = the active one (Settings), null = the image's built-in ComfyUI. */
+    runtimeId: z.string().regex(RUNTIME_ID_PATTERN, "a runtime id is 3-63 lower-case letters, digits or '-'").nullable().optional(),
   })
   .strict();
 

@@ -113,7 +113,7 @@ function fakeRunpod(
     onCreate?: (index: number) => void;
   } = {}
 ) {
-  const createInputs: Array<{ gpu?: { id: string; allowedCudaVersions?: string[] } }> = [];
+  const createInputs: Array<{ gpu?: { id: string; allowedCudaVersions?: string[] }; env?: Record<string, string> }> = [];
   const runningPolls = new Map<string, number>();
   const names = new Map<string, { name: string; gpu: string }>();
   let listCalls = 0;
@@ -233,6 +233,8 @@ function fixture(opts: {
   accountWide?: (now: Date, localPodIds: string[], options?: { fresh?: boolean; spendOnly?: boolean }) => Promise<{ otherActiveSessions: number; otherSpentTodayUsd: number }>;
   /** BL-155 review 3: the proxy URL builder (default: a fixed test host). */
   proxyUrl?: (podId: string, port: number) => string;
+  /** BL-200: pod runtime support (`.ready` per runtime id, script uploads counted). */
+  runtimes?: { isReady(runtimeId: string): Promise<boolean>; ensurePodScripts(): Promise<unknown> };
 } = {}) {
   const capacityLog: Array<{ sessionId?: string; gpuTypeId: string; result: string; detail: string | null; hostCudaVersion?: string | null }> = [];
   let recordCalls = 0;
@@ -270,6 +272,7 @@ function fixture(opts: {
     volumeLock: lock.lock,
     ...(opts.jobSummary ? { jobSummary: opts.jobSummary } : {}),
     ...(opts.accountWide ? { accountWide: opts.accountWide } : {}),
+    ...(opts.runtimes ? { runtimes: opts.runtimes } : {}),
     capacityLog: {
       // Like the DB helper: the entry's id (here its index) comes back, and the host's CUDA is set on that entry.
       record: async (a) => {
@@ -2645,4 +2648,61 @@ test("AC-SC-02 (review): with no minimum, a host read refused by RunPod (401) is
   const running = await startRunning(f);
   assert.equal(running.status, "running");
   assert.equal(running.hostCudaVersion, null);
+});
+
+// -- BL-200 (POD_RUNTIMES_PLAN.md AC-RT-04, ADR 0043) ----------------------------------------------------------------------
+// A session on a runtime passes YTM_RUNTIME_ID in env and never a secret besides its own COMFY_TOKEN; a runtime that is not
+// built is refused before any pod (and before any session row); absent = the active runtime, null = the built-in ComfyUI.
+
+function runtimeSupport(ready: Set<string>) {
+  let uploads = 0;
+  return { support: { isReady: async (id: string) => ready.has(id), ensurePodScripts: async () => void uploads++ }, uploads: () => uploads };
+}
+const STATS_0410 = { ...CUDA_STATS, system: { ...CUDA_STATS.system, comfyui_version: "0.41.0" } };
+
+test("AC-RT-04: a session on a built runtime gets YTM_RUNTIME_ID (and only its own token) and shows the runtime and ComfyUI version", async () => {
+  const rt = runtimeSupport(new Set(["comfy-0410-flux3"]));
+  const f = fixture({ runtimes: rt.support, comfy: fakeComfy({ stats: () => STATS_0410 }) });
+  const pending = await f.services.requestSession({ ...operatorRequest, runtimeId: "comfy-0410-flux3" });
+  assert.equal(pending.runtimeId, "comfy-0410-flux3");
+  const running = await f.services.approveAndStartSession({ sessionId: pending.sessionId });
+  assert.equal(running.status, "running");
+  assert.deepEqual(f.runpod.createInputs[0].env, { COMFY_TOKEN: "tok-abc", YTM_RUNTIME_ID: "comfy-0410-flux3" });
+  assert.equal(running.runtimeId, "comfy-0410-flux3");
+  assert.equal(running.comfyVersion, "0.41.0");
+  assert.equal(rt.uploads(), 1, "the pod-side scripts are put on the volume before the pod");
+});
+
+test("AC-RT-04: a runtime that is not built is refused with media_runtime_not_ready before any session row or pod", async () => {
+  const rt = runtimeSupport(new Set());
+  const f = fixture({ runtimes: rt.support });
+  await assert.rejects(f.services.requestSession({ ...operatorRequest, runtimeId: "comfy-0410-flux3" }), (e: unknown) => isDomainError(e) && e.code === "media_runtime_not_ready");
+  assert.equal(f.mem.rows.size, 0);
+  assert.equal(f.runpod.createInputs.length, 0);
+});
+
+test("AC-RT-04: a pending session whose runtime stopped being built is refused at approve, before any pod", async () => {
+  const ready = new Set(["comfy-0410-flux3"]);
+  const f = fixture({ runtimes: runtimeSupport(ready).support });
+  const pending = await f.services.requestSession({ ...operatorRequest, runtimeId: "comfy-0410-flux3" });
+  ready.delete("comfy-0410-flux3");
+  await assert.rejects(f.services.approveAndStartSession({ sessionId: pending.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_runtime_not_ready");
+  assert.equal(f.runpod.createInputs.length, 0);
+  assert.equal(f.mem.rows.get(pending.sessionId)?.status, "pending");
+});
+
+test("BL-200: no runtimeId = the active runtime; null = the image's built-in ComfyUI (no YTM_RUNTIME_ID); no active runtime = built-in", async () => {
+  const active = fixture({ runtimes: runtimeSupport(new Set(["comfy-0410-flux3"])).support, settings: { activeRuntimeId: "comfy-0410-flux3" } });
+  assert.equal((await active.services.requestSession(operatorRequest)).runtimeId, "comfy-0410-flux3");
+  const builtIn = await active.services.requestSession({ ...operatorRequest, runtimeId: null });
+  assert.equal(builtIn.runtimeId, null);
+  await active.services.approveAndStartSession({ sessionId: builtIn.sessionId });
+  assert.deepEqual(active.runpod.createInputs[0].env, { COMFY_TOKEN: "tok-abc" });
+
+  const none = fixture();
+  const session = await none.services.requestSession(operatorRequest);
+  assert.equal(session.runtimeId, null);
+  const running = await none.services.approveAndStartSession({ sessionId: session.sessionId });
+  assert.deepEqual(none.runpod.createInputs[0].env, { COMFY_TOKEN: "tok-abc" });
+  assert.equal(running.comfyVersion, null, "the default stats report no comfyui_version");
 });
