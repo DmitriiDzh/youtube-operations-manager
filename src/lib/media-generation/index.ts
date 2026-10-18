@@ -13,7 +13,6 @@ import { sleep as sharedSleep } from "@/lib/shared-async";
 import { createExchangeFs, resolveFromYtmDir, resolveSentToYtmFile } from "@/lib/workspace-exchange";
 import { createExchangeLocalFs } from "./adapters/exchange-fs";
 import { createMediaJobStore } from "./adapters/job-store";
-import { createFsKeyFile } from "./adapters/key-file-fs";
 import { createMediaSessionStore } from "./adapters/session-store";
 import { createTemplateRegistryReader } from "./adapters/template-registry-fs";
 import { createMediaControlEventSink, createMediaGenerationStore, createModelPullStore, createVolumeLockStore } from "./adapters/store";
@@ -95,7 +94,10 @@ function buildCore(jobScheduling: JobScheduling) {
   const volumeLock = createVolumeLock({ store: createVolumeLockStore(), isHolderActive, log: (line) => console.warn(line) });
   const base = createMediaGenerationServices({
     store: createMediaGenerationStore(),
-    keyFile: createFsKeyFile(appDataPaths.appDataDir),
+    // BL-199 (ADR 0042): the RunPod/S3 set lives in this computer's shared secret store (moved there from media_credentials on
+    // first use); session tokens are sealed with the same store's key, opened with the legacy media key as a fallback.
+    secret: getDeviceSecrets().slot("runpod"),
+    sealer: { seal: (plaintext) => getDeviceSecrets().seal(plaintext), open: (payload) => getDeviceSecrets().open(payload) },
     gateway: {
       createRunpodClient: (apiKey) => createRunpodApiClient({ apiKey }),
       createS3Client: (config) => createRunpodS3Client(config),

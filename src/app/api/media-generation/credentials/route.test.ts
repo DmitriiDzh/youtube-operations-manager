@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DomainError, type MediaGenerationCore } from "@/lib/media-generation";
-import { createKeyFile, type KeyFileAccess } from "@/lib/media-generation/key-file";
-import { createMediaGenerationServices, type MediaGenerationStore, type StoredCredentialsRow } from "@/lib/media-generation/services";
+import { createKeyFile, type KeyFileAccess } from "@/lib/device-key-file";
+import { createDeviceSecrets, createMemoryDeviceSecretStore } from "@/lib/device-secrets";
+import { createMediaGenerationServices, type MediaGenerationStore } from "@/lib/media-generation/services";
 import type { RunpodApiClient, RunpodS3Client } from "@/lib/media-gateway";
 import { createCredentialsDeleteHandler, createCredentialsGetHandler, createCredentialsPutHandler } from "./route";
 import { createOverviewGetHandler } from "../overview/route";
@@ -14,18 +15,9 @@ const RUNPOD_KEY = "rpa_SECRETSECRETSECRETSECRETSECRET";
 const S3_SECRET = "rps_verysecretvalue";
 
 function core(opts: { runpodAccepts?: boolean; verifyError?: DomainError } = {}): MediaGenerationCore {
-  let row: StoredCredentialsRow | null = null;
   let keyContent: string | null = null;
   let settings: string | null = null;
   const store: MediaGenerationStore = {
-    getCredentials: async () => row,
-    upsertCredentials: async (input) => {
-      row = { ...input, verifiedAt: null, updatedAt: new Date("2026-10-05T00:00:00Z") };
-    },
-    setCredentialsVerifiedAt: async () => {},
-    clearCredentials: async () => {
-      row = null;
-    },
     getSettingsJson: async () => settings,
     setSettingsJson: async (json) => {
       settings = json;
@@ -43,9 +35,16 @@ function core(opts: { runpodAccepts?: boolean; verifyError?: DomainError } = {})
       keyContent = null;
     },
   };
+  // BL-199 (ADR 0042): the RunPod set lives in the shared device-secret store (in memory here, over this test's key file).
+  const secrets = createDeviceSecrets({
+    store: createMemoryDeviceSecretStore(),
+    keyFile: createKeyFile(access, (detail) => new DomainError({ code: "encryption_key_not_configured", message: detail })),
+    now: () => Date.parse("2026-10-05T00:00:00Z"),
+  });
   return createMediaGenerationServices({
     store,
-    keyFile: createKeyFile(access),
+    secret: secrets.slot("runpod"),
+    sealer: { seal: (plaintext) => secrets.seal(plaintext), open: (payload) => secrets.open(payload) },
     gateway: {
       createRunpodClient: () =>
         ({

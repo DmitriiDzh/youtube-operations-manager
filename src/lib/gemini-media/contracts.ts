@@ -99,7 +99,6 @@ export const GEMINI_INPUT_EXTENSIONS: Readonly<Record<string, string>> = Object.
 /** The job's folder under the channel's `99 Data Exchange/From YTM/`. */
 export const GEMINI_OUTPUT_SUBDIR = "gemini";
 export const GEMINI_MANIFEST_FILE = "manifest.json";
-export const GEMINI_KEY_FILE_NAME = "gemini-media.key";
 
 export type GeminiMediaSettings = {
   /** The owner's switch: the operator may generate (paid). Off by default. */

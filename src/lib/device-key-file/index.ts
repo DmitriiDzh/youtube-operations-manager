@@ -3,10 +3,9 @@ import { readFile, rm } from "node:fs/promises";
 import { writeJsonFileAtomic } from "@/lib/atomic-json-file";
 
 // ---------------------------------------------------------------------------
-// BL-174 (docs/roadmap/plans/GEMINI_MEDIA_PLAN.md §2.1, AGENTS.md §M): the per-device encryption key file, shared by every
-// module that keeps a secret entered in Settings (RunPod/S3 since Phase 14, the Gemini API key since BL-174). Moved here
-// unchanged from `media-generation/key-file.ts` + `adapters/key-file-fs.ts`; each module keeps its OWN file (clearing one
-// module's credentials deletes only its file) and its own error for an unusable file.
+// BL-174 (docs/roadmap/plans/GEMINI_MEDIA_PLAN.md §2.1, AGENTS.md §M): the per-device encryption key file. Since BL-199
+// (ADR 0042) its one user is `src/lib/device-secrets` (`device-secrets.key`, every typed secret of this computer); the
+// pre-BL-199 files (`media-generation.key`, `gemini-media.key`) are only read, by its legacy migration.
 // ---------------------------------------------------------------------------
 
 const KEY_BYTES = 32;
