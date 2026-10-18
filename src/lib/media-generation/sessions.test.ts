@@ -96,6 +96,8 @@ function fakeRunpod(
     runningAfterPolls?: number;
     terminateSticks?: boolean;
     containerNeverStarts?: boolean;
+    /** FO-REQ-0031: the first N pods created never start their container (a host without the image); later ones do. */
+    stuckPods?: number;
     capacity?: (input: { gpu?: { id: string } }) => boolean;
     /** BL-133 review: createPod creates the pod but its answer is lost (a timeout) for these GPUs. */
     createThenLoseAnswer?: (input: { gpu?: { id: string } }) => boolean;
@@ -133,7 +135,7 @@ function fakeRunpod(
     ports: null,
     // Like the live API: `RUNNING` + a runtime once the container is up; `containerNeverStarts` = RUNNING with no runtime.
     ...(opts.podCuda ? { cudaVersion: opts.podCuda(id) } : {}),
-    containerUptimeSec: pods.get(id)?.status === "RUNNING" && !opts.containerNeverStarts && (runningPolls.get(id) ?? 0) > (opts.uptimeAfterRunningPolls ?? 0) ? 5 : null,
+    containerUptimeSec: pods.get(id)?.status === "RUNNING" && !opts.containerNeverStarts && Number(id.slice(3)) > (opts.stuckPods ?? 0) && (runningPolls.get(id) ?? 0) > (opts.uptimeAfterRunningPolls ?? 0) ? 5 : null,
     env: {},
     createdAt: null,
     startedAt: null,
@@ -233,10 +235,12 @@ function fixture(opts: {
   accountWide?: (now: Date, localPodIds: string[], options?: { fresh?: boolean; spendOnly?: boolean }) => Promise<{ otherActiveSessions: number; otherSpentTodayUsd: number }>;
   /** BL-155 review 3: the proxy URL builder (default: a fixed test host). */
   proxyUrl?: (podId: string, port: number) => string;
+  /** FO-REQ-0031: the whole start budget (default 60 s), to see the container limit act before it. */
+  startMs?: number;
   /** BL-200: pod runtime support (`.ready` per runtime id, script uploads counted). */
   runtimes?: { isReady(runtimeId: string): Promise<boolean>; ensurePodScripts(): Promise<unknown> };
 } = {}) {
-  const capacityLog: Array<{ sessionId?: string; gpuTypeId: string; result: string; detail: string | null; hostCudaVersion?: string | null }> = [];
+  const capacityLog: Array<{ sessionId?: string; gpuTypeId: string; result: string; detail: string | null; hostCudaVersion?: string | null; containerSeconds?: number | null; bootSeconds?: number | null }> = [];
   let recordCalls = 0;
   const events: Array<{ actor: string; action: string; subject: string; details?: Record<string, unknown> }> = [];
   const settings = { ...READY_SETTINGS, ...opts.settings };
@@ -268,7 +272,7 @@ function fixture(opts: {
     sleep: async (ms) => {
       now = new Date(now.getTime() + ms);
     },
-    timeouts: { startMs: 60_000, pollMs: 5_000, stopMs: 20_000 },
+    timeouts: { startMs: opts.startMs ?? 60_000, pollMs: 5_000, stopMs: 20_000 },
     volumeLock: lock.lock,
     ...(opts.jobSummary ? { jobSummary: opts.jobSummary } : {}),
     ...(opts.accountWide ? { accountWide: opts.accountWide } : {}),
@@ -282,6 +286,10 @@ function fixture(opts: {
       setHostCuda: async (attemptId, host) => {
         const entry = capacityLog[attemptId];
         if (entry) entry.hostCudaVersion = host;
+      },
+      setTimings: async (attemptId, timings) => {
+        const entry = capacityLog[attemptId];
+        if (entry) Object.assign(entry, timings);
       },
     },
     events: { record: async (e) => void events.push(e) },
@@ -2001,7 +2009,8 @@ test("FO-REQ-0005: getFactorySettings shows the switch, the limits, the GPU choi
   assert.equal(before.gpu.minVramGb, 24);
   assert.equal(before.gpu.maxPricePerHr, 1.2);
   assert.equal(before.gpu.minCudaVersion, "12.8", "BL-155: the owner's minimum CUDA (default 12.8) is part of the factory's settings read");
-  assert.deepEqual(before.capacity, { retrySeconds: 30, waitMinutes: 20 });
+  // FO-REQ-0031 adds the stuck-container limit and retries (defaults 3 min, 1) to the same block.
+  assert.deepEqual(before.capacity, { retrySeconds: 30, waitMinutes: 20, containerStartMinutes: 3, containerStuckRetries: 1 });
   assert.deepEqual({ maxUsdPerDay: before.device.maxUsdPerDay, maxConcurrentSessions: before.device.maxConcurrentSessions, idleMinutes: before.device.idleMinutes }, { maxUsdPerDay: 10, maxConcurrentSessions: 3, idleMinutes: 10 });
 
   // One factory start waiting for capacity reserves its $2 cap; an owner request is not the factory's spend.
@@ -2705,4 +2714,71 @@ test("BL-200: no runtimeId = the active runtime; null = the image's built-in Com
   const running = await none.services.approveAndStartSession({ sessionId: session.sessionId });
   assert.deepEqual(none.runpod.createInputs[0].env, { COMFY_TOKEN: "tok-abc" });
   assert.equal(running.comfyVersion, null, "the default stats report no comfyui_version");
+});
+
+// -- FO-REQ-0031 (stuck container: give up early, place again, show the stage) ---------------------------------------------------
+// Expected from the request: a placed pod whose container does not run within containerStartMinutes is terminated at that limit
+// (not at the whole start budget), logged `container_stuck`, and the session is placed again up to containerStuckRetries times,
+// else it fails with media_container_stuck; usdCharged covers only the short wait; the start's stage is on the session.
+
+test("FO-REQ-0031: a container that never starts is terminated at the 3-min limit, logged container_stuck, and the session is placed again and runs", async () => {
+  const f = fixture({ runpod: fakeRunpod({ stuckPods: 1 }), startMs: 8 * 60_000, settings: { containerStartMinutes: 3, containerStuckRetries: 1 } });
+  const pending = await f.services.requestSession(operatorRequest);
+  const t0 = f.getNow().getTime();
+  const running = await f.services.approveAndStartSession({ sessionId: pending.sessionId });
+  assert.equal(running.status, "running");
+  assert.equal(running.podId, "pod2");
+  assert.ok(f.runpod.calls.includes("terminate:pod1"));
+  const stuckEntry = f.capacityLog.find((e) => e.result === "container_stuck");
+  assert.ok(stuckEntry && /did not start within 3 min/.test(stuckEntry.detail ?? ""));
+  assert.deepEqual(f.capacityLog.map((e) => e.result), ["placed", "container_stuck", "placed"]);
+  assert.ok(f.getNow().getTime() - t0 < 5 * 60_000, "the whole start took under 5 min, not the 8-min budget");
+  assert.equal(running.startStage, "ready");
+  assert.equal(typeof f.capacityLog[2].containerSeconds, "number");
+  assert.equal(typeof f.capacityLog[2].bootSeconds, "number");
+});
+
+test("FO-REQ-0031: when every host tried is stuck, the session fails with media_container_stuck after containerStuckRetries re-placements", async () => {
+  const f = fixture({ runpod: fakeRunpod({ stuckPods: 5 }), startMs: 8 * 60_000, settings: { containerStartMinutes: 2, containerStuckRetries: 1 } });
+  const pending = await f.services.requestSession(operatorRequest);
+  const t0 = f.getNow().getTime();
+  await assert.rejects(f.services.approveAndStartSession({ sessionId: pending.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_container_stuck");
+  const row = f.mem.rows.get(pending.sessionId)!;
+  assert.equal(row.status, "failed");
+  assert.match(row.error ?? "", /container_stuck/);
+  assert.deepEqual(f.capacityLog.map((e) => e.result), ["placed", "container_stuck", "placed", "container_stuck"]);
+  assert.ok(f.runpod.calls.includes("terminate:pod1") && f.runpod.calls.includes("terminate:pod2"));
+  assert.ok(f.getNow().getTime() - t0 < 6 * 60_000, "two 2-min waits, not two 8-min budgets");
+  assert.ok((row.usdCharged ?? 1) < (0.69 * 6) / 60, "billed only the short waits");
+});
+
+test("FO-REQ-0031: while starting, the session shows its stage (placed → pulling_image → comfy_booting → ready) with stageSince", async () => {
+  const seen: Array<string | null> = [];
+  const f = fixture({ runpod: fakeRunpod({ uptimeAfterRunningPolls: 2 }) });
+  const pending = await f.services.requestSession(operatorRequest);
+  const origTransition = f.mem.store.transition;
+  f.mem.store.transition = async (id, from, set) => {
+    if ("startStage" in set) seen.push(set.startStage ?? null);
+    return origTransition(id, from, set);
+  };
+  const running = await f.services.approveAndStartSession({ sessionId: pending.sessionId });
+  assert.deepEqual([...new Set(seen)], ["placed", "pulling_image", "comfy_booting", "ready"]);
+  assert.equal(running.startStage, "ready");
+  assert.ok(running.stageSince);
+});
+
+// FO-REQ-0031 review: a slow but healthy container (up before the limit) is never given up; with no retries allowed a stuck one ends
+// the start at once; a stuck pod does not use up the incompatible-host re-placements.
+test("FO-REQ-0031: a container that starts just before the limit is kept; containerStuckRetries 0 fails at the first stuck pod", async () => {
+  // uptimeAfterRunningPolls 30: RUNNING from the first poll, the container up after 30 more polls of 5 s = 2.5 min (< 3 min).
+  const slow = fixture({ runpod: fakeRunpod({ uptimeAfterRunningPolls: 30 }), startMs: 8 * 60_000, settings: { containerStartMinutes: 3 } });
+  const pending = await slow.services.requestSession(operatorRequest);
+  const running = await slow.services.approveAndStartSession({ sessionId: pending.sessionId });
+  assert.equal(running.status, "running");
+  assert.deepEqual(slow.capacityLog.map((e) => e.result), ["placed"]);
+
+  const none = fixture({ runpod: fakeRunpod({ stuckPods: 5 }), startMs: 8 * 60_000, settings: { containerStartMinutes: 2, containerStuckRetries: 0 } });
+  const p2 = await none.services.requestSession(operatorRequest);
+  await assert.rejects(none.services.approveAndStartSession({ sessionId: p2.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_container_stuck" && /Servers → Setup/.test(e.message));
+  assert.deepEqual(none.capacityLog.map((e) => e.result), ["placed", "container_stuck"]);
 });

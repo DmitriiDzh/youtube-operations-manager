@@ -4456,5 +4456,30 @@ Plan: `docs/roadmap/plans/VIDEO_COST_PLAN.md` §2 stages 2-4 (criteria 3-9). Sch
   create / validate, against the runtime's tested node list; an untested runtime and the built-in one are not checked. The graph's
   `class_type` values are the requirement; a separate `requiredNodes` field was not added (it would say nothing the API-format
   graph does not, and a strict registry schema would mark such files invalid on a build without it).
+- **Input check (BL-201, FO-REQ-0030).** The first real job on `comfy-0410-flux3` failed at `/prompt`: ComfyUI 0.41.0 made
+  `ImageScaleToTotalPixels.resolution_steps` required, and the node-presence test had passed.
+  - The test now reads the whole `/object_info` and checks each graph statically (`runtime-graph-check.ts`):
+    - a required input not set by value, link or parameter;
+    - a list value not allowed;
+    - an INT / FLOAT out of range or of the wrong type, or a non-boolean BOOLEAN;
+    - an undeclared input, as a warning.
+  - Linked, parameter-filled and file-list inputs are not value-checked.
+  - `templateRuntimeProblems` / `runtimeIncompatibleError` (`runtimes.ts`) are the single check used by both the job create and
+    the factory start, per template version.
+- **Stuck container (BL-202, FO-REQ-0031, schema v98).** In the start loop (`sessions.ts`), a placed pod whose container reports no
+  uptime within `containerStartMinutes` (shared setting, default 3) of placement is terminated at that limit. The attempt is logged
+  `container_stuck` (with RunPod's `machineId` when the answer has one), and the session is placed again (`{ replace }`, as a
+  BL-155 incompatible host) up to `containerStuckRetries` (default 1); after that the start fails with `media_container_stuck`.
+  - The 8-min start budget still counts from placement (unchanged). A slow but healthy host can need more than the limit; the
+    owner raises `containerStartMinutes` (≤ 7, below the budget) or the retries, and the refusal says so.
+  - Counted apart: stuck re-placements (`containerStuckRetries`) and incompatible-host ones (`MAX_EXTRA_PLACEMENTS`). A re-placement
+    that then finds no capacity fails with the code of what caused it.
+  - The request's separate `container_running` stage is folded into `comfy_booting` (the container is up and ComfyUI boots). A
+    terminal session keeps its last stage, which shows where a failed start stopped.
+  - A build whose container was once seen running (`containerStartedAt`) is never judged stuck afterwards.
+  - The row carries `start_stage` / `stage_since` (placed → pulling_image → comfy_booting → ready), and the `placed` capacity
+    entry gets `container_seconds` / `boot_seconds` once ready.
+  - Runtime build pods use the same limit and retry count (`runtime-builds.ts`).
+  - RunPod's REST API cannot exclude a machine, so "avoid a bad host" (request item 3) is not done; a retry may land anywhere.
 - **Not done.** Our own Docker image; pruning old runtimes from the volume (RISK-132); running a template's job in the test.
 

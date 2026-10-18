@@ -388,7 +388,7 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.23.0",
+    factoryApiVersion: "1.24.0",
     tools: [
       "factory_get_capabilities",
       "factory_list_logical_paths",

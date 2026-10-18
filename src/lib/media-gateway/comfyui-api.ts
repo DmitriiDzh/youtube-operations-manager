@@ -148,6 +148,14 @@ export function createComfyUiClient(args: {
     return { status: response.status, body };
   }
 
+  async function getObjectInfo(): Promise<Record<string, unknown>> {
+    const { body } = await request("GET", "/object_info");
+    const info = asRecord(body);
+    const entries = Object.entries(info).filter(([name]) => name.length > 0 && name.length <= 200);
+    if (entries.length === 0) throw new DomainError({ code: "comfyui_unavailable", message: "GET /object_info listed no node types (still booting, or another server answered)." });
+    return Object.fromEntries(entries);
+  }
+
   return {
     baseUrl,
 
@@ -168,12 +176,14 @@ export function createComfyUiClient(args: {
      * the names leave this call; the per-node input definitions (megabytes) are not kept.
      */
     async getNodeTypes(): Promise<string[]> {
-      const { body } = await request("GET", "/object_info");
-      const info = asRecord(body);
-      const names = Object.keys(info).filter((name) => name.length > 0 && name.length <= 200);
-      if (names.length === 0) throw new DomainError({ code: "comfyui_unavailable", message: "GET /object_info listed no node types (still booting, or another server answered)." });
-      return names.sort();
+      return Object.keys(await getObjectInfo()).sort();
     },
+
+    /**
+     * FO-REQ-0030: the whole `GET /object_info` answer (node type → its input / output definitions), for checking a template's
+     * inputs against the runtime without running it. Read-only.
+     */
+    getObjectInfo,
 
     /**
      * Queues an API-format workflow. ComfyUI validates it first: a validation failure comes back as

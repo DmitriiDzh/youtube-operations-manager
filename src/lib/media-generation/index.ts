@@ -3,7 +3,7 @@ import { createHfTokenServices } from "./hf-token";
 import { createRuntimeServices } from "./runtimes";
 import { createRuntimeBuildServices } from "./runtime-builds";
 import { createRuntimeTestServices } from "./runtime-tests";
-import { assertActiveRuntimeUnchanged, missingNodeTypes } from "./runtimes";
+import { assertActiveRuntimeUnchanged, runtimeIncompatibleError, templateRuntimeProblems } from "./runtimes";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -11,7 +11,7 @@ import { hostname } from "node:os";
 import { createAssetCatalogCore } from "@/lib/asset-catalog";
 import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
-import { appDataPaths, getLatestMediaGpuAvailabilityAt, listMediaSessionsNeedingCostSplit, setMediaJobCostShare, getMediaSessionJobSummary, insertMediaCapacityAttempt, insertMediaGpuAvailabilitySnapshot, listMediaCapacityAttempts, listMediaGpuAvailabilityLog, setMediaCapacityAttemptHostCuda, summarizeMediaGpuAvailabilityLog, getMediaTemplateAdoptionsJson, getMediaTemplateSyncLastJson, listMediaControlEvents, setMediaTemplateAdoptionsJson, setMediaTemplateSyncLastJson } from "@/lib/db";
+import { appDataPaths, getLatestMediaGpuAvailabilityAt, listMediaSessionsNeedingCostSplit, setMediaJobCostShare, getMediaSessionJobSummary, insertMediaCapacityAttempt, insertMediaGpuAvailabilitySnapshot, listMediaCapacityAttempts, listMediaGpuAvailabilityLog, setMediaCapacityAttemptHostCuda, setMediaCapacityAttemptTimings, summarizeMediaGpuAvailabilityLog, getMediaTemplateAdoptionsJson, getMediaTemplateSyncLastJson, listMediaControlEvents, setMediaTemplateAdoptionsJson, setMediaTemplateSyncLastJson } from "@/lib/db";
 import { createLogicalPathsCore } from "@/lib/logical-paths";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
 import { comfyUiProxyBaseUrl, createComfyUiClient, createGithubClient, createHuggingFaceClient, createRunpodApiClient, createRunpodS3Client } from "@/lib/media-gateway";
@@ -175,7 +175,7 @@ function buildCore(jobScheduling: JobScheduling) {
   const sessions = createMediaSessionServices({
     store: createMediaSessionStore(),
     jobSummary: (sessionId) => getMediaSessionJobSummary(sessionId),
-    capacityLog: { record: (attempt) => insertMediaCapacityAttempt(attempt), setHostCuda: (attemptId, host) => setMediaCapacityAttemptHostCuda(attemptId, host) },
+    capacityLog: { record: (attempt) => insertMediaCapacityAttempt(attempt), setHostCuda: (attemptId, host) => setMediaCapacityAttemptHostCuda(attemptId, host), setTimings: (attemptId, timings) => setMediaCapacityAttemptTimings(attemptId, timings) },
     events: createMediaControlEventSink(),
     base,
     createComfyClient: ({ baseUrl, token }) => createComfyUiClient({ baseUrl, token }),
@@ -219,7 +219,7 @@ function buildCore(jobScheduling: JobScheduling) {
       touchActivity: (sessionId) => sessions.touchActivity(sessionId),
     },
     s3: () => base.s3(),
-    runtimeNodes: async (runtimeId) => (await runtimes.testedNodes(runtimeId))?.nodes ?? null,
+    runtimeTested: (runtimeId) => runtimes.testedNodes(runtimeId),
     async resolveOutputRoot(channelId) {
       const workspace = await workspaces.getWorkspace({ channelId });
       if (!workspace.configured) {
@@ -293,8 +293,17 @@ function buildCore(jobScheduling: JobScheduling) {
   // BL-200 stage 3 (AC-RT-05/09): a runtime test -- the build if needed, a GPU session capped by the owner's test limit, the node
   // list against each template, test.json. The Operator's session goes through its own factory limits; the owner's is approved
   // as the owner.
+  /** FO-REQ-0030: the "nodeId.input" pairs a template's parameters fill at job time (they count as set in its graph). */
+  const parameterInputsOf = (parametersJson: string): string[] => {
+    try {
+      const parameters = JSON.parse(parametersJson) as Array<{ nodeId?: unknown; input?: unknown }>;
+      return Array.isArray(parameters) ? parameters.filter((p) => typeof p.nodeId === "string" && typeof p.input === "string").map((p) => `${p.nodeId}.${p.input}`) : [];
+    } catch {
+      return [];
+    }
+  };
   const runtimeTemplates = async () =>
-    (await createMediaJobStore().templates.list()).map((t) => ({ templateId: t.id, version: t.version, source: t.source ?? ("owner" as const), workflowJson: t.workflowJson }));
+    (await createMediaJobStore().templates.list()).map((t) => ({ templateId: t.id, version: t.version, source: t.source ?? ("owner" as const), workflowJson: t.workflowJson, parameterInputs: parameterInputsOf(t.parametersJson) }));
   const runtimeTests = createRuntimeTestServices({
     store: createRuntimeTestStore(),
     getSettings: () => base.getSettings(),
@@ -318,8 +327,8 @@ function buildCore(jobScheduling: JobScheduling) {
       get: (sessionId) => sessions.getSession({ sessionId }),
       async readNodes(sessionId) {
         const comfy = await sessions.comfyClientForSession(sessionId);
-        const [nodes, stats] = await Promise.all([comfy.getNodeTypes(), comfy.getSystemStats()]);
-        return { nodes, comfyVersion: comfyVersionOf(stats) };
+        const [objectInfo, stats] = await Promise.all([comfy.getObjectInfo(), comfy.getSystemStats()]);
+        return { objectInfo, comfyVersion: comfyVersionOf(stats) };
       },
       async stop(sessionId, actor) {
         if (actor === "factory") return sessions.factoryStopSession({ sessionId });
@@ -342,14 +351,9 @@ function buildCore(jobScheduling: JobScheduling) {
     const tested = await runtimes.testedNodes(runtimeId);
     const template = (await runtimeTemplates()).find((t) => t.templateId === input.templateId);
     if (!tested || !template) return;
-    const missing = missingNodeTypes(template.workflowJson, tested.nodes);
-    if (missing.length > 0) {
-      throw new DomainError({
-        code: "media_runtime_incompatible",
-        message: `Template ${input.templateId} needs node types runtime ${runtimeId} does not have: ${missing.join(", ")}; no pod was started.`,
-        details: { templateId: input.templateId, runtimeId, missing },
-      });
-    }
+    // FO-REQ-0030: also the input problems the runtime's test found in this template version.
+    const refusal = runtimeIncompatibleError(input.templateId, runtimeId, templateRuntimeProblems(template, tested));
+    if (refusal) throw refusal;
   };
   /** BL-132 audit (plan §2.5): newest first. */
   const listControlEvents = async (limit = 50): Promise<MediaControlEventView[]> =>
@@ -371,6 +375,8 @@ function buildCore(jobScheduling: JobScheduling) {
       result: row.result as MediaCapacityAttempt["result"],
       detail: row.detail ?? null,
       hostCudaVersion: row.hostCudaVersion ?? null,
+      containerSeconds: row.containerSeconds ?? null,
+      bootSeconds: row.bootSeconds ?? null,
     }));
   // BL-138: the RunPod account id (a GraphQL read). Kept an hour when known, 5 minutes when it could not be read, and dropped
   // as soon as the stored credentials change (independent review: a replaced or imported key may be another account).

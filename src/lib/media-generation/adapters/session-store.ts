@@ -57,6 +57,8 @@ function fromDb(row: StoredMediaSession): StoredSessionRow {
     hostCudaVersion: row.hostCudaVersion ?? null,
     runtimeId: row.runtimeId ?? null,
     comfyVersion: row.comfyVersion ?? null,
+    startStage: row.startStage ?? null,
+    stageSince: row.stageSince ?? null,
   };
 }
 

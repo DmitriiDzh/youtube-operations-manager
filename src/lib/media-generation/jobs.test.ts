@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { TestedRuntime } from "./runtimes";
 import { createHash } from "node:crypto";
 import test from "node:test";
 import type { ComfyHistoryEntry, ComfyProgressEvent, ComfyUiClient, RunpodS3Client, S3ObjectSummary } from "@/lib/media-gateway";
@@ -205,7 +206,7 @@ function completed(outputs: Array<{ nodeId: string; kind: string; filename: stri
   return { promptId: "prompt-1", status: "completed", statusMessages: ["execution_success"], outputs: outputs.map((o) => ({ ...o, type: "output" })), raw: {} };
 }
 
-function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<typeof fakeS3>; sessionRunning?: boolean; workspaceFails?: boolean; sentToYtm?: Map<string, { path: string; bytes: number }>; progress?: JobProgressRegistry; hostCudaVersion?: string | null; runtimeId?: string | null; runtimeNodes?: (runtimeId: string) => Promise<ReadonlySet<string> | null> } = {}) {
+function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<typeof fakeS3>; sessionRunning?: boolean; workspaceFails?: boolean; sentToYtm?: Map<string, { path: string; bytes: number }>; progress?: JobProgressRegistry; hostCudaVersion?: string | null; runtimeId?: string | null; runtimeTested?: (runtimeId: string) => Promise<TestedRuntime | null> } = {}) {
   const mem = memoryStore();
   const resolvedInputs: string[] = [];
   const comfy = opts.comfy ?? fakeComfy([null, completed([{ nodeId: "9", kind: "images", filename: "ComfyUI_00001_.png", subfolder: "job-1" }])]);
@@ -258,7 +259,7 @@ function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<t
         activity.push(sessionId);
       },
     },
-    ...(opts.runtimeNodes ? { runtimeNodes: opts.runtimeNodes } : {}),
+    ...(opts.runtimeTested ? { runtimeTested: opts.runtimeTested } : {}),
     s3: async () => {
       if (s3Fails) throw new Error("media gateway is turned off");
       return s3.client;
@@ -2252,7 +2253,7 @@ test("BL-194: a job's manifest.json carries its video number (null when not link
 // an untested runtime (no list) are not checked.
 
 test("AC-RT-07: a template needing a node type the session's runtime lacks is refused with the missing list; nothing is created or sent", async () => {
-  const f = fixture({ runtimeId: "comfy-0410-flux3", runtimeNodes: async () => new Set(["CheckpointLoaderSimple", "CLIPTextEncode"]) });
+  const f = fixture({ runtimeId: "comfy-0410-flux3", runtimeTested: async () => ({ nodes: new Set(["CheckpointLoaderSimple", "CLIPTextEncode"]), comfyVersion: "0.41.0", templates: [] }) });
   const t = await importDefault(f.services);
   await assert.rejects(
     f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "a cat" }, createdBy: "agent" }),
@@ -2264,10 +2265,46 @@ test("AC-RT-07: a template needing a node type the session's runtime lacks is re
 });
 
 test("AC-RT-07: on the built-in runtime, or on a runtime with no tested list, nothing is checked", async () => {
-  for (const opts of [{ runtimeId: null, runtimeNodes: async () => new Set<string>() }, { runtimeId: "untested", runtimeNodes: async () => null }]) {
+  for (const opts of [{ runtimeId: null, runtimeTested: async () => ({ nodes: new Set<string>(), comfyVersion: null, templates: [] }) }, { runtimeId: "untested", runtimeTested: async () => null }]) {
     const f = fixture(opts);
     const t = await importDefault(f.services);
     const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "a cat" }, createdBy: "agent" });
     assert.equal(job.status, "submitted", String(opts.runtimeId));
   }
+});
+
+// FO-REQ-0030: the same refusal for input problems the runtime's test found in THIS template version (with them in details); another
+// version's problems, and unknown-input warnings, do not refuse.
+test("FO-REQ-0030: a template version whose test found a missing required input is refused before anything runs; another version is not", async () => {
+  const nodes = new Set(["CheckpointLoaderSimple", "CLIPTextEncode", "KSampler", "SaveImage"]);
+  const issue = { nodeId: "3", classType: "KSampler", input: "denoise", problem: "required_missing" as const };
+  // The imported template's id is known only after the import; the fake reads it when the job is created.
+  const holder = { templateId: "" };
+  const make = (version: number, problem: "required_missing" | "unknown_input" = "required_missing") =>
+    fixture({ runtimeId: "comfy-0410-flux3", runtimeTested: async () => ({ nodes, comfyVersion: "0.41.0", templates: [{ templateId: holder.templateId, version, ok: false, missing: [], invalid: [{ ...issue, problem }] }] }) });
+  const f = make(1);
+  const t = await importDefault(f.services);
+  holder.templateId = t.templateId;
+  await assert.rejects(
+    f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "a cat" }, createdBy: "agent" }),
+    (e: unknown) => isDomainError(e) && e.code === "media_runtime_incompatible" && JSON.stringify((e.details as { invalid: unknown }).invalid) === JSON.stringify([issue])
+  );
+  assert.equal(f.comfy.submits.length, 0);
+  for (const other of [make(2), make(1, "unknown_input")]) {
+    const t2 = await importDefault(other.services);
+    holder.templateId = t2.templateId;
+    const job = await other.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t2.templateId, params: { prompt: "a cat" }, createdBy: "agent" });
+    assert.equal(job.status, "submitted");
+  }
+});
+
+// FO-REQ-0030 review: a result recorded for another graph (the template reinstalled at the same version with a fix) does not refuse.
+test("FO-REQ-0030: a test result for a different graph of the same template version does not refuse the job", async () => {
+  const nodes = new Set(["CheckpointLoaderSimple", "CLIPTextEncode", "KSampler", "SaveImage"]);
+  const holder = { templateId: "" };
+  const f = fixture({ runtimeId: "comfy-0410-flux3", runtimeTested: async () => ({ nodes, comfyVersion: "0.41.0", templates: [{ templateId: holder.templateId, version: 1, ok: false, missing: [], graphSha256: "0".repeat(64), invalid: [{ nodeId: "3", classType: "KSampler", input: "denoise", problem: "required_missing" as const }] }] }) });
+  const t = await importDefault(f.services);
+  holder.templateId = t.templateId;
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "a cat" }, createdBy: "agent" });
+  assert.equal(job.status, "submitted");
 });

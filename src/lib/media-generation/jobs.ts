@@ -30,7 +30,7 @@ import {
 } from "./contracts";
 import type { MediaControlEvent } from "./models";
 import { hostCudaTooOld } from "./cuda-host";
-import { missingNodeTypes } from "./runtimes";
+import { runtimeIncompatibleError, templateRuntimeProblems, type TestedRuntime } from "./runtimes";
 import {
   adoptTemplateInputSchema,
   checkDeclaredModels,
@@ -170,8 +170,8 @@ export type JobServiceDependencies = {
     touchActivity(sessionId: string): Promise<void>;
   };
   s3(): Promise<RunpodS3Client>;
-  /** BL-200 (AC-RT-07): a runtime's tested node list; null = never tested (then nothing is checked). Absent = no runtimes. */
-  runtimeNodes?(runtimeId: string): Promise<ReadonlySet<string> | null>;
+  /** BL-200 (AC-RT-07) / FO-REQ-0030: a runtime's last test (node list, per-template input problems); null = never tested. */
+  runtimeTested?(runtimeId: string): Promise<TestedRuntime | null>;
   /** `<workspace>/99 Data Exchange/From YTM` for the channel (throws `media_workspace_unavailable`). */
   resolveOutputRoot(channelId: string): Promise<string>;
   fs: {
@@ -942,16 +942,12 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
    * anything is uploaded or queued. The image's built-in ComfyUI and an untested runtime have no list: nothing is checked.
    */
   async function assertRuntimeFitsTemplate(session: { sessionId: string; runtimeId?: string | null }, template: StoredTemplateRow): Promise<void> {
-    if (!session.runtimeId || !deps.runtimeNodes) return;
-    const nodes = await deps.runtimeNodes(session.runtimeId);
-    if (!nodes) return;
-    const missing = missingNodeTypes(template.workflowJson, nodes);
-    if (missing.length === 0) return;
-    throw new DomainError({
-      code: "media_runtime_incompatible",
-      message: `Template ${template.id} needs node types runtime ${session.runtimeId} does not have: ${missing.join(", ")}. Use a runtime that has them (factory_media_test_runtime shows each runtime's result per template).`,
-      details: { sessionId: session.sessionId, templateId: template.id, runtimeId: session.runtimeId, missing },
-    });
+    if (!session.runtimeId || !deps.runtimeTested) return;
+    const tested = await deps.runtimeTested(session.runtimeId);
+    if (!tested) return;
+    const problems = templateRuntimeProblems({ templateId: template.id, version: template.version, workflowJson: template.workflowJson }, tested);
+    const refusal = runtimeIncompatibleError(template.id, session.runtimeId, problems, { sessionId: session.sessionId });
+    if (refusal) throw refusal;
   }
 
   async function requireTemplate(templateId: string): Promise<StoredTemplateRow> {

@@ -1,7 +1,8 @@
 import { DomainError, MEDIA_SESSION_TERMINAL_STATUSES, RUNTIME_ID_PATTERN, type MediaSession, type MediaSettings } from "./contracts";
 import type { MediaControlEvent, PullActor } from "./models";
 import type { RuntimeBuildJob } from "./runtime-builds";
-import { missingNodeTypes, type RuntimeTestResult } from "./runtimes";
+import { blockingIssues, checkGraphInputs, compactNodeInfo } from "./runtime-graph-check";
+import { graphSha256, missingNodeTypes, type RuntimeTestResult } from "./runtimes";
 
 // ---------------------------------------------------------------------------
 // BL-200 stage 3 (ADR 0043, POD_RUNTIMES_PLAN.md §5, AC-RT-05/09): testing a pod runtime profile. A test is asynchronous and is
@@ -43,7 +44,7 @@ export type RuntimeTestJob = {
   templates: RuntimeTestResult["templates"] | null;
 };
 
-export type RuntimeTestTemplate = { templateId: string; version: number; source: "owner" | "factory"; workflowJson: string };
+export type RuntimeTestTemplate = { templateId: string; version: number; source: "owner" | "factory"; workflowJson: string; /** FO-REQ-0030: "nodeId.input" pairs its parameters fill at job time. */ parameterInputs?: string[] };
 
 export type RuntimeTestDeps = {
   store: { getJson(): Promise<string | null>; updateJson(mutate: (current: string | null) => string): Promise<string> };
@@ -54,7 +55,8 @@ export type RuntimeTestDeps = {
     /** Starts (requests and approves) a session on the runtime; `approved: false` = held (by a limit) and nothing runs. */
     start(input: { channelId: string; runtimeId: string; maxMinutes: number; maxUsd: number; actor: PullActor }): Promise<{ sessionId: string; approved: boolean; heldBy: string | null }>;
     get(sessionId: string): Promise<MediaSession>;
-    readNodes(sessionId: string): Promise<{ nodes: string[]; comfyVersion: string | null }>;
+    /** `/object_info` in full (FO-REQ-0030: the inputs too) and the ComfyUI version. */
+    readNodes(sessionId: string): Promise<{ objectInfo: Record<string, unknown>; comfyVersion: string | null }>;
     stop(sessionId: string, actor: PullActor): Promise<MediaSession>;
   };
   templates(): Promise<RuntimeTestTemplate[]>;
@@ -134,22 +136,25 @@ export function createRuntimeTestServices(deps: RuntimeTestDeps) {
   }
 
   async function check(job: RuntimeTestJob, session: MediaSession): Promise<RuntimeTestJob> {
-    let read: { nodes: string[]; comfyVersion: string | null };
+    let read: { objectInfo: Record<string, unknown>; comfyVersion: string | null };
     try {
       read = await deps.sessions.readNodes(session.sessionId);
     } catch (error) {
       return fail(job, `ComfyUI on the runtime did not list its nodes: ${error instanceof Error ? error.message : String(error)}`);
     }
-    const nodes = new Set(read.nodes);
+    const nodes = new Set(Object.keys(read.objectInfo));
+    const nodeInfo = compactNodeInfo(read.objectInfo);
     const templates = (await templatesFor(job)).map((t) => {
       const missing = missingNodeTypes(t.workflowJson, nodes);
-      return { templateId: t.templateId, version: t.version, ok: missing.length === 0, missing };
+      // FO-REQ-0030: the graph's inputs against this runtime's node definitions; only blocking problems fail the template.
+      const invalid = checkGraphInputs(t.workflowJson, nodeInfo, new Set(t.parameterInputs ?? []));
+      return { templateId: t.templateId, version: t.version, ok: missing.length === 0 && blockingIssues(invalid).length === 0, missing, invalid, graphSha256: graphSha256(t.workflowJson) };
     });
     const bootSeconds = session.startedAt && session.readyAt ? Math.round((Date.parse(session.readyAt) - Date.parse(session.startedAt)) / 1000) : null;
     const stopped = await stopQuietly(job);
     const costUsd = stopped?.usdCharged ?? session.usdCharged ?? null;
     const ok = templates.every((t) => t.ok);
-    const result: RuntimeTestResult = { ok, testedAt: nowIso(), comfyVersion: session.comfyVersion ?? read.comfyVersion, nodes: [...nodes].sort(), templates, costUsd, bootSeconds, error: ok ? null : "some templates need node types this runtime lacks", allTemplates: job.templateIds === null };
+    const result: RuntimeTestResult = { ok, testedAt: nowIso(), comfyVersion: session.comfyVersion ?? read.comfyVersion, nodes: [...nodes].sort(), templates, costUsd, bootSeconds, error: ok ? null : "some templates need node types this runtime lacks, or set inputs its nodes do not accept", allTemplates: job.templateIds === null };
     await deps.runtimes.writeTestResult(job.runtimeId, result);
     const finished = await save({ ...job, status: ok ? "passed" : "failed", finishedAt: result.testedAt, error: result.error ?? null, costUsd, bootSeconds, templates });
     await audit({ actor: job.requestedBy, action: ok ? "runtime_tested" : "runtime_test_failed", subject: job.runtimeId, details: { testId: job.testId, sessionId: job.sessionId, comfyVersion: result.comfyVersion, nodes: nodes.size, failed: templates.filter((t) => !t.ok), costUsd, bootSeconds } });

@@ -4,7 +4,7 @@ import { DEFAULT_MEDIA_SETTINGS, isDomainError, type MediaSession, type MediaSet
 import type { MediaControlEvent } from "./models";
 import type { RuntimeBuildJob } from "./runtime-builds";
 import { createRuntimeTestServices, runtimeTestMinutes, type RuntimeTestTemplate } from "./runtime-tests";
-import { missingNodeTypes, requiredNodeTypes, type RuntimeTestResult } from "./runtimes";
+import { graphSha256, missingNodeTypes, requiredNodeTypes, type RuntimeTestResult } from "./runtimes";
 
 // BL-200 stage 3 (POD_RUNTIMES_PLAN.md §5, AC-RT-05 and AC-RT-09; ADR 0043). AC-RT-05: the test writes the per-template result; a
 // template using a class_type absent from the node list fails with that type. AC-RT-09: the test's GPU minutes never exceed
@@ -18,7 +18,7 @@ const TEMPLATES: RuntimeTestTemplate[] = [
   { templateId: "owner-local", version: 1, source: "owner", workflowJson: graph("SAM3Segment") },
 ];
 
-function harness(options: { ready?: boolean; nodes?: string[]; approved?: boolean; settings?: Partial<MediaSettings> } = {}) {
+function harness(options: { ready?: boolean; nodes?: string[]; objectInfo?: Record<string, unknown>; templates?: RuntimeTestTemplate[]; approved?: boolean; settings?: Partial<MediaSettings> } = {}) {
   let ready = options.ready ?? true;
   let now = new Date("2026-10-18T16:00:00Z");
   const builds: RuntimeBuildJob[] = [];
@@ -53,13 +53,14 @@ function harness(options: { ready?: boolean; nodes?: string[]; approved?: boolea
         return { sessionId: "s1", approved: options.approved ?? true, heldBy: options.approved === false ? "Factory sessions are switched off (Servers → Setup)" : null };
       },
       get: async () => session(),
-      readNodes: async () => ({ nodes: options.nodes ?? ["CheckpointLoaderSimple", "KSampler", "SaveImage", "ReferenceMultiLatent", "Flux3LayoutPrompt"], comfyVersion: "0.41.0" }),
+      // Node types with no declared inputs unless the test gives a full `/object_info`.
+      readNodes: async () => ({ objectInfo: options.objectInfo ?? Object.fromEntries((options.nodes ?? ["CheckpointLoaderSimple", "KSampler", "SaveImage", "ReferenceMultiLatent", "Flux3LayoutPrompt"]).map((n) => [n, { input: { required: {} } }])), comfyVersion: "0.41.0" }),
       stop: async (id) => {
         stopped.push(id);
         return session();
       },
     },
-    templates: async () => TEMPLATES,
+    templates: async () => options.templates ?? TEMPLATES,
     events: { record: async (e) => void events.push(e) },
     generateId: () => "t1",
     clock: { now: () => now },
@@ -113,9 +114,9 @@ test("AC-RT-05/09: a built runtime -- a GPU session capped at runtimeTestMaxUsd,
   assert.equal(result.costUsd, 0.04);
   // Registry templates only (source factory) by default; the owner's local one is not checked.
   assert.deepEqual(result.templates, [
-    { templateId: "p1-flux-schnell", version: 2, ok: true, missing: [] },
-    { templateId: "p3-flux3-klein-edit", version: 1, ok: true, missing: [] },
-  ]);
+    { templateId: "p1-flux-schnell", version: 2, ok: true, missing: [], invalid: [] },
+    { templateId: "p3-flux3-klein-edit", version: 1, ok: true, missing: [], invalid: [] },
+  ].map((t) => ({ ...t, graphSha256: graphSha256(TEMPLATES.find((x) => x.templateId === t.templateId)!.workflowJson) })));
   assert.ok(h.events.some((e) => e.action === "runtime_tested" && e.actor === "factory"));
 });
 
@@ -125,7 +126,9 @@ test("AC-RT-05: a template using a node type the runtime lacks fails with that t
   h.setSession("running");
   const [done] = await h.services.pollRuntimeTests();
   assert.equal(done.status, "failed");
-  assert.deepEqual(h.written[0].templates.find((t) => t.templateId === "p3-flux3-klein-edit"), { templateId: "p3-flux3-klein-edit", version: 1, ok: false, missing: ["Flux3LayoutPrompt", "ReferenceMultiLatent"] });
+  const { graphSha256: _hash, ...p3 } = h.written[0].templates.find((t) => t.templateId === "p3-flux3-klein-edit")!;
+  void _hash;
+  assert.deepEqual(p3, { templateId: "p3-flux3-klein-edit", version: 1, ok: false, missing: ["Flux3LayoutPrompt", "ReferenceMultiLatent"], invalid: [] });
   assert.equal(h.written[0].ok, false);
 });
 
@@ -190,4 +193,34 @@ test("AC-RT-06 input: a test of every registry template records allTemplates; a 
   some.setSession("running");
   await some.services.pollRuntimeTests();
   assert.equal(some.written[0].allTemplates, false);
+});
+
+// FO-REQ-0030 acceptance: v2 of p3-flux3-klein-edit sets no `resolution_steps` on ImageScaleToTotalPixels, which ComfyUI 0.41.0
+// requires -> invalid, required_missing, the template and the test fail; a parameter-filled input counts as set; an unknown input
+// alone is only a warning.
+test("FO-REQ-0030: the test reports each template's input problems; a required input missing fails it, an unknown input does not", async () => {
+  const objectInfo = {
+    LoadImage: { input: { required: { image: [["a.png"]] } } },
+    ImageScaleToTotalPixels: { input: { required: { image: ["IMAGE"], upscale_method: [["lanczos"]], megapixels: ["FLOAT", { min: 0.01, max: 16 }], resolution_steps: ["INT", { min: 1, max: 256 }] } } },
+    SaveImage: { input: { required: { images: ["IMAGE"], filename_prefix: ["STRING"] } } },
+  };
+  const g = (scale: Record<string, unknown>, save: Record<string, unknown> = {}) =>
+    JSON.stringify({ "11": { class_type: "LoadImage", inputs: { image: "x.png" } }, "12": { class_type: "ImageScaleToTotalPixels", inputs: { image: ["11", 0], upscale_method: "lanczos", megapixels: 1, ...scale } }, "9": { class_type: "SaveImage", inputs: { images: ["12", 0], filename_prefix: "out", ...save } } });
+  const h = harness({
+    objectInfo,
+    templates: [
+      { templateId: "p3-flux3-klein-edit", version: 2, source: "factory", workflowJson: g({}), parameterInputs: ["11.image"] },
+      { templateId: "p3-flux3-klein-edit-v3", version: 3, source: "factory", workflowJson: g({ resolution_steps: 1 }, { legacy_flag: true }), parameterInputs: ["11.image"] },
+    ],
+  });
+  await h.services.testRuntime({ runtimeId: RID, channelId: "UC1" });
+  h.setSession("running");
+  const [done] = await h.services.pollRuntimeTests();
+  assert.equal(done.status, "failed");
+  const [{ graphSha256: _h, ...v2 }, v3] = h.written[0].templates;
+  void _h;
+  assert.deepEqual(v2, { templateId: "p3-flux3-klein-edit", version: 2, ok: false, missing: [], invalid: [{ nodeId: "12", classType: "ImageScaleToTotalPixels", input: "resolution_steps", problem: "required_missing" }] });
+  assert.equal(v3.ok, true, "an unknown input is a warning only");
+  assert.deepEqual(v3.invalid, [{ nodeId: "9", classType: "SaveImage", input: "legacy_flag", problem: "unknown_input" }]);
+  assert.equal(h.written[0].nodes.length, 3);
 });

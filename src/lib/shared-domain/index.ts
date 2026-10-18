@@ -82,6 +82,7 @@ export type DomainErrorCode =
   | "media_runtime_incompatible"
   | "media_runtime_not_ready"
   | "media_runtime_activation_disabled"
+  | "media_container_stuck"
   | "capability_not_supported"
   | "endpoint_not_allowed"
   | "connection_disabled"

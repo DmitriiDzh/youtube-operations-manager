@@ -29,6 +29,7 @@ export const errors = {
   "errors.github_unavailable": "GitHub could not be reached or refused the request. Try again later.",
   "errors.media_runtime_incompatible": "The pod runtime lacks nodes this template needs; nothing was started.",
   "errors.media_runtime_not_ready": "This pod runtime is not built or tested yet.",
+  "errors.media_container_stuck": "The pod's container did not start in time on any host tried; start the session again.",
   "errors.media_runtime_activation_disabled": "The owner has not allowed the Factory Operator to change the active pod runtime.",
   "errors.send_merge_conflicts": "The selected change sets change the same fields. Choose which variant to send.",
   "errors.duplicate_target_in_row": "Two selected changes target the same field of one video — keep one of them.",

@@ -1267,8 +1267,12 @@ function statusDetail(t: Translate, s: Session, nowMs: number): string {
         count: s.capacity?.attempts ?? 0,
         giveUp: s.capacity?.waitUntil ? t("media.sessions.detailGivesUp", { date: formatDisplayDateTime(s.capacity.waitUntil) }) : "",
       });
-    case "starting":
-      return t("media.sessions.detailStarting", { since: sinceLabel(t, s.startedAt, nowMs) });
+    case "starting": {
+      // FO-REQ-0031: which stage the start is in, and for how long.
+      const base = t("media.sessions.detailStarting", { since: sinceLabel(t, s.startedAt, nowMs) });
+      const stageKey = s.startStage ? (`media.sessions.stage.${s.startStage}` as const) : null;
+      return stageKey && isUiTextKey(stageKey) ? `${base} · ${t(stageKey)} ${sinceLabel(t, s.stageSince, nowMs)}` : base;
+    }
     case "running":
       return s.lastActivityAt ? t("media.sessions.detailReadyActive", { since: sinceLabel(t, s.lastActivityAt, nowMs) }) : t("media.sessions.detailReady");
     case "stopping":
@@ -2800,6 +2804,12 @@ const RUNTIME_STATUS_KEYS: Record<RuntimeView["status"], UiTextKey> = {
   test_failed: "media.runtimes.status.test_failed",
   tested: "media.runtimes.status.tested",
 };
+const RUNTIME_INPUT_PROBLEM_KEYS: Record<"required_missing" | "unknown_input" | "bad_value" | "out_of_range", UiTextKey> = {
+  required_missing: "media.runtimes.problem.required_missing",
+  unknown_input: "media.runtimes.problem.unknown_input",
+  bad_value: "media.runtimes.problem.bad_value",
+  out_of_range: "media.runtimes.problem.out_of_range",
+};
 const TEST_STATUS_KEYS: Record<RuntimeTestJob["status"], UiTextKey> = {
   building: "media.runtimes.test.building",
   starting: "media.runtimes.test.starting",
@@ -2963,7 +2973,16 @@ export function PodRuntimesCard({ settings, onChanged }: { settings: Settings; o
                 {failed.length > 0 && (
                   <ul className="space-y-0.5 text-xs text-amber-300">
                     {failed.map((x) => (
-                      <li key={x.templateId}>{t("media.runtimes.templateMissing", { template: `${x.templateId} v${x.version}`, nodes: x.missing.join(", ") })}</li>
+                      <li key={x.templateId}>
+                        {x.missing.length > 0 && t("media.runtimes.templateMissing", { template: `${x.templateId} v${x.version}`, nodes: x.missing.join(", ") })}
+                        {(x.invalid ?? [])
+                          .filter((i) => i.problem !== "unknown_input")
+                          .map((i) => (
+                            <span key={`${i.nodeId}.${i.input}`} className="block">
+                              {t("media.runtimes.templateInput", { template: `${x.templateId} v${x.version}`, node: `${i.nodeId} ${i.classType}`, input: i.input, problem: t(RUNTIME_INPUT_PROBLEM_KEYS[i.problem]) })}
+                            </span>
+                          ))}
+                      </li>
                     ))}
                   </ul>
                 )}
@@ -3030,6 +3049,9 @@ export function GpuFallbackCard({ settings, onChanged }: { settings: Settings; o
   const [maxPrice, setMaxPrice] = useState(settings.gpuMaxPricePerHr === null ? "" : String(settings.gpuMaxPricePerHr));
   const [retrySeconds, setRetrySeconds] = useState(String(settings.capacityRetrySeconds));
   const [waitMinutes, setWaitMinutes] = useState(String(settings.capacityWaitMinutes));
+  // FO-REQ-0031: a container that does not start in time is given up and placed again.
+  const [containerMinutes, setContainerMinutes] = useState(String(settings.containerStartMinutes));
+  const [stuckRetries, setStuckRetries] = useState(String(settings.containerStuckRetries));
   // BL-155: "" = no filter (null); otherwise one of RunPod's known CUDA versions.
   const [minCuda, setMinCuda] = useState(settings.minCudaVersion ?? "");
   const [busy, setBusy] = useState(false);
@@ -3042,8 +3064,10 @@ export function GpuFallbackCard({ settings, onChanged }: { settings: Settings; o
     setMaxPrice(settings.gpuMaxPricePerHr === null ? "" : String(settings.gpuMaxPricePerHr));
     setRetrySeconds(String(settings.capacityRetrySeconds));
     setWaitMinutes(String(settings.capacityWaitMinutes));
+    setContainerMinutes(String(settings.containerStartMinutes));
+    setStuckRetries(String(settings.containerStuckRetries));
     setMinCuda(settings.minCudaVersion ?? "");
-  }, [fallbackKey, settings.gpuMinVramGb, settings.gpuMaxPricePerHr, settings.capacityRetrySeconds, settings.capacityWaitMinutes, settings.minCudaVersion]);
+  }, [fallbackKey, settings.gpuMinVramGb, settings.gpuMaxPricePerHr, settings.capacityRetrySeconds, settings.capacityWaitMinutes, settings.minCudaVersion, settings.containerStartMinutes, settings.containerStuckRetries]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -3056,8 +3080,10 @@ export function GpuFallbackCard({ settings, onChanged }: { settings: Settings; o
     const gpuMaxPricePerHr = maxPrice.trim() ? parseMoney(maxPrice) : null;
     const capacityRetrySeconds = parseInteger(retrySeconds, { min: 15, max: 3600 });
     const capacityWaitMinutes = parseInteger(waitMinutes, { min: 1, max: 1440 });
+    const containerStartMinutes = parseInteger(containerMinutes, { min: 1, max: 7 });
+    const containerStuckRetries = /^\s*[0-3]\s*$/.test(stuckRetries) ? Number(stuckRetries.trim()) : null;
     const minCudaVersion = MEDIA_CUDA_VERSIONS.find((v) => v === minCuda) ?? null;
-    if ((minVram.trim() && gpuMinVramGb === null) || (maxPrice.trim() && gpuMaxPricePerHr === null) || capacityRetrySeconds === null || capacityWaitMinutes === null || gpuFallbackIds.length > 10) {
+    if ((minVram.trim() && gpuMinVramGb === null) || (maxPrice.trim() && gpuMaxPricePerHr === null) || capacityRetrySeconds === null || capacityWaitMinutes === null || containerStartMinutes === null || containerStuckRetries === null || gpuFallbackIds.length > 10) {
       setError(t("media.fallback.invalid"));
       return;
     }
@@ -3068,7 +3094,7 @@ export function GpuFallbackCard({ settings, onChanged }: { settings: Settings; o
       await requestJson("/api/media-generation/settings", {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(onlyChangedSettings({ gpuFallbackIds, gpuMinVramGb, gpuMaxPricePerHr, capacityRetrySeconds, capacityWaitMinutes, minCudaVersion }, settings)),
+        body: JSON.stringify(onlyChangedSettings({ gpuFallbackIds, gpuMinVramGb, gpuMaxPricePerHr, capacityRetrySeconds, capacityWaitMinutes, minCudaVersion, containerStartMinutes, containerStuckRetries }, settings)),
       });
       setNotice(t("common.saved"));
       await onChanged();
@@ -3105,6 +3131,14 @@ export function GpuFallbackCard({ settings, onChanged }: { settings: Settings; o
         <label className="block text-xs text-zinc-400">
           {t("media.fallback.wait")}
           <input type="text" inputMode="numeric" value={waitMinutes} onChange={(e) => setWaitMinutes(e.target.value)} className={inputClass} />
+        </label>
+        <label className="block text-xs text-zinc-400">
+          {t("media.fallback.containerStart")}
+          <input type="text" inputMode="numeric" value={containerMinutes} onChange={(e) => setContainerMinutes(e.target.value)} className={inputClass} />
+        </label>
+        <label className="block text-xs text-zinc-400">
+          {t("media.fallback.stuckRetries")}
+          <input type="text" inputMode="numeric" value={stuckRetries} onChange={(e) => setStuckRetries(e.target.value)} className={inputClass} />
         </label>
         <label className="block text-xs text-zinc-400">
           <span className="flex items-center gap-1">
