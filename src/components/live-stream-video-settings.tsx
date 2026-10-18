@@ -93,6 +93,8 @@ export function LiveStreamVideoSettingsCard({
   const [dateText, setDateText] = useState(savedForm.recordingDate ? formatDisplayDateUtc(savedForm.recordingDate) : "");
   const [playlists, setPlaylists] = useState<Playlist[] | null>(null);
   const [playlistsError, setPlaylistsError] = useState<string | null>(null);
+  // BL-197: the list is remembered on the server for 1 h; "Refresh list" reads it live (each press bumps this).
+  const [playlistsReload, setPlaylistsReload] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -113,7 +115,7 @@ export function LiveStreamVideoSettingsCard({
   // The channel's playlists, read once from YouTube (1 unit) -- the same list the publishing defaults use.
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/youtube/playlists")
+    fetch(`/api/youtube/playlists${playlistsReload > 0 ? "?refresh=1" : ""}`)
       .then(async (res) => {
         const body = await res.json().catch(() => null);
         if (!res.ok) throw new Error(errorText(t, body, t("live.video.playlistsFailed"), { showErrorField: false }));
@@ -126,7 +128,7 @@ export function LiveStreamVideoSettingsCard({
     return () => {
       cancelled = true;
     };
-  }, [t]);
+  }, [t, playlistsReload]);
 
   const tagChars = tagsLength(form.tags);
   const tagProblem =
@@ -335,6 +337,18 @@ export function LiveStreamVideoSettingsCard({
         <h4 className={sectionTitleClass}>{t("live.video.section.playlists")}</h4>
         {playlists === null && !playlistsError && <LoadingIndicator className="text-xs text-zinc-400" />}
         {playlistsError && <p className="text-xs text-amber-300">{t("live.video.playlistsUnavailable", { message: playlistsError })}</p>}
+        <button
+          type="button"
+          onClick={() => {
+            setPlaylistsError(null);
+            setPlaylists(null);
+            setPlaylistsReload((n) => n + 1);
+          }}
+          disabled={busy || (playlists === null && !playlistsError)}
+          className="self-start text-xs text-sky-400 hover:underline disabled:opacity-50"
+        >
+          {t("live.video.playlistsRefresh")}
+        </button>
         {playlistRows.length === 0 && playlists !== null && <p className="text-xs text-zinc-500">{t("live.video.playlistsNone")}</p>}
         {playlistRows.length > 0 && (
           <ul className="max-h-56 space-y-1 overflow-y-auto">

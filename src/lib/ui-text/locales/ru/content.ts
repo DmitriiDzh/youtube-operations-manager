@@ -182,6 +182,7 @@ export const content: Record<keyof typeof en, string> = {
   "publishingSettings.playlistNone": "Без плейлиста",
   "publishingSettings.playlistUnknown": "Плейлист {id} (нет в списке канала)",
   "publishingSettings.playlistsUnavailable": "Список плейлистов не загрузился: {message}",
+  "publishingSettings.playlistsRefresh": "Обновить список",
   "publishingSettings.license.youtube": "Стандартная лицензия YouTube",
   "publishingSettings.license.creativeCommon": "Creative Commons — с указанием авторства",
   "publishingSettings.notSavedYet": "Ещё не сохранено: показаны значения по умолчанию.",

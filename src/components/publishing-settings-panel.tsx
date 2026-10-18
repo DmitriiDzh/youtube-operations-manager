@@ -50,6 +50,8 @@ export function PublishingSettingsPanel({ channelId, visible }: { channelId: str
   const [draft, setDraft] = useState<Settings | null>(null);
   const [playlists, setPlaylists] = useState<Playlist[] | null>(null);
   const [playlistsError, setPlaylistsError] = useState<string | null>(null);
+  // BL-197: the list is remembered on the server for 1 h; "Refresh list" reads it live.
+  const [playlistsRefresh, setPlaylistsRefresh] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedNotice, setSavedNotice] = useState(false);
@@ -80,7 +82,7 @@ export function PublishingSettingsPanel({ channelId, visible }: { channelId: str
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch("/api/youtube/playlists");
+        const res = await fetch(`/api/youtube/playlists${playlistsRefresh ? "?refresh=1" : ""}`);
         const data = await res.json();
         if (!res.ok) throw new Error(errorText(t, data, t("publishingSettings.loadFailed")));
         if (!cancelled) setPlaylists((data as Playlist[]).map((p) => ({ id: p.id, title: p.title })));
@@ -94,7 +96,7 @@ export function PublishingSettingsPanel({ channelId, visible }: { channelId: str
     return () => {
       cancelled = true;
     };
-  }, [visible, channelId, playlists, t]);
+  }, [visible, channelId, playlists, playlistsRefresh, t]);
 
   if (!channelId) return null;
   if (!view || !draft) {
@@ -182,6 +184,18 @@ export function PublishingSettingsPanel({ channelId, visible }: { channelId: str
             ))}
           </select>
           {playlistsError && <span className="text-xs text-amber-300">{t("publishingSettings.playlistsUnavailable", { message: playlistsError })}</span>}
+          <button
+            type="button"
+            onClick={() => {
+              setPlaylistsError(null);
+              setPlaylistsRefresh(true);
+              setPlaylists(null);
+            }}
+            disabled={playlists === null}
+            className="self-start text-xs text-sky-400 hover:underline disabled:opacity-50"
+          >
+            {t("publishingSettings.playlistsRefresh")}
+          </button>
         </label>
         <label className="flex flex-col gap-1 text-xs text-zinc-400">
           {t("publishingSettings.field.categoryId")}

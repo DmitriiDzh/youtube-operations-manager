@@ -288,6 +288,7 @@ export const liveStreams: Record<keyof typeof en, string> = {
   "live.video.hint.publicStats": "Видят ли зрители, сколько у трансляции лайков.",
   "live.video.playlistsFailed": "Не удалось прочитать плейлисты канала",
   "live.video.playlistsUnavailable": "Плейлисты канала не прочитались: {message}",
+  "live.video.playlistsRefresh": "Обновить список",
   "live.video.playlistsNone": "У канала нет плейлистов.",
   "live.video.playlistMissing": "больше нет на канале",
   "live.video.playlistsHint": "Трансляция добавляется в каждый отмеченный плейлист (не больше {max}).",
