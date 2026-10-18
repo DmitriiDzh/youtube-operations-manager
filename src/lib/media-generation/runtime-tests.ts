@@ -278,8 +278,9 @@ export function createRuntimeTestServices(deps: RuntimeTestDeps) {
       });
     },
 
+    /** Oldest first by start (the stored list keeps open tests first, which is not an order to show). */
     async listRuntimeTests(runtimeId?: string): Promise<RuntimeTestJob[]> {
-      const jobs = await readJobs();
+      const jobs = [...(await readJobs())].sort((a, b) => a.startedAt.localeCompare(b.startedAt));
       return runtimeId ? jobs.filter((j) => j.runtimeId === runtimeId) : jobs;
     },
   };

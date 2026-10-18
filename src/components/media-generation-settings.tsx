@@ -2911,7 +2911,9 @@ export function PodRuntimesCard({ settings, onChanged }: { settings: Settings; o
     );
   }
 
-  const latestTest = (runtimeId: string) => view?.tests.filter((x) => x.runtimeId === runtimeId).at(-1) ?? null;
+  // The newest test by its start: the stored list keeps open tests first, so its last entry can be an older, finished one.
+  const latestTest = (runtimeId: string) =>
+    view?.tests.filter((x) => x.runtimeId === runtimeId).reduce<RuntimeTestJob | null>((newest, x) => (!newest || Date.parse(x.startedAt) > Date.parse(newest.startedAt) ? x : newest), null) ?? null;
   const active = view?.runtimes.find((r) => r.active) ?? null;
 
   return (
