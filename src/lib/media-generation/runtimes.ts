@@ -155,7 +155,7 @@ export type RuntimeDeps = {
   getSettings(): Promise<MediaSettings>;
   events: { record(event: MediaControlEvent): Promise<void> };
   clock: { now(): Date };
-  /** Stage 2: the runtime ids whose CPU build is running on this computer (the build module's job list). */
+  /** Stage 2: the runtime ids whose build is running on this computer (the build module's job list). */
   buildingRuntimeIds?: () => Promise<Set<string>>;
 };
 

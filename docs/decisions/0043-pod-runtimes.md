@@ -19,7 +19,7 @@ New models need newer nodes (FLUX 3 Image Klein, 2026-10-15), and the Operator c
      beside it.
    - Every computer already shares that volume, so profiles need no new sync family.
    - The active profile is a shared media setting. `null` is the image's built-in ComfyUI.
-2. **Build on a CPU pod with the GPU template's image** (owner msg 3022).
+2. **Build with the GPU template's image** (owner msg 3022: on a CPU pod). **Amended 2026-10-18 (probe 2, owner msg 3035):** a `cpu3c` host never started the multi-GB CUDA image (45 min pulling); the build runs on the cheapest GPU of the owner's list in the volume's datacenter, which has the image cached. The GPU is not used; the cap is 30 min.
    - The venv refers to the image's Python, so the image must match.
    - A `.ready` marker is written last, under a per-profile lock.
    - The build does **not** take the network-volume lock (`volume-lock.ts`), a deliberate exception to that lock's "every writer

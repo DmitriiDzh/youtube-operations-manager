@@ -4418,12 +4418,12 @@ Plan: `docs/roadmap/plans/VIDEO_COST_PLAN.md` §2 stages 2-4 (criteria 3-9). Sch
 - **Profiles.** A runtime is one immutable file on the network volume, `ytm/runtimes/<runtimeId>/runtime.json`: ComfyUI and node packs
   at exact 40-hex commits (a tag is resolved through the media gateway's GitHub child at create time) and pinned pip extras. Every
   repo must sit under the owner's allow-list. The volume is the store every computer shares, so profiles have no sync family.
-- **Build** (`runtime-builds.ts`). A CPU pod (`cpu3c`, 4 vCPU, 40 GB disk) runs the GPU template's own image (`imageName`; none = refused,
+- **Build** (`runtime-builds.ts`). A pod on the cheapest GPU of the owner's list in the volume's datacenter (40 GB disk; the next GPU on no capacity) runs the GPU template's own image (`imageName`; none = refused,
   never a fallback image) with the entrypoint `bash /workspace/ytm/runtime-build.sh <id>`, no ports, no env. The script clones each
   repo at its commit (verified with `rev-parse`), makes a venv from the image's Python with a `.pth` to the image's site-packages
   (torch is never downloaded: probe 1), installs the requirements without torch/torchvision/torchaudio, writes `.ready` last and
   then `build.json`. The watch loop reads the verdict and terminates the pod (a build is finished only once the pod is confirmed
-  gone); a dead pod fails at once; the cap is 60 min. `.ready` is the invariant: without it a runtime is not built.
+  gone); a dead pod fails at once; the cap is 30 min. Probe 2 (2026-10-18): on a `cpu3c` host the CUDA image never started in 45 min, so the build moved to a GPU host, which has the image cached (owner msg 3035). `.ready` is the invariant: without it a runtime is not built.
   - It does not take the network-volume lock: it writes only under its own folder, nothing reads that before `.ready`, and the
     exclusive lock would block every session for the build's ~9 min. `.lock` (pod id, stale after 2 h) and the app's job list stop
     a second build of one profile.
