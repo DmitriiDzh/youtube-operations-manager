@@ -968,7 +968,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **`src/lib/device-secrets/`** — единственный владелец введённых в Настройках секретов этого компьютера.
   - Таблица `device_secrets` (v96) и файл `device-secrets.key` (0600).
   - Ячейки: `runpod` (набор RunPod + S3, JSON), `gemini`, `huggingface`.
-  - Открытые подсказки без секретов (префикс ключа, id ключа S3, последние 4 символа, пользователь HF). Время в мс; `revision` для сравнения-и-записи статуса.
+  - Открытые подсказки без секретов (префикс ключа, id ключа S3, последние 4 символа, пользователь HF). Время в мс. Сравнение-и-запись статуса идёт по версии, вычисленной из шифротекста (уникальна для каждого сохранения).
   - «Настроен» = строка + читаемый файл. Очистка удаляет одну строку; общий файл удаляется, только если он испорчен.
   - `seal`/`open` для токенов сессий ComfyUI: при открытии сначала ключ хранилища, затем старый `media-generation.key`.
 - **Перенос без повторного ввода** (`legacy.ts`): при первом чтении ячейки старая строка `media_credentials` / `gemini_credentials` расшифровывается своим старым файлом, записывается, читается обратно и сравнивается. После этого ставится флаг `device_secret_migrated:<name>` в `app_settings`. Старые таблицы и файлы остаются (RISK-131).
@@ -976,11 +976,13 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   - `media-generation` (`secret` + `sealer`) и `gemini-media` (`secret`) работают через ячейки; `media-generation/key-file.ts` удалён.
   - Токен HF: `media-generation/hf-token.ts`, маршруты `/api/media-generation/hf-token` (+`/test`), карточка `HfTokenSettings` на вкладке «Облачные API».
 - **Скачивание из закрытых репозиториев:** клиент `media-gateway/huggingface.ts` получает токен на каждый вызов.
-  - Bearer-заголовок уходит только на huggingface.co; `whoami`; лицензия из `cardData`.
+  - Токен читается и уходит (Bearer, только на huggingface.co) лишь для закрытого или приватного репозитория, открытые от него не зависят.
+  - Для закрытого репозитория до создания пода выполняется HEAD на сам файл: если условия не приняты, ошибка возникает до пода.
+  - Проверка токена — `whoami`; лицензия из `cardData`.
   - Под получает токен переменной окружения `HF_TOKEN`, не через `cmd`.
   - Ошибки `hf_token_missing` / `hf_token_invalid` / `hf_gate_not_accepted` (`details.repoUrl`).
   - `ModelPull` и список моделей показывают `licenseId` / `licenseUrl`.
-- **Factory API 1.22.0:** `factory_media_get_settings` → `hfToken: set | not set`. Файл `.ytmkeys` получил раздел `huggingface`; подсказка `hfUser` есть только при наличии токена.
+- **Factory API 1.22.0:** `factory_media_get_settings` → `hfToken: set | not set`. Файл `.ytmkeys` получил раздел `huggingface`: токен проверяется до сохранения любого раздела; подсказка `hfUser` есть только при наличии токена.
 - Не входят: OAuth и ключи AI-подключений / облачного подключения (ключи из env, RISK-07/48), ротация ключа (RISK-106).
 
 ## 3. Где вносить изменения

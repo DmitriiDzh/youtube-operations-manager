@@ -10055,29 +10055,6 @@ export async function getStoredMediaCredentials(database: AppDb = db): Promise<S
   };
 }
 
-/** Replaces the whole blob (a new key set); `verifiedAt` resets, since nothing has been tested yet. */
-export async function upsertStoredMediaCredentials(
-  input: { ciphertext: string; iv: string; authTag: string; runpodKeyPrefix: string; s3AccessKeyId: string | null },
-  database: AppDb = db
-): Promise<void> {
-  const now = new Date();
-  await database
-    .insert(mediaCredentials)
-    .values({ id: MEDIA_CREDENTIALS_SINGLETON_ID, ...input, verifiedAt: null, updatedAt: now })
-    .onConflictDoUpdate({
-      target: mediaCredentials.id,
-      set: { ...input, verifiedAt: null, updatedAt: now },
-    });
-}
-
-export async function setStoredMediaCredentialsVerifiedAt(verifiedAt: Date, database: AppDb = db): Promise<void> {
-  await database.update(mediaCredentials).set({ verifiedAt }).where(eq(mediaCredentials.id, MEDIA_CREDENTIALS_SINGLETON_ID));
-}
-
-export async function clearStoredMediaCredentials(database: AppDb = db): Promise<void> {
-  await database.delete(mediaCredentials).where(eq(mediaCredentials.id, MEDIA_CREDENTIALS_SINGLETON_ID));
-}
-
 const MEDIA_GENERATION_SETTINGS_KEY = "media_generation_settings";
 const MEDIA_GATEWAY_ENABLED_SETTING_KEY = "media_gateway_enabled";
 const MEDIA_MODEL_PULLS_KEY = "media_model_pulls";
@@ -10835,35 +10812,6 @@ export type StoredGeminiCredentials = typeof geminiCredentials.$inferSelect;
 export async function getStoredGeminiCredentials(database: AppDb = db): Promise<StoredGeminiCredentials | null> {
   const [row] = await database.select().from(geminiCredentials).where(eq(geminiCredentials.id, GEMINI_CREDENTIALS_SINGLETON_ID));
   return row ?? null;
-}
-
-export async function upsertStoredGeminiCredentials(
-  input: Pick<StoredGeminiCredentials, "ciphertext" | "iv" | "authTag" | "keyHint" | "status" | "verifiedAt">,
-  database: AppDb = db
-): Promise<void> {
-  const updatedAt = new Date();
-  await database
-    .insert(geminiCredentials)
-    .values({ id: GEMINI_CREDENTIALS_SINGLETON_ID, ...input, updatedAt })
-    .onConflictDoUpdate({ target: geminiCredentials.id, set: { ...input, updatedAt } });
-}
-
-/** A key check's result, written only while the stored key is still the one that was checked (review round 1); false otherwise. */
-export async function setStoredGeminiCredentialsStatus(
-  checkedCiphertext: string,
-  input: Pick<StoredGeminiCredentials, "status" | "verifiedAt">,
-  database: AppDb = db
-): Promise<boolean> {
-  const rows = await database
-    .update(geminiCredentials)
-    .set({ ...input, updatedAt: new Date() })
-    .where(and(eq(geminiCredentials.id, GEMINI_CREDENTIALS_SINGLETON_ID), eq(geminiCredentials.ciphertext, checkedCiphertext)))
-    .returning({ id: geminiCredentials.id });
-  return rows.length > 0;
-}
-
-export async function clearStoredGeminiCredentials(database: AppDb = db): Promise<void> {
-  await database.delete(geminiCredentials).where(eq(geminiCredentials.id, GEMINI_CREDENTIALS_SINGLETON_ID));
 }
 
 /** The module's settings as stored (JSON), `null` before the first save. */
@@ -14636,10 +14584,10 @@ export async function upsertStoredDeviceSecret(
     .onConflictDoUpdate({ target: deviceSecrets.name, set: { ...values, revision: sql`${deviceSecrets.revision} + 1` } });
 }
 
-/** Compare-and-set: only when the row still has `expectedRevision` (a key saved meanwhile is never touched). True when it changed. */
+/** Compare-and-set: only when the row still holds `expectedCiphertext` (unique per save: a value saved meanwhile is never touched). */
 export async function setStoredDeviceSecretStatus(
   name: string,
-  expectedRevision: number,
+  expectedCiphertext: string,
   patch: { status?: string | null; verifiedAt?: number | null },
   database: AppDb = db
 ): Promise<boolean> {
@@ -14650,7 +14598,7 @@ export async function setStoredDeviceSecretStatus(
   const result = await database
     .update(deviceSecrets)
     .set(set)
-    .where(and(eq(deviceSecrets.name, name), eq(deviceSecrets.revision, expectedRevision)))
+    .where(and(eq(deviceSecrets.name, name), eq(deviceSecrets.ciphertext, expectedCiphertext)))
     .returning({ name: deviceSecrets.name });
   return result.length > 0;
 }

@@ -113,7 +113,7 @@ export type ModelPullStore = {
 export type ModelServiceDependencies = {
   store: ModelPullStore;
   /** The Hugging Face Hub metadata read (`src/lib/media-gateway/huggingface.ts`), done before any pod is created. */
-  hub: { getFileInfo(input: { repoId: string; file: string; revision?: string; token?: string | null }): Promise<HuggingFaceFileInfo> };
+  hub: { getFileInfo(input: { repoId: string; file: string; revision?: string; tokenFor?: () => Promise<string | null> }): Promise<HuggingFaceFileInfo> };
   /**
    * BL-134 (FO-REQ-0028, ADR 0042): this computer's Hugging Face read token, or null when none is stored. Sent only to the Hub
    * (metadata) and to the pull pod's env (`HF_TOKEN`, masked in every pod read); never recorded on the pull.
@@ -497,8 +497,11 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
       throw new DomainError({ code: "media_session_conflict", message: "A model pull is already running; wait for it to finish." });
     }
     // BL-132 pre-check (AC-FM-01): everything that can refuse the pull is asked BEFORE any pod exists -- no cost.
-    const hfToken = deps.hfToken ? await deps.hfToken() : null;
-    const hub = await deps.hub.getFileInfo({ repoId: parsed.repoId, file: parsed.file, revision: parsed.revision, token: hfToken });
+    // BL-134 (review): the stored token is read only if the repo needs it -- a public pull never depends on it.
+    let hfTokenRead: string | null | undefined;
+    const tokenFor = async () => (hfTokenRead !== undefined ? hfTokenRead : (hfTokenRead = deps.hfToken ? await deps.hfToken() : null));
+    const hub = await deps.hub.getFileInfo({ repoId: parsed.repoId, file: parsed.file, revision: parsed.revision, tokenFor });
+    const hfToken = hub.authenticated ? await tokenFor() : null;
     if (hub.sha256 && parsed.sha256 && hub.sha256 !== parsed.sha256) {
       throw new DomainError({
         code: "media_model_hash_mismatch",

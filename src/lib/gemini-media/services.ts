@@ -235,8 +235,13 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
 
   /** The stored key in clear, or `null` when none is stored. A key file that is missing or unusable fails closed. */
   async function readApiKey(): Promise<string | null> {
+    return (await readApiKeyWithVersion())?.value ?? null;
+  }
+
+  /** The stored key and the version it was read at (a later status update lands only on that same key). */
+  async function readApiKeyWithVersion(): Promise<{ value: string; version: string } | null> {
     try {
-      return await deps.secret.read();
+      return await deps.secret.readWithVersion();
     } catch (error) {
       if (isDomainError(error) && (error.code === "device_secret_unreadable" || error.code === "encryption_key_not_configured")) {
         throw new DomainError({ code: "encryption_key_not_configured", message: "The stored Gemini API key cannot be read on this computer; enter it again (Settings → Cloud APIs)." });
@@ -245,18 +250,18 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
     }
   }
 
-  // BL-193: the fingerprint of the stored key, recomputed only when the stored key changes (its revision).
-  let fingerprintCache: { revision: number; value: string } | null = null;
+  // BL-193: the fingerprint of the stored key, recomputed only when the stored key changes (its version, unique per save).
+  let fingerprintCache: { version: string; value: string } | null = null;
   /** The stored key's fingerprint (ADR 0039), or null when no usable key is stored here (then nothing is shared). Never throws. */
   async function keyFingerprint(): Promise<string | null> {
     try {
       const info = await deps.secret.info();
       if (!info) return null;
-      if (fingerprintCache?.revision === info.revision) return fingerprintCache.value;
-      const apiKey = await readApiKey();
-      if (!apiKey) return null;
-      const value = geminiKeyFingerprint(apiKey);
-      fingerprintCache = { revision: info.revision, value };
+      if (fingerprintCache && fingerprintCache.version === info.version) return fingerprintCache.value;
+      const read = await readApiKeyWithVersion();
+      if (!read) return null;
+      const value = geminiKeyFingerprint(read.value);
+      fingerprintCache = { version: read.version, value };
       return value;
     } catch {
       return null;
@@ -402,9 +407,9 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
     storeImportedKey: storeCheckedKey,
 
     async testKey(): Promise<GeminiKeyView> {
-      const info = await deps.secret.info();
-      const apiKey = await readApiKey();
-      if (!info || !apiKey) throw new DomainError({ code: "gemini_key_missing", message: "No Gemini API key is stored on this computer." });
+      const read = await readApiKeyWithVersion();
+      if (!read) throw new DomainError({ code: "gemini_key_missing", message: "No Gemini API key is stored on this computer." });
+      const apiKey = read.value;
       let status: "ok" | "payment_required" = "ok";
       try {
         await deps.api.checkKey(apiKey);
@@ -413,7 +418,7 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
         status = "payment_required";
       }
       // Only the status of the key that was checked: a key saved meanwhile (another tab) is never overwritten (review round 1).
-      await deps.secret.setStatus(info.revision, { status, verifiedAt: now().getTime() });
+      await deps.secret.setStatus(read.version, { status, verifiedAt: now().getTime() });
       return keyView();
     },
 

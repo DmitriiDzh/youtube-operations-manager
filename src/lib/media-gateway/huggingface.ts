@@ -1,4 +1,4 @@
-import { DomainError } from "@/lib/shared-domain";
+import { DomainError, isDomainError } from "@/lib/shared-domain";
 import { assertMediaGatewayAuthorized, type Authorize } from "./authorization";
 import { jsonRequest } from "./http";
 import { asNumber, asRecord, asString } from "./json";
@@ -30,6 +30,8 @@ export type HuggingFaceFileInfo = {
   licenseId: string | null;
   /** BL-134: the card's licence link at this commit, else the repo page when a licence is named; null without a licence. */
   licenseUrl: string | null;
+  /** BL-134: the repo needed the owner's token (the pull pod then gets it); false for a public repo read without it. */
+  authenticated: boolean;
 };
 
 type Fetch = typeof fetch;
@@ -88,6 +90,35 @@ export function createHuggingFaceClient(args: { fetchImpl?: Fetch; authorize?: A
 
   const repoPath = (repoId: string) => repoId.split("/").map(encodeURIComponent).join("/");
 
+  /**
+   * BL-134 (review): metadata of a gated repo is readable with any valid token; the FILE is not until its conditions are accepted.
+   * One HEAD on the file's resolve URL (no redirect followed, no body) tells it before a pod is paid for.
+   */
+  async function checkFileAccess(repoId: string, commitSha: string, file: string, token: string, context: Record<string, unknown>): Promise<void> {
+    await authorize("huggingface_api");
+    const url = `${baseUrl}/${repoPath(repoId)}/resolve/${encodeURIComponent(commitSha)}/${file.split("/").map(encodeURIComponent).join("/")}`;
+    let status: number;
+    try {
+      const response = await fetchImpl(url, { method: "HEAD", redirect: "manual", headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+      status = response.status;
+    } catch (error) {
+      throw new DomainError({ code: "huggingface_unavailable", message: `Hugging Face file check failed: ${error instanceof Error ? error.message : String(error)}`, details: context });
+    }
+    if (status === 401) {
+      throw new DomainError({ code: "hf_token_invalid", message: "Hugging Face did not accept the stored token (HTTP 401). Check it in Settings → Cloud APIs or enter a new read token.", details: { ...context, status } });
+    }
+    if (status === 403) {
+      const repoUrl = `${baseUrl}/${repoId}`;
+      throw new DomainError({
+        code: "hf_gate_not_accepted",
+        message: `Hugging Face refused this file with the stored token (HTTP 403): accept the repository's conditions on ${repoUrl} with the same account, then pull again.`,
+        details: { ...context, status, repoUrl },
+      });
+    }
+    if (status === 404) throw new DomainError({ code: "media_model_not_found", message: `${file} is not downloadable from ${repoId}@${commitSha}.`, details: { ...context, status } });
+    if (status >= 400) throw new DomainError({ code: "huggingface_unavailable", message: `Hugging Face answered HTTP ${status} for the file.`, details: { ...context, status } });
+  }
+
   return {
     /** BL-134: who a read token belongs to (`/api/whoami-v2`); a refused token is `hf_token_invalid`. */
     async whoami(token: string): Promise<{ name: string }> {
@@ -97,18 +128,41 @@ export function createHuggingFaceClient(args: { fetchImpl?: Fetch; authorize?: A
       return { name };
     },
 
-    async getFileInfo(input: { repoId: string; file: string; revision?: string; token?: string | null }): Promise<HuggingFaceFileInfo> {
+    /**
+     * BL-134 (review): the token is asked for (`tokenFor`) and sent ONLY when the repo needs it -- a public repo is read without it,
+     * so a revoked or unreadable stored token never blocks public pulls. For a repo read with the token, the file itself is checked
+     * (HEAD on its resolve URL) before any pod exists: conditions not accepted is `hf_gate_not_accepted` here, at no cost.
+     */
+    async getFileInfo(input: { repoId: string; file: string; revision?: string; tokenFor?: () => Promise<string | null> }): Promise<HuggingFaceFileInfo> {
       const revision = input.revision ?? "main";
       const context = { repoId: input.repoId, file: input.file, revision };
-      const token = input.token ?? null;
-      const info = asRecord(await request("GET", `/api/models/${repoPath(input.repoId)}/revision/${encodeURIComponent(revision)}`, context, undefined, token));
+      const infoPath = `/api/models/${repoPath(input.repoId)}/revision/${encodeURIComponent(revision)}`;
+      let token: string | null = null;
+      const needToken = async (details: Record<string, unknown>): Promise<string> => {
+        const stored = input.tokenFor ? await input.tokenFor() : null;
+        if (!stored) {
+          throw new DomainError({
+            code: "hf_token_missing",
+            message: `${input.repoId} is gated or private on Hugging Face: enter a Hugging Face read token in Settings → Cloud APIs (and accept the repository's conditions) to pull from it.`,
+            details: { ...context, ...details, repoUrl: `${baseUrl}/${input.repoId}` },
+          });
+        }
+        return stored;
+      };
+      let info: Record<string, unknown>;
+      try {
+        info = asRecord(await request("GET", infoPath, context));
+      } catch (error) {
+        // Unauthenticated 401/403: private (or no such repo) -- with a stored token, ask again with it; without one it stays gated.
+        if (!(isDomainError(error) && error.code === "media_model_gated" && input.tokenFor)) throw error;
+        const stored = await input.tokenFor();
+        if (!stored) throw error;
+        token = stored;
+        info = asRecord(await request("GET", infoPath, context, undefined, token));
+      }
       // `gated` is false, "auto" or "manual"; anything but false needs an accepted licence + token (BL-134).
-      if (((info.gated !== undefined && info.gated !== false) || info.private === true) && !token) {
-        throw new DomainError({
-          code: "hf_token_missing",
-          message: `${input.repoId} is gated or private on Hugging Face: enter a Hugging Face read token in Settings → Cloud APIs (and accept the repository's conditions) to pull from it.`,
-          details: { ...context, gated: info.gated ?? null, private: info.private ?? null, repoUrl: `${baseUrl}/${input.repoId}` },
-        });
+      if (!token && ((info.gated !== undefined && info.gated !== false) || info.private === true)) {
+        token = await needToken({ gated: info.gated ?? null, private: info.private ?? null });
       }
       const commitSha = asString(info.sha);
       if (!commitSha) throw new DomainError({ code: "huggingface_unavailable", message: "Hugging Face did not report the revision's commit.", details: context });
@@ -124,6 +178,7 @@ export function createHuggingFaceClient(args: { fetchImpl?: Fetch; authorize?: A
           : null;
       const form = new URLSearchParams([["paths", input.file], ["expand", "false"]]).toString();
       const entries = await request("POST", `/api/models/${repoPath(input.repoId)}/paths-info/${encodeURIComponent(commitSha)}`, context, form, token);
+      if (token) await checkFileAccess(input.repoId, commitSha, input.file, token, context);
       const entry = (Array.isArray(entries) ? entries : []).map(asRecord).find((e) => asString(e.path) === input.file && asString(e.type) === "file");
       if (!entry) throw new DomainError({ code: "media_model_not_found", message: `${input.file} is not a file in ${input.repoId}@${revision}.`, details: context });
       const lfs = entry.lfs === undefined || entry.lfs === null ? null : asRecord(entry.lfs);
@@ -137,6 +192,7 @@ export function createHuggingFaceClient(args: { fetchImpl?: Fetch; authorize?: A
         sha256: sha256 && /^[0-9a-f]{64}$/.test(sha256) ? sha256 : null,
         licenseId: licenseId ?? null,
         licenseUrl,
+        authenticated: token !== null,
       };
     },
   };

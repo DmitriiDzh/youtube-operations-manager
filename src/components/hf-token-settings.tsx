@@ -3,6 +3,7 @@
 import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useState } from "react";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
+import { CLOUD_CREDENTIALS_IMPORTED_EVENT } from "./cloud-credentials-transfer";
 import { ConfirmDialog } from "./confirm-dialog";
 import { InfoTooltip } from "./info-tooltip";
 import { MaskedSecretInput } from "./masked-secret-input";
@@ -47,7 +48,7 @@ export function HfTokenSettings() {
     [t]
   );
 
-  useEffect(() => {
+  const load = useCallback(() => {
     call()
       .then((next) => {
         setView(next);
@@ -55,6 +56,13 @@ export function HfTokenSettings() {
       })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : t("hfToken.failed")));
   }, [call, t]);
+
+  useEffect(() => {
+    load();
+    // Review of BL-134: a cloud-keys import may carry the token; reload like the RunPod and Gemini cards do.
+    window.addEventListener(CLOUD_CREDENTIALS_IMPORTED_EVENT, load);
+    return () => window.removeEventListener(CLOUD_CREDENTIALS_IMPORTED_EVENT, load);
+  }, [load]);
 
   async function run(action: () => Promise<HfTokenView>, success: string) {
     setBusy(true);

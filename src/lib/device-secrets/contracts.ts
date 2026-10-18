@@ -22,15 +22,21 @@ export type DeviceSecretInfo = {
   status: string | null;
   verifiedAt: number | null;
   updatedAt: number;
-  revision: number;
+  /**
+   * Identifies this exact stored value (derived from its ciphertext, unique per save even when the same value is saved again or
+   * after a clear): the compare-and-set token for status updates and the key of any cache of the value (review of BL-199: a row
+   * counter restarts after a delete, so it could match another key).
+   */
+  version: string;
 };
 
-export type StoredDeviceSecretRow = DeviceSecretInfo & { name: string } & EncryptedPayload;
+export type StoredDeviceSecretRow = { name: string; hints: DeviceSecretHints; status: string | null; verifiedAt: number | null; updatedAt: number; revision: number } & EncryptedPayload;
 
 export type DeviceSecretStorePort = {
   get(name: string): Promise<StoredDeviceSecretRow | null>;
   upsert(row: { name: string; hints: DeviceSecretHints; status: string | null; verifiedAt: number | null; updatedAt: number } & EncryptedPayload): Promise<void>;
-  setStatus(name: string, expectedRevision: number, patch: { status?: string | null; verifiedAt?: number | null }): Promise<boolean>;
+  /** Compare-and-set on the stored ciphertext (unique per save). */
+  setStatus(name: string, expectedCiphertext: string, patch: { status?: string | null; verifiedAt?: number | null }): Promise<boolean>;
   delete(name: string): Promise<void>;
   isMigrated(name: string): Promise<boolean>;
   markMigrated(name: string, at: number): Promise<void>;

@@ -21,7 +21,7 @@ export { createMemoryDeviceSecretStore } from "./memory-store";
 const store: DeviceSecretStorePort = {
   get: (name) => getStoredDeviceSecret(name),
   upsert: (row) => upsertStoredDeviceSecret(row),
-  setStatus: (name, expectedRevision, patch) => setStoredDeviceSecretStatus(name, expectedRevision, patch),
+  setStatus: (name, expectedCiphertext, patch) => setStoredDeviceSecretStatus(name, expectedCiphertext, patch),
   delete: (name) => deleteStoredDeviceSecret(name),
   isMigrated: (name) => isDeviceSecretMigrated(name),
   markMigrated: (name, at) => markDeviceSecretMigrated(name, at),

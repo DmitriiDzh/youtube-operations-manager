@@ -143,9 +143,14 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
 
   /** Decrypts for one call. Never returned by any public method. */
   async function requireSecrets(): Promise<SecretSet> {
-    let plaintext: string | null;
+    return (await requireSecretsWithVersion()).secrets;
+  }
+
+  /** The set and the version it was read at (a later verifiedAt lands only on that same set). */
+  async function requireSecretsWithVersion(): Promise<{ secrets: SecretSet; version: string }> {
+    let read: { value: string; version: string } | null;
     try {
-      plaintext = await deps.secret.read();
+      read = await deps.secret.readWithVersion();
     } catch (error) {
       if (isDomainError(error) && (error.code === "device_secret_unreadable" || error.code === "encryption_key_not_configured")) {
         throw new DomainError({
@@ -155,10 +160,10 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
       }
       throw error;
     }
-    if (plaintext === null) {
+    if (read === null) {
       throw new DomainError({ code: "media_generation_not_configured", message: "No RunPod credentials are configured on this device (Settings → Cloud APIs)." });
     }
-    return JSON.parse(plaintext) as SecretSet;
+    return { secrets: JSON.parse(read.value) as SecretSet, version: read.version };
   }
 
   async function runpodClient(): Promise<RunpodApiClient> {
@@ -273,7 +278,8 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
 
     /** One read call per service; a success stamps `verifiedAt`. Never throws for a failed probe -- reports it. */
     async testCredentials(): Promise<MediaCredentialsTestResult> {
-      const client = await runpodClient();
+      const tested = await requireSecretsWithVersion();
+      const client = deps.gateway.createRunpodClient(tested.secrets.runpodApiKey);
       let runpod: MediaCredentialsTestResult["runpod"];
       try {
         await client.verifyKey();
@@ -296,9 +302,8 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
       let verifiedAt: string | null = null;
       if (runpod.ok && !("ok" in s3 && !s3.ok)) {
         const now = deps.clock.now();
-        const info = await deps.secret.info();
-        // Only on the set that was tested: a set saved meanwhile keeps its own (null) verifiedAt.
-        if (info) await deps.secret.setStatus(info.revision, { verifiedAt: now.getTime() });
+        // Only on the set that was tested (its version read before the probes): a set saved meanwhile keeps its own (null) verifiedAt.
+        await deps.secret.setStatus(tested.version, { verifiedAt: now.getTime() });
         verifiedAt = now.toISOString();
       }
       return { runpod, s3, verifiedAt };

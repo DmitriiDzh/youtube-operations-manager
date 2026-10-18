@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { DeviceSecretSlot } from "@/lib/device-secrets";
+import { createKeyFile, type KeyFileAccess } from "@/lib/device-key-file";
+import { createDeviceSecrets, createMemoryDeviceSecretStore, type DeviceSecretSlot } from "@/lib/device-secrets";
 import { DomainError } from "@/lib/shared-domain";
 import { createHfTokenServices } from "./hf-token";
 
@@ -9,33 +10,19 @@ import { createHfTokenServices } from "./hf-token";
 
 const TOKEN = "hf_" + "a".repeat(34);
 
-function memorySlot() {
-  let row: { value: string; hints: Record<string, string | null>; status: string | null; verifiedAt: number | null; revision: number } | null = null;
-  const slot = {
-    name: "huggingface",
-    async state() {
-      return row ? "set" : "none";
-    },
-    async info() {
-      return row ? { hints: row.hints, status: row.status, verifiedAt: row.verifiedAt, updatedAt: 1_760_000_000_000, revision: row.revision } : null;
-    },
-    async read() {
-      return row?.value ?? null;
-    },
-    async write(value: string, input: { hints: Record<string, string | null>; status?: string | null; verifiedAt?: number | null }) {
-      row = { value, hints: input.hints, status: input.status ?? null, verifiedAt: input.verifiedAt ?? null, revision: (row?.revision ?? 0) + 1 };
-      return { hints: row.hints, status: row.status, verifiedAt: row.verifiedAt, updatedAt: 1, revision: row.revision };
-    },
-    async setStatus(expected: number, patch: { status?: string | null; verifiedAt?: number | null }) {
-      if (!row || row.revision !== expected) return false;
-      row = { ...row, ...(patch.status !== undefined ? { status: patch.status } : {}), ...(patch.verifiedAt !== undefined ? { verifiedAt: patch.verifiedAt } : {}) };
-      return true;
-    },
-    async clear() {
-      row = null;
-    },
-  } as unknown as DeviceSecretSlot;
-  return slot;
+/** The real store over an in-memory table and key file (BL-199): the slot behaves exactly as in production. */
+function memorySlot(): DeviceSecretSlot {
+  let keyText: string | null = null;
+  const access: KeyFileAccess = {
+    read: async () => keyText,
+    write: async (content) => void (keyText = JSON.stringify(content)),
+    remove: async () => void (keyText = null),
+    randomBytes: (n) => Buffer.alloc(n, 5),
+  };
+  return createDeviceSecrets({
+    store: createMemoryDeviceSecretStore(),
+    keyFile: createKeyFile(access, (detail) => new DomainError({ code: "encryption_key_not_configured", message: detail })),
+  }).slot("huggingface");
 }
 
 test("setHfToken: whoami first, then stored with the user name; the view never carries the token", async () => {

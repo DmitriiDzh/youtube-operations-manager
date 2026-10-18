@@ -4394,7 +4394,7 @@ Plan: `docs/roadmap/plans/VIDEO_COST_PLAN.md` §2 stages 2-4 (criteria 3-9). Sch
   the Hugging Face read token.
   - Storage: one table `device_secrets` (schema v96, device-local, never synced or snapshotted) and one key file
     `device-secrets.key` (0600, created on the first save).
-  - Each feature module gets a slot (`state`, `info`, `read`, `write`, `setStatus` compare-and-set on `revision`, `clear`) and never
+  - Each feature module gets a slot (`state`, `info`, `read` / `readWithVersion`, `write`, `setStatus` compare-and-set on a version derived from the ciphertext, `clear`) and never
     sees the key or the ciphertext.
   - "Configured" means a row and a readable key file. Clearing removes one row; the shared file goes only when it is unusable.
 - **Migration.** Done at runtime, idempotent, without re-entry: on a slot's first use its legacy row (`media_credentials` /
@@ -4405,7 +4405,9 @@ Plan: `docs/roadmap/plans/VIDEO_COST_PLAN.md` §2 stages 2-4 (criteria 3-9). Sch
   opened before the update.
 - **Hugging Face.**
   - The token is checked with `whoami` before it is saved.
-  - It is sent only to huggingface.co, as a Bearer header from the media gateway's HF child.
+  - It is read and sent only for a gated or private repo, so public pulls never depend on it. It goes only to huggingface.co, as a
+    Bearer header from the media gateway's HF child.
+  - For such a repo, a HEAD on the file runs before any pod is created.
   - The pull pod gets it in `env.HF_TOKEN` (masked by `redactPodEnv`), never in `cmd`; it is never on the `ModelPull` record or in
     any API/MCP output.
   - Gated without a token: `hf_token_missing`; token refused: `hf_token_invalid`; 403 with a valid token: `hf_gate_not_accepted`.

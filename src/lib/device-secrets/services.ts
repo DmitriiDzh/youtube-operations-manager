@@ -1,7 +1,8 @@
+import { createHash } from "node:crypto";
 import { decryptSecret, encryptSecret, type EncryptedPayload } from "@/lib/shared-crypto";
 import type { KeyFile } from "@/lib/device-key-file";
 import { DomainError, isDomainError } from "@/lib/shared-domain";
-import type { DeviceSecretHints, DeviceSecretInfo, DeviceSecretName, DeviceSecretState, DeviceSecretStorePort, LegacySecretSource } from "./contracts";
+import type { DeviceSecretHints, DeviceSecretInfo, DeviceSecretName, DeviceSecretState, DeviceSecretStorePort, LegacySecretSource, StoredDeviceSecretRow } from "./contracts";
 
 export type DeviceSecretsDeps = {
   store: DeviceSecretStorePort;
@@ -22,11 +23,22 @@ function unreadable(name: string, detail: string): DomainError {
   });
 }
 
+/** An opaque token for one stored value: unique per save (the ciphertext carries a fresh IV), never the value itself. */
+function versionOf(row: StoredDeviceSecretRow): string {
+  return createHash("sha256").update(`${row.iv}:${row.ciphertext}`).digest("hex").slice(0, 32);
+}
+
+function infoOf(row: StoredDeviceSecretRow): DeviceSecretInfo {
+  return { hints: row.hints, status: row.status, verifiedAt: row.verifiedAt, updatedAt: row.updatedAt, version: versionOf(row) };
+}
+
 /** BL-199 (ADR 0042): this computer's typed secrets. */
 export function createDeviceSecrets(deps: DeviceSecretsDeps) {
   const now = deps.now ?? (() => Date.now());
-  /** Slots whose legacy row exists but cannot be opened (missing / unusable legacy key file): reported as `key_file_missing`. */
+  /** Slots whose legacy row cannot be opened (missing / unusable legacy key file): reported as `key_file_missing`. */
   const legacyUnreadable = new Set<DeviceSecretName>();
+  /** Slots whose legacy row waits because THIS store's key file is unusable: reported as `key_file_invalid` (review of BL-199). */
+  const legacyBlocked = new Set<DeviceSecretName>();
   const migrating = new Map<DeviceSecretName, Promise<void>>();
 
   async function keyState(): Promise<"ok" | "missing" | "invalid"> {
@@ -38,7 +50,10 @@ export function createDeviceSecrets(deps: DeviceSecretsDeps) {
     }
   }
 
-  /** ADR 0042 §3: moves a slot's legacy secret on first use -- written, read back, compared, then marked. Idempotent. */
+  /**
+   * ADR 0042 §3: moves a slot's legacy secret on first use -- written, read back, compared, then marked. Idempotent, one run per slot
+   * at a time; `write`/`clear` wait for it, and it never writes over a row that exists by the time it would (review of BL-199).
+   */
   function ensureMigrated(name: DeviceSecretName): Promise<void> {
     const running = migrating.get(name);
     if (running) return running;
@@ -57,7 +72,17 @@ export function createDeviceSecrets(deps: DeviceSecretsDeps) {
       }
       legacyUnreadable.delete(name);
       if (legacy) {
+        // An unusable key file of this store: nothing can be written; reported, never thrown (the card must still render).
+        if ((await keyState()) === "invalid") {
+          legacyBlocked.add(name);
+          return;
+        }
+        legacyBlocked.delete(name);
         const key = await deps.keyFile.readOrCreateKey();
+        if (await deps.store.get(name)) {
+          await deps.store.markMigrated(name, now());
+          return;
+        }
         await deps.store.upsert({ name, ...encryptSecret(legacy.plaintext, key), hints: legacy.hints, status: legacy.status, verifiedAt: legacy.verifiedAt, updatedAt: now() });
         const written = await deps.store.get(name);
         if (!written || decryptSecret(written, key) !== legacy.plaintext) throw unreadable(name, "the moved copy did not read back");
@@ -69,13 +94,27 @@ export function createDeviceSecrets(deps: DeviceSecretsDeps) {
   }
 
   function slot(name: DeviceSecretName) {
+    /** The secret and the version it was read at (for a later compare-and-set on exactly that value), or null. */
+    async function readWithVersion(): Promise<{ value: string; version: string } | null> {
+      await ensureMigrated(name);
+      const row = await deps.store.get(name);
+      if (!row) return null;
+      const key = await deps.keyFile.readKey();
+      if (!key) throw unreadable(name, "this computer's key file is missing");
+      try {
+        return { value: decryptSecret(row, key), version: versionOf(row) };
+      } catch {
+        throw unreadable(name, "it does not open with this computer's key file");
+      }
+    }
+
     return {
       name,
 
       async state(): Promise<DeviceSecretState> {
         await ensureMigrated(name);
         const row = await deps.store.get(name);
-        if (!row) return legacyUnreadable.has(name) ? "key_file_missing" : "none";
+        if (!row) return legacyBlocked.has(name) ? "key_file_invalid" : legacyUnreadable.has(name) ? "key_file_missing" : "none";
         const key = await keyState();
         return key === "ok" ? "set" : key === "missing" ? "key_file_missing" : "key_file_invalid";
       },
@@ -84,45 +123,45 @@ export function createDeviceSecrets(deps: DeviceSecretsDeps) {
       async info(): Promise<DeviceSecretInfo | null> {
         await ensureMigrated(name);
         const row = await deps.store.get(name);
-        return row ? { hints: row.hints, status: row.status, verifiedAt: row.verifiedAt, updatedAt: row.updatedAt, revision: row.revision } : null;
+        return row ? infoOf(row) : null;
       },
 
       /** The secret in clear for one call, or null when none is stored. A missing/unusable key file or a foreign row fails closed. */
       async read(): Promise<string | null> {
-        await ensureMigrated(name);
-        const row = await deps.store.get(name);
-        if (!row) return null;
-        const key = await deps.keyFile.readKey();
-        if (!key) throw unreadable(name, "this computer's key file is missing");
-        try {
-          return decryptSecret(row, key);
-        } catch {
-          throw unreadable(name, "it does not open with this computer's key file");
-        }
+        return (await readWithVersion())?.value ?? null;
       },
+
+      readWithVersion,
 
       /** Stores a new value (the key file is created on the first save); status and verifiedAt as given. */
       async write(plaintext: string, input: { hints: DeviceSecretHints; status?: string | null; verifiedAt?: number | null }): Promise<DeviceSecretInfo> {
+        // A legacy move in flight must not land over this value afterwards.
+        await ensureMigrated(name).catch(() => undefined);
         const key = await deps.keyFile.readOrCreateKey();
         await deps.store.upsert({ name, ...encryptSecret(plaintext, key), hints: input.hints, status: input.status ?? null, verifiedAt: input.verifiedAt ?? null, updatedAt: now() });
         // A value written here supersedes any legacy row for good.
         await deps.store.markMigrated(name, now());
         legacyUnreadable.delete(name);
+        legacyBlocked.delete(name);
         const row = await deps.store.get(name);
         if (!row) throw unreadable(name, "the saved row is missing");
-        return { hints: row.hints, status: row.status, verifiedAt: row.verifiedAt, updatedAt: row.updatedAt, revision: row.revision };
+        return infoOf(row);
       },
 
-      /** Compare-and-set on the revision: a value saved meanwhile is never given another value's status. */
-      async setStatus(expectedRevision: number, patch: { status?: string | null; verifiedAt?: number | null }): Promise<boolean> {
-        return deps.store.setStatus(name, expectedRevision, patch);
+      /** Compare-and-set on the version: a value saved meanwhile is never given another value's status. True when it changed. */
+      async setStatus(expectedVersion: string, patch: { status?: string | null; verifiedAt?: number | null }): Promise<boolean> {
+        const row = await deps.store.get(name);
+        if (!row || versionOf(row) !== expectedVersion) return false;
+        return deps.store.setStatus(name, row.ciphertext, patch);
       },
 
       /** Removes only this slot's row (and never brings a legacy row back); the shared key file goes only when it is unusable. */
       async clear(): Promise<void> {
+        await ensureMigrated(name).catch(() => undefined);
         await deps.store.delete(name);
         await deps.store.markMigrated(name, now());
         legacyUnreadable.delete(name);
+        legacyBlocked.delete(name);
         if ((await keyState()) === "invalid") await deps.keyFile.removeKey();
       },
     };

@@ -18,8 +18,9 @@ secret, a Hugging Face read token.
 ## Decision
 
 1. **`src/lib/device-secrets/` is the one owner** of this computer's typed secrets:
-   - one table `device_secrets` (one row per name, plaintext non-secret hints, status, verifiedAt and updatedAt in ms, a
-     revision for compare-and-set);
+   - one table `device_secrets` (one row per name, plaintext non-secret hints, status, verifiedAt and updatedAt in ms;
+     the compare-and-set token is a version derived from the ciphertext, unique per save — a row counter restarted after a clear,
+     review of BL-199);
    - one key file `device-secrets.key` (0600, `device-key-file`);
    - AES-256-GCM (`shared-crypto`).
 
@@ -38,12 +39,15 @@ secret, a Hugging Face read token.
 4. **One behaviour:**
    - "configured" means a row and a readable key file;
    - clearing a secret removes only its row; the shared file goes only when it is itself unusable;
-   - the Gemini status update keeps its compare-and-set, on the row's revision.
+   - the Gemini status update keeps its compare-and-set, on the version read before the check.
 5. **Session tokens:**
    - The ComfyUI proxy tokens of new sessions are sealed with the store's key.
    - Opening falls back to the legacy `media-generation.key` while it exists. Running sessions are not re-sealed.
 6. **Hugging Face token:**
-   - It is sent only to huggingface.co, from the media gateway's HF child.
+   - It is read and sent only for a repo that needs it, so a public pull never depends on it (review of BL-134). It goes only to
+     huggingface.co, from the media gateway's HF child.
+   - For such a repo, a HEAD on the file checks access before any pod is created: conditions not accepted means
+     `hf_gate_not_accepted`, at no cost.
    - The pull pod receives it as the env var `HF_TOKEN`, masked in every pod read by `redactPodEnv`, never in its command line.
    - `factory_media_get_settings` reports `hfToken: set | not set`.
 

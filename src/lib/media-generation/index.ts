@@ -414,6 +414,8 @@ function buildCore(jobScheduling: JobScheduling) {
     clearHfToken: hfToken.clearHfToken,
     /** BL-134: for the password-encrypted cloud-keys file only (`cloud-credentials-transfer`), never a route. */
     exportHfTokenForTransfer: hfToken.readHfToken,
+    checkHfTokenForImport: hfToken.checkHfTokenForImport,
+    storeCheckedHfToken: hfToken.storeCheckedHfToken,
     ...sessions,
     ...jobs,
     ...models,

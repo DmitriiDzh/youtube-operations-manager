@@ -45,26 +45,39 @@ export function createHfTokenServices(deps: HfTokenDeps) {
     };
   }
 
+  type CheckedHfToken = { token: string; user: string };
+  async function checkHfToken(input: unknown): Promise<CheckedHfToken> {
+    const { token } = parseWithSchema(setHfTokenInputSchema, input, "Hugging Face token");
+    const { name } = await deps.hub.whoami(token);
+    return { token, user: name };
+  }
+  async function storeChecked(checked: CheckedHfToken): Promise<HfTokenView> {
+    await deps.slot.write(checked.token, { hints: { user: checked.user }, status: "ok", verifiedAt: now() });
+    return view();
+  }
+
   return {
     getHfToken: view,
 
     /** Checks the token with Hugging Face (`whoami`) and only then stores it; a refused token stores nothing (`hf_token_invalid`). */
     async setHfToken(input: unknown): Promise<HfTokenView> {
-      const { token } = parseWithSchema(setHfTokenInputSchema, input, "Hugging Face token");
-      const { name } = await deps.hub.whoami(token);
-      await deps.slot.write(token, { hints: { user: name }, status: "ok", verifiedAt: now() });
-      return view();
+      return storeChecked(await checkHfToken(input));
     },
+
+    /** BL-134 (review): the cloud-keys import checks every section BEFORE storing any -- this is the HF check (stores nothing). */
+    checkHfTokenForImport: checkHfToken,
+    /** Stores a token `checkHfTokenForImport` accepted. */
+    storeCheckedHfToken: storeChecked,
 
     /** One `whoami` with the stored token; the result is recorded only on the token that was checked (compare-and-set). */
     async testHfToken(): Promise<HfTokenView> {
-      const [token, info] = await Promise.all([deps.slot.read(), deps.slot.info()]);
-      if (!token || !info) throw new DomainError({ code: "hf_token_missing", message: "No Hugging Face token is stored on this computer." });
+      const read = await deps.slot.readWithVersion();
+      if (!read) throw new DomainError({ code: "hf_token_missing", message: "No Hugging Face token is stored on this computer." });
       try {
-        await deps.hub.whoami(token);
-        await deps.slot.setStatus(info.revision, { status: "ok", verifiedAt: now() });
+        await deps.hub.whoami(read.value);
+        await deps.slot.setStatus(read.version, { status: "ok", verifiedAt: now() });
       } catch (error) {
-        if (isDomainError(error) && error.code === "hf_token_invalid") await deps.slot.setStatus(info.revision, { status: "invalid", verifiedAt: now() });
+        if (isDomainError(error) && error.code === "hf_token_invalid") await deps.slot.setStatus(read.version, { status: "invalid", verifiedAt: now() });
         throw error;
       }
       return view();

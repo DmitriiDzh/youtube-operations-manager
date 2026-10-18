@@ -53,13 +53,14 @@ test("device_secrets: upsert grows the revision; hints and times round-trip in m
   });
 });
 
-test("device_secrets: status compare-and-set applies only on the expected revision", async () => {
+test("device_secrets: status compare-and-set applies only on the expected ciphertext", async () => {
   await withDb(async (database) => {
     await upsertStoredDeviceSecret(row("gemini", "c1"), database);
     await upsertStoredDeviceSecret(row("gemini", "c2"), database);
-    assert.equal(await setStoredDeviceSecretStatus("gemini", 1, { status: "payment_required" }, database), false);
+    // Review of BL-199: the compare-and-set token is the ciphertext (unique per save), not the row counter.
+    assert.equal(await setStoredDeviceSecretStatus("gemini", "c1", { status: "payment_required" }, database), false);
     assert.equal((await getStoredDeviceSecret("gemini", database))?.status, "ok");
-    assert.equal(await setStoredDeviceSecretStatus("gemini", 2, { status: "payment_required", verifiedAt: 300 }, database), true);
+    assert.equal(await setStoredDeviceSecretStatus("gemini", "c2", { status: "payment_required", verifiedAt: 300 }, database), true);
     const after = await getStoredDeviceSecret("gemini", database);
     assert.deepEqual([after?.status, after?.verifiedAt], ["payment_required", 300]);
   });

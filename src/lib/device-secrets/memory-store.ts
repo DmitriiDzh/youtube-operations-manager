@@ -15,9 +15,9 @@ export function createMemoryDeviceSecretStore(): DeviceSecretStorePort & { rows:
       const previous = rows.get(row.name);
       rows.set(row.name, { ...row, revision: previous ? previous.revision + 1 : 1 });
     },
-    async setStatus(name, expectedRevision, patch) {
+    async setStatus(name, expectedCiphertext, patch) {
       const row = rows.get(name);
-      if (!row || row.revision !== expectedRevision) return false;
+      if (!row || row.ciphertext !== expectedCiphertext) return false;
       rows.set(name, { ...row, ...(patch.status !== undefined ? { status: patch.status } : {}), ...(patch.verifiedAt !== undefined ? { verifiedAt: patch.verifiedAt } : {}) });
       return true;
     },

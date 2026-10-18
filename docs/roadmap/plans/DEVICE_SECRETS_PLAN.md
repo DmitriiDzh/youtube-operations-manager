@@ -83,7 +83,8 @@ Expected values come from the rules above.
   file, and `set` otherwise. A row whose ciphertext does not open with the file fails with `device_secret_unreadable`.
 - **AC-DS-03**: clear("x") removes only row x. Other secrets and the key file stay. An unusable key file is removed together
   with the cleared row.
-- **AC-DS-04**: setStatus with a stale revision changes nothing.
+- **AC-DS-04**: setStatus with a stale version changes nothing, including after a clear and a new save. The version comes from the
+  ciphertext; a row counter would restart and match another key (review).
 - **AC-DS-05**: seal/open round-trip with the store's key. A payload sealed with the legacy key opens through the fallback.
   Without either key it fails with `media_generation_not_configured`.
 

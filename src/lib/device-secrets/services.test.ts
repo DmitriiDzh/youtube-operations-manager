@@ -6,43 +6,13 @@ import test from "node:test";
 import { createKeyFile, createKeyFileFsAccess } from "@/lib/device-key-file";
 import { encryptSecret } from "@/lib/shared-crypto";
 import { DomainError } from "@/lib/shared-domain";
-import type { DeviceSecretStorePort, LegacySecretSource, StoredDeviceSecretRow } from "./contracts";
+import type { LegacySecretSource } from "./contracts";
+import { createMemoryDeviceSecretStore } from "./memory-store";
 import { createDeviceSecrets } from "./services";
 
 // BL-199 (docs/roadmap/plans/DEVICE_SECRETS_PLAN.md AC-DS-01..08, ADR 0042). Expected values follow the plan's rules: "set" = row +
 // readable key file; clearing removes one row, never the shared file unless it is unusable; a legacy secret moves once, verified,
 // and never comes back after a clear.
-
-function memoryStore() {
-  const rows = new Map<string, StoredDeviceSecretRow>();
-  const migrated = new Set<string>();
-  const port: DeviceSecretStorePort = {
-    async get(name) {
-      const row = rows.get(name);
-      return row ? { ...row, hints: { ...row.hints } } : null;
-    },
-    async upsert(row) {
-      const previous = rows.get(row.name);
-      rows.set(row.name, { ...row, revision: previous ? previous.revision + 1 : 1 });
-    },
-    async setStatus(name, expectedRevision, patch) {
-      const row = rows.get(name);
-      if (!row || row.revision !== expectedRevision) return false;
-      rows.set(name, { ...row, ...(patch.status !== undefined ? { status: patch.status } : {}), ...(patch.verifiedAt !== undefined ? { verifiedAt: patch.verifiedAt } : {}) });
-      return true;
-    },
-    async delete(name) {
-      rows.delete(name);
-    },
-    async isMigrated(name) {
-      return migrated.has(name);
-    },
-    async markMigrated(name) {
-      migrated.add(name);
-    },
-  };
-  return { port, rows, migrated };
-}
 
 function invalid(detail: string) {
   return new DomainError({ code: "encryption_key_not_configured", message: detail });
@@ -53,7 +23,8 @@ async function tempKeyFilePath(): Promise<string> {
 }
 
 async function build(options: { legacy?: Partial<Record<"runpod" | "gemini", LegacySecretSource>>; legacySealKey?: () => Promise<Buffer | null> } = {}) {
-  const store = memoryStore();
+  const memory = createMemoryDeviceSecretStore();
+  const store = { port: memory, rows: memory.rows, migrated: memory.migrated };
   const keyPath = await tempKeyFilePath();
   const secrets = createDeviceSecrets({ store: store.port, keyFile: createKeyFile(createKeyFileFsAccess(keyPath), invalid), legacy: options.legacy, legacySealKey: options.legacySealKey, now: () => 1_760_000_000_000 });
   return { secrets, store, keyPath };
@@ -103,15 +74,25 @@ test("AC-DS-03: clearing one secret removes only its row; the key file stays unl
   await assert.rejects(stat(keyPath), "an unusable key file goes with the cleared row");
 });
 
-test("AC-DS-04: a status update with a stale revision changes nothing", async () => {
+test("AC-DS-04: a status update with a stale version changes nothing -- also after a clear and a new save (no ABA, review of BL-199)", async () => {
   const { secrets } = await build();
   const first = await secrets.slot("gemini").write("k1", { hints: {}, status: "ok" });
   await secrets.slot("gemini").write("k2", { hints: {}, status: "ok" });
-  assert.equal(await secrets.slot("gemini").setStatus(first.revision, { status: "payment_required" }), false);
+  assert.equal(await secrets.slot("gemini").setStatus(first.version, { status: "payment_required" }), false);
   assert.equal((await secrets.slot("gemini").info())?.status, "ok");
-  const current = (await secrets.slot("gemini").info())!;
-  assert.equal(await secrets.slot("gemini").setStatus(current.revision, { status: "payment_required", verifiedAt: 5 }), true);
-  assert.deepEqual([(await secrets.slot("gemini").info())?.status, (await secrets.slot("gemini").info())?.verifiedAt], ["payment_required", 5]);
+
+  // Clear, then save another key: the row counter would restart, the version does not repeat.
+  const before = (await secrets.slot("gemini").info())!;
+  await secrets.slot("gemini").clear();
+  await secrets.slot("gemini").write("k3", { hints: {}, status: "ok" });
+  assert.equal(await secrets.slot("gemini").setStatus(before.version, { status: "payment_required" }), false);
+  assert.equal((await secrets.slot("gemini").info())?.status, "ok");
+
+  const current = (await secrets.slot("gemini").readWithVersion())!;
+  assert.equal(current.value, "k3");
+  assert.equal(await secrets.slot("gemini").setStatus(current.version, { status: "payment_required", verifiedAt: 5 }), true);
+  const after = (await secrets.slot("gemini").info())!;
+  assert.deepEqual([after.status, after.verifiedAt], ["payment_required", 5]);
 });
 
 test("AC-DS-05: seal/open with this store's key; a token sealed with the legacy key opens through the fallback; neither -> null", async () => {
@@ -186,4 +167,30 @@ test("migration: no legacy row -> marked once, nothing stored; two first reads a
   assert.equal(reads, 1);
   assert.ok(store.migrated.has("gemini"));
   assert.equal(store.rows.has("gemini"), false);
+});
+
+test("review: a save during the legacy move wins -- the move never lands over a value written meanwhile", async () => {
+  let release: (() => void) | null = null;
+  const legacy: LegacySecretSource = {
+    read: () => new Promise((resolve) => (release = () => resolve({ plaintext: "AIza-legacy", hints: {}, status: null, verifiedAt: null }))),
+  };
+  const { secrets } = await build({ legacy: { gemini: legacy } });
+  const firstRead = secrets.slot("gemini").state();
+  await new Promise((resolve) => setImmediate(resolve));
+  const saving = secrets.slot("gemini").write("AIza-new", { hints: {} });
+  release!();
+  await Promise.all([firstRead, saving]);
+  assert.equal(await secrets.slot("gemini").read(), "AIza-new");
+});
+
+test("review: a legacy row waiting while this store's key file is unusable is reported key_file_invalid, never thrown; clear recovers", async () => {
+  const legacy: LegacySecretSource = { read: async () => ({ plaintext: "{}", hints: {}, status: null, verifiedAt: null }) };
+  const { secrets, keyPath } = await build({ legacy: { runpod: legacy } });
+  await writeFile(keyPath, "not json");
+  assert.equal(await secrets.slot("runpod").state(), "key_file_invalid");
+  assert.equal(await secrets.slot("runpod").info(), null);
+  await secrets.slot("runpod").clear();
+  await assert.rejects(stat(keyPath), "the unusable key file is removed");
+  await secrets.slot("runpod").write('{"runpodApiKey":"rpa_y"}', { hints: {} });
+  assert.equal(await secrets.slot("runpod").state(), "set");
 });
