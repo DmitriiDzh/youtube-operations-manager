@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { RUNPOD_DATACENTER_ID_PATTERN } from "@/lib/media-gateway";
-import { MAX_CONCURRENT_SESSIONS_RANGE, MEDIA_CUDA_VERSIONS } from "./contracts";
+import { MAX_CONCURRENT_SESSIONS_RANGE, MEDIA_CUDA_VERSIONS, RUNTIME_ID_PATTERN } from "./contracts";
 export { parseWithSchema, formatZodError } from "./contracts";
 
 /** RunPod datacenter ids look like `EU-RO-1`, `EUR-IS-1`, `US-TX-3`. */
@@ -61,6 +61,13 @@ export const mediaSettingsSchema = z
     ownerReleaseWhenDone: z.boolean(),
     // BL-155: one of RunPod's known versions, or null = no filter.
     minCudaVersion: z.enum(MEDIA_CUDA_VERSIONS).nullable(),
+    // BL-200 (ADR 0043).
+    activeRuntimeId: z.string().regex(RUNTIME_ID_PATTERN).nullable(),
+    factoryMayActivateRuntime: z.boolean(),
+    runtimeSourceAllowlist: z
+      .array(z.string().trim().max(200).regex(/^https:\/\/[A-Za-z0-9.-]+\/([A-Za-z0-9_.-]+\/)?$/, "an https URL prefix ending with /, like https://github.com/comfyanonymous/"))
+      .max(50),
+    runtimeTestMaxUsd: z.number().gt(0).max(100),
   })
   .strict();
 
@@ -91,6 +98,8 @@ export const requestSessionInputSchema = z
     planId: z.string().min(2).max(80).optional(),
     /** BL-159: the session's own minimum host CUDA version; it may only raise the owner's setting (applied at placement). */
     minCudaVersion: z.enum(MEDIA_CUDA_VERSIONS).optional(),
+    /** BL-200 (ADR 0043): the pod runtime profile to run; absent = the active one (Settings), null = the image's built-in ComfyUI. */
+    runtimeId: z.string().regex(RUNTIME_ID_PATTERN, "a runtime id is 3-63 lower-case letters, digits or '-'").nullable().optional(),
   })
   .strict();
 

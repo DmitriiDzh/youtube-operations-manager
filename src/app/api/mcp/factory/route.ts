@@ -79,6 +79,24 @@ function createToolDeps(): FactoryToolDeps {
         // BL-134 (FO-REQ-0028 E): whether a Hugging Face token is stored and readable here -- never the value.
         return { settings: { ...settings, hfToken: hf.state === "set" ? ("set" as const) : ("not set" as const) } };
       },
+      // BL-200: pod runtime profiles (every write recorded with actor `factory`).
+      listRuntimes: async () => createMediaGenerationCore().listRuntimes(),
+      getRuntime: async ({ runtimeId }) => {
+        const core = createMediaGenerationCore();
+        const [runtime, builds, tests] = await Promise.all([core.getRuntime(runtimeId), core.listRuntimeBuilds(), core.listRuntimeTests(runtimeId)]);
+        return { runtime, builds: builds.filter((b) => b.runtimeId === runtimeId).slice(-10), tests: tests.slice(-10) };
+      },
+      listComfyReleases: async () => createMediaGenerationCore().listComfyReleases(),
+      createRuntime: async (input) => createMediaGenerationCore().createRuntime(input, { actor: "factory" }),
+      testRuntime: async ({ runtimeId, templateIds, channelId }) => {
+        const connected = await channelConnections.listConnectedChannels();
+        const channel = channelId ?? connected[0]?.channelId;
+        if (!channel || !connected.some((c) => c.channelId === channel)) {
+          throw new DomainError({ code: "CHANNEL_WORKSPACE_CHANNEL_NOT_CONNECTED", message: "No connected channel with this id; the test session is booked to a connected channel.", details: { channelId: channel ?? null } });
+        }
+        return { test: await createMediaGenerationCore().testRuntime({ runtimeId, channelId: channel, ...(templateIds ? { templateIds } : {}) }, { actor: "factory" }) };
+      },
+      setActiveRuntime: async ({ runtimeId }) => createMediaGenerationCore().setActiveRuntime({ runtimeId }, { actor: "factory" }),
       listTemplates: async () => {
         const core = createMediaGenerationCore();
         const [templates, lastSync, onVolume] = await Promise.all([
@@ -121,6 +139,8 @@ function createToolDeps(): FactoryToolDeps {
           if (!template) throw new DomainError({ code: "media_template_not_found", message: "No workflow template with this id", details: { templateId: input.templateId } });
           if (!gpu) gpu = template.gpu ?? undefined;
           templateMinCudaVersion = template.minCudaVersion ?? null;
+          // BL-200 (AC-RT-07): a template the session's runtime cannot load is refused before any pod.
+          await core.assertTemplateFitsRuntime({ templateId: input.templateId, ...(input.runtimeId !== undefined ? { runtimeId: input.runtimeId } : {}) });
         }
         // BL-143: a session for a plan -- the plan must be active and of this channel.
         if (input.planId) await createGenerationPlansCore().checkSessionLink({ planId: input.planId, channelId: input.channelId });
@@ -132,6 +152,7 @@ function createToolDeps(): FactoryToolDeps {
           ...(gpu ? { gpu } : {}),
           ...(input.releaseWhenDone !== undefined ? { releaseWhenDone: input.releaseWhenDone } : {}),
           ...(input.minCudaVersion ? { minCudaVersion: input.minCudaVersion } : {}),
+          ...(input.runtimeId !== undefined ? { runtimeId: input.runtimeId } : {}),
           templateMinCudaVersion,
         });
       },

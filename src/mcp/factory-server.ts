@@ -81,7 +81,16 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 // token), hf_token_invalid (Hugging Face refused the token), hf_gate_not_accepted (details.repoUrl: accept the conditions there);
 // a pull and factory_media_list_models show licenseId / licenseUrl from the repo card; factory_media_get_settings adds
 // settings.hfToken "set" | "not set". Additive.
-export const FACTORY_API_VERSION = "1.22.0";
+// BL-200 (FO-REQ-0029, ADR 0043): 1.23.0 -- pod runtime profiles: factory_media_list_runtimes / _get_runtime /
+// _list_comfy_releases (READ) and factory_media_create_runtime (WRITE: a profile file on the volume; nothing built or charged);
+// settings gain activeRuntimeId, factoryMayActivateRuntime, runtimeSourceAllowlist, runtimeTestMaxUsd. factory_media_start_session
+// takes runtimeId? (default the active runtime; not built = media_runtime_not_ready before any pod); a session shows runtimeId and
+// comfyVersion. factory_media_test_runtime (WRITE: a CPU build if needed, then a GPU session capped by runtimeTestMaxUsd, the node
+// list against every template) and factory_media_activate_runtime (WRITE: a tested runtime, or null, while the owner's switch is
+// on); a job or a factory session with templateId whose graph needs a node type the runtime's test did not find is refused with
+// media_runtime_incompatible before any pod / upload. Additive (with no active runtime every session runs the built-in ComfyUI,
+// as before).
+export const FACTORY_API_VERSION = "1.23.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -102,6 +111,13 @@ export const FACTORY_TOOL_NAMES = [
   "factory_media_delete_template",
   "factory_media_adopt_template",
   "factory_media_get_settings",
+  // BL-200 (FO-REQ-0029, ADR 0043): pod runtime profiles -- ComfyUI and node packs pinned to commits, on the network volume.
+  "factory_media_list_runtimes",
+  "factory_media_get_runtime",
+  "factory_media_list_comfy_releases",
+  "factory_media_create_runtime",
+  "factory_media_test_runtime",
+  "factory_media_activate_runtime",
   // BL-133 (docs/roadmap/plans/FACTORY_GPU_SESSIONS_PLAN.md §2.2/§2.5): sessions it starts itself, jobs in them, the capacity log.
   "factory_media_start_session",
   "factory_media_get_session",
@@ -167,6 +183,11 @@ export const FACTORY_WRITE_TOOL_NAMES = [
   "factory_media_sync_templates",
   "factory_media_delete_template",
   "factory_media_adopt_template",
+  // BL-200: a new runtime profile (a file on the volume; nothing is built, started or charged), its test (a CPU build and a
+  // short GPU session, within the owner's limits) and making it active (only with the owner's switch on).
+  "factory_media_create_runtime",
+  "factory_media_test_runtime",
+  "factory_media_activate_runtime",
   "factory_media_start_session",
   "factory_media_stop_session",
   "factory_media_create_job",
@@ -229,8 +250,15 @@ export type FactoryToolDeps = {
     deleteTemplate(input: { templateId: string }): Promise<Record<string, unknown>>;
     adoptTemplate(input: { templateId: string; newTemplateId: string }): Promise<Record<string, unknown>>;
     getSettings(): Promise<Record<string, unknown>>;
+    // BL-200.
+    listRuntimes(): Promise<Record<string, unknown>>;
+    getRuntime(input: { runtimeId: string }): Promise<Record<string, unknown>>;
+    listComfyReleases(): Promise<Record<string, unknown>>;
+    createRuntime(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+    testRuntime(input: { runtimeId: string; templateIds?: string[]; channelId?: string }): Promise<Record<string, unknown>>;
+    setActiveRuntime(input: { runtimeId: string | null }): Promise<Record<string, unknown>>;
     // BL-133.
-    startSession(input: { channelId: string; maxMinutes?: number; maxUsd?: number; templateId?: string; gpu?: { candidates: string[]; minVramGb?: number | null; maxPricePerHr?: number | null }; releaseWhenDone?: boolean; planId?: string; minCudaVersion?: string }): Promise<Record<string, unknown>>;
+    startSession(input: { channelId: string; maxMinutes?: number; maxUsd?: number; templateId?: string; gpu?: { candidates: string[]; minVramGb?: number | null; maxPricePerHr?: number | null }; releaseWhenDone?: boolean; planId?: string; minCudaVersion?: string; runtimeId?: string | null }): Promise<Record<string, unknown>>;
     getSession(input: { sessionId?: string }): Promise<Record<string, unknown>>;
     endSession(input: { sessionId: string }): Promise<Record<string, unknown>>;
     createJob(input: { sessionId: string; templateId: string; params: Record<string, string | number | boolean>; planId?: string; itemKey?: string; seed?: number; storyboardId?: string; segmentId?: string; videoNumber?: string }): Promise<Record<string, unknown>>;
@@ -355,6 +383,26 @@ const pullModelInput = z
   .strict();
 const pullIdInput = z.object({ pullId: z.string().min(1).max(64) }).strict();
 const optionalPullIdInput = z.object({ pullId: z.string().min(1).max(64).optional() }).strict();
+// BL-200: the shapes only; the media core validates every field strictly (allow-list, commits, pins).
+const runtimeIdInput = z.object({ runtimeId: z.string().min(1).max(64) }).strict();
+const createRuntimeInput = z
+  .object({
+    runtimeId: z.string().min(1).max(64),
+    name: z.string().max(120).optional(),
+    description: z.string().max(1000).optional(),
+    comfy: z.object({ repo: z.string().max(300).optional(), ref: z.string().min(1).max(200) }).strict(),
+    customNodes: z.array(z.object({ repo: z.string().max(300), commit: z.string().max(64) }).strict()).max(50).optional(),
+    pip: z.array(z.string().max(200)).max(100).optional(),
+  })
+  .strict();
+const testRuntimeInput = z
+  .object({
+    runtimeId: z.string().min(1).max(64),
+    templateIds: z.array(z.string().min(1).max(64)).max(200).optional(),
+    channelId: z.string().min(1).max(64).optional(),
+  })
+  .strict();
+const setActiveRuntimeInput = z.object({ runtimeId: z.string().min(1).max(64).nullable() }).strict();
 const modelKeyInput = z.object({ key: z.string().min(1).max(1000) }).strict();
 const syncInput = z.object({ dryRun: z.boolean().optional() }).strict();
 const templateIdInput = z.object({ templateId: z.string().min(1).max(64) }).strict();
@@ -380,6 +428,8 @@ const startSessionInput = z
     /** BL-159: the session's own minimum host CUDA version (only raises the owner's setting). The shape is checked here; the
      * media core accepts only the versions RunPod knows (gpu.cudaVersions). */
     minCudaVersion: z.string().regex(/^\d{1,2}\.\d{1,2}$/).optional(),
+    /** BL-200 (1.23.0): the pod runtime profile to run; absent = the active one, null = the image's built-in ComfyUI. */
+    runtimeId: z.string().regex(/^[a-z0-9][a-z0-9-]{2,62}$/).nullable().optional(),
   })
   .strict();
 const sessionIdInput = z.object({ sessionId: z.string().min(1).max(64) }).strict();
@@ -537,6 +587,78 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     async () => successResult(await deps.media.storageStatus())
   );
 
+  // BL-200 (FO-REQ-0029, ADR 0043): pod runtime profiles.
+  registerTool(
+    "factory_media_list_runtimes",
+    {
+      description:
+        "List the pod runtime profiles on the network volume (1.23.0): { runtimes: [{ runtimeId, name, comfy: { repo, commit, ref }, customNodes: [{ repo, commit }], pip, createdAt, createdBy, status: created | building | build_failed | built | test_failed | tested, active, ready (the build's .ready marker on the volume -- without it the runtime is not built), build, test: { ok, testedAt, comfyVersion, nodeCount, templates, costUsd, bootSeconds } }], activeRuntimeId }. activeRuntimeId null = the image's built-in ComfyUI. Read-only.",
+      inputSchema: emptyInput,
+    },
+    async () => successResult(await deps.media.listRuntimes())
+  );
+
+  registerTool(
+    "factory_media_get_runtime",
+    {
+      description:
+        "One runtime profile with its test result per template ({ runtime: { ...profile, templates: [{ templateId, version, ok, missing: [node types] }] }, builds: [its CPU builds on this computer: status running | built | failed | timeout, error], tests: [its tests: status building | starting | passed | failed, sessionId, error, costUsd, bootSeconds] }). Read-only.",
+      inputSchema: runtimeIdInput,
+    },
+    async (args) => successResult(await deps.media.getRuntime(parseInput(runtimeIdInput, args)))
+  );
+
+  registerTool(
+    "factory_media_list_comfy_releases",
+    {
+      description: "ComfyUI's newest releases on GitHub ({ repo, releases: [{ tag, name, publishedAt, prerelease }] }), for choosing comfy.ref. Read-only.",
+      inputSchema: emptyInput,
+    },
+    async () => successResult(await deps.media.listComfyReleases())
+  );
+
+  registerTool(
+    "factory_media_create_runtime",
+    {
+      description:
+        "Create a pod runtime profile (1.23.0): { runtimeId (3-63 lower-case letters, digits, '-'), name?, description?, comfy: { repo? (default https://github.com/comfyanonymous/ComfyUI), ref (a tag or branch, resolved to its exact commit now, or an exact 40-hex commit) }, customNodes?: [{ repo, commit (exactly 40 hex) }], pip?: ['name==version'; torch, torchvision and torchaudio come from the pod image and cannot be pinned] }; two node packs may not share a folder (repository) name. Every repository must be HTTPS and under the owner's allowed sources (Servers → Setup; settings.runtimeSourceAllowlist in factory_media_get_settings), otherwise validation_failed lists the refused ones. A profile is never edited: the same runtimeId twice is refused -- create a new one. Nothing is built, started or charged here. Recorded as created by the Factory Operator.",
+      inputSchema: createRuntimeInput,
+    },
+    async (args) => {
+      const input = parseInput(createRuntimeInput, args);
+      await deps.assertMutationAllowed();
+      return successResult({ runtime: await deps.media.createRuntime(input) });
+    }
+  );
+
+  registerTool(
+    "factory_media_test_runtime",
+    {
+      description:
+        "Test a pod runtime profile (1.23.0): { runtimeId, templateIds? (default: every registry template), channelId? (the connected channel the test session is booked to; default: the first connected one) }. Returns at once with { test: { testId, status: building | starting | passed | failed, ... } }; the server advances it about once a minute -- poll factory_media_get_runtime (its `tests`). Steps: a runtime that is not built is built first on a CPU pod (~10 min, cents; no GPU); then a short GPU session on the runtime under YOUR factory limits, its USD cap = the owner's runtimeTestMaxUsd ($0.5 by default) and its minutes what that buys at the GPU's price (3-15 min); once ComfyUI answers, its node types (/object_info) and version (/system_stats) are read, every template's graph is checked for node types the runtime lacks, the session is stopped, and the result is kept beside the profile (factory_media_get_runtime: templates [{ templateId, version, ok, missing }], comfyVersion, costUsd, bootSeconds). The test passes when every checked template has all its nodes. Only node presence is checked -- no generation is run. A session held by a limit fails the test (nothing is billed).",
+      inputSchema: testRuntimeInput,
+    },
+    async (args) => {
+      const input = parseInput(testRuntimeInput, args);
+      await deps.assertMutationAllowed();
+      return successResult(await deps.media.testRuntime(input));
+    }
+  );
+
+  registerTool(
+    "factory_media_activate_runtime",
+    {
+      description:
+        "Make a pod runtime the default for new sessions (1.23.0): { runtimeId } -- only a runtime whose test against EVERY registry template passed (status tested, a test without templateIds; otherwise media_runtime_not_ready), and only while the owner's switch 'The Operator may make a runtime active' is on (settings.factoryMayActivateRuntime; off = media_runtime_activation_disabled -- you can still create and test). { runtimeId: null } = the image's built-in ComfyUI. Rollback = set the previous runtimeId (returned as previousRuntimeId). Sessions already running keep their runtime. Recorded with who and when.",
+      inputSchema: setActiveRuntimeInput,
+    },
+    async (args) => {
+      const input = parseInput(setActiveRuntimeInput, args);
+      await deps.assertMutationAllowed();
+      return successResult(await deps.media.setActiveRuntime(input));
+    }
+  );
+
   registerTool(
     "factory_media_list_models",
     {
@@ -668,7 +790,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_media_start_session",
     {
       description:
-        "Start a GPU session yourself: { channelId (the connected channel whose workspace receives the outputs), maxMinutes?, maxUsd? (both default to the owner's factory per-session limits), templateId? (use that registry template's GPU list and its minCudaVersion) | gpu? { candidates: [GPU type ids in order], minVramGb?, maxPricePerHr? }, minCudaVersion? (1.9.0: one of gpu.cudaVersions; this session's own minimum host CUDA, wins over the template's; it may only RAISE the owner's minimum -- a lower value is used as the owner's), releaseWhenDone? (true = the pod stops by itself one minute after the last job finished, stopReason 'released after last job ...'; false = it stays up until the idle timeout or your stop; omitted = the owner's setting, on by default) }. Within ALL of the owner's factory limits (the switch, per session, the factory's day and month) and the device's own limits, it is approved by you and the pod starts at once -> { session, approved: true }. Otherwise it is created pending for the owner -> { session, approved: false, heldBy: which limit }. GPUs are tried in order in the volume's datacenter; if none can be placed the session waits as waiting_capacity (no pod, no cost) and is retried every 30 s until the owner's wait limit, then fails with media_no_capacity. Pods are placed only on hosts whose CUDA driver supports the higher of the owner's minimum (gpu.minCudaVersion in factory_media_get_settings, 12.8 by default) and the session's own (1.9.0); before running, the host is checked again (its CUDA version, and a cuda device in ComfyUI) -- an incompatible pod is terminated and placed again at most twice, then the session fails with media_gpu_host_incompatible (1.7.0). With release-when-done, a session whose every job failed stops with stopReason 'all jobs failed (release when done)' (1.7.0). Poll factory_media_get_session.",
+        "Start a GPU session yourself: { channelId (the connected channel whose workspace receives the outputs), maxMinutes?, maxUsd? (both default to the owner's factory per-session limits), templateId? (use that registry template's GPU list and its minCudaVersion) | gpu? { candidates: [GPU type ids in order], minVramGb?, maxPricePerHr? }, minCudaVersion? (1.9.0: one of gpu.cudaVersions; this session's own minimum host CUDA, wins over the template's; it may only RAISE the owner's minimum -- a lower value is used as the owner's), releaseWhenDone? (true = the pod stops by itself one minute after the last job finished, stopReason 'released after last job ...'; false = it stays up until the idle timeout or your stop; omitted = the owner's setting, on by default), runtimeId? (1.23.0: the pod runtime profile to run -- see factory_media_list_runtimes; omitted = the active runtime, null = the image's built-in ComfyUI; a runtime that is not built is refused with media_runtime_not_ready before any pod or session exists; the session shows runtimeId and, once running, comfyVersion) }. Within ALL of the owner's factory limits (the switch, per session, the factory's day and month) and the device's own limits, it is approved by you and the pod starts at once -> { session, approved: true }. Otherwise it is created pending for the owner -> { session, approved: false, heldBy: which limit }. GPUs are tried in order in the volume's datacenter; if none can be placed the session waits as waiting_capacity (no pod, no cost) and is retried every 30 s until the owner's wait limit, then fails with media_no_capacity. Pods are placed only on hosts whose CUDA driver supports the higher of the owner's minimum (gpu.minCudaVersion in factory_media_get_settings, 12.8 by default) and the session's own (1.9.0); before running, the host is checked again (its CUDA version, and a cuda device in ComfyUI) -- an incompatible pod is terminated and placed again at most twice, then the session fails with media_gpu_host_incompatible (1.7.0). With release-when-done, a session whose every job failed stops with stopReason 'all jobs failed (release when done)' (1.7.0). Poll factory_media_get_session.",
       inputSchema: startSessionInput,
     },
     async (args) => {

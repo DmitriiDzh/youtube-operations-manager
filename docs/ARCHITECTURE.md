@@ -4413,3 +4413,37 @@ Plan: `docs/roadmap/plans/VIDEO_COST_PLAN.md` §2 stages 2-4 (criteria 3-9). Sch
   - Gated without a token: `hf_token_missing`; token refused: `hf_token_invalid`; 403 with a valid token: `hf_gate_not_accepted`.
   - The licence comes from the repo card's `license` / `license_link`.
 
+## BL-200 — pod runtimes the Factory Operator manages (FO-REQ-0029, ADR 0043)
+
+- **Profiles.** A runtime is one immutable file on the network volume, `ytm/runtimes/<runtimeId>/runtime.json`: ComfyUI and node packs
+  at exact 40-hex commits (a tag is resolved through the media gateway's GitHub child at create time) and pinned pip extras. Every
+  repo must sit under the owner's allow-list. The volume is the store every computer shares, so profiles have no sync family.
+- **Build** (`runtime-builds.ts`). A CPU pod (`cpu3c`, 4 vCPU, 40 GB disk) runs the GPU template's own image (`imageName`; none = refused,
+  never a fallback image) with the entrypoint `bash /workspace/ytm/runtime-build.sh <id>`, no ports, no env. The script clones each
+  repo at its commit (verified with `rev-parse`), makes a venv from the image's Python with a `.pth` to the image's site-packages
+  (torch is never downloaded: probe 1), installs the requirements without torch/torchvision/torchaudio, writes `.ready` last and
+  then `build.json`. The watch loop reads the verdict and terminates the pod (a build is finished only once the pod is confirmed
+  gone); a dead pod fails at once; the cap is 60 min. `.ready` is the invariant: without it a runtime is not built.
+  - It does not take the network-volume lock: it writes only under its own folder, nothing reads that before `.ready`, and the
+    exclusive lock would block every session for the build's ~9 min. `.lock` (pod id, stale after 2 h) and the app's job list stop
+    a second build of one profile.
+  - `ensurePodScripts` uploads this version's `scripts/media/pod/{pod-start.sh,runtime-build.sh}` to `ytm/` when the volume's copy
+    differs, before a build and before a session on a runtime. Both computers run from the repository checkout.
+- **Sessions.** `runtimeId` on a request: absent = the active runtime, `null` = the image's built-in ComfyUI. A runtime without
+  `.ready` is refused (`media_runtime_not_ready`) before the row, and again at approve before the pod. The pod's env gets
+  `YTM_RUNTIME_ID` next to its own `COMFY_TOKEN` and nothing else; `pod-start.sh` then runs that runtime's ComfyUI with its venv and
+  refuses to fall back to the built-in one. Schema v97 adds `media_sessions.runtime_id` and `comfy_version` (from
+  `/system_stats` `system.comfyui_version` at ready).
+- **Test** (`runtime-tests.ts`, advanced by the watch loop). Build if needed → a GPU session on the runtime (the Operator's through
+  its factory limits, the owner's approved as the owner) with `maxUsd = runtimeTestMaxUsd` and `maxMinutes = min(15, floor(cap × 60 /
+  price))`, at least 3 → `/object_info` (`getNodeTypes`, names only) and `/system_stats` → each template's `class_type` values against
+  the list → the session stopped → `test.json`. A held session fails the test and is withdrawn.
+- **Activation.** `setActiveRuntime` (core) needs status `tested`; the Operator also needs `factoryMayActivateRuntime`. A plain
+  settings save that changes `activeRuntimeId` is refused, while the sync applies a peer's value directly. Rollback is activating
+  the previous id or `null`.
+- **Pre-pod refusal.** `media_runtime_incompatible` (with the missing node types) at a factory start with `templateId` and at job
+  create / validate, against the runtime's tested node list; an untested runtime and the built-in one are not checked. The graph's
+  `class_type` values are the requirement; a separate `requiredNodes` field was not added (it would say nothing the API-format
+  graph does not, and a strict registry schema would mark such files invalid on a build without it).
+- **Not done.** Our own Docker image; pruning old runtimes from the volume (RISK-132); running a template's job in the test.
+

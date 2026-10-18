@@ -75,6 +75,9 @@ export type StoredSessionRow = {
   minCudaVersion?: string | null;
   usedMinCudaVersion?: string | null;
   hostCudaVersion?: string | null;
+  // Schema v97 (BL-200); absent on rows written before it.
+  runtimeId?: string | null;
+  comfyVersion?: string | null;
   /** When this app last saw the pod alive (schema v54): the billable window of a pod found already gone closes here. */
   lastSeenAliveAt: Date | null;
   /** When this app's terminate DELETE went through (schema v57): a retried stop that finds the pod gone bills to here. */
@@ -150,6 +153,12 @@ export type SessionServiceDependencies = {
   };
   /** BL-135: the session's jobs, for "release when done" (late-bound to the job services in `index.ts`). */
   jobSummary?(sessionId: string): Promise<{ total: number; open: number; failed: number; lastFinishedAt: Date | null }>;
+  /**
+   * BL-200 (ADR 0043, AC-RT-04): pod runtime profiles. `isReady` = `.ready` on the volume (a session on a runtime that is not
+   * built is refused before any pod); `ensurePodScripts` puts this version's pod-start.sh on the volume before such a pod.
+   * Absent = no runtime support (a session asking for one is refused).
+   */
+  runtimes?: { isReady(runtimeId: string): Promise<boolean>; ensurePodScripts(): Promise<unknown> };
 };
 
 /** BL-135: how long a `releaseWhenDone` session may sit with every job finished before its pod is stopped. */
@@ -174,6 +183,13 @@ export const MAX_EXTRA_PLACEMENTS = 2;
 const isActive = (row: StoredSessionRow) => (MEDIA_SESSION_ACTIVE_STATUSES as readonly MediaSessionStatus[]).includes(row.status);
 
 export type WatchTickResult = { action: "none" | "stopped" | "interrupted" | "retried_stop" | "retried_start"; sessionId: string | null; reason: string | null };
+
+/** BL-200: the ComfyUI version `/system_stats` reports (`system.comfyui_version`), or null when it says none. */
+export function comfyVersionOf(stats: Record<string, unknown>): string | null {
+  const system = stats.system;
+  const version = system && typeof system === "object" ? (system as Record<string, unknown>).comfyui_version : undefined;
+  return typeof version === "string" && version.trim() ? version.trim().slice(0, 64) : null;
+}
 
 /** The pod's name is deterministic so a pod created before the `starting` write can still be found at boot. */
 export function podNameFor(sessionId: string): string {
@@ -236,6 +252,8 @@ export function toPublicSession(row: StoredSessionRow, now: Date): MediaSession 
     minCudaVersion: row.minCudaVersion ?? null,
     usedMinCudaVersion: row.usedMinCudaVersion ?? null,
     hostCudaVersion: row.hostCudaVersion ?? null,
+    runtimeId: row.runtimeId ?? null,
+    comfyVersion: row.comfyVersion ?? null,
     capacity:
       row.status === "waiting_capacity" || (row.capacityAttempts ?? 0) > 0
         ? { attempts: row.capacityAttempts ?? 0, nextAttemptAt: iso(row.capacityNextAttemptAt ?? null), waitUntil: iso(row.capacityWaitUntil ?? null) }
@@ -257,6 +275,18 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     const row = await deps.store.get(sessionId);
     if (!row) throw notFound(sessionId);
     return row;
+  }
+
+  /** BL-200 (AC-RT-04): a runtime that is not built on the volume is refused before any pod (or any session row) exists. */
+  async function assertRuntimeReady(runtimeId: string): Promise<void> {
+    if (!deps.runtimes) throw new DomainError({ code: "media_runtime_not_ready", message: `Pod runtimes are not available in this process; runtime ${runtimeId} cannot be used.`, details: { runtimeId } });
+    if (!(await deps.runtimes.isReady(runtimeId))) {
+      throw new DomainError({
+        code: "media_runtime_not_ready",
+        message: `Runtime ${runtimeId} is not built on the network volume (no .ready); build it first (factory_media_test_runtime builds and tests it), or start the session on another runtime.`,
+        details: { runtimeId },
+      });
+    }
   }
 
   /** Every session billed today: started today, stopped today, or still open (a session across midnight counts in full). */
@@ -575,6 +605,12 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         details: { sessionId, requested: { gpuTypeId: row.gpuTypeId, datacenterId: row.datacenterId, costPerHr: row.costPerHr }, current: { gpuTypeId: settings.gpuTypeId, datacenterId: settings.datacenterId, costPerHr: settings.gpuOnDemandPricePerHr } },
       });
     }
+    // BL-200 (AC-RT-04): re-checked at approve (a pending request can wait for the owner while the volume changes), and the
+    // pod-side start script that knows runtimes is put on the volume -- both before any pod exists.
+    if (row.runtimeId) {
+      await assertRuntimeReady(row.runtimeId);
+      await deps.runtimes!.ensurePodScripts();
+    }
     const client = await deps.base.resolveRunpodClient(); // credentials must resolve
     const token = deps.generateToken();
     const sealed = await deps.base.sealSecret(token);
@@ -790,7 +826,8 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
             dataCenterId: settings.datacenterId ?? undefined,
             mounts: settings.networkVolumeId ? { network: [{ volumeId: settings.networkVolumeId, path: "/workspace" }] } : undefined,
             ports: [`${COMFY_PROXY_PORT}/http`],
-            env: { COMFY_TOKEN: token },
+            // BL-200 (AC-RT-04): the runtime id is the only other value the pod gets -- never a secret besides its own token.
+            env: { COMFY_TOKEN: token, ...(approved.runtimeId ? { YTM_RUNTIME_ID: approved.runtimeId } : {}) },
           });
           used = candidate;
           placedEntryId = await recordAttempt(sessionId, settings, candidate, "placed", null, pod.cudaVersion ?? null);
@@ -1080,7 +1117,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
                 break;
               }
               const ready = deps.clock.now();
-              const running = await deps.store.transition(sessionId, ["starting"], { status: "running", readyAt: ready, lastActivityAt: ready, lastSeenAliveAt: ready, error: null });
+              const running = await deps.store.transition(sessionId, ["starting"], { status: "running", readyAt: ready, lastActivityAt: ready, lastSeenAliveAt: ready, error: null, comfyVersion: comfyVersionOf(stats) });
               if (!running) {
                 lastDetail = `session was ${(await requireRow(sessionId)).status} when ComfyUI answered`;
                 break;
@@ -1318,6 +1355,9 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       if (settings.gpuOnDemandPricePerHr === null) {
         throw new DomainError({ code: "media_settings_invalid", message: "The GPU's price is unknown -- reload the catalog and save the GPU again in Servers → Setup." });
       }
+      // BL-200: absent = the active runtime (the owner's default for new sessions), null = the image's built-in ComfyUI.
+      const runtimeId = parsed.runtimeId !== undefined ? parsed.runtimeId : settings.activeRuntimeId;
+      if (runtimeId) await assertRuntimeReady(runtimeId);
       const maxMinutes = parsed.maxMinutes ?? settings.defaultMaxMinutes;
       // The upper bound is whichever cap bites first: the minutes at the saved price, or the session's own USD cap.
       const byMinutes = (settings.gpuOnDemandPricePerHr * maxMinutes) / 60;
@@ -1365,6 +1405,8 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         minCudaVersion: parsed.minCudaVersion ?? null,
         usedMinCudaVersion: null,
         hostCudaVersion: null,
+        runtimeId: runtimeId ?? null,
+        comfyVersion: null,
       });
       return toPublicSession(row, now);
     },
@@ -1431,6 +1473,8 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       minCudaVersion?: string;
       /** BL-159: the minimum declared by the template the session was started with (`templateId`), if any. */
       templateMinCudaVersion?: string | null;
+      /** BL-200: the runtime to run (absent = the active one, null = the image's built-in ComfyUI); refused if not built. */
+      runtimeId?: string | null;
     }): Promise<{ session: MediaSession; approved: boolean; heldBy: string | null }> {
       const settings = await deps.base.getSettings();
       // BL-159 (AC-SC-01): the call's value, else the template's; either may only raise the owner's floor (at placement).
@@ -1444,6 +1488,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         ...(input.gpu ? { gpu: input.gpu } : {}),
         ...(input.planId ? { planId: input.planId } : {}),
         ...(ownMinCuda ? { minCudaVersion: ownMinCuda } : {}),
+        ...(input.runtimeId !== undefined ? { runtimeId: input.runtimeId } : {}),
         requestedBy: "factory",
       });
       const row = await requireRow(pending.sessionId);

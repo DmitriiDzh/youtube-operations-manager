@@ -2,6 +2,8 @@ import {
   getMediaGatewayEnabled,
   getMediaGenerationSettingsJson,
   getMediaModelPullsJson,
+  getMediaRuntimeJobsJson,
+  getMediaRuntimeTestsJson,
   getMediaVolumeLockHolder,
   releaseMediaVolumeLock,
   insertMediaControlEvent,
@@ -9,8 +11,11 @@ import {
   setMediaGenerationSettingsJson,
   tryAcquireMediaVolumeLock,
   updateMediaModelPullsJson,
+  updateMediaRuntimeJobsJson,
+  updateMediaRuntimeTestsJson,
 } from "@/lib/db";
 import type { MediaControlEvent, ModelPullStore } from "../models";
+import type { RuntimeBuildStore } from "../runtime-builds";
 import type { MediaGenerationStore } from "../services";
 import type { VolumeLockStore } from "../volume-lock";
 
@@ -34,6 +39,22 @@ export function createModelPullStore(): ModelPullStore {
   return {
     getPullsJson: () => getMediaModelPullsJson(),
     updatePullsJson: (mutate) => updateMediaModelPullsJson(mutate),
+  };
+}
+
+/** BL-200: the runtime builds in flight (app_settings JSON, the same compare-and-swap as the pulls list). */
+export function createRuntimeBuildStore(): RuntimeBuildStore {
+  return {
+    getJobsJson: () => getMediaRuntimeJobsJson(),
+    updateJobsJson: (mutate) => updateMediaRuntimeJobsJson(mutate),
+  };
+}
+
+/** BL-200 stage 3: the runtime tests (app_settings JSON, the same compare-and-swap). */
+export function createRuntimeTestStore(): { getJson(): Promise<string | null>; updateJson(mutate: (current: string | null) => string): Promise<string> } {
+  return {
+    getJson: () => getMediaRuntimeTestsJson(),
+    updateJson: (mutate) => updateMediaRuntimeTestsJson(mutate),
   };
 }
 

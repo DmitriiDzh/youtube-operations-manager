@@ -205,7 +205,7 @@ function completed(outputs: Array<{ nodeId: string; kind: string; filename: stri
   return { promptId: "prompt-1", status: "completed", statusMessages: ["execution_success"], outputs: outputs.map((o) => ({ ...o, type: "output" })), raw: {} };
 }
 
-function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<typeof fakeS3>; sessionRunning?: boolean; workspaceFails?: boolean; sentToYtm?: Map<string, { path: string; bytes: number }>; progress?: JobProgressRegistry; hostCudaVersion?: string | null } = {}) {
+function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<typeof fakeS3>; sessionRunning?: boolean; workspaceFails?: boolean; sentToYtm?: Map<string, { path: string; bytes: number }>; progress?: JobProgressRegistry; hostCudaVersion?: string | null; runtimeId?: string | null; runtimeNodes?: (runtimeId: string) => Promise<ReadonlySet<string> | null> } = {}) {
   const mem = memoryStore();
   const resolvedInputs: string[] = [];
   const comfy = opts.comfy ?? fakeComfy([null, completed([{ nodeId: "9", kind: "images", filename: "ComfyUI_00001_.png", subfolder: "job-1" }])]);
@@ -252,12 +252,13 @@ function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<t
       },
     },
     sessions: {
-      getRunningSession: async (sessionId) => (opts.sessionRunning === false ? null : { sessionId, channelId: "UC1", podId: "pod1", gpuTypeId: "RTX 4090", costPerHr: 0.69, hostCudaVersion: opts.hostCudaVersion ?? null }),
+      getRunningSession: async (sessionId) => (opts.sessionRunning === false ? null : { sessionId, channelId: "UC1", podId: "pod1", gpuTypeId: "RTX 4090", costPerHr: 0.69, hostCudaVersion: opts.hostCudaVersion ?? null, runtimeId: opts.runtimeId ?? null }),
       comfyClientForSession: async () => comfy.client,
       touchActivity: async (sessionId) => {
         activity.push(sessionId);
       },
     },
+    ...(opts.runtimeNodes ? { runtimeNodes: opts.runtimeNodes } : {}),
     s3: async () => {
       if (s3Fails) throw new Error("media gateway is turned off");
       return s3.client;
@@ -2243,4 +2244,30 @@ test("BL-194: a job's manifest.json carries its video number (null when not link
   const base = { status: "done" as const, error: null, finishedAt: new Date("2026-10-17T10:01:00Z"), outputs: [], outputDir: "/x", templateName: null, device: { deviceId: null, hostname: null } };
   assert.equal(buildJobManifest({ ...base, job }).video, "V49");
   assert.equal(buildJobManifest({ ...base, job: { ...job, video: null } }).video, null);
+});
+
+// -- BL-200 (POD_RUNTIMES_PLAN.md AC-RT-07, ADR 0043) ------------------------------------------------------------------------
+// Expected from the plan: a job whose template needs a node type the session's runtime was tested without is refused with
+// media_runtime_incompatible (the missing list) before anything is created or submitted; the built-in runtime (no runtimeId) and
+// an untested runtime (no list) are not checked.
+
+test("AC-RT-07: a template needing a node type the session's runtime lacks is refused with the missing list; nothing is created or sent", async () => {
+  const f = fixture({ runtimeId: "comfy-0410-flux3", runtimeNodes: async () => new Set(["CheckpointLoaderSimple", "CLIPTextEncode"]) });
+  const t = await importDefault(f.services);
+  await assert.rejects(
+    f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "a cat" }, createdBy: "agent" }),
+    (e: unknown) => isDomainError(e) && e.code === "media_runtime_incompatible" && Array.isArray((e.details as { missing?: unknown }).missing) && ((e.details as { missing: string[] }).missing).includes("KSampler")
+  );
+  assert.equal((await f.mem.store.jobs.list({})).length, 0, "no job created");
+  assert.equal(f.comfy.submits.length, 0, "nothing submitted to ComfyUI");
+  await assert.rejects(f.services.validateJobParams({ templateId: t.templateId, params: { prompt: "x" }, sessionId: "s1" }), (e: unknown) => isDomainError(e) && e.code === "media_runtime_incompatible");
+});
+
+test("AC-RT-07: on the built-in runtime, or on a runtime with no tested list, nothing is checked", async () => {
+  for (const opts of [{ runtimeId: null, runtimeNodes: async () => new Set<string>() }, { runtimeId: "untested", runtimeNodes: async () => null }]) {
+    const f = fixture(opts);
+    const t = await importDefault(f.services);
+    const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "a cat" }, createdBy: "agent" });
+    assert.equal(job.status, "submitted", String(opts.runtimeId));
+  }
 });

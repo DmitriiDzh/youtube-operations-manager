@@ -1,5 +1,11 @@
 import { getDeviceSecrets } from "@/lib/device-secrets";
 import { createHfTokenServices } from "./hf-token";
+import { createRuntimeServices } from "./runtimes";
+import { createRuntimeBuildServices } from "./runtime-builds";
+import { createRuntimeTestServices } from "./runtime-tests";
+import { assertActiveRuntimeUnchanged, missingNodeTypes } from "./runtimes";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { createAssetCatalogCore } from "@/lib/asset-catalog";
@@ -8,14 +14,14 @@ import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { appDataPaths, getLatestMediaGpuAvailabilityAt, listMediaSessionsNeedingCostSplit, setMediaJobCostShare, getMediaSessionJobSummary, insertMediaCapacityAttempt, insertMediaGpuAvailabilitySnapshot, listMediaCapacityAttempts, listMediaGpuAvailabilityLog, setMediaCapacityAttemptHostCuda, summarizeMediaGpuAvailabilityLog, getMediaTemplateAdoptionsJson, getMediaTemplateSyncLastJson, listMediaControlEvents, setMediaTemplateAdoptionsJson, setMediaTemplateSyncLastJson } from "@/lib/db";
 import { createLogicalPathsCore } from "@/lib/logical-paths";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
-import { comfyUiProxyBaseUrl, createComfyUiClient, createHuggingFaceClient, createRunpodApiClient, createRunpodS3Client } from "@/lib/media-gateway";
+import { comfyUiProxyBaseUrl, createComfyUiClient, createGithubClient, createHuggingFaceClient, createRunpodApiClient, createRunpodS3Client } from "@/lib/media-gateway";
 import { sleep as sharedSleep } from "@/lib/shared-async";
 import { createExchangeFs, resolveFromYtmDir, resolveSentToYtmFile } from "@/lib/workspace-exchange";
 import { createExchangeLocalFs } from "./adapters/exchange-fs";
 import { createMediaJobStore } from "./adapters/job-store";
 import { createMediaSessionStore } from "./adapters/session-store";
 import { createTemplateRegistryReader } from "./adapters/template-registry-fs";
-import { createMediaControlEventSink, createMediaGenerationStore, createModelPullStore, createVolumeLockStore } from "./adapters/store";
+import { createMediaControlEventSink, createMediaGenerationStore, createModelPullStore, createRuntimeBuildStore, createRuntimeTestStore, createVolumeLockStore } from "./adapters/store";
 import { DomainError, MEDIA_SESSION_TERMINAL_STATUSES, type MediaCapacityAttempt, type MediaControlEventView, type MediaModelUsage } from "./contracts";
 import { createJobProgressRegistry } from "./job-progress";
 import { splitEndedSessionCosts } from "./cost-split";
@@ -24,7 +30,7 @@ import { createMediaModelServices } from "./models";
 import { findLivePodByName } from "./pod-lifecycle";
 import { createGpuAvailabilityLogServices } from "./gpu-availability-log";
 import { createMediaGenerationServices } from "./services";
-import { createMediaSessionServices } from "./sessions";
+import { comfyVersionOf, createMediaSessionServices } from "./sessions";
 import { createVolumeLock } from "./volume-lock";
 import { createVolumeMigrationServices } from "./volume-migration";
 import { accountWideUsage, buildSessionsReport, deriveOtherDevices, stopPeerSession, type OtherDevicesView, type SessionJobsInput } from "./cross-device";
@@ -117,6 +123,26 @@ function buildCore(jobScheduling: JobScheduling) {
   // BL-134 (FO-REQ-0028, ADR 0042): the Hugging Face read token lives in the shared device-secret store.
   const hub = createHuggingFaceClient();
   const hfToken = createHfTokenServices({ slot: getDeviceSecrets().slot("huggingface"), hub });
+  // BL-200 (FO-REQ-0029, ADR 0043): pod runtime profiles on the network volume, built on CPU pods (stage 2).
+  const runtimeBuilds = createRuntimeBuildServices({
+    store: createRuntimeBuildStore(),
+    base: { getSettings: () => base.getSettings(), resolveRunpodClient: () => base.resolveRunpodClient(), s3: () => base.s3() },
+    // The installed app's own copy (Mac and Windows both run from the repository checkout, `scripts/` included).
+    // LF only (review): a Windows checkout with autocrlf would otherwise upload a CRLF start script that bash cannot run.
+    readPodScript: async (name) => (await readFile(path.join(process.cwd(), "scripts", "media", "pod", name), "utf8")).replace(/\r\n/g, "\n"),
+    events: createMediaControlEventSink(),
+    generateId: () => randomUUID(),
+    clock: { now },
+    sleep,
+  });
+  const runtimes = createRuntimeServices({
+    s3: () => base.s3(),
+    github: createGithubClient(),
+    getSettings: () => base.getSettings(),
+    events: createMediaControlEventSink(),
+    clock: { now },
+    buildingRuntimeIds: async () => new Set((await runtimeBuilds.listRuntimeBuilds()).filter((j) => j.status === "running").map((j) => j.runtimeId)),
+  });
   const models = createMediaModelServices({
     store: createModelPullStore(),
     hub,
@@ -162,6 +188,11 @@ function buildCore(jobScheduling: JobScheduling) {
     log: (line) => console.warn(line),
     // BL-138: devices on the same RunPod account share the limits (late-bound: the helpers are defined below).
     accountWide: (at, localPodIds, options) => otherDevicesOnAccount(at, localPodIds, options),
+    // BL-200 (AC-RT-04): `.ready` on the volume is the build's own last step.
+    runtimes: {
+      isReady: async (runtimeId) => (await (await base.s3()).headObject(`ytm/runtimes/${runtimeId}/.ready`)) !== null,
+      ensurePodScripts: () => runtimeBuilds.ensurePodScripts(),
+    },
   });
   sessionsRef = sessions;
   const workspaces = createChannelWorkspacesCore();
@@ -181,13 +212,14 @@ function buildCore(jobScheduling: JobScheduling) {
           throw error;
         }
         return session.status === "running"
-          ? { sessionId: session.sessionId, channelId: session.channelId, podId: session.podId, gpuTypeId: session.gpuTypeId, costPerHr: session.costPerHr, hostCudaVersion: session.hostCudaVersion }
+          ? { sessionId: session.sessionId, channelId: session.channelId, podId: session.podId, gpuTypeId: session.gpuTypeId, costPerHr: session.costPerHr, hostCudaVersion: session.hostCudaVersion, runtimeId: session.runtimeId }
           : null;
       },
       comfyClientForSession: (sessionId) => sessions.comfyClientForSession(sessionId),
       touchActivity: (sessionId) => sessions.touchActivity(sessionId),
     },
     s3: () => base.s3(),
+    runtimeNodes: async (runtimeId) => (await runtimes.testedNodes(runtimeId))?.nodes ?? null,
     async resolveOutputRoot(channelId) {
       const workspace = await workspaces.getWorkspace({ channelId });
       if (!workspace.configured) {
@@ -258,6 +290,67 @@ function buildCore(jobScheduling: JobScheduling) {
     videoLink: { resolve: (input) => createVideoProjectsServiceForProduction().resolveJobVideo(input) },
   });
   jobsRef = jobs;
+  // BL-200 stage 3 (AC-RT-05/09): a runtime test -- the build if needed, a GPU session capped by the owner's test limit, the node
+  // list against each template, test.json. The Operator's session goes through its own factory limits; the owner's is approved
+  // as the owner.
+  const runtimeTemplates = async () =>
+    (await createMediaJobStore().templates.list()).map((t) => ({ templateId: t.id, version: t.version, source: t.source ?? ("owner" as const), workflowJson: t.workflowJson }));
+  const runtimeTests = createRuntimeTestServices({
+    store: createRuntimeTestStore(),
+    getSettings: () => base.getSettings(),
+    runtimes: { getRuntime: (runtimeId) => runtimes.getRuntime(runtimeId), writeTestResult: (runtimeId, result) => runtimes.writeTestResult(runtimeId, result) },
+    builds: { start: (runtimeId, actor) => runtimeBuilds.startRuntimeBuild({ runtimeId }, { actor }), list: () => runtimeBuilds.listRuntimeBuilds() },
+    sessions: {
+      async start({ channelId, runtimeId, maxMinutes, maxUsd, actor }) {
+        if (actor === "factory") {
+          const started = await sessions.factoryStartSession({ channelId, runtimeId, maxMinutes, maxUsd, releaseWhenDone: false });
+          return { sessionId: started.session.sessionId, approved: started.approved, heldBy: started.heldBy };
+        }
+        const pending = await sessions.requestSession({ channelId, requestedBy: "operator", runtimeId, maxMinutes, maxUsd, releaseWhenDone: false, reason: `pod runtime test (${runtimeId})` });
+        try {
+          const { started } = await sessions.approveSession({ sessionId: pending.sessionId });
+          started.catch(() => undefined); // the test reads the session's state; a failed start is its answer
+          return { sessionId: pending.sessionId, approved: true, heldBy: null };
+        } catch (error) {
+          return { sessionId: pending.sessionId, approved: false, heldBy: error instanceof Error ? error.message : String(error) };
+        }
+      },
+      get: (sessionId) => sessions.getSession({ sessionId }),
+      async readNodes(sessionId) {
+        const comfy = await sessions.comfyClientForSession(sessionId);
+        const [nodes, stats] = await Promise.all([comfy.getNodeTypes(), comfy.getSystemStats()]);
+        return { nodes, comfyVersion: comfyVersionOf(stats) };
+      },
+      async stop(sessionId, actor) {
+        if (actor === "factory") return sessions.factoryStopSession({ sessionId });
+        const current = await sessions.getSession({ sessionId });
+        return current.status === "pending" ? sessions.rejectSession({ sessionId, reason: "pod runtime test withdrawn" }) : sessions.stopSession({ sessionId, reason: "pod runtime test finished" });
+      },
+    },
+    templates: runtimeTemplates,
+    events: createMediaControlEventSink(),
+    generateId: () => randomUUID(),
+    clock: { now },
+  });
+  /**
+   * BL-200 (AC-RT-07): a template whose graph needs node types the runtime's tested list lacks is refused before any pod starts.
+   * `runtimeId` undefined = the active one; null (the built-in ComfyUI) and an untested runtime have no list and are not checked.
+   */
+  const assertTemplateFitsRuntime = async (input: { templateId: string; runtimeId?: string | null }) => {
+    const runtimeId = input.runtimeId !== undefined ? input.runtimeId : (await base.getSettings()).activeRuntimeId;
+    if (!runtimeId) return;
+    const tested = await runtimes.testedNodes(runtimeId);
+    const template = (await runtimeTemplates()).find((t) => t.templateId === input.templateId);
+    if (!tested || !template) return;
+    const missing = missingNodeTypes(template.workflowJson, tested.nodes);
+    if (missing.length > 0) {
+      throw new DomainError({
+        code: "media_runtime_incompatible",
+        message: `Template ${input.templateId} needs node types runtime ${runtimeId} does not have: ${missing.join(", ")}; no pod was started.`,
+        details: { templateId: input.templateId, runtimeId, missing },
+      });
+    }
+  };
   /** BL-132 audit (plan §2.5): newest first. */
   const listControlEvents = async (limit = 50): Promise<MediaControlEventView[]> =>
     (await listMediaControlEvents(Math.min(Math.max(1, limit), 200))).map((row) => ({
@@ -389,8 +482,11 @@ function buildCore(jobScheduling: JobScheduling) {
     clock: { now },
   });
   /** An edit in Setup: validated and saved as before, then the fields it changed are shared (a failure to share never fails the save). */
-  const updateSettings = (input: unknown) => settingsSync.exclusive(async () => {
+  const saveAndShare = (input: unknown, options: { allowActiveRuntime?: boolean } = {}) => settingsSync.exclusive(async () => {
     const before = await base.getSettings();
+    // BL-200 (AC-RT-06): the active runtime changes only through setActiveRuntime (a passed test, the Operator's switch). A form
+    // that resends every field unchanged is fine.
+    if (!options.allowActiveRuntime) assertActiveRuntimeUnchanged(input, before.activeRuntimeId);
     const after = await base.updateSettings(input);
     const changed = changedSharedFields(before, after);
     if (Object.keys(changed).length > 0) {
@@ -400,6 +496,15 @@ function buildCore(jobScheduling: JobScheduling) {
     }
     return after;
   });
+  const updateSettings = (input: unknown) => saveAndShare(input);
+  /** BL-200 (AC-RT-06): make a tested runtime active (or `null`: the image's built-in ComfyUI). Rollback = the previous id. */
+  const setActiveRuntime = async (input: { runtimeId: string | null }, options: { actor?: "owner" | "factory" } = {}) => {
+    const actor = options.actor ?? "owner";
+    const { from, to } = await runtimes.checkActivation(input.runtimeId, actor);
+    const settings = from === to ? await base.getSettings() : await saveAndShare({ activeRuntimeId: to }, { allowActiveRuntime: true });
+    await createMediaControlEventSink().record({ actor, action: "runtime_activated", subject: to ?? "built-in", details: { from, to } });
+    return { activeRuntimeId: settings.activeRuntimeId, previousRuntimeId: from };
+  };
   /** The owner picked one value of a conflicted setting (Merge, or the startup window): shared at once, applied here at once. */
   const resolveSettingConflict = async (input: { field: string; value: MediaSettingValue }) => {
     await settingsSync.exclusive(() => createMediaSettingsCoreForProduction().resolveConflict(input));
@@ -408,6 +513,20 @@ function buildCore(jobScheduling: JobScheduling) {
 
   return {
     ...base,
+    listRuntimes: runtimes.listRuntimes,
+    getRuntime: runtimes.getRuntime,
+    listComfyReleases: runtimes.listComfyReleases,
+    createRuntime: runtimes.createRuntime,
+    runtimeTestedNodes: runtimes.testedNodes,
+    startRuntimeBuild: runtimeBuilds.startRuntimeBuild,
+    pollRuntimeBuilds: runtimeBuilds.pollRuntimeBuilds,
+    listRuntimeBuilds: runtimeBuilds.listRuntimeBuilds,
+    ensurePodScripts: runtimeBuilds.ensurePodScripts,
+    testRuntime: runtimeTests.testRuntime,
+    pollRuntimeTests: runtimeTests.pollRuntimeTests,
+    listRuntimeTests: runtimeTests.listRuntimeTests,
+    setActiveRuntime,
+    assertTemplateFitsRuntime,
     getHfToken: hfToken.getHfToken,
     setHfToken: hfToken.setHfToken,
     testHfToken: hfToken.testHfToken,
