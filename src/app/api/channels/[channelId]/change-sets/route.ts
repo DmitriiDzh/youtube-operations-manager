@@ -4,10 +4,12 @@ import { authOptions } from "@/lib/auth";
 import { DomainError } from "@/lib/changesets/contracts";
 import { createChangeSetCore } from "@/lib/changesets";
 import { createChannelAccessCore } from "@/lib/channel-access";
+import { createSendApprovedCore } from "@/lib/batches";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
 
 const core = createChangeSetCore();
 const channelAccess = createChannelAccessCore();
+const sendCore = createSendApprovedCore();
 
 export async function GET(
   _request: Request,
@@ -22,7 +24,12 @@ export async function GET(
     const { channelId } = await params;
     await channelAccess.assertActiveChannel({ userId: session.user.id, channelId });
     const changeSets = await core.listChangeSets({ channelId });
-    return NextResponse.json({ changeSets });
+    // BL-198 (AC-ST-12): how many approved changes of each set are already on YouTube -- «Записаны в YouTube» when all of them,
+    // «Одобренные» (waiting to be sent) otherwise. Additive field.
+    const written = await sendCore.writtenCountsByChangeSet(channelId, changeSets.map((changeSet) => changeSet.id));
+    return NextResponse.json({
+      changeSets: changeSets.map((changeSet) => ({ ...changeSet, writtenCount: written.get(changeSet.id)?.writtenCount ?? 0 })),
+    });
   } catch (error) {
     if (error instanceof DomainError) {
       return NextResponse.json(
