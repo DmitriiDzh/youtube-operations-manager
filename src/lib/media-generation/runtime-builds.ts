@@ -370,8 +370,9 @@ export function createRuntimeBuildServices(deps: RuntimeBuildDeps) {
       return serialized(() => pollInner());
     },
 
+    /** Oldest first by start (the stored list keeps running builds first). */
     async listRuntimeBuilds(): Promise<RuntimeBuildJob[]> {
-      return readJobs();
+      return [...(await readJobs())].sort((a, b) => a.startedAt.localeCompare(b.startedAt));
     },
   };
 }

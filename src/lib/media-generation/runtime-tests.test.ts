@@ -224,3 +224,14 @@ test("FO-REQ-0030: the test reports each template's input problems; a required i
   assert.deepEqual(v3.invalid, [{ nodeId: "9", classType: "SaveImage", input: "legacy_flag", problem: "unknown_input" }]);
   assert.equal(h.written[0].nodes.length, 3);
 });
+
+// The card and factory_media_get_runtime show the newest test last: listing is by start time, not by the stored order.
+test("listRuntimeTests is oldest-first by start, whatever order the store keeps", async () => {
+  const h = harness({ ready: false });
+  await h.services.testRuntime({ runtimeId: RID, channelId: "UC1" }); // test t1, building
+  h.builds[0].status = "failed";
+  await h.services.pollRuntimeTests(); // t1 failed
+  const list = await h.services.listRuntimeTests(RID);
+  assert.deepEqual(list.map((t) => t.status), ["failed"]);
+  assert.ok(list.every((t, i) => i === 0 || list[i - 1].startedAt <= t.startedAt));
+});
