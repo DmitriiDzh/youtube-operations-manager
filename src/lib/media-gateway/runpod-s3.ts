@@ -82,8 +82,10 @@ function xmlTag(block: string, tag: string): string | null {
 }
 
 /** `ListObjectsV2` result XML -> summaries. A tiny purpose-built parser: the shape is fixed and small. */
-export function parseListObjectsXml(xml: string): { objects: S3ObjectSummary[]; isTruncated: boolean; nextContinuationToken: string | null } {
+export function parseListObjectsXml(xml: string): { objects: S3ObjectSummary[]; prefixes: string[]; isTruncated: boolean; nextContinuationToken: string | null } {
   const objects: S3ObjectSummary[] = [];
+  // FO-MSG-0019: with a delimiter, the "folders" one level down come back as CommonPrefixes instead of every object below them.
+  const prefixes = [...xml.matchAll(/<CommonPrefixes>([\s\S]*?)<\/CommonPrefixes>/g)].map((m) => xmlTag(m[1], "Prefix")).filter((p): p is string => p !== null);
   for (const match of xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)) {
     const block = match[1];
     const key = xmlTag(block, "Key");
@@ -97,6 +99,7 @@ export function parseListObjectsXml(xml: string): { objects: S3ObjectSummary[]; 
   }
   return {
     objects,
+    prefixes,
     isTruncated: xmlTag(xml, "IsTruncated") === "true",
     nextContinuationToken: xmlTag(xml, "NextContinuationToken"),
   };
@@ -165,9 +168,10 @@ export function createRunpodS3Client(config: RunpodS3Config, deps: { fetchImpl?:
     });
   }
 
-  async function listObjects(args: { prefix?: string; maxKeys?: number; continuationToken?: string } = {}) {
+  async function listObjects(args: { prefix?: string; maxKeys?: number; continuationToken?: string; delimiter?: string } = {}) {
     const query: Record<string, string> = { "list-type": "2", "max-keys": String(args.maxKeys ?? 1000) };
     if (args.prefix) query.prefix = args.prefix;
+    if (args.delimiter) query.delimiter = args.delimiter;
     if (args.continuationToken) query["continuation-token"] = args.continuationToken;
     const response = await signedFetch("GET", objectUrl("", query));
     if (!response.ok) throw failure(response, "GET", args.prefix ?? "");
@@ -185,6 +189,21 @@ export function createRunpodS3Client(config: RunpodS3Config, deps: { fetchImpl?:
       do {
         const page = await listObjects({ prefix, continuationToken: token });
         all.push(...page.objects);
+        token = page.isTruncated && page.nextContinuationToken ? page.nextContinuationToken : undefined;
+      } while (token);
+      return all;
+    },
+
+    /**
+     * FO-MSG-0019: the "folders" directly under a prefix (`<prefix><name>/`), without listing what is inside them -- one request per
+     * 1000 folders instead of one per 1000 objects (a runtime's venv alone is ~20 000).
+     */
+    async listFolders(prefix: string): Promise<string[]> {
+      const all: string[] = [];
+      let token: string | undefined;
+      do {
+        const page = await listObjects({ prefix, delimiter: "/", continuationToken: token });
+        all.push(...page.prefixes);
         token = page.isTruncated && page.nextContinuationToken ? page.nextContinuationToken : undefined;
       } while (token);
       return all;

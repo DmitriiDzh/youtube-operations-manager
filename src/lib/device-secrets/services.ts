@@ -84,8 +84,20 @@ export function createDeviceSecrets(deps: DeviceSecretsDeps) {
           return;
         }
         await deps.store.upsert({ name, ...encryptSecret(legacy.plaintext, key), hints: legacy.hints, status: legacy.status, verifiedAt: legacy.verifiedAt, updatedAt: now() });
+        // Read back with the key AS STORED in the file, never the one in memory (FO-MSG-0018: a key replaced meanwhile passed this).
         const written = await deps.store.get(name);
-        if (!written || decryptSecret(written, key) !== legacy.plaintext) throw unreadable(name, "the moved copy did not read back");
+        const stored = await deps.keyFile.readKey();
+        let readBack: string | null = null;
+        try {
+          readBack = written && stored ? decryptSecret(written, stored) : null;
+        } catch {
+          readBack = null;
+        }
+        if (readBack !== legacy.plaintext) {
+          // Not marked: the legacy row is still there, and the next use moves it again.
+          await deps.store.delete(name);
+          throw unreadable(name, "the moved copy did not read back");
+        }
       }
       await deps.store.markMigrated(name, now());
     })().finally(() => migrating.delete(name));

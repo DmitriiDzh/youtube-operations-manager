@@ -88,3 +88,19 @@ test("review 11: the key-file methods work detached (no `this`)", async () => {
   assert.equal(created.length, 32);
   assert.deepEqual(await readKey(), created);
 });
+
+// FO-MSG-0018 (2026-10-18): two first uses at once must end with ONE key -- the one in the file -- in every caller's hands.
+test("FO-MSG-0018: concurrent first uses create one key; every caller gets the key that is in the file (one instance and two)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "key-race-"));
+  try {
+    const file = path.join(dir, "device-secrets.key");
+    const one = createKeyFile(createKeyFileFsAccess(file));
+    const other = createKeyFile(createKeyFileFsAccess(file)); // e.g. the CLI next to the server
+    const keys = await Promise.all([one.readOrCreateKey(), one.readOrCreateKey(), other.readOrCreateKey(), other.readOrCreateKey()]);
+    const stored = (await one.readKey())!;
+    for (const key of keys) assert.ok(key.equals(stored));
+    assert.equal((await stat(file)).mode & 0o777, 0o600);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
