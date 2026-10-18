@@ -45,6 +45,9 @@ export type CloudCredentialsImport = {
 
 const nothingChanged = (message: string) => new DomainError({ code: "validation_failed", message: `${message} Nothing was changed.` });
 
+/** The provider each section names in a message (review of BL-134: the Hugging Face section was called "Gemini"). */
+const SECTION_LABELS: Record<CloudCredentialSection, string> = { runpod: "RunPod", gemini: "Gemini", huggingface: "Hugging Face" };
+
 export function createCloudCredentialsTransfer(deps: CloudCredentialsTransferDeps) {
   return {
     async exportFile(input: unknown): Promise<CloudCredentialsExport> {
@@ -77,7 +80,13 @@ export function createCloudCredentialsTransfer(deps: CloudCredentialsTransferDep
           version: 1,
           createdAt: deps.clock.now().toISOString(),
           sections,
-          hints: { runpodKeyPrefix: hints.runpodKeyPrefix ?? null, s3AccessKeyId: hints.s3AccessKeyId ?? null, geminiKeyHint: hints.geminiKeyHint ?? null },
+          hints: {
+            runpodKeyPrefix: hints.runpodKeyPrefix ?? null,
+            s3AccessKeyId: hints.s3AccessKeyId ?? null,
+            geminiKeyHint: hints.geminiKeyHint ?? null,
+            // BL-134: only when the file carries a Hugging Face token (files without one keep their earlier shape).
+            ...(hints.hfUser ? { hfUser: hints.hfUser } : {}),
+          },
           encrypted,
         },
         skipped,
@@ -122,7 +131,7 @@ export function createCloudCredentialsTransfer(deps: CloudCredentialsTransferDep
         } catch (error) {
           if (isDomainError(error)) {
             const tail = /Nothing was changed\.$|not saved\.$/.test(error.message) ? "" : " Nothing was changed.";
-            throw new DomainError({ code: error.code, message: `${section === "runpod" ? "RunPod" : "Gemini"}: ${error.message}${tail}`, details: { ...(error.details as Record<string, unknown> | undefined), section } });
+            throw new DomainError({ code: error.code, message: `${SECTION_LABELS[section]}: ${error.message}${tail}`, details: { ...(error.details as Record<string, unknown> | undefined), section } });
           }
           throw error;
         }
@@ -133,7 +142,7 @@ export function createCloudCredentialsTransfer(deps: CloudCredentialsTransferDep
           imported[section] = await deps.sections[section].store(value);
         } catch (error) {
           const done = Object.keys(imported);
-          const message = `${section === "runpod" ? "RunPod" : "Gemini"} could not be stored: ${error instanceof Error ? error.message : String(error)}${done.length > 0 ? ` (already stored: ${done.join(", ")})` : " Nothing was changed."}`;
+          const message = `${SECTION_LABELS[section]} could not be stored: ${error instanceof Error ? error.message : String(error)}${done.length > 0 ? ` (already stored: ${done.join(", ")})` : " Nothing was changed."}`;
           if (isDomainError(error)) throw new DomainError({ code: error.code, message, details: { section, stored: done } });
           throw new Error(message);
         }

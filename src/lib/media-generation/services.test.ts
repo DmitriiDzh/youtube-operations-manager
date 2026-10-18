@@ -2,9 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createRunpodApiClient, type RunpodApiClient, type RunpodS3Client, type RunpodS3Config } from "@/lib/media-gateway";
 import { DEFAULT_MEDIA_SETTINGS, isDomainError } from "./contracts";
-import { createKeyFile, type KeyFileAccess } from "./key-file";
+import { createKeyFile as createSharedKeyFile, type KeyFileAccess } from "@/lib/device-key-file";
+import { createDeviceSecrets, createMemoryDeviceSecretStore } from "@/lib/device-secrets";
 import { DomainError } from "@/lib/shared-domain";
-import { createMediaGenerationServices, type MediaGenerationStore, type StoredCredentialsRow } from "./services";
+import { createMediaGenerationServices, type MediaGenerationStore } from "./services";
+
+// BL-199 (ADR 0042): the RunPod set lives in the shared device-secret store; this harness builds one in memory over its key file.
+const createKeyFile = (access: KeyFileAccess) => createSharedKeyFile(access, (detail) => new DomainError({ code: "encryption_key_not_configured", message: detail }));
 
 // Expected behaviour is stated in docs/roadmap/plans/PHASE_14_PLAN.md §4 (AC-P14-01, -02, -19,
 // -21) and §2.9, written before this module. Nothing here is read back from the implementation.
@@ -12,22 +16,9 @@ import { createMediaGenerationServices, type MediaGenerationStore, type StoredCr
 const RUNPOD_KEY = "rpa_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
 function memoryStore() {
-  let credentials: StoredCredentialsRow | null = null;
   let settingsJson: string | null = null;
   let gatewayEnabled = true;
   const store: MediaGenerationStore = {
-    async getCredentials() {
-      return credentials;
-    },
-    async upsertCredentials(input) {
-      credentials = { ...input, verifiedAt: null, updatedAt: new Date("2026-10-05T12:00:00Z") };
-    },
-    async setCredentialsVerifiedAt(at) {
-      if (credentials) credentials = { ...credentials, verifiedAt: at };
-    },
-    async clearCredentials() {
-      credentials = null;
-    },
     async getSettingsJson() {
       return settingsJson;
     },
@@ -41,7 +32,8 @@ function memoryStore() {
       gatewayEnabled = enabled;
     },
   };
-  return { store, row: () => credentials, settingsJson: () => settingsJson };
+  const secretStore = createMemoryDeviceSecretStore();
+  return { store, secretStore, row: () => secretStore.rows.get("runpod") ?? null, settingsJson: () => settingsJson };
 }
 
 function memoryKeyFile(initial: string | null = null) {
@@ -158,9 +150,12 @@ function fixture(opts: { keyFileContent?: string | null; runpod?: ReturnType<typ
   let now = new Date("2026-10-05T12:34:56Z");
   const runpod = opts.runpod ?? fakeRunpod();
   const s3 = opts.s3 ?? fakeS3();
+  // The fixed save time the expectations below use (2026-10-05T12:00:00Z).
+  const secrets = createDeviceSecrets({ store: mem.secretStore, keyFile: key.keyFile, now: () => Date.parse("2026-10-05T12:00:00Z") });
   const services = createMediaGenerationServices({
     store: mem.store,
-    keyFile: key.keyFile,
+    secret: secrets.slot("runpod"),
+    sealer: { seal: (plaintext) => secrets.seal(plaintext), open: (payload) => secrets.open(payload) },
     gateway: { createRunpodClient: runpod.factory, createS3Client: s3.factory },
     clock: { now: () => now },
     sleep: async (ms) => {
@@ -248,7 +243,7 @@ test("a row encrypted under a different device key fails closed as not configure
   assert.ok(row);
   // Same row, a different key file (as after copying playlist-manager.db to another machine).
   const other = fixture({ keyFileContent: JSON.stringify({ version: 1, key: Buffer.alloc(32, 7).toString("base64") }) });
-  await other.mem.store.upsertCredentials({ ciphertext: row.ciphertext, iv: row.iv, authTag: row.authTag, runpodKeyPrefix: row.runpodKeyPrefix, s3AccessKeyId: null });
+  other.mem.secretStore.rows.set("runpod", { ...row });
   await assert.rejects(other.services.listDataCenters(), (e: unknown) => isDomainError(e) && e.code === "media_generation_not_configured");
 });
 
@@ -636,7 +631,7 @@ test("review 19: an operator createPod with no usable credentials never leaves a
   const { services, mem } = fixture({ volumeLock });
   await services.setCredentials({ runpodApiKey: RUNPOD_KEY });
   await services.updateSettings({ datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" });
-  await mem.store.clearCredentials();
+  mem.secretStore.rows.delete("runpod");
   await assert.rejects(services.createPod({ name: "ytm-media", image: "python:3.12-slim", cpu: { id: "cpu3c", vcpuCount: 2 }, cloud: "SECURE", mounts: { network: [{ volumeId: "vol-eu", path: "/workspace" }] } }), (e: unknown) => isDomainError(e) && e.code === "media_generation_not_configured");
   assert.equal(store.current(), null);
 });

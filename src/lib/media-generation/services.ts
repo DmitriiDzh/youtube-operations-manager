@@ -1,17 +1,18 @@
-import { decryptSecret, encryptSecret, type EncryptedPayload } from "@/lib/shared-crypto";
+import type { EncryptedPayload } from "@/lib/shared-crypto";
+import type { DeviceSecretSlot } from "@/lib/device-secrets";
 import type { CreatePodInput, RunpodAccountBalance, RunpodApiClient, RunpodDataCenter, RunpodGpuType, RunpodNetworkVolume, RunpodPod, RunpodS3Client, RunpodS3Config } from "@/lib/media-gateway";
 import { comfyUiProxyBaseUrl } from "@/lib/media-gateway";
 import {
   COMFY_PROXY_PORT,
   DEFAULT_MEDIA_SETTINGS,
   DomainError,
+  isDomainError,
   RUNPOD_KEY_PREFIX_LENGTH,
   type MediaCredentialsStatus,
   type MediaCredentialsTestResult,
   type MediaGenerationOverview,
   type MediaSettings,
 } from "./contracts";
-import type { KeyFile } from "./key-file";
 import { buildGpuAvailability, gpuAvailabilityInputSchema, type GpuAvailability } from "./gpu-availability";
 import { findLivePodByName, terminateAndConfirm } from "./pod-lifecycle";
 import type { VolumeLock } from "./volume-lock";
@@ -31,21 +32,7 @@ import {
   updateSettingsInputSchema,
 } from "./schemas";
 
-export type StoredCredentialsRow = {
-  ciphertext: string;
-  iv: string;
-  authTag: string;
-  runpodKeyPrefix: string;
-  s3AccessKeyId: string | null;
-  verifiedAt: Date | null;
-  updatedAt: Date;
-};
-
 export type MediaGenerationStore = {
-  getCredentials(): Promise<StoredCredentialsRow | null>;
-  upsertCredentials(input: { ciphertext: string; iv: string; authTag: string; runpodKeyPrefix: string; s3AccessKeyId: string | null }): Promise<void>;
-  setCredentialsVerifiedAt(at: Date): Promise<void>;
-  clearCredentials(): Promise<void>;
   getSettingsJson(): Promise<string | null>;
   setSettingsJson(json: string): Promise<void>;
   getGatewayEnabled(): Promise<boolean>;
@@ -58,7 +45,13 @@ export type SecretSet = { runpodApiKey: string; s3AccessKeyId: string | null; s3
 
 export type ServiceDependencies = {
   store: MediaGenerationStore;
-  keyFile: KeyFile;
+  /**
+   * BL-199 (ADR 0042): the RunPod key + S3 pair's slot in this computer's shared secret store -- the JSON `SecretSet`, with the
+   * key prefix and the S3 access key id as plaintext hints.
+   */
+  secret: DeviceSecretSlot;
+  /** BL-199 (ADR 0042 §5): seals/opens a session's proxy token with this computer's key (null: no key / does not open). */
+  sealer: { seal(plaintext: string): Promise<EncryptedPayload | null>; open(payload: EncryptedPayload): Promise<string | null> };
   /** Gateway factories (`src/lib/media-gateway/`), injected so tests never touch the network. */
   gateway: {
     createRunpodClient(apiKey: string): RunpodApiClient;
@@ -130,49 +123,47 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
   }
 
   async function credentialsStatus(): Promise<MediaCredentialsStatus> {
-    const row = await deps.store.getCredentials();
-    if (!row) return { configured: false, reason: "no_credentials" };
-    // AC-P14-21: a row with no key file on this device is "not configured" -- no decryption attempt. A key file that
+    // AC-P14-21: a stored set with no key file on this device is "not configured" -- no decryption attempt. A key file that
     // cannot be read (truncated, hand-edited) is reported, never thrown: the card must still render so the operator can
-    // reset (review round 16).
-    try {
-      if ((await deps.keyFile.readKey()) === null) return { configured: false, reason: "key_file_missing" };
-    } catch (error) {
-      if (error instanceof DomainError && error.code === "encryption_key_not_configured") return { configured: false, reason: "key_file_invalid" };
-      throw error;
-    }
+    // reset (review round 16). BL-199: the state comes from the shared store, which also moves a pre-BL-199 row on first use.
+    const state = await deps.secret.state();
+    if (state === "none") return { configured: false, reason: "no_credentials" };
+    if (state === "key_file_missing") return { configured: false, reason: "key_file_missing" };
+    if (state === "key_file_invalid") return { configured: false, reason: "key_file_invalid" };
+    const info = await deps.secret.info();
+    if (!info) return { configured: false, reason: "no_credentials" };
     return {
       configured: true,
-      runpodKeyPrefix: row.runpodKeyPrefix,
-      s3AccessKeyId: row.s3AccessKeyId,
-      verifiedAt: row.verifiedAt ? row.verifiedAt.toISOString() : null,
-      updatedAt: row.updatedAt.toISOString(),
+      runpodKeyPrefix: info.hints.runpodKeyPrefix ?? "",
+      s3AccessKeyId: info.hints.s3AccessKeyId ?? null,
+      verifiedAt: info.verifiedAt ? new Date(info.verifiedAt).toISOString() : null,
+      updatedAt: new Date(info.updatedAt).toISOString(),
     };
   }
 
   /** Decrypts for one call. Never returned by any public method. */
   async function requireSecrets(): Promise<SecretSet> {
-    const row = await deps.store.getCredentials();
-    const key = row ? await deps.keyFile.readKey() : null;
-    if (!row || !key) {
-      throw new DomainError({
-        code: "media_generation_not_configured",
-        message: !row
-          ? "No RunPod credentials are configured on this device (Settings → Cloud APIs)."
-          : "The stored RunPod credentials cannot be read on this device: the key file is missing. Enter the credentials again.",
-      });
-    }
-    const payload: EncryptedPayload = { ciphertext: row.ciphertext, iv: row.iv, authTag: row.authTag };
-    let plaintext: string;
+    return (await requireSecretsWithVersion()).secrets;
+  }
+
+  /** The set and the version it was read at (a later verifiedAt lands only on that same set). */
+  async function requireSecretsWithVersion(): Promise<{ secrets: SecretSet; version: string }> {
+    let read: { value: string; version: string } | null;
     try {
-      plaintext = decryptSecret(payload, key);
-    } catch {
-      throw new DomainError({
-        code: "media_generation_not_configured",
-        message: "The stored RunPod credentials do not match this device's key file. Clear them and enter them again.",
-      });
+      read = await deps.secret.readWithVersion();
+    } catch (error) {
+      if (isDomainError(error) && (error.code === "device_secret_unreadable" || error.code === "encryption_key_not_configured")) {
+        throw new DomainError({
+          code: "media_generation_not_configured",
+          message: "The stored RunPod credentials cannot be read on this device (the key file is missing or does not match). Enter the credentials again.",
+        });
+      }
+      throw error;
     }
-    return JSON.parse(plaintext) as SecretSet;
+    if (read === null) {
+      throw new DomainError({ code: "media_generation_not_configured", message: "No RunPod credentials are configured on this device (Settings → Cloud APIs)." });
+    }
+    return { secrets: JSON.parse(read.value) as SecretSet, version: read.version };
   }
 
   async function runpodClient(): Promise<RunpodApiClient> {
@@ -198,17 +189,15 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
   /** Encrypts the whole set under the device key (created on first use) and resets `verifiedAt` (typed or imported keys). */
   async function storeCredentials(parsed: SetCredentialsInput): Promise<MediaCredentialsStatus> {
     await assertVolumeFree("change the RunPod credentials");
-    const key = await deps.keyFile.readOrCreateKey();
     const secrets: SecretSet = {
       runpodApiKey: parsed.runpodApiKey,
       s3AccessKeyId: parsed.s3AccessKeyId ?? null,
       s3SecretAccessKey: parsed.s3SecretAccessKey ?? null,
     };
-    const encrypted = encryptSecret(JSON.stringify(secrets), key);
-    await deps.store.upsertCredentials({
-      ...encrypted,
-      runpodKeyPrefix: `${parsed.runpodApiKey.slice(0, RUNPOD_KEY_PREFIX_LENGTH)}…`,
-      s3AccessKeyId: secrets.s3AccessKeyId,
+    // A new set: `verifiedAt` resets (nothing has been tested yet).
+    await deps.secret.write(JSON.stringify(secrets), {
+      hints: { runpodKeyPrefix: `${parsed.runpodApiKey.slice(0, RUNPOD_KEY_PREFIX_LENGTH)}…`, s3AccessKeyId: secrets.s3AccessKeyId },
+      verifiedAt: null,
     });
     return credentialsStatus();
   }
@@ -245,7 +234,7 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
      * stored. Never returned by any route; an unreadable stored set throws (`media_generation_not_configured`).
      */
     async exportCredentialsForTransfer(): Promise<SecretSet | null> {
-      if (!(await deps.store.getCredentials())) return null;
+      if (!(await deps.secret.info())) return null;
       return requireSecrets();
     },
 
@@ -282,19 +271,15 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
      */
     async clearCredentials(): Promise<MediaCredentialsStatus> {
       await assertVolumeFree("clear the RunPod credentials");
-      await deps.store.clearCredentials();
-      try {
-        await deps.keyFile.readKey();
-      } catch (error) {
-        if (!(error instanceof DomainError && error.code === "encryption_key_not_configured")) throw error;
-        await deps.keyFile.removeKey();
-      }
+      // The shared store removes only this set (and the key file only when it is itself unusable).
+      await deps.secret.clear();
       return credentialsStatus();
     },
 
     /** One read call per service; a success stamps `verifiedAt`. Never throws for a failed probe -- reports it. */
     async testCredentials(): Promise<MediaCredentialsTestResult> {
-      const client = await runpodClient();
+      const tested = await requireSecretsWithVersion();
+      const client = deps.gateway.createRunpodClient(tested.secrets.runpodApiKey);
       let runpod: MediaCredentialsTestResult["runpod"];
       try {
         await client.verifyKey();
@@ -317,7 +302,8 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
       let verifiedAt: string | null = null;
       if (runpod.ok && !("ok" in s3 && !s3.ok)) {
         const now = deps.clock.now();
-        await deps.store.setCredentialsVerifiedAt(now);
+        // Only on the set that was tested (its version read before the probes): a set saved meanwhile keeps its own (null) verifiedAt.
+        await deps.secret.setStatus(tested.version, { verifiedAt: now.getTime() });
         verifiedAt = now.toISOString();
       }
       return { runpod, s3, verifiedAt };
@@ -429,15 +415,16 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
 
     /** Encrypts a per-session secret (the ComfyUI proxy token) under the device key. */
     async sealSecret(plaintext: string): Promise<EncryptedPayload> {
-      const key = await deps.keyFile.readKey();
-      if (!key) throw new DomainError({ code: "media_generation_not_configured", message: "No device key file yet -- save the RunPod credentials first." });
-      return encryptSecret(plaintext, key);
+      const sealed = await deps.sealer.seal(plaintext);
+      if (!sealed) throw new DomainError({ code: "media_generation_not_configured", message: "No device key file yet -- save the RunPod credentials first." });
+      return sealed;
     },
 
+    /** BL-199: this computer's key first, then the pre-BL-199 media key a running session's token may still be sealed with. */
     async openSecret(payload: EncryptedPayload): Promise<string> {
-      const key = await deps.keyFile.readKey();
-      if (!key) throw new DomainError({ code: "media_generation_not_configured", message: "The device key file is missing." });
-      return decryptSecret(payload, key);
+      const opened = await deps.sealer.open(payload);
+      if (opened === null) throw new DomainError({ code: "media_generation_not_configured", message: "The device key file is missing or does not open this token." });
+      return opened;
     },
 
     /** The RunPod client for one call sequence; the key stays inside its closure. */

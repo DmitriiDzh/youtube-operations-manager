@@ -18,7 +18,6 @@ export { DomainError, isDomainError, parseWithSchema, formatZodError };
 // Sessions and jobs are later slices. Nothing here ever returns a secret to a caller.
 // ---------------------------------------------------------------------------
 
-export const MEDIA_KEY_FILE_NAME = "media-generation.key";
 /** The pod port the token proxy listens on (scripts/media/pod/Caddyfile); ComfyUI itself stays on 127.0.0.1:8188. */
 export const COMFY_PROXY_PORT = 8189;
 /** Characters of the RunPod key kept in plaintext for recognition in the UI ("rpa_ab12…"). */
@@ -395,6 +394,9 @@ export type MediaModelEntry = {
   bytes: number;
   lastModified: string | null;
   sha256: string | null;
+  /** BL-134: the licence the pull recorded from the repo card (null when unknown or none). */
+  licenseId: string | null;
+  licenseUrl: string | null;
   usedBy: Array<{ templateId: string; version: number; source: "factory" | "owner" | "registry" }>;
 };
 

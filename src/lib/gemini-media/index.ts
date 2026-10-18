@@ -1,12 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
-import path from "node:path";
 import { createAssetCatalogCore } from "@/lib/asset-catalog";
 import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
 import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { appDataPaths } from "@/lib/db";
-import { createKeyFile, createKeyFileFsAccess } from "@/lib/device-key-file";
+import { getDeviceSecrets } from "@/lib/device-secrets";
 import { createGeminiApiClient, isMediaGatewayEnabled } from "@/lib/media-gateway";
 import { createStoryboardGateForProduction } from "@/lib/storyboards";
 import { createVideoProjectsServiceForProduction } from "@/lib/video-projects";
@@ -14,7 +13,6 @@ import { createGeminiSettingsCoreForProduction, createGeminiSpendShareCoreForPro
 import { createGeminiFiles } from "./adapters/files";
 import { createGeminiWorkspace } from "./adapters/workspace";
 import { createGeminiStore } from "./adapters/store";
-import { DomainError, GEMINI_KEY_FILE_NAME } from "./contracts";
 import { createGeminiMediaServices, type GeminiMediaDeps } from "./services";
 import { changedSharedLimits, createGeminiSettingsSync, type GeminiSharedValue } from "./settings-sync";
 import { createGeminiSpendSharePublisher } from "./spend-share";
@@ -53,14 +51,8 @@ function buildDeps(): GeminiMediaDeps {
   return {
     store: createGeminiStore(),
     api: createGeminiApiClient(),
-    keyFile: createKeyFile(
-      createKeyFileFsAccess(path.join(appDataPaths.appDataDir, GEMINI_KEY_FILE_NAME)),
-      (detail) =>
-        new DomainError({
-          code: "encryption_key_not_configured",
-          message: `The Gemini key file exists but is unusable (${detail}). Remove the stored key and enter it again (Settings → Cloud APIs).`,
-        })
-    ),
+    // BL-199 (ADR 0042): the key's slot in this computer's shared secret store (its legacy row moves there on first use).
+    secret: getDeviceSecrets().slot("gemini"),
     workspace: createGeminiWorkspace(async (channelId) => workspaces.getWorkspace({ channelId })),
     files: createGeminiFiles(),
     assets: {

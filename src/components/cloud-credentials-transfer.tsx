@@ -11,7 +11,7 @@ import { useT } from "./ui-text-provider";
 // password typed on both ends. The password lives only in these fields; the server never stores it, and no key ever reaches the
 // browser (the server answers with ciphertext and public hints only).
 
-type Section = "runpod" | "gemini";
+type Section = "runpod" | "gemini" | "huggingface";
 
 /** Fired on `window` after an import: the RunPod and Gemini cards reload their own views. */
 export const CLOUD_CREDENTIALS_IMPORTED_EVENT = "cloud-credentials-imported";
@@ -38,7 +38,8 @@ export function CloudCredentialsTransfer() {
   const [notices, setNotices] = useState<Array<{ text: string; warning: boolean }>>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const sectionName = (section: Section) => t(section === "runpod" ? "cloudKeys.section.runpod" : "cloudKeys.section.gemini");
+  const sectionName = (section: Section) =>
+    t(section === "runpod" ? "cloudKeys.section.runpod" : section === "gemini" ? "cloudKeys.section.gemini" : "cloudKeys.section.huggingface");
 
   function reset(next: "idle" | "export" | "import") {
     setMode(next);

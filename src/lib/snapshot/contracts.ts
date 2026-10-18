@@ -239,6 +239,7 @@ export const SNAPSHOT_DEVICE_LOCAL_TABLES: Readonly<Record<string, string>> = Ob
   generation_plan_picks: "the owner's picks and \"none fits\" on this device's generation plans (BL-175); they belong to the owning device's plan and travel in its sync report",
   generation_plan_peer_picks: "pick actions given here on another device's generation plans (BL-175); they travel in this device's sync report until that device applies them",
   gemini_credentials: "the encrypted Gemini API key (BL-174); the key file is per device, so the row is unreadable anywhere else",
+  device_secrets: "this computer's encrypted typed secrets (BL-199, ADR 0042); the key file is per device, so the rows are unreadable anywhere else",
   gemini_media_jobs: "this device's Gemini image/video jobs (BL-174); their files land in this device's copy of the channel folder",
   publishing_uploads: "this computer's upload queue (BL-182, ADR 0037): approved release packages and each step's outcome; a package uploads from the computer that has its files",
   video_reservations: "the video numbers THIS computer reserved (BL-194, ADR 0040); the other computers learn them from its video-reservations report, never from a copied database",

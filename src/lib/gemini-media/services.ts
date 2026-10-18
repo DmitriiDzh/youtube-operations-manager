@@ -1,9 +1,8 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
-import type { KeyFile } from "@/lib/device-key-file";
+import type { DeviceSecretSlot } from "@/lib/device-secrets";
 import type { GeminiApiClient } from "@/lib/media-gateway";
-import { decryptSecret, encryptSecret } from "@/lib/shared-crypto";
-import type { GeminiMediaJobStatusValue, StoredGeminiCredentials, StoredGeminiMediaJob } from "@/lib/db";
+import type { GeminiMediaJobStatusValue, StoredGeminiMediaJob } from "@/lib/db";
 import {
   DEFAULT_GEMINI_MEDIA_SETTINGS,
   DomainError,
@@ -41,11 +40,6 @@ import { checkJobRules, createJobInputSchema, getJobsInputSchema, parseWithSchem
 // real database, gateway, file system and key file.
 
 export type GeminiStore = {
-  getCredentials(): Promise<StoredGeminiCredentials | null>;
-  upsertCredentials(input: Pick<StoredGeminiCredentials, "ciphertext" | "iv" | "authTag" | "keyHint" | "status" | "verifiedAt">): Promise<void>;
-  /** Writes a check's result only while the stored key is still the one checked (its ciphertext); false otherwise. */
-  setCredentialsStatus(checkedCiphertext: string, input: Pick<StoredGeminiCredentials, "status" | "verifiedAt">): Promise<boolean>;
-  clearCredentials(): Promise<void>;
   getSettingsJson(): Promise<string | null>;
   setSettingsJson(json: string): Promise<void>;
   insertJob(row: StoredGeminiMediaJob): Promise<boolean>;
@@ -77,7 +71,8 @@ export type GeminiFilesPort = {
 export type GeminiMediaDeps = {
   store: GeminiStore;
   api: GeminiApiPort;
-  keyFile: KeyFile;
+  /** BL-199 (ADR 0042): the Gemini key's slot in this computer's shared secret store (hint: the key's last 4 characters). */
+  secret: DeviceSecretSlot;
   workspace: GeminiWorkspacePort;
   files: GeminiFilesPort;
   assets: {
@@ -224,36 +219,49 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
     return settingsFromJson(await deps.store.getSettingsJson());
   }
 
-  function keyViewOf(row: StoredGeminiCredentials | null): GeminiKeyView {
-    if (!row) return { configured: false, keyHint: null, status: null, verifiedAt: null, updatedAt: null };
-    return { configured: true, keyHint: row.keyHint, status: row.status, verifiedAt: row.verifiedAt ? row.verifiedAt.toISOString() : null, updatedAt: row.updatedAt.toISOString() };
+  /** "configured" = a key stored AND readable on this computer (ADR 0042 §4: a row with a missing key file is not configured). */
+  async function keyView(): Promise<GeminiKeyView> {
+    const [state, info] = await Promise.all([deps.secret.state(), deps.secret.info()]);
+    if (!info) return { configured: false, keyHint: null, status: null, verifiedAt: null, updatedAt: null };
+    const status = info.status === "ok" || info.status === "payment_required" ? info.status : null;
+    return {
+      configured: state === "set",
+      keyHint: info.hints.keyHint ?? null,
+      status,
+      verifiedAt: info.verifiedAt ? new Date(info.verifiedAt).toISOString() : null,
+      updatedAt: new Date(info.updatedAt).toISOString(),
+    };
   }
 
   /** The stored key in clear, or `null` when none is stored. A key file that is missing or unusable fails closed. */
   async function readApiKey(): Promise<string | null> {
-    const row = await deps.store.getCredentials();
-    if (!row) return null;
-    const key = await deps.keyFile.readKey();
-    if (!key) throw new DomainError({ code: "encryption_key_not_configured", message: "The Gemini key file is missing on this computer; enter the API key again (Settings → Cloud APIs)." });
+    return (await readApiKeyWithVersion())?.value ?? null;
+  }
+
+  /** The stored key and the version it was read at (a later status update lands only on that same key). */
+  async function readApiKeyWithVersion(): Promise<{ value: string; version: string } | null> {
     try {
-      return decryptSecret({ ciphertext: row.ciphertext, iv: row.iv, authTag: row.authTag }, key);
-    } catch {
-      throw new DomainError({ code: "encryption_key_not_configured", message: "The stored Gemini API key cannot be decrypted with this computer's key file; enter it again (Settings → Cloud APIs)." });
+      return await deps.secret.readWithVersion();
+    } catch (error) {
+      if (isDomainError(error) && (error.code === "device_secret_unreadable" || error.code === "encryption_key_not_configured")) {
+        throw new DomainError({ code: "encryption_key_not_configured", message: "The stored Gemini API key cannot be read on this computer; enter it again (Settings → Cloud APIs)." });
+      }
+      throw error;
     }
   }
 
-  // BL-193: the fingerprint of the stored key, recomputed only when the stored key changes (its ciphertext).
-  let fingerprintCache: { ciphertext: string; value: string } | null = null;
+  // BL-193: the fingerprint of the stored key, recomputed only when the stored key changes (its version, unique per save).
+  let fingerprintCache: { version: string; value: string } | null = null;
   /** The stored key's fingerprint (ADR 0039), or null when no usable key is stored here (then nothing is shared). Never throws. */
   async function keyFingerprint(): Promise<string | null> {
     try {
-      const row = await deps.store.getCredentials();
-      if (!row) return null;
-      if (fingerprintCache?.ciphertext === row.ciphertext) return fingerprintCache.value;
-      const apiKey = await readApiKey();
-      if (!apiKey) return null;
-      const value = geminiKeyFingerprint(apiKey);
-      fingerprintCache = { ciphertext: row.ciphertext, value };
+      const info = await deps.secret.info();
+      if (!info) return null;
+      if (fingerprintCache && fingerprintCache.version === info.version) return fingerprintCache.value;
+      const read = await readApiKeyWithVersion();
+      if (!read) return null;
+      const value = geminiKeyFingerprint(read.value);
+      fingerprintCache = { version: read.version, value };
       return value;
     } catch {
       return null;
@@ -290,10 +298,8 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
   }
   async function storeCheckedKey(checked: CheckedGeminiKey): Promise<GeminiKeyView> {
     const { apiKey } = parseWithSchema(setKeyInputSchema, { apiKey: checked.apiKey }, "Gemini API key");
-    const key = await deps.keyFile.readOrCreateKey();
-    const sealed = encryptSecret(apiKey, key);
-    await deps.store.upsertCredentials({ ...sealed, keyHint: apiKey.slice(-4), status: checked.status, verifiedAt: now() });
-    return keyViewOf(await deps.store.getCredentials());
+    await deps.secret.write(apiKey, { hints: { keyHint: apiKey.slice(-4) }, status: checked.status, verifiedAt: now().getTime() });
+    return keyView();
   }
 
   async function spend(at: Date = now()): Promise<GeminiSpend> {
@@ -380,7 +386,7 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
     keyFingerprint,
 
     async getKey(): Promise<GeminiKeyView> {
-      return keyViewOf(await deps.store.getCredentials());
+      return keyView();
     },
 
     /** Checks the key with Google first (AC-GM-01): a refused key is never stored; an empty balance (402) is stored with that status. */
@@ -401,9 +407,9 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
     storeImportedKey: storeCheckedKey,
 
     async testKey(): Promise<GeminiKeyView> {
-      const row = await deps.store.getCredentials();
-      const apiKey = await readApiKey();
-      if (!row || !apiKey) throw new DomainError({ code: "gemini_key_missing", message: "No Gemini API key is stored on this computer." });
+      const read = await readApiKeyWithVersion();
+      if (!read) throw new DomainError({ code: "gemini_key_missing", message: "No Gemini API key is stored on this computer." });
+      const apiKey = read.value;
       let status: "ok" | "payment_required" = "ok";
       try {
         await deps.api.checkKey(apiKey);
@@ -412,15 +418,14 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
         status = "payment_required";
       }
       // Only the status of the key that was checked: a key saved meanwhile (another tab) is never overwritten (review round 1).
-      await deps.store.setCredentialsStatus(row.ciphertext, { status, verifiedAt: now() });
-      return keyViewOf(await deps.store.getCredentials());
+      await deps.secret.setStatus(read.version, { status, verifiedAt: now().getTime() });
+      return keyView();
     },
 
-    /** Removes the stored key and this module's key file (never the RunPod one). */
+    /** Removes the stored key; the shared key file stays (ADR 0042 §4 -- it protects the other secrets too). */
     async clearKey(): Promise<GeminiKeyView> {
-      await deps.store.clearCredentials();
-      await deps.keyFile.removeKey();
-      return keyViewOf(null);
+      await deps.secret.clear();
+      return keyView();
     },
 
     async updateSettings(input: unknown): Promise<GeminiMediaSettings> {
@@ -432,8 +437,7 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
 
     /** The operator's read (`factory_gemini_get_status`): switch, key presence (never the key), limits, spend, models and prices. */
     async getStatus() {
-      const [settings, row, current, gatewayEnabled] = await Promise.all([getSettings(), deps.store.getCredentials(), spend(), deps.isGatewayEnabled()]);
-      const key = keyViewOf(row);
+      const [settings, key, current, gatewayEnabled] = await Promise.all([getSettings(), keyView(), spend(), deps.isGatewayEnabled()]);
       const { enabled, ...limits } = settings;
       return {
         enabled,
@@ -471,7 +475,7 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
         const settings = await getSettings();
         const preconditionRefusal: GeminiRefusal | null = !settings.enabled
           ? { code: "gemini_disabled", message: "Generation through Gemini is turned off on this computer (Settings → Cloud APIs)." }
-          : !(await deps.store.getCredentials())
+          : (await deps.secret.state()) !== "set"
             ? { code: "gemini_key_missing", message: "No Gemini API key is stored on this computer (Settings → Cloud APIs)." }
             : null;
         if (preconditionRefusal && !input.dryRun) throw new DomainError({ code: preconditionRefusal.code, message: preconditionRefusal.message });

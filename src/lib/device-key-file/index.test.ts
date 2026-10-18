@@ -3,9 +3,14 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { isDomainError } from "./contracts";
-import { createKeyFile, type KeyFileAccess } from "./key-file";
-import { createKeyFileFsAccess, mediaKeyFilePath } from "./adapters/key-file-fs";
+import { createKeyFile as createSharedKeyFile, createKeyFileFsAccess, type KeyFileAccess } from "@/lib/device-key-file";
+import { deviceSecretsKeyFilePath } from "@/lib/device-secrets";
+import { DomainError, isDomainError } from "@/lib/shared-domain";
+
+// BL-199 (ADR 0042): moved from media-generation (its own key file is gone): the same guarantees now hold for this computer's one
+// secrets key file, `device-secrets.key` -- created on first use only, 0600, a malformed file fails closed.
+const createKeyFile = (access: KeyFileAccess) =>
+  createSharedKeyFile(access, (detail) => new DomainError({ code: "encryption_key_not_configured", message: detail }));
 
 // AC-P14-21 (docs/roadmap/plans/PHASE_14_PLAN.md §2.9/§4): the key is created by the app on first
 // use, in the app-data directory, mode 0600; a read never creates it; a malformed file fails closed.
@@ -54,11 +59,11 @@ test("a malformed key file fails closed with encryption_key_not_configured, not 
   }
 });
 
-test("the real file adapter writes media-generation.key under the app-data dir with mode 0600", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "media-key-test-"));
+test("the real file adapter writes device-secrets.key under the app-data dir with mode 0600", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "device-key-test-"));
   try {
-    const filePath = mediaKeyFilePath(dir);
-    assert.equal(path.basename(filePath), "media-generation.key");
+    const filePath = deviceSecretsKeyFilePath(dir);
+    assert.equal(path.basename(filePath), "device-secrets.key");
     const keyFile = createKeyFile(createKeyFileFsAccess(filePath));
     assert.equal(await keyFile.readKey(), null);
     const key = await keyFile.readOrCreateKey();

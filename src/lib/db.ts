@@ -1267,6 +1267,25 @@ export const generationPlanPeerPicks = sqliteTable(
 );
 
 /**
+ * BL-199 (ADR 0042, docs/roadmap/plans/DEVICE_SECRETS_PLAN.md): this computer's typed secrets -- RunPod/S3, Gemini, the
+ * Hugging Face token -- one row per name, encrypted under the one key file `device-secrets.key` (`src/lib/device-secrets/`, the
+ * only reader/writer). `hints_json` holds plaintext, non-secret display fields (a key prefix, an access key id, the last 4
+ * characters, a user name). Times in ms. `revision` grows on every write (compare-and-set for status updates).
+ * Device-local, never in a snapshot or sync family (the key file is per device).
+ */
+export const deviceSecrets = sqliteTable("device_secrets", {
+  name: text("name").primaryKey(),
+  ciphertext: text("ciphertext").notNull(),
+  iv: text("iv").notNull(),
+  authTag: text("auth_tag").notNull(),
+  hintsJson: text("hints_json").notNull().default("{}"),
+  status: text("status"),
+  verifiedAt: integer("verified_at"),
+  updatedAt: integer("updated_at").notNull(),
+  revision: integer("revision").notNull().default(1),
+});
+
+/**
  * Schema v83 (BL-174, docs/roadmap/plans/GEMINI_MEDIA_PLAN.md §2.2): the Gemini API key, AES-256-GCM under this device's
  * `gemini-media.key` (shared `device-key-file`), one row. Only the last 4 characters are kept readable (`key_hint`).
  * Device-local, never in a snapshot or sync family (the key file is per device).
@@ -5161,6 +5180,25 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       }
       await client.execute("CREATE INDEX IF NOT EXISTS media_jobs_video_idx ON media_jobs (video)");
       await client.execute("CREATE INDEX IF NOT EXISTS gemini_media_jobs_video_idx ON gemini_media_jobs (video)");
+    },
+  },
+  {
+    version: 96,
+    description:
+      "device_secrets -- BL-199 (ADR 0042): this computer's typed secrets (RunPod/S3, Gemini, Hugging Face token) in one table under one key file; additive, the legacy media_credentials / gemini_credentials rows are moved at runtime by src/lib/device-secrets and kept",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS device_secrets (" +
+          "name TEXT PRIMARY KEY, " +
+          "ciphertext TEXT NOT NULL, " +
+          "iv TEXT NOT NULL, " +
+          "auth_tag TEXT NOT NULL, " +
+          "hints_json TEXT NOT NULL DEFAULT '{}', " +
+          "status TEXT, " +
+          "verified_at INTEGER, " +
+          "updated_at INTEGER NOT NULL, " +
+          "revision INTEGER NOT NULL DEFAULT 1)"
+      );
     },
   },
 ];
@@ -10017,29 +10055,6 @@ export async function getStoredMediaCredentials(database: AppDb = db): Promise<S
   };
 }
 
-/** Replaces the whole blob (a new key set); `verifiedAt` resets, since nothing has been tested yet. */
-export async function upsertStoredMediaCredentials(
-  input: { ciphertext: string; iv: string; authTag: string; runpodKeyPrefix: string; s3AccessKeyId: string | null },
-  database: AppDb = db
-): Promise<void> {
-  const now = new Date();
-  await database
-    .insert(mediaCredentials)
-    .values({ id: MEDIA_CREDENTIALS_SINGLETON_ID, ...input, verifiedAt: null, updatedAt: now })
-    .onConflictDoUpdate({
-      target: mediaCredentials.id,
-      set: { ...input, verifiedAt: null, updatedAt: now },
-    });
-}
-
-export async function setStoredMediaCredentialsVerifiedAt(verifiedAt: Date, database: AppDb = db): Promise<void> {
-  await database.update(mediaCredentials).set({ verifiedAt }).where(eq(mediaCredentials.id, MEDIA_CREDENTIALS_SINGLETON_ID));
-}
-
-export async function clearStoredMediaCredentials(database: AppDb = db): Promise<void> {
-  await database.delete(mediaCredentials).where(eq(mediaCredentials.id, MEDIA_CREDENTIALS_SINGLETON_ID));
-}
-
 const MEDIA_GENERATION_SETTINGS_KEY = "media_generation_settings";
 const MEDIA_GATEWAY_ENABLED_SETTING_KEY = "media_gateway_enabled";
 const MEDIA_MODEL_PULLS_KEY = "media_model_pulls";
@@ -10797,35 +10812,6 @@ export type StoredGeminiCredentials = typeof geminiCredentials.$inferSelect;
 export async function getStoredGeminiCredentials(database: AppDb = db): Promise<StoredGeminiCredentials | null> {
   const [row] = await database.select().from(geminiCredentials).where(eq(geminiCredentials.id, GEMINI_CREDENTIALS_SINGLETON_ID));
   return row ?? null;
-}
-
-export async function upsertStoredGeminiCredentials(
-  input: Pick<StoredGeminiCredentials, "ciphertext" | "iv" | "authTag" | "keyHint" | "status" | "verifiedAt">,
-  database: AppDb = db
-): Promise<void> {
-  const updatedAt = new Date();
-  await database
-    .insert(geminiCredentials)
-    .values({ id: GEMINI_CREDENTIALS_SINGLETON_ID, ...input, updatedAt })
-    .onConflictDoUpdate({ target: geminiCredentials.id, set: { ...input, updatedAt } });
-}
-
-/** A key check's result, written only while the stored key is still the one that was checked (review round 1); false otherwise. */
-export async function setStoredGeminiCredentialsStatus(
-  checkedCiphertext: string,
-  input: Pick<StoredGeminiCredentials, "status" | "verifiedAt">,
-  database: AppDb = db
-): Promise<boolean> {
-  const rows = await database
-    .update(geminiCredentials)
-    .set({ ...input, updatedAt: new Date() })
-    .where(and(eq(geminiCredentials.id, GEMINI_CREDENTIALS_SINGLETON_ID), eq(geminiCredentials.ciphertext, checkedCiphertext)))
-    .returning({ id: geminiCredentials.id });
-  return rows.length > 0;
-}
-
-export async function clearStoredGeminiCredentials(database: AppDb = db): Promise<void> {
-  await database.delete(geminiCredentials).where(eq(geminiCredentials.id, GEMINI_CREDENTIALS_SINGLETON_ID));
 }
 
 /** The module's settings as stored (JSON), `null` before the first save. */
@@ -14534,4 +14520,98 @@ export async function listGenerationPlanVideos(ids: string[], database: AppDb = 
 export async function getGenerationPlanVideo(planId: string, database: AppDb = db): Promise<{ channelId: string; video: string | null } | null> {
   const [row] = await database.select({ channelId: generationPlans.channelId, video: generationPlans.video }).from(generationPlans).where(eq(generationPlans.id, planId));
   return row ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// BL-199 (ADR 0042): `device_secrets` -- read/written only through `src/lib/device-secrets/`.
+// ---------------------------------------------------------------------------
+
+export type StoredDeviceSecret = {
+  name: string;
+  ciphertext: string;
+  iv: string;
+  authTag: string;
+  hints: Record<string, string | null>;
+  status: string | null;
+  verifiedAt: number | null;
+  updatedAt: number;
+  revision: number;
+};
+
+function parseHints(json: string): Record<string, string | null> {
+  try {
+    const parsed: unknown = JSON.parse(json);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(Object.entries(parsed as Record<string, unknown>).map(([k, v]) => [k, typeof v === "string" ? v : null]));
+  } catch {
+    return {};
+  }
+}
+
+export async function getStoredDeviceSecret(name: string, database: AppDb = db): Promise<StoredDeviceSecret | null> {
+  const [row] = await database.select().from(deviceSecrets).where(eq(deviceSecrets.name, name));
+  if (!row) return null;
+  return {
+    name: row.name,
+    ciphertext: row.ciphertext,
+    iv: row.iv,
+    authTag: row.authTag,
+    hints: parseHints(row.hintsJson),
+    status: row.status ?? null,
+    verifiedAt: row.verifiedAt ?? null,
+    updatedAt: row.updatedAt,
+    revision: row.revision,
+  };
+}
+
+/** Replaces the secret (a new value): the revision grows; status and verifiedAt are what the caller passes. */
+export async function upsertStoredDeviceSecret(
+  input: { name: string; ciphertext: string; iv: string; authTag: string; hints: Record<string, string | null>; status: string | null; verifiedAt: number | null; updatedAt: number },
+  database: AppDb = db
+): Promise<void> {
+  const values = {
+    ciphertext: input.ciphertext,
+    iv: input.iv,
+    authTag: input.authTag,
+    hintsJson: JSON.stringify(input.hints),
+    status: input.status,
+    verifiedAt: input.verifiedAt,
+    updatedAt: input.updatedAt,
+  };
+  await database
+    .insert(deviceSecrets)
+    .values({ name: input.name, ...values, revision: 1 })
+    .onConflictDoUpdate({ target: deviceSecrets.name, set: { ...values, revision: sql`${deviceSecrets.revision} + 1` } });
+}
+
+/** Compare-and-set: only when the row still holds `expectedCiphertext` (unique per save: a value saved meanwhile is never touched). */
+export async function setStoredDeviceSecretStatus(
+  name: string,
+  expectedCiphertext: string,
+  patch: { status?: string | null; verifiedAt?: number | null },
+  database: AppDb = db
+): Promise<boolean> {
+  const set: Partial<{ status: string | null; verifiedAt: number | null }> = {};
+  if (patch.status !== undefined) set.status = patch.status;
+  if (patch.verifiedAt !== undefined) set.verifiedAt = patch.verifiedAt;
+  if (Object.keys(set).length === 0) return false;
+  const result = await database
+    .update(deviceSecrets)
+    .set(set)
+    .where(and(eq(deviceSecrets.name, name), eq(deviceSecrets.ciphertext, expectedCiphertext)))
+    .returning({ name: deviceSecrets.name });
+  return result.length > 0;
+}
+
+export async function deleteStoredDeviceSecret(name: string, database: AppDb = db): Promise<void> {
+  await database.delete(deviceSecrets).where(eq(deviceSecrets.name, name));
+}
+
+/** Whether `name`'s legacy row was already moved into `device_secrets` (then it is never read again). Device-local setting. */
+export async function isDeviceSecretMigrated(name: string, database: AppDb = db): Promise<boolean> {
+  return (await getAppSetting(`device_secret_migrated:${name}`, database)) !== null;
+}
+
+export async function markDeviceSecretMigrated(name: string, at: number, database: AppDb = db): Promise<void> {
+  await setAppSetting(`device_secret_migrated:${name}`, String(at), database);
 }

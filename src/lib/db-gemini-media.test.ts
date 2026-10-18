@@ -6,7 +6,6 @@ import test from "node:test";
 import { drizzle } from "drizzle-orm/libsql";
 import { createLibsqlClient } from "@/lib/libsql-client";
 import {
-  clearStoredGeminiCredentials,
   getGeminiMediaJob,
   getGeminiMediaJobByRequest,
   getGeminiMediaSettingsJson,
@@ -17,7 +16,6 @@ import {
   SCHEMA_MIGRATIONS,
   setGeminiMediaSettingsJson,
   updateGeminiMediaJob,
-  upsertStoredGeminiCredentials,
   type AppDb,
 } from "@/lib/db";
 
@@ -64,15 +62,17 @@ test("schema v83: a second run converges; both tables exist", () =>
     assert.ok(names.includes("gemini_credentials") && names.includes("gemini_media_jobs"));
   }));
 
-test("credentials: one row, replaced in place, cleared; settings JSON round-trips", () =>
-  withDb(async (database) => {
+// BL-199 (ADR 0042) changed this: the Gemini key moved to `device_secrets`; the legacy row is only READ now (by the one-time move,
+// `src/lib/device-secrets/legacy.ts`), never written by the app, so its write helpers are gone.
+test("credentials: the legacy row is read as stored (the move to device_secrets reads it); settings JSON round-trips", () =>
+  withDb(async (database, client) => {
     assert.equal(await getStoredGeminiCredentials(database), null);
-    await upsertStoredGeminiCredentials({ ciphertext: "c1", iv: "i", authTag: "t", keyHint: "abcd", status: "ok", verifiedAt: new Date("2026-10-10T12:00:00Z") }, database);
-    await upsertStoredGeminiCredentials({ ciphertext: "c2", iv: "i", authTag: "t", keyHint: "wxyz", status: "payment_required", verifiedAt: null }, database);
+    await client.execute({
+      sql: "INSERT INTO gemini_credentials (id, ciphertext, iv, auth_tag, key_hint, status, verified_at, updated_at) VALUES ('default', 'c2', 'i', 't', 'wxyz', 'payment_required', NULL, 1760000000000)",
+      args: [],
+    });
     const row = await getStoredGeminiCredentials(database);
     assert.deepEqual([row?.ciphertext, row?.keyHint, row?.status, row?.verifiedAt], ["c2", "wxyz", "payment_required", null]);
-    await clearStoredGeminiCredentials(database);
-    assert.equal(await getStoredGeminiCredentials(database), null);
     assert.equal(await getGeminiMediaSettingsJson(database), null);
     await setGeminiMediaSettingsJson('{"enabled":true}', database);
     assert.equal(await getGeminiMediaSettingsJson(database), '{"enabled":true}');

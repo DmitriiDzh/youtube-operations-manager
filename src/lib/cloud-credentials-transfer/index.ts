@@ -10,7 +10,10 @@ export * from "./contracts";
 export { createCloudCredentialsTransfer } from "./services";
 export type { CloudCredentialsExport, CloudCredentialsImport, CloudCredentialsTransfer, CredentialSectionPort } from "./services";
 
-type MediaCore = Pick<ReturnType<typeof createMediaGenerationCore>, "exportCredentialsForTransfer" | "getCredentialsStatus" | "checkCredentialsForImport" | "storeImportedCredentials">;
+type MediaCore = Pick<
+  ReturnType<typeof createMediaGenerationCore>,
+  "exportCredentialsForTransfer" | "getCredentialsStatus" | "checkCredentialsForImport" | "storeImportedCredentials" | "exportHfTokenForTransfer" | "getHfToken" | "checkHfTokenForImport" | "storeCheckedHfToken"
+>;
 type GeminiCore = Pick<ReturnType<typeof createGeminiMediaCore>, "exportKeyForTransfer" | "getKey" | "checkKeyForImport" | "storeImportedKey">;
 
 /** Each module's section, through its own public functions; `media()` / `gemini()` are called inside each call (lazy, §M). */
@@ -36,6 +39,17 @@ export function cloudCredentialSections(media: () => MediaCore, gemini: () => Ge
       },
       check: (secret) => gemini().checkKeyForImport(secret),
       store: (checked) => gemini().storeImportedKey(checked as Parameters<GeminiCore["storeImportedKey"]>[0]),
+    },
+    // BL-134: the Hugging Face read token (media-generation owns it). Checked with Hugging Face before ANY section is stored.
+    huggingface: {
+      async exportSecret() {
+        const core = media();
+        const token = await core.exportHfTokenForTransfer();
+        if (!token) return null;
+        return { secret: { token }, hints: { hfUser: (await core.getHfToken()).user } };
+      },
+      check: (secret) => media().checkHfTokenForImport(secret),
+      store: (checked) => media().storeCheckedHfToken(checked as Parameters<MediaCore["storeCheckedHfToken"]>[0]),
     },
   };
 }

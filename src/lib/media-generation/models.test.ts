@@ -16,7 +16,7 @@ function fakeHub(info: Partial<{ sha256: string | null; bytes: number; commitSha
   return {
     async getFileInfo(input) {
       calls?.push(`hub:${input.repoId}:${input.file}:${input.revision ?? "main"}`);
-      return { repoId: input.repoId, revision: input.revision ?? "main", commitSha: info.commitSha ?? "c0ffee", path: input.file, bytes: info.bytes ?? 1000, sha256: info.sha256 === undefined ? HUB_SHA : info.sha256 };
+      return { repoId: input.repoId, revision: input.revision ?? "main", commitSha: info.commitSha ?? "c0ffee", path: input.file, bytes: info.bytes ?? 1000, sha256: info.sha256 === undefined ? HUB_SHA : info.sha256, licenseId: null, licenseUrl: null, authenticated: false };
     },
   };
 }
@@ -88,6 +88,8 @@ function fixture(
     usage?: MediaModelUsage;
     lockHeldBy?: string;
     volumeLock?: ModelServiceDependencies["volumeLock"];
+    /** BL-134: this computer's stored Hugging Face token (or a reader, e.g. one that fails like an unreadable token). */
+    hfToken?: string | (() => Promise<string | null>);
   } = {}
 ) {
   const objects = opts.objects ?? new Map<string, number>();
@@ -96,8 +98,9 @@ function fixture(
   const calls: string[] = [];
   let podStatus = opts.podStatus ?? "RUNNING";
   const client = {
-    async createPod(input: { cmd?: string[]; cpu?: { id: string; vcpuCount: number }; mounts?: unknown }) {
+    async createPod(input: { cmd?: string[]; cpu?: { id: string; vcpuCount: number }; mounts?: unknown; env?: Record<string, string> }) {
       calls.push(`createPod:${input.cpu?.id}:${input.cpu?.vcpuCount}`);
+      if (input.env) calls.push(`env:${JSON.stringify(input.env)}`);
       if (opts.createFails) throw new Error("no capacity");
       calls.push(`cmd:${input.cmd?.[2] ?? ""}`);
       return { id: "cpupod1", status: "PROVISIONING", costPerHr: 0.08 };
@@ -156,6 +159,7 @@ function fixture(
       pullCapMs: 60 * 60_000,
       volumeLock: opts.volumeLock ?? testLock({ heldBy: opts.lockHeldBy }).lock,
       ...(opts.usage ? { modelUsage: async () => opts.usage! } : {}),
+      ...(opts.hfToken ? { hfToken: typeof opts.hfToken === "function" ? opts.hfToken : async () => (opts.hfToken as string) } : {}),
     },
     { verdicts, podWritesVerdict: opts.podWritesVerdict }
   );
@@ -1111,4 +1115,37 @@ test("FO-REQ-0005 review: ok=false with the EXPECTED hash means the target was t
   assert.equal(failed.status, "failed");
   assert.match(failed.error ?? "", /already existed.*nothing was overwritten/);
   assert.doesNotMatch(failed.error ?? "", /mismatch/);
+});
+
+// BL-134 AC-HF-04 (docs/roadmap/plans/DEVICE_SECRETS_PLAN.md): the stored token reaches the Hub check and the pull pod's env only --
+// never its command line, the recorded pull, or the pull list -- and only for a repo that needs it (review: a public pull never reads it).
+test("AC-HF-04: a gated repo -- the token goes to the Hub check and to the pod's env HF_TOKEN, never into cmd or the pull record; the licence is recorded", async () => {
+  const token = "hf_" + "t".repeat(34);
+  const hub: ModelServiceDependencies["hub"] = {
+    async getFileInfo(input) {
+      const used = await input.tokenFor?.();
+      return { repoId: input.repoId, revision: "main", commitSha: "c0ffee", path: input.file, bytes: 1000, sha256: HUB_SHA, licenseId: "other", licenseUrl: "https://huggingface.co/bfl/klein/blob/c0ffee/LICENSE.md", authenticated: used === token };
+    },
+  };
+  const f = fixture({ hfToken: token, hub });
+  const pull = await f.services.startPull({ repoId: "bfl/klein", file: "klein.safetensors", folder: "diffusion_models" });
+  assert.ok(f.calls.includes(`env:${JSON.stringify({ HF_TOKEN: token })}`));
+  assert.ok(f.calls.filter((c) => c.startsWith("cmd:")).every((c) => !c.includes(token)), "never in the command line");
+  assert.ok(!JSON.stringify(pull).includes(token) && !JSON.stringify(f.pulls()).includes(token), "never on the recorded pull");
+  assert.deepEqual([pull.licenseId, pull.licenseUrl], ["other", "https://huggingface.co/bfl/klein/blob/c0ffee/LICENSE.md"]);
+});
+
+test("AC-HF-04 (review): a public repo never reads the stored token -- an unreadable one cannot block it -- and the pod gets no env", async () => {
+  let reads = 0;
+  const f = fixture({
+    hub: { async getFileInfo(input) { return { repoId: input.repoId, revision: "main", commitSha: "c0ffee", path: input.file, bytes: 1000, sha256: HUB_SHA, licenseId: null, licenseUrl: null, authenticated: false }; } },
+    hfToken: async () => {
+      reads += 1;
+      throw new Error("device_secret_unreadable");
+    },
+  });
+  const pull = await f.services.startPull({ repoId: "Comfy-Org/flux1-schnell", file: "flux1-schnell-fp8.safetensors", folder: "checkpoints" });
+  assert.equal(pull.status, "running");
+  assert.equal(reads, 0);
+  assert.ok(!f.calls.some((c) => c.startsWith("env:")));
 });

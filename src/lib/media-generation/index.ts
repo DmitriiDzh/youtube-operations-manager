@@ -1,3 +1,5 @@
+import { getDeviceSecrets } from "@/lib/device-secrets";
+import { createHfTokenServices } from "./hf-token";
 import { randomBytes, randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { createAssetCatalogCore } from "@/lib/asset-catalog";
@@ -11,7 +13,6 @@ import { sleep as sharedSleep } from "@/lib/shared-async";
 import { createExchangeFs, resolveFromYtmDir, resolveSentToYtmFile } from "@/lib/workspace-exchange";
 import { createExchangeLocalFs } from "./adapters/exchange-fs";
 import { createMediaJobStore } from "./adapters/job-store";
-import { createFsKeyFile } from "./adapters/key-file-fs";
 import { createMediaSessionStore } from "./adapters/session-store";
 import { createTemplateRegistryReader } from "./adapters/template-registry-fs";
 import { createMediaControlEventSink, createMediaGenerationStore, createModelPullStore, createVolumeLockStore } from "./adapters/store";
@@ -93,7 +94,10 @@ function buildCore(jobScheduling: JobScheduling) {
   const volumeLock = createVolumeLock({ store: createVolumeLockStore(), isHolderActive, log: (line) => console.warn(line) });
   const base = createMediaGenerationServices({
     store: createMediaGenerationStore(),
-    keyFile: createFsKeyFile(appDataPaths.appDataDir),
+    // BL-199 (ADR 0042): the RunPod/S3 set lives in this computer's shared secret store (moved there from media_credentials on
+    // first use); session tokens are sealed with the same store's key, opened with the legacy media key as a fallback.
+    secret: getDeviceSecrets().slot("runpod"),
+    sealer: { seal: (plaintext) => getDeviceSecrets().seal(plaintext), open: (payload) => getDeviceSecrets().open(payload) },
     gateway: {
       createRunpodClient: (apiKey) => createRunpodApiClient({ apiKey }),
       createS3Client: (config) => createRunpodS3Client(config),
@@ -110,9 +114,13 @@ function buildCore(jobScheduling: JobScheduling) {
     log: (line) => console.warn(line),
   });
   baseRef = base;
+  // BL-134 (FO-REQ-0028, ADR 0042): the Hugging Face read token lives in the shared device-secret store.
+  const hub = createHuggingFaceClient();
+  const hfToken = createHfTokenServices({ slot: getDeviceSecrets().slot("huggingface"), hub });
   const models = createMediaModelServices({
     store: createModelPullStore(),
-    hub: createHuggingFaceClient(),
+    hub,
+    hfToken: () => hfToken.readHfToken(),
     events: createMediaControlEventSink(),
     // Late-bound: the job services (which own the templates) are built below.
     modelUsage: async () => {
@@ -400,6 +408,14 @@ function buildCore(jobScheduling: JobScheduling) {
 
   return {
     ...base,
+    getHfToken: hfToken.getHfToken,
+    setHfToken: hfToken.setHfToken,
+    testHfToken: hfToken.testHfToken,
+    clearHfToken: hfToken.clearHfToken,
+    /** BL-134: for the password-encrypted cloud-keys file only (`cloud-credentials-transfer`), never a route. */
+    exportHfTokenForTransfer: hfToken.readHfToken,
+    checkHfTokenForImport: hfToken.checkHfTokenForImport,
+    storeCheckedHfToken: hfToken.storeCheckedHfToken,
     ...sessions,
     ...jobs,
     ...models,

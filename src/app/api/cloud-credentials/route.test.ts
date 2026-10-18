@@ -1,12 +1,11 @@
+import { createDeviceSecrets, createMemoryDeviceSecretStore } from "@/lib/device-secrets";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { cloudCredentialSections, createCloudCredentialsTransfer } from "@/lib/cloud-credentials-transfer";
 import { createKeyFile, type KeyFileAccess } from "@/lib/device-key-file";
-import type { StoredGeminiCredentials } from "@/lib/db";
 import { createGeminiMediaServices, type GeminiMediaDeps, type GeminiStore } from "@/lib/gemini-media";
 import { DomainError } from "@/lib/media-generation";
-import { createKeyFile as createRunpodKeyFile, type KeyFileAccess as RunpodKeyFileAccess } from "@/lib/media-generation/key-file";
-import { createMediaGenerationServices, type MediaGenerationStore, type StoredCredentialsRow } from "@/lib/media-generation/services";
+import { createMediaGenerationServices, type MediaGenerationStore } from "@/lib/media-generation/services";
 import type { RunpodApiClient, RunpodS3Client } from "@/lib/media-gateway";
 import { encryptWithPassword } from "@/lib/shared-crypto";
 import { createCloudCredentialsExportPostHandler } from "./export/route";
@@ -26,23 +25,14 @@ const PASSWORD = "long enough passphrase";
 const FAST = { N: 2 ** 10, r: 8, p: 1 }; // cheap in tests; production uses 2^17
 
 function computer(opts: { runpodAccepts?: boolean; runpodError?: DomainError; googleRefuses?: boolean } = {}) {
-  let row: StoredCredentialsRow | null = null;
   let runpodKeyText: string | null = null;
   const store: MediaGenerationStore = {
-    getCredentials: async () => row,
-    upsertCredentials: async (input) => {
-      row = { ...input, verifiedAt: null, updatedAt: new Date("2026-10-16T00:00:00Z") };
-    },
-    setCredentialsVerifiedAt: async () => {},
-    clearCredentials: async () => {
-      row = null;
-    },
     getSettingsJson: async () => null,
     setSettingsJson: async () => {},
     getGatewayEnabled: async () => true,
     setGatewayEnabled: async () => {},
   };
-  const runpodAccess: RunpodKeyFileAccess = {
+  const runpodAccess: KeyFileAccess = {
     read: async () => runpodKeyText,
     write: async (c) => {
       runpodKeyText = JSON.stringify(c);
@@ -52,9 +42,16 @@ function computer(opts: { runpodAccepts?: boolean; runpodError?: DomainError; go
       runpodKeyText = null;
     },
   };
+  // BL-199 (ADR 0042): one secret store and ONE key file per computer, shared by the RunPod set and the Gemini key.
+  const secrets = createDeviceSecrets({
+    store: createMemoryDeviceSecretStore(),
+    keyFile: createKeyFile(runpodAccess, (detail) => new DomainError({ code: "encryption_key_not_configured", message: detail })),
+    now: () => Date.parse("2026-10-16T00:00:00Z"),
+  });
   const media = createMediaGenerationServices({
     store,
-    keyFile: createRunpodKeyFile(runpodAccess),
+    secret: secrets.slot("runpod"),
+    sealer: { seal: (plaintext) => secrets.seal(plaintext), open: (payload) => secrets.open(payload) },
     gateway: {
       createRunpodClient: () =>
         ({
@@ -69,28 +66,7 @@ function computer(opts: { runpodAccepts?: boolean; runpodError?: DomainError; go
     clock: { now: () => new Date("2026-10-16T00:00:00Z") },
   });
 
-  let creds: StoredGeminiCredentials | null = null;
-  let geminiKeyText: string | null = null;
-  const geminiAccess: KeyFileAccess = {
-    read: async () => geminiKeyText,
-    write: async (c) => {
-      geminiKeyText = JSON.stringify(c);
-    },
-    remove: async () => {
-      geminiKeyText = null;
-    },
-    randomBytes: (n) => Buffer.alloc(n, 3),
-  };
-  const geminiStore = {
-    getCredentials: async () => creds,
-    upsertCredentials: async (input: Omit<StoredGeminiCredentials, "id" | "updatedAt">) => {
-      creds = { id: "default", ...input, updatedAt: new Date("2026-10-16T00:00:00Z") };
-    },
-    setCredentialsStatus: async () => true,
-    clearCredentials: async () => {
-      creds = null;
-    },
-  } as unknown as GeminiStore;
+  const geminiStore = {} as unknown as GeminiStore;
   const googleChecks: string[] = [];
   const gemini = createGeminiMediaServices({
     store: geminiStore,
@@ -100,11 +76,14 @@ function computer(opts: { runpodAccepts?: boolean; runpodError?: DomainError; go
         if (opts.googleRefuses) throw new DomainError({ code: "gemini_key_invalid", message: "Google refused the API key (HTTP 400)" });
       },
     },
-    keyFile: createKeyFile(geminiAccess, (detail) => new DomainError({ code: "encryption_key_not_configured", message: detail })),
+    // BL-199 (ADR 0042): the Gemini key lives in the shared device-secret store (in memory here).
+    secret: secrets.slot("gemini"),
     clock: { now: () => new Date("2026-10-16T00:00:00Z") },
   } as unknown as GeminiMediaDeps);
 
-  const transfer = createCloudCredentialsTransfer({ sections: cloudCredentialSections(() => media, () => gemini), clock: { now: () => new Date("2026-10-16T00:00:00Z") }, passwordScrypt: FAST });
+  // BL-134 added a Hugging Face section owned by media-generation's core; this computer stores no HF token here.
+  const mediaWithHf = { ...media, exportHfTokenForTransfer: async () => null, getHfToken: async () => ({ state: "none" as const, user: null, status: null, verifiedAt: null, updatedAt: null }), checkHfTokenForImport: async () => { throw new Error("no HF import in this test"); }, storeCheckedHfToken: async () => { throw new Error("no HF import in this test"); } };
+  const transfer = createCloudCredentialsTransfer({ sections: cloudCredentialSections(() => mediaWithHf, () => gemini), clock: { now: () => new Date("2026-10-16T00:00:00Z") }, passwordScrypt: FAST });
   const routes = { getSession: async () => ({ user: { id: "owner" } }), transfer };
   return {
     media,

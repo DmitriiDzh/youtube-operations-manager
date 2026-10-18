@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createKeyFile, type KeyFileAccess } from "@/lib/device-key-file";
-import type { StoredGeminiCredentials } from "@/lib/db";
+import { createDeviceSecrets, createMemoryDeviceSecretStore } from "@/lib/device-secrets";
 import { createGeminiMediaServices, DomainError, type GeminiMediaDeps, type GeminiStore } from "@/lib/gemini-media";
 import { createGeminiKeyTestPostHandler } from "./key/test/route";
 import { createGeminiKeyDeleteHandler, createGeminiKeyPutHandler } from "./key/route";
@@ -15,7 +15,6 @@ import type { GeminiRouteDeps } from "./shared";
 const KEY = "AIzaSySECRETSECRETSECRET0042";
 
 function deps(opts: { session?: boolean; googleRefuses?: boolean } = {}): GeminiRouteDeps {
-  let creds: StoredGeminiCredentials | null = null;
   let settings: string | null = null;
   let keyText: string | null = null;
   const access: KeyFileAccess = {
@@ -29,18 +28,6 @@ function deps(opts: { session?: boolean; googleRefuses?: boolean } = {}): Gemini
     randomBytes: (n) => Buffer.alloc(n, 3),
   };
   const store: GeminiStore = {
-    getCredentials: async () => creds,
-    upsertCredentials: async (input) => {
-      creds = { id: "default", ...input, updatedAt: new Date("2026-10-10T12:00:00Z") };
-    },
-    setCredentialsStatus: async (checked, input) => {
-      if (!creds || creds.ciphertext !== checked) return false;
-      creds = { ...creds, ...input };
-      return true;
-    },
-    clearCredentials: async () => {
-      creds = null;
-    },
     getSettingsJson: async () => settings,
     setSettingsJson: async (json) => {
       settings = json;
@@ -58,7 +45,8 @@ function deps(opts: { session?: boolean; googleRefuses?: boolean } = {}): Gemini
         if (opts.googleRefuses) throw new DomainError({ code: "gemini_key_invalid", message: "Google refused the API key (HTTP 400)", details: { outcome: "answered", status: 400 } });
       },
     } as unknown as GeminiMediaDeps["api"],
-    keyFile: createKeyFile(access, (detail) => new DomainError({ code: "encryption_key_not_configured", message: detail })),
+    // BL-199 (ADR 0042): the key lives in the shared device-secret store (in memory here, over this test's key file).
+    secret: createDeviceSecrets({ store: createMemoryDeviceSecretStore(), keyFile: createKeyFile(access, (detail) => new DomainError({ code: "encryption_key_not_configured", message: detail })) }).slot("gemini"),
     isGatewayEnabled: async () => true,
     clock: { now: () => new Date("2026-10-10T12:00:00Z") },
   } as unknown as GeminiMediaDeps);

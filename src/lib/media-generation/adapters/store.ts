@@ -1,18 +1,14 @@
 import {
-  clearStoredMediaCredentials,
   getMediaGatewayEnabled,
   getMediaGenerationSettingsJson,
   getMediaModelPullsJson,
   getMediaVolumeLockHolder,
   releaseMediaVolumeLock,
-  getStoredMediaCredentials,
   insertMediaControlEvent,
   setMediaGatewayEnabled,
   setMediaGenerationSettingsJson,
-  setStoredMediaCredentialsVerifiedAt,
   tryAcquireMediaVolumeLock,
   updateMediaModelPullsJson,
-  upsertStoredMediaCredentials,
 } from "@/lib/db";
 import type { MediaControlEvent, ModelPullStore } from "../models";
 import type { MediaGenerationStore } from "../services";
@@ -43,10 +39,6 @@ export function createModelPullStore(): ModelPullStore {
 
 export function createMediaGenerationStore(): MediaGenerationStore {
   return {
-    getCredentials: () => getStoredMediaCredentials(),
-    upsertCredentials: (input) => upsertStoredMediaCredentials(input),
-    setCredentialsVerifiedAt: (at) => setStoredMediaCredentialsVerifiedAt(at),
-    clearCredentials: () => clearStoredMediaCredentials(),
     getSettingsJson: () => getMediaGenerationSettingsJson(),
     setSettingsJson: (json) => setMediaGenerationSettingsJson(json),
     getGatewayEnabled: () => getMediaGatewayEnabled(),
