@@ -4387,3 +4387,27 @@ Plan: `docs/roadmap/plans/VIDEO_COST_PLAN.md` §2 stages 2-4 (criteria 3-9). Sch
   total chip per video from its own fetch, `video-cost-dialog.tsx`, `video-costs-backfill.tsx` in its own `FeatureErrorBoundary`).
 - **Limits.** RunPod jobs are `pending` (0) until their session ends; a published video's lines leave the reports after 120 days
   (`Vn_cost.json` keeps them); runs that left every database are lost (RISK-130).
+
+## BL-199 / BL-134 — one store for this computer's secrets; gated Hugging Face pulls (ADR 0042)
+
+- **Store.** `src/lib/device-secrets/` owns every secret typed into Settings on this computer: the RunPod/S3 set, the Gemini key and
+  the Hugging Face read token.
+  - Storage: one table `device_secrets` (schema v96, device-local, never synced or snapshotted) and one key file
+    `device-secrets.key` (0600, created on the first save).
+  - Each feature module gets a slot (`state`, `info`, `read`, `write`, `setStatus` compare-and-set on `revision`, `clear`) and never
+    sees the key or the ciphertext.
+  - "Configured" means a row and a readable key file. Clearing removes one row; the shared file goes only when it is unusable.
+- **Migration.** Done at runtime, idempotent, without re-entry: on a slot's first use its legacy row (`media_credentials` /
+  `gemini_credentials`) is decrypted with its legacy file, written, read back and compared, then marked moved
+  (`app_settings` `device_secret_migrated:<name>`). Legacy tables and files are kept (RISK-131). The migration was verified on a
+  scratch copy of the owner's real database: both secrets moved with the same values and hints.
+- **Session tokens.** ComfyUI proxy tokens are sealed with the store's key. Opening falls back to the legacy media key for sessions
+  opened before the update.
+- **Hugging Face.**
+  - The token is checked with `whoami` before it is saved.
+  - It is sent only to huggingface.co, as a Bearer header from the media gateway's HF child.
+  - The pull pod gets it in `env.HF_TOKEN` (masked by `redactPodEnv`), never in `cmd`; it is never on the `ModelPull` record or in
+    any API/MCP output.
+  - Gated without a token: `hf_token_missing`; token refused: `hf_token_invalid`; 403 with a valid token: `hf_gate_not_accepted`.
+  - The licence comes from the repo card's `license` / `license_link`.
+

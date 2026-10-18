@@ -2025,3 +2025,17 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Re-evaluate:** if the owner sees `≈` on most RunPod lines (events lost), or wants costs of videos published outside the app kept
   longer (a file written for any published video, or a longer window).
 - **Gate(s):** none. **Status:** open.
+
+## RISK-131 — One key file now protects every typed secret; the legacy key files stay while old sessions may need them — OPEN, 2026-10-18
+
+- **What:** BL-199 / ADR 0042. (1) `device-secrets.key` encrypts the RunPod/S3 set, the Gemini key and the Hugging Face token, so
+  losing or corrupting it loses all of them at once (RISK-106's "no rotation or backup" now covers all three); they are re-entered or
+  imported from a `.ytmkeys` file. (2) The pre-BL-199 `media-generation.key` stays because ComfyUI proxy tokens of sessions opened
+  before the update are sealed with it (opened through the fallback); `gemini-media.key` and the legacy rows in `media_credentials` /
+  `gemini_credentials` stay inert (never read again once moved, never dropped: `resolveMergedNumberingCollision` relies on
+  `media_credentials`). (3) A legacy key file missing at migration time means that one secret is entered again.
+- **Bounds:** device-local only, never synced or snapshotted; the legacy copies are encrypted with their own device keys.
+- **Re-evaluate:** when no session from before the update can remain (then the legacy key file and rows can be deleted by a cleanup
+  task), or with RISK-106's rotation.
+- **Gate(s):** none. **Status:** open.
+
