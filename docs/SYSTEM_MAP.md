@@ -963,7 +963,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   - Общий запуск: `useBatchSendRunner` (`send-approved-button.tsx`).
 - Схема не менялась.
 
-### 2.9av Одно хранилище секретов компьютера и скачивание моделей из закрытых репозиториев Hugging Face (BL-134 / BL-199, FO-REQ-0028, `docs/roadmap/plans/DEVICE_SECRETS_PLAN.md`, ADR 0042) — **IMPLEMENTED** на `feature/bl-134-device-secrets` (не влито в `dev`)
+### 2.9av Одно хранилище секретов компьютера и скачивание моделей из закрытых репозиториев Hugging Face (BL-134 / BL-199, FO-REQ-0028, `docs/roadmap/plans/DEVICE_SECRETS_PLAN.md`, ADR 0042) — **IMPLEMENTED** (влито в `dev` 2026-10-18, 24d45d67)
 
 - **`src/lib/device-secrets/`** — единственный владелец введённых в Настройках секретов этого компьютера.
   - Таблица `device_secrets` (v96) и файл `device-secrets.key` (0600).
