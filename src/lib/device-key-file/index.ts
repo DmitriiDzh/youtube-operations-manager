@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { readFile, rm } from "node:fs/promises";
+import { link, readFile, rm, writeFile } from "node:fs/promises";
 import { writeJsonFileAtomic } from "@/lib/atomic-json-file";
 
 // ---------------------------------------------------------------------------
@@ -19,6 +19,11 @@ export type KeyFileAccess = {
   write(content: KeyFileContent): Promise<void>;
   /** Deletes the file; a missing file is fine. */
   remove(): Promise<void>;
+  /**
+   * FO-MSG-0018: writes the content only if NO file exists yet, all or nothing; `false` when one already exists (another caller
+   * created it first). Absent = this access cannot do it atomically (in-memory fakes): `write` is used, guarded in-process only.
+   */
+  createExclusive?(content: KeyFileContent): Promise<boolean>;
   randomBytes(size: number): Buffer;
 };
 
@@ -43,6 +48,7 @@ export function createKeyFile(access: KeyFileAccess, invalid: (detail: string) =
     const text = await access.read();
     return text === null ? null : parseKeyFile(text, invalid);
   }
+  let creating: Promise<Buffer> | null = null;
   // Plain closures, no `this`: the methods keep working when passed detached (review round 11).
   return {
     readKey,
@@ -52,13 +58,26 @@ export function createKeyFile(access: KeyFileAccess, invalid: (detail: string) =
       await access.remove();
     },
 
-    /** Reads the key, creating it on first use -- for the operator's "save credentials" only. */
-    async readOrCreateKey(): Promise<Buffer> {
-      const existing = await readKey();
-      if (existing) return existing;
-      const key = access.randomBytes(KEY_BYTES);
-      await access.write({ version: 1, key: key.toString("base64") });
-      return key;
+    /**
+     * Reads the key, creating it on first use. FO-MSG-0018 (2026-10-18): two first uses at once (the RunPod and the Gemini secret
+     * moving at the same start) each created a key and the last write won, leaving one secret sealed with a key nobody has. Now
+     * one creation runs at a time in this process, the file is created only if absent, and the key returned is always the one in
+     * the file.
+     */
+    readOrCreateKey(): Promise<Buffer> {
+      creating ??= (async () => {
+        const existing = await readKey();
+        if (existing) return existing;
+        const content: KeyFileContent = { version: 1, key: access.randomBytes(KEY_BYTES).toString("base64") };
+        if (access.createExclusive) await access.createExclusive(content);
+        else await access.write(content);
+        const stored = await readKey();
+        if (!stored) throw invalid("the key file could not be created");
+        return stored;
+      })().finally(() => {
+        creating = null;
+      });
+      return creating;
     },
   };
 }
@@ -81,6 +100,21 @@ export function createKeyFileFsAccess(filePath: string): KeyFileAccess {
     },
     async remove() {
       await rm(filePath, { force: true });
+    },
+    async createExclusive(content) {
+      // A private temp file, then a hard link to the final name: link() fails with EEXIST if the name exists, and the final file
+      // is never half-written -- also across processes (the CLI next to the server).
+      const temp = `${filePath}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+      await writeFile(temp, JSON.stringify(content), { mode: 0o600, flag: "wx" });
+      try {
+        await link(temp, filePath);
+        return true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+        throw error;
+      } finally {
+        await rm(temp, { force: true });
+      }
     },
     randomBytes: (size) => randomBytes(size),
   };

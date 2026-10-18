@@ -215,9 +215,10 @@ export function createRuntimeServices(deps: RuntimeDeps) {
     /** Every profile on the volume, newest first, with its build / test state and whether it is the active one. */
     async listRuntimes(): Promise<{ runtimes: RuntimeView[]; activeRuntimeId: string | null }> {
       const [s3, settings, building] = await Promise.all([deps.s3(), deps.getSettings(), deps.buildingRuntimeIds?.() ?? new Set<string>()]);
-      const ids = (await s3.listAllObjects(RUNTIMES_PREFIX))
-        .map((o) => new RegExp(`^${RUNTIMES_PREFIX}([^/]+)/runtime\\.json$`).exec(o.key)?.[1])
-        .filter((id): id is string => Boolean(id && RUNTIME_ID_PATTERN.test(id)));
+      // FO-MSG-0019: only the folders one level down -- never the ~20 000 files of each runtime's venv (that listing timed out).
+      const ids = (await s3.listFolders(RUNTIMES_PREFIX))
+        .map((folder) => folder.slice(RUNTIMES_PREFIX.length).replace(/\/$/, ""))
+        .filter((id) => RUNTIME_ID_PATTERN.test(id));
       const profiles = (await Promise.all(ids.map((id) => readProfile(s3, id)))).filter((p): p is RuntimeProfile => p !== null);
       const views = await Promise.all(profiles.map((p) => view(s3, p, settings, building).then(stripDetail)));
       views.sort((a, b) => b.createdAt.localeCompare(a.createdAt));

@@ -16,9 +16,15 @@ function harness(settings: Partial<MediaSettings> = {}) {
   const objects = new Map<string, string>();
   const events: MediaControlEvent[] = [];
   const resolved: string[] = [];
+  const folderListings: string[] = [];
   const s3 = {
     async listAllObjects(prefix: string) {
       return [...objects.keys()].filter((k) => k.startsWith(prefix)).map((key) => ({ key, size: 1, lastModified: null, etag: null }));
+    },
+    // Like S3 with delimiter "/": the distinct "folders" one level under the prefix.
+    async listFolders(prefix: string) {
+      folderListings.push(prefix);
+      return [...new Set([...objects.keys()].filter((k) => k.startsWith(prefix) && k.slice(prefix.length).includes("/")).map((k) => prefix + k.slice(prefix.length).split("/")[0] + "/"))];
     },
     async getObjectText(key: string) {
       return objects.get(key) ?? null;
@@ -43,7 +49,7 @@ function harness(settings: Partial<MediaSettings> = {}) {
     events: { record: async (e) => void events.push(e) },
     clock: { now: () => new Date("2026-10-18T15:00:00Z") },
   });
-  return { services, objects, events, resolved };
+  return { services, objects, events, resolved, folderListings };
 }
 
 const valid = (overrides: Record<string, unknown> = {}) => ({
@@ -203,4 +209,15 @@ test("AC-RT-06: a test of chosen templates only does not make a runtime activata
   assert.doesNotThrow(() => assertActiveRuntimeUnchanged({ maxUsdPerDay: 5 }, "a-runtime"));
   assert.throws(() => assertActiveRuntimeUnchanged({ activeRuntimeId: "other" }, "a-runtime"), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
   assert.throws(() => assertActiveRuntimeUnchanged({ activeRuntimeId: null }, "a-runtime"), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
+});
+
+// FO-MSG-0019 (2026-10-18): the listing timed out walking every venv file; it must read only the folders and the profile files.
+test("FO-MSG-0019: listRuntimes lists only the runtime folders (never the venv files) and skips folders without a profile", async () => {
+  const h = harness();
+  await h.services.createRuntime(valid());
+  for (let i = 0; i < 50; i++) h.objects.set(`ytm/runtimes/comfy-0410-flux3/venv/lib/f${i}.py`, "x");
+  h.objects.set("ytm/runtimes/probe1/venv/bin/python", "x");
+  const list = await h.services.listRuntimes();
+  assert.deepEqual(list.runtimes.map((r) => r.runtimeId), ["comfy-0410-flux3"]);
+  assert.deepEqual(h.folderListings, ["ytm/runtimes/"]);
 });

@@ -4401,6 +4401,14 @@ Plan: `docs/roadmap/plans/VIDEO_COST_PLAN.md` §2 stages 2-4 (criteria 3-9). Sch
   `gemini_credentials`) is decrypted with its legacy file, written, read back and compared, then marked moved
   (`app_settings` `device_secret_migrated:<name>`). Legacy tables and files are kept (RISK-131). The migration was verified on a
   scratch copy of the owner's real database: both secrets moved with the same values and hints.
+- **Key file creation (FO-MSG-0018 fix).** On the Mac's first v96 start, the RunPod set and the Gemini key moved at the same moment.
+  Each move created its own `device-secrets.key`, and the last write won. The Gemini row was left sealed with a key nobody had, so
+  the status read "set" while jobs failed `gemini_key_missing`; the owner re-entered the key.
+  - `readOrCreateKey` now runs one creation at a time per process.
+  - The file is created only if absent (temp file + `link`, also across processes), and the key returned is the one read back from
+    the file.
+  - A move is verified with the key read from the file, not the one in memory; a failed check deletes the moved row and leaves the
+    legacy row unmarked.
 - **Session tokens.** ComfyUI proxy tokens are sealed with the store's key. Opening falls back to the legacy media key for sessions
   opened before the update.
 - **Hugging Face.**
@@ -4438,6 +4446,9 @@ Plan: `docs/roadmap/plans/VIDEO_COST_PLAN.md` §2 stages 2-4 (criteria 3-9). Sch
   its factory limits, the owner's approved as the owner) with `maxUsd = runtimeTestMaxUsd` and `maxMinutes = min(15, floor(cap × 60 /
   price))`, at least 3 → `/object_info` (`getNodeTypes`, names only) and `/system_stats` → each template's `class_type` values against
   the list → the session stopped → `test.json`. A held session fails the test and is withdrawn.
+- **Listing (FO-MSG-0019 fix).** `listRuntimes` reads only the folders under `ytm/runtimes/` (S3 ListObjectsV2 with delimiter `/`,
+  `listFolders`, checked on RunPod 2026-10-18: 161 ms). It then reads each profile file and never lists the ~20 000 files of a venv;
+  the old full listing timed out.
 - **Activation.** `setActiveRuntime` (core) needs status `tested`; the Operator also needs `factoryMayActivateRuntime`. A plain
   settings save that changes `activeRuntimeId` is refused, while the sync applies a peer's value directly. Rollback is activating
   the previous id or `null`.

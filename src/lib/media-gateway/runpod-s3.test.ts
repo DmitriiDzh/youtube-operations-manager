@@ -55,6 +55,7 @@ test("listObjects is a signed path-style ListObjectsV2 on the volume bucket, par
   const headers = calls[0].init.headers as Record<string, string>;
   assert.match(headers.authorization, /^AWS4-HMAC-SHA256 Credential=user_abc\/20261005\/EU-RO-1\/s3\/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=[0-9a-f]{64}$/);
   assert.deepEqual(page, {
+    prefixes: [], // FO-MSG-0019: CommonPrefixes, none without a delimiter
     isTruncated: true,
     nextContinuationToken: "tok&1",
     objects: [
@@ -137,6 +138,7 @@ test("putObject refuses a body over the 500 MB single-PUT limit without calling 
 test("parseListObjectsXml on an empty listing", () => {
   assert.deepEqual(parseListObjectsXml("<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>"), {
     objects: [],
+    prefixes: [],
     isTruncated: false,
     nextContinuationToken: null,
   });
@@ -290,4 +292,12 @@ test("copyObjectFrom fails on an HTTP error and on a 200 response with an <Error
   await assert.rejects(late.copyObjectFrom("srcvol", "a", "b"), (e: unknown) => isDomainError(e) && e.code === "runpod_s3_unavailable");
   const denied = createRunpodS3Client(CONFIG, { fetchImpl: fakeFetch(() => new Response("", { status: 403 })).fetchImpl, authorize: noAuth });
   await assert.rejects(denied.copyObjectFrom("srcvol", "a", "b"), (e: unknown) => isDomainError(e) && e.code === "media_credentials_invalid");
+});
+
+// FO-MSG-0019: ListObjectsV2 with delimiter "/" returns the folders one level down as CommonPrefixes (AWS S3 API reference).
+test("parseListObjectsXml reads CommonPrefixes as folders", () => {
+  const xml = `<ListBucketResult><Prefix>ytm/runtimes/</Prefix><Delimiter>/</Delimiter><IsTruncated>false</IsTruncated><CommonPrefixes><Prefix>ytm/runtimes/a-runtime/</Prefix></CommonPrefixes><CommonPrefixes><Prefix>ytm/runtimes/probe1/</Prefix></CommonPrefixes></ListBucketResult>`;
+  const parsed = parseListObjectsXml(xml);
+  assert.deepEqual(parsed.prefixes, ["ytm/runtimes/a-runtime/", "ytm/runtimes/probe1/"]);
+  assert.deepEqual(parsed.objects, []);
 });

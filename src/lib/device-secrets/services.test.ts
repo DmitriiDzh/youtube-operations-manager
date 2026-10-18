@@ -194,3 +194,16 @@ test("review: a legacy row waiting while this store's key file is unusable is re
   await secrets.slot("runpod").write('{"runpodApiKey":"rpa_y"}', { hints: {} });
   assert.equal(await secrets.slot("runpod").state(), "set");
 });
+
+// FO-MSG-0018 (2026-10-18, live): the RunPod set and the Gemini key moved at the same first start; both created a key file and one
+// secret was left sealed with a key nobody had (status said "set", jobs said "cannot be read"). Both must read back after a
+// concurrent first use.
+test("FO-MSG-0018: two legacy secrets moving at once on a computer with no key file yet both read back", async () => {
+  const source = (plaintext: string, hints: Record<string, string>): LegacySecretSource => ({ read: async () => ({ plaintext, hints, status: null, verifiedAt: null }) });
+  const { secrets } = await build({ legacy: { runpod: source('{"runpodApiKey":"rp"}', {}), gemini: source("AIza-legacy", { keyHint: "acy0" }) } });
+  const [runpod, gemini] = await Promise.all([secrets.slot("runpod").read(), secrets.slot("gemini").read()]);
+  assert.equal(runpod, '{"runpodApiKey":"rp"}');
+  assert.equal(gemini, "AIza-legacy");
+  assert.equal(await secrets.slot("gemini").read(), "AIza-legacy");
+  assert.equal(await secrets.slot("runpod").read(), '{"runpodApiKey":"rp"}');
+});
