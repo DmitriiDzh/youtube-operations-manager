@@ -104,7 +104,9 @@ function computer(opts: { runpodAccepts?: boolean; runpodError?: DomainError; go
     clock: { now: () => new Date("2026-10-16T00:00:00Z") },
   } as unknown as GeminiMediaDeps);
 
-  const transfer = createCloudCredentialsTransfer({ sections: cloudCredentialSections(() => media, () => gemini), clock: { now: () => new Date("2026-10-16T00:00:00Z") }, passwordScrypt: FAST });
+  // BL-134 added a Hugging Face section owned by media-generation's core; this computer stores no HF token here.
+  const mediaWithHf = { ...media, exportHfTokenForTransfer: async () => null, getHfToken: async () => ({ state: "none" as const, user: null, status: null, verifiedAt: null, updatedAt: null }), setHfToken: async () => { throw new Error("no HF import in this test"); } };
+  const transfer = createCloudCredentialsTransfer({ sections: cloudCredentialSections(() => mediaWithHf, () => gemini), clock: { now: () => new Date("2026-10-16T00:00:00Z") }, passwordScrypt: FAST });
   const routes = { getSession: async () => ({ user: { id: "owner" } }), transfer };
   return {
     media,

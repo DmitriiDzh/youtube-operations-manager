@@ -395,6 +395,9 @@ export type MediaModelEntry = {
   bytes: number;
   lastModified: string | null;
   sha256: string | null;
+  /** BL-134: the licence the pull recorded from the repo card (null when unknown or none). */
+  licenseId: string | null;
+  licenseUrl: string | null;
   usedBy: Array<{ templateId: string; version: number; source: "factory" | "owner" | "registry" }>;
 };
 

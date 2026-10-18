@@ -90,6 +90,9 @@ export type ModelPull = {
   /** The Hub's size, known before the pod started. */
   expectedBytes?: number | null;
   requestedBy?: PullActor;
+  /** BL-134: the repo card's licence id and link at the pulled commit (null when the card names none). */
+  licenseId?: string | null;
+  licenseUrl?: string | null;
 };
 
 export type PullActor = "owner" | "factory";
@@ -110,7 +113,12 @@ export type ModelPullStore = {
 export type ModelServiceDependencies = {
   store: ModelPullStore;
   /** The Hugging Face Hub metadata read (`src/lib/media-gateway/huggingface.ts`), done before any pod is created. */
-  hub: { getFileInfo(input: { repoId: string; file: string; revision?: string }): Promise<HuggingFaceFileInfo> };
+  hub: { getFileInfo(input: { repoId: string; file: string; revision?: string; token?: string | null }): Promise<HuggingFaceFileInfo> };
+  /**
+   * BL-134 (FO-REQ-0028, ADR 0042): this computer's Hugging Face read token, or null when none is stored. Sent only to the Hub
+   * (metadata) and to the pull pod's env (`HF_TOKEN`, masked in every pod read); never recorded on the pull.
+   */
+  hfToken?: () => Promise<string | null>;
   /** Audit sink; a failure to record never fails the action itself (it is logged). */
   events: { record(event: MediaControlEvent): Promise<void> };
   /** BL-132: which templates use which model (the job services' `modelUsage`); absent = nothing known, registry unavailable. */
@@ -392,13 +400,21 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
     async listModelsWithUsage(): Promise<{ models: MediaModelEntry[]; registry: MediaModelUsage["registry"]; registryError: string | null }> {
       const [files, usage, pulls] = await Promise.all([listModelFiles(), usageOrUnknown(), readPulls()]);
       const hashes = new Map<string, string>();
-      for (const pull of pulls) if (pull.status === "done" && pull.actualSha256) hashes.set(pull.expectedKey, pull.actualSha256);
+      const licenses = new Map<string, { licenseId: string | null; licenseUrl: string | null }>();
+      for (const pull of pulls) {
+        if (pull.status !== "done") continue;
+        if (pull.actualSha256) hashes.set(pull.expectedKey, pull.actualSha256);
+        // BL-134: the licence recorded by the pull that brought this file (pulls before BL-134 recorded none).
+        if (pull.licenseId !== undefined || pull.licenseUrl !== undefined) licenses.set(pull.expectedKey, { licenseId: pull.licenseId ?? null, licenseUrl: pull.licenseUrl ?? null });
+      }
       return {
         registry: usage.registry,
         registryError: usage.registryError,
         models: files.map((f) => ({
           ...f,
           sha256: hashes.get(f.key) ?? null,
+          licenseId: licenses.get(f.key)?.licenseId ?? null,
+          licenseUrl: licenses.get(f.key)?.licenseUrl ?? null,
           usedBy: usage.users.filter((u) => u.key === f.key).map(({ templateId, version, source }) => ({ templateId, version, source })),
         })),
       };
@@ -481,7 +497,8 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
       throw new DomainError({ code: "media_session_conflict", message: "A model pull is already running; wait for it to finish." });
     }
     // BL-132 pre-check (AC-FM-01): everything that can refuse the pull is asked BEFORE any pod exists -- no cost.
-    const hub = await deps.hub.getFileInfo({ repoId: parsed.repoId, file: parsed.file, revision: parsed.revision });
+    const hfToken = deps.hfToken ? await deps.hfToken() : null;
+    const hub = await deps.hub.getFileInfo({ repoId: parsed.repoId, file: parsed.file, revision: parsed.revision, token: hfToken });
     if (hub.sha256 && parsed.sha256 && hub.sha256 !== parsed.sha256) {
       throw new DomainError({
         code: "media_model_hash_mismatch",
@@ -548,6 +565,8 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
       actualSha256: null,
       expectedBytes: hub.bytes,
       requestedBy,
+      licenseId: hub.licenseId,
+      licenseUrl: hub.licenseUrl,
     };
     await savePull(reserved);
     let pod: { id: string };
@@ -560,6 +579,8 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
         dataCenterId: settings.datacenterId,
         mounts: { network: [{ volumeId: settings.networkVolumeId, path: "/workspace" }] },
         cmd: ["bash", "-lc", buildPullCommand({ pullId, repoId: parsed.repoId, file: parsed.file, folder: parsed.folder, targetName: parsed.targetName, commitSha: hub.commitSha, expectedSha256 })],
+        // BL-134: `hf download` reads HF_TOKEN from the env -- never the command line, which RunPod shows in the pod's details.
+        ...(hfToken ? { env: { HF_TOKEN: hfToken } } : {}),
         startSsh: false,
       });
     } catch (error) {

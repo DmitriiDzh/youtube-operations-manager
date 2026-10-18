@@ -8,8 +8,9 @@ import { asNumber, asRecord, asString } from "./json";
 // Hub HTTP API: the metadata a model pull is checked against BEFORE any pod is created (no cost). Two reads,
 // the same ones `huggingface_hub` makes: `model_info` at a revision (resolves it to a commit, tells gated /
 // private) and `paths-info` at that commit (the file's size and, for an LFS file, its SHA-256 = `lfs.oid`).
-// Public repos only in this phase: no token is ever sent (gated repos with the owner's token are BL-134).
-// The downloads themselves happen on the pull pod (`hf download`), never through this process.
+// BL-134 (FO-REQ-0028, ADR 0042): with the owner's read token (passed per call, never stored here) a gated repo can be read
+// too; the token is sent only to this base URL, as a Bearer header, and never appears in an error or its details.
+// The downloads themselves happen on the pull pod (`hf download`, token in its env), never through this process.
 // ---------------------------------------------------------------------------
 
 export const HUGGINGFACE_BASE_URL = "https://huggingface.co";
@@ -25,6 +26,10 @@ export type HuggingFaceFileInfo = {
   bytes: number;
   /** The Hub's SHA-256 of an LFS file; `null` for a file stored in git (no declared hash). */
   sha256: string | null;
+  /** BL-134: the repo card's licence id (`cardData.license`), or null. */
+  licenseId: string | null;
+  /** BL-134: the card's licence link at this commit, else the repo page when a licence is named; null without a licence. */
+  licenseUrl: string | null;
 };
 
 type Fetch = typeof fetch;
@@ -34,13 +39,17 @@ export function createHuggingFaceClient(args: { fetchImpl?: Fetch; authorize?: A
   const authorize = args.authorize ?? assertMediaGatewayAuthorized;
   const baseUrl = (args.baseUrl ?? HUGGINGFACE_BASE_URL).replace(/\/$/, "");
 
-  async function request(method: string, path: string, context: Record<string, unknown>, form?: string): Promise<unknown> {
+  async function request(method: string, path: string, context: Record<string, unknown>, form?: string, token?: string | null): Promise<unknown> {
     await authorize("huggingface_api");
     const response = await jsonRequest({
       fetchImpl,
       url: `${baseUrl}${path}`,
       method,
-      headers: { accept: "application/json", ...(form === undefined ? {} : { "content-type": "application/x-www-form-urlencoded" }) },
+      headers: {
+        accept: "application/json",
+        ...(form === undefined ? {} : { "content-type": "application/x-www-form-urlencoded" }),
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+      },
       body: form,
       timeoutMs: REQUEST_TIMEOUT_MS,
       unavailable: (stage, detail, status) =>
@@ -51,6 +60,18 @@ export function createHuggingFaceClient(args: { fetchImpl?: Fetch; authorize?: A
         }),
     });
     const detail = asString(asRecord(response.body).error);
+    const repoId = typeof context.repoId === "string" ? context.repoId : null;
+    if (token && response.status === 401) {
+      throw new DomainError({ code: "hf_token_invalid", message: "Hugging Face did not accept the stored token (HTTP 401). Check it in Settings → Cloud APIs or enter a new read token.", details: { ...context, status: 401 } });
+    }
+    if (token && response.status === 403) {
+      const repoUrl = repoId ? `${baseUrl}/${repoId}` : null;
+      throw new DomainError({
+        code: "hf_gate_not_accepted",
+        message: `Hugging Face refused this file with the stored token (HTTP 403): accept the repository's conditions on ${repoUrl ?? "its page"} with the same account, then pull again.`,
+        details: { ...context, status: 403, repoUrl },
+      });
+    }
     if (response.status === 401 || response.status === 403) {
       // Unauthenticated, the Hub answers 401 for a repository that does not exist too (independent review): it cannot be
       // told apart from a private one, so the message names both.
@@ -68,18 +89,41 @@ export function createHuggingFaceClient(args: { fetchImpl?: Fetch; authorize?: A
   const repoPath = (repoId: string) => repoId.split("/").map(encodeURIComponent).join("/");
 
   return {
-    async getFileInfo(input: { repoId: string; file: string; revision?: string }): Promise<HuggingFaceFileInfo> {
+    /** BL-134: who a read token belongs to (`/api/whoami-v2`); a refused token is `hf_token_invalid`. */
+    async whoami(token: string): Promise<{ name: string }> {
+      const body = asRecord(await request("GET", "/api/whoami-v2", { check: "whoami" }, undefined, token));
+      const name = asString(body.name);
+      if (!name) throw new DomainError({ code: "huggingface_unavailable", message: "Hugging Face did not report the token's user.", details: { check: "whoami" } });
+      return { name };
+    },
+
+    async getFileInfo(input: { repoId: string; file: string; revision?: string; token?: string | null }): Promise<HuggingFaceFileInfo> {
       const revision = input.revision ?? "main";
       const context = { repoId: input.repoId, file: input.file, revision };
-      const info = asRecord(await request("GET", `/api/models/${repoPath(input.repoId)}/revision/${encodeURIComponent(revision)}`, context));
-      // `gated` is false, "auto" or "manual"; anything but false needs an accepted licence + token.
-      if ((info.gated !== undefined && info.gated !== false) || info.private === true) {
-        throw new DomainError({ code: "media_model_gated", message: "The repository is gated or private; only public repositories can be pulled (gated repos: BL-134).", details: { ...context, gated: info.gated ?? null, private: info.private ?? null } });
+      const token = input.token ?? null;
+      const info = asRecord(await request("GET", `/api/models/${repoPath(input.repoId)}/revision/${encodeURIComponent(revision)}`, context, undefined, token));
+      // `gated` is false, "auto" or "manual"; anything but false needs an accepted licence + token (BL-134).
+      if (((info.gated !== undefined && info.gated !== false) || info.private === true) && !token) {
+        throw new DomainError({
+          code: "hf_token_missing",
+          message: `${input.repoId} is gated or private on Hugging Face: enter a Hugging Face read token in Settings → Cloud APIs (and accept the repository's conditions) to pull from it.`,
+          details: { ...context, gated: info.gated ?? null, private: info.private ?? null, repoUrl: `${baseUrl}/${input.repoId}` },
+        });
       }
       const commitSha = asString(info.sha);
       if (!commitSha) throw new DomainError({ code: "huggingface_unavailable", message: "Hugging Face did not report the revision's commit.", details: context });
+      const card = asRecord(info.cardData);
+      const licenseId = asString(card.license);
+      const licenseLink = asString(card.license_link);
+      const licenseUrl = licenseLink
+        ? /^https?:\/\//.test(licenseLink)
+          ? licenseLink
+          : `${baseUrl}/${input.repoId}/blob/${commitSha}/${licenseLink.replace(/^\.?\//, "")}`
+        : licenseId
+          ? `${baseUrl}/${input.repoId}`
+          : null;
       const form = new URLSearchParams([["paths", input.file], ["expand", "false"]]).toString();
-      const entries = await request("POST", `/api/models/${repoPath(input.repoId)}/paths-info/${encodeURIComponent(commitSha)}`, context, form);
+      const entries = await request("POST", `/api/models/${repoPath(input.repoId)}/paths-info/${encodeURIComponent(commitSha)}`, context, form, token);
       const entry = (Array.isArray(entries) ? entries : []).map(asRecord).find((e) => asString(e.path) === input.file && asString(e.type) === "file");
       if (!entry) throw new DomainError({ code: "media_model_not_found", message: `${input.file} is not a file in ${input.repoId}@${revision}.`, details: context });
       const lfs = entry.lfs === undefined || entry.lfs === null ? null : asRecord(entry.lfs);
@@ -91,6 +135,8 @@ export function createHuggingFaceClient(args: { fetchImpl?: Fetch; authorize?: A
         path: input.file,
         bytes: asNumber(lfs?.size) ?? asNumber(entry.size) ?? 0,
         sha256: sha256 && /^[0-9a-f]{64}$/.test(sha256) ? sha256 : null,
+        licenseId: licenseId ?? null,
+        licenseUrl,
       };
     },
   };

@@ -77,7 +77,13 @@ export function createCloudCredentialsTransfer(deps: CloudCredentialsTransferDep
           version: 1,
           createdAt: deps.clock.now().toISOString(),
           sections,
-          hints: { runpodKeyPrefix: hints.runpodKeyPrefix ?? null, s3AccessKeyId: hints.s3AccessKeyId ?? null, geminiKeyHint: hints.geminiKeyHint ?? null },
+          hints: {
+            runpodKeyPrefix: hints.runpodKeyPrefix ?? null,
+            s3AccessKeyId: hints.s3AccessKeyId ?? null,
+            geminiKeyHint: hints.geminiKeyHint ?? null,
+            // BL-134: only when the file carries a Hugging Face token (files without one keep their earlier shape).
+            ...(hints.hfUser ? { hfUser: hints.hfUser } : {}),
+          },
           encrypted,
         },
         skipped,

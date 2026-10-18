@@ -76,7 +76,12 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 // BL-180 (owner, Telegram msg 2902): 1.21.0 -- the three Veo 3.1 previews (veo-3.1-generate-preview, -fast-, -lite-) are removed
 // from the Gemini catalog: factory_gemini_get_status no longer lists them and factory_gemini_create_job refuses them
 // (gemini_invalid_params, field model). The only video model is gemini-omni-1.1-flash. Not additive: a Veo create now fails.
-export const FACTORY_API_VERSION = "1.21.0";
+// BL-134 (FO-REQ-0028, ADR 0042): 1.22.0 -- factory_media_pull_model can pull from gated/private Hugging Face repos with the
+// owner's read token stored on this computer (never readable through the API): new errors hf_token_missing (a gated repo, no
+// token), hf_token_invalid (Hugging Face refused the token), hf_gate_not_accepted (details.repoUrl: accept the conditions there);
+// a pull and factory_media_list_models show licenseId / licenseUrl from the repo card; factory_media_get_settings adds
+// settings.hfToken "set" | "not set". Additive.
+export const FACTORY_API_VERSION = "1.22.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -546,7 +551,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_media_pull_model",
     {
       description:
-        "Put one model file from a PUBLIC Hugging Face repository on the network volume: { repoId, file, folder, revision?, sha256, targetName? }. sha256 is REQUIRED. The file lands at models/<folder>/<targetName>; targetName defaults to the base name of file (the repo's sub-folders are dropped: file 'split_files/vae/x.safetensors' with folder 'vae' -> models/vae/x.safetensors). Give targetName (one file name: letters, digits, '.', '_', '+', '-') when that key is taken, e.g. two repos' model.safetensors. Before any pod starts the file is checked on Hugging Face (exists, not gated, its declared SHA-256 equals yours, fits in the free space); then a small CPU pod downloads that exact commit, hashes it and moves it into place only if the hash matches (otherwise nothing is left). Refused while GPU sessions use the volume (media_session_conflict) or another pull runs; an existing file is never overwritten. Returns { pull } with expectedBytes; track it with factory_media_get_pull. Costs a few cents of CPU time plus storage. Recorded as requested by the Factory Operator.",
+        "Put one model file from a Hugging Face repository on the network volume (public, or gated/private when the owner stored a read token on this computer and accepted the repo's conditions -- 1.22.0): { repoId, file, folder, revision?, sha256, targetName? }. sha256 is REQUIRED. The file lands at models/<folder>/<targetName>; targetName defaults to the base name of file (the repo's sub-folders are dropped: file 'split_files/vae/x.safetensors' with folder 'vae' -> models/vae/x.safetensors). Give targetName (one file name: letters, digits, '.', '_', '+', '-') when that key is taken, e.g. two repos' model.safetensors. Before any pod starts the file is checked on Hugging Face (exists, readable -- a gated repo without a token is hf_token_missing, a refused token hf_token_invalid, conditions not accepted hf_gate_not_accepted with details.repoUrl --, its declared SHA-256 equals yours, fits in the free space); then a small CPU pod downloads that exact commit, hashes it and moves it into place only if the hash matches (otherwise nothing is left). Refused while GPU sessions use the volume (media_session_conflict) or another pull runs; an existing file is never overwritten. Returns { pull } with expectedBytes and licenseId / licenseUrl from the repo card; track it with factory_media_get_pull. The token is never shown. Costs a few cents of CPU time plus storage. Recorded as requested by the Factory Operator.",
       inputSchema: pullModelInput,
     },
     async (args) => {
@@ -651,7 +656,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_media_get_settings",
     {
       description:
-        "Read the owner's factory settings (Servers → Setup) without a session: { settings: { factorySessionsEnabled, limits: { maxUsdPerSession, maxMinutesPerSession, maxUsdPerDay, maxUsdPerMonth }, spentOrReservedUsd: { today, thisMonth } (your sessions' spend plus what open ones may still spend up to their caps -- what a start is checked against), device: { maxUsdPerDay, spentTodayUsd (this computer only; a start also counts other computers on the same RunPod account), maxConcurrentSessions, idleMinutes }, gpu: { gpuTypeId, fallbackIds, minVramGb, maxPricePerHr, onDemandPricePerHr, cloudType, minCudaVersion (1.7.0: the lowest host CUDA a pod may land on, null = any), cudaVersions (1.9.0: the values a minimum may take, ascending) }, capacity: { retrySeconds, waitMinutes } } }. Days and months are this computer's local calendar. No secrets. Read-only, no RunPod call.",
+        "Read the owner's factory settings (Servers → Setup) without a session: { settings: { factorySessionsEnabled, limits: { maxUsdPerSession, maxMinutesPerSession, maxUsdPerDay, maxUsdPerMonth }, spentOrReservedUsd: { today, thisMonth } (your sessions' spend plus what open ones may still spend up to their caps -- what a start is checked against), device: { maxUsdPerDay, spentTodayUsd (this computer only; a start also counts other computers on the same RunPod account), maxConcurrentSessions, idleMinutes }, gpu: { gpuTypeId, fallbackIds, minVramGb, maxPricePerHr, onDemandPricePerHr, cloudType, minCudaVersion (1.7.0: the lowest host CUDA a pod may land on, null = any), cudaVersions (1.9.0: the values a minimum may take, ascending) }, capacity: { retrySeconds, waitMinutes }, hfToken: 'set' | 'not set' (1.22.0: a Hugging Face read token is stored and readable on this computer; never its value) } }. Days and months are this computer's local calendar. No secrets. Read-only, no RunPod call.",
       inputSchema: emptyInput,
     },
     async () => successResult(await deps.media.getSettings())

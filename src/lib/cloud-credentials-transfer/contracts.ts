@@ -9,7 +9,8 @@ export const CLOUD_CREDENTIALS_FILE_FORMAT = "ytm-cloud-credentials";
 export const LEGACY_RUNPOD_CREDENTIALS_FILE_FORMAT = "ytm-runpod-credentials";
 export const CREDENTIALS_EXPORT_MIN_PASSWORD = 12;
 
-export const CLOUD_CREDENTIAL_SECTIONS = ["runpod", "gemini"] as const;
+/** BL-134 (ADR 0042): the Hugging Face read token joins the file as its own section. */
+export const CLOUD_CREDENTIAL_SECTIONS = ["runpod", "gemini", "huggingface"] as const;
 export type CloudCredentialSection = (typeof CLOUD_CREDENTIAL_SECTIONS)[number];
 
 export const exportCloudCredentialsInputSchema = z
@@ -29,7 +30,13 @@ export const cloudCredentialsFileSchema = z
     /** Which sections the ciphertext holds, and their public hints (never a secret: a key prefix, the S3 key id, a key's last 4). */
     sections: z.array(z.enum(CLOUD_CREDENTIAL_SECTIONS)).min(1).max(CLOUD_CREDENTIAL_SECTIONS.length),
     hints: z
-      .object({ runpodKeyPrefix: z.string().max(64).nullable(), s3AccessKeyId: z.string().max(256).nullable(), geminiKeyHint: z.string().max(8).nullable() })
+      .object({
+        runpodKeyPrefix: z.string().max(64).nullable(),
+        s3AccessKeyId: z.string().max(256).nullable(),
+        geminiKeyHint: z.string().max(8).nullable(),
+        // BL-134: absent in files written before it.
+        hfUser: z.string().max(200).nullable().optional(),
+      })
       .strict(),
     encrypted: encryptedSchema,
   })
@@ -54,6 +61,7 @@ export const cloudCredentialsPayloadSchema = z
   .object({
     runpod: z.unknown().optional(),
     gemini: z.object({ apiKey: z.string().min(1).max(512) }).strict().optional(),
+    huggingface: z.object({ token: z.string().min(1).max(512) }).strict().optional(),
   })
   .strict();
 

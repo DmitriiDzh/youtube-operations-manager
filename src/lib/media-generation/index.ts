@@ -1,3 +1,5 @@
+import { getDeviceSecrets } from "@/lib/device-secrets";
+import { createHfTokenServices } from "./hf-token";
 import { randomBytes, randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { createAssetCatalogCore } from "@/lib/asset-catalog";
@@ -110,9 +112,13 @@ function buildCore(jobScheduling: JobScheduling) {
     log: (line) => console.warn(line),
   });
   baseRef = base;
+  // BL-134 (FO-REQ-0028, ADR 0042): the Hugging Face read token lives in the shared device-secret store.
+  const hub = createHuggingFaceClient();
+  const hfToken = createHfTokenServices({ slot: getDeviceSecrets().slot("huggingface"), hub });
   const models = createMediaModelServices({
     store: createModelPullStore(),
-    hub: createHuggingFaceClient(),
+    hub,
+    hfToken: () => hfToken.readHfToken(),
     events: createMediaControlEventSink(),
     // Late-bound: the job services (which own the templates) are built below.
     modelUsage: async () => {
@@ -400,6 +406,12 @@ function buildCore(jobScheduling: JobScheduling) {
 
   return {
     ...base,
+    getHfToken: hfToken.getHfToken,
+    setHfToken: hfToken.setHfToken,
+    testHfToken: hfToken.testHfToken,
+    clearHfToken: hfToken.clearHfToken,
+    /** BL-134: for the password-encrypted cloud-keys file only (`cloud-credentials-transfer`), never a route. */
+    exportHfTokenForTransfer: hfToken.readHfToken,
     ...sessions,
     ...jobs,
     ...models,

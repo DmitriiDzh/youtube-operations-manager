@@ -73,7 +73,12 @@ function createToolDeps(): FactoryToolDeps {
       // FO-REQ-0005.
       deleteTemplate: async (input) => createMediaGenerationCore().deleteWorkflowTemplate(input, { actor: "factory" }),
       adoptTemplate: async (input) => createMediaGenerationCore().adoptWorkflowTemplate(input),
-      getSettings: async () => ({ settings: await createMediaGenerationCore().getFactorySettings() }),
+      getSettings: async () => {
+        const core = createMediaGenerationCore();
+        const [settings, hf] = await Promise.all([core.getFactorySettings(), core.getHfToken()]);
+        // BL-134 (FO-REQ-0028 E): whether a Hugging Face token is stored and readable here -- never the value.
+        return { settings: { ...settings, hfToken: hf.state === "set" ? ("set" as const) : ("not set" as const) } };
+      },
       listTemplates: async () => {
         const core = createMediaGenerationCore();
         const [templates, lastSync, onVolume] = await Promise.all([
