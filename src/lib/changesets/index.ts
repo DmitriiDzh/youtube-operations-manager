@@ -39,3 +39,6 @@ export function createChangeSetCore() {
 }
 
 export type ChangeSetCore = ReturnType<typeof createChangeSetCore>;
+
+// BL-198: the synced-copy reading the send service uses to tell a change already on YouTube.
+export { readWithChannelBaseline, remoteHoldsApprovedValue } from "./diff";

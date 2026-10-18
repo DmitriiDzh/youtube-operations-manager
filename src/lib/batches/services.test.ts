@@ -86,12 +86,13 @@ function createFakeStore() {
     callLog,
     changes,
     /** Test-only helper: registers a changesets Change as approved/valid/non-conflicting. */
-    registerApprovedChange(entry: { id: string; videoId: string }) {
+    registerApprovedChange(entry: { id: string; videoId: string; language?: string; field?: "title" | "description"; changeType?: "add" | "modify" | "unchanged" | "delete" }) {
       changes.set(entry.id, {
         id: entry.id,
         videoId: entry.videoId,
-        language: "es",
-        field: "title",
+        language: entry.language ?? "es",
+        field: entry.field ?? "title",
+        ...(entry.changeType ? { changeType: entry.changeType } : {}),
         baselineValue: "baseline",
         proposedValue: "proposed",
         approvedValue: "proposed",
@@ -304,10 +305,18 @@ async function createApprovedBatch(
   harness: ReturnType<typeof createHarness>,
   input: Parameters<ReturnType<typeof createBatchServices>["createBatch"]>[0]
 ) {
+  // BL-198 (AC-ST-11): one row may no longer carry two changes for the same (language, field), so the n-th change of a video gets
+  // its own target (es title, es description, fr title, ...); the first one keeps es/title, as before.
+  const languages = ["es", "fr", "de", "it", "pt", "ja"];
   for (const selection of input.selections) {
-    for (const changeId of selection.changeIds) {
-      harness.store.registerApprovedChange({ id: changeId, videoId: selection.videoId });
-    }
+    selection.changeIds.forEach((changeId, index) => {
+      harness.store.registerApprovedChange({
+        id: changeId,
+        videoId: selection.videoId,
+        language: languages[Math.floor(index / 2) % languages.length],
+        field: index % 2 === 0 ? "title" : "description",
+      });
+    });
   }
   return harness.services.createBatch(input);
 }
@@ -703,4 +712,32 @@ test("listBatchesByChannel only returns batches for that channel; requireBatchFo
 
   const correct = await harness.services.requireBatchForChannel("UC_CHANNEL_B", batchOnChannelB.id);
   assert.equal(correct.id, batchOnChannelB.id);
+});
+
+// BL-198 AC-ST-11 (docs/roadmap/plans/SEND_TOGETHER_PLAN.md): a row must not carry two changes for one target, nor a delete next to any
+// other change of its language -- the payload builder would otherwise let one of them win silently.
+test("AC-ST-11: two es-title changes in one row are refused with duplicate_target_in_row; nothing is created", async () => {
+  const harness = createHarness();
+  harness.store.registerApprovedChange({ id: "c1", videoId: "v1", language: "es", field: "title" });
+  harness.store.registerApprovedChange({ id: "c2", videoId: "v1", language: "ES", field: "title" });
+  await assert.rejects(
+    () => harness.services.createBatch({ channelId: "UC_TEST", selections: [{ videoId: "v1", changeIds: ["c1", "c2"] }] }),
+    (error: unknown) => error instanceof DomainError && error.code === "duplicate_target_in_row"
+  );
+  assert.equal((await harness.services.listBatchesByChannel("UC_TEST")).length, 0);
+});
+
+// Review of BL-198: the first version also refused a delete next to a modify of its language, which PROJECT_SPEC §16 (2026-09-20)
+// explicitly allows in one approved batch (the delete is applied last). The plan's AC-ST-11 was wrong about that case; corrected here.
+test("AC-ST-11: a de delete next to a de title in one row stays allowed (PROJECT_SPEC §16); es title + es description is allowed", async () => {
+  const harness = createHarness();
+  harness.store.registerApprovedChange({ id: "d1", videoId: "v1", language: "de", field: "description", changeType: "delete" });
+  harness.store.registerApprovedChange({ id: "d2", videoId: "v1", language: "de", field: "title", changeType: "delete" });
+  harness.store.registerApprovedChange({ id: "t1", videoId: "v1", language: "de", field: "title" });
+  const withDelete = await harness.services.createBatch({ channelId: "UC_TEST", selections: [{ videoId: "v1", changeIds: ["d1", "d2", "t1"] }] });
+  assert.deepEqual((await harness.services.listLedgerRows(withDelete.id))[0].changeIds, ["d1", "d2", "t1"]);
+  harness.store.registerApprovedChange({ id: "e1", videoId: "v2", language: "es", field: "title" });
+  harness.store.registerApprovedChange({ id: "e2", videoId: "v2", language: "es", field: "description" });
+  const batch = await harness.services.createBatch({ channelId: "UC_TEST", selections: [{ videoId: "v2", changeIds: ["e1", "e2"] }] });
+  assert.deepEqual((await harness.services.listLedgerRows(batch.id))[0].changeIds, ["e1", "e2"]);
 });

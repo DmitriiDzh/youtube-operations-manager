@@ -933,7 +933,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Исследования:** `countResearchChannelsDueForCollection` (`db.ts`, те же условия, что у захвата, без записи) и `hasChannelsDue`. Если ничего не пора, `collect-if-stale` отвечает без цикла синхронизации устройств и без tokeninfo.
 - **Охваты:** `dueState` — правило `onlyIfDue`, вынесено без изменений. `isAnyReachSyncDue`: если ничего не пора, `sync-all` отвечает до импорта другого компьютера.
 
-### 2.9at Экраны не тратят квоту на уже сохранённые данные (BL-197) — **IMPLEMENTED** на `feature/bl-197-quota-from-db` (ещё не влито в `dev`)
+### 2.9at Экраны не тратят квоту на уже сохранённые данные (BL-197) — **IMPLEMENTED** (влито в `dev` 2026-10-18, bcdf8e8a)
 
 - **Шапка:** `GET /api/youtube/channel-info` читает `channels.list mine` один раз на вход. Дальше 6 ч отвечает из памяти процесса (`src/lib/channel-access/live-channel-memo.ts`, ключ — пользователь сессии). Память сбрасывается при входе через Google (`auth.ts` `signIn`), при отключении канала и при перезапуске. Каждый ответ по-прежнему вызывает `activateChannel` (ADR 0004). Живое чтение подписано в журнале квоты как `channel_header`. Проверку входа делает `/api/channel-connections/health`, она без квоты.
 - **Переключатель каналов:** `use-connected-channels` шлёт `POST /api/channels/sync { onlyIfStale: true }`. Ответ `{ skipped: true }` без YouTube, если у канала, прочитанного живьём для этого входа (память шапки), есть копия этого же входа не старше 6 ч; без живого чтения (новый вход, перезапуск) синхронизация идёт (`channel-sync/freshness.ts`, общее правило с `publishing/refresh-stale`). Новый канал без своей копии синхронизируется сразу. Явный `channelId` и синхронизация без флага выполняются всегда.
@@ -942,6 +942,26 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Плейлисты для выбора:** `GET /api/youtube/playlists` → `listPlaylistsRemembered` (`playlist-management/playlist-list-memo.ts`, 1 ч на вход). Любое изменение плейлистов через ядро, вход через Google и отключение канала сбрасывают память; общий помощник `src/lib/user-ttl-memo/` (у шапки тоже) не даёт чтению, начатому до сброса, вернуть старый ответ. `?refresh=1` — кнопка «Обновить список». `listPlaylists` для MCP и CLI остаётся живым.
 - **Охват:** после неудачной автоматической попытки активный канал ждёт `FAILED_ACTIVE_RETRY_AFTER_MINUTES` (60 мин), фоновый — 6 ч. `nextAutoCheckAt` в статусе учитывает эту паузу.
 - **Не входит:** окно видео (`videos.list` перед правкой) и четыре нехранимых разреза Аудитории. Схема не менялась.
+
+### 2.9au Несколько наборов изменений одним пакетом, вкладка «Записаны в YouTube» (BL-198, `docs/roadmap/plans/SEND_TOGETHER_PLAN.md`, ADR 0020 Amendment 1) — **IMPLEMENTED** на `feature/bl-198-send-together` (не влито в `dev`)
+
+- **Сервис:** `src/lib/batches/send-approved.ts`.
+  - `planSendTogether` только читает.
+  - `createBatchForChangeSets` собирает одну строку на видео со всеми отправляемыми изменениями выбранных наборов: один `videos.update`, 52 единицы.
+  - Коллизии разных наборов:
+    - Коллизия — одно и то же (видео, язык, поле) или удаление языка рядом с любым изменением этого языка.
+    - Без `resolutions` сервис отвечает `send_merge_conflicts`.
+    - При живой отправке невыбранные варианты отклоняются через `createChangeSetCore().rejectChange`. Пробный прогон их только не включает.
+    - В аудит пишется событие `MERGE` по строкам.
+  - Отправка одного набора (ADR 0020) идёт через тот же сервис без изменений.
+- **«Записано»:** есть более новая успешная строка настоящего пакета, или сохранённая копия видео уже держит одобренное значение (`remoteHoldsApprovedValue`, `changesets/diff.ts`). Тем же правилом не отправляется повторно уже записанное.
+- **`createBatch`** отклоняет строку с двумя изменениями одной цели (`duplicate_target_in_row`).
+- **Маршруты:** `POST .../change-sets/send-together/plan` и `POST .../change-sets/send-together` (`{ changeSetIds, resolutions?, dryRun? }`). Список наборов получил поле `writtenCount`.
+- **UI:**
+  - «Языки»: галочки в «Одобренных», «Отправить вместе», `SendTogetherDialog` с выбором варианта, вкладка «Записаны в YouTube». «Одобренные» = ждут отправки.
+  - «Пакеты»: галочки на шаге 1 и «Один пакет из отмеченных наборов», с пробным прогоном.
+  - Общий запуск: `useBatchSendRunner` (`send-approved-button.tsx`).
+- Схема не менялась.
 
 ## 3. Где вносить изменения
 

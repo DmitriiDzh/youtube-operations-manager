@@ -1239,6 +1239,15 @@ All routes are App Router handlers and require authenticated session user.
 ### Channel sync API (read-only)
 
 - `GET /api/channels` — list locally synchronized channels
+- `POST /api/channels/[channelId]/change-sets/send-together/plan` — BL-198, read only: `{ changeSetIds }` →
+  `{ videoCount, changeCount, languageCount, estimatedUnits, conflicts[], inFlightBatchId, inFlightCoversSelection }`
+- `POST /api/channels/[channelId]/change-sets/send-together` — BL-198: `{ changeSetIds, resolutions?: [{ videoId, language,
+  changeSetId }], dryRun? }` → 201 `{ batchId, changeCount, videoCount, rejectedChangeIds }`. Errors:
+  - `send_merge_conflicts` (409, `details.conflicts`);
+  - `send_already_in_progress` (409, `details.batchId`, `coversSelection`);
+  - `send_nothing_to_send`;
+  - `live_writes_disabled`.
+  The change-set list (`GET .../change-sets`) adds `writtenCount` per set.
 - `POST /api/channels/sync` — synchronize a channel (`{ "channelId"?: "UC...", "onlyIfStale"?: true }`; omitted = the
   authenticated account's own channel). BL-197: `onlyIfStale` (the dashboard's automatic sync) answers
   `{ skipped: true, reason: "fresh", channelId, lastSyncedAt }` without YouTube when the channel last read live for the identity has

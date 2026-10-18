@@ -16,7 +16,9 @@ export type AuditEventType =
   | "VERIFICATION"
   | "DRY_RUN"
   | "RECONCILIATION"
-  | "CANCELLED";
+  | "CANCELLED"
+  /** BL-198: the batch was made from several change sets; which set's variant was kept where they collided, and what was rejected. */
+  | "MERGE";
 
 export type AuditEvent = {
   id: number;

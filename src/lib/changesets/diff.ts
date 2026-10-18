@@ -67,6 +67,19 @@ export function readWithChannelBaseline(video: StoredVideoRecord, channelBaselin
 }
 
 /**
+ * BL-198: whether the channel's last synced copy (read against the baseline, `readWithChannelBaseline`) already holds a change's
+ * approved value -- for a delete, whether the language is gone. Used to tell a change that is already on YouTube.
+ */
+export function remoteHoldsApprovedValue(
+  read: ReturnType<typeof readWithChannelBaseline> | null,
+  change: { language: string; field: "title" | "description"; changeType: string; approvedValue: string | null }
+): boolean {
+  if (!read || change.approvedValue === null) return false;
+  if (change.changeType === "delete") return read.current(change.language, "title") === "" && read.current(change.language, "description") === "";
+  return read.current(change.language, change.field) === change.approvedValue;
+}
+
+/**
  * Classifies a proposed field value relative to the *current* synchronized remote
  * value (never the export-time baseline -- that is only used for conflict detection).
  * Deliberately returns the narrower "add"|"modify"|"unchanged" (not the full `ChangeType`

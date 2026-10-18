@@ -42,6 +42,8 @@ export type DomainErrorCode =
   | "batch_not_found"
   | "batch_already_running"
   | "send_nothing_to_send"
+  | "send_merge_conflicts"
+  | "duplicate_target_in_row"
   | "send_already_in_progress"
   | "ledger_row_not_found"
   | "ledger_invalid_transition"

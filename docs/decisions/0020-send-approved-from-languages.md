@@ -52,3 +52,23 @@ dialog). The owner considers the second step a repeat of the approval ("Approved
   resumed by the next send click (decision 5) or from the Batches tab.
 - Not done here: auto-send on approval (the owner asked for a button), a dry-run option in the pop-up (the
   Batches tab still offers dry runs).
+
+## Amendment 1 — several change sets in one batch (BL-198, 2026-10-18)
+
+**Assigned by** the owner (Telegram 2026-10-18, msgs 2996, 2999). Plan: `docs/roadmap/plans/SEND_TOGETHER_PLAN.md`.
+
+- **Several sets, one batch.** `POST .../change-sets/send-together` builds one live batch (or a dry run from the Batches tab) from
+  several change sets: one row per video carrying every selected set's sendable changes, so a video is written once whatever the
+  number of languages. The one-set route above delegates to the same service; its behaviour and error details are unchanged.
+- **Collisions are the owner's decision.** When two selected sets change the same (video, language, field), or one deletes a
+  language another changes, nothing is created (`send_merge_conflicts`) until the owner picks, per video and language, which
+  set's variant goes in.
+  - On a live send the variants not picked are **rejected** in their sets, through the change-set service, so they are never
+    sent later over the picked one. The dialog says so, and a rejected change can be approved again.
+  - A dry run rejects nothing.
+  - The batch records a `MERGE` audit event per affected row.
+- **Defence in depth.** `createBatch` refuses a row holding two changes for one target (`duplicate_target_in_row`), whichever
+  path built it.
+- **"Already written"** also counts a change whose value the channel's synced copy already holds. A change's `updatedAt` was seen
+  to move after its write without a new value, so the time comparison alone missed it.
+- Every safeguard of decision 4 is unchanged. No new write call site exists: the browser still runs the existing execute route.
