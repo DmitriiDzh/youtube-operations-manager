@@ -250,3 +250,17 @@ test("FO-REQ-0031: a stuck build container is given up at the limit and the buil
   assert.equal(jobs.find((j) => j.podId === "pod2")?.status, "failed");
   assert.equal(h.created.length, 2, "no third pod: one retry only");
 });
+
+// FO-REQ-0031 review: a build whose container has run is never judged stuck later (a container restart, an answer briefly without
+// `runtime`): it keeps running until its verdict or the cap.
+test("FO-REQ-0031: once the build container was seen running, a later answer without uptime does not end the build", async () => {
+  const h = harness({ settings: { containerStartMinutes: 3 } });
+  await h.services.startRuntimeBuild({ runtimeId: RID });
+  await h.services.pollRuntimeBuilds(); // container up: recorded
+  h.pods.get("pod1")!.containerUptimeSec = null;
+  h.advance(10 * 60_000);
+  const [job] = await h.services.pollRuntimeBuilds();
+  assert.equal(job.status, "running");
+  assert.deepEqual(h.terminated, []);
+  assert.ok(job.containerStartedAt);
+});

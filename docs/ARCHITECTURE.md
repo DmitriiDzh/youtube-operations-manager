@@ -4470,7 +4470,13 @@ Plan: `docs/roadmap/plans/VIDEO_COST_PLAN.md` §2 stages 2-4 (criteria 3-9). Sch
   uptime within `containerStartMinutes` (shared setting, default 3) of placement is terminated at that limit. The attempt is logged
   `container_stuck` (with RunPod's `machineId` when the answer has one), and the session is placed again (`{ replace }`, as a
   BL-155 incompatible host) up to `containerStuckRetries` (default 1); after that the start fails with `media_container_stuck`.
-  - The 8-min start budget stays for ComfyUI's boot.
+  - The 8-min start budget still counts from placement (unchanged). A slow but healthy host can need more than the limit; the
+    owner raises `containerStartMinutes` (≤ 7, below the budget) or the retries, and the refusal says so.
+  - Counted apart: stuck re-placements (`containerStuckRetries`) and incompatible-host ones (`MAX_EXTRA_PLACEMENTS`). A re-placement
+    that then finds no capacity fails with the code of what caused it.
+  - The request's separate `container_running` stage is folded into `comfy_booting` (the container is up and ComfyUI boots). A
+    terminal session keeps its last stage, which shows where a failed start stopped.
+  - A build whose container was once seen running (`containerStartedAt`) is never judged stuck afterwards.
   - The row carries `start_stage` / `stage_since` (placed → pulling_image → comfy_booting → ready), and the `placed` capacity
     entry gets `container_seconds` / `boot_seconds` once ready.
   - Runtime build pods use the same limit and retry count (`runtime-builds.ts`).

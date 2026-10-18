@@ -47,6 +47,8 @@ export type RuntimeBuildJob = {
   gpuTypeId?: string | null;
   /** FO-REQ-0031: how many stuck-container builds of this profile came before this one in the same chain (0 = the first). */
   stuckRetries?: number;
+  /** FO-REQ-0031 review: when this build's container was first seen running -- from then on it is never judged stuck. */
+  containerStartedAt?: string | null;
 };
 
 export type RuntimeBuildStore = {
@@ -337,8 +339,9 @@ export function createRuntimeBuildServices(deps: RuntimeBuildDeps) {
       }
       // FO-REQ-0031: a container that has not started within the owner's limit (a host without the image) is given up at once and
       // the build is started again on another pod, up to containerStuckRetries times -- not left to bill until the cap.
+      if (pod && pod.containerUptimeSec != null && !job.containerStartedAt) await saveJob({ ...job, containerStartedAt: deps.clock.now().toISOString() });
       const settings = await deps.base.getSettings().catch(() => null);
-      if (settings && pod && pod.containerUptimeSec == null && now - Date.parse(job.startedAt) >= settings.containerStartMinutes * 60_000) {
+      if (settings && pod && !job.containerStartedAt && pod.containerUptimeSec == null && now - Date.parse(job.startedAt) >= settings.containerStartMinutes * 60_000) {
         const ended = await finishJob(job, "failed", { error: `container_stuck: the build pod's container did not start within ${settings.containerStartMinutes} min` });
         const used = job.stuckRetries ?? 0;
         if (ended.status === "failed" && used < settings.containerStuckRetries) {

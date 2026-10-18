@@ -2766,3 +2766,19 @@ test("FO-REQ-0031: while starting, the session shows its stage (placed → pulli
   assert.equal(running.startStage, "ready");
   assert.ok(running.stageSince);
 });
+
+// FO-REQ-0031 review: a slow but healthy container (up before the limit) is never given up; with no retries allowed a stuck one ends
+// the start at once; a stuck pod does not use up the incompatible-host re-placements.
+test("FO-REQ-0031: a container that starts just before the limit is kept; containerStuckRetries 0 fails at the first stuck pod", async () => {
+  // uptimeAfterRunningPolls 30: RUNNING from the first poll, the container up after 30 more polls of 5 s = 2.5 min (< 3 min).
+  const slow = fixture({ runpod: fakeRunpod({ uptimeAfterRunningPolls: 30 }), startMs: 8 * 60_000, settings: { containerStartMinutes: 3 } });
+  const pending = await slow.services.requestSession(operatorRequest);
+  const running = await slow.services.approveAndStartSession({ sessionId: pending.sessionId });
+  assert.equal(running.status, "running");
+  assert.deepEqual(slow.capacityLog.map((e) => e.result), ["placed"]);
+
+  const none = fixture({ runpod: fakeRunpod({ stuckPods: 5 }), startMs: 8 * 60_000, settings: { containerStartMinutes: 2, containerStuckRetries: 0 } });
+  const p2 = await none.services.requestSession(operatorRequest);
+  await assert.rejects(none.services.approveAndStartSession({ sessionId: p2.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_container_stuck" && /Servers → Setup/.test(e.message));
+  assert.deepEqual(none.capacityLog.map((e) => e.result), ["placed", "container_stuck"]);
+});

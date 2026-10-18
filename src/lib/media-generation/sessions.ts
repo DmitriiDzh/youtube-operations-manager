@@ -789,6 +789,10 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     let lastMismatch: string | null = null;
     /** FO-REQ-0031: stuck-container re-placements used by this start (bounded by `containerStuckRetries`). */
     let stuckRetries = 0;
+    /** BL-155: incompatible-host re-placements, counted apart from the stuck ones (review: one budget must not eat the other). */
+    let incompatibleRetries = 0;
+    /** Why the last re-placement happened: its refusal, if no host can be placed after it, says so (review). */
+    let lastReplaceKind: "incompatible" | "stuck" = "incompatible";
 
     const placeOnce = async (row: StoredSessionRow, placement: number): Promise<MediaSession | { replace: string }> => {
       let pod: RunpodPod | null = null;
@@ -882,8 +886,9 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         // A re-placement never WAITS: the row's billing window is open (it started with the first pod), so a wait would bill
         // the idle minutes. The session fails with the reason it had to be placed again.
         const message = `${lastMismatch ?? "incompatible GPU host"}; no other host could be placed (${failures.join("; ")})`;
-        await finish(row, ["approved"], "failed", { error: `media_gpu_host_incompatible: ${message}`, ...endedEarly() });
-        throw new DomainError({ code: "media_gpu_host_incompatible", message: `The session could not start on a compatible GPU host: ${message}.`, details: { sessionId, placements: placement } });
+        const code = lastReplaceKind === "stuck" ? "media_container_stuck" : "media_gpu_host_incompatible";
+        await finish(row, ["approved"], "failed", { error: `${code}: ${message}`, ...endedEarly() });
+        throw new DomainError({ code, message: code === "media_container_stuck" ? `The session's container did not start, and no other host could be placed: ${message}.` : `The session could not start on a compatible GPU host: ${message}.`, details: { sessionId, placements: placement } });
       }
       // From here on a pod EXISTS and bills: every exit path below either confirms its termination or
       // leaves the session non-terminal (`stopping`, podId recorded) so the watcher/boot sweep retries.
@@ -958,7 +963,9 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         }
         // Never a second pod next to one that may still bill: an unconfirmed terminate ends here (`stopping`, watcher retries).
         if (!terminated.confirmed) return abortStart(detail, "media_gpu_host_incompatible", terminated);
-        if (placement >= MAX_EXTRA_PLACEMENTS) return abortStart(`${detail} (${placement + 1} placements, no compatible host)`, "media_gpu_host_incompatible", terminated);
+        if (incompatibleRetries >= MAX_EXTRA_PLACEMENTS) return abortStart(`${detail} (${placement + 1} placements, no compatible host)`, "media_gpu_host_incompatible", terminated);
+        incompatibleRetries += 1;
+        lastReplaceKind = "incompatible";
         return { replace: detail };
       };
       /**
@@ -977,8 +984,9 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
           lastTerminatedAt = deps.clock.now();
         }
         if (!terminated.confirmed) return abortStart(detail, "media_container_stuck", terminated);
-        if (stuckRetries >= settings.containerStuckRetries) return abortStart(`${detail}; ${stuckRetries + 1} host(s) tried`, "media_container_stuck", terminated);
+        if (stuckRetries >= settings.containerStuckRetries) return abortStart(`${detail}; ${stuckRetries + 1} host(s) tried (raise the container start limit or the retries in Servers → Setup if hosts are slow rather than stuck)`, "media_container_stuck", terminated);
         stuckRetries += 1;
+        lastReplaceKind = "stuck";
         return { replace: detail };
       };
       /** FO-REQ-0031: the start's stage on the row (best effort; a DB hiccup never aborts a start). */
@@ -1064,7 +1072,9 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       // One RunPod 502 / 30 s timeout on getPod must not terminate a healthy, almost-ready pod (review round 17): a run of
       // consecutive failures is tolerated like the job poller's; the deadline still bounds the whole wait.
       let pollFailures = 0;
-      // FO-REQ-0031: the container must be running this long after placement at the latest; then only ComfyUI's boot is waited for.
+      // FO-REQ-0031: the container must be running this long after placement at the latest (the 8-min start budget still counts
+      // from placement too). A slow but healthy host (an image not cached) can need more: the owner raises the limit (≤ 7 min) or
+      // the retries in Setup -- the refusal says so.
       const containerDeadline = placedAt.getTime() + settings.containerStartMinutes * 60_000;
       let containerRunningAt: Date | null = null;
       let stuck: string | null = null;

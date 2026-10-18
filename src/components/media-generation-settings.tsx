@@ -3080,7 +3080,7 @@ export function GpuFallbackCard({ settings, onChanged }: { settings: Settings; o
     const gpuMaxPricePerHr = maxPrice.trim() ? parseMoney(maxPrice) : null;
     const capacityRetrySeconds = parseInteger(retrySeconds, { min: 15, max: 3600 });
     const capacityWaitMinutes = parseInteger(waitMinutes, { min: 1, max: 1440 });
-    const containerStartMinutes = parseInteger(containerMinutes, { min: 1, max: 30 });
+    const containerStartMinutes = parseInteger(containerMinutes, { min: 1, max: 7 });
     const containerStuckRetries = /^\s*[0-3]\s*$/.test(stuckRetries) ? Number(stuckRetries.trim()) : null;
     const minCudaVersion = MEDIA_CUDA_VERSIONS.find((v) => v === minCuda) ?? null;
     if ((minVram.trim() && gpuMinVramGb === null) || (maxPrice.trim() && gpuMaxPricePerHr === null) || capacityRetrySeconds === null || capacityWaitMinutes === null || containerStartMinutes === null || containerStuckRetries === null || gpuFallbackIds.length > 10) {
