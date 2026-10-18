@@ -985,7 +985,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Factory API 1.22.0:** `factory_media_get_settings` → `hfToken: set | not set`. Файл `.ytmkeys` получил раздел `huggingface`: токен проверяется до сохранения любого раздела; подсказка `hfUser` есть только при наличии токена.
 - Не входят: OAuth и ключи AI-подключений / облачного подключения (ключи из env, RISK-07/48), ротация ключа (RISK-106).
 
-### 2.9aw Среды пода, которыми управляет Оператор (BL-200, FO-REQ-0029, `docs/roadmap/plans/POD_RUNTIMES_PLAN.md`, ADR 0043) — **IMPLEMENTED** (ветка `feature/fo-req-0029-runtimes`, не влито)
+### 2.9aw Среды пода, которыми управляет Оператор (BL-200, FO-REQ-0029, `docs/roadmap/plans/POD_RUNTIMES_PLAN.md`, ADR 0043) — **IMPLEMENTED** (влито в `dev` 2026-10-18, 4347f7d8; сборка на GPU — 57f49e9c)
 
 - **Профиль** — неизменяемый `ytm/runtimes/<id>/runtime.json` на сетевом томе (ComfyUI и наборы нод на точных коммитах, pip с версиями); рядом `build.json`, `.ready`, `test.json`. Общий для компьютеров через сам том.
   - `media-generation/runtimes.ts`: профили, статус (`.ready` обязателен для «собрана»), `requiredNodeTypes` (все `class_type` графа), `checkActivation`.
