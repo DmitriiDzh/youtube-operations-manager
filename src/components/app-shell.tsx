@@ -4,8 +4,9 @@
 // indicator) and a top bar (active channel + channel switch + sign out), replacing the
 // previous single horizontal pill-tab-bar-as-navigation. Purely a chrome/layout change --
 // every existing tab's own content component is rendered completely unchanged inside it.
-import Link from "next/link";
-import type { ComponentType, ReactNode, SVGProps } from "react";
+import Link, { useLinkStatus } from "next/link";
+import { usePathname } from "next/navigation";
+import { useEffect, useState, type ComponentType, type MouseEvent, type ReactNode, type SVGProps } from "react";
 import type { ChannelInfo } from "@/components/app-channel";
 import type { PlanChannelWork } from "@/lib/generation-plans/contracts";
 import { ChannelSwitcher } from "./channel-switcher";
@@ -51,6 +52,22 @@ export function AppShell<T extends string>(props: {
   children: ReactNode;
 }) {
   const t = useT();
+  // BL-203 (FAST_NAVIGATION_PLAN.md §2 stage 2): the clicked item shows as selected at once, not only once the new page is committed,
+  // so a click is visibly taken even while the server is still answering. Cleared when the address changes (or never arrives).
+  const pathname = usePathname();
+  const [pending, setPending] = useState<{ value: T; from: string } | null>(null);
+  const pendingValue = pending && pending.from === pathname ? pending.value : null;
+  useEffect(() => {
+    if (!pendingValue) return;
+    const id = setTimeout(() => setPending(null), 15_000);
+    return () => clearTimeout(id);
+  }, [pendingValue]);
+  const selected = pendingValue ?? props.activeTab;
+  function onNavClick(event: MouseEvent<HTMLAnchorElement>, value: T) {
+    // A middle/modified click opens another browser tab; this one does not navigate.
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    if (value !== props.activeTab) setPending({ value, from: pathname });
+  }
   return (
     <div className="flex min-h-screen">
       <aside className="flex w-60 shrink-0 flex-col border-r border-border bg-sidebar">
@@ -63,13 +80,14 @@ export function AppShell<T extends string>(props: {
         </div>
         <nav className="flex flex-1 flex-col gap-0.5 px-2 py-2">
           {props.navItems.map((item) => {
-            const active = item.value === props.activeTab;
+            const active = item.value === selected;
             const Icon = item.icon;
             return (
               <Link
                 key={item.value}
                 href={item.href}
-                aria-current={active ? "page" : undefined}
+                aria-current={item.value === props.activeTab ? "page" : undefined}
+                onClick={(event) => onNavClick(event, item.value)}
                 className={`flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors ${
                   active
                     ? "bg-surface font-medium text-white"
@@ -78,6 +96,7 @@ export function AppShell<T extends string>(props: {
               >
                 <Icon className={active ? "h-5 w-5 text-accent" : "h-5 w-5"} />
                 {item.label}
+                <NavPendingMark forced={item.value === pendingValue} />
                 {!!item.badge && (
                   <span title={item.badgeTitle} className="ml-auto flex h-5 min-w-5 items-center justify-center rounded-full bg-red-600 px-1.5 text-[11px] font-semibold text-white">
                     {item.badge}
@@ -142,8 +161,26 @@ export function AppShell<T extends string>(props: {
             wide viewport. A tab whose content is narrow by nature (forms/cards: Home, Settings,
             Device) applies its own max-width locally instead, so this shell stays width-agnostic
             for every tab rather than picking one width that's wrong for half of them. */}
+        {/* BL-203: a thin bar under the header while a menu click waits for its page. Always 2 px tall, so nothing shifts. */}
+        <div className="relative h-0.5 shrink-0 overflow-hidden">
+          {pendingValue && <div role="progressbar" aria-label={t("shell.navigating")} className="ytom-nav-progress absolute inset-y-0 w-1/3 bg-accent" />}
+        </div>
         <main className="flex-1 overflow-y-auto px-6 py-6">{props.children}</main>
       </div>
     </div>
+  );
+}
+
+/** BL-203: a fixed-size spinner inside a menu link, visible while that link's navigation is pending. `useLinkStatus` covers a click
+ * Next has not committed yet; `forced` covers the item the shell itself marked as clicked. */
+function NavPendingMark({ forced }: { forced: boolean }) {
+  const { pending } = useLinkStatus();
+  return (
+    <span
+      aria-hidden
+      className={`inline-block h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-zinc-600 border-t-accent transition-opacity motion-reduce:animate-none ${
+        pending || forced ? "opacity-100" : "opacity-0"
+      }`}
+    />
   );
 }
