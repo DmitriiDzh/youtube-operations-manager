@@ -3,6 +3,7 @@ import type { ResolvedCredentials } from "@/lib/shared-domain";
 import {
   assertLiveWritesAuthorized,
   bindLiveBroadcast,
+  deleteVideoById,
   insertLiveBroadcast,
   insertLiveStream,
   setVideoThumbnail,
@@ -58,6 +59,12 @@ export function createLiveStreamsYoutubeWrites(): BroadcastsDependencies["youtub
       const youtube = await clientFor(credentials);
       await assertLiveWritesAuthorized();
       return setVideoThumbnail(youtube, videoId, image);
+    },
+    // BL-205: a new segment that never went live is removed (plan §2.2 step 7).
+    async deleteVideo(credentials, videoId) {
+      const youtube = await clientFor(credentials);
+      await assertLiveWritesAuthorized();
+      return deleteVideoById(youtube, videoId);
     },
     async playlistHasVideo(credentials, playlistId, videoId) {
       const youtube = await clientFor(credentials);

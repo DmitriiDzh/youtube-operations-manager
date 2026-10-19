@@ -55,6 +55,7 @@ test("getLiveBroadcasts maps the lifecycle, privacy, bound stream and the snippe
     lifeCycleStatus: "live",
     privacyStatus: "unlisted",
     boundStreamId: "STREAM1",
+    recordFromStart: null, // BL-205: contentDetails.recordFromStart, absent in this item
     categoryId: "10",
   });
 });

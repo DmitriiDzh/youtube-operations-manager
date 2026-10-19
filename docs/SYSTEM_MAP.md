@@ -875,6 +875,16 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   - Каждый шаг — событие `video_settings_step`, итог — `video_settings_applied`. Сбой шага эфир не останавливает.
   - «Применить настройки видео» (`GET|POST .../live-stream/apply-video-settings`): пробный прогон, затем повторная отправка.
   - video-details получил `paidProductPlacement`. Схема не менялась.
+- **BL-205 сегменты (FO-REQ-0032, `docs/roadmap/plans/LIVE_SEGMENTS_PLAN.md`, ветка `feature/fo-req-0032-live-segments`, схема v99):**
+  - `live-streams/segments.ts`: при включённом «Перезапуске эфира» раннер до 12 ч создаёт новую трансляцию с записью на том же потоке и выводит её в эфир, затем завершает старую (спайк D: без разрыва).
+  - Сбой: старый сегмент остаётся, новый удаляется, уведомление `live_segment_switch_failed`, повтор через 30 мин, не больше 6 переключений в сутки.
+  - Метка `segment_switching_json` и восстановление после падения.
+  - Записи добавляются в выбранный плейлист.
+  - Запись идёт через учётку канала, Live writes (ADR 0044) и проверку канала.
+  - Таблица `live_stream_segments`.
+  - API: `PUT .../live-stream/segments`. Карточка «Перезапуск эфира».
+  - `factory_live_get_status.segments` (Factory API 1.25.0).
+  - Композиция модулей для раннера и маршрутов — `src/composition/live-stream-video-fields.ts`.
 - **Общий модуль `src/lib/youtube-video-fields/`** (BL-186, §M): лимиты и списки полей видео (500 символов тегов, 2 МБ обложки,
   категории, лицензии, тип картинки по байтам); публикация реэкспортирует их без изменений.
 - **Риски:** RISK-125 (ключ в командной строке ffmpeg), RISK-126 (T9 нужен раз в ~2 ч).

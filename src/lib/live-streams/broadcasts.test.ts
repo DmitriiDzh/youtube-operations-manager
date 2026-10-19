@@ -25,6 +25,8 @@ type HarnessVideo = {
   refusalLanded?: boolean;
   /** Stop the stream right after the fields step (the owner pressed Stop meanwhile). */
   stopAfterFields?: boolean;
+  /** A segment switch replaces the broadcast right after the fields step (BL-205). */
+  replaceAfterFields?: boolean;
   /** The video details port throws something unexpected, not a step failure. */
   crash?: boolean;
 };
@@ -65,6 +67,7 @@ function harness(opts: { channelLanguage?: string | null; video?: HarnessVideo; 
               if (video.applyFails) throw new Error(video.applyFails);
               applied.push({ videoId, patch });
               if (video.stopAfterFields) stream = { ...stream, intent: "off" };
+              if (video.replaceAfterFields) stream = { ...stream, broadcastId: "BC2" };
               return { verified: true };
             },
             addToPlaylist: async ({ playlistId }) => {
@@ -142,6 +145,7 @@ function harness(opts: { channelLanguage?: string | null; video?: HarnessVideo; 
         calls.push(`thumbnails.set:${videoId}:${image.mimeType}`);
         if (video.thumbnailFails) throw new Error(video.thumbnailFails);
       },
+      deleteVideo: async (_c, videoId) => void calls.push(`videos.delete:${videoId}`),
       playlistHasVideo: async (_c, playlistId) => {
         calls.push(`playlistItems.list:${playlistId}`);
         return (video.inPlaylist ?? []).includes(playlistId) || landed.includes(playlistId);
@@ -616,4 +620,13 @@ test("the language sent is the channel's baseline, whatever the stream's setting
   await none.broadcasts.start("UC1", { userId: "u1" });
   await none.runBackground();
   assert.equal("defaultLanguage" in (none.applied[0]?.patch ?? {}), false);
+});
+
+// BL-205 AC-SEG-13: the old segment's application still running when a switch replaces it -- skipped as replaced, not stopped.
+test("a segment switch replacing the broadcast mid-application skips the remaining steps as broadcast_replaced", async () => {
+  const h = harness({ videoSettingsJson: WITH_THUMB, streamId: "STREAM1", video: { thumbnailFile: { kind: "jpeg", bytes: THUMB }, replaceAfterFields: true } });
+  await h.broadcasts.start("UC1", { userId: "u1" });
+  await h.runBackground();
+  const steps = (h.events.find((e) => e.kind === "video_settings_applied")?.detail as { steps: Array<{ step: string; skipped?: string }> }).steps;
+  assert.deepEqual(steps.filter((s) => s.skipped).map((s) => s.skipped), ["broadcast_replaced", "broadcast_replaced"]);
 });

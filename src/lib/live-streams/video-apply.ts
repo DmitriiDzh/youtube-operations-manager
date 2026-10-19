@@ -29,11 +29,12 @@ export type VideoApplyDependencies = {
   thumbnails: { read(channelId: string): Promise<{ kind: "jpeg" | "png"; bytes: Uint8Array } | null> };
   event(channelId: string, kind: string, detail: Record<string, unknown>): Promise<void>;
   sleep(ms: number): Promise<void>;
-  /** Whether the broadcast is still the stream's running one: once the owner stopped it, the remaining steps are not sent. */
-  isCurrent(channelId: string, broadcastId: string): Promise<boolean>;
+  /** Whether the broadcast is still the stream's running one: once the owner stopped it, or a segment switch replaced it (BL-205),
+   * the remaining steps are not sent. */
+  isCurrent(channelId: string, broadcastId: string): Promise<"current" | "stopped" | "replaced">;
 };
 
-export type VideoApplyStep = { step: string; ok: boolean; skipped?: "already_in_playlist" | "stream_stopped"; error?: string };
+export type VideoApplyStep = { step: string; ok: boolean; skipped?: "already_in_playlist" | "stream_stopped" | "broadcast_replaced"; error?: string };
 export type VideoApplyResult = { broadcastId: string; ok: boolean; steps: VideoApplyStep[]; notApplied?: "module_unavailable" };
 
 /** A playlist add YouTube refused once is tried once more after this pause (spike C: a 409 right after the playlist changed). */
@@ -83,7 +84,7 @@ function message(error: unknown): string {
 
 export async function applyVideoSettings(
   deps: VideoApplyDependencies,
-  args: { channelId: string; broadcastId: string; credentialRef: unknown; credentials: ResolvedCredentials; settings: LiveVideoSettings; channelLanguage: string | null; trigger: "start" | "again" }
+  args: { channelId: string; broadcastId: string; credentialRef: unknown; credentials: ResolvedCredentials; settings: LiveVideoSettings; channelLanguage: string | null; trigger: "start" | "again" | "segment" }
 ): Promise<VideoApplyResult> {
   const { channelId, broadcastId, settings } = args;
   const steps: VideoApplyStep[] = [];
@@ -108,8 +109,9 @@ export async function applyVideoSettings(
 
   // Stopped meanwhile (the owner's Stop ended the broadcast): the rest is not sent.
   const stillCurrent = async (step: string) => {
-    if (await deps.isCurrent(channelId, broadcastId)) return true;
-    await record({ step, ok: true, skipped: "stream_stopped" });
+    const state = await deps.isCurrent(channelId, broadcastId);
+    if (state === "current") return true;
+    await record({ step, ok: true, skipped: state === "replaced" ? "broadcast_replaced" : "stream_stopped" });
     return false;
   };
 

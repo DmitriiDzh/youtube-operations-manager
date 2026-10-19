@@ -70,3 +70,9 @@ export const DEFAULT_LIVE_VIDEO_SETTINGS: LiveVideoSettings = Object.freeze({
   broadcast: { latencyPreference: "normal", enableDvr: true, enableEmbed: true, closedCaptionsType: "closedCaptionsDisabled" },
 }) as LiveVideoSettings;
 
+
+/** BL-205 (LIVE_SEGMENTS_PLAN.md §2.1): the segment length bounds -- 15 min (for tests) to 11 h 45 min (YouTube keeps a recording
+ * only under 12 h); the default 11 h. Here so the Web UI can use them. */
+export const SEGMENT_MIN_MINUTES = 15;
+export const SEGMENT_MAX_MINUTES = 705;
+export const SEGMENT_DEFAULT_MINUTES = 660;

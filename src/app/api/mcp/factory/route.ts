@@ -5,7 +5,7 @@ import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
 import { createFactoryMcpEndpoint } from "@/lib/factory-mcp-endpoint";
 import { createFactoryTokenCore } from "@/lib/factory-agent-tokens";
 import { createGeminiMediaCore } from "@/lib/gemini-media";
-import { collectLiveStreamEntries, createLiveStreamsCore, getLiveStreamsDeviceId, listPeerLiveStreams } from "@/lib/live-streams";
+import { collectLiveStreamEntries, createLiveSegmentSettingsCore, createLiveStreamsCore, getLiveStreamsDeviceId, listPeerLiveStreams } from "@/lib/live-streams";
 import { createLogicalPathsCore } from "@/lib/logical-paths";
 import { createGenerationPlansCore, withPlanLock } from "@/lib/generation-plans";
 import { createMediaGenerationCore, DomainError, withJobErrorCode } from "@/lib/media-generation";
@@ -237,7 +237,9 @@ function createToolDeps(): FactoryToolDeps {
           ...own.map((entry) => ({ device: { deviceId, hostName: null, thisComputer: true }, updatedAt: new Date(now).toISOString(), ...entry })),
           ...peers.flatMap((peer) => peer.streams.map((entry) => ({ device: { deviceId: peer.deviceId, hostName: peer.hostName, thisComputer: false }, updatedAt: peer.updatedAt, ...entry }))),
         ].filter((s) => !input.channelId || s.channelId === input.channelId);
-        return { streams };
+        // BL-205 (1.25.0): this computer's segments -- settings, the running one, the last 30 days and failure stages (codes only).
+        const segments = (await Promise.all(own.filter((e) => !input.channelId || e.channelId === input.channelId).map((e) => createLiveSegmentSettingsCore().view(e.channelId, now)))).filter(Boolean);
+        return { streams, segments };
       },
       mapSources: async (input) => ({ results: await createLiveStreamsCore().setSources(input.channelId, { items: input.items }, "factory") }),
     },

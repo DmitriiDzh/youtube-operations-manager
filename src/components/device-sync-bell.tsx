@@ -43,11 +43,12 @@ type SyncStatus = {
 
 const POLL_MS = 30_000;
 // BL-176 (LIVE_STREAMS_PLAN.md §3.10): this computer's live-stream notices, each opening the channel's «Трансляции» tab.
-type LiveNotice = { channelId: string; kind: "live_stream_down" | "live_stream_ended" | "live_stream_source_missing"; since: number; detail?: string };
+type LiveNotice = { channelId: string; kind: "live_stream_down" | "live_stream_ended" | "live_stream_source_missing" | "live_segment_switch_failed"; since: number; detail?: string };
 const LIVE_NOTICE_TEXT: Record<LiveNotice["kind"], UiTextKey> = {
   live_stream_down: "live.bell.down",
   live_stream_ended: "live.bell.ended",
   live_stream_source_missing: "live.bell.sourceMissing",
+  live_segment_switch_failed: "live.bell.segmentSwitchFailed",
 };
 const LIVE_STREAM_HREF = "/content/streams";
 
