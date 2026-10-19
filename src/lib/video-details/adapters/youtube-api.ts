@@ -40,6 +40,7 @@ function toSnapshot(videoId: string, context: NonNullable<Awaited<ReturnType<typ
     selfDeclaredMadeForKids: context.status.selfDeclaredMadeForKids ?? null,
     containsSyntheticMedia: context.status.containsSyntheticMedia ?? null,
     recordingDate: context.recordingDate,
+    paidProductPlacement: context.paidProductPlacement,
   };
 }
 
@@ -109,6 +110,7 @@ export function createVideoDetailsYoutubeApiAdapter() {
         });
       }
       const touchesRecordingDetails = "recordingDate" in args.patch;
+      const touchesPaidPlacement = "paidProductPlacement" in args.patch;
 
       await applyVideoDetailsUpdate({
         youtube,
@@ -139,6 +141,7 @@ export function createVideoDetailsYoutubeApiAdapter() {
                 }),
               }
             : {}),
+          ...(touchesPaidPlacement ? { paidProductPlacementDetails: { hasPaidProductPlacement: args.patch.paidProductPlacement === true } } : {}),
         },
       });
 

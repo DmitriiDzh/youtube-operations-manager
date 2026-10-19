@@ -331,6 +331,8 @@ test("captureBackup snapshot is kind: video_fields and mirrors the before snapsh
       containsSyntheticMedia: false,
     },
     recordingDate: null,
+    // BL-186 stage 3 (owner msg 3134): the paid-promotion mark is a video-details field now and is backed up with the rest.
+    paidProductPlacement: null,
   });
 });
 

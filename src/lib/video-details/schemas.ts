@@ -43,6 +43,7 @@ const videoDetailsPatchSchema = z
     selfDeclaredMadeForKids: z.boolean().optional(),
     containsSyntheticMedia: z.boolean().optional(),
     recordingDate: z.string().min(1).optional(),
+    paidProductPlacement: z.boolean().optional(),
   })
   .strict()
   .refine((patch) => Object.keys(patch).length > 0, {

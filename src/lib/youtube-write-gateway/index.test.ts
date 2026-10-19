@@ -397,3 +397,24 @@ test("pickWritableSnippetFields 'keep': the freshly read audio language is sent 
   assert.equal("defaultAudioLanguage" in pickWritableSnippetFields({ title: "T" }, { includeDefaultAudioLanguage: "keep" }), false);
   assert.equal("defaultAudioLanguage" in pickWritableSnippetFields({ title: "T", defaultAudioLanguage: null }, { includeDefaultAudioLanguage: "keep" }), false);
 });
+
+// BL-186 spike C (2026-10-19): the paid-promotion mark is set by `videos.update` with its own part, alone or beside others.
+test("applyVideoDetailsUpdate sends paidProductPlacementDetails as its own part, and only the parts given", async () => {
+  const calls: Array<{ part: string[]; requestBody: Record<string, unknown> }> = [];
+  const youtube = fakeYoutubeClient({
+    videosUpdate: (async (args: { part: string[]; requestBody: Record<string, unknown> }) => {
+      calls.push(args);
+      return { data: {} };
+    }) as unknown as youtube_v3.Youtube["videos"]["update"],
+  });
+  await applyVideoDetailsUpdate({ youtube, videoId: "v1", parts: { paidProductPlacementDetails: { hasPaidProductPlacement: true } } });
+  assert.deepEqual(calls[0], { part: ["paidProductPlacementDetails"], requestBody: { id: "v1", paidProductPlacementDetails: { hasPaidProductPlacement: true } } });
+
+  await applyVideoDetailsUpdate({
+    youtube,
+    videoId: "v1",
+    parts: { status: { privacyStatus: "unlisted" }, paidProductPlacementDetails: { hasPaidProductPlacement: false } },
+  });
+  assert.deepEqual(calls[1]!.part, ["status", "paidProductPlacementDetails"]);
+  assert.deepEqual(calls[1]!.requestBody.paidProductPlacementDetails, { hasPaidProductPlacement: false });
+});

@@ -407,7 +407,8 @@ const BASE_VIDEO_ITEM = {
 test("getVideoDetailsContext returns snippet/status/recordingDate but never localizations", async () => {
   const youtube = fakeYoutubeClient({
     videosList: (async (args: { part?: string[] }) => {
-      assert.deepEqual(args.part, ["snippet", "status", "recordingDetails"]);
+      // BL-186 stage 3 (owner msg 3134): the paid-promotion mark became a video-details field, so its part is read too.
+      assert.deepEqual(args.part, ["snippet", "status", "recordingDetails", "paidProductPlacementDetails"]);
       return { data: { items: [BASE_VIDEO_ITEM] } };
     }) as unknown as youtube_v3.Youtube["videos"]["list"],
   });
@@ -418,6 +419,7 @@ test("getVideoDetailsContext returns snippet/status/recordingDate but never loca
   assert.equal(context!.snippet.title, "Original Title");
   assert.equal(context!.status.privacyStatus, "public");
   assert.equal(context!.recordingDate, null);
+  assert.equal(context!.paidProductPlacement, null);
   assert.equal("localizations" in context!, false);
 });
 

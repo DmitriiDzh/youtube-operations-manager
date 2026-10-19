@@ -52,7 +52,7 @@ export type ServiceDependencies = {
       channelId: string;
       operationId: string;
       videoId: string;
-      snapshot: { kind: "video_fields"; snippet: Record<string, unknown>; status: Record<string, unknown>; recordingDate: string | null };
+      snapshot: { kind: "video_fields"; snippet: Record<string, unknown>; status: Record<string, unknown>; recordingDate: string | null; paidProductPlacement?: boolean | null };
     }): Promise<{ path: string; capturedAt: string }>;
   };
   auditStore: {
@@ -193,6 +193,7 @@ export function createVideoDetailsServices(deps: ServiceDependencies) {
               containsSyntheticMedia: before.containsSyntheticMedia,
             },
             recordingDate: before.recordingDate,
+            paidProductPlacement: before.paidProductPlacement ?? null,
           },
         });
 
