@@ -2059,9 +2059,15 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
   (1) When a document really changed (a local edit, or a peer's file with new changes), `mergeIncoming` still runs `Automerge.load`/`merge`/`save`
   and the full projection on the server's only thread: about 2 s per 0.7 MB channel document, during which every click and request
   waits. The first cycle after each server start is such a full pass for every channel.
-  (2) A channel's document keeps its whole history: 0.7 MB on 2026-10-19, ~650 ms per load, and growing.
+  (2) A full `Automerge.load` costs ~650 ms per 0.7 MB document (2026-10-19). The size comes from the drafts themselves (~770
+  changes per channel), not from a long history (55–101 history entries). Measured on a copy: the merge itself takes 4 ms, save
+  35 ms, and the conflict scan 30 ms. `loadIncremental` of the peer's bytes into an already loaded document takes 6 ms, with the
+  same heads as a full merge. Loading both documents from scratch, and re-projecting every row, make up the rest.
 - **Bounds:** the caches are keyed by the bytes' sha256, so they are never stale. A failed projection is never recorded as clean,
   so the next cycle repairs it.
 - **Re-evaluate:** when a document passes 2 MB, when a load passes 1.5 s, or when the owner again reports clicks waiting while drafts
-  sync. Options: move the merge to a `worker_thread`, or compact the history (a cross-device format decision, needs an ADR).
+  sync. Options, as proposed to the owner (Telegram msg 3084):
+  - keep the loaded document in memory and apply peers with `loadIncremental`. This silently accepts a foreign lineage, so it needs
+    its own lineage check. Project only the changed rows.
+  - move the work to a `worker_thread`.
 - **Gate(s):** none. **Status:** open.
