@@ -70,6 +70,8 @@ type Overview = {
   } | null;
   videoSettings: LiveVideoSettings | null;
   videoSettingsProblem: string | null;
+  /** Owner msg 3153: the channel's baseline title/description language -- the broadcast's language. */
+  channelDefaultLanguage?: string | null;
   /** BL-186 stage 3: the last video settings summary (any age). */
   videoSettingsLast?: { at: string; detail: Record<string, unknown> } | null;
   events: Array<{ id: string; at: string; kind: string; detail: Record<string, unknown> }>;
@@ -225,7 +227,7 @@ export function LiveStreamPanel({ channelId, visible }: { channelId: string | nu
         <>
           <StatusCard overview={overview} base={base!} onChanged={load} />
           <SettingsCard overview={overview} base={base!} onChanged={load} />
-          <LiveStreamVideoSettingsCard base={base!} saved={overview.videoSettings} problem={overview.videoSettingsProblem} onChanged={load} />
+          <LiveStreamVideoSettingsCard base={base!} channelLanguage={overview.channelDefaultLanguage ?? null} saved={overview.videoSettings} problem={overview.videoSettingsProblem} onChanged={load} />
           <RotationCard overview={overview} base={base!} onChanged={load} />
           <HistoryCard overview={overview} />
         </>
@@ -544,7 +546,8 @@ function StartVideoSettingsSummary({ settings, apply }: { settings: Omit<LiveVid
         <dt className="text-zinc-500">{t("live.video.field.category")}</dt>
         <dd className="text-zinc-200">{settings.categoryId ? t(`publishingSettings.category.${settings.categoryId}` as UiTextKey) : "—"}</dd>
         <dt className="text-zinc-500">{t("live.video.field.defaultLanguage")}</dt>
-        <dd className="text-zinc-200">{settings.defaultLanguage ?? "—"}</dd>
+        {/* Owner msg 3153: the channel's baseline, as sent (the stream's own field is not used). */}
+        <dd className="text-zinc-200">{typeof apply?.patch.defaultLanguage === "string" ? apply.patch.defaultLanguage : "—"}</dd>
         <dt className="text-zinc-500">{t("live.video.field.audioLanguage")}</dt>
         <dd className="text-zinc-200">{settings.defaultAudioLanguage ?? "—"}</dd>
         <dt className="text-zinc-500">{t("live.video.section.marks")}</dt>

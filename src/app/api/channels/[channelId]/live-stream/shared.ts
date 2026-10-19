@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
 import { authOptions } from "@/lib/auth";
 import { createChannelAccessCore } from "@/lib/channel-access";
-import { latestLiveStreamEvent, listLiveStreamEvents } from "@/lib/db";
+import { getChannelExpectedLanguages, latestLiveStreamEvent, listLiveStreamEvents } from "@/lib/db";
 import { createPlaylistManagementCore } from "@/lib/playlist-management";
 import { createVideoDetailsCore } from "@/lib/video-details";
 import {
@@ -89,7 +89,7 @@ export function createLiveStreamRouteCore(): LiveStreamRouteCore {
   const videoSettings = createStreamVideoSettingsCore();
   return {
     async overview(channelId) {
-      const [view, module, running, events, preview, youtube, entries, peers, video, lastApply] = await Promise.all([
+      const [view, module, running, events, preview, youtube, entries, peers, video, lastApply, languages] = await Promise.all([
         rotation.getOverview(channelId),
         settings.get(),
         supervisor.runningHelper(channelId),
@@ -100,6 +100,7 @@ export function createLiveStreamRouteCore(): LiveStreamRouteCore {
         listPeerLiveStreams().catch(() => []),
         videoSettings.get(channelId),
         latestLiveStreamEvent(channelId, "video_settings_applied"),
+        getChannelExpectedLanguages(channelId),
       ]);
       return {
         ...view,
@@ -107,6 +108,8 @@ export function createLiveStreamRouteCore(): LiveStreamRouteCore {
         videoSettings: video.ok ? video.settings : null,
         videoSettingsProblem: video.ok ? null : video.problem,
         // BL-186 stage 3: the last video settings summary, read on its own (a 24/7 stream pushes it out of the 50 events).
+        // Owner msg 3153: the broadcast's title/description language is the channel's baseline (shown read-only in the form).
+        channelDefaultLanguage: languages.defaultLanguage,
         videoSettingsLast: lastApply ? { at: lastApply.at.toISOString(), detail: JSON.parse(lastApply.detailJson) as unknown } : null,
         module,
         // §3.10: the state in the one vocabulary the report and the Operator use.

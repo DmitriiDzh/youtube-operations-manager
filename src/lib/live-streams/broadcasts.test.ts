@@ -29,7 +29,7 @@ type HarnessVideo = {
   crash?: boolean;
 };
 
-function harness(opts: { video?: HarnessVideo; recordingRequired?: boolean; insertError?: string; liveWrites?: boolean; streamId?: string | null; broadcastId?: string | null; intent?: "on" | "off"; wrongChannel?: boolean; transitionError?: string; bindError?: string; readBack?: Partial<{ title: string }>; encoderFails?: boolean; videoSettingsJson?: string | null } = {}) {
+function harness(opts: { channelLanguage?: string | null; video?: HarnessVideo; recordingRequired?: boolean; insertError?: string; liveWrites?: boolean; streamId?: string | null; broadcastId?: string | null; intent?: "on" | "off"; wrongChannel?: boolean; transitionError?: string; bindError?: string; readBack?: Partial<{ title: string }>; encoderFails?: boolean; videoSettingsJson?: string | null } = {}) {
   const calls: string[] = [];
   const events: Array<{ kind: string; detail: Record<string, unknown> }> = [];
   let stream = {
@@ -53,6 +53,7 @@ function harness(opts: { video?: HarnessVideo; recordingRequired?: boolean; inse
   let inBackground = false;
   const deps: BroadcastsDependencies = {
     background: (task) => void tasks.push(task),
+    channelLanguage: async () => (opts.channelLanguage === undefined ? "en" : opts.channelLanguage),
     sleep: async () => undefined,
     thumbnails: { read: async () => video.thumbnailFile ?? null },
     videoFields:
@@ -492,7 +493,8 @@ test("Start answers at once; then the video settings go to the broadcast's video
 
 test("an empty field is not sent: no tags, no category, no languages, no date -> only the values that always exist", async () => {
   const bare = JSON.stringify({ ...JSON.parse(SAVED_SETTINGS), tags: [], categoryId: null, defaultLanguage: null, defaultAudioLanguage: null, recordingDate: null, playlists: [] });
-  const h = harness({ videoSettingsJson: bare, streamId: "STREAM1" });
+  // No channel baseline either (the language comes from it, owner msg 3153).
+  const h = harness({ videoSettingsJson: bare, streamId: "STREAM1", channelLanguage: null });
   await h.broadcasts.start("UC1", { userId: "u1" });
   await h.runBackground();
   // The owner's embedding choice is sent explicitly too (review: spike C showed it is one flag with the broadcast's enableEmbed).
@@ -600,4 +602,18 @@ test("a run that throws still leaves a failed summary (the page never waits fore
   const summary = h.events.find((e) => e.kind === "video_settings_applied")?.detail as { ok: boolean; steps: Array<{ step: string; ok: boolean; error?: string }> };
   assert.equal(summary.ok, false);
   assert.deepEqual(summary.steps.at(-1), { step: "run", ok: false, error: "the database went away" });
+});
+
+// Owner, Telegram msg 3153 (option а): the broadcast's title/description language is the channel's baseline, never the stream's field.
+test("the language sent is the channel's baseline, whatever the stream's settings say; no baseline -> not sent", async () => {
+  const german = JSON.stringify({ ...JSON.parse(SAVED_SETTINGS), defaultLanguage: "de" });
+  const h = harness({ videoSettingsJson: german, streamId: "STREAM1", channelLanguage: "ja" });
+  await h.broadcasts.start("UC1", { userId: "u1" });
+  await h.runBackground();
+  assert.equal(h.applied[0]?.patch.defaultLanguage, "ja");
+
+  const none = harness({ videoSettingsJson: german, streamId: "STREAM1", channelLanguage: null });
+  await none.broadcasts.start("UC1", { userId: "u1" });
+  await none.runBackground();
+  assert.equal("defaultLanguage" in (none.applied[0]?.patch ?? {}), false);
 });

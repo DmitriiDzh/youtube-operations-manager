@@ -267,6 +267,8 @@ export const liveStreams = {
   "live.event.recordingRequired": "YouTube did not allow switching recording off — the broadcast is recorded",
   "live.event.videoSettingsStep": "Video setting",
   "live.event.videoSettingsApplied": "Video settings sent",
+  "live.video.languageFromChannel": "The channel's baseline language: it is always the one sent. Change it in Languages → channel settings.",
+  "live.video.languageFromChannelMissing": "The channel has no baseline language: none is sent. Set it in Languages → channel settings.",
   "live.start.videoSettingsTitle": "Saved video settings",
   "live.video.title": "On YouTube",
   "live.video.info": "Every setting YouTube lets an app set for a broadcast and its video. What only YouTube Studio can set is listed at the end.",

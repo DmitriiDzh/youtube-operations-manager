@@ -76,11 +76,14 @@ async function request<T>(url: string, init: RequestInit, fallback: string, t: R
 
 export function LiveStreamVideoSettingsCard({
   base,
+  channelLanguage,
   saved,
   problem,
   onChanged,
 }: {
   base: string;
+  /** Owner msg 3153: the channel's baseline language, which the broadcast always gets. */
+  channelLanguage: string | null;
   saved: LiveVideoSettings | null;
   problem: string | null;
   onChanged: () => Promise<void>;
@@ -265,17 +268,15 @@ export function LiveStreamVideoSettingsCard({
               ))}
             </select>
           </label>
-          <label className="flex flex-col gap-1 text-xs text-zinc-400">
+          {/* Owner, Telegram msg 3153 (option а): always the channel's baseline language -- shown, not chosen here, so Batches
+              (which align every video to the baseline) and the stream never undo each other. */}
+          <div className="flex max-w-64 flex-col gap-1 text-xs text-zinc-400">
             {t("live.video.field.defaultLanguage")}
-            <select value={form.defaultLanguage ?? ""} onChange={(e) => setForm({ ...form, defaultLanguage: e.target.value || null })} disabled={busy} className={`${inputClass} max-w-56`}>
-              <option value="">{t("live.video.notSet")}</option>
-              {languageOptions.map((lang) => (
-                <option key={lang.code} value={lang.code}>
-                  {lang.code} — {lang.name}
-                </option>
-              ))}
-            </select>
-          </label>
+            <p className="rounded-md border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-sm text-zinc-200">
+              {channelLanguage ? `${channelLanguage} — ${languageOptions.find((l) => l.code === channelLanguage)?.name ?? channelLanguage}` : t("live.video.notSet")}
+            </p>
+            <span className="text-[11px] text-zinc-500">{channelLanguage ? t("live.video.languageFromChannel") : t("live.video.languageFromChannelMissing")}</span>
+          </div>
           <label className="flex flex-col gap-1 text-xs text-zinc-400">
             {t("live.video.field.audioLanguage")}
             <select value={form.defaultAudioLanguage ?? ""} onChange={(e) => setForm({ ...form, defaultAudioLanguage: e.target.value || null })} disabled={busy} className={`${inputClass} max-w-56`}>

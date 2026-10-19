@@ -91,6 +91,8 @@ export type BroadcastsDependencies = {
   };
   /** BL-186 stage 3: the video-level writers the app layer plugs in (video-details, playlist-management; AGENTS.md §M). */
   videoFields?: VideoFieldsPort;
+  /** BL-186 stage 3: the channel's baseline title/description language (owner msg 3153: the broadcast's language is always it). */
+  channelLanguage(channelId: string): Promise<string | null>;
   /** BL-186 stage 3: the stream's chosen thumbnail file on this computer. */
   thumbnails: { read(channelId: string): Promise<{ kind: "jpeg" | "png"; bytes: Uint8Array } | null> };
   /** Runs the video settings after Start without holding Start's answer (tests run it in place). */
@@ -156,6 +158,7 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
   function runVideoSettings(args: { channelId: string; broadcastId: string; credentialRef: unknown; credentials: ResolvedCredentials; settings: LiveVideoSettings; trigger: "start" | "again" }): Promise<VideoApplyResult> {
     return withLock(`video-settings:${args.channelId}`, async () => {
       try {
+        const channelLanguage = await deps.channelLanguage(args.channelId);
         return await applyVideoSettings(
           {
             videoFields: deps.videoFields,
@@ -168,7 +171,7 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
               return stream?.intent === "on" && stream.broadcastId === broadcastId;
             },
           },
-          args
+          { ...args, channelLanguage }
         );
       } catch (error) {
         // Never a silent end (review): the page reads this summary, so a run that threw still leaves one.
@@ -281,6 +284,7 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
       const settings = await deps.settings();
       const stored = readStoredVideoSettings(stream.videoSettingsJson);
       const videoSettings = stored.ok ? stored.settings : null;
+      const apply = videoSettings && deps.videoFields ? describeVideoApply(videoSettings, await deps.channelLanguage(channelId)) : null;
       return {
         createsStream: !stream.streamId,
         broadcast: {
@@ -300,9 +304,9 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
          * broadcast's video right after the encoder starts (`videoSettingsApply`: exactly what, and its units).
          */
         videoSettings: videoSettings ? { ...videoSettings, broadcast: undefined } : null,
-        videoSettingsApply: videoSettings && deps.videoFields ? describeVideoApply(videoSettings) : null,
+        videoSettingsApply: apply,
         videoSettingsProblem: stored.ok ? null : stored.problem,
-        units: (stream.streamId ? 4 : 5) + (videoSettings && deps.videoFields ? describeVideoApply(videoSettings).units : 0),
+        units: (stream.streamId ? 4 : 5) + (apply?.units ?? 0),
         liveWritesEnabled: await deps.liveWritesEnabled(),
         moduleReady: settings.enabled && settings.host.ok,
       };
@@ -318,7 +322,7 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
       const settings = savedVideoSettings(stream);
       if (!settings) throw new DomainError({ code: "validation_failed", message: "Save the stream's video settings first", details: { channelId } });
       if (!deps.videoFields) throw new DomainError({ code: "validation_failed", message: "Video settings cannot be applied here (the video details module is not available)", details: { channelId } });
-      return { broadcastId: stream.broadcastId, ...describeVideoApply(settings), liveWritesEnabled: await deps.liveWritesEnabled() };
+      return { broadcastId: stream.broadcastId, ...describeVideoApply(settings, await deps.channelLanguage(channelId)), liveWritesEnabled: await deps.liveWritesEnabled() };
     },
 
     /** BL-186 stage 3, «Применить снова»: the saved video settings, sent again to the running broadcast's video (the owner's action). */

@@ -1,7 +1,7 @@
 import { randomBytes, randomInt, randomUUID } from "node:crypto";
 import os from "node:os";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
-import {
+import { getChannelExpectedLanguages,
   getLiveStream,
   getLiveWritesEnabled,
   listLiveStreamEvents,
@@ -140,6 +140,7 @@ export function createLiveBroadcastsCore(options: { videoFields?: VideoFieldsPor
   const thumbnails = createThumbnailFs(getProductionAppPaths().liveStreamsThumbnailsDir);
   return createLiveBroadcasts({
     videoFields: options.videoFields,
+    channelLanguage: async (channelId) => (await getChannelExpectedLanguages(channelId)).defaultLanguage,
     thumbnails: { read: (channelId) => thumbnails.read(channelId) },
     settings: () => createLiveStreamsSettingsCore().get(),
     liveWritesEnabled: () => getLiveWritesEnabled(),

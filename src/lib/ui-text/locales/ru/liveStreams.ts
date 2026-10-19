@@ -269,6 +269,8 @@ export const liveStreams: Record<keyof typeof en, string> = {
   "live.event.recordingRequired": "YouTube не разрешил отключить запись — эфир записывается",
   "live.event.videoSettingsStep": "Настройка видео",
   "live.event.videoSettingsApplied": "Настройки видео отправлены",
+  "live.video.languageFromChannel": "Базовый язык канала: всегда отправляется он. Меняется в «Языки» → настройки канала.",
+  "live.video.languageFromChannelMissing": "У канала не задан базовый язык: язык не отправляется. Задайте его в «Языки» → настройки канала.",
   "live.start.videoSettingsTitle": "Сохранённые настройки видео",
   "live.video.title": "На YouTube",
   "live.video.info": "Все настройки, которые YouTube разрешает задать приложению для трансляции и её видео. То, что задаётся только в YouTube Studio, перечислено в конце.",

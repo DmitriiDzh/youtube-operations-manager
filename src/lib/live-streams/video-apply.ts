@@ -44,7 +44,7 @@ export const PLAYLIST_RETRY_DELAY_MS = 2_000;
  * AGENTS.md §F). The booleans and the licence always have a value. Title, description and privacy are the broadcast's own and are
  * kept by video-details' merge onto a fresh read.
  */
-export function buildVideoPatch(settings: LiveVideoSettings): Record<string, unknown> {
+export function buildVideoPatch(settings: LiveVideoSettings, channelLanguage: string | null): Record<string, unknown> {
   const patch: Record<string, unknown> = {
     license: settings.license,
     publicStatsViewable: settings.publicStatsViewable,
@@ -57,7 +57,9 @@ export function buildVideoPatch(settings: LiveVideoSettings): Record<string, unk
   };
   if (settings.tags.length > 0) patch.tags = settings.tags;
   if (settings.categoryId) patch.categoryId = settings.categoryId;
-  if (settings.defaultLanguage) patch.defaultLanguage = settings.defaultLanguage;
+  // Owner, Telegram msg 3153 (option а): the title/description language is always the channel's baseline (Batches align every
+  // video to it, PROJECT_SPEC §14 / FO-REQ-0022) -- never the stream's own field, so the two writers cannot undo each other.
+  if (channelLanguage) patch.defaultLanguage = channelLanguage;
   if (settings.defaultAudioLanguage) patch.defaultAudioLanguage = settings.defaultAudioLanguage;
   if (settings.recordingDate) patch.recordingDate = settings.recordingDate;
   return patch;
@@ -65,10 +67,10 @@ export function buildVideoPatch(settings: LiveVideoSettings): Record<string, unk
 
 /** What applying would send, and its quota units: 1 read + 50 for the update (+ up to 3 read-back reads), 50 for the thumbnail,
  * and per playlist 1 read for its owner, 1 for its items and 50 for the insert. */
-export function describeVideoApply(settings: LiveVideoSettings): { patch: Record<string, unknown>; thumbnail: boolean; playlists: Array<{ id: string; title: string }>; units: number } {
+export function describeVideoApply(settings: LiveVideoSettings, channelLanguage: string | null): { patch: Record<string, unknown>; thumbnail: boolean; playlists: Array<{ id: string; title: string }>; units: number } {
   const thumbnail = settings.thumbnail !== null;
   return {
-    patch: buildVideoPatch(settings),
+    patch: buildVideoPatch(settings, channelLanguage),
     thumbnail,
     playlists: settings.playlists,
     units: 1 + 50 + 1 + (thumbnail ? 50 : 0) + settings.playlists.length * 52,
@@ -81,7 +83,7 @@ function message(error: unknown): string {
 
 export async function applyVideoSettings(
   deps: VideoApplyDependencies,
-  args: { channelId: string; broadcastId: string; credentialRef: unknown; credentials: ResolvedCredentials; settings: LiveVideoSettings; trigger: "start" | "again" }
+  args: { channelId: string; broadcastId: string; credentialRef: unknown; credentials: ResolvedCredentials; settings: LiveVideoSettings; channelLanguage: string | null; trigger: "start" | "again" }
 ): Promise<VideoApplyResult> {
   const { channelId, broadcastId, settings } = args;
   const steps: VideoApplyStep[] = [];
@@ -98,7 +100,7 @@ export async function applyVideoSettings(
 
   // 1. The video's fields: one videos.update through video-details (identity, backup, merge onto a fresh read, read-back).
   try {
-    const { verified } = await deps.videoFields.apply({ credentialRef: args.credentialRef, channelId, videoId: broadcastId, patch: buildVideoPatch(settings) });
+    const { verified } = await deps.videoFields.apply({ credentialRef: args.credentialRef, channelId, videoId: broadcastId, patch: buildVideoPatch(settings, args.channelLanguage) });
     await record(verified ? { step: "fields", ok: true } : { step: "fields", ok: false, error: "YouTube reads back something else" });
   } catch (error) {
     await record({ step: "fields", ok: false, error: message(error) });

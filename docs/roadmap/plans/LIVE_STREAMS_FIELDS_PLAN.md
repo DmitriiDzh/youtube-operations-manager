@@ -267,6 +267,16 @@ picker in one go.
   under a per-channel lock.
 - **Video-details:** gained `paidProductPlacement` (patch, snapshot, backup, read-back, its own `videos.update` part).
 - **Playlist retry:** a playlist add refused once is tried once more after 2 s, after spike C's 409.
+- **Title/description language (owner, Telegram msg 3153, option а, after independent review):** the broadcast's `defaultLanguage` is
+  always the channel's baseline (`channels.expected_default_language`), because Batches align every video to it (PROJECT_SPEC §14,
+  FO-REQ-0022). The form shows the baseline read-only. The saved field is ignored, and with no baseline nothing is sent.
+- **Review fixes:**
+  - read-back of up to 9 × 10 s for this caller;
+  - the summary is read by its own query;
+  - `embeddable` is sent explicitly from `enableEmbed`;
+  - the 1-unit membership check, which is re-run before the playlist retry;
+  - steps after a Stop are skipped;
+  - a run that throws still writes a failed summary.
 
 ## 5. Build order (one branch, merged once on the owner's yes)
 1. **Stage 1 — the picker (BL-187).** Shared `workspace-videos` walk (publishing switched to it), matching, the dialog, the
