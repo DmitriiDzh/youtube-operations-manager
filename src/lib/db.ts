@@ -5624,11 +5624,9 @@ async function initializeDatabase() {
     if (lockAcquired) await releaseOperationLock(rawClient);
   }
 
-  // Gate B toggle: NOT reset here any more (architecture audit 2026-10-01, finding H1). It used to
-  // be forced to false on EVERY process boot -- but the flag is shared by every process, so each CLI
-  // call or MCP spawn silently switched the operator's toggle off (and could strand a running Batch
-  // in APPLYING). "Off by default each session" is now enforced where a session actually starts:
-  // the web server's boot hook (`src/instrumentation.ts` -> `resetLiveWritesForNewServerSession`).
+  // Live-writes toggle: never reset here (architecture audit 2026-10-01, H1: the flag is shared by every process, so a
+  // per-boot reset in each CLI call or MCP spawn switched the owner's toggle off). Since ADR 0044 (owner msg 3157) it is on
+  // by default and nothing resets it anywhere.
 
   // The read-side toggles (`data_api_reads_enabled`/`analytics_reads_enabled`, see
   // `getDataApiReadsEnabled`/`getAnalyticsReadsEnabled` below) are deliberately NOT reset here,
@@ -6228,8 +6226,7 @@ const MCP_CONNECTION_ENABLED_SETTING_KEY = "mcp_connection_enabled";
  * (Batches, single-item apply, playlists); Batches additionally only construct a real
  * `WriteExecutor` when it is true (`createLiveWriteExecutorIfEnabled`). Persisted, not an in-memory module
  * variable, so every process that reads it (the Web app, a separately-spawned MCP process, the
- * CLI) agrees. "Off by default each session" is achieved by `resetLiveWritesForNewServerSession`,
- * run once at web-server boot only (never per process -- H1).
+ * CLI) agrees. Since ADR 0044 it is on by default and only the owner changes it (never a reset).
  */
 const LIVE_WRITES_SESSION_LEASE_SETTING_KEY = "live_writes_session_lease_at";
 
@@ -6246,30 +6243,49 @@ export const LIVE_WRITES_SESSION_LEASE_RENEW_MS = 30 * 1000;
 export const LIVE_WRITES_SESSION_LEASE_MAX_SKEW_MS = 60 * 1000;
 
 /**
- * Gate B: Live writes are honored only while a web-server session is alive (owner rule "off by
- * default at the start of every session", 2026-09-21; architecture audit H1 + review). True only
- * when the persisted toggle is on AND the web server's session lease is fresh. Every consumer (the
- * write gateway, the Batch executor factory, the batch/experiment routes, the Settings snapshot)
- * reads this one function, so the UI toggle and the real write permission can never disagree.
+ * Live writes (ADR 0044, owner msg 3157, 2026-10-19): ON unless the owner switched them off -- a toggle never set counts as on,
+ * and nothing resets it. Honored only while the web server's session lease is fresh, so an MCP/CLI process alone (the app down)
+ * cannot write; a lapsed lease refuses writes but no longer persists "off" -- once the server is back, writes work again.
+ * Every consumer (the write gateway, the Batch executor factory, the batch/experiment routes, the Settings snapshot) reads this
+ * one function, so the UI toggle and the real write permission can never disagree.
  */
 export async function getLiveWritesEnabled(now: Date = new Date()): Promise<boolean> {
-  if ((await getAppSetting(LIVE_WRITES_ENABLED_SETTING_KEY)) !== "true") return false;
+  if ((await getAppSetting(LIVE_WRITES_ENABLED_SETTING_KEY)) === "false") return false;
+  return liveWritesLeaseFresh(now);
+}
+
+const LIVE_WRITES_DEFAULT_ON_MIGRATED_KEY = "live_writes_default_on_migrated";
+
+/**
+ * ADR 0044, once per database: a stored "off" written by the old per-session reset is not the owner's choice -- forget it, so
+ * the toggle starts on as he decided. Called only by the web server's boot hook; afterwards only the owner's setter writes it.
+ */
+export async function migrateLiveWritesToDefaultOn(database: AppDb = db): Promise<boolean> {
+  if ((await getAppSetting(LIVE_WRITES_DEFAULT_ON_MIGRATED_KEY, database)) === "true") return false;
+  // Marker first (review): a failure after it can only leave the old "off" in place (fail closed), never wipe an "off" the owner
+  // set later on a second run.
+  await setAppSetting(LIVE_WRITES_DEFAULT_ON_MIGRATED_KEY, "true", database);
+  await database.delete(appSettings).where(eq(appSettings.key, LIVE_WRITES_ENABLED_SETTING_KEY));
+  return true;
+}
+
+/** ADR 0044 (review): a graceful stop ends the lease at once, so no CLI/MCP process can write in the minutes after the server is
+ * gone. The owner's toggle is untouched. Called only by the web server's signal handlers. */
+export async function expireLiveWritesSessionLease(database: AppDb = db): Promise<void> {
+  await setAppSetting(LIVE_WRITES_SESSION_LEASE_SETTING_KEY, "0", database);
+}
+
+/** The owner's own choice, apart from whether the server is up. */
+export async function getLiveWritesToggle(): Promise<boolean> {
+  return (await getAppSetting(LIVE_WRITES_ENABLED_SETTING_KEY)) !== "false";
+}
+
+async function liveWritesLeaseFresh(now: Date): Promise<boolean> {
   const leaseAt = Number(await getAppSetting(LIVE_WRITES_SESSION_LEASE_SETTING_KEY));
   const age = now.getTime() - leaseAt;
-  // Fresh = stamped within the TTL AND not meaningfully in the future (a lease stamped while the
-  // clock ran ahead must not stay "fresh" for hours after the clock is corrected -- review round 4).
-  if (Number.isFinite(leaseAt) && age < LIVE_WRITES_SESSION_LEASE_TTL_MS && age > -LIVE_WRITES_SESSION_LEASE_MAX_SKEW_MS) {
-    return true;
-  }
-  // A lapsed lease is a real OFF, persisted: the toggle must not silently come back on when a later
-  // renewal happens (e.g. after the laptop wakes), and the Settings UI must show exactly what is
-  // enforced. Re-enabling is always an explicit operator action (review round 4).
-  try {
-    await setAppSetting(LIVE_WRITES_ENABLED_SETTING_KEY, "false");
-  } catch {
-    // Still reported as off below.
-  }
-  return false;
+  // Fresh = stamped within the TTL AND not meaningfully in the future (a lease stamped while the clock ran ahead must not stay
+  // "fresh" for hours after the clock is corrected -- review round 4).
+  return Number.isFinite(leaseAt) && age < LIVE_WRITES_SESSION_LEASE_TTL_MS && age > -LIVE_WRITES_SESSION_LEASE_MAX_SKEW_MS;
 }
 
 /** Called only by the operator-facing web settings route -- turning the toggle on happens inside a
@@ -6286,17 +6302,6 @@ export async function setLiveWritesEnabled(enabled: boolean): Promise<void> {
  */
 export async function renewLiveWritesSessionLease(now: Date = new Date(), database: AppDb = db): Promise<void> {
   await setAppSetting(LIVE_WRITES_SESSION_LEASE_SETTING_KEY, String(now.getTime()), database);
-}
-
-/**
- * Gate B's "off by default at the start of every session" (owner instruction, 2026-09-21: "по
- * дефолту при запуске сессии он выключен") -- called ONLY by the web server's boot hook
- * (`src/instrumentation.ts`), never by an MCP server or CLI process: the flag is shared by all
- * processes, so resetting it from any of them would switch the operator's live toggle off
- * mid-session (architecture audit 2026-10-01, H1).
- */
-export async function resetLiveWritesForNewServerSession(database: AppDb = db): Promise<void> {
-  await setAppSetting(LIVE_WRITES_ENABLED_SETTING_KEY, "false", database);
 }
 
 /**

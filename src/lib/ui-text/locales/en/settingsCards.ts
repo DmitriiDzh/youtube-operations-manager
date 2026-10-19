@@ -2,10 +2,10 @@
 export const settingsCards = {
   "settingsCards.saveApply": "Save / Apply",
   "settingsCards.discardChanges": "Discard changes",
-  "settingsCards.liveWrites.info": "Off by default every session. When on, a Batch you create can be a real (non-dry-run) one, and the Batches tab gets an actual “Execute” action that writes to YouTube. This is layer 1 of a two-layer barrier -- turning it on does not by itself send anything.",
-  "settingsCards.liveWrites.toggle": "Enable live writes for this session",
+  "settingsCards.liveWrites.info": "On by default (ADR 0044) and stays as you leave it -- a restart does not change it. While it is on, every part of the app may write to YouTube through its own checks (a Batch's Execute, video details, playlists, publishing, live streams, the Operator over MCP). Turn it off to stop every YouTube write at once; it stays off until you turn it on again.",
+  "settingsCards.liveWrites.toggle": "Allow writes to YouTube",
   "settingsCards.liveWrites.confirmTitle": "Enable real YouTube writes?",
-  "settingsCards.liveWrites.confirmBody": "A Batch you create while this is on can be a real, non-dry-run one, and the Batches tab will offer an actual Execute action. This does not send anything by itself -- but it removes the safety barrier that currently makes that impossible. Turn it back off any time; it also resets to off automatically the next time the app restarts.",
+  "settingsCards.liveWrites.confirmBody": "While this is on, every part of the app may write to YouTube through its own checks, and the Batches tab offers an actual Execute action. Turning it on sends nothing by itself. It stays on until you turn it off.",
   "settingsCards.enable": "Enable",
   "settingsCards.appVersion.loadFailed": "Could not load build-info.json",
   "settingsCards.appVersion.title": "App version",

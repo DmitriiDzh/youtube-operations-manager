@@ -51,10 +51,8 @@ const marketIntelligenceCore = createMarketIntelligenceCore();
 
 /**
  * App-wide settings (Settings tab, owner instruction 2026-09-21). Two flags today:
- * - `liveWritesEnabled` -- Gate B toggle (docs/TECHNICAL_DEBT.md RISK-09). Reset to off when the
- *   web server starts and when it shuts down (`src/instrumentation.ts`), regardless of what was
- *   last saved;
- *   turning this on is layer 1 of the two-layer live-write barrier, not the write itself.
+ * - `liveWritesEnabled` -- the Live-writes toggle (ADR 0044): on by default, never reset; the owner's off persists. Reported as
+ *   the effective state (the toggle AND a live web-server lease), so it reads off while the server is not renewing its lease.
  * - `deviceAutoSyncEnabled` -- automatic device sync (docs/roadmap/plans/DEVICE_AUTO_SYNC_PLAN.md
  *   §3.7). On by default, persistent, device-local.
  * - `operatorCliEnabled` -- Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md 12.5): whether the CLI

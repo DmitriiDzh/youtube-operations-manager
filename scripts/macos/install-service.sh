@@ -156,7 +156,7 @@ while [ "$ATTEMPT" -lt 900 ]; do
     echo ""
     echo "Done. The server runs as a system service and starts when the Mac is switched on."
     echo "  - Any account on this Mac opens it at http://localhost:$PORT"
-    echo "  - It is never stopped by idleness; 10 minutes without an open window only switch Live writes off."
+    echo "  - It is never stopped by idleness (and, since ADR 0044, idleness does not switch Live writes off)."
     echo "  - It builds and runs only the dev or main branch of $ROOT."
     echo "  - To restart it (e.g. to load a new commit): stop.sh. To remove the service: uninstall-service.command."
     exit 0

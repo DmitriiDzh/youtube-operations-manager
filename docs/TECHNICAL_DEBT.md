@@ -274,6 +274,16 @@ Verified: `npm test`, lint, build, and a production-server smoke test (`/`, `/ap
 
 ## RISK-09 — Phase 5 write-safety infrastructure does not exist yet
 
+- **Update 2026-10-19 (ADR 0044, owner, Telegram msg 3157): "off by default every session" is withdrawn by the owner's decision.**
+  - Live writes are on unless the owner switched them off. Nothing resets them: not a boot, not a shutdown, not the idle window.
+  - The session lease stays only as a liveness check. Writes are refused while the web server is down, but a lapse no longer
+    persists OFF.
+  - What still guards a real write:
+    - each write path's own checks (identity, dry run/approval, backup, read-back);
+    - Batches' second layer;
+    - the owner's toggle when he turns it off.
+  - The 2026-10-01 bullets below describe the earlier model and remain as history.
+
 - **Update 2026-10-01 (architecture audit H1 and its review).** Rule: **Live writes are honored
   only while a web-server session is alive.**
   - `getLiveWritesEnabled` is true only when the toggle is on AND the web server's session lease

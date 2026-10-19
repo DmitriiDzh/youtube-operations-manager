@@ -87,7 +87,7 @@ type ApiError = { error: string; message: string; details?: unknown };
  *
  * "Create as a real batch" and the "Execute" action below are only rendered/enabled when
  * the Settings-tab "live writes" toggle is on (owner instruction, 2026-09-21,
- * docs/TECHNICAL_DEBT.md RISK-09) -- with it off (the default every session), a batch
+ * docs/TECHNICAL_DEBT.md RISK-09) -- with it off (the owner's choice; on by default since ADR 0044), a batch
  * created here is still forced dry-run by the API route regardless of what this UI sends
  * (see src/app/api/channels/[channelId]/batches/route.ts), and Execute is hidden
  * entirely, exactly as before this change.

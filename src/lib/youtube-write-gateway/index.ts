@@ -56,7 +56,7 @@ export async function assertLiveWritesAuthorized(): Promise<void> {
   throw new DomainError({
     code: "live_writes_disabled",
     message:
-      "Real YouTube write execution is disabled -- the Settings tab's \"live writes\" toggle is off (defaults off every session, docs/TECHNICAL_DEBT.md RISK-09/Gate B).",
+      "Real YouTube write execution is disabled -- the Settings tab's \"live writes\" toggle is off, or the app's web server is not running (ADR 0044: on by default, only the owner turns it off).",
   });
 }
 

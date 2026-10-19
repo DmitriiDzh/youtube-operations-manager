@@ -60,8 +60,8 @@ export function resolveIdleTimeoutMs(env: Record<string, string | undefined> = p
 /**
  * What an expired idle window does (BL-158). `exit`: the process ends (the launcher-started server, BL-116).
  * `end-session`: the macOS system service (owner, 2026-10-08: started at power-on so the second Mac account can work
- * without the owner) must never stop by idleness, but Live writes still live only as long as a session (RISK-09), so
- * the same window ends the session instead -- once per idle period, again after new activity goes idle.
+ * without the owner) must never stop by idleness; the same window only marks the session's end in the log -- once per
+ * idle period, again after new activity goes idle. (It used to reset Live writes; ADR 0044 ended that.)
  * Only `YTOM_SERVICE_MODE=1`, set by the service's launchd job, selects it; anything else keeps today's exit.
  */
 export type IdleAction = "exit" | "end-session";
@@ -72,17 +72,13 @@ export function resolveIdleAction(env: Record<string, string | undefined> = proc
 
 /**
  * The handler an expired idle window runs (`src/instrumentation.ts`), built here so each action's behaviour is tested.
- * `end-session` (BL-158): reset Live writes, then report -- it never stops pods, flushes or exits; the process goes on.
- * Resolves false when the reset failed, so the watcher tries again: under the service nothing else would ever switch
- * Live writes off (the process keeps renewing the session lease), unlike the exit below.
- * `exit` (BL-116): reset Live writes (best effort: the process is going away and the lease lapses within its TTL), stop
- * a running generation pod (AC-P14-09), publish unexported changes, then exit -- in that order, and the exit happens
- * even when an earlier step fails.
+ * `end-session` (BL-158): report the session's end -- it never stops pods, flushes or exits; the process goes on.
+ * `exit` (BL-116): stop a running generation pod (AC-P14-09), publish unexported changes, then exit -- in that order, and
+ * the exit happens even when an earlier step fails. Neither resets Live writes any more (ADR 0044, owner msg 3157).
  */
 export function createIdleHandler(
   action: IdleAction,
   steps: {
-    resetLiveWrites: () => Promise<void>;
     stopPods: () => Promise<unknown>;
     flush: () => Promise<unknown>;
     exit: () => void;
@@ -91,22 +87,18 @@ export function createIdleHandler(
   }
 ): () => Promise<boolean> {
   if (action === "end-session") {
-    return () =>
-      steps.resetLiveWrites().then(
-        () => {
-          steps.onSessionEnded();
-          return true;
-        },
-        (error: unknown) => {
-          steps.onSessionEndFailed(error);
-          return false;
-        }
-      );
+    return async () => {
+      try {
+        steps.onSessionEnded();
+        return true;
+      } catch (error) {
+        steps.onSessionEndFailed(error);
+        return false;
+      }
+    };
   }
   return () =>
-    steps
-      .resetLiveWrites()
-      .catch(() => undefined)
+    Promise.resolve()
       .then(() => steps.stopPods())
       .then(() => steps.flush())
       .then(() => true)

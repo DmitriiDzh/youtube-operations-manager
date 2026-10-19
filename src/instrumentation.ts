@@ -9,14 +9,9 @@ const DB_INIT_RETRY_POLL_MS = 5_000;
  * Next.js's own `register()` hook -- called once when a new server instance starts, before it
  * accepts requests (node_modules/next/dist/docs/.../instrumentation.md).
  *
- * Gate B "off by default at the start of every session" (owner, 2026-09-21): the web server's
- * boot is the session start, so the shared Live-writes flag is reset here -- and ALSO when the web
- * server session ends (idle auto-shutdown, SIGINT/SIGTERM), so an MCP/CLI-only period after the web
- * server has stopped never inherits a Live-writes toggle nobody enabled for it (architecture-audit
- * review, H1). The signal handlers only reset -- Next.js keeps ownership of the actual shutdown, so
- * in-flight requests still drain. A hard crash can still skip the shutdown reset; the next web boot resets it
- * (docs/TECHNICAL_DEBT.md RISK-09). Deliberately NOT done in db.ts initialization, which also runs
- * in every MCP/CLI process and used to switch the operator's live toggle off mid-session (H1).
+ * Live writes (ADR 0044, owner msg 3157, 2026-10-19): on by default and never reset by the server -- not at boot, not at
+ * shutdown, not when idle. The web server only renews its session lease, so writes are honored while it runs; an MCP/CLI
+ * process alone (the app down) cannot write. The owner's toggle in Settings is the one switch that turns writes off.
  *
  * The idle auto-shutdown itself (`src/lib/idle-shutdown.ts`, owner instruction 2026-09-25) is armed
  * only in a real production process, never during `next dev`.
@@ -54,9 +49,12 @@ export async function register() {
 
 async function startServerSession() {
   // Dynamic import keeps db.ts out of the edge/instrumentation bundle graph.
-  const { LIVE_WRITES_SESSION_LEASE_RENEW_MS, renewLiveWritesSessionLease, resetLiveWritesForNewServerSession } =
+  const { LIVE_WRITES_SESSION_LEASE_RENEW_MS, expireLiveWritesSessionLease, migrateLiveWritesToDefaultOn, renewLiveWritesSessionLease } =
     await import("@/lib/db");
-  await resetLiveWritesForNewServerSession();
+  // ADR 0044: once per database, the "off" left by the old per-session reset is forgotten (the toggle starts on).
+  await migrateLiveWritesToDefaultOn().catch((error: unknown) =>
+    createDefaultLogger().error({ event: "live_writes.default_on_migration_failed", context: { message: error instanceof Error ? error.message : String(error) } })
+  );
 
   // Session lease (architecture-audit review, round 3): Live writes are honored only while this web
   // server keeps renewing it, so ANY end of the session -- including a crash or Windows
@@ -72,19 +70,11 @@ async function startServerSession() {
   await renewQuietly();
   setInterval(() => void renewQuietly(), LIVE_WRITES_SESSION_LEASE_RENEW_MS).unref();
 
-  const resetQuietly = async () => {
-    try {
-      await resetLiveWritesForNewServerSession();
-    } catch {
-      // Best effort -- the next web boot resets it anyway.
-    }
-  };
-  // On SIGINT/SIGTERM only RESET -- never exit here. Next.js's own signal handler closes the server
-  // and lets in-flight requests finish (e.g. a Batch executing inside one request) before it exits;
-  // exiting ourselves would cut such a request off mid-write (architecture-audit review, round 2).
-  // The reset is a single local SQLite write, which in practice completes long before Next's drain.
-  process.once("SIGINT", () => void resetQuietly());
-  process.once("SIGTERM", () => void resetQuietly());
+  // ADR 0044: SIGINT/SIGTERM no longer touch the owner's toggle; they only end this server's lease at once (review), so no CLI/MCP
+  // process can write in the minutes after the server is gone. Next.js's own handler still closes the server and drains requests.
+  const expireQuietly = () => void expireLiveWritesSessionLease().catch(() => undefined);
+  process.once("SIGINT", expireQuietly);
+  process.once("SIGTERM", expireQuietly);
 
   // Automatic device sync (docs/roadmap/plans/DEVICE_AUTO_SYNC_PLAN.md §3.5): the snapshot tick
   // (export when changed / import a fast-forward / otherwise notify) and the draft sync-gateway
@@ -527,7 +517,6 @@ async function startServerSession() {
   const idleAction = resolveIdleAction();
   const idleLogger = createDefaultLogger();
   const onIdle = createIdleHandler(idleAction, {
-    resetLiveWrites: () => resetLiveWritesForNewServerSession(),
     // A running generation pod is terminated BEFORE the process goes away (AC-P14-09; bounded inside).
     stopPods: () => media.stopForShutdown(),
     flush: async () => {
@@ -535,7 +524,7 @@ async function startServerSession() {
       await tickQuietly({ force: true, exportOnly: true });
     },
     exit: () => process.exit(0),
-    onSessionEnded: () => idleLogger.info({ event: "idle_shutdown.session_ended", context: { liveWritesReset: true } }),
+    onSessionEnded: () => idleLogger.info({ event: "idle_shutdown.session_ended", context: {} }),
     onSessionEndFailed: (error) =>
       idleLogger.error({
         event: "idle_shutdown.session_end_failed",

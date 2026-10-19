@@ -18,7 +18,7 @@ type Settings = {
 };
 
 /**
- * "Live writes" is the Gate B toggle (docs/TECHNICAL_DEBT.md RISK-09) -- off by default every
+ * "Live writes" is the Gate B toggle (docs/TECHNICAL_DEBT.md RISK-09) -- on by default since ADR 0044 (owner msg 3157); before that it was off by default every
  * session (the web server resets it to false when it starts and when it shuts down,
  * `src/instrumentation.ts`), and turning it on here is layer 1 of the two-layer live-write barrier,
  * never the write itself. The "MCP connection" toggle used to live in this same component --
