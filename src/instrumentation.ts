@@ -484,7 +484,9 @@ async function startServerSession() {
   // deliberately NOT "busy" for the idle watcher below (plan §3.1): Live writes still reset after 10 idle minutes.
   let liveStreams: import("@/lib/live-streams").LiveStreamsRunner | null = null;
   try {
-    liveStreams = (await import("@/lib/live-streams")).createLiveStreamsRunnerCore();
+    // BL-205: the segment switcher applies the video settings and adds recordings through modules plugged in here (§M).
+    const { createLiveStreamVideoFields } = await import("@/composition/live-stream-video-fields");
+    liveStreams = (await import("@/lib/live-streams")).createLiveStreamsRunnerCore({ videoFields: createLiveStreamVideoFields() });
   } catch (error) {
     console.warn(`[live-streams] not started: ${error instanceof Error ? error.message : String(error)}`);
   }

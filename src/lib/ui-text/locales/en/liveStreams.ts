@@ -189,6 +189,7 @@ export const liveStreams = {
   "live.bell.title": "Live streams",
   "live.bell.down": "The live stream has not been on air since {since}.",
   "live.bell.ended": "YouTube ended the live stream at {since}: start a new broadcast.",
+  "live.bell.segmentSwitchFailed": "A live segment switch failed: the old segment is still on air, next attempt in 30 min",
   "live.bell.sourceMissing": "The next video ({videoId}) is not on the Mac: the copied videos are replayed.",
   "live.youtube.title": "On YouTube",
   "live.youtube.status": "Broadcast: {lifecycle} · stream: {stream} · health: {health}",

@@ -24,6 +24,8 @@ export type RunnerDependencies = {
   listStreams(): Promise<Array<{ channelId: string; intent: "on" | "off" }>>;
   supervisor: Pick<StreamSupervisor, "runningHelper" | "liveHelper" | "startEncoder" | "stopEncoder" | "tick" | "checkBroadcast">;
   event(channelId: string, kind: string, detail: Record<string, unknown>): Promise<void>;
+  /** BL-205: the segment switcher, called for each running stream after it is tended (absent: no segments). */
+  segments?: { tick(channelId: string): Promise<void> };
   /** §3.11: this computer's report for the other computers; `false` publishes an empty one (the module is off). */
   publish?(enabled: boolean): Promise<void>;
   now(): number;
@@ -82,8 +84,11 @@ export function createLiveStreamsRunner(deps: RunnerDependencies) {
     const interval = now - startedAt < BROADCAST_FAST_WINDOW_MS ? BROADCAST_CHECK_FAST_MS : BROADCAST_CHECK_INTERVAL_MS;
     if (last === undefined || last < startedAt || now - last >= interval) {
       lastBroadcastCheck.set(channelId, now);
-      await deps.supervisor.checkBroadcast(channelId);
+      const check = await deps.supervisor.checkBroadcast(channelId);
+      if (check?.endedByYoutube) return;
     }
+    // BL-205: the segment switch (and the recordings playlist), only for a stream whose encoder runs.
+    await deps.segments?.tick(channelId);
   }
 
   return {

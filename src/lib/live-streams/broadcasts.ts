@@ -14,6 +14,7 @@ import { isRecordingRequiredRefusal, isRedundantTransition, liveErrorReason, toL
 import { parseWithSchema } from "./schemas";
 import { withChannelLock as withLock } from "./supervisor";
 import { applyVideoSettings, describeVideoApply, type VideoApplyResult, type VideoFieldsPort } from "./video-apply";
+import { readSegmentSettings } from "./segments";
 import { readStoredVideoSettings } from "./video-settings";
 
 // ---------------------------------------------------------------------------
@@ -36,6 +37,9 @@ type Broadcast = {
   lifeCycleStatus: string | null;
   privacyStatus: string | null;
   categoryId: string | null;
+  /** BL-205: YouTube's own start/end times (the segment switch measures its overlap with them). */
+  actualStartTime?: string | null;
+  actualEndTime?: string | null;
 };
 
 export type BroadcastsDependencies = {
@@ -55,6 +59,8 @@ export type BroadcastsDependencies = {
       madeForKids: boolean;
       /** Schema v92 (BL-186): the stream's video and broadcast settings; null = never saved. */
       videoSettingsJson?: string | null;
+      /** Schema v99 (BL-205): the segment settings; segments on means every broadcast records. */
+      segmentsJson?: string | null;
     } | null>;
     update(channelId: string, set: Record<string, unknown>): Promise<boolean>;
     event(channelId: string, kind: string, detail: Record<string, unknown>): Promise<void>;
@@ -88,6 +94,8 @@ export type BroadcastsDependencies = {
     setThumbnail(credentials: ResolvedCredentials, videoId: string, image: { mimeType: "image/jpeg" | "image/png"; bytes: Buffer }): Promise<void>;
     /** BL-186 stage 3: whether a playlist already holds the video (a read; Apply again must not add it twice). */
     playlistHasVideo(credentials: ResolvedCredentials, playlistId: string, videoId: string): Promise<boolean>;
+    /** BL-205: `videos.delete` of a segment that never went live. */
+    deleteVideo(credentials: ResolvedCredentials, videoId: string): Promise<void>;
   };
   /** BL-186 stage 3: the video-level writers the app layer plugs in (video-details, playlist-management; AGENTS.md §M). */
   videoFields?: VideoFieldsPort;
@@ -155,7 +163,7 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
   }
 
   /** BL-186 stage 3: the broadcast's video settings, one channel at a time. */
-  function runVideoSettings(args: { channelId: string; broadcastId: string; credentialRef: unknown; credentials: ResolvedCredentials; settings: LiveVideoSettings; trigger: "start" | "again" }): Promise<VideoApplyResult> {
+  function runVideoSettings(args: { channelId: string; broadcastId: string; credentialRef: unknown; credentials: ResolvedCredentials; settings: LiveVideoSettings; trigger: "start" | "again" | "segment" }): Promise<VideoApplyResult> {
     return withLock(`video-settings:${args.channelId}`, async () => {
       try {
         const channelLanguage = await deps.channelLanguage(args.channelId);
@@ -168,7 +176,9 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
             sleep: deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
             isCurrent: async (channelId, broadcastId) => {
               const stream = await deps.streams.get(channelId);
-              return stream?.intent === "on" && stream.broadcastId === broadcastId;
+              if (stream?.intent !== "on") return "stopped";
+              // BL-205: a segment switch replaced the broadcast -- the new segment gets its own application.
+              return stream.broadcastId === broadcastId ? "current" : "replaced";
             },
           },
           { ...args, channelLanguage }
@@ -211,7 +221,8 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
         enableAutoStart: true,
         enableAutoStop: false,
         enableMonitorStream: false,
-        recordFromStart: false,
+        // BL-205: with segments on, the broadcast records (keeping the recordings is the point of segments).
+        recordFromStart: readSegmentSettings(stream.segmentsJson).enabled,
         // BL-186: the owner's broadcast settings, set at insert (DVR and captions cannot change once live). Never saved: not sent.
         ...(videoSettings ? videoSettings.broadcast : {}),
       };
@@ -314,6 +325,18 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
 
     /** §3.9 Start: create the stream (first time), a broadcast, bind them, then start the encoder. */
     start: (channelId: string, credentialRef: unknown) => withLock(`start:${channelId}`, () => startOnce(channelId, credentialRef)),
+
+    /** BL-205: the saved video settings for a new segment the switcher just made live (in the background, like after Start). */
+    applyVideoSettingsForSegment(args: { channelId: string; broadcastId: string; credentialRef: unknown; credentials: ResolvedCredentials }): void {
+      void (async () => {
+        const stream = await deps.streams.get(args.channelId);
+        const stored = readStoredVideoSettings(stream?.videoSettingsJson);
+        if (!stored.ok || !stored.settings) return;
+        const settings = stored.settings;
+        const task = () => runVideoSettings({ ...args, settings, trigger: "segment" });
+        (deps.background ?? ((run) => void run().catch(() => undefined)))(task);
+      })().catch(() => undefined);
+    },
 
     /** BL-186 stage 3, «Применить снова», step 1 (the dry run): what would be sent to the running broadcast's video now. No call. */
     async previewApplyVideoSettings(channelId: string) {

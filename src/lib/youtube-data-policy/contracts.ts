@@ -217,6 +217,7 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
   live_stream_videos: authorized("our own public videos in a live-stream rotation, with their privacy re-read from YouTube (BL-176)"),
   live_stream_events: authorized("our channels' live-broadcast audit trail and YouTube status changes (BL-176)"),
   live_stream_sources: notApiData("the Operator's map of our videos to local files (BL-176)"),
+  live_stream_segments: authorized("our channels' live-stream segment broadcasts: ids, YouTube's start/end times and recording state (BL-205)"),
   ai_connections: notApiData("AI provider configuration"),
   ai_connection_credentials: notApiData("AI provider secrets"),
   agent_channel_tokens: notApiData("agent credentials (hashes)"),

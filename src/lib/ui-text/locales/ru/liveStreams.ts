@@ -191,6 +191,7 @@ export const liveStreams: Record<keyof typeof en, string> = {
   "live.bell.title": "Трансляции",
   "live.bell.down": "Трансляция не в эфире с {since}.",
   "live.bell.ended": "YouTube завершил трансляцию в {since}: начните новую.",
+  "live.bell.segmentSwitchFailed": "Не удалось переключить сегмент эфира: идёт старый сегмент, новая попытка через 30 мин",
   "live.bell.sourceMissing": "Следующего видео ({videoId}) нет на Mac: по кругу идут уже скопированные.",
   "live.youtube.title": "В YouTube",
   "live.youtube.status": "Трансляция: {lifecycle} · поток: {stream} · здоровье: {health}",

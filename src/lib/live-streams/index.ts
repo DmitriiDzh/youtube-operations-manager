@@ -1,7 +1,7 @@
 import { randomBytes, randomInt, randomUUID } from "node:crypto";
 import os from "node:os";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
-import { getChannelExpectedLanguages,
+import { getChannelExpectedLanguages, latestLiveStreamEvent, getStoredChannel, listOpenLiveStreamSegments, updateLiveStreamSegment, insertLiveStreamSegment, countLiveStreamEvents,
   getLiveStream,
   getLiveWritesEnabled,
   listLiveStreamEvents,
@@ -32,6 +32,9 @@ import type { VideoFieldsPort } from "./video-apply";
 import { createLiveBroadcasts } from "./broadcasts";
 import { createLiveStreamsYoutubeWrites } from "./adapters/youtube-writes";
 import { createLiveStreamsRunner } from "./runner";
+import { createLiveSegments, type LiveSegments } from "./segments";
+import { readStoredVideoSettings } from "./video-settings";
+import { isRedundantTransition } from "./errors";
 import { liveNotices, type LiveNotice } from "./notices";
 import { createRotationPicker } from "./picker-service";
 import { streamReportEntry, type StreamReportEntry } from "./report";
@@ -214,11 +217,77 @@ export async function listPeerLiveStreams(): Promise<Array<{ deviceId: string; h
 }
 
 /** What the server does for live streams by itself (instrumentation's loop): restore, tend, read the broadcast. */
-export function createLiveStreamsRunnerCore() {
+/**
+ * BL-205 (LIVE_SEGMENTS_PLAN.md): the segment switcher. Its writes are the app's own (ADR 0044), made with the channel's connected
+ * account after Live writes and the identity check, each through the gateway adapter. `videoFields` is plugged in by the app layer.
+ */
+export function createLiveSegmentsCore(options: { videoFields?: VideoFieldsPort } = {}): LiveSegments {
+  const writes = createLiveStreamsYoutubeWrites();
+  const broadcasts = createLiveBroadcastsCore(options);
+  const supervisor = createStreamSupervisorCore();
+  const event = async (channelId: string, kind: string, detail: Record<string, unknown>) =>
+    insertLiveStreamEvent({ id: randomUUID(), channelId, at: new Date(), kind, detailJson: JSON.stringify(detail) });
+  return createLiveSegments({
+    streams: {
+      get: (channelId) => getLiveStream(channelId),
+      update: (channelId, set) => updateLiveStream(channelId, { ...set, updatedAt: new Date() }),
+      event,
+      countEventsSince: (channelId, kinds, since) => countLiveStreamEvents(channelId, kinds, since),
+    },
+    segments: {
+      insert: (row) => insertLiveStreamSegment(row),
+      update: (id, set) => updateLiveStreamSegment(id, set),
+      open: (channelId) => listOpenLiveStreamSegments(channelId),
+    },
+    broadcastSettings: async (channelId) => {
+      const stored = readStoredVideoSettings((await getLiveStream(channelId))?.videoSettingsJson);
+      return stored.ok && stored.settings ? stored.settings.broadcast : null;
+    },
+    authorize: async (channelId) => {
+      if (!(await getLiveWritesEnabled())) throw new Error("Live writes are off (Settings)");
+      const channel = await getStoredChannel(channelId);
+      if (!channel?.connectedUserId) throw new Error("The channel has no connected account");
+      const credentialRef = { userId: channel.connectedUserId };
+      const credentials = await resolveGoogleCredentials({ credentialRef, requiredScopes: ["https://www.googleapis.com/auth/youtube.force-ssl"] });
+      await createWriteContextCore().assertWriteChannel({ credentialRef, credentials, expectedChannelId: channelId });
+      return { credentialRef, credentials };
+    },
+    youtube: {
+      insertBroadcast: (credentials, args) => writes.insertBroadcast(credentials, args),
+      bind: (credentials, args) => writes.bind(credentials, args),
+      transition: async (credentials, args) => {
+        try {
+          return await writes.transition(credentials, args);
+        } catch (error) {
+          if (isRedundantTransition(error)) return { lifeCycleStatus: args.broadcastStatus };
+          throw error;
+        }
+      },
+      lifecycles: async (credentials, ids) => {
+        const out: Record<string, { lifeCycleStatus: string | null; actualStartTime: string | null; actualEndTime: string | null }> = {};
+        for (const id of ids) {
+          const b = await writes.getBroadcast(credentials, id);
+          if (b) out[id] = { lifeCycleStatus: b.lifeCycleStatus, actualStartTime: b.actualStartTime ?? null, actualEndTime: b.actualEndTime ?? null };
+        }
+        return out;
+      },
+      deleteVideo: (credentials, videoId) => writes.deleteVideo(credentials, videoId),
+    },
+    applyVideoSettings: (args) => broadcasts.applyVideoSettingsForSegment(args),
+    addToPlaylist: options.videoFields ? (args) => options.videoFields!.addToPlaylist(args) : undefined,
+    playedVideos: async (channelId) => (await supervisor.readStatus(channelId))?.passVideoIds ?? [],
+    newId: () => randomUUID(),
+    clock: () => Date.now(),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  });
+}
+
+export function createLiveStreamsRunnerCore(options: { videoFields?: VideoFieldsPort } = {}) {
   return createLiveStreamsRunner({
     settings: () => createLiveStreamsSettingsCore().get(),
     listStreams: () => listLiveStreams(),
     supervisor: createStreamSupervisorCore(),
+    segments: createLiveSegmentsCore(options),
     event: async (channelId, kind, detail) => insertLiveStreamEvent({ id: randomUUID(), channelId, at: new Date(), kind, detailJson: JSON.stringify(detail) }),
     publish: (enabled) => publishLiveStreamsReport({ enabled }),
     now: () => Date.now(),
@@ -234,7 +303,13 @@ export function createLiveStreamsNoticesCore() {
       if (!settings.enabled || !settings.host.ok) return [];
       const inputs = await Promise.all(
         (await listLiveStreams()).map(async (stream) => {
-          const [status, poll, events] = await Promise.all([supervisor.readStatus(stream.channelId), supervisor.lastYoutubePoll(stream.channelId), listLiveStreamEvents(stream.channelId, 50)]);
+          const [status, poll, events, switched, switchFailed] = await Promise.all([
+            supervisor.readStatus(stream.channelId),
+            supervisor.lastYoutubePoll(stream.channelId),
+            listLiveStreamEvents(stream.channelId, 50),
+            latestLiveStreamEvent(stream.channelId, "live_segment_switched"),
+            latestLiveStreamEvent(stream.channelId, "live_segment_switch_failed"),
+          ]);
           const ended = events.find((e) => e.kind === "youtube_ended" || e.kind === "encoder_start");
           return {
             channelId: stream.channelId,
@@ -243,6 +318,7 @@ export function createLiveStreamsNoticesCore() {
             helper: status ? { state: status.state, updatedAt: status.updatedAt, lastExitAt: status.lastExit?.at ?? null, missingVideoId: status.missingVideoId ?? null } : null,
             youtube: poll ? { checkedAt: poll.checkedAt, lifeCycleStatus: poll.lifeCycleStatus, notLiveSince: poll.notLiveSince } : null,
             endedAt: ended?.kind === "youtube_ended" ? ended.at.getTime() : null,
+            segmentSwitchFailedAt: switchFailed && (!switched || switched.at < switchFailed.at) ? switchFailed.at.getTime() : null,
           };
         })
       );

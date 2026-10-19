@@ -247,6 +247,7 @@ export const SNAPSHOT_DEVICE_LOCAL_TABLES: Readonly<Record<string, string>> = Ob
   live_stream_videos: "this computer's live-stream rotations (BL-176); the original paths are in this computer's copy of the channel folder",
   live_stream_events: "this computer's live-stream audit trail and history (BL-176)",
   live_stream_sources: "the Operator's map of videos to original files on this computer (BL-176)",
+  live_stream_segments: "this computer's live-stream segments (BL-205): the broadcasts of its own stream, recordings and playlist state",
 });
 
 /**

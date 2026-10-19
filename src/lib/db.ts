@@ -1446,9 +1446,32 @@ export const liveStreams = sqliteTable("live_streams", {
   /** Schema v92 (BL-186, LIVE_STREAMS_FIELDS_PLAN.md §3.2): the stream's own video and broadcast settings, JSON validated by the
    * live-streams module on read and write; null = never saved (Start sends only what it sent before BL-186). */
   videoSettingsJson: text("video_settings_json"),
+  /** Schema v99 (BL-205, LIVE_SEGMENTS_PLAN.md §2.1): the segment settings, JSON validated by live-streams; null = never saved (off). */
+  segmentsJson: text("segments_json"),
+  /** Schema v99 (BL-205 §2.2 step 8): the marker of a switch in progress, JSON; null = none. */
+  segmentSwitchingJson: text("segment_switching_json"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
 });
+
+/** Schema v99 (BL-205, LIVE_SEGMENTS_PLAN.md §2.3): one row per segment broadcast of a channel's stream. Device-local. */
+export const liveStreamSegments = sqliteTable(
+  "live_stream_segments",
+  {
+    id: text("id").primaryKey(),
+    channelId: text("channel_id").notNull(),
+    broadcastId: text("broadcast_id").notNull(),
+    startedAt: integer("started_at", { mode: "timestamp_ms" }).notNull(),
+    endedAt: integer("ended_at", { mode: "timestamp_ms" }),
+    switchOverlapMs: integer("switch_overlap_ms"),
+    rotationJson: text("rotation_json"),
+    recordingStatus: text("recording_status", { enum: ["none", "recorded", "processing", "failed"] }).notNull(),
+    playlistStatus: text("playlist_status", { enum: ["none", "pending", "added", "failed"] }).notNull(),
+    playlistAttempts: integer("playlist_attempts").notNull(),
+    failure: text("failure"),
+  },
+  (table) => [index("live_stream_segments_channel_started_idx").on(table.channelId, table.startedAt)]
+);
 
 /**
  * Schema v86 (LIVE_STREAMS_PLAN.md §3.3/§3.4): a channel's rotation, one row per video. `original_path` is relative to the
@@ -5242,6 +5265,34 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
           if (!isDuplicateColumnError(error)) throw error;
         }
       }
+    },
+  },
+  {
+    version: 99,
+    description:
+      "live_streams.segments_json/segment_switching_json + live_stream_segments -- BL-205 (FO-REQ-0032, LIVE_SEGMENTS_PLAN.md): a stream in segments under 12 h, the switch marker and one row per segment. Additive, device-local",
+    apply: async (client) => {
+      for (const statement of ["ALTER TABLE live_streams ADD COLUMN segments_json TEXT", "ALTER TABLE live_streams ADD COLUMN segment_switching_json TEXT"]) {
+        try {
+          await client.execute(statement);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
+      await client.execute(`CREATE TABLE IF NOT EXISTS live_stream_segments (
+        id TEXT PRIMARY KEY,
+        channel_id TEXT NOT NULL,
+        broadcast_id TEXT NOT NULL,
+        started_at INTEGER NOT NULL,
+        ended_at INTEGER,
+        switch_overlap_ms INTEGER,
+        rotation_json TEXT,
+        recording_status TEXT NOT NULL,
+        playlist_status TEXT NOT NULL,
+        playlist_attempts INTEGER NOT NULL DEFAULT 0,
+        failure TEXT
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS live_stream_segments_channel_started_idx ON live_stream_segments (channel_id, started_at)");
     },
   },
 ];
@@ -14324,6 +14375,48 @@ export async function setLiveStreamRotationOrder(channelId: string, videoIds: re
 
 export async function insertLiveStreamEvent(row: typeof liveStreamEvents.$inferInsert, database: AppDb = db): Promise<void> {
   await database.insert(liveStreamEvents).values(row);
+}
+
+export type StoredLiveStreamSegment = typeof liveStreamSegments.$inferSelect;
+
+export async function insertLiveStreamSegment(row: typeof liveStreamSegments.$inferInsert, database: AppDb = db): Promise<void> {
+  await database.insert(liveStreamSegments).values(row);
+}
+
+export async function updateLiveStreamSegment(
+  id: string,
+  set: Partial<Omit<typeof liveStreamSegments.$inferInsert, "id" | "channelId">>,
+  database: AppDb = db
+): Promise<void> {
+  await database.update(liveStreamSegments).set(set).where(eq(liveStreamSegments.id, id));
+}
+
+/** BL-205: how many events of these kinds a channel's stream logged since `since` (the daily switch cap). */
+export async function countLiveStreamEvents(channelId: string, kinds: readonly string[], since: Date, database: AppDb = db): Promise<number> {
+  if (kinds.length === 0) return 0;
+  const [row] = await database
+    .select({ count: sql<number>`count(*)` })
+    .from(liveStreamEvents)
+    .where(and(eq(liveStreamEvents.channelId, channelId), inArray(liveStreamEvents.kind, [...kinds]), gte(liveStreamEvents.at, since)));
+  return Number(row?.count ?? 0);
+}
+
+/** BL-205: the segments of a channel that are still running or whose recording still waits for the playlist. */
+export async function listOpenLiveStreamSegments(channelId: string, database: AppDb = db): Promise<StoredLiveStreamSegment[]> {
+  return database
+    .select()
+    .from(liveStreamSegments)
+    .where(and(eq(liveStreamSegments.channelId, channelId), or(isNull(liveStreamSegments.endedAt), eq(liveStreamSegments.playlistStatus, "pending"))))
+    .orderBy(desc(liveStreamSegments.startedAt));
+}
+
+/** Newest first, started at or after `since`. */
+export async function listLiveStreamSegments(channelId: string, since: Date, database: AppDb = db): Promise<StoredLiveStreamSegment[]> {
+  return database
+    .select()
+    .from(liveStreamSegments)
+    .where(and(eq(liveStreamSegments.channelId, channelId), gte(liveStreamSegments.startedAt, since)))
+    .orderBy(desc(liveStreamSegments.startedAt));
 }
 
 /** Newest first. */

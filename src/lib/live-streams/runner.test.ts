@@ -6,7 +6,7 @@ import { BROADCAST_CHECK_INTERVAL_MS, createLiveStreamsRunner } from "./runner";
 // BL-176 (LIVE_STREAMS_PLAN.md §3.1 "the owner's on is a saved intent", §3.6 "after a Mac restart", §3.8 "after every
 // encoder (re)start, the app reads the broadcast", ADR 0036 §2 "switched off: no timers, no processes").
 
-function harness(opts: { enabled?: boolean; hostOk?: boolean; streams?: Array<{ channelId: string; intent: "on" | "off" }>; startFails?: string; strays?: string[] } = {}) {
+function harness(opts: { enabled?: boolean; hostOk?: boolean; streams?: Array<{ channelId: string; intent: "on" | "off" }>; startFails?: string; strays?: string[]; endedByYoutube?: boolean } = {}) {
   const calls: string[] = [];
   let running = new Set<string>();
   const strays = new Set<string>(opts.strays ?? []);
@@ -41,9 +41,10 @@ function harness(opts: { enabled?: boolean; hostOk?: boolean; streams?: Array<{ 
       },
       checkBroadcast: async (c) => {
         calls.push(`check:${c}`);
-        return { lifeCycleStatus: "live", endedByYoutube: false };
+        return opts.endedByYoutube ? { lifeCycleStatus: "complete", endedByYoutube: true } : { lifeCycleStatus: "live", endedByYoutube: false };
       },
     },
+    segments: { tick: async (c) => void calls.push(`segments:${c}`) },
     event: async (_c, kind, detail) => void events.push(`${kind}:${String(detail.message)}`),
     now: () => clock,
   });
@@ -103,7 +104,8 @@ test("after a (re)start the broadcast is read at once, every minute for 10 minut
   await h.runner.tick(); // the encoder starts at 0
   h.calls.length = 0;
   await h.runner.tick();
-  assert.deepEqual(h.calls, ["running:UC1", "tick:UC1", "check:UC1"], "read right after the start");
+  // BL-205: the segment switcher is ticked after the check (the harness now plugs one in).
+  assert.deepEqual(h.calls, ["running:UC1", "tick:UC1", "check:UC1", "segments:UC1"], "read right after the start");
   h.calls.length = 0;
   h.advance(30_000);
   await h.runner.tick();
@@ -190,4 +192,23 @@ test("an encoder that keeps dying right after its start backs off every time: 1,
     await h.runner.tick();
     assert.equal(starts(), before + 1, `a start after ${wait / 60_000} min`);
   }
+});
+
+// BL-205 (LIVE_SEGMENTS_PLAN.md §2.2): the segment switcher runs only for a stream whose encoder runs, after it is tended, and never
+// once YouTube has ended the stream's broadcast (AC-SEG-07: the switch hands the row over before ending the old one, so an ended
+// broadcast seen here is the stream's own end).
+test("segments: ticked for a running stream after its broadcast check; not for a stopped one; not once YouTube ended the broadcast", async () => {
+  const h = harness();
+  h.ownerStarted("UC1");
+  await h.runner.tick();
+  assert.deepEqual(h.calls.filter((c) => c.startsWith("check:") || c.startsWith("segments:")), ["check:UC1", "segments:UC1"]);
+
+  const ended = harness({ endedByYoutube: true });
+  ended.ownerStarted("UC1");
+  await ended.runner.tick();
+  assert.ok(!ended.calls.includes("segments:UC1"));
+
+  const off = harness({ streams: [{ channelId: "UC1", intent: "off" }] });
+  await off.runner.tick();
+  assert.ok(!off.calls.some((c) => c.startsWith("segments:")));
 });

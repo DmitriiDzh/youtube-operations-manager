@@ -3,7 +3,7 @@
 // Pure: the caller passes each stream's intent, the helper's status, YouTube's last poll and the latest end event.
 // ---------------------------------------------------------------------------
 
-export type LiveNoticeKind = "live_stream_down" | "live_stream_ended" | "live_stream_source_missing";
+export type LiveNoticeKind = "live_stream_down" | "live_stream_ended" | "live_stream_source_missing" | "live_segment_switch_failed";
 export type LiveNotice = { channelId: string; kind: LiveNoticeKind; since: number; detail?: string };
 
 export type StreamNoticeInput = {
@@ -16,6 +16,8 @@ export type StreamNoticeInput = {
   youtube: { checkedAt: number; lifeCycleStatus: string | null; notLiveSince: number | null } | null;
   /** The latest `youtube_ended` event, if any. */
   endedAt: number | null;
+  /** BL-205: the latest failed segment switch not followed by a successful one, if any. */
+  segmentSwitchFailedAt?: number | null;
 };
 
 /** A helper status older than this means the helper is gone (it writes every 5 s while running). */
@@ -45,6 +47,8 @@ export function liveNotices(streams: readonly StreamNoticeInput[], now: number, 
       const since = downs.length > 0 ? Math.min(...downs) : null;
       if (since !== null && now - since >= delay) notices.push({ channelId: s.channelId, kind: "live_stream_down", since });
       if (s.helper?.missingVideoId) notices.push({ channelId: s.channelId, kind: "live_stream_source_missing", since: s.helper.updatedAt, detail: s.helper.missingVideoId });
+      // BL-205: a failed segment switch is shown for 24 h, or until a later switch succeeds.
+      if (s.segmentSwitchFailedAt && now - s.segmentSwitchFailedAt < ENDED_NOTICE_MS) notices.push({ channelId: s.channelId, kind: "live_segment_switch_failed", since: s.segmentSwitchFailedAt });
     } else if (s.endedAt !== null && now - s.endedAt < ENDED_NOTICE_MS) {
       notices.push({ channelId: s.channelId, kind: "live_stream_ended", since: s.endedAt });
     }
