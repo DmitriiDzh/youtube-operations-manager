@@ -348,7 +348,10 @@ function StatusCard({ overview, base, onChanged }: { overview: Overview; base: s
             <dt className="text-zinc-500">{t("live.field.title")}</dt>
             <dd className="text-zinc-200">{settings.title}</dd>
             <dt className="text-zinc-500">{t("live.field.description")}</dt>
-            <dd className="whitespace-pre-wrap text-zinc-200">{settings.description || "—"}</dd>
+            {/* A stream description can be thousands of characters: about 8 lines here, the rest scrolls in place. */}
+            <dd className="max-h-32 overflow-y-auto whitespace-pre-wrap break-words rounded border border-zinc-800 bg-zinc-950/40 px-2 py-1 text-zinc-200">
+              {settings.description || "—"}
+            </dd>
             <dt className="text-zinc-500">{t("live.field.privacy")}</dt>
             <dd className="text-zinc-200">{t(PRIVACY_KEYS[settings.privacyStatus])}</dd>
             <dt className="text-zinc-500">{t("live.field.madeForKids")}</dt>

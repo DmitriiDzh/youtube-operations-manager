@@ -21,7 +21,8 @@ export function BlockingDialog({
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" role="presentation">
       <div
-        className={`w-full ${maxWidthClass} space-y-3 rounded-lg border border-zinc-700 bg-zinc-900 p-5 shadow-xl`}
+        // Never taller than the screen (owner, Telegram msg 3111): long content scrolls inside the dialog.
+        className={`max-h-[calc(100dvh-2rem)] w-full overflow-y-auto ${maxWidthClass} space-y-3 rounded-lg border border-zinc-700 bg-zinc-900 p-5 shadow-xl`}
         role="dialog"
         aria-modal="true"
         aria-busy={busy}

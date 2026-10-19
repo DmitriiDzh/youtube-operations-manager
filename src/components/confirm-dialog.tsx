@@ -71,11 +71,22 @@ export function ConfirmDialog({
   }, []);
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4" role="presentation">
-      <div className={`w-full ${size === "wide" ? "max-w-2xl" : children ? "max-w-lg" : "max-w-sm"} space-y-4 rounded-lg border border-zinc-700 bg-zinc-900 p-5 shadow-xl`} role="alertdialog" aria-modal="true" aria-label={title}>
-        <p className="text-sm font-medium text-zinc-100">{title}</p>
-        {description && <p className="text-xs text-zinc-400">{description}</p>}
-        {children}
-        <div className="flex justify-end gap-2">
+      {/* Owner, Telegram msg 3111 (2026-10-19): the live-stream Start dialog grew taller than the screen and its buttons could not be
+          reached. The dialog never exceeds the viewport: the title and the buttons stay in view, the content between them scrolls. */}
+      <div
+        className={`flex max-h-[calc(100dvh-2rem)] w-full ${size === "wide" ? "max-w-2xl" : children ? "max-w-lg" : "max-w-sm"} flex-col gap-4 rounded-lg border border-zinc-700 bg-zinc-900 p-5 shadow-xl`}
+        role="alertdialog"
+        aria-modal="true"
+        aria-label={title}
+      >
+        <p className="shrink-0 text-sm font-medium text-zinc-100">{title}</p>
+        {(description || children) && (
+          <div className="-mr-2 min-h-0 space-y-4 overflow-y-auto pr-2">
+            {description && <p className="text-xs text-zinc-400">{description}</p>}
+            {children}
+          </div>
+        )}
+        <div className="flex shrink-0 justify-end gap-2">
           <button
             ref={cancelRef}
             onClick={onCancel}
