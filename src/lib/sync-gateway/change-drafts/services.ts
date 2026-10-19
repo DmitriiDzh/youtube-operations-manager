@@ -768,7 +768,8 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
       // for what the merge removed must be deleted here, or this device would keep showing deleted drafts.
       const cleanup = existingBytes ? await removeProjectionRowsMissingFrom(parsed.channelId, localDoc, merged) : null;
       if (cleanup && cleanup.failedChangeSetIds.size > 0) {
-        // A row that should be gone is still there: the next cycle must run this merge and its cleanup again.
+        // A row that should be gone is still there: do not let a later cycle skip this document as cleanly projected. (The next
+        // full merge re-projects, but it cannot retry this deletion -- it no longer sees the removed rows; same as before BL-203.)
         cache.projectedCleanly.delete(saved.hash);
       } else if (saved.projectedCleanly) {
         cache.containsIncoming.set(`${saved.hash}:${incomingHash}`, true);

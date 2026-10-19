@@ -56,6 +56,9 @@ export function AppShell<T extends string>(props: {
   // so a click is visibly taken even while the server is still answering. Cleared when the address changes (or never arrives).
   const pathname = usePathname();
   const [pending, setPending] = useState<{ value: T; from: string } | null>(null);
+  // Once the address moves on (the page arrived, or Back / an in-page link went elsewhere), the click is settled: forget it, so a
+  // later return to the address it was made from never shows it again (React's adjust-state-during-render pattern).
+  if (pending && pending.from !== pathname) setPending(null);
   const pendingValue = pending && pending.from === pathname ? pending.value : null;
   useEffect(() => {
     if (!pendingValue) return;

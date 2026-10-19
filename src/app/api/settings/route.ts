@@ -128,7 +128,11 @@ const marketIntelligenceCore = createMarketIntelligenceCore();
  * 2026-10-04). A log problem only drops the extra layer, never the Google figure.
  */
 // BL-203: the Settings tab's blocks each fetch this route at once; they share one Cloud Monitoring read per 30 s.
-const cloudQuotaStatusShared = createCachedReader(() => createCloudQuotasCore().getQuotaStatus(), 30_000);
+// A degraded answer (not connected, token refresh failed, a service unknown) is not kept: right after the owner connects Cloud the
+// next fetch must read again (independent review).
+const cloudQuotaStatusShared = createCachedReader(() => createCloudQuotasCore().getQuotaStatus(), 30_000, {
+  keep: (status) => status.connected && !status.tokenRefreshFailed && status.dataApi !== null && status.analytics !== null,
+});
 
 async function cloudQuotaStatusWithLedger() {
   const status = await cloudQuotaStatusShared();
