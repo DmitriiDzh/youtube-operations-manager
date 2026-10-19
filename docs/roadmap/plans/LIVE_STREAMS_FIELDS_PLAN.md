@@ -1,7 +1,7 @@
 # Live streams: every API field in the stream's settings, and adding videos by checkboxes (BL-186, BL-187)
 
 **Status:** stage 1 (BL-187, the picker) and stage 2 (BL-186 offline part: settings, v92, Start's broadcast fields and dry run)
-built on `feature/live-streams-fields-and-picker`; stage 3 waits for spike C. Owner's "ок"
+built on `feature/live-streams-fields-and-picker`; stage 3 waits for the owner's go; spike C done 2026-10-19 (§4.2 results). Owner's "ок"
 to the plan and its proposed answers to §8 Q1–Q3: Telegram msg 2788 (2026-10-14); Q4 (spike C) is asked again before stage 3.
 
 - Owner's requests: Telegram 2026-10-14, msgs 2780 (both items), 2782 (the field list), 2785 (the go):
@@ -222,6 +222,29 @@ of the broadcast; whether `enableEmbed` and `status.embeddable` are one flag; wh
 locked once live; whether today's `liveBroadcasts.update` (title edit) resets tags, category or languages set by
 `videos.update` (read the video before and after); whether channel sync lists the broadcast as a channel video.
 Cost ≈ 300 units.
+
+**Spike C results (2026-10-19, owner "да" Telegram msg 3123).**
+- **Setup.** An unlisted broadcast on Tropico (`gter-XBlAHk`), a test pattern from this Mac for ~3 min, then ended. The test
+  video and the private test playlist were deleted afterwards; the reusable test stream `YTM spike C (test, delete)` is left
+  (the gateway has no `liveStreams.delete`).
+- **Every write went through `youtube-write-gateway`**, after `assertLiveWritesAuthorized` and `write-context.assertWriteChannel`.
+  The script was a throwaway in the session scratchpad and is not in the repository.
+
+| Check | Result |
+|---|---|
+| `liveBroadcasts.insert` with `recordFromStart: false` | **Refused**: "The user is not permitted to disable recording" (Tropico). The app sends `false` at every Start (§1.1). A channel without that permission cannot Start. Needs a fix or a setting. |
+| `videos.update` snippet (tags, category, defaultLanguage) on an upcoming broadcast | Accepted. Reads lag tens of seconds: tags appeared on a later read. |
+| `videos.update` status (embeddable, license, public stats, made for kids, `containsSyntheticMedia`) | Accepted. `containsSyntheticMedia` is never returned by `videos.list`, not even for regular videos, so it can only be checked in Studio. |
+| `recordingDetails.recordingDate` | Accepted, read back. |
+| `defaultAudioLanguage` not sent | Reset from `en` to `en-US`, as known (RISK-102); stage 3 must keep it (`"keep"`). |
+| `paidProductPlacementDetails` via `videos.update` | **Works** (false → true), both upcoming and live. |
+| `thumbnails.set` on the broadcast id | Works, both upcoming and live (maxres thumbnails appear). |
+| `playlistItems.insert` of the broadcast | Works. The first try, right after `playlists.insert`, got 409 "The operation was aborted"; the retry succeeded. Retry once on 409. |
+| `enableEmbed` vs `status.embeddable` | **One flag**: `embeddable: false` via `videos.update` turned the broadcast's `enableEmbed` false. |
+| `videos.update` while live | Accepted. Tags changed; the broadcast stayed live and the encoder reported no error. |
+| `liveBroadcasts.update` title edit while live (the app's Edit) | Kept the tags, category, languages and paid placement set by `videos.update`. |
+| The live broadcast in the uploads playlist (channel sync) | Listed at once. |
+| `latencyPreference`/`enableEmbed` change while live via `liveBroadcasts.update` contentDetails | Not tested: the gateway has no such call, and the plan already treats these as Start-only. |
 
 ### 4.3 With the owner on the Mac
 Set every field → Start → the broadcast in Studio shows them all; replace the thumbnail and a tag live; add 5 videos with the
