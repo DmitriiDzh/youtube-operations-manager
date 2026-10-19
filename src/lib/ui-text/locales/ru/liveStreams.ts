@@ -317,6 +317,7 @@ export const liveStreams: Record<keyof typeof en, string> = {
   "live.segments.stage.insert": "создание",
   "live.segments.stage.bind": "привязка к потоку",
   "live.segments.stage.go_live": "выход в эфир",
+  "live.segments.stage.handover": "передача эфира",
   "live.event.segmentSwitchCancelled": "Переключение отменено вашим «Стоп»",
   "live.event.segmentCleanedUp": "Неудавшийся новый сегмент убран",
   "live.event.segmentEndOldRetrying": "Старый сегмент пока не завершился, повторяю",

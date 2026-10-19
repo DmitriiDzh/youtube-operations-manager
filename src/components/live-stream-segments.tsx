@@ -33,6 +33,7 @@ const CODE_KEYS: Record<string, UiTextKey> = {
   "stage.insert": "live.segments.stage.insert",
   "stage.bind": "live.segments.stage.bind",
   "stage.go_live": "live.segments.stage.go_live",
+  "stage.handover": "live.segments.stage.handover",
 };
 
 const cardClass = "space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4";

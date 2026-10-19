@@ -8,6 +8,7 @@ import {
   PLAYLIST_MAX_ATTEMPTS,
   PLAYLIST_RETRY_MS,
   readSegmentSettings,
+  HANDOVER_RETRY_MAX_MS,
   STEP_RETRY_MAX_MS,
   stepRetryDelay,
   SWITCH_RETRY_MS,
@@ -462,4 +463,56 @@ test("review 2: Stop and a new Start before the hand-over resumes -- the new seg
   assert.deepEqual(h.applied, []);
   assert.equal(h.events.filter((e) => e.kind === "live_segment_switched").length, 0);
   assert.equal(h.marker(), null);
+});
+
+// Third independent review (2026-10-19).
+test("review 3: ending the old segment is retried at least every 5 min; after the owner's Stop at least every minute", async () => {
+  assert.equal(stepRetryDelay(20, HANDOVER_RETRY_MAX_MS), 5 * 60_000);
+  const h = harness({ completeOldRefusals: 100 });
+  await h.ticks(2);
+  while ((h.marker()!.attempts ?? 0) < 8) {
+    h.advance(HANDOVER_RETRY_MAX_MS);
+    await h.ticks(1);
+  }
+  h.setStream({ intent: "off" }); // the owner's Stop
+  h.calls.length = 0;
+  h.advance(60_000);
+  await h.ticks(1);
+  assert.ok(h.calls.includes("transition(OLD->complete)"), "a Stop is not kept waiting behind a long pause");
+});
+
+test("review 3: Stop and Start while the new segment is still going live -- it is cleaned up, never asked to go live again", async () => {
+  const h = harness({ neverLive: true });
+  await h.segments.tick("UC1"); // insert, bind, live request; NEW stays ready
+  h.setStream({ intent: "on", broadcastId: "THIRD" }); // Stop (OLD ended by it) and a new Start
+  h.lifecycles.THIRD = { lifeCycleStatus: "live", actualStartTime: new Date(START + 11 * H).toISOString(), actualEndTime: null };
+  h.calls.length = 0;
+  h.advance(2 * 60_000);
+  await h.ticks(3);
+  assert.ok(!h.calls.includes("transition(NEW->live)"), "never asked to go live again");
+  assert.ok(h.calls.includes("delete(NEW)"));
+  assert.equal(h.stream().broadcastId, "THIRD");
+  assert.equal(h.lifecycles.THIRD!.lifeCycleStatus, "live");
+  assert.equal(h.marker(), null);
+});
+
+test("review 3: the new segment ended before the old one -- the row goes back to the old one, which stays live", async () => {
+  const h = harness({ rowBroadcast: "NEW", marker: HANDOVER, lifecycles: { NEW: { lifeCycleStatus: "complete", actualStartTime: new Date(START + 11 * H).toISOString(), actualEndTime: new Date(START + 11 * H + 60_000).toISOString() } } });
+  await h.ticks(3);
+  assert.ok(!h.calls.includes("transition(OLD->complete)"));
+  assert.equal(h.lifecycles.OLD!.lifeCycleStatus, "live");
+  assert.equal(h.stream().broadcastId, "OLD");
+  assert.equal(h.events.filter((e) => e.kind === "live_segment_switch_failed" && e.detail.stage === "handover").length, 1);
+  assert.equal(h.marker(), null);
+});
+
+test("review 3: a cancelled hand-over closes both segments with YouTube's times; both recordings go to the playlist", async () => {
+  const h = harness({ intent: "off", marker: HANDOVER, lifecycles: LIVE_NEW, settings: { ...ON, recordingsPlaylist: { id: "PLREC", title: "Записи" } } });
+  await h.ticks(1);
+  const old = h.rows.find((r) => r.broadcastId === "OLD")!;
+  const fresh = h.rows.find((r) => r.broadcastId === "NEW")!;
+  assert.ok(old.endedAt && fresh.endedAt);
+  assert.equal(fresh.startedAt.getTime(), START + 11 * H);
+  assert.equal(old.playlistStatus, "pending");
+  assert.equal(fresh.playlistStatus, "pending");
 });

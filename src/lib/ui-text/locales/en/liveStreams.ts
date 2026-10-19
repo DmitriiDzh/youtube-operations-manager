@@ -315,6 +315,7 @@ export const liveStreams = {
   "live.segments.stage.insert": "creating",
   "live.segments.stage.bind": "binding to the stream",
   "live.segments.stage.go_live": "going live",
+  "live.segments.stage.handover": "handing over",
   "live.event.segmentSwitchCancelled": "Switch cancelled by your Stop",
   "live.event.segmentCleanedUp": "The failed new segment was removed",
   "live.event.segmentEndOldRetrying": "The old segment has not ended yet, retrying",

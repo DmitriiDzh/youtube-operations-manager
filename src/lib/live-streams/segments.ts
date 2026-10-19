@@ -93,8 +93,10 @@ export type SwitchMarker = {
 /** Ending the old segment, or cleaning up the new one, is retried after this, doubling each time up to an hour (quota: review). */
 export const STEP_RETRY_MS = 60_000;
 export const STEP_RETRY_MAX_MS = 3_600_000;
-export function stepRetryDelay(attempts: number): number {
-  return Math.min(STEP_RETRY_MS * 2 ** Math.max(0, attempts - 1), STEP_RETRY_MAX_MS);
+/** Ending the old segment waits at most this: two live broadcasts cost more than a few reads (third review). */
+export const HANDOVER_RETRY_MAX_MS = 5 * 60_000;
+export function stepRetryDelay(attempts: number, maxMs: number = STEP_RETRY_MAX_MS): number {
+  return Math.min(STEP_RETRY_MS * 2 ** Math.max(0, attempts - 1), maxMs);
 }
 /** A broadcast that is not live yet is read again only after this (no row until it is live). */
 export const NOT_LIVE_RECHECK_MS = 5 * 60_000;
@@ -190,6 +192,12 @@ export function readSwitchMarker(json: string | null | undefined): SwitchMarker 
   } catch {
     return null;
   }
+}
+
+/** The owner stopped the stream during a switch (or stopped and started a new broadcast): the switch hands nothing over. */
+function isSwitchCancelled(stream: { intent: string; broadcastId: string | null }, marker: SwitchMarker): boolean {
+  if (stream.intent !== "on") return true;
+  return marker.phase === "going_live" ? stream.broadcastId !== marker.fromBroadcastId : stream.broadcastId !== marker.fromBroadcastId && stream.broadcastId !== marker.newBroadcastId;
 }
 
 export function createLiveSegments(deps: SegmentsDependencies) {
@@ -318,12 +326,23 @@ export function createLiveSegments(deps: SegmentsDependencies) {
   async function stepHandover(stream: StreamRow, marker: SwitchMarker, auth: { credentialRef: unknown; credentials: ResolvedCredentials }, settings: SegmentSettings): Promise<void> {
     const { channelId } = stream;
     const attempts = marker.attempts ?? 0;
+    const isEnded = (life: { lifeCycleStatus: string | null } | undefined) => !life || life.lifeCycleStatus === "complete" || life.lifeCycleStatus === "revoked";
     // Stopped, or stopped and started again (the row names a third broadcast): nothing is handed over.
-    const stopped = stream.intent !== "on" || (stream.broadcastId !== marker.fromBroadcastId && stream.broadcastId !== marker.newBroadcastId);
-    // A crash between writing this phase and moving the row (review): the row is moved first, so the old segment's end is never
-    // taken for the stream's end.
-    if (!stopped && stream.broadcastId === marker.fromBroadcastId) await deps.streams.update(channelId, { broadcastId: marker.newBroadcastId });
-    let ended = false;
+    const stopped = isSwitchCancelled(stream, marker);
+    if (!stopped) {
+      // The old segment is ended only while the new one is live (third review): a new one ended meanwhile (Studio, YouTube) ->
+      // the row goes back to the old one and the switch is given up; the old one is never touched.
+      const before = await deps.youtube.lifecycles(auth.credentials, [marker.newBroadcastId]);
+      if (isEnded(before[marker.newBroadcastId])) {
+        if (stream.broadcastId === marker.newBroadcastId) await deps.streams.update(channelId, { broadcastId: marker.fromBroadcastId });
+        await writeMarker(channelId, { ...marker, phase: "cleanup", reason: "handover", attempts: 0, lastAttemptAt: undefined });
+        await deps.streams.event(channelId, "live_segment_switch_failed", { stage: "handover", message: "the new segment ended before the old one was ended", newBroadcastId: marker.newBroadcastId });
+        return;
+      }
+      // A crash between writing this phase and moving the row (review): the row is moved first, so the old segment's end is never
+      // taken for the stream's end.
+      if (stream.broadcastId === marker.fromBroadcastId) await deps.streams.update(channelId, { broadcastId: marker.newBroadcastId });
+    }
     try {
       await deps.youtube.transition(auth.credentials, { broadcastId: marker.fromBroadcastId, broadcastStatus: "complete" });
     } catch {
@@ -335,15 +354,25 @@ export function createLiveSegments(deps: SegmentsDependencies) {
     }
     const lives = await deps.youtube.lifecycles(auth.credentials, [marker.fromBroadcastId, marker.newBroadcastId]);
     const old = lives[marker.fromBroadcastId];
-    ended = !old || old.lifeCycleStatus === "complete" || old.lifeCycleStatus === "revoked";
-    const newEnded = !lives[marker.newBroadcastId] || lives[marker.newBroadcastId]!.lifeCycleStatus === "complete" || lives[marker.newBroadcastId]!.lifeCycleStatus === "revoked";
-    if (!ended || (stopped && !newEnded)) {
+    const ended = isEnded(old);
+    if (!ended || (stopped && !isEnded(lives[marker.newBroadcastId]))) {
       const next = attempts + 1;
       await writeMarker(channelId, { ...marker, attempts: next, lastAttemptAt: deps.clock() });
       if (next === HANDOVER_ALERT_ATTEMPTS) await deps.streams.event(channelId, "live_segment_end_old_retrying", { attempts: next, fromBroadcastId: marker.fromBroadcastId });
       return;
     }
     if (stopped) {
+      // Both segments are closed with YouTube's own times; the new one recorded from its start, so it goes to the playlist too.
+      const pending = settings.recordingsPlaylist !== null && deps.addToPlaylist !== undefined;
+      const oldRow = (await deps.segments.open(channelId)).find((r) => r.broadcastId === marker.fromBroadcastId && r.endedAt === null);
+      if (oldRow) await deps.segments.update(oldRow.id, { endedAt: new Date(isoTime(old?.actualEndTime) ?? deps.clock()), recordingStatus: oldRow.recorded ? "recorded" : "none", playlistStatus: oldRow.recorded && pending ? "pending" : "none" });
+      const fresh = lives[marker.newBroadcastId];
+      const newStart = isoTime(fresh?.actualStartTime);
+      if (newStart !== null) {
+        await deps.segments.insert({ id: deps.newId(), channelId, broadcastId: marker.newBroadcastId, startedAt: new Date(newStart), recorded: true, recordingStatus: "none", playlistStatus: "none", playlistAttempts: 0 });
+        const newRow = (await deps.segments.open(channelId)).find((r) => r.broadcastId === marker.newBroadcastId && r.endedAt === null);
+        if (newRow) await deps.segments.update(newRow.id, { endedAt: new Date(isoTime(fresh?.actualEndTime) ?? deps.clock()), recordingStatus: "recorded", playlistStatus: pending ? "pending" : "none" });
+      }
       await writeMarker(channelId, null);
       await deps.streams.event(channelId, "live_segment_switch_cancelled", { newBroadcastId: marker.newBroadcastId, phase: "handover" });
       return;
@@ -425,9 +454,11 @@ export function createLiveSegments(deps: SegmentsDependencies) {
     const settings = readSegmentSettings(stream.segmentsJson);
     const now = deps.clock();
     if (marker) {
-      // A retry waits out its backoff BEFORE any call, the identity check included (quota: review).
+      // A retry waits out its backoff BEFORE any call, the identity check included (quota: review). Ending the old segment waits
+      // at most 5 min, and only a minute once the owner stopped the stream (third review).
       const attempts = marker.attempts ?? 0;
-      if (marker.phase !== "going_live" && attempts > 0 && now - (marker.lastAttemptAt ?? 0) < stepRetryDelay(attempts)) return;
+      const maxDelay = marker.phase === "handover" ? (isSwitchCancelled(stream, marker) ? STEP_RETRY_MS : HANDOVER_RETRY_MAX_MS) : STEP_RETRY_MAX_MS;
+      if (marker.phase !== "going_live" && attempts > 0 && now - (marker.lastAttemptAt ?? 0) < stepRetryDelay(attempts, maxDelay)) return;
       // A switch in progress is always finished -- even after the owner's Stop (then the new broadcast is cleaned up).
       let auth: { credentialRef: unknown; credentials: ResolvedCredentials };
       try {
@@ -435,7 +466,8 @@ export function createLiveSegments(deps: SegmentsDependencies) {
       } catch {
         return; // Live writes off or no account: the marker waits, nothing half-done is lost.
       }
-      if (marker.phase === "going_live" && stream.intent !== "on") {
+      // Stopped, or stopped and started again (third review): the new one is cleaned up whatever its state, never asked to go live.
+      if (marker.phase === "going_live" && isSwitchCancelled(stream, marker)) {
         await writeMarker(channelId, { ...marker, phase: "cleanup", reason: "stream_stopped", attempts: 0 });
         return;
       }

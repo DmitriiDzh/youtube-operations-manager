@@ -98,8 +98,14 @@
      names the old broadcast (a crash between the two writes) moves the row first, then ends the old one. A `handover` marker
      found after the owner's Stop (intent off, or the row names a third broadcast after a new Start) ends the new one too and
      hands nothing over (`live_segment_switch_cancelled`).
-   - Ending the old one and cleaning up the new one are retried with a pause of 1 min that doubles up to 1 h; nothing, the
-     identity check included, is called inside the pause. A broadcast not live yet is read again only after 5 min.
+   - Ending the old one and cleaning up the new one are retried with a pause of 1 min that doubles (up to 5 min for ending the
+     old one, 1 min once the owner stopped, 1 h for a cleanup); nothing, the identity check included, is called inside the
+     pause. A broadcast not live yet is read again only after 5 min.
+   - **Third review:** a `going_live` switch is cleaned up as soon as the owner stops (or stops and starts again), whatever the
+     new broadcast's state. Every hand-over attempt first reads the new broadcast: if it ended meanwhile, the row goes back to the
+     old one, which is never ended, and the switch fails at stage `handover`. A cancelled hand-over closes both rows with YouTube's
+     times and queues both recordings for the playlist. Stop with `encoderOnly` during a hand-over is not distinguished (it is
+     offered only while Live writes are off, when the switcher cannot write either).
    - Start keeps its own lock (it may copy the buffer for minutes). Stop, Go live and Edit take the stream's broadcast lock; a
      switch step never waits for it and is skipped when it is busy.
 9. **The old segment's video settings may still be applying** when the switch replaces it. Its remaining steps are skipped as
