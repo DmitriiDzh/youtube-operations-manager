@@ -90,8 +90,14 @@ export type SwitchMarker = {
   lastAttemptAt?: number;
 };
 
-/** Ending the old segment, or cleaning up the new one, is retried at most this often. */
+/** Ending the old segment, or cleaning up the new one, is retried after this, doubling each time up to an hour (quota: review). */
 export const STEP_RETRY_MS = 60_000;
+export const STEP_RETRY_MAX_MS = 3_600_000;
+export function stepRetryDelay(attempts: number): number {
+  return Math.min(STEP_RETRY_MS * 2 ** Math.max(0, attempts - 1), STEP_RETRY_MAX_MS);
+}
+/** A broadcast that is not live yet is read again only after this (no row until it is live). */
+export const NOT_LIVE_RECHECK_MS = 5 * 60_000;
 /** After this many attempts to end the old segment, the owner is told (the switcher keeps trying: two live broadcasts must end). */
 export const HANDOVER_ALERT_ATTEMPTS = 5;
 /** `transition live` is repeated once if the broadcast has not started after this long. */
@@ -165,8 +171,9 @@ export type SegmentsDependencies = {
   addToPlaylist?(args: { credentialRef: unknown; channelId: string; playlistId: string; videoId: string }): Promise<{ added: boolean; reason?: string }>;
   /** The rotation videos the encoder played in the segment, best effort. */
   playedVideos(channelId: string): Promise<string[]>;
-  /** The lock the owner's Start, Stop and Edit take for this channel: a switch step never runs at the same time as them. */
-  withBroadcastLock<T>(channelId: string, fn: () => Promise<T>): Promise<T>;
+  /** The lock the owner's Stop, Go live and Edit take for this channel: a switch step never runs at the same time as them. Busy ->
+   * the step is skipped (resolves undefined), never waited for. */
+  withBroadcastLock(channelId: string, fn: () => Promise<void>): Promise<void | undefined>;
   newId(): string;
   clock(): number;
 };
@@ -189,6 +196,7 @@ export function createLiveSegments(deps: SegmentsDependencies) {
   /** A failed switch's earliest retry, per channel (in memory; the daily cap in the database bounds a restart loop). */
   const retryAt = new Map<string, number>();
   const capNotified = new Set<string>();
+  const notLiveUntil = new Map<string, number>();
 
   async function writeMarker(channelId: string, marker: SwitchMarker | null) {
     await deps.streams.update(channelId, { segmentSwitchingJson: marker ? JSON.stringify(marker) : null });
@@ -202,14 +210,24 @@ export function createLiveSegments(deps: SegmentsDependencies) {
    */
   async function currentSegment(stream: StreamRow): Promise<SegmentRow | null> {
     const open = await deps.segments.open(stream.channelId);
+    const settings = readSegmentSettings(stream.segmentsJson);
     for (const row of open) {
-      if (row.endedAt === null && row.broadcastId !== stream.broadcastId) await deps.segments.update(row.id, { endedAt: new Date(deps.clock()), recordingStatus: row.recorded ? "recorded" : "none" });
+      if (row.endedAt === null && row.broadcastId !== stream.broadcastId) {
+        // A broadcast the owner's Stop (or YouTube) ended: closed; its recording still goes to the playlist when it recorded.
+        const pending = row.recorded && settings.recordingsPlaylist !== null && deps.addToPlaylist !== undefined;
+        await deps.segments.update(row.id, { endedAt: new Date(deps.clock()), recordingStatus: row.recorded ? "recorded" : "none", playlistStatus: pending ? "pending" : "none" });
+      }
     }
     const found = open.find((s) => s.broadcastId === stream.broadcastId && s.endedAt === null);
     if (found) return found;
+    if (deps.clock() < (notLiveUntil.get(stream.channelId) ?? 0)) return null;
     const { credentials } = await deps.authorize(stream.channelId);
     const life = (await deps.youtube.lifecycles(credentials, [stream.broadcastId!]))[stream.broadcastId!];
-    if (!life || life.lifeCycleStatus !== "live") return null; // not live yet: no segment to time
+    if (!life || life.lifeCycleStatus !== "live") {
+      notLiveUntil.set(stream.channelId, deps.clock() + NOT_LIVE_RECHECK_MS); // not live yet: no segment to time
+      return null;
+    }
+    notLiveUntil.delete(stream.channelId);
     const row = {
       id: deps.newId(),
       channelId: stream.channelId,
@@ -300,20 +318,34 @@ export function createLiveSegments(deps: SegmentsDependencies) {
   async function stepHandover(stream: StreamRow, marker: SwitchMarker, auth: { credentialRef: unknown; credentials: ResolvedCredentials }, settings: SegmentSettings): Promise<void> {
     const { channelId } = stream;
     const attempts = marker.attempts ?? 0;
-    if (attempts > 0 && deps.clock() - (marker.lastAttemptAt ?? 0) < STEP_RETRY_MS) return;
+    // Stopped, or stopped and started again (the row names a third broadcast): nothing is handed over.
+    const stopped = stream.intent !== "on" || (stream.broadcastId !== marker.fromBroadcastId && stream.broadcastId !== marker.newBroadcastId);
+    // A crash between writing this phase and moving the row (review): the row is moved first, so the old segment's end is never
+    // taken for the stream's end.
+    if (!stopped && stream.broadcastId === marker.fromBroadcastId) await deps.streams.update(channelId, { broadcastId: marker.newBroadcastId });
     let ended = false;
     try {
       await deps.youtube.transition(auth.credentials, { broadcastId: marker.fromBroadcastId, broadcastStatus: "complete" });
     } catch {
       // Read below: it may have ended anyway.
     }
+    if (stopped) {
+      // The owner's Stop during the hand-over: both broadcasts end; nothing is handed over.
+      await deps.youtube.transition(auth.credentials, { broadcastId: marker.newBroadcastId, broadcastStatus: "complete" }).catch(() => undefined);
+    }
     const lives = await deps.youtube.lifecycles(auth.credentials, [marker.fromBroadcastId, marker.newBroadcastId]);
     const old = lives[marker.fromBroadcastId];
     ended = !old || old.lifeCycleStatus === "complete" || old.lifeCycleStatus === "revoked";
-    if (!ended) {
+    const newEnded = !lives[marker.newBroadcastId] || lives[marker.newBroadcastId]!.lifeCycleStatus === "complete" || lives[marker.newBroadcastId]!.lifeCycleStatus === "revoked";
+    if (!ended || (stopped && !newEnded)) {
       const next = attempts + 1;
       await writeMarker(channelId, { ...marker, attempts: next, lastAttemptAt: deps.clock() });
       if (next === HANDOVER_ALERT_ATTEMPTS) await deps.streams.event(channelId, "live_segment_end_old_retrying", { attempts: next, fromBroadcastId: marker.fromBroadcastId });
+      return;
+    }
+    if (stopped) {
+      await writeMarker(channelId, null);
+      await deps.streams.event(channelId, "live_segment_switch_cancelled", { newBroadcastId: marker.newBroadcastId, phase: "handover" });
       return;
     }
     const open = await deps.segments.open(channelId);
@@ -342,7 +374,6 @@ export function createLiveSegments(deps: SegmentsDependencies) {
   async function stepCleanup(stream: StreamRow, marker: SwitchMarker, credentials: ResolvedCredentials): Promise<void> {
     const { channelId } = stream;
     const attempts = marker.attempts ?? 0;
-    if (attempts > 0 && deps.clock() - (marker.lastAttemptAt ?? 0) < STEP_RETRY_MS) return;
     try {
       const life = (await deps.youtube.lifecycles(credentials, [marker.newBroadcastId]))[marker.newBroadcastId];
       if (life && (life.lifeCycleStatus === "live" || life.lifeCycleStatus === "liveStarting" || life.lifeCycleStatus === "testing")) {
@@ -394,6 +425,9 @@ export function createLiveSegments(deps: SegmentsDependencies) {
     const settings = readSegmentSettings(stream.segmentsJson);
     const now = deps.clock();
     if (marker) {
+      // A retry waits out its backoff BEFORE any call, the identity check included (quota: review).
+      const attempts = marker.attempts ?? 0;
+      if (marker.phase !== "going_live" && attempts > 0 && now - (marker.lastAttemptAt ?? 0) < stepRetryDelay(attempts)) return;
       // A switch in progress is always finished -- even after the owner's Stop (then the new broadcast is cleaned up).
       let auth: { credentialRef: unknown; credentials: ResolvedCredentials };
       try {

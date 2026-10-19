@@ -41,7 +41,7 @@ import { createRotationPicker } from "./picker-service";
 import { streamReportEntry, type StreamReportEntry } from "./report";
 import { createLiveStreamsServices } from "./services";
 import { createLiveStreamsSettings, liveStreamsHost } from "./settings";
-import { createStreamSupervisor, withChannelLock } from "./supervisor";
+import { createStreamSupervisor, isChannelLockBusy, withChannelLock } from "./supervisor";
 import { createStreamVideoSettings } from "./video-settings";
 
 // BL-176 (docs/roadmap/plans/LIVE_STREAMS_PLAN.md, ADR 0036): the live-streams module wired to its real adapters.
@@ -280,7 +280,8 @@ export function createLiveSegmentsCore(options: { videoFields?: VideoFieldsPort 
     newId: () => randomUUID(),
     clock: () => Date.now(),
     // The same key as the owner's Start, Stop and Edit (broadcasts.ts): a switch step never runs at the same time as them.
-    withBroadcastLock: (channelId, fn) => withChannelLock(`broadcast:${channelId}`, fn),
+    // Never waits: a busy lock (the owner's Stop/Edit/Go live) skips this tick's step; the next tick does it.
+    withBroadcastLock: (channelId, fn) => (isChannelLockBusy(`broadcast:${channelId}`) ? Promise.resolve(undefined) : withChannelLock(`broadcast:${channelId}`, fn)),
   });
 }
 

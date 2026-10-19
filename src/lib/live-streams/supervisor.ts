@@ -130,6 +130,12 @@ export function withBufferLock<T>(channelId: string, fn: () => Promise<T>): Prom
   return withLock(`${channelId}#buffer`, fn);
 }
 
+/** BL-205: whether a lock is held or queued right now (the segment switcher skips its step instead of waiting). */
+export function isChannelLockBusy(key: string): boolean {
+  const g = globalThis as GlobalWithLocks;
+  return Boolean(g[LOCKS_KEY]?.has(key));
+}
+
 function withLock<T>(channelId: string, fn: () => Promise<T>): Promise<T> {
   const g = globalThis as GlobalWithLocks;
   const locks = (g[LOCKS_KEY] ??= new Map());

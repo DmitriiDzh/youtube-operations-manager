@@ -325,8 +325,9 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
     },
 
     /** §3.9 Start: create the stream (first time), a broadcast, bind them, then start the encoder. */
-    // BL-205: Start, Stop, Go live and Edit share one key with the segment switcher, so a switch step never runs during them.
-    start: (channelId: string, credentialRef: unknown) => withLock(`broadcast:${channelId}`, () => startOnce(channelId, credentialRef)),
+    // Start keeps its own key (it may copy the buffer for minutes): it runs only on a stopped stream, where the switcher at most
+    // cleans up its own new broadcast, never the stream's.
+    start: (channelId: string, credentialRef: unknown) => withLock(`start:${channelId}`, () => startOnce(channelId, credentialRef)),
 
     /** BL-205: the saved video settings for a new segment the switcher just made live (in the background, like after Start). */
     applyVideoSettingsForSegment(args: { channelId: string; broadcastId: string; credentialRef: unknown; credentials: ResolvedCredentials }): void {
@@ -466,8 +467,8 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
       return { before, after, verified };
     },
   };
-  // BL-205: the owner's Go live, Stop and Edit take the stream's broadcast lock too (Start takes it above), so the segment switcher
-  // never changes the stream's broadcast in the middle of one of them.
+  // BL-205: the owner's Go live, Stop and Edit take the stream's broadcast lock, so the segment switcher never changes the stream's
+  // broadcast in the middle of one of them (they are short; a switch step never waits for them -- it skips a busy lock).
   return {
     ...api,
     goLive: (channelId: string, credentialRef: unknown) => withLock(`broadcast:${channelId}`, () => api.goLive(channelId, credentialRef)),

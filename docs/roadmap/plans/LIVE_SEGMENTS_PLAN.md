@@ -94,6 +94,14 @@
      - `ready`, `created` or `testing`: the new one is deleted;
      - gone: nothing.
    - Then the marker is cleared.
+   - **As built (second review):** the marker has phases (`going_live`, `handover`, `cleanup`). A `handover` marker whose row still
+     names the old broadcast (a crash between the two writes) moves the row first, then ends the old one. A `handover` marker
+     found after the owner's Stop (intent off, or the row names a third broadcast after a new Start) ends the new one too and
+     hands nothing over (`live_segment_switch_cancelled`).
+   - Ending the old one and cleaning up the new one are retried with a pause of 1 min that doubles up to 1 h; nothing, the
+     identity check included, is called inside the pause. A broadcast not live yet is read again only after 5 min.
+   - Start keeps its own lock (it may copy the buffer for minutes). Stop, Go live and Edit take the stream's broadcast lock; a
+     switch step never waits for it and is skipped when it is busy.
 9. **The old segment's video settings may still be applying** when the switch replaces it. Its remaining steps are skipped as
    `broadcast_replaced` (not `stream_stopped`), and N+1 gets its own application after the switch.
 

@@ -8,7 +8,8 @@ import {
   PLAYLIST_MAX_ATTEMPTS,
   PLAYLIST_RETRY_MS,
   readSegmentSettings,
-  STEP_RETRY_MS,
+  STEP_RETRY_MAX_MS,
+  stepRetryDelay,
   SWITCH_RETRY_MS,
   switchDueAt,
   type SegmentSettings,
@@ -72,6 +73,7 @@ function harness(opts: {
   let addRefusals = opts.addRefusals ?? 0;
   const applied: string[] = [];
   let ids = 0;
+  let authorizations = 0;
   const deps: SegmentsDependencies = {
     streams: {
       get: async () => stream,
@@ -92,6 +94,7 @@ function harness(opts: {
     },
     broadcastSettings: async () => ({ latencyPreference: "low", enableDvr: true, enableEmbed: true, closedCaptionsType: "closedCaptionsDisabled" }),
     authorize: async () => {
+      authorizations += 1;
       if (opts.authFails) throw new Error("Live writes are off");
       return { credentialRef: { userId: "u-tropico" }, credentials: { accessToken: "t" } as never };
     },
@@ -165,6 +168,12 @@ function harness(opts: {
         await segments.tick("UC1");
         now += TICK;
       }
+    },
+    /** Identity checks since the last call. */
+    countAuthorize: () => {
+      const n = authorizations;
+      authorizations = 0;
+      return n;
     },
     marker: () => (stream.segmentSwitchingJson ? (JSON.parse(stream.segmentSwitchingJson) as SwitchMarker) : null),
   };
@@ -251,9 +260,9 @@ test("AC-SEG-04b (review): a failed delete keeps the marker and is retried until
   const h = harness({ bindFails: true, deleteRefusals: 2 });
   await h.ticks(2);
   assert.ok(h.marker(), "still tracked after a failed delete");
-  h.advance(STEP_RETRY_MS);
+  h.advance(stepRetryDelay(1));
   await h.ticks(1);
-  h.advance(STEP_RETRY_MS);
+  h.advance(stepRetryDelay(2));
   await h.ticks(1);
   assert.equal(h.calls.filter((c) => c === "delete(NEW)").length, 3);
   assert.equal(h.marker(), null);
@@ -288,7 +297,7 @@ test("AC-SEG-07 (review): ending the old segment is retried until YouTube says i
   const h = harness({ completeOldRefusals: HANDOVER_ALERT_ATTEMPTS + 1 });
   await h.ticks(2); // to handover
   for (let i = 0; i < HANDOVER_ALERT_ATTEMPTS + 2; i++) {
-    h.advance(STEP_RETRY_MS);
+    h.advance(stepRetryDelay(i + 1));
     await h.ticks(1);
   }
   assert.equal(h.calls.filter((c) => c === "transition(OLD->complete)").length, HANDOVER_ALERT_ATTEMPTS + 2);
@@ -374,4 +383,83 @@ test("rows of broadcasts that are no longer the stream's (the owner's Stop and a
   await h.ticks(1);
   assert.ok(h.rows.find((r) => r.broadcastId === "OLD")!.endedAt, "the old row is closed");
   assert.ok(h.rows.find((r) => r.broadcastId === "OTHER" && r.endedAt === null));
+});
+
+// Second independent review (2026-10-19).
+const LIVE_NEW = { NEW: { lifeCycleStatus: "live", actualStartTime: new Date(START + 11 * H).toISOString(), actualEndTime: null } };
+const HANDOVER: SwitchMarker = { phase: "handover", startedAt: START + 11 * H - TICK, fromBroadcastId: "OLD", newBroadcastId: "NEW", liveRequestedAt: START + 11 * H - TICK, liveRequests: 1, attempts: 0 };
+
+test("review 2: a crash between writing the hand-over and moving the row -- the row is moved to the new one before the old one is ended", async () => {
+  const h = harness({ marker: HANDOVER, lifecycles: LIVE_NEW }); // the row still names OLD
+  await h.ticks(2);
+  const moved = h.calls.indexOf("row.broadcastId=NEW");
+  assert.ok(moved >= 0 && moved < h.calls.indexOf("transition(OLD->complete)"), "the row names NEW before OLD is ended");
+  assert.equal(h.stream().broadcastId, "NEW");
+  assert.equal(h.lifecycles.OLD!.lifeCycleStatus, "complete");
+  assert.equal(h.lifecycles.NEW!.lifeCycleStatus, "live");
+  assert.equal(h.events.filter((e) => e.kind === "live_segment_switched").length, 1);
+  assert.equal(h.marker(), null);
+});
+
+test("review 2: the owner's Stop during the hand-over -- both broadcasts end, nothing is handed over or applied, not a failure", async () => {
+  const h = harness({ intent: "off", marker: HANDOVER, lifecycles: LIVE_NEW });
+  await h.ticks(2);
+  assert.ok(!h.calls.includes("row.broadcastId=NEW"));
+  assert.equal(h.lifecycles.OLD!.lifeCycleStatus, "complete");
+  assert.equal(h.lifecycles.NEW!.lifeCycleStatus, "complete");
+  assert.deepEqual(h.applied, []);
+  assert.equal(h.events.filter((e) => e.kind === "live_segment_switched").length, 0);
+  assert.equal(h.events.filter((e) => e.kind === "live_segment_switch_failed").length, 0);
+  assert.equal(h.events.filter((e) => e.kind === "live_segment_switch_cancelled").length, 1);
+  assert.equal(h.marker(), null);
+});
+
+test("review 2: a retry waits its growing pause before any call (the read and the identity check too); the pause stops growing at an hour", async () => {
+  const h = harness({ completeOldRefusals: 100 });
+  await h.ticks(2); // to handover
+  while ((h.marker()!.attempts ?? 0) === 0) await h.ticks(1); // the first refusal
+  h.calls.length = 0;
+  h.countAuthorize();
+  await h.ticks(Math.floor(stepRetryDelay(1) / TICK) - 2);
+  assert.deepEqual(h.calls, [], "nothing at all inside the pause");
+  assert.equal(h.countAuthorize(), 0, "no identity check inside the pause");
+  h.advance(2 * TICK);
+  await h.ticks(1);
+  assert.equal(h.calls.filter((c) => c === "transition(OLD->complete)").length, 1);
+  assert.equal(stepRetryDelay(2), 2 * stepRetryDelay(1));
+  assert.equal(stepRetryDelay(50), STEP_RETRY_MAX_MS);
+});
+
+test("review 2: a recorded segment closed because the stream no longer names it still goes to the recordings playlist", async () => {
+  const h = harness({
+    settings: { ...ON, recordingsPlaylist: { id: "PLREC", title: "Записи" } },
+    rowBroadcast: "OTHER",
+    now: START + 2 * H,
+    lifecycles: { OTHER: { lifeCycleStatus: "live", actualStartTime: new Date(START + H).toISOString(), actualEndTime: null, recordFromStart: true } },
+  });
+  await h.ticks(2);
+  const old = h.rows.find((r) => r.broadcastId === "OLD")!;
+  assert.ok(old.endedAt);
+  assert.ok(old.playlistStatus === "pending" || old.playlistStatus === "added");
+  assert.ok(h.calls.includes("playlistItems.insert(OLD->PLREC)"));
+});
+
+test("review 2: a broadcast that is not live yet is read again only after a few minutes", async () => {
+  const h = harness({ rowBroadcast: "READY", rows: [], lifecycles: { READY: { lifeCycleStatus: "ready", actualStartTime: null, actualEndTime: null } } });
+  await h.ticks(10); // 2.5 min
+  assert.equal(h.calls.filter((c) => c === "read(READY)").length, 1);
+  h.advance(5 * 60_000);
+  await h.ticks(1);
+  assert.equal(h.calls.filter((c) => c === "read(READY)").length, 2);
+});
+
+test("review 2: Stop and a new Start before the hand-over resumes -- the new segment is ended, the owner's new broadcast is left alone", async () => {
+  const h = harness({ rowBroadcast: "THIRD", marker: HANDOVER, lifecycles: { ...LIVE_NEW, THIRD: { lifeCycleStatus: "live", actualStartTime: new Date(START + 11 * H).toISOString(), actualEndTime: null } } });
+  await h.ticks(2);
+  assert.equal(h.stream().broadcastId, "THIRD");
+  assert.equal(h.lifecycles.NEW!.lifeCycleStatus, "complete");
+  assert.equal(h.lifecycles.THIRD!.lifeCycleStatus, "live");
+  assert.deepEqual(h.applied, []);
+  assert.equal(h.events.filter((e) => e.kind === "live_segment_switched").length, 0);
+  assert.equal(h.marker(), null);
 });
