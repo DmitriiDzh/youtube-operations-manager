@@ -32,4 +32,5 @@ export function createCloudQuotasCore() {
   });
 }
 
+export { createCachedReader } from "./cached-status";
 export type { CloudQuotaStatus, PerMinuteQuotaStatus, QuotaService, ServiceQuotaStatus } from "./contracts";
