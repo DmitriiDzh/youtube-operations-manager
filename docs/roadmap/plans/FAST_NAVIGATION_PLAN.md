@@ -1,6 +1,11 @@
 # A click in the menu answers at once and opens fast (BL-203)
 
-**Status: assigned 2026-10-19 (owner, Telegram msgs 3056/3062); in progress on `feature/bl-203-fast-navigation`.**
+**Status: done 2026-10-19. BL-203 merged into `dev` 0306977e (owner msg 3087); BL-204 merged 5027e317 (owner msg 3106); live on the Mac.**
+Live on the Mac after the restart:
+- a sidebar click during the conflict poll takes 16–70 ms (was 650–1500 ms);
+- `conflicts-summary` takes 8–11 ms (was 1.2–2 s);
+- `/api/settings` takes 20–32 ms (was 0.4–0.57 s);
+- the slowest light request in a 60 s window took 16 ms (was 1.5 s).
 
 The owner (msg 3056): after BL-195 a click in the left menu waits long with no sign that it was taken, and the blocks of the new
 page fill in slowly. Analysis sent as msg 3061, accepted ("да", msg 3062).
