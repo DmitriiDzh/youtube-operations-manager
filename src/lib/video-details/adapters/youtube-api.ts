@@ -40,6 +40,7 @@ function toSnapshot(videoId: string, context: NonNullable<Awaited<ReturnType<typ
     selfDeclaredMadeForKids: context.status.selfDeclaredMadeForKids ?? null,
     containsSyntheticMedia: context.status.containsSyntheticMedia ?? null,
     recordingDate: context.recordingDate,
+    paidProductPlacement: context.paidProductPlacement,
   };
 }
 
@@ -79,6 +80,7 @@ export function createVideoDetailsYoutubeApiAdapter() {
       credentials: ResolvedCredentials;
       videoId: string;
       patch: VideoDetailsPatch;
+      readBackRetries?: number;
     }): Promise<{ before: VideoDetailsSnapshot; after: VideoDetailsSnapshot }> {
       await assertLiveWritesAuthorized();
 
@@ -109,6 +111,7 @@ export function createVideoDetailsYoutubeApiAdapter() {
         });
       }
       const touchesRecordingDetails = "recordingDate" in args.patch;
+      const touchesPaidPlacement = "paidProductPlacement" in args.patch;
 
       await applyVideoDetailsUpdate({
         youtube,
@@ -139,6 +142,7 @@ export function createVideoDetailsYoutubeApiAdapter() {
                 }),
               }
             : {}),
+          ...(touchesPaidPlacement ? { paidProductPlacementDetails: { hasPaidProductPlacement: args.patch.paidProductPlacement === true } } : {}),
         },
       });
 
@@ -146,6 +150,7 @@ export function createVideoDetailsYoutubeApiAdapter() {
       // defaultAudioLanguage) -- re-read a bounded number of times before verification judges it.
       const after = await readBackUntilApplied({
         patch: args.patch,
+        ...(args.readBackRetries !== undefined ? { retries: args.readBackRetries } : {}),
         read: async () => {
           const verifiedContext = await getVideoDetailsContext(youtube, args.videoId);
           if (!verifiedContext) {

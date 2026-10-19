@@ -14331,6 +14331,17 @@ export async function listLiveStreamEvents(channelId: string, limit: number, dat
     .limit(limit);
 }
 
+/** BL-186 stage 3: the newest event of one kind (the video settings summary must not fall out of the 50-event window). */
+export async function latestLiveStreamEvent(channelId: string, kind: string, database: AppDb = db): Promise<StoredLiveStreamEvent | null> {
+  const [row] = await database
+    .select()
+    .from(liveStreamEvents)
+    .where(and(eq(liveStreamEvents.channelId, channelId), eq(liveStreamEvents.kind, kind)))
+    .orderBy(desc(liveStreamEvents.at), desc(liveStreamEvents.id))
+    .limit(1);
+  return row ?? null;
+}
+
 export async function upsertLiveStreamSource(row: typeof liveStreamSources.$inferInsert, database: AppDb = db): Promise<void> {
   const { channelId, videoId, ...rest } = row;
   await database

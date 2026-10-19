@@ -191,6 +191,8 @@ export async function applyVideoDetailsUpdate(args: {
     snippet?: youtube_v3.Schema$VideoSnippet;
     status?: youtube_v3.Schema$VideoStatus;
     recordingDetails?: { recordingDate?: string | null };
+    /** BL-186 stage 3: settable by `videos.update` (spike C, 2026-10-19), not only at upload. */
+    paidProductPlacementDetails?: { hasPaidProductPlacement: boolean };
   };
 }): Promise<void> {
   const part = Object.keys(args.parts) as Array<keyof typeof args.parts>;

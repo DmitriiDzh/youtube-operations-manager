@@ -817,6 +817,8 @@ export type VideoDetailsContext = {
   snippet: youtube_v3.Schema$VideoSnippet;
   status: youtube_v3.Schema$VideoStatus;
   recordingDate: string | null;
+  /** BL-186 stage 3: `paidProductPlacementDetails.hasPaidProductPlacement`; null when YouTube gives none. */
+  paidProductPlacement: boolean | null;
 };
 
 /** Fetches exactly the three parts `src/lib/video-details/` can write -- never `localizations`,
@@ -827,7 +829,7 @@ export async function getVideoDetailsContext(
   videoId: string
 ): Promise<VideoDetailsContext | null> {
   const res = await youtube.videos.list({
-    part: ["snippet", "status", "recordingDetails"],
+    part: ["snippet", "status", "recordingDetails", "paidProductPlacementDetails"],
     id: [videoId],
   });
 
@@ -839,6 +841,7 @@ export async function getVideoDetailsContext(
     snippet: item.snippet,
     status: item.status,
     recordingDate: item.recordingDetails?.recordingDate ?? null,
+    paidProductPlacement: item.paidProductPlacementDetails?.hasPaidProductPlacement ?? null,
   };
 }
 
@@ -972,6 +975,12 @@ export async function getPlaylistForUpdate(
     ...mapped,
     channelId,
   };
+}
+
+/** BL-186 stage 3: whether a playlist holds a video -- one `playlistItems.list` filtered by `videoId` (1 unit, never a full walk). */
+export async function playlistContainsVideo(youtube: youtube_v3.Youtube, playlistId: string, videoId: string): Promise<boolean> {
+  const res = await youtube.playlistItems.list({ part: ["id"], playlistId, videoId, maxResults: 1 });
+  return (res.data.items ?? []).length > 0;
 }
 
 export async function listPlaylistItemIdsByVideo(

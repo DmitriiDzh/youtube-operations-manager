@@ -66,6 +66,21 @@ writes and the identity check unchanged -- and a stream whose settings were neve
 video-level settings (tags, category, languages, marks, thumbnail, playlists) are saved and shown, but writing them is a later
 stage that waits for a real test broadcast (spike C) and the owner's separate "да".
 
+## Amendment 2026-10-19 (BL-186 stage 3, after spike C)
+
+The owner said "да" to spike C (Telegram msg 3123) and "Делай" to stage 3 (msg 3134). Start, the owner's attended action, now also
+writes the broadcast's video-level settings once the encoder is started:
+- one `videos.update` through video-details (identity check, backup, merge onto a fresh read, read-back);
+- `thumbnails.set` through this module's gateway adapter;
+- one `playlistItems.insert` per saved playlist through playlist-management, which checks the playlist belongs to the channel.
+
+The settings are written in the background, so Start answers at once. A failed step is an event and never ends the broadcast.
+«Применить настройки видео» is the same owner action: it sends the saved settings again, with a dry run first. The owner uses it
+to retry a failed step and to apply settings edited during the broadcast. Live writes and the identity check govern each write
+as before. video-details and playlist-management are plugged in by the app layer (`api/channels/[channelId]/live-stream/shared.ts`),
+so this module still imports no other feature module (AGENTS.md §M). Without them, Start works as before and says the settings
+were not applied. A channel that may not switch recording off gets its broadcast with recording on (spike C, `fix/live-recording-fallback`).
+
 ## Alternatives rejected
 
 - **All originals on the internal disk:** 47 GB does not fit in 30 GB free.

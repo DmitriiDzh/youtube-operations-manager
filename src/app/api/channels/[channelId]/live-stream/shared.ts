@@ -3,7 +3,9 @@ import { NextResponse } from "next/server";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
 import { authOptions } from "@/lib/auth";
 import { createChannelAccessCore } from "@/lib/channel-access";
-import { listLiveStreamEvents } from "@/lib/db";
+import { getChannelExpectedLanguages, latestLiveStreamEvent, listLiveStreamEvents } from "@/lib/db";
+import { createPlaylistManagementCore } from "@/lib/playlist-management";
+import { createVideoDetailsCore } from "@/lib/video-details";
 import {
   collectLiveStreamEntries,
   listPeerLiveStreams,
@@ -14,6 +16,7 @@ import {
   createStreamSupervisorCore,
   createStreamVideoSettingsCore,
   isDomainError,
+  type VideoFieldsPort,
 } from "@/lib/live-streams";
 
 // BL-176 (LIVE_STREAMS_PLAN.md §3.9/§3.12): the owner's routes for a channel's live stream. Every handler: a Web session
@@ -43,7 +46,30 @@ export type LiveStreamRouteCore = {
   restart(channelId: string): Promise<unknown>;
   previewEdit(channelId: string, credentialRef: { userId: string }, body: unknown): Promise<unknown>;
   edit(channelId: string, credentialRef: { userId: string }, body: unknown): Promise<unknown>;
+  /** BL-186 stage 3, «Применить снова»: the dry run (no call), then the owner's apply (YouTube writes). */
+  previewApplyVideoSettings(channelId: string): Promise<unknown>;
+  applyVideoSettings(channelId: string, credentialRef: { userId: string }): Promise<unknown>;
 };
+
+/**
+ * BL-186 stage 3: the broadcast's video-level writers, composed here at the app layer -- live-streams imports no other feature
+ * module (AGENTS.md §M). video-details writes the video's fields (identity, backup, read-back); playlist-management adds the
+ * video to a playlist of the same channel. Both keep their own Live-writes check.
+ */
+export function createLiveStreamVideoFields(): VideoFieldsPort {
+  return {
+    async apply({ credentialRef, channelId, videoId, patch }) {
+      // 9 read-back retries, 10 s apart: a fresh broadcast's tags read back tens of seconds late (spike C; independent review).
+      const result = await createVideoDetailsCore().applyFieldsUpdate({ credentialRef, expectedChannelId: channelId, videoId, patch, readBackRetries: 9 });
+      return { verified: result.verified };
+    },
+    async addToPlaylist({ credentialRef, channelId, playlistId, videoId }) {
+      const result = await createPlaylistManagementCore().addVideosToPlaylist({ credentialRef, expectedChannelId: channelId, playlistId, videoIds: [videoId] });
+      const failure = result.failures[0];
+      return result.added === 1 ? { added: true } : { added: false, reason: failure ? [failure.reason, failure.message].filter(Boolean).join(": ") : undefined };
+    },
+  };
+}
 
 export type LiveStreamRouteDeps = {
   getSession: () => Promise<{ user?: { id?: string | null } } | null>;
@@ -57,13 +83,13 @@ function objectBody(body: unknown): Record<string, unknown> {
 
 export function createLiveStreamRouteCore(): LiveStreamRouteCore {
   const rotation = createLiveStreamsCore();
-  const broadcasts = createLiveBroadcastsCore();
+  const broadcasts = createLiveBroadcastsCore({ videoFields: createLiveStreamVideoFields() });
   const supervisor = createStreamSupervisorCore();
   const settings = createLiveStreamsSettingsCore();
   const videoSettings = createStreamVideoSettingsCore();
   return {
     async overview(channelId) {
-      const [view, module, running, events, preview, youtube, entries, peers, video] = await Promise.all([
+      const [view, module, running, events, preview, youtube, entries, peers, video, lastApply, languages] = await Promise.all([
         rotation.getOverview(channelId),
         settings.get(),
         supervisor.runningHelper(channelId),
@@ -73,12 +99,18 @@ export function createLiveStreamRouteCore(): LiveStreamRouteCore {
         collectLiveStreamEntries(),
         listPeerLiveStreams().catch(() => []),
         videoSettings.get(channelId),
+        latestLiveStreamEvent(channelId, "video_settings_applied"),
+        getChannelExpectedLanguages(channelId),
       ]);
       return {
         ...view,
         // BL-186: null = never saved; a stored value that fails the schema is reported, never replaced by defaults.
         videoSettings: video.ok ? video.settings : null,
         videoSettingsProblem: video.ok ? null : video.problem,
+        // BL-186 stage 3: the last video settings summary, read on its own (a 24/7 stream pushes it out of the 50 events).
+        // Owner msg 3153: the broadcast's title/description language is the channel's baseline (shown read-only in the form).
+        channelDefaultLanguage: languages.defaultLanguage,
+        videoSettingsLast: lastApply ? { at: lastApply.at.toISOString(), detail: JSON.parse(lastApply.detailJson) as unknown } : null,
         module,
         // §3.10: the state in the one vocabulary the report and the Operator use.
         state: entries.find((e) => e.channelId === channelId)?.state ?? "off",
@@ -111,6 +143,8 @@ export function createLiveStreamRouteCore(): LiveStreamRouteCore {
     // The module validates both strictly (a missing or malformed field is a 400, never a YouTube call).
     previewEdit: (channelId, credentialRef, body) => broadcasts.previewEdit(channelId, credentialRef, objectBody(body).patch),
     edit: (channelId, credentialRef, body) => broadcasts.edit(channelId, credentialRef, objectBody(body).patch, objectBody(body).expected),
+    previewApplyVideoSettings: (channelId) => broadcasts.previewApplyVideoSettings(channelId),
+    applyVideoSettings: (channelId, credentialRef) => broadcasts.applyVideoSettingsAgain(channelId, credentialRef),
   };
 }
 

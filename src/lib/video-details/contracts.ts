@@ -43,6 +43,9 @@ export type VideoDetailsPatch = {
   selfDeclaredMadeForKids?: boolean;
   containsSyntheticMedia?: boolean;
   recordingDate?: string;
+  /** `paidProductPlacementDetails.hasPaidProductPlacement` -- Studio's paid-promotion mark. Settable by `videos.update` on any
+   * video, upcoming and live broadcasts included (BL-186 spike C, 2026-10-19). */
+  paidProductPlacement?: boolean;
 };
 
 export type VideoDetailsSnapshot = {
@@ -62,6 +65,8 @@ export type VideoDetailsSnapshot = {
   selfDeclaredMadeForKids: boolean | null;
   containsSyntheticMedia: boolean | null;
   recordingDate: string | null;
+  /** BL-186 stage 3: read with the other parts; optional so older snapshots stay valid. */
+  paidProductPlacement?: boolean | null;
 };
 
 export type VideoDetailsDiff = {

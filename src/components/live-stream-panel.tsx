@@ -62,17 +62,27 @@ type Overview = {
     moduleReady: boolean;
     /** BL-186: the broadcast settings the insert carries (null = never saved: YouTube's defaults). */
     broadcast?: { settings: LiveVideoSettings["broadcast"] | null };
-    /** BL-186: the saved video-level settings -- shown, not sent by this Start yet. */
+    /** BL-186: the saved video-level settings. */
     videoSettings?: Omit<LiveVideoSettings, "broadcast"> | null;
-    videoSettingsApplied?: boolean;
+    /** BL-186 stage 3: exactly what Start sends to the broadcast's video right after it starts (null: nothing, or not available). */
+    videoSettingsApply?: VideoApplyPreview | null;
     videoSettingsProblem?: string | null;
   } | null;
   videoSettings: LiveVideoSettings | null;
   videoSettingsProblem: string | null;
+  /** Owner msg 3153: the channel's baseline title/description language -- the broadcast's language. */
+  channelDefaultLanguage?: string | null;
+  /** BL-186 stage 3: the last video settings summary (any age). */
+  videoSettingsLast?: { at: string; detail: Record<string, unknown> } | null;
   events: Array<{ id: string; at: string; kind: string; detail: Record<string, unknown> }>;
   state: StreamState;
   peers: Array<{ deviceId: string; hostName: string | null; updatedAt: string; stream: { state: StreamState; since: string | null; playing: { index: number; total: number; videoId: string } | null; viewers: number | null } }>;
 };
+
+/** BL-186 stage 3: what «Применить снова» (and Start) send to the broadcast's video, and its quota units. */
+type VideoApplyPreview = { patch: Record<string, unknown>; thumbnail: boolean; playlists: Array<{ id: string; title: string }>; units: number };
+type VideoApplyStep = { step: string; ok: boolean; skipped?: string; error?: string };
+type VideoApplyResult = { broadcastId: string; ok: boolean; steps: VideoApplyStep[]; notApplied?: string };
 
 type StreamState = "off" | "ended_by_youtube" | "starting" | "live" | "replaying" | "no_source" | "reconnecting";
 
@@ -217,7 +227,7 @@ export function LiveStreamPanel({ channelId, visible }: { channelId: string | nu
         <>
           <StatusCard overview={overview} base={base!} onChanged={load} />
           <SettingsCard overview={overview} base={base!} onChanged={load} />
-          <LiveStreamVideoSettingsCard base={base!} saved={overview.videoSettings} problem={overview.videoSettingsProblem} onChanged={load} />
+          <LiveStreamVideoSettingsCard base={base!} channelLanguage={overview.channelDefaultLanguage ?? null} saved={overview.videoSettings} problem={overview.videoSettingsProblem} onChanged={load} />
           <RotationCard overview={overview} base={base!} onChanged={load} />
           <HistoryCard overview={overview} />
         </>
@@ -235,7 +245,8 @@ function StatusCard({ overview, base, onChanged }: { overview: Overview; base: s
   const busy = busyAction.busy;
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [dialog, setDialog] = useState<"start" | "stop" | "goLive" | null>(null);
+  const [dialog, setDialog] = useState<"start" | "stop" | "goLive" | "applyVideo" | null>(null);
+  const [applyPreview, setApplyPreview] = useState<(VideoApplyPreview & { liveWritesEnabled: boolean }) | null>(null);
   const state = STATE_VIEW[overview.state] ?? STATE_VIEW.off;
   const on = overview.stream?.intent === "on";
   const status = overview.encoder.status;
@@ -254,9 +265,11 @@ function StatusCard({ overview, base, onChanged }: { overview: Overview; base: s
         const encoderError = (result as { encoderError?: string } | null)?.encoderError;
         const youtubeRefusal = (result as { youtubeRefusal?: string } | null)?.youtubeRefusal;
         const recordingForced = (result as { recordingForced?: boolean } | null)?.recordingForced === true;
+        const applied = (result as { steps?: unknown } | null)?.steps ? (result as VideoApplyResult) : null;
         // BL-195: a partial result is kept on screen until closed (an error line); a plain success hides itself.
         if (encoderError) setError(t("live.start.encoderLater", { error: encoderError }));
         else if (youtubeRefusal) setError(t("live.stop.noBroadcast", { reason: causeText(t, youtubeRefusal) }));
+        else if (applied && !applied.ok) setError(t("live.videoApply.someFailed", { steps: failedStepsText(t, applied.steps) }));
         else setNotice(recordingForced ? t("live.start.doneRecording") : done);
         await onChanged();
       } catch (err) {
@@ -321,9 +334,29 @@ function StatusCard({ overview, base, onChanged }: { overview: Overview; base: s
             <button onClick={() => setDialog("goLive")} disabled={busy} className={buttonClass}>
               {t("live.action.goLive")}
             </button>
+            {overview.videoSettings && (
+              <button
+                onClick={() =>
+                  void busyAction.run(t("live.videoApply.previewing"), async () => {
+                    setError(null);
+                    try {
+                      setApplyPreview(await requestJson<VideoApplyPreview & { liveWritesEnabled: boolean }>(`${base}/apply-video-settings`, undefined, t("live.actionFailed"), t));
+                      setDialog("applyVideo");
+                    } catch (err) {
+                      setError(err instanceof Error ? err.message : t("live.actionFailed"));
+                    }
+                  })
+                }
+                disabled={busy}
+                className={buttonClass}
+              >
+                {t("live.action.applyVideo")}
+              </button>
+            )}
           </>
         )}
       </div>
+      {on && overview.videoSettings && <VideoApplyStatus overview={overview} />}
       {!on && overview.rotation.length === 0 && <p className="text-xs text-zinc-500">{t("live.start.needRotation")}</p>}
       {!on && overview.rotation.length > 0 && !settings.title.trim() && <p className="text-xs text-zinc-500">{t("live.start.needTitle")}</p>}
       {busy && <LoadingIndicator className="text-xs text-zinc-400" />}
@@ -335,6 +368,19 @@ function StatusCard({ overview, base, onChanged }: { overview: Overview; base: s
         }}
       />
 
+      {dialog === "applyVideo" && applyPreview && (
+        <ConfirmDialog
+          title={t("live.videoApply.title")}
+          description={t("live.videoApply.description")}
+          confirmLabel={t("live.action.applyVideo")}
+          confirmDisabled={!applyPreview.liveWritesEnabled}
+          onCancel={() => setDialog(null)}
+          onConfirm={() => void run(() => requestJson(`${base}/apply-video-settings`, json("POST", {}), t("live.actionFailed"), t), t("live.videoApply.done"), t("live.videoApply.applying"))}
+        >
+          <VideoApplyList preview={applyPreview} />
+          {!applyPreview.liveWritesEnabled && <p className="text-xs text-amber-300">{t("live.liveWritesOff")}</p>}
+        </ConfirmDialog>
+      )}
       {dialog === "start" && preview && (
         <ConfirmDialog
           title={t("live.start.title")}
@@ -377,7 +423,7 @@ function StatusCard({ overview, base, onChanged }: { overview: Overview; base: s
             <dd className="text-zinc-200">{t("live.start.unitsValue", { units: String(preview.units) })}</dd>
           </dl>
           {!preview.broadcast?.settings && !preview.videoSettingsProblem && <p className="text-xs text-zinc-400">{t("live.start.broadcastDefaults")}</p>}
-          {preview.videoSettings && <StartVideoSettingsSummary settings={preview.videoSettings} />}
+          {preview.videoSettings && <StartVideoSettingsSummary settings={preview.videoSettings} apply={preview.videoSettingsApply ?? null} />}
           {preview.videoSettingsProblem && <p className="text-xs text-amber-300">{t("live.video.problem", { problem: preview.videoSettingsProblem })}</p>}
           {preview.createsStream && <p className="text-xs text-zinc-400">{t("live.start.createsStream")}</p>}
           {!preview.liveWritesEnabled && <p className="text-xs text-amber-300">{t("live.liveWritesOff")}</p>}
@@ -424,8 +470,63 @@ const LATENCY_KEYS: Record<LiveLatency, UiTextKey> = {
   ultraLow: "live.video.latency.ultraLow",
 };
 
-/** BL-186 (LIVE_STREAMS_FIELDS_PLAN.md §5 stage 2): the saved video-level settings in the Start dialog, marked as not sent yet. */
-function StartVideoSettingsSummary({ settings }: { settings: Omit<LiveVideoSettings, "broadcast"> }) {
+/** BL-186 stage 3: the failed steps of an application, in words («Обложка: …; Плейлист «Radio»: …»). */
+function failedStepsText(t: ReturnType<typeof useT>, steps: VideoApplyStep[]): string {
+  return steps
+    .filter((s) => !s.ok)
+    .map((s) => `${stepLabel(t, s.step)}: ${s.error ?? "—"}`)
+    .join("; ");
+}
+
+function stepLabel(t: ReturnType<typeof useT>, step: string): string {
+  if (step === "fields") return t("live.videoApply.step.fields");
+  if (step === "thumbnail") return t("live.videoApply.step.thumbnail");
+  return t("live.videoApply.step.playlist", { id: step.replace(/^playlist:/, "") });
+}
+
+/** BL-186 stage 3: what an application sends -- the dry run's list (Start dialog and «Применить снова»). */
+function VideoApplyList({ preview }: { preview: VideoApplyPreview }) {
+  const t = useT();
+  const fields = Object.keys(preview.patch).map((field) => {
+    const key = `live.videoApply.field.${field}` as UiTextKey;
+    const value = preview.patch[field];
+    return `${t(key)}: ${Array.isArray(value) ? value.join(", ") : typeof value === "boolean" ? (value ? t("live.yes") : t("live.no")) : String(value)}`;
+  });
+  return (
+    <div className="space-y-1 text-xs text-zinc-300">
+      <p className="text-zinc-400">{t("live.videoApply.sends")}</p>
+      <ul className="list-inside list-disc space-y-0.5">
+        <li>{t("live.videoApply.step.fields")}: {fields.join("; ")}</li>
+        {preview.thumbnail && <li>{t("live.videoApply.step.thumbnail")}</li>}
+        {preview.playlists.map((p) => (
+          <li key={p.id}>{t("live.videoApply.step.playlistNamed", { title: p.title || p.id })}</li>
+        ))}
+      </ul>
+      <p className="text-zinc-500">{t("live.videoApply.units", { units: String(preview.units) })}</p>
+    </div>
+  );
+}
+
+/**
+ * BL-186 stage 3: whether the saved video settings reached the running broadcast -- read from the stream's own events (the last
+ * application for this broadcast), with the failed steps in words. «Применить снова» repeats it.
+ */
+function VideoApplyStatus({ overview }: { overview: Overview }) {
+  const t = useT();
+  const broadcastId = overview.stream?.broadcastId ?? null;
+  const last = overview.videoSettingsLast && overview.videoSettingsLast.detail.broadcastId === broadcastId ? overview.videoSettingsLast : null;
+  if (!last) return <p className="text-xs text-zinc-400">{t("live.videoApply.pending")}</p>;
+  const detail = last.detail as unknown as VideoApplyResult;
+  if (detail.notApplied) return <p className="text-xs text-amber-300">{t("live.videoApply.unavailable")}</p>;
+  return detail.ok ? (
+    <p className="text-xs text-emerald-300">{t("live.videoApply.ok", { at: new Date(last.at).toLocaleString(t.language) })}</p>
+  ) : (
+    <p className="text-xs text-amber-300">{t("live.videoApply.someFailed", { steps: failedStepsText(t, detail.steps) })}</p>
+  );
+}
+
+/** BL-186: the saved video-level settings in the Start dialog; stage 3: sent to the broadcast's video right after Start. */
+function StartVideoSettingsSummary({ settings, apply }: { settings: Omit<LiveVideoSettings, "broadcast">; apply: VideoApplyPreview | null }) {
   const t = useT();
   const marks = [
     settings.containsSyntheticMedia && t("live.video.field.synthetic"),
@@ -434,14 +535,19 @@ function StartVideoSettingsSummary({ settings }: { settings: Omit<LiveVideoSetti
   return (
     <div className="space-y-1 rounded-lg border border-zinc-800 p-2 text-xs">
       <p className="text-zinc-300">{t("live.start.videoSettingsTitle")}</p>
-      <p className="text-amber-300">{t("live.start.videoSettingsNotSent")}</p>
+      {apply ? (
+        <p className="text-zinc-400">{t("live.start.videoSettingsSent", { units: String(apply.units) })}</p>
+      ) : (
+        <p className="text-amber-300">{t("live.videoApply.unavailable")}</p>
+      )}
       <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1">
         <dt className="text-zinc-500">{t("live.video.field.tags")}</dt>
         <dd className="text-zinc-200">{settings.tags.length > 0 ? settings.tags.join(", ") : "—"}</dd>
         <dt className="text-zinc-500">{t("live.video.field.category")}</dt>
         <dd className="text-zinc-200">{settings.categoryId ? t(`publishingSettings.category.${settings.categoryId}` as UiTextKey) : "—"}</dd>
         <dt className="text-zinc-500">{t("live.video.field.defaultLanguage")}</dt>
-        <dd className="text-zinc-200">{settings.defaultLanguage ?? "—"}</dd>
+        {/* Owner msg 3153: the channel's baseline, as sent (the stream's own field is not used). */}
+        <dd className="text-zinc-200">{typeof apply?.patch.defaultLanguage === "string" ? apply.patch.defaultLanguage : "—"}</dd>
         <dt className="text-zinc-500">{t("live.video.field.audioLanguage")}</dt>
         <dd className="text-zinc-200">{settings.defaultAudioLanguage ?? "—"}</dd>
         <dt className="text-zinc-500">{t("live.video.section.marks")}</dt>
@@ -837,6 +943,9 @@ const EVENT_KEYS: Record<string, UiTextKey> = {
   guard_override: "live.event.guardOverride",
   guard_override_cleared: "live.event.guardOverrideCleared",
   sources_set: "live.event.sourcesSet",
+  recording_required: "live.event.recordingRequired",
+  video_settings_step: "live.event.videoSettingsStep",
+  video_settings_applied: "live.event.videoSettingsApplied",
 };
 
 function HistoryCard({ overview }: { overview: Overview }) {
@@ -852,7 +961,9 @@ function HistoryCard({ overview }: { overview: Overview }) {
             const key = EVENT_KEYS[event.kind];
             const detail = event.detail;
             const what =
-              typeof detail.method === "string"
+              event.kind === "video_settings_step" && typeof detail.step === "string"
+                ? `${stepLabel(t, detail.step)} · ${detail.ok ? t("live.yes") : String(detail.error ?? "—")}`
+                : typeof detail.method === "string"
                 ? detail.method
                 : typeof detail.videoId === "string"
                   ? detail.videoId

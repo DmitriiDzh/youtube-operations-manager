@@ -5,10 +5,11 @@ import {
   bindLiveBroadcast,
   insertLiveBroadcast,
   insertLiveStream,
+  setVideoThumbnail,
   transitionLiveBroadcast,
   updateLiveBroadcast,
 } from "@/lib/youtube-write-gateway";
-import { createYoutubeClient, getLiveBroadcasts } from "@/lib/youtube-read-gateway";
+import { createYoutubeClient, getLiveBroadcasts, playlistContainsVideo } from "@/lib/youtube-read-gateway";
 import type { BroadcastsDependencies } from "../broadcasts";
 
 // BL-176 (LIVE_STREAMS_PLAN.md §3.2/§3.9, ADR 0036 §3): the owner's live writes, each through the write gateway with the
@@ -50,6 +51,17 @@ export function createLiveStreamsYoutubeWrites(): BroadcastsDependencies["youtub
     async getBroadcast(credentials, broadcastId) {
       const youtube = await clientFor(credentials);
       return (await getLiveBroadcasts(youtube, [broadcastId]))[0] ?? null;
+    },
+    // BL-186 stage 3: the broadcast's thumbnail (the thumbnail and the playlist reads are the only stage-3 calls made here;
+    // the video's fields and the playlist inserts go through video-details and playlist-management, plugged in by the app).
+    async setThumbnail(credentials, videoId, image) {
+      const youtube = await clientFor(credentials);
+      await assertLiveWritesAuthorized();
+      return setVideoThumbnail(youtube, videoId, image);
+    },
+    async playlistHasVideo(credentials, playlistId, videoId) {
+      const youtube = await clientFor(credentials);
+      return playlistContainsVideo(youtube, playlistId, videoId);
     },
   };
 }

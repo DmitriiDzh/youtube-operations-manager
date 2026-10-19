@@ -13,6 +13,7 @@ import {
 import { isRecordingRequiredRefusal, isRedundantTransition, liveErrorReason, toLiveDomainError } from "./errors";
 import { parseWithSchema } from "./schemas";
 import { withChannelLock as withLock } from "./supervisor";
+import { applyVideoSettings, describeVideoApply, type VideoApplyResult, type VideoFieldsPort } from "./video-apply";
 import { readStoredVideoSettings } from "./video-settings";
 
 // ---------------------------------------------------------------------------
@@ -83,7 +84,20 @@ export type BroadcastsDependencies = {
     transition(credentials: ResolvedCredentials, args: { broadcastId: string; broadcastStatus: "live" | "complete" }): Promise<{ lifeCycleStatus: string | null }>;
     update(credentials: ResolvedCredentials, args: { broadcastId: string; snippet: { title: string; description: string; scheduledStartTime: string; scheduledEndTime?: string | null; categoryId?: string | null }; privacyStatus: LivePrivacy }): Promise<void>;
     getBroadcast(credentials: ResolvedCredentials, broadcastId: string): Promise<Broadcast | null>;
+    /** BL-186 stage 3: `thumbnails.set` on the broadcast's video (the write gateway). */
+    setThumbnail(credentials: ResolvedCredentials, videoId: string, image: { mimeType: "image/jpeg" | "image/png"; bytes: Buffer }): Promise<void>;
+    /** BL-186 stage 3: whether a playlist already holds the video (a read; Apply again must not add it twice). */
+    playlistHasVideo(credentials: ResolvedCredentials, playlistId: string, videoId: string): Promise<boolean>;
   };
+  /** BL-186 stage 3: the video-level writers the app layer plugs in (video-details, playlist-management; AGENTS.md §M). */
+  videoFields?: VideoFieldsPort;
+  /** BL-186 stage 3: the channel's baseline title/description language (owner msg 3153: the broadcast's language is always it). */
+  channelLanguage(channelId: string): Promise<string | null>;
+  /** BL-186 stage 3: the stream's chosen thumbnail file on this computer. */
+  thumbnails: { read(channelId: string): Promise<{ kind: "jpeg" | "png"; bytes: Uint8Array } | null> };
+  /** Runs the video settings after Start without holding Start's answer (tests run it in place). */
+  background?: (task: () => Promise<unknown>) => void;
+  sleep?: (ms: number) => Promise<void>;
   supervisor: {
     startEncoder(channelId: string, options: { freshPass: boolean; playable?: readonly string[] }): Promise<{ pid: number }>;
     stopEncoder(channelId: string, reason: string): Promise<boolean>;
@@ -140,8 +154,36 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
     await deps.streams.event(channelId, "youtube_write", { method, ...detail });
   }
 
+  /** BL-186 stage 3: the broadcast's video settings, one channel at a time. */
+  function runVideoSettings(args: { channelId: string; broadcastId: string; credentialRef: unknown; credentials: ResolvedCredentials; settings: LiveVideoSettings; trigger: "start" | "again" }): Promise<VideoApplyResult> {
+    return withLock(`video-settings:${args.channelId}`, async () => {
+      try {
+        const channelLanguage = await deps.channelLanguage(args.channelId);
+        return await applyVideoSettings(
+          {
+            videoFields: deps.videoFields,
+            youtube: deps.youtube,
+            thumbnails: deps.thumbnails,
+            event: (channelId, kind, detail) => deps.streams.event(channelId, kind, detail),
+            sleep: deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
+            isCurrent: async (channelId, broadcastId) => {
+              const stream = await deps.streams.get(channelId);
+              return stream?.intent === "on" && stream.broadcastId === broadcastId;
+            },
+          },
+          { ...args, channelLanguage }
+        );
+      } catch (error) {
+        // Never a silent end (review): the page reads this summary, so a run that threw still leaves one.
+        const result: VideoApplyResult = { broadcastId: args.broadcastId, ok: false, steps: [{ step: "run", ok: false, error: error instanceof Error ? error.message : String(error) }] };
+        await deps.streams.event(args.channelId, "video_settings_applied", { ...result, trigger: args.trigger }).catch(() => undefined);
+        return result;
+      }
+    });
+  }
+
   /** One Start at a time per channel: a second request waits, then finds the stream on and is refused. */
-  async function startOnce(channelId: string, credentialRef: unknown): Promise<{ broadcastId: string; streamId: string; encoderStarted: boolean; encoderError?: string; recordingForced?: boolean }> {
+  async function startOnce(channelId: string, credentialRef: unknown): Promise<{ broadcastId: string; streamId: string; encoderStarted: boolean; encoderError?: string; recordingForced?: boolean; videoSettings: "applying" | "not_saved" }> {
     await requireModule();
     const stream = await requireStream(channelId);
     // A second Start (a stale page, a repeated request) must not create another broadcast and lose track of the live one.
@@ -208,14 +250,24 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
       // The broadcast is recorded only once it is bound: a failed Start never leaves the app tracking a broadcast with no stream.
       await deps.streams.update(channelId, { broadcastId, intent: "on", onSince: deps.clock() });
 
+      // BL-186 stage 3: the saved video settings go to the broadcast's video after the encoder start, in the background, so Start
+      // answers at once; each step is an event and a failure never ends the broadcast (plan §2.2 step 4).
+      const videoSettingsState = videoSettings ? "applying" : "not_saved";
+      const scheduleVideoSettings = () => {
+        if (!videoSettings) return;
+        const task = () => runVideoSettings({ channelId, broadcastId, credentialRef, credentials, settings: videoSettings, trigger: "start" });
+        (deps.background ?? ((run) => void run().catch(() => undefined)))(task);
+      };
       try {
         await deps.supervisor.startEncoder(channelId, { freshPass: true, playable });
-        return { broadcastId, streamId, encoderStarted: true, ...(recordingForced ? { recordingForced } : {}) };
+        scheduleVideoSettings();
+        return { broadcastId, streamId, encoderStarted: true, videoSettings: videoSettingsState, ...(recordingForced ? { recordingForced } : {}) };
       } catch (error) {
         // The broadcast exists and is bound; the intent is on, so the background loop keeps trying to start the encoder.
         const message = error instanceof Error ? error.message : String(error);
         await deps.streams.event(channelId, "encoder_start_failed", { message });
-        return { broadcastId, streamId, encoderStarted: false, encoderError: message, ...(recordingForced ? { recordingForced } : {}) };
+        scheduleVideoSettings();
+        return { broadcastId, streamId, encoderStarted: false, encoderError: message, videoSettings: videoSettingsState, ...(recordingForced ? { recordingForced } : {}) };
       }
     } catch (error) {
       throw toLiveDomainError(error, "Start");
@@ -232,6 +284,7 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
       const settings = await deps.settings();
       const stored = readStoredVideoSettings(stream.videoSettingsJson);
       const videoSettings = stored.ok ? stored.settings : null;
+      const apply = videoSettings && deps.videoFields ? describeVideoApply(videoSettings, await deps.channelLanguage(channelId)) : null;
       return {
         createsStream: !stream.streamId,
         broadcast: {
@@ -247,13 +300,13 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
           settings: videoSettings ? videoSettings.broadcast : null,
         },
         /**
-         * BL-186: the saved video-level settings (tags, category, languages, thumbnail, playlists...). Shown so the owner sees them,
-         * but NOT sent by this Start: applying them waits for spike C (LIVE_STREAMS_FIELDS_PLAN.md §5 stage 3). No units counted.
+         * BL-186: the saved video-level settings (tags, category, languages, thumbnail, playlists...). Stage 3: sent to the
+         * broadcast's video right after the encoder starts (`videoSettingsApply`: exactly what, and its units).
          */
         videoSettings: videoSettings ? { ...videoSettings, broadcast: undefined } : null,
-        videoSettingsApplied: false,
+        videoSettingsApply: apply,
         videoSettingsProblem: stored.ok ? null : stored.problem,
-        units: stream.streamId ? 4 : 5,
+        units: (stream.streamId ? 4 : 5) + (apply?.units ?? 0),
         liveWritesEnabled: await deps.liveWritesEnabled(),
         moduleReady: settings.enabled && settings.host.ok,
       };
@@ -261,6 +314,28 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
 
     /** §3.9 Start: create the stream (first time), a broadcast, bind them, then start the encoder. */
     start: (channelId: string, credentialRef: unknown) => withLock(`start:${channelId}`, () => startOnce(channelId, credentialRef)),
+
+    /** BL-186 stage 3, «Применить снова», step 1 (the dry run): what would be sent to the running broadcast's video now. No call. */
+    async previewApplyVideoSettings(channelId: string) {
+      const stream = await deps.streams.get(channelId);
+      if (!stream?.broadcastId || stream.intent !== "on") throw new DomainError({ code: "validation_failed", message: "The stream is not on: there is no broadcast to apply the settings to", details: { channelId } });
+      const settings = savedVideoSettings(stream);
+      if (!settings) throw new DomainError({ code: "validation_failed", message: "Save the stream's video settings first", details: { channelId } });
+      if (!deps.videoFields) throw new DomainError({ code: "validation_failed", message: "Video settings cannot be applied here (the video details module is not available)", details: { channelId } });
+      return { broadcastId: stream.broadcastId, ...describeVideoApply(settings, await deps.channelLanguage(channelId)), liveWritesEnabled: await deps.liveWritesEnabled() };
+    },
+
+    /** BL-186 stage 3, «Применить снова»: the saved video settings, sent again to the running broadcast's video (the owner's action). */
+    async applyVideoSettingsAgain(channelId: string, credentialRef: unknown): Promise<VideoApplyResult> {
+      await requireModule();
+      const stream = await deps.streams.get(channelId);
+      if (!stream?.broadcastId || stream.intent !== "on") throw new DomainError({ code: "validation_failed", message: "The stream is not on: there is no broadcast to apply the settings to", details: { channelId } });
+      const settings = savedVideoSettings(stream);
+      if (!settings) throw new DomainError({ code: "validation_failed", message: "Save the stream's video settings first", details: { channelId } });
+      if (!deps.videoFields) throw new DomainError({ code: "validation_failed", message: "Video settings cannot be applied here (the video details module is not available)", details: { channelId } });
+      const credentials = await authorize(channelId, credentialRef);
+      return runVideoSettings({ channelId, broadcastId: stream.broadcastId, credentialRef, credentials, settings, trigger: "again" });
+    },
 
     /** §3.9: if the picture arrives but the broadcast is not live after a few minutes, the owner asks for `live`. */
     async goLive(channelId: string, credentialRef: unknown): Promise<{ lifeCycleStatus: string | null }> {

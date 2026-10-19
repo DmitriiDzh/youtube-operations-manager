@@ -29,6 +29,8 @@ export type VideoFieldsBackupSnapshot = {
   snippet: Record<string, unknown>;
   status: Record<string, unknown>;
   recordingDate: string | null;
+  /** BL-186 stage 3: the paid-promotion mark before the write (absent in backups made before it). */
+  paidProductPlacement?: boolean | null;
 };
 
 export type BackupSnapshot = LocalizationBackupSnapshot | VideoFieldsBackupSnapshot;

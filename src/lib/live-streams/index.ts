@@ -1,7 +1,7 @@
 import { randomBytes, randomInt, randomUUID } from "node:crypto";
 import os from "node:os";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
-import {
+import { getChannelExpectedLanguages,
   getLiveStream,
   getLiveWritesEnabled,
   listLiveStreamEvents,
@@ -28,6 +28,7 @@ import { createLiveStreamsStore } from "./adapters/store";
 import { createThumbnailFs } from "./adapters/thumbnail-fs";
 import { createLiveStreamsYoutubeReads } from "./adapters/youtube-api";
 import { createLiveStreamBuffer } from "./buffer";
+import type { VideoFieldsPort } from "./video-apply";
 import { createLiveBroadcasts } from "./broadcasts";
 import { createLiveStreamsYoutubeWrites } from "./adapters/youtube-writes";
 import { createLiveStreamsRunner } from "./runner";
@@ -131,9 +132,16 @@ export function createStreamSupervisorCore() {
   });
 }
 
-/** The owner's attended actions: Start, Go live, Stop, Edit -- the only live-stream code that writes to YouTube. */
-export function createLiveBroadcastsCore() {
+/**
+ * The owner's attended actions: Start, Go live, Stop, Edit, Apply again -- the only live-stream code that writes to YouTube.
+ * `videoFields` (BL-186 stage 3) is plugged in by the app layer: this module imports no other feature module (AGENTS.md §M).
+ */
+export function createLiveBroadcastsCore(options: { videoFields?: VideoFieldsPort } = {}) {
+  const thumbnails = createThumbnailFs(getProductionAppPaths().liveStreamsThumbnailsDir);
   return createLiveBroadcasts({
+    videoFields: options.videoFields,
+    channelLanguage: async (channelId) => (await getChannelExpectedLanguages(channelId)).defaultLanguage,
+    thumbnails: { read: (channelId) => thumbnails.read(channelId) },
     settings: () => createLiveStreamsSettingsCore().get(),
     liveWritesEnabled: () => getLiveWritesEnabled(),
     auth: { resolve: (args) => resolveGoogleCredentials(args as Parameters<typeof resolveGoogleCredentials>[0]) },
@@ -251,3 +259,5 @@ export * from "./contracts";
 export type { PickerRow, PickerRowState, PickerVideo, MatchSource } from "./picker";
 export type { PickerResult } from "./picker-service";
 export { checkOriginal, checkPublicOnly, classifyRunEnd, locatePlayback, passLength, planBuffer, canCopyIntoBuffer } from "./rotation";
+
+export type { VideoFieldsPort, VideoApplyResult } from "./video-apply";
