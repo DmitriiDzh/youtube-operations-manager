@@ -4,6 +4,7 @@ import * as Automerge from "@automerge/automerge";
 import { getStoredChangeById, getStoredChangeSet, upsertChannel } from "@/lib/db";
 import { DomainError, type ChannelDraftDocument, type DraftChange, type DraftChangeSet, type DraftProvenance } from "./contracts";
 import { createChangeDraftsCore, type ServiceDependencies } from "./services";
+import { createChangeDraftsCache } from "./cache";
 import type { ChangeDraftsStoreAdapter } from "./adapters/automerge-store";
 import type { DiscardedDocumentBackupStore } from "./adapters/discarded-backup-store";
 import { createSqlProjectionAdapter, type SqlProjectionAdapter } from "./adapters/sql-projection";
@@ -1604,4 +1605,80 @@ test("exportBytes returns the same bytes for an unchanged document and follows a
   await deviceA.updateProposedValue({ channelId: CHANNEL, changeId: "c-1", proposedValue: "Changed" });
   const third = Automerge.load<ChannelDraftDocument>(await deviceA.exportBytes({ channelId: CHANNEL }));
   assert.equal(third.changes["c-1"]!.proposedValue, "Changed");
+});
+
+// BL-204 (FAST_NAVIGATION_PLAN.md §4.3): the channel's document stays loaded and is changed in place.
+
+test("AC-MEM-02: a truncated peer file is refused; the local document is unchanged; the whole file merges next time", async () => {
+  const { deviceA, deviceB } = await seedTwoDeviceDrafts();
+  await deviceB.updateProposedValue({ channelId: CHANNEL, changeId: "c-1", proposedValue: "From B" });
+  const whole = await deviceB.exportBytes({ channelId: CHANNEL });
+  const before = await deviceA.exportBytes({ channelId: CHANNEL });
+
+  await assert.rejects(() => deviceA.mergeIncoming({ channelId: CHANNEL, incomingBytes: whole.slice(0, Math.floor(whole.length * 0.9)) }), /incomplete/);
+  assert.deepEqual(Array.from(await deviceA.exportBytes({ channelId: CHANNEL })), Array.from(before));
+
+  await deviceA.mergeIncoming({ channelId: CHANNEL, incomingBytes: whole });
+  assert.equal((await deviceA.getDocument({ channelId: CHANNEL })).changes["c-1"]!.proposedValue, "From B");
+});
+
+test("AC-MEM-03: a foreign-lineage peer is refused, the stored bytes stay identical, and a later local write still works", async () => {
+  const store = countingStore();
+  const local = createChangeDraftsCore(makeDeps({ store }));
+  await local.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-local", source: "ai_localization" });
+  const before = Array.from((await store.loadDocumentBytes(CHANNEL))!);
+
+  const foreign = createChangeDraftsCore(makeDeps({ store: fakeStore() }));
+  await foreign.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-foreign", source: "ai_localization" });
+  await assert.rejects(
+    async () => local.mergeIncoming({ channelId: CHANNEL, incomingBytes: await foreign.exportBytes({ channelId: CHANNEL }) }),
+    (error: unknown) => error instanceof DomainError && error.code === "divergent_document_lineage"
+  );
+  await assert.rejects(
+    () => local.mergeIncoming({ channelId: CHANNEL, incomingBytes: Automerge.save(Automerge.load(Automerge.save(Automerge.from({ x: 1 })))) }),
+    (error: unknown) => error instanceof DomainError && error.code === "divergent_document_lineage"
+  );
+  assert.deepEqual(Array.from((await store.loadDocumentBytes(CHANNEL))!), before);
+
+  await local.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-after", source: "ai_localization" });
+  const doc = await local.getDocument({ channelId: CHANNEL });
+  assert.ok(doc.changeSets["cs-local"]);
+  assert.ok(doc.changeSets["cs-after"]);
+  assert.equal(doc.changeSets["cs-foreign"], undefined);
+});
+
+test("AC-MEM-05: 100 alternating writes and reads on one channel raise no Automerge error; two cores sharing a cache see each other's writes", async () => {
+  const store = fakeStore();
+  const cache = createChangeDraftsCache();
+  const coreA = createChangeDraftsCore(makeDeps({ store, cache }));
+  const coreB = createChangeDraftsCore(makeDeps({ store, cache }));
+  await coreA.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-1", source: "ai_localization" });
+  await seedPeer(coreA, "c-1", "v0");
+
+  // Some calls run at the same time on purpose: the channel queue must keep them apart.
+  const pending: Promise<unknown>[] = [];
+  for (let i = 1; i <= 100; i++) {
+    const core = i % 2 ? coreA : coreB;
+    pending.push(core.updateProposedValue({ channelId: CHANNEL, changeId: "c-1", proposedValue: `v${i}` }));
+    pending.push(core.listConflicts({ channelId: CHANNEL }));
+    pending.push(core.exportBytes({ channelId: CHANNEL }));
+    pending.push(core.getDocument({ channelId: CHANNEL }));
+  }
+  await Promise.all(pending);
+
+  assert.equal((await coreB.getDocument({ channelId: CHANNEL })).changes["c-1"]!.proposedValue, "v100");
+  const reloaded = Automerge.load<ChannelDraftDocument>((await store.loadDocumentBytes(CHANNEL))!);
+  assert.equal(reloaded.changes["c-1"]!.proposedValue, "v100");
+  assert.deepEqual(await coreA.listConflicts({ channelId: CHANNEL }), []);
+});
+
+test("AC-MEM-05: a write that fails midway does not leave a stale live document behind", async () => {
+  const store = fakeStore();
+  const cache = createChangeDraftsCache();
+  const core = createChangeDraftsCore(makeDeps({ store, cache }));
+  await core.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-1", source: "ai_localization" });
+  await seedPeer(core, "c-1", "v0");
+  await assert.rejects(() => core.updateProposedValue({ channelId: CHANNEL, changeId: "missing", proposedValue: "x" }));
+  await core.updateProposedValue({ channelId: CHANNEL, changeId: "c-1", proposedValue: "v1" });
+  assert.equal((await core.getDocument({ channelId: CHANNEL })).changes["c-1"]!.proposedValue, "v1");
 });

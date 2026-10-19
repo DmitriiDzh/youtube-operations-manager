@@ -268,6 +268,11 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   - `change-drafts/cache.ts` holds results keyed by the document bytes' sha256, so `listConflicts`, `exportBytes` and an already-contained `mergeIncoming` skip `Automerge.load` on unchanged bytes. The transport skips rewriting an identical device file.
   - The browser no longer starts sync cycles; only `src/instrumentation.ts` runs them (every 60 s).
   - The remaining real-merge block is RISK-133.
+- **BL-204 (2026-10-19, FAST_NAVIGATION_PLAN.md §4):**
+  - `cache.documents` keeps each channel's live Automerge document. It is changed in place, never cloned for callers, and reloaded only when the stored bytes' hash differs.
+  - A peer is applied by `loadIncremental` on a throwaway clone. A dependency-free added change means `divergent_document_lineage`; otherwise `applyChanges` runs on the live document.
+  - `document-bytes.ts` refuses a truncated or damaged peer file by its chunk checksums.
+  - Every method, read-only ones included, runs under the per-channel queue.
 - **Чего нет:** отдельная header-иконка для бейджа (пока живёт на nav-элементе сайдбара); структурное предотвращение независимого бутстрапа двух устройств (RISK-46's вариант (a) — только уборка после факта реализована, не предотвращение).
 
 ### 2.9i Phase 8 (Intelligence Foundation) — **IMPLEMENTED**, merged to `dev`, live re-consent done

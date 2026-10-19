@@ -92,3 +92,84 @@ full pass (merge + projection), as today.
   Live, once deployed: a sidebar click while the conflict poll runs commits in under 100 ms.
 - **AC-NAV-08.** Within 100 ms of a click the clicked menu item shows as selected, with a pending mark. The mark goes away once the
   page is committed.
+
+## 4. Stage 4 — BL-204: draft documents stay in memory (RISK-133, option A)
+
+Owner: Telegram msgs 3082–3087 ("ок": first A, then B only if the measurements call for it). The numbers behind this stage are
+in Telegram msgs 3094/3095/3099.
+
+### 4.1 Findings (measured on a copy of the real data, 2026-10-19)
+
+- **A real merge costs ~2.4 s per channel:**
+  - local `Automerge.load`, 0.65–0.75 s;
+  - peer `Automerge.load`, 0.54–0.63 s;
+  - `genesisChangeHash` of each side, ~0.5 s each (`getAllChanges` walks the whole history);
+  - merge 4 ms, save 35 ms, conflict scan 30 ms, projection ~0.1 s.
+- **Every local write** (edit, approve) loads the document first: ~0.8 s.
+- **Memory: not a leak (corrected).** Automerge frees a document's WASM memory through its own `FinalizationRegistry` once the
+  document is unreachable. WASM memory never shrinks, so RSS shows the peak: 0.66 GB at start, 1.1 GB after 51 minutes, then 1.0
+  GB. An early probe read that peak as a leak, and the owner was told so (msg 3097); the correction is in msg 3102. On `dev`,
+  50 local writes grow RSS by 13 MB.
+- **Clones are not independent.** A clone shares untouched sub-objects with its source, so freeing the source breaks the clone.
+  `Automerge.change`, `loadIncremental` and `applyChanges` return a document on the same handle (the input becomes outdated).
+  Plain field reads on an outdated or freed document still work; Automerge calls on it fail.
+- **`loadIncremental` of the peer's bytes onto a clone** of the local document takes ~0.5 s when the peer has new changes, and
+  6 ms when it has none.
+  - `getChanges(local, result)` lists what the peer added, in ~1 ms.
+  - A same-lineage peer adds no change without dependencies. An unrelated document adds its root change.
+  - `applyChanges(local, added)` gives the same heads and the same conflicts as the full merge.
+  - A truncated peer file makes `loadIncremental` add nothing and raise no error. `Automerge.load` threw on it.
+
+### 4.2 Design
+
+- **One live document per channel** (`cache.documents`: channelId → `{ hash, doc }`).
+  - The live document is used and changed in place; it is never cloned for a caller and never freed.
+  - It is loaded from disk only when the stored bytes' sha256 differs from the entry: at startup, or when the file was changed
+    outside this process.
+  - A write path takes it out of the entry (hash cleared) before changing it. `saveDocument` puts the new document back under
+    the new bytes' hash. A write that fails midway therefore makes the next call reload instead of reusing an outdated document.
+- **Every method takes the per-channel lock**, read-only ones too. No reader can see the live document while a write changes
+  it. `listConflicts`/`exportBytes` answer from the hash caches, so they wait only during a real write.
+- **The merge:**
+  1. check that the peer's bytes are whole, checksum-valid Automerge chunks (`document-bytes.ts`). A damaged file throws, as
+     `Automerge.load` did;
+  2. `trial = loadIncremental(clone(live), peerBytes)`, then `added = getChanges(live, trial)`;
+  3. if any added change has no dependencies, refuse with `divergent_document_lineage`; the live document is untouched;
+  4. otherwise `applyChanges(live, added)`, then free the trial (a leaf clone, so freeing it is safe).
+
+  A channel with no local document still adopts the peer's document as is.
+- **Unchanged:** the projection, BL-203's skip rules, every public method's signature and result.
+- **Out of scope:** BL-205. The ~0.5 s peer decode stays on the server thread; moving it off would need a worker.
+
+### 4.3 Acceptance criteria (before the code)
+
+- **AC-MEM-01.** On the copy, measured from fresh rsync data:
+  - a second unchanged sync cycle is still under 100 ms;
+  - a real merge of a peer with one new change takes ≤ 0.7 s;
+  - a local write (`updateProposedValue`) after the first load takes ≤ 0.2 s.
+- **AC-MEM-02.** A truncated peer file is refused with an error. The local document and its bytes stay unchanged. The next cycle
+  with the whole file merges it.
+- **AC-MEM-03.** A foreign-lineage peer is refused with `divergent_document_lineage`. The stored bytes are byte-identical before
+  and after, and a following local write still works. The existing "REFUSES to merge two documents with no shared history" test
+  passes unchanged.
+- **AC-MEM-04.** All existing change-drafts, sync and changesets tests pass unchanged, including:
+  - the three-way conflict test;
+  - "reports a NEW competing value on an ALREADY-conflicted field as new".
+- **AC-MEM-05.** 100 alternating writes and reads (`updateProposedValue`, `listConflicts`, `exportBytes`, `getDocument`) on one
+  core and channel raise no Automerge error. Two cores sharing one cache see each other's writes without a reload.
+- **AC-MEM-06.** On the copy, 50 local writes on a real document grow RSS by less than 50 MB. (The "today ~250 MB" figure written
+  here first was the leak misreading above.)
+
+### 4.4 Measured (fresh copy of the real data, 2026-10-19; `dev` → BL-204)
+
+| Case | `dev` | BL-204 |
+|---|---|---|
+| First cycle after start (full) | 5,993 ms, block 2,375 ms | 1,841 ms, block 757 ms |
+| Unchanged cycle | 5 ms | 6 ms |
+| Peer with one new change | 2,459 ms, block 2,347 ms | 755 ms, block 646 ms |
+| Next cycle after that | 672 ms | 42 ms |
+| Local write | 843–868 ms | 122–134 ms |
+| 50 local writes, RSS growth | 13 MB | 24 MB (one live document kept per channel) |
+
+AC-MEM-01's merge target was ≤ 0.7 s; 0.76 s was measured, so it is missed by 0.06 s. The peer decode (`loadIncremental`, ~0.65 s)
+is all of the rest. Moving it off the thread is BL-205.

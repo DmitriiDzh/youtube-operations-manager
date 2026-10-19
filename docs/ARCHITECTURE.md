@@ -2493,6 +2493,16 @@ state, so these are held per process via `globalThis`:
 - The transport does not rewrite a device file whose content is unchanged.
 - An unchanged cycle takes ~30 ms instead of ~5.8 s. A real merge still blocks the thread (RISK-133).
 
+**BL-204: the channel's document stays loaded.** (FAST_NAVIGATION_PLAN.md §4)
+- `cache.documents` (channelId → `{hash, doc}`) holds the live document. A call checks it out, and `saveDocument` puts back the
+  saved one. A read that ends normally gives it back; a call that throws drops it, so the next call reloads.
+- Automerge clones share sub-objects with their source, so documents are never freed by hand, except the merge's throwaway trial
+  clone.
+- Merge: `loadIncremental(clone(live), peer)`, then `getChanges(live, trial)`. A root change (no deps) means divergent lineage and
+  the live document is untouched; otherwise `applyChanges(live, added)`. Peer bytes must pass `assertCompleteAutomergeBytes`
+  first, because `loadIncremental` silently ignores a truncated tail.
+- Measured: a real merge takes 0.76 s (was 2.46 s), a local write 0.13 s (was 0.85 s).
+
 **Boot.** `initializeDatabase` takes the migration lock only when a migration is due
 (`acquireMigrationLockIfDue`). It waits for a busy lock and clears a dead export's lock. Around the
 migrations, `createSyncPreservingMigrationHooks` (BL-139) moves the lineage fingerprint by
