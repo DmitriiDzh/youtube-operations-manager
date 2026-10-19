@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   LIVE_WRITES_SESSION_LEASE_TTL_MS,
   getLiveWritesEnabled,
+  expireLiveWritesSessionLease,
   getLiveWritesToggle,
   migrateLiveWritesToDefaultOn,
   rawSqlClient,
@@ -58,6 +59,7 @@ test("ADR 0044: no code resets the toggle -- nothing outside db.ts writes the ke
   }
   assert.deepEqual(offenders, []);
   const db = await readFile(path.join(SRC, "lib", "db.ts"), "utf8");
+  // The one-time ADR 0044 migration deletes the old automatic "off" (a delete, not a write of a value).
   assert.equal(db.split("setAppSetting(LIVE_WRITES_ENABLED_SETTING_KEY").length - 1, 1, "the only write of the toggle is the owner's setter");
 });
 
@@ -111,4 +113,13 @@ test("ADR 0044 migration: once per database the old automatic off is forgotten; 
   assert.equal(await migrateLiveWritesToDefaultOn(), false, "it runs once");
   assert.equal(await getLiveWritesToggle(), false, "the owner's choice survives every later boot");
   await setLiveWritesEnabled(true);
+});
+
+test("ADR 0044 (review): a graceful stop expires the lease at once -- writes refused, the owner's toggle untouched", async () => {
+  await setLiveWritesEnabled(true);
+  await expireLiveWritesSessionLease();
+  assert.equal(await getLiveWritesEnabled(), false);
+  assert.equal(await getLiveWritesToggle(), true);
+  await renewLiveWritesSessionLease();
+  assert.equal(await getLiveWritesEnabled(), true);
 });

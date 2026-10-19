@@ -32,6 +32,11 @@ playlists, publishing uploads, live streams and the Operator over MCP.
 
 ## Consequences
 
+- After a graceful stop the lease stays fresh for up to its TTL (3 min). A CLI or MCP process could still pass the check in that
+  window, the same exposure a crash already had. Before this ADR, SIGTERM wrote "off" at once.
+- **Upgrade:** a stored "off" written by the old per-session reset is forgotten once per database at the first boot of this
+  version (`migrateLiveWritesToDefaultOn`, marker key `live_writes_default_on_migrated`), so the toggle starts on. After that,
+  only the owner changes it.
 - Every write path works without the owner switching anything on first. What guards a write is now:
   - each path's own checks: identity (`assertWriteChannel`), dry run and approval, backup, read-back;
   - Batches' second layer (a real `WriteExecutor` and Execute);

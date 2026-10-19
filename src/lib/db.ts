@@ -6262,12 +6262,20 @@ const LIVE_WRITES_DEFAULT_ON_MIGRATED_KEY = "live_writes_default_on_migrated";
  */
 export async function migrateLiveWritesToDefaultOn(database: AppDb = db): Promise<boolean> {
   if ((await getAppSetting(LIVE_WRITES_DEFAULT_ON_MIGRATED_KEY, database)) === "true") return false;
-  await database.delete(appSettings).where(eq(appSettings.key, LIVE_WRITES_ENABLED_SETTING_KEY));
+  // Marker first (review): a failure after it can only leave the old "off" in place (fail closed), never wipe an "off" the owner
+  // set later on a second run.
   await setAppSetting(LIVE_WRITES_DEFAULT_ON_MIGRATED_KEY, "true", database);
+  await database.delete(appSettings).where(eq(appSettings.key, LIVE_WRITES_ENABLED_SETTING_KEY));
   return true;
 }
 
-/** The owner's own choice, apart from whether the server is up (the Settings card shows both). */
+/** ADR 0044 (review): a graceful stop ends the lease at once, so no CLI/MCP process can write in the minutes after the server is
+ * gone. The owner's toggle is untouched. Called only by the web server's signal handlers. */
+export async function expireLiveWritesSessionLease(database: AppDb = db): Promise<void> {
+  await setAppSetting(LIVE_WRITES_SESSION_LEASE_SETTING_KEY, "0", database);
+}
+
+/** The owner's own choice, apart from whether the server is up. */
 export async function getLiveWritesToggle(): Promise<boolean> {
   return (await getAppSetting(LIVE_WRITES_ENABLED_SETTING_KEY)) !== "false";
 }

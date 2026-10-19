@@ -49,9 +49,12 @@ export async function register() {
 
 async function startServerSession() {
   // Dynamic import keeps db.ts out of the edge/instrumentation bundle graph.
-  const { LIVE_WRITES_SESSION_LEASE_RENEW_MS, migrateLiveWritesToDefaultOn, renewLiveWritesSessionLease } = await import("@/lib/db");
+  const { LIVE_WRITES_SESSION_LEASE_RENEW_MS, expireLiveWritesSessionLease, migrateLiveWritesToDefaultOn, renewLiveWritesSessionLease } =
+    await import("@/lib/db");
   // ADR 0044: once per database, the "off" left by the old per-session reset is forgotten (the toggle starts on).
-  await migrateLiveWritesToDefaultOn().catch(() => undefined);
+  await migrateLiveWritesToDefaultOn().catch((error: unknown) =>
+    createDefaultLogger().error({ event: "live_writes.default_on_migration_failed", context: { message: error instanceof Error ? error.message : String(error) } })
+  );
 
   // Session lease (architecture-audit review, round 3): Live writes are honored only while this web
   // server keeps renewing it, so ANY end of the session -- including a crash or Windows
@@ -67,8 +70,11 @@ async function startServerSession() {
   await renewQuietly();
   setInterval(() => void renewQuietly(), LIVE_WRITES_SESSION_LEASE_RENEW_MS).unref();
 
-  // ADR 0044: no Live-writes reset on SIGINT/SIGTERM any more. Next.js's own signal handler still closes the server and lets
-  // in-flight requests drain; once it is gone, the lease lapses and no other process can write.
+  // ADR 0044: SIGINT/SIGTERM no longer touch the owner's toggle; they only end this server's lease at once (review), so no CLI/MCP
+  // process can write in the minutes after the server is gone. Next.js's own handler still closes the server and drains requests.
+  const expireQuietly = () => void expireLiveWritesSessionLease().catch(() => undefined);
+  process.once("SIGINT", expireQuietly);
+  process.once("SIGTERM", expireQuietly);
 
   // Automatic device sync (docs/roadmap/plans/DEVICE_AUTO_SYNC_PLAN.md §3.5): the snapshot tick
   // (export when changed / import a fast-forward / otherwise notify) and the draft sync-gateway
