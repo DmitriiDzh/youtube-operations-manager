@@ -13,7 +13,7 @@ function googleError(reason: string) {
   return Object.assign(new Error(reason), { response: { status: 403, data: { error: { errors: [{ reason }] } } } });
 }
 
-function harness(opts: { liveWrites?: boolean; streamId?: string | null; broadcastId?: string | null; intent?: "on" | "off"; wrongChannel?: boolean; transitionError?: string; bindError?: string; readBack?: Partial<{ title: string }>; encoderFails?: boolean; videoSettingsJson?: string | null } = {}) {
+function harness(opts: { recordingRequired?: boolean; insertError?: string; liveWrites?: boolean; streamId?: string | null; broadcastId?: string | null; intent?: "on" | "off"; wrongChannel?: boolean; transitionError?: string; bindError?: string; readBack?: Partial<{ title: string }>; encoderFails?: boolean; videoSettingsJson?: string | null } = {}) {
   const calls: string[] = [];
   const events: Array<{ kind: string; detail: Record<string, unknown> }> = [];
   let stream = {
@@ -62,6 +62,10 @@ function harness(opts: { liveWrites?: boolean; streamId?: string | null; broadca
       insertBroadcast: async (_c, args) => {
         calls.push("liveBroadcasts.insert");
         sent.broadcast = args;
+        if (opts.insertError) throw googleError(opts.insertError);
+        if (opts.recordingRequired && args.recordFromStart === false) {
+          throw Object.assign(new Error("The user is not permitted to disable recording."), { response: { status: 403, data: { error: { message: "The user is not permitted to disable recording.", errors: [{ reason: "forbidden", message: "The user is not permitted to disable recording." }] } } } });
+        }
         return { broadcastId: "BC1", lifeCycleStatus: "created" };
       },
       bind: async (_c, args) => {
@@ -352,4 +356,26 @@ test("previewStart: shows the broadcast settings sent and the saved video settin
   assert.equal(never.videoSettings, null);
   const corrupt = await harness({ videoSettingsJson: "{" }).broadcasts.previewStart("UC1");
   assert.match(String(corrupt.videoSettingsProblem), /not valid JSON/);
+});
+
+// Spike C (2026-10-19, LIVE_STREAMS_FIELDS_PLAN.md §4.2): Tropico got "The user is not permitted to disable recording."
+test("a channel that may not switch recording off: Start retries once with recording on, the stream starts, and Start says so", async () => {
+  const h = harness({ recordingRequired: true, streamId: "STREAM1" });
+  const result = (await h.broadcasts.start("UC1", { userId: "u1" })) as { recordingForced?: boolean; encoderStarted: boolean };
+  assert.equal(result.recordingForced, true);
+  assert.equal(result.encoderStarted, true);
+  assert.equal((h.sent.broadcast as { recordFromStart: boolean }).recordFromStart, true);
+  assert.deepEqual(YOUTUBE_CALLS(h.calls), ["videos.list", "liveBroadcasts.insert", "liveBroadcasts.insert", "liveBroadcasts.bind", "liveStreams.list"]);
+  assert.equal(h.events.filter((e) => e.kind === "recording_required").length, 1);
+  const insertEvent = h.events.find((e) => e.kind === "youtube_write" && e.detail.method === "liveBroadcasts.insert");
+  assert.equal((insertEvent?.detail.sent as { recordFromStart: boolean }).recordFromStart, true, "the event records what was really sent");
+  assert.equal(h.stream().intent, "on");
+});
+
+test("any other refused insert is not retried and Start fails as before (nothing turned on)", async () => {
+  const h = harness({ streamId: "STREAM1", insertError: "insufficientLivePermissions" });
+  await assert.rejects(() => h.broadcasts.start("UC1", { userId: "u1" }), /not allowed to manage this channel's live broadcasts/);
+  assert.deepEqual(YOUTUBE_CALLS(h.calls), ["videos.list", "liveBroadcasts.insert"]);
+  assert.equal(h.events.filter((e) => e.kind === "recording_required").length, 0);
+  assert.equal(h.stream().intent, "off");
 });

@@ -26,6 +26,23 @@ export function liveErrorReason(error: unknown): string | null {
   return typeof reason === "string" ? reason : null;
 }
 
+/**
+ * Spike C (2026-10-19, LIVE_STREAMS_FIELDS_PLAN.md §4.2): a channel that may not switch recording off gets "The user is not
+ * permitted to disable recording." from `liveBroadcasts.insert` with `recordFromStart: false`. Matched on the message, because the
+ * reason code was not captured; the reason is accepted too when YouTube gives it.
+ */
+export function isRecordingRequiredRefusal(error: unknown): boolean {
+  const messages: string[] = [];
+  if (error instanceof Error) messages.push(error.message);
+  const errors = (error as { response?: { data?: { error?: { message?: unknown; errors?: Array<{ message?: unknown; reason?: unknown }> } } } } | null)?.response?.data?.error;
+  if (typeof errors?.message === "string") messages.push(errors.message);
+  for (const e of errors?.errors ?? []) {
+    if (typeof e?.message === "string") messages.push(e.message);
+    if (e?.reason === "recordingRequired" || e?.reason === "invalidRecordFromStart") return true;
+  }
+  return messages.some((m) => /not permitted to disable recording/i.test(m));
+}
+
 /** §3.2: `redundantTransition` ("already in the requested status") counts as done. */
 export function isRedundantTransition(error: unknown): boolean {
   return liveErrorReason(error) === "redundantTransition";

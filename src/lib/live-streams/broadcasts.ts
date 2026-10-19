@@ -10,7 +10,7 @@ import {
   type LiveStreamsSettings,
   type LiveVideoSettings,
 } from "./contracts";
-import { isRedundantTransition, liveErrorReason, toLiveDomainError } from "./errors";
+import { isRecordingRequiredRefusal, isRedundantTransition, liveErrorReason, toLiveDomainError } from "./errors";
 import { parseWithSchema } from "./schemas";
 import { withChannelLock as withLock } from "./supervisor";
 import { readStoredVideoSettings } from "./video-settings";
@@ -141,7 +141,7 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
   }
 
   /** One Start at a time per channel: a second request waits, then finds the stream on and is refused. */
-  async function startOnce(channelId: string, credentialRef: unknown): Promise<{ broadcastId: string; streamId: string; encoderStarted: boolean; encoderError?: string }> {
+  async function startOnce(channelId: string, credentialRef: unknown): Promise<{ broadcastId: string; streamId: string; encoderStarted: boolean; encoderError?: string; recordingForced?: boolean }> {
     await requireModule();
     const stream = await requireStream(channelId);
     // A second Start (a stale page, a repeated request) must not create another broadcast and lose track of the live one.
@@ -160,7 +160,7 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
         await deps.streams.update(channelId, { streamId });
         await written(channelId, "liveStreams.insert", { streamId });
       }
-      const sent = {
+      let sent = {
         title: stream.title,
         description: stream.description,
         scheduledStartTime: new Date(deps.clock().getTime() + START_LEAD_MS).toISOString(),
@@ -173,7 +173,20 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
         // BL-186: the owner's broadcast settings, set at insert (DVR and captions cannot change once live). Never saved: not sent.
         ...(videoSettings ? videoSettings.broadcast : {}),
       };
-      const { broadcastId, lifeCycleStatus } = await deps.youtube.insertBroadcast(credentials, sent);
+      // Spike C (2026-10-19): a channel that may not switch recording off is refused the broadcast. The stream still starts --
+      // once more with recording on -- and Start says so; nothing is created by the refused insert.
+      let recordingForced = false;
+      let inserted: { broadcastId: string; lifeCycleStatus: string | null };
+      try {
+        inserted = await deps.youtube.insertBroadcast(credentials, sent);
+      } catch (error) {
+        if (!isRecordingRequiredRefusal(error)) throw error;
+        await deps.streams.event(channelId, "recording_required", { message: error instanceof Error ? error.message : String(error) });
+        sent = { ...sent, recordFromStart: true };
+        recordingForced = true;
+        inserted = await deps.youtube.insertBroadcast(credentials, sent);
+      }
+      const { broadcastId, lifeCycleStatus } = inserted;
       await written(channelId, "liveBroadcasts.insert", { broadcastId, sent, lifeCycleStatus });
       let bound: { boundStreamId: string | null };
       try {
@@ -197,12 +210,12 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
 
       try {
         await deps.supervisor.startEncoder(channelId, { freshPass: true, playable });
-        return { broadcastId, streamId, encoderStarted: true };
+        return { broadcastId, streamId, encoderStarted: true, ...(recordingForced ? { recordingForced } : {}) };
       } catch (error) {
         // The broadcast exists and is bound; the intent is on, so the background loop keeps trying to start the encoder.
         const message = error instanceof Error ? error.message : String(error);
         await deps.streams.event(channelId, "encoder_start_failed", { message });
-        return { broadcastId, streamId, encoderStarted: false, encoderError: message };
+        return { broadcastId, streamId, encoderStarted: false, encoderError: message, ...(recordingForced ? { recordingForced } : {}) };
       }
     } catch (error) {
       throw toLiveDomainError(error, "Start");

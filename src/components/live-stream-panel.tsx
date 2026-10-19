@@ -253,10 +253,11 @@ function StatusCard({ overview, base, onChanged }: { overview: Overview; base: s
         const result = await action();
         const encoderError = (result as { encoderError?: string } | null)?.encoderError;
         const youtubeRefusal = (result as { youtubeRefusal?: string } | null)?.youtubeRefusal;
+        const recordingForced = (result as { recordingForced?: boolean } | null)?.recordingForced === true;
         // BL-195: a partial result is kept on screen until closed (an error line); a plain success hides itself.
         if (encoderError) setError(t("live.start.encoderLater", { error: encoderError }));
         else if (youtubeRefusal) setError(t("live.stop.noBroadcast", { reason: causeText(t, youtubeRefusal) }));
-        else setNotice(done);
+        else setNotice(recordingForced ? t("live.start.doneRecording") : done);
         await onChanged();
       } catch (err) {
         setError(err instanceof Error ? err.message : t("live.actionFailed"));
