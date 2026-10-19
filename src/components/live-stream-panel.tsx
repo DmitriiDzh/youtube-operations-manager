@@ -10,6 +10,7 @@ import { InfoTooltip } from "./info-tooltip";
 import type { LiveLatency, LiveVideoSettings } from "@/lib/live-streams/fields";
 import { LiveStreamAddVideosDialog } from "./live-stream-add-videos-dialog";
 import { LiveStreamVideoSettingsCard } from "./live-stream-video-settings";
+import { LiveStreamSegmentsCard, type SegmentsViewData } from "./live-stream-segments";
 import { LoadingIndicator } from "./operation-progress";
 import { ToggleSwitch } from "./toggle-switch";
 import { useT } from "./ui-text-provider";
@@ -70,6 +71,8 @@ type Overview = {
   } | null;
   videoSettings: LiveVideoSettings | null;
   videoSettingsProblem: string | null;
+  /** BL-205: «Перезапуск эфира» -- the segment settings, the running segment and the last 30 days. */
+  segments?: SegmentsViewData | null;
   /** Owner msg 3153: the channel's baseline title/description language -- the broadcast's language. */
   channelDefaultLanguage?: string | null;
   /** BL-186 stage 3: the last video settings summary (any age). */
@@ -228,6 +231,7 @@ export function LiveStreamPanel({ channelId, visible }: { channelId: string | nu
           <StatusCard overview={overview} base={base!} onChanged={load} />
           <SettingsCard overview={overview} base={base!} onChanged={load} />
           <LiveStreamVideoSettingsCard base={base!} channelLanguage={overview.channelDefaultLanguage ?? null} saved={overview.videoSettings} problem={overview.videoSettingsProblem} onChanged={load} />
+          <LiveStreamSegmentsCard base={base!} view={overview.segments ?? null} onChanged={load} />
           <RotationCard overview={overview} base={base!} onChanged={load} />
           <HistoryCard overview={overview} />
         </>
@@ -943,6 +947,13 @@ const EVENT_KEYS: Record<string, UiTextKey> = {
   guard_override: "live.event.guardOverride",
   guard_override_cleared: "live.event.guardOverrideCleared",
   sources_set: "live.event.sourcesSet",
+  live_segment_switched: "live.event.segmentSwitched",
+  live_segment_switch_failed: "live.event.segmentSwitchFailed",
+  live_segment_recovered: "live.event.segmentRecovered",
+  live_segment_cap_reached: "live.event.segmentCapReached",
+  live_segment_recording_added: "live.event.segmentRecordingAdded",
+  live_segment_recording_not_added: "live.event.segmentRecordingNotAdded",
+  segments_saved: "live.event.segmentsSaved",
   recording_required: "live.event.recordingRequired",
   video_settings_step: "live.event.videoSettingsStep",
   video_settings_applied: "live.event.videoSettingsApplied",

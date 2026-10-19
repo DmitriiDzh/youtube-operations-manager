@@ -10,10 +10,8 @@ import type { LiveVideoSettings } from "./fields";
 // the identity check; the switches are the app's own writes (ADR 0044), allowed only while the owner's «Перезапуск эфира» is on.
 // ---------------------------------------------------------------------------
 
-export const SEGMENT_MIN_MINUTES = 15;
-/** 11 h 45 min: YouTube keeps a recording only under 12 h. */
-export const SEGMENT_MAX_MINUTES = 705;
-export const SEGMENT_DEFAULT_MINUTES = 660;
+import { SEGMENT_DEFAULT_MINUTES, SEGMENT_MAX_MINUTES, SEGMENT_MIN_MINUTES } from "./fields";
+export { SEGMENT_DEFAULT_MINUTES, SEGMENT_MAX_MINUTES, SEGMENT_MIN_MINUTES };
 /** A quiet hour moves a switch that is due within this window of it. */
 export const QUIET_HOUR_WINDOW_MS = 2 * 3_600_000;
 /** How long the new segment may take to go live before the switch is given up. */
@@ -381,3 +379,61 @@ export function createLiveSegments(deps: SegmentsDependencies) {
 }
 
 export type LiveSegments = ReturnType<typeof createLiveSegments>;
+
+/** BL-205: what the page and the Operator see -- the settings, the running segment and the last 30 days (codes only, no text). */
+export type SegmentsView = {
+  channelId: string;
+  enabled: boolean;
+  lengthMinutes: number;
+  switchHourUtc: number | null;
+  recordingsPlaylist: { id: string; title: string } | null;
+  current: { broadcastId: string; startedAt: string; switchDueAt: string | null } | null;
+  segments: Array<{ broadcastId: string; startedAt: string; endedAt: string | null; overlapMs: number | null; rotation: string[]; recording: string; playlist: string }>;
+  failures: Array<{ at: string; stage: string }>;
+};
+
+export function segmentsView(args: {
+  channelId: string;
+  settingsJson: string | null | undefined;
+  broadcastId: string | null;
+  intent: "on" | "off";
+  rows: Array<{ broadcastId: string; startedAt: Date; endedAt: Date | null; switchOverlapMs: number | null; rotationJson: string | null; recordingStatus: string; playlistStatus: string }>;
+  failures: Array<{ at: Date; detail: Record<string, unknown> }>;
+}): SegmentsView {
+  const settings = readSegmentSettings(args.settingsJson);
+  const running = args.intent === "on" ? args.rows.find((r) => r.broadcastId === args.broadcastId && r.endedAt === null) : undefined;
+  const rotation = (json: string | null) => {
+    try {
+      const parsed = json ? (JSON.parse(json) as unknown) : [];
+      return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string") : [];
+    } catch {
+      return [];
+    }
+  };
+  return {
+    channelId: args.channelId,
+    enabled: settings.enabled,
+    lengthMinutes: settings.lengthMinutes,
+    switchHourUtc: settings.switchHourUtc,
+    recordingsPlaylist: settings.recordingsPlaylist,
+    current: running
+      ? { broadcastId: running.broadcastId, startedAt: running.startedAt.toISOString(), switchDueAt: settings.enabled ? new Date(switchDueAt(settings, running.startedAt.getTime())).toISOString() : null }
+      : null,
+    segments: args.rows.map((r) => ({
+      broadcastId: r.broadcastId,
+      startedAt: r.startedAt.toISOString(),
+      endedAt: r.endedAt?.toISOString() ?? null,
+      overlapMs: r.switchOverlapMs,
+      rotation: rotation(r.rotationJson),
+      recording: r.recordingStatus,
+      playlist: r.playlistStatus,
+    })),
+    failures: args.failures.map((f) => ({ at: f.at.toISOString(), stage: typeof f.detail.stage === "string" ? f.detail.stage : "unknown" })),
+  };
+}
+
+/** The owner's segment settings from the form: checked by the schema (`v` is added here). */
+export function parseSegmentSettingsInput(input: unknown): SegmentSettings {
+  const body = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  return segmentSettingsSchema.parse({ v: 1, ...body });
+}

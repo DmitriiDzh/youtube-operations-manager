@@ -1,6 +1,6 @@
 # Live streams in segments under 12 h, with recordings (BL-205, FO-REQ-0032)
 
-**Status: assigned 2026-10-19.** The owner said "да начинай" (Telegram msg 3178) after spike D (msg 3175). The branch is
+**Status: built 2026-10-19 on `feature/fo-req-0032-live-segments` (stages 1-2); acceptance with the owner pending.** The owner said "да начинай" (Telegram msg 3178) after spike D (msg 3175). The branch is
 `feature/fo-req-0032-live-segments`.
 
 - **The request:** the Operator's FO-REQ-0032 (from the Producer's PRD-REQ-0015). It is in the Developer Exchange `Outbox/`.
@@ -169,7 +169,7 @@
 - **AC-SEG-10.** The daily cap of 6 counts successes and failures, per channel, per UTC day.
 - **AC-SEG-11.** MCP: `factory_live_get_status` returns `segments` with codes only (no key, URL or error text). Factory API is
   1.25.0.
-- **AC-SEG-12.** The settings validation:
+- **AC-SEG-12 (as built: the playlist's ownership is checked by playlist-management at the add, not at save).** The settings validation:
   - the length is 15–705;
   - the hour is 0–23 or null;
   - the playlist must be one of the channel's own (checked at save, from the playlist list).

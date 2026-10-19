@@ -1,7 +1,7 @@
 import { randomBytes, randomInt, randomUUID } from "node:crypto";
 import os from "node:os";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
-import { getChannelExpectedLanguages, latestLiveStreamEvent, getStoredChannel, listOpenLiveStreamSegments, updateLiveStreamSegment, insertLiveStreamSegment, countLiveStreamEvents,
+import { getChannelExpectedLanguages, listLiveStreamEventsOfKind, listLiveStreamSegments, latestLiveStreamEvent, getStoredChannel, listOpenLiveStreamSegments, updateLiveStreamSegment, insertLiveStreamSegment, countLiveStreamEvents,
   getLiveStream,
   getLiveWritesEnabled,
   listLiveStreamEvents,
@@ -32,7 +32,8 @@ import type { VideoFieldsPort } from "./video-apply";
 import { createLiveBroadcasts } from "./broadcasts";
 import { createLiveStreamsYoutubeWrites } from "./adapters/youtube-writes";
 import { createLiveStreamsRunner } from "./runner";
-import { createLiveSegments, type LiveSegments } from "./segments";
+import { DomainError as SegmentsDomainError } from "./contracts";
+import { createLiveSegments, parseSegmentSettingsInput, segmentsView, type LiveSegments, type SegmentSettings, type SegmentsView } from "./segments";
 import { readStoredVideoSettings } from "./video-settings";
 import { isRedundantTransition } from "./errors";
 import { liveNotices, type LiveNotice } from "./notices";
@@ -337,3 +338,37 @@ export type { PickerResult } from "./picker-service";
 export { checkOriginal, checkPublicOnly, classifyRunEnd, locatePlayback, passLength, planBuffer, canCopyIntoBuffer } from "./rotation";
 
 export type { VideoFieldsPort, VideoApplyResult } from "./video-apply";
+
+/** BL-205: the segment settings (local, no YouTube write) and the segments view for the page and the Operator. Local reads only. */
+export function createLiveSegmentSettingsCore() {
+  return {
+    async save(channelId: string, input: unknown) {
+      let settings: SegmentSettings;
+      try {
+        settings = parseSegmentSettingsInput(input);
+      } catch (error) {
+        throw new SegmentsDomainError({ code: "validation_failed", message: `Invalid segment settings: ${error instanceof Error ? error.message : String(error)}`, details: { channelId } });
+      }
+      const stream = await getLiveStream(channelId);
+      if (!stream) throw new SegmentsDomainError({ code: "validation_failed", message: "Save the stream's settings first", details: { channelId } });
+      await updateLiveStream(channelId, { segmentsJson: JSON.stringify(settings), updatedAt: new Date() });
+      await insertLiveStreamEvent({ id: randomUUID(), channelId, at: new Date(), kind: "segments_saved", detailJson: JSON.stringify({ enabled: settings.enabled, lengthMinutes: settings.lengthMinutes, switchHourUtc: settings.switchHourUtc, recordingsPlaylistId: settings.recordingsPlaylist?.id ?? null }) });
+      return settings;
+    },
+    async view(channelId: string, now: number = Date.now()): Promise<SegmentsView | null> {
+      const stream = await getLiveStream(channelId);
+      if (!stream) return null;
+      const since = new Date(now - 30 * 86_400_000);
+      const [rows, failures] = await Promise.all([listLiveStreamSegments(channelId, since), listLiveStreamEventsOfKind(channelId, "live_segment_switch_failed", since)]);
+      return segmentsView({
+        channelId,
+        settingsJson: stream.segmentsJson,
+        broadcastId: stream.broadcastId,
+        intent: stream.intent,
+        rows,
+        failures: failures.map((f) => ({ at: f.at, detail: JSON.parse(f.detailJson) as Record<string, unknown> })),
+      });
+    },
+  };
+}
+export type { SegmentsView, SegmentSettings } from "./segments";

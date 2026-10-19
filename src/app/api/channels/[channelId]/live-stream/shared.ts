@@ -14,6 +14,7 @@ import {
   createRotationPickerCore,
   createStreamSupervisorCore,
   createStreamVideoSettingsCore,
+  createLiveSegmentSettingsCore,
   isDomainError,
 } from "@/lib/live-streams";
 
@@ -44,6 +45,8 @@ export type LiveStreamRouteCore = {
   restart(channelId: string): Promise<unknown>;
   previewEdit(channelId: string, credentialRef: { userId: string }, body: unknown): Promise<unknown>;
   edit(channelId: string, credentialRef: { userId: string }, body: unknown): Promise<unknown>;
+  /** BL-205: the segment settings (local, no YouTube write). */
+  saveSegments(channelId: string, body: unknown): Promise<unknown>;
   /** BL-186 stage 3, «Применить снова»: the dry run (no call), then the owner's apply (YouTube writes). */
   previewApplyVideoSettings(channelId: string): Promise<unknown>;
   applyVideoSettings(channelId: string, credentialRef: { userId: string }): Promise<unknown>;
@@ -68,7 +71,7 @@ export function createLiveStreamRouteCore(): LiveStreamRouteCore {
   const videoSettings = createStreamVideoSettingsCore();
   return {
     async overview(channelId) {
-      const [view, module, running, events, preview, youtube, entries, peers, video, lastApply, languages] = await Promise.all([
+      const [view, module, running, events, preview, youtube, entries, peers, video, lastApply, languages, segments] = await Promise.all([
         rotation.getOverview(channelId),
         settings.get(),
         supervisor.runningHelper(channelId),
@@ -80,6 +83,7 @@ export function createLiveStreamRouteCore(): LiveStreamRouteCore {
         videoSettings.get(channelId),
         latestLiveStreamEvent(channelId, "video_settings_applied"),
         getChannelExpectedLanguages(channelId),
+        createLiveSegmentSettingsCore().view(channelId),
       ]);
       return {
         ...view,
@@ -89,6 +93,8 @@ export function createLiveStreamRouteCore(): LiveStreamRouteCore {
         // BL-186 stage 3: the last video settings summary, read on its own (a 24/7 stream pushes it out of the 50 events).
         // Owner msg 3153: the broadcast's title/description language is the channel's baseline (shown read-only in the form).
         channelDefaultLanguage: languages.defaultLanguage,
+        // BL-205: the segment settings, the running segment and the last 30 days.
+        segments,
         videoSettingsLast: lastApply ? { at: lastApply.at.toISOString(), detail: JSON.parse(lastApply.detailJson) as unknown } : null,
         module,
         // §3.10: the state in the one vocabulary the report and the Operator use.
@@ -122,6 +128,7 @@ export function createLiveStreamRouteCore(): LiveStreamRouteCore {
     // The module validates both strictly (a missing or malformed field is a 400, never a YouTube call).
     previewEdit: (channelId, credentialRef, body) => broadcasts.previewEdit(channelId, credentialRef, objectBody(body).patch),
     edit: (channelId, credentialRef, body) => broadcasts.edit(channelId, credentialRef, objectBody(body).patch, objectBody(body).expected),
+    saveSegments: (channelId, body) => createLiveSegmentSettingsCore().save(channelId, body),
     previewApplyVideoSettings: (channelId) => broadcasts.previewApplyVideoSettings(channelId),
     applyVideoSettings: (channelId, credentialRef) => broadcasts.applyVideoSettingsAgain(channelId, credentialRef),
   };

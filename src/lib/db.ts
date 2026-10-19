@@ -14391,6 +14391,15 @@ export async function updateLiveStreamSegment(
   await database.update(liveStreamSegments).set(set).where(eq(liveStreamSegments.id, id));
 }
 
+/** BL-205: a channel's events of one kind since `since`, newest first (the segment failures shown to the owner and the Operator). */
+export async function listLiveStreamEventsOfKind(channelId: string, kind: string, since: Date, database: AppDb = db): Promise<StoredLiveStreamEvent[]> {
+  return database
+    .select()
+    .from(liveStreamEvents)
+    .where(and(eq(liveStreamEvents.channelId, channelId), eq(liveStreamEvents.kind, kind), gte(liveStreamEvents.at, since)))
+    .orderBy(desc(liveStreamEvents.at));
+}
+
 /** BL-205: how many events of these kinds a channel's stream logged since `since` (the daily switch cap). */
 export async function countLiveStreamEvents(channelId: string, kinds: readonly string[], since: Date, database: AppDb = db): Promise<number> {
   if (kinds.length === 0) return 0;
