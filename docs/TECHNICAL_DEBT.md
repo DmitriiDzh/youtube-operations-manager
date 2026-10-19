@@ -2070,4 +2070,8 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
   - keep the loaded document in memory and apply peers with `loadIncremental`. This silently accepts a foreign lineage, so it needs
     its own lineage check. Project only the changed rows.
   - move the work to a `worker_thread`.
+- **BL-204 (2026-10-19), partly reduced:** each channel's document now stays loaded, a peer is applied with `loadIncremental` onto
+  a throwaway clone, and lineage is checked on the added changes only. Measured on a copy: a real merge takes 0.76 s (was 2.46 s),
+  a local write 0.13 s (was 0.85 s), and the first cycle after a start 1.8 s (was 6.0 s). What is left is the peer decode, ~0.65 s
+  on the server thread per changed peer file; moving it off the thread is BL-205, only if needed.
 - **Gate(s):** none. **Status:** open.

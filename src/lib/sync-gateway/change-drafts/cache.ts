@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import type { FieldConflict } from "./contracts";
+import type * as Automerge from "@automerge/automerge";
+import type { ChannelDraftDocument, FieldConflict } from "./contracts";
 
 /**
  * BL-203 (docs/roadmap/plans/FAST_NAVIGATION_PLAN.md §2 stage 1): what this process already computed from a given document's
@@ -19,6 +20,12 @@ export type ChangeDraftsCache = {
   projectedCleanly: BoundedMap<true>;
   /** `${localHash}:${incomingHash}` pairs where the local document already contains the incoming one. */
   containsIncoming: BoundedMap<true>;
+  /**
+   * BL-204 (FAST_NAVIGATION_PLAN.md §4): each channel's live document, for the stored bytes whose sha256 is `hash`, so a call does
+   * not load it again (~0.7 s for a real channel). It is changed in place and never freed by hand: Automerge clones share
+   * sub-objects with their source, so freeing a document would break its clones; Automerge's own finalizer frees it once unused.
+   */
+  documents: Map<string, { hash: string; doc: Automerge.Doc<ChannelDraftDocument> }>;
 };
 
 export function hashDocumentBytes(bytes: Uint8Array): string {
@@ -63,5 +70,6 @@ export function createChangeDraftsCache(): ChangeDraftsCache {
     savedBytes: new BoundedMap(8),
     projectedCleanly: new BoundedMap(32),
     containsIncoming: new BoundedMap(64),
+    documents: new Map(),
   };
 }

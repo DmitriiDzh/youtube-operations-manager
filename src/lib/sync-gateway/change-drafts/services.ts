@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import * as Automerge from "@automerge/automerge";
 import {
   DomainError,
@@ -31,6 +32,7 @@ import { createDefaultLogger, type Logger as ChangeDraftsLogger } from "@/lib/sh
 import type { SqlProjectionAdapter } from "./adapters/sql-projection";
 import type { SqlSourceAdapter } from "./adapters/sql-source";
 import { createChangeDraftsCache, hashDocumentBytes, type ChangeDraftsCache } from "./cache";
+import { assertCompleteAutomergeBytes } from "./document-bytes";
 
 export type ServiceDependencies = {
   store: ChangeDraftsStoreAdapter;
@@ -77,23 +79,6 @@ function emptyDocument(channelId: string): Automerge.Doc<ChannelDraftDocument> {
 }
 
 /**
- * The hash of a document's very first ("genesis") change -- deterministic for every document
- * that shares real history with another (a real `Automerge.load` of previously-`Automerge.save`d
- * bytes, or a document produced by `Automerge.merge`/`Automerge.change` starting from one of
- * those), and different for every independently-created document (`Automerge.from()` draws a
- * fresh random actor id and starts an unrelated history each time it runs). Used by
- * `mergeIncoming` to refuse a merge between two documents with no common ancestor, rather than
- * silently corrupt one side -- see that function's own doc comment for the empirical failure this
- * guards against. Verified empirically (this module's own probe scripts, not from Automerge's
- * docs): two real forks of the same document always share this hash even after both diverge;
- * two independently-created documents never do.
- */
-function genesisChangeHash(doc: Automerge.Doc<ChannelDraftDocument>): string {
-  const changes = Automerge.getAllChanges(doc);
-  return Automerge.decodeChange(changes[0]).hash;
-}
-
-/**
  * Scans every `DraftChange` in `doc` for a field Automerge recorded more than one concurrent
  * write for (AC-CRDT-02) -- a deterministic "current" value is always readable via normal
  * property access, but `Automerge.getConflicts` is the only way to discover that a concurrent
@@ -117,11 +102,10 @@ function scanForConflicts(doc: Automerge.Doc<ChannelDraftDocument>): FieldConfli
 /**
  * One in-process queue per channel for every method that loads a channel's document, changes it and saves it back. Without it an interleaving
  * (the hourly retention sweep loading the document while the owner approves a change, then the sweep saving its stale copy) silently loses the
- * other write. Shared by every core instance in the process (routes, MCP, the sweep each build their own), hence the `globalThis` key. The
- * read-only methods are not queued.
+ * other write. Shared by every core instance in the process (routes, MCP, the sweep each build their own), hence the `globalThis` key.
+ * BL-204: the read-only methods are queued too -- they use the channel's live document, which a write changes in place.
  */
 const CHANNEL_LOCKS_KEY = "__changeDraftsChannelLocks";
-const READ_ONLY_METHODS = new Set(["getDocument", "listConflicts", "exportBytes"]);
 
 function channelLocks(): Map<string, Promise<unknown>> {
   const holder = globalThis as unknown as Record<string, Map<string, Promise<unknown>> | undefined>;
@@ -131,10 +115,6 @@ function channelLocks(): Map<string, Promise<unknown>> {
 function withChannelLocks<T extends Record<string, (input: unknown) => Promise<unknown>>>(core: T): T {
   const wrapped: Record<string, (input: unknown) => Promise<unknown>> = {};
   for (const [name, method] of Object.entries(core)) {
-    if (READ_ONLY_METHODS.has(name)) {
-      wrapped[name] = method;
-      continue;
-    }
     wrapped[name] = (input: unknown) => {
       const channelId = (input as { channelId?: unknown } | null)?.channelId;
       if (typeof channelId !== "string" || channelId.length === 0) return method(input); // invalid input: let the method's own validation reject it
@@ -158,12 +138,28 @@ function withChannelLocks<T extends Record<string, (input: unknown) => Promise<u
 export function createChangeDraftsCore(deps: ServiceDependencies) {
   const cache = deps.cache ?? createChangeDraftsCache();
 
+  /**
+   * BL-204 (FAST_NAVIGATION_PLAN.md §4): a call takes a channel's live document out of the cache while it works with it (a write
+   * changes it in place, which makes the cached object outdated). `saveDocument` puts the saved document back. A call that ends
+   * without saving (a read) gives it back unchanged; a call that throws does not, so the next call loads from disk rather than
+   * reuse a document a failed write may have changed.
+   */
+  const checkouts = new AsyncLocalStorage<Map<string, { hash: string; doc: Automerge.Doc<ChannelDraftDocument> }>>();
+
+  function liveDocument(channelId: string, bytes: Uint8Array, hash: string = hashDocumentBytes(bytes)): Automerge.Doc<ChannelDraftDocument> {
+    const entry = cache.documents.get(channelId);
+    const doc = entry && entry.hash === hash ? entry.doc : Automerge.load<ChannelDraftDocument>(bytes);
+    cache.documents.delete(channelId);
+    checkouts.getStore()?.set(channelId, { hash, doc });
+    return doc;
+  }
+
   /** Used by every write path (including `mergeIncoming`'s local side): a channel with no
    * document yet legitimately starts from an empty one -- this is not an error case. */
   async function loadOrCreateDocument(channelId: string): Promise<Automerge.Doc<ChannelDraftDocument>> {
     const bytes = await deps.store.loadDocumentBytes(channelId);
     if (!bytes) return emptyDocument(channelId);
-    return Automerge.load<ChannelDraftDocument>(bytes);
+    return liveDocument(channelId, bytes);
   }
 
   /** Used by read-only entry points (`getDocument`/`exportBytes`/`listConflicts`): a channel
@@ -171,7 +167,7 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
    * silently returning a valid-looking empty document here would let `exportBytes` hand a peer
    * a document for a channel that was never real, which that peer would then happily merge. */
   async function loadDocumentOrThrow(channelId: string): Promise<Automerge.Doc<ChannelDraftDocument>> {
-    return Automerge.load<ChannelDraftDocument>(await loadBytesOrThrow(channelId));
+    return liveDocument(channelId, await loadBytesOrThrow(channelId));
   }
 
   async function loadBytesOrThrow(channelId: string): Promise<Uint8Array> {
@@ -244,6 +240,9 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
     const bytes = Automerge.save(doc);
     await deps.store.saveDocumentBytes(channelId, bytes);
     const hash = hashDocumentBytes(bytes);
+    // BL-204: the saved document is the channel's live one from now on.
+    checkouts.getStore()?.delete(channelId);
+    cache.documents.set(channelId, { hash, doc });
     let projectedCleanly = false;
     try {
       const failures = await projectToSql(doc);
@@ -700,61 +699,50 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
       ) {
         return { newConflicts: [] };
       }
-      const localDoc = existingBytes
-        ? Automerge.load<ChannelDraftDocument>(existingBytes)
-        : emptyDocument(parsed.channelId);
+      // BL-204: a truncated or damaged peer file is refused here, as `Automerge.load` used to refuse it -- `loadIncremental` below
+      // silently ignores a damaged tail, which would look like "nothing new".
+      assertCompleteAutomergeBytes(parsed.incomingBytes);
+      const localDoc = existingBytes ? liveDocument(parsed.channelId, existingBytes, localHash!) : emptyDocument(parsed.channelId);
       const actorsBefore = new Map<string, Set<string>>();
       for (const c of scanForConflicts(localDoc)) {
         actorsBefore.set(`${c.changeId}.${c.field}`, new Set(Object.keys(c.valuesByActor)));
       }
 
-      // Deliberately NOT `Automerge.merge(Automerge.clone(localDoc), incomingDoc)`: an extra
-      // clone here (found empirically while testing a 3-way conflict -- see this module's own
-      // tests) reassigns a fresh actor id on every call and, across repeated save/reload/merge
-      // cycles, silently dropped a third concurrent writer's value from the conflict entirely
-      // instead of recording it. `localDoc`, freshly obtained from `Automerge.load`, is already
-      // a valid, directly mergeable document -- no clone is needed or safe here.
-      const incomingDoc = Automerge.load<ChannelDraftDocument>(parsed.incomingBytes);
-
-      // CRITICAL, found empirically while designing CD5 (device onboarding to a channel it has
-      // never touched before): when `existingBytes` is null, `localDoc` above is a freshly,
-      // independently-created empty document (`emptyDocument()` calls `Automerge.from()`, which
-      // draws a random actor id and starts a brand-new, unrelated history every time it runs) --
-      // it shares NO real history with `incomingDoc`. `Automerge.merge()` between two
-      // independently-rooted documents is NOT a safe recursive combine: measured empirically
-      // (100 trials, fresh random actor ids each time), it silently discarded the ENTIRE incoming
-      // document's content in 55/100 runs -- a coin flip tied to random actor-id tie-breaking at
-      // the root map keys, not a rare edge case. The correct move when there is truly nothing
-      // local to combine is to ADOPT the incoming bytes directly as the new local document --
-      // never attempt a merge at all in this case. `actorsBefore` is still computed from the
-      // (empty) local state above, so every conflict already present in the adopted document is
-      // correctly reported as "new" to this device, exactly as it should be for a first import.
+      // CRITICAL, found empirically while designing CD5 (device onboarding to a channel it has never touched before): with no
+      // local document, `localDoc` above is a freshly, independently created empty document (`Automerge.from()` draws a random actor
+      // id and starts an unrelated history). Merging two independently rooted documents silently discarded the ENTIRE incoming
+      // document in 55/100 measured runs. So with nothing local the incoming bytes are ADOPTED as the new local document, never
+      // merged; `actorsBefore` (empty) makes every conflict already in it count as new to this device, as a first import should.
       //
-      // A second, related failure mode found while designing CD5's multi-peer sync loop: even
-      // when `existingBytes` IS present, `localDoc` and `incomingDoc` can still share no real
-      // history -- e.g. this device already adopted peer B's document (no local doc existed
-      // before that), and is now processing peer C's file, where B and C independently
-      // bootstrapped the same channel without ever syncing with each other first
-      // (AUTOMERGE_MIGRATION_PLAN.md §6 CD5's own documented operational constraint). Measured
-      // empirically: this is not a probabilistic coin flip like the empty-local case above -- it
-      // is a DETERMINISTIC 100/100 silent loss of one whole side's content. A shared genesis
-      // change hash (`genesisChangeHash`) reliably distinguishes "these two documents have real
-      // common history" from "these two are unrelated" (verified: a real fork always keeps its
-      // origin's genesis hash even after diverging; an independently-created document never
-      // matches). Fail closed here rather than silently corrupt local state -- mirrors this
-      // codebase's own established handling of the identical class of problem in
-      // `src/lib/snapshot/` ("divergent lineage... блокируется явно, никогда не разрешается по
-      // createdAt").
-      if (existingBytes && genesisChangeHash(localDoc) !== genesisChangeHash(incomingDoc)) {
-        throw new DomainError({
-          code: "divergent_document_lineage",
-          message:
-            "The incoming document shares no common history with the local document for this channel -- refusing to merge rather than silently discard one side's data",
-          details: { channelId: parsed.channelId },
-        });
+      // With a local document the two can still share no history (this device adopted peer B, and peer C bootstrapped the same
+      // channel on its own, AUTOMERGE_MIGRATION_PLAN.md §6 CD5); merging them lost one whole side in 100/100 runs. Fail closed
+      // instead, like `src/lib/snapshot/`'s divergent-lineage refusal.
+      //
+      // BL-204: the peer's changes are first applied to a throwaway clone (`loadIncremental`, ~0.5 s instead of a second full load
+      // plus each side's genesis hash, ~1.6 s together), and lineage is read from what the peer actually adds: a change with no
+      // dependencies starts a history, and a document of the same lineage never adds one (its first change is the shared genesis,
+      // already here). Only then are those changes applied to the live document itself, so a refused peer leaves it untouched.
+      let merged: Automerge.Doc<ChannelDraftDocument>;
+      if (existingBytes) {
+        const trial = Automerge.loadIncremental(Automerge.clone(localDoc), parsed.incomingBytes);
+        const added = Automerge.getChanges(localDoc, trial);
+        Automerge.free(trial); // a leaf clone (nothing shares its sub-objects): its ~5 MB need not wait for the finalizer
+        if (added.some((change) => Automerge.decodeChange(change).deps.length === 0)) {
+          cache.documents.set(parsed.channelId, { hash: localHash!, doc: localDoc }); // untouched: keep it live
+          checkouts.getStore()?.delete(parsed.channelId);
+          throw new DomainError({
+            code: "divergent_document_lineage",
+            message:
+              "The incoming document shares no common history with the local document for this channel -- refusing to merge rather than silently discard one side's data",
+            details: { channelId: parsed.channelId },
+          });
+        }
+        // After this in-place apply `localDoc` is outdated: its plain field reads still show the PRE-merge state (the projection
+        // cleanup below relies on that), but an Automerge call on it (e.g. `getConflicts`) would see the merged state -- make none.
+        [merged] = Automerge.applyChanges(localDoc, added);
+      } else {
+        merged = Automerge.load<ChannelDraftDocument>(parsed.incomingBytes);
       }
-
-      const merged = existingBytes ? Automerge.merge(localDoc, incomingDoc) : incomingDoc;
 
       const conflictsAfter = scanForConflicts(merged);
       const newConflicts = conflictsAfter.filter((c) => {
@@ -799,7 +787,7 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
       if (existingBytes) {
         const backup = await deps.discardedBackupStore.backup(parsed.channelId, existingBytes);
         backupPath = backup.path;
-        discardedDoc = Automerge.load<ChannelDraftDocument>(existingBytes);
+        discardedDoc = liveDocument(parsed.channelId, existingBytes);
       }
 
       // Deliberately `saveDocument` BEFORE deleting the orphaned rows below, not after (considered
@@ -842,7 +830,7 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
       const hash = hashDocumentBytes(bytes);
       const known = cache.conflicts.get(hash);
       if (known) return known;
-      const conflicts = scanForConflicts(Automerge.load<ChannelDraftDocument>(bytes));
+      const conflicts = scanForConflicts(liveDocument(channelId, bytes, hash));
       cache.conflicts.set(hash, conflicts);
       return conflicts;
     },
@@ -985,7 +973,7 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
       const hash = hashDocumentBytes(bytes);
       const known = cache.savedBytes.get(hash);
       if (known) return known;
-      const saved = Automerge.save(Automerge.load<ChannelDraftDocument>(bytes));
+      const saved = Automerge.save(liveDocument(channelId, bytes, hash));
       cache.savedBytes.set(hash, saved);
       return saved;
     },
@@ -1040,7 +1028,19 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
     },
   };
 
-  return withChannelLocks(core);
+  // BL-204: a call that ends normally without saving gives the live documents it took back (see `checkouts` above).
+  const withCheckouts: Record<string, (input: unknown) => Promise<unknown>> = {};
+  for (const [name, method] of Object.entries(core) as Array<[string, (input: unknown) => Promise<unknown>]>) {
+    withCheckouts[name] = (input: unknown) => {
+      const taken = new Map<string, { hash: string; doc: Automerge.Doc<ChannelDraftDocument> }>();
+      return checkouts.run(taken, async () => {
+        const result = await method(input);
+        for (const [channelId, entry] of taken) cache.documents.set(channelId, entry);
+        return result;
+      });
+    };
+  }
+  return withChannelLocks(withCheckouts as typeof core);
 }
 
 export type ChangeDraftsCore = ReturnType<typeof createChangeDraftsCore>;
