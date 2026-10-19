@@ -6,6 +6,7 @@ import {
   LIVE_WRITES_SESSION_LEASE_TTL_MS,
   getLiveWritesEnabled,
   getLiveWritesToggle,
+  migrateLiveWritesToDefaultOn,
   rawSqlClient,
   renewLiveWritesSessionLease,
   setLiveWritesEnabled,
@@ -99,4 +100,15 @@ test("lease: only the web boot hook and the settings route can renew it -- never
   assert.deepEqual(renewers.sort(), [path.join("instrumentation.ts"), path.join("lib", "db.ts")].sort());
   // setLiveWritesEnabled(true) also renews the lease -- so it, too, is web-settings-route-only.
   assert.deepEqual(enablers.sort(), [path.join("app", "api", "settings", "route.ts"), path.join("lib", "db.ts")].sort());
+});
+
+test("ADR 0044 migration: once per database the old automatic off is forgotten; the owner's later off is kept", async () => {
+  await rawSqlClient.execute({ sql: "DELETE FROM app_settings WHERE key = ?", args: ["live_writes_default_on_migrated"] });
+  await setLiveWritesEnabled(false); // what the old boot reset left behind
+  assert.equal(await migrateLiveWritesToDefaultOn(), true);
+  assert.equal(await getLiveWritesToggle(), true);
+  await setLiveWritesEnabled(false); // the owner's own off, after the migration
+  assert.equal(await migrateLiveWritesToDefaultOn(), false, "it runs once");
+  assert.equal(await getLiveWritesToggle(), false, "the owner's choice survives every later boot");
+  await setLiveWritesEnabled(true);
 });

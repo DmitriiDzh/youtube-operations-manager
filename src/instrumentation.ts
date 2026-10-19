@@ -49,7 +49,9 @@ export async function register() {
 
 async function startServerSession() {
   // Dynamic import keeps db.ts out of the edge/instrumentation bundle graph.
-  const { LIVE_WRITES_SESSION_LEASE_RENEW_MS, renewLiveWritesSessionLease } = await import("@/lib/db");
+  const { LIVE_WRITES_SESSION_LEASE_RENEW_MS, migrateLiveWritesToDefaultOn, renewLiveWritesSessionLease } = await import("@/lib/db");
+  // ADR 0044: once per database, the "off" left by the old per-session reset is forgotten (the toggle starts on).
+  await migrateLiveWritesToDefaultOn().catch(() => undefined);
 
   // Session lease (architecture-audit review, round 3): Live writes are honored only while this web
   // server keeps renewing it, so ANY end of the session -- including a crash or Windows

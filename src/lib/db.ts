@@ -6254,6 +6254,19 @@ export async function getLiveWritesEnabled(now: Date = new Date()): Promise<bool
   return liveWritesLeaseFresh(now);
 }
 
+const LIVE_WRITES_DEFAULT_ON_MIGRATED_KEY = "live_writes_default_on_migrated";
+
+/**
+ * ADR 0044, once per database: a stored "off" written by the old per-session reset is not the owner's choice -- forget it, so
+ * the toggle starts on as he decided. Called only by the web server's boot hook; afterwards only the owner's setter writes it.
+ */
+export async function migrateLiveWritesToDefaultOn(database: AppDb = db): Promise<boolean> {
+  if ((await getAppSetting(LIVE_WRITES_DEFAULT_ON_MIGRATED_KEY, database)) === "true") return false;
+  await database.delete(appSettings).where(eq(appSettings.key, LIVE_WRITES_ENABLED_SETTING_KEY));
+  await setAppSetting(LIVE_WRITES_DEFAULT_ON_MIGRATED_KEY, "true", database);
+  return true;
+}
+
 /** The owner's own choice, apart from whether the server is up (the Settings card shows both). */
 export async function getLiveWritesToggle(): Promise<boolean> {
   return (await getAppSetting(LIVE_WRITES_ENABLED_SETTING_KEY)) !== "false";
