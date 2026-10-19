@@ -96,7 +96,8 @@ test("an encoder that dies right after its start counts as a failed start (backo
 test("a stream that is on gets its encoder started when none runs (boot / after a crash of the helper); off streams are left alone", async () => {
   const h = harness();
   await h.runner.tick();
-  assert.deepEqual(h.calls, ["running:UC1", "start:UC1"]);
+  // BL-205 (review): an off stream is still given to the segment switcher, which only finishes a switch the owner's Stop cut short.
+  assert.deepEqual(h.calls, ["running:UC1", "start:UC1", "segments:UC2"]);
 });
 
 test("after a (re)start the broadcast is read at once, every minute for 10 minutes, then every 5 minutes", async () => {
@@ -105,7 +106,7 @@ test("after a (re)start the broadcast is read at once, every minute for 10 minut
   h.calls.length = 0;
   await h.runner.tick();
   // BL-205: the segment switcher is ticked after the check (the harness now plugs one in).
-  assert.deepEqual(h.calls, ["running:UC1", "tick:UC1", "check:UC1", "segments:UC1"], "read right after the start");
+  assert.deepEqual(h.calls, ["running:UC1", "tick:UC1", "check:UC1", "segments:UC1", "segments:UC2"], "read right after the start");
   h.calls.length = 0;
   h.advance(30_000);
   await h.runner.tick();
@@ -201,14 +202,15 @@ test("segments: ticked for a running stream after its broadcast check; not for a
   const h = harness();
   h.ownerStarted("UC1");
   await h.runner.tick();
-  assert.deepEqual(h.calls.filter((c) => c.startsWith("check:") || c.startsWith("segments:")), ["check:UC1", "segments:UC1"]);
+  assert.deepEqual(h.calls.filter((c) => c.startsWith("check:") || c.startsWith("segments:")), ["check:UC1", "segments:UC1", "segments:UC2"]);
 
   const ended = harness({ endedByYoutube: true });
   ended.ownerStarted("UC1");
   await ended.runner.tick();
   assert.ok(!ended.calls.includes("segments:UC1"));
 
+  // A stopped stream is ticked too (only a switch its Stop cut short is finished there), but never tended.
   const off = harness({ streams: [{ channelId: "UC1", intent: "off" }] });
   await off.runner.tick();
-  assert.ok(!off.calls.some((c) => c.startsWith("segments:")));
+  assert.deepEqual(off.calls.filter((c) => !c.startsWith("segments:")), []);
 });

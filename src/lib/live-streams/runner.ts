@@ -115,6 +115,8 @@ export function createLiveStreamsRunner(deps: RunnerDependencies) {
         if (stream.intent !== "on") {
           // A stream the owner stopped never keeps an encoder (e.g. one a Stop could not reach in time).
           if (await deps.supervisor.liveHelper(stream.channelId).catch(() => null)) await deps.supervisor.stopEncoder(stream.channelId, "intent_off").catch(() => false);
+          // BL-205: a segment switch interrupted by the owner's Stop still has its new broadcast cleaned up.
+          await deps.segments?.tick(stream.channelId).catch((error: unknown) => console.warn(`[live-streams] ${stream.channelId} segments: ${error instanceof Error ? error.message : String(error)}`));
           continue;
         }
         try {

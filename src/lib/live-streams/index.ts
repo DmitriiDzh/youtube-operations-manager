@@ -41,7 +41,7 @@ import { createRotationPicker } from "./picker-service";
 import { streamReportEntry, type StreamReportEntry } from "./report";
 import { createLiveStreamsServices } from "./services";
 import { createLiveStreamsSettings, liveStreamsHost } from "./settings";
-import { createStreamSupervisor } from "./supervisor";
+import { createStreamSupervisor, withChannelLock } from "./supervisor";
 import { createStreamVideoSettings } from "./video-settings";
 
 // BL-176 (docs/roadmap/plans/LIVE_STREAMS_PLAN.md, ADR 0036): the live-streams module wired to its real adapters.
@@ -265,10 +265,10 @@ export function createLiveSegmentsCore(options: { videoFields?: VideoFieldsPort 
         }
       },
       lifecycles: async (credentials, ids) => {
-        const out: Record<string, { lifeCycleStatus: string | null; actualStartTime: string | null; actualEndTime: string | null }> = {};
+        const out: Record<string, { lifeCycleStatus: string | null; actualStartTime: string | null; actualEndTime: string | null; recordFromStart: boolean | null }> = {};
         for (const id of ids) {
           const b = await writes.getBroadcast(credentials, id);
-          if (b) out[id] = { lifeCycleStatus: b.lifeCycleStatus, actualStartTime: b.actualStartTime ?? null, actualEndTime: b.actualEndTime ?? null };
+          if (b) out[id] = { lifeCycleStatus: b.lifeCycleStatus, actualStartTime: b.actualStartTime ?? null, actualEndTime: b.actualEndTime ?? null, recordFromStart: b.recordFromStart ?? null };
         }
         return out;
       },
@@ -279,7 +279,8 @@ export function createLiveSegmentsCore(options: { videoFields?: VideoFieldsPort 
     playedVideos: async (channelId) => (await supervisor.readStatus(channelId))?.passVideoIds ?? [],
     newId: () => randomUUID(),
     clock: () => Date.now(),
-    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    // The same key as the owner's Start, Stop and Edit (broadcasts.ts): a switch step never runs at the same time as them.
+    withBroadcastLock: (channelId, fn) => withChannelLock(`broadcast:${channelId}`, fn),
   });
 }
 
@@ -359,7 +360,11 @@ export function createLiveSegmentSettingsCore() {
       const stream = await getLiveStream(channelId);
       if (!stream) return null;
       const since = new Date(now - 30 * 86_400_000);
-      const [rows, failures] = await Promise.all([listLiveStreamSegments(channelId, since), listLiveStreamEventsOfKind(channelId, "live_segment_switch_failed", since)]);
+      const [rows, failures, switched] = await Promise.all([
+        listLiveStreamSegments(channelId, since),
+        listLiveStreamEventsOfKind(channelId, "live_segment_switch_failed", since),
+        latestLiveStreamEvent(channelId, "live_segment_switched"),
+      ]);
       return segmentsView({
         channelId,
         settingsJson: stream.segmentsJson,
@@ -367,6 +372,7 @@ export function createLiveSegmentSettingsCore() {
         intent: stream.intent,
         rows,
         failures: failures.map((f) => ({ at: f.at, detail: JSON.parse(f.detailJson) as Record<string, unknown> })),
+        lastSwitchedAt: switched?.at ?? null,
       });
     },
   };

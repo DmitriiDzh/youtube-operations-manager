@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { errorText } from "@/lib/ui-text";
+import { errorText, type UiTextKey } from "@/lib/ui-text";
 import { SEGMENT_DEFAULT_MINUTES, SEGMENT_MAX_MINUTES, SEGMENT_MIN_MINUTES } from "@/lib/live-streams/fields";
 import { ToggleSwitch } from "./toggle-switch";
 import { useT } from "./ui-text-provider";
@@ -17,9 +17,23 @@ export type SegmentsViewData = {
   current: { broadcastId: string; startedAt: string; switchDueAt: string | null } | null;
   segments: Array<{ broadcastId: string; startedAt: string; endedAt: string | null; overlapMs: number | null; rotation: string[]; recording: string; playlist: string }>;
   failures: Array<{ at: string; stage: string }>;
+  lastSwitchedAt?: string | null;
 };
 
 type Form = { enabled: boolean; hours: string; minutes: string; switchHourUtc: number | null; recordingsPlaylist: { id: string; title: string } | null };
+
+const CODE_KEYS: Record<string, UiTextKey> = {
+  "recording.none": "live.segments.recording.none",
+  "recording.recorded": "live.segments.recording.recorded",
+  "playlist.none": "live.segments.playlist.none",
+  "playlist.pending": "live.segments.playlist.pending",
+  "playlist.added": "live.segments.playlist.added",
+  "playlist.failed": "live.segments.playlist.failed",
+  "stage.authorize": "live.segments.stage.authorize",
+  "stage.insert": "live.segments.stage.insert",
+  "stage.bind": "live.segments.stage.bind",
+  "stage.go_live": "live.segments.stage.go_live",
+};
 
 const cardClass = "space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4";
 const inputClass = "rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm text-zinc-100 disabled:opacity-50";
@@ -89,7 +103,9 @@ export function LiveStreamSegmentsCard({ base, view, onChanged }: { base: string
   }
 
   const time = (iso: string) => new Date(iso).toLocaleString(t.language);
-  const lastFailure = view?.failures[0];
+  // A failure is shown only while no switch has succeeded since (independent review).
+  const lastFailure = view?.failures[0] && (!view.lastSwitchedAt || view.failures[0].at > view.lastSwitchedAt) ? view.failures[0] : undefined;
+  const code = (prefix: string, value: string) => (CODE_KEYS[`${prefix}.${value}`] ? t(CODE_KEYS[`${prefix}.${value}`]!) : value);
 
   return (
     <div className={cardClass}>
@@ -105,7 +121,7 @@ export function LiveStreamSegmentsCard({ base, view, onChanged }: { base: string
             : t("live.segments.currentOff", { since: time(view.current.startedAt) })}
         </p>
       )}
-      {lastFailure && <p className="text-xs text-amber-300">{t("live.segments.lastFailure", { at: time(lastFailure.at), stage: lastFailure.stage })}</p>}
+      {lastFailure && <p className="text-xs text-amber-300">{t("live.segments.lastFailure", { at: time(lastFailure.at), stage: code("stage", lastFailure.stage) })}</p>}
 
       <div className="flex items-center gap-3">
         <ToggleSwitch checked={form.enabled} onChange={(enabled) => setForm({ ...form, enabled })} disabled={busy} label={t("live.segments.toggle")} />
@@ -188,10 +204,8 @@ export function LiveStreamSegmentsCard({ base, view, onChanged }: { base: string
                   <td className="py-1 pr-3">{time(s.startedAt)}</td>
                   <td className="py-1 pr-3">{s.endedAt ? time(s.endedAt) : t("live.segments.running")}</td>
                   <td className="py-1 pr-3">{s.overlapMs === null ? "—" : t("live.segments.seconds", { seconds: String(Math.round(s.overlapMs / 1000)) })}</td>
-                  {/* ui-text-ignore: status codes (data) */}
-                  <td className="py-1 pr-3">{s.recording}</td>
-                  {/* ui-text-ignore: status codes (data) */}
-                  <td className="py-1 pr-3">{s.playlist}</td>
+                  <td className="py-1 pr-3">{code("recording", s.recording)}</td>
+                  <td className="py-1 pr-3">{code("playlist", s.playlist)}</td>
                 </tr>
               ))}
             </tbody>

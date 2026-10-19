@@ -1464,6 +1464,8 @@ export const liveStreamSegments = sqliteTable(
     startedAt: integer("started_at", { mode: "timestamp_ms" }).notNull(),
     endedAt: integer("ended_at", { mode: "timestamp_ms" }),
     switchOverlapMs: integer("switch_overlap_ms"),
+    /** Whether the broadcast records (`recordFromStart`): only a recorded segment goes into the recordings playlist. */
+    recorded: integer("recorded", { mode: "boolean" }).notNull(),
     rotationJson: text("rotation_json"),
     recordingStatus: text("recording_status", { enum: ["none", "recorded", "processing", "failed"] }).notNull(),
     playlistStatus: text("playlist_status", { enum: ["none", "pending", "added", "failed"] }).notNull(),
@@ -5286,6 +5288,7 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         started_at INTEGER NOT NULL,
         ended_at INTEGER,
         switch_overlap_ms INTEGER,
+        recorded INTEGER NOT NULL DEFAULT 0,
         rotation_json TEXT,
         recording_status TEXT NOT NULL,
         playlist_status TEXT NOT NULL,

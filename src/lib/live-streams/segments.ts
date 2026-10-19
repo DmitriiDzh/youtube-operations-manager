@@ -16,7 +16,6 @@ export { SEGMENT_DEFAULT_MINUTES, SEGMENT_MAX_MINUTES, SEGMENT_MIN_MINUTES };
 export const QUIET_HOUR_WINDOW_MS = 2 * 3_600_000;
 /** How long the new segment may take to go live before the switch is given up. */
 export const GO_LIVE_TIMEOUT_MS = 5 * 60_000;
-export const GO_LIVE_POLL_MS = 3_000;
 /** After a failed switch, the next attempt is not before this. */
 export const SWITCH_RETRY_MS = 30 * 60_000;
 /** Switches per channel per UTC day, successes and failures together. */
@@ -70,7 +69,35 @@ export function startOfUtcDay(now: number): number {
   return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
 }
 
-export type SwitchMarker = { startedAt: number; fromBroadcastId: string; newBroadcastId: string | null };
+/**
+ * The switch as a persisted state machine (independent review): every step is written to the stream's marker BEFORE it is
+ * acted on, each tick advances it by one short step (no long waits inside a tick), and a crash or restart simply resumes it.
+ * - `going_live`: the new broadcast is inserted, bound and asked to go live; ticks read its state until it is live.
+ * - `handover`: the stream row names the new broadcast; ticks end the old one until YouTube says it ended.
+ * - `cleanup`: the switch failed or the stream was stopped; ticks end or delete the new one until done.
+ */
+export type SwitchMarker = {
+  phase: "going_live" | "handover" | "cleanup";
+  startedAt: number;
+  fromBroadcastId: string;
+  newBroadcastId: string;
+  /** When `transition live` was last sent (sent once, and once more if still not starting after a minute). */
+  liveRequestedAt: number;
+  liveRequests: number;
+  /** `cleanup`: why the switch is given up (the failure stage, or `stream_stopped`). */
+  reason?: string;
+  attempts?: number;
+  lastAttemptAt?: number;
+};
+
+/** Ending the old segment, or cleaning up the new one, is retried at most this often. */
+export const STEP_RETRY_MS = 60_000;
+/** After this many attempts to end the old segment, the owner is told (the switcher keeps trying: two live broadcasts must end). */
+export const HANDOVER_ALERT_ATTEMPTS = 5;
+/** `transition live` is repeated once if the broadcast has not started after this long. */
+export const LIVE_REQUEST_REPEAT_MS = 60_000;
+
+type Lifecycle = { lifeCycleStatus: string | null; actualStartTime: string | null; actualEndTime: string | null; recordFromStart?: boolean | null };
 
 type StreamRow = {
   channelId: string;
@@ -91,6 +118,7 @@ type SegmentRow = {
   broadcastId: string;
   startedAt: Date;
   endedAt: Date | null;
+  recorded: boolean;
   playlistStatus: "none" | "pending" | "added" | "failed";
   playlistAttempts: number;
 };
@@ -103,7 +131,7 @@ export type SegmentsDependencies = {
     countEventsSince(channelId: string, kinds: readonly string[], since: Date): Promise<number>;
   };
   segments: {
-    insert(row: { id: string; channelId: string; broadcastId: string; startedAt: Date; recordingStatus: "none"; playlistStatus: "none"; playlistAttempts: 0 }): Promise<void>;
+    insert(row: { id: string; channelId: string; broadcastId: string; startedAt: Date; recorded: boolean; recordingStatus: "none"; playlistStatus: "none"; playlistAttempts: 0 }): Promise<void>;
     update(id: string, set: Record<string, unknown>): Promise<void>;
     /** Every segment of the channel that has no end yet, or whose recording still waits for the playlist. */
     open(channelId: string): Promise<SegmentRow[]>;
@@ -127,8 +155,8 @@ export type SegmentsDependencies = {
     bind(credentials: ResolvedCredentials, args: { broadcastId: string; streamId: string }): Promise<unknown>;
     /** `live` or `complete`; a "redundant transition" (already there) resolves, it is not an error. */
     transition(credentials: ResolvedCredentials, args: { broadcastId: string; broadcastStatus: "live" | "complete" }): Promise<unknown>;
-    /** The broadcasts' life-cycle states and YouTube's own start/end times; a broadcast YouTube no longer has is absent. */
-    lifecycles(credentials: ResolvedCredentials, broadcastIds: string[]): Promise<Record<string, { lifeCycleStatus: string | null; actualStartTime: string | null; actualEndTime: string | null }>>;
+    /** The broadcasts' states and YouTube's own start/end times (and whether they record); one YouTube no longer has is absent. */
+    lifecycles(credentials: ResolvedCredentials, broadcastIds: string[]): Promise<Record<string, Lifecycle>>;
     deleteVideo(credentials: ResolvedCredentials, videoId: string): Promise<void>;
   };
   /** BL-186 stage 3: the saved video settings for the new segment (in the background). */
@@ -137,107 +165,73 @@ export type SegmentsDependencies = {
   addToPlaylist?(args: { credentialRef: unknown; channelId: string; playlistId: string; videoId: string }): Promise<{ added: boolean; reason?: string }>;
   /** The rotation videos the encoder played in the segment, best effort. */
   playedVideos(channelId: string): Promise<string[]>;
+  /** The lock the owner's Start, Stop and Edit take for this channel: a switch step never runs at the same time as them. */
+  withBroadcastLock<T>(channelId: string, fn: () => Promise<T>): Promise<T>;
   newId(): string;
   clock(): number;
-  sleep(ms: number): Promise<void>;
 };
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+export function readSwitchMarker(json: string | null | undefined): SwitchMarker | null {
+  if (!json) return null;
+  try {
+    const marker = JSON.parse(json) as SwitchMarker;
+    return marker && typeof marker.newBroadcastId === "string" && typeof marker.fromBroadcastId === "string" ? marker : null;
+  } catch {
+    return null;
+  }
+}
+
 export function createLiveSegments(deps: SegmentsDependencies) {
-  /** Switches running in this process; a marker without one here was left by a crash or restart (plan §2.2 step 8). */
-  const switching = new Set<string>();
-  /** A failed attempt's earliest retry, per channel (and the last failure reported, so it is not repeated every tick). */
+  /** A failed switch's earliest retry, per channel (in memory; the daily cap in the database bounds a restart loop). */
   const retryAt = new Map<string, number>();
+  const capNotified = new Set<string>();
 
   async function writeMarker(channelId: string, marker: SwitchMarker | null) {
     await deps.streams.update(channelId, { segmentSwitchingJson: marker ? JSON.stringify(marker) : null });
   }
 
-  function readMarker(json: string | null | undefined): SwitchMarker | null {
-    if (!json) return null;
-    try {
-      return JSON.parse(json) as SwitchMarker;
-    } catch {
-      return null;
-    }
-  }
+  const isoTime = (iso: string | null | undefined) => (iso ? Date.parse(iso) : null);
 
-  /** The segment row of the running broadcast, created when missing (the owner's Start made the first one). */
-  async function currentSegment(stream: StreamRow): Promise<SegmentRow> {
+  /**
+   * The row of the running broadcast, created from YouTube's own start time and recording flag when missing (the owner's Start,
+   * or a broadcast started before segments were on). Rows of broadcasts that are no longer the stream's are closed.
+   */
+  async function currentSegment(stream: StreamRow): Promise<SegmentRow | null> {
     const open = await deps.segments.open(stream.channelId);
+    for (const row of open) {
+      if (row.endedAt === null && row.broadcastId !== stream.broadcastId) await deps.segments.update(row.id, { endedAt: new Date(deps.clock()), recordingStatus: row.recorded ? "recorded" : "none" });
+    }
     const found = open.find((s) => s.broadcastId === stream.broadcastId && s.endedAt === null);
     if (found) return found;
-    const row = { id: deps.newId(), channelId: stream.channelId, broadcastId: stream.broadcastId!, startedAt: stream.onSince ?? new Date(deps.clock()), recordingStatus: "none" as const, playlistStatus: "none" as const, playlistAttempts: 0 as const };
+    const { credentials } = await deps.authorize(stream.channelId);
+    const life = (await deps.youtube.lifecycles(credentials, [stream.broadcastId!]))[stream.broadcastId!];
+    if (!life || life.lifeCycleStatus !== "live") return null; // not live yet: no segment to time
+    const row = {
+      id: deps.newId(),
+      channelId: stream.channelId,
+      broadcastId: stream.broadcastId!,
+      startedAt: new Date(isoTime(life.actualStartTime) ?? stream.onSince?.getTime() ?? deps.clock()),
+      recorded: life.recordFromStart === true,
+      recordingStatus: "none" as const,
+      playlistStatus: "none" as const,
+      playlistAttempts: 0 as const,
+    };
     await deps.segments.insert(row);
     return { ...row, endedAt: null };
   }
 
-  /** Plan §2.2 step 8: a switch left half-done by a crash or restart -- exactly one live broadcast remains. */
-  async function recover(stream: StreamRow, marker: SwitchMarker): Promise<void> {
-    const { channelId } = stream;
-    if (!marker.newBroadcastId) {
-      await writeMarker(channelId, null);
-      await deps.streams.event(channelId, "live_segment_recovered", { action: "nothing_created" });
-      return;
-    }
-    const { credentials } = await deps.authorize(channelId);
-    const states = await deps.youtube.lifecycles(credentials, [marker.newBroadcastId, marker.fromBroadcastId]);
-    const fresh = states[marker.newBroadcastId];
-    let action: string;
-    if (!fresh) {
-      action = "new_gone";
-    } else if (fresh.lifeCycleStatus === "live" && stream.broadcastId === marker.newBroadcastId) {
-      if (states[marker.fromBroadcastId]?.lifeCycleStatus === "live") await deps.youtube.transition(credentials, { broadcastId: marker.fromBroadcastId, broadcastStatus: "complete" });
-      action = "old_completed";
-    } else if (fresh.lifeCycleStatus === "live") {
-      await deps.youtube.transition(credentials, { broadcastId: marker.newBroadcastId, broadcastStatus: "complete" });
-      action = "new_completed";
-    } else if (fresh.lifeCycleStatus === "complete" || fresh.lifeCycleStatus === "revoked") {
-      action = "new_ended";
-    } else {
-      await deps.youtube.deleteVideo(credentials, marker.newBroadcastId);
-      action = "new_deleted";
-    }
-    await writeMarker(channelId, null);
-    await deps.streams.event(channelId, "live_segment_recovered", { action, from: marker.fromBroadcastId, to: marker.newBroadcastId });
-  }
-
-  async function fail(channelId: string, stage: string, error: unknown, newBroadcastId: string | null, credentials: ResolvedCredentials | null) {
-    let deleted = false;
-    if (newBroadcastId && credentials) {
-      // The new segment never went live: it is removed, so no empty broadcast is left behind (plan §2.2 step 7).
-      deleted = await deps.youtube.deleteVideo(credentials, newBroadcastId).then(
-        () => true,
-        () => false
-      );
-    }
-    await writeMarker(channelId, null);
-    retryAt.set(channelId, deps.clock() + SWITCH_RETRY_MS);
-    await deps.streams.event(channelId, "live_segment_switch_failed", { stage, message: messageOf(error), newBroadcastId, newDeleted: deleted, retryInMinutes: SWITCH_RETRY_MS / 60_000 });
-  }
-
-  /** Plan §2.2 steps 2-6. */
-  async function runSwitch(stream: StreamRow, segment: SegmentRow, settings: SegmentSettings): Promise<void> {
+  /** Starts a switch: insert, bind, ask once to go live. Each id is in the marker before the next call. */
+  async function begin(stream: StreamRow, auth: { credentials: ResolvedCredentials }): Promise<void> {
     const { channelId } = stream;
     const from = stream.broadcastId!;
-    let auth: { credentialRef: unknown; credentials: ResolvedCredentials };
-    try {
-      auth = await deps.authorize(channelId);
-    } catch (error) {
-      // Live writes off or a wrong channel: nothing was written. Reported once per retry window, not every tick.
-      await fail(channelId, "authorize", error, null, null);
-      return;
-    }
-    const { credentials, credentialRef } = auth;
-    const marker: SwitchMarker = { startedAt: deps.clock(), fromBroadcastId: from, newBroadcastId: null };
-    await writeMarker(channelId, marker);
-    let to: string | null = null;
+    let to: string;
     try {
       const broadcast = await deps.broadcastSettings(channelId);
-      ({ broadcastId: to } = await deps.youtube.insertBroadcast(credentials, {
+      ({ broadcastId: to } = await deps.youtube.insertBroadcast(auth.credentials, {
         title: stream.title,
         description: stream.description,
         scheduledStartTime: new Date(deps.clock() + 60_000).toISOString(),
@@ -249,85 +243,137 @@ export function createLiveSegments(deps: SegmentsDependencies) {
         recordFromStart: true,
         ...(broadcast ?? {}),
       }));
-      await writeMarker(channelId, { ...marker, newBroadcastId: to });
-      await deps.streams.event(channelId, "youtube_write", { method: "liveBroadcasts.insert", broadcastId: to, segment: true });
     } catch (error) {
-      await fail(channelId, "insert", error, null, null);
+      // Nothing was created: the switch simply failed (the old segment goes on).
+      retryAt.set(channelId, deps.clock() + SWITCH_RETRY_MS);
+      await deps.streams.event(channelId, "live_segment_switch_failed", { stage: "insert", message: messageOf(error), newBroadcastId: null });
       return;
     }
+    const marker: SwitchMarker = { phase: "going_live", startedAt: deps.clock(), fromBroadcastId: from, newBroadcastId: to, liveRequestedAt: 0, liveRequests: 0 };
+    await writeMarker(channelId, marker);
+    await deps.streams.event(channelId, "youtube_write", { method: "liveBroadcasts.insert", broadcastId: to, segment: true });
     try {
-      await deps.youtube.bind(credentials, { broadcastId: to, streamId: stream.streamId! });
+      await deps.youtube.bind(auth.credentials, { broadcastId: to, streamId: stream.streamId! });
       await deps.streams.event(channelId, "youtube_write", { method: "liveBroadcasts.bind", broadcastId: to, streamId: stream.streamId, segment: true });
     } catch (error) {
-      await fail(channelId, "bind", error, to, credentials);
+      await writeMarker(channelId, { ...marker, phase: "cleanup", reason: "bind", attempts: 0 });
+      await deps.streams.event(channelId, "live_segment_switch_failed", { stage: "bind", message: messageOf(error), newBroadcastId: to });
       return;
     }
-    // Make the new segment live, polling until it is (at most 5 min). The old one is still live on the same stream meanwhile.
-    const deadline = deps.clock() + GO_LIVE_TIMEOUT_MS;
-    let live = false;
-    let lastError: unknown = null;
-    while (!live && deps.clock() < deadline) {
-      try {
-        await deps.youtube.transition(credentials, { broadcastId: to, broadcastStatus: "live" });
-      } catch (error) {
-        lastError = error;
-      }
-      const states = await deps.youtube.lifecycles(credentials, [to]).catch(() => ({}) as Record<string, { lifeCycleStatus: string | null }>);
-      live = states[to]?.lifeCycleStatus === "live";
-      if (!live) await deps.sleep(GO_LIVE_POLL_MS);
-    }
-    if (!live) {
-      await fail(channelId, "go_live", lastError ?? new Error("the new segment did not go live within 5 minutes"), to, credentials);
-      return;
-    }
-    // The owner may have pressed Stop meanwhile: then the new segment is ended too, and nothing is handed over.
-    const now0 = await deps.streams.get(channelId);
-    if (!now0 || now0.intent !== "on" || now0.broadcastId !== from) {
-      await deps.youtube.transition(credentials, { broadcastId: to, broadcastStatus: "complete" }).catch(() => undefined);
-      await writeMarker(channelId, null);
-      await deps.streams.event(channelId, "live_segment_switch_failed", { stage: "stream_changed", message: "the stream was stopped or changed during the switch", newBroadcastId: to, newDeleted: false, retryInMinutes: 0 });
-      return;
-    }
-    // Hand over: the stream row names the new segment BEFORE the old one ends, so the broadcast check never takes the old
-    // segment's end for the stream's end (plan §2.2 step 5).
-    await deps.streams.update(channelId, { broadcastId: to });
-    let oldEnded = false;
-    for (let attempt = 0; attempt < 3 && !oldEnded; attempt++) {
-      try {
-        await deps.youtube.transition(credentials, { broadcastId: from, broadcastStatus: "complete" });
-        oldEnded = true;
-      } catch (error) {
-        lastError = error;
-        if (attempt < 2) await deps.sleep(GO_LIVE_POLL_MS);
-      }
-    }
-    const states = await deps.youtube.lifecycles(credentials, [from, to]).catch(() => ({}) as Record<string, { actualStartTime: string | null; actualEndTime: string | null }>);
-    const newStart = states[to]?.actualStartTime ? Date.parse(states[to]!.actualStartTime!) : null;
-    const oldEnd = states[from]?.actualEndTime ? Date.parse(states[from]!.actualEndTime!) : null;
-    const overlapMs = newStart !== null && oldEnd !== null ? oldEnd - newStart : null;
-    const now = deps.clock();
-    await deps.segments.update(segment.id, {
-      endedAt: new Date(oldEnd ?? now),
-      switchOverlapMs: overlapMs,
-      rotationJson: JSON.stringify(await deps.playedVideos(channelId).catch(() => [])),
-      recordingStatus: oldEnded ? "recorded" : "failed",
-      playlistStatus: settings.recordingsPlaylist && deps.addToPlaylist ? "pending" : "none",
-      ...(oldEnded ? {} : { failure: `the old segment could not be ended: ${messageOf(lastError)}` }),
-    });
-    await deps.segments.insert({ id: deps.newId(), channelId, broadcastId: to, startedAt: new Date(newStart ?? now), recordingStatus: "none", playlistStatus: "none", playlistAttempts: 0 });
-    await writeMarker(channelId, null);
-    retryAt.delete(channelId);
-    await deps.streams.event(channelId, "live_segment_switched", { from, to, overlapMs, oldEnded });
-    deps.applyVideoSettings({ channelId, broadcastId: to, credentialRef, credentials });
+    await requestLive(channelId, marker, auth.credentials);
   }
 
-  /** Plan §2.2 step 6: ended segments go into the recordings playlist, retried every 10 min for 2 h. */
+  async function requestLive(channelId: string, marker: SwitchMarker, credentials: ResolvedCredentials) {
+    try {
+      await deps.youtube.transition(credentials, { broadcastId: marker.newBroadcastId, broadcastStatus: "live" });
+    } catch {
+      // The state read decides: a refusal here is either "already starting" or a real problem the 5-minute limit catches.
+    }
+    await writeMarker(channelId, { ...marker, liveRequestedAt: deps.clock(), liveRequests: marker.liveRequests + 1 });
+  }
+
+  /** `going_live`: read the new broadcast; live -> hand over; too slow -> give up (cleanup). Reads only, except one repeat. */
+  async function stepGoingLive(stream: StreamRow, marker: SwitchMarker, credentials: ResolvedCredentials): Promise<void> {
+    const { channelId } = stream;
+    const life = (await deps.youtube.lifecycles(credentials, [marker.newBroadcastId]))[marker.newBroadcastId];
+    if (life?.lifeCycleStatus === "live") {
+      if (stream.intent !== "on" || stream.broadcastId !== marker.fromBroadcastId) {
+        await writeMarker(channelId, { ...marker, phase: "cleanup", reason: "stream_stopped", attempts: 0 });
+        return;
+      }
+      // Hand over: the stream row names the new segment BEFORE the old one ends, so the broadcast check never takes the old
+      // segment's end for the stream's end (plan §2.2 step 5).
+      await writeMarker(channelId, { ...marker, phase: "handover", attempts: 0 });
+      await deps.streams.update(channelId, { broadcastId: marker.newBroadcastId });
+      return;
+    }
+    if (deps.clock() - marker.startedAt >= GO_LIVE_TIMEOUT_MS) {
+      await writeMarker(channelId, { ...marker, phase: "cleanup", reason: "go_live", attempts: 0 });
+      await deps.streams.event(channelId, "live_segment_switch_failed", { stage: "go_live", message: `the new segment did not go live within 5 minutes (state ${life?.lifeCycleStatus ?? "gone"})`, newBroadcastId: marker.newBroadcastId });
+      return;
+    }
+    const waiting = !life || life.lifeCycleStatus === "ready" || life.lifeCycleStatus === "testing" || life.lifeCycleStatus === "created";
+    if (waiting && marker.liveRequests < 2 && deps.clock() - marker.liveRequestedAt >= LIVE_REQUEST_REPEAT_MS) await requestLive(channelId, marker, credentials);
+  }
+
+  /** `handover`: end the old segment until YouTube says it ended; then close the rows and finish. Never gives up. */
+  async function stepHandover(stream: StreamRow, marker: SwitchMarker, auth: { credentialRef: unknown; credentials: ResolvedCredentials }, settings: SegmentSettings): Promise<void> {
+    const { channelId } = stream;
+    const attempts = marker.attempts ?? 0;
+    if (attempts > 0 && deps.clock() - (marker.lastAttemptAt ?? 0) < STEP_RETRY_MS) return;
+    let ended = false;
+    try {
+      await deps.youtube.transition(auth.credentials, { broadcastId: marker.fromBroadcastId, broadcastStatus: "complete" });
+    } catch {
+      // Read below: it may have ended anyway.
+    }
+    const lives = await deps.youtube.lifecycles(auth.credentials, [marker.fromBroadcastId, marker.newBroadcastId]);
+    const old = lives[marker.fromBroadcastId];
+    ended = !old || old.lifeCycleStatus === "complete" || old.lifeCycleStatus === "revoked";
+    if (!ended) {
+      const next = attempts + 1;
+      await writeMarker(channelId, { ...marker, attempts: next, lastAttemptAt: deps.clock() });
+      if (next === HANDOVER_ALERT_ATTEMPTS) await deps.streams.event(channelId, "live_segment_end_old_retrying", { attempts: next, fromBroadcastId: marker.fromBroadcastId });
+      return;
+    }
+    const open = await deps.segments.open(channelId);
+    const oldRow = open.find((r) => r.broadcastId === marker.fromBroadcastId && r.endedAt === null);
+    const newStart = isoTime(lives[marker.newBroadcastId]?.actualStartTime);
+    const oldEnd = isoTime(old?.actualEndTime);
+    const overlapMs = newStart !== null && oldEnd !== null ? oldEnd - newStart : null;
+    if (oldRow) {
+      const addToPlaylist = oldRow.recorded && settings.recordingsPlaylist !== null && deps.addToPlaylist !== undefined;
+      await deps.segments.update(oldRow.id, {
+        endedAt: new Date(oldEnd ?? deps.clock()),
+        switchOverlapMs: overlapMs,
+        rotationJson: JSON.stringify(await deps.playedVideos(channelId).catch(() => [])),
+        recordingStatus: oldRow.recorded ? "recorded" : "none",
+        playlistStatus: addToPlaylist ? "pending" : "none",
+      });
+    }
+    await deps.segments.insert({ id: deps.newId(), channelId, broadcastId: marker.newBroadcastId, startedAt: new Date(newStart ?? deps.clock()), recorded: true, recordingStatus: "none", playlistStatus: "none", playlistAttempts: 0 });
+    await writeMarker(channelId, null);
+    retryAt.delete(channelId);
+    await deps.streams.event(channelId, "live_segment_switched", { from: marker.fromBroadcastId, to: marker.newBroadcastId, overlapMs });
+    deps.applyVideoSettings({ channelId, broadcastId: marker.newBroadcastId, credentialRef: auth.credentialRef, credentials: auth.credentials });
+  }
+
+  /** `cleanup`: the new broadcast is ended (live) or deleted (never live), retried until done; the old one is never touched. */
+  async function stepCleanup(stream: StreamRow, marker: SwitchMarker, credentials: ResolvedCredentials): Promise<void> {
+    const { channelId } = stream;
+    const attempts = marker.attempts ?? 0;
+    if (attempts > 0 && deps.clock() - (marker.lastAttemptAt ?? 0) < STEP_RETRY_MS) return;
+    try {
+      const life = (await deps.youtube.lifecycles(credentials, [marker.newBroadcastId]))[marker.newBroadcastId];
+      if (life && (life.lifeCycleStatus === "live" || life.lifeCycleStatus === "liveStarting" || life.lifeCycleStatus === "testing")) {
+        await deps.youtube.transition(credentials, { broadcastId: marker.newBroadcastId, broadcastStatus: "complete" });
+      } else if (life && life.lifeCycleStatus !== "complete" && life.lifeCycleStatus !== "revoked") {
+        await deps.youtube.deleteVideo(credentials, marker.newBroadcastId);
+      }
+    } catch (error) {
+      await writeMarker(channelId, { ...marker, attempts: attempts + 1, lastAttemptAt: deps.clock() });
+      if (attempts === 0) await deps.streams.event(channelId, "live_segment_cleanup_retry", { newBroadcastId: marker.newBroadcastId, message: messageOf(error) });
+      return;
+    }
+    await writeMarker(channelId, null);
+    if (marker.reason === "stream_stopped") {
+      // The owner's Stop during a switch: not a failure, and not counted toward the daily cap.
+      await deps.streams.event(channelId, "live_segment_switch_cancelled", { newBroadcastId: marker.newBroadcastId });
+    } else {
+      retryAt.set(channelId, deps.clock() + SWITCH_RETRY_MS);
+      await deps.streams.event(channelId, "live_segment_cleaned_up", { newBroadcastId: marker.newBroadcastId, stage: marker.reason ?? "unknown", retryInMinutes: SWITCH_RETRY_MS / 60_000 });
+    }
+  }
+
+  /** Plan §2.2 step 6: ended, recorded segments go into the recordings playlist, retried every 10 min for 2 h. */
   async function addRecordings(channelId: string, settings: SegmentSettings, now: number): Promise<void> {
     if (!settings.recordingsPlaylist || !deps.addToPlaylist) return;
-    for (const segment of await deps.segments.open(channelId)) {
-      if (segment.playlistStatus !== "pending" || !segment.endedAt) continue;
-      if (now < segment.endedAt.getTime() + segment.playlistAttempts * PLAYLIST_RETRY_MS) continue;
-      const { credentialRef } = await deps.authorize(channelId);
+    const due = (await deps.segments.open(channelId)).filter(
+      (s) => s.playlistStatus === "pending" && s.endedAt !== null && now >= s.endedAt.getTime() + s.playlistAttempts * PLAYLIST_RETRY_MS
+    );
+    if (due.length === 0) return;
+    const { credentialRef } = await deps.authorize(channelId);
+    for (const segment of due) {
       const result = await deps.addToPlaylist({ credentialRef, channelId, playlistId: settings.recordingsPlaylist.id, videoId: segment.broadcastId }).catch((error: unknown) => ({ added: false, reason: messageOf(error) }));
       if (result.added) {
         await deps.segments.update(segment.id, { playlistStatus: "added", playlistAttempts: segment.playlistAttempts + 1 });
@@ -341,40 +387,60 @@ export function createLiveSegments(deps: SegmentsDependencies) {
     }
   }
 
-  return {
-    /** One tick for one channel (the runner calls it for a running stream). Never throws for a YouTube refusal. */
-    async tick(channelId: string): Promise<void> {
-      if (switching.has(channelId)) return;
-      const stream = await deps.streams.get(channelId);
-      if (!stream || stream.intent !== "on" || !stream.broadcastId || !stream.streamId) return;
-      switching.add(channelId);
+  async function tickLocked(channelId: string): Promise<void> {
+    const stream = await deps.streams.get(channelId);
+    if (!stream) return;
+    const marker = readSwitchMarker(stream.segmentSwitchingJson);
+    const settings = readSegmentSettings(stream.segmentsJson);
+    const now = deps.clock();
+    if (marker) {
+      // A switch in progress is always finished -- even after the owner's Stop (then the new broadcast is cleaned up).
+      let auth: { credentialRef: unknown; credentials: ResolvedCredentials };
       try {
-        const marker = readMarker(stream.segmentSwitchingJson);
-        if (marker) {
-          await recover(stream, marker);
-          return;
-        }
-        const settings = readSegmentSettings(stream.segmentsJson);
-        const now = deps.clock();
-        await addRecordings(channelId, settings, now).catch(() => undefined);
-        if (!settings.enabled) return;
-        const segment = await currentSegment(stream);
-        if (now < switchDueAt(settings, segment.startedAt.getTime())) return;
-        if (now < (retryAt.get(channelId) ?? 0)) return;
-        const today = await deps.streams.countEventsSince(channelId, ["live_segment_switched", "live_segment_switch_failed"], new Date(startOfUtcDay(now)));
-        if (today >= DAILY_SWITCH_CAP) {
-          if (!retryAt.has(channelId)) await deps.streams.event(channelId, "live_segment_cap_reached", { cap: DAILY_SWITCH_CAP });
-          retryAt.set(channelId, startOfUtcDay(now) + 86_400_000);
-          return;
-        }
-        await runSwitch(stream, segment, settings);
-      } finally {
-        switching.delete(channelId);
+        auth = await deps.authorize(channelId);
+      } catch {
+        return; // Live writes off or no account: the marker waits, nothing half-done is lost.
       }
-    },
+      if (marker.phase === "going_live" && stream.intent !== "on") {
+        await writeMarker(channelId, { ...marker, phase: "cleanup", reason: "stream_stopped", attempts: 0 });
+        return;
+      }
+      if (marker.phase === "going_live") await stepGoingLive(stream, marker, auth.credentials);
+      else if (marker.phase === "handover") await stepHandover(stream, marker, auth, settings);
+      else await stepCleanup(stream, marker, auth.credentials);
+      return;
+    }
+    if (stream.intent !== "on" || !stream.broadcastId || !stream.streamId) return;
+    await addRecordings(channelId, settings, now).catch(() => undefined);
+    if (!settings.enabled) return;
+    const segment = await currentSegment(stream);
+    if (!segment) return;
+    if (now < switchDueAt(settings, segment.startedAt.getTime())) return;
+    if (now < (retryAt.get(channelId) ?? 0)) return;
+    const today = await deps.streams.countEventsSince(channelId, ["live_segment_switched", "live_segment_switch_failed"], new Date(startOfUtcDay(now)));
+    if (today >= DAILY_SWITCH_CAP) {
+      const key = `${channelId}:${startOfUtcDay(now)}`;
+      if (!capNotified.has(key)) {
+        capNotified.add(key);
+        await deps.streams.event(channelId, "live_segment_cap_reached", { cap: DAILY_SWITCH_CAP });
+      }
+      return;
+    }
+    let auth: { credentialRef: unknown; credentials: ResolvedCredentials };
+    try {
+      auth = await deps.authorize(channelId);
+    } catch (error) {
+      // Live writes off or a wrong channel: nothing was written. Reported once per retry window, not every tick.
+      retryAt.set(channelId, now + SWITCH_RETRY_MS);
+      await deps.streams.event(channelId, "live_segment_switch_failed", { stage: "authorize", message: messageOf(error), newBroadcastId: null });
+      return;
+    }
+    await begin(stream, auth);
+  }
 
-    /** Whether a switch of this channel is running now (Start/Stop wait for it through the shared lock in the wiring). */
-    isSwitching: (channelId: string) => switching.has(channelId),
+  return {
+    /** One short step for one channel (the runner calls it every tick). Never waits minutes; never throws for a refusal. */
+    tick: (channelId: string): Promise<void> => deps.withBroadcastLock(channelId, () => tickLocked(channelId)),
   };
 }
 
@@ -390,6 +456,8 @@ export type SegmentsView = {
   current: { broadcastId: string; startedAt: string; switchDueAt: string | null } | null;
   segments: Array<{ broadcastId: string; startedAt: string; endedAt: string | null; overlapMs: number | null; rotation: string[]; recording: string; playlist: string }>;
   failures: Array<{ at: string; stage: string }>;
+  /** When the last switch succeeded (a failure before it is no longer current). */
+  lastSwitchedAt: string | null;
 };
 
 export function segmentsView(args: {
@@ -399,6 +467,7 @@ export function segmentsView(args: {
   intent: "on" | "off";
   rows: Array<{ broadcastId: string; startedAt: Date; endedAt: Date | null; switchOverlapMs: number | null; rotationJson: string | null; recordingStatus: string; playlistStatus: string }>;
   failures: Array<{ at: Date; detail: Record<string, unknown> }>;
+  lastSwitchedAt?: Date | null;
 }): SegmentsView {
   const settings = readSegmentSettings(args.settingsJson);
   const running = args.intent === "on" ? args.rows.find((r) => r.broadcastId === args.broadcastId && r.endedAt === null) : undefined;
@@ -429,6 +498,7 @@ export function segmentsView(args: {
       playlist: r.playlistStatus,
     })),
     failures: args.failures.map((f) => ({ at: f.at.toISOString(), stage: typeof f.detail.stage === "string" ? f.detail.stage : "unknown" })),
+    lastSwitchedAt: args.lastSwitchedAt?.toISOString() ?? null,
   };
 }
 

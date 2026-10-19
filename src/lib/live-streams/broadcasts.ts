@@ -37,9 +37,10 @@ type Broadcast = {
   lifeCycleStatus: string | null;
   privacyStatus: string | null;
   categoryId: string | null;
-  /** BL-205: YouTube's own start/end times (the segment switch measures its overlap with them). */
+  /** BL-205: YouTube's own start/end times (the segment switch measures its overlap with them) and whether it records. */
   actualStartTime?: string | null;
   actualEndTime?: string | null;
+  recordFromStart?: boolean | null;
 };
 
 export type BroadcastsDependencies = {
@@ -285,7 +286,7 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
     }
   }
 
-  return {
+  const api = {
     /**
      * §3.9 the Start dialog (the dry run): exactly what Start will send, and its quota units -- 5 the first time
      * (`liveStreams.insert`, `videos.list`, `liveBroadcasts.insert`, `bind`, `liveStreams.list`), 4 after. No YouTube call.
@@ -324,7 +325,8 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
     },
 
     /** §3.9 Start: create the stream (first time), a broadcast, bind them, then start the encoder. */
-    start: (channelId: string, credentialRef: unknown) => withLock(`start:${channelId}`, () => startOnce(channelId, credentialRef)),
+    // BL-205: Start, Stop, Go live and Edit share one key with the segment switcher, so a switch step never runs during them.
+    start: (channelId: string, credentialRef: unknown) => withLock(`broadcast:${channelId}`, () => startOnce(channelId, credentialRef)),
 
     /** BL-205: the saved video settings for a new segment the switcher just made live (in the background, like after Start). */
     applyVideoSettingsForSegment(args: { channelId: string; broadcastId: string; credentialRef: unknown; credentials: ResolvedCredentials }): void {
@@ -463,6 +465,14 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
       if (!verified) throw new DomainError({ code: "update_failed", message: "YouTube accepted the change but reads back something else", details: { channelId, readBack } });
       return { before, after, verified };
     },
+  };
+  // BL-205: the owner's Go live, Stop and Edit take the stream's broadcast lock too (Start takes it above), so the segment switcher
+  // never changes the stream's broadcast in the middle of one of them.
+  return {
+    ...api,
+    goLive: (channelId: string, credentialRef: unknown) => withLock(`broadcast:${channelId}`, () => api.goLive(channelId, credentialRef)),
+    stop: (channelId: string, credentialRef: unknown, options: { encoderOnly: boolean }) => withLock(`broadcast:${channelId}`, () => api.stop(channelId, credentialRef, options)),
+    edit: (channelId: string, credentialRef: unknown, rawPatch: unknown, rawExpected: unknown) => withLock(`broadcast:${channelId}`, () => api.edit(channelId, credentialRef, rawPatch, rawExpected)),
   };
 }
 

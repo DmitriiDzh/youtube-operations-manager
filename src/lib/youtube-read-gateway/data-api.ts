@@ -1157,6 +1157,8 @@ export type LiveBroadcastSnapshot = {
   lifeCycleStatus: string | null;
   privacyStatus: string | null;
   boundStreamId: string | null;
+  /** BL-205: whether the broadcast records (`contentDetails.recordFromStart`). */
+  recordFromStart: boolean | null;
   /** Not in the installed client's types but listed as settable on update; echoed so an update does not delete it. */
   categoryId: string | null;
 };
@@ -1183,6 +1185,7 @@ export async function getLiveBroadcasts(youtube: youtube_v3.Youtube, broadcastId
         lifeCycleStatus: item.status?.lifeCycleStatus ?? null,
         privacyStatus: item.status?.privacyStatus ?? null,
         boundStreamId: item.contentDetails?.boundStreamId ?? null,
+        recordFromStart: item.contentDetails?.recordFromStart ?? null,
         categoryId: ((item.snippet as Record<string, unknown> | undefined)?.categoryId as string | undefined) ?? null,
       });
     }
