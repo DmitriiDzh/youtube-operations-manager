@@ -977,6 +977,12 @@ export async function getPlaylistForUpdate(
   };
 }
 
+/** BL-186 stage 3: whether a playlist holds a video -- one `playlistItems.list` filtered by `videoId` (1 unit, never a full walk). */
+export async function playlistContainsVideo(youtube: youtube_v3.Youtube, playlistId: string, videoId: string): Promise<boolean> {
+  const res = await youtube.playlistItems.list({ part: ["id"], playlistId, videoId, maxResults: 1 });
+  return (res.data.items ?? []).length > 0;
+}
+
 export async function listPlaylistItemIdsByVideo(
   youtube: youtube_v3.Youtube,
   playlistId: string

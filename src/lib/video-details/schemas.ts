@@ -84,6 +84,9 @@ export const applyFieldsUpdateInputSchema = previewFieldsUpdateInputSchema.exten
   // operator never actually saw a correct diff for (AGENTS.md §G's "approval" requirement means
   // approving *this* diff, not whatever the video happens to look like now).
   expectedEtag: z.string().min(1).optional(),
+  /** BL-186 stage 3: more read-back retries (10 s apart) for a caller writing to a fresh broadcast, whose tags read back tens of
+   * seconds late (spike C). Default: the owner-chosen 3. */
+  readBackRetries: z.number().int().min(0).max(12).optional(),
 });
 
 export type VideoDetailsPatchInput = z.infer<typeof videoDetailsPatchSchema>;

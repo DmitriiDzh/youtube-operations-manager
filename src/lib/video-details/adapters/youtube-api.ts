@@ -80,6 +80,7 @@ export function createVideoDetailsYoutubeApiAdapter() {
       credentials: ResolvedCredentials;
       videoId: string;
       patch: VideoDetailsPatch;
+      readBackRetries?: number;
     }): Promise<{ before: VideoDetailsSnapshot; after: VideoDetailsSnapshot }> {
       await assertLiveWritesAuthorized();
 
@@ -149,6 +150,7 @@ export function createVideoDetailsYoutubeApiAdapter() {
       // defaultAudioLanguage) -- re-read a bounded number of times before verification judges it.
       const after = await readBackUntilApplied({
         patch: args.patch,
+        ...(args.readBackRetries !== undefined ? { retries: args.readBackRetries } : {}),
         read: async () => {
           const verifiedContext = await getVideoDetailsContext(youtube, args.videoId);
           if (!verifiedContext) {

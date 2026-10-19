@@ -154,18 +154,29 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
 
   /** BL-186 stage 3: the broadcast's video settings, one channel at a time. */
   function runVideoSettings(args: { channelId: string; broadcastId: string; credentialRef: unknown; credentials: ResolvedCredentials; settings: LiveVideoSettings; trigger: "start" | "again" }): Promise<VideoApplyResult> {
-    return withLock(`video-settings:${args.channelId}`, () =>
-      applyVideoSettings(
-        {
-          videoFields: deps.videoFields,
-          youtube: deps.youtube,
-          thumbnails: deps.thumbnails,
-          event: (channelId, kind, detail) => deps.streams.event(channelId, kind, detail),
-          sleep: deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
-        },
-        args
-      )
-    );
+    return withLock(`video-settings:${args.channelId}`, async () => {
+      try {
+        return await applyVideoSettings(
+          {
+            videoFields: deps.videoFields,
+            youtube: deps.youtube,
+            thumbnails: deps.thumbnails,
+            event: (channelId, kind, detail) => deps.streams.event(channelId, kind, detail),
+            sleep: deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
+            isCurrent: async (channelId, broadcastId) => {
+              const stream = await deps.streams.get(channelId);
+              return stream?.intent === "on" && stream.broadcastId === broadcastId;
+            },
+          },
+          args
+        );
+      } catch (error) {
+        // Never a silent end (review): the page reads this summary, so a run that threw still leaves one.
+        const result: VideoApplyResult = { broadcastId: args.broadcastId, ok: false, steps: [{ step: "run", ok: false, error: error instanceof Error ? error.message : String(error) }] };
+        await deps.streams.event(args.channelId, "video_settings_applied", { ...result, trigger: args.trigger }).catch(() => undefined);
+        return result;
+      }
+    });
   }
 
   /** One Start at a time per channel: a second request waits, then finds the stream on and is refused. */

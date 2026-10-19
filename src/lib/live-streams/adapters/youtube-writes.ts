@@ -9,7 +9,7 @@ import {
   transitionLiveBroadcast,
   updateLiveBroadcast,
 } from "@/lib/youtube-write-gateway";
-import { createYoutubeClient, getLiveBroadcasts, listPlaylistItemIdsByVideo } from "@/lib/youtube-read-gateway";
+import { createYoutubeClient, getLiveBroadcasts, playlistContainsVideo } from "@/lib/youtube-read-gateway";
 import type { BroadcastsDependencies } from "../broadcasts";
 
 // BL-176 (LIVE_STREAMS_PLAN.md §3.2/§3.9, ADR 0036 §3): the owner's live writes, each through the write gateway with the
@@ -61,7 +61,7 @@ export function createLiveStreamsYoutubeWrites(): BroadcastsDependencies["youtub
     },
     async playlistHasVideo(credentials, playlistId, videoId) {
       const youtube = await clientFor(credentials);
-      return (await listPlaylistItemIdsByVideo(youtube, playlistId)).has(videoId);
+      return playlistContainsVideo(youtube, playlistId, videoId);
     },
   };
 }

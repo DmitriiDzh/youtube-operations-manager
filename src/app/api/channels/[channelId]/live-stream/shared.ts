@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
 import { authOptions } from "@/lib/auth";
 import { createChannelAccessCore } from "@/lib/channel-access";
-import { listLiveStreamEvents } from "@/lib/db";
+import { latestLiveStreamEvent, listLiveStreamEvents } from "@/lib/db";
 import { createPlaylistManagementCore } from "@/lib/playlist-management";
 import { createVideoDetailsCore } from "@/lib/video-details";
 import {
@@ -59,7 +59,8 @@ export type LiveStreamRouteCore = {
 export function createLiveStreamVideoFields(): VideoFieldsPort {
   return {
     async apply({ credentialRef, channelId, videoId, patch }) {
-      const result = await createVideoDetailsCore().applyFieldsUpdate({ credentialRef, expectedChannelId: channelId, videoId, patch });
+      // 9 read-back retries, 10 s apart: a fresh broadcast's tags read back tens of seconds late (spike C; independent review).
+      const result = await createVideoDetailsCore().applyFieldsUpdate({ credentialRef, expectedChannelId: channelId, videoId, patch, readBackRetries: 9 });
       return { verified: result.verified };
     },
     async addToPlaylist({ credentialRef, channelId, playlistId, videoId }) {
@@ -88,7 +89,7 @@ export function createLiveStreamRouteCore(): LiveStreamRouteCore {
   const videoSettings = createStreamVideoSettingsCore();
   return {
     async overview(channelId) {
-      const [view, module, running, events, preview, youtube, entries, peers, video] = await Promise.all([
+      const [view, module, running, events, preview, youtube, entries, peers, video, lastApply] = await Promise.all([
         rotation.getOverview(channelId),
         settings.get(),
         supervisor.runningHelper(channelId),
@@ -98,12 +99,15 @@ export function createLiveStreamRouteCore(): LiveStreamRouteCore {
         collectLiveStreamEntries(),
         listPeerLiveStreams().catch(() => []),
         videoSettings.get(channelId),
+        latestLiveStreamEvent(channelId, "video_settings_applied"),
       ]);
       return {
         ...view,
         // BL-186: null = never saved; a stored value that fails the schema is reported, never replaced by defaults.
         videoSettings: video.ok ? video.settings : null,
         videoSettingsProblem: video.ok ? null : video.problem,
+        // BL-186 stage 3: the last video settings summary, read on its own (a 24/7 stream pushes it out of the 50 events).
+        videoSettingsLast: lastApply ? { at: lastApply.at.toISOString(), detail: JSON.parse(lastApply.detailJson) as unknown } : null,
         module,
         // §3.10: the state in the one vocabulary the report and the Operator use.
         state: entries.find((e) => e.channelId === channelId)?.state ?? "off",

@@ -70,6 +70,8 @@ type Overview = {
   } | null;
   videoSettings: LiveVideoSettings | null;
   videoSettingsProblem: string | null;
+  /** BL-186 stage 3: the last video settings summary (any age). */
+  videoSettingsLast?: { at: string; detail: Record<string, unknown> } | null;
   events: Array<{ id: string; at: string; kind: string; detail: Record<string, unknown> }>;
   state: StreamState;
   peers: Array<{ deviceId: string; hostName: string | null; updatedAt: string; stream: { state: StreamState; since: string | null; playing: { index: number; total: number; videoId: string } | null; viewers: number | null } }>;
@@ -510,7 +512,7 @@ function VideoApplyList({ preview }: { preview: VideoApplyPreview }) {
 function VideoApplyStatus({ overview }: { overview: Overview }) {
   const t = useT();
   const broadcastId = overview.stream?.broadcastId ?? null;
-  const last = overview.events.find((e) => e.kind === "video_settings_applied" && e.detail.broadcastId === broadcastId);
+  const last = overview.videoSettingsLast && overview.videoSettingsLast.detail.broadcastId === broadcastId ? overview.videoSettingsLast : null;
   if (!last) return <p className="text-xs text-zinc-400">{t("live.videoApply.pending")}</p>;
   const detail = last.detail as unknown as VideoApplyResult;
   if (detail.notApplied) return <p className="text-xs text-amber-300">{t("live.videoApply.unavailable")}</p>;

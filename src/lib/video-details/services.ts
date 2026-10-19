@@ -44,6 +44,7 @@ export type ServiceDependencies = {
       credentials: ResolvedCredentials;
       videoId: string;
       patch: VideoDetailsPatch;
+      readBackRetries?: number;
     }): Promise<{ before: VideoDetailsSnapshot; after: VideoDetailsSnapshot }>;
   };
   backup: {
@@ -208,6 +209,7 @@ export function createVideoDetailsServices(deps: ServiceDependencies) {
           credentials,
           videoId: parsedInput.videoId,
           patch: parsedInput.patch,
+          ...(parsedInput.readBackRetries !== undefined ? { readBackRetries: parsedInput.readBackRetries } : {}),
         });
 
         if (guardrail.shouldPersistSelection && guardrail.userId) {

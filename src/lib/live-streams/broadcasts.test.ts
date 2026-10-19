@@ -21,6 +21,12 @@ type HarnessVideo = {
   thumbnailFails?: string;
   inPlaylist?: string[];
   addRefusals?: number;
+  /** The refused add actually landed (a timeout): the playlist holds the video afterwards. */
+  refusalLanded?: boolean;
+  /** Stop the stream right after the fields step (the owner pressed Stop meanwhile). */
+  stopAfterFields?: boolean;
+  /** The video details port throws something unexpected, not a step failure. */
+  crash?: boolean;
 };
 
 function harness(opts: { video?: HarnessVideo; recordingRequired?: boolean; insertError?: string; liveWrites?: boolean; streamId?: string | null; broadcastId?: string | null; intent?: "on" | "off"; wrongChannel?: boolean; transitionError?: string; bindError?: string; readBack?: Partial<{ title: string }>; encoderFails?: boolean; videoSettingsJson?: string | null } = {}) {
@@ -43,6 +49,8 @@ function harness(opts: { video?: HarnessVideo; recordingRequired?: boolean; inse
   const video = opts.video ?? {};
   let addRefusals = video.addRefusals ?? 0;
   const applied: Array<{ videoId: string; patch: Record<string, unknown> }> = [];
+  const landed: string[] = [];
+  let inBackground = false;
   const deps: BroadcastsDependencies = {
     background: (task) => void tasks.push(task),
     sleep: async () => undefined,
@@ -55,14 +63,17 @@ function harness(opts: { video?: HarnessVideo; recordingRequired?: boolean; inse
               calls.push("videos.update");
               if (video.applyFails) throw new Error(video.applyFails);
               applied.push({ videoId, patch });
+              if (video.stopAfterFields) stream = { ...stream, intent: "off" };
               return { verified: true };
             },
             addToPlaylist: async ({ playlistId }) => {
               calls.push(`playlistItems.insert:${playlistId}`);
               if (addRefusals > 0) {
                 addRefusals -= 1;
+                if (video.refusalLanded) landed.push(playlistId);
                 return { added: false, reason: "409: The operation was aborted." };
               }
+              landed.push(playlistId);
               return { added: true };
             },
           },
@@ -77,7 +88,10 @@ function harness(opts: { video?: HarnessVideo; recordingRequired?: boolean; inse
       },
     },
     streams: {
-      get: async () => stream,
+      get: async () => {
+        if (video.crash && inBackground) throw new TypeError("the database went away");
+        return stream;
+      },
       update: async (_c, set) => {
         stream = { ...stream, ...(set as object) };
         return true;
@@ -129,7 +143,7 @@ function harness(opts: { video?: HarnessVideo; recordingRequired?: boolean; inse
       },
       playlistHasVideo: async (_c, playlistId) => {
         calls.push(`playlistItems.list:${playlistId}`);
-        return (video.inPlaylist ?? []).includes(playlistId);
+        return (video.inPlaylist ?? []).includes(playlistId) || landed.includes(playlistId);
       },
     },
     supervisor: {
@@ -155,6 +169,7 @@ function harness(opts: { video?: HarnessVideo; recordingRequired?: boolean; inse
     applied,
     /** Runs what Start left in the background (the video settings). */
     runBackground: async () => {
+      inBackground = true;
       while (tasks.length > 0) await tasks.shift()!();
     },
   };
@@ -406,7 +421,7 @@ test("previewStart: shows the broadcast settings and exactly the video settings 
   assert.deepEqual(preview.broadcast.settings, { latencyPreference: "low", enableDvr: false, enableEmbed: true, closedCaptionsType: "closedCaptionsDisabled" });
   assert.deepEqual(preview.videoSettings?.tags, ["jazz", "lofi radio"]);
   assert.deepEqual(preview.videoSettingsApply, {
-    patch: { license: "youtube", publicStatsViewable: true, containsSyntheticMedia: true, paidProductPlacement: false, tags: ["jazz", "lofi radio"], categoryId: "10", defaultLanguage: "en", defaultAudioLanguage: "zxx" },
+    patch: { license: "youtube", publicStatsViewable: true, containsSyntheticMedia: true, paidProductPlacement: false, embeddable: true, tags: ["jazz", "lofi radio"], categoryId: "10", defaultLanguage: "en", defaultAudioLanguage: "zxx" },
     thumbnail: false,
     playlists: [{ id: "PL0123456789abcdefghijklmnopqrstuv", title: "Radio" }],
     // 1 read + 50 update + 1 read-back, no thumbnail, one playlist: 1 owner read + 1 items read + 50 insert.
@@ -466,7 +481,7 @@ test("Start answers at once; then the video settings go to the broadcast's video
   assert.deepEqual(h.applied, [
     {
       videoId: "BC1",
-      patch: { license: "youtube", publicStatsViewable: true, containsSyntheticMedia: true, paidProductPlacement: false, tags: ["jazz", "lofi radio"], categoryId: "10", defaultLanguage: "en", defaultAudioLanguage: "zxx" },
+      patch: { license: "youtube", publicStatsViewable: true, containsSyntheticMedia: true, paidProductPlacement: false, embeddable: true, tags: ["jazz", "lofi radio"], categoryId: "10", defaultLanguage: "en", defaultAudioLanguage: "zxx" },
     },
   ]);
   const summary = h.events.find((e) => e.kind === "video_settings_applied")?.detail as { ok: boolean; trigger: string; steps: Array<{ step: string; ok: boolean }> };
@@ -480,7 +495,8 @@ test("an empty field is not sent: no tags, no category, no languages, no date ->
   const h = harness({ videoSettingsJson: bare, streamId: "STREAM1" });
   await h.broadcasts.start("UC1", { userId: "u1" });
   await h.runBackground();
-  assert.deepEqual(h.applied[0]?.patch, { license: "youtube", publicStatsViewable: true, containsSyntheticMedia: true, paidProductPlacement: false });
+  // The owner's embedding choice is sent explicitly too (review: spike C showed it is one flag with the broadcast's enableEmbed).
+  assert.deepEqual(h.applied[0]?.patch, { license: "youtube", publicStatsViewable: true, containsSyntheticMedia: true, paidProductPlacement: false, embeddable: true });
 });
 
 test("a failed thumbnail leaves the broadcast and the encoder on, is reported, and Apply again repeats it (a playlist already holding the video is skipped)", async () => {
@@ -557,4 +573,31 @@ test("Apply again's dry run lists exactly what would be sent, and makes no call"
   assert.equal(preview.units, 104);
   assert.deepEqual(preview.playlists, [{ id: "PL0123456789abcdefghijklmnopqrstuv", title: "Radio" }]);
   assert.deepEqual(h.calls, []);
+});
+
+// Independent review fixes (2026-10-19).
+test("a refused playlist add that actually landed is not retried (looked again first): the video is never added twice", async () => {
+  const h = harness({ videoSettingsJson: SAVED_SETTINGS, streamId: "STREAM1", video: { addRefusals: 1, refusalLanded: true } });
+  await h.broadcasts.start("UC1", { userId: "u1" });
+  await h.runBackground();
+  assert.equal(h.calls.filter((c) => c.startsWith("playlistItems.insert")).length, 1);
+  assert.equal((h.events.find((e) => e.kind === "video_settings_applied")?.detail as { ok: boolean }).ok, true);
+});
+
+test("the owner stops the stream while the settings are applied: the remaining steps are not sent", async () => {
+  const h = harness({ videoSettingsJson: WITH_THUMB, streamId: "STREAM1", video: { thumbnailFile: { kind: "jpeg", bytes: THUMB }, stopAfterFields: true } });
+  await h.broadcasts.start("UC1", { userId: "u1" });
+  await h.runBackground();
+  assert.deepEqual(AFTER_START(h.calls), ["videos.update"]);
+  const steps = (h.events.find((e) => e.kind === "video_settings_applied")?.detail as { steps: Array<{ step: string; skipped?: string }> }).steps;
+  assert.deepEqual(steps.filter((s) => s.skipped === "stream_stopped").map((s) => s.step), ["thumbnail", "playlist:PL0123456789abcdefghijklmnopqrstuv"]);
+});
+
+test("a run that throws still leaves a failed summary (the page never waits forever)", async () => {
+  const h = harness({ videoSettingsJson: SAVED_SETTINGS, streamId: "STREAM1", video: { crash: true } });
+  await h.broadcasts.start("UC1", { userId: "u1" });
+  await h.runBackground();
+  const summary = h.events.find((e) => e.kind === "video_settings_applied")?.detail as { ok: boolean; steps: Array<{ step: string; ok: boolean; error?: string }> };
+  assert.equal(summary.ok, false);
+  assert.deepEqual(summary.steps.at(-1), { step: "run", ok: false, error: "the database went away" });
 });

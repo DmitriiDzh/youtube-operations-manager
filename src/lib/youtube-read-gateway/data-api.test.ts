@@ -23,6 +23,7 @@ import {
   searchPublicChannels,
   getVideoCommentCounts,
   listOwnVideoComments,
+  playlistContainsVideo,
 } from "./data-api";
 
 // The "Data API reads" toggle (owner instruction, 2026-09-22): default-enabled, unlike Gate B's
@@ -1047,4 +1048,19 @@ test("getPublicVideoTitles asks for snippet only in calls of at most 50 ids, and
   assert.deepEqual(titles.find((t) => t.videoId === "x3"), { videoId: "x3", title: "Three", channelId: null, channelTitle: null });
   assert.deepEqual(await getPublicVideoTitles(youtube, []), []);
   assert.equal(calls.length, 2, "no call for an empty list");
+});
+
+// BL-186 stage 3 (independent review): the membership check filters by video id -- one call, 1 unit, never a full walk.
+test("playlistContainsVideo asks for that one video in the playlist and answers by whether an item came back", async () => {
+  const asked: unknown[] = [];
+  const make = (items: unknown[]) =>
+    fakeYoutubeClient({
+      playlistItemsList: (async (args: unknown) => {
+        asked.push(args);
+        return { data: { items } };
+      }) as unknown as youtube_v3.Youtube["playlistItems"]["list"],
+    });
+  assert.equal(await playlistContainsVideo(make([{ id: "PLI1" }]), "PL1", "v1"), true);
+  assert.equal(await playlistContainsVideo(make([]), "PL1", "v1"), false);
+  assert.deepEqual(asked[0], { part: ["id"], playlistId: "PL1", videoId: "v1", maxResults: 1 });
 });

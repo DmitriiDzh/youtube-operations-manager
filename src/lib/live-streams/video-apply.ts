@@ -29,9 +29,11 @@ export type VideoApplyDependencies = {
   thumbnails: { read(channelId: string): Promise<{ kind: "jpeg" | "png"; bytes: Uint8Array } | null> };
   event(channelId: string, kind: string, detail: Record<string, unknown>): Promise<void>;
   sleep(ms: number): Promise<void>;
+  /** Whether the broadcast is still the stream's running one: once the owner stopped it, the remaining steps are not sent. */
+  isCurrent(channelId: string, broadcastId: string): Promise<boolean>;
 };
 
-export type VideoApplyStep = { step: string; ok: boolean; skipped?: "already_in_playlist"; error?: string };
+export type VideoApplyStep = { step: string; ok: boolean; skipped?: "already_in_playlist" | "stream_stopped"; error?: string };
 export type VideoApplyResult = { broadcastId: string; ok: boolean; steps: VideoApplyStep[]; notApplied?: "module_unavailable" };
 
 /** A playlist add YouTube refused once is tried once more after this pause (spike C: a 409 right after the playlist changed). */
@@ -49,6 +51,9 @@ export function buildVideoPatch(settings: LiveVideoSettings): Record<string, unk
     // video-details refuses a status write without it: YouTube never returns it, so leaving it out would reset it.
     containsSyntheticMedia: settings.containsSyntheticMedia,
     paidProductPlacement: settings.paidProductPlacement,
+    // Spike C: the video's `embeddable` and the broadcast's `enableEmbed` are one flag. The status part is sent whole, so the
+    // owner's choice is sent explicitly -- a read made seconds after the insert may still show the old value (review).
+    embeddable: settings.broadcast.enableEmbed,
   };
   if (settings.tags.length > 0) patch.tags = settings.tags;
   if (settings.categoryId) patch.categoryId = settings.categoryId;
@@ -99,8 +104,15 @@ export async function applyVideoSettings(
     await record({ step: "fields", ok: false, error: message(error) });
   }
 
+  // Stopped meanwhile (the owner's Stop ended the broadcast): the rest is not sent.
+  const stillCurrent = async (step: string) => {
+    if (await deps.isCurrent(channelId, broadcastId)) return true;
+    await record({ step, ok: true, skipped: "stream_stopped" });
+    return false;
+  };
+
   // 2. The thumbnail, only the file the settings name (its SHA-256 must still match: a changed file is not sent unseen).
-  if (settings.thumbnail) {
+  if (settings.thumbnail && (await stillCurrent("thumbnail"))) {
     try {
       const file = await deps.thumbnails.read(channelId);
       if (!file) throw new Error("The thumbnail file is missing on this computer: choose it again in the settings");
@@ -116,6 +128,7 @@ export async function applyVideoSettings(
   // 3. The playlists: skipped when the video is already there (Apply again must not add it twice); one retry on a refusal.
   for (const playlist of settings.playlists) {
     const step = `playlist:${playlist.id}`;
+    if (!(await stillCurrent(step))) continue;
     try {
       if (await deps.youtube.playlistHasVideo(args.credentials, playlist.id, broadcastId)) {
         await record({ step, ok: true, skipped: "already_in_playlist" });
@@ -124,7 +137,12 @@ export async function applyVideoSettings(
       let outcome = await deps.videoFields.addToPlaylist({ credentialRef: args.credentialRef, channelId, playlistId: playlist.id, videoId: broadcastId });
       if (!outcome.added) {
         await deps.sleep(PLAYLIST_RETRY_DELAY_MS);
-        outcome = await deps.videoFields.addToPlaylist({ credentialRef: args.credentialRef, channelId, playlistId: playlist.id, videoId: broadcastId });
+        // A refused call may still have landed (a timeout): look again before retrying, so the video is never added twice.
+        if (await deps.youtube.playlistHasVideo(args.credentials, playlist.id, broadcastId)) {
+          outcome = { added: true };
+        } else {
+          outcome = await deps.videoFields.addToPlaylist({ credentialRef: args.credentialRef, channelId, playlistId: playlist.id, videoId: broadcastId });
+        }
       }
       await record(outcome.added ? { step, ok: true } : { step, ok: false, error: outcome.reason ?? "YouTube refused the playlist item" });
     } catch (error) {
