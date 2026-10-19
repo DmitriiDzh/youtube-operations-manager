@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { createFilesystemTransportAdapter } from "./filesystem-transport";
@@ -106,5 +106,22 @@ test("a channelId/deviceId containing filesystem-unsafe characters is sanitized 
     const peers = await transport.listPeerFiles(root, "../../etc/passwd", "unrelated-device");
     assert.equal(peers.length, 1);
     assert.deepEqual(Array.from(peers[0].bytes), [7]);
+  });
+});
+
+// BL-203 AC-NAV-02: an unchanged document is not written again (Syncthing would copy it to every device for nothing).
+test("writeDeviceFile leaves an identical file untouched (same mtime) and still writes changed bytes", async () => {
+  await withTempDir("change-drafts-sync-test-", async (root) => {
+    const transport = createFilesystemTransportAdapter();
+    await transport.writeDeviceFile(root, "UC_test", "device-a", new Uint8Array([1, 2, 3]));
+    const file = path.join(root, "UC_test", "device-a.automerge");
+    const past = new Date("2026-01-01T00:00:00Z");
+    await utimes(file, past, past);
+
+    await transport.writeDeviceFile(root, "UC_test", "device-a", new Uint8Array([1, 2, 3]));
+    assert.equal((await stat(file)).mtime.getTime(), past.getTime());
+
+    await transport.writeDeviceFile(root, "UC_test", "device-a", new Uint8Array([1, 2, 4]));
+    assert.deepEqual(Array.from(await readFile(file)), [1, 2, 4]);
   });
 });

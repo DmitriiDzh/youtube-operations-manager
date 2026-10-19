@@ -2481,6 +2481,18 @@ state, so these are held per process via `globalThis`:
 - the run-all single-flight guard;
 - the three production sync cores, which keeps the existing "adopt peer" vs cycle exclusion real.
 
+**BL-203: browser tabs no longer start draft cycles; unchanged documents are not reworked.**
+- Since BL-203 (`docs/roadmap/plans/FAST_NAVIGATION_PLAN.md`) the `(app)` layout no longer POSTs the route, either on mount or
+  every 60 s. The scheduler alone runs the cycle; "Sync now" still uses the route.
+- `sync-gateway/change-drafts` keeps one process-wide `ChangeDraftsCache` (`cache.ts`, held via `globalThis`). It is keyed by
+  the sha256 of document bytes:
+  - `listConflicts` and `exportBytes` reuse what they computed for the same bytes;
+  - `mergeIncoming` returns at once when the local bytes already contain the incoming ones (identical bytes, or a pair merged
+    before) and the local projection last succeeded with no failed row. A failed projection or cleanup is never recorded, so the
+    next cycle repairs it.
+- The transport does not rewrite a device file whose content is unchanged.
+- An unchanged cycle takes ~30 ms instead of ~5.8 s. A real merge still blocks the thread (RISK-133).
+
 **Boot.** `initializeDatabase` takes the migration lock only when a migration is due
 (`acquireMigrationLockIfDue`). It waits for a busy lock and clears a dead export's lock. Around the
 migrations, `createSyncPreservingMigrationHooks` (BL-139) moves the lineage fingerprint by

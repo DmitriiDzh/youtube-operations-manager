@@ -78,6 +78,10 @@ export function createFilesystemTransportAdapter(): ChangeDraftsSyncTransportAda
       const dir = channelDir(root, channelId);
       await mkdir(dir, { recursive: true });
       const finalPath = path.join(dir, `${sanitize(deviceId)}.automerge`);
+      // BL-203: an unchanged document is not written again -- every cycle used to rewrite ~0.7 MB per channel, which Syncthing then
+      // copied to every other device for nothing.
+      const current = await readFile(finalPath).catch(() => null);
+      if (current && Buffer.compare(current, bytes) === 0) return;
       await writeFileAtomic(finalPath, bytes); // tmp + fsync + RISK-22 rename retry (audit M4)
     },
 
