@@ -1,7 +1,7 @@
 # Live streams: every API field in the stream's settings, and adding videos by checkboxes (BL-186, BL-187)
 
 **Status:** stage 1 (BL-187, the picker) and stage 2 (BL-186 offline part: settings, v92, Start's broadcast fields and dry run)
-built on `feature/live-streams-fields-and-picker`; stage 3 waits for the owner's go; spike C done 2026-10-19 (§4.2 results). Owner's "ок"
+built on `feature/live-streams-fields-and-picker`; spike C done 2026-10-19 (§4.2 results); stage 3 built 2026-10-19 on `feature/bl-186-stage-3` (owner "Делай", msg 3134), see §5.1. Owner's "ок"
 to the plan and its proposed answers to §8 Q1–Q3: Telegram msg 2788 (2026-10-14); Q4 (spike C) is asked again before stage 3.
 
 - Owner's requests: Telegram 2026-10-14, msgs 2780 (both items), 2782 (the field list), 2785 (the go):
@@ -249,6 +249,24 @@ Cost ≈ 300 units.
 ### 4.3 With the owner on the Mac
 Set every field → Start → the broadcast in Studio shows them all; replace the thumbnail and a tag live; add 5 videos with the
 picker in one go.
+
+## 5.1 Stage 3 as built (2026-10-19), deviations from §2.2/§3
+
+- **Live edits:** there are no separate «Свойства видео / Обложка / Плейлисты» sections in the Edit dialog. The owner edits the
+  saved settings, then presses «Применить настройки видео», which shows a dry run and sends them again. The same button retries a
+  failed step after Start. One control covers both cases; announced to the owner in msg 3140.
+- **No `settings_applied_json` column (no schema change):** what was applied is read from the stream's events.
+  `video_settings_step` is written per step; `video_settings_applied` is the summary, with `broadcastId`, `ok` and `trigger`.
+  «Применить снова» resends every step, which is safe:
+  - the update merges onto a fresh read;
+  - the thumbnail is set again;
+  - a playlist that already holds the video is skipped (one `playlistItems.list` read first).
+- **Wiring:** video-details and playlist-management reach live-streams as a port (`VideoFieldsPort`), composed at the app layer.
+  `boundaries.test.ts` is unchanged.
+- **Start's answer:** Start answers at once (`videoSettings: "applying" | "not_saved"`); the settings follow in the background
+  under a per-channel lock.
+- **Video-details:** gained `paidProductPlacement` (patch, snapshot, backup, read-back, its own `videos.update` part).
+- **Playlist retry:** a playlist add refused once is tried once more after 2 s, after spike C's 409.
 
 ## 5. Build order (one branch, merged once on the owner's yes)
 1. **Stage 1 — the picker (BL-187).** Shared `workspace-videos` walk (publishing switched to it), matching, the dialog, the

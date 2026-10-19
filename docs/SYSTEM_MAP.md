@@ -866,6 +866,14 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   `GET|PUT|DELETE .../live-stream/thumbnail`. Сохранение в YouTube не пишет. Старт отправляет только настройки трансляции
   (в том же `liveBroadcasts.insert`, без новых единиц); настройки видео показываются в окне «Запустить» как «пока не
   отправляются» — их применение (этап 3) ждёт пробного эфира (spike C).
+- **BL-186 этап 3 (2026-10-19, ветка `feature/bl-186-stage-3`, план §5.1, ADR 0036 Amendment 2026-10-19):**
+  - После старта кодировщика настройки видео уходят в видео трансляции в фоне (`live-streams/video-apply.ts`):
+    - одно `videos.update` через video-details (подключён портом `VideoFieldsPort` на уровне приложения, `live-stream/shared.ts`);
+    - `thumbnails.set` со сверкой SHA-256 файла;
+    - плейлисты через playlist-management, без дублей, с одним повтором.
+  - Каждый шаг — событие `video_settings_step`, итог — `video_settings_applied`. Сбой шага эфир не останавливает.
+  - «Применить настройки видео» (`GET|POST .../live-stream/apply-video-settings`): пробный прогон, затем повторная отправка.
+  - video-details получил `paidProductPlacement`. Схема не менялась.
 - **Общий модуль `src/lib/youtube-video-fields/`** (BL-186, §M): лимиты и списки полей видео (500 символов тегов, 2 МБ обложки,
   категории, лицензии, тип картинки по байтам); публикация реэкспортирует их без изменений.
 - **Риски:** RISK-125 (ключ в командной строке ffmpeg), RISK-126 (T9 нужен раз в ~2 ч).
