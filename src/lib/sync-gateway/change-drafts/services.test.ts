@@ -1682,3 +1682,30 @@ test("AC-MEM-05: a write that fails midway does not leave a stale live document 
   await core.updateProposedValue({ channelId: CHANNEL, changeId: "c-1", proposedValue: "v1" });
   assert.equal((await core.getDocument({ channelId: CHANNEL })).changes["c-1"]!.proposedValue, "v1");
 });
+
+test("AC-MEM-05: a write whose save fails after the change drops the live document; the next calls match what is on disk", async () => {
+  const inner = fakeStore();
+  let failNext = false;
+  const store: ChangeDraftsStoreAdapter = {
+    loadDocumentBytes: inner.loadDocumentBytes,
+    async saveDocumentBytes(channelId, bytes) {
+      if (failNext) {
+        failNext = false;
+        throw new Error("simulated disk failure");
+      }
+      await inner.saveDocumentBytes(channelId, bytes);
+    },
+  };
+  const core = createChangeDraftsCore(makeDeps({ store, cache: createChangeDraftsCache() }));
+  await core.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-1", source: "ai_localization" });
+  await seedPeer(core, "c-1", "v0");
+
+  failNext = true;
+  await assert.rejects(() => core.updateProposedValue({ channelId: CHANNEL, changeId: "c-1", proposedValue: "never saved" }), /simulated disk failure/);
+  assert.equal((await core.getDocument({ channelId: CHANNEL })).changes["c-1"]!.proposedValue, "v0", "the unsaved change is not served from memory");
+
+  await core.updateProposedValue({ channelId: CHANNEL, changeId: "c-1", proposedValue: "v1" });
+  const onDisk = Automerge.load<ChannelDraftDocument>((await inner.loadDocumentBytes(CHANNEL))!);
+  assert.equal(onDisk.changes["c-1"]!.proposedValue, "v1");
+  assert.equal((await core.getDocument({ channelId: CHANNEL })).changes["c-1"]!.proposedValue, "v1");
+});

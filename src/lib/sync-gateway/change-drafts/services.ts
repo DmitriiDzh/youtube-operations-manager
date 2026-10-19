@@ -737,7 +737,8 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
             details: { channelId: parsed.channelId },
           });
         }
-        // Plain reads of `localDoc` (the projection cleanup below) still work once it is outdated by this in-place apply.
+        // After this in-place apply `localDoc` is outdated: its plain field reads still show the PRE-merge state (the projection
+        // cleanup below relies on that), but an Automerge call on it (e.g. `getConflicts`) would see the merged state -- make none.
         [merged] = Automerge.applyChanges(localDoc, added);
       } else {
         merged = Automerge.load<ChannelDraftDocument>(parsed.incomingBytes);

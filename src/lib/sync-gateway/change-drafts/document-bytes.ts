@@ -32,8 +32,10 @@ export function assertCompleteAutomergeBytes(bytes: Uint8Array): void {
     }
     const end = cursor + length;
     if (end > bytes.length) throw new Error("The incoming draft document is incomplete (truncated, still being copied?)");
+    // A compressed change chunk (type 2) carries the checksum of its uncompressed form; only its length is checked here. Automerge
+    // 3.5 writes document (0) and change (1) chunks, which are checked in full.
     const actual = createHash("sha256").update(bytes.subarray(typeAt, end)).digest().subarray(0, 4);
-    if (Buffer.compare(Buffer.from(actual), Buffer.from(checksum)) !== 0) {
+    if (bytes[typeAt] !== 2 && Buffer.compare(Buffer.from(actual), Buffer.from(checksum)) !== 0) {
       throw new Error("The incoming draft document is corrupt (chunk checksum mismatch)");
     }
     offset = end;
