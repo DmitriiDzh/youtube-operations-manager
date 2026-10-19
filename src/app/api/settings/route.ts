@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { isValidIanaTimezone, isValidLocalTimeOfDay } from "@/lib/zoned-time";
 import { checkAnalyticsBoundaries } from "./analytics-boundaries";
-import { createCloudQuotasCore } from "@/lib/cloud-quotas";
+import { createCachedReader, createCloudQuotasCore } from "@/lib/cloud-quotas";
 import { createMarketIntelligenceCore } from "@/lib/market-intelligence";
 import {
   getAnalyticsReadsEnabled,
@@ -127,8 +127,15 @@ const marketIntelligenceCore = createMarketIntelligenceCore();
  * window. Google's metric lags by minutes, so the bar draws this as a dimmer layer under Google's real figure (owner idea,
  * 2026-10-04). A log problem only drops the extra layer, never the Google figure.
  */
+// BL-203: the Settings tab's blocks each fetch this route at once; they share one Cloud Monitoring read per 30 s.
+// A degraded answer (not connected, token refresh failed, a service unknown) is not kept: right after the owner connects Cloud the
+// next fetch must read again (independent review).
+const cloudQuotaStatusShared = createCachedReader(() => createCloudQuotasCore().getQuotaStatus(), 30_000, {
+  keep: (status) => status.connected && !status.tokenRefreshFailed && status.dataApi !== null && status.analytics !== null,
+});
+
 async function cloudQuotaStatusWithLedger() {
-  const status = await createCloudQuotasCore().getQuotaStatus();
+  const status = await cloudQuotaStatusShared();
   const history = createQuotaHistoryCore();
   const withLedger = async <T extends { window: "since_reset" | "rolling_24h" } | null>(entry: T, service: "data" | "analytics") => {
     if (!entry) return entry;

@@ -67,6 +67,7 @@ export const shell: Record<keyof typeof en, string> = {
   "activity.stream.title": "Трансляция: {channel}",
   "activity.unavailable": "Не удалось прочитать: {sources}. Остальное показано.",
   "shell.deviceSync": "Синхронизация компьютеров",
+  "shell.navigating": "Открываю страницу…",
   "shell.signOut": "Выйти",
   "shell.conflicts.ariaLabel": "Выберите, что оставить",
   "shell.switching.title": "Переключение канала…",

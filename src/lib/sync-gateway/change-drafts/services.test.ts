@@ -1420,3 +1420,188 @@ test("BL-125 a SQL delete that failed once is finished by the next purge call, a
   assert.deepEqual([...projection.projectedChangeSets.keys()], ["cs-keep"]);
   assert.deepEqual([...projection.projectedChanges.keys()].sort(), ["cs-keep-c1", "cs-keep-c2"]);
 });
+
+// BL-203 (docs/roadmap/plans/FAST_NAVIGATION_PLAN.md §3): unchanged documents are not loaded, saved or re-projected again.
+
+/** A store that counts saves, so a test can tell a skipped merge from a real one. */
+function countingStore(): ChangeDraftsStoreAdapter & { saves: number } {
+  const inner = fakeStore();
+  const store = {
+    saves: 0,
+    loadDocumentBytes: inner.loadDocumentBytes,
+    async saveDocumentBytes(channelId: string, bytes: Uint8Array) {
+      store.saves += 1;
+      await inner.saveDocumentBytes(channelId, bytes);
+    },
+  };
+  return store;
+}
+
+/** A projection that counts change upserts and can be told to refuse them. */
+function countingProjection(): SqlProjectionAdapter & { upserts: number; refuse: boolean } {
+  const inner = fakeProjection();
+  const projection = {
+    ...inner,
+    upserts: 0,
+    refuse: false,
+    async upsertChange(change: DraftChange) {
+      projection.upserts += 1;
+      if (projection.refuse) throw new Error("simulated refused row");
+      await inner.upsertChange(change);
+    },
+  };
+  return projection;
+}
+
+async function seedPeer(core: ReturnType<typeof createChangeDraftsCore>, changeId: string, value: string) {
+  await core.addChange({
+    channelId: CHANNEL,
+    changeId,
+    changeSetId: "cs-1",
+    videoId: "v1",
+    language: "de",
+    field: "title",
+    baselineValue: "Original Title",
+    proposedValue: value,
+    changeType: "modify",
+  });
+}
+
+test("AC-NAV-01: listConflicts follows the stored bytes -- 0, then exactly 1 right after a merge brings a conflict, then the same 1 again", async () => {
+  const { deviceA, deviceB } = await seedTwoDeviceDrafts();
+  assert.equal((await deviceA.listConflicts({ channelId: CHANNEL })).length, 0);
+
+  await deviceA.updateProposedValue({ channelId: CHANNEL, changeId: "c-1", proposedValue: "A" });
+  await deviceB.updateProposedValue({ channelId: CHANNEL, changeId: "c-1", proposedValue: "B" });
+  await deviceA.mergeIncoming({ channelId: CHANNEL, incomingBytes: await deviceB.exportBytes({ channelId: CHANNEL }) });
+
+  const first = await deviceA.listConflicts({ channelId: CHANNEL });
+  assert.equal(first.length, 1);
+  assert.equal(first[0]!.changeId, "c-1");
+  const second = await deviceA.listConflicts({ channelId: CHANNEL });
+  assert.equal(second.length, 1);
+  assert.equal(second[0]!.changeId, "c-1");
+
+  // Resolving it changes the bytes, so the count follows at once.
+  const winner = Object.keys(first[0]!.valuesByActor)[0]!;
+  await deviceA.resolveConflict({ channelId: CHANNEL, changeId: "c-1", field: "proposedValue", winningActorId: winner });
+  assert.equal((await deviceA.listConflicts({ channelId: CHANNEL })).length, 0);
+});
+
+test("AC-NAV-02: a second merge of the same unchanged peer bytes saves nothing and projects nothing; the first one did both", async () => {
+  const { deviceA: seeder, deviceB } = await seedTwoDeviceDrafts();
+  const store = countingStore();
+  await store.saveDocumentBytes(CHANNEL, await seeder.exportBytes({ channelId: CHANNEL }));
+  await deviceB.updateProposedValue({ channelId: CHANNEL, changeId: "c-1", proposedValue: "Neu" });
+  await seedPeer(deviceB, "c-peer", "Titel");
+  const peerBytes = await deviceB.exportBytes({ channelId: CHANNEL });
+  store.saves = 0;
+  const projection = countingProjection();
+  const deviceA = createChangeDraftsCore(makeDeps({ store, projection }));
+
+  const first = await deviceA.mergeIncoming({ channelId: CHANNEL, incomingBytes: peerBytes });
+  assert.deepEqual(first.newConflicts, []);
+  assert.equal(store.saves, 1, "the first merge saves the merged document");
+  assert.equal(projection.upserts, 2, "the first merge projects both changes");
+  const merged = await deviceA.getDocument({ channelId: CHANNEL });
+  assert.equal(merged.changes["c-1"]!.proposedValue, "Neu");
+  assert.equal(merged.changes["c-peer"]!.proposedValue, "Titel");
+
+  const second = await deviceA.mergeIncoming({ channelId: CHANNEL, incomingBytes: peerBytes });
+  assert.deepEqual(second.newConflicts, []);
+  assert.equal(store.saves, 1, "an unchanged pair is not saved again");
+  assert.equal(projection.upserts, 2, "an unchanged pair is not projected again");
+
+  // Identical local and incoming bytes are skipped too, once the local projection is known clean.
+  await deviceA.mergeIncoming({ channelId: CHANNEL, incomingBytes: (await store.loadDocumentBytes(CHANNEL))! });
+  assert.equal(store.saves, 1);
+});
+
+test("AC-NAV-02: identical local and incoming bytes are merged in full the first time (fresh process: projection not yet known clean)", async () => {
+  const { deviceA: seeder } = await seedTwoDeviceDrafts();
+  const bytes = await seeder.exportBytes({ channelId: CHANNEL });
+  const store = countingStore();
+  await store.saveDocumentBytes(CHANNEL, bytes);
+  store.saves = 0;
+  const projection = countingProjection();
+  const core = createChangeDraftsCore(makeDeps({ store, projection }));
+
+  await core.mergeIncoming({ channelId: CHANNEL, incomingBytes: bytes });
+  assert.equal(store.saves, 1, "the first pass after a start re-projects, as before BL-203");
+  assert.equal(projection.upserts, 1);
+  await core.mergeIncoming({ channelId: CHANNEL, incomingBytes: bytes });
+  assert.equal(store.saves, 1);
+  assert.equal(projection.upserts, 1);
+});
+
+test("AC-NAV-03: a peer file that gains one conflicting edit after an unchanged cycle is merged and reports exactly that conflict", async () => {
+  const { deviceA, deviceB } = await seedTwoDeviceDrafts();
+  const unchanged = await deviceB.exportBytes({ channelId: CHANNEL });
+  await deviceA.mergeIncoming({ channelId: CHANNEL, incomingBytes: unchanged });
+  await deviceA.mergeIncoming({ channelId: CHANNEL, incomingBytes: unchanged });
+
+  await deviceA.updateProposedValue({ channelId: CHANNEL, changeId: "c-1", proposedValue: "From A" });
+  await deviceB.updateProposedValue({ channelId: CHANNEL, changeId: "c-1", proposedValue: "From B" });
+  const result = await deviceA.mergeIncoming({ channelId: CHANNEL, incomingBytes: await deviceB.exportBytes({ channelId: CHANNEL }) });
+
+  assert.equal(result.newConflicts.length, 1);
+  assert.equal(result.newConflicts[0]!.changeId, "c-1");
+  assert.deepEqual(Object.values(result.newConflicts[0]!.valuesByActor).sort(), ["From A", "From B"]);
+  assert.equal((await deviceA.listConflicts({ channelId: CHANNEL })).length, 1);
+});
+
+test("AC-NAV-04: after a merge whose projection refused a row, the same unchanged pair is merged and projected again", async () => {
+  const { deviceA: seeder, deviceB } = await seedTwoDeviceDrafts();
+  const store = countingStore();
+  await store.saveDocumentBytes(CHANNEL, await seeder.exportBytes({ channelId: CHANNEL }));
+  await deviceB.updateProposedValue({ channelId: CHANNEL, changeId: "c-1", proposedValue: "Neu" });
+  const peerBytes = await deviceB.exportBytes({ channelId: CHANNEL });
+  store.saves = 0;
+  const projection = countingProjection();
+  const core = createChangeDraftsCore(makeDeps({ store, projection, logger: { info: () => undefined, error: () => undefined } }));
+
+  projection.refuse = true;
+  await core.mergeIncoming({ channelId: CHANNEL, incomingBytes: peerBytes });
+  assert.equal(store.saves, 1);
+
+  projection.refuse = false;
+  await core.mergeIncoming({ channelId: CHANNEL, incomingBytes: peerBytes });
+  assert.equal(store.saves, 2, "the failed projection is repaired by the next cycle");
+  await core.mergeIncoming({ channelId: CHANNEL, incomingBytes: peerBytes });
+  assert.equal(store.saves, 2, "once projected cleanly, the pair is skipped");
+});
+
+test("AC-NAV-05: after discardLocalAndAdoptPeer replaced the local bytes, an unchanged second peer file is merged in full again", async () => {
+  const { deviceA: seeder, deviceB } = await seedTwoDeviceDrafts();
+  const store = countingStore();
+  await store.saveDocumentBytes(CHANNEL, await seeder.exportBytes({ channelId: CHANNEL }));
+  const core = createChangeDraftsCore(makeDeps({ store }));
+
+  await deviceB.updateProposedValue({ channelId: CHANNEL, changeId: "c-1", proposedValue: "From B" });
+  const peerB = await deviceB.exportBytes({ channelId: CHANNEL });
+  await core.mergeIncoming({ channelId: CHANNEL, incomingBytes: peerB });
+
+  // Adopt an unrelated peer: B's changes are gone from the local document.
+  const other = createChangeDraftsCore(makeDeps({ store: fakeStore() }));
+  await other.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-other", source: "ai_localization" });
+  await core.discardLocalAndAdoptPeer({ channelId: CHANNEL, incomingBytes: await other.exportBytes({ channelId: CHANNEL }) });
+  const savesBefore = store.saves;
+
+  // B's unchanged file is not skipped: it is a different lineage now, so it is refused (never silently treated as merged).
+  await assert.rejects(
+    () => core.mergeIncoming({ channelId: CHANNEL, incomingBytes: peerB }),
+    (error: unknown) => error instanceof DomainError && error.code === "divergent_document_lineage"
+  );
+  assert.equal(store.saves, savesBefore);
+});
+
+test("exportBytes returns the same bytes for an unchanged document and follows a change at once", async () => {
+  const { deviceA } = await seedTwoDeviceDrafts();
+  const first = await deviceA.exportBytes({ channelId: CHANNEL });
+  const second = await deviceA.exportBytes({ channelId: CHANNEL });
+  assert.deepEqual(Array.from(second), Array.from(first));
+
+  await deviceA.updateProposedValue({ channelId: CHANNEL, changeId: "c-1", proposedValue: "Changed" });
+  const third = Automerge.load<ChannelDraftDocument>(await deviceA.exportBytes({ channelId: CHANNEL }));
+  assert.equal(third.changes["c-1"]!.proposedValue, "Changed");
+});

@@ -67,6 +67,7 @@ export const shell = {
   "activity.stream.title": "Stream: {channel}",
   "activity.unavailable": "Could not read: {sources}. The rest is shown.",
   "shell.deviceSync": "Device sync",
+  "shell.navigating": "Opening the page…",
   "shell.signOut": "Sign out",
   "shell.conflicts.ariaLabel": "Choose what to keep",
   "shell.switching.title": "Switching channel…",

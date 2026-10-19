@@ -30,6 +30,7 @@ import type { DiscardedDocumentBackupStore } from "./adapters/discarded-backup-s
 import { createDefaultLogger, type Logger as ChangeDraftsLogger } from "@/lib/shared-logger";
 import type { SqlProjectionAdapter } from "./adapters/sql-projection";
 import type { SqlSourceAdapter } from "./adapters/sql-source";
+import { createChangeDraftsCache, hashDocumentBytes, type ChangeDraftsCache } from "./cache";
 
 export type ServiceDependencies = {
   store: ChangeDraftsStoreAdapter;
@@ -39,6 +40,9 @@ export type ServiceDependencies = {
    * `discardLocalAndAdoptPeer` overwrites it, so the discard is never silently unrecoverable. */
   discardedBackupStore: DiscardedDocumentBackupStore;
   logger?: ChangeDraftsLogger;
+  /** BL-203: results already computed from unchanged document bytes (`cache.ts`). Production shares one per process; omitted, a
+   * core gets its own. */
+  cache?: ChangeDraftsCache;
 };
 
 /**
@@ -152,6 +156,8 @@ function withChannelLocks<T extends Record<string, (input: unknown) => Promise<u
 }
 
 export function createChangeDraftsCore(deps: ServiceDependencies) {
+  const cache = deps.cache ?? createChangeDraftsCache();
+
   /** Used by every write path (including `mergeIncoming`'s local side): a channel with no
    * document yet legitimately starts from an empty one -- this is not an error case. */
   async function loadOrCreateDocument(channelId: string): Promise<Automerge.Doc<ChannelDraftDocument>> {
@@ -165,11 +171,15 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
    * silently returning a valid-looking empty document here would let `exportBytes` hand a peer
    * a document for a channel that was never real, which that peer would then happily merge. */
   async function loadDocumentOrThrow(channelId: string): Promise<Automerge.Doc<ChannelDraftDocument>> {
+    return Automerge.load<ChannelDraftDocument>(await loadBytesOrThrow(channelId));
+  }
+
+  async function loadBytesOrThrow(channelId: string): Promise<Uint8Array> {
     const bytes = await deps.store.loadDocumentBytes(channelId);
     if (!bytes) {
       throw new DomainError({ code: "not_found", message: "No draft document exists for this channel", details: { channelId } });
     }
-    return Automerge.load<ChannelDraftDocument>(bytes);
+    return bytes;
   }
 
   /**
@@ -218,7 +228,7 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
     return failures;
   }
 
-  async function saveDocument(channelId: string, doc: Automerge.Doc<ChannelDraftDocument>): Promise<void> {
+  async function saveDocument(channelId: string, doc: Automerge.Doc<ChannelDraftDocument>): Promise<{ hash: string; projectedCleanly: boolean }> {
     // The Automerge document -- not the SQL projection -- is this module's source of truth, so
     // it's saved first and unconditionally. The projection is then deliberately isolated in its
     // own try/catch: if it throws (a transient DB error, a missing `channels` FK row, SQLite
@@ -231,7 +241,10 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
     // projection failure. A stale projection is an acceptable, recoverable degradation (the next
     // successful save re-projects the whole document anyway); losing a conflict notification is
     // not.
-    await deps.store.saveDocumentBytes(channelId, Automerge.save(doc));
+    const bytes = Automerge.save(doc);
+    await deps.store.saveDocumentBytes(channelId, bytes);
+    const hash = hashDocumentBytes(bytes);
+    let projectedCleanly = false;
     try {
       const failures = await projectToSql(doc);
       if (failures.length > 0) {
@@ -239,6 +252,8 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
           event: "change_drafts.projection.failed",
           context: { channelId, failedRows: failures.length, failures: failures.slice(0, 20) },
         });
+      } else {
+        projectedCleanly = true;
       }
     } catch (error) {
       (deps.logger ?? createDefaultLogger()).error({
@@ -246,6 +261,11 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
         context: { channelId, cause: error instanceof Error ? error.message : String(error) },
       });
     }
+    // BL-203: only a fully projected save may later let `mergeIncoming` skip an unchanged pair. A failed one is forgotten, so the
+    // next cycle re-merges and re-projects exactly as before (the repair path the comment above relies on).
+    if (projectedCleanly) cache.projectedCleanly.set(hash, true);
+    else cache.projectedCleanly.delete(hash);
+    return { hash, projectedCleanly };
   }
 
   /**
@@ -668,6 +688,18 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
     async mergeIncoming(input: unknown): Promise<MergeResult> {
       const parsed = parseWithSchema(mergeIncomingInputSchema, input, "mergeIncoming input");
       const existingBytes = await deps.store.loadDocumentBytes(parsed.channelId);
+      // BL-203: the local document already holds everything the incoming one has (the same bytes, or this exact pair was merged
+      // before) and its projection is known clean -- merging again would load, save and re-project the same document for nothing,
+      // and changes the local document already has cannot bring a new conflict.
+      const incomingHash = hashDocumentBytes(parsed.incomingBytes);
+      const localHash = existingBytes ? hashDocumentBytes(existingBytes) : null;
+      if (
+        localHash &&
+        cache.projectedCleanly.has(localHash) &&
+        (localHash === incomingHash || cache.containsIncoming.has(`${localHash}:${incomingHash}`))
+      ) {
+        return { newConflicts: [] };
+      }
       const localDoc = existingBytes
         ? Automerge.load<ChannelDraftDocument>(existingBytes)
         : emptyDocument(parsed.channelId);
@@ -731,10 +763,17 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
         return Object.keys(c.valuesByActor).some((actor) => !knownActors.has(actor));
       });
 
-      await saveDocument(parsed.channelId, merged);
+      const saved = await saveDocument(parsed.channelId, merged);
       // A peer's purge arrives as a real deletion inside the shared document; `saveDocument` only upserts, so the SQL rows
       // for what the merge removed must be deleted here, or this device would keep showing deleted drafts.
-      if (existingBytes) await removeProjectionRowsMissingFrom(parsed.channelId, localDoc, merged);
+      const cleanup = existingBytes ? await removeProjectionRowsMissingFrom(parsed.channelId, localDoc, merged) : null;
+      if (cleanup && cleanup.failedChangeSetIds.size > 0) {
+        // A row that should be gone is still there: do not let a later cycle skip this document as cleanly projected. (The next
+        // full merge re-projects, but it cannot retry this deletion -- it no longer sees the removed rows; same as before BL-203.)
+        cache.projectedCleanly.delete(saved.hash);
+      } else if (saved.projectedCleanly) {
+        cache.containsIncoming.set(`${saved.hash}:${incomingHash}`, true);
+      }
       return { newConflicts };
     },
 
@@ -798,8 +837,14 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
 
     async listConflicts(input: unknown): Promise<FieldConflict[]> {
       const { channelId } = parseWithSchema(channelIdInputSchema, input, "listConflicts input");
-      const doc = await loadDocumentOrThrow(channelId);
-      return scanForConflicts(doc);
+      const bytes = await loadBytesOrThrow(channelId);
+      // BL-203: the conflict poll runs every 20 s per open tab; the same bytes always hold the same conflicts.
+      const hash = hashDocumentBytes(bytes);
+      const known = cache.conflicts.get(hash);
+      if (known) return known;
+      const conflicts = scanForConflicts(Automerge.load<ChannelDraftDocument>(bytes));
+      cache.conflicts.set(hash, conflicts);
+      return conflicts;
     },
 
     /**
@@ -935,8 +980,14 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
     /** The exact bytes another device's `mergeIncoming` expects -- see that function's own doc comment. */
     async exportBytes(input: unknown): Promise<Uint8Array> {
       const { channelId } = parseWithSchema(channelIdInputSchema, input, "exportBytes input");
-      const doc = await loadDocumentOrThrow(channelId);
-      return Automerge.save(doc);
+      const bytes = await loadBytesOrThrow(channelId);
+      // BL-203: every sync cycle exports every channel; the same stored bytes always save to the same output.
+      const hash = hashDocumentBytes(bytes);
+      const known = cache.savedBytes.get(hash);
+      if (known) return known;
+      const saved = Automerge.save(Automerge.load<ChannelDraftDocument>(bytes));
+      cache.savedBytes.set(hash, saved);
+      return saved;
     },
 
     /**

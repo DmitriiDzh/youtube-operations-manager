@@ -53,3 +53,13 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .ytom-success-pop, .ytom-success-tick { animation: none; stroke-dashoffset: 0; }
 }
+
+/* BL-203: the bar under the header while a menu click waits for its page (app-shell.tsx). */
+@keyframes ytom-nav-progress {
+  from { left: -33%; }
+  to { left: 100%; }
+}
+.ytom-nav-progress { animation: ytom-nav-progress 1s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .ytom-nav-progress { animation: none; left: 0; width: 100%; opacity: 0.6; }
+}
