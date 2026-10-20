@@ -9,7 +9,8 @@ import type { DomainError } from "@/lib/shared-domain";
 // its own verdict), so a transport fix lands once instead of in two near-verbatim copies.
 // ---------------------------------------------------------------------------
 
-export type JsonResponse = { status: number; ok: boolean; body: unknown };
+/** `retryAfter`: the raw `Retry-After` header (seconds or an HTTP date), null when absent -- a 429 answer says how long to wait. */
+export type JsonResponse = { status: number; ok: boolean; body: unknown; retryAfter: string | null };
 
 export async function jsonRequest(args: {
   fetchImpl: typeof fetch;
@@ -53,7 +54,7 @@ export async function jsonRequest(args: {
       body = { raw: text.slice(0, 500) };
     }
   }
-  return { status: response.status, ok: response.ok, body };
+  return { status: response.status, ok: response.ok, body, retryAfter: response.headers?.get?.("retry-after") ?? null };
 }
 
 /** True for a parsed JSON body (an object), false for `{ raw }` (non-JSON text) or no body. */

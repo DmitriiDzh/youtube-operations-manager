@@ -103,10 +103,11 @@ function fakeRunpod(
     createThenLoseAnswer?: (input: { gpu?: { id: string } }) => boolean;
     /** BL-133 review: listPods answers [] for the first N calls (RunPod's listing lagging behind a just-created pod), then the truth. */
     listLagCalls?: number;
-    /** BL-155: the host CUDA version GraphQL reports for a pod (default 12.9, a compatible host); an Error = the read fails. */
-    hostCuda?: (podId: string) => string | null | Error;
-    /** The host CUDA version the pod answer itself carries (`cudaVersion`, owner msg 2093); absent by default. */
-    podCuda?: (podId: string) => string | null;
+    /**
+     * BL-155: the host CUDA version a RUNNING pod's answer carries (`cudaVersion`, REST v2, owner msg 2093; default 12.9, a
+     * compatible host); null = the answer does not say. Each RUNNING answer is one read (`hostCuda:<id>`).
+     */
+    hostCuda?: (podId: string) => string | null;
     /** BL-155 review: the pod's $/h by GPU type (default 0.69). */
     podPrice?: (gpuId: string) => number;
     /** BL-155 review 4: a RUNNING pod reports no runtime (image still downloading) for its first N RUNNING polls. */
@@ -123,6 +124,11 @@ function fakeRunpod(
   const calls: string[] = [];
   let created = 0;
   let polls = 0;
+  const hostCudaOf = (id: string): { cudaVersion?: string | null } => {
+    if (pods.get(id)?.status !== "RUNNING") return {};
+    calls.push(`hostCuda:${id}`);
+    return { cudaVersion: opts.hostCuda ? opts.hostCuda(id) : "12.9" };
+  };
   const pod = (id: string): RunpodPod => ({
     id,
     name: "ytm",
@@ -134,7 +140,7 @@ function fakeRunpod(
     networkVolumeIds: ["vol-eu"],
     ports: null,
     // Like the live API: `RUNNING` + a runtime once the container is up; `containerNeverStarts` = RUNNING with no runtime.
-    ...(opts.podCuda ? { cudaVersion: opts.podCuda(id) } : {}),
+    ...hostCudaOf(id),
     containerUptimeSec: pods.get(id)?.status === "RUNNING" && !opts.containerNeverStarts && Number(id.slice(3)) > (opts.stuckPods ?? 0) && (runningPolls.get(id) ?? 0) > (opts.uptimeAfterRunningPolls ?? 0) ? 5 : null,
     env: {},
     createdAt: null,
@@ -183,12 +189,6 @@ function fakeRunpod(
       if (opts.terminateSticks) return { terminated: true as const, alreadyGone: !pods.has(id) };
       const existed = pods.delete(id);
       return { terminated: true as const, alreadyGone: !existed };
-    },
-    async getPodHostCudaVersion(id: string) {
-      calls.push(`hostCuda:${id}`);
-      const answer = opts.hostCuda ? opts.hostCuda(id) : "12.9";
-      if (answer instanceof Error) throw answer;
-      return answer;
     },
     async listPods() {
       listCalls++;
@@ -2112,8 +2112,8 @@ test("AC-CU-02: three incompatible hosts (the first + 2 extra placements) -> fai
   assert.equal(row.secondsUsed, 10);
 });
 
-test("AC-CU-02: an unknown host CUDA version (the read failed or answered nothing) does not block the start", async () => {
-  for (const hostCuda of [() => new Error("RunPod GraphQL returned errors"), () => null]) {
+test("AC-CU-02: an unknown host CUDA version (the pod answer does not say) does not block the start", async () => {
+  for (const hostCuda of [() => null]) {
     const runpod = fakeRunpod({ hostCuda });
     const f = fixture({ runpod, settings: { gpuTypeId: FOUR } });
     const running = await startRunning(f);
@@ -2238,18 +2238,6 @@ test("BL-155 review: each re-placement's `starting` row restarts approvedAt at t
   // pod1 reached RUNNING after two 5 s polls (10:00:10) and was replaced then; pod2 was placed at 10:00:10.
   assert.equal(running.startedAt, "2026-10-05T10:00:00.000Z");
   assert.equal(running.approvedAt, "2026-10-05T10:00:10.000Z");
-});
-
-test("BL-155 review: a rejected RunPod key during the host read is not 'unknown' -- the start ends and the pod is terminated", async () => {
-  const runpod = fakeRunpod({ hostCuda: () => new DomainError({ code: "media_credentials_invalid", message: "RunPod rejected the API key (HTTP 401)." }) });
-  const f = fixture({ runpod, settings: { gpuTypeId: FOUR } });
-  const requested = await f.services.requestSession(operatorRequest);
-  await assert.rejects(f.services.approveAndStartSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_session_start_failed");
-  const row = f.mem.rows.get(requested.sessionId)!;
-  assert.equal(row.status, "failed");
-  assert.match(row.error ?? "", /rejected the API key/);
-  assert.equal(runpod.pods.size, 0);
-  assert.equal(runpod.createInputs.length, 1);
 });
 
 // -- BL-155 independent review round 2 -------------------------------------------------------------------------------------
@@ -2398,14 +2386,14 @@ test("BL-155 review 3: a re-placement pod aborted before its `starting` write, t
 // then a failed or empty read is asked again on the next poll. A re-placement that cannot create a new pod ends the session
 // (never a wait), billed from the first pod's creation to the confirmed terminate of the last one.
 
-test("BL-155 review 4: a host CUDA read that fails while the image downloads is asked again; a later 12.4 still terminates and re-places", async () => {
+test("BL-155 review 4: a pod answer without the host CUDA while the image downloads is asked again; a later 12.4 still terminates and re-places", async () => {
   let pod1Reads = 0;
   const runpod = fakeRunpod({
     uptimeAfterRunningPolls: 2,
     hostCuda: (podId) => {
       if (podId !== "pod1") return "12.8";
       pod1Reads++;
-      return pod1Reads === 1 ? new Error("RunPod GraphQL request failed: timeout") : pod1Reads === 2 ? null : "12.4";
+      return pod1Reads <= 2 ? null : "12.4";
     },
   });
   const f = fixture({ runpod, settings: { gpuTypeId: FOUR } });
@@ -2416,14 +2404,14 @@ test("BL-155 review 4: a host CUDA read that fails while the image downloads is 
   assert.deepEqual(f.capacityLog.map((a) => [a.result, a.detail]), [["placed", null], ["error", "CUDA driver too old: host 12.4 < 12.8"], ["placed", null]]);
 });
 
-test("BL-155 review 4: a host version still unknown once the container is up is unknown -- the start continues and stops asking", async () => {
+test("BL-155 review 4: a host version still unknown once the container is up is unknown -- the start continues", async () => {
   const runpod = fakeRunpod({ uptimeAfterRunningPolls: 2, hostCuda: () => null });
   const f = fixture({ runpod, settings: { gpuTypeId: FOUR } });
   const running = await startRunning(f);
   assert.equal(running.status, "running");
   assert.equal(running.podId, "pod1");
-  // RUNNING without runtime twice, then with runtime: three reads, the last one at the poll the container came up.
-  assert.equal(runpod.calls.filter((c) => c === "hostCuda:pod1").length, 3);
+  // The host's CUDA now comes with every pod answer (no separate read to count, owner msgs 3226-3229): it stays unknown.
+  assert.equal(running.hostCudaVersion, null);
 });
 
 async function replacementThatCannotCreate(second: "no_capacity" | "fatal") {
@@ -2466,20 +2454,16 @@ test("BL-155 review 4: after an incompatible host, a fatal createPod answer ends
   assert.equal(row.secondsUsed, 10);
 });
 
-// Owner, Telegram 2026-10-08 (msg 2093): RunPod's own pod answer carries the host's CUDA (`cudaVersion`, seen live: "13.0");
-// it is used first, and the separate GraphQL read only when the answer does not say.
-test("BL-155: the host CUDA from the pod answer decides without a GraphQL read; a missing one falls back to the read", async () => {
-  const fromPod = fakeRunpod({ podCuda: (podId) => (podId === "pod1" ? "12.4" : "13.0"), hostCuda: () => new Error("must not be asked") });
+// Owner, Telegram 2026-10-08 (msg 2093): RunPod's own pod answer carries the host's CUDA (`cudaVersion`, seen live: "13.0").
+// RunPod retires the legacy GraphQL API in early 2027 (owner msg 3226-3229): the pod answer is now the only source.
+test("BL-155: the host CUDA from the pod answer decides; the client has no GraphQL CUDA read", async () => {
+  const fromPod = fakeRunpod({ hostCuda: (podId) => (podId === "pod1" ? "12.4" : "13.0") });
   const f = fixture({ runpod: fromPod, settings: { gpuTypeId: FOUR } });
   const running = await startRunning(f);
   assert.equal(running.status, "running");
   assert.equal(running.podId, "pod2");
   assert.deepEqual(f.capacityLog.map((a) => [a.result, a.detail]), [["placed", null], ["error", "CUDA driver too old: host 12.4 < 12.8"], ["placed", null]]);
-  assert.equal(fromPod.calls.some((c) => c.startsWith("hostCuda:")), false, "no GraphQL read when the pod answer names the CUDA");
-  const fallback = fakeRunpod({ podCuda: () => null, hostCuda: (podId) => (podId === "pod1" ? "12.4" : "12.8") });
-  const g = fixture({ runpod: fallback, settings: { gpuTypeId: FOUR } });
-  assert.equal((await startRunning(g)).podId, "pod2");
-  assert.equal(fallback.calls.includes("hostCuda:pod1"), true);
+  assert.equal("getPodHostCudaVersion" in fromPod.client, false);
 });
 
 // -- BL-159 (docs/roadmap/plans/PER_SESSION_CUDA_PLAN.md, AC-SC-01/02/03; FO-REQ-0011) ----------------------------------
@@ -2571,7 +2555,7 @@ test("AC-SC-02: the host's CUDA is shown on the running session and on the capac
 });
 
 test("AC-SC-02: a host CUDA named by the create answer is on the placed entry at once", async () => {
-  const runpod = fakeRunpod({ podCuda: () => "13.0", hostCuda: () => "13.0" });
+  const runpod = fakeRunpod({ hostCuda: () => "13.0" });
   const f = fixture({ runpod, settings: { gpuTypeId: FOUR } });
   const running = await startRunning(f);
   assert.equal(running.hostCudaVersion, "13.0");
@@ -2649,14 +2633,6 @@ test("AC-SC-02 (review): when a placement's own log entry could not be written, 
   assert.equal(running.podId, "pod2");
   assert.equal(running.hostCudaVersion, "12.8", "the session still shows its real host");
   assert.deepEqual(f.capacityLog.map((a) => [a.result, a.hostCudaVersion]), [["placed", "12.4"], ["error", null]], "pod1's entry keeps 12.4");
-});
-
-test("AC-SC-02 (review): with no minimum, a host read refused by RunPod (401) is unknown -- it never stops the start", async () => {
-  const runpod = fakeRunpod({ hostCuda: () => new DomainError({ code: "media_credentials_invalid", message: "RunPod rejected the key (401)" }) });
-  const f = fixture({ runpod, settings: { gpuTypeId: FOUR, minCudaVersion: null } });
-  const running = await startRunning(f);
-  assert.equal(running.status, "running");
-  assert.equal(running.hostCudaVersion, null);
 });
 
 // -- BL-200 (POD_RUNTIMES_PLAN.md AC-RT-04, ADR 0043) ----------------------------------------------------------------------

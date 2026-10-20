@@ -1089,20 +1089,6 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
           return { ok: false };
         }
       };
-      /**
-       * BL-155: the host's CUDA version once the pod runs (null = unknown, which never blocks). A rejected key is not "unknown":
-       * it propagates like any gateway auth failure in this poll -- the pod is terminated and the start fails.
-       */
-      const readHostCuda = async (): Promise<string | null> => {
-        try {
-          return await client.getPodHostCudaVersion(pod.id);
-        } catch (error) {
-          // BL-159 (review): without a minimum the read is for display only -- nothing it returns may stop a start.
-          if (error instanceof DomainError && error.code === "media_credentials_invalid" && minCudaVersion !== null) throw error;
-          log(`[media] could not read the CUDA version of pod ${pod.id}'s host: ${error instanceof Error ? error.message : String(error)}`);
-          return null;
-        }
-      };
       const seenAlive = () => deps.store.markSeenAlive(sessionId, deps.clock.now()).catch(() => undefined); // a DB hiccup is not a reason to abort
       /** BL-159 (AC-SC-02): the host's CUDA on the session and on this placement's own `placed` capacity entry (best effort, never aborts). */
       const recordHostCuda = async (host: string): Promise<void> => {
@@ -1136,8 +1122,8 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
             // the next poll; only once the container is up is the version taken as unknown (review round 4).
             // BL-159 (AC-SC-02): read with or without a minimum, so the host's version is always shown.
             if (current.status === "RUNNING" && !hostChecked) {
-              // The pod answer itself names the host's CUDA (owner, msg 2093); the GraphQL read is the fallback.
-              const host = current.cudaVersion ?? (await readHostCuda());
+              // The pod answer itself names the host's CUDA (owner, msg 2093); RunPod retires the GraphQL read in early 2027.
+              const host = current.cudaVersion ?? null;
               if (host !== null || current.containerUptimeSec !== null) hostChecked = true;
               if (host !== null) await recordHostCuda(host);
               if (hostCudaTooOld(host, minCudaVersion)) {

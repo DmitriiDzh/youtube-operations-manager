@@ -2085,3 +2085,15 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
   a local write 0.13 s (was 0.85 s), and the first cycle after a start 1.8 s (was 6.0 s). What is left is the peer decode, ~0.65 s
   on the server thread per changed peer file; moving it off the thread is BL-205, only if needed.
 - **Gate(s):** none. **Status:** open.
+
+## RISK-134 — RunPod retires its legacy GraphQL API in early 2027: the balance and the account id still read it — OPEN, 2026-10-20
+
+- **What:** RunPod retires REST v1 on 2026-11-15 (not used here) and the legacy GraphQL API "in early 2027" (no date). Two
+  reads still use GraphQL: the account balance (`getAccountBalance`, RISK-107 item 5) and the account id that tells devices they
+  share one account (`getAccountId`, ADR 0028). REST v2 has no balance, and `GET /v2/organization` answers 403 for the owner's
+  key (checked live 2026-10-20). The host CUDA read moved to the v2 pod answer (owner msgs 3226-3229).
+- **Effect:** once GraphQL is off, the panel shows the v2 billing spend instead of the balance (the fallback exists), and the
+  account id is unknown, so devices no longer count each other's sessions toward the shared limits (ADR 0028's unknown case).
+- **Possible fix:** a key with organization read access and the account id from `/v2/organization` (every device switches in
+  the same build, or ids differ); a v2 balance endpoint if RunPod adds one.
+- **Gate(s):** none. **Status:** open; re-check when RunPod dates the GraphQL retirement.

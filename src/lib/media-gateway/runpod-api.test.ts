@@ -1,20 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { isDomainError } from "@/lib/shared-domain";
-import { createRunpodApiClient, extractList, toPod } from "./runpod-api";
+import { createRunpodApiClient, extractList, retryAfterSeconds, toPod } from "./runpod-api";
 
 // Expected request shapes come from docs.runpod.io/api-reference-v2/openapi.json (2026-10-05) and
 // PHASE_14_PLAN.md (terminate = DELETE, never stop), not from this implementation.
 
 type Call = { url: string; init: RequestInit };
 
-function fakeFetch(responder: (call: Call) => { status: number; body?: unknown }) {
+function fakeFetch(responder: (call: Call) => { status: number; body?: unknown; headers?: Record<string, string> }) {
   const calls: Call[] = [];
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const call = { url: String(input), init: init ?? {} };
     calls.push(call);
-    const { status, body } = responder(call);
-    return new Response(body === undefined ? null : JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    const { status, body, headers } = responder(call);
+    return new Response(body === undefined ? null : JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
   }) as typeof fetch;
   return { fetchImpl, calls };
 }
@@ -415,43 +415,66 @@ test("getAccountId reads myself.id over GraphQL; an unanswerable query is null; 
   await assert.rejects(rejected.getAccountId());
 });
 
-// BL-155 (CUDA_HOSTS_PLAN.md AC-CU-02; graphql-spec.runpod.io): the host's CUDA version is `pod { machine { machineSystem {
-// cudaVersion } } }` over the legacy GraphQL API. A missing field or an unanswerable query is null (unknown never blocks a
-// start); a rejected key stays an error like every other call.
-test("BL-155: getPodHostCudaVersion reads pod.machine.machineSystem.cudaVersion; any shape problem is null", async () => {
-  const { fetchImpl, calls } = fakeFetch(() => ({ status: 200, body: { data: { pod: { machine: { machineSystem: { cudaVersion: "12.4" } } } } } }));
-  const client = createRunpodApiClient({ apiKey: "k", authorize: noAuth, fetchImpl });
-  assert.equal(await client.getPodHostCudaVersion("abc123xyz"), "12.4");
-  assert.equal(calls[0].url, "https://api.runpod.io/graphql");
-  assert.equal(calls[0].init.method, "POST");
-  const query = String((JSON.parse(String(calls[0].init.body)) as { query: string }).query);
-  assert.match(query, /pod\(input:\s*\{\s*podId:\s*"abc123xyz"\s*\}\)/);
-  assert.match(query, /machine\s*\{\s*machineSystem\s*\{\s*cudaVersion\s*\}\s*\}/);
-  for (const answer of [
-    { status: 200, body: { data: { pod: null } } },
-    { status: 200, body: { data: { pod: { machine: null } } } },
-    { status: 200, body: { data: { pod: { machine: { machineSystem: {} } } } } },
-    { status: 200, body: { data: { pod: { machine: { machineSystem: { cudaVersion: 12.4 } } } } } },
-    { status: 200, body: { errors: [{ message: "Something went wrong" }] } },
-    { status: 500, body: { message: "down" } },
-  ]) {
-    const c = createRunpodApiClient({ apiKey: "k", authorize: noAuth, fetchImpl: fakeFetch(() => answer).fetchImpl });
-    assert.equal(await c.getPodHostCudaVersion("abc123xyz"), null, JSON.stringify(answer));
-  }
-  const rejected = createRunpodApiClient({ apiKey: "k", authorize: noAuth, fetchImpl: fakeFetch(() => ({ status: 401, body: {} })).fetchImpl });
-  await assert.rejects(rejected.getPodHostCudaVersion("abc123xyz"), (e: unknown) => isDomainError(e) && e.code === "media_credentials_invalid");
-});
-
-test("BL-155: a pod id that is not a plain RunPod id is never put into the GraphQL query", async () => {
-  const { fetchImpl, calls } = fakeFetch(() => ({ status: 200, body: { data: {} } }));
-  const client = createRunpodApiClient({ apiKey: "k", authorize: noAuth, fetchImpl });
-  assert.equal(await client.getPodHostCudaVersion('x" } ) { myself { id } } #'), null);
-  assert.equal(calls.length, 0);
-});
-
 // BL-155 (owner msg 2093): the pod answer's `cudaVersion` (seen live on 2026-10-08 as "13.0") is the host's CUDA.
 test("toPod reads the host CUDA version from the pod answer, null when it is absent", () => {
   assert.equal(toPod({ id: "p", cudaVersion: "13.0" }).cudaVersion, "13.0");
   assert.equal(toPod({ id: "p", cudaVersion: 12.8 }).cudaVersion, "12.8");
   assert.equal(toPod({ id: "p" }).cudaVersion, null);
+});
+
+// RunPod's per-user rate limits (owner msgs 3226-3229; REST v2 openapi.json TooManyRequestsError: HTTP 429 with `Retry-After`
+// in seconds; RFC 9110 §10.2.3 also allows an HTTP date). Expected, written before the code: a 429 is sent again after the
+// named wait, at most 3 times and only for a wait of at most 60 s (10 s when unnamed); otherwise it is runpod_api_unavailable
+// with status 429 and the named wait -- never media_credentials_invalid.
+function limited(answers: Array<{ status: number; body?: unknown; headers?: Record<string, string> }>) {
+  let i = 0;
+  const waits: number[] = [];
+  const { fetchImpl, calls } = fakeFetch(() => answers[Math.min(i++, answers.length - 1)]);
+  const client = createRunpodApiClient({ apiKey: "k", authorize: noAuth, fetchImpl, sleep: async (ms) => void waits.push(ms) });
+  return { client, calls, waits };
+}
+
+test("rate limit: a 429 is sent again after its Retry-After, and the next answer is used", async () => {
+  const { client, calls, waits } = limited([{ status: 429, body: { title: "Too Many Requests" }, headers: { "retry-after": "2" } }, { status: 200, body: { pods: [] } }]);
+  assert.deepEqual(await client.listPods(), []);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(waits, [2000]);
+});
+
+test("rate limit: a create refused with 429 is sent again (RunPod did nothing with it)", async () => {
+  const { client, calls, waits } = limited([{ status: 429, headers: { "retry-after": "1" } }, { status: 201, body: { id: "pod9", desiredStatus: "RUNNING" } }]);
+  const pod = await client.createPod({ name: "ytm", imageName: "img", gpuTypeIds: ["NVIDIA GeForce RTX 4090"] } as never);
+  assert.equal(pod.id, "pod9");
+  assert.equal(calls.filter((c) => c.init.method === "POST").length, 2);
+  assert.deepEqual(waits, [1000]);
+});
+
+test("rate limit: still limited after 3 retries -> runpod_api_unavailable with status 429 and the named wait", async () => {
+  const { client, calls, waits } = limited([{ status: 429, headers: { "retry-after": "5" } }]);
+  await assert.rejects(client.listPods(), (e: unknown) => isDomainError(e) && e.code === "runpod_api_unavailable" && (e.details as { status?: number; retryAfterSeconds?: number }).status === 429 && (e.details as { retryAfterSeconds?: number }).retryAfterSeconds === 5);
+  assert.equal(calls.length, 4);
+  assert.deepEqual(waits, [5000, 5000, 5000]);
+});
+
+test("rate limit: a wait over a minute is not slept through -- the error comes at once", async () => {
+  const { client, calls, waits } = limited([{ status: 429, headers: { "retry-after": "120" } }]);
+  await assert.rejects(client.listPods(), (e: unknown) => isDomainError(e) && (e.details as { retryAfterSeconds?: number }).retryAfterSeconds === 120);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(waits, []);
+});
+
+test("rate limit: no Retry-After -> 10 s; the GraphQL reads are limited the same way", async () => {
+  const { client, calls, waits } = limited([{ status: 429 }, { status: 200, body: { data: { myself: { id: "user_1" } } } }]);
+  assert.equal(await client.getAccountId(), "user_1");
+  assert.equal(calls[1].url, "https://api.runpod.io/graphql");
+  assert.deepEqual(waits, [10_000]);
+});
+
+test("retryAfterSeconds: seconds, an HTTP date, or null", () => {
+  assert.equal(retryAfterSeconds("7"), 7);
+  assert.equal(retryAfterSeconds(" 0 "), 0);
+  assert.equal(retryAfterSeconds("Tue, 20 Oct 2026 15:00:30 GMT", Date.parse("2026-10-20T15:00:00Z")), 30);
+  assert.equal(retryAfterSeconds("Tue, 20 Oct 2026 14:59:00 GMT", Date.parse("2026-10-20T15:00:00Z")), 0);
+  assert.equal(retryAfterSeconds("soon"), null);
+  assert.equal(retryAfterSeconds(null), null);
 });
