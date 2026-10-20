@@ -273,6 +273,7 @@ export function createLiveSegmentsCore(options: { videoFields?: VideoFieldsPort 
         return out;
       },
       deleteVideo: (credentials, videoId) => writes.deleteVideo(credentials, videoId),
+      playlistHasVideo: (credentials, playlistId, videoId) => writes.playlistHasVideo(credentials, playlistId, videoId),
     },
     applyVideoSettings: (args) => broadcasts.applyVideoSettingsForSegment(args),
     addToPlaylist: options.videoFields ? (args) => options.videoFields!.addToPlaylist(args) : undefined,
