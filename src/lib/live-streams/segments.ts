@@ -166,6 +166,8 @@ export type SegmentsDependencies = {
     /** The broadcasts' states and YouTube's own start/end times (and whether they record); one YouTube no longer has is absent. */
     lifecycles(credentials: ResolvedCredentials, broadcastIds: string[]): Promise<Record<string, Lifecycle>>;
     deleteVideo(credentials: ResolvedCredentials, videoId: string): Promise<void>;
+    /** Whether the playlist already holds the video: the Start's own playlist step may have added the broadcast to the same one. */
+    playlistHasVideo(credentials: ResolvedCredentials, playlistId: string, videoId: string): Promise<boolean>;
   };
   /** BL-186 stage 3: the saved video settings for the new segment (in the background). */
   applyVideoSettings(args: { channelId: string; broadcastId: string; credentialRef: unknown; credentials: ResolvedCredentials }): void;
@@ -432,12 +434,14 @@ export function createLiveSegments(deps: SegmentsDependencies) {
       (s) => s.playlistStatus === "pending" && s.endedAt !== null && now >= s.endedAt.getTime() + s.playlistAttempts * PLAYLIST_RETRY_MS
     );
     if (due.length === 0) return;
-    const { credentialRef } = await deps.authorize(channelId);
+    const { credentialRef, credentials } = await deps.authorize(channelId);
     for (const segment of due) {
-      const result = await deps.addToPlaylist({ credentialRef, channelId, playlistId: settings.recordingsPlaylist.id, videoId: segment.broadcastId }).catch((error: unknown) => ({ added: false, reason: messageOf(error) }));
+      // The video settings' playlists are applied to every broadcast at its start; the same playlist here must not get it twice.
+      const already = await deps.youtube.playlistHasVideo(credentials, settings.recordingsPlaylist.id, segment.broadcastId).catch(() => false);
+      const result = already ? { added: true } : await deps.addToPlaylist({ credentialRef, channelId, playlistId: settings.recordingsPlaylist.id, videoId: segment.broadcastId }).catch((error: unknown) => ({ added: false, reason: messageOf(error) }));
       if (result.added) {
         await deps.segments.update(segment.id, { playlistStatus: "added", playlistAttempts: segment.playlistAttempts + 1 });
-        await deps.streams.event(channelId, "live_segment_recording_added", { broadcastId: segment.broadcastId, playlistId: settings.recordingsPlaylist.id });
+        await deps.streams.event(channelId, "live_segment_recording_added", { broadcastId: segment.broadcastId, playlistId: settings.recordingsPlaylist.id, ...(already ? { alreadyThere: true } : {}) });
       } else if (segment.playlistAttempts + 1 >= PLAYLIST_MAX_ATTEMPTS) {
         await deps.segments.update(segment.id, { playlistStatus: "failed", playlistAttempts: segment.playlistAttempts + 1, failure: result.reason ?? "YouTube refused the playlist item" });
         await deps.streams.event(channelId, "live_segment_recording_not_added", { broadcastId: segment.broadcastId, reason: result.reason ?? null });

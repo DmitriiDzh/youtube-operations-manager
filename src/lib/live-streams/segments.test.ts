@@ -48,6 +48,8 @@ function harness(opts: {
   authFails?: boolean;
   switchesToday?: number;
   addRefusals?: number;
+  /** Videos already in the recordings playlist (the Start's own playlist step put them there). */
+  inPlaylist?: string[];
   oldRecorded?: boolean;
   rows?: Row[];
 } = {}) {
@@ -136,6 +138,10 @@ function harness(opts: {
           throw new Error("backendError");
         }
         delete lifecycles[id];
+      },
+      playlistHasVideo: async (_c, playlistId, videoId) => {
+        calls.push(`playlistHas(${playlistId}:${videoId})`);
+        return (opts.inPlaylist ?? []).includes(videoId);
       },
     },
     applyVideoSettings: ({ broadcastId }) => void applied.push(broadcastId),
@@ -339,6 +345,16 @@ test("AC-SEG-08: a recorded segment goes into the playlist after the switch, ret
   const none = harness();
   await none.ticks(4);
   assert.equal(none.rows.find((r) => r.broadcastId === "OLD")!.playlistStatus, "none");
+});
+
+test("AC-SEG-08b: a recording the Start's video settings already put into the same playlist is not added a second time", async () => {
+  const h = harness({ settings: { ...ON, recordingsPlaylist: { id: "PLREC", title: "Записи" } }, inPlaylist: ["OLD"] });
+  await h.ticks(6);
+  assert.equal(h.rows.find((r) => r.broadcastId === "OLD")!.playlistStatus, "added");
+  assert.ok(!h.calls.some((c) => c.startsWith("playlistItems.insert")));
+  const added = h.events.find((e) => e.kind === "live_segment_recording_added");
+  assert.ok(added);
+  assert.ok(h.calls.includes("playlistHas(PLREC:OLD)"));
 });
 
 test("AC-SEG-09: a restart mid-switch resumes from the marker and leaves exactly one live broadcast", async () => {
