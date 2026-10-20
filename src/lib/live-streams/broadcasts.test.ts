@@ -53,6 +53,8 @@ function harness(opts: { channelLanguage?: string | null; video?: HarnessVideo; 
   const applied: Array<{ videoId: string; patch: Record<string, unknown> }> = [];
   const landed: string[] = [];
   let inBackground = false;
+  let resolved = 0;
+  const tokens: Record<string, string> = {};
   const deps: BroadcastsDependencies = {
     background: (task) => void tasks.push(task),
     channelLanguage: async () => (opts.channelLanguage === undefined ? "en" : opts.channelLanguage),
@@ -83,7 +85,7 @@ function harness(opts: { channelLanguage?: string | null; video?: HarnessVideo; 
           },
     settings: async () => ({ ...DEFAULT_LIVE_STREAMS_SETTINGS, enabled: true, host: { ok: true } }),
     liveWritesEnabled: async () => opts.liveWrites ?? true,
-    auth: { resolve: async () => ({ credentialRef: { userId: "u1" }, accessToken: "t", scopeSet: new Set() }) as never },
+    auth: { resolve: async () => ({ credentialRef: { userId: "u1" }, accessToken: `t${++resolved}`, scopeSet: new Set() }) as never },
     writeContext: {
       assertWriteChannel: async ({ expectedChannelId }) => {
         calls.push("identity");
@@ -114,6 +116,7 @@ function harness(opts: { channelLanguage?: string | null; video?: HarnessVideo; 
         return { streamId: "STREAM1" };
       },
       insertBroadcast: async (_c, args) => {
+        tokens.insert = _c.accessToken;
         calls.push("liveBroadcasts.insert");
         sent.broadcast = args;
         if (opts.insertError) throw googleError(opts.insertError);
@@ -142,6 +145,7 @@ function harness(opts: { channelLanguage?: string | null; video?: HarnessVideo; 
         return broadcast;
       },
       setThumbnail: async (_c, videoId, image) => {
+        tokens.thumbnail = _c.accessToken;
         calls.push(`thumbnails.set:${videoId}:${image.mimeType}`);
         if (video.thumbnailFails) throw new Error(video.thumbnailFails);
       },
@@ -172,6 +176,7 @@ function harness(opts: { channelLanguage?: string | null; video?: HarnessVideo; 
     sent,
     stream: () => stream,
     applied,
+    tokens,
     /** Runs what Start left in the background (the video settings). */
     runBackground: async () => {
       inBackground = true;
@@ -430,10 +435,10 @@ test("previewStart: shows the broadcast settings and exactly the video settings 
     thumbnail: false,
     playlists: [{ id: "PL0123456789abcdefghijklmnopqrstuv", title: "Radio" }],
     // 1 read + 50 update + 1 read-back, no thumbnail, one playlist: 1 owner read + 1 items read + 50 insert.
-    units: 104,
+    units: 105, // 104 + 1 identity read for the fresh credentials of the playlist step (2026-10-20)
   });
   assert.equal(preview.videoSettingsProblem, null);
-  assert.equal(preview.units, 5 + 104);
+  assert.equal(preview.units, 5 + 105);
   const noPort = await harness({ videoSettingsJson: SAVED_SETTINGS, video: { port: false } }).broadcasts.previewStart("UC1");
   assert.equal(noPort.videoSettingsApply, null);
   assert.equal(noPort.units, 5);
@@ -576,7 +581,7 @@ test("Apply again's dry run lists exactly what would be sent, and makes no call"
   const h = harness({ videoSettingsJson: SAVED_SETTINGS, intent: "on", broadcastId: "BC1" });
   const preview = await h.broadcasts.previewApplyVideoSettings("UC1");
   assert.equal(preview.broadcastId, "BC1");
-  assert.equal(preview.units, 104);
+  assert.equal(preview.units, 105);
   assert.deepEqual(preview.playlists, [{ id: "PL0123456789abcdefghijklmnopqrstuv", title: "Radio" }]);
   assert.deepEqual(h.calls, []);
 });
@@ -629,4 +634,12 @@ test("a segment switch replacing the broadcast mid-application skips the remaini
   await h.runBackground();
   const steps = (h.events.find((e) => e.kind === "video_settings_applied")?.detail as { steps: Array<{ step: string; skipped?: string }> }).steps;
   assert.deepEqual(steps.filter((s) => s.skipped).map((s) => s.skipped), ["broadcast_replaced", "broadcast_replaced"]);
+});
+
+test("the thumbnail is sent with credentials resolved after the fields step, not the token Start began with (Tropico, 2026-10-20)", async () => {
+  const h = harness({ videoSettingsJson: WITH_THUMB, streamId: "STREAM1", video: { thumbnailFile: { kind: "jpeg", bytes: THUMB } } });
+  await h.broadcasts.start("UC1", { userId: "u1" });
+  await h.runBackground();
+  assert.ok(h.tokens.insert && h.tokens.thumbnail);
+  assert.notEqual(h.tokens.thumbnail, h.tokens.insert);
 });

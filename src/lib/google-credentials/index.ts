@@ -77,6 +77,9 @@ function buildFromStoredUser(
   };
 }
 
+
+/** A token with less than this left is refreshed before use. */
+export const TOKEN_EXPIRY_MARGIN_SECONDS = 60;
 export function createGoogleCredentialResolver(
   deps: ResolveCredentialDependencies = {
     createOAuthClient: createGoogleOAuthClient,
@@ -120,7 +123,9 @@ export function createGoogleCredentialResolver(
     resolved.scopeSet = await refreshScopeSet(oauth2, resolved.accessToken, resolved.scopeSet);
 
   const now = Math.floor(Date.now() / 1000);
-  const isExpired = typeof resolved.tokenExpiry === "number" && resolved.tokenExpiry <= now;
+  // A token about to expire counts as expired (review, 2026-10-20): a streamed upload such as thumbnails.set is not retried by
+  // the library after a 401, so a token with seconds left must be refreshed before it is handed out.
+  const isExpired = typeof resolved.tokenExpiry === "number" && resolved.tokenExpiry <= now + TOKEN_EXPIRY_MARGIN_SECONDS;
 
     if (isExpired) {
       if (!resolved.refreshToken) {

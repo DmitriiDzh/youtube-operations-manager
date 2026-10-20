@@ -181,6 +181,7 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
               // BL-205: a segment switch replaced the broadcast -- the new segment gets its own application.
               return stream.broadcastId === broadcastId ? "current" : "replaced";
             },
+            credentials: () => authorize(args.channelId, args.credentialRef),
           },
           { ...args, channelLanguage }
         );

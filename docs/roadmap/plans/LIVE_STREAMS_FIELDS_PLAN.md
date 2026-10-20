@@ -233,7 +233,7 @@ Cost ≈ 300 units.
 | Check | Result |
 |---|---|
 | `liveBroadcasts.insert` with `recordFromStart: false` | **Refused**: "The user is not permitted to disable recording" (Tropico). The app sends `false` at every Start (§1.1). A channel without that permission cannot Start. Fixed the same day (`fix/live-recording-fallback`, owner msg 3134): on this refusal Start retries once with recording on (event `recording_required`), and says so. |
-| `videos.update` snippet (tags, category, defaultLanguage) on an upcoming broadcast | Accepted. Reads lag tens of seconds: tags appeared on a later read. |
+| `videos.update` snippet (tags, category, defaultLanguage) on an upcoming broadcast | Accepted. Reads lag tens of seconds: tags appeared on a later read. **2026-10-20 (real streams):** a live broadcast's tags read back sorted alphabetically, so the read-back compares tags in any order; the thumbnail and playlist steps resolve fresh credentials (the run can outlast the token). |
 | `videos.update` status (embeddable, license, public stats, made for kids, `containsSyntheticMedia`) | Accepted. `containsSyntheticMedia` is never returned by `videos.list`, not even for regular videos, so it can only be checked in Studio. |
 | `recordingDetails.recordingDate` | Accepted, read back. |
 | `defaultAudioLanguage` not sent | Reset from `en` to `en-US`, as known (RISK-102); stage 3 must keep it (`"keep"`). |

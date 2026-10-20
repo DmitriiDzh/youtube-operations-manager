@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { VideoDetailsSnapshot } from "./contracts";
-import { READ_BACK_RETRIES, READ_BACK_RETRY_DELAY_MS, readBackUntilApplied } from "./read-back";
+import { READ_BACK_RETRIES, READ_BACK_RETRY_DELAY_MS, readBackUntilApplied, sameFieldValue } from "./read-back";
 
 const snap = (audio: string | null): VideoDetailsSnapshot => ({ defaultAudioLanguage: audio }) as VideoDetailsSnapshot;
 
@@ -57,4 +57,13 @@ test("a read error propagates instead of being swallowed", async () => {
     () => readBackUntilApplied({ read: async () => { throw new Error("boom"); }, patch: { defaultAudioLanguage: "en" }, sleep: async () => {} }),
     /boom/
   );
+});
+
+test("tags read back sorted (a live broadcast, observed 2026-10-20) are the tags written; a missing, extra or changed tag is not", () => {
+  const written = ["jazz", "cuban jazz", "bossa nova"];
+  assert.equal(sameFieldValue("tags", ["bossa nova", "cuban jazz", "jazz"], written), true);
+  assert.equal(sameFieldValue("tags", ["bossa nova", "jazz"], written), false);
+  assert.equal(sameFieldValue("tags", ["bossa nova", "cuban jazz", "jazz", "latin"], written), false);
+  assert.equal(sameFieldValue("tags", ["bossa nova", "Cuban Jazz", "jazz"], written), false);
+  assert.equal(sameFieldValue("tags", ["jazz", "jazz", "bossa nova"], written), false);
 });
