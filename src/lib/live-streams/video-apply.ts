@@ -32,6 +32,9 @@ export type VideoApplyDependencies = {
   /** Whether the broadcast is still the stream's running one: once the owner stopped it, or a segment switch replaced it (BL-205),
    * the remaining steps are not sent. */
   isCurrent(channelId: string, broadcastId: string): Promise<"current" | "stopped" | "replaced">;
+  /** Fresh credentials (Live writes, identity) for the steps after the fields: the run can outlast the access token it started with
+   * (Tropico, 2026-10-20: the thumbnail was refused as unauthenticated 2 minutes after a segment switch). */
+  credentials?(): Promise<ResolvedCredentials>;
 };
 
 export type VideoApplyStep = { step: string; ok: boolean; skipped?: "already_in_playlist" | "stream_stopped" | "broadcast_replaced"; error?: string };
@@ -115,6 +118,8 @@ export async function applyVideoSettings(
     return false;
   };
 
+  const fresh = () => (deps.credentials ? deps.credentials() : Promise.resolve(args.credentials));
+
   // 2. The thumbnail, only the file the settings name (its SHA-256 must still match: a changed file is not sent unseen).
   if (settings.thumbnail && (await stillCurrent("thumbnail"))) {
     try {
@@ -122,7 +127,7 @@ export async function applyVideoSettings(
       if (!file) throw new Error("The thumbnail file is missing on this computer: choose it again in the settings");
       const sha256 = createHash("sha256").update(file.bytes).digest("hex");
       if (sha256 !== settings.thumbnail.sha256) throw new Error("The thumbnail file changed since it was chosen: choose it again in the settings");
-      await deps.youtube.setThumbnail(args.credentials, broadcastId, { mimeType: file.kind === "png" ? "image/png" : "image/jpeg", bytes: Buffer.from(file.bytes) });
+      await deps.youtube.setThumbnail(await fresh(), broadcastId, { mimeType: file.kind === "png" ? "image/png" : "image/jpeg", bytes: Buffer.from(file.bytes) });
       await record({ step: "thumbnail", ok: true });
     } catch (error) {
       await record({ step: "thumbnail", ok: false, error: message(error) });
@@ -134,7 +139,8 @@ export async function applyVideoSettings(
     const step = `playlist:${playlist.id}`;
     if (!(await stillCurrent(step))) continue;
     try {
-      if (await deps.youtube.playlistHasVideo(args.credentials, playlist.id, broadcastId)) {
+      const credentials = await fresh();
+      if (await deps.youtube.playlistHasVideo(credentials, playlist.id, broadcastId)) {
         await record({ step, ok: true, skipped: "already_in_playlist" });
         continue;
       }
@@ -142,7 +148,7 @@ export async function applyVideoSettings(
       if (!outcome.added) {
         await deps.sleep(PLAYLIST_RETRY_DELAY_MS);
         // A refused call may still have landed (a timeout): look again before retrying, so the video is never added twice.
-        if (await deps.youtube.playlistHasVideo(args.credentials, playlist.id, broadcastId)) {
+        if (await deps.youtube.playlistHasVideo(credentials, playlist.id, broadcastId)) {
           outcome = { added: true };
         } else {
           outcome = await deps.videoFields.addToPlaylist({ credentialRef: args.credentialRef, channelId, playlistId: playlist.id, videoId: broadcastId });

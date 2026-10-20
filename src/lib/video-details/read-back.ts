@@ -29,6 +29,13 @@ export function isUnverifiable(field: string, readBack: unknown): boolean {
   return WRITE_ONLY_FIELDS.has(field) && (readBack === null || readBack === undefined);
 }
 
+/**
+ * Fields whose order YouTube does not keep on read: a live broadcast's `tags` read back sorted (Tropico and Rural Japan,
+ * 2026-10-20 -- every read-back mismatched until the run gave up). They compare as the same items in any order.
+ */
+const UNORDERED_FIELDS = new Set<string>(["tags"]);
+const sortedCopy = (list: unknown[]) => [...list].map((item) => JSON.stringify(item)).sort();
+
 /** Whether a read-back value is what was written: instants compare as instants, lists by content, the rest exactly. */
 export function sameFieldValue(field: string, readBack: unknown, written: unknown): boolean {
   if (isUnverifiable(field, readBack)) return true;
@@ -37,6 +44,7 @@ export function sameFieldValue(field: string, readBack: unknown, written: unknow
     const b = Date.parse(written);
     return !Number.isNaN(a) && a === b;
   }
+  if (UNORDERED_FIELDS.has(field) && Array.isArray(readBack) && Array.isArray(written)) return JSON.stringify(sortedCopy(readBack)) === JSON.stringify(sortedCopy(written));
   return Array.isArray(readBack) || Array.isArray(written) ? JSON.stringify(readBack) === JSON.stringify(written) : readBack === written;
 }
 
