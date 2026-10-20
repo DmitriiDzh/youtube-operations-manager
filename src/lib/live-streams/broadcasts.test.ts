@@ -435,10 +435,10 @@ test("previewStart: shows the broadcast settings and exactly the video settings 
     thumbnail: false,
     playlists: [{ id: "PL0123456789abcdefghijklmnopqrstuv", title: "Radio" }],
     // 1 read + 50 update + 1 read-back, no thumbnail, one playlist: 1 owner read + 1 items read + 50 insert.
-    units: 104,
+    units: 105, // 104 + 1 identity read for the fresh credentials of the playlist step (2026-10-20)
   });
   assert.equal(preview.videoSettingsProblem, null);
-  assert.equal(preview.units, 5 + 104);
+  assert.equal(preview.units, 5 + 105);
   const noPort = await harness({ videoSettingsJson: SAVED_SETTINGS, video: { port: false } }).broadcasts.previewStart("UC1");
   assert.equal(noPort.videoSettingsApply, null);
   assert.equal(noPort.units, 5);
@@ -581,7 +581,7 @@ test("Apply again's dry run lists exactly what would be sent, and makes no call"
   const h = harness({ videoSettingsJson: SAVED_SETTINGS, intent: "on", broadcastId: "BC1" });
   const preview = await h.broadcasts.previewApplyVideoSettings("UC1");
   assert.equal(preview.broadcastId, "BC1");
-  assert.equal(preview.units, 104);
+  assert.equal(preview.units, 105);
   assert.deepEqual(preview.playlists, [{ id: "PL0123456789abcdefghijklmnopqrstuv", title: "Radio" }]);
   assert.deepEqual(h.calls, []);
 });

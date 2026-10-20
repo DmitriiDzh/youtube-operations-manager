@@ -70,14 +70,15 @@ export function buildVideoPatch(settings: LiveVideoSettings, channelLanguage: st
 }
 
 /** What applying would send, and its quota units: 1 read + 50 for the update (+ up to 3 read-back reads), 50 for the thumbnail,
- * and per playlist 1 read for its owner, 1 for its items and 50 for the insert. */
+ * and per playlist 1 read for its owner, 1 for its items and 50 for the insert; + 1 identity read for the fresh credentials the
+ * thumbnail and playlist steps use (2026-10-20). */
 export function describeVideoApply(settings: LiveVideoSettings, channelLanguage: string | null): { patch: Record<string, unknown>; thumbnail: boolean; playlists: Array<{ id: string; title: string }>; units: number } {
   const thumbnail = settings.thumbnail !== null;
   return {
     patch: buildVideoPatch(settings, channelLanguage),
     thumbnail,
     playlists: settings.playlists,
-    units: 1 + 50 + 1 + (thumbnail ? 50 : 0) + settings.playlists.length * 52,
+    units: 1 + 50 + 1 + (thumbnail ? 50 : 0) + settings.playlists.length * 52 + (thumbnail || settings.playlists.length > 0 ? 1 : 0),
   };
 }
 
@@ -118,7 +119,9 @@ export async function applyVideoSettings(
     return false;
   };
 
-  const fresh = () => (deps.credentials ? deps.credentials() : Promise.resolve(args.credentials));
+  // Resolved once, right before the first step that needs it (one identity read per run, as the preview counts).
+  let freshCredentials: Promise<ResolvedCredentials> | null = null;
+  const fresh = () => (freshCredentials ??= deps.credentials ? deps.credentials() : Promise.resolve(args.credentials));
 
   // 2. The thumbnail, only the file the settings name (its SHA-256 must still match: a changed file is not sent unseen).
   if (settings.thumbnail && (await stillCurrent("thumbnail"))) {
