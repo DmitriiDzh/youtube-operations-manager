@@ -2090,10 +2090,10 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 
 - **What:** RunPod retires REST v1 on 2026-11-15 (not used here) and the legacy GraphQL API "in early 2027" (no date). Two
   reads still use GraphQL: the account balance (`getAccountBalance`, RISK-107 item 5) and the account id that tells devices they
-  share one account (`getAccountId`, ADR 0028). REST v2 has no balance, and `GET /v2/organization` answers 403 for the owner's
-  key (checked live 2026-10-20). The host CUDA read moved to the v2 pod answer (owner msgs 3226-3229).
+  share one account (`getAccountId`, ADR 0028). REST v2 has no balance, and `GET /v2/organization` answers 403 "organizations
+  are not enabled for this user" (checked live 2026-10-20: the owner's account has no organization; no key permission changes it). The host CUDA read moved to the v2 pod answer (owner msgs 3226-3229).
 - **Effect:** once GraphQL is off, the panel shows the v2 billing spend instead of the balance (the fallback exists), and the
   account id is unknown, so devices no longer count each other's sessions toward the shared limits (ADR 0028's unknown case).
-- **Possible fix:** a key with organization read access and the account id from `/v2/organization` (every device switches in
-  the same build, or ids differ); a v2 balance endpoint if RunPod adds one.
+- **Possible fix:** a v2 account or balance endpoint if RunPod adds one before the retirement (every device switches in the same
+  build, or the ids differ); else the unknown-account behaviour stays.
 - **Gate(s):** none. **Status:** open; re-check when RunPod dates the GraphQL retirement.
