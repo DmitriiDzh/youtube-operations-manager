@@ -207,6 +207,22 @@ export async function applyVideoDetailsUpdate(args: {
   });
 }
 
+// ---------------------------------------------------------------------------
+// BL-210 (CHANNEL_LOCALIZATIONS_PLAN.md "API facts", ADR 0047): a channel's own translations. `channels.update` takes ONE part per
+// request ("You can only update any one of those parts with a single request", developers.google.com/youtube/v3/docs/channels/
+// update) and replaces it whole (an omitted property "existing value will be deleted"), 50 units (logged by the quota ledger's
+// wrapped client like every call). Only `part=localizations`: the app never writes a channel's `brandingSettings` (owner msg 3350).
+// The only caller (`channel-localizations/adapters/youtube-api.ts`) calls `assertLiveWritesAuthorized()` itself immediately before.
+// ---------------------------------------------------------------------------
+
+/** Real `channels.update part=localizations` with the FULL map (the part is replaced whole). */
+export async function updateChannelLocalizations(args: { youtube: youtube_v3.Youtube; channelId: string; localizations: Record<string, LocaleMetadata> }): Promise<void> {
+  await args.youtube.channels.update({
+    part: ["localizations"],
+    requestBody: { id: args.channelId, localizations: args.localizations },
+  });
+}
+
 /** Real `playlists.insert`. Caller calls `assertLiveWritesAuthorized()` first. */
 export async function createPlaylistForAuthenticated(
   youtube: youtube_v3.Youtube,

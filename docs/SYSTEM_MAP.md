@@ -908,6 +908,29 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   - Этап 5: карточка «Переводы» (`src/components/live-stream-localizations.tsx`, логика —
     `live-stream-localizations-model.ts`) под настройками трансляции: строка на язык (язык, название, описание), добавить /
     убрать / сохранить, отказы сервера по строкам, предупреждение и результат последнего шага; шаг `localizations` в списках шагов.
+- **BL-210 переводы самого канала (`docs/roadmap/plans/CHANNEL_LOCALIZATIONS_PLAN.md`, ADR 0047, ветка
+  `feature/channel-localizations`):**
+  - Третий разрешённый писатель `localizations` (AGENTS.md §F) — модуль `src/lib/channel-localizations/`: название и описание
+    канала на других языках (`channels.localizations`).
+  - Схема **v104** (только этот компьютер): `channel_localizations` (набор на канал, кто сохранил, последний результат) и
+    `channel_localization_events` (журнал аудита).
+  - `set.ts` (чистый): валидатор через общий `shared-localization-set` (название 1–30 символов, описание 1–1000 символов —
+    документированные пределы полей канала), предпросмотр (new / changed / unchanged, нетронутые языки, установка языка по
+    умолчанию, квота).
+  - «Применить» только из Web UI (`POST /api/channels/[channelId]/channel-localizations/apply`, тело `{ setVersion }` из
+    предпросмотра): набор не менялся после проверки (иначе `localizations_changed`) → `assertWriteChannel` → свежее
+    `channels.list` → отказы `channel_default_language_not_set` (нет `brandingSettings.channel.defaultLanguage` — владелец задаёт
+    его в YouTube Studio, msg 3350) / `default_language_mismatch` / `own_language_in_live` / свой язык в наборе → бэкап →
+    повторное чтение → общее слияние (запись своего языка, равная базовому тексту, отправляется без изменений) →
+    `assertLiveWritesAuthorized` → один `channels.update part=localizations` → проверка чтением → аудит. 50 единиц плюс чтения.
+    `brandingSettings` приложение не пишет никогда.
+  - Шлюзы: `getChannelLocalizationsContext` (чтение), `updateChannelLocalizations` (запись).
+  - MCP Оператора (Factory API 1.29.0): `factory_channel_save_localizations` (локальная запись) и
+    `factory_channel_get_localizations` (набор, переводы на YouTube — 1 единица, последний результат в кодах); маршрут MCP получает
+    только поверхность без apply (AC-CL-10).
+  - Карточка «Переводы канала» (`src/components/channel-localizations-panel.tsx`) во вкладке «Языки» под настройками языка канала.
+- **Общий модуль `src/lib/shared-localization-set/`** (BL-210, §M): валидатор набора «язык → название/описание» с пределами
+  параметром; им пользуются `live-streams/localizations.ts` (пределы видео) и `channel-localizations` (пределы канала).
 - **Общий модуль `src/lib/shared-localization-merge/`** (BL-207, §M): `buildSafeLocalizationsPayload`, `checkDefaultLanguage`,
   `localeKeyFor` — вынесены из `batches/merge.ts` (тот реэкспортирует); им пользуются Batches и `live-localizations`.
 - **Общий модуль `src/lib/youtube-video-fields/`** (BL-186, §M): лимиты и списки полей видео (500 символов тегов, 2 МБ обложки,

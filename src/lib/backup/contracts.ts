@@ -33,7 +33,18 @@ export type VideoFieldsBackupSnapshot = {
   paidProductPlacement?: boolean | null;
 };
 
-export type BackupSnapshot = LocalizationBackupSnapshot | VideoFieldsBackupSnapshot;
+/**
+ * BL-210 (ADR 0047): a channel's own translations writer backs up the channel as read before its first write -- the base text, every
+ * `brandingSettings.channel` field and every translation. Stored under the channel id in place of a video id.
+ */
+export type ChannelLocalizationsBackupSnapshot = {
+  kind: "channel_localizations";
+  snippet: { title: string; description: string; defaultLanguage: string | null };
+  brandingChannel: Record<string, unknown>;
+  localizations: Record<string, { title: string; description: string }>;
+};
+
+export type BackupSnapshot = LocalizationBackupSnapshot | VideoFieldsBackupSnapshot | ChannelLocalizationsBackupSnapshot;
 
 export type BackupRecord = {
   path: string;

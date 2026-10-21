@@ -807,6 +807,19 @@ the Change Set mechanism, `src/lib/live-localizations/` writes `localizations` -
   Live-writes check right before its one `videos.update`, read-back (every other language and the snippet fields kept) and audit.
 It writes no other field (the snippet part is sent back as just read, including the audio language, `zxx` too) and adds no deletion.
 
+**Third writer of per-language title/description (added 2026-10-22, owner, Telegram msgs 3343/3345/3347, BL-210, ADR 0047).**
+`src/lib/channel-localizations/` writes a channel's OWN translations (`channels.localizations`, the name and description viewers
+see on the channel page) -- and only on these terms:
+- only the channel's one stored set (`channel_localizations`), prepared by the Factory Operator over MCP or by hand in the
+  «Переводы канала» card, and sent only when the owner presses «Применить» in the Web UI (no MCP tool or agent reaches it);
+- through the same safe merge (`src/lib/shared-localization-merge/`): a fresh read, every other language kept, nothing deleted,
+  the channel's own title/description untouched, never the channel's own default language as a translation;
+- with identity check, backup, a re-read right before the write (else nothing is sent), the Live-writes check right before its one
+  `channels.update`, read-back and audit.
+It writes no other channel field (owner msg 3350): a channel without `brandingSettings.channel.defaultLanguage` (required for
+`localizations`) is refused, and the owner sets it once in YouTube Studio. «Применить» applies only the set the owner previewed (a
+set saved since is refused), and an own-language translation on YouTube differing from the base text is refused, never deleted.
+
 ---
 
 # 22. Idempotent Batch Execution

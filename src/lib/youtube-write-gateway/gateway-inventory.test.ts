@@ -134,6 +134,8 @@ const WRITE_PRIMITIVE_NAMES = [
   "deleteVideoById",
   // BL-182 stage 2: the uploaded video's thumbnail.
   "setVideoThumbnail",
+  // BL-210 (ADR 0047): a channel's own translations (only `part=localizations`, owner msg 3350).
+  "updateChannelLocalizations",
 ];
 
 test("youtube-write-gateway inventory: every file that imports a real write primitive also calls assertLiveWritesAuthorized", async () => {
@@ -175,4 +177,16 @@ test("youtube-write-gateway inventory: every file that imports a real write prim
         `assertLiveWritesAuthorized() (a mention in a comment or string doesn't count)`
     );
   }
+});
+
+// BL-210 AC-CL-12 (CHANNEL_LOCALIZATIONS_PLAN.md): `channels.update` is called only inside this module, and the pattern above
+// covers it (a regression narrowing WRITE_CALL_PATTERN's resource list must fail here, not slip through).
+test("AC-CL-12: channels.update is matched by the write pattern and called only inside youtube-write-gateway", async () => {
+  assert.ok(WRITE_CALL_PATTERN.test("youtube.channels.update({"));
+  const callers: string[] = [];
+  for (const file of await listAllScannedFiles()) {
+    if (file.endsWith(".test.ts")) continue;
+    if (/\.channels\.update\s*\(/.test(await readFile(file, "utf8"))) callers.push(path.relative(REPO_ROOT, file));
+  }
+  assert.deepEqual(callers, ["src/lib/youtube-write-gateway/index.ts"]);
 });

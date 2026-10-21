@@ -7,6 +7,7 @@ import {
   assertDataApiReadsAuthorized,
   createYoutubeClient,
   getChannelForSync,
+  getChannelLocalizationsContext,
   getPublicChannelSnapshot,
   getPublicChannelStats,
   searchPublicMusicVideos,
@@ -1063,4 +1064,42 @@ test("playlistContainsVideo asks for that one video in the playlist and answers 
   assert.equal(await playlistContainsVideo(make([{ id: "PLI1" }]), "PL1", "v1"), true);
   assert.equal(await playlistContainsVideo(make([]), "PL1", "v1"), false);
   assert.deepEqual(asked[0], { part: ["id"], playlistId: "PL1", videoId: "v1", maxResults: 1 });
+});
+
+// BL-210 (CHANNEL_LOCALIZATIONS_PLAN.md "API facts"): one channels.list call by id with exactly the three parts the writer needs; the
+// branding channel object is returned whole (every field as read), the translations as a plain map.
+test("getChannelLocalizationsContext reads snippet, brandingSettings and localizations of the channel by id", async () => {
+  let receivedArgs: unknown;
+  const youtube = fakeYoutubeClient({
+    channelsList: (async (args: unknown) => {
+      receivedArgs = args;
+      return {
+        data: {
+          items: [
+            {
+              id: "UC1",
+              snippet: { title: "Base", description: "Base desc", defaultLanguage: "en" },
+              brandingSettings: { channel: { title: "Base", description: "Base desc", defaultLanguage: "en", keywords: "a b", country: "US" } },
+              localizations: { fr: { title: "Fr", description: "Fr desc" }, ja: { title: "Ja" } },
+            },
+          ],
+        },
+      };
+    }) as unknown as youtube_v3.Youtube["channels"]["list"],
+  });
+  const context = await getChannelLocalizationsContext(youtube, "UC1");
+  assert.deepEqual(receivedArgs, { part: ["snippet", "brandingSettings", "localizations"], id: ["UC1"] });
+  assert.deepEqual(context, {
+    channelId: "UC1",
+    snippet: { title: "Base", description: "Base desc", defaultLanguage: "en" },
+    brandingChannel: { title: "Base", description: "Base desc", defaultLanguage: "en", keywords: "a b", country: "US" },
+    localizations: { fr: { title: "Fr", description: "Fr desc" }, ja: { title: "Ja", description: "" } },
+  });
+});
+
+test("getChannelLocalizationsContext: no item -> null; no default language -> null, no branding -> {}", async () => {
+  const empty = fakeYoutubeClient({ channelsList: (async () => ({ data: { items: [] } })) as unknown as youtube_v3.Youtube["channels"]["list"] });
+  assert.equal(await getChannelLocalizationsContext(empty, "UC1"), null);
+  const bare = fakeYoutubeClient({ channelsList: (async () => ({ data: { items: [{ id: "UC1", snippet: { title: "T" } }] } })) as unknown as youtube_v3.Youtube["channels"]["list"] });
+  assert.deepEqual(await getChannelLocalizationsContext(bare, "UC1"), { channelId: "UC1", snippet: { title: "T", description: "", defaultLanguage: null }, brandingChannel: {}, localizations: {} });
 });

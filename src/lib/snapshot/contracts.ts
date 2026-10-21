@@ -250,6 +250,8 @@ export const SNAPSHOT_DEVICE_LOCAL_TABLES: Readonly<Record<string, string>> = Ob
   live_stream_events: "this computer's live-stream audit trail and history (BL-176)",
   live_stream_sources: "the Operator's map of videos to original files on this computer (BL-176)",
   live_stream_segments: "this computer's live-stream segments (BL-205): the broadcasts of its own stream, recordings and playlist state",
+  channel_localizations: "the channel translations stored on this computer and its last apply (BL-210, ADR 0047); applied to YouTube from this computer only",
+  channel_localization_events: "this computer's channel-translations audit trail (BL-210)",
 });
 
 /**

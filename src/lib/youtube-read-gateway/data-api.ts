@@ -812,6 +812,32 @@ export async function getVideoMetadataContext(
   };
 }
 
+/**
+ * BL-210 (CHANNEL_LOCALIZATIONS_PLAN.md, ADR 0047): one of our channels as the channel translations writer needs it -- the base
+ * title/description, both default-language fields (only `brandingSettings.channel.defaultLanguage` is writable), every
+ * `brandingSettings.channel` field as read (a `brandingSettings` write sends the settable ones back: the API deletes an omitted
+ * one) and the per-language translations. `channels.list part=snippet,brandingSettings,localizations` (1 unit). Null when
+ * YouTube does not return the channel.
+ */
+export type ChannelLocalizationsContext = {
+  channelId: string;
+  snippet: { title: string; description: string; defaultLanguage: string | null };
+  brandingChannel: Record<string, unknown>;
+  localizations: Record<string, LocaleMetadata>;
+};
+
+export async function getChannelLocalizationsContext(youtube: youtube_v3.Youtube, channelId: string): Promise<ChannelLocalizationsContext | null> {
+  const res = await youtube.channels.list({ part: ["snippet", "brandingSettings", "localizations"], id: [channelId] });
+  const item = res.data.items?.[0];
+  if (!item?.id) return null;
+  return {
+    channelId: item.id,
+    snippet: { title: item.snippet?.title ?? "", description: item.snippet?.description ?? "", defaultLanguage: item.snippet?.defaultLanguage ?? null },
+    brandingChannel: { ...((item.brandingSettings?.channel ?? {}) as Record<string, unknown>) },
+    localizations: toLocaleMetadataMap(item.localizations as Record<string, youtube_v3.Schema$VideoLocalization> | undefined),
+  };
+}
+
 export type VideoDetailsContext = {
   etag: string | null;
   snippet: youtube_v3.Schema$VideoSnippet;

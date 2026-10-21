@@ -1,4 +1,5 @@
 import { createChannelConnectionsCore } from "@/lib/channel-connections";
+import { createChannelLocalizationsOperatorCore, operatorChannelLocalizations } from "@/lib/channel-localizations";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { getMcpConnectionEnabled, rawSqlClient, recordGatewayCallOutcome } from "@/lib/db";
 import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
@@ -250,6 +251,12 @@ function createToolDeps(): FactoryToolDeps {
       mapSources: async (input) => ({ results: await createLiveStreamsCore().setSources(input.channelId, { items: input.items }, "factory") }),
       // BL-207: the stream's translations, replaced as a whole (refused whole, nothing half-saved); local only.
       setLocalizations: async (input) => ({ ...(await createStreamLocalizationsCore().save(input.channelId, input.localizations, "factory")) }),
+    },
+    // BL-210 (CHANNEL_LOCALIZATIONS_PLAN.md §5, ADR 0047): a channel's own translations -- the Operator's surface of the module has
+    // no apply, so nothing here reaches a YouTube write; the save is local, the get reads YouTube once (1 unit).
+    channelLocalizations: {
+      get: async (input) => operatorChannelLocalizations(createChannelLocalizationsOperatorCore(), input.channelId),
+      save: async (input) => ({ ...(await createChannelLocalizationsOperatorCore().save(input.channelId, input.localizations)) }),
     },
     // BL-184 (STORYBOARD_PLAN.md §2.6): storyboards; every write is the Operator's (the owner decides in the Web UI only).
     storyboards: {

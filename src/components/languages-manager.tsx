@@ -1,6 +1,7 @@
 "use client";
 
 import { errorText } from "@/lib/ui-text";
+import { ChannelLocalizationsPanel } from "./channel-localizations-panel";
 import { LanguageDefaultsPanel } from "@/components/language-defaults-panel";
 import { useLocalizationVersion } from "@/components/use-localization-version";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -1375,6 +1376,9 @@ export function LanguagesManager() {
       )}
 
       {channelId && <LanguageDefaultsPanel channelId={channelId} supportedLanguages={supportedLanguages} />}
+
+      {/* BL-210: the channel's own name and description in other languages, under the base language they translate. */}
+      {channelId && <ChannelLocalizationsPanel channelId={channelId} />}
 
       {channelId && (
         <div className="rounded-xl border border-dashed border-zinc-800 bg-zinc-900/50 px-4 py-3 text-xs text-zinc-500">

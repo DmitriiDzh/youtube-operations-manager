@@ -13,7 +13,11 @@ import { createFactoryMcpServer, FACTORY_API_VERSION, FACTORY_TOOL_NAMES, FACTOR
 // BL-176 (LIVE_STREAMS_PLAN.md §3.4/§3.11): two live-stream tools (a status read, a local map write).
 // BL-184 (STORYBOARD_PLAN.md §2.6): six storyboard tools (four writes, two reads).
 // BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.7): factory_jobs_list, a read (owner msg 2806: the Operator only sees other computers' jobs).
+// BL-210 (CHANNEL_LOCALIZATIONS_PLAN.md §5): a channel's translations -- factory_channel_get_localizations (a read) and
+// factory_channel_save_localizations (a local write).
 const EXPECTED_TOOLS = [
+  "factory_channel_get_localizations",
+  "factory_channel_save_localizations",
   "factory_gemini_create_job",
   "factory_gemini_get_job",
   "factory_gemini_get_status",
@@ -89,6 +93,7 @@ function registeredNames(): string[] {
       plans: {} as never,
       gemini: {} as never,
       live: {} as never,
+      channelLocalizations: {} as never,
       storyboards: {} as never,
       jobs: {} as never,
       videos: {} as never,
@@ -123,7 +128,9 @@ test("§2.5(2): the channel-agent server's source never registers a factory_ too
 // local template; BL-143 / ADR 0029 adds its generation plans: create, import, update, close, report); every other tool is a read; no tool sets a path, a workspace or a token, and none approves or rejects a
 // session for anyone else.
 test("AC-FO-09 (amended by ADR 0025/0026): writes are exactly the named media/session/job actions; everything else is a read; nothing sets a path, workspace or token", () => {
+  // BL-210 (CHANNEL_LOCALIZATIONS_PLAN.md §5): the channel translations save is a write (local only; the plan names it a WRITE tool).
   assert.deepEqual([...FACTORY_WRITE_TOOL_NAMES].sort(), [
+    "factory_channel_save_localizations",
     "factory_gemini_create_job",
     "factory_live_map_sources",
     "factory_live_save_localizations",
@@ -162,8 +169,9 @@ test("AC-FO-09 (amended by ADR 0025/0026): writes are exactly the named media/se
   for (const name of FACTORY_TOOL_NAMES) {
     // BL-174: the Gemini reads are factory_gemini_get_*; BL-176: the live-stream read is factory_live_get_status; BL-184: the
     // storyboard reads are factory_storyboard_get / factory_storyboard_list; BL-188: factory_jobs_list; BL-194: factory_video_list /
-    // factory_video_get_cost.
-    if (!writes.has(name)) assert.match(name, /^factory_(get|list|media_(get|list|storage|capacity)|plan_(get|list|todo)|gemini_(get|list)|live_(get|list)|storyboard_(get|list)|jobs_list|video_(list|get_cost))_?/, `${name} must be a read`);
+    // factory_video_get_cost. BL-210 (CHANNEL_LOCALIZATIONS_PLAN.md §5): the channel translations read is factory_channel_get_localizations
+    // (the pattern gains channel_get; the requirement "every non-write tool is a read" is unchanged).
+    if (!writes.has(name)) assert.match(name, /^factory_(get|list|media_(get|list|storage|capacity)|plan_(get|list|todo)|gemini_(get|list)|live_(get|list)|channel_get|storyboard_(get|list)|jobs_list|video_(list|get_cost))_?/, `${name} must be a read`);
     assert.doesNotMatch(name, /_(set|issue|revoke)_|workspace|token|approve|reject/, `${name} must not touch paths, workspaces or tokens, or approve for anyone`);
   }
 });
@@ -198,6 +206,8 @@ test("§2.5(3): the factory route and endpoint reach only the allowlisted module
     "@/lib/gemini-media",
     // BL-176 (LIVE_STREAMS_PLAN.md §3.11): the live-streams module for factory_live_get_status / factory_live_map_sources.
     "@/lib/live-streams",
+    // BL-210 (CHANNEL_LOCALIZATIONS_PLAN.md §5): the channel-localizations module's Operator surface (no apply) for the factory_channel_* tools.
+    "@/lib/channel-localizations",
     // BL-184 (STORYBOARD_PLAN.md §2.6): the storyboards module for the factory_storyboard_* tools.
     "@/lib/storyboards",
     // BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.7): the shared jobs pool for factory_jobs_list (read-only).
@@ -258,7 +268,8 @@ test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.23.0 
   // `localizations` of factory_live_get_status.
   // BL-208 (GPU_START_FIXES_PLAN.md): 1.28.0 -- factory_media_start_session answers gpuSkipped, skips carry kind, and the availability
   // log / stats read one CUDA minimum (optional minCudaVersion, echoed with the minimums present). Additive.
-  assert.equal(FACTORY_API_VERSION, "1.28.0");
+  // BL-210 (CHANNEL_LOCALIZATIONS_PLAN.md §5: "This is Factory API 1.29.0"): two new tools, additive -> 1.29.0.
+  assert.equal(FACTORY_API_VERSION, "1.29.0");
   const agentOperations = await readFile("src/lib/agent-operations/contracts.ts", "utf8");
   assert.equal(agentOperations.includes("FACTORY_API_VERSION"), false);
 });
