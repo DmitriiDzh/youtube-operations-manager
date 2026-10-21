@@ -1,6 +1,15 @@
 import { sameLanguage } from "@/lib/shared-language-baseline";
-import { isSupportedYoutubeLanguageCode, suggestYoutubeLanguageCode } from "@/lib/youtube-supported-languages";
-import { DESCRIPTION_MAX_BYTES, hasAngleBrackets, TITLE_MAX_CHARACTERS } from "@/lib/youtube-video-fields";
+import {
+  normalizeDescription,
+  validateLocalizationSet,
+  type LocalizationEntry,
+  type LocalizationRefusal,
+  type LocalizationRefusalReason,
+  type LocalizationSet,
+  type LocalizationSetLimits,
+  type LocalizationSetValidation,
+} from "@/lib/shared-localization-set";
+import { DESCRIPTION_MAX_BYTES, TITLE_MAX_CHARACTERS } from "@/lib/youtube-video-fields";
 import { DomainError } from "./contracts";
 import type { LiveStreamsDependencies } from "./services";
 import type { StoredVideoSettings } from "./video-settings";
@@ -13,98 +22,33 @@ import type { StoredVideoSettings } from "./video-settings";
 // store and the page apply the same rules.
 // ---------------------------------------------------------------------------
 
-export type LiveLocalization = { title: string; description: string };
+export type LiveLocalization = LocalizationEntry;
 /** Language code (an exact supported YouTube code) → its title and description. */
-export type LiveLocalizationSet = Record<string, LiveLocalization>;
+export type LiveLocalizationSet = LocalizationSet;
 
 /** One stream's set: at most this many languages. */
 export const LIVE_LOCALIZATIONS_MAX_LANGUAGES = 50;
 
-export type LiveLocalizationRefusalReason =
-  | "not_an_entry"
-  | "unsupported_language"
-  | "baseline_language"
-  | "title_empty"
-  | "title_too_long"
-  | "title_angle_brackets"
-  | "description_empty"
-  | "description_too_long"
-  | "description_angle_brackets";
+export type LiveLocalizationRefusalReason = LocalizationRefusalReason;
+export type LiveLocalizationRefusal = LocalizationRefusal;
+export type LiveLocalizationsValidation = LocalizationSetValidation;
 
-export type LiveLocalizationRefusal = { language: string; reason: LiveLocalizationRefusalReason; message: string; hint?: string };
+export { normalizeDescription };
 
-export type LiveLocalizationsValidation =
-  | { ok: true; set: LiveLocalizationSet }
-  /** `problem`: why the set as a whole is refused; `refused`: every refused language with its reason. Nothing is stored. */
-  | { ok: false; problem: "not_an_object" | "too_many_languages" | "invalid_languages"; message: string; refused: LiveLocalizationRefusal[] };
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** A description as stored: CRLF line breaks become LF (a pasted Windows text; YouTube keeps LF). */
-export function normalizeDescription(description: string): string {
-  return description.replace(/\r\n/g, "\n");
-}
-
-function entryRefusals(language: string, value: unknown, baselineLanguage: string | null): LiveLocalizationRefusal[] {
-  const refusals: LiveLocalizationRefusal[] = [];
-  if (!isSupportedYoutubeLanguageCode(language)) {
-    const hint = suggestYoutubeLanguageCode(language);
-    refusals.push({
-      language,
-      reason: "unsupported_language",
-      message: hint ? `"${language}" is not a YouTube language code -- did you mean "${hint}"?` : `"${language}" is not a language YouTube supports`,
-      ...(hint ? { hint } : {}),
-    });
-  } else if (sameLanguage(language, baselineLanguage)) {
-    refusals.push({ language, reason: "baseline_language", message: `"${language}" is the channel's base language: its text is the stream's own title and description` });
-  }
-
-  const keys = isPlainObject(value) ? Object.keys(value).sort().join(",") : null;
-  if (!isPlainObject(value) || keys !== "description,title" || typeof value.title !== "string" || typeof value.description !== "string") {
-    refusals.push({ language, reason: "not_an_entry", message: "Each language needs exactly a title and a description (text)" });
-    return refusals;
-  }
-
-  const title = value.title.trim();
-  const titleLength = [...title].length;
-  if (titleLength === 0) refusals.push({ language, reason: "title_empty", message: "The title is empty" });
-  else if (titleLength > TITLE_MAX_CHARACTERS) refusals.push({ language, reason: "title_too_long", message: `The title has ${titleLength} characters; YouTube allows ${TITLE_MAX_CHARACTERS}` });
-  if (hasAngleBrackets(value.title)) refusals.push({ language, reason: "title_angle_brackets", message: "The title may not contain < or >" });
-
-  // Owner, Telegram msg 3287: a translation needs its description too (1–5000 bytes; empty after trimming is refused). Counted
-  // as stored: with CRLF line breaks made LF.
-  const description = normalizeDescription(value.description);
-  const bytes = new TextEncoder().encode(description).length;
-  if (description.trim().length === 0) refusals.push({ language, reason: "description_empty", message: "The description is empty" });
-  else if (bytes > DESCRIPTION_MAX_BYTES) refusals.push({ language, reason: "description_too_long", message: `The description has ${bytes} bytes; YouTube allows ${DESCRIPTION_MAX_BYTES}` });
-  if (hasAngleBrackets(value.description)) refusals.push({ language, reason: "description_angle_brackets", message: "The description may not contain < or >" });
-  return refusals;
-}
+/** A video's title and description bounds (the broadcast's video is what the set is written to). */
+const LIVE_LOCALIZATION_LIMITS: LocalizationSetLimits = {
+  titleMaxCharacters: TITLE_MAX_CHARACTERS,
+  description: { max: DESCRIPTION_MAX_BYTES, unit: "bytes" },
+  maxLanguages: LIVE_LOCALIZATIONS_MAX_LANGUAGES,
+};
 
 /**
  * The whole set, or every reason it is refused (one bad language refuses it all: nothing is half-saved). The title is kept trimmed
  * (as YouTube stores it); the description as given, with CRLF line breaks made LF. `baselineLanguage` is the channel's baseline (null = none set).
+ * BL-210: the rules live in `shared-localization-set` (shared with the channel translations); this wrapper passes the video limits.
  */
 export function validateLiveLocalizations(input: unknown, options: { baselineLanguage: string | null }): LiveLocalizationsValidation {
-  if (!isPlainObject(input)) {
-    return { ok: false, problem: "not_an_object", message: "The translations must be an object: language code → { title, description }", refused: [] };
-  }
-  const languages = Object.keys(input);
-  if (languages.length > LIVE_LOCALIZATIONS_MAX_LANGUAGES) {
-    return { ok: false, problem: "too_many_languages", message: `${languages.length} languages; at most ${LIVE_LOCALIZATIONS_MAX_LANGUAGES}`, refused: [] };
-  }
-  const refused = languages.flatMap((language) => entryRefusals(language, input[language], options.baselineLanguage));
-  if (refused.length > 0) {
-    return { ok: false, problem: "invalid_languages", message: `Refused: ${refused.map((r) => `${r.language} (${r.message})`).join("; ")}`, refused };
-  }
-  const set: LiveLocalizationSet = {};
-  for (const language of languages) {
-    const value = input[language] as LiveLocalization;
-    set[language] = { title: value.title.trim(), description: normalizeDescription(value.description) };
-  }
-  return { ok: true, set };
+  return validateLocalizationSet(input, { baselineLanguage: options.baselineLanguage, limits: LIVE_LOCALIZATION_LIMITS, ownText: "the stream's own title and description" });
 }
 
 export type StoredLocalizations = { ok: true; set: LiveLocalizationSet | null } | { ok: false; problem: string };

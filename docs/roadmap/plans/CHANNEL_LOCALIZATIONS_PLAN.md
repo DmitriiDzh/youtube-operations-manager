@@ -65,6 +65,46 @@
 
    Keys go into en and ru.
 
+## API facts (checked 2026-10-22 in the official Data API v3 reference, before the code)
+
+Sources: [channels.update](https://developers.google.com/youtube/v3/docs/channels/update) (U1),
+[channels resource](https://developers.google.com/youtube/v3/docs/channels) (U2),
+[channels.list](https://developers.google.com/youtube/v3/docs/channels/list) (U3).
+
+- **Parts.** `channels.update` accepts `brandingSettings`, `invideoPromotion` or `localizations` (U1: "set to either
+  brandingSettings, invideoPromotion, or localizations"), and **one part per request** (U1: "You can only update any one of
+  those parts with a single request.").
+- **Replace semantics.** U1: the method "overrides the existing values for all of the mutable properties" of the part, and an
+  omitted property that has a value: "the property's existing value will be deleted". So the `localizations` part is always
+  sent with the FULL merged map, and a `brandingSettings` write sends back every settable field it read.
+- **Default language.** U2 has both `snippet.defaultLanguage` and `brandingSettings.channel.defaultLanguage` ("The language
+  of the text in the channel resource's snippet.title and snippet.description"). Only the branding one is in U1's settable
+  list (`brandingSettings.channel.defaultLanguage`). U1 error `defaultLanguageNotSetError`: "The defaultLanguage must be set
+  to update localizations."
+- **Settable branding fields (U1).** `brandingSettings.channel.country`, `description`, `defaultLanguage`, `keywords`,
+  `trackingAnalyticsAccountId`, `unsubscribedTrailer`. `channelTitleUpdateForbidden`: the title must be the current one
+  "or omit the property".
+- **Limits (U2).** `brandingSettings.channel.title`: "maximum length of 30 characters". `snippet.description` and
+  `brandingSettings.channel.description`: "maximum length of 1000 characters". `localizations.(key).title` /
+  `.description`: **no limit stated**. No rule on `<` / `>` is stated for channels.
+- **Quota.** U1: "A call to this method has a quota cost of 50 units." U3: `channels.list` "a quota cost of 1 unit".
+- **Errors on the way (U1).** `defaultLanguageNotSetError`, `localizationValidationError`, `channelTitleUpdateForbidden`,
+  `brandingValidationError`.
+
+### Deviations from the plan above (the docs win)
+
+1. **Two writes when the default language is missing (§3, AC-CL-08).** It cannot be set "in the same update" as the
+   translations: one part per request. Apply first writes `part=brandingSettings` (only the default language changes; every
+   settable `brandingSettings.channel` field that was read is sent back exactly, the title is left out), reads it back, then
+   writes `part=localizations`. Each write has its own `assertLiveWritesAuthorized` right before it. Cost: 50 units, or 100
+   with the default language, plus 1-unit reads.
+2. **The default language is `brandingSettings.channel.defaultLanguage`** (the writable one). When `snippet.defaultLanguage`
+   says something else, Apply refuses (`default_language_mismatch`, nothing written).
+3. **Limits.** The translation fields have no documented limit; the set uses the documented limits of the fields they
+   translate: title at most 30 characters, description at most 1000 characters (counted in characters, not bytes). The
+   `<` / `>` rule is kept from the video fields (conservative). Open question for the owner: a translated channel name
+   longer than 30 characters is refused.
+
 ## Acceptance (written before the code)
 
 - **AC-CL-01** Saving a valid set (es, de) stores it; nothing is sent to YouTube.
