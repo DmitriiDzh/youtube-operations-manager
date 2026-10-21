@@ -286,6 +286,10 @@ test("BL-206: factory_media_get_gpu_stats's MCP schema and the media core's gpuS
     [{ weekdays: [1, 2, 3, 4, 5, 6, 7, 1] }, false],
     [{ includeSessions: "yes" }, false],
     [{ region: "EU" }, false],
+    // BL-208 (GPU_START_FIXES_PLAN.md §F): the optional CUDA minimum of the availability read.
+    [{ minCudaVersion: "13.0" }, true],
+    [{ minCudaVersion: "12.8.1" }, false],
+    [{ minCudaVersion: 12.8 }, false],
   ];
   for (const [input, ok] of cases) {
     assert.equal(gpuStatsInput.safeParse(input).success, ok, `MCP ${JSON.stringify(input)}`);

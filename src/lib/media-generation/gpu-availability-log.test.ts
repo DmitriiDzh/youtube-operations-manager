@@ -232,3 +232,136 @@ test("AC-GA-05: a catalog with no GPU of 24 GB or more stores nothing and counts
   assert.equal((await services.snapshotGpuAvailabilityIfDue()).status, "failed");
   assert.equal(h.log.snapshots.length, 0);
 });
+
+// -- BL-208 (docs/roadmap/plans/GPU_START_FIXES_PLAN.md §F, AC-SF-08/09; FO-MSG-0020), written before the code ---------------------
+// Every CUDA minimum in use (the Settings' plus every installed template's) is read and stored on its own, with its own due check
+// and back-off. Settings 12.8, templates 12.8 and 13.0 -> two GPU-catalog reads per tick (12.8 and 13.0), two snapshots, same `at`.
+
+function perMinimumHarness(options: { emptyFor?: string[]; templates?: string[]; settingsMin?: MediaSettings["minCudaVersion"] } = {}) {
+  const gpuReads: Array<string | null> = [];
+  let datacenterReads = 0;
+  let now = T0;
+  const emptyFor = new Set(options.emptyFor ?? []);
+  const fetchImpl = (async (input: string | URL | Request) => {
+    const url = new URL(String(input));
+    if (url.pathname.includes("/catalog/datacenters")) {
+      datacenterReads += 1;
+      return new Response(JSON.stringify({ dataCenters: [{ id: "EU-RO-1", region: "EUROPE", networkVolumeTypes: ["STANDARD"] }] }), { status: 200 });
+    }
+    const minimum = url.searchParams.get("minCudaVersion");
+    gpuReads.push(minimum);
+    const gpus = minimum !== null && emptyFor.has(minimum) ? [] : [{ id: "NVIDIA GeForce RTX 4090", name: "4090", memory: 24, secure: true, availability: "LOW", price: { secure: 0.69 }, dataCenters: [{ id: "EU-RO-1", availability: "LOW" }] }];
+    return new Response(JSON.stringify({ gpus }), { status: 200 });
+  }) as typeof fetch;
+  const snapshots: Array<{ at: Date; minCudaVersion: string; rows: GpuAvailabilityLogRow[] }> = [];
+  const store: GpuAvailabilityLogStore = {
+    async latestAt(minCudaVersion) {
+      const own = snapshots.filter((s) => minCudaVersion === undefined || s.minCudaVersion === minCudaVersion);
+      return own.length ? own[own.length - 1].at : null;
+    },
+    async insertSnapshot(at, rows) {
+      snapshots.push({ at, minCudaVersion: rows[0]?.minCudaVersion ?? "", rows });
+    },
+    async list() {
+      return [];
+    },
+    async summarize() {
+      return { snapshots: 0, firstAt: null, lastAt: null, groups: [], gpuSnapshots: [] };
+    },
+  };
+  const lines: string[] = [];
+  const services = createGpuAvailabilityLogServices({
+    store,
+    base: {
+      getGatewayEnabled: async () => true,
+      getCredentialsStatus: async () => ({ configured: true, runpodKeyPrefix: "rpa_ABCD…", s3AccessKeyId: null, verifiedAt: null, updatedAt: T0.toISOString() }),
+      getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", minCudaVersion: options.settingsMin === undefined ? "12.8" : options.settingsMin }),
+      resolveRunpodClient: async () => createRunpodApiClient({ apiKey: "rpa_secret", fetchImpl, authorize: async () => {} }),
+    },
+    templateMinCudaVersions: async () => options.templates ?? ["12.8", "13.0"],
+    clock: { now: () => now },
+    log: (line) => lines.push(line),
+  });
+  return { services, gpuReads, snapshots, lines, datacenterReads: () => datacenterReads, advance: (ms: number) => (now = new Date(now.getTime() + ms)) };
+}
+
+test("AC-SF-08: Settings 12.8, templates 12.8 and 13.0 -> one tick reads the GPU catalog twice (12.8 and 13.0) and stores two snapshots with the same at", async () => {
+  const h = perMinimumHarness();
+  const outcome = await h.services.snapshotGpuAvailabilityIfDue();
+  assert.deepEqual(h.gpuReads, ["12.8", "13.0"]);
+  assert.equal(h.datacenterReads(), 1, "the datacenter catalog once per tick");
+  assert.deepEqual(
+    h.snapshots.map((s) => [s.at.toISOString(), s.minCudaVersion, s.rows.map((r) => r.minCudaVersion)]),
+    [
+      [T0.toISOString(), "12.8", ["12.8", "12.8"]],
+      [T0.toISOString(), "13.0", ["13.0", "13.0"]],
+    ]
+  );
+  assert.deepEqual(outcome, {
+    status: "taken",
+    at: T0.toISOString(),
+    rows: 4,
+    minimums: [
+      { minCudaVersion: "12.8", status: "taken", at: T0.toISOString(), rows: 2 },
+      { minCudaVersion: "13.0", status: "taken", at: T0.toISOString(), rows: 2 },
+    ],
+  });
+});
+
+test("AC-SF-08: no minimum anywhere (Settings none, no template minimum) -> one snapshot read without a filter, as before", async () => {
+  const h = perMinimumHarness({ settingsMin: null, templates: [] });
+  const outcome = await h.services.snapshotGpuAvailabilityIfDue();
+  assert.deepEqual(h.gpuReads, [null]);
+  assert.deepEqual(outcome, { status: "taken", at: T0.toISOString(), rows: 2 });
+  assert.equal(h.snapshots[0].minCudaVersion, "");
+});
+
+test("AC-SF-09: the 13.0 read returns no GPU -> the 12.8 snapshot is stored, the tick reports the 13.0 failure, the tick 15 min later retries 13.0", async () => {
+  const h = perMinimumHarness({ emptyFor: ["13.0"] });
+  const first = await h.services.snapshotGpuAvailabilityIfDue();
+  assert.deepEqual(h.snapshots.map((s) => s.minCudaVersion), ["12.8"]);
+  assert.equal(first.status, "taken");
+  assert.deepEqual(first.minimums, [
+    { minCudaVersion: "12.8", status: "taken", at: T0.toISOString(), rows: 2 },
+    { minCudaVersion: "13.0", status: "failed", code: "error", message: "RunPod's catalog listed no GPU of 24 GB or more" },
+  ]);
+  assert.equal(h.lines.length, 1);
+  assert.match(h.lines[0], /snapshot failed \(error\) for CUDA 13\.0/);
+  // 5 and 10 minutes later: 12.8 fresh, 13.0 backing off -- no RunPod read at all.
+  for (const minutes of [5, 10]) {
+    h.advance(5 * MINUTE);
+    const skipped = await h.services.snapshotGpuAvailabilityIfDue();
+    assert.equal(skipped.status, "skipped", `T+${minutes}`);
+    assert.deepEqual(skipped.minimums?.map((m) => [m.minCudaVersion, m.status === "skipped" ? m.reason : m.status]), [["12.8", "fresh"], ["13.0", "backoff"]]);
+  }
+  assert.deepEqual(h.gpuReads, ["12.8", "13.0"]);
+  h.advance(5 * MINUTE); // T+15: both due again
+  await h.services.snapshotGpuAvailabilityIfDue();
+  assert.deepEqual(h.gpuReads, ["12.8", "13.0", "12.8", "13.0"], "13.0 retried 15 minutes after its failure");
+});
+
+test("BL-208 §F: a new template minimum with no snapshot yet is due at once, while the Settings' one is still fresh", async () => {
+  let templates = ["12.8"];
+  const services = createGpuAvailabilityLogServices({
+    store: {
+      latestAt: async (min) => (min === "12.8" ? T0 : null),
+      insertSnapshot: async () => undefined,
+      list: async () => [],
+      summarize: async () => ({ snapshots: 0, firstAt: null, lastAt: null, groups: [], gpuSnapshots: [] }),
+    },
+    base: {
+      getGatewayEnabled: async () => true,
+      getCredentialsStatus: async () => ({ configured: true, runpodKeyPrefix: "rpa_ABCD…", s3AccessKeyId: null, verifiedAt: null, updatedAt: T0.toISOString() }),
+      getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, minCudaVersion: "12.8" }),
+      resolveRunpodClient: async () => {
+        throw new DomainError({ code: "media_generation_not_configured", message: "stop here" });
+      },
+    },
+    templateMinCudaVersions: async () => templates,
+    clock: { now: () => new Date(T0.getTime() + 5 * MINUTE) },
+  });
+  assert.deepEqual(await services.snapshotGpuAvailabilityIfDue(), { status: "skipped", reason: "fresh" });
+  templates = ["13.0"];
+  // 13.0 is due: the tick goes on to RunPod (here: not configured, so a quiet skip instead of a "fresh").
+  assert.deepEqual(await services.snapshotGpuAvailabilityIfDue(), { status: "skipped", reason: "not_configured" });
+});

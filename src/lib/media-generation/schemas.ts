@@ -287,5 +287,7 @@ export const gpuStatsInputSchema = z
     /** ISO weekdays: 1 = Monday … 7 = Sunday. */
     weekdays: z.array(z.number().int().min(1).max(7)).min(1).max(7).optional(),
     includeSessions: z.boolean().optional(),
+    /** BL-208: the CUDA minimum whose availability snapshots are counted (default: the Settings' minimum). */
+    minCudaVersion: z.enum(MEDIA_CUDA_VERSIONS).optional(),
   })
   .strict();

@@ -42,6 +42,11 @@ export function higherCudaVersion(owner: string | null, own: string | null): str
   return (compareCudaVersions(own, owner) ?? -1) > 0 ? own : owner;
 }
 
+/** BL-208: CUDA minimums ascending as versions ('' = none, first), without repeats. */
+export function orderCudaMinimums(values: Iterable<string>): string[] {
+  return [...new Set(values)].sort((a, b) => (a === "" ? -1 : b === "" ? 1 : (compareCudaVersions(a, b) ?? (a < b ? -1 : a > b ? 1 : 0))));
+}
+
 /** True only when the host's version is known AND below the minimum: an unknown host never blocks a start. */
 export function hostCudaTooOld(host: string | null, minimum: string | null): boolean {
   if (host === null || minimum === null) return false;

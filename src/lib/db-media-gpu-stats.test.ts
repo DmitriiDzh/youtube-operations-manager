@@ -214,7 +214,9 @@ function statsOn(database: AppDb) {
       availabilityCells: (filter) => countMediaGpuAvailabilityCells(filter, database),
       sessionsFirstApprovedBetween: async () => [],
     },
-    candidateSettings: async () => ({ gpuTypeId: RTX4090, gpuFallbackIds: [] }),
+    // BL-208 (GPU_START_FIXES_PLAN.md §F, AC-SF-10): the stats read one CUDA minimum, by default the Settings' -- the Settings always
+    // carry one (12.8, the minimum these snapshots were stored with), so the stub now says it.
+    candidateSettings: async () => ({ gpuTypeId: RTX4090, gpuFallbackIds: [], minCudaVersion: "12.8" as const }),
     clock: { now: () => new Date("2026-10-26T00:00:00Z") },
   });
 }

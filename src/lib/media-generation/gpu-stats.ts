@@ -4,6 +4,7 @@ import { parseGpuSkipped, type StoredSessionRow } from "./sessions";
 import { DomainError, parseWithSchema, type MediaGpuPlan, type MediaSettings } from "./contracts";
 import { GPU_AVAILABILITY_NONE, GPU_AVAILABILITY_OVERALL, GPU_AVAILABILITY_SNAPSHOT_INTERVAL_MS, withImpliedNone } from "./gpu-availability";
 import { orderedGpuCandidateIds } from "./gpu-plan";
+import { orderCudaMinimums } from "./cuda-host";
 
 const GPU_AVAILABILITY_UNKNOWN = "UNKNOWN";
 
@@ -69,6 +70,8 @@ function readGpuPlan(json: string | null | undefined): MediaGpuPlan | null | "in
 
 /** The Settings' part of the candidate list (`orderedGpuCandidateIds` without a plan). */
 export type GpuCandidateSettings = Pick<MediaSettings, "gpuTypeId" | "gpuFallbackIds">;
+/** BL-208: what the stats read from the Settings -- the candidate list and the default CUDA minimum of the availability read. */
+export type GpuStatsSettings = GpuCandidateSettings & Pick<MediaSettings, "minCudaVersion">;
 
 export function buildGpuWaitRecord(row: StoredSessionRow, settings: GpuCandidateSettings): GpuWaitRecord {
   const plan = readGpuPlan(row.gpuPlanJson);
@@ -116,13 +119,15 @@ export type GpuStatsStore = {
    * it; the stored rows per GPU, datacenter and level (and `gpuTypeIds` / `dataCenterIds`; the overall `*` rows only when no
    * datacenter is named or `*` is).
    */
-  availabilityCells(filter: { since: Date; until: Date; gpuTypeIds?: string[]; dataCenterIds?: string[] }): Promise<{
+  availabilityCells(filter: { since: Date; until: Date; gpuTypeIds?: string[]; dataCenterIds?: string[]; /** BL-208: one CUDA minimum ('' = none). */ minCudaVersion?: string }): Promise<{
     snapshots: GpuStatsCell[];
     gpus: Array<GpuStatsCell & { gpuTypeId: string }>;
     rows: Array<GpuStatsCell & { gpuTypeId: string; dataCenterId: string; stock: string | null }>;
   }>;
   /** Sessions whose first approval is in the range, newest first. */
   sessionsFirstApprovedBetween(since: Date, until: Date): Promise<StoredSessionRow[]>;
+  /** BL-208: the CUDA minimums ('' = none) with an availability snapshot in the range. */
+  availabilityMinimums?(range: { since: Date; until: Date }): Promise<string[]>;
 };
 
 /** Nearest-rank percentile: the k-th smallest value with k = ceil(p/100 × n); null for no values. */
@@ -317,7 +322,7 @@ export function buildGpuSessionStats(records: GpuWaitRecord[], includeSessions: 
  * `factory_media_get_gpu_stats` (READ): local data only -- the stored availability snapshots and this computer's sessions. Its
  * dependencies hold no RunPod client: it cannot reach RunPod, and costs nothing.
  */
-export function createGpuStatsServices(deps: { store: GpuStatsStore; candidateSettings(): Promise<GpuCandidateSettings>; clock: { now(): Date } }) {
+export function createGpuStatsServices(deps: { store: GpuStatsStore; candidateSettings(): Promise<GpuStatsSettings>; clock: { now(): Date } }) {
   return {
     async getGpuStats(input: unknown = {}) {
       const parsed = parseWithSchema(gpuStatsInputSchema, input ?? {}, "GPU stats input");
@@ -333,15 +338,20 @@ export function createGpuStatsServices(deps: { store: GpuStatsStore; candidateSe
         throw new DomainError({ code: "invalid_request", message: "hoursUtc.from equals hoursUtc.to: an empty hour window.", details: { hoursUtc: parsed.hoursUtc } });
       }
       const window: GpuStatsWindow = { ...(parsed.hoursUtc ? { hoursUtc: parsed.hoursUtc } : {}), ...(parsed.weekdays ? { weekdays: parsed.weekdays } : {}) };
+      const candidateSettings = await deps.candidateSettings();
+      // BL-208 (GPU_START_FIXES_PLAN.md §F, AC-SF-10): the availability is read under ONE CUDA minimum -- the input's, else the
+      // Settings' ('' = none) -- since every minimum in use is snapshotted at the same time; echoed with the minimums present.
+      const minimum = parsed.minCudaVersion ?? candidateSettings.minCudaVersion ?? "";
       const cells = await deps.store.availabilityCells({
         since: from,
         until: to,
         ...(parsed.gpuTypeIds ? { gpuTypeIds: parsed.gpuTypeIds } : {}),
         ...(parsed.dataCenterIds ? { dataCenterIds: parsed.dataCenterIds } : {}),
+        minCudaVersion: minimum,
       });
       const availability = buildGpuAvailabilityStats(cells, window, parsed.dataCenterIds);
+      const present = deps.store.availabilityMinimums ? await deps.store.availabilityMinimums({ since: from, until: to }) : [];
 
-      const candidateSettings = await deps.candidateSettings();
       const rows = await deps.store.sessionsFirstApprovedBetween(from, to);
       const records = rows
         .filter((row) => {
@@ -359,6 +369,8 @@ export function createGpuStatsServices(deps: { store: GpuStatsStore; candidateSe
         hoursUtc: parsed.hoursUtc ?? null,
         weekdays: parsed.weekdays ?? null,
         intervalMinutes: GPU_AVAILABILITY_SNAPSHOT_INTERVAL_MS / 60_000,
+        minCudaVersion: minimum === "" ? null : minimum,
+        minCudaVersions: orderCudaMinimums(present).map((key) => (key === "" ? null : key)),
         snapshots: availability.snapshots,
         availability: availability.entries,
         sessions: buildGpuSessionStats(records, parsed.includeSessions === true),
