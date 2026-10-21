@@ -4565,5 +4565,12 @@ title/description (AGENTS.md §F, PROJECT_SPEC §21), reversing `LIVE_STREAMS_FI
   (`localizationsStatusEntry`: codes only -- `problem: invalid_stored`, warning codes, `lastStep.failure: read_back_mismatch |
   failed`, never the error text). Web: `GET/PUT /api/channels/[channelId]/live-stream/localizations` (`liveStreamHandler`:
   session 401, active channel 403) and `localizations` in the overview.
-- **Not yet:** the «Переводы» card (stage 5). Whether
+- **The «Переводы» card (stage 5):** `src/components/live-stream-localizations.tsx` under the broadcast settings card, its pure
+  logic in `live-stream-localizations-model.ts` (rows ↔ set, language choices = supported codes minus the channel baseline and
+  minus the other rows' languages, the server's validator per row plus `language_missing`, `details.refused` placed on rows).
+  A row per language (select, title, description with a byte counter), Add / Remove / Save (Save sends the whole set; removing
+  every row and saving clears it); the warnings, a stored-value problem and the last step shown; the panel's step list, the
+  Start summary, the «Применить снова» list and the history name the step and its languages. Rows are replaced from the poll
+  only while unedited. No native dialogs; all text in `ui-text` (`live.translations.*`).
+- **Not yet verified:** whether
   a live broadcast's video reads its localizations back is unverified until the first real go-live with a set.

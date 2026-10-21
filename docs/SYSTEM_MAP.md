@@ -901,6 +901,9 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
     нет трансляции — `live_stream_not_found`) и `factory_live_get_status.localizations` (набор, предупреждения, последний шаг —
     коды); маршрут `GET/PUT /api/channels/[channelId]/live-stream/localizations` и поле `localizations` в обзоре трансляции.
     Набор без сохранённых настроек видео — предупреждение `video_settings_not_saved`, не отказ (владелец, msg 3287).
+  - Этап 5: карточка «Переводы» (`src/components/live-stream-localizations.tsx`, логика —
+    `live-stream-localizations-model.ts`) под настройками трансляции: строка на язык (язык, название, описание), добавить /
+    убрать / сохранить, отказы сервера по строкам, предупреждение и результат последнего шага; шаг `localizations` в списках шагов.
 - **Общий модуль `src/lib/shared-localization-merge/`** (BL-207, §M): `buildSafeLocalizationsPayload`, `checkDefaultLanguage`,
   `localeKeyFor` — вынесены из `batches/merge.ts` (тот реэкспортирует); им пользуются Batches и `live-localizations`.
 - **Общий модуль `src/lib/youtube-video-fields/`** (BL-186, §M): лимиты и списки полей видео (500 символов тегов, 2 МБ обложки,
