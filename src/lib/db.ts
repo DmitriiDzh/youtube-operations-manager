@@ -1489,6 +1489,34 @@ export const liveStreams = sqliteTable("live_streams", {
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
 });
 
+/**
+ * Schema v104 (BL-210, CHANNEL_LOCALIZATIONS_PLAN.md, ADR 0047): a channel's own title/description translations as stored on this
+ * computer -- the set the owner applies with «Применить» (JSON `{ "<lang>": { title, description } }`, validated by
+ * channel-localizations on read and write; null = none) -- and the last apply's result (JSON, null = never applied). Device-local.
+ */
+export const channelLocalizations = sqliteTable("channel_localizations", {
+  channelId: text("channel_id").primaryKey(),
+  localizationsJson: text("localizations_json"),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }),
+  /** owner | factory */
+  updatedBy: text("updated_by"),
+  lastApplyJson: text("last_apply_json"),
+  lastApplyAt: integer("last_apply_at", { mode: "timestamp_ms" }),
+});
+
+/** Schema v104 (BL-210): the channel translations' append-only audit trail (saved, backup, write, verification, failed). Device-local. */
+export const channelLocalizationEvents = sqliteTable(
+  "channel_localization_events",
+  {
+    id: text("id").primaryKey(),
+    channelId: text("channel_id").notNull(),
+    at: integer("at", { mode: "timestamp_ms" }).notNull(),
+    kind: text("kind").notNull(),
+    detailJson: text("detail_json").notNull(),
+  },
+  (table) => [index("channel_localization_events_channel_at_idx").on(table.channelId, table.at)]
+);
+
 /** Schema v99 (BL-205, LIVE_SEGMENTS_PLAN.md §2.3): one row per segment broadcast of a channel's stream. Device-local. */
 export const liveStreamSegments = sqliteTable(
   "live_stream_segments",
@@ -5406,6 +5434,29 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       } catch (error) {
         if (!isDuplicateColumnError(error)) throw error;
       }
+    },
+  },
+  {
+    version: 104,
+    description:
+      "channel_localizations + channel_localization_events -- BL-210 (CHANNEL_LOCALIZATIONS_PLAN.md, ADR 0047; owner msgs 3343/3345/3347): a channel's own title/description translations stored on this computer, the last apply's result, and their append-only audit trail. Additive, idempotent, device-local",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS channel_localizations (
+        channel_id TEXT PRIMARY KEY,
+        localizations_json TEXT,
+        updated_at INTEGER,
+        updated_by TEXT,
+        last_apply_json TEXT,
+        last_apply_at INTEGER
+      )`);
+      await client.execute(`CREATE TABLE IF NOT EXISTS channel_localization_events (
+        id TEXT PRIMARY KEY,
+        channel_id TEXT NOT NULL,
+        at INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        detail_json TEXT NOT NULL
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS channel_localization_events_channel_at_idx ON channel_localization_events (channel_id, at)");
     },
   },
 ];
@@ -14742,6 +14793,52 @@ export async function latestLiveStreamEvent(channelId: string, kind: string, dat
     .orderBy(desc(liveStreamEvents.at), desc(liveStreamEvents.id))
     .limit(1);
   return row ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// BL-210 (v104): a channel's own translations, stored on this computer.
+// ---------------------------------------------------------------------------
+
+export type StoredChannelLocalizations = typeof channelLocalizations.$inferSelect;
+export type StoredChannelLocalizationEvent = typeof channelLocalizationEvents.$inferSelect;
+
+export async function getChannelLocalizationsRow(channelId: string, database: AppDb = db): Promise<StoredChannelLocalizations | null> {
+  const [row] = await database.select().from(channelLocalizations).where(eq(channelLocalizations.channelId, channelId));
+  return row ?? null;
+}
+
+/** Replaces the stored set (null clears it); the last apply's result is kept. */
+export async function saveChannelLocalizationsSet(
+  channelId: string,
+  set: { localizationsJson: string | null; updatedAt: Date; updatedBy: "owner" | "factory" },
+  database: AppDb = db
+): Promise<void> {
+  await database
+    .insert(channelLocalizations)
+    .values({ channelId, ...set })
+    .onConflictDoUpdate({ target: channelLocalizations.channelId, set });
+}
+
+/** Records the last apply's result (the stored set is kept). */
+export async function saveChannelLocalizationsLastApply(channelId: string, result: { lastApplyJson: string; lastApplyAt: Date }, database: AppDb = db): Promise<void> {
+  await database
+    .insert(channelLocalizations)
+    .values({ channelId, ...result })
+    .onConflictDoUpdate({ target: channelLocalizations.channelId, set: result });
+}
+
+export async function insertChannelLocalizationEvent(row: typeof channelLocalizationEvents.$inferInsert, database: AppDb = db): Promise<void> {
+  await database.insert(channelLocalizationEvents).values(row);
+}
+
+/** Newest first. */
+export async function listChannelLocalizationEvents(channelId: string, limit = 50, database: AppDb = db): Promise<StoredChannelLocalizationEvent[]> {
+  return database
+    .select()
+    .from(channelLocalizationEvents)
+    .where(eq(channelLocalizationEvents.channelId, channelId))
+    .orderBy(desc(channelLocalizationEvents.at), desc(channelLocalizationEvents.id))
+    .limit(limit);
 }
 
 export async function upsertLiveStreamSource(row: typeof liveStreamSources.$inferInsert, database: AppDb = db): Promise<void> {

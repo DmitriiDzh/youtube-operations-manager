@@ -181,6 +181,8 @@ const DOMAIN_ERROR_STATUS = {
   video_workspace_unavailable: 409,
   video_costs_unavailable: 409,
   change_set_incomplete: 500,
+  no_baseline: 409,
+  default_language_mismatch: 409,
   RESEARCH_EXPORT_WORKSPACE_NOT_CONFIGURED: 409,
   RESEARCH_EXPORT_WORKSPACE_UNAVAILABLE: 409,
   RESEARCH_EXPORT_WRITE_FAILED: 500,

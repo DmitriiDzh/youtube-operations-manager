@@ -260,6 +260,10 @@ export type DomainErrorCode =
   // time. WRITE_FAILED: a file could not be written; nothing from that call is left behind.
   // A Change Set was created but not every one of its changes could be read back (see changesets/services.ts persistChangeSet).
   | "change_set_incomplete"
+  // BL-210 (CHANNEL_LOCALIZATIONS_PLAN.md): the channel has no default language and no baseline to set it to; its two default-language
+  // fields (snippet / brandingSettings.channel) disagree. Nothing is written in either case.
+  | "no_baseline"
+  | "default_language_mismatch"
   | "RESEARCH_EXPORT_WORKSPACE_NOT_CONFIGURED"
   | "RESEARCH_EXPORT_WORKSPACE_UNAVAILABLE"
   | "RESEARCH_EXPORT_WRITE_FAILED"

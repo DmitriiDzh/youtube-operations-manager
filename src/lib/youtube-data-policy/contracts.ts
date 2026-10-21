@@ -220,6 +220,8 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
   live_stream_events: authorized("our channels' live-broadcast audit trail and YouTube status changes (BL-176)"),
   live_stream_sources: notApiData("the Operator's map of our videos to local files (BL-176)"),
   live_stream_segments: authorized("our channels' live-stream segment broadcasts: ids, YouTube's start/end times and recording state (BL-205)"),
+  channel_localizations: authorized("our channels' own title/description translations, set by the owner or the Operator, and the last apply's result (BL-210)"),
+  channel_localization_events: authorized("our channels' translations audit trail: languages written and read-back results (BL-210)"),
   ai_connections: notApiData("AI provider configuration"),
   ai_connection_credentials: notApiData("AI provider secrets"),
   agent_channel_tokens: notApiData("agent credentials (hashes)"),
