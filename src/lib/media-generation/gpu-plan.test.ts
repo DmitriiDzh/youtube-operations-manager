@@ -147,3 +147,18 @@ test("AC-SF-02: an empty catalog ([]) is read like an unreadable one -- every li
   assert.deepEqual(candidates, [{ gpuTypeId: "NVIDIA GeForce RTX 4090", pricePerHr: 0.74, memoryInGb: null }]);
   assert.deepEqual(skipped, []);
 });
+
+// Independent review of BL-208: under a price cap an unreadable or empty catalog leaves a fallback's price unknown. That is the
+// catalog's state, not a wrong setting, so the skip is `stock` and a waiting session keeps waiting (plan §E: "a briefly empty
+// catalog does not end a start"). A known price over the cap stays `config`.
+test("BL-208 §E (review): price unknown only because the catalog is unreadable or empty is a `stock` skip", () => {
+  for (const catalog of [null, []]) {
+    const { candidates, skipped } = resolveGpuCandidates({
+      plan: { candidates: ["NVIDIA L4"], minVramGb: null, maxPricePerHr: null },
+      settings: { ...SETTINGS, gpuMaxPricePerHr: 1 },
+      catalog,
+    });
+    assert.deepEqual(candidates, []);
+    assert.deepEqual(skipped, [{ gpuTypeId: "NVIDIA L4", kind: "stock", reason: "price unknown (catalog unavailable) under the $1/h cap (Settings)" }]);
+  }
+});

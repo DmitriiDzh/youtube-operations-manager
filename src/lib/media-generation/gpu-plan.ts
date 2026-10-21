@@ -67,7 +67,8 @@ export function resolveGpuCandidates(args: {
     if (!catalog) {
       const price = id === settings.gpuTypeId ? settings.gpuOnDemandPricePerHr : null;
       if (maxPrice !== null && (price === null || price > maxPrice)) {
-        skipped.push({ gpuTypeId: id, kind: "config", reason: price === null ? `price unknown (catalog unavailable) under the $${maxPrice}/h cap (${priceBound})` : overCap(price) });
+        // Unknown price only because the catalog could not be read: a stock-kind skip (independent review) -- the next round re-reads it.
+        skipped.push({ gpuTypeId: id, kind: price === null ? "stock" : "config", reason: price === null ? `price unknown (catalog unavailable) under the $${maxPrice}/h cap (${priceBound})` : overCap(price) });
         continue;
       }
       candidates.push({ gpuTypeId: id, pricePerHr: price, memoryInGb: null });
