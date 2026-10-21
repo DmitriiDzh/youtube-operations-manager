@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { SUPPORTED_YOUTUBE_LANGUAGES } from "@/lib/youtube-supported-languages";
 import { DomainError } from "./contracts";
-import { createStreamLocalizations, readStoredLocalizations, validateLiveLocalizations } from "./localizations";
+import { createStreamLocalizations, localizationsWarnings, readStoredLocalizations, validateLiveLocalizations } from "./localizations";
 import type { StoredStreamRow } from "./services";
 import { readStoredVideoSettings } from "./video-settings";
 
@@ -232,4 +232,54 @@ test("view: the last localizations step of the last application, with its broadc
   // An application without the step (no set then): none.
   const none = { at: applied.at, detailJson: JSON.stringify({ broadcastId: "B3", steps: [{ step: "fields", ok: true }] }) };
   assert.equal((await service(fake, "en", none).view("UC1")).lastStep, null);
+});
+
+// Independent review 2026-10-21: CRLF line breaks are stored as LF (and counted as stored); a saved set that can never be written
+// is warned about -- the channel's base language now in the set (the step fails closed on it, AC-LL-02), or no base language at
+// all (the fields step then sets no default language and the writer refuses a video without one, AC-LL-03). Values by hand.
+
+test("CRLF: a description 'a\\r\\nb' is stored as 'a\\nb', and its bytes are counted as stored", () => {
+  const result = validateLiveLocalizations({ de: entry("T", "a\r\nb") }, baseline);
+  assert.deepEqual(result, { ok: true, set: { de: { title: "T", description: "a\nb" } } });
+  // "é" is 2 bytes. 1666 × "é\r\n" is 1666 × 4 = 6664 bytes as given, but stored as 1666 × "é\n" = 4998 bytes -- accepted;
+  // 1667 × "é\n" = 5001 bytes -- refused.
+  assert.equal(validateLiveLocalizations({ de: entry("T", "é\r\n".repeat(1666)) }, baseline).ok, true);
+  assert.equal(validateLiveLocalizations({ de: entry("T", "é\r\n".repeat(1667)) }, baseline).ok, false);
+});
+
+const SAVED_VIDEO_SETTINGS = JSON.stringify({
+  v: 1,
+  tags: [],
+  categoryId: null,
+  defaultLanguage: null,
+  defaultAudioLanguage: null,
+  license: "youtube",
+  publicStatsViewable: true,
+  containsSyntheticMedia: false,
+  paidProductPlacement: false,
+  recordingDate: null,
+  playlists: [],
+  thumbnail: null,
+  broadcast: { latencyPreference: "low", enableDvr: false, enableEmbed: true, closedCaptionsType: "closedCaptionsDisabled" },
+});
+
+test("warnings: the channel's base language now in the stored set -- baseline_language_in_set, with the language", async () => {
+  // Saved while the base language was en; the owner then made it de.
+  const fake = fakeStore({ localizationsJson: JSON.stringify({ de: entry("Dt", "Dd"), fr: entry("Ft", "Fd") }), videoSettingsJson: SAVED_VIDEO_SETTINGS });
+  const view = await service(fake, "de").view("UC1");
+  assert.deepEqual(view.warnings.map((w) => [w.code, w.language]), [["baseline_language_in_set", "de"]]);
+  // In any letter case; and none while the base language is not in the set.
+  assert.deepEqual((await service(fake, "DE").view("UC1")).warnings.map((w) => w.code), ["baseline_language_in_set"]);
+  assert.deepEqual((await service(fake, "en").view("UC1")).warnings, []);
+});
+
+test("warnings: the channel has no base language -- no_baseline (saved anyway, a warning, not a refusal); none without a set", async () => {
+  const fake = fakeStore({ videoSettingsJson: SAVED_VIDEO_SETTINGS });
+  const saved = await service(fake, null).save("UC1", { de: entry("Dt", "Dd") });
+  assert.deepEqual(saved.localizations, { de: { title: "Dt", description: "Dd" } });
+  assert.deepEqual(saved.warnings.map((w) => w.code), ["no_baseline"]);
+  assert.deepEqual((await service(fake, null).view("UC1")).warnings.map((w) => w.code), ["no_baseline"]);
+  assert.deepEqual((await service(fake, null).save("UC1", {})).warnings, []);
+  // Both kinds at once: unsaved video settings and no base language.
+  assert.deepEqual(localizationsWarnings({ de: entry() }, { ok: true, settings: null }, null).map((w) => w.code), ["video_settings_not_saved", "no_baseline"]);
 });

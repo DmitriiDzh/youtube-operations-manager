@@ -4541,11 +4541,12 @@ title/description (AGENTS.md §F, PROJECT_SPEC §21), reversing `LIVE_STREAMS_FI
   snapshot's device-local list; the `ytm-live-streams` report does not carry it). `validateLiveLocalizations` (pure, for the MCP
   tool, the route, the store and the page) refuses the whole set if any language fails: exact supported code
   (`suggestYoutubeLanguageCode` gives the letter-case hint), title 1–100 characters after trimming (stored trimmed), description
-  1–5000 bytes (required: blank refused, owner msg 3287), no `<`/`>`, not the channel's baseline (case-insensitive), ≤ 50 languages. `createStreamLocalizations`: `set`
+  1–5000 bytes (required: blank refused, owner msg 3287; CRLF stored and counted as LF), no `<`/`>`, not the channel's baseline (case-insensitive), ≤ 50 languages. `createStreamLocalizations`: `set`
   replaces, `{}` clears (null), a channel without a stream row here is `live_stream_not_found` (404), event `localizations_saved`
   (`{ languages, by: owner | factory }`). `view` adds the warnings (a set while the row's video settings are unsaved or unreadable:
   `video_settings_not_saved` / `video_settings_invalid` -- the step runs only inside `applyVideoSettings`, a warning, never a
-  refusal, owner msg 3287) and the last `localizations` step from the last `video_settings_applied` summary; `save` = `set` + the
+  refusal, owner msg 3287; a set holding the channel's current base language: `baseline_language_in_set` with `language` -- the
+  step fails closed on it; no base language: `no_baseline` -- the video gets no default language, so nothing is written) and the last `localizations` step from the last `video_settings_applied` summary; `save` = `set` + the
   warnings.
   `readStoredLocalizations` reports a stored value that no longer passes (never guessed).
 - **The step** (`live-streams/video-apply.ts`): read once in `broadcasts.ts`'s `runVideoSettings` (the funnel of Start,
@@ -4576,6 +4577,6 @@ title/description (AGENTS.md §F, PROJECT_SPEC §21), reversing `LIVE_STREAMS_FI
   A row per language (select, title, description with a byte counter), Add / Remove / Save (Save sends the whole set; removing
   every row and saving clears it); the warnings, a stored-value problem and the last step shown; the panel's step list, the
   Start summary, the «Применить снова» list and the history name the step and its languages. Rows are replaced from the poll
-  only while unedited. No native dialogs; all text in `ui-text` (`live.translations.*`).
+  only while unedited (compared as stored: title trimmed, description CRLF → LF, so a just-saved card is clean). No native dialogs; all text in `ui-text` (`live.translations.*`).
 - **Not yet verified:** whether
   a live broadcast's video reads its localizations back is unverified until the first real go-live with a set.

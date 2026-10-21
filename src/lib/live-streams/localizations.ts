@@ -42,6 +42,11 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** A description as stored: CRLF line breaks become LF (a pasted Windows text; YouTube keeps LF). */
+export function normalizeDescription(description: string): string {
+  return description.replace(/\r\n/g, "\n");
+}
+
 function entryRefusals(language: string, value: unknown, baselineLanguage: string | null): LiveLocalizationRefusal[] {
   const refusals: LiveLocalizationRefusal[] = [];
   if (!isSupportedYoutubeLanguageCode(language)) {
@@ -68,9 +73,11 @@ function entryRefusals(language: string, value: unknown, baselineLanguage: strin
   else if (titleLength > TITLE_MAX_CHARACTERS) refusals.push({ language, reason: "title_too_long", message: `The title has ${titleLength} characters; YouTube allows ${TITLE_MAX_CHARACTERS}` });
   if (hasAngleBrackets(value.title)) refusals.push({ language, reason: "title_angle_brackets", message: "The title may not contain < or >" });
 
-  // Owner, Telegram msg 3287: a translation needs its description too (1–5000 bytes; empty after trimming is refused).
-  const bytes = new TextEncoder().encode(value.description).length;
-  if (value.description.trim().length === 0) refusals.push({ language, reason: "description_empty", message: "The description is empty" });
+  // Owner, Telegram msg 3287: a translation needs its description too (1–5000 bytes; empty after trimming is refused). Counted
+  // as stored: with CRLF line breaks made LF.
+  const description = normalizeDescription(value.description);
+  const bytes = new TextEncoder().encode(description).length;
+  if (description.trim().length === 0) refusals.push({ language, reason: "description_empty", message: "The description is empty" });
   else if (bytes > DESCRIPTION_MAX_BYTES) refusals.push({ language, reason: "description_too_long", message: `The description has ${bytes} bytes; YouTube allows ${DESCRIPTION_MAX_BYTES}` });
   if (hasAngleBrackets(value.description)) refusals.push({ language, reason: "description_angle_brackets", message: "The description may not contain < or >" });
   return refusals;
@@ -78,7 +85,7 @@ function entryRefusals(language: string, value: unknown, baselineLanguage: strin
 
 /**
  * The whole set, or every reason it is refused (one bad language refuses it all: nothing is half-saved). The title is kept trimmed
- * (as YouTube stores it); the description exactly as given. `baselineLanguage` is the channel's baseline (null = none set).
+ * (as YouTube stores it); the description as given, with CRLF line breaks made LF. `baselineLanguage` is the channel's baseline (null = none set).
  */
 export function validateLiveLocalizations(input: unknown, options: { baselineLanguage: string | null }): LiveLocalizationsValidation {
   if (!isPlainObject(input)) {
@@ -95,7 +102,7 @@ export function validateLiveLocalizations(input: unknown, options: { baselineLan
   const set: LiveLocalizationSet = {};
   for (const language of languages) {
     const value = input[language] as LiveLocalization;
-    set[language] = { title: value.title.trim(), description: value.description };
+    set[language] = { title: value.title.trim(), description: normalizeDescription(value.description) };
   }
   return { ok: true, set };
 }
@@ -121,9 +128,16 @@ export function readStoredLocalizations(json: string | null | undefined): Stored
 
 /**
  * Why a saved set may not reach YouTube (a warning, never a refusal -- owner msg 3287): the translations step runs only when the
- * stream's video settings are saved (`applyVideoSettings` is skipped otherwise), and only as their part.
+ * stream's video settings are saved (`applyVideoSettings` is skipped otherwise), and only as their part; a set holding the
+ * channel's current base language fails on every broadcast (the video's own language is never a translation); without a base
+ * language the broadcast's video gets no default language, and a video without one gets no translations.
  */
-export type LiveLocalizationsWarning = { code: "video_settings_not_saved" | "video_settings_invalid"; message: string };
+export type LiveLocalizationsWarning = {
+  code: "video_settings_not_saved" | "video_settings_invalid" | "baseline_language_in_set" | "no_baseline";
+  message: string;
+  /** `baseline_language_in_set`: the set's language that is the channel's base language now. */
+  language?: string;
+};
 
 /** The last `localizations` step of an application (Start, a segment, «Применить снова»); `error` is the owner's text. */
 export type LiveLocalizationsLastStep = { at: string; broadcastId: string | null; ok: boolean; skipped?: string; error?: string };
@@ -148,16 +162,28 @@ export type StreamLocalizationsDependencies = {
   newId: () => string;
 };
 
-/** The warnings for a saved set, from the row's video settings (none without a set). */
-export function localizationsWarnings(hasSet: boolean, videoSettings: StoredVideoSettings): LiveLocalizationsWarning[] {
-  if (!hasSet) return [];
+/** The warnings for a saved set, from the row's video settings and the channel's base language now (none without a set). */
+export function localizationsWarnings(set: LiveLocalizationSet | null, videoSettings: StoredVideoSettings, baselineLanguage: string | null): LiveLocalizationsWarning[] {
+  if (!set || Object.keys(set).length === 0) return [];
+  const warnings: LiveLocalizationsWarning[] = [];
   if (!videoSettings.ok) {
-    return [{ code: "video_settings_invalid", message: "The stream's saved video settings are unreadable, so nothing is applied after Start -- the translations are not written until they are saved again" }];
+    warnings.push({ code: "video_settings_invalid", message: "The stream's saved video settings are unreadable, so nothing is applied after Start -- the translations are not written until they are saved again" });
+  } else if (videoSettings.settings === null) {
+    warnings.push({ code: "video_settings_not_saved", message: "The stream's video settings are not saved, so nothing is applied after Start -- the translations are written only as part of the video settings: save them" });
   }
-  if (videoSettings.settings === null) {
-    return [{ code: "video_settings_not_saved", message: "The stream's video settings are not saved, so nothing is applied after Start -- the translations are written only as part of the video settings: save them" }];
+  if (baselineLanguage === null || baselineLanguage.trim().length === 0) {
+    warnings.push({ code: "no_baseline", message: "The channel has no base language, so the broadcast's video gets no default language and the translations are not written: set the channel's base language" });
+  } else {
+    const own = Object.keys(set).find((language) => sameLanguage(language, baselineLanguage));
+    if (own) {
+      warnings.push({
+        code: "baseline_language_in_set",
+        message: `The translations hold "${own}", now the channel's base language: the translations step fails on every broadcast until it is removed`,
+        language: own,
+      });
+    }
   }
-  return [];
+  return warnings;
 }
 
 /** The `localizations` step of an application summary, if it ran one. */
@@ -181,8 +207,9 @@ export function lastLocalizationsStep(applied: { at: Date; detailJson: string } 
 }
 
 export function createStreamLocalizations(deps: StreamLocalizationsDependencies) {
-  async function warningsFor(channelId: string, hasSet: boolean): Promise<LiveLocalizationsWarning[]> {
-    return localizationsWarnings(hasSet, deps.readVideoSettings((await deps.store.getStream(channelId))?.videoSettingsJson));
+  async function warningsFor(channelId: string, set: LiveLocalizationSet | null): Promise<LiveLocalizationsWarning[]> {
+    if (!set || Object.keys(set).length === 0) return [];
+    return localizationsWarnings(set, deps.readVideoSettings((await deps.store.getStream(channelId))?.videoSettingsJson), await deps.channelLanguage(channelId));
   }
 
   const service = {
@@ -199,7 +226,7 @@ export function createStreamLocalizations(deps: StreamLocalizationsDependencies)
       return {
         localizations: set,
         problem: stored.ok ? null : stored.problem,
-        warnings: localizationsWarnings(set !== null, deps.readVideoSettings(row?.videoSettingsJson)),
+        warnings: await warningsFor(channelId, set),
         lastStep: lastLocalizationsStep(await deps.lastApplied(channelId)),
       };
     },
@@ -207,7 +234,7 @@ export function createStreamLocalizations(deps: StreamLocalizationsDependencies)
     /** `set`, plus the warnings the saved set has now (MCP and route answer). */
     async save(channelId: string, input: unknown, by: "owner" | "factory" = "owner"): Promise<{ localizations: LiveLocalizationSet; warnings: LiveLocalizationsWarning[] }> {
       const localizations = await service.set(channelId, input, by);
-      return { localizations, warnings: await warningsFor(channelId, Object.keys(localizations).length > 0) };
+      return { localizations, warnings: await warningsFor(channelId, localizations) };
     },
 
     /**

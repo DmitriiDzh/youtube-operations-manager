@@ -50,7 +50,7 @@ in the same branch.
   device-local, like the row.
 - **Validation** (shared by the MCP tool, the route and the store). The language must be an exact supported YouTube code
   (`pt-br` is refused with a "did you mean pt-BR" hint). The title must be 1–100 characters after trimming and the description
-  1–5000 bytes (required: empty after trimming is refused, owner msg 3287). Neither may contain `<` or `>`. The channel's baseline language is refused, because its text is the base
+  1–5000 bytes (required: empty after trimming is refused, owner msg 3287; CRLF line breaks are stored and counted as LF). Neither may contain `<` or `>`. The channel's baseline language is refused, because its text is the base
   text. At most 50 languages.
 - **Semantics.** Saving a set replaces the stored set. An empty set clears it.
 

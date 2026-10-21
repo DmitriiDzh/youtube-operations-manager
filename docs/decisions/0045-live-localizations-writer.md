@@ -24,7 +24,7 @@ translated live stream titles and descriptions). Plan: `docs/roadmap/plans/LIVE_
 1. **Storage.** `live_streams.localizations_json` (schema v101, nullable, device-local like the row): `{ "<lang>": { title,
    description } }`. One pure validator (`live-streams/localizations.ts`) for the MCP tool, the route, the store and the page:
    an exact supported YouTube code (a letter-case near-miss gets a "did you mean" hint), title 1–100 characters after trimming,
-   description 1–5000 bytes (required: empty after trimming is refused, owner msg 3287), no `<` or `>`, never the channel's baseline language, at most 50 languages. One bad entry
+   description 1–5000 bytes (required: empty after trimming is refused, owner msg 3287; CRLF line breaks stored and counted as LF), no `<` or `>`, never the channel's baseline language, at most 50 languages. One bad entry
    refuses the whole set; saving replaces the set; an empty set clears it.
 2. **The writer** is a new module, `src/lib/live-localizations/`, plugged into live-streams at the app layer
    (`src/composition/live-stream-localizations.ts`, AGENTS.md §M), so live-streams still imports no other feature module and works

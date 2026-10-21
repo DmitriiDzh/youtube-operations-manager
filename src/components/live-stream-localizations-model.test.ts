@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { checkRows, languageChoices, refusalsByRow, rowsOf, sameAsSaved, setOf, type TranslationRow } from "./live-stream-localizations-model";
+import { DICTIONARIES } from "@/lib/ui-text";
+import { checkRows, languageChoices, refusalsByRow, rowsOf, sameAsSaved, setOf, WARNING_KEYS, type TranslationRow } from "./live-stream-localizations-model";
 
 // BL-207 stage 5 (LIVE_LOCALIZATIONS_PLAN.md §2 stage 5, AC-LL-07): the card offers supported codes minus the channel baseline and
 // minus the languages other rows use, and shows the same refusals as the server. Expected values by hand from the plan.
@@ -51,4 +52,21 @@ test("server refusals land on the rows of their languages, with the hint", () =>
   const byRow = refusalsByRow(rows, [{ language: "pt-br", reason: "unsupported_language", message: "m", hint: "pt-BR" }]);
   assert.deepEqual(byRow.get("a"), [{ reason: "unsupported_language", hint: "pt-BR" }]);
   assert.equal(byRow.has("b"), false);
+});
+
+test("dirty state: a title with spaces around it and a CRLF description equal the set the server stored (trimmed title, LF)", () => {
+  // The server stores "Jazz Radio" for "  Jazz Radio  " and "a\nb" for "a\r\nb": after a save the card is clean.
+  const stored = { de: { title: "Jazz Radio", description: "a\nb" } };
+  assert.equal(sameAsSaved([row("r1", "de", "  Jazz Radio  ", "a\r\nb")], stored), true);
+  // A real difference still counts.
+  assert.equal(sameAsSaved([row("r1", "de", "Jazz Radio!", "a\nb")], stored), false);
+  assert.equal(sameAsSaved([row("r1", "de", "Jazz Radio", "a\n b")], stored), false);
+});
+
+test("the card has an English and a Russian text for every warning code, the base-language one naming the language", () => {
+  assert.deepEqual(Object.keys(WARNING_KEYS).sort(), ["baseline_language_in_set", "no_baseline", "video_settings_invalid", "video_settings_not_saved"]);
+  for (const language of ["en", "ru"] as const) {
+    for (const key of Object.values(WARNING_KEYS)) assert.ok(DICTIONARIES[language][key], `${language}: ${key}`);
+    assert.match(DICTIONARIES[language][WARNING_KEYS.baseline_language_in_set], /\{language\}/);
+  }
 });

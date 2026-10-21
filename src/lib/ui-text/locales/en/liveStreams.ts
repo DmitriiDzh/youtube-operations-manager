@@ -414,6 +414,8 @@ export const liveStreams = {
   "live.translations.bytes": "{bytes} / {max} bytes",
   "live.translations.warning.videoSettingsNotSaved": "The video settings below are not saved, so nothing is applied after Start: the translations are written only together with them. Save the video settings.",
   "live.translations.warning.videoSettingsInvalid": "The saved video settings cannot be used, so nothing is applied after Start: the translations are not written until the video settings are saved again.",
+  "live.translations.warning.baselineLanguageInSet": "The translations hold {language}, now the channel's base language: its text is the title and description above, so the translations are not written to any broadcast until you remove that row and save.",
+  "live.translations.warning.noBaseline": "The channel has no base language, so the broadcast's video gets no default language and the translations are not written. Set the channel's base language.",
   "live.translations.problem": "The saved translations cannot be used ({problem}). Save them again; until then they are not written.",
   "live.translations.last.ok": "Last write of the translations: done ({at}).",
   "live.translations.last.skipped": "Last write of the translations: skipped ({at}) -- {reason}.",

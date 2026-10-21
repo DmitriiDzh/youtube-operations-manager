@@ -8,7 +8,7 @@ import { LIVE_LOCALIZATIONS_MAX_LANGUAGES, type LiveLocalizationRefusal, type Li
 import { ActionButton, StatusNotice } from "./busy-feedback";
 import { InfoTooltip } from "./info-tooltip";
 import { LoadingIndicator } from "./operation-progress";
-import { checkRows, languageChoices, refusalsByRow, rowsOf, sameAsSaved, setOf, type RowRefusal, type TranslationRow } from "./live-stream-localizations-model";
+import { checkRows, languageChoices, refusalsByRow, rowsOf, sameAsSaved, setOf, WARNING_KEYS, type RowRefusal, type TranslationRow } from "./live-stream-localizations-model";
 import { useT } from "./ui-text-provider";
 
 // BL-207 stage 5 (docs/roadmap/plans/LIVE_LOCALIZATIONS_PLAN.md §2, ADR 0045): «Переводы» -- the stream's title and description in
@@ -21,11 +21,6 @@ const inputClass = "rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text
 const buttonClass = "rounded-lg border border-zinc-700 px-3 py-1 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-50";
 const primaryClass = "rounded-lg bg-zinc-100 px-3 py-1 text-xs font-medium text-zinc-900 hover:bg-white disabled:opacity-50";
 const warnClass = "rounded-lg border border-amber-800/60 bg-amber-950/20 px-3 py-2 text-xs text-amber-200";
-
-const WARNING_KEYS: Record<string, UiTextKey> = {
-  video_settings_not_saved: "live.translations.warning.videoSettingsNotSaved",
-  video_settings_invalid: "live.translations.warning.videoSettingsInvalid",
-};
 
 const SKIPPED_KEYS: Record<string, UiTextKey> = {
   fields_failed: "live.translations.skipped.fields_failed",
@@ -135,7 +130,7 @@ export function LiveStreamLocalizationsCard({
       {view?.problem && <p className={warnClass}>{t("live.translations.problem", { problem: view.problem })}</p>}
       {(view?.warnings ?? []).map((warning) => (
         <p key={warning.code} className={warnClass}>
-          {WARNING_KEYS[warning.code] ? t(WARNING_KEYS[warning.code]) : warning.message}
+          {warning.code in WARNING_KEYS ? t(WARNING_KEYS[warning.code], { language: warning.language ?? "" }) : warning.message}
         </p>
       ))}
       {last &&

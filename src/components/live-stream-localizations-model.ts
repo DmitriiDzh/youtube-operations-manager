@@ -3,7 +3,16 @@
 // `live-streams/localizations.ts`), so the card shows exactly what the server would refuse.
 import { sameLanguage } from "@/lib/shared-language-baseline";
 import { SUPPORTED_YOUTUBE_LANGUAGES } from "@/lib/youtube-supported-languages";
-import { validateLiveLocalizations, type LiveLocalizationRefusal, type LiveLocalizationSet } from "@/lib/live-streams/localizations";
+import type { UiTextKey } from "@/lib/ui-text";
+import { normalizeDescription, validateLiveLocalizations, type LiveLocalizationRefusal, type LiveLocalizationSet, type LiveLocalizationsWarning } from "@/lib/live-streams/localizations";
+
+/** The card's text for each warning the server gives (every code has one: the type requires it). `{language}`: the warning's. */
+export const WARNING_KEYS: Record<LiveLocalizationsWarning["code"], UiTextKey> = {
+  video_settings_not_saved: "live.translations.warning.videoSettingsNotSaved",
+  video_settings_invalid: "live.translations.warning.videoSettingsInvalid",
+  baseline_language_in_set: "live.translations.warning.baselineLanguageInSet",
+  no_baseline: "live.translations.warning.noBaseline",
+};
 
 export type TranslationRow = { id: string; language: string; title: string; description: string };
 
@@ -21,14 +30,19 @@ export function setOf(rows: readonly TranslationRow[]): Record<string, { title: 
   return set;
 }
 
-/** Whether the rows say the same as the saved set (order and the row ids do not matter). */
+/**
+ * Whether the rows say the same as the saved set (order and the row ids do not matter). Compared as the server stores them: the
+ * title trimmed, the description with CRLF made LF -- so a just-saved card is clean and takes the server's (or MCP's) updates.
+ */
 export function sameAsSaved(rows: readonly TranslationRow[], saved: LiveLocalizationSet | null): boolean {
   if (rows.some((row) => !row.language)) return false;
   const a = setOf(rows);
   const b = saved ?? {};
   const keys = Object.keys(a);
   if (keys.length !== Object.keys(b).length) return false;
-  return keys.every((key) => b[key] !== undefined && b[key].title === a[key].title && b[key].description === a[key].description);
+  return keys.every(
+    (key) => b[key] !== undefined && b[key].title.trim() === a[key].title.trim() && normalizeDescription(b[key].description) === normalizeDescription(a[key].description)
+  );
 }
 
 /**

@@ -902,7 +902,8 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   - Этап 4: MCP `factory_live_save_localizations` (Factory API 1.27.0, локальная запись, проход через device mutation gate,
     нет трансляции — `live_stream_not_found`) и `factory_live_get_status.localizations` (набор, предупреждения, последний шаг —
     коды); маршрут `GET/PUT /api/channels/[channelId]/live-stream/localizations` и поле `localizations` в обзоре трансляции.
-    Набор без сохранённых настроек видео — предупреждение `video_settings_not_saved`, не отказ (владелец, msg 3287).
+    Набор без сохранённых настроек видео — предупреждение `video_settings_not_saved`, не отказ (владелец, msg 3287); набор с
+    нынешним основным языком канала — `baseline_language_in_set`, канал без основного языка — `no_baseline` (тоже предупреждения).
   - Этап 5: карточка «Переводы» (`src/components/live-stream-localizations.tsx`, логика —
     `live-stream-localizations-model.ts`) под настройками трансляции: строка на язык (язык, название, описание), добавить /
     убрать / сохранить, отказы сервера по строкам, предупреждение и результат последнего шага; шаг `localizations` в списках шагов.
