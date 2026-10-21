@@ -119,6 +119,10 @@ controls for one thing could disagree. Whether they are the same flag is **UNVER
 - **No daily restart** (msg 2785). The 12-hour archive limit (`LIVE_STREAMS_PLAN.md` §1.3) is irrelevant: recording is off.
 
 ### 2.3 Translations and AGENTS.md §F
+> **Reversed 2026-10-21 (owner, Telegram msg 3257, BL-207, ADR 0045, `LIVE_LOCALIZATIONS_PLAN.md`).** The stream now holds one
+> translations set, written to every broadcast and segment by a second, narrowly scoped `localizations` writer
+> (`src/lib/live-localizations/`). The text below is the original decision, kept for history.
+
 - **The Change Set / localization mechanism keeps sole authority over per-language title/description.** This plan adds no
   second `localizations` writer: the stream's settings hold the **base** title and description only.
 - After Start, the broadcast is a channel video. The stream page links «Переводы» to that video in the existing

@@ -487,7 +487,9 @@ async function startServerSession() {
   try {
     // BL-205: the segment switcher applies the video settings and adds recordings through modules plugged in here (§M).
     const { createLiveStreamVideoFields } = await import("@/composition/live-stream-video-fields");
-    liveStreams = (await import("@/lib/live-streams")).createLiveStreamsRunnerCore({ videoFields: createLiveStreamVideoFields() });
+    // BL-207: the stream's translations go to every segment too.
+    const { createLiveStreamLocalizations } = await import("@/composition/live-stream-localizations");
+    liveStreams = (await import("@/lib/live-streams")).createLiveStreamsRunnerCore({ videoFields: createLiveStreamVideoFields(), localizations: createLiveStreamLocalizations() });
   } catch (error) {
     console.warn(`[live-streams] not started: ${error instanceof Error ? error.message : String(error)}`);
   }

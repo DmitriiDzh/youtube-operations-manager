@@ -18,8 +18,9 @@ export { DomainError, isDomainError, parseWithSchema, formatZodError, mapUnknown
  * sent as blank (AGENTS.md §F / the owner's explicit "не перезаписывая всё остальное").
  *
  * Deliberately excludes `localizations` entirely -- this module can never read or write a
- * locale; that stays the exclusive responsibility of `src/lib/localization/`/`src/lib/changesets/`
- * (no parallel implementation, AGENTS.md §D). Fields confirmed writable via the OFFICIAL
+ * locale; that belongs to the Change Set mechanism (`src/lib/localization/`/`src/lib/changesets/`, written by Batches) and,
+ * for a live broadcast's video only, to `src/lib/live-localizations/` (BL-207, ADR 0045) -- both through the one shared merge
+ * `src/lib/shared-localization-merge/` (AGENTS.md §D/§F). Fields confirmed writable via the OFFICIAL
  * "You can set values for these properties" list on developers.google.com's `videos.update`/
  * `videos.insert` reference (checked live 2026-09-20) -- `madeForKids`,
  * and every `contentDetails.*` field (age restriction, region restriction) are readable but NOT

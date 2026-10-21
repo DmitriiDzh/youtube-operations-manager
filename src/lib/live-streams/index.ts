@@ -28,7 +28,8 @@ import { createLiveStreamsStore } from "./adapters/store";
 import { createThumbnailFs } from "./adapters/thumbnail-fs";
 import { createLiveStreamsYoutubeReads } from "./adapters/youtube-api";
 import { createLiveStreamBuffer } from "./buffer";
-import type { VideoFieldsPort } from "./video-apply";
+import type { LocalizationsPort, VideoFieldsPort } from "./video-apply";
+import { createStreamLocalizations } from "./localizations";
 import { createLiveBroadcasts } from "./broadcasts";
 import { createLiveStreamsYoutubeWrites } from "./adapters/youtube-writes";
 import { createLiveStreamsRunner } from "./runner";
@@ -74,6 +75,20 @@ export function createStreamVideoSettingsCore() {
     newId: () => randomUUID(),
   });
 }
+
+/** BL-207: the stream's title/description translations, saved on this computer (one set per stream). Local only. */
+export function createStreamLocalizationsCore() {
+  return createStreamLocalizations({
+    store: createLiveStreamsStore(),
+    channelLanguage: async (channelId) => (await getChannelExpectedLanguages(channelId)).defaultLanguage,
+    clock: () => new Date(),
+    newId: () => randomUUID(),
+  });
+}
+
+/** The video-level writers the app layer plugs in (AGENTS.md §M): video-details/playlist-management (BL-186), live-localizations
+ * (BL-207). Either absent: Start works as before and that part is reported as not applied. */
+export type LiveVideoWriters = { videoFields?: VideoFieldsPort; localizations?: LocalizationsPort };
 
 /** BL-187: the «Добавить видео…» dialog's list -- `04 Videos/` of the channel workspace matched to the channel's videos. Read-only. */
 export function createRotationPickerCore() {
@@ -140,10 +155,11 @@ export function createStreamSupervisorCore() {
  * The owner's attended actions: Start, Go live, Stop, Edit, Apply again -- the only live-stream code that writes to YouTube.
  * `videoFields` (BL-186 stage 3) is plugged in by the app layer: this module imports no other feature module (AGENTS.md §M).
  */
-export function createLiveBroadcastsCore(options: { videoFields?: VideoFieldsPort } = {}) {
+export function createLiveBroadcastsCore(options: LiveVideoWriters = {}) {
   const thumbnails = createThumbnailFs(getProductionAppPaths().liveStreamsThumbnailsDir);
   return createLiveBroadcasts({
     videoFields: options.videoFields,
+    localizations: options.localizations,
     channelLanguage: async (channelId) => (await getChannelExpectedLanguages(channelId)).defaultLanguage,
     thumbnails: { read: (channelId) => thumbnails.read(channelId) },
     settings: () => createLiveStreamsSettingsCore().get(),
@@ -222,7 +238,7 @@ export async function listPeerLiveStreams(): Promise<Array<{ deviceId: string; h
  * BL-205 (LIVE_SEGMENTS_PLAN.md): the segment switcher. Its writes are the app's own (ADR 0044), made with the channel's connected
  * account after Live writes and the identity check, each through the gateway adapter. `videoFields` is plugged in by the app layer.
  */
-export function createLiveSegmentsCore(options: { videoFields?: VideoFieldsPort } = {}): LiveSegments {
+export function createLiveSegmentsCore(options: LiveVideoWriters = {}): LiveSegments {
   const writes = createLiveStreamsYoutubeWrites();
   const broadcasts = createLiveBroadcastsCore(options);
   const supervisor = createStreamSupervisorCore();
@@ -286,7 +302,7 @@ export function createLiveSegmentsCore(options: { videoFields?: VideoFieldsPort 
   });
 }
 
-export function createLiveStreamsRunnerCore(options: { videoFields?: VideoFieldsPort } = {}) {
+export function createLiveStreamsRunnerCore(options: LiveVideoWriters = {}) {
   return createLiveStreamsRunner({
     settings: () => createLiveStreamsSettingsCore().get(),
     listStreams: () => listLiveStreams(),
@@ -340,7 +356,9 @@ export type { PickerRow, PickerRowState, PickerVideo, MatchSource } from "./pick
 export type { PickerResult } from "./picker-service";
 export { checkOriginal, checkPublicOnly, classifyRunEnd, locatePlayback, passLength, planBuffer, canCopyIntoBuffer } from "./rotation";
 
-export type { VideoFieldsPort, VideoApplyResult } from "./video-apply";
+export type { LocalizationsPort, VideoFieldsPort, VideoApplyResult } from "./video-apply";
+export { LIVE_LOCALIZATIONS_MAX_LANGUAGES, readStoredLocalizations, validateLiveLocalizations } from "./localizations";
+export type { LiveLocalization, LiveLocalizationRefusal, LiveLocalizationSet, LiveLocalizationsValidation, StoredLocalizations } from "./localizations";
 
 /** BL-205: the segment settings (local, no YouTube write) and the segments view for the page and the Operator. Local reads only. */
 export function createLiveSegmentSettingsCore() {

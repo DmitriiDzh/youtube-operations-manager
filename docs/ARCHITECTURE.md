@@ -3922,7 +3922,8 @@ Plan: `docs/roadmap/plans/LIVE_STREAMS_PLAN.md` (FO-REQ-0019). Schema v86, Facto
   `liveBroadcasts.insert` (no new call or unit; never saved = not sent, YouTube's defaults). The video-level fields are shown in the
   Start dialog as "not sent yet": applying them (`videos.update`, `thumbnails.set`, `playlistItems.insert`) is stage 3, after spike
   C. The field limits and lists live in the shared `src/lib/youtube-video-fields/` (publishing re-exports them). Translations of
-  the broadcast's title/description go through the normal localization screens (plan §2.3), never these settings.
+  the broadcast's title/description are not these settings: they are the stream's own set (BL-207, see "Live stream translations
+  at publish" below; this reverses plan §2.3).
 - **Risks:** RISK-125 (the key in ffmpeg's argv), RISK-126 (the T9 every ~2 h).
 
 ## 46. The channel's language is the truth for localization (BL-178, FO-REQ-0022)
@@ -4527,3 +4528,33 @@ Plan: `docs/roadmap/plans/VIDEO_COST_PLAN.md` §2 stages 2-4 (criteria 3-9). Sch
   - RunPod's REST API cannot exclude a machine, so "avoid a bad host" (request item 3) is not done; a retry may land anywhere.
 - **Not done.** Our own Docker image; pruning old runtimes from the volume (RISK-132); running a template's job in the test.
 
+## BL-207 — live stream translations at publish (ADR 0045)
+
+Owner msgs 3254/3257; plan `docs/roadmap/plans/LIVE_LOCALIZATIONS_PLAN.md`. A second, narrowly scoped writer of per-language
+title/description (AGENTS.md §F, PROJECT_SPEC §21), reversing `LIVE_STREAMS_FIELDS_PLAN.md` §2.3.
+
+- **Shared merge** (`src/lib/shared-localization-merge/`, pure): `buildSafeLocalizationsPayload`, `checkDefaultLanguage`,
+  `localeKeyFor` and the fresh-video types, moved unchanged from `batches/merge.ts` (which re-exports them; Batches-only types
+  such as `PendingChange` stay there). The change input is the narrow `LocalizationFieldChange`. `hasAngleBrackets` moved from
+  `publishing/packages.ts` into `youtube-video-fields`.
+- **The set** (`live-streams/localizations.ts`): schema v101 `live_streams.localizations_json`, device-local (the table is in the
+  snapshot's device-local list; the `ytm-live-streams` report does not carry it). `validateLiveLocalizations` (pure, for the MCP
+  tool, the route, the store and the page) refuses the whole set if any language fails: exact supported code
+  (`suggestYoutubeLanguageCode` gives the letter-case hint), title 1–100 characters after trimming (stored trimmed), description
+  ≤ 5000 bytes, no `<`/`>`, not the channel's baseline (case-insensitive), ≤ 50 languages. `createStreamLocalizations`: `set`
+  replaces, `{}` clears (null), a channel without a stream row here is `not_found`, event `localizations_saved`.
+  `readStoredLocalizations` reports a stored value that no longer passes (never guessed).
+- **The step** (`live-streams/video-apply.ts`): read once in `broadcasts.ts`'s `runVideoSettings` (the funnel of Start,
+  «Применить снова» and segments). Right after the fields step: corrupt set → failed step; no set → no step; fields not verified
+  → `skipped: "fields_failed"`; stream stopped/replaced → the usual skip; port absent → failed step; otherwise the port's result
+  (`YouTube reads back something else: <detail>` when not verified). Events `video_settings_step` as for every step. The dry runs
+  add 52 units and the languages when a set exists.
+- **The writer** (`src/lib/live-localizations/`, plugged in by `src/composition/live-stream-localizations.ts` in the routes and
+  the server's runner): `assertWriteChannel` → fresh `getVideoMetadataContext` (read gateway), re-read until it shows the fields
+  step's tags (any order), category and languages — else `update_failed` and nothing sent → `checkDefaultLanguage` → the set
+  holding the video's own language fails closed → backup (`kind: "localization"` with snippet text) → the shared merge, with the
+  audio language just read sent back (not `zxx`) → `assertLiveWritesAuthorized` → `applyVideoMetadataUpdate` → read-back of each
+  written language (key case-insensitive) and the snippet text, up to 6 reads 10 s apart, telling "language missing" from "text
+  differs" → audit BACKUP/RESULT/VERIFICATION (`video_edit_audit_events`, `source: "live_localizations"`).
+- **Not yet:** the MCP tool `factory_live_set_localizations` and the status field (stage 4), the «Переводы» card (stage 5). Whether
+  a live broadcast's video reads its localizations back is unverified until the first real go-live with a set.

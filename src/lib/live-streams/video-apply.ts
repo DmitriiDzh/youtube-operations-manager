@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { ResolvedCredentials } from "@/lib/shared-domain";
 import type { LiveVideoSettings } from "./fields";
+import type { LiveLocalizationSet, StoredLocalizations } from "./localizations";
 
 // ---------------------------------------------------------------------------
 // BL-186 stage 3 (docs/roadmap/plans/LIVE_STREAMS_FIELDS_PLAN.md §2.2, §5 stage 3; spike C §4.2): the broadcast's video-level
@@ -20,8 +21,19 @@ export type VideoFieldsPort = {
   addToPlaylist(args: { credentialRef: unknown; channelId: string; playlistId: string; videoId: string }): Promise<{ added: boolean; reason?: string }>;
 };
 
+/**
+ * BL-207 (LIVE_LOCALIZATIONS_PLAN.md §2 stage 3, ADR 0045): the translations writer, plugged in by the app layer like the fields
+ * (`live-localizations`). It checks the identity, reads the video fresh, keeps every other language, backs up, checks Live writes
+ * right before its one `videos.update` and reads back. `expected`: the fields step's snippet values, which the fresh read must
+ * already show (the snippet part is sent whole). Absent, a stored set is reported as not applied.
+ */
+export type LocalizationsPort = {
+  apply(args: { credentialRef: unknown; channelId: string; videoId: string; localizations: LiveLocalizationSet; expected: Record<string, unknown> }): Promise<{ verified: true } | { verified: false; detail: string }>;
+};
+
 export type VideoApplyDependencies = {
   videoFields?: VideoFieldsPort;
+  localizations?: LocalizationsPort;
   youtube: {
     setThumbnail(credentials: ResolvedCredentials, videoId: string, image: { mimeType: "image/jpeg" | "image/png"; bytes: Buffer }): Promise<void>;
     playlistHasVideo(credentials: ResolvedCredentials, playlistId: string, videoId: string): Promise<boolean>;
@@ -37,7 +49,7 @@ export type VideoApplyDependencies = {
   credentials?(): Promise<ResolvedCredentials>;
 };
 
-export type VideoApplyStep = { step: string; ok: boolean; skipped?: "already_in_playlist" | "stream_stopped" | "broadcast_replaced"; error?: string };
+export type VideoApplyStep = { step: string; ok: boolean; skipped?: "already_in_playlist" | "stream_stopped" | "broadcast_replaced" | "fields_failed"; error?: string };
 export type VideoApplyResult = { broadcastId: string; ok: boolean; steps: VideoApplyStep[]; notApplied?: "module_unavailable" };
 
 /** A playlist add YouTube refused once is tried once more after this pause (spike C: a 409 right after the playlist changed). */
@@ -69,17 +81,34 @@ export function buildVideoPatch(settings: LiveVideoSettings, channelLanguage: st
   return patch;
 }
 
+/** BL-207: the translations step's units when a set is stored -- 1 fresh read + 50 for the update + 1 read-back (more only while
+ * YouTube still reads back something else). */
+export const LOCALIZATIONS_STEP_UNITS = 1 + 50 + 1;
+
 /** What applying would send, and its quota units: 1 read + 50 for the update (+ up to 3 read-back reads), 50 for the thumbnail,
  * and per playlist 1 read for its owner, 1 for its items and 50 for the insert; + 1 identity read for the fresh credentials the
- * thumbnail and playlist steps use (2026-10-20). */
-export function describeVideoApply(settings: LiveVideoSettings, channelLanguage: string | null): { patch: Record<string, unknown>; thumbnail: boolean; playlists: Array<{ id: string; title: string }>; units: number } {
+ * thumbnail and playlist steps use (2026-10-20). BL-207: with stored translations, their languages and step units. */
+export function describeVideoApply(
+  settings: LiveVideoSettings,
+  channelLanguage: string | null,
+  localizationLanguages: readonly string[] = []
+): { patch: Record<string, unknown>; thumbnail: boolean; playlists: Array<{ id: string; title: string }>; units: number; localizations?: string[] } {
   const thumbnail = settings.thumbnail !== null;
+  const translated = localizationLanguages.length > 0;
   return {
     patch: buildVideoPatch(settings, channelLanguage),
     thumbnail,
     playlists: settings.playlists,
-    units: 1 + 50 + 1 + (thumbnail ? 50 : 0) + settings.playlists.length * 52 + (thumbnail || settings.playlists.length > 0 ? 1 : 0),
+    units: 1 + 50 + 1 + (thumbnail ? 50 : 0) + settings.playlists.length * 52 + (thumbnail || settings.playlists.length > 0 ? 1 : 0) + (translated ? LOCALIZATIONS_STEP_UNITS : 0),
+    ...(translated ? { localizations: [...localizationLanguages] } : {}),
   };
+}
+
+/** The snippet values the fields step sends, which the translations step's fresh read must show before it sends the snippet back. */
+function expectedSnippet(patch: Record<string, unknown>): Record<string, unknown> {
+  const expected: Record<string, unknown> = {};
+  for (const field of ["tags", "categoryId", "defaultLanguage", "defaultAudioLanguage"]) if (field in patch) expected[field] = patch[field];
+  return expected;
 }
 
 function message(error: unknown): string {
@@ -88,7 +117,17 @@ function message(error: unknown): string {
 
 export async function applyVideoSettings(
   deps: VideoApplyDependencies,
-  args: { channelId: string; broadcastId: string; credentialRef: unknown; credentials: ResolvedCredentials; settings: LiveVideoSettings; channelLanguage: string | null; trigger: "start" | "again" | "segment" }
+  args: {
+    channelId: string;
+    broadcastId: string;
+    credentialRef: unknown;
+    credentials: ResolvedCredentials;
+    settings: LiveVideoSettings;
+    channelLanguage: string | null;
+    trigger: "start" | "again" | "segment";
+    /** BL-207: the stream's stored translations (one set for every broadcast and segment); absent or none = no step. */
+    localizations?: StoredLocalizations;
+  }
 ): Promise<VideoApplyResult> {
   const { channelId, broadcastId, settings } = args;
   const steps: VideoApplyStep[] = [];
@@ -104,8 +143,11 @@ export async function applyVideoSettings(
   }
 
   // 1. The video's fields: one videos.update through video-details (identity, backup, merge onto a fresh read, read-back).
+  const patch = buildVideoPatch(settings, args.channelLanguage);
+  let fieldsOk = false;
   try {
-    const { verified } = await deps.videoFields.apply({ credentialRef: args.credentialRef, channelId, videoId: broadcastId, patch: buildVideoPatch(settings, args.channelLanguage) });
+    const { verified } = await deps.videoFields.apply({ credentialRef: args.credentialRef, channelId, videoId: broadcastId, patch });
+    fieldsOk = verified;
     await record(verified ? { step: "fields", ok: true } : { step: "fields", ok: false, error: "YouTube reads back something else" });
   } catch (error) {
     await record({ step: "fields", ok: false, error: message(error) });
@@ -122,6 +164,30 @@ export async function applyVideoSettings(
   // Resolved once, right before the first step that needs it (one identity read per run, as the preview counts).
   let freshCredentials: Promise<ResolvedCredentials> | null = null;
   const fresh = () => (freshCredentials ??= deps.credentials ? deps.credentials() : Promise.resolve(args.credentials));
+
+  // 1b. BL-207: the stream's translations, only after the fields were written and read back (its snippet is sent whole, from a
+  // fresh read that must show them). No stored set: no step and no call (like a thumbnail never chosen).
+  const stored = args.localizations;
+  if (stored && !stored.ok) {
+    await record({ step: "localizations", ok: false, error: `${stored.problem}. Save the stream's translations again.` });
+  } else if (stored?.set) {
+    const set = stored.set;
+    if (!fieldsOk) {
+      await record({ step: "localizations", ok: true, skipped: "fields_failed" });
+    } else if (await stillCurrent("localizations")) {
+      if (!deps.localizations) {
+        await record({ step: "localizations", ok: false, error: "The translations cannot be written here (the live translations module is not available)" });
+      } else {
+        try {
+          const result = await deps.localizations.apply({ credentialRef: args.credentialRef, channelId, videoId: broadcastId, localizations: set, expected: expectedSnippet(patch) });
+          // Whether a live broadcast's video reads its localizations back is unverified (plan §3): the detail says what differs.
+          await record(result.verified ? { step: "localizations", ok: true } : { step: "localizations", ok: false, error: `YouTube reads back something else: ${result.detail}` });
+        } catch (error) {
+          await record({ step: "localizations", ok: false, error: message(error) });
+        }
+      }
+    }
+  }
 
   // 2. The thumbnail, only the file the settings name (its SHA-256 must still match: a changed file is not sent unseen).
   if (settings.thumbnail && (await stillCurrent("thumbnail"))) {

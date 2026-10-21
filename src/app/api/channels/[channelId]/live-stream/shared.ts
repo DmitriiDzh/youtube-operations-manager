@@ -5,6 +5,7 @@ import { authOptions } from "@/lib/auth";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { getChannelExpectedLanguages, latestLiveStreamEvent, listLiveStreamEvents } from "@/lib/db";
 import { createLiveStreamVideoFields } from "@/composition/live-stream-video-fields";
+import { createLiveStreamLocalizations } from "@/composition/live-stream-localizations";
 import {
   collectLiveStreamEntries,
   listPeerLiveStreams,
@@ -65,7 +66,7 @@ function objectBody(body: unknown): Record<string, unknown> {
 
 export function createLiveStreamRouteCore(): LiveStreamRouteCore {
   const rotation = createLiveStreamsCore();
-  const broadcasts = createLiveBroadcastsCore({ videoFields: createLiveStreamVideoFields() });
+  const broadcasts = createLiveBroadcastsCore({ videoFields: createLiveStreamVideoFields(), localizations: createLiveStreamLocalizations() });
   const supervisor = createStreamSupervisorCore();
   const settings = createLiveStreamsSettingsCore();
   const videoSettings = createStreamVideoSettingsCore();

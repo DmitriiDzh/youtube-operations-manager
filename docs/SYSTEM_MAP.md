@@ -885,8 +885,22 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   - API: `PUT .../live-stream/segments`. Карточка «Перезапуск эфира».
   - `factory_live_get_status.segments` (Factory API 1.25.0).
   - Композиция модулей для раннера и маршрутов — `src/composition/live-stream-video-fields.ts`.
+- **BL-207 переводы трансляции при публикации (`docs/roadmap/plans/LIVE_LOCALIZATIONS_PLAN.md`, ADR 0045, ветка
+  `feature/live-localizations`, этапы 1–3; MCP и карточка — этапы 4–5, ещё не сделаны):**
+  - Один набор переводов на трансляцию: схема **v101** `live_streams.localizations_json` (только этот компьютер);
+    `live-streams/localizations.ts` — общий чистый валидатор (точный код YouTube с подсказкой регистра, заголовок 1–100,
+    описание ≤ 5000 байт, без `<`/`>`, не базовый язык канала, ≤ 50 языков, весь набор или ничего) и хранилище (замена,
+    пустой набор очищает).
+  - Второй разрешённый писатель `localizations` (AGENTS.md §F) — модуль `src/lib/live-localizations/`, подключается портом
+    `LocalizationsPort` через `src/composition/live-stream-localizations.ts` (маршруты и раннер сегментов).
+  - Шаг `localizations` в `applyVideoSettings` сразу после полей и только при их успехе (иначе `skipped: fields_failed`); нет
+    набора — нет шага и вызовов. Конвейер: `assertWriteChannel` → свежее `videos.list snippet,localizations` (должно уже
+    показывать значения полей) → `checkDefaultLanguage` → собственный язык видео в наборе = отказ → бэкап → общее слияние →
+    `assertLiveWritesAuthorized` → `videos.update` → проверка чтением (отличает «language missing» от «text differs») → аудит.
+- **Общий модуль `src/lib/shared-localization-merge/`** (BL-207, §M): `buildSafeLocalizationsPayload`, `checkDefaultLanguage`,
+  `localeKeyFor` — вынесены из `batches/merge.ts` (тот реэкспортирует); им пользуются Batches и `live-localizations`.
 - **Общий модуль `src/lib/youtube-video-fields/`** (BL-186, §M): лимиты и списки полей видео (500 символов тегов, 2 МБ обложки,
-  категории, лицензии, тип картинки по байтам); публикация реэкспортирует их без изменений.
+  категории, лицензии, тип картинки по байтам, `hasAngleBrackets` — BL-207); публикация реэкспортирует их без изменений.
 - **Риски:** RISK-125 (ключ в командной строке ffmpeg), RISK-126 (T9 нужен раз в ~2 ч).
 
 ### 2.9ak Картинки и видео через Gemini API под управлением оператора (BL-174, ADR 0035, `docs/roadmap/plans/GEMINI_MEDIA_PLAN.md`) — **IMPLEMENTED, влито в `dev` (`e72502e`)**
