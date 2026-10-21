@@ -28,7 +28,7 @@ type UploadRow = {
 };
 
 const ACTIVE = new Set(["queued", "uploading", "processing", "finishing", "paused"]);
-const FAILED_KEYS = new Set(["unknown_outcome", "package_changed", "processing_rejected", "processing_failed", "WRITE_CHANNEL_MISMATCH"]);
+const FAILED_KEYS = new Set(["unknown_outcome", "package_changed", "video_hash_mismatch", "processing_rejected", "processing_failed", "WRITE_CHANNEL_MISMATCH"]);
 const STATUS_STYLE: Record<UploadRow["status"], string> = {
   queued: "bg-zinc-800 text-zinc-300",
   uploading: "bg-indigo-950/60 text-indigo-200",

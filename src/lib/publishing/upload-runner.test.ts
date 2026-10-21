@@ -707,3 +707,46 @@ test("AC-AU-10: an automatic row is inserted private without publishAt, never ge
   assert.deepEqual(h.publishAtWrites, []);
   assert.ok(h.yt.log.includes("playlist PL_jazz vid1"));
 });
+
+// BL-209 review L5: an automatic row's video is hashed again right before a new session starts -- a mismatch fails the row for good
+// with `video_hash_mismatch` before any YouTube call; a resumed session is never hashed again; an approval's row is never hashed.
+test("review L5: an automatic row whose video no longer matches its manifest's SHA-256 fails before any YouTube call", async () => {
+  const sha = (videoHash: string) => async (path: string) => (path.endsWith(".mp4") ? videoHash : "sha-approved");
+  const identityCalls: string[] = [];
+  const h = harness([job({ publishAt: null, automatic: true, packageJson: JSON.stringify({ ...PKG, videoSha256: "a".repeat(64) }) })], {
+    assertWriteChannel: async () => void identityCalls.push("identity"),
+  });
+  h.deps.files.sha256 = sha("b".repeat(64));
+  await h.runAll();
+  assert.deepEqual([h.row().status, h.row().errorCode], ["failed", "video_hash_mismatch"]);
+  assert.deepEqual([h.yt.log, identityCalls, h.yt.videos.length], [[], [], 0]);
+  await h.runAll();
+  assert.deepEqual(h.yt.log, [], "not retried");
+});
+
+test("review L5: a matching automatic row uploads; a resumed session is not hashed again; an approval's row is never hashed", async () => {
+  const hashed: string[] = [];
+  const counting = (videoHash: string) => async (path: string) => {
+    if (path.endsWith(".mp4")) hashed.push(path);
+    return path.endsWith(".mp4") ? videoHash : "sha-approved";
+  };
+  const ok = harness([job({ publishAt: null, automatic: true, packageJson: JSON.stringify({ ...PKG, videoSha256: "a".repeat(64) }) })]);
+  ok.deps.files.sha256 = counting("a".repeat(64));
+  await ok.runAll();
+  assert.deepEqual([ok.row().status, hashed.length], ["done", 1]);
+
+  // Resuming: a session holds 4 bytes already; the file now hashes differently -- not looked at, the upload finishes.
+  hashed.length = 0;
+  const resumed = harness([job({ publishAt: null, automatic: true, status: "uploading", attempts: 1, packageJson: JSON.stringify({ ...PKG, videoSha256: "a".repeat(64) }) })]);
+  resumed.deps.files.sha256 = counting("b".repeat(64));
+  await resumed.deps.gateway.begin({ accessToken: "t", resource: { snippet: { title: PKG.title, description: "" }, status: { privacyStatus: "private", selfDeclaredMadeForKids: false } }, contentLength: 10, contentType: "video/*", notifySubscribers: false });
+  await resumed.deps.gateway.putChunk({ accessToken: "t", sessionUri: "https://www.googleapis.com/upload/youtube/v3/videos?s=1", chunk: VIDEO_BYTES.subarray(0, 4), start: 0, total: 10, contentType: "video/*" });
+  resumed.store.set("u1", { ...resumed.row(), sessionUri: "https://www.googleapis.com/upload/youtube/v3/videos?s=1", storedBytes: 4 });
+  await resumed.runAll();
+  assert.deepEqual([resumed.row().status, hashed.length], ["done", 0]);
+
+  const manual = harness([job({ publishAt: null })]);
+  manual.deps.files.sha256 = counting("b".repeat(64));
+  await manual.runAll();
+  assert.deepEqual([manual.row().status, hashed.length], ["done", 0]);
+});

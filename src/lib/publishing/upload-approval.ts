@@ -138,6 +138,8 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
         videoFile: `${folder}/${pkg.files.video}`,
         thumbnailFile: `${folder}/${pkg.files.thumbnail}`,
         sizeBytes: pkg.sizeBytes,
+        // Review L5: the runner checks an automatic row's file against it before a session starts.
+        ...(args.mode.automatic && pkg.sha256 ? { videoSha256: pkg.sha256 } : {}),
       };
       return {
         id: deps.newId(),

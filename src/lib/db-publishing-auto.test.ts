@@ -5,11 +5,12 @@ import path from "node:path";
 import test from "node:test";
 import { drizzle } from "drizzle-orm/libsql";
 import { createLibsqlClient } from "@/lib/libsql-client";
-import { initializeDatabaseSchema, insertPublishingUploads, listAutoQueuedManifestHashes, SCHEMA_MIGRATIONS, type AppDb, type StoredPublishingUpload } from "@/lib/db";
+import { initializeDatabaseSchema, insertPublishingUploads, listTriedManifestHashes, SCHEMA_MIGRATIONS, type AppDb, type StoredPublishingUpload } from "@/lib/db";
 
 // BL-209 (AUTO_PRIVATE_UPLOAD_PLAN.md §2 item 6, ADR 0046; ADR 0001: additive only) on a real migrated temporary database: schema
 // v103 adds `publishing_uploads.automatic` (NOT NULL DEFAULT 0, so every older row reads as an approval), converges when run again,
-// and the manifest hashes the automatic upload tried are listed per channel whatever became of their rows.
+// and the manifest hashes already tried are listed per channel whatever became of their rows -- automatic or the owner's own
+// (review M1: an upload the owner cancelled, or one that failed, never comes back by itself).
 
 async function withDb(run: (database: AppDb, client: ReturnType<typeof createLibsqlClient>) => Promise<void>): Promise<void> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "db-auto-upload-"));
@@ -68,15 +69,16 @@ test("v103: an older row reads as not automatic; the migration runs again withou
     await SCHEMA_MIGRATIONS.find((m) => m.version === 103)!.apply(client);
     const read = await client.execute("SELECT automatic FROM publishing_uploads WHERE id = 'old'");
     assert.equal(Number(read.rows[0].automatic), 0);
-    assert.deepEqual([...(await listAutoQueuedManifestHashes("UC1", database))], []);
+    // Review M1 changed the rule: an approval's row (here the old one) also counts as tried.
+    assert.deepEqual([...(await listTriedManifestHashes("UC1", database))], ["mf-old"]);
   }));
 
-test("BL-209: the automatic upload's tried manifest hashes -- automatic rows of the channel only, any status", () =>
+test("BL-209 review M1: the tried manifest hashes -- every row of the channel, automatic or manual, any status", () =>
   withDb(async (database) => {
     assert.equal(await insertPublishingUploads([row({ id: "a1", automatic: true, manifestSha256: "mf-1", status: "failed", errorCode: "package_changed" })], database), true);
     assert.equal(await insertPublishingUploads([row({ id: "a2", automatic: true, manifestSha256: "mf-2", status: "cancelled" })], database), true);
     assert.equal(await insertPublishingUploads([row({ id: "m1", automatic: false, manifestSha256: "mf-manual", video: "V66" })], database), true);
     assert.equal(await insertPublishingUploads([row({ id: "o1", channelId: "UC2", automatic: true, manifestSha256: "mf-other" })], database), true);
-    assert.deepEqual([...(await listAutoQueuedManifestHashes("UC1", database))].sort(), ["mf-1", "mf-2"]);
-    assert.deepEqual([...(await listAutoQueuedManifestHashes("UC2", database))], ["mf-other"]);
+    assert.deepEqual([...(await listTriedManifestHashes("UC1", database))].sort(), ["mf-1", "mf-2", "mf-manual"]);
+    assert.deepEqual([...(await listTriedManifestHashes("UC2", database))], ["mf-other"]);
   }));

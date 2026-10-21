@@ -333,6 +333,7 @@ export const content = {
   "publishingUploads.cancelFailed": "Could not cancel the upload.",
   "publishingUploads.failed.unknown_outcome": "Outcome unknown: the last chunk was sent, but YouTube never confirmed the upload ({reason}). Open Studio: if the video is there, do nothing — the package stays taken; if it is not, press \"No video — allow uploading again\".",
   "publishingUploads.failed.package_changed": "The package or its video file changed after the approval, so the upload stopped. Check the package and approve again.",
+  "publishingUploads.failed.video_hash_mismatch": "The video file no longer matched the SHA-256 in its manifest, so the automatic upload stopped before anything was sent. It is not retried by itself: check the file, or approve the package yourself.",
   "publishingUploads.failed.processing_rejected": "YouTube rejected the video while processing it: {reason}",
   "publishingUploads.failed.processing_failed": "YouTube failed to process the video: {reason}",
   "publishingUploads.failed.WRITE_CHANNEL_MISMATCH": "The Google sign-in now belongs to another channel, so the upload did not start.",

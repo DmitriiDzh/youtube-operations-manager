@@ -11334,14 +11334,15 @@ export async function listPublishingUploads(
 }
 
 /**
- * BL-209 (AUTO_PRIVATE_UPLOAD_PLAN.md §2): the manifest hashes the automatic upload already queued for the channel, whatever became
- * of those rows (done, failed, cancelled): one try per manifest version, never a second one by itself.
+ * BL-209 (AUTO_PRIVATE_UPLOAD_PLAN.md §2; review M1): the manifest hashes that already have an upload row on this computer for the
+ * channel -- automatic or the owner's approval, whatever became of it (done, failed, cancelled). The automatic upload never queues
+ * such a manifest version by itself: one the owner cancelled, or one that failed, stays his decision.
  */
-export async function listAutoQueuedManifestHashes(channelId: string, database: AppDb = db): Promise<Set<string>> {
+export async function listTriedManifestHashes(channelId: string, database: AppDb = db): Promise<Set<string>> {
   const rows = await database
     .selectDistinct({ manifestSha256: publishingUploads.manifestSha256 })
     .from(publishingUploads)
-    .where(and(eq(publishingUploads.channelId, channelId), eq(publishingUploads.automatic, true)));
+    .where(eq(publishingUploads.channelId, channelId));
   return new Set(rows.map((row) => row.manifestSha256));
 }
 

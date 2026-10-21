@@ -23,6 +23,7 @@ const AUTO_UPLOAD_REASONS = new Set([
   "no_connected_account",
   "no_workspace",
   "workspace_unavailable",
+  "channel_failed",
 ]);
 
 type Settings = {
@@ -136,6 +137,8 @@ export function LiveWritesSettings() {
                 <InfoTooltip>{t("settingsCards.autoPrivateUpload.info")}</InfoTooltip>
               </div>
             )}
+            {/* Review M2(a): two computers that both see the factory's folder must not both upload -- one switch on one computer. */}
+            {typeof draft.autoPrivateUploadEnabled === "boolean" && <p className="mt-1 text-xs text-zinc-400">{t("settingsCards.autoPrivateUpload.oneComputer")}</p>}
             {/* BL-209 follow-up: one line -- the first reason the automatic upload is waiting, and how many more. */}
             {settings?.autoPrivateUploadEnabled === true && (settings.autoPrivateUploadWaiting ?? []).length > 0 && (() => {
               const list = settings.autoPrivateUploadWaiting ?? [];

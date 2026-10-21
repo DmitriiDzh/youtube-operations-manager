@@ -7,6 +7,8 @@ export const settingsCards: Record<keyof typeof en, string> = {
   "settingsCards.liveWrites.toggle": "Разрешить запись в YouTube",
   "settingsCards.autoPrivateUpload.toggle": "Загружать готовые пакеты автоматически (private, без даты)",
   "settingsCards.autoPrivateUpload.info": "Выключено по умолчанию; один переключатель для всех каналов этого компьютера. Пока включено, каждые 5 минут приложение загружает каждый готовый пакет, видео которого совпадает с манифестом (размер и SHA-256), как private, без даты публикации, и добавляет его в плейлист релизов. Оно никогда не публикует и не назначает дату. Каждая версия манифеста пробуется один раз: неудачная загрузка сама не повторяется. Загрузки видны в «Контент → Публикация» с пометкой «автоматически» и стоят на паузе, пока запись в YouTube выключена. Выключение не ставит новых загрузок; уже поставленные остаются, их можно отменить.",
+  "settingsCards.autoPrivateUpload.oneComputer": "Включайте это только на ОДНОМ компьютере: два компьютера с одной папкой канала могут каждый начать загрузку одного и того же пакета.",
+  "settingsCards.autoPrivateUpload.reason.channel_failed": "канал не удалось проверить (см. журнал сервера)",
   "settingsCards.autoPrivateUpload.waitingPackage": "Автоматическая загрузка ждёт: {video} — {reason}.",
   "settingsCards.autoPrivateUpload.waitingChannel": "Автоматическая загрузка пропускает канал {channel}: {reason}.",
   "settingsCards.autoPrivateUpload.waitingMore": "(и ещё {count})",

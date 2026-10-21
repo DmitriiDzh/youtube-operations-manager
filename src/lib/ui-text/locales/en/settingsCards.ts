@@ -6,6 +6,8 @@ export const settingsCards = {
   "settingsCards.liveWrites.toggle": "Allow writes to YouTube",
   "settingsCards.autoPrivateUpload.toggle": "Upload ready packages automatically (private, no date)",
   "settingsCards.autoPrivateUpload.info": "Off by default; one switch for every channel on this computer. While it is on, every 5 minutes the app uploads each ready release package whose video matches its manifest (size and SHA-256) as private, without a publish date, and adds it to the release playlist. It never publishes or schedules. Each manifest version is tried once: a failed upload is not repeated by itself. The uploads appear under Content → Publishing, marked automatic, and pause while writes to YouTube are off. Turning it off queues nothing new; what is queued stays and can be cancelled.",
+  "settingsCards.autoPrivateUpload.oneComputer": "Turn this on on ONE computer only: two computers with the same workspace could each start an upload of the same package.",
+  "settingsCards.autoPrivateUpload.reason.channel_failed": "the channel could not be checked (see the server log)",
   "settingsCards.autoPrivateUpload.waitingPackage": "Automatic upload is waiting: {video} -- {reason}.",
   "settingsCards.autoPrivateUpload.waitingChannel": "Automatic upload skips channel {channel}: {reason}.",
   "settingsCards.autoPrivateUpload.waitingMore": "(and {count} more)",

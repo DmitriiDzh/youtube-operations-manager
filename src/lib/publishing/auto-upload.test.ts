@@ -118,7 +118,8 @@ function harness(initial: { packages: ScannedPackage[]; enabled?: boolean; files
     scan: async () => (state.noWorkspace ? { status: "no_workspace" } : { status: "ok", packages: state.packages }),
     liveVideos: approvalDeps.liveVideos,
     peerUploads: approvalDeps.peerUploads,
-    autoQueuedHashes: async () => new Set(state.rows.filter((row) => row.automatic).map((row) => row.manifestSha256)),
+    // Review M1: every row here counts as tried, automatic or the owner's, whatever its status.
+    triedHashes: async () => new Set(state.rows.map((row) => row.manifestSha256)),
     videoFile: async (_channelId, relativePath) => {
       const file = state.files[relativePath];
       return file ? { path: `/ws/${relativePath}`, bytes: file.bytes, mtimeMs: file.mtimeMs } : null;
@@ -253,7 +254,7 @@ test("AC-AU-07: a peer that starts the same package while the video is hashed st
     scan: async () => ({ status: "ok", packages: [p] }),
     liveVideos: async () => new Set(),
     peerUploads: async () => new Map(),
-    autoQueuedHashes: async () => new Set(),
+    triedHashes: async () => new Set(),
     videoFile: async () => ({ path: "/ws/v", bytes: 1000, mtimeMs: 1 }),
     hashFile: async () => {
       h.state.peers.set("V65", { host: "Windows", uploaded: false });
@@ -376,7 +377,7 @@ test("the switch turned off while a video was hashed: nothing is queued", async 
     scan: async () => ({ status: "ok", packages: [p] }),
     liveVideos: async () => new Set(),
     peerUploads: async () => new Map(),
-    autoQueuedHashes: async () => new Set(),
+    triedHashes: async () => new Set(),
     videoFile: async () => ({ path: "/ws/v", bytes: 1000, mtimeMs: 1 }),
     hashFile: async () => HASH_A,
     queue: async () => {
@@ -433,7 +434,7 @@ test("waiting reasons: a refusal for one package (tags over 500 characters) is r
     scan: async () => ({ status: "ok", packages: [p] }),
     liveVideos: async () => new Set(),
     peerUploads: async () => new Map(),
-    autoQueuedHashes: async () => new Set(),
+    triedHashes: async () => new Set(),
     videoFile: async () => ({ path: "/ws/v", bytes: 1000, mtimeMs: 1 }),
     hashFile: async () => HASH_A,
     queue: (input) =>
@@ -482,4 +483,109 @@ test("waiting reasons: a channel without a connected account or without a worksp
   await h.auto.tick();
   await h.auto.tick();
   assert.deepEqual(h.state.saved.slice(2), [[]]);
+});
+
+// BL-209 independent review fixes (coordinator): M1, M2(b), L1, L3, L4.
+test("review M1: a manifest version the owner approved and then cancelled is never queued by the automatic upload", async () => {
+  const p = scanned(release("V65"), "mf-1");
+  // The owner's own approval of this very manifest version, cancelled before YouTube (it no longer holds the package).
+  const first = harness({ packages: [p], files: fileOf(p) });
+  await first.auto.tick();
+  const manual: StoredPublishingUpload = { ...first.state.rows[0], id: "manual-1", automatic: false, status: "cancelled", finishedAt: NOW };
+  assert.equal(holdsPackage(manual), false);
+  const h = harness({ packages: [p], files: fileOf(p) });
+  h.state.rows.push(manual);
+  assert.deepEqual((await h.auto.tick()).queued, []);
+  assert.deepEqual([h.state.rows.length, h.state.hashCalls.length], [1, 0]);
+});
+
+test("review M2(b): a package another computer reports in any state (uploading or uploaded) is skipped before any hash", async () => {
+  for (const uploaded of [false, true]) {
+    const p = scanned(release("V65"), "mf-1");
+    const h = harness({ packages: [p], files: fileOf(p) });
+    h.state.peers.set("V65", { host: "Windows", uploaded });
+    assert.deepEqual((await h.auto.tick()).queued, [], String(uploaded));
+    assert.deepEqual([h.state.rows.length, h.state.hashCalls.length], [0, 0]);
+  }
+});
+
+test("review L1: the first tick after a start always saves the list, so a reason stored before a restart is cleared (on and off)", async () => {
+  const p = scanned(release("V65"), "mf-1");
+  const on = harness({ packages: [p], files: fileOf(p) });
+  on.state.packages = []; // nothing waits now
+  await on.auto.tick();
+  await on.auto.tick();
+  assert.deepEqual(on.state.saved, [[]], "saved once after the start, not again while nothing changes");
+  const off = harness({ packages: [p], files: fileOf(p), enabled: false });
+  await off.auto.tick();
+  await off.auto.tick();
+  assert.deepEqual(off.state.saved, [[]]);
+});
+
+test("review L3: switched off while a video is hashed -- the standing reasons are cleared and nothing is queued", async () => {
+  const a = scanned(release("V65"), "mf-1");
+  const h = harness({ packages: [a], files: fileOf(a) });
+  h.state.insertsToday = 100;
+  await h.auto.tick(); // V65 waits for the bucket
+  assert.deepEqual(h.state.saved.at(-1)?.map((e) => e.reason), ["upload_daily_limit"]);
+  h.state.insertsToday = 0;
+  let reads = 0;
+  const auto = createAutoPrivateUpload({
+    enabled: async () => ++reads === 1,
+    channels: async () => [{ channelId: CHANNEL, userId: OWNER }],
+    scan: async () => ({ status: "ok", packages: [a] }),
+    liveVideos: async () => new Set(),
+    peerUploads: async () => new Map(),
+    triedHashes: async () => new Set(),
+    videoFile: async () => ({ path: "/ws/v", bytes: 1000, mtimeMs: 1 }),
+    hashFile: async () => HASH_A,
+    queue: async () => {
+      throw new Error("must not queue");
+    },
+    logMismatch: async () => undefined,
+    hashCache: new Map(),
+    loggedMismatches: new Set(),
+    logWaiting: async () => undefined,
+    saveWaiting: async (entries) => void h.state.saved.push(entries),
+    waiting: new Map([["package|UC_t|mf-1", { kind: "package", channelId: CHANNEL, video: "V65", manifestSha256: "mf-1", reason: "upload_daily_limit" }]]),
+  });
+  const result = await auto.tick();
+  assert.deepEqual([result.queued, result.reasons], [[], []]);
+  assert.deepEqual(h.state.saved.at(-1), []);
+});
+
+test("review L4: one channel's failure does not stop the others; it is recorded once as that channel's reason", async () => {
+  const p = scanned(release("V65"), "mf-1");
+  const queued: string[] = [];
+  const log: AutoUploadWaiting[] = [];
+  const auto = createAutoPrivateUpload({
+    enabled: async () => true,
+    channels: async () => [
+      { channelId: "UC_broken", userId: OWNER },
+      { channelId: CHANNEL, userId: OWNER },
+    ],
+    scan: async (channelId) => {
+      if (channelId === "UC_broken") throw new Error("database is locked");
+      return { status: "ok", packages: [p] };
+    },
+    liveVideos: async () => new Set(queued),
+    peerUploads: async () => new Map(),
+    triedHashes: async () => new Set(),
+    videoFile: async () => ({ path: "/ws/v", bytes: 1000, mtimeMs: 1 }),
+    hashFile: async () => HASH_A,
+    queue: async (input) => {
+      queued.push("V65");
+      return { id: `up-${input.channelId}`, video: "V65" };
+    },
+    logMismatch: async () => undefined,
+    hashCache: new Map(),
+    loggedMismatches: new Set(),
+    logWaiting: async (entry) => void log.push(entry),
+    saveWaiting: async () => undefined,
+    waiting: new Map(),
+  });
+  const first = await auto.tick();
+  await auto.tick();
+  assert.deepEqual(first.queued.map((q) => [q.channelId, q.video]), [[CHANNEL, "V65"]]);
+  assert.deepEqual(log, [{ kind: "channel", channelId: "UC_broken", reason: "channel_failed" }]);
 });

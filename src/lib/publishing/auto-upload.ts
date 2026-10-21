@@ -30,8 +30,8 @@ export type AutoUploadDeps = {
   /** The videos held by an upload row on this computer, and those another computer reports (the approval's own reads). */
   liveVideos(channelId: string): Promise<Set<string>>;
   peerUploads(channelId: string): Promise<Map<string, { host: string | null; uploaded: boolean }>>;
-  /** The manifest hashes already auto-queued for the channel (any status). */
-  autoQueuedHashes(channelId: string): Promise<Set<string>>;
+  /** The manifest hashes that already have an upload row here -- automatic or manual, any status (review M1). */
+  triedHashes(channelId: string): Promise<Set<string>>;
   /** The package's video file by the workspace rule, with its size and modification time; null when it is not there. */
   videoFile(channelId: string, relativePath: string): Promise<{ path: string; bytes: number; mtimeMs: number } | null>;
   /** The SHA-256 (lower-case hex) of a whole file. Costly on a multi-GB video: called only after the size matched, once per key. */
@@ -97,6 +97,8 @@ export function createAutoPrivateUpload(deps: AutoUploadDeps) {
    * channel connected) is dropped, so it is logged again if it comes back. When the tick stopped early, the reasons of what it did
    * not reach this time stay as they were.
    */
+  let savedSinceStart = false;
+
   async function settle(found: Map<string, AutoUploadWaiting>, visited: Set<string>, stoppedEarly: boolean): Promise<AutoUploadWaiting[]> {
     const next = new Map(found);
     if (stoppedEarly) for (const [key, entry] of deps.waiting) if (!visited.has(key) && !next.has(key)) next.set(key, entry);
@@ -106,12 +108,24 @@ export function createAutoPrivateUpload(deps: AutoUploadDeps) {
       warn(entry.kind === "package" ? `${entry.video}: waiting (${entry.reason})` : `channel ${entry.channelId} skipped (${entry.reason})`);
       await deps.logWaiting(entry).catch(() => undefined);
     }
-    const changed = next.size !== deps.waiting.size || [...next].some(([key, entry]) => deps.waiting.get(key)?.reason !== entry.reason);
+    // Review L1: the first save after a start always runs, so a list stored before a restart never lingers on the card.
+    const changed = !savedSinceStart || next.size !== deps.waiting.size || [...next].some(([key, entry]) => deps.waiting.get(key)?.reason !== entry.reason);
     deps.waiting.clear();
     for (const [key, entry] of next) deps.waiting.set(key, entry);
     const list = [...next.values()];
-    if (changed) await deps.saveWaiting(list).catch(() => undefined);
+    if (changed) {
+      await deps.saveWaiting(list).catch(() => undefined);
+      savedSinceStart = true;
+    }
     return list;
+  }
+
+  /** Off (at the start of a tick or midway): nothing waits any more; the stored list is cleared (once after a start, then on change). */
+  async function clearWaiting(): Promise<void> {
+    if (deps.waiting.size === 0 && savedSinceStart) return;
+    deps.waiting.clear();
+    await deps.saveWaiting([]).catch(() => undefined);
+    savedSinceStart = true;
   }
 
   return {
@@ -119,10 +133,7 @@ export function createAutoPrivateUpload(deps: AutoUploadDeps) {
       const result: AutoUploadTickResult = { enabled: false, queued: [], waiting: null, reasons: [] };
       if (!(await deps.enabled())) {
         // Off: nothing waits any more (the card shows no reason); nothing else is read.
-        if (deps.waiting.size > 0) {
-          deps.waiting.clear();
-          await deps.saveWaiting([]).catch(() => undefined);
-        }
+        await clearWaiting();
         return result;
       }
       result.enabled = true;
@@ -132,61 +143,73 @@ export function createAutoPrivateUpload(deps: AutoUploadDeps) {
       let stoppedEarly = false;
       channels: for (const channel of await deps.channels()) {
         visited.add(`channel|${channel.channelId}`);
-        if (channel.userId === null) {
-          note({ kind: "channel", channelId: channel.channelId, reason: "no_connected_account" });
-          continue;
-        }
-        const scanned = await deps.scan(channel.channelId);
-        if (scanned.status !== "ok") {
-          note({ kind: "channel", channelId: channel.channelId, reason: scanned.status });
-          continue;
-        }
-        const live = await deps.liveVideos(channel.channelId);
-        const peers = await deps.peerUploads(channel.channelId);
-        const tried = await deps.autoQueuedHashes(channel.channelId);
-        for (const p of scanned.packages) {
-          if (!candidate(p)) continue;
-          visited.add(`package|${channel.channelId}|${p.manifestSha256}`);
-          const expected = p.pkg.sha256 ?? null;
-          if (!expected) continue; // no `sha256` in the manifest: the owner's approval only
-          if (live.has(p.pkg.video) || peers.has(p.pkg.video)) continue;
-          if (tried.has(p.manifestSha256)) continue; // one try per manifest version
-          const file = await deps.videoFile(channel.channelId, `${p.folder}/${p.pkg.files.video}`);
-          if (!file || file.bytes !== p.pkg.sizeBytes) continue; // the size first: free; a different size is never hashed
-          let actual: string;
-          try {
-            actual = await videoHash(p.manifestSha256, file);
-          } catch (error) {
-            note({ kind: "package", channelId: channel.channelId, video: p.pkg.video, manifestSha256: p.manifestSha256, reason: "hash_failed" });
-            void error;
+        // Review L4: one channel's failure (an unreadable workspace, a database error) never stops the other channels; it is a
+        // waiting reason of that channel, recorded once per change.
+        try {
+          if (channel.userId === null) {
+            note({ kind: "channel", channelId: channel.channelId, reason: "no_connected_account" });
             continue;
           }
-          if (actual !== expected) {
-            if (!deps.loggedMismatches.has(p.manifestSha256)) {
-              deps.loggedMismatches.add(p.manifestSha256);
-              await deps.logMismatch({ channelId: channel.channelId, video: p.pkg.video, manifestSha256: p.manifestSha256, expected, actual }).catch(() => undefined);
-            }
+          const scanned = await deps.scan(channel.channelId);
+          if (scanned.status !== "ok") {
+            note({ kind: "channel", channelId: channel.channelId, reason: scanned.status });
             continue;
           }
-          // Hashing a large file takes a while: the owner may have switched it off meanwhile.
-          const switchOn = await deps.enabled();
-          if (!switchOn) return result;
-          try {
-            const queued = await deps.queue({ channelId: channel.channelId, userId: channel.userId, manifestPath: p.manifestPath, manifestSha256: p.manifestSha256, scanned, switchOn });
-            tried.add(p.manifestSha256);
-            result.queued.push({ channelId: channel.channelId, video: queued.video, uploadId: queued.id, manifestSha256: p.manifestSha256 });
-          } catch (error) {
-            const code = isDomainError(error) ? error.code : "refused";
-            note({ kind: "package", channelId: channel.channelId, video: p.pkg.video, manifestSha256: p.manifestSha256, reason: code });
-            if (code === "publishing_settings_changed") break; // this channel's settings wait for Merge; the next channel may go on
-            if (AUTO_UPLOAD_WAIT_CODES.has(code)) {
-              // The bucket and the pool are the project's: nothing else fits this tick either. Never dropped -- tried again later.
-              result.waiting = code;
-              stoppedEarly = true;
-              break channels;
+          const live = await deps.liveVideos(channel.channelId);
+          const peers = await deps.peerUploads(channel.channelId);
+          const tried = await deps.triedHashes(channel.channelId);
+          for (const p of scanned.packages) {
+            if (!candidate(p)) continue;
+            visited.add(`package|${channel.channelId}|${p.manifestSha256}`);
+            const expected = p.pkg.sha256 ?? null;
+            if (!expected) continue; // no `sha256` in the manifest: the owner's approval only
+            if (live.has(p.pkg.video) || peers.has(p.pkg.video)) continue;
+            if (tried.has(p.manifestSha256)) continue; // one try per manifest version; a cancelled or failed one stays the owner's
+            const file = await deps.videoFile(channel.channelId, `${p.folder}/${p.pkg.files.video}`);
+            if (!file || file.bytes !== p.pkg.sizeBytes) continue; // the size first: free; a different size is never hashed
+            let actual: string;
+            try {
+              actual = await videoHash(p.manifestSha256, file);
+            } catch (error) {
+              note({ kind: "package", channelId: channel.channelId, video: p.pkg.video, manifestSha256: p.manifestSha256, reason: "hash_failed" });
+              void error;
+              continue;
             }
-            // Refused for this package alone (queued meanwhile, changed, not ready any more, tags too long): the next tick sees it again.
+            if (actual !== expected) {
+              if (!deps.loggedMismatches.has(p.manifestSha256)) {
+                deps.loggedMismatches.add(p.manifestSha256);
+                await deps.logMismatch({ channelId: channel.channelId, video: p.pkg.video, manifestSha256: p.manifestSha256, expected, actual }).catch(() => undefined);
+              }
+              continue;
+            }
+            // Hashing a large file takes a while: the owner may have switched it off meanwhile.
+            const switchOn = await deps.enabled();
+            if (!switchOn) {
+              // Review L3: switched off midway -- the reasons are cleared like a tick that starts off.
+              await clearWaiting();
+              result.reasons = [];
+              return result;
+            }
+            try {
+              const queued = await deps.queue({ channelId: channel.channelId, userId: channel.userId, manifestPath: p.manifestPath, manifestSha256: p.manifestSha256, scanned, switchOn });
+              tried.add(p.manifestSha256);
+              result.queued.push({ channelId: channel.channelId, video: queued.video, uploadId: queued.id, manifestSha256: p.manifestSha256 });
+            } catch (error) {
+              const code = isDomainError(error) ? error.code : "refused";
+              note({ kind: "package", channelId: channel.channelId, video: p.pkg.video, manifestSha256: p.manifestSha256, reason: code });
+              if (code === "publishing_settings_changed") break; // this channel's settings wait for Merge; the next channel may go on
+              if (AUTO_UPLOAD_WAIT_CODES.has(code)) {
+                // The bucket and the pool are the project's: nothing else fits this tick either. Never dropped -- tried again later.
+                result.waiting = code;
+                stoppedEarly = true;
+                break channels;
+              }
+              // Refused for this package alone (queued meanwhile, changed, not ready any more, tags too long): the next tick sees it again.
+            }
           }
+        } catch (error) {
+          note({ kind: "channel", channelId: channel.channelId, reason: "channel_failed" });
+          void error;
         }
       }
       result.reasons = await settle(found, visited, stoppedEarly);

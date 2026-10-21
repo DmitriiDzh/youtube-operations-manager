@@ -19,7 +19,7 @@ import {
   setAutoPrivateUploadWaiting,
   getChannelExpectedLanguages,
   getLiveWritesEnabled,
-  listAutoQueuedManifestHashes,
+  listTriedManifestHashes,
   listStoredChannels,
   getPublishingG1Probe,
   insertVideoEditAuditEvent,
@@ -552,7 +552,7 @@ export function createAutoPrivateUploadCore() {
     scan: (channelId) => scan.scan(channelId),
     liveVideos: (channelId) => localHeldVideos(channelId),
     peerUploads: (channelId) => peerUploadsOf(channelId),
-    autoQueuedHashes: (channelId) => listAutoQueuedManifestHashes(channelId),
+    triedHashes: (channelId) => listTriedManifestHashes(channelId),
     async videoFile(channelId, relativePath) {
       const workspace = await files.workspace(channelId);
       if (!workspace) return null;

@@ -54,6 +54,15 @@ approve. What stands for the approval, and what keeps it from becoming a path an
    marks the row «автоматически»; the agents' calendar read reports `automatic`, `progressPercent` and `finishedAt` (Agent API
    3.20.0, Producer API 1.10.0).
 7. **Switching it off** queues nothing new; rows already queued stay, and the owner cancels them as today.
+8. **One computer only (review M2).** The switch is per computer and there is no cross-computer lock beyond the peer reports: two
+   computers that both see the same workspace and both have it on could each start the same package in the minutes before one
+   reports it. The owner turns it on on ONE computer only (a visible line under the toggle says so). A package a peer report lists
+   in any state (uploading or uploaded) is skipped before it is hashed.
+9. **Never re-tried by itself (review M1).** Any earlier upload row of the same manifest version on this computer -- automatic or
+   the owner's, done, failed or cancelled -- counts as tried.
+10. **The file is checked again before it goes (review L5).** An automatic row carries the manifest's SHA-256; the runner hashes the
+   video again right before a new upload session starts (never on a resumed one) and fails the row with `video_hash_mismatch`, not
+   retried and before any YouTube call, when it no longer matches.
 
 ## Rationale
 

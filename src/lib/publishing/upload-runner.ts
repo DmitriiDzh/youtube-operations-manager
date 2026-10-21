@@ -22,6 +22,11 @@ export type ApprovedPackage = {
   videoFile: string;
   thumbnailFile: string;
   sizeBytes: number;
+  /**
+   * BL-209 review L5: the video's SHA-256 from the manifest, frozen on an AUTOMATIC row only. The runner checks the file against it
+   * right before a new upload session starts (never on a resumed one); absent on an approval's row.
+   */
+  videoSha256?: string;
 };
 
 export type UploadSteps = {
@@ -327,11 +332,18 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
     return job.publishAtAtInsert && job.publishAt !== null && Date.parse(job.publishAt) - now().getTime() <= PUBLISH_AT_MARGIN_MS;
   }
 
+  /** BL-209 review L5: an automatic row whose video file's SHA-256 is no longer its manifest's (false for an approval's row). */
+  async function videoHashDiffers(job: StoredPublishingUpload, pkg: ApprovedPackage, filePath: string): Promise<boolean> {
+    if (!job.automatic || !pkg.videoSha256) return false;
+    return (await deps.files.sha256(filePath)).toLowerCase() !== pkg.videoSha256;
+  }
+
   async function upload(job: StoredPublishingUpload): Promise<void> {
     const pkg = parseJson<ApprovedPackage | null>(job.packageJson, null);
     const settings = parseJson<PublishingSettings | null>(job.settingsJson, null);
     if (!pkg || !settings) return fail(job, "job_damaged", "The approved package of this upload cannot be read.");
     let current = job;
+    let hashChecked = false;
     try {
       if (current.status === "queued") {
         // The files must still be what the owner approved: the same manifest, a video of the same size.
@@ -339,6 +351,10 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
         if (!manifest || (await deps.files.sha256(manifest.path)) !== job.manifestSha256) return fail(job, "package_changed", "The package changed on disk after it was approved.");
         const videoFile = await deps.files.resolve(job.channelId, pkg.videoFile);
         if (!videoFile || videoFile.bytes !== job.totalBytes) return fail(job, "package_changed", "The video file changed or is missing since it was approved.");
+        // Review L5: an automatic row was queued because the file matched its manifest's SHA-256; the file is hashed again before
+        // anything reaches YouTube (not even the identity read). A mismatch fails the row for good -- never retried by itself.
+        if (await videoHashDiffers(job, pkg, videoFile.path)) return fail(job, VIDEO_HASH_MISMATCH, "The video file no longer matches the SHA-256 in its manifest, so the automatic upload stopped before anything was sent.");
+        hashChecked = true;
         await identity(job);
         if (!(await deps.store.update(job.id, "queued", { status: "uploading", attempts: job.attempts + 1, sessionUri: null, storedBytes: 0, updatedAt: now() }))) return;
         current = { ...job, status: "uploading", attempts: job.attempts + 1, sessionUri: null, storedBytes: 0 };
@@ -358,6 +374,10 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
       const videoFile = await deps.files.resolve(current.channelId, pkg.videoFile);
       if (!videoFile || videoFile.bytes !== current.totalBytes) return failAfterError(current, "package_changed", "The video file changed or is missing during the upload.");
       if (!current.sessionUri) {
+        // A new session after an expired one (no byte of it kept): the automatic row's file is checked again first.
+        if (!hashChecked && (await videoHashDiffers(current, pkg, videoFile.path))) {
+          return fail(current, VIDEO_HASH_MISMATCH, "The video file no longer matches the SHA-256 in its manifest, so the automatic upload stopped before a new session.");
+        }
         const publishAtAtInsert = current.publishAt !== null && Date.parse(current.publishAt) - now().getTime() >= PUBLISH_AT_AT_INSERT_MIN_MS;
         const resource: InsertResource = {
           snippet: { title: pkg.title, description: pkg.description, tags: pkg.tags, categoryId: settings.categoryId, defaultLanguage: pkg.defaultLanguage, defaultAudioLanguage: pkg.defaultAudioLanguage },
@@ -618,6 +638,9 @@ export function isCancellable(row: Pick<StoredPublishingUpload, "status" | "resu
     !stepsOf(row).finalChunkSentAt
   );
 }
+
+/** BL-209 review L5: an automatic upload whose video no longer matched its manifest's SHA-256 before a session started. */
+export const VIDEO_HASH_MISMATCH = "video_hash_mismatch";
 
 /** The owner looked in Studio and found no video: the `unknown_outcome` row stops holding its package (re-check 1). */
 export const UNKNOWN_OUTCOME_RELEASED = "unknown_outcome_released";
