@@ -19,7 +19,8 @@ import {
  * BL-172 (FO-REQ-0016 B, docs/roadmap/plans/GPU_AVAILABILITY_PLAN.md): RunPod's GPU stock stored regularly, so the Factory
  * Operator can see how often a GPU had stock in a datacenter before choosing where the media volume lives. Device-local; each
  * computer keeps its own log. BL-206 (FO-REQ-0033, GPU_STATS_PLAN.md §2.A): every 15 minutes, compactly -- one row per snapshot
- * in `media_gpu_availability_snapshots`, and datacenter rows only where the stock was not NONE.
+ * in `media_gpu_availability_snapshots` (BL-208, v102: `media_gpu_availability_cuda_snapshots`, one per time and CUDA minimum), and
+ * datacenter rows only where the stock was not NONE.
  */
 
 /** BL-208: `minCudaVersion` -- the snapshots of one CUDA minimum ('' = read without one); the services always give it. */

@@ -3663,11 +3663,12 @@ RunPod reads only through the media gateway (`src/lib/media-gateway/`), so its s
 - **Storage.** `media_gpu_availability_log` (`at`, `gpu_type_id`, `data_center_id`, `stock`, `price_per_hr`, `min_cuda_version`;
   indexes on `at` and on `(gpu_type_id, data_center_id, at)`). `insertMediaGpuAvailabilitySnapshot` writes a snapshot in one transaction
   (200 rows per insert; no rows = nothing stored, and a snapshot already stored at the same second makes a repeat store nothing) plus its row in `media_gpu_availability_snapshots` (schema v100: `at` PK, `rows`, `min_cuda_version`; the
-  migration backfills every distinct `at` of the log with its row count; schema v102, BL-208: rebuilt in one transaction with the PK
-  `(at, min_cuda_version)`, `min_cuda_version` NOT NULL with `''` = no minimum, rows kept -- a second minimum at the same second is
-  stored, a repeat is not) and then prunes both tables older than
+  migration backfills every distinct `at` of the log with its row count; schema v102, BL-208: the snapshots move to the new table
+  `media_gpu_availability_cuda_snapshots` (PK `(at, min_cuda_version)`, `min_cuda_version` NOT NULL with `''` = no minimum), which
+  copies the v100 rows (`INSERT OR IGNORE`, NULL → `''`); a second minimum at the same second is stored, a repeat is not. Additive per
+  ADR 0001: the v100 table stays, no longer read, written or pruned) and then prunes both tables older than
   `GPU_AVAILABILITY_LOG_RETENTION_DAYS` (90; a failed prune is ignored, like the capacity log). `getLatestMediaGpuAvailabilityAt` reads
-  the snapshots table. Both classified `not_api_data`, device-local in snapshots.
+  the snapshots table (since v102 `media_gpu_availability_cuda_snapshots`). Both classified `not_api_data`, device-local in snapshots.
 - **Reads.** `listGpuAvailabilityLog` backs `factory_media_list_gpu_availability_log`: rows newest first (`listMediaGpuAvailabilityLog`,
   default 1,000, at most 5,000), or with `summary` the SQL `GROUP BY gpu_type_id, data_center_id, stock` over every matching row
   (`summarizeMediaGpuAvailabilityLog`), folded per GPU and datacenter by `summarizeGpuAvailabilityGroups`. BL-206: the summary's

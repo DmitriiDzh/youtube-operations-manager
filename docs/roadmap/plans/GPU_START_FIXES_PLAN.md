@@ -33,7 +33,9 @@ catalog is known to be wrong both ways (pods were placed while it showed EU-RO-1
 
 - Minimums read per snapshot tick: the Settings minimum plus every installed template's `minCudaVersion`, non-null, without
   repeats, ascending (today 12.8 and 13.0). No minimum anywhere: one snapshot without a filter, as today.
-- Schema v102: `media_gpu_availability_snapshots` gets the primary key `(at, min_cuda_version)`, `min_cuda_version` NOT NULL
+- Schema v102 (as built, additive per ADR 0001 -- coordinator 2026-10-21: no table rebuild): a NEW table
+  `media_gpu_availability_cuda_snapshots` with the primary key `(at, min_cuda_version)` copies v100's rows; the old
+  `media_gpu_availability_snapshots` stays, unread and unwritten. Originally planned: `media_gpu_availability_snapshots` gets the primary key `(at, min_cuda_version)`, `min_cuda_version` NOT NULL
   (`''` = no minimum). Existing rows are kept with their value.
 - Each minimum is read and stored on its own: one minimum failing (empty catalog) does not drop the other's snapshot. The
   due check and the back-off look at the snapshots of each minimum separately.

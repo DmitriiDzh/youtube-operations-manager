@@ -147,11 +147,9 @@ test("AC-SF-10: factory_media_get_gpu_stats counts one minimum too -- 4 snapshot
     assert.equal(under130.availability.find((e) => e.gpuTypeId === "X" && e.dataCenterId === "A")?.inStock, 4);
   }));
 
-test("AC-SF-11: v102 keeps the existing snapshot rows and their minimum (NULL -> ''); a second snapshot at the same at with another minimum is stored, a repeat is not", () =>
+test("AC-SF-11: v102 copies the v100 snapshot rows with their minimum (NULL -> '') into the new table and leaves the old one; same at with another minimum is stored, a repeat is not; a re-run changes nothing", () =>
   withDb(async (database, client) => {
-    // The table as v100 left it (primary key `at` alone, nullable minimum), with two old snapshots.
-    await client.execute("DROP TABLE media_gpu_availability_snapshots");
-    await client.execute("CREATE TABLE media_gpu_availability_snapshots (at INTEGER PRIMARY KEY, rows INTEGER NOT NULL, min_cuda_version TEXT)");
+    // Two snapshots as v100 stored them (primary key `at` alone, nullable minimum) -- the table v102 copies from and leaves in place.
     const t1 = Math.floor(at(0).getTime() / 1000);
     const t2 = Math.floor(at(15).getTime() / 1000);
     await client.execute({ sql: "INSERT INTO media_gpu_availability_snapshots (at, rows, min_cuda_version) VALUES (?, 3, '12.8'), (?, 2, NULL)", args: [t1, t2] });
@@ -159,24 +157,34 @@ test("AC-SF-11: v102 keeps the existing snapshot rows and their minimum (NULL ->
     assert.ok(v102, "schema v102 exists");
     await v102.apply(client);
     await v102.apply(client); // a re-run changes nothing
-    const kept = await client.execute("SELECT at, rows, min_cuda_version FROM media_gpu_availability_snapshots ORDER BY at, min_cuda_version");
+    const select = "SELECT at, rows, min_cuda_version FROM media_gpu_availability_cuda_snapshots ORDER BY at, min_cuda_version";
+    const copied = await client.execute(select);
     assert.deepEqual(
-      kept.rows.map((r) => [Number(r.at), Number(r.rows), r.min_cuda_version]),
+      copied.rows.map((r) => [Number(r.at), Number(r.rows), r.min_cuda_version]),
       [
         [t1, 3, "12.8"],
         [t2, 2, ""],
       ]
     );
-    const pk = await client.execute("PRAGMA table_info(media_gpu_availability_snapshots)");
+    const pk = await client.execute("PRAGMA table_info(media_gpu_availability_cuda_snapshots)");
     assert.deepEqual(
-      pk.rows.filter((c) => Number(c.pk) > 0).map((c) => String(c.name)),
+      pk.rows.filter((c) => Number(c.pk) > 0).sort((a, b) => Number(a.pk) - Number(b.pk)).map((c) => String(c.name)),
       ["at", "min_cuda_version"]
     );
-    // Same `at` as the old 12.8 snapshot, minimum 13.0: stored (with its log rows); the same again: nothing more.
+    // The old table stays as it was (additive, ADR 0001): still there, its two rows untouched.
+    const old = await client.execute("SELECT at, rows, min_cuda_version FROM media_gpu_availability_snapshots ORDER BY at");
+    assert.deepEqual(
+      old.rows.map((r) => [Number(r.at), Number(r.rows), r.min_cuda_version]),
+      [
+        [t1, 3, "12.8"],
+        [t2, 2, null],
+      ]
+    );
+    // Same `at` as the copied 12.8 snapshot, minimum 13.0: stored (with its log rows); the same again, or 12.8 again: nothing more.
     await insertMediaGpuAvailabilitySnapshot(at(0), [row("13.0", "*", "LOW")], database);
     await insertMediaGpuAvailabilitySnapshot(at(0), [row("13.0", "*", "HIGH")], database);
     await insertMediaGpuAvailabilitySnapshot(at(0), [row("12.8", "*", "HIGH")], database);
-    const after = await client.execute("SELECT at, rows, min_cuda_version FROM media_gpu_availability_snapshots ORDER BY at, min_cuda_version");
+    const after = await client.execute(select);
     assert.deepEqual(
       after.rows.map((r) => [Number(r.at), Number(r.rows), r.min_cuda_version]),
       [
@@ -188,4 +196,7 @@ test("AC-SF-11: v102 keeps the existing snapshot rows and their minimum (NULL ->
     const logRows = await listMediaGpuAvailabilityLog({ limit: 10, minCudaVersion: "13.0" }, database);
     assert.deepEqual(logRows.map((r) => r.stock), ["LOW"], "the repeat stored no log row");
     assert.equal(((await getLatestMediaGpuAvailabilityAt(database, "")) ?? new Date(0)).getTime(), at(15).getTime());
+    // A re-run after new snapshots changes nothing either (INSERT OR IGNORE of the same old rows).
+    await v102.apply(client);
+    assert.deepEqual((await client.execute(select)).rows.length, 3);
   }));

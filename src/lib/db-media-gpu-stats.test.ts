@@ -114,6 +114,9 @@ test("AC-GS-03: the list tool's summary over 2 old snapshots (NONE stored) and 2
       ["X", "A", "NONE"],
     ]);
     await rerunV100(client); // the upgrade
+    // BL-208 (GPU_START_FIXES_PLAN.md §F): v102 copies the v100 snapshots into media_gpu_availability_cuda_snapshots, the table read from
+    // then on -- an upgrade from before v100 runs both.
+    await SCHEMA_MIGRATIONS.find((m) => m.version === 102)!.apply(client);
     await insertMediaGpuAvailabilitySnapshot(new Date("2026-10-21T10:00:00Z"), [row("X", "*", "HIGH"), row("X", "A", "LOW")], database);
     await insertMediaGpuAvailabilitySnapshot(new Date("2026-10-21T10:15:00Z"), [row("X", "*", "HIGH")], database);
 
@@ -142,7 +145,8 @@ test("BL-206: a new snapshot writes its snapshots-table row (rows = rows stored)
     await insertMediaGpuAvailabilitySnapshot(new Date(now.getTime() - 91 * DAY), [row("X", "*", "LOW")], database);
     await insertMediaGpuAvailabilitySnapshot(new Date(now.getTime() - 89 * DAY), [row("X", "*", "LOW"), row("X", "A", "LOW")], database);
     await insertMediaGpuAvailabilitySnapshot(now, [row("X", "*", "NONE"), row("X", "A", "LOW"), row("X", "B", "HIGH")], database);
-    const result = await client.execute("SELECT at, rows FROM media_gpu_availability_snapshots ORDER BY at");
+    // BL-208 (v102): snapshots are written to media_gpu_availability_cuda_snapshots (the v100 table is retired, ADR 0001).
+    const result = await client.execute("SELECT at, rows FROM media_gpu_availability_cuda_snapshots ORDER BY at");
     assert.deepEqual(
       result.rows.map((r) => [Number(r.at), Number(r.rows)]),
       [
@@ -304,11 +308,12 @@ test("BL-206 review: an empty insert stores no snapshot; a repeat at the same se
   withDb(async (database, client) => {
     const at = new Date("2026-10-21T10:00:00Z");
     await insertMediaGpuAvailabilitySnapshot(at, [], database);
-    assert.equal(Number((await client.execute("SELECT count(*) AS n FROM media_gpu_availability_snapshots")).rows[0].n), 0);
+    // BL-208 (v102): the snapshot rows live in media_gpu_availability_cuda_snapshots.
+    assert.equal(Number((await client.execute("SELECT count(*) AS n FROM media_gpu_availability_cuda_snapshots")).rows[0].n), 0);
     assert.equal(await getLatestMediaGpuAvailabilityAt(database), null);
     await insertMediaGpuAvailabilitySnapshot(at, [row("X", "*", "LOW"), row("X", "A", "LOW")], database);
     await insertMediaGpuAvailabilitySnapshot(at, [row("X", "*", "HIGH"), row("X", "A", "HIGH"), row("X", "B", "LOW")], database);
-    const snapshots = await client.execute("SELECT at, rows FROM media_gpu_availability_snapshots");
+    const snapshots = await client.execute("SELECT at, rows FROM media_gpu_availability_cuda_snapshots");
     assert.deepEqual(snapshots.rows.map((r) => [Number(r.at), Number(r.rows)]), [[seconds("2026-10-21T10:00:00Z"), 2]]);
     const log = await client.execute("SELECT data_center_id, stock FROM media_gpu_availability_log ORDER BY data_center_id");
     assert.deepEqual(log.rows.map((r) => [r.data_center_id, r.stock]), [["*", "LOW"], ["A", "LOW"]]);
