@@ -116,7 +116,12 @@ export type CreatePodInput = {
   name: string;
   image?: string;
   templateId?: string;
-  gpu?: { id: string; count?: number; vcpuCount?: number; memory?: number; allowedCudaVersions?: string[] };
+  /**
+   * `allowedCudaVersions` matches EXACTLY (RunPod v2 openapi, POST /pods: "a version no machine reports yields a capacity error");
+   * `minCudaVersion` is the lowest acceptable host CUDA as major.minor, compared numerically. The two are mutually exclusive (HTTP
+   * 400 if both are sent). BL-208 fix I: session pods send `minCudaVersion` only.
+   */
+  gpu?: { id: string; count?: number; vcpuCount?: number; memory?: number; allowedCudaVersions?: string[]; minCudaVersion?: string };
   cpu?: { id: string; vcpuCount: number };
   cloud?: "SECURE" | "COMMUNITY";
   dataCenterId?: string;

@@ -11,7 +11,7 @@ import { hostname } from "node:os";
 import { createAssetCatalogCore } from "@/lib/asset-catalog";
 import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
-import { appDataPaths, countMediaGpuAvailabilityCells, getLatestMediaGpuAvailabilityAt, listMediaSessionsNeedingCostSplit, setMediaJobCostShare, getMediaSessionJobSummary, insertMediaCapacityAttempt, insertMediaGpuAvailabilitySnapshot, listMediaCapacityAttempts, listMediaGpuAvailabilityLog, setMediaCapacityAttemptHostCuda, setMediaCapacityAttemptTimings, summarizeMediaGpuAvailabilityLog, getMediaTemplateAdoptionsJson, getMediaTemplateSyncLastJson, listMediaControlEvents, setMediaTemplateAdoptionsJson, setMediaTemplateSyncLastJson } from "@/lib/db";
+import { appDataPaths, countMediaGpuAvailabilityCells, getLatestMediaGpuAvailabilityAt, listMediaGpuAvailabilityMinimums, listMediaWorkflowTemplateMinCudaVersions, listMediaSessionsNeedingCostSplit, setMediaJobCostShare, getMediaSessionJobSummary, insertMediaCapacityAttempt, insertMediaGpuAvailabilitySnapshot, listMediaCapacityAttempts, listMediaGpuAvailabilityLog, setMediaCapacityAttemptHostCuda, setMediaCapacityAttemptTimings, summarizeMediaGpuAvailabilityLog, getMediaTemplateAdoptionsJson, getMediaTemplateSyncLastJson, listMediaControlEvents, setMediaTemplateAdoptionsJson, setMediaTemplateSyncLastJson } from "@/lib/db";
 import { createLogicalPathsCore } from "@/lib/logical-paths";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
 import { comfyUiProxyBaseUrl, createComfyUiClient, createGithubClient, createHuggingFaceClient, createRunpodApiClient, createRunpodS3Client } from "@/lib/media-gateway";
@@ -164,12 +164,15 @@ function buildCore(jobScheduling: JobScheduling) {
   // BL-172 (FO-REQ-0016 B): the GPU availability log (every 15 minutes since BL-206) (the timer in src/instrumentation.ts, the factory read tool).
   const gpuAvailabilityLog = createGpuAvailabilityLogServices({
     store: {
-      latestAt: () => getLatestMediaGpuAvailabilityAt(),
+      latestAt: (minCudaVersion) => getLatestMediaGpuAvailabilityAt(undefined, minCudaVersion),
       insertSnapshot: (at, rows) => insertMediaGpuAvailabilitySnapshot(at, rows),
       list: (filter) => listMediaGpuAvailabilityLog(filter),
       summarize: (filter) => summarizeMediaGpuAvailabilityLog(filter),
+      minimums: (range) => listMediaGpuAvailabilityMinimums(range),
     },
     base,
+    // BL-208 (GPU_START_FIXES_PLAN.md §F): every installed template's CUDA minimum is snapshotted too.
+    templateMinCudaVersions: () => listMediaWorkflowTemplateMinCudaVersions(),
     clock: { now },
     log: (line) => console.warn(line),
   });
@@ -178,6 +181,7 @@ function buildCore(jobScheduling: JobScheduling) {
     store: {
       availabilityCells: (filter) => countMediaGpuAvailabilityCells(filter),
       sessionsFirstApprovedBetween: (since, until) => listSessionsFirstApprovedBetween(since, until),
+      availabilityMinimums: (range) => listMediaGpuAvailabilityMinimums(range),
     },
     candidateSettings: () => base.getSettings(),
     clock: { now },

@@ -91,8 +91,8 @@ export type MediaSettings = {
   ownerReleaseWhenDone: boolean;
   /**
    * BL-155 (docs/roadmap/plans/CUDA_HOSTS_PLAN.md, FO-REQ-0007): the lowest host-driver CUDA version a session pod may land on
-   * (the template image is `...-cuda12.8`). Every createPod asks RunPod for `allowedCudaVersions` = the known versions at or
-   * above it, and the start checks the host before `running`. null = no filter (the behaviour before BL-155).
+   * (the template image is `...-cuda12.8`). Every createPod asks RunPod for `gpu.minCudaVersion` = it (BL-208 fix I; before that an
+   * exact `allowedCudaVersions` list), and the start checks the host before `running`. null = no filter (the behaviour before BL-155).
    */
   minCudaVersion: MediaCudaVersion | null;
   // -- BL-200 (FO-REQ-0029, ADR 0043, docs/roadmap/plans/POD_RUNTIMES_PLAN.md) -------------------------------------------
@@ -243,7 +243,7 @@ export type MediaSession = {
   /** BL-206: true when `firstApprovedAt` is the earliest capacity attempt of a session from before schema v100 (approximate). */
   firstApprovedApproximate: boolean;
   /** BL-206: the GPU candidates the first placement skipped before any try, with the reason; null = no placement recorded. */
-  gpuSkipped: Array<{ gpuTypeId: string; reason: string }> | null;
+  gpuSkipped: Array<{ gpuTypeId: string; reason: string; kind?: "stock" | "config" }> | null;
   startedAt: string | null;
   readyAt: string | null;
   lastActivityAt: string | null;

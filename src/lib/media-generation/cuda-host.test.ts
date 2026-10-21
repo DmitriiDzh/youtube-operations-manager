@@ -84,3 +84,12 @@ test("AC-SC-01: the comparison is numeric (12.10 is above 12.9), never text orde
   assert.equal(higherCudaVersion("12.9", "12.10"), "12.10");
   assert.equal(higherCudaVersion("12.10", "12.9"), "12.10");
 });
+
+// BL-208 fix I (GPU_START_FIXES_PLAN.md AC-SF-12): hosts report CUDA versions newer than the list known here (13.1, 13.2); they
+// compare numerically and pass a 13.0 minimum.
+test("AC-SF-12: a 13.2 host is not too old for a 13.0 (or 12.8) minimum; 13.2 compares above 13.0", () => {
+  assert.equal(compareCudaVersions("13.2", "13.0"), 1);
+  assert.equal(hostCudaTooOld("13.2", "13.0"), false);
+  assert.equal(hostCudaTooOld("13.1", "12.8"), false);
+  assert.equal(hostCudaTooOld("12.9", "13.0"), true);
+});

@@ -21,7 +21,11 @@ export function compareCudaVersions(a: string, b: string): -1 | 0 | 1 | null {
   return 0;
 }
 
-/** createPod's `gpu.allowedCudaVersions`: every known version at or above the minimum; null (send nothing) without one. */
+/**
+ * Every known version at or above the minimum; null without one. BL-208 fix I: no longer what a session's createPod sends (RunPod
+ * matches `allowedCudaVersions` exactly, and this list ends at the newest version known here, so newer hosts were excluded); kept
+ * for the operator's own pod bodies.
+ */
 export function allowedCudaVersionsFor(minimum: string | null): string[] | null {
   if (minimum === null) return null;
   return MEDIA_CUDA_VERSIONS.filter((v) => (compareCudaVersions(v, minimum) ?? -1) >= 0);
@@ -36,6 +40,11 @@ export function higherCudaVersion(owner: string | null, own: string | null): str
   if (owner === null) return own;
   if (own === null) return owner;
   return (compareCudaVersions(own, owner) ?? -1) > 0 ? own : owner;
+}
+
+/** BL-208: CUDA minimums ascending as versions ('' = none, first), without repeats. */
+export function orderCudaMinimums(values: Iterable<string>): string[] {
+  return [...new Set(values)].sort((a, b) => (a === "" ? -1 : b === "" ? 1 : (compareCudaVersions(a, b) ?? (a < b ? -1 : a > b ? 1 : 0))));
 }
 
 /** True only when the host's version is known AND below the minimum: an unknown host never blocks a start. */

@@ -164,6 +164,8 @@ export const gpuAvailabilityLogInputSchema = z
     dataCenterId: z.string().min(1).max(32).optional(),
     limit: z.number().int().min(1).max(5000).optional(),
     summary: z.boolean().optional(),
+    /** BL-208: the CUDA minimum whose snapshots are read (default: the Settings' minimum). */
+    minCudaVersion: z.enum(MEDIA_CUDA_VERSIONS).optional(),
   })
   .strict();
 export type GpuAvailabilityLogInput = z.infer<typeof gpuAvailabilityLogInputSchema>;

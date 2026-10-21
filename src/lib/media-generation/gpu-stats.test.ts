@@ -138,7 +138,8 @@ function statsServices(sessions: StoredSessionRow[], calls: string[] = []) {
       return sessions;
     },
   };
-  return createGpuStatsServices({ store, candidateSettings: async () => ({ gpuTypeId: FOUR, gpuFallbackIds: [FIVE] }), clock: { now: () => new Date("2026-10-21T12:00:00Z") } });
+  // BL-208 (GPU_START_FIXES_PLAN.md §F): the Settings also give the default CUDA minimum of the availability read (always set there).
+  return createGpuStatsServices({ store, candidateSettings: async () => ({ gpuTypeId: FOUR, gpuFallbackIds: [FIVE], minCudaVersion: "12.8" }), clock: { now: () => new Date("2026-10-21T12:00:00Z") } });
 }
 
 /** A ready session first approved at 2026-10-20 (Tuesday) 10:00 UTC that waited `minutes`. */
