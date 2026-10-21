@@ -2,7 +2,7 @@ import { getChannelExpectedLanguages, getChannelLocalizationsRow, getStoredChann
 import { createBackupCore } from "@/lib/backup";
 import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { sleep } from "@/lib/shared-async";
-import { createIdGenerator } from "@/lib/shared-domain";
+import { createIdGenerator, isDomainError } from "@/lib/shared-domain";
 import { createWriteContextCore } from "@/lib/write-context";
 import { createChannelLocalizationsYoutubeAdapter } from "./adapters/youtube-api";
 import { createChannelLocalizationsService, type ChannelLocalizationsService } from "./services";
@@ -64,6 +64,46 @@ export function operatorSurface(service: Pick<ChannelLocalizationsService, "view
     view: (channelId: string) => service.view(channelId),
     live: (channelId: string) => service.live(channelId),
     save: (channelId: string, input: unknown) => service.save(channelId, input, "factory"),
+  };
+}
+
+export type OperatorSurface = ReturnType<typeof operatorSurface>;
+
+/**
+ * `factory_channel_get_localizations` (AC-CL-11): the stored set, the channel's translations on YouTube read now (1 unit; when the
+ * read is impossible, `live: null` with the error code) and the last apply -- in codes, never the owner's error text or a path.
+ */
+export async function operatorChannelLocalizations(surface: OperatorSurface, channelId: string): Promise<Record<string, unknown>> {
+  const view = await surface.view(channelId);
+  let live: Awaited<ReturnType<OperatorSurface["live"]>> | null = null;
+  let liveUnavailable: string | null = null;
+  try {
+    live = await surface.live(channelId);
+  } catch (error) {
+    liveUnavailable = isDomainError(error) ? error.code : "failed";
+  }
+  const last = view.lastApply;
+  return {
+    channelId,
+    stored: {
+      localizations: view.localizations,
+      problem: view.problem === null ? null : "invalid_stored",
+      baselineLanguage: view.baselineLanguage,
+      updatedAt: view.updatedAt,
+      updatedBy: view.updatedBy,
+    },
+    live,
+    liveUnavailable,
+    lastApply: last
+      ? {
+          at: last.at,
+          ok: last.ok,
+          languages: last.languages,
+          defaultLanguageSet: last.defaultLanguageSet,
+          writes: last.writes,
+          ...(last.ok ? {} : { failure: last.failure, ...(last.failure === "failed" ? { code: last.detail } : {}) }),
+        }
+      : null,
   };
 }
 

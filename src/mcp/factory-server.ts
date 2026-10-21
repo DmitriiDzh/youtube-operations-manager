@@ -124,7 +124,12 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 // snapshotted at every CUDA minimum in use (the Settings' and the installed templates'); factory_media_list_gpu_availability_log and
 // factory_media_get_gpu_stats take an optional minCudaVersion (default: the Settings' minimum), read only that minimum's snapshots,
 // echo it and list the minimums present in the range. Additive.
-export const FACTORY_API_VERSION = "1.28.0";
+// BL-210 (CHANNEL_LOCALIZATIONS_PLAN.md, ADR 0047): 1.29.0 -- factory_channel_save_localizations (WRITE, local only: a channel's own
+// name/description translations, one set per channel, replace semantics, {} clears, any refused language refuses the whole call
+// with details.refused; title 1-30 characters, description 1-1000 characters) and factory_channel_get_localizations (READ: the stored
+// set, the channel's translations on YouTube read now -- 1 quota unit, no write -- and the last apply in codes). Only the owner's
+// «Применить» in the Web UI sends a set to YouTube; no tool reaches it. Additive.
+export const FACTORY_API_VERSION = "1.29.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -191,6 +196,9 @@ export const FACTORY_TOOL_NAMES = [
   "factory_live_map_sources",
   // BL-207: the stream's title/description translations (a local write).
   "factory_live_save_localizations",
+  // BL-210: a channel's own name/description translations -- the stored set and YouTube's (a read), saving the set (a local write).
+  "factory_channel_get_localizations",
+  "factory_channel_save_localizations",
   // BL-184: storyboards -- versions, submitting for the owner's review, answers to the owner's comments; reads.
   "factory_storyboard_create",
   "factory_storyboard_update",
@@ -249,6 +257,8 @@ export const FACTORY_WRITE_TOOL_NAMES = [
   "factory_live_map_sources",
   // BL-207: the stream's translations (local only; written to YouTube only by the app after the owner's Start).
   "factory_live_save_localizations",
+  // BL-210: a channel's translations (local only; written to YouTube only by the owner's «Применить» in the Web UI).
+  "factory_channel_save_localizations",
   // BL-184: storyboard versions, submissions and answers (synced to the other computers; nothing is generated or charged).
   "factory_storyboard_create",
   "factory_storyboard_update",
@@ -341,6 +351,14 @@ export type FactoryToolDeps = {
     mapSources(input: { channelId: string; items: Array<{ videoId: string; file: string }> }): Promise<Record<string, unknown>>;
     /** BL-207: replace the stream's translations (the module validates every language; nothing is half-saved). */
     setLocalizations(input: { channelId: string; localizations: Record<string, { title: string; description: string }> }): Promise<Record<string, unknown>>;
+  };
+  /**
+   * BL-210: a channel's own translations (the channel-localizations module validates every language itself). Its Operator surface
+   * has no apply: nothing here reaches a YouTube write.
+   */
+  channelLocalizations: {
+    get(input: { channelId: string }): Promise<Record<string, unknown>>;
+    save(input: { channelId: string; localizations: Record<string, { title: string; description: string }> }): Promise<Record<string, unknown>>;
   };
   /** BL-184: storyboards (the module validates every input strictly itself; every write is the Operator's). */
   storyboards: {
@@ -1221,6 +1239,40 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
       const input = parseInput(liveLocalizationsInput, args);
       await deps.assertMutationAllowed();
       return successResult(await deps.live.setLocalizations(input));
+    }
+  );
+
+  // -- BL-210 (CHANNEL_LOCALIZATIONS_PLAN.md §5, ADR 0047): a channel's own translations. The shape only; the module checks every code
+  // and bound. The save passes the device mutation gate; neither tool can send anything to YouTube.
+  const channelRefInput = z.object({ channelId: z.string().min(1).max(64) }).strict();
+  const channelLocalizationsInput = z
+    .object({
+      channelId: z.string().min(1).max(64),
+      localizations: z.record(z.string().min(1).max(32), z.object({ title: z.string(), description: z.string() }).strict()),
+    })
+    .strict();
+
+  registerTool(
+    "factory_channel_get_localizations",
+    {
+      description:
+        "A channel's own name and description translations (1.29.0): { channelId (connected on THIS computer) } -> { channelId, stored: { localizations: { <language>: { title, description } } | null, problem: invalid_stored | null, baselineLanguage (the channel's base language here, null = none), updatedAt, updatedBy: owner | factory | null }, live: { defaultLanguage, localizations: { <language>: { title, description } } } | null (read from YouTube now: channels.list, 1 quota unit, nothing written), liveUnavailable: null | <code> (why live is null, e.g. data_api_reads_disabled, channel_not_connected, youtube_quota_exceeded), lastApply: { at, ok, languages (written), defaultLanguageSet, writes, failure?: read_back_mismatch | failed, code? (failed: the error code) } | null }. Only the owner's «Применить» in the app sends the stored set to YouTube. Never a token or error text.",
+      inputSchema: channelRefInput,
+    },
+    async (args) => successResult(await deps.channelLocalizations.get(parseInput(channelRefInput, args)))
+  );
+
+  registerTool(
+    "factory_channel_save_localizations",
+    {
+      description:
+        "Save a channel's own name and description translations on THIS computer (1.29.0): { channelId (connected here), localizations: { <language>: { title, description } } } -> { localizations (the stored set) }. One set per channel; it REPLACES the stored one, {} clears it. A language must be an exact YouTube code (pt-BR, not pt-br: details give a hint), never the channel's base language; title 1-30 characters after trimming (the documented channel-title limit), description required, 1-1000 characters, neither with < or >; at most 50 languages. Any refused language refuses the whole call (validation_failed, details.refused: [{ language, reason: unsupported_language | baseline_language | not_an_entry | title_empty | title_too_long | title_angle_brackets | description_empty | description_too_long | description_angle_brackets, message, hint? }]) and nothing is saved. Not connected here: channel_not_connected. Local only: NOTHING is sent to YouTube -- the owner reviews and applies it in the app (languages not in the set stay as they are; nothing is deleted). Passes the device mutation gate; recorded as done by the Factory Operator.",
+      inputSchema: channelLocalizationsInput,
+    },
+    async (args) => {
+      const input = parseInput(channelLocalizationsInput, args);
+      await deps.assertMutationAllowed();
+      return successResult(await deps.channelLocalizations.save(input));
     }
   );
 

@@ -10,6 +10,7 @@ import { createFactoryMcpServer, FACTORY_TOOL_NAMES, type FactoryToolDeps } from
 import { createFactoryMcpEndpoint } from "./index";
 import { createStreamLocalizations, localizationsStatusEntry } from "@/lib/live-streams/localizations";
 import { readStoredVideoSettings } from "@/lib/live-streams/video-settings";
+import { operatorChannelLocalizations } from "@/lib/channel-localizations";
 
 // Expected behavior comes from docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md §2.1 and §4
 // (AC-FO-06, AC-FO-07, AC-FO-08, AC-FO-13), written before this module.
@@ -126,6 +127,11 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
       getStatus: async (input) => (mediaCalls.push(`live.status:${input.channelId ?? ""}`), { streams: [] }),
       mapSources: async (input) => (mediaCalls.push(`live.map:${input.channelId}:${input.items.length}`), { results: [] }),
       setLocalizations: async (input) => (mediaCalls.push(`live.localizations:${input.channelId}:${Object.keys(input.localizations).join(",")}`), { localizations: input.localizations, warnings: [] }),
+    },
+    // BL-210: the channel translations' Operator surface is a fake that records what reached it.
+    channelLocalizations: {
+      get: async (input) => (mediaCalls.push(`channel.localizations.get:${input.channelId}`), { channelId: input.channelId }),
+      save: async (input) => (mediaCalls.push(`channel.localizations.save:${input.channelId}:${Object.keys(input.localizations).join(",")}`), { localizations: input.localizations }),
     },
     // BL-184: the storyboards module is a fake that records what reached it.
     storyboards: {
@@ -290,7 +296,10 @@ test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exact
   const { token } = await tokenServices.issueToken({});
   const body = await (await endpoint.handle(rpc(LIST_TOOLS, withToken(token)))).json();
   const names = (body.result.tools as Array<{ name: string }>).map((tool) => tool.name).sort();
+  // BL-210 (CHANNEL_LOCALIZATIONS_PLAN.md §5): the two factory_channel_* tools are listed too.
   assert.deepEqual(names, [
+    "factory_channel_get_localizations",
+    "factory_channel_save_localizations",
     "factory_gemini_create_job",
     "factory_gemini_get_job",
     "factory_gemini_get_status",
@@ -389,6 +398,8 @@ test("AC-FO-07: a channel tool name is not callable on the factory endpoint", as
 // no tool is added or removed). BL-206 (GPU_STATS_PLAN.md §2.C): 1.26.0 and the READ tool factory_media_get_gpu_stats after the log.
 // BL-207 (LIVE_LOCALIZATIONS_PLAN.md §2 stage 4): 1.27.0 and the WRITE tool factory_live_save_localizations after the map.
 // BL-208 (GPU_START_FIXES_PLAN.md): 1.28.0, no tool added or removed.
+// BL-210 (CHANNEL_LOCALIZATIONS_PLAN.md §5): 1.29.0 and the READ tool factory_channel_get_localizations and the WRITE tool
+// factory_channel_save_localizations after the live tools (declaration order).
 test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), READ and WRITE, the tool list and the write tools", async () => {
   const { endpoint, tokenServices } = setup();
   const { token } = await tokenServices.issueToken({});
@@ -396,7 +407,7 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.28.0", // BL-208: gpuSkipped on a factory start, the availability log per CUDA minimum (additive)
+    factoryApiVersion: "1.29.0", // BL-210: the two factory_channel_* tools (additive)
     tools: [
       "factory_get_capabilities",
       "factory_list_logical_paths",
@@ -449,6 +460,8 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
       "factory_live_get_status",
       "factory_live_map_sources",
       "factory_live_save_localizations",
+      "factory_channel_get_localizations",
+      "factory_channel_save_localizations",
       "factory_storyboard_create",
       "factory_storyboard_update",
       "factory_storyboard_get",
@@ -490,6 +503,7 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
       "factory_gemini_create_job",
       "factory_live_map_sources",
       "factory_live_save_localizations",
+      "factory_channel_save_localizations",
       "factory_storyboard_create",
       "factory_storyboard_update",
       "factory_storyboard_submit",
@@ -1279,4 +1293,69 @@ test("BL-194: factory_video_get_cost is a read with a strict schema that reaches
     assert.equal(Boolean(body.result?.isError ?? body.error), true, JSON.stringify(bad));
   }
   assert.deepEqual(toolDeps.mediaCalls, [], "an invalid input never reaches the module");
+});
+
+// BL-210 (CHANNEL_LOCALIZATIONS_PLAN.md §5, AC-CL-01/10): factory_channel_save_localizations is a local write that passes the gate
+// first and reaches only the module's save; its input is strict; factory_channel_get_localizations is a read (no gate).
+test("AC-CL-10: factory_channel_save_localizations passes the gate first; strict schema; get is a read without the gate", async () => {
+  const { endpoint, tokenServices, toolDeps } = setupWithDeps();
+  const { token } = await tokenServices.issueToken({});
+  const ok = { channelId: "UC_A", localizations: { de: { title: "Dt", description: "Dd" } } };
+  assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_channel_save_localizations", ok), withToken(token))))).isError, false);
+  assert.deepEqual(toolDeps.mediaCalls, ["gate", "channel.localizations.save:UC_A:de"]);
+  toolDeps.mediaCalls.length = 0;
+  assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_channel_get_localizations", { channelId: "UC_A" }), withToken(token))))).isError, false);
+  assert.deepEqual(toolDeps.mediaCalls, ["channel.localizations.get:UC_A"]);
+  toolDeps.mediaCalls.length = 0;
+  for (const [tool, bad] of [
+    ["factory_channel_save_localizations", { ...ok, apply: true }],
+    ["factory_channel_save_localizations", { channelId: "UC_A" }],
+    ["factory_channel_save_localizations", { channelId: "UC_A", localizations: { de: { title: "Dt", description: "Dd", tags: [] } } }],
+    ["factory_channel_save_localizations", { channelId: "UC_A", localizations: [] }],
+    ["factory_channel_get_localizations", { channelId: "UC_A", live: false }],
+    ["factory_channel_get_localizations", {}],
+  ] as const) {
+    const body = await (await endpoint.handle(rpc(call(tool, bad), withToken(token)))).json();
+    assert.equal(Boolean(body.result?.isError ?? body.error), true, JSON.stringify(bad));
+  }
+  assert.deepEqual(toolDeps.mediaCalls, [], "an invalid input reaches neither the gate nor the module");
+});
+
+// BL-210 AC-CL-11 (values by hand from the plan §5): get returns the stored set, the live translations and the last apply -- the last
+// apply in codes (never the owner's error text or the backup path); a live read that cannot be made gives live null and its code.
+test("AC-CL-11: factory_channel_get_localizations returns the stored set, the live localizations and the last result", async () => {
+  const view = {
+    channelId: "UC_A",
+    localizations: { de: { title: "Dt", description: "Dd" } },
+    problem: null,
+    baselineLanguage: "en",
+    updatedAt: "2026-10-22T09:00:00.000Z",
+    updatedBy: "factory" as const,
+    lastApply: { at: "2026-10-22T10:00:00.000Z", ok: false as const, failure: "failed" as const, detail: "live_writes_disabled", error: "Real YouTube write execution is disabled", languages: ["de"], defaultLanguageSet: null, writes: 0, backupPath: "/Users/x/backups/UC_A/op/UC_A.json" },
+  };
+  const surface = {
+    view: async () => view,
+    live: async () => ({ defaultLanguage: "en", localizations: { fr: { title: "Ft", description: "Fd" } } }),
+    save: async () => ({ localizations: {} }),
+  };
+  const { endpoint, tokenServices } = setup({
+    toolDeps: { channelLocalizations: { get: (input) => operatorChannelLocalizations(surface, input.channelId), save: async () => ({}) } },
+  });
+  const { token } = await tokenServices.issueToken({});
+  const result = await toolResult(await endpoint.handle(rpc(call("factory_channel_get_localizations", { channelId: "UC_A" }), withToken(token))));
+  assert.equal(result.isError, false);
+  assert.deepEqual(result.payload, {
+    channelId: "UC_A",
+    stored: { localizations: { de: { title: "Dt", description: "Dd" } }, problem: null, baselineLanguage: "en", updatedAt: "2026-10-22T09:00:00.000Z", updatedBy: "factory" },
+    live: { defaultLanguage: "en", localizations: { fr: { title: "Ft", description: "Fd" } } },
+    liveUnavailable: null,
+    lastApply: { at: "2026-10-22T10:00:00.000Z", ok: false, languages: ["de"], defaultLanguageSet: null, writes: 0, failure: "failed", code: "live_writes_disabled" },
+  });
+
+  const unreadable = await operatorChannelLocalizations(
+    { ...surface, live: async () => Promise.reject(new DomainError({ code: "data_api_reads_disabled", message: "off" })) },
+    "UC_A"
+  );
+  assert.equal(unreadable.live, null);
+  assert.equal(unreadable.liveUnavailable, "data_api_reads_disabled");
 });
