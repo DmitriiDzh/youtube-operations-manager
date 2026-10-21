@@ -6,7 +6,7 @@ import { createStreamLocalizations, readStoredLocalizations, validateLiveLocaliz
 import type { StoredStreamRow } from "./services";
 
 // BL-207 stage 2 (docs/roadmap/plans/LIVE_LOCALIZATIONS_PLAN.md §2 stage 2, AC-LL-07). Expected values by hand from the plan and
-// the YouTube videos resource: a title is 1–100 characters (trimmed), a description at most 5000 BYTES, neither holds < or >;
+// the YouTube videos resource: a title is 1–100 characters (trimmed), a description 1–5000 BYTES (required: blank refused, owner msg 3287), neither holds < or >;
 // a language is an exact supported YouTube code and never the channel's baseline; at most 50 languages; one bad entry refuses the
 // whole set and nothing is stored.
 
@@ -14,10 +14,10 @@ const baseline = { baselineLanguage: "en" };
 const entry = (title = "Titel", description = "Beschreibung") => ({ title, description });
 
 test("AC-LL-07: a valid set is accepted, the title stored trimmed and the description as given", () => {
-  const result = validateLiveLocalizations({ de: entry("  Jazz Radio 24/7  ", " Beschreibung \n"), "pt-BR": entry("Rádio", "") }, baseline);
+  const result = validateLiveLocalizations({ de: entry("  Jazz Radio 24/7  ", " Beschreibung \n"), "pt-BR": entry("Rádio", "x") }, baseline);
   assert.equal(result.ok, true);
   if (!result.ok) return;
-  assert.deepEqual(result.set, { de: { title: "Jazz Radio 24/7", description: " Beschreibung \n" }, "pt-BR": { title: "Rádio", description: "" } });
+  assert.deepEqual(result.set, { de: { title: "Jazz Radio 24/7", description: " Beschreibung \n" }, "pt-BR": { title: "Rádio", description: "x" } });
 });
 
 test("AC-LL-07: the title must be 1–100 characters after trimming (code points, not UTF-16 units)", () => {
@@ -41,6 +41,20 @@ test("AC-LL-07: the description is at most 5000 bytes: 2500 × é (5000 bytes) a
     if (result.ok) continue;
     assert.deepEqual(result.refused.map((r) => [r.language, r.reason]), [["de", "description_too_long"]]);
   }
+});
+
+test("AC-LL-07 (owner msg 3287): the description is required -- empty or blank refused, \"x\" accepted, 1..5000 bytes", () => {
+  for (const description of ["", "   "]) {
+    const result = validateLiveLocalizations({ de: entry("T", description) }, baseline);
+    assert.equal(result.ok, false, JSON.stringify(description));
+    if (result.ok) continue;
+    assert.deepEqual(result.refused.map((r) => [r.language, r.reason]), [["de", "description_empty"]]);
+  }
+  assert.equal(validateLiveLocalizations({ de: entry("T", "x") }, baseline).ok, true);
+  assert.equal(validateLiveLocalizations({ de: entry("T", "é".repeat(2500)) }, baseline).ok, true);
+  const tooLong = validateLiveLocalizations({ de: entry("T", "é".repeat(2501)) }, baseline);
+  assert.equal(tooLong.ok, false);
+  if (!tooLong.ok) assert.deepEqual(tooLong.refused.map((r) => r.reason), ["description_too_long"]);
 });
 
 test("AC-LL-07: < or > in the title or the description is refused", () => {

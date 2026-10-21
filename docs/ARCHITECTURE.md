@@ -4541,7 +4541,7 @@ title/description (AGENTS.md §F, PROJECT_SPEC §21), reversing `LIVE_STREAMS_FI
   snapshot's device-local list; the `ytm-live-streams` report does not carry it). `validateLiveLocalizations` (pure, for the MCP
   tool, the route, the store and the page) refuses the whole set if any language fails: exact supported code
   (`suggestYoutubeLanguageCode` gives the letter-case hint), title 1–100 characters after trimming (stored trimmed), description
-  ≤ 5000 bytes, no `<`/`>`, not the channel's baseline (case-insensitive), ≤ 50 languages. `createStreamLocalizations`: `set`
+  1–5000 bytes (required: blank refused, owner msg 3287), no `<`/`>`, not the channel's baseline (case-insensitive), ≤ 50 languages. `createStreamLocalizations`: `set`
   replaces, `{}` clears (null), a channel without a stream row here is `not_found`, event `localizations_saved`.
   `readStoredLocalizations` reports a stored value that no longer passes (never guessed).
 - **The step** (`live-streams/video-apply.ts`): read once in `broadcasts.ts`'s `runVideoSettings` (the funnel of Start,

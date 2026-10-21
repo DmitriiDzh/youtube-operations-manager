@@ -889,7 +889,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   `feature/live-localizations`, этапы 1–3; MCP и карточка — этапы 4–5, ещё не сделаны):**
   - Один набор переводов на трансляцию: схема **v101** `live_streams.localizations_json` (только этот компьютер);
     `live-streams/localizations.ts` — общий чистый валидатор (точный код YouTube с подсказкой регистра, заголовок 1–100,
-    описание ≤ 5000 байт, без `<`/`>`, не базовый язык канала, ≤ 50 языков, весь набор или ничего) и хранилище (замена,
+    описание обязательно, 1–5000 байт, без `<`/`>`, не базовый язык канала, ≤ 50 языков, весь набор или ничего) и хранилище (замена,
     пустой набор очищает).
   - Второй разрешённый писатель `localizations` (AGENTS.md §F) — модуль `src/lib/live-localizations/`, подключается портом
     `LocalizationsPort` через `src/composition/live-stream-localizations.ts` (маршруты и раннер сегментов).

@@ -26,6 +26,7 @@ export type LiveLocalizationRefusalReason =
   | "title_empty"
   | "title_too_long"
   | "title_angle_brackets"
+  | "description_empty"
   | "description_too_long"
   | "description_angle_brackets";
 
@@ -66,8 +67,10 @@ function entryRefusals(language: string, value: unknown, baselineLanguage: strin
   else if (titleLength > TITLE_MAX_CHARACTERS) refusals.push({ language, reason: "title_too_long", message: `The title has ${titleLength} characters; YouTube allows ${TITLE_MAX_CHARACTERS}` });
   if (hasAngleBrackets(value.title)) refusals.push({ language, reason: "title_angle_brackets", message: "The title may not contain < or >" });
 
+  // Owner, Telegram msg 3287: a translation needs its description too (1–5000 bytes; empty after trimming is refused).
   const bytes = new TextEncoder().encode(value.description).length;
-  if (bytes > DESCRIPTION_MAX_BYTES) refusals.push({ language, reason: "description_too_long", message: `The description has ${bytes} bytes; YouTube allows ${DESCRIPTION_MAX_BYTES}` });
+  if (value.description.trim().length === 0) refusals.push({ language, reason: "description_empty", message: "The description is empty" });
+  else if (bytes > DESCRIPTION_MAX_BYTES) refusals.push({ language, reason: "description_too_long", message: `The description has ${bytes} bytes; YouTube allows ${DESCRIPTION_MAX_BYTES}` });
   if (hasAngleBrackets(value.description)) refusals.push({ language, reason: "description_angle_brackets", message: "The description may not contain < or >" });
   return refusals;
 }
