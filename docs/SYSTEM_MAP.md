@@ -917,12 +917,14 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   - `set.ts` (чистый): валидатор через общий `shared-localization-set` (название 1–30 символов, описание 1–1000 символов —
     документированные пределы полей канала), предпросмотр (new / changed / unchanged, нетронутые языки, установка языка по
     умолчанию, квота).
-  - «Применить» только из Web UI (`POST /api/channels/[channelId]/channel-localizations/apply`): `assertWriteChannel` → свежее
-    `channels.list` → отказы `no_baseline` / `default_language_mismatch` / свой язык в наборе → бэкап → повторное чтение →
-    при отсутствии языка по умолчанию отдельный `channels.update part=brandingSettings` (базовый язык, остальные изменяемые поля
-    как прочитаны, без title) с проверкой → общее слияние → `assertLiveWritesAuthorized` → `channels.update part=localizations` →
-    проверка чтением → аудит. 50 единиц (100 с языком по умолчанию) плюс чтения.
-  - Шлюзы: `getChannelLocalizationsContext` (чтение), `updateChannelLocalizations` / `updateChannelBrandingChannel` (запись).
+  - «Применить» только из Web UI (`POST /api/channels/[channelId]/channel-localizations/apply`, тело `{ setVersion }` из
+    предпросмотра): набор не менялся после проверки (иначе `localizations_changed`) → `assertWriteChannel` → свежее
+    `channels.list` → отказы `channel_default_language_not_set` (нет `brandingSettings.channel.defaultLanguage` — владелец задаёт
+    его в YouTube Studio, msg 3350) / `default_language_mismatch` / `own_language_in_live` / свой язык в наборе → бэкап →
+    повторное чтение → общее слияние (запись своего языка, равная базовому тексту, отправляется без изменений) →
+    `assertLiveWritesAuthorized` → один `channels.update part=localizations` → проверка чтением → аудит. 50 единиц плюс чтения.
+    `brandingSettings` приложение не пишет никогда.
+  - Шлюзы: `getChannelLocalizationsContext` (чтение), `updateChannelLocalizations` (запись).
   - MCP Оператора (Factory API 1.29.0): `factory_channel_save_localizations` (локальная запись) и
     `factory_channel_get_localizations` (набор, переводы на YouTube — 1 единица, последний результат в кодах); маршрут MCP получает
     только поверхность без apply (AC-CL-10).

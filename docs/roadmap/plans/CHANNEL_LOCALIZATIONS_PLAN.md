@@ -37,7 +37,8 @@
      - the base title, description and default language are unchanged (or, in the case below, now equal to the baseline).
      - Otherwise the result is `ok: false` with what differed.
    - **Audit:** an event with the channel, the languages, the backup id and the result.
-3. **Base language.** If the channel has no default language (the property the API requires for localizations — the agent
+3. **Base language.** *(Superseded by the owner's msg 3350: nothing is set; a channel without
+   `brandingSettings.channel.defaultLanguage` is refused -- see "API facts", deviation 1.)* If the channel has no default language (the property the API requires for localizations — the agent
    checks the docs: `brandingSettings.channel.defaultLanguage` or `snippet.defaultLanguage`):
    - the preview says so;
    - Apply sets it to the channel's baseline language (channel language settings) in the same update.
@@ -93,17 +94,21 @@ Sources: [channels.update](https://developers.google.com/youtube/v3/docs/channel
 
 ### Deviations from the plan above (the docs win)
 
-1. **Two writes when the default language is missing (§3, AC-CL-08).** It cannot be set "in the same update" as the
-   translations: one part per request. Apply first writes `part=brandingSettings` (only the default language changes; every
-   settable `brandingSettings.channel` field that was read is sent back exactly, the title is left out), reads it back, then
-   writes `part=localizations`. Each write has its own `assertLiveWritesAuthorized` right before it. Cost: 50 units, or 100
-   with the default language, plus 1-unit reads.
-2. **The default language is `brandingSettings.channel.defaultLanguage`** (the writable one). When `snippet.defaultLanguage`
+1. **No default-language write (§3, AC-CL-08/09) -- owner decision, Telegram msg 3350 (2026-10-22).** The default language
+   cannot be set "in the same update" as the translations (one part per request), and the owner chose not to write
+   `brandingSettings` at all. When `brandingSettings.channel.defaultLanguage` is not set -- even if `snippet.defaultLanguage`
+   is (review #5) -- Apply refuses with `channel_default_language_not_set` (409) and writes nothing; the preview and the card
+   say to set it once in YouTube Studio (Settings → Channel → Basic info → Language). §3's "Apply sets it to the baseline" and
+   `no_baseline` are dropped. One write per apply: 50 units plus 1-unit reads.
+2. **The default language is `brandingSettings.channel.defaultLanguage`** (the one the API names). When `snippet.defaultLanguage`
    says something else, Apply refuses (`default_language_mismatch`, nothing written).
 3. **Limits.** The translation fields have no documented limit; the set uses the documented limits of the fields they
    translate: title at most 30 characters, description at most 1000 characters (counted in characters, not bytes). The
-   `<` / `>` rule is kept from the video fields (conservative). Open question for the owner: a translated channel name
-   longer than 30 characters is refused.
+   `<` / `>` rule is kept from the video fields (conservative). The owner kept the 30-character title limit (msg 3350).
+4. **Review fixes (2026-10-22).** #1: if YouTube lists a translation in the channel's own language whose title or description
+   differs from the base text, Apply refuses with `own_language_in_live` (409) and the preview shows it; if it equals the base
+   text it is sent back unchanged in the full map (never dropped). #2: the preview answers `setVersion` (SHA-256 of the stored
+   set); «Применить» sends it and a set saved since is refused with `localizations_changed` (409), nothing written.
 
 ## Acceptance (written before the code)
 
@@ -122,9 +127,10 @@ Sources: [channels.update](https://developers.google.com/youtube/v3/docs/channel
   (`assertWriteChannel`).
 - **AC-CL-06** Live writes off → refused, and no gateway write is made.
 - **AC-CL-07** Read-back shows es differing → `ok: false`, `read_back_mismatch`, and the backup is kept.
-- **AC-CL-08** The channel has no default language and the baseline is en → the update sets it to en. Every other field of
-  that part equals what was read.
-- **AC-CL-09** No baseline → `no_baseline`, and no write.
+- **AC-CL-08** ~~The channel has no default language and the baseline is en → the update sets it to en.~~ Amended by the owner
+  (msg 3350): the channel has no `brandingSettings.channel.defaultLanguage` → `channel_default_language_not_set`, no write.
+- **AC-CL-09** ~~No baseline → `no_baseline`, and no write.~~ Amended (msg 3350, review #5): only `snippet.defaultLanguage` set →
+  refused the same way, no write.
 - **AC-CL-10** No MCP tool or agent endpoint can reach the YouTube write: only the Web UI route calls apply.
 - **AC-CL-11** `factory_channel_get_localizations` returns the stored set, the live localizations and the last result.
 - **AC-CL-12** The gateway inventory test lists `channels.update` only inside `youtube-write-gateway`.

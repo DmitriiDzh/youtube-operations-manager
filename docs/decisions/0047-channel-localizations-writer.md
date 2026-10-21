@@ -2,8 +2,9 @@
 
 Status: Accepted
 
-**Date:** 2026-10-22. **Decided by** the owner, Telegram msgs 3343 (translations of the channel description), 3345 (the name too)
-and 3347 (option 3: the Factory Operator prepares over MCP, the owner applies, and there is also a manual card). Plan:
+**Date:** 2026-10-22. **Decided by** the owner, Telegram msgs 3343 (translations of the channel description), 3345 (the name too),
+3347 (option 3: the Factory Operator prepares over MCP, the owner applies, and there is also a manual card) and 3350 (no
+`brandingSettings` write at all; the 30-character title limit kept). Plan:
 `docs/roadmap/plans/CHANNEL_LOCALIZATIONS_PLAN.md` (BL-210).
 
 ## Context
@@ -26,52 +27,58 @@ and 3347 (option 3: the Factory Operator prepares over MCP, the owner applies, a
 
 ## Decision
 
-1. **A third authorized writer**, `src/lib/channel-localizations/`, of a channel's own per-language `title`/`description` --
-   and nothing else of the channel, with the one exception in 4.
+1. **A third authorized writer**, `src/lib/channel-localizations/`, of a channel's own per-language `title`/`description`
+   (`channels.update part=localizations`) -- and nothing else of the channel. It never writes `brandingSettings` (owner msg 3350).
 2. **Storage.** Schema v104, device-local: `channel_localizations` (one set per channel, `{ "<lang>": { title, description } }`,
    who saved it, the last apply's result) and `channel_localization_events` (the append-only audit trail). Saving replaces the
    set, `{}` clears it, and nothing is sent to YouTube on save. The validator is the shared `src/lib/shared-localization-set/`
    (extracted from `live-streams/localizations.ts`, which keeps its own limits through a thin wrapper, AGENTS.md §M), with the
-   channel's limits: title 1–30 characters, description 1–1000 characters, no `<`/`>` (kept from the video fields: conservative),
-   an exact supported code, never the channel's baseline, at most 50 languages; one bad language refuses the whole set.
+   channel's limits: title 1–30 characters (kept by the owner, msg 3350), description 1–1000 characters, no `<`/`>` (kept from the
+   video fields: conservative), an exact supported code, never the channel's baseline, at most 50 languages; one bad language
+   refuses the whole set.
 3. **Who may write.** The Factory Operator saves a set (`factory_channel_save_localizations`, Factory API 1.29.0) and reads it
    with the live translations (`factory_channel_get_localizations`). Only the owner's «Применить» in the Web UI
    (`POST /api/channels/[channelId]/channel-localizations/apply`, Web session + active channel) sends it to YouTube. The MCP
    route receives the module's Operator surface (`operatorSurface`: view, live, save) -- it has no apply, and a source-scan test
-   (AC-CL-10) keeps the apply and the two gateway writes out of every MCP and agent path.
-4. **The pipeline** (AGENTS.md §G): `write-context.assertWriteChannel` → a fresh `channels.list
-   part=snippet,brandingSettings,localizations` (read gateway) → the preview's refusals (`no_baseline`, `default_language_mismatch`
-   when the two default-language fields disagree, the channel's own language in the set, an empty set) before any write → nothing
-   different: nothing written → a backup of the channel as read (`kind: "channel_localizations"`, under the channel id) → a re-read
-   that must equal the first (else `update_failed`, nothing sent) → **only when the channel has no default language:** its own
-   `channels.update part=brandingSettings` setting `brandingSettings.channel.defaultLanguage` to the channel's baseline, every other
-   settable `brandingSettings.channel` field that had a value sent back exactly as read, the title omitted; then read back (the
-   default language set, every other settable field and the base text unchanged; else `read_back_mismatch` and the translations
-   are not written) → the shared merge (`shared-localization-merge`'s `buildSafeLocalizationsPayload`, only its `localizations`
-   used): the set's languages added or replaced, every other language kept, nothing deleted, the own language never sent →
-   `assertLiveWritesAuthorized` immediately before each write → `channels.update part=localizations` with the full merged map →
-   read-back (every written language exactly, every other language kept, the base text, the default language and the branding
-   fields unchanged; bounded re-reads) → audit events (saved, backup, write, verification, failed) and the last result.
-5. **The write gateway** gains `updateChannelLocalizations` and `updateChannelBrandingChannel` (both in the inventory's
-   `WRITE_PRIMITIVE_NAMES`) and the pure `pickSettableBrandingChannelFields`; the read gateway gains
-   `getChannelLocalizationsContext`.
+   (AC-CL-10) keeps the apply and the gateway write out of every MCP and agent path.
+4. **The pipeline** (AGENTS.md §G):
+   1. the stored set must still be the one the owner previewed: the preview answers `setVersion` (SHA-256 of the stored set),
+      «Применить» sends it, a set saved since (e.g. by the Operator) is refused with `localizations_changed` (review #2);
+   2. `write-context.assertWriteChannel`;
+   3. a fresh `channels.list part=snippet,brandingSettings,localizations` (read gateway);
+   4. refusals before any write: `channel_default_language_not_set` when `brandingSettings.channel.defaultLanguage` is not set
+      (even if `snippet.defaultLanguage` is -- the owner sets it once in YouTube Studio: Settings → Channel → Basic info →
+      Language), `default_language_mismatch` when both are set and differ, `own_language_in_live` when YouTube lists a translation
+      in the channel's own language whose text differs from the base name/description (review #1), the channel's own language in
+      the set, an empty set; nothing different: nothing written;
+   5. a backup of the channel as read (`kind: "channel_localizations"`, under the channel id);
+   6. a re-read that must equal the first (else `update_failed`, nothing sent);
+   7. the shared merge (`shared-localization-merge`'s `buildSafeLocalizationsPayload`, only its `localizations` used): the set's
+      languages added or replaced, every other language kept, nothing deleted; an own-language entry equal to the base text is
+      sent back unchanged (the merge leaves it out; this writer puts it back);
+   8. `assertLiveWritesAuthorized` immediately before the one `channels.update part=localizations` with the full merged map;
+   9. read-back (every written language exactly, every other language -- the own-language entry included -- kept, the base text
+      and the branding settings unchanged; bounded re-reads);
+   10. audit events (saved, backup, write, verification, failed) and the last result.
+5. **The write gateway** gains `updateChannelLocalizations` (in the inventory's `WRITE_PRIMITIVE_NAMES`) and nothing for
+   `brandingSettings`; the read gateway gains `getChannelLocalizationsContext`.
 
 ## Consequences
 
 - AGENTS.md §F and PROJECT_SPEC §21 name this third writer; SYSTEM_MAP and ARCHITECTURE describe it.
-- **Deviations from the plan forced by the reference:** the default language cannot be set "in the same update" as the
-  translations (one part per request), so a channel without one costs two writes (100 units) instead of one (50); the default
-  language is the branding field; the limits are the documented ones of the fields translated (30 / 1000 characters).
-- The `brandingSettings` write echoes `keywords`, `country`, `description`, `unsubscribedTrailer` and
-  `trackingAnalyticsAccountId` as read. YouTube may truncate keywords holding an unescaped quote; the read-back then reports
-  `branding field changed: keywords` and stops before the translations (the backup holds the original).
-- Each apply costs 50 units (100 with the default language) plus at least 3 (5) one-unit reads; «Проверить на YouTube» and
+- **Deviations from the plan:** the plan's "set the baseline as the default language" (AC-CL-08) and `no_baseline` (AC-CL-09)
+  are replaced by the owner's msg 3350 -- a channel without a default language is refused; the default language is the branding
+  field; the limits are the documented ones of the fields translated (30 / 1000 characters).
+- Each apply costs one `channels.update` (50 units) plus at least 3 one-unit reads; «Проверить на YouTube» and
   `factory_channel_get_localizations` cost 1 unit each.
 - Not verified against the real API yet: the first real apply is the live acceptance (whether YouTube lists an own-language entry
-  for a channel, and whether a channel translation longer than 30 characters is refused by YouTube or only by us).
+  for a channel, and whether a channel translation longer than 30 characters would have been accepted by YouTube).
 
 ## Alternatives rejected
 
 - **Sending `brandingSettings` and `localizations` in one call:** refused by the API (one part per request).
+- **Setting a missing default language by a separate `brandingSettings` write** (this ADR's first draft): it has to echo every
+  settable branding field (keywords, country, description, ...), which YouTube may change on the way (keywords truncation); the
+  owner chose to set the language once in YouTube Studio instead (msg 3350).
 - **Letting the Operator apply over MCP:** the owner chose option 3 (msg 3347): the Operator prepares, the owner applies.
 - **Reusing the video limits (100 characters / 5000 bytes):** they are a video's; the channel's documented limits are lower.

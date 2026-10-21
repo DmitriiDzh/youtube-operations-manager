@@ -814,11 +814,11 @@ see on the channel page) -- and only on these terms:
   «Переводы канала» card, and sent only when the owner presses «Применить» in the Web UI (no MCP tool or agent reaches it);
 - through the same safe merge (`src/lib/shared-localization-merge/`): a fresh read, every other language kept, nothing deleted,
   the channel's own title/description untouched, never the channel's own default language as a translation;
-- with identity check, backup, a re-read right before the writes (else nothing is sent), the Live-writes check right before each
+- with identity check, backup, a re-read right before the write (else nothing is sent), the Live-writes check right before its one
   `channels.update`, read-back and audit.
-`channels.update` takes one part per request, so a channel without a default language (required for `localizations`) first gets
-the channel baseline as `brandingSettings.channel.defaultLanguage` in its own `brandingSettings` write, every other settable
-branding field sent back exactly as read and the title omitted -- the only other channel field this writer ever sets.
+It writes no other channel field (owner msg 3350): a channel without `brandingSettings.channel.defaultLanguage` (required for
+`localizations`) is refused, and the owner sets it once in YouTube Studio. «Применить» applies only the set the owner previewed (a
+set saved since is refused), and an own-language translation on YouTube differing from the base text is refused, never deleted.
 
 ---
 
