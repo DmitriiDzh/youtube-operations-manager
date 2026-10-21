@@ -207,6 +207,49 @@ export async function applyVideoDetailsUpdate(args: {
   });
 }
 
+// ---------------------------------------------------------------------------
+// BL-210 (CHANNEL_LOCALIZATIONS_PLAN.md "API facts", ADR 0047): a channel's own translations. `channels.update` takes ONE part per
+// request ("You can only update any one of those parts with a single request", developers.google.com/youtube/v3/docs/channels/
+// update) and replaces it whole (an omitted property "existing value will be deleted"), 50 units each (logged by the quota
+// ledger's wrapped client like every call). The only caller (`channel-localizations/adapters/youtube-api.ts`) calls
+// `assertLiveWritesAuthorized()` itself immediately before each.
+// ---------------------------------------------------------------------------
+
+/**
+ * The `brandingSettings.channel` properties `channels.update` lets a request set (its "You can set values for these properties"
+ * list). The title is not here: it may only be omitted or repeated unchanged (`channelTitleUpdateForbidden`), so it is omitted.
+ */
+export const SETTABLE_BRANDING_CHANNEL_FIELDS = ["country", "description", "defaultLanguage", "keywords", "trackingAnalyticsAccountId", "unsubscribedTrailer"] as const;
+
+/** The settable `brandingSettings.channel` fields that hold a value in a read, exactly as read (nothing else). */
+export function pickSettableBrandingChannelFields(channel: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const field of SETTABLE_BRANDING_CHANNEL_FIELDS) {
+    const value = channel[field];
+    if (value !== undefined && value !== null) out[field] = value;
+  }
+  return out;
+}
+
+/** Real `channels.update part=localizations` with the FULL map (the part is replaced whole). */
+export async function updateChannelLocalizations(args: { youtube: youtube_v3.Youtube; channelId: string; localizations: Record<string, LocaleMetadata> }): Promise<void> {
+  await args.youtube.channels.update({
+    part: ["localizations"],
+    requestBody: { id: args.channelId, localizations: args.localizations },
+  });
+}
+
+/**
+ * Real `channels.update part=brandingSettings` sending only `brandingSettings.channel` as given -- the caller passes every settable
+ * field it read (`pickSettableBrandingChannelFields`) with its one change; nothing else of `brandingSettings` is sent.
+ */
+export async function updateChannelBrandingChannel(args: { youtube: youtube_v3.Youtube; channelId: string; channel: Record<string, unknown> }): Promise<void> {
+  await args.youtube.channels.update({
+    part: ["brandingSettings"],
+    requestBody: { id: args.channelId, brandingSettings: { channel: args.channel as youtube_v3.Schema$ChannelSettings } },
+  });
+}
+
 /** Real `playlists.insert`. Caller calls `assertLiveWritesAuthorized()` first. */
 export async function createPlaylistForAuthenticated(
   youtube: youtube_v3.Youtube,
