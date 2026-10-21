@@ -145,7 +145,8 @@ test("AC-GA-05: a RunPod failure is logged and returned, never thrown; the next 
   assert.ok(!h.lines[0].includes("rpa_secret"), "the key never reaches the log");
   assert.equal(h.log.snapshots.length, 0);
   const readsAfterFailure = h.urls.length;
-  h.advance(HOUR - 1000);
+  // GPU_STATS_PLAN §2.A: the retry after a failure is 15 min (was 1 h), so a failure never makes a gap over an hour.
+  h.advance(15 * 60 * 1000 - 1000);
   assert.deepEqual(await h.services.snapshotGpuAvailabilityIfDue(), { status: "skipped", reason: "backoff" });
   assert.equal(h.urls.length, readsAfterFailure);
   h.setStatus(200);
@@ -191,7 +192,7 @@ test("AC-GA-05: a datacenter catalog with no network-volume tier anywhere stores
   assert.equal(h.log.snapshots.length, 0);
 });
 
-test("AC-GA-05: a catalog with no GPU of 24 GB or more stores nothing and counts as a failure (retried an hour later), not as a snapshot", async () => {
+test("AC-GA-05: a catalog with no GPU of 24 GB or more stores nothing and counts as a failure (retried 15 minutes later), not as a snapshot", async () => {
   const h = harness();
   const services = createGpuAvailabilityLogServices({
     store: h.log.store,

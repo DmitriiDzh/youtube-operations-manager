@@ -47,7 +47,8 @@ export type GpuAvailabilitySnapshotOutcome =
   | { status: "failed"; code: string; message: string };
 
 /** After a failed reading, the next attempt waits this long (the timer ticks more often than that). */
-export const GPU_AVAILABILITY_FAILURE_BACKOFF_MS = 60 * 60 * 1000;
+/** BL-206: 15 min (was 1 h), so one failed reading costs at most one 15-min snapshot (FO-REQ-0033: no gap over an hour). */
+export const GPU_AVAILABILITY_FAILURE_BACKOFF_MS = 15 * 60 * 1000;
 export const GPU_AVAILABILITY_LOG_DEFAULT_LIMIT = 1000;
 
 export function createGpuAvailabilityLogServices(deps: {
@@ -66,7 +67,7 @@ export function createGpuAvailabilityLogServices(deps: {
   return {
     /**
      * The timer's one call (every 5 minutes): a snapshot when the newest stored one is 14 minutes old (BL-206; nominally every 15). Skips without any RunPod call
-     * while the media gateway is off or RunPod is not configured, and never throws: a failed reading is logged and retried an hour
+     * while the media gateway is off or RunPod is not configured, and never throws: a failed reading is logged and retried 15 minutes
      * later. Two catalog reads per snapshot, Secure Cloud (network volumes exist only there), with the Settings' CUDA minimum.
      */
     async snapshotGpuAvailabilityIfDue(): Promise<GpuAvailabilitySnapshotOutcome> {

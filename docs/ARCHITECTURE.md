@@ -3646,7 +3646,7 @@ RunPod reads only through the media gateway (`src/lib/media-gateway/`), so its s
   (with a minimum set, RunPod lists only versions at or above it, so an empty list is `false`; null only with no minimum and no list).
 - **Log** (`gpu-availability-log.ts`). `snapshotGpuAvailabilityIfDue` returns `taken` / `skipped` (`fresh`: newest snapshot under 14 min
   -- `GPU_AVAILABILITY_SNAPSHOT_DUE_MS`, nominally every 15 min, `GPU_AVAILABILITY_SNAPSHOT_INTERVAL_MS`; 3 h before BL-206;
-  `backoff`: under an hour since a failure, kept in memory; `gateway_off` / `not_configured`: checked before any client is resolved, so a
+  `backoff`: under 15 minutes since a failure (an hour before BL-206), kept in memory; `gateway_off` / `not_configured`: checked before any client is resolved, so a
   switched-off gateway records no blocked traffic) / `failed` (logged, never thrown). It always reads Secure Cloud (network volumes
   exist only there) and stores GPUs of 24 GB or more (fixed, so raising the Settings minimum does not shrink the log), through
   `buildGpuAvailabilitySnapshotRows`: per GPU an overall `*` row (always) plus one row per datacenter with a volume tier where the GPU

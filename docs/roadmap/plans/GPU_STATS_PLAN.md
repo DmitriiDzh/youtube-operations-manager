@@ -25,7 +25,7 @@ automatic datacenter switch; a second volume or a move is decided later from the
 
 ### A. Snapshots every 15 minutes, stored compactly (FO-REQ §1)
 - Interval 3 h → **15 min**; the timer ticks every **5 min** and a snapshot is due at ≥ 14 min, so the gap stays ≤ ~20 min
-  while the server runs. Not a user setting (FO-REQ says "configurable"; a constant is enough for now — said in the DEV-RESP).
+  while the server runs. The retry after a failed reading drops from 1 h to 15 min (added while building), so a failure costs one snapshot. Not a user setting (FO-REQ says "configurable"; a constant is enough for now — said in the DEV-RESP).
 - **Schema v100:** new table `media_gpu_availability_snapshots (at PK, rows, min_cuda_version)` — one row per snapshot.
   The log stores only rows with stock ≠ NONE (and the overall `*` row always); a snapshot without a row for a GPU×datacenter
   means NONE. Migration: copy each existing distinct `at` into the new table; old NONE rows stay (no rewrite of 56 k rows).
