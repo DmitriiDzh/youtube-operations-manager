@@ -1361,7 +1361,12 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     if (open.status === "approved" || open.status === "starting") {
       if (!isStartAbandoned(open, now)) return { action: "none", sessionId: open.id, reason: null };
       const since = startAttemptSince(open);
-      const reason = `start abandoned: still ${open.status} ${Math.round((now.getTime() - since.getTime()) / 60_000)} min after approval (the approving request did not finish)`;
+      // The approve request's own error, when it left one, is kept: it says WHY the start stopped (e.g. RunPod's HTTP 500), and
+      // the minutes only say how long RunPod took to confirm no pod exists (FO-REQ-0035 follow-up, owner msg 3340).
+      const minutes = Math.round((now.getTime() - since.getTime()) / 60_000);
+      const reason = open.error
+        ? `start abandoned after: ${open.error} (closed ${minutes} min after approval, once RunPod confirmed no pod exists)`
+        : `start abandoned: still ${open.status} ${minutes} min after approval (the approving request did not finish)`;
       const result = await reconcileAbandoned(open, reason, "failed");
       return { action: result === "reconciled" ? "stopped" : result === "retrying" ? "retried_stop" : "none", sessionId: open.id, reason };
     }

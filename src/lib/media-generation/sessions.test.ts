@@ -3066,3 +3066,22 @@ test("AC-SF-12: no minimum sends neither minCudaVersion nor allowedCudaVersions"
   assert.equal((await startRunning(f)).status, "running");
   assert.deepEqual(runpod.createInputs.map((i) => i.gpu), [{ id: FOUR, count: 1 }]);
 });
+
+// -- FO-REQ-0035 follow-up (owner msg 3340, 2026-10-21): an abandoned start keeps the approve request's own error -----------------
+// Session d1d0b8fa: createPod got RunPod's "HTTP 500: authentication failed.", the name check failed too, and the watcher later closed
+// the row as "still approved 10 min after approval (the approving request did not finish)" -- the cause was lost. Expected: the
+// watcher's reason carries the stored error; a row WITHOUT one keeps the old wording.
+
+test("FO-REQ-0035 follow-up: the watcher closes an abandoned start with the approve request's own error in the reason", async () => {
+  const f = fixture();
+  const requested = await f.services.requestSession(operatorRequest);
+  const stored = "pod creation failed (RunPod API returned HTTP 500: authentication failed.) and RunPod could not be asked whether the pod exists (HTTP 500)";
+  f.mem.rows.set(requested.sessionId, { ...f.mem.rows.get(requested.sessionId)!, status: "approved", approvedAt: f.getNow(), error: stored });
+  f.advance(10 * 60_000);
+  const tick = await tick1(f.services);
+  assert.equal(tick.action, "stopped");
+  assert.equal(tick.reason, `start abandoned after: ${stored} (closed 10 min after approval, once RunPod confirmed no pod exists)`);
+  const row = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "failed");
+  assert.match(row.error ?? "", /HTTP 500: authentication failed/);
+});

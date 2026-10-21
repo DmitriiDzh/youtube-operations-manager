@@ -66,11 +66,17 @@ for (const signal of ["SIGTERM", "SIGINT"]) {
 }
 
 function startServer() {
-  // Same log file as the launcher's server (start.sh), truncated per run.
+  // Same log file as the launcher's server (start.sh), new per run; the previous run's is kept as .launcher.log.1.
   const logPath = path.join(root, ".launcher.log");
   const startedAt = Date.now();
   // Not detached: the server stays in this job's process group, so launchd cleans it up if this process ever dies.
   try {
+    // The previous run's output is kept as .launcher.log.1 (one run back), so a failure can still be traced after a restart.
+    try {
+      fs.renameSync(logPath, `${logPath}.1`);
+    } catch {
+      // No previous log yet.
+    }
     const out = fs.openSync(logPath, "w");
     server = spawn("npm", ["run", "start"], { cwd: root, env: { ...process.env, YTOM_SERVICE_MODE: "1" }, stdio: ["ignore", out, out] });
   } catch (error) {
