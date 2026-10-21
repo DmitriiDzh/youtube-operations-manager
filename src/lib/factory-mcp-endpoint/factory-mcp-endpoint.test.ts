@@ -85,6 +85,7 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
       capacityLog: async () => (mediaCalls.push("capacityLog"), { attempts: [] }),
       gpuAvailability: async () => (mediaCalls.push("gpuAvailability"), { availability: {} }),
       gpuAvailabilityLog: async () => (mediaCalls.push("gpuAvailabilityLog"), { log: {} }),
+      gpuStats: async () => (mediaCalls.push("gpuStats"), { stats: {} }),
       deleteTemplate: async (input) => (mediaCalls.push(`deleteTemplate:${input.templateId}`), { deleted: true }),
       adoptTemplate: async (input) => (mediaCalls.push(`adoptTemplate:${input.templateId}>${input.newTemplateId}`), { status: "pending" }),
       getSettings: async () => (mediaCalls.push("getSettings"), { settings: {} }),
@@ -307,6 +308,7 @@ test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exact
     "factory_media_delete_model",
     "factory_media_delete_template",
     "factory_media_get_gpu_availability",
+    "factory_media_get_gpu_stats",
     "factory_media_get_job",
     "factory_media_get_pull",
     "factory_media_get_runtime",
@@ -380,7 +382,7 @@ test("AC-FO-07: a channel tool name is not callable on the factory endpoint", as
 // BL-189 (STORYBOARD_TAKES_PLAN.md §2.4): 1.18.0 and the write tool factory_storyboard_attach_render after the other storyboard tools.
 // BL-194 (VIDEO_COST_PLAN.md §2 stage 1): 1.20.0 and the two video tools, last (declaration order); factory_video_create a write.
 // BL-180: 1.21.0 (the Veo 3.1 previews leave the Gemini catalog; no tool is added or removed). BL-134: 1.22.0 (gated HF pulls;
-// no tool is added or removed).
+// no tool is added or removed). BL-206 (GPU_STATS_PLAN.md §2.C): 1.26.0 and the READ tool factory_media_get_gpu_stats after the log.
 test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), READ and WRITE, the tool list and the write tools", async () => {
   const { endpoint, tokenServices } = setup();
   const { token } = await tokenServices.issueToken({});
@@ -388,7 +390,7 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.25.0", // BL-205 (FO-REQ-0032): segments in factory_live_get_status
+    factoryApiVersion: "1.26.0", // BL-206 (FO-REQ-0033): factory_media_get_gpu_stats, compact availability log
     tools: [
       "factory_get_capabilities",
       "factory_list_logical_paths",
@@ -420,6 +422,7 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
       "factory_media_capacity_log",
       "factory_media_get_gpu_availability",
       "factory_media_list_gpu_availability_log",
+      "factory_media_get_gpu_stats",
       "factory_plan_create",
       "factory_plan_import",
       "factory_plan_update",
@@ -688,6 +691,12 @@ test("BL-172: the GPU availability tools reject unknown keys and out-of-range va
     ["factory_media_list_gpu_availability_log", { limit: 5001 }],
     ["factory_media_list_gpu_availability_log", { since: "yesterday" }],
     ["factory_media_list_gpu_availability_log", { region: "EU" }],
+    // BL-206: the stats tool's schema is strict and bounded too.
+    ["factory_media_get_gpu_stats", { from: "last week" }],
+    ["factory_media_get_gpu_stats", { hoursUtc: { from: 12, to: 25 } }],
+    ["factory_media_get_gpu_stats", { weekdays: [0] }],
+    ["factory_media_get_gpu_stats", { gpuTypeIds: [] }],
+    ["factory_media_get_gpu_stats", { region: "EU" }],
   ] as const) {
     toolDeps.mediaCalls.length = 0;
     const body = await (await endpoint.handle(rpc(call(name, { ...args }), withToken(token)))).json();
@@ -723,6 +732,7 @@ test("BL-133 (AC-FG-08): the session and job writes pass the device mutation gat
     ["factory_media_capacity_log", {}, "capacityLog"],
     ["factory_media_get_gpu_availability", {}, "gpuAvailability"],
     ["factory_media_list_gpu_availability_log", { summary: true }, "gpuAvailabilityLog"],
+    ["factory_media_get_gpu_stats", { weekdays: [1, 2] }, "gpuStats"],
   ] as const) {
     toolDeps.mediaCalls.length = 0;
     assert.equal((await toolResult(await endpoint.handle(rpc(call(name, { ...args }), withToken(token))))).isError, false, name);

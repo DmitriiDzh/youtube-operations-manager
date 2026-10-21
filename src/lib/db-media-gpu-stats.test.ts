@@ -7,19 +7,22 @@ import type { Client } from "@libsql/client";
 import { createLibsqlClient } from "@/lib/libsql-client";
 import { drizzle } from "drizzle-orm/libsql";
 import {
+  countMediaGpuAvailabilityCells,
   getLatestMediaGpuAvailabilityAt,
   initializeDatabaseSchema,
   insertMediaGpuAvailabilitySnapshot,
   listMediaGpuAvailabilityLog,
+  listMediaSessionsFirstApprovedBetween,
   SCHEMA_MIGRATIONS,
   summarizeMediaGpuAvailabilityLog,
   type AppDb,
 } from "@/lib/db";
 import { DEFAULT_MEDIA_SETTINGS } from "@/lib/media-generation/contracts";
 import { createGpuAvailabilityLogServices } from "@/lib/media-generation/gpu-availability-log";
+import { createGpuStatsServices } from "@/lib/media-generation/gpu-stats";
 
 // BL-206 (FO-REQ-0033, docs/roadmap/plans/GPU_STATS_PLAN.md §3): AC-GS-03 (the list tool's summary over old snapshots with NONE stored
-// and new ones with NONE implied) and AC-GS-09 (the v100 migration backfills the snapshots table) on a real migrated database. Every
+// and new ones with NONE implied), AC-GS-04 (the FO-REQ's own question, counted in SQL per hour and weekday) and AC-GS-09 (the v100 migration backfills the snapshots table) on a real migrated database. Every
 // expected value is the plan's, worked out by hand in the comments; nothing is read back from the code under test.
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -184,5 +187,113 @@ test("AC-GS-09: v100 gives an old session the earliest capacity attempt as an ap
         ["no-attempts", null, null, null],
         ["with-attempts", seconds("2026-10-20T09:01:00Z"), 1, null],
       ]
+    );
+  }));
+
+const RTX4090 = "NVIDIA GeForce RTX 4090";
+const L40S = "NVIDIA L40S";
+
+/**
+ * AC-GS-04's eight snapshots of the 4090 in EU-RO-1 (2026-10-19 is a Monday, checked with `date`), stored the v100 way: the overall
+ * row always, the EU-RO-1 row only when not NONE. An L40S is read in each too (LOW in EU-RO-1), so the GPU filter is exercised.
+ */
+const AC_GS_04: Array<[string, string]> = [
+  ["2026-10-19T11:45:00Z", "LOW"], // Mon, before 12:00
+  ["2026-10-19T12:00:00Z", "LOW"], // Mon -- in
+  ["2026-10-19T17:45:00Z", "NONE"], // Mon -- in
+  ["2026-10-19T18:00:00Z", "HIGH"], // Mon, 18:00 is excluded (end exclusive)
+  ["2026-10-20T13:00:00Z", "MEDIUM"], // Tue -- in
+  ["2026-10-21T15:00:00Z", "NONE"], // Wed -- in
+  ["2026-10-24T14:00:00Z", "LOW"], // Sat, not a weekday
+  ["2026-10-25T12:30:00Z", "LOW"], // Sun, not a weekday
+];
+
+function statsOn(database: AppDb) {
+  return createGpuStatsServices({
+    store: {
+      availabilityCells: (filter) => countMediaGpuAvailabilityCells(filter, database),
+      sessionsFirstApprovedBetween: async () => [],
+    },
+    settingsCandidates: async () => [RTX4090],
+    clock: { now: () => new Date("2026-10-26T00:00:00Z") },
+  });
+}
+
+test("AC-GS-04: \"how often was a 4090 obtainable in EU-RO-1 between 12:00 and 18:00 UTC on weekdays\" -> 4 snapshots, 2 in stock, share 0.5; byHourUtc[12] 1 snapshot, share 1.0", () =>
+  withDb(async (database) => {
+    for (const [at, stock] of AC_GS_04) {
+      const rows = [row(RTX4090, "*", "HIGH"), row(L40S, "*", "HIGH"), row(L40S, "EU-RO-1", "LOW")];
+      if (stock !== "NONE") rows.push(row(RTX4090, "EU-RO-1", stock));
+      await insertMediaGpuAvailabilitySnapshot(new Date(at), rows, database);
+    }
+    const stats = await statsOn(database).getGpuStats({
+      from: "2026-10-19T00:00:00Z",
+      to: "2026-10-26T00:00:00Z",
+      gpuTypeIds: [RTX4090],
+      dataCenterIds: ["EU-RO-1"],
+      hoursUtc: { from: 12, to: 18 },
+      weekdays: [1, 2, 3, 4, 5],
+    });
+    assert.equal(stats.snapshots, 4);
+    assert.equal(stats.availability.length, 1);
+    const [entry] = stats.availability;
+    assert.deepEqual([entry.gpuTypeId, entry.dataCenterId, entry.snapshots, entry.inStock, entry.inStockShare], [RTX4090, "EU-RO-1", 4, 2, 0.5]);
+    assert.deepEqual(entry.stock, { LOW: 1, MEDIUM: 1, NONE: 2 });
+    assert.deepEqual(entry.byHourUtc[12], { snapshots: 1, inStockShare: 1 });
+    assert.deepEqual(entry.byHourUtc[13], { snapshots: 1, inStockShare: 1 });
+    assert.deepEqual(entry.byHourUtc[15], { snapshots: 1, inStockShare: 0 });
+    assert.deepEqual(entry.byHourUtc[17], { snapshots: 1, inStockShare: 0 });
+    assert.deepEqual(entry.byHourUtc[11], { snapshots: 0, inStockShare: null });
+    assert.deepEqual(entry.byHourUtc[18], { snapshots: 0, inStockShare: null });
+    // Monday 12:00 LOW + 17:45 NONE; Tuesday MEDIUM; Wednesday NONE; nothing on the weekend.
+    assert.deepEqual(entry.byWeekday, [
+      { snapshots: 2, inStockShare: 0.5 },
+      { snapshots: 1, inStockShare: 1 },
+      { snapshots: 1, inStockShare: 0 },
+      { snapshots: 0, inStockShare: null },
+      { snapshots: 0, inStockShare: null },
+      { snapshots: 0, inStockShare: null },
+      { snapshots: 0, inStockShare: null },
+    ]);
+
+    // Without the hour and weekday window: all 8 snapshots, in stock in 6 (LOW ×4, HIGH, MEDIUM); the overall rows are listed too.
+    const whole = await statsOn(database).getGpuStats({ from: "2026-10-19T00:00:00Z", to: "2026-10-26T00:00:00Z", gpuTypeIds: [RTX4090] });
+    assert.equal(whole.snapshots, 8);
+    assert.deepEqual(
+      whole.availability.map((e) => [e.dataCenterId, e.snapshots, e.inStock, e.inStockShare]),
+      [
+        ["*", 8, 8, 1],
+        ["EU-RO-1", 8, 6, 0.75],
+      ]
+    );
+  }));
+
+test("AC-GS-04: a named datacenter where the GPU never had stock gets an all-NONE entry (nothing stored for it)", () =>
+  withDb(async (database) => {
+    for (const [at] of AC_GS_04.slice(0, 3)) await insertMediaGpuAvailabilitySnapshot(new Date(at), [row(RTX4090, "*", "LOW")], database);
+    const stats = await statsOn(database).getGpuStats({ from: "2026-10-19T00:00:00Z", to: "2026-10-20T00:00:00Z", dataCenterIds: ["EU-CZ-1"] });
+    assert.deepEqual(
+      stats.availability.map((e) => [e.gpuTypeId, e.dataCenterId, e.snapshots, e.inStock, e.inStockShare, e.stock]),
+      [[RTX4090, "EU-CZ-1", 3, 0, 0, { NONE: 3 }]]
+    );
+  }));
+
+test("BL-206: the sessions read for the stats are those first approved in the range (inclusive), newest first; never approved = not read", () =>
+  withDb(async (_database, client) => {
+    for (const [id, first] of [
+      ["before", "2026-10-18T23:59:59Z"],
+      ["start", "2026-10-19T00:00:00Z"],
+      ["inside", "2026-10-22T08:00:00Z"],
+      ["end", "2026-10-26T00:00:00Z"],
+      ["after", "2026-10-26T00:00:01Z"],
+      ["never", null],
+    ] as const) {
+      await insertOldSession(client, id);
+      if (first) await client.execute({ sql: "UPDATE media_sessions SET first_approved_at = ? WHERE id = ?", args: [seconds(first), id] });
+    }
+    const rows = await listMediaSessionsFirstApprovedBetween(new Date("2026-10-19T00:00:00Z"), new Date("2026-10-26T00:00:00Z"), drizzle(client) as unknown as AppDb);
+    assert.deepEqual(
+      rows.map((r) => r.id),
+      ["end", "inside", "start"]
     );
   }));

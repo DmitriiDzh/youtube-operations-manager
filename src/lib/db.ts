@@ -4,7 +4,7 @@ import { writeJsonFileAtomic } from "@/lib/atomic-json-file";
 import { type Client } from "@libsql/client";
 import { createLibsqlClient, SQLITE_BUSY_TIMEOUT_MS } from "@/lib/libsql-client";
 import { drizzle } from "drizzle-orm/libsql";
-import { sqliteTable, text, integer, real, primaryKey, index, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, primaryKey, index, uniqueIndex, type SQLiteColumn } from "drizzle-orm/sqlite-core";
 import path from "path";
 import { API_DATA_RETENTION_DAYS, YOUTUBE_API_SNAPSHOT_SOURCES } from "@/lib/youtube-data-policy/contracts";
 import { isValidLocalTimeOfDay, zonedInstant } from "@/lib/zoned-time";
@@ -10369,6 +10369,61 @@ export async function summarizeMediaGpuAvailabilityLog(
     groups: groups.map((g) => ({ ...g, count: Number(g.count) })),
     gpuSnapshots: gpuSnapshots.map((g) => ({ gpuTypeId: g.gpuTypeId, snapshots: Number(g.snapshots) })),
   };
+}
+
+/** BL-206: a UTC hour (0-23) and an ISO weekday (1 = Monday … 7 = Sunday) of a Unix-seconds `at` column, in SQL. */
+const utcHourOf = (column: SQLiteColumn) => sql<number>`cast(strftime('%H', ${column}, 'unixepoch') as integer)`;
+const isoWeekdayOf = (column: SQLiteColumn) => sql<number>`(cast(strftime('%w', ${column}, 'unixepoch') as integer) + 6) % 7 + 1`;
+
+/**
+ * BL-206 (GPU_STATS_PLAN.md §2.C): the availability log counted per UTC hour and ISO weekday, in SQL (never row by row), under a
+ * time range: the snapshots taken; per GPU the snapshots with a row of it; the stored rows per GPU, datacenter and level.
+ */
+export async function countMediaGpuAvailabilityCells(
+  filter: { since: Date; until: Date; gpuTypeIds?: string[]; dataCenterIds?: string[] },
+  database: AppDb = db
+): Promise<{
+  snapshots: Array<{ hour: number; weekday: number; count: number }>;
+  gpus: Array<{ gpuTypeId: string; hour: number; weekday: number; count: number }>;
+  rows: Array<{ gpuTypeId: string; dataCenterId: string; stock: string | null; hour: number; weekday: number; count: number }>;
+}> {
+  const log = mediaGpuAvailabilityLog;
+  const snapshotsTable = mediaGpuAvailabilitySnapshots;
+  const snapshotHour = utcHourOf(snapshotsTable.at);
+  const snapshotDay = isoWeekdayOf(snapshotsTable.at);
+  const snapshots = await database
+    .select({ hour: snapshotHour, weekday: snapshotDay, count: sql<number>`count(*)` })
+    .from(snapshotsTable)
+    .where(and(gte(snapshotsTable.at, filter.since), lte(snapshotsTable.at, filter.until)))
+    .groupBy(snapshotHour, snapshotDay);
+  const hour = utcHourOf(log.at);
+  const day = isoWeekdayOf(log.at);
+  const gpuWhere = and(gte(log.at, filter.since), lte(log.at, filter.until), filter.gpuTypeIds ? inArray(log.gpuTypeId, filter.gpuTypeIds) : undefined);
+  const gpus = await database
+    .select({ gpuTypeId: log.gpuTypeId, hour, weekday: day, count: sql<number>`count(distinct ${log.at})` })
+    .from(log)
+    .where(gpuWhere)
+    .groupBy(log.gpuTypeId, hour, day);
+  const rows = await database
+    .select({ gpuTypeId: log.gpuTypeId, dataCenterId: log.dataCenterId, stock: log.stock, hour, weekday: day, count: sql<number>`count(*)` })
+    .from(log)
+    .where(and(gpuWhere, filter.dataCenterIds ? inArray(log.dataCenterId, filter.dataCenterIds) : undefined))
+    .groupBy(log.gpuTypeId, log.dataCenterId, log.stock, hour, day);
+  const n = (value: unknown) => Number(value);
+  return {
+    snapshots: snapshots.map((c) => ({ hour: n(c.hour), weekday: n(c.weekday), count: n(c.count) })),
+    gpus: gpus.map((c) => ({ gpuTypeId: c.gpuTypeId, hour: n(c.hour), weekday: n(c.weekday), count: n(c.count) })),
+    rows: rows.map((c) => ({ gpuTypeId: c.gpuTypeId, dataCenterId: c.dataCenterId, stock: c.stock, hour: n(c.hour), weekday: n(c.weekday), count: n(c.count) })),
+  };
+}
+
+/** BL-206: the sessions whose first approval is in the range (inclusive), newest first. */
+export async function listMediaSessionsFirstApprovedBetween(since: Date, until: Date, database: AppDb = db): Promise<StoredMediaSession[]> {
+  return database
+    .select()
+    .from(mediaSessions)
+    .where(and(gte(mediaSessions.firstApprovedAt, since), lte(mediaSessions.firstApprovedAt, until)))
+    .orderBy(desc(mediaSessions.firstApprovedAt), desc(mediaSessions.id));
 }
 
 export async function insertMediaControlEvent(

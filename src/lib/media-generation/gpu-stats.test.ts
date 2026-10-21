@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { StoredSessionRow } from "./sessions";
-import { buildGpuWaitRecord, failureReasonOf } from "./gpu-stats";
+import { isDomainError } from "./contracts";
+import { buildGpuWaitRecord, createGpuStatsServices, failureReasonOf, nearestRank, type GpuStatsStore } from "./gpu-stats";
 
 // BL-206 (FO-REQ-0033, docs/roadmap/plans/GPU_STATS_PLAN.md §3). Expected values are the plan's acceptance criteria, worked out by
 // hand: AC-GS-05 (approved 10:00, retried 10:20, ready 10:24 -> a 24-minute wait, not 4) and AC-GS-07 (the skipped candidates on
@@ -94,4 +95,112 @@ test("BL-206: a failure's reason is the code its error starts with, or its first
   assert.equal(failureReasonOf("no GPU candidate qualifies: X: not in RunPod's GPU catalog"), "no_gpu_candidate_qualifies");
   assert.equal(failureReasonOf("pod creation failed: HTTP 422"), "pod_creation_failed");
   assert.equal(failureReasonOf(null), "unknown");
+});
+
+// -- §2.C factory_media_get_gpu_stats: AC-GS-06 (wait statistics) and AC-GS-08 (refusals, no RunPod) ------------------------------
+
+const EMPTY_CELLS = { snapshots: [], gpus: [], rows: [] };
+
+function statsServices(sessions: StoredSessionRow[], calls: string[] = []) {
+  const store: GpuStatsStore = {
+    async availabilityCells() {
+      calls.push("availabilityCells");
+      return EMPTY_CELLS;
+    },
+    async sessionsFirstApprovedBetween() {
+      calls.push("sessions");
+      return sessions;
+    },
+  };
+  return createGpuStatsServices({ store, settingsCandidates: async () => [FOUR, FIVE], clock: { now: () => new Date("2026-10-21T12:00:00Z") } });
+}
+
+/** A ready session first approved at 2026-10-20 (Tuesday) 10:00 UTC that waited `minutes`. */
+function readyAfter(id: string, minutes: number, gpuTypeId = FOUR): StoredSessionRow {
+  const first = new Date("2026-10-20T10:00:00Z");
+  return storedSession({ id, firstApprovedAt: first, approvedAt: first, readyAt: new Date(first.getTime() + minutes * 60_000), gpuTypeId, status: "done" });
+}
+
+test("AC-GS-06: waits 2, 4, 6, 8, 30 min and one media_no_capacity failure -> median 6, p90 30 (nearest rank), failureRate 1/6; the failure is not a wait", async () => {
+  const failed = storedSession({ id: "f1", status: "failed", firstApprovedAt: new Date("2026-10-20T10:00:00Z"), error: "media_no_capacity: nobody could be placed in 30 min", gpuTypeId: FOUR });
+  const sessions = [readyAfter("a", 2), readyAfter("b", 4), readyAfter("c", 6, FIVE), readyAfter("d", 8), readyAfter("e", 30), failed];
+  const { sessions: stats } = await statsServices(sessions).getGpuStats({ from: "2026-10-20T00:00:00Z", to: "2026-10-21T00:00:00Z" });
+  assert.equal(stats.count, 6);
+  assert.equal(stats.ready, 5);
+  assert.equal(stats.failed, 1);
+  assert.equal(stats.medianWaitMinutes, 6);
+  assert.equal(stats.p90WaitMinutes, 30);
+  assert.ok(stats.failureRate !== null && Math.abs(stats.failureRate - 1 / 6) < 0.0001, String(stats.failureRate));
+  assert.deepEqual(stats.failures, { media_no_capacity: 1 });
+  // All six tried the Settings' list; the GPUs obtained: the 4090 four times (2, 4, 8, 30 -> median 4 at k = ceil(0.5 × 4) = 2, p90 30 at k = 4), the 5090 once (6).
+  assert.deepEqual(
+    stats.byCandidates.map((g) => [g.candidates, g.count, g.ready, g.failed, g.medianWaitMinutes, g.p90WaitMinutes]),
+    [[[FOUR, FIVE], 6, 5, 1, 6, 30]]
+  );
+  assert.deepEqual(stats.byGpu, [
+    { gpuTypeId: FOUR, ready: 4, medianWaitMinutes: 4, p90WaitMinutes: 30 },
+    { gpuTypeId: FIVE, ready: 1, medianWaitMinutes: 6, p90WaitMinutes: 6 },
+  ]);
+  assert.equal("list" in stats, false, "the list only with includeSessions");
+});
+
+test("AC-GS-06: nearest rank -- an even count takes the lower middle (2, 4, 6, 8 -> median 4); one value is every percentile; none is null", () => {
+  assert.equal(nearestRank([8, 2, 6, 4], 50), 4);
+  assert.equal(nearestRank([8, 2, 6, 4], 90), 8);
+  assert.equal(nearestRank([5], 90), 5);
+  assert.equal(nearestRank([], 50), null);
+});
+
+test("BL-206: includeSessions lists each session's wait record; hours/weekdays filter the sessions by their first approval", async () => {
+  const saturday = storedSession({ id: "sat", firstApprovedAt: new Date("2026-10-24T13:00:00Z"), readyAt: new Date("2026-10-24T13:03:00Z"), status: "done" });
+  const tuesday = readyAfter("tue", 3);
+  const services = statsServices([saturday, tuesday]);
+  const all = await services.getGpuStats({ from: "2026-10-19T00:00:00Z", to: "2026-10-26T00:00:00Z", includeSessions: true });
+  assert.deepEqual(
+    (all.sessions.list ?? []).map((r) => [r.sessionId, r.waitMinutes]),
+    [
+      ["sat", 3],
+      ["tue", 3],
+    ]
+  );
+  const weekdays = await services.getGpuStats({ from: "2026-10-19T00:00:00Z", to: "2026-10-26T00:00:00Z", weekdays: [1, 2, 3, 4, 5], includeSessions: true });
+  assert.deepEqual((weekdays.sessions.list ?? []).map((r) => r.sessionId), ["tue"]);
+  const morning = await services.getGpuStats({ from: "2026-10-19T00:00:00Z", to: "2026-10-26T00:00:00Z", hoursUtc: { from: 6, to: 12 } });
+  assert.equal(morning.sessions.count, 1, "10:00 is inside 6-12, 13:00 is not");
+});
+
+test("AC-GS-08: from after to, or a window over 90 days, is refused with invalid_request before any read", async () => {
+  const calls: string[] = [];
+  const services = statsServices([], calls);
+  for (const input of [
+    { from: "2026-10-21T00:00:00Z", to: "2026-10-20T00:00:00Z" },
+    { from: "2026-07-01T00:00:00Z", to: "2026-10-01T00:00:00Z" }, // 92 days
+    { to: "2026-10-21T00:00:00Z", from: "2026-07-22T23:59:59Z" }, // 90 days and 1 s
+    { hoursUtc: { from: 12, to: 12 } },
+  ]) {
+    await assert.rejects(services.getGpuStats(input), (e: unknown) => isDomainError(e) && e.code === "invalid_request", JSON.stringify(input));
+  }
+  assert.deepEqual(calls, []);
+  // Exactly 90 days is allowed; the default window is the last 7 days to now.
+  const ninety = await services.getGpuStats({ from: "2026-07-23T00:00:00Z", to: "2026-10-21T00:00:00Z" });
+  assert.equal(ninety.from, "2026-07-23T00:00:00.000Z");
+  const defaults = await services.getGpuStats({});
+  assert.deepEqual([defaults.from, defaults.to], ["2026-10-14T12:00:00.000Z", "2026-10-21T12:00:00.000Z"]);
+  await assert.rejects(services.getGpuStats({ weekdays: [8] }), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
+});
+
+test("AC-GS-08: the stats never reach RunPod -- no RunPod client among its dependencies, and no network call while it runs", async () => {
+  const original = globalThis.fetch;
+  let fetched = 0;
+  globalThis.fetch = (async () => {
+    fetched += 1;
+    throw new Error("no network in this test");
+  }) as typeof fetch;
+  try {
+    const out = await statsServices([readyAfter("a", 2)]).getGpuStats({ includeSessions: true, from: "2026-10-20T00:00:00Z", to: "2026-10-21T00:00:00Z" });
+    assert.equal(out.sessions.ready, 1);
+  } finally {
+    globalThis.fetch = original;
+  }
+  assert.equal(fetched, 0);
 });

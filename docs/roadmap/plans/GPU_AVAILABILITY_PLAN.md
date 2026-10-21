@@ -84,6 +84,10 @@ Reply to the Operator: DEV-RESP-0019.
 
 ### B. Availability log (stored)
 
+> **Superseded in part by BL-206 (`GPU_STATS_PLAN.md` §2.A, 2026-10-21):** snapshots every **15 minutes** (due at 14 min, timer every
+> 5 min), and per-datacenter NONE rows are no longer stored (a missing row is NONE; one row per snapshot in
+> `media_gpu_availability_snapshots`). The 3-hour interval below is the BL-172 design as built then.
+
 - **When:** a snapshot every **3 hours** in the server process (a timer next to the media timers in `instrumentation.ts`; the Mac
   service runs continuously).
   - Only while the media gateway is on and RunPod is configured.

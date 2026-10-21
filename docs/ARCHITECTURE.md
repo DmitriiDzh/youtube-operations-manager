@@ -3630,7 +3630,7 @@ Plan: `docs/roadmap/plans/VIDEO_COMMENTS_PLAN.md` (AC-VC-01..12). Schema v80.
 - **Reads.** `listStoredComments` (channel scope) backs `agent_get_video_comments`: the requested videos of the channel, newest comments
   first (`limit`), with the state.
 
-## 41. GPU availability per datacenter, now and every 3 hours (BL-172, FO-REQ-0016)
+## 41. GPU availability per datacenter, now and every 15 minutes (BL-172, FO-REQ-0016; BL-206, FO-REQ-0033)
 
 Plan: `docs/roadmap/plans/GPU_AVAILABILITY_PLAN.md` (AC-GA-01..09). Schema v81. Part of the media core (`src/lib/media-generation/`);
 RunPod reads only through the media gateway (`src/lib/media-gateway/`), so its switch and traffic log apply.
@@ -3644,21 +3644,43 @@ RunPod reads only through the media gateway (`src/lib/media-gateway/`), so its s
   (`gpu-availability.ts`): GPUs at or above the memory minimum (input, else Settings, else 24 GB), each with its datacenters' stock,
   `networkVolume` (the datacenter lists a volume tier) and `s3Api`; `cudaAvailable` = some listed version ≥ the minimum is available
   (with a minimum set, RunPod lists only versions at or above it, so an empty list is `false`; null only with no minimum and no list).
-- **Log** (`gpu-availability-log.ts`). `snapshotGpuAvailabilityIfDue` returns `taken` / `skipped` (`fresh`: newest snapshot under 3 h;
+- **Log** (`gpu-availability-log.ts`). `snapshotGpuAvailabilityIfDue` returns `taken` / `skipped` (`fresh`: newest snapshot under 14 min
+  -- `GPU_AVAILABILITY_SNAPSHOT_DUE_MS`, nominally every 15 min, `GPU_AVAILABILITY_SNAPSHOT_INTERVAL_MS`; 3 h before BL-206;
   `backoff`: under an hour since a failure, kept in memory; `gateway_off` / `not_configured`: checked before any client is resolved, so a
   switched-off gateway records no blocked traffic) / `failed` (logged, never thrown). It always reads Secure Cloud (network volumes
   exist only there) and stores GPUs of 24 GB or more (fixed, so raising the Settings minimum does not shrink the log), through
-  `buildGpuAvailabilitySnapshotRows`: per GPU an overall `*` row plus one row per datacenter with a volume tier (`NONE` where the GPU
-  does not list it). A GPU catalog with nothing of 24 GB or more, or a datacenter catalog with no volume tier anywhere, is a failure, not
-  a snapshot (it would otherwise count as fresh and hide the gap). The timer in `src/instrumentation.ts` ticks every 15 minutes
-  (first after 5) behind `assertDeviceAvailableForMutation`.
+  `buildGpuAvailabilitySnapshotRows`: per GPU an overall `*` row (always) plus one row per datacenter with a volume tier where the GPU
+  is listed there with a level other than NONE (BL-206; before it NONE rows were stored too -- 92 % of the rows -- and they are not
+  rewritten; a missing row means NONE). A GPU catalog with nothing of 24 GB or more, or a datacenter catalog with no volume tier anywhere, is a failure, not
+  a snapshot (it would otherwise count as fresh and hide the gap). The timer in `src/instrumentation.ts` ticks every 5 minutes
+  (first after 5; every 15 before BL-206) behind `assertDeviceAvailableForMutation`, so the gap stays about 15-20 minutes.
 - **Storage.** `media_gpu_availability_log` (`at`, `gpu_type_id`, `data_center_id`, `stock`, `price_per_hr`, `min_cuda_version`;
   indexes on `at` and on `(gpu_type_id, data_center_id, at)`). `insertMediaGpuAvailabilitySnapshot` writes a snapshot in one transaction
-  (200 rows per insert) and then prunes rows older than `GPU_AVAILABILITY_LOG_RETENTION_DAYS` (90; a failed prune is ignored, like the
-  capacity log). Classified `not_api_data`, device-local in snapshots.
+  (200 rows per insert) plus its row in `media_gpu_availability_snapshots` (schema v100: `at` PK, `rows`, `min_cuda_version`; the
+  migration backfills every distinct `at` of the log with its row count) and then prunes both tables older than
+  `GPU_AVAILABILITY_LOG_RETENTION_DAYS` (90; a failed prune is ignored, like the capacity log). `getLatestMediaGpuAvailabilityAt` reads
+  the snapshots table. Both classified `not_api_data`, device-local in snapshots.
 - **Reads.** `listGpuAvailabilityLog` backs `factory_media_list_gpu_availability_log`: rows newest first (`listMediaGpuAvailabilityLog`,
   default 1,000, at most 5,000), or with `summary` the SQL `GROUP BY gpu_type_id, data_center_id, stock` over every matching row
-  (`summarizeMediaGpuAvailabilityLog`), folded per GPU and datacenter by `summarizeGpuAvailabilityGroups`.
+  (`summarizeMediaGpuAvailabilityLog`), folded per GPU and datacenter by `summarizeGpuAvailabilityGroups`. BL-206: the summary's
+  `snapshots`/`firstAt`/`lastAt` come from the snapshots table (time range only), and with `gpuSnapshots` (per GPU, the distinct `at`
+  with any row of it) a datacenter entry's NONE = the GPU's snapshots − its other levels, identical for old (NONE stored) and new
+  (NONE implied) snapshots; a GPU × datacenter named together with no row gets one all-NONE entry.
+- **Statistics (BL-206, `gpu-stats.ts`, `factory_media_get_gpu_stats`, Factory API 1.26.0).** `createGpuStatsServices` depends on two
+  store reads and the Settings' GPU list only -- no RunPod client is in reach. `countMediaGpuAvailabilityCells` groups in SQL by UTC hour
+  (`strftime('%H', at, 'unixepoch')`) and ISO weekday (`(%w + 6) % 7 + 1`): the snapshots taken, per GPU the distinct snapshots with a
+  row of it, and the stored rows per GPU, datacenter and level; `buildGpuAvailabilityStats` applies the hour/weekday window to those
+  cells and derives NONE per cell as above (so 90 days never load row by row). Sessions: `listMediaSessionsFirstApprovedBetween` →
+  `buildGpuWaitRecord` per row (candidates from its plan, else the Settings' list as it is now; wait = `readyAt − firstApprovedAt`;
+  outcome ready / failed / stopped / open; failure reason = the error's leading code) → `buildGpuSessionStats` (median and p90 by
+  nearest rank over ready sessions, failureRate = failed / (ready + failed), by candidate list and by GPU obtained). The window is
+  checked in the core: `from` > `to`, more than 90 days, or an empty hour window → `invalid_request` before any read.
+- **Session wait facts (BL-206, schema v100).** `media_sessions.first_approved_at` is set only by `approve` (the guarded `pending →
+  approved` UPDATE, once per session); a capacity retry (`waiting_capacity → approved`) and a re-placement (`starting → approved`, or a
+  later placement in `placeOnce`) move `approved_at` -- the start budget's clock -- but never it. The migration backfills older sessions
+  from their earliest `media_capacity_attempts.at` and sets `first_approved_approximate`. `startApproved` stores
+  `resolveGpuCandidates().skipped` as `gpu_skipped_json` only while the row has none (so the first placement's record stays through
+  retries), best effort like `usedMinCudaVersion`, also when no candidate qualifies.
 
 ## 42. Re-checks of rated tracks: a fixed version, or a question about one spot (BL-173, FO-REQ-0017)
 
