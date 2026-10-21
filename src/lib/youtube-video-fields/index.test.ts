@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { imageKindOf, tagsLength, THUMBNAIL_MAX_BYTES } from "./index";
+import { hasAngleBrackets, imageKindOf, tagsLength, THUMBNAIL_MAX_BYTES } from "./index";
 
 // YouTube Data API videos resource: snippet.tags "maximum length of 500 characters" -- commas between tags count, and a tag with
 // a space is quoted (both quotes count). thumbnails.set: JPEG or PNG, at most 2 MB. Expected values by hand.
@@ -19,4 +19,12 @@ test("imageKindOf reads the first bytes, not a name; THUMBNAIL_MAX_BYTES is 2 Mi
   assert.equal(imageKindOf(new Uint8Array([0x47, 0x49, 0x46, 0x38])), "other");
   assert.equal(imageKindOf(new Uint8Array([0xff, 0xd8])), "other");
   assert.equal(THUMBNAIL_MAX_BYTES, 2_097_152);
+});
+
+// videos resource: title and description accept "all valid UTF-8 characters except < and >".
+test("hasAngleBrackets finds < or > anywhere, and nothing else", () => {
+  assert.equal(hasAngleBrackets("a < b"), true);
+  assert.equal(hasAngleBrackets(">"), true);
+  assert.equal(hasAngleBrackets("Jazz «радио» & (live) [24/7]"), false);
+  assert.equal(hasAngleBrackets(""), false);
 });

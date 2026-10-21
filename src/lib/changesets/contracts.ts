@@ -15,7 +15,7 @@ export { DomainError, isDomainError, parseWithSchema, formatZodError, mapUnknown
 export type ChangeField = "title" | "description";
 // "delete" (added 2026-09-21, docs/PROJECT_SPEC.md §16's 2026-09-20 deletion-policy
 // update) represents a proposal to remove a language's localization entirely -- see
-// src/lib/batches/merge.ts's buildSafeLocalizationsPayload for how it is merged
+// src/lib/shared-localization-merge (buildSafeLocalizationsPayload) for how it is merged
 // (delete-wins, applied after all other changes) and its defaultLanguage guard.
 export type ChangeType = "add" | "modify" | "unchanged" | "delete";
 export type ChangeValidationStatus = "valid" | "invalid";
