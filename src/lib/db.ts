@@ -842,6 +842,13 @@ export const mediaSessions = sqliteTable(
     // Schema v98 (FO-REQ-0031): where the start is (placed / pulling_image / comfy_booting / ready) and since when.
     startStage: text("start_stage"),
     stageSince: integer("stage_since", { mode: "timestamp" }),
+    // Schema v100 (BL-206, FO-REQ-0033, GPU_STATS_PLAN.md §2.B): the first approval -- written once, at the approval, and never
+    // moved by a re-placement or a capacity retry (`approved_at` is) -- so the real wait is ready − first approval; true in
+    // `first_approved_approximate` when v100 backfilled it from the session's earliest capacity attempt (sessions before v100).
+    // `gpu_skipped_json`: the GPU candidates the first placement skipped before any try, with the reason ([] = none skipped).
+    firstApprovedAt: integer("first_approved_at", { mode: "timestamp" }),
+    firstApprovedApproximate: integer("first_approved_approximate", { mode: "boolean" }),
+    gpuSkippedJson: text("gpu_skipped_json"),
   },
   (table) => [index("media_sessions_open_slot_idx").on(table.openSlot), index("media_sessions_status_idx").on(table.status)]
 );
@@ -5314,7 +5321,7 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
   {
     version: 100,
     description:
-      "media_gpu_availability_snapshots -- BL-206 (FO-REQ-0033, GPU_STATS_PLAN.md): one row per GPU availability snapshot (taken every 15 min from now on; datacenter rows stored only where the stock is not NONE), backfilled from the log's distinct times with their row counts. Additive, device-local",
+      "media_gpu_availability_snapshots + media_sessions.first_approved_at/first_approved_approximate/gpu_skipped_json -- BL-206 (FO-REQ-0033, GPU_STATS_PLAN.md): one row per GPU availability snapshot (taken every 15 min from now on; datacenter rows stored only where the stock is not NONE), backfilled from the log's distinct times with their row counts; a session's first approval (backfilled, approximate, from its earliest capacity attempt) and the GPU candidates its first placement skipped. Additive, device-local",
     apply: async (client) => {
       await client.execute(`CREATE TABLE IF NOT EXISTS media_gpu_availability_snapshots (
         at INTEGER PRIMARY KEY,
@@ -5324,6 +5331,23 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       await client.execute(
         "INSERT OR IGNORE INTO media_gpu_availability_snapshots (at, rows, min_cuda_version) SELECT at, count(*), max(min_cuda_version) FROM media_gpu_availability_log GROUP BY at"
       );
+      for (const statement of [
+        "ALTER TABLE media_sessions ADD COLUMN first_approved_at INTEGER",
+        "ALTER TABLE media_sessions ADD COLUMN first_approved_approximate INTEGER",
+        "ALTER TABLE media_sessions ADD COLUMN gpu_skipped_json TEXT",
+      ]) {
+        try {
+          await client.execute(statement);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
+      // Sessions before v100: the earliest capacity attempt (createPod is tried right after the approval) stands in for the first
+      // approval, marked approximate. A session without any attempt keeps null.
+      await client.execute(`UPDATE media_sessions
+        SET first_approved_at = (SELECT min(a.at) FROM media_capacity_attempts a WHERE a.session_id = media_sessions.id),
+            first_approved_approximate = 1
+        WHERE first_approved_at IS NULL AND EXISTS (SELECT 1 FROM media_capacity_attempts a WHERE a.session_id = media_sessions.id)`);
     },
   },
 ];

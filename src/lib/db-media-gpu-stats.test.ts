@@ -148,3 +148,41 @@ test("BL-206: a new snapshot writes its snapshots-table row (rows = rows stored)
       ]
     );
   }));
+
+/** A session row as a pre-v100 build left it (no first approval column value). */
+async function insertOldSession(client: Client, id: string): Promise<void> {
+  await client.execute({
+    sql: "INSERT INTO media_sessions (id, channel_id, status, requested_by, max_minutes, estimate_usd, fits_today, created_at, approved_at) VALUES (?, 'UC1', 'done', 'factory', 60, 0.69, 1, ?, ?)",
+    args: [id, seconds("2026-10-20T09:00:00Z"), seconds("2026-10-20T09:40:00Z")],
+  });
+}
+
+async function insertAttempt(client: Client, sessionId: string, at: string): Promise<void> {
+  await client.execute({
+    sql: "INSERT INTO media_capacity_attempts (at, session_id, datacenter_id, gpu_type_id, price_per_hr, result) VALUES (?, ?, 'EU-RO-1', 'NVIDIA GeForce RTX 4090', 0.69, 'no_capacity')",
+    args: [seconds(at), sessionId],
+  });
+}
+
+test("AC-GS-09: v100 gives an old session the earliest capacity attempt as an approximate first approval; one without attempts keeps null; a set one is kept", () =>
+  withDb(async (_database, client) => {
+    await insertOldSession(client, "with-attempts");
+    await insertOldSession(client, "no-attempts");
+    await insertOldSession(client, "already-set");
+    await client.execute({ sql: "UPDATE media_sessions SET first_approved_at = ?, first_approved_approximate = 0 WHERE id = 'already-set'", args: [seconds("2026-10-20T09:05:00Z")] });
+    await insertAttempt(client, "with-attempts", "2026-10-20T09:31:00Z");
+    await insertAttempt(client, "with-attempts", "2026-10-20T09:01:00Z"); // the earliest, inserted second
+    await insertAttempt(client, "with-attempts", "2026-10-20T09:40:00Z");
+    await insertAttempt(client, "already-set", "2026-10-20T09:06:00Z");
+    await rerunV100(client);
+    await rerunV100(client); // re-running changes nothing
+    const result = await client.execute("SELECT id, first_approved_at, first_approved_approximate, gpu_skipped_json FROM media_sessions ORDER BY id");
+    assert.deepEqual(
+      result.rows.map((r) => [r.id, r.first_approved_at === null ? null : Number(r.first_approved_at), r.first_approved_approximate === null ? null : Number(r.first_approved_approximate), r.gpu_skipped_json]),
+      [
+        ["already-set", seconds("2026-10-20T09:05:00Z"), 0, null],
+        ["no-attempts", null, null, null],
+        ["with-attempts", seconds("2026-10-20T09:01:00Z"), 1, null],
+      ]
+    );
+  }));

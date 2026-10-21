@@ -82,6 +82,13 @@ export type StoredSessionRow = {
   // Schema v98 (FO-REQ-0031); absent on rows written before it.
   startStage?: string | null;
   stageSince?: Date | null;
+  // Schema v100 (BL-206); absent on rows written before it.
+  /** The first approval, written once at the approval -- never moved by a re-placement or a capacity retry (`approvedAt` is). */
+  firstApprovedAt?: Date | null;
+  /** True when v100 backfilled `firstApprovedAt` from the earliest capacity attempt (a session from before v100). */
+  firstApprovedApproximate?: boolean | null;
+  /** The candidates the first placement skipped before any try, as JSON `[{ gpuTypeId, reason }]`; null = no placement recorded. */
+  gpuSkippedJson?: string | null;
   /** When this app last saw the pod alive (schema v54): the billable window of a pod found already gone closes here. */
   lastSeenAliveAt: Date | null;
   /** When this app's terminate DELETE went through (schema v57): a retried stop that finds the pod gone bills to here. */
@@ -224,6 +231,20 @@ export function liveUsd(row: StoredSessionRow, now: Date): number | null {
   return round2((seconds * row.costPerHr) / 3600);
 }
 
+/** BL-206: the stored skipped candidates; an unreadable value reads as null (not recorded), never as a throw. */
+export function parseGpuSkipped(json: string | null): Array<{ gpuTypeId: string; reason: string }> | null {
+  if (!json) return null;
+  try {
+    const parsed: unknown = JSON.parse(json);
+    if (!Array.isArray(parsed)) return null;
+    return parsed
+      .filter((entry): entry is { gpuTypeId: string; reason: string } => typeof entry?.gpuTypeId === "string" && typeof entry?.reason === "string")
+      .map((entry) => ({ gpuTypeId: entry.gpuTypeId, reason: entry.reason }));
+  } catch {
+    return null;
+  }
+}
+
 export function toPublicSession(row: StoredSessionRow, now: Date): MediaSession {
   const iso = (d: Date | null) => (d ? d.toISOString() : null);
   return {
@@ -243,6 +264,9 @@ export function toPublicSession(row: StoredSessionRow, now: Date): MediaSession 
     comfyUiProxyUrl: row.comfyUiProxyUrl,
     createdAt: row.createdAt.toISOString(),
     approvedAt: iso(row.approvedAt),
+    firstApprovedAt: iso(row.firstApprovedAt ?? null),
+    firstApprovedApproximate: row.firstApprovedApproximate === true,
+    gpuSkipped: parseGpuSkipped(row.gpuSkippedJson ?? null),
     startedAt: iso(row.startedAt),
     readyAt: iso(row.readyAt),
     lastActivityAt: iso(row.lastActivityAt),
@@ -634,7 +658,8 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     const localSlots = Math.max(0, settings.maxConcurrentSessions - others.otherActiveSessions);
     const approved = await deps.store.approve(
       sessionId,
-      { approvedAt: now, approvedByUserId: input.approvedByUserId ?? null, approvedBy: input.approvedBy, tokenCiphertext: sealed.ciphertext, tokenIv: sealed.iv, tokenAuthTag: sealed.authTag },
+      // BL-206: `firstApprovedAt` is set here only -- pending -> approved happens once per session.
+      { approvedAt: now, firstApprovedAt: now, firstApprovedApproximate: false, approvedByUserId: input.approvedByUserId ?? null, approvedBy: input.approvedBy, tokenCiphertext: sealed.ciphertext, tokenIv: sealed.iv, tokenAuthTag: sealed.authTag },
       localSlots
     );
     if (!approved) {
@@ -771,6 +796,9 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       .then(() => client.listGpuTypes({ cloud: settings.cloudType }))
       .catch(() => null);
     const { candidates, skipped } = resolveGpuCandidates({ plan, settings, catalog });
+    // BL-206 (GPU_STATS_PLAN.md §2.B, AC-GS-07): the candidates the FIRST placement skipped, kept on the row ([] = none); a capacity
+    // retry runs this again and leaves the first record as it is. Best effort, like the minimum above: a lost record never stops a start.
+    if (approved.gpuSkippedJson == null) await deps.store.transition(approved.id, ["approved"], { status: "approved", gpuSkippedJson: JSON.stringify(skipped) }).catch(() => null);
     if (candidates.length === 0) {
       const detail = skipped.map((s) => `${s.gpuTypeId}: ${s.reason}`).join("; ") || "no GPU is configured";
       await finish(approved, ["approved"], "failed", { error: `no GPU candidate qualifies: ${detail}` });
