@@ -13,6 +13,8 @@ import { useT } from "./ui-text-provider";
 
 type Settings = {
   liveWritesEnabled: boolean;
+  /** BL-209 (ADR 0046): null when its read failed -- only this toggle is then hidden, never the Live writes one. */
+  autoPrivateUploadEnabled?: boolean | null;
   gatewayTraffic?: GatewayTrafficWindowView[];
   cloudQuotaStatus?: { dataApi: ServiceQuotaStatusView; tokenRefreshFailed?: boolean };
 };
@@ -57,7 +59,11 @@ export function LiveWritesSettings() {
       const res = await fetch("/api/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ liveWritesEnabled: next.liveWritesEnabled }),
+        // Only the fields that changed (the route applies the ones present).
+        body: JSON.stringify({
+          ...(next.liveWritesEnabled !== settings?.liveWritesEnabled ? { liveWritesEnabled: next.liveWritesEnabled } : {}),
+          ...(typeof next.autoPrivateUploadEnabled === "boolean" && next.autoPrivateUploadEnabled !== settings?.autoPrivateUploadEnabled ? { autoPrivateUploadEnabled: next.autoPrivateUploadEnabled } : {}),
+        }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -76,7 +82,7 @@ export function LiveWritesSettings() {
 
   if (!draft) return null;
 
-  const dirty = settings && draft.liveWritesEnabled !== settings.liveWritesEnabled;
+  const dirty = settings && (draft.liveWritesEnabled !== settings.liveWritesEnabled || draft.autoPrivateUploadEnabled !== settings.autoPrivateUploadEnabled);
 
   return (
     <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
@@ -101,6 +107,19 @@ export function LiveWritesSettings() {
               />
               <span className="text-sm text-zinc-300">{t("settingsCards.liveWrites.toggle")}</span>
             </div>
+            {/* BL-209 (owner msg 3331): the automatic private upload's switch sits next to «Запись в YouTube». Its uploads still
+                pause while Live writes are off. */}
+            {typeof draft.autoPrivateUploadEnabled === "boolean" && (
+              <div className="mt-2 flex items-center gap-2">
+                <ToggleSwitch
+                  label={t("settingsCards.autoPrivateUpload.toggle")}
+                  checked={draft.autoPrivateUploadEnabled}
+                  onChange={(checked) => setDraft({ ...draft, autoPrivateUploadEnabled: checked })}
+                />
+                <span className="text-sm text-zinc-300">{t("settingsCards.autoPrivateUpload.toggle")}</span>
+                <InfoTooltip>{t("settingsCards.autoPrivateUpload.info")}</InfoTooltip>
+              </div>
+            )}
           </div>
         }
         right={

@@ -314,6 +314,8 @@ export const content: Record<keyof typeof en, string> = {
   "publishingApproval.busy.queueing": "Ставлю загрузки в очередь…",
   "publishingApproval.failed": "Не удалось поставить загрузки в очередь.",
   "publishingUploads.title": "Загрузки",
+  "publishingUploads.automatic": "автоматически",
+  "publishingUploads.automaticHint": "Поставлено переключателем автоматической загрузки (Настройки): private, без даты.",
   "publishingUploads.empty": "Загрузок с этого компьютера пока не было.",
   "publishingUploads.status.queued": "В очереди",
   "publishingUploads.status.uploading": "Отправляется · {percent}%",

@@ -7,6 +7,8 @@ import { createCachedReader, createCloudQuotasCore } from "@/lib/cloud-quotas";
 import { createMarketIntelligenceCore } from "@/lib/market-intelligence";
 import {
   getAnalyticsReadsEnabled,
+  getAutoPrivateUploadEnabled,
+  setAutoPrivateUploadEnabled,
   getReportingReadsEnabled,
   getWikipediaReadsEnabled,
   getYoutubeFeedReadsEnabled,
@@ -53,6 +55,8 @@ const marketIntelligenceCore = createMarketIntelligenceCore();
  * App-wide settings (Settings tab, owner instruction 2026-09-21). Two flags today:
  * - `liveWritesEnabled` -- the Live-writes toggle (ADR 0044): on by default, never reset; the owner's off persists. Reported as
  *   the effective state (the toggle AND a live web-server lease), so it reads off while the server is not renewing its lease.
+ * - `autoPrivateUploadEnabled` -- BL-209 (AUTO_PRIVATE_UPLOAD_PLAN.md, ADR 0046): the owner's standing approval for ready release
+ *   packages to be uploaded as private, without a date, by the publishing module's watcher. Off by default, persistent, device-local.
  * - `deviceAutoSyncEnabled` -- automatic device sync (docs/roadmap/plans/DEVICE_AUTO_SYNC_PLAN.md
  *   §3.7). On by default, persistent, device-local.
  * - `operatorCliEnabled` -- Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md 12.5): whether the CLI
@@ -166,6 +170,7 @@ async function getSettingsSnapshot() {
     quotaReservePercent: () => getQuotaReservePercent(),
     draftRetentionDays: () => getDraftRetentionDays(),
     writeLogRetentionDays: () => getWriteLogRetentionDays(),
+    autoPrivateUploadEnabled: () => getAutoPrivateUploadEnabled(),
   });
 }
 
@@ -328,6 +333,11 @@ export async function POST(request: Request) {
   // any write actually happen.
   if (typeof body.liveWritesEnabled === "boolean") {
     await setLiveWritesEnabled(body.liveWritesEnabled);
+  }
+  // BL-209 (ADR 0046): the owner's automatic private upload switch -- this route (the Web UI, a signed-in session) is its only
+  // setter; no MCP tool, agent endpoint or CLI command reaches it (AC-AU-11).
+  if (typeof body.autoPrivateUploadEnabled === "boolean") {
+    await setAutoPrivateUploadEnabled(body.autoPrivateUploadEnabled);
   }
   if (typeof body.mcpConnectionEnabled === "boolean") {
     await setMcpConnectionEnabled(body.mcpConnectionEnabled);

@@ -310,6 +310,8 @@ export const content = {
   "publishingApproval.busy.queueing": "Queueing the uploads…",
   "publishingApproval.failed": "Could not queue the uploads.",
   "publishingUploads.title": "Uploads",
+  "publishingUploads.automatic": "automatic",
+  "publishingUploads.automaticHint": "Queued by the automatic upload switch (Settings): private, no date.",
   "publishingUploads.empty": "No uploads from this computer yet.",
   "publishingUploads.status.queued": "Queued",
   "publishingUploads.status.uploading": "Sending · {percent}%",

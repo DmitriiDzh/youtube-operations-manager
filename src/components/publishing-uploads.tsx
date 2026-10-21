@@ -23,6 +23,8 @@ type UploadRow = {
   errorCode: string | null;
   errorMessage: string | null;
   createdAt: string;
+  /** BL-209: queued by the owner's automatic-upload switch (private, no date). */
+  automatic?: boolean;
 };
 
 const ACTIVE = new Set(["queued", "uploading", "processing", "finishing", "paused"]);
@@ -148,6 +150,11 @@ export function PublishingUploads({ channelId, visible, refreshKey }: { channelI
           return (
             <li key={row.id} className="flex flex-wrap items-center gap-2 px-3 py-2 text-xs">
               <span className="font-mono text-zinc-400">{row.video}</span>
+              {row.automatic && (
+                <span className="rounded bg-sky-950/50 px-1.5 py-0.5 text-sky-200" title={t("publishingUploads.automaticHint")}>
+                  {t("publishingUploads.automatic")}
+                </span>
+              )}
               <span className={`rounded px-1.5 py-0.5 ${STATUS_STYLE[row.status]}`}>
                 {t(`publishingUploads.status.${row.status}` as UiTextKey, { percent })}
               </span>

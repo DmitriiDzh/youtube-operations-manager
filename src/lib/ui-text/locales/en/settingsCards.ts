@@ -4,6 +4,8 @@ export const settingsCards = {
   "settingsCards.discardChanges": "Discard changes",
   "settingsCards.liveWrites.info": "On by default (ADR 0044) and stays as you leave it -- a restart does not change it. While it is on, every part of the app may write to YouTube through its own checks (a Batch's Execute, video details, playlists, publishing, live streams, the Operator over MCP). Turn it off to stop every YouTube write at once; it stays off until you turn it on again.",
   "settingsCards.liveWrites.toggle": "Allow writes to YouTube",
+  "settingsCards.autoPrivateUpload.toggle": "Upload ready packages automatically (private, no date)",
+  "settingsCards.autoPrivateUpload.info": "Off by default; one switch for every channel on this computer. While it is on, every 5 minutes the app uploads each ready release package whose video matches its manifest (size and SHA-256) as private, without a publish date, and adds it to the release playlist. It never publishes or schedules. Each manifest version is tried once: a failed upload is not repeated by itself. The uploads appear under Content → Publishing, marked automatic, and pause while writes to YouTube are off. Turning it off queues nothing new; what is queued stays and can be cancelled.",
   "settingsCards.liveWrites.confirmTitle": "Enable real YouTube writes?",
   "settingsCards.liveWrites.confirmBody": "While this is on, every part of the app may write to YouTube through its own checks, and the Batches tab offers an actual Execute action. Turning it on sends nothing by itself. It stays on until you turn it off.",
   "settingsCards.enable": "Enable",
