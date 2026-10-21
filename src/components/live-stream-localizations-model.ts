@@ -4,6 +4,7 @@
 import { sameLanguage } from "@/lib/shared-language-baseline";
 import { SUPPORTED_YOUTUBE_LANGUAGES } from "@/lib/youtube-supported-languages";
 import type { UiTextKey } from "@/lib/ui-text";
+import type { LocalizationSetValidation } from "@/lib/shared-localization-set";
 import { normalizeDescription, validateLiveLocalizations, type LiveLocalizationRefusal, type LiveLocalizationSet, type LiveLocalizationsWarning } from "@/lib/live-streams/localizations";
 
 /** The card's text for each warning the server gives (every code has one: the type requires it). `{language}`: the warning's. */
@@ -54,11 +55,18 @@ export function languageChoices(rows: readonly TranslationRow[], rowId: string, 
   return SUPPORTED_YOUTUBE_LANGUAGES.filter((lang) => !used.has(lang.code) && !sameLanguage(lang.code, baselineLanguage)).map((lang) => ({ code: lang.code, name: lang.name }));
 }
 
-/** The refusals of each row by the server's rules (rows are keyed by id), and the problem with the set as a whole. */
-export function checkRows(rows: readonly TranslationRow[], baselineLanguage: string | null): { byRow: Map<string, RowRefusal[]>; tooMany: boolean } {
+/**
+ * The refusals of each row by the server's rules (rows are keyed by id), and the problem with the set as a whole. BL-210: the channel
+ * translations card passes its own validator (the channel's limits); the stream card keeps the default.
+ */
+export function checkRows(
+  rows: readonly TranslationRow[],
+  baselineLanguage: string | null,
+  validate: (input: unknown, options: { baselineLanguage: string | null }) => LocalizationSetValidation = validateLiveLocalizations
+): { byRow: Map<string, RowRefusal[]>; tooMany: boolean } {
   const byRow = new Map<string, RowRefusal[]>();
   for (const row of rows) if (!row.language) byRow.set(row.id, [{ reason: "language_missing" }]);
-  const result = validateLiveLocalizations(setOf(rows), { baselineLanguage });
+  const result = validate(setOf(rows), { baselineLanguage });
   if (result.ok) return { byRow, tooMany: false };
   if (result.problem === "too_many_languages") return { byRow, tooMany: true };
   return { byRow: mergeRefusals(byRow, rows, result.refused), tooMany: false };
