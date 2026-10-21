@@ -11,7 +11,7 @@ import { hostname } from "node:os";
 import { createAssetCatalogCore } from "@/lib/asset-catalog";
 import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
-import { appDataPaths, getLatestMediaGpuAvailabilityAt, listMediaSessionsNeedingCostSplit, setMediaJobCostShare, getMediaSessionJobSummary, insertMediaCapacityAttempt, insertMediaGpuAvailabilitySnapshot, listMediaCapacityAttempts, listMediaGpuAvailabilityLog, setMediaCapacityAttemptHostCuda, setMediaCapacityAttemptTimings, summarizeMediaGpuAvailabilityLog, getMediaTemplateAdoptionsJson, getMediaTemplateSyncLastJson, listMediaControlEvents, setMediaTemplateAdoptionsJson, setMediaTemplateSyncLastJson } from "@/lib/db";
+import { appDataPaths, countMediaGpuAvailabilityCells, getLatestMediaGpuAvailabilityAt, listMediaSessionsNeedingCostSplit, setMediaJobCostShare, getMediaSessionJobSummary, insertMediaCapacityAttempt, insertMediaGpuAvailabilitySnapshot, listMediaCapacityAttempts, listMediaGpuAvailabilityLog, setMediaCapacityAttemptHostCuda, setMediaCapacityAttemptTimings, summarizeMediaGpuAvailabilityLog, getMediaTemplateAdoptionsJson, getMediaTemplateSyncLastJson, listMediaControlEvents, setMediaTemplateAdoptionsJson, setMediaTemplateSyncLastJson } from "@/lib/db";
 import { createLogicalPathsCore } from "@/lib/logical-paths";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
 import { comfyUiProxyBaseUrl, createComfyUiClient, createGithubClient, createHuggingFaceClient, createRunpodApiClient, createRunpodS3Client } from "@/lib/media-gateway";
@@ -19,7 +19,7 @@ import { sleep as sharedSleep } from "@/lib/shared-async";
 import { createExchangeFs, resolveFromYtmDir, resolveSentToYtmFile } from "@/lib/workspace-exchange";
 import { createExchangeLocalFs } from "./adapters/exchange-fs";
 import { createMediaJobStore } from "./adapters/job-store";
-import { createMediaSessionStore } from "./adapters/session-store";
+import { createMediaSessionStore, listSessionsFirstApprovedBetween } from "./adapters/session-store";
 import { createTemplateRegistryReader } from "./adapters/template-registry-fs";
 import { createMediaControlEventSink, createMediaGenerationStore, createModelPullStore, createRuntimeBuildStore, createRuntimeTestStore, createVolumeLockStore } from "./adapters/store";
 import { DomainError, MEDIA_SESSION_TERMINAL_STATUSES, type MediaCapacityAttempt, type MediaControlEventView, type MediaModelUsage } from "./contracts";
@@ -29,6 +29,7 @@ import { createMediaJobServices } from "./jobs";
 import { createMediaModelServices } from "./models";
 import { findLivePodByName } from "./pod-lifecycle";
 import { createGpuAvailabilityLogServices } from "./gpu-availability-log";
+import { createGpuStatsServices } from "./gpu-stats";
 import { createMediaGenerationServices } from "./services";
 import { comfyVersionOf, createMediaSessionServices } from "./sessions";
 import { createVolumeLock } from "./volume-lock";
@@ -160,7 +161,7 @@ function buildCore(jobScheduling: JobScheduling) {
   });
   modelsRef = models;
   const migration = createVolumeMigrationServices({ base, clock: { now }, sleep, log: (line) => console.warn(line) });
-  // BL-172 (FO-REQ-0016 B): the 3-hourly GPU availability log (the timer in src/instrumentation.ts, the factory read tool).
+  // BL-172 (FO-REQ-0016 B): the GPU availability log (every 15 minutes since BL-206) (the timer in src/instrumentation.ts, the factory read tool).
   const gpuAvailabilityLog = createGpuAvailabilityLogServices({
     store: {
       latestAt: () => getLatestMediaGpuAvailabilityAt(),
@@ -171,6 +172,15 @@ function buildCore(jobScheduling: JobScheduling) {
     base,
     clock: { now },
     log: (line) => console.warn(line),
+  });
+  // BL-206 (FO-REQ-0033): GPU availability and session-wait statistics -- local reads only, no RunPod client in reach.
+  const gpuStats = createGpuStatsServices({
+    store: {
+      availabilityCells: (filter) => countMediaGpuAvailabilityCells(filter),
+      sessionsFirstApprovedBetween: (since, until) => listSessionsFirstApprovedBetween(since, until),
+    },
+    candidateSettings: () => base.getSettings(),
+    clock: { now },
   });
   const sessions = createMediaSessionServices({
     store: createMediaSessionStore(),
@@ -546,6 +556,7 @@ function buildCore(jobScheduling: JobScheduling) {
     ...models,
     ...migration,
     ...gpuAvailabilityLog,
+    ...gpuStats,
     updateSettings,
     listControlEvents,
     listCapacityAttempts,

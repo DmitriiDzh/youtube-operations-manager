@@ -177,17 +177,39 @@ test("the input is strict and bounded: unknown keys, an unlisted CUDA version, e
 
 // -- B: the stored log --------------------------------------------------------------------------------------------------------------
 
-test("AC-GA-04: a snapshot stores per GPU of 24 GB+ an overall row and one row per datacenter with network volumes, NONE where RunPod did not list it", () => {
+// BL-206 (GPU_STATS_PLAN.md §2.A, AC-GS-02) changed this requirement: NONE datacenter rows are no longer stored (a snapshot without a
+// row for a GPU in a datacenter means NONE there), so the two NONE rows BL-172 expected here are gone; the overall rows stay.
+test("AC-GA-04 / AC-GS-02: a snapshot stores per GPU of 24 GB+ an overall row and a row per datacenter with network volumes only where the stock is not NONE", () => {
   const availability = buildGpuAvailability({ gpus: GPUS, dataCenters: DATA_CENTERS, input: { minVramGb: 24 }, settings: { ...SETTINGS, gpuMinVramGb: 48 }, now: NOW });
   // EU-SE-1 offers no network volume and EUR-IS-1 is not in the datacenter catalog: neither is stored. The 16 GB card is left out.
   assert.deepEqual(buildGpuAvailabilitySnapshotRows(availability), [
     { gpuTypeId: "NVIDIA GeForce RTX 4090", pricePerHr: 0.89, minCudaVersion: "12.8", dataCenterId: "*", stock: "HIGH" },
     { gpuTypeId: "NVIDIA GeForce RTX 4090", pricePerHr: 0.89, minCudaVersion: "12.8", dataCenterId: "EU-RO-1", stock: "MEDIUM" },
-    { gpuTypeId: "NVIDIA GeForce RTX 4090", pricePerHr: 0.89, minCudaVersion: "12.8", dataCenterId: "US-IL-1", stock: "NONE" },
     { gpuTypeId: "NVIDIA L40S", pricePerHr: 1.09, minCudaVersion: "12.8", dataCenterId: "*", stock: "HIGH" },
-    { gpuTypeId: "NVIDIA L40S", pricePerHr: 1.09, minCudaVersion: "12.8", dataCenterId: "EU-RO-1", stock: "NONE" },
     { gpuTypeId: "NVIDIA L40S", pricePerHr: 1.09, minCudaVersion: "12.8", dataCenterId: "US-IL-1", stock: "LOW" },
   ]);
+});
+
+test("AC-GS-02: 2 GPUs × 3 volume datacenters, one GPU LOW in one datacenter -> 2 overall rows + 1 datacenter row = 3 rows; an overall NONE is kept", () => {
+  const dcs: RunpodDataCenter[] = ["EU-RO-1", "EU-CZ-1", "US-IL-1"].map((id) => ({ id, region: null, countryCode: null, networkVolumeTypes: ["STANDARD"] }));
+  const availability = buildGpuAvailability({
+    gpus: [
+      gpu({ id: "A", displayName: "A", memoryInGb: 24, estimatedAvailability: "LOW", dataCenters: [{ id: "EU-CZ-1", countryCode: null, estimatedAvailability: "LOW" }] }),
+      gpu({ id: "B", displayName: "B", memoryInGb: 24, estimatedAvailability: "NONE", dataCenters: [{ id: "US-IL-1", countryCode: null, estimatedAvailability: "NONE" }] }),
+    ],
+    dataCenters: dcs,
+    input: { minVramGb: 24 },
+    settings: SETTINGS,
+    now: NOW,
+  });
+  assert.deepEqual(
+    buildGpuAvailabilitySnapshotRows(availability).map((row) => [row.gpuTypeId, row.dataCenterId, row.stock]),
+    [
+      ["A", "*", "LOW"],
+      ["A", "EU-CZ-1", "LOW"],
+      ["B", "*", "NONE"],
+    ]
+  );
 });
 
 test("AC-GA-04: a datacenter RunPod lists for a GPU without a level is stored as null (unknown), not as NONE", () => {
@@ -198,11 +220,11 @@ test("AC-GA-04: a datacenter RunPod lists for a GPU without a level is stored as
     settings: SETTINGS,
     now: NOW,
   });
+  // BL-206: EU-RO-1 (not listed = NONE) is no longer stored.
   assert.deepEqual(
     buildGpuAvailabilitySnapshotRows(availability).map((row) => [row.dataCenterId, row.stock]),
     [
       ["*", null],
-      ["EU-RO-1", "NONE"],
       ["US-IL-1", null],
     ]
   );
@@ -220,6 +242,23 @@ test("AC-GA-07: the summary adds up the counts per GPU and datacenter -- LOW, NO
       { gpuTypeId: "NVIDIA A40", dataCenterId: "EU-RO-1", snapshots: 1, stock: { UNKNOWN: 1 } },
       { gpuTypeId: "NVIDIA L40S", dataCenterId: "*", snapshots: 3, stock: { HIGH: 3 } },
       { gpuTypeId: "NVIDIA L40S", dataCenterId: "US-IL-1", snapshots: 3, stock: { NONE: 1, LOW: 2 } },
+    ]
+  );
+});
+
+test("AC-GS-03: with the per-GPU snapshot count, a missing datacenter row is NONE -- 4 snapshots, LOW stored twice and NONE stored once (an old snapshot) give LOW 2, NONE 2", () => {
+  assert.deepEqual(
+    summarizeGpuAvailabilityGroups(
+      [
+        { gpuTypeId: "X", dataCenterId: "*", stock: "HIGH", count: 4 },
+        { gpuTypeId: "X", dataCenterId: "A", stock: "LOW", count: 2 },
+        { gpuTypeId: "X", dataCenterId: "A", stock: "NONE", count: 1 },
+      ],
+      new Map([["X", 4]])
+    ),
+    [
+      { gpuTypeId: "X", dataCenterId: "*", snapshots: 4, stock: { HIGH: 4 } },
+      { gpuTypeId: "X", dataCenterId: "A", snapshots: 4, stock: { LOW: 2, NONE: 2 } },
     ]
   );
 });

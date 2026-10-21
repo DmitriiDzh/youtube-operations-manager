@@ -2,6 +2,7 @@ import type { DomainErrorCode } from "@/lib/shared-domain";
 
 const DOMAIN_ERROR_STATUS = {
   validation_failed: 400,
+  invalid_request: 400,
   unauthorized: 401,
   AUTH_CALLBACK_INVALID: 401,
   AUTH_REFRESH_TOKEN_MISSING: 401,

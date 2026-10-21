@@ -5,6 +5,7 @@ import {
   listOpenMediaSessions,
   listMediaSessions,
   listMediaSessionsBillableSince,
+  listMediaSessionsFirstApprovedBetween,
   markMediaSessionSeenAlive,
   touchMediaSessionActivity,
   transitionMediaSession,
@@ -59,6 +60,9 @@ function fromDb(row: StoredMediaSession): StoredSessionRow {
     comfyVersion: row.comfyVersion ?? null,
     startStage: row.startStage ?? null,
     stageSince: row.stageSince ?? null,
+    firstApprovedAt: row.firstApprovedAt ?? null,
+    firstApprovedApproximate: row.firstApprovedApproximate ?? null,
+    gpuSkippedJson: row.gpuSkippedJson ?? null,
   };
 }
 
@@ -91,4 +95,9 @@ export function createMediaSessionStore(): MediaSessionStore {
     touchActivity: (id, at) => touchMediaSessionActivity(id, at),
     markSeenAlive: (id, at) => markMediaSessionSeenAlive(id, at),
   };
+}
+
+/** BL-206 (factory_media_get_gpu_stats): the sessions first approved in a range, newest first -- read-only. */
+export async function listSessionsFirstApprovedBetween(since: Date, until: Date): Promise<StoredSessionRow[]> {
+  return (await listMediaSessionsFirstApprovedBetween(since, until)).map(fromDb);
 }

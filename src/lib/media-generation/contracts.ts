@@ -35,7 +35,7 @@ export type MediaCredentialsStatus =
 
 export type MediaCloudType = "SECURE" | "COMMUNITY";
 
-/** BL-172: how long the 3-hourly GPU availability log keeps a snapshot (pruned on insert). */
+/** BL-172: how long the GPU availability log (every 15 minutes since BL-206) keeps a snapshot (pruned on insert). */
 export const GPU_AVAILABILITY_LOG_RETENTION_DAYS = 90;
 
 export type MediaSettings = {
@@ -236,7 +236,14 @@ export type MediaSession = {
   podId: string | null;
   comfyUiProxyUrl: string | null;
   createdAt: string;
+  /** Moves with each re-placement and capacity retry (the start budget is measured from it); `firstApprovedAt` does not. */
   approvedAt: string | null;
+  /** BL-206: the first approval -- the real wait is readyAt − firstApprovedAt; null while pending (or never approved). */
+  firstApprovedAt: string | null;
+  /** BL-206: true when `firstApprovedAt` is the earliest capacity attempt of a session from before schema v100 (approximate). */
+  firstApprovedApproximate: boolean;
+  /** BL-206: the GPU candidates the first placement skipped before any try, with the reason; null = no placement recorded. */
+  gpuSkipped: Array<{ gpuTypeId: string; reason: string }> | null;
   startedAt: string | null;
   readyAt: string | null;
   lastActivityAt: string | null;

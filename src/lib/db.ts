@@ -4,7 +4,7 @@ import { writeJsonFileAtomic } from "@/lib/atomic-json-file";
 import { type Client } from "@libsql/client";
 import { createLibsqlClient, SQLITE_BUSY_TIMEOUT_MS } from "@/lib/libsql-client";
 import { drizzle } from "drizzle-orm/libsql";
-import { sqliteTable, text, integer, real, primaryKey, index, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, primaryKey, index, uniqueIndex, type SQLiteColumn } from "drizzle-orm/sqlite-core";
 import path from "path";
 import { API_DATA_RETENTION_DAYS, YOUTUBE_API_SNAPSHOT_SOURCES } from "@/lib/youtube-data-policy/contracts";
 import { isValidLocalTimeOfDay, zonedInstant } from "@/lib/zoned-time";
@@ -842,6 +842,13 @@ export const mediaSessions = sqliteTable(
     // Schema v98 (FO-REQ-0031): where the start is (placed / pulling_image / comfy_booting / ready) and since when.
     startStage: text("start_stage"),
     stageSince: integer("stage_since", { mode: "timestamp" }),
+    // Schema v100 (BL-206, FO-REQ-0033, GPU_STATS_PLAN.md §2.B): the first approval -- written once, at the approval, and never
+    // moved by a re-placement or a capacity retry (`approved_at` is) -- so the real wait is ready − first approval; true in
+    // `first_approved_approximate` when v100 backfilled it from the session's earliest capacity attempt (sessions before v100).
+    // `gpu_skipped_json`: the GPU candidates the first placement skipped before any try, with the reason ([] = none skipped).
+    firstApprovedAt: integer("first_approved_at", { mode: "timestamp" }),
+    firstApprovedApproximate: integer("first_approved_approximate", { mode: "boolean" }),
+    gpuSkippedJson: text("gpu_skipped_json"),
   },
   (table) => [index("media_sessions_open_slot_idx").on(table.openSlot), index("media_sessions_status_idx").on(table.status)]
 );
@@ -976,9 +983,10 @@ export const mediaCapacityAttempts = sqliteTable(
 );
 
 /**
- * Schema v81 (BL-172, FO-REQ-0016 B, docs/roadmap/plans/GPU_AVAILABILITY_PLAN.md): RunPod's GPU stock read every 3 hours -- per
- * snapshot, one overall row per GPU (`data_center_id` `*`) and one row per datacenter with network volumes (NONE where the catalog
- * did not list that datacenter for the GPU). Kept 90 days, device-local; our own record of RunPod readings, not YouTube data.
+ * Schema v81 (BL-172, FO-REQ-0016 B, docs/roadmap/plans/GPU_AVAILABILITY_PLAN.md): RunPod's GPU stock read every 3 hours (BL-206, v100:
+ * every 15 minutes) -- per snapshot, one overall row per GPU (`data_center_id` `*`) and one row per datacenter with network volumes
+ * (until v100 also NONE where the catalog did not list that datacenter for the GPU; from v100 only rows whose stock is not NONE,
+ * the snapshot itself is in `media_gpu_availability_snapshots`). Kept 90 days, device-local; our own record of RunPod readings, not YouTube data.
  */
 export const mediaGpuAvailabilityLog = sqliteTable(
   "media_gpu_availability_log",
@@ -994,6 +1002,18 @@ export const mediaGpuAvailabilityLog = sqliteTable(
   },
   (table) => [index("media_gpu_availability_log_at_idx").on(table.at), index("media_gpu_availability_log_gpu_dc_at_idx").on(table.gpuTypeId, table.dataCenterId, table.at)]
 );
+
+/**
+ * Schema v100 (BL-206, FO-REQ-0033, docs/roadmap/plans/GPU_STATS_PLAN.md §2.A): one row per GPU availability snapshot -- when it
+ * was taken, how many log rows it stored and the CUDA minimum it was read with. From v100 the log stores datacenter rows only where
+ * the stock was not NONE, so this table is what says a snapshot happened (a GPU × datacenter without a row in it was NONE).
+ * Backfilled from the log's distinct `at`. Kept 90 days like the log, device-local; not YouTube data.
+ */
+export const mediaGpuAvailabilitySnapshots = sqliteTable("media_gpu_availability_snapshots", {
+  at: integer("at", { mode: "timestamp" }).primaryKey(),
+  rows: integer("rows").notNull(),
+  minCudaVersion: text("min_cuda_version"),
+});
 
 /**
  * Schema v66 (BL-143, ADR 0029): a generation plan. The definition (stages, groups, items with their job params) is one
@@ -5296,6 +5316,38 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         failure TEXT
       )`);
       await client.execute("CREATE INDEX IF NOT EXISTS live_stream_segments_channel_started_idx ON live_stream_segments (channel_id, started_at)");
+    },
+  },
+  {
+    version: 100,
+    description:
+      "media_gpu_availability_snapshots + media_sessions.first_approved_at/first_approved_approximate/gpu_skipped_json -- BL-206 (FO-REQ-0033, GPU_STATS_PLAN.md): one row per GPU availability snapshot (taken every 15 min from now on; datacenter rows stored only where the stock is not NONE), backfilled from the log's distinct times with their row counts; a session's first approval (backfilled, approximate, from its earliest capacity attempt) and the GPU candidates its first placement skipped. Additive, device-local",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS media_gpu_availability_snapshots (
+        at INTEGER PRIMARY KEY,
+        rows INTEGER NOT NULL,
+        min_cuda_version TEXT
+      )`);
+      await client.execute(
+        "INSERT OR IGNORE INTO media_gpu_availability_snapshots (at, rows, min_cuda_version) SELECT at, count(*), max(min_cuda_version) FROM media_gpu_availability_log GROUP BY at"
+      );
+      for (const statement of [
+        "ALTER TABLE media_sessions ADD COLUMN first_approved_at INTEGER",
+        "ALTER TABLE media_sessions ADD COLUMN first_approved_approximate INTEGER",
+        "ALTER TABLE media_sessions ADD COLUMN gpu_skipped_json TEXT",
+      ]) {
+        try {
+          await client.execute(statement);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
+      // Sessions before v100: the earliest capacity attempt (createPod is tried right after the approval) stands in for the first
+      // approval, marked approximate. A session without any attempt keeps null.
+      await client.execute(`UPDATE media_sessions
+        SET first_approved_at = (SELECT min(a.at) FROM media_capacity_attempts a WHERE a.session_id = media_sessions.id),
+            first_approved_approximate = 1
+        WHERE first_approved_at IS NULL AND EXISTS (SELECT 1 FROM media_capacity_attempts a WHERE a.session_id = media_sessions.id)`);
     },
   },
 ];
@@ -10215,24 +10267,41 @@ export async function listMediaCapacityAttempts(
 
 export type MediaGpuAvailabilityLogRow = { gpuTypeId: string; dataCenterId: string; stock: string | null; pricePerHr: number | null; minCudaVersion: string | null };
 
-/** BL-172: one snapshot (every row gets the same `at`), in one transaction; rows older than 90 days are pruned on the way. */
+/**
+ * BL-172: one snapshot (every row gets the same `at`), in one transaction; rows older than 90 days are pruned on the way. BL-206:
+ * the snapshot's own row goes into `media_gpu_availability_snapshots` in the same transaction (no rows = nothing stored; a snapshot
+ * already stored at the same second makes a repeat store nothing), and that table is pruned with the log.
+ */
 export async function insertMediaGpuAvailabilitySnapshot(at: Date, rows: MediaGpuAvailabilityLogRow[], database: AppDb = db): Promise<void> {
+  // An empty reading is no snapshot (the caller treats an empty catalog as a failure; review: never a row of 0).
   if (rows.length === 0) return;
   await database.transaction(async (tx) => {
+    // A snapshot already stored at this second is kept as it is: a repeat stores nothing, so no log row is doubled (review).
+    const claimed = await tx
+      .insert(mediaGpuAvailabilitySnapshots)
+      .values({ at, rows: rows.length, minCudaVersion: rows[0].minCudaVersion ?? null })
+      .onConflictDoNothing({ target: mediaGpuAvailabilitySnapshots.at })
+      .returning({ at: mediaGpuAvailabilitySnapshots.at });
+    if (claimed.length === 0) return;
     for (let i = 0; i < rows.length; i += 200) {
       await tx.insert(mediaGpuAvailabilityLog).values(rows.slice(i, i + 200).map((row) => ({ ...row, at })));
     }
   });
   // Housekeeping, like the capacity log: a failed prune never loses the snapshot just stored.
+  const cutoff = new Date(at.getTime() - GPU_AVAILABILITY_LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000);
   await database
     .delete(mediaGpuAvailabilityLog)
-    .where(lt(mediaGpuAvailabilityLog.at, new Date(at.getTime() - GPU_AVAILABILITY_LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000)))
+    .where(lt(mediaGpuAvailabilityLog.at, cutoff))
+    .catch(() => undefined);
+  await database
+    .delete(mediaGpuAvailabilitySnapshots)
+    .where(lt(mediaGpuAvailabilitySnapshots.at, cutoff))
     .catch(() => undefined);
 }
 
-/** BL-172: when the newest snapshot was taken (null = none yet). */
+/** BL-172: when the newest snapshot was taken (null = none yet); BL-206: read from the snapshots table. */
 export async function getLatestMediaGpuAvailabilityAt(database: AppDb = db): Promise<Date | null> {
-  const [row] = await database.select({ at: mediaGpuAvailabilityLog.at }).from(mediaGpuAvailabilityLog).orderBy(desc(mediaGpuAvailabilityLog.at)).limit(1);
+  const [row] = await database.select({ at: mediaGpuAvailabilitySnapshots.at }).from(mediaGpuAvailabilitySnapshots).orderBy(desc(mediaGpuAvailabilitySnapshots.at)).limit(1);
   return row?.at ?? null;
 }
 
@@ -10263,24 +10332,39 @@ export async function listMediaGpuAvailabilityLog(
 
 /**
  * BL-172: for each GPU and datacenter in the range, the number of snapshots per stock level -- counted in SQL over every matching
- * row, never over a page of them. Also the number of distinct snapshots in the range.
+ * row, never over a page of them. BL-206: the snapshots in the range (and the first / last) come from the snapshots table, under the
+ * time range only; `gpuSnapshots` is, per GPU (under the time range and `gpuTypeId`), the snapshots with a row of it -- the
+ * denominator that turns a missing datacenter row into NONE.
  */
 export async function summarizeMediaGpuAvailabilityLog(
   filter: MediaGpuAvailabilityLogFilter,
   database: AppDb = db
-): Promise<{ snapshots: number; firstAt: Date | null; lastAt: Date | null; groups: Array<{ gpuTypeId: string; dataCenterId: string; stock: string | null; count: number }> }> {
+): Promise<{
+  snapshots: number;
+  firstAt: Date | null;
+  lastAt: Date | null;
+  groups: Array<{ gpuTypeId: string; dataCenterId: string; stock: string | null; count: number }>;
+  gpuSnapshots: Array<{ gpuTypeId: string; snapshots: number }>;
+}> {
   const conditions = gpuAvailabilityConditions(filter);
   const where = conditions.length > 0 ? and(...conditions) : undefined;
+  const timeConditions = [filter.since ? gte(mediaGpuAvailabilitySnapshots.at, filter.since) : undefined, filter.until ? lte(mediaGpuAvailabilitySnapshots.at, filter.until) : undefined].filter((c) => c !== undefined);
   const [totals] = await database
-    .select({ snapshots: sql<number>`count(distinct ${mediaGpuAvailabilityLog.at})`, firstAt: sql<number | null>`min(${mediaGpuAvailabilityLog.at})`, lastAt: sql<number | null>`max(${mediaGpuAvailabilityLog.at})` })
-    .from(mediaGpuAvailabilityLog)
-    .where(where);
+    .select({ snapshots: sql<number>`count(*)`, firstAt: sql<number | null>`min(${mediaGpuAvailabilitySnapshots.at})`, lastAt: sql<number | null>`max(${mediaGpuAvailabilitySnapshots.at})` })
+    .from(mediaGpuAvailabilitySnapshots)
+    .where(timeConditions.length > 0 ? and(...timeConditions) : undefined);
   const groups = await database
     .select({ gpuTypeId: mediaGpuAvailabilityLog.gpuTypeId, dataCenterId: mediaGpuAvailabilityLog.dataCenterId, stock: mediaGpuAvailabilityLog.stock, count: sql<number>`count(*)` })
     .from(mediaGpuAvailabilityLog)
     .where(where)
     .groupBy(mediaGpuAvailabilityLog.gpuTypeId, mediaGpuAvailabilityLog.dataCenterId, mediaGpuAvailabilityLog.stock)
     .orderBy(asc(mediaGpuAvailabilityLog.gpuTypeId), asc(mediaGpuAvailabilityLog.dataCenterId), asc(mediaGpuAvailabilityLog.stock));
+  const gpuConditions = gpuAvailabilityConditions({ since: filter.since, until: filter.until, gpuTypeId: filter.gpuTypeId });
+  const gpuSnapshots = await database
+    .select({ gpuTypeId: mediaGpuAvailabilityLog.gpuTypeId, snapshots: sql<number>`count(distinct ${mediaGpuAvailabilityLog.at})` })
+    .from(mediaGpuAvailabilityLog)
+    .where(gpuConditions.length > 0 ? and(...gpuConditions) : undefined)
+    .groupBy(mediaGpuAvailabilityLog.gpuTypeId);
   // `at` is stored in Unix seconds (drizzle's timestamp mode); min/max come back raw.
   const toDate = (value: number | null | undefined) => (value === null || value === undefined ? null : new Date(Number(value) * 1000));
   return {
@@ -10288,7 +10372,63 @@ export async function summarizeMediaGpuAvailabilityLog(
     firstAt: toDate(totals?.firstAt),
     lastAt: toDate(totals?.lastAt),
     groups: groups.map((g) => ({ ...g, count: Number(g.count) })),
+    gpuSnapshots: gpuSnapshots.map((g) => ({ gpuTypeId: g.gpuTypeId, snapshots: Number(g.snapshots) })),
   };
+}
+
+/** BL-206: a UTC hour (0-23) and an ISO weekday (1 = Monday … 7 = Sunday) of a Unix-seconds `at` column, in SQL. */
+const utcHourOf = (column: SQLiteColumn) => sql<number>`cast(strftime('%H', ${column}, 'unixepoch') as integer)`;
+const isoWeekdayOf = (column: SQLiteColumn) => sql<number>`(cast(strftime('%w', ${column}, 'unixepoch') as integer) + 6) % 7 + 1`;
+
+/**
+ * BL-206 (GPU_STATS_PLAN.md §2.C): the availability log counted per UTC hour and ISO weekday, in SQL (never row by row), under a
+ * time range: the snapshots taken; per GPU the snapshots with a row of it; the stored rows per GPU, datacenter and level.
+ */
+export async function countMediaGpuAvailabilityCells(
+  filter: { since: Date; until: Date; gpuTypeIds?: string[]; dataCenterIds?: string[] },
+  database: AppDb = db
+): Promise<{
+  snapshots: Array<{ hour: number; weekday: number; count: number }>;
+  gpus: Array<{ gpuTypeId: string; hour: number; weekday: number; count: number }>;
+  rows: Array<{ gpuTypeId: string; dataCenterId: string; stock: string | null; hour: number; weekday: number; count: number }>;
+}> {
+  const log = mediaGpuAvailabilityLog;
+  const snapshotsTable = mediaGpuAvailabilitySnapshots;
+  const snapshotHour = utcHourOf(snapshotsTable.at);
+  const snapshotDay = isoWeekdayOf(snapshotsTable.at);
+  const snapshots = await database
+    .select({ hour: snapshotHour, weekday: snapshotDay, count: sql<number>`count(*)` })
+    .from(snapshotsTable)
+    .where(and(gte(snapshotsTable.at, filter.since), lte(snapshotsTable.at, filter.until)))
+    .groupBy(snapshotHour, snapshotDay);
+  const hour = utcHourOf(log.at);
+  const day = isoWeekdayOf(log.at);
+  const gpuWhere = and(gte(log.at, filter.since), lte(log.at, filter.until), filter.gpuTypeIds ? inArray(log.gpuTypeId, filter.gpuTypeIds) : undefined);
+  const gpus = await database
+    .select({ gpuTypeId: log.gpuTypeId, hour, weekday: day, count: sql<number>`count(distinct ${log.at})` })
+    .from(log)
+    .where(gpuWhere)
+    .groupBy(log.gpuTypeId, hour, day);
+  const rows = await database
+    .select({ gpuTypeId: log.gpuTypeId, dataCenterId: log.dataCenterId, stock: log.stock, hour, weekday: day, count: sql<number>`count(*)` })
+    .from(log)
+    .where(and(gpuWhere, filter.dataCenterIds ? inArray(log.dataCenterId, filter.dataCenterIds) : undefined))
+    .groupBy(log.gpuTypeId, log.dataCenterId, log.stock, hour, day);
+  const n = (value: unknown) => Number(value);
+  return {
+    snapshots: snapshots.map((c) => ({ hour: n(c.hour), weekday: n(c.weekday), count: n(c.count) })),
+    gpus: gpus.map((c) => ({ gpuTypeId: c.gpuTypeId, hour: n(c.hour), weekday: n(c.weekday), count: n(c.count) })),
+    rows: rows.map((c) => ({ gpuTypeId: c.gpuTypeId, dataCenterId: c.dataCenterId, stock: c.stock, hour: n(c.hour), weekday: n(c.weekday), count: n(c.count) })),
+  };
+}
+
+/** BL-206: the sessions whose first approval is in the range (inclusive), newest first. */
+export async function listMediaSessionsFirstApprovedBetween(since: Date, until: Date, database: AppDb = db): Promise<StoredMediaSession[]> {
+  return database
+    .select()
+    .from(mediaSessions)
+    .where(and(gte(mediaSessions.firstApprovedAt, since), lte(mediaSessions.firstApprovedAt, until)))
+    .orderBy(desc(mediaSessions.firstApprovedAt), desc(mediaSessions.id));
 }
 
 export async function insertMediaControlEvent(

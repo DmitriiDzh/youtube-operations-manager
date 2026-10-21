@@ -34,6 +34,7 @@ const EXPECTED_TOOLS = [
   "factory_media_delete_model",
   "factory_media_delete_template",
   "factory_media_get_gpu_availability",
+  "factory_media_get_gpu_stats",
   "factory_media_get_job",
   "factory_media_get_pull",
   "factory_media_get_runtime",
@@ -249,7 +250,39 @@ test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.23.0 
   // BL-134 (FO-REQ-0028): gated Hugging Face pulls, three hf_* errors, licence fields and settings.hfToken (additive) -> 1.22.0.
   // BL-200 (FO-REQ-0029, ADR 0043): pod runtime profiles -- four tools (list, get, list ComfyUI releases, create) -> 1.23.0.
   // BL-205 (FO-REQ-0032): 1.25.0 -- factory_live_get_status gains `segments` (additive).
-  assert.equal(FACTORY_API_VERSION, "1.25.0");
+  // BL-206 (FO-REQ-0033, GPU_STATS_PLAN.md §2.C): 1.26.0 -- the READ tool factory_media_get_gpu_stats; the availability log stops
+  // listing per-datacenter NONE rows (its summary counts stay the same).
+  assert.equal(FACTORY_API_VERSION, "1.26.0");
   const agentOperations = await readFile("src/lib/agent-operations/contracts.ts", "utf8");
   assert.equal(agentOperations.includes("FACTORY_API_VERSION"), false);
+});
+
+// BL-206 review: the MCP boundary's copy of the stats input must not drift from the media core's schema (one accepts what the other
+// refuses). Fixed inputs at and past every bound.
+test("BL-206: factory_media_get_gpu_stats's MCP schema and the media core's gpuStatsInputSchema accept and refuse the same inputs", async () => {
+  const { gpuStatsInput } = await import("./factory-server");
+  const { gpuStatsInputSchema } = await import("@/lib/media-generation/schemas");
+  const cases: Array<[unknown, boolean]> = [
+    [{}, true],
+    [{ from: "2026-10-19T00:00:00Z", to: "2026-10-26T00:00:00+03:00", gpuTypeIds: ["G"], dataCenterIds: ["EU-RO-1"], hoursUtc: { from: 0, to: 24 }, weekdays: [1, 7], includeSessions: true }, true],
+    [{ hoursUtc: { from: 22, to: 2 } }, true],
+    [{ from: "last week" }, false],
+    [{ to: "2026-10-26" }, false],
+    [{ gpuTypeIds: [] }, false],
+    [{ gpuTypeIds: Array.from({ length: 51 }, (_, i) => `G${i}`) }, false],
+    [{ dataCenterIds: ["x".repeat(33)] }, false],
+    [{ hoursUtc: { from: 24, to: 24 } }, false],
+    [{ hoursUtc: { from: 12, to: 25 } }, false],
+    [{ hoursUtc: { from: 1, to: 0 } }, false],
+    [{ hoursUtc: { from: 1, to: 5, tz: "UTC" } }, false],
+    [{ weekdays: [0] }, false],
+    [{ weekdays: [8] }, false],
+    [{ weekdays: [1, 2, 3, 4, 5, 6, 7, 1] }, false],
+    [{ includeSessions: "yes" }, false],
+    [{ region: "EU" }, false],
+  ];
+  for (const [input, ok] of cases) {
+    assert.equal(gpuStatsInput.safeParse(input).success, ok, `MCP ${JSON.stringify(input)}`);
+    assert.equal(gpuStatsInputSchema.safeParse(input).success, ok, `core ${JSON.stringify(input)}`);
+  }
 });

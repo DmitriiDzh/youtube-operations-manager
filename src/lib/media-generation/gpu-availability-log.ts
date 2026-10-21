@@ -4,6 +4,9 @@ import {
   buildGpuAvailability,
   buildGpuAvailabilitySnapshotRows,
   DEFAULT_AVAILABILITY_MIN_VRAM_GB,
+  GPU_AVAILABILITY_NONE,
+  GPU_AVAILABILITY_OVERALL,
+  GPU_AVAILABILITY_SNAPSHOT_DUE_MS,
   GPU_AVAILABILITY_SNAPSHOT_INTERVAL_MS,
   gpuAvailabilityLogInputSchema,
   summarizeGpuAvailabilityGroups,
@@ -12,19 +15,30 @@ import {
 } from "./gpu-availability";
 
 /**
- * BL-172 (FO-REQ-0016 B, docs/roadmap/plans/GPU_AVAILABILITY_PLAN.md): RunPod's GPU stock stored every 3 hours, so the Factory
+ * BL-172 (FO-REQ-0016 B, docs/roadmap/plans/GPU_AVAILABILITY_PLAN.md): RunPod's GPU stock stored regularly, so the Factory
  * Operator can see how often a GPU had stock in a datacenter before choosing where the media volume lives. Device-local; each
- * computer keeps its own log.
+ * computer keeps its own log. BL-206 (FO-REQ-0033, GPU_STATS_PLAN.md §2.A): every 15 minutes, compactly -- one row per snapshot
+ * in `media_gpu_availability_snapshots`, and datacenter rows only where the stock was not NONE.
  */
 
 export type GpuAvailabilityLogFilter = { since?: Date; until?: Date; gpuTypeId?: string; dataCenterId?: string };
 
 export type GpuAvailabilityLogStore = {
   latestAt(): Promise<Date | null>;
-  /** Every row gets `at`; rows older than the retention are pruned on the way. */
+  /** Every row gets `at`, plus one snapshot row; rows and snapshots older than the retention are pruned on the way. */
   insertSnapshot(at: Date, rows: GpuAvailabilityLogRow[]): Promise<void>;
   list(filter: GpuAvailabilityLogFilter & { limit: number }): Promise<Array<GpuAvailabilityLogRow & { at: Date }>>;
-  summarize(filter: GpuAvailabilityLogFilter): Promise<{ snapshots: number; firstAt: Date | null; lastAt: Date | null; groups: Array<{ gpuTypeId: string; dataCenterId: string; stock: string | null; count: number }> }>;
+  /**
+   * `snapshots` / `firstAt` / `lastAt`: the snapshots taken in the time range (gpu/datacenter filters do not apply); `groups`: the
+   * stored rows per level under the whole filter; `gpuSnapshots`: per GPU, the snapshots in the range with a row of it.
+   */
+  summarize(filter: GpuAvailabilityLogFilter): Promise<{
+    snapshots: number;
+    firstAt: Date | null;
+    lastAt: Date | null;
+    groups: Array<{ gpuTypeId: string; dataCenterId: string; stock: string | null; count: number }>;
+    gpuSnapshots: Array<{ gpuTypeId: string; snapshots: number }>;
+  }>;
 };
 
 export type GpuAvailabilitySnapshotOutcome =
@@ -33,7 +47,8 @@ export type GpuAvailabilitySnapshotOutcome =
   | { status: "failed"; code: string; message: string };
 
 /** After a failed reading, the next attempt waits this long (the timer ticks more often than that). */
-export const GPU_AVAILABILITY_FAILURE_BACKOFF_MS = 60 * 60 * 1000;
+/** BL-206: 15 min (was 1 h), so one failed reading costs at most one 15-min snapshot (FO-REQ-0033: no gap over an hour). */
+export const GPU_AVAILABILITY_FAILURE_BACKOFF_MS = 15 * 60 * 1000;
 export const GPU_AVAILABILITY_LOG_DEFAULT_LIMIT = 1000;
 
 export function createGpuAvailabilityLogServices(deps: {
@@ -51,15 +66,16 @@ export function createGpuAvailabilityLogServices(deps: {
 
   return {
     /**
-     * The timer's one call (every few minutes): a snapshot when the newest stored one is 3 hours old. Skips without any RunPod call
-     * while the media gateway is off or RunPod is not configured, and never throws: a failed reading is logged and retried an hour
+     * The timer's one call (every 5 minutes): a snapshot when the newest stored one is 14 minutes old (BL-206; nominally every 15). Skips without any RunPod call
+     * while the media gateway is off or RunPod is not configured, and never throws: a failed reading is logged and retried 15 minutes
      * later. Two catalog reads per snapshot, Secure Cloud (network volumes exist only there), with the Settings' CUDA minimum.
      */
     async snapshotGpuAvailabilityIfDue(): Promise<GpuAvailabilitySnapshotOutcome> {
+      // The tick's own start: a failure is dated here, not after the reads, so the retry falls on the tick 15 minutes later.
+      const now = deps.clock.now();
       try {
-        const now = deps.clock.now();
         const latest = await deps.store.latestAt();
-        if (latest && now.getTime() - latest.getTime() < GPU_AVAILABILITY_SNAPSHOT_INTERVAL_MS) return { status: "skipped", reason: "fresh" };
+        if (latest && now.getTime() - latest.getTime() < GPU_AVAILABILITY_SNAPSHOT_DUE_MS) return { status: "skipped", reason: "fresh" };
         if (lastFailureAt && now.getTime() - lastFailureAt.getTime() < GPU_AVAILABILITY_FAILURE_BACKOFF_MS) return { status: "skipped", reason: "backoff" };
         if (!(await deps.base.getGatewayEnabled())) return { status: "skipped", reason: "gateway_off" };
         if (!(await deps.base.getCredentialsStatus()).configured) return { status: "skipped", reason: "not_configured" };
@@ -74,7 +90,7 @@ export function createGpuAvailabilityLogServices(deps: {
           settings: { ...settings, cloudType: "SECURE" },
           now,
         });
-        // Either catalog coming back empty is a failure, not a snapshot: it would be stored as fresh and hide the gap for 3 hours.
+        // Either catalog coming back empty is a failure, not a snapshot: it would be stored as fresh and hide the gap.
         if (availability.gpus.length === 0) throw new Error("RunPod's catalog listed no GPU of 24 GB or more");
         if (!availability.dataCenters.some((dc) => dc.networkVolumeTypes.length > 0)) throw new Error("RunPod's catalog listed no datacenter with network volumes");
         const rows = buildGpuAvailabilitySnapshotRows(availability);
@@ -84,10 +100,10 @@ export function createGpuAvailabilityLogServices(deps: {
       } catch (error) {
         if (isDomainError(error) && error.code === "media_generation_not_configured") return { status: "skipped", reason: "not_configured" };
         if (isDomainError(error) && error.code === "media_gateway_disabled") return { status: "skipped", reason: "gateway_off" };
-        lastFailureAt = deps.clock.now();
+        lastFailureAt = now;
         const code = isDomainError(error) ? error.code : "error";
         const message = error instanceof Error ? error.message : String(error);
-        deps.log?.(`[gpu-availability] the 3-hourly GPU availability snapshot failed (${code}): ${message}`);
+        deps.log?.(`[gpu-availability] the GPU availability snapshot failed (${code}): ${message}`);
         return { status: "failed", code, message };
       }
     },
@@ -114,13 +130,20 @@ export function createGpuAvailabilityLogServices(deps: {
       const head = { intervalHours: GPU_AVAILABILITY_SNAPSHOT_INTERVAL_MS / 3_600_000, retentionDays: GPU_AVAILABILITY_LOG_RETENTION_DAYS, lastSnapshotAt: latest ? latest.toISOString() : null };
       if (parsed.summary) {
         const summary = await deps.store.summarize(filter);
+        const gpuSnapshots = new Map(summary.gpuSnapshots.map((g) => [g.gpuTypeId, g.snapshots]));
+        const entries = summarizeGpuAvailabilityGroups(summary.groups, gpuSnapshots);
+        // BL-206: a GPU and datacenter named together that were NONE in every snapshot have no stored row; the entry is all NONE.
+        const read = filter.gpuTypeId ? gpuSnapshots.get(filter.gpuTypeId) : undefined;
+        if (filter.gpuTypeId && filter.dataCenterId && filter.dataCenterId !== GPU_AVAILABILITY_OVERALL && entries.length === 0 && read) {
+          entries.push({ gpuTypeId: filter.gpuTypeId, dataCenterId: filter.dataCenterId, snapshots: read, stock: { [GPU_AVAILABILITY_NONE]: read } });
+        }
         return {
           ...head,
           summary: {
             snapshots: summary.snapshots,
             firstAt: summary.firstAt ? summary.firstAt.toISOString() : null,
             lastAt: summary.lastAt ? summary.lastAt.toISOString() : null,
-            entries: summarizeGpuAvailabilityGroups(summary.groups),
+            entries,
           },
         };
       }

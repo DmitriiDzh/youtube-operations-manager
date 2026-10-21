@@ -24,6 +24,8 @@ export type CredentialRef =
 export type DomainErrorCode =
   | "unauthorized"
   | "validation_failed"
+  // BL-206 (GPU_STATS_PLAN.md AC-GS-08): a request whose fields are each valid but do not fit together (e.g. from after to).
+  | "invalid_request"
   | "target_language_unresolvable"
   | "not_found"
   | "transcript_unavailable"

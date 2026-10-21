@@ -102,7 +102,16 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 // runtime build pod whose container does not start (built again on a new pod, same retry count).
 // BL-205 (FO-REQ-0032, LIVE_SEGMENTS_PLAN.md): 1.25.0 -- factory_live_get_status gains `segments` (this computer's segment
 // settings, the running segment, the last 30 days and failure stages; codes only). Additive.
-export const FACTORY_API_VERSION = "1.25.0";
+// BL-206 (FO-REQ-0033, GPU_STATS_PLAN.md): 1.26.0 -- factory_media_get_gpu_stats (READ, local, no RunPod call): GPU availability
+// per GPU × datacenter (snapshots, inStock, inStockShare, levels, byHourUtc, byWeekday) inside a from/to window with optional
+// gpuTypeIds, dataCenterIds, hoursUtc and weekdays, and the sessions' GPU wait (median / p90 by nearest rank, failures apart,
+// byCandidates, byGpu, failure reasons, the list with includeSessions); refuses from > to or a window over 90 days with
+// invalid_request. The availability log is snapshotted every 15 minutes (was 3 hours; intervalHours 0.25) and stores datacenter
+// rows only where the stock is not NONE -- factory_media_list_gpu_availability_log's rows no longer list per-datacenter NONE rows
+// from then on (a missing row is NONE); its summary counts NONE as the GPU's snapshots − the other levels, so the numbers stay as
+// before, and summary.snapshots is the snapshots taken in the range (the gpu/datacenter filters no longer narrow it). Sessions show
+// firstApprovedAt, firstApprovedApproximate and gpuSkipped. Additive except the log's NONE rows.
+export const FACTORY_API_VERSION = "1.26.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -138,9 +147,11 @@ export const FACTORY_TOOL_NAMES = [
   "factory_media_get_job",
   "factory_media_cancel_job",
   "factory_media_capacity_log",
-  // BL-172 (FO-REQ-0016): GPU stock per datacenter, now and as stored every 3 hours.
+  // BL-172 (FO-REQ-0016): GPU stock per datacenter, now and as stored (every 15 minutes since BL-206).
   "factory_media_get_gpu_availability",
   "factory_media_list_gpu_availability_log",
+  // BL-206 (FO-REQ-0033): availability and session-wait statistics from the stored data.
+  "factory_media_get_gpu_stats",
   // BL-143 (ADR 0029): generation plans.
   "factory_plan_create",
   "factory_plan_import",
@@ -280,6 +291,8 @@ export type FactoryToolDeps = {
     // BL-172 (FO-REQ-0016 A).
     gpuAvailability(input: { gpuTypeIds?: string[]; dataCenterIds?: string[]; minVramGb?: number; minCudaVersion?: string }): Promise<Record<string, unknown>>;
     gpuAvailabilityLog(input: { since?: string; until?: string; gpuTypeId?: string; dataCenterId?: string; limit?: number; summary?: boolean }): Promise<Record<string, unknown>>;
+    // BL-206 (FO-REQ-0033).
+    gpuStats(input: { from?: string; to?: string; gpuTypeIds?: string[]; dataCenterIds?: string[]; hoursUtc?: { from: number; to: number }; weekdays?: number[]; includeSessions?: boolean }): Promise<Record<string, unknown>>;
   };
   /** BL-143 (ADR 0029): the generation plans core; it validates every input strictly itself. */
   plans: {
@@ -484,6 +497,21 @@ const gpuAvailabilityLogInput = z
     dataCenterId: z.string().min(1).max(32).optional(),
     limit: z.number().int().min(1).max(5000).optional(),
     summary: z.boolean().optional(),
+  })
+  .strict();
+
+// BL-206: the boundary copy of the media core's `gpuStatsInputSchema` (media-generation/schemas.ts) -- this file may import no domain
+// module (§2.5(3)), so the shape is repeated here, as for the other factory tools, and factory-server.test.ts checks that both accept
+// and refuse exactly the same inputs. The core also checks that from/to fit together (invalid_request).
+export const gpuStatsInput = z
+  .object({
+    from: z.string().datetime({ offset: true }).optional(),
+    to: z.string().datetime({ offset: true }).optional(),
+    gpuTypeIds: z.array(z.string().min(1).max(128)).min(1).max(50).optional(),
+    dataCenterIds: z.array(z.string().min(1).max(32)).min(1).max(50).optional(),
+    hoursUtc: z.object({ from: z.number().int().min(0).max(23), to: z.number().int().min(1).max(24) }).strict().optional(),
+    weekdays: z.array(z.number().int().min(1).max(7)).min(1).max(7).optional(),
+    includeSessions: z.boolean().optional(),
   })
   .strict();
 
@@ -895,10 +923,20 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_media_list_gpu_availability_log",
     {
       description:
-        "RunPod's GPU stock as THIS computer stored it every 3 hours, kept 90 days (BL-172). Each snapshot: for every GPU of 24 GB or more (Secure Cloud, with the Settings' CUDA minimum), one overall row (dataCenterId \"*\") and one row per datacenter that offers network volumes -- NONE where RunPod did not list that datacenter for the GPU, so counts include the real zeros. { log: { intervalHours, retentionDays, lastSnapshotAt, rows: [{ at, gpuTypeId, dataCenterId, stock (NONE|LOW|MEDIUM|HIGH; null = RunPod gave no level), pricePerHr (the GPU type's Secure on-demand USD/h), minCudaVersion }] } }, newest first -- or, with summary: true, { log: { …, summary: { snapshots (distinct snapshots in the range), firstAt, lastAt, entries: [{ gpuTypeId, dataCenterId, snapshots, stock: { HIGH?: n, MEDIUM?: n, LOW?: n, NONE?: n, UNKNOWN?: n } }] } } } counted over every matching row. -- { since?, until? (ISO date-times), gpuTypeId?, dataCenterId?, limit? (1–5000, default 1000; rows only), summary? }. Snapshots are taken only while the media gateway is on and RunPod is configured; each computer keeps its own log. Read-only, local, no RunPod call.",
+        "RunPod's GPU stock as THIS computer stored it every 15 minutes (1.26.0; every 3 hours before), kept 90 days (BL-172, BL-206). Each snapshot: for every GPU of 24 GB or more (Secure Cloud, with the Settings' CUDA minimum), one overall row (dataCenterId \"*\", always) and one row per datacenter that offers network volumes where the GPU's stock there was not NONE -- 1.26.0: a datacenter without a row in a snapshot was NONE there (snapshots before 1.26.0 also stored those NONE rows). { log: { intervalHours (0.25), retentionDays, lastSnapshotAt, rows: [{ at, gpuTypeId, dataCenterId, stock (NONE|LOW|MEDIUM|HIGH; null = RunPod gave no level), pricePerHr (the GPU type's Secure on-demand USD/h), minCudaVersion }] } }, newest first -- or, with summary: true, { log: { …, summary: { snapshots (the snapshots taken in the range; gpuTypeId/dataCenterId do not narrow it), firstAt, lastAt, entries: [{ gpuTypeId, dataCenterId, snapshots (the snapshots the GPU was read in), stock: { HIGH?: n, MEDIUM?: n, LOW?: n, NONE?: n, UNKNOWN?: n } }] } } } counted over every matching row, NONE = the GPU's snapshots − its other levels there (the same numbers as when NONE was stored). A GPU × datacenter that was NONE in every snapshot of the range has no entry, unless both gpuTypeId and dataCenterId are given. For hours, weekdays and session waits use factory_media_get_gpu_stats. -- { since?, until? (ISO date-times), gpuTypeId?, dataCenterId?, limit? (1–5000, default 1000; rows only), summary? }. Snapshots are taken only while the media gateway is on and RunPod is configured; each computer keeps its own log. Read-only, local, no RunPod call.",
       inputSchema: gpuAvailabilityLogInput,
     },
     async (args) => successResult(await deps.media.gpuAvailabilityLog(parseInput(gpuAvailabilityLogInput, args)))
+  );
+
+  registerTool(
+    "factory_media_get_gpu_stats",
+    {
+      description:
+        "GPU availability and session-wait statistics from what THIS computer stored (1.26.0, BL-206): the 15-minute availability snapshots and its media sessions. Local and read-only -- never calls RunPod, costs nothing. { stats: { from, to, hoursUtc, weekdays, intervalMinutes (15), snapshots (taken in the window), availability: [{ gpuTypeId, dataCenterId (\"*\" = RunPod's overall stock), snapshots (those the GPU was read in), inStock (a level LOW/MEDIUM/HIGH), inStockShare (0..1, null without snapshots), unknown (listed there without a level: neither in stock nor NONE), stock: { HIGH?, MEDIUM?, LOW?, NONE?, UNKNOWN? }, byHourUtc: [24 × { snapshots, inStockShare }] (index = UTC hour), byWeekday: [7 × { snapshots, inStockShare }] (index 0 = Monday) }], sessions: { count, ready, failed, stopped (ended before ready otherwise: a stop, a reject, an app restart), open, failureRate (failed / (ready + failed)), medianWaitMinutes, p90WaitMinutes (nearest rank over the ready sessions; failures excluded), approximateWaits (sessions from before 1.26.0: their first approval is their earliest capacity attempt), failures: { reason: n } (the code the error starts with before ':', e.g. media_no_capacity; any other text is 'other'), byCandidates: [{ candidates, ...the same counts }], byGpu: [{ gpuTypeId (obtained), ready, medianWaitMinutes, p90WaitMinutes }], list?: [{ sessionId, requestedBy, status, outcome: ready|failed|stopped|open, candidates, datacenterId, firstApprovedAt, waitApproximate, readyAt, waitMinutes (ready − first approval; a capacity retry or re-placement does not restart it), gpuTypeId, capacityAttempts, skipped: [{ gpuTypeId, reason }] (candidates the first placement skipped before any try, e.g. not offered in the volume's datacenter; null = not recorded), failureReason, usdCharged }] (newest first, at most 500), listTruncated? } } } -- { from?, to? (ISO date-times; default the last 7 days to now; at most 90 days, from after to or a longer window = invalid_request), gpuTypeIds?, dataCenterIds? (a named datacenter without stock gets an all-NONE entry per GPU; \"*\" adds the overall rows, which are listed by default only without dataCenterIds), hoursUtc?: { from 0-23, to 1-24 } (UTC, to exclusive; from > to wraps past midnight), weekdays? [1 = Monday … 7 = Sunday], includeSessions? (default false) }. Hours and weekdays filter the snapshots by their time and the sessions by their first approval; sessions are those first approved in the window, every requester (owner and factory), filtered by datacenter and by GPU (a candidate or the GPU obtained). Candidates: the ordered, de-duplicated list a start tries -- the session's own plan, else the Settings' GPU and fallback list as they are now; null when its stored plan is unreadable.",
+      inputSchema: gpuStatsInput,
+    },
+    async (args) => successResult(await deps.media.gpuStats(parseInput(gpuStatsInput, args)))
   );
 
   // -- BL-143 (ADR 0029): generation plans. The plans core validates every field strictly (bounds, patterns); the schemas

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { encryptSecret, decryptSecret } from "@/lib/shared-crypto";
-import type { ComfyUiClient, RunpodApiClient, RunpodPod } from "@/lib/media-gateway";
+import type { ComfyUiClient, RunpodApiClient, RunpodGpuType, RunpodPod } from "@/lib/media-gateway";
 import { DomainError, MEDIA_SESSION_ACTIVE_STATUSES, DEFAULT_MEDIA_SETTINGS, isDomainError, type MediaSettings } from "./contracts";
 import { createMediaSessionServices, type MediaSessionStore, type StoredSessionRow } from "./sessions";
 import { createMemoryVolumeLockStore, createVolumeLock } from "./volume-lock";
@@ -116,6 +116,8 @@ function fakeRunpod(
     uptimeAfterRunningPolls?: number;
     /** BL-159 review: called as each createPod begins (0 = the first), to look at the session row between placements. */
     onCreate?: (index: number) => void;
+    /** BL-206: the GPU catalog listGpuTypes answers (read at each start); absent = no catalog (the call fails, as before). */
+    catalog?: () => RunpodGpuType[];
   } = {}
 ) {
   const createInputs: Array<{ gpu?: { id: string; allowedCudaVersions?: string[] }; env?: Record<string, string> }> = [];
@@ -150,6 +152,7 @@ function fakeRunpod(
     raw: {},
   });
   const client = {
+    ...(opts.catalog ? { listGpuTypes: async () => opts.catalog!() } : {}),
     async createPod(input: { env?: Record<string, string>; gpu?: { id: string; allowedCudaVersions?: string[] } }) {
       opts.onCreate?.(createInputs.length);
       createInputs.push(input);
@@ -2758,4 +2761,117 @@ test("FO-REQ-0031: a container that starts just before the limit is kept; contai
   const p2 = await none.services.requestSession(operatorRequest);
   await assert.rejects(none.services.approveAndStartSession({ sessionId: p2.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_container_stuck" && /Servers → Setup/.test(e.message));
   assert.deepEqual(none.capacityLog.map((e) => e.result), ["placed", "container_stuck"]);
+});
+
+// -- BL-206 (FO-REQ-0033, GPU_STATS_PLAN.md §3, AC-GS-05 / AC-GS-07; written before the code) --------------------------------------
+// The first approval is written once and never moved by a capacity retry or a re-placement (approvedAt is); the candidates the
+// first placement skipped before any try are stored with their reason and shown on the session.
+
+function catalogGpu(id: string, memoryInGb: number, dataCenters: string[]): RunpodGpuType {
+  return {
+    id,
+    displayName: id,
+    memoryInGb,
+    secureCloud: true,
+    communityCloud: false,
+    onDemandPricePerHr: 0.69,
+    spotPricePerHr: null,
+    estimatedAvailability: "LOW",
+    dataCenters: dataCenters.map((dc) => ({ id: dc, countryCode: null, estimatedAvailability: "LOW" })),
+    cudaVersions: [],
+  };
+}
+
+test("AC-GS-05: a capacity retry moves approvedAt to the retry (10:20), firstApprovedAt stays at the approval (10:00)", async () => {
+  let full = true;
+  const f = fixture({ runpod: fakeRunpod({ capacity: () => full }), settings: { gpuTypeId: FOUR, capacityRetrySeconds: 20 * 60, capacityWaitMinutes: 60, idleMinutes: 1000 } });
+  const requested = await f.services.requestSession(operatorRequest);
+  assert.equal(requested.firstApprovedAt, null, "pending: not approved yet");
+  const waiting = await f.services.approveAndStartSession({ sessionId: requested.sessionId });
+  assert.equal(waiting.status, "waiting_capacity");
+  assert.equal(waiting.firstApprovedAt, "2026-10-05T10:00:00.000Z");
+  f.advance(20 * 60_000);
+  full = false;
+  assert.equal((await tick1(f.services)).action, "retried_start");
+  const row = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "running");
+  assert.ok(row.approvedAt && row.approvedAt.getTime() >= new Date("2026-10-05T10:20:00Z").getTime(), "the retry restarted approvedAt");
+  assert.equal(row.firstApprovedAt?.toISOString(), "2026-10-05T10:00:00.000Z");
+  assert.equal(row.firstApprovedApproximate, false);
+});
+
+test("AC-GS-05: a re-placement after an incompatible host moves approvedAt, never firstApprovedAt", async () => {
+  let advance: (ms: number) => void = () => undefined;
+  let advanced = false;
+  // Reading pod1's host moves the fake clock 10 s, so the second placement's own time is visible.
+  const runpod = fakeRunpod({
+    hostCuda: (podId) => {
+      if (podId === "pod1" && !advanced) {
+        advanced = true;
+        advance(10_000);
+      }
+      return podId === "pod1" ? "12.4" : "12.8";
+    },
+  });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR } });
+  advance = f.advance;
+  const running = await startRunning(f);
+  assert.equal(running.podId, "pod2", "placed again");
+  assert.equal(running.approvedAt, "2026-10-05T10:00:10.000Z", "approvedAt moved to the second placement");
+  assert.equal(running.firstApprovedAt, "2026-10-05T10:00:00.000Z");
+});
+
+test("AC-GS-07: a candidate not offered in the volume's datacenter is stored as skipped with its reason and shown on the session; a retry keeps the first record", async () => {
+  let fiveOffered = ["US-IL-1"];
+  let full = true;
+  const runpod = fakeRunpod({ capacity: () => full, catalog: () => [catalogGpu(FOUR, 24, ["EU-RO-1"]), catalogGpu(FIVE, 32, fiveOffered)] });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR, gpuFallbackIds: [FIVE], capacityRetrySeconds: 30, capacityWaitMinutes: 60, idleMinutes: 1000 } });
+  const requested = await f.services.requestSession(operatorRequest);
+  const waiting = await f.services.approveAndStartSession({ sessionId: requested.sessionId });
+  assert.equal(waiting.status, "waiting_capacity");
+  const expected = [{ gpuTypeId: FIVE, reason: "not offered in EU-RO-1 (the volume's datacenter)" }];
+  assert.deepEqual(waiting.gpuSkipped, expected);
+  // The catalog changes before the retry: the retry skips nothing, the first placement's record stays.
+  fiveOffered = ["EU-RO-1"];
+  full = false;
+  f.advance(31_000);
+  assert.equal((await tick1(f.services)).action, "retried_start");
+  assert.equal(f.mem.rows.get(requested.sessionId)?.status, "running");
+  assert.deepEqual(JSON.parse(f.mem.rows.get(requested.sessionId)?.gpuSkippedJson ?? "null"), expected);
+});
+
+test("AC-GS-07: when no candidate qualifies the session fails and the skipped list is still stored; a first placement that skips nothing stores []", async () => {
+  const f = fixture({ runpod: fakeRunpod({ catalog: () => [catalogGpu(FOUR, 24, ["US-IL-1"])] }), settings: { gpuTypeId: FOUR } });
+  const requested = await f.services.requestSession(operatorRequest);
+  await assert.rejects(f.services.approveAndStartSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_session_start_failed");
+  const failed = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(failed.status, "failed");
+  assert.deepEqual(JSON.parse(failed.gpuSkippedJson ?? "null"), [{ gpuTypeId: FOUR, reason: "not offered in EU-RO-1 (the volume's datacenter)" }]);
+
+  const g = fixture({ runpod: fakeRunpod({ catalog: () => [catalogGpu(FOUR, 24, ["EU-RO-1"])] }), settings: { gpuTypeId: FOUR } });
+  const running = await startRunning(g);
+  assert.equal(running.status, "running");
+  assert.deepEqual(running.gpuSkipped, []);
+});
+
+test("BL-206 review: an unreadable catalog records no skipped list; the first retry that reads the catalog records it", async () => {
+  let catalogUp = false;
+  let full = true;
+  const runpod = fakeRunpod({
+    capacity: () => full,
+    catalog: () => {
+      if (!catalogUp) throw new Error("RunPod catalog unavailable");
+      return [catalogGpu(FOUR, 24, ["EU-RO-1"]), catalogGpu(FIVE, 32, ["US-IL-1"])];
+    },
+  });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR, gpuFallbackIds: [FIVE], capacityRetrySeconds: 30, capacityWaitMinutes: 60, idleMinutes: 1000 } });
+  const requested = await f.services.requestSession(operatorRequest);
+  const waiting = await f.services.approveAndStartSession({ sessionId: requested.sessionId });
+  assert.equal(waiting.status, "waiting_capacity");
+  assert.equal(waiting.gpuSkipped, null, "no catalog: nothing could be checked, nothing recorded");
+  catalogUp = true;
+  full = false;
+  f.advance(31_000);
+  assert.equal((await tick1(f.services)).action, "retried_start");
+  assert.deepEqual(JSON.parse(f.mem.rows.get(requested.sessionId)?.gpuSkippedJson ?? "null"), [{ gpuTypeId: FIVE, reason: "not offered in EU-RO-1 (the volume's datacenter)" }]);
 });
