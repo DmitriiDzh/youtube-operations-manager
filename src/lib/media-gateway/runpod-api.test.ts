@@ -424,7 +424,7 @@ test("toPod reads the host CUDA version from the pod answer, null when it is abs
 
 // RunPod's per-user rate limits (owner msgs 3226-3229; REST v2 openapi.json TooManyRequestsError: HTTP 429 with `Retry-After`
 // in seconds; RFC 9110 §10.2.3 also allows an HTTP date). Expected, written before the code: a 429 is sent again after the
-// named wait, at most 3 times and only for a wait of at most 60 s (10 s when unnamed); otherwise it is runpod_api_unavailable
+// named wait, at most 3 times and only while the waits of the one call add up to at most 60 s (10 s when unnamed); otherwise it is runpod_api_unavailable
 // with status 429 and the named wait -- never media_credentials_invalid.
 function limited(answers: Array<{ status: number; body?: unknown; headers?: Record<string, string> }>) {
   let i = 0;
@@ -463,6 +463,27 @@ test("rate limit: a wait over a minute is not slept through -- the error comes a
   assert.deepEqual(waits, []);
 });
 
+test("rate limit: the waits of one call add up to at most a minute -- a second 40 s wait is not slept", async () => {
+  const { client, calls, waits } = limited([{ status: 429, headers: { "retry-after": "40" } }]);
+  await assert.rejects(client.listPods(), (e: unknown) => isDomainError(e) && (e.details as { status?: number }).status === 429);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(waits, [40_000]);
+});
+
+test("rate limit: each resend is authorized again -- the gateway switched off during the wait blocks it", async () => {
+  let enabled = true;
+  const authorized: string[] = [];
+  const { fetchImpl, calls } = fakeFetch(() => ({ status: 429, headers: { "retry-after": "1" } }));
+  const authorize = async (category: string) => {
+    authorized.push(category);
+    if (!enabled) throw new Error("media gateway is off");
+  };
+  const client = createRunpodApiClient({ apiKey: "k", authorize: authorize as never, fetchImpl, sleep: async () => void (enabled = false) });
+  await assert.rejects(client.listPods(), /media gateway is off/);
+  assert.equal(calls.length, 1, "no request after the toggle went off");
+  assert.deepEqual(authorized, ["runpod_api", "runpod_api"]);
+});
+
 test("rate limit: no Retry-After -> 10 s; the GraphQL reads are limited the same way", async () => {
   const { client, calls, waits } = limited([{ status: 429 }, { status: 200, body: { data: { myself: { id: "user_1" } } } }]);
   assert.equal(await client.getAccountId(), "user_1");
@@ -476,5 +497,8 @@ test("retryAfterSeconds: seconds, an HTTP date, or null", () => {
   assert.equal(retryAfterSeconds("Tue, 20 Oct 2026 15:00:30 GMT", Date.parse("2026-10-20T15:00:00Z")), 30);
   assert.equal(retryAfterSeconds("Tue, 20 Oct 2026 14:59:00 GMT", Date.parse("2026-10-20T15:00:00Z")), 0);
   assert.equal(retryAfterSeconds("soon"), null);
+  // Neither form (RFC 9110 §10.2.3): not read as some old date that would mean "retry at once".
+  assert.equal(retryAfterSeconds("1.5"), null);
+  assert.equal(retryAfterSeconds("-1"), null);
   assert.equal(retryAfterSeconds(null), null);
 });

@@ -2092,6 +2092,9 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
   reads still use GraphQL: the account balance (`getAccountBalance`, RISK-107 item 5) and the account id that tells devices they
   share one account (`getAccountId`, ADR 0028). REST v2 has no balance, and `GET /v2/organization` answers 403 "organizations
   are not enabled for this user" (checked live 2026-10-20: the owner's account has no organization; no key permission changes it). The host CUDA read moved to the v2 pod answer (owner msgs 3226-3229).
+- **Also accepted (review, 2026-10-21):** a RUNNING pod answer without `cudaVersion` now leaves the minimum unchecked (logged;
+  before, GraphQL was asked); ComfyUI's cuda-device check still runs. A `createPod` refused with 429 is resent by the gateway,
+  on RunPod's documented meaning that a 429 is refused before any work; a pod created despite a 429 would be a second pod.
 - **Effect:** once GraphQL is off, the panel shows the v2 billing spend instead of the balance (the fallback exists), and the
   account id is unknown, so devices no longer count each other's sessions toward the shared limits (ADR 0028's unknown case).
 - **Possible fix:** a v2 account or balance endpoint if RunPod adds one before the retirement (every device switches in the same

@@ -108,6 +108,8 @@ function fakeRunpod(
      * compatible host); null = the answer does not say. Each RUNNING answer is one read (`hostCuda:<id>`).
      */
     hostCuda?: (podId: string) => string | null;
+    /** BL-159 (AC-SC-02): the host CUDA version the createPod answer itself already carries; absent by default. */
+    createAnswerCuda?: string;
     /** BL-155 review: the pod's $/h by GPU type (default 0.69). */
     podPrice?: (gpuId: string) => number;
     /** BL-155 review 4: a RUNNING pod reports no runtime (image still downloading) for its first N RUNNING polls. */
@@ -169,7 +171,7 @@ function fakeRunpod(
       names.set(id, { name: (input as { name?: string }).name ?? "ytm", gpu: input.gpu?.id ?? "" });
       if (opts.createThenLoseAnswer?.(input)) throw new Error("RunPod API request failed: The operation was aborted due to timeout");
       calls.push(`env:${input.env?.COMFY_TOKEN ?? ""}`);
-      return pod(id);
+      return { ...pod(id), ...(opts.createAnswerCuda ? { cudaVersion: opts.createAnswerCuda } : {}) };
     },
     async getPod(id: string) {
       calls.push(`getPod:${id}`);
@@ -2113,15 +2115,13 @@ test("AC-CU-02: three incompatible hosts (the first + 2 extra placements) -> fai
 });
 
 test("AC-CU-02: an unknown host CUDA version (the pod answer does not say) does not block the start", async () => {
-  for (const hostCuda of [() => null]) {
-    const runpod = fakeRunpod({ hostCuda });
-    const f = fixture({ runpod, settings: { gpuTypeId: FOUR } });
-    const running = await startRunning(f);
-    assert.equal(running.status, "running");
-    assert.equal(running.podId, "pod1");
-    assert.equal(runpod.createInputs.length, 1);
-    assert.deepEqual(f.capacityLog.map((a) => a.result), ["placed"]);
-  }
+  const runpod = fakeRunpod({ hostCuda: () => null });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR } });
+  const running = await startRunning(f);
+  assert.equal(running.status, "running");
+  assert.equal(running.podId, "pod1");
+  assert.equal(runpod.createInputs.length, 1);
+  assert.deepEqual(f.capacityLog.map((a) => a.result), ["placed"]);
 });
 
 test("AC-CU-02: when the incompatible pod's termination cannot be confirmed, no second pod is created -- the session stays stopping for the watcher", async () => {
@@ -2555,10 +2555,11 @@ test("AC-SC-02: the host's CUDA is shown on the running session and on the capac
 });
 
 test("AC-SC-02: a host CUDA named by the create answer is on the placed entry at once", async () => {
-  const runpod = fakeRunpod({ hostCuda: () => "13.0" });
+  // The RUNNING answers name no version, so only the create answer can put 13.0 on the placed entry.
+  const runpod = fakeRunpod({ createAnswerCuda: "13.0", hostCuda: () => null });
   const f = fixture({ runpod, settings: { gpuTypeId: FOUR } });
   const running = await startRunning(f);
-  assert.equal(running.hostCudaVersion, "13.0");
+  assert.equal(running.status, "running");
   assert.deepEqual(f.capacityLog.map((a) => [a.result, a.hostCudaVersion]), [["placed", "13.0"]]);
 });
 

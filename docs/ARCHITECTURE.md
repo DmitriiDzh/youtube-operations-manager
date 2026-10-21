@@ -3000,7 +3000,7 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   deletes such a key only by that ledger and only for a terminal job (other `exchange/in/` files stay "reference input").
 - **Factory GPU sessions, fallback, capacity wait (BL-133, ADR 0026, schema v64).** `gpu-plan.ts` resolves the candidates (session plan,
   else device GPU + `gpuFallbackIds`; filtered by VRAM, price cap and the volume's datacenter via the catalog) and classifies a failed
-  createPod (400 "could not be placed" = no capacity; 429/5xx/none = transient; else fatal). `startApproved` loops over them, keeping the
+  createPod (400 "could not be placed" = no capacity; 429/5xx/none = transient; else fatal). Every RunPod call (REST v2 and GraphQL, `createPod` too) first resends a 429 itself after its `Retry-After` (seconds or IMF-fixdate; 10 s when absent): at most 3 times and at most 60 s of waits per call, each resend authorized again (`runpod-api.ts` `rateLimited`); only then is the 429 the transient error above. `startApproved` loops over them, keeping the
   orphan-name search per attempt and recording each attempt in `media_capacity_attempts`; none placed → `waitForCapacity` (`approved →
   waiting_capacity`, no pod). `watchOne` retries a due waiting session in the background (`waiting_capacity → approved` with `approvedAt`
   restarted) and fails it after the wait; the loop ticks at least every `capacityRetrySeconds`. `approveInner` is shared by the owner's

@@ -29,7 +29,9 @@ const REQUEST_TIMEOUT_MS = 30_000;
 /**
  * RunPod limits requests per user (REST v2: 180 a minute, 7200 an hour, 86400 a day, read live from `RateLimit-Policy` on
  * 2026-10-20; the legacy APIs got limits too). A 429 is refused before any work is done, so any call -- a create too -- is sent
- * again after the `Retry-After` it names: at most 3 times, and only when the wait is at most a minute (10 s when unnamed).
+ * again after the `Retry-After` it names: at most 3 times, and only while the waits of that one call add up to at most a minute
+ * (10 s when unnamed) -- so a caller that polls or serves a page is never held for minutes. Every resend is authorized again
+ * (the media gateway toggle can be switched off during the wait, and each real attempt is one traffic event).
  */
 export const RATE_LIMIT_RETRIES = 3;
 export const RATE_LIMIT_MAX_WAIT_SECONDS = 60;
@@ -40,6 +42,8 @@ export function retryAfterSeconds(header: string | null, now: number = Date.now(
   if (header === null) return null;
   const trimmed = header.trim();
   if (/^\d+$/.test(trimmed)) return Number(trimmed);
+  // Only the IMF-fixdate form ("Tue, 20 Oct 2026 15:00:30 GMT"): V8's lenient Date.parse reads "1.5" or "-1" as an old date.
+  if (!/^[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$/.test(trimmed)) return null;
   const at = Date.parse(trimmed);
   return Number.isNaN(at) ? null : Math.max(0, Math.ceil((at - now) / 1000));
 }
@@ -251,30 +255,32 @@ export function createRunpodApiClient(args: {
 }) {
   const fetchImpl = args.fetchImpl ?? fetch;
   const sleep = args.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const authorize = args.authorize ?? assertMediaGatewayAuthorized;
 
   /** Sends again after RunPod's own `Retry-After` while it is rate limited (see RATE_LIMIT_RETRIES); else the 429 is an error. */
   async function rateLimited(send: () => Promise<JsonResponse>, where: { method: string; path: string }): Promise<JsonResponse> {
+    let waited = 0;
     for (let attempt = 0; ; attempt++) {
+      await authorize("runpod_api");
       const response = await send();
       if (response.status !== 429) return response;
       const named = retryAfterSeconds(response.retryAfter);
       const wait = named ?? RATE_LIMIT_DEFAULT_WAIT_SECONDS;
-      if (attempt >= RATE_LIMIT_RETRIES || wait > RATE_LIMIT_MAX_WAIT_SECONDS) {
+      if (attempt >= RATE_LIMIT_RETRIES || waited + wait > RATE_LIMIT_MAX_WAIT_SECONDS) {
         throw new DomainError({
           code: "runpod_api_unavailable",
           message: `RunPod rate limit reached (HTTP 429)${named !== null ? `; it asks to retry after ${named} s` : ""}.`,
           details: { ...where, status: 429, retryAfterSeconds: named },
         });
       }
+      waited += wait;
       await sleep(wait * 1000);
     }
   }
   const graphqlUrl = args.graphqlUrl ?? RUNPOD_GRAPHQL_URL;
-  const authorize = args.authorize ?? assertMediaGatewayAuthorized;
   const baseUrl = (args.baseUrl ?? RUNPOD_API_BASE_URL).replace(/\/$/, "");
 
   async function request(method: string, path: string, body?: unknown): Promise<{ status: number; body: unknown }> {
-    await authorize("runpod_api");
     const response = await rateLimited(() => jsonRequest({
       fetchImpl,
       url: `${baseUrl}${path}`,
@@ -318,7 +324,6 @@ export function createRunpodApiClient(args: {
 
   /** The legacy-GraphQL reads (balance, account id; RunPod retires it in early 2027, RISK in TECHNICAL_DEBT.md). Errors arrive as HTTP 200 + `errors[]` too; both become DomainErrors. */
   async function graphql(query: string): Promise<Record<string, unknown>> {
-    await authorize("runpod_api");
     const response = await rateLimited(() => jsonRequest({
       fetchImpl,
       url: graphqlUrl,

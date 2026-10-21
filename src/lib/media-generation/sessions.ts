@@ -1125,6 +1125,10 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
               // The pod answer itself names the host's CUDA (owner, msg 2093); RunPod retires the GraphQL read in early 2027.
               const host = current.cudaVersion ?? null;
               if (host !== null || current.containerUptimeSec !== null) hostChecked = true;
+              if (host === null && current.containerUptimeSec !== null && minCudaVersion !== null) {
+                // RISK-134: without the GraphQL read an answer that omits the version leaves the minimum unchecked -- say so.
+                log(`[media] pod ${pod.id} runs but RunPod did not name its host's CUDA version; the ${minCudaVersion} minimum is not checked`);
+              }
               if (host !== null) await recordHostCuda(host);
               if (hostCudaTooOld(host, minCudaVersion)) {
                 mismatch = `CUDA driver too old: host ${host} < ${minCudaVersion}`;
