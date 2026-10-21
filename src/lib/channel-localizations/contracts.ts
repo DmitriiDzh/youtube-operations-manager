@@ -7,8 +7,8 @@ export { DomainError, isDomainError } from "@/lib/shared-domain";
 // BL-210 (docs/roadmap/plans/CHANNEL_LOCALIZATIONS_PLAN.md, ADR 0047): the third authorized writer of per-language title/description
 // (AGENTS.md §F) -- a channel's OWN translations (`channels.update part=localizations`), applied only by the owner's «Применить»
 // in the Web UI. It never deletes a language, never touches the base title/description, never writes the channel's own language
-// as a translation; when the channel has no default language it sets the baseline as `brandingSettings.channel.defaultLanguage`
-// first (a separate write: one part per request), sending every other settable branding field back exactly as read.
+// as a translation, and writes nothing else of the channel: a channel without `brandingSettings.channel.defaultLanguage` is refused
+// (the owner sets it once in YouTube Studio, owner msg 3350).
 // ---------------------------------------------------------------------------
 
 export type ChannelLocalizationsActor = "owner" | "factory";
@@ -20,8 +20,6 @@ export type ChannelLocalizationsLastApply =
       ok: true;
       /** Languages written (new or changed); [] = nothing differed, nothing was written. */
       languages: string[];
-      /** The default language set by this apply (null = not changed). */
-      defaultLanguageSet: string | null;
       writes: number;
       backupPath: string | null;
     }
@@ -33,7 +31,6 @@ export type ChannelLocalizationsLastApply =
       detail: string;
       error?: string;
       languages: string[];
-      defaultLanguageSet: string | null;
       writes: number;
       backupPath: string | null;
     };
@@ -53,6 +50,8 @@ export type ChannelLocalizationsView = {
 export type ChannelLocalizationsPreviewView = ChannelLocalizationsPreview & {
   /** The channel's translations on YouTube now (read for this preview, 1 unit). */
   live: Record<string, { title: string; description: string }>;
+  /** The version of the stored set this preview was computed from; «Применить» sends it back (refused if the set changed since). */
+  setVersion: string;
 };
 
 export type ChannelLocalizationsStoreRow = {
@@ -84,10 +83,8 @@ export type ChannelLocalizationsDependencies = {
   youtube: {
     /** `channels.list part=snippet,brandingSettings,localizations` by id, through the read gateway; null = not returned. */
     read(credentials: ResolvedCredentials, channelId: string): Promise<LiveChannelLocalizations | null>;
-    /** The shared Live-writes check (write gateway), called immediately before each write. */
+    /** The shared Live-writes check (write gateway), called immediately before the write. */
     assertLiveWritesAuthorized(): Promise<void>;
-    /** `channels.update part=brandingSettings` (only `brandingSettings.channel`), through the write gateway. */
-    updateBrandingChannel(credentials: ResolvedCredentials, channelId: string, channel: Record<string, unknown>): Promise<void>;
     /** `channels.update part=localizations` with the full map, through the write gateway. */
     updateLocalizations(credentials: ResolvedCredentials, channelId: string, localizations: Record<string, { title: string; description: string }>): Promise<void>;
   };

@@ -31,8 +31,9 @@ const primaryClass = "rounded-lg bg-zinc-100 px-3 py-1 text-xs font-medium text-
 const warnClass = "rounded-lg border border-amber-800/60 bg-amber-950/20 px-3 py-2 text-xs text-amber-200";
 
 const PROBLEM_KEYS: Record<ChannelLocalizationsPreviewProblem, UiTextKey> = {
-  no_baseline: "channelTranslations.problem.no_baseline",
+  default_language_not_set: "channelTranslations.problem.default_language_not_set",
   default_language_mismatch: "channelTranslations.problem.default_language_mismatch",
+  own_language_in_live: "channelTranslations.problem.own_language_in_live",
   own_language_in_set: "channelTranslations.problem.own_language_in_set",
   empty_set: "channelTranslations.problem.empty_set",
 };
@@ -165,7 +166,8 @@ export function ChannelLocalizationsPanel({ channelId }: { channelId: string }) 
     setError(null);
     setNotice(null);
     try {
-      const response = await fetch(`${base}/apply`, { method: "POST" });
+      // Review #2: the apply is bound to the set this preview was computed from.
+      const response = await fetch(`${base}/apply`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ setVersion: preview?.setVersion ?? "" }) });
       const body = await response.json().catch(() => null);
       if (!response.ok) throw new Error(errorText(t, body, t("channelTranslations.applyFailed")));
       const result = body as ChannelLocalizationsLastApply;
@@ -303,11 +305,7 @@ export function ChannelLocalizationsPanel({ channelId }: { channelId: string }) 
             ))}
           </ul>
           <p>{preview.untouched.length > 0 ? t("channelTranslations.untouched", { languages: preview.untouched.join(", ") }) : t("channelTranslations.untouchedNone")}</p>
-          <p>
-            {preview.defaultLanguage.change
-              ? t("channelTranslations.defaultLanguageSet", { language: preview.defaultLanguage.after ?? "" })
-              : t("channelTranslations.defaultLanguageCurrent", { language: preview.defaultLanguage.current ?? "—" })}
-          </p>
+          {preview.defaultLanguage.current && <p>{t("channelTranslations.defaultLanguageCurrent", { language: preview.defaultLanguage.current })}</p>}
           {preview.problems.map((problem) => (
             <p key={problem} className={warnClass}>
               {t(PROBLEM_KEYS[problem])}
@@ -332,11 +330,7 @@ export function ChannelLocalizationsPanel({ channelId }: { channelId: string }) 
       {confirming && preview && (
         <ConfirmDialog
           title={t("channelTranslations.confirmTitle")}
-          description={
-            preview.defaultLanguage.change
-              ? t("channelTranslations.confirmBodyDefault", { count: String(preview.languages.filter((l) => l.status !== "unchanged").length), language: preview.defaultLanguage.after ?? "" })
-              : t("channelTranslations.confirmBody", { count: String(preview.languages.filter((l) => l.status !== "unchanged").length) })
-          }
+          description={t("channelTranslations.confirmBody", { count: String(preview.languages.filter((l) => l.status !== "unchanged").length) })}
           cancelLabel={t("common.cancel")}
           confirmLabel={t("channelTranslations.confirm")}
           confirmBusyLabel={applying ? t("channelTranslations.applying") : null}

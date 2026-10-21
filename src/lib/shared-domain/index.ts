@@ -260,10 +260,13 @@ export type DomainErrorCode =
   // time. WRITE_FAILED: a file could not be written; nothing from that call is left behind.
   // A Change Set was created but not every one of its changes could be read back (see changesets/services.ts persistChangeSet).
   | "change_set_incomplete"
-  // BL-210 (CHANNEL_LOCALIZATIONS_PLAN.md): the channel has no default language and no baseline to set it to; its two default-language
-  // fields (snippet / brandingSettings.channel) disagree. Nothing is written in either case.
-  | "no_baseline"
+  // BL-210 (CHANNEL_LOCALIZATIONS_PLAN.md): the channel has no `brandingSettings.channel.defaultLanguage` (set once in YouTube Studio,
+  // owner msg 3350); its two default-language fields disagree; YouTube lists an own-language translation differing from the base
+  // text; the stored set changed since the owner previewed it. Nothing is written in any case.
+  | "channel_default_language_not_set"
   | "default_language_mismatch"
+  | "own_language_in_live"
+  | "localizations_changed"
   | "RESEARCH_EXPORT_WORKSPACE_NOT_CONFIGURED"
   | "RESEARCH_EXPORT_WORKSPACE_UNAVAILABLE"
   | "RESEARCH_EXPORT_WRITE_FAILED"

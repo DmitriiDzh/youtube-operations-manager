@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import { DomainError } from "@/lib/shared-domain";
 import type { ChannelLocalizationsDependencies, ChannelLocalizationsLastApply } from "./contracts";
@@ -6,8 +7,8 @@ import { createChannelLocalizationsService } from "./services";
 import { previewChannelLocalizations, type LiveChannelLocalizations } from "./set";
 import { operatorSurface } from "./index";
 
-// BL-210 acceptance (docs/roadmap/plans/CHANNEL_LOCALIZATIONS_PLAN.md AC-CL-01..09, written before the code; "API facts" for the
-// two-write default-language case). Every expected value is written by hand from the plan, PROJECT_SPEC §21 (keep every other
+// BL-210 acceptance (docs/roadmap/plans/CHANNEL_LOCALIZATIONS_PLAN.md AC-CL-01..09, written before the code; AC-CL-08/09 amended by
+// the owner's decision msg 3350: no brandingSettings write -- a channel without a default language is refused; review #1/#2 cases). Every expected value is written by hand from the plan, PROJECT_SPEC §21 (keep every other
 // language, the base text untouched, nothing deleted) and the channels.update reference -- never computed by the code under test.
 
 type Live = LiveChannelLocalizations;
@@ -37,7 +38,6 @@ function harness(options: {
 } = {}) {
   const state: Live = clone(options.live ?? liveChannel());
   const calls: string[] = [];
-  const brandingWrites: Array<Record<string, unknown>> = [];
   const localizationWrites: Array<Record<string, { title: string; description: string }>> = [];
   const events: Array<{ kind: string; detail: unknown }> = [];
   const backups: unknown[] = [];
@@ -83,13 +83,6 @@ function harness(options: {
         calls.push("liveWrites");
         if (options.liveWrites === false) throw new DomainError({ code: "live_writes_disabled", message: "off" });
       },
-      updateBrandingChannel: async (_credentials, _channelId, channel) => {
-        calls.push("updateBranding");
-        brandingWrites.push(clone(channel));
-        // channels.update replaces the part: the omitted title is kept by YouTube (it may only be omitted), anything else as sent.
-        state.brandingChannel = { title: state.brandingChannel.title, ...clone(channel) };
-        if (typeof channel.defaultLanguage === "string") state.snippet.defaultLanguage = channel.defaultLanguage;
-      },
       updateLocalizations: async (_credentials, _channelId, localizations) => {
         calls.push("updateLocalizations");
         localizationWrites.push(clone(localizations));
@@ -111,10 +104,13 @@ function harness(options: {
     newId: () => "op-1",
     readBack: { attempts: 2, delayMs: 0 },
   };
-  return { service: createChannelLocalizationsService(deps), state, calls, brandingWrites, localizationWrites, events, backups, row };
+  // The version of the stored set the owner previewed (review #2): computed here independently -- SHA-256 of the stored column.
+  const version = () => createHash("sha256").update(row.localizationsJson ?? "").digest("hex");
+  const service = createChannelLocalizationsService(deps);
+  return { service, apply: (setVersion: string = version()) => service.apply("UC1", { userId: "user-1" }, setVersion), version, state, calls, localizationWrites, events, backups, row };
 }
 
-const writeCalls = (calls: string[]) => calls.filter((c) => c === "updateBranding" || c === "updateLocalizations");
+const writeCalls = (calls: string[]) => calls.filter((c) => c === "updateLocalizations");
 
 test("AC-CL-01: saving a valid set (es, de) stores it, records who saved it, and sends nothing to YouTube", async () => {
   const h = harness({ stored: null });
@@ -158,13 +154,12 @@ test("a save for a channel not connected here is refused (channel_not_connected)
 
 test("AC-CL-03: the channel holds fr and es, the set es and de -> one localizations write with fr unchanged, es and de new; read-back ok", async () => {
   const h = harness({ live: liveChannel({ localizations: { fr: { title: "Fr", description: "Fr desc" }, es: { title: "Es old", description: "Es old desc" } } }) });
-  const result = await h.service.apply("UC1", { userId: "user-1" });
+  const result = await h.apply();
   assert.deepEqual(h.localizationWrites, [
     { fr: { title: "Fr", description: "Fr desc" }, es: { title: "Es", description: "Es desc" }, de: { title: "De", description: "De desc" } },
   ]);
-  // The base title/description are not sent anywhere: no snippet part exists, and no branding write was made.
-  assert.deepEqual(h.brandingWrites, []);
-  assert.deepEqual(result, { at: "2026-10-22T10:00:00.000Z", ok: true, languages: ["es", "de"], defaultLanguageSet: null, writes: 1, backupPath: "/backups/UC1/op-1/UC1.metadata_before.json" });
+  // The base title/description are not sent anywhere: the only write is the localizations part.
+  assert.deepEqual(result, { at: "2026-10-22T10:00:00.000Z", ok: true, languages: ["es", "de"], writes: 1, backupPath: "/backups/UC1/op-1/UC1.metadata_before.json" });
   // Identity first, then reads, the backup, the re-read, Live writes immediately before the one write, then the read-back.
   assert.deepEqual(h.calls, ["identity", "read", "backup", "read", "liveWrites", "updateLocalizations", "read"]);
   assert.deepEqual(h.state.snippet, { title: "Base", description: "Base desc", defaultLanguage: "en" });
@@ -182,13 +177,13 @@ test("AC-CL-03: the channel holds fr and es, the set es and de -> one localizati
 
 test("AC-CL-04: a language the set does not name (ja) is still sent: nothing is deleted", async () => {
   const h = harness({ live: liveChannel({ localizations: { ja: { title: "Ja", description: "Ja desc" } } }) });
-  await h.service.apply("UC1", { userId: "user-1" });
+  await h.apply();
   assert.deepEqual(h.localizationWrites, [{ ja: { title: "Ja", description: "Ja desc" }, es: { title: "Es", description: "Es desc" }, de: { title: "De", description: "De desc" } }]);
 });
 
 test("AC-CL-05: the active credentials belong to another channel -> refused before any read or write", async () => {
   const h = harness({ activeChannel: "UC_OTHER" });
-  await assert.rejects(h.service.apply("UC1", { userId: "user-1" }), (e: unknown) => e instanceof DomainError && (e.code as string) === "WRITE_CHANNEL_MISMATCH");
+  await assert.rejects(h.apply(), (e: unknown) => e instanceof DomainError && (e.code as string) === "WRITE_CHANNEL_MISMATCH");
   assert.deepEqual(h.calls, ["identity"]);
   assert.deepEqual(writeCalls(h.calls), []);
   assert.equal((JSON.parse(h.row.lastApplyJson as string) as ChannelLocalizationsLastApply).ok, false);
@@ -196,7 +191,7 @@ test("AC-CL-05: the active credentials belong to another channel -> refused befo
 
 test("AC-CL-06: Live writes off -> refused, and no gateway write is made", async () => {
   const h = harness({ liveWrites: false });
-  await assert.rejects(h.service.apply("UC1", { userId: "user-1" }), (e: unknown) => e instanceof DomainError && e.code === "live_writes_disabled");
+  await assert.rejects(h.apply(), (e: unknown) => e instanceof DomainError && e.code === "live_writes_disabled");
   assert.deepEqual(writeCalls(h.calls), []);
   const last = JSON.parse(h.row.lastApplyJson as string) as ChannelLocalizationsLastApply;
   assert.deepEqual(last.ok === false ? [last.failure, last.detail] : null, ["failed", "live_writes_disabled"]);
@@ -204,14 +199,13 @@ test("AC-CL-06: Live writes off -> refused, and no gateway write is made", async
 
 test("AC-CL-07: the read-back shows es differing -> ok:false, read_back_mismatch, and the backup is kept", async () => {
   const h = harness({ tamper: (state) => void (state.localizations.es = { title: "Es", description: "something else" }) });
-  const result = await h.service.apply("UC1", { userId: "user-1" });
+  const result = await h.apply();
   assert.deepEqual(result, {
     at: "2026-10-22T10:00:00.000Z",
     ok: false,
     failure: "read_back_mismatch",
     detail: "text differs: es",
     languages: ["es", "de"],
-    defaultLanguageSet: null,
     writes: 1,
     backupPath: "/backups/UC1/op-1/UC1.metadata_before.json",
   });
@@ -221,105 +215,98 @@ test("AC-CL-07: the read-back shows es differing -> ok:false, read_back_mismatch
   assert.deepEqual(h.calls.slice(-2), ["read", "read"]);
 });
 
-test("AC-CL-08: no default language, baseline en -> a brandingSettings write sets it to en, every other settable field as read; then the translations", async () => {
-  const branding = { title: "Base", description: "Base desc", keywords: "music \"lo fi\"", country: "JP", unsubscribedTrailer: "abcdefghijk", trackingAnalyticsAccountId: "UA-1", moderateComments: true };
-  const h = harness({ live: liveChannel({ snippet: { title: "Base", description: "Base desc", defaultLanguage: null }, brandingChannel: branding }) });
-  const result = await h.service.apply("UC1", { userId: "user-1" });
-  // Exactly the six settable fields read with a value; the title left out (channelTitleUpdateForbidden); defaultLanguage the baseline.
-  assert.deepEqual(h.brandingWrites, [{ description: "Base desc", keywords: "music \"lo fi\"", country: "JP", unsubscribedTrailer: "abcdefghijk", trackingAnalyticsAccountId: "UA-1", defaultLanguage: "en" }]);
-  assert.deepEqual(h.localizationWrites, [{ es: { title: "Es", description: "Es desc" }, de: { title: "De", description: "De desc" } }]);
-  // Each write has its own Live-writes check immediately before it; each is read back before the next step.
-  assert.deepEqual(h.calls, ["identity", "read", "backup", "read", "liveWrites", "updateBranding", "read", "liveWrites", "updateLocalizations", "read"]);
-  assert.deepEqual(result, { at: "2026-10-22T10:00:00.000Z", ok: true, languages: ["es", "de"], defaultLanguageSet: "en", writes: 2, backupPath: "/backups/UC1/op-1/UC1.metadata_before.json" });
-});
-
-test("AC-CL-08: a branding field read back changed -> ok:false read_back_mismatch, and the translations are not written", async () => {
-  // YouTube may truncate keywords holding an unescaped quote (channels resource): after the branding write it stores "a", not "a\"b".
-  const base = harness({ live: liveChannel({ snippet: { title: "Base", description: "Base desc", defaultLanguage: null }, brandingChannel: { title: "Base", description: "Base desc", keywords: "a\"b" } }) });
-  const tampered = await tamperingApply(base, { title: "Base", description: "Base desc", keywords: "a", defaultLanguage: "en" });
-  assert.deepEqual(tampered.result.ok === false ? [tampered.result.failure, tampered.result.detail] : null, ["read_back_mismatch", "branding field changed: keywords"]);
-  assert.deepEqual(tampered.localizationWrites, []);
-});
-
-/** Runs an apply whose branding write YouTube stores as `stored` (a separate fake: the default one keeps what is sent). */
-async function tamperingApply(base: ReturnType<typeof harness>, stored: Record<string, unknown>) {
-  const localizationWrites: unknown[] = [];
-  const state = base.state;
-  const deps = {
-    store: { get: async () => ({ localizationsJson: base.row.localizationsJson, updatedAt: null, updatedBy: null, lastApplyJson: null }), saveSet: async () => undefined, saveLastApply: async () => undefined },
-    channel: async () => ({ connectedUserId: "user-1" }),
-    baselineLanguage: async () => "en",
-    auth: { resolve: async () => ({ accessToken: "a", refreshToken: "r" }) as never },
-    writeContext: { assertWriteChannel: async () => undefined },
-    youtube: {
-      read: async () => clone(state),
-      assertLiveWritesAuthorized: async () => undefined,
-      updateBrandingChannel: async () => void (state.brandingChannel = clone(stored)),
-      updateLocalizations: async (_c: unknown, _id: string, l: unknown) => void localizationWrites.push(l),
-    },
-    backup: { checkInfrastructureHealth: async () => ({ healthy: true }), captureBackup: async () => ({ path: "/b", capturedAt: "x" }) },
-    audit: { record: async () => undefined },
-    sleep: async () => undefined,
-    clock: () => new Date("2026-10-22T10:00:00.000Z"),
-    newId: () => "op-1",
-    readBack: { attempts: 1, delayMs: 0 },
-  } as unknown as ChannelLocalizationsDependencies;
-  const result = await createChannelLocalizationsService(deps).apply("UC1", { userId: "user-1" });
-  return { result, localizationWrites };
-}
-
-test("AC-CL-09: no default language and no baseline -> no_baseline, no backup and no write", async () => {
-  const h = harness({ baseline: null, live: liveChannel({ snippet: { title: "Base", description: "Base desc", defaultLanguage: null }, brandingChannel: { title: "Base" } }) });
-  await assert.rejects(h.service.apply("UC1", { userId: "user-1" }), (e: unknown) => e instanceof DomainError && e.code === "no_baseline");
+// AC-CL-08 and AC-CL-09 as amended by the owner's decision (msg 3350): the app never writes brandingSettings. The plan's original
+// AC-CL-08 (set the baseline as the default language) and AC-CL-09 (no baseline -> no_baseline) are replaced: the requirement
+// changed to "brandingSettings.channel.defaultLanguage not set -> refused, nothing written" (review #5: snippet alone does not count).
+test("AC-CL-08 (amended, msg 3350): no default language on the channel -> channel_default_language_not_set, no backup and no write", async () => {
+  const h = harness({ live: liveChannel({ snippet: { title: "Base", description: "Base desc", defaultLanguage: null }, brandingChannel: { title: "Base", description: "Base desc" } }) });
+  await assert.rejects(h.apply(), (e: unknown) => e instanceof DomainError && (e.code as string) === "channel_default_language_not_set");
   assert.deepEqual(h.calls, ["identity", "read"]);
+});
+
+test("AC-CL-09 (amended, msg 3350; review #5): only snippet.defaultLanguage set, branding not set -> refused, no write", async () => {
+  const h = harness({ live: liveChannel({ brandingChannel: { title: "Base", description: "Base desc" } }) });
+  await assert.rejects(h.apply(), (e: unknown) => e instanceof DomainError && (e.code as string) === "channel_default_language_not_set");
+  assert.deepEqual(writeCalls(h.calls), []);
+});
+
+test("review #1: YouTube lists an own-language (en) entry differing from the base text -> own_language_in_live, nothing written", async () => {
+  const h = harness({ live: liveChannel({ localizations: { en: { title: "Other name", description: "Base desc" }, fr: { title: "Fr", description: "Fr desc" } } }) });
+  await assert.rejects(h.apply(), (e: unknown) => e instanceof DomainError && (e.code as string) === "own_language_in_live");
+  assert.deepEqual(writeCalls(h.calls), []);
+  assert.deepEqual(h.backups, []);
+});
+
+test("review #1: an own-language (en) entry equal to the base text is sent back unchanged, not dropped; read-back ok", async () => {
+  const h = harness({ live: liveChannel({ localizations: { en: { title: "Base", description: "Base desc" }, fr: { title: "Fr", description: "Fr desc" } } }) });
+  const result = await h.apply();
+  assert.deepEqual(h.localizationWrites, [
+    { fr: { title: "Fr", description: "Fr desc" }, es: { title: "Es", description: "Es desc" }, de: { title: "De", description: "De desc" }, en: { title: "Base", description: "Base desc" } },
+  ]);
+  assert.equal(result.ok, true);
+});
+
+test("review #2: the Operator saves set B between the preview and the apply -> localizations_changed, nothing read or written", async () => {
+  const h = harness();
+  const preview = await h.service.preview("UC1");
+  assert.equal(preview.setVersion, h.version());
+  await h.service.save("UC1", { it: { title: "It", description: "It desc" } }, "factory");
+  h.calls.length = 0;
+  await assert.rejects(h.apply(preview.setVersion), (e: unknown) => e instanceof DomainError && (e.code as string) === "localizations_changed");
+  assert.deepEqual(h.calls, []);
+  assert.deepEqual(h.localizationWrites, []);
+  // A missing version is refused too.
+  await assert.rejects(h.service.apply("UC1", { userId: "user-1" }, undefined), (e: unknown) => e instanceof DomainError && e.code === "validation_failed");
 });
 
 test("the two default-language fields disagree -> default_language_mismatch, nothing written", async () => {
   const h = harness({ live: liveChannel({ snippet: { title: "Base", description: "Base desc", defaultLanguage: "fr" } }) });
-  await assert.rejects(h.service.apply("UC1", { userId: "user-1" }), (e: unknown) => e instanceof DomainError && e.code === "default_language_mismatch");
+  await assert.rejects(h.apply(), (e: unknown) => e instanceof DomainError && e.code === "default_language_mismatch");
   assert.deepEqual(writeCalls(h.calls), []);
 });
 
 test("the set holds the channel's own language on YouTube (it differs from the baseline) -> refused, nothing written", async () => {
   const h = harness({ baseline: "ru", stored: { en: { title: "En", description: "En desc" } } });
-  await assert.rejects(h.service.apply("UC1", { userId: "user-1" }), (e: unknown) => e instanceof DomainError && e.code === "validation_failed");
+  await assert.rejects(h.apply(), (e: unknown) => e instanceof DomainError && e.code === "validation_failed");
   assert.deepEqual(writeCalls(h.calls), []);
 });
 
 test("the channel changes on YouTube between the read and the write -> update_failed, nothing written, the backup kept", async () => {
   const h = harness({ changeAfterFirstRead: (state) => void (state.localizations.it = { title: "It", description: "It desc" }) });
-  await assert.rejects(h.service.apply("UC1", { userId: "user-1" }), (e: unknown) => e instanceof DomainError && e.code === "update_failed");
+  await assert.rejects(h.apply(), (e: unknown) => e instanceof DomainError && e.code === "update_failed");
   assert.deepEqual(writeCalls(h.calls), []);
   assert.equal(h.backups.length, 1);
 });
 
 test("every language already as stored -> nothing written (0 writes), ok", async () => {
   const h = harness({ live: liveChannel({ localizations: { es: { title: "Es", description: "Es desc" }, de: { title: "De", description: "De desc" } } }) });
-  const result = await h.service.apply("UC1", { userId: "user-1" });
-  assert.deepEqual(result, { at: "2026-10-22T10:00:00.000Z", ok: true, languages: [], defaultLanguageSet: null, writes: 0, backupPath: null });
+  const result = await h.apply();
+  assert.deepEqual(result, { at: "2026-10-22T10:00:00.000Z", ok: true, languages: [], writes: 0, backupPath: null });
   assert.deepEqual(h.calls, ["identity", "read"]);
 });
 
-test("preview: new / changed / unchanged, untouched languages (the own-language entry aside), default language and quota", () => {
+test("preview: new / changed / unchanged, untouched languages (the equal own-language entry among them), default language and quota", () => {
   const live = liveChannel({
     localizations: { en: { title: "Base", description: "Base desc" }, fr: { title: "Fr", description: "Fr desc" }, es: { title: "Es old", description: "Es desc" }, de: { title: "De", description: "De desc" } },
   });
   const set = { es: { title: "Es", description: "Es desc" }, de: { title: "De", description: "De desc" }, it: { title: "It", description: "It desc" } };
-  assert.deepEqual(previewChannelLocalizations(set, live, "en"), {
+  assert.deepEqual(previewChannelLocalizations(set, live), {
     languages: [
       { language: "es", status: "changed" },
       { language: "de", status: "unchanged" },
       { language: "it", status: "new" },
     ],
-    untouched: ["fr"],
-    defaultLanguage: { current: "en", after: "en", change: false },
+    untouched: ["en", "fr"],
+    defaultLanguage: { current: "en" },
     problems: [],
     quota: { writes: 1, writeUnits: 50, readUnits: 3 },
     ownLanguage: "en",
   });
-  const noDefault = liveChannel({ snippet: { title: "Base", description: "Base desc", defaultLanguage: null }, brandingChannel: { title: "Base" } });
-  assert.deepEqual(previewChannelLocalizations({ it: { title: "It", description: "It desc" } }, noDefault, "en").quota, { writes: 2, writeUnits: 100, readUnits: 5 });
-  assert.deepEqual(previewChannelLocalizations({ it: { title: "It", description: "It desc" } }, noDefault, null).problems, ["no_baseline"]);
+  const noDefault = liveChannel({ snippet: { title: "Base", description: "Base desc", defaultLanguage: "en" }, brandingChannel: { title: "Base" } });
+  const refused = previewChannelLocalizations({ it: { title: "It", description: "It desc" } }, noDefault);
+  assert.deepEqual([refused.problems, refused.quota, refused.defaultLanguage], [["default_language_not_set"], { writes: 0, writeUnits: 0, readUnits: 1 }, { current: null }]);
+  const ownDiffers = liveChannel({ localizations: { en: { title: "Base", description: "Other" } } });
+  assert.deepEqual(previewChannelLocalizations({ it: { title: "It", description: "It desc" } }, ownDiffers).problems, ["own_language_in_live"]);
 });
 
 test("AC-CL-10 (shape): the Operator's surface has view, live and save -- no apply -- and saves as the factory", async () => {

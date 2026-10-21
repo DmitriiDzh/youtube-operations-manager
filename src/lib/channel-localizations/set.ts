@@ -73,23 +73,33 @@ function keyFor(localizations: Record<string, unknown>, language: string): strin
 const text = (value: unknown): string | null => (typeof value === "string" && value.trim().length > 0 ? value : null);
 
 /**
- * The channel's default language and whether its two fields agree. The writable one is `brandingSettings.channel.defaultLanguage`
- * (plan "API facts", deviation 2); `snippet.defaultLanguage` stands in when the branding one is absent.
+ * The channel's default language: `brandingSettings.channel.defaultLanguage` (the one `channels.update` lets a request set, and the
+ * one localizations require). Owner decision (msg 3350): this app never sets it -- not set there means nothing is written, even when
+ * `snippet.defaultLanguage` has a value. `mismatch`: both are set and disagree.
  */
 export function channelDefaultLanguage(live: LiveChannelLocalizations): { language: string | null; mismatch: boolean } {
   const branding = text(live.brandingChannel.defaultLanguage);
   const snippet = text(live.snippet.defaultLanguage);
-  if (branding && snippet && !sameLanguage(branding, snippet)) return { language: branding, mismatch: true };
-  return { language: branding ?? snippet, mismatch: false };
+  return { language: branding, mismatch: branding !== null && snippet !== null && !sameLanguage(branding, snippet) };
+}
+
+/** The channel's own-language entry in its translations, if YouTube lists one (null = none). */
+export function ownLanguageEntry(live: LiveChannelLocalizations, ownLanguage: string): { key: string; sameAsBase: boolean } | null {
+  const key = keyFor(live.localizations, ownLanguage);
+  if (key === null) return null;
+  const entry = live.localizations[key];
+  return { key, sameAsBase: entry.title === live.snippet.title && entry.description === live.snippet.description };
 }
 
 export type ChannelLocalizationLanguageStatus = "new" | "changed" | "unchanged";
 
 export type ChannelLocalizationsPreviewProblem =
-  /** No default language on the channel and no baseline to set it to. */
-  | "no_baseline"
+  /** `brandingSettings.channel.defaultLanguage` is not set: the owner sets it once in YouTube Studio (owner msg 3350). */
+  | "default_language_not_set"
   /** The snippet and branding default languages disagree. */
   | "default_language_mismatch"
+  /** YouTube lists a translation in the channel's own language whose text differs from the base name/description. */
+  | "own_language_in_live"
   /** The set holds the channel's own (default) language. */
   | "own_language_in_set"
   /** Nothing is stored. */
@@ -97,33 +107,32 @@ export type ChannelLocalizationsPreviewProblem =
 
 export type ChannelLocalizationsPreview = {
   languages: Array<{ language: string; status: ChannelLocalizationLanguageStatus }>;
-  /** Languages on YouTube the set does not name: kept exactly as they are (nothing is deleted). */
+  /** Languages on YouTube the set does not name (the own-language entry included): sent back exactly as they are, nothing deleted. */
   untouched: string[];
-  /** The default language now and after the apply; `change`: Apply sets it (a separate `brandingSettings` write). */
-  defaultLanguage: { current: string | null; after: string | null; change: boolean };
+  /** The channel's default language on YouTube (`brandingSettings.channel.defaultLanguage`); null = not set (nothing is written). */
+  defaultLanguage: { current: string | null };
   /** Why Apply would refuse (empty = it may run). */
   problems: ChannelLocalizationsPreviewProblem[];
-  /** `channels.update` calls the apply makes (0-2) and their quota, plus the reads it makes at least (1 before, 1 + 1 per write). */
+  /** `channels.update` calls the apply makes (0 or 1) and their quota, plus the reads it makes at least (1 before, 2 per write). */
   quota: { writes: number; writeUnits: number; readUnits: number };
-  /** The own-language entry YouTube may list for the default language: never a translation, never sent (`set` aside). */
+  /** The channel's own language: its text is the base name/description, never a translation of the set. */
   ownLanguage: string | null;
 };
 
 /**
  * What Apply would do with `set` on the channel as read (`live`): every language of the set new / changed / unchanged, the
- * languages it leaves as they are, the default-language change and the quota. `baselineLanguage`: the channel's baseline (null =
- * none), set as the default language only when the channel has none.
+ * languages it leaves as they are, the default language, the problems and the quota.
  */
-export function previewChannelLocalizations(set: ChannelLocalizationSet | null, live: LiveChannelLocalizations, baselineLanguage: string | null): ChannelLocalizationsPreview {
+export function previewChannelLocalizations(set: ChannelLocalizationSet | null, live: LiveChannelLocalizations): ChannelLocalizationsPreview {
   const problems: ChannelLocalizationsPreviewProblem[] = [];
   const current = channelDefaultLanguage(live);
+  if (current.language === null) problems.push("default_language_not_set");
   if (current.mismatch) problems.push("default_language_mismatch");
-  const baseline = text(baselineLanguage);
-  const after = current.language ?? baseline;
-  if (after === null) problems.push("no_baseline");
+  const own = current.language;
+  if (own !== null && ownLanguageEntry(live, own)?.sameAsBase === false) problems.push("own_language_in_live");
   const entries = Object.entries(set ?? {});
   if (entries.length === 0) problems.push("empty_set");
-  if (after !== null && entries.some(([language]) => sameLanguage(language, after))) problems.push("own_language_in_set");
+  if (own !== null && entries.some(([language]) => sameLanguage(language, own))) problems.push("own_language_in_set");
 
   const languages = entries.map(([language, value]) => {
     const key = keyFor(live.localizations, language);
@@ -131,16 +140,15 @@ export function previewChannelLocalizations(set: ChannelLocalizationSet | null, 
       key === null ? "new" : live.localizations[key].title === value.title && live.localizations[key].description === value.description ? "unchanged" : "changed";
     return { language, status };
   });
-  const untouched = Object.keys(live.localizations).filter((key) => !sameLanguage(key, after) && !entries.some(([language]) => sameLanguage(language, key)));
+  const untouched = Object.keys(live.localizations).filter((key) => !entries.some(([language]) => sameLanguage(language, key)));
 
-  const defaultChange = current.language === null && after !== null;
-  const writes = problems.length > 0 ? 0 : (defaultChange ? 1 : 0) + (languages.some((l) => l.status !== "unchanged") ? 1 : 0);
+  const writes = problems.length === 0 && languages.some((l) => l.status !== "unchanged") ? 1 : 0;
   return {
     languages,
     untouched,
-    defaultLanguage: { current: current.language, after, change: defaultChange },
+    defaultLanguage: { current: current.language },
     problems,
     quota: { writes, writeUnits: writes * CHANNEL_UPDATE_UNITS, readUnits: CHANNEL_LIST_UNITS * (1 + 2 * writes) },
-    ownLanguage: after,
+    ownLanguage: own,
   };
 }

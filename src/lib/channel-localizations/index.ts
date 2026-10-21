@@ -99,7 +99,6 @@ export async function operatorChannelLocalizations(surface: OperatorSurface, cha
           at: last.at,
           ok: last.ok,
           languages: last.languages,
-          defaultLanguageSet: last.defaultLanguageSet,
           writes: last.writes,
           ...(last.ok ? {} : { failure: last.failure, ...(last.failure === "failed" ? { code: last.detail } : {}) }),
         }

@@ -21,7 +21,7 @@ function deps(overrides: Partial<ChannelLocalizationsRouteDeps> = {}) {
         return { localizations: {} };
       },
       preview: async (channelId) => (calls.push(["preview", channelId]), {}) as never,
-      apply: async (channelId, credentialRef) => (calls.push(["apply", channelId, credentialRef]), { ok: true }) as never,
+      apply: async (channelId, credentialRef, setVersion) => (calls.push(["apply", channelId, credentialRef, setVersion]), { ok: true }) as never,
     },
     ...overrides,
   };
@@ -39,7 +39,7 @@ test("no session -> 401 and the module is not called", async () => {
 
 test("a channel that is not the active one -> 403 and the module is not called", async () => {
   const { handlers, calls } = deps();
-  assert.equal((await handlers.APPLY(new Request("http://x", { method: "POST" }), ctx("UC2"))).status, 403);
+  assert.equal((await handlers.APPLY(new Request("http://x", { method: "POST", body: "{}" }), ctx("UC2"))).status, 403);
   assert.deepEqual(calls, []);
 });
 
@@ -52,8 +52,9 @@ test("PUT saves as the owner; a refused set answers 400 with details.refused", a
   assert.deepEqual(calls[0], ["save", "UC1", { de: { title: "T", description: "D" } }, "owner"]);
 });
 
-test("POST /apply passes the session's user as the credential reference", async () => {
+test("POST /apply passes the session's user as the credential reference and the previewed set version (review #2)", async () => {
   const { handlers, calls } = deps();
-  assert.equal((await handlers.APPLY(new Request("http://x", { method: "POST" }), ctx())).status, 200);
-  assert.deepEqual(calls, [["apply", "UC1", { userId: "user-1" }]]);
+  assert.equal((await handlers.APPLY(new Request("http://x", { method: "POST", body: JSON.stringify({ setVersion: "v1" }) }), ctx())).status, 200);
+  assert.deepEqual(calls, [["apply", "UC1", { userId: "user-1" }, "v1"]]);
+  assert.equal((await handlers.APPLY(new Request("http://x", { method: "POST", body: "not json" }), ctx())).status, 400);
 });

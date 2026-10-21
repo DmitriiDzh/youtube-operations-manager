@@ -134,9 +134,8 @@ const WRITE_PRIMITIVE_NAMES = [
   "deleteVideoById",
   // BL-182 stage 2: the uploaded video's thumbnail.
   "setVideoThumbnail",
-  // BL-210 (ADR 0047): a channel's own translations, and its default language when it has none.
+  // BL-210 (ADR 0047): a channel's own translations (only `part=localizations`, owner msg 3350).
   "updateChannelLocalizations",
-  "updateChannelBrandingChannel",
 ];
 
 test("youtube-write-gateway inventory: every file that imports a real write primitive also calls assertLiveWritesAuthorized", async () => {

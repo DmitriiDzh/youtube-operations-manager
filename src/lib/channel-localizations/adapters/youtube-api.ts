@@ -1,12 +1,12 @@
 import { createGoogleOAuthClient } from "@/lib/auth";
 import type { ResolvedCredentials } from "@/lib/shared-domain";
 import { createYoutubeClient, getChannelLocalizationsContext } from "@/lib/youtube-read-gateway";
-import { assertLiveWritesAuthorized, updateChannelBrandingChannel, updateChannelLocalizations } from "@/lib/youtube-write-gateway";
+import { assertLiveWritesAuthorized, updateChannelLocalizations } from "@/lib/youtube-write-gateway";
 import type { ChannelLocalizationsDependencies } from "../contracts";
 
 // BL-210 (CHANNEL_LOCALIZATIONS_PLAN.md, ADR 0047): the channel translations writer's YouTube calls -- the read through the read
-// gateway's barrel, the two `channels.update` writes through the write gateway with the shared Live-writes check (AGENTS.md §G;
-// gateway-inventory.test.ts checks this file calls it). The service calls the check immediately before each write.
+// gateway's barrel, the one `channels.update part=localizations` through the write gateway with the shared Live-writes check
+// (AGENTS.md §G; gateway-inventory.test.ts checks this file calls it). The service calls the check immediately before the write.
 
 async function clientFor(credentials: ResolvedCredentials) {
   const oauth2 = createGoogleOAuthClient();
@@ -23,10 +23,6 @@ export function createChannelLocalizationsYoutubeAdapter(): ChannelLocalizations
     },
     async assertLiveWritesAuthorized() {
       await assertLiveWritesAuthorized();
-    },
-    async updateBrandingChannel(credentials, channelId, channel) {
-      // The service has just called `assertLiveWritesAuthorized` (above) immediately before this.
-      await updateChannelBrandingChannel({ youtube: await clientFor(credentials), channelId, channel });
     },
     async updateLocalizations(credentials, channelId, localizations) {
       // The service has just called `assertLiveWritesAuthorized` (above) immediately before this.

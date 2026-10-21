@@ -68,7 +68,19 @@ export function createChannelLocalizationsHandlers(deps: ChannelLocalizationsRou
     }),
     /** What «Применить» would do now (a 1-unit read; nothing is written). */
     PREVIEW: channelLocalizationsHandler(deps, async ({ core, channelId }) => NextResponse.json(await core.preview(channelId))),
-    /** The owner's «Применить»: the only path from this app to a channel's translations on YouTube. */
-    APPLY: channelLocalizationsHandler(deps, async ({ core, channelId, userId }) => NextResponse.json(await core.apply(channelId, { userId }))),
+    /**
+     * The owner's «Применить»: the only path from this app to a channel's translations on YouTube. Body `{ setVersion }` -- the
+     * version the preview answered (review #2: a set saved since is refused with 409 `localizations_changed`).
+     */
+    APPLY: channelLocalizationsHandler(deps, async ({ core, channelId, userId, request }) => {
+      let body: unknown;
+      try {
+        body = await request.json();
+      } catch {
+        return NextResponse.json({ error: "validation_failed", message: "Request body must be valid JSON" }, { status: 400 });
+      }
+      const setVersion = body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>).setVersion : undefined;
+      return NextResponse.json(await core.apply(channelId, { userId }, setVersion));
+    }),
   };
 }

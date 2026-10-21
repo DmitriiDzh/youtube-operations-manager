@@ -1331,7 +1331,7 @@ test("AC-CL-11: factory_channel_get_localizations returns the stored set, the li
     baselineLanguage: "en",
     updatedAt: "2026-10-22T09:00:00.000Z",
     updatedBy: "factory" as const,
-    lastApply: { at: "2026-10-22T10:00:00.000Z", ok: false as const, failure: "failed" as const, detail: "live_writes_disabled", error: "Real YouTube write execution is disabled", languages: ["de"], defaultLanguageSet: null, writes: 0, backupPath: "/Users/x/backups/UC_A/op/UC_A.json" },
+    lastApply: { at: "2026-10-22T10:00:00.000Z", ok: false as const, failure: "failed" as const, detail: "live_writes_disabled", error: "Real YouTube write execution is disabled", languages: ["de"], writes: 0, backupPath: "/Users/x/backups/UC_A/op/UC_A.json" },
   };
   const surface = {
     view: async () => view,
@@ -1349,7 +1349,7 @@ test("AC-CL-11: factory_channel_get_localizations returns the stored set, the li
     stored: { localizations: { de: { title: "Dt", description: "Dd" } }, problem: null, baselineLanguage: "en", updatedAt: "2026-10-22T09:00:00.000Z", updatedBy: "factory" },
     live: { defaultLanguage: "en", localizations: { fr: { title: "Ft", description: "Fd" } } },
     liveUnavailable: null,
-    lastApply: { at: "2026-10-22T10:00:00.000Z", ok: false, languages: ["de"], defaultLanguageSet: null, writes: 0, failure: "failed", code: "live_writes_disabled" },
+    lastApply: { at: "2026-10-22T10:00:00.000Z", ok: false, languages: ["de"], writes: 0, failure: "failed", code: "live_writes_disabled" },
   });
 
   const unreadable = await operatorChannelLocalizations(
