@@ -214,8 +214,11 @@ export const createPodPassthroughSchema = z
         vcpuCount: z.number().optional(),
         memory: z.number().optional(),
         allowedCudaVersions: z.array(z.string()).optional(),
+        /** BL-208 fix I: RunPod's numeric lowest host CUDA (major.minor); RunPod refuses it together with allowedCudaVersions. */
+        minCudaVersion: z.string().regex(/^\d{1,2}\.\d{1,2}$/, "a CUDA version such as 12.8").optional(),
       })
       .strict()
+      .refine((gpu) => !(gpu.minCudaVersion && gpu.allowedCudaVersions && gpu.allowedCudaVersions.length > 0), { message: "send minCudaVersion or allowedCudaVersions, not both (RunPod refuses both)", path: ["minCudaVersion"] })
       .optional(),
     cpu: z.object({ id: z.string().min(1), vcpuCount: z.number().int().min(1) }).strict().optional(),
     cloud: z.enum(["SECURE", "COMMUNITY"]).optional(),

@@ -15,7 +15,7 @@ import {
   type MediaSessionStatus,
   type MediaSettings,
 } from "./contracts";
-import { allowedCudaVersionsFor, comfyCudaDevice, higherCudaVersion, hostCudaTooOld } from "./cuda-host";
+import { comfyCudaDevice, higherCudaVersion, hostCudaTooOld } from "./cuda-host";
 import { classifyCreatePodFailure, describeGpuSkips, resolveGpuCandidates, type GpuCandidate, type GpuSkip, type GpuSkipKind } from "./gpu-plan";
 import { findLivePodByName, terminateAndConfirm as terminateAndConfirmPod, type TerminateOutcome } from "./pod-lifecycle";
 import { describeVolumeLockHolder, type VolumeLock } from "./volume-lock";
@@ -875,7 +875,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         }
       };
       const candidateOf = (existing: RunpodPod, fallback: GpuCandidate): GpuCandidate => candidates.find((c) => c.gpuTypeId === existing.gpuTypeId) ?? fallback;
-      const allowedCudaVersions = allowedCudaVersionsFor(minCudaVersion);
+
       for (const [index, candidate] of candidates.entries()) {
         placedAt = deps.clock.now();
         if (placement === 0) startedAt = placedAt;
@@ -894,7 +894,9 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
             name: podNameFor(sessionId),
             templateId: settings.templateId ?? undefined,
             // BL-155 (AC-CU-01): only hosts whose driver supports CUDA ≥ the minimum; none matching = RunPod's "no capacity".
-            gpu: { id: candidate.gpuTypeId, count: 1, ...(allowedCudaVersions ? { allowedCudaVersions } : {}) },
+            // BL-208 fix I (AC-SF-12): as RunPod's numeric `minCudaVersion`, never the exact `allowedCudaVersions` list -- that list
+            // ended at 13.0 and excluded every host reporting a newer driver (13.1, 13.2), read back as "could not be placed".
+            gpu: { id: candidate.gpuTypeId, count: 1, ...(minCudaVersion ? { minCudaVersion } : {}) },
             cloud: settings.cloudType,
             dataCenterId: settings.datacenterId ?? undefined,
             mounts: settings.networkVolumeId ? { network: [{ volumeId: settings.networkVolumeId, path: "/workspace" }] } : undefined,

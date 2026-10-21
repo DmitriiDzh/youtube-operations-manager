@@ -41,6 +41,15 @@ catalog is known to be wrong both ways (pods were placed while it showed EU-RO-1
   Settings minimum. The answer echoes the minimum used and lists the minimums that have snapshots in the range.
 - Factory API 1.28.0 (additive).
 
+## I: the CUDA minimum as RunPod's `minCudaVersion` (added 2026-10-21, coordinator, same branch)
+
+createPod sent `gpu.allowedCudaVersions` = our known versions ≥ the minimum (12.8 → 12.8/12.9/13.0). RunPod's v2 openapi (POST
+/pods, `gpu`): "allowedCudaVersions … Matching is exact, so a version no machine reports yields a capacity error"; `gpu.minCudaVersion`
+is the "lowest acceptable CUDA version for the host machine, as major.minor, compared numerically", mutually exclusive with a
+non-empty `allowedCudaVersions` (400 if both). The live catalog shows hosts reporting only CUDA 13.2 (4090, L4, PRO 4500 in EU-RO-1),
+which the exact list excluded -- read back as "could not be placed". Fix: a session pod sends `gpu: { id, count: 1, minCudaVersion }`
+when a minimum is set, neither field without one. The host check after placement (BL-155) compares numerically and accepts 13.1/13.2.
+
 ## Acceptance (written before the code)
 
 - **AC-SF-01 (E)** Catalog lists the 4090 without EU-RO-1 (volume in EU-RO-1), plan = [4090]: the session is `waiting_capacity`,
@@ -62,3 +71,5 @@ catalog is known to be wrong both ways (pods were placed while it showed EU-RO-1
   the stock counts come only from the 12.8 rows; without the input the Settings minimum is used and echoed.
 - **AC-SF-11 (F)** v102 migration keeps the existing snapshot rows and their minimum; a second snapshot at the same `at` with a
   different minimum is stored, a repeat with the same minimum is not.
+- **AC-SF-12 (I)** A 13.0 minimum: createPod's `gpu` is `{ id, count: 1, minCudaVersion: "13.0" }` with no `allowedCudaVersions`;
+  no minimum: neither field is sent; a pod on a 13.2 host passes the 13.0 host check and runs.

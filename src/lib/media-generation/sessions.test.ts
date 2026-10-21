@@ -120,7 +120,7 @@ function fakeRunpod(
     catalog?: () => RunpodGpuType[];
   } = {}
 ) {
-  const createInputs: Array<{ gpu?: { id: string; allowedCudaVersions?: string[] }; env?: Record<string, string> }> = [];
+  const createInputs: Array<{ gpu?: { id: string; allowedCudaVersions?: string[]; minCudaVersion?: string }; env?: Record<string, string> }> = [];
   const runningPolls = new Map<string, number>();
   const names = new Map<string, { name: string; gpu: string }>();
   let listCalls = 0;
@@ -153,7 +153,7 @@ function fakeRunpod(
   });
   const client = {
     ...(opts.catalog ? { listGpuTypes: async () => opts.catalog!() } : {}),
-    async createPod(input: { env?: Record<string, string>; gpu?: { id: string; allowedCudaVersions?: string[] } }) {
+    async createPod(input: { env?: Record<string, string>; gpu?: { id: string; allowedCudaVersions?: string[]; minCudaVersion?: string } }) {
       opts.onCreate?.(createInputs.length);
       createInputs.push(input);
       calls.push(`createPod:${input.gpu?.id ?? ""}`);
@@ -2035,15 +2035,18 @@ test("FO-REQ-0005: getFactorySettings shows the switch, the limits, the GPU choi
 // the session fails with media_gpu_host_incompatible. An unknown host version does not block. With release-when-done, a
 // session whose every job failed says so in its stopReason.
 
-test("AC-CU-01: every createPod carries gpu.allowedCudaVersions = the known versions ≥ the minimum (12.8 -> 12.8/12.9/13.0)", async () => {
+// BL-208 fix I (GPU_START_FIXES_PLAN.md AC-SF-12) changed AC-CU-01's means, not its intent: RunPod matches allowedCudaVersions
+// EXACTLY (v2 openapi, POST /pods), so the list 12.8/12.9/13.0 excluded hosts reporting 13.1/13.2; the minimum is now sent as
+// RunPod's numeric gpu.minCudaVersion, and never together with allowedCudaVersions (RunPod answers 400 to both).
+test("AC-CU-01 / AC-SF-12: every createPod carries gpu.minCudaVersion = the minimum (12.8) and no allowedCudaVersions", async () => {
   const f = fixture({ settings: { gpuTypeId: FOUR, gpuFallbackIds: [FIVE] }, runpod: fakeRunpod({ capacity: (input) => input.gpu?.id === FOUR }) });
   const running = await startRunning(f);
   assert.equal(running.status, "running");
   assert.deepEqual(
-    f.runpod.createInputs.map((i) => [i.gpu?.id, i.gpu?.allowedCudaVersions]),
+    f.runpod.createInputs.map((i) => [i.gpu?.id, i.gpu?.minCudaVersion, "allowedCudaVersions" in (i.gpu ?? {})]),
     [
-      [FOUR, ["12.8", "12.9", "13.0"]],
-      [FIVE, ["12.8", "12.9", "13.0"]],
+      [FOUR, "12.8", false],
+      [FIVE, "12.8", false],
     ]
   );
 });
@@ -2053,13 +2056,14 @@ test("AC-CU-01: with no minimum (null) createPod sends no CUDA filter -- today's
   await startRunning(f);
   assert.equal(f.runpod.createInputs.length, 1);
   assert.equal("allowedCudaVersions" in (f.runpod.createInputs[0].gpu ?? {}), false);
+  assert.equal("minCudaVersion" in (f.runpod.createInputs[0].gpu ?? {}), false, "BL-208 AC-SF-12: no minimum sends neither filter");
   // BL-159 (FO-REQ-0011 §2.3, AC-SC-02) changed this requirement: the host's CUDA is now read with or without a minimum so the
   // session can show it (BL-155 read it only when a minimum was set) -- it still never filters or blocks without one.
   assert.equal(f.runpod.calls.some((c) => c.startsWith("hostCuda:")), true, "the host is read to be shown");
 });
 
 test("AC-CU-01: no host with a matching driver is answered like no capacity -- the fallback list, then waiting_capacity (no pod)", async () => {
-  const f = fixture({ settings: { gpuTypeId: FOUR, gpuFallbackIds: [FIVE] }, runpod: fakeRunpod({ capacity: (input) => Boolean((input as { gpu?: { allowedCudaVersions?: string[] } }).gpu?.allowedCudaVersions) }) });
+  const f = fixture({ settings: { gpuTypeId: FOUR, gpuFallbackIds: [FIVE] }, runpod: fakeRunpod({ capacity: (input) => Boolean((input as { gpu?: { minCudaVersion?: string } }).gpu?.minCudaVersion) }) }); // BL-208 AC-SF-12: the filter is minCudaVersion
   const waiting = await startRunning(f);
   assert.equal(waiting.status, "waiting_capacity");
   assert.equal(waiting.podId, null);
@@ -2476,7 +2480,9 @@ test("BL-155: the host CUDA from the pod answer decides; the client has no Graph
 // wins over the template's. The host's CUDA is read with or without a minimum and shown on the session and on the capacity
 // log's `placed` entry; a re-placement clears it until the new host is known.
 
-const allowedOf = (f: ReturnType<typeof fixture>) => f.runpod.createInputs.map((i) => i.gpu?.allowedCudaVersions ?? null);
+// BL-208 fix I (AC-SF-12): the minimum a placement used is now sent as gpu.minCudaVersion (one value), no longer as the exact list
+// allowedCudaVersions (the expected lists below became their lowest value: [12.8, 12.9, 13.0] -> 12.8, [13.0] -> 13.0).
+const allowedOf = (f: ReturnType<typeof fixture>) => f.runpod.createInputs.map((i) => i.gpu?.minCudaVersion ?? null);
 
 // The fake's hosts answer 12.9 by default; a 13.0 minimum needs a 13.0 host to reach running.
 const cuda13 = () => fakeRunpod({ hostCuda: () => "13.0" });
@@ -2486,7 +2492,7 @@ test("AC-SC-01: a factory start with minCudaVersion 13.0 places only on CUDA 13.
   const result = await f.services.factoryStartSession({ channelId: "UC1", minCudaVersion: "13.0" });
   assert.equal(result.approved, true);
   await settle();
-  assert.deepEqual(allowedOf(f), [["13.0"]]);
+  assert.deepEqual(allowedOf(f), ["13.0"]);
   const session = await f.services.getFactorySession({ sessionId: result.session.sessionId });
   assert.equal(session.minCudaVersion, "13.0");
   assert.equal(session.usedMinCudaVersion, "13.0");
@@ -2497,7 +2503,7 @@ test("AC-SC-01: a session's minimum below the owner's is clamped to the owner's 
   const result = await f.services.factoryStartSession({ channelId: "UC1", minCudaVersion: "12.4" });
   assert.equal(result.approved, true);
   await settle();
-  assert.deepEqual(allowedOf(f), [["12.8", "12.9", "13.0"]]);
+  assert.deepEqual(allowedOf(f), ["12.8"]);
   const session = await f.services.getFactorySession({ sessionId: result.session.sessionId });
   assert.equal(session.status, "running");
   assert.equal(session.minCudaVersion, "12.4", "what was asked stays visible");
@@ -2508,7 +2514,7 @@ test("AC-SC-01: without a session value the owner's setting applies as before (1
   const plain = fixture({ settings: FACTORY_ON });
   const a = await plain.services.factoryStartSession({ channelId: "UC1" });
   await settle();
-  assert.deepEqual(allowedOf(plain), [["12.8", "12.9", "13.0"]]);
+  assert.deepEqual(allowedOf(plain), ["12.8"]);
   const sa = await plain.services.getFactorySession({ sessionId: a.session.sessionId });
   assert.equal(sa.minCudaVersion, null);
   assert.equal(sa.usedMinCudaVersion, "12.8");
@@ -2516,7 +2522,7 @@ test("AC-SC-01: without a session value the owner's setting applies as before (1
   const noOwner = fixture({ runpod: cuda13(), settings: { ...FACTORY_ON, minCudaVersion: null } });
   const b = await noOwner.services.factoryStartSession({ channelId: "UC1", minCudaVersion: "13.0" });
   await settle();
-  assert.deepEqual(allowedOf(noOwner), [["13.0"]]);
+  assert.deepEqual(allowedOf(noOwner), ["13.0"]);
   assert.equal((await noOwner.services.getFactorySession({ sessionId: b.session.sessionId })).usedMinCudaVersion, "13.0");
 });
 
@@ -2524,12 +2530,12 @@ test("AC-SC-01: a template's minimum applies when the call gives none; the call'
   const fromTemplate = fixture({ runpod: cuda13(), settings: FACTORY_ON });
   await fromTemplate.services.factoryStartSession({ channelId: "UC1", templateMinCudaVersion: "13.0" });
   await settle();
-  assert.deepEqual(allowedOf(fromTemplate), [["13.0"]]);
+  assert.deepEqual(allowedOf(fromTemplate), ["13.0"]);
 
   const callWins = fixture({ runpod: cuda13(), settings: FACTORY_ON });
   const started = await callWins.services.factoryStartSession({ channelId: "UC1", minCudaVersion: "12.9", templateMinCudaVersion: "13.0" });
   await settle();
-  assert.deepEqual(allowedOf(callWins), [["12.9", "13.0"]]);
+  assert.deepEqual(allowedOf(callWins), ["12.9"]);
   assert.equal((await callWins.services.getFactorySession({ sessionId: started.session.sessionId })).minCudaVersion, "12.9");
 });
 
@@ -3039,4 +3045,24 @@ test("AC-SF-07: gpuSkipped is null when the catalog cannot be read, and for a re
   assert.equal(pending.gpuSkipped, null);
   assert.equal(reads, 0);
   await settle();
+});
+
+// -- BL-208 fix I (GPU_START_FIXES_PLAN.md AC-SF-12): RunPod v2 POST /pods -- allowedCudaVersions matches exactly, minCudaVersion is
+// the lowest acceptable host CUDA compared numerically; the two are mutually exclusive. Hosts report 13.2 today.
+
+test("AC-SF-12: a 13.0 minimum sends gpu.minCudaVersion '13.0' and no allowedCudaVersions; a 13.2 host passes the host check and runs", async () => {
+  const runpod = fakeRunpod({ hostCuda: () => "13.2" });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR, minCudaVersion: "13.0" } });
+  const running = await startRunning(f);
+  assert.equal(running.status, "running");
+  assert.deepEqual(runpod.createInputs.map((i) => i.gpu), [{ id: FOUR, count: 1, minCudaVersion: "13.0" }]);
+  assert.equal(running.hostCudaVersion, "13.2");
+  assert.deepEqual(f.capacityLog.map((a) => a.result), ["placed"], "never terminated as incompatible");
+});
+
+test("AC-SF-12: no minimum sends neither minCudaVersion nor allowedCudaVersions", async () => {
+  const runpod = fakeRunpod({ hostCuda: () => "13.2" });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR, minCudaVersion: null } });
+  assert.equal((await startRunning(f)).status, "running");
+  assert.deepEqual(runpod.createInputs.map((i) => i.gpu), [{ id: FOUR, count: 1 }]);
 });

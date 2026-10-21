@@ -119,7 +119,8 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 // BL-208 (FO-REQ-0035, GPU_START_FIXES_PLAN.md): 1.28.0 -- factory_media_start_session's answer gains gpuSkipped [{ gpuTypeId, kind
 // (stock | config), reason }] from one catalog read at start (null when it could not be read or the request is held); a start whose
 // candidates were all skipped for a stock reason waits as waiting_capacity instead of failing; skip reasons name the bound
-// ((Settings) / (session)); sessions' and stats' skipped entries carry kind. Additive.
+// ((Settings) / (session)); sessions' and stats' skipped entries carry kind. createPod sends RunPod's numeric gpu.minCudaVersion
+// instead of the exact allowedCudaVersions list (hosts reporting CUDA 13.1/13.2 are no longer excluded). Additive.
 export const FACTORY_API_VERSION = "1.28.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
