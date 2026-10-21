@@ -795,6 +795,18 @@ the project owner's own explicit authorization each time — never something a c
 is safe merely because the underlying YouTube API technically allows it, and never done by quietly
 widening an existing type (e.g. `ChangeField`) without first updating this section to say so.
 
+**Second writer of per-language title/description (added 2026-10-21, owner, Telegram msgs 3254/3257, BL-207, ADR 0045).** Besides
+the Change Set mechanism, `src/lib/live-localizations/` writes `localizations` -- and only on these terms:
+- only to a live broadcast's video (each broadcast and BL-205 segment of the channel's stream), after its fields step succeeded;
+- only the stream's one stored set (`live_streams.localizations_json`), set by the Factory Operator over MCP or by hand in the
+  Live section; a language without a translation gets nothing written, so its viewers see the base text;
+- through the same safe merge as Batches (`src/lib/shared-localization-merge/`, the rules above): a fresh read, every other
+  language kept byte-for-byte, nothing deleted, the snippet title/description untouched, never the video's own `defaultLanguage`
+  (a set holding it fails closed), never a video without one;
+- with identity check, backup, a re-read right before the write that must show the video unchanged (else nothing is sent), the
+  Live-writes check right before its one `videos.update`, read-back (every other language and the snippet fields kept) and audit.
+It writes no other field (the snippet part is sent back as just read, including the audio language, `zxx` too) and adds no deletion.
+
 ---
 
 # 22. Idempotent Batch Execution

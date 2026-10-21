@@ -228,6 +228,8 @@ export type DomainErrorCode =
   | "live_stream_video_refused"
   | "live_stream_workspace_unavailable"
   | "live_stream_video_not_found"
+  // BL-207 (LIVE_LOCALIZATIONS_PLAN.md AC-LL-10): the channel has no live stream on this computer (nothing to attach translations to).
+  | "live_stream_not_found"
   // HOST_UNSUPPORTED: the module can be switched on only on the Mac running as the system service (ADR 0036 §1).
   | "live_streams_host_unsupported"
   // BL-184 (docs/roadmap/plans/STORYBOARD_PLAN.md, ADR 0038) -- storyboards. NOT_FOUND: no storyboard with this id in the

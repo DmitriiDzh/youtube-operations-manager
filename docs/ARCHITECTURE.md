@@ -3922,7 +3922,8 @@ Plan: `docs/roadmap/plans/LIVE_STREAMS_PLAN.md` (FO-REQ-0019). Schema v86, Facto
   `liveBroadcasts.insert` (no new call or unit; never saved = not sent, YouTube's defaults). The video-level fields are shown in the
   Start dialog as "not sent yet": applying them (`videos.update`, `thumbnails.set`, `playlistItems.insert`) is stage 3, after spike
   C. The field limits and lists live in the shared `src/lib/youtube-video-fields/` (publishing re-exports them). Translations of
-  the broadcast's title/description go through the normal localization screens (plan §2.3), never these settings.
+  the broadcast's title/description are not these settings: they are the stream's own set (BL-207, see "Live stream translations
+  at publish" below; this reverses plan §2.3).
 - **Risks:** RISK-125 (the key in ffmpeg's argv), RISK-126 (the T9 every ~2 h).
 
 ## 46. The channel's language is the truth for localization (BL-178, FO-REQ-0022)
@@ -4527,3 +4528,55 @@ Plan: `docs/roadmap/plans/VIDEO_COST_PLAN.md` §2 stages 2-4 (criteria 3-9). Sch
   - RunPod's REST API cannot exclude a machine, so "avoid a bad host" (request item 3) is not done; a retry may land anywhere.
 - **Not done.** Our own Docker image; pruning old runtimes from the volume (RISK-132); running a template's job in the test.
 
+## BL-207 — live stream translations at publish (ADR 0045)
+
+Owner msgs 3254/3257; plan `docs/roadmap/plans/LIVE_LOCALIZATIONS_PLAN.md`. A second, narrowly scoped writer of per-language
+title/description (AGENTS.md §F, PROJECT_SPEC §21), reversing `LIVE_STREAMS_FIELDS_PLAN.md` §2.3.
+
+- **Shared merge** (`src/lib/shared-localization-merge/`, pure): `buildSafeLocalizationsPayload`, `checkDefaultLanguage`,
+  `localeKeyFor` and the fresh-video types, moved unchanged from `batches/merge.ts` (which re-exports them; Batches-only types
+  such as `PendingChange` stay there). The change input is the narrow `LocalizationFieldChange`. `hasAngleBrackets` moved from
+  `publishing/packages.ts` into `youtube-video-fields`.
+- **The set** (`live-streams/localizations.ts`): schema v101 `live_streams.localizations_json`, device-local (the table is in the
+  snapshot's device-local list; the `ytm-live-streams` report does not carry it). `validateLiveLocalizations` (pure, for the MCP
+  tool, the route, the store and the page) refuses the whole set if any language fails: exact supported code
+  (`suggestYoutubeLanguageCode` gives the letter-case hint), title 1–100 characters after trimming (stored trimmed), description
+  1–5000 bytes (required: blank refused, owner msg 3287; CRLF stored and counted as LF), no `<`/`>`, not the channel's baseline (case-insensitive), ≤ 50 languages. `createStreamLocalizations`: `set`
+  replaces, `{}` clears (null), a channel without a stream row here is `live_stream_not_found` (404), event `localizations_saved`
+  (`{ languages, by: owner | factory }`). `view` adds the warnings (a set while the row's video settings are unsaved or unreadable:
+  `video_settings_not_saved` / `video_settings_invalid` -- the step runs only inside `applyVideoSettings`, a warning, never a
+  refusal, owner msg 3287; a set holding the channel's current base language: `baseline_language_in_set` with `language` -- the
+  step fails closed on it; no base language: `no_baseline` -- the video gets no default language, so nothing is written) and the last `localizations` step from the last `video_settings_applied` summary; `save` = `set` + the
+  warnings.
+  `readStoredLocalizations` reports a stored value that no longer passes (never guessed).
+- **The step** (`live-streams/video-apply.ts`): read once in `broadcasts.ts`'s `runVideoSettings` (the funnel of Start,
+  «Применить снова» and segments). Right after the fields step: corrupt set → failed step; no set → no step; fields not verified
+  → `skipped: "fields_failed"`; stream stopped/replaced → the usual skip; port absent → failed step; otherwise the port's result
+  (`YouTube reads back something else: <detail>` when not verified; `sent: false` when the broadcast stopped being current right
+  before the write → the usual skip). Events `video_settings_step` as for every step. The dry runs add 53 units and the
+  languages when a set exists and both writers are plugged in.
+- **The writer** (`src/lib/live-localizations/`, plugged in by `src/composition/live-stream-localizations.ts` in the routes and
+  the server's runner): `assertWriteChannel` → fresh `getVideoMetadataContext` (read gateway), re-read until it shows the fields
+  step's tags (any order), category and languages — else `update_failed` and nothing sent → `checkDefaultLanguage` → the set
+  holding the video's own language fails closed → backup (`kind: "localization"` with snippet text) → `isCurrent` asked again
+  (stopped/replaced: nothing sent) → a re-read that must equal the first read's title, description, tags, category, languages and
+  localizations (else `update_failed`, "the video changed … apply again", nothing sent; no broadcast lock: Edit holds it) → the
+  shared merge from the re-read, with the audio language just read sent back (`zxx` included) → `assertLiveWritesAuthorized` →
+  `applyVideoMetadataUpdate` → read-back, up to 6 reads 10 s apart: each written language (key case-insensitive; "language
+  missing" / "text differs"), every other language kept ("language lost" / "other language changed"), the snippet text, and the
+  tags (any order), category and languages ("tags changed", "audio language changed", …) → audit BACKUP/RESULT/VERIFICATION
+  (`video_edit_audit_events`, `source: "live_localizations"`).
+- **MCP and route (stage 4, Factory API 1.27.0):** `factory_live_save_localizations` (strict `{ channelId, localizations }`, gate
+  first, `save(..., "factory")`, refusals as `validation_failed` with `details.refused`) and `factory_live_get_status.localizations`
+  (`localizationsStatusEntry`: codes only -- `problem: invalid_stored`, warning codes, `lastStep.failure: read_back_mismatch |
+  failed`, never the error text). Web: `GET/PUT /api/channels/[channelId]/live-stream/localizations` (`liveStreamHandler`:
+  session 401, active channel 403) and `localizations` in the overview.
+- **The «Переводы» card (stage 5):** `src/components/live-stream-localizations.tsx` under the broadcast settings card, its pure
+  logic in `live-stream-localizations-model.ts` (rows ↔ set, language choices = supported codes minus the channel baseline and
+  minus the other rows' languages, the server's validator per row plus `language_missing`, `details.refused` placed on rows).
+  A row per language (select, title, description with a byte counter), Add / Remove / Save (Save sends the whole set; removing
+  every row and saving clears it); the warnings, a stored-value problem and the last step shown; the panel's step list, the
+  Start summary, the «Применить снова» list and the history name the step and its languages. Rows are replaced from the poll
+  only while unedited (compared as stored: title trimmed, description CRLF → LF, so a just-saved card is clean). No native dialogs; all text in `ui-text` (`live.translations.*`).
+- **Not yet verified:** whether
+  a live broadcast's video reads its localizations back is unverified until the first real go-live with a set.

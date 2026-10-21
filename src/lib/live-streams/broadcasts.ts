@@ -13,7 +13,8 @@ import {
 import { isRecordingRequiredRefusal, isRedundantTransition, liveErrorReason, toLiveDomainError } from "./errors";
 import { parseWithSchema } from "./schemas";
 import { withChannelLock as withLock } from "./supervisor";
-import { applyVideoSettings, describeVideoApply, type VideoApplyResult, type VideoFieldsPort } from "./video-apply";
+import { applyVideoSettings, describeVideoApply, type LocalizationsPort, type VideoApplyResult, type VideoFieldsPort } from "./video-apply";
+import { readStoredLocalizations } from "./localizations";
 import { readSegmentSettings } from "./segments";
 import { readStoredVideoSettings } from "./video-settings";
 
@@ -62,6 +63,8 @@ export type BroadcastsDependencies = {
       videoSettingsJson?: string | null;
       /** Schema v99 (BL-205): the segment settings; segments on means every broadcast records. */
       segmentsJson?: string | null;
+      /** Schema v101 (BL-207): the stream's title/description translations; null = none. */
+      localizationsJson?: string | null;
     } | null>;
     update(channelId: string, set: Record<string, unknown>): Promise<boolean>;
     event(channelId: string, kind: string, detail: Record<string, unknown>): Promise<void>;
@@ -100,6 +103,8 @@ export type BroadcastsDependencies = {
   };
   /** BL-186 stage 3: the video-level writers the app layer plugs in (video-details, playlist-management; AGENTS.md §M). */
   videoFields?: VideoFieldsPort;
+  /** BL-207: the translations writer the app layer plugs in (live-localizations; AGENTS.md §M). */
+  localizations?: LocalizationsPort;
   /** BL-186 stage 3: the channel's baseline title/description language (owner msg 3153: the broadcast's language is always it). */
   channelLanguage(channelId: string): Promise<string | null>;
   /** BL-186 stage 3: the stream's chosen thumbnail file on this computer. */
@@ -159,6 +164,14 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
     return stored.settings;
   }
 
+  /** BL-207: the languages of the stream's stored translations, for the dry runs (none, or an unreadable value: none counted). Only
+   * when both writers are plugged in: without the translations writer, or the fields one it follows, nothing would be sent. */
+  function storedLanguages(stream: { localizationsJson?: string | null }): string[] {
+    if (!deps.videoFields || !deps.localizations) return [];
+    const stored = readStoredLocalizations(stream.localizationsJson);
+    return stored.ok && stored.set ? Object.keys(stored.set) : [];
+  }
+
   async function written(channelId: string, method: string, detail: Record<string, unknown>) {
     await deps.streams.event(channelId, "youtube_write", { method, ...detail });
   }
@@ -168,9 +181,12 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
     return withLock(`video-settings:${args.channelId}`, async () => {
       try {
         const channelLanguage = await deps.channelLanguage(args.channelId);
+        // BL-207: one set per stream, read here -- the one funnel of Start, «Применить снова» and every segment.
+        const localizations = readStoredLocalizations((await deps.streams.get(args.channelId))?.localizationsJson);
         return await applyVideoSettings(
           {
             videoFields: deps.videoFields,
+            localizations: deps.localizations,
             youtube: deps.youtube,
             thumbnails: deps.thumbnails,
             event: (channelId, kind, detail) => deps.streams.event(channelId, kind, detail),
@@ -183,7 +199,7 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
             },
             credentials: () => authorize(args.channelId, args.credentialRef),
           },
-          { ...args, channelLanguage }
+          { ...args, channelLanguage, localizations }
         );
       } catch (error) {
         // Never a silent end (review): the page reads this summary, so a run that threw still leaves one.
@@ -297,7 +313,7 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
       const settings = await deps.settings();
       const stored = readStoredVideoSettings(stream.videoSettingsJson);
       const videoSettings = stored.ok ? stored.settings : null;
-      const apply = videoSettings && deps.videoFields ? describeVideoApply(videoSettings, await deps.channelLanguage(channelId)) : null;
+      const apply = videoSettings && deps.videoFields ? describeVideoApply(videoSettings, await deps.channelLanguage(channelId), storedLanguages(stream)) : null;
       return {
         createsStream: !stream.streamId,
         broadcast: {
@@ -349,7 +365,7 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
       const settings = savedVideoSettings(stream);
       if (!settings) throw new DomainError({ code: "validation_failed", message: "Save the stream's video settings first", details: { channelId } });
       if (!deps.videoFields) throw new DomainError({ code: "validation_failed", message: "Video settings cannot be applied here (the video details module is not available)", details: { channelId } });
-      return { broadcastId: stream.broadcastId, ...describeVideoApply(settings, await deps.channelLanguage(channelId)), liveWritesEnabled: await deps.liveWritesEnabled() };
+      return { broadcastId: stream.broadcastId, ...describeVideoApply(settings, await deps.channelLanguage(channelId), storedLanguages(stream)), liveWritesEnabled: await deps.liveWritesEnabled() };
     },
 
     /** BL-186 stage 3, «Применить снова»: the saved video settings, sent again to the running broadcast's video (the owner's action). */

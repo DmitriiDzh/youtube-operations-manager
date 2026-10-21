@@ -31,7 +31,16 @@ type HarnessVideo = {
   crash?: boolean;
 };
 
-function harness(opts: { channelLanguage?: string | null; video?: HarnessVideo; recordingRequired?: boolean; insertError?: string; liveWrites?: boolean; streamId?: string | null; broadcastId?: string | null; intent?: "on" | "off"; wrongChannel?: boolean; transitionError?: string; bindError?: string; readBack?: Partial<{ title: string }>; encoderFails?: boolean; videoSettingsJson?: string | null } = {}) {
+type HarnessLocalized = {
+  /** false = no translations writer plugged in. */
+  port?: false;
+  result?: { verified: false; detail: string };
+  throws?: string;
+  /** The stream changes while the step prepares (after its reads, before its write): the writer asks isCurrent right then. */
+  changeBeforeWrite?: "stop" | "replace";
+};
+
+function harness(opts: { channelLanguage?: string | null; video?: HarnessVideo; recordingRequired?: boolean; insertError?: string; liveWrites?: boolean; streamId?: string | null; broadcastId?: string | null; intent?: "on" | "off"; wrongChannel?: boolean; transitionError?: string; bindError?: string; readBack?: Partial<{ title: string }>; encoderFails?: boolean; videoSettingsJson?: string | null; localizationsJson?: string | null; localized?: HarnessLocalized } = {}) {
   const calls: string[] = [];
   const events: Array<{ kind: string; detail: Record<string, unknown> }> = [];
   let stream = {
@@ -44,7 +53,9 @@ function harness(opts: { channelLanguage?: string | null; video?: HarnessVideo; 
     privacyStatus: "unlisted" as LivePrivacy,
     madeForKids: false,
     videoSettingsJson: opts.videoSettingsJson ?? null,
+    localizationsJson: opts.localizationsJson ?? null,
   };
+  const localized: Array<{ videoId: string; localizations: unknown; expected: unknown }> = [];
   let broadcast = { broadcastId: "BC1", title: "Tropico Jazz Radio", description: "24/7", scheduledStartTime: "2026-10-12T12:02:00.000Z", scheduledEndTime: null, lifeCycleStatus: "live", privacyStatus: "unlisted", categoryId: "10" };
   const sent: Record<string, unknown> = {};
   const tasks: Array<() => Promise<unknown>> = [];
@@ -81,6 +92,22 @@ function harness(opts: { channelLanguage?: string | null; video?: HarnessVideo; 
               }
               landed.push(playlistId);
               return { added: true };
+            },
+          },
+    // BL-207: the translations writer (plugged in unless `localized.port` is false).
+    localizations:
+      opts.localized?.port === false
+        ? undefined
+        : {
+            apply: async ({ videoId, localizations, expected, isCurrent }) => {
+              if (opts.localized?.changeBeforeWrite === "stop") stream = { ...stream, intent: "off" };
+              if (opts.localized?.changeBeforeWrite === "replace") stream = { ...stream, broadcastId: "BC2" };
+              const state = await isCurrent();
+              if (state !== "current") return { sent: false as const, reason: state };
+              calls.push("videos.update:localizations");
+              localized.push({ videoId, localizations, expected });
+              if (opts.localized?.throws) throw new DomainError({ code: "live_writes_disabled", message: opts.localized.throws });
+              return opts.localized?.result ?? { verified: true };
             },
           },
     settings: async () => ({ ...DEFAULT_LIVE_STREAMS_SETTINGS, enabled: true, host: { ok: true } }),
@@ -177,6 +204,7 @@ function harness(opts: { channelLanguage?: string | null; video?: HarnessVideo; 
     stream: () => stream,
     applied,
     tokens,
+    localized,
     /** Runs what Start left in the background (the video settings). */
     runBackground: async () => {
       inBackground = true;
@@ -642,4 +670,117 @@ test("the thumbnail is sent with credentials resolved after the fields step, not
   await h.runBackground();
   assert.ok(h.tokens.insert && h.tokens.thumbnail);
   assert.notEqual(h.tokens.thumbnail, h.tokens.insert);
+});
+
+// ---------------------------------------------------------------------------
+// BL-207 stage 3 (LIVE_LOCALIZATIONS_PLAN.md §2 stage 3, §3 AC-LL-04/05/06/08): the `localizations` step runs after the fields,
+// only when they were written, with the stream's one stored set; no set -> no step, no call. Expected values by hand.
+// ---------------------------------------------------------------------------
+
+const SET = { de: { title: "Jazz Radio", description: "Rund um die Uhr" }, fr: { title: "Radio Jazz", description: "24h/24" } };
+const SET_JSON = JSON.stringify(SET);
+const EXPECTED = { tags: ["jazz", "lofi radio"], categoryId: "10", defaultLanguage: "en", defaultAudioLanguage: "zxx" };
+const stepsOf = (h: ReturnType<typeof harness>) => (h.events.filter((e) => e.kind === "video_settings_applied").at(-1)?.detail as { steps: Array<{ step: string; ok: boolean; skipped?: string; error?: string }> }).steps;
+
+test("AC-LL-06 (Start): the set goes to the broadcast's video right after the fields, before the thumbnail, with the fields' snippet values", async () => {
+  const h = harness({ videoSettingsJson: WITH_THUMB, localizationsJson: SET_JSON, streamId: "STREAM1", video: { thumbnailFile: { kind: "jpeg", bytes: THUMB } } });
+  await h.broadcasts.start("UC1", { userId: "u1" });
+  await h.runBackground();
+  assert.deepEqual(AFTER_START(h.calls).slice(0, 3), ["videos.update", "videos.update:localizations", "thumbnails.set:BC1:image/jpeg"]);
+  assert.deepEqual(h.localized, [{ videoId: "BC1", localizations: SET, expected: EXPECTED }]);
+  assert.deepEqual(stepsOf(h).map((s) => [s.step, s.ok]), [["fields", true], ["localizations", true], ["thumbnail", true], ["playlist:PL0123456789abcdefghijklmnopqrstuv", true]]);
+  // Each step is an event like the others.
+  assert.ok(h.events.some((e) => e.kind === "video_settings_step" && e.detail.step === "localizations" && e.detail.ok === true));
+});
+
+test("AC-LL-06 (Применить снова, segment): the same set, through the same step", async () => {
+  const again = harness({ videoSettingsJson: SAVED_SETTINGS, localizationsJson: SET_JSON, intent: "on", broadcastId: "BC1" });
+  const result = await again.broadcasts.applyVideoSettingsAgain("UC1", { userId: "u1" });
+  assert.equal(result.ok, true);
+  assert.deepEqual(again.localized, [{ videoId: "BC1", localizations: SET, expected: EXPECTED }]);
+
+  const segment = harness({ videoSettingsJson: SAVED_SETTINGS, localizationsJson: SET_JSON, intent: "on", broadcastId: "BC7" });
+  segment.broadcasts.applyVideoSettingsForSegment({ channelId: "UC1", broadcastId: "BC7", credentialRef: { userId: "u1" }, credentials: { accessToken: "t0" } as never });
+  await new Promise((resolve) => setImmediate(resolve));
+  await segment.runBackground();
+  assert.deepEqual(segment.localized, [{ videoId: "BC7", localizations: SET, expected: EXPECTED }]);
+  assert.equal(segment.events.find((e) => e.kind === "video_settings_applied")?.detail.trigger, "segment");
+});
+
+test("AC-LL-05: no stored set -- no localizations step and no call", async () => {
+  const h = harness({ videoSettingsJson: SAVED_SETTINGS, streamId: "STREAM1" });
+  await h.broadcasts.start("UC1", { userId: "u1" });
+  await h.runBackground();
+  assert.deepEqual(h.localized, []);
+  assert.ok(!stepsOf(h).some((s) => s.step === "localizations"));
+  assert.ok(!h.calls.includes("videos.update:localizations"));
+});
+
+test("AC-LL-04: the fields step failed -- the localizations step is skipped and no call is made", async () => {
+  const h = harness({ videoSettingsJson: SAVED_SETTINGS, localizationsJson: SET_JSON, streamId: "STREAM1", video: { applyFails: "quotaExceeded" } });
+  await h.broadcasts.start("UC1", { userId: "u1" });
+  await h.runBackground();
+  assert.deepEqual(h.localized, []);
+  assert.deepEqual(stepsOf(h).find((s) => s.step === "localizations"), { step: "localizations", ok: true, skipped: "fields_failed" });
+});
+
+test("AC-LL-08: a read-back without de is a failed step saying so; the thumbnail and playlists still run", async () => {
+  const h = harness({ videoSettingsJson: SAVED_SETTINGS, localizationsJson: SET_JSON, streamId: "STREAM1", localized: { result: { verified: false, detail: "language missing: de" } } });
+  await h.broadcasts.start("UC1", { userId: "u1" });
+  await h.runBackground();
+  const steps = stepsOf(h);
+  assert.deepEqual(steps.find((s) => s.step === "localizations"), { step: "localizations", ok: false, error: "YouTube reads back something else: language missing: de" });
+  assert.ok(steps.some((s) => s.step.startsWith("playlist:") && s.ok));
+});
+
+test("a writer refusal (e.g. Live writes off) is the step's error, never an end of the run", async () => {
+  const h = harness({ videoSettingsJson: SAVED_SETTINGS, localizationsJson: SET_JSON, streamId: "STREAM1", localized: { throws: "Real YouTube write execution is disabled" } });
+  await h.broadcasts.start("UC1", { userId: "u1" });
+  await h.runBackground();
+  assert.deepEqual(stepsOf(h).find((s) => s.step === "localizations"), { step: "localizations", ok: false, error: "Real YouTube write execution is disabled" });
+});
+
+test("a stored set without the writer plugged in is reported as not applied; a corrupt stored set is reported, never sent", async () => {
+  const absent = harness({ videoSettingsJson: SAVED_SETTINGS, localizationsJson: SET_JSON, streamId: "STREAM1", localized: { port: false } });
+  await absent.broadcasts.start("UC1", { userId: "u1" });
+  await absent.runBackground();
+  const step = stepsOf(absent).find((s) => s.step === "localizations");
+  assert.equal(step?.ok, false);
+  assert.match(String(step?.error), /not available/);
+
+  const corrupt = harness({ videoSettingsJson: SAVED_SETTINGS, localizationsJson: '{"pt-br":{"title":"T","description":"D"}}', streamId: "STREAM1" });
+  await corrupt.broadcasts.start("UC1", { userId: "u1" });
+  await corrupt.runBackground();
+  assert.deepEqual(corrupt.localized, []);
+  assert.equal(stepsOf(corrupt).find((s) => s.step === "localizations")?.ok, false);
+});
+
+// Review 2026-10-21: the step re-reads the video right before its write (1 unit), so 1 + 1 + 50 + 1 = 53 (was 52).
+test("the dry runs count the translations: 1 read + 1 re-read + 50 update + 1 read-back = 53 more units, and name the languages", async () => {
+  const preview = await harness({ videoSettingsJson: SAVED_SETTINGS, localizationsJson: SET_JSON }).broadcasts.previewStart("UC1");
+  assert.equal(preview.videoSettingsApply?.units, 105 + 53);
+  assert.deepEqual(preview.videoSettingsApply?.localizations, ["de", "fr"]);
+  assert.equal(preview.units, 5 + 105 + 53);
+  const again = await harness({ videoSettingsJson: SAVED_SETTINGS, localizationsJson: SET_JSON, intent: "on", broadcastId: "BC1" }).broadcasts.previewApplyVideoSettings("UC1");
+  assert.equal(again.units, 105 + 53);
+});
+
+test("the dry runs list no translations when the translations writer is not plugged in (they would not be sent)", async () => {
+  const preview = await harness({ videoSettingsJson: SAVED_SETTINGS, localizationsJson: SET_JSON, localized: { port: false } }).broadcasts.previewStart("UC1");
+  assert.equal(preview.videoSettingsApply?.units, 105);
+  assert.equal(preview.videoSettingsApply && "localizations" in preview.videoSettingsApply, false);
+  assert.equal(preview.units, 5 + 105);
+  const again = await harness({ videoSettingsJson: SAVED_SETTINGS, localizationsJson: SET_JSON, intent: "on", broadcastId: "BC1", localized: { port: false } }).broadcasts.previewApplyVideoSettings("UC1");
+  assert.equal(again.units, 105);
+  assert.equal("localizations" in again, false);
+});
+
+test("stopped or replaced while the translations step prepared: nothing sent, the step skipped as such", async () => {
+  for (const [change, skipped] of [["stop", "stream_stopped"], ["replace", "broadcast_replaced"]] as const) {
+    const h = harness({ videoSettingsJson: SAVED_SETTINGS, localizationsJson: SET_JSON, intent: "on", broadcastId: "BC1", localized: { changeBeforeWrite: change } });
+    await h.broadcasts.applyVideoSettingsAgain("UC1", { userId: "u1" });
+    assert.deepEqual(h.localized, []);
+    assert.equal(h.calls.includes("videos.update:localizations"), false);
+    assert.deepEqual(stepsOf(h).find((s) => s.step === "localizations"), { step: "localizations", ok: true, skipped });
+  }
 });

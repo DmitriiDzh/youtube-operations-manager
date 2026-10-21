@@ -24,6 +24,7 @@ const EXPECTED_TOOLS = [
   "factory_list_logical_paths",
   "factory_live_get_status",
   "factory_live_map_sources",
+  "factory_live_save_localizations",
   "factory_media_activate_runtime",
   "factory_media_adopt_template",
   "factory_media_cancel_job",
@@ -125,6 +126,7 @@ test("AC-FO-09 (amended by ADR 0025/0026): writes are exactly the named media/se
   assert.deepEqual([...FACTORY_WRITE_TOOL_NAMES].sort(), [
     "factory_gemini_create_job",
     "factory_live_map_sources",
+    "factory_live_save_localizations",
     "factory_media_activate_runtime",
     "factory_media_adopt_template",
     "factory_media_cancel_job",
@@ -252,7 +254,9 @@ test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.23.0 
   // BL-205 (FO-REQ-0032): 1.25.0 -- factory_live_get_status gains `segments` (additive).
   // BL-206 (FO-REQ-0033, GPU_STATS_PLAN.md §2.C): 1.26.0 -- the READ tool factory_media_get_gpu_stats; the availability log stops
   // listing per-datacenter NONE rows (its summary counts stay the same).
-  assert.equal(FACTORY_API_VERSION, "1.26.0");
+  // BL-207 (LIVE_LOCALIZATIONS_PLAN.md §2 stage 4): 1.27.0 -- the WRITE tool factory_live_save_localizations and the additive
+  // `localizations` of factory_live_get_status.
+  assert.equal(FACTORY_API_VERSION, "1.27.0");
   const agentOperations = await readFile("src/lib/agent-operations/contracts.ts", "utf8");
   assert.equal(agentOperations.includes("FACTORY_API_VERSION"), false);
 });

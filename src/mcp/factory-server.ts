@@ -111,7 +111,12 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 // from then on (a missing row is NONE); its summary counts NONE as the GPU's snapshots − the other levels, so the numbers stay as
 // before, and summary.snapshots is the snapshots taken in the range (the gpu/datacenter filters no longer narrow it). Sessions show
 // firstApprovedAt, firstApprovedApproximate and gpuSkipped. Additive except the log's NONE rows.
-export const FACTORY_API_VERSION = "1.26.0";
+// BL-207 (LIVE_LOCALIZATIONS_PLAN.md §2 stage 4, ADR 0045): 1.27.0 -- factory_live_save_localizations (WRITE, local only: the
+// stream's translations of its title and description, one set per stream, written to every broadcast and segment after Start as
+// part of the video settings; replace semantics, {} clears, any refused language refuses the whole call with every refusal in
+// details.refused) and factory_live_get_status gains `localizations` (this computer only: the set, warnings and the last step, in
+// codes). Additive.
+export const FACTORY_API_VERSION = "1.27.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -176,6 +181,8 @@ export const FACTORY_TOOL_NAMES = [
   // BL-176: live streams -- their status (read) and the map of videos to their original files (a local write).
   "factory_live_get_status",
   "factory_live_map_sources",
+  // BL-207: the stream's title/description translations (a local write).
+  "factory_live_save_localizations",
   // BL-184: storyboards -- versions, submitting for the owner's review, answers to the owner's comments; reads.
   "factory_storyboard_create",
   "factory_storyboard_update",
@@ -232,6 +239,8 @@ export const FACTORY_WRITE_TOOL_NAMES = [
   "factory_gemini_create_job",
   // BL-176: the map of videos to original files (local only; nothing reaches YouTube, nothing starts a stream).
   "factory_live_map_sources",
+  // BL-207: the stream's translations (local only; written to YouTube only by the app after the owner's Start).
+  "factory_live_save_localizations",
   // BL-184: storyboard versions, submissions and answers (synced to the other computers; nothing is generated or charged).
   "factory_storyboard_create",
   "factory_storyboard_update",
@@ -322,6 +331,8 @@ export type FactoryToolDeps = {
   live: {
     getStatus(input: { channelId?: string }): Promise<Record<string, unknown>>;
     mapSources(input: { channelId: string; items: Array<{ videoId: string; file: string }> }): Promise<Record<string, unknown>>;
+    /** BL-207: replace the stream's translations (the module validates every language; nothing is half-saved). */
+    setLocalizations(input: { channelId: string; localizations: Record<string, { title: string; description: string }> }): Promise<Record<string, unknown>>;
   };
   /** BL-184: storyboards (the module validates every input strictly itself; every write is the Operator's). */
   storyboards: {
@@ -1155,12 +1166,19 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
       items: z.array(z.object({ videoId: z.string().regex(/^[A-Za-z0-9_-]{11}$/), file: z.string().min(1).max(500) }).strict()).min(1).max(200),
     })
     .strict();
+  // BL-207: the shape only (language → { title, description }); the live-streams validator checks every code and bound.
+  const liveLocalizationsInput = z
+    .object({
+      channelId: z.string().min(1).max(64),
+      localizations: z.record(z.string().min(1).max(32), z.object({ title: z.string(), description: z.string() }).strict()),
+    })
+    .strict();
 
   registerTool(
     "factory_live_get_status",
     {
       description:
-        "Live streams (1.14.0): every 24/7 stream on THIS computer and the ones other computers report (about 1-2 minutes behind), optionally for one channelId -> { streams: [{ device: { deviceId, hostName, thisComputer }, updatedAt, channelId, state: off | ended_by_youtube (start a new broadcast in the app) | starting | live | replaying (the next video is not on the Mac: the copied ones are replayed) | no_source | reconnecting, since (ISO, when the owner turned it on), playing: { index, total, videoId } | null, health: { lifeCycleStatus, streamStatus, healthStatus, issueTypes: [YouTube's configurationIssues types] } | null (polled every 5 minutes), lastInterruption: { at, cause: encoder_exit | source_missing | pass_end | replay_end } | null, viewers }], segments (1.25.0, this computer only): [{ channelId, enabled, lengthMinutes, switchHourUtc, recordingsPlaylist: { id, title } | null, current: { broadcastId, startedAt, switchDueAt } | null, segments: [{ broadcastId, startedAt, endedAt, overlapMs, rotation: [videoId], recording: none | recorded, playlist: none | pending | added | failed }] (last 30 days, newest first), failures: [{ at, stage: authorize | insert | bind | go_live | handover }], lastSwitchedAt }] }. While «Перезапуск эфира» is on, the app itself switches the broadcast before 12 h (the owner's setting). Streams run only on the Mac running the app as its system service; only the owner starts, stops or edits a broadcast, in the app. Never a key, URL or error text. Read-only, local (no YouTube call).",
+        "Live streams (1.14.0): every 24/7 stream on THIS computer and the ones other computers report (about 1-2 minutes behind), optionally for one channelId -> { streams: [{ device: { deviceId, hostName, thisComputer }, updatedAt, channelId, state: off | ended_by_youtube (start a new broadcast in the app) | starting | live | replaying (the next video is not on the Mac: the copied ones are replayed) | no_source | reconnecting, since (ISO, when the owner turned it on), playing: { index, total, videoId } | null, health: { lifeCycleStatus, streamStatus, healthStatus, issueTypes: [YouTube's configurationIssues types] } | null (polled every 5 minutes), lastInterruption: { at, cause: encoder_exit | source_missing | pass_end | replay_end } | null, viewers }], segments (1.25.0, this computer only): [{ channelId, enabled, lengthMinutes, switchHourUtc, recordingsPlaylist: { id, title } | null, current: { broadcastId, startedAt, switchDueAt } | null, segments: [{ broadcastId, startedAt, endedAt, overlapMs, rotation: [videoId], recording: none | recorded, playlist: none | pending | added | failed }] (last 30 days, newest first), failures: [{ at, stage: authorize | insert | bind | go_live | handover }], lastSwitchedAt }], localizations (1.27.0, this computer only): [{ channelId, localizations: { <language>: { title, description } } | null, problem: invalid_stored | null, warnings: [video_settings_not_saved | video_settings_invalid (the set is written only as part of the saved video settings) | baseline_language_in_set (the channel's base language is now in the set: the step fails on every broadcast until it is removed) | no_baseline (the channel has no base language: nothing is written)], lastStep: { at, broadcastId, ok, skipped?: fields_failed | stream_stopped | broadcast_replaced, failure?: read_back_mismatch | failed } | null }] }. While «Перезапуск эфира» is on, the app itself switches the broadcast before 12 h (the owner's setting). Streams run only on the Mac running the app as its system service; only the owner starts, stops or edits a broadcast, in the app. Never a key, URL or error text. Read-only, local (no YouTube call).",
       inputSchema: liveStatusInput,
     },
     async (args) => successResult(await deps.live.getStatus(parseInput(liveStatusInput, args)))
@@ -1177,6 +1195,20 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
       const input = parseInput(liveMapInput, args);
       await deps.assertMutationAllowed();
       return successResult(await deps.live.mapSources(input));
+    }
+  );
+
+  registerTool(
+    "factory_live_save_localizations",
+    {
+      description:
+        "Set the translations of a live stream's title and description (1.27.0): { channelId (a stream on THIS computer), localizations: { <language>: { title, description } } } -> { localizations (the stored set), warnings: [{ code: video_settings_not_saved | video_settings_invalid | baseline_language_in_set | no_baseline, message, language? }] }. One set per stream: every broadcast and every segment gets it, written after Start right after the video's fields (and only when they were written), as part of the stream's saved video settings -- without them nothing is written (a warning, not a refusal); likewise a set holding the channel's current base language (baseline_language_in_set, with language) or a channel without a base language (no_baseline) is saved with a warning, never written. The set REPLACES the stored one; {} clears it. A language must be an exact YouTube code (pt-BR, not pt-br: details give a hint), never the channel's base language; title 1-100 characters after trimming, description required, 1-5000 bytes, neither with < or >; at most 50 languages. Languages not in the set are left as they are on YouTube (nothing is deleted). Any refused language refuses the whole call (validation_failed, details.refused: [{ language, reason: unsupported_language | baseline_language | not_an_entry | title_empty | title_too_long | title_angle_brackets | description_empty | description_too_long | description_angle_brackets, message, hint? }]) and nothing is saved. No stream here: live_stream_not_found. Local only, no YouTube call; passes the device mutation gate; recorded as done by the Factory Operator.",
+      inputSchema: liveLocalizationsInput,
+    },
+    async (args) => {
+      const input = parseInput(liveLocalizationsInput, args);
+      await deps.assertMutationAllowed();
+      return successResult(await deps.live.setLocalizations(input));
     }
   );
 

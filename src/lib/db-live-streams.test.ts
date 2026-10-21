@@ -142,3 +142,24 @@ test("v92: video_settings_json is null on a new row, set by an update, kept by o
     assert.equal(row?.videoSettingsJson, '{"v":1}');
   });
 });
+
+// BL-207 (LIVE_LOCALIZATIONS_PLAN.md §2 stage 2): schema v101 adds the stream's translations -- null until saved, set by an update,
+// never cleared by a write of other columns or of the whole row without it; running the migration again converges.
+test("v101: localizations_json is null on a new row, set by an update, kept by other writes", async () => {
+  await withDb(async (database, client) => {
+    const columns = await client.execute("PRAGMA table_info(live_streams)");
+    assert.ok(columns.rows.some((row) => row.name === "localizations_json"));
+    const v101 = SCHEMA_MIGRATIONS.find((m) => m.version === 101);
+    assert.ok(v101, "schema v101 exists");
+    await v101.apply(client);
+    await upsertLiveStream(stream(), database);
+    assert.equal((await getLiveStream("UC1", database))?.localizationsJson, null);
+    const set = '{"de":{"title":"Jazz Radio","description":"Rund um die Uhr"}}';
+    assert.equal(await updateLiveStream("UC1", { localizationsJson: set }, database), true);
+    await updateLiveStream("UC1", { title: "Other", videoSettingsJson: '{"v":1}', updatedAt: T }, database);
+    await upsertLiveStream(stream({ title: "Again" }), database);
+    assert.equal((await getLiveStream("UC1", database))?.localizationsJson, set);
+    assert.equal(await updateLiveStream("UC1", { localizationsJson: null }, database), true);
+    assert.equal((await getLiveStream("UC1", database))?.localizationsJson, null);
+  });
+});

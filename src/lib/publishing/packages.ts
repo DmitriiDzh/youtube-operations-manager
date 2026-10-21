@@ -5,7 +5,7 @@
 
 // The YouTube field limits live in the shared `youtube-video-fields` module (also used by live-streams); re-exported unchanged.
 export { DESCRIPTION_MAX_BYTES, imageKindOf, TAGS_MAX_CHARACTERS, tagsLength, THUMBNAIL_MAX_BYTES, TITLE_MAX_CHARACTERS } from "@/lib/youtube-video-fields";
-import { DESCRIPTION_MAX_BYTES, TAGS_MAX_CHARACTERS, tagsLength, THUMBNAIL_MAX_BYTES, TITLE_MAX_CHARACTERS } from "@/lib/youtube-video-fields";
+import { DESCRIPTION_MAX_BYTES, hasAngleBrackets, TAGS_MAX_CHARACTERS, tagsLength, THUMBNAIL_MAX_BYTES, TITLE_MAX_CHARACTERS } from "@/lib/youtube-video-fields";
 
 export const RELEASE_PACKAGE_SCHEMA = "yt-release-package/1";
 export const RELEASE_PACKAGE_FILE_PATTERN = /^V\d+_release\.json$/;
@@ -140,14 +140,14 @@ export function packageProblems(pkg: ReleasePackage, facts: PackageFacts, channe
   const title = pkg.title.trim();
   if (title === "") problems.push({ code: "title_empty" });
   if ([...pkg.title].length > TITLE_MAX_CHARACTERS) problems.push({ code: "title_too_long", params: { length: [...pkg.title].length, max: TITLE_MAX_CHARACTERS } });
-  if (/[<>]/.test(pkg.title)) problems.push({ code: "title_angle_brackets" });
+  if (hasAngleBrackets(pkg.title)) problems.push({ code: "title_angle_brackets" });
   const descriptionBytes = new TextEncoder().encode(pkg.description).length;
   if (descriptionBytes > DESCRIPTION_MAX_BYTES) problems.push({ code: "description_too_long", params: { bytes: descriptionBytes, max: DESCRIPTION_MAX_BYTES } });
-  if (/[<>]/.test(pkg.description)) problems.push({ code: "description_angle_brackets" });
+  if (hasAngleBrackets(pkg.description)) problems.push({ code: "description_angle_brackets" });
   const tags = tagsLength(pkg.tags);
   if (tags > TAGS_MAX_CHARACTERS) problems.push({ code: "tags_too_long", params: { length: tags, max: TAGS_MAX_CHARACTERS } });
   // FO-MSG-0017: the package's tags get the same check as the channel's -- YouTube does not accept < or > in a tag.
-  if (pkg.tags.some((tag) => /[<>]/.test(tag))) problems.push({ code: "tags_angle_brackets" });
+  if (pkg.tags.some((tag) => hasAngleBrackets(tag))) problems.push({ code: "tags_angle_brackets" });
   problems.push(...chapterProblems(pkg.description, facts.video.durationSeconds ?? pkg.durationSeconds));
 
   if (channel.defaultLanguage === null) problems.push({ code: "no_channel_baseline" });

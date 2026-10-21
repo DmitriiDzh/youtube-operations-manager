@@ -30,7 +30,8 @@ export type LiveThumbnail = { kind: "jpeg" | "png"; bytes: number; sha256: strin
  * BL-186 (LIVE_STREAMS_FIELDS_PLAN.md §2.1/§3.2): the stream's own video and broadcast settings -- every field the API can set
  * (owner msgs 2782/2785). Saved locally (schema v92); saving writes nothing to YouTube. An empty text/list field is not sent;
  * nothing here ever means "delete" (AGENTS.md §F). Made for kids, privacy, title and description stay in `StreamSettingsInput`.
- * The broadcast's title/description translations are NOT here: they go through the normal translation screens (plan §2.3).
+ * The broadcast's title/description translations are NOT here: they are the stream's own set (`localizations.ts`, schema v101,
+ * BL-207, ADR 0045 -- reversing plan §2.3), written by the `localizations` step after the fields.
  */
 export type LiveVideoSettings = {
   v: 1;

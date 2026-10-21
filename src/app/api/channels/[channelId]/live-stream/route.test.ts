@@ -9,6 +9,9 @@ import { createStartPostHandler } from "./start/route";
 import { createStopPostHandler } from "./stop/route";
 import { createLiveStreamThumbnailHandlers } from "./thumbnail/route";
 import { createLiveStreamVideoSettingsPutHandler } from "./video-settings/route";
+import { createLiveStreamLocalizationsHandlers } from "./localizations/route";
+import { createStreamLocalizations } from "@/lib/live-streams/localizations";
+import { readStoredVideoSettings } from "@/lib/live-streams/video-settings";
 import type { LiveStreamRouteCore, LiveStreamRouteDeps } from "./shared";
 
 // BL-176 (LIVE_STREAMS_PLAN.md §3.9/§3.12; DEVELOPMENT_PLAYBOOK §6.6): every route needs a Web session (401) and the channel
@@ -115,4 +118,81 @@ test("video settings and thumbnail: 401/403 first, 2 MB + 1 refused before the m
   const ok = await createLiveStreamThumbnailHandlers(deps()).PUT(put(new Uint8Array([0xff, 0xd8, 0xff])), ctx());
   assert.equal(ok.status, 200);
   assert.deepEqual(calls, ['setThumbnail:["UC1",{"0":255,"1":216,"2":255}]']);
+});
+
+// BL-207 (LIVE_LOCALIZATIONS_PLAN.md AC-LL-07, AC-LL-10; DEVELOPMENT_PLAYBOOK §6.6): the translations route is behind the same
+// session and active-channel checks; PUT passes `localizations` to the module, which refuses the whole set per language.
+test("translations: 401/403 before the module; PUT passes `localizations` through; GET reads the view", async () => {
+  calls.length = 0;
+  const handlers = createLiveStreamLocalizationsHandlers(deps({ session: false }));
+  assert.equal((await handlers.PUT(post({ localizations: {} }), ctx())).status, 401);
+  assert.equal((await createLiveStreamLocalizationsHandlers(deps({ activeChannel: "UC2" })).GET(new Request("http://localhost/x"), ctx("UC1"))).status, 403);
+  assert.deepEqual(calls, []);
+  const ok = createLiveStreamLocalizationsHandlers(deps());
+  assert.equal((await ok.PUT(new Request("http://localhost/x", { method: "PUT", body: JSON.stringify({ localizations: { de: { title: "T", description: "D" } } }) }), ctx())).status, 200);
+  assert.equal((await ok.GET(new Request("http://localhost/x"), ctx())).status, 200);
+  assert.deepEqual(calls, ['saveLocalizations:["UC1",{"de":{"title":"T","description":"D"}}]', 'getLocalizations:["UC1"]']);
+});
+
+/** The route over the real translations store with one in-memory row (null = no stream on this computer). */
+function localizationsRoute(initial: Record<string, unknown> | null) {
+  let row: Record<string, unknown> | null = initial ? { channelId: "UC1", localizationsJson: null, ...initial } : null;
+  const service = createStreamLocalizations({
+    store: {
+      getStream: async () => row as never,
+      updateStream: async (_channelId, set) => {
+        if (!row) return false;
+        row = { ...row, ...set };
+        return true;
+      },
+      insertEvent: async () => undefined,
+    },
+    channelLanguage: async () => "en",
+    readVideoSettings: readStoredVideoSettings,
+    lastApplied: async () => null,
+    clock: () => new Date("2026-10-21T10:00:00Z"),
+    newId: () => "e1",
+  });
+  const base = deps();
+  const core = { ...base.core, getLocalizations: (channelId: string) => service.view(channelId), saveLocalizations: (channelId: string, body: unknown) => service.save(channelId, body, "owner") } as unknown as LiveStreamRouteCore;
+  const handlers = createLiveStreamLocalizationsHandlers({ ...base, core });
+  const put = async (localizations: unknown) => handlers.PUT(new Request("http://localhost/x", { method: "PUT", body: JSON.stringify({ localizations }) }), ctx());
+  return { handlers, put, row: () => row };
+}
+
+test("AC-LL-07 via the route: each refusal is a 400 with every refused language; nothing stored; 5000 bytes accepted", async () => {
+  const before = JSON.stringify({ fr: { title: "Ft", description: "Fd" } });
+  const route = localizationsRoute({ localizationsJson: before });
+  const cases: Array<[Record<string, unknown>, Array<[string, string]>]> = [
+    [{ de: { title: "", description: "D" } }, [["de", "title_empty"]]],
+    [{ de: { title: "x".repeat(101), description: "D" } }, [["de", "title_too_long"]]],
+    [{ de: { title: "T", description: "é".repeat(2501) } }, [["de", "description_too_long"]]],
+    [{ de: { title: "T", description: "   " } }, [["de", "description_empty"]]],
+    [{ de: { title: "T", description: "a > b" } }, [["de", "description_angle_brackets"]]],
+    [{ "pt-br": { title: "T", description: "D" }, xx: { title: "T", description: "D" } }, [["pt-br", "unsupported_language"], ["xx", "unsupported_language"]]],
+    [{ en: { title: "T", description: "D" } }, [["en", "baseline_language"]]],
+  ];
+  for (const [localizations, refused] of cases) {
+    const response = await route.put(localizations);
+    assert.equal(response.status, 400, JSON.stringify(localizations).slice(0, 80));
+    const body = await response.json();
+    assert.equal(body.error, "validation_failed");
+    assert.deepEqual(body.details.refused.map((r: { language: string; reason: string }) => [r.language, r.reason]), refused);
+  }
+  assert.equal(route.row()!.localizationsJson, before);
+
+  const accepted = await route.put({ de: { title: "Dt", description: "é".repeat(2500) } });
+  assert.equal(accepted.status, 200);
+  assert.deepEqual(await accepted.json(), {
+    localizations: { de: { title: "Dt", description: "é".repeat(2500) } },
+    warnings: [{ code: "video_settings_not_saved", message: "The stream's video settings are not saved, so nothing is applied after Start -- the translations are written only as part of the video settings: save them" }],
+  });
+  const view = await (await route.handlers.GET(new Request("http://localhost/x"), ctx())).json();
+  assert.deepEqual(view.localizations, { de: { title: "Dt", description: "é".repeat(2500) } });
+});
+
+test("AC-LL-10 via the route: no stream on this computer is a 404 live_stream_not_found", async () => {
+  const response = await localizationsRoute(null).put({ de: { title: "T", description: "D" } });
+  assert.equal(response.status, 404);
+  assert.equal((await response.json()).error, "live_stream_not_found");
 });

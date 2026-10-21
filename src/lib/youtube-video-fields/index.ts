@@ -25,6 +25,12 @@ export type VideoLicense = (typeof VIDEO_LICENSES)[number];
  */
 export const VIDEO_CATEGORY_IDS = ["1", "2", "10", "15", "17", "19", "20", "22", "23", "24", "25", "26", "27", "28", "29"] as const;
 
+/** Whether a text holds `<` or `>`, which YouTube refuses in a title, a description and a tag (BL-207: moved here from
+ * `publishing/packages.ts` so the live translations validator applies the same rule). */
+export function hasAngleBrackets(text: string): boolean {
+  return /[<>]/.test(text);
+}
+
 /** snippet.tags as YouTube counts it: each tag, its quotes when it has a space, and a comma between tags. */
 export function tagsLength(tags: readonly string[]): number {
   if (tags.length === 0) return 0;

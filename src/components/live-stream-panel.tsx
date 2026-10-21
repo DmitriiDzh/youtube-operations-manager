@@ -10,6 +10,8 @@ import { InfoTooltip } from "./info-tooltip";
 import type { LiveLatency, LiveVideoSettings } from "@/lib/live-streams/fields";
 import { LiveStreamAddVideosDialog } from "./live-stream-add-videos-dialog";
 import { LiveStreamVideoSettingsCard } from "./live-stream-video-settings";
+import { LiveStreamLocalizationsCard } from "./live-stream-localizations";
+import type { LiveLocalizationsView } from "@/lib/live-streams/localizations";
 import { LiveStreamSegmentsCard, type SegmentsViewData } from "./live-stream-segments";
 import { LoadingIndicator } from "./operation-progress";
 import { ToggleSwitch } from "./toggle-switch";
@@ -75,6 +77,8 @@ type Overview = {
   segments?: SegmentsViewData | null;
   /** Owner msg 3153: the channel's baseline title/description language -- the broadcast's language. */
   channelDefaultLanguage?: string | null;
+  /** BL-207: the stream's translations, their warnings and the last localizations step. */
+  localizations?: LiveLocalizationsView | null;
   /** BL-186 stage 3: the last video settings summary (any age). */
   videoSettingsLast?: { at: string; detail: Record<string, unknown> } | null;
   events: Array<{ id: string; at: string; kind: string; detail: Record<string, unknown> }>;
@@ -83,7 +87,7 @@ type Overview = {
 };
 
 /** BL-186 stage 3: what «Применить снова» (and Start) send to the broadcast's video, and its quota units. */
-type VideoApplyPreview = { patch: Record<string, unknown>; thumbnail: boolean; playlists: Array<{ id: string; title: string }>; units: number };
+type VideoApplyPreview = { patch: Record<string, unknown>; thumbnail: boolean; playlists: Array<{ id: string; title: string }>; units: number; localizations?: string[] };
 type VideoApplyStep = { step: string; ok: boolean; skipped?: string; error?: string };
 type VideoApplyResult = { broadcastId: string; ok: boolean; steps: VideoApplyStep[]; notApplied?: string };
 
@@ -230,6 +234,7 @@ export function LiveStreamPanel({ channelId, visible }: { channelId: string | nu
         <>
           <StatusCard overview={overview} base={base!} onChanged={load} />
           <SettingsCard overview={overview} base={base!} onChanged={load} />
+          <LiveStreamLocalizationsCard base={base!} view={overview.localizations ?? null} channelLanguage={overview.channelDefaultLanguage ?? null} hasStream={overview.stream !== null} onChanged={load} />
           <LiveStreamVideoSettingsCard base={base!} channelLanguage={overview.channelDefaultLanguage ?? null} saved={overview.videoSettings} problem={overview.videoSettingsProblem} onChanged={load} />
           <LiveStreamSegmentsCard base={base!} view={overview.segments ?? null} onChanged={load} />
           <RotationCard overview={overview} base={base!} onChanged={load} />
@@ -485,6 +490,7 @@ function failedStepsText(t: ReturnType<typeof useT>, steps: VideoApplyStep[]): s
 function stepLabel(t: ReturnType<typeof useT>, step: string): string {
   if (step === "fields") return t("live.videoApply.step.fields");
   if (step === "thumbnail") return t("live.videoApply.step.thumbnail");
+  if (step === "localizations") return t("live.videoApply.step.localizations");
   return t("live.videoApply.step.playlist", { id: step.replace(/^playlist:/, "") });
 }
 
@@ -501,6 +507,7 @@ function VideoApplyList({ preview }: { preview: VideoApplyPreview }) {
       <p className="text-zinc-400">{t("live.videoApply.sends")}</p>
       <ul className="list-inside list-disc space-y-0.5">
         <li>{t("live.videoApply.step.fields")}: {fields.join("; ")}</li>
+        {preview.localizations && preview.localizations.length > 0 && <li>{t("live.videoApply.step.localizationsList", { languages: preview.localizations.join(", ") })}</li>}
         {preview.thumbnail && <li>{t("live.videoApply.step.thumbnail")}</li>}
         {preview.playlists.map((p) => (
           <li key={p.id}>{t("live.videoApply.step.playlistNamed", { title: p.title || p.id })}</li>
@@ -560,6 +567,8 @@ function StartVideoSettingsSummary({ settings, apply }: { settings: Omit<LiveVid
         <dd className="text-zinc-200">{settings.playlists.length > 0 ? settings.playlists.map((p) => p.title || p.id).join(", ") : "—"}</dd>
         <dt className="text-zinc-500">{t("live.video.section.thumbnail")}</dt>
         <dd className="text-zinc-200">{settings.thumbnail ? t("live.yes") : t("live.no")}</dd>
+        <dt className="text-zinc-500">{t("live.videoApply.step.localizations")}</dt>
+        <dd className="text-zinc-200">{apply?.localizations && apply.localizations.length > 0 ? apply.localizations.join(", ") : "—"}</dd>
       </dl>
     </div>
   );
@@ -961,6 +970,7 @@ const EVENT_KEYS: Record<string, UiTextKey> = {
   recording_required: "live.event.recordingRequired",
   video_settings_step: "live.event.videoSettingsStep",
   video_settings_applied: "live.event.videoSettingsApplied",
+  localizations_saved: "live.event.localizationsSaved",
 };
 
 function HistoryCard({ overview }: { overview: Overview }) {
@@ -978,6 +988,8 @@ function HistoryCard({ overview }: { overview: Overview }) {
             const what =
               event.kind === "video_settings_step" && typeof detail.step === "string"
                 ? `${stepLabel(t, detail.step)} · ${detail.ok ? t("live.yes") : String(detail.error ?? "—")}`
+                : event.kind === "localizations_saved" && Array.isArray(detail.languages)
+                ? detail.languages.join(", ") || "—"
                 : typeof detail.method === "string"
                 ? detail.method
                 : typeof detail.videoId === "string"
