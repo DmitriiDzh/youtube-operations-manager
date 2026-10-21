@@ -20,28 +20,54 @@ export function orderedGpuCandidateIds(plan: Pick<MediaGpuPlan, "candidates"> | 
 }
 
 /**
+ * BL-208 (GPU_START_FIXES_PLAN.md §E): why a candidate was skipped. `stock` = RunPod's live catalog said so (the GPU is not in it,
+ * or it does not list the volume's datacenter for it) -- the catalog is known to be wrong both ways, so a start whose candidates
+ * were all skipped for a stock reason WAITS for capacity; `config` = the owner's or the session's own bounds (VRAM minimum, price
+ * cap, no price under a cap) -- a start with only such skips fails at once.
+ */
+export type GpuSkipKind = "stock" | "config";
+export type GpuSkip = { gpuTypeId: string; kind: GpuSkipKind; reason: string };
+
+/** `a; b` lines of skipped candidates, for the waiting / no-capacity / start-failed texts (BL-208 §D). */
+export function describeGpuSkips(skipped: ReadonlyArray<{ gpuTypeId: string; reason: string }>): string[] {
+  return skipped.map((s) => `${s.gpuTypeId} skipped: ${s.reason}`);
+}
+
+/**
  * The candidates to try, in order. The session's own plan (a request's or a template's) wins; without one, the device's
  * GPU followed by its fallback list. Filtered by minimum VRAM, price cap and -- when the catalog knows -- whether the
- * GPU is offered in the volume's datacenter. Without a catalog (it could not be read) nothing can be checked: every
- * candidate is tried as listed, except that a price cap then admits only the device GPU with its saved price.
+ * GPU is offered in the volume's datacenter. Without a catalog (it could not be read, or RunPod answered an empty one --
+ * BL-208 AC-SF-02) nothing can be checked: every candidate is tried as listed, except that a price cap then admits only
+ * the device GPU with its saved price. Every skip reason names which bound applied: `(Settings)` or `(session)` (BL-208 §D;
+ * the session's value only when it is strictly tighter than the owner's).
  */
 export function resolveGpuCandidates(args: {
   plan: MediaGpuPlan | null;
   settings: Pick<MediaSettings, "gpuTypeId" | "gpuFallbackIds" | "gpuMinVramGb" | "gpuMaxPricePerHr" | "gpuOnDemandPricePerHr" | "datacenterId">;
   catalog: RunpodGpuType[] | null;
-}): { candidates: GpuCandidate[]; skipped: Array<{ gpuTypeId: string; reason: string }> } {
-  const { plan, settings, catalog } = args;
+}): { candidates: GpuCandidate[]; skipped: GpuSkip[] } {
+  const { plan, settings } = args;
+  const catalog = args.catalog && args.catalog.length > 0 ? args.catalog : null;
   const ids = orderedGpuCandidateIds(plan, settings);
   // The owner's floor and cap are HARD bounds (independent review): a plan may only tighten them, never loosen them.
-  const minVram = [plan?.minVramGb ?? null, settings.gpuMinVramGb].reduce<number | null>((acc, v) => (v === null ? acc : acc === null ? v : Math.max(acc, v)), null);
-  const maxPrice = [plan?.maxPricePerHr ?? null, settings.gpuMaxPricePerHr].reduce<number | null>((acc, v) => (v === null ? acc : acc === null ? v : Math.min(acc, v)), null);
+  const planVram = plan?.minVramGb ?? null;
+  const planPrice = plan?.maxPricePerHr ?? null;
+  const ownerVram = settings.gpuMinVramGb;
+  const ownerPrice = settings.gpuMaxPricePerHr;
+  const vramBySession = planVram !== null && (ownerVram === null || planVram > ownerVram);
+  const priceBySession = planPrice !== null && (ownerPrice === null || planPrice < ownerPrice);
+  const minVram = vramBySession ? planVram : ownerVram;
+  const maxPrice = priceBySession ? planPrice : ownerPrice;
+  const vramBound = vramBySession ? "session" : "Settings";
+  const priceBound = priceBySession ? "session" : "Settings";
+  const overCap = (price: number) => `$${price}/h is over the $${maxPrice}/h cap (${priceBound})`;
   const candidates: GpuCandidate[] = [];
-  const skipped: Array<{ gpuTypeId: string; reason: string }> = [];
+  const skipped: GpuSkip[] = [];
   for (const id of ids) {
     if (!catalog) {
       const price = id === settings.gpuTypeId ? settings.gpuOnDemandPricePerHr : null;
       if (maxPrice !== null && (price === null || price > maxPrice)) {
-        skipped.push({ gpuTypeId: id, reason: price === null ? "price unknown (catalog unavailable) under a price cap" : `$${price}/h is over the $${maxPrice}/h cap` });
+        skipped.push({ gpuTypeId: id, kind: "config", reason: price === null ? `price unknown (catalog unavailable) under the $${maxPrice}/h cap (${priceBound})` : overCap(price) });
         continue;
       }
       candidates.push({ gpuTypeId: id, pricePerHr: price, memoryInGb: null });
@@ -49,20 +75,20 @@ export function resolveGpuCandidates(args: {
     }
     const entry = catalog.find((g) => g.id === id);
     if (!entry) {
-      skipped.push({ gpuTypeId: id, reason: "not in RunPod's GPU catalog" });
+      skipped.push({ gpuTypeId: id, kind: "stock", reason: "not in RunPod's GPU catalog" });
       continue;
     }
     if (minVram !== null && (entry.memoryInGb === null || entry.memoryInGb < minVram)) {
-      skipped.push({ gpuTypeId: id, reason: `${entry.memoryInGb ?? "?"} GB VRAM is under the ${minVram} GB minimum` });
+      skipped.push({ gpuTypeId: id, kind: "config", reason: `${entry.memoryInGb ?? "?"} GB VRAM is under the ${minVram} GB minimum (${vramBound})` });
       continue;
     }
     const price = entry.onDemandPricePerHr;
     if (maxPrice !== null && (price === null || price > maxPrice)) {
-      skipped.push({ gpuTypeId: id, reason: price === null ? "no on-demand price" : `$${price}/h is over the $${maxPrice}/h cap` });
+      skipped.push({ gpuTypeId: id, kind: "config", reason: price === null ? `no on-demand price under the $${maxPrice}/h cap (${priceBound})` : overCap(price) });
       continue;
     }
     if (settings.datacenterId && entry.dataCenters.length > 0 && !entry.dataCenters.some((dc) => dc.id === settings.datacenterId)) {
-      skipped.push({ gpuTypeId: id, reason: `not offered in ${settings.datacenterId} (the volume's datacenter)` });
+      skipped.push({ gpuTypeId: id, kind: "stock", reason: `not offered in ${settings.datacenterId} (the volume's datacenter)` });
       continue;
     }
     candidates.push({ gpuTypeId: id, pricePerHr: price, memoryInGb: entry.memoryInGb });

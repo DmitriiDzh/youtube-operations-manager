@@ -243,7 +243,7 @@ export type MediaSession = {
   /** BL-206: true when `firstApprovedAt` is the earliest capacity attempt of a session from before schema v100 (approximate). */
   firstApprovedApproximate: boolean;
   /** BL-206: the GPU candidates the first placement skipped before any try, with the reason; null = no placement recorded. */
-  gpuSkipped: Array<{ gpuTypeId: string; reason: string }> | null;
+  gpuSkipped: Array<{ gpuTypeId: string; reason: string; kind?: "stock" | "config" }> | null;
   startedAt: string | null;
   readyAt: string | null;
   lastActivityAt: string | null;

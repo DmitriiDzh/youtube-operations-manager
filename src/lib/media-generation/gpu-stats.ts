@@ -35,7 +35,8 @@ export type GpuWaitRecord = {
   /** The GPU the session got (null unless ready). */
   gpuTypeId: string | null;
   capacityAttempts: number;
-  skipped: Array<{ gpuTypeId: string; reason: string }> | null;
+  /** BL-208: `kind` (stock | config) on records stored from 1.28.0 on; older records have none. */
+  skipped: Array<{ gpuTypeId: string; reason: string; kind?: "stock" | "config" }> | null;
   /** For a failed session: the code its error starts with (`media_no_capacity`), else its first words as a code. */
   failureReason: string | null;
   usdCharged: number | null;

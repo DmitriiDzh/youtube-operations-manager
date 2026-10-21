@@ -388,6 +388,7 @@ test("AC-FO-07: a channel tool name is not callable on the factory endpoint", as
 // BL-180: 1.21.0 (the Veo 3.1 previews leave the Gemini catalog; no tool is added or removed). BL-134: 1.22.0 (gated HF pulls;
 // no tool is added or removed). BL-206 (GPU_STATS_PLAN.md §2.C): 1.26.0 and the READ tool factory_media_get_gpu_stats after the log.
 // BL-207 (LIVE_LOCALIZATIONS_PLAN.md §2 stage 4): 1.27.0 and the WRITE tool factory_live_save_localizations after the map.
+// BL-208 (GPU_START_FIXES_PLAN.md): 1.28.0, no tool added or removed.
 test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), READ and WRITE, the tool list and the write tools", async () => {
   const { endpoint, tokenServices } = setup();
   const { token } = await tokenServices.issueToken({});
@@ -395,7 +396,7 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.27.0", // BL-207: factory_live_save_localizations, localizations in factory_live_get_status
+    factoryApiVersion: "1.28.0", // BL-208: gpuSkipped on a factory start, the availability log per CUDA minimum (additive)
     tools: [
       "factory_get_capabilities",
       "factory_list_logical_paths",

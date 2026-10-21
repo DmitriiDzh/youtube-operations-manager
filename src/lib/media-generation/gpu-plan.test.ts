@@ -96,3 +96,54 @@ test("AC-CU-01: RunPod's 'no longer any instances available' answer (400) is no 
   assert.equal(classifyCreatePodFailure(api(402, `RunPod API returned HTTP 402: ${text}`)), "fatal");
   assert.equal(classifyCreatePodFailure(api(400, "RunPod API returned HTTP 400: allowedCudaVersions[0] must be one of 11.8, 12.0, ...")), "fatal", "a bad request is not capacity");
 });
+
+// -- BL-208 (docs/roadmap/plans/GPU_START_FIXES_PLAN.md §E/§D, AC-SF-02/06; FO-MSG-0020), written before the code ------------------
+// Expected strings are the plan's own wording: "$1.19/h is over the $1/h cap (Settings)"; a session cap stricter than the Settings'
+// is named "(session)"; stock skips (not in the catalog, datacenter not listed) are `stock`, bound skips are `config`.
+
+test("AC-SF-06: a 5090 at $1.19 under a $1 Settings cap is skipped as config, the reason naming the Settings cap", () => {
+  const { candidates, skipped } = resolveGpuCandidates({
+    plan: null,
+    settings: { ...SETTINGS, gpuTypeId: "NVIDIA GeForce RTX 5090", gpuFallbackIds: [], gpuMaxPricePerHr: 1 },
+    catalog: [gpu("NVIDIA GeForce RTX 5090", 32, 1.19, ["EU-RO-1"])],
+  });
+  assert.deepEqual(candidates, []);
+  assert.deepEqual(skipped, [{ gpuTypeId: "NVIDIA GeForce RTX 5090", kind: "config", reason: "$1.19/h is over the $1/h cap (Settings)" }]);
+});
+
+test("AC-SF-06: with a session cap of $0.80 under a $2 Settings cap the reason names the session cap; the VRAM reason names its bound too", () => {
+  const { skipped } = resolveGpuCandidates({
+    plan: { candidates: ["NVIDIA GeForce RTX 5090", "NVIDIA RTX A4000"], minVramGb: 20, maxPricePerHr: 0.8 },
+    settings: { ...SETTINGS, gpuMaxPricePerHr: 2, gpuMinVramGb: 16 },
+    catalog: [gpu("NVIDIA GeForce RTX 5090", 32, 1.19, ["EU-RO-1"]), gpu("NVIDIA RTX A4000", 16, 0.25, ["EU-RO-1"])],
+  });
+  assert.deepEqual(skipped, [
+    { gpuTypeId: "NVIDIA GeForce RTX 5090", kind: "config", reason: "$1.19/h is over the $0.8/h cap (session)" },
+    { gpuTypeId: "NVIDIA RTX A4000", kind: "config", reason: "16 GB VRAM is under the 20 GB minimum (session)" },
+  ]);
+  // A session value equal to (or looser than) the owner's leaves the owner's bound in force: named Settings.
+  const owner = resolveGpuCandidates({
+    plan: { candidates: ["NVIDIA RTX A4000"], minVramGb: 24, maxPricePerHr: null },
+    settings: { ...SETTINGS, gpuMinVramGb: 24 },
+    catalog: [gpu("NVIDIA RTX A4000", 16, 0.25, ["EU-RO-1"])],
+  });
+  assert.deepEqual(owner.skipped, [{ gpuTypeId: "NVIDIA RTX A4000", kind: "config", reason: "16 GB VRAM is under the 24 GB minimum (Settings)" }]);
+});
+
+test("BL-208 §E: a GPU missing from the catalog and one whose datacenters do not include the volume's are `stock` skips", () => {
+  const { skipped } = resolveGpuCandidates({
+    plan: { candidates: ["NVIDIA L40S", "NVIDIA H200 (made up)"], minVramGb: null, maxPricePerHr: null },
+    settings: SETTINGS,
+    catalog: CATALOG,
+  });
+  assert.deepEqual(skipped, [
+    { gpuTypeId: "NVIDIA L40S", kind: "stock", reason: "not offered in EU-RO-1 (the volume's datacenter)" },
+    { gpuTypeId: "NVIDIA H200 (made up)", kind: "stock", reason: "not in RunPod's GPU catalog" },
+  ]);
+});
+
+test("AC-SF-02: an empty catalog ([]) is read like an unreadable one -- every listed candidate is tried, nothing is skipped", () => {
+  const { candidates, skipped } = resolveGpuCandidates({ plan: { candidates: ["NVIDIA GeForce RTX 4090"], minVramGb: null, maxPricePerHr: null }, settings: SETTINGS, catalog: [] });
+  assert.deepEqual(candidates, [{ gpuTypeId: "NVIDIA GeForce RTX 4090", pricePerHr: 0.74, memoryInGb: null }]);
+  assert.deepEqual(skipped, []);
+});

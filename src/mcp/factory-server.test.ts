@@ -256,7 +256,9 @@ test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.23.0 
   // listing per-datacenter NONE rows (its summary counts stay the same).
   // BL-207 (LIVE_LOCALIZATIONS_PLAN.md §2 stage 4): 1.27.0 -- the WRITE tool factory_live_save_localizations and the additive
   // `localizations` of factory_live_get_status.
-  assert.equal(FACTORY_API_VERSION, "1.27.0");
+  // BL-208 (GPU_START_FIXES_PLAN.md): 1.28.0 -- factory_media_start_session answers gpuSkipped, skips carry kind, and the availability
+  // log / stats read one CUDA minimum (optional minCudaVersion, echoed with the minimums present). Additive.
+  assert.equal(FACTORY_API_VERSION, "1.28.0");
   const agentOperations = await readFile("src/lib/agent-operations/contracts.ts", "utf8");
   assert.equal(agentOperations.includes("FACTORY_API_VERSION"), false);
 });

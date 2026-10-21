@@ -2829,7 +2829,8 @@ test("AC-GS-07: a candidate not offered in the volume's datacenter is stored as 
   const requested = await f.services.requestSession(operatorRequest);
   const waiting = await f.services.approveAndStartSession({ sessionId: requested.sessionId });
   assert.equal(waiting.status, "waiting_capacity");
-  const expected = [{ gpuTypeId: FIVE, reason: "not offered in EU-RO-1 (the volume's datacenter)" }];
+  // BL-208 (GPU_START_FIXES_PLAN.md §E, FO-MSG-0020): every skip now carries its kind (a datacenter skip is `stock`).
+  const expected = [{ gpuTypeId: FIVE, kind: "stock", reason: "not offered in EU-RO-1 (the volume's datacenter)" }];
   assert.deepEqual(waiting.gpuSkipped, expected);
   // The catalog changes before the retry: the retry skips nothing, the first placement's record stays.
   fiveOffered = ["EU-RO-1"];
@@ -2841,12 +2842,14 @@ test("AC-GS-07: a candidate not offered in the volume's datacenter is stored as 
 });
 
 test("AC-GS-07: when no candidate qualifies the session fails and the skipped list is still stored; a first placement that skips nothing stores []", async () => {
-  const f = fixture({ runpod: fakeRunpod({ catalog: () => [catalogGpu(FOUR, 24, ["US-IL-1"])] }), settings: { gpuTypeId: FOUR } });
+  // BL-208 (GPU_START_FIXES_PLAN.md §E AC-SF-01/03, FO-MSG-0020): a datacenter-only skip now WAITS for capacity, so the "no candidate
+  // qualifies -> failed" case is a bound (config) skip -- the 24 GB 4090 under a 32 GB Settings minimum; skips carry their kind.
+  const f = fixture({ runpod: fakeRunpod({ catalog: () => [catalogGpu(FOUR, 24, ["EU-RO-1"])] }), settings: { gpuTypeId: FOUR, gpuMinVramGb: 32 } });
   const requested = await f.services.requestSession(operatorRequest);
   await assert.rejects(f.services.approveAndStartSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_session_start_failed");
   const failed = f.mem.rows.get(requested.sessionId)!;
   assert.equal(failed.status, "failed");
-  assert.deepEqual(JSON.parse(failed.gpuSkippedJson ?? "null"), [{ gpuTypeId: FOUR, reason: "not offered in EU-RO-1 (the volume's datacenter)" }]);
+  assert.deepEqual(JSON.parse(failed.gpuSkippedJson ?? "null"), [{ gpuTypeId: FOUR, kind: "config", reason: "24 GB VRAM is under the 32 GB minimum (Settings)" }]);
 
   const g = fixture({ runpod: fakeRunpod({ catalog: () => [catalogGpu(FOUR, 24, ["EU-RO-1"])] }), settings: { gpuTypeId: FOUR } });
   const running = await startRunning(g);
@@ -2873,5 +2876,167 @@ test("BL-206 review: an unreadable catalog records no skipped list; the first re
   full = false;
   f.advance(31_000);
   assert.equal((await tick1(f.services)).action, "retried_start");
-  assert.deepEqual(JSON.parse(f.mem.rows.get(requested.sessionId)?.gpuSkippedJson ?? "null"), [{ gpuTypeId: FIVE, reason: "not offered in EU-RO-1 (the volume's datacenter)" }]);
+  // BL-208 (GPU_START_FIXES_PLAN.md §E, FO-MSG-0020): the stored skip carries its kind.
+  assert.deepEqual(JSON.parse(f.mem.rows.get(requested.sessionId)?.gpuSkippedJson ?? "null"), [{ gpuTypeId: FIVE, kind: "stock", reason: "not offered in EU-RO-1 (the volume's datacenter)" }]);
+});
+
+// -- BL-208 (docs/roadmap/plans/GPU_START_FIXES_PLAN.md §E/§D, AC-SF-01..05/07; FO-MSG-0020), written before the code ----------------
+// A start whose candidates were all skipped for a STOCK reason (RunPod's catalog) waits for capacity instead of failing; bound
+// (config) skips still fail at once; an empty catalog is read like an unreadable one; the factory start answers gpuSkipped.
+
+const NOT_IN_EU = "not offered in EU-RO-1 (the volume's datacenter)";
+
+test("AC-SF-01: the catalog lists the 4090 without EU-RO-1 (volume in EU-RO-1), plan = [4090] -> waiting_capacity, no createPod, the error names the datacenter", async () => {
+  const runpod = fakeRunpod({ catalog: () => [catalogGpu(FOUR, 24, ["US-IL-1"])] });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR, capacityRetrySeconds: 30, capacityWaitMinutes: 30 } });
+  const requested = await f.services.requestSession({ ...operatorRequest, gpu: { candidates: [FOUR] } });
+  const waiting = await f.services.approveAndStartSession({ sessionId: requested.sessionId });
+  assert.equal(waiting.status, "waiting_capacity");
+  assert.equal(waiting.podId, null);
+  assert.deepEqual(runpod.createInputs, [], "a stock-skipped candidate is never tried with createPod");
+  assert.equal(waiting.capacity?.attempts, 1);
+  assert.match(waiting.error ?? "", /not offered in EU-RO-1/);
+  assert.equal(waiting.error, `waiting for capacity: ${FOUR} skipped: ${NOT_IN_EU}`);
+  assert.deepEqual(waiting.gpuSkipped, [{ gpuTypeId: FOUR, kind: "stock", reason: NOT_IN_EU }]);
+});
+
+test("AC-SF-02: with an empty catalog ([]) createPod is tried for the 4090, as with an unreadable catalog; nothing is recorded as skipped", async () => {
+  const runpod = fakeRunpod({ catalog: () => [] });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR } });
+  const requested = await f.services.requestSession({ ...operatorRequest, gpu: { candidates: [FOUR] } });
+  const running = await f.services.approveAndStartSession({ sessionId: requested.sessionId });
+  assert.equal(running.status, "running");
+  assert.deepEqual(runpod.calls.filter((c) => c.startsWith("createPod:")), [`createPod:${FOUR}`]);
+  assert.equal(running.gpuSkipped, null, "an empty catalog checked nothing");
+});
+
+test("AC-SF-03: only price-cap skips (4090 at $0.69 under a $0.50 Settings cap) fail at once with media_session_start_failed, as before", async () => {
+  const runpod = fakeRunpod({ catalog: () => [catalogGpu(FOUR, 24, ["EU-RO-1"])] });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR, gpuMaxPricePerHr: 0.5 } });
+  const requested = await f.services.requestSession({ ...operatorRequest, gpu: { candidates: [FOUR] } });
+  await assert.rejects(
+    f.services.approveAndStartSession({ sessionId: requested.sessionId }),
+    (e: unknown) => isDomainError(e) && e.code === "media_session_start_failed" && /\$0\.69\/h is over the \$0\.5\/h cap \(Settings\)/.test(e.message)
+  );
+  const row = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "failed");
+  assert.equal(row.capacityAttempts ?? 0, 0, "never waited");
+  assert.deepEqual(runpod.createInputs, []);
+});
+
+test("AC-SF-04: waiting as in AC-SF-01, the next round's catalog lists EU-RO-1 -> createPod is sent and the pod is placed", async () => {
+  let dcs = ["US-IL-1"];
+  const runpod = fakeRunpod({ catalog: () => [catalogGpu(FOUR, 24, dcs)] });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR, capacityRetrySeconds: 30, capacityWaitMinutes: 30, idleMinutes: 1000 } });
+  const requested = await f.services.requestSession({ ...operatorRequest, gpu: { candidates: [FOUR] } });
+  assert.equal((await f.services.approveAndStartSession({ sessionId: requested.sessionId })).status, "waiting_capacity");
+  dcs = ["EU-RO-1"];
+  f.advance(31_000);
+  assert.equal((await tick1(f.services)).action, "retried_start");
+  const row = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "running");
+  assert.equal(row.podId, "pod1");
+  assert.deepEqual(runpod.calls.filter((c) => c.startsWith("createPod:")), [`createPod:${FOUR}`]);
+});
+
+test("AC-SF-05: waiting as in AC-SF-01 past capacityWaitMinutes -> failed media_no_capacity, the message naming the datacenter reason", async () => {
+  const runpod = fakeRunpod({ catalog: () => [catalogGpu(FOUR, 24, ["US-IL-1"])] });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR, capacityRetrySeconds: 30, capacityWaitMinutes: 2 } });
+  const requested = await f.services.requestSession({ ...operatorRequest, gpu: { candidates: [FOUR] } });
+  await f.services.approveAndStartSession({ sessionId: requested.sessionId });
+  // Rounds every 30 s keep it waiting (each re-reads the catalog); past the 2 min it fails.
+  for (let i = 0; i < 3; i++) {
+    f.advance(31_000);
+    await tick1(f.services);
+    assert.equal(f.mem.rows.get(requested.sessionId)?.status, "waiting_capacity");
+  }
+  f.advance(2 * 60_000);
+  assert.equal((await tick1(f.services)).action, "stopped");
+  const row = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "failed");
+  assert.match(row.error ?? "", /^media_no_capacity: /);
+  assert.match(row.error ?? "", /not offered in EU-RO-1/);
+  assert.deepEqual(runpod.createInputs, []);
+  assert.equal(row.usdCharged, 0);
+});
+
+test("BL-208 §E: a mix -- the 5090 skipped for the datacenter, the 4090 'could not be placed' -> waiting; the text names both", async () => {
+  const runpod = fakeRunpod({ capacity: () => true, catalog: () => [catalogGpu(FOUR, 24, ["EU-RO-1"]), catalogGpu(FIVE, 32, ["US-IL-1"])] });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR, gpuFallbackIds: [FIVE] } });
+  const requested = await f.services.requestSession(operatorRequest);
+  const waiting = await f.services.approveAndStartSession({ sessionId: requested.sessionId });
+  assert.equal(waiting.status, "waiting_capacity");
+  assert.equal(
+    waiting.error,
+    `waiting for capacity: ${FOUR}: RunPod API returned HTTP 400: This GPU and data center combination could not be placed.; ${FIVE} skipped: ${NOT_IN_EU}`
+  );
+});
+
+test("BL-208 §E: only config skips fail at once; no candidate left with a config skip AND a stock skip -> waiting (one skip is stock)", async () => {
+  const runpod = fakeRunpod({ catalog: () => [catalogGpu(FOUR, 24, ["US-IL-1"]), catalogGpu(FIVE, 32, ["EU-RO-1"])] });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR, gpuFallbackIds: [FIVE], gpuMinVramGb: 40 } });
+  const requested = await f.services.requestSession(operatorRequest);
+  // The 4090 is under the 40 GB minimum (config) before its datacenter is looked at; the 5090 too -- both config: fails at once.
+  await assert.rejects(f.services.approveAndStartSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_session_start_failed");
+  assert.equal(f.mem.rows.get(requested.sessionId)?.status, "failed");
+  const g = fixture({
+    runpod: fakeRunpod({ catalog: () => [catalogGpu(FOUR, 24, ["EU-RO-1"]), catalogGpu(FIVE, 48, ["US-IL-1"])] }),
+    settings: { gpuTypeId: FOUR, gpuFallbackIds: [FIVE], gpuMinVramGb: 40 },
+  });
+  const other = await g.services.requestSession(operatorRequest);
+  const mixed = await g.services.approveAndStartSession({ sessionId: other.sessionId });
+  assert.equal(mixed.status, "waiting_capacity", "4090: config (24 GB < 40), 5090: stock (not in EU-RO-1)");
+  assert.deepEqual(
+    mixed.gpuSkipped?.map((s) => [s.gpuTypeId, s.kind]),
+    [
+      [FOUR, "config"],
+      [FIVE, "stock"],
+    ]
+  );
+});
+
+test("AC-SF-07: factory_media_start_session's answer carries gpuSkipped with kind and reason for a skipped 5090, from one catalog read", async () => {
+  let catalogReads = 0;
+  const runpod = fakeRunpod({
+    catalog: () => {
+      catalogReads += 1;
+      return [catalogGpu(FOUR, 24, ["EU-RO-1"]), { ...catalogGpu(FIVE, 32, ["EU-RO-1"]), onDemandPricePerHr: 1.19 }];
+    },
+  });
+  const f = fixture({ runpod, settings: { ...FACTORY_ON, gpuTypeId: FOUR, gpuFallbackIds: [FIVE], gpuMaxPricePerHr: 1 } });
+  const result = await f.services.factoryStartSession({ channelId: "UC1" });
+  assert.equal(result.approved, true);
+  assert.deepEqual(result.gpuSkipped, [{ gpuTypeId: FIVE, kind: "config", reason: "$1.19/h is over the $1/h cap (Settings)" }]);
+  await settle();
+  assert.equal(f.mem.rows.get(result.session.sessionId)?.status, "running");
+  assert.equal(catalogReads, 1, "the start used the catalog the answer was built from");
+});
+
+test("AC-SF-07: gpuSkipped is null when the catalog cannot be read, and for a request held for the owner (no RunPod call)", async () => {
+  const unreadable = fixture({
+    runpod: fakeRunpod({
+      catalog: () => {
+        throw new Error("RunPod catalog unavailable");
+      },
+    }),
+    settings: { ...FACTORY_ON, gpuTypeId: FOUR },
+  });
+  const started = await unreadable.services.factoryStartSession({ channelId: "UC1" });
+  assert.equal(started.approved, true);
+  assert.equal(started.gpuSkipped, null);
+  let reads = 0;
+  const held = fixture({
+    runpod: fakeRunpod({
+      catalog: () => {
+        reads += 1;
+        return [catalogGpu(FOUR, 24, ["EU-RO-1"])];
+      },
+    }),
+    settings: { factorySessionsEnabled: false, gpuTypeId: FOUR },
+  });
+  const pending = await held.services.factoryStartSession({ channelId: "UC1" });
+  assert.equal(pending.approved, false);
+  assert.equal(pending.gpuSkipped, null);
+  assert.equal(reads, 0);
+  await settle();
 });

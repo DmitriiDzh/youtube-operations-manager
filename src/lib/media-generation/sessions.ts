@@ -1,5 +1,5 @@
 import type { EncryptedPayload } from "@/lib/shared-crypto";
-import type { ComfyUiClient, RunpodApiClient, RunpodPod } from "@/lib/media-gateway";
+import type { ComfyUiClient, RunpodApiClient, RunpodGpuType, RunpodPod } from "@/lib/media-gateway";
 import {
   type MediaCapacityResult,
   COMFY_PROXY_PORT,
@@ -16,7 +16,7 @@ import {
   type MediaSettings,
 } from "./contracts";
 import { allowedCudaVersionsFor, comfyCudaDevice, higherCudaVersion, hostCudaTooOld } from "./cuda-host";
-import { classifyCreatePodFailure, resolveGpuCandidates, type GpuCandidate } from "./gpu-plan";
+import { classifyCreatePodFailure, describeGpuSkips, resolveGpuCandidates, type GpuCandidate, type GpuSkip, type GpuSkipKind } from "./gpu-plan";
 import { findLivePodByName, terminateAndConfirm as terminateAndConfirmPod, type TerminateOutcome } from "./pod-lifecycle";
 import { describeVolumeLockHolder, type VolumeLock } from "./volume-lock";
 import { round2 } from "@/lib/shared-money";
@@ -197,6 +197,13 @@ const isActive = (row: StoredSessionRow) => (MEDIA_SESSION_ACTIVE_STATUSES as re
 
 export type WatchTickResult = { action: "none" | "stopped" | "interrupted" | "retried_stop" | "retried_start"; sessionId: string | null; reason: string | null };
 
+/** RunPod's GPU catalog for a start; an unreadable one is null (never a reason to refuse a start: the candidates are tried as listed). */
+async function readGpuCatalog(client: RunpodApiClient, settings: Pick<MediaSettings, "cloudType">): Promise<RunpodGpuType[] | null> {
+  return Promise.resolve()
+    .then(() => client.listGpuTypes({ cloud: settings.cloudType }))
+    .catch(() => null);
+}
+
 /** BL-200: the ComfyUI version `/system_stats` reports (`system.comfyui_version`), or null when it says none. */
 export function comfyVersionOf(stats: Record<string, unknown>): string | null {
   const system = stats.system;
@@ -231,15 +238,18 @@ export function liveUsd(row: StoredSessionRow, now: Date): number | null {
   return round2((seconds * row.costPerHr) / 3600);
 }
 
-/** BL-206: the stored skipped candidates; an unreadable value reads as null (not recorded), never as a throw. */
-export function parseGpuSkipped(json: string | null): Array<{ gpuTypeId: string; reason: string }> | null {
+/**
+ * BL-206: the stored skipped candidates; an unreadable value reads as null (not recorded), never as a throw. BL-208: an entry's
+ * `kind` (stock | config) is kept when it is one of the two; records from before 1.28.0 have none and stay without it.
+ */
+export function parseGpuSkipped(json: string | null): Array<{ gpuTypeId: string; reason: string; kind?: GpuSkipKind }> | null {
   if (!json) return null;
   try {
     const parsed: unknown = JSON.parse(json);
     if (!Array.isArray(parsed)) return null;
     return parsed
-      .filter((entry): entry is { gpuTypeId: string; reason: string } => typeof entry?.gpuTypeId === "string" && typeof entry?.reason === "string")
-      .map((entry) => ({ gpuTypeId: entry.gpuTypeId, reason: entry.reason }));
+      .filter((entry): entry is { gpuTypeId: string; reason: string; kind?: unknown } => typeof entry?.gpuTypeId === "string" && typeof entry?.reason === "string")
+      .map((entry) => ({ gpuTypeId: entry.gpuTypeId, reason: entry.reason, ...(entry.kind === "stock" || entry.kind === "config" ? { kind: entry.kind } : {}) }));
   } catch {
     return null;
   }
@@ -600,7 +610,14 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
    * The approve itself (owner: Web route; factory: within its limits, BL-133). Preconditions first, none of which changes
    * the row; then the guarded `pending -> approved`; the start continues in the background.
    */
-  async function approveInner(input: { sessionId: unknown; approvedByUserId?: string | null; approvedBy: "owner" | "factory"; onStage?: (text: string) => void }): Promise<{ session: MediaSession; started: Promise<MediaSession> }> {
+  async function approveInner(input: {
+    sessionId: unknown;
+    approvedByUserId?: string | null;
+    approvedBy: "owner" | "factory";
+    onStage?: (text: string) => void;
+    /** BL-208 §D: the GPU catalog the factory start already read (its first placement then reads none of its own). */
+    catalog?: RunpodGpuType[] | null;
+  }): Promise<{ session: MediaSession; started: Promise<MediaSession> }> {
     const { sessionId } = parseWithSchema(sessionIdInputSchema, { sessionId: input.sessionId }, "approve session");
     const onStage = input.onStage ?? (() => undefined);
     const row = await requireRow(sessionId);
@@ -675,7 +692,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         details: { sessionId, activeSessions: active.map((r) => r.id), otherDevicesActiveSessions: others.otherActiveSessions, maxConcurrentSessions: settings.maxConcurrentSessions },
       });
     }
-    const started = startApproved(approved, settings, client, token, onStage);
+    const started = startApproved(approved, settings, client, token, onStage, input.catalog ?? null);
     started.catch(() => undefined); // the outcome is on the row; a caller that ignores `started` must not crash the process
     return { session: toPublicSession(approved, now), started };
   
@@ -778,7 +795,15 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
    * `startedAt` = now, which is when RunPod starts billing) -> running once ComfyUI answers behind the token proxy. A
    * failure after the pod exists terminates it and ends the session `failed` (AC-P14-07).
    */
-  async function startApproved(approved: StoredSessionRow, settings: MediaSettings, client: RunpodApiClient, token: string, onStage: (text: string) => void): Promise<MediaSession> {
+  async function startApproved(
+    approved: StoredSessionRow,
+    settings: MediaSettings,
+    client: RunpodApiClient,
+    token: string,
+    onStage: (text: string) => void,
+    /** BL-208 §D: a catalog the factory start read moments ago (its answer's gpuSkipped) -- used instead of a second read. */
+    prereadCatalog: RunpodGpuType[] | null = null
+  ): Promise<MediaSession> {
     const sessionId = approved.id;
     onStage("Creating the pod");
     // BL-133 (FACTORY_GPU_SESSIONS_PLAN.md §2.3): the candidates are tried in order -- the session's own plan, else the
@@ -792,15 +817,20 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     // createPod calls asked for -- the reason a raised minimum can find no host. Best effort; the row may have moved on.
     await deps.store.transition(approved.id, ["approved"], { status: "approved", usedMinCudaVersion: minCudaVersion }).catch(() => null);
     // An unreadable catalog is not a reason to refuse a start: the listed candidates are then tried as they are.
-    const catalog = await Promise.resolve()
-      .then(() => client.listGpuTypes({ cloud: settings.cloudType }))
-      .catch(() => null);
+    // BL-208 (AC-SF-02): an empty catalog ([]) is read like an unreadable one -- nothing can be checked, nothing is recorded.
+    const readCatalog = prereadCatalog && prereadCatalog.length > 0 ? prereadCatalog : await readGpuCatalog(client, settings);
+    const catalog = readCatalog && readCatalog.length > 0 ? readCatalog : null;
     const { candidates, skipped } = resolveGpuCandidates({ plan, settings, catalog });
+    const skipLines = describeGpuSkips(skipped);
     // BL-206 (GPU_STATS_PLAN.md §2.B, AC-GS-07): the candidates the FIRST placement skipped, kept on the row ([] = none); a capacity
     // retry runs this again and leaves the first record as it is. Best effort, like the minimum above: a lost record never stops a start.
     // Without a catalog nothing could be checked, so nothing is recorded: the first placement that reads one records it (review).
     if (approved.gpuSkippedJson == null && catalog !== null) await deps.store.transition(approved.id, ["approved"], { status: "approved", gpuSkippedJson: JSON.stringify(skipped) }).catch(() => null);
     if (candidates.length === 0) {
+      // BL-208 (GPU_START_FIXES_PLAN.md §E, AC-SF-01/03): a skip for a stock reason (RunPod's catalog, known to be wrong both ways)
+      // WAITS like "could not be placed" -- the watcher re-reads the catalog every capacityRetrySeconds; no stock-skipped candidate
+      // is tried with createPod. Only bound (config) skips fail at once: a wrong cap must not wait 30 min for nothing.
+      if (skipped.some((s) => s.kind === "stock")) return waitForCapacity(approved, settings, skipLines);
       const detail = skipped.map((s) => `${s.gpuTypeId}: ${s.reason}`).join("; ") || "no GPU is configured";
       await finish(approved, ["approved"], "failed", { error: `no GPU candidate qualifies: ${detail}` });
       throw new DomainError({ code: "media_session_start_failed", message: `No GPU candidate qualifies: ${detail}.`, details: { sessionId, skipped } });
@@ -904,14 +934,17 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
           const kind = classifyCreatePodFailure(error);
           await recordAttempt(sessionId, settings, candidate, kind === "no_capacity" ? "no_capacity" : "error", message);
           if (kind === "fatal") {
-            await finish(row, ["approved"], "failed", { error: `pod creation failed: ${message}`, ...endedEarly() });
-            throw new DomainError({ code: "media_session_start_failed", message: `Pod creation failed: ${message}`, details: { sessionId } });
+            // BL-208 §D: the candidates skipped before any try are named too.
+            const skippedNote = skipLines.length > 0 ? ` (${skipLines.join("; ")})` : "";
+            await finish(row, ["approved"], "failed", { error: `pod creation failed: ${message}${skippedNote}`, ...endedEarly() });
+            throw new DomainError({ code: "media_session_start_failed", message: `Pod creation failed: ${message}${skippedNote}`, details: { sessionId } });
           }
           failures.push(`${candidate.gpuTypeId}: ${message}`);
         }
       }
       if (!pod || !used) {
-        if (placement === 0) return waitForCapacity(row, settings, failures);
+        // BL-208 §D: the waiting / no-capacity texts name the skipped candidates besides the createPod failures.
+        if (placement === 0) return waitForCapacity(row, settings, [...failures, ...skipLines]);
         // A re-placement never WAITS: the row's billing window is open (it started with the first pod), so a wait would bill
         // the idle minutes. The session fails with the reason it had to be placed again.
         const message = `${lastMismatch ?? "incompatible GPU host"}; no other host could be placed (${failures.join("; ")})`;
@@ -1564,7 +1597,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       templateMinCudaVersion?: string | null;
       /** BL-200: the runtime to run (absent = the active one, null = the image's built-in ComfyUI); refused if not built. */
       runtimeId?: string | null;
-    }): Promise<{ session: MediaSession; approved: boolean; heldBy: string | null }> {
+    }): Promise<{ session: MediaSession; approved: boolean; heldBy: string | null; gpuSkipped: GpuSkip[] | null }> {
       const settings = await deps.base.getSettings();
       // BL-159 (AC-SC-01): the call's value, else the template's; either may only raise the owner's floor (at placement).
       const ownMinCuda = input.minCudaVersion ?? input.templateMinCudaVersion ?? undefined;
@@ -1599,19 +1632,28 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       if (held) {
         await recordSessionEvent({ actor: "factory", action: "session_held_for_owner", subject: row.id, details: { reason: held } });
         const kept = await deps.store.transition(row.id, ["pending"], { status: "pending", reason: `started by the Factory Operator; waits for the owner: ${held}` });
-        return { session: toPublicSession(kept ?? row, now), approved: false, heldBy: held };
+        // BL-208 §D: a held request starts nothing, so no catalog is read for it (no RunPod call): gpuSkipped is null.
+        return { session: toPublicSession(kept ?? row, now), approved: false, heldBy: held, gpuSkipped: null };
       }
+      // BL-208 (GPU_START_FIXES_PLAN.md §D, AC-SF-07): the answer names the candidates the start will skip, from ONE catalog read made
+      // here, before the approval -- the start runs on in the background, so its own placement comes after this answer. The same
+      // catalog is handed to the start (no second read). null = the catalog could not be read (or was empty).
+      const catalogClient = await deps.base.resolveRunpodClient().catch(() => null);
+      const readCatalog = catalogClient ? await readGpuCatalog(catalogClient, settings) : null;
+      const catalog = readCatalog && readCatalog.length > 0 ? readCatalog : null;
+      const plan = row.gpuPlanJson ? (JSON.parse(row.gpuPlanJson) as MediaGpuPlan) : null;
+      const gpuSkipped = catalog ? resolveGpuCandidates({ plan, settings, catalog }).skipped : null;
       try {
-        const { session } = await approveInner({ sessionId: row.id, approvedBy: "factory" });
+        const { session } = await approveInner({ sessionId: row.id, approvedBy: "factory", catalog });
         await recordSessionEvent({ actor: "factory", action: "session_started", subject: row.id, details: { maxMinutes: row.maxMinutes, maxUsd: row.maxUsd } });
-        return { session, approved: true, heldBy: null };
+        return { session, approved: true, heldBy: null, gpuSkipped };
       } catch (error) {
         // A DEVICE limit (daily cap, concurrency, a pull on the volume, settings changed): the request stays pending.
         const reason = error instanceof Error ? error.message : String(error);
         await recordSessionEvent({ actor: "factory", action: "session_held_for_owner", subject: row.id, details: { reason } });
         const latest = await requireRow(row.id);
         if (latest.status !== "pending") throw error;
-        return { session: toPublicSession(latest, deps.clock.now()), approved: false, heldBy: reason };
+        return { session: toPublicSession(latest, deps.clock.now()), approved: false, heldBy: reason, gpuSkipped: null };
       }
     },
 
