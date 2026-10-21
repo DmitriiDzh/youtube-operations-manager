@@ -92,3 +92,4 @@ next-env.d.ts
 
 # BL-116: the detached server's output (both launchers)
 /.launcher.log
+/.launcher.log.1
