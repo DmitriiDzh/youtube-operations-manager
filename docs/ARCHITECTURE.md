@@ -3010,7 +3010,8 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
 - **CUDA host check and re-placement (BL-155, `docs/roadmap/plans/CUDA_HOSTS_PLAN.md`, FO-REQ-0007, no schema change).** Setting
   `minCudaVersion` (12.8 default; null and no session minimum (BL-159) = no create-pod filter and no host-version check -- the
   host's version is still read, for display only) → every createPod sends
-  `gpu.allowedCudaVersions` = the known versions ≥ it (`cuda-host.ts`, pure); no matching host is RunPod's "no capacity". Before
+  `gpu.allowedCudaVersions` = the known versions ≥ it (`cuda-host.ts`, pure; since BL-208 fix I `gpu.minCudaVersion` = the minimum
+  instead -- RunPod matches the list exactly); no matching host is RunPod's "no capacity". Before
   `running` the start reads the host's CUDA -- from the pod answer itself (REST v2 `cudaVersion`, seen live 2026-10-08; the GraphQL fallback was removed 2026-10-20, RISK-134) -- on
   each RUNNING poll until it gets a value or the container is up (then unknown = not blocking), and always requires a `cuda` device
   with VRAM in `/system_stats`. A mismatch terminates the pod (confirmed, else the usual `stopping` path, no second pod), logs a
@@ -3030,7 +3031,7 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   `factory_media_start_session { minCudaVersion? }` or the started template's top-level `minCudaVersion` (call wins) is the session's
   own minimum (`media_sessions.min_cuda_version`; channel agents and the Web UI cannot set it). `startApproved` computes
   `higherCudaVersion(owner, own)` at every start and capacity retry -- the owner's setting is the floor (owner's decision) -- writes it
-  at once to `used_min_cuda_version` (so a session waiting for capacity shows why), and uses it for `allowedCudaVersions`, the host
+  at once to `used_min_cuda_version` (so a session waiting for capacity shows why), and uses it for createPod's CUDA filter (`gpu.minCudaVersion` since BL-208), the host
   check and the mismatch text. The host's CUDA is read with or without a minimum (without one a failed read, even a 401, is unknown)
   and written to `host_cuda_version` and to that placement's own capacity-log row (`insertMediaCapacityAttempt` returns the id,
   `setMediaCapacityAttemptHostCuda`); going back to `approved` for a re-placement clears it. `jobs.ts` `assertHostFitsTemplate`
@@ -3653,11 +3654,18 @@ RunPod reads only through the media gateway (`src/lib/media-gateway/`), so its s
   is listed there with a level other than NONE (BL-206; before it NONE rows were stored too -- 92 % of the rows -- and they are not
   rewritten; a missing row means NONE). A GPU catalog with nothing of 24 GB or more, or a datacenter catalog with no volume tier anywhere, is a failure, not
   a snapshot (it would otherwise count as fresh and hide the gap). The timer in `src/instrumentation.ts` ticks every 5 minutes
-  (first after 5; every 15 before BL-206) behind `assertDeviceAvailableForMutation`, so the gap stays about 15-20 minutes.
+  (first after 5; every 15 before BL-206) behind `assertDeviceAvailableForMutation`, so the gap stays about 15-20 minutes. BL-208
+  (`GPU_START_FIXES_PLAN.md` §F): a tick reads every CUDA minimum in use -- the Settings' plus every installed template's
+  (`listMediaWorkflowTemplateMinCudaVersions`), ascending (`orderCudaMinimums`, `cuda-host.ts`); none anywhere = one read without a
+  filter (key `''`). The datacenter catalog is read once per tick, the GPU catalog once per due minimum; each minimum has its own due
+  check (`latestAt(minimum)`) and back-off, and one minimum's failure never drops another's snapshot. With more than one minimum the
+  tick's outcome lists each one's result in `minimums`.
 - **Storage.** `media_gpu_availability_log` (`at`, `gpu_type_id`, `data_center_id`, `stock`, `price_per_hr`, `min_cuda_version`;
   indexes on `at` and on `(gpu_type_id, data_center_id, at)`). `insertMediaGpuAvailabilitySnapshot` writes a snapshot in one transaction
   (200 rows per insert; no rows = nothing stored, and a snapshot already stored at the same second makes a repeat store nothing) plus its row in `media_gpu_availability_snapshots` (schema v100: `at` PK, `rows`, `min_cuda_version`; the
-  migration backfills every distinct `at` of the log with its row count) and then prunes both tables older than
+  migration backfills every distinct `at` of the log with its row count; schema v102, BL-208: rebuilt in one transaction with the PK
+  `(at, min_cuda_version)`, `min_cuda_version` NOT NULL with `''` = no minimum, rows kept -- a second minimum at the same second is
+  stored, a repeat is not) and then prunes both tables older than
   `GPU_AVAILABILITY_LOG_RETENTION_DAYS` (90; a failed prune is ignored, like the capacity log). `getLatestMediaGpuAvailabilityAt` reads
   the snapshots table. Both classified `not_api_data`, device-local in snapshots.
 - **Reads.** `listGpuAvailabilityLog` backs `factory_media_list_gpu_availability_log`: rows newest first (`listMediaGpuAvailabilityLog`,
@@ -3665,7 +3673,10 @@ RunPod reads only through the media gateway (`src/lib/media-gateway/`), so its s
   (`summarizeMediaGpuAvailabilityLog`), folded per GPU and datacenter by `summarizeGpuAvailabilityGroups`. BL-206: the summary's
   `snapshots`/`firstAt`/`lastAt` come from the snapshots table (time range only), and with `gpuSnapshots` (per GPU, the distinct `at`
   with any row of it) a datacenter entry's NONE = the GPU's snapshots − its other levels, identical for old (NONE stored) and new
-  (NONE implied) snapshots; a GPU × datacenter named together with no row gets one all-NONE entry.
+  (NONE implied) snapshots; a GPU × datacenter named together with no row gets one all-NONE entry. BL-208: every read (latest,
+  rows, summary, `countMediaGpuAvailabilityCells`) is under ONE minimum -- the input `minCudaVersion`, else the Settings' -- the log's
+  nullable column compared as `coalesce(min_cuda_version, '')`; the answers echo `minCudaVersion` and list `minCudaVersions` present
+  in the range (`listMediaGpuAvailabilityMinimums`).
 - **Statistics (BL-206, `gpu-stats.ts`, `factory_media_get_gpu_stats`, Factory API 1.26.0).** `createGpuStatsServices` depends on two
   store reads and the Settings' GPU list only -- no RunPod client is in reach. `countMediaGpuAvailabilityCells` groups in SQL by UTC hour
   (`strftime('%H', at, 'unixepoch')`) and ISO weekday (`(%w + 6) % 7 + 1`): the snapshots taken, per GPU the distinct snapshots with a
@@ -3681,6 +3692,18 @@ RunPod reads only through the media gateway (`src/lib/media-gateway/`), so its s
   from their earliest `media_capacity_attempts.at` and sets `first_approved_approximate`. `startApproved` stores
   `resolveGpuCandidates().skipped` as `gpu_skipped_json` only while the row has none and the catalog could be read (so the first
   placement that could check the candidates is the one recorded), best effort like `usedMinCudaVersion`, also when no candidate qualifies.
+- **Start fixes E + D + I (BL-208, `docs/roadmap/plans/GPU_START_FIXES_PLAN.md`, FO-REQ-0035, Factory API 1.28.0).** Every skip from
+  `resolveGpuCandidates` has a `kind`: `stock` (not in RunPod's catalog; the catalog does not list the volume's datacenter for it) or
+  `config` (VRAM under the minimum, price over the cap, no price under a cap); a bound skip's reason names it `(Settings)` or
+  `(session)` (the session's value only when strictly tighter). An empty catalog (`[]`) is read like an unreadable one. When no
+  candidate is left, `startApproved` goes to `waitForCapacity` if any skip is `stock` (no createPod for a stock-skipped candidate; the
+  watcher re-reads the catalog every round, `media_no_capacity` after the wait) and fails at once (`media_session_start_failed`) only
+  with `config` skips; the waiting / no-capacity / start-failed texts list the skips (`describeGpuSkips`) besides the createPod
+  failures. `factoryStartSession` reads the catalog once before the approval, answers `gpuSkipped` (null when unreadable or when the
+  request is held) and hands that catalog to the start (`prereadCatalog`, no second read). `parseGpuSkipped` keeps `kind` (older
+  rows have none). Fix I: createPod sends RunPod's numeric `gpu.minCudaVersion` (the higher of the owner's and the session's minimum),
+  never the exact `allowedCudaVersions` list, which ended at 13.0 and excluded hosts reporting 13.1/13.2; the host check compares
+  versions numerically, so a 13.2 host passes a 13.0 minimum.
 
 ## 42. Re-checks of rated tracks: a fixed version, or a question about one spot (BL-173, FO-REQ-0017)
 
