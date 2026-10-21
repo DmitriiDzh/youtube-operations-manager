@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isSupportedYoutubeLanguageCode, SUPPORTED_YOUTUBE_LANGUAGES } from "./youtube-supported-languages";
+import { isSupportedYoutubeLanguageCode, suggestYoutubeLanguageCode, SUPPORTED_YOUTUBE_LANGUAGES } from "./youtube-supported-languages";
 
 test("SUPPORTED_YOUTUBE_LANGUAGES is the 83 entries captured from the real i18nLanguages.list response on 2026-09-21 plus pt-BR (owner request 2026-10-04)", () => {
   assert.equal(SUPPORTED_YOUTUBE_LANGUAGES.length, 84);
@@ -16,4 +16,13 @@ test("isSupportedYoutubeLanguageCode accepts a code present in the real captured
 test("isSupportedYoutubeLanguageCode rejects a code absent from the list, including the documented en-US gap", () => {
   assert.equal(isSupportedYoutubeLanguageCode("en-US"), false);
   assert.equal(isSupportedYoutubeLanguageCode("not-a-real-code"), false);
+});
+
+test("suggestYoutubeLanguageCode (BL-207) names the exact code for a letter-case near-miss only", () => {
+  assert.equal(suggestYoutubeLanguageCode("pt-br"), "pt-BR");
+  assert.equal(suggestYoutubeLanguageCode("ZH-tw"), "zh-TW");
+  assert.equal(suggestYoutubeLanguageCode("DE"), "de");
+  assert.equal(suggestYoutubeLanguageCode("pt-BR"), null);
+  assert.equal(suggestYoutubeLanguageCode("xx"), null);
+  assert.equal(suggestYoutubeLanguageCode("en-us"), null);
 });

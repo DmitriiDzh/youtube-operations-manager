@@ -50,6 +50,8 @@ export type StoredStreamRow = {
   onSince: Date | null;
   /** Schema v92 (BL-186): the stream's video and broadcast settings as stored JSON; null = never saved. */
   videoSettingsJson?: string | null;
+  /** Schema v101 (BL-207): the stream's title/description translations as stored JSON; null = none. */
+  localizationsJson?: string | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -75,7 +77,7 @@ export type LiveStreamsDependencies = {
     getStream(channelId: string): Promise<StoredStreamRow | null>;
     upsertStream(row: Omit<StoredStreamRow, "positionUpdatedAt" | "onSince" | "passOrderJson" | "nextPassOrderJson" | "streamId" | "broadcastId"> & Partial<StoredStreamRow>): Promise<void>;
     /** Some columns of an existing row only (never the stream's ids, intent or position). */
-    updateStream(channelId: string, set: Partial<Pick<StoredStreamRow, "title" | "description" | "privacyStatus" | "madeForKids" | "orderMode" | "videoSettingsJson" | "updatedAt">>): Promise<boolean>;
+    updateStream(channelId: string, set: Partial<Pick<StoredStreamRow, "title" | "description" | "privacyStatus" | "madeForKids" | "orderMode" | "videoSettingsJson" | "localizationsJson" | "updatedAt">>): Promise<boolean>;
     listVideos(channelId: string): Promise<StoredVideoRow[]>;
     upsertVideo(row: StoredVideoRow): Promise<void>;
     updateVideo(channelId: string, videoId: string, set: Partial<Omit<StoredVideoRow, "channelId" | "videoId" | "addedAt">>): Promise<boolean>;

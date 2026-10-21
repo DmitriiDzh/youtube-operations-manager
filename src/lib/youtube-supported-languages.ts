@@ -112,3 +112,13 @@ const SUPPORTED_YOUTUBE_LANGUAGE_CODES = new Set(SUPPORTED_YOUTUBE_LANGUAGES.map
 export function isSupportedYoutubeLanguageCode(code: string): boolean {
   return SUPPORTED_YOUTUBE_LANGUAGE_CODES.has(code);
 }
+
+/**
+ * BL-207: the supported code a near-miss was meant to be, matched ignoring letter case (`pt-br` → `pt-BR`); null when the code is
+ * already exact or nothing matches. Only a hint for a refusal message -- the code itself is still refused.
+ */
+export function suggestYoutubeLanguageCode(code: string): string | null {
+  if (SUPPORTED_YOUTUBE_LANGUAGE_CODES.has(code)) return null;
+  const wanted = code.trim().toLowerCase();
+  return SUPPORTED_YOUTUBE_LANGUAGES.find((lang) => lang.code.toLowerCase() === wanted)?.code ?? null;
+}

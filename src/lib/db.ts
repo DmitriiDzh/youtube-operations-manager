@@ -1470,6 +1470,9 @@ export const liveStreams = sqliteTable("live_streams", {
   segmentsJson: text("segments_json"),
   /** Schema v99 (BL-205 §2.2 step 8): the marker of a switch in progress, JSON; null = none. */
   segmentSwitchingJson: text("segment_switching_json"),
+  /** Schema v101 (BL-207, LIVE_LOCALIZATIONS_PLAN.md §2 stage 2): the stream's title/description translations, JSON
+   * `{ "<lang>": { title, description } }` validated by live-streams on read and write; null = none. Device-local, like the row. */
+  localizationsJson: text("localizations_json"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
 });
@@ -5348,6 +5351,18 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         SET first_approved_at = (SELECT min(a.at) FROM media_capacity_attempts a WHERE a.session_id = media_sessions.id),
             first_approved_approximate = 1
         WHERE first_approved_at IS NULL AND EXISTS (SELECT 1 FROM media_capacity_attempts a WHERE a.session_id = media_sessions.id)`);
+    },
+  },
+  {
+    version: 101,
+    description:
+      "live_streams.localizations_json -- BL-207 (LIVE_LOCALIZATIONS_PLAN.md, ADR 0045; owner msgs 3254/3257): the stream's translations of its title and description, written to every broadcast and segment after Start. Additive, nullable, device-local",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE live_streams ADD COLUMN localizations_json TEXT");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
     },
   },
 ];
