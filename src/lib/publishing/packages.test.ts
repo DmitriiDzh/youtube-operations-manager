@@ -146,3 +146,17 @@ test("paths and image types", () => {
   assert.equal(imageKindOf(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])), "png");
   assert.equal(imageKindOf(new Uint8Array([0x47, 0x49, 0x46, 0x38])), "other");
 });
+
+// BL-209 (AUTO_PRIVATE_UPLOAD_PLAN.md §2 item 2, FO-REQ-0036): yt-release-package/1 may carry a top-level `sha256` -- the hex
+// SHA-256 of the video file. It is read as lower-case hex; absent or not 64 hex digits it is null (the package then uploads only on
+// the owner's approval, AC-AU-03) and never a problem: a manual upload does not need it.
+test("BL-209: the manifest's optional sha256 -- read as lower-case hex; absent or malformed is null and no problem", () => {
+  const upper = "ABCDEF0123456789".repeat(4);
+  const read = (sha256: unknown) => parseReleasePackage({ ...MANIFEST, sha256 });
+  assert.equal(read(upper).pkg?.sha256, "abcdef0123456789".repeat(4));
+  assert.equal(parseReleasePackage(MANIFEST).pkg?.sha256, null);
+  for (const bad of ["abc", "g".repeat(64), "a".repeat(63), 42, null]) {
+    assert.deepEqual([read(bad).pkg?.sha256, read(bad).problems], [null, []], String(bad));
+  }
+  assert.deepEqual(codes(read(upper).pkg!), []);
+});

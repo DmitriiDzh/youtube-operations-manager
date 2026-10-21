@@ -1,3 +1,4 @@
+import type { StoredPublishingUpload } from "@/lib/db";
 import { buildPublishingCalendar, currentRows, PUBLISHING_REMINDER_DAYS, type CalendarEntry, type CalendarSourceVideo, type PublishingCoverage } from "./calendar";
 
 // BL-182 stage 1: the calendar and the reminder read from the local copy of the channel's videos -- never a YouTube call. The data
@@ -35,7 +36,43 @@ export type AgentPackages =
       status: "ok";
       items: Array<{ video: string | null; title: string | null; plannedPublishDate: string | null; state: string; problems: string[]; videoId: string | null }>;
     };
-export type AgentUpload = { video: string; status: string; publishAt: string | null; videoId: string | null; pausedReason: string | null; errorCode: string | null };
+export type AgentUpload = {
+  video: string;
+  status: string;
+  publishAt: string | null;
+  videoId: string | null;
+  pausedReason: string | null;
+  errorCode: string | null;
+  /** BL-209 (Agent API 3.20.0, Producer 1.10.0): queued by the owner's automatic-upload switch (private, no date), not an approval. */
+  automatic: boolean;
+  /** Bytes YouTube stored / the video's size, as a whole percent (rounded down); null when the size is unknown (0). */
+  progressPercent: number | null;
+  /** When the upload ended (done, failed or cancelled), ISO 8601; null while it is under way. */
+  finishedAt: string | null;
+};
+
+/** BL-209: an upload's progress as the agents see it -- floor(stored / total * 100), at most 100; null when the total is unknown. */
+export function uploadProgressPercent(storedBytes: number, totalBytes: number): number | null {
+  if (!(totalBytes > 0)) return null;
+  return Math.min(100, Math.max(0, Math.floor((storedBytes / totalBytes) * 100)));
+}
+
+/** The agents' view of one upload row of this computer (`agent_get_publishing_calendar`'s `uploads`). */
+export function agentUploadOf(
+  row: Pick<StoredPublishingUpload, "video" | "status" | "publishAt" | "videoId" | "pausedReason" | "errorCode" | "automatic" | "storedBytes" | "totalBytes" | "finishedAt">
+): AgentUpload {
+  return {
+    video: row.video,
+    status: row.status,
+    publishAt: row.publishAt,
+    videoId: row.videoId,
+    pausedReason: row.pausedReason,
+    errorCode: row.errorCode,
+    automatic: row.automatic,
+    progressPercent: uploadProgressPercent(row.storedBytes, row.totalBytes),
+    finishedAt: row.finishedAt ? row.finishedAt.toISOString() : null,
+  };
+}
 
 export type PublishingCalendarDeps = {
   listVideos(channelId: string): Promise<CalendarSourceVideo[]>;

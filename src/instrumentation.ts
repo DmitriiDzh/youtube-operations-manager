@@ -478,6 +478,30 @@ async function startServerSession() {
   };
   setTimeout(() => void uploadsLoop(), 15_000).unref();
 
+  // BL-209 (AUTO_PRIVATE_UPLOAD_PLAN.md, ADR 0046): the automatic private upload, in its own loop (AGENTS.md §M) every 5 minutes,
+  // each tick started only after the previous one ended (a video hash can take a while). Off (the default) a tick reads the switch
+  // only. On, ready packages whose video matches its manifest's size and SHA-256 are queued (private, no date) for the runner above;
+  // nothing here writes to YouTube. Never during a snapshot import/migration or in recovery mode (it writes rows).
+  let autoUploads: import("@/lib/publishing").AutoPrivateUpload | null = null;
+  try {
+    autoUploads = (await import("@/lib/publishing")).createAutoPrivateUploadCore();
+  } catch (error) {
+    console.warn(`[publishing] automatic upload not started: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const AUTO_UPLOADS_TICK_MS = 5 * 60_000;
+  const autoUploadsLoop = async () => {
+    if (!autoUploads) return;
+    try {
+      await assertDeviceAvailableForMutation(rawSqlClient);
+      await autoUploads.tick();
+    } catch (error) {
+      const paused = error instanceof Error && (error.name === "OperationLockError" || error.name === "RecoveryModeError");
+      if (!paused) console.warn(`[publishing] automatic upload: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    setTimeout(() => void autoUploadsLoop(), AUTO_UPLOADS_TICK_MS).unref();
+  };
+  setTimeout(() => void autoUploadsLoop(), 60_000).unref();
+
   // BL-176 (LIVE_STREAMS_PLAN.md §3.1/§3.6/§3.8, ADR 0036): live streams, in their own loop (AGENTS.md §M). Switched off
   // (the default) or on a computer that is not the Mac's system service, a tick only reads the settings: no process, no
   // YouTube call. Otherwise a stream whose intent is on gets its encoder adopted or started again (the key is read from

@@ -9,7 +9,19 @@ import { MCP_TOOL_CLASSIFICATION } from "@/mcp/tool-classification";
 // runner or the cancel. Agents read the calendar (`agent_get_publishing_calendar`) only.
 
 const SRC = path.resolve(process.cwd(), "src");
-const UPLOAD_WRITERS = ["createUploadApprovalCore", "createUploadRunnerCore", "cancelUpload", "createUploadApproval", "createUploadRunner"];
+// BL-209 AC-AU-11 (AUTO_PRIVATE_UPLOAD_PLAN.md §1, ADR 0046): the automatic upload's queue and its switch's setter join the list --
+// the owner's switch is set from the Web UI only, and nothing an agent calls can reach the automatic queue.
+const UPLOAD_WRITERS = [
+  "createUploadApprovalCore",
+  "createUploadRunnerCore",
+  "cancelUpload",
+  "createUploadApproval",
+  "createUploadRunner",
+  "createAutoPrivateUploadCore",
+  "createAutoPrivateUpload",
+  "queueAutomatic",
+  "setAutoPrivateUploadEnabled",
+];
 
 async function files(dir: string): Promise<string[]> {
   const out: string[] = [];
@@ -39,4 +51,15 @@ test("AC-UP-14: no MCP server or agent endpoint code reaches the upload approval
     }
   }
   assert.deepEqual(offenders, []);
+});
+
+// BL-209 AC-AU-11: the switch's only setter is the Web UI's Settings route; no MCP tool name mentions it.
+test("AC-AU-11: setAutoPrivateUploadEnabled is called only by the Settings route; no MCP tool names the automatic upload", async () => {
+  const callers: string[] = [];
+  for (const file of await files(SRC)) {
+    const content = await readFile(file, "utf8");
+    if (/\bsetAutoPrivateUploadEnabled\b/.test(content)) callers.push(path.relative(SRC, file));
+  }
+  assert.deepEqual(callers.sort(), ["app/api/settings/route.ts", "lib/db.ts"]);
+  assert.deepEqual(Object.keys(MCP_TOOL_CLASSIFICATION).filter((name) => /auto.*upload|auto_private/i.test(name)), []);
 });

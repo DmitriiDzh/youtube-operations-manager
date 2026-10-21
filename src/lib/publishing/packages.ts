@@ -33,6 +33,12 @@ export type ReleasePackage = {
   defaultAudioLanguage: string;
   ready: boolean;
   problems: string[];
+  /**
+   * BL-209 (AUTO_PRIVATE_UPLOAD_PLAN.md §2): the video file's SHA-256 (lower-case hex), the manifest's optional top-level `sha256`.
+   * Null (or absent in an older value) when the manifest has none or it is not 64 hex digits: such a package uploads only on the
+   * owner's approval. Never a problem of its own -- a manual upload does not need it.
+   */
+  sha256?: string | null;
 };
 
 /** Why a package cannot be uploaded; `params` fill the interface text (`publishingPackages.problem.<code>`). */
@@ -99,9 +105,10 @@ export function parseReleasePackage(raw: unknown): { pkg: ReleasePackage | null;
   const ready = raw.ready === true;
   if (typeof raw.ready !== "boolean") problems.push({ code: "field_invalid", params: { field: "ready" } });
   const factoryProblems = Array.isArray(raw.problems) ? raw.problems.map(String) : [];
+  const sha256 = typeof raw.sha256 === "string" && /^[0-9a-f]{64}$/i.test(raw.sha256) ? raw.sha256.toLowerCase() : null;
   if (problems.length > 0) return { pkg: null, problems };
   return {
-    pkg: { channelId, video, mix, plannedPublishDate, files: { video: videoFile, thumbnail: thumbnailFile }, sizeBytes, durationSeconds, title, description, tags, defaultLanguage, defaultAudioLanguage, ready, problems: factoryProblems },
+    pkg: { channelId, video, mix, plannedPublishDate, files: { video: videoFile, thumbnail: thumbnailFile }, sizeBytes, durationSeconds, title, description, tags, defaultLanguage, defaultAudioLanguage, ready, problems: factoryProblems, sha256 },
     problems: [],
   };
 }

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { open, realpath, rename, writeFile } from "node:fs/promises";
+import { open, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
 import { YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
@@ -15,8 +15,11 @@ import {
 } from "@/lib/sync-gateway";
 import {
   clearPublishingG1Probe,
+  getAutoPrivateUploadEnabled,
   getChannelExpectedLanguages,
   getLiveWritesEnabled,
+  listAutoQueuedManifestHashes,
+  listStoredChannels,
   getPublishingG1Probe,
   insertVideoEditAuditEvent,
   claimPublishingUpload,
@@ -51,9 +54,10 @@ import { createPackageComposer } from "./package-composer";
 import { authorizedOAuth, createPublishingFinishWrites, createPublishingYoutubeWrites, freshAccessToken } from "./adapters/youtube-writes";
 import { ACTIVE_UPLOAD_STATUSES, createUploadRunner, holdsPackage, isCancellable, UNKNOWN_OUTCOME_RELEASED, type UploadRunnerDeps } from "./upload-runner";
 import { createUploadApproval } from "./upload-approval";
+import { createAutoPrivateUpload } from "./auto-upload";
 import { estimateUploadUnits, isDeferredPublishAt } from "./publish-dates";
 import type { G1ProbeRecord } from "./contracts";
-import { createPublishingCalendarReads } from "./calendar-reads";
+import { agentUploadOf, createPublishingCalendarReads } from "./calendar-reads";
 import { createG1Probe } from "./g1-probe";
 import { createPublishingSettingsService } from "./settings-service";
 
@@ -150,7 +154,7 @@ export function createPublishingCalendarCore() {
       };
     },
     async uploads(channelId) {
-      return (await listChannelUploads(channelId)).map((row) => ({ video: row.video, status: row.status, publishAt: row.publishAt, videoId: row.videoId, pausedReason: row.pausedReason, errorCode: row.errorCode }));
+      return (await listChannelUploads(channelId)).map((row) => agentUploadOf(row));
     },
   });
 }
@@ -523,6 +527,48 @@ export function createUploadApprovalCore() {
   });
 }
 
+const AUTO_HASH_CACHE_KEY = Symbol.for("ytom.publishing.autoUploadHashCache");
+const AUTO_MISMATCH_LOG_KEY = Symbol.for("ytom.publishing.autoUploadMismatchLog");
+
+/**
+ * BL-209 (AUTO_PRIVATE_UPLOAD_PLAN.md, ADR 0046): the automatic private upload of this computer, ticked by its own loop
+ * (`src/instrumentation.ts`, AGENTS.md §M). Off (the default) a tick reads the switch only. On, it scans every connected channel's
+ * packages, hashes a video only when its size matches, and queues through the approval's own checks; the runner uploads.
+ */
+export function createAutoPrivateUploadCore() {
+  const scan = createPackageScanCore();
+  const approval = createUploadApprovalCore();
+  const files = createPackageScanReads();
+  const holder = globalThis as typeof globalThis & { [key: symbol]: unknown };
+  const hashCache = (holder[AUTO_HASH_CACHE_KEY] ??= new Map<string, string>()) as Map<string, string>;
+  const loggedMismatches = (holder[AUTO_MISMATCH_LOG_KEY] ??= new Set<string>()) as Set<string>;
+  return createAutoPrivateUpload({
+    enabled: () => getAutoPrivateUploadEnabled(),
+    async channels() {
+      return (await listStoredChannels()).filter((channel) => channel.connectedUserId !== null).map((channel) => ({ channelId: channel.channelId, userId: channel.connectedUserId as string }));
+    },
+    scan: (channelId) => scan.scan(channelId),
+    liveVideos: (channelId) => localHeldVideos(channelId),
+    peerUploads: (channelId) => peerUploadsOf(channelId),
+    autoQueuedHashes: (channelId) => listAutoQueuedManifestHashes(channelId),
+    async videoFile(channelId, relativePath) {
+      const workspace = await files.workspace(channelId);
+      if (!workspace) return null;
+      const file = await files.resolveFile(workspace, relativePath);
+      if (!file) return null;
+      const info = await stat(file.path).catch(() => null);
+      return info ? { path: file.path, bytes: file.bytes, mtimeMs: info.mtimeMs } : null;
+    },
+    hashFile: (absolutePath) => sha256OfFile(absolutePath),
+    queue: (input) => approval.queueAutomatic(input),
+    logMismatch: ({ channelId, video, manifestSha256, expected, actual }) =>
+      insertVideoEditAuditEvent({ channelId, videoId: `package:${video}`, eventType: "RESULT", detail: { event: "publishing.auto_upload_hash_mismatch", video, manifestSha256, expected, actual } }),
+    hashCache,
+    loggedMismatches,
+    warn: (message) => console.warn(`[publishing] auto upload: ${message}`),
+  });
+}
+
 /** The channel's uploads on this computer, newest first (the progress list in Content → «Публикация»). */
 export async function listChannelUploads(channelId: string) {
   return listPublishingUploads({ channelId, limit: 100 });
@@ -541,6 +587,7 @@ export async function cancelUpload(channelId: string, uploadId: string): Promise
   return done;
 }
 export type { UploadRunner, UploadSteps, ApprovedPackage } from "./upload-runner";
+export type { AutoPrivateUpload, AutoUploadTickResult } from "./auto-upload";
 
 /**
  * The owner looked in Studio after an `unknown_outcome` and found no video: the row stops holding its package, which can then be

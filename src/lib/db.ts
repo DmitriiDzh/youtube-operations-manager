@@ -1424,6 +1424,11 @@ export const publishingUploads = sqliteTable(
     /** Which runner works on the row until when: two processes on one database never both send it (review should-fix 6). */
     leaseOwner: text("lease_owner"),
     leaseUntil: integer("lease_until", { mode: "timestamp_ms" }),
+    /**
+     * Schema v103 (BL-209, AUTO_PRIVATE_UPLOAD_PLAN.md, ADR 0046): queued by the owner's «Автоматическая загрузка» switch, not by an
+     * approval screen -- always private and without a date. A row with it set also records that its manifest hash was tried once.
+     */
+    automatic: integer("automatic", { mode: "boolean" }).notNull().default(false),
   },
   (table) => [index("publishing_uploads_status_idx").on(table.status, table.nextAttemptAt), index("publishing_uploads_channel_idx").on(table.channelId, table.createdAt)]
 );
@@ -5391,6 +5396,18 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       );
     },
   },
+  {
+    version: 103,
+    description:
+      "publishing_uploads.automatic -- BL-209 (FO-REQ-0036, AUTO_PRIVATE_UPLOAD_PLAN.md, ADR 0046): an upload queued by the owner's automatic-upload switch (private, no date); with the manifest hash it also records that this manifest version was tried once. Additive, NOT NULL DEFAULT 0 (every existing row is an approval), device-local",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE publishing_uploads ADD COLUMN automatic INTEGER NOT NULL DEFAULT 0");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
+    },
+  },
 ];
 
 /**
@@ -6491,6 +6508,20 @@ export async function setOperatorCliEnabled(enabled: boolean): Promise<void> {
 }
 
 const DEVICE_AUTO_SYNC_ENABLED_SETTING_KEY = "device_auto_sync_enabled";
+const AUTO_PRIVATE_UPLOAD_ENABLED_SETTING_KEY = "auto_private_upload_enabled";
+
+/**
+ * BL-209 (AUTO_PRIVATE_UPLOAD_PLAN.md §1, ADR 0046): the owner's «Автоматическая загрузка (private)» switch -- OFF unless he turned
+ * it on. Persistent, device-local like every `app_settings` row, one switch for every channel on this computer. Set only by the Web
+ * UI's Settings route (no MCP tool, agent endpoint or CLI command reaches the setter; AC-AU-11).
+ */
+export async function getAutoPrivateUploadEnabled(): Promise<boolean> {
+  return (await getAppSetting(AUTO_PRIVATE_UPLOAD_ENABLED_SETTING_KEY)) === "true";
+}
+
+export async function setAutoPrivateUploadEnabled(enabled: boolean): Promise<void> {
+  await setAppSetting(AUTO_PRIVATE_UPLOAD_ENABLED_SETTING_KEY, enabled ? "true" : "false");
+}
 const DEVICE_SYNC_STATUS_SETTING_KEY = "device_sync_status";
 
 /**
@@ -11278,6 +11309,18 @@ export async function listPublishingUploads(
     .where(conditions.length > 0 ? and(...conditions) : undefined)
     .orderBy(desc(publishingUploads.createdAt), desc(publishingUploads.id))
     .limit(filter.limit);
+}
+
+/**
+ * BL-209 (AUTO_PRIVATE_UPLOAD_PLAN.md §2): the manifest hashes the automatic upload already queued for the channel, whatever became
+ * of those rows (done, failed, cancelled): one try per manifest version, never a second one by itself.
+ */
+export async function listAutoQueuedManifestHashes(channelId: string, database: AppDb = db): Promise<Set<string>> {
+  const rows = await database
+    .selectDistinct({ manifestSha256: publishingUploads.manifestSha256 })
+    .from(publishingUploads)
+    .where(and(eq(publishingUploads.channelId, channelId), eq(publishingUploads.automatic, true)));
+  return new Set(rows.map((row) => row.manifestSha256));
 }
 
 /**

@@ -57,6 +57,8 @@ function job(over: Partial<StoredPublishingUpload> = {}): StoredPublishingUpload
     finishedAt: null,
     leaseOwner: null,
     leaseUntil: null,
+    // BL-209 (schema v103): every row now carries `automatic`; these jobs are the owner's approvals.
+    automatic: false,
     ...over,
   };
 }
@@ -691,4 +693,17 @@ test("BL-194 criterion 8: a cost file that cannot be written leaves the upload d
   const steps = JSON.parse(h.row().stepsJson);
   assert.equal(steps.cost, "failed");
   assert.ok((steps.notes as string[]).some((n) => n.includes("V65_cost.json not written")));
+});
+
+// BL-209 AC-AU-10 (AUTO_PRIVATE_UPLOAD_PLAN.md §2 item 4: "Never public, never scheduled"; owner msg 3333: the playlist step runs as
+// for a manual upload): an automatic row is sent private with no publishAt, no publish time is written afterwards, and it is still
+// added to the release playlist.
+test("AC-AU-10: an automatic row is inserted private without publishAt, never gets a date afterwards, and goes to the playlist", async () => {
+  const h = harness([job({ publishAt: null, automatic: true })]);
+  await h.runAll();
+  assert.equal(h.row().status, "done");
+  assert.deepEqual(h.yt.videos[0].resource.status, { privacyStatus: "private", selfDeclaredMadeForKids: false, containsSyntheticMedia: true, license: "youtube", embeddable: true });
+  assert.equal("publishAt" in h.yt.videos[0].resource.status, false);
+  assert.deepEqual(h.publishAtWrites, []);
+  assert.ok(h.yt.log.includes("playlist PL_jazz vid1"));
 });
