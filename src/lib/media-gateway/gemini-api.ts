@@ -473,7 +473,7 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; longWaitFetchIm
         if (!lastHostIsGemini && (response.status === 401 || response.status === 403)) {
           throw new DomainError({ code: "gemini_unavailable", message: `The video's storage host refused the download (HTTP ${response.status}).`, details: { ...context, outcome: "answered", status: response.status } });
         }
-        throw failure({ status: response.status, ok: false, body }, context);
+        throw failure({ status: response.status, ok: false, body, retryAfter: null }, context);
       }
       // A JSON answer is a metadata page or an error, never the video (review item 4: it would be saved as video-1.mp4).
       if ((response.headers.get("content-type") ?? "").toLowerCase().includes("application/json")) {
