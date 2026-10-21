@@ -6,10 +6,11 @@ import type { GpuAvailabilityLogRow } from "./gpu-availability";
 import { createGpuAvailabilityLogServices, type GpuAvailabilityLogStore } from "./gpu-availability-log";
 
 // AC-GA-05 (docs/roadmap/plans/GPU_AVAILABILITY_PLAN.md §4, written before this module): a snapshot when none is younger than
-// 3 h; with the gateway off or no credentials a skip without error and without a RunPod call; a RunPod failure logged, not thrown;
+// 3 h -- changed by BL-206 (GPU_STATS_PLAN.md §2.A, AC-GS-01) to due at 14 min, nominally every 15; with the gateway off or no credentials a skip without error and without a RunPod call; a RunPod failure logged, not thrown;
 // two catalog reads per snapshot. The network is stubbed under the real gateway client, so the URLs are the ones RunPod would get.
 
 const HOUR = 60 * 60 * 1000;
+const MINUTE = 60 * 1000;
 const T0 = new Date("2026-10-10T09:00:00Z");
 
 function memoryLog(latest: Date | null = null) {
@@ -78,7 +79,8 @@ function harness(options: { latest?: Date | null; gatewayOn?: boolean; configure
 
 test("AC-GA-05: with no snapshot stored, one is taken -- two catalog reads, Secure Cloud and the Settings' CUDA minimum, every row at the same time", async () => {
   const h = harness({ settings: { cloudType: "COMMUNITY" } });
-  assert.deepEqual(await h.services.snapshotGpuAvailabilityIfDue(), { status: "taken", at: T0.toISOString(), rows: 2 });
+  // BL-206 (AC-GS-02): the L40S is not listed in EU-RO-1 (the only volume datacenter), so only its overall row is stored.
+  assert.deepEqual(await h.services.snapshotGpuAvailabilityIfDue(), { status: "taken", at: T0.toISOString(), rows: 1 });
   assert.equal(h.urls.length, 2);
   const gpus = new URL(h.urls.find((u) => u.includes("/catalog/gpus")) ?? "");
   assert.equal(gpus.searchParams.get("cloud"), "SECURE", "network volumes exist only on Secure Cloud, whatever the Settings say");
@@ -86,23 +88,34 @@ test("AC-GA-05: with no snapshot stored, one is taken -- two catalog reads, Secu
   assert.equal(h.log.snapshots.length, 1);
   assert.deepEqual(h.log.snapshots[0], {
     at: T0,
-    rows: [
-      { gpuTypeId: "NVIDIA L40S", pricePerHr: 1.09, minCudaVersion: "12.8", dataCenterId: "*", stock: "LOW" },
-      { gpuTypeId: "NVIDIA L40S", pricePerHr: 1.09, minCudaVersion: "12.8", dataCenterId: "EU-RO-1", stock: "NONE" },
-    ],
+    rows: [{ gpuTypeId: "NVIDIA L40S", pricePerHr: 1.09, minCudaVersion: "12.8", dataCenterId: "*", stock: "LOW" }],
   });
 });
 
-test("AC-GA-05: a snapshot younger than 3 hours makes the tick skip without a RunPod call; at exactly 3 hours the next one is taken", async () => {
-  const h = harness({ latest: new Date(T0.getTime() - 3 * HOUR + 1000) });
+test("AC-GS-01: a snapshot younger than 14 minutes makes the tick skip without a RunPod call; at exactly 14 minutes the next one is taken", async () => {
+  const h = harness({ latest: new Date(T0.getTime() - 14 * MINUTE + 1000) });
   assert.deepEqual(await h.services.snapshotGpuAvailabilityIfDue(), { status: "skipped", reason: "fresh" });
   assert.deepEqual(h.urls, []);
   h.advance(1000);
   assert.equal((await h.services.snapshotGpuAvailabilityIfDue()).status, "taken");
   assert.equal(h.urls.length, 2);
-  h.advance(15 * 60 * 1000);
-  assert.deepEqual(await h.services.snapshotGpuAvailabilityIfDue(), { status: "skipped", reason: "fresh" }, "the next tick after a snapshot");
+  h.advance(5 * MINUTE);
+  assert.deepEqual(await h.services.snapshotGpuAvailabilityIfDue(), { status: "skipped", reason: "fresh" }, "the next 5-minute tick after a snapshot");
+  h.advance(5 * MINUTE);
+  assert.deepEqual(await h.services.snapshotGpuAvailabilityIfDue(), { status: "skipped", reason: "fresh" }, "10 minutes after it");
   assert.equal(h.urls.length, 2);
+});
+
+test("AC-GS-01: a 5-minute tick over one hour of fake clock (13 ticks, 0..60 min) takes 5 snapshots at 0, 15, 30, 45 and 60 min -- no gap over 20 minutes", async () => {
+  const h = harness();
+  for (let tick = 0; tick <= 12; tick += 1) {
+    await h.services.snapshotGpuAvailabilityIfDue();
+    h.advance(5 * MINUTE);
+  }
+  const taken = h.log.snapshots.map((snapshot) => (snapshot.at.getTime() - T0.getTime()) / MINUTE);
+  assert.deepEqual(taken, [0, 15, 30, 45, 60]);
+  const gaps = taken.slice(1).map((at, i) => at - taken[i]);
+  assert.ok(gaps.every((gap) => gap <= 20), `gaps ${gaps.join(", ")}`);
 });
 
 test("AC-GA-05: the gateway off or RunPod not configured skips without error and without reaching RunPod", async () => {

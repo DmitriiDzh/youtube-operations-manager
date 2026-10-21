@@ -122,29 +122,37 @@ export function buildGpuAvailability(args: {
 
 // -- BL-172 B: the stored log ------------------------------------------------------------------------------------------------------
 
-/** A snapshot is due when the newest stored one is this old (FO-REQ-0016: every 3 hours). */
-export const GPU_AVAILABILITY_SNAPSHOT_INTERVAL_MS = 3 * 60 * 60 * 1000;
+/**
+ * BL-206 (FO-REQ-0033, GPU_STATS_PLAN.md §2.A): snapshots every 15 minutes (BL-172 had 3 hours). This is the nominal interval the
+ * log reports; a snapshot is due at `GPU_AVAILABILITY_SNAPSHOT_DUE_MS` so a 5-minute timer keeps the gap at about 15-20 minutes.
+ */
+export const GPU_AVAILABILITY_SNAPSHOT_INTERVAL_MS = 15 * 60 * 1000;
+/** A snapshot is due when the newest stored one is at least this old (one minute under the interval, for timer jitter). */
+export const GPU_AVAILABILITY_SNAPSHOT_DUE_MS = 14 * 60 * 1000;
 /** The `dataCenterId` of a GPU's overall row (RunPod's stock across all datacenters). */
 export const GPU_AVAILABILITY_OVERALL = "*";
+/** The stock level a datacenter row has when it is not stored (BL-206: implied by the snapshot without a row). */
+export const GPU_AVAILABILITY_NONE = "NONE";
 
 export type GpuAvailabilityLogRow = { gpuTypeId: string; dataCenterId: string; stock: string | null; pricePerHr: number | null; minCudaVersion: string | null };
 
 /**
  * One snapshot's rows from a reading built with `minVramGb` 24 (fixed, so the log does not shrink when the Settings minimum is
- * raised): per GPU an overall row, plus one row per datacenter that offers network volumes -- NONE where RunPod did not list that
- * datacenter for the GPU, so a count of "at least LOW" has its real zeros. Datacenters without network volumes are not stored.
+ * raised): per GPU an overall row (always, whatever its level), plus one row per datacenter that offers network volumes where
+ * RunPod listed the GPU with a level other than NONE (a null level -- listed without one -- is kept as unknown). BL-206: NONE
+ * datacenter rows are no longer stored (92 % of the rows); a snapshot without a row for a GPU in a datacenter means NONE there.
+ * Datacenters without network volumes are not stored.
  */
 export function buildGpuAvailabilitySnapshotRows(availability: GpuAvailability): GpuAvailabilityLogRow[] {
   const volumeDcs = availability.dataCenters.filter((dc) => dc.networkVolumeTypes.length > 0).map((dc) => dc.dataCenterId);
   return availability.gpus.flatMap((gpu) => {
     const common = { gpuTypeId: gpu.gpuTypeId, pricePerHr: gpu.pricePerHr, minCudaVersion: availability.minCudaVersion };
-    return [
-      { ...common, dataCenterId: GPU_AVAILABILITY_OVERALL, stock: gpu.stock },
-      ...volumeDcs.map((dataCenterId) => {
-        const listed = gpu.dataCenters.find((dc) => dc.dataCenterId === dataCenterId);
-        return { ...common, dataCenterId, stock: listed ? listed.stock : "NONE" };
-      }),
-    ];
+    const rows: GpuAvailabilityLogRow[] = [{ ...common, dataCenterId: GPU_AVAILABILITY_OVERALL, stock: gpu.stock }];
+    for (const dataCenterId of volumeDcs) {
+      const listed = gpu.dataCenters.find((dc) => dc.dataCenterId === dataCenterId);
+      if (listed && listed.stock !== GPU_AVAILABILITY_NONE) rows.push({ ...common, dataCenterId, stock: listed.stock });
+    }
+    return rows;
   });
 }
 
@@ -163,7 +171,16 @@ export type GpuAvailabilityLogInput = z.infer<typeof gpuAvailabilityLogInputSche
 /** Per GPU and datacenter: snapshots in the range and how many of them were at each stock level (`UNKNOWN` = no level given). */
 export type GpuAvailabilitySummaryEntry = { gpuTypeId: string; dataCenterId: string; snapshots: number; stock: Record<string, number> };
 
-export function summarizeGpuAvailabilityGroups(groups: Array<{ gpuTypeId: string; dataCenterId: string; stock: string | null; count: number }>): GpuAvailabilitySummaryEntry[] {
+/**
+ * The summary entries from the stored groups. With `gpuSnapshots` (BL-206) a datacenter entry counts the snapshots its GPU was read
+ * in (the snapshots with any row of that GPU -- its overall row is always stored) and NONE = those snapshots − the stored rows of
+ * other levels, so old snapshots (NONE stored) and new ones (NONE implied) give the same counts. The overall `*` entries are always
+ * stored and counted as they are. Without `gpuSnapshots` every count is the stored rows' (BL-172).
+ */
+export function summarizeGpuAvailabilityGroups(
+  groups: Array<{ gpuTypeId: string; dataCenterId: string; stock: string | null; count: number }>,
+  gpuSnapshots?: ReadonlyMap<string, number>
+): GpuAvailabilitySummaryEntry[] {
   const entries = new Map<string, GpuAvailabilitySummaryEntry>();
   for (const group of groups) {
     const key = `${group.gpuTypeId}\u0000${group.dataCenterId}`;
@@ -172,6 +189,18 @@ export function summarizeGpuAvailabilityGroups(groups: Array<{ gpuTypeId: string
     entry.stock[level] = (entry.stock[level] ?? 0) + group.count;
     entry.snapshots += group.count;
     entries.set(key, entry);
+  }
+  if (gpuSnapshots) {
+    for (const entry of entries.values()) {
+      const read = gpuSnapshots.get(entry.gpuTypeId);
+      if (entry.dataCenterId === GPU_AVAILABILITY_OVERALL || read === undefined) continue;
+      const other = entry.snapshots - (entry.stock[GPU_AVAILABILITY_NONE] ?? 0);
+      const none = Math.max(0, read - other);
+      const { [GPU_AVAILABILITY_NONE]: _stored, ...levels } = entry.stock;
+      void _stored;
+      entry.stock = none > 0 ? { ...levels, [GPU_AVAILABILITY_NONE]: none } : levels;
+      entry.snapshots = other + none;
+    }
   }
   // Code-unit order, the same as the database's: the overall `*` row before any datacenter.
   const byCode = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);

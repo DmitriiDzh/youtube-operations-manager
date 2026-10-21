@@ -107,7 +107,7 @@ test("AC-GA-07: since/until (inclusive), gpuTypeId and dataCenterId filter; rows
     );
     assert.deepEqual(all.rows[0], { at: t3.toISOString(), gpuTypeId: RTX4090, dataCenterId: "*", stock: "HIGH", pricePerHr: 0.89, minCudaVersion: "12.8" });
     assert.equal(all.lastSnapshotAt, t3.toISOString());
-    assert.equal(all.intervalHours, 3);
+    assert.equal(all.intervalHours, 0.25, "BL-206 (GPU_STATS_PLAN.md §2.A): every 15 minutes, was 3 hours");
     assert.equal(all.retentionDays, 90);
 
     const narrowed = await log.listGpuAvailabilityLog({ gpuTypeId: L40S, dataCenterId: "US-IL-1", since: t2.toISOString(), until: t3.toISOString() });
@@ -153,9 +153,18 @@ test("AC-GA-07: summary -- three snapshots with L40S/US-IL-1 = LOW, NONE, LOW gi
     assert.ok("summary" in later);
     assert.deepEqual(later.summary.entries, [{ gpuTypeId: L40S, dataCenterId: "US-IL-1", snapshots: 2, stock: { NONE: 1, LOW: 1 } }]);
     assert.equal(later.summary.snapshots, 2);
+    // BL-206 (GPU_STATS_PLAN.md §2.A) changed this: `snapshots` counts the snapshots taken in the range (the gpu/datacenter filters do
+    // not narrow it -- a datacenter without rows was NONE in them), so a datacenter with no row has no entry but the range has 3.
     const empty = await log.listGpuAvailabilityLog({ summary: true, dataCenterId: "EU-CZ-1" });
     assert.ok("summary" in empty);
-    assert.deepEqual(empty.summary, { snapshots: 0, firstAt: null, lastAt: null, entries: [] });
+    assert.deepEqual(empty.summary, { snapshots: 3, firstAt: t1.toISOString(), lastAt: t3.toISOString(), entries: [] });
+    // Named together with a GPU read in those snapshots, the datacenter is all NONE.
+    const named = await log.listGpuAvailabilityLog({ summary: true, gpuTypeId: L40S, dataCenterId: "EU-CZ-1" });
+    assert.ok("summary" in named);
+    assert.deepEqual(named.summary.entries, [{ gpuTypeId: L40S, dataCenterId: "EU-CZ-1", snapshots: 3, stock: { NONE: 3 } }]);
+    const none = await log.listGpuAvailabilityLog({ summary: true, since: "2026-10-11T00:00:00Z" });
+    assert.ok("summary" in none);
+    assert.deepEqual(none.summary, { snapshots: 0, firstAt: null, lastAt: null, entries: [] });
   }));
 
 test("AC-GA-07: the summary counts every matching row, not a page of them -- a 1,250-row snapshot is stored whole (chunked), listed 1,000 by default and counted in full", () =>
