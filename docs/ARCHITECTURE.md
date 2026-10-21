@@ -4203,7 +4203,33 @@ is already set everywhere), 2734 (one merge for the whole stage).
 - **Calendar:** a ready package shows on its planned day at the channel's time (dashed violet, not clickable); it is not scheduled
   yet, so its day stays a gap. The folder is read at most every 5 minutes.
 - **Agents** (Agent API 3.17.0, Producer API 1.8.0): `agent_get_publishing_calendar` also lists the packages (state, problem codes,
-  video id) and this computer's uploads. No tool uploads, schedules or cancels (`no-agent-upload-tool.test.ts`).
+  video id) and this computer's uploads (since 3.20.0 / 1.10.0 with `automatic`, `progressPercent`, `finishedAt`, §47.5). No tool uploads, schedules or cancels (`no-agent-upload-tool.test.ts`).
+
+### 47.5 Automatic private upload (BL-209, ADR 0046, `docs/roadmap/plans/AUTO_PRIVATE_UPLOAD_PLAN.md`)
+
+- **The switch.** `app_settings.auto_private_upload_enabled` (`getAutoPrivateUploadEnabled` / `setAutoPrivateUploadEnabled` in
+  `db.ts`): off by default, persistent, device-local, one for every channel. Shown on the Live writes card
+  (`live-writes-settings.tsx`) with a visible caption; read and set through `/api/settings` (`autoPrivateUploadEnabled`) only.
+- **The watcher** (`publishing/auto-upload.ts`, `createAutoPrivateUploadCore` in `index.ts`), its own loop in `instrumentation.ts`
+  every 5 minutes (the next tick starts after the previous one ended; skipped during an import/migration or in recovery mode). Off, a
+  tick reads the switch only. On, for every channel with a connected account: the package scan, then per package -- `ready` (the
+  scan's checks) with a thumbnail and a manifest hash → the manifest's top-level `sha256` (`packages.ts`, optional, lower-case hex;
+  none → owner's approval only) → not held here or by a peer → its manifest hash never auto-queued (`listAutoQueuedManifestHashes`,
+  any status) → the video's size equals `sizeBytes` (no hash otherwise) → its SHA-256, cached in memory per (manifest hash, size,
+  mtime) → the switch read again → `queueAutomatic`. A SHA-256 mismatch is audited once per manifest hash
+  (`publishing.auto_upload_hash_mismatch`).
+- **Queueing** is `upload-approval.ts` `queueAutomatic`: the approval's own `queue` step (held here / by a peer at queue time, ready,
+  the `videos.insert` bucket with the queued uploads counted, the quota pool, the tags), with `publishAt` null, `automatic` true and
+  `approvedBy` = the channel's `connected_user_id` (the runner's credentials and identity check). `upload_daily_limit`,
+  `quota_insufficient`, `quota_unknown` (never acknowledged) stop the tick and wait; `publishing_settings_changed` skips the channel;
+  any other refusal skips the package until a later tick. Audit: `publishing.upload_auto_queued` (time, channel, video, manifest
+  hash, switch state, upload id).
+- **Schema v103:** `publishing_uploads.automatic INTEGER NOT NULL DEFAULT 0`. The runner is unchanged: an automatic row is inserted
+  private without `publishAt`, gets no date afterwards, and goes to the release playlist.
+- **Visibility.** Content → «Публикация» marks the row «автоматически»; `agent_get_publishing_calendar`'s `uploads` carry
+  `automatic`, `progressPercent` (floor of stored / total bytes, null when the total is 0) and `finishedAt` (Agent API 3.20.0, Producer
+  API 1.10.0; `calendar-reads.ts` `agentUploadOf`). No agent tool reaches the watcher, `queueAutomatic` or the setter
+  (`no-agent-upload-tool.test.ts`, AC-AU-11).
 
 ### 47.4 Not built yet
 
