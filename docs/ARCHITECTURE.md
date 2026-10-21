@@ -4642,3 +4642,44 @@ title/description (AGENTS.md §F, PROJECT_SPEC §21), reversing `LIVE_STREAMS_FI
   only while unedited (compared as stored: title trimmed, description CRLF → LF, so a just-saved card is clean). No native dialogs; all text in `ui-text` (`live.translations.*`).
 - **Not yet verified:** whether
   a live broadcast's video reads its localizations back is unverified until the first real go-live with a set.
+
+## BL-210 — a channel's own translations (ADR 0047)
+
+Owner msgs 3343/3345/3347; plan `docs/roadmap/plans/CHANNEL_LOCALIZATIONS_PLAN.md` (its "API facts" section quotes the
+`channels` / `channels.update` / `channels.list` reference). The third, narrowly scoped writer of per-language title/description
+(AGENTS.md §F, PROJECT_SPEC §21), for the channel resource itself.
+
+- **Shared validator** (`src/lib/shared-localization-set/`, pure): `validateLocalizationSet(input, { baselineLanguage, limits,
+  ownText })` -- moved from `live-streams/localizations.ts`, whose `validateLiveLocalizations` is now a wrapper with the video
+  limits (100 characters / 5000 bytes, behaviour unchanged). The description limit is counted in bytes or characters.
+- **The set** (`channel-localizations/set.ts`, pure, imported by the card): channel limits 30 / 1000 characters (the documented
+  `brandingSettings.channel.title` and description limits; none is documented for `localizations`), `readStoredChannelLocalizations`
+  (a stored value that no longer passes is reported, never guessed), `channelDefaultLanguage` (`brandingSettings.channel.defaultLanguage`,
+  the writable one; `snippet.defaultLanguage` stands in when absent; both present and different = mismatch) and
+  `previewChannelLocalizations` (per language new / changed / unchanged, the untouched languages without the own-language entry,
+  `defaultLanguage { current, after, change }`, problems, `quota { writes, writeUnits, readUnits }`).
+- **Storage** (schema v104, device-local, in the snapshot's device-local list): `channel_localizations` (`localizations_json`,
+  `updated_at`, `updated_by`, `last_apply_json`, `last_apply_at`; saving the set keeps the last apply and vice versa) and
+  `channel_localization_events` (saved / backup / write / verification / failed).
+- **The service** (`channel-localizations/services.ts`): `save` (connected channel, validator, replace, event `saved`, no YouTube
+  call), `view`, `live` (a `channels.list` with the channel's connected account, read scope), `preview` and `apply` -- identity →
+  fresh read → refusals → nothing different: `{ ok: true, writes: 0 }` → backup (`kind: "channel_localizations"`, stored under the
+  channel id) → re-read equal to the first (else `update_failed`) → the `brandingSettings` write when the channel has no default
+  language (`pickSettableBrandingChannelFields` of the read + `defaultLanguage`, title omitted) and its read-back → the shared merge
+  (`buildSafeLocalizationsPayload` with the channel as a `FreshVideoContext`, only `localizations` used) →
+  `assertLiveWritesAuthorized` before each write → `channels.update part=localizations` → read-back (4 reads, 5 s apart: "language
+  missing" / "text differs" / "language lost" / "other language changed" / "branding settings changed" / base text) → the last
+  result (`ok`, `languages`, `defaultLanguageSet`, `writes`, `backupPath`; or `failure: read_back_mismatch | failed`). A failure
+  before the writes throws and is also stored as the last result.
+- **Surfaces.** `createChannelLocalizationsOwnerCore` (the Web routes only) and `createChannelLocalizationsOperatorCore` =
+  `operatorSurface` (view, live, save as `factory`; no apply) for the Factory MCP route; `operatorChannelLocalizations` shapes
+  `factory_channel_get_localizations` (codes only). `no-agent-apply.test.ts` scans every MCP and agent path for the apply and the
+  two gateway writes.
+- **Gateways.** Read: `getChannelLocalizationsContext` (`part=snippet,brandingSettings,localizations`, by id). Write:
+  `updateChannelLocalizations`, `updateChannelBrandingChannel` (one part each), `SETTABLE_BRANDING_CHANNEL_FIELDS` /
+  `pickSettableBrandingChannelFields`. The quota ledger logs both through the wrapped client (`channels.update` 50, `channels.list` 1).
+- **Web UI.** «Переводы канала» (`src/components/channel-localizations-panel.tsx`) in the Languages tab under the channel's language
+  defaults: rows (language, name, description with character counters), Save, «Проверить на YouTube» (the preview), «Применить»
+  behind `ConfirmDialog`, the last result. The row logic reuses `live-stream-localizations-model.ts` (`checkRows` takes the
+  validator). Routes: `GET/PUT /api/channels/[channelId]/channel-localizations`, `GET .../preview`, `POST .../apply`.
+- **Not yet verified against the real API:** the first real apply is the live acceptance.
