@@ -214,7 +214,7 @@ function statsOn(database: AppDb) {
       availabilityCells: (filter) => countMediaGpuAvailabilityCells(filter, database),
       sessionsFirstApprovedBetween: async () => [],
     },
-    settingsCandidates: async () => [RTX4090],
+    candidateSettings: async () => ({ gpuTypeId: RTX4090, gpuFallbackIds: [] }),
     clock: { now: () => new Date("2026-10-26T00:00:00Z") },
   });
 }
@@ -296,4 +296,18 @@ test("BL-206: the sessions read for the stats are those first approved in the ra
       rows.map((r) => r.id),
       ["end", "inside", "start"]
     );
+  }));
+
+test("BL-206 review: an empty insert stores no snapshot; a repeat at the same second stores nothing more (no doubled log rows)", () =>
+  withDb(async (database, client) => {
+    const at = new Date("2026-10-21T10:00:00Z");
+    await insertMediaGpuAvailabilitySnapshot(at, [], database);
+    assert.equal(Number((await client.execute("SELECT count(*) AS n FROM media_gpu_availability_snapshots")).rows[0].n), 0);
+    assert.equal(await getLatestMediaGpuAvailabilityAt(database), null);
+    await insertMediaGpuAvailabilitySnapshot(at, [row("X", "*", "LOW"), row("X", "A", "LOW")], database);
+    await insertMediaGpuAvailabilitySnapshot(at, [row("X", "*", "HIGH"), row("X", "A", "HIGH"), row("X", "B", "LOW")], database);
+    const snapshots = await client.execute("SELECT at, rows FROM media_gpu_availability_snapshots");
+    assert.deepEqual(snapshots.rows.map((r) => [Number(r.at), Number(r.rows)]), [[seconds("2026-10-21T10:00:00Z"), 2]]);
+    const log = await client.execute("SELECT data_center_id, stock FROM media_gpu_availability_log ORDER BY data_center_id");
+    assert.deepEqual(log.rows.map((r) => [r.data_center_id, r.stock]), [["*", "LOW"], ["A", "LOW"]]);
   }));

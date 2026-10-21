@@ -798,7 +798,8 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     const { candidates, skipped } = resolveGpuCandidates({ plan, settings, catalog });
     // BL-206 (GPU_STATS_PLAN.md §2.B, AC-GS-07): the candidates the FIRST placement skipped, kept on the row ([] = none); a capacity
     // retry runs this again and leaves the first record as it is. Best effort, like the minimum above: a lost record never stops a start.
-    if (approved.gpuSkippedJson == null) await deps.store.transition(approved.id, ["approved"], { status: "approved", gpuSkippedJson: JSON.stringify(skipped) }).catch(() => null);
+    // Without a catalog nothing could be checked, so nothing is recorded: the first placement that reads one records it (review).
+    if (approved.gpuSkippedJson == null && catalog !== null) await deps.store.transition(approved.id, ["approved"], { status: "approved", gpuSkippedJson: JSON.stringify(skipped) }).catch(() => null);
     if (candidates.length === 0) {
       const detail = skipped.map((s) => `${s.gpuTypeId}: ${s.reason}`).join("; ") || "no GPU is configured";
       await finish(approved, ["approved"], "failed", { error: `no GPU candidate qualifies: ${detail}` });

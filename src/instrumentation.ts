@@ -240,7 +240,7 @@ async function startServerSession() {
   setTimeout(janitorQuietly, 10 * 60_000).unref();
   setInterval(janitorQuietly, MEDIA_JANITOR_INTERVAL_MS).unref();
   // BL-172 (FO-REQ-0016 B): RunPod's GPU stock per datacenter, stored regularly -- BL-206 (FO-REQ-0033): every 15 minutes. The
-  // core decides whether one is due (the newest stored snapshot is 14 min old, an hour after a failure), skips without a RunPod call
+  // core decides whether one is due (the newest stored snapshot is 14 min old; 15 min after a failed tick), skips without a RunPod call
   // while the gateway is off or nothing is configured, and never throws. The 5-minute tick keeps the gap at about 15-20 minutes.
   // Never during a snapshot import/migration or in recovery mode (the gate the draft sync uses).
   const GPU_AVAILABILITY_TICK_MS = 5 * 60_000;

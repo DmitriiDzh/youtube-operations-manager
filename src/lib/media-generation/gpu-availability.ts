@@ -172,6 +172,24 @@ export type GpuAvailabilityLogInput = z.infer<typeof gpuAvailabilityLogInputSche
 export type GpuAvailabilitySummaryEntry = { gpuTypeId: string; dataCenterId: string; snapshots: number; stock: Record<string, number> };
 
 /**
+ * BL-206: the one rule for NONE in the compact log -- of the `read` snapshots a GPU was read in, those without a stored row of another
+ * level (UNKNOWN included) were NONE. Stored NONE rows (snapshots before v100) are not added on top: they are among those `read`.
+ * Returns the levels other than NONE as given, plus NONE when it is above zero.
+ */
+export function withImpliedNone(levels: Readonly<Record<string, number>>, read: number): Record<string, number> {
+  const result: Record<string, number> = {};
+  let present = 0;
+  for (const [level, count] of Object.entries(levels)) {
+    if (level === GPU_AVAILABILITY_NONE) continue;
+    result[level] = count;
+    present += count;
+  }
+  const none = Math.max(0, read - present);
+  if (none > 0) result[GPU_AVAILABILITY_NONE] = none;
+  return result;
+}
+
+/**
  * The summary entries from the stored groups. With `gpuSnapshots` (BL-206) a datacenter entry counts the snapshots its GPU was read
  * in (the snapshots with any row of that GPU -- its overall row is always stored) and NONE = those snapshots − the stored rows of
  * other levels, so old snapshots (NONE stored) and new ones (NONE implied) give the same counts. The overall `*` entries are always
@@ -194,12 +212,8 @@ export function summarizeGpuAvailabilityGroups(
     for (const entry of entries.values()) {
       const read = gpuSnapshots.get(entry.gpuTypeId);
       if (entry.dataCenterId === GPU_AVAILABILITY_OVERALL || read === undefined) continue;
-      const other = entry.snapshots - (entry.stock[GPU_AVAILABILITY_NONE] ?? 0);
-      const none = Math.max(0, read - other);
-      const { [GPU_AVAILABILITY_NONE]: _stored, ...levels } = entry.stock;
-      void _stored;
-      entry.stock = none > 0 ? { ...levels, [GPU_AVAILABILITY_NONE]: none } : levels;
-      entry.snapshots = other + none;
+      entry.stock = withImpliedNone(entry.stock, read);
+      entry.snapshots = Object.values(entry.stock).reduce((sum, n) => sum + n, 0);
     }
   }
   // Code-unit order, the same as the database's: the overall `*` row before any datacenter.

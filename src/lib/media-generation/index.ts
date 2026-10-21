@@ -179,10 +179,7 @@ function buildCore(jobScheduling: JobScheduling) {
       availabilityCells: (filter) => countMediaGpuAvailabilityCells(filter),
       sessionsFirstApprovedBetween: (since, until) => listSessionsFirstApprovedBetween(since, until),
     },
-    settingsCandidates: async () => {
-      const settings = await base.getSettings();
-      return [...new Set([settings.gpuTypeId, ...settings.gpuFallbackIds].filter((id): id is string => Boolean(id)))];
-    },
+    candidateSettings: () => base.getSettings(),
     clock: { now },
   });
   const sessions = createMediaSessionServices({

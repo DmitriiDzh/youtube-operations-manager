@@ -2853,3 +2853,25 @@ test("AC-GS-07: when no candidate qualifies the session fails and the skipped li
   assert.equal(running.status, "running");
   assert.deepEqual(running.gpuSkipped, []);
 });
+
+test("BL-206 review: an unreadable catalog records no skipped list; the first retry that reads the catalog records it", async () => {
+  let catalogUp = false;
+  let full = true;
+  const runpod = fakeRunpod({
+    capacity: () => full,
+    catalog: () => {
+      if (!catalogUp) throw new Error("RunPod catalog unavailable");
+      return [catalogGpu(FOUR, 24, ["EU-RO-1"]), catalogGpu(FIVE, 32, ["US-IL-1"])];
+    },
+  });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR, gpuFallbackIds: [FIVE], capacityRetrySeconds: 30, capacityWaitMinutes: 60, idleMinutes: 1000 } });
+  const requested = await f.services.requestSession(operatorRequest);
+  const waiting = await f.services.approveAndStartSession({ sessionId: requested.sessionId });
+  assert.equal(waiting.status, "waiting_capacity");
+  assert.equal(waiting.gpuSkipped, null, "no catalog: nothing could be checked, nothing recorded");
+  catalogUp = true;
+  full = false;
+  f.advance(31_000);
+  assert.equal((await tick1(f.services)).action, "retried_start");
+  assert.deepEqual(JSON.parse(f.mem.rows.get(requested.sessionId)?.gpuSkippedJson ?? "null"), [{ gpuTypeId: FIVE, reason: "not offered in EU-RO-1 (the volume's datacenter)" }]);
+});

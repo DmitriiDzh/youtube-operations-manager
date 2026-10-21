@@ -11,6 +11,15 @@ import { DomainError, type MediaGpuPlan, type MediaSettings } from "./contracts"
 export type GpuCandidate = { gpuTypeId: string; pricePerHr: number | null; memoryInGb: number | null };
 
 /**
+ * The GPU ids a start tries, in order and without repeats: the session's own plan when it lists any, else the device's GPU followed by
+ * its fallback list. The one place this list is made (a start, and BL-206's wait statistics).
+ */
+export function orderedGpuCandidateIds(plan: Pick<MediaGpuPlan, "candidates"> | null, settings: Pick<MediaSettings, "gpuTypeId" | "gpuFallbackIds">): string[] {
+  const ordered = plan && plan.candidates.length > 0 ? plan.candidates : [settings.gpuTypeId, ...settings.gpuFallbackIds].filter((id): id is string => Boolean(id));
+  return [...new Set(ordered)];
+}
+
+/**
  * The candidates to try, in order. The session's own plan (a request's or a template's) wins; without one, the device's
  * GPU followed by its fallback list. Filtered by minimum VRAM, price cap and -- when the catalog knows -- whether the
  * GPU is offered in the volume's datacenter. Without a catalog (it could not be read) nothing can be checked: every
@@ -22,8 +31,7 @@ export function resolveGpuCandidates(args: {
   catalog: RunpodGpuType[] | null;
 }): { candidates: GpuCandidate[]; skipped: Array<{ gpuTypeId: string; reason: string }> } {
   const { plan, settings, catalog } = args;
-  const ordered = plan && plan.candidates.length > 0 ? plan.candidates : [settings.gpuTypeId, ...settings.gpuFallbackIds].filter((id): id is string => Boolean(id));
-  const ids = [...new Set(ordered)];
+  const ids = orderedGpuCandidateIds(plan, settings);
   // The owner's floor and cap are HARD bounds (independent review): a plan may only tighten them, never loosen them.
   const minVram = [plan?.minVramGb ?? null, settings.gpuMinVramGb].reduce<number | null>((acc, v) => (v === null ? acc : acc === null ? v : Math.max(acc, v)), null);
   const maxPrice = [plan?.maxPricePerHr ?? null, settings.gpuMaxPricePerHr].reduce<number | null>((acc, v) => (v === null ? acc : acc === null ? v : Math.min(acc, v)), null);

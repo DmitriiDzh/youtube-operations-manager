@@ -10269,18 +10269,23 @@ export type MediaGpuAvailabilityLogRow = { gpuTypeId: string; dataCenterId: stri
 
 /**
  * BL-172: one snapshot (every row gets the same `at`), in one transaction; rows older than 90 days are pruned on the way. BL-206:
- * the snapshot's own row goes into `media_gpu_availability_snapshots` in the same transaction (a repeat at the same second adds its
- * rows), and that table is pruned with the log.
+ * the snapshot's own row goes into `media_gpu_availability_snapshots` in the same transaction (no rows = nothing stored; a snapshot
+ * already stored at the same second makes a repeat store nothing), and that table is pruned with the log.
  */
 export async function insertMediaGpuAvailabilitySnapshot(at: Date, rows: MediaGpuAvailabilityLogRow[], database: AppDb = db): Promise<void> {
+  // An empty reading is no snapshot (the caller treats an empty catalog as a failure; review: never a row of 0).
+  if (rows.length === 0) return;
   await database.transaction(async (tx) => {
+    // A snapshot already stored at this second is kept as it is: a repeat stores nothing, so no log row is doubled (review).
+    const claimed = await tx
+      .insert(mediaGpuAvailabilitySnapshots)
+      .values({ at, rows: rows.length, minCudaVersion: rows[0].minCudaVersion ?? null })
+      .onConflictDoNothing({ target: mediaGpuAvailabilitySnapshots.at })
+      .returning({ at: mediaGpuAvailabilitySnapshots.at });
+    if (claimed.length === 0) return;
     for (let i = 0; i < rows.length; i += 200) {
       await tx.insert(mediaGpuAvailabilityLog).values(rows.slice(i, i + 200).map((row) => ({ ...row, at })));
     }
-    await tx
-      .insert(mediaGpuAvailabilitySnapshots)
-      .values({ at, rows: rows.length, minCudaVersion: rows[0]?.minCudaVersion ?? null })
-      .onConflictDoUpdate({ target: mediaGpuAvailabilitySnapshots.at, set: { rows: sql`${mediaGpuAvailabilitySnapshots.rows} + ${rows.length}` } });
   });
   // Housekeeping, like the capacity log: a failed prune never loses the snapshot just stored.
   const cutoff = new Date(at.getTime() - GPU_AVAILABILITY_LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000);

@@ -1,7 +1,11 @@
-import { z } from "zod";
+import type { z } from "zod";
+import { gpuStatsInputSchema } from "./schemas";
 import { parseGpuSkipped, type StoredSessionRow } from "./sessions";
-import { DomainError, parseWithSchema, type MediaGpuPlan } from "./contracts";
-import { GPU_AVAILABILITY_NONE, GPU_AVAILABILITY_OVERALL, GPU_AVAILABILITY_SNAPSHOT_INTERVAL_MS } from "./gpu-availability";
+import { DomainError, parseWithSchema, type MediaGpuPlan, type MediaSettings } from "./contracts";
+import { GPU_AVAILABILITY_NONE, GPU_AVAILABILITY_OVERALL, GPU_AVAILABILITY_SNAPSHOT_INTERVAL_MS, withImpliedNone } from "./gpu-availability";
+import { orderedGpuCandidateIds } from "./gpu-plan";
+
+const GPU_AVAILABILITY_UNKNOWN = "UNKNOWN";
 
 /**
  * BL-206 (FO-REQ-0033, docs/roadmap/plans/GPU_STATS_PLAN.md §2.B/§2.C): a session's GPU wait, derived from its row (no table of its
@@ -19,8 +23,8 @@ export type GpuWaitRecord = {
   requestedBy: string;
   status: string;
   outcome: GpuWaitOutcome;
-  /** The GPU list the session tried: its own plan's, else the Settings' GPU and fallback list (as they are now). */
-  candidates: string[];
+  /** The GPU list the session tried: its own plan's, else the Settings' GPU and fallback list (as they are now); null = its stored plan is unreadable. */
+  candidates: string[] | null;
   datacenterId: string | null;
   firstApprovedAt: string | null;
   /** True for a session from before schema v100: its first approval is its earliest capacity attempt. */
@@ -37,24 +41,38 @@ export type GpuWaitRecord = {
   usdCharged: number | null;
 };
 
-/** `media_no_capacity: …` → `media_no_capacity`; `no GPU candidate qualifies: …` → `no_gpu_candidate_qualifies`. */
+/**
+ * The code a failed session's error starts with -- `media_no_capacity: …` → `media_no_capacity` -- or `other` when it does not start
+ * with one (free text such as `pod creation failed (HTTP 500 …)` would split the buckets otherwise).
+ */
 export function failureReasonOf(error: string | null): string {
-  if (!error) return "unknown";
-  const head = error.split(":")[0].trim().toLowerCase();
-  const code = head
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .slice(0, 60);
-  return code || "unknown";
+  const code = error ? /^[a-z][a-z0-9_]+(?=:)/.exec(error) : null;
+  return code ? code[0] : "other";
 }
 
 function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
-export function buildGpuWaitRecord(row: StoredSessionRow, settingsCandidates: string[]): GpuWaitRecord {
-  const plan = row.gpuPlanJson ? (JSON.parse(row.gpuPlanJson) as MediaGpuPlan) : null;
-  const candidates = plan && plan.candidates.length > 0 ? [...plan.candidates] : [...settingsCandidates];
+/** The session's stored GPU plan; `invalid` when it cannot be read (that record then has no candidate list, the call goes on). */
+function readGpuPlan(json: string | null | undefined): MediaGpuPlan | null | "invalid" {
+  if (!json) return null;
+  try {
+    const parsed = JSON.parse(json) as { candidates?: unknown };
+    if (!parsed || !Array.isArray(parsed.candidates) || !parsed.candidates.every((id) => typeof id === "string")) return "invalid";
+    return parsed as MediaGpuPlan;
+  } catch {
+    return "invalid";
+  }
+}
+
+/** The Settings' part of the candidate list (`orderedGpuCandidateIds` without a plan). */
+export type GpuCandidateSettings = Pick<MediaSettings, "gpuTypeId" | "gpuFallbackIds">;
+
+export function buildGpuWaitRecord(row: StoredSessionRow, settings: GpuCandidateSettings): GpuWaitRecord {
+  const plan = readGpuPlan(row.gpuPlanJson);
+  // The same ordered, de-duplicated list a start tries (gpu-plan.ts), from the session's plan, else the Settings as they are now.
+  const candidates = plan === "invalid" ? null : orderedGpuCandidateIds(plan, settings);
   const first = row.firstApprovedAt ?? null;
   const outcome: GpuWaitOutcome = row.readyAt ? "ready" : row.status === "failed" ? "failed" : ["done", "rejected", "interrupted"].includes(row.status) ? "stopped" : "open";
   return {
@@ -85,19 +103,7 @@ export const GPU_STATS_MAX_DAYS = 90;
 /** At most this many sessions are listed with `includeSessions` (newest first); the counts always cover all of them. */
 export const GPU_STATS_SESSION_LIST_LIMIT = 500;
 
-export const gpuStatsInputSchema = z
-  .object({
-    from: z.string().datetime({ offset: true }).optional(),
-    to: z.string().datetime({ offset: true }).optional(),
-    gpuTypeIds: z.array(z.string().min(1).max(128)).min(1).max(50).optional(),
-    dataCenterIds: z.array(z.string().min(1).max(32)).min(1).max(50).optional(),
-    /** UTC hours, `to` exclusive; `from` > `to` wraps past midnight (22 → 2 = 22:00-01:59). */
-    hoursUtc: z.object({ from: z.number().int().min(0).max(23), to: z.number().int().min(1).max(24) }).strict().optional(),
-    /** ISO weekdays: 1 = Monday … 7 = Sunday. */
-    weekdays: z.array(z.number().int().min(1).max(7)).min(1).max(7).optional(),
-    includeSessions: z.boolean().optional(),
-  })
-  .strict();
+export { gpuStatsInputSchema };
 export type GpuStatsInput = z.infer<typeof gpuStatsInputSchema>;
 
 /** Counts of one GPU availability key in one UTC hour (0-23) of one ISO weekday (1-7). */
@@ -149,8 +155,11 @@ export type GpuAvailabilityStatsEntry = {
   gpuTypeId: string;
   dataCenterId: string;
   snapshots: number;
+  /** Snapshots with a stock level other than NONE (LOW / MEDIUM / HIGH). */
   inStock: number;
   inStockShare: number | null;
+  /** Snapshots where RunPod listed the GPU there without a level: neither in stock nor NONE. */
+  unknown: number;
   stock: Record<string, number>;
   /** Index = UTC hour 0-23. */
   byHourUtc: Array<{ snapshots: number; inStockShare: number | null }>;
@@ -159,7 +168,8 @@ export type GpuAvailabilityStatsEntry = {
 };
 
 /**
- * Per GPU × datacenter, inside the hour/weekday window: snapshots (those the GPU was read in), how many of them had stock (≠ NONE),
+ * Per GPU × datacenter, inside the hour/weekday window: snapshots (those the GPU was read in), how many of them had stock (a level
+ * other than NONE; a listing without a level is `unknown`, apart),
  * the counts per level and the same per hour and weekday. NONE is always snapshots − the stored rows of other levels, so old
  * snapshots (NONE stored) and new ones (NONE implied) count alike. A requested datacenter without any stored row still gets an
  * entry per GPU (all NONE).
@@ -205,21 +215,22 @@ export function buildGpuAvailabilityStats(
     const byDay = Array.from({ length: 7 }, () => ({ snapshots: 0, inStock: 0 }));
     let snapshots = 0;
     let inStock = 0;
+    let unknown = 0;
     for (const [key, read] of denominators) {
       const hour = Math.floor(key / 8);
       const weekday = key % 8;
-      const levels = entry.cells.get(key) ?? {};
-      let present = 0;
+      const levels = withImpliedNone(entry.cells.get(key) ?? {}, read);
+      let total = 0;
       for (const [level, count] of Object.entries(levels)) {
-        if (level === GPU_AVAILABILITY_NONE) continue;
         stock[level] = (stock[level] ?? 0) + count;
-        present += count;
+        total += count;
       }
-      const none = Math.max(0, read - present);
-      if (none > 0) stock[GPU_AVAILABILITY_NONE] = (stock[GPU_AVAILABILITY_NONE] ?? 0) + none;
-      const total = present + none;
+      // In stock = a level RunPod gave (LOW / MEDIUM / HIGH); listed without a level (UNKNOWN) is counted apart (review).
+      const cellUnknown = levels[GPU_AVAILABILITY_UNKNOWN] ?? 0;
+      const present = total - (levels[GPU_AVAILABILITY_NONE] ?? 0) - cellUnknown;
       snapshots += total;
       inStock += present;
+      unknown += cellUnknown;
       byHour[hour].snapshots += total;
       byHour[hour].inStock += present;
       byDay[weekday - 1].snapshots += total;
@@ -231,6 +242,7 @@ export function buildGpuAvailabilityStats(
       snapshots,
       inStock,
       inStockShare: share(inStock, snapshots),
+      unknown,
       stock,
       byHourUtc: byHour.map((b) => ({ snapshots: b.snapshots, inStockShare: share(b.inStock, b.snapshots) })),
       byWeekday: byDay.map((b) => ({ snapshots: b.snapshots, inStockShare: share(b.inStock, b.snapshots) })),
@@ -275,7 +287,7 @@ export function summarizeGpuWaits(records: GpuWaitRecord[]): GpuWaitSummary {
 }
 
 export function buildGpuSessionStats(records: GpuWaitRecord[], includeSessions: boolean) {
-  const byCandidates = new Map<string, { candidates: string[]; records: GpuWaitRecord[] }>();
+  const byCandidates = new Map<string, { candidates: string[] | null; records: GpuWaitRecord[] }>();
   const byGpu = new Map<string, GpuWaitRecord[]>();
   const failures: Record<string, number> = {};
   for (const record of records) {
@@ -304,7 +316,7 @@ export function buildGpuSessionStats(records: GpuWaitRecord[], includeSessions: 
  * `factory_media_get_gpu_stats` (READ): local data only -- the stored availability snapshots and this computer's sessions. Its
  * dependencies hold no RunPod client: it cannot reach RunPod, and costs nothing.
  */
-export function createGpuStatsServices(deps: { store: GpuStatsStore; settingsCandidates(): Promise<string[]>; clock: { now(): Date } }) {
+export function createGpuStatsServices(deps: { store: GpuStatsStore; candidateSettings(): Promise<GpuCandidateSettings>; clock: { now(): Date } }) {
   return {
     async getGpuStats(input: unknown = {}) {
       const parsed = parseWithSchema(gpuStatsInputSchema, input ?? {}, "GPU stats input");
@@ -328,7 +340,7 @@ export function createGpuStatsServices(deps: { store: GpuStatsStore; settingsCan
       });
       const availability = buildGpuAvailabilityStats(cells, window, parsed.dataCenterIds);
 
-      const settingsCandidates = await deps.settingsCandidates();
+      const candidateSettings = await deps.candidateSettings();
       const rows = await deps.store.sessionsFirstApprovedBetween(from, to);
       const records = rows
         .filter((row) => {
@@ -336,9 +348,9 @@ export function createGpuStatsServices(deps: { store: GpuStatsStore; settingsCan
           const { hour, weekday } = hourAndWeekday(row.firstApprovedAt);
           return inWindow(hour, weekday, window);
         })
-        .map((row) => buildGpuWaitRecord(row, settingsCandidates))
+        .map((row) => buildGpuWaitRecord(row, candidateSettings))
         .filter((record) => !parsed.dataCenterIds || (record.datacenterId !== null && parsed.dataCenterIds.includes(record.datacenterId)))
-        .filter((record) => !parsed.gpuTypeIds || record.candidates.some((id) => parsed.gpuTypeIds!.includes(id)) || (record.gpuTypeId !== null && parsed.gpuTypeIds.includes(record.gpuTypeId)));
+        .filter((record) => !parsed.gpuTypeIds || (record.candidates ?? []).some((id) => parsed.gpuTypeIds!.includes(id)) || (record.gpuTypeId !== null && parsed.gpuTypeIds.includes(record.gpuTypeId)));
 
       return {
         from: from.toISOString(),

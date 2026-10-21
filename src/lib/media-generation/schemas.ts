@@ -268,3 +268,21 @@ export type CreateTemplatePassthroughInput = z.infer<typeof createTemplatePassth
 export type UpdateSettingsInput = z.infer<typeof updateSettingsInputSchema>;
 export type CreateNetworkVolumeInput = z.infer<typeof createNetworkVolumeInputSchema>;
 export type CreatePodPassthroughInput = z.infer<typeof createPodPassthroughSchema>;
+
+/**
+ * BL-206 (GPU_STATS_PLAN.md §2.C): `factory_media_get_gpu_stats`'s input -- one schema for the MCP tool and the media core, which
+ * also checks that from/to fit together (`invalid_request`).
+ */
+export const gpuStatsInputSchema = z
+  .object({
+    from: z.string().datetime({ offset: true }).optional(),
+    to: z.string().datetime({ offset: true }).optional(),
+    gpuTypeIds: z.array(z.string().min(1).max(128)).min(1).max(50).optional(),
+    dataCenterIds: z.array(z.string().min(1).max(32)).min(1).max(50).optional(),
+    /** UTC hours, `to` exclusive; `from` > `to` wraps past midnight (22 → 2 = 22:00-01:59). */
+    hoursUtc: z.object({ from: z.number().int().min(0).max(23), to: z.number().int().min(1).max(24) }).strict().optional(),
+    /** ISO weekdays: 1 = Monday … 7 = Sunday. */
+    weekdays: z.array(z.number().int().min(1).max(7)).min(1).max(7).optional(),
+    includeSessions: z.boolean().optional(),
+  })
+  .strict();

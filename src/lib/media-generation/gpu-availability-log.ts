@@ -37,7 +37,7 @@ export type GpuAvailabilityLogStore = {
     firstAt: Date | null;
     lastAt: Date | null;
     groups: Array<{ gpuTypeId: string; dataCenterId: string; stock: string | null; count: number }>;
-    gpuSnapshots?: Array<{ gpuTypeId: string; snapshots: number }>;
+    gpuSnapshots: Array<{ gpuTypeId: string; snapshots: number }>;
   }>;
 };
 
@@ -71,8 +71,9 @@ export function createGpuAvailabilityLogServices(deps: {
      * later. Two catalog reads per snapshot, Secure Cloud (network volumes exist only there), with the Settings' CUDA minimum.
      */
     async snapshotGpuAvailabilityIfDue(): Promise<GpuAvailabilitySnapshotOutcome> {
+      // The tick's own start: a failure is dated here, not after the reads, so the retry falls on the tick 15 minutes later.
+      const now = deps.clock.now();
       try {
-        const now = deps.clock.now();
         const latest = await deps.store.latestAt();
         if (latest && now.getTime() - latest.getTime() < GPU_AVAILABILITY_SNAPSHOT_DUE_MS) return { status: "skipped", reason: "fresh" };
         if (lastFailureAt && now.getTime() - lastFailureAt.getTime() < GPU_AVAILABILITY_FAILURE_BACKOFF_MS) return { status: "skipped", reason: "backoff" };
@@ -99,7 +100,7 @@ export function createGpuAvailabilityLogServices(deps: {
       } catch (error) {
         if (isDomainError(error) && error.code === "media_generation_not_configured") return { status: "skipped", reason: "not_configured" };
         if (isDomainError(error) && error.code === "media_gateway_disabled") return { status: "skipped", reason: "gateway_off" };
-        lastFailureAt = deps.clock.now();
+        lastFailureAt = now;
         const code = isDomainError(error) ? error.code : "error";
         const message = error instanceof Error ? error.message : String(error);
         deps.log?.(`[gpu-availability] the GPU availability snapshot failed (${code}): ${message}`);
@@ -129,10 +130,10 @@ export function createGpuAvailabilityLogServices(deps: {
       const head = { intervalHours: GPU_AVAILABILITY_SNAPSHOT_INTERVAL_MS / 3_600_000, retentionDays: GPU_AVAILABILITY_LOG_RETENTION_DAYS, lastSnapshotAt: latest ? latest.toISOString() : null };
       if (parsed.summary) {
         const summary = await deps.store.summarize(filter);
-        const gpuSnapshots = summary.gpuSnapshots ? new Map(summary.gpuSnapshots.map((g) => [g.gpuTypeId, g.snapshots])) : undefined;
+        const gpuSnapshots = new Map(summary.gpuSnapshots.map((g) => [g.gpuTypeId, g.snapshots]));
         const entries = summarizeGpuAvailabilityGroups(summary.groups, gpuSnapshots);
         // BL-206: a GPU and datacenter named together that were NONE in every snapshot have no stored row; the entry is all NONE.
-        const read = filter.gpuTypeId ? gpuSnapshots?.get(filter.gpuTypeId) : undefined;
+        const read = filter.gpuTypeId ? gpuSnapshots.get(filter.gpuTypeId) : undefined;
         if (filter.gpuTypeId && filter.dataCenterId && filter.dataCenterId !== GPU_AVAILABILITY_OVERALL && entries.length === 0 && read) {
           entries.push({ gpuTypeId: filter.gpuTypeId, dataCenterId: filter.dataCenterId, snapshots: read, stock: { [GPU_AVAILABILITY_NONE]: read } });
         }
