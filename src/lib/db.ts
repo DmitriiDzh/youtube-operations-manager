@@ -1424,6 +1424,11 @@ export const publishingUploads = sqliteTable(
     /** Which runner works on the row until when: two processes on one database never both send it (review should-fix 6). */
     leaseOwner: text("lease_owner"),
     leaseUntil: integer("lease_until", { mode: "timestamp_ms" }),
+    /**
+     * Schema v103 (BL-209, AUTO_PRIVATE_UPLOAD_PLAN.md, ADR 0046): queued by the owner's «Автоматическая загрузка» switch, not by an
+     * approval screen -- always private and without a date. A row with it set also records that its manifest hash was tried once.
+     */
+    automatic: integer("automatic", { mode: "boolean" }).notNull().default(false),
   },
   (table) => [index("publishing_uploads_status_idx").on(table.status, table.nextAttemptAt), index("publishing_uploads_channel_idx").on(table.channelId, table.createdAt)]
 );
@@ -5391,6 +5396,18 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       );
     },
   },
+  {
+    version: 103,
+    description:
+      "publishing_uploads.automatic -- BL-209 (FO-REQ-0036, AUTO_PRIVATE_UPLOAD_PLAN.md, ADR 0046): an upload queued by the owner's automatic-upload switch (private, no date); with the manifest hash it also records that this manifest version was tried once. Additive, NOT NULL DEFAULT 0 (every existing row is an approval), device-local",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE publishing_uploads ADD COLUMN automatic INTEGER NOT NULL DEFAULT 0");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
+    },
+  },
 ];
 
 /**
@@ -6491,6 +6508,42 @@ export async function setOperatorCliEnabled(enabled: boolean): Promise<void> {
 }
 
 const DEVICE_AUTO_SYNC_ENABLED_SETTING_KEY = "device_auto_sync_enabled";
+const AUTO_PRIVATE_UPLOAD_ENABLED_SETTING_KEY = "auto_private_upload_enabled";
+
+/**
+ * BL-209 (AUTO_PRIVATE_UPLOAD_PLAN.md §1, ADR 0046): the owner's «Автоматическая загрузка (private)» switch -- OFF unless he turned
+ * it on. Persistent, device-local like every `app_settings` row, one switch for every channel on this computer. Set only by the Web
+ * UI's Settings route (no MCP tool, agent endpoint or CLI command reaches the setter; AC-AU-11).
+ */
+export async function getAutoPrivateUploadEnabled(): Promise<boolean> {
+  return (await getAppSetting(AUTO_PRIVATE_UPLOAD_ENABLED_SETTING_KEY)) === "true";
+}
+
+export async function setAutoPrivateUploadEnabled(enabled: boolean): Promise<void> {
+  await setAppSetting(AUTO_PRIVATE_UPLOAD_ENABLED_SETTING_KEY, enabled ? "true" : "false");
+}
+
+const AUTO_PRIVATE_UPLOAD_WAITING_SETTING_KEY = "auto_private_upload_waiting";
+
+/**
+ * BL-209 follow-up: why the automatic upload is not queuing something now (owned by `publishing/auto-upload.ts`, written only when
+ * it changed; shown on the Live writes card). Stored rather than kept in memory: the watcher's loop and the Settings route are
+ * separate module instances. JSON; [] or unset = nothing waits. Device-local.
+ */
+export async function getAutoPrivateUploadWaiting(): Promise<unknown[]> {
+  const raw = await getAppSetting(AUTO_PRIVATE_UPLOAD_WAITING_SETTING_KEY);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function setAutoPrivateUploadWaiting(entries: unknown[]): Promise<void> {
+  await setAppSetting(AUTO_PRIVATE_UPLOAD_WAITING_SETTING_KEY, JSON.stringify(entries));
+}
 const DEVICE_SYNC_STATUS_SETTING_KEY = "device_sync_status";
 
 /**
@@ -11278,6 +11331,19 @@ export async function listPublishingUploads(
     .where(conditions.length > 0 ? and(...conditions) : undefined)
     .orderBy(desc(publishingUploads.createdAt), desc(publishingUploads.id))
     .limit(filter.limit);
+}
+
+/**
+ * BL-209 (AUTO_PRIVATE_UPLOAD_PLAN.md §2; review M1): the manifest hashes that already have an upload row on this computer for the
+ * channel -- automatic or the owner's approval, whatever became of it (done, failed, cancelled). The automatic upload never queues
+ * such a manifest version by itself: one the owner cancelled, or one that failed, stays his decision.
+ */
+export async function listTriedManifestHashes(channelId: string, database: AppDb = db): Promise<Set<string>> {
+  const rows = await database
+    .selectDistinct({ manifestSha256: publishingUploads.manifestSha256 })
+    .from(publishingUploads)
+    .where(eq(publishingUploads.channelId, channelId));
+  return new Set(rows.map((row) => row.manifestSha256));
 }
 
 /**

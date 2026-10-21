@@ -1196,3 +1196,6 @@ idle / minutes / USD; every job submit or poll counts as activity. Contract: `do
 - Since Agent API 3.17.0 (Producer 1.8.0, BL-182 stage 2) it also lists the release packages in this computer's copy of the channel
   workspace (state and the codes of why one is not ready) and this computer's upload queue, so a channel worker can see which
   packages are ready, uploading or done. Still read-only.
+- Since Agent API 3.20.0 (Producer 1.10.0, BL-209, ADR 0046) each upload also says whether the owner's automatic-upload switch
+  queued it (`automatic`: private, never a date), how far it is (`progressPercent`) and when it ended (`finishedAt`). No agent tool
+  turns the switch or queues an upload.

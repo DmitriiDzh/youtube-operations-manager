@@ -713,7 +713,7 @@ test("AC-PR-07 / AC-PR-10: the Producer's own tools -- its channels with their f
   // BL-182 stage 1 (PUBLISHING_PLAN.md §2 stage 1 item 4, FO-REQ-0023 §4 C4): 1.7.0 adds the READ channel tool
   // agent_get_publishing_calendar; no upload or schedule tool (ADR 0037).
   // BL-191 (SUGGESTED_SOURCES_PLAN.md AC-SS-08, FO-REQ-0026 §4.1): 1.9.0 adds the READ channel tool agent_get_stored_suggested_sources.
-  assert.equal(PRODUCER_API_VERSION, "1.9.0"); // 1.8.0 (BL-182 stage 2): the calendar read lists packages and uploads
+  assert.equal(PRODUCER_API_VERSION, "1.10.0"); // 1.10.0 (BL-209): the calendar read's uploads gain automatic / progressPercent / finishedAt; 1.8.0 (BL-182 stage 2): the calendar read lists packages and uploads
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_stored_suggested_sources"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_publishing_calendar"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_video_comments"));

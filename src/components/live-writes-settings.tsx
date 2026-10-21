@@ -10,9 +10,28 @@ import { InfoTooltip } from "./info-tooltip";
 import { SettingsSectionRow } from "./settings-section-row";
 import { ToggleSwitch } from "./toggle-switch";
 import { useT } from "./ui-text-provider";
+import type { UiTextKey } from "@/lib/ui-text";
+
+/** The reasons with their own text; any other refusal code reads as "refused" (the code in brackets). */
+const AUTO_UPLOAD_REASONS = new Set([
+  "upload_daily_limit",
+  "quota_insufficient",
+  "quota_unknown",
+  "publishing_settings_changed",
+  "upload_tags_too_long",
+  "hash_failed",
+  "no_connected_account",
+  "no_workspace",
+  "workspace_unavailable",
+  "channel_failed",
+]);
 
 type Settings = {
   liveWritesEnabled: boolean;
+  /** BL-209 (ADR 0046): null when its read failed -- only this toggle is then hidden, never the Live writes one. */
+  autoPrivateUploadEnabled?: boolean | null;
+  /** BL-209 follow-up: why the automatic upload is waiting now, written by its watcher (read-only). */
+  autoPrivateUploadWaiting?: Array<{ kind: "package" | "channel"; channelId: string; video?: string; reason: string }>;
   gatewayTraffic?: GatewayTrafficWindowView[];
   cloudQuotaStatus?: { dataApi: ServiceQuotaStatusView; tokenRefreshFailed?: boolean };
 };
@@ -57,7 +76,11 @@ export function LiveWritesSettings() {
       const res = await fetch("/api/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ liveWritesEnabled: next.liveWritesEnabled }),
+        // Only the fields that changed (the route applies the ones present).
+        body: JSON.stringify({
+          ...(next.liveWritesEnabled !== settings?.liveWritesEnabled ? { liveWritesEnabled: next.liveWritesEnabled } : {}),
+          ...(typeof next.autoPrivateUploadEnabled === "boolean" && next.autoPrivateUploadEnabled !== settings?.autoPrivateUploadEnabled ? { autoPrivateUploadEnabled: next.autoPrivateUploadEnabled } : {}),
+        }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -76,7 +99,7 @@ export function LiveWritesSettings() {
 
   if (!draft) return null;
 
-  const dirty = settings && draft.liveWritesEnabled !== settings.liveWritesEnabled;
+  const dirty = settings && (draft.liveWritesEnabled !== settings.liveWritesEnabled || draft.autoPrivateUploadEnabled !== settings.autoPrivateUploadEnabled);
 
   return (
     <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
@@ -101,6 +124,39 @@ export function LiveWritesSettings() {
               />
               <span className="text-sm text-zinc-300">{t("settingsCards.liveWrites.toggle")}</span>
             </div>
+            {/* BL-209 (owner msg 3331): the automatic private upload's switch sits next to «Запись в YouTube». Its uploads still
+                pause while Live writes are off. */}
+            {typeof draft.autoPrivateUploadEnabled === "boolean" && (
+              <div className="mt-2 flex items-center gap-2">
+                <ToggleSwitch
+                  label={t("settingsCards.autoPrivateUpload.toggle")}
+                  checked={draft.autoPrivateUploadEnabled}
+                  onChange={(checked) => setDraft({ ...draft, autoPrivateUploadEnabled: checked })}
+                />
+                <span className="text-sm text-zinc-300">{t("settingsCards.autoPrivateUpload.toggle")}</span>
+                <InfoTooltip>{t("settingsCards.autoPrivateUpload.info")}</InfoTooltip>
+              </div>
+            )}
+            {/* Review M2(a): two computers that both see the factory's folder must not both upload -- one switch on one computer. */}
+            {typeof draft.autoPrivateUploadEnabled === "boolean" && <p className="mt-1 text-xs text-zinc-400">{t("settingsCards.autoPrivateUpload.oneComputer")}</p>}
+            {/* BL-209 follow-up: one line -- the first reason the automatic upload is waiting, and how many more. */}
+            {settings?.autoPrivateUploadEnabled === true && (settings.autoPrivateUploadWaiting ?? []).length > 0 && (() => {
+              const list = settings.autoPrivateUploadWaiting ?? [];
+              const first = list[0];
+              const reason = AUTO_UPLOAD_REASONS.has(first.reason)
+                ? t(`settingsCards.autoPrivateUpload.reason.${first.reason}` as UiTextKey)
+                : t("settingsCards.autoPrivateUpload.reason.other", { code: first.reason });
+              const line =
+                first.kind === "package"
+                  ? t("settingsCards.autoPrivateUpload.waitingPackage", { video: first.video ?? "", reason })
+                  : t("settingsCards.autoPrivateUpload.waitingChannel", { channel: first.channelId, reason });
+              return (
+                <p className="mt-1 text-xs text-amber-200">
+                  {line}
+                  {list.length > 1 && ` ${t("settingsCards.autoPrivateUpload.waitingMore", { count: String(list.length - 1) })}`}
+                </p>
+              );
+            })()}
           </div>
         }
         right={

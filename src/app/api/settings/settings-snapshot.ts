@@ -29,6 +29,10 @@ type Readers = {
   /** BL-125: days a settled draft is kept (default 7) and days a successful write log is kept (default 30, minimum 7). */
   draftRetentionDays: () => Promise<number>;
   writeLogRetentionDays: () => Promise<number>;
+  /** BL-209 (ADR 0046): the owner's automatic private upload switch; off by default, device-local. */
+  autoPrivateUploadEnabled: () => Promise<boolean>;
+  /** BL-209 follow-up: why the automatic upload is waiting now ([] = nothing), written by its watcher. Read-only here. */
+  autoPrivateUploadWaiting: () => Promise<unknown[]>;
 };
 
 export async function buildSettingsSnapshot(readers: Readers) {
@@ -68,6 +72,8 @@ export async function buildSettingsSnapshot(readers: Readers) {
     quotaReservePercent: values.quotaReservePercent as number | null,
     draftRetentionDays: values.draftRetentionDays as number | null,
     writeLogRetentionDays: values.writeLogRetentionDays as number | null,
+    autoPrivateUploadEnabled: values.autoPrivateUploadEnabled as boolean | null,
+    autoPrivateUploadWaiting: (values.autoPrivateUploadWaiting as unknown[] | null) ?? [],
     /** Names of the reads that failed this time (their fields are `null`). Empty when all succeeded. */
     unavailable,
   };

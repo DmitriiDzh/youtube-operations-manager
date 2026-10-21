@@ -1,7 +1,8 @@
 # 0037. Uploads and scheduling of the owner's own release packages, from the Web UI, on the owner's approval only
 
 Status: Accepted (owner, Telegram msg 2702 for the G1 probe; msg 2707 for the plan's answers: order, rescheduling while private,
-the AI-use fix).
+the AI-use fix). §1 and §3 amended by [0046](0046-auto-private-upload.md) (2026-10-22): the owner's automatic-upload switch is a
+standing approval of private, undated uploads of ready packages whose video matches its manifest's SHA-256.
 
 **Date:** 2026-10-13.
 - **Request:** FO-REQ-0023 (the Operator, from the owner's instruction 1110), relayed by the owner here on 2026-10-13 (msg 2698).

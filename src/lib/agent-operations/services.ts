@@ -198,7 +198,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     domain: "video_context",
     permission: "READ",
     description:
-      "The channel's publishing calendar from the synced copy (BL-182): published, scheduled and overdue videos of the past and next 14 days, private uploads without a date, how far ahead the channel is covered (and whether that is under 7 days) and the days without a video. A LOCAL read; uploading and scheduling stay with the owner in the Web UI. Requires channelId to be the caller's currently-active channel.",
+      "The channel's publishing calendar from the synced copy (BL-182): published, scheduled and overdue videos of the past and next 14 days, private uploads without a date, how far ahead the channel is covered (and whether that is under 7 days) and the days without a video; this computer's release packages and uploads (since 3.20.0 each upload says whether it was queued automatically -- private, no date -- with progressPercent and finishedAt). A LOCAL read; uploading and scheduling stay with the owner in the Web UI. Requires channelId to be the caller's currently-active channel.",
   },
   {
     id: "analytics.query_video_milestones",

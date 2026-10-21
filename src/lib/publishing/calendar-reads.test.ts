@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { DomainError } from "@/lib/shared-domain";
 import type { CalendarSourceVideo } from "./calendar";
-import { createPublishingCalendarReads } from "./calendar-reads";
+import { agentUploadOf, createPublishingCalendarReads } from "./calendar-reads";
 
 // BL-182 stage 1 (FO-REQ-0023 §4 C4 "read-only calendar for agents and the Producer: published / scheduled / gaps for the past 14 and
 // the next 14 days"; D "a channel never synced must not produce a false alert"). Days are UTC dates (the owner publishes at 12:00Z).
@@ -67,7 +67,9 @@ test("agent calendar: the release packages and this computer's uploads ride alon
     clock: { now: () => NOW },
   };
   const items = [{ video: "V65", title: "T", plannedPublishDate: "2026-10-24", state: "not_ready", problems: ["thumbnail_missing"], videoId: null }];
-  const uploads = [{ video: "V64", status: "paused", publishAt: "2026-10-23T12:00:00.000Z", videoId: null, pausedReason: "live_writes_off", errorCode: null }];
+  // BL-209 (Agent API 3.20.0): an upload also carries automatic / progressPercent / finishedAt -- added to the fixture, the
+  // pass-through it checks is unchanged.
+  const uploads = [{ video: "V64", status: "paused", publishAt: "2026-10-23T12:00:00.000Z", videoId: null, pausedReason: "live_writes_off", errorCode: null, automatic: false, progressPercent: 0, finishedAt: null }];
   const ok = await createPublishingCalendarReads({ ...base, packages: async () => ({ status: "ok", items }), uploads: async () => uploads }).getAgentCalendar({ credentialRef: { userId: "u1" }, channelId: "UC_A" });
   assert.deepEqual(ok.packages, { status: "ok", items });
   assert.deepEqual(ok.uploads, uploads);
@@ -78,4 +80,27 @@ test("agent calendar: the release packages and this computer's uploads ride alon
     },
   }).getAgentCalendar({ credentialRef: { userId: "u1" }, channelId: "UC_A" });
   assert.deepEqual([failed.packages, failed.uploads], [{ status: "unavailable" }, []]);
+});
+
+// BL-209 AC-AU-12 (AUTO_PRIVATE_UPLOAD_PLAN.md §2 item 7): the agents' calendar read reports, for each upload, whether it was queued
+// automatically, its progress (stored bytes / total, as a whole percent; null when the total is unknown) and when it ended.
+test("AC-AU-12: an upload's automatic flag, progressPercent and finishedAt in the agent read", () => {
+  const base = { video: "V65", status: "uploading" as const, publishAt: null, videoId: null, pausedReason: null, errorCode: null, finishedAt: null };
+  assert.deepEqual(agentUploadOf({ ...base, automatic: true, storedBytes: 250, totalBytes: 1000 }), {
+    video: "V65",
+    status: "uploading",
+    publishAt: null,
+    videoId: null,
+    pausedReason: null,
+    errorCode: null,
+    automatic: true,
+    progressPercent: 25,
+    finishedAt: null,
+  });
+  // 2/3 of the bytes -> 66 (rounded down: never "100" before the last byte).
+  assert.equal(agentUploadOf({ ...base, automatic: false, storedBytes: 2, totalBytes: 3 }).progressPercent, 66);
+  assert.equal(agentUploadOf({ ...base, automatic: false, storedBytes: 999, totalBytes: 1000 }).progressPercent, 99);
+  assert.equal(agentUploadOf({ ...base, automatic: false, storedBytes: 0, totalBytes: 0 }).progressPercent, null);
+  const done = agentUploadOf({ ...base, status: "done", automatic: true, storedBytes: 1000, totalBytes: 1000, videoId: "vid1", finishedAt: new Date("2026-10-21T13:05:00Z") });
+  assert.deepEqual([done.automatic, done.progressPercent, done.finishedAt, done.videoId], [true, 100, "2026-10-21T13:05:00.000Z", "vid1"]);
 });

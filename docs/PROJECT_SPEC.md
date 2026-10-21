@@ -1838,7 +1838,9 @@ Do not implement yet:
 - autonomous metadata optimization;
 - automatic video publishing;
 - video upload (lifted for one case, 2026-10-13, ADR 0037: the owner's own release packages,
-  uploaded and scheduled from the Web UI on the owner's approval only -- never by an agent);
+  uploaded and scheduled from the Web UI on the owner's approval only -- never by an agent; since 2026-10-22, ADR 0046, also
+  uploaded as private without a date on the standing approval of the owner's automatic-upload switch, when the video matches
+  its manifest's SHA-256 -- still never by an agent, never published or scheduled that way);
 - thumbnail generation;
 - image generation;
 - music generation;

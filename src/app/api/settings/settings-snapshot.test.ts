@@ -25,6 +25,9 @@ function readers(overrides: Partial<Parameters<typeof buildSettingsSnapshot>[0]>
     quotaReservePercent: async () => 20,
     draftRetentionDays: async () => 7,
     writeLogRetentionDays: async () => 30,
+    // BL-209: the automatic-upload switch is a new reader of the snapshot (added to the fixture; nothing else here changes).
+    autoPrivateUploadEnabled: async () => false,
+    autoPrivateUploadWaiting: async () => [],
     ...overrides,
   };
 }
@@ -93,4 +96,18 @@ test("BL-181: the evening boundary is returned as stored ('' = off)", async () =
   const off = await buildSettingsSnapshot(readers({ analyticsTimes: async () => ({ dailyUtc: "09:05", eveningUtc: "" }) }));
   assert.equal(off.analyticsEveningUtcTime, "");
   assert.equal(off.analyticsSyncUtcTime, "09:05");
+});
+
+// BL-209 (AUTO_PRIVATE_UPLOAD_PLAN.md §1): the switch is shown on the Live writes card, so the snapshot reports it; a failed read
+// is null and named, like every other field (the card then hides only its own toggle).
+test("BL-209: the snapshot reports the automatic-upload switch; a failed read is null and named", async () => {
+  assert.equal((await buildSettingsSnapshot(readers({ autoPrivateUploadEnabled: async () => true }))).autoPrivateUploadEnabled, true);
+  const failed = await buildSettingsSnapshot(
+    readers({
+      autoPrivateUploadEnabled: async () => {
+        throw new Error("boom");
+      },
+    })
+  );
+  assert.deepEqual([failed.autoPrivateUploadEnabled, failed.unavailable, failed.liveWritesEnabled], [null, ["autoPrivateUploadEnabled"], true]);
 });

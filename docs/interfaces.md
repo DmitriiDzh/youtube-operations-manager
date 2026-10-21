@@ -748,6 +748,13 @@ Key MCP tools:
     published | uploaded_unknown, problems[] (codes), videoId }] }`, from this computer's copy of the workspace) and `uploads[{ video,
     status: queued | uploading | processing | finishing | paused | done | failed | cancelled, publishAt, videoId, pausedReason,
     errorCode }]` (this computer's queue). Still read-only: no agent tool uploads, schedules or cancels (ADR 0037 §1).
+  - BL-209 (Agent API 3.20.0, Producer API 1.10.0, ADR 0046, additive): each `uploads[]` item also has `automatic` (boolean: queued
+    by the owner's automatic-upload switch -- private, never a date), `progressPercent` (integer 0-100, floor of stored / total bytes;
+    null when the total is unknown) and `finishedAt` (ISO 8601 when done / failed / cancelled, else null). `yt-release-package/1`
+    may carry a top-level `sha256` (hex SHA-256 of the video file); without it a package uploads only on the owner's approval.
+    `/api/settings` (Web only) reads and sets `autoPrivateUploadEnabled` (boolean, default false); no MCP tool or CLI command does.
+    It also returns `autoPrivateUploadWaiting` (read-only): `[{ kind: package, channelId, video, manifestSha256, reason } | { kind:
+    channel, channelId, reason }]`, why the automatic upload is waiting now (`[]` = nothing).
   - Web only (BL-182 stage 2): `GET/PUT /api/channels/[id]/publishing-settings` (the channel's publishing defaults, synced; PUT the
     changed fields), `GET/POST .../publishing-settings/conflicts` (choose a computer's value), `GET .../publishing/packages` (the
     release packages with state and problems), `GET .../publishing/packages/thumbnail?path=`, `GET/POST .../publishing/uploads` (the
@@ -1174,15 +1181,17 @@ An agent role that reads every channel connected on the device, one channel per 
 changes for the owner to approve (FO-REQ-0014, Producer API 1.1.0). Technical contract only. Producer API 1.2.0 (BL-166) adds the upload
 milestones, 1.3.0 (BL-168) the stored traffic sources and devices, 1.4.0 (BL-169) the stored search terms, 1.5.0 (BL-170) experiment
 arms: the results tool and the `experiment.link_video` proposal, 1.6.0 (BL-171) the stored own-video comments, 1.7.0 / 1.8.0 (BL-182) the
-publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources.
+publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.0 (BL-209) the calendar uploads' `automatic`,
+`progressPercent` and `finishedAt`.
 
 - **Transport:** as the factory endpoint, with `Authorization: Bearer ytom_pr_...` (the same checks and codes; a channel or factory token is
   401 `AGENT_TOKEN_INVALID` here, and a producer token on `/api/mcp` and `/api/mcp/factory`). Re-verified on every tool call.
-- **Producer API version:** `1.9.0` (1.0.0, plus the three proposal tools in 1.1.0 (BL-163), plus `agent_get_video_milestones` and
+- **Producer API version:** `1.10.0` (1.0.0, plus the three proposal tools in 1.1.0 (BL-163), plus `agent_get_video_milestones` and
   `producer_upload_milestones` in 1.2.0 (BL-166), plus `agent_get_stored_breakdowns` in 1.3.0 (BL-168), plus `agent_get_stored_search_terms`
   in 1.4.0 (BL-169), plus `agent_get_experiment_results` and the proposal kind `experiment.link_video` in 1.5.0 (BL-170), plus
   `agent_get_video_comments` in 1.6.0 (BL-171), plus `agent_get_publishing_calendar` in 1.7.0 and its packages and uploads in 1.8.0
-  (BL-182), plus `agent_get_stored_suggested_sources` in 1.9.0 (BL-191)), independent of `AGENT_API_VERSION` and the Factory API.
+  (BL-182), plus `agent_get_stored_suggested_sources` in 1.9.0 (BL-191), plus the calendar uploads' `automatic` / `progressPercent` /
+  `finishedAt` in 1.10.0 (BL-209)), independent of `AGENT_API_VERSION` and the Factory API.
 - **Channel tools** -- the channel agent's READ tools under their own names, each with the channel agent's own input and output plus a REQUIRED
   `channelId` (any channel `producer_list_channels` lists): `agent_get_channel_context` (includes the editorial profile), `channel_video_list`,
   `agent_get_video_context`, `agent_query_channel_analytics`, `agent_query_channel_breakdown` (both may read YouTube Analytics live, as for a channel
