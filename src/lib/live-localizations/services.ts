@@ -12,19 +12,53 @@ export const LIVE_LOCALIZATIONS_READ_BACK = { attempts: 6, delayMs: 10_000 };
 
 const sortedJson = (list: unknown) => (Array.isArray(list) ? JSON.stringify(list.map((item) => JSON.stringify(item)).sort()) : JSON.stringify(list ?? null));
 
-/** Whether the fresh snippet already shows the fields step's values (tags in any order: a live broadcast reads them back sorted). */
-function expectedHolds(video: FreshLiveVideo, expected: ExpectedSnippet): boolean {
-  const snippet = video.snippet as Record<string, unknown>;
-  if ("tags" in expected && sortedJson(snippet.tags ?? []) !== sortedJson(expected.tags)) return false;
-  if ("categoryId" in expected && (snippet.categoryId ?? null) !== expected.categoryId) return false;
-  for (const field of ["defaultLanguage", "defaultAudioLanguage"] as const) {
-    if (field in expected && !sameLanguage(snippet[field] as string | null | undefined, expected[field] as string | null | undefined)) return false;
-  }
-  return true;
+type Snippet = Record<string, unknown>;
+const text = (value: unknown) => (typeof value === "string" && value.length > 0 ? value : null);
+/** Two language values alike in any letter case; none and none alike too (`sameLanguage` says no for two absent values). */
+const sameValue = (a: unknown, b: unknown) => (text(a) === null && text(b) === null) || sameLanguage(text(a), text(b));
+
+/** The snippet fields the update sends back besides the text, each with what a difference is called. */
+const SNIPPET_FIELDS = [
+  { field: "tags", label: "tags changed", same: (a: unknown, b: unknown) => sortedJson(a ?? []) === sortedJson(b ?? []) },
+  { field: "categoryId", label: "category changed", same: (a: unknown, b: unknown) => (a ?? null) === (b ?? null) },
+  { field: "defaultLanguage", label: "default language changed", same: sameValue },
+  { field: "defaultAudioLanguage", label: "audio language changed", same: sameValue },
+] as const;
+
+/** What differs between two reads' tags, category and languages (tags in any order: a live broadcast reads them back sorted). */
+function snippetDifferences(video: FreshLiveVideo, reference: FreshLiveVideo): string[] {
+  const a = video.snippet as Snippet;
+  const b = reference.snippet as Snippet;
+  return SNIPPET_FIELDS.filter(({ field, same }) => !same(a[field], b[field])).map(({ label }) => label);
 }
 
-/** What the read-back shows wrong, or null when every written language and the snippet text are exactly as sent. */
-function readBackProblem(after: FreshLiveVideo, before: FreshLiveVideo, set: Record<string, LiveLocalizationEntry>): string | null {
+/** Which of the fields step's values the snippet does not show (only the fields it sent). */
+function expectedProblems(video: FreshLiveVideo, expected: ExpectedSnippet): string[] {
+  const snippet = video.snippet as Snippet;
+  return SNIPPET_FIELDS.filter(({ field, same }) => field in expected && !same(snippet[field], (expected as Snippet)[field])).map(({ label }) => label);
+}
+
+const localizationsJson = (localizations: Record<string, LiveLocalizationEntry>) =>
+  JSON.stringify(Object.keys(localizations).sort().map((key) => [key, localizations[key].title, localizations[key].description]));
+
+/** Whether a second read differs from the one the payload was built from in anything the update sends back. */
+function changedBetweenReads(second: FreshLiveVideo, first: FreshLiveVideo): boolean {
+  return (
+    second.snippet.title !== first.snippet.title ||
+    second.snippet.description !== first.snippet.description ||
+    (second.snippet.defaultLanguage ?? null) !== (first.snippet.defaultLanguage ?? null) ||
+    (text((second.snippet as Snippet).defaultAudioLanguage) ?? null) !== (text((first.snippet as Snippet).defaultAudioLanguage) ?? null) ||
+    snippetDifferences(second, first).length > 0 ||
+    localizationsJson(second.localizations) !== localizationsJson(first.localizations)
+  );
+}
+
+/**
+ * What the read-back shows wrong, or null when it holds: every written language exactly as sent, every other language the video
+ * had kept as it was (its own-language mirror aside: the merge never sends it), the snippet text unchanged, and the tags,
+ * category and languages still as sent and as the fields step wrote them.
+ */
+function readBackProblem(after: FreshLiveVideo, before: FreshLiveVideo, set: Record<string, LiveLocalizationEntry>, expected: ExpectedSnippet): string | null {
   const problems: string[] = [];
   if (after.snippet.title !== before.snippet.title || after.snippet.description !== before.snippet.description) problems.push("the base title or description changed");
   const missing: string[] = [];
@@ -34,8 +68,20 @@ function readBackProblem(after: FreshLiveVideo, before: FreshLiveVideo, set: Rec
     if (key === null) missing.push(language);
     else if (after.localizations[key].title !== value.title || after.localizations[key].description !== value.description) differs.push(language);
   }
+  const lost: string[] = [];
+  const otherChanged: string[] = [];
+  const languages = Object.keys(set);
+  for (const [language, value] of Object.entries(before.localizations)) {
+    if (sameLanguage(language, before.snippet.defaultLanguage) || languages.some((written) => sameLanguage(written, language))) continue;
+    const key = localeKeyFor(after.localizations, language);
+    if (key === null) lost.push(language);
+    else if (after.localizations[key].title !== value.title || after.localizations[key].description !== value.description) otherChanged.push(language);
+  }
   if (missing.length > 0) problems.push(`language missing: ${missing.join(", ")}`);
   if (differs.length > 0) problems.push(`text differs: ${differs.join(", ")}`);
+  if (lost.length > 0) problems.push(`language lost: ${lost.join(", ")}`);
+  if (otherChanged.length > 0) problems.push(`other language changed: ${otherChanged.join(", ")}`);
+  for (const label of new Set([...snippetDifferences(after, before), ...expectedProblems(after, expected)])) problems.push(label);
   return problems.length > 0 ? problems.join("; ") : null;
 }
 
@@ -51,7 +97,8 @@ export function createLiveLocalizationsWriter(deps: LiveLocalizationsWriterDepen
   return {
     /**
      * The stream's stored set onto one broadcast's video (AGENTS.md §G): identity, a fresh read, its default language, the set
-     * never holding it, a backup, the safe merge, Live writes immediately before the one update, a read-back, the audit.
+     * never holding it, a backup, the broadcast still current and the video unchanged right before the write, the safe merge,
+     * Live writes immediately before the one update, a read-back, the audit.
      */
     async apply(input: LiveLocalizationsApplyInput): Promise<LiveLocalizationsApplyResult> {
       const { channelId, videoId, localizations } = input;
@@ -66,11 +113,11 @@ export function createLiveLocalizationsWriter(deps: LiveLocalizationsWriterDepen
       // replica's read echoed back would undo it (tags read back tens of seconds late on a fresh broadcast, spike C).
       const expected = input.expected ?? {};
       let fresh = await read(credentials, videoId);
-      for (let attempt = 1; attempt < attempts && !expectedHolds(fresh, expected); attempt++) {
+      for (let attempt = 1; attempt < attempts && expectedProblems(fresh, expected).length > 0; attempt++) {
         await deps.sleep(delayMs);
         fresh = await read(credentials, videoId);
       }
-      if (!expectedHolds(fresh, expected)) {
+      if (expectedProblems(fresh, expected).length > 0) {
         throw new DomainError({ code: "update_failed", message: "The video's fields do not read back as just written yet, so the translations were not sent (they would undo them)", details: { videoId } });
       }
 
@@ -99,33 +146,49 @@ export function createLiveLocalizationsWriter(deps: LiveLocalizationsWriterDepen
       });
       await deps.audit.record({ channelId, videoId, eventType: "BACKUP", detail: { source: "live_localizations", backupPath: backup.path } });
 
-      // 6. The safe merge: the set's languages overwritten, every other kept, nothing deleted. The audio language just read is sent
-      // back -- `videos.update` resets a snippet field left out (RISK-102); `zxx` is refused when echoed and is left out.
-      const audio = typeof fresh.snippet.defaultAudioLanguage === "string" ? fresh.snippet.defaultAudioLanguage : null;
+      // 6. Right before the write: the broadcast is still the stream's running one (a Stop or a segment switch may have landed
+      // meanwhile), and the video still reads as the read the payload is built from -- an Edit made since would be undone by the
+      // snippet sent whole, so a changed video is refused (1 more read). The broadcast lock is not taken here: Edit holds it.
+      if (input.isCurrent) {
+        const state = await input.isCurrent();
+        if (state !== "current") return { sent: false, reason: state };
+      }
+      const recheck = await read(credentials, videoId);
+      if (changedBetweenReads(recheck, fresh)) {
+        throw new DomainError({ code: "update_failed", message: "The video changed while the translations were being prepared, so nothing was sent: apply again", details: { videoId } });
+      }
+      // The same values; the latest read is the one sent back.
+      fresh = recheck;
+
+      // 7. The safe merge: the set's languages overwritten, every other kept, nothing deleted. The audio language just read is sent
+      // back as it is, `zxx` included (the fields step writes it, schemas.ts allows it) -- `videos.update` resets a snippet field
+      // left out (RISK-102). None read: none sent.
+      const audio = typeof fresh.snippet.defaultAudioLanguage === "string" && fresh.snippet.defaultAudioLanguage.length > 0 ? fresh.snippet.defaultAudioLanguage : null;
       const payload = buildSafeLocalizationsPayload(
         fresh,
         languages.flatMap((language) => [
           { language, field: "title" as const, proposedValue: localizations[language].title },
           { language, field: "description" as const, proposedValue: localizations[language].description },
         ]),
-        { defaultAudioLanguage: audio && audio.toLowerCase() !== "zxx" ? audio : null }
+        { defaultAudioLanguage: audio }
       );
 
-      // 7. Live writes, immediately before the one write.
+      // 8. Live writes, immediately before the one write.
       await deps.youtube.assertLiveWritesAuthorized();
       await deps.youtube.update(credentials, videoId, payload);
       await deps.audit.record({ channelId, videoId, eventType: "RESULT", detail: { source: "live_localizations", languages } });
 
-      // 8. Read-back: every written language exactly, the snippet text unchanged.
+      // 9. Read-back: every written language exactly, every other kept, the snippet text and fields unchanged.
+      const before = fresh;
       let after = await read(credentials, videoId);
-      let problem = readBackProblem(after, fresh, localizations);
+      let problem = readBackProblem(after, before, localizations, expected);
       for (let attempt = 1; attempt < attempts && problem !== null; attempt++) {
         await deps.sleep(delayMs);
         after = await read(credentials, videoId);
-        problem = readBackProblem(after, fresh, localizations);
+        problem = readBackProblem(after, before, localizations, expected);
       }
 
-      // 9. Audit.
+      // 10. Audit.
       await deps.audit.record({ channelId, videoId, eventType: "VERIFICATION", detail: problem === null ? { source: "live_localizations", verified: true } : { source: "live_localizations", verified: false, problem } });
       return problem === null ? { verified: true } : { verified: false, detail: problem };
     },

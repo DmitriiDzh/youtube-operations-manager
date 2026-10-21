@@ -65,18 +65,24 @@ in the same branch.
   4. if the fresh `defaultLanguage` equals a language in the set, fail closed with no write (PROJECT_SPEC §14's "baseline
      language itself → FAILED" rule);
   5. a backup of the fresh title, description and localizations through the existing backup store;
-  6. `buildSafeLocalizationsPayload`: the same languages are overwritten, other languages are kept, nothing is deleted;
-  7. `assertLiveWritesAuthorized` immediately before `applyVideoMetadataUpdate`;
-  8. read-back, which must show every written language exactly and the snippet title/description unchanged;
-  9. an audit event like video-details' own.
+  6. right before the write (review 2026-10-21): the broadcast still current (else nothing sent, the usual skip) and a re-read
+     showing the same snippet and localizations as the payload's read (else `ok:false`, "the video changed while the
+     translations were being prepared … apply again", nothing sent; the broadcast lock is not taken);
+  7. `buildSafeLocalizationsPayload`: the same languages are overwritten, other languages are kept, nothing is deleted; the
+     audio language read is sent back, `zxx` included;
+  8. `assertLiveWritesAuthorized` immediately before `applyVideoMetadataUpdate`;
+  9. read-back, which must show every written language exactly, every other language kept, the snippet title/description
+     unchanged and the tags, category and languages as sent;
+  10. an audit event like video-details' own.
 
   A mismatch gives `{step: "localizations", ok: false, error: "YouTube reads back something else"}`.
 - **§G steps on this path:**
   - present: identity, validation, backup, approval, audit, verification;
   - not present: a diff (the set *is* the approved change);
   - dry-run: covered by Live writes off.
-- **Quota.** One more `videos.update` (+50 units) plus one `videos.list` (1 unit) per broadcast and per segment, and only when
-  a set exists.
+- **Quota.** One more `videos.update` (+50 units) plus three `videos.list` (fresh read, re-read right before the write,
+  read-back; 1 unit each) per broadcast and per segment, and only when a set exists: 53 in the dry runs (review 2026-10-21; was
+  52 before the re-read).
 
 ### Stage 4 — MCP (Factory API 1.26.0 → 1.27.0)
 - **`factory_live_save_localizations({ channelId, localizations })`** is a local write (no YouTube call). It is listed in

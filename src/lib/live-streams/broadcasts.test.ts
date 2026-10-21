@@ -36,6 +36,8 @@ type HarnessLocalized = {
   port?: false;
   result?: { verified: false; detail: string };
   throws?: string;
+  /** The stream changes while the step prepares (after its reads, before its write): the writer asks isCurrent right then. */
+  changeBeforeWrite?: "stop" | "replace";
 };
 
 function harness(opts: { channelLanguage?: string | null; video?: HarnessVideo; recordingRequired?: boolean; insertError?: string; liveWrites?: boolean; streamId?: string | null; broadcastId?: string | null; intent?: "on" | "off"; wrongChannel?: boolean; transitionError?: string; bindError?: string; readBack?: Partial<{ title: string }>; encoderFails?: boolean; videoSettingsJson?: string | null; localizationsJson?: string | null; localized?: HarnessLocalized } = {}) {
@@ -97,7 +99,11 @@ function harness(opts: { channelLanguage?: string | null; video?: HarnessVideo; 
       opts.localized?.port === false
         ? undefined
         : {
-            apply: async ({ videoId, localizations, expected }) => {
+            apply: async ({ videoId, localizations, expected, isCurrent }) => {
+              if (opts.localized?.changeBeforeWrite === "stop") stream = { ...stream, intent: "off" };
+              if (opts.localized?.changeBeforeWrite === "replace") stream = { ...stream, broadcastId: "BC2" };
+              const state = await isCurrent();
+              if (state !== "current") return { sent: false as const, reason: state };
               calls.push("videos.update:localizations");
               localized.push({ videoId, localizations, expected });
               if (opts.localized?.throws) throw new DomainError({ code: "live_writes_disabled", message: opts.localized.throws });
@@ -749,11 +755,32 @@ test("a stored set without the writer plugged in is reported as not applied; a c
   assert.equal(stepsOf(corrupt).find((s) => s.step === "localizations")?.ok, false);
 });
 
-test("the dry runs count the translations: 1 read + 50 update + 1 read-back = 52 more units, and name the languages", async () => {
+// Review 2026-10-21: the step re-reads the video right before its write (1 unit), so 1 + 1 + 50 + 1 = 53 (was 52).
+test("the dry runs count the translations: 1 read + 1 re-read + 50 update + 1 read-back = 53 more units, and name the languages", async () => {
   const preview = await harness({ videoSettingsJson: SAVED_SETTINGS, localizationsJson: SET_JSON }).broadcasts.previewStart("UC1");
-  assert.equal(preview.videoSettingsApply?.units, 105 + 52);
+  assert.equal(preview.videoSettingsApply?.units, 105 + 53);
   assert.deepEqual(preview.videoSettingsApply?.localizations, ["de", "fr"]);
-  assert.equal(preview.units, 5 + 105 + 52);
+  assert.equal(preview.units, 5 + 105 + 53);
   const again = await harness({ videoSettingsJson: SAVED_SETTINGS, localizationsJson: SET_JSON, intent: "on", broadcastId: "BC1" }).broadcasts.previewApplyVideoSettings("UC1");
-  assert.equal(again.units, 105 + 52);
+  assert.equal(again.units, 105 + 53);
+});
+
+test("the dry runs list no translations when the translations writer is not plugged in (they would not be sent)", async () => {
+  const preview = await harness({ videoSettingsJson: SAVED_SETTINGS, localizationsJson: SET_JSON, localized: { port: false } }).broadcasts.previewStart("UC1");
+  assert.equal(preview.videoSettingsApply?.units, 105);
+  assert.equal(preview.videoSettingsApply && "localizations" in preview.videoSettingsApply, false);
+  assert.equal(preview.units, 5 + 105);
+  const again = await harness({ videoSettingsJson: SAVED_SETTINGS, localizationsJson: SET_JSON, intent: "on", broadcastId: "BC1", localized: { port: false } }).broadcasts.previewApplyVideoSettings("UC1");
+  assert.equal(again.units, 105);
+  assert.equal("localizations" in again, false);
+});
+
+test("stopped or replaced while the translations step prepared: nothing sent, the step skipped as such", async () => {
+  for (const [change, skipped] of [["stop", "stream_stopped"], ["replace", "broadcast_replaced"]] as const) {
+    const h = harness({ videoSettingsJson: SAVED_SETTINGS, localizationsJson: SET_JSON, intent: "on", broadcastId: "BC1", localized: { changeBeforeWrite: change } });
+    await h.broadcasts.applyVideoSettingsAgain("UC1", { userId: "u1" });
+    assert.deepEqual(h.localized, []);
+    assert.equal(h.calls.includes("videos.update:localizations"), false);
+    assert.deepEqual(stepsOf(h).find((s) => s.step === "localizations"), { step: "localizations", ok: true, skipped });
+  }
 });

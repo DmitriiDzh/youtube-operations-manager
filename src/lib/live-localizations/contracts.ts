@@ -23,10 +23,18 @@ export type LiveLocalizationsApplyInput = {
   videoId: string;
   localizations: Record<string, LiveLocalizationEntry>;
   expected?: ExpectedSnippet;
+  /**
+   * Whether the broadcast is still the stream's running one, asked again right before the write (the owner's Stop or a segment
+   * switch may land while the step reads and backs up). Absent: not asked.
+   */
+  isCurrent?: () => Promise<"current" | "stopped" | "replaced">;
 };
 
-/** `verified: false` = YouTube took the update but reads back something else (`detail` says what). Failures before it throw. */
-export type LiveLocalizationsApplyResult = { verified: true } | { verified: false; detail: string };
+/**
+ * `verified: false` = YouTube took the update but reads back something else (`detail` says what). `sent: false` = the broadcast
+ * stopped being the stream's running one right before the write, so nothing was sent. Failures before the write throw.
+ */
+export type LiveLocalizationsApplyResult = { verified: true } | { verified: false; detail: string } | { sent: false; reason: "stopped" | "replaced" };
 
 export type LiveLocalizationsWriterDependencies = {
   auth: { resolve(args: { credentialRef: unknown; requiredScopes: readonly string[] }): Promise<ResolvedCredentials> };

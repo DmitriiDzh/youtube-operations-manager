@@ -26,6 +26,10 @@ function harness(opts: {
   liveWrites?: boolean;
   wrongChannel?: boolean;
   backupUnhealthy?: boolean;
+  /** A change made on YouTube just before the given read (1 = the first videos.list), e.g. an owner's Edit between the reads. */
+  changeBeforeRead?: { read: number; change: (video: Video) => void };
+  /** The broadcast's state when the writer asks right before the write (absent: the writer is not given the question). */
+  current?: "current" | "stopped" | "replaced";
 } = {}) {
   const calls: string[] = [];
   const audit: Array<{ eventType: string; detail: Record<string, unknown> }> = [];
@@ -33,6 +37,7 @@ function harness(opts: {
   const updates: Array<{ videoId: string; payload: { snippet: Record<string, unknown>; localizations: Record<string, { title: string; description: string }> } }> = [];
   let video: Video | null = opts.video === undefined ? baseVideo() : opts.video;
   let stale = opts.staleReads ?? 0;
+  let reads = 0;
   const deps: LiveLocalizationsWriterDependencies = {
     auth: { resolve: async () => ({ credentialRef: { userId: "u1" }, accessToken: "t", scopeSet: new Set() }) as never },
     writeContext: {
@@ -45,6 +50,8 @@ function harness(opts: {
     youtube: {
       readFresh: async () => {
         calls.push("videos.list");
+        reads += 1;
+        if (video && opts.changeBeforeRead?.read === reads) opts.changeBeforeRead.change(video);
         if (!video) return null;
         if (stale > 0) {
           stale -= 1;
@@ -89,7 +96,14 @@ function harness(opts: {
     updates,
     video: () => video,
     apply: (localizations: Record<string, { title: string; description: string }> = SET, expected: Record<string, unknown> = {}) =>
-      writer.apply({ credentialRef: { userId: "u1" }, channelId: "UC1", videoId: "BC1", localizations, expected }),
+      writer.apply({
+        credentialRef: { userId: "u1" },
+        channelId: "UC1",
+        videoId: "BC1",
+        localizations,
+        expected,
+        ...(opts.current ? { isCurrent: async () => (calls.push("isCurrent"), opts.current!) } : {}),
+      }),
   };
 }
 
@@ -97,16 +111,25 @@ test("AC-LL-01: one update keeps it, overwrites fr, adds de, leaves the snippet 
   const h = harness();
   const result = await h.apply();
   assert.deepEqual(result, { verified: true });
-  assert.deepEqual(h.calls, ["identity", "videos.list", "backup", "liveWrites", "videos.update", "videos.list"]);
+  // Review 2026-10-21: one more read right before the write (the video must not have changed since the payload's read).
+  assert.deepEqual(h.calls, ["identity", "videos.list", "backup", "videos.list", "liveWrites", "videos.update", "videos.list"]);
   assert.equal(h.updates.length, 1);
   assert.equal(h.updates[0].videoId, "BC1");
   assert.deepEqual(h.updates[0].payload.localizations, { fr: { title: "Ft", description: "Fd2" }, it: { title: "Io", description: "Id" }, de: { title: "Dt", description: "Dd" } });
   assert.deepEqual(h.updates[0].payload.snippet, { title: "T", description: "D", tags: ["jazz", "lofi"], categoryId: "10", defaultLanguage: "en", defaultAudioLanguage: "en-US" });
 });
 
-test("the audio language zxx (refused when echoed) is not sent back", async () => {
+test("the audio language zxx (Not applicable, which the fields step writes) is sent back as read, so videos.update does not reset it", async () => {
   const video = baseVideo();
   video.snippet.defaultAudioLanguage = "zxx";
+  const h = harness({ video });
+  assert.deepEqual(await h.apply(), { verified: true });
+  assert.equal(h.updates[0].payload.snippet.defaultAudioLanguage, "zxx");
+});
+
+test("no audio language read: none is sent", async () => {
+  const video = baseVideo();
+  video.snippet.defaultAudioLanguage = null;
   const h = harness({ video });
   await h.apply();
   assert.equal("defaultAudioLanguage" in h.updates[0].payload.snippet, false);
@@ -173,8 +196,7 @@ test("AC-LL-08: a read-back missing de is not verified -- 'language missing', af
     },
   });
   const result = await h.apply();
-  assert.equal(result.verified, false);
-  if (result.verified) return;
+  assert.ok("detail" in result && result.verified === false);
   assert.match(result.detail, /language missing: de/);
   assert.doesNotMatch(result.detail, /text differs/);
   // 1 read-back + 2 re-reads (3 attempts), a pause before each re-read.
@@ -188,18 +210,16 @@ test("read-back: a language present with other text is told apart from a missing
     afterWrite: (payload, current) => ({ snippet: current.snippet, localizations: { ...payload.localizations, fr: { title: "Fo", description: "Fd" } } }),
   });
   const result = await h.apply();
-  assert.equal(result.verified, false);
-  if (!result.verified) {
-    assert.match(result.detail, /text differs: fr/);
-    assert.doesNotMatch(result.detail, /language missing/);
-  }
+  assert.ok("detail" in result && result.verified === false);
+  assert.match(result.detail, /text differs: fr/);
+  assert.doesNotMatch(result.detail, /language missing/);
 });
 
 test("read-back: the snippet title or description changed by the write is not verified", async () => {
   const h = harness({ afterWrite: (payload, current) => ({ snippet: { ...current.snippet, title: "Other" }, localizations: { ...payload.localizations } }) });
   const result = await h.apply();
-  assert.equal(result.verified, false);
-  if (!result.verified) assert.match(result.detail, /base title or description/);
+  assert.ok("detail" in result && result.verified === false);
+  assert.match(result.detail, /base title or description/);
 });
 
 test("read-back: a key read back in other letter case counts as the language (pt-br for pt-BR)", async () => {
@@ -218,8 +238,8 @@ test("AC-LL-09: Live writes off -- live_writes_disabled, the update is never sen
   await assert.rejects(() => h.apply(), (error: unknown) => error instanceof DomainError && error.code === "live_writes_disabled");
   assert.deepEqual(h.updates, []);
   assert.equal(h.calls.includes("videos.update"), false);
-  // Checked immediately before the write, after the backup.
-  assert.deepEqual(h.calls, ["identity", "videos.list", "backup", "liveWrites"]);
+  // Checked immediately before the write, after the backup and the re-read.
+  assert.deepEqual(h.calls, ["identity", "videos.list", "backup", "videos.list", "liveWrites"]);
 });
 
 test("AC-LL-09: the identity check fails -- no read, no backup, no write", async () => {
@@ -255,4 +275,93 @@ test("an empty set sends nothing at all", async () => {
   const h = harness();
   assert.deepEqual(await h.apply({}), { verified: true });
   assert.deepEqual(h.calls, []);
+});
+
+// ---------------------------------------------------------------------------
+// Independent review 2026-10-21: the read-back also proves nothing else was lost or reset (PROJECT_SPEC §21: every other language
+// kept; RISK-102: the audio language not reset; the fields step's tags/category/languages kept), and the write is refused when
+// the video changed between the read the payload was built from and the write, or the broadcast stopped being the current one.
+// Expected values by hand from baseVideo(): fr overwritten, de added, it kept as Io/Id, audio en-US, tags jazz/lofi, category 10.
+// ---------------------------------------------------------------------------
+
+test("read-back: another language the video had (it) lost by the write -- 'language lost: it'", async () => {
+  const h = harness({
+    afterWrite: (payload, current) => {
+      const { it, ...rest } = payload.localizations;
+      void it;
+      return { snippet: { ...current.snippet, ...(payload.snippet as Video["snippet"]) }, localizations: { ...rest, en: { title: "T", description: "D" } } };
+    },
+  });
+  assert.deepEqual(await h.apply(), { verified: false, detail: "language lost: it" });
+  assert.equal(h.audit.at(-1)?.detail.problem, "language lost: it");
+});
+
+test("read-back: another language's text changed -- 'other language changed: it'", async () => {
+  const h = harness({
+    afterWrite: (payload, current) => ({ snippet: { ...current.snippet, ...(payload.snippet as Video["snippet"]) }, localizations: { ...payload.localizations, it: { title: "Io", description: "changed" } } }),
+  });
+  assert.deepEqual(await h.apply(), { verified: false, detail: "other language changed: it" });
+});
+
+test("read-back: the audio language reset by the write -- 'audio language changed'", async () => {
+  const h = harness({
+    afterWrite: (payload, current) => ({ snippet: { ...current.snippet, ...(payload.snippet as Video["snippet"]), defaultAudioLanguage: "en" }, localizations: { ...payload.localizations } }),
+  });
+  assert.deepEqual(await h.apply(), { verified: false, detail: "audio language changed" });
+});
+
+test("read-back: the tags changed by the write -- 'tags changed' (once, though the fields step's tags differ too); another order is fine", async () => {
+  const changed = harness({
+    afterWrite: (payload, current) => ({ snippet: { ...current.snippet, ...(payload.snippet as Video["snippet"]), tags: ["jazz"] }, localizations: { ...payload.localizations } }),
+  });
+  assert.deepEqual(await changed.apply(SET, { tags: ["lofi", "jazz"], categoryId: "10" }), { verified: false, detail: "tags changed" });
+
+  const sorted = harness({
+    afterWrite: (payload, current) => ({ snippet: { ...current.snippet, ...(payload.snippet as Video["snippet"]), tags: ["lofi", "jazz"] }, localizations: { ...payload.localizations } }),
+  });
+  assert.deepEqual(await sorted.apply(SET, { tags: ["jazz", "lofi"] }), { verified: true });
+});
+
+test("read-back: the category or default language changed -- each named", async () => {
+  const h = harness({
+    afterWrite: (payload, current) => ({ snippet: { ...current.snippet, ...(payload.snippet as Video["snippet"]), categoryId: "22", defaultLanguage: "fr" }, localizations: { ...payload.localizations } }),
+  });
+  assert.deepEqual(await h.apply(SET, { categoryId: "10", defaultLanguage: "en" }), { verified: false, detail: "category changed; default language changed" });
+});
+
+test("the video's title edited between the payload's read and the write: refused, nothing sent", async () => {
+  const h = harness({ changeBeforeRead: { read: 2, change: (video) => void (video.snippet.title = "Edited by the owner") } });
+  await assert.rejects(() => h.apply(), (error: unknown) => error instanceof DomainError && error.code === "update_failed" && /changed while the translations were being prepared/.test(error.message));
+  assert.deepEqual(h.updates, []);
+  assert.deepEqual(h.calls, ["identity", "videos.list", "backup", "videos.list"]);
+});
+
+test("the tags, the audio language or the languages changed between the reads: refused, nothing sent", async () => {
+  const changes: Array<(video: Video) => void> = [
+    (video) => void (video.snippet.tags = ["jazz", "lofi", "new"]),
+    (video) => void (video.snippet.categoryId = "22"),
+    (video) => void (video.snippet.defaultAudioLanguage = "de"),
+    (video) => void (video.snippet.description = "D2"),
+    (video) => void (video.localizations.es = { title: "Es", description: "Ed" }),
+  ];
+  for (const change of changes) {
+    const h = harness({ changeBeforeRead: { read: 2, change } });
+    await assert.rejects(() => h.apply(), (error: unknown) => error instanceof DomainError && error.code === "update_failed");
+    assert.deepEqual(h.updates, []);
+  }
+  // Only the tag order differs: the same video, written.
+  const h = harness({ changeBeforeRead: { read: 2, change: (video) => void (video.snippet.tags = ["lofi", "jazz"]) } });
+  assert.deepEqual(await h.apply(), { verified: true });
+});
+
+test("the broadcast is no longer the running one right before the write: nothing sent, no re-read", async () => {
+  for (const state of ["stopped", "replaced"] as const) {
+    const h = harness({ current: state });
+    assert.deepEqual(await h.apply(), { sent: false, reason: state });
+    assert.deepEqual(h.calls, ["identity", "videos.list", "backup", "isCurrent"]);
+    assert.deepEqual(h.updates, []);
+  }
+  const current = harness({ current: "current" });
+  assert.deepEqual(await current.apply(), { verified: true });
+  assert.deepEqual(current.calls, ["identity", "videos.list", "backup", "isCurrent", "videos.list", "liveWrites", "videos.update", "videos.list"]);
 });

@@ -164,8 +164,10 @@ export function createLiveBroadcasts(deps: BroadcastsDependencies) {
     return stored.settings;
   }
 
-  /** BL-207: the languages of the stream's stored translations, for the dry runs (none, or an unreadable value: none counted). */
+  /** BL-207: the languages of the stream's stored translations, for the dry runs (none, or an unreadable value: none counted). Only
+   * when both writers are plugged in: without the translations writer, or the fields one it follows, nothing would be sent. */
   function storedLanguages(stream: { localizationsJson?: string | null }): string[] {
+    if (!deps.videoFields || !deps.localizations) return [];
     const stored = readStoredLocalizations(stream.localizationsJson);
     return stored.ok && stored.set ? Object.keys(stored.set) : [];
   }

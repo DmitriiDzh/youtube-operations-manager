@@ -895,8 +895,10 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
     `LocalizationsPort` через `src/composition/live-stream-localizations.ts` (маршруты и раннер сегментов).
   - Шаг `localizations` в `applyVideoSettings` сразу после полей и только при их успехе (иначе `skipped: fields_failed`); нет
     набора — нет шага и вызовов. Конвейер: `assertWriteChannel` → свежее `videos.list snippet,localizations` (должно уже
-    показывать значения полей) → `checkDefaultLanguage` → собственный язык видео в наборе = отказ → бэкап → общее слияние →
-    `assertLiveWritesAuthorized` → `videos.update` → проверка чтением (отличает «language missing» от «text differs») → аудит.
+    показывать значения полей) → `checkDefaultLanguage` → собственный язык видео в наборе = отказ → бэкап → трансляция всё ещё
+    текущая и повторное чтение без изменений (иначе ничего не отправляется) → общее слияние (язык звука отправляется как прочитан,
+    `zxx` тоже) → `assertLiveWritesAuthorized` → `videos.update` → проверка чтением (записанные языки, остальные языки не потеряны,
+    теги/категория/языки не изменились) → аудит. Пробные расчёты: +53 единицы.
   - Этап 4: MCP `factory_live_save_localizations` (Factory API 1.27.0, локальная запись, проход через device mutation gate,
     нет трансляции — `live_stream_not_found`) и `factory_live_get_status.localizations` (набор, предупреждения, последний шаг —
     коды); маршрут `GET/PUT /api/channels/[channelId]/live-stream/localizations` и поле `localizations` в обзоре трансляции.

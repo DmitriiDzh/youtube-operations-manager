@@ -38,20 +38,33 @@ translated live stream titles and descriptions). Plan: `docs/roadmap/plans/LIVE_
    3. `checkDefaultLanguage`: no `defaultLanguage`, no write;
    4. the set holding the video's own language fails closed (PROJECT_SPEC §14);
    5. a backup (`kind: "localization"`, with the snippet title/description);
-   6. `buildSafeLocalizationsPayload`, now in the shared `src/lib/shared-localization-merge/` (moved from `batches/merge.ts`,
+   6. right before the write (independent review, 2026-10-21): the broadcast must still be the stream's running one (a Stop or a
+      segment switch landing meanwhile: nothing sent, the step skipped as `stream_stopped` / `broadcast_replaced`), and one more
+      `videos.list` must show the same title, description, tags, category, languages and localizations as the read the payload
+      is built from -- an Edit made since would be undone by the snippet sent whole, so a change refuses the step ("the video
+      changed while the translations were being prepared … apply again") and nothing is sent. The broadcast lock is not taken
+      (Edit holds it: deadlock risk);
+   7. `buildSafeLocalizationsPayload`, now in the shared `src/lib/shared-localization-merge/` (moved from `batches/merge.ts`,
       which re-exports it): the set's languages overwritten, every other kept, nothing deleted, the snippet text untouched;
-   7. `assertLiveWritesAuthorized` immediately before the one `applyVideoMetadataUpdate` (write gateway);
-   8. a read-back of every written language and the snippet text, re-read a bounded number of times;
-   9. audit events (BACKUP, RESULT, VERIFICATION) in the per-video edit log, `source: "live_localizations"`.
+   8. `assertLiveWritesAuthorized` immediately before the one `applyVideoMetadataUpdate` (write gateway);
+   9. a read-back, re-read a bounded number of times: every written language exactly; every other language the video had
+      (its own-language mirror aside) still present and unchanged (`language lost: …` / `other language changed: …`); the snippet
+      text unchanged; tags (any order), category, default language and audio language as sent and as the fields step wrote them
+      (`tags changed`, `audio language changed`, …);
+   10. audit events (BACKUP, RESULT, VERIFICATION) in the per-video edit log, `source: "live_localizations"`.
 5. **The audio language.** `videos.update` resets a snippet field left out (RISK-102). The writer sends back the
-   `defaultAudioLanguage` it just read (the value the fields step wrote), except `zxx`, which YouTube refuses when echoed.
+   `defaultAudioLanguage` it just read (the value the fields step wrote), `zxx` included; none read, none sent. (Corrected by the
+   independent review, 2026-10-21: this section first left `zxx` out, as the single-item edits do after a 2026-10-02 rejection --
+   but the stream's settings allow `zxx` (`live-streams/schemas.ts`) and the fields step writes it, so leaving it out would reset
+   it on every broadcast. Whether YouTube accepts `zxx` echoed with `localizations` is verified at the first real go-live.)
 
 ## Consequences
 
 - AGENTS.md §F, PROJECT_SPEC §21, `LIVE_STREAMS_FIELDS_PLAN.md` §2.3 and the code comments that stated the old rule are amended.
-- Quota: with a set, each broadcast and segment costs one more `videos.update` (50) and two `videos.list` (fresh read and
-  read-back, 1 each); the dry runs count 52.
-- A read-back mismatch is a failed step (`YouTube reads back something else: language missing: … / text differs: …`), never an
+- Quota: with a set, each broadcast and segment costs one more `videos.update` (50) and three `videos.list` (fresh read,
+  re-read right before the write, read-back; 1 each); the dry runs count 53.
+- A read-back mismatch is a failed step (`YouTube reads back something else: language missing: … / text differs: … / language
+  lost: … / audio language changed …`), never an
   end of the broadcast. Whether a live broadcast's video reads its localizations back is not verified yet; the first real go-live
   with a set is the live acceptance, like the BL-205 spike.
 - Batches and this writer share one merge rule and one locale-key rule; neither has a copy.

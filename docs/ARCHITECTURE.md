@@ -4551,15 +4551,20 @@ title/description (AGENTS.md §F, PROJECT_SPEC §21), reversing `LIVE_STREAMS_FI
 - **The step** (`live-streams/video-apply.ts`): read once in `broadcasts.ts`'s `runVideoSettings` (the funnel of Start,
   «Применить снова» and segments). Right after the fields step: corrupt set → failed step; no set → no step; fields not verified
   → `skipped: "fields_failed"`; stream stopped/replaced → the usual skip; port absent → failed step; otherwise the port's result
-  (`YouTube reads back something else: <detail>` when not verified). Events `video_settings_step` as for every step. The dry runs
-  add 52 units and the languages when a set exists.
+  (`YouTube reads back something else: <detail>` when not verified; `sent: false` when the broadcast stopped being current right
+  before the write → the usual skip). Events `video_settings_step` as for every step. The dry runs add 53 units and the
+  languages when a set exists and both writers are plugged in.
 - **The writer** (`src/lib/live-localizations/`, plugged in by `src/composition/live-stream-localizations.ts` in the routes and
   the server's runner): `assertWriteChannel` → fresh `getVideoMetadataContext` (read gateway), re-read until it shows the fields
   step's tags (any order), category and languages — else `update_failed` and nothing sent → `checkDefaultLanguage` → the set
-  holding the video's own language fails closed → backup (`kind: "localization"` with snippet text) → the shared merge, with the
-  audio language just read sent back (not `zxx`) → `assertLiveWritesAuthorized` → `applyVideoMetadataUpdate` → read-back of each
-  written language (key case-insensitive) and the snippet text, up to 6 reads 10 s apart, telling "language missing" from "text
-  differs" → audit BACKUP/RESULT/VERIFICATION (`video_edit_audit_events`, `source: "live_localizations"`).
+  holding the video's own language fails closed → backup (`kind: "localization"` with snippet text) → `isCurrent` asked again
+  (stopped/replaced: nothing sent) → a re-read that must equal the first read's title, description, tags, category, languages and
+  localizations (else `update_failed`, "the video changed … apply again", nothing sent; no broadcast lock: Edit holds it) → the
+  shared merge from the re-read, with the audio language just read sent back (`zxx` included) → `assertLiveWritesAuthorized` →
+  `applyVideoMetadataUpdate` → read-back, up to 6 reads 10 s apart: each written language (key case-insensitive; "language
+  missing" / "text differs"), every other language kept ("language lost" / "other language changed"), the snippet text, and the
+  tags (any order), category and languages ("tags changed", "audio language changed", …) → audit BACKUP/RESULT/VERIFICATION
+  (`video_edit_audit_events`, `source: "live_localizations"`).
 - **MCP and route (stage 4, Factory API 1.27.0):** `factory_live_save_localizations` (strict `{ channelId, localizations }`, gate
   first, `save(..., "factory")`, refusals as `validation_failed` with `details.refused`) and `factory_live_get_status.localizations`
   (`localizationsStatusEntry`: codes only -- `problem: invalid_stored`, warning codes, `lastStep.failure: read_back_mismatch |

@@ -25,10 +25,18 @@ export type VideoFieldsPort = {
  * BL-207 (LIVE_LOCALIZATIONS_PLAN.md §2 stage 3, ADR 0045): the translations writer, plugged in by the app layer like the fields
  * (`live-localizations`). It checks the identity, reads the video fresh, keeps every other language, backs up, checks Live writes
  * right before its one `videos.update` and reads back. `expected`: the fields step's snippet values, which the fresh read must
- * already show (the snippet part is sent whole). Absent, a stored set is reported as not applied.
+ * already show (the snippet part is sent whole). `isCurrent`: asked again right before the write; not current = nothing sent
+ * (`sent: false`). Absent, a stored set is reported as not applied.
  */
 export type LocalizationsPort = {
-  apply(args: { credentialRef: unknown; channelId: string; videoId: string; localizations: LiveLocalizationSet; expected: Record<string, unknown> }): Promise<{ verified: true } | { verified: false; detail: string }>;
+  apply(args: {
+    credentialRef: unknown;
+    channelId: string;
+    videoId: string;
+    localizations: LiveLocalizationSet;
+    expected: Record<string, unknown>;
+    isCurrent: () => Promise<"current" | "stopped" | "replaced">;
+  }): Promise<{ verified: true } | { verified: false; detail: string } | { sent: false; reason: "stopped" | "replaced" }>;
 };
 
 export type VideoApplyDependencies = {
@@ -81,9 +89,9 @@ export function buildVideoPatch(settings: LiveVideoSettings, channelLanguage: st
   return patch;
 }
 
-/** BL-207: the translations step's units when a set is stored -- 1 fresh read + 50 for the update + 1 read-back (more only while
- * YouTube still reads back something else). */
-export const LOCALIZATIONS_STEP_UNITS = 1 + 50 + 1;
+/** BL-207: the translations step's units when a set is stored -- 1 fresh read + 1 re-read right before the write (the video must
+ * not have changed meanwhile) + 50 for the update + 1 read-back (more only while YouTube still reads back something else). */
+export const LOCALIZATIONS_STEP_UNITS = 1 + 1 + 50 + 1;
 
 /** What applying would send, and its quota units: 1 read + 50 for the update (+ up to 3 read-back reads), 50 for the thumbnail,
  * and per playlist 1 read for its owner, 1 for its items and 50 for the insert; + 1 identity read for the fresh credentials the
@@ -179,9 +187,21 @@ export async function applyVideoSettings(
         await record({ step: "localizations", ok: false, error: "The translations cannot be written here (the live translations module is not available)" });
       } else {
         try {
-          const result = await deps.localizations.apply({ credentialRef: args.credentialRef, channelId, videoId: broadcastId, localizations: set, expected: expectedSnippet(patch) });
-          // Whether a live broadcast's video reads its localizations back is unverified (plan §3): the detail says what differs.
-          await record(result.verified ? { step: "localizations", ok: true } : { step: "localizations", ok: false, error: `YouTube reads back something else: ${result.detail}` });
+          const result = await deps.localizations.apply({
+            credentialRef: args.credentialRef,
+            channelId,
+            videoId: broadcastId,
+            localizations: set,
+            expected: expectedSnippet(patch),
+            // Asked again right before the write: a Stop or a segment switch may land while the step reads and backs up.
+            isCurrent: () => deps.isCurrent(channelId, broadcastId),
+          });
+          if ("sent" in result) {
+            await record({ step: "localizations", ok: true, skipped: result.reason === "replaced" ? "broadcast_replaced" : "stream_stopped" });
+          } else {
+            // Whether a live broadcast's video reads its localizations back is unverified (plan §3): the detail says what differs.
+            await record(result.verified ? { step: "localizations", ok: true } : { step: "localizations", ok: false, error: `YouTube reads back something else: ${result.detail}` });
+          }
         } catch (error) {
           await record({ step: "localizations", ok: false, error: message(error) });
         }
