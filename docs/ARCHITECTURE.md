@@ -4560,7 +4560,7 @@ title/description (AGENTS.md §F, PROJECT_SPEC §21), reversing `LIVE_STREAMS_FI
   audio language just read sent back (not `zxx`) → `assertLiveWritesAuthorized` → `applyVideoMetadataUpdate` → read-back of each
   written language (key case-insensitive) and the snippet text, up to 6 reads 10 s apart, telling "language missing" from "text
   differs" → audit BACKUP/RESULT/VERIFICATION (`video_edit_audit_events`, `source: "live_localizations"`).
-- **MCP and route (stage 4, Factory API 1.27.0):** `factory_live_set_localizations` (strict `{ channelId, localizations }`, gate
+- **MCP and route (stage 4, Factory API 1.27.0):** `factory_live_save_localizations` (strict `{ channelId, localizations }`, gate
   first, `save(..., "factory")`, refusals as `validation_failed` with `details.refused`) and `factory_live_get_status.localizations`
   (`localizationsStatusEntry`: codes only -- `problem: invalid_stored`, warning codes, `lastStep.failure: read_back_mismatch |
   failed`, never the error text). Web: `GET/PUT /api/channels/[channelId]/live-stream/localizations` (`liveStreamHandler`:

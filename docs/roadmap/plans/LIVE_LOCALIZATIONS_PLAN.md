@@ -79,7 +79,7 @@ in the same branch.
   a set exists.
 
 ### Stage 4 — MCP (Factory API 1.26.0 → 1.27.0)
-- **`factory_live_set_localizations({ channelId, localizations })`** is a local write (no YouTube call). It is listed in
+- **`factory_live_save_localizations({ channelId, localizations })`** is a local write (no YouTube call). It is listed in
   `FACTORY_TOOL_NAMES` and `FACTORY_WRITE_TOOL_NAMES` and checked by `assertMutationAllowed`. The channel must have a stream
   here, like `factory_live_map_sources`. It returns the stored set and the languages it refused, with reasons. The whole call
   is refused if any language is invalid; nothing is half-saved.
@@ -113,7 +113,7 @@ in the same branch.
   A refused call stores nothing.
 - **AC-LL-08:** Read-back missing `de` → `ok:false`, "YouTube reads back something else".
 - **AC-LL-09:** Live writes off → `live_writes_disabled` before any write call; the identity check fails → no write.
-- **AC-LL-10:** The `factory_live_set_localizations` input is strict. A channel without a stream here gives
+- **AC-LL-10:** The `factory_live_save_localizations` input is strict. A channel without a stream here gives
   `live_stream_not_found`. `factory_live_get_status` shows the saved set.
 - **Live acceptance:** the first real go-live with a set. Whether `localizations` on a live broadcast's video read back is not
   verified yet; it is treated like the BL-205 spike.

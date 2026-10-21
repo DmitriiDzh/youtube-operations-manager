@@ -24,7 +24,7 @@ const EXPECTED_TOOLS = [
   "factory_list_logical_paths",
   "factory_live_get_status",
   "factory_live_map_sources",
-  "factory_live_set_localizations",
+  "factory_live_save_localizations",
   "factory_media_activate_runtime",
   "factory_media_adopt_template",
   "factory_media_cancel_job",
@@ -126,7 +126,7 @@ test("AC-FO-09 (amended by ADR 0025/0026): writes are exactly the named media/se
   assert.deepEqual([...FACTORY_WRITE_TOOL_NAMES].sort(), [
     "factory_gemini_create_job",
     "factory_live_map_sources",
-    "factory_live_set_localizations",
+    "factory_live_save_localizations",
     "factory_media_activate_runtime",
     "factory_media_adopt_template",
     "factory_media_cancel_job",
@@ -164,11 +164,7 @@ test("AC-FO-09 (amended by ADR 0025/0026): writes are exactly the named media/se
     // storyboard reads are factory_storyboard_get / factory_storyboard_list; BL-188: factory_jobs_list; BL-194: factory_video_list /
     // factory_video_get_cost.
     if (!writes.has(name)) assert.match(name, /^factory_(get|list|media_(get|list|storage|capacity)|plan_(get|list|todo)|gemini_(get|list)|live_(get|list)|storyboard_(get|list)|jobs_list|video_(list|get_cost))_?/, `${name} must be a read`);
-    // BL-207 (LIVE_LOCALIZATIONS_PLAN.md stage 4 / AC-LL-10 name the tool): factory_live_set_localizations sets a stream's title and
-    // description translations -- not a path, a workspace or a token -- so it alone is exempt from the `_set_` name check; the
-    // other alternatives still apply to it, and every other tool keeps the full check.
-    const forbidden = name === "factory_live_set_localizations" ? /_(issue|revoke)_|workspace|token|approve|reject/ : /_(set|issue|revoke)_|workspace|token|approve|reject/;
-    assert.doesNotMatch(name, forbidden, `${name} must not touch paths, workspaces or tokens, or approve for anyone`);
+    assert.doesNotMatch(name, /_(set|issue|revoke)_|workspace|token|approve|reject/, `${name} must not touch paths, workspaces or tokens, or approve for anyone`);
   }
 });
 
@@ -258,7 +254,7 @@ test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.23.0 
   // BL-205 (FO-REQ-0032): 1.25.0 -- factory_live_get_status gains `segments` (additive).
   // BL-206 (FO-REQ-0033, GPU_STATS_PLAN.md §2.C): 1.26.0 -- the READ tool factory_media_get_gpu_stats; the availability log stops
   // listing per-datacenter NONE rows (its summary counts stay the same).
-  // BL-207 (LIVE_LOCALIZATIONS_PLAN.md §2 stage 4): 1.27.0 -- the WRITE tool factory_live_set_localizations and the additive
+  // BL-207 (LIVE_LOCALIZATIONS_PLAN.md §2 stage 4): 1.27.0 -- the WRITE tool factory_live_save_localizations and the additive
   // `localizations` of factory_live_get_status.
   assert.equal(FACTORY_API_VERSION, "1.27.0");
   const agentOperations = await readFile("src/lib/agent-operations/contracts.ts", "utf8");

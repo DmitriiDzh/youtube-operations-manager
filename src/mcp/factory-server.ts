@@ -111,7 +111,7 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 // from then on (a missing row is NONE); its summary counts NONE as the GPU's snapshots − the other levels, so the numbers stay as
 // before, and summary.snapshots is the snapshots taken in the range (the gpu/datacenter filters no longer narrow it). Sessions show
 // firstApprovedAt, firstApprovedApproximate and gpuSkipped. Additive except the log's NONE rows.
-// BL-207 (LIVE_LOCALIZATIONS_PLAN.md §2 stage 4, ADR 0045): 1.27.0 -- factory_live_set_localizations (WRITE, local only: the
+// BL-207 (LIVE_LOCALIZATIONS_PLAN.md §2 stage 4, ADR 0045): 1.27.0 -- factory_live_save_localizations (WRITE, local only: the
 // stream's translations of its title and description, one set per stream, written to every broadcast and segment after Start as
 // part of the video settings; replace semantics, {} clears, any refused language refuses the whole call with every refusal in
 // details.refused) and factory_live_get_status gains `localizations` (this computer only: the set, warnings and the last step, in
@@ -182,7 +182,7 @@ export const FACTORY_TOOL_NAMES = [
   "factory_live_get_status",
   "factory_live_map_sources",
   // BL-207: the stream's title/description translations (a local write).
-  "factory_live_set_localizations",
+  "factory_live_save_localizations",
   // BL-184: storyboards -- versions, submitting for the owner's review, answers to the owner's comments; reads.
   "factory_storyboard_create",
   "factory_storyboard_update",
@@ -240,7 +240,7 @@ export const FACTORY_WRITE_TOOL_NAMES = [
   // BL-176: the map of videos to original files (local only; nothing reaches YouTube, nothing starts a stream).
   "factory_live_map_sources",
   // BL-207: the stream's translations (local only; written to YouTube only by the app after the owner's Start).
-  "factory_live_set_localizations",
+  "factory_live_save_localizations",
   // BL-184: storyboard versions, submissions and answers (synced to the other computers; nothing is generated or charged).
   "factory_storyboard_create",
   "factory_storyboard_update",
@@ -1199,7 +1199,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
   );
 
   registerTool(
-    "factory_live_set_localizations",
+    "factory_live_save_localizations",
     {
       description:
         "Set the translations of a live stream's title and description (1.27.0): { channelId (a stream on THIS computer), localizations: { <language>: { title, description } } } -> { localizations (the stored set), warnings: [{ code: video_settings_not_saved | video_settings_invalid, message }] }. One set per stream: every broadcast and every segment gets it, written after Start right after the video's fields (and only when they were written), as part of the stream's saved video settings -- without them nothing is written (a warning, not a refusal). The set REPLACES the stored one; {} clears it. A language must be an exact YouTube code (pt-BR, not pt-br: details give a hint), never the channel's base language; title 1-100 characters after trimming, description required, 1-5000 bytes, neither with < or >; at most 50 languages. Languages not in the set are left as they are on YouTube (nothing is deleted). Any refused language refuses the whole call (validation_failed, details.refused: [{ language, reason: unsupported_language | baseline_language | not_an_entry | title_empty | title_too_long | title_angle_brackets | description_empty | description_too_long | description_angle_brackets, message, hint? }]) and nothing is saved. No stream here: live_stream_not_found. Local only, no YouTube call; passes the device mutation gate; recorded as done by the Factory Operator.",

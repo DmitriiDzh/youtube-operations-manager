@@ -851,7 +851,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Общие модули:** `src/lib/ffmpeg-host/` (поиск ffmpeg, возможности, ffprobe; `keyframes.mjs`), `workspace-exchange.resolveWorkspaceFile`, семейство `sync-gateway/live-streams` (отчёт `ytm-live-streams` v1).
 - **Схема v86:** `live_streams`, `live_stream_videos`, `live_stream_events`, `live_stream_sources` (только этот компьютер); настройки — `app_settings.live_streams_settings`.
 - **Web:** Контент → «Видео» | «Трансляции» (`/content/streams`, активный канал; на Windows — только чтение из отчёта), Настройки → «Трансляции»; API `/api/channels/[channelId]/live-stream/**`, `/api/live-streams/settings`, `/api/live-streams/notices`.
-- **Оператор (Factory API 1.14.0):** `factory_live_get_status`, `factory_live_map_sources`; с 1.27.0 (BL-207) — `factory_live_set_localizations` и `factory_live_get_status.localizations`.
+- **Оператор (Factory API 1.14.0):** `factory_live_get_status`, `factory_live_map_sources`; с 1.27.0 (BL-207) — `factory_live_save_localizations` и `factory_live_get_status.localizations`.
 - **BL-187 (этап 1 `docs/roadmap/plans/LIVE_STREAMS_FIELDS_PLAN.md`, ветка `feature/live-streams-fields-and-picker`, не в `dev`):**
   окно «Добавить видео…» — итоговые файлы `Vn` из `04 Videos/` с галочками (`picker.ts`, `picker-service.ts`,
   `adapters/picker-files.ts`). Совпадение файла с видео: карта оператора → `Vn_youtube.json` → `video_registry.csv`; иначе
@@ -897,7 +897,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
     набора — нет шага и вызовов. Конвейер: `assertWriteChannel` → свежее `videos.list snippet,localizations` (должно уже
     показывать значения полей) → `checkDefaultLanguage` → собственный язык видео в наборе = отказ → бэкап → общее слияние →
     `assertLiveWritesAuthorized` → `videos.update` → проверка чтением (отличает «language missing» от «text differs») → аудит.
-  - Этап 4: MCP `factory_live_set_localizations` (Factory API 1.27.0, локальная запись, проход через device mutation gate,
+  - Этап 4: MCP `factory_live_save_localizations` (Factory API 1.27.0, локальная запись, проход через device mutation gate,
     нет трансляции — `live_stream_not_found`) и `factory_live_get_status.localizations` (набор, предупреждения, последний шаг —
     коды); маршрут `GET/PUT /api/channels/[channelId]/live-stream/localizations` и поле `localizations` в обзоре трансляции.
     Набор без сохранённых настроек видео — предупреждение `video_settings_not_saved`, не отказ (владелец, msg 3287).
