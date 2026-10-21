@@ -165,6 +165,7 @@ const DOMAIN_ERROR_STATUS = {
   live_stream_video_refused: 422,
   live_stream_workspace_unavailable: 409,
   live_stream_video_not_found: 404,
+  live_stream_not_found: 404,
   live_streams_host_unsupported: 409,
   upload_tags_too_long: 422,
   storyboard_not_found: 404,

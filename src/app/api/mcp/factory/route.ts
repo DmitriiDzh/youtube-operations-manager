@@ -5,7 +5,7 @@ import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
 import { createFactoryMcpEndpoint } from "@/lib/factory-mcp-endpoint";
 import { createFactoryTokenCore } from "@/lib/factory-agent-tokens";
 import { createGeminiMediaCore } from "@/lib/gemini-media";
-import { collectLiveStreamEntries, createLiveSegmentSettingsCore, createLiveStreamsCore, getLiveStreamsDeviceId, listPeerLiveStreams } from "@/lib/live-streams";
+import { collectLiveStreamEntries, createLiveSegmentSettingsCore, createLiveStreamsCore, createStreamLocalizationsCore, getLiveStreamsDeviceId, listPeerLiveStreams, localizationsStatusEntry } from "@/lib/live-streams";
 import { createLogicalPathsCore } from "@/lib/logical-paths";
 import { createGenerationPlansCore, withPlanLock } from "@/lib/generation-plans";
 import { createMediaGenerationCore, DomainError, withJobErrorCode } from "@/lib/media-generation";
@@ -240,10 +240,16 @@ function createToolDeps(): FactoryToolDeps {
           ...peers.flatMap((peer) => peer.streams.map((entry) => ({ device: { deviceId: peer.deviceId, hostName: peer.hostName, thisComputer: false }, updatedAt: peer.updatedAt, ...entry }))),
         ].filter((s) => !input.channelId || s.channelId === input.channelId);
         // BL-205 (1.25.0): this computer's segments -- settings, the running one, the last 30 days and failure stages (codes only).
-        const segments = (await Promise.all(own.filter((e) => !input.channelId || e.channelId === input.channelId).map((e) => createLiveSegmentSettingsCore().view(e.channelId, now)))).filter(Boolean);
-        return { streams, segments };
+        const ownChannels = own.filter((e) => !input.channelId || e.channelId === input.channelId).map((e) => e.channelId);
+        const segments = (await Promise.all(ownChannels.map((channelId) => createLiveSegmentSettingsCore().view(channelId, now)))).filter(Boolean);
+        // BL-207 (1.27.0): this computer's translations -- the set, its warnings and the last step, in codes.
+        const localizationsCore = createStreamLocalizationsCore();
+        const localizations = await Promise.all(ownChannels.map(async (channelId) => localizationsStatusEntry(channelId, await localizationsCore.view(channelId))));
+        return { streams, segments, localizations };
       },
       mapSources: async (input) => ({ results: await createLiveStreamsCore().setSources(input.channelId, { items: input.items }, "factory") }),
+      // BL-207: the stream's translations, replaced as a whole (refused whole, nothing half-saved); local only.
+      setLocalizations: async (input) => ({ ...(await createStreamLocalizationsCore().save(input.channelId, input.localizations, "factory")) }),
     },
     // BL-184 (STORYBOARD_PLAN.md §2.6): storyboards; every write is the Operator's (the owner decides in the Web UI only).
     storyboards: {

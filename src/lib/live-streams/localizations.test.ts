@@ -4,6 +4,7 @@ import { SUPPORTED_YOUTUBE_LANGUAGES } from "@/lib/youtube-supported-languages";
 import { DomainError } from "./contracts";
 import { createStreamLocalizations, readStoredLocalizations, validateLiveLocalizations } from "./localizations";
 import type { StoredStreamRow } from "./services";
+import { readStoredVideoSettings } from "./video-settings";
 
 // BL-207 stage 2 (docs/roadmap/plans/LIVE_LOCALIZATIONS_PLAN.md §2 stage 2, AC-LL-07). Expected values by hand from the plan and
 // the YouTube videos resource: a title is 1–100 characters (trimmed), a description 1–5000 BYTES (required: blank refused, owner msg 3287), neither holds < or >;
@@ -149,8 +150,15 @@ function fakeStore(initial: Partial<StoredStreamRow> | null) {
   };
 }
 
-function service(fake: ReturnType<typeof fakeStore>, channelLanguage: string | null = "en") {
-  return createStreamLocalizations({ store: fake.store, channelLanguage: async () => channelLanguage, clock: () => new Date("2026-10-21T10:00:00Z"), newId: () => "id" });
+function service(fake: ReturnType<typeof fakeStore>, channelLanguage: string | null = "en", lastApplied: { at: Date; detailJson: string } | null = null) {
+  return createStreamLocalizations({
+    store: fake.store,
+    channelLanguage: async () => channelLanguage,
+    readVideoSettings: readStoredVideoSettings,
+    lastApplied: async () => lastApplied,
+    clock: () => new Date("2026-10-21T10:00:00Z"),
+    newId: () => "id",
+  });
 }
 
 test("store: saving replaces the stored set, and get returns it", async () => {
@@ -185,6 +193,43 @@ test("AC-LL-07: a refused call stores nothing (one bad language among good ones)
 
 test("store: a channel without a stream here is refused (nothing created)", async () => {
   const fake = fakeStore(null);
-  await assert.rejects(() => service(fake).set("UC1", { de: entry() }), (error: unknown) => error instanceof DomainError && error.code === "not_found");
+  await assert.rejects(() => service(fake).set("UC1", { de: entry() }), (error: unknown) => error instanceof DomainError && error.code === "live_stream_not_found");
   assert.equal(fake.row(), null);
+});
+
+// Stage 4 (owner msg 3287: a warning, not a refusal): a set is written only as part of the saved video settings, so a saved set
+// without them is reported; the last `localizations` step comes from the last application summary.
+test("view/save: a set without saved video settings is saved and warned about (video_settings_not_saved); none without a set", async () => {
+  const fake = fakeStore({});
+  const saved = await service(fake).save("UC1", { de: entry("Dt", "Dd") });
+  assert.deepEqual(saved.localizations, { de: { title: "Dt", description: "Dd" } });
+  assert.deepEqual(saved.warnings.map((w) => w.code), ["video_settings_not_saved"]);
+  assert.deepEqual((await service(fake).view("UC1")).warnings.map((w) => w.code), ["video_settings_not_saved"]);
+  // Clearing the set: nothing to warn about.
+  assert.deepEqual((await service(fake).save("UC1", {})).warnings, []);
+  assert.deepEqual(await service(fake).view("UC1"), { localizations: null, problem: null, warnings: [], lastStep: null });
+});
+
+test("view: saved video settings -- no warning; unreadable ones -- video_settings_invalid", async () => {
+  const withSettings = fakeStore({ localizationsJson: JSON.stringify({ de: entry("Dt", "Dd") }), videoSettingsJson: "{not json" });
+  assert.deepEqual((await service(withSettings).view("UC1")).warnings.map((w) => w.code), ["video_settings_invalid"]);
+});
+
+test("view: the last localizations step of the last application, with its broadcast", async () => {
+  const fake = fakeStore({ localizationsJson: JSON.stringify({ de: entry("Dt", "Dd") }) });
+  const applied = {
+    at: new Date("2026-10-21T09:00:00Z"),
+    detailJson: JSON.stringify({ broadcastId: "B1", ok: false, steps: [{ step: "fields", ok: true }, { step: "localizations", ok: false, error: "YouTube reads back something else: de missing" }] }),
+  };
+  assert.deepEqual((await service(fake, "en", applied).view("UC1")).lastStep, {
+    at: "2026-10-21T09:00:00.000Z",
+    broadcastId: "B1",
+    ok: false,
+    error: "YouTube reads back something else: de missing",
+  });
+  const skipped = { at: applied.at, detailJson: JSON.stringify({ broadcastId: "B2", steps: [{ step: "fields", ok: false, error: "x" }, { step: "localizations", ok: true, skipped: "fields_failed" }] }) };
+  assert.deepEqual((await service(fake, "en", skipped).view("UC1")).lastStep, { at: "2026-10-21T09:00:00.000Z", broadcastId: "B2", ok: true, skipped: "fields_failed" });
+  // An application without the step (no set then): none.
+  const none = { at: applied.at, detailJson: JSON.stringify({ broadcastId: "B3", steps: [{ step: "fields", ok: true }] }) };
+  assert.equal((await service(fake, "en", none).view("UC1")).lastStep, null);
 });

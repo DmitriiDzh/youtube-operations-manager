@@ -15,6 +15,7 @@ import {
   createRotationPickerCore,
   createStreamSupervisorCore,
   createStreamVideoSettingsCore,
+  createStreamLocalizationsCore,
   createLiveSegmentSettingsCore,
   isDomainError,
 } from "@/lib/live-streams";
@@ -29,6 +30,9 @@ export type LiveStreamRouteCore = {
   saveSettings(channelId: string, body: unknown): Promise<unknown>;
   /** BL-186: the stream's video and broadcast settings and its thumbnail -- local only, never a YouTube write. */
   saveVideoSettings(channelId: string, body: unknown): Promise<unknown>;
+  /** BL-207: the stream's translations -- local only, never a YouTube write (the set, its warnings, the last step). */
+  getLocalizations(channelId: string): Promise<unknown>;
+  saveLocalizations(channelId: string, localizations: unknown): Promise<unknown>;
   setThumbnail(channelId: string, bytes: Uint8Array): Promise<unknown>;
   clearThumbnail(channelId: string): Promise<void>;
   readThumbnail(channelId: string): Promise<{ kind: "jpeg" | "png"; bytes: Uint8Array } | null>;
@@ -70,9 +74,10 @@ export function createLiveStreamRouteCore(): LiveStreamRouteCore {
   const supervisor = createStreamSupervisorCore();
   const settings = createLiveStreamsSettingsCore();
   const videoSettings = createStreamVideoSettingsCore();
+  const localizations = createStreamLocalizationsCore();
   return {
     async overview(channelId) {
-      const [view, module, running, events, preview, youtube, entries, peers, video, lastApply, languages, segments] = await Promise.all([
+      const [view, module, running, events, preview, youtube, entries, peers, video, lastApply, languages, segments, translations] = await Promise.all([
         rotation.getOverview(channelId),
         settings.get(),
         supervisor.runningHelper(channelId),
@@ -85,6 +90,7 @@ export function createLiveStreamRouteCore(): LiveStreamRouteCore {
         latestLiveStreamEvent(channelId, "video_settings_applied"),
         getChannelExpectedLanguages(channelId),
         createLiveSegmentSettingsCore().view(channelId),
+        localizations.view(channelId),
       ]);
       return {
         ...view,
@@ -96,6 +102,8 @@ export function createLiveStreamRouteCore(): LiveStreamRouteCore {
         channelDefaultLanguage: languages.defaultLanguage,
         // BL-205: the segment settings, the running segment and the last 30 days.
         segments,
+        // BL-207: the stream's translations, their warnings and the last localizations step.
+        localizations: translations,
         videoSettingsLast: lastApply ? { at: lastApply.at.toISOString(), detail: JSON.parse(lastApply.detailJson) as unknown } : null,
         module,
         // §3.10: the state in the one vocabulary the report and the Operator use.
@@ -110,6 +118,8 @@ export function createLiveStreamRouteCore(): LiveStreamRouteCore {
     },
     saveSettings: (channelId, body) => rotation.saveSettings(channelId, body),
     saveVideoSettings: (channelId, body) => videoSettings.save(channelId, body),
+    getLocalizations: (channelId) => localizations.view(channelId),
+    saveLocalizations: (channelId, body) => localizations.save(channelId, body, "owner"),
     setThumbnail: (channelId, bytes) => videoSettings.setThumbnail(channelId, bytes),
     clearThumbnail: (channelId) => videoSettings.clearThumbnail(channelId),
     readThumbnail: (channelId) => videoSettings.readThumbnail(channelId),

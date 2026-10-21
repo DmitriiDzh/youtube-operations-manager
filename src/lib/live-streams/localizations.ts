@@ -3,6 +3,7 @@ import { isSupportedYoutubeLanguageCode, suggestYoutubeLanguageCode } from "@/li
 import { DESCRIPTION_MAX_BYTES, hasAngleBrackets, TITLE_MAX_CHARACTERS } from "@/lib/youtube-video-fields";
 import { DomainError } from "./contracts";
 import type { LiveStreamsDependencies } from "./services";
+import type { StoredVideoSettings } from "./video-settings";
 
 // ---------------------------------------------------------------------------
 // BL-207 stage 2 (docs/roadmap/plans/LIVE_LOCALIZATIONS_PLAN.md §2, ADR 0045): the stream's translations of its title and
@@ -118,26 +119,102 @@ export function readStoredLocalizations(json: string | null | undefined): Stored
   return { ok: true, set: Object.keys(result.set).length > 0 ? result.set : null };
 }
 
+/**
+ * Why a saved set may not reach YouTube (a warning, never a refusal -- owner msg 3287): the translations step runs only when the
+ * stream's video settings are saved (`applyVideoSettings` is skipped otherwise), and only as their part.
+ */
+export type LiveLocalizationsWarning = { code: "video_settings_not_saved" | "video_settings_invalid"; message: string };
+
+/** The last `localizations` step of an application (Start, a segment, «Применить снова»); `error` is the owner's text. */
+export type LiveLocalizationsLastStep = { at: string; broadcastId: string | null; ok: boolean; skipped?: string; error?: string };
+
+export type LiveLocalizationsView = {
+  /** The saved set (null = none, or unreadable: see `problem`). */
+  localizations: LiveLocalizationSet | null;
+  problem: string | null;
+  warnings: LiveLocalizationsWarning[];
+  lastStep: LiveLocalizationsLastStep | null;
+};
+
 export type StreamLocalizationsDependencies = {
   store: Pick<LiveStreamsDependencies["store"], "getStream" | "updateStream" | "insertEvent">;
   /** The channel's baseline title/description language (null = none set). */
   channelLanguage(channelId: string): Promise<string | null>;
+  /** Reads the row's stored video settings (`video-settings.ts`), injected so this file stays importable by the page. */
+  readVideoSettings(json: string | null | undefined): StoredVideoSettings;
+  /** The stream's last `video_settings_applied` summary (null = none). */
+  lastApplied(channelId: string): Promise<{ at: Date; detailJson: string } | null>;
   clock: () => Date;
   newId: () => string;
 };
 
-export function createStreamLocalizations(deps: StreamLocalizationsDependencies) {
+/** The warnings for a saved set, from the row's video settings (none without a set). */
+export function localizationsWarnings(hasSet: boolean, videoSettings: StoredVideoSettings): LiveLocalizationsWarning[] {
+  if (!hasSet) return [];
+  if (!videoSettings.ok) {
+    return [{ code: "video_settings_invalid", message: "The stream's saved video settings are unreadable, so nothing is applied after Start -- the translations are not written until they are saved again" }];
+  }
+  if (videoSettings.settings === null) {
+    return [{ code: "video_settings_not_saved", message: "The stream's video settings are not saved, so nothing is applied after Start -- the translations are written only as part of the video settings: save them" }];
+  }
+  return [];
+}
+
+/** The `localizations` step of an application summary, if it ran one. */
+export function lastLocalizationsStep(applied: { at: Date; detailJson: string } | null): LiveLocalizationsLastStep | null {
+  if (!applied) return null;
+  let detail: { broadcastId?: unknown; steps?: unknown };
+  try {
+    detail = JSON.parse(applied.detailJson) as typeof detail;
+  } catch {
+    return null;
+  }
+  const step = Array.isArray(detail.steps) ? (detail.steps as Array<Record<string, unknown>>).find((s) => s?.step === "localizations") : undefined;
+  if (!step) return null;
   return {
+    at: applied.at.toISOString(),
+    broadcastId: typeof detail.broadcastId === "string" ? detail.broadcastId : null,
+    ok: step.ok === true,
+    ...(typeof step.skipped === "string" ? { skipped: step.skipped } : {}),
+    ...(typeof step.error === "string" ? { error: step.error } : {}),
+  };
+}
+
+export function createStreamLocalizations(deps: StreamLocalizationsDependencies) {
+  async function warningsFor(channelId: string, hasSet: boolean): Promise<LiveLocalizationsWarning[]> {
+    return localizationsWarnings(hasSet, deps.readVideoSettings((await deps.store.getStream(channelId))?.videoSettingsJson));
+  }
+
+  const service = {
     /** The saved set (null = none) or the problem with it. */
     async get(channelId: string): Promise<StoredLocalizations> {
       return readStoredLocalizations((await deps.store.getStream(channelId))?.localizationsJson);
+    },
+
+    /** What the page, the route and the Operator see: the set, its warnings and the last step's result. */
+    async view(channelId: string): Promise<LiveLocalizationsView> {
+      const row = await deps.store.getStream(channelId);
+      const stored = readStoredLocalizations(row?.localizationsJson);
+      const set = stored.ok ? stored.set : null;
+      return {
+        localizations: set,
+        problem: stored.ok ? null : stored.problem,
+        warnings: localizationsWarnings(set !== null, deps.readVideoSettings(row?.videoSettingsJson)),
+        lastStep: lastLocalizationsStep(await deps.lastApplied(channelId)),
+      };
+    },
+
+    /** `set`, plus the warnings the saved set has now (MCP and route answer). */
+    async save(channelId: string, input: unknown, by: "owner" | "factory" = "owner"): Promise<{ localizations: LiveLocalizationSet; warnings: LiveLocalizationsWarning[] }> {
+      const localizations = await service.set(channelId, input, by);
+      return { localizations, warnings: await warningsFor(channelId, Object.keys(localizations).length > 0) };
     },
 
     /**
      * Local only. The set replaces the saved one; an empty set clears it. The channel must have a stream on this computer. Any
      * refused language refuses the whole call (`validation_failed`, `details.refused`) and nothing is stored.
      */
-    async set(channelId: string, input: unknown): Promise<LiveLocalizationSet> {
+    async set(channelId: string, input: unknown, by: "owner" | "factory" = "owner"): Promise<LiveLocalizationSet> {
       const result = validateLiveLocalizations(input, { baselineLanguage: await deps.channelLanguage(channelId) });
       if (!result.ok) {
         throw new DomainError({ code: "validation_failed", message: result.message, details: { channelId, problem: result.problem, refused: result.refused } });
@@ -146,10 +223,39 @@ export function createStreamLocalizations(deps: StreamLocalizationsDependencies)
       const languages = Object.keys(result.set);
       const localizationsJson = languages.length > 0 ? JSON.stringify(result.set) : null;
       if (!(await deps.store.updateStream(channelId, { localizationsJson, updatedAt: now }))) {
-        throw new DomainError({ code: "not_found", message: "This channel has no live stream on this computer", details: { channelId } });
+        throw new DomainError({ code: "live_stream_not_found", message: "This channel has no live stream on this computer", details: { channelId } });
       }
-      await deps.store.insertEvent({ id: deps.newId(), channelId, at: now, kind: "localizations_saved", detailJson: JSON.stringify({ languages }) });
+      await deps.store.insertEvent({ id: deps.newId(), channelId, at: now, kind: "localizations_saved", detailJson: JSON.stringify({ languages, by }) });
       return result.set;
     },
+  };
+  return service;
+}
+
+/** The Operator's status entry (Factory API 1.27.0): codes only -- never the owner's error text (ADR 0036's status rule). */
+export type LiveLocalizationsStatusEntry = {
+  channelId: string;
+  localizations: LiveLocalizationSet | null;
+  problem: "invalid_stored" | null;
+  warnings: Array<LiveLocalizationsWarning["code"]>;
+  lastStep: { at: string; broadcastId: string | null; ok: boolean; skipped?: string; failure?: "read_back_mismatch" | "failed" } | null;
+};
+
+export function localizationsStatusEntry(channelId: string, view: LiveLocalizationsView): LiveLocalizationsStatusEntry {
+  const step = view.lastStep;
+  return {
+    channelId,
+    localizations: view.localizations,
+    problem: view.problem === null ? null : "invalid_stored",
+    warnings: view.warnings.map((w) => w.code),
+    lastStep: step
+      ? {
+          at: step.at,
+          broadcastId: step.broadcastId,
+          ok: step.ok,
+          ...(step.skipped ? { skipped: step.skipped } : {}),
+          ...(!step.ok ? { failure: step.error?.startsWith("YouTube reads back something else") ? ("read_back_mismatch" as const) : ("failed" as const) } : {}),
+        }
+      : null,
   };
 }

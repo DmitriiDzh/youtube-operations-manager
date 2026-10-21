@@ -8,6 +8,8 @@ import { OperationLockError } from "@/lib/operation-lock";
 import { RecoveryModeError } from "@/lib/device-mutation-gate";
 import { createFactoryMcpServer, FACTORY_TOOL_NAMES, type FactoryToolDeps } from "@/mcp/factory-server";
 import { createFactoryMcpEndpoint } from "./index";
+import { createStreamLocalizations, localizationsStatusEntry } from "@/lib/live-streams/localizations";
+import { readStoredVideoSettings } from "@/lib/live-streams/video-settings";
 
 // Expected behavior comes from docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md §2.1 and §4
 // (AC-FO-06, AC-FO-07, AC-FO-08, AC-FO-13), written before this module.
@@ -123,6 +125,7 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
     live: {
       getStatus: async (input) => (mediaCalls.push(`live.status:${input.channelId ?? ""}`), { streams: [] }),
       mapSources: async (input) => (mediaCalls.push(`live.map:${input.channelId}:${input.items.length}`), { results: [] }),
+      setLocalizations: async (input) => (mediaCalls.push(`live.localizations:${input.channelId}:${Object.keys(input.localizations).join(",")}`), { localizations: input.localizations, warnings: [] }),
     },
     // BL-184: the storyboards module is a fake that records what reached it.
     storyboards: {
@@ -298,6 +301,7 @@ test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exact
     "factory_list_logical_paths",
     "factory_live_get_status",
     "factory_live_map_sources",
+    "factory_live_set_localizations",
     "factory_media_activate_runtime",
     "factory_media_adopt_template",
     "factory_media_cancel_job",
@@ -383,6 +387,7 @@ test("AC-FO-07: a channel tool name is not callable on the factory endpoint", as
 // BL-194 (VIDEO_COST_PLAN.md §2 stage 1): 1.20.0 and the two video tools, last (declaration order); factory_video_create a write.
 // BL-180: 1.21.0 (the Veo 3.1 previews leave the Gemini catalog; no tool is added or removed). BL-134: 1.22.0 (gated HF pulls;
 // no tool is added or removed). BL-206 (GPU_STATS_PLAN.md §2.C): 1.26.0 and the READ tool factory_media_get_gpu_stats after the log.
+// BL-207 (LIVE_LOCALIZATIONS_PLAN.md §2 stage 4): 1.27.0 and the WRITE tool factory_live_set_localizations after the map.
 test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), READ and WRITE, the tool list and the write tools", async () => {
   const { endpoint, tokenServices } = setup();
   const { token } = await tokenServices.issueToken({});
@@ -390,7 +395,7 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.26.0", // BL-206 (FO-REQ-0033): factory_media_get_gpu_stats, compact availability log
+    factoryApiVersion: "1.27.0", // BL-207: factory_live_set_localizations, localizations in factory_live_get_status
     tools: [
       "factory_get_capabilities",
       "factory_list_logical_paths",
@@ -442,6 +447,7 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
       "factory_gemini_get_job",
       "factory_live_get_status",
       "factory_live_map_sources",
+      "factory_live_set_localizations",
       "factory_storyboard_create",
       "factory_storyboard_update",
       "factory_storyboard_get",
@@ -482,6 +488,7 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
       "factory_plan_withdraw_recheck",
       "factory_gemini_create_job",
       "factory_live_map_sources",
+      "factory_live_set_localizations",
       "factory_storyboard_create",
       "factory_storyboard_update",
       "factory_storyboard_submit",
@@ -1003,6 +1010,137 @@ test("BL-176: factory_live_map_sources passes the gate first; factory_live_get_s
     assert.equal(Boolean(body.result?.isError ?? body.error), true, JSON.stringify(bad));
   }
   assert.deepEqual(toolDeps.mediaCalls, [], "an invalid input reaches neither the gate nor the module");
+});
+
+// BL-207 (LIVE_LOCALIZATIONS_PLAN.md AC-LL-10): factory_live_set_localizations is a local write that passes the gate first; its
+// input is strict (channelId + localizations of { title, description } only); {} is a valid set (it clears).
+test("AC-LL-10: factory_live_set_localizations passes the gate first; strict schema; {} accepted", async () => {
+  const { endpoint, tokenServices, toolDeps } = setupWithDeps();
+  const { token } = await tokenServices.issueToken({});
+  const ok = { channelId: "UC_A", localizations: { de: { title: "Dt", description: "Dd" } } };
+  assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_live_set_localizations", ok), withToken(token))))).isError, false);
+  assert.deepEqual(toolDeps.mediaCalls, ["gate", "live.localizations:UC_A:de"]);
+  toolDeps.mediaCalls.length = 0;
+  assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_live_set_localizations", { channelId: "UC_A", localizations: {} }), withToken(token))))).isError, false);
+  assert.deepEqual(toolDeps.mediaCalls, ["gate", "live.localizations:UC_A:"]);
+  toolDeps.mediaCalls.length = 0;
+  for (const bad of [
+    { ...ok, extra: 1 },
+    { channelId: "UC_A" },
+    { localizations: {} },
+    { channelId: "UC_A", localizations: { de: { title: "Dt", description: "Dd", tags: ["x"] } } },
+    { channelId: "UC_A", localizations: { de: { title: "Dt" } } },
+    { channelId: "UC_A", localizations: { de: "Dt" } },
+    { channelId: "UC_A", localizations: [] },
+  ]) {
+    const body = await (await endpoint.handle(rpc(call("factory_live_set_localizations", bad), withToken(token)))).json();
+    assert.equal(Boolean(body.result?.isError ?? body.error), true, JSON.stringify(bad));
+  }
+  assert.deepEqual(toolDeps.mediaCalls, [], "an invalid input reaches neither the gate nor the module");
+});
+
+/** The real translations store of the live-streams module over one in-memory row (null = no stream on this computer). */
+function liveLocalizationsOverMemory(initial: { localizationsJson?: string | null; videoSettingsJson?: string | null } | null) {
+  let row: Record<string, unknown> | null = initial ? { channelId: "UC_A", localizationsJson: null, ...initial } : null;
+  const events: Array<{ kind: string; detail: unknown }> = [];
+  const service = createStreamLocalizations({
+    store: {
+      getStream: async () => row as never,
+      updateStream: async (_channelId, set) => {
+        if (!row) return false;
+        row = { ...row, ...set };
+        return true;
+      },
+      insertEvent: async (event) => {
+        events.push({ kind: event.kind, detail: JSON.parse(event.detailJson) });
+      },
+    },
+    channelLanguage: async () => "en",
+    readVideoSettings: readStoredVideoSettings,
+    lastApplied: async () => null,
+    clock: () => new Date("2026-10-21T10:00:00Z"),
+    newId: () => "e1",
+  });
+  const live: FactoryToolDeps["live"] = {
+    getStatus: async () => ({ streams: [], segments: [], localizations: row ? [localizationsStatusEntry("UC_A", await service.view("UC_A"))] : [] }),
+    mapSources: async () => ({ results: [] }),
+    setLocalizations: async (input) => ({ ...(await service.save(input.channelId, input.localizations, "factory")) }),
+  };
+  return { live, events, row: () => row };
+}
+
+// AC-LL-07 through the MCP tool (values by hand from the plan): each refused language comes back with its reason, the whole call
+// is refused and nothing is stored; 2500 × "é" (5000 bytes) is accepted. AC-LL-10: no stream here = live_stream_not_found, and
+// factory_live_get_status shows the saved set (with the not-saved-video-settings warning, owner msg 3287).
+test("AC-LL-07 / AC-LL-10: refusals per language through MCP, nothing stored; live_stream_not_found; get_status shows the set", async () => {
+  const before = JSON.stringify({ fr: { title: "Ft", description: "Fd" } });
+  const memory = liveLocalizationsOverMemory({ localizationsJson: before });
+  const { endpoint, tokenServices } = setup({ toolDeps: { live: memory.live } });
+  const { token } = await tokenServices.issueToken({});
+  const send = async (localizations: unknown) => toolResult(await endpoint.handle(rpc(call("factory_live_set_localizations", { channelId: "UC_A", localizations }), withToken(token))));
+
+  const cases: Array<[Record<string, unknown>, Array<[string, string]>]> = [
+    [{ de: { title: "", description: "D" } }, [["de", "title_empty"]]],
+    [{ de: { title: "x".repeat(101), description: "D" } }, [["de", "title_too_long"]]],
+    [{ de: { title: "T", description: "é".repeat(2501) } }, [["de", "description_too_long"]]],
+    [{ de: { title: "T", description: "" } }, [["de", "description_empty"]]],
+    [{ de: { title: "Jazz <live>", description: "D" } }, [["de", "title_angle_brackets"]]],
+    [{ "pt-br": { title: "T", description: "D" }, xx: { title: "T", description: "D" }, de: { title: "T", description: "D" } }, [["pt-br", "unsupported_language"], ["xx", "unsupported_language"]]],
+    [{ en: { title: "T", description: "D" } }, [["en", "baseline_language"]]],
+  ];
+  for (const [localizations, refused] of cases) {
+    const result = await send(localizations);
+    assert.equal(result.isError, true, JSON.stringify(localizations).slice(0, 80));
+    const error = result.payload.error as { code: string; details: { refused: Array<{ language: string; reason: string; hint?: string }> } };
+    assert.equal(error.code, "validation_failed");
+    assert.deepEqual(error.details.refused.map((r) => [r.language, r.reason]), refused);
+  }
+  // pt-br carries the hint pt-BR.
+  const hinted = await send({ "pt-br": { title: "T", description: "D" } });
+  assert.equal((hinted.payload.error as { details: { refused: Array<{ hint?: string }> } }).details.refused[0].hint, "pt-BR");
+  // 51 languages: the set as a whole is refused.
+  const codes = ["de", "fr", "it", "es", "ja", "ko", "nl", "pl", "pt-BR", "pt-PT", "sv", "tr", "uk", "cs", "da", "fi", "el", "hu", "id", "ms", "no", "ro", "sk", "th", "vi", "zh-CN", "zh-TW", "ar", "he", "hi", "bn", "bg", "hr", "et", "lv", "lt", "sl", "sr", "ca", "eu", "gl", "is", "ga", "mt", "sq", "mk", "ka", "hy", "az", "kk", "uz"];
+  assert.equal(codes.length, 51);
+  const tooMany = await send(Object.fromEntries(codes.map((c) => [c, { title: "T", description: "D" }])));
+  assert.equal(tooMany.isError, true);
+  assert.equal((tooMany.payload.error as { details: { problem: string } }).details.problem, "too_many_languages");
+  // Nothing of any refused call was stored, and no event was written.
+  assert.equal(memory.row()!.localizationsJson, before);
+  assert.deepEqual(memory.events, []);
+
+  // Accepted: the set replaces the stored one (fr is gone), 5000 bytes allowed; the warning says the video settings are not saved.
+  const accepted = await send({ de: { title: " Dt ", description: "é".repeat(2500) } });
+  assert.equal(accepted.isError, false);
+  assert.deepEqual(accepted.payload.localizations, { de: { title: "Dt", description: "é".repeat(2500) } });
+  assert.deepEqual((accepted.payload.warnings as Array<{ code: string }>).map((w) => w.code), ["video_settings_not_saved"]);
+  assert.deepEqual(memory.events, [{ kind: "localizations_saved", detail: { languages: ["de"], by: "factory" } }]);
+
+  const status = await toolResult(await endpoint.handle(rpc(call("factory_live_get_status", { channelId: "UC_A" }), withToken(token))));
+  assert.deepEqual(status.payload.localizations, [
+    { channelId: "UC_A", localizations: { de: { title: "Dt", description: "é".repeat(2500) } }, problem: null, warnings: ["video_settings_not_saved"], lastStep: null },
+  ]);
+
+  // No stream on this computer.
+  const none = liveLocalizationsOverMemory(null);
+  const other = setup({ toolDeps: { live: none.live } });
+  const { token: otherToken } = await other.tokenServices.issueToken({});
+  const missing = await toolResult(await other.endpoint.handle(rpc(call("factory_live_set_localizations", { channelId: "UC_A", localizations: { de: { title: "T", description: "D" } } }), withToken(otherToken))));
+  assert.equal(missing.isError, true);
+  assert.equal((missing.payload.error as { code: string }).code, "live_stream_not_found");
+});
+
+test("AC-LL-10: get_status reports the last localizations step in codes, never the error text", () => {
+  const entry = localizationsStatusEntry("UC_A", {
+    localizations: { de: { title: "Dt", description: "Dd" } },
+    problem: null,
+    warnings: [],
+    lastStep: { at: "2026-10-21T09:00:00.000Z", broadcastId: "B1", ok: false, error: "YouTube reads back something else: de missing" },
+  });
+  assert.deepEqual(entry.lastStep, { at: "2026-10-21T09:00:00.000Z", broadcastId: "B1", ok: false, failure: "read_back_mismatch" });
+  const other = localizationsStatusEntry("UC_A", { localizations: null, problem: "the saved translations are not valid JSON", warnings: [], lastStep: { at: "x", broadcastId: null, ok: false, error: "Live writes are off" } });
+  assert.equal(other.problem, "invalid_stored");
+  assert.deepEqual(other.lastStep, { at: "x", broadcastId: null, ok: false, failure: "failed" });
+  assert.equal(JSON.stringify(other).includes("Live writes are off"), false);
 });
 
 // BL-184 (STORYBOARD_PLAN.md §2.6): the four storyboard writes pass the device mutation gate first and reach nothing behind a closed

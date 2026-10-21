@@ -4542,7 +4542,11 @@ title/description (AGENTS.md §F, PROJECT_SPEC §21), reversing `LIVE_STREAMS_FI
   tool, the route, the store and the page) refuses the whole set if any language fails: exact supported code
   (`suggestYoutubeLanguageCode` gives the letter-case hint), title 1–100 characters after trimming (stored trimmed), description
   1–5000 bytes (required: blank refused, owner msg 3287), no `<`/`>`, not the channel's baseline (case-insensitive), ≤ 50 languages. `createStreamLocalizations`: `set`
-  replaces, `{}` clears (null), a channel without a stream row here is `not_found`, event `localizations_saved`.
+  replaces, `{}` clears (null), a channel without a stream row here is `live_stream_not_found` (404), event `localizations_saved`
+  (`{ languages, by: owner | factory }`). `view` adds the warnings (a set while the row's video settings are unsaved or unreadable:
+  `video_settings_not_saved` / `video_settings_invalid` -- the step runs only inside `applyVideoSettings`, a warning, never a
+  refusal, owner msg 3287) and the last `localizations` step from the last `video_settings_applied` summary; `save` = `set` + the
+  warnings.
   `readStoredLocalizations` reports a stored value that no longer passes (never guessed).
 - **The step** (`live-streams/video-apply.ts`): read once in `broadcasts.ts`'s `runVideoSettings` (the funnel of Start,
   «Применить снова» and segments). Right after the fields step: corrupt set → failed step; no set → no step; fields not verified
@@ -4556,5 +4560,10 @@ title/description (AGENTS.md §F, PROJECT_SPEC §21), reversing `LIVE_STREAMS_FI
   audio language just read sent back (not `zxx`) → `assertLiveWritesAuthorized` → `applyVideoMetadataUpdate` → read-back of each
   written language (key case-insensitive) and the snippet text, up to 6 reads 10 s apart, telling "language missing" from "text
   differs" → audit BACKUP/RESULT/VERIFICATION (`video_edit_audit_events`, `source: "live_localizations"`).
-- **Not yet:** the MCP tool `factory_live_set_localizations` and the status field (stage 4), the «Переводы» card (stage 5). Whether
+- **MCP and route (stage 4, Factory API 1.27.0):** `factory_live_set_localizations` (strict `{ channelId, localizations }`, gate
+  first, `save(..., "factory")`, refusals as `validation_failed` with `details.refused`) and `factory_live_get_status.localizations`
+  (`localizationsStatusEntry`: codes only -- `problem: invalid_stored`, warning codes, `lastStep.failure: read_back_mismatch |
+  failed`, never the error text). Web: `GET/PUT /api/channels/[channelId]/live-stream/localizations` (`liveStreamHandler`:
+  session 401, active channel 403) and `localizations` in the overview.
+- **Not yet:** the «Переводы» card (stage 5). Whether
   a live broadcast's video reads its localizations back is unverified until the first real go-live with a set.

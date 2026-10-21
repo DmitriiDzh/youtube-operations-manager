@@ -851,7 +851,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Общие модули:** `src/lib/ffmpeg-host/` (поиск ffmpeg, возможности, ffprobe; `keyframes.mjs`), `workspace-exchange.resolveWorkspaceFile`, семейство `sync-gateway/live-streams` (отчёт `ytm-live-streams` v1).
 - **Схема v86:** `live_streams`, `live_stream_videos`, `live_stream_events`, `live_stream_sources` (только этот компьютер); настройки — `app_settings.live_streams_settings`.
 - **Web:** Контент → «Видео» | «Трансляции» (`/content/streams`, активный канал; на Windows — только чтение из отчёта), Настройки → «Трансляции»; API `/api/channels/[channelId]/live-stream/**`, `/api/live-streams/settings`, `/api/live-streams/notices`.
-- **Оператор (Factory API 1.14.0):** `factory_live_get_status`, `factory_live_map_sources`.
+- **Оператор (Factory API 1.14.0):** `factory_live_get_status`, `factory_live_map_sources`; с 1.27.0 (BL-207) — `factory_live_set_localizations` и `factory_live_get_status.localizations`.
 - **BL-187 (этап 1 `docs/roadmap/plans/LIVE_STREAMS_FIELDS_PLAN.md`, ветка `feature/live-streams-fields-and-picker`, не в `dev`):**
   окно «Добавить видео…» — итоговые файлы `Vn` из `04 Videos/` с галочками (`picker.ts`, `picker-service.ts`,
   `adapters/picker-files.ts`). Совпадение файла с видео: карта оператора → `Vn_youtube.json` → `video_registry.csv`; иначе
@@ -886,7 +886,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   - `factory_live_get_status.segments` (Factory API 1.25.0).
   - Композиция модулей для раннера и маршрутов — `src/composition/live-stream-video-fields.ts`.
 - **BL-207 переводы трансляции при публикации (`docs/roadmap/plans/LIVE_LOCALIZATIONS_PLAN.md`, ADR 0045, ветка
-  `feature/live-localizations`, этапы 1–3; MCP и карточка — этапы 4–5, ещё не сделаны):**
+  `feature/live-localizations`, этапы 1–5):**
   - Один набор переводов на трансляцию: схема **v101** `live_streams.localizations_json` (только этот компьютер);
     `live-streams/localizations.ts` — общий чистый валидатор (точный код YouTube с подсказкой регистра, заголовок 1–100,
     описание обязательно, 1–5000 байт, без `<`/`>`, не базовый язык канала, ≤ 50 языков, весь набор или ничего) и хранилище (замена,
@@ -897,6 +897,10 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
     набора — нет шага и вызовов. Конвейер: `assertWriteChannel` → свежее `videos.list snippet,localizations` (должно уже
     показывать значения полей) → `checkDefaultLanguage` → собственный язык видео в наборе = отказ → бэкап → общее слияние →
     `assertLiveWritesAuthorized` → `videos.update` → проверка чтением (отличает «language missing» от «text differs») → аудит.
+  - Этап 4: MCP `factory_live_set_localizations` (Factory API 1.27.0, локальная запись, проход через device mutation gate,
+    нет трансляции — `live_stream_not_found`) и `factory_live_get_status.localizations` (набор, предупреждения, последний шаг —
+    коды); маршрут `GET/PUT /api/channels/[channelId]/live-stream/localizations` и поле `localizations` в обзоре трансляции.
+    Набор без сохранённых настроек видео — предупреждение `video_settings_not_saved`, не отказ (владелец, msg 3287).
 - **Общий модуль `src/lib/shared-localization-merge/`** (BL-207, §M): `buildSafeLocalizationsPayload`, `checkDefaultLanguage`,
   `localeKeyFor` — вынесены из `batches/merge.ts` (тот реэкспортирует); им пользуются Batches и `live-localizations`.
 - **Общий модуль `src/lib/youtube-video-fields/`** (BL-186, §M): лимиты и списки полей видео (500 символов тегов, 2 МБ обложки,

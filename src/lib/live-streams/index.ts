@@ -81,6 +81,8 @@ export function createStreamLocalizationsCore() {
   return createStreamLocalizations({
     store: createLiveStreamsStore(),
     channelLanguage: async (channelId) => (await getChannelExpectedLanguages(channelId)).defaultLanguage,
+    readVideoSettings: readStoredVideoSettings,
+    lastApplied: async (channelId) => latestLiveStreamEvent(channelId, "video_settings_applied"),
     clock: () => new Date(),
     newId: () => randomUUID(),
   });
@@ -357,8 +359,8 @@ export type { PickerResult } from "./picker-service";
 export { checkOriginal, checkPublicOnly, classifyRunEnd, locatePlayback, passLength, planBuffer, canCopyIntoBuffer } from "./rotation";
 
 export type { LocalizationsPort, VideoFieldsPort, VideoApplyResult } from "./video-apply";
-export { LIVE_LOCALIZATIONS_MAX_LANGUAGES, readStoredLocalizations, validateLiveLocalizations } from "./localizations";
-export type { LiveLocalization, LiveLocalizationRefusal, LiveLocalizationSet, LiveLocalizationsValidation, StoredLocalizations } from "./localizations";
+export { LIVE_LOCALIZATIONS_MAX_LANGUAGES, localizationsStatusEntry, readStoredLocalizations, validateLiveLocalizations } from "./localizations";
+export type { LiveLocalization, LiveLocalizationRefusal, LiveLocalizationSet, LiveLocalizationsValidation, LiveLocalizationsView, LiveLocalizationsWarning, LiveLocalizationsLastStep, LiveLocalizationsStatusEntry, StoredLocalizations } from "./localizations";
 
 /** BL-205: the segment settings (local, no YouTube write) and the segments view for the page and the Operator. Local reads only. */
 export function createLiveSegmentSettingsCore() {
