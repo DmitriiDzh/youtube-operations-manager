@@ -8,6 +8,7 @@ import { createMarketIntelligenceCore } from "@/lib/market-intelligence";
 import {
   getAnalyticsReadsEnabled,
   getAutoPrivateUploadEnabled,
+  getAutoPrivateUploadWaiting,
   setAutoPrivateUploadEnabled,
   getReportingReadsEnabled,
   getWikipediaReadsEnabled,
@@ -171,6 +172,7 @@ async function getSettingsSnapshot() {
     draftRetentionDays: () => getDraftRetentionDays(),
     writeLogRetentionDays: () => getWriteLogRetentionDays(),
     autoPrivateUploadEnabled: () => getAutoPrivateUploadEnabled(),
+    autoPrivateUploadWaiting: () => getAutoPrivateUploadWaiting(),
   });
 }
 

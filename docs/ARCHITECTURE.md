@@ -4224,6 +4224,13 @@ is already set everywhere), 2734 (one merge for the whole stage).
   `quota_insufficient`, `quota_unknown` (never acknowledged) stop the tick and wait; `publishing_settings_changed` skips the channel;
   any other refusal skips the package until a later tick. Audit: `publishing.upload_auto_queued` (time, channel, video, manifest
   hash, switch state, upload id).
+- **Waiting reasons (no spam).** A ready, matching package not queued now (a refusal code: `upload_daily_limit`,
+  `quota_insufficient`, `quota_unknown`, `publishing_settings_changed`, `upload_tags_too_long`, ...; `hash_failed`) and a channel
+  skipped (`no_connected_account`, `no_workspace`, `workspace_unavailable`) are recorded once per (manifest hash, reason) or
+  (channel, reason) change: one audit event `publishing.upload_auto_waiting` and one console line. A reason that clears is dropped
+  and logged again if it returns; a tick stopped early keeps the reasons it did not reach. The standing list is kept in memory and,
+  when it changes, in `app_settings.auto_private_upload_waiting`; `/api/settings` returns it as `autoPrivateUploadWaiting` and the
+  Live writes card shows the first one in one line (en/ru keys `settingsCards.autoPrivateUpload.*`).
 - **Schema v103:** `publishing_uploads.automatic INTEGER NOT NULL DEFAULT 0`. The runner is unchanged: an automatic row is inserted
   private without `publishAt`, gets no date afterwards, and goes to the release playlist.
 - **Visibility.** Content → «Публикация» marks the row «автоматически»; `agent_get_publishing_calendar`'s `uploads` carry

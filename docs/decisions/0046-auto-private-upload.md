@@ -48,7 +48,9 @@ approve. What stands for the approval, and what keeps it from becoming a path an
    twice.
 6. **Traceable.** Each row is marked `automatic` (schema v103, additive); each automatic queue writes an audit event
    `publishing.upload_auto_queued` with the time, channel, video, manifest hash, the switch state and the upload id; a video whose
-   SHA-256 differs from its manifest's is logged once per manifest hash (`publishing.auto_upload_hash_mismatch`). The Content page
+   SHA-256 differs from its manifest's is logged once per manifest hash (`publishing.auto_upload_hash_mismatch`). A package that
+   cannot be queued now, or a channel that is skipped, is recorded once per reason change (`publishing.upload_auto_waiting`) and
+   the current reason is shown next to the switch. The Content page
    marks the row «автоматически»; the agents' calendar read reports `automatic`, `progressPercent` and `finishedAt` (Agent API
    3.20.0, Producer API 1.10.0).
 7. **Switching it off** queues nothing new; rows already queued stay, and the owner cancels them as today.

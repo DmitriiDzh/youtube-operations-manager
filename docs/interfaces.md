@@ -753,6 +753,8 @@ Key MCP tools:
     null when the total is unknown) and `finishedAt` (ISO 8601 when done / failed / cancelled, else null). `yt-release-package/1`
     may carry a top-level `sha256` (hex SHA-256 of the video file); without it a package uploads only on the owner's approval.
     `/api/settings` (Web only) reads and sets `autoPrivateUploadEnabled` (boolean, default false); no MCP tool or CLI command does.
+    It also returns `autoPrivateUploadWaiting` (read-only): `[{ kind: package, channelId, video, manifestSha256, reason } | { kind:
+    channel, channelId, reason }]`, why the automatic upload is waiting now (`[]` = nothing).
   - Web only (BL-182 stage 2): `GET/PUT /api/channels/[id]/publishing-settings` (the channel's publishing defaults, synced; PUT the
     changed fields), `GET/POST .../publishing-settings/conflicts` (choose a computer's value), `GET .../publishing/packages` (the
     release packages with state and problems), `GET .../publishing/packages/thumbnail?path=`, `GET/POST .../publishing/uploads` (the

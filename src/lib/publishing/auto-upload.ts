@@ -9,7 +9,17 @@ import { isDomainError } from "@/lib/shared-domain";
 import type { PackageScanResult, ScannedPackage } from "./package-scan";
 import { AUTO_UPLOAD_WAIT_CODES } from "./upload-approval";
 
-export type AutoUploadChannel = { channelId: string; userId: string };
+/** `userId` null: the channel has no connected account on this computer (it is skipped, with the reason recorded). */
+export type AutoUploadChannel = { channelId: string; userId: string | null };
+
+/**
+ * Why a ready, matching package (or a whole channel) is not queued now. Package reasons are the approval's refusal codes
+ * (`upload_daily_limit`, `quota_insufficient`, `quota_unknown`, `publishing_settings_changed`, `upload_tags_too_long`, ...);
+ * channel reasons are `no_connected_account`, `no_workspace` and `workspace_unavailable`.
+ */
+export type AutoUploadWaiting =
+  | { kind: "package"; channelId: string; video: string; manifestSha256: string; reason: string }
+  | { kind: "channel"; channelId: string; reason: string };
 
 export type AutoUploadDeps = {
   /** The owner's switch (device-local, default off). Read at the start of a tick and again right before each queue. */
@@ -37,6 +47,15 @@ export type AutoUploadDeps = {
   }): Promise<{ id: string; video: string }>;
   /** A video whose SHA-256 differs from its manifest's, logged once per manifest hash. */
   logMismatch(args: { channelId: string; video: string; manifestSha256: string; expected: string; actual: string }): Promise<void>;
+  /**
+   * A reason that appeared or changed (once per (manifest hash, reason) or (channel, reason) change, never every tick): the audit
+   * event `publishing.upload_auto_waiting`.
+   */
+  logWaiting(entry: AutoUploadWaiting): Promise<void>;
+  /** The reasons standing after a tick, for the Settings card; called only when they changed. */
+  saveWaiting(entries: AutoUploadWaiting[]): Promise<void>;
+  /** Kept between ticks (in memory): the reasons standing, by key, so only a change is logged. */
+  waiting: Map<string, AutoUploadWaiting>;
   /** Kept between ticks (in memory): `${manifestSha256}|${bytes}|${mtimeMs}` -> the video's SHA-256; and the hashes logged. */
   hashCache: Map<string, string>;
   loggedMismatches: Set<string>;
@@ -49,7 +68,11 @@ export type AutoUploadTickResult = {
   queued: Array<{ channelId: string; video: string; uploadId: string; manifestSha256: string }>;
   /** Set when the tick stopped early on a full bucket / quota (waits for a later tick). */
   waiting: string | null;
+  /** Every reason standing after this tick (packages and channels). */
+  reasons: AutoUploadWaiting[];
 };
+
+const waitingKey = (entry: AutoUploadWaiting) => (entry.kind === "package" ? `package|${entry.channelId}|${entry.manifestSha256}` : `channel|${entry.channelId}`);
 
 /** What a package must be before its video is even looked at: ready by the scan's checks, with a manifest hash and a video hash. */
 function candidate(p: ScannedPackage): p is ScannedPackage & { pkg: NonNullable<ScannedPackage["pkg"]>; manifestSha256: string } {
@@ -69,19 +92,61 @@ export function createAutoPrivateUpload(deps: AutoUploadDeps) {
     return hash;
   }
 
+  /**
+   * The tick's reasons replace the standing ones: a new or changed reason is logged once; a reason gone (queued, ready again, the
+   * channel connected) is dropped, so it is logged again if it comes back. When the tick stopped early, the reasons of what it did
+   * not reach this time stay as they were.
+   */
+  async function settle(found: Map<string, AutoUploadWaiting>, visited: Set<string>, stoppedEarly: boolean): Promise<AutoUploadWaiting[]> {
+    const next = new Map(found);
+    if (stoppedEarly) for (const [key, entry] of deps.waiting) if (!visited.has(key) && !next.has(key)) next.set(key, entry);
+    for (const [key, entry] of next) {
+      const before = deps.waiting.get(key);
+      if (before && before.reason === entry.reason) continue;
+      warn(entry.kind === "package" ? `${entry.video}: waiting (${entry.reason})` : `channel ${entry.channelId} skipped (${entry.reason})`);
+      await deps.logWaiting(entry).catch(() => undefined);
+    }
+    const changed = next.size !== deps.waiting.size || [...next].some(([key, entry]) => deps.waiting.get(key)?.reason !== entry.reason);
+    deps.waiting.clear();
+    for (const [key, entry] of next) deps.waiting.set(key, entry);
+    const list = [...next.values()];
+    if (changed) await deps.saveWaiting(list).catch(() => undefined);
+    return list;
+  }
+
   return {
     async tick(): Promise<AutoUploadTickResult> {
-      const result: AutoUploadTickResult = { enabled: false, queued: [], waiting: null };
-      if (!(await deps.enabled())) return result;
+      const result: AutoUploadTickResult = { enabled: false, queued: [], waiting: null, reasons: [] };
+      if (!(await deps.enabled())) {
+        // Off: nothing waits any more (the card shows no reason); nothing else is read.
+        if (deps.waiting.size > 0) {
+          deps.waiting.clear();
+          await deps.saveWaiting([]).catch(() => undefined);
+        }
+        return result;
+      }
       result.enabled = true;
-      for (const channel of await deps.channels()) {
+      const found = new Map<string, AutoUploadWaiting>();
+      const visited = new Set<string>();
+      const note = (entry: AutoUploadWaiting) => found.set(waitingKey(entry), entry);
+      let stoppedEarly = false;
+      channels: for (const channel of await deps.channels()) {
+        visited.add(`channel|${channel.channelId}`);
+        if (channel.userId === null) {
+          note({ kind: "channel", channelId: channel.channelId, reason: "no_connected_account" });
+          continue;
+        }
         const scanned = await deps.scan(channel.channelId);
-        if (scanned.status !== "ok") continue;
+        if (scanned.status !== "ok") {
+          note({ kind: "channel", channelId: channel.channelId, reason: scanned.status });
+          continue;
+        }
         const live = await deps.liveVideos(channel.channelId);
         const peers = await deps.peerUploads(channel.channelId);
         const tried = await deps.autoQueuedHashes(channel.channelId);
         for (const p of scanned.packages) {
           if (!candidate(p)) continue;
+          visited.add(`package|${channel.channelId}|${p.manifestSha256}`);
           const expected = p.pkg.sha256 ?? null;
           if (!expected) continue; // no `sha256` in the manifest: the owner's approval only
           if (live.has(p.pkg.video) || peers.has(p.pkg.video)) continue;
@@ -92,7 +157,8 @@ export function createAutoPrivateUpload(deps: AutoUploadDeps) {
           try {
             actual = await videoHash(p.manifestSha256, file);
           } catch (error) {
-            warn(`${p.pkg.video}: the video could not be hashed: ${error instanceof Error ? error.message : String(error)}`);
+            note({ kind: "package", channelId: channel.channelId, video: p.pkg.video, manifestSha256: p.manifestSha256, reason: "hash_failed" });
+            void error;
             continue;
           }
           if (actual !== expected) {
@@ -110,18 +176,20 @@ export function createAutoPrivateUpload(deps: AutoUploadDeps) {
             tried.add(p.manifestSha256);
             result.queued.push({ channelId: channel.channelId, video: queued.video, uploadId: queued.id, manifestSha256: p.manifestSha256 });
           } catch (error) {
-            const code = isDomainError(error) ? error.code : null;
+            const code = isDomainError(error) ? error.code : "refused";
+            note({ kind: "package", channelId: channel.channelId, video: p.pkg.video, manifestSha256: p.manifestSha256, reason: code });
             if (code === "publishing_settings_changed") break; // this channel's settings wait for Merge; the next channel may go on
-            if (code !== null && AUTO_UPLOAD_WAIT_CODES.has(code)) {
+            if (AUTO_UPLOAD_WAIT_CODES.has(code)) {
               // The bucket and the pool are the project's: nothing else fits this tick either. Never dropped -- tried again later.
               result.waiting = code;
-              return result;
+              stoppedEarly = true;
+              break channels;
             }
             // Refused for this package alone (queued meanwhile, changed, not ready any more, tags too long): the next tick sees it again.
-            warn(`${p.pkg.video}: not queued automatically: ${error instanceof Error ? error.message : String(error)}`);
           }
         }
       }
+      result.reasons = await settle(found, visited, stoppedEarly);
       return result;
     },
   };

@@ -6522,6 +6522,28 @@ export async function getAutoPrivateUploadEnabled(): Promise<boolean> {
 export async function setAutoPrivateUploadEnabled(enabled: boolean): Promise<void> {
   await setAppSetting(AUTO_PRIVATE_UPLOAD_ENABLED_SETTING_KEY, enabled ? "true" : "false");
 }
+
+const AUTO_PRIVATE_UPLOAD_WAITING_SETTING_KEY = "auto_private_upload_waiting";
+
+/**
+ * BL-209 follow-up: why the automatic upload is not queuing something now (owned by `publishing/auto-upload.ts`, written only when
+ * it changed; shown on the Live writes card). Stored rather than kept in memory: the watcher's loop and the Settings route are
+ * separate module instances. JSON; [] or unset = nothing waits. Device-local.
+ */
+export async function getAutoPrivateUploadWaiting(): Promise<unknown[]> {
+  const raw = await getAppSetting(AUTO_PRIVATE_UPLOAD_WAITING_SETTING_KEY);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function setAutoPrivateUploadWaiting(entries: unknown[]): Promise<void> {
+  await setAppSetting(AUTO_PRIVATE_UPLOAD_WAITING_SETTING_KEY, JSON.stringify(entries));
+}
 const DEVICE_SYNC_STATUS_SETTING_KEY = "device_sync_status";
 
 /**

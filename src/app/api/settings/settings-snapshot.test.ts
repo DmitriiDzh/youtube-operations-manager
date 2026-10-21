@@ -27,6 +27,7 @@ function readers(overrides: Partial<Parameters<typeof buildSettingsSnapshot>[0]>
     writeLogRetentionDays: async () => 30,
     // BL-209: the automatic-upload switch is a new reader of the snapshot (added to the fixture; nothing else here changes).
     autoPrivateUploadEnabled: async () => false,
+    autoPrivateUploadWaiting: async () => [],
     ...overrides,
   };
 }

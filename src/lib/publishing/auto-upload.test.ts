@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { StoredPublishingUpload } from "@/lib/db";
-import { createAutoPrivateUpload, type AutoUploadDeps } from "./auto-upload";
+import { createAutoPrivateUpload, type AutoUploadDeps, type AutoUploadWaiting } from "./auto-upload";
 import type { ScannedPackage } from "./package-scan";
 import { packageProblems, type ReleasePackage } from "./packages";
 import { DEFAULT_PUBLISHING_SETTINGS } from "./settings";
@@ -84,6 +84,11 @@ function harness(initial: { packages: ScannedPackage[]; enabled?: boolean; files
     hashCalls: [] as string[],
     mismatches: [] as Array<Record<string, unknown>>,
     audits: [] as Array<Record<string, unknown>>,
+    waitingLog: [] as AutoUploadWaiting[],
+    saved: [] as AutoUploadWaiting[][],
+    channels: [{ channelId: CHANNEL, userId: OWNER as string | null }],
+    quotaShort: false,
+    noWorkspace: false,
   };
   let id = 0;
   const approvalDeps: UploadApprovalDeps = {
@@ -93,7 +98,10 @@ function harness(initial: { packages: ScannedPackage[]; enabled?: boolean; files
     peerUploads: async () => state.peers,
     insertsToday: async () => state.insertsToday,
     pending: async () => ({ inserts: state.rows.filter((row) => row.status === "queued").length, units: 0 }),
-    checkUnits: async (units) => ({ decision: "allow", estimatedUnits: units, remainingUnits: 9000 }),
+    checkUnits: async (units) =>
+      state.quotaShort
+        ? { decision: "insufficient", estimatedUnits: units, remainingUnits: 10, resetsAt: "2026-10-22T07:00:00.000Z" }
+        : { decision: "allow", estimatedUnits: units, remainingUnits: 9000 },
     insert: async (rows) => {
       if (rows.some((row) => state.rows.some((held) => held.video === row.video && holdsPackage(held)))) return false;
       state.rows.push(...rows);
@@ -106,8 +114,8 @@ function harness(initial: { packages: ScannedPackage[]; enabled?: boolean; files
   const approval = createUploadApproval(approvalDeps);
   const deps: AutoUploadDeps = {
     enabled: async () => state.enabled,
-    channels: async () => [{ channelId: CHANNEL, userId: OWNER }],
-    scan: async () => ({ status: "ok", packages: state.packages }),
+    channels: async () => state.channels,
+    scan: async () => (state.noWorkspace ? { status: "no_workspace" } : { status: "ok", packages: state.packages }),
     liveVideos: approvalDeps.liveVideos,
     peerUploads: approvalDeps.peerUploads,
     autoQueuedHashes: async () => new Set(state.rows.filter((row) => row.automatic).map((row) => row.manifestSha256)),
@@ -124,6 +132,9 @@ function harness(initial: { packages: ScannedPackage[]; enabled?: boolean; files
     logMismatch: async (args) => void state.mismatches.push(args),
     hashCache: new Map(),
     loggedMismatches: new Set(),
+    logWaiting: async (entry) => void state.waitingLog.push(entry),
+    saveWaiting: async (entries) => void state.saved.push(entries),
+    waiting: new Map(),
   };
   return { state, auto: createAutoPrivateUpload(deps) };
 }
@@ -135,7 +146,7 @@ test("AC-AU-01: switched off (the default) a ready, matching package is never qu
   const p = scanned(release("V65"), "mf-1");
   const h = harness({ packages: [p], enabled: false, files: fileOf(p) });
   const result = await h.auto.tick();
-  assert.deepEqual(result, { enabled: false, queued: [], waiting: null });
+  assert.deepEqual(result, { enabled: false, queued: [], waiting: null, reasons: [] });
   assert.deepEqual([h.state.rows.length, h.state.hashCalls.length, h.state.audits.length], [0, 0, 0]);
 });
 
@@ -265,6 +276,9 @@ test("AC-AU-07: a peer that starts the same package while the video is hashed st
     logMismatch: async () => undefined,
     hashCache: new Map(),
     loggedMismatches: new Set(),
+    logWaiting: async () => undefined,
+    saveWaiting: async () => undefined,
+    waiting: new Map(),
   });
   assert.deepEqual((await auto.tick()).queued, []);
   assert.equal(h.state.rows.length, 0);
@@ -296,7 +310,12 @@ test("AC-AU-09: the day's insert bucket full -> not queued this tick (waiting, n
   const p = scanned(release("V65"), "mf-1");
   const h = harness({ packages: [p], files: fileOf(p) });
   h.state.insertsToday = 100; // UPLOADS_PER_DAY
-  assert.deepEqual(await h.auto.tick(), { enabled: true, queued: [], waiting: "upload_daily_limit" });
+  assert.deepEqual(await h.auto.tick(), {
+    enabled: true,
+    queued: [],
+    waiting: "upload_daily_limit",
+    reasons: [{ kind: "package", channelId: CHANNEL, video: "V65", manifestSha256: "mf-1", reason: "upload_daily_limit" }],
+  });
   assert.equal(h.state.rows.length, 0);
   h.state.insertsToday = 99;
   assert.deepEqual((await h.auto.tick()).queued.map((q) => q.video), ["V65"]);
@@ -366,7 +385,101 @@ test("the switch turned off while a video was hashed: nothing is queued", async 
     logMismatch: async () => undefined,
     hashCache: new Map(),
     loggedMismatches: new Set(),
+    logWaiting: async () => undefined,
+    saveWaiting: async () => undefined,
+    waiting: new Map(),
   });
   assert.deepEqual((await auto.tick()).queued, []);
   assert.equal(h.state.rows.length, 0);
+});
+
+// BL-209 follow-up (coordinator, Q2 + Q4): a ready, matching package that cannot be queued now, or a channel that is skipped, is
+// recorded once per (manifest hash, reason) or (channel, reason) change -- one `publishing.upload_auto_waiting` event and the list
+// shown on the Settings card -- never again on every tick while nothing changes.
+test("waiting reasons: logged and saved once per change, not every tick; a cleared reason is dropped and logged again if it returns", async () => {
+  const p = scanned(release("V65"), "mf-1");
+  const h = harness({ packages: [p], files: fileOf(p) });
+  const entry = (reason: string): AutoUploadWaiting => ({ kind: "package", channelId: CHANNEL, video: "V65", manifestSha256: "mf-1", reason });
+  h.state.insertsToday = 100;
+  await h.auto.tick();
+  await h.auto.tick();
+  await h.auto.tick();
+  assert.deepEqual(h.state.waitingLog, [entry("upload_daily_limit")]);
+  assert.deepEqual(h.state.saved, [[entry("upload_daily_limit")]]);
+  // The reason changes (the bucket has room, the pool is now short): logged once more, then not again.
+  h.state.insertsToday = 0;
+  h.state.quotaShort = true;
+  await h.auto.tick();
+  await h.auto.tick();
+  assert.deepEqual(h.state.waitingLog, [entry("upload_daily_limit"), entry("quota_insufficient")]);
+  assert.deepEqual(h.state.saved, [[entry("upload_daily_limit")], [entry("quota_insufficient")]]);
+  // Queued at last: the reason is gone, the card's list is empty again; nothing new is logged.
+  h.state.quotaShort = false;
+  const result = await h.auto.tick();
+  assert.deepEqual([result.queued.map((q) => q.video), result.reasons], [["V65"], []]);
+  assert.equal(h.state.waitingLog.length, 2);
+  assert.deepEqual(h.state.saved.at(-1), []);
+});
+
+test("waiting reasons: a refusal for one package (tags over 500 characters) is recorded once with its code; the reason changing is logged again", async () => {
+  // 26 tags of 20 characters: 26 × 20 + 25 commas = 545 characters, over YouTube's 500 (the package's own check counts them too,
+  // so the package's tags stay short and the CHANNEL's tags -- used when the package has none -- are the long ones).
+  const p = scanned(release("V65", { tags: [] }), "mf-1");
+  const h = harness({ packages: [p], files: fileOf(p) });
+  const longTags = Array.from({ length: 26 }, (_, i) => `tag${String(i).padStart(2, "0")}${"x".repeat(15)}`);
+  const auto = createAutoPrivateUpload({
+    enabled: async () => true,
+    channels: async () => [{ channelId: CHANNEL, userId: OWNER }],
+    scan: async () => ({ status: "ok", packages: [p] }),
+    liveVideos: async () => new Set(),
+    peerUploads: async () => new Map(),
+    autoQueuedHashes: async () => new Set(),
+    videoFile: async () => ({ path: "/ws/v", bytes: 1000, mtimeMs: 1 }),
+    hashFile: async () => HASH_A,
+    queue: (input) =>
+      createUploadApproval({
+        scan: async () => ({ status: "ok", packages: [p] }),
+        settings: async () => ({ channelId: CHANNEL, settings: { ...SETTINGS, channelTags: longTags }, defaults: DEFAULT_PUBLISHING_SETTINGS, saved: [], conflictedFields: [] }),
+        liveVideos: async () => new Set(),
+        peerUploads: async () => new Map(),
+        insertsToday: async () => 0,
+        pending: async () => ({ inserts: 0, units: 0 }),
+        checkUnits: async (units) => ({ decision: "allow", estimatedUnits: units, remainingUnits: 9000 }),
+        insert: async () => true,
+        newId: () => "up-x",
+        audit: async () => undefined,
+        clock: { now: () => NOW },
+      }).queueAutomatic(input),
+    logMismatch: async () => undefined,
+    hashCache: new Map(),
+    loggedMismatches: new Set(),
+    logWaiting: async (entry) => void h.state.waitingLog.push(entry),
+    saveWaiting: async (entries) => void h.state.saved.push(entries),
+    waiting: new Map(),
+  });
+  await auto.tick();
+  await auto.tick();
+  assert.deepEqual(h.state.waitingLog, [{ kind: "package", channelId: CHANNEL, video: "V65", manifestSha256: "mf-1", reason: "upload_tags_too_long" }]);
+  assert.equal(h.state.saved.length, 1);
+});
+
+test("waiting reasons: a channel without a connected account or without a workspace is recorded once per (channel, reason) change", async () => {
+  const p = scanned(release("V65"), "mf-1");
+  const h = harness({ packages: [p], files: fileOf(p) });
+  h.state.channels = [{ channelId: "UC_other", userId: null }];
+  await h.auto.tick();
+  await h.auto.tick();
+  assert.deepEqual(h.state.waitingLog, [{ kind: "channel", channelId: "UC_other", reason: "no_connected_account" }]);
+  assert.deepEqual(h.state.saved, [[{ kind: "channel", channelId: "UC_other", reason: "no_connected_account" }]]);
+  // The channel connected but its workspace is missing: a new reason for the same channel, logged once.
+  h.state.channels = [{ channelId: "UC_other", userId: OWNER }];
+  h.state.noWorkspace = true;
+  await h.auto.tick();
+  await h.auto.tick();
+  assert.deepEqual(h.state.waitingLog.map((e) => e.reason), ["no_connected_account", "no_workspace"]);
+  // Switched off: nothing waits any more -- the card's list is cleared once.
+  h.state.enabled = false;
+  await h.auto.tick();
+  await h.auto.tick();
+  assert.deepEqual(h.state.saved.slice(2), [[]]);
 });

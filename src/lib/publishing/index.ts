@@ -16,6 +16,7 @@ import {
 import {
   clearPublishingG1Probe,
   getAutoPrivateUploadEnabled,
+  setAutoPrivateUploadWaiting,
   getChannelExpectedLanguages,
   getLiveWritesEnabled,
   listAutoQueuedManifestHashes,
@@ -54,7 +55,7 @@ import { createPackageComposer } from "./package-composer";
 import { authorizedOAuth, createPublishingFinishWrites, createPublishingYoutubeWrites, freshAccessToken } from "./adapters/youtube-writes";
 import { ACTIVE_UPLOAD_STATUSES, createUploadRunner, holdsPackage, isCancellable, UNKNOWN_OUTCOME_RELEASED, type UploadRunnerDeps } from "./upload-runner";
 import { createUploadApproval } from "./upload-approval";
-import { createAutoPrivateUpload } from "./auto-upload";
+import { createAutoPrivateUpload, type AutoUploadWaiting } from "./auto-upload";
 import { estimateUploadUnits, isDeferredPublishAt } from "./publish-dates";
 import type { G1ProbeRecord } from "./contracts";
 import { agentUploadOf, createPublishingCalendarReads } from "./calendar-reads";
@@ -529,6 +530,7 @@ export function createUploadApprovalCore() {
 
 const AUTO_HASH_CACHE_KEY = Symbol.for("ytom.publishing.autoUploadHashCache");
 const AUTO_MISMATCH_LOG_KEY = Symbol.for("ytom.publishing.autoUploadMismatchLog");
+const AUTO_WAITING_KEY = Symbol.for("ytom.publishing.autoUploadWaiting");
 
 /**
  * BL-209 (AUTO_PRIVATE_UPLOAD_PLAN.md, ADR 0046): the automatic private upload of this computer, ticked by its own loop
@@ -545,7 +547,7 @@ export function createAutoPrivateUploadCore() {
   return createAutoPrivateUpload({
     enabled: () => getAutoPrivateUploadEnabled(),
     async channels() {
-      return (await listStoredChannels()).filter((channel) => channel.connectedUserId !== null).map((channel) => ({ channelId: channel.channelId, userId: channel.connectedUserId as string }));
+      return (await listStoredChannels()).map((channel) => ({ channelId: channel.channelId, userId: channel.connectedUserId }));
     },
     scan: (channelId) => scan.scan(channelId),
     liveVideos: (channelId) => localHeldVideos(channelId),
@@ -563,6 +565,15 @@ export function createAutoPrivateUploadCore() {
     queue: (input) => approval.queueAutomatic(input),
     logMismatch: ({ channelId, video, manifestSha256, expected, actual }) =>
       insertVideoEditAuditEvent({ channelId, videoId: `package:${video}`, eventType: "RESULT", detail: { event: "publishing.auto_upload_hash_mismatch", video, manifestSha256, expected, actual } }),
+    logWaiting: (entry) =>
+      insertVideoEditAuditEvent({
+        channelId: entry.channelId,
+        videoId: entry.kind === "package" ? `package:${entry.video}` : `channel:${entry.channelId}`,
+        eventType: "RESULT",
+        detail: { event: "publishing.upload_auto_waiting", ...entry },
+      }),
+    saveWaiting: (entries) => setAutoPrivateUploadWaiting(entries),
+    waiting: (holder[AUTO_WAITING_KEY] ??= new Map()) as Map<string, AutoUploadWaiting>,
     hashCache,
     loggedMismatches,
     warn: (message) => console.warn(`[publishing] auto upload: ${message}`),
@@ -587,7 +598,7 @@ export async function cancelUpload(channelId: string, uploadId: string): Promise
   return done;
 }
 export type { UploadRunner, UploadSteps, ApprovedPackage } from "./upload-runner";
-export type { AutoPrivateUpload, AutoUploadTickResult } from "./auto-upload";
+export type { AutoPrivateUpload, AutoUploadTickResult, AutoUploadWaiting } from "./auto-upload";
 
 /**
  * The owner looked in Studio after an `unknown_outcome` and found no video: the row stops holding its package, which can then be
