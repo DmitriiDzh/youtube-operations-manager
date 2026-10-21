@@ -59,7 +59,10 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT"]
  * `AGENT_CAPABILITIES` (`src/lib/agent-operations/services.ts`) for the current, authoritative
  * list of capabilities.
  */
-export const AGENT_API_VERSION = "3.19.0";
+// 3.20.0 (BL-209, AUTO_PRIVATE_UPLOAD_PLAN.md, ADR 0046): agent_get_publishing_calendar's uploads gain `automatic`,
+// `progressPercent` and `finishedAt`. Additive; bumped as the plan asks (the same as 3.17.0 / 3.19.0 did for field widenings) so the
+// Operator can tell a build that reports automatic uploads from one that does not.
+export const AGENT_API_VERSION = "3.20.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry
