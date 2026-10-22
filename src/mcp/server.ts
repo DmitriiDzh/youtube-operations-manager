@@ -488,6 +488,8 @@ export type ProducerSession = {
   portfolioOverview(input: { startDate: string; endDate: string }): Promise<Record<string, unknown>>;
   /** BL-166: every connected channel's uploads in the range with their day-7 / day-28 milestones and Reach (stored data only). */
   uploadMilestones(input: { startDate: string; endDate: string }): Promise<Record<string, unknown>>;
+  /** BL-214: every connected channel's live-stream summary over the range (this computer's samples and pulls only). */
+  liveAnalytics(input: { startDate: string; endDate: string }): Promise<Record<string, unknown>>;
   /** BL-163: the Producer's side of the proposal store -- submit, list its own, mark read. Approving is not here (Web UI only). */
   proposals: {
     submit(input: Record<string, unknown>): Promise<Record<string, unknown>>;
@@ -2967,6 +2969,16 @@ export function createMcpServer(
       inputSchema: producerUploadMilestonesInputSchema,
     },
     async (args: z.infer<typeof producerUploadMilestonesInputSchema>) => toolSuccessResult(await producerSession!.uploadMilestones(args))
+  );
+
+  registerTool(
+    "producer_live_analytics",
+    {
+      description:
+        "BL-214: each connected channel's 24/7 live streams over UTC dates [startDate, endDate] (at most 92 days), from what the computer that runs the stream stored: its own checks of the broadcast (every 5 minutes, every minute after a start) and the YouTube Analytics it pulled for each ended broadcast. Per channel: `totals` and `days` (UTC) with samples, onAirMs (broadcast live), notLiveMs (stream on, broadcast not live), dataGaps (no check for over 10 minutes: not counted), viewerHours, averageViewers (time-weighted), peakViewers, interruptions (encoder runs that ended early and were restarted); `broadcasts` (a segment is its own broadcast) with the same figures, firstSampleAt/lastSampleAt, `youtube` (null until pulled: { status collected | failed | unavailable, final, collectedAt, concurrent { average, peak }, live { views, minutesWatched }, onDemand { views, minutesWatched } } -- pulled an hour after the broadcast ended and once more 4 days later) and `analyticsCollected` (true once that final pull is stored: deleting the recording loses nothing stored here). Unknown is null, never 0. A computer that runs no stream has no samples. Local data only, never a live YouTube call.",
+      inputSchema: producerUploadMilestonesInputSchema,
+    },
+    async (args: z.infer<typeof producerUploadMilestonesInputSchema>) => toolSuccessResult(await producerSession!.liveAnalytics(args))
   );
 
   // BL-163 (FO-REQ-0014 §C, docs/roadmap/plans/WATCHLIST_HYGIENE_PROPOSALS_PLAN.md §2.C): the Producer proposes, the owner decides in

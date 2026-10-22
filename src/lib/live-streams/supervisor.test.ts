@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DEFAULT_LIVE_STREAMS_SETTINGS, DomainError } from "./contracts";
-import { createStreamSupervisor, drawPassOrder, playablePass, type HelperStatus, type SupervisorDependencies, type SupervisorStream } from "./supervisor";
+import { createStreamSupervisor, drawPassOrder, playablePass, type HelperStatus, type SupervisorDependencies, type SupervisorStream, type ViewerSample } from "./supervisor";
 
 // BL-176 acceptance for the server side of a running stream (LIVE_STREAMS_PLAN.md §3.1, §3.6–§3.8, §4.1 "Recovery";
 // ADR 0036 §4–5). Fakes stand in for files, processes, YouTube and the store.
@@ -12,8 +12,10 @@ const B = "BBBBBBBBBB2";
 const C = "CCCCCCCCCC3";
 const NOW = new Date("2026-10-12T12:00:00Z");
 
-function harness(opts: { stream?: Partial<SupervisorStream>; playable?: string[]; enabled?: boolean; ingestion?: boolean; lifecycle?: string | null; spawnWritesStatus?: boolean } = {}) {
+function harness(opts: { stream?: Partial<SupervisorStream>; playable?: string[]; enabled?: boolean; ingestion?: boolean; lifecycle?: string | null; spawnWritesStatus?: boolean; viewers?: number | null; sampleFails?: boolean } = {}) {
   const files = new Map<string, string>();
+  const samples: ViewerSample[] = [];
+  let viewerReads = 0;
   const events: Array<{ kind: string; detail: Record<string, unknown>; at?: string }> = [];
   const ours = new Set<number>();
   let strays = 0;
@@ -50,6 +52,10 @@ function harness(opts: { stream?: Partial<SupervisorStream>; playable?: string[]
       videos: async () => [A, B, C].map((videoId) => ({ videoId, originalPath: `04 Videos/${videoId}.mp4`, videoDurationSeconds: 7382, originalDurationSeconds: 7382.3 })),
       recheck: async () => playable,
       event: async (_c, kind, detail, at) => void events.push({ kind, detail, ...(at ? { at: at.toISOString() } : {}) }),
+      sample: async (_c, sample) => {
+        if (opts.sampleFails) throw new Error("SQLITE_BUSY");
+        samples.push(sample);
+      },
     },
     buffer: {
       sync: async (_c, args) => {
@@ -63,7 +69,10 @@ function harness(opts: { stream?: Partial<SupervisorStream>; playable?: string[]
       readIngestion: async () => (opts.ingestion === false ? null : { rtmpsIngestionAddress: "rtmps://a.rtmps.youtube.com/live2", streamName: KEY }),
       readLifecycle: async () => (opts.lifecycle === null ? { found: false, lifeCycleStatus: null } : { found: true, lifeCycleStatus: opts.lifecycle ?? "live" }),
       readStreamHealth: async () => ({ streamStatus: "active", healthStatus: "ok", configurationIssues: [{ type: "bitrateLow", severity: "warning" }] }),
-      readViewers: async () => 7,
+      readViewers: async () => {
+        viewerReads += 1;
+        return opts.viewers === undefined ? 7 : opts.viewers;
+      },
     },
     files: {
       read: async (f) => files.get(f) ?? null,
@@ -109,6 +118,8 @@ function harness(opts: { stream?: Partial<SupervisorStream>; playable?: string[]
     supervisor: createStreamSupervisor(deps),
     files,
     events,
+    samples,
+    viewerReads: () => viewerReads,
     alive,
     ours,
     signals,
@@ -439,4 +450,62 @@ test("Restart starts from the position as it is when the encoder stops, not as i
   await restarting;
   const plan = JSON.parse(h.files.get("/appdata/live-streams/UC1/plan.json")!);
   assert.deepEqual([plan.pass.videos[plan.pass.startIndex].videoId, plan.pass.startOffset], [B, 42]);
+});
+
+// --- BL-211 (LIVE_ANALYTICS_PLAN.md stage 1; owner msgs 3360-3369): every completed broadcast poll is kept as a sample. ---
+
+test("BL-211: a live poll keeps one sample with what it read -- viewers, lifecycle, stream status, health -- and makes no extra viewers read", async () => {
+  const h = harness({ lifecycle: "live" });
+  await h.supervisor.startEncoder("UC1", { freshPass: true });
+  h.status({});
+  await h.supervisor.checkBroadcast("UC1");
+  assert.deepEqual(h.samples, [{ sampledAt: NOW, broadcastId: "BC1", viewers: 7, lifeCycleStatus: "live", streamStatus: "active", healthStatus: "ok" }]);
+  assert.equal(h.viewerReads(), 1);
+  h.advance(5 * 60_000);
+  h.status({});
+  await h.supervisor.checkBroadcast("UC1");
+  assert.deepEqual(h.samples.map((s) => s.sampledAt.getTime()), [NOW.getTime(), NOW.getTime() + 300_000]);
+  assert.equal(h.viewerReads(), 2, "one viewers read per poll, as before");
+});
+
+test("BL-211: no count from YouTube is kept as viewers null, never 0", async () => {
+  const h = harness({ lifecycle: "live", viewers: null });
+  await h.supervisor.startEncoder("UC1", { freshPass: true });
+  h.status({});
+  await h.supervisor.checkBroadcast("UC1");
+  assert.equal(h.samples.length, 1);
+  assert.equal(h.samples[0].viewers, null);
+});
+
+test("BL-211: a broadcast that is not live yet (ready) is sampled with viewers null and no viewers read", async () => {
+  const h = harness({ lifecycle: "ready" });
+  await h.supervisor.startEncoder("UC1", { freshPass: true });
+  h.status({});
+  await h.supervisor.checkBroadcast("UC1");
+  assert.deepEqual(h.samples, [{ sampledAt: NOW, broadcastId: "BC1", viewers: null, lifeCycleStatus: "ready", streamStatus: "active", healthStatus: "ok" }]);
+  assert.equal(h.viewerReads(), 0);
+});
+
+test("BL-211: no sample when YouTube ended the broadcast (the event records it) or when the stream has no broadcast", async () => {
+  for (const lifecycle of ["complete", "revoked", null]) {
+    const h = harness({ lifecycle });
+    await h.supervisor.startEncoder("UC1", { freshPass: true });
+    h.status({});
+    await h.supervisor.checkBroadcast("UC1");
+    assert.deepEqual(h.samples, [], String(lifecycle));
+  }
+  const none = harness({ stream: { broadcastId: null } });
+  assert.deepEqual(await none.supervisor.checkBroadcast("UC1"), { lifeCycleStatus: null, endedByYoutube: false });
+  assert.deepEqual(none.samples, []);
+});
+
+test("BL-211: a sample that cannot be written never breaks the poll -- result, poll file and status event stay as without it", async () => {
+  const h = harness({ lifecycle: "live", sampleFails: true });
+  await h.supervisor.startEncoder("UC1", { freshPass: true });
+  h.status({});
+  assert.deepEqual(await h.supervisor.checkBroadcast("UC1"), { lifeCycleStatus: "live", endedByYoutube: false });
+  assert.equal((await h.supervisor.lastYoutubePoll("UC1"))?.viewers, 7);
+  assert.ok(h.events.some((e) => e.kind === "youtube_status"));
+  assert.deepEqual(h.events.filter((e) => e.kind === "viewer_sample_failed").map((e) => e.detail), [{ broadcastId: "BC1" }]);
+  assert.equal(h.stream().intent, "on");
 });

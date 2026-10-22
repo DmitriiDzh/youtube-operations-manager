@@ -10,7 +10,8 @@
 // `src/lib/youtube-write-gateway/` to own.
 import { google } from "googleapis";
 import type { youtubeAnalytics_v2 } from "googleapis";
-import { getAnalyticsReadsEnabled, recordGatewayCallOutcome } from "../db";
+import { createGoogleOAuthClient } from "../auth";
+import { getAnalyticsReadsEnabled, getUserOAuthTokens, recordGatewayCallOutcome, saveUserOAuthTokens } from "../db";
 import { DomainError } from "../video-metadata/contracts";
 import { wrapYoutubeClientForQuotaClassification } from "./error-classification";
 
@@ -257,4 +258,63 @@ export async function queryChannelAnalyticsReport(
   });
 
   return parseDayDimensionReport(res.data);
+}
+
+/**
+ * BL-212 (docs/roadmap/plans/LIVE_ANALYTICS_PLAN.md stage 2): a generic `reports.query` for one of our own videos, rows keyed
+ * by column NAME (dimensions as strings, metrics as numbers) -- the live-stream reports below have dimensions other than `day`.
+ * Official reports (checked 2026-10-22): https://developers.google.com/youtube/analytics/channel_reports ("concurrent viewers"
+ * needs `filters=video==`, dimension 0 or 1 `livestreamPosition`), https://developers.google.com/youtube/analytics/dimensions
+ * (`liveOrOnDemand`: LIVE / ON_DEMAND).
+ */
+export type NamedReportRow = { dimensions: Record<string, string>; metrics: Record<string, number> };
+
+function parseNamedReport(data: { columnHeaders?: Array<{ name?: string | null; columnType?: string | null }> | null; rows?: unknown[][] | null }): NamedReportRow[] {
+  const headers = (data.columnHeaders ?? []).map((header, index) => ({ index, name: header.name ?? null, type: header.columnType ?? null }));
+  return (data.rows ?? []).map((row) => {
+    const dimensions: Record<string, string> = {};
+    const metrics: Record<string, number> = {};
+    for (const header of headers) {
+      if (!header.name) continue;
+      const raw = row[header.index];
+      if (header.type === "DIMENSION") dimensions[header.name] = String(raw);
+      else if (header.type === "METRIC") {
+        const value = typeof raw === "number" ? raw : Number(raw);
+        if (Number.isFinite(value)) metrics[header.name] = value;
+      }
+    }
+    return { dimensions, metrics };
+  });
+}
+
+export async function queryOwnVideoReport(
+  youtubeAnalytics: youtubeAnalytics_v2.Youtubeanalytics,
+  args: { channelId: string; videoId: string; startDate: string; endDate: string; metricNames: readonly string[]; dimensions?: string }
+): Promise<NamedReportRow[]> {
+  const res = await youtubeAnalytics.reports.query({
+    ids: `channel==${args.channelId}`,
+    startDate: args.startDate,
+    endDate: args.endDate,
+    metrics: args.metricNames.join(","),
+    ...(args.dimensions ? { dimensions: args.dimensions } : {}),
+    filters: `video==${args.videoId}`,
+  });
+  return parseNamedReport(res.data);
+}
+
+/** BL-212: an Analytics client under a stored Google user (a background read: no session), refreshed tokens saved back -- the
+ * Analytics counterpart of `data-api.ts`'s `getAuthenticatedYoutube`. */
+export async function getAuthenticatedYoutubeAnalytics(userId: string): Promise<youtubeAnalytics_v2.Youtubeanalytics> {
+  const user = await getUserOAuthTokens(userId);
+  if (!user?.accessToken) throw new Error("User not authenticated");
+  const oauth2 = createGoogleOAuthClient();
+  oauth2.setCredentials({ access_token: user.accessToken, refresh_token: user.refreshToken });
+  oauth2.on("tokens", async (tokens) => {
+    await saveUserOAuthTokens(userId, {
+      accessToken: tokens.access_token ?? user.accessToken,
+      refreshToken: tokens.refresh_token ?? user.refreshToken,
+      tokenExpiry: tokens.expiry_date ? Math.floor(tokens.expiry_date / 1000) : user.tokenExpiry,
+    });
+  });
+  return createYoutubeAnalyticsClient(oauth2);
 }

@@ -6,6 +6,7 @@ import { createChannelAccessCore } from "@/lib/channel-access";
 import { getChannelExpectedLanguages, latestLiveStreamEvent, listLiveStreamEvents } from "@/lib/db";
 import { createLiveStreamVideoFields } from "@/composition/live-stream-video-fields";
 import { createLiveStreamLocalizations } from "@/composition/live-stream-localizations";
+import { createLiveAnalyticsCore } from "@/lib/live-analytics";
 import {
   collectLiveStreamEntries,
   listPeerLiveStreams,
@@ -55,6 +56,8 @@ export type LiveStreamRouteCore = {
   /** BL-186 stage 3, «Применить снова»: the dry run (no call), then the owner's apply (YouTube writes). */
   previewApplyVideoSettings(channelId: string): Promise<unknown>;
   applyVideoSettings(channelId: string, credentialRef: { userId: string }): Promise<unknown>;
+  /** BL-213: the «Эфиры» summary over the last `days` (local samples and events, no YouTube call). */
+  liveAnalytics(channelId: string, days: number): Promise<unknown>;
 };
 
 
@@ -75,7 +78,9 @@ export function createLiveStreamRouteCore(): LiveStreamRouteCore {
   const settings = createLiveStreamsSettingsCore();
   const videoSettings = createStreamVideoSettingsCore();
   const localizations = createStreamLocalizationsCore();
+  const liveAnalytics = createLiveAnalyticsCore();
   return {
+    liveAnalytics: (channelId, days) => liveAnalytics.summary(channelId, days),
     async overview(channelId) {
       const [view, module, running, events, preview, youtube, entries, peers, video, lastApply, languages, segments, translations] = await Promise.all([
         rotation.getOverview(channelId),

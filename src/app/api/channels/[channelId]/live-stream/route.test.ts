@@ -10,6 +10,7 @@ import { createStopPostHandler } from "./stop/route";
 import { createLiveStreamThumbnailHandlers } from "./thumbnail/route";
 import { createLiveStreamVideoSettingsPutHandler } from "./video-settings/route";
 import { createLiveStreamLocalizationsHandlers } from "./localizations/route";
+import { createLiveStreamAnalyticsGetHandler } from "./analytics/route";
 import { createStreamLocalizations } from "@/lib/live-streams/localizations";
 import { readStoredVideoSettings } from "@/lib/live-streams/video-settings";
 import type { LiveStreamRouteCore, LiveStreamRouteDeps } from "./shared";
@@ -195,4 +196,17 @@ test("AC-LL-10 via the route: no stream on this computer is a 404 live_stream_no
   const response = await localizationsRoute(null).put({ de: { title: "T", description: "D" } });
   assert.equal(response.status, 404);
   assert.equal((await response.json()).error, "live_stream_not_found");
+});
+
+// BL-213 (LIVE_ANALYTICS_PLAN.md stage 3): the «Эфиры» summary route -- session 401, active channel 403, days 1..90 (default 7).
+test("BL-213: analytics route -- 401 without a session, 403 for another channel, 400 for a bad range, default 7 days", async () => {
+  const get = (d: LiveStreamRouteDeps, query = "", channelId = "UC1") => createLiveStreamAnalyticsGetHandler(d)(new Request(`http://localhost/x${query}`), ctx(channelId));
+  calls.length = 0;
+  assert.equal((await get(deps({ session: false }))).status, 401);
+  assert.equal((await get(deps(), "", "UC2")).status, 403);
+  for (const bad of ["?days=0", "?days=91", "?days=x", "?days=1.5"]) assert.equal((await get(deps(), bad)).status, 400, bad);
+  assert.deepEqual(calls, [], "the module is not reached");
+  assert.equal((await get(deps())).status, 200);
+  assert.equal((await get(deps(), "?days=30")).status, 200);
+  assert.deepEqual(calls, ['liveAnalytics:["UC1",7]', 'liveAnalytics:["UC1",30]']);
 });

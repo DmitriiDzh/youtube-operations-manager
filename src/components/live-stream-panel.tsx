@@ -13,6 +13,7 @@ import { LiveStreamVideoSettingsCard } from "./live-stream-video-settings";
 import { LiveStreamLocalizationsCard } from "./live-stream-localizations";
 import type { LiveLocalizationsView } from "@/lib/live-streams/localizations";
 import { LiveStreamSegmentsCard, type SegmentsViewData } from "./live-stream-segments";
+import { LiveStreamAnalyticsCard } from "./live-stream-analytics";
 import { LoadingIndicator } from "./operation-progress";
 import { ToggleSwitch } from "./toggle-switch";
 import { useT } from "./ui-text-provider";
@@ -233,6 +234,7 @@ export function LiveStreamPanel({ channelId, visible }: { channelId: string | nu
       {overview.module.host.ok && (
         <>
           <StatusCard overview={overview} base={base!} onChanged={load} />
+          <LiveStreamAnalyticsCard base={base!} visible={visible} />
           <SettingsCard overview={overview} base={base!} onChanged={load} />
           <LiveStreamLocalizationsCard base={base!} view={overview.localizations ?? null} channelLanguage={overview.channelDefaultLanguage ?? null} hasStream={overview.stream !== null} onChanged={load} />
           <LiveStreamVideoSettingsCard base={base!} channelLanguage={overview.channelDefaultLanguage ?? null} saved={overview.videoSettings} problem={overview.videoSettingsProblem} onChanged={load} />
@@ -957,6 +959,7 @@ const EVENT_KEYS: Record<string, UiTextKey> = {
   guard_override_cleared: "live.event.guardOverrideCleared",
   sources_set: "live.event.sourcesSet",
   live_segment_switched: "live.event.segmentSwitched",
+  viewer_sample_failed: "live.event.viewerSampleFailed",
   live_segment_switch_failed: "live.event.segmentSwitchFailed",
   live_segment_recovered: "live.event.segmentRecovered",
   live_segment_cap_reached: "live.event.segmentCapReached",

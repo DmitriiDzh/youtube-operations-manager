@@ -531,6 +531,21 @@ async function startServerSession() {
   };
   setTimeout(() => void liveStreamsLoop(), 20_000).unref();
 
+  // BL-212 (LIVE_ANALYTICS_PLAN.md stage 2): YouTube Analytics of our own ended broadcasts, once an hour, in its own loop
+  // (AGENTS.md §M). Only broadcasts this computer sampled (BL-211) are asked about, so a computer that runs no stream makes no
+  // call. Read-only; off with the Settings "Analytics reads" toggle like every Analytics read.
+  const liveAnalyticsLoop = async () => {
+    try {
+      await assertDeviceAvailableForMutation(rawSqlClient);
+      await (await import("@/lib/live-analytics")).createBroadcastAnalyticsCollectorCore().tick();
+    } catch (error) {
+      const paused = error instanceof Error && (error.name === "OperationLockError" || error.name === "RecoveryModeError");
+      if (!paused) console.warn(`[live-analytics] ${error instanceof Error ? error.message : String(error)}`);
+    }
+    setTimeout(() => void liveAnalyticsLoop(), (await import("@/lib/live-analytics/contracts")).PULL_TICK_MS).unref();
+  };
+  setTimeout(() => void liveAnalyticsLoop(), 5 * 60_000).unref();
+
   if (process.env.NODE_ENV !== "production") return;
   // Idle auto-shutdown: no request is in flight by definition, so reset, publish any unexported
   // local changes, then exit. Deliberately NOT raced against a timeout: exiting while the export

@@ -109,6 +109,7 @@ function setup(initial: { enabled?: boolean } = {}) {
         ],
         portfolioOverview: async (input) => ({ ...input, source: "local", channels: [] }),
         uploadMilestones: async (input) => ({ ...input, source: "local", channels: [] }),
+        liveAnalytics: async (input) => ({ ...input, source: "local", channels: [] }),
         proposals: {
           submit: async (input) => {
             proposalCalls.push(["submit", input]);
@@ -713,7 +714,9 @@ test("AC-PR-07 / AC-PR-10: the Producer's own tools -- its channels with their f
   // BL-182 stage 1 (PUBLISHING_PLAN.md §2 stage 1 item 4, FO-REQ-0023 §4 C4): 1.7.0 adds the READ channel tool
   // agent_get_publishing_calendar; no upload or schedule tool (ADR 0037).
   // BL-191 (SUGGESTED_SOURCES_PLAN.md AC-SS-08, FO-REQ-0026 §4.1): 1.9.0 adds the READ channel tool agent_get_stored_suggested_sources.
-  assert.equal(PRODUCER_API_VERSION, "1.10.0"); // 1.10.0 (BL-209): the calendar read's uploads gain automatic / progressPercent / finishedAt; 1.8.0 (BL-182 stage 2): the calendar read lists packages and uploads
+  // BL-214 (LIVE_ANALYTICS_PLAN.md stage 4): 1.11.0 adds the READ tool producer_live_analytics; the DRAFT list is unchanged.
+  assert.ok(PRODUCER_TOOL_NAMES.includes("producer_live_analytics"));
+  assert.equal(PRODUCER_API_VERSION, "1.11.0"); // 1.10.0 (BL-209): the calendar read's uploads gain automatic / progressPercent / finishedAt; 1.8.0 (BL-182 stage 2): the calendar read lists packages and uploads
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_stored_suggested_sources"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_publishing_calendar"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_video_comments"));
@@ -754,6 +757,7 @@ test("a token revoked mid-session is refused on its next call, before any channe
       listChannels: async () => [],
       portfolioOverview: async () => ({}),
       uploadMilestones: async () => ({}),
+      liveAnalytics: async () => ({}),
       proposals: { submit: async () => ({}), list: async () => ({}), markDone: async () => ({}) },
     },
   });
@@ -938,6 +942,7 @@ test("BL-163 AC-PR-05: no approve, reject or apply tool exists on any endpoint",
       listChannels: async () => [],
       portfolioOverview: async () => ({}),
       uploadMilestones: async () => ({}),
+      liveAnalytics: async () => ({}),
       proposals: { submit: async () => ({}), list: async () => ({}), markDone: async () => ({}) },
     },
   });
@@ -948,4 +953,16 @@ test("BL-163 AC-PR-05: no approve, reject or apply tool exists on any endpoint",
   }
   const agentNames = Object.keys((agent as unknown as { _registeredTools: Record<string, unknown> })._registeredTools);
   assert.equal(agentNames.includes("producer_propose"), false, "a channel agent does not get the Producer's proposal tools");
+});
+
+test("BL-214: producer_live_analytics takes real calendar dates, start before end, at most 92 days, and passes them on", async () => {
+  const { endpoint, tokens } = setup();
+  const token = (await tokens.issueToken({})).token;
+  const ask = (startDate: string, endDate: string) => endpoint.handle(rpc(call("producer_live_analytics", { startDate, endDate }), bearer(token))).then(toolResult);
+  assert.equal((await ask("2026-02-01", "2026-02-30")).isError, true);
+  assert.equal((await ask("2026-10-07", "2026-10-01")).isError, true);
+  assert.equal((await ask("2026-07-01", "2026-10-01")).isError, true);
+  const ok = await ask("2026-07-01", "2026-09-30");
+  assert.equal(ok.isError, false);
+  assert.deepEqual(payloadOf(ok.text), { startDate: "2026-07-01", endDate: "2026-09-30", source: "local", channels: [] });
 });

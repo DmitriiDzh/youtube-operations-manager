@@ -47,7 +47,13 @@ answer nothing.
   `stream_status`, `health_status`), additive migration, device-local like `live_streams`.
 - Written by `checkBroadcast` from the reads it already makes: **no new YouTube call, no quota**. A failed read is stored
   as a row with `viewers = null`, never 0 (a gap stays visible).
-- Retention: owner decision (§5 Q1); default proposal: keep everything (≈ 290 rows per channel per day).
+- Rows: every completed poll of a stream with a broadcast (live: viewers as read; not live yet, e.g. `ready`: viewers null,
+  no viewers read); none when YouTube ended the broadcast (its event records it) or there is no broadcast. A failed write
+  is swallowed with a `viewer_sample_failed` event -- the poll that stops an ended stream never breaks.
+- Retention: keep everything (owner's defaults, msg 3370: reversible, cadence unchanged, Mac only). ≈ 288 rows per
+  channel per day at 5 min, plus ~9 per (re)start from the 1-minute window.
+- The summariser (peak, average, viewer-hours, interruptions) belongs to stage 3, which displays it; an interruption is
+  defined there against the poll's 1-minute/5-minute rhythm, not a single fixed interval.
 - Lives in `src/lib/live-streams/` (writer) + a small pure `live-analytics` summariser (shared by UI and MCP, §M).
 
 ### Stage 2 — per-broadcast Analytics pull (BL-212)
@@ -72,6 +78,15 @@ answer nothing.
   live/on-demand, and per broadcast `analyticsCollected` (whether stage 2's pull is complete — what tells anyone deleting
   a recording that its numbers are already safe). Agent API minor version bump; Windows reads it from the synced report
   only if the owner wants it there (§5 Q3).
+
+**Built (2026-10-22, owner msg 3372: all four in one branch).** Stage 1 schema v105; stage 3 `src/lib/live-analytics/summarise.ts`
+(rules below) + `GET .../live-stream/analytics?days=1..90` + `live-stream-analytics.tsx`; stage 2 `collect.ts`, schema v106,
+hourly loop in `instrumentation.ts` (first pull 1 h after the last sample, final 4 days later, 4 broadcasts per tick, retry
+6 h × 5; a report refused with 400 is `unsupported`, 403/404 on all three is `unavailable`); stage 4 Producer API 1.11.0.
+Summary rules: an interval a→b of at most 10 min belongs to sample a (state, UTC day/hour, broadcast), a longer one is a data
+gap; viewer-hours = Σ a.viewers × interval over live intervals with a count, average = that / time with a count; interruptions
+= `encoder_run_exit` with a cause other than `pass_end` (the helper restarted the run). Not verified before merge: what the
+API returns for a broadcast whose recording is not kept or was deleted (first real pulls after the restart).
 
 ## 3. Acceptance criteria (to be fixed by hand before each stage's code)
 
