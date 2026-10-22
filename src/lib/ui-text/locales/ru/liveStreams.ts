@@ -301,6 +301,7 @@ export const liveStreams: Record<keyof typeof en, string> = {
   "live.segments.running": "идёт",
   "live.segments.seconds": "{seconds} с",
   "live.event.segmentSwitched": "Эфир переключён на новый сегмент",
+  "live.event.viewerSampleFailed": "Не удалось сохранить замер зрителей",
   "live.event.segmentSwitchFailed": "Переключение сегмента не удалось",
   "live.event.segmentRecovered": "Незавершённое переключение исправлено",
   "live.event.segmentCapReached": "Достигнут лимит переключений за сутки",

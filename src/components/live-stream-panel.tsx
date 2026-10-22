@@ -957,6 +957,7 @@ const EVENT_KEYS: Record<string, UiTextKey> = {
   guard_override_cleared: "live.event.guardOverrideCleared",
   sources_set: "live.event.sourcesSet",
   live_segment_switched: "live.event.segmentSwitched",
+  viewer_sample_failed: "live.event.viewerSampleFailed",
   live_segment_switch_failed: "live.event.segmentSwitchFailed",
   live_segment_recovered: "live.event.segmentRecovered",
   live_segment_cap_reached: "live.event.segmentCapReached",

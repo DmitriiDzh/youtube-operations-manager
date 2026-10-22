@@ -41,6 +41,9 @@ export type YoutubePoll = {
   viewers: number | null;
 };
 
+/** BL-211 (LIVE_ANALYTICS_PLAN.md stage 1): what one completed broadcast poll read, kept as the stream's history. */
+export type ViewerSample = { sampledAt: Date; broadcastId: string; viewers: number | null; lifeCycleStatus: string | null; streamStatus: string | null; healthStatus: string | null };
+
 export type SupervisorStream = {
   channelId: string;
   intent: "on" | "off";
@@ -68,6 +71,8 @@ export type SupervisorDependencies = {
     /** §3.4: re-reads the rotation from YouTube; the playable ids in rotation order. */
     recheck(channelId: string): Promise<string[]>;
     event(channelId: string, kind: string, detail: Record<string, unknown>, at?: Date): Promise<void>;
+    /** BL-211: keeps one completed broadcast poll (viewers null = YouTube gave no count). */
+    sample(channelId: string, sample: ViewerSample): Promise<void>;
   };
   buffer: Pick<LiveStreamBuffer, "sync" | "fileOf">;
   ffmpeg(dir: string | null): Promise<{ ffmpegPath: string; ffprobePath: string; features: { rtmps: boolean; h264Videotoolbox: boolean; libx264: boolean } } | null>;
@@ -502,6 +507,13 @@ export function createStreamSupervisor(deps: SupervisorDependencies) {
       };
       await deps.files.writeAtomic(youtubeFile(channelId), JSON.stringify(poll));
       if (previous?.lifeCycleStatus !== lifeCycleStatus) await deps.streams.event(channelId, "youtube_status", { lifeCycleStatus, streamStatus: poll.streamStatus, healthStatus: poll.healthStatus });
+      // BL-211: the same poll kept as history, from the reads above (no extra YouTube call). Analytics never breaks the poll that
+      // stops an encoder YouTube ended (AGENTS.md §M): a failed write is recorded as an event at most, and swallowed.
+      try {
+        await deps.streams.sample(channelId, { sampledAt: new Date(now), broadcastId: stream.broadcastId, viewers, lifeCycleStatus, streamStatus: poll.streamStatus, healthStatus: poll.healthStatus });
+      } catch {
+        await deps.streams.event(channelId, "viewer_sample_failed", { broadcastId: stream.broadcastId }).catch(() => undefined);
+      }
       return { lifeCycleStatus, endedByYoutube: false };
     },
 

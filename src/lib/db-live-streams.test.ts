@@ -10,6 +10,8 @@ import {
   getLiveStream,
   initializeDatabaseSchema,
   insertLiveStreamEvent,
+  insertLiveViewerSample,
+  listLiveViewerSamples,
   listLiveStreamEvents,
   listLiveStreamSources,
   listLiveStreamVideos,
@@ -163,3 +165,20 @@ test("v101: localizations_json is null on a new row, set by an update, kept by o
     assert.equal((await getLiveStream("UC1", database))?.localizationsJson, null);
   });
 });
+
+// BL-211 (LIVE_ANALYTICS_PLAN.md stage 1): schema v105 keeps viewer samples per channel; null viewers stay null; a second
+// sample at the same instant is ignored; a range is [from, to), oldest first.
+test("v105: live_viewer_samples per channel, oldest first, [from, to), null kept, same instant ignored", () =>
+  withDb(async (database) => {
+    const at = (m: number) => new Date(Date.UTC(2026, 9, 22, 12, m));
+    const row = (channelId: string, m: number, viewers: number | null) => ({ channelId, sampledAt: at(m), broadcastId: "BC1", viewers, lifeCycleStatus: "live", streamStatus: "active", healthStatus: "good" });
+    await insertLiveViewerSample(row("UC1", 10, 12), database);
+    await insertLiveViewerSample(row("UC1", 0, 5), database);
+    await insertLiveViewerSample(row("UC1", 5, null), database);
+    await insertLiveViewerSample(row("UC1", 5, 99), database);
+    await insertLiveViewerSample(row("UC2", 5, 40), database);
+    const got = await listLiveViewerSamples("UC1", at(0), at(10), database);
+    assert.deepEqual(got.map((s) => [s.sampledAt.getTime(), s.viewers]), [[at(0).getTime(), 5], [at(5).getTime(), null]]);
+    assert.equal((await listLiveViewerSamples("UC1", at(0), at(11), database)).length, 3);
+    assert.deepEqual((await listLiveViewerSamples("UC2", at(0), at(11), database)).map((s) => s.viewers), [40]);
+  }));

@@ -299,6 +299,7 @@ export const liveStreams = {
   "live.segments.running": "running",
   "live.segments.seconds": "{seconds} s",
   "live.event.segmentSwitched": "Switched to a new segment",
+  "live.event.viewerSampleFailed": "Could not save the viewer count of this check",
   "live.event.segmentSwitchFailed": "A segment switch failed",
   "live.event.segmentRecovered": "An unfinished switch was repaired",
   "live.event.segmentCapReached": "The daily switch limit was reached",

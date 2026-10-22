@@ -1539,6 +1539,25 @@ export const liveStreamSegments = sqliteTable(
 );
 
 /**
+ * Schema v105 (BL-211, LIVE_ANALYTICS_PLAN.md stage 1): one row per completed broadcast poll of a running stream -- the
+ * concurrent viewers and the broadcast/stream state that poll already read, so the stream's history survives a recording
+ * that was not kept or was deleted. `viewers` is null when YouTube gave no count (never 0); no extra YouTube call is made.
+ */
+export const liveViewerSamples = sqliteTable(
+  "live_viewer_samples",
+  {
+    channelId: text("channel_id").notNull(),
+    sampledAt: integer("sampled_at", { mode: "timestamp_ms" }).notNull(),
+    broadcastId: text("broadcast_id").notNull(),
+    viewers: integer("viewers"),
+    lifeCycleStatus: text("life_cycle_status"),
+    streamStatus: text("stream_status"),
+    healthStatus: text("health_status"),
+  },
+  (table) => [primaryKey({ columns: [table.channelId, table.sampledAt] })]
+);
+
+/**
  * Schema v86 (LIVE_STREAMS_PLAN.md §3.3/§3.4): a channel's rotation, one row per video. `original_path` is relative to the
  * channel workspace. `check_*` is the last check of the video (public-only guard, file, duration); a guard override is the
  * owner's, with a reason.
@@ -5457,6 +5476,23 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         detail_json TEXT NOT NULL
       )`);
       await client.execute("CREATE INDEX IF NOT EXISTS channel_localization_events_channel_at_idx ON channel_localization_events (channel_id, at)");
+    },
+  },
+  {
+    version: 105,
+    description:
+      "live_viewer_samples -- BL-211 (LIVE_ANALYTICS_PLAN.md stage 1; owner msgs 3360-3369): one row per completed broadcast poll of a running stream (concurrent viewers, lifecycle, stream status and health), primary key (channel_id, sampled_at). Additive, idempotent, device-local",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS live_viewer_samples (
+        channel_id TEXT NOT NULL,
+        sampled_at INTEGER NOT NULL,
+        broadcast_id TEXT NOT NULL,
+        viewers INTEGER,
+        life_cycle_status TEXT,
+        stream_status TEXT,
+        health_status TEXT,
+        PRIMARY KEY (channel_id, sampled_at)
+      )`);
     },
   },
 ];
@@ -14775,6 +14811,22 @@ export async function listLiveStreamSegments(channelId: string, since: Date, dat
 }
 
 /** Newest first. */
+export type StoredLiveViewerSample = typeof liveViewerSamples.$inferSelect;
+
+/** BL-211: a second sample at the same instant for the same channel is ignored (the first one stands). */
+export async function insertLiveViewerSample(row: typeof liveViewerSamples.$inferInsert, database: AppDb = db): Promise<void> {
+  await database.insert(liveViewerSamples).values(row).onConflictDoNothing();
+}
+
+/** BL-211: a channel's samples in [from, to), oldest first. */
+export async function listLiveViewerSamples(channelId: string, from: Date, to: Date, database: AppDb = db): Promise<StoredLiveViewerSample[]> {
+  return database
+    .select()
+    .from(liveViewerSamples)
+    .where(and(eq(liveViewerSamples.channelId, channelId), gte(liveViewerSamples.sampledAt, from), lt(liveViewerSamples.sampledAt, to)))
+    .orderBy(asc(liveViewerSamples.sampledAt));
+}
+
 export async function listLiveStreamEvents(channelId: string, limit: number, database: AppDb = db): Promise<StoredLiveStreamEvent[]> {
   return database
     .select()
