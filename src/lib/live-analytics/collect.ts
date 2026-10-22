@@ -65,8 +65,10 @@ function isDue(broadcast: { lastSampleAt: number }, stored: StoredPull | undefin
   if (now - broadcast.lastSampleAt < BROADCAST_ENDED_AFTER_MS) return false;
   if (!stored) return true;
   if (stored.final || stored.status === "unavailable") return false;
-  if (stored.status === "failed") return stored.attempts < PULL_MAX_ATTEMPTS && now - stored.lastAttemptAt.getTime() >= PULL_RETRY_AFTER_MS;
-  return now >= broadcast.lastSampleAt + FINAL_PULL_AFTER_MS;
+  const mayRetry = stored.attempts < PULL_MAX_ATTEMPTS && now - stored.lastAttemptAt.getTime() >= PULL_RETRY_AFTER_MS;
+  if (stored.status === "failed") return mayRetry;
+  // Collected, not final: the final pull once the lag is over -- a failed one is retried like any other, within the same cap.
+  return now >= broadcast.lastSampleAt + FINAL_PULL_AFTER_MS && mayRetry;
 }
 
 export function createBroadcastAnalyticsCollector(deps: CollectorDeps) {
@@ -86,25 +88,45 @@ export function createBroadcastAnalyticsCollector(deps: CollectorDeps) {
     const outcomes = [concurrent.outcome, curve.outcome, split.outcome];
     const attempts = (stored?.attempts ?? 0) + 1;
     const at = new Date(now);
+    const error = [concurrent.error, curve.error, split.error].filter(Boolean).join(" | ") || null;
+    const gone = outcomes.every((o) => o === "unavailable");
     if (!outcomes.includes("ok")) {
-      const status: BroadcastAnalyticsStatus = outcomes.every((o) => o === "unavailable") ? "unavailable" : "failed";
-      // A failed retry keeps what an earlier pull collected.
-      await deps.save({ ...(stored ?? { collectedAt: null, dataJson: null, final: false }), broadcastId: broadcast.broadcastId, channelId: broadcast.channelId, status: stored?.status === "collected" ? "collected" : status, attempts, lastAttemptAt: at, error: [concurrent.error, curve.error, split.error].filter(Boolean).join(" | ") || null });
+      if (stored?.status === "collected") {
+        // A failed retry keeps what an earlier pull collected; a video that is gone now makes that pull the final one.
+        await deps.save({ ...stored, final: stored.final || gone, attempts, lastAttemptAt: at, error });
+        return;
+      }
+      await deps.save({ broadcastId: broadcast.broadcastId, channelId: broadcast.channelId, status: gone ? "unavailable" : "failed", final: false, attempts, lastAttemptAt: at, collectedAt: null, dataJson: null, error });
       return;
     }
+    let previous: BroadcastAnalyticsData | null = null;
+    try {
+      previous = stored?.dataJson ? (JSON.parse(stored.dataJson) as BroadcastAnalyticsData) : null;
+    } catch {
+      previous = null;
+    }
+    // Per report: one that did not answer this time keeps the earlier pull's value and outcome.
+    const keep = <T,>(outcome: ReportOutcome, fresh: () => T, earlier: T | undefined, earlierOutcome: ReportOutcome | undefined): [T | null, ReportOutcome] =>
+      outcome === "ok" ? [fresh(), outcome] : previous && earlierOutcome === "ok" ? [earlier ?? null, "ok"] : [null, outcome];
+    const [concurrentValue, concurrentOutcome] = keep(concurrent.outcome, () => ({ average: metric(concurrent.rows[0], CONCURRENT[0]), peak: metric(concurrent.rows[0], CONCURRENT[1]) }), previous?.concurrent ?? undefined, previous?.reports.concurrent);
+    const [curveValue, curveOutcome] = keep(
+      curve.outcome,
+      () =>
+        curve.rows
+          .map((row): [number, number | null, number | null] => [Number(row.dimensions.livestreamPosition), metric(row, CONCURRENT[0]), metric(row, CONCURRENT[1])])
+          .filter(([position]) => Number.isFinite(position))
+          .sort((a, b) => a[0] - b[0]),
+      previous?.curve ?? undefined,
+      previous?.reports.curve
+    );
     const byKind = (kind: string) => split.rows.find((row) => row.dimensions.liveOrOnDemand === kind);
+    const [splitValue, splitOutcome] = keep(split.outcome, () => ({ live: totals(byKind("LIVE")), onDemand: totals(byKind("ON_DEMAND")) }), previous ? { live: previous.live, onDemand: previous.onDemand } : undefined, previous?.reports.split);
     const data: BroadcastAnalyticsData = {
-      concurrent: concurrent.outcome === "ok" ? { average: metric(concurrent.rows[0], CONCURRENT[0]), peak: metric(concurrent.rows[0], CONCURRENT[1]) } : null,
-      curve:
-        curve.outcome === "ok"
-          ? curve.rows
-              .map((row): [number, number | null, number | null] => [Number(row.dimensions.livestreamPosition), metric(row, CONCURRENT[0]), metric(row, CONCURRENT[1])])
-              .filter(([position]) => Number.isFinite(position))
-              .sort((a, b) => a[0] - b[0])
-          : null,
-      live: split.outcome === "ok" ? totals(byKind("LIVE")) : null,
-      onDemand: split.outcome === "ok" ? totals(byKind("ON_DEMAND")) : null,
-      reports: { concurrent: concurrent.outcome, curve: curve.outcome, split: split.outcome },
+      concurrent: concurrentValue,
+      curve: curveValue,
+      live: splitValue?.live ?? null,
+      onDemand: splitValue?.onDemand ?? null,
+      reports: { concurrent: concurrentOutcome, curve: curveOutcome, split: splitOutcome },
     };
     await deps.save({
       broadcastId: broadcast.broadcastId,

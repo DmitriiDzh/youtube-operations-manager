@@ -154,3 +154,56 @@ test("BL-212: at most 4 broadcasts per tick, oldest ended first", async () => {
   await h.collector.tick();
   assert.deepEqual([...new Set(h.queries.map((q) => q.videoId))], ["B6", "B5", "B4", "B3"]);
 });
+
+// Independent review (2026-10-22): the final pull must not repeat every hour when it fails, and must not lose what the first pull got.
+test("BL-212: a final pull that finds the video gone keeps the first pull's data, becomes final and is not asked again", async () => {
+  let gone = false;
+  const last = NOW - 2 * HOUR;
+  const h = harness({ broadcasts: [{ broadcastId: "B1", firstSampleAt: last - HOUR, lastSampleAt: last }], fail: () => (gone ? httpError(404) : null) });
+  await h.collector.tick();
+  const first = h.saved.get("B1")!.dataJson;
+  gone = true;
+  h.advance(4 * 24 * HOUR);
+  await h.collector.tick();
+  const row = h.saved.get("B1")!;
+  assert.deepEqual([row.status, row.final, row.attempts, row.dataJson], ["collected", true, 2, first]);
+  h.advance(HOUR);
+  await h.collector.tick();
+  h.advance(30 * 24 * HOUR);
+  await h.collector.tick();
+  assert.equal(h.queries.length, 6, "no third pull");
+});
+
+test("BL-212: a final pull that keeps failing (500) is retried every 6 hours at most, within 5 attempts in all", async () => {
+  let failing = false;
+  const last = NOW - 2 * HOUR;
+  const h = harness({ broadcasts: [{ broadcastId: "B1", firstSampleAt: last - HOUR, lastSampleAt: last }], fail: () => (failing ? httpError(500) : null) });
+  await h.collector.tick();
+  failing = true;
+  h.advance(4 * 24 * HOUR);
+  await h.collector.tick();
+  assert.equal(h.queries.length, 6);
+  h.advance(HOUR);
+  await h.collector.tick();
+  assert.equal(h.queries.length, 6, "not every hour");
+  for (let i = 0; i < 20; i++) {
+    h.advance(6 * HOUR);
+    await h.collector.tick();
+  }
+  const row = h.saved.get("B1")!;
+  assert.deepEqual([row.status, row.final, row.attempts], ["collected", false, 5]);
+  assert.equal(h.queries.length, 15);
+});
+
+test("BL-212: a report that does not answer in the final pull keeps the first pull's value", async () => {
+  let splitFails = false;
+  const last = NOW - 2 * HOUR;
+  const h = harness({ broadcasts: [{ broadcastId: "B1", firstSampleAt: last - HOUR, lastSampleAt: last }], fail: (q) => (splitFails && q.dimensions === "liveOrOnDemand" ? httpError(500) : null) });
+  await h.collector.tick();
+  splitFails = true;
+  h.advance(4 * 24 * HOUR);
+  await h.collector.tick();
+  const data = JSON.parse(h.saved.get("B1")!.dataJson!);
+  assert.equal(h.saved.get("B1")!.final, true);
+  assert.deepEqual([data.live, data.onDemand, data.reports.split], [{ views: 100, minutesWatched: 900 }, { views: 40, minutesWatched: 120 }, "ok"]);
+});

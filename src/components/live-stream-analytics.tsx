@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { BroadcastAnalyticsView, LiveSummary, LiveSummaryFigures } from "@/lib/live-analytics/contracts";
 import type { UiTextKey } from "@/lib/ui-text";
 import { AnalyticsLineChart } from "./analytics-line-chart";
@@ -36,19 +36,30 @@ export function LiveStreamAnalyticsCard({ base, visible }: { base: string; visib
   const [loading, setLoading] = useState(false);
   const [showBroadcasts, setShowBroadcasts] = useState(false);
 
+  // Only the latest request may fill the card: a slower answer for an earlier range or channel is dropped.
+  const latest = useRef(0);
   const load = useCallback(async () => {
+    const request = ++latest.current;
     setLoading(true);
     try {
       const response = await fetch(`${base}/analytics?days=${days}`);
       if (!response.ok) throw new Error(t("live.analytics.loadFailed"));
-      setSummary((await response.json()) as Summary);
+      const data = (await response.json()) as Summary;
+      if (request !== latest.current) return;
+      setSummary(data);
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : t("live.analytics.loadFailed"));
+      if (request === latest.current) setError(e instanceof Error ? e.message : t("live.analytics.loadFailed"));
     } finally {
-      setLoading(false);
+      if (request === latest.current) setLoading(false);
     }
   }, [base, days, t]);
+
+  // Another channel: never show the previous channel's figures while its own load.
+  useEffect(() => {
+    setSummary(null);
+    setError(null);
+  }, [base]);
 
   useEffect(() => {
     if (visible) void load();
