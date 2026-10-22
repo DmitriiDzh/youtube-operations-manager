@@ -194,6 +194,11 @@ metric logic.
 **Deliverable:** reproducible analytical reports from stored historical data, each with clear
 provenance and documented metric definitions.
 
+**Live stream analytics (owner, Telegram msgs 3360-3366, 2026-10-22).** Statistics of 24/7 live streams that do not
+depend on a recording surviving: our own concurrent-viewer samples, per-broadcast Analytics pulled before a recording can
+disappear, a summary in the Web UI and a read-only producer tool -- `docs/roadmap/plans/LIVE_ANALYTICS_PLAN.md`
+(BL-211..BL-214).
+
 ## 5. Phase 9 — Market Discovery & Trend Intelligence
 
 **Status:** slices 1-3 DONE (see §12's marker below); a much larger, detailed extended-scope
