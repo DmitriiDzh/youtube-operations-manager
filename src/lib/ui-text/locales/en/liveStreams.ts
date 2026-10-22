@@ -463,4 +463,12 @@ export const liveStreams = {
   "live.analytics.col.to": "Last check (UTC)",
   "live.analytics.showBroadcasts": "Show broadcasts ({count})",
   "live.analytics.hideBroadcasts": "Hide broadcasts ({count})",
+  "live.analytics.col.ytConcurrent": "YouTube: avg / peak concurrent",
+  "live.analytics.col.ytLiveViews": "Views live",
+  "live.analytics.col.ytRecordingViews": "Views of the recording",
+  "live.analytics.yt.pending": "after it ends",
+  "live.analytics.yt.unavailable": "no data (video gone)",
+  "live.analytics.yt.failed": "not received yet",
+  "live.analytics.yt.notFinal": "First pull; YouTube Analytics is updated again 4 days after the broadcast ends",
+  "live.analytics.yt.note": "The YouTube columns come from YouTube Analytics: pulled an hour after a broadcast ends and again after 4 days, and kept even if the recording is deleted later.",
 } as const;

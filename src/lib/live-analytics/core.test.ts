@@ -16,6 +16,10 @@ test("BL-213: the summary asks for [now - days, now) and labels the range", asyn
         { sampledAt: now.getTime() - 5 * 60_000, broadcastId: "B1", viewers: 5, lifeCycleStatus: "live" },
       ];
     },
+    pulls: async (ids) => {
+      asked.push(`pulls ${ids.join(",")}`);
+      return [{ broadcastId: "B1", channelId: "UC1", status: "collected", final: false, attempts: 1, lastAttemptAt: now, collectedAt: now, dataJson: JSON.stringify({ concurrent: { average: 4, peak: 9 }, curve: [], live: { views: 10, minutesWatched: 50 }, onDemand: null, reports: { concurrent: "ok", curve: "ok", split: "ok" } }), error: null }];
+    },
     runExits: async (channelId, from) => {
       asked.push(`exits ${channelId} ${from.toISOString()}`);
       return [
@@ -25,7 +29,8 @@ test("BL-213: the summary asks for [now - days, now) and labels the range", asyn
     },
   });
   const summary = await core.summary("UC1", 2);
-  assert.deepEqual(asked.sort(), ["exits UC1 2026-10-20T12:00:00.000Z", "samples UC1 2026-10-20T12:00:00.000Z 2026-10-22T12:00:00.000Z"]);
+  assert.deepEqual(asked.sort(), ["exits UC1 2026-10-20T12:00:00.000Z", "pulls B1", "samples UC1 2026-10-20T12:00:00.000Z 2026-10-22T12:00:00.000Z"]);
+  assert.deepEqual(summary.analytics, [{ broadcastId: "B1", status: "collected", final: false, collectedAt: now.toISOString(), concurrent: { average: 4, peak: 9 }, live: { views: 10, minutesWatched: 50 }, onDemand: null }]);
   assert.deepEqual(summary.range, { from: "2026-10-20T12:00:00.000Z", to: "2026-10-22T12:00:00.000Z", days: 2 });
   assert.equal(summary.totals.interruptions, 1);
   assert.equal(summary.totals.onAirMs, 5 * 60_000);

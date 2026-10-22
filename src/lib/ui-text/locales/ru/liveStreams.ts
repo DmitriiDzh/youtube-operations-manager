@@ -465,4 +465,12 @@ export const liveStreams: Record<keyof typeof en, string> = {
   "live.analytics.col.to": "Последний замер (UTC)",
   "live.analytics.showBroadcasts": "Показать трансляции ({count})",
   "live.analytics.hideBroadcasts": "Скрыть трансляции ({count})",
+  "live.analytics.col.ytConcurrent": "YouTube: среднее / пик одновременно",
+  "live.analytics.col.ytLiveViews": "Просмотры в эфире",
+  "live.analytics.col.ytRecordingViews": "Просмотры записи",
+  "live.analytics.yt.pending": "после окончания",
+  "live.analytics.yt.unavailable": "нет данных (видео нет)",
+  "live.analytics.yt.failed": "пока не получено",
+  "live.analytics.yt.notFinal": "Первая выгрузка; YouTube Analytics будет выгружена ещё раз через 4 дня после окончания",
+  "live.analytics.yt.note": "Колонки YouTube — из YouTube Analytics: выгружаются через час после окончания трансляции и ещё раз через 4 дня и сохраняются, даже если запись потом удалят.",
 };

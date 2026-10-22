@@ -1558,6 +1558,24 @@ export const liveViewerSamples = sqliteTable(
 );
 
 /**
+ * Schema v106 (BL-212, LIVE_ANALYTICS_PLAN.md stage 2): YouTube Analytics of one of our ended broadcasts, pulled once it ended
+ * and again after the reporting lag (`final`), kept here because a recording that is not kept or is deleted may answer
+ * nothing later. `data_json` is the module's own shape (concurrent viewers, the per-minute curve, live/on-demand totals and each
+ * report's outcome); `status`: collected | failed | unavailable.
+ */
+export const liveBroadcastAnalytics = sqliteTable("live_broadcast_analytics", {
+  broadcastId: text("broadcast_id").primaryKey(),
+  channelId: text("channel_id").notNull(),
+  status: text("status").notNull(),
+  final: integer("final", { mode: "boolean" }).notNull(),
+  attempts: integer("attempts").notNull(),
+  lastAttemptAt: integer("last_attempt_at", { mode: "timestamp_ms" }).notNull(),
+  collectedAt: integer("collected_at", { mode: "timestamp_ms" }),
+  dataJson: text("data_json"),
+  error: text("error"),
+});
+
+/**
  * Schema v86 (LIVE_STREAMS_PLAN.md §3.3/§3.4): a channel's rotation, one row per video. `original_path` is relative to the
  * channel workspace. `check_*` is the last check of the video (public-only guard, file, duration); a guard override is the
  * owner's, with a reason.
@@ -5492,6 +5510,24 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         stream_status TEXT,
         health_status TEXT,
         PRIMARY KEY (channel_id, sampled_at)
+      )`);
+    },
+  },
+  {
+    version: 106,
+    description:
+      "live_broadcast_analytics -- BL-212 (LIVE_ANALYTICS_PLAN.md stage 2): YouTube Analytics of each ended broadcast of our own streams (concurrent viewers, per-minute curve, live/on-demand totals), pulled after it ended and again after the reporting lag. Additive, idempotent, device-local",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS live_broadcast_analytics (
+        broadcast_id TEXT PRIMARY KEY,
+        channel_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        final INTEGER NOT NULL,
+        attempts INTEGER NOT NULL,
+        last_attempt_at INTEGER NOT NULL,
+        collected_at INTEGER,
+        data_json TEXT,
+        error TEXT
       )`);
     },
   },
@@ -14825,6 +14861,32 @@ export async function listLiveViewerSamples(channelId: string, from: Date, to: D
     .from(liveViewerSamples)
     .where(and(eq(liveViewerSamples.channelId, channelId), gte(liveViewerSamples.sampledAt, from), lt(liveViewerSamples.sampledAt, to)))
     .orderBy(asc(liveViewerSamples.sampledAt));
+}
+
+/** BL-212: every broadcast with samples on this computer, with its channel and first/last sample. */
+export async function listSampledLiveBroadcasts(database: AppDb = db): Promise<Array<{ channelId: string; broadcastId: string; firstSampleAt: number; lastSampleAt: number }>> {
+  const rows = await database
+    .select({
+      channelId: liveViewerSamples.channelId,
+      broadcastId: liveViewerSamples.broadcastId,
+      first: sql<number>`min(${liveViewerSamples.sampledAt})`,
+      last: sql<number>`max(${liveViewerSamples.sampledAt})`,
+    })
+    .from(liveViewerSamples)
+    .groupBy(liveViewerSamples.channelId, liveViewerSamples.broadcastId);
+  return rows.map((row) => ({ channelId: row.channelId, broadcastId: row.broadcastId, firstSampleAt: Number(row.first), lastSampleAt: Number(row.last) }));
+}
+
+export type StoredLiveBroadcastAnalytics = typeof liveBroadcastAnalytics.$inferSelect;
+
+export async function listLiveBroadcastAnalytics(broadcastIds: readonly string[], database: AppDb = db): Promise<StoredLiveBroadcastAnalytics[]> {
+  if (broadcastIds.length === 0) return [];
+  return database.select().from(liveBroadcastAnalytics).where(inArray(liveBroadcastAnalytics.broadcastId, [...broadcastIds]));
+}
+
+export async function upsertLiveBroadcastAnalytics(row: typeof liveBroadcastAnalytics.$inferInsert, database: AppDb = db): Promise<void> {
+  const set = { channelId: row.channelId, status: row.status, final: row.final, attempts: row.attempts, lastAttemptAt: row.lastAttemptAt, collectedAt: row.collectedAt ?? null, dataJson: row.dataJson ?? null, error: row.error ?? null };
+  await database.insert(liveBroadcastAnalytics).values(row).onConflictDoUpdate({ target: liveBroadcastAnalytics.broadcastId, set });
 }
 
 export async function listLiveStreamEvents(channelId: string, limit: number, database: AppDb = db): Promise<StoredLiveStreamEvent[]> {

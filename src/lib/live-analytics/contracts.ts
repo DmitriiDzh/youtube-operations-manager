@@ -42,6 +42,45 @@ export type LiveSummary = {
   hours: Array<{ hour: string; averageViewers: number | null; peakViewers: number | null }>;
   /** By broadcast (a BL-205 segment is its own broadcast), in order of their first sample. */
   broadcasts: Array<{ broadcastId: string; firstSampleAt: number; lastSampleAt: number } & LiveSummaryFigures>;
-  /** BL-212: YouTube Analytics figures per broadcast; null until that stage exists. */
-  analytics: null;
+  /** BL-212: YouTube Analytics of the broadcasts above that this computer pulled; null when not looked up. */
+  analytics: BroadcastAnalyticsView[] | null;
+};
+
+// ---------------------------------------------------------------------------
+// BL-212 (LIVE_ANALYTICS_PLAN.md stage 2): YouTube Analytics of an ended broadcast, pulled by this computer.
+// ---------------------------------------------------------------------------
+
+/** A broadcast counts as ended when its last sample is this old (the poll runs every 5 minutes while it is on). */
+export const BROADCAST_ENDED_AFTER_MS = 60 * 60_000;
+/** The second, final pull: after YouTube Analytics' reporting lag. */
+export const FINAL_PULL_AFTER_MS = 4 * DAY_MS;
+export const PULL_RETRY_AFTER_MS = 6 * 60 * 60_000;
+export const PULL_MAX_ATTEMPTS = 5;
+export const PULLS_PER_TICK = 4;
+export const PULL_TICK_MS = 60 * 60_000;
+
+/** ok; unsupported = YouTube refused the query (400); unavailable = the video is gone or not ours (403/404); error = anything else. */
+export type ReportOutcome = "ok" | "unsupported" | "unavailable" | "error";
+export type WatchTotals = { views: number | null; minutesWatched: number | null };
+
+export type BroadcastAnalyticsData = {
+  concurrent: { average: number | null; peak: number | null } | null;
+  /** The "concurrent viewers" report by `livestreamPosition` (usually a minute): [position, average, peak]. */
+  curve: Array<[number, number | null, number | null]> | null;
+  live: WatchTotals | null;
+  onDemand: WatchTotals | null;
+  reports: { concurrent: ReportOutcome; curve: ReportOutcome; split: ReportOutcome };
+};
+
+export type BroadcastAnalyticsStatus = "collected" | "failed" | "unavailable";
+
+export type BroadcastAnalyticsView = {
+  broadcastId: string;
+  status: BroadcastAnalyticsStatus;
+  /** True after the pull that followed the reporting lag. */
+  final: boolean;
+  collectedAt: string | null;
+  concurrent: BroadcastAnalyticsData["concurrent"];
+  live: WatchTotals | null;
+  onDemand: WatchTotals | null;
 };

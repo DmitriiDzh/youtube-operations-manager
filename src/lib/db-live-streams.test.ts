@@ -12,6 +12,9 @@ import {
   insertLiveStreamEvent,
   insertLiveViewerSample,
   listLiveViewerSamples,
+  listSampledLiveBroadcasts,
+  listLiveBroadcastAnalytics,
+  upsertLiveBroadcastAnalytics,
   listLiveStreamEvents,
   listLiveStreamSources,
   listLiveStreamVideos,
@@ -181,4 +184,25 @@ test("v105: live_viewer_samples per channel, oldest first, [from, to), null kept
     assert.deepEqual(got.map((s) => [s.sampledAt.getTime(), s.viewers]), [[at(0).getTime(), 5], [at(5).getTime(), null]]);
     assert.equal((await listLiveViewerSamples("UC1", at(0), at(11), database)).length, 3);
     assert.deepEqual((await listLiveViewerSamples("UC2", at(0), at(11), database)).map((s) => s.viewers), [40]);
+  }));
+
+// BL-212: schema v106 -- the broadcasts sampled (first/last sample per channel and broadcast) and one analytics row per broadcast,
+// replaced in full by a later pull.
+test("v106: sampled broadcasts with first/last sample; live_broadcast_analytics upserted per broadcast", () =>
+  withDb(async (database) => {
+    const at = (m: number) => new Date(Date.UTC(2026, 9, 22, 12, m));
+    for (const [m, b] of [[0, "B1"], [5, "B1"], [10, "B2"]] as const) {
+      await insertLiveViewerSample({ channelId: "UC1", sampledAt: at(m), broadcastId: b, viewers: 1, lifeCycleStatus: "live", streamStatus: null, healthStatus: null }, database);
+    }
+    const sampled = (await listSampledLiveBroadcasts(database)).sort((a, b) => a.broadcastId.localeCompare(b.broadcastId));
+    assert.deepEqual(sampled, [
+      { channelId: "UC1", broadcastId: "B1", firstSampleAt: at(0).getTime(), lastSampleAt: at(5).getTime() },
+      { channelId: "UC1", broadcastId: "B2", firstSampleAt: at(10).getTime(), lastSampleAt: at(10).getTime() },
+    ]);
+    const row = { broadcastId: "B1", channelId: "UC1", status: "failed", final: false, attempts: 1, lastAttemptAt: at(20), collectedAt: null, dataJson: null, error: "500" };
+    await upsertLiveBroadcastAnalytics(row, database);
+    await upsertLiveBroadcastAnalytics({ ...row, status: "collected", attempts: 2, collectedAt: at(30), dataJson: "{}", error: null }, database);
+    const stored = await listLiveBroadcastAnalytics(["B1", "B9"], database);
+    assert.deepEqual(stored.map((r) => [r.broadcastId, r.status, r.attempts, r.collectedAt?.getTime(), r.dataJson, r.error]), [["B1", "collected", 2, at(30).getTime(), "{}", null]]);
+    assert.deepEqual(await listLiveBroadcastAnalytics([], database), []);
   }));

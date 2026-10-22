@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import type { LiveSummary, LiveSummaryFigures } from "@/lib/live-analytics/contracts";
+import type { BroadcastAnalyticsView, LiveSummary, LiveSummaryFigures } from "@/lib/live-analytics/contracts";
 import type { UiTextKey } from "@/lib/ui-text";
 import { AnalyticsLineChart } from "./analytics-line-chart";
 import { LoadingIndicator } from "./operation-progress";
@@ -71,6 +71,13 @@ export function LiveStreamAnalyticsCard({ base, visible }: { base: string; visib
         { key: "live.analytics.interruptions", value: formatNumber(totals.interruptions) },
       ]
     : [];
+  const pulls = new Map<string, BroadcastAnalyticsView>((summary?.analytics ?? []).map((a) => [a.broadcastId, a]));
+  const youtubeConcurrent = (a: BroadcastAnalyticsView | undefined) =>
+    !a ? t("live.analytics.yt.pending") : a.status === "unavailable" ? t("live.analytics.yt.unavailable") : a.status === "failed" && !a.concurrent ? t("live.analytics.yt.failed") : `${viewers(a.concurrent?.average ?? null)} / ${viewers(a.concurrent?.peak ?? null)}`;
+  const youtubeViews = (a: BroadcastAnalyticsView | undefined, part: "live" | "onDemand") => {
+    const value = a?.[part]?.views;
+    return typeof value === "number" ? formatNumber(value) : dash;
+  };
   const chart = (summary?.hours ?? []).flatMap((h) => (h.averageViewers === null ? [] : [{ date: h.hour, value: h.averageViewers }]));
 
   return (
@@ -147,7 +154,8 @@ export function LiveStreamAnalyticsCard({ base, visible }: { base: string; visib
             {t(showBroadcasts ? "live.analytics.hideBroadcasts" : "live.analytics.showBroadcasts", { count: String(summary.broadcasts.length) })}
           </button>
           {showBroadcasts && (
-            <div className="overflow-x-auto">
+            <div className="space-y-2 overflow-x-auto">
+              <p className="text-xs text-zinc-500">{t("live.analytics.yt.note")}</p>
               <table className="w-full text-left text-xs">
                 <thead className="text-zinc-400">
                   <tr>
@@ -158,6 +166,9 @@ export function LiveStreamAnalyticsCard({ base, visible }: { base: string; visib
                     <th className="py-1 pr-3 font-normal">{t("live.analytics.peak")}</th>
                     <th className="py-1 pr-3 font-normal">{t("live.analytics.average")}</th>
                     <th className="py-1 pr-3 font-normal">{t("live.analytics.viewerHours")}</th>
+                    <th className="py-1 pr-3 font-normal">{t("live.analytics.col.ytConcurrent")}</th>
+                    <th className="py-1 pr-3 font-normal">{t("live.analytics.col.ytLiveViews")}</th>
+                    <th className="py-1 pr-3 font-normal">{t("live.analytics.col.ytRecordingViews")}</th>
                   </tr>
                 </thead>
                 <tbody className="text-zinc-200 tabular-nums">
@@ -175,6 +186,11 @@ export function LiveStreamAnalyticsCard({ base, visible }: { base: string; visib
                       <td className="py-1 pr-3">{viewers(b.peakViewers)}</td>
                       <td className="py-1 pr-3">{viewers(b.averageViewers)}</td>
                       <td className="py-1 pr-3">{formatNumber(b.viewerHours, { maximumFractionDigits: 1 })}</td>
+                      <td className="py-1 pr-3" title={pulls.get(b.broadcastId)?.final === false ? t("live.analytics.yt.notFinal") : undefined}>
+                        {youtubeConcurrent(pulls.get(b.broadcastId))}
+                      </td>
+                      <td className="py-1 pr-3">{youtubeViews(pulls.get(b.broadcastId), "live")}</td>
+                      <td className="py-1 pr-3">{youtubeViews(pulls.get(b.broadcastId), "onDemand")}</td>
                     </tr>
                   ))}
                 </tbody>
