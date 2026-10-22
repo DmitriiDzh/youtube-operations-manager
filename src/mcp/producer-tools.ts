@@ -9,7 +9,8 @@
 
 /** The Producer API's own version, independent of `AGENT_API_VERSION` and `FACTORY_API_VERSION`. */
 // 1.10.0 (BL-209, ADR 0046): agent_get_publishing_calendar's uploads gain automatic / progressPercent / finishedAt (additive).
-export const PRODUCER_API_VERSION = "1.10.0";
+// 1.11.0 (BL-214, LIVE_ANALYTICS_PLAN.md stage 4): the READ tool producer_live_analytics (additive).
+export const PRODUCER_API_VERSION = "1.11.0";
 
 /** The channel agent's READ tools the Producer gets; each call names its channel and runs in that channel's agent scope. */
 export const PRODUCER_CHANNEL_TOOLS: Readonly<Record<string, { capability: string }>> = Object.freeze({
@@ -74,6 +75,7 @@ export const PRODUCER_ONLY_TOOLS = [
   "producer_list_channels",
   "producer_portfolio_overview",
   "producer_upload_milestones",
+  "producer_live_analytics",
   "producer_propose",
   "producer_list_proposals",
   "producer_mark_proposals_done",

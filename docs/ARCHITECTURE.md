@@ -3922,6 +3922,13 @@ Plan: `docs/roadmap/plans/LIVE_STREAMS_PLAN.md` (FO-REQ-0019). Schema v86, Facto
   (pid + token + fresh status) or started (the key read from YouTube); its position, buffer and next pass are tended; every 5 min the
   broadcast, the stream's health and the viewers are read (`youtube.json`). YouTube ending the broadcast stops the encoder with no
   write. A running stream is not "busy" for the idle watcher.
+- **Live analytics** (BL-211..214, `docs/roadmap/plans/LIVE_ANALYTICS_PLAN.md`): every completed broadcast poll is kept in
+  `live_viewer_samples` (v105; viewers null when YouTube gives no count; a failed write never breaks the poll). The shared leaf
+  module `src/lib/live-analytics/` (imports no feature module) summarises samples + encoder run exits (`summarise.ts`, rules in
+  the plan §3), pulls YouTube Analytics of ended broadcasts hourly from `instrumentation.ts` (`collect.ts` → `live_broadcast_analytics`,
+  v106: concurrent avg/peak, per-minute `livestreamPosition` curve, `liveOrOnDemand` views/minutes; first pull 1 h after the last
+  sample, final 4 days later; 400 = unsupported part, 403/404 on all = unavailable, else retry 6 h × 5; reads-off/quota stop the
+  tick) and serves the «Эфиры» card (`GET .../live-stream/analytics`) and `producer_live_analytics`. Device-local.
 - **Other computers** see the `live-streams` per-device report (`sync-gateway/live-streams`, strict fixed codes); the Operator reads
   `factory_live_get_status` and maps files with `factory_live_map_sources`. Bell notices: down, ended by YouTube, next video missing.
 - **Adding by checkboxes** (BL-187, `docs/roadmap/plans/LIVE_STREAMS_FIELDS_PLAN.md` §2.4; `picker.ts`, `picker-service.ts`,

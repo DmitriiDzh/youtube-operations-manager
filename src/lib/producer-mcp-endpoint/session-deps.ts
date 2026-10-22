@@ -15,6 +15,7 @@ import {
 import { createPortfolioOverviewServices, createUploadMilestonesServices } from "@/lib/portfolio-overview";
 import { createReachReportsCore } from "@/lib/reach-reports";
 import { PRODUCER_API_VERSION } from "@/mcp/producer-tools";
+import { createLiveAnalyticsCore } from "@/lib/live-analytics";
 import type { ProducerMcpSession } from "./index";
 
 // BL-161 / BL-166: the real deps of a Producer session -- what `src/app/api/mcp/producer/route.ts` hands the MCP server. Kept here,
@@ -105,6 +106,7 @@ export function createProducerSessionDeps(session: ProducerMcpSession): Producer
     listChannels,
     portfolioOverview: async (input) => ({ ...(await portfolio.getOverview(input)) }),
     uploadMilestones: async (input) => ({ ...(await uploadMilestones.getUploadMilestones(input)) }),
+    liveAnalytics: async (input) => ({ ...(await createLiveAnalyticsCore().portfolio(input, await listChannels())) }),
     proposals: {
       submit: async (input) => ({ ...(await proposals.submitProducerProposal(input, { agentApiVersion: PRODUCER_API_VERSION })) }),
       list: async (input) => ({ ...(await proposals.listProducerProposals(input)) }),

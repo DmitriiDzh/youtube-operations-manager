@@ -1189,12 +1189,12 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
 
 - **Transport:** as the factory endpoint, with `Authorization: Bearer ytom_pr_...` (the same checks and codes; a channel or factory token is
   401 `AGENT_TOKEN_INVALID` here, and a producer token on `/api/mcp` and `/api/mcp/factory`). Re-verified on every tool call.
-- **Producer API version:** `1.10.0` (1.0.0, plus the three proposal tools in 1.1.0 (BL-163), plus `agent_get_video_milestones` and
+- **Producer API version:** `1.11.0` (1.0.0, plus the three proposal tools in 1.1.0 (BL-163), plus `agent_get_video_milestones` and
   `producer_upload_milestones` in 1.2.0 (BL-166), plus `agent_get_stored_breakdowns` in 1.3.0 (BL-168), plus `agent_get_stored_search_terms`
   in 1.4.0 (BL-169), plus `agent_get_experiment_results` and the proposal kind `experiment.link_video` in 1.5.0 (BL-170), plus
   `agent_get_video_comments` in 1.6.0 (BL-171), plus `agent_get_publishing_calendar` in 1.7.0 and its packages and uploads in 1.8.0
   (BL-182), plus `agent_get_stored_suggested_sources` in 1.9.0 (BL-191), plus the calendar uploads' `automatic` / `progressPercent` /
-  `finishedAt` in 1.10.0 (BL-209)), independent of `AGENT_API_VERSION` and the Factory API.
+  `finishedAt` in 1.10.0 (BL-209), plus `producer_live_analytics` in 1.11.0 (BL-214)), independent of `AGENT_API_VERSION` and the Factory API.
 - **Channel tools** -- the channel agent's READ tools under their own names, each with the channel agent's own input and output plus a REQUIRED
   `channelId` (any channel `producer_list_channels` lists): `agent_get_channel_context` (includes the editorial profile), `channel_video_list`,
   `agent_get_video_context`, `agent_query_channel_analytics`, `agent_query_channel_breakdown` (both may read YouTube Analytics live, as for a channel
@@ -1221,6 +1221,13 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
   { views, estimatedMinutesWatched, averageViewDuration, averageViewPercentage } | null, reach: { daysWithData, impressions, ctr } }] }] | null }] }`
   -- public uploads published in the range by UTC date, oldest first (private, scheduled and upcoming videos are left out); `totals` only when collected; Reach over the same window (impressions summed,
   CTR impressions-weighted), `null` figures when no Reach day is stored in it; `uploads` null for a channel never synced here. No curves.
+  `producer_live_analytics` `{ startDate, endDate }` (YYYY-MM-DD UTC, at most 92 days; BL-214, `docs/roadmap/plans/LIVE_ANALYTICS_PLAN.md`) →
+  `{ startDate, endDate, source: "local", channels: [{ channelId, title, totals: Figures, days: [{ date } & Figures], broadcasts: [{ broadcastId,
+  firstSampleAt, lastSampleAt (ISO) } & Figures & { youtube: { status (collected | failed | unavailable), final, collectedAt, concurrent: { average,
+  peak } | null, live: { views, minutesWatched } | null, onDemand: { views, minutesWatched } | null } | null, analyticsCollected }] }] }` with
+  `Figures = { samples, onAirMs, notLiveMs, dataGaps, viewerHours, averageViewers, peakViewers, interruptions }` -- from the stream computer's
+  own broadcast checks and its stored YouTube Analytics pulls; unknown is null, never 0; `analyticsCollected` = the final pull (4 days after the
+  broadcast) is stored. Local read only.
 - **Every channel-tool answer** (success or error) carries `forChannelId`; the role's own tools do not, nor does a refusal of the MCP layer
   itself (unknown tool, input the schema rejects). **Every call**, refused or not, is logged (`GET /api/producer-agent-token/calls`, below): a
   refusal of the MCP layer as `TOOL_NOT_FOUND` / `INVALID_PARAMS`, a request the transport rejected as a whole (e.g. a wrong `Accept`

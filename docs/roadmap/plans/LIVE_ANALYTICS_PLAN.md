@@ -79,6 +79,15 @@ answer nothing.
   a recording that its numbers are already safe). Agent API minor version bump; Windows reads it from the synced report
   only if the owner wants it there (§5 Q3).
 
+**Built (2026-10-22, owner msg 3372: all four in one branch).** Stage 1 schema v105; stage 3 `src/lib/live-analytics/summarise.ts`
+(rules below) + `GET .../live-stream/analytics?days=1..90` + `live-stream-analytics.tsx`; stage 2 `collect.ts`, schema v106,
+hourly loop in `instrumentation.ts` (first pull 1 h after the last sample, final 4 days later, 4 broadcasts per tick, retry
+6 h × 5; a report refused with 400 is `unsupported`, 403/404 on all three is `unavailable`); stage 4 Producer API 1.11.0.
+Summary rules: an interval a→b of at most 10 min belongs to sample a (state, UTC day/hour, broadcast), a longer one is a data
+gap; viewer-hours = Σ a.viewers × interval over live intervals with a count, average = that / time with a count; interruptions
+= `encoder_run_exit` with a cause other than `pass_end` (the helper restarted the run). Not verified before merge: what the
+API returns for a broadcast whose recording is not kept or was deleted (first real pulls after the restart).
+
 ## 3. Acceptance criteria (to be fixed by hand before each stage's code)
 
 - Stage 1: a 5-minute poll while live writes exactly one row; a failed viewers read writes `viewers = null`; no extra

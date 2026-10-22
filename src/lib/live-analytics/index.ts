@@ -61,15 +61,54 @@ export function defaultLiveAnalyticsDeps(): LiveAnalyticsDeps {
 }
 
 export function createLiveAnalyticsCore(deps: LiveAnalyticsDeps = defaultLiveAnalyticsDeps()) {
+  async function between(channelId: string, from: Date, to: Date): Promise<LiveSummary> {
+    const [samples, events] = await Promise.all([deps.samples(channelId, from, to), deps.runExits(channelId, from)]);
+    const summary = summariseLive({ samples, events: events.filter((event) => event.at < to.getTime()) });
+    const pulls = await deps.pulls(summary.broadcasts.map((b) => b.broadcastId));
+    return { ...summary, analytics: pulls.map(viewOf) };
+  }
   return {
+    between,
     async summary(channelId: string, days: number): Promise<LiveSummary & { range: { from: string; to: string; days: number } }> {
       const to = deps.now();
       const from = new Date(to.getTime() - days * DAY_MS);
-      const [samples, events] = await Promise.all([deps.samples(channelId, from, to), deps.runExits(channelId, from)]);
-      const inRange = events.filter((event) => event.at < to.getTime());
-      const summary = summariseLive({ samples, events: inRange });
-      const pulls = await deps.pulls(summary.broadcasts.map((b) => b.broadcastId));
-      return { range: { from: from.toISOString(), to: to.toISOString(), days }, ...summary, analytics: pulls.map(viewOf) };
+      return { range: { from: from.toISOString(), to: to.toISOString(), days }, ...(await between(channelId, from, to)) };
+    },
+    /**
+     * BL-214 (`producer_live_analytics`): each channel's summary over UTC dates [startDate, endDate] -- totals, days and broadcasts,
+     * each broadcast with what YouTube Analytics gave (`youtube`, null until pulled) and `analyticsCollected` (the final pull after
+     * the reporting lag is stored: deleting the recording loses nothing kept here). No hourly series.
+     */
+    async portfolio(input: { startDate: string; endDate: string }, channels: Array<{ channelId: string; title: string }>) {
+      const from = new Date(`${input.startDate}T00:00:00.000Z`);
+      const to = new Date(Date.parse(`${input.endDate}T00:00:00.000Z`) + DAY_MS);
+      return {
+        startDate: input.startDate,
+        endDate: input.endDate,
+        source: "local" as const,
+        channels: await Promise.all(
+          channels.map(async (channel) => {
+            const summary = await between(channel.channelId, from, to);
+            const pulls = new Map((summary.analytics ?? []).map((a) => [a.broadcastId, a]));
+            return {
+              channelId: channel.channelId,
+              title: channel.title,
+              totals: summary.totals,
+              days: summary.days,
+              broadcasts: summary.broadcasts.map((b) => {
+                const pull = pulls.get(b.broadcastId) ?? null;
+                return {
+                  ...b,
+                  firstSampleAt: new Date(b.firstSampleAt).toISOString(),
+                  lastSampleAt: new Date(b.lastSampleAt).toISOString(),
+                  youtube: pull ? { status: pull.status, final: pull.final, collectedAt: pull.collectedAt, concurrent: pull.concurrent, live: pull.live, onDemand: pull.onDemand } : null,
+                  analyticsCollected: pull?.status === "collected" && pull.final,
+                };
+              }),
+            };
+          })
+        ),
+      };
     },
   };
 }
