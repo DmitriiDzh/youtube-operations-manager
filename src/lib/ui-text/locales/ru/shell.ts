@@ -14,6 +14,7 @@ export const shell: Record<keyof typeof en, string> = {
   "nav.merge": "Слияние",
 
   "tabs.servers.sessions": "Сессии",
+  "tabs.servers.analytics": "Аналитика",
   "tabs.servers.models": "Модели",
   "tabs.servers.templates": "Шаблоны процессов",
   "tabs.servers.setup": "Настройка",

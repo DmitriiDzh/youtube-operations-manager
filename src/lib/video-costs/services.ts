@@ -44,11 +44,15 @@ const costFileInputSchema = z.object({ channelId: channelIdSchema, video: videoN
 const iso = (d: Date | null) => (d ? d.toISOString() : null);
 const money = (n: number) => Math.round(n * UNITS) / UNITS;
 
-function runpodMediaKind(outputsJson: string | null): SharedCostRun["mediaKind"] {
+export function runpodMediaKind(outputsJson: string | null): SharedCostRun["mediaKind"] {
   if (!outputsJson) return null;
   try {
-    const outputs = JSON.parse(outputsJson) as Array<{ kind?: unknown }>;
+    const outputs = JSON.parse(outputsJson) as Array<{ kind?: unknown; filename?: unknown }>;
     const kinds = new Set(outputs.map((o) => (typeof o.kind === "string" ? o.kind : "")));
+    // BL-219: ComfyUI's video savers report an .mp4 under `images`; the file name decides first.
+    const names = outputs.map((o) => (typeof o.filename === "string" ? o.filename.toLowerCase() : ""));
+    if (names.some((n) => /\.(mp4|webm|mov|mkv|gif)$/.test(n))) return "video";
+    if (names.some((n) => /\.(wav|mp3|flac|ogg|m4a|aac)$/.test(n))) return "audio";
     if (["videos", "gifs", "video"].some((k) => kinds.has(k))) return "video";
     if (kinds.has("images")) return "image";
     if (kinds.has("audio")) return "audio";
@@ -365,6 +369,31 @@ export function createVideoCostsService(deps: VideoCostsDeps) {
       await deps.publishReport(report);
       lastPublished = { body, at: deps.now().getTime() };
       return true;
+    },
+
+    /**
+     * BL-219 (SERVERS_ANALYTICS_PLAN.md): every computer's runs of every channel, for the spend analytics. This computer's runs in
+     * full (not the report's window: a cancelled video's runs were paid too); the others' as their reports carry them. One run id is
+     * one run even if two reports carry it. No storyboard is read: `result` only tells failed / active / session / test apart.
+     */
+    async allRuns(): Promise<{ runs: CostRun[]; computers: CostComputer[] }> {
+      const [device, rows, peers] = await Promise.all([deps.ownDevice(), deps.ownRows(), peerReports()]);
+      const none = new Set<string>();
+      const seen = new Set<string>();
+      const runs: CostRun[] = [];
+      const add = (run: SharedCostRun, deviceId: string, hostName: string | null, thisComputer: boolean) => {
+        if (seen.has(run.runId)) return;
+        seen.add(run.runId);
+        runs.push({ ...run, deviceId, hostName, thisComputer, result: resultOf(run, none), estimate: ESTIMATE_BASES.has(run.basis) });
+      };
+      for (const run of buildOwnRuns(rows)) add(run, device.deviceId, device.hostName, true);
+      const others = peers.reports.filter((report) => report.deviceId !== device.deviceId);
+      for (const report of others) for (const run of report.runs) add(run, report.deviceId, report.hostName, false);
+      const computers: CostComputer[] = [
+        { deviceId: device.deviceId, hostName: device.hostName, thisComputer: true, updatedAt: null },
+        ...others.map((report) => ({ deviceId: report.deviceId, hostName: report.hostName, thisComputer: false, updatedAt: report.updatedAt })),
+      ];
+      return { runs, computers };
     },
 
     /** Content: every video of the channel with a run, its RunPod / Gemini / total, and «не привязано». */

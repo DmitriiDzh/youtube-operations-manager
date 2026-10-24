@@ -15139,6 +15139,67 @@ export async function setMediaJobCostShare(
 // BL-194 stage 3 (ADR 0041): what the video-costs module reads -- every paid run of this computer, with no prompt or parameter.
 // ---------------------------------------------------------------------------
 
+/** BL-219 (SERVERS_ANALYTICS_PLAN.md): what this computer knows about its sessions that the cost runs do not carry. Read-only. */
+export type SpendSessionFact = {
+  id: string;
+  channelId: string;
+  status: string;
+  requestedBy: string;
+  gpuTypeId: string | null;
+  secondsUsed: number | null;
+  usdCharged: number | null;
+  stopReason: string | null;
+  error: string | null;
+  createdAt: Date;
+  stoppedAt: Date | null;
+};
+
+export async function listSpendSessionFacts(database: AppDb = db): Promise<SpendSessionFact[]> {
+  return database
+    .select({
+      id: mediaSessions.id,
+      channelId: mediaSessions.channelId,
+      status: mediaSessions.status,
+      requestedBy: mediaSessions.requestedBy,
+      gpuTypeId: mediaSessions.gpuTypeId,
+      secondsUsed: mediaSessions.secondsUsed,
+      usdCharged: mediaSessions.usdCharged,
+      stopReason: mediaSessions.stopReason,
+      error: mediaSessions.error,
+      createdAt: mediaSessions.createdAt,
+      stoppedAt: mediaSessions.stoppedAt,
+    })
+    .from(mediaSessions);
+}
+
+/** BL-219: this computer's RunPod jobs -- which session, who created them, their outputs (for previews). Read-only. */
+export type SpendJobFact = { id: string; sessionId: string; createdBy: string; outputsJson: string | null; error: string | null };
+
+export async function listSpendJobFacts(database: AppDb = db): Promise<SpendJobFact[]> {
+  return database
+    .select({ id: mediaJobs.id, sessionId: mediaJobs.sessionId, createdBy: mediaJobs.createdBy, outputsJson: mediaJobs.outputsJson, error: mediaJobs.error })
+    .from(mediaJobs);
+}
+
+/** BL-219: this computer's Gemini jobs -- who created them, their outputs, their error code. Read-only. */
+export type SpendGeminiFact = { jobId: string; createdBy: string; outputsJson: string | null; errorCode: string | null };
+
+export async function listSpendGeminiFacts(database: AppDb = db): Promise<SpendGeminiFact[]> {
+  return database
+    .select({ jobId: geminiMediaJobs.jobId, createdBy: geminiMediaJobs.createdBy, outputsJson: geminiMediaJobs.outputsJson, errorCode: geminiMediaJobs.errorCode })
+    .from(geminiMediaJobs);
+}
+
+/** BL-219: one job's channel and outputs (RunPod or Gemini), for an output preview. Read-only; null when unknown. */
+export async function getSpendJobOutputs(source: "runpod" | "gemini", jobId: string, database: AppDb = db): Promise<{ channelId: string; outputsJson: string | null } | null> {
+  if (source === "runpod") {
+    const [row] = await database.select({ channelId: mediaJobs.channelId, outputsJson: mediaJobs.outputsJson }).from(mediaJobs).where(eq(mediaJobs.id, jobId));
+    return row ?? null;
+  }
+  const [row] = await database.select({ channelId: geminiMediaJobs.channelId, outputsJson: geminiMediaJobs.outputsJson }).from(geminiMediaJobs).where(eq(geminiMediaJobs.jobId, jobId));
+  return row ?? null;
+}
+
 export type VideoCostRunpodJobRow = {
   id: string;
   sessionId: string;

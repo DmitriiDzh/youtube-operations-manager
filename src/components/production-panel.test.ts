@@ -13,11 +13,13 @@ import { describeBalance, MEDIA_TABS, SERVERS_TABS } from "./production-panel";
 // Changed requirement (BL-157, SERVERS_MEDIA_PLAN.md AC-SM-01; FO-REQ-0009 §1–§2, owner msgs 2119/2125): Production is split
 // in two -- Servers (shared: Sessions, Models, Workflow templates; Setup on the right) and Media (the active channel's:
 // Plans, Jobs). The order of the remaining tabs is the AC-P14-26 order.
+// Changed requirement (BL-219, SERVERS_ANALYTICS_PLAN.md; owner msg 3415 a): an Analytics tab right after Sessions.
 test("AC-SM-01: Servers' tabs are Sessions, Models, Workflow templates (work, left) then Setup (right); Media's are Music, Images, Storyboards, Video (BL-184 stage 3)", () => {
   assert.deepEqual(
     SERVERS_TABS.map((tab) => [translate("en", tab.labelKey), tab.side]),
     [
       ["Sessions", "work"],
+      ["Analytics", "work"],
       ["Models", "work"],
       ["Workflow templates", "work"],
       ["Setup", "setup"],
