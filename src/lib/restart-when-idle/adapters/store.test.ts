@@ -109,3 +109,13 @@ test("AC-RI-02/06 (real database): a request goes open → restarting → done a
     assert.equal(status.lastRestart?.finishedAt, "2026-10-24T10:01:15.000Z");
   });
 });
+
+test("review (real database): a second open request is refused by the one-open index", async () => {
+  await withDb(async (client) => {
+    const store = createRestartStore(client, { get: async () => null, set: async () => undefined });
+    const row = (id: string) => ({ id, status: "open" as const, requestedBy: "owner" as const, requestedAt: 1, restartingAt: null, finishedAt: null, fromVersion: null, fromSchema: null, toVersion: null, toSchema: null, waitedMinutes: null });
+    await store.insertRequest(row("r1"));
+    await assert.rejects(store.insertRequest(row("r2")));
+    assert.deepEqual((await store.listRequests(["open"])).map((r) => r.id), ["r1"]);
+  });
+});

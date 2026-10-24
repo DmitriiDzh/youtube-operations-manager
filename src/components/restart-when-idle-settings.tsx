@@ -18,6 +18,8 @@ type HoldView = { holdId: string; heldBy: string; reason: string; until: string;
 type Status = { request: RequestView | null; waitingFor: Reason[]; holds: HoldView[]; lastRestart: RequestView | null; quietMinutes: number; serviceMode: boolean };
 
 const POLL_MS = 5_000;
+/** No request from this page for this long after the server sent itself the stop signal. */
+const RESTART_QUIET_MS = 120_000;
 const REASON_KEYS: Record<string, UiTextKey> = {
   media_session: "settingsCards.restartIdle.reason.media_session",
   media_job: "settingsCards.restartIdle.reason.media_job",
@@ -77,11 +79,17 @@ export function RestartWhenIdleSettings() {
   }, [load]);
 
   const open = status?.request !== null && status?.request !== undefined;
+  // Review (BL-220): while the server stops, this page must not hold a connection to it (a kept-alive request kept a stopping server
+  // alive on 2026-10-13). From the stop signal on, the card waits RESTART_QUIET_MS before it asks again.
+  const restartingAt = status?.request?.status === "restarting" ? status.request.restartingAt : null;
   useEffect(() => {
     if (!open && !unreachable) return;
-    const timer = setInterval(() => void load(), POLL_MS);
+    const timer = setInterval(() => {
+      if (restartingAt !== null && Date.now() - Date.parse(restartingAt) < RESTART_QUIET_MS) return;
+      void load();
+    }, POLL_MS);
     return () => clearInterval(timer);
-  }, [open, unreachable, load]);
+  }, [open, unreachable, restartingAt, load]);
 
   async function act(input: RequestInfo, init: RequestInit, onDone?: () => void) {
     setBusy(true);

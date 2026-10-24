@@ -27,6 +27,9 @@ const MAX_IDS = 5;
 
 const iso = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString());
 
+/** Review (BL-220): active holds one holder may keep at once. */
+export const RESTART_HOLDS_PER_HOLDER = 3;
+
 /** A `restarting` request this old whose process still answers did not restart; the owner may cancel it. */
 export const RESTART_STUCK_MS = 5 * 60_000;
 
@@ -177,7 +180,14 @@ export function createRestartWhenIdle(deps: RestartWhenIdleDependencies) {
       toSchema: null,
       waitedMinutes: null,
     };
-    await deps.store.insertRequest(row);
+    try {
+      await deps.store.insertRequest(row);
+    } catch (error) {
+      // Another request was opened at the same moment (the one-open index refused this one): join it.
+      const raced = (await deps.store.listRequests(["open"]))[0];
+      if (raced) return { request: requestView(raced), joined: true };
+      throw error;
+    }
     deps.log("restart_when_idle.requested", { requestId: row.id, requestedBy: by });
     return { request: requestView(row), joined: false };
   }
@@ -287,6 +297,11 @@ export function createRestartWhenIdle(deps: RestartWhenIdleDependencies) {
       }
       if (!isRestartHoldOwner(input.heldBy)) throw invalid("unknown hold owner", { field: "heldBy" });
       const now = deps.clock();
+      // Review (BL-220): a holder keeps at most RESTART_HOLDS_PER_HOLDER active holds, so a loop cannot stack them.
+      const mine = (await deps.store.listActiveHolds(now)).filter((hold) => hold.heldBy === input.heldBy);
+      if (mine.length >= RESTART_HOLDS_PER_HOLDER) {
+        throw invalid(`at most ${RESTART_HOLDS_PER_HOLDER} active holds per holder: release one first`, { field: "holds", active: mine.length });
+      }
       const row: RestartHoldRow = { id: deps.newId(), heldBy: input.heldBy, reason, createdAt: now, until: now + minutes * 60_000, releasedAt: null, releasedBy: null };
       await deps.store.insertHold(row);
       deps.log("restart_when_idle.hold_set", { holdId: row.id, heldBy: row.heldBy, minutes });

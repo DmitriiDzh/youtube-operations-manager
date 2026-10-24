@@ -34,6 +34,9 @@ function readBuild(): { version: string; schema: number } {
 }
 
 /** Where the developer script writes its request: the app-data folder this server uses (~/Library/Application Support/... on a Mac). */
+/** Review (BL-220): how long after its own stop signal a still-running process exits by itself. */
+export const RESTART_FORCE_EXIT_MS = 90_000;
+
 export function restartRequestFilePath(): string {
   return path.join(getProductionAppPaths().appDataDir, RESTART_REQUEST_FILE_NAME);
 }
@@ -89,7 +92,16 @@ export function createRestartWhenIdleCore(): RestartWhenIdle {
     newId: () => randomUUID(),
     serviceMode: () => process.env.YTOM_SERVICE_MODE === "1",
     build: readBuild,
-    stop: () => process.kill(process.pid, "SIGTERM"),
+    // Review (BL-220): the graceful stop can hang on a connection a browser keeps open (2026-10-13: the listener closed, the process
+    // stayed, launchd waited -- the app was down for minutes). The shutdown hooks run at the signal; 90 s later a process that is still
+    // here exits by itself so launchd starts the next run. The timer is unref'd: it never keeps a process alive that is ending anyway.
+    stop: () => {
+      process.kill(process.pid, "SIGTERM");
+      setTimeout(() => {
+        console.warn("[restart-when-idle] still running 90 s after its own stop signal; exiting so the service starts the next run");
+        process.exit(0);
+      }, RESTART_FORCE_EXIT_MS).unref();
+    },
     takeRequestFile,
     log: (event, context) => logger.info({ event, context }),
   });

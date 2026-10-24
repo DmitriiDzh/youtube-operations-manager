@@ -397,3 +397,10 @@ test("AC-RI-05: a restart whose stop did not happen (still answering 5 minutes l
   await f.service.tick();
   assert.equal(f.state.stops, 2);
 });
+
+test("review: a holder keeps at most 3 active holds; another holder is not limited by them", async () => {
+  const f = fixture();
+  for (let i = 0; i < 3; i++) await f.service.hold({ heldBy: "factory", minutes: 60, reason: `step ${i}` });
+  await rejects(f.service.hold({ heldBy: "factory", minutes: 60, reason: "one more" }), "validation_failed");
+  await f.service.hold({ heldBy: "owner", minutes: 5, reason: "owner's own" });
+});

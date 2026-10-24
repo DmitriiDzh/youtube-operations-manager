@@ -56,17 +56,19 @@ async function startServerSession() {
     createDefaultLogger().error({ event: "live_writes.default_on_migration_failed", context: { message: error instanceof Error ? error.message : String(error) } })
   );
 
-  // BL-220 (RESTART_WHEN_IDLE_PLAN.md, ADR 0049): restart when idle. On every boot a request left `restarting` (or still open) becomes
+  // BL-220 (RESTART_WHEN_IDLE_PLAN.md, ADR 0049): restart when idle. On every service boot a request left `restarting` (or still open) becomes
   // `done` with this build's version and schema. Only under the macOS system service (YTOM_SERVICE_MODE=1, launchd starts the next run)
   // the check runs every 15 s: the developer's request file, the 24 h expiry, and -- once nothing waits -- one SIGTERM to this process,
   // the same graceful stop as stop.sh (the handlers below still run). Its own loop; a failure never stops what follows (AGENTS.md §M).
   try {
     const { createRestartWhenIdleCore, RESTART_TICK_MS } = await import("@/lib/restart-when-idle");
     const restart = createRestartWhenIdleCore();
-    await restart.finalizeBoot().catch((error: unknown) =>
-      console.warn(`[restart-when-idle] boot: ${error instanceof Error ? error.message : String(error)}`)
-    );
     if (process.env.YTOM_SERVICE_MODE === "1") {
+      // Review (BL-220): only the service finalizes a request at boot -- another server on the same database (a worktree's dev
+      // server) must never mark the live server's open request as done or take its request file.
+      await restart.finalizeBoot().catch((error: unknown) =>
+        console.warn(`[restart-when-idle] boot: ${error instanceof Error ? error.message : String(error)}`)
+      );
       const { rawSqlClient: restartSqlClient } = await import("@/lib/db");
       const { assertDeviceAvailableForMutation: assertRestartMayWrite } = await import("@/lib/device-mutation-gate");
       const restartLoop = async () => {

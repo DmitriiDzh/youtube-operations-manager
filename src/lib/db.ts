@@ -5587,6 +5587,8 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
           "waited_minutes INTEGER)"
       );
       await client.execute("CREATE INDEX IF NOT EXISTS restart_requests_status_idx ON restart_requests (status, requested_at)");
+      // Review (BL-220): at most one open request, even when the owner's button and the developer's file race.
+      await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS restart_requests_one_open ON restart_requests ((1)) WHERE status = 'open'");
       await client.execute(
         "CREATE TABLE IF NOT EXISTS restart_holds (" +
           "id TEXT PRIMARY KEY, " +

@@ -37,5 +37,18 @@ Status: Accepted
 - Factory API 1.30.0 and Agent API 4.4.0 (additive). AGENTS.md §N changes only after this is live.
 - The module only reads other modules' state (`src/lib/live-streams` exposes `listLiveStreamTransitions`); removing it leaves
   every other module working (AGENTS.md §M).
-- A media session awaiting the owner's approval (`pending`) counts as unfinished, as the plan says, so it keeps a restart waiting
-  until it is decided or the request expires.
+- A media session still awaiting the owner's approval (`pending`) does NOT hold a restart: it runs nothing on the server and
+  survives one (holding on it could block every restart for up to 24 h). Every later non-terminal session state does.
+
+## Review additions (2026-10-24)
+
+- **A stop that hangs.** The graceful stop can hang on a connection a browser keeps open (2026-10-13). 90 s after its own stop signal a
+  process that is still running exits by itself (the shutdown hooks already ran at the signal), so launchd starts the next run. The
+  Settings card does not ask the server anything for 2 minutes after the stop signal.
+- **Only the service finalizes at boot.** Another server on the same database (a worktree's dev server) never marks the live server's
+  request done or takes its request file.
+- **One open request** is enforced by a unique index; a racing second request joins the first.
+- **At most 3 active holds per holder.**
+- **Known limits.** The quiet window counts MCP calls by their start, so a single MCP call or Web request that runs longer than the
+  quiet minutes and touches none of the checked sources can still be cut by the restart. The owner's own Web activity (for example
+  approving a session at the same second) is not counted; the window between the last check and the stop is under 15 s.
