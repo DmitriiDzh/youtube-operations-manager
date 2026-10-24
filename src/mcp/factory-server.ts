@@ -309,7 +309,8 @@ export type FactoryToolDeps = {
     setActiveRuntime(input: { runtimeId: string | null }): Promise<Record<string, unknown>>;
     // BL-133.
     startSession(input: { channelId: string; maxMinutes?: number; maxUsd?: number; templateId?: string; gpu?: { candidates: string[]; minVramGb?: number | null; maxPricePerHr?: number | null }; releaseWhenDone?: boolean; planId?: string; minCudaVersion?: string; runtimeId?: string | null }): Promise<Record<string, unknown>>;
-    getSession(input: { sessionId?: string }): Promise<Record<string, unknown>>;
+    /** BL-218 review: `channelId` (a worker's pinned call only; not in the factory tool's input) filters before the 20-row cut. */
+    getSession(input: { sessionId?: string; channelId?: string }): Promise<Record<string, unknown>>;
     endSession(input: { sessionId: string }): Promise<Record<string, unknown>>;
     createJob(input: { sessionId: string; templateId: string; params: Record<string, string | number | boolean>; planId?: string; itemKey?: string; seed?: number; storyboardId?: string; segmentId?: string; videoNumber?: string }): Promise<Record<string, unknown>>;
     getJob(input: { jobId?: string; sessionId?: string }): Promise<Record<string, unknown>>;

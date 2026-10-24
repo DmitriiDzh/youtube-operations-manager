@@ -39,7 +39,7 @@ export type WorkerPrivacyDeps = {
   /** The broadcast ids the app is streaming for this channel right now (stream on, or a segment not ended). */
   currentBroadcastIds(channelId: string): Promise<Set<string>>;
   /** A fresh read of the video's status on YouTube. */
-  readVideo(videoId: string): Promise<{ privacyStatus: string | null; publishAt: string | null; etag: string | null }>;
+  readVideo(videoId: string): Promise<{ privacyStatus: string | null; publishAt: string | null; etag: string | null; liveBroadcastContent?: string | null }>;
   /** The real write through video-details, bound to the read's etag; returns the status read back. */
   writeVideo(args: { videoId: string; privacyStatus: WorkerPrivacyStatus; expectedEtag: string | null }): Promise<{ privacyStatus: string | null }>;
   /** This channel's playlists from YouTube. */
@@ -84,6 +84,14 @@ export function createWorkerPrivacyServices(deps: WorkerPrivacyDeps) {
         });
       }
       const current = await deps.readVideo(parsed.id);
+      // FO-REQ-0037 review: the fresh read too -- a broadcast that went live or was scheduled after the last channel sync.
+      if (current.liveBroadcastContent === "live" || current.liveBroadcastContent === "upcoming") {
+        throw new DomainError({
+          code: "AGENT_LIVE_BROADCAST_OWNER_ONLY",
+          message: "This is a live or upcoming broadcast; only the owner changes its privacy.",
+          details: { videoId: parsed.id },
+        });
+      }
       if (current.publishAt) {
         throw new DomainError({
           code: "AGENT_SCHEDULE_OWNER_ONLY",

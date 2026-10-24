@@ -20,11 +20,13 @@ function fixture(overrides: Partial<WorkerPrivacyDeps> = {}) {
       if (channelId !== CHANNEL) return null;
       if (videoId === "peerLive") return { liveBroadcastContent: "live" };
       if (videoId === "upcoming1") return { liveBroadcastContent: "upcoming" };
-      return ["rec1", "sched", "live1"].includes(videoId) ? { liveBroadcastContent: "none" } : null;
+      return ["rec1", "sched", "live1", "rec-now-live"].includes(videoId) ? { liveBroadcastContent: "none" } : null;
     },
     currentBroadcastIds: async () => new Set(["live1"]),
     readVideo: async (videoId) =>
-      videoId === "sched" ? { privacyStatus: "private", publishAt: "2026-11-01T10:00:00Z", etag: "e" } : { privacyStatus: "public", publishAt: null, etag: "etag-1" },
+      videoId === "rec-now-live"
+        ? { privacyStatus: "public", publishAt: null, etag: "e", liveBroadcastContent: "live" }
+        : videoId === "sched" ? { privacyStatus: "private", publishAt: "2026-11-01T10:00:00Z", etag: "e" } : { privacyStatus: "public", publishAt: null, etag: "etag-1" },
     writeVideo: async ({ videoId, privacyStatus, expectedEtag }) => {
       writes.push(`video:${videoId}:${privacyStatus}:${expectedEtag}`);
       return { privacyStatus };
@@ -73,6 +75,8 @@ test("AC-WP-04: the channel's current live broadcast is refused; a finished reco
   // A stream run by another computer (only the synced list knows it is live), and an upcoming broadcast.
   await assert.rejects(services.setPrivacy({ target: "video", id: "peerLive", privacyStatus: "private", dryRun: false }), code("AGENT_LIVE_BROADCAST_OWNER_ONLY"));
   await assert.rejects(services.setPrivacy({ target: "video", id: "upcoming1", privacyStatus: "private", dryRun: false }), code("AGENT_LIVE_BROADCAST_OWNER_ONLY"));
+  // The synced list still says "none", but YouTube says it is live now (it started after the last sync): refused too.
+  await assert.rejects(services.setPrivacy({ target: "video", id: "rec-now-live", privacyStatus: "private", dryRun: false }), code("AGENT_LIVE_BROADCAST_OWNER_ONLY"));
   const result = await services.setPrivacy({ target: "video", id: "rec1", privacyStatus: "private", dryRun: false });
   assert.equal(result.changed, true);
   assert.deepEqual(writes, ["video:rec1:private:etag-1"]);

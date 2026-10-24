@@ -120,9 +120,11 @@ export function createFactoryMediaDeps(): FactoryToolDeps["media"] {
           templateMinCudaVersion,
         });
       },
-      getSession: async ({ sessionId }) => {
+      getSession: async ({ sessionId, channelId }) => {
         const core = createMediaGenerationCore();
-        if (sessionId === undefined) return { sessions: (await core.listSessions(100)).filter((s) => s.requestedBy === "factory").slice(0, 20) };
+        if (sessionId === undefined) {
+          return { sessions: (await core.listSessions(100)).filter((s) => s.requestedBy === "factory" && (channelId === undefined || s.channelId === channelId)).slice(0, 20) };
+        }
         return { session: await factorySession(sessionId) };
       },
       endSession: async ({ sessionId }) => ({ session: await createMediaGenerationCore().factoryStopSession({ sessionId }) }),
