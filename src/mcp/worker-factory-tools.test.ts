@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isDomainError } from "@/lib/shared-domain";
+import { DomainError, isDomainError } from "@/lib/shared-domain";
 import type { FactoryToolDeps } from "./factory-server";
 import { pinFactoryDepsToChannel, workerFactoryTools, WORKER_FACTORY_TOOL_NAMES } from "./worker-factory-tools";
 
@@ -33,7 +33,12 @@ function fakeDeps() {
     },
     gemini: {
       getStatus: note("gemini.getStatus"),
-      createJob: note("gemini.createJob"),
+      createJob: async (input: unknown) => {
+        if ((input as { requestId?: string }).requestId === "used-by-japan") {
+          throw new DomainError({ code: "gemini_request_exists", message: "requestId used by job G-J", details: { jobId: "G-J" } });
+        }
+        return note("gemini.createJob")(input);
+      },
       // Like the real module: a jobId is looked up by id alone, whatever channelId says.
       getJobs: async (input: unknown) => {
         const jobId = (input as { jobId?: string }).jobId;
@@ -208,4 +213,14 @@ test("review (HIGH): a Gemini job of another channel, asked for by id, is not fo
   const pinned = pinFactoryDepsToChannel(() => deps, TROPICO, async () => undefined);
   await assert.rejects(pinned.gemini.getJobs({ jobId: "G-J" }), code("gemini_job_not_found"));
   assert.deepEqual(await pinned.gemini.getJobs({ jobId: "G-T" }), { job: { jobId: "G-T", channelId: TROPICO } });
+});
+
+test("re-check: a requestId another channel used is refused without naming that channel's job", async () => {
+  const { deps } = fakeDeps();
+  const pinned = pinFactoryDepsToChannel(() => deps, TROPICO, async () => undefined);
+  await assert.rejects(pinned.gemini.createJob({ channelId: TROPICO, requestId: "used-by-japan" }), (error: unknown) => {
+    assert.ok(isDomainError(error) && error.code === "gemini_request_exists");
+    assert.equal(JSON.stringify({ message: (error as Error).message, details: (error as DomainError).details ?? null }).includes("G-J"), false);
+    return true;
+  });
 });

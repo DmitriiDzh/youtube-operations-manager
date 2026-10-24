@@ -101,7 +101,7 @@ export function fromToolResult(
         : tool === "agent_video_create"
           ? text((result.video as { video?: unknown } | undefined)?.video)
           : tool === "agent_factory_start_session"
-            ? text((result.session as { id?: unknown } | undefined)?.id)
+            ? text((result.session as { sessionId?: unknown } | undefined)?.sessionId)
             : tool === "agent_gemini_create_job" || tool === "agent_factory_create_job"
               ? text((result.job as { jobId?: unknown; id?: unknown } | undefined)?.jobId) ?? text((result.job as { id?: unknown } | undefined)?.id)
               : tool === "agent_plan_create" || tool === "agent_storyboard_create"

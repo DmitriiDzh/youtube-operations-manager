@@ -1,4 +1,4 @@
-import { DomainError } from "@/lib/shared-domain";
+import { DomainError, isDomainError } from "@/lib/shared-domain";
 import type { FactoryChannelDeps } from "./factory-channel-deps";
 import { createFactoryMcpServer, type FactoryToolContract, type FactoryToolDeps } from "./factory-server";
 
@@ -239,7 +239,18 @@ export function pinFactoryDepsToChannel(
     },
     gemini: {
       getStatus: () => deps().gemini.getStatus(),
-      createJob: byChannel((input) => deps().gemini.createJob(input)),
+      // Re-check: a requestId another channel already used is refused without naming that channel's job (the Operator and every
+      // worker share the actor "factory", so the module's replay lookup can hit another channel's job).
+      createJob: byChannel(async (input) => {
+        try {
+          return await deps().gemini.createJob(input);
+        } catch (error) {
+          if (isDomainError(error) && error.code === "gemini_request_exists") {
+            throw new DomainError({ code: "gemini_request_exists", message: "This requestId was already used for another request; choose a new requestId." });
+          }
+          throw error;
+        }
+      }),
       // Review (HIGH): the Gemini module ignores channelId when a jobId is given -- the job's own channel is checked here.
       getJobs: async (input) => {
         const pinned = pinChannel(input, channelId, true);
