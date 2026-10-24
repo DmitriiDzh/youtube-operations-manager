@@ -11,6 +11,7 @@ import { PublishingPackages } from "@/components/publishing-packages";
 import { PublishingSettingsPanel } from "@/components/publishing-settings-panel";
 import { VideoProjectsPanel } from "@/components/video-projects-panel";
 import { CONTENT_TABS } from "@/components/section-tabs";
+import { useContentTabBadges } from "@/components/content-tab-badges";
 import { useT } from "@/components/ui-text-provider";
 
 // BL-149 (docs/roadmap/plans/APP_ROUTES_PLAN.md): the section's own address. BL-176 (LIVE_STREAMS_PLAN.md §3.12): Content has
@@ -21,6 +22,8 @@ export default function ContentLayout({ children }: { children: ReactNode }) {
   const router = useRouter();
   const t = useT();
   const segment = useSelectedLayoutSegment();
+  // BL-221 (CONTENT_UX_PLAN.md stage E): what each tab is waiting for, on the tab itself.
+  const badges = useContentTabBadges(channel?.id ?? null);
   const tab = CONTENT_TABS.find((item) => item.value === segment)?.value ?? null;
   if (!tab) return <>{children}</>;
   return (
@@ -36,6 +39,19 @@ export default function ContentLayout({ children }: { children: ReactNode }) {
             className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${tab === item.value ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`}
           >
             {t(item.labelKey)}
+            {item.value === "publishing" && badges.releases > 0 && (
+              <span className="ml-1.5 rounded-full bg-violet-600/80 px-1.5 text-[10px] font-semibold text-white" title={t("contentTabs.badge.releases", { count: badges.releases })}>
+                {badges.releases}
+              </span>
+            )}
+            {item.value === "calendar" && badges.calendarDue && (
+              <span className="ml-1.5 rounded-full bg-amber-500/90 px-1.5 text-[10px] font-semibold text-zinc-950" title={t("contentTabs.badge.calendar")}>
+                !
+              </span>
+            )}
+            {item.value === "streams" && badges.streamTrouble && (
+              <span className="ml-1.5 inline-block h-2 w-2 rounded-full bg-red-500 align-middle" title={t("contentTabs.badge.stream")} role="img" aria-label={t("contentTabs.badge.stream")} />
+            )}
           </button>
         ))}
       </div>

@@ -41,6 +41,9 @@ export const shell: Record<keyof typeof en, string> = {
   "tabs.content.streams": "Трансляции",
   "tabs.content.calendar": "Календарь",
   "tabs.content.publishing": "Ролики и релизы",
+  "contentTabs.badge.releases": "{count, plural, one {# ролик готов} few {# ролика готовы} many {# роликов готовы} other {# ролика готовы}} к следующему шагу (пакет или загрузка)",
+  "contentTabs.badge.calendar": "Запланировано меньше чем на 7 дней вперёд",
+  "contentTabs.badge.stream": "Эфир идёт с проблемами (здоровье по YouTube)",
   "tabs.settings.about": "О программе",
 
   "shell.productName": "Operations Manager",
