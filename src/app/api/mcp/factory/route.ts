@@ -6,6 +6,7 @@ import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { getMcpConnectionEnabled, rawSqlClient, recordGatewayCallOutcome } from "@/lib/db";
 import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
 import { createLogicalPathsCore } from "@/lib/logical-paths";
+import { createRestartWhenIdleCore } from "@/lib/restart-when-idle";
 import type { FactoryToolDeps } from "@/mcp/factory-server";
 import { createFactoryChannelDeps } from "@/mcp/factory-channel-deps";
 import { createFactoryMediaDeps } from "../factory-media-deps";
@@ -42,6 +43,12 @@ function createFactoryToolDeps(): FactoryToolDeps {
     // BL-132 / BL-133: the media core's factory-facing actions, shared with the channel workers (BL-218, ./factory-media-deps.ts).
     media: createFactoryMediaDeps(),
     ...createFactoryChannelDeps(),
+    // BL-220 (ADR 0049): the Operator's holds are always `factory`; it releases only those (the module answers not_found otherwise).
+    restart: {
+      status: async () => ({ ...(await createRestartWhenIdleCore().status()) }),
+      hold: async (input) => ({ ...(await createRestartWhenIdleCore().hold({ heldBy: "factory", minutes: input.minutes, reason: input.reason })) }),
+      release: async (input) => ({ ...(await createRestartWhenIdleCore().releaseHold({ holdId: input.holdId, by: "factory" })) }),
+    },
     assertMutationAllowed: () => assertDeviceAvailableForMutation(rawSqlClient),
   };
 }

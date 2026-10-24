@@ -290,6 +290,8 @@ export function pinFactoryDepsToChannel(
     jobs: {
       list: async (input) => deps().jobs.list({ ...record(input), channelId: pinChannel(input, channelId, true).channelId as string }),
     },
+    // BL-220: a worker's restart tools are its own (src/mcp/server.ts, holds as worker:<channel>); none is re-exposed from here.
+    restart: { status: refused, hold: refused, release: refused },
     assertMutationAllowed: () => assertMutationAllowed(),
   };
 }

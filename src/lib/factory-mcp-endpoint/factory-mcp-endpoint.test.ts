@@ -153,6 +153,8 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
     jobs: {
       list: async (input) => (mediaCalls.push(`jobs.list:${input.channelId ?? ""}:${input.source ?? ""}:${input.limit ?? ""}`), { devices: [], jobs: [], total: 0, truncated: false }),
     },
+    // BL-220: the restart tools' deps (not exercised here).
+    restart: { status: async () => ({}), hold: async () => ({}), release: async () => ({}) },
     async assertMutationAllowed() {
       mediaCalls.push("gate");
       if (gateClosed.value) throw new DomainError({ code: "OPERATION_LOCKED" as never, message: "an import is running" });
@@ -362,7 +364,7 @@ test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exact
     "factory_video_create",
     "factory_video_get_cost",
     "factory_video_list",
-  ]);
+  ].concat(["factory_hold_restart", "factory_release_hold", "factory_restart_status"]).sort()); // BL-220: the three restart tools (1.30.0)
   assert.equal(names.some((n) => /approve|reject/.test(n)), false, "no tool approves or rejects a session for anyone");
   assert.deepEqual([...FACTORY_TOOL_NAMES].sort(), names);
 });
@@ -400,6 +402,8 @@ test("AC-FO-07: a channel tool name is not callable on the factory endpoint", as
 // BL-208 (GPU_START_FIXES_PLAN.md): 1.28.0, no tool added or removed.
 // BL-210 (CHANNEL_LOCALIZATIONS_PLAN.md §5): 1.29.0 and the READ tool factory_channel_get_localizations and the WRITE tool
 // factory_channel_save_localizations after the live tools (declaration order).
+// BL-220 (RESTART_WHEN_IDLE_PLAN.md "Factory API 1.30.0"): 1.30.0 and the three restart tools, last (declaration order); hold and
+// release are writes.
 test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), READ and WRITE, the tool list and the write tools", async () => {
   const { endpoint, tokenServices } = setup();
   const { token } = await tokenServices.issueToken({});
@@ -407,7 +411,7 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.29.0", // BL-210: the two factory_channel_* tools (additive)
+    factoryApiVersion: "1.30.0", // BL-220: the three restart tools (additive)
     tools: [
       "factory_get_capabilities",
       "factory_list_logical_paths",
@@ -473,6 +477,9 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
       "factory_video_create",
       "factory_video_list",
       "factory_video_get_cost",
+      "factory_restart_status",
+      "factory_hold_restart",
+      "factory_release_hold",
     ],
     permissions: ["READ", "WRITE"],
     writeTools: [
@@ -510,8 +517,55 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
       "factory_storyboard_reply",
       "factory_storyboard_attach_render",
       "factory_video_create",
+      "factory_hold_restart",
+      "factory_release_hold",
     ],
   });
+});
+
+// BL-220 (RESTART_WHEN_IDLE_PLAN.md AC-RI-03/04, "MCP"): the Operator's hold and release are writes behind the device mutation gate;
+// the status read is not counted as an MCP call (a poll must not keep the quiet window open); the module's refusal comes back as is.
+test("BL-220: factory_hold_restart / factory_release_hold pass the gate first; factory_restart_status is not counted as an MCP call", async () => {
+  const reached: string[] = [];
+  const toolDeps = fakeToolDeps({
+    restart: {
+      status: async () => (reached.push("status"), { request: null, waitingFor: [] }),
+      hold: async (input) => {
+        reached.push(`hold:${JSON.stringify(input)}`);
+        if (input.minutes === 0) throw new DomainError({ code: "validation_failed", message: "minutes must be 1-60" });
+        return { hold: { holdId: "h1" } };
+      },
+      release: async (input) => {
+        reached.push(`release:${JSON.stringify(input)}`);
+        throw new DomainError({ code: "not_found", message: "No such hold" });
+      },
+    },
+  });
+  const tokenServices = createFactoryTokenServices({ store: createMemoryTokenStore(), generateSecret: () => "s1" });
+  const endpoint = createFactoryMcpEndpoint({
+    isConnectionEnabled: async () => true,
+    verifyToken: (token) => tokenServices.verifyToken(token),
+    createServer: ({ session }) => createFactoryMcpServer(toolDeps.deps, { connectionEnabled: true, session }),
+  });
+  const { token } = await tokenServices.issueToken({});
+  const run = async (name: string, args: Record<string, unknown> = {}) => toolResult(await endpoint.handle(rpc(call(name, args), withToken(token))));
+
+  assert.equal((await run("factory_restart_status")).isError, false);
+  assert.deepEqual(toolDeps.outcomes, [], "the status read is not counted");
+  assert.deepEqual((await run("factory_hold_restart", { minutes: 10, reason: "watching a run" })).payload, { hold: { holdId: "h1" } });
+  assert.deepEqual(toolDeps.outcomes, ["allowed"], "a hold is counted");
+  const refused = await run("factory_hold_restart", { minutes: 0, reason: "x" });
+  assert.equal(refused.isError, true);
+  assert.equal((refused.payload as { error: { code: string } }).error.code, "validation_failed");
+  const notOwn = await run("factory_release_hold", { holdId: "h-worker" });
+  assert.equal((notOwn.payload as { error: { code: string } }).error.code, "not_found");
+  assert.deepEqual(toolDeps.mediaCalls, ["gate", "gate", "gate"], "every write passed the gate");
+  assert.deepEqual(reached, ["status", 'hold:{"minutes":10,"reason":"watching a run"}', 'hold:{"minutes":0,"reason":"x"}', 'release:{"holdId":"h-worker"}']);
+
+  toolDeps.gateClosed.value = true;
+  reached.length = 0;
+  assert.equal((await run("factory_hold_restart", { minutes: 5, reason: "x" })).isError, true);
+  assert.deepEqual(reached, [], "a closed gate reaches nothing");
 });
 
 test("BL-132: every factory write passes the device mutation gate first and reaches nothing when it is closed; reads and a dry-run sync do not need it", async () => {

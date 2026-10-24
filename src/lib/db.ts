@@ -5567,6 +5567,41 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       await client.execute("CREATE INDEX IF NOT EXISTS worker_action_log_channel_at_idx ON worker_action_log (channel_id, at)");
     },
   },
+  {
+    version: 108,
+    description:
+      "restart_requests + restart_holds -- BL-220 (RESTART_WHEN_IDLE_PLAN.md, ADR 0049; FO-REQ-0038): a request to restart the server once nobody works with it (who asked, its state, the versions before and after) and the holds that keep it waiting. Additive, idempotent, device-local",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS restart_requests (" +
+          "id TEXT PRIMARY KEY, " +
+          "status TEXT NOT NULL, " +
+          "requested_by TEXT NOT NULL, " +
+          "requested_at INTEGER NOT NULL, " +
+          "restarting_at INTEGER, " +
+          "finished_at INTEGER, " +
+          "from_version TEXT, " +
+          "from_schema INTEGER, " +
+          "to_version TEXT, " +
+          "to_schema INTEGER, " +
+          "waited_minutes INTEGER)"
+      );
+      await client.execute("CREATE INDEX IF NOT EXISTS restart_requests_status_idx ON restart_requests (status, requested_at)");
+      // Review (BL-220): at most one open request, even when the owner's button and the developer's file race.
+      await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS restart_requests_one_open ON restart_requests ((1)) WHERE status = 'open'");
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS restart_holds (" +
+          "id TEXT PRIMARY KEY, " +
+          "held_by TEXT NOT NULL, " +
+          "reason TEXT NOT NULL, " +
+          "created_at INTEGER NOT NULL, " +
+          "until_at INTEGER NOT NULL, " +
+          "released_at INTEGER, " +
+          "released_by TEXT)"
+      );
+      await client.execute("CREATE INDEX IF NOT EXISTS restart_holds_until_idx ON restart_holds (until_at)");
+    },
+  },
 ];
 
 /**
@@ -7210,6 +7245,22 @@ export async function setWriteLogRetentionDays(days: number, database: AppDb = d
     throw new Error(`Write log retention must be a whole number of days from ${MIN_WRITE_LOG_RETENTION_DAYS} to ${MAX_RETENTION_DAYS}`);
   }
   await setAppSetting(WRITE_LOG_RETENTION_DAYS_SETTING_KEY, String(days), database);
+}
+
+// --- BL-220: restart when idle -- the quiet minutes after the last MCP call ---------------------------------
+
+const RESTART_QUIET_MINUTES_SETTING_KEY = "restart_quiet_minutes";
+
+/** The stored quiet minutes (BL-220), or null when never set or unreadable -- the restart-when-idle module applies its default and bounds. */
+export async function getRestartQuietMinutesSetting(database: AppDb = db): Promise<number | null> {
+  const raw = await getAppSetting(RESTART_QUIET_MINUTES_SETTING_KEY, database);
+  if (raw === null || !/^\d{1,3}$/.test(raw)) return null;
+  return Number(raw);
+}
+
+/** Stores the quiet minutes as given; the restart-when-idle module validates them first (1-30). */
+export async function setRestartQuietMinutesSetting(minutes: number, database: AppDb = db): Promise<void> {
+  await setAppSetting(RESTART_QUIET_MINUTES_SETTING_KEY, String(minutes), database);
 }
 
 // --- BL-117: quota ledger ---------------------------------------------------------------------------

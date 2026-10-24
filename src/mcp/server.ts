@@ -11,6 +11,7 @@ import { createCliAuthService, type CliAuthService } from "@/lib/cli-auth";
 import { insertWorkerActionLogEntry, listWorkerActionLogEntries, recordGatewayCallOutcome } from "@/lib/db";
 import { describeWorkerWrite, fromToolResult, serializeWorkerDetail } from "./worker-actions";
 import { createWorkerPrivacyCore, setPrivacyInputSchema } from "@/lib/worker-privacy";
+import { createRestartWhenIdleCore } from "@/lib/restart-when-idle";
 import { createFactoryChannelDeps } from "./factory-channel-deps";
 import { workerFactoryTools, type WorkerMediaDeps } from "./worker-factory-tools";
 import type { CredentialRef } from "@/lib/shared-domain";
@@ -607,6 +608,11 @@ export const previewInputSchema = z
 
 /** BL-215: `agent_list_worker_actions`. */
 const agentListWorkerActionsInputSchema = z.object({ limit: z.number().int().min(1).max(100).optional() }).strict();
+// BL-220 (RESTART_WHEN_IDLE_PLAN.md): the bounds (1-60 minutes, a 1-200 character reason) are the module's own (validation_failed).
+const agentHoldRestartInputSchema = z.object({ minutes: z.number(), reason: z.string() }).strict();
+const agentReleaseHoldInputSchema = z.object({ holdId: z.string() }).strict();
+/** BL-220: a status poll is not counted as an MCP call, so polling it never keeps the restart's quiet window open. */
+const UNCOUNTED_CHANNEL_TOOLS: ReadonlySet<string> = new Set(["agent_restart_status"]);
 
 export const applyInputSchema = z
   .object({
@@ -2827,7 +2833,7 @@ export function createMcpServer(
         if (write) await logWorkerWrite(session, name, write, result);
         return result;
       }
-      await recordGatewayCallOutcome("mcp_tool_calls", "allowed");
+      if (!UNCOUNTED_CHANNEL_TOOLS.has(name)) await recordGatewayCallOutcome("mcp_tool_calls", "allowed");
       if (!write) return handler(args);
       try {
         result = (await handler(args)) as ToolResponse;
@@ -4004,6 +4010,63 @@ export function createMcpServer(
           errorCode: row.errorCode,
         })),
       });
+    }
+  );
+
+  // BL-220 (RESTART_WHEN_IDLE_PLAN.md, ADR 0049): restart when idle -- a worker's holds are `worker:<its channel>`, and it ends only
+  // those (another's hold is not_found). Hold and release are local writes, logged in the worker log (./worker-actions.ts).
+  const workerHoldOwner = () => {
+    const session = getAgentSession();
+    if (!session) throw new DomainError({ code: "AGENT_SESSION_OPERATOR_ONLY", message: "only a channel agent holds a restart" });
+    return `worker:${session.channelId}` as const;
+  };
+  registerTool(
+    "agent_restart_status",
+    {
+      description:
+        "BL-220 (ADR 0049): restart when idle on this computer: {} -> { request (the open restart request, or null), waitingFor: [{ kind: media_session | media_job | gemini_job | upload | live_stream | operation_lock | operation | batch | hold | mcp_quiet | check_failed, count, ids, until }], holds: [{ holdId, heldBy (factory | owner | worker:<channelId>), reason, createdAt, until, active }], lastRestart, quietMinutes, serviceMode }. Once a request is open, the server restarts itself (the system service starts the new build) when waitingFor is empty. This call does not count as an MCP call for the quiet window. Local read only.",
+      inputSchema: z.object({}).strict(),
+    },
+    async () => {
+      try {
+        return toolSuccessResult({ ...(await createRestartWhenIdleCore().status()) });
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    }
+  );
+  registerTool(
+    "agent_hold_restart",
+    {
+      description:
+        "BL-220 (ADR 0049): keep this computer's server from restarting while this channel's work must not be cut: { minutes (whole, 1-60), reason (1-200 characters) } -> { hold: { holdId, heldBy: worker:<this channel>, reason, createdAt, until, active } }. It ends by itself at `until`, or earlier with agent_release_hold; the owner can end it too. Only delays a restart, never starts one. Refusals: validation_failed. Local write; logged in the worker log.",
+      inputSchema: agentHoldRestartInputSchema,
+    },
+    async (args: z.infer<typeof agentHoldRestartInputSchema>) => {
+      const gate = await assertMcpDeviceAvailable();
+      if (gate) return gate;
+      try {
+        return toolSuccessResult({ ...(await createRestartWhenIdleCore().hold({ heldBy: workerHoldOwner(), minutes: args.minutes, reason: args.reason })) });
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    }
+  );
+  registerTool(
+    "agent_release_hold",
+    {
+      description:
+        "BL-220 (ADR 0049): end one of this channel's own restart holds early: { holdId } -> { hold, released (false when it had already ended) }. A hold of another channel, the Operator or the owner is not_found. Local write; logged in the worker log.",
+      inputSchema: agentReleaseHoldInputSchema,
+    },
+    async (args: z.infer<typeof agentReleaseHoldInputSchema>) => {
+      const gate = await assertMcpDeviceAvailable();
+      if (gate) return gate;
+      try {
+        return toolSuccessResult({ ...(await createRestartWhenIdleCore().releaseHold({ holdId: args.holdId, by: workerHoldOwner() })) });
+      } catch (error) {
+        return toolErrorResult(error);
+      }
     }
   );
 

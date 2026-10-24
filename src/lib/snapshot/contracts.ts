@@ -202,6 +202,8 @@ export const SNAPSHOT_DEVICE_LOCAL_TABLES: Readonly<Record<string, string>> = Ob
   producer_agent_tokens: "Producer agent credential hash (BL-161); shared by the agent-tokens sync family, never by a snapshot (BL-160)",
   producer_call_log: "per-device log of the Producer agent's calls (BL-161)",
   worker_action_log: "per-device log of channel agents' YouTube write calls (BL-215)",
+  restart_requests: "per-device requests to restart this computer's server when idle, and the last restart (BL-220)",
+  restart_holds: "per-device holds that keep this computer's server from restarting (BL-220)",
   agent_connections: "retired (ADR 0011), table kept inert",
   agent_capability_zones: "retired (ADR 0011), table kept inert",
   app_settings: "per-device settings and toggles (Live writes, MCP, reads, ...)",

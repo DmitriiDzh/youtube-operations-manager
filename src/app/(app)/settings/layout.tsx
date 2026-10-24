@@ -27,6 +27,7 @@ import { HfTokenSettings } from "@/components/hf-token-settings";
 import { LiveStreamsSettings } from "@/components/live-streams-settings";
 import { DeviceAutoSyncSettings } from "@/components/device-auto-sync-settings";
 import { AppVersionInfo } from "@/components/app-version-info";
+import { RestartWhenIdleSettings } from "@/components/restart-when-idle-settings";
 import { InfoTooltip } from "@/components/info-tooltip";
 import { FeatureErrorBoundary } from "@/components/feature-error-boundary";
 import { UiLanguageSettings } from "@/components/ui-language-settings";
@@ -180,6 +181,9 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
       <div className={settingsSubTab === "about" ? "space-y-6" : "hidden"}>
         <FeatureErrorBoundary label={section("settingsCard.about")}>
           <AppVersionInfo />
+        </FeatureErrorBoundary>
+        <FeatureErrorBoundary label={section("settingsCards.restartIdle.title")}>
+          <RestartWhenIdleSettings />
         </FeatureErrorBoundary>
       </div>
     </div>

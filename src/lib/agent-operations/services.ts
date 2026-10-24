@@ -620,6 +620,23 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     description:
       "The Google account and the write channel this session acts as (`whoami`, `write_context`). In a channel session both are always the token's own channel and identity.",
   },
+  // BL-220 (RESTART_WHEN_IDLE_PLAN.md, ADR 0049): restart when idle on this computer.
+  {
+    id: "system.restart_status",
+    mcpTools: ["agent_restart_status"],
+    domain: "system",
+    permission: "READ",
+    description:
+      "Restart when idle (`agent_restart_status`): the open restart request, every reason it waits for (media, uploads, live streams starting/stopping/switching, locks, holds, recent MCP calls), the holds, the last restart and the quiet minutes. This read is not counted as an MCP call for the quiet window.",
+  },
+  {
+    id: "system.restart_hold",
+    mcpTools: ["agent_hold_restart", "agent_release_hold"],
+    domain: "system",
+    permission: "DRAFT",
+    description:
+      "Keep this computer's server from restarting for 1-60 minutes with a reason (`agent_hold_restart`), and end the channel's own hold early (`agent_release_hold`; another's is not_found). Local writes, logged in the worker log; they only delay a restart, never start one.",
+  },
   {
     id: "video_context.list_videos_live",
     mcpTools: ["list"],
