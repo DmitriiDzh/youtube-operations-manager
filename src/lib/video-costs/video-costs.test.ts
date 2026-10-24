@@ -347,3 +347,35 @@ test("a refresh tick reads this computer's rows, the peers' reports, the video l
   // ownReport lists the videos once for its window; the refresh once more for the files.
   assert.deepEqual(reads, { rows: 1, peers: 1, states: 2, storyboards: 1 });
 });
+
+// BL-219 (SERVERS_ANALYTICS_PLAN.md AC-SA-01): the spend analytics reads every computer's runs once each, and this computer's in
+// full -- a cancelled video's runs were paid too, though the report leaves them out.
+test("BL-219 allRuns: this computer's runs in full, the other computer's from its report, one run id counted once", async () => {
+  const w = world();
+  w.states.set("V40", { state: "cancelled", folder: null });
+  const win = computer("win", w, () => ({ ...none(), gemini: [gemini("w1", { video: null })] }));
+  await win.service.publishOwnReport();
+  // The Windows report also carries a run id the Mac has (a copied database): it must not count twice.
+  const report = w.reports.get("win")!;
+  w.reports.set("win", { ...report, runs: [...report.runs, { ...report.runs[0], runId: "runpod:dup" }] });
+  const mac = computer("mac", w, () => ({ ...none(), runpod: [runpod("dup"), runpod("cancelled-video", { video: "V40" })] }));
+  const { runs, computers } = await mac.service.allRuns();
+  assert.deepEqual(runs.map((r) => [r.runId, r.deviceId, r.thisComputer]).sort(), [
+    ["gemini:w1", "win", false],
+    ["runpod:cancelled-video", "mac", true],
+    ["runpod:dup", "mac", true],
+  ]);
+  assert.deepEqual(computers.map((c) => [c.deviceId, c.thisComputer]), [
+    ["mac", true],
+    ["win", false],
+  ]);
+});
+
+// BL-219: ComfyUI's video savers (VHS) list an .mp4 under `images`; it is a clip, not an image -- the cost per result by kind relies on it.
+test("BL-219: a RunPod output's kind follows its file name first", async () => {
+  const { runpodMediaKind } = await import("./services");
+  assert.equal(runpodMediaKind(JSON.stringify([{ kind: "images", filename: "ltx25_flf_00001_.mp4" }])), "video");
+  assert.equal(runpodMediaKind(JSON.stringify([{ kind: "audio", filename: "track.flac" }])), "audio");
+  assert.equal(runpodMediaKind(JSON.stringify([{ kind: "images", filename: "flux_00001_.png" }])), "image");
+  assert.equal(runpodMediaKind(null), null);
+});

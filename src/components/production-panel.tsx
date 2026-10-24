@@ -34,6 +34,7 @@ import { PlansPanel } from "./generation-plans-panel";
 // Media (the active channel's). The Servers header shows the RunPod balance and today's spend; the keys stay in Settings.
 
 import { MEDIA_TABS, SERVERS_TABS, type MediaTab, type ServersTab } from "./section-tabs";
+import { ServersAnalyticsPanel } from "./servers-analytics-panel";
 import type { PlanMediaKind } from "@/lib/generation-plans/contracts";
 import { StoryboardsPanel, StoryboardVideoLinks } from "./storyboards-panel";
 import { GeminiCreateCard } from "./gemini-media-create";
@@ -229,6 +230,12 @@ export function ServersPanel({
         {/* BL-193 (owner msgs 2864/2867): Gemini next to RunPod, failing on its own (AGENTS.md §M). */}
         <FeatureErrorBoundary label={`${t("nav.servers")} — ${t("gemini.servers.title")}`}>
           <GeminiServersCard onToday={setGeminiToday} />
+        </FeatureErrorBoundary>
+      </div>
+      {/* BL-219: Servers → «Аналитика», failing on its own (AGENTS.md §M). */}
+      <div className={tab === "analytics" ? "space-y-6" : "hidden"}>
+        <FeatureErrorBoundary label={`${t("nav.servers")} — ${t("tabs.servers.analytics")}`}>
+          <ServersAnalyticsPanel active={tab === "analytics"} />
         </FeatureErrorBoundary>
       </div>
       <div className={tab === "models" ? "space-y-6" : "hidden"}>

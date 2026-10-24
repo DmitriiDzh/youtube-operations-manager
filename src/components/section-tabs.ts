@@ -6,6 +6,8 @@
 // shared GPU and model infrastructure -- the same for every channel; Media is what the owner reviews for the ACTIVE channel.
 export const SERVERS_TABS = [
   { value: "sessions", labelKey: "tabs.servers.sessions", side: "work" },
+  // BL-219 (SERVERS_ANALYTICS_PLAN.md, owner msg 3415 a): what was generated and what it cost, on every computer.
+  { value: "analytics", labelKey: "tabs.servers.analytics", side: "work" },
   { value: "models", labelKey: "tabs.servers.models", side: "work" },
   { value: "templates", labelKey: "tabs.servers.templates", side: "work" },
   { value: "setup", labelKey: "tabs.servers.setup", side: "setup" },

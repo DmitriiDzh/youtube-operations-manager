@@ -94,6 +94,6 @@ export function createVideoCostsBackfillForProduction(extra: Pick<BackfillDeps, 
 
 export { createVideoCostsBackfill } from "./backfill";
 export type { BackfillDeps, BackfillProposals, BackfillStoryboard, VideoCostsBackfill } from "./backfill";
-export { createVideoCostsService, buildOwnRuns, resultOf, selectReportRuns, totalsOf, PUBLISHED_RUNS_KEEP_DAYS, UNLINKED_RUNS_KEEP_DAYS } from "./services";
+export { createVideoCostsService, buildOwnRuns, runpodMediaKind, resultOf, selectReportRuns, totalsOf, PUBLISHED_RUNS_KEEP_DAYS, UNLINKED_RUNS_KEEP_DAYS } from "./services";
 export type { VideoCostsService } from "./services";
 export * from "./contracts";

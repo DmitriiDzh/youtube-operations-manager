@@ -14,6 +14,7 @@ export const shell = {
   "nav.merge": "Merge",
 
   "tabs.servers.sessions": "Sessions",
+  "tabs.servers.analytics": "Analytics",
   "tabs.servers.models": "Models",
   "tabs.servers.templates": "Workflow templates",
   "tabs.servers.setup": "Setup",

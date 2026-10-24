@@ -1598,6 +1598,22 @@ Session and the ACTIVE channel required (ADR 0004); the channel comes from the a
 - `PUT /api/channels/[channelId]/storyboards/[storyboardId]/video` `{ videoNumber: "V49" | null }` and `POST /api/generation-plans/[planId]/video` `{ videoNumber }` — the owner's video picker. `GET /api/channels/[channelId]/videos` stays the channel's synced YouTube videos (`channel-sync`), hence the name `video-projects`.
 - RunPod `POST /api/media-generation/jobs` and Gemini `POST /api/gemini-media/jobs` accept `videoNumber` (the same rules as the Factory tools).
 
+### Servers analytics API (BL-219, `docs/roadmap/plans/SERVERS_ANALYTICS_PLAN.md`, Servers → «Аналитика»)
+
+Read-only, signed-in owner only (401 otherwise); no RunPod, Gemini or YouTube call. Every computer's cost runs (video-costs) plus this
+computer's session / job facts.
+
+- `GET /api/servers/analytics?days=7|30|90|all&channelId=&device=all|this&who=all|owner|factory|agent&tz=<IANA>` → `{ period,
+  totals { totalUsd, runpodUsd, geminiUsd, previousTotalUsd, estimated }, results { done, failed, byKind }, costPerResultUsd, gpu
+  { workHours, paidHours }, losses { idle, failedJobs, failedGemini, failedStarts, totalUsd }, daily[{ day, runpodWorkUsd,
+  runpodIdleUsd, geminiUsd }], byLabel, byVideo { videos, unlinkedUsd }, byChannel, byWho, byGpu, computers, channels }`. Defaults:
+  30 days, everything, UTC. An unknown value or key is 400.
+- `GET /api/servers/analytics/history?…the same filters…&kind=all|runpod|gemini&errors=0|1&day=YYYY-MM-DD&cursor=` → `{ rows, total,
+  nextCursor }`, 30 rows a page, newest first: `session` (this computer's, with its jobs and idle part, a failed start's error),
+  `gemini` (this computer's), `other_computer` (another computer's run).
+- `GET /api/servers/analytics/preview?source=runpod|gemini&jobId=&index=` → a small JPEG of one image output of this computer's job,
+  resolved only inside the job's `From YTM/<media|gemini>/<job>/` folder; 404 otherwise.
+
 ### Video costs API (BL-194 stages 2-4, ADR 0041, Content → «Ролики в работе»)
 
 Session and the ACTIVE channel required (ADR 0004); the channel (and storyboard) come from the address only; a `channelId` in a body is refused (400).
