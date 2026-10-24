@@ -213,6 +213,22 @@ export async function collectLiveStreamEntries(now: number = Date.now()): Promis
   );
 }
 
+/**
+ * BL-220 (RESTART_WHEN_IDLE_PLAN.md AC-RI-01/02): the streams on this computer that are being started, stopped or switched right now
+ * -- an owner's Start / Go live / Stop / Edit or the encoder's own start or stop holds one of the stream's locks, and a segment switch
+ * keeps its marker until it ends. A stream that simply runs (live, replaying, reconnecting) is not listed. Local reads only; the locks
+ * are this process's own, so call it in the server process.
+ */
+export async function listLiveStreamTransitions(): Promise<Array<{ channelId: string; kind: "start_stop" | "switching" }>> {
+  const out: Array<{ channelId: string; kind: "start_stop" | "switching" }> = [];
+  for (const stream of await listLiveStreams()) {
+    const id = stream.channelId;
+    if ([id, `start:${id}`, `broadcast:${id}`, `video-settings:${id}`].some((key) => isChannelLockBusy(key))) out.push({ channelId: id, kind: "start_stop" });
+    else if (stream.segmentSwitchingJson) out.push({ channelId: id, kind: "switching" });
+  }
+  return out;
+}
+
 /** This computer's name as other computers show it ("on <host>"), or null when it has no usable name. */
 function hostName(): string | null {
   const name = os.hostname().replace(/\.local$/, "").replace(/[^\p{L}\p{N} ._'-]/gu, "").slice(0, 64);

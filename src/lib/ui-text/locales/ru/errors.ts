@@ -162,6 +162,7 @@ export const errors: Record<keyof typeof en, string> = {
   "errors.gemini_payment_required": "На платёжном аккаунте Google закончился предоплаченный баланс.",
   "errors.gemini_limit_exceeded": "Запрос превышает лимит расходов на Gemini.",
   "errors.gemini_request_exists": "Задание Gemini с этим id запроса уже есть, с другим содержанием.",
+  "errors.restart_needs_service": "Перезапуск, когда никто не работает, есть только у системной службы Mac (она сама запускает приложение снова). Перезапустите приложение обычным способом.",
   "errors.gemini_job_not_found": "Задание Gemini не найдено.",
   "errors.gemini_input_unavailable": "Входная картинка недоступна.",
   "errors.gemini_workspace_unavailable": "У канала нет рабочей папки на этом компьютере.",

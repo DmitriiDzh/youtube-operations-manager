@@ -71,12 +71,23 @@ function describeLocalWrite(args: ToolArgs): WorkerWriteDescription {
   };
 }
 
+/**
+ * BL-220 (RESTART_WHEN_IDLE_PLAN.md, ADR 0049): a worker's restart hold and its release -- local writes (nothing reaches YouTube), in
+ * the worker log so the owner sees who held the restart. The hold's id comes from the answer (`fromToolResult`); a release names it.
+ */
+const RESTART_HOLD_WRITES: Readonly<Record<string, (args: ToolArgs) => WorkerWriteDescription>> = Object.freeze({
+  agent_hold_restart: (args) => ({ target: null, detail: detail({ minutes: typeof args?.minutes === "number" ? args.minutes : undefined, reason: text(args?.reason) ?? undefined }) }),
+  agent_release_hold: (args) => ({ target: text(args?.holdId), detail: {} }),
+});
+
 /** What a worker call of `tool` would write, or `null` when it would not write (a read, or `apply` as a preview). */
 export function describeWorkerWrite(tool: string, args: unknown): WorkerWriteDescription | null {
   const fields = typeof args === "object" && args !== null ? (args as Record<string, unknown>) : undefined;
   // A Gemini dry run spends nothing and writes nothing.
   if (tool === "agent_gemini_create_job" && fields?.dryRun === true) return null;
   if (WORKER_FACTORY_WRITE_TOOL_NAMES.includes(tool)) return describeLocalWrite(fields);
+  const restart = RESTART_HOLD_WRITES[tool];
+  if (restart) return restart(fields);
   const describe = DESCRIBE[tool];
   if (!describe) return null;
   return describe(fields);
@@ -100,7 +111,9 @@ export function fromToolResult(
         ? text(playlist?.id)
         : tool === "agent_video_create"
           ? text((result.video as { video?: unknown } | undefined)?.video)
-          : tool === "agent_factory_start_session"
+          : tool === "agent_hold_restart"
+            ? text((result.hold as { holdId?: unknown } | undefined)?.holdId)
+            : tool === "agent_factory_start_session"
             ? text((result.session as { sessionId?: unknown } | undefined)?.sessionId)
             : tool === "agent_gemini_create_job" || tool === "agent_factory_create_job"
               ? text((result.job as { jobId?: unknown; id?: unknown } | undefined)?.jobId) ?? text((result.job as { id?: unknown } | undefined)?.id)

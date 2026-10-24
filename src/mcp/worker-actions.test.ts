@@ -60,3 +60,12 @@ test("BL-218: paid calls name their session or job; a Gemini dry run is not a wr
   assert.equal(fromToolResult("agent_factory_start_session", { session: { sessionId: "S2" } }).target, "S2");
   assert.equal(fromToolResult("agent_gemini_create_job", { job: { jobId: "G1" } }).target, "G1");
 });
+
+// BL-220 (RESTART_WHEN_IDLE_PLAN.md "holds are logged in the worker log"): a hold and its release are logged (local writes), the status
+// read is not; the hold's id comes from the answer, a release names it in its input.
+test("BL-220: agent_hold_restart / agent_release_hold are logged with the hold's id; agent_restart_status is a read", () => {
+  assert.equal(describeWorkerWrite("agent_restart_status", {}), null);
+  assert.deepEqual(describeWorkerWrite("agent_hold_restart", { minutes: 10, reason: "plan P1" }), { target: null, detail: { minutes: 10, reason: "plan P1" } });
+  assert.deepEqual(describeWorkerWrite("agent_release_hold", { holdId: "h1" }), { target: "h1", detail: {} });
+  assert.equal(fromToolResult("agent_hold_restart", { hold: { holdId: "h9" } }).target, "h9");
+});

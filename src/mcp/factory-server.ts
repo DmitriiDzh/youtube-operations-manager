@@ -129,7 +129,11 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 // with details.refused; title 1-30 characters, description 1-1000 characters) and factory_channel_get_localizations (READ: the stored
 // set, the channel's translations on YouTube read now -- 1 quota unit, no write -- and the last apply in codes). Only the owner's
 // «Применить» in the Web UI sends a set to YouTube; no tool reaches it. Additive.
-export const FACTORY_API_VERSION = "1.29.0";
+// BL-220 (RESTART_WHEN_IDLE_PLAN.md, ADR 0049; FO-REQ-0038): 1.30.0 -- factory_restart_status (READ: the open restart request, what
+// it waits for, the holds, the last restart, the quiet minutes, whether this computer runs as the system service; this call does not
+// count as MCP activity for the quiet window), factory_hold_restart (WRITE, local: keep the server from restarting for 1-60 minutes,
+// with a reason) and factory_release_hold (WRITE, local: end one of the Operator's own holds; another's is not_found). Additive.
+export const FACTORY_API_VERSION = "1.30.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -214,6 +218,10 @@ export const FACTORY_TOOL_NAMES = [
   "factory_video_create",
   "factory_video_list",
   "factory_video_get_cost",
+  // BL-220: restart when idle -- the status (a read), holding the restart and ending the Operator's own hold (local writes).
+  "factory_restart_status",
+  "factory_hold_restart",
+  "factory_release_hold",
 ] as const;
 
 /**
@@ -268,7 +276,13 @@ export const FACTORY_WRITE_TOOL_NAMES = [
   "factory_storyboard_attach_render",
   // BL-194: reserves the next video number of a channel (local and synced; nothing is generated, charged or sent to YouTube).
   "factory_video_create",
+  // BL-220: a restart hold and its release (local only; they keep this computer's server from restarting, nothing else).
+  "factory_hold_restart",
+  "factory_release_hold",
 ] as const;
+
+/** BL-220: a status poll must not keep the quiet window open forever, so it is not counted as an MCP call (`mcp_tool_calls`). */
+const UNCOUNTED_TOOLS: ReadonlySet<string> = new Set(["factory_restart_status"]);
 
 export type FactoryChannelEntry = {
   channelId: string;
@@ -382,6 +396,12 @@ export type FactoryToolDeps = {
   /** BL-188: every computer's media jobs, read-only (the pool module filters and bounds them). */
   jobs: {
     list(input: { channelId?: string; source?: "runpod" | "gemini"; mediaKind?: "audio" | "image" | "video"; status?: string; planId?: string; limit?: number }): Promise<Record<string, unknown>>;
+  };
+  /** BL-220 (ADR 0049): restart when idle, with the Operator as the hold owner `factory` (the module validates every input itself). */
+  restart: {
+    status(): Promise<Record<string, unknown>>;
+    hold(input: { minutes: unknown; reason: unknown }): Promise<Record<string, unknown>>;
+    release(input: { holdId: unknown }): Promise<Record<string, unknown>>;
   };
   /** The same local gate every mutating channel tool passes (operation lock, recovery mode); throws when not allowed. */
   assertMutationAllowed(): Promise<void>;
@@ -609,7 +629,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
         // tell the role its (perfectly good) token was revoked (same rule as the endpoint's own 503).
         return errorResult(isDomainError(error) && error.code === "AGENT_TOKEN_INVALID" ? error : new Error("token verification unavailable"));
       }
-      await deps.recordOutcome("allowed");
+      if (!UNCOUNTED_TOOLS.has(name)) await deps.recordOutcome("allowed");
       try {
         return await handler(args);
       } catch (error) {
@@ -1417,6 +1437,46 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
       inputSchema: jobsListInput,
     },
     async (args) => successResult(await deps.jobs.list(parseInput(jobsListInput, args)))
+  );
+
+  // -- BL-220 (RESTART_WHEN_IDLE_PLAN.md, ADR 0049): restart when idle. The module checks every bound itself (validation_failed).
+  const RESTART_SHAPE =
+    "Status: { request: { id, status: open | restarting, requestedBy: owner | developer, requestedAt, ... } | null, waitingFor: [{ kind: media_session | media_job | gemini_job | upload | live_stream | operation_lock | operation | batch | hold | mcp_quiet | check_failed, count, ids (at most 5), until (when it ends by itself, or null) }], holds: [{ holdId, heldBy: factory | owner | worker:<channelId>, reason, createdAt, until, active }], lastRestart: { finishedAt, fromVersion, toVersion, fromSchema, toSchema, waitedMinutes, requestedBy } | null, quietMinutes (1-30, default 3), serviceMode }.";
+  const holdRestartInput = z.object({ minutes: z.number(), reason: z.string() }).strict();
+  const releaseHoldInput = z.object({ holdId: z.string() }).strict();
+  registerTool(
+    "factory_restart_status",
+    {
+      description: `Restart when idle on this computer (1.30.0): {} -> status. While a request is open (the owner's button, or the developer's script) the server checks every 15 s and restarts itself (a graceful stop; the system service starts the new build) once waitingFor is empty: no unfinished media session, no media job queued/submitted/generating/transferring, no Gemini job queued/submitting/running, no upload being sent, no live stream starting/stopping/switching (a running stream does not count), no operation lock or running operation/Batch, no active hold, and no MCP call in the last quietMinutes. A request still open after 24 h expires. This call itself does not count as an MCP call for the quiet window, so polling it never delays a restart. Read-only, local. ${RESTART_SHAPE}`,
+      inputSchema: emptyInput,
+    },
+    async () => successResult(await deps.restart.status())
+  );
+  registerTool(
+    "factory_hold_restart",
+    {
+      description:
+        "Keep this computer's server from restarting while you work (1.30.0): { minutes (whole, 1-60), reason (1-200 characters) } -> { hold: { holdId, heldBy: factory, reason, createdAt, until, active } }. The hold ends by itself at `until`, or earlier with factory_release_hold; several holds can be active at once, and the owner can end any of them. Use it before a long step that must not be cut (for example a run you start and then watch). It only delays a restart; it never starts one. Refusals: validation_failed (minutes outside 1-60, no reason). Local only.",
+      inputSchema: holdRestartInput,
+    },
+    async (args) => {
+      const input = parseInput(holdRestartInput, args);
+      await deps.assertMutationAllowed();
+      return successResult(await deps.restart.hold(input));
+    }
+  );
+  registerTool(
+    "factory_release_hold",
+    {
+      description:
+        "End one of your own restart holds early (1.30.0): { holdId } -> { hold, released (false when it had already ended) }. A hold set by someone else (a channel worker, the owner) is not_found. Local only.",
+      inputSchema: releaseHoldInput,
+    },
+    async (args) => {
+      const input = parseInput(releaseHoldInput, args);
+      await deps.assertMutationAllowed();
+      return successResult(await deps.restart.release(input));
+    }
   );
 
   return server;

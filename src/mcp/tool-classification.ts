@@ -108,6 +108,10 @@ export const MCP_TOOL_CLASSIFICATION: Readonly<Record<string, McpToolClass>> = O
   agent_list_worker_actions: "bound",
   // BL-216 (ADR 0048): private/unlisted on the bound channel's own videos and playlists, never public.
   agent_set_privacy: "bound",
+  // BL-220 (RESTART_WHEN_IDLE_PLAN.md, ADR 0049): restart when idle -- the status, a worker's own hold and its release.
+  agent_restart_status: "bound",
+  agent_hold_restart: "bound",
+  agent_release_hold: "bound",
   // BL-217 (WORKER_CAPABILITIES_PLAN.md stage 3): the Factory Operator's channel tools for the bound channel only (worker-factory-tools.ts).
   agent_plan_get: "bound",
   agent_plan_list: "bound",

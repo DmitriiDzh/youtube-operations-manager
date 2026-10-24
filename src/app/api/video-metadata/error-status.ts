@@ -154,6 +154,7 @@ const DOMAIN_ERROR_STATUS = {
   gemini_limit_exceeded: 409,
   gemini_request_exists: 409,
   gemini_job_not_found: 404,
+  restart_needs_service: 409,
   gemini_cancel_too_late: 409,
   media_job_command_invalid: 409,
   gemini_input_unavailable: 422,

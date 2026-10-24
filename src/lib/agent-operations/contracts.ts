@@ -72,7 +72,9 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT",
 // storyboards, video numbers, jobs, live) for the worker's own channel. Additive.
 // 4.3.0 (BL-218, stage 4, owner msg 3402): paid work the Operator's way for the worker's own channel -- agent_factory_* sessions and
 // jobs, agent_plan_run_stage / _rerun, agent_gemini_get_status / _create_job (EXECUTE), within the owner's switches and limits. Additive.
-export const AGENT_API_VERSION = "4.3.0";
+// 4.4.0 (BL-220, RESTART_WHEN_IDLE_PLAN.md, ADR 0049): agent_restart_status (READ), agent_hold_restart / agent_release_hold (DRAFT:
+// a worker's own restart holds, logged in the worker log). Additive.
+export const AGENT_API_VERSION = "4.4.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry
