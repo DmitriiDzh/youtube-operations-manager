@@ -12,11 +12,13 @@ type WorkerAction = { at: string; tool: string; target: string | null; detail: s
 const REFUSAL_CODES = new Set(["AGENT_PUBLIC_NOT_ALLOWED", "AGENT_TOKEN_INVALID", "CHANNEL_NOT_ACTIVE", "WRITE_CHANNEL_MISMATCH", "live_writes_disabled"]);
 
 /** The few fields of a row's detail the owner reads at a glance; anything else stays out of the list. */
-function readDetail(detail: string | null): { privacyStatus?: string; videoCount?: number; failedVideos?: number } {
+function readDetail(detail: string | null): { privacyStatus?: string; previousPrivacyStatus?: string; unchanged?: boolean; videoCount?: number; failedVideos?: number } {
   try {
     const parsed = detail ? (JSON.parse(detail) as Record<string, unknown>) : {};
     return {
       privacyStatus: typeof parsed.privacyStatus === "string" ? parsed.privacyStatus : undefined,
+      previousPrivacyStatus: typeof parsed.previousPrivacyStatus === "string" ? parsed.previousPrivacyStatus : undefined,
+      unchanged: parsed.changed === false,
       videoCount: Array.isArray(parsed.videoIds) ? parsed.videoIds.length : undefined,
       failedVideos: typeof parsed.failedVideos === "number" && parsed.failedVideos > 0 ? parsed.failedVideos : undefined,
     };
@@ -87,7 +89,13 @@ export function ChannelWorkerActions({ channelId }: { channelId: string }) {
                 <span className="text-zinc-500">{formatDisplayDateTime(action.at)}</span>
                 <span className="text-zinc-200">{isUiTextKey(toolKey) ? t(toolKey) : action.tool}</span>
                 {action.target && <span className="font-mono">{action.target}</span>}
-                {detail.privacyStatus && <span>{t("settingsCards.workerActions.privacy", { status: detail.privacyStatus })}</span>}
+                {detail.privacyStatus &&
+                  (detail.previousPrivacyStatus ? (
+                    <span>{t("settingsCards.workerActions.privacyChange", { from: detail.previousPrivacyStatus, to: detail.privacyStatus })}</span>
+                  ) : (
+                    <span>{t("settingsCards.workerActions.privacy", { status: detail.privacyStatus })}</span>
+                  ))}
+                {detail.unchanged && <span className="text-zinc-500">{t("settingsCards.workerActions.unchanged")}</span>}
                 {detail.videoCount !== undefined && <span>{t("settingsCards.workerActions.videos", { count: String(detail.videoCount) })}</span>}
                 {detail.failedVideos !== undefined && (
                   <span className="text-amber-400">{t("settingsCards.workerActions.failedVideos", { count: String(detail.failedVideos) })}</span>

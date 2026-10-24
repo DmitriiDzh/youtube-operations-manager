@@ -988,6 +988,13 @@ nothing. This replaces BL-091's per-capability zones, which are retired in
     would really write (refused ones included): `at`, channel, token id, tool, target (video/playlist id; a created playlist's
     id from YouTube's answer), `detail` (JSON, at most 500 characters: changed fields, `privacyStatus`, `videoIds`,
     `failedVideos`), `outcome` `ok`/`error`, `errorCode`. A failed row write never changes the tool's answer.
+    `agent_set_privacy` (BL-216, Agent API 4.1.0, EXECUTE): `{ target: "video" | "playlist", id, privacyStatus: "private" |
+    "unlisted", dryRun? (default true) }` → `{ target, id, dryRun, previousPrivacyStatus, privacyStatus, changed }`. Never
+    public (not accepted). Refused: a scheduled video (`AGENT_SCHEDULE_OWNER_ONLY`, 403), the channel's current live broadcast
+    (`AGENT_LIVE_BROADCAST_OWNER_ONLY`, 403), a video not in the channel's synced list or a playlist not of the channel
+    (`not_found`). A video is written by `video-details` (identity check, backup, Live writes, read-back, bound to the read
+    etag), a playlist by the playlist core; no write when the status is already the asked one. Log rows gain
+    `previousPrivacyStatus` and `changed`.
     `agent_list_worker_actions { limit? 1-100, default 50 }` → `{ actions: [{ at, tool, target, detail, outcome, errorCode }] }`
     (READ, bound channel only).
   - `list` / `transcript` / `preview` / `channel_sync` are confined to the bound channel.

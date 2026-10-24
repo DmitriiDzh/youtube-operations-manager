@@ -717,6 +717,14 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     description: "Add videos to or remove them from a playlist of the bound channel (`playlist_add_videos`, `playlist_remove_videos`). Real YouTube writes, per-video results; logged.",
   },
   {
+    id: "youtube_writes.set_privacy",
+    mcpTools: ["agent_set_privacy"],
+    domain: "youtube_writes",
+    permission: "EXECUTE",
+    description:
+      "BL-216: make one of the bound channel's videos or playlists private or unlisted (`agent_set_privacy`, dryRun by default). Never public; a scheduled video and the current live broadcast stay the owner's. A real YouTube write through the video-details / playlist writes (Live writes); logged with the previous status.",
+  },
+  {
     id: "youtube_writes.list_worker_actions",
     mcpTools: ["agent_list_worker_actions"],
     domain: "youtube_writes",

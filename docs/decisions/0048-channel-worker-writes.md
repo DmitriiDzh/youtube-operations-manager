@@ -38,6 +38,8 @@ Status: Accepted
 ## Consequences
 
 - `AGENT_API_VERSION` 4.0.0 (MAJOR): a worker loses `playlist_delete` and `public`.
-- Stage 2 (BL-216) adds `agent_set_privacy` under the same rules (private/unlisted only, logged with the previous status).
+- Stage 2 (BL-216, Agent API 4.1.0) adds `agent_set_privacy` under the same rules: private/unlisted only, logged with the previous
+  status, refused for a scheduled video and the app's current broadcast. It is allowed by the owner's Live writes switch, like
+  every other write (owner msgs 3386/3389: no separate approval per change).
 - `docs/AGENT_OPERATIONS_INTERFACE.md` §3 and §8 are updated: §8's "no new YouTube write path" still holds (every write goes through
   the write gateway, the write-channel guardrail and Live writes), but a worker's writes are no longer only drafts.

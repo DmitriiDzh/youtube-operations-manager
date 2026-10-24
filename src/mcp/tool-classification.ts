@@ -106,6 +106,8 @@ export const MCP_TOOL_CLASSIFICATION: Readonly<Record<string, McpToolClass>> = O
   agent_release_media_session: "bound",
   // BL-215 (ADR 0048): the bound channel's worker log, read-only.
   agent_list_worker_actions: "bound",
+  // BL-216 (ADR 0048): private/unlisted on the bound channel's own videos and playlists, never public.
+  agent_set_privacy: "bound",
   // BL-161: the Producer role's own tools.
   producer_get_capabilities: "producer-only",
   producer_list_channels: "producer-only",

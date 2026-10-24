@@ -25,10 +25,10 @@ test("a created playlist is private unless asked otherwise", () => {
 });
 
 test("the answer gives a created playlist's id and the failed videos of an add/remove", () => {
-  assert.deepEqual(fromToolResult("playlist_create", { playlist: { id: "p-new" } }), { target: "p-new", failedVideos: null });
-  assert.deepEqual(fromToolResult("playlist_add_videos", { failures: [{}, {}] }), { target: null, failedVideos: 2 });
-  assert.deepEqual(fromToolResult("playlist_update", { playlist: { id: "p" } }), { target: null, failedVideos: null });
-  assert.deepEqual(fromToolResult("playlist_create", undefined), { target: null, failedVideos: null });
+  assert.deepEqual(fromToolResult("playlist_create", { playlist: { id: "p-new" } }), { target: "p-new", failedVideos: null, previousPrivacyStatus: null, changed: null });
+  assert.deepEqual(fromToolResult("playlist_add_videos", { failures: [{}, {}] }), { target: null, failedVideos: 2, previousPrivacyStatus: null, changed: null });
+  assert.deepEqual(fromToolResult("playlist_update", { playlist: { id: "p" } }), { target: null, failedVideos: null, previousPrivacyStatus: null, changed: null });
+  assert.deepEqual(fromToolResult("playlist_create", undefined), { target: null, failedVideos: null, previousPrivacyStatus: null, changed: null });
 });
 
 test("the detail column is bounded at 500 characters and empty fields give null", () => {
@@ -36,4 +36,18 @@ test("the detail column is bounded at 500 characters and empty fields give null"
   const long = serializeWorkerDetail({ videoIds: Array.from({ length: 200 }, (_, i) => `video-${i}`) });
   assert.equal(long?.length, 500);
   assert.ok(long?.endsWith("…"));
+});
+
+test("BL-216: agent_set_privacy writes only with dryRun false, and the answer gives the previous status", () => {
+  assert.equal(describeWorkerWrite("agent_set_privacy", { target: "video", id: "v1", privacyStatus: "private" }), null);
+  assert.deepEqual(describeWorkerWrite("agent_set_privacy", { target: "playlist", id: "PL1", privacyStatus: "unlisted", dryRun: false }), {
+    target: "PL1",
+    detail: { target: "playlist", privacyStatus: "unlisted" },
+  });
+  assert.deepEqual(fromToolResult("agent_set_privacy", { previousPrivacyStatus: "public", changed: true }), {
+    target: null,
+    failedVideos: null,
+    previousPrivacyStatus: "public",
+    changed: true,
+  });
 });

@@ -16,7 +16,8 @@
 | 3 | BL-217 | `agent_*` versions of the Operator's channel tools (plans, storyboards, video numbers, live, channel translations, jobs, Gemini reads) | 4.2.0 |
 | 4 | BL-218 | Paid work for workers (Gemini jobs, plan stages) with per-action approval | 4.3.0 |
 
-Stages 2–4 are planned in DEV-RESP-0040 and get their own sections here when they start.
+Stages 2–4 are built on ONE branch, `feature/fo-req-0037-worker-stages`, and merged together (owner msgs 3392/3393/3395; stage 1
+was merged alone at 1c91aac2 and is not restarted onto the live server until the rest is ready).
 
 ## Stage 1 (BL-215) -- acceptance criteria
 
@@ -49,3 +50,21 @@ Written before the code, from the owner's decisions and FO-REQ-0037's "Owner kee
 - The log is device-local (like the Producer's call log); each computer shows the writes its own endpoint served.
 - No before → after values in the log yet: the wrapper sees the request and the answer, not YouTube's previous state. Stage 2's
   privacy tool records the previous status itself.
+
+## Stage 2 (BL-216) -- acceptance criteria
+
+From the owner's answer 4 (msg 3384) and msg 3386/3389: a direct write, allowed by the owner's Live writes switch, never public.
+
+- **AC-WP-01** `agent_set_privacy { target: "video" | "playlist", id, privacyStatus: "private" | "unlisted", dryRun? }`; any
+  other `privacyStatus` (`public` included) is invalid input. The service refuses `public` again (`AGENT_PUBLIC_NOT_ALLOWED`).
+- **AC-WP-02** A video must be in the bound channel's synced mirror (`not_found` otherwise, the same as a video that does not
+  exist); a playlist must be one of the bound channel's (`not_found` otherwise).
+- **AC-WP-03** A video with a `publishAt` (scheduled) is refused with `AGENT_SCHEDULE_OWNER_ONLY`, nothing written: changing its
+  privacy would drop the owner's schedule.
+- **AC-WP-04** The app's current broadcast of the channel (its stream is on, or an open segment's broadcast) is refused with
+  `AGENT_LIVE_BROADCAST_OWNER_ONLY`. Finished recordings are allowed (PRD-REQ-0019's case).
+- **AC-WP-05** `dryRun` defaults to true: the answer shows `previousPrivacyStatus` and `privacyStatus`, nothing is written. With
+  `dryRun: false` a video goes through `video-details`' write (identity check, backup, Live writes, read-back, audit) bound to the
+  previewed etag; a playlist through the playlist core (write-channel guardrail, ownership, Live writes).
+- **AC-WP-06** A target that already has the asked status is not written (`changed: false`).
+- **AC-WP-07** Every call with `dryRun: false` leaves one worker-log row with `previousPrivacyStatus` and `privacyStatus`.

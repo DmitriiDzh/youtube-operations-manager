@@ -3,7 +3,8 @@
  * really write to YouTube, and what each one is about -- the input of the worker log the channel session's wrapper in
  * `./server.ts` writes. Pure: no database, no YouTube.
  *
- * `apply` writes only with an explicit `dryRun: false` (it defaults to a preview, RISK-12); the four playlist tools always write.
+ * `apply` and `agent_set_privacy` (BL-216) write only with an explicit `dryRun: false` (both default to a preview); the four
+ * playlist tools always write.
  * `playlist_delete` is not here: it is never registered for a worker (operator-only, ADR 0048 §3).
  */
 
@@ -47,6 +48,8 @@ const DESCRIBE: Readonly<Record<string, (args: ToolArgs) => WorkerWriteDescripti
       privacyStatus: text(args?.privacyStatus) ?? undefined,
     }),
   }),
+  agent_set_privacy: (args) =>
+    args?.dryRun === false ? { target: text(args.id), detail: detail({ target: text(args.target), privacyStatus: text(args.privacyStatus) }) } : null,
   playlist_add_videos: (args) => ({ target: text(args?.playlistId), detail: detail({ videoIds: videoIds(args) }) }),
   playlist_remove_videos: (args) => ({ target: text(args?.playlistId), detail: detail({ videoIds: videoIds(args) }) }),
 });
@@ -65,12 +68,19 @@ export function describeWorkerWrite(tool: string, args: unknown): WorkerWriteDes
  * What only YouTube's answer tells: a created playlist's id (it has none before), and how many videos of an add/remove failed (those
  * two tools answer `ok` with per-video failures).
  */
-export function fromToolResult(tool: string, structured: unknown): { target: string | null; failedVideos: number | null } {
+export function fromToolResult(
+  tool: string,
+  structured: unknown
+): { target: string | null; failedVideos: number | null; previousPrivacyStatus: string | null; changed: boolean | null } {
   const result = typeof structured === "object" && structured !== null ? (structured as Record<string, unknown>) : {};
   const playlist = result.playlist as { id?: unknown } | undefined;
   const failures = result.failures;
+  const privacy = tool === "agent_set_privacy";
   return {
     target: tool === "playlist_create" ? text(playlist?.id) : null,
     failedVideos: (tool === "playlist_add_videos" || tool === "playlist_remove_videos") && Array.isArray(failures) ? failures.length : null,
+    // BL-216: the status before the change, as the tool read it from YouTube (AC-WP-07), and whether anything was written.
+    previousPrivacyStatus: privacy ? text(result.previousPrivacyStatus) : null,
+    changed: privacy && typeof result.changed === "boolean" ? result.changed : null,
   };
 }

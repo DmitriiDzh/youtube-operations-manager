@@ -188,3 +188,20 @@ test("AC-WK-01/02 end to end: through the MCP tools and the real playlist core, 
     ]
   );
 });
+
+test("AC-WP-07: agent_set_privacy is logged only when it would write (dryRun:false), refusals included", async () => {
+  const channelId = "UC_WL_PRIVACY";
+  await inSession(channelId, async (tools) => {
+    assert.ok(tools.agent_set_privacy, "registered for a worker");
+    // Unknown to this channel's (empty) synced list: refused not_found, before anything reaches YouTube.
+    await tools.agent_set_privacy.handler({ target: "video", id: "v-unknown", privacyStatus: "private" });
+    const refused = await tools.agent_set_privacy.handler({ target: "video", id: "v-unknown", privacyStatus: "private", dryRun: false });
+    assert.equal(refused.isError, true);
+    assert.equal(JSON.parse(refused.content[0].text).error.code, "not_found");
+  });
+  const rows = await listWorkerActionLogEntries(channelId, 100);
+  assert.deepEqual(
+    rows.map((row) => [row.tool, row.target, row.errorCode, JSON.parse(row.detail ?? "{}")]),
+    [["agent_set_privacy", "v-unknown", "not_found", { target: "video", privacyStatus: "private" }]]
+  );
+});

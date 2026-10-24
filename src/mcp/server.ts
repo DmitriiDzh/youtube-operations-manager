@@ -10,6 +10,7 @@ import type { VideoMetadataCore } from "@/lib/video-metadata";
 import { createCliAuthService, type CliAuthService } from "@/lib/cli-auth";
 import { insertWorkerActionLogEntry, listWorkerActionLogEntries, recordGatewayCallOutcome } from "@/lib/db";
 import { describeWorkerWrite, fromToolResult, serializeWorkerDetail } from "./worker-actions";
+import { createWorkerPrivacyCore, setPrivacyInputSchema } from "@/lib/worker-privacy";
 import type { CredentialRef } from "@/lib/shared-domain";
 import { createPlaylistManagementCore, type PlaylistManagementCore } from "@/lib/playlist-management";
 import { OperationLockError } from "@/lib/operation-lock";
@@ -2837,7 +2838,12 @@ export function createMcpServer(
     result: ToolResponse
   ): Promise<void> {
     const answered = fromToolResult(name, result.structuredContent);
-    const detail = serializeWorkerDetail(answered.failedVideos === null ? write.detail : { ...write.detail, failedVideos: answered.failedVideos });
+    const detail = serializeWorkerDetail({
+      ...write.detail,
+      ...(answered.failedVideos === null ? {} : { failedVideos: answered.failedVideos }),
+      ...(answered.previousPrivacyStatus === null ? {} : { previousPrivacyStatus: answered.previousPrivacyStatus }),
+      ...(answered.changed === null ? {} : { changed: answered.changed }),
+    });
     await insertWorkerActionLogEntry({
       at: new Date(),
       channelId: session.channelId,
@@ -3930,6 +3936,24 @@ export function createMcpServer(
       inputSchema: createExperimentProposalInputSchema,
     },
     (args) => handlers.createExperimentProposal(args)
+  );
+
+  registerTool(
+    "agent_set_privacy",
+    {
+      description:
+        "BL-216 (ADR 0048): hide one of THIS channel's videos or playlists: { target: video|playlist, id, privacyStatus: private|unlisted, dryRun? } -> { target, id, dryRun, previousPrivacyStatus, privacyStatus, changed }. dryRun defaults to true (shows the change, writes nothing); pass dryRun:false to write. Never public (not accepted). Refused: a scheduled video (AGENT_SCHEDULE_OWNER_ONLY -- its date is the owner's), the channel's current live broadcast (AGENT_LIVE_BROADCAST_OWNER_ONLY; finished recordings are fine), a video not in this channel's synced list or a playlist not of this channel (not_found). A video is written through the app's video-details write (identity check, backup, Live writes, read-back), a playlist through the playlist write (Live writes); a target already at that status is not written (changed:false). About 51 quota units for a video, about 51 for a playlist. Logged in the worker log.",
+      inputSchema: setPrivacyInputSchema,
+    },
+    async (args: z.infer<typeof setPrivacyInputSchema>) => {
+      const gate = await assertMcpDeviceAvailable();
+      if (gate) return gate;
+      try {
+        return toolSuccessResult({ ...(await createWorkerPrivacyCore().setPrivacy(args)) });
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    }
   );
 
   registerTool(
