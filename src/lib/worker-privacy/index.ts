@@ -33,7 +33,7 @@ export function createWorkerPrivacyCore() {
         },
         async readVideo(videoId) {
           const snapshot = await videoDetails.getSnapshot({ credentialRef, expectedChannelId: channelId, videoId });
-          return { privacyStatus: snapshot.privacyStatus ?? null, publishAt: snapshot.publishAt ?? null, etag: snapshot.etag };
+          return { privacyStatus: snapshot.privacyStatus ?? null, publishAt: snapshot.publishAt ?? null, etag: snapshot.etag, liveBroadcastContent: snapshot.liveBroadcastContent ?? null };
         },
         async writeVideo({ videoId, privacyStatus, expectedEtag }) {
           const result = await videoDetails.applyFieldsUpdate({

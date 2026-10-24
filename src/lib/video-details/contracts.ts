@@ -68,6 +68,9 @@ export type VideoDetailsSnapshot = {
   recordingDate: string | null;
   /** BL-186 stage 3: read with the other parts; optional so older snapshots stay valid. */
   paidProductPlacement?: boolean | null;
+  /** Read-only (`snippet.liveBroadcastContent`: none | live | upcoming), never written. FO-REQ-0037 review: a channel agent's privacy
+   * write checks it fresh, so a broadcast started after the last sync is still the owner's. */
+  liveBroadcastContent?: string | null;
 };
 
 export type VideoDetailsDiff = {

@@ -179,7 +179,7 @@ export function pinFactoryDepsToChannel(
                 await requireOwnSession(input.sessionId);
                 return media().getSession(input);
               }
-              const listed = record(await media().getSession({}));
+              const listed = record(await media().getSession({ channelId }));
               const sessions = Array.isArray(listed.sessions) ? listed.sessions.filter((session) => record(session).channelId === channelId) : [];
               return { sessions };
             };

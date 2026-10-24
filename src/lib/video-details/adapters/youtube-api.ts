@@ -41,6 +41,7 @@ function toSnapshot(videoId: string, context: NonNullable<Awaited<ReturnType<typ
     containsSyntheticMedia: context.status.containsSyntheticMedia ?? null,
     recordingDate: context.recordingDate,
     paidProductPlacement: context.paidProductPlacement,
+    liveBroadcastContent: context.snippet.liveBroadcastContent ?? null,
   };
 }
 
