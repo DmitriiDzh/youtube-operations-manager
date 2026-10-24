@@ -41,7 +41,7 @@ Written before the code, from the owner's decisions and FO-REQ-0037's "Owner kee
 - **AC-WK-08** `GET /api/channels/{channelId}/worker-actions` (signed-in owner only, 401 otherwise) returns at most 100 rows of
   that channel, newest first; rows of other channels never appear. Rows older than 90 days are pruned.
 - **AC-WK-09** `agent_list_worker_actions` returns only the bound channel's rows.
-- **AC-WK-10** The Settings → Channels row of each channel shows a «Действия воркера» list with every text in all UI languages.
+- **AC-WK-10** The Settings → Channels row of each channel shows a «Действия воркера в YouTube» list with every text in all UI languages.
 
 ## Not in stage 1
 

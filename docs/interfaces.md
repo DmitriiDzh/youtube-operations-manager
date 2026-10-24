@@ -371,7 +371,7 @@ Key MCP tools:
 - Metadata tools:
   - `list`, `transcript`, `preview`, `apply`
 - Playlist tools:
-  - `playlist_list`, `playlist_create`, `playlist_update`, `playlist_delete`
+  - `playlist_list`, `playlist_create`, `playlist_update`, `playlist_delete` (owner-only since Agent API 4.0.0: not registered for a channel agent, ADR 0048)
   - `playlist_add_videos`, `playlist_remove_videos`
 - Change Set / Batch tools (Phase 7 slice 1, `docs/roadmap/plans/PHASE_7_PLAN.md`; closes part of
   `docs/TECHNICAL_DEBT.md` RISK-04) — all five are **read/propose-only**: none can reach a real
@@ -442,7 +442,7 @@ Key MCP tools:
 - Agent Operations Interface tools (Phase 7, `docs/AGENT_OPERATIONS_INTERFACE.md` §7 for current slice status):
   - `agent_get_capabilities` — `{}` (no parameters) → `SystemCapabilities` (product/agent-API
     version, implemented capabilities, data domains, the full permission vocabulary, what's
-    actually granted today — always `["READ","DRAFT"]` — named future extension points, and the
+    actually granted today — `["READ","DRAFT","EXECUTE"]` since Agent API 4.0.0 (ADR 0048), never `APPROVE` — named future extension points, and the
     local schema version). Read-only, no channel scoping (instance-level information). Call this
     first, before assuming any other Agent Operations tool exists.
   - BL-178 additions (2026-10-12, additive, no version bump): `agent_get_channel_context` also returns `languageBaseline`
@@ -1324,7 +1324,7 @@ Both are operator-only and require a NextAuth session. The mutating methods are 
 
 - `GET /api/agent-tokens` → `{ tokens: [{ tokenId, channelId, label, createdAt }] }` (metadata only).
 - `GET /api/channels/{channelId}/worker-actions` (BL-215, ADR 0048) → `{ actions: [{ at, tool, target, detail, outcome, errorCode }] }`:
-  that channel's worker log on this device, newest first, at most 100 rows (the Settings → Channels list «Записи воркера»). Read-only.
+  that channel's worker log on this device, newest first, at most 100 rows (the Settings → Channels list «Действия воркера в YouTube»). Read-only.
 - Logical paths and the Factory Operator token (BL-129, ADR 0022), all operator-only (session required, 401 otherwise):
   - `GET /api/logical-paths` → `{ paths: [{ name, audience, description, path | null, status: "exists" | "missing" | null, updatedAt | null }] }` (this device's value; `status` is a one-time check of the stored path).
   - `POST /api/logical-paths` with `{ name, audience: "all_agents" | "factory_only", description? }` → `201 { path: { name } }`; `LOGICAL_PATH_ALREADY_EXISTS` (409), invalid name `validation_failed` (400).

@@ -333,7 +333,7 @@ produces content itself (no media pipeline, no YouTube write).
 - **Write-once by design:** create, get, list only -- no update, no status field, no approval
   workflow. The owner spec describes no review/approval process for proposals (unlike Change
   Sets); inventing one would be scope creep (`AGENTS.md` §C). A proposal is simply a DRAFT object;
-  `GRANTED_PERMISSIONS` remains `["READ","DRAFT"]`.
+  `GRANTED_PERMISSIONS` remained `["READ","DRAFT"]` at the time (EXECUTE was added later for a worker's own-channel YouTube writes, ADR 0048 -- proposals are still DRAFT).
 - **Fields (owner spec §18):** `objective`/`topicConcept`/`rationale` are dedicated, bounded
   free-text columns. `evidence` reuses the exact `EvidenceReference` shape from slice F (owner
   spec §13), now defined once in `src/lib/shared-provenance/` (see below). The remaining,

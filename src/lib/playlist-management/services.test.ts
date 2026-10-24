@@ -67,6 +67,8 @@ function createServicesFixture() {
     channelSelectionStore: {
       setSelectedChannelId: async () => undefined,
     },
+    // ADR 0048's agent rule; agent-public.test.ts covers it. These tests run as the owner (no agent session).
+    assertMayNotPublish: () => undefined,
   });
 
   return { services, authCalls };
@@ -90,6 +92,7 @@ test("listPlaylists resolves auth and returns stable output", async () => {
 test("createPlaylist maps unknown failures to update_failed", async () => {
   const { authCalls } = createServicesFixture();
   const services = createPlaylistManagementServices({
+    assertMayNotPublish: () => undefined, // owner mode (no agent session); the agent rule: agent-public.test.ts
     authResolver: {
       resolve: async (args) => {
         authCalls.push(args);
@@ -151,6 +154,7 @@ test("createPlaylist blocks mismatch guardrail and does not call remote create",
   let createCalls = 0;
 
   const services = createPlaylistManagementServices({
+    assertMayNotPublish: () => undefined, // owner mode (no agent session); the agent rule: agent-public.test.ts
     authResolver: {
       resolve: async (args) => ({
         credentialRef: args.credentialRef as { userId: string },
@@ -227,6 +231,7 @@ test("updatePlaylist applies validated patch, preserves non-patched fields and p
   let capturedUpdateInput: unknown;
 
   const services = createPlaylistManagementServices({
+    assertMayNotPublish: () => undefined, // owner mode (no agent session); the agent rule: agent-public.test.ts
     authResolver: {
       resolve: async (args) => ({
         credentialRef: args.credentialRef as { userId: string },
@@ -318,6 +323,7 @@ test("updatePlaylist blocks guardrail mismatch before ownership preflight and re
   const calls = { preflight: 0, update: 0 };
 
   const services = createPlaylistManagementServices({
+    assertMayNotPublish: () => undefined, // owner mode (no agent session); the agent rule: agent-public.test.ts
     authResolver: {
       resolve: async (args) => ({
         credentialRef: args.credentialRef as { userId: string },
@@ -392,6 +398,7 @@ test("updatePlaylist fails closed on unresolved write channel before ownership p
   const calls = { preflight: 0, update: 0 };
 
   const services = createPlaylistManagementServices({
+    assertMayNotPublish: () => undefined, // owner mode (no agent session); the agent rule: agent-public.test.ts
     authResolver: {
       resolve: async (args) => ({
         credentialRef: args.credentialRef as { userId: string },
@@ -455,6 +462,7 @@ test("updatePlaylist fails closed when playlist ownership does not match active 
   const calls = { update: 0 };
 
   const services = createPlaylistManagementServices({
+    assertMayNotPublish: () => undefined, // owner mode (no agent session); the agent rule: agent-public.test.ts
     authResolver: {
       resolve: async (args) => ({
         credentialRef: args.credentialRef as { userId: string },
@@ -526,6 +534,7 @@ test("updatePlaylist fails closed when playlist ownership does not match active 
 
 test("addVideosToPlaylist returns stable partial result with per-item failures", async () => {
   const services = createPlaylistManagementServices({
+    assertMayNotPublish: () => undefined, // owner mode (no agent session); the agent rule: agent-public.test.ts
     authResolver: {
       resolve: async (args) => ({
         credentialRef: args.credentialRef as { userId: string },
@@ -612,6 +621,7 @@ test("addVideosToPlaylist returns stable partial result with per-item failures",
 test("removeVideosFromPlaylist preserves order and returns not-found failures", async () => {
   const deletedItemIds: string[] = [];
   const services = createPlaylistManagementServices({
+    assertMayNotPublish: () => undefined, // owner mode (no agent session); the agent rule: agent-public.test.ts
     authResolver: {
       resolve: async (args) => ({
         credentialRef: args.credentialRef as { userId: string },
@@ -712,6 +722,7 @@ test("addVideosToPlaylist fails closed when playlist ownership does not match ac
   const calls = { add: 0 };
 
   const services = createPlaylistManagementServices({
+    assertMayNotPublish: () => undefined, // owner mode (no agent session); the agent rule: agent-public.test.ts
     authResolver: {
       resolve: async (args) => ({
         credentialRef: args.credentialRef as { userId: string },
@@ -784,6 +795,7 @@ test("removeVideosFromPlaylist fails closed when playlist ownership does not mat
   const calls = { delete: 0 };
 
   const services = createPlaylistManagementServices({
+    assertMayNotPublish: () => undefined, // owner mode (no agent session); the agent rule: agent-public.test.ts
     authResolver: {
       resolve: async (args) => ({
         credentialRef: args.credentialRef as { userId: string },
@@ -864,6 +876,7 @@ test("addVideosToPlaylist fails closed on unresolved write channel before owners
   const calls = { preflight: 0, add: 0 };
 
   const services = createPlaylistManagementServices({
+    assertMayNotPublish: () => undefined, // owner mode (no agent session); the agent rule: agent-public.test.ts
     authResolver: {
       resolve: async (args) => ({
         credentialRef: args.credentialRef as { userId: string },
@@ -926,6 +939,7 @@ test("removeVideosFromPlaylist fails closed on unresolved write channel before o
   const calls = { preflight: 0, delete: 0 };
 
   const services = createPlaylistManagementServices({
+    assertMayNotPublish: () => undefined, // owner mode (no agent session); the agent rule: agent-public.test.ts
     authResolver: {
       resolve: async (args) => ({
         credentialRef: args.credentialRef as { userId: string },
@@ -987,6 +1001,7 @@ test("removeVideosFromPlaylist fails closed on unresolved write channel before o
 test("deletePlaylist enforces guardrail and deletes when channel matches", async () => {
   const calls = { delete: 0, persist: 0 };
   const services = createPlaylistManagementServices({
+    assertMayNotPublish: () => undefined, // owner mode (no agent session); the agent rule: agent-public.test.ts
     authResolver: {
       resolve: async (args) => ({
         credentialRef: args.credentialRef as { userId: string },
@@ -1051,6 +1066,7 @@ test("deletePlaylist enforces guardrail and deletes when channel matches", async
 
 test("deletePlaylist fails closed when active channel and playlist owner mismatch", async () => {
   const services = createPlaylistManagementServices({
+    assertMayNotPublish: () => undefined, // owner mode (no agent session); the agent rule: agent-public.test.ts
     authResolver: {
       resolve: async (args) => ({
         credentialRef: args.credentialRef as { userId: string },
@@ -1113,6 +1129,7 @@ test("deletePlaylist blocks unresolved guardrail and never reaches remote delete
   const calls = { preflight: 0, delete: 0 };
 
   const services = createPlaylistManagementServices({
+    assertMayNotPublish: () => undefined, // owner mode (no agent session); the agent rule: agent-public.test.ts
     authResolver: {
       resolve: async (args) => ({
         credentialRef: args.credentialRef as { userId: string },

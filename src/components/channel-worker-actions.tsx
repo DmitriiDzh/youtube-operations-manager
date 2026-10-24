@@ -1,12 +1,15 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { isUiTextKey } from "@/lib/ui-text";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { InfoTooltip } from "./info-tooltip";
 import { useT } from "./ui-text-provider";
 
 type WorkerAction = { at: string; tool: string; target: string | null; detail: string | null; outcome: "ok" | "error"; errorCode: string | null };
+
+/** Codes that mean the app refused the call (a rule, not a YouTube or network failure). */
+const REFUSAL_CODES = new Set(["AGENT_PUBLIC_NOT_ALLOWED", "AGENT_TOKEN_INVALID", "CHANNEL_NOT_ACTIVE", "WRITE_CHANNEL_MISMATCH", "live_writes_disabled"]);
 
 /** The few fields of a row's detail the owner reads at a glance; anything else stays out of the list. */
 function readDetail(detail: string | null): { privacyStatus?: string; videoCount?: number; failedVideos?: number } {
@@ -33,15 +36,22 @@ export function ChannelWorkerActions({ channelId }: { channelId: string }) {
   const [open, setOpen] = useState(false);
   const [actions, setActions] = useState<WorkerAction[] | null>(null);
   const [failed, setFailed] = useState(false);
+  // Only the newest request may set the list (Show and Refresh can overlap).
+  const latest = useRef(0);
 
   const load = useCallback(async () => {
+    const request = ++latest.current;
     setFailed(false);
     try {
       const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/worker-actions`);
       if (!res.ok) throw new Error("load failed");
-      setActions(((await res.json()) as { actions: WorkerAction[] }).actions);
+      const loaded = ((await res.json()) as { actions: WorkerAction[] }).actions;
+      if (request === latest.current) setActions(loaded);
     } catch {
-      setFailed(true);
+      if (request === latest.current) {
+        setActions(null);
+        setFailed(true);
+      }
     }
   }, [channelId]);
 
@@ -86,7 +96,7 @@ export function ChannelWorkerActions({ channelId }: { channelId: string }) {
                   <span className="text-emerald-400">{t("settingsCards.workerActions.done")}</span>
                 ) : (
                   <span className="text-red-400">
-                    {t("settingsCards.workerActions.refused")}
+                    {action.errorCode && REFUSAL_CODES.has(action.errorCode) ? t("settingsCards.workerActions.refused") : t("settingsCards.workerActions.failed")}
                     {action.errorCode ? ` (${action.errorCode})` : ""}
                   </span>
                 )}

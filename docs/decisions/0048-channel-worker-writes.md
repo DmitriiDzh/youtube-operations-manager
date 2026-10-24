@@ -25,13 +25,13 @@ Status: Accepted
    drafts (Change Sets, media sessions, collection requests stay owner-approved). A test ties the inventory to the channel tool
    registry in both directions.
 2. **Never public.** In an agent session `playlist_create` and `playlist_update` refuse `privacyStatus: "public"` with
-   `AGENT_PUBLIC_NOT_ALLOWED` (`src/lib/channel-access`'s agent scope, checked by the playlist core before anything else). The owner's
+   `AGENT_PUBLIC_NOT_ALLOWED` (`src/lib/channel-access`'s agent scope, checked by the playlist core right after input validation, before any credential or YouTube call). The owner's
    Web UI is unchanged.
 3. **No playlist delete.** `playlist_delete` becomes `operator-only` (not registered for a worker). It cannot be undone; a worker
    makes a playlist private instead (owner, answer 3).
 4. **`apply` stays** a real write for workers (owner, answer 2), logged.
 5. **A worker log.** Schema v107 `worker_action_log`, device-local, 90 days: one row per worker call that would really write
-   (`apply` with `dryRun: false`, every call of the four playlist tools), refused calls included. It is written by the channel
+   (`apply` with `dryRun: false`, every call of the four playlist tools), refused calls included (a revoked token too; a call the MCP SDK rejects on its input schema never reaches the tool and cannot write). It is written by the channel
    session's MCP wrapper, outside the tool's own result (a log failure never changes the answer). The owner reads it in Settings →
    Channels; a worker reads its own channel's rows with `agent_list_worker_actions`.
 

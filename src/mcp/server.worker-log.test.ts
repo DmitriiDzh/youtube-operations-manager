@@ -3,6 +3,8 @@ import test from "node:test";
 import { runInAgentSession } from "@/lib/agent-session";
 import { DomainError } from "@/lib/shared-domain";
 import { listWorkerActionLogEntries } from "@/lib/db";
+import { createPlaylistManagementCore } from "@/lib/playlist-management";
+import { createVideoMetadataCore } from "@/lib/video-metadata";
 import { createMcpServer } from "./server";
 
 // WORKER_CAPABILITIES_PLAN.md AC-WK-04/06/07/09 (ADR 0048). Expected rows are written from the plan: one row per worker call that
@@ -133,5 +135,56 @@ test("AC-WK-09: agent_list_worker_actions returns only the bound channel's rows"
   assert.deepEqual(
     actions.map((action) => action.target),
     ["pa"]
+  );
+});
+
+test("AC-WK-06: a write refused because the token was revoked is logged too", async () => {
+  const channelId = "UC_WL_REVOKED";
+  const server = createMcpServer(core(), {
+    connectionEnabled: true,
+    agentSession: {
+      tokenId: `tok-${channelId}`,
+      channelId,
+      reverify: async () => {
+        throw new DomainError({ code: "AGENT_TOKEN_INVALID", message: "revoked" });
+      },
+    },
+  });
+  const tools = (server as unknown as { _registeredTools: Tools })._registeredTools;
+  await runInAgentSession({ tokenId: `tok-${channelId}`, channelId, userId: "u-1" }, async () => {
+    const result = await tools.playlist_update.handler({ playlistId: "p1", expectedChannelId: channelId, privacyStatus: "private" });
+    assert.equal(result.isError, true);
+    const read = await tools.playlist_list.handler({});
+    assert.equal(read.isError, true);
+  });
+  const rows = await listWorkerActionLogEntries(channelId, 100);
+  assert.deepEqual(
+    rows.map((row) => [row.tool, row.target, row.errorCode]),
+    [["playlist_update", "p1", "AGENT_TOKEN_INVALID"]],
+    "the refused write is logged, the refused read is not"
+  );
+});
+
+test("AC-WK-01/02 end to end: through the MCP tools and the real playlist core, public is refused and the refusal is logged", async () => {
+  const channelId = "UC_WL_REAL";
+  const real = { ...createVideoMetadataCore(), ...createPlaylistManagementCore() };
+  const server = createMcpServer(real, { connectionEnabled: true, agentSession: { tokenId: `tok-${channelId}`, channelId, reverify: async () => {} } });
+  const tools = (server as unknown as { _registeredTools: Tools })._registeredTools;
+  await runInAgentSession({ tokenId: `tok-${channelId}`, channelId, userId: "u-1" }, async () => {
+    for (const result of [
+      await tools.playlist_create.handler({ title: "X", expectedChannelId: channelId, privacyStatus: "public" }),
+      await tools.playlist_update.handler({ playlistId: "p1", expectedChannelId: channelId, privacyStatus: "public" }),
+    ]) {
+      assert.equal(result.isError, true);
+      assert.equal(JSON.parse(result.content[0].text).error.code, "AGENT_PUBLIC_NOT_ALLOWED");
+    }
+  });
+  const rows = (await listWorkerActionLogEntries(channelId, 100)).reverse();
+  assert.deepEqual(
+    rows.map((row) => [row.tool, row.outcome, row.errorCode]),
+    [
+      ["playlist_create", "error", "AGENT_PUBLIC_NOT_ALLOWED"],
+      ["playlist_update", "error", "AGENT_PUBLIC_NOT_ALLOWED"],
+    ]
   );
 });

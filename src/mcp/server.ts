@@ -2804,40 +2804,52 @@ export function createMcpServer(
     // per-capability zones were retired in Phase 12, owner decision D4 -- one agent owns all of
     // its channel's work; see docs/decisions/0011-retire-agent-capability-zones.md.)
     return (async (args: never) => {
+      // BL-215 (ADR 0048, AC-WK-06/07): a call that would really write to YouTube leaves one worker-log row, refused or not (a
+      // revoked token included). The row is written after the answer exists and never changes it -- the YouTube write may already
+      // have happened. A call the SDK rejects on its input schema never reaches this wrapper and cannot write.
+      const write = describeWorkerWrite(name, args);
+      let result: ToolResponse;
       try {
         assertAgentSession(session.tokenId);
         await session.reverify();
       } catch (error) {
         await recordGatewayCallOutcome("mcp_tool_calls", "blocked");
-        return toolErrorResult(error);
+        result = toolErrorResult(error);
+        if (write) await logWorkerWrite(session, name, write, result);
+        return result;
       }
       await recordGatewayCallOutcome("mcp_tool_calls", "allowed");
-      // BL-215 (ADR 0048, AC-WK-06/07): a call that would really write to YouTube leaves one worker-log row, refused or not. The
-      // row is written after the answer exists and never changes it -- the YouTube write may already have happened.
-      const write = describeWorkerWrite(name, args);
       if (!write) return handler(args);
-      let result: ToolResponse;
       try {
         result = (await handler(args)) as ToolResponse;
       } catch (error) {
         result = toolErrorResult(error);
       }
-      const answered = fromToolResult(name, result.structuredContent);
-      const detail = serializeWorkerDetail(answered.failedVideos === null ? write.detail : { ...write.detail, failedVideos: answered.failedVideos });
-      await insertWorkerActionLogEntry({
-        at: new Date(),
-        channelId: session.channelId,
-        tokenId: session.tokenId,
-        tool: name,
-        target: write.target ?? answered.target,
-        detail,
-        outcome: result.isError ? "error" : "ok",
-        errorCode: result.isError ? toolErrorCode(result) : null,
-      }).catch((error: unknown) => {
-        console.error(`[mcp] worker log row for ${name} not written: ${error instanceof Error ? error.message : String(error)}`);
-      });
+      await logWorkerWrite(session, name, write, result);
       return result;
     }) as typeof handler;
+  }
+
+  async function logWorkerWrite(
+    session: { tokenId: string; channelId: string },
+    name: string,
+    write: NonNullable<ReturnType<typeof describeWorkerWrite>>,
+    result: ToolResponse
+  ): Promise<void> {
+    const answered = fromToolResult(name, result.structuredContent);
+    const detail = serializeWorkerDetail(answered.failedVideos === null ? write.detail : { ...write.detail, failedVideos: answered.failedVideos });
+    await insertWorkerActionLogEntry({
+      at: new Date(),
+      channelId: session.channelId,
+      tokenId: session.tokenId,
+      tool: name,
+      target: write.target ?? answered.target,
+      detail,
+      outcome: result.isError ? "error" : "ok",
+      errorCode: result.isError ? toolErrorCode(result) : null,
+    }).catch((error: unknown) => {
+      console.error(`[mcp] worker log row for ${name} not written: ${error instanceof Error ? error.message : String(error)}`);
+    });
   }
 
   // BL-161 (docs/roadmap/plans/PRODUCER_ROLE_PLAN.md §3): the Producer's registration. Its own tools run as they are; a channel

@@ -153,6 +153,7 @@ export const settingsCards = {
   "settingsCards.workerActions.empty": "The agent of this channel has not written anything to YouTube on this computer yet.",
   "settingsCards.workerActions.done": "done",
   "settingsCards.workerActions.refused": "refused",
+  "settingsCards.workerActions.failed": "failed",
   "settingsCards.workerActions.privacy": "privacy: {status}",
   "settingsCards.workerActions.videos": "videos: {count}",
   "settingsCards.workerActions.failedVideos": "not done: {count}",
