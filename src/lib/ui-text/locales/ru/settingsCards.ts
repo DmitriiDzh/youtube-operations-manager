@@ -175,7 +175,6 @@ export const settingsCards: Record<keyof typeof en, string> = {
   "settingsCards.workerActions.tool.agent_video_create": "Зарезервировал номер видео",
   "settingsCards.workerActions.tool.agent_live_map_sources": "Указал исходные файлы эфира",
   "settingsCards.workerActions.tool.agent_live_save_localizations": "Сохранил переводы эфира",
-  "settingsCards.workerActions.tool.agent_channel_save_localizations": "Сохранил переводы канала",
   "settingsCards.workerActions.tool.agent_set_privacy": "Изменил доступ",
   "settingsCards.workerActions.privacyChange": "доступ: {from} → {to}",
   "settingsCards.workerActions.unchanged": "уже так, ничего не записано",

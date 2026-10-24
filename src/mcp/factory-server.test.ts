@@ -189,14 +189,14 @@ test("§2.5(3): factory-server.ts imports only the MCP SDK, zod and shared-domai
 });
 
 test("§2.5(3): the factory route and endpoint reach only the allowlisted modules", async () => {
-  // BL-217: the tool wiring moved from the route into src/lib/factory-tool-deps (shared with the channel workers' versions of the
-  // channel tools); the route now only builds the endpoint. The same allowlist pins the wiring module.
+  // BL-217: the tool wiring moved from the route into src/mcp/factory-tool-deps.ts (shared with the channel workers' versions of the
+  // channel tools, kept outside src/lib: live-streams may be imported by no other src/lib module); the route now only builds the endpoint. The same allowlist pins the wiring module.
   const route = importsOf(await readFile("src/app/api/mcp/factory/route.ts", "utf8"));
   assert.deepEqual(
-    route.filter((spec) => !["@/lib/db", "@/lib/factory-mcp-endpoint", "@/lib/factory-agent-tokens", "@/lib/factory-tool-deps", "@/mcp/factory-server"].includes(spec)),
+    route.filter((spec) => !["@/lib/db", "@/lib/factory-mcp-endpoint", "@/lib/factory-agent-tokens", "@/mcp/factory-tool-deps", "@/mcp/factory-server"].includes(spec)),
     []
   );
-  const wiring = importsOf(await readFile("src/lib/factory-tool-deps/index.ts", "utf8"));
+  const wiring = importsOf(await readFile("src/mcp/factory-tool-deps.ts", "utf8"));
   const routeAllowed = new Set([
     "@/lib/channel-connections",
     "@/lib/channel-workspaces",
@@ -237,7 +237,7 @@ test("§2.5(3): the factory route and endpoint reach only the allowlisted module
 });
 
 test("§2.5(4): none of the factory files reads channel-scope state (agent-session, selected channel, credentials)", async () => {
-  for (const file of ["src/mcp/factory-server.ts", "src/app/api/mcp/factory/route.ts", "src/lib/factory-mcp-endpoint/index.ts", "src/lib/factory-tool-deps/index.ts"]) {
+  for (const file of ["src/mcp/factory-server.ts", "src/app/api/mcp/factory/route.ts", "src/lib/factory-mcp-endpoint/index.ts", "src/mcp/factory-tool-deps.ts"]) {
     const source = await readFile(file, "utf8");
     for (const forbidden of ["agent-session", "getSelectedChannelId", "resolveEffectiveCredentialRef", "credentialRef", "googleapis", "youtube-read-gateway", "youtube-write-gateway"]) {
       // Comments may mention a forbidden name; strip them before scanning.

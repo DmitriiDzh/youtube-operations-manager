@@ -134,8 +134,6 @@ export const MCP_TOOL_CLASSIFICATION: Readonly<Record<string, McpToolClass>> = O
   agent_live_get_status: "bound",
   agent_live_map_sources: "bound",
   agent_live_save_localizations: "bound",
-  agent_channel_get_localizations: "bound",
-  agent_channel_save_localizations: "bound",
   agent_gemini_get_job: "bound",
   // BL-161: the Producer role's own tools.
   producer_get_capabilities: "producer-only",

@@ -44,8 +44,8 @@ export const WORKER_FACTORY_TOOLS: Readonly<Record<string, { agentName: string; 
   factory_live_get_status: { agentName: "agent_live_get_status", writes: false },
   factory_live_map_sources: { agentName: "agent_live_map_sources", writes: true },
   factory_live_save_localizations: { agentName: "agent_live_save_localizations", writes: true },
-  factory_channel_get_localizations: { agentName: "agent_channel_get_localizations", writes: false },
-  factory_channel_save_localizations: { agentName: "agent_channel_save_localizations", writes: true },
+  // Not factory_channel_get/save_localizations: ADR 0047 (AGENTS.md §F) names the owner and the Factory Operator as the only ones
+  // who save a channel's own translations, and AC-CL-10 keeps every channel-translation tool out of channel sessions.
   factory_gemini_get_job: { agentName: "agent_gemini_get_job", writes: false },
 });
 
@@ -141,10 +141,8 @@ export function pinFactoryDepsToChannel(real: () => FactoryToolDeps, channelId: 
       mapSources: async (input) => deps().live.mapSources(pinChannel(input, channelId) as Parameters<FactoryToolDeps["live"]["mapSources"]>[0]),
       setLocalizations: async (input) => deps().live.setLocalizations(pinChannel(input, channelId) as Parameters<FactoryToolDeps["live"]["setLocalizations"]>[0]),
     },
-    channelLocalizations: {
-      get: async (input) => deps().channelLocalizations.get(pinChannel(input, channelId) as Parameters<FactoryToolDeps["channelLocalizations"]["get"]>[0]),
-      save: async (input) => deps().channelLocalizations.save(pinChannel(input, channelId) as Parameters<FactoryToolDeps["channelLocalizations"]["save"]>[0]),
-    },
+    // ADR 0047: a channel's own translations are the owner's and the Factory Operator's only.
+    channelLocalizations: { get: refused, save: refused },
     storyboards: {
       create: byChannel((input) => deps().storyboards.create(input)),
       update: byChannel((input) => deps().storyboards.update(input)),
@@ -170,7 +168,7 @@ export type WorkerFactoryTool = { name: string; contract: FactoryToolContract; h
 
 /**
  * The worker tools of one channel session: each factory tool of `WORKER_FACTORY_TOOLS`, renamed, with a description that says it is
- * the worker's version, over `pinFactoryDepsToChannel`. The `real` deps are the factory's own wiring (`src/lib/factory-tool-deps`).
+ * the worker's version, over `pinFactoryDepsToChannel`. The `real` deps are the factory's own wiring (`src/mcp/factory-tool-deps.ts`).
  */
 export function workerFactoryTools(real: () => FactoryToolDeps, channelId: string): WorkerFactoryTool[] {
   const tools: WorkerFactoryTool[] = [];

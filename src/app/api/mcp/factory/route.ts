@@ -1,7 +1,7 @@
 import { getMcpConnectionEnabled } from "@/lib/db";
 import { createFactoryMcpEndpoint } from "@/lib/factory-mcp-endpoint";
 import { createFactoryTokenCore } from "@/lib/factory-agent-tokens";
-import { createFactoryToolDeps } from "@/lib/factory-tool-deps";
+import { createFactoryToolDeps } from "@/mcp/factory-tool-deps";
 import { createFactoryMcpServer } from "@/mcp/factory-server";
 
 // Never cached or prerendered: every call is an authenticated, per-request Factory Operator session.

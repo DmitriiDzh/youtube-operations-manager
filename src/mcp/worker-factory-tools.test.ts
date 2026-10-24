@@ -59,7 +59,6 @@ test("AC-WF-01: a call naming another channel is refused before the module runs"
     () => pinned.storyboards.get({ channelId: JAPAN, storyboardId: "s" }),
     () => pinned.videos.create({ channelId: JAPAN }),
     () => pinned.live.mapSources({ channelId: JAPAN, items: [] }),
-    () => pinned.channelLocalizations.save({ channelId: JAPAN, localizations: {} }),
     () => pinned.jobs.list({ channelId: JAPAN }),
     () => pinned.live.getStatus({ channelId: JAPAN }),
     () => pinned.plans.importPlan({ plan: { channelId: JAPAN } }),
@@ -110,6 +109,9 @@ test("AC-WF-04: shared and paid deps are refused: models, templates, runtimes, s
     () => pinned.plans.move({ planId: "P-T", channelId: JAPAN }),
     () => pinned.gemini.createJob({ channelId: TROPICO }),
     () => pinned.gemini.getStatus(),
+    // ADR 0047 / AC-CL-10: the channel's own translations stay the owner's and the Operator's.
+    () => pinned.channelLocalizations.get({ channelId: TROPICO }),
+    () => pinned.channelLocalizations.save({ channelId: TROPICO, localizations: {} }),
   ];
   for (const call of refusals) {
     await assert.rejects(async () => call(), code("AGENT_SESSION_OPERATOR_ONLY"));
@@ -121,8 +123,8 @@ test("AC-WF-05: the worker gets exactly the listed tools, renamed, and none of t
   const { deps } = fakeDeps();
   const names = workerFactoryTools(() => deps, TROPICO).map((tool) => tool.name).sort();
   assert.deepEqual(names, [...WORKER_FACTORY_TOOL_NAMES].sort());
-  assert.equal(names.length, 28);
-  for (const forbidden of ["agent_plan_run_stage", "agent_plan_rerun", "agent_plan_move", "agent_gemini_create_job", "agent_media_start_session"]) {
+  assert.equal(names.length, 26);
+  for (const forbidden of ["agent_plan_run_stage", "agent_plan_rerun", "agent_plan_move", "agent_gemini_create_job", "agent_media_start_session", "agent_channel_get_localizations", "agent_channel_save_localizations"]) {
     assert.ok(!names.includes(forbidden), forbidden);
   }
   assert.ok(names.every((name) => name.startsWith("agent_")));

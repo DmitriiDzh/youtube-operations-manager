@@ -174,7 +174,6 @@ export const settingsCards = {
   "settingsCards.workerActions.tool.agent_video_create": "Reserved a video number",
   "settingsCards.workerActions.tool.agent_live_map_sources": "Mapped stream source files",
   "settingsCards.workerActions.tool.agent_live_save_localizations": "Saved the stream's translations",
-  "settingsCards.workerActions.tool.agent_channel_save_localizations": "Saved the channel's translations",
   "settingsCards.workerActions.tool.agent_set_privacy": "Changed privacy",
   "settingsCards.workerActions.privacyChange": "privacy: {from} → {to}",
   "settingsCards.workerActions.unchanged": "already so, nothing written",

@@ -81,8 +81,9 @@ the Tropico token is refused").
 - **AC-WF-03** Where the Operator's tool lets the channel be left out (live status, jobs list, Gemini jobs, plan list), the token's
   channel is put in -- a worker never sees another channel's rows.
 - **AC-WF-04** Shared and paid things stay unreachable: models, templates, runtimes, GPU data and settings, sessions, the channel
-  list, logical paths, `run_stage`/`rerun`/`move`, Gemini status and job creation.
-- **AC-WF-05** Exactly 28 tools, named `agent_*`, with the same input/output contracts as their `factory_*` originals (built by the
+  list, logical paths, `run_stage`/`rerun`/`move`, Gemini status and job creation -- and the channel's own translations (ADR 0047:
+  only the owner and the Factory Operator save them; changing that is the owner's separate decision).
+- **AC-WF-05** Exactly 26 tools, named `agent_*`, with the same input/output contracts as their `factory_*` originals (built by the
   factory server itself, not copied). Each write is a worker-log row.
 
 **Decision -- the actor.** The modules keep recording `factory` for these writes: their synced shapes (the plans report's

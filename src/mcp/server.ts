@@ -11,7 +11,7 @@ import { createCliAuthService, type CliAuthService } from "@/lib/cli-auth";
 import { insertWorkerActionLogEntry, listWorkerActionLogEntries, recordGatewayCallOutcome } from "@/lib/db";
 import { describeWorkerWrite, fromToolResult, serializeWorkerDetail } from "./worker-actions";
 import { createWorkerPrivacyCore, setPrivacyInputSchema } from "@/lib/worker-privacy";
-import { createFactoryToolDeps } from "@/lib/factory-tool-deps";
+import { createFactoryToolDeps } from "./factory-tool-deps";
 import { workerFactoryTools } from "./worker-factory-tools";
 import type { CredentialRef } from "@/lib/shared-domain";
 import { createPlaylistManagementCore, type PlaylistManagementCore } from "@/lib/playlist-management";

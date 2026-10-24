@@ -277,7 +277,7 @@ export type FactoryChannelEntry = {
   workspace: { configured: false } | { configured: true; path: string };
 };
 
-/** Everything the factory tools can reach. Wired in `src/lib/factory-tool-deps` (BL-217; used by the factory route and, channel-pinned, by the workers). */
+/** Everything the factory tools can reach. Wired in `src/mcp/factory-tool-deps.ts` (BL-217; used by the factory route and, channel-pinned, by the workers). */
 export type FactoryToolDeps = {
   readLogicalPath(input: unknown): Promise<{ name: string; path: string }>;
   listLogicalPaths(): Promise<

@@ -68,8 +68,8 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT",
 // grantedPermissions gains EXECUTE, and agent_list_worker_actions (READ) reads the new worker log.
 // 4.1.0 (BL-216, WORKER_CAPABILITIES_PLAN.md stage 2): agent_set_privacy (EXECUTE) -- a channel agent makes its own videos and
 // playlists private or unlisted, never public; worker-log rows gain previousPrivacyStatus / changed. Additive.
-// 4.2.0 (BL-217, stage 3): the domain channel_production -- 28 agent_* versions of the Factory Operator's channel tools (plans,
-// storyboards, video numbers, jobs, live, channel translations) for the worker's own channel. Additive.
+// 4.2.0 (BL-217, stage 3): the domain channel_production -- 26 agent_* versions of the Factory Operator's channel tools (plans,
+// storyboards, video numbers, jobs, live) for the worker's own channel. Additive.
 export const AGENT_API_VERSION = "4.2.0";
 
 /**

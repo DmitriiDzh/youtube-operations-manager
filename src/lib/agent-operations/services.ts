@@ -798,22 +798,6 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
       "Map published videos to their original files and save the stream's translations (`agent_live_map_sources`, `agent_live_save_localizations`), as the factory_live_* tools. Local only: the owner builds rotations and starts streams; the app writes translations at the owner's Start. Logged.",
   },
   {
-    id: "channel_production.channel_localizations",
-    mcpTools: ["agent_channel_get_localizations"],
-    domain: "channel_production",
-    permission: "READ",
-    description:
-      "The channel's own title/description translations, saved and live (`agent_channel_get_localizations`), as factory_channel_get_localizations (one 1-unit YouTube read).",
-  },
-  {
-    id: "channel_production.save_channel_localizations",
-    mcpTools: ["agent_channel_save_localizations"],
-    domain: "channel_production",
-    permission: "DRAFT",
-    description:
-      "Save the channel's own translations (`agent_channel_save_localizations`), as factory_channel_save_localizations. Local only; written to YouTube only by the owner's «Применить». Logged.",
-  },
-  {
     id: "youtube_writes.list_worker_actions",
     mcpTools: ["agent_list_worker_actions"],
     domain: "youtube_writes",

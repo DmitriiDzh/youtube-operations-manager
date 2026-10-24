@@ -999,11 +999,11 @@ nothing. This replaces BL-091's per-capability zones, which are retired in
     `_list` / `_todo` / `_create` / `_import` / `_update` / `_close` / `_report` / `_clone_group` / `_request_recheck` /
     `_withdraw_recheck`, `agent_storyboard_get` / `_list` / `_create` / `_update` / `_submit` / `_reply` / `_attach_render`,
     `agent_video_create` / `_list` / `_get_cost`, `agent_jobs_list`, `agent_live_get_status` / `_map_sources` /
-    `_save_localizations`, `agent_channel_get_localizations` / `_save_localizations`, `agent_gemini_get_job`: each is its
+    `_save_localizations`, `agent_gemini_get_job`: each is its
     `factory_*` tool (the same input, output and errors, see "Factory Operator MCP endpoint" below) for the bound channel only:
     another channel → `CHANNEL_NOT_ACTIVE`, another channel's plan → `plan_not_found`; where the channel may be left out, the
     bound one is used. Every write is a worker-log row. Not given: shared things (models, templates, runtimes, GPU data and
-    settings, storage), sessions, `factory_plan_move`, and the paid `run_stage` / `rerun` / Gemini create (stage 4).
+    settings, storage), sessions, `factory_plan_move`, the channel's own translations (ADR 0047), and the paid `run_stage` / `rerun` / Gemini create (stage 4).
     `agent_list_worker_actions { limit? 1-100, default 50 }` → `{ actions: [{ at, tool, target, detail, outcome, errorCode }] }`
     (READ, bound channel only).
   - `list` / `transcript` / `preview` / `channel_sync` are confined to the bound channel.

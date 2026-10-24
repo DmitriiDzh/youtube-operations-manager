@@ -41,9 +41,10 @@ Status: Accepted
 - Stage 2 (BL-216, Agent API 4.1.0) adds `agent_set_privacy` under the same rules: private/unlisted only, logged with the previous
   status, refused for a scheduled video and the app's current broadcast. It is allowed by the owner's Live writes switch, like
   every other write (owner msgs 3386/3389: no separate approval per change).
-- Stage 3 (BL-217, Agent API 4.2.0) gives a worker 28 of the Factory Operator's channel tools as `agent_*` (domain
+- Stage 3 (BL-217, Agent API 4.2.0) gives a worker 26 of the Factory Operator's channel tools as `agent_*` (domain
   `channel_production`): the factory server's own tools over channel-pinned deps (`src/mcp/worker-factory-tools.ts`; the wiring
-  moved to `src/lib/factory-tool-deps`, shared with the factory route). Local writes are DRAFT and logged; the modules keep the actor
-  `factory`, because their synced shapes accept only `factory`/`owner` (the worker log says which worker wrote).
+  moved to `src/mcp/factory-tool-deps.ts`, shared with the factory route). Local writes are DRAFT and logged; the modules keep the actor
+  `factory`, because their synced shapes accept only `factory`/`owner` (the worker log says which worker wrote). A channel's OWN
+  translations stay out (ADR 0047: only the owner and the Factory Operator save them; AC-CL-10).
 - `docs/AGENT_OPERATIONS_INTERFACE.md` §3 and §8 are updated: §8's "no new YouTube write path" still holds (every write goes through
   the write gateway, the write-channel guardrail and Live writes), but a worker's writes are no longer only drafts.

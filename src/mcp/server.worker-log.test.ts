@@ -209,7 +209,7 @@ test("AC-WP-07: agent_set_privacy is logged only when it would write (dryRun:fal
 test("BL-217: the worker versions of the Operator's channel tools are registered, and a refused local write is logged", async () => {
   const channelId = "UC_WL_FACTORY";
   await inSession(channelId, async (tools) => {
-    for (const name of ["agent_plan_create", "agent_storyboard_submit", "agent_video_create", "agent_live_get_status", "agent_channel_save_localizations"]) {
+    for (const name of ["agent_plan_create", "agent_storyboard_submit", "agent_video_create", "agent_live_get_status"]) {
       assert.ok(tools[name], `${name} registered`);
     }
     for (const name of ["agent_plan_run_stage", "agent_plan_move", "agent_gemini_create_job", "factory_plan_create"]) {
