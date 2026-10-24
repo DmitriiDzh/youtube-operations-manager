@@ -245,7 +245,7 @@ test("getSystemCapabilities returns every field the spec requires, sourced from 
   // Bumped 0.15.0 -> 1.0.0, Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md AC-P12-13): a breaking
   // agent-contract change (token required, identity/credential overrides removed) -> MAJOR.
   // MINOR 3.16.0 (BL-182 stage 1): new READ capability video_context.query_publishing_calendar. Previously 3.15.0 (BL-181).
-  assert.equal(result.agentApiVersion, "4.0.0"); // MAJOR 4.0.0 (BL-215, ADR 0048): playlist_delete owner-only and "public" refused for a channel agent, youtube_writes capabilities + EXECUTE, agent_list_worker_actions; MINOR 3.20.0 (BL-209): agent_get_publishing_calendar uploads gain automatic / progressPercent / finishedAt (additive); MINOR 3.19.0 (BL-193): agent_get_media_limits gains accountSpentTodayUsd / otherDevicesSpentTodayUsd (additive); MINOR 3.18.0 (BL-191, SUGGESTED_SOURCES_PLAN.md §2): new READ capability analytics.query_stored_suggested_sources; MINOR 3.17.0 (BL-182 stage 2): agent_get_publishing_calendar lists the release packages and this computer's uploads; MINOR 3.13.0 (BL-171, VIDEO_COMMENTS_PLAN.md §2): new READ capability video_context.query_video_comments; MINOR 3.12.0 (BL-170, EXPERIMENT_ARMS_PLAN.md §2 "Reads"): new READ capability decision_engine.query_experiment_results, experiment arms in the hypothesis trail; MINOR 3.11.0 (BL-169, VIDEO_SEARCH_TERMS_PLAN.md §2): new READ capability analytics.query_stored_search_terms; MINOR 3.10.0 (BL-168, VIDEO_BREAKDOWNS_PLAN.md §2 "Reads"): new READ capability analytics.query_stored_breakdowns; MINOR 3.9.0 (BL-166, VIDEO_MILESTONES_PLAN.md §2 "Versions"): new READ capability analytics.query_video_milestones; MINOR 3.6.0 (BL-135): agent_release_media_session + releaseWhenDone; MINOR 3.5.0 (BL-132): media template input parameters (image/audio/video), job inputs[], template source/models; before that 3.3.0 (Factory Operator access, logical path registry tools) on top of 3.2.0 + MINOR 3.4.0: the seven media_generation capabilities (Phase 14 slice 5, PHASE_14_PLAN.md §2.7) and agent_get_media_limits openSessions/maxConcurrentSessions/activeSessionCount (slice 6)
+  assert.equal(result.agentApiVersion, "4.3.0"); // MINOR 4.3.0 (BL-218): paid work the Operator's way; MINOR 4.2.0 (BL-217): channel_production tools; MINOR 4.1.0 (BL-216): agent_set_privacy; MAJOR 4.0.0 (BL-215, ADR 0048): playlist_delete owner-only and "public" refused for a channel agent, youtube_writes capabilities + EXECUTE, agent_list_worker_actions; MINOR 3.20.0 (BL-209): agent_get_publishing_calendar uploads gain automatic / progressPercent / finishedAt (additive); MINOR 3.19.0 (BL-193): agent_get_media_limits gains accountSpentTodayUsd / otherDevicesSpentTodayUsd (additive); MINOR 3.18.0 (BL-191, SUGGESTED_SOURCES_PLAN.md §2): new READ capability analytics.query_stored_suggested_sources; MINOR 3.17.0 (BL-182 stage 2): agent_get_publishing_calendar lists the release packages and this computer's uploads; MINOR 3.13.0 (BL-171, VIDEO_COMMENTS_PLAN.md §2): new READ capability video_context.query_video_comments; MINOR 3.12.0 (BL-170, EXPERIMENT_ARMS_PLAN.md §2 "Reads"): new READ capability decision_engine.query_experiment_results, experiment arms in the hypothesis trail; MINOR 3.11.0 (BL-169, VIDEO_SEARCH_TERMS_PLAN.md §2): new READ capability analytics.query_stored_search_terms; MINOR 3.10.0 (BL-168, VIDEO_BREAKDOWNS_PLAN.md §2 "Reads"): new READ capability analytics.query_stored_breakdowns; MINOR 3.9.0 (BL-166, VIDEO_MILESTONES_PLAN.md §2 "Versions"): new READ capability analytics.query_video_milestones; MINOR 3.6.0 (BL-135): agent_release_media_session + releaseWhenDone; MINOR 3.5.0 (BL-132): media template input parameters (image/audio/video), job inputs[], template source/models; before that 3.3.0 (Factory Operator access, logical path registry tools) on top of 3.2.0 + MINOR 3.4.0: the seven media_generation capabilities (Phase 14 slice 5, PHASE_14_PLAN.md §2.7) and agent_get_media_limits openSessions/maxConcurrentSessions/activeSessionCount (slice 6)
   assert.equal(result.schemaVersions.app, 14);
   assert.ok(Array.isArray(result.capabilities));
   assert.ok(Array.isArray(result.dataDomains));
@@ -268,15 +268,21 @@ test("grantedPermissions is exactly READ, DRAFT, EXECUTE -- never APPROVE", asyn
 
 // AC-WK-05: EXECUTE is declared exactly for the tools that can write to YouTube for a worker -- the list below is taken from the
 // owner-approved plan, not from the implementation.
-test("AC-WK-05: EXECUTE capabilities name exactly apply and the four playlist writes, all in youtube_writes", async () => {
+test("AC-WK-05/AC-WP-01/AC-WF-06: EXECUTE capabilities name exactly the YouTube writes (youtube_writes) and the paid runs (channel_production)", async () => {
   const { services } = createFixture();
   const result = await services.getSystemCapabilities({});
   const execute = result.capabilities.filter((capability) => capability.permission === "EXECUTE");
-  assert.ok(execute.every((capability) => capability.domain === "youtube_writes"));
   assert.deepEqual(
-    execute.flatMap((capability) => capability.mcpTools ?? []).sort(),
-    ["apply", "playlist_add_videos", "playlist_create", "playlist_remove_videos", "playlist_update"]
+    execute.filter((capability) => capability.domain === "youtube_writes").flatMap((capability) => capability.mcpTools ?? []).sort(),
+    // agent_set_privacy joined in stage 2 (owner msg 3384 answer 4: a direct privacy write).
+    ["agent_set_privacy", "apply", "playlist_add_videos", "playlist_create", "playlist_remove_videos", "playlist_update"]
   );
+  // Stage 4 (owner msg 3402 "может, как оператор"): paid work -- GPU sessions and jobs, plan runs, Gemini jobs.
+  assert.deepEqual(
+    execute.filter((capability) => capability.domain === "channel_production").flatMap((capability) => capability.mcpTools ?? []).sort(),
+    ["agent_factory_cancel_job", "agent_factory_create_job", "agent_factory_start_session", "agent_factory_stop_session", "agent_gemini_create_job", "agent_plan_rerun", "agent_plan_run_stage"]
+  );
+  assert.ok(execute.every((capability) => capability.domain === "youtube_writes" || capability.domain === "channel_production"));
   assert.ok(!result.capabilities.some((capability) => (capability.mcpTools ?? []).includes("playlist_delete")), "playlist_delete is owner-only");
 });
 

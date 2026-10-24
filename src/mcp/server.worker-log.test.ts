@@ -188,3 +188,43 @@ test("AC-WK-01/02 end to end: through the MCP tools and the real playlist core, 
     ]
   );
 });
+
+test("AC-WP-07: agent_set_privacy is logged only when it would write (dryRun:false), refusals included", async () => {
+  const channelId = "UC_WL_PRIVACY";
+  await inSession(channelId, async (tools) => {
+    assert.ok(tools.agent_set_privacy, "registered for a worker");
+    // Unknown to this channel's (empty) synced list: refused not_found, before anything reaches YouTube.
+    await tools.agent_set_privacy.handler({ target: "video", id: "v-unknown", privacyStatus: "private" });
+    const refused = await tools.agent_set_privacy.handler({ target: "video", id: "v-unknown", privacyStatus: "private", dryRun: false });
+    assert.equal(refused.isError, true);
+    assert.equal(JSON.parse(refused.content[0].text).error.code, "not_found");
+  });
+  const rows = await listWorkerActionLogEntries(channelId, 100);
+  assert.deepEqual(
+    rows.map((row) => [row.tool, row.target, row.errorCode, JSON.parse(row.detail ?? "{}")]),
+    [["agent_set_privacy", "v-unknown", "not_found", { target: "video", privacyStatus: "private" }]]
+  );
+});
+
+test("BL-217: the worker versions of the Operator's channel tools are registered, and a refused local write is logged", async () => {
+  const channelId = "UC_WL_FACTORY";
+  await inSession(channelId, async (tools) => {
+    for (const name of ["agent_plan_create", "agent_storyboard_submit", "agent_video_create", "agent_live_get_status"]) {
+      assert.ok(tools[name], `${name} registered`);
+    }
+    // Stage 4 (owner msg 3402) added the paid tools; move and the factory_ names themselves stay out.
+    for (const name of ["agent_plan_move", "factory_plan_create", "agent_media_pull_model"]) {
+      assert.equal(tools[name], undefined, `${name} not registered`);
+    }
+    const refused = await tools.agent_video_create.handler({ channelId: "UC_OTHER" });
+    assert.equal(refused.isError, true);
+    const read = await tools.agent_storyboard_list.handler({ channelId: "UC_OTHER" });
+    assert.equal(read.isError, true);
+  });
+  const rows = await listWorkerActionLogEntries(channelId, 100);
+  assert.deepEqual(
+    rows.map((row) => [row.tool, row.outcome, row.errorCode]),
+    [["agent_video_create", "error", "CHANNEL_NOT_ACTIVE"]],
+    "the refused write is logged; the refused read is not"
+  );
+});

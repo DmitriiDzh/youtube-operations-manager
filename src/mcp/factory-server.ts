@@ -277,7 +277,7 @@ export type FactoryChannelEntry = {
   workspace: { configured: false } | { configured: true; path: string };
 };
 
-/** Everything the factory tools can reach. Wired in `src/app/api/mcp/factory/route.ts`. */
+/** Everything the factory tools can reach. Wired in `src/app/api/mcp/factory/route.ts`, its channel part in `src/mcp/factory-channel-deps.ts` (BL-217; also used, channel-pinned, by the workers). */
 export type FactoryToolDeps = {
   readLogicalPath(input: unknown): Promise<{ name: string; path: string }>;
   listLogicalPaths(): Promise<
@@ -386,10 +386,19 @@ export type FactoryToolDeps = {
   assertMutationAllowed(): Promise<void>;
 };
 
+export type FactoryToolContract = { description: string; inputSchema: z.ZodTypeAny };
+
 export type FactoryServerOptions = {
   /** The verified session of THIS request. Absent means "no valid token": ZERO tools are registered. */
   session?: { tokenId: string; reverify(): Promise<void> } | null;
   connectionEnabled?: boolean;
+  /**
+   * BL-217 (WORKER_CAPABILITIES_PLAN.md stage 3): instead of registering the tools, hand each one's contract and handler to the
+   * caller -- the channel workers' MCP server re-exposes a closed subset under `agent_*` names, with channel-pinned `deps`. The
+   * handler is the tool's own (input checks, errors as `{ ok: false, error }`), without this server's token re-check and call
+   * counting: the caller's own session wrapper does both. Nothing is registered on this server then.
+   */
+  collect?: (name: (typeof FACTORY_TOOL_NAMES)[number], contract: FactoryToolContract, handler: (args: unknown) => Promise<ToolResponse>) => void;
 };
 
 type ToolResponse = {
@@ -579,6 +588,16 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     config: { description: string; inputSchema: z.ZodTypeAny },
     handler: (args: unknown) => Promise<ToolResponse>
   ) {
+    if (options.collect) {
+      options.collect(name, config, async (args: unknown) => {
+        try {
+          return await handler(args);
+        } catch (error) {
+          return errorResult(error, name);
+        }
+      });
+      return;
+    }
     if (!connectionEnabled || !session) return;
     const counted = async (args: unknown): Promise<ToolResponse> => {
       try {

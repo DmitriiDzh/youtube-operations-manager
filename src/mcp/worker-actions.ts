@@ -3,9 +3,12 @@
  * really write to YouTube, and what each one is about -- the input of the worker log the channel session's wrapper in
  * `./server.ts` writes. Pure: no database, no YouTube.
  *
- * `apply` writes only with an explicit `dryRun: false` (it defaults to a preview, RISK-12); the four playlist tools always write.
+ * `apply` and `agent_set_privacy` (BL-216) write only with an explicit `dryRun: false` (both default to a preview); the four
+ * playlist tools always write.
  * `playlist_delete` is not here: it is never registered for a worker (operator-only, ADR 0048 §3).
  */
+
+import { WORKER_FACTORY_WRITE_TOOL_NAMES } from "./worker-factory-tools";
 
 type ToolArgs = Record<string, unknown> | undefined;
 
@@ -47,6 +50,8 @@ const DESCRIBE: Readonly<Record<string, (args: ToolArgs) => WorkerWriteDescripti
       privacyStatus: text(args?.privacyStatus) ?? undefined,
     }),
   }),
+  agent_set_privacy: (args) =>
+    args?.dryRun === false ? { target: text(args.id), detail: detail({ target: text(args.target), privacyStatus: text(args.privacyStatus) }) } : null,
   playlist_add_videos: (args) => ({ target: text(args?.playlistId), detail: detail({ videoIds: videoIds(args) }) }),
   playlist_remove_videos: (args) => ({ target: text(args?.playlistId), detail: detail({ videoIds: videoIds(args) }) }),
 });
@@ -54,23 +59,57 @@ const DESCRIBE: Readonly<Record<string, (args: ToolArgs) => WorkerWriteDescripti
 /** The tools that can write to YouTube for a worker (for the capability inventory's test, ADR 0048 §1). */
 export const WORKER_YOUTUBE_WRITE_TOOLS: readonly string[] = Object.freeze(Object.keys(DESCRIBE));
 
-/** What a worker call of `tool` would write, or `null` when it would not write to YouTube (a read, or `apply` as a preview). */
+/**
+ * BL-217: the worker versions of the Operator's channel tools that change local state (plans, storyboards, video numbers, live and
+ * channel translations). Nothing reaches YouTube; the row says which record and which fields the worker sent.
+ */
+function describeLocalWrite(args: ToolArgs): WorkerWriteDescription {
+  const plan = args?.plan as Record<string, unknown> | undefined;
+  return {
+    target: text(args?.planId) ?? text(plan?.planId) ?? text(args?.storyboardId) ?? text(args?.sessionId) ?? text(args?.jobId) ?? null,
+    detail: detail({ fields: Object.keys(args ?? {}).filter((field) => field !== "channelId").sort() }),
+  };
+}
+
+/** What a worker call of `tool` would write, or `null` when it would not write (a read, or `apply` as a preview). */
 export function describeWorkerWrite(tool: string, args: unknown): WorkerWriteDescription | null {
+  const fields = typeof args === "object" && args !== null ? (args as Record<string, unknown>) : undefined;
+  // A Gemini dry run spends nothing and writes nothing.
+  if (tool === "agent_gemini_create_job" && fields?.dryRun === true) return null;
+  if (WORKER_FACTORY_WRITE_TOOL_NAMES.includes(tool)) return describeLocalWrite(fields);
   const describe = DESCRIBE[tool];
   if (!describe) return null;
-  return describe(typeof args === "object" && args !== null ? (args as Record<string, unknown>) : undefined);
+  return describe(fields);
 }
 
 /**
  * What only YouTube's answer tells: a created playlist's id (it has none before), and how many videos of an add/remove failed (those
  * two tools answer `ok` with per-video failures).
  */
-export function fromToolResult(tool: string, structured: unknown): { target: string | null; failedVideos: number | null } {
+export function fromToolResult(
+  tool: string,
+  structured: unknown
+): { target: string | null; failedVideos: number | null; previousPrivacyStatus: string | null; changed: boolean | null } {
   const result = typeof structured === "object" && structured !== null ? (structured as Record<string, unknown>) : {};
   const playlist = result.playlist as { id?: unknown } | undefined;
   const failures = result.failures;
+  const privacy = tool === "agent_set_privacy";
   return {
-    target: tool === "playlist_create" ? text(playlist?.id) : null,
+    target:
+      tool === "playlist_create"
+        ? text(playlist?.id)
+        : tool === "agent_video_create"
+          ? text((result.video as { video?: unknown } | undefined)?.video)
+          : tool === "agent_factory_start_session"
+            ? text((result.session as { sessionId?: unknown } | undefined)?.sessionId)
+            : tool === "agent_gemini_create_job" || tool === "agent_factory_create_job"
+              ? text((result.job as { jobId?: unknown; id?: unknown } | undefined)?.jobId) ?? text((result.job as { id?: unknown } | undefined)?.id)
+              : tool === "agent_plan_create" || tool === "agent_storyboard_create"
+            ? text((result.plan as { planId?: unknown } | undefined)?.planId) ?? text((result.storyboard as { storyboardId?: unknown } | undefined)?.storyboardId)
+            : null,
     failedVideos: (tool === "playlist_add_videos" || tool === "playlist_remove_videos") && Array.isArray(failures) ? failures.length : null,
+    // BL-216: the status before the change, as the tool read it from YouTube (AC-WP-07), and whether anything was written.
+    previousPrivacyStatus: privacy ? text(result.previousPrivacyStatus) : null,
+    changed: privacy && typeof result.changed === "boolean" ? result.changed : null,
   };
 }

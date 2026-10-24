@@ -38,6 +38,19 @@ Status: Accepted
 ## Consequences
 
 - `AGENT_API_VERSION` 4.0.0 (MAJOR): a worker loses `playlist_delete` and `public`.
-- Stage 2 (BL-216) adds `agent_set_privacy` under the same rules (private/unlisted only, logged with the previous status).
+- Stage 2 (BL-216, Agent API 4.1.0) adds `agent_set_privacy` under the same rules: private/unlisted only, logged with the previous
+  status, refused for a scheduled video and the app's current broadcast. It is allowed by the owner's Live writes switch, like
+  every other write (owner msgs 3386/3389: no separate approval per change).
+- Stage 3 (BL-217, Agent API 4.2.0) gives a worker 26 of the Factory Operator's channel tools as `agent_*` (domain
+  `channel_production`): the factory server's own tools over channel-pinned deps (`src/mcp/worker-factory-tools.ts`; the wiring
+  the channel part moved to `src/mcp/factory-channel-deps.ts`, shared with the factory route; the media part with session start/stop stays in the route). Local writes are DRAFT and logged; the modules keep the actor
+  `factory`, because their synced shapes accept only `factory`/`owner` (the worker log says which worker wrote). A channel's OWN
+  translations stay out (ADR 0047: only the owner and the Factory Operator save them; AC-CL-10).
+- Stage 4 (BL-218, Agent API 4.3.0, owner msg 3402 «может, как оператор») gives a worker the Operator's paid tools for its channel:
+  `agent_factory_*` sessions and jobs, plan runs, Gemini jobs (EXECUTE) -- the factory's own code on the factory's terms (the
+  owner's factory-sessions switch and factory limits, the Gemini switch and limits; one budget shared with the Operator). This
+  amends Phase 14's "approve/start/stop are Web-only" and ADR 0029 §4 ("a job is linked to a plan only by the factory") for a
+  worker's own channel: the worker acts as the factory there. The older owner-approved path (`agent_request_media_session`) stays.
+  The media wiring stays outside `src/mcp` (`src/app/api/mcp/factory-media-deps.ts`, injected by the channel agents' route).
 - `docs/AGENT_OPERATIONS_INTERFACE.md` §3 and §8 are updated: §8's "no new YouTube write path" still holds (every write goes through
   the write gateway, the write-channel guardrail and Live writes), but a worker's writes are no longer only drafts.

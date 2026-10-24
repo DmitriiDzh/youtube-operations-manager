@@ -988,6 +988,28 @@ nothing. This replaces BL-091's per-capability zones, which are retired in
     would really write (refused ones included): `at`, channel, token id, tool, target (video/playlist id; a created playlist's
     id from YouTube's answer), `detail` (JSON, at most 500 characters: changed fields, `privacyStatus`, `videoIds`,
     `failedVideos`), `outcome` `ok`/`error`, `errorCode`. A failed row write never changes the tool's answer.
+    `agent_set_privacy` (BL-216, Agent API 4.1.0, EXECUTE): `{ target: "video" | "playlist", id, privacyStatus: "private" |
+    "unlisted", dryRun? (default true) }` → `{ target, id, dryRun, previousPrivacyStatus, privacyStatus, changed }`. Never
+    public (not accepted). Refused: a scheduled video (`AGENT_SCHEDULE_OWNER_ONLY`, 403), the channel's current live broadcast
+    (`AGENT_LIVE_BROADCAST_OWNER_ONLY`, 403), a video not in the channel's synced list or a playlist not of the channel
+    (`not_found`). A video is written by `video-details` (identity check, backup, Live writes, read-back, bound to the read
+    etag), a playlist by the playlist core; no write when the status is already the asked one. Log rows gain
+    `previousPrivacyStatus` and `changed`.
+    **Operator tools for the worker's channel (BL-217, Agent API 4.2.0, domain `channel_production`).** `agent_plan_get` /
+    `_list` / `_todo` / `_create` / `_import` / `_update` / `_close` / `_report` / `_clone_group` / `_request_recheck` /
+    `_withdraw_recheck`, `agent_storyboard_get` / `_list` / `_create` / `_update` / `_submit` / `_reply` / `_attach_render`,
+    `agent_video_create` / `_list` / `_get_cost`, `agent_jobs_list`, `agent_live_get_status` / `_map_sources` /
+    `_save_localizations`, `agent_gemini_get_job`: each is its
+    `factory_*` tool (the same input, output and errors, see "Factory Operator MCP endpoint" below) for the bound channel only:
+    another channel → `CHANNEL_NOT_ACTIVE`, another channel's plan → `plan_not_found`; where the channel may be left out, the
+    bound one is used. Every write is a worker-log row. Not given: shared things (models, templates, runtimes, GPU data and
+    settings, storage), `factory_plan_move` and the channel's own translations (ADR 0047).
+    **Paid work the Operator's way (BL-218, Agent API 4.3.0):** `agent_factory_start_session` / `_get_session` / `_stop_session`
+    / `_create_job` / `_get_job` / `_cancel_job`, `agent_plan_run_stage`, `agent_plan_rerun`, `agent_gemini_get_status`,
+    `agent_gemini_create_job` -- the `factory_media_*` / `factory_plan_*` / `factory_gemini_*` tools for the bound channel, on the
+    factory's terms (self-approved only within the owner's factory limits and while the factory-sessions switch is on; Gemini
+    within its switch and limits; one budget with the Operator). Another channel's session or job → `media_session_not_found` /
+    `media_job_not_found`. The owner-approved `agent_request_media_session` path is unchanged.
     `agent_list_worker_actions { limit? 1-100, default 50 }` → `{ actions: [{ at, tool, target, detail, outcome, errorCode }] }`
     (READ, bound channel only).
   - `list` / `transcript` / `preview` / `channel_sync` are confined to the bound channel.
@@ -1324,7 +1346,7 @@ Both are operator-only and require a NextAuth session. The mutating methods are 
 
 - `GET /api/agent-tokens` → `{ tokens: [{ tokenId, channelId, label, createdAt }] }` (metadata only).
 - `GET /api/channels/{channelId}/worker-actions` (BL-215, ADR 0048) → `{ actions: [{ at, tool, target, detail, outcome, errorCode }] }`:
-  that channel's worker log on this device, newest first, at most 100 rows (the Settings → Channels list «Действия воркера в YouTube»). Read-only.
+  that channel's worker log on this device, newest first, at most 100 rows (the Settings → Channels list «Действия воркера»). Read-only.
 - Logical paths and the Factory Operator token (BL-129, ADR 0022), all operator-only (session required, 401 otherwise):
   - `GET /api/logical-paths` → `{ paths: [{ name, audience, description, path | null, status: "exists" | "missing" | null, updatedAt | null }] }` (this device's value; `status` is a one-time check of the stored path).
   - `POST /api/logical-paths` with `{ name, audience: "all_agents" | "factory_only", description? }` → `201 { path: { name } }`; `LOGICAL_PATH_ALREADY_EXISTS` (409), invalid name `validation_failed` (400).
