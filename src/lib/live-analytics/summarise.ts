@@ -31,12 +31,21 @@ function bucket<K>(map: Map<K, Acc>, key: K): Acc {
   return acc;
 }
 
+/**
+ * BL-221 (owner, Telegram msg 3453): YouTube leaves `concurrentViewers` out when nobody watches (the owner never hides the count),
+ * so a sample taken while the broadcast is live and carrying no number counts as 0 viewers. Outside "live" no number stays unknown.
+ */
+function viewersOf(sample: LiveSampleInput): number | null {
+  return sample.viewers ?? (sample.lifeCycleStatus === "live" ? 0 : null);
+}
+
 const utcDate = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 const utcHour = (ms: number) => `${new Date(ms).toISOString().slice(0, 13)}:00:00.000Z`;
 
 /**
  * The summary of a stream's samples and events (LIVE_ANALYTICS_PLAN.md §3): an interval a→b of at most MAX_GAP_MS belongs to
- * sample a -- its state, UTC day, hour and broadcast; a longer one is a data gap. Unknown stays null, never 0.
+ * sample a -- its state, UTC day, hour and broadcast; a longer one is a data gap. Unknown stays null, never 0 -- except a live
+ * sample without a count, which is 0 viewers (`viewersOf`, owner msg 3453).
  */
 export function summariseLive(input: { samples: readonly LiveSampleInput[]; events: readonly LiveEventInput[] }): LiveSummary {
   const samples = [...input.samples].sort((a, b) => a.sampledAt - b.sampledAt);
@@ -52,7 +61,8 @@ export function summariseLive(input: { samples: readonly LiveSampleInput[]; even
     spans.set(a.broadcastId, span ? { first: span.first, last: a.sampledAt } : { first: a.sampledAt, last: a.sampledAt });
     for (const acc of targets) {
       acc.samples += 1;
-      if (a.viewers !== null) acc.peak = acc.peak === null ? a.viewers : Math.max(acc.peak, a.viewers);
+      const viewers = viewersOf(a);
+      if (viewers !== null) acc.peak = acc.peak === null ? viewers : Math.max(acc.peak, viewers);
     }
     const b = samples[i + 1];
     if (!b) return;
@@ -62,8 +72,9 @@ export function summariseLive(input: { samples: readonly LiveSampleInput[]; even
       else if (a.lifeCycleStatus !== "live") acc.notLiveMs += dt;
       else {
         acc.onAirMs += dt;
-        if (a.viewers !== null) {
-          acc.viewerMs += a.viewers * dt;
+        const viewers = viewersOf(a);
+        if (viewers !== null) {
+          acc.viewerMs += viewers * dt;
           acc.knownMs += dt;
         }
       }

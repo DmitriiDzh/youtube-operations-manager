@@ -206,8 +206,8 @@ export function LiveStreamPanel({ channelId, visible }: { channelId: string | nu
   }
 
   return (
-    <div className="max-w-4xl space-y-6">
-      <p className="text-sm text-zinc-400">{t("live.intro")}</p>
+    <div className="space-y-6">
+      <p className="max-w-4xl text-sm text-zinc-400">{t("live.intro")}</p>
       {loadError && <p className="text-sm text-red-400">{loadError}</p>}
       {(!overview.module.enabled || !overview.module.host.ok) && (
         <div className="rounded-xl border border-amber-800/60 bg-amber-500/10 p-3 text-sm text-amber-200">
@@ -233,17 +233,90 @@ export function LiveStreamPanel({ channelId, visible }: { channelId: string | nu
       ))}
       {overview.module.host.ok && (
         <>
-          <StatusCard overview={overview} base={base!} onChanged={load} />
-          <LiveStreamAnalyticsCard base={base!} visible={visible} />
-          <SettingsCard overview={overview} base={base!} onChanged={load} />
-          <LiveStreamLocalizationsCard base={base!} view={overview.localizations ?? null} channelLanguage={overview.channelDefaultLanguage ?? null} hasStream={overview.stream !== null} onChanged={load} />
-          <LiveStreamVideoSettingsCard base={base!} channelLanguage={overview.channelDefaultLanguage ?? null} saved={overview.videoSettings} problem={overview.videoSettingsProblem} onChanged={load} />
-          <LiveStreamSegmentsCard base={base!} view={overview.segments ?? null} onChanged={load} />
-          <RotationCard overview={overview} base={base!} onChanged={load} />
-          <HistoryCard overview={overview} />
+          {/* BL-221 (CONTENT_UX_PLAN.md stage C): the state and the figures first, full width; what is set once is folded. */}
+          <div className="grid gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
+            <StatusCard overview={overview} base={base!} onChanged={load} />
+            <LiveStreamAnalyticsCard base={base!} visible={visible} />
+          </div>
+          <div className="max-w-4xl space-y-6">
+            <RotationCard overview={overview} base={base!} onChanged={load} />
+            <details className="group rounded-xl border border-zinc-800 bg-zinc-900">
+              <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-zinc-200 hover:text-white">{t("live.settingsGroup")}</summary>
+              <div className="space-y-6 border-t border-zinc-800 p-3">
+                <SettingsCard overview={overview} base={base!} onChanged={load} />
+                <LiveStreamLocalizationsCard base={base!} view={overview.localizations ?? null} channelLanguage={overview.channelDefaultLanguage ?? null} hasStream={overview.stream !== null} onChanged={load} />
+                <LiveStreamVideoSettingsCard base={base!} channelLanguage={overview.channelDefaultLanguage ?? null} saved={overview.videoSettings} problem={overview.videoSettingsProblem} onChanged={load} />
+                <LiveStreamSegmentsCard base={base!} view={overview.segments ?? null} onChanged={load} />
+              </div>
+            </details>
+            <HistoryCard overview={overview} />
+          </div>
         </>
       )}
       {!overview.module.host.ok && overview.peers.length === 0 && <p className="text-sm text-zinc-500">{t("live.peer.none")}</p>}
+    </div>
+  );
+}
+
+/** BL-221: YouTube's word for the stream's health, and what it means for the owner. */
+const HEALTH_VIEW: Record<string, { key: UiTextKey; className: string }> = {
+  good: { key: "live.health.good", className: "border-emerald-800/60 bg-emerald-950/30 text-emerald-200" },
+  ok: { key: "live.health.ok", className: "border-emerald-800/60 bg-emerald-950/30 text-emerald-200" },
+  bad: { key: "live.health.bad", className: "border-red-800/70 bg-red-950/40 text-red-200" },
+  noData: { key: "live.health.noData", className: "border-amber-800/60 bg-amber-950/30 text-amber-200" },
+  revoked: { key: "live.health.revoked", className: "border-red-800/70 bg-red-950/40 text-red-200" },
+};
+/** The configuration issues explained in plain words (liveStreams `status.healthStatus.configurationIssues[].type`); others by name. */
+const ISSUE_TEXT: Record<string, UiTextKey> = {
+  videoIngestionStarved: "live.issue.videoIngestionStarved",
+  videoIngestionFasterThanExpected: "live.issue.videoIngestionFasterThanExpected",
+  bitrateLow: "live.issue.bitrateLow",
+  bitrateHigh: "live.issue.bitrateHigh",
+  gopSizeLong: "live.issue.gop",
+  gopSizeOver: "live.issue.gop",
+  openGop: "live.issue.gop",
+  frameRateHigh: "live.issue.frameRateHigh",
+  noAudioStream: "live.issue.noAudioStream",
+  noVideoStream: "live.issue.noVideoStream",
+};
+
+/**
+ * BL-221 (CONTENT_UX_PLAN.md stage C): the stream's state at a glance -- viewers now (a live broadcast without a count is 0
+ * viewers, owner msg 3453) and YouTube's health with what each reported issue means. YouTube's own words stay visible as data.
+ */
+function YoutubeHealth({ youtube }: { youtube: NonNullable<Overview["youtube"]> }) {
+  const t = useT();
+  const health = youtube.healthStatus ? HEALTH_VIEW[youtube.healthStatus] : undefined;
+  const viewers = youtube.viewers ?? (youtube.lifeCycleStatus === "live" ? 0 : null);
+  const issues = [...new Map(youtube.configurationIssues.map((issue) => [issue.type, issue])).values()];
+  return (
+    <div className={`space-y-2 rounded-lg border p-3 ${health?.className ?? "border-zinc-800 bg-zinc-950 text-zinc-300"}`}>
+      <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
+        {viewers !== null && (
+          <p className="text-sm">
+            <span className="text-2xl font-semibold tabular-nums text-white">{viewers}</span> {t("live.health.viewersNow")}
+          </p>
+        )}
+        <p className="text-sm font-medium">{health ? t(health.key) : t("live.health.unknown")}</p>
+      </div>
+      {issues.length > 0 && (
+        <ul className="space-y-1 text-xs">
+          {issues.map((issue) => (
+            <li key={issue.type}>
+              {/* ui-text-ignore: YouTube's own issue name (data) */}
+              <span className="font-mono opacity-80">{issue.type}</span>
+              {" — "}
+              {t(ISSUE_TEXT[issue.type] ?? "live.issue.other")}
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="text-xs opacity-70">
+        {/* ui-text-ignore: YouTube's own status words (data) */}
+        {t("live.youtube.status", { lifecycle: youtube.lifeCycleStatus ?? "—", stream: youtube.streamStatus ?? "—", health: youtube.healthStatus ?? "—" })}
+        {" · "}
+        {t("live.youtube.checked", { at: new Date(youtube.checkedAt).toLocaleString(t.language) })}
+      </p>
     </div>
   );
 }
@@ -311,23 +384,7 @@ function StatusCard({ overview, base, onChanged }: { overview: Overview; base: s
           {status.progress.bitrate && <p className="text-xs text-zinc-500">{t("live.status.bitrate", { bitrate: status.progress.bitrate })}</p>}
         </div>
       )}
-      {on && overview.youtube && (
-        <div className="space-y-1 rounded-lg border border-zinc-800 bg-zinc-950 p-2.5 text-xs text-zinc-400">
-          <p className="text-zinc-300">
-            {/* ui-text-ignore: YouTube's own status words (data) */}
-            {t("live.youtube.status", {
-              lifecycle: overview.youtube.lifeCycleStatus ?? "—",
-              stream: overview.youtube.streamStatus ?? "—",
-              health: overview.youtube.healthStatus ?? "—",
-            })}
-          </p>
-          {overview.youtube.viewers !== null && <p>{t("live.youtube.viewers", { viewers: String(overview.youtube.viewers) })}</p>}
-          {overview.youtube.configurationIssues.length > 0 && (
-            <p className="text-amber-300">{t("live.youtube.issues", { issues: overview.youtube.configurationIssues.map((i) => i.type).join(", ") })}</p>
-          )}
-          <p className="text-zinc-500">{t("live.youtube.checked", { at: new Date(overview.youtube.checkedAt).toLocaleString(t.language) })}</p>
-        </div>
-      )}
+      {on && overview.youtube && <YoutubeHealth youtube={overview.youtube} />}
       <div className="flex flex-wrap gap-2">
         {!on && (
           <button onClick={() => setDialog("start")} disabled={busy || !ready || overview.rotation.length === 0 || !settings.title.trim()} className={primaryClass}>
