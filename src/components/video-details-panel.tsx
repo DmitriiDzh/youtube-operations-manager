@@ -1,7 +1,8 @@
 "use client";
 
 import { canWritePublishAt } from "@/lib/video-details/publish-at-rule";
-import { errorText } from "@/lib/ui-text";
+import { errorText, type UiTextKey } from "@/lib/ui-text";
+import { VIDEO_CATEGORY_IDS } from "@/lib/youtube-video-fields";
 import { useCallback, useEffect, useState } from "react";
 import { OperationOverlay, useOperation } from "./operation-progress";
 import { formatDisplayDateTime, formatDisplayDateUtc, parseDisplayDate, parseDisplayDateTime } from "@/lib/shared-formatting";
@@ -337,12 +338,20 @@ export function VideoDetailsPanel({
         </label>
         <label className="block">
           <span className="text-xs text-zinc-400">{t("video.field.categoryId")}</span>
-          <input
+          {/* BL-221: the category by name (YouTube's assignable categories), never a bare id. */}
+          <select
             value={form.categoryId}
             onChange={(e) => updateForm({ categoryId: e.target.value })}
-            placeholder={t("video.field.categoryIdPlaceholder")}
             className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-200"
-          />
+          >
+            {!form.categoryId && <option value="">{t("video.field.categoryIdPlaceholder")}</option>}
+            {form.categoryId && !(VIDEO_CATEGORY_IDS as readonly string[]).includes(form.categoryId) && <option value={form.categoryId}>{form.categoryId}</option>}
+            {VIDEO_CATEGORY_IDS.map((id) => (
+              <option key={id} value={id}>
+                {t(`publishingSettings.category.${id}` as UiTextKey)}
+              </option>
+            ))}
+          </select>
         </label>
       </div>
 

@@ -1,6 +1,6 @@
-import { releaseManifestFileName, uploadRecordFileName, type VideoFolder, type VideoRegistryRow } from "@/lib/workspace-videos";
+import { isNamedAfterRelease, isVideoFileName, releaseManifestFileName, uploadRecordFileName, type VideoFolder, type VideoRegistryRow } from "@/lib/workspace-videos";
 import { VIDEO_NUMBER_PATTERN } from "@/lib/sync-gateway";
-import type { OwnReservation, ReservationView, VideoConflict, VideoProject, VideoSource, VideoState } from "./contracts";
+import type { OwnReservation, ReservationView, UploadRecordLink, VideoConflict, VideoProject, VideoSource, VideoState } from "./contracts";
 
 // BL-194 stage 1 (VIDEO_COST_PLAN.md §2, ADR 0040): the pure rules -- the next number, the list of a channel's videos, and the
 // duplicates two computers made. No I/O.
@@ -29,7 +29,9 @@ export type VideoListInput = {
   /** Null while the workspace cannot be read: the list is then the reservations and uploads only. */
   folders: VideoFolder[] | null;
   registry: VideoRegistryRow[] | null;
-  uploads: Array<{ video: string; status: string }>;
+  uploads: Array<{ video: string; status: string; videoId?: string | null }>;
+  /** BL-221: the videos the folders' `Vn_youtube.json` files name (absent: none read). */
+  uploadRecords?: UploadRecordLink[];
 };
 
 /** Every number of the channel the inputs know -- cancelled reservations included: a number is never given twice. */
@@ -61,12 +63,21 @@ const DEAD_UPLOAD = new Set(["failed", "cancelled"]);
  * an upload is under way; cancelled when every reservation was given up and nothing else knows it; in work otherwise.
  */
 export function buildVideoList(input: VideoListInput): VideoProject[] {
-  type Entry = { reservations: ReservationView[]; sources: Set<VideoSource>; folder: VideoFolder | null; registry: boolean; uploads: string[] };
+  type Entry = {
+    reservations: ReservationView[];
+    sources: Set<VideoSource>;
+    folder: VideoFolder | null;
+    registry: boolean;
+    uploads: string[];
+    recordId: string | null;
+    uploadId: string | null;
+    registryId: string | null;
+  };
   const entries = new Map<string, Entry>();
   const entry = (video: string): Entry => {
     let e = entries.get(video);
     if (!e) {
-      e = { reservations: [], sources: new Set(), folder: null, registry: false, uploads: [] };
+      e = { reservations: [], sources: new Set(), folder: null, registry: false, uploads: [], recordId: null, uploadId: null, registryId: null };
       entries.set(video, e);
     }
     return e;
@@ -92,12 +103,19 @@ export function buildVideoList(input: VideoListInput): VideoProject[] {
     const e = entry(row.vNumber);
     e.sources.add("registry");
     e.registry = true;
+    e.registryId ??= row.videoId;
   }
   for (const upload of input.uploads) {
     if (videoNumberValue(upload.video) === null) continue;
     const e = entry(upload.video);
     e.sources.add("upload");
     e.uploads.push(upload.status);
+    if (upload.videoId) e.uploadId ??= upload.videoId;
+  }
+  // A record only counts for a number the list already knows from its folder (it was read from that folder).
+  for (const record of input.uploadRecords ?? []) {
+    const e = entries.get(record.video);
+    if (e?.folder) e.recordId ??= record.videoId;
   }
 
   const suggestion = nextVideoNumber(knownNumbers(input));
@@ -132,6 +150,9 @@ export function buildVideoList(input: VideoListInput): VideoProject[] {
       hostName: lead?.hostName ?? null,
       thisComputer: lead?.thisComputer ?? false,
       conflict,
+      youtubeVideoId: e.recordId ?? e.uploadId ?? e.registryId,
+      hasVideoFile: files.some((name) => isVideoFileName(name) && isNamedAfterRelease(name, video)),
+      uploading: e.uploads.some((s) => !DEAD_UPLOAD.has(s) && !PUBLISHED_UPLOAD.has(s)),
     });
   }
   return out.sort((a, b) => b.number - a.number);

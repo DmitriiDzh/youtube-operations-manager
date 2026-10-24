@@ -290,7 +290,7 @@ test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.23.0 
   // log / stats read one CUDA minimum (optional minCudaVersion, echoed with the minimums present). Additive.
   // BL-210 (CHANNEL_LOCALIZATIONS_PLAN.md §5: "This is Factory API 1.29.0"): two new tools, additive -> 1.29.0.
   // BL-220 (RESTART_WHEN_IDLE_PLAN.md "Factory API 1.30.0"): three new tools, additive -> 1.30.0.
-  assert.equal(FACTORY_API_VERSION, "1.30.0");
+  assert.equal(FACTORY_API_VERSION, "1.31.0");
   const agentOperations = await readFile("src/lib/agent-operations/contracts.ts", "utf8");
   assert.equal(agentOperations.includes("FACTORY_API_VERSION"), false);
 });

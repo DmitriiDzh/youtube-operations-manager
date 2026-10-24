@@ -75,6 +75,8 @@ export function PublishingPackages({ channelId, visible }: { channelId: string |
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
+  // BL-221: a published package is done -- hidden until the owner asks (it stays in «Ролики и релизы» → «Опубликовано»).
+  const [showPublished, setShowPublished] = useState(false);
   /** The date text the owner typed per package (DD.MM.YYYY, "" = no date); absent = the suggested date. */
   const [typedDates, setTypedDates] = useState<Record<string, string>>({});
   const [approving, setApproving] = useState(false);
@@ -225,6 +227,11 @@ export function PublishingPackages({ channelId, visible }: { channelId: string |
         <>
           <div className="flex flex-wrap items-center gap-3">
             <p className="text-xs text-zinc-400">{t("publishingPackages.summary", counts)}</p>
+            {packages.some((p) => p.state === "published") && (
+              <button type="button" onClick={() => setShowPublished((x) => !x)} className="text-xs text-zinc-400 underline hover:text-zinc-200">
+                {t(showPublished ? "publishingPackages.hidePublished" : "publishingPackages.showPublished", { count: packages.filter((p) => p.state === "published").length })}
+              </button>
+            )}
             {readyPaths.length > 0 && (
               <button type="button" onClick={() => setSelected(selected.length > 0 ? [] : readyPaths)} className="text-xs text-zinc-400 underline hover:text-zinc-200">
                 {selected.length > 0 ? t("publishingPackages.clearSelection") : t("publishingPackages.selectAllReady")}
@@ -232,7 +239,7 @@ export function PublishingPackages({ channelId, visible }: { channelId: string |
             )}
           </div>
           <ul className="divide-y divide-zinc-800 rounded-lg border border-zinc-800">
-            {packages.map((p) => {
+            {(showPublished ? packages : packages.filter((p) => p.state !== "published")).map((p) => {
               const isChosen = selected.includes(p.manifestPath) && p.state === "ready";
               const day = isChosen ? dateOf(p) : null;
               const typed = typedDates[p.manifestPath];

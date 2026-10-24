@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { formatDisplayDateTime } from "@/lib/shared-formatting";
+import { formatDisplayDate, formatDisplayDateTime, resolvePublishDate } from "@/lib/shared-formatting";
 import { errorText, type UiTextKey } from "@/lib/ui-text";
 import { ConfirmDialog } from "./confirm-dialog";
 import { LoadingIndicator } from "./operation-progress";
@@ -9,6 +9,8 @@ import { useUiText } from "./ui-text-provider";
 import { costUsd, VideoCostDialog, type CostTotalsView } from "./video-cost-dialog";
 import { VideoCostsBackfill } from "./video-costs-backfill";
 import { FeatureErrorBoundary } from "./feature-error-boundary";
+import { canLink, PIPELINE_PHASES, pipelinePhase, type PipelinePhase } from "./video-pipeline";
+import { VideoLinkDialog } from "./video-link-dialog";
 
 // BL-194 stage 1 (docs/roadmap/plans/VIDEO_COST_PLAN.md §2 "UI", ADR 0040): Content → «Публикация» starts with the channel's videos
 // in work. «Новый ролик» reserves the next number (with an optional working title); a number two computers took at once is shown
@@ -25,17 +27,43 @@ export type VideoProjectView = {
   deviceId: string | null;
   thisComputer: boolean;
   conflict: { reservations: VideoReservationView[]; winnerDeviceId: string; thisComputerInvolved: boolean; thisComputerLoses: boolean; suggestedVideo: string | null } | null;
+  /** BL-221: the YouTube video this number became (null while unknown). */
+  youtubeVideoId?: string | null;
+  /** BL-221: the folder holds the release video file. */
+  hasVideoFile?: boolean;
+  /** BL-221: an upload of the number is queued or running here (no manual link then). */
+  uploading?: boolean;
 };
 export type VideoListView = { videos: VideoProjectView[]; workspace: "ok" | "not_configured" | "unavailable"; nextVideo: string | null };
 /** BL-194 stage 3: the cost summary of the channel's videos (its own route; the list works without it). */
 type VideoCostSummaryView = { videos: Array<{ video: string; totals: CostTotalsView }>; unlinked: CostTotalsView };
 
-const STATE_STYLE: Record<VideoProjectView["state"], string> = {
-  in_work: "bg-indigo-950/60 text-indigo-200",
-  packaged: "bg-emerald-950/50 text-emerald-300",
-  published: "bg-zinc-800 text-zinc-400",
-  cancelled: "bg-zinc-800 text-zinc-500 line-through",
+/** BL-221: the synced videos the board reads (a local read): the linked video's title, access, date and views. */
+type SyncedVideoLite = { videoId: string; title: string; privacyStatus: string; publishAt: string | null; publishedAt: string; viewCount: number | null };
+
+const PHASE_TITLE: Record<PipelinePhase, UiTextKey> = {
+  prep: "pipeline.phase.prep",
+  edit: "pipeline.phase.edit",
+  package: "pipeline.phase.package",
+  youtube: "pipeline.phase.youtube",
+  published: "pipeline.phase.published",
 };
+const PHASE_HINT: Record<PipelinePhase, UiTextKey> = {
+  prep: "pipeline.phaseHint.prep",
+  edit: "pipeline.phaseHint.edit",
+  package: "pipeline.phaseHint.package",
+  youtube: "pipeline.phaseHint.youtube",
+  published: "pipeline.phaseHint.published",
+};
+const PHASE_ACCENT: Record<PipelinePhase, string> = {
+  prep: "border-t-indigo-500",
+  edit: "border-t-sky-500",
+  package: "border-t-violet-500",
+  youtube: "border-t-amber-500",
+  published: "border-t-emerald-500",
+};
+/** The «Опубликовано» column shows the newest few until the owner opens it. */
+const PUBLISHED_SHOWN = 6;
 
 const computerName = (r: { hostName: string | null; deviceId: string | null }, fallback: string) => r.hostName ?? r.deviceId ?? fallback;
 
@@ -45,7 +73,9 @@ export function VideoProjectsPanel({ channelId, visible }: { channelId: string |
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [showAll, setShowAll] = useState(false);
+  const [publishedOpen, setPublishedOpen] = useState(false);
+  const [synced, setSynced] = useState<Map<string, SyncedVideoLite> | null>(null);
+  const [linking, setLinking] = useState<VideoProjectView | null>(null);
   const [creating, setCreating] = useState(false);
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
@@ -86,12 +116,26 @@ export function VideoProjectsPanel({ channelId, visible }: { channelId: string |
     }
   }, [channelId]);
 
+  // BL-221: the channel's synced videos (local), for the linked video's title, access and date. A failure leaves them out.
+  const loadSynced = useCallback(async () => {
+    if (!channelId) return;
+    try {
+      const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/videos`);
+      if (!res.ok) return;
+      const data = (await res.json()) as { videos: SyncedVideoLite[] };
+      setSynced(new Map(data.videos.map((v) => [v.videoId, v])));
+    } catch {
+      // the board works without them
+    }
+  }, [channelId]);
+
   useEffect(() => {
     if (visible) {
       void load();
       void loadCosts();
+      void loadSynced();
     }
-  }, [visible, load, loadCosts]);
+  }, [visible, load, loadCosts, loadSynced]);
 
   async function act(url: string, body: unknown, success: (data: { video: VideoProjectView; replaced?: string }) => string) {
     setBusy(true);
@@ -112,9 +156,15 @@ export function VideoProjectsPanel({ channelId, visible }: { channelId: string |
 
   if (!channelId) return null;
   const videos = list?.videos ?? [];
-  // In work, plus every number in dispute whatever its state (both computers must see it).
-  const shown = showAll ? videos : videos.filter((v) => v.state === "in_work" || v.conflict);
   const canCreate = list?.workspace === "ok" && Boolean(list.nextVideo);
+  const syncedOf = (v: VideoProjectView) => (v.youtubeVideoId ? synced?.get(v.youtubeVideoId) ?? null : null);
+  const columns = new Map<PipelinePhase, VideoProjectView[]>(PIPELINE_PHASES.map((phase) => [phase, []]));
+  for (const v of videos) {
+    const phase = pipelinePhase(v, syncedOf(v));
+    if (phase) columns.get(phase)!.push(v);
+  }
+  const cancelledCount = videos.filter((v) => v.state === "cancelled").length;
+  const linkable = videos.filter((v) => canLink(v) && (v.hasVideoFile || v.state !== "in_work")).length;
 
   return (
     <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4 text-sm">
@@ -136,7 +186,7 @@ export function VideoProjectsPanel({ channelId, visible }: { channelId: string |
           >
             {t("videoProjects.new")}
           </button>
-          <button type="button" onClick={() => void Promise.all([load(), loadCosts()])} disabled={loading} className="rounded-lg bg-zinc-800 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-700 disabled:opacity-50">
+          <button type="button" onClick={() => void Promise.all([load(), loadCosts(), loadSynced()])} disabled={loading} className="rounded-lg bg-zinc-800 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-700 disabled:opacity-50">
             {t("videoProjects.refresh")}
           </button>
         </div>
@@ -151,77 +201,142 @@ export function VideoProjectsPanel({ channelId, visible }: { channelId: string |
         </p>
       )}
       {costsFailed && <p className="text-xs text-amber-300/80">{t("videoCosts.loadFailed")}</p>}
-      {list && shown.length === 0 && <p className="text-xs text-zinc-400">{t(showAll ? "videoProjects.emptyAll" : "videoProjects.empty")}</p>}
-      {shown.length > 0 && (
-        <ul className="divide-y divide-zinc-800 rounded-lg border border-zinc-800">
-          {shown.map((v) => {
-            const computer = computerName(v, t("videoProjects.unknownComputer"));
-            const winner = v.conflict?.reservations.find((r) => r.deviceId === v.conflict?.winnerDeviceId);
-            const others = v.conflict?.reservations.filter((r) => !r.thisComputer) ?? [];
-            const cost = costs?.videos.find((c) => c.video === v.video)?.totals ?? null;
-            return (
-              <li key={v.video} className="space-y-1.5 px-3 py-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-mono text-sm text-zinc-100">{v.video}</span>
-                  <span className={`rounded px-1.5 py-0.5 text-[11px] ${STATE_STYLE[v.state]}`}>{t(`videoProjects.state.${v.state}` as UiTextKey)}</span>
-                  <span className={v.workingTitle ? "truncate text-zinc-200" : "text-zinc-500"}>{v.workingTitle ?? t("videoProjects.untitled")}</span>
-                  {cost && (
-                    <button
-                      type="button"
-                      onClick={() => setCostOf(v)}
-                      title={t("videoCosts.chipTitle", { runpod: costUsd(cost.runpodUsd), gemini: costUsd(cost.geminiUsd), runs: cost.runs })}
-                      className="ml-auto shrink-0 rounded-md border border-zinc-700 px-2 py-0.5 font-mono text-[11px] text-zinc-200 hover:border-indigo-500 hover:bg-zinc-800"
-                    >
-                      {t(cost.estimated ? "videoCosts.chipEstimated" : "videoCosts.chip", { total: costUsd(cost.totalUsd) })}
+      {costs && costs.unlinked.runs > 0 && (
+        <p className="rounded-lg border border-amber-800/60 bg-amber-950/20 px-3 py-2 text-xs text-amber-200">
+          {t("videoCosts.unlinked", { total: `${costs.unlinked.estimated ? "≈" : ""}${costUsd(costs.unlinked.totalUsd)}`, runs: costs.unlinked.runs })}
+        </p>
+      )}
+      {linkable > 0 && <p className="text-xs text-zinc-400">{t("pipeline.linkHint", { count: linkable })}</p>}
+      {list && videos.length === 0 && <p className="text-xs text-zinc-400">{t("videoProjects.emptyAll")}</p>}
+      {videos.length > 0 && (
+        // BL-221 (CONTENT_UX_PLAN.md stage B): one board by phase instead of one list; each number in exactly one column.
+        <div className="overflow-x-auto">
+          <div className="grid min-w-[1000px] grid-cols-5 gap-3">
+            {PIPELINE_PHASES.map((phase) => {
+              const items = columns.get(phase)!;
+              const visibleItems = phase === "published" && !publishedOpen ? items.slice(0, PUBLISHED_SHOWN) : items;
+              return (
+                <section key={phase} className={`flex min-w-0 flex-col gap-2 rounded-lg border border-zinc-800 border-t-2 bg-zinc-950/40 p-2 ${PHASE_ACCENT[phase]}`}>
+                  <header className="px-1" title={t(PHASE_HINT[phase])}>
+                    <h4 className="flex items-center justify-between text-xs font-medium text-zinc-300">
+                      <span>{t(PHASE_TITLE[phase])}</span>
+                      <span className="rounded-full bg-zinc-800 px-1.5 text-[11px] text-zinc-400">{items.length}</span>
+                    </h4>
+                  </header>
+                  {items.length === 0 && <p className="px-1 text-[11px] text-zinc-600">{t("pipeline.columnEmpty")}</p>}
+                  {visibleItems.map((v) => {
+                    const yt = syncedOf(v);
+                    const cost = costs?.videos.find((c) => c.video === v.video)?.totals ?? null;
+                    const computer = computerName(v, t("videoProjects.unknownComputer"));
+                    const winner = v.conflict?.reservations.find((r) => r.deviceId === v.conflict?.winnerDeviceId);
+                    const others = v.conflict?.reservations.filter((r) => !r.thisComputer) ?? [];
+                    const date = yt ? resolvePublishDate(yt) : null;
+                    return (
+                      <article key={v.video} className="space-y-1 rounded-md border border-zinc-800 bg-zinc-900 p-2 text-xs">
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-sm text-zinc-100">{v.video}</span>
+                          {cost && cost.runs > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => setCostOf(v)}
+                              title={t("videoCosts.chipTitle", { runpod: costUsd(cost.runpodUsd), gemini: costUsd(cost.geminiUsd), runs: cost.runs })}
+                              className="ml-auto shrink-0 rounded border border-zinc-700 px-1.5 py-0.5 font-mono text-[11px] text-zinc-200 hover:border-indigo-500 hover:bg-zinc-800"
+                            >
+                              {t(cost.estimated && !costUsd(cost.totalUsd).startsWith("<") ? "videoCosts.chipEstimated" : "videoCosts.chip", { total: costUsd(cost.totalUsd) })}
+                            </button>
+                          )}
+                        </div>
+                        {(yt || v.workingTitle || !v.folder) && (
+                          <p className={`line-clamp-2 ${yt || v.workingTitle ? "text-zinc-200" : "text-zinc-500"}`} title={yt?.title ?? v.workingTitle ?? undefined}>
+                            {yt?.title ?? v.workingTitle ?? t("videoProjects.untitled")}
+                          </p>
+                        )}
+                        <p className="text-zinc-500">
+                          {phase === "published" || phase === "youtube"
+                            ? yt
+                              ? [
+                                  t(yt.privacyStatus === "public" ? "pipeline.public" : yt.publishAt ? "pipeline.scheduled" : yt.privacyStatus === "unlisted" ? "pipeline.unlisted" : "pipeline.private"),
+                                  date ? formatDisplayDate(date) : null,
+                                  yt.viewCount !== null ? t("pipeline.views", { count: yt.viewCount }) : null,
+                                ]
+                                  .filter(Boolean)
+                                  .join(" · ")
+                              : t(v.youtubeVideoId ? "pipeline.notSyncedYet" : "pipeline.publishedNoVideo")
+                            : v.folder
+                              ? v.folder.slice(v.folder.lastIndexOf("/") + 1)
+                              : v.createdAt
+                                ? t(v.thisComputer ? "videoProjects.reservedHere" : "videoProjects.reservedOn", { date: formatDisplayDateTime(v.createdAt), computer })
+                                : t("videoProjects.noFolder")}
+                        </p>
+                        {v.conflict && (
+                          <div className="space-y-1.5 rounded border border-amber-800/60 bg-amber-950/20 p-1.5 text-amber-200">
+                            <p>
+                              {t("videoProjects.conflict", {
+                                video: v.video,
+                                computers: (others.length > 0 ? others : v.conflict.reservations).map((r) => computerName(r, t("videoProjects.unknownComputer"))).join(", "),
+                                winner: winner ? computerName(winner, t("videoProjects.unknownComputer")) : v.conflict.winnerDeviceId,
+                              })}
+                            </p>
+                            <p>{t(v.conflict.thisComputerLoses ? "videoProjects.conflictLoses" : v.conflict.thisComputerInvolved ? "videoProjects.conflictKeeps" : "videoProjects.conflictElsewhere")}</p>
+                            {v.conflict.thisComputerLoses && v.conflict.suggestedVideo && (
+                              <button type="button" onClick={() => setRenumbering(v)} disabled={busy} className="rounded bg-amber-600 px-2 py-0.5 font-medium text-white hover:bg-amber-500 disabled:opacity-50">
+                                {t("videoProjects.takeNext", { video: v.conflict.suggestedVideo })}
+                              </button>
+                            )}
+                          </div>
+                        )}
+                        <div className="flex flex-wrap gap-x-3 gap-y-1">
+                          {canLink(v) && (phase !== "prep" || v.hasVideoFile) && (
+                            <button type="button" onClick={() => setLinking(v)} disabled={busy} className="text-sky-400 underline hover:text-sky-300 disabled:opacity-50">
+                              {t("pipeline.link")}
+                            </button>
+                          )}
+                          {v.youtubeVideoId && (
+                            // ui-text-ignore: a link label made of the video id (data)
+                            <a href={`https://studio.youtube.com/video/${encodeURIComponent(v.youtubeVideoId)}/edit`} target="_blank" rel="noreferrer" className="text-zinc-400 underline hover:text-zinc-200">
+                              {t("pipeline.studio")}
+                            </a>
+                          )}
+                          {v.thisComputer && v.state === "in_work" && !v.conflict && (
+                            <button type="button" onClick={() => setCancelling(v)} disabled={busy} className="text-zinc-500 underline hover:text-zinc-300 disabled:opacity-50">
+                              {t("videoProjects.cancel")}
+                            </button>
+                          )}
+                        </div>
+                      </article>
+                    );
+                  })}
+                  {phase === "published" && items.length > PUBLISHED_SHOWN && (
+                    <button type="button" onClick={() => setPublishedOpen((x) => !x)} className="px-1 text-left text-[11px] text-zinc-400 underline hover:text-zinc-200">
+                      {publishedOpen ? t("pipeline.showFewer") : t("pipeline.showMore", { count: items.length - PUBLISHED_SHOWN })}
                     </button>
                   )}
-                </div>
-                <p className="text-xs text-zinc-400">
-                  {v.createdAt
-                    ? t(v.thisComputer ? "videoProjects.reservedHere" : "videoProjects.reservedOn", { date: formatDisplayDateTime(v.createdAt), computer })
-                    : t("videoProjects.fromWorkspace")}
-                  {" · "}
-                  {v.folder ? t("videoProjects.folder", { folder: v.folder }) : t("videoProjects.noFolder")}
-                </p>
-                {v.conflict && (
-                  <div className="space-y-2 rounded-lg border border-amber-800/60 bg-amber-950/20 px-3 py-2 text-xs text-amber-200">
-                    <p>
-                      {t("videoProjects.conflict", {
-                        video: v.video,
-                        computers: (others.length > 0 ? others : v.conflict.reservations).map((r) => computerName(r, t("videoProjects.unknownComputer"))).join(", "),
-                        winner: winner ? computerName(winner, t("videoProjects.unknownComputer")) : v.conflict.winnerDeviceId,
-                      })}
-                    </p>
-                    <p>{t(v.conflict.thisComputerLoses ? "videoProjects.conflictLoses" : v.conflict.thisComputerInvolved ? "videoProjects.conflictKeeps" : "videoProjects.conflictElsewhere")}</p>
-                    {v.conflict.thisComputerLoses && v.conflict.suggestedVideo && (
-                      <button type="button" onClick={() => setRenumbering(v)} disabled={busy} className="rounded-md bg-amber-600 px-3 py-1 text-xs font-medium text-white hover:bg-amber-500 disabled:opacity-50">
-                        {t("videoProjects.takeNext", { video: v.conflict.suggestedVideo })}
-                      </button>
-                    )}
-                  </div>
-                )}
-                {v.thisComputer && v.state === "in_work" && !v.conflict && (
-                  <button type="button" onClick={() => setCancelling(v)} disabled={busy} className="text-xs text-zinc-500 underline hover:text-zinc-300 disabled:opacity-50">
-                    {t("videoProjects.cancel")}
-                  </button>
-                )}
-              </li>
-            );
-          })}
-        </ul>
+                </section>
+              );
+            })}
+          </div>
+        </div>
       )}
-      {costs && costs.unlinked.runs > 0 && <p className="text-xs text-zinc-500">{t("videoCosts.unlinked", { total: `${costs.unlinked.estimated ? "≈" : ""}${costUsd(costs.unlinked.totalUsd)}`, runs: costs.unlinked.runs })}</p>}
-      {videos.length > 0 && (
-        <button type="button" onClick={() => setShowAll((x) => !x)} className="text-xs text-zinc-400 underline hover:text-zinc-200">
-          {t(showAll ? "videoProjects.showInWork" : "videoProjects.showAll", { n: videos.length })}
-        </button>
-      )}
+      {cancelledCount > 0 && <p className="text-[11px] text-zinc-600">{t("pipeline.cancelledCount", { count: cancelledCount })}</p>}
 
       {list && (
         // BL-194 stage 4: older runs, in their own boundary (a failure there never hides the list).
         <FeatureErrorBoundary label={t("videoCostsBackfill.title")}>
           <VideoCostsBackfill channelId={channelId} videos={videos} onChanged={() => void loadCosts()} />
         </FeatureErrorBoundary>
+      )}
+      {linking && (
+        <VideoLinkDialog
+          channelId={channelId}
+          video={linking.video}
+          onCancel={() => setLinking(null)}
+          onLinked={(videoId) => {
+            setLinking(null);
+            setNotice(t("pipeline.linked", { video: linking.video, videoId }));
+            setError(null);
+            void load();
+          }}
+        />
       )}
       {costOf && <VideoCostDialog channelId={channelId} video={costOf.video} workingTitle={costOf.workingTitle} onClose={() => setCostOf(null)} />}
       {creating && list?.nextVideo && (

@@ -14,7 +14,7 @@ import { getVideoMetadataErrorStatus } from "../../../video-metadata/error-statu
 export type VideoProjectsRouteDeps = {
   getSession: () => Promise<{ user?: { id?: string | null } } | null>;
   assertActiveChannel: (args: { userId: string; channelId: string }) => Promise<void>;
-  service: () => Pick<VideoProjectsService, "listVideos" | "createVideo" | "renumber" | "cancelVideo">;
+  service: () => Pick<VideoProjectsService, "listVideos" | "createVideo" | "renumber" | "cancelVideo" | "linkSuggestions" | "linkVideo">;
 };
 
 const defaultDeps = (): VideoProjectsRouteDeps => ({
@@ -81,5 +81,20 @@ export function createVideoProjectsRouteHandlers(deps: VideoProjectsRouteDeps = 
     /** Gives up a video reserved on this computer. */
     cancel: (_request: Request, context: Params<Base & { video: string }>) =>
       guarded(context, async ({ channelId, video }) => NextResponse.json(await deps.service().cancelVideo({ channelId, video: decodeURIComponent(video) }))),
+
+    /** BL-221 «Привязать к видео»: the synced videos offered for a number (by its folder's date, never by title). */
+    linkSuggestions: (_request: Request, context: Params<Base & { video: string }>) =>
+      guarded(context, async ({ channelId, video }) => NextResponse.json(await deps.service().linkSuggestions({ channelId, video: decodeURIComponent(video) }))),
+
+    /** BL-221 «Привязать к видео»: `{ videoId }` -- the owner's confirmed link, written as the folder's `Vn_youtube.json`. */
+    link: (request: Request, context: Params<Base & { video: string }>) =>
+      guarded(context, async ({ channelId, video }) => {
+        const body = await bodyOf(request);
+        if (!body) return NextResponse.json({ error: "validation_failed", message: "The request must be a JSON object." }, { status: 400 });
+        if ("channelId" in body || "video" in body) {
+          return NextResponse.json({ error: "validation_failed", message: "The channel and the number are the ones in the address; send only videoId." }, { status: 400 });
+        }
+        return NextResponse.json(await deps.service().linkVideo({ ...body, channelId, video: decodeURIComponent(video) }));
+      }),
   };
 }

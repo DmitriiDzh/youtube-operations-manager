@@ -14,6 +14,10 @@ export const listVideosInputSchema = z
   .object({ channelId, state: z.enum(["in_work", "packaged", "published", "cancelled"]).optional() })
   .strict();
 export const videoRefInputSchema = z.object({ channelId, video: videoNumberSchema }).strict();
+/** BL-221: «Привязать к видео» -- a number and a YouTube video id of the same channel. */
+export const linkVideoInputSchema = z
+  .object({ channelId, video: videoNumberSchema, videoId: z.string().regex(/^[A-Za-z0-9_-]{11}$/, "a YouTube video id") })
+  .strict();
 
 /** The link a job, storyboard or plan creation may carry (all optional; an explicit number wins over the inherited ones). */
 export const jobVideoInputSchema = z

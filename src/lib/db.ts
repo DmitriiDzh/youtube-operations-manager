@@ -15133,8 +15133,14 @@ export async function cancelVideoReservation(channelId: string, video: string, s
 }
 
 /** The video numbers this computer's upload queue knows for a channel, with each upload's status. */
-export async function listPublishingUploadVideos(channelId: string, database: AppDb = db): Promise<Array<{ video: string; status: PublishingUploadStatus }>> {
-  return database.select({ video: publishingUploads.video, status: publishingUploads.status }).from(publishingUploads).where(eq(publishingUploads.channelId, channelId));
+export async function listPublishingUploadVideos(
+  channelId: string,
+  database: AppDb = db,
+): Promise<Array<{ video: string; status: PublishingUploadStatus; videoId: string | null }>> {
+  return database
+    .select({ video: publishingUploads.video, status: publishingUploads.status, videoId: publishingUploads.videoId })
+    .from(publishingUploads)
+    .where(eq(publishingUploads.channelId, channelId));
 }
 
 // ---------------------------------------------------------------------------
@@ -15502,4 +15508,41 @@ export async function isDeviceSecretMigrated(name: string, database: AppDb = db)
 
 export async function markDeviceSecretMigrated(name: string, at: number, database: AppDb = db): Promise<void> {
   await setAppSetting(`device_secret_migrated:${name}`, String(at), database);
+}
+
+// ---------------------------------------------------------------------------
+// BL-221 (docs/roadmap/plans/CONTENT_UX_PLAN.md stage A): what the «Видео» list adds to each synced video -- local reads only.
+// ---------------------------------------------------------------------------
+
+/** Every broadcast the app ran on the channel: its segments and the broadcasts its viewer poll sampled. */
+export async function listAppBroadcastIds(channelId: string, database: AppDb = db): Promise<string[]> {
+  const [segments, samples] = await Promise.all([
+    database.selectDistinct({ id: liveStreamSegments.broadcastId }).from(liveStreamSegments).where(eq(liveStreamSegments.channelId, channelId)),
+    database.selectDistinct({ id: liveViewerSamples.broadcastId }).from(liveViewerSamples).where(eq(liveViewerSamples.channelId, channelId)),
+  ]);
+  return [...new Set([...segments, ...samples].map((row) => row.id))];
+}
+
+/** The channel's daily `views` from `startDate` (YYYY-MM-DD) on. */
+export async function listVideoDailyViewsSince(
+  channelId: string,
+  startDate: string,
+  database: AppDb = db,
+): Promise<Array<{ videoId: string; date: string; views: number }>> {
+  return database
+    .select({ videoId: videoMetricsDaily.videoId, date: videoMetricsDaily.metricDate, views: videoMetricsDaily.metricValue })
+    .from(videoMetricsDaily)
+    .where(and(eq(videoMetricsDaily.channelId, channelId), eq(videoMetricsDaily.metricName, "views"), gte(videoMetricsDaily.metricDate, startDate)));
+}
+
+/** The newest day with daily `views` of the channel, and the newest day of its reach (impressions/CTR) report; null when none. */
+export async function getVideoInsightDataDates(channelId: string, database: AppDb = db): Promise<{ views: string | null; reach: string | null }> {
+  const [views, reach] = await Promise.all([
+    database
+      .select({ date: sql<string | null>`max(${videoMetricsDaily.metricDate})` })
+      .from(videoMetricsDaily)
+      .where(and(eq(videoMetricsDaily.channelId, channelId), eq(videoMetricsDaily.metricName, "views"))),
+    database.select({ date: sql<string | null>`max(${channelReachDaily.date})` }).from(channelReachDaily).where(eq(channelReachDaily.channelId, channelId)),
+  ]);
+  return { views: views[0]?.date ?? null, reach: reach[0]?.date ?? null };
 }

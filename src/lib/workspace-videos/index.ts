@@ -162,3 +162,4 @@ export function parseVideoRegistry(text: string): VideoRegistryRow[] {
 }
 
 export { createWorkspaceVideoFiles } from "./adapters/files";
+export { writeUploadRecordFile } from "./adapters/upload-record";

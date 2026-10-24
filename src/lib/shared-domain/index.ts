@@ -255,6 +255,10 @@ export type DomainErrorCode =
   // factory's `MMDD Vn` folders are) cannot be read, so no number is given.
   | "video_not_found"
   | "video_in_dispute"
+  // BL-221: «Привязать к видео» -- the number already has its YouTube video, or that video is already another number's.
+  | "video_already_linked"
+  // BL-221: «Привязать к видео» refused while this computer uploads the number.
+  | "video_upload_in_progress"
   | "video_workspace_unavailable"
   | "video_costs_unavailable"
   // Research export (docs/roadmap/plans/RESEARCH_EXPORT_PLAN.md) -- NOT_CONFIGURED: the channel has no workspace folder on this

@@ -21,6 +21,11 @@ function setup(options: { userId?: string | null; active?: string } = {}) {
         throw new DomainError({ code: "validation_failed", message: "not lost" });
       },
       cancelVideo: async (input) => (calls.push(`cancel:${JSON.stringify(input)}`), { video: { video: "V1" } as never }),
+      linkSuggestions: async (input) => (calls.push(`suggest:${JSON.stringify(input)}`), { video: { video: "V52" } as never, suggested: [], others: [] }),
+      linkVideo: async (input) => {
+        calls.push(`link:${JSON.stringify(input)}`);
+        throw new DomainError({ code: "video_already_linked", message: "already linked" });
+      },
     }),
   };
   return { handlers: createVideoProjectsRouteHandlers(deps), calls };
@@ -56,4 +61,16 @@ test("BL-194 routes: renumber and cancel name the video from the address; a refu
   assert.equal((await res.json()).error, "validation_failed");
   assert.equal((await handlers.cancel(new Request("http://127.0.0.1/x", { method: "POST" }), ctx({ channelId: "UC_A", video: "V50" }))).status, 200);
   assert.deepEqual(calls, ['renumber:{"channelId":"UC_A","video":"V50"}', 'cancel:{"channelId":"UC_A","video":"V50"}']);
+});
+
+test("BL-221 routes: «Привязать к видео» takes the channel and the number from the address, only videoId from the body", async () => {
+  const { handlers, calls } = setup();
+  assert.equal((await handlers.linkSuggestions(new Request("http://127.0.0.1/x"), ctx({ channelId: "UC_A", video: "V52" }))).status, 200);
+  const refused = await handlers.link(post({ videoId: "abcdefghijk" }), ctx({ channelId: "UC_A", video: "V52" }));
+  assert.equal(refused.status, 409);
+  assert.equal((await refused.json()).error, "video_already_linked");
+  assert.equal((await handlers.link(post({ videoId: "abcdefghijk", video: "V9" }), ctx({ channelId: "UC_A", video: "V52" }))).status, 400);
+  assert.equal((await handlers.link(post({ videoId: "abcdefghijk", channelId: "UC_B" }), ctx({ channelId: "UC_A", video: "V52" }))).status, 400);
+  assert.equal((await handlers.link(post({ videoId: "abcdefghijk" }), ctx({ channelId: "UC_B", video: "V52" }))).status, 403);
+  assert.deepEqual(calls, ['suggest:{"channelId":"UC_A","video":"V52"}', 'link:{"videoId":"abcdefghijk","channelId":"UC_A","video":"V52"}']);
 });

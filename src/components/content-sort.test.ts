@@ -101,3 +101,16 @@ test("nextSortState flips direction on the active column and uses a natural defa
   assert.deepEqual(nextSortState(DEFAULT_SORT, "title"), { key: "title", direction: "asc" });
   assert.deepEqual(nextSortState(DEFAULT_SORT, "views"), { key: "views", direction: "desc" });
 });
+
+test("BL-221: duration and the extra columns sort largest first on the first click; a missing value sorts last either way", () => {
+  const list = [video("a", { durationSeconds: 7200 }), video("b", { durationSeconds: null }), video("c", { durationSeconds: 10800 })];
+  const byDuration = nextSortState(DEFAULT_SORT, "duration");
+  assert.deepEqual(byDuration, { key: "duration", direction: "desc" });
+  assert.deepEqual(ids(sortVideos(list, byDuration)), ["c", "a", "b"]);
+  assert.deepEqual(ids(sortVideos(list, nextSortState(byDuration, "duration"))), ["a", "c", "b"]);
+  const cost: Record<string, number | null> = { a: 1.9, b: null, c: 0.42 };
+  const byCost = nextSortState(DEFAULT_SORT, "cost");
+  assert.deepEqual(ids(sortVideos(list, byCost, (v, key) => (key === "cost" ? cost[v.videoId] : null))), ["a", "c", "b"]);
+  // Without the extra values every row is "missing": the original order stays.
+  assert.deepEqual(ids(sortVideos(list, byCost)), ["a", "b", "c"]);
+});
