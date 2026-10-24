@@ -4694,3 +4694,29 @@ Owner msgs 3343/3345/3347/3350; plan `docs/roadmap/plans/CHANNEL_LOCALIZATIONS_P
   (`checkRows` takes the validator). Routes: `GET/PUT /api/channels/[channelId]/channel-localizations`, `GET .../preview`,
   `POST .../apply`.
 - **Not yet verified against the real API:** the first real apply is the live acceptance.
+
+## BL-221 — the Content section redesign (CONTENT_UX_PLAN.md)
+
+Owner msgs 3439/3444/3449/3451/3453. On branch `feature/content-ux-redesign`. No schema change; no new YouTube call.
+
+- **Vn ↔ YouTube video.** `buildVideoList` gives each number `youtubeVideoId`: the folder's `Vn_youtube.json` (read by the
+  workspace adapter through `resolveWorkspaceFile`, only for a number whose folder the list knows), else this computer's upload
+  (`publishing_uploads.video_id`), else the registry row; and `hasVideoFile` (`isVideoFileName` + `isNamedAfterRelease`).
+  `factory_video_list` / `agent_video_list` carry both (Factory API 1.31.0, Agent API 4.5.0).
+- **«Привязать к видео».** For a number uploaded outside the app. `linkSuggestions` (pure, `video-projects/linking.ts`): unlinked
+  regular synced videos (not `live`/`upcoming`) published, or scheduled, on the folder's MMDD (the year nearest to now) UTC day; the
+  rest by the nearest date. Never by title (AGENTS.md §F). `linkVideo` (under the module lock): the number needs a folder and no video;
+  the video must be a synced, not removed video of the channel and not another number's (`video_already_linked`, 409); writes
+  `{ schema: "yt-release-upload/1", channelId, video, videoId, linkedAt, linkedBy: "owner", device, result: "linked" }` with
+  `workspace-videos.writeUploadRecordFile(..., { exclusive: true })` -- real folder inside the workspace, temp file + rename, never
+  over an existing record. Publishing's upload runner now writes its record through the same function. A local file only.
+- **Video insights.** `src/lib/video-insights` (pure `buildVideoInsights` + `loadVideoInsights` over `db.ts`): kind = `live`
+  (`liveBroadcastContent` live), `broadcast` (upcoming), `recording` (a broadcast in `live_stream_segments` or
+  `live_viewer_samples`), else `video`; views over the 7 days ending on the newest `video_metrics_daily` day; impressions and
+  CTR (clicks / rated impressions) over the 7 days ending on the newest `channel_reach_daily` day. `GET .../videos/insights`.
+- **Board.** `video-pipeline.ts` derives the display phase (prep / edit / package / youtube / published) from `state`,
+  `hasVideoFile`, `youtubeVideoId` and the synced video's privacy; `VideoState` is unchanged.
+- **Live viewers.** `summarise.ts` `viewersOf`: a sample with `lifeCycleStatus` live and no count is 0 viewers (YouTube omits
+  `concurrentViewers` when nobody watches; owner msg 3453); otherwise no count stays unknown. Producer API 1.12.0.
+- **Tab badges.** `content-tab-badges.ts`: video-projects (edit + package phases), the calendar's `coverage.due`, the live overview's
+  health (bad / noData / revoked while live); local reads once a minute.

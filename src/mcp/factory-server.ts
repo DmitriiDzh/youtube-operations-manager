@@ -133,7 +133,11 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 // it waits for, the holds, the last restart, the quiet minutes, whether this computer runs as the system service; this call does not
 // count as MCP activity for the quiet window), factory_hold_restart (WRITE, local: keep the server from restarting for 1-60 minutes,
 // with a reason) and factory_release_hold (WRITE, local: end one of the Operator's own holds; another's is not_found). Additive.
-export const FACTORY_API_VERSION = "1.30.0";
+// BL-221 (CONTENT_UX_PLAN.md stage B): 1.31.0 -- factory_video_list's videos gain youtubeVideoId (the YouTube video the number became:
+// the folder's Vn_youtube.json, else this computer's upload, else video_registry.csv; null while unknown) and hasVideoFile (the folder
+// holds the release video file). A Vn_youtube.json may now also be the owner's link of a video uploaded outside the app
+// (result "linked", linkedBy "owner"). Additive.
+export const FACTORY_API_VERSION = "1.31.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
