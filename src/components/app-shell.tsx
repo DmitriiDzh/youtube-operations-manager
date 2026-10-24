@@ -127,7 +127,7 @@ export function AppShell<T extends string>(props: {
               <p className="text-sm font-medium">
                 {props.channel?.title ?? (props.channelUnavailable ? t("shell.reconnectNeeded") : t("common.loading"))}
                 {props.channel?.videoCount && (
-                  <span className="ml-2 text-xs text-muted">{t("shell.videoCount", { count: Number(props.channel.videoCount) })}</span>
+                  <span className="ml-2 text-xs text-muted" title={t("shell.videoCountHint")}>{t("shell.videoCount", { count: Number(props.channel.videoCount) })}</span>
                 )}
               </p>
             </div>

@@ -1,7 +1,9 @@
 import { resolvePublishDate } from "@/lib/shared-formatting";
 import type { SyncedVideo } from "./content-manager";
 
-export type SortKey = "title" | "privacy" | "publish" | "views" | "comments";
+export type SortKey = "title" | "privacy" | "publish" | "views" | "comments" | "duration" | ExtraSortKey;
+/** BL-221: the columns whose values come from outside the synced video (Vn, last 7 days, languages, cost). */
+export type ExtraSortKey = "vn" | "views7d" | "ctr" | "languages" | "cost";
 export type SortDirection = "asc" | "desc";
 export type SortState = { key: SortKey; direction: SortDirection };
 
@@ -16,6 +18,12 @@ const DEFAULT_DIRECTION: Record<SortKey, SortDirection> = {
   publish: "desc",
   views: "desc",
   comments: "desc",
+  duration: "desc",
+  vn: "desc",
+  views7d: "desc",
+  ctr: "desc",
+  languages: "desc",
+  cost: "desc",
 };
 
 export function nextSortState(current: SortState, key: SortKey): SortState {
@@ -32,7 +40,7 @@ function publishTimestamp(video: SyncedVideo): number | null {
   return iso ? new Date(iso).getTime() : null;
 }
 
-function sortValue(video: SyncedVideo, key: SortKey): string | number | null {
+function sortValue(video: SyncedVideo, key: SortKey, extra?: (video: SyncedVideo, key: ExtraSortKey) => number | null): string | number | null {
   switch (key) {
     case "title":
       return video.title;
@@ -44,14 +52,23 @@ function sortValue(video: SyncedVideo, key: SortKey): string | number | null {
       return video.viewCount;
     case "comments":
       return video.commentCount;
+    case "duration":
+      return video.durationSeconds ?? null;
+    default:
+      return extra ? extra(video, key) : null;
   }
 }
 
-/** Returns a new array; the input is never mutated. Missing values always sort last, in either direction. */
-export function sortVideos(videos: SyncedVideo[], sort: SortState): SyncedVideo[] {
+/** Returns a new array; the input is never mutated. Missing values always sort last, in either direction. `extra` gives the
+ * BL-221 columns that are not fields of the synced video (absent: those sort as missing). */
+export function sortVideos(
+  videos: SyncedVideo[],
+  sort: SortState,
+  extra?: (video: SyncedVideo, key: ExtraSortKey) => number | null,
+): SyncedVideo[] {
   const sign = sort.direction === "asc" ? 1 : -1;
   return videos
-    .map((video, index) => ({ video, index, value: sortValue(video, sort.key) }))
+    .map((video, index) => ({ video, index, value: sortValue(video, sort.key, extra) }))
     .sort((a, b) => {
       if (a.value === null && b.value === null) return a.index - b.index;
       if (a.value === null) return 1;

@@ -36,7 +36,14 @@ type CostComputerView = { deviceId: string; hostName: string | null; thisCompute
 type VideoCostView = { video: string; totals: CostTotalsView; runs: CostRunView[]; computers: CostComputerView[] };
 
 /** Up to 4 decimals (a RunPod share is split to 1/10000 USD), at least 2. */
+/** BL-221 (CONTENT_UX_PLAN.md stage B): totals in cents; a positive amount under a cent is «<$0.01», never «$0.00». */
 export function costUsd(value: number): string {
+  if (value > 0 && value < 0.005) return "<$0.01";
+  return `$${value.toFixed(2)}`;
+}
+
+/** One run's own share, where fractions of a cent matter: up to 4 decimals, trailing zeros past the cents dropped. */
+export function costUsdPrecise(value: number): string {
   const fixed = value.toFixed(4);
   return `$${fixed.replace(/(\.\d\d\d?)0+$/, "$1").replace(/(\.\d\d)0$/, "$1")}`;
 }
@@ -151,9 +158,9 @@ export function VideoCostDialog({ channelId, video, workingTitle, onClose }: { c
                         <span className={`rounded px-1.5 py-0.5 text-[11px] ${RESULT_STYLE[run.result]}`}>{t(`videoCosts.result.${run.result}` as UiTextKey)}</span>
                       </p>
                       <div className="md:text-right">
-                        <p className="font-mono text-zinc-100">{money(run.usd, run.estimate)}</p>
+                        <p className="font-mono text-zinc-100">{`${run.estimate ? "≈" : ""}${costUsdPrecise(run.usd)}`}</p>
                         <p className="text-zinc-500">{t(`videoCosts.basis.${run.basis}` as UiTextKey)}</p>
-                        {run.source === "runpod" && run.overheadUsd !== null && run.overheadUsd > 0 && run.kind === "job" && <p className="text-zinc-500">{t("videoCosts.overhead", { amount: costUsd(run.overheadUsd) })}</p>}
+                        {run.source === "runpod" && run.overheadUsd !== null && run.overheadUsd > 0 && run.kind === "job" && <p className="text-zinc-500">{t("videoCosts.overhead", { amount: costUsdPrecise(run.overheadUsd) })}</p>}
                         {run.gpuSeconds !== null && run.kind === "job" && <p className="text-zinc-500">{t("videoCosts.gpuSeconds", { seconds: Math.round(run.gpuSeconds) })}</p>}
                       </div>
                       <p className="min-w-0 truncate text-zinc-400">{run.thisComputer ? t("videoCosts.computerHere", { name: computerName(run) }) : computerName(run)}</p>
