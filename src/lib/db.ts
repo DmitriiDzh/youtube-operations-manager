@@ -15133,8 +15133,14 @@ export async function cancelVideoReservation(channelId: string, video: string, s
 }
 
 /** The video numbers this computer's upload queue knows for a channel, with each upload's status. */
-export async function listPublishingUploadVideos(channelId: string, database: AppDb = db): Promise<Array<{ video: string; status: PublishingUploadStatus }>> {
-  return database.select({ video: publishingUploads.video, status: publishingUploads.status }).from(publishingUploads).where(eq(publishingUploads.channelId, channelId));
+export async function listPublishingUploadVideos(
+  channelId: string,
+  database: AppDb = db,
+): Promise<Array<{ video: string; status: PublishingUploadStatus; videoId: string | null }>> {
+  return database
+    .select({ video: publishingUploads.video, status: publishingUploads.status, videoId: publishingUploads.videoId })
+    .from(publishingUploads)
+    .where(eq(publishingUploads.channelId, channelId));
 }
 
 // ---------------------------------------------------------------------------

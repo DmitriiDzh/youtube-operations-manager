@@ -75,10 +75,32 @@ export type VideoProject = {
   hostName: string | null;
   thisComputer: boolean;
   conflict: VideoConflict | null;
+  /**
+   * BL-221: the YouTube video this number became -- from the folder's `Vn_youtube.json`, else this computer's upload, else
+   * `video_registry.csv`; null while none of them names one.
+   */
+  youtubeVideoId: string | null;
+  /** BL-221: the folder holds the release video file (`Vn <name>.mp4`/`.mov`/`.m4v`). */
+  hasVideoFile: boolean;
 };
 
+/** BL-221: a synced video of the channel the owner may link a number to (a local read; never YouTube). */
+export type LinkCandidate = {
+  videoId: string;
+  title: string;
+  publishedAt: string;
+  publishAt: string | null;
+  privacyStatus: string;
+  durationSeconds: number | null;
+  liveBroadcastContent: string | null;
+  thumbnailUrl: string | null;
+};
+
+/** BL-221: the video a folder's `Vn_youtube.json` names. */
+export type UploadRecordLink = { video: string; videoId: string };
+
 export type WorkspaceVideos =
-  | { status: "ok"; folders: VideoFolder[]; registry: VideoRegistryRow[] }
+  | { status: "ok"; folders: VideoFolder[]; registry: VideoRegistryRow[]; uploadRecords?: UploadRecordLink[] }
   | { status: "not_configured" }
   | { status: "unavailable"; reason: string };
 
@@ -99,11 +121,15 @@ export type VideoProjectsDeps = {
   /** The channel workspace's `MMDD Vn` folders and `video_registry.csv`. */
   workspace(channelId: string): Promise<WorkspaceVideos>;
   /** This computer's upload queue for the channel (`publishing_uploads`). */
-  uploads(channelId: string): Promise<Array<{ video: string; status: string }>>;
+  uploads(channelId: string): Promise<Array<{ video: string; status: string; videoId?: string | null }>>;
   /** The video a storyboard of the channel is linked to (the storyboards document), null when none or no such storyboard. */
   storyboardVideo(channelId: string, storyboardId: string): Promise<string | null>;
   /** The video a plan of this computer is linked to, with the plan's channel; null when there is no such plan. */
   planVideo(planId: string): Promise<{ channelId: string; video: string | null } | null>;
+  /** BL-221: the channel's synced videos (without the ones removed on YouTube); a local read. */
+  channelVideos?(channelId: string): Promise<LinkCandidate[]>;
+  /** BL-221: writes a `Vn_youtube.json` (workspace-relative path) that must not exist yet, inside the channel workspace. */
+  writeUploadRecord?(channelId: string, relativePath: string, record: unknown): Promise<void>;
   now(): Date;
   /** Reservations of one process run one at a time (read the highest number, then take the next). */
   withLock<T>(fn: () => Promise<T>): Promise<T>;

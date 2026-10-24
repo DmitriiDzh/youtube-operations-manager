@@ -1,8 +1,10 @@
 import { parseWithSchema } from "@/lib/shared-domain";
 import { VIDEO_RESERVATIONS_REPORT_FORMAT, VIDEO_RESERVATIONS_REPORT_VERSION, type VideoReservationsReport } from "@/lib/sync-gateway";
-import { DomainError, isDomainError, type OwnReservation, type VideoProject, type VideoProjectsDeps } from "./contracts";
+import { uploadRecordFileName } from "@/lib/workspace-videos";
+import { DomainError, isDomainError, type LinkCandidate, type OwnReservation, type VideoProject, type VideoProjectsDeps } from "./contracts";
+import { linkSuggestions } from "./linking";
 import { buildVideoList, knownNumbers, nextVideoNumber, type VideoListInput } from "./numbering";
-import { createVideoInputSchema, jobVideoInputSchema, listVideosInputSchema, videoNumberSchema, videoRefInputSchema } from "./schemas";
+import { createVideoInputSchema, jobVideoInputSchema, linkVideoInputSchema, listVideosInputSchema, videoNumberSchema, videoRefInputSchema } from "./schemas";
 
 // BL-194 stage 1 (VIDEO_COST_PLAN.md §2, ADR 0040): reserving a number, the channel's list of videos with its conflicts, the
 // losing computer's renumbering, and the one check every link to a video passes (`assertAttachable`). The Web routes, the API
@@ -61,6 +63,7 @@ export function createVideoProjectsService(deps: VideoProjectsDeps) {
       folders: workspace.status === "ok" ? workspace.folders : null,
       registry: workspace.status === "ok" ? workspace.registry : null,
       uploads,
+      uploadRecords: workspace.status === "ok" ? workspace.uploadRecords ?? [] : [],
     };
     const reason = workspace.status === "unavailable" ? workspace.reason : workspace.status === "not_configured" ? "no workspace folder is set for the channel on this computer" : null;
     return { input, workspace: workspace.status, workspaceReason: reason };
@@ -118,6 +121,19 @@ export function createVideoProjectsService(deps: VideoProjectsDeps) {
       log(`[video-projects] ${from}'s video ${video} is not linked to this job: ${error instanceof Error ? error.message : String(error)}`);
       return null;
     }
+  }
+
+  /** A number «Привязать к видео» may act on: in the list, with a folder, not linked yet. */
+  function linkable(channelId: string, list: VideoProject[], video: string, workspace: VideoListResult["workspace"]): VideoProject {
+    if (workspace !== "ok") throw unavailable(channelId, "the workspace folder cannot be read");
+    const project = list.find((v) => v.video === video);
+    if (!project || !project.folder) {
+      throw new DomainError({ code: "video_not_found", message: `${video} has no MMDD Vn folder in the channel workspace; nothing to link.`, details: { channelId, video } });
+    }
+    if (project.youtubeVideoId) {
+      throw new DomainError({ code: "video_already_linked", message: `${video} is already linked to ${project.youtubeVideoId}; nothing was changed.`, details: { channelId, video, videoId: project.youtubeVideoId } });
+    }
+    return project;
   }
 
   return {
@@ -181,6 +197,62 @@ export function createVideoProjectsService(deps: VideoProjectsDeps) {
       if (!done) throw new DomainError({ code: "video_not_found", message: `${input.video} is not a video in work reserved on this computer`, details: { channelId: input.channelId, video: input.video } });
       await publishOwnReport();
       return { video: projectOf(await gather(input.channelId), input.video) };
+    },
+
+    /**
+     * BL-221 «Привязать к видео»: the synced videos the owner may link a number to -- `suggested` were published (or are
+     * scheduled) on its folder's day; `others` are every other unlinked video, the nearest date first. Never by title (§F).
+     */
+    async linkSuggestions(raw: unknown): Promise<{ video: VideoProject; suggested: LinkCandidate[]; others: LinkCandidate[] }> {
+      const input = parseWithSchema(videoRefInputSchema, raw, "link suggestions");
+      await requireConnected(input.channelId);
+      const gathered = await gather(input.channelId);
+      const list = buildVideoList(gathered.input);
+      const project = linkable(input.channelId, list, input.video, gathered.workspace);
+      const candidates = deps.channelVideos ? await deps.channelVideos(input.channelId) : [];
+      const linked = new Set(list.flatMap((v) => (v.youtubeVideoId ? [v.youtubeVideoId] : [])));
+      return { video: project, ...linkSuggestions(project.folder!, candidates, linked, deps.now()) };
+    },
+
+    /**
+     * BL-221 «Привязать к видео» (owner msgs 3448/3451): the owner confirms which synced video of the channel a number with a
+     * folder but no known video became; a `Vn_youtube.json` (`result: "linked"`) is written into that folder. A local file only --
+     * no YouTube call. Refused: a number without a folder, one already linked, a video of another channel (or not synced), a video
+     * already linked to another number.
+     */
+    async linkVideo(raw: unknown): Promise<{ video: VideoProject }> {
+      const input = parseWithSchema(linkVideoInputSchema, raw, "link video");
+      await requireConnected(input.channelId);
+      if (!deps.channelVideos || !deps.writeUploadRecord) throw unavailable(input.channelId, "linking is not available here");
+      const writeRecord = deps.writeUploadRecord;
+      const channelVideos = deps.channelVideos;
+      const gathered = await deps.withLock(async () => {
+        const before = await gather(input.channelId);
+        const list = buildVideoList(before.input);
+        const project = linkable(input.channelId, list, input.video, before.workspace);
+        const other = list.find((v) => v.youtubeVideoId === input.videoId);
+        if (other) {
+          throw new DomainError({ code: "video_already_linked", message: `${input.videoId} is already ${other.video}; nothing was changed.`, details: { channelId: input.channelId, video: other.video, videoId: input.videoId } });
+        }
+        const candidate = (await channelVideos(input.channelId)).find((c) => c.videoId === input.videoId);
+        if (!candidate) {
+          throw new DomainError({ code: "video_not_found", message: `${input.videoId} is not a synced video of ${input.channelId}; nothing was changed.`, details: { channelId: input.channelId, videoId: input.videoId } });
+        }
+        const device = await deps.ownDevice();
+        await writeRecord(input.channelId, `${project.folder}/${uploadRecordFileName(project.video)}`, {
+          schema: "yt-release-upload/1",
+          channelId: input.channelId,
+          video: project.video,
+          videoId: input.videoId,
+          linkedAt: deps.now().toISOString(),
+          linkedBy: "owner",
+          device: { deviceId: device.deviceId, hostname: device.hostName },
+          result: "linked",
+        });
+        log(`[video-projects] ${input.channelId} ${project.video} linked to ${input.videoId} by the owner`);
+        return gather(input.channelId);
+      });
+      return { video: projectOf(gathered, input.video) };
     },
 
     assertAttachable,

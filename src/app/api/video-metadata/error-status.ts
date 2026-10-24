@@ -179,6 +179,7 @@ const DOMAIN_ERROR_STATUS = {
   storyboard_not_approved: 409,
   video_not_found: 404,
   video_in_dispute: 409,
+  video_already_linked: 409,
   video_workspace_unavailable: 409,
   video_costs_unavailable: 409,
   change_set_incomplete: 500,

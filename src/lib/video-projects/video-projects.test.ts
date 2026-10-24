@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { VideoReservationsReport } from "@/lib/sync-gateway";
 import type { VideoFolder, VideoRegistryRow } from "@/lib/workspace-videos";
-import { isDomainError, type OwnReservation, type VideoProjectsDeps, type WorkspaceVideos } from "./contracts";
+import { isDomainError, type LinkCandidate, type OwnReservation, type VideoProjectsDeps, type WorkspaceVideos } from "./contracts";
+import { folderDateNear, folderMonthDay, linkSuggestions } from "./linking";
 import { createVideoProjectsService } from "./services";
 
 // BL-194 stage 1 acceptance (docs/roadmap/plans/VIDEO_COST_PLAN.md §4, criteria 1, 2 and 8; ADR 0040). Expected numbers are worked
@@ -17,13 +18,15 @@ type Harness = {
   own: OwnReservation[];
   peers: VideoReservationsReport[];
   workspace: Record<string, WorkspaceVideos | (() => Promise<WorkspaceVideos>)>;
-  uploads: Record<string, Array<{ video: string; status: string }>>;
+  uploads: Record<string, Array<{ video: string; status: string; videoId?: string | null }>>;
   storyboards: Record<string, string | null | Error>;
   plans: Record<string, { channelId: string; video: string | null } | Error>;
   published: VideoReservationsReport[];
   logs: string[];
   now: Date;
   connected: string[];
+  channelVideos: Record<string, LinkCandidate[]>;
+  records: Array<{ channelId: string; relativePath: string; record: Record<string, unknown> }>;
 };
 
 function harness(overrides: Partial<Harness> = {}) {
@@ -39,6 +42,8 @@ function harness(overrides: Partial<Harness> = {}) {
     logs: [],
     now: new Date("2026-10-17T10:00:05.000Z"),
     connected: [UC1, UC2],
+    channelVideos: {},
+    records: [],
     ...overrides,
   };
   let queue: Promise<unknown> = Promise.resolve();
@@ -78,6 +83,10 @@ function harness(overrides: Partial<Harness> = {}) {
       const v = h.plans[planId];
       if (v instanceof Error) throw v;
       return v ?? null;
+    },
+    channelVideos: async (channelId) => h.channelVideos[channelId] ?? [],
+    writeUploadRecord: async (channelId, relativePath, record) => {
+      h.records.push({ channelId, relativePath, record: record as Record<string, unknown> });
     },
     now: () => h.now,
     withLock<T>(fn: () => Promise<T>): Promise<T> {
@@ -360,4 +369,166 @@ test("AC-8: a video reserved on this computer is attachable without reading the 
     workspace: { [UC1]: async () => Promise.reject(new Error("EIO")) },
   });
   assert.equal(await service.resolveJobVideo({ channelId: UC1, videoNumber: "V49" }), "V49");
+});
+
+// -- BL-221 (docs/roadmap/plans/CONTENT_UX_PLAN.md stage B): the YouTube video each number became, and whether its video file exists --
+
+test("BL-221: the YouTube video of a number -- the folder's Vn_youtube.json first, then this computer's upload, then the registry", async () => {
+  const { service } = harness({
+    workspace: {
+      [UC1]: {
+        status: "ok",
+        folders: [
+          folder("04 Videos/10 October/1001 V41", "V41", ["V41_youtube.json"]),
+          folder("04 Videos/10 October/1002 V42", "V42"),
+          folder("04 Videos/10 October/1003 V43", "V43"),
+          folder("04 Videos/10 October/1004 V44", "V44"),
+        ],
+        registry: [
+          { vNumber: "V41", videoId: "REGISTRY_41", folder: "10 October/1001 V41" },
+          { vNumber: "V42", videoId: "REGISTRY_42", folder: "10 October/1002 V42" },
+        ],
+        uploadRecords: [
+          { video: "V41", videoId: "RECORD___41" },
+          // a record of a number whose folder the list does not know is ignored
+          { video: "V99", videoId: "RECORD___99" },
+        ],
+      },
+    },
+    uploads: { [UC1]: [{ video: "V41", status: "done", videoId: "UPLOAD___41" }, { video: "V43", status: "done", videoId: "UPLOAD___43" }] },
+  });
+  const byVideo = new Map((await service.listVideos({ channelId: UC1 })).videos.map((v) => [v.video, v.youtubeVideoId]));
+  assert.equal(byVideo.get("V41"), "RECORD___41");
+  assert.equal(byVideo.get("V42"), "REGISTRY_42");
+  assert.equal(byVideo.get("V43"), "UPLOAD___43");
+  assert.equal(byVideo.get("V44"), null);
+  assert.equal(byVideo.has("V99"), false);
+});
+
+test("BL-221: a folder has the video file only when a .mp4/.mov/.m4v is named after its own number", async () => {
+  const { service } = harness({
+    workspace: {
+      [UC1]: {
+        status: "ok",
+        folders: [
+          folder("04 Videos/10 October/1001 V5", "V5", ["V5 Tropico Jazz.mp4"]),
+          folder("04 Videos/10 October/1002 V6", "V6", ["V60 Tropico Jazz.mp4", "V6_Report.txt"]),
+          folder("04 Videos/10 October/1003 V7", "V7", ["V7_final.MOV"]),
+          folder("04 Videos/10 October/1004 V8", "V8", ["V8 Tropico Jazz.wav"]),
+        ],
+        registry: [],
+      },
+    },
+  });
+  const byVideo = new Map((await service.listVideos({ channelId: UC1 })).videos.map((v) => [v.video, v.hasVideoFile]));
+  assert.deepEqual([byVideo.get("V5"), byVideo.get("V6"), byVideo.get("V7"), byVideo.get("V8")], [true, false, true, false]);
+});
+
+// -- BL-221 «Привязать к видео» (CONTENT_UX_PLAN.md stage B; owner msgs 3448/3449/3451: by the folder's date, never by title) ---------
+
+const candidate = (videoId: string, publishedAt: string, extra: Partial<LinkCandidate> = {}): LinkCandidate => ({
+  videoId,
+  title: `title of ${videoId}`,
+  publishedAt,
+  publishAt: null,
+  privacyStatus: "public",
+  durationSeconds: 7200,
+  liveBroadcastContent: "none",
+  thumbnailUrl: null,
+  ...extra,
+});
+
+test("BL-221: the folder date is the MMDD of the folder name, in the year nearest to now", () => {
+  assert.deepEqual(folderMonthDay("04 Videos/10 October/1011 V52"), { month: 10, day: 11 });
+  assert.equal(folderMonthDay("04 Videos/10 October/1014 Live 24-7"), null);
+  assert.equal(folderMonthDay("04 Videos/10 October/1311 V52"), null);
+  assert.equal(folderDateNear("04 Videos/10 October/1011 V52", new Date("2026-10-24T10:00:00Z")), Date.parse("2026-10-11T00:00:00Z"));
+  // In early January a December folder is last year's; in late December a January folder is next year's.
+  assert.equal(folderDateNear("04 Videos/12 December/1230 V90", new Date("2027-01-03T10:00:00Z")), Date.parse("2026-12-30T00:00:00Z"));
+  assert.equal(folderDateNear("04 Videos/01 January/0102 V95", new Date("2026-12-28T10:00:00Z")), Date.parse("2027-01-02T00:00:00Z"));
+});
+
+test("BL-221: suggestions are the unlinked regular videos published or scheduled on the folder's UTC day; the rest by nearest date", () => {
+  const now = new Date("2026-10-24T10:00:00Z");
+  const result = linkSuggestions(
+    "04 Videos/10 October/1011 V52",
+    [
+      candidate("published__A", "2026-10-11T12:00:31Z"),
+      candidate("scheduled__B", "2026-10-01T09:00:00Z", { publishAt: "2026-10-11T23:30:00Z", privacyStatus: "private" }),
+      candidate("nextday____C", "2026-10-12T00:10:00Z"),
+      candidate("weekbefore_D", "2026-10-04T12:00:00Z"),
+      candidate("upcoming___E", "2026-10-11T12:00:00Z", { liveBroadcastContent: "upcoming" }),
+      candidate("livenow____F", "2026-10-11T12:00:00Z", { liveBroadcastContent: "live" }),
+      candidate("linked_____G", "2026-10-11T12:00:00Z"),
+      // published on the 11th of a different month: not the folder's day
+      candidate("othermonthH", "2026-09-11T12:00:00Z"),
+    ],
+    new Set(["linked_____G"]),
+    now,
+  );
+  // Distances from 2026-10-11T00:00Z: A 12h00m31s, B 23h30m -> A first.
+  assert.deepEqual(result.suggested.map((c) => c.videoId), ["published__A", "scheduled__B"]);
+  // C is 1 day 10 min away, D 7 days, H 30 days.
+  assert.deepEqual(result.others.map((c) => c.videoId), ["nextday____C", "weekbefore_D", "othermonthH"]);
+});
+
+function linkHarness(extra: Partial<Harness> = {}) {
+  return harness({
+    workspace: {
+      [UC1]: {
+        status: "ok",
+        folders: [folder("04 Videos/10 October/1011 V52", "V52", ["V52 Tropico Jazz.mp4"]), folder("04 Videos/10 October/1010 V51", "V51", ["V51_youtube.json"])],
+        registry: [],
+        uploadRecords: [{ video: "V51", videoId: "already__51" }],
+      },
+    },
+    channelVideos: { [UC1]: [candidate("publishd_52", "2026-10-11T12:00:00Z"), candidate("already__51", "2026-10-10T12:00:00Z")] },
+    ...extra,
+  });
+}
+
+test("BL-221: linking a number writes its Vn_youtube.json into its folder (result linked, by the owner) and the list then shows the video", async () => {
+  const { h, service } = linkHarness();
+  const suggestions = await service.linkSuggestions({ channelId: UC1, video: "V52" });
+  assert.deepEqual(suggestions.suggested.map((c) => c.videoId), ["publishd_52"]);
+  assert.deepEqual(suggestions.others.map((c) => c.videoId), []);
+
+  // The harness has no real file: the list reads the record through uploadRecords, so add it as the adapter would read it back.
+  const result = await service.linkVideo({ channelId: UC1, video: "V52", videoId: "publishd_52" });
+  assert.equal(h.records.length, 1);
+  const written = h.records[0];
+  assert.equal(written.channelId, UC1);
+  assert.equal(written.relativePath, "04 Videos/10 October/1011 V52/V52_youtube.json");
+  assert.deepEqual(
+    { ...written.record, device: undefined },
+    {
+      schema: "yt-release-upload/1",
+      channelId: UC1,
+      video: "V52",
+      videoId: "publishd_52",
+      linkedAt: "2026-10-17T10:00:05.000Z",
+      linkedBy: "owner",
+      device: undefined,
+      result: "linked",
+    },
+  );
+  assert.deepEqual(written.record.device, { deviceId: "mac-device", hostname: "Mac" });
+  assert.equal(result.video.video, "V52");
+});
+
+test("BL-221: a link is refused for a video of another channel, a video linked to another number, a linked number, a number without a folder", async () => {
+  const { h, service } = linkHarness();
+  await rejects(service.linkVideo({ channelId: UC1, video: "V52", videoId: "otherChanVd" }), "video_not_found");
+  await rejects(service.linkVideo({ channelId: UC1, video: "V52", videoId: "already__51" }), "video_already_linked");
+  await rejects(service.linkVideo({ channelId: UC1, video: "V51", videoId: "publishd_52" }), "video_already_linked");
+  await rejects(service.linkVideo({ channelId: UC1, video: "V77", videoId: "publishd_52" }), "video_not_found");
+  await rejects(service.linkVideo({ channelId: UC1, video: "V52", videoId: "bad id" }), "validation_failed");
+  await rejects(service.linkVideo({ channelId: "UC_not_connected", video: "V52", videoId: "publishd_52" }), "video_workspace_unavailable");
+  assert.equal(h.records.length, 0);
+});
+
+test("BL-221: without a readable workspace nothing is linked", async () => {
+  const { h, service } = linkHarness({ workspace: { [UC1]: { status: "unavailable", reason: "disk missing" } } });
+  await rejects(service.linkVideo({ channelId: UC1, video: "V52", videoId: "publishd_52" }), "video_workspace_unavailable");
+  assert.equal(h.records.length, 0);
 });

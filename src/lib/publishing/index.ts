@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { open, realpath, rename, stat, writeFile } from "node:fs/promises";
+import { open, realpath, stat } from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
 import { YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
@@ -48,7 +48,7 @@ import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-
 import { createWriteContextCore } from "@/lib/write-context";
 import { createYoutubeClient, getVideoUploadState, listPlaylistItemIdsByVideo, listUploadsPlaylistFirstPage } from "@/lib/youtube-read-gateway";
 import { createWorkspaceExchangeFsForPublishing, isRealVideoFolder, resolveWorkspaceFileForPublishing, writeVideoFolderFile } from "./adapters/files";
-import { createWorkspaceVideoFiles } from "@/lib/workspace-videos";
+import { createWorkspaceVideoFiles, writeUploadRecordFile } from "@/lib/workspace-videos";
 import { createPackageScan, isPackageThumbnailPath, VIDEOS_FOLDER, type PackageScanDeps } from "./package-scan";
 import { imageKindOf } from "./packages";
 import { createPackageComposer } from "./package-composer";
@@ -381,15 +381,7 @@ export function createUploadRunnerCore() {
       sha256: (filePath) => sha256OfFile(filePath),
       /** Next to the package, inside the workspace (its real folder checked), written whole or not at all. */
       async writeRecord(channelId, relativePath, record) {
-        const name = relativePath.slice(relativePath.lastIndexOf("/") + 1);
-        if (!/^V\d+_youtube\.json$/.test(name)) throw new Error(`Not an upload record name: ${name}`);
-        const workspace = await realpath(await workspaceOf(channelId));
-        const folder = await realpath(path.join(workspace, ...relativePath.slice(0, relativePath.lastIndexOf("/")).split("/")));
-        if (folder === workspace || !isPathInsideOrEqual(workspace, folder)) throw new Error("The package folder is outside the channel workspace.");
-        const target = path.join(folder, name);
-        const temporary = path.join(folder, `.${name}.${randomUUID()}.tmp`);
-        await writeFile(temporary, `${JSON.stringify(record, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
-        await rename(temporary, target);
+        await writeUploadRecordFile(await workspaceOf(channelId), relativePath, record);
       },
     },
     // BL-194 stage 3 (ADR 0041): the video's cost next to its package -- the video-costs module, loaded only here and only when used
