@@ -63,6 +63,11 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
   });
   const [open, setOpen] = useState<{ videoId: string; title: string } | null>(null);
   const [packageEntries, setPackageEntries] = useState<PackageEntry[]>([]);
+  // BL-221: ready packages without a planned day -- offered on the empty days ahead, in order.
+  const [readyUndated, setReadyUndated] = useState<string[]>([]);
+  // BL-221: the day the owner clicked (its videos with their views below the grid) and the synced views (a local read).
+  const [selectedDay, setSelectedDay] = useState<string | null>(null);
+  const [views, setViews] = useState<Map<string, number | null>>(new Map());
   const packagesReadAt = useRef(0);
   const [detailsDirty, setDetailsDirty] = useState(false);
 
@@ -88,6 +93,12 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
               .filter((p) => p.state === "ready" && p.plannedPublishDate)
               .map((p) => ({ videoId: p.manifestPath, title: `${p.video ?? ""} ${p.title ?? ""}`.trim(), kind: "package" as const, at: `${p.plannedPublishDate}T${time}:00Z` }))
           );
+          setReadyUndated((scanned.packages ?? []).filter((p) => p.state === "ready" && !p.plannedPublishDate).map((p) => p.video ?? p.manifestPath));
+        }
+        const videosRes = await fetch(`${base}/videos`);
+        if (videosRes.ok) {
+          const list = ((await videosRes.json()) as { videos?: Array<{ videoId: string; viewCount: number | null }> }).videos ?? [];
+          setViews(new Map(list.map((v) => [v.videoId, v.viewCount])));
         }
       }
     } catch {
@@ -131,6 +142,14 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
   const now = useMemo(() => new Date(), [data]); // eslint-disable-line react-hooks/exhaustive-deps -- "now" moves with each load
   const byDay = useMemo(() => entriesByDay([...(data?.entries ?? []), ...packageEntries]), [data, packageEntries]);
   const gaps = useMemo(() => gapDays(now, byDay), [now, byDay]);
+  // BL-221: each empty day ahead, in date order, gets the next ready package without a date as a suggestion.
+  const gapSuggestion = useMemo(() => {
+    const out = new Map<string, string>();
+    [...gaps].sort().forEach((key, index) => {
+      if (index < readyUndated.length) out.set(key, readyUndated[index]);
+    });
+    return out;
+  }, [gaps, readyUndated]);
   const weeks = useMemo(() => monthWeeks(cursor.year, cursor.month), [cursor]);
   const todayKey = localDayKey(now);
   const undated = (data?.entries ?? []).filter((entry) => entry.kind === "unscheduled");
@@ -232,7 +251,7 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
             <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-sm bg-sky-600" />{t("publishingCalendar.legend.scheduled")}</span>
             <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-sm bg-amber-600" />{t("publishingCalendar.legend.overdue")}</span>
             <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-sm border border-dashed border-violet-600" />{t("publishingCalendar.legend.package")}</span>
-            <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-sm border border-dashed border-red-600" />{t("publishingCalendar.legend.gap")}</span>
+            <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-sm border border-dashed border-amber-500" />{t("publishingCalendar.legend.gap")}</span>
           </div>
         </div>
 
@@ -252,9 +271,17 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
               <div
                 key={key}
                 aria-current={isToday ? "date" : undefined}
-                className={`min-h-24 rounded-md border p-1 ${isGap ? "border-dashed border-red-700/80" : "border-zinc-800"} ${inMonth ? "bg-zinc-950" : "bg-zinc-950/40 opacity-60"} ${isToday ? "ring-1 ring-sky-700" : ""}`}
+                className={`min-h-24 rounded-md border p-1 ${isGap ? "border-dashed border-amber-600/70" : "border-zinc-800"} ${inMonth ? "bg-zinc-950" : "bg-zinc-950/40 opacity-60"} ${isToday ? "ring-1 ring-sky-700" : ""} ${selectedDay === key ? "ring-1 ring-zinc-400" : ""}`}
               >
-                <div className={`mb-1 text-right text-[11px] ${isToday ? "font-semibold text-sky-300" : "text-zinc-500"}`}>{day.getDate()}</div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedDay((current) => (current === key ? null : key))}
+                  aria-pressed={selectedDay === key}
+                  aria-label={t("publishingCalendar.dayOpen", { date: formatDisplayDate(day) })}
+                  className={`mb-1 block w-full text-right text-[11px] hover:text-white ${isToday ? "font-semibold text-sky-300" : "text-zinc-500"}`}
+                >
+                  {day.getDate()}
+                </button>
                 <div className="space-y-1">
                   {entries.map((entry) =>
                     entry.kind === "package" ? (
@@ -280,12 +307,56 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
                     </button>
                     )
                   )}
-                  {isGap && entries.length === 0 && <div className="text-center text-[10px] text-red-400/80">{t("publishingCalendar.gap")}</div>}
+                  {isGap && entries.length === 0 && (
+                    <div className="text-center text-[10px] text-amber-300/80">
+                      {t("publishingCalendar.gap")}
+                      {gapSuggestion.has(key) && <span className="block text-violet-300/90">{t("publishingCalendar.gapFill", { video: gapSuggestion.get(key)! })}</span>}
+                    </div>
+                  )}
                 </div>
               </div>
             );
           })}
         </div>
+        {selectedDay && (
+          // BL-221: the clicked day -- its videos with their views (synced), its packages, or what could fill it.
+          <div className="mt-3 space-y-1 rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 text-sm">
+            <div className="flex items-center justify-between">
+              <h4 className="font-medium text-zinc-200">{formatDisplayDate(new Date(`${selectedDay}T12:00:00`))}</h4>
+              <button type="button" onClick={() => setSelectedDay(null)} className="text-xs text-zinc-400 underline hover:text-zinc-200">
+                {t("publishingCalendar.dayClose")}
+              </button>
+            </div>
+            {(byDay.get(selectedDay) ?? []).length === 0 ? (
+              <p className="text-xs text-zinc-500">
+                {gaps.has(selectedDay)
+                  ? gapSuggestion.has(selectedDay)
+                    ? t("publishingCalendar.dayGapFill", { video: gapSuggestion.get(selectedDay)! })
+                    : t("publishingCalendar.dayGap")
+                  : t("publishingCalendar.dayEmpty")}
+              </p>
+            ) : (
+              <ul className="space-y-1">
+                {(byDay.get(selectedDay) ?? []).map((entry) => (
+                  <li key={entry.videoId} className="flex items-center gap-2">
+                    <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[11px] ${KIND_STYLES[entry.kind]}`}>{t(`publishingCalendar.legend.${entry.kind === "unscheduled" ? "scheduled" : entry.kind}` as UiTextKey)}</span>
+                    {entry.kind === "package" ? (
+                      <span className="min-w-0 flex-1 truncate text-zinc-300">{entry.title}</span>
+                    ) : (
+                      <button type="button" onClick={() => setOpen({ videoId: entry.videoId, title: entry.title })} className="min-w-0 flex-1 truncate text-left text-zinc-200 hover:text-white">
+                        {entry.title}
+                      </button>
+                    )}
+                    {entry.at && <span className="shrink-0 text-xs text-zinc-500">{timeOf(entry.at)}</span>}
+                    {entry.kind !== "package" && views.get(entry.videoId) != null && (
+                      <span className="shrink-0 text-xs tabular-nums text-zinc-400">{t("pipeline.views", { count: views.get(entry.videoId)! })}</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
       </section>
 
       {(undated.length > 0 || overdue.length > 0) && (
