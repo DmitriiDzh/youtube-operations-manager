@@ -4702,10 +4702,11 @@ Owner msgs 3439/3444/3449/3451/3453. On branch `feature/content-ux-redesign`. No
 - **Vn ↔ YouTube video.** `buildVideoList` gives each number `youtubeVideoId`: the folder's `Vn_youtube.json` (read by the
   workspace adapter through `resolveWorkspaceFile`, only for a number whose folder the list knows), else this computer's upload
   (`publishing_uploads.video_id`), else the registry row; and `hasVideoFile` (`isVideoFileName` + `isNamedAfterRelease`).
-  `factory_video_list` / `agent_video_list` carry both (Factory API 1.31.0, Agent API 4.5.0).
+  `uploading` (an upload of the number queued or running here). `factory_video_list` / `agent_video_list` carry all three
+  (Factory API 1.31.0, Agent API 4.5.0).
 - **«Привязать к видео».** For a number uploaded outside the app. `linkSuggestions` (pure, `video-projects/linking.ts`): unlinked
   regular synced videos (not `live`/`upcoming`) published, or scheduled, on the folder's MMDD (the year nearest to now) UTC day; the
-  rest by the nearest date. Never by title (AGENTS.md §F). `linkVideo` (under the module lock): the number needs a folder and no video;
+  rest by the nearest date. Never by title (AGENTS.md §F). `linkVideo` (under the module lock): the number needs a folder, no video, no upload under way here (`video_upload_in_progress`) and not to be cancelled;
   the video must be a synced, not removed video of the channel and not another number's (`video_already_linked`, 409); writes
   `{ schema: "yt-release-upload/1", channelId, video, videoId, linkedAt, linkedBy: "owner", device, result: "linked" }` with
   `workspace-videos.writeUploadRecordFile(..., { exclusive: true })` -- real folder inside the workspace, temp file + rename, never
