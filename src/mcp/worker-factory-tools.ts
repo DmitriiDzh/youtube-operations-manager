@@ -1,4 +1,5 @@
 import { DomainError } from "@/lib/shared-domain";
+import type { FactoryChannelDeps } from "./factory-channel-deps";
 import { createFactoryMcpServer, type FactoryToolContract, type FactoryToolDeps } from "./factory-server";
 
 /**
@@ -84,7 +85,7 @@ function pinChannel(input: unknown, channelId: string, optional = false): Record
 }
 
 /** The factory deps confined to one channel. Reads `real` lazily, so an unused module is never built. */
-export function pinFactoryDepsToChannel(real: () => FactoryToolDeps, channelId: string): FactoryToolDeps {
+export function pinFactoryDepsToChannel(real: () => FactoryChannelDeps, channelId: string, assertMutationAllowed: () => Promise<void>): FactoryToolDeps {
   const deps = () => real();
   async function requireOwnPlan(input: unknown): Promise<void> {
     const planId = record(input).planId;
@@ -160,7 +161,7 @@ export function pinFactoryDepsToChannel(real: () => FactoryToolDeps, channelId: 
     jobs: {
       list: async (input) => deps().jobs.list({ ...record(input), channelId: pinChannel(input, channelId, true).channelId as string }),
     },
-    assertMutationAllowed: () => deps().assertMutationAllowed(),
+    assertMutationAllowed: () => assertMutationAllowed(),
   };
 }
 
@@ -168,11 +169,11 @@ export type WorkerFactoryTool = { name: string; contract: FactoryToolContract; h
 
 /**
  * The worker tools of one channel session: each factory tool of `WORKER_FACTORY_TOOLS`, renamed, with a description that says it is
- * the worker's version, over `pinFactoryDepsToChannel`. The `real` deps are the factory's own wiring (`src/mcp/factory-tool-deps.ts`).
+ * the worker's version, over `pinFactoryDepsToChannel`. The `real` deps are the factory's own channel wiring (`./factory-channel-deps.ts`); `assertMutationAllowed` is the device mutation gate.
  */
-export function workerFactoryTools(real: () => FactoryToolDeps, channelId: string): WorkerFactoryTool[] {
+export function workerFactoryTools(real: () => FactoryChannelDeps, channelId: string, assertMutationAllowed: () => Promise<void>): WorkerFactoryTool[] {
   const tools: WorkerFactoryTool[] = [];
-  createFactoryMcpServer(pinFactoryDepsToChannel(real, channelId), {
+  createFactoryMcpServer(pinFactoryDepsToChannel(real, channelId, assertMutationAllowed), {
     collect: (name: FactoryName, contract, handler) => {
       const entry = WORKER_FACTORY_TOOLS[name];
       if (!entry) return;

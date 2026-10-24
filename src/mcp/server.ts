@@ -11,7 +11,7 @@ import { createCliAuthService, type CliAuthService } from "@/lib/cli-auth";
 import { insertWorkerActionLogEntry, listWorkerActionLogEntries, recordGatewayCallOutcome } from "@/lib/db";
 import { describeWorkerWrite, fromToolResult, serializeWorkerDetail } from "./worker-actions";
 import { createWorkerPrivacyCore, setPrivacyInputSchema } from "@/lib/worker-privacy";
-import { createFactoryToolDeps } from "./factory-tool-deps";
+import { createFactoryChannelDeps } from "./factory-channel-deps";
 import { workerFactoryTools } from "./worker-factory-tools";
 import type { CredentialRef } from "@/lib/shared-domain";
 import { createPlaylistManagementCore, type PlaylistManagementCore } from "@/lib/playlist-management";
@@ -3962,7 +3962,12 @@ export function createMcpServer(
   // BL-217 (WORKER_CAPABILITIES_PLAN.md stage 3): the Factory Operator's channel tools, for this session's channel only -- the same
   // tools over channel-pinned deps (./worker-factory-tools.ts). Only in a channel session: the Producer's closed list has none of them.
   if (agentSession) {
-    for (const tool of workerFactoryTools(createFactoryToolDeps, agentSession.channelId)) {
+    for (const tool of workerFactoryTools(createFactoryChannelDeps, agentSession.channelId, async () => {
+      // The same device mutation gate as every other channel write (the factory write tools call it first).
+      const { rawSqlClient } = await import("@/lib/db");
+      const { assertDeviceAvailableForMutation } = await import("@/lib/device-mutation-gate");
+      await assertDeviceAvailableForMutation(rawSqlClient);
+    })) {
       registerTool(tool.name, tool.contract, tool.handler as (args: never) => Promise<ToolResponse>);
     }
   }

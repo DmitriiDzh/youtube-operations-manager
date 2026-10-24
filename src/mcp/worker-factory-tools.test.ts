@@ -52,7 +52,7 @@ function fakeDeps() {
 
 test("AC-WF-01: a call naming another channel is refused before the module runs", async () => {
   const { deps, calls } = fakeDeps();
-  const pinned = pinFactoryDepsToChannel(() => deps, TROPICO);
+  const pinned = pinFactoryDepsToChannel(() => deps, TROPICO, async () => undefined);
   for (const call of [
     () => pinned.plans.create({ channelId: JAPAN, planId: "x" }),
     () => pinned.storyboards.create({ channelId: JAPAN }),
@@ -71,7 +71,7 @@ test("AC-WF-01: a call naming another channel is refused before the module runs"
 
 test("AC-WF-02: a plan of another channel behaves as not found, the own plan reaches the module", async () => {
   const { deps, calls } = fakeDeps();
-  const pinned = pinFactoryDepsToChannel(() => deps, TROPICO);
+  const pinned = pinFactoryDepsToChannel(() => deps, TROPICO, async () => undefined);
   for (const call of [() => pinned.plans.update({ planId: "P-J" }), () => pinned.plans.get({ planId: "P-J" }), () => pinned.plans.report({ planId: "P-J", rows: [] }), () => pinned.plans.update({ planId: "P-missing" })]) {
     await assert.rejects(call(), code("plan_not_found"));
   }
@@ -82,7 +82,7 @@ test("AC-WF-02: a plan of another channel behaves as not found, the own plan rea
 
 test("AC-WF-03: where the channel may be left out, the token's channel is put in", async () => {
   const { deps, calls } = fakeDeps();
-  const pinned = pinFactoryDepsToChannel(() => deps, TROPICO);
+  const pinned = pinFactoryDepsToChannel(() => deps, TROPICO, async () => undefined);
   await pinned.live.getStatus({});
   await pinned.jobs.list({ limit: 5 });
   await pinned.gemini.getJobs({});
@@ -97,7 +97,7 @@ test("AC-WF-03: where the channel may be left out, the token's channel is put in
 
 test("AC-WF-04: shared and paid deps are refused: models, templates, runtimes, sessions, GPU data, other channels, paid runs", async () => {
   const { deps, calls } = fakeDeps();
-  const pinned = pinFactoryDepsToChannel(() => deps, TROPICO);
+  const pinned = pinFactoryDepsToChannel(() => deps, TROPICO, async () => undefined);
   const refusals: Array<() => unknown> = [
     () => pinned.media.listModels(),
     () => pinned.media.startSession({ channelId: TROPICO }),
@@ -121,7 +121,7 @@ test("AC-WF-04: shared and paid deps are refused: models, templates, runtimes, s
 
 test("AC-WF-05: the worker gets exactly the listed tools, renamed, and none of the shared or paid ones", () => {
   const { deps } = fakeDeps();
-  const names = workerFactoryTools(() => deps, TROPICO).map((tool) => tool.name).sort();
+  const names = workerFactoryTools(() => deps, TROPICO, async () => undefined).map((tool) => tool.name).sort();
   assert.deepEqual(names, [...WORKER_FACTORY_TOOL_NAMES].sort());
   assert.equal(names.length, 26);
   for (const forbidden of ["agent_plan_run_stage", "agent_plan_rerun", "agent_plan_move", "agent_gemini_create_job", "agent_media_start_session", "agent_channel_get_localizations", "agent_channel_save_localizations"]) {
@@ -132,7 +132,7 @@ test("AC-WF-05: the worker gets exactly the listed tools, renamed, and none of t
 
 test("AC-WF-01 through the tool: agent_plan_update with the Tropico token on a Japan plan answers plan_not_found", async () => {
   const { deps, calls } = fakeDeps();
-  const tool = workerFactoryTools(() => deps, TROPICO).find((entry) => entry.name === "agent_plan_update");
+  const tool = workerFactoryTools(() => deps, TROPICO, async () => undefined).find((entry) => entry.name === "agent_plan_update");
   assert.ok(tool);
   const result = (await tool.handler({ planId: "P-J", title: "x" })) as { isError?: boolean; content: Array<{ text: string }> };
   assert.equal(result.isError, true);
