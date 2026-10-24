@@ -91,6 +91,8 @@ type ServiceDependencies = {
   channelSelectionStore: {
     setSelectedChannelId(userId: string, channelId: string): Promise<void>;
   };
+  /** ADR 0048: refuses `public` for a channel-bound agent (no-op for the owner). Wired to `channel-access` in `index.ts`. */
+  assertMayNotPublish(privacyStatus: string | undefined): void;
 };
 
 function classifyYoutubeMutationError(
@@ -171,6 +173,7 @@ export function createPlaylistManagementServices(deps: ServiceDependencies) {
         input,
         "playlist create input"
       );
+      deps.assertMayNotPublish(parsedInput.privacyStatus);
 
       try {
         const credentials = await deps.authResolver.resolve({
@@ -210,6 +213,7 @@ export function createPlaylistManagementServices(deps: ServiceDependencies) {
         input,
         "playlist update input"
       );
+      deps.assertMayNotPublish(parsedInput.privacyStatus);
 
       try {
         const credentials = await deps.authResolver.resolve({

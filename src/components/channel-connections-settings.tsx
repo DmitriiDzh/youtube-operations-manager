@@ -5,6 +5,7 @@ import { useState } from "react";
 import { signIn, signOut } from "next-auth/react";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { ChannelAgentTokenField } from "./channel-agent-token-field";
+import { ChannelWorkerActions } from "./channel-worker-actions";
 import { ChannelWorkspaceField } from "./channel-workspace-field";
 import { FeatureErrorBoundary } from "./feature-error-boundary";
 import { InfoTooltip } from "./info-tooltip";
@@ -151,6 +152,9 @@ export function ChannelConnectionsSettings() {
                 </FeatureErrorBoundary>
                 <FeatureErrorBoundary label={t("settingsCards.channels.tokenBoundary")}>
                   <ChannelAgentTokenField channelId={c.channelId} />
+                </FeatureErrorBoundary>
+                <FeatureErrorBoundary label={t("settingsCards.channels.workerActionsBoundary")}>
+                  <ChannelWorkerActions channelId={c.channelId} />
                 </FeatureErrorBoundary>
               </li>
             );

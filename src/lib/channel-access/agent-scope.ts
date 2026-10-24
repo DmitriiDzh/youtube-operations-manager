@@ -43,3 +43,16 @@ export function readStringField(input: unknown, field: string): string | undefin
   const value = (input as Record<string, unknown>)[field];
   return typeof value === "string" ? value : undefined;
 }
+
+/**
+ * ADR 0048 (BL-215, owner msg 3384): a channel-bound agent never makes anything public -- that stays the owner's. Outside an agent
+ * session (the owner's Web UI) this is a no-op. Called by a core before it resolves credentials or calls YouTube.
+ */
+export function assertAgentMayNotPublish(privacyStatus: string | null | undefined): void {
+  if (privacyStatus !== "public" || !getAgentSession()) return;
+  throw new DomainError({
+    code: "AGENT_PUBLIC_NOT_ALLOWED",
+    message: "A channel agent cannot make anything public -- that stays the owner's. Use private or unlisted.",
+    details: { privacyStatus },
+  });
+}

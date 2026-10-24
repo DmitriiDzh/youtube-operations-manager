@@ -28,7 +28,8 @@ export const MCP_TOOL_CLASSIFICATION: Readonly<Record<string, McpToolClass>> = O
   playlist_list: "bound",
   playlist_create: "bound",
   playlist_add_videos: "bound",
-  playlist_delete: "bound",
+  // ADR 0048 (BL-215, owner msg 3384): a delete cannot be undone -- owner-only; a worker makes a playlist private instead.
+  playlist_delete: "operator-only",
   playlist_update: "bound",
   playlist_remove_videos: "bound",
   changeset_list: "bound",
@@ -103,6 +104,8 @@ export const MCP_TOOL_CLASSIFICATION: Readonly<Record<string, McpToolClass>> = O
   agent_get_media_job: "bound",
   agent_cancel_media_job: "bound",
   agent_release_media_session: "bound",
+  // BL-215 (ADR 0048): the bound channel's worker log, read-only.
+  agent_list_worker_actions: "bound",
   // BL-161: the Producer role's own tools.
   producer_get_capabilities: "producer-only",
   producer_list_channels: "producer-only",

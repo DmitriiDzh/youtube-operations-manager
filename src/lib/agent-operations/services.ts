@@ -118,6 +118,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   // application, not just what this module itself implements.
   {
     id: "channel_context.list_channels",
+    mcpTools: ["channel_list"],
     domain: "channel_context",
     permission: "READ",
     description:
@@ -125,6 +126,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   },
   {
     id: "video_context.list_videos",
+    mcpTools: ["channel_video_list"],
     domain: "video_context",
     permission: "READ",
     description:
@@ -132,6 +134,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   },
   {
     id: "localization_draft.create_localization_proposals",
+    mcpTools: ["ai_localization_generate"],
     domain: "localization_draft",
     permission: "DRAFT",
     description:
@@ -139,6 +142,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   },
   {
     id: "localization_draft.create_change_set_from_agent_proposals",
+    mcpTools: ["ai_localization_create_change_set"],
     domain: "localization_draft",
     permission: "DRAFT",
     description:
@@ -367,6 +371,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   // `operations_workspace.list_files` above.
   {
     id: "market_intelligence.query_competitors",
+    mcpTools: ["query_competitors"],
     domain: "market_intelligence",
     permission: "READ",
     description:
@@ -374,6 +379,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   },
   {
     id: "market_intelligence.query_market_intelligence",
+    mcpTools: ["query_market_intelligence"],
     domain: "market_intelligence",
     permission: "READ",
     description:
@@ -481,6 +487,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   },
   {
     id: "decision_engine.create_experiment_proposal",
+    mcpTools: ["create_experiment_proposal"],
     domain: "decision_engine",
     permission: "DRAFT",
     description:
@@ -601,6 +608,120 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     permission: "READ",
     description:
       "One logical path's value on THIS device by name, as an absolute path string; LOGICAL_PATH_NOT_CONFIGURED_ON_DEVICE when none is set here (never an empty-string path), LOGICAL_PATH_NOT_FOUND for an unknown name or a path not available to agents (indistinguishable). Implemented as the `agent_get_logical_path` MCP tool. Read-only, local, no filesystem access.",
+  },
+  // BL-215 (ADR 0048, owner msg 3384): the pre-existing channel tools that had no entry, so a worker reading this list sees exactly
+  // what its token may call. The `youtube_writes` entries are real YouTube writes (EXECUTE) on the bound channel only, each gated
+  // by the write-channel guardrail and Live writes, never `public`, and each logged (agent_list_worker_actions).
+  {
+    id: "system.whoami",
+    mcpTools: ["whoami", "write_context"],
+    domain: "system",
+    permission: "READ",
+    description:
+      "The Google account and the write channel this session acts as (`whoami`, `write_context`). In a channel session both are always the token's own channel and identity.",
+  },
+  {
+    id: "video_context.list_videos_live",
+    mcpTools: ["list"],
+    domain: "video_context",
+    permission: "READ",
+    description: "List the bound channel's videos live from YouTube (`list`; a quota-costing read). For the local mirror use channel_video_list.",
+  },
+  {
+    id: "video_context.get_transcript",
+    mcpTools: ["transcript"],
+    domain: "video_context",
+    permission: "READ",
+    description: "A video's transcript status and text (`transcript`), for a video of the bound channel.",
+  },
+  {
+    id: "channel_context.sync_channel",
+    mcpTools: ["channel_sync"],
+    domain: "channel_context",
+    permission: "READ",
+    description:
+      "Refresh the bound channel's local mirror from YouTube (`channel_sync`): reads YouTube, writes only the local database, never a YouTube write.",
+  },
+  {
+    id: "localization_draft.list_change_sets",
+    mcpTools: ["changeset_list", "changeset_get"],
+    domain: "localization_draft",
+    permission: "READ",
+    description: "The channel's Change Sets and their changes (`changeset_list`, `changeset_get`). Read only; approval stays the owner's.",
+  },
+  {
+    id: "localization_draft.preview_import",
+    mcpTools: ["localization_import_preview"],
+    domain: "localization_draft",
+    permission: "READ",
+    description: "Validate an XLSX localization workbook against the channel's synced videos (`localization_import_preview`). Persists nothing.",
+  },
+  {
+    id: "localization_draft.create_change_set_from_import",
+    mcpTools: ["changeset_create_from_import"],
+    domain: "localization_draft",
+    permission: "DRAFT",
+    description:
+      "Persist an XLSX localization workbook as a new Change Set, every change pending the owner's approval (`changeset_create_from_import`). Never writes to YouTube.",
+  },
+  {
+    id: "localization_draft.list_batches",
+    mcpTools: ["batch_list", "batch_get"],
+    domain: "localization_draft",
+    permission: "READ",
+    description: "The channel's Batches and their per-video rows (`batch_list`, `batch_get`). Read only; sending a Batch is the owner's, in the Web UI.",
+  },
+  {
+    id: "youtube_writes.preview_video_metadata",
+    mcpTools: ["preview"],
+    domain: "youtube_writes",
+    permission: "READ",
+    description: "What `apply` would change on a video of the bound channel (`preview`). No write.",
+  },
+  {
+    id: "youtube_writes.apply_video_metadata",
+    mcpTools: ["apply"],
+    domain: "youtube_writes",
+    permission: "EXECUTE",
+    description:
+      "Write a video's main title and description (`apply`). A real YouTube write only with dryRun:false (the default is a preview); bound channel only, write-channel guardrail and Live writes; logged.",
+  },
+  {
+    id: "youtube_writes.list_playlists",
+    mcpTools: ["playlist_list"],
+    domain: "youtube_writes",
+    permission: "READ",
+    description: "The bound channel's playlists with their privacy (`playlist_list`).",
+  },
+  {
+    id: "youtube_writes.create_playlist",
+    mcpTools: ["playlist_create"],
+    domain: "youtube_writes",
+    permission: "EXECUTE",
+    description:
+      "Create a playlist on the bound channel (`playlist_create`), private by default. A real YouTube write; `public` is refused (AGENT_PUBLIC_NOT_ALLOWED, ADR 0048); logged.",
+  },
+  {
+    id: "youtube_writes.update_playlist",
+    mcpTools: ["playlist_update"],
+    domain: "youtube_writes",
+    permission: "EXECUTE",
+    description:
+      "Change a playlist's title, description or privacy (`playlist_update`) -- for example make it private or unlisted. A real YouTube write; `public` is refused (AGENT_PUBLIC_NOT_ALLOWED, ADR 0048); logged. Deleting a playlist is the owner's.",
+  },
+  {
+    id: "youtube_writes.edit_playlist_items",
+    mcpTools: ["playlist_add_videos", "playlist_remove_videos"],
+    domain: "youtube_writes",
+    permission: "EXECUTE",
+    description: "Add videos to or remove them from a playlist of the bound channel (`playlist_add_videos`, `playlist_remove_videos`). Real YouTube writes, per-video results; logged.",
+  },
+  {
+    id: "youtube_writes.list_worker_actions",
+    mcpTools: ["agent_list_worker_actions"],
+    domain: "youtube_writes",
+    permission: "READ",
+    description: "This channel's worker log on this computer (`agent_list_worker_actions`): every real write call above, refused ones included, 90 days.",
   },
 ];
 

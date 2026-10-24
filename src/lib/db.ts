@@ -1745,6 +1745,22 @@ export const producerCallLog = sqliteTable("producer_call_log", {
 });
 
 /**
+ * BL-215 (ADR 0048), SCHEMA_MIGRATIONS version 107: one row per channel-agent ("worker") call that would really write to YouTube,
+ * refused calls included -- what the owner sees in Settings → Channels. Device-local; rows older than 90 days are pruned on insert.
+ */
+export const workerActionLog = sqliteTable("worker_action_log", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  at: integer("at", { mode: "timestamp" }).notNull(),
+  channelId: text("channel_id").notNull(),
+  tokenId: text("token_id").notNull(),
+  tool: text("tool").notNull(),
+  target: text("target"),
+  detail: text("detail"),
+  outcome: text("outcome").notNull(),
+  errorCode: text("error_code"),
+});
+
+/**
  * Phase 8 (Intelligence Foundation, `docs/roadmap/plans/PHASE_8_PLAN.md` §5/§6 slice 2),
  * SCHEMA_MIGRATIONS version 8. Historical time-series metrics, additive alongside `videos`
  * (a "current snapshot" table, never a history) -- `docs/PROJECT_SPEC.md` §33's canonical
@@ -5531,6 +5547,26 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       )`);
     },
   },
+  {
+    version: 107,
+    description:
+      "worker_action_log -- BL-215 (WORKER_CAPABILITIES_PLAN.md, ADR 0048): one row per channel-agent call that would really write to YouTube (refused calls included), for the owner's Settings → Channels list. Additive, idempotent, device-local",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS worker_action_log (" +
+          "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+          "at INTEGER NOT NULL, " +
+          "channel_id TEXT NOT NULL, " +
+          "token_id TEXT NOT NULL, " +
+          "tool TEXT NOT NULL, " +
+          "target TEXT, " +
+          "detail TEXT, " +
+          "outcome TEXT NOT NULL, " +
+          "error_code TEXT)"
+      );
+      await client.execute("CREATE INDEX IF NOT EXISTS worker_action_log_channel_at_idx ON worker_action_log (channel_id, at)");
+    },
+  },
 ];
 
 /**
@@ -8010,6 +8046,45 @@ export async function listProducerCallLogEntries(limit: number, database: AppDb 
     .from(producerCallLog)
     .where(gte(producerCallLog.at, new Date(now.getTime() - PRODUCER_CALL_LOG_RETENTION_MS)))
     .orderBy(desc(producerCallLog.at), desc(producerCallLog.id))
+    .limit(limit);
+  return rows.map((row) => ({ ...row, outcome: row.outcome === "ok" ? "ok" : "error" }));
+}
+
+export type WorkerActionLogEntry = {
+  id: number;
+  at: Date;
+  channelId: string;
+  tokenId: string;
+  tool: string;
+  target: string | null;
+  detail: string | null;
+  outcome: "ok" | "error";
+  errorCode: string | null;
+};
+
+/** How long a worker action stays in the log (BL-215, the same as the Producer's call log). */
+export const WORKER_ACTION_LOG_RETENTION_MS = 90 * 24 * 60 * 60_000;
+
+/** BL-215: records one worker write call and drops rows older than the retention, in one transaction. */
+export async function insertWorkerActionLogEntry(entry: Omit<WorkerActionLogEntry, "id">, database: AppDb = db): Promise<void> {
+  await database.transaction(async (tx) => {
+    await tx.insert(workerActionLog).values(entry);
+    await tx.delete(workerActionLog).where(lt(workerActionLog.at, new Date(entry.at.getTime() - WORKER_ACTION_LOG_RETENTION_MS)));
+  });
+}
+
+/** BL-215: one channel's newest worker actions first, within the retention. */
+export async function listWorkerActionLogEntries(
+  channelId: string,
+  limit: number,
+  database: AppDb = db,
+  now: Date = new Date()
+): Promise<WorkerActionLogEntry[]> {
+  const rows = await database
+    .select()
+    .from(workerActionLog)
+    .where(and(eq(workerActionLog.channelId, channelId), gte(workerActionLog.at, new Date(now.getTime() - WORKER_ACTION_LOG_RETENTION_MS))))
+    .orderBy(desc(workerActionLog.at), desc(workerActionLog.id))
     .limit(limit);
   return rows.map((row) => ({ ...row, outcome: row.outcome === "ok" ? "ok" : "error" }));
 }

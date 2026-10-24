@@ -281,6 +281,8 @@ export type DomainErrorCode =
   | "AGENT_TOKEN_IDENTITY_MISMATCH"
   | "AGENT_SESSION_CREDENTIAL_OVERRIDE"
   | "AGENT_SESSION_OPERATOR_ONLY"
+  // ADR 0048 (BL-215): a channel-bound agent asked to make something public -- that stays the owner's.
+  | "AGENT_PUBLIC_NOT_ALLOWED"
   // BL-130 (docs/roadmap/plans/AGENT_TOKEN_IMPORT_PLAN.md) -- an operator importing an already-issued
   // token on another device. MALFORMED: not a token of this kind (wrong prefix, length, alphabet).
   // LEGACY_FORMAT: a channel token issued before channel ids were embedded -- reissue it instead.
