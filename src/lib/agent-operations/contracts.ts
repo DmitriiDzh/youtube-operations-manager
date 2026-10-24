@@ -70,7 +70,9 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT",
 // playlists private or unlisted, never public; worker-log rows gain previousPrivacyStatus / changed. Additive.
 // 4.2.0 (BL-217, stage 3): the domain channel_production -- 26 agent_* versions of the Factory Operator's channel tools (plans,
 // storyboards, video numbers, jobs, live) for the worker's own channel. Additive.
-export const AGENT_API_VERSION = "4.2.0";
+// 4.3.0 (BL-218, stage 4, owner msg 3402): paid work the Operator's way for the worker's own channel -- agent_factory_* sessions and
+// jobs, agent_plan_run_stage / _rerun, agent_gemini_get_status / _create_job (EXECUTE), within the owner's switches and limits. Additive.
+export const AGENT_API_VERSION = "4.3.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry

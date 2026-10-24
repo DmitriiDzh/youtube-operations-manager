@@ -192,7 +192,12 @@ test("§2.5(3): the factory route and endpoint reach only the allowlisted module
   // BL-217: the channel part of the wiring moved from the route into src/mcp/factory-channel-deps.ts (shared with the channel
   // workers' versions of the channel tools); the media part stays in the route. Both files together reach only the allowlist.
   const route = importsOf(await readFile("src/app/api/mcp/factory/route.ts", "utf8"));
-  const wiring = [...route, ...importsOf(await readFile("src/mcp/factory-channel-deps.ts", "utf8"))].filter((spec) => spec !== "./factory-server");
+  // BL-218: the media part moved to src/app/api/mcp/factory-media-deps.ts (shared with the channel workers' MCP route).
+  const wiring = [
+    ...route,
+    ...importsOf(await readFile("src/mcp/factory-channel-deps.ts", "utf8")),
+    ...importsOf(await readFile("src/app/api/mcp/factory-media-deps.ts", "utf8")),
+  ].filter((spec) => spec !== "./factory-server" && spec !== "../factory-media-deps");
   const routeAllowed = new Set([
     "@/lib/channel-connections",
     "@/lib/channel-workspaces",
@@ -234,7 +239,7 @@ test("§2.5(3): the factory route and endpoint reach only the allowlisted module
 });
 
 test("§2.5(4): none of the factory files reads channel-scope state (agent-session, selected channel, credentials)", async () => {
-  for (const file of ["src/mcp/factory-server.ts", "src/app/api/mcp/factory/route.ts", "src/lib/factory-mcp-endpoint/index.ts", "src/mcp/factory-channel-deps.ts"]) {
+  for (const file of ["src/mcp/factory-server.ts", "src/app/api/mcp/factory/route.ts", "src/lib/factory-mcp-endpoint/index.ts", "src/mcp/factory-channel-deps.ts", "src/app/api/mcp/factory-media-deps.ts"]) {
     const source = await readFile(file, "utf8");
     for (const forbidden of ["agent-session", "getSelectedChannelId", "resolveEffectiveCredentialRef", "credentialRef", "googleapis", "youtube-read-gateway", "youtube-write-gateway"]) {
       // Comments may mention a forbidden name; strip them before scanning.

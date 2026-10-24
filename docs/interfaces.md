@@ -1003,7 +1003,13 @@ nothing. This replaces BL-091's per-capability zones, which are retired in
     `factory_*` tool (the same input, output and errors, see "Factory Operator MCP endpoint" below) for the bound channel only:
     another channel → `CHANNEL_NOT_ACTIVE`, another channel's plan → `plan_not_found`; where the channel may be left out, the
     bound one is used. Every write is a worker-log row. Not given: shared things (models, templates, runtimes, GPU data and
-    settings, storage), sessions, `factory_plan_move`, the channel's own translations (ADR 0047), and the paid `run_stage` / `rerun` / Gemini create (stage 4).
+    settings, storage), `factory_plan_move` and the channel's own translations (ADR 0047).
+    **Paid work the Operator's way (BL-218, Agent API 4.3.0):** `agent_factory_start_session` / `_get_session` / `_stop_session`
+    / `_create_job` / `_get_job` / `_cancel_job`, `agent_plan_run_stage`, `agent_plan_rerun`, `agent_gemini_get_status`,
+    `agent_gemini_create_job` -- the `factory_media_*` / `factory_plan_*` / `factory_gemini_*` tools for the bound channel, on the
+    factory's terms (self-approved only within the owner's factory limits and while the factory-sessions switch is on; Gemini
+    within its switch and limits; one budget with the Operator). Another channel's session or job → `media_session_not_found` /
+    `media_job_not_found`. The owner-approved `agent_request_media_session` path is unchanged.
     `agent_list_worker_actions { limit? 1-100, default 50 }` → `{ actions: [{ at, tool, target, detail, outcome, errorCode }] }`
     (READ, bound channel only).
   - `list` / `transcript` / `preview` / `channel_sync` are confined to the bound channel.

@@ -46,5 +46,11 @@ Status: Accepted
   the channel part moved to `src/mcp/factory-channel-deps.ts`, shared with the factory route; the media part with session start/stop stays in the route). Local writes are DRAFT and logged; the modules keep the actor
   `factory`, because their synced shapes accept only `factory`/`owner` (the worker log says which worker wrote). A channel's OWN
   translations stay out (ADR 0047: only the owner and the Factory Operator save them; AC-CL-10).
+- Stage 4 (BL-218, Agent API 4.3.0, owner msg 3402 «может, как оператор») gives a worker the Operator's paid tools for its channel:
+  `agent_factory_*` sessions and jobs, plan runs, Gemini jobs (EXECUTE) -- the factory's own code on the factory's terms (the
+  owner's factory-sessions switch and factory limits, the Gemini switch and limits; one budget shared with the Operator). This
+  amends Phase 14's "approve/start/stop are Web-only" and ADR 0029 §4 ("a job is linked to a plan only by the factory") for a
+  worker's own channel: the worker acts as the factory there. The older owner-approved path (`agent_request_media_session`) stays.
+  The media wiring stays outside `src/mcp` (`src/app/api/mcp/factory-media-deps.ts`, injected by the channel agents' route).
 - `docs/AGENT_OPERATIONS_INTERFACE.md` §3 and §8 are updated: §8's "no new YouTube write path" still holds (every write goes through
   the write gateway, the write-channel guardrail and Live writes), but a worker's writes are no longer only drafts.

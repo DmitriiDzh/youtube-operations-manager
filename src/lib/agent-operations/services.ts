@@ -797,6 +797,47 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     description:
       "Map published videos to their original files and save the stream's translations (`agent_live_map_sources`, `agent_live_save_localizations`), as the factory_live_* tools. Local only: the owner builds rotations and starts streams; the app writes translations at the owner's Start. Logged.",
   },
+  // BL-218 (stage 4, owner msg 3402): paid work the Operator's way, within the owner's switches and limits.
+  {
+    id: "channel_production.factory_sessions",
+    mcpTools: ["agent_factory_start_session", "agent_factory_stop_session"],
+    domain: "channel_production",
+    permission: "EXECUTE",
+    description:
+      "BL-218: start and stop a paid GPU session for this channel the Factory Operator's way (`agent_factory_start_session`, `agent_factory_stop_session`), as factory_media_start_session / _stop_session: approved by itself only within the owner's factory limits and while the owner's factory-sessions switch is on, otherwise it waits for the owner. Logged.",
+  },
+  {
+    id: "channel_production.read_factory_sessions",
+    mcpTools: ["agent_factory_get_session", "agent_factory_get_job"],
+    domain: "channel_production",
+    permission: "READ",
+    description:
+      "This channel's factory sessions and their jobs (`agent_factory_get_session`, `agent_factory_get_job`), as factory_media_get_session / _get_job.",
+  },
+  {
+    id: "channel_production.factory_jobs",
+    mcpTools: ["agent_factory_create_job", "agent_factory_cancel_job", "agent_plan_run_stage", "agent_plan_rerun"],
+    domain: "channel_production",
+    permission: "EXECUTE",
+    description:
+      "Run and cancel media jobs in this channel's factory session, and run plan stages and reruns (`agent_factory_create_job`, `agent_factory_cancel_job`, `agent_plan_run_stage`, `agent_plan_rerun`), as the factory_* tools: GPU time inside a session already started within the owner's limits. Logged.",
+  },
+  {
+    id: "channel_production.gemini_status",
+    mcpTools: ["agent_gemini_get_status"],
+    domain: "channel_production",
+    permission: "READ",
+    description:
+      "The Gemini catalog, the owner's switch and limits and what is left of them (`agent_gemini_get_status`), as factory_gemini_get_status -- the spend shown is the whole account's, not this channel's.",
+  },
+  {
+    id: "channel_production.gemini_jobs",
+    mcpTools: ["agent_gemini_create_job"],
+    domain: "channel_production",
+    permission: "EXECUTE",
+    description:
+      "A paid Gemini image or video job for this channel (`agent_gemini_create_job`), as factory_gemini_create_job: only while the owner's Gemini switch is on and within the owner's per-day / per-month limits (a dry run is free). Logged.",
+  },
   {
     id: "youtube_writes.list_worker_actions",
     mcpTools: ["agent_list_worker_actions"],

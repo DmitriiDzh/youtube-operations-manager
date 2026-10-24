@@ -95,20 +95,19 @@ test("AC-WF-03: where the channel may be left out, the token's channel is put in
   ]);
 });
 
-test("AC-WF-04: shared and paid deps are refused: models, templates, runtimes, sessions, GPU data, other channels, paid runs", async () => {
+test("AC-WF-04: shared deps are refused: models, templates, runtimes, GPU data, other channels, plan moves, channel translations", async () => {
   const { deps, calls } = fakeDeps();
   const pinned = pinFactoryDepsToChannel(() => deps, TROPICO, async () => undefined);
   const refusals: Array<() => unknown> = [
     () => pinned.media.listModels(),
-    () => pinned.media.startSession({ channelId: TROPICO }),
     () => pinned.media.gpuStats({}),
+    () => pinned.media.pullModel({ repoId: "r", file: "f", folder: "x", sha256: "0".repeat(64) }),
+    () => pinned.media.createRuntime({}),
     () => pinned.listChannels(),
     () => pinned.readLogicalPath({ name: "x" }),
-    () => pinned.plans.runStage({ planId: "P-T" }),
-    () => pinned.plans.rerun({ planId: "P-T" }),
     () => pinned.plans.move({ planId: "P-T", channelId: JAPAN }),
-    () => pinned.gemini.createJob({ channelId: TROPICO }),
-    () => pinned.gemini.getStatus(),
+    // Stage 4's session tools refuse when the route gave no media wiring.
+    () => pinned.media.startSession({ channelId: TROPICO }),
     // ADR 0047 / AC-CL-10: the channel's own translations stay the owner's and the Operator's.
     () => pinned.channelLocalizations.get({ channelId: TROPICO }),
     () => pinned.channelLocalizations.save({ channelId: TROPICO, localizations: {} }),
@@ -123,8 +122,8 @@ test("AC-WF-05: the worker gets exactly the listed tools, renamed, and none of t
   const { deps } = fakeDeps();
   const names = workerFactoryTools(() => deps, TROPICO, async () => undefined).map((tool) => tool.name).sort();
   assert.deepEqual(names, [...WORKER_FACTORY_TOOL_NAMES].sort());
-  assert.equal(names.length, 26);
-  for (const forbidden of ["agent_plan_run_stage", "agent_plan_rerun", "agent_plan_move", "agent_gemini_create_job", "agent_media_start_session", "agent_channel_get_localizations", "agent_channel_save_localizations"]) {
+  assert.equal(names.length, 36);
+  for (const forbidden of ["agent_plan_move", "agent_media_pull_model", "agent_media_list_models", "agent_media_create_runtime", "agent_media_get_gpu_stats", "agent_channel_get_localizations", "agent_channel_save_localizations"]) {
     assert.ok(!names.includes(forbidden), forbidden);
   }
   assert.ok(names.every((name) => name.startsWith("agent_")));
@@ -138,4 +137,58 @@ test("AC-WF-01 through the tool: agent_plan_update with the Tropico token on a J
   assert.equal(result.isError, true);
   assert.equal(JSON.parse(result.content[0].text).error.code, "plan_not_found");
   assert.deepEqual(calls, []);
+});
+
+// Stage 4 (BL-218, owner msg 3402 "может, как оператор"): paid work for the own channel only.
+function fakeMedia(calls: string[]) {
+  const sessions: Record<string, string> = { "S-T": TROPICO, "S-J": JAPAN };
+  const jobs: Record<string, string> = { "J-T": TROPICO, "J-J": JAPAN };
+  const note = (name: string) => async (input: unknown) => {
+    calls.push(`${name}:${JSON.stringify(input)}`);
+    return { ok: true };
+  };
+  return {
+    startSession: note("startSession"),
+    getSession: async (input: { sessionId?: string }) => {
+      if (input.sessionId === undefined) return { sessions: [{ id: "S-T", channelId: TROPICO }, { id: "S-J", channelId: JAPAN }] };
+      const channel = sessions[input.sessionId];
+      if (!channel) throw new Error("media_session_not_found");
+      return { session: { id: input.sessionId, channelId: channel } };
+    },
+    endSession: note("endSession"),
+    createJob: note("createJob"),
+    getJob: async (input: { jobId?: string }) => {
+      const channel = input.jobId ? jobs[input.jobId] : undefined;
+      if (!channel) throw new Error("media_job_not_found");
+      return { job: { jobId: input.jobId, channelId: channel } };
+    },
+    cancelJob: note("cancelJob"),
+  } as unknown as FactoryToolDeps["media"];
+}
+
+test("AC-WF-06: a worker starts, uses and stops only its own channel's sessions and jobs; a Japan session is not found", async () => {
+  const { deps, calls } = fakeDeps();
+  const mediaCalls: string[] = [];
+  const pinned = pinFactoryDepsToChannel(() => deps, TROPICO, async () => undefined, () => fakeMedia(mediaCalls));
+  await assert.rejects(pinned.media.startSession({ channelId: JAPAN }), code("CHANNEL_NOT_ACTIVE"));
+  await assert.rejects(pinned.media.startSession({ channelId: TROPICO, planId: "P-J" }), code("plan_not_found"));
+  await assert.rejects(pinned.media.endSession({ sessionId: "S-J" }), code("media_session_not_found"));
+  await assert.rejects(pinned.media.createJob({ sessionId: "S-J", templateId: "t", params: {} }), code("media_session_not_found"));
+  await assert.rejects(pinned.media.cancelJob({ jobId: "J-J" }), code("media_job_not_found"));
+  await assert.rejects(pinned.media.getJob({ jobId: "J-J" }), code("media_job_not_found"));
+  await assert.rejects(pinned.plans.runStage({ planId: "P-J", sessionId: "S-T" }), code("plan_not_found"));
+  await assert.rejects(pinned.plans.rerun({ planId: "P-T", sessionId: "S-J", itemKey: "i" }), code("media_session_not_found"));
+  await assert.rejects(pinned.gemini.createJob({ channelId: JAPAN }), code("CHANNEL_NOT_ACTIVE"));
+  assert.deepEqual(mediaCalls, []);
+
+  await pinned.media.startSession({ channelId: TROPICO, planId: "P-T" });
+  await pinned.media.createJob({ sessionId: "S-T", templateId: "t", params: {} });
+  await pinned.media.endSession({ sessionId: "S-T" });
+  await pinned.media.cancelJob({ jobId: "J-T" });
+  assert.deepEqual((mediaCalls as string[]).map((call) => call.split(":")[0]), ["startSession", "createJob", "endSession", "cancelJob"]);
+  const listed = (await pinned.media.getSession({})) as { sessions: Array<{ id: string }> };
+  assert.deepEqual(listed.sessions.map((session) => session.id), ["S-T"]);
+  await pinned.plans.runStage({ planId: "P-T", sessionId: "S-T" });
+  await pinned.gemini.createJob({ channelId: TROPICO });
+  assert.ok(calls.some((call) => call.startsWith("plans.runStage")) && calls.some((call) => call.startsWith("gemini.createJob")));
 });

@@ -13,7 +13,8 @@ import { createFactoryMcpServer, type FactoryToolContract, type FactoryToolDeps 
  * - every other dep (models, templates, runtimes, GPU data, settings, sessions, other channels' list) is refused, so a tool left
  *   out of `WORKER_FACTORY_TOOLS` could not reach them even if it were exposed by mistake.
  * The modules still record the actor `factory` (their synced shapes accept only `factory` / `owner`); the worker log
- * (`worker_action_log`, ADR 0048) records which worker wrote what. Paid tools (run_stage, rerun, gemini_create_job) are stage 4.
+ * (`worker_action_log`, ADR 0048) records which worker wrote what. Stage 4 (BL-218) adds the paid tools on the same terms as the
+ * Operator: sessions, jobs, plan runs and Gemini jobs, within the owner's switches and limits.
  */
 
 type FactoryName = Parameters<NonNullable<Parameters<typeof createFactoryMcpServer>[1]>["collect"] & object>[0];
@@ -48,7 +49,25 @@ export const WORKER_FACTORY_TOOLS: Readonly<Record<string, { agentName: string; 
   // Not factory_channel_get/save_localizations: ADR 0047 (AGENTS.md §F) names the owner and the Factory Operator as the only ones
   // who save a channel's own translations, and AC-CL-10 keeps every channel-translation tool out of channel sessions.
   factory_gemini_get_job: { agentName: "agent_gemini_get_job", writes: false },
+  // BL-218 (stage 4, owner msg 3402 "может, как оператор"): paid work, exactly as the Operator does it -- a session the worker starts
+  // is approved by itself only within the owner's factory limits and while the owner's factory-sessions switch is on (otherwise it
+  // waits for the owner), Gemini jobs only within the owner's Gemini switch and limits. Only for this channel; each call is logged.
+  // `agent_factory_*`: the Operator's way (a factory session); the older `agent_request_media_session` / `agent_create_media_job`
+  // path (every session approved by the owner) stays as it is.
+  factory_media_start_session: { agentName: "agent_factory_start_session", writes: true },
+  factory_media_get_session: { agentName: "agent_factory_get_session", writes: false },
+  factory_media_stop_session: { agentName: "agent_factory_stop_session", writes: true },
+  factory_media_create_job: { agentName: "agent_factory_create_job", writes: true },
+  factory_media_get_job: { agentName: "agent_factory_get_job", writes: false },
+  factory_media_cancel_job: { agentName: "agent_factory_cancel_job", writes: true },
+  factory_plan_run_stage: { agentName: "agent_plan_run_stage", writes: true },
+  factory_plan_rerun: { agentName: "agent_plan_rerun", writes: true },
+  factory_gemini_get_status: { agentName: "agent_gemini_get_status", writes: false },
+  factory_gemini_create_job: { agentName: "agent_gemini_create_job", writes: true },
 });
+
+/** BL-218: the Operator's media wiring a channel route injects (sessions and jobs); without it those tools refuse. */
+export type WorkerMediaDeps = FactoryToolDeps["media"];
 
 /** The worker tool names, for the classification and capability inventories. */
 export const WORKER_FACTORY_TOOL_NAMES: readonly string[] = Object.freeze(Object.values(WORKER_FACTORY_TOOLS).map((entry) => entry.agentName));
@@ -85,8 +104,40 @@ function pinChannel(input: unknown, channelId: string, optional = false): Record
 }
 
 /** The factory deps confined to one channel. Reads `real` lazily, so an unused module is never built. */
-export function pinFactoryDepsToChannel(real: () => FactoryChannelDeps, channelId: string, assertMutationAllowed: () => Promise<void>): FactoryToolDeps {
+export function pinFactoryDepsToChannel(
+  real: () => FactoryChannelDeps,
+  channelId: string,
+  assertMutationAllowed: () => Promise<void>,
+  realMedia?: () => FactoryToolDeps["media"]
+): FactoryToolDeps {
   const deps = () => real();
+  const media = (): FactoryToolDeps["media"] => {
+    if (!realMedia) refused();
+    return realMedia();
+  };
+  const sessionNotFound = (sessionId: unknown) => new DomainError({ code: "media_session_not_found", message: "No session with this id", details: { sessionId } });
+  const jobNotFound = (jobId: unknown) => new DomainError({ code: "media_job_not_found", message: "No job with this id", details: { jobId } });
+  /** A session id of this channel's (the factory's own check already refuses a session that is not a factory session). */
+  async function requireOwnSession(sessionId: unknown): Promise<void> {
+    if (typeof sessionId !== "string") return;
+    let owner: unknown;
+    try {
+      owner = record(record(await media().getSession({ sessionId })).session).channelId;
+    } catch {
+      throw sessionNotFound(sessionId);
+    }
+    if (owner !== channelId) throw sessionNotFound(sessionId);
+  }
+  async function requireOwnJob(jobId: unknown): Promise<void> {
+    if (typeof jobId !== "string") return;
+    let owner: unknown;
+    try {
+      owner = record(record(await media().getJob({ jobId })).job).channelId;
+    } catch {
+      throw jobNotFound(jobId);
+    }
+    if (owner !== channelId) throw jobNotFound(jobId);
+  }
   async function requireOwnPlan(input: unknown): Promise<void> {
     const planId = record(input).planId;
     const planNotFound = new DomainError({ code: "plan_not_found", message: "plan not found", details: { planId } });
@@ -112,7 +163,53 @@ export function pinFactoryDepsToChannel(real: () => FactoryChannelDeps, channelI
     listLogicalPaths: refused,
     listChannels: refused,
     recordOutcome: async () => undefined,
-    media: new Proxy({} as FactoryToolDeps["media"], { get: () => refused }),
+    // BL-218: only the session and job part, for this channel; models, templates, runtimes, GPU data and settings stay refused.
+    media: new Proxy({} as FactoryToolDeps["media"], {
+      get: (_target, name) => {
+        switch (name) {
+          case "startSession":
+            return async (input: Parameters<FactoryToolDeps["media"]["startSession"]>[0]) => {
+              pinChannel(input, channelId);
+              if (input.planId !== undefined) await requireOwnPlan({ planId: input.planId });
+              return media().startSession(input);
+            };
+          case "getSession":
+            return async (input: { sessionId?: string }) => {
+              if (input.sessionId !== undefined) {
+                await requireOwnSession(input.sessionId);
+                return media().getSession(input);
+              }
+              const listed = record(await media().getSession({}));
+              const sessions = Array.isArray(listed.sessions) ? listed.sessions.filter((session) => record(session).channelId === channelId) : [];
+              return { sessions };
+            };
+          case "endSession":
+            return async (input: { sessionId: string }) => {
+              await requireOwnSession(input.sessionId);
+              return media().endSession(input);
+            };
+          case "createJob":
+            return async (input: Parameters<FactoryToolDeps["media"]["createJob"]>[0]) => {
+              await requireOwnSession(input.sessionId);
+              if (input.planId !== undefined) await requireOwnPlan({ planId: input.planId });
+              return media().createJob(input);
+            };
+          case "getJob":
+            return async (input: { jobId?: string; sessionId?: string }) => {
+              if (input.jobId !== undefined) await requireOwnJob(input.jobId);
+              else await requireOwnSession(input.sessionId);
+              return media().getJob(input);
+            };
+          case "cancelJob":
+            return async (input: { jobId: string }) => {
+              await requireOwnJob(input.jobId);
+              return media().cancelJob(input);
+            };
+          default:
+            return refused;
+        }
+      },
+    }),
     plans: {
       create: byChannel((input) => deps().plans.create(input)),
       importPlan: async (input) => {
@@ -125,16 +222,24 @@ export function pinFactoryDepsToChannel(real: () => FactoryChannelDeps, channelI
       list: byChannel((input) => deps().plans.list(input), true),
       todo: byPlan("todo"),
       report: byPlan("report"),
-      runStage: refused,
-      rerun: refused,
+      runStage: async (input) => {
+        await requireOwnPlan(input);
+        await requireOwnSession(record(input).sessionId);
+        return deps().plans.runStage(input);
+      },
+      rerun: async (input) => {
+        await requireOwnPlan(input);
+        await requireOwnSession(record(input).sessionId);
+        return deps().plans.rerun(input);
+      },
       cloneGroup: byPlan("cloneGroup"),
       move: refused,
       requestRecheck: byPlan("requestRecheck"),
       withdrawRecheck: byPlan("withdrawRecheck"),
     },
     gemini: {
-      getStatus: refused,
-      createJob: refused,
+      getStatus: () => deps().gemini.getStatus(),
+      createJob: byChannel((input) => deps().gemini.createJob(input)),
       getJobs: byChannel((input) => deps().gemini.getJobs(input), true),
     },
     live: {
@@ -171,9 +276,14 @@ export type WorkerFactoryTool = { name: string; contract: FactoryToolContract; h
  * The worker tools of one channel session: each factory tool of `WORKER_FACTORY_TOOLS`, renamed, with a description that says it is
  * the worker's version, over `pinFactoryDepsToChannel`. The `real` deps are the factory's own channel wiring (`./factory-channel-deps.ts`); `assertMutationAllowed` is the device mutation gate.
  */
-export function workerFactoryTools(real: () => FactoryChannelDeps, channelId: string, assertMutationAllowed: () => Promise<void>): WorkerFactoryTool[] {
+export function workerFactoryTools(
+  real: () => FactoryChannelDeps,
+  channelId: string,
+  assertMutationAllowed: () => Promise<void>,
+  realMedia?: () => FactoryToolDeps["media"]
+): WorkerFactoryTool[] {
   const tools: WorkerFactoryTool[] = [];
-  createFactoryMcpServer(pinFactoryDepsToChannel(real, channelId, assertMutationAllowed), {
+  createFactoryMcpServer(pinFactoryDepsToChannel(real, channelId, assertMutationAllowed, realMedia), {
     collect: (name: FactoryName, contract, handler) => {
       const entry = WORKER_FACTORY_TOOLS[name];
       if (!entry) return;

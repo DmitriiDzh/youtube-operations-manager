@@ -212,7 +212,8 @@ test("BL-217: the worker versions of the Operator's channel tools are registered
     for (const name of ["agent_plan_create", "agent_storyboard_submit", "agent_video_create", "agent_live_get_status"]) {
       assert.ok(tools[name], `${name} registered`);
     }
-    for (const name of ["agent_plan_run_stage", "agent_plan_move", "agent_gemini_create_job", "factory_plan_create"]) {
+    // Stage 4 (owner msg 3402) added the paid tools; move and the factory_ names themselves stay out.
+    for (const name of ["agent_plan_move", "factory_plan_create", "agent_media_pull_model"]) {
       assert.equal(tools[name], undefined, `${name} not registered`);
     }
     const refused = await tools.agent_video_create.handler({ channelId: "UC_OTHER" });

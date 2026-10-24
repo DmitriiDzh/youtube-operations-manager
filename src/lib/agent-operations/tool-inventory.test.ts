@@ -51,7 +51,9 @@ test("AC-WK-05: the capability list names exactly the tools a channel session re
   // server.ts's literal names is not enough).
   const { createMcpServer } = await import("@/mcp/server");
   const stub = new Proxy({}, { get: () => async () => ({}) }) as Parameters<typeof createMcpServer>[0];
-  const server = createMcpServer(stub, { connectionEnabled: true, agentSession: { tokenId: "t", channelId: "UC_T", reverify: async () => {} } });
+  // The channel agents' route always injects the media wiring (BL-218), so the inventory is checked with it.
+  const media = new Proxy({}, { get: () => async () => ({}) }) as never;
+  const server = createMcpServer(stub, { connectionEnabled: true, agentSession: { tokenId: "t", channelId: "UC_T", reverify: async () => {} }, workerMediaDeps: () => media });
   const bound = Object.keys((server as unknown as { _registeredTools: Record<string, unknown> })._registeredTools).sort();
   const visible = listAgentCapabilityDescriptors().filter((capability) => capability.domain !== "operations_workspace");
 

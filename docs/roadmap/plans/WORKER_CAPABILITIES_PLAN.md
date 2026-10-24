@@ -90,3 +90,19 @@ the Tropico token is refused").
 `owner`, live/channel translation `updatedBy`) accept only `factory` / `owner`, and a new value would break the other computer
 until both update. Who did it is in the worker log (tool, token, time, target). Paid runs and plan-linked jobs (which need a
 factory session, ADR 0029 §4) are stage 4.
+
+## Stage 4 (BL-218) -- acceptance criteria
+
+Owner msg 3402 (to «сам или одобряю»): «может, как оператор» -- a worker starts paid work itself on the Operator's terms.
+
+- **AC-WF-06** Ten more worker tools from the Operator's own: `agent_factory_start_session` / `_get_session` / `_stop_session` /
+  `_create_job` / `_get_job` / `_cancel_job`, `agent_plan_run_stage`, `agent_plan_rerun`, `agent_gemini_get_status`,
+  `agent_gemini_create_job`. A session another channel's, a job in it, a plan of another channel, or a Gemini job named for another
+  channel is refused (`media_session_not_found` / `media_job_not_found` / `plan_not_found` / `CHANNEL_NOT_ACTIVE`); the own
+  channel's calls reach the factory's code unchanged.
+- **AC-WF-07** The terms are the Operator's, unchanged: a session approves itself only within the owner's factory limits and while
+  the owner's factory-sessions switch is on (otherwise it waits for the owner); Gemini only within the owner's switch and limits.
+  The limits are shared with the Operator (one budget). Each paid call is a worker-log row.
+- **AC-WF-08** Nothing in `src/mcp` reaches the media core's session start/stop: the wiring lives in
+  `src/app/api/mcp/factory-media-deps.ts` and the channel agents' route injects it (`session-approval-inventory.test.ts` unchanged).
+  Without it the tools refuse.
