@@ -250,6 +250,28 @@ in `docs/DEVELOPMENT_PLAYBOOK.md` §6.2.
   an existing module into line with this principle is its own separately-scoped task requiring its
   own assignment, per §C, not something to start on the strength of this section alone.
 
+## N. Restarting the owner's live server (hard rule)
+
+Established 2026-10-24, project owner instruction (Telegram msg 3420, verbatim: «перезапуск сервера только если (когда) ни оператор,
+ни агенты каналов не работают сейчас с ним (пропиши это как жесткое правило)»). It applies to every action that stops or restarts
+the server the owner and the agents use (`scripts/macos/stop.sh`, `start.sh`, `update.sh`, the system service, a Windows restart, or
+anything that kills its process), whatever the reason (a merge, a fix, a migration). Merging into `dev` is not a restart and is not
+held back by this rule; only the restart waits.
+
+**Restart only when nobody works with the server.** Before every restart, all of the following must hold, checked each time (never
+assumed from an earlier answer):
+
+1. **The Factory Operator** answers, on its session channel, that it is idle and has nothing starting in the next minutes (no GPU
+   session, no plan run, no Gemini job, no upload it is waiting on). No answer means "not idle".
+2. **No agent is calling the server:** no MCP call on any endpoint (channel workers, the Producer, the Operator) in the last
+   10 minutes -- read-only check of `gateway_call_events` (`category = 'mcp_tool_calls'`, `occurred_at` within 10 minutes).
+3. **No paid work is running:** no media session that is not finished (`stop.sh` refuses on its own; never `--force`), and no
+   Gemini job queued or running.
+
+If any check fails, do not restart: wait and check again later, and tell the owner the restart is pending and why. The live 24/7
+streams are not a reason to wait (their encoders survive a restart), but nothing else overrides this rule -- not a pending merge,
+not an urgent fix, not a peer agent asking for the restart. Only the owner can lift it for one specific restart, in their own words.
+
 ## Standard development workflow
 
 1. Read project instructions (this file, plus §A's reading list as relevant to the task).
