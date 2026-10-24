@@ -30,5 +30,6 @@ fi
 echo "Restart requested at $AT ($FILE)."
 echo "The server takes it up within 15 s and restarts once nobody works with it."
 echo "Follow it in the app: Settings -> About, \"Restart when nobody is working\" (what it waits for, the holds, the last restart),"
-echo "or in the server log: tail -f \"$ROOT/.launcher.log\" | grep restart_when_idle"
+echo "or in the server log, .launcher.log in the folder the service runs from (here, when this is that folder):"
+echo "  tail -f \"$ROOT/.launcher.log\" | grep restart_when_idle"
 echo "Cancel it there with \"Cancel the request\"."

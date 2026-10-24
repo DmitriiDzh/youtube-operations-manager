@@ -248,6 +248,9 @@ test("AC-RI-05: a request open for 24 h becomes expired and does not restart", a
   assert.equal(f.state.requests[0].status, "open", "a millisecond before 24 h: still open");
   f.busy.uploads = [];
   f.state.now = T0 + 24 * 60 * MIN;
+  // The status is a read: it shows no request past 24 h and changes nothing; the check marks it expired.
+  assert.equal((await f.service.status()).request, null);
+  assert.equal(f.state.requests[0].status, "open");
   await f.service.tick();
   assert.equal(f.state.requests[0].status, "expired");
   assert.equal(f.state.stops, 0);

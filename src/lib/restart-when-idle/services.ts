@@ -235,7 +235,8 @@ export function createRestartWhenIdle(deps: RestartWhenIdleDependencies) {
     /** `{ request, waitingFor, holds, lastRestart, quietMinutes, serviceMode }` -- works on every computer (AC-RI-07). */
     async status(): Promise<RestartStatus> {
       const now = deps.clock();
-      const open = await expireDue(now);
+      // Read-only (a GET passes no mutation gate): a request past 24 h is not shown; the next check or request marks it expired.
+      const open = (await deps.store.listRequests(["open"])).filter((row) => now - row.requestedAt < RESTART_REQUEST_MAX_AGE_MS);
       const current = open[0] ?? (await deps.store.listRequests(["restarting"]))[0] ?? null;
       const last = await deps.store.lastDone();
       return {

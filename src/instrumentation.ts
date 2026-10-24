@@ -67,11 +67,17 @@ async function startServerSession() {
       console.warn(`[restart-when-idle] boot: ${error instanceof Error ? error.message : String(error)}`)
     );
     if (process.env.YTOM_SERVICE_MODE === "1") {
+      const { rawSqlClient: restartSqlClient } = await import("@/lib/db");
+      const { assertDeviceAvailableForMutation: assertRestartMayWrite } = await import("@/lib/device-mutation-gate");
       const restartLoop = async () => {
         try {
+          // It writes rows (the request, its expiry, `restarting`): never during an import / migration or in recovery mode -- the
+          // gate the other loops use; paused quietly, the next check tries again.
+          await assertRestartMayWrite(restartSqlClient);
           await restart.tick();
         } catch (error) {
-          console.warn(`[restart-when-idle] ${error instanceof Error ? error.message : String(error)}`);
+          const paused = error instanceof Error && (error.name === "OperationLockError" || error.name === "RecoveryModeError");
+          if (!paused) console.warn(`[restart-when-idle] ${error instanceof Error ? error.message : String(error)}`);
         }
         setTimeout(() => void restartLoop(), RESTART_TICK_MS).unref();
       };
