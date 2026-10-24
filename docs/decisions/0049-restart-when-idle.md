@@ -43,7 +43,8 @@ Status: Accepted
 ## Review additions (2026-10-24)
 
 - **A stop that hangs.** The graceful stop can hang on a connection a browser keeps open (2026-10-13). 90 s after its own stop signal a
-  process that is still running exits by itself (the shutdown hooks already ran at the signal), so launchd starts the next run. The
+  process that is still running exits by itself (the shutdown hooks already ran at the signal), so launchd starts the next run --
+  unless the operation lock is held (an import started meanwhile): then it waits, re-checking every 10 s, so the lock is never left behind. The
   Settings card does not ask the server anything for 2 minutes after the stop signal.
 - **Only the service finalizes at boot.** Another server on the same database (a worktree's dev server) never marks the live server's
   request done or takes its request file.

@@ -33,10 +33,27 @@ function readBuild(): { version: string; schema: number } {
   return { version, schema: SCHEMA_CURRENT_VERSION };
 }
 
-/** Where the developer script writes its request: the app-data folder this server uses (~/Library/Application Support/... on a Mac). */
 /** Review (BL-220): how long after its own stop signal a still-running process exits by itself. */
 export const RESTART_FORCE_EXIT_MS = 90_000;
+/** Review (BL-220): while an export/import/migration holds the operation lock, the forced exit waits and checks again this often. */
+const FORCE_EXIT_RECHECK_MS = 10_000;
 
+/** The forced exit, unless the operation lock is held (an import that started meanwhile must finish, or its lock would stay). */
+function exitUnlessLocked(): void {
+  void getOperationLock(rawSqlClient)
+    .catch(() => null)
+    .then((lock) => {
+      if (lock) {
+        console.warn(`[restart-when-idle] forced exit waits: the operation lock is held (${lock.operationType})`);
+        setTimeout(exitUnlessLocked, FORCE_EXIT_RECHECK_MS).unref();
+        return;
+      }
+      console.warn("[restart-when-idle] still running 90 s after its own stop signal; exiting so the service starts the next run");
+      process.exit(0);
+    });
+}
+
+/** Where the developer script writes its request: the app-data folder this server uses (~/Library/Application Support/... on a Mac). */
 export function restartRequestFilePath(): string {
   return path.join(getProductionAppPaths().appDataDir, RESTART_REQUEST_FILE_NAME);
 }
@@ -97,10 +114,7 @@ export function createRestartWhenIdleCore(): RestartWhenIdle {
     // here exits by itself so launchd starts the next run. The timer is unref'd: it never keeps a process alive that is ending anyway.
     stop: () => {
       process.kill(process.pid, "SIGTERM");
-      setTimeout(() => {
-        console.warn("[restart-when-idle] still running 90 s after its own stop signal; exiting so the service starts the next run");
-        process.exit(0);
-      }, RESTART_FORCE_EXIT_MS).unref();
+      setTimeout(exitUnlessLocked, RESTART_FORCE_EXIT_MS).unref();
     },
     takeRequestFile,
     log: (event, context) => logger.info({ event, context }),
