@@ -49,7 +49,9 @@ export type WorkerPrivacyDeps = {
 };
 
 function notFound(target: "video" | "playlist", id: string): DomainError {
-  return new DomainError({ code: "not_found", message: `${target} not found`, details: { [target === "video" ? "videoId" : "playlistId"]: id } });
+  return target === "video"
+    ? new DomainError({ code: "not_found", message: "video not found in this channel's synced list -- run channel_sync first if it is new", details: { videoId: id } })
+    : new DomainError({ code: "not_found", message: "playlist not found on this channel", details: { playlistId: id } });
 }
 
 export function createWorkerPrivacyServices(deps: WorkerPrivacyDeps) {

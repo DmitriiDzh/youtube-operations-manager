@@ -1,0 +1,192 @@
+import { DomainError } from "@/lib/shared-domain";
+import { createFactoryMcpServer, type FactoryToolContract, type FactoryToolDeps } from "./factory-server";
+
+/**
+ * BL-217 (docs/roadmap/plans/WORKER_CAPABILITIES_PLAN.md stage 3, FO-REQ-0037 item 2): the Factory Operator's channel tools for a
+ * channel worker, its own channel only. Not a second implementation: the worker's `agent_*` tool IS the `factory_*` tool (same
+ * input, output, checks and errors, built by `createFactoryMcpServer` with `collect`), run over CHANNEL-PINNED deps:
+ * - an input's `channelId` must be the token's channel (`CHANNEL_NOT_ACTIVE` otherwise); where the factory tool lets it be left
+ *   out (live status, the jobs list, Gemini jobs), the token's channel is put in;
+ * - a call by plan id first checks the plan is the token's channel's (`plan_not_found` otherwise, the same as a missing plan);
+ * - an imported plan file must name the token's channel;
+ * - every other dep (models, templates, runtimes, GPU data, settings, sessions, other channels' list) is refused, so a tool left
+ *   out of `WORKER_FACTORY_TOOLS` could not reach them even if it were exposed by mistake.
+ * The modules still record the actor `factory` (their synced shapes accept only `factory` / `owner`); the worker log
+ * (`worker_action_log`, ADR 0048) records which worker wrote what. Paid tools (run_stage, rerun, gemini_create_job) are stage 4.
+ */
+
+type FactoryName = Parameters<NonNullable<Parameters<typeof createFactoryMcpServer>[1]>["collect"] & object>[0];
+
+/** factory tool → worker tool name, and whether it writes (local state only; nothing here writes to YouTube or spends money). */
+export const WORKER_FACTORY_TOOLS: Readonly<Record<string, { agentName: string; writes: boolean }>> = Object.freeze({
+  factory_plan_get: { agentName: "agent_plan_get", writes: false },
+  factory_plan_list: { agentName: "agent_plan_list", writes: false },
+  factory_plan_todo: { agentName: "agent_plan_todo", writes: false },
+  factory_plan_create: { agentName: "agent_plan_create", writes: true },
+  factory_plan_import: { agentName: "agent_plan_import", writes: true },
+  factory_plan_update: { agentName: "agent_plan_update", writes: true },
+  factory_plan_close: { agentName: "agent_plan_close", writes: true },
+  factory_plan_report: { agentName: "agent_plan_report", writes: true },
+  factory_plan_clone_group: { agentName: "agent_plan_clone_group", writes: true },
+  factory_plan_request_recheck: { agentName: "agent_plan_request_recheck", writes: true },
+  factory_plan_withdraw_recheck: { agentName: "agent_plan_withdraw_recheck", writes: true },
+  factory_storyboard_get: { agentName: "agent_storyboard_get", writes: false },
+  factory_storyboard_list: { agentName: "agent_storyboard_list", writes: false },
+  factory_storyboard_create: { agentName: "agent_storyboard_create", writes: true },
+  factory_storyboard_update: { agentName: "agent_storyboard_update", writes: true },
+  factory_storyboard_submit: { agentName: "agent_storyboard_submit", writes: true },
+  factory_storyboard_reply: { agentName: "agent_storyboard_reply", writes: true },
+  factory_storyboard_attach_render: { agentName: "agent_storyboard_attach_render", writes: true },
+  factory_video_create: { agentName: "agent_video_create", writes: true },
+  factory_video_list: { agentName: "agent_video_list", writes: false },
+  factory_video_get_cost: { agentName: "agent_video_get_cost", writes: false },
+  factory_jobs_list: { agentName: "agent_jobs_list", writes: false },
+  factory_live_get_status: { agentName: "agent_live_get_status", writes: false },
+  factory_live_map_sources: { agentName: "agent_live_map_sources", writes: true },
+  factory_live_save_localizations: { agentName: "agent_live_save_localizations", writes: true },
+  factory_channel_get_localizations: { agentName: "agent_channel_get_localizations", writes: false },
+  factory_channel_save_localizations: { agentName: "agent_channel_save_localizations", writes: true },
+  factory_gemini_get_job: { agentName: "agent_gemini_get_job", writes: false },
+});
+
+/** The worker tool names, for the classification and capability inventories. */
+export const WORKER_FACTORY_TOOL_NAMES: readonly string[] = Object.freeze(Object.values(WORKER_FACTORY_TOOLS).map((entry) => entry.agentName));
+
+/** Worker tools that change local state -- each call is a worker-log row (ADR 0048). */
+export const WORKER_FACTORY_WRITE_TOOL_NAMES: readonly string[] = Object.freeze(
+  Object.values(WORKER_FACTORY_TOOLS)
+    .filter((entry) => entry.writes)
+    .map((entry) => entry.agentName)
+);
+
+function record(input: unknown): Record<string, unknown> {
+  return typeof input === "object" && input !== null && !Array.isArray(input) ? (input as Record<string, unknown>) : {};
+}
+
+function notThisChannel(channelId: unknown): DomainError {
+  return new DomainError({
+    code: "CHANNEL_NOT_ACTIVE",
+    message: "A channel worker works only on its own channel.",
+    details: { channelId },
+  });
+}
+
+function refused(): never {
+  throw new DomainError({ code: "AGENT_SESSION_OPERATOR_ONLY", message: "This is the Factory Operator's, not a channel worker's." });
+}
+
+/** `channelId` of the input must be the bound channel. `optional`: when left out, the bound channel is put in. */
+function pinChannel(input: unknown, channelId: string, optional = false): Record<string, unknown> {
+  const fields = record(input);
+  if (fields.channelId === undefined && optional) return { ...fields, channelId };
+  if (fields.channelId !== channelId) throw notThisChannel(fields.channelId);
+  return fields;
+}
+
+/** The factory deps confined to one channel. Reads `real` lazily, so an unused module is never built. */
+export function pinFactoryDepsToChannel(real: () => FactoryToolDeps, channelId: string): FactoryToolDeps {
+  const deps = () => real();
+  async function requireOwnPlan(input: unknown): Promise<void> {
+    const planId = record(input).planId;
+    const planNotFound = new DomainError({ code: "plan_not_found", message: "plan not found", details: { planId } });
+    if (typeof planId !== "string") return; // the plans core refuses the input itself
+    let owner: unknown;
+    try {
+      owner = record(record(await deps().plans.get({ planId, latest: true })).plan).channelId;
+    } catch {
+      throw planNotFound;
+    }
+    if (owner !== channelId) throw planNotFound;
+  }
+  const byPlan =
+    <K extends keyof FactoryToolDeps["plans"]>(name: K) =>
+    async (input: unknown) => {
+      await requireOwnPlan(input);
+      return (deps().plans[name] as (input: unknown) => Promise<Record<string, unknown>>)(input);
+    };
+  const byChannel = (call: (input: unknown) => Promise<Record<string, unknown>>, optional = false) => async (input: unknown) => call(pinChannel(input, channelId, optional));
+
+  return {
+    readLogicalPath: refused,
+    listLogicalPaths: refused,
+    listChannels: refused,
+    recordOutcome: async () => undefined,
+    media: new Proxy({} as FactoryToolDeps["media"], { get: () => refused }),
+    plans: {
+      create: byChannel((input) => deps().plans.create(input)),
+      importPlan: async (input) => {
+        if (record(record(input).plan).channelId !== channelId) throw notThisChannel(record(record(input).plan).channelId);
+        return deps().plans.importPlan(input);
+      },
+      update: byPlan("update"),
+      close: byPlan("close"),
+      get: byPlan("get"),
+      list: byChannel((input) => deps().plans.list(input), true),
+      todo: byPlan("todo"),
+      report: byPlan("report"),
+      runStage: refused,
+      rerun: refused,
+      cloneGroup: byPlan("cloneGroup"),
+      move: refused,
+      requestRecheck: byPlan("requestRecheck"),
+      withdrawRecheck: byPlan("withdrawRecheck"),
+    },
+    gemini: {
+      getStatus: refused,
+      createJob: refused,
+      getJobs: byChannel((input) => deps().gemini.getJobs(input), true),
+    },
+    live: {
+      getStatus: async (input) => deps().live.getStatus({ ...record(input), channelId: pinChannel(input, channelId, true).channelId as string }),
+      mapSources: async (input) => deps().live.mapSources(pinChannel(input, channelId) as Parameters<FactoryToolDeps["live"]["mapSources"]>[0]),
+      setLocalizations: async (input) => deps().live.setLocalizations(pinChannel(input, channelId) as Parameters<FactoryToolDeps["live"]["setLocalizations"]>[0]),
+    },
+    channelLocalizations: {
+      get: async (input) => deps().channelLocalizations.get(pinChannel(input, channelId) as Parameters<FactoryToolDeps["channelLocalizations"]["get"]>[0]),
+      save: async (input) => deps().channelLocalizations.save(pinChannel(input, channelId) as Parameters<FactoryToolDeps["channelLocalizations"]["save"]>[0]),
+    },
+    storyboards: {
+      create: byChannel((input) => deps().storyboards.create(input)),
+      update: byChannel((input) => deps().storyboards.update(input)),
+      get: byChannel((input) => deps().storyboards.get(input)),
+      list: byChannel((input) => deps().storyboards.list(input)),
+      submit: byChannel((input) => deps().storyboards.submit(input)),
+      reply: byChannel((input) => deps().storyboards.reply(input)),
+      attachRender: byChannel((input) => deps().storyboards.attachRender(input)),
+    },
+    videos: {
+      create: byChannel((input) => deps().videos.create(input)),
+      list: byChannel((input) => deps().videos.list(input)),
+      cost: byChannel((input) => deps().videos.cost(input)),
+    },
+    jobs: {
+      list: async (input) => deps().jobs.list({ ...record(input), channelId: pinChannel(input, channelId, true).channelId as string }),
+    },
+    assertMutationAllowed: () => deps().assertMutationAllowed(),
+  };
+}
+
+export type WorkerFactoryTool = { name: string; contract: FactoryToolContract; handler: (args: unknown) => Promise<unknown> };
+
+/**
+ * The worker tools of one channel session: each factory tool of `WORKER_FACTORY_TOOLS`, renamed, with a description that says it is
+ * the worker's version, over `pinFactoryDepsToChannel`. The `real` deps are the factory's own wiring (`src/lib/factory-tool-deps`).
+ */
+export function workerFactoryTools(real: () => FactoryToolDeps, channelId: string): WorkerFactoryTool[] {
+  const tools: WorkerFactoryTool[] = [];
+  createFactoryMcpServer(pinFactoryDepsToChannel(real, channelId), {
+    collect: (name: FactoryName, contract, handler) => {
+      const entry = WORKER_FACTORY_TOOLS[name];
+      if (!entry) return;
+      tools.push({
+        name: entry.agentName,
+        contract: {
+          description: `Channel worker's version of ${name} (BL-217): the same input, output and checks, for YOUR channel only -- channelId must be your own channel (CHANNEL_NOT_ACTIVE otherwise) and a plan of another channel is plan_not_found. Where the text below says "factory" or "the Operator", read "you". ${contract.description}`,
+          inputSchema: contract.inputSchema,
+        },
+        handler,
+      });
+    },
+  });
+  return tools;
+}

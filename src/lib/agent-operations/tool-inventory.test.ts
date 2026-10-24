@@ -24,7 +24,10 @@ test("every registered agent_* / analytics_* MCP tool is named by a capability's
   const missing = wanted.filter((name) => !covered.has(name));
   assert.deepEqual(missing, [], `registered MCP tools with no capability entry: ${missing.join(", ")}`);
 
-  const unknown = [...covered].filter((name) => !registered.includes(name));
+  // BL-217's worker versions of the Operator's tools are registered in a loop (no literal name here); the AC-WK-05 test below checks
+  // them against the real registry.
+  const { WORKER_FACTORY_TOOL_NAMES } = await import("@/mcp/worker-factory-tools");
+  const unknown = [...covered].filter((name) => !registered.includes(name) && !WORKER_FACTORY_TOOL_NAMES.includes(name));
   assert.deepEqual(unknown, [], `capabilities naming a tool that is not registered: ${unknown.join(", ")}`);
 });
 
@@ -44,9 +47,12 @@ test("capability ids are unique", () => {
 // inventory missed 26 channel tools (among them every YouTube write), so workers believed their token could not write. Every tool a
 // channel session registers (classified `bound`) must be named by a capability, and nothing else may be named.
 test("AC-WK-05: the capability list names exactly the tools a channel session registers, and every capability names its tools", async () => {
-  const { MCP_TOOL_CLASSIFICATION } = await import("@/mcp/tool-classification");
-  const registered = await registeredToolNames();
-  const bound = registered.filter((name) => MCP_TOOL_CLASSIFICATION[name] === "bound").sort();
+  // The real registry of a channel session (BL-217 registers the worker versions of the Operator's tools in a loop, so a scan of
+  // server.ts's literal names is not enough).
+  const { createMcpServer } = await import("@/mcp/server");
+  const stub = new Proxy({}, { get: () => async () => ({}) }) as Parameters<typeof createMcpServer>[0];
+  const server = createMcpServer(stub, { connectionEnabled: true, agentSession: { tokenId: "t", channelId: "UC_T", reverify: async () => {} } });
+  const bound = Object.keys((server as unknown as { _registeredTools: Record<string, unknown> })._registeredTools).sort();
   const visible = listAgentCapabilityDescriptors().filter((capability) => capability.domain !== "operations_workspace");
 
   const unnamed = visible.filter((capability) => (capability.mcpTools ?? []).length === 0).map((capability) => capability.id);

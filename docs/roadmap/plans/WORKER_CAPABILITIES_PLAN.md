@@ -42,7 +42,7 @@ Written before the code, from the owner's decisions and FO-REQ-0037's "Owner kee
 - **AC-WK-08** `GET /api/channels/{channelId}/worker-actions` (signed-in owner only, 401 otherwise) returns at most 100 rows of
   that channel, newest first; rows of other channels never appear. Rows older than 90 days are pruned.
 - **AC-WK-09** `agent_list_worker_actions` returns only the bound channel's rows.
-- **AC-WK-10** The Settings → Channels row of each channel shows a «Действия воркера в YouTube» list with every text in all UI languages.
+- **AC-WK-10** The Settings → Channels row of each channel shows a «Действия воркера» list with every text in all UI languages.
 
 ## Not in stage 1
 
@@ -68,3 +68,24 @@ From the owner's answer 4 (msg 3384) and msg 3386/3389: a direct write, allowed 
   previewed etag; a playlist through the playlist core (write-channel guardrail, ownership, Live writes).
 - **AC-WP-06** A target that already has the asked status is not written (`changed: false`).
 - **AC-WP-07** Every call with `dryRun: false` leaves one worker-log row with `previousPrivacyStatus` and `privacyStatus`.
+
+## Stage 3 (BL-217) -- acceptance criteria
+
+From FO-REQ-0037 item 2 ("the Operator abilities that can be scoped to a channel") and its acceptance ("a test call to Japan with
+the Tropico token is refused").
+
+- **AC-WF-01** Every worker version of a channel tool refuses an input naming another channel with `CHANNEL_NOT_ACTIVE`, before the
+  module runs (create/get/list of storyboards, plans, video numbers, live, channel translations, jobs; an imported plan file).
+- **AC-WF-02** A call by plan id of another channel's plan answers `plan_not_found`, the same as a missing plan; the own plan's call
+  reaches the module.
+- **AC-WF-03** Where the Operator's tool lets the channel be left out (live status, jobs list, Gemini jobs, plan list), the token's
+  channel is put in -- a worker never sees another channel's rows.
+- **AC-WF-04** Shared and paid things stay unreachable: models, templates, runtimes, GPU data and settings, sessions, the channel
+  list, logical paths, `run_stage`/`rerun`/`move`, Gemini status and job creation.
+- **AC-WF-05** Exactly 28 tools, named `agent_*`, with the same input/output contracts as their `factory_*` originals (built by the
+  factory server itself, not copied). Each write is a worker-log row.
+
+**Decision -- the actor.** The modules keep recording `factory` for these writes: their synced shapes (the plans report's
+`owner`, live/channel translation `updatedBy`) accept only `factory` / `owner`, and a new value would break the other computer
+until both update. Who did it is in the worker log (tool, token, time, target). Paid runs and plan-linked jobs (which need a
+factory session, ADR 0029 §4) are stage 4.

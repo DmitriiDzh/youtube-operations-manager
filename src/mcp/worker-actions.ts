@@ -8,6 +8,8 @@
  * `playlist_delete` is not here: it is never registered for a worker (operator-only, ADR 0048 §3).
  */
 
+import { WORKER_FACTORY_WRITE_TOOL_NAMES } from "./worker-factory-tools";
+
 type ToolArgs = Record<string, unknown> | undefined;
 
 export type WorkerWriteDescription = { target: string | null; detail: Record<string, unknown> };
@@ -57,11 +59,25 @@ const DESCRIBE: Readonly<Record<string, (args: ToolArgs) => WorkerWriteDescripti
 /** The tools that can write to YouTube for a worker (for the capability inventory's test, ADR 0048 §1). */
 export const WORKER_YOUTUBE_WRITE_TOOLS: readonly string[] = Object.freeze(Object.keys(DESCRIBE));
 
-/** What a worker call of `tool` would write, or `null` when it would not write to YouTube (a read, or `apply` as a preview). */
+/**
+ * BL-217: the worker versions of the Operator's channel tools that change local state (plans, storyboards, video numbers, live and
+ * channel translations). Nothing reaches YouTube; the row says which record and which fields the worker sent.
+ */
+function describeLocalWrite(args: ToolArgs): WorkerWriteDescription {
+  const plan = args?.plan as Record<string, unknown> | undefined;
+  return {
+    target: text(args?.planId) ?? text(plan?.planId) ?? text(args?.storyboardId) ?? null,
+    detail: detail({ fields: Object.keys(args ?? {}).filter((field) => field !== "channelId").sort() }),
+  };
+}
+
+/** What a worker call of `tool` would write, or `null` when it would not write (a read, or `apply` as a preview). */
 export function describeWorkerWrite(tool: string, args: unknown): WorkerWriteDescription | null {
+  const fields = typeof args === "object" && args !== null ? (args as Record<string, unknown>) : undefined;
+  if (WORKER_FACTORY_WRITE_TOOL_NAMES.includes(tool)) return describeLocalWrite(fields);
   const describe = DESCRIBE[tool];
   if (!describe) return null;
-  return describe(typeof args === "object" && args !== null ? (args as Record<string, unknown>) : undefined);
+  return describe(fields);
 }
 
 /**
@@ -77,7 +93,14 @@ export function fromToolResult(
   const failures = result.failures;
   const privacy = tool === "agent_set_privacy";
   return {
-    target: tool === "playlist_create" ? text(playlist?.id) : null,
+    target:
+      tool === "playlist_create"
+        ? text(playlist?.id)
+        : tool === "agent_video_create"
+          ? text((result.video as { video?: unknown } | undefined)?.video)
+          : tool === "agent_plan_create" || tool === "agent_storyboard_create"
+            ? text((result.plan as { planId?: unknown } | undefined)?.planId) ?? text((result.storyboard as { storyboardId?: unknown } | undefined)?.storyboardId)
+            : null,
     failedVideos: (tool === "playlist_add_videos" || tool === "playlist_remove_videos") && Array.isArray(failures) ? failures.length : null,
     // BL-216: the status before the change, as the tool read it from YouTube (AC-WP-07), and whether anything was written.
     previousPrivacyStatus: privacy ? text(result.previousPrivacyStatus) : null,

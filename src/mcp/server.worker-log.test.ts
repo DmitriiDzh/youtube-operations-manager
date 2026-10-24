@@ -205,3 +205,25 @@ test("AC-WP-07: agent_set_privacy is logged only when it would write (dryRun:fal
     [["agent_set_privacy", "v-unknown", "not_found", { target: "video", privacyStatus: "private" }]]
   );
 });
+
+test("BL-217: the worker versions of the Operator's channel tools are registered, and a refused local write is logged", async () => {
+  const channelId = "UC_WL_FACTORY";
+  await inSession(channelId, async (tools) => {
+    for (const name of ["agent_plan_create", "agent_storyboard_submit", "agent_video_create", "agent_live_get_status", "agent_channel_save_localizations"]) {
+      assert.ok(tools[name], `${name} registered`);
+    }
+    for (const name of ["agent_plan_run_stage", "agent_plan_move", "agent_gemini_create_job", "factory_plan_create"]) {
+      assert.equal(tools[name], undefined, `${name} not registered`);
+    }
+    const refused = await tools.agent_video_create.handler({ channelId: "UC_OTHER" });
+    assert.equal(refused.isError, true);
+    const read = await tools.agent_storyboard_list.handler({ channelId: "UC_OTHER" });
+    assert.equal(read.isError, true);
+  });
+  const rows = await listWorkerActionLogEntries(channelId, 100);
+  assert.deepEqual(
+    rows.map((row) => [row.tool, row.outcome, row.errorCode]),
+    [["agent_video_create", "error", "CHANNEL_NOT_ACTIVE"]],
+    "the refused write is logged; the refused read is not"
+  );
+});

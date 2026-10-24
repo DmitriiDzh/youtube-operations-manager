@@ -724,6 +724,95 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     description:
       "BL-216: make one of the bound channel's videos or playlists private or unlisted (`agent_set_privacy`, dryRun by default). Never public; a scheduled video and the current live broadcast stay the owner's. A real YouTube write through the video-details / playlist writes (Live writes); logged with the previous status.",
   },
+  // BL-217 (WORKER_CAPABILITIES_PLAN.md stage 3): the Factory Operator's channel tools for the worker's own channel.
+  {
+    id: "channel_production.read_plans",
+    mcpTools: ["agent_plan_get", "agent_plan_list", "agent_plan_todo"],
+    domain: "channel_production",
+    permission: "READ",
+    description:
+      "This channel's generation plans as the Factory Operator sees them (`agent_plan_get`, `agent_plan_list`, `agent_plan_todo`): the same input and output as factory_plan_get / _list / _todo. Local reads.",
+  },
+  {
+    id: "channel_production.write_plans",
+    mcpTools: ["agent_plan_create", "agent_plan_import", "agent_plan_update", "agent_plan_close", "agent_plan_report", "agent_plan_clone_group", "agent_plan_request_recheck", "agent_plan_withdraw_recheck"],
+    domain: "channel_production",
+    permission: "DRAFT",
+    description:
+      "Make and keep this channel's generation plans (create, import, update, close, report results, clone a wave, request or withdraw a re-check), the same as the factory_plan_* tools. Local only; the owner still judges every attempt; running a stage (paid) is not here. Logged.",
+  },
+  {
+    id: "channel_production.read_storyboards",
+    mcpTools: ["agent_storyboard_get", "agent_storyboard_list"],
+    domain: "channel_production",
+    permission: "READ",
+    description:
+      "This channel's storyboards (`agent_storyboard_get`, `agent_storyboard_list`), as factory_storyboard_get / _list.",
+  },
+  {
+    id: "channel_production.write_storyboards",
+    mcpTools: ["agent_storyboard_create", "agent_storyboard_update", "agent_storyboard_submit", "agent_storyboard_reply", "agent_storyboard_attach_render"],
+    domain: "channel_production",
+    permission: "DRAFT",
+    description:
+      "Write this channel's storyboards and send them to the owner (create, update, submit, reply, attach the final render), as the factory_storyboard_* tools. The owner comments and approves in the Web UI only. Logged.",
+  },
+  {
+    id: "channel_production.video_numbers",
+    mcpTools: ["agent_video_create"],
+    domain: "channel_production",
+    permission: "DRAFT",
+    description:
+      "Reserve the next video number of this channel (`agent_video_create`), as factory_video_create. Local and synced; nothing generated or sent to YouTube. Logged.",
+  },
+  {
+    id: "channel_production.read_videos",
+    mcpTools: ["agent_video_list", "agent_video_get_cost"],
+    domain: "channel_production",
+    permission: "READ",
+    description:
+      "This channel's video numbers and one video's visual cost (`agent_video_list`, `agent_video_get_cost`), as factory_video_list / _get_cost.",
+  },
+  {
+    id: "channel_production.read_jobs",
+    mcpTools: ["agent_jobs_list", "agent_gemini_get_job"],
+    domain: "channel_production",
+    permission: "READ",
+    description:
+      "This channel's media jobs on every computer and its Gemini jobs (`agent_jobs_list`, `agent_gemini_get_job`), as factory_jobs_list / factory_gemini_get_job.",
+  },
+  {
+    id: "channel_production.read_live",
+    mcpTools: ["agent_live_get_status"],
+    domain: "channel_production",
+    permission: "READ",
+    description:
+      "This channel's live stream status, segments and translations (`agent_live_get_status`), as factory_live_get_status for this channel.",
+  },
+  {
+    id: "channel_production.write_live",
+    mcpTools: ["agent_live_map_sources", "agent_live_save_localizations"],
+    domain: "channel_production",
+    permission: "DRAFT",
+    description:
+      "Map published videos to their original files and save the stream's translations (`agent_live_map_sources`, `agent_live_save_localizations`), as the factory_live_* tools. Local only: the owner builds rotations and starts streams; the app writes translations at the owner's Start. Logged.",
+  },
+  {
+    id: "channel_production.channel_localizations",
+    mcpTools: ["agent_channel_get_localizations"],
+    domain: "channel_production",
+    permission: "READ",
+    description:
+      "The channel's own title/description translations, saved and live (`agent_channel_get_localizations`), as factory_channel_get_localizations (one 1-unit YouTube read).",
+  },
+  {
+    id: "channel_production.save_channel_localizations",
+    mcpTools: ["agent_channel_save_localizations"],
+    domain: "channel_production",
+    permission: "DRAFT",
+    description:
+      "Save the channel's own translations (`agent_channel_save_localizations`), as factory_channel_save_localizations. Local only; written to YouTube only by the owner's «Применить». Logged.",
+  },
   {
     id: "youtube_writes.list_worker_actions",
     mcpTools: ["agent_list_worker_actions"],

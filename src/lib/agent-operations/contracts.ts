@@ -68,7 +68,9 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT",
 // grantedPermissions gains EXECUTE, and agent_list_worker_actions (READ) reads the new worker log.
 // 4.1.0 (BL-216, WORKER_CAPABILITIES_PLAN.md stage 2): agent_set_privacy (EXECUTE) -- a channel agent makes its own videos and
 // playlists private or unlisted, never public; worker-log rows gain previousPrivacyStatus / changed. Additive.
-export const AGENT_API_VERSION = "4.1.0";
+// 4.2.0 (BL-217, stage 3): the domain channel_production -- 28 agent_* versions of the Factory Operator's channel tools (plans,
+// storyboards, video numbers, jobs, live, channel translations) for the worker's own channel. Additive.
+export const AGENT_API_VERSION = "4.2.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry
@@ -98,6 +100,8 @@ export const AGENT_CAPABILITY_DOMAINS = [
   "logical_paths",
   // BL-215 (ADR 0048): a worker's real YouTube writes on its own channel (EXECUTE) and their log.
   "youtube_writes",
+  // BL-217: the Factory Operator's channel tools for the worker's own channel (plans, storyboards, video numbers, jobs, live, translations).
+  "channel_production",
 ] as const;
 export type AgentCapabilityDomain = (typeof AGENT_CAPABILITY_DOMAINS)[number];
 
