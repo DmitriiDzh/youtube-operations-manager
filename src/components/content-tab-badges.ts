@@ -44,25 +44,30 @@ async function getJson<T>(url: string): Promise<T | null> {
 }
 
 export function useContentTabBadges(channelId: string | null): ContentTabBadges {
-  const [badges, setBadges] = useState<ContentTabBadges>(NONE);
+  const [badges, setBadges] = useState<ContentTabBadges & { channelId: string | null }>({ ...NONE, channelId: null });
   useEffect(() => {
     if (!channelId) return;
     let cancelled = false;
     const base = `/api/channels/${encodeURIComponent(channelId)}`;
-    const read = () =>
+    const read = () => {
+      // A hidden browser tab reads nothing (review): the badges catch up when it is shown again.
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       void Promise.all([
         getJson<{ videos: PipelineProject[] }>(`${base}/video-projects`),
         getJson<{ lastSyncedAt: string | null; coverage: { due: boolean } }>(`${base}/publishing/calendar`),
         getJson<{ stream: { intent: string } | null; youtube: { lifeCycleStatus: string | null; healthStatus: string | null } | null }>(`${base}/live-stream`),
       ]).then(([projects, calendar, live]) => {
-        if (!cancelled) setBadges(contentTabBadges({ projects, calendar, live }));
+        if (!cancelled) setBadges({ ...contentTabBadges({ projects, calendar, live }), channelId });
       });
+    };
     read();
     const timer = setInterval(read, 60_000);
+    document.addEventListener("visibilitychange", read);
     return () => {
       cancelled = true;
       clearInterval(timer);
+      document.removeEventListener("visibilitychange", read);
     };
   }, [channelId]);
-  return channelId ? badges : NONE;
+  return channelId && badges.channelId === channelId ? badges : NONE;
 }

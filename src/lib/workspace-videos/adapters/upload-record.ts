@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { lstat, realpath, rename, unlink, writeFile } from "node:fs/promises";
+import { link, realpath, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { isPathInsideOrEqual } from "@/lib/local-path-validation";
 
@@ -21,13 +21,16 @@ export async function writeUploadRecordFile(
   const folder = slash < 0 ? workspace : await realpath(path.join(workspace, ...relativePath.slice(0, slash).split("/")));
   if (folder === workspace || !isPathInsideOrEqual(workspace, folder)) throw new Error("The package folder is outside the channel workspace.");
   const target = path.join(folder, name);
-  if (options.exclusive && (await lstat(target).then(() => true, () => false))) throw new Error(`${name} already exists.`);
   const temporary = path.join(folder, `.${name}.${randomUUID()}.tmp`);
   await writeFile(temporary, `${JSON.stringify(record, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
   try {
-    await rename(temporary, target);
+    // `exclusive`: a hard link fails with EEXIST when the record is there -- atomic, unlike a check before `rename`.
+    if (options.exclusive) await link(temporary, target);
+    else await rename(temporary, target);
   } catch (error) {
-    await unlink(temporary).catch(() => undefined);
+    if (!options.exclusive) await unlink(temporary).catch(() => undefined);
     throw error;
+  } finally {
+    if (options.exclusive) await unlink(temporary).catch(() => undefined);
   }
 }

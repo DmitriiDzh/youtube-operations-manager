@@ -67,6 +67,8 @@ export function combineExtras(sources: ExtrasSources): Map<string, VideoExtras> 
   return out;
 }
 
+const EMPTY_SOURCES: ExtrasSources = { insights: null, projects: null, costs: null, overview: null };
+
 async function getJson<T>(url: string): Promise<T | null> {
   try {
     const res = await fetch(url);
@@ -78,7 +80,7 @@ async function getJson<T>(url: string): Promise<T | null> {
 
 /** Loads the four sources for the channel (again whenever `reloadKey` changes, e.g. after a sync). */
 export function useVideoExtras(channelId: string, reloadKey: number) {
-  const [sources, setSources] = useState<ExtrasSources>({ insights: null, projects: null, costs: null, overview: null });
+  const [sources, setSources] = useState<ExtrasSources & { channelId: string | null }>({ channelId: null, insights: null, projects: null, costs: null, overview: null });
   useEffect(() => {
     if (!channelId) return;
     let cancelled = false;
@@ -89,11 +91,12 @@ export function useVideoExtras(channelId: string, reloadKey: number) {
       getJson<CostsView>(`${base}/video-costs`),
       getJson<OverviewView>(`${base}/localizations`),
     ]).then(([insights, projects, costs, overview]) => {
-      if (!cancelled) setSources({ insights, projects, costs, overview });
+      if (!cancelled) setSources({ channelId, insights, projects, costs, overview });
     });
     return () => {
       cancelled = true;
     };
   }, [channelId, reloadKey]);
-  return sources;
+  // Another channel: nothing of the previous one is shown while its own reads run (review).
+  return sources.channelId === channelId ? sources : EMPTY_SOURCES;
 }

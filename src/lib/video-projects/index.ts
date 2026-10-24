@@ -8,6 +8,7 @@ import { createStoryboardsCoreForProduction, createVideoReservationsShareCoreFor
 import { writeUploadRecordFile } from "@/lib/workspace-videos";
 import { createVideoProjectsStore } from "./adapters/store";
 import { createVideoProjectsWorkspace } from "./adapters/workspace";
+import { DomainError } from "./contracts";
 import { createVideoProjectsService, type VideoProjectsService } from "./services";
 
 // BL-194 stage 1 (ADR 0040): the video-projects module of THIS server process. One instance per process (keyed on globalThis: the
@@ -53,8 +54,18 @@ export function createVideoProjectsServiceForProduction(): VideoProjectsService 
         })),
       writeUploadRecord: async (channelId, relativePath, record) => {
         const workspace = await createChannelWorkspacesCore().getWorkspace({ channelId });
-        if (!workspace.configured) throw new Error("No workspace folder is set for the channel on this computer.");
-        await writeUploadRecordFile(workspace.path, relativePath, record, { exclusive: true });
+        if (!workspace.configured) {
+          throw new DomainError({ code: "video_workspace_unavailable", message: "No workspace folder is set for the channel on this computer.", details: { channelId } });
+        }
+        try {
+          await writeUploadRecordFile(workspace.path, relativePath, record, { exclusive: true });
+        } catch (error) {
+          // A record that is there but could not be read (so the list saw no video) is still never overwritten.
+          if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+            throw new DomainError({ code: "video_already_linked", message: `${relativePath} already exists; nothing was changed.`, details: { channelId, path: relativePath } });
+          }
+          throw error;
+        }
       },
       // A storyboard's video, read from the synced storyboards document (never through the storyboards feature module).
       storyboardVideo: async (channelId, storyboardId) => (await createStoryboardsCoreForProduction().read(channelId)).find((s) => s.id === storyboardId)?.video ?? null,

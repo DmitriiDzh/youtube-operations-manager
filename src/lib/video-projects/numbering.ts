@@ -152,6 +152,7 @@ export function buildVideoList(input: VideoListInput): VideoProject[] {
       conflict,
       youtubeVideoId: e.recordId ?? e.uploadId ?? e.registryId,
       hasVideoFile: files.some((name) => isVideoFileName(name) && isNamedAfterRelease(name, video)),
+      uploading: e.uploads.some((s) => !DEAD_UPLOAD.has(s) && !PUBLISHED_UPLOAD.has(s)),
     });
   }
   return out.sort((a, b) => b.number - a.number);

@@ -9,6 +9,8 @@ export type PipelineProject = {
   state: "in_work" | "packaged" | "published" | "cancelled";
   hasVideoFile?: boolean;
   youtubeVideoId?: string | null;
+  /** An upload of the number is queued or running on this computer. */
+  uploading?: boolean;
 };
 export type PipelineSyncedVideo = { privacyStatus: string; publishAt: string | null };
 
@@ -29,7 +31,8 @@ export function pipelinePhase(project: PipelineProject, synced: PipelineSyncedVi
   return project.hasVideoFile ? "edit" : "prep";
 }
 
-/** A number the owner may link to a YouTube video: it has a folder and no video yet, and is not cancelled (`linkVideo`'s rules). */
+/** A number the owner may link to a YouTube video: it has a folder, no video yet, no upload under way, and is not cancelled
+ * (`linkVideo`'s rules). */
 export function canLink(project: PipelineProject & { folder: string | null }): boolean {
-  return project.state !== "cancelled" && Boolean(project.folder) && !project.youtubeVideoId;
+  return project.state !== "cancelled" && Boolean(project.folder) && !project.youtubeVideoId && !project.uploading;
 }

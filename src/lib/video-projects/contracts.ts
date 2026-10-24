@@ -82,6 +82,8 @@ export type VideoProject = {
   youtubeVideoId: string | null;
   /** BL-221: the folder holds the release video file (`Vn <name>.mp4`/`.mov`/`.m4v`). */
   hasVideoFile: boolean;
+  /** BL-221: an upload of this number on this computer is queued or running (not failed/cancelled) -- never linked by hand then. */
+  uploading: boolean;
 };
 
 /** BL-221: a synced video of the channel the owner may link a number to (a local read; never YouTube). */

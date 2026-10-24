@@ -27,4 +27,6 @@ test("BL-221: «Привязать к видео» is offered for a number with 
   assert.equal(canLink({ state: "in_work", folder: null, youtubeVideoId: null }), false);
   assert.equal(canLink({ state: "published", folder: "f", youtubeVideoId: "abcdefghijk" }), false);
   assert.equal(canLink({ state: "cancelled", folder: "f", youtubeVideoId: null }), false);
+  // Review: never while this computer uploads the number.
+  assert.equal(canLink({ state: "packaged", folder: "f", youtubeVideoId: null, uploading: true }), false);
 });

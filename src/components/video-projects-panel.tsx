@@ -31,6 +31,8 @@ export type VideoProjectView = {
   youtubeVideoId?: string | null;
   /** BL-221: the folder holds the release video file. */
   hasVideoFile?: boolean;
+  /** BL-221: an upload of the number is queued or running here (no manual link then). */
+  uploading?: boolean;
 };
 export type VideoListView = { videos: VideoProjectView[]; workspace: "ok" | "not_configured" | "unavailable"; nextVideo: string | null };
 /** BL-194 stage 3: the cost summary of the channel's videos (its own route; the list works without it). */

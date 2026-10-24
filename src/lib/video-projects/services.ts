@@ -130,10 +130,26 @@ export function createVideoProjectsService(deps: VideoProjectsDeps) {
     if (!project || !project.folder) {
       throw new DomainError({ code: "video_not_found", message: `${video} has no MMDD Vn folder in the channel workspace; nothing to link.`, details: { channelId, video } });
     }
+    if (project.state === "cancelled") {
+      throw new DomainError({ code: "video_not_found", message: `${video} was given up; nothing to link.`, details: { channelId, video } });
+    }
     if (project.youtubeVideoId) {
       throw new DomainError({ code: "video_already_linked", message: `${video} is already linked to ${project.youtubeVideoId}; nothing was changed.`, details: { channelId, video, videoId: project.youtubeVideoId } });
     }
+    // Review (BL-221): an upload in progress would write its own record over the link and put a second video on YouTube.
+    if (project.uploading) {
+      throw new DomainError({ code: "video_upload_in_progress", message: `${video} is being uploaded by this computer; link it only if that upload is cancelled.`, details: { channelId, video } });
+    }
     return project;
+  }
+
+  /** Every YouTube video any source names for a number of the channel (records, this computer's uploads, the registry). */
+  function namedVideos(input: VideoListInput): Map<string, string> {
+    const named = new Map<string, string>();
+    for (const r of input.uploadRecords ?? []) named.set(r.videoId, r.video);
+    for (const u of input.uploads) if (u.videoId) named.set(u.videoId, u.video);
+    for (const r of input.registry ?? []) if (r.vNumber) named.set(r.videoId, r.vNumber);
+    return named;
   }
 
   return {
@@ -210,7 +226,7 @@ export function createVideoProjectsService(deps: VideoProjectsDeps) {
       const list = buildVideoList(gathered.input);
       const project = linkable(input.channelId, list, input.video, gathered.workspace);
       const candidates = deps.channelVideos ? await deps.channelVideos(input.channelId) : [];
-      const linked = new Set(list.flatMap((v) => (v.youtubeVideoId ? [v.youtubeVideoId] : [])));
+      const linked = new Set([...list.flatMap((v) => (v.youtubeVideoId ? [v.youtubeVideoId] : [])), ...namedVideos(gathered.input).keys()]);
       return { video: project, ...linkSuggestions(project.folder!, candidates, linked, deps.now()) };
     },
 
@@ -230,9 +246,9 @@ export function createVideoProjectsService(deps: VideoProjectsDeps) {
         const before = await gather(input.channelId);
         const list = buildVideoList(before.input);
         const project = linkable(input.channelId, list, input.video, before.workspace);
-        const other = list.find((v) => v.youtubeVideoId === input.videoId);
-        if (other) {
-          throw new DomainError({ code: "video_already_linked", message: `${input.videoId} is already ${other.video}; nothing was changed.`, details: { channelId: input.channelId, video: other.video, videoId: input.videoId } });
+        const otherVideo = list.find((v) => v.youtubeVideoId === input.videoId)?.video ?? namedVideos(before.input).get(input.videoId);
+        if (otherVideo) {
+          throw new DomainError({ code: "video_already_linked", message: `${input.videoId} is already ${otherVideo}; nothing was changed.`, details: { channelId: input.channelId, video: otherVideo, videoId: input.videoId } });
         }
         const candidate = (await channelVideos(input.channelId)).find((c) => c.videoId === input.videoId);
         if (!candidate) {

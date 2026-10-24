@@ -532,3 +532,47 @@ test("BL-221: without a readable workspace nothing is linked", async () => {
   await rejects(service.linkVideo({ channelId: UC1, video: "V52", videoId: "publishd_52" }), "video_workspace_unavailable");
   assert.equal(h.records.length, 0);
 });
+
+// -- BL-221 review: a link never races an upload, never takes a cancelled number, never a video any source already names ---------
+
+test("BL-221 review: a number this computer is uploading (queued or running) is not linked; a failed or finished upload does not block", async () => {
+  const { h, service } = linkHarness({ uploads: { [UC1]: [{ video: "V52", status: "queued", videoId: null }] } });
+  const list = await service.listVideos({ channelId: UC1 });
+  assert.equal(list.videos.find((v) => v.video === "V52")?.uploading, true);
+  await rejects(service.linkVideo({ channelId: UC1, video: "V52", videoId: "publishd_52" }), "video_upload_in_progress");
+  await rejects(service.linkSuggestions({ channelId: UC1, video: "V52" }), "video_upload_in_progress");
+  assert.equal(h.records.length, 0);
+
+  const failed = linkHarness({ uploads: { [UC1]: [{ video: "V52", status: "failed", videoId: null }] } });
+  assert.equal((await failed.service.listVideos({ channelId: UC1 })).videos.find((v) => v.video === "V52")?.uploading, false);
+  await failed.service.linkVideo({ channelId: UC1, video: "V52", videoId: "publishd_52" });
+  assert.equal(failed.h.records.length, 1);
+});
+
+test("BL-221 review: a cancelled number is not linked, even through the API", async () => {
+  const { h, service } = linkHarness({
+    own: [reservation(UC1, "V53", "2026-10-11T08:00:00.000Z", { state: "cancelled", cancelledAt: "2026-10-12T08:00:00.000Z" })],
+    workspace: { [UC1]: { status: "ok", folders: [], registry: [] } },
+  });
+  // A cancelled number has no folder here: not linkable. With a folder the list does not call it cancelled (the folder is work).
+  await rejects(service.linkVideo({ channelId: UC1, video: "V53", videoId: "publishd_52" }), "video_not_found");
+  assert.equal(h.records.length, 0);
+});
+
+test("BL-221 review: a video the registry names for another number is not linked again, even when that number has its own record", async () => {
+  const { h, service } = linkHarness({
+    workspace: {
+      [UC1]: {
+        status: "ok",
+        folders: [folder("04 Videos/10 October/1011 V52", "V52", ["V52 Tropico Jazz.mp4"]), folder("04 Videos/10 October/1010 V41", "V41", ["V41_youtube.json"])],
+        // V41's record names another video, so V41's chosen id is "record_v41_"; the registry still names "publishd_52" for V41.
+        registry: [{ vNumber: "V41", videoId: "publishd_52", folder: "10 October/1010 V41" }],
+        uploadRecords: [{ video: "V41", videoId: "record_v41_" }],
+      },
+    },
+  });
+  const suggestions = await service.linkSuggestions({ channelId: UC1, video: "V52" });
+  assert.deepEqual(suggestions.suggested.map((c) => c.videoId), []);
+  await rejects(service.linkVideo({ channelId: UC1, video: "V52", videoId: "publishd_52" }), "video_already_linked");
+  assert.equal(h.records.length, 0);
+});
