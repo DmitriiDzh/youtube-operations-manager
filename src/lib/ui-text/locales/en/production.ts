@@ -486,6 +486,7 @@ export const production = {
   "review.strip.compareHint": "Shift+click an attempt to compare it",
   "serversAnalytics.badge.gpu": "GPU",
   "serversAnalytics.badge.gemini": "Gemini",
+  "serversAnalytics.updating": "Updating…",
   "serversAnalytics.csv": "⇩ CSV",
   "serversAnalytics.byLabel.title": "What it went on",
   "serversAnalytics.byLabel.hint": "model / template",

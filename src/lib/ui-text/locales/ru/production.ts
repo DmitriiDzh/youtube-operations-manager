@@ -487,6 +487,7 @@ export const production: Record<keyof typeof en, string> = {
   "review.strip.compareHint": "Shift+клик по варианту — сравнить с ним",
   "serversAnalytics.badge.gpu": "GPU",
   "serversAnalytics.badge.gemini": "Gemini",
+  "serversAnalytics.updating": "Обновляется…",
   "serversAnalytics.csv": "⇩ CSV",
   "serversAnalytics.byLabel.title": "На что потрачено",
   "serversAnalytics.byLabel.hint": "модель / шаблон",

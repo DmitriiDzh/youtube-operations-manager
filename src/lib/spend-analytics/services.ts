@@ -11,8 +11,15 @@ const money = (value: number) => Math.round(value * 10_000) / 10_000;
 const isFailed = (run: CostRun) => run.status === "failed" || run.status === "cancelled";
 
 /** The calendar day of an instant in a time zone, as YYYY-MM-DD. */
+const formatters = new Map<string, Intl.DateTimeFormat>();
 export function dayKey(at: Date | string, tz: string): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(at));
+  // Review (BL-219): one formatter per time zone -- building one per call made a summary of a few thousand runs take ~1 s.
+  let formatter = formatters.get(tz);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" });
+    formatters.set(tz, formatter);
+  }
+  return formatter.format(new Date(at));
 }
 
 /** The last `count` calendar days in `tz`, oldest first, ending with the day of `now`. */
@@ -39,7 +46,8 @@ export function whoOf(run: CostRun, facts: SpendFacts): SpendWho | null {
   const id = run.runId.slice(run.runId.indexOf(":") + 1);
   const raw =
     run.kind === "session" ? facts.sessions.get(id)?.requestedBy : run.source === "gemini" ? facts.gemini.get(id)?.createdBy : facts.jobs.get(id)?.createdBy;
-  if (raw === "operator") return "owner";
+  // RunPod sessions/jobs started in the Web UI say `operator`; Gemini jobs started there say `owner`.
+  if (raw === "operator" || raw === "owner") return "owner";
   if (raw === "agent") return "agent";
   return raw === "factory" ? "factory" : null;
 }
@@ -205,21 +213,24 @@ export function buildSummary(inputs: SpendInputs, filter: SpendFilter, now: Date
   };
 }
 
-function imagesIn(outputsJson: string | null): number {
-  if (!outputsJson) return 0;
+/**
+ * The image outputs of a job, in order, as plain file names inside the job folder -- the one rule for the history's preview count and
+ * the preview route's index (an .mp4 that ComfyUI lists under `images` is not an image; a name with a folder is not served).
+ */
+export function imageFileNames(outputsJson: string | null): string[] {
   try {
-    const outputs = JSON.parse(outputsJson) as Array<{ kind?: unknown; filename?: unknown; path?: unknown; mimeType?: unknown }>;
-    return Array.isArray(outputs)
-      ? outputs.filter((o) => {
-          const name = typeof o.filename === "string" ? o.filename : typeof o.path === "string" ? o.path : "";
-          // An .mp4 that ComfyUI lists under `images` is not an image (no preview for it).
-          return /\.(png|jpe?g|webp)$/i.test(name) && (o.kind === "images" || o.kind === "image" || (typeof o.mimeType === "string" && o.mimeType.startsWith("image/")));
-        }).length
-      : 0;
+    const outputs = JSON.parse(outputsJson ?? "[]") as Array<{ kind?: unknown; filename?: unknown; path?: unknown; mimeType?: unknown }>;
+    if (!Array.isArray(outputs)) return [];
+    return outputs
+      .filter((o) => o.kind === "images" || o.kind === "image" || (typeof o.mimeType === "string" && o.mimeType.startsWith("image/")))
+      .map((o) => (typeof o.filename === "string" ? o.filename : typeof o.path === "string" ? (o.path.split("/").pop() ?? "") : ""))
+      .filter((name) => /^[^/\\]+\.(png|jpe?g|webp)$/i.test(name));
   } catch {
-    return 0;
+    return [];
   }
 }
+
+const imagesIn = (outputsJson: string | null) => imageFileNames(outputsJson).length;
 
 function errorOf(text: string | null): { code: string | null; text: string } | null {
   if (!text) return null;

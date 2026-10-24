@@ -398,7 +398,8 @@ function HistoryCard({ filters, day, channelTitle }: { filters: Filters; day: st
 function csvOf(summary: Summary, channelTitle: (id: string) => string): string {
   const lines = [["section", "key", "usd", "count"].join(",")];
   const esc = (v: string) => `"${v.replace(/"/g, '""')}"`;
-  for (const d of summary.daily) lines.push(["day", d.day, String(d.runpodWorkUsd + d.runpodIdleUsd + d.geminiUsd), ""].join(","));
+  const money = (v: number) => (Math.round(v * 10_000) / 10_000).toString();
+  for (const d of summary.daily) lines.push(["day", d.day, money(d.runpodWorkUsd + d.runpodIdleUsd + d.geminiUsd), ""].join(","));
   for (const l of summary.byLabel) lines.push(["model", esc(l.label), String(l.usd), String(l.runs)].join(","));
   for (const v of summary.byVideo.videos) lines.push(["video", esc(`${channelTitle(v.channelId)} ${v.video}`), String(v.usd), String(v.runs)].join(","));
   lines.push(["video", "unlinked", String(summary.byVideo.unlinkedUsd), ""].join(","));
@@ -412,6 +413,7 @@ export function ServersAnalyticsPanel({ active }: { active: boolean }) {
   const [filters, setFilters] = useState<Filters>({ days: "30", channelId: "", device: "all", who: "all" });
   const [summary, setSummary] = useState<Summary | null>(null);
   const [failed, setFailed] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [day, setDay] = useState<string | null>(null);
   const [opened, setOpened] = useState(false);
   const latest = useRef(0);
@@ -424,6 +426,7 @@ export function ServersAnalyticsPanel({ active }: { active: boolean }) {
     if (!opened) return;
     const request = ++latest.current;
     setFailed(false);
+    setLoading(true);
     setDay(null);
     void (async () => {
       try {
@@ -432,7 +435,13 @@ export function ServersAnalyticsPanel({ active }: { active: boolean }) {
         const data = (await res.json()) as Summary;
         if (request === latest.current) setSummary(data);
       } catch {
-        if (request === latest.current) setFailed(true);
+        // Review (BL-219): never leave the previous filter's numbers on screen next to the error.
+        if (request === latest.current) {
+          setSummary(null);
+          setFailed(true);
+        }
+      } finally {
+        if (request === latest.current) setLoading(false);
       }
     })();
   }, [filters, opened]);
@@ -502,6 +511,7 @@ export function ServersAnalyticsPanel({ active }: { active: boolean }) {
       </div>
 
       {failed && <p className="text-sm text-red-400">{t("serversAnalytics.loadFailed")}</p>}
+      {loading && s && <p className="text-xs text-zinc-500">{t("serversAnalytics.updating")}</p>}
       {!s && !failed && <p className="text-sm text-zinc-500">{t("common.loading")}</p>}
 
       {s && (

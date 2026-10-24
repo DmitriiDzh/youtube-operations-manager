@@ -195,3 +195,12 @@ test("AC-SA-04/07: a day picked on the chart narrows the history to that day", (
   const page = buildHistory(INPUTS, WEEK, { kind: "all", errorsOnly: false, cursor: null, day: "2026-10-23" }, NOW);
   assert.deepEqual(page.rows.map((r) => r.id), ["G1", "S2"]);
 });
+
+test("review: a Gemini job started in the Web UI (createdBy owner) counts as the owner's", () => {
+  const facts: SpendFacts = { ...FACTS, gemini: new Map([...FACTS.gemini, ["G1", { jobId: "G1", createdBy: "owner", outputsJson: null, errorCode: null }]]) };
+  const s = buildSummary({ ...INPUTS, facts }, { ...WEEK, who: "owner" }, NOW);
+  assert.equal(s.totals.totalUsd, 0.1); // S3 0.04 (operator) + G1 0.06 (owner)
+  const page = buildHistory({ ...INPUTS, facts }, WEEK, { kind: "gemini", errorsOnly: false, cursor: null }, NOW);
+  const g1 = page.rows.find((r) => r.id === "G1");
+  assert.ok(g1 && g1.type === "gemini" && g1.who === "owner");
+});

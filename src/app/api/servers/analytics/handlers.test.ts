@@ -71,3 +71,24 @@ test("AC-SA-09: a preview resolves inside the job's own folder, and a job or fil
   assert.equal((await GET(new Request("http://x/p?source=gemini&jobId=nope"))).status, 404);
   assert.equal((await GET(new Request("http://x/p?source=runpod&jobId=..%2Fetc"))).status, 400);
 });
+
+// Review (BL-219): the real resolver composition -- a bare file name must resolve inside the job's own From YTM folder.
+test("AC-SA-09 (real folder): the preview's resolver finds the file in the job folder and refuses one outside it", async () => {
+  const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const { previewDeps } = await import("./preview/deps");
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "ws-"));
+  try {
+    const job = path.join(workspace, "99 Data Exchange", "From YTM", "media", "J1");
+    await mkdir(job, { recursive: true });
+    await writeFile(path.join(job, "a.png"), "png");
+    await writeFile(path.join(workspace, "99 Data Exchange", "From YTM", "media", "outside.png"), "png");
+    const found = await previewDeps.resolveJobFile(workspace, "media", "J1", "a.png");
+    assert.ok(found.path.endsWith(path.join("J1", "a.png")));
+    await assert.rejects(previewDeps.resolveJobFile(workspace, "media", "J1", "../outside.png"));
+    await assert.rejects(previewDeps.resolveJobFile(workspace, "media", "J1", "missing.png"));
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});

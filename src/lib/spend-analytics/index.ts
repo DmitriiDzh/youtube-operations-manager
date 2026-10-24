@@ -21,6 +21,6 @@ export async function readSpendInputs(): Promise<SpendInputs> {
   };
 }
 
-export { buildHistory, buildSummary, dayKey, lastDays, whoOf } from "./services";
+export { buildHistory, buildSummary, dayKey, imageFileNames, lastDays, whoOf } from "./services";
 export type { HistoryOptions } from "./services";
 export * from "./contracts";
