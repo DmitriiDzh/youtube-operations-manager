@@ -52,8 +52,10 @@ Four permission classes, always this exact set (`PERMISSION_CLASSES`,
 | `APPROVE` | a distinct operation -- never implicitly granted by creating a draft |
 | `EXECUTE` | performs an external mutation (e.g. a real YouTube write) |
 
-**Codex's actual granted set today is `GRANTED_PERMISSIONS = ["READ", "DRAFT"]`** -- a hardcoded
-constant, not a request parameter, not inferred from anything a slice implements. No code path in
+**The granted set is `GRANTED_PERMISSIONS = ["READ", "DRAFT", "EXECUTE"]`** (EXECUTE since ADR 0048, owner msg 3384, 2026-10-24:
+a channel agent's real YouTube writes on its own channel -- `apply`, the playlist writes -- existed since Phase 12 / ADR 0011 but were
+not declared; they are now the `youtube_writes` domain, never `public`, always logged) -- a hardcoded
+constant, not a request parameter, not inferred from anything a slice implements. `APPROVE` is never granted. No code path in
 this module, or in any module it wraps (`ai-localization`, `changesets`), can set a Change's
 `approvalStatus` to anything but `"pending"` at creation. Widening this set is its own, separate,
 explicit future owner decision (mirrors the `autonomous-dev-loop` skill's own "never relaxed by
@@ -76,7 +78,7 @@ underlying `AgentOperationsCore.getSystemCapabilities()`, three transports, one 
   capabilities: AgentCapabilityDescriptor[]; // only what is ACTUALLY reachable right now
   dataDomains: AgentDataDomain[];     // grows exactly in step with capabilities
   actionClasses: PermissionClass[];   // the full 4-class vocabulary, always ["READ","DRAFT","APPROVE","EXECUTE"]
-  grantedPermissions: PermissionClass[]; // what THIS caller actually holds today -- always ["READ","DRAFT"]
+  grantedPermissions: PermissionClass[]; // what THIS caller actually holds today -- ["READ","DRAFT","EXECUTE"] (ADR 0048), never APPROVE
   plannedFutureCapabilities: string[]; // named extension points not implemented yet (owner spec §14/§20)
   schemaVersions: { app: number };    // SCHEMA_CURRENT_VERSION, src/lib/db.ts
 }
@@ -1087,7 +1089,8 @@ its tools appears in this interface, and none of the channel tools is callable o
   unrestricted filesystem access, or unrestricted database access, to any agent-facing response.
 - No new YouTube write path -- every mutation an agent's DRAFT eventually causes goes through the
   existing `youtube-write-gateway`/Change-Set/Batch pipeline, Gate B's live-write barrier included,
-  unchanged.
+  unchanged. A channel agent's own EXECUTE tools (ADR 0048) use the same gateway, write-channel guardrail
+  and Live writes; they never make anything public and are logged per call.
 - No code path may set a Change/ChangeSet's approval state to anything but `pending` at creation,
   regardless of which slice or capability created it.
 - Channel scoping is never automatic -- every capability that takes a `channelId` must itself

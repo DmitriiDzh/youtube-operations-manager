@@ -245,7 +245,7 @@ test("getSystemCapabilities returns every field the spec requires, sourced from 
   // Bumped 0.15.0 -> 1.0.0, Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md AC-P12-13): a breaking
   // agent-contract change (token required, identity/credential overrides removed) -> MAJOR.
   // MINOR 3.16.0 (BL-182 stage 1): new READ capability video_context.query_publishing_calendar. Previously 3.15.0 (BL-181).
-  assert.equal(result.agentApiVersion, "3.20.0"); // MINOR 3.20.0 (BL-209): agent_get_publishing_calendar uploads gain automatic / progressPercent / finishedAt (additive); MINOR 3.19.0 (BL-193): agent_get_media_limits gains accountSpentTodayUsd / otherDevicesSpentTodayUsd (additive); MINOR 3.18.0 (BL-191, SUGGESTED_SOURCES_PLAN.md §2): new READ capability analytics.query_stored_suggested_sources; MINOR 3.17.0 (BL-182 stage 2): agent_get_publishing_calendar lists the release packages and this computer's uploads; MINOR 3.13.0 (BL-171, VIDEO_COMMENTS_PLAN.md §2): new READ capability video_context.query_video_comments; MINOR 3.12.0 (BL-170, EXPERIMENT_ARMS_PLAN.md §2 "Reads"): new READ capability decision_engine.query_experiment_results, experiment arms in the hypothesis trail; MINOR 3.11.0 (BL-169, VIDEO_SEARCH_TERMS_PLAN.md §2): new READ capability analytics.query_stored_search_terms; MINOR 3.10.0 (BL-168, VIDEO_BREAKDOWNS_PLAN.md §2 "Reads"): new READ capability analytics.query_stored_breakdowns; MINOR 3.9.0 (BL-166, VIDEO_MILESTONES_PLAN.md §2 "Versions"): new READ capability analytics.query_video_milestones; MINOR 3.6.0 (BL-135): agent_release_media_session + releaseWhenDone; MINOR 3.5.0 (BL-132): media template input parameters (image/audio/video), job inputs[], template source/models; before that 3.3.0 (Factory Operator access, logical path registry tools) on top of 3.2.0 + MINOR 3.4.0: the seven media_generation capabilities (Phase 14 slice 5, PHASE_14_PLAN.md §2.7) and agent_get_media_limits openSessions/maxConcurrentSessions/activeSessionCount (slice 6)
+  assert.equal(result.agentApiVersion, "4.0.0"); // MAJOR 4.0.0 (BL-215, ADR 0048): playlist_delete owner-only and "public" refused for a channel agent, youtube_writes capabilities + EXECUTE, agent_list_worker_actions; MINOR 3.20.0 (BL-209): agent_get_publishing_calendar uploads gain automatic / progressPercent / finishedAt (additive); MINOR 3.19.0 (BL-193): agent_get_media_limits gains accountSpentTodayUsd / otherDevicesSpentTodayUsd (additive); MINOR 3.18.0 (BL-191, SUGGESTED_SOURCES_PLAN.md §2): new READ capability analytics.query_stored_suggested_sources; MINOR 3.17.0 (BL-182 stage 2): agent_get_publishing_calendar lists the release packages and this computer's uploads; MINOR 3.13.0 (BL-171, VIDEO_COMMENTS_PLAN.md §2): new READ capability video_context.query_video_comments; MINOR 3.12.0 (BL-170, EXPERIMENT_ARMS_PLAN.md §2 "Reads"): new READ capability decision_engine.query_experiment_results, experiment arms in the hypothesis trail; MINOR 3.11.0 (BL-169, VIDEO_SEARCH_TERMS_PLAN.md §2): new READ capability analytics.query_stored_search_terms; MINOR 3.10.0 (BL-168, VIDEO_BREAKDOWNS_PLAN.md §2 "Reads"): new READ capability analytics.query_stored_breakdowns; MINOR 3.9.0 (BL-166, VIDEO_MILESTONES_PLAN.md §2 "Versions"): new READ capability analytics.query_video_milestones; MINOR 3.6.0 (BL-135): agent_release_media_session + releaseWhenDone; MINOR 3.5.0 (BL-132): media template input parameters (image/audio/video), job inputs[], template source/models; before that 3.3.0 (Factory Operator access, logical path registry tools) on top of 3.2.0 + MINOR 3.4.0: the seven media_generation capabilities (Phase 14 slice 5, PHASE_14_PLAN.md §2.7) and agent_get_media_limits openSessions/maxConcurrentSessions/activeSessionCount (slice 6)
   assert.equal(result.schemaVersions.app, 14);
   assert.ok(Array.isArray(result.capabilities));
   assert.ok(Array.isArray(result.dataDomains));
@@ -254,16 +254,30 @@ test("getSystemCapabilities returns every field the spec requires, sourced from 
   assert.ok(Array.isArray(result.plannedFutureCapabilities));
 });
 
-// AC-CAP-02: the single most safety-critical assertion in this slice -- Codex (or any agent)
-// must never be told it holds APPROVE/EXECUTE, since granting either implicitly would violate
-// the owner's own explicit "AI may propose, human approves" invariant (AGENTS.md §G).
-test("grantedPermissions is exactly READ+DRAFT -- never APPROVE or EXECUTE", async () => {
+// AC-CAP-02: an agent must never be told it holds APPROVE -- approving its own drafts would violate the owner's "AI may propose,
+// human approves" invariant (AGENTS.md §G). Changed for ADR 0048 (AGENTS.md §L, the requirement changed, owner msg 3384): EXECUTE
+// is now granted, because a channel agent's real YouTube writes on its own channel (ADR 0011, D4) are declared instead of hidden
+// (WORKER_CAPABILITIES_PLAN.md AC-WK-05). APPROVE stays excluded.
+test("grantedPermissions is exactly READ, DRAFT, EXECUTE -- never APPROVE", async () => {
   const { services } = createFixture();
   const result = await services.getSystemCapabilities({});
 
-  assert.deepEqual(result.grantedPermissions, ["READ", "DRAFT"]);
+  assert.deepEqual(result.grantedPermissions, ["READ", "DRAFT", "EXECUTE"]);
   assert.ok(!result.grantedPermissions.includes("APPROVE" as never));
-  assert.ok(!result.grantedPermissions.includes("EXECUTE" as never));
+});
+
+// AC-WK-05: EXECUTE is declared exactly for the tools that can write to YouTube for a worker -- the list below is taken from the
+// owner-approved plan, not from the implementation.
+test("AC-WK-05: EXECUTE capabilities name exactly apply and the four playlist writes, all in youtube_writes", async () => {
+  const { services } = createFixture();
+  const result = await services.getSystemCapabilities({});
+  const execute = result.capabilities.filter((capability) => capability.permission === "EXECUTE");
+  assert.ok(execute.every((capability) => capability.domain === "youtube_writes"));
+  assert.deepEqual(
+    execute.flatMap((capability) => capability.mcpTools ?? []).sort(),
+    ["apply", "playlist_add_videos", "playlist_create", "playlist_remove_videos", "playlist_update"]
+  );
+  assert.ok(!result.capabilities.some((capability) => (capability.mcpTools ?? []).includes("playlist_delete")), "playlist_delete is owner-only");
 });
 
 // Independent test-suite audit (2026-09-26): the test above only checks the top-level
@@ -272,7 +286,7 @@ test("grantedPermissions is exactly READ+DRAFT -- never APPROVE or EXECUTE", asy
 // `permission: "APPROVE"`/`"EXECUTE"` would pass every existing test unnoticed, directly
 // undermining AGENTS.md §G's "AI-generated metadata must remain a draft" principle extended to
 // capability advertisement itself.
-test("AC-CAP-02 (structural invariant): every individual capability's own .permission is within grantedPermissions -- never APPROVE/EXECUTE per-capability either", async () => {
+test("AC-CAP-02 (structural invariant): every individual capability's own .permission is within grantedPermissions -- never APPROVE per-capability either", async () => {
   const { services } = createFixture();
   const result = await services.getSystemCapabilities({});
 

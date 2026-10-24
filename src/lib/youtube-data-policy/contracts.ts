@@ -230,6 +230,7 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
   factory_agent_tokens: notApiData("agent credentials (hashes)"),
   producer_agent_tokens: notApiData("agent credentials (hashes)"),
   producer_call_log: notApiData("which Producer tool was called for which channel, and when"),
+  worker_action_log: authorized("which of our own videos/playlists a channel agent wrote to, when, and the outcome (BL-215)"),
   agent_connections: notApiData("retired, inert"),
   agent_capability_zones: notApiData("retired, inert"),
   app_settings: notApiData("app toggles and status"),

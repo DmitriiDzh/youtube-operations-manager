@@ -8,7 +8,8 @@ import { createVideoMetadataCore } from "@/lib/video-metadata";
 import { calendarDateSchema, DomainError, isDomainError } from "@/lib/shared-domain";
 import type { VideoMetadataCore } from "@/lib/video-metadata";
 import { createCliAuthService, type CliAuthService } from "@/lib/cli-auth";
-import { recordGatewayCallOutcome } from "@/lib/db";
+import { insertWorkerActionLogEntry, listWorkerActionLogEntries, recordGatewayCallOutcome } from "@/lib/db";
+import { describeWorkerWrite, fromToolResult, serializeWorkerDetail } from "./worker-actions";
 import type { CredentialRef } from "@/lib/shared-domain";
 import { createPlaylistManagementCore, type PlaylistManagementCore } from "@/lib/playlist-management";
 import { OperationLockError } from "@/lib/operation-lock";
@@ -76,7 +77,7 @@ import { getChannelReachInputObjectSchema, getReachStatusInputSchema, getReporti
 import { createPublishingCalendarCore, type PublishingCalendarCore } from "@/lib/publishing";
 import { getAgentPublishingCalendarInputSchema } from "@/lib/publishing/schemas";
 import { createMarketAssignmentCore, type MarketAssignmentCore } from "@/lib/market-assignments";
-import { assertAgentSession, runInAgentSession } from "@/lib/agent-session";
+import { assertAgentSession, getAgentSession, runInAgentSession } from "@/lib/agent-session";
 import { MCP_TOOL_CLASSIFICATION } from "./tool-classification";
 import {
   PRODUCER_API_VERSION,
@@ -600,6 +601,9 @@ export const previewInputSchema = z
     editorialPrompt: z.string().min(1),
   })
   .strict();
+
+/** BL-215: `agent_list_worker_actions`. */
+const agentListWorkerActionsInputSchema = z.object({ limit: z.number().int().min(1).max(100).optional() }).strict();
 
 export const applyInputSchema = z
   .object({
@@ -2779,7 +2783,7 @@ export function createMcpServer(
     const registration = producerSession
       ? producerRegistration(producerSession, name, toolClass, config, handler)
       : agentSession && toolClass === "bound"
-        ? { config, handler: channelAgentHandler(agentSession, handler) }
+        ? { config, handler: channelAgentHandler(agentSession, name, handler) }
         : null;
     if (!registration) {
       return;
@@ -2788,7 +2792,8 @@ export function createMcpServer(
   }
 
   function channelAgentHandler(
-    session: { tokenId: string; reverify(): Promise<void> },
+    session: { tokenId: string; channelId: string; reverify(): Promise<void> },
+    name: string,
     handler: (args: never) => Promise<ToolResponse> | ToolResponse | ReturnType<typeof handlers.whoami>
   ) {
     // Counts real tool invocations for the Settings tab's traffic stats (owner instruction,
@@ -2807,7 +2812,31 @@ export function createMcpServer(
         return toolErrorResult(error);
       }
       await recordGatewayCallOutcome("mcp_tool_calls", "allowed");
-      return handler(args);
+      // BL-215 (ADR 0048, AC-WK-06/07): a call that would really write to YouTube leaves one worker-log row, refused or not. The
+      // row is written after the answer exists and never changes it -- the YouTube write may already have happened.
+      const write = describeWorkerWrite(name, args);
+      if (!write) return handler(args);
+      let result: ToolResponse;
+      try {
+        result = (await handler(args)) as ToolResponse;
+      } catch (error) {
+        result = toolErrorResult(error);
+      }
+      const answered = fromToolResult(name, result.structuredContent);
+      const detail = serializeWorkerDetail(answered.failedVideos === null ? write.detail : { ...write.detail, failedVideos: answered.failedVideos });
+      await insertWorkerActionLogEntry({
+        at: new Date(),
+        channelId: session.channelId,
+        tokenId: session.tokenId,
+        tool: name,
+        target: write.target ?? answered.target,
+        detail,
+        outcome: result.isError ? "error" : "ok",
+        errorCode: result.isError ? toolErrorCode(result) : null,
+      }).catch((error: unknown) => {
+        console.error(`[mcp] worker log row for ${name} not written: ${error instanceof Error ? error.message : String(error)}`);
+      });
+      return result;
     }) as typeof handler;
   }
 
@@ -3889,6 +3918,30 @@ export function createMcpServer(
       inputSchema: createExperimentProposalInputSchema,
     },
     (args) => handlers.createExperimentProposal(args)
+  );
+
+  registerTool(
+    "agent_list_worker_actions",
+    {
+      description:
+        "BL-215 (ADR 0048): this channel's worker log on this computer, newest first: { limit? (1-100, default 50) } -> { actions: [{ at, tool, target, detail, outcome: ok|error, errorCode }] }. One row per call of a tool that really writes to YouTube (apply with dryRun:false, playlist_create/_update/_add_videos/_remove_videos), refused calls included; kept 90 days. The owner sees the same list in Settings → Channels. Local read only; only the bound channel's rows.",
+      inputSchema: agentListWorkerActionsInputSchema,
+    },
+    async (args: z.infer<typeof agentListWorkerActionsInputSchema>) => {
+      const session = getAgentSession();
+      if (!session) return toolErrorResult(new DomainError({ code: "AGENT_SESSION_OPERATOR_ONLY", message: "only a channel agent has a worker log" }));
+      const rows = await listWorkerActionLogEntries(session.channelId, args.limit ?? 50);
+      return toolSuccessResult({
+        actions: rows.map((row) => ({
+          at: row.at.toISOString(),
+          tool: row.tool,
+          target: row.target,
+          detail: row.detail,
+          outcome: row.outcome,
+          errorCode: row.errorCode,
+        })),
+      });
+    }
   );
 
   return server;

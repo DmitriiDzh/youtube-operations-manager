@@ -22,22 +22,22 @@ export { DomainError, isDomainError };
  * Four-tier permission model (owner spec §5). READ/DRAFT/APPROVE/EXECUTE are deliberately
  * distinct -- creating a draft never implies approval, and no code path anywhere in this module
  * (or any module it wraps) may collapse that distinction. Codex's actual GRANTED set today is
- * `GRANTED_PERMISSIONS` below (READ + DRAFT only) -- a hardcoded constant, not something any
+ * `GRANTED_PERMISSIONS` below (READ, DRAFT and, since ADR 0048, EXECUTE) -- a hardcoded constant, not something any
  * request parameter can widen.
  */
 export const PERMISSION_CLASSES = ["READ", "DRAFT", "APPROVE", "EXECUTE"] as const;
 export type PermissionClass = (typeof PERMISSION_CLASSES)[number];
 
 /**
- * The permission set actually granted to an operational agent today. READ + DRAFT only --
- * APPROVE/EXECUTE are never granted merely because an agent authored a proposal (owner spec §5:
- * "Do not grant APPROVE or EXECUTE merely because the agent created the proposal"; §31: "It must
- * NOT initially: approve its own proposals... directly mutate YouTube"). Changing this requires
- * its own explicit, separate, future owner decision -- never inferred from a clean review cycle,
- * a completed slice, or this module's own judgment (mirrors the `autonomous-dev-loop` skill's own
- * "never relaxed by this skill" boundary list).
+ * The permission set actually granted to an operational agent today: READ + DRAFT, and since ADR 0048 EXECUTE for the real YouTube
+ * writes a channel agent already had on its own channel (ADR 0011, owner decision D4) -- now declared instead of hidden. APPROVE is
+ * never granted merely because an agent authored a proposal (owner spec §5): Change Sets, media sessions and collection requests stay
+ * the owner's to approve. Changing this requires its own explicit owner decision -- never inferred from a clean review cycle, a
+ * completed slice, or this module's own judgment.
  */
-export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT"] as const;
+// ADR 0048 (owner msg 3384, 2026-10-24): EXECUTE is granted -- a channel agent's real YouTube writes on its own channel (ADR 0011's
+// D4), declared in the `youtube_writes` domain, never `public`, always logged. APPROVE is still never granted.
+export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT", "EXECUTE"] as const;
 
 /**
  * Independently versioned from `package.json`'s product version -- the Agent API surface can
@@ -62,7 +62,11 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT"]
 // 3.20.0 (BL-209, AUTO_PRIVATE_UPLOAD_PLAN.md, ADR 0046): agent_get_publishing_calendar's uploads gain `automatic`,
 // `progressPercent` and `finishedAt`. Additive; bumped as the plan asks (the same as 3.17.0 / 3.19.0 did for field widenings) so the
 // Operator can tell a build that reports automatic uploads from one that does not.
-export const AGENT_API_VERSION = "3.20.0";
+// 4.0.0 (BL-215, WORKER_CAPABILITIES_PLAN.md, ADR 0048): BREAKING for channel agents -- playlist_delete is no longer registered in a
+// channel session (owner-only), and playlist_create / playlist_update refuse privacyStatus "public" (AGENT_PUBLIC_NOT_ALLOWED). The
+// capability list now names every channel tool: the new domain youtube_writes declares apply and the playlist writes as EXECUTE,
+// grantedPermissions gains EXECUTE, and agent_list_worker_actions (READ) reads the new worker log.
+export const AGENT_API_VERSION = "4.0.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry
@@ -90,6 +94,8 @@ export const AGENT_CAPABILITY_DOMAINS = [
   // Phase 14 slice 5 -- remote media generation sessions and jobs on RunPod/ComfyUI.
   "media_generation",
   "logical_paths",
+  // BL-215 (ADR 0048): a worker's real YouTube writes on its own channel (EXECUTE) and their log.
+  "youtube_writes",
 ] as const;
 export type AgentCapabilityDomain = (typeof AGENT_CAPABILITY_DOMAINS)[number];
 
@@ -129,6 +135,8 @@ export const AGENT_DATA_DOMAINS = [
   "media_generation_jobs",
   // Factory Operator access -- named local paths and their value on this device, never anything inside them.
   "logical_path_values",
+  // BL-215 -- the worker log: which of the channel's videos/playlists a channel agent wrote to, when, and the outcome.
+  "worker_actions",
 ] as const;
 export type AgentDataDomain = (typeof AGENT_DATA_DOMAINS)[number];
 

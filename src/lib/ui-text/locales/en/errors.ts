@@ -179,6 +179,7 @@ export const errors = {
   "errors.AGENT_TOKEN_IDENTITY_MISMATCH": "The channel's Google account no longer owns this channel. Reconnect the channel first.",
   "errors.AGENT_SESSION_CREDENTIAL_OVERRIDE": "An agent cannot use its own credentials.",
   "errors.AGENT_SESSION_OPERATOR_ONLY": "Only the operator can do this.",
+  "errors.AGENT_PUBLIC_NOT_ALLOWED": "A channel agent cannot make anything public. Only the owner can.",
   "errors.AGENT_TOKEN_IMPORT_MALFORMED": "This is not a token of this kind.",
   "errors.AGENT_TOKEN_IMPORT_LEGACY_FORMAT": "This token is in an old format. Issue a new one on the other computer and import that.",
   "errors.AGENT_TOKEN_CHANNEL_MISMATCH": "This token belongs to another channel.",

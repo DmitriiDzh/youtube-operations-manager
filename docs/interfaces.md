@@ -976,8 +976,20 @@ nothing. This replaces BL-091's per-capability zones, which are retired in
 - **What an agent session can reach.**
   - Only tools classified `bound` (`src/mcp/tool-classification.ts`, enforced by an inventory test).
   - Operator-only, and never available to an agent: `write_channel_select`, `write_channel_list`,
-    `auth_user_select`, and the global
+    `auth_user_select`, `playlist_delete` (since Agent API 4.0.0, ADR 0048), and the global
     operations-workspace tools (owner decision D2: channel folders only).
+  - **YouTube writes (ADR 0048, Agent API 4.0.0).** On the bound channel only, through the write-channel guardrail and Live
+    writes: `apply` (a real write only with `dryRun: false`), `playlist_create`, `playlist_update`, `playlist_add_videos`,
+    `playlist_remove_videos`. `agent_get_capabilities` lists them in the domain `youtube_writes` as `EXECUTE`
+    (`grantedPermissions` `READ`, `DRAFT`, `EXECUTE`; never `APPROVE`), and names every other channel tool too (a test ties the
+    list to the registry). `privacyStatus: "public"` on `playlist_create` / `playlist_update` is refused with
+    `AGENT_PUBLIC_NOT_ALLOWED` (403) before any YouTube call; the owner's Web UI still accepts it.
+  - **Worker log (BL-215, schema v107 `worker_action_log`, device-local, 90 days).** One row per call of those five tools that
+    would really write (refused ones included): `at`, channel, token id, tool, target (video/playlist id; a created playlist's
+    id from YouTube's answer), `detail` (JSON, at most 500 characters: changed fields, `privacyStatus`, `videoIds`,
+    `failedVideos`), `outcome` `ok`/`error`, `errorCode`. A failed row write never changes the tool's answer.
+    `agent_list_worker_actions { limit? 1-100, default 50 }` → `{ actions: [{ at, tool, target, detail, outcome, errorCode }] }`
+    (READ, bound channel only).
   - `list` / `transcript` / `preview` / `channel_sync` are confined to the bound channel.
   - Market tools return only records the operator assigned to that channel (below).
   - Channel-less hypotheses are invisible.
@@ -1311,6 +1323,8 @@ Both are operator-only and require a NextAuth session. The mutating methods are 
 `src/proxy.ts`.
 
 - `GET /api/agent-tokens` → `{ tokens: [{ tokenId, channelId, label, createdAt }] }` (metadata only).
+- `GET /api/channels/{channelId}/worker-actions` (BL-215, ADR 0048) → `{ actions: [{ at, tool, target, detail, outcome, errorCode }] }`:
+  that channel's worker log on this device, newest first, at most 100 rows (the Settings → Channels list «Записи воркера»). Read-only.
 - Logical paths and the Factory Operator token (BL-129, ADR 0022), all operator-only (session required, 401 otherwise):
   - `GET /api/logical-paths` → `{ paths: [{ name, audience, description, path | null, status: "exists" | "missing" | null, updatedAt | null }] }` (this device's value; `status` is a one-time check of the stored path).
   - `POST /api/logical-paths` with `{ name, audience: "all_agents" | "factory_only", description? }` → `201 { path: { name } }`; `LOGICAL_PATH_ALREADY_EXISTS` (409), invalid name `validation_failed` (400).

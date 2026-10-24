@@ -39,3 +39,20 @@ test("capability ids are unique", () => {
   const ids = listAgentCapabilityDescriptors().map((c) => c.id);
   assert.equal(new Set(ids).size, ids.length);
 });
+
+// BL-215 (ADR 0048, WORKER_CAPABILITIES_PLAN.md AC-WK-05): the first test above only covers agent_*/analytics_* names, and the
+// inventory missed 26 channel tools (among them every YouTube write), so workers believed their token could not write. Every tool a
+// channel session registers (classified `bound`) must be named by a capability, and nothing else may be named.
+test("AC-WK-05: the capability list names exactly the tools a channel session registers, and every capability names its tools", async () => {
+  const { MCP_TOOL_CLASSIFICATION } = await import("@/mcp/tool-classification");
+  const registered = await registeredToolNames();
+  const bound = registered.filter((name) => MCP_TOOL_CLASSIFICATION[name] === "bound").sort();
+  const visible = listAgentCapabilityDescriptors().filter((capability) => capability.domain !== "operations_workspace");
+
+  const unnamed = visible.filter((capability) => (capability.mcpTools ?? []).length === 0).map((capability) => capability.id);
+  assert.deepEqual(unnamed, [], `capabilities that name no tool: ${unnamed.join(", ")}`);
+
+  const named = [...new Set(visible.flatMap((capability) => capability.mcpTools ?? []))].sort();
+  assert.deepEqual(named, bound);
+  assert.ok(!named.includes("playlist_delete"), "playlist_delete is owner-only (ADR 0048 §3)");
+});
