@@ -10,7 +10,7 @@ export type PreviewDeps = {
   getSession: () => Promise<{ user?: { id?: string | null } } | null>;
   jobOutputs: (source: "runpod" | "gemini", jobId: string) => Promise<{ channelId: string; outputsJson: string | null } | null>;
   workspaceOf: (channelId: string) => Promise<string | null>;
-  /** Resolves the plain file name `fileName` inside the job's From YTM folder; throws when it is not there. */
+  /** Resolves `fileName` (relative to the job folder, "/"-separated) inside the job's From YTM folder; throws when it is not there. */
   resolveJobFile: (workspace: string, subdir: "media" | "gemini", jobFolder: string, fileName: string) => Promise<{ path: string }>;
   preview: (path: string) => Promise<Uint8Array | null>;
   readFile: (path: string) => Promise<Uint8Array>;

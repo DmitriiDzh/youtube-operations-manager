@@ -20,7 +20,7 @@ export const previewDeps: PreviewDeps = {
   },
   // Review (BL-219): the resolver takes the file's FULL path (it proves the real file stays inside the job folder), not a bare name.
   resolveJobFile: (workspace, subdir, jobFolder, fileName) =>
-    resolveFromYtmJobFile({ workspace, subdir, jobId: jobFolder, filePath: path.join(workspace, DATA_EXCHANGE_DIR_NAME, FROM_YTM_DIR_NAME, subdir, jobFolder, fileName), fs: createExchangeFs(), validateWorkspacePath: validateOperatorDirectoryPath, isPathInsideOrEqual, unavailable: (reason) => new Error(reason) }),
+    resolveFromYtmJobFile({ workspace, subdir, jobId: jobFolder, filePath: path.join(workspace, DATA_EXCHANGE_DIR_NAME, FROM_YTM_DIR_NAME, subdir, jobFolder, ...fileName.split("/")), fs: createExchangeFs(), validateWorkspacePath: validateOperatorDirectoryPath, isPathInsideOrEqual, unavailable: (reason) => new Error(reason) }),
   preview: (path) => createImagePreviewerForProduction().preview(path),
   readFile: async (path) => new Uint8Array(await readFile(path)),
 };

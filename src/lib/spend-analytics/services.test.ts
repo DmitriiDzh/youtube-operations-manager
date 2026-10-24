@@ -54,11 +54,11 @@ const FACTS: SpendFacts = {
     ["S3", { id: "S3", channelId: T, status: "done", requestedBy: "operator", gpuTypeId: "RTX 4090", secondsUsed: 240, usdCharged: 0.04, stopReason: null, error: null, createdAt: at("2026-10-22T10:00:00Z"), stoppedAt: null }],
   ]),
   jobs: new Map([
-    ["J1", { id: "J1", sessionId: "S1", createdBy: "factory", outputsJson: JSON.stringify([{ kind: "images", filename: "a.png" }, { kind: "gifs", filename: "b.mp4" }]), error: null }],
+    ["J1", { id: "J1", sessionId: "S1", createdBy: "factory", outputsJson: JSON.stringify([{ kind: "images", filename: "a.png", remoteKey: "exchange/J1/a.png", localPath: "/ws/a.png" }, { kind: "gifs", filename: "b.mp4", remoteKey: "exchange/J1/b.mp4", localPath: "/ws/b.mp4" }]), error: null }],
     ["J2", { id: "J2", sessionId: "S1", createdBy: "factory", outputsJson: null, error: "boom" }],
   ]),
   gemini: new Map([
-    ["G1", { jobId: "G1", createdBy: "factory", outputsJson: JSON.stringify([{ kind: "image", mimeType: "image/jpeg", path: "x.jpg" }]), errorCode: null }],
+    ["G1", { jobId: "G1", createdBy: "factory", outputsJson: JSON.stringify([{ kind: "image", mimeType: "image/jpeg", path: "gemini/G1/x.jpg", localPath: "/ws/x.jpg" }]), errorCode: null }],
     ["G2", { jobId: "G2", createdBy: "agent", outputsJson: null, errorCode: "gemini_payment_required" }],
     ["G3", { jobId: "G3", createdBy: "factory", outputsJson: null, errorCode: null }],
     ["G4", { jobId: "G4", createdBy: "factory", outputsJson: null, errorCode: null }],

@@ -46,9 +46,19 @@ test("AC-SA-06: an unknown value, time zone or extra key is refused with 400", a
 });
 
 test("AC-SA-09: only image outputs can be previewed, by plain file name", () => {
+  const pulled = "/ws/out";
   assert.deepEqual(
-    imageFiles(JSON.stringify([{ kind: "images", filename: "a.png" }, { kind: "gifs", filename: "b.mp4" }, { kind: "images", filename: "../x.png" }, { kind: "image", path: "gemini/gm_1/image-1.jpg", mimeType: "image/jpeg" }])),
-    ["a.png", "image-1.jpg"]
+    imageFiles(
+      JSON.stringify([
+        { kind: "images", filename: "a.png", remoteKey: "exchange/J1/a.png", localPath: pulled },
+        { kind: "images", filename: "b.mp4", remoteKey: "exchange/J1/b.mp4", localPath: pulled },
+        { kind: "images", filename: "c.png", remoteKey: "exchange/J1/sub/c.png", localPath: pulled },
+        { kind: "images", filename: "x.png", remoteKey: "exchange/J1/../x.png", localPath: pulled },
+        { kind: "images", filename: "never.png", remoteKey: "exchange/J1/never.png", localPath: null, note: "not pulled" },
+        { kind: "image", path: "gemini/gm_1/image-1.jpg", localPath: pulled, mimeType: "image/jpeg" },
+      ])
+    ),
+    ["a.png", "sub/c.png", "image-1.jpg"]
   );
   assert.deepEqual(imageFiles("not json"), []);
 });
@@ -57,7 +67,7 @@ test("AC-SA-09: a preview resolves inside the job's own folder, and a job or fil
   const resolved: string[] = [];
   const GET = createPreviewHandler({
     getSession: owner,
-    jobOutputs: async (source, jobId) => (jobId === "J1" ? { channelId: "UC_T", outputsJson: JSON.stringify([{ kind: "images", filename: "a.png" }]) } : null),
+    jobOutputs: async (source, jobId) => (jobId === "J1" ? { channelId: "UC_T", outputsJson: JSON.stringify([{ kind: "images", filename: "a.png", remoteKey: "exchange/J1/a.png", localPath: "/ws/a.png" }]) } : null),
     workspaceOf: async () => "/ws",
     resolveJobFile: async (workspace, subdir, folder, file) => (resolved.push(`${workspace}|${subdir}|${folder}|${file}`), { path: "/ws/a.png" }),
     preview: async () => new Uint8Array([1, 2, 3]),
@@ -83,9 +93,12 @@ test("AC-SA-09 (real folder): the preview's resolver finds the file in the job f
     const job = path.join(workspace, "99 Data Exchange", "From YTM", "media", "J1");
     await mkdir(job, { recursive: true });
     await writeFile(path.join(job, "a.png"), "png");
+    await mkdir(path.join(job, "sub"));
+    await writeFile(path.join(job, "sub", "c.png"), "png");
     await writeFile(path.join(workspace, "99 Data Exchange", "From YTM", "media", "outside.png"), "png");
     const found = await previewDeps.resolveJobFile(workspace, "media", "J1", "a.png");
     assert.ok(found.path.endsWith(path.join("J1", "a.png")));
+    assert.ok((await previewDeps.resolveJobFile(workspace, "media", "J1", "sub/c.png")).path.endsWith(path.join("J1", "sub", "c.png")));
     await assert.rejects(previewDeps.resolveJobFile(workspace, "media", "J1", "../outside.png"));
     await assert.rejects(previewDeps.resolveJobFile(workspace, "media", "J1", "missing.png"));
   } finally {

@@ -214,17 +214,30 @@ export function buildSummary(inputs: SpendInputs, filter: SpendFilter, now: Date
 }
 
 /**
- * The image outputs of a job, in order, as plain file names inside the job folder -- the one rule for the history's preview count and
- * the preview route's index (an .mp4 that ComfyUI lists under `images` is not an image; a name with a folder is not served).
+ * The image outputs of a job that are on this computer, in order, as paths RELATIVE TO THE JOB FOLDER ("a.png", or "sub/a.png" when a
+ * Save node nested a subfolder: the puller keeps the remote key's path below `exchange/<jobId>/`) -- the one rule for the history's
+ * preview count and the preview route's index. An .mp4 that ComfyUI lists under `images` is not an image; an output never pulled
+ * (no `localPath`) has no file; a path with an empty, `.` or `..` segment is never served.
  */
 export function imageFileNames(outputsJson: string | null): string[] {
   try {
-    const outputs = JSON.parse(outputsJson ?? "[]") as Array<{ kind?: unknown; filename?: unknown; path?: unknown; mimeType?: unknown }>;
+    const outputs = JSON.parse(outputsJson ?? "[]") as Array<{ kind?: unknown; filename?: unknown; path?: unknown; remoteKey?: unknown; localPath?: unknown; mimeType?: unknown }>;
     if (!Array.isArray(outputs)) return [];
-    return outputs
-      .filter((o) => o.kind === "images" || o.kind === "image" || (typeof o.mimeType === "string" && o.mimeType.startsWith("image/")))
-      .map((o) => (typeof o.filename === "string" ? o.filename : typeof o.path === "string" ? (o.path.split("/").pop() ?? "") : ""))
-      .filter((name) => /^[^/\\]+\.(png|jpe?g|webp)$/i.test(name));
+    const names: string[] = [];
+    for (const o of outputs) {
+      if (!(o.kind === "images" || o.kind === "image" || (typeof o.mimeType === "string" && o.mimeType.startsWith("image/")))) continue;
+      if (typeof o.localPath !== "string" || o.localPath.length === 0) continue;
+      let relative: string | null = null;
+      if (typeof o.remoteKey === "string") relative = o.remoteKey.split("/").slice(2).join("/"); // exchange/<jobId>/<...>
+      else if (typeof o.path === "string") relative = o.path.split("/").slice(2).join("/"); // gemini/<jobId>/<...>
+      else if (typeof o.filename === "string") relative = o.filename;
+      if (!relative) continue;
+      const segments = relative.split("/");
+      if (segments.some((part) => part === "" || part === "." || part === ".." || part.includes("\\"))) continue;
+      if (!/\.(png|jpe?g|webp)$/i.test(relative)) continue;
+      names.push(relative);
+    }
+    return names;
   } catch {
     return [];
   }
