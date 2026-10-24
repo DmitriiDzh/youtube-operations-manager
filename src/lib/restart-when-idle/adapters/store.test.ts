@@ -35,7 +35,8 @@ test("AC-RI-01 (real database): the table readers name exactly the busy rows of 
     await session("s-running", "running");
     await session("s-done", "done");
     await session("s-interrupted", "interrupted");
-    assert.deepEqual((await readers.mediaSessions()).sort(), ["s-pending", "s-running"]);
+    // A session still waiting for the owner's approval runs nothing here and survives a restart (plan AC-RI-01, refined).
+    assert.deepEqual((await readers.mediaSessions()).sort(), ["s-running"]);
 
     const job = (id: string, status: string) =>
       client.execute({ sql: "INSERT INTO media_jobs (id, session_id, channel_id, template_id, template_version, params_json, status, created_by) VALUES (?, 's', 'UC', 't', 1, '{}', ?, 'factory')", args: [id, status] });

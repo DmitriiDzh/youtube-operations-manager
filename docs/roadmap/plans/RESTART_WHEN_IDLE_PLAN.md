@@ -30,7 +30,8 @@
 ## Acceptance criteria (written before the code)
 
 - **AC-RI-01** With any one of the following on this computer, a request does not restart, and `waitingFor` names it:
-  - a media session that is not finished;
+  - a media session that is not finished -- except one still waiting for the owner's approval (`pending`): it runs nothing on
+    the server and survives a restart, and holding on it could block every restart until the request's 24 h end;
   - a media job queued, submitted, generating or transferring;
   - a Gemini job queued, submitting or running;
   - an upload in progress;
@@ -43,7 +44,9 @@
 - **AC-RI-03** A hold of N minutes keeps the restart waiting until `until` or its release. An expired hold is ignored. Minutes must
   be 1–60 and a reason is required; anything else is `validation_failed`.
 - **AC-RI-04** A worker can release only its own hold (`not_found` otherwise); the Operator only its own; the owner any.
-- **AC-RI-05** The owner can cancel an open request. A request open for 24 h becomes `expired` and does not restart.
+- **AC-RI-05** The owner can cancel an open request. A request open for 24 h becomes `expired` and does not restart. A request
+  left `restarting` for 5 minutes while the server still answers (the stop did not happen) can be cancelled too, and a new
+  request then sends the stop again.
 - **AC-RI-06** On boot, a `restarting` request becomes `done` with the running version and schema, shown as `lastRestart`.
 - **AC-RI-07** Outside the system service, a request is refused (`restart_needs_service`) and nothing is stopped.
 - **AC-RI-08** The quiet-minutes setting accepts 1–30 (default 3) and applies to the next check.

@@ -289,6 +289,7 @@ export const settingsCards = {
   "settingsCards.restartIdle.waitingTitle": "Waiting for:",
   "settingsCards.restartIdle.nothingWaiting": "Nothing is waiting -- it restarts at the next check.",
   "settingsCards.restartIdle.restarting": "Restarting now -- the page comes back when the new build has started.",
+  "settingsCards.restartIdle.stuck": "The stop was sent over 5 minutes ago and the server is still running: the restart did not happen. Cancel it and try again.",
   "settingsCards.restartIdle.unreachable": "The server is not answering -- it is probably restarting.",
   "settingsCards.restartIdle.cancel": "Cancel the request",
   "settingsCards.restartIdle.until": "until {time}",

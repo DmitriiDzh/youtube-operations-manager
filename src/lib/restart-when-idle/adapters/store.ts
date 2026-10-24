@@ -1,5 +1,7 @@
 import type { Client } from "@libsql/client";
 import { MEDIA_SESSION_NON_TERMINAL_STATUSES } from "@/lib/media-generation/contracts";
+
+const SESSIONS_HOLDING = MEDIA_SESSION_NON_TERMINAL_STATUSES.filter((status) => status !== "pending");
 import { GEMINI_ACTIVE_STATUSES } from "@/lib/gemini-media/contracts";
 import type { RestartHoldOwner, RestartHoldRow, RestartRequestRow, RestartRequestStatus, RestartStore } from "../contracts";
 
@@ -115,7 +117,9 @@ export function createTableReaders(client: Client) {
   };
   const marks = (values: readonly string[]) => values.map(() => "?").join(", ");
   return {
-    mediaSessions: () => ids(`SELECT id FROM media_sessions WHERE status IN (${marks(MEDIA_SESSION_NON_TERMINAL_STATUSES)}) ORDER BY created_at`, MEDIA_SESSION_NON_TERMINAL_STATUSES),
+    // A session still waiting for the owner's approval (`pending`) runs nothing on this server and survives a restart, so it does not
+    // hold one (otherwise an unanswered request would hold every restart for up to 24 h); every later non-terminal state does.
+    mediaSessions: () => ids(`SELECT id FROM media_sessions WHERE status IN (${marks(SESSIONS_HOLDING)}) ORDER BY created_at`, SESSIONS_HOLDING),
     mediaJobs: () => ids(`SELECT id FROM media_jobs WHERE status IN (${marks(MEDIA_JOB_BUSY_STATUSES)}) ORDER BY created_at`, MEDIA_JOB_BUSY_STATUSES),
     geminiJobs: () => ids(`SELECT job_id AS id FROM gemini_media_jobs WHERE status IN (${marks(GEMINI_ACTIVE_STATUSES)}) ORDER BY created_at`, GEMINI_ACTIVE_STATUSES),
     uploads: () => ids(`SELECT id FROM publishing_uploads WHERE status IN (${marks(UPLOAD_BUSY_STATUSES)}) ORDER BY created_at`, UPLOAD_BUSY_STATUSES),

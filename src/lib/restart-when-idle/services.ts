@@ -27,6 +27,9 @@ const MAX_IDS = 5;
 
 const iso = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString());
 
+/** A `restarting` request this old whose process still answers did not restart; the owner may cancel it. */
+export const RESTART_STUCK_MS = 5 * 60_000;
+
 export function requestView(row: RestartRequestRow): RestartRequestView {
   return {
     id: row.id,
@@ -254,15 +257,21 @@ export function createRestartWhenIdle(deps: RestartWhenIdleDependencies) {
       return createRequest(by, deps.clock());
     },
 
-    /** The owner cancels the open request (AC-RI-05); `not_found` when there is none. */
+    /**
+     * The owner cancels the open request (AC-RI-05); `not_found` when there is none. Also a request stuck in `restarting`: the stop
+     * was sent at least {@link RESTART_STUCK_MS} ago and this process is still answering, so the restart did not happen (a stop can
+     * hang, e.g. on a connection the browser keeps open) -- cancelling it lets a new request be made.
+     */
     async cancel(): Promise<{ request: RestartRequestView }> {
       const now = deps.clock();
       const open = await expireDue(now);
-      const row = open[0];
-      if (!row || !(await deps.store.updateRequest(row.id, "open", { status: "cancelled", finishedAt: now }))) {
+      const stuck = open.length === 0 ? (await deps.store.listRequests(["restarting"])).find((r) => r.restartingAt !== null && now - r.restartingAt >= RESTART_STUCK_MS) : undefined;
+      const row = open[0] ?? stuck;
+      if (!row || !(await deps.store.updateRequest(row.id, row.status, { status: "cancelled", finishedAt: now }))) {
         throw new DomainError({ code: "not_found", message: "No restart request is open" });
       }
-      deps.log("restart_when_idle.cancelled", { requestId: row.id });
+      if (row === stuck) stopSent = false; // this process did not stop: a later request may send the stop again
+      deps.log("restart_when_idle.cancelled", { requestId: row.id, stuck: row === stuck });
       return { request: requestView({ ...row, status: "cancelled", finishedAt: now }) };
     },
 

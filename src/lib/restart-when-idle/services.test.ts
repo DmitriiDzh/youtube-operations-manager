@@ -382,3 +382,18 @@ test("AC-RI-09 (boot): a request file written before this start is satisfied by 
   await f.service.tick();
   assert.equal(f.state.stops, 0);
 });
+
+test("AC-RI-05: a restart whose stop did not happen (still answering 5 minutes later) can be cancelled, and a new request stops again", async () => {
+  const f = fixture();
+  await f.service.request("owner");
+  await f.service.tick();
+  assert.equal(f.state.stops, 1);
+  // Right after the stop there is nothing to cancel yet.
+  await rejects(f.service.cancel(), "not_found");
+  f.state.now = T0 + 5 * MIN;
+  const cancelled = await f.service.cancel();
+  assert.equal(cancelled.request.status, "cancelled");
+  await f.service.request("owner");
+  await f.service.tick();
+  assert.equal(f.state.stops, 2);
+});

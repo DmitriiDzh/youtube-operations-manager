@@ -290,6 +290,7 @@ export const settingsCards: Record<keyof typeof en, string> = {
   "settingsCards.restartIdle.waitingTitle": "Ждёт:",
   "settingsCards.restartIdle.nothingWaiting": "Ничто не мешает -- перезапуск при следующей проверке.",
   "settingsCards.restartIdle.restarting": "Перезапускается -- страница вернётся, когда запустится новая сборка.",
+  "settingsCards.restartIdle.stuck": "Сигнал остановки отправлен больше 5 минут назад, а сервер всё ещё работает: перезапуск не произошёл. Отмените и попробуйте снова.",
   "settingsCards.restartIdle.unreachable": "Сервер не отвечает -- вероятно, перезапускается.",
   "settingsCards.restartIdle.cancel": "Отменить запрос",
   "settingsCards.restartIdle.until": "до {time}",

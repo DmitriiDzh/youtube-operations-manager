@@ -13,7 +13,7 @@ import { useT } from "./ui-text-provider";
 // holds (who / why / until, each with «Снять»), the MCP quiet minutes and the last restart. Every text is a ui-text key.
 
 type Reason = { kind: string; count: number; ids: string[]; until: string | null };
-type RequestView = { id: string; status: "open" | "restarting" | "done" | "cancelled" | "expired"; requestedBy: "owner" | "developer"; requestedAt: string; finishedAt: string | null; waitedMinutes: number | null; fromVersion: string | null; toVersion: string | null };
+type RequestView = { id: string; status: "open" | "restarting" | "done" | "cancelled" | "expired"; requestedBy: "owner" | "developer"; requestedAt: string; restartingAt: string | null; finishedAt: string | null; waitedMinutes: number | null; fromVersion: string | null; toVersion: string | null };
 type HoldView = { holdId: string; heldBy: string; reason: string; until: string; active: boolean };
 type Status = { request: RequestView | null; waitingFor: Reason[]; holds: HoldView[]; lastRestart: RequestView | null; quietMinutes: number; serviceMode: boolean };
 
@@ -132,6 +132,8 @@ export function RestartWhenIdleSettings() {
   const request = status.request;
   const last = status.lastRestart;
 
+  // The stop was sent 5+ minutes ago and the server still answers: the restart did not happen; the owner may cancel it.
+  const stuck = request?.status === "restarting" && request.restartingAt !== null && Date.now() - Date.parse(request.restartingAt) >= 5 * 60_000;
   return (
     <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
       <h3 className="flex items-center gap-1.5 text-base font-medium text-zinc-100">
@@ -158,7 +160,9 @@ export function RestartWhenIdleSettings() {
         <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950 p-3 text-sm">
           <p className="text-zinc-200">{t("settingsCards.restartIdle.requested", { time: formatDisplayDateTime(request.requestedAt), who: who(request.requestedBy) })}</p>
           {request.status === "restarting" ? (
-            <p className="text-amber-300">{t("settingsCards.restartIdle.restarting")}</p>
+            <p className="text-amber-300">
+              {stuck ? t("settingsCards.restartIdle.stuck") : t("settingsCards.restartIdle.restarting")}
+            </p>
           ) : status.waitingFor.length === 0 ? (
             <p className="text-emerald-400">{t("settingsCards.restartIdle.nothingWaiting")}</p>
           ) : (
@@ -174,7 +178,7 @@ export function RestartWhenIdleSettings() {
               </ul>
             </div>
           )}
-          {request.status === "open" && (
+          {(request.status === "open" || stuck) && (
             <button
               onClick={() => void act("/api/restart-when-idle", { method: "DELETE" })}
               disabled={busy}
