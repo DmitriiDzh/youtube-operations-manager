@@ -40,7 +40,7 @@ export const shell = {
   "tabs.content.videos": "Videos",
   "tabs.content.streams": "Live streams",
   "tabs.content.calendar": "Calendar",
-  "tabs.content.publishing": "Publishing",
+  "tabs.content.publishing": "Videos & releases",
   "tabs.settings.about": "About",
 
   "shell.productName": "Operations Manager",

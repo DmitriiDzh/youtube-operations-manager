@@ -54,7 +54,13 @@ export default function ContentLayout({ children }: { children: ReactNode }) {
                 <VideoProjectsPanel channelId={channel?.id ?? null} visible={tab === "publishing"} />
               </FeatureErrorBoundary>
               <PublishingPackages channelId={channel?.id ?? null} visible={tab === "publishing"} />
-              <PublishingSettingsPanel channelId={channel?.id ?? null} visible={tab === "publishing"} />
+              {/* BL-221: the channel's publishing defaults are set rarely -- folded under the board and the packages. */}
+              <details className="group rounded-xl border border-zinc-800 bg-zinc-900">
+                <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-zinc-200 hover:text-white">{t("publishingSettings.collapsedTitle")}</summary>
+                <div className="border-t border-zinc-800 p-2">
+                  <PublishingSettingsPanel channelId={channel?.id ?? null} visible={tab === "publishing"} />
+                </div>
+              </details>
             </div>
           </FeatureErrorBoundary>
         </div>

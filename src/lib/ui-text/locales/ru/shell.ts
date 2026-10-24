@@ -40,7 +40,7 @@ export const shell: Record<keyof typeof en, string> = {
   "tabs.content.videos": "Видео",
   "tabs.content.streams": "Трансляции",
   "tabs.content.calendar": "Календарь",
-  "tabs.content.publishing": "Публикация",
+  "tabs.content.publishing": "Ролики и релизы",
   "tabs.settings.about": "О программе",
 
   "shell.productName": "Operations Manager",
