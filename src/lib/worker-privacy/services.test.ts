@@ -16,7 +16,12 @@ function fixture(overrides: Partial<WorkerPrivacyDeps> = {}) {
     assertMayNotPublish: (status) => {
       if (status === "public") throw new DomainError({ code: "AGENT_PUBLIC_NOT_ALLOWED", message: "no" });
     },
-    findChannelVideo: async (channelId, videoId) => (channelId === CHANNEL && ["rec1", "sched", "live1"].includes(videoId) ? {} : null),
+    findChannelVideo: async (channelId, videoId) => {
+      if (channelId !== CHANNEL) return null;
+      if (videoId === "peerLive") return { liveBroadcastContent: "live" };
+      if (videoId === "upcoming1") return { liveBroadcastContent: "upcoming" };
+      return ["rec1", "sched", "live1"].includes(videoId) ? { liveBroadcastContent: "none" } : null;
+    },
     currentBroadcastIds: async () => new Set(["live1"]),
     readVideo: async (videoId) =>
       videoId === "sched" ? { privacyStatus: "private", publishAt: "2026-11-01T10:00:00Z", etag: "e" } : { privacyStatus: "public", publishAt: null, etag: "etag-1" },
@@ -65,6 +70,9 @@ test("AC-WP-03: a scheduled video is refused, nothing written", async () => {
 test("AC-WP-04: the channel's current live broadcast is refused; a finished recording is allowed", async () => {
   const { services, writes } = fixture();
   await assert.rejects(services.setPrivacy({ target: "video", id: "live1", privacyStatus: "private", dryRun: false }), code("AGENT_LIVE_BROADCAST_OWNER_ONLY"));
+  // A stream run by another computer (only the synced list knows it is live), and an upcoming broadcast.
+  await assert.rejects(services.setPrivacy({ target: "video", id: "peerLive", privacyStatus: "private", dryRun: false }), code("AGENT_LIVE_BROADCAST_OWNER_ONLY"));
+  await assert.rejects(services.setPrivacy({ target: "video", id: "upcoming1", privacyStatus: "private", dryRun: false }), code("AGENT_LIVE_BROADCAST_OWNER_ONLY"));
   const result = await services.setPrivacy({ target: "video", id: "rec1", privacyStatus: "private", dryRun: false });
   assert.equal(result.changed, true);
   assert.deepEqual(writes, ["video:rec1:private:etag-1"]);

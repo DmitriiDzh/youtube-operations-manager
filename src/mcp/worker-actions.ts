@@ -66,7 +66,7 @@ export const WORKER_YOUTUBE_WRITE_TOOLS: readonly string[] = Object.freeze(Objec
 function describeLocalWrite(args: ToolArgs): WorkerWriteDescription {
   const plan = args?.plan as Record<string, unknown> | undefined;
   return {
-    target: text(args?.planId) ?? text(plan?.planId) ?? text(args?.storyboardId) ?? null,
+    target: text(args?.planId) ?? text(plan?.planId) ?? text(args?.storyboardId) ?? text(args?.sessionId) ?? text(args?.jobId) ?? null,
     detail: detail({ fields: Object.keys(args ?? {}).filter((field) => field !== "channelId").sort() }),
   };
 }
@@ -74,6 +74,8 @@ function describeLocalWrite(args: ToolArgs): WorkerWriteDescription {
 /** What a worker call of `tool` would write, or `null` when it would not write (a read, or `apply` as a preview). */
 export function describeWorkerWrite(tool: string, args: unknown): WorkerWriteDescription | null {
   const fields = typeof args === "object" && args !== null ? (args as Record<string, unknown>) : undefined;
+  // A Gemini dry run spends nothing and writes nothing.
+  if (tool === "agent_gemini_create_job" && fields?.dryRun === true) return null;
   if (WORKER_FACTORY_WRITE_TOOL_NAMES.includes(tool)) return describeLocalWrite(fields);
   const describe = DESCRIBE[tool];
   if (!describe) return null;
@@ -98,7 +100,11 @@ export function fromToolResult(
         ? text(playlist?.id)
         : tool === "agent_video_create"
           ? text((result.video as { video?: unknown } | undefined)?.video)
-          : tool === "agent_plan_create" || tool === "agent_storyboard_create"
+          : tool === "agent_factory_start_session"
+            ? text((result.session as { id?: unknown } | undefined)?.id)
+            : tool === "agent_gemini_create_job" || tool === "agent_factory_create_job"
+              ? text((result.job as { jobId?: unknown; id?: unknown } | undefined)?.jobId) ?? text((result.job as { id?: unknown } | undefined)?.id)
+              : tool === "agent_plan_create" || tool === "agent_storyboard_create"
             ? text((result.plan as { planId?: unknown } | undefined)?.planId) ?? text((result.storyboard as { storyboardId?: unknown } | undefined)?.storyboardId)
             : null,
     failedVideos: (tool === "playlist_add_videos" || tool === "playlist_remove_videos") && Array.isArray(failures) ? failures.length : null,

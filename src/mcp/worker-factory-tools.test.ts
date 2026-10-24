@@ -31,7 +31,17 @@ function fakeDeps() {
       rerun: note("plans.rerun"), cloneGroup: note("plans.cloneGroup"), move: note("plans.move"), requestRecheck: note("plans.requestRecheck"),
       withdrawRecheck: note("plans.withdrawRecheck"),
     },
-    gemini: { getStatus: note("gemini.getStatus"), createJob: note("gemini.createJob"), getJobs: note("gemini.getJobs") },
+    gemini: {
+      getStatus: note("gemini.getStatus"),
+      createJob: note("gemini.createJob"),
+      // Like the real module: a jobId is looked up by id alone, whatever channelId says.
+      getJobs: async (input: unknown) => {
+        const jobId = (input as { jobId?: string }).jobId;
+        if (jobId === "G-J") return { job: { jobId, channelId: JAPAN } };
+        if (jobId === "G-T") return { job: { jobId, channelId: TROPICO } };
+        return note("gemini.getJobs")(input);
+      },
+    },
     live: { getStatus: note("live.getStatus"), mapSources: note("live.mapSources"), setLocalizations: note("live.setLocalizations") },
     channelLocalizations: { get: note("cl.get"), save: note("cl.save") },
     storyboards: {
@@ -118,7 +128,7 @@ test("AC-WF-04: shared deps are refused: models, templates, runtimes, GPU data, 
   assert.deepEqual(calls, []);
 });
 
-test("AC-WF-05: the worker gets exactly the listed tools, renamed, and none of the shared or paid ones", () => {
+test("AC-WF-05/06: the worker gets exactly the listed tools, renamed, and none of the shared ones", () => {
   const { deps } = fakeDeps();
   const names = workerFactoryTools(() => deps, TROPICO, async () => undefined).map((tool) => tool.name).sort();
   assert.deepEqual(names, [...WORKER_FACTORY_TOOL_NAMES].sort());
@@ -191,4 +201,11 @@ test("AC-WF-06: a worker starts, uses and stops only its own channel's sessions 
   await pinned.plans.runStage({ planId: "P-T", sessionId: "S-T" });
   await pinned.gemini.createJob({ channelId: TROPICO });
   assert.ok(calls.some((call) => call.startsWith("plans.runStage")) && calls.some((call) => call.startsWith("gemini.createJob")));
+});
+
+test("review (HIGH): a Gemini job of another channel, asked for by id, is not found", async () => {
+  const { deps } = fakeDeps();
+  const pinned = pinFactoryDepsToChannel(() => deps, TROPICO, async () => undefined);
+  await assert.rejects(pinned.gemini.getJobs({ jobId: "G-J" }), code("gemini_job_not_found"));
+  assert.deepEqual(await pinned.gemini.getJobs({ jobId: "G-T" }), { job: { jobId: "G-T", channelId: TROPICO } });
 });

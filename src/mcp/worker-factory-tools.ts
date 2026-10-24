@@ -240,7 +240,20 @@ export function pinFactoryDepsToChannel(
     gemini: {
       getStatus: () => deps().gemini.getStatus(),
       createJob: byChannel((input) => deps().gemini.createJob(input)),
-      getJobs: byChannel((input) => deps().gemini.getJobs(input), true),
+      // Review (HIGH): the Gemini module ignores channelId when a jobId is given -- the job's own channel is checked here.
+      getJobs: async (input) => {
+        const pinned = pinChannel(input, channelId, true);
+        if (typeof pinned.jobId !== "string") return deps().gemini.getJobs(pinned);
+        const notFound = new DomainError({ code: "gemini_job_not_found", message: `No Gemini job ${pinned.jobId} on this computer.`, details: { jobId: pinned.jobId } });
+        let answer: Record<string, unknown>;
+        try {
+          answer = await deps().gemini.getJobs(pinned);
+        } catch {
+          throw notFound;
+        }
+        if (record(answer.job).channelId !== channelId) throw notFound;
+        return answer;
+      },
     },
     live: {
       getStatus: async (input) => deps().live.getStatus({ ...record(input), channelId: pinChannel(input, channelId, true).channelId as string }),

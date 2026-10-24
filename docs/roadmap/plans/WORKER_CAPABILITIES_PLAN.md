@@ -81,7 +81,8 @@ the Tropico token is refused").
 - **AC-WF-03** Where the Operator's tool lets the channel be left out (live status, jobs list, Gemini jobs, plan list), the token's
   channel is put in -- a worker never sees another channel's rows.
 - **AC-WF-04** Shared and paid things stay unreachable: models, templates, runtimes, GPU data and settings, sessions, the channel
-  list, logical paths, `run_stage`/`rerun`/`move`, Gemini status and job creation -- and the channel's own translations (ADR 0047:
+  list, logical paths, `run_stage`/`rerun`/`move`, Gemini status and job creation (sessions, jobs, `run_stage`/`rerun` and Gemini
+  were opened by stage 4, AC-WF-06; the rest stays) -- and the channel's own translations (ADR 0047:
   only the owner and the Factory Operator save them; changing that is the owner's separate decision).
 - **AC-WF-05** Exactly 26 tools, named `agent_*`, with the same input/output contracts as their `factory_*` originals (built by the
   factory server itself, not copied). Each write is a worker-log row.
@@ -106,3 +107,7 @@ Owner msg 3402 (to «сам или одобряю»): «может, как оп�
 - **AC-WF-08** Nothing in `src/mcp` reaches the media core's session start/stop: the wiring lives in
   `src/app/api/mcp/factory-media-deps.ts` and the channel agents' route injects it (`session-approval-inventory.test.ts` unchanged).
   Without it the tools refuse.
+- Known limit: `agent_factory_get_session` without an id lists this channel's sessions among the newest 20 factory sessions of the
+  computer; a busy Operator can push older ones out of that list (ask by id then). It shows no other channel's sessions.
+- AC-WP-04 (refined by review): besides this computer's current broadcast, a video the synced list marks `live` or `upcoming` is
+  refused too, so a stream another computer runs is covered.

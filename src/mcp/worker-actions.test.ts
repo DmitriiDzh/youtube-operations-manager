@@ -51,3 +51,11 @@ test("BL-216: agent_set_privacy writes only with dryRun false, and the answer gi
     changed: true,
   });
 });
+
+test("BL-218: paid calls name their session or job; a Gemini dry run is not a write", () => {
+  assert.equal(describeWorkerWrite("agent_gemini_create_job", { channelId: "UC", dryRun: true }), null);
+  assert.equal(describeWorkerWrite("agent_factory_stop_session", { sessionId: "S1" })?.target, "S1");
+  assert.equal(describeWorkerWrite("agent_factory_cancel_job", { jobId: "J1" })?.target, "J1");
+  assert.equal(fromToolResult("agent_factory_start_session", { session: { id: "S2" } }).target, "S2");
+  assert.equal(fromToolResult("agent_gemini_create_job", { job: { jobId: "G1" } }).target, "G1");
+});

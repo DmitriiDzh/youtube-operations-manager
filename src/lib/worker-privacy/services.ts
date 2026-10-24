@@ -71,8 +71,12 @@ export function createWorkerPrivacyServices(deps: WorkerPrivacyDeps) {
         return { ...base, previousPrivacyStatus: playlist.privacyStatus, changed: true };
       }
 
-      if (!(await deps.findChannelVideo(deps.channelId, parsed.id))) throw notFound("video", parsed.id);
-      if ((await deps.currentBroadcastIds(deps.channelId)).has(parsed.id)) {
+      const stored = await deps.findChannelVideo(deps.channelId, parsed.id);
+      if (!stored) throw notFound("video", parsed.id);
+      // Review (HIGH-adjacent): this computer knows its own current broadcast; a stream run by another computer is known only from the
+      // synced list's liveBroadcastContent -- a live or upcoming broadcast stays the owner's either way.
+      const broadcastState = (stored as { liveBroadcastContent?: unknown }).liveBroadcastContent;
+      if ((await deps.currentBroadcastIds(deps.channelId)).has(parsed.id) || broadcastState === "live" || broadcastState === "upcoming") {
         throw new DomainError({
           code: "AGENT_LIVE_BROADCAST_OWNER_ONLY",
           message: "This is the channel's current live broadcast; only the owner changes its privacy.",
