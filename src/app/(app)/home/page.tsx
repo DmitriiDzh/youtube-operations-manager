@@ -3,6 +3,8 @@
 import { useRouter } from "next/navigation";
 import { useAppChannel } from "@/components/app-channel";
 import { HomeDashboardPanel } from "@/components/home-dashboard-panel";
+import { ChannelBrandingPanel } from "@/components/channel-branding-panel";
+import { ChannelLocalizationsPanel } from "@/components/channel-localizations-panel";
 import { EditorialProfilePanel } from "@/components/editorial-profile-panel";
 import { FeatureErrorBoundary } from "@/components/feature-error-boundary";
 import { useT } from "@/components/ui-text-provider";
@@ -26,6 +28,17 @@ export default function HomePage() {
           <FeatureErrorBoundary label={`${t("nav.home")} — ${t("page.home.dashboard")}`}>
             <HomeDashboardPanel subscriberCount={channel?.subscriberCount} onViewAllContent={() => router.push("/content")} />
           </FeatureErrorBoundary>
+          {/* BL-223 (CHANNEL_BRANDING_PLAN.md §6, owner msgs 3488/3489): the channel's branding, and its translations below it. */}
+          {channel?.id && (
+            <div className="max-w-3xl space-y-6">
+              <FeatureErrorBoundary label={`${t("nav.home")} — ${t("channelBranding.title")}`}>
+                <ChannelBrandingPanel channelId={channel.id} />
+              </FeatureErrorBoundary>
+              <FeatureErrorBoundary label={`${t("nav.home")} — ${t("channelTranslations.title")}`}>
+                <ChannelLocalizationsPanel channelId={channel.id} />
+              </FeatureErrorBoundary>
+            </div>
+          )}
           <div className="max-w-3xl">
             <FeatureErrorBoundary label={`${t("nav.home")} — ${t("conflicts.subject.editorialProfile")}`}>
               <EditorialProfilePanel />

@@ -4692,7 +4692,7 @@ Owner msgs 3343/3345/3347/3350; plan `docs/roadmap/plans/CHANNEL_LOCALIZATIONS_P
   `factory_channel_get_localizations` (codes only). `no-agent-apply.test.ts` scans every MCP and agent path for the apply and the
   gateway write.
 - **Gateways.** Read: `getChannelLocalizationsContext` (`part=snippet,brandingSettings,localizations`, by id). Write:
-  `updateChannelLocalizations` (one part); no `brandingSettings` primitive exists. The quota ledger logs both through the wrapped
+  `updateChannelLocalizations` (one part); the `brandingSettings` primitives are BL-223's own. The quota ledger logs both through the wrapped
   client (`channels.update` 50, `channels.list` 1).
 - **Web UI.** «Переводы канала» (`src/components/channel-localizations-panel.tsx`) in the Languages tab under the channel's language
   defaults: rows (language, name, description with character counters), Save, «Проверить на YouTube» (the preview; a missing
@@ -4701,6 +4701,48 @@ Owner msgs 3343/3345/3347/3350; plan `docs/roadmap/plans/CHANNEL_LOCALIZATIONS_P
   (`checkRows` takes the validator). Routes: `GET/PUT /api/channels/[channelId]/channel-localizations`, `GET .../preview`,
   `POST .../apply`.
 - **Not yet verified against the real API:** the first real apply is the live acceptance.
+
+## BL-223 — the channel branding writer (ADR 0050)
+
+Owner msgs 3482/3488 (FO-REQ-0039); plan `docs/roadmap/plans/CHANNEL_BRANDING_PLAN.md` (its "API facts" section quotes the
+`channels`, `channels.update`, `channelBanners.insert` and `channels.list` reference, with the deviations the docs forced). The
+only writer of a channel's `brandingSettings` (AGENTS.md §F, PROJECT_SPEC §21): description, keywords and banner; nothing else.
+
+- **The draft** (`channel-branding/draft.ts`, pure, imported by the card): `{ description?, keywords?: string[], banner?: { sha256,
+  bytes, width, height, mimeType } }`; absent = leave as on YouTube, `""` / `[]` = clear. Checks: description ≤ 1000 characters and
+  no `<`/`>`; keywords trimmed, no `"`, serialized space-separated with a spaced keyword in quotes, ≤ 500 characters in that form;
+  banner jpeg/png by magic bytes, ≤ 6 MB, ≥ 2048×1152, `width × 9 = height × 16`, its size read from the PNG IHDR or the JPEG SOFn
+  header (no dependency). `parseKeywords` reads YouTube's string back as a list (a quoted run = one keyword).
+- **Storage** (schema v109, device-local, in the snapshot's device-local list): `channel_branding` (`draft_json`, `updated_at`,
+  `updated_by` owner | factory | worker, `last_apply_json`, `last_apply_at`) and `channel_branding_events` (saved / backup /
+  banner_upload / write / verification / failed). The banner's bytes: `adapters/banner-store.ts` under
+  `<appDataDir>/channel-branding/<channelId>/banner.<ext>` (temp file + rename; one per channel).
+- **The service** (`services.ts`): `save` (all fields checked, any refusal → `validation_failed` with every `details.refused`,
+  nothing stored; an agent's banner through `workspace-exchange.resolveSentToYtmFile`, its size checked before reading), `view`,
+  `live` / `get` (one `channels.list part=snippet,brandingSettings,localizations` with the channel's account), `bannerBytes`,
+  `preview` (`planBranding`: per field new / changed / unchanged / cleared; the banner `unchanged` only when the last apply set the
+  same SHA-256 and the channel still shows that URL; quota; `draftVersion` = SHA-256 of the stored column, which holds the banner's
+  hash) and `apply(channelId, credentialRef, draftVersion)`: version → the stored banner's bytes match its SHA-256 (else
+  `branding_changed`) → identity → fresh read → nothing different: `{ ok: true, writes: 0 }` → backup (`kind: "channel_branding"`)
+  → re-read equal (else `update_failed`) → `assertLiveWritesAuthorized` + `insertBanner` → `buildBrandingBody` (title as read, the
+  six documented settable `brandingSettings.channel` fields as read, the changed draft fields replaced, a cleared one left out, the
+  banner URL as read unless uploaded; undocumented fields are not sent) → `assertLiveWritesAuthorized` + `updateBranding` (a failure
+  after the upload → `banner_uploaded_not_set`; any failure after the update succeeded → `written_unverified`; a failure keeps the
+  previous apply's banner in the last result) → read-back (4 reads, 5 s apart: the draft fields, the banner URL, every other
+  branding field, the name, the translations) → the last result.
+- **Surfaces.** `createChannelBrandingOwnerCore` (the Web routes only); `agentSurface` / `createChannelBrandingAgentCore` (get,
+  save as `factory` or `worker`; no apply) for `src/mcp/factory-channel-deps.ts`, which the Factory route and the channel workers'
+  pinned tools (`worker-factory-tools.ts`, saved as `worker`) share; `agentChannelBranding` shapes the get in codes.
+  `no-agent-apply.test.ts` scans every MCP and agent path for the apply, the adapter and both primitives.
+- **Gateways.** Read: `getChannelBrandingContext`. Write: `insertChannelBanner` (`channelBanners.insert`, media only, ≤ 6 MB) and
+  `updateChannelBrandingSettings` (one part). Quota ledger: `channelBanners.insert` 50.
+- **Web UI.** «Канал» (`src/components/channel-branding-panel.tsx`) on «Главная» above «Переводы канала»: the name, handle and avatar
+  read-only with a YouTube Studio link; description, keywords (comma-separated) and banner (file input, checked in the browser by
+  the same `draft.ts`) next to their values on YouTube; Save, «Проверить на YouTube», «Применить» behind `ConfirmDialog`, the last
+  result with its code. Routes: `GET/PUT /api/channels/[channelId]/channel-branding`, `GET .../banner`, `GET .../preview`,
+  `POST .../apply`.
+- **Not yet verified against the real API:** whether YouTube keeps `bannerExternalUrl` exactly as sent, and how it formats keywords;
+  the read-back reports either. The first real apply is the live acceptance.
 
 ## BL-221 — the Content section redesign (CONTENT_UX_PLAN.md)
 

@@ -1,3 +1,4 @@
+import { agentChannelBranding, createChannelBrandingAgentCore } from "@/lib/channel-branding";
 import { createChannelLocalizationsOperatorCore, operatorChannelLocalizations } from "@/lib/channel-localizations";
 import { createGeminiMediaCore } from "@/lib/gemini-media";
 import { collectLiveStreamEntries, createLiveSegmentSettingsCore, createLiveStreamsCore, createStreamLocalizationsCore, getLiveStreamsDeviceId, listPeerLiveStreams, localizationsStatusEntry } from "@/lib/live-streams";
@@ -15,7 +16,7 @@ import type { FactoryToolDeps } from "./factory-server";
  * approval, start or stop (`session-approval-inventory.test.ts`). The factory route adds the media, logical-path and channel-list
  * parts.
  */
-export type FactoryChannelDeps = Pick<FactoryToolDeps, "plans" | "gemini" | "live" | "channelLocalizations" | "storyboards" | "videos" | "jobs">;
+export type FactoryChannelDeps = Pick<FactoryToolDeps, "plans" | "gemini" | "live" | "channelLocalizations" | "channelBranding" | "storyboards" | "videos" | "jobs">;
 
 export function createFactoryChannelDeps(): FactoryChannelDeps {
   return {
@@ -70,6 +71,12 @@ export function createFactoryChannelDeps(): FactoryChannelDeps {
     channelLocalizations: {
       get: async (input) => operatorChannelLocalizations(createChannelLocalizationsOperatorCore(), input.channelId),
       save: async (input) => ({ ...(await createChannelLocalizationsOperatorCore().save(input.channelId, input.localizations)) }),
+    },
+    // BL-223 (CHANNEL_BRANDING_PLAN.md §5, ADR 0050): a channel's description, keywords and banner -- the agent surface of the module
+    // has no apply, so nothing here reaches a YouTube write; the save is local, the get reads YouTube once (1 unit).
+    channelBranding: {
+      get: async (input) => agentChannelBranding(createChannelBrandingAgentCore(), input.channelId),
+      save: async (input, by = "factory") => ({ ...(await createChannelBrandingAgentCore().save(input, by)) }),
     },
     // BL-184 (STORYBOARD_PLAN.md §2.6): storyboards; every write is the Operator's (the owner decides in the Web UI only).
     storyboards: {

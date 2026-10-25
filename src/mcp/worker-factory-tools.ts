@@ -48,6 +48,9 @@ export const WORKER_FACTORY_TOOLS: Readonly<Record<string, { agentName: string; 
   factory_live_save_localizations: { agentName: "agent_live_save_localizations", writes: true },
   // Not factory_channel_get/save_localizations: ADR 0047 (AGENTS.md §F) names the owner and the Factory Operator as the only ones
   // who save a channel's own translations, and AC-CL-10 keeps every channel-translation tool out of channel sessions.
+  // BL-223 (ADR 0050, FO-REQ-0039): the channel's description, keywords and banner -- a draft for the owner's «Применить», own channel.
+  factory_channel_get_branding: { agentName: "agent_channel_get_branding", writes: false },
+  factory_channel_save_branding: { agentName: "agent_channel_save_branding", writes: true },
   factory_gemini_get_job: { agentName: "agent_gemini_get_job", writes: false },
   // BL-218 (stage 4, owner msg 3402 "может, как оператор"): paid work, exactly as the Operator does it -- a session the worker starts
   // is approved by itself only within the owner's factory limits and while the owner's factory-sessions switch is on (otherwise it
@@ -273,6 +276,11 @@ export function pinFactoryDepsToChannel(
     },
     // ADR 0047: a channel's own translations are the owner's and the Factory Operator's only.
     channelLocalizations: { get: refused, save: refused },
+    // BL-223: the branding draft of the worker's own channel, recorded as saved by a worker (never an apply).
+    channelBranding: {
+      get: async (input) => deps().channelBranding.get(pinChannel(input, channelId) as { channelId: string }),
+      save: async (input) => deps().channelBranding.save(pinChannel(input, channelId) as Parameters<FactoryToolDeps["channelBranding"]["save"]>[0], "worker"),
+    },
     storyboards: {
       create: byChannel((input) => deps().storyboards.create(input)),
       update: byChannel((input) => deps().storyboards.update(input)),

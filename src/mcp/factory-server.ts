@@ -137,7 +137,12 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 // the folder's Vn_youtube.json, else this computer's upload, else video_registry.csv; null while unknown) and hasVideoFile (the folder
 // holds the release video file) and uploading (an upload of the number is queued or running on this computer). A Vn_youtube.json may now also be the owner's link of a video uploaded outside the app
 // (result "linked", linkedBy "owner"). Additive.
-export const FACTORY_API_VERSION = "1.31.0";
+// BL-223 (CHANNEL_BRANDING_PLAN.md, ADR 0050; FO-REQ-0039): 1.32.0 -- factory_channel_get_branding (READ: the stored draft of the
+// channel's description, keywords and banner, the channel on YouTube read now -- 1 quota unit, no write -- and the last apply in
+// codes) and factory_channel_save_branding (WRITE, local only: replace semantics, {} clears; the banner a path relative to the
+// channel's '99 Data Exchange/Sent to YTM/'; any refused field refuses the whole call with details.refused). Only the owner's
+// «Применить» in the Web UI sends the draft to YouTube; no tool reaches it. Additive.
+export const FACTORY_API_VERSION = "1.32.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -207,6 +212,9 @@ export const FACTORY_TOOL_NAMES = [
   // BL-210: a channel's own name/description translations -- the stored set and YouTube's (a read), saving the set (a local write).
   "factory_channel_get_localizations",
   "factory_channel_save_localizations",
+  // BL-223: a channel's description, keywords and banner -- the draft and YouTube's (a read), saving the draft (a local write).
+  "factory_channel_get_branding",
+  "factory_channel_save_branding",
   // BL-184: storyboards -- versions, submitting for the owner's review, answers to the owner's comments; reads.
   "factory_storyboard_create",
   "factory_storyboard_update",
@@ -271,6 +279,8 @@ export const FACTORY_WRITE_TOOL_NAMES = [
   "factory_live_save_localizations",
   // BL-210: a channel's translations (local only; written to YouTube only by the owner's «Применить» in the Web UI).
   "factory_channel_save_localizations",
+  // BL-223: a channel's branding draft (local only; written to YouTube only by the owner's «Применить» in the Web UI).
+  "factory_channel_save_branding",
   // BL-184: storyboard versions, submissions and answers (synced to the other computers; nothing is generated or charged).
   "factory_storyboard_create",
   "factory_storyboard_update",
@@ -378,6 +388,14 @@ export type FactoryToolDeps = {
   channelLocalizations: {
     get(input: { channelId: string }): Promise<Record<string, unknown>>;
     save(input: { channelId: string; localizations: Record<string, { title: string; description: string }> }): Promise<Record<string, unknown>>;
+  };
+  /**
+   * BL-223 (ADR 0050): a channel's description, keywords and banner draft (the channel-branding module validates every field
+   * itself). Its agent surface has no apply: nothing here reaches a YouTube write. `by`: the Operator, or a channel's worker.
+   */
+  channelBranding: {
+    get(input: { channelId: string }): Promise<Record<string, unknown>>;
+    save(input: { channelId: string; description?: string; keywords?: string[]; bannerFile?: string; keepBanner?: boolean }, by?: "factory" | "worker"): Promise<Record<string, unknown>>;
   };
   /** BL-184: storyboards (the module validates every input strictly itself; every write is the Operator's). */
   storyboards: {
@@ -1317,6 +1335,42 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
       const input = parseInput(channelLocalizationsInput, args);
       await deps.assertMutationAllowed();
       return successResult(await deps.channelLocalizations.save(input));
+    }
+  );
+
+  // -- BL-223 (CHANNEL_BRANDING_PLAN.md §5, ADR 0050): a channel's description, keywords and banner. The shape only; the module
+  // checks every limit. The save passes the device mutation gate; neither tool can send anything to YouTube.
+  const channelBrandingInput = z
+    .object({
+      channelId: z.string().min(1).max(64),
+      description: z.string().max(10_000).optional(),
+      keywords: z.array(z.string().max(500)).max(500).optional(),
+      bannerFile: z.string().min(1).max(500).optional(),
+      keepBanner: z.boolean().optional(),
+    })
+    .strict();
+
+  registerTool(
+    "factory_channel_get_branding",
+    {
+      description:
+        "A channel's own description, keywords and banner (1.32.0): { channelId (connected on THIS computer) } -> { channelId, stored: { draft: { description?, keywords?: [string], banner?: { sha256, bytes, width, height, mimeType } } | null, problem: invalid_stored | null, updatedAt, updatedBy: owner | factory | worker | null }, live: { title, avatarUrl, customUrl, description, keywords: [string], country, defaultLanguage, unsubscribedTrailer, bannerUrl } | null (read from YouTube now: channels.list, 1 quota unit, nothing written), liveUnavailable: null | <code> (why live is null, e.g. data_api_reads_disabled, channel_not_connected, youtube_quota_exceeded), lastApply: { at, ok, fields: [description | keywords | banner] (written), writes (0-2), bannerUrl, failure?: read_back_mismatch | banner_uploaded_not_set | written_unverified (the update was written, its check failed) | failed, code? (the error code) } | null }. The name and the avatar cannot be changed through the API (YouTube Studio only). Only the owner's «Применить» in the app sends the draft to YouTube. Never a token, a path or error text.",
+      inputSchema: channelRefInput,
+    },
+    async (args) => successResult(await deps.channelBranding.get(parseInput(channelRefInput, args)))
+  );
+
+  registerTool(
+    "factory_channel_save_branding",
+    {
+      description:
+        "Save a channel's description, keywords and banner as a draft on THIS computer (1.32.0): { channelId (connected here), description? (the channel description in its base language; '' clears it on YouTube; <= 1000 characters, no < or >), keywords? ([string]: written space-separated, a keyword with a space in double quotes; no double quotation mark inside a keyword; <= 500 characters all together with the spaces and quotes; [] clears them), bannerFile? (a JPEG or PNG relative to the channel workspace's '99 Data Exchange/Sent to YTM/', e.g. 'branding/banner.png' -- no .. or absolute path; <= 6 MB, at least 2048x1152, exactly 16:9, 2560x1440 recommended; copied into the app on save), keepBanner? (true: keep the banner already in the draft) } -> { draft }. One draft per channel; it REPLACES the stored one ({} clears it); a field left out stays as it is on YouTube. Any refused field refuses the whole call (validation_failed, details.refused: [{ field: description | keywords | banner, reason: not_a_string | description_too_long | description_angle_brackets | keywords_not_a_list | keyword_empty | keyword_quote | keywords_too_long | banner_path_invalid | banner_unavailable | banner_not_jpeg_or_png | banner_unreadable | banner_too_large | banner_too_small | banner_not_16_9 | banner_exif_rotated (a JPEG with an EXIF orientation other than 1), message }]) and nothing is saved. Not connected here: channel_not_connected. Local only: NOTHING is sent to YouTube -- the owner reviews and applies it in the app (the name, avatar, country, default language and trailer are never changed). Passes the device mutation gate.",
+      inputSchema: channelBrandingInput,
+    },
+    async (args) => {
+      const input = parseInput(channelBrandingInput, args);
+      await deps.assertMutationAllowed();
+      return successResult(await deps.channelBranding.save(input));
     }
   );
 

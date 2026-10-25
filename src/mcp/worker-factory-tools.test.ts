@@ -49,6 +49,13 @@ function fakeDeps() {
     },
     live: { getStatus: note("live.getStatus"), mapSources: note("live.mapSources"), setLocalizations: note("live.setLocalizations") },
     channelLocalizations: { get: note("cl.get"), save: note("cl.save") },
+    channelBranding: {
+      get: note("cb.get"),
+      save: async (input: unknown, by: unknown) => {
+        calls.push(`cb.save:${JSON.stringify(input)}:${String(by)}`);
+        return { ok: true };
+      },
+    },
     storyboards: {
       create: note("sb.create"), update: note("sb.update"), get: note("sb.get"), list: note("sb.list"), submit: note("sb.submit"),
       reply: note("sb.reply"), attachRender: note("sb.attachRender"),
@@ -137,7 +144,8 @@ test("AC-WF-05/06: the worker gets exactly the listed tools, renamed, and none o
   const { deps } = fakeDeps();
   const names = workerFactoryTools(() => deps, TROPICO, async () => undefined).map((tool) => tool.name).sort();
   assert.deepEqual(names, [...WORKER_FACTORY_TOOL_NAMES].sort());
-  assert.equal(names.length, 36);
+  // BL-223: + agent_channel_get_branding / agent_channel_save_branding (36 -> 38).
+  assert.equal(names.length, 38);
   for (const forbidden of ["agent_plan_move", "agent_media_pull_model", "agent_media_list_models", "agent_media_create_runtime", "agent_media_get_gpu_stats", "agent_channel_get_localizations", "agent_channel_save_localizations"]) {
     assert.ok(!names.includes(forbidden), forbidden);
   }
@@ -223,4 +231,17 @@ test("re-check: a requestId another channel used is refused without naming that 
     assert.equal(JSON.stringify({ message: (error as Error).message, details: (error as DomainError).details ?? null }).includes("G-J"), false);
     return true;
   });
+});
+
+// BL-223 (CHANNEL_BRANDING_PLAN.md §5, ADR 0050): the worker's branding draft -- its own channel only, saved as "worker"; another
+// channel is refused before the module runs.
+test("BL-223: agent_channel_*_branding reach the module for the own channel only, the save recorded as a worker's", async () => {
+  const { deps, calls } = fakeDeps();
+  const pinned = pinFactoryDepsToChannel(() => deps, TROPICO, async () => undefined);
+  await assert.rejects(pinned.channelBranding.get({ channelId: JAPAN }), code("CHANNEL_NOT_ACTIVE"));
+  await assert.rejects(pinned.channelBranding.save({ channelId: JAPAN, description: "x" }), code("CHANNEL_NOT_ACTIVE"));
+  assert.deepEqual(calls, []);
+  await pinned.channelBranding.get({ channelId: TROPICO });
+  await pinned.channelBranding.save({ channelId: TROPICO, description: "D", bannerFile: "b/banner.png" });
+  assert.deepEqual(calls, [`cb.get:{"channelId":"${TROPICO}"}`, `cb.save:{"channelId":"${TROPICO}","description":"D","bannerFile":"b/banner.png"}:worker`]);
 });

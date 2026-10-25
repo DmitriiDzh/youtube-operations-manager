@@ -224,6 +224,8 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
   live_viewer_samples: authorized("our own broadcasts' concurrent viewers and stream state, sampled by the stream's poll (BL-211): statistics, III.E.4.b"),
   channel_localizations: authorized("our channels' own title/description translations, set by the owner or the Operator, and the last apply's result (BL-210)"),
   channel_localization_events: authorized("our channels' translations audit trail: languages written and read-back results (BL-210)"),
+  channel_branding: authorized("our channels' own description/keywords/banner draft, set by the owner or our agents, and the last apply's result (BL-223)"),
+  channel_branding_events: authorized("our channels' branding audit trail: fields written, banner URL and read-back results (BL-223)"),
   ai_connections: notApiData("AI provider configuration"),
   ai_connection_credentials: notApiData("AI provider secrets"),
   agent_channel_tokens: notApiData("agent credentials (hashes)"),

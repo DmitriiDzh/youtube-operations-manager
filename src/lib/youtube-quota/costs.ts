@@ -36,6 +36,8 @@ export const DATA_API_UNIT_COSTS: Readonly<Record<string, number>> = {
   "captions.update": 450,
   "captions.delete": 50,
   "thumbnails.set": 50,
+  // BL-223 (CHANNEL_BRANDING_PLAN.md "API facts"): "A call to this method has a quota cost of 50 units" (channelBanners/insert, U6).
+  "channelBanners.insert": 50,
   "activities.list": 1,
   // Since 2026-06-01 `search.list` has its own bucket (100 calls/day, 1 unit each), not the 10,000-unit pool.
   "search.list": 1,

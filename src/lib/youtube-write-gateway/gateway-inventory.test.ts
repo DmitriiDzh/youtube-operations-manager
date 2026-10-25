@@ -136,6 +136,9 @@ const WRITE_PRIMITIVE_NAMES = [
   "setVideoThumbnail",
   // BL-210 (ADR 0047): a channel's own translations (only `part=localizations`, owner msg 3350).
   "updateChannelLocalizations",
+  // BL-223 (ADR 0050): a channel's description, keywords and banner (owner msgs 3482/3488).
+  "insertChannelBanner",
+  "updateChannelBrandingSettings",
 ];
 
 test("youtube-write-gateway inventory: every file that imports a real write primitive also calls assertLiveWritesAuthorized", async () => {
@@ -189,4 +192,27 @@ test("AC-CL-12: channels.update is matched by the write pattern and called only 
     if (/\.channels\.update\s*\(/.test(await readFile(file, "utf8"))) callers.push(path.relative(REPO_ROOT, file));
   }
   assert.deepEqual(callers, ["src/lib/youtube-write-gateway/index.ts"]);
+});
+
+// BL-223 AC-CB-11 (CHANNEL_BRANDING_PLAN.md): `channelBanners.insert` is matched by the write pattern and called only inside this
+// module; the two branding primitives are called only by the branding writer's adapter, and the BL-210 localization writer never
+// writes brandingSettings (no `part: ["brandingSettings"]` and no branding primitive outside the gateway and that adapter).
+test("AC-CB-11: channelBanners.insert and the brandingSettings update live only in the gateway; only the branding adapter calls them", async () => {
+  assert.ok(WRITE_CALL_PATTERN.test("youtube.channelBanners.insert({"));
+  const bannerCalls: string[] = [];
+  const primitiveCallers: string[] = [];
+  const brandingPart: string[] = [];
+  for (const file of await listAllScannedFiles()) {
+    if (file.endsWith(".test.ts")) continue;
+    const content = await readFile(file, "utf8");
+    const rel = path.relative(REPO_ROOT, file);
+    if (/\.channelBanners\.insert\s*\(/.test(content)) bannerCalls.push(rel);
+    if (/\b(insertChannelBanner|updateChannelBrandingSettings)\s*\(/.test(content)) primitiveCallers.push(rel);
+    if (/part:\s*\[\s*"brandingSettings"\s*\]/.test(content)) brandingPart.push(rel);
+  }
+  assert.deepEqual(bannerCalls, ["src/lib/youtube-write-gateway/index.ts"]);
+  assert.deepEqual(primitiveCallers.sort(), ["src/lib/channel-branding/adapters/youtube-api.ts", "src/lib/youtube-write-gateway/index.ts"]);
+  assert.deepEqual(brandingPart, ["src/lib/youtube-write-gateway/index.ts"]);
+  const localizationWriter = await readFile(path.join(REPO_ROOT, "src/lib/channel-localizations/adapters/youtube-api.ts"), "utf8");
+  assert.ok(!/brandingSettings|insertChannelBanner|updateChannelBrandingSettings/.test(localizationWriter));
 });

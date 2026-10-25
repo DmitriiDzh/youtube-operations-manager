@@ -15,6 +15,9 @@ test("known Data API methods cost what Google's table says", () => {
     "captions.update": 450,
     "captions.list": 50,
     "search.list": 1,
+    // BL-223: determine_quota_cost lists channelBanners.insert at 50 and channels.update at 50.
+    "channelBanners.insert": 50,
+    "channels.update": 50,
   };
   for (const [method, units] of Object.entries(expected)) assert.equal(quotaUnitsForCall("data", method), units, method);
   assert.equal(quotaUnitsForCall("analytics", "reports.query"), 1);

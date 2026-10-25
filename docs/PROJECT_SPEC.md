@@ -820,6 +820,17 @@ It writes no other channel field (owner msg 3350): a channel without `brandingSe
 `localizations`) is refused, and the owner sets it once in YouTube Studio. «Применить» applies only the set the owner previewed (a
 set saved since is refused), and an own-language translation on YouTube differing from the base text is refused, never deleted.
 
+**Channel branding writer (added 2026-10-25, owner, Telegram msgs 3482/3488, BL-223, ADR 0050).** `src/lib/channel-branding/`
+writes a channel's own description, keywords and banner (`brandingSettings.channel.description` / `.keywords`,
+`channelBanners.insert` then `brandingSettings.image.bannerExternalUrl`) -- lifting msg 3350's "no `brandingSettings` write" for
+these fields only, and only on these terms: the channel's one stored draft (`channel_branding`, saved by the owner on «Главная»,
+the Factory Operator or the channel's own worker; the banner copied into the app data on save), sent only when the owner presses
+«Применить» in the Web UI after previewing it (a draft saved since is refused, `branding_changed`); a full read-merge-write of
+`brandingSettings` (every other documented settable field and the title sent back exactly as read); identity check, backup, a
+re-read right before the writes, the Live-writes check right before each write, read-back and audit; partial states named
+(`banner_uploaded_not_set`, `read_back_mismatch`). It never writes the name, avatar, country, default language, trailer or
+tracking id, and it is not a localization writer.
+
 ---
 
 # 22. Idempotent Batch Execution

@@ -257,6 +257,8 @@ export const SNAPSHOT_DEVICE_LOCAL_TABLES: Readonly<Record<string, string>> = Ob
   live_viewer_samples: "this computer's live-stream viewer samples (BL-211); a stream runs from this computer only",
   channel_localizations: "the channel translations stored on this computer and its last apply (BL-210, ADR 0047); applied to YouTube from this computer only",
   channel_localization_events: "this computer's channel-translations audit trail (BL-210)",
+  channel_branding: "the channel branding draft (description, keywords, banner metadata) stored on this computer and its last apply (BL-223, ADR 0050); applied to YouTube from this computer only",
+  channel_branding_events: "this computer's channel-branding audit trail (BL-223)",
 });
 
 /**

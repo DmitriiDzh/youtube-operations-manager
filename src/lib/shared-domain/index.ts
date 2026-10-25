@@ -273,6 +273,12 @@ export type DomainErrorCode =
   | "default_language_mismatch"
   | "own_language_in_live"
   | "localizations_changed"
+  // BL-223 (CHANNEL_BRANDING_PLAN.md, ADR 0050): the stored branding draft changed since the owner previewed it (nothing written);
+  // the banner was uploaded but the brandingSettings update failed (the channel keeps its old banner).
+  | "branding_changed"
+  | "banner_uploaded_not_set"
+  // BL-223 review #2: the brandingSettings update succeeded, then the audit or the read-back failed (written, not verified).
+  | "written_unverified"
   | "RESEARCH_EXPORT_WORKSPACE_NOT_CONFIGURED"
   | "RESEARCH_EXPORT_WORKSPACE_UNAVAILABLE"
   | "RESEARCH_EXPORT_WRITE_FAILED"

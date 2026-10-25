@@ -76,7 +76,10 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT",
 // a worker's own restart holds, logged in the worker log). Additive.
 // 4.5.0 (BL-221, CONTENT_UX_PLAN.md stage B): agent_video_list's videos gain youtubeVideoId and hasVideoFile (as factory_video_list,
 // Factory API 1.31.0). Additive.
-export const AGENT_API_VERSION = "4.5.0";
+// 4.6.0 (BL-223, CHANNEL_BRANDING_PLAN.md, ADR 0050): agent_channel_get_branding (READ) / agent_channel_save_branding (DRAFT) -- the
+// worker's own channel's description, keywords and banner draft (the banner from its workspace's Sent to YTM), as the factory_channel_*
+// branding tools (Factory API 1.32.0). Only the owner's «Применить» writes it to YouTube. Additive.
+export const AGENT_API_VERSION = "4.6.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry
