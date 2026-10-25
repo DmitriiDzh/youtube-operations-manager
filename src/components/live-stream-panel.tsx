@@ -254,7 +254,7 @@ export function LiveStreamPanel({ channelId, visible }: { channelId: string | nu
         </>
       )}
       {/* BL-222: the stream runs on another computer -- its shared «Эфиры» summary, read-only. */}
-      {!overview.module.host.ok && overview.peers.length > 0 && <LiveStreamAnalyticsCard base={base!} visible={visible} />}
+      {!overview.module.host.ok && <LiveStreamAnalyticsCard base={base!} visible={visible} remote />}
       {!overview.module.host.ok && overview.peers.length === 0 && <p className="text-sm text-zinc-500">{t("live.peer.none")}</p>}
     </div>
   );

@@ -32,7 +32,8 @@ function uptime(f: LiveSummaryFigures): number | null {
   return covered > 0 ? f.onAirMs / covered : null;
 }
 
-export function LiveStreamAnalyticsCard({ base, visible }: { base: string; visible: boolean }) {
+/** `remote`: this computer cannot run the stream -- with no shared figures the card says the other computer has not shared any yet. */
+export function LiveStreamAnalyticsCard({ base, visible, remote = false }: { base: string; visible: boolean; remote?: boolean }) {
   const { t, formatNumber, language } = useUiText();
   const [days, setDays] = useState(7);
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -118,13 +119,15 @@ export function LiveStreamAnalyticsCard({ base, visible }: { base: string; visib
       <p className="text-xs text-zinc-500">
         {summary?.source?.kind === "peer"
           ? t("live.analytics.sourcePeer", { host: summary.source.hostName ?? summary.source.deviceId, at: new Date(summary.source.updatedAt).toLocaleString(language) })
-          : t("live.analytics.source")}
+          : remote
+            ? t("live.analytics.sourceRemote")
+            : t("live.analytics.source")}
       </p>
       {error && <p className="text-sm text-red-400">{error}</p>}
       {!summary ? (
         !error && <LoadingIndicator className="text-sm text-zinc-400" />
       ) : summary.totals.samples === 0 ? (
-        <p className="text-sm text-zinc-500">{t("live.analytics.empty")}</p>
+        <p className="text-sm text-zinc-500">{t(remote && summary.source?.kind !== "peer" ? "live.analytics.emptyRemote" : "live.analytics.empty")}</p>
       ) : (
         <>
           <dl className="grid grid-cols-2 gap-3 sm:grid-cols-3">

@@ -57,7 +57,7 @@ test("BL-214: the producer portfolio -- the date window, per-channel figures, yo
     pulls: async (ids) =>
       ids.includes("B1")
         ? [
-            { broadcastId: "B1", channelId: "UC1", status: "collected", final: true, attempts: 2, lastAttemptAt: new Date(), collectedAt: new Date("2026-10-26T00:00:00Z"), dataJson: JSON.stringify({ concurrent: { average: 3, peak: 5 }, curve: [], live: { views: 7, minutesWatched: 20 }, onDemand: { views: 1, minutesWatched: 2 }, reports: { concurrent: "ok", curve: "ok", split: "ok" } }), error: null },
+            { broadcastId: "B1", channelId: "UC1", status: "collected" as const, final: true, attempts: 2, lastAttemptAt: new Date(), collectedAt: new Date("2026-10-26T00:00:00Z"), dataJson: JSON.stringify({ concurrent: { average: 3, peak: 5 }, curve: [], live: { views: 7, minutesWatched: 20 }, onDemand: { views: 1, minutesWatched: 2 }, reports: { concurrent: "ok", curve: "ok", split: "ok" } }), error: null },
             { broadcastId: "B2", channelId: "UC1", status: "collected", final: false, attempts: 1, lastAttemptAt: new Date(), collectedAt: new Date("2026-10-22T00:00:00Z"), dataJson: JSON.stringify({ concurrent: null, curve: null, live: null, onDemand: null, reports: { concurrent: "error", curve: "error", split: "error" } }), error: null },
           ]
         : [],
@@ -157,4 +157,26 @@ test("AC-LA5-03: no peer, another channel's peer, or a range no one shares (3 da
     assert.equal(summary.totals.samples, 0);
     assert.equal(summary.totals.peakViewers, null);
   }
+});
+
+test("BL-222 review: the real summaries of a busy 90 days fit the shared report's strict schema", async () => {
+  const { liveAnalyticsReportSchema } = await import("@/lib/sync-gateway");
+  const samples: Sample[] = [];
+  // 89 days of 12-hour segments (a new 11-character broadcast id every 12 h), a sample every 5 minutes, odd viewer counts and gaps.
+  for (let t = NOW.getTime() - 89 * 86_400_000; t < NOW.getTime(); t += 5 * MIN) {
+    const segment = Math.floor((t - NOW.getTime()) / (12 * 3_600_000));
+    if (Math.floor(t / 3_600_000) % 37 === 0) continue;
+    samples.push({ channelId: "UC1", sampledAt: t, broadcastId: `B${String(Math.abs(segment)).padStart(10, "0")}`, viewers: (t / MIN) % 7 === 0 ? null : (t / MIN) % 23, lifeCycleStatus: (t / MIN) % 50 === 0 ? "ready" : "live" });
+  }
+  const pull = (broadcastId: string) => ({ broadcastId, channelId: "UC1", status: "collected" as const, final: true, attempts: 2, lastAttemptAt: NOW, collectedAt: NOW, dataJson: JSON.stringify({ concurrent: { average: 3.25, peak: 11 }, curve: [[1, 2.5, 4]], live: { views: 120, minutesWatched: 1234.5 }, onDemand: { views: 3, minutesWatched: null }, reports: { concurrent: "ok", curve: "ok", split: "ok" } }), error: null });
+  const core = createLiveAnalyticsCore({
+    now: () => NOW,
+    samples: async (channelId, from, to) => samples.filter((s) => s.channelId === channelId && s.sampledAt >= from.getTime() && s.sampledAt < to.getTime()),
+    runExits: async () => [{ at: NOW.getTime() - 3_600_000, kind: "encoder_run_exit", cause: "encoder_exit" }],
+    pulls: async (ids) => ids.map(pull),
+  });
+  const channels = await core.shared(["UC1"]);
+  const parsed = liveAnalyticsReportSchema.safeParse({ format: "ytm-live-analytics", version: 1, deviceId: "mac-1", hostName: "Mac mini", updatedAt: NOW.toISOString(), channels });
+  assert.equal(parsed.success, true, parsed.success ? "" : JSON.stringify(parsed.error.issues.slice(0, 3)));
+  assert.ok(channels[0].ranges[3].summary.hours.length > 2000, "the 90-day range carries every hour");
 });

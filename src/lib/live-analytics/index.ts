@@ -4,7 +4,7 @@ import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { getStoredChannel, listLiveBroadcastAnalytics, listLiveStreamEventsOfKind, listLiveViewerSamples, listSampledLiveBroadcasts, upsertLiveBroadcastAnalytics } from "@/lib/db";
 import { getProductionAppPaths } from "@/lib/platform-paths";
 import { DomainError } from "@/lib/shared-domain";
-import { createLiveAnalyticsShareCoreForProduction, LIVE_ANALYTICS_REPORT_FORMAT, LIVE_ANALYTICS_REPORT_VERSION, SHARED_LIVE_ANALYTICS_RANGES, type SharedLiveAnalyticsChannel } from "@/lib/sync-gateway";
+import { createLiveAnalyticsShareCoreForProduction, LIVE_ANALYTICS_REPORT_FORMAT, LIVE_ANALYTICS_REPORT_VERSION, SHARED_LIVE_ANALYTICS_RANGES, sharedLiveAnalyticsChannelSchema, type SharedLiveAnalyticsChannel } from "@/lib/sync-gateway";
 import { getAuthenticatedYoutubeAnalytics, queryOwnVideoReport } from "@/lib/youtube-read-gateway";
 import { createBroadcastAnalyticsCollector, type CollectorDeps, type StoredPull } from "./collect";
 import { DAY_MS, type BroadcastAnalyticsData, type BroadcastAnalyticsStatus, type BroadcastAnalyticsView, type LiveSummary } from "./contracts";
@@ -182,7 +182,8 @@ export function createBroadcastAnalyticsCollectorCore() {
 /** This computer's name as other computers show it ("by <host>"), or null when it has no usable name. */
 function hostLabel(): string | null {
   try {
-    return hostname().replace(/\.local$/, "").replace(/[^\p{L}\p{N} ._'-]/gu, "").slice(0, 64) || null;
+    // Cut by code points, not UTF-16 units: half a surrogate pair would fail the report's schema.
+    return Array.from(hostname().replace(/\.local$/, "").replace(/[^\p{L}\p{N} ._'-]/gu, "")).slice(0, 64).join("").trim() || null;
   } catch {
     return null;
   }
@@ -195,7 +196,12 @@ function hostLabel(): string | null {
 export async function publishLiveAnalyticsReport(now: Date = new Date()): Promise<void> {
   const since = now.getTime() - 90 * DAY_MS;
   const channelIds = [...new Set((await listSampledLiveBroadcasts()).filter((b) => b.lastSampleAt >= since).map((b) => b.channelId))].sort();
-  const channels = await createLiveAnalyticsCore({ ...defaultLiveAnalyticsDeps(), now: () => now }).shared(channelIds);
+  // One channel whose summary the strict schema refuses (e.g. an old stored pull) is left out and said; the others are shared.
+  const channels = (await createLiveAnalyticsCore({ ...defaultLiveAnalyticsDeps(), now: () => now }).shared(channelIds)).filter((channel) => {
+    const parsed = sharedLiveAnalyticsChannelSchema.safeParse(channel);
+    if (!parsed.success) console.warn(`[live-analytics] report: ${channel.channelId} left out: ${parsed.error.issues[0]?.path.join(".")} ${parsed.error.issues[0]?.message}`);
+    return parsed.success;
+  });
   const deviceId = (await createBootstrapConfigStore(getProductionAppPaths().bootstrapConfigPath).ensureExists()).deviceId;
   await createLiveAnalyticsShareCoreForProduction().publishLocalReport({
     format: LIVE_ANALYTICS_REPORT_FORMAT,

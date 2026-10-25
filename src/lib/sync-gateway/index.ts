@@ -60,7 +60,7 @@ export { LIVE_STREAMS_REPORT_FORMAT, LIVE_STREAMS_REPORT_VERSION } from "./live-
 export { createLiveStreamsSyncRunnerForProduction } from "./live-streams-sync";
 export { createLiveAnalyticsShareCoreForProduction, createLiveAnalyticsShareCore } from "./live-analytics";
 export type { LiveAnalyticsReport, SharedLiveAnalyticsChannel, SharedLiveSummary, LiveAnalyticsShareCore } from "./live-analytics";
-export { LIVE_ANALYTICS_REPORT_FORMAT, LIVE_ANALYTICS_REPORT_VERSION, SHARED_LIVE_ANALYTICS_RANGES } from "./live-analytics";
+export { LIVE_ANALYTICS_REPORT_FORMAT, LIVE_ANALYTICS_REPORT_VERSION, SHARED_LIVE_ANALYTICS_RANGES, sharedLiveAnalyticsChannelSchema, liveAnalyticsReportSchema } from "./live-analytics";
 export { createLiveAnalyticsSyncRunnerForProduction } from "./live-analytics-sync";
 export { createAgentTokensShareCoreForProduction, createAgentTokensShareCore } from "./agent-tokens";
 export type { AgentTokensReport, SharedAgentToken, AgentTokensShareCore, AgentTokensReportStore } from "./agent-tokens";
