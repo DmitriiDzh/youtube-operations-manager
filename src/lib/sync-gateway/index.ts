@@ -150,6 +150,21 @@ export type {
   StoryboardVersion,
 } from "./storyboards";
 export { createStoryboardsSyncRunnerForProduction } from "./storyboards-sync";
+// BL-225 (ADR 0051): a channel's weekly publishing plans (agents' slots, the owner's approvals and vetoes), one document per channel.
+export { createPublishingPlansCoreForProduction, createPublishingPlansCore, emptyDocument as emptyPublishingPlansDocument, slotKey as publishingPlanSlotKey } from "./publishing-plans";
+export type {
+  PublishingPlanActor,
+  PublishingPlanChange,
+  PublishingPlanDecision,
+  PublishingPlanDecisionKind,
+  PublishingPlanMeta,
+  PublishingPlanSlot,
+  PublishingPlanSlotContent,
+  PublishingPlansCore,
+  PublishingPlansDocument,
+  PublishingPlansSnapshot,
+} from "./publishing-plans";
+export { createPublishingPlansSyncRunnerForProduction } from "./publishing-plans-sync";
 
 // BL-194 (ADR 0040): the video numbers each computer reserved, as a per-device report (the list and its conflicts: video-projects).
 export {

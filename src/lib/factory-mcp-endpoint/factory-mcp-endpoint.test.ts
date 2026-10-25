@@ -139,6 +139,12 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
       get: async (input) => (mediaCalls.push(`channel.branding.get:${input.channelId}`), { channelId: input.channelId }),
       save: async (input, by) => (mediaCalls.push(`channel.branding.save:${input.channelId}:${by ?? "factory"}:${input.bannerFile ?? ""}`), { draft: null }),
     },
+    // BL-225: the publishing-plans agents' surface is a fake that records what reached it.
+    publishingPlans: {
+      save: async (input, by) => (mediaCalls.push(`plan.save:${(input as { channelId: string }).channelId}:${by ?? "factory"}`), { plan: {} }),
+      get: async (input) => (mediaCalls.push(`plan.get:${(input as { weekStart: string }).weekStart}`), { plan: {} }),
+      list: async (input) => (mediaCalls.push(`plan.list:${(input as { channelId: string }).channelId}`), { plans: [] }),
+    },
     // BL-184: the storyboards module is a fake that records what reached it.
     storyboards: {
       create: async (input) => (mediaCalls.push(`sb.create:${(input as { channelId: string }).channelId}`), { storyboard: {} }),
@@ -362,6 +368,9 @@ test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exact
     "factory_plan_todo",
     "factory_plan_update",
     "factory_plan_withdraw_recheck",
+    "factory_publishing_plan_get",
+    "factory_publishing_plan_list",
+    "factory_publishing_plan_save",
     "factory_storyboard_attach_render",
     "factory_storyboard_create",
     "factory_storyboard_get",
@@ -419,7 +428,7 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.32.0", // BL-223: factory_channel_get_branding / factory_channel_save_branding; 1.31.0 (BL-221: factory_video_list gains youtubeVideoId / hasVideoFile (additive); 1.30.0 (BL-220): the three restart tools
+    factoryApiVersion: "1.33.0", // BL-225: factory_publishing_plan_save / _get / _list; 1.32.0 (BL-223): factory_channel_get_branding / factory_channel_save_branding; 1.31.0 (BL-221: factory_video_list gains youtubeVideoId / hasVideoFile (additive); 1.30.0 (BL-220): the three restart tools
     tools: [
       "factory_get_capabilities",
       "factory_list_logical_paths",
@@ -476,6 +485,9 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
       "factory_channel_save_localizations",
       "factory_channel_get_branding",
       "factory_channel_save_branding",
+      "factory_publishing_plan_save",
+      "factory_publishing_plan_get",
+      "factory_publishing_plan_list",
       "factory_storyboard_create",
       "factory_storyboard_update",
       "factory_storyboard_get",
@@ -522,6 +534,7 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
       "factory_live_save_localizations",
       "factory_channel_save_localizations",
       "factory_channel_save_branding",
+      "factory_publishing_plan_save",
       "factory_storyboard_create",
       "factory_storyboard_update",
       "factory_storyboard_submit",
@@ -1478,4 +1491,31 @@ test("AC-CB-10: factory_channel_get_branding returns the draft, the live values 
     liveUnavailable: null,
     lastApply: { at: "2026-10-25T10:00:00.000Z", ok: false, fields: ["banner"], writes: 1, bannerUrl: null, failure: "banner_uploaded_not_set", code: "update_failed" },
   });
+});
+
+// BL-225 (WEEKLY_PUBLISHING_PLAN.md AC-WP-05): factory_publishing_plan_save is a local write that passes the gate first and reaches
+// only the module's save (as the Operator); its input is strict -- no approval or veto field exists; get and list are reads.
+test("AC-WP-05: factory_publishing_plan_save passes the gate first; strict schema refuses any approval field; get/list are reads", async () => {
+  const { endpoint, tokenServices, toolDeps } = setupWithDeps();
+  const { token } = await tokenServices.issueToken({});
+  const ok = { channelId: "UC_A", weekStart: "2026-10-26", timeZone: "Asia/Tokyo", slots: [{ slotId: "s1", date: "2026-10-26", publishAt: "2026-10-26T18:00", lengthHint: "≈ 3 ч" }] };
+  assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_publishing_plan_save", ok), withToken(token))))).isError, false);
+  assert.deepEqual(toolDeps.mediaCalls, ["gate", "plan.save:UC_A:factory"]);
+  toolDeps.mediaCalls.length = 0;
+  assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_publishing_plan_get", { channelId: "UC_A", weekStart: "2026-10-26" }), withToken(token))))).isError, false);
+  assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_publishing_plan_list", { channelId: "UC_A" }), withToken(token))))).isError, false);
+  assert.deepEqual(toolDeps.mediaCalls, ["plan.get:2026-10-26", "plan.list:UC_A"]);
+  toolDeps.mediaCalls.length = 0;
+  for (const [tool, bad] of [
+    ["factory_publishing_plan_save", { ...ok, approved: true }],
+    ["factory_publishing_plan_save", { ...ok, approve: ["s1"] }],
+    ["factory_publishing_plan_save", { ...ok, slots: [{ ...ok.slots[0], approval: "approved" }] }],
+    ["factory_publishing_plan_save", { ...ok, slots: [{ ...ok.slots[0], vetoed: false }] }],
+    ["factory_publishing_plan_save", { weekStart: "2026-10-26" }],
+    ["factory_publishing_plan_get", { channelId: "UC_A", weekStart: "2026-10-26", decide: "approve" }],
+  ] as const) {
+    const body = await (await endpoint.handle(rpc(call(tool, bad), withToken(token)))).json();
+    assert.equal(Boolean(body.result?.isError ?? body.error), true, JSON.stringify(bad));
+  }
+  assert.deepEqual(toolDeps.mediaCalls, [], "an invalid input reaches neither the gate nor the module");
 });

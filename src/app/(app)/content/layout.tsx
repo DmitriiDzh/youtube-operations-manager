@@ -10,6 +10,7 @@ import { PublishingCalendar } from "@/components/publishing-calendar";
 import { PublishingPackages } from "@/components/publishing-packages";
 import { PublishingSettingsPanel } from "@/components/publishing-settings-panel";
 import { VideoProjectsPanel } from "@/components/video-projects-panel";
+import { WeeklyPlanPanel } from "@/components/weekly-plan-panel";
 import { CONTENT_TABS } from "@/components/section-tabs";
 import { useContentTabBadges } from "@/components/content-tab-badges";
 import { useT } from "@/components/ui-text-provider";
@@ -42,6 +43,11 @@ export default function ContentLayout({ children }: { children: ReactNode }) {
             {item.value === "publishing" && badges.releases > 0 && (
               <span className="ml-1.5 rounded-full bg-violet-600/80 px-1.5 text-[10px] font-semibold text-white" title={t("contentTabs.badge.releases", { count: badges.releases })}>
                 {badges.releases}
+              </span>
+            )}
+            {item.value === "week-plan" && badges.weekPlan > 0 && (
+              <span className="ml-1.5 rounded-full bg-amber-500/90 px-1.5 text-[10px] font-semibold text-zinc-950" title={t("contentTabs.badge.weekPlan", { count: badges.weekPlan })}>
+                {badges.weekPlan}
               </span>
             )}
             {item.value === "calendar" && badges.calendarDue && (
@@ -78,6 +84,12 @@ export default function ContentLayout({ children }: { children: ReactNode }) {
                 </div>
               </details>
             </div>
+          </FeatureErrorBoundary>
+        </div>
+        {/* BL-225 (ADR 0051, AGENTS.md §M): the weekly plan in its own boundary -- Content works without it. */}
+        <div className={tab === "week-plan" ? undefined : "hidden"}>
+          <FeatureErrorBoundary label={t("tabs.content.weekPlan")}>
+            <WeeklyPlanPanel channelId={channel?.id ?? null} visible={tab === "week-plan"} />
           </FeatureErrorBoundary>
         </div>
         <div className={tab === "calendar" ? undefined : "hidden"}>

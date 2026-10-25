@@ -3931,7 +3931,7 @@ Plan: `docs/roadmap/plans/LIVE_STREAMS_PLAN.md` (FO-REQ-0019). Schema v86, Facto
   tick) and serves the «Эфиры» card (`GET .../live-stream/analytics`) and `producer_live_analytics`. The samples and pulls are
   device-local. BL-222 (plan §6): every 5 min its own loop publishes `publishLiveAnalyticsReport` -- the four ranges (1/7/30/90
   days) of each channel sampled in the last 90 days, from local data only -- as the per-device report `ytm-live-analytics` v1
-  (`sync-gateway/live-analytics`, family `live_analytics`, 18 in all; strict: ids, ISO dates, codes and numbers, never the
+  (`sync-gateway/live-analytics`, family `live_analytics`, the 18th; strict: ids, ISO dates, codes and numbers, never the
   per-minute curve). `summary` answers from local samples when it has any for the channel in the range, else from the newest peer
   report whose range has samples (`source: {kind: "peer", deviceId, hostName, updatedAt}`), else local (empty); a range outside
   1/7/30/90 is local only. `producer_live_analytics` stays local. The card is also shown on a computer without the stream host
@@ -4765,6 +4765,50 @@ only writer of a channel's `brandingSettings` (AGENTS.md §F, PROJECT_SPEC §21)
   `POST .../apply`.
 - **Not yet verified against the real API:** whether YouTube keeps `bannerExternalUrl` exactly as sent, and how it formats keywords;
   the read-back reports either. The first real apply is the live acceptance.
+
+## BL-225 — the weekly publishing plan (ADR 0051)
+
+FO-REQ-0040; owner msgs 3511/3534; plan `docs/roadmap/plans/WEEKLY_PUBLISHING_PLAN.md` (AC-WP-01..34). Stage 1 on branch
+`feature/bl-225-weekly-plan`: the plan, the MCP tools and the screen. No YouTube call, no schema change.
+
+- **Storage** (`sync-gateway/publishing-plans`, family `publishing_plans`, 19 in all): one Automerge document per channel
+  (`ytm-publishing-plans` v1, genesis actor "publishing-plans") with three flat maps that exist from the genesis -- `plans` by
+  `weekStart` (time zone, created/updated by), `slots` by `<weekStart>:<slotId>` (assigned whole), `decisions` by a fresh id -- so
+  two computers that start the same week or save different slots merge; a slot edited on both: last writer wins.
+- **The module** (`src/lib/publishing-plans/`): `model.ts` derives everything -- the content hash (SHA-256 of `[timeZone, date,
+  publishAt, lengthHint, note]`), approved (the newest approved/revoked decision with the current hash), `changedAfterApproval` (the
+  last approved snapshot still standing when the hash differs), vetoed (the newest vetoed/restored decision), the status (stage 1:
+  `planned` / `vetoed`; a `progress` port brings the others in stages 2-3), the plan state and counts. `services.ts`: `save` (every
+  rule first, then one change; `details.refused`), `get`, `list`, `ownerList` (with `waiting`), `ownerGet`, `decide` (approve the
+  shown hashes or nothing; revoke; veto; restore; nothing after a slot's time). `agentSurface` (save/get/list) feeds
+  `factory-channel-deps.ts` and the workers' pinned tools; `createPublishingPlansOwnerCore` only the Web routes
+  (`boundaries.test.ts` scans every MCP path). Times: `zoned-time` (`instantOf` refuses a skipped hour).
+- **Web UI.** Контент → «План недели» (`weekly-plan-panel.tsx`): week arrows and state chip, the caption (who, when, the channel's
+  zone, the owner's time in brackets), four tiles, a row per slot (date/time, thumbnail placeholder, title, the pipeline План ›
+  Видео › Пакет › YouTube › Дата, actions), amber rows for a change after approval, struck-through vetoed rows with «Вернуть»,
+  the inline veto confirmation, and in «Всю неделю» the bar with the count, the quota estimate (`estimateUploadUnits`) and «Одобрить
+  неделю»; «По одному» gives «Одобрить» / «Отозвать» per slot. The tab's badge reads `waiting`.
+- **Stage 2 -- package v2** (`publishing/packages.ts`): `RELEASE_PACKAGE_SCHEMAS` accepts `/1` and `/2`; v2 adds `slotId`,
+  `localizations` (checked in `packageProblems` by `shared-localization-set` with a video's limits; `packageLocalizationSet` gives the
+  form sent), `containsSyntheticMedia`, `thumbnails` (one default = `files.thumbnail`; the tests checked by the scan like the default,
+  2 MB each). The composer refuses a thumbnail over 2 MB or not an image. Schema v110: `publishing_uploads.slot_id`, set when queued.
+  The plan's `progress` port is filled by `src/lib/publishing-plan-progress/` (a composition module: the package scan, cached a
+  minute, and this computer's upload rows -> `built` / `packaged` / `uploading` / `failed (code)` / `scheduled` / `published`,
+  `videoId`, the package's facts), passed by `factory-channel-deps.ts` and the owner's routes. The agents' list takes `limit`.
+- **Stage 3 -- uploads of approved slots** (ADR 0051 §7/§8/§10, AGENTS.md §F «Upload localizations»):
+  - `auto-upload.ts` gets `slotDecisions` (from `src/composition/publishing-plan-slots.ts` -> the plan's `createPublishingPlansUploadCore`):
+    vetoed -> skipped (`slot_vetoed`, not hashed); approved and > 15 min ahead -> `queueAutomatic({ slotPublishAt })`; else dateless.
+  - `upload-runner.ts`: the insert's AI flag is `syntheticMediaOf(pkg, settings)`; finishing starts with `localizations` (the shared
+    writer via `writeLocalizations`, `expected` = the insert's snippet so a stale read is never echoed back), then thumbnail, playlist,
+    read-back, and the date only when all passed (`steps.localizations` in `none` / `verified`).
+  - `src/lib/shared-video-localizations/` holds the writer moved out of `live-localizations` (unchanged; `source` names the caller in
+    the audit); `live-localizations` re-exports it.
+  - `plan-schedule.ts` + `createPlanScheduleCore` (loop in `instrumentation.ts`, every minute): for each done row with a slot and a
+    video, `desiredDate` (veto -> no date; approved -> the slot's time when the upload's checks passed and it is > 15 min ahead; pending
+    -> nothing; a date within 15 min is never changed); a fresh read, refused if not private; video-details `applyFieldsUpdate`
+    (`publishAt` null removes the date: `statusPartOf` leaves it out of the status part); read back; `steps.planSync`, the row's date,
+    audit `publishing.plan_scheduled` / `plan_unscheduled`. Live writes / reads off or the quota: the pass stops, nothing recorded;
+    another refusal is recorded and retried after an hour.
 
 ## BL-221 — the Content section redesign (CONTENT_UX_PLAN.md)
 

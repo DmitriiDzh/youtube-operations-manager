@@ -21,6 +21,10 @@ const UPLOAD_WRITERS = [
   "createAutoPrivateUpload",
   "queueAutomatic",
   "setAutoPrivateUploadEnabled",
+  // BL-225 stage 3 (ADR 0051 §5/§7): the plan's changes to an uploaded video's date, and the slots' decisions it reads.
+  "createPlanScheduleCore",
+  "createPlanSchedule",
+  "createPublishingPlansUploadCore",
 ];
 
 async function files(dir: string): Promise<string[]> {
@@ -35,10 +39,17 @@ async function files(dir: string): Promise<string[]> {
 
 /** Tools whose names match but only read: the publishing calendar, and the analytics milestones of published uploads (BL-166). */
 const KNOWN_READS = new Set(["agent_get_publishing_calendar", "producer_upload_milestones"]);
+/**
+ * BL-225 (FO-REQ-0040, ADR 0051 §6 -- a new requirement, not a relaxation of this one): a channel worker drafts its weekly
+ * publishing plan. The draft neither uploads nor schedules anything: only the owner's approval of a slot in the Web UI does, and
+ * the plan module's agents' surface has no decision function (`publishing-plans/boundaries.test.ts`). The next test still holds:
+ * no MCP code reaches the upload approval, the runner or the automatic queue.
+ */
+const KNOWN_PLAN_DRAFTS = new Set(["agent_publishing_plan_save", "agent_publishing_plan_get", "agent_publishing_plan_list"]);
 
-test("AC-UP-14: no MCP tool name uploads, schedules or publishes a video; the matching names are known reads", () => {
+test("AC-UP-14: no MCP tool name uploads, schedules or publishes a video; the matching names are known reads or plan drafts", () => {
   const publishingTools = Object.keys(MCP_TOOL_CLASSIFICATION).filter((name) => /upload|schedul|publish|insert_video|thumbnail/i.test(name));
-  assert.deepEqual(publishingTools.filter((name) => !KNOWN_READS.has(name)), []);
+  assert.deepEqual(publishingTools.filter((name) => !KNOWN_READS.has(name) && !KNOWN_PLAN_DRAFTS.has(name)), []);
 });
 
 test("AC-UP-14: no MCP server or agent endpoint code reaches the upload approval, the runner or the cancel", async () => {

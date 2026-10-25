@@ -956,6 +956,25 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
     `agent_channel_save_branding` у работника своего канала (Agent API 4.6.0); баннер агента — путь в `Sent to YTM`. Apply нет ни
     в одном MCP-пути (AC-CB-09).
   - Карточка «Канал» (`src/components/channel-branding-panel.tsx`) на «Главной», под ней «Переводы канала».
+- **BL-225 план недели публикаций (`docs/roadmap/plans/WEEKLY_PUBLISHING_PLAN.md`, ADR 0051, ветка `feature/bl-225-weekly-plan`; этап 1):**
+  - Модуль `src/lib/publishing-plans/` (§M: только семейство синхронизации, подключения каналов, `zoned-time`; не `publishing`).
+    План на канал и неделю (понедельник), часовой пояс канала в плане, слоты `{ slotId, date, publishAt (местное), lengthHint,
+    note }`. Одобрение, «изменён после одобрения», вето и статус выводятся из записей, не хранятся.
+  - Хранение: семейство синхронизации `publishing_plans` (19-е; документ Automerge на канал, `<данные приложения>/publishing-plans-doc`),
+    одинаково на обоих компьютерах. Схема БД не меняется.
+  - MCP: `factory_publishing_plan_save/get/list` (Factory API 1.33.0) и `agent_publishing_plan_save/get/list` у работника своего
+    канала (Agent API 4.7.0). Решений в MCP нет (AC-WP-05): одобряет, отзывает, снимает и возвращает только владелец.
+  - Маршруты владельца `/api/channels/[channelId]/publishing-plans` (+ `/[weekStart]`, `/[weekStart]/decisions`); аудит решений на
+    этом компьютере. Вкладка Контент → «План недели» (`src/components/weekly-plan-panel.tsx`, чистая часть `weekly-plan-model.ts`)
+    со значком «ждёт одобрения»; «Всю неделю / По одному» — вид, не настройка.
+  - Этап 2: пакет `yt-release-package/2` (`slotId`, `localizations`, `containsSyntheticMedia`, `thumbnails` с одной основной; 2 МБ на
+    каждую обложку — при сканировании и в «Новом пакете»); схема **v110** `publishing_uploads.slot_id`; модуль-композиция
+    `src/lib/publishing-plan-progress/` (скан пакетов и строки загрузок этого компьютера → статусы слотов и данные пакета на экране).
+  - Этап 3: автозагрузка (BL-209) ставит пакет одобренного и не снятого слота с его временем, снятый пропускает (решения слотов —
+    `src/composition/publishing-plan-slots.ts`); загрузчик пишет переводы пакета первым шагом после обработки общим писателем
+    `src/lib/shared-video-localizations/` (вынесен из live-localizations) и ИИ-метку пакета; дата — только после переводов, обложки,
+    плейлиста и сверки. Цикл `plan-schedule` (раз в минуту, `instrumentation.ts`): вето снимает дату у загруженного видео, одобрение
+    или новое время её ставит — через video-details (`publishAt: null`). Статусы загрузки видны только на загружающем компьютере.
 - **Общий модуль `src/lib/shared-localization-set/`** (BL-210, §M): валидатор набора «язык → название/описание» с пределами
   параметром; им пользуются `live-streams/localizations.ts` (пределы видео) и `channel-localizations` (пределы канала).
 - **Общий модуль `src/lib/shared-localization-merge/`** (BL-207, §M): `buildSafeLocalizationsPayload`, `checkDefaultLanguage`,

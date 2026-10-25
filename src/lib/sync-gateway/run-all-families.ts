@@ -12,6 +12,7 @@ import { createChannelLanguageSettingsSyncRunnerForProduction } from "./channel-
 import { createChannelPublishingSettingsSyncRunnerForProduction } from "./channel-publishing-settings-sync";
 import { createPublishingUploadsSyncRunnerForProduction } from "./publishing-uploads-sync";
 import { createStoryboardsSyncRunnerForProduction } from "./storyboards-sync";
+import { createPublishingPlansSyncRunnerForProduction } from "./publishing-plans-sync";
 import { createMediaJobsSyncRunnerForProduction } from "./media-jobs-sync";
 import { createVideoReservationsSyncRunnerForProduction } from "./video-reservations-sync";
 import { createVideoCostsSyncRunnerForProduction } from "./video-costs-sync";
@@ -47,7 +48,7 @@ async function runAndRecord<T>(
  * process-wide guard in `runAllSyncFamiliesOnce` below.
  */
 async function runAllOnce() {
-  const [changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards, mediaJobs, geminiSpend, geminiSettings, videoReservations, videoCosts, liveAnalytics] = await Promise.all([
+  const [changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards, mediaJobs, geminiSpend, geminiSettings, videoReservations, videoCosts, liveAnalytics, publishingPlans] = await Promise.all([
     runAndRecord("change_drafts", () => createChangeDraftsSyncCoreForProduction().runSyncCycle()),
     runAndRecord("editorial_profile", () => createEditorialProfileSyncRunnerForProduction().runSyncCycle()),
     runAndRecord("ai_connections", () => createAiConnectionsCatalogSyncRunnerForProduction().runSyncCycle()),
@@ -81,8 +82,10 @@ async function runAllOnce() {
     runAndRecord("video_costs", () => createVideoCostsSyncRunnerForProduction().runSyncCycle()),
     // BL-222 (LIVE_ANALYTICS_PLAN.md §6): this computer's live-stream summaries out, the other devices' in (shown read-only).
     runAndRecord("live_analytics", () => createLiveAnalyticsSyncRunnerForProduction().runSyncCycle()),
+    // BL-225 (ADR 0051): each channel's weekly publishing plans (the agents' slots, the owner's approvals and vetoes), the same everywhere.
+    runAndRecord("publishing_plans", () => createPublishingPlansSyncRunnerForProduction().runSyncCycle()),
   ]);
-  return { changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards, mediaJobs, geminiSpend, geminiSettings, videoReservations, videoCosts, liveAnalytics };
+  return { changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards, mediaJobs, geminiSpend, geminiSettings, videoReservations, videoCosts, liveAnalytics, publishingPlans };
 }
 
 type AllFamiliesResult = Awaited<ReturnType<typeof runAllOnce>>;

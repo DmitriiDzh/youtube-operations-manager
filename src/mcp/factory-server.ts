@@ -142,7 +142,10 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 // codes) and factory_channel_save_branding (WRITE, local only: replace semantics, {} clears; the banner a path relative to the
 // channel's '99 Data Exchange/Sent to YTM/'; any refused field refuses the whole call with details.refused). Only the owner's
 // «Применить» in the Web UI sends the draft to YouTube; no tool reaches it. Additive.
-export const FACTORY_API_VERSION = "1.32.0";
+// BL-225 (WEEKLY_PUBLISHING_PLAN.md, ADR 0051; FO-REQ-0040): 1.33.0 -- factory_publishing_plan_save (WRITE, local: the channel's
+// weekly plan, synced between the computers), factory_publishing_plan_get / factory_publishing_plan_list (READ). Agents draft;
+// only the owner approves, revokes, vetoes and restores slots in the Web UI. Additive.
+export const FACTORY_API_VERSION = "1.33.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -215,6 +218,10 @@ export const FACTORY_TOOL_NAMES = [
   // BL-223: a channel's description, keywords and banner -- the draft and YouTube's (a read), saving the draft (a local write).
   "factory_channel_get_branding",
   "factory_channel_save_branding",
+  // BL-225: the weekly publishing plan -- saving the draft (a local write, synced), one plan and the list (reads).
+  "factory_publishing_plan_save",
+  "factory_publishing_plan_get",
+  "factory_publishing_plan_list",
   // BL-184: storyboards -- versions, submitting for the owner's review, answers to the owner's comments; reads.
   "factory_storyboard_create",
   "factory_storyboard_update",
@@ -281,6 +288,8 @@ export const FACTORY_WRITE_TOOL_NAMES = [
   "factory_channel_save_localizations",
   // BL-223: a channel's branding draft (local only; written to YouTube only by the owner's «Применить» in the Web UI).
   "factory_channel_save_branding",
+  // BL-225: a channel's weekly plan (synced to the other computers; only the owner approves it, in the Web UI).
+  "factory_publishing_plan_save",
   // BL-184: storyboard versions, submissions and answers (synced to the other computers; nothing is generated or charged).
   "factory_storyboard_create",
   "factory_storyboard_update",
@@ -396,6 +405,15 @@ export type FactoryToolDeps = {
   channelBranding: {
     get(input: { channelId: string }): Promise<Record<string, unknown>>;
     save(input: { channelId: string; description?: string; keywords?: string[]; bannerFile?: string; keepBanner?: boolean }, by?: "factory" | "worker"): Promise<Record<string, unknown>>;
+  };
+  /**
+   * BL-225 (ADR 0051): the weekly publishing plan (the publishing-plans module validates every input strictly itself). Its agents'
+   * surface has no decision: nothing here approves, revokes, vetoes or restores a slot. `by`: the Operator, or a channel's worker.
+   */
+  publishingPlans: {
+    save(input: unknown, by?: "factory" | "worker"): Promise<Record<string, unknown>>;
+    get(input: unknown): Promise<Record<string, unknown>>;
+    list(input: unknown): Promise<Record<string, unknown>>;
   };
   /** BL-184: storyboards (the module validates every input strictly itself; every write is the Operator's). */
   storyboards: {
@@ -1372,6 +1390,63 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
       await deps.assertMutationAllowed();
       return successResult(await deps.channelBranding.save(input));
     }
+  );
+
+  // -- BL-225 (FO-REQ-0040, WEEKLY_PUBLISHING_PLAN.md stage 1 item 5, ADR 0051): the weekly publishing plan. The schemas here name
+  // the fields (strict: no approval or veto field exists); the publishing-plans module checks every rule. The save passes the device
+  // mutation gate; nothing reaches YouTube.
+  const planSlotInput = z
+    .object({
+      slotId: z.string().min(1).max(40),
+      date: z.string().max(10),
+      publishAt: z.string().max(16),
+      lengthHint: z.string().max(40).nullable().optional(),
+      note: z.string().max(500).nullable().optional(),
+    })
+    .strict();
+  const planSaveInput = z
+    .object({
+      channelId: z.string().min(1).max(64),
+      weekStart: z.string().max(10),
+      timeZone: z.string().min(1).max(64).optional(),
+      slots: z.array(planSlotInput).max(28).optional(),
+      removeSlotIds: z.array(z.string().min(1).max(40)).max(28).optional(),
+    })
+    .strict();
+  const planRefInput = z.object({ channelId: z.string().min(1).max(64), weekStart: z.string().max(10) }).strict();
+  const planListInput = z.object({ channelId: z.string().min(1).max(64), limit: z.number().int().min(1).max(52).optional() }).strict();
+  const PLAN_SHAPE =
+    "Plan: { channelId, weekStart (a Monday), weekEnd (its Sunday), timeZone, state: empty | awaiting_approval (a future slot not vetoed waits for the owner) | approved | past, counts: { slots, approved, needsApproval, vetoed }, firstRelease (UTC, the earliest slot not vetoed, or null), createdAt, createdBy: factory | worker, updatedAt, updatedBy, slots: [{ slotId, date, publishAt (local wall time 'YYYY-MM-DDTHH:MM' in timeZone), publishAtUtc, lengthHint, note, contentHash, approval: approved | needs_approval, approvedAt, changedAfterApproval: { previous: { date, publishAt, lengthHint, note, timeZone }, approvedAt, changedAt, changedBy } | null (the owner approved other content: he must approve the change), vetoed: { at, device } | null, status: planned | built (a yt-release-package/2 names the slot, not ready yet, its video there) | packaged (that package is ready; or uploaded private without a date) | uploading | scheduled (private with the slot's date on the video) | published | failed (statusCode: the upload's code, or the step that kept the date off: localizations_failed | localizations_mismatch | thumbnail_failed | playlist_failed | read_back_mismatch | publish_at_failed | publish_at_too_soon | plan_scheduled_failed | plan_unscheduled_failed) | vetoed, statusCode, videoId (upload statuses come from the computer that uploads -- the one with the automatic-upload switch on), package: { video, title, durationSeconds, languages: [code], containsSyntheticMedia (the package's, else the channel setting), thumbnailPath, testThumbnails (count), problems: [code] } | null, released (its time has passed), createdAt, updatedAt, updatedBy }] sorted by time } (get only: slots).";
+
+  registerTool(
+    "factory_publishing_plan_save",
+    {
+      description: `Save a channel's weekly publishing plan as a draft for the owner (1.33.0): { channelId (connected here), weekStart ('YYYY-MM-DD', a Monday), timeZone? (IANA, e.g. 'Asia/Tokyo': the channel's time; required for a new plan; changing it re-times every slot), slots?: [{ slotId (1-40 of letters, digits, '_', '-'; yours), date ('YYYY-MM-DD', within weekStart..weekStart+6), publishAt ('YYYY-MM-DDTHH:MM', the channel's local time on that date), lengthHint? (<= 40, e.g. '≈ 3 ч'), note? (<= 500) }] (<= 28 in a plan; each slot is given WHOLE -- an omitted lengthHint/note is none; a slot not named stays as it is), removeSlotIds?: [slotId] } -> { plan, changed: [slotId], unlocked: [slotId] (were approved, now need the owner again), removed: [slotId] }. A new or changed slot must be in the future; a slot sent unchanged is a no-op. Changing ANY field of an approved slot (or the plan's timeZone) drops its approval: the owner approves it again. An approved, vetoed or uploaded slot cannot be removed (the owner vetoes it instead); a slot id is unique across the channel's weeks; a vetoed slot stays vetoed whatever you change. You cannot approve: only the owner approves the week or a slot, revokes, vetoes and restores, in the app (Контент → «План недели»), on either computer; the plan is synced between the computers (a minute or two). Any refused field refuses the whole call and nothing is saved: validation_failed with details.refused: [{ slotId?, field: weekStart | timeZone | slots | date | publishAt | removeSlotIds, reason: week_start_invalid | week_start_not_monday | time_zone_required | time_zone_invalid | too_many_slots | duplicate_slot | date_invalid | outside_week | publish_at_invalid (malformed, or a time the clock skips) | date_mismatch | in_past | unknown_slot | slot_approved (an approval stands, also of content changed since) | slot_vetoed | slot_uploaded | slot_id_in_other_week (a slot id is unique in the channel) }]. Not connected here: publishing_plan_channel_unavailable. Nothing is sent to YouTube. Passes the device mutation gate. ${PLAN_SHAPE}`,
+      inputSchema: planSaveInput,
+    },
+    async (args) => {
+      const input = parseInput(planSaveInput, args);
+      await deps.assertMutationAllowed();
+      return successResult(await deps.publishingPlans.save(input));
+    }
+  );
+
+  registerTool(
+    "factory_publishing_plan_get",
+    {
+      description: `One weekly publishing plan with every slot, its approval, veto and status (1.33.0): { channelId, weekStart } -> { plan }. The owner's decisions made on another computer appear after a sync (a minute or two). Refusals: publishing_plan_not_found, publishing_plan_channel_unavailable. Read-only. ${PLAN_SHAPE}`,
+      inputSchema: planRefInput,
+    },
+    async (args) => successResult(await deps.publishingPlans.get(parseInput(planRefInput, args)))
+  );
+
+  registerTool(
+    "factory_publishing_plan_list",
+    {
+      description: "A channel's weekly publishing plans, newest week first (1.33.0): { channelId, limit? (1-52, default 12: the newest weeks) } -> { plans: [the plan's fields without slots] }. Read-only.",
+      inputSchema: planListInput,
+    },
+    async (args) => successResult(await deps.publishingPlans.list(parseInput(planListInput, args)))
   );
 
   // -- BL-184 (FO-REQ-0024, STORYBOARD_PLAN.md §2.6): storyboards. The schemas here name the fields; the storyboards module checks

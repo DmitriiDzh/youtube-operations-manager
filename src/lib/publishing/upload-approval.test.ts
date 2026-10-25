@@ -233,3 +233,34 @@ test("channel tags for a package with tags: []: bound to what was shown, and ref
   await refusedWith(over.approval.approve({ channelId: "UC_t", userId: "u-owner", items: [item("V67")], shownSettings: huge }), "upload_tags_too_long");
   assert.equal(over.inserted.length, 0);
 });
+
+// BL-225 stage 2 (FO-REQ-0040 acceptance 4, ADR 0051): the slot a v2 package names is kept on its upload row; a v1 package has none.
+test("AC-WP-23: the upload row keeps the plan slot of a v2 package (null for v1)", async () => {
+  const v2 = scanned("V65");
+  v2.pkg = { ...v2.pkg!, schemaVersion: 2, slotId: "w44-mon" };
+  const h = harness([v2, scanned("V66")]);
+  await h.approval.approve({ channelId: "UC_t", userId: "u", items: [item("V65"), item("V66")], shownSettings: SETTINGS });
+  assert.deepEqual(h.inserted.map((row) => [row.video, row.slotId]), [["V65", "w44-mon"], ["V66", null]]);
+});
+
+// BL-225 stage 3 (ADR 0051 §8): the frozen package carries a v2 package's translations as the shared rules send them (the title
+// trimmed, CRLF made LF), its own AI flag and its slot; a v1 package carries none of them.
+test("AC-WP-30: the frozen package holds the v2 translations (checked form), the AI flag and the slot", async () => {
+  const v2 = scanned("V65");
+  v2.pkg = { ...v2.pkg!, schemaVersion: 2, slotId: "w44-mon", containsSyntheticMedia: false, localizations: { ja: { title: "  夜明け  ", description: "田んぼ\r\n朝" } } };
+  const h = harness([v2, scanned("V66")]);
+  await h.approval.approve({ channelId: "UC_t", userId: "u", items: [item("V65"), item("V66")], shownSettings: SETTINGS });
+  const [first, second] = h.inserted.map((row) => JSON.parse(row.packageJson));
+  assert.deepEqual([first.localizations, first.containsSyntheticMedia, first.slotId], [{ ja: { title: "夜明け", description: "田んぼ\n朝" } }, false, "w44-mon"]);
+  assert.deepEqual([second.localizations, second.containsSyntheticMedia, second.slotId], [undefined, undefined, undefined]);
+});
+
+// Review #5 (LOW): two packages naming the same plan slot could both upload and be scheduled. A package whose slot an upload here
+// already holds (another video) is refused: `upload_slot_taken`.
+test("review #5: a package whose slot is held by another video's upload is refused, nothing queued", async () => {
+  const v2 = scanned("V65");
+  v2.pkg = { ...v2.pkg!, schemaVersion: 2, slotId: "w44-mon" };
+  const h = harness([v2], { heldSlots: async () => new Set(["w44-mon"]) });
+  await refusedWith(h.approval.approve({ channelId: "UC_t", userId: "u", items: [item("V65")], shownSettings: SETTINGS }), "upload_slot_taken");
+  assert.deepEqual(h.inserted, []);
+});

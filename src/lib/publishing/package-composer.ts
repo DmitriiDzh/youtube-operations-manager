@@ -7,6 +7,7 @@ import {
   packageProblems,
   RELEASE_PACKAGE_FILE_PATTERN,
   RELEASE_PACKAGE_SCHEMA,
+  THUMBNAIL_MAX_BYTES,
   youtubeRecordFileName,
   type ChannelExpectations,
   type PackageProblem,
@@ -298,6 +299,10 @@ export function createPackageComposer(deps: ComposerDeps) {
       const { workspace, pkg, draft, channel } = await build(channelId, input);
       if (!draft.picks.video) throw refuse("package_no_video", "Choose the video file.", { folder: input.folder });
       if (!draft.picks.thumbnail) throw refuse("package_no_thumbnail", "Choose the thumbnail.", { folder: input.folder });
+      // BL-225 stage 2 (owner msg 3511 answer 4): the 2 MB limit and the image type are enforced when the package is made, not only
+      // reported by the scan afterwards.
+      if (draft.problems.some((p) => p.code === "thumbnail_too_large")) throw refuse("package_thumbnail_too_large", "The thumbnail is larger than 2 MB.", { folder: input.folder, file: draft.picks.thumbnail, max: THUMBNAIL_MAX_BYTES });
+      if (draft.problems.some((p) => p.code === "thumbnail_not_image")) throw refuse("package_thumbnail_not_image", "The thumbnail is neither JPEG nor PNG.", { folder: input.folder, file: draft.picks.thumbnail });
       if (draft.durationSeconds === null) throw refuse("package_duration_unknown", "The video's length could not be read (is ffprobe installed?).", { folder: input.folder });
       if (channel.defaultLanguage === null || channel.defaultAudioLanguage === null) {
         throw refuse("package_no_baseline", "The channel has no language or audio-language baseline (Languages → Language defaults).");

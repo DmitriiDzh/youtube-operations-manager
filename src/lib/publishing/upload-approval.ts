@@ -10,7 +10,7 @@ import { DomainError } from "@/lib/shared-domain";
 import type { PackageScanResult } from "./package-scan";
 import type { PublishingSettingsView } from "./settings-service";
 import { uploadTags, type PublishingSettings } from "./settings";
-import { tagsLength } from "./packages";
+import { packageLocalizationSet, tagsLength } from "./packages";
 import { estimateUploadUnits, isDeferredPublishAt } from "./publish-dates";
 import { normalizeLineEndings, type ApprovedPackage } from "./upload-runner";
 
@@ -36,6 +36,8 @@ export type UploadApprovalDeps = {
   /** What this computer's queued and unfinished uploads will still spend: inserts not made yet, and their pool units (review). */
   pending(now: Date): Promise<{ inserts: number; units: number }>;
   checkUnits(units: number): Promise<UnitsVerdict>;
+  /** Review #5 (BL-225): the plan slots an upload here already holds (absent: none checked). */
+  heldSlots?(channelId: string): Promise<Set<string>>;
   insert(rows: StoredPublishingUpload[]): Promise<boolean>;
   newId(): string;
   audit(args: { channelId: string; detail: Record<string, unknown> }): Promise<void>;
@@ -74,6 +76,7 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
     const { refuse, now, view, scanned } = args;
     const live = await deps.liveVideos(args.channelId);
     const elsewhere = await deps.peerUploads(args.channelId);
+    const heldSlots = deps.heldSlots ? await deps.heldSlots(args.channelId) : new Set<string>();
 
     const chosen = args.items.map((item) => {
       const found = scanned.packages.find((p) => p.manifestPath === item.manifestPath);
@@ -85,6 +88,8 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
         const host = peer.host ?? "another computer";
         throw refuse("upload_already_queued", peer.uploaded ? `${found.pkg.video} was already uploaded from ${host}.` : `${found.pkg.video} is being uploaded on ${host}.`, { video: found.pkg.video, host });
       }
+      // Review #5: one upload per plan slot.
+      if (found.pkg.slotId && heldSlots.has(found.pkg.slotId)) throw refuse("upload_slot_taken", `${found.pkg.video}: the plan slot ${found.pkg.slotId} already has an upload.`, { video: found.pkg.video, slotId: found.pkg.slotId });
       if (found.state !== "ready" || !found.thumbnailPath) throw refuse("upload_package_not_ready", `${found.pkg.video} is not ready to upload.`, { video: found.pkg.video, problems: found.problems });
       if (item.publishAt !== null) {
         const at = Date.parse(item.publishAt);
@@ -140,6 +145,10 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
         sizeBytes: pkg.sizeBytes,
         // Review L5: the runner checks an automatic row's file against it before a session starts.
         ...(args.mode.automatic && pkg.sha256 ? { videoSha256: pkg.sha256 } : {}),
+        // BL-225 stage 3 (ADR 0051 §8): a v2 package's translations (as the shared rules send them), its own AI flag and its slot.
+        ...(packageLocalizationSet(pkg) ? { localizations: packageLocalizationSet(pkg)! } : {}),
+        ...(typeof pkg.containsSyntheticMedia === "boolean" ? { containsSyntheticMedia: pkg.containsSyntheticMedia } : {}),
+        ...(pkg.slotId ? { slotId: pkg.slotId } : {}),
       };
       return {
         id: deps.newId(),
@@ -172,6 +181,8 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
         leaseOwner: null,
         leaseUntil: null,
         automatic: args.mode.automatic,
+        // BL-225 stage 2 (ADR 0051): the plan slot a v2 package names (FO-REQ-0040 acceptance 4: each upload maps to its slot).
+        slotId: pkg.slotId ?? null,
       };
     });
     if (!(await deps.insert(rows))) throw refuse("upload_already_queued", "One of the videos was queued meanwhile.");
@@ -179,7 +190,8 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
       const detail =
         args.mode.automatic
           ? // ADR 0046 / plan §2 item 6: when, channel, package, manifest hash, the switch state and the resulting upload id.
-            { event: "publishing.upload_auto_queued", at: now.toISOString(), channelId: row.channelId, uploadId: row.id, video: row.video, manifestSha256: row.manifestSha256, switchOn: args.mode.switchOn, publishAt: null, uploadPrivate: true, publish: false, automatic: true }
+            // BL-225 stage 3: with the approved plan slot it is for and that slot's time (null: no approved slot -- private, no date).
+            { event: "publishing.upload_auto_queued", at: now.toISOString(), channelId: row.channelId, uploadId: row.id, video: row.video, manifestSha256: row.manifestSha256, switchOn: args.mode.switchOn, publishAt: row.publishAt, uploadPrivate: true, publish: row.publishAt !== null, automatic: true, ...(row.slotId ? { slotId: row.slotId } : {}) }
           : { event: "publishing.upload_approved", uploadId: row.id, video: row.video, publishAt: row.publishAt, uploadPrivate: true, publish: row.publishAt !== null, approvedBy: args.userId };
       await deps.audit({ channelId: args.channelId, detail });
     }
@@ -226,7 +238,12 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
       manifestSha256: string;
       scanned: Extract<PackageScanResult, { status: "ok" }>;
       switchOn: boolean;
-    }): Promise<{ id: string; video: string }> {
+      /**
+       * BL-225 stage 3 (ADR 0051 §7): the time of the APPROVED, not vetoed weekly-plan slot the package names -- the owner's slot
+       * approval is the approval of this date. Absent/null: private, no date (ADR 0046).
+       */
+      slotPublishAt?: string | null;
+    }): Promise<{ id: string; video: string; publishAt: string | null }> {
       const now = deps.clock.now();
       const refuse: Refuse = (code, message, details) => new DomainError({ code, message, details: { channelId: input.channelId, ...details } });
       if (!input.switchOn) throw refuse("validation_failed", "The automatic upload is switched off.");
@@ -237,7 +254,7 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
       const result = await queue({
         channelId: input.channelId,
         userId: input.userId,
-        items: [{ manifestPath: input.manifestPath, manifestSha256: input.manifestSha256, publishAt: null }],
+        items: [{ manifestPath: input.manifestPath, manifestSha256: input.manifestSha256, publishAt: input.slotPublishAt ?? null }],
         view,
         scanned: input.scanned,
         acknowledgeUnknownQuota: false,
@@ -245,7 +262,7 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
         refuse,
         now,
       });
-      return { id: result.uploads[0].id, video: result.uploads[0].video };
+      return { id: result.uploads[0].id, video: result.uploads[0].video, publishAt: result.uploads[0].publishAt };
     },
   };
 }

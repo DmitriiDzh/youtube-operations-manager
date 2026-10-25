@@ -87,6 +87,9 @@ export function resolveAppPaths(input: ResolveAppPathsInput): AppPaths {
     storyboardsDocDir: path.join(appDataDir, "storyboards-doc"),
     storyboardsSyncFallbackDir: path.join(appDataDir, "storyboards-sync-local"),
     storyboardsDiscardedBackupsDir: path.join(appDataDir, "storyboards-discarded-backups"),
+    publishingPlansDocDir: path.join(appDataDir, "publishing-plans-doc"),
+    publishingPlansSyncFallbackDir: path.join(appDataDir, "publishing-plans-sync-local"),
+    publishingPlansDiscardedBackupsDir: path.join(appDataDir, "publishing-plans-discarded-backups"),
     bootstrapConfigPath: path.join(appDataDir, "bootstrap-config.json"),
     authContextPath: path.join(appDataDir, "auth-context.json"),
   };

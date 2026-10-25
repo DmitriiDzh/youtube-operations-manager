@@ -169,3 +169,15 @@ test("the preview serves only an image under 04 Videos", () => {
     assert.equal(isPackageThumbnailPath(bad), false, bad);
   }
 });
+
+// Review #5 (LOW, BL-225): packages naming the same weekly-plan slot. None uploads while two wait for it (`slot_duplicate`); once
+// one of them is uploaded, the others are refused (`slot_taken`).
+test("review #5: two packages naming one slot are both not ready; with one uploaded, the other is", async () => {
+  const { markSharedSlots } = await import("./package-scan");
+  const pkg = (video: string, uploaded: boolean) =>
+    ({ video, state: uploaded ? "scheduled" : "ready", problems: [], youtube: uploaded ? { videoId: "x", privacyStatus: "private", publishAt: null } : null, pkg: { slotId: "s1" } }) as never;
+  const both = markSharedSlots([pkg("V64", false), pkg("V65", false)]) as Array<{ state: string; problems: Array<{ code: string }> }>;
+  assert.deepEqual(both.map((p) => [p.state, p.problems.map((x) => x.code)]), [["not_ready", ["slot_duplicate"]], ["not_ready", ["slot_duplicate"]]]);
+  const taken = markSharedSlots([pkg("V64", true), pkg("V65", false)]) as Array<{ state: string; problems: Array<{ code: string }> }>;
+  assert.deepEqual(taken.map((p) => [p.state, p.problems.map((x) => x.code)]), [["scheduled", []], ["not_ready", ["slot_taken"]]]);
+});

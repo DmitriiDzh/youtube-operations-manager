@@ -796,7 +796,8 @@ is safe merely because the underlying YouTube API technically allows it, and nev
 widening an existing type (e.g. `ChangeField`) without first updating this section to say so.
 
 **Second writer of per-language title/description (added 2026-10-21, owner, Telegram msgs 3254/3257, BL-207, ADR 0045).** Besides
-the Change Set mechanism, `src/lib/live-localizations/` writes `localizations` -- and only on these terms:
+the Change Set mechanism, `src/lib/live-localizations/` writes `localizations` (since BL-225 through the shared writer
+`src/lib/shared-video-localizations/`, shared with the upload localizations below) -- and only on these terms:
 - only to a live broadcast's video (each broadcast and BL-205 segment of the channel's stream), after its fields step succeeded;
 - only the stream's one stored set (`live_streams.localizations_json`), set by the Factory Operator over MCP or by hand in the
   Live section; a language without a translation gets nothing written, so its viewers see the base text;
@@ -830,6 +831,14 @@ the Factory Operator or the channel's own worker; the banner copied into the app
 re-read right before the writes, the Live-writes check right before each write, read-back and audit; partial states named
 (`banner_uploaded_not_set`, `read_back_mismatch`). It never writes the name, avatar, country, default language, trailer or
 tracking id, and it is not a localization writer.
+
+**Upload localizations (added 2026-10-25, owner, Telegram msgs 3511/3534/3537, BL-225, ADR 0051).**
+`src/lib/publishing/` may write a video's per-language title/description only on the upload it makes itself of a
+`yt-release-package/2`: only the package's own set (checked when the upload is queued), as the first step after processing, through
+the shared video translations writer (`src/lib/shared-video-localizations/`, the same safe merge: nothing deleted, the snippet text
+untouched, never the video's own language), with identity check, backup, the Live-writes check before its write, read-back and
+audit. The date (`status.publishAt`) is written only after the translations, thumbnail, playlist and read-back passed (BL-224); a
+veto of the slot removes an uploaded video's date (still private). Agents draft plans; only the owner approves a slot.
 
 ---
 
@@ -1864,7 +1873,8 @@ Do not implement yet:
 - video upload (lifted for one case, 2026-10-13, ADR 0037: the owner's own release packages,
   uploaded and scheduled from the Web UI on the owner's approval only -- never by an agent; since 2026-10-22, ADR 0046, also
   uploaded as private without a date on the standing approval of the owner's automatic-upload switch, when the video matches
-  its manifest's SHA-256 -- still never by an agent, never published or scheduled that way);
+  its manifest's SHA-256 -- still never by an agent, never published or scheduled that way; since 2026-10-25, ADR 0051, also
+  scheduled at a weekly-plan slot's time when the owner approved that slot -- agents draft the plan, never approve it);
 - thumbnail generation;
 - image generation;
 - music generation;

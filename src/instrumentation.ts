@@ -493,7 +493,9 @@ async function startServerSession() {
   // off an upload pauses. Never during a snapshot import/migration or in recovery mode (it writes rows and the upload record).
   let uploads: import("@/lib/publishing").UploadRunner | null = null;
   try {
-    uploads = (await import("@/lib/publishing")).createUploadRunnerCore();
+    // Review #1 (BL-225): the runner asks the weekly plan again before a slot's row starts and before its date (§M: composed here).
+    const { planSlotDecisions } = await import("@/composition/publishing-plan-slots");
+    uploads = (await import("@/lib/publishing")).createUploadRunnerCore({ slotDecisions: planSlotDecisions });
   } catch (error) {
     console.warn(`[publishing] uploads not started: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -517,7 +519,9 @@ async function startServerSession() {
   // nothing here writes to YouTube. Never during a snapshot import/migration or in recovery mode (it writes rows).
   let autoUploads: import("@/lib/publishing").AutoPrivateUpload | null = null;
   try {
-    autoUploads = (await import("@/lib/publishing")).createAutoPrivateUploadCore();
+    // BL-225 stage 3 (ADR 0051 §7): the weekly plan's slot decisions, plugged in from the composition layer (§M).
+    const { planSlotDecisions } = await import("@/composition/publishing-plan-slots");
+    autoUploads = (await import("@/lib/publishing")).createAutoPrivateUploadCore({ slotDecisions: planSlotDecisions });
   } catch (error) {
     console.warn(`[publishing] automatic upload not started: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -534,6 +538,31 @@ async function startServerSession() {
     setTimeout(() => void autoUploadsLoop(), AUTO_UPLOADS_TICK_MS).unref();
   };
   setTimeout(() => void autoUploadsLoop(), 60_000).unref();
+
+  // BL-225 stage 3 (WEEKLY_PUBLISHING_PLAN.md, ADR 0051 §5/§10; owner msg 3537): the weekly plan's word on videos this computer
+  // already uploaded for a slot -- a veto removes the date, an approval or a re-approval with a new time sets it -- in its own loop
+  // every minute (§M). A row whose date already matches the plan costs no YouTube call; each change goes through video-details'
+  // write path (identity, backup, Live writes right before the write, read-back). Never during an import/migration or recovery.
+  let planSchedule: import("@/lib/publishing").PlanSchedule | null = null;
+  try {
+    const { planSlotDecisions } = await import("@/composition/publishing-plan-slots");
+    planSchedule = (await import("@/lib/publishing")).createPlanScheduleCore({ slotDecisions: planSlotDecisions });
+  } catch (error) {
+    console.warn(`[publishing] plan schedule not started: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const PLAN_SCHEDULE_TICK_MS = 60_000;
+  const planScheduleLoop = async () => {
+    if (!planSchedule) return;
+    try {
+      await assertDeviceAvailableForMutation(rawSqlClient);
+      await planSchedule.tick();
+    } catch (error) {
+      const paused = error instanceof Error && (error.name === "OperationLockError" || error.name === "RecoveryModeError");
+      if (!paused) console.warn(`[publishing] plan schedule: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    setTimeout(() => void planScheduleLoop(), PLAN_SCHEDULE_TICK_MS).unref();
+  };
+  setTimeout(() => void planScheduleLoop(), 90_000).unref();
 
   // BL-176 (LIVE_STREAMS_PLAN.md §3.1/§3.6/§3.8, ADR 0036): live streams, in their own loop (AGENTS.md §M). Switched off
   // (the default) or on a computer that is not the Mac's system service, a tick only reads the settings: no process, no

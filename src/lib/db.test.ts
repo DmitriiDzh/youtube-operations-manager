@@ -1074,7 +1074,8 @@ test("recordGatewayCallOutcome: prunes events older than the retention window on
 // languages, and the uploads under way an eleventh, a per-device report like the live streams.
 // BL-188 (2026-10-14): every computer's media jobs are a thirteenth, a per-device report like the sessions.
 // BL-193 (2026-10-16, ADR 0039): the Gemini spend report (a fourteenth) and the Gemini limits' document (a fifteenth).
-test("getSyncFamilyStatuses: every family (fifteen since BL-193) reports a never-synced row before any cycle completes", () =>
+// BL-225 (ADR 0051): the weekly publishing plans, one document per channel like the storyboards.
+test("getSyncFamilyStatuses: every family (nineteen since BL-225) reports a never-synced row before any cycle completes", () =>
   withTempClient(async (client) => {
     await initializeDatabaseSchema(client);
     const isolatedDb = createIsolatedDb(client);
@@ -1083,7 +1084,7 @@ test("getSyncFamilyStatuses: every family (fifteen since BL-193) reports a never
 
     assert.deepEqual(
       statuses.map((s) => s.family).sort(),
-      ["agent_tokens", "ai_connections", "change_drafts", "channel_language_settings", "channel_publishing_settings", "editorial_profile", "gemini_settings", "gemini_spend", "generation_plans", "live_analytics", "live_streams", "media_jobs", "media_sessions", "media_settings", "publishing_uploads", "storyboards", "video_costs", "video_reservations"]
+      ["agent_tokens", "ai_connections", "change_drafts", "channel_language_settings", "channel_publishing_settings", "editorial_profile", "gemini_settings", "gemini_spend", "generation_plans", "live_analytics", "live_streams", "media_jobs", "media_sessions", "media_settings", "publishing_plans", "publishing_uploads", "storyboards", "video_costs", "video_reservations"]
     );
     for (const s of statuses) {
       assert.equal(s.lastSyncedAt, null);

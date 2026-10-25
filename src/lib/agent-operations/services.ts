@@ -831,6 +831,23 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     description:
       "Save this channel's description, keywords and banner as a draft (`agent_channel_save_branding`; the banner a file in your workspace's 99 Data Exchange/Sent to YTM/), as factory_channel_save_branding. Local only: only the owner's «Применить» in the app writes it to YouTube; the name and avatar are YouTube Studio's. Logged.",
   },
+  // BL-225 (WEEKLY_PUBLISHING_PLAN.md stage 1 item 5, ADR 0051): the channel's weekly publishing plan -- a draft for the owner.
+  {
+    id: "channel_production.read_publishing_plan",
+    mcpTools: ["agent_publishing_plan_get", "agent_publishing_plan_list"],
+    domain: "channel_production",
+    permission: "READ",
+    description:
+      "This channel's weekly publishing plans: one week with every slot's approval, veto and status, or the list newest first (`agent_publishing_plan_get`, `agent_publishing_plan_list`), as factory_publishing_plan_get / _list.",
+  },
+  {
+    id: "channel_production.write_publishing_plan",
+    mcpTools: ["agent_publishing_plan_save"],
+    domain: "channel_production",
+    permission: "DRAFT",
+    description:
+      "Save this channel's weekly publishing plan as a draft (`agent_publishing_plan_save`: a Monday weekStart, the channel's time zone, slots with date and local publish time), as factory_publishing_plan_save. Synced to the other computers; only the owner approves, revokes or vetoes a slot in the app, and changing an approved slot needs him again. Nothing is sent to YouTube. Logged.",
+  },
   // BL-218 (stage 4, owner msg 3402): paid work the Operator's way, within the owner's switches and limits.
   {
     id: "channel_production.factory_sessions",

@@ -50,3 +50,13 @@ test("a status write without containsSyntheticMedia, when the read lacks it, is 
   assert.deepEqual(missingWriteOnlyStatusFields(false, {}, { title: "x" }), []);
   assert.deepEqual(missingWriteOnlyStatusFields(true, { containsSyntheticMedia: true }, { license: "youtube" }), [], "a readable value is carried over");
 });
+
+// BL-225 stage 3 (ADR 0051 §5; FO-REQ-0040 item 5: "after upload: the video is unscheduled and stays private"): removing the date
+// follows the same rule as setting one -- only on a private video whose current date is more than 15 minutes ahead.
+test("BL-225: publishAt null (remove the date) -- allowed on a private video whose date is far enough ahead, refused otherwise", () => {
+  const now = Date.parse("2026-10-25T12:00:00Z");
+  assert.equal(publishAtWriteRefusal("v", { privacyStatus: "private", publishAt: "2026-10-26T09:00:00Z" }, { publishAt: null }, now), null);
+  assert.equal(publishAtWriteRefusal("v", { privacyStatus: "private", publishAt: null }, { publishAt: null }, now), null);
+  assert.equal(publishAtWriteRefusal("v", { privacyStatus: "private", publishAt: "2026-10-25T12:10:00Z" }, { publishAt: null }, now)?.code, "publish_at_already_published");
+  assert.equal(publishAtWriteRefusal("v", { privacyStatus: "public", publishAt: null }, { publishAt: null }, now)?.code, "publish_at_already_published");
+});

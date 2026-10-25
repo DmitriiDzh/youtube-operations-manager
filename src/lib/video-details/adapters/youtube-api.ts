@@ -56,6 +56,16 @@ const STATUS_PATCH_KEYS = [
   "containsSyntheticMedia",
 ] as const;
 
+/**
+ * The status part a patch sends: the part as just read with the patch's fields on top, only the writable ones. BL-225 stage 3
+ * (ADR 0051 §5): a null `publishAt` removes the date -- left out of the part, which `videos.update` replaces whole.
+ */
+export function statusPartOf(readStatus: Record<string, unknown>, patch: VideoDetailsPatch): Record<string, unknown> {
+  const status = pickWritableStatusFields({ ...readStatus, ...patch });
+  if (patch.publishAt === null) delete status.publishAt;
+  return status;
+}
+
 export function createVideoDetailsYoutubeApiAdapter() {
   return {
     async getSnapshot(args: { credentials: ResolvedCredentials; videoId: string }): Promise<VideoDetailsSnapshot> {
@@ -130,10 +140,7 @@ export function createVideoDetailsYoutubeApiAdapter() {
             : {}),
           ...(touchesStatus
             ? {
-                status: pickWritableStatusFields({
-                  ...context.status,
-                  ...args.patch,
-                }) as typeof context.status,
+                status: statusPartOf(context.status as Record<string, unknown>, args.patch) as typeof context.status,
               }
             : {}),
           ...(touchesRecordingDetails

@@ -60,6 +60,7 @@ function job(over: Partial<StoredPublishingUpload> = {}): StoredPublishingUpload
     leaseUntil: null,
     // BL-209 (schema v103): every row now carries `automatic`; these jobs are the owner's approvals.
     automatic: false,
+    slotId: null,
     ...over,
   };
 }
@@ -994,4 +995,119 @@ test("AC-UP-02d: a thumbnail YouTube says is not custom after the re-reads -> mi
     const steps = JSON.parse(h.row().stepsJson);
     assert.deepEqual([steps.verify.result, steps.verify.mismatches, steps.publishAt], [expected, expected === "mismatch" ? ["thumbnail"] : [], expected === "mismatch" ? "withheld" : "set"], String(custom));
   }
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// BL-225 stage 3 (WEEKLY_PUBLISHING_PLAN.md AC-WP-30/33/34; FO-REQ-0040 items 2 and 4; ADR 0051 §8; AGENTS.md §F «Upload
+// localizations»). Requirements: a v2 package's translations are written onto the video the upload made, first after processing,
+// by the shared writer (which reads back); its own AI flag replaces the channel's in the insert and in the date write; the date
+// goes on only when the translations, the thumbnail, the playlist and the read-back all passed -- any failure leaves the video
+// private without a date.
+// ---------------------------------------------------------------------------------------------------------------------------
+
+const PKG_V2: ApprovedPackage = { ...PKG, localizations: { ja: { title: "キューバ", description: "朝" } }, containsSyntheticMedia: false, slotId: "w44-fri" };
+
+function v2Harness(result: { verified: true } | { verified: false; detail: string } | "throw" | "absent") {
+  const calls: Array<{ videoId: string; languages: string[]; expected: unknown }> = [];
+  const synthetic: boolean[] = [];
+  const h = harness([job({ packageJson: JSON.stringify(PKG_V2), slotId: "w44-fri" })], {
+    ...(result === "absent"
+      ? {}
+      : {
+          writeLocalizations: async (args) => {
+            calls.push({ videoId: args.videoId, languages: Object.keys(args.localizations), expected: args.expected });
+            h.order.push("translations");
+            if (result === "throw") throw new DomainError({ code: "validation_failed", message: "own language" });
+            return result;
+          },
+        }),
+    setPublishAt: async ({ publishAt, containsSyntheticMedia }) => {
+      synthetic.push(containsSyntheticMedia);
+      h.publishAtWrites.push(publishAt);
+      h.order.push(`publishAt ${publishAt}`);
+    },
+  });
+  return { h, calls, synthetic };
+}
+
+test("AC-WP-30: translations first after processing, then thumbnail, playlist, read-back, and only then the date; the package's AI flag is sent", async () => {
+  const { h, calls, synthetic } = v2Harness({ verified: true });
+  await h.runAll();
+  assert.equal(h.row().status, "done");
+  assert.equal(h.row().errorCode, null);
+  assert.equal(h.yt.videos[0].resource.status.containsSyntheticMedia, false, "the package's own AI flag, not the channel's (true)");
+  assert.deepEqual(calls, [{ videoId: "vid1", languages: ["ja"], expected: { tags: ["jazz"], categoryId: "10", defaultLanguage: "en", defaultAudioLanguage: "en" } }]);
+  assert.deepEqual(h.order, ["translations", "thumbnail", "playlist", "read", "read", "publishAt 2026-10-24T12:00:00.000Z", "read"]);
+  assert.deepEqual(synthetic, [false]);
+  assert.equal(JSON.parse(h.row().stepsJson).localizations, "verified");
+});
+
+test("AC-WP-33/34: translations that read back differently, fail, or have no writer -> the video stays private without a date", async () => {
+  for (const [result, step, code] of [
+    [{ verified: false, detail: "text differs: ja" }, "mismatch", "verify_mismatch"],
+    ["throw", "failed", "step_failed"],
+    ["absent", "failed", "step_failed"],
+  ] as const) {
+    const { h } = v2Harness(result);
+    await h.runAll();
+    const steps = JSON.parse(h.row().stepsJson);
+    assert.deepEqual([h.row().status, steps.localizations, steps.publishAt, h.row().errorCode], ["done", step, "withheld", code], JSON.stringify(result));
+    assert.deepEqual(h.publishAtWrites, [], "no date was written");
+  }
+});
+
+test("AC-WP-33: a forced thumbnail failure leaves the video private and unscheduled", async () => {
+  const { h } = v2Harness({ verified: true });
+  h.deps.gateway.setThumbnail = async () => {
+    throw new DomainError({ code: "update_failed", message: "bad image", details: { status: 400, reason: "invalidImage" } });
+  };
+  const runner = createUploadRunner(h.deps);
+  for (let i = 0; i < 40 && h.row().status !== "done"; i += 1) {
+    await runner.tick();
+    h.clock.at = new Date(h.clock.at.getTime() + 31_000);
+  }
+  const steps = JSON.parse(h.row().stepsJson);
+  assert.deepEqual([h.row().status, steps.thumbnail, steps.publishAt, h.row().errorCode], ["done", "failed", "withheld", "step_failed"]);
+  assert.deepEqual(h.publishAtWrites, []);
+});
+
+// Review #1 (HIGH): the slot's date was frozen when the row was queued; a veto, a revoke or a new time made meanwhile did not reach
+// the date step. The runner asks the plan again right before the date (and before a queued row starts): vetoed -> no date (a row
+// not started yet is cancelled); not approved now -> an automatic row gets no date (its date came from the approval); approved
+// with another time -> that time.
+function slotHarness(decision: import("./auto-upload").SlotDecision, over: Partial<StoredPublishingUpload> = {}) {
+  const h = harness([job({ automatic: true, slotId: "w44-fri", packageJson: JSON.stringify({ ...PKG, slotId: "w44-fri" }), ...over })], {
+    slotDecision: async () => decision,
+  });
+  return h;
+}
+
+test("review #1: a slot vetoed after queueing -- a row not started is cancelled before anything reaches YouTube", async () => {
+  const h = slotHarness({ kind: "vetoed" });
+  await h.runAll();
+  assert.deepEqual([h.row().status, h.row().errorCode], ["cancelled", "slot_vetoed"]);
+  assert.deepEqual(h.yt.log, []);
+});
+
+test("review #1: a slot vetoed or no longer approved before the date step -> the date is withheld (the video stays private)", async () => {
+  for (const decision of [{ kind: "vetoed" }, { kind: "pending" }] as const) {
+    const h = slotHarness(decision, { status: "finishing", videoId: "vid1", stepsJson: JSON.stringify({ uploadedAt: NOW.toISOString(), thumbnail: "set", playlist: "added" }) });
+    h.yt.videos.push(VID1_UPLOADED);
+    const runner = createUploadRunner(h.deps);
+    for (let i = 0; i < 10 && h.row().status !== "done"; i += 1) await runner.tick();
+    assert.deepEqual([JSON.parse(h.row().stepsJson).publishAt, h.publishAtWrites], ["withheld", []], decision.kind);
+  }
+});
+
+test("review #1: a slot re-approved with a new time -> the date step writes the new time; an owner's own row keeps its date when pending", async () => {
+  const moved = slotHarness({ kind: "approved", publishAt: "2026-10-25T12:00:00.000Z" }, { status: "finishing", videoId: "vid1", stepsJson: JSON.stringify({ uploadedAt: NOW.toISOString(), thumbnail: "set", playlist: "added" }) });
+  moved.yt.videos.push(VID1_UPLOADED);
+  let runner = createUploadRunner(moved.deps);
+  for (let i = 0; i < 10 && moved.row().status !== "done"; i += 1) await runner.tick();
+  assert.deepEqual([moved.publishAtWrites, moved.row().publishAt, JSON.parse(moved.row().stepsJson).publishAt], [["2026-10-25T12:00:00.000Z"], "2026-10-25T12:00:00.000Z", "set"]);
+  const manual = slotHarness({ kind: "pending" }, { automatic: false, status: "finishing", videoId: "vid1", stepsJson: JSON.stringify({ uploadedAt: NOW.toISOString(), thumbnail: "set", playlist: "added" }) });
+  manual.yt.videos.push(VID1_UPLOADED);
+  runner = createUploadRunner(manual.deps);
+  for (let i = 0; i < 10 && manual.row().status !== "done"; i += 1) await runner.tick();
+  assert.deepEqual(manual.publishAtWrites, ["2026-10-24T12:00:00.000Z"], "the owner approved this date himself");
 });

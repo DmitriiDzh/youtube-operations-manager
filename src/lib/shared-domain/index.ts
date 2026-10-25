@@ -103,6 +103,9 @@ export type DomainErrorCode =
   | "package_file_invalid"
   | "package_no_video"
   | "package_no_thumbnail"
+  // BL-225 stage 2 (owner msg 3511 answer 4): the chosen thumbnail is over 2 MB, or is not a JPEG/PNG -- refused when the package is made.
+  | "package_thumbnail_too_large"
+  | "package_thumbnail_not_image"
   | "package_duration_unknown"
   | "package_no_baseline"
   | "package_title_empty"
@@ -249,6 +252,18 @@ export type DomainErrorCode =
   // NOT_APPROVED (stage 2, the gate): a first/last-frame video from two different images without an approved storyboard, or one
   // naming a storyboard segment that is not approved or whose keyframes are not the job's frames (details.reason).
   | "storyboard_not_approved"
+  // BL-225 (WEEKLY_PUBLISHING_PLAN.md, ADR 0051) -- weekly publishing plans. NOT_FOUND: no plan for the week / no such slot;
+  // CHANNEL_UNAVAILABLE: the channel is not connected on this computer; CHANGED: a slot's content differs from what the owner was
+  // shown (or a revoke names a slot that is not approved); SLOT_VETOED: an approval names a vetoed slot; SLOT_PAST: the slot's time
+  // has passed (it can no longer be approved, vetoed or restored).
+  | "publishing_plan_not_found"
+  | "publishing_plan_slot_not_found"
+  | "publishing_plan_channel_unavailable"
+  | "publishing_plan_changed"
+  | "publishing_plan_slot_vetoed"
+  | "publishing_plan_slot_past"
+  // Review #5 (BL-225): a package whose plan slot already has an upload on this computer.
+  | "upload_slot_taken"
   // BL-194 stage 1 (docs/roadmap/plans/VIDEO_COST_PLAN.md, ADR 0040) -- video numbers. NOT_FOUND: no such video of the channel
   // that can be linked (unknown, or cancelled). IN_DISPUTE: two computers reserved the number; nothing is linked to it until the
   // losing computer takes another. WORKSPACE_UNAVAILABLE: the channel is not connected here, or its workspace folder (where the

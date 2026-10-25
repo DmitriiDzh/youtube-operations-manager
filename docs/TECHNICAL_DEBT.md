@@ -2102,3 +2102,14 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Possible fix:** a v2 account or balance endpoint if RunPod adds one before the retirement (every device switches in the same
   build, or the ids differ); else the unknown-account behaviour stays.
 - **Gate(s):** none. **Status:** open; re-check when RunPod dates the GraphQL retirement.
+
+## RISK-135 — A weekly-plan slot's upload status is known only on the computer that uploads — OPEN, 2026-10-25
+
+- **What:** BL-225's slot statuses `uploading`, `failed (code)` and the exact `scheduled` come from this computer's
+  `publishing_uploads` rows (device-local). The other computer's «План недели» and `*_publishing_plan_get` see only the package scan:
+  `packaged`, then `scheduled` / `published` once `Vn_youtube.json` and the channel's synced copy say so; a failure is invisible there.
+- **Also:** ADR 0046 §8's "switch on one computer only" now also decides which computer schedules approved slots; two computers with
+  the switch on could each upload the same package in the minutes before a peer report arrives (as for BL-209).
+- **Effect:** an agent asking the non-uploading computer may see `packaged` for a slot whose upload failed elsewhere.
+- **Possible fix:** carry `slotId`, status and code in the `publishing-uploads` per-device report and merge it into the progress port.
+- **Gate(s):** none. **Status:** open; re-check after the first real week of approved slots.

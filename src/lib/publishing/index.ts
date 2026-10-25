@@ -19,6 +19,7 @@ import {
   setAutoPrivateUploadWaiting,
   getChannelExpectedLanguages,
   getLiveWritesEnabled,
+  getDataApiReadsEnabled,
   listTriedManifestHashes,
   listStoredChannels,
   getPublishingG1Probe,
@@ -32,12 +33,14 @@ import {
   removeLocalVideoRowIfUnreferenced,
   savePublishingG1Probe,
   updatePublishingUpload,
+  type StoredPublishingUpload,
 } from "@/lib/db";
 import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
 import { createChannelSyncCore } from "@/lib/channel-sync";
 import { getProductionAppPaths } from "@/lib/platform-paths/runtime";
 import type { ResolvedCredentials } from "@/lib/shared-domain";
 import { createVideoDetailsCore } from "@/lib/video-details";
+import { createVideoLocalizationsWriterCore } from "@/lib/shared-video-localizations";
 import { createQuotaGuardCore } from "@/lib/quota-guard";
 import { getQuotaLedgerSyncCore } from "@/lib/quota-ledger-sync";
 import { nextYoutubeQuotaReset, startOfYoutubeQuotaDay } from "@/lib/youtube-quota";
@@ -53,9 +56,11 @@ import { createPackageScan, isPackageThumbnailPath, VIDEOS_FOLDER, type PackageS
 import { imageKindOf } from "./packages";
 import { createPackageComposer } from "./package-composer";
 import { authorizedOAuth, createPublishingFinishWrites, createPublishingYoutubeWrites, freshAccessToken } from "./adapters/youtube-writes";
-import { ACTIVE_UPLOAD_STATUSES, createUploadRunner, holdsPackage, isCancellable, UNKNOWN_OUTCOME_RELEASED, type UploadRunnerDeps } from "./upload-runner";
+import { ACTIVE_UPLOAD_STATUSES, createUploadRunner, holdsPackage, isCancellable, syntheticMediaOf, UNKNOWN_OUTCOME_RELEASED, type ApprovedPackage, type UploadRunnerDeps } from "./upload-runner";
+import { createPlanSchedule } from "./plan-schedule";
+import type { PublishingSettings } from "./settings";
 import { createUploadApproval } from "./upload-approval";
-import { createAutoPrivateUpload, type AutoUploadWaiting } from "./auto-upload";
+import { createAutoPrivateUpload, type AutoUploadWaiting, type SlotDecision } from "./auto-upload";
 import { estimateUploadUnits, isDeferredPublishAt } from "./publish-dates";
 import type { G1ProbeRecord } from "./contracts";
 import { agentUploadOf, createPublishingCalendarReads } from "./calendar-reads";
@@ -308,7 +313,7 @@ const uploadsPlaylistOf = (channelId: string) => (channelId.startsWith("UC") ? `
  * BL-182 stage 2 (ADR 0037): the background upload runner of this computer. Every write goes through the write gateway right after
  * the Live writes check; every read through the read gateway; the deferred publish time through video-details' own write path.
  */
-export function createUploadRunnerCore() {
+export function createUploadRunnerCore(options: { slotDecisions?: (channelId: string) => Promise<Map<string, SlotDecision>> } = {}) {
   const workspaces = createChannelWorkspacesCore();
   const writeContext = createWriteContextCore();
   const uploads = createPublishingYoutubeWrites();
@@ -350,6 +355,16 @@ export function createUploadRunnerCore() {
     },
     async setPublishAt({ channelId, videoId, publishAt, containsSyntheticMedia, credentialRef }) {
       await videoDetails.applyFieldsUpdate({ credentialRef, expectedChannelId: channelId, videoId, patch: { privacyStatus: "private", publishAt, containsSyntheticMedia } });
+    },
+    // Review #1 (BL-225): the plan's decision on a row's slot now, from the composition layer (absent: the row's own date stands).
+    ...(options.slotDecisions
+      ? { slotDecision: async (channelId: string, slotId: string) => (await options.slotDecisions!(channelId)).get(slotId) ?? null }
+      : {}),
+    // BL-225 stage 3 (AGENTS.md §F «Upload localizations», ADR 0051 §8): the shared video translations writer, named in the audit.
+    async writeLocalizations({ channelId, videoId, localizations, expected, credentialRef }) {
+      const result = await createVideoLocalizationsWriterCore("upload_localizations").apply({ credentialRef, channelId, videoId, localizations, expected });
+      if ("sent" in result) return { verified: false, detail: `not sent (${result.reason})` };
+      return result;
     },
     files: {
       async resolve(channelId, relativePath) {
@@ -513,6 +528,8 @@ export function createUploadApprovalCore() {
       return { inserts: rows.filter((row) => row.videoId === null).length, units };
     },
     checkUnits: (units) => createQuotaGuardCore().checkUnits(units),
+    // Review #5 (BL-225): the slots held by an upload here (queued, running, done, or with a video).
+    heldSlots: async (channelId) => new Set((await listPublishingUploads({ channelId, withSlot: true, limit: 5000 })).filter(holdsPackage).map((row) => row.slotId as string)),
     insert: (rows) => insertPublishingUploads(rows),
     newId: () => randomUUID(),
     audit: ({ channelId, detail }) => insertVideoEditAuditEvent({ channelId, videoId: `upload:${String(detail.uploadId ?? "")}`, eventType: "RESULT", detail }),
@@ -529,7 +546,7 @@ const AUTO_WAITING_KEY = Symbol.for("ytom.publishing.autoUploadWaiting");
  * (`src/instrumentation.ts`, AGENTS.md §M). Off (the default) a tick reads the switch only. On, it scans every connected channel's
  * packages, hashes a video only when its size matches, and queues through the approval's own checks; the runner uploads.
  */
-export function createAutoPrivateUploadCore() {
+export function createAutoPrivateUploadCore(options: { slotDecisions?: (channelId: string) => Promise<Map<string, SlotDecision>> } = {}) {
   const scan = createPackageScanCore();
   const approval = createUploadApprovalCore();
   const files = createPackageScanReads();
@@ -555,6 +572,8 @@ export function createAutoPrivateUploadCore() {
     },
     hashFile: (absolutePath) => sha256OfFile(absolutePath),
     queue: (input) => approval.queueAutomatic(input),
+    // BL-225 stage 3: the weekly plan's slots, given by the composition layer (absent: as before -- every package private, no date).
+    ...(options.slotDecisions ? { slotDecisions: options.slotDecisions } : {}),
     logMismatch: ({ channelId, video, manifestSha256, expected, actual }) =>
       insertVideoEditAuditEvent({ channelId, videoId: `package:${video}`, eventType: "RESULT", detail: { event: "publishing.auto_upload_hash_mismatch", video, manifestSha256, expected, actual } }),
     logWaiting: (entry) =>
@@ -603,3 +622,49 @@ export async function releaseUnknownOutcome(channelId: string, uploadId: string)
   if (done) await insertVideoEditAuditEvent({ channelId, videoId: `upload:${uploadId}`, eventType: "RESULT", detail: { event: "publishing.unknown_outcome_released", uploadId, video: row.video } });
   return done;
 }
+
+/**
+ * BL-225 stage 3 (ADR 0051 §5, §7, §10; owner msg 3537): the weekly plan's changes to videos this computer uploaded for a slot -- a
+ * veto removes the date, an approval or a re-approval with a new time sets it -- through video-details' write path (identity,
+ * backup, Live writes right before the write, read-back). The slots' decisions come from the composition layer.
+ */
+export function createPlanScheduleCore(options: { slotDecisions: (channelId: string) => Promise<Map<string, SlotDecision>> }) {
+  const videoDetails = createVideoDetailsCore();
+  const parse = <T,>(text: string): T | null => {
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      return null;
+    }
+  };
+  const credentialRefOf = (row: StoredPublishingUpload) => ({ userId: row.approvedBy });
+  return createPlanSchedule({
+    rows: async () => (await listPublishingUploads({ statuses: ["done"], withSlot: true, limit: 2000 })).filter((row) => row.videoId !== null),
+    slotDecisions: options.slotDecisions,
+    async read(row) {
+      const snapshot = await videoDetails.getSnapshot({ credentialRef: credentialRefOf(row), expectedChannelId: row.channelId, videoId: row.videoId as string });
+      return { privacyStatus: snapshot.privacyStatus, publishAt: snapshot.publishAt };
+    },
+    async write(row, publishAt) {
+      const pkg = parse<ApprovedPackage>(row.packageJson) ?? ({} as ApprovedPackage);
+      const settings = parse<PublishingSettings>(row.settingsJson);
+      if (!settings) throw new Error("The upload's settings cannot be read.");
+      await videoDetails.applyFieldsUpdate({
+        credentialRef: credentialRefOf(row),
+        expectedChannelId: row.channelId,
+        videoId: row.videoId as string,
+        // Status is replaced whole and YouTube never returns "AI use": it is sent again, as the upload sent it.
+        patch: { privacyStatus: "private", publishAt, containsSyntheticMedia: syntheticMediaOf(pkg, settings) },
+      });
+    },
+    update: (row, set) => updatePublishingUpload(row.id, "done", { ...set, updatedAt: new Date() }),
+    audit: (row, detail) => insertVideoEditAuditEvent({ channelId: row.channelId, videoId: row.videoId ?? `upload:${row.id}`, eventType: "RESULT", detail }),
+    clock: { now: () => new Date() },
+    liveWritesEnabled: () => getLiveWritesEnabled(),
+    dataReadsEnabled: () => getDataApiReadsEnabled(),
+    nextQuotaReset: (now) => nextYoutubeQuotaReset(now),
+  });
+}
+export type { PlanSchedule } from "./plan-schedule";
+export { checksPassed, desiredDate } from "./plan-schedule";
+export type { SlotDecision } from "./auto-upload";

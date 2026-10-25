@@ -18,6 +18,7 @@ import { createFactoryMcpServer, FACTORY_API_VERSION, FACTORY_TOOL_NAMES, FACTOR
 // BL-220 (RESTART_WHEN_IDLE_PLAN.md "Factory API 1.30.0"): factory_restart_status (a read), factory_hold_restart and
 // factory_release_hold (local writes).
 // BL-223 (CHANNEL_BRANDING_PLAN.md §5): factory_channel_get_branding (a read) and factory_channel_save_branding (a local write).
+// BL-225 (WEEKLY_PUBLISHING_PLAN.md stage 1 item 5): factory_publishing_plan_save (a local write), _get and _list (reads).
 const EXPECTED_TOOLS = [
   "factory_channel_get_branding",
   "factory_channel_get_localizations",
@@ -76,6 +77,9 @@ const EXPECTED_TOOLS = [
   "factory_plan_todo",
   "factory_plan_update",
   "factory_plan_withdraw_recheck",
+  "factory_publishing_plan_get",
+  "factory_publishing_plan_list",
+  "factory_publishing_plan_save",
   "factory_release_hold",
   "factory_restart_status",
   "factory_storyboard_attach_render",
@@ -103,6 +107,7 @@ function registeredNames(): string[] {
       live: {} as never,
       channelLocalizations: {} as never,
       channelBranding: {} as never,
+      publishingPlans: {} as never,
       storyboards: {} as never,
       jobs: {} as never,
       videos: {} as never,
@@ -171,6 +176,7 @@ test("AC-FO-09 (amended by ADR 0025/0026): writes are exactly the named media/se
     "factory_plan_run_stage",
     "factory_plan_update",
     "factory_plan_withdraw_recheck",
+    "factory_publishing_plan_save",
     "factory_release_hold",
     "factory_storyboard_attach_render",
     "factory_storyboard_create",
@@ -186,7 +192,7 @@ test("AC-FO-09 (amended by ADR 0025/0026): writes are exactly the named media/se
     // factory_video_get_cost. BL-210 (CHANNEL_LOCALIZATIONS_PLAN.md §5): the channel translations read is factory_channel_get_localizations
     // (the pattern gains channel_get; the requirement "every non-write tool is a read" is unchanged).
     // BL-220 (RESTART_WHEN_IDLE_PLAN.md): factory_restart_status is the plan's status read (the pattern gains restart_status).
-    if (!writes.has(name)) assert.match(name, /^factory_(get|list|media_(get|list|storage|capacity)|plan_(get|list|todo)|gemini_(get|list)|live_(get|list)|channel_get|storyboard_(get|list)|jobs_list|video_(list|get_cost)|restart_status)_?/, `${name} must be a read`);
+    if (!writes.has(name)) assert.match(name, /^factory_(get|list|media_(get|list|storage|capacity)|plan_(get|list|todo)|gemini_(get|list)|live_(get|list)|channel_get|storyboard_(get|list)|publishing_plan_(get|list)|jobs_list|video_(list|get_cost)|restart_status)_?/, `${name} must be a read`);
     assert.doesNotMatch(name, /_(set|issue|revoke)_|workspace|token|approve|reject/, `${name} must not touch paths, workspaces or tokens, or approve for anyone`);
   }
 });
@@ -233,6 +239,10 @@ test("§2.5(3): the factory route and endpoint reach only the allowlisted module
     "@/lib/channel-localizations",
     // BL-223 (CHANNEL_BRANDING_PLAN.md §5): the channel-branding module's agent surface (no apply) for the factory_channel_*_branding tools.
     "@/lib/channel-branding",
+    // BL-225 (WEEKLY_PUBLISHING_PLAN.md stage 1 item 5): the publishing-plans module's agents' surface (no decision).
+    "@/lib/publishing-plans",
+    // BL-225 stage 2: the composition of the plan's progress from the publishing scan (no write).
+    "@/lib/publishing-plan-progress",
     // BL-184 (STORYBOARD_PLAN.md §2.6): the storyboards module for the factory_storyboard_* tools.
     "@/lib/storyboards",
     // BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.7): the shared jobs pool for factory_jobs_list (read-only).
@@ -299,7 +309,8 @@ test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.23.0 
   // BL-210 (CHANNEL_LOCALIZATIONS_PLAN.md §5: "This is Factory API 1.29.0"): two new tools, additive -> 1.29.0.
   // BL-220 (RESTART_WHEN_IDLE_PLAN.md "Factory API 1.30.0"): three new tools, additive -> 1.30.0.
   // BL-223 (CHANNEL_BRANDING_PLAN.md §5: "Minor version bump"): two new tools, additive -> 1.32.0.
-  assert.equal(FACTORY_API_VERSION, "1.32.0");
+  // BL-225 (WEEKLY_PUBLISHING_PLAN.md stage 1 item 5): three new tools, additive -> 1.33.0.
+  assert.equal(FACTORY_API_VERSION, "1.33.0");
   const agentOperations = await readFile("src/lib/agent-operations/contracts.ts", "utf8");
   assert.equal(agentOperations.includes("FACTORY_API_VERSION"), false);
 });

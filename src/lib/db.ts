@@ -1429,6 +1429,12 @@ export const publishingUploads = sqliteTable(
      * approval screen -- always private and without a date. A row with it set also records that its manifest hash was tried once.
      */
     automatic: integer("automatic", { mode: "boolean" }).notNull().default(false),
+    /**
+     * Schema v110 (BL-225 stage 2, WEEKLY_PUBLISHING_PLAN.md, ADR 0051): the weekly-plan slot a `yt-release-package/2` names
+     * (`slotId`), copied when the row is queued; null for a v1 package or one without a slot. FO-REQ-0040 acceptance 4: each
+     * uploaded video maps to its slot.
+     */
+    slotId: text("slot_id"),
   },
   (table) => [index("publishing_uploads_status_idx").on(table.status, table.nextAttemptAt), index("publishing_uploads_channel_idx").on(table.channelId, table.createdAt)]
 );
@@ -5654,6 +5660,18 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       await client.execute("CREATE INDEX IF NOT EXISTS channel_branding_events_channel_at_idx ON channel_branding_events (channel_id, at)");
     },
   },
+  {
+    version: 110,
+    description:
+      "publishing_uploads.slot_id -- BL-225 stage 2 (WEEKLY_PUBLISHING_PLAN.md, ADR 0051; FO-REQ-0040): the weekly-plan slot a yt-release-package/2 names, copied when the upload is queued. Additive, nullable (every existing row has none), device-local",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE publishing_uploads ADD COLUMN slot_id TEXT");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
+    },
+  },
 ];
 
 /**
@@ -8301,9 +8319,9 @@ export async function getGatewayTrafficLast24h(
   }));
 }
 
-export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens" | "live_streams" | "channel_language_settings" | "channel_publishing_settings" | "publishing_uploads" | "storyboards" | "media_jobs" | "gemini_spend" | "gemini_settings" | "video_reservations" | "video_costs" | "live_analytics";
+export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens" | "live_streams" | "channel_language_settings" | "channel_publishing_settings" | "publishing_uploads" | "storyboards" | "media_jobs" | "gemini_spend" | "gemini_settings" | "video_reservations" | "video_costs" | "live_analytics" | "publishing_plans";
 
-const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings", "agent_tokens", "live_streams", "channel_language_settings", "channel_publishing_settings", "publishing_uploads", "storyboards", "media_jobs", "gemini_spend", "gemini_settings", "video_reservations", "video_costs", "live_analytics"];
+const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings", "agent_tokens", "live_streams", "channel_language_settings", "channel_publishing_settings", "publishing_uploads", "storyboards", "media_jobs", "gemini_spend", "gemini_settings", "video_reservations", "video_costs", "live_analytics", "publishing_plans"];
 
 export type SyncFamilyStatusRow = {
   family: SyncFamily;
@@ -11619,12 +11637,14 @@ export async function getPublishingUpload(id: string, database: AppDb = db): Pro
 
 /** Newest first; optional channel and status filters. */
 export async function listPublishingUploads(
-  filter: { channelId?: string; statuses?: readonly PublishingUploadStatus[]; limit: number },
+  /** Review #6 (BL-225): `withSlot` -- only rows that name a weekly-plan slot, filtered before the limit. */
+  filter: { channelId?: string; statuses?: readonly PublishingUploadStatus[]; limit: number; withSlot?: boolean },
   database: AppDb = db
 ): Promise<StoredPublishingUpload[]> {
   const conditions = [
     filter.channelId === undefined ? undefined : eq(publishingUploads.channelId, filter.channelId),
     filter.statuses === undefined ? undefined : inArray(publishingUploads.status, [...filter.statuses]),
+    filter.withSlot ? isNotNull(publishingUploads.slotId) : undefined,
   ].filter((c) => c !== undefined);
   return database
     .select()

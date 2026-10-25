@@ -17,7 +17,7 @@ export const PUBLISH_AT_MARGIN_MS = 15 * 60_000;
 export function publishAtWriteRefusal(
   videoId: string,
   before: { privacyStatus: string | null; publishAt: string | null },
-  patch: { publishAt?: string },
+  patch: { publishAt?: string | null },
   nowMs: number
 ): DomainError | null {
   if (patch.publishAt === undefined) return null;
@@ -29,6 +29,8 @@ export function publishAtWriteRefusal(
       details: { videoId, currentPublishAt: before.publishAt, privacyStatus: before.privacyStatus },
     });
   }
+  // BL-225 stage 3 (ADR 0051): removing the date (a vetoed slot) needs only the rule above -- the video stays private.
+  if (patch.publishAt === null) return null;
   const nextMs = Date.parse(patch.publishAt);
   if (Number.isNaN(nextMs) || nextMs <= nowMs + PUBLISH_AT_MARGIN_MS) {
     return new DomainError({

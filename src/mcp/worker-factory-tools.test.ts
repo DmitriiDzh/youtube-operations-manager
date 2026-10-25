@@ -56,6 +56,14 @@ function fakeDeps() {
         return { ok: true };
       },
     },
+    publishingPlans: {
+      save: async (input: unknown, by: unknown) => {
+        calls.push(`plan.save:${JSON.stringify(input)}:${String(by)}`);
+        return { ok: true };
+      },
+      get: note("plan.get"),
+      list: note("plan.list"),
+    },
     storyboards: {
       create: note("sb.create"), update: note("sb.update"), get: note("sb.get"), list: note("sb.list"), submit: note("sb.submit"),
       reply: note("sb.reply"), attachRender: note("sb.attachRender"),
@@ -144,8 +152,9 @@ test("AC-WF-05/06: the worker gets exactly the listed tools, renamed, and none o
   const { deps } = fakeDeps();
   const names = workerFactoryTools(() => deps, TROPICO, async () => undefined).map((tool) => tool.name).sort();
   assert.deepEqual(names, [...WORKER_FACTORY_TOOL_NAMES].sort());
-  // BL-223: + agent_channel_get_branding / agent_channel_save_branding (36 -> 38).
-  assert.equal(names.length, 38);
+  // BL-223: + agent_channel_get_branding / agent_channel_save_branding (36 -> 38). BL-225: + agent_publishing_plan_save / _get /
+  // _list (38 -> 41).
+  assert.equal(names.length, 41);
   for (const forbidden of ["agent_plan_move", "agent_media_pull_model", "agent_media_list_models", "agent_media_create_runtime", "agent_media_get_gpu_stats", "agent_channel_get_localizations", "agent_channel_save_localizations"]) {
     assert.ok(!names.includes(forbidden), forbidden);
   }
@@ -244,4 +253,18 @@ test("BL-223: agent_channel_*_branding reach the module for the own channel only
   await pinned.channelBranding.get({ channelId: TROPICO });
   await pinned.channelBranding.save({ channelId: TROPICO, description: "D", bannerFile: "b/banner.png" });
   assert.deepEqual(calls, [`cb.get:{"channelId":"${TROPICO}"}`, `cb.save:{"channelId":"${TROPICO}","description":"D","bannerFile":"b/banner.png"}:worker`]);
+});
+
+// BL-225 (WEEKLY_PUBLISHING_PLAN.md AC-WP-12/17, ADR 0051): the worker's weekly plan -- its own channel only, saved as "worker";
+// another channel is refused before the module runs.
+test("BL-225: agent_publishing_plan_* reach the module for the own channel only, the save recorded as a worker's", async () => {
+  const { deps, calls } = fakeDeps();
+  const pinned = pinFactoryDepsToChannel(() => deps, TROPICO, async () => undefined);
+  await assert.rejects(pinned.publishingPlans.save({ channelId: JAPAN, weekStart: "2026-10-26", timeZone: "Asia/Tokyo" }), code("CHANNEL_NOT_ACTIVE"));
+  await assert.rejects(pinned.publishingPlans.get({ channelId: JAPAN, weekStart: "2026-10-26" }), code("CHANNEL_NOT_ACTIVE"));
+  await assert.rejects(pinned.publishingPlans.list({ channelId: JAPAN }), code("CHANNEL_NOT_ACTIVE"));
+  assert.deepEqual(calls, []);
+  await pinned.publishingPlans.save({ channelId: TROPICO, weekStart: "2026-10-26", timeZone: "Asia/Tokyo" });
+  await pinned.publishingPlans.list({ channelId: TROPICO });
+  assert.deepEqual(calls, [`plan.save:{"channelId":"${TROPICO}","weekStart":"2026-10-26","timeZone":"Asia/Tokyo"}:worker`, `plan.list:{"channelId":"${TROPICO}"}`]);
 });
