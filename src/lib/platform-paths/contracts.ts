@@ -124,6 +124,10 @@ export type AppPaths = {
   storyboardsDocDir: string;
   storyboardsSyncFallbackDir: string;
   storyboardsDiscardedBackupsDir: string;
+  /** BL-225 (ADR 0051): the per-channel weekly publishing plans documents (sync-gateway `publishing-plans`). */
+  publishingPlansDocDir: string;
+  publishingPlansSyncFallbackDir: string;
+  publishingPlansDiscardedBackupsDir: string;
   /** Path to the device-local bootstrap config JSON file. */
   bootstrapConfigPath: string;
   /** Path to the CLI/MCP active-user auth-context JSON file. */

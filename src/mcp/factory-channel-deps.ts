@@ -1,4 +1,5 @@
 import { agentChannelBranding, createChannelBrandingAgentCore } from "@/lib/channel-branding";
+import { createPublishingPlansAgentCore } from "@/lib/publishing-plans";
 import { createChannelLocalizationsOperatorCore, operatorChannelLocalizations } from "@/lib/channel-localizations";
 import { createGeminiMediaCore } from "@/lib/gemini-media";
 import { collectLiveStreamEntries, createLiveSegmentSettingsCore, createLiveStreamsCore, createStreamLocalizationsCore, getLiveStreamsDeviceId, listPeerLiveStreams, localizationsStatusEntry } from "@/lib/live-streams";
@@ -16,7 +17,7 @@ import type { FactoryToolDeps } from "./factory-server";
  * approval, start or stop (`session-approval-inventory.test.ts`). The factory route adds the media, logical-path and channel-list
  * parts.
  */
-export type FactoryChannelDeps = Pick<FactoryToolDeps, "plans" | "gemini" | "live" | "channelLocalizations" | "channelBranding" | "storyboards" | "videos" | "jobs">;
+export type FactoryChannelDeps = Pick<FactoryToolDeps, "plans" | "gemini" | "live" | "channelLocalizations" | "channelBranding" | "publishingPlans" | "storyboards" | "videos" | "jobs">;
 
 export function createFactoryChannelDeps(): FactoryChannelDeps {
   return {
@@ -77,6 +78,13 @@ export function createFactoryChannelDeps(): FactoryChannelDeps {
     channelBranding: {
       get: async (input) => agentChannelBranding(createChannelBrandingAgentCore(), input.channelId),
       save: async (input, by = "factory") => ({ ...(await createChannelBrandingAgentCore().save(input, by)) }),
+    },
+    // BL-225 (ADR 0051): the weekly publishing plan -- the agents' surface of the module has no decision function, so nothing here
+    // approves a slot or reaches YouTube; the save is synced to the other computers.
+    publishingPlans: {
+      save: async (input, by = "factory") => ({ ...(await createPublishingPlansAgentCore().save(input, by)) }),
+      get: async (input) => ({ ...(await createPublishingPlansAgentCore().get(input)) }),
+      list: async (input) => ({ ...(await createPublishingPlansAgentCore().list(input)) }),
     },
     // BL-184 (STORYBOARD_PLAN.md §2.6): storyboards; every write is the Operator's (the owner decides in the Web UI only).
     storyboards: {

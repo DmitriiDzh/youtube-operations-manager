@@ -40,6 +40,8 @@ export const RESEARCH_TABS = [
 export const CONTENT_TABS = [
   { value: "videos", labelKey: "tabs.content.videos" },
   { value: "publishing", labelKey: "tabs.content.publishing" },
+  // BL-225 (WEEKLY_PUBLISHING_PLAN.md stage 1 item 6, owner msg 3534): the week's publishing plan, approved by the owner.
+  { value: "week-plan", labelKey: "tabs.content.weekPlan" },
   { value: "calendar", labelKey: "tabs.content.calendar" },
   { value: "streams", labelKey: "tabs.content.streams" },
 ] as const;

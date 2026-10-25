@@ -41,8 +41,10 @@ export const shell = {
   "tabs.content.streams": "Live streams",
   "tabs.content.calendar": "Calendar",
   "tabs.content.publishing": "Videos & releases",
+  "tabs.content.weekPlan": "Week plan",
   "contentTabs.badge.releases": "{count, plural, one {# video is} other {# videos are}} ready for the next step (a package or an upload)",
   "contentTabs.badge.calendar": "Fewer than 7 days are scheduled ahead",
+  "contentTabs.badge.weekPlan": "{count, plural, one {# slot waits} other {# slots wait}} for your approval",
   "contentTabs.badge.stream": "The live stream is on air with problems (YouTube's health)",
   "tabs.settings.about": "About",
 

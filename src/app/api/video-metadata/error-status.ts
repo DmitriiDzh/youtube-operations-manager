@@ -177,6 +177,13 @@ const DOMAIN_ERROR_STATUS = {
   storyboard_version_not_latest: 409,
   storyboard_not_submitted: 409,
   storyboard_not_approved: 409,
+  // BL-225 (ADR 0051): weekly publishing plans.
+  publishing_plan_not_found: 404,
+  publishing_plan_slot_not_found: 404,
+  publishing_plan_channel_unavailable: 409,
+  publishing_plan_changed: 409,
+  publishing_plan_slot_vetoed: 409,
+  publishing_plan_slot_past: 409,
   video_not_found: 404,
   video_in_dispute: 409,
   video_already_linked: 409,

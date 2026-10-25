@@ -52,6 +52,10 @@ export const WORKER_FACTORY_TOOLS: Readonly<Record<string, { agentName: string; 
   factory_channel_get_branding: { agentName: "agent_channel_get_branding", writes: false },
   factory_channel_save_branding: { agentName: "agent_channel_save_branding", writes: true },
   factory_gemini_get_job: { agentName: "agent_gemini_get_job", writes: false },
+  // BL-225 (ADR 0051, FO-REQ-0040): the channel's weekly publishing plan -- a draft for the owner's approval, own channel only.
+  factory_publishing_plan_save: { agentName: "agent_publishing_plan_save", writes: true },
+  factory_publishing_plan_get: { agentName: "agent_publishing_plan_get", writes: false },
+  factory_publishing_plan_list: { agentName: "agent_publishing_plan_list", writes: false },
   // BL-218 (stage 4, owner msg 3402 "может, как оператор"): paid work, exactly as the Operator does it -- a session the worker starts
   // is approved by itself only within the owner's factory limits and while the owner's factory-sessions switch is on (otherwise it
   // waits for the owner), Gemini jobs only within the owner's Gemini switch and limits. Only for this channel; each call is logged.
@@ -280,6 +284,12 @@ export function pinFactoryDepsToChannel(
     channelBranding: {
       get: async (input) => deps().channelBranding.get(pinChannel(input, channelId) as { channelId: string }),
       save: async (input) => deps().channelBranding.save(pinChannel(input, channelId) as Parameters<FactoryToolDeps["channelBranding"]["save"]>[0], "worker"),
+    },
+    // BL-225: the weekly plan of the worker's own channel, saved as a worker's (never a decision: the surface has none).
+    publishingPlans: {
+      save: byChannel((input) => deps().publishingPlans.save(input, "worker")),
+      get: byChannel((input) => deps().publishingPlans.get(input)),
+      list: byChannel((input) => deps().publishingPlans.list(input)),
     },
     storyboards: {
       create: byChannel((input) => deps().storyboards.create(input)),

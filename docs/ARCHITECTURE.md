@@ -4766,6 +4766,29 @@ only writer of a channel's `brandingSettings` (AGENTS.md §F, PROJECT_SPEC §21)
 - **Not yet verified against the real API:** whether YouTube keeps `bannerExternalUrl` exactly as sent, and how it formats keywords;
   the read-back reports either. The first real apply is the live acceptance.
 
+## BL-225 — the weekly publishing plan (ADR 0051)
+
+FO-REQ-0040; owner msgs 3511/3534; plan `docs/roadmap/plans/WEEKLY_PUBLISHING_PLAN.md` (AC-WP-01..34). Stage 1 on branch
+`feature/bl-225-weekly-plan`: the plan, the MCP tools and the screen. No YouTube call, no schema change.
+
+- **Storage** (`sync-gateway/publishing-plans`, family `publishing_plans`, 19 in all): one Automerge document per channel
+  (`ytm-publishing-plans` v1, genesis actor "publishing-plans") with three flat maps that exist from the genesis -- `plans` by
+  `weekStart` (time zone, created/updated by), `slots` by `<weekStart>:<slotId>` (assigned whole), `decisions` by a fresh id -- so
+  two computers that start the same week or save different slots merge; a slot edited on both: last writer wins.
+- **The module** (`src/lib/publishing-plans/`): `model.ts` derives everything -- the content hash (SHA-256 of `[timeZone, date,
+  publishAt, lengthHint, note]`), approved (the newest approved/revoked decision with the current hash), `changedAfterApproval` (the
+  last approved snapshot still standing when the hash differs), vetoed (the newest vetoed/restored decision), the status (stage 1:
+  `planned` / `vetoed`; a `progress` port brings the others in stages 2-3), the plan state and counts. `services.ts`: `save` (every
+  rule first, then one change; `details.refused`), `get`, `list`, `ownerList` (with `waiting`), `ownerGet`, `decide` (approve the
+  shown hashes or nothing; revoke; veto; restore; nothing after a slot's time). `agentSurface` (save/get/list) feeds
+  `factory-channel-deps.ts` and the workers' pinned tools; `createPublishingPlansOwnerCore` only the Web routes
+  (`boundaries.test.ts` scans every MCP path). Times: `zoned-time` (`instantOf` refuses a skipped hour).
+- **Web UI.** Контент → «План недели» (`weekly-plan-panel.tsx`): week arrows and state chip, the caption (who, when, the channel's
+  zone, the owner's time in brackets), four tiles, a row per slot (date/time, thumbnail placeholder, title, the pipeline План ›
+  Видео › Пакет › YouTube › Дата, actions), amber rows for a change after approval, struck-through vetoed rows with «Вернуть»,
+  the inline veto confirmation, and in «Всю неделю» the bar with the count, the quota estimate (`estimateUploadUnits`) and «Одобрить
+  неделю»; «По одному» gives «Одобрить» / «Отозвать» per slot. The tab's badge reads `waiting`.
+
 ## BL-221 — the Content section redesign (CONTENT_UX_PLAN.md)
 
 Owner msgs 3439/3444/3449/3451/3453. On branch `feature/content-ux-redesign`. No schema change; no new YouTube call.

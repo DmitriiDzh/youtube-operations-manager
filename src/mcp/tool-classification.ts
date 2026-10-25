@@ -141,6 +141,10 @@ export const MCP_TOOL_CLASSIFICATION: Readonly<Record<string, McpToolClass>> = O
   // BL-223 (ADR 0050): the bound channel's branding draft (description, keywords, banner); never an apply.
   agent_channel_get_branding: "bound",
   agent_channel_save_branding: "bound",
+  // BL-225 (ADR 0051): the bound channel's weekly publishing plan; saving a draft only, never an approval.
+  agent_publishing_plan_save: "bound",
+  agent_publishing_plan_get: "bound",
+  agent_publishing_plan_list: "bound",
   agent_gemini_get_job: "bound",
   // BL-218 (stage 4): paid work the Operator's way, within the owner's switches and limits, for the bound channel only.
   agent_factory_start_session: "bound",
