@@ -80,3 +80,13 @@ test("AC-WP-31: the slots' decisions reach publishing only through src/compositi
   assert.deepEqual(uploadCore.sort(), ["composition/publishing-plan-slots.ts", "lib/publishing-plans/index.ts"]);
   assert.deepEqual(schedule.sort(), ["instrumentation.ts", "lib/publishing/index.ts"]);
 });
+
+// BL-225 stage 3 (AGENTS.md §F «Upload localizations» and «Second localization writer»): the shared video translations writer is
+// called only by its two authorized callers -- the live-broadcast writer and the upload of a planned release package.
+test("AGENTS.md §F: the shared video translations writer is created only by live-localizations and publishing", async () => {
+  const callers: string[] = [];
+  for (const file of await files(SRC)) {
+    if (/\bcreateVideoLocalizationsWriterCore\b/.test(await readFile(file, "utf8"))) callers.push(path.relative(SRC, file));
+  }
+  assert.deepEqual(callers.sort(), ["lib/live-localizations/index.ts", "lib/publishing/index.ts", "lib/shared-video-localizations/index.ts"]);
+});

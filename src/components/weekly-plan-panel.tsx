@@ -379,7 +379,8 @@ function SlotRow(props: {
   else meta = { text: slot.note ? t("weekPlan.agentNote", { note: slot.note }) : "", tone: "text-zinc-400" };
 
   const canAct = !slot.released;
-  const afterUpload = slot.status === "uploading" || slot.status === "scheduled";
+  // The video may already be on YouTube: under way, scheduled, published, or uploaded private without a date (it has a video id).
+  const afterUpload = slot.videoId !== null || slot.status === "uploading" || slot.status === "scheduled" || slot.status === "published";
 
   return (
     <li className={changed ? "bg-amber-950/20" : slot.vetoed ? "bg-zinc-950/40" : undefined}>
