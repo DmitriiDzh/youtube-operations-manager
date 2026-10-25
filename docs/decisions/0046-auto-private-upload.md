@@ -82,3 +82,11 @@ checks and the runner means the automatic path cannot drift from the manual one.
 - Schema v103 adds `publishing_uploads.automatic INTEGER NOT NULL DEFAULT 0` (ADR 0001: additive; every existing row is an approval).
 - `yt-release-package/1` gains an optional top-level `sha256`; manifests without it parse as before.
 - Agent API 3.20.0 and Producer API 1.10.0: additive fields on `agent_get_publishing_calendar`'s `uploads`.
+
+## Amendment 1 (BL-225, ADR 0051 §7, 2026-10-25; owner msgs 3511/3537)
+
+- **§4 no longer holds for one case.** A `yt-release-package/2` whose `slotId` names a weekly-plan slot the owner APPROVED (and did
+  not veto), more than 15 minutes ahead, is queued with that slot's time as `publishAt`: the owner's slot approval is the approval of
+  that date. The upload still inserts private without a date and writes it last (BL-224). Every other automatic row is as before:
+  private, no date. A package whose slot is vetoed is never queued (`slot_vetoed`).
+- **§8 (one computer) now also decides who schedules approved slots** (owner msg 3537): the computer with the switch on.

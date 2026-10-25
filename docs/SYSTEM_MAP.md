@@ -967,7 +967,14 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   - Маршруты владельца `/api/channels/[channelId]/publishing-plans` (+ `/[weekStart]`, `/[weekStart]/decisions`); аудит решений на
     этом компьютере. Вкладка Контент → «План недели» (`src/components/weekly-plan-panel.tsx`, чистая часть `weekly-plan-model.ts`)
     со значком «ждёт одобрения»; «Всю неделю / По одному» — вид, не настройка.
-  - Этапы 2–3 (пакет v2, автозагрузка одобренных слотов, переводы при загрузке) — ещё не сделаны.
+  - Этап 2: пакет `yt-release-package/2` (`slotId`, `localizations`, `containsSyntheticMedia`, `thumbnails` с одной основной; 2 МБ на
+    каждую обложку — при сканировании и в «Новом пакете»); схема **v110** `publishing_uploads.slot_id`; модуль-композиция
+    `src/lib/publishing-plan-progress/` (скан пакетов и строки загрузок этого компьютера → статусы слотов и данные пакета на экране).
+  - Этап 3: автозагрузка (BL-209) ставит пакет одобренного и не снятого слота с его временем, снятый пропускает (решения слотов —
+    `src/composition/publishing-plan-slots.ts`); загрузчик пишет переводы пакета первым шагом после обработки общим писателем
+    `src/lib/shared-video-localizations/` (вынесен из live-localizations) и ИИ-метку пакета; дата — только после переводов, обложки,
+    плейлиста и сверки. Цикл `plan-schedule` (раз в минуту, `instrumentation.ts`): вето снимает дату у загруженного видео, одобрение
+    или новое время её ставит — через video-details (`publishAt: null`). Статусы загрузки видны только на загружающем компьютере.
 - **Общий модуль `src/lib/shared-localization-set/`** (BL-210, §M): валидатор набора «язык → название/описание» с пределами
   параметром; им пользуются `live-streams/localizations.ts` (пределы видео) и `channel-localizations` (пределы канала).
 - **Общий модуль `src/lib/shared-localization-merge/`** (BL-207, §M): `buildSafeLocalizationsPayload`, `checkDefaultLanguage`,

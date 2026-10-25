@@ -177,6 +177,21 @@ private, with its thumbnail, translations and AI flag, and only after a verified
 - **AC-WP-34** The translations never touch another language, the snippet text or the video's own language; Live writes off
   writes nothing.
 
+## Acceptance status (2026-10-25, branch `feature/bl-225-weekly-plan`)
+
+All tested against fakes; nothing verified against the real API or by eye yet (the first real approved-slot upload is the
+acceptance).
+
+- AC-WP-01..14: `src/lib/publishing-plans/publishing-plans.test.ts`; AC-WP-13: `src/lib/sync-gateway/publishing-plans/services.test.ts`;
+  AC-WP-12: the routes' `handlers.test.ts`; AC-WP-05/16/17: `publishing-plans/boundaries.test.ts`, the Factory endpoint and worker
+  tool tests; AC-WP-15: `src/components/weekly-plan-model.test.ts`.
+- AC-WP-20..22: `src/lib/publishing/packages-v2.test.ts`, `package-composer.test.ts` (2 MB at creation); AC-WP-23:
+  `src/lib/publishing-plan-progress/progress.test.ts`, `upload-approval.test.ts` (the row's slot), `db-publishing-auto.test.ts` (v110).
+- AC-WP-30..34: `upload-runner.test.ts` (order, translations, AI flag, thumbnail failure), `auto-upload.test.ts` (approved / vetoed /
+  pending slots), `plan-schedule.test.ts` (veto after upload, re-approval moves the date), `video-details` (`publishAt: null`),
+  `live-localizations/services.test.ts` (the shared writer's source). AC-WP-30's "≥ 48 h before release" is the Operator's lead time;
+  the app enforces only the 15-minute margin.
+
 ## Owner's answers for stage 3 (Telegram msg 3537, 2026-10-25)
 
 - The computer where the automatic-upload switch is on uploads approved slots (ADR 0046 §8: one computer only).

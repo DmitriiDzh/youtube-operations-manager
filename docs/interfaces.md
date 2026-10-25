@@ -755,6 +755,18 @@ Key MCP tools:
     `/api/settings` (Web only) reads and sets `autoPrivateUploadEnabled` (boolean, default false); no MCP tool or CLI command does.
     It also returns `autoPrivateUploadWaiting` (read-only): `[{ kind: package, channelId, video, manifestSha256, reason } | { kind:
     channel, channelId, reason }]`, why the automatic upload is waiting now (`[]` = nothing).
+  - **`yt-release-package/2`** (BL-225 stage 2, ADR 0051; additive to `/1`, which still parses as before; a `/1` manifest's v2 fields
+    are ignored): `slotId?` (1-40 of letters, digits, `_`, `-`: the weekly-plan slot), `localizations?` (`{ <YouTube language>: {
+    title, description } }`: title ≤ 100 characters, description ≤ 5000 bytes, no `<`/`>`, never the package's own `defaultLanguage`,
+    ≤ 50 languages; any refusal -> problem `localizations_invalid` with the languages and reasons), `containsSyntheticMedia?`
+    (boolean; absent = the channel's publishing setting), `thumbnails?` (`[{ file, role: default | test }]`, files inside the folder,
+    none twice, exactly one `default` -- else `thumbnails_default_count` / `field_invalid`; with it `files.thumbnail` may be left out,
+    and if given must be the default). Every thumbnail is JPEG/PNG ≤ 2 MB (`thumbnail_too_large`, `test_thumbnail_too_large`,
+    `test_thumbnail_missing`, `test_thumbnail_not_image`); only the default is uploaded, the tests are kept for Test & Compare in
+    Studio. «Новый пакет» refuses a thumbnail over 2 MB or not an image (`package_thumbnail_too_large` / `package_thumbnail_not_image`).
+    An approved slot's package uploads with the slot's date (written last), its translations and its AI flag (stage 3); audit events
+    `publishing.upload_auto_queued` gain `slotId` and the date; `publishing.plan_scheduled` / `publishing.plan_unscheduled` record the
+    plan's later date changes on an uploaded video.
   - Web only (BL-182 stage 2): `GET/PUT /api/channels/[id]/publishing-settings` (the channel's publishing defaults, synced; PUT the
     changed fields), `GET/POST .../publishing-settings/conflicts` (choose a computer's value), `GET .../publishing/packages` (the
     release packages with state and problems), `GET .../publishing/packages/thumbnail?path=`, `GET/POST .../publishing/uploads` (the
@@ -1209,7 +1221,7 @@ A second agent role, separate from the channel agents. Technical contract only (
     - **`factory_channel_get_branding`** (READ; one `channels.list`, 1 quota unit, never a write) `{ channelId }` (strict) → `{ channelId, stored: { draft | null, problem: invalid_stored | null, updatedAt, updatedBy: owner | factory | worker | null }, live: { title, avatarUrl, customUrl, description, keywords: [string], country, defaultLanguage, unsubscribedTrailer, bannerUrl } | null, liveUnavailable: null | <error code>, lastApply: { at, ok, fields: [description | keywords | banner], writes (0-2), bannerUrl, failure?: read_back_mismatch | banner_uploaded_not_set | written_unverified | failed, code? } | null }` -- codes only, never the owner's error text or a backup path.
   - **BL-225 weekly publishing plan tools (Factory API 1.33.0, ADR 0051, `docs/roadmap/plans/WEEKLY_PUBLISHING_PLAN.md`).** One
     plan per channel and week (a Monday), in the `publishing_plans` sync family (the same on every computer). Nothing is sent to
-    YouTube; uploads of approved slots come with BL-225 stages 2-3.
+    YouTube by these tools; an approved slot's package is uploaded and scheduled by the owner's computer (stage 3, ADR 0051 §7).
     - **`factory_publishing_plan_save`** (WRITE, synced, device mutation gate first) `{ channelId, weekStart, timeZone?, slots?: [{
       slotId, date, publishAt ('YYYY-MM-DDTHH:MM' local in timeZone), lengthHint?, note? }], removeSlotIds? }` (strict; no approval
       or veto field) → `{ plan, changed, unlocked, removed }`. A slot is given whole; a new or changed slot must be in the future and
@@ -1221,9 +1233,14 @@ A second agent role, separate from the channel agents. Technical contract only (
     - **`factory_publishing_plan_get`** (READ) `{ channelId, weekStart }` → `{ plan }`: `weekEnd`, `timeZone`, `state` (`empty`,
       `awaiting_approval`, `approved`, `past`), `counts`, `firstRelease`, and per slot `publishAtUtc`, `contentHash`, `approval`
       (`approved` | `needs_approval`), `approvedAt`, `changedAfterApproval` (the approved content and who changed it), `vetoed`,
-      `status` (`planned` | `built` | `packaged` | `uploading` | `scheduled` | `published` | `failed` | `vetoed`; 1.33.0 computes
-      `planned` and `vetoed`), `statusCode`, `videoId`, `released`; `publishing_plan_not_found`.
-    - **`factory_publishing_plan_list`** (READ) `{ channelId }` → `{ plans }` (the plan's fields without slots, newest week first).
+      `status` (`planned` | `built` | `packaged` | `uploading` | `scheduled` | `published` | `failed` | `vetoed`: `built` / `packaged`
+      from a `yt-release-package/2` naming the slot; the upload statuses from the computer that uploads), `statusCode` (with `failed`:
+      the upload's code or `localizations_failed` | `localizations_mismatch` | `thumbnail_failed` | `playlist_failed` |
+      `read_back_mismatch` | `publish_at_failed` | `publish_at_too_soon` | `plan_scheduled_failed` | `plan_unscheduled_failed`),
+      `videoId`, `package` (`{ video, title, durationSeconds, languages, containsSyntheticMedia, thumbnailPath, testThumbnails, problems }`
+      or null), `released`; `publishing_plan_not_found`.
+    - **`factory_publishing_plan_list`** (READ) `{ channelId, limit? (1-52, default 12) }` → `{ plans }` (the plan's fields without
+      slots, newest week first).
   - **BL-220 restart-when-idle tools (Factory API 1.30.0, ADR 0049, `docs/roadmap/plans/RESTART_WHEN_IDLE_PLAN.md`).** While a
     restart request is open (the owner's button, or `scripts/macos/restart-when-idle.sh`), the server checks every 15 s and, once
     nothing waits, records `restarting` and sends itself SIGTERM (the system service starts the new build). Only under the macOS

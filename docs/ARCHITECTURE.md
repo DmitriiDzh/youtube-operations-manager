@@ -4788,6 +4788,27 @@ FO-REQ-0040; owner msgs 3511/3534; plan `docs/roadmap/plans/WEEKLY_PUBLISHING_PL
   Видео › Пакет › YouTube › Дата, actions), amber rows for a change after approval, struck-through vetoed rows with «Вернуть»,
   the inline veto confirmation, and in «Всю неделю» the bar with the count, the quota estimate (`estimateUploadUnits`) and «Одобрить
   неделю»; «По одному» gives «Одобрить» / «Отозвать» per slot. The tab's badge reads `waiting`.
+- **Stage 2 -- package v2** (`publishing/packages.ts`): `RELEASE_PACKAGE_SCHEMAS` accepts `/1` and `/2`; v2 adds `slotId`,
+  `localizations` (checked in `packageProblems` by `shared-localization-set` with a video's limits; `packageLocalizationSet` gives the
+  form sent), `containsSyntheticMedia`, `thumbnails` (one default = `files.thumbnail`; the tests checked by the scan like the default,
+  2 MB each). The composer refuses a thumbnail over 2 MB or not an image. Schema v110: `publishing_uploads.slot_id`, set when queued.
+  The plan's `progress` port is filled by `src/lib/publishing-plan-progress/` (a composition module: the package scan, cached a
+  minute, and this computer's upload rows -> `built` / `packaged` / `uploading` / `failed (code)` / `scheduled` / `published`,
+  `videoId`, the package's facts), passed by `factory-channel-deps.ts` and the owner's routes. The agents' list takes `limit`.
+- **Stage 3 -- uploads of approved slots** (ADR 0051 §7/§8/§10, AGENTS.md §F «Upload localizations»):
+  - `auto-upload.ts` gets `slotDecisions` (from `src/composition/publishing-plan-slots.ts` -> the plan's `createPublishingPlansUploadCore`):
+    vetoed -> skipped (`slot_vetoed`, not hashed); approved and > 15 min ahead -> `queueAutomatic({ slotPublishAt })`; else dateless.
+  - `upload-runner.ts`: the insert's AI flag is `syntheticMediaOf(pkg, settings)`; finishing starts with `localizations` (the shared
+    writer via `writeLocalizations`, `expected` = the insert's snippet so a stale read is never echoed back), then thumbnail, playlist,
+    read-back, and the date only when all passed (`steps.localizations` in `none` / `verified`).
+  - `src/lib/shared-video-localizations/` holds the writer moved out of `live-localizations` (unchanged; `source` names the caller in
+    the audit); `live-localizations` re-exports it.
+  - `plan-schedule.ts` + `createPlanScheduleCore` (loop in `instrumentation.ts`, every minute): for each done row with a slot and a
+    video, `desiredDate` (veto -> no date; approved -> the slot's time when the upload's checks passed and it is > 15 min ahead; pending
+    -> nothing; a date within 15 min is never changed); a fresh read, refused if not private; video-details `applyFieldsUpdate`
+    (`publishAt` null removes the date: `statusPartOf` leaves it out of the status part); read back; `steps.planSync`, the row's date,
+    audit `publishing.plan_scheduled` / `plan_unscheduled`. Live writes / reads off or the quota: the pass stops, nothing recorded;
+    another refusal is recorded and retried after an hour.
 
 ## BL-221 — the Content section redesign (CONTENT_UX_PLAN.md)
 

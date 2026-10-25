@@ -76,6 +76,22 @@ what is published?
    a composition module `src/lib/publishing-plan-progress/` (publishing's scan → slot statuses), so neither feature module imports
    the other. In stage 2 the upload still sends the channel's AI flag; the package's own flag and translations are sent from stage 3.
 
+12. **Stage 3 as built.**
+   - The video translations writer moved from `live-localizations` to the shared module `src/lib/shared-video-localizations/`
+     (AGENTS.md §M; behaviour unchanged); its only callers are live-localizations and publishing (source scan).
+   - The upload writes the package's translations as the first step after processing, before the thumbnail; any step that fails
+     (translations, thumbnail, playlist, read-back) withholds the date.
+   - A plan-schedule loop (every minute, `src/instrumentation.ts`) applies the plan to videos this computer uploaded for a slot: a
+     veto removes the date, an approval after a dateless upload or a re-approval with a new time sets it, through video-details
+     (`publishAt: null` now removes a date by the same 15-minute rule), read before and after. It is NOT gated by the automatic
+     upload switch (a veto must land); Live writes still gates every write. A refused or mismatched change is tried again at most
+     hourly. A slot that is not approved now (revoked, or changed after approval) leaves an existing date as it is: only a veto
+     stops a release.
+   - So a date the owner sets by hand in Studio or in «Видео» on a vetoed slot's video is removed again by the plan: restore the slot
+     first.
+   - The slot statuses `uploading`, `failed (code)`, `scheduled`, `published` and `videoId` come from this computer's upload rows; the
+     other computer shows what the package scan says (`scheduled` / `published` via `Vn_youtube.json`).
+
 ## Consequences
 
 - A new sync family (19 in all) appears in Settings → «Слияние».
