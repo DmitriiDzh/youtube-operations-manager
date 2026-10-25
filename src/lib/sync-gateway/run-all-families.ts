@@ -4,6 +4,7 @@ import { createEditorialProfileSyncRunnerForProduction } from "./editorial-profi
 import { createAiConnectionsCatalogSyncRunnerForProduction } from "./ai-connections-catalog-sync";
 import { createMediaSessionsSyncRunnerForProduction } from "./media-sessions-sync";
 import { createLiveStreamsSyncRunnerForProduction } from "./live-streams-sync";
+import { createLiveAnalyticsSyncRunnerForProduction } from "./live-analytics-sync";
 import { createGenerationPlansSyncRunnerForProduction } from "./generation-plans-sync";
 import { createMediaSettingsSyncRunnerForProduction } from "./media-settings-sync";
 import { createAgentTokensSyncRunnerForProduction } from "./agent-tokens-sync";
@@ -46,7 +47,7 @@ async function runAndRecord<T>(
  * process-wide guard in `runAllSyncFamiliesOnce` below.
  */
 async function runAllOnce() {
-  const [changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards, mediaJobs, geminiSpend, geminiSettings, videoReservations, videoCosts] = await Promise.all([
+  const [changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards, mediaJobs, geminiSpend, geminiSettings, videoReservations, videoCosts, liveAnalytics] = await Promise.all([
     runAndRecord("change_drafts", () => createChangeDraftsSyncCoreForProduction().runSyncCycle()),
     runAndRecord("editorial_profile", () => createEditorialProfileSyncRunnerForProduction().runSyncCycle()),
     runAndRecord("ai_connections", () => createAiConnectionsCatalogSyncRunnerForProduction().runSyncCycle()),
@@ -78,8 +79,10 @@ async function runAllOnce() {
     runAndRecord("video_reservations", () => createVideoReservationsSyncRunnerForProduction().runSyncCycle()),
     // BL-194 stage 3 (ADR 0041): this computer's paid runs out, the other devices' in (one cost per video everywhere).
     runAndRecord("video_costs", () => createVideoCostsSyncRunnerForProduction().runSyncCycle()),
+    // BL-222 (LIVE_ANALYTICS_PLAN.md §6): this computer's live-stream summaries out, the other devices' in (shown read-only).
+    runAndRecord("live_analytics", () => createLiveAnalyticsSyncRunnerForProduction().runSyncCycle()),
   ]);
-  return { changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards, mediaJobs, geminiSpend, geminiSettings, videoReservations, videoCosts };
+  return { changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards, mediaJobs, geminiSpend, geminiSettings, videoReservations, videoCosts, liveAnalytics };
 }
 
 type AllFamiliesResult = Awaited<ReturnType<typeof runAllOnce>>;

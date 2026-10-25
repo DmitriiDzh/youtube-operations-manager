@@ -8301,9 +8301,9 @@ export async function getGatewayTrafficLast24h(
   }));
 }
 
-export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens" | "live_streams" | "channel_language_settings" | "channel_publishing_settings" | "publishing_uploads" | "storyboards" | "media_jobs" | "gemini_spend" | "gemini_settings" | "video_reservations" | "video_costs";
+export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens" | "live_streams" | "channel_language_settings" | "channel_publishing_settings" | "publishing_uploads" | "storyboards" | "media_jobs" | "gemini_spend" | "gemini_settings" | "video_reservations" | "video_costs" | "live_analytics";
 
-const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings", "agent_tokens", "live_streams", "channel_language_settings", "channel_publishing_settings", "publishing_uploads", "storyboards", "media_jobs", "gemini_spend", "gemini_settings", "video_reservations", "video_costs"];
+const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings", "agent_tokens", "live_streams", "channel_language_settings", "channel_publishing_settings", "publishing_uploads", "storyboards", "media_jobs", "gemini_spend", "gemini_settings", "video_reservations", "video_costs", "live_analytics"];
 
 export type SyncFamilyStatusRow = {
   family: SyncFamily;

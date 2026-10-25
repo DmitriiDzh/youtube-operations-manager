@@ -3928,7 +3928,14 @@ Plan: `docs/roadmap/plans/LIVE_STREAMS_PLAN.md` (FO-REQ-0019). Schema v86, Facto
   the plan §3), pulls YouTube Analytics of ended broadcasts hourly from `instrumentation.ts` (`collect.ts` → `live_broadcast_analytics`,
   v106: concurrent avg/peak, per-minute `livestreamPosition` curve, `liveOrOnDemand` views/minutes; first pull 1 h after the last
   sample, final 4 days later; 400 = unsupported part, 403/404 on all = unavailable, else retry 6 h × 5; reads-off/quota stop the
-  tick) and serves the «Эфиры» card (`GET .../live-stream/analytics`) and `producer_live_analytics`. Device-local.
+  tick) and serves the «Эфиры» card (`GET .../live-stream/analytics`) and `producer_live_analytics`. The samples and pulls are
+  device-local. BL-222 (plan §6): every 5 min its own loop publishes `publishLiveAnalyticsReport` -- the four ranges (1/7/30/90
+  days) of each channel sampled in the last 90 days, from local data only -- as the per-device report `ytm-live-analytics` v1
+  (`sync-gateway/live-analytics`, family `live_analytics`, 18 in all; strict: ids, ISO dates, codes and numbers, never the
+  per-minute curve). `summary` answers from local samples when it has any for the channel in the range, else from the newest peer
+  report whose range has samples (`source: {kind: "peer", deviceId, hostName, updatedAt}`), else local (empty); a range outside
+  1/7/30/90 is local only. `producer_live_analytics` stays local. The card is also shown on a computer without the stream host
+  when a peer reports the channel.
 - **Other computers** see the `live-streams` per-device report (`sync-gateway/live-streams`, strict fixed codes); the Operator reads
   `factory_live_get_status` and maps files with `factory_live_map_sources`. Bell notices: down, ended by YouTube, next video missing.
 - **Adding by checkboxes** (BL-187, `docs/roadmap/plans/LIVE_STREAMS_FIELDS_PLAN.md` §2.4; `picker.ts`, `picker-service.ts`,

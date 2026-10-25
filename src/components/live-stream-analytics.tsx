@@ -9,9 +9,13 @@ import { useUiText } from "./ui-text-provider";
 
 // BL-213 (docs/roadmap/plans/LIVE_ANALYTICS_PLAN.md stage 3): «Эфиры» -- how the stream did over the last days, from the viewer
 // samples this computer keeps (BL-211) and the encoder's early exits. A read of local data; never a YouTube call. Unknown is
-// "—", never 0. Its own fetch: the page's 5-second poll does not carry it.
+// "—", never 0. Its own fetch: the page's 5-second poll does not carry it. BL-222: where the stream runs on another computer, the
+// figures are the summary that computer shared, and the card names it.
 
-type Summary = LiveSummary & { range: { from: string; to: string; days: number } };
+type Summary = LiveSummary & {
+  range: { from: string; to: string; days: number };
+  source?: { kind: "local" } | { kind: "peer"; deviceId: string; hostName: string | null; updatedAt: string };
+};
 
 const RANGES: Array<{ days: number; key: UiTextKey }> = [
   { days: 1, key: "live.analytics.range.day" },
@@ -28,7 +32,8 @@ function uptime(f: LiveSummaryFigures): number | null {
   return covered > 0 ? f.onAirMs / covered : null;
 }
 
-export function LiveStreamAnalyticsCard({ base, visible }: { base: string; visible: boolean }) {
+/** `remote`: this computer cannot run the stream -- with no shared figures the card says the other computer has not shared any yet. */
+export function LiveStreamAnalyticsCard({ base, visible, remote = false }: { base: string; visible: boolean; remote?: boolean }) {
   const { t, formatNumber, language } = useUiText();
   const [days, setDays] = useState(7);
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -111,12 +116,18 @@ export function LiveStreamAnalyticsCard({ base, visible }: { base: string; visib
           {t("live.analytics.refresh")}
         </button>
       </div>
-      <p className="text-xs text-zinc-500">{t("live.analytics.source")}</p>
+      <p className="text-xs text-zinc-500">
+        {summary?.source?.kind === "peer"
+          ? t("live.analytics.sourcePeer", { host: summary.source.hostName ?? summary.source.deviceId, at: new Date(summary.source.updatedAt).toLocaleString(language) })
+          : remote
+            ? t("live.analytics.sourceRemote")
+            : t("live.analytics.source")}
+      </p>
       {error && <p className="text-sm text-red-400">{error}</p>}
       {!summary ? (
         !error && <LoadingIndicator className="text-sm text-zinc-400" />
       ) : summary.totals.samples === 0 ? (
-        <p className="text-sm text-zinc-500">{t("live.analytics.empty")}</p>
+        <p className="text-sm text-zinc-500">{t(remote && summary.source?.kind !== "peer" ? "live.analytics.emptyRemote" : "live.analytics.empty")}</p>
       ) : (
         <>
           <dl className="grid grid-cols-2 gap-3 sm:grid-cols-3">
