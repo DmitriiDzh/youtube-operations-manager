@@ -931,12 +931,29 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
     его в YouTube Studio, msg 3350) / `default_language_mismatch` / `own_language_in_live` / свой язык в наборе → бэкап →
     повторное чтение → общее слияние (запись своего языка, равная базовому тексту, отправляется без изменений) →
     `assertLiveWritesAuthorized` → один `channels.update part=localizations` → проверка чтением → аудит. 50 единиц плюс чтения.
-    `brandingSettings` приложение не пишет никогда.
+    `brandingSettings` этот писатель не пишет (их пишет только BL-223, ADR 0050).
   - Шлюзы: `getChannelLocalizationsContext` (чтение), `updateChannelLocalizations` (запись).
   - MCP Оператора (Factory API 1.29.0): `factory_channel_save_localizations` (локальная запись) и
     `factory_channel_get_localizations` (набор, переводы на YouTube — 1 единица, последний результат в кодах); маршрут MCP получает
     только поверхность без apply (AC-CL-10).
-  - Карточка «Переводы канала» (`src/components/channel-localizations-panel.tsx`) во вкладке «Языки» под настройками языка канала.
+  - Карточка «Переводы канала» (`src/components/channel-localizations-panel.tsx`) во вкладке «Языки» под настройками языка канала
+    и (BL-223) на «Главной» под карточкой «Канал».
+- **BL-223 оформление канала (`docs/roadmap/plans/CHANNEL_BRANDING_PLAN.md`, ADR 0050, ветка `feature/bl-223-channel-branding`):**
+  - Разрешённый писатель `brandingSettings` (AGENTS.md §F, владелец msgs 3482/3488) — модуль `src/lib/channel-branding/`:
+    описание, ключевые слова и баннер канала; название и аватар только показываются (API их не меняет).
+  - Схема **v109** (только этот компьютер): `channel_branding` (черновик на канал, кто сохранил, последний результат) и
+    `channel_branding_events` (аудит). Баннер копируется в `<данные приложения>/channel-branding/<channelId>/banner.<jpg|png>`.
+  - `draft.ts` (чистый, его же берёт карточка): пределы (описание 1000 символов, ключевые слова 500, баннер jpeg/png ≤ 6 МБ,
+    ≥ 2048×1152, ровно 16:9), размер картинки из заголовка PNG/JPEG без зависимостей, ключевые слова в формате YouTube.
+  - «Применить» только из Web UI (`POST /api/channels/[channelId]/channel-branding/apply`, `{ draftVersion }`): `branding_changed`
+    → `assertWriteChannel` → чтение → бэкап → повторное чтение → `channelBanners.insert` → полный `brandingSettings`
+    (`channels.update`), Live writes перед каждой записью → проверка чтением → аудит; `banner_uploaded_not_set`,
+    `read_back_mismatch`.
+  - Шлюзы: `getChannelBrandingContext` (чтение), `insertChannelBanner` и `updateChannelBrandingSettings` (запись).
+  - MCP: `factory_channel_get_branding` / `factory_channel_save_branding` (Factory API 1.32.0) и `agent_channel_get_branding` /
+    `agent_channel_save_branding` у работника своего канала (Agent API 4.6.0); баннер агента — путь в `Sent to YTM`. Apply нет ни
+    в одном MCP-пути (AC-CB-09).
+  - Карточка «Канал» (`src/components/channel-branding-panel.tsx`) на «Главной», под ней «Переводы канала».
 - **Общий модуль `src/lib/shared-localization-set/`** (BL-210, §M): валидатор набора «язык → название/описание» с пределами
   параметром; им пользуются `live-streams/localizations.ts` (пределы видео) и `channel-localizations` (пределы канала).
 - **Общий модуль `src/lib/shared-localization-merge/`** (BL-207, §M): `buildSafeLocalizationsPayload`, `checkDefaultLanguage`,

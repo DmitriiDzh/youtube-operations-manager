@@ -122,6 +122,18 @@ Sources: [channels.update](https://developers.google.com/youtube/v3/docs/channel
 4. **The read** is `channels.list part=snippet,brandingSettings,localizations` (still 1 unit), so the read-back can prove the
    translations (BL-210) unchanged.
 
+## Implementation notes (2026-10-25, branch `feature/bl-223-channel-branding`)
+
+- Module `src/lib/channel-branding/`, schema v109, Factory API 1.32.0, Agent API 4.6.0; ADR 0050; acceptance tests
+  `services.test.ts` (AC-CB-01..08, 10), `no-agent-apply.test.ts` (AC-CB-09), `gateway-inventory.test.ts` (AC-CB-11), the route
+  and MCP tests.
+- §5 said workers follow "how BL-217 exposed the channel translations to workers" -- BL-217 never did (ADR 0047 keeps them the
+  Operator's). The branding tools are added to `WORKER_FACTORY_TOOLS` like the other channel tools, pinned to the bound channel,
+  the draft recorded as saved by `worker`; channel translations stay out of channel sessions.
+- Draft semantics chosen: a field left out = unchanged on YouTube; `""` / `[]` clear it; `keepBanner` keeps the stored banner on a
+  save that does not send a new one. A banner cannot be removed (no documented way), only replaced.
+- The preview is `POST .../preview` (the task asked for POST; BL-210 used GET).
+
 ## Acceptance (written before the code)
 
 - **AC-CB-01** Saving a valid draft (description, keywords, a 2560×1440 PNG) stores it and copies the banner; no YouTube call.
