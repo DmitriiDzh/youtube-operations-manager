@@ -261,8 +261,8 @@ export function ChannelBrandingPanel({ channelId }: { channelId: string }) {
 
       <div className="flex flex-wrap items-center gap-3">
         {live?.avatarUrl ? (
-          // eslint-disable-next-line @next/next/no-img-element -- the channel's avatar from YouTube
-          <img src={live.avatarUrl} alt="" className="h-12 w-12 shrink-0 rounded-full" />
+          // eslint-disable-next-line @next/next/no-img-element -- the channel's avatar from YouTube; no referrer: YouTube's image hosts refuse some sizes when the page sends its address (seen live 2026-10-25)
+          <img src={live.avatarUrl} alt="" referrerPolicy="no-referrer" className="h-12 w-12 shrink-0 rounded-full" />
         ) : (
           <div className="h-12 w-12 shrink-0 rounded-full bg-zinc-800" />
         )}
@@ -346,7 +346,7 @@ export function ChannelBrandingPanel({ channelId }: { channelId: string }) {
             <figcaption className="text-[11px] text-zinc-500">{t("channelBranding.bannerOnYoutube")}</figcaption>
             {live?.bannerUrl ? (
               // eslint-disable-next-line @next/next/no-img-element -- the channel's banner from YouTube
-              <img src={live.bannerUrl} alt="" className="aspect-video w-full rounded-md object-cover" />
+              <img src={live.bannerUrl} alt="" referrerPolicy="no-referrer" className="aspect-video w-full rounded-md object-cover" />
             ) : (
               <div className="flex aspect-video w-full items-center justify-center rounded-md bg-zinc-800 text-[11px] text-zinc-500">{t("channelBranding.noBanner")}</div>
             )}
