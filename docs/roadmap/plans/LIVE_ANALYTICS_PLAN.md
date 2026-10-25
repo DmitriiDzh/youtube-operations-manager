@@ -109,5 +109,42 @@ day); data the API may refuse after a recording is deleted (hence samples first)
 1. Sample retention: keep all, or e.g. 90 days of 5-minute samples plus daily totals forever?
 2. Should a faster sampling rate be used while live (e.g. every minute)? It costs Data API quota (1 unit per read).
 3. Should the summary also be visible on Windows (via the `live-streams` sync report) or only on the Mac?
+   **Answered 2026-10-25 (owner msgs 3479/3482): yes, on every computer — stage 5 (BL-222).**
 4. Recording deletion stays outside the app (Studio / the Operator by hand)? If the app should delete them, that is a
    separate write feature with its own approval (write gateway, Live writes) and is not part of this plan.
+
+## 6. Stage 5 — the summary on the other computers (BL-222)
+
+Owner, Telegram msg 3479 (2026-10-25): «аналитику по трансляции даже при том что она запущена на другом компьютере»; msg 3482
+chose the option proposed in msg 3481: the computer that runs the stream shares a ready summary, no extra YouTube call.
+
+- **Own per-device report family `live_analytics`** (`ytm-live-analytics` v1, Syncthing subfolder `live-analytics`), not a
+  field in `ytm-live-streams`: that schema is strict with `version: 1`, so any change there would make a computer that is not
+  updated yet refuse the whole report and lose the stream's state. A build without this family never sees the new folder.
+- **What is shared:** for each channel with samples in the last 90 days, the four summaries the card offers (1, 7, 30, 90 days),
+  each exactly what `GET .../live-stream/analytics?days=N` answers locally (totals, days, hours, broadcasts, and the YouTube
+  Analytics views — never the per-minute `curve`), plus the range. Raw samples are not shared. Strict schema: ids, ISO dates,
+  fixed codes and numbers only, no free text. A computer with no samples publishes `channels: []`.
+- **Who and how often:** the `live-analytics` module publishes its own report every 5 minutes (the sampling cadence) in its own
+  loop in `instrumentation.ts` (AGENTS.md §M: it imports nothing from `live-streams`). Cost: four local summaries per channel
+  every 5 minutes; no YouTube call.
+- **Which source the route answers from:** local when this computer has samples for the channel in the range; otherwise the
+  newest peer report (by `updatedAt`) whose channel entry for that range has samples; otherwise local (empty). A `days` value
+  outside 1/7/30/90 is answered only locally (the UI never asks one). The answer gains
+  `source: {kind: "local"} | {kind: "peer", deviceId, hostName, updatedAt}` (additive). A peer silent for 7 days is forgotten
+  (`PEER_FORGET_AFTER_MS`), so a retired computer's history disappears a week after its last report.
+- **UI:** the «Эфиры» card is also shown where the stream runs elsewhere (Windows: under the other computer's stream card), with
+  «По данным <computer>, <time>» when the figures come from a peer. Texts in every language.
+- **Out of scope:** `producer_live_analytics` stays local-only (stage 4) unless the owner asks.
+- **Acceptance needs the other computer updated:** until Windows runs this build, the Mac publishes and nobody reads.
+
+### Acceptance criteria (stage 5, fixed before code)
+
+- AC-LA5-01: the report schema refuses free text (an unknown field, a bad broadcast id, a `days` other than 1/7/30/90).
+- AC-LA5-02: the publisher puts four ranges per channel with samples in the last 90 days, each equal to the local summary for
+  that range; a channel with no samples in 90 days is left out; nothing sampled → `channels: []`.
+- AC-LA5-03: route source — local samples present → `local`, even when a peer has more; none → the newest peer entry with
+  samples for that range (`peer`, its host and time); a peer whose entry for the range has 0 samples is skipped; no peer →
+  `local` with zero figures; `days=3` with no local samples → `local`.
+- AC-LA5-04: a peer report of an older `updatedAt` never replaces a newer one (the per-device core's rule, unchanged).
+- AC-LA5-05: the card renders on a computer without the stream host when a peer reports the channel, and names the peer.

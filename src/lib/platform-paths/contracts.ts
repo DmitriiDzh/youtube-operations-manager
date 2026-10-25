@@ -110,6 +110,9 @@ export type AppPaths = {
   /** BL-194 stage 3 (ADR 0041): the video-costs family -- this device's paid runs and the peers' latest reports. */
   videoCostsShareDir: string;
   videoCostsSyncFallbackDir: string;
+  /** BL-222 (LIVE_ANALYTICS_PLAN.md §6): the live-analytics family -- this device's live-stream summaries and the peers' latest reports. */
+  liveAnalyticsShareDir: string;
+  liveAnalyticsSyncFallbackDir: string;
   /** BL-193: the gemini-spend family -- this device's Gemini spend report and the peers' latest reports. */
   geminiSpendShareDir: string;
   geminiSpendSyncFallbackDir: string;
