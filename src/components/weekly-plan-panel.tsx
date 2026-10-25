@@ -65,6 +65,12 @@ const ERROR_KEYS: Record<string, UiTextKey> = {
   publishing_plan_slot_vetoed: "weekPlan.error.vetoed",
 };
 
+/** The slot's channel time reads the same on the owner's clock (same date and time). */
+function sameClock(slot: Pick<PlanSlotDto, "date" | "publishAt" | "publishAtUtc">, ownerZone: string | null): boolean {
+  const owner = zonedParts(slot.publishAtUtc, ownerZone);
+  return owner.ymd === slot.date && owner.time === slot.publishAt.slice(11, 16);
+}
+
 const weekdayKey = (n: number) => `weekPlan.weekday.${n}` as UiTextKey;
 const actorKey = (actor: "factory" | "worker", capital = false) => (capital ? `weekPlan.actorCap.${actor}` : `weekPlan.actor.${actor}`) as UiTextKey;
 
@@ -164,7 +170,8 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
 
   const shown = plan && plan !== "none" && plan.weekStart === week ? plan : null;
   const toApprove = useMemo(() => (shown ? slotsToApprove(shown) : []), [shown]);
-  const sameZone = shown ? ownerZone === shown.timeZone : true;
+  // The owner's own time is shown only where it differs from the channel's (also when his zone is unknown and the browser's is used).
+  const sameZone = shown ? shown.slots.every((s) => sameClock(s, ownerZone)) : true;
 
   if (!channelId) return null;
 
@@ -256,7 +263,6 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
                   plan={shown}
                   mode={mode}
                   ownerZone={ownerZone}
-                  sameZone={sameZone}
                   at={at}
                   busy={busy}
                   confirming={confirmVeto === slot.slotId}
@@ -309,7 +315,6 @@ function SlotRow(props: {
   plan: PlanDto;
   mode: Mode;
   ownerZone: string | null;
-  sameZone: boolean;
   at: (iso: string) => string;
   busy: string | null;
   confirming: boolean;
@@ -367,7 +372,7 @@ function SlotRow(props: {
           <div className={`text-sm font-medium ${slot.vetoed ? "line-through" : ""}`}>{dayLabel}</div>
           <div className="text-sm">
             {wall.time}
-            {!props.sameZone && !slot.vetoed && <span className="ml-1 text-zinc-500">{t("weekPlan.ownerTime", { time: ownerLabel })}</span>}
+            {!sameClock(slot, props.ownerZone) && !slot.vetoed && <span className="ml-1 text-zinc-500">{t("weekPlan.ownerTime", { time: ownerLabel })}</span>}
           </div>
         </div>
         <div className="hidden h-[54px] w-24 items-center justify-center rounded-md border border-dashed border-zinc-700 text-[10px] text-zinc-500 md:flex">{t("weekPlan.noThumbnail")}</div>

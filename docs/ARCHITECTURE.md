@@ -3931,7 +3931,7 @@ Plan: `docs/roadmap/plans/LIVE_STREAMS_PLAN.md` (FO-REQ-0019). Schema v86, Facto
   tick) and serves the «Эфиры» card (`GET .../live-stream/analytics`) and `producer_live_analytics`. The samples and pulls are
   device-local. BL-222 (plan §6): every 5 min its own loop publishes `publishLiveAnalyticsReport` -- the four ranges (1/7/30/90
   days) of each channel sampled in the last 90 days, from local data only -- as the per-device report `ytm-live-analytics` v1
-  (`sync-gateway/live-analytics`, family `live_analytics`, 18 in all; strict: ids, ISO dates, codes and numbers, never the
+  (`sync-gateway/live-analytics`, family `live_analytics`, the 18th; strict: ids, ISO dates, codes and numbers, never the
   per-minute curve). `summary` answers from local samples when it has any for the channel in the range, else from the newest peer
   report whose range has samples (`source: {kind: "peer", deviceId, hostName, updatedAt}`), else local (empty); a range outside
   1/7/30/90 is local only. `producer_live_analytics` stays local. The card is also shown on a computer without the stream host
