@@ -579,6 +579,21 @@ async function startServerSession() {
   };
   setTimeout(() => void liveAnalyticsLoop(), 5 * 60_000).unref();
 
+  // BL-222 (LIVE_ANALYTICS_PLAN.md §6): this computer's «Эфиры» summaries for the other computers, every 5 minutes (the sampling
+  // cadence), in its own loop. Local reads and one local file; never a YouTube call. The sync cycle carries the file.
+  const LIVE_ANALYTICS_PUBLISH_MS = 5 * 60_000;
+  const liveAnalyticsPublishLoop = async () => {
+    try {
+      await assertDeviceAvailableForMutation(rawSqlClient);
+      await (await import("@/lib/live-analytics")).publishLiveAnalyticsReport();
+    } catch (error) {
+      const paused = error instanceof Error && (error.name === "OperationLockError" || error.name === "RecoveryModeError");
+      if (!paused) console.warn(`[live-analytics] report: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    setTimeout(() => void liveAnalyticsPublishLoop(), LIVE_ANALYTICS_PUBLISH_MS).unref();
+  };
+  setTimeout(() => void liveAnalyticsPublishLoop(), 60_000).unref();
+
   if (process.env.NODE_ENV !== "production") return;
   // Idle auto-shutdown: no request is in flight by definition, so reset, publish any unexported
   // local changes, then exit. Deliberately NOT raced against a timeout: exiting while the export

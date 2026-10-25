@@ -9,9 +9,13 @@ import { useUiText } from "./ui-text-provider";
 
 // BL-213 (docs/roadmap/plans/LIVE_ANALYTICS_PLAN.md stage 3): «Эфиры» -- how the stream did over the last days, from the viewer
 // samples this computer keeps (BL-211) and the encoder's early exits. A read of local data; never a YouTube call. Unknown is
-// "—", never 0. Its own fetch: the page's 5-second poll does not carry it.
+// "—", never 0. Its own fetch: the page's 5-second poll does not carry it. BL-222: where the stream runs on another computer, the
+// figures are the summary that computer shared, and the card names it.
 
-type Summary = LiveSummary & { range: { from: string; to: string; days: number } };
+type Summary = LiveSummary & {
+  range: { from: string; to: string; days: number };
+  source?: { kind: "local" } | { kind: "peer"; deviceId: string; hostName: string | null; updatedAt: string };
+};
 
 const RANGES: Array<{ days: number; key: UiTextKey }> = [
   { days: 1, key: "live.analytics.range.day" },
@@ -111,7 +115,11 @@ export function LiveStreamAnalyticsCard({ base, visible }: { base: string; visib
           {t("live.analytics.refresh")}
         </button>
       </div>
-      <p className="text-xs text-zinc-500">{t("live.analytics.source")}</p>
+      <p className="text-xs text-zinc-500">
+        {summary?.source?.kind === "peer"
+          ? t("live.analytics.sourcePeer", { host: summary.source.hostName ?? summary.source.deviceId, at: new Date(summary.source.updatedAt).toLocaleString(language) })
+          : t("live.analytics.source")}
+      </p>
       {error && <p className="text-sm text-red-400">{error}</p>}
       {!summary ? (
         !error && <LoadingIndicator className="text-sm text-zinc-400" />

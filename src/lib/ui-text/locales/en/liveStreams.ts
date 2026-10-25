@@ -463,6 +463,7 @@ export const liveStreams = {
   "live.analytics.refresh": "Refresh",
   "live.analytics.loadFailed": "Could not load the stream statistics",
   "live.analytics.source": "From this computer's checks of the broadcast (every 5 minutes, every minute after a start); days and hours in UTC. While on air, no number from YouTube means nobody was watching (0); “—” means no figure at all.",
+  "live.analytics.sourcePeer": "From the checks of the broadcast made by {host}, which runs the stream (shared {at}); days and hours in UTC. While on air, no number from YouTube means nobody was watching (0); “—” means no figure at all.",
   "live.analytics.empty": "No checks stored for this period yet: they are saved while the stream is on.",
   "live.analytics.onAir": "On air",
   "live.analytics.uptime": "Live share",
