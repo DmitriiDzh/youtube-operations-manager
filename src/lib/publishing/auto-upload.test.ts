@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { StoredPublishingUpload } from "@/lib/db";
-import { createAutoPrivateUpload, type AutoUploadDeps, type AutoUploadWaiting } from "./auto-upload";
+import { createAutoPrivateUpload, type AutoUploadDeps, type AutoUploadWaiting, type SlotDecision } from "./auto-upload";
 import type { ScannedPackage } from "./package-scan";
 import { packageProblems, type ReleasePackage } from "./packages";
 import { DEFAULT_PUBLISHING_SETTINGS } from "./settings";
@@ -73,7 +73,7 @@ function scanned(pkg: ReleasePackage, manifestSha256: string, fileBytes = pkg.si
   };
 }
 
-function harness(initial: { packages: ScannedPackage[]; enabled?: boolean; files?: Record<string, { bytes: number; mtimeMs: number; hash: string }> }) {
+function harness(initial: { packages: ScannedPackage[]; enabled?: boolean; files?: Record<string, { bytes: number; mtimeMs: number; hash: string }>; slots?: Map<string, SlotDecision> }) {
   const state = {
     enabled: initial.enabled ?? true,
     packages: initial.packages,
@@ -136,6 +136,8 @@ function harness(initial: { packages: ScannedPackage[]; enabled?: boolean; files
     logWaiting: async (entry) => void state.waitingLog.push(entry),
     saveWaiting: async (entries) => void state.saved.push(entries),
     waiting: new Map(),
+    // BL-225 stage 3: the plan's slot decisions (absent: the plan module is not plugged in).
+    ...(initial.slots ? { slotDecisions: async () => initial.slots!, now: () => NOW } : {}),
   };
   return { state, auto: createAutoPrivateUpload(deps) };
 }
@@ -588,4 +590,41 @@ test("review L4: one channel's failure does not stop the others; it is recorded 
   await auto.tick();
   assert.deepEqual(first.queued.map((q) => [q.channelId, q.video]), [[CHANNEL, "V65"]]);
   assert.deepEqual(log, [{ kind: "channel", channelId: "UC_broken", reason: "channel_failed" }]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// BL-225 stage 3 (WEEKLY_PUBLISHING_PLAN.md AC-WP-30/31; ADR 0051 §7; FO-REQ-0040 items 3 and 5; owner msg 3537: the computer with
+// the switch on uploads approved slots). A v2 package names a slot: approved and more than 15 minutes ahead -> queued with the
+// slot's time (written last by the runner); vetoed -> never queued; not approved, too close, or no plan module -> private without
+// a date, exactly as before. Values by hand: NOW is 2026-10-21 12:00Z.
+// ---------------------------------------------------------------------------------------------------------------------------
+
+test("AC-WP-30: an approved slot gives the automatic upload its time; the row names the slot", async () => {
+  const p = scanned(release("V65", { slotId: "w44-fri", schemaVersion: 2 }), "mf-1");
+  const h = harness({ packages: [p], files: fileOf(p), slots: new Map([["w44-fri", { kind: "approved", publishAt: "2026-10-30T09:00:00.000Z" }]]) });
+  await h.auto.tick();
+  assert.deepEqual([h.state.rows[0].publishAt, h.state.rows[0].slotId, h.state.rows[0].automatic], ["2026-10-30T09:00:00.000Z", "w44-fri", true]);
+  assert.deepEqual([h.state.audits[0].publishAt, h.state.audits[0].publish, h.state.audits[0].slotId], ["2026-10-30T09:00:00.000Z", true, "w44-fri"]);
+});
+
+test("AC-WP-31: a vetoed slot's package is never queued (the reason is recorded); a pending or unknown slot uploads without a date", async () => {
+  const vetoed = scanned(release("V65", { slotId: "w44-fri", schemaVersion: 2 }), "mf-1");
+  const v = harness({ packages: [vetoed], files: fileOf(vetoed), slots: new Map([["w44-fri", { kind: "vetoed" }]]) });
+  const result = await v.auto.tick();
+  assert.equal(v.state.rows.length, 0);
+  assert.deepEqual(result.reasons.map((r) => r.reason), ["slot_vetoed"]);
+  assert.equal(v.state.hashCalls.length, 0, "a vetoed slot's video is not even hashed");
+  for (const slots of [new Map<string, SlotDecision>([["w44-fri", { kind: "pending" }]]), new Map<string, SlotDecision>(), undefined]) {
+    const p = scanned(release("V65", { slotId: "w44-fri", schemaVersion: 2 }), "mf-1");
+    const h = harness({ packages: [p], files: fileOf(p), ...(slots ? { slots } : {}) });
+    await h.auto.tick();
+    assert.deepEqual([h.state.rows.length, h.state.rows[0].publishAt], [1, null], JSON.stringify(slots ? [...slots] : "no plan module"));
+  }
+});
+
+test("AC-WP-31: an approved slot 15 minutes ahead or less is not given to the upload (private, no date)", async () => {
+  const p = scanned(release("V65", { slotId: "w44-fri", schemaVersion: 2 }), "mf-1");
+  const h = harness({ packages: [p], files: fileOf(p), slots: new Map([["w44-fri", { kind: "approved", publishAt: "2026-10-21T12:15:00.000Z" }]]) });
+  await h.auto.tick();
+  assert.equal(h.state.rows[0].publishAt, null);
 });

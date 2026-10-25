@@ -66,3 +66,17 @@ test("AC-WP-05 / AC-WP-17: the plan tools are exactly save/get/list for the Oper
     ]
   );
 });
+
+// BL-225 stage 3 (ADR 0051 §7, AGENTS.md §M): the uploads read the slots' decisions only through the composition layer, and only
+// the server's own loops (never an MCP path or a route) run the automatic upload and the plan's date changes.
+test("AC-WP-31: the slots' decisions reach publishing only through src/composition; the plan schedule runs only in instrumentation", async () => {
+  const uploadCore: string[] = [];
+  const schedule: string[] = [];
+  for (const file of await files(SRC)) {
+    const text = await readFile(file, "utf8");
+    if (/\bcreatePublishingPlansUploadCore\b/.test(text)) uploadCore.push(path.relative(SRC, file));
+    if (/\bcreatePlanScheduleCore\b/.test(text)) schedule.push(path.relative(SRC, file));
+  }
+  assert.deepEqual(uploadCore.sort(), ["composition/publishing-plan-slots.ts", "lib/publishing-plans/index.ts"]);
+  assert.deepEqual(schedule.sort(), ["instrumentation.ts", "lib/publishing/index.ts"]);
+});

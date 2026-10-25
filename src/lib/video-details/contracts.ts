@@ -36,8 +36,9 @@ export type VideoDetailsPatch = {
   defaultAudioLanguage?: string;
   privacyStatus?: "private" | "public" | "unlisted";
   /** Settable only together with `privacyStatus: "private"`, and only if the video has never
-   * been published -- both enforced before any network call (schemas.ts + services.ts). */
-  publishAt?: string;
+   * been published -- both enforced before any network call (schemas.ts + services.ts). BL-225 stage 3 (ADR 0051): null removes
+   * the date (the video stays private) -- the same rule: private now, any current date more than 15 minutes ahead. */
+  publishAt?: string | null;
   license?: "youtube" | "creativeCommon";
   embeddable?: boolean;
   publicStatsViewable?: boolean;

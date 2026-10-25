@@ -30,6 +30,8 @@ function harness(opts: {
   changeBeforeRead?: { read: number; change: (video: Video) => void };
   /** The broadcast's state when the writer asks right before the write (absent: the writer is not given the question). */
   current?: "current" | "stopped" | "replaced";
+  /** BL-225 stage 3: the writer's caller as the audit names it. */
+  source?: "live_localizations" | "upload_localizations";
 } = {}) {
   const calls: string[] = [];
   const audit: Array<{ eventType: string; detail: Record<string, unknown> }> = [];
@@ -87,6 +89,7 @@ function harness(opts: {
     sleep: async () => void calls.push("sleep"),
     newId: () => "op1",
     readBack: { attempts: 3, delayMs: 10 },
+    ...(opts.source ? { source: opts.source } : {}),
   };
   const writer = createLiveLocalizationsWriter(deps);
   return {
@@ -364,4 +367,16 @@ test("the broadcast is no longer the running one right before the write: nothing
   const current = harness({ current: "current" });
   assert.deepEqual(await current.apply(), { verified: true });
   assert.deepEqual(current.calls, ["identity", "videos.list", "backup", "isCurrent", "videos.list", "liveWrites", "videos.update", "videos.list"]);
+});
+
+// BL-225 stage 3 (ADR 0051 §8, AGENTS.md §F «Upload localizations»): the writer is shared with the upload of a planned release
+// package; the same steps run, and the audit names the caller (BL-207's stays `live_localizations`).
+test("BL-225: the shared writer names its caller in the audit -- upload_localizations for an upload, live_localizations by default", async () => {
+  const upload = harness({ source: "upload_localizations" });
+  assert.deepEqual(await upload.apply(), { verified: true });
+  assert.deepEqual([...new Set(upload.audit.map((a) => a.detail.source))], ["upload_localizations"]);
+  assert.deepEqual(upload.calls.filter((c) => c === "liveWrites" || c === "videos.update"), ["liveWrites", "videos.update"]);
+  const live = harness();
+  await live.apply();
+  assert.deepEqual([...new Set(live.audit.map((a) => a.detail.source))], ["live_localizations"]);
 });

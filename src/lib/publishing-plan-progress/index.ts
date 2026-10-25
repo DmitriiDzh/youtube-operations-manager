@@ -1,6 +1,6 @@
-import { createPackageScanCore, createPublishingSettingsCore } from "@/lib/publishing";
+import { createPackageScanCore, createPublishingSettingsCore, listChannelUploads } from "@/lib/publishing";
 import type { PlanSlotProgress, PublishingPlansPorts } from "@/lib/publishing-plans";
-import { progressOfSlots } from "./progress";
+import { progressOfSlots, progressWithUploads } from "./progress";
 
 // BL-225 stage 2 (ADR 0051, AGENTS.md §M): the plan's `progress` port from the publishing module's package scan, given to the plan's
 // surfaces by the MCP deps and the Web routes. A scan reads the channel's whole `04 Videos/` folder, so one is kept for a minute per
@@ -27,10 +27,13 @@ async function packagesOf(channelId: string): Promise<Cached | null> {
   }
 }
 
-/** The plan's progress port (stage 2: `built`, `packaged`, and `scheduled` / `published` once a package's upload record says so). */
+/** The plan's progress port: the packages (`built`, `packaged`) and this computer's uploads (`uploading`, `failed`, `scheduled`, `published`). */
 export const publishingPlanProgress: NonNullable<PublishingPlansPorts["progress"]> = async (channelId, _weekStart, slotIds): Promise<Map<string, PlanSlotProgress>> => {
   const found = await packagesOf(channelId);
-  return found ? progressOfSlots(found.packages, slotIds, found.synthetic) : new Map();
+  const fromPackages = found ? progressOfSlots(found.packages, slotIds, found.synthetic) : new Map<string, PlanSlotProgress>();
+  // BL-225 stage 3: this computer's upload rows name their slot -- uploading, failed (with the step's code), scheduled, published.
+  const rows = await listChannelUploads(channelId).catch(() => []);
+  return progressWithUploads(fromPackages, rows, slotIds, Date.now());
 };
 
-export { progressOfPackage, progressOfSlots } from "./progress";
+export { progressOfPackage, progressOfSlots, progressOfUploadRow, progressWithUploads } from "./progress";

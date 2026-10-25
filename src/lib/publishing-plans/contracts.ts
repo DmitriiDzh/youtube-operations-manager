@@ -140,3 +140,10 @@ export type PublishingPlansPorts = {
   /** Stages 2-3: what the packages and uploads say of the slots, by slotId. Absent: nothing (stage 1). */
   progress?(channelId: string, weekStart: string, slotIds: string[]): Promise<Map<string, PlanSlotProgress>>;
 };
+
+/**
+ * BL-225 stage 3 (ADR 0051 §5, §7): what the uploads may do with a slot's video -- `approved` (schedule it at `publishAt`, UTC),
+ * `vetoed` (never upload it; once uploaded, remove its date), `pending` (not approved now: upload it, if at all, without a date and
+ * leave any date as it is). A slot id found in two plans is `pending` (ambiguous: nothing is scheduled by it).
+ */
+export type PlanSlotDecision = { kind: "approved"; publishAt: string } | { kind: "vetoed" } | { kind: "pending" };

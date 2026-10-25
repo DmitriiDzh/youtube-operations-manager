@@ -21,6 +21,10 @@ const UPLOAD_WRITERS = [
   "createAutoPrivateUpload",
   "queueAutomatic",
   "setAutoPrivateUploadEnabled",
+  // BL-225 stage 3 (ADR 0051 §5/§7): the plan's changes to an uploaded video's date, and the slots' decisions it reads.
+  "createPlanScheduleCore",
+  "createPlanSchedule",
+  "createPublishingPlansUploadCore",
 ];
 
 async function files(dir: string): Promise<string[]> {

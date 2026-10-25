@@ -10,7 +10,7 @@ import { DomainError } from "@/lib/shared-domain";
 import type { PackageScanResult } from "./package-scan";
 import type { PublishingSettingsView } from "./settings-service";
 import { uploadTags, type PublishingSettings } from "./settings";
-import { tagsLength } from "./packages";
+import { packageLocalizationSet, tagsLength } from "./packages";
 import { estimateUploadUnits, isDeferredPublishAt } from "./publish-dates";
 import { normalizeLineEndings, type ApprovedPackage } from "./upload-runner";
 
@@ -140,6 +140,10 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
         sizeBytes: pkg.sizeBytes,
         // Review L5: the runner checks an automatic row's file against it before a session starts.
         ...(args.mode.automatic && pkg.sha256 ? { videoSha256: pkg.sha256 } : {}),
+        // BL-225 stage 3 (ADR 0051 §8): a v2 package's translations (as the shared rules send them), its own AI flag and its slot.
+        ...(packageLocalizationSet(pkg) ? { localizations: packageLocalizationSet(pkg)! } : {}),
+        ...(typeof pkg.containsSyntheticMedia === "boolean" ? { containsSyntheticMedia: pkg.containsSyntheticMedia } : {}),
+        ...(pkg.slotId ? { slotId: pkg.slotId } : {}),
       };
       return {
         id: deps.newId(),
@@ -181,7 +185,8 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
       const detail =
         args.mode.automatic
           ? // ADR 0046 / plan §2 item 6: when, channel, package, manifest hash, the switch state and the resulting upload id.
-            { event: "publishing.upload_auto_queued", at: now.toISOString(), channelId: row.channelId, uploadId: row.id, video: row.video, manifestSha256: row.manifestSha256, switchOn: args.mode.switchOn, publishAt: null, uploadPrivate: true, publish: false, automatic: true }
+            // BL-225 stage 3: with the approved plan slot it is for and that slot's time (null: no approved slot -- private, no date).
+            { event: "publishing.upload_auto_queued", at: now.toISOString(), channelId: row.channelId, uploadId: row.id, video: row.video, manifestSha256: row.manifestSha256, switchOn: args.mode.switchOn, publishAt: row.publishAt, uploadPrivate: true, publish: row.publishAt !== null, automatic: true, ...(row.slotId ? { slotId: row.slotId } : {}) }
           : { event: "publishing.upload_approved", uploadId: row.id, video: row.video, publishAt: row.publishAt, uploadPrivate: true, publish: row.publishAt !== null, approvedBy: args.userId };
       await deps.audit({ channelId: args.channelId, detail });
     }
@@ -228,7 +233,12 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
       manifestSha256: string;
       scanned: Extract<PackageScanResult, { status: "ok" }>;
       switchOn: boolean;
-    }): Promise<{ id: string; video: string }> {
+      /**
+       * BL-225 stage 3 (ADR 0051 §7): the time of the APPROVED, not vetoed weekly-plan slot the package names -- the owner's slot
+       * approval is the approval of this date. Absent/null: private, no date (ADR 0046).
+       */
+      slotPublishAt?: string | null;
+    }): Promise<{ id: string; video: string; publishAt: string | null }> {
       const now = deps.clock.now();
       const refuse: Refuse = (code, message, details) => new DomainError({ code, message, details: { channelId: input.channelId, ...details } });
       if (!input.switchOn) throw refuse("validation_failed", "The automatic upload is switched off.");
@@ -239,7 +249,7 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
       const result = await queue({
         channelId: input.channelId,
         userId: input.userId,
-        items: [{ manifestPath: input.manifestPath, manifestSha256: input.manifestSha256, publishAt: null }],
+        items: [{ manifestPath: input.manifestPath, manifestSha256: input.manifestSha256, publishAt: input.slotPublishAt ?? null }],
         view,
         scanned: input.scanned,
         acknowledgeUnknownQuota: false,
@@ -247,7 +257,7 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
         refuse,
         now,
       });
-      return { id: result.uploads[0].id, video: result.uploads[0].video };
+      return { id: result.uploads[0].id, video: result.uploads[0].video, publishAt: result.uploads[0].publishAt };
     },
   };
 }

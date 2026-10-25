@@ -28,7 +28,20 @@ export type ApprovedPackage = {
    * right before a new upload session starts (never on a resumed one); absent on an approval's row.
    */
   videoSha256?: string;
+  /**
+   * BL-225 stage 3 (ADR 0051 §8): a `yt-release-package/2`'s translations as checked when queued (absent: none). Written after the
+   * insert by the shared video translations writer and read back before the date goes on.
+   */
+  localizations?: Record<string, { title: string; description: string }>;
+  /** BL-225 stage 3: the package's own AI flag (absent: the channel's setting, frozen with the row). */
+  containsSyntheticMedia?: boolean;
+  /** BL-225: the weekly-plan slot the package names. */
+  slotId?: string;
 };
+
+/** The AI flag an upload carries: the package's own, else the channel's setting (BL-225 stage 3). */
+export const syntheticMediaOf = (pkg: Pick<ApprovedPackage, "containsSyntheticMedia">, settings: Pick<PublishingSettings, "containsSyntheticMedia">): boolean =>
+  pkg.containsSyntheticMedia ?? settings.containsSyntheticMedia;
 
 export type UploadSteps = {
   /** When the last chunk was first sent: from then on the video may exist even if no answer said so (never restarted blindly). */
@@ -43,6 +56,16 @@ export type UploadSteps = {
    * when the date still went in with the insert; never made for a new row.
    */
   publishAt?: "at_insert" | "set" | "skipped_too_soon" | "withheld" | "failed";
+  /**
+   * BL-225 stage 3: the package's translations, written first after processing by the shared writer (identity, backup, merge, Live
+   * writes, read-back). `none`: the package has none. Anything but `verified` / `none` withholds the date.
+   */
+  localizations?: "verified" | "mismatch" | "failed" | "none";
+  /**
+   * BL-225 stage 3 (ADR 0051 §5, §10): the last change the plan made to the video's date after the upload -- a veto removed it, an
+   * approval (or a re-approval with a new time) set it. Read back before it is stored.
+   */
+  planSync?: { at: string; action: "scheduled" | "unscheduled"; publishAt: string | null; result: "verified" | "mismatch" | "refused"; reason?: string };
   thumbnail?: "set" | "failed";
   playlist?: "added" | "already_there" | "none" | "failed";
   verify?: { result: "verified" | "mismatch"; mismatches: string[] };
@@ -95,6 +118,17 @@ export type UploadRunnerDeps = {
   };
   /** The publish time, written last, through video-details' own write path (backup, read-modify-write, read-back, audit). */
   setPublishAt(args: { channelId: string; videoId: string; publishAt: string; containsSyntheticMedia: boolean } & UploadCredentials): Promise<void>;
+  /**
+   * BL-225 stage 3 (AGENTS.md §F «Upload localizations»): the package's translations onto the video this upload made, by the shared
+   * video translations writer -- identity, a fresh read, never the video's own language, backup, the safe merge, Live writes right
+   * before its one `videos.update`, read-back, audit. Absent: a package with translations gets its date withheld.
+   */
+  writeLocalizations?(args: {
+    channelId: string;
+    videoId: string;
+    localizations: Record<string, { title: string; description: string }>;
+    expected: { tags: string[]; categoryId: string; defaultLanguage: string; defaultAudioLanguage: string };
+  } & UploadCredentials): Promise<{ verified: true } | { verified: false; detail: string }>;
   files: {
     /** A file of the channel's workspace by the workspace rule; null when it is not there (or not inside). */
     resolve(channelId: string, relativePath: string): Promise<{ path: string; bytes: number } | null>;
@@ -252,7 +286,7 @@ export function readBackMismatches(after: VideoReadBack, pkg: ApprovedPackage, s
   // one would be scheduled before it was verified.
   if (publishAt === null && after.publishAt !== null && after.publishAt !== undefined) mismatches.push("publishAt");
   if (after.selfDeclaredMadeForKids !== settings.madeForKids) mismatches.push("madeForKids");
-  if (after.containsSyntheticMedia !== null && after.containsSyntheticMedia !== undefined && after.containsSyntheticMedia !== settings.containsSyntheticMedia) mismatches.push("containsSyntheticMedia");
+  if (after.containsSyntheticMedia !== null && after.containsSyntheticMedia !== undefined && after.containsSyntheticMedia !== syntheticMediaOf(pkg, settings)) mismatches.push("containsSyntheticMedia");
   if (after.license !== settings.license) mismatches.push("license");
   if (after.embeddable !== settings.embeddable) mismatches.push("embeddable");
   return mismatches;
@@ -408,7 +442,8 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
           status: {
             privacyStatus: "private",
             selfDeclaredMadeForKids: settings.madeForKids,
-            containsSyntheticMedia: settings.containsSyntheticMedia,
+            // BL-225 stage 3: the package's own AI flag when it has one, else the channel's.
+            containsSyntheticMedia: syntheticMediaOf(pkg, settings),
             license: settings.license,
             embeddable: settings.embeddable,
           },
@@ -500,9 +535,9 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
     const steps = stepsOf(job);
     const note = (text: string) => (steps.notes = [...(steps.notes ?? []), text.slice(0, 300)]);
     const videoId = job.videoId;
-    let step: "thumbnail" | "playlist" | "verify" | "publishAt" | "record" | "sync" = "thumbnail";
+    let step: "localizations" | "thumbnail" | "playlist" | "verify" | "publishAt" | "record" | "sync" = "thumbnail";
     const giveUp = async (message: string) => {
-      if (step === "publishAt" || step === "thumbnail" || step === "playlist") steps[step] = "failed";
+      if (step === "publishAt" || step === "thumbnail" || step === "playlist" || step === "localizations") steps[step] = "failed";
       else if (step === "verify") steps.verify = { result: "mismatch", mismatches: ["unreadable"] };
       else if (step === "record") steps.record = "failed";
       else steps.sync = "failed";
@@ -518,7 +553,33 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
         return void (await saveSteps(job, steps));
       }
       // The writes below check the channel first, like the upload (review should-fix 1; PUBLISHING_PLAN §3).
-      const creds = publishAtDue || steps.thumbnail === undefined || steps.playlist === undefined ? await identity(job) : await deps.credentials(job);
+      const creds = publishAtDue || steps.thumbnail === undefined || steps.playlist === undefined || steps.localizations === undefined ? await identity(job) : await deps.credentials(job);
+      // BL-225 stage 3 (ADR 0051 §8): the package's translations first, onto this upload's own video; the writer reads back.
+      step = "localizations";
+      const translations = pkg.localizations && Object.keys(pkg.localizations).length > 0 ? pkg.localizations : null;
+      // No translations (every v1 package, and a row from before this step): nothing to write -- noted, and the next step runs now.
+      if (steps.localizations === undefined && !translations) steps.localizations = "none";
+      if (steps.localizations === undefined && translations) {
+        const set = translations;
+        if (!deps.writeLocalizations) {
+          steps.localizations = "failed";
+          note("translations: no writer on this computer");
+        } else {
+          const result = await deps.writeLocalizations({
+            channelId: job.channelId,
+            videoId,
+            localizations: set,
+            expected: { tags: pkg.tags, categoryId: settings.categoryId, defaultLanguage: pkg.defaultLanguage, defaultAudioLanguage: pkg.defaultAudioLanguage },
+            ...creds,
+          });
+          if (result.verified) steps.localizations = "verified";
+          else {
+            steps.localizations = "mismatch";
+            note(`translations read back differently: ${result.detail}`);
+          }
+        }
+        return void (await saveSteps(job, steps));
+      }
       step = "thumbnail";
       if (steps.thumbnail === undefined) {
         const file = await deps.files.resolve(job.channelId, pkg.thumbnailFile);
@@ -567,7 +628,13 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
       }
       step = "publishAt";
       if (job.publishAt !== null && steps.publishAt === undefined) {
-        const failedBefore = [steps.thumbnail === "set" ? null : "thumbnail", steps.playlist === "failed" ? "playlist" : null, steps.verify.result === "verified" ? null : "read-back"].filter(
+        const failedBefore = [
+          // BL-225 stage 3: a package's translations must be on the video, read back, before it gets a date.
+          steps.localizations === undefined || steps.localizations === "none" || steps.localizations === "verified" ? null : "translations",
+          steps.thumbnail === "set" ? null : "thumbnail",
+          steps.playlist === "failed" ? "playlist" : null,
+          steps.verify.result === "verified" ? null : "read-back",
+        ].filter(
           (name): name is string => name !== null
         );
         if (failedBefore.length > 0) {
@@ -579,7 +646,7 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
           // A write whose answer was lost and is asked again: the date may already be there, and is not written twice.
           const before = await deps.reads.snapshot({ channelId: job.channelId, videoId, ...creds });
           if (!(before.privacyStatus === "private" && sameInstant(before.publishAt, job.publishAt))) {
-            await deps.setPublishAt({ channelId: job.channelId, videoId, publishAt: job.publishAt, containsSyntheticMedia: settings.containsSyntheticMedia, ...creds });
+            await deps.setPublishAt({ channelId: job.channelId, videoId, publishAt: job.publishAt, containsSyntheticMedia: syntheticMediaOf(pkg, settings), ...creds });
           }
           // The date itself, read back: private with exactly this time, or the step failed (the video is not marked scheduled).
           const after = await deps.reads.snapshot({ channelId: job.channelId, videoId, ...creds });
@@ -631,7 +698,7 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
           note(`sync after the upload failed: ${errorInfo(error).message}`);
         }
       }
-      const problem = steps.verify.result === "mismatch" ? "verify_mismatch" : [steps.publishAt, steps.thumbnail, steps.playlist, steps.record].includes("failed") ? "step_failed" : steps.publishAt === "skipped_too_soon" ? "publish_at_too_soon" : null;
+      const problem = steps.verify.result === "mismatch" || steps.localizations === "mismatch" ? "verify_mismatch" : [steps.publishAt, steps.thumbnail, steps.playlist, steps.record, steps.localizations].includes("failed") ? "step_failed" : steps.publishAt === "skipped_too_soon" ? "publish_at_too_soon" : null;
       if (await deps.store.update(job.id, "finishing", { status: "done", stepsJson: JSON.stringify(steps), errorCode: problem, finishedAt: now(), updatedAt: now() })) {
         await deps.audit({ channelId: job.channelId, videoId, detail: { event: "publishing.upload_done", uploadId: job.id, video: job.video, steps } });
       }

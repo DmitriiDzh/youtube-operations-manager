@@ -303,3 +303,13 @@ export function packageProblems(pkg: ReleasePackage, facts: PackageFacts, channe
   if (!facts.youtubeRecordExists && facts.sameTitleVideoId !== null) problems.push({ code: "same_title_on_channel", params: { videoId: facts.sameTitleVideoId } });
   return problems;
 }
+
+/**
+ * BL-225 stage 3: a ready package's translations as they are sent (the shared rules' own form: titles trimmed, descriptions with LF
+ * line breaks), or null when it has none. A set the rules refuse is null too -- such a package is never ready (`packageProblems`).
+ */
+export function packageLocalizationSet(pkg: Pick<ReleasePackage, "localizations" | "defaultLanguage">): Record<string, { title: string; description: string }> | null {
+  if (!pkg.localizations || Object.keys(pkg.localizations).length === 0) return null;
+  const checked = validateLocalizationSet(pkg.localizations, { baselineLanguage: pkg.defaultLanguage || null, limits: PACKAGE_LOCALIZATION_LIMITS, ownText: "the package's own title and description" });
+  return checked.ok ? checked.set : null;
+}

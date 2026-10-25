@@ -82,3 +82,41 @@ test("AC-WP-23: a package without a slot, for another slot, or unparsed gives no
   const map = progressOfSlots([scanned("V64", null), scanned("V65", "other"), { ...scanned("V66", "s1"), pkg: null }], ["s1"], true);
   assert.equal(map.size, 0);
 });
+
+// BL-225 stage 3 (AC-WP-30/33, FO-REQ-0040 item 6 and acceptance 3/4): this computer's upload row for a slot says where it stands --
+// under way: uploading; failed: its code; done: the first step that kept the date off, else scheduled until the date and published
+// after it; the date counts only once it is on the video. The newest row of a slot wins over the package scan.
+const uploadRow = (over: Partial<import("./progress").UploadRowForProgress> = {}) => ({
+  slotId: "s1",
+  status: "done",
+  videoId: "vid64",
+  publishAt: "2026-10-26T09:00:00.000Z",
+  errorCode: null,
+  stepsJson: JSON.stringify({ localizations: "verified", thumbnail: "set", playlist: "added", verify: { result: "verified" }, publishAt: "set" }),
+  createdAt: new Date("2026-10-24T00:00:00Z"),
+  ...over,
+});
+const NOW_MS = Date.parse("2026-10-25T12:00:00Z");
+
+test("AC-WP-30/33: upload rows -> uploading, failed with the step's code, scheduled, published; the date counts once on the video", async () => {
+  const { progressOfUploadRow } = await import("./progress");
+  assert.deepEqual(progressOfUploadRow(uploadRow({ status: "uploading", videoId: null }), NOW_MS), { status: "uploading", code: null, videoId: null });
+  assert.deepEqual(progressOfUploadRow(uploadRow({ status: "failed", errorCode: "processing_rejected" }), NOW_MS), { status: "failed", code: "processing_rejected", videoId: "vid64" });
+  assert.equal(progressOfUploadRow(uploadRow(), NOW_MS)?.status, "scheduled");
+  assert.equal(progressOfUploadRow(uploadRow(), Date.parse("2026-10-26T10:00:00Z"))?.status, "published");
+  const failedThumbnail = uploadRow({ stepsJson: JSON.stringify({ localizations: "verified", thumbnail: "failed", playlist: "added", verify: { result: "verified" }, publishAt: "withheld" }) });
+  assert.deepEqual(progressOfUploadRow(failedThumbnail, NOW_MS), { status: "failed", code: "thumbnail_failed", videoId: "vid64" });
+  assert.equal(progressOfUploadRow(uploadRow({ stepsJson: JSON.stringify({ localizations: "mismatch" }) }), NOW_MS)?.code, "localizations_mismatch");
+  assert.equal(progressOfUploadRow(uploadRow({ stepsJson: JSON.stringify({ thumbnail: "set", playlist: "none", verify: { result: "verified" } }) }), NOW_MS)?.status, "packaged", "a planned date not yet on the video");
+  assert.equal(progressOfUploadRow(uploadRow({ publishAt: null }), NOW_MS)?.status, "packaged");
+  assert.equal(progressOfUploadRow(uploadRow({ status: "cancelled" }), NOW_MS), null);
+});
+
+test("AC-WP-23/30: the newest upload row of a slot overrides the package scan, keeping the package's facts", async () => {
+  const { progressWithUploads } = await import("./progress");
+  const fromPackages = progressOfSlots([scanned("V64", "s1")], ["s1"], true);
+  const merged = progressWithUploads(fromPackages, [uploadRow({ status: "failed", errorCode: "x", createdAt: new Date("2026-10-23T00:00:00Z") }), uploadRow()], ["s1"], NOW_MS);
+  assert.equal(merged.get("s1")?.status, "scheduled");
+  assert.equal(merged.get("s1")?.package?.video, "V64");
+  assert.equal(progressWithUploads(new Map(), [uploadRow({ slotId: "other" })], ["s1"], NOW_MS).size, 0);
+});

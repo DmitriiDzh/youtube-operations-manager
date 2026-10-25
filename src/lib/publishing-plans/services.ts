@@ -1,7 +1,7 @@
 import { parseWithSchema } from "@/lib/shared-domain";
 import type { PublishingPlanDecision, PublishingPlanMeta, PublishingPlanSlot, PublishingPlansSnapshot } from "@/lib/sync-gateway";
 import { isValidIanaTimezone } from "@/lib/zoned-time";
-import { DomainError, PUBLISHING_PLAN_LIMITS, type PlanSaveRefusal, type PlanSummary, type PlanView, type PublishingPlanActor, type PublishingPlansPorts } from "./contracts";
+import { DomainError, PUBLISHING_PLAN_LIMITS, type PlanSaveRefusal, type PlanSlotDecision, type PlanSummary, type PlanView, type PublishingPlanActor, type PublishingPlansPorts } from "./contracts";
 import { addDays, contentHashOf, contentOf, decisionStateOf, instantOf, isCalendarDate, isMonday, planViewOf } from "./model";
 import { getPlanInputSchema, listPlansInputSchema, ownerDecisionInputSchema, PLAN_LIST_DEFAULT_LIMIT, savePlanInputSchema } from "./schemas";
 
@@ -233,10 +233,36 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
     });
   }
 
+  /**
+   * BL-225 stage 3: every slot's decision for the uploads (`PlanSlotDecision`), by slot id. A released slot is `pending` (its time
+   * has passed: nothing is scheduled or unscheduled by it any more); a slot id in two plans is `pending`.
+   */
+  async function slotDecisions(channelId: string): Promise<Map<string, PlanSlotDecision>> {
+    const snapshot = await ports.store.read(channelId);
+    const decisions = new Map<string, PlanSlotDecision>();
+    const seen = new Set<string>();
+    for (const meta of Object.values(snapshot.plans)) {
+      const view = planViewOf({ channelId, meta, slots: slotsOf(snapshot, meta.weekStart), decisions: decisionsOf(snapshot, meta.weekStart), progress: new Map(), now: ports.now() });
+      for (const slot of view.slots) {
+        if (seen.has(slot.slotId)) {
+          decisions.set(slot.slotId, { kind: "pending" });
+          continue;
+        }
+        seen.add(slot.slotId);
+        decisions.set(
+          slot.slotId,
+          slot.released ? { kind: "pending" } : slot.vetoed ? { kind: "vetoed" } : slot.approval === "approved" ? { kind: "approved", publishAt: slot.publishAtUtc } : { kind: "pending" }
+        );
+      }
+    }
+    return decisions;
+  }
+
   return {
     save,
     get,
     list: agentList,
+    slotDecisions,
     ownerList: async (channelId: string): Promise<{ plans: PlanSummary[]; waiting: number }> => {
       const plans = await list(channelId);
       return { plans, waiting: plans.reduce((sum, p) => sum + p.counts.needsApproval, 0) };
@@ -261,4 +287,10 @@ export function agentSurface(service: PublishingPlansAgentSurface): PublishingPl
 export type PublishingPlansOwnerSurface = Pick<PublishingPlansService, "ownerList" | "ownerGet" | "decide">;
 export function ownerSurface(service: PublishingPlansOwnerSurface): PublishingPlansOwnerSurface {
   return { ownerList: (channelId) => service.ownerList(channelId), ownerGet: (channelId, weekStart) => service.ownerGet(channelId, weekStart), decide: (channelId, weekStart, input, userId) => service.decide(channelId, weekStart, input, userId) };
+}
+
+/** BL-225 stage 3: what the uploads read (the slots' decisions) -- never a save or a decision. */
+export type PublishingPlansUploadSurface = Pick<PublishingPlansService, "slotDecisions">;
+export function uploadSurface(service: PublishingPlansUploadSurface): PublishingPlansUploadSurface {
+  return { slotDecisions: (channelId) => service.slotDecisions(channelId) };
 }

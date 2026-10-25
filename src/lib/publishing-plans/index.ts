@@ -4,7 +4,7 @@ import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { insertVideoEditAuditEvent } from "@/lib/db";
 import { createPublishingPlansCoreForProduction } from "@/lib/sync-gateway";
 import type { PublishingPlansPorts } from "./contracts";
-import { agentSurface, createPublishingPlansService, ownerSurface, type PublishingPlansAgentSurface, type PublishingPlansOwnerSurface, type PublishingPlansService } from "./services";
+import { agentSurface, createPublishingPlansService, ownerSurface, uploadSurface, type PublishingPlansAgentSurface, type PublishingPlansOwnerSurface, type PublishingPlansService, type PublishingPlansUploadSurface } from "./services";
 
 // BL-225 (ADR 0051): the publishing-plans module of THIS server process. The write lock is one per process (keyed on globalThis: the
 // MCP routes and the Web routes are compiled separately), so it covers the agents' saves and the owner's decisions together. The
@@ -51,8 +51,13 @@ export function createPublishingPlansOwnerCore(progress?: PublishingPlansPorts["
   return ownerSurface(service(progress));
 }
 
-export { createPublishingPlansService, agentSurface, ownerSurface } from "./services";
-export type { PublishingPlansService, PublishingPlansAgentSurface, PublishingPlansOwnerSurface } from "./services";
+/** BL-225 stage 3: the slots' decisions for the uploads (the composition layer gives them to publishing); read-only. */
+export function createPublishingPlansUploadCore(): PublishingPlansUploadSurface {
+  return uploadSurface(service());
+}
+
+export { createPublishingPlansService, agentSurface, ownerSurface, uploadSurface } from "./services";
+export type { PublishingPlansService, PublishingPlansAgentSurface, PublishingPlansOwnerSurface, PublishingPlansUploadSurface } from "./services";
 export { contentHashOf, instantOf, isMonday, weekEndOf, addDays, planViewOf, slotViewOf, decisionStateOf, needsOwner } from "./model";
 export * from "./contracts";
 export * from "./schemas";

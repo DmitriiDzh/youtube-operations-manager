@@ -242,3 +242,15 @@ test("AC-WP-23: the upload row keeps the plan slot of a v2 package (null for v1)
   await h.approval.approve({ channelId: "UC_t", userId: "u", items: [item("V65"), item("V66")], shownSettings: SETTINGS });
   assert.deepEqual(h.inserted.map((row) => [row.video, row.slotId]), [["V65", "w44-mon"], ["V66", null]]);
 });
+
+// BL-225 stage 3 (ADR 0051 §8): the frozen package carries a v2 package's translations as the shared rules send them (the title
+// trimmed, CRLF made LF), its own AI flag and its slot; a v1 package carries none of them.
+test("AC-WP-30: the frozen package holds the v2 translations (checked form), the AI flag and the slot", async () => {
+  const v2 = scanned("V65");
+  v2.pkg = { ...v2.pkg!, schemaVersion: 2, slotId: "w44-mon", containsSyntheticMedia: false, localizations: { ja: { title: "  夜明け  ", description: "田んぼ\r\n朝" } } };
+  const h = harness([v2, scanned("V66")]);
+  await h.approval.approve({ channelId: "UC_t", userId: "u", items: [item("V65"), item("V66")], shownSettings: SETTINGS });
+  const [first, second] = h.inserted.map((row) => JSON.parse(row.packageJson));
+  assert.deepEqual([first.localizations, first.containsSyntheticMedia, first.slotId], [{ ja: { title: "夜明け", description: "田んぼ\n朝" } }, false, "w44-mon"]);
+  assert.deepEqual([second.localizations, second.containsSyntheticMedia, second.slotId], [undefined, undefined, undefined]);
+});

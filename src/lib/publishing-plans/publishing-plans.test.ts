@@ -292,3 +292,23 @@ test("AC-WP-23: the slot shows its package progress; vetoed wins", async () => {
   assert.deepEqual(slotOf(plan, "s1").package, pkg);
   assert.equal(slotOf(plan, "s2").status, "vetoed");
 });
+
+// BL-225 stage 3 (ADR 0051 §5, §7): the uploads read each slot's decision -- approved (its UTC time), vetoed, or pending (not
+// approved, changed since approval, released, or a slot id found in two plans).
+test("AC-WP-30/31: slot decisions for the uploads", async () => {
+  const h = harness();
+  const { plan } = await weekOfThree(h);
+  await h.service.save({ channelId: CH, weekStart: "2026-11-02", timeZone: "Asia/Tokyo", slots: [tokyoSlot("s3", "2026-11-02", "18:00")] }, "factory");
+  await h.service.decide(CH, WEEK, { action: "approve", slots: [{ slotId: "s1", contentHash: slotOf(plan, "s1").contentHash }, { slotId: "s2", contentHash: slotOf(plan, "s2").contentHash }] }, "u1");
+  await h.service.decide(CH, WEEK, { action: "veto", slots: [{ slotId: "s2" }] }, "u1");
+  const decisions = await h.service.slotDecisions(CH);
+  assert.deepEqual(decisions.get("s1"), { kind: "approved", publishAt: "2026-10-26T06:00:00.000Z" }); // 15:00 JST
+  assert.deepEqual(decisions.get("s2"), { kind: "vetoed" });
+  assert.deepEqual(decisions.get("s3"), { kind: "pending" }, "s3 is in two plans");
+  await h.service.save({ channelId: CH, weekStart: WEEK, slots: [tokyoSlot("s1", "2026-10-26", "16:00")] }, "worker");
+  assert.deepEqual((await h.service.slotDecisions(CH)).get("s1"), { kind: "pending" }, "changed after approval");
+  h.tick("2026-10-26T06:00:00Z");
+  assert.deepEqual((await h.service.slotDecisions(CH)).get("s2"), { kind: "vetoed" }, "s2 (27.10) is still ahead");
+  h.tick("2026-10-27T09:00:00Z");
+  assert.deepEqual((await h.service.slotDecisions(CH)).get("s2"), { kind: "pending" }, "released");
+});

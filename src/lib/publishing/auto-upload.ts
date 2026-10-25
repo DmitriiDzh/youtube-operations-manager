@@ -44,7 +44,16 @@ export type AutoUploadDeps = {
     manifestSha256: string;
     scanned: Extract<PackageScanResult, { status: "ok" }>;
     switchOn: boolean;
-  }): Promise<{ id: string; video: string }>;
+    /** BL-225 stage 3: the approved plan slot's time (UTC), or null/absent for no date. */
+    slotPublishAt?: string | null;
+  }): Promise<{ id: string; video: string; publishAt?: string | null }>;
+  /**
+   * BL-225 stage 3 (ADR 0051 §5, §7; owner msg 3537): the weekly plan's decision on each slot of the channel, by slot id (the
+   * composition layer reads the publishing-plans module). Absent (the plan module off): every package uploads as before.
+   */
+  slotDecisions?(channelId: string): Promise<Map<string, SlotDecision>>;
+  /** The clock for the slot margin (absent: the system clock). */
+  now?(): Date;
   /** A video whose SHA-256 differs from its manifest's, logged once per manifest hash. */
   logMismatch(args: { channelId: string; video: string; manifestSha256: string; expected: string; actual: string }): Promise<void>;
   /**
@@ -71,6 +80,12 @@ export type AutoUploadTickResult = {
   /** Every reason standing after this tick (packages and channels). */
   reasons: AutoUploadWaiting[];
 };
+
+/** BL-225 stage 3: a plan slot's decision as the uploads use it (the plan module's `PlanSlotDecision`, restated: §M). */
+export type SlotDecision = { kind: "approved"; publishAt: string } | { kind: "vetoed" } | { kind: "pending" };
+
+/** A publish time must be more than this ahead to be queued with the upload (the approval's own margin). */
+const SLOT_MARGIN_MS = 15 * 60_000;
 
 const waitingKey = (entry: AutoUploadWaiting) => (entry.kind === "package" ? `package|${entry.channelId}|${entry.manifestSha256}` : `channel|${entry.channelId}`);
 
@@ -158,8 +173,16 @@ export function createAutoPrivateUpload(deps: AutoUploadDeps) {
           const live = await deps.liveVideos(channel.channelId);
           const peers = await deps.peerUploads(channel.channelId);
           const tried = await deps.triedHashes(channel.channelId);
+          const slots = deps.slotDecisions ? await deps.slotDecisions(channel.channelId) : null;
           for (const p of scanned.packages) {
             if (!candidate(p)) continue;
+            // BL-225 stage 3 (FO-REQ-0040 item 5): a package whose plan slot the owner vetoed is skipped before anything else.
+            const slot = p.pkg.slotId && slots ? (slots.get(p.pkg.slotId) ?? { kind: "pending" as const }) : null;
+            if (slot?.kind === "vetoed") {
+              visited.add(`package|${channel.channelId}|${p.manifestSha256}`);
+              note({ kind: "package", channelId: channel.channelId, video: p.pkg.video, manifestSha256: p.manifestSha256, reason: "slot_vetoed" });
+              continue;
+            }
             visited.add(`package|${channel.channelId}|${p.manifestSha256}`);
             const expected = p.pkg.sha256 ?? null;
             if (!expected) continue; // no `sha256` in the manifest: the owner's approval only
@@ -191,7 +214,10 @@ export function createAutoPrivateUpload(deps: AutoUploadDeps) {
               return result;
             }
             try {
-              const queued = await deps.queue({ channelId: channel.channelId, userId: channel.userId, manifestPath: p.manifestPath, manifestSha256: p.manifestSha256, scanned, switchOn });
+              // BL-225 stage 3 (ADR 0051 §7): an approved slot still far enough ahead gives the upload its date (written last, after the
+              // read-back); otherwise private without a date, as before -- the plan sets the date later when the slot is approved.
+              const slotPublishAt = slot?.kind === "approved" && Date.parse(slot.publishAt) > (deps.now?.() ?? new Date()).getTime() + SLOT_MARGIN_MS ? slot.publishAt : null;
+              const queued = await deps.queue({ channelId: channel.channelId, userId: channel.userId, manifestPath: p.manifestPath, manifestSha256: p.manifestSha256, scanned, switchOn, slotPublishAt });
               tried.add(p.manifestSha256);
               result.queued.push({ channelId: channel.channelId, video: queued.video, uploadId: queued.id, manifestSha256: p.manifestSha256 });
             } catch (error) {
