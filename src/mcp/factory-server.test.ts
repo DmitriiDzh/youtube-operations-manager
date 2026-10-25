@@ -17,8 +17,11 @@ import { createFactoryMcpServer, FACTORY_API_VERSION, FACTORY_TOOL_NAMES, FACTOR
 // factory_channel_save_localizations (a local write).
 // BL-220 (RESTART_WHEN_IDLE_PLAN.md "Factory API 1.30.0"): factory_restart_status (a read), factory_hold_restart and
 // factory_release_hold (local writes).
+// BL-223 (CHANNEL_BRANDING_PLAN.md §5): factory_channel_get_branding (a read) and factory_channel_save_branding (a local write).
 const EXPECTED_TOOLS = [
+  "factory_channel_get_branding",
   "factory_channel_get_localizations",
+  "factory_channel_save_branding",
   "factory_channel_save_localizations",
   "factory_gemini_create_job",
   "factory_gemini_get_job",
@@ -99,6 +102,7 @@ function registeredNames(): string[] {
       gemini: {} as never,
       live: {} as never,
       channelLocalizations: {} as never,
+      channelBranding: {} as never,
       storyboards: {} as never,
       jobs: {} as never,
       videos: {} as never,
@@ -135,7 +139,9 @@ test("§2.5(2): the channel-agent server's source never registers a factory_ too
 // session for anyone else.
 test("AC-FO-09 (amended by ADR 0025/0026): writes are exactly the named media/session/job actions; everything else is a read; nothing sets a path, workspace or token", () => {
   // BL-210 (CHANNEL_LOCALIZATIONS_PLAN.md §5): the channel translations save is a write (local only; the plan names it a WRITE tool).
+  // BL-223 (CHANNEL_BRANDING_PLAN.md §5): the branding draft save is a write (local only; the plan names it WRITE to local storage).
   assert.deepEqual([...FACTORY_WRITE_TOOL_NAMES].sort(), [
+    "factory_channel_save_branding",
     "factory_channel_save_localizations",
     "factory_gemini_create_job",
     "factory_hold_restart",
@@ -225,6 +231,8 @@ test("§2.5(3): the factory route and endpoint reach only the allowlisted module
     "@/lib/live-streams",
     // BL-210 (CHANNEL_LOCALIZATIONS_PLAN.md §5): the channel-localizations module's Operator surface (no apply) for the factory_channel_* tools.
     "@/lib/channel-localizations",
+    // BL-223 (CHANNEL_BRANDING_PLAN.md §5): the channel-branding module's agent surface (no apply) for the factory_channel_*_branding tools.
+    "@/lib/channel-branding",
     // BL-184 (STORYBOARD_PLAN.md §2.6): the storyboards module for the factory_storyboard_* tools.
     "@/lib/storyboards",
     // BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.7): the shared jobs pool for factory_jobs_list (read-only).
@@ -290,7 +298,8 @@ test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.23.0 
   // log / stats read one CUDA minimum (optional minCudaVersion, echoed with the minimums present). Additive.
   // BL-210 (CHANNEL_LOCALIZATIONS_PLAN.md §5: "This is Factory API 1.29.0"): two new tools, additive -> 1.29.0.
   // BL-220 (RESTART_WHEN_IDLE_PLAN.md "Factory API 1.30.0"): three new tools, additive -> 1.30.0.
-  assert.equal(FACTORY_API_VERSION, "1.31.0");
+  // BL-223 (CHANNEL_BRANDING_PLAN.md §5: "Minor version bump"): two new tools, additive -> 1.32.0.
+  assert.equal(FACTORY_API_VERSION, "1.32.0");
   const agentOperations = await readFile("src/lib/agent-operations/contracts.ts", "utf8");
   assert.equal(agentOperations.includes("FACTORY_API_VERSION"), false);
 });

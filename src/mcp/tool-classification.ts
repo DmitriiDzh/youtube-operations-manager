@@ -138,6 +138,9 @@ export const MCP_TOOL_CLASSIFICATION: Readonly<Record<string, McpToolClass>> = O
   agent_live_get_status: "bound",
   agent_live_map_sources: "bound",
   agent_live_save_localizations: "bound",
+  // BL-223 (ADR 0050): the bound channel's branding draft (description, keywords, banner); never an apply.
+  agent_channel_get_branding: "bound",
+  agent_channel_save_branding: "bound",
   agent_gemini_get_job: "bound",
   // BL-218 (stage 4): paid work the Operator's way, within the owner's switches and limits, for the bound channel only.
   agent_factory_start_session: "bound",

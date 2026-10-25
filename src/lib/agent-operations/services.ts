@@ -814,6 +814,23 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     description:
       "Map published videos to their original files and save the stream's translations (`agent_live_map_sources`, `agent_live_save_localizations`), as the factory_live_* tools. Local only: the owner builds rotations and starts streams; the app writes translations at the owner's Start. Logged.",
   },
+  // BL-223 (CHANNEL_BRANDING_PLAN.md §5, ADR 0050): the channel's description, keywords and banner -- a draft for the owner.
+  {
+    id: "channel_production.read_branding",
+    mcpTools: ["agent_channel_get_branding"],
+    domain: "channel_production",
+    permission: "READ",
+    description:
+      "This channel's branding draft (description, keywords, banner), the channel on YouTube now (name, avatar, description, keywords, banner; 1 quota unit) and the last apply (`agent_channel_get_branding`), as factory_channel_get_branding.",
+  },
+  {
+    id: "channel_production.write_branding",
+    mcpTools: ["agent_channel_save_branding"],
+    domain: "channel_production",
+    permission: "DRAFT",
+    description:
+      "Save this channel's description, keywords and banner as a draft (`agent_channel_save_branding`; the banner a file in your workspace's 99 Data Exchange/Sent to YTM/), as factory_channel_save_branding. Local only: only the owner's «Применить» in the app writes it to YouTube; the name and avatar are YouTube Studio's. Logged.",
+  },
   // BL-218 (stage 4, owner msg 3402): paid work the Operator's way, within the owner's switches and limits.
   {
     id: "channel_production.factory_sessions",

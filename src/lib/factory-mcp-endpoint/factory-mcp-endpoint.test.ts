@@ -10,6 +10,7 @@ import { createFactoryMcpServer, FACTORY_TOOL_NAMES, type FactoryToolDeps } from
 import { createFactoryMcpEndpoint } from "./index";
 import { createStreamLocalizations, localizationsStatusEntry } from "@/lib/live-streams/localizations";
 import { readStoredVideoSettings } from "@/lib/live-streams/video-settings";
+import { agentChannelBranding } from "@/lib/channel-branding";
 import { operatorChannelLocalizations } from "@/lib/channel-localizations";
 
 // Expected behavior comes from docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md §2.1 and §4
@@ -132,6 +133,11 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
     channelLocalizations: {
       get: async (input) => (mediaCalls.push(`channel.localizations.get:${input.channelId}`), { channelId: input.channelId }),
       save: async (input) => (mediaCalls.push(`channel.localizations.save:${input.channelId}:${Object.keys(input.localizations).join(",")}`), { localizations: input.localizations }),
+    },
+    // BL-223: the channel branding agent surface is a fake that records what reached it.
+    channelBranding: {
+      get: async (input) => (mediaCalls.push(`channel.branding.get:${input.channelId}`), { channelId: input.channelId }),
+      save: async (input, by) => (mediaCalls.push(`channel.branding.save:${input.channelId}:${by ?? "factory"}:${input.bannerFile ?? ""}`), { draft: null }),
     },
     // BL-184: the storyboards module is a fake that records what reached it.
     storyboards: {
@@ -298,9 +304,11 @@ test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exact
   const { token } = await tokenServices.issueToken({});
   const body = await (await endpoint.handle(rpc(LIST_TOOLS, withToken(token)))).json();
   const names = (body.result.tools as Array<{ name: string }>).map((tool) => tool.name).sort();
-  // BL-210 (CHANNEL_LOCALIZATIONS_PLAN.md §5): the two factory_channel_* tools are listed too.
+  // BL-210 (CHANNEL_LOCALIZATIONS_PLAN.md §5): the two factory_channel_* tools are listed too; BL-223: the two branding tools.
   assert.deepEqual(names, [
+    "factory_channel_get_branding",
     "factory_channel_get_localizations",
+    "factory_channel_save_branding",
     "factory_channel_save_localizations",
     "factory_gemini_create_job",
     "factory_gemini_get_job",
@@ -411,7 +419,7 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.31.0", // BL-221: factory_video_list gains youtubeVideoId / hasVideoFile (additive); 1.30.0 (BL-220): the three restart tools
+    factoryApiVersion: "1.32.0", // BL-223: factory_channel_get_branding / factory_channel_save_branding; 1.31.0 (BL-221: factory_video_list gains youtubeVideoId / hasVideoFile (additive); 1.30.0 (BL-220): the three restart tools
     tools: [
       "factory_get_capabilities",
       "factory_list_logical_paths",
@@ -466,6 +474,8 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
       "factory_live_save_localizations",
       "factory_channel_get_localizations",
       "factory_channel_save_localizations",
+      "factory_channel_get_branding",
+      "factory_channel_save_branding",
       "factory_storyboard_create",
       "factory_storyboard_update",
       "factory_storyboard_get",
@@ -511,6 +521,7 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
       "factory_live_map_sources",
       "factory_live_save_localizations",
       "factory_channel_save_localizations",
+      "factory_channel_save_branding",
       "factory_storyboard_create",
       "factory_storyboard_update",
       "factory_storyboard_submit",
@@ -1412,4 +1423,59 @@ test("AC-CL-11: factory_channel_get_localizations returns the stored set, the li
   );
   assert.equal(unreadable.live, null);
   assert.equal(unreadable.liveUnavailable, "data_api_reads_disabled");
+});
+
+// BL-223 (CHANNEL_BRANDING_PLAN.md §5, AC-CB-09/10): factory_channel_save_branding is a local write that passes the gate first and
+// reaches only the module's save (as the Operator); its input is strict (no apply, no unknown field); factory_channel_get_branding is
+// a read (no gate).
+test("AC-CB-09: factory_channel_save_branding passes the gate first; strict schema; get is a read without the gate", async () => {
+  const { endpoint, tokenServices, toolDeps } = setupWithDeps();
+  const { token } = await tokenServices.issueToken({});
+  const ok = { channelId: "UC_A", description: "D", keywords: ["lofi"], bannerFile: "branding/banner.png" };
+  assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_channel_save_branding", ok), withToken(token))))).isError, false);
+  assert.deepEqual(toolDeps.mediaCalls, ["gate", "channel.branding.save:UC_A:factory:branding/banner.png"]);
+  toolDeps.mediaCalls.length = 0;
+  assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_channel_get_branding", { channelId: "UC_A" }), withToken(token))))).isError, false);
+  assert.deepEqual(toolDeps.mediaCalls, ["channel.branding.get:UC_A"]);
+  toolDeps.mediaCalls.length = 0;
+  for (const [tool, bad] of [
+    ["factory_channel_save_branding", { ...ok, apply: true }],
+    ["factory_channel_save_branding", { ...ok, draftVersion: "v" }],
+    ["factory_channel_save_branding", { channelId: "UC_A", keywords: "lofi" }],
+    ["factory_channel_save_branding", { description: "D" }],
+    ["factory_channel_get_branding", { channelId: "UC_A", apply: true }],
+  ] as const) {
+    const body = await (await endpoint.handle(rpc(call(tool, bad), withToken(token)))).json();
+    assert.equal(Boolean(body.result?.isError ?? body.error), true, JSON.stringify(bad));
+  }
+  assert.deepEqual(toolDeps.mediaCalls, [], "an invalid input reaches neither the gate nor the module");
+});
+
+// BL-223 AC-CB-10 (values by hand from the plan §2/§5): get returns the stored draft, the live values (name and avatar included) and
+// the last apply in codes (never the owner's error text or the backup path).
+test("AC-CB-10: factory_channel_get_branding returns the draft, the live values and the last result in codes", async () => {
+  const surface = {
+    get: async () => ({
+      channelId: "UC_A",
+      draft: { description: "D", keywords: ["lofi"] },
+      problem: null,
+      updatedAt: "2026-10-25T09:00:00.000Z",
+      updatedBy: "worker" as const,
+      lastApply: { at: "2026-10-25T10:00:00.000Z", ok: false as const, failure: "banner_uploaded_not_set" as const, detail: "update_failed", error: "The new banner was uploaded", fields: ["banner" as const], writes: 1, backupPath: "/Users/x/backups/UC_A.json", banner: null },
+      live: { title: "Name", avatarUrl: "https://a/800", customUrl: "@n", description: "Old", keywords: [], country: "US", defaultLanguage: "en", unsubscribedTrailer: null, bannerUrl: "https://b/1" },
+      liveUnavailable: null,
+    }),
+    save: async () => ({ draft: null }),
+  };
+  const { endpoint, tokenServices } = setup({ toolDeps: { channelBranding: { get: (input) => agentChannelBranding(surface, input.channelId), save: async () => ({}) } } });
+  const { token } = await tokenServices.issueToken({});
+  const result = await toolResult(await endpoint.handle(rpc(call("factory_channel_get_branding", { channelId: "UC_A" }), withToken(token))));
+  assert.equal(result.isError, false);
+  assert.deepEqual(result.payload, {
+    channelId: "UC_A",
+    stored: { draft: { description: "D", keywords: ["lofi"] }, problem: null, updatedAt: "2026-10-25T09:00:00.000Z", updatedBy: "worker" },
+    live: { title: "Name", avatarUrl: "https://a/800", customUrl: "@n", description: "Old", keywords: [], country: "US", defaultLanguage: "en", unsubscribedTrailer: null, bannerUrl: "https://b/1" },
+    liveUnavailable: null,
+    lastApply: { at: "2026-10-25T10:00:00.000Z", ok: false, fields: ["banner"], writes: 1, bannerUrl: null, failure: "banner_uploaded_not_set", code: "update_failed" },
+  });
 });
