@@ -831,6 +831,13 @@ re-read right before the writes, the Live-writes check right before each write, 
 (`banner_uploaded_not_set`, `read_back_mismatch`). It never writes the name, avatar, country, default language, trailer or
 tracking id, and it is not a localization writer.
 
+**Upload localizations (added 2026-10-25, owner, Telegram msgs 3511/3534, BL-225, ADR 0051; built in BL-225 stages 2-3).**
+`src/lib/publishing/` may write a video's per-language title/description only on the upload it makes itself of a
+`yt-release-package/2` for a slot the owner approved in a weekly publishing plan: only the package's own set, with the insert or
+in one `videos.update` right after it, through the same safe merge (nothing deleted, the snippet text untouched, never the
+video's own language), with identity check, the Live-writes check before each write, read-back and audit. The date
+(`status.publishAt`) is written only after that read-back passes (BL-224). Agents draft plans; only the owner approves a slot.
+
 ---
 
 # 22. Idempotent Batch Execution
@@ -1864,7 +1871,8 @@ Do not implement yet:
 - video upload (lifted for one case, 2026-10-13, ADR 0037: the owner's own release packages,
   uploaded and scheduled from the Web UI on the owner's approval only -- never by an agent; since 2026-10-22, ADR 0046, also
   uploaded as private without a date on the standing approval of the owner's automatic-upload switch, when the video matches
-  its manifest's SHA-256 -- still never by an agent, never published or scheduled that way);
+  its manifest's SHA-256 -- still never by an agent, never published or scheduled that way; since 2026-10-25, ADR 0051, also
+  scheduled at a weekly-plan slot's time when the owner approved that slot -- agents draft the plan, never approve it);
 - thumbnail generation;
 - image generation;
 - music generation;
