@@ -52,12 +52,13 @@ function row(over: Partial<StoredPublishingUpload> = {}): StoredPublishingUpload
 }
 
 function harness(initial: StoredPublishingUpload, decision: SlotDecision | undefined, video: { privacyStatus: string; publishAt: string | null } = { privacyStatus: "private", publishAt: initial.publishAt }) {
-  const state = { row: { ...initial }, video: { ...video }, writes: [] as Array<string | null>, audits: [] as Array<Record<string, unknown>>, reads: 0, liveWrites: true, readBackWrong: false, now: NOW };
+  const state = { row: { ...initial }, video: { ...video }, writes: [] as Array<string | null>, audits: [] as Array<Record<string, unknown>>, reads: 0, liveWrites: true, dataReads: true, quotaOut: false, readBackWrong: false, now: NOW };
   const schedule = createPlanSchedule({
     rows: async () => [state.row],
     slotDecisions: async () => new Map(decision ? [["w44-mon", decision]] : []),
     read: async () => {
       state.reads += 1;
+      if (state.quotaOut) throw new DomainError({ code: "youtube_quota_exceeded", message: "quota" });
       return { ...state.video };
     },
     write: async (_row, publishAt) => {
@@ -71,6 +72,10 @@ function harness(initial: StoredPublishingUpload, decision: SlotDecision | undef
     },
     audit: async (_row, detail) => void state.audits.push(detail),
     clock: { now: () => state.now },
+    // Review #4: the switches, read at the start of a pass; the next quota day (midnight Pacific = 07:00Z in October).
+    liveWritesEnabled: async () => state.liveWrites,
+    dataReadsEnabled: async () => state.dataReads,
+    nextQuotaReset: () => new Date("2026-10-26T07:00:00Z"),
   });
   return { state, schedule, steps: () => JSON.parse(state.row.stepsJson) };
 }
@@ -137,4 +142,33 @@ test("AC-WP-32/34: Live writes off -> nothing written and nothing recorded (the 
   wrong.state.readBackWrong = true;
   await wrong.schedule.tick();
   assert.deepEqual([wrong.steps().planSync.result, wrong.state.row.publishAt], ["mismatch", "2026-10-26T09:00:00.000Z"]);
+});
+
+// Review #4 (MEDIUM): with Live writes or reads off a pending change cost a read every pass (and the quota on top). The pass now
+// reads the switches first and stops without any YouTube call; a quota refusal is recorded (the hourly retry applies) and nothing
+// is read again until the quota day resets.
+test("review #4: Live writes off or reads off -> the pass makes no YouTube call at all", async () => {
+  const writesOff = harness(row(), { kind: "vetoed" });
+  writesOff.state.liveWrites = false;
+  await writesOff.schedule.tick();
+  assert.equal(writesOff.state.reads, 0);
+  const readsOff = harness(row(), { kind: "vetoed" });
+  readsOff.state.dataReads = false;
+  await readsOff.schedule.tick();
+  assert.equal(readsOff.state.reads, 0);
+});
+
+test("review #4: a quota refusal is recorded and nothing is read again until the quota resets", async () => {
+  const h = harness(row(), { kind: "vetoed" });
+  h.state.quotaOut = true;
+  await h.schedule.tick();
+  assert.deepEqual([h.steps().planSync.result, h.steps().planSync.reason], ["refused", "youtube_quota_exceeded"]);
+  const reads = h.state.reads;
+  h.state.quotaOut = false;
+  h.state.now = new Date(NOW.getTime() + RETRY_AFTER_MS + 1); // an hour later, still before the reset
+  await h.schedule.tick();
+  assert.equal(h.state.reads, reads, "waits for the quota day");
+  h.state.now = new Date("2026-10-26T07:00:01Z");
+  await h.schedule.tick();
+  assert.equal(h.state.row.publishAt, null, "after the reset the veto lands");
 });

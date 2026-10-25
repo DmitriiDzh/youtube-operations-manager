@@ -40,6 +40,7 @@ export function progressOfPackage(scanned: ScannedPackage, channelSyntheticMedia
     status,
     code: null,
     videoId: scanned.youtube?.videoId ?? null,
+    publishAt: scanned.youtube?.publishAt ?? null,
     package: {
       video: pkg.video,
       title: pkg.title,
@@ -96,7 +97,7 @@ const ACTIVE = new Set(["queued", "uploading", "processing", "finishing", "pause
  * `scheduled` while its date is ahead and `published` once it passed; done without a date (uploaded before the slot was approved)
  * -> `packaged` with the video id. A cancelled row, or one released after an unknown outcome, says nothing.
  */
-export function progressOfUploadRow(row: UploadRowForProgress, nowMs: number): Pick<PlanSlotProgress, "status" | "code" | "videoId"> | null {
+export function progressOfUploadRow(row: UploadRowForProgress, nowMs: number): Pick<PlanSlotProgress, "status" | "code" | "videoId" | "publishAt"> | null {
   if (row.status === "cancelled" || row.errorCode === "unknown_outcome_released") return null;
   if (ACTIVE.has(row.status)) return { status: "uploading", code: null, videoId: row.videoId };
   if (row.status === "failed") return { status: "failed", code: row.errorCode ?? "failed", videoId: row.videoId };
@@ -120,7 +121,7 @@ export function progressOfUploadRow(row: UploadRowForProgress, nowMs: number): P
   // The date counts only once it is on the video: written by the upload (or an old row's insert), or by the plan afterwards.
   const onVideo = steps.publishAt === "set" || steps.publishAt === "at_insert" || (steps.planSync?.result === "verified" && steps.planSync.action === "scheduled");
   if (row.publishAt === null || !onVideo) return { status: "packaged", code: null, videoId: row.videoId };
-  return { status: Date.parse(row.publishAt) > nowMs ? "scheduled" : "published", code: null, videoId: row.videoId };
+  return { status: Date.parse(row.publishAt) > nowMs ? "scheduled" : "published", code: null, videoId: row.videoId, publishAt: row.publishAt };
 }
 
 /** The packages' progress, with each slot's newest upload row on this computer taking precedence (it knows the upload's steps). */
@@ -136,7 +137,8 @@ export function progressWithUploads(fromPackages: Map<string, PlanSlotProgress>,
   for (const [slotId, row] of newest) {
     const fromRow = progressOfUploadRow(row, nowMs);
     if (!fromRow) continue;
-    result.set(slotId, { ...fromRow, videoId: fromRow.videoId ?? result.get(slotId)?.videoId ?? null, package: result.get(slotId)?.package ?? null });
+    const before = result.get(slotId);
+    result.set(slotId, { ...fromRow, videoId: fromRow.videoId ?? before?.videoId ?? null, publishAt: fromRow.publishAt ?? before?.publishAt ?? null, package: before?.package ?? null });
   }
   return result;
 }

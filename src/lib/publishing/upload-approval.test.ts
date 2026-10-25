@@ -254,3 +254,13 @@ test("AC-WP-30: the frozen package holds the v2 translations (checked form), the
   assert.deepEqual([first.localizations, first.containsSyntheticMedia, first.slotId], [{ ja: { title: "夜明け", description: "田んぼ\n朝" } }, false, "w44-mon"]);
   assert.deepEqual([second.localizations, second.containsSyntheticMedia, second.slotId], [undefined, undefined, undefined]);
 });
+
+// Review #5 (LOW): two packages naming the same plan slot could both upload and be scheduled. A package whose slot an upload here
+// already holds (another video) is refused: `upload_slot_taken`.
+test("review #5: a package whose slot is held by another video's upload is refused, nothing queued", async () => {
+  const v2 = scanned("V65");
+  v2.pkg = { ...v2.pkg!, schemaVersion: 2, slotId: "w44-mon" };
+  const h = harness([v2], { heldSlots: async () => new Set(["w44-mon"]) });
+  await refusedWith(h.approval.approve({ channelId: "UC_t", userId: "u", items: [item("V65")], shownSettings: SETTINGS }), "upload_slot_taken");
+  assert.deepEqual(h.inserted, []);
+});

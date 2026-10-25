@@ -11637,12 +11637,14 @@ export async function getPublishingUpload(id: string, database: AppDb = db): Pro
 
 /** Newest first; optional channel and status filters. */
 export async function listPublishingUploads(
-  filter: { channelId?: string; statuses?: readonly PublishingUploadStatus[]; limit: number },
+  /** Review #6 (BL-225): `withSlot` -- only rows that name a weekly-plan slot, filtered before the limit. */
+  filter: { channelId?: string; statuses?: readonly PublishingUploadStatus[]; limit: number; withSlot?: boolean },
   database: AppDb = db
 ): Promise<StoredPublishingUpload[]> {
   const conditions = [
     filter.channelId === undefined ? undefined : eq(publishingUploads.channelId, filter.channelId),
     filter.statuses === undefined ? undefined : inArray(publishingUploads.status, [...filter.statuses]),
+    filter.withSlot ? isNotNull(publishingUploads.slotId) : undefined,
   ].filter((c) => c !== undefined);
   return database
     .select()

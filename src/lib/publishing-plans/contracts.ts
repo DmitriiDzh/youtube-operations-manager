@@ -51,6 +51,8 @@ export type PlanSlotProgress = {
   code: string | null;
   videoId: string | null;
   package?: PlanSlotPackage | null;
+  /** Review #3: the date the uploaded video carries (UTC), if any: the slot is not released before it. */
+  publishAt?: string | null;
 };
 
 /** Why an agent's save was refused, one entry per problem (`validation_failed`, `details.refused`). */
@@ -70,7 +72,11 @@ export type PlanSaveRefusal = {
     | "date_mismatch"
     | "in_past"
     | "unknown_slot"
-    | "slot_approved";
+    | "slot_approved"
+    // Review #2/#3: a slot id another week of the channel uses; removing a vetoed slot or one whose video is uploaded.
+    | "slot_id_in_other_week"
+    | "slot_vetoed"
+    | "slot_uploaded";
 };
 
 export type PlanState = "empty" | "awaiting_approval" | "approved" | "past";

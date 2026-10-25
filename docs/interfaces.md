@@ -1228,7 +1228,8 @@ A second agent role, separate from the channel agents. Technical contract only (
       inside the week; any change to an approved slot (or the zone) drops its approval; an approved slot cannot be removed. Any refusal
       refuses the call: `validation_failed`, `details.refused: [{ slotId?, field, reason }]` (`week_start_invalid`,
       `week_start_not_monday`, `time_zone_required`, `time_zone_invalid`, `too_many_slots`, `duplicate_slot`, `date_invalid`,
-      `outside_week`, `publish_at_invalid`, `date_mismatch`, `in_past`, `unknown_slot`, `slot_approved`);
+      `outside_week`, `publish_at_invalid`, `date_mismatch`, `in_past`, `unknown_slot`, `slot_approved` (an approval stands, also of
+      content changed since), `slot_vetoed`, `slot_uploaded`, `slot_id_in_other_week` -- a slot id is unique in the channel);
       `publishing_plan_channel_unavailable` when the channel is not connected here.
     - **`factory_publishing_plan_get`** (READ) `{ channelId, weekStart }` → `{ plan }`: `weekEnd`, `timeZone`, `state` (`empty`,
       `awaiting_approval`, `approved`, `past`), `counts`, `firstRelease`, and per slot `publishAtUtc`, `contentHash`, `approval`

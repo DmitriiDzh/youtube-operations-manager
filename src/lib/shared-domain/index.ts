@@ -262,6 +262,8 @@ export type DomainErrorCode =
   | "publishing_plan_changed"
   | "publishing_plan_slot_vetoed"
   | "publishing_plan_slot_past"
+  // Review #5 (BL-225): a package whose plan slot already has an upload on this computer.
+  | "upload_slot_taken"
   // BL-194 stage 1 (docs/roadmap/plans/VIDEO_COST_PLAN.md, ADR 0040) -- video numbers. NOT_FOUND: no such video of the channel
   // that can be linked (unknown, or cancelled). IN_DISPUTE: two computers reserved the number; nothing is linked to it until the
   // losing computer takes another. WORKSPACE_UNAVAILABLE: the channel is not connected here, or its workspace folder (where the

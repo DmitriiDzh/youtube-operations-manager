@@ -1070,3 +1070,44 @@ test("AC-WP-33: a forced thumbnail failure leaves the video private and unschedu
   assert.deepEqual([h.row().status, steps.thumbnail, steps.publishAt, h.row().errorCode], ["done", "failed", "withheld", "step_failed"]);
   assert.deepEqual(h.publishAtWrites, []);
 });
+
+// Review #1 (HIGH): the slot's date was frozen when the row was queued; a veto, a revoke or a new time made meanwhile did not reach
+// the date step. The runner asks the plan again right before the date (and before a queued row starts): vetoed -> no date (a row
+// not started yet is cancelled); not approved now -> an automatic row gets no date (its date came from the approval); approved
+// with another time -> that time.
+function slotHarness(decision: import("./auto-upload").SlotDecision, over: Partial<StoredPublishingUpload> = {}) {
+  const h = harness([job({ automatic: true, slotId: "w44-fri", packageJson: JSON.stringify({ ...PKG, slotId: "w44-fri" }), ...over })], {
+    slotDecision: async () => decision,
+  });
+  return h;
+}
+
+test("review #1: a slot vetoed after queueing -- a row not started is cancelled before anything reaches YouTube", async () => {
+  const h = slotHarness({ kind: "vetoed" });
+  await h.runAll();
+  assert.deepEqual([h.row().status, h.row().errorCode], ["cancelled", "slot_vetoed"]);
+  assert.deepEqual(h.yt.log, []);
+});
+
+test("review #1: a slot vetoed or no longer approved before the date step -> the date is withheld (the video stays private)", async () => {
+  for (const decision of [{ kind: "vetoed" }, { kind: "pending" }] as const) {
+    const h = slotHarness(decision, { status: "finishing", videoId: "vid1", stepsJson: JSON.stringify({ uploadedAt: NOW.toISOString(), thumbnail: "set", playlist: "added" }) });
+    h.yt.videos.push(VID1_UPLOADED);
+    const runner = createUploadRunner(h.deps);
+    for (let i = 0; i < 10 && h.row().status !== "done"; i += 1) await runner.tick();
+    assert.deepEqual([JSON.parse(h.row().stepsJson).publishAt, h.publishAtWrites], ["withheld", []], decision.kind);
+  }
+});
+
+test("review #1: a slot re-approved with a new time -> the date step writes the new time; an owner's own row keeps its date when pending", async () => {
+  const moved = slotHarness({ kind: "approved", publishAt: "2026-10-25T12:00:00.000Z" }, { status: "finishing", videoId: "vid1", stepsJson: JSON.stringify({ uploadedAt: NOW.toISOString(), thumbnail: "set", playlist: "added" }) });
+  moved.yt.videos.push(VID1_UPLOADED);
+  let runner = createUploadRunner(moved.deps);
+  for (let i = 0; i < 10 && moved.row().status !== "done"; i += 1) await runner.tick();
+  assert.deepEqual([moved.publishAtWrites, moved.row().publishAt, JSON.parse(moved.row().stepsJson).publishAt], [["2026-10-25T12:00:00.000Z"], "2026-10-25T12:00:00.000Z", "set"]);
+  const manual = slotHarness({ kind: "pending" }, { automatic: false, status: "finishing", videoId: "vid1", stepsJson: JSON.stringify({ uploadedAt: NOW.toISOString(), thumbnail: "set", playlist: "added" }) });
+  manual.yt.videos.push(VID1_UPLOADED);
+  runner = createUploadRunner(manual.deps);
+  for (let i = 0; i < 10 && manual.row().status !== "done"; i += 1) await runner.tick();
+  assert.deepEqual(manual.publishAtWrites, ["2026-10-24T12:00:00.000Z"], "the owner approved this date himself");
+});

@@ -87,10 +87,23 @@ what is published?
      upload switch (a veto must land); Live writes still gates every write. A refused or mismatched change is tried again at most
      hourly. A slot that is not approved now (revoked, or changed after approval) leaves an existing date as it is: only a veto
      stops a release.
-   - So a date the owner sets by hand in Studio or in «Видео» on a vetoed slot's video is removed again by the plan: restore the slot
-     first.
+   - The plan acts on the date it knows from its own upload row: a date the owner sets by hand in Studio or in «Видео» on a vetoed
+     slot's video is NOT removed (the row still says no date); the owner keeps that choice. (Corrected after the independent review.)
    - The slot statuses `uploading`, `failed (code)`, `scheduled`, `published` and `videoId` come from this computer's upload rows; the
      other computer shows what the package scan says (`scheduled` / `published` via `Vn_youtube.json`).
+
+13. **After the independent review (2026-10-25).**
+   - The runner asks the plan again before a slot's queued row starts (vetoed -> the row is cancelled, `slot_vetoed`) and right
+     before the date step (vetoed, or on an automatic row no longer approved -> the date is withheld; approved with another time ->
+     that time). The date frozen at queue time is no longer final.
+   - A slot id is unique in a channel (`slot_id_in_other_week`); where two plans hold one anyway, a veto in either wins.
+   - An agent cannot remove a slot with a standing approval (also of content changed since), a vetoed slot, or one with an upload;
+     a slot counts as released only after the latest of its time, its standing approved time and its video's date.
+   - Decisions order by a Lamport counter (`seq`: one above the highest seen), the wall clock only as a tiebreak.
+   - The plan schedule makes no YouTube call while Live writes or reads are off, and waits for the quota day after a quota refusal
+     (recorded, hourly retry per row); it reads only rows with a slot (filtered in SQL).
+   - Two packages naming one slot: neither is ready (`slot_duplicate`), or the others once one is uploaded (`slot_taken`); an upload
+     whose slot is already held is refused (`upload_slot_taken`).
 
 ## Consequences
 

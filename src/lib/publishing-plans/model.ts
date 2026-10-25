@@ -41,7 +41,8 @@ export function contentHashOf(timeZone: string, content: PublishingPlanSlotConte
 
 export const contentOf = (slot: PublishingPlanSlotContent): PublishingPlanSlotContent => ({ date: slot.date, publishAt: slot.publishAt, lengthHint: slot.lengthHint ?? null, note: slot.note ?? null });
 
-const byTime = (a: PublishingPlanDecision, b: PublishingPlanDecision) => Date.parse(a.at) - Date.parse(b.at) || a.id.localeCompare(b.id);
+/** Review #7: the counter first (a decision made after another sorts after it), the wall clock and the id only as tiebreaks. */
+const byTime = (a: PublishingPlanDecision, b: PublishingPlanDecision) => (a.seq ?? 0) - (b.seq ?? 0) || Date.parse(a.at) - Date.parse(b.at) || a.id.localeCompare(b.id);
 
 /** A slot's approval and veto, from its decisions (any order). */
 export function decisionStateOf(decisions: readonly PublishingPlanDecision[], contentHash: string) {
@@ -75,6 +76,13 @@ export function slotViewOf(args: {
   const state = decisionStateOf(args.decisions, contentHash);
   // A stored slot's time is valid in the zone it was saved with; a later zone change could, in theory, land it in a skipped hour.
   const instant = instantOf(slot.publishAt, meta.timeZone) ?? zonedInstant({ localDate: slot.publishAt.slice(0, 10), localTime: slot.publishAt.slice(11, 16), timezone: meta.timeZone });
+  // Review #3: the slot is released only once the latest time its video may come out has passed -- its own time, the approved time
+  // it still stands on (changed since), and the date its uploaded video carries.
+  const releaseMs = Math.max(
+    instant.getTime(),
+    state.superseded ? (instantOf(state.superseded.snapshot.publishAt, state.superseded.snapshot.timeZone)?.getTime() ?? 0) : 0,
+    args.progress?.publishAt ? Date.parse(args.progress.publishAt) || 0 : 0
+  );
   return {
     slotId: slot.slotId,
     ...content,
@@ -90,7 +98,7 @@ export function slotViewOf(args: {
     statusCode: state.vetoed ? null : (args.progress?.code ?? null),
     videoId: args.progress?.videoId ?? null,
     package: args.progress?.package ?? null,
-    released: instant.getTime() <= now.getTime(),
+    released: releaseMs <= now.getTime(),
     createdAt: slot.createdAt,
     updatedAt: slot.updatedAt,
     updatedBy: slot.updatedBy,

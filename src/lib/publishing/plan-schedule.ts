@@ -26,6 +26,11 @@ export type PlanScheduleDeps = {
   update(row: StoredPublishingUpload, set: { publishAt: string | null; stepsJson: string }): Promise<boolean>;
   audit(row: StoredPublishingUpload, detail: Record<string, unknown>): Promise<void>;
   clock: { now(): Date };
+  /** Review #4: the switches, read at the start of every pass -- off, the pass makes no YouTube call. */
+  liveWritesEnabled(): Promise<boolean>;
+  dataReadsEnabled(): Promise<boolean>;
+  /** The next YouTube quota day (midnight Pacific): after a quota refusal nothing is read before it. */
+  nextQuotaReset(now: Date): Date;
 };
 
 const stepsOf = (row: Pick<StoredPublishingUpload, "stepsJson">): UploadSteps => {
@@ -62,13 +67,15 @@ export function desiredDate(row: Pick<StoredPublishingUpload, "publishAt" | "ste
 }
 
 /** Errors after which the pass stops and tries again later (nothing recorded): the switches, the quota, an answer not given. */
-const RETRY_LATER = new Set(["live_writes_disabled", "data_api_reads_disabled", "youtube_quota_exceeded"]);
+const RETRY_LATER = new Set(["live_writes_disabled", "data_api_reads_disabled"]);
 function errorCode(error: unknown): string | null {
   const code = (error as { code?: unknown } | null)?.code;
   return typeof code === "string" ? code : null;
 }
 
 export function createPlanSchedule(deps: PlanScheduleDeps) {
+  /** Review #4: no YouTube call before this (a quota refusal waits for the quota day). */
+  let quotaPausedUntil = 0;
   /** One change, read before and after: refused when the video is not private or its date is within the margin. */
   async function change(row: StoredPublishingUpload, publishAt: string | null, action: "scheduled" | "unscheduled", at: string): Promise<NonNullable<UploadSteps["planSync"]>> {
     const before = await deps.read(row);
@@ -86,6 +93,9 @@ export function createPlanSchedule(deps: PlanScheduleDeps) {
   return {
     /** One pass over the finished uploads with a slot; a row whose date already matches the plan costs no YouTube call. */
     async tick(): Promise<{ changed: number }> {
+      // Review #4: switched off or out of quota -> nothing is read, nothing is written, nothing recorded.
+      if (deps.clock.now().getTime() < quotaPausedUntil) return { changed: 0 };
+      if (!(await deps.liveWritesEnabled()) || !(await deps.dataReadsEnabled())) return { changed: 0 };
       const rows = await deps.rows();
       const byChannel = new Map<string, Map<string, SlotDecision>>();
       let changed = 0;
@@ -109,6 +119,8 @@ export function createPlanSchedule(deps: PlanScheduleDeps) {
           // Live writes off, reads off or the quota (nothing was written): the pass stops, the next one tries again. Anything else is
           // recorded (tried again in an hour).
           if (code !== null && RETRY_LATER.has(code)) return { changed };
+          // Review #4: the quota is out -- recorded (the hourly retry applies to the row) and the whole pass waits for the reset.
+          if (code === "youtube_quota_exceeded") quotaPausedUntil = deps.nextQuotaReset(deps.clock.now()).getTime();
           result = { at, action, publishAt: want.publishAt, result: "refused", reason: code ?? "unknown_error" };
         }
         const stored = result.result === "verified" ? want.publishAt : row.publishAt;
@@ -117,6 +129,7 @@ export function createPlanSchedule(deps: PlanScheduleDeps) {
           changed += 1;
           await deps.audit(row, { event: action === "unscheduled" ? "publishing.plan_unscheduled" : "publishing.plan_scheduled", uploadId: row.id, video: row.video, slotId: row.slotId, previous: row.publishAt, ...result });
         }
+        if (deps.clock.now().getTime() < quotaPausedUntil) return { changed };
       }
       return { changed };
     },

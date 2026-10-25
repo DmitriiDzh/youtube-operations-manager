@@ -298,17 +298,97 @@ test("AC-WP-23: the slot shows its package progress; vetoed wins", async () => {
 test("AC-WP-30/31: slot decisions for the uploads", async () => {
   const h = harness();
   const { plan } = await weekOfThree(h);
-  await h.service.save({ channelId: CH, weekStart: "2026-11-02", timeZone: "Asia/Tokyo", slots: [tokyoSlot("s3", "2026-11-02", "18:00")] }, "factory");
   await h.service.decide(CH, WEEK, { action: "approve", slots: [{ slotId: "s1", contentHash: slotOf(plan, "s1").contentHash }, { slotId: "s2", contentHash: slotOf(plan, "s2").contentHash }] }, "u1");
   await h.service.decide(CH, WEEK, { action: "veto", slots: [{ slotId: "s2" }] }, "u1");
   const decisions = await h.service.slotDecisions(CH);
   assert.deepEqual(decisions.get("s1"), { kind: "approved", publishAt: "2026-10-26T06:00:00.000Z" }); // 15:00 JST
   assert.deepEqual(decisions.get("s2"), { kind: "vetoed" });
-  assert.deepEqual(decisions.get("s3"), { kind: "pending" }, "s3 is in two plans");
+  // Review #2 changed this case: an id can no longer be saved in two weeks (see the review #2 tests); s3 is simply not approved.
+  assert.deepEqual(decisions.get("s3"), { kind: "pending" }, "s3 is not approved");
   await h.service.save({ channelId: CH, weekStart: WEEK, slots: [tokyoSlot("s1", "2026-10-26", "16:00")] }, "worker");
   assert.deepEqual((await h.service.slotDecisions(CH)).get("s1"), { kind: "pending" }, "changed after approval");
   h.tick("2026-10-26T06:00:00Z");
   assert.deepEqual((await h.service.slotDecisions(CH)).get("s2"), { kind: "vetoed" }, "s2 (27.10) is still ahead");
   h.tick("2026-10-27T09:00:00Z");
   assert.deepEqual((await h.service.slotDecisions(CH)).get("s2"), { kind: "pending" }, "released");
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// Independent review of BL-225 (2026-10-25). Each test states the failing scenario the review found; written before the fix.
+// ---------------------------------------------------------------------------------------------------------------------------
+
+// Review #2 (HIGH): a slot id reused in another week made every decision of it `pending` -- a veto stopped working. A slot id is
+// unique per channel: a save naming an id that exists in another week is refused (`slot_id_in_other_week`).
+test("review #2: a slot id that exists in another week of the channel is refused; nothing is saved", async () => {
+  const h = harness();
+  await weekOfThree(h);
+  const error = await h.service.save({ channelId: CH, weekStart: "2026-11-02", timeZone: "Asia/Tokyo", slots: [tokyoSlot("s1", "2026-11-02", "18:00")] }, "factory").then(() => null, (e: unknown) => e);
+  assert.deepEqual(refusedOf(error).map((r) => [r.slotId, r.reason]), [["s1", "slot_id_in_other_week"]]);
+  await assert.rejects(h.service.get({ channelId: CH, weekStart: "2026-11-02" }), rejectsWith("publishing_plan_not_found"));
+});
+
+// Review #2: when an id is in two plans anyway (written before this check, or by two computers at once), a veto in either wins.
+test("review #2: an ambiguous slot id is vetoed when any of its slots is vetoed, else pending", async () => {
+  const h = harness();
+  const { plan } = await weekOfThree(h);
+  // Two computers each wrote "s1" in a different week before a sync: written straight into the store, past the save's check.
+  await h.core.savePlan(CH, { weekStart: "2026-11-02", create: { weekStart: "2026-11-02", timeZone: "Asia/Tokyo", createdAt: "x", createdBy: "factory", updatedAt: "x", updatedBy: "factory" }, updatedAt: "x", updatedBy: "factory", upserts: [{ weekStart: "2026-11-02", slotId: "s1", date: "2026-11-02", publishAt: "2026-11-02T18:00", lengthHint: null, note: null, createdAt: "x", updatedAt: "x", updatedBy: "factory" }], removes: [] });
+  await h.service.decide(CH, WEEK, { action: "approve", slots: [{ slotId: "s1", contentHash: slotOf(plan, "s1").contentHash }] }, "u1");
+  assert.deepEqual((await h.service.slotDecisions(CH)).get("s1"), { kind: "pending" });
+  await h.service.decide("UC-IdugmwWRvRo9-j0yK5AbA", "2026-11-02", { action: "veto", slots: [{ slotId: "s1" }] }, "u1");
+  assert.deepEqual((await h.service.slotDecisions(CH)).get("s1"), { kind: "vetoed" });
+});
+
+// Review #3 (MEDIUM): an agent could remove an approved slot in two saves (edit it -> pending -> remove). A slot that has an
+// approval still standing (even for older content), a vetoed slot, or one with an upload / a video, cannot be removed.
+test("review #3: removing a slot with a standing approval (changed since), a vetoed slot or an uploaded one is refused", async () => {
+  const h = harness();
+  const { plan } = await weekOfThree(h);
+  await h.service.decide(CH, WEEK, { action: "approve", slots: [{ slotId: "s1", contentHash: slotOf(plan, "s1").contentHash }] }, "u1");
+  await h.service.save({ channelId: CH, weekStart: WEEK, slots: [tokyoSlot("s1", "2026-10-26", "19:00")] }, "worker");
+  await h.service.decide(CH, WEEK, { action: "veto", slots: [{ slotId: "s2" }] }, "u1");
+  const error = await h.service.save({ channelId: CH, weekStart: WEEK, removeSlotIds: ["s1", "s2"] }, "worker").then(() => null, (e: unknown) => e);
+  assert.deepEqual(refusedOf(error).map((r) => [r.slotId, r.reason]).sort(), [["s1", "slot_approved"], ["s2", "slot_vetoed"]]);
+  // A revoked approval no longer stands: the slot can go.
+  const s1 = slotOf((await h.service.get({ channelId: CH, weekStart: WEEK })).plan, "s1");
+  await h.service.decide(CH, WEEK, { action: "approve", slots: [{ slotId: "s1", contentHash: s1.contentHash }] }, "u1");
+  await h.service.decide(CH, WEEK, { action: "revoke", slots: [{ slotId: "s1", contentHash: s1.contentHash }] }, "u1");
+  assert.deepEqual((await h.service.save({ channelId: CH, weekStart: WEEK, removeSlotIds: ["s1"] }, "worker")).removed, ["s1"]);
+  // A slot with an upload (its video on YouTube) cannot be removed either.
+  const uploaded = createPublishingPlansService({
+    store: h.core,
+    isChannelConnected: async () => true,
+    deviceLabel: async () => "Mac",
+    now: () => new Date("2026-10-25T07:00:00Z"),
+    randomId: () => "y",
+    withLock: (fn) => fn(),
+    audit: async () => undefined,
+    progress: async () => new Map([["s3", { status: "packaged" as const, code: null, videoId: "vid3", package: null }]]),
+  });
+  const refusedUpload = await uploaded.save({ channelId: CH, weekStart: WEEK, removeSlotIds: ["s3"] }, "worker").then(() => null, (e: unknown) => e);
+  assert.deepEqual(refusedUpload && refusedOf(refusedUpload).map((r) => [r.slotId, r.reason]), [["s3", "slot_uploaded"]]);
+});
+
+// Review #3: a slot moved earlier after approval stays vetoable until the later of its own time and the approved time it still
+// stands on (the video may be scheduled at the approved time).
+test("review #3: veto stays possible until the later of the slot's time and its standing approved time", async () => {
+  const h = harness();
+  const { plan } = await weekOfThree(h);
+  await h.service.decide(CH, WEEK, { action: "approve", slots: [{ slotId: "s2", contentHash: slotOf(plan, "s2").contentHash }] }, "u1"); // 27.10 18:00 JST
+  await h.service.save({ channelId: CH, weekStart: WEEK, slots: [tokyoSlot("s2", "2026-10-27", "12:00")] }, "worker"); // moved earlier
+  h.tick("2026-10-27T04:00:00Z"); // 13:00 JST: the new time has passed, the approved 18:00 has not
+  const vetoed = await h.service.decide(CH, WEEK, { action: "veto", slots: [{ slotId: "s2" }] }, "u1");
+  assert.equal(slotOf(vetoed.plan, "s2").status, "vetoed");
+});
+
+// Review #7 (LOW): the newest decision was chosen by each computer's wall clock. A decision carries a counter one above the
+// highest it saw, so a later decision wins even when its computer's clock is behind; the time only breaks ties.
+test("review #7: a decision made after another wins even with an earlier clock (counter first, time as tiebreak)", async () => {
+  const h = harness("2026-10-25T07:00:00Z");
+  const { plan } = await weekOfThree(h);
+  await h.service.decide(CH, WEEK, { action: "veto", slots: [{ slotId: "s1" }] }, "u1");
+  h.tick("2026-10-25T06:00:00Z"); // the second computer's clock is an hour behind
+  const restored = await h.service.decide(CH, WEEK, { action: "restore", slots: [{ slotId: "s1" }] }, "u1");
+  assert.equal(slotOf(restored.plan, "s1").vetoed, null, "the restore made after the veto wins");
+  void plan;
 });

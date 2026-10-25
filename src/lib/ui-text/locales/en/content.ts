@@ -636,4 +636,6 @@ export const content = {
   "weekPlan.package.thumbnailTests": "thumbnail + {count} test",
   "weekPlan.package.problems": "{count, plural, one {# problem in the package} other {# problems in the package}}",
   "weekPlan.metaSeparator": "·",
+  "publishingPackages.problem.slot_duplicate": "Another package names the same plan slot ({slotId}): give each package its own slot.",
+  "publishingPackages.problem.slot_taken": "The plan slot {slotId} already has an uploaded video.",
 } as const;

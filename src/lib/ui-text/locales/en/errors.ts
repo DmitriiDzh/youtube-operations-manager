@@ -91,6 +91,7 @@ export const errors = {
   "errors.package_file_invalid": "This file is not in the video folder.",
   "errors.package_no_video": "Choose the video file.",
   "errors.package_no_thumbnail": "Choose the thumbnail.",
+  "errors.upload_slot_taken": "This package's plan slot already has an upload.",
   "errors.package_thumbnail_too_large": "The thumbnail is larger than 2 MB: choose a smaller file.",
   "errors.package_thumbnail_not_image": "The thumbnail is neither JPEG nor PNG.",
   "errors.package_duration_unknown": "The video’s length could not be read (is ffprobe installed?).",

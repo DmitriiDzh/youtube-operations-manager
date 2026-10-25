@@ -36,6 +36,8 @@ export type UploadApprovalDeps = {
   /** What this computer's queued and unfinished uploads will still spend: inserts not made yet, and their pool units (review). */
   pending(now: Date): Promise<{ inserts: number; units: number }>;
   checkUnits(units: number): Promise<UnitsVerdict>;
+  /** Review #5 (BL-225): the plan slots an upload here already holds (absent: none checked). */
+  heldSlots?(channelId: string): Promise<Set<string>>;
   insert(rows: StoredPublishingUpload[]): Promise<boolean>;
   newId(): string;
   audit(args: { channelId: string; detail: Record<string, unknown> }): Promise<void>;
@@ -74,6 +76,7 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
     const { refuse, now, view, scanned } = args;
     const live = await deps.liveVideos(args.channelId);
     const elsewhere = await deps.peerUploads(args.channelId);
+    const heldSlots = deps.heldSlots ? await deps.heldSlots(args.channelId) : new Set<string>();
 
     const chosen = args.items.map((item) => {
       const found = scanned.packages.find((p) => p.manifestPath === item.manifestPath);
@@ -85,6 +88,8 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
         const host = peer.host ?? "another computer";
         throw refuse("upload_already_queued", peer.uploaded ? `${found.pkg.video} was already uploaded from ${host}.` : `${found.pkg.video} is being uploaded on ${host}.`, { video: found.pkg.video, host });
       }
+      // Review #5: one upload per plan slot.
+      if (found.pkg.slotId && heldSlots.has(found.pkg.slotId)) throw refuse("upload_slot_taken", `${found.pkg.video}: the plan slot ${found.pkg.slotId} already has an upload.`, { video: found.pkg.video, slotId: found.pkg.slotId });
       if (found.state !== "ready" || !found.thumbnailPath) throw refuse("upload_package_not_ready", `${found.pkg.video} is not ready to upload.`, { video: found.pkg.video, problems: found.problems });
       if (item.publishAt !== null) {
         const at = Date.parse(item.publishAt);

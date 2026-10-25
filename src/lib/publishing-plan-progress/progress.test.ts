@@ -57,6 +57,7 @@ test("AC-WP-23: ready -> packaged with the package's facts; the AI flag falls ba
     status: "packaged",
     code: null,
     videoId: null,
+    publishAt: null, // review #3 added the video's date (none before an upload)
     package: { video: "V64", title: "Title V64", durationSeconds: 10800, languages: ["de", "ja"], containsSyntheticMedia: true, thumbnailPath: "04 Videos/10 October/1026 V64/T.jpg", testThumbnails: 2, problems: [] },
   });
   assert.equal(progressOfSlots([scanned("V64", "s1", {}, { containsSyntheticMedia: false })], ["s1"], true).get("s1")?.package?.containsSyntheticMedia, false);
@@ -119,4 +120,12 @@ test("AC-WP-23/30: the newest upload row of a slot overrides the package scan, k
   assert.equal(merged.get("s1")?.status, "scheduled");
   assert.equal(merged.get("s1")?.package?.video, "V64");
   assert.equal(progressWithUploads(new Map(), [uploadRow({ slotId: "other" })], ["s1"], NOW_MS).size, 0);
+});
+
+// Review #3: the progress carries the date the uploaded video has, so the plan does not call the slot released before it.
+test("review #3: a scheduled row and an uploaded package give their video's date", async () => {
+  const { progressOfUploadRow } = await import("./progress");
+  assert.equal(progressOfUploadRow(uploadRow(), NOW_MS)?.publishAt, "2026-10-26T09:00:00.000Z");
+  const scheduled = scanned("V64", "s1", { state: "scheduled", youtube: { videoId: "abcdefghijk", privacyStatus: "private", publishAt: "2026-10-30T09:00:00Z" } });
+  assert.equal(progressOfSlots([scheduled], ["s1"], true).get("s1")?.publishAt, "2026-10-30T09:00:00Z");
 });

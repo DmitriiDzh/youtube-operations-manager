@@ -493,7 +493,9 @@ async function startServerSession() {
   // off an upload pauses. Never during a snapshot import/migration or in recovery mode (it writes rows and the upload record).
   let uploads: import("@/lib/publishing").UploadRunner | null = null;
   try {
-    uploads = (await import("@/lib/publishing")).createUploadRunnerCore();
+    // Review #1 (BL-225): the runner asks the weekly plan again before a slot's row starts and before its date (§M: composed here).
+    const { planSlotDecisions } = await import("@/composition/publishing-plan-slots");
+    uploads = (await import("@/lib/publishing")).createUploadRunnerCore({ slotDecisions: planSlotDecisions });
   } catch (error) {
     console.warn(`[publishing] uploads not started: ${error instanceof Error ? error.message : String(error)}`);
   }

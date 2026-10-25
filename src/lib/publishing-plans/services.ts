@@ -79,6 +79,7 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
       const decisionsFor = (slotId: string) => decisions.filter((d) => d.slotId === slotId);
       const approvedNow = (slot: PublishingPlanSlot) => existing !== null && decisionStateOf(decisionsFor(slot.slotId), contentHashOf(existing.timeZone, contentOf(slot))).approved;
 
+      const otherWeeksIds = new Set(Object.values(snapshot.slots).filter((s) => s.weekStart !== weekStart).map((s) => s.slotId));
       const seen = new Set<string>();
       const upserts: PublishingPlanSlot[] = [];
       const changed: string[] = [];
@@ -90,6 +91,11 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
         seen.add(input.slotId);
         const content = contentOf({ date: input.date, publishAt: input.publishAt, lengthHint: input.lengthHint ?? null, note: input.note ?? null });
         const before = current.get(input.slotId);
+        // Review #2: a slot id is unique in the channel (the uploads find a slot by its id alone).
+        if (!before && otherWeeksIds.has(input.slotId)) {
+          refused.push({ slotId: input.slotId, field: "slots", reason: "slot_id_in_other_week" });
+          continue;
+        }
         const same = before !== undefined && contentHashOf(existing!.timeZone, contentOf(before)) === contentHashOf(timeZone, content);
         if (same) continue; // unchanged: a no-op whatever its time
         if (!isCalendarDate(content.date)) {
@@ -118,10 +124,17 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
       }
 
       const removes: string[] = [];
-      for (const slotId of new Set(parsed.removeSlotIds ?? [])) {
+      // Review #3: what the uploads say of the slots to remove (a slot whose video is on YouTube stays).
+      const toRemove = [...new Set(parsed.removeSlotIds ?? [])];
+      const uploads = toRemove.length > 0 && ports.progress ? await ports.progress(channelId, weekStart, toRemove) : new Map();
+      for (const slotId of toRemove) {
         const slot = current.get(slotId);
+        const state = slot && existing ? decisionStateOf(decisionsFor(slotId), contentHashOf(existing.timeZone, contentOf(slot))) : null;
+        const upload = uploads.get(slotId);
         if (!slot) refused.push({ slotId, field: "removeSlotIds", reason: "unknown_slot" });
-        else if (approvedNow(slot)) refused.push({ slotId, field: "removeSlotIds", reason: "slot_approved" });
+        else if (state && (state.approved || state.superseded)) refused.push({ slotId, field: "removeSlotIds", reason: "slot_approved" });
+        else if (state?.vetoed) refused.push({ slotId, field: "removeSlotIds", reason: "slot_vetoed" });
+        else if (upload && (upload.videoId || ["uploading", "scheduled", "published"].includes(upload.status))) refused.push({ slotId, field: "removeSlotIds", reason: "slot_uploaded" });
         else if (seen.has(slotId)) refused.push({ slotId, field: "removeSlotIds", reason: "duplicate_slot" });
         else removes.push(slotId);
       }
@@ -206,7 +219,10 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
       if (effective.length > 0) {
         const device = await ports.deviceLabel();
         const at = stamp();
+        // Review #7: one above the highest counter in the channel's document.
+        const seq = Math.max(0, ...Object.values(snapshot.decisions).map((d) => d.seq ?? 0)) + 1;
         const records: PublishingPlanDecision[] = effective.map((slot) => ({
+          seq,
           id: `pd_${ports.randomId()}`.slice(0, 40),
           weekStart,
           slotId: slot.slotId,
@@ -245,7 +261,9 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
       const view = planViewOf({ channelId, meta, slots: slotsOf(snapshot, meta.weekStart), decisions: decisionsOf(snapshot, meta.weekStart), progress: new Map(), now: ports.now() });
       for (const slot of view.slots) {
         if (seen.has(slot.slotId)) {
-          decisions.set(slot.slotId, { kind: "pending" });
+          // Review #2: an id in two plans schedules nothing, but a veto in either of them still stops it.
+          const vetoed = decisions.get(slot.slotId)?.kind === "vetoed" || (!slot.released && slot.vetoed !== null);
+          decisions.set(slot.slotId, vetoed ? { kind: "vetoed" } : { kind: "pending" });
           continue;
         }
         seen.add(slot.slotId);

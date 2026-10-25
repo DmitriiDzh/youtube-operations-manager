@@ -90,6 +90,7 @@ export const errors: Record<keyof typeof en, string> = {
   "errors.package_file_invalid": "Этого файла нет в папке ролика.",
   "errors.package_no_video": "Выберите файл видео.",
   "errors.package_no_thumbnail": "Выберите обложку.",
+  "errors.upload_slot_taken": "У слота плана этого пакета уже есть загрузка.",
   "errors.package_thumbnail_too_large": "Обложка больше 2 МБ: выберите файл поменьше.",
   "errors.package_thumbnail_not_image": "Обложка не в формате JPEG или PNG.",
   "errors.package_duration_unknown": "Не удалось прочитать длину видео (установлен ли ffprobe?).",

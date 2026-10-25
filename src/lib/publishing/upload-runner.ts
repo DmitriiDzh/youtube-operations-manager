@@ -10,6 +10,7 @@
 import type { StoredPublishingUpload } from "@/lib/db";
 import { READ_BACK_RETRIES, READ_BACK_RETRY_DELAY_MS } from "@/lib/video-details/read-back";
 import type { PublishingSettings } from "./settings";
+import type { SlotDecision } from "./auto-upload";
 
 /** The package as the owner approved it (frozen in `package_json`). Paths are relative to the channel workspace. */
 export type ApprovedPackage = {
@@ -123,6 +124,11 @@ export type UploadRunnerDeps = {
    * video translations writer -- identity, a fresh read, never the video's own language, backup, the safe merge, Live writes right
    * before its one `videos.update`, read-back, audit. Absent: a package with translations gets its date withheld.
    */
+  /**
+   * Review #1 (BL-225, ADR 0051 §7): the weekly plan's decision on the row's slot NOW (the composition layer reads the plan module),
+   * asked before a queued row starts and right before the date step; absent (the plan module off): the row's own date stands.
+   */
+  slotDecision?(channelId: string, slotId: string): Promise<SlotDecision | null>;
   writeLocalizations?(args: {
     channelId: string;
     videoId: string;
@@ -402,6 +408,13 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
     let hashChecked = false;
     try {
       if (current.status === "queued") {
+        // Review #1: a slot vetoed since the row was queued -- the row stops here, before anything is read or sent.
+        if (job.slotId && deps.slotDecision && (await deps.slotDecision(job.channelId, job.slotId))?.kind === "vetoed") {
+          if (await deps.store.update(job.id, "queued", { status: "cancelled", errorCode: "slot_vetoed", finishedAt: now(), updatedAt: now() })) {
+            await deps.audit({ channelId: job.channelId, videoId: null, detail: { event: "publishing.upload_cancelled_slot_vetoed", uploadId: job.id, video: job.video, slotId: job.slotId } });
+          }
+          return;
+        }
         // The files must still be what the owner approved: the same manifest, a video of the same size.
         const manifest = await deps.files.resolve(job.channelId, pkg.manifestPath);
         if (!manifest || (await deps.files.sha256(manifest.path)) !== job.manifestSha256) return fail(job, "package_changed", "The package changed on disk after it was approved.");
@@ -627,6 +640,25 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
         return void (await saveSteps(job, steps));
       }
       step = "publishAt";
+      // Review #1: the plan's word right before the date -- a veto or (on an automatic row, whose date came from the approval) a slot
+      // no longer approved withholds it; an approval with another time replaces it.
+      let publishAtNow = job.publishAt;
+      let slotWithheld: string | null = null;
+      if (job.publishAt !== null && steps.publishAt === undefined && job.slotId && deps.slotDecision) {
+        const decision = await deps.slotDecision(job.channelId, job.slotId);
+        if (decision?.kind === "vetoed") slotWithheld = "the slot was vetoed";
+        else if (decision?.kind === "approved") publishAtNow = new Date(decision.publishAt).toISOString();
+        else if (job.automatic) slotWithheld = "the slot is no longer approved";
+      }
+      if (publishAtNow !== job.publishAt && publishAtNow !== null) {
+        if (!(await deps.store.update(job.id, "finishing", { publishAt: publishAtNow, updatedAt: now() }))) return;
+        job = { ...job, publishAt: publishAtNow };
+      }
+      if (slotWithheld && job.publishAt !== null && steps.publishAt === undefined) {
+        steps.publishAt = "withheld";
+        note(`publish time not set (${slotWithheld}): the video stays private without a date`);
+        return void (await saveSteps(job, steps));
+      }
       if (job.publishAt !== null && steps.publishAt === undefined) {
         const failedBefore = [
           // BL-225 stage 3: a package's translations must be on the video, read back, before it gets a date.

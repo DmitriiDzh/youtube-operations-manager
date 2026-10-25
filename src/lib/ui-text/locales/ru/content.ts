@@ -640,4 +640,6 @@ export const content: Record<keyof typeof en, string> = {
   "weekPlan.package.thumbnailTests": "обложка + {count} тестовых",
   "weekPlan.package.problems": "{count, plural, one {# проблема в пакете} few {# проблемы в пакете} many {# проблем в пакете} other {# проблемы в пакете}}",
   "weekPlan.metaSeparator": "·",
+  "publishingPackages.problem.slot_duplicate": "Другой пакет указывает тот же слот плана ({slotId}): у каждого пакета должен быть свой слот.",
+  "publishingPackages.problem.slot_taken": "У слота плана {slotId} уже есть загруженное видео.",
 };

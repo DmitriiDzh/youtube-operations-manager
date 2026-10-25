@@ -54,6 +54,12 @@ export type PublishingPlanDecision = {
   by: "owner";
   device: string | null;
   at: string;
+  /**
+   * Review #7: one above the highest `seq` the deciding computer saw in the channel's document (a Lamport counter), so a decision
+   * made after another orders after it whatever the computers' clocks say; `at` only breaks a tie. Absent on a decision written
+   * before this field (it orders as 0).
+   */
+  seq?: number;
 };
 
 export type PublishingPlansDocument = {

@@ -186,6 +186,7 @@ const DOMAIN_ERROR_STATUS = {
   publishing_plan_changed: 409,
   publishing_plan_slot_vetoed: 409,
   publishing_plan_slot_past: 409,
+  upload_slot_taken: 409,
   video_not_found: 404,
   video_in_dispute: 409,
   video_already_linked: 409,

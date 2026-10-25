@@ -19,6 +19,7 @@ import {
   setAutoPrivateUploadWaiting,
   getChannelExpectedLanguages,
   getLiveWritesEnabled,
+  getDataApiReadsEnabled,
   listTriedManifestHashes,
   listStoredChannels,
   getPublishingG1Probe,
@@ -312,7 +313,7 @@ const uploadsPlaylistOf = (channelId: string) => (channelId.startsWith("UC") ? `
  * BL-182 stage 2 (ADR 0037): the background upload runner of this computer. Every write goes through the write gateway right after
  * the Live writes check; every read through the read gateway; the deferred publish time through video-details' own write path.
  */
-export function createUploadRunnerCore() {
+export function createUploadRunnerCore(options: { slotDecisions?: (channelId: string) => Promise<Map<string, SlotDecision>> } = {}) {
   const workspaces = createChannelWorkspacesCore();
   const writeContext = createWriteContextCore();
   const uploads = createPublishingYoutubeWrites();
@@ -355,6 +356,10 @@ export function createUploadRunnerCore() {
     async setPublishAt({ channelId, videoId, publishAt, containsSyntheticMedia, credentialRef }) {
       await videoDetails.applyFieldsUpdate({ credentialRef, expectedChannelId: channelId, videoId, patch: { privacyStatus: "private", publishAt, containsSyntheticMedia } });
     },
+    // Review #1 (BL-225): the plan's decision on a row's slot now, from the composition layer (absent: the row's own date stands).
+    ...(options.slotDecisions
+      ? { slotDecision: async (channelId: string, slotId: string) => (await options.slotDecisions!(channelId)).get(slotId) ?? null }
+      : {}),
     // BL-225 stage 3 (AGENTS.md §F «Upload localizations», ADR 0051 §8): the shared video translations writer, named in the audit.
     async writeLocalizations({ channelId, videoId, localizations, expected, credentialRef }) {
       const result = await createVideoLocalizationsWriterCore("upload_localizations").apply({ credentialRef, channelId, videoId, localizations, expected });
@@ -523,6 +528,8 @@ export function createUploadApprovalCore() {
       return { inserts: rows.filter((row) => row.videoId === null).length, units };
     },
     checkUnits: (units) => createQuotaGuardCore().checkUnits(units),
+    // Review #5 (BL-225): the slots held by an upload here (queued, running, done, or with a video).
+    heldSlots: async (channelId) => new Set((await listPublishingUploads({ channelId, withSlot: true, limit: 5000 })).filter(holdsPackage).map((row) => row.slotId as string)),
     insert: (rows) => insertPublishingUploads(rows),
     newId: () => randomUUID(),
     audit: ({ channelId, detail }) => insertVideoEditAuditEvent({ channelId, videoId: `upload:${String(detail.uploadId ?? "")}`, eventType: "RESULT", detail }),
@@ -632,7 +639,7 @@ export function createPlanScheduleCore(options: { slotDecisions: (channelId: str
   };
   const credentialRefOf = (row: StoredPublishingUpload) => ({ userId: row.approvedBy });
   return createPlanSchedule({
-    rows: async () => (await listPublishingUploads({ statuses: ["done"], limit: 500 })).filter((row) => row.slotId !== null && row.videoId !== null),
+    rows: async () => (await listPublishingUploads({ statuses: ["done"], withSlot: true, limit: 2000 })).filter((row) => row.videoId !== null),
     slotDecisions: options.slotDecisions,
     async read(row) {
       const snapshot = await videoDetails.getSnapshot({ credentialRef: credentialRefOf(row), expectedChannelId: row.channelId, videoId: row.videoId as string });
@@ -653,6 +660,9 @@ export function createPlanScheduleCore(options: { slotDecisions: (channelId: str
     update: (row, set) => updatePublishingUpload(row.id, "done", { ...set, updatedAt: new Date() }),
     audit: (row, detail) => insertVideoEditAuditEvent({ channelId: row.channelId, videoId: row.videoId ?? `upload:${row.id}`, eventType: "RESULT", detail }),
     clock: { now: () => new Date() },
+    liveWritesEnabled: () => getLiveWritesEnabled(),
+    dataReadsEnabled: () => getDataApiReadsEnabled(),
+    nextQuotaReset: (now) => nextYoutubeQuotaReset(now),
   });
 }
 export type { PlanSchedule } from "./plan-schedule";

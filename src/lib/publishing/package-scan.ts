@@ -89,6 +89,29 @@ function stateOf(record: { videoId: string } | null, video: { privacyStatus: str
   return problems.length > 0 ? "not_ready" : "ready";
 }
 
+/**
+ * Review #5 (BL-225): packages naming the same weekly-plan slot. While none of them is uploaded, each is not ready
+ * (`slot_duplicate`: the Operator fixes the slot ids); once one is uploaded, every other one is (`slot_taken`). Pure.
+ */
+export function markSharedSlots(packages: ScannedPackage[]): ScannedPackage[] {
+  const bySlot = new Map<string, ScannedPackage[]>();
+  for (const p of packages) {
+    const slotId = p.pkg?.slotId;
+    if (slotId) bySlot.set(slotId, [...(bySlot.get(slotId) ?? []), p]);
+  }
+  const marks = new Map<ScannedPackage, string>();
+  for (const group of bySlot.values()) {
+    if (group.length < 2) continue;
+    const uploaded = group.some((p) => p.youtube !== null);
+    for (const p of group) if (p.youtube === null) marks.set(p, uploaded ? "slot_taken" : "slot_duplicate");
+  }
+  return packages.map((p) => {
+    const code = marks.get(p);
+    if (!code) return p;
+    return { ...p, state: "not_ready" as const, problems: [...p.problems, { code, params: { slotId: p.pkg?.slotId ?? "" } }] };
+  });
+}
+
 export function createPackageScan(deps: PackageScanDeps) {
   async function readJson(path: string): Promise<unknown> {
     // The factory's text files carry a BOM; JSON.parse does not accept one.
@@ -186,7 +209,7 @@ export function createPackageScan(deps: PackageScanDeps) {
       }
       const number = (p: ScannedPackage) => Number(/\d+/.exec(p.video ?? p.manifestPath.split("/").pop() ?? "")?.[0] ?? 0);
       packages.sort((a, b) => (a.plannedPublishDate ?? "9999") .localeCompare(b.plannedPublishDate ?? "9999") || number(a) - number(b));
-      return { status: "ok", packages };
+      return { status: "ok", packages: markSharedSlots(packages) };
     },
   };
 }
