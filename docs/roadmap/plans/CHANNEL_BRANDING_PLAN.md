@@ -66,13 +66,61 @@
 - Syncing drafts between computers (device-local like BL-210).
 - Any Apply path for agents.
 
-## API facts (to be filled by the implementer from the official Data API v3 reference before code)
+## API facts (checked 2026-10-25 in the official Data API v3 reference, before the code)
 
-`channels.update` (parts, replace semantics, settable `brandingSettings` fields, title rule, errors, 50 units), `channels`
-resource (description and keywords limits and format, banner property names returned by `channels.list`),
-`channelBanners.insert` (media types, size, dimensions/aspect, quota, response, how the URL is then set), `channels.list`
-(1 unit). Each fact with its source URL and a short quote, like CHANNEL_LOCALIZATIONS_PLAN.md. Where the docs contradict this
-plan, the docs win and the deviation is listed here.
+Sources: [channels.update](https://developers.google.com/youtube/v3/docs/channels/update) (U1, last updated 2026-10-15),
+[channels resource](https://developers.google.com/youtube/v3/docs/channels) (U2),
+[channelBanners.insert](https://developers.google.com/youtube/v3/docs/channelBanners/insert) (U3),
+[channelBanners resource](https://developers.google.com/youtube/v3/docs/channelBanners) (U4),
+[channels.list](https://developers.google.com/youtube/v3/docs/channels/list) (U5),
+[quota calculator](https://developers.google.com/youtube/v3/determine_quota_cost) (U6).
+
+- **One part per request, replaced whole.** U1: "You can only update any one of those parts with a single request"; the method
+  "overrides the existing values for all of the mutable properties that are contained in the part"; "If ... your request does not
+  specify a value for a property that already has a value, the property's existing value will be deleted." So the
+  `brandingSettings` write echoes every settable property it read; only the draft's fields are replaced.
+- **Settable `brandingSettings` properties (U1, "You can set values for these properties").** `brandingSettings.channel.country`,
+  `.description`, `.defaultLanguage`, `.keywords`, `.trackingAnalyticsAccountId`, `.unsubscribedTrailer`. Required: `id`.
+- **Title.** U1 (`channelTitleUpdateForbidden`): "When updating a channel's brandingSettings part, you must set the
+  brandingSettings.channel.title property's value to the channel's current title or omit the property. The API returns an error
+  if you change the property's value." The write repeats the title exactly as read (and the read-back checks it unchanged).
+- **Description.** U2 `brandingSettings.channel.description`: "The property's value has a maximum length of 1000 characters."
+  (characters, not bytes; no forbidden characters are documented -- `<`/`>` are refused anyway, conservatively, as in BL-210).
+- **Keywords.** U2 `brandingSettings.channel.keywords`: "The value is a space-separated list of strings. Channel keywords might be
+  truncated if they exceed the maximum allowed length of 500 characters or if they contained unescaped quotation marks (")."; "the
+  500 character limit is not a per-keyword limit but rather a limit on the total length of all keywords." How a keyword with a
+  space is written is not documented: the app writes it in double quotes (as YouTube Studio shows it), counts the quotes and the
+  separating spaces in the 500, and refuses a keyword containing `"` (never truncated by YouTube, conservative).
+- **Banner upload.** U3: "1. Call the channelBanners.insert method to upload the binary image data to YouTube. The image must have
+  a 16:9 aspect ratio and be at least 2048x1152 pixels. We recommend uploading a 2560px by 1440px image. 2. Extract the url
+  property's value from the response ... 3. Call the channels.update method ... Set the brandingSettings.image.bannerExternalUrl
+  property's value to the URL obtained in step 2." "Maximum file size: 6MB"; "Accepted Media MIME types: image/jpeg, image/png,
+  application/octet-stream"; "A call to this method has a quota cost of 50 units." Errors `bannerAlbumFull`, `mediaBodyRequired`.
+  U4: the response is a `youtube#channelBannerResource` with `url`.
+- **Banner on the channel.** U2: `brandingSettings.image.bannerExternalUrl`: "This property specifies the location of the banner
+  image that YouTube uses to generate the various banner image sizes for a channel." `channels.list part=brandingSettings` returns
+  it. U2 also marks the `brandingSettings.image` object "deprecated" (every other image child individually), and U1's settable
+  list does not name `bannerExternalUrl`.
+- **Deprecated, never sent.** U2: `brandingSettings.watch` "This object and all of its child properties have been deprecated"
+  (`featuredPlaylistId`: "The API returns an error if you attempt to set its value"), `brandingSettings.hints` deprecated.
+- **Avatar.** U2 `snippet.thumbnails` (default 88×88, medium 240×240, high 800×800) is read-only; no method sets it. The name has no
+  update path either (the title rule above). Both are shown read-only with a YouTube Studio link.
+- **Quota.** U1/U6 `channels.update` 50 units; U3/U6 `channelBanners.insert` 50 units; U5/U6 `channels.list` 1 unit.
+
+**Deviations from the plan above (the docs win):**
+
+1. **Exact 16:9.** U3 says "must have a 16:9 aspect ratio" with no tolerance: the app refuses any banner whose width × 9 ≠
+   height × 16 (2048×1152, 2560×1440 pass; 2560×1441 is refused). No maximum dimension is documented; none is enforced.
+2. **The banner property is documented on U3/U4 but missing from U1's settable list** (and its parent object is marked deprecated).
+   The app follows U3's documented three steps (`brandingSettings.image.bannerExternalUrl`), and echoes the banner URL as read
+   when the draft has no banner (U1's deletion rule: leaving it out could remove the channel's banner). Whether YouTube keeps
+   exactly the URL sent is unknown until the first real apply: the read-back compares it and reports `read_back_mismatch`
+   (`banner not set`) rather than hiding a difference. A banner can only be replaced, never removed.
+3. **Only the documented settable fields are echoed** (the six above plus the title as read, and the banner URL). A
+   `brandingSettings.channel` field YouTube returns outside that list is not sent (sending it risks `invalidBrandingOption`); the
+   read-back reports it if YouTube dropped it.
+4. **The read** is `channels.list part=snippet,brandingSettings,localizations` (still 1 unit), so the read-back can prove the
+   translations (BL-210) unchanged.
 
 ## Acceptance (written before the code)
 
