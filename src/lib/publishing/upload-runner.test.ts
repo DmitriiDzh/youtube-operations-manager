@@ -425,6 +425,17 @@ test("AC-UP-11: a restart in the middle of the steps continues at the step -- no
 // the date leaves the video private and unscheduled, with that step's error on the upload. Expected values by hand from that order.
 const VID1_UPLOADED = { videoId: "vid1", title: PKG.title, resource: { snippet: { title: PKG.title, description: PKG.description, tags: ["jazz"], categoryId: "10", defaultLanguage: "en", defaultAudioLanguage: "en" }, status: { privacyStatus: "private" as const, selfDeclaredMadeForKids: false, license: "youtube" as const, embeddable: true } } };
 
+test("AC-UP-02d: a row whose session began before the change with the date in its insert finishes as at_insert -- no second write, the read-back checks the date", async () => {
+  const h = harness([job({ status: "finishing", videoId: "vid1", publishAtAtInsert: true, stepsJson: JSON.stringify({ uploadedAt: NOW.toISOString() }) })]);
+  h.yt.videos.push({ ...VID1_UPLOADED, resource: { ...VID1_UPLOADED.resource, status: { ...VID1_UPLOADED.resource.status, publishAt: "2026-10-24T12:00:00.000Z" } } });
+  const runner = createUploadRunner(h.deps);
+  for (let i = 0; i < 10 && h.row().status !== "done"; i += 1) await runner.tick();
+  const steps = JSON.parse(h.row().stepsJson);
+  assert.deepEqual([h.row().status, h.row().errorCode, steps.publishAt, steps.thumbnail, steps.verify.result], ["done", null, "at_insert", "set", "verified"]);
+  assert.deepEqual(h.publishAtWrites, []);
+  assert.equal(h.records.at(-1)?.record.publishAt, "2026-10-24T12:00:00.000Z");
+});
+
 test("AC-UP-02d: a thumbnail YouTube refuses -> no publish time is written; the video stays private without a date and the job says why", async () => {
   const h = harness([job()]);
   h.deps.gateway.setThumbnail = async () => Promise.reject(new DomainError({ code: "update_failed", message: "invalid image", details: { status: 400, reason: "invalidImage" } }));
