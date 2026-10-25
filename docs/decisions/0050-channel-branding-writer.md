@@ -41,8 +41,10 @@ Request: FO-REQ-0039 (Factory Operator). Plan: `docs/roadmap/plans/CHANNEL_BRAND
    copied on save to `<app data>/channel-branding/<channelId>/banner.<jpg|png>` and checked against the stored SHA-256 at apply,
    so the image the owner previewed cannot change before «Применить». `{}` clears the draft; saving sends nothing to YouTube.
 3. **Validation on save** (one error refuses the whole draft, `validation_failed`, `details.refused`): description ≤ 1000
-   characters without `<`/`>`; keywords: each non-empty, no `"`, a keyword with a space written in double quotes, the whole
-   space-separated string ≤ 500 characters; banner: jpeg/png by its first bytes, ≤ 6 MB, ≥ 2048×1152, exactly 16:9.
+   characters without `<`/`>` (the card counts the ones to remove); keywords: each non-empty, no `"`, a keyword with a space written in double quotes, the whole
+   space-separated string ≤ 500 characters; banner: jpeg/png by its first bytes, ≤ 6 MB, ≥ 2048×1152, exactly 16:9, a JPEG
+   without an EXIF orientation other than 1 (undocumented: conservative). An agent's banner is read from one handle whose dev/ino
+   is the resolver's, at most 6 MB + 1 byte; a Web multipart upload needs `Content-Length`.
 4. **Who may write.** The owner (the card «Канал» on «Главная») and, as drafts only, the Factory Operator
    (`factory_channel_get_branding` / `factory_channel_save_branding`, Factory API 1.32.0) and a channel's own worker
    (`agent_channel_get_branding` / `agent_channel_save_branding`, bound to its channel, Agent API 4.6.0). Agents name the banner by
@@ -59,7 +61,9 @@ Request: FO-REQ-0039 (Factory Operator). Plan: `docs/roadmap/plans/CHANNEL_BRAND
    the one `channels.update part=brandingSettings`; read-back (bounded re-reads: the draft's fields as sent -- keywords compared
    as lists --, every other branding field, the title and the translations unchanged); audit and the last result.
    Partial states are named: banner uploaded but the update failed → `banner_uploaded_not_set` (the old banner stays); the update
-   done but the read-back differs → `read_back_mismatch` with the fields (the backup is kept).
+   done but the read-back differs → `read_back_mismatch` with the fields (the backup is kept); the update done but the audit or a
+   read-back read then fails → `written_unverified` (independent review: never a plain failure once the channel was written).
+   A failed apply keeps the banner a previous apply recorded, so it is not uploaded again.
 6. **Gateways.** The write gateway gains `insertChannelBanner` and `updateChannelBrandingSettings` (both in the inventory's
    `WRITE_PRIMITIVE_NAMES`); the read gateway gains `getChannelBrandingContext`. `channelBanners.insert` costs 50 units in the
    quota ledger.

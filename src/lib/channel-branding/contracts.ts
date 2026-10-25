@@ -27,8 +27,9 @@ export type ChannelBrandingLastApply =
   | {
       at: string;
       ok: false;
-      failure: "read_back_mismatch" | "banner_uploaded_not_set" | "failed";
-      /** read_back_mismatch: what differed; banner_uploaded_not_set / failed: the error code. */
+      /** written_unverified (review #2): channels.update succeeded, then the audit or the read-back failed -- written, not verified. */
+      failure: "read_back_mismatch" | "banner_uploaded_not_set" | "written_unverified" | "failed";
+      /** read_back_mismatch: what differed; banner_uploaded_not_set / written_unverified: the cause's code; failed: the error code. */
       detail: string;
       error?: string;
       fields: ChannelBrandingField[];

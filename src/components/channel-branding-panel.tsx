@@ -8,6 +8,7 @@ import {
   CHANNEL_BANNER_MIN_WIDTH,
   CHANNEL_BRANDING_DESCRIPTION_MAX_CHARACTERS,
   CHANNEL_BRANDING_KEYWORDS_MAX_CHARACTERS,
+  angleBracketCount,
   characterCount,
   checkBannerBytes,
   keywordsFromText,
@@ -49,15 +50,18 @@ const STATUS_KEYS: Record<"new" | "changed" | "unchanged" | "cleared", UiTextKey
   cleared: "channelBranding.status.cleared",
 };
 
-const FAILURE_KEYS: Record<"read_back_mismatch" | "banner_uploaded_not_set" | "failed", UiTextKey> = {
+const FAILURE_KEYS: Record<"read_back_mismatch" | "banner_uploaded_not_set" | "written_unverified" | "failed", UiTextKey> = {
   read_back_mismatch: "channelBranding.last.mismatch",
   banner_uploaded_not_set: "channelBranding.last.bannerNotSet",
+  written_unverified: "channelBranding.last.writtenUnverified",
   failed: "channelBranding.last.failed",
 };
 
 /** A refusal in the owner's language (the server's message is the agents'). */
-function refusalText(t: ReturnType<typeof useT>, refusal: ChannelBrandingRefusal): string {
+function refusalText(t: ReturnType<typeof useT>, refusal: ChannelBrandingRefusal, description: string): string {
   return t(`channelBranding.reason.${refusal.reason}` as UiTextKey, {
+    // Review #5: which characters to remove, and how many (the description may come from YouTube with them).
+    count: String(angleBracketCount(description)),
     max: refusal.field === "description" ? String(CHANNEL_BRANDING_DESCRIPTION_MAX_CHARACTERS) : String(CHANNEL_BRANDING_KEYWORDS_MAX_CHARACTERS),
     width: String(CHANNEL_BANNER_MIN_WIDTH),
     height: String(CHANNEL_BANNER_MIN_HEIGHT),
@@ -386,7 +390,7 @@ export function ChannelBrandingPanel({ channelId }: { channelId: string }) {
       {refusals.length > 0 && (
         <ul className="space-y-0.5 text-xs text-amber-300">
           {refusals.map((refusal) => (
-            <li key={`${refusal.field}-${refusal.reason}`}>{refusalText(t, refusal)}</li>
+            <li key={`${refusal.field}-${refusal.reason}`}>{refusalText(t, refusal, description)}</li>
           ))}
         </ul>
       )}

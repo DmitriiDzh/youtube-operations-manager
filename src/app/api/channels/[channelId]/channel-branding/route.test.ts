@@ -65,8 +65,15 @@ test("PUT multipart carries the banner file's bytes with the draft fields", asyn
   const form = new FormData();
   form.set("draft", JSON.stringify({ description: "D" }));
   form.set("banner", new Blob([Buffer.from("banner-bytes")], { type: "image/png" }), "b.png");
-  assert.equal((await handlers.PUT(new Request("http://x", { method: "PUT", body: form }), ctx())).status, 200);
+  const encoded = new Request("http://x", { method: "PUT", body: form });
+  const body = await encoded.arrayBuffer();
+  const headers = { "content-type": encoded.headers.get("content-type")!, "content-length": String(body.byteLength) };
+  assert.equal((await handlers.PUT(new Request("http://x", { method: "PUT", body, headers }), ctx())).status, 200);
   assert.deepEqual(calls, [["save", "UC1", "D", undefined, "bytes", "banner-bytes", "owner"]]);
+  // Review #3: without a Content-Length the upload is refused before the body is read (411), and the module is not called.
+  const noLength = await handlers.PUT(new Request("http://x", { method: "PUT", body, headers: { "content-type": headers["content-type"] } }), ctx());
+  assert.equal(noLength.status, 411);
+  assert.equal(calls.length, 1);
 });
 
 test("POST /apply passes the session's user and the previewed draftVersion; branding_changed -> 409; bad JSON -> 400", async () => {

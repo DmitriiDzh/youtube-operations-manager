@@ -277,7 +277,12 @@ export function createChannelBrandingService(deps: ChannelBrandingDependencies) 
               newBanner = await file.read();
             }
           } catch (error) {
-            refused.push({ field: "banner", reason: "banner_unavailable", message: error instanceof Error ? error.message : "the banner file cannot be read" });
+            // Review #3: the capped read found the file grown past 6 MB after the size check.
+            if ((error as { code?: unknown } | null)?.code === "banner_too_large") {
+              refused.push({ field: "banner", reason: "banner_too_large", message: `the banner is larger than 6 MB (${CHANNEL_BANNER_MAX_BYTES} bytes)` });
+            } else {
+              refused.push({ field: "banner", reason: "banner_unavailable", message: error instanceof Error ? error.message : "the banner file cannot be read" });
+            }
           }
         }
       }
@@ -335,10 +340,17 @@ export function createChannelBrandingService(deps: ChannelBrandingDependencies) 
       let writes = 0;
       let fields: ChannelBrandingField[] = [];
       let uploadedBannerUrl: string | null = null;
+      // Review #1: the banner a previous apply set stays recorded through any failure of this one (else the next preview would
+      // upload it again). Review #2: once the update succeeded, a later failure says "written, not verified".
+      let previousBanner: { sha256: string; url: string } | null = null;
+      let draftBannerSha: string | null = null;
+      let written = false;
       await connectedChannel(channelId);
       try {
         const { row, draft, problem } = await stored(channelId);
         const lastApply = parseLastApply(row?.lastApplyJson);
+        previousBanner = lastApply?.banner ?? null;
+        draftBannerSha = draft?.banner?.sha256 ?? null;
         // 0. The draft the owner previewed (AC-CB-07): the Operator, a worker or another tab may have saved another one since.
         if (typeof draftVersion !== "string" || draftVersion.length === 0) {
           throw new DomainError({ code: "validation_failed", message: "The version of the previewed draft is missing: check against YouTube first", details: { channelId } });
@@ -412,6 +424,7 @@ export function createChannelBrandingService(deps: ChannelBrandingDependencies) 
           });
         }
         writes++;
+        written = true;
         await deps.audit.record({ channelId, kind: "write", detail: { part: "brandingSettings", fields, sent: body } });
 
         // 7. Read-back (AC-CB-08).
@@ -435,23 +448,26 @@ export function createChannelBrandingService(deps: ChannelBrandingDependencies) 
         await deps.audit.record({ channelId, kind: "verification", detail: { verified: true, fields } });
         await recordLastApply(channelId, result);
         return result;
-      } catch (error) {
+      } catch (caught) {
+        let error = caught;
+        if (written) {
+          // Review #2: channels.update succeeded, then the audit or a read-back read failed -- the channel WAS written; only the
+          // verification is missing. Never reported as a plain failure.
+          const cause = isDomainError(caught) ? caught.code : "failed";
+          error = new DomainError({
+            code: "written_unverified",
+            message: `The channel branding was written on YouTube, but checking it afterwards failed (${cause}): open the channel to check it, or check against YouTube again. The backup was kept`,
+            details: { channelId, cause },
+          });
+        }
         const code = isDomainError(error) ? error.code : "failed";
         const message = error instanceof Error ? error.message : "Unknown error";
-        const partial = code === "banner_uploaded_not_set";
-        const detail = partial && isDomainError(error) ? String((error.details as { cause?: unknown } | undefined)?.cause ?? code) : code;
+        const failure = code === "banner_uploaded_not_set" || code === "written_unverified" ? code : "failed";
+        const detail = failure !== "failed" && isDomainError(error) ? String((error.details as { cause?: unknown } | undefined)?.cause ?? code) : code;
+        // The banner on the channel now: the one uploaded here once the update carried it, else the one a previous apply set.
+        const banner = written && uploadedBannerUrl && draftBannerSha ? { sha256: draftBannerSha, url: uploadedBannerUrl } : previousBanner;
         await deps.audit.record({ channelId, kind: "failed", detail: { code, message, writes, backupPath, bannerUrl: uploadedBannerUrl } }).catch(() => undefined);
-        await recordLastApply(channelId, {
-          at: deps.clock().toISOString(),
-          ok: false,
-          failure: partial ? "banner_uploaded_not_set" : "failed",
-          detail,
-          error: message,
-          fields,
-          writes,
-          backupPath,
-          banner: null,
-        }).catch(() => undefined);
+        await recordLastApply(channelId, { at: deps.clock().toISOString(), ok: false, failure, detail, error: message, fields, writes, backupPath, banner }).catch(() => undefined);
         throw error;
       }
     },

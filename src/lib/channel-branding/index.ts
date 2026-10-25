@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { createBackupCore } from "@/lib/backup";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
@@ -12,6 +11,8 @@ import { createIdGenerator } from "@/lib/shared-domain";
 import { createExchangeFs, resolveSentToYtmFile } from "@/lib/workspace-exchange";
 import { createWriteContextCore } from "@/lib/write-context";
 import { createBannerStore } from "./adapters/banner-store";
+import { readFileCapped } from "./adapters/workspace-file";
+import { CHANNEL_BANNER_MAX_BYTES } from "./draft";
 import { createChannelBrandingYoutubeAdapter } from "./adapters/youtube-api";
 import type { ChannelBannerInput, ChannelBrandingActor, ChannelBrandingDependencies } from "./contracts";
 import { createChannelBrandingService, type ChannelBrandingService } from "./services";
@@ -45,7 +46,8 @@ async function workspaceFile(channelId: string, relativePath: string): Promise<{
     isPathInsideOrEqual,
     unavailable: (reason) => new Error(reason),
   });
-  return { size: file.bytes, read: () => readFile(file.path) };
+  // Review #3: read from one opened handle, the resolver's dev/ino checked, at most 6 MB + 1 byte.
+  return { size: file.bytes, read: () => readFileCapped(file.path, file.identity, CHANNEL_BANNER_MAX_BYTES) };
 }
 
 /**

@@ -119,6 +119,9 @@ Sources: [channels.update](https://developers.google.com/youtube/v3/docs/channel
 3. **Only the documented settable fields are echoed** (the six above plus the title as read, and the banner URL). A
    `brandingSettings.channel` field YouTube returns outside that list is not sent (sending it risks `invalidBrandingOption`); the
    read-back reports it if YouTube dropped it.
+5. **EXIF orientation (independent review).** Neither U3 nor U4 says whether YouTube applies a JPEG's EXIF Orientation. A JPEG whose
+   orientation is not 1 (e.g. 6 or 8: shown rotated) could pass the 16:9 check on its stored pixels while looking portrait, so it is
+   refused (`banner_exif_rotated`) -- conservative, undocumented.
 4. **The read** is `channels.list part=snippet,brandingSettings,localizations` (still 1 unit), so the read-back can prove the
    translations (BL-210) unchanged.
 
@@ -132,6 +135,10 @@ Sources: [channels.update](https://developers.google.com/youtube/v3/docs/channel
   the draft recorded as saved by `worker`; channel translations stay out of channel sessions.
 - Draft semantics chosen: a field left out = unchanged on YouTube; `""` / `[]` clear it; `keepBanner` keeps the stored banner on a
   save that does not send a new one. A banner cannot be removed (no documented way), only replaced.
+- Independent review fixes: a failed apply keeps the previous apply's banner (no re-upload); a failure after the update succeeded
+  is `written_unverified` (with the uploaded banner URL kept), never a plain `failed`; the agent's banner is read from one handle
+  (dev/ino checked, at most 6 MB + 1 byte); a multipart upload without `Content-Length` is refused (411); EXIF-rotated JPEGs are
+  refused; the card counts the `<`/`>` to remove.
 - The preview is `GET .../preview` like BL-210 (the brief said POST): a POST passes `src/proxy.ts`'s mutation gate and would be
   refused during the operation lock or recovery mode, though it only reads.
 

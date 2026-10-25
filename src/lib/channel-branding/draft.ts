@@ -42,7 +42,8 @@ export type ChannelBrandingRefusalReason =
   | "banner_unreadable"
   | "banner_too_large"
   | "banner_too_small"
-  | "banner_not_16_9";
+  | "banner_not_16_9"
+  | "banner_exif_rotated";
 
 export type ChannelBrandingRefusal = { field: ChannelBrandingField; reason: ChannelBrandingRefusalReason; message: string };
 
@@ -85,7 +86,8 @@ export function validateDescription(input: unknown): { value: string } | { refus
   if (characterCount(value) > CHANNEL_BRANDING_DESCRIPTION_MAX_CHARACTERS) {
     return { refusal: { field: "description", reason: "description_too_long", message: `description is ${characterCount(value)} characters; the limit is ${CHANNEL_BRANDING_DESCRIPTION_MAX_CHARACTERS}` } };
   }
-  if (/[<>]/.test(value)) return { refusal: { field: "description", reason: "description_angle_brackets", message: "description must not contain < or >" } };
+  const brackets = angleBracketCount(value);
+  if (brackets > 0) return { refusal: { field: "description", reason: "description_angle_brackets", message: `description must not contain < or > (${brackets} found)` } };
   return { value };
 }
 
@@ -152,6 +154,51 @@ export function imageDimensions(bytes: Uint8Array, kind: ChannelBannerMimeType):
   return null;
 }
 
+/**
+ * Review #4: the EXIF Orientation of a JPEG (APP1 "Exif", IFD0 tag 0x0112), null when it has none. A value other than 1 means a
+ * viewer rotates or mirrors the stored pixels, so the size read from the frame header is not the size the image looks; how YouTube
+ * treats it is not documented, so such a banner is refused (conservative).
+ */
+export function jpegExifOrientation(bytes: Uint8Array): number | null {
+  let i = 2;
+  while (i + 3 < bytes.length && bytes[i] === 0xff) {
+    const marker = bytes[i + 1];
+    if (marker === 0xd9 || marker === 0xda) return null;
+    if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7) || marker === 0xff) {
+      i += marker === 0xff ? 1 : 2;
+      continue;
+    }
+    const length = (bytes[i + 2] << 8) | bytes[i + 3];
+    if (length < 2) return null;
+    const start = i + 4;
+    if (marker === 0xe1 && length >= 16 && String.fromCharCode(...bytes.slice(start, start + 6)) === "Exif\0\0") {
+      const tiff = start + 6;
+      const end = Math.min(i + 2 + length, bytes.length);
+      const order = String.fromCharCode(bytes[tiff], bytes[tiff + 1]);
+      if (order !== "II" && order !== "MM") return null;
+      const little = order === "II";
+      const u16 = (at: number) => (at + 1 < end ? (little ? bytes[at] | (bytes[at + 1] << 8) : (bytes[at] << 8) | bytes[at + 1]) : -1);
+      const u32 = (at: number) => (at + 3 < end ? (little ? (bytes[at] | (bytes[at + 1] << 8) | (bytes[at + 2] << 16)) + bytes[at + 3] * 2 ** 24 : bytes[at] * 2 ** 24 + ((bytes[at + 1] << 16) | (bytes[at + 2] << 8) | bytes[at + 3])) : -1);
+      const ifd = tiff + u32(tiff + 4);
+      const count = u16(ifd);
+      if (count < 0) return null;
+      for (let n = 0; n < count; n++) {
+        const entry = ifd + 2 + n * 12;
+        if (entry + 11 >= end) return null;
+        if (u16(entry) === 0x0112) return u16(entry + 8);
+      }
+      return null;
+    }
+    i += 2 + length;
+  }
+  return null;
+}
+
+/** Review #5: how many `<` / `>` a text holds (the card names them so the owner can remove them). */
+export function angleBracketCount(value: string): number {
+  return (value.match(/[<>]/g) ?? []).length;
+}
+
 /** The banner checks of `channelBanners.insert` (type by content, size, minimum size, exactly 16:9). */
 export function checkBannerBytes(bytes: Uint8Array): { meta: Omit<ChannelBannerMeta, "sha256"> } | { refusal: ChannelBrandingRefusal } {
   const refuse = (reason: ChannelBrandingRefusalReason, message: string) => ({ refusal: { field: "banner" as const, reason, message } });
@@ -164,6 +211,10 @@ export function checkBannerBytes(bytes: Uint8Array): { meta: Omit<ChannelBannerM
     return refuse("banner_too_small", `the banner is ${size.width}×${size.height}; it must be at least ${CHANNEL_BANNER_MIN_WIDTH}×${CHANNEL_BANNER_MIN_HEIGHT}`);
   }
   if (size.width * 9 !== size.height * 16) return refuse("banner_not_16_9", `the banner is ${size.width}×${size.height}; it must be exactly 16:9 (e.g. 2560×1440)`);
+  const orientation = kind === "image/jpeg" ? jpegExifOrientation(bytes) : null;
+  if (orientation !== null && orientation !== 1) {
+    return refuse("banner_exif_rotated", `the JPEG's EXIF orientation is ${orientation} (shown rotated or mirrored); save it without rotation (orientation 1) or as PNG`);
+  }
   return { meta: { bytes: bytes.length, width: size.width, height: size.height, mimeType: kind } };
 }
 

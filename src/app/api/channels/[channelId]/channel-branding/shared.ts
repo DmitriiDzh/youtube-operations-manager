@@ -68,7 +68,11 @@ export function createChannelBrandingHandlers(deps: ChannelBrandingRouteDeps) {
       let fields: Record<string, unknown> | null;
       let bannerBytes: Buffer | null = null;
       if (contentType.startsWith("multipart/form-data")) {
-        if (Number(request.headers.get("content-length") ?? 0) > CHANNEL_BANNER_MAX_BYTES + CONTENT_LENGTH_MARGIN_BYTES) return invalid("The banner exceeds 6 MB", 413);
+        // Review #3: without a Content-Length the body would be buffered whole before the 6 MB check -- refused instead (browsers
+        // always send it for a FormData body).
+        const declared = request.headers.get("content-length");
+        if (declared === null || !/^\d+$/.test(declared)) return invalid("A banner upload needs a Content-Length header", 411);
+        if (Number(declared) > CHANNEL_BANNER_MAX_BYTES + CONTENT_LENGTH_MARGIN_BYTES) return invalid("The banner exceeds 6 MB", 413);
         const form = await request.formData().catch(() => null);
         if (!form) return invalid("Request body must be multipart form data");
         try {

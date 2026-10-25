@@ -4720,7 +4720,8 @@ only writer of a channel's `brandingSettings` (AGENTS.md §F, PROJECT_SPEC §21)
   → re-read equal (else `update_failed`) → `assertLiveWritesAuthorized` + `insertBanner` → `buildBrandingBody` (title as read, the
   six documented settable `brandingSettings.channel` fields as read, the changed draft fields replaced, a cleared one left out, the
   banner URL as read unless uploaded; undocumented fields are not sent) → `assertLiveWritesAuthorized` + `updateBranding` (a failure
-  after the upload → `banner_uploaded_not_set`) → read-back (4 reads, 5 s apart: the draft fields, the banner URL, every other
+  after the upload → `banner_uploaded_not_set`; any failure after the update succeeded → `written_unverified`; a failure keeps the
+  previous apply's banner in the last result) → read-back (4 reads, 5 s apart: the draft fields, the banner URL, every other
   branding field, the name, the translations) → the last result.
 - **Surfaces.** `createChannelBrandingOwnerCore` (the Web routes only); `agentSurface` / `createChannelBrandingAgentCore` (get,
   save as `factory` or `worker`; no apply) for `src/mcp/factory-channel-deps.ts`, which the Factory route and the channel workers'

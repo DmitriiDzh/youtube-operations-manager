@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 import { DomainError } from "@/lib/shared-domain";
 import type { ChannelBrandingBody, ChannelBrandingDependencies, ChannelBrandingLastApply, LiveChannelBranding } from "./contracts";
-import { bannerKindOf, imageDimensions, parseKeywords, serializeKeywords } from "./draft";
+import { angleBracketCount, bannerKindOf, checkBannerBytes, imageDimensions, jpegExifOrientation, parseKeywords, serializeKeywords, validateDescription } from "./draft";
 import { createChannelBrandingService } from "./services";
 
 // BL-223 (docs/roadmap/plans/CHANNEL_BRANDING_PLAN.md, acceptance AC-CB-01..08 and 10, written before the code; ADR 0050). Expected
@@ -59,7 +59,7 @@ function liveChannel(overrides: Partial<LiveChannelBranding> = {}, branding: Rec
 // `reads`: the answers to channels.list in order -- the preview, the fresh read, the equal re-read, then the read-back(s).
 type Harness = ReturnType<typeof harness>;
 
-function harness(options: { reads?: LiveChannelBranding[]; liveWrites?: boolean; updateFails?: boolean; wrongChannel?: boolean; workspace?: Record<string, Buffer> } = {}) {
+function harness(options: { reads?: LiveChannelBranding[]; liveWrites?: boolean; updateFails?: boolean; wrongChannel?: boolean; workspace?: Record<string, Buffer>; readFailsAt?: number; auditFailsOn?: string } = {}) {
   const calls: string[] = [];
   const rows = new Map<string, { draftJson: string | null; updatedAt: Date | null; updatedBy: string | null; lastApplyJson: string | null }>();
   const files = new Map<string, Buffer>();
@@ -105,6 +105,7 @@ function harness(options: { reads?: LiveChannelBranding[]; liveWrites?: boolean;
     youtube: {
       read: async () => {
         calls.push("channels.list");
+        if (options.readFailsAt !== undefined && readIndex + 1 >= options.readFailsAt) throw new DomainError({ code: "youtube_quota_exceeded" as never, message: "quota" });
         const read = reads[Math.min(readIndex, reads.length - 1)];
         readIndex++;
         return structuredClone(read);
@@ -134,6 +135,7 @@ function harness(options: { reads?: LiveChannelBranding[]; liveWrites?: boolean;
     },
     audit: {
       record: async (args) => {
+        if (args.kind === options.auditFailsOn) throw new Error("disk full");
         events.push({ kind: args.kind, detail: args.detail });
       },
     },
@@ -475,4 +477,88 @@ test("AC-CB-10: when YouTube cannot be read, get still answers the draft with li
   const view = await h.service.get("UC1");
   assert.equal(view.live, null);
   assert.equal(view.liveUnavailable, "data_api_reads_disabled");
+});
+
+// --- Independent review of BL-223 ------------------------------------------------------------------------------------------------
+
+const APPLIED_BANNER = { sha256: "a".repeat(64), url: "https://yt3/applied-banner" };
+
+test("review #1: a failed apply keeps the banner a previous apply set, so the next preview does not upload it again", async () => {
+  const banner = png(2560, 1440);
+  for (const failure of ["branding_changed", "live_writes_disabled", "WRONG_CHANNEL"] as const) {
+    const onChannel = liveChannel({ bannerExternalUrl: APPLIED_BANNER.url });
+    const h = harness({ reads: [onChannel], liveWrites: failure !== "live_writes_disabled", wrongChannel: failure === "WRONG_CHANNEL" });
+    await h.service.save("UC1", { description: "New", banner: { kind: "bytes", bytes: banner } }, "owner");
+    const applied = { ...APPLIED_BANNER, sha256: sha(banner) };
+    h.rows.get("UC1")!.lastApplyJson = JSON.stringify({ at: "2026-10-24T00:00:00.000Z", ok: true, fields: ["banner"], writes: 2, backupPath: "/b", banner: applied });
+    const version = failure === "branding_changed" ? "stale" : await previewVersion(h);
+    await assert.rejects(h.service.apply("UC1", { userId: "user-1" }, version), { code: failure });
+    const last = JSON.parse(h.rows.get("UC1")!.lastApplyJson!) as ChannelBrandingLastApply;
+    assert.deepEqual(last.banner, applied, failure);
+    assert.deepEqual((await h.service.preview("UC1")).fields.find((f) => f.field === "banner"), { field: "banner", status: "unchanged" }, failure);
+  }
+});
+
+test("review #2: the update succeeded, then the read-back read fails -> written_unverified, the uploaded banner recorded", async () => {
+  // Reads: preview (1), fresh (2), equal re-read (3), then the read-back (4) fails.
+  const h = harness({ reads: [liveChannel()], readFailsAt: 4 });
+  const banner = png(2560, 1440);
+  await h.service.save("UC1", { banner: { kind: "bytes", bytes: banner } }, "owner");
+  await assert.rejects(h.service.apply("UC1", { userId: "user-1" }, await previewVersion(h)), (error: DomainError) => {
+    assert.equal(error.code, "written_unverified");
+    assert.match(error.message, /was written on YouTube/);
+    return true;
+  });
+  assert.deepEqual(h.writeCalls(), ["channelBanners.insert:image/png", "channels.update:UC1"]);
+  const last = JSON.parse(h.rows.get("UC1")!.lastApplyJson!) as ChannelBrandingLastApply;
+  assert.equal(!last.ok && last.failure, "written_unverified");
+  assert.equal(!last.ok && last.detail, "youtube_quota_exceeded");
+  assert.equal(last.writes, 2);
+  assert.deepEqual(last.banner, { sha256: sha(banner), url: "https://yt3/new-banner" });
+  assert.equal(last.backupPath, "/backups/b1.json");
+});
+
+test("review #2: the update succeeded, then the write's audit record fails -> written_unverified (not a plain failure)", async () => {
+  const h = harness({ auditFailsOn: "write" });
+  await h.service.save("UC1", { description: "New" }, "owner");
+  await assert.rejects(h.service.apply("UC1", { userId: "user-1" }, await previewVersion(h)), { code: "written_unverified" });
+  const last = JSON.parse(h.rows.get("UC1")!.lastApplyJson!) as ChannelBrandingLastApply;
+  assert.equal(!last.ok && last.failure, "written_unverified");
+  assert.equal(!last.ok && last.detail, "failed");
+});
+
+test("review #3: an agent's banner that grows past 6 MB between the size check and the read is refused as too large", async () => {
+  const h = harness();
+  h.deps.workspaceFile = async () => ({ size: 100, read: async () => Promise.reject(Object.assign(new Error("larger than 6291456 bytes"), { code: "banner_too_large" })) });
+  await assert.rejects(h.service.save("UC1", { banner: { kind: "workspace", path: "b/banner.png" } }, "worker"), (error: DomainError) => {
+    assert.deepEqual((error.details as { refused: Array<{ reason: string }> }).refused.map((r) => r.reason), ["banner_too_large"]);
+    return true;
+  });
+  assert.equal(h.rows.size, 0);
+});
+
+/** A JPEG whose APP1 Exif (big-endian) IFD0 holds Orientation = `orientation`, then a SOF0 frame of the given size. */
+function jpegWithOrientation(width: number, height: number, orientation: number): Buffer {
+  const tiff = [0x4d, 0x4d, 0x00, 0x2a, 0x00, 0x00, 0x00, 0x08, 0x00, 0x01, 0x01, 0x12, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01, 0x00, orientation, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+  const payload = [0x45, 0x78, 0x69, 0x66, 0x00, 0x00, ...tiff];
+  const app1 = [0xff, 0xe1, (payload.length + 2) >> 8, (payload.length + 2) & 0xff, ...payload];
+  const plain = jpeg(width, height);
+  return Buffer.concat([plain.subarray(0, 2), Buffer.from(app1), plain.subarray(2)]);
+}
+
+test("review #4: a JPEG with EXIF orientation 6 or 8 is refused (banner_exif_rotated); orientation 1 or none passes", () => {
+  assert.equal(jpegExifOrientation(jpegWithOrientation(2560, 1440, 6)), 6);
+  for (const orientation of [6, 8]) {
+    const checked = checkBannerBytes(jpegWithOrientation(2560, 1440, orientation));
+    assert.equal("refusal" in checked && checked.refusal.reason, "banner_exif_rotated", String(orientation));
+  }
+  assert.ok("meta" in checkBannerBytes(jpegWithOrientation(2560, 1440, 1)));
+  assert.equal(jpegExifOrientation(jpeg(2560, 1440)), null);
+  assert.ok("meta" in checkBannerBytes(jpeg(2560, 1440)));
+});
+
+test("review #5: the < / > refusal counts the characters to remove", () => {
+  assert.equal(angleBracketCount("a <b> c > d"), 3);
+  const checked = validateDescription("x < y >");
+  assert.equal("refusal" in checked && checked.refusal.message, "description must not contain < or > (2 found)");
 });
