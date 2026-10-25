@@ -293,3 +293,22 @@ test("isRealVideoFolder: a folder inside 04 Videos yes; 04 Videos itself, a syml
   assert.equal(await isRealVideoFolder(ws, "04 Videos/10 October/1023 V57"), false, "a symlink to elsewhere in the workspace");
   assert.equal(await isRealVideoFolder(ws, "04 Videos/10 October/1024 V58"), false);
 });
+
+// BL-225 stage 2 (WEEKLY_PUBLISHING_PLAN.md AC-WP-21; owner msg 3511 answer 4): the 2 MB thumbnail limit is enforced when the package
+// is made -- 2 097 152 bytes is accepted, one byte more refused, and a non-image refused; nothing is written then.
+test("AC-WP-21: the composer refuses a thumbnail over 2 MB or not JPEG/PNG; exactly 2 MB is saved", async () => {
+  const at = (bytes: number, head?: Uint8Array) => {
+    const fs = workspace();
+    fs.set(`${V56_FOLDER}/Thumbnail_V56.jpg`, { kind: "file", bytes, head: head ?? new Uint8Array([0xff, 0xd8, 0xff, 0xe0]) });
+    return setup({ fs });
+  };
+  const big = at(2_097_153);
+  await assert.rejects(() => big.composer.save(CHANNEL, { folder: V56_FOLDER }), refusedWith("package_thumbnail_too_large"));
+  assert.equal(big.writes.length, 0);
+  const gif = at(1000, new Uint8Array([0x47, 0x49, 0x46, 0x38]));
+  await assert.rejects(() => gif.composer.save(CHANNEL, { folder: V56_FOLDER }), refusedWith("package_thumbnail_not_image"));
+  assert.equal(gif.writes.length, 0);
+  const exact = at(2_097_152);
+  await exact.composer.save(CHANNEL, { folder: V56_FOLDER });
+  assert.equal(exact.writes.length, 1);
+});

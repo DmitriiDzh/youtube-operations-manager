@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { createPublishingPlansOwnerCore, type PublishingPlansOwnerSurface } from "@/lib/publishing-plans";
+import { publishingPlanProgress } from "@/lib/publishing-plan-progress";
 import { DomainError } from "@/lib/shared-domain";
 import { getVideoMetadataErrorStatus } from "../../../video-metadata/error-status";
 
@@ -22,7 +23,8 @@ const defaultDeps = (): PublishingPlanRouteDeps => ({
   assertActiveChannel: async (args) => {
     await createChannelAccessCore().assertActiveChannel(args);
   },
-  service: createPublishingPlansOwnerCore,
+  // BL-225 stage 2: the slots' package progress from the publishing scan (the composition module; §M).
+  service: () => createPublishingPlansOwnerCore(publishingPlanProgress),
 });
 
 function errorResponse(error: unknown) {

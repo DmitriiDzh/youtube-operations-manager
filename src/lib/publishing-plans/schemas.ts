@@ -32,7 +32,10 @@ export const savePlanInputSchema = z
 export type SavePlanInput = z.infer<typeof savePlanInputSchema>;
 
 export const getPlanInputSchema = z.object({ channelId, weekStart: day }).strict();
-export const listPlansInputSchema = z.object({ channelId }).strict();
+/** BL-225 stage 2: `limit` -- the newest weeks only (default 12, at most 52). */
+export const PLAN_LIST_DEFAULT_LIMIT = 12;
+export const PLAN_LIST_MAX_LIMIT = 52;
+export const listPlansInputSchema = z.object({ channelId, limit: z.number().int().min(1).max(PLAN_LIST_MAX_LIMIT).optional() }).strict();
 
 /**
  * The owner's decision (Web UI): approve one slot or the week (the slots the screen showed, each with the hash shown), revoke one

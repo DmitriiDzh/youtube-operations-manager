@@ -56,6 +56,7 @@ const row = (over: Partial<StoredPublishingUpload>): StoredPublishingUpload => (
   leaseOwner: null,
   leaseUntil: null,
   automatic: false,
+  slotId: null,
   ...over,
 });
 
@@ -81,4 +82,18 @@ test("BL-209 review M1: the tried manifest hashes -- every row of the channel, a
     assert.equal(await insertPublishingUploads([row({ id: "o1", channelId: "UC2", automatic: true, manifestSha256: "mf-other" })], database), true);
     assert.deepEqual([...(await listTriedManifestHashes("UC1", database))].sort(), ["mf-1", "mf-2", "mf-manual"]);
     assert.deepEqual([...(await listTriedManifestHashes("UC2", database))], ["mf-other"]);
+  }));
+
+// BL-225 stage 2 (WEEKLY_PUBLISHING_PLAN.md stage 2, ADR 0051; ADR 0001 additive): schema v110 adds `publishing_uploads.slot_id`,
+// nullable -- a row written before reads null, the migration converges when run again, and a row keeps the slot it was given.
+test("v110: slot_id is null on an older row, kept on a new one; the migration runs again without change", () =>
+  withDb(async (database, client) => {
+    await client.execute(
+      "INSERT INTO publishing_uploads (id, channel_id, video, manifest_path, manifest_sha256, package_json, settings_json, approved_by, approved_at, status, total_bytes, stored_bytes, publish_at_at_insert, steps_json, attempts, created_at, updated_at) " +
+        "VALUES ('old', 'UC1', 'V60', 'p', 'mf-old', '{}', '{}', 'u', 0, 'done', 1, 1, 0, '{}', 1, 0, 0)"
+    );
+    await SCHEMA_MIGRATIONS.find((m) => m.version === 110)!.apply(client);
+    assert.equal((await client.execute("SELECT slot_id FROM publishing_uploads WHERE id = 'old'")).rows[0].slot_id, null);
+    assert.equal(await insertPublishingUploads([row({ id: "n1", video: "V64", manifestSha256: "mf-n1", slotId: "w44-mon" })], database), true);
+    assert.equal((await client.execute("SELECT slot_id FROM publishing_uploads WHERE id = 'n1'")).rows[0].slot_id, "w44-mon");
   }));

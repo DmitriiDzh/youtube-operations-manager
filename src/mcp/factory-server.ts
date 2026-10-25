@@ -1414,8 +1414,9 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     })
     .strict();
   const planRefInput = z.object({ channelId: z.string().min(1).max(64), weekStart: z.string().max(10) }).strict();
+  const planListInput = z.object({ channelId: z.string().min(1).max(64), limit: z.number().int().min(1).max(52).optional() }).strict();
   const PLAN_SHAPE =
-    "Plan: { channelId, weekStart (a Monday), weekEnd (its Sunday), timeZone, state: empty | awaiting_approval (a future slot not vetoed waits for the owner) | approved | past, counts: { slots, approved, needsApproval, vetoed }, firstRelease (UTC, the earliest slot not vetoed, or null), createdAt, createdBy: factory | worker, updatedAt, updatedBy, slots: [{ slotId, date, publishAt (local wall time 'YYYY-MM-DDTHH:MM' in timeZone), publishAtUtc, lengthHint, note, contentHash, approval: approved | needs_approval, approvedAt, changedAfterApproval: { previous: { date, publishAt, lengthHint, note, timeZone }, approvedAt, changedAt, changedBy } | null (the owner approved other content: he must approve the change), vetoed: { at, device } | null, status: planned | built | packaged | uploading | scheduled | published | failed | vetoed (1.33.0: planned and vetoed only; the others come with the release-package and upload stages), statusCode (with failed), videoId, released (its time has passed), createdAt, updatedAt, updatedBy }] sorted by time } (get only: slots).";
+    "Plan: { channelId, weekStart (a Monday), weekEnd (its Sunday), timeZone, state: empty | awaiting_approval (a future slot not vetoed waits for the owner) | approved | past, counts: { slots, approved, needsApproval, vetoed }, firstRelease (UTC, the earliest slot not vetoed, or null), createdAt, createdBy: factory | worker, updatedAt, updatedBy, slots: [{ slotId, date, publishAt (local wall time 'YYYY-MM-DDTHH:MM' in timeZone), publishAtUtc, lengthHint, note, contentHash, approval: approved | needs_approval, approvedAt, changedAfterApproval: { previous: { date, publishAt, lengthHint, note, timeZone }, approvedAt, changedAt, changedBy } | null (the owner approved other content: he must approve the change), vetoed: { at, device } | null, status: planned | built (a yt-release-package/2 names the slot, not ready yet, its video there) | packaged (that package is ready) | uploading | scheduled | published | failed | vetoed, statusCode (with failed), videoId, package: { video, title, durationSeconds, languages: [code], containsSyntheticMedia (the package's, else the channel setting), thumbnailPath, testThumbnails (count), problems: [code] } | null, released (its time has passed), createdAt, updatedAt, updatedBy }] sorted by time } (get only: slots).";
 
   registerTool(
     "factory_publishing_plan_save",
@@ -1442,10 +1443,10 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
   registerTool(
     "factory_publishing_plan_list",
     {
-      description: "A channel's weekly publishing plans, newest week first (1.33.0): { channelId } -> { plans: [the plan's fields without slots] }. Read-only.",
-      inputSchema: channelRefInput,
+      description: "A channel's weekly publishing plans, newest week first (1.33.0): { channelId, limit? (1-52, default 12: the newest weeks) } -> { plans: [the plan's fields without slots] }. Read-only.",
+      inputSchema: planListInput,
     },
-    async (args) => successResult(await deps.publishingPlans.list(parseInput(channelRefInput, args)))
+    async (args) => successResult(await deps.publishingPlans.list(parseInput(planListInput, args)))
   );
 
   // -- BL-184 (FO-REQ-0024, STORYBOARD_PLAN.md §2.6): storyboards. The schemas here name the fields; the storyboards module checks

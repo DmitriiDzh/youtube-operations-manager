@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { changedField, defaultWeek, mondayOf, pipelineOf, shiftWeek, slotsToApprove, tileCounts, wallParts, zonedParts, type PlanSlotDto } from "./weekly-plan-model";
+import { changedField, defaultWeek, lengthLabel, mondayOf, pipelineOf, shiftWeek, slotsToApprove, tileCounts, wallParts, zonedParts, type PlanSlotDto } from "./weekly-plan-model";
 
 // BL-225 (WEEKLY_PUBLISHING_PLAN.md stage 1 item 6, AC-WP-15): the screen's pure rules. Values by hand: 2026-10-26 is a Monday,
 // 2026-11-01 its Sunday; 18:00 in Tokyo is 09:00Z, which is 10:00 in Berlin (CET, UTC+1, after 25.10); 23:30Z on 31.10 is 08:30 on Sunday 1.11 in Tokyo.
@@ -20,6 +20,7 @@ const slot = (over: Partial<PlanSlotDto>): PlanSlotDto => ({
   status: "planned",
   statusCode: null,
   videoId: null,
+  package: null,
   released: false,
   updatedAt: "2026-10-25T07:00:00Z",
   updatedBy: "factory",
@@ -79,4 +80,10 @@ test("AC-WP-15: which field the agent changed after approval", () => {
   assert.equal(changedField(changed({ publishAt: "2026-10-26T15:00", note: "снег" }), "Asia/Tokyo"), "note");
   assert.equal(changedField(changed({ publishAt: "2026-10-26T15:00" }), "Asia/Seoul"), "zone");
   assert.equal(changedField(slot({}), "Asia/Tokyo"), null);
+});
+
+test("BL-225 stage 2: a package's length on the row -- whole hours from one hour, else minutes", () => {
+  assert.deepEqual(lengthLabel(3 * 3600 + 600), { unit: "h", value: 3 });
+  assert.deepEqual(lengthLabel(3599), { unit: "min", value: 60 });
+  assert.deepEqual(lengthLabel(20), { unit: "min", value: 1 });
 });

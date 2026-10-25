@@ -172,6 +172,8 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
         leaseOwner: null,
         leaseUntil: null,
         automatic: args.mode.automatic,
+        // BL-225 stage 2 (ADR 0051): the plan slot a v2 package names (FO-REQ-0040 acceptance 4: each upload maps to its slot).
+        slotId: pkg.slotId ?? null,
       };
     });
     if (!(await deps.insert(rows))) throw refuse("upload_already_queued", "One of the videos was queued meanwhile.");

@@ -26,12 +26,31 @@ export const PUBLISHING_PLAN_LIMITS = {
 export const PLAN_SLOT_STATUSES = ["planned", "built", "packaged", "uploading", "scheduled", "published", "failed", "vetoed"] as const;
 export type PlanSlotStatus = (typeof PLAN_SLOT_STATUSES)[number];
 
-/** What the uploads report for a slot (stages 2-3); null/absent: nothing yet. */
+/** BL-225 stage 2: the release package that names the slot (`yt-release-package/2` `slotId`), as the plan screen shows it. */
+export type PlanSlotPackage = {
+  /** The channel's video number (`V64`). */
+  video: string;
+  title: string;
+  durationSeconds: number;
+  /** The translation languages the package carries (whether YouTube would take them is the package's own problem list). */
+  languages: string[];
+  /** The AI flag the upload will carry: the package's own, else the channel's publishing setting. */
+  containsSyntheticMedia: boolean;
+  /** The default thumbnail relative to the workspace (served by the publishing thumbnail route), or null when it is missing. */
+  thumbnailPath: string | null;
+  /** How many test thumbnails the package keeps for Test & Compare in Studio (never uploaded). */
+  testThumbnails: number;
+  /** The package's problems (codes), empty when ready. */
+  problems: string[];
+};
+
+/** What the packages and uploads report for a slot (stages 2-3); null/absent: nothing yet. */
 export type PlanSlotProgress = {
   status: Exclude<PlanSlotStatus, "planned" | "vetoed">;
   /** The failure code with `failed` (e.g. `thumbnail_failed`). */
   code: string | null;
   videoId: string | null;
+  package?: PlanSlotPackage | null;
 };
 
 /** Why an agent's save was refused, one entry per problem (`validation_failed`, `details.refused`). */
@@ -74,6 +93,8 @@ export type PlanSlotView = PublishingPlanSlotContent & {
   /** With `failed`: the code (stage 3). */
   statusCode: string | null;
   videoId: string | null;
+  /** BL-225 stage 2: the package that names the slot, or null. */
+  package: PlanSlotPackage | null;
   /** The slot's time has passed (it can no longer be approved, vetoed or restored). */
   released: boolean;
   createdAt: string;

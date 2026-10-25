@@ -1429,6 +1429,12 @@ export const publishingUploads = sqliteTable(
      * approval screen -- always private and without a date. A row with it set also records that its manifest hash was tried once.
      */
     automatic: integer("automatic", { mode: "boolean" }).notNull().default(false),
+    /**
+     * Schema v110 (BL-225 stage 2, WEEKLY_PUBLISHING_PLAN.md, ADR 0051): the weekly-plan slot a `yt-release-package/2` names
+     * (`slotId`), copied when the row is queued; null for a v1 package or one without a slot. FO-REQ-0040 acceptance 4: each
+     * uploaded video maps to its slot.
+     */
+    slotId: text("slot_id"),
   },
   (table) => [index("publishing_uploads_status_idx").on(table.status, table.nextAttemptAt), index("publishing_uploads_channel_idx").on(table.channelId, table.createdAt)]
 );
@@ -5652,6 +5658,18 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         detail_json TEXT NOT NULL
       )`);
       await client.execute("CREATE INDEX IF NOT EXISTS channel_branding_events_channel_at_idx ON channel_branding_events (channel_id, at)");
+    },
+  },
+  {
+    version: 110,
+    description:
+      "publishing_uploads.slot_id -- BL-225 stage 2 (WEEKLY_PUBLISHING_PLAN.md, ADR 0051; FO-REQ-0040): the weekly-plan slot a yt-release-package/2 names, copied when the upload is queued. Additive, nullable (every existing row has none), device-local",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE publishing_uploads ADD COLUMN slot_id TEXT");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
     },
   },
 ];

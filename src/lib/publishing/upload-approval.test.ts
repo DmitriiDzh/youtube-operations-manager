@@ -233,3 +233,12 @@ test("channel tags for a package with tags: []: bound to what was shown, and ref
   await refusedWith(over.approval.approve({ channelId: "UC_t", userId: "u-owner", items: [item("V67")], shownSettings: huge }), "upload_tags_too_long");
   assert.equal(over.inserted.length, 0);
 });
+
+// BL-225 stage 2 (FO-REQ-0040 acceptance 4, ADR 0051): the slot a v2 package names is kept on its upload row; a v1 package has none.
+test("AC-WP-23: the upload row keeps the plan slot of a v2 package (null for v1)", async () => {
+  const v2 = scanned("V65");
+  v2.pkg = { ...v2.pkg!, schemaVersion: 2, slotId: "w44-mon" };
+  const h = harness([v2, scanned("V66")]);
+  await h.approval.approve({ channelId: "UC_t", userId: "u", items: [item("V65"), item("V66")], shownSettings: SETTINGS });
+  assert.deepEqual(h.inserted.map((row) => [row.video, row.slotId]), [["V65", "w44-mon"], ["V66", null]]);
+});

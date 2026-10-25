@@ -49,7 +49,8 @@ test("the request's example package is valid as it is", () => {
 });
 
 test("the manifest shape: another schema, a path leaving the folder, a missing field or an impossible date is refused", () => {
-  assert.deepEqual(parseReleasePackage({ ...MANIFEST, schema: "yt-release-package/2" }).problems, [{ code: "unknown_schema", params: { schema: "yt-release-package/2" } }]);
+  // BL-225 stage 2 (FO-REQ-0040 item 2, ADR 0051): /2 is now a known version (the requirement changed), so an unknown one is /3.
+  assert.deepEqual(parseReleasePackage({ ...MANIFEST, schema: "yt-release-package/3" }).problems, [{ code: "unknown_schema", params: { schema: "yt-release-package/3" } }]);
   assert.equal(parseReleasePackage(null).problems[0].code, "not_a_package");
   for (const [field, over] of [
     ["files.video", { files: { video: "../V65.mp4", thumbnail: "t.jpg" } }],

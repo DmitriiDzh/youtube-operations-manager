@@ -177,9 +177,8 @@ private, with its thumbnail, translations and AI flag, and only after a verified
 - **AC-WP-34** The translations never touch another language, the snippet text or the video's own language; Live writes off
   writes nothing.
 
-## Questions left for the owner
+## Owner's answers for stage 3 (Telegram msg 3537, 2026-10-25)
 
-- Stage 3: which computer uploads approved slots. Proposed: the one where the automatic-upload switch is on (ADR 0046 §8: one
-  computer only).
-- Stage 3: a slot re-approved with a new time after its video was scheduled -- move the date (one `videos.update`) or leave it to
-  the owner in Studio? Proposed: move it, read back.
+- The computer where the automatic-upload switch is on uploads approved slots (ADR 0046 §8: one computer only).
+- A slot re-approved with a new time after its video was scheduled: the app moves the video's date itself (one `videos.update`,
+  read back).

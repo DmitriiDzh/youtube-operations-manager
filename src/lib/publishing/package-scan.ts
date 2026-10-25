@@ -34,6 +34,8 @@ export type ScannedPackage = {
   title: string | null;
   plannedPublishDate: string | null;
   thumbnailPath: string | null;
+  /** BL-225 stage 2: a v2 package's test thumbnails found on disk (relative to the workspace), for the owner's Test & Compare. */
+  testThumbnailPaths?: string[];
   sizeBytes: number | null;
   durationSeconds: number | null;
   state: PackageState;
@@ -104,6 +106,7 @@ export function createPackageScan(deps: PackageScanDeps) {
       title: null,
       plannedPublishDate: null,
       thumbnailPath: null,
+      testThumbnailPaths: [],
       sizeBytes: null,
       durationSeconds: null,
       state: "not_ready",
@@ -127,6 +130,12 @@ export function createPackageScan(deps: PackageScanDeps) {
     const durationSeconds = typeof probed === "number" ? probed : null;
     const thumbnailFile = await deps.resolveFile(workspace, `${folder}/${pkg.files.thumbnail}`);
     const thumbnailKind = thumbnailFile ? imageKindOf(await deps.readHead(thumbnailFile.path, 8)) : null;
+    // BL-225 stage 2: every test thumbnail of a v2 package gets the default's checks (exists, JPEG/PNG by content, 2 MB).
+    const testThumbnails = [];
+    for (const test of (pkg.thumbnails ?? []).filter((t) => t.role === "test")) {
+      const file = await deps.resolveFile(workspace, `${folder}/${test.file}`);
+      testThumbnails.push({ file: test.file, exists: file !== null, sizeBytes: file?.bytes ?? null, kind: file ? imageKindOf(await deps.readHead(file.path, 8)) : null });
+    }
     const recordFile = await deps.resolveFile(workspace, `${folder}/${youtubeRecordFileName(pkg.video)}`);
     let record: { videoId: string } | null = null;
     if (recordFile) {
@@ -138,6 +147,7 @@ export function createPackageScan(deps: PackageScanDeps) {
       {
         video: { exists: videoFile !== null, sizeBytes: videoFile?.bytes ?? null, durationSeconds, probeFailed: videoFile !== null && probed === null, noProbe: probed === "no_ffprobe" },
         thumbnail: { exists: thumbnailFile !== null, sizeBytes: thumbnailFile?.bytes ?? null, kind: thumbnailKind },
+        testThumbnails,
         youtubeRecordExists: recordFile !== null,
         sameTitleVideoId: sameTitle?.videoId ?? null,
       },
@@ -151,6 +161,7 @@ export function createPackageScan(deps: PackageScanDeps) {
       title: pkg.title,
       plannedPublishDate: pkg.plannedPublishDate,
       thumbnailPath: thumbnailFile ? `${folder}/${pkg.files.thumbnail}` : null,
+      testThumbnailPaths: testThumbnails.filter((t) => t.exists).map((t) => `${folder}/${t.file}`),
       sizeBytes: pkg.sizeBytes,
       durationSeconds: pkg.durationSeconds,
       state: stateOf(record, uploaded, problems, deps.clock.now().getTime()),

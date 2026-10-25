@@ -9,6 +9,7 @@ import { useUserTimezone } from "./use-user-timezone";
 import {
   changedField,
   defaultWeek,
+  lengthLabel,
   pipelineOf,
   shiftWeek,
   slotsToApprove,
@@ -258,6 +259,7 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
               {shown.slots.map((slot, index) => (
                 <SlotRow
                   key={slot.slotId}
+                  channelId={channelId}
                   slot={slot}
                   number={index + 1}
                   plan={shown}
@@ -310,6 +312,7 @@ function Tile({ label, value }: { label: string; value: string }) {
 }
 
 function SlotRow(props: {
+  channelId: string;
   slot: PlanSlotDto;
   number: number;
   plan: PlanDto;
@@ -332,8 +335,21 @@ function SlotRow(props: {
   const pipeline = pipelineOf(slot);
   const busyHere = props.busy?.endsWith(`:${slot.slotId}`) ?? false;
   const anyBusy = props.busy !== null;
-  const title =
-    slot.note && slot.lengthHint
+  const pkg = slot.package;
+  const length = pkg ? lengthLabel(pkg.durationSeconds) : null;
+  // BL-225 stage 2: the package's facts, each its own text (never glued into a sentence).
+  const facts = pkg
+    ? [
+        t(length!.unit === "h" ? "weekPlan.package.hours" : "weekPlan.package.minutes", { value: length!.value }),
+        t("weekPlan.package.languages", { count: pkg.languages.length }),
+        ...(pkg.containsSyntheticMedia ? [t("weekPlan.package.ai")] : []),
+        ...(pkg.thumbnailPath ? [pkg.testThumbnails > 0 ? t("weekPlan.package.thumbnailTests", { count: pkg.testThumbnails }) : t("weekPlan.package.thumbnail")] : []),
+        ...(pkg.problems.length > 0 ? [t("weekPlan.package.problems", { count: pkg.problems.length })] : []),
+      ]
+    : [];
+  const title = pkg
+    ? t("weekPlan.package.title", { video: pkg.video, title: pkg.title })
+    : slot.note && slot.lengthHint
       ? t("weekPlan.slot.titleNoteLength", { n: props.number, note: slot.note, length: slot.lengthHint })
       : slot.note
         ? t("weekPlan.slot.titleNote", { n: props.number, note: slot.note })
@@ -375,9 +391,28 @@ function SlotRow(props: {
             {!sameClock(slot, props.ownerZone) && !slot.vetoed && <span className="ml-1 text-zinc-500">{t("weekPlan.ownerTime", { time: ownerLabel })}</span>}
           </div>
         </div>
-        <div className="hidden h-[54px] w-24 items-center justify-center rounded-md border border-dashed border-zinc-700 text-[10px] text-zinc-500 md:flex">{t("weekPlan.noThumbnail")}</div>
+        {pkg?.thumbnailPath ? (
+          // eslint-disable-next-line @next/next/no-img-element -- a local file served by the app's own route, not an optimisable asset
+          <img
+            src={`/api/channels/${encodeURIComponent(props.channelId)}/publishing/packages/thumbnail?path=${encodeURIComponent(pkg.thumbnailPath)}`}
+            alt={pkg.title}
+            className={`hidden h-[54px] w-24 rounded-md object-cover md:block ${slot.vetoed ? "opacity-50" : ""}`}
+          />
+        ) : (
+          <div className="hidden h-[54px] w-24 items-center justify-center rounded-md border border-dashed border-zinc-700 text-[10px] text-zinc-500 md:flex">{t("weekPlan.noThumbnail")}</div>
+        )}
         <div className="col-span-2 min-w-0 md:col-span-1">
           <div className={`truncate text-sm font-medium ${slot.vetoed ? "text-zinc-500" : "text-zinc-100"}`}>{title}</div>
+          {facts.length > 0 && (
+            <div className="flex flex-wrap gap-x-1.5 text-xs text-zinc-400">
+              {facts.map((fact, i) => (
+                <span key={i} className={pkg && i === facts.length - 1 && pkg.problems.length > 0 ? "text-amber-300" : undefined}>
+                  {i > 0 && <span aria-hidden className="mr-1.5 text-zinc-600">{t("weekPlan.metaSeparator")}</span>}
+                  {fact}
+                </span>
+              ))}
+            </div>
+          )}
           {meta.text && <div className={`truncate text-xs ${meta.tone}`}>{meta.text}</div>}
         </div>
         <div className="col-span-2 md:col-span-1" aria-label={t("weekPlan.pipelineLabel")}>

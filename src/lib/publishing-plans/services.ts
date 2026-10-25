@@ -3,7 +3,7 @@ import type { PublishingPlanDecision, PublishingPlanMeta, PublishingPlanSlot, Pu
 import { isValidIanaTimezone } from "@/lib/zoned-time";
 import { DomainError, PUBLISHING_PLAN_LIMITS, type PlanSaveRefusal, type PlanSummary, type PlanView, type PublishingPlanActor, type PublishingPlansPorts } from "./contracts";
 import { addDays, contentHashOf, contentOf, decisionStateOf, instantOf, isCalendarDate, isMonday, planViewOf } from "./model";
-import { getPlanInputSchema, listPlansInputSchema, ownerDecisionInputSchema, savePlanInputSchema } from "./schemas";
+import { getPlanInputSchema, listPlansInputSchema, ownerDecisionInputSchema, PLAN_LIST_DEFAULT_LIMIT, savePlanInputSchema } from "./schemas";
 
 // BL-225 (FO-REQ-0040 items 1, 5, 6; WEEKLY_PUBLISHING_PLAN.md stage 1 items 3-5; ADR 0051): what agents and the owner may do with a
 // plan. Agents (the Factory Operator, a channel's worker) save, get and list; the owner approves, revokes, vetoes and restores. The
@@ -169,9 +169,9 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
   }
 
   async function agentList(input: unknown): Promise<{ plans: PlanSummary[] }> {
-    const { channelId } = parseWithSchema(listPlansInputSchema, input, "publishing plans");
+    const { channelId, limit } = parseWithSchema(listPlansInputSchema, input, "publishing plans");
     await assertChannel(channelId);
-    return { plans: await list(channelId) };
+    return { plans: (await list(channelId)).slice(0, limit ?? PLAN_LIST_DEFAULT_LIMIT) };
   }
 
   /**

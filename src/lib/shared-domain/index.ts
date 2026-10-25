@@ -103,6 +103,9 @@ export type DomainErrorCode =
   | "package_file_invalid"
   | "package_no_video"
   | "package_no_thumbnail"
+  // BL-225 stage 2 (owner msg 3511 answer 4): the chosen thumbnail is over 2 MB, or is not a JPEG/PNG -- refused when the package is made.
+  | "package_thumbnail_too_large"
+  | "package_thumbnail_not_image"
   | "package_duration_unknown"
   | "package_no_baseline"
   | "package_title_empty"

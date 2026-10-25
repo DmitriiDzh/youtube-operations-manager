@@ -68,6 +68,14 @@ what is published?
 9. **Thumbnails stay at 2 MB** (msg 3511 answer 4), checked when a package is scanned and when the composer writes it -- the
    default and every test variant. Test variants are kept for Test & Compare in Studio and never uploaded (the API has none).
 
+10. **Owner's answers for stage 3 (msg 3537).** The computer with the automatic-upload switch on uploads approved slots; a slot
+   re-approved with a new time after its video was scheduled gets its date moved by the app (one `videos.update` of
+   `status.publishAt`, still private, read back).
+11. **Stage 2 additions.** The agents' list returns the newest 12 weeks by default (`limit` 1-52). Package v2 translations are kept
+   inline in the manifest (the Operator's `localizations/<lang>.json` files are not read). The plan's `progress` port is filled by
+   a composition module `src/lib/publishing-plan-progress/` (publishing's scan → slot statuses), so neither feature module imports
+   the other. In stage 2 the upload still sends the channel's AI flag; the package's own flag and translations are sent from stage 3.
+
 ## Consequences
 
 - A new sync family (19 in all) appears in Settings → «Слияние».

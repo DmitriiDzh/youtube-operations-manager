@@ -78,6 +78,8 @@ const DOMAIN_ERROR_STATUS = {
   package_file_invalid: 400,
   package_no_video: 400,
   package_no_thumbnail: 400,
+  package_thumbnail_too_large: 400,
+  package_thumbnail_not_image: 400,
   package_duration_unknown: 409,
   package_no_baseline: 409,
   package_title_empty: 400,

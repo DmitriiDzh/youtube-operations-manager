@@ -241,6 +241,8 @@ test("§2.5(3): the factory route and endpoint reach only the allowlisted module
     "@/lib/channel-branding",
     // BL-225 (WEEKLY_PUBLISHING_PLAN.md stage 1 item 5): the publishing-plans module's agents' surface (no decision).
     "@/lib/publishing-plans",
+    // BL-225 stage 2: the composition of the plan's progress from the publishing scan (no write).
+    "@/lib/publishing-plan-progress",
     // BL-184 (STORYBOARD_PLAN.md §2.6): the storyboards module for the factory_storyboard_* tools.
     "@/lib/storyboards",
     // BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.7): the shared jobs pool for factory_jobs_list (read-only).

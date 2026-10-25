@@ -254,3 +254,41 @@ test("AC-WP-14: list -- newest week first, with counts and state; the waiting co
   const empty = await h.service.save({ channelId: CH, weekStart: "2026-11-09", timeZone: "Asia/Tokyo" }, "factory");
   assert.equal(empty.plan.state, "empty");
 });
+
+// BL-225 stage 2: the agents' list is bounded -- the newest 12 weeks by default, `limit` 1-52; the owner's list (the screen) is not.
+test("AC-WP-14: the agents' list returns the newest weeks only (default 12, limit 1..52)", async () => {
+  const h = harness("2026-01-01T00:00:00Z");
+  let monday = "2026-01-05";
+  for (let i = 0; i < 14; i += 1) {
+    await h.service.save({ channelId: CH, weekStart: monday, timeZone: "Asia/Tokyo" }, "factory");
+    monday = new Date(Date.parse(`${monday}T00:00:00Z`) + 7 * 86_400_000).toISOString().slice(0, 10);
+  }
+  const all = await h.service.list({ channelId: CH });
+  assert.equal(all.plans.length, 12);
+  assert.equal(all.plans[0].weekStart, "2026-04-06"); // the 14th Monday from 5 January
+  assert.deepEqual((await h.service.list({ channelId: CH, limit: 2 })).plans.map((p) => p.weekStart), ["2026-04-06", "2026-03-30"]);
+  await assert.rejects(h.service.list({ channelId: CH, limit: 53 }), rejectsWith("validation_failed"));
+  assert.equal((await h.service.ownerList(CH)).plans.length, 14);
+});
+
+// BL-225 stage 2: the progress port's package reaches the slot view; a vetoed slot stays vetoed whatever its package says.
+test("AC-WP-23: the slot shows its package progress; vetoed wins", async () => {
+  const h = harness();
+  await h.service.save({ channelId: CH, weekStart: WEEK, timeZone: "Asia/Tokyo", slots: [tokyoSlot("s1", "2026-10-26", "18:00"), tokyoSlot("s2", "2026-10-27", "18:00")] }, "factory");
+  const pkg = { video: "V64", title: "T", durationSeconds: 10800, languages: ["ja"], containsSyntheticMedia: true, thumbnailPath: null, testThumbnails: 0, problems: [] };
+  const withProgress = createPublishingPlansService({
+    store: h.core,
+    isChannelConnected: async () => true,
+    deviceLabel: async () => "Mac",
+    now: () => new Date("2026-10-25T07:00:00Z"),
+    randomId: () => "x",
+    withLock: (fn) => fn(),
+    audit: async () => undefined,
+    progress: async () => new Map([["s1", { status: "packaged" as const, code: null, videoId: null, package: pkg }], ["s2", { status: "packaged" as const, code: null, videoId: null, package: pkg }]]),
+  });
+  await h.service.decide(CH, WEEK, { action: "veto", slots: [{ slotId: "s2" }] }, "u1");
+  const { plan } = await withProgress.get({ channelId: CH, weekStart: WEEK });
+  assert.equal(slotOf(plan, "s1").status, "packaged");
+  assert.deepEqual(slotOf(plan, "s1").package, pkg);
+  assert.equal(slotOf(plan, "s2").status, "vetoed");
+});

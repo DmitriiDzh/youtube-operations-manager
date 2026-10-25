@@ -19,6 +19,8 @@ export type PlanSlotDto = {
   status: PlanSlotStatus;
   statusCode: string | null;
   videoId: string | null;
+  /** BL-225 stage 2: the release package that names the slot. */
+  package: { video: string; title: string; durationSeconds: number; languages: string[]; containsSyntheticMedia: boolean; thumbnailPath: string | null; testThumbnails: number; problems: string[] } | null;
   released: boolean;
   updatedAt: string;
   updatedBy: "factory" | "worker";
@@ -125,4 +127,9 @@ export function changedField(slot: Pick<PlanSlotDto, "date" | "publishAt" | "len
   if ((previous.note ?? null) !== (slot.note ?? null)) return "note";
   if (previous.timeZone !== timeZone) return "zone";
   return null;
+}
+
+/** A package's length as the plan screen rounds it: whole hours from one hour, else whole minutes (at least 1). */
+export function lengthLabel(seconds: number): { unit: "h" | "min"; value: number } {
+  return seconds >= 3600 ? { unit: "h", value: Math.round(seconds / 3600) } : { unit: "min", value: Math.max(1, Math.round(seconds / 60)) };
 }

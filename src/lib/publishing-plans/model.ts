@@ -89,6 +89,7 @@ export function slotViewOf(args: {
     status: state.vetoed ? "vetoed" : (args.progress?.status ?? "planned"),
     statusCode: state.vetoed ? null : (args.progress?.code ?? null),
     videoId: args.progress?.videoId ?? null,
+    package: args.progress?.package ?? null,
     released: instant.getTime() <= now.getTime(),
     createdAt: slot.createdAt,
     updatedAt: slot.updatedAt,

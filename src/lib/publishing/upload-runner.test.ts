@@ -60,6 +60,7 @@ function job(over: Partial<StoredPublishingUpload> = {}): StoredPublishingUpload
     leaseUntil: null,
     // BL-209 (schema v103): every row now carries `automatic`; these jobs are the owner's approvals.
     automatic: false,
+    slotId: null,
     ...over,
   };
 }
