@@ -8,6 +8,7 @@
 // writes off pauses a job (never fails it); quota and the channel's upload cap pause it until they reset.
 
 import type { StoredPublishingUpload } from "@/lib/db";
+import { READ_BACK_RETRIES, READ_BACK_RETRY_DELAY_MS } from "@/lib/video-details/read-back";
 import type { PublishingSettings } from "./settings";
 
 /** The package as the owner approved it (frozen in `package_json`). Paths are relative to the channel workspace. */
@@ -45,6 +46,12 @@ export type UploadSteps = {
   thumbnail?: "set" | "failed";
   playlist?: "added" | "already_there" | "none" | "failed";
   verify?: { result: "verified" | "mismatch"; mismatches: string[] };
+  /**
+   * Read-backs that differed and were read again later (independent review: YouTube can lag right after processing). The date
+   * hangs on the read-back, so a difference is read again up to READ_BACK_RETRIES times, READ_BACK_RETRY_DELAY_MS apart (video-
+   * details' own constants), before it counts as a mismatch.
+   */
+  verifyRereads?: number;
   record?: "written" | "failed";
   /** BL-194 stage 3 (ADR 0041): `Vn_cost.json` next to the package, written with the record (never a reason to fail the upload). */
   cost?: "written" | "failed";
@@ -79,7 +86,7 @@ export type UploadRunnerDeps = {
   };
   reads: {
     /** `videos.list` status and processing of one video; null when YouTube does not return it. */
-    uploadState(credentials: unknown, videoId: string): Promise<{ uploadStatus: string | null; rejectionReason: string | null; failureReason: string | null; hasPaidProductPlacement?: boolean | null } | null>;
+    uploadState(credentials: unknown, videoId: string): Promise<{ uploadStatus: string | null; rejectionReason: string | null; failureReason: string | null; hasPaidProductPlacement?: boolean | null; hasCustomThumbnail?: boolean | null } | null>;
     /** The channel's newest uploads (first page of its uploads playlist, private ones included for its own user). */
     recentUploads(credentials: unknown, channelId: string): Promise<Array<{ videoId: string; title: string }>>;
     playlistHasVideo(credentials: unknown, playlistId: string, videoId: string): Promise<boolean>;
@@ -116,7 +123,8 @@ export type UploadRunnerDeps = {
 
 export type InsertResource = {
   snippet: { title: string; description: string; tags?: string[]; categoryId?: string; defaultLanguage?: string; defaultAudioLanguage?: string };
-  status: { privacyStatus: "private"; publishAt?: string; selfDeclaredMadeForKids: boolean; containsSyntheticMedia?: boolean; license?: "youtube" | "creativeCommon"; embeddable?: boolean };
+  /** Never a `publishAt` (owner msgs 3510/3511): the date is written last, after the read-back. */
+  status: { privacyStatus: "private"; selfDeclaredMadeForKids: boolean; containsSyntheticMedia?: boolean; license?: "youtube" | "creativeCommon"; embeddable?: boolean };
   paidProductPlacementDetails?: { hasPaidProductPlacement: boolean };
 };
 
@@ -130,6 +138,8 @@ export type VideoReadBack = {
   privacyStatus: string | null;
   publishAt: string | null;
   selfDeclaredMadeForKids: boolean | null;
+  /** YouTube accepts it but does not return it (G1): null is unverifiable, never a mismatch; a value that differs is one. */
+  containsSyntheticMedia?: boolean | null;
   license: string | null;
   embeddable: boolean | null;
 };
@@ -238,7 +248,11 @@ export function readBackMismatches(after: VideoReadBack, pkg: ApprovedPackage, s
   const published = publishAt !== null && Date.parse(publishAt) <= nowMs;
   if (after.privacyStatus !== "private" && !(published && after.privacyStatus === "public")) mismatches.push("privacyStatus");
   if (publishAt !== null && !published && !sameInstant(after.publishAt, publishAt)) mismatches.push("publishAt");
+  // Independent review: no date is expected yet (a new row before its date step, or an undated one) -- a video that already has
+  // one would be scheduled before it was verified.
+  if (publishAt === null && after.publishAt !== null && after.publishAt !== undefined) mismatches.push("publishAt");
   if (after.selfDeclaredMadeForKids !== settings.madeForKids) mismatches.push("madeForKids");
+  if (after.containsSyntheticMedia !== null && after.containsSyntheticMedia !== undefined && after.containsSyntheticMedia !== settings.containsSyntheticMedia) mismatches.push("containsSyntheticMedia");
   if (after.license !== settings.license) mismatches.push("license");
   if (after.embeddable !== settings.embeddable) mismatches.push("embeddable");
   return mismatches;
@@ -535,10 +549,18 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
         const publishAt = steps.publishAt === "at_insert" || steps.publishAt === "set" ? job.publishAt : null;
         const mismatches = readBackMismatches(after, pkg, settings, publishAt, now().getTime());
         // «Прямая реклама» is not in the snapshot; the upload state read shows it. Checked only when it was sent: YouTube must say
-        // true (not returned, or false, is a mismatch the owner sees).
-        if (settings.paidProductPlacement === true) {
+        // true (not returned, or false, is a mismatch the owner sees). The same read carries `contentDetails.hasCustomThumbnail`
+        // (independent review): after a set thumbnail, false is a mismatch; not returned (null) leaves thumbnails.set's 200 as the
+        // evidence. Read only when one of them is to be checked.
+        if (settings.paidProductPlacement === true || steps.thumbnail === "set") {
           const state = await deps.reads.uploadState(creds.credentials, videoId);
-          if (state?.hasPaidProductPlacement !== true) mismatches.push("paidProductPlacement");
+          if (settings.paidProductPlacement === true && state?.hasPaidProductPlacement !== true) mismatches.push("paidProductPlacement");
+          if (steps.thumbnail === "set" && state?.hasCustomThumbnail === false) mismatches.push("thumbnail");
+        }
+        if (mismatches.length > 0 && (steps.verifyRereads ?? 0) < READ_BACK_RETRIES) {
+          // Read again later, never decided on one read (independent review): the job waits, the step stays open.
+          const stepsJson = JSON.stringify({ ...steps, verifyRereads: (steps.verifyRereads ?? 0) + 1, retries: 0 });
+          return void (await deps.store.update(job.id, "finishing", { stepsJson, nextAttemptAt: new Date(now().getTime() + READ_BACK_RETRY_DELAY_MS), updatedAt: now() }));
         }
         steps.verify = { result: mismatches.length === 0 ? "verified" : "mismatch", mismatches };
         return void (await saveSteps(job, steps));
@@ -675,6 +697,12 @@ export function isCancellable(row: Pick<StoredPublishingUpload, "status" | "resu
     row.storedBytes < row.totalBytes &&
     !stepsOf(row).finalChunkSentAt
   );
+}
+
+/** Whether the upload's date is on the video (written, or in an old row's insert) -- not merely planned (independent review). */
+export function isPublishAtSet(row: Pick<StoredPublishingUpload, "stepsJson">): boolean {
+  const value = stepsOf(row).publishAt;
+  return value === "set" || value === "at_insert";
 }
 
 /** BL-209 review L5: an automatic upload whose video no longer matched its manifest's SHA-256 before a session started. */

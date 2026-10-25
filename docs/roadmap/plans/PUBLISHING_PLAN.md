@@ -228,7 +228,10 @@
      was ≥ 6 h ahead (owner msg 2717), else first after processing -- before the thumbnail. That could schedule a video whose
      thumbnail or upload later failed. Now the date is always last. Trade-off: every dated upload pays a `videos.update` and its
      reads (55 units in the estimate) that the date at insert saved. Rows whose session began before the change keep their
-     at-insert date (`publish_at_at_insert = 1`) and are finished without a second write.
+     at-insert date (`publish_at_at_insert = 1`) and are finished without a second write; known limitation: their date is not
+     cleared if a later step fails. The read-back is read again up to 3 times, 10 s apart, before a difference counts; it checks
+     AI use when YouTube returns it and `contentDetails.hasCustomThumbnail` (documented in the videos resource; false = mismatch,
+     not returned = `thumbnails.set`'s 200 is the evidence). `Vn_youtube.json` carries the date only once it is on the video.
    - Busy for idle shutdown. Live writes are checked before every gateway call; when they turn off, the job pauses and does not
      fail.
 6. **Never twice.**

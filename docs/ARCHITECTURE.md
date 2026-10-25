@@ -4176,7 +4176,7 @@ is already set everywhere), 2734 (one merge for the whole stage).
   (owner msgs 3510/3511, 2026-10-25, FO-REQ-0040 item 4: a video is never scheduled before its thumbnail is set and the upload is
   verified -- this replaced msg 2717's "at insert when at least 6 h ahead"). After processing, in order: `thumbnails.set` (new
   gateway primitive), `playlistItems.insert` unless the video is already in the playlist, a read-back against the approval
-  (`verify_mismatch` names the fields; AI use is not readable), then the publish time -- only when the thumbnail is set, the
+  (`verify_mismatch` names the fields), then the publish time -- only when the thumbnail is set, the
   playlist step did not fail and the read-back verified; otherwise it is withheld (`steps.publishAt = "withheld"`, a note names
   the failed step, the video stays private without a date). The date goes through video-details' own write (private, AI use
   explicit, backup, read-back, audit); the runner reads the video before it (a date already there from a write whose answer was
@@ -4185,7 +4185,20 @@ is already set everywhere), 2734 (one merge for the whole stage).
   workspace's real folder; `publishAt` only when it was set), an audit row, a channel sync. Trade-off: every dated upload now pays
   the `videos.update` and its reads (55 units in the estimate) that a date at insert saved. A row whose session began before this
   change with the date in its insert (`publish_at_at_insert = 1`, kept in the schema, always 0 for new rows) is finished as before:
-  `steps.publishAt = "at_insert"`, nothing written, the read-back checks the date.
+  `steps.publishAt = "at_insert"`, nothing written, the read-back checks the date. Known limitation: such a row's date is already
+  on the video, so a thumbnail, playlist or read-back failure does not clear it (no write takes a date off); the owner sees the
+  failure on the job. The gateway's insert type has no `publishAt` and refuses one (`beginResumableVideoUpload`); an old row
+  resumes its existing session and never re-sends the insert body, and an expired one starts a new session without a date.
+  The read-back (independent review): it is read again up to 3 times, 10 s apart (video-details' `READ_BACK_RETRIES` /
+  `READ_BACK_RETRY_DELAY_MS`, as a waiting step, `steps.verifyRereads`) before a difference counts -- YouTube can lag right after
+  processing, and «Прямая реклама» can come back empty at first; an unreadable video counts at once (after the usual retries). It
+  checks AI use (`containsSyntheticMedia`: null is not returned by YouTube and unverifiable, a different value is a mismatch), and
+  a date where none is expected yet (`publishAt`). The thumbnail: the upload-state read (same `videos.list`, part
+  `contentDetails`) gives `contentDetails.hasCustomThumbnail` ("Indicates whether the video uploader has provided a custom
+  thumbnail image for the video", YouTube Data API videos resource, uploader only); false is a `thumbnail` mismatch, not returned
+  leaves `thumbnails.set`'s 200 as the evidence. `Vn_youtube.json`: the first copy (when the video id arrives) has no date; the
+  record step runs after the date step and writes `publishAt` only when it is on the video (`set`/`at_insert`), else null. The
+  uploads list shows the date as «Публикация» only then, otherwise as planned and not set.
   Live writes off pauses a job and it resumes by itself; `quotaExceeded` (in any client's error shape: the upload's own, the read
   gateway's `youtube_quota_exceeded`, a gaxios 7 `response.data.error.errors[]`) pauses every queued upload until the quota day
   resets, `uploadLimitExceeded` that channel's for 24 h; a 5xx, 429, timeout, network failure or an answer that does not say

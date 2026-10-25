@@ -385,6 +385,7 @@ export const content = {
   "publishingUploads.result.publish_at_too_soon": "The date was not set: by the time the upload was checked it was too close. Set it in Details.",
   "publishingUploads.result.publish_at_withheld": "The date was not set: the video stays private without one. Set it in Details once this is fixed.",
   "publishingUploads.publishAt": "Goes public: {time} UTC",
+  "publishingUploads.publishAtPlanned": "Planned: {time} UTC — not set on the video",
   "publishingUploads.cancel": "Cancel",
   "publishingUploads.cancelFailed": "Could not cancel the upload.",
   "publishingUploads.failed.unknown_outcome": "Outcome unknown: the last chunk was sent, but YouTube never confirmed the upload ({reason}). Open Studio: if the video is there, do nothing — the package stays taken; if it is not, press \"No video — allow uploading again\".",

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { isCancellable } from "@/lib/publishing/upload-runner";
+import { isCancellable, isPublishAtSet } from "@/lib/publishing/upload-runner";
 import { formatDisplayDateTime, formatDisplayDateUtc } from "@/lib/shared-formatting";
 import { errorText, type UiTextKey } from "@/lib/ui-text";
 import { ConfirmDialog } from "./confirm-dialog";
@@ -40,13 +40,14 @@ const STATUS_STYLE: Record<UploadRow["status"], string> = {
   cancelled: "bg-zinc-800 text-zinc-500",
 };
 
-function PublishTime({ publishAt }: { publishAt: string }) {
+/** The date as on the video once it is set; as planned (not on the video yet) before that or when it was not set (review). */
+function PublishTime({ publishAt, set }: { publishAt: string; set: boolean }) {
   const t = useT();
   const time = publishAt.slice(11, 16);
   const hint = useUtcLocalHint(time, { on: new Date(publishAt) });
   return (
     <span>
-      {formatDisplayDateUtc(publishAt)} {t("publishingUploads.publishAt", { time })}
+      {formatDisplayDateUtc(publishAt)} {t(set ? "publishingUploads.publishAt" : "publishingUploads.publishAtPlanned", { time })}
       {hint && (
         <span className="ml-1 text-zinc-500" title={hint.title}>
           {hint.text}
@@ -162,7 +163,7 @@ export function PublishingUploads({ channelId, visible, refreshKey }: { channelI
               </span>
               {row.publishAt && (
                 <span className="text-zinc-400">
-                  <PublishTime publishAt={row.publishAt} />
+                  <PublishTime publishAt={row.publishAt} set={isPublishAtSet(row)} />
                 </span>
               )}
               {row.videoId && (

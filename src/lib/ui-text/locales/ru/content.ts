@@ -389,6 +389,7 @@ export const content: Record<keyof typeof en, string> = {
   "publishingUploads.result.publish_at_too_soon": "Дата не поставлена: к концу проверки загрузки время было уже слишком близко. Поставьте её в «Подробностях».",
   "publishingUploads.result.publish_at_withheld": "Дата не поставлена: видео остаётся приватным без даты. Поставьте её в «Подробностях», когда это исправлено.",
   "publishingUploads.publishAt": "Публикация: {time} UTC",
+  "publishingUploads.publishAtPlanned": "По плану: {time} UTC — на видео не поставлена",
   "publishingUploads.cancel": "Отменить",
   "publishingUploads.cancelFailed": "Не удалось отменить загрузку.",
   "publishingUploads.failed.unknown_outcome": "Исход неизвестен: последний кусок отправлен, но YouTube так и не подтвердил загрузку ({reason}). Откройте Studio: если видео там есть, ничего не делайте — пакет останется занятым; если видео нет, нажмите «Видео нет — разрешить загрузить снова».",

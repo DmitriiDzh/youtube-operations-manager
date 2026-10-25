@@ -920,11 +920,16 @@ export type VideoUploadState = {
   processingStatus: string | null;
   /** Studio's «Прямая реклама» (paidProductPlacementDetails); null = not returned. */
   hasPaidProductPlacement: boolean | null;
+  /**
+   * `contentDetails.hasCustomThumbnail` -- YouTube Data API videos resource: "Indicates whether the video uploader has provided a
+   * custom thumbnail image for the video" (visible to the uploader only); null = not returned. Same call, same 1 unit.
+   */
+  hasCustomThumbnail: boolean | null;
 };
 
-/** `videos.list part=snippet,status,processingDetails` for one video; null when YouTube does not return it (deleted, or not ours). */
+/** `videos.list part=snippet,status,processingDetails,paidProductPlacementDetails,contentDetails` for one video; null when YouTube does not return it (deleted, or not ours). */
 export async function getVideoUploadState(youtube: youtube_v3.Youtube, videoId: string): Promise<VideoUploadState | null> {
-  const res = await youtube.videos.list({ part: ["snippet", "status", "processingDetails", "paidProductPlacementDetails"], id: [videoId] });
+  const res = await youtube.videos.list({ part: ["snippet", "status", "processingDetails", "paidProductPlacementDetails", "contentDetails"], id: [videoId] });
   const item = res.data.items?.[0];
   if (!item) return null;
   return {
@@ -940,6 +945,7 @@ export async function getVideoUploadState(youtube: youtube_v3.Youtube, videoId: 
     containsSyntheticMedia: item.status?.containsSyntheticMedia ?? null,
     processingStatus: item.processingDetails?.processingStatus ?? null,
     hasPaidProductPlacement: item.paidProductPlacementDetails?.hasPaidProductPlacement ?? null,
+    hasCustomThumbnail: item.contentDetails?.hasCustomThumbnail ?? null,
   };
 }
 
