@@ -4137,7 +4137,7 @@ Plan: `docs/roadmap/plans/PUBLISHING_PLAN.md`. Owner: msgs 2698, 2702 and 2707.
 
 ### 47.3 Stage 2 — publishing defaults, release packages, upload and schedule
 
-Owner msgs 2715 (defaults chosen once), 2717 (scheduled at insert), 2725/2727 (UTC publish time, BL-183), 2725 (no AI-use fix: it
+Owner msgs 2715 (defaults chosen once), 2717 (scheduled at insert; superseded by msgs 3510/3511, see the upload runner), 2725/2727 (UTC publish time, BL-183), 2725 (no AI-use fix: it
 is already set everywhere), 2734 (one merge for the whole stage).
 
 - **Publishing defaults per channel** (`publishing/settings.ts`; sync family `channel-publishing-settings`, one Automerge document
@@ -4172,11 +4172,33 @@ is already set everywhere), 2734 (one merge for the whole stage).
   per pass for the uploads already sent. The approver's Google user and `assertWriteChannel` before the first byte; the files must
   still match the approval. The session URI is stored before the first byte; a resumed upload asks the session how much it holds; a
   lost answer is resolved by a status query (done → the video is adopted); an expired session restarts only when no video with the
-  title is among the channel's newest uploads (found → adopted). `publishAt` goes in at insert when it is at least 6 h ahead,
-  otherwise after processing through video-details' own write (private, AI use explicit, backup, read-back, audit); 15 minutes or
-  less is not written (`publish_at_too_soon` on the job). Then `thumbnails.set` (new gateway primitive), `playlistItems.insert` unless
-  the video is already in the playlist, a read-back against the approval (`verify_mismatch` names the fields; AI use is not
-  readable), `Vn_youtube.json` next to the package (atomic, inside the workspace's real folder), an audit row, a channel sync.
+  title is among the channel's newest uploads (found → adopted). The insert is always private and never carries `publishAt`
+  (owner msgs 3510/3511, 2026-10-25, FO-REQ-0040 item 4: a video is never scheduled before its thumbnail is set and the upload is
+  verified -- this replaced msg 2717's "at insert when at least 6 h ahead"). After processing, in order: `thumbnails.set` (new
+  gateway primitive), `playlistItems.insert` unless the video is already in the playlist, a read-back against the approval
+  (`verify_mismatch` names the fields), then the publish time -- only when the thumbnail is set, the
+  playlist step did not fail and the read-back verified; otherwise it is withheld (`steps.publishAt = "withheld"`, a note names
+  the failed step, the video stays private without a date). The date goes through video-details' own write (private, AI use
+  explicit, backup, read-back, audit); the runner reads the video before it (a date already there from a write whose answer was
+  lost is not written again) and after it (private with exactly that time, or the step is `failed`). 15 minutes or less ahead at
+  that point is not written (`publish_at_too_soon` on the job). Then `Vn_youtube.json` next to the package (atomic, inside the
+  workspace's real folder; `publishAt` only when it was set), an audit row, a channel sync. Trade-off: every dated upload now pays
+  the `videos.update` and its reads (55 units in the estimate) that a date at insert saved. A row whose session began before this
+  change with the date in its insert (`publish_at_at_insert = 1`, kept in the schema, always 0 for new rows) is finished as before:
+  `steps.publishAt = "at_insert"`, nothing written, the read-back checks the date. Known limitation: such a row's date is already
+  on the video, so a thumbnail, playlist or read-back failure does not clear it (no write takes a date off); the owner sees the
+  failure on the job. The gateway's insert type has no `publishAt` and refuses one (`beginResumableVideoUpload`); an old row
+  resumes its existing session and never re-sends the insert body, and an expired one starts a new session without a date.
+  The read-back (independent review): it is read again up to 3 times, 10 s apart (video-details' `READ_BACK_RETRIES` /
+  `READ_BACK_RETRY_DELAY_MS`, as a waiting step, `steps.verifyRereads`) before a difference counts -- YouTube can lag right after
+  processing, and «Прямая реклама» can come back empty at first; an unreadable video counts at once (after the usual retries). It
+  checks AI use (`containsSyntheticMedia`: null is not returned by YouTube and unverifiable, a different value is a mismatch), and
+  a date where none is expected yet (`publishAt`). The thumbnail: the upload-state read (same `videos.list`, part
+  `contentDetails`) gives `contentDetails.hasCustomThumbnail` ("Indicates whether the video uploader has provided a custom
+  thumbnail image for the video", YouTube Data API videos resource, uploader only); false is a `thumbnail` mismatch, not returned
+  leaves `thumbnails.set`'s 200 as the evidence. `Vn_youtube.json`: the first copy (when the video id arrives) has no date; the
+  record step runs after the date step and writes `publishAt` only when it is on the video (`set`/`at_insert`), else null. The
+  uploads list shows the date as «Публикация» only then, otherwise as planned and not set.
   Live writes off pauses a job and it resumes by itself; `quotaExceeded` (in any client's error shape: the upload's own, the read
   gateway's `youtube_quota_exceeded`, a gaxios 7 `response.data.error.errors[]`) pauses every queued upload until the quota day
   resets, `uploadLimitExceeded` that channel's for 24 h; a 5xx, 429, timeout, network failure or an answer that does not say
@@ -4188,7 +4210,7 @@ is already set everywhere), 2734 (one merge for the whole stage).
   before any file check. As soon as YouTube gives the video id, a first `Vn_youtube.json` names it. A row whose video exists keeps
   its package taken whatever became of the job: the unique index covers it, the approval and the per-device report count it
   (`holdsPackage`). A lease (`lease_owner`, `lease_until`, 2 minutes per pass) keeps a second process on the same database (a dev
-  server) away from a row. A publish time set at insert that comes within 15 minutes before the last chunk (a long pause) stops
+  server) away from a row. A publish time set at insert (only such an old row) that comes within 15 minutes before the last chunk (a long pause) stops
   the upload before that chunk (`publish_at_passed`, nothing made). Processing waits at most 24 h, and a video YouTube no longer
   returns for 30 minutes ends it as `video_missing`. The writes after the upload check the channel first, like the upload.
   Descriptions are sent and compared with LF line endings. The approval counts the uploads already queued here against the day's

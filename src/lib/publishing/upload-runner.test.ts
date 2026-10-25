@@ -3,10 +3,11 @@ import test from "node:test";
 import type { StoredPublishingUpload } from "@/lib/db";
 import { DomainError } from "@/lib/shared-domain";
 import { DEFAULT_PUBLISHING_SETTINGS, type PublishingSettings } from "./settings";
-import { classifyUploadError, createUploadRunner, holdsPackage, isCancellable, readBackMismatches, type ApprovedPackage, type InsertResource, type UploadRunnerDeps, type VideoReadBack } from "./upload-runner";
+import { classifyUploadError, createUploadRunner, holdsPackage, isCancellable, isPublishAtSet, readBackMismatches, type ApprovedPackage, type InsertResource, type UploadRunnerDeps, type VideoReadBack } from "./upload-runner";
 
 // BL-182 stage 2 -- the upload runner against fakes (no real YouTube call, DEVELOPMENT_PLAYBOOK §6.11). Requirements: the
-// acceptance list in upload-runner.acceptance.test.ts (FO-REQ-0023 §4 B5–B7 and §5; ADR 0037; owner msgs 2717, 2725/2727) and
+// acceptance list in upload-runner.acceptance.test.ts (FO-REQ-0023 §4 B5–B7 and §5; ADR 0037; owner msgs 2725/2727; owner msgs
+// 3510/3511 = FO-REQ-0040 item 4, the publish time last, which replaces msg 2717's "scheduled at insert") and
 // the YouTube resumable-upload protocol: a session holds the bytes it got (308 + Range), `bytes */total` asks where it stands, a
 // 404 means the session expired, and the video exists only once the last byte is in. Expected values are worked out by hand.
 
@@ -66,7 +67,8 @@ function job(over: Partial<StoredPublishingUpload> = {}): StoredPublishingUpload
 /** A resumable-upload server: it keeps the bytes it got; a scripted fault can lose an answer after the bytes arrived. */
 function fakeYoutube() {
   const sessions = new Map<string, { bytes: number; resource: InsertResource; expired: boolean; videoId: string | null }>();
-  const videos: Array<{ videoId: string; title: string; resource: InsertResource }> = [];
+  /** `publishAtAtInsert`: a video from before owner msgs 3510/3511 whose old insert carried the date (the insert type has none now). */
+  const videos: Array<{ videoId: string; title: string; resource: InsertResource; publishAtAtInsert?: string }> = [];
   const log: string[] = [];
   let faults: Array<"lose_answer" | "network_before" | "expire" | "live_writes_off" | "quota" | "upload_limit"> = [];
   let liveWrites = true;
@@ -134,6 +136,8 @@ function harness(rows: StoredPublishingUpload[], over: Partial<UploadRunnerDeps>
   const clock = { at: NOW };
   const records: Array<{ path: string; record: Record<string, unknown> }> = [];
   const publishAtWrites: string[] = [];
+  /** Every call after the upload that the order requirement is about: thumbnail, playlist item, read, publish-time write. */
+  const order: string[] = [];
   let paidPromotionDropped = false;
   let processing: string = "processed";
   let readBack: Partial<VideoReadBack> = {};
@@ -157,7 +161,17 @@ function harness(rows: StoredPublishingUpload[], over: Partial<UploadRunnerDeps>
     assertWriteChannel: async () => undefined,
     accessToken: async () => "access",
     liveWritesEnabled: async () => yt.liveWrites(),
-    gateway: yt.gateway,
+    gateway: {
+      ...yt.gateway,
+      setThumbnail: async (c, videoId, image) => {
+        order.push("thumbnail");
+        return yt.gateway.setThumbnail(c, videoId, image);
+      },
+      addToPlaylist: async (c, videoId, playlistId) => {
+        order.push("playlist");
+        return yt.gateway.addToPlaylist(c, videoId, playlistId);
+      },
+    },
     reads: {
       // «Прямая реклама» as YouTube keeps it: what the insert sent, unless a test says YouTube dropped it.
       uploadState: async () => ({
@@ -169,6 +183,7 @@ function harness(rows: StoredPublishingUpload[], over: Partial<UploadRunnerDeps>
       recentUploads: async () => yt.videos.map((v) => ({ videoId: v.videoId, title: v.title })),
       playlistHasVideo: async () => false,
       snapshot: async ({ videoId }) => {
+        order.push("read");
         const video = yt.videos.find((v) => v.videoId === videoId)!;
         return {
           title: video.resource.snippet.title,
@@ -178,7 +193,7 @@ function harness(rows: StoredPublishingUpload[], over: Partial<UploadRunnerDeps>
           defaultLanguage: video.resource.snippet.defaultLanguage ?? null,
           defaultAudioLanguage: video.resource.snippet.defaultAudioLanguage ?? null,
           privacyStatus: "private",
-          publishAt: video.resource.status.publishAt?.replace(".000Z", "Z") ?? publishAtWrites.at(-1) ?? null,
+          publishAt: video.publishAtAtInsert?.replace(".000Z", "Z") ?? publishAtWrites.at(-1) ?? null,
           selfDeclaredMadeForKids: video.resource.status.selfDeclaredMadeForKids,
           license: video.resource.status.license ?? null,
           embeddable: video.resource.status.embeddable ?? null,
@@ -189,6 +204,7 @@ function harness(rows: StoredPublishingUpload[], over: Partial<UploadRunnerDeps>
     setPublishAt: async ({ publishAt, containsSyntheticMedia }) => {
       assert.equal(containsSyntheticMedia, true, "the status write sends AI use explicitly");
       publishAtWrites.push(publishAt);
+      order.push(`publishAt ${publishAt}`);
     },
     files: {
       resolve: async (_c, relativePath) => ({ path: `/ws/${relativePath}`, bytes: relativePath.endsWith(".mp4") ? 10 : 100 }),
@@ -216,18 +232,22 @@ function harness(rows: StoredPublishingUpload[], over: Partial<UploadRunnerDeps>
       if ([...store.values()].every((r) => !["queued", "uploading", "processing", "finishing"].includes(r.status))) return;
     }
   }
-  return { yt, store, row, runner, deps, clock, records, publishAtWrites, runAll, setProcessing: (s: string) => (processing = s), setReadBack: (r: Partial<VideoReadBack>) => (readBack = r), dropPaidPromotion: () => (paidPromotionDropped = true) };
+  return { yt, store, row, runner, deps, clock, records, publishAtWrites, order, runAll, setProcessing: (s: string) => (processing = s), setReadBack: (r: Partial<VideoReadBack>) => (readBack = r), dropPaidPromotion: () => (paidPromotionDropped = true) };
 }
 
-test("the whole way: one session, the bytes in order, processing, then thumbnail, playlist, read-back, record, sync -- done", async () => {
+test("AC-UP-02d, the whole way: one session, the bytes in order, processing, then thumbnail, playlist, read-back, publish time, record, sync -- done", async () => {
   const h = harness([job()]);
   await h.runAll();
   assert.equal(h.row().status, "done");
   assert.equal(h.row().errorCode, null);
   assert.equal(h.yt.videos.length, 1);
   assert.deepEqual(h.yt.log, ["begin https://www.googleapis.com/upload/youtube/v3/videos?s=1", "put 0-3", "put 4-7", "put 8-9", "thumbnail vid1", "playlist PL_jazz vid1"]);
+  // Owner msgs 3510/3511 (FO-REQ-0040 item 4): insert without a date; thumbnail, playlist, read-back; only then the date, and the
+  // date read back on its own. (Before, msg 2717 put a date 6 h or more ahead into the insert -- superseded, so "at_insert" is gone.)
+  assert.equal("publishAt" in h.yt.videos[0].resource.status, false, "the insert never carries the date");
+  assert.deepEqual(h.order, ["thumbnail", "playlist", "read", "read", "publishAt 2026-10-24T12:00:00.000Z", "read"]);
   const steps = JSON.parse(h.row().stepsJson);
-  assert.deepEqual([steps.publishAt, steps.thumbnail, steps.playlist, steps.verify.result, steps.record, steps.sync], ["at_insert", "set", "added", "verified", "written", "synced"]);
+  assert.deepEqual([steps.thumbnail, steps.playlist, steps.verify.result, steps.publishAt, steps.record, steps.sync], ["set", "added", "verified", "set", "written", "synced"]);
   // Review B1: the record names the video as soon as YouTube gives its id, then the record step writes it in full.
   assert.deepEqual(h.records.map((r) => r.path), ["04 Videos/10 October/1024 V65/V65_youtube.json", "04 Videos/10 October/1024 V65/V65_youtube.json"]);
   assert.deepEqual([h.records[0].record.videoId, h.records[0].record.result], ["vid1", "uploaded"]);
@@ -235,20 +255,22 @@ test("the whole way: one session, the bytes in order, processing, then thumbnail
   assert.equal(h.records[1].record.uploadedAt, h.records[0].record.uploadedAt, "the upload's own time, not the record step's");
 });
 
-test("AC-UP-02b, AC-UP-02c: at least 6 h ahead -> publishAt at insert; nearer -> after processing through video-details; no date -> never", async () => {
+test("AC-UP-02b, AC-UP-02c: any date -> never at insert, written last through video-details; no date -> never", async () => {
+  // Owner msgs 3510/3511 replace msg 2717: 11 days ahead used to go into the insert; now it is written after the read-back too.
   const far = harness([job()]);
   await far.runAll();
-  assert.equal(far.yt.videos[0].resource.status.publishAt, "2026-10-24T12:00:00.000Z");
-  assert.deepEqual(far.publishAtWrites, []);
-  // 5 h 59 min ahead: not at insert; set after processing (still well over 15 minutes ahead then).
+  assert.equal("publishAt" in far.yt.videos[0].resource.status, false);
+  assert.deepEqual(far.publishAtWrites, ["2026-10-24T12:00:00.000Z"]);
+  assert.equal(JSON.parse(far.row().stepsJson).publishAt, "set");
+  // 5 h 59 min ahead: the same (still well over 15 minutes ahead when it is written).
   const near = harness([job({ publishAt: "2026-10-13T17:59:00.000Z" })]);
   await near.runAll();
-  assert.equal(near.yt.videos[0].resource.status.publishAt, undefined);
+  assert.equal("publishAt" in near.yt.videos[0].resource.status, false);
   assert.deepEqual(near.publishAtWrites, ["2026-10-13T17:59:00.000Z"]);
   assert.equal(JSON.parse(near.row().stepsJson).publishAt, "set");
   const none = harness([job({ publishAt: null })]);
   await none.runAll();
-  assert.equal(none.yt.videos[0].resource.status.publishAt, undefined);
+  assert.equal("publishAt" in none.yt.videos[0].resource.status, false);
   assert.deepEqual(none.publishAtWrites, []);
   assert.equal(none.row().status, "done");
   assert.equal(JSON.parse(none.row().stepsJson).publishAt, undefined);
@@ -257,7 +279,7 @@ test("AC-UP-02b, AC-UP-02c: at least 6 h ahead -> publishAt at insert; nearer ->
 test("AC-UP-02b: a date that comes within 15 minutes before processing ends is not written; the job says so", async () => {
   const h = harness([job({ publishAt: "2026-10-13T12:20:00.000Z" })]);
   h.setProcessing("uploaded");
-  await h.runner.tick(); // sent at 12:00: 20 min ahead, so not at insert; processing has not finished
+  await h.runner.tick(); // sent at 12:00: 20 min ahead; processing has not finished
   h.clock.at = new Date("2026-10-13T12:06:00Z"); // processing ends with 14 minutes left
   h.setProcessing("processed");
   await h.runAll();
@@ -271,7 +293,8 @@ test("the insert carries the package and the channel defaults: private, AI use, 
   await h.runAll();
   const { snippet, status } = h.yt.videos[0].resource;
   assert.deepEqual(snippet, { title: PKG.title, description: PKG.description, tags: ["jazz"], categoryId: "10", defaultLanguage: "en", defaultAudioLanguage: "en" });
-  assert.deepEqual(status, { privacyStatus: "private", publishAt: "2026-10-24T12:00:00.000Z", selfDeclaredMadeForKids: false, containsSyntheticMedia: true, license: "youtube", embeddable: true });
+  // No publishAt: owner msgs 3510/3511 (the date is written last, never at insert).
+  assert.deepEqual(status, { privacyStatus: "private", selfDeclaredMadeForKids: false, containsSyntheticMedia: true, license: "youtube", embeddable: true });
 });
 
 test("AC-UP-05: a cut connection mid-upload resumes from what the session holds -- same session, no byte twice, one video", async () => {
@@ -388,12 +411,130 @@ test("AC-UP-03 and approval binding: a wrong channel or a package changed on dis
 
 test("AC-UP-11: a restart in the middle of the steps continues at the step -- no second thumbnail, no second playlist item", async () => {
   const h = harness([job({ status: "finishing", videoId: "vid1", publishAtAtInsert: true, stepsJson: JSON.stringify({ publishAt: "at_insert", thumbnail: "set" }) })]);
-  h.yt.videos.push({ videoId: "vid1", title: PKG.title, resource: { snippet: { title: PKG.title, description: PKG.description, tags: ["jazz"], categoryId: "10", defaultLanguage: "en", defaultAudioLanguage: "en" }, status: { privacyStatus: "private", publishAt: "2026-10-24T12:00:00.000Z", selfDeclaredMadeForKids: false, license: "youtube", embeddable: true } } });
+  h.yt.videos.push({ videoId: "vid1", title: PKG.title, resource: { snippet: { title: PKG.title, description: PKG.description, tags: ["jazz"], categoryId: "10", defaultLanguage: "en", defaultAudioLanguage: "en" }, status: { privacyStatus: "private", selfDeclaredMadeForKids: false, license: "youtube", embeddable: true } }, publishAtAtInsert: "2026-10-24T12:00:00.000Z" });
   const restarted = createUploadRunner({ ...h.deps, reads: { ...h.deps.reads, playlistHasVideo: async () => true } });
   for (let i = 0; i < 6; i += 1) await restarted.tick();
   assert.equal(h.row().status, "done");
   assert.deepEqual(h.yt.log, [], "neither the thumbnail nor the playlist item is written again");
   assert.equal(JSON.parse(h.row().stepsJson).playlist, "already_there");
+  // A row from before owner msgs 3510/3511 whose date went in with the insert: kept as at_insert, never written again.
+  assert.deepEqual(h.publishAtWrites, []);
+});
+
+// Owner msgs 3510/3511 (2026-10-25, FO-REQ-0040 item 4): a video is never scheduled before its thumbnail is set and the upload is
+// verified. Order: insert private without a date -> thumbnail and playlist -> read-back -> only then the date. A failed step before
+// the date leaves the video private and unscheduled, with that step's error on the upload. Expected values by hand from that order.
+const VID1_UPLOADED = { videoId: "vid1", title: PKG.title, resource: { snippet: { title: PKG.title, description: PKG.description, tags: ["jazz"], categoryId: "10", defaultLanguage: "en", defaultAudioLanguage: "en" }, status: { privacyStatus: "private" as const, selfDeclaredMadeForKids: false, license: "youtube" as const, embeddable: true } } };
+
+test("AC-UP-02d: a row whose session began before the change with the date in its insert finishes as at_insert -- no second write, the read-back checks the date", async () => {
+  const h = harness([job({ status: "finishing", videoId: "vid1", publishAtAtInsert: true, stepsJson: JSON.stringify({ uploadedAt: NOW.toISOString() }) })]);
+  h.yt.videos.push({ ...VID1_UPLOADED, publishAtAtInsert: "2026-10-24T12:00:00.000Z" });
+  const runner = createUploadRunner(h.deps);
+  for (let i = 0; i < 10 && h.row().status !== "done"; i += 1) await runner.tick();
+  const steps = JSON.parse(h.row().stepsJson);
+  assert.deepEqual([h.row().status, h.row().errorCode, steps.publishAt, steps.thumbnail, steps.verify.result], ["done", null, "at_insert", "set", "verified"]);
+  assert.deepEqual(h.publishAtWrites, []);
+  assert.equal(h.records.at(-1)?.record.publishAt, "2026-10-24T12:00:00.000Z");
+});
+
+test("AC-UP-02d: a thumbnail YouTube refuses -> no publish time is written; the video stays private without a date and the job says why", async () => {
+  const h = harness([job()]);
+  h.deps.gateway.setThumbnail = async () => Promise.reject(new DomainError({ code: "update_failed", message: "invalid image", details: { status: 400, reason: "invalidImage" } }));
+  const runner = createUploadRunner(h.deps);
+  for (let i = 0; i < 20 && h.row().status !== "done"; i += 1) {
+    await runner.tick();
+    h.clock.at = new Date(h.clock.at.getTime() + 31_000);
+  }
+  const steps = JSON.parse(h.row().stepsJson);
+  assert.deepEqual([h.row().status, h.row().errorCode, steps.thumbnail, steps.publishAt], ["done", "step_failed", "failed", "withheld"]);
+  assert.deepEqual(h.publishAtWrites, [], "never scheduled");
+  assert.equal(h.order.some((o) => o.startsWith("publishAt")), false);
+  assert.ok(steps.notes.some((n: string) => n.startsWith("thumbnail:")), "the thumbnail's own error is on the upload");
+  assert.ok(steps.notes.some((n: string) => n.includes("publish time not set (thumbnail failed)")));
+  assert.equal(h.records.at(-1)?.record.publishAt, null, "the record says no date");
+});
+
+test("AC-UP-02d: a missing thumbnail file or a failed playlist item -> no publish time is written", async () => {
+  const noFile = harness([job()]);
+  const resolve = noFile.deps.files.resolve;
+  noFile.deps.files.resolve = async (c, rel) => (rel === PKG.thumbnailFile ? null : resolve(c, rel));
+  await createUploadRunner(noFile.deps).tick();
+  for (let i = 0; i < 20 && noFile.row().status !== "done"; i += 1) {
+    noFile.clock.at = new Date(noFile.clock.at.getTime() + 31_000);
+    await createUploadRunner(noFile.deps).tick();
+  }
+  assert.deepEqual([noFile.row().status, JSON.parse(noFile.row().stepsJson).publishAt], ["done", "withheld"]);
+  assert.deepEqual(noFile.publishAtWrites, []);
+
+  const playlist = harness([job()]);
+  playlist.deps.gateway.addToPlaylist = async () => Promise.reject(new DomainError({ code: "update_failed", message: "forbidden", details: { status: 403, reason: "playlistForbidden" } }));
+  const runner = createUploadRunner(playlist.deps);
+  for (let i = 0; i < 20 && playlist.row().status !== "done"; i += 1) {
+    await runner.tick();
+    playlist.clock.at = new Date(playlist.clock.at.getTime() + 31_000);
+  }
+  const steps = JSON.parse(playlist.row().stepsJson);
+  assert.deepEqual([playlist.row().errorCode, steps.thumbnail, steps.playlist, steps.publishAt], ["step_failed", "set", "failed", "withheld"]);
+  assert.deepEqual(playlist.publishAtWrites, []);
+});
+
+test("AC-UP-02d: a read-back that differs -> no publish time is written; verify_mismatch names the fields", async () => {
+  const h = harness([job()]);
+  h.setReadBack({ title: "Cuban Jazz at Sunset" });
+  await h.runAll();
+  const steps = JSON.parse(h.row().stepsJson);
+  assert.deepEqual([h.row().status, h.row().errorCode, steps.verify.mismatches, steps.publishAt], ["done", "verify_mismatch", ["title"], "withheld"]);
+  assert.deepEqual(h.publishAtWrites, []);
+  // A read-back that cannot be read at all counts the same: nothing is scheduled on an unverified upload.
+  const unreadable = harness([job()]);
+  unreadable.deps.reads = { ...unreadable.deps.reads, snapshot: async () => Promise.reject(Object.assign(new Error("timeout"), { code: "TimeoutError" })) };
+  const runner = createUploadRunner(unreadable.deps);
+  for (let i = 0; i < 60 && unreadable.row().status !== "done"; i += 1) {
+    await runner.tick();
+    unreadable.clock.at = new Date(unreadable.clock.at.getTime() + 11 * 60_000);
+  }
+  assert.deepEqual([unreadable.row().errorCode, JSON.parse(unreadable.row().stepsJson).publishAt], ["verify_mismatch", "withheld"]);
+  assert.deepEqual(unreadable.publishAtWrites, []);
+});
+
+test("AC-UP-02d, AC-UP-11: a job resumed after its thumbnail -> no second thumbnail, the date written exactly once, after the read-back", async () => {
+  const h = harness([job({ status: "finishing", videoId: "vid1", stepsJson: JSON.stringify({ uploadedAt: NOW.toISOString(), thumbnail: "set" }) })]);
+  h.yt.videos.push(VID1_UPLOADED);
+  const restarted = createUploadRunner(h.deps);
+  for (let i = 0; i < 10 && h.row().status !== "done"; i += 1) await restarted.tick();
+  assert.equal(h.row().status, "done");
+  assert.deepEqual(h.order, ["playlist", "read", "read", "publishAt 2026-10-24T12:00:00.000Z", "read"]);
+  assert.deepEqual(h.publishAtWrites, ["2026-10-24T12:00:00.000Z"]);
+  assert.equal(JSON.parse(h.row().stepsJson).publishAt, "set");
+});
+
+test("AC-UP-02d: the date write's answer is lost but the date is there -> it is not written again; a date that does not read back fails the step", async () => {
+  const lost = harness([job({ status: "finishing", videoId: "vid1", stepsJson: JSON.stringify({ uploadedAt: NOW.toISOString(), thumbnail: "set", playlist: "added" }) })]);
+  lost.yt.videos.push(VID1_UPLOADED);
+  const write = lost.deps.setPublishAt;
+  let lose = true;
+  lost.deps.setPublishAt = async (args) => {
+    await write(args);
+    if (lose) {
+      lose = false;
+      throw Object.assign(new Error("read ETIMEDOUT"), { code: "ETIMEDOUT" });
+    }
+  };
+  const runner = createUploadRunner(lost.deps);
+  for (let i = 0; i < 10 && lost.row().status !== "done"; i += 1) {
+    await runner.tick();
+    lost.clock.at = new Date(lost.clock.at.getTime() + 31_000);
+  }
+  assert.deepEqual([lost.row().status, lost.row().errorCode, JSON.parse(lost.row().stepsJson).publishAt], ["done", null, "set"]);
+  assert.deepEqual(lost.publishAtWrites, ["2026-10-24T12:00:00.000Z"], "written once");
+
+  const ignored = harness([job({ status: "finishing", videoId: "vid1", stepsJson: JSON.stringify({ uploadedAt: NOW.toISOString(), thumbnail: "set", playlist: "added" }) })]);
+  ignored.yt.videos.push(VID1_UPLOADED);
+  ignored.deps.setPublishAt = async () => undefined; // an answer of success, but YouTube kept no date
+  const runner2 = createUploadRunner(ignored.deps);
+  for (let i = 0; i < 10 && ignored.row().status !== "done"; i += 1) await runner2.tick();
+  assert.deepEqual([ignored.row().errorCode, JSON.parse(ignored.row().stepsJson).publishAt], ["step_failed", "failed"]);
+  assert.equal(ignored.records.at(-1)?.record.publishAt, null, "the record never claims a date the read-back did not show");
 });
 
 test("AC-UP-10: a read-back that differs ends the job with verify_mismatch and names the fields", async () => {
@@ -549,17 +690,33 @@ test("review B2: resuming asks the session first -- a moved video file does not 
 });
 
 test("review should-fix 2: a publish time set at insert that comes within 15 minutes before the last chunk stops the upload, nothing is made", async () => {
-  // 6 h 1 min ahead: set at insert; then a pause of Live writes holds the upload for 6 hours.
+  // Only a row whose session began before owner msgs 3510/3511 with the date in the insert (`publishAtAtInsert`, kept for such
+  // rows); a pause of Live writes holds the upload until 10 minutes before its date.
   const h = harness([job({ publishAt: "2026-10-13T18:01:00.000Z" })]);
   h.yt.setFaults([undefined as never, undefined as never, "live_writes_off"]);
   await h.runner.tick();
   assert.equal(h.row().status, "paused");
+  h.store.set("u1", { ...h.row(), publishAtAtInsert: true });
   h.clock.at = new Date("2026-10-13T17:50:00Z");
   h.yt.setLiveWrites(true);
   await h.runner.tick();
   assert.deepEqual([h.row().status, h.row().errorCode, h.row().videoId], ["failed", "publish_at_passed", null]);
   assert.equal(h.yt.videos.length, 0, "the last chunk never went");
   assert.equal(holdsPackage(h.row()), false, "nothing exists: the owner can approve it again with a new date");
+});
+
+test("AC-UP-02d: a new row's date is not in the insert, so the same pause does not stop it; at the date step it is too soon and not written", async () => {
+  const h = harness([job({ publishAt: "2026-10-13T18:01:00.000Z" })]);
+  h.yt.setFaults([undefined as never, undefined as never, "live_writes_off"]);
+  await h.runner.tick();
+  assert.equal(h.row().status, "paused");
+  h.clock.at = new Date("2026-10-13T17:50:00Z");
+  h.yt.setLiveWrites(true);
+  await h.runAll();
+  const steps = JSON.parse(h.row().stepsJson);
+  assert.deepEqual([h.row().status, h.row().errorCode, steps.thumbnail, steps.publishAt], ["done", "publish_at_too_soon", "set", "skipped_too_soon"]);
+  assert.deepEqual(h.publishAtWrites, []);
+  assert.equal("publishAt" in h.yt.videos[0].resource.status, false, "private, no date");
 });
 
 test("review should-fix 6: a row another runner holds is left alone until its lease ends", async () => {
@@ -749,4 +906,92 @@ test("review L5: a matching automatic row uploads; a resumed session is not hash
   manual.deps.files.sha256 = counting("b".repeat(64));
   await manual.runAll();
   assert.deepEqual([manual.row().status, hashed.length], ["done", 0]);
+});
+
+// Independent review of the FO-REQ-0040 item 4 fix. The date now hangs on the read-back, so (owner msgs 3510/3511) a read-back must
+// neither schedule an unverified video nor withhold the date over YouTube's lag. Expected values by hand from that requirement.
+test("AC-UP-02d: a read-back that differs only at first (YouTube's lag) is read again 10 s later and verifies; the date is then written", async () => {
+  const h = harness([job({ status: "finishing", videoId: "vid1", stepsJson: JSON.stringify({ uploadedAt: NOW.toISOString(), thumbnail: "set", playlist: "added" }) })]);
+  h.yt.videos.push(VID1_UPLOADED);
+  const read = h.deps.reads.snapshot;
+  let reads = 0;
+  h.deps.reads.snapshot = async (args) => ({ ...(await read(args)), ...(++reads === 1 ? { description: "" } : {}) });
+  const runner = createUploadRunner(h.deps);
+  await runner.tick();
+  assert.equal(JSON.parse(h.row().stepsJson).verify, undefined, "one differing read decides nothing");
+  assert.equal(h.row().nextAttemptAt?.getTime(), NOW.getTime() + 10_000);
+  h.clock.at = new Date(NOW.getTime() + 10_000);
+  for (let i = 0; i < 6 && h.row().status !== "done"; i += 1) await runner.tick();
+  const steps = JSON.parse(h.row().stepsJson);
+  assert.deepEqual([h.row().errorCode, steps.verify.result, steps.publishAt], [null, "verified", "set"]);
+  assert.deepEqual(h.publishAtWrites, ["2026-10-24T12:00:00.000Z"]);
+});
+
+test("AC-UP-02d: a read-back that keeps differing is read 1 + 3 times (video-details' READ_BACK_RETRIES), then a mismatch and no date", async () => {
+  const h = harness([job({ status: "finishing", videoId: "vid1", stepsJson: JSON.stringify({ uploadedAt: NOW.toISOString(), thumbnail: "set", playlist: "added" }) })]);
+  h.yt.videos.push(VID1_UPLOADED);
+  h.setReadBack({ embeddable: false });
+  const runner = createUploadRunner(h.deps);
+  for (let i = 0; i < 12 && h.row().status !== "done"; i += 1) {
+    await runner.tick();
+    h.clock.at = new Date(h.clock.at.getTime() + 10_000);
+  }
+  const steps = JSON.parse(h.row().stepsJson);
+  assert.deepEqual([h.row().errorCode, steps.verify.mismatches, steps.publishAt], ["verify_mismatch", ["embeddable"], "withheld"]);
+  assert.equal(h.order.filter((o) => o === "read").length, 4);
+  assert.deepEqual(h.publishAtWrites, []);
+});
+
+test("AC-UP-02d: paid promotion read back empty at first, then true, verifies (the same re-read); still empty after the re-reads is a mismatch", async () => {
+  const settings = { ...SETTINGS, paidProductPlacement: true };
+  const start = () => job({ status: "finishing", videoId: "vid1", settingsJson: JSON.stringify(settings), stepsJson: JSON.stringify({ uploadedAt: NOW.toISOString(), thumbnail: "set", playlist: "added" }) });
+  for (const [emptyReads, expected] of [[1, "verified"], [99, "mismatch"]] as const) {
+    const h = harness([start()]);
+    h.yt.videos.push(VID1_UPLOADED);
+    let reads = 0;
+    h.deps.reads.uploadState = async () => ({ uploadStatus: "processed", rejectionReason: null, failureReason: null, hasPaidProductPlacement: ++reads <= emptyReads ? null : true });
+    const runner = createUploadRunner(h.deps);
+    for (let i = 0; i < 12 && h.row().status !== "done"; i += 1) {
+      await runner.tick();
+      h.clock.at = new Date(h.clock.at.getTime() + 10_000);
+    }
+    const steps = JSON.parse(h.row().stepsJson);
+    assert.equal(steps.verify.result, expected);
+    assert.equal(steps.publishAt, expected === "verified" ? "set" : "withheld");
+  }
+});
+
+test("read-back: AI use read back as null is not a mismatch (YouTube does not return it); read back different is; a date where none is expected is", () => {
+  const after: VideoReadBack = { title: PKG.title, description: PKG.description, tags: ["jazz"], categoryId: "10", defaultLanguage: "en", defaultAudioLanguage: "en", privacyStatus: "private", publishAt: null, selfDeclaredMadeForKids: false, license: "youtube", embeddable: true };
+  assert.deepEqual(readBackMismatches({ ...after, containsSyntheticMedia: null }, PKG, SETTINGS, null, NOW.getTime()), []);
+  assert.deepEqual(readBackMismatches({ ...after, containsSyntheticMedia: true }, PKG, SETTINGS, null, NOW.getTime()), []);
+  assert.deepEqual(readBackMismatches({ ...after, containsSyntheticMedia: false }, PKG, SETTINGS, null, NOW.getTime()), ["containsSyntheticMedia"]);
+  // A new row is read back before its date step: a video that already has a date would be scheduled unverified.
+  assert.deepEqual(readBackMismatches({ ...after, publishAt: "2026-10-24T12:00:00Z" }, PKG, SETTINGS, null, NOW.getTime()), ["publishAt"]);
+});
+
+test("the uploads list shows the date as set only when it is on the video (set, or an old row's insert); planned otherwise", () => {
+  const row = (publishAt?: string) => ({ stepsJson: JSON.stringify(publishAt ? { publishAt } : {}) });
+  assert.deepEqual(
+    [undefined, "set", "at_insert", "withheld", "skipped_too_soon", "failed"].map((value) => isPublishAtSet(row(value))),
+    [false, true, true, false, false, false]
+  );
+});
+
+// YouTube Data API videos resource: `contentDetails.hasCustomThumbnail` "Indicates whether the video uploader has provided a custom
+// thumbnail image for the video" (uploader only). After thumbnails.set, false (after the re-reads) is a mismatch and withholds the
+// date; not returned (null) leaves the 200 of thumbnails.set as the evidence.
+test("AC-UP-02d: a thumbnail YouTube says is not custom after the re-reads -> mismatch 'thumbnail', no date; not returned -> verified", async () => {
+  for (const [custom, expected] of [[false, "mismatch"], [null, "verified"], [true, "verified"]] as const) {
+    const h = harness([job({ status: "finishing", videoId: "vid1", stepsJson: JSON.stringify({ uploadedAt: NOW.toISOString(), thumbnail: "set", playlist: "added" }) })]);
+    h.yt.videos.push(VID1_UPLOADED);
+    h.deps.reads.uploadState = async () => ({ uploadStatus: "processed", rejectionReason: null, failureReason: null, hasPaidProductPlacement: null, hasCustomThumbnail: custom });
+    const runner = createUploadRunner(h.deps);
+    for (let i = 0; i < 12 && h.row().status !== "done"; i += 1) {
+      await runner.tick();
+      h.clock.at = new Date(h.clock.at.getTime() + 10_000);
+    }
+    const steps = JSON.parse(h.row().stepsJson);
+    assert.deepEqual([steps.verify.result, steps.verify.mismatches, steps.publishAt], [expected, expected === "mismatch" ? ["thumbnail"] : [], expected === "mismatch" ? "withheld" : "set"], String(custom));
+  }
 });

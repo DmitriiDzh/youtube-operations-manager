@@ -36,19 +36,21 @@ export function assignPublishDates(args: {
   return dates;
 }
 
-/** A publish time at least this far ahead is sent at insert (owner msg 2717; FO-REQ-0023 §4 B5.4); a nearer one after processing. */
-export const PUBLISH_AT_AT_INSERT_MIN_MS = 6 * 3_600_000;
-
-/** Whether a publish time is written after processing (less than 6 h ahead) rather than at insert. */
-export function isDeferredPublishAt(publishAt: string | null, now: Date): boolean {
-  return publishAt !== null && Date.parse(publishAt) - now.getTime() < PUBLISH_AT_AT_INSERT_MIN_MS;
+/**
+ * Whether a publish time is written after the upload (a `videos.update` the pool pays for). Since owner msgs 3510/3511 (2026-10-25,
+ * FO-REQ-0040 item 4) every dated upload is inserted private without a date and gets its date last, after the thumbnail, the
+ * playlist and a passing read-back -- no longer at insert when it is 6 h or more ahead (owner msg 2717, superseded).
+ */
+export function isDeferredPublishAt(publishAt: string | null): boolean {
+  return publishAt !== null;
 }
 
 /**
  * The pool units one upload needs: the thumbnail (50), a playlist item (50 + 1 to check it is not there yet), a deferred publish
- * time (videos.update 50 + its reads), and about 45 reads (the identity check per pass, the processing polls, the read-back, the
- * sync after it). `videos.insert` itself comes from its own bucket, not the pool.
+ * time (videos.update 50 + video-details' own 3 reads + the runner's read before and after it = 55), and about 45 reads (the
+ * identity check per pass, the processing polls, the read-back, the sync after it). `videos.insert` itself comes from its own
+ * bucket, not the pool.
  */
 export function estimateUploadUnits(args: { playlist: boolean; deferredPublishAt: boolean }): number {
-  return 50 + 45 + (args.playlist ? 51 : 0) + (args.deferredPublishAt ? 53 : 0);
+  return 50 + 45 + (args.playlist ? 51 : 0) + (args.deferredPublishAt ? 55 : 0);
 }

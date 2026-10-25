@@ -195,7 +195,7 @@ export function PublishingPackages({ channelId, visible }: { channelId: string |
   const estimatedUnits = chosen.reduce((sum, p) => {
     const day = dateOf(p);
     const publishAt = day && settings ? publishInstant(day, settings.publishTimeUtc) : null;
-    return sum + estimateUploadUnits({ playlist: Boolean(settings?.playlistId), deferredPublishAt: isDeferredPublishAt(publishAt, new Date()) });
+    return sum + estimateUploadUnits({ playlist: Boolean(settings?.playlistId), deferredPublishAt: isDeferredPublishAt(publishAt) });
   }, 0);
 
   return (

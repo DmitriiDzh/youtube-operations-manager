@@ -56,11 +56,15 @@ test("start: a refusal keeps Google's reason; a session URI outside googleapis.c
   );
 });
 
-test("start: nothing is sent for an empty file or a publish date without private", async () => {
+// Owner msgs 3510/3511 (FO-REQ-0040 item 4): an upload is inserted private and never with a date -- the date is written after the
+// upload is verified. So any publishAt in the insert is refused, private or not (before: allowed with private, msg 2717).
+test("start: nothing is sent for an empty file, a video that is not private, or any publish date", async () => {
   const { http, calls } = fake([]);
   await assert.rejects(beginResumableVideoUpload({ accessToken: "t", resource: RESOURCE, contentLength: 0, contentType: "video/mp4", notifySubscribers: false }, http));
-  const publicWithDate = { ...RESOURCE, status: { ...RESOURCE.status, privacyStatus: "public" as unknown as "private", publishAt: "2026-10-20T12:00:00Z" } };
-  await assert.rejects(beginResumableVideoUpload({ accessToken: "t", resource: publicWithDate, contentLength: 5, contentType: "video/mp4", notifySubscribers: false }, http));
+  const notPrivate = { ...RESOURCE, status: { ...RESOURCE.status, privacyStatus: "public" as unknown as "private" } };
+  await assert.rejects(beginResumableVideoUpload({ accessToken: "t", resource: notPrivate, contentLength: 5, contentType: "video/mp4", notifySubscribers: false }, http));
+  const privateWithDate = { ...RESOURCE, status: { ...RESOURCE.status, publishAt: "2026-10-20T12:00:00Z" } as typeof RESOURCE.status };
+  await assert.rejects(beginResumableVideoUpload({ accessToken: "t", resource: privateWithDate, contentLength: 5, contentType: "video/mp4", notifySubscribers: false }, http), /without publishAt/);
   assert.equal(calls.length, 0);
 });
 

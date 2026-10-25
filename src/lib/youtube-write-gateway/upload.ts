@@ -26,7 +26,10 @@ const UPLOAD_ORIGIN = "https://www.googleapis.com";
 const UPLOAD_ENDPOINT = `${UPLOAD_ORIGIN}/upload/youtube/v3/videos`;
 const REQUEST_TIMEOUT_MS = 10 * 60_000;
 
-/** The video resource sent at insert. Only what the plan sets; `publishAt` only together with `privacyStatus: "private"`. */
+/**
+ * The video resource sent at insert. Only what the plan sets; never a `publishAt` (owner msgs 3510/3511, FO-REQ-0040 item 4: the
+ * date is written last, after the thumbnail, the playlist and the read-back, through video-details).
+ */
 export type VideoInsertResource = {
   snippet: {
     title: string;
@@ -38,7 +41,6 @@ export type VideoInsertResource = {
   };
   status: {
     privacyStatus: "private";
-    publishAt?: string;
     selfDeclaredMadeForKids: boolean;
     containsSyntheticMedia?: boolean;
     license?: "youtube" | "creativeCommon";
@@ -120,8 +122,8 @@ export async function beginResumableVideoUpload(
   http: UploadHttp = nodeUploadHttp
 ): Promise<{ sessionUri: string }> {
   if (!Number.isInteger(args.contentLength) || args.contentLength <= 0) throw new DomainError({ code: "validation_failed", message: "The upload has no bytes." });
-  if (args.resource.status.publishAt !== undefined && args.resource.status.privacyStatus !== "private") {
-    throw new DomainError({ code: "validation_failed", message: "publishAt is only allowed with privacyStatus private." });
+  if (args.resource.status.privacyStatus !== "private" || "publishAt" in args.resource.status) {
+    throw new DomainError({ code: "validation_failed", message: "An upload is inserted private and without publishAt; the date is written after the upload is verified." });
   }
   const body = Buffer.from(JSON.stringify(args.resource), "utf8");
   const parts = ["snippet", "status", ...(args.resource.paidProductPlacementDetails ? ["paidProductPlacementDetails"] : [])].join(",");

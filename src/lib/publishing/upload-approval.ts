@@ -106,7 +106,7 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
         sum +
         estimateUploadUnits({
           playlist: view.settings.playlistId !== null,
-          deferredPublishAt: isDeferredPublishAt(c.item.publishAt, now),
+          deferredPublishAt: isDeferredPublishAt(c.item.publishAt),
         }),
       0
     );

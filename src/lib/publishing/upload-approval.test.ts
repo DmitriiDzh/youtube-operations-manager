@@ -96,9 +96,11 @@ test("an approval queues each row as it was shown: the package, the settings, th
   assert.deepEqual(JSON.parse(first.settingsJson), SETTINGS);
   assert.deepEqual(JSON.parse(first.packageJson).videoFile, "04 Videos/10 October/x V65/V65 Tropico Jazz.mp4");
   assert.equal(second.publishAt, null, "a row without a date only uploads");
-  // Units by hand: each upload 50 + 45 + 51 (playlist) = 146; both at insert or undated -> 292.
-  assert.deepEqual(h.unitsAsked, [292]);
-  assert.equal(result.estimatedUnits, 292);
+  // Units by hand: each upload 50 + 45 + 51 (playlist) = 146; the dated V65 also pays its publish-time write, now always after the
+  // upload (owner msgs 3510/3511 replaced msg 2717's "at insert when 6 h or more ahead", which made it free): 50 + 3 + 2 reads = 55.
+  // 146 + 55 + 146 = 347.
+  assert.deepEqual(h.unitsAsked, [347]);
+  assert.equal(result.estimatedUnits, 347);
 });
 
 test("AC-UP-01: a manifest changed since it was shown, or settings changed since, refuse the whole approval", async () => {
@@ -134,8 +136,8 @@ test("AC-UP-02: a publish time 15 minutes ahead or less is refused; 15 minutes a
   await refusedWith(h.approval.approve({ channelId: "UC_t", userId: "u", items: [item("V65", "2026-10-12T12:00:00.000Z")], shownSettings: SETTINGS }), "publish_at_too_soon");
   const ok = await h.approval.approve({ channelId: "UC_t", userId: "u", items: [item("V65", "2026-10-13T12:15:01.000Z")], shownSettings: SETTINGS });
   assert.equal(ok.uploads[0].publishAt, "2026-10-13T12:15:01.000Z");
-  // That time is less than 6 h ahead: the publish time is written after processing -> 146 + 53 = 199 units.
-  assert.equal(ok.estimatedUnits, 199);
+  // The publish time is written after the upload (owner msgs 3510/3511: always, last) -> 146 + 55 = 201 units.
+  assert.equal(ok.estimatedUnits, 201);
 });
 
 test("quota: the 100-a-day upload bucket, the pool units like a batch's, an unknown quota only with the owner's yes", async () => {
@@ -151,7 +153,9 @@ test("quota: the 100-a-day upload bucket, the pool units like a batch's, an unkn
 
 test("the estimate: thumbnail, reads, and the playlist item and deferred publish time only when they happen", () => {
   assert.equal(estimateUploadUnits({ playlist: false, deferredPublishAt: false }), 95);
-  assert.equal(estimateUploadUnits({ playlist: true, deferredPublishAt: true }), 199);
+  // The publish time: videos.update 50 + video-details' own 3 reads + the runner's read before and after = 55 (was
+  // 53 before owner msgs 3510/3511 added the runner's two reads around the write).
+  assert.equal(estimateUploadUnits({ playlist: true, deferredPublishAt: true }), 201);
 });
 
 test("a listed package twice, two rows of one video, an empty or too large selection are refused", async () => {
@@ -178,7 +182,7 @@ test("quota: uploads already queued count against the day's inserts and units", 
   await refusedWith(bucket.approval.approve({ channelId: "UC_t", userId: "u", items: [item("V65"), item("V66")], shownSettings: SETTINGS }), "upload_daily_limit");
   const units = harness([scanned("V65")], { pending: async () => ({ inserts: 3, units: 500 }) });
   await units.approval.approve({ channelId: "UC_t", userId: "u", items: [item("V65")], shownSettings: SETTINGS });
-  assert.deepEqual(units.unitsAsked, [146 + 500], "this upload's 146 units and the queued ones' 500");
+  assert.deepEqual(units.unitsAsked, [146 + 55 + 500], "this dated upload's 201 units (its date is written after the upload, owner msgs 3510/3511) and the queued ones' 500");
 });
 
 test("AC-UP-12: a package another computer already uploaded is refused with that said", async () => {
