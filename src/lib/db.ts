@@ -1517,6 +1517,35 @@ export const channelLocalizationEvents = sqliteTable(
   (table) => [index("channel_localization_events_channel_at_idx").on(table.channelId, table.at)]
 );
 
+/**
+ * Schema v109 (BL-223, CHANNEL_BRANDING_PLAN.md, ADR 0050): a channel's branding draft as stored on this computer -- the
+ * description, keywords and banner metadata the owner applies with «Применить» (JSON validated by channel-branding on read and
+ * write; null = no draft; the banner's bytes live in the app data folder, `bannerSha256` proves them unchanged) -- and the last
+ * apply's result (JSON, null = never applied). Device-local.
+ */
+export const channelBranding = sqliteTable("channel_branding", {
+  channelId: text("channel_id").primaryKey(),
+  draftJson: text("draft_json"),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }),
+  /** owner | factory | worker */
+  updatedBy: text("updated_by"),
+  lastApplyJson: text("last_apply_json"),
+  lastApplyAt: integer("last_apply_at", { mode: "timestamp_ms" }),
+});
+
+/** Schema v109 (BL-223): the channel branding writer's append-only audit trail (saved, backup, banner_upload, write, verification, failed). */
+export const channelBrandingEvents = sqliteTable(
+  "channel_branding_events",
+  {
+    id: text("id").primaryKey(),
+    channelId: text("channel_id").notNull(),
+    at: integer("at", { mode: "timestamp_ms" }).notNull(),
+    kind: text("kind").notNull(),
+    detailJson: text("detail_json").notNull(),
+  },
+  (table) => [index("channel_branding_events_channel_at_idx").on(table.channelId, table.at)]
+);
+
 /** Schema v99 (BL-205, LIVE_SEGMENTS_PLAN.md §2.3): one row per segment broadcast of a channel's stream. Device-local. */
 export const liveStreamSegments = sqliteTable(
   "live_stream_segments",
@@ -5600,6 +5629,29 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
           "released_by TEXT)"
       );
       await client.execute("CREATE INDEX IF NOT EXISTS restart_holds_until_idx ON restart_holds (until_at)");
+    },
+  },
+  {
+    version: 109,
+    description:
+      "channel_branding + channel_branding_events -- BL-223 (CHANNEL_BRANDING_PLAN.md, ADR 0050; owner msgs 3482/3488): a channel's description/keywords/banner draft stored on this computer, the last apply's result, and their append-only audit trail. Additive, idempotent, device-local",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS channel_branding (
+        channel_id TEXT PRIMARY KEY,
+        draft_json TEXT,
+        updated_at INTEGER,
+        updated_by TEXT,
+        last_apply_json TEXT,
+        last_apply_at INTEGER
+      )`);
+      await client.execute(`CREATE TABLE IF NOT EXISTS channel_branding_events (
+        id TEXT PRIMARY KEY,
+        channel_id TEXT NOT NULL,
+        at INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        detail_json TEXT NOT NULL
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS channel_branding_events_channel_at_idx ON channel_branding_events (channel_id, at)");
     },
   },
 ];
@@ -15078,6 +15130,46 @@ export async function listChannelLocalizationEvents(channelId: string, limit = 5
     .from(channelLocalizationEvents)
     .where(eq(channelLocalizationEvents.channelId, channelId))
     .orderBy(desc(channelLocalizationEvents.at), desc(channelLocalizationEvents.id))
+    .limit(limit);
+}
+
+// ---------------------------------------------------------------------------
+// BL-223 (v109): a channel's branding draft, stored on this computer.
+// ---------------------------------------------------------------------------
+
+export type StoredChannelBranding = typeof channelBranding.$inferSelect;
+export type StoredChannelBrandingEvent = typeof channelBrandingEvents.$inferSelect;
+
+export async function getChannelBrandingRow(channelId: string, database: AppDb = db): Promise<StoredChannelBranding | null> {
+  const [row] = await database.select().from(channelBranding).where(eq(channelBranding.channelId, channelId));
+  return row ?? null;
+}
+
+/** Replaces the stored draft (null clears it); the last apply's result is kept. */
+export async function saveChannelBrandingDraft(
+  channelId: string,
+  draft: { draftJson: string | null; updatedAt: Date; updatedBy: "owner" | "factory" | "worker" },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(channelBranding).values({ channelId, ...draft }).onConflictDoUpdate({ target: channelBranding.channelId, set: draft });
+}
+
+/** Records the last apply's result (the stored draft is kept). */
+export async function saveChannelBrandingLastApply(channelId: string, result: { lastApplyJson: string; lastApplyAt: Date }, database: AppDb = db): Promise<void> {
+  await database.insert(channelBranding).values({ channelId, ...result }).onConflictDoUpdate({ target: channelBranding.channelId, set: result });
+}
+
+export async function insertChannelBrandingEvent(row: typeof channelBrandingEvents.$inferInsert, database: AppDb = db): Promise<void> {
+  await database.insert(channelBrandingEvents).values(row);
+}
+
+/** Newest first. */
+export async function listChannelBrandingEvents(channelId: string, limit = 50, database: AppDb = db): Promise<StoredChannelBrandingEvent[]> {
+  return database
+    .select()
+    .from(channelBrandingEvents)
+    .where(eq(channelBrandingEvents.channelId, channelId))
+    .orderBy(desc(channelBrandingEvents.at), desc(channelBrandingEvents.id))
     .limit(limit);
 }
 

@@ -1,3 +1,4 @@
+import { Readable } from "node:stream";
 import type { youtube_v3 } from "googleapis";
 import { getLiveWritesEnabled, recordGatewayCallOutcome } from "@/lib/db";
 import {
@@ -211,7 +212,7 @@ export async function applyVideoDetailsUpdate(args: {
 // BL-210 (CHANNEL_LOCALIZATIONS_PLAN.md "API facts", ADR 0047): a channel's own translations. `channels.update` takes ONE part per
 // request ("You can only update any one of those parts with a single request", developers.google.com/youtube/v3/docs/channels/
 // update) and replaces it whole (an omitted property "existing value will be deleted"), 50 units (logged by the quota ledger's
-// wrapped client like every call). Only `part=localizations`: the app never writes a channel's `brandingSettings` (owner msg 3350).
+// wrapped client like every call). Only `part=localizations` here; the `brandingSettings` write is BL-223's own (below, ADR 0050).
 // The only caller (`channel-localizations/adapters/youtube-api.ts`) calls `assertLiveWritesAuthorized()` itself immediately before.
 // ---------------------------------------------------------------------------
 
@@ -220,6 +221,40 @@ export async function updateChannelLocalizations(args: { youtube: youtube_v3.You
   await args.youtube.channels.update({
     part: ["localizations"],
     requestBody: { id: args.channelId, localizations: args.localizations },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// BL-223 (CHANNEL_BRANDING_PLAN.md "API facts", ADR 0050; owner msgs 3482/3488 lift msg 3350 for the description, keywords and
+// banner only): the channel branding writer's two calls. `channelBanners.insert` takes the image bytes ("16:9 ... at least
+// 2048x1152 pixels", "Maximum file size: 6MB", jpeg/png, 50 units) and answers the banner's `url`, which is then set as
+// `brandingSettings.image.bannerExternalUrl` through `channels.update part=brandingSettings` (one part per request, replaced whole:
+// the caller builds the full object from a fresh read). The only caller (`channel-branding/adapters/youtube-api.ts`) calls
+// `assertLiveWritesAuthorized()` itself immediately before each.
+// ---------------------------------------------------------------------------
+
+export const CHANNEL_BANNER_MAX_BYTES = 6 * 1024 * 1024;
+
+/** Real `channelBanners.insert`; returns the banner URL YouTube answers. */
+export async function insertChannelBanner(youtube: youtube_v3.Youtube, image: { mimeType: "image/jpeg" | "image/png"; bytes: Buffer }): Promise<{ url: string }> {
+  if (image.bytes.length === 0 || image.bytes.length > CHANNEL_BANNER_MAX_BYTES) throw new DomainError({ code: "validation_failed", message: "A channel banner must be 1 byte to 6 MB." });
+  const res = await youtube.channelBanners.insert({ media: { mimeType: image.mimeType, body: Readable.from(image.bytes) } });
+  const url = res.data?.url;
+  if (!url) throw new DomainError({ code: "update_failed", message: "YouTube accepted the banner but returned no URL." });
+  return { url };
+}
+
+/** The `brandingSettings` object sent: the caller's full object built from a fresh read (only documented settable fields). */
+export type ChannelBrandingSettingsBody = {
+  channel: Record<string, string>;
+  image?: { bannerExternalUrl: string };
+};
+
+/** Real `channels.update part=brandingSettings` with the FULL object (the part is replaced whole). */
+export async function updateChannelBrandingSettings(args: { youtube: youtube_v3.Youtube; channelId: string; brandingSettings: ChannelBrandingSettingsBody }): Promise<void> {
+  await args.youtube.channels.update({
+    part: ["brandingSettings"],
+    requestBody: { id: args.channelId, brandingSettings: args.brandingSettings },
   });
 }
 

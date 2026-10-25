@@ -44,7 +44,19 @@ export type ChannelLocalizationsBackupSnapshot = {
   localizations: Record<string, { title: string; description: string }>;
 };
 
-export type BackupSnapshot = LocalizationBackupSnapshot | VideoFieldsBackupSnapshot | ChannelLocalizationsBackupSnapshot;
+/**
+ * BL-223 (ADR 0050): the channel branding writer backs up the channel as read before its first write -- the name, every
+ * `brandingSettings.channel` field, the banner URL and every translation. Stored under the channel id in place of a video id.
+ */
+export type ChannelBrandingBackupSnapshot = {
+  kind: "channel_branding";
+  title: string;
+  brandingChannel: Record<string, unknown>;
+  bannerExternalUrl: string | null;
+  localizations: Record<string, { title: string; description: string }>;
+};
+
+export type BackupSnapshot = LocalizationBackupSnapshot | VideoFieldsBackupSnapshot | ChannelLocalizationsBackupSnapshot | ChannelBrandingBackupSnapshot;
 
 export type BackupRecord = {
   path: string;

@@ -838,6 +838,40 @@ export async function getChannelLocalizationsContext(youtube: youtube_v3.Youtube
   };
 }
 
+/**
+ * BL-223 (CHANNEL_BRANDING_PLAN.md "API facts", ADR 0050): one of our channels as the branding writer needs it -- the name, the
+ * avatar URL (`snippet.thumbnails`, read-only), every `brandingSettings.channel` field as read (a `brandingSettings` write sends
+ * the settable ones back: the API deletes an omitted one), the banner URL (`brandingSettings.image.bannerExternalUrl`) and the
+ * translations (the read-back proves them unchanged). `channels.list part=snippet,brandingSettings,localizations` (1 unit). Null
+ * when YouTube does not return the channel.
+ */
+export type ChannelBrandingContext = {
+  channelId: string;
+  title: string;
+  /** The largest avatar YouTube gives (high, medium, default), null = none yet. */
+  avatarUrl: string | null;
+  customUrl: string | null;
+  brandingChannel: Record<string, unknown>;
+  bannerExternalUrl: string | null;
+  localizations: Record<string, LocaleMetadata>;
+};
+
+export async function getChannelBrandingContext(youtube: youtube_v3.Youtube, channelId: string): Promise<ChannelBrandingContext | null> {
+  const res = await youtube.channels.list({ part: ["snippet", "brandingSettings", "localizations"], id: [channelId] });
+  const item = res.data.items?.[0];
+  if (!item?.id) return null;
+  const thumbnails = item.snippet?.thumbnails;
+  return {
+    channelId: item.id,
+    title: item.snippet?.title ?? "",
+    avatarUrl: thumbnails?.high?.url ?? thumbnails?.medium?.url ?? thumbnails?.default?.url ?? null,
+    customUrl: item.snippet?.customUrl ?? null,
+    brandingChannel: { ...((item.brandingSettings?.channel ?? {}) as Record<string, unknown>) },
+    bannerExternalUrl: item.brandingSettings?.image?.bannerExternalUrl ?? null,
+    localizations: toLocaleMetadataMap(item.localizations as Record<string, youtube_v3.Schema$VideoLocalization> | undefined),
+  };
+}
+
 export type VideoDetailsContext = {
   etag: string | null;
   snippet: youtube_v3.Schema$VideoSnippet;

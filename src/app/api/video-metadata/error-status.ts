@@ -188,6 +188,8 @@ const DOMAIN_ERROR_STATUS = {
   default_language_mismatch: 409,
   own_language_in_live: 409,
   localizations_changed: 409,
+  branding_changed: 409,
+  banner_uploaded_not_set: 502,
   RESEARCH_EXPORT_WORKSPACE_NOT_CONFIGURED: 409,
   RESEARCH_EXPORT_WORKSPACE_UNAVAILABLE: 409,
   RESEARCH_EXPORT_WRITE_FAILED: 500,

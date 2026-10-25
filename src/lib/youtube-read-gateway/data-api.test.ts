@@ -8,6 +8,7 @@ import {
   createYoutubeClient,
   getChannelForSync,
   getChannelLocalizationsContext,
+  getChannelBrandingContext,
   getPublicChannelSnapshot,
   getPublicChannelStats,
   searchPublicMusicVideos,
@@ -1102,4 +1103,39 @@ test("getChannelLocalizationsContext: no item -> null; no default language -> nu
   assert.equal(await getChannelLocalizationsContext(empty, "UC1"), null);
   const bare = fakeYoutubeClient({ channelsList: (async () => ({ data: { items: [{ id: "UC1", snippet: { title: "T" } }] } })) as unknown as youtube_v3.Youtube["channels"]["list"] });
   assert.deepEqual(await getChannelLocalizationsContext(bare, "UC1"), { channelId: "UC1", snippet: { title: "T", description: "", defaultLanguage: null }, brandingChannel: {}, localizations: {} });
+});
+
+// BL-223 (CHANNEL_BRANDING_PLAN.md "API facts"): one channels.list call by id (snippet, brandingSettings, localizations: 1 unit); the
+// branding channel object whole, the banner from brandingSettings.image.bannerExternalUrl, the avatar the largest thumbnail.
+test("getChannelBrandingContext reads the name, avatar, branding fields, banner and translations of the channel by id", async () => {
+  let receivedArgs: unknown;
+  const youtube = fakeYoutubeClient({
+    channelsList: (async (args: unknown) => {
+      receivedArgs = args;
+      return {
+        data: {
+          items: [
+            {
+              id: "UC1",
+              snippet: { title: "Name", customUrl: "@name", thumbnails: { default: { url: "https://a/88" }, high: { url: "https://a/800" } } },
+              brandingSettings: { channel: { title: "Name", description: "D", keywords: "a \"b c\"", country: "US" }, image: { bannerExternalUrl: "https://b/1" } },
+              localizations: { fr: { title: "Fr", description: "Fd" } },
+            },
+          ],
+        },
+      };
+    }) as unknown as youtube_v3.Youtube["channels"]["list"],
+  });
+  assert.deepEqual(await getChannelBrandingContext(youtube, "UC1"), {
+    channelId: "UC1",
+    title: "Name",
+    avatarUrl: "https://a/800",
+    customUrl: "@name",
+    brandingChannel: { title: "Name", description: "D", keywords: 'a "b c"', country: "US" },
+    bannerExternalUrl: "https://b/1",
+    localizations: { fr: { title: "Fr", description: "Fd" } },
+  });
+  assert.deepEqual(receivedArgs, { part: ["snippet", "brandingSettings", "localizations"], id: ["UC1"] });
+  const empty = fakeYoutubeClient({ channelsList: (async () => ({ data: { items: [] } })) as unknown as youtube_v3.Youtube["channels"]["list"] });
+  assert.equal(await getChannelBrandingContext(empty, "UC1"), null);
 });
