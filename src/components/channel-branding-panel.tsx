@@ -202,7 +202,7 @@ export function ChannelBrandingPanel({ channelId }: { channelId: string }) {
     setError(null);
     setNotice(null);
     try {
-      const response = await fetch(`${base}/preview`, { method: "POST" });
+      const response = await fetch(`${base}/preview`);
       const body = await response.json().catch(() => null);
       if (!response.ok) throw new Error(errorText(t, body, t("channelBranding.previewFailed")));
       setPreview(body as ChannelBrandingPreview);

@@ -8,7 +8,7 @@ import { isDomainError } from "@/lib/shared-domain";
 
 // BL-223 (CHANNEL_BRANDING_PLAN.md §2-§4/§6, ADR 0050): the owner's routes for a channel's description, keywords and banner. Every
 // handler: a Web session (401), the channel must be the active one (ADR 0004, 403), a thin call into the module, DomainError ->
-// status. GET reads YouTube once (1 unit) next to the stored draft; PUT and GET /banner are local; POST /preview reads YouTube
+// status. GET reads YouTube once (1 unit) next to the stored draft; PUT and GET /banner are local; GET /preview reads YouTube
 // (1 unit); only POST /apply writes to YouTube -- the one path to it, with the identity check, Live writes, backup, read-back and
 // audit inside the module. Mutating methods pass `src/proxy.ts`'s gate like every /api route.
 

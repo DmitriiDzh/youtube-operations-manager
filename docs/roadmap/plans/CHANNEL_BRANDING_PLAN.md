@@ -132,7 +132,8 @@ Sources: [channels.update](https://developers.google.com/youtube/v3/docs/channel
   the draft recorded as saved by `worker`; channel translations stay out of channel sessions.
 - Draft semantics chosen: a field left out = unchanged on YouTube; `""` / `[]` clear it; `keepBanner` keeps the stored banner on a
   save that does not send a new one. A banner cannot be removed (no documented way), only replaced.
-- The preview is `POST .../preview` (the task asked for POST; BL-210 used GET).
+- The preview is `GET .../preview` like BL-210 (the brief said POST): a POST passes `src/proxy.ts`'s mutation gate and would be
+  refused during the operation lock or recovery mode, though it only reads.
 
 ## Acceptance (written before the code)
 

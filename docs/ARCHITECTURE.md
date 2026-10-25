@@ -4731,7 +4731,7 @@ only writer of a channel's `brandingSettings` (AGENTS.md §F, PROJECT_SPEC §21)
 - **Web UI.** «Канал» (`src/components/channel-branding-panel.tsx`) on «Главная» above «Переводы канала»: the name, handle and avatar
   read-only with a YouTube Studio link; description, keywords (comma-separated) and banner (file input, checked in the browser by
   the same `draft.ts`) next to their values on YouTube; Save, «Проверить на YouTube», «Применить» behind `ConfirmDialog`, the last
-  result with its code. Routes: `GET/PUT /api/channels/[channelId]/channel-branding`, `GET .../banner`, `POST .../preview`,
+  result with its code. Routes: `GET/PUT /api/channels/[channelId]/channel-branding`, `GET .../banner`, `GET .../preview`,
   `POST .../apply`.
 - **Not yet verified against the real API:** whether YouTube keeps `bannerExternalUrl` exactly as sent, and how it formats keywords;
   the read-back reports either. The first real apply is the live acceptance.
