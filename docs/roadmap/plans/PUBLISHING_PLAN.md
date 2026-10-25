@@ -215,13 +215,20 @@
    - Steps:
      1. identity check;
      2. the per-device report "uploading package X on <device>" (sync family);
-     3. resumable insert with the saved session URI and offset (survives restarts; a 404 restarts the upload);
-     4. `publishAt` at insert if it is ≥ 6 h ahead, else after processing;
-     5. poll processing;
-     6. `thumbnails.set`;
-     7. `playlistItems.insert`;
-     8. read-back of everything;
+     3. resumable insert with the saved session URI and offset (survives restarts; a 404 restarts the upload), private and
+        **without** `publishAt`;
+     4. poll processing;
+     5. `thumbnails.set`;
+     6. `playlistItems.insert`;
+     7. read-back of everything except the date;
+     8. only then `publishAt` (private), itself read back -- withheld when step 5, 6 or 7 failed (the video stays private without
+        a date, the step's error on the job); 15 minutes or less ahead → not written;
      9. `Vn_youtube.json`, the History row and a targeted sync.
+   - **Changed 2026-10-25 (owner msgs 3510/3511, FO-REQ-0040 item 4).** The approved order put `publishAt` into the insert when it
+     was ≥ 6 h ahead (owner msg 2717), else first after processing -- before the thumbnail. That could schedule a video whose
+     thumbnail or upload later failed. Now the date is always last. Trade-off: every dated upload pays a `videos.update` and its
+     reads (55 units in the estimate) that the date at insert saved. Rows whose session began before the change keep their
+     at-insert date (`publish_at_at_insert = 1`) and are finished without a second write.
    - Busy for idle shutdown. Live writes are checked before every gateway call; when they turn off, the job pauses and does not
      fail.
 6. **Never twice.**

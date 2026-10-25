@@ -1,13 +1,13 @@
 // BL-182 stage 2 (PUBLISHING_PLAN.md §2 stage 2 items 5–7; FO-REQ-0023 §4 B5–B7; ADR 0037). The upload queue of this computer,
-// advanced by a background tick: one byte stream at a time, and the steps after it (processing, the deferred publish time, the
-// thumbnail, the playlist, the read-back, the upload record, a sync) for the uploads already sent. Every step's outcome is stored
+// advanced by a background tick: one byte stream at a time, and the steps after it (processing, the thumbnail, the playlist, the
+// read-back, the publish time, the upload record, a sync) for the uploads already sent. The publish time comes last (owner msgs
+// 3510/3511, FO-REQ-0040 item 4): a video is never scheduled before its thumbnail is set and the upload is verified. Every step's outcome is stored
 // before the next one starts, so a restart continues at its step. Never twice (ADR 0037 §4): an upload whose answer was lost asks
 // its session where it stands; an expired session starts again only while its last chunk was never sent and the channel's recent
 // uploads show no video with the package's title; once a video exists its row keeps blocking the package, failed or not. Live
 // writes off pauses a job (never fails it); quota and the channel's upload cap pause it until they reset.
 
 import type { StoredPublishingUpload } from "@/lib/db";
-import { PUBLISH_AT_AT_INSERT_MIN_MS } from "./publish-dates";
 import type { PublishingSettings } from "./settings";
 
 /** The package as the owner approved it (frozen in `package_json`). Paths are relative to the channel workspace. */
@@ -36,7 +36,12 @@ export type UploadSteps = {
   uploadedAt?: string;
   /** Unknown answers in a row at the current step (a 5xx, a timeout, a network failure); reset by progress. */
   retries?: number;
-  publishAt?: "at_insert" | "set" | "skipped_too_soon" | "failed";
+  /**
+   * The publish time, written last. `withheld`: not written because the thumbnail, the playlist or the read-back failed -- the video
+   * stays private without a date. `at_insert`: only a row whose session began before owner msgs 3510/3511 (`publishAtAtInsert`),
+   * when the date still went in with the insert; never made for a new row.
+   */
+  publishAt?: "at_insert" | "set" | "skipped_too_soon" | "withheld" | "failed";
   thumbnail?: "set" | "failed";
   playlist?: "added" | "already_there" | "none" | "failed";
   verify?: { result: "verified" | "mismatch"; mismatches: string[] };
@@ -81,7 +86,7 @@ export type UploadRunnerDeps = {
     /** The video as YouTube has it now (video-details' snapshot), for the read-back. */
     snapshot(args: { channelId: string; videoId: string } & UploadCredentials): Promise<VideoReadBack>;
   };
-  /** The deferred publish time, through video-details' own write path (backup, read-modify-write, read-back, audit). */
+  /** The publish time, written last, through video-details' own write path (backup, read-modify-write, read-back, audit). */
   setPublishAt(args: { channelId: string; videoId: string; publishAt: string; containsSyntheticMedia: boolean } & UploadCredentials): Promise<void>;
   files: {
     /** A file of the channel's workspace by the workspace rule; null when it is not there (or not inside). */
@@ -327,7 +332,10 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
     await deps.store.update(job.id, "uploading", { sessionUri: null, storedBytes: 0, updatedAt: now() });
   }
 
-  /** A publish time set at insert that comes within the margin before the last chunk: nothing is made, the owner picks a new date. */
+  /**
+   * A publish time set at insert that comes within the margin before the last chunk: nothing is made, the owner picks a new date.
+   * Only a row whose session began with the date in the insert (before owner msgs 3510/3511); a new row never has one.
+   */
   function publishTimePassed(job: StoredPublishingUpload): boolean {
     return job.publishAtAtInsert && job.publishAt !== null && Date.parse(job.publishAt) - now().getTime() <= PUBLISH_AT_MARGIN_MS;
   }
@@ -378,12 +386,13 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
         if (!hashChecked && (await videoHashDiffers(current, pkg, videoFile.path))) {
           return fail(current, VIDEO_HASH_MISMATCH, "The video file no longer matches the SHA-256 in its manifest, so the automatic upload stopped before a new session.");
         }
-        const publishAtAtInsert = current.publishAt !== null && Date.parse(current.publishAt) - now().getTime() >= PUBLISH_AT_AT_INSERT_MIN_MS;
+        // Owner msgs 3510/3511 (FO-REQ-0040 item 4): the insert is private and never carries a publish time, whatever the date; the
+        // date is written last, after the thumbnail, the playlist and a passing read-back. The column stays (old rows) and is false.
+        const publishAtAtInsert = false;
         const resource: InsertResource = {
           snippet: { title: pkg.title, description: pkg.description, tags: pkg.tags, categoryId: settings.categoryId, defaultLanguage: pkg.defaultLanguage, defaultAudioLanguage: pkg.defaultAudioLanguage },
           status: {
             privacyStatus: "private",
-            ...(publishAtAtInsert ? { publishAt: current.publishAt as string } : {}),
             selfDeclaredMadeForKids: settings.madeForKids,
             containsSyntheticMedia: settings.containsSyntheticMedia,
             license: settings.license,
@@ -464,7 +473,12 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
     return deps.store.update(job.id, "finishing", { stepsJson: JSON.stringify({ ...steps, retries: 0 }), errorMessage: null, updatedAt: now() });
   }
 
-  /** One step after the upload, in order; each outcome is stored before the next. A failed step is noted, the others still run. */
+  /**
+   * One step after the upload, in order; each outcome is stored before the next. A failed step is noted, the others still run --
+   * except the publish time. Owner msgs 3510/3511 (FO-REQ-0040 item 4): it is written last, after the thumbnail, the playlist and
+   * a read-back of everything else, and only when the thumbnail is set, the playlist step did not fail and the read-back verified;
+   * otherwise it is withheld and the video stays private without a date. The write is then read back on its own.
+   */
   async function finishing(job: StoredPublishingUpload): Promise<void> {
     const pkg = parseJson<ApprovedPackage | null>(job.packageJson, null);
     const settings = parseJson<PublishingSettings | null>(job.settingsJson, null);
@@ -472,7 +486,7 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
     const steps = stepsOf(job);
     const note = (text: string) => (steps.notes = [...(steps.notes ?? []), text.slice(0, 300)]);
     const videoId = job.videoId;
-    let step: "publishAt" | "thumbnail" | "playlist" | "verify" | "record" | "sync" = "publishAt";
+    let step: "thumbnail" | "playlist" | "verify" | "publishAt" | "record" | "sync" = "thumbnail";
     const giveUp = async (message: string) => {
       if (step === "publishAt" || step === "thumbnail" || step === "playlist") steps[step] = "failed";
       else if (step === "verify") steps.verify = { result: "mismatch", mismatches: ["unreadable"] };
@@ -482,17 +496,15 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
       await saveSteps(job, steps);
     };
     try {
-      // The writes below check the channel first, like the upload (review should-fix 1; PUBLISHING_PLAN §3).
-      const creds = steps.publishAt === undefined || steps.thumbnail === undefined || steps.playlist === undefined ? await identity(job) : await deps.credentials(job);
-      if (job.publishAt !== null && steps.publishAt === undefined) {
-        if (job.publishAtAtInsert) steps.publishAt = "at_insert";
-        else if (Date.parse(job.publishAt) - now().getTime() <= PUBLISH_AT_MARGIN_MS) steps.publishAt = "skipped_too_soon";
-        else {
-          await deps.setPublishAt({ channelId: job.channelId, videoId, publishAt: job.publishAt, containsSyntheticMedia: settings.containsSyntheticMedia, ...creds });
-          steps.publishAt = "set";
-        }
+      const publishAtDue = job.publishAt !== null && steps.publishAt === undefined;
+      // A row whose session began before msgs 3510/3511 with the date in the insert: the video already has it. Stored first, so the
+      // read-back below checks it; nothing is written for it.
+      if (publishAtDue && job.publishAtAtInsert) {
+        steps.publishAt = "at_insert";
         return void (await saveSteps(job, steps));
       }
+      // The writes below check the channel first, like the upload (review should-fix 1; PUBLISHING_PLAN §3).
+      const creds = publishAtDue || steps.thumbnail === undefined || steps.playlist === undefined ? await identity(job) : await deps.credentials(job);
       step = "thumbnail";
       if (steps.thumbnail === undefined) {
         const file = await deps.files.resolve(job.channelId, pkg.thumbnailFile);
@@ -529,6 +541,32 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
           if (state?.hasPaidProductPlacement !== true) mismatches.push("paidProductPlacement");
         }
         steps.verify = { result: mismatches.length === 0 ? "verified" : "mismatch", mismatches };
+        return void (await saveSteps(job, steps));
+      }
+      step = "publishAt";
+      if (job.publishAt !== null && steps.publishAt === undefined) {
+        const failedBefore = [steps.thumbnail === "set" ? null : "thumbnail", steps.playlist === "failed" ? "playlist" : null, steps.verify.result === "verified" ? null : "read-back"].filter(
+          (name): name is string => name !== null
+        );
+        if (failedBefore.length > 0) {
+          steps.publishAt = "withheld";
+          note(`publish time not set (${failedBefore.join(", ")} failed): the video stays private without a date`);
+        } else if (Date.parse(job.publishAt) - now().getTime() <= PUBLISH_AT_MARGIN_MS) {
+          steps.publishAt = "skipped_too_soon";
+        } else {
+          // A write whose answer was lost and is asked again: the date may already be there, and is not written twice.
+          const before = await deps.reads.snapshot({ channelId: job.channelId, videoId, ...creds });
+          if (!(before.privacyStatus === "private" && sameInstant(before.publishAt, job.publishAt))) {
+            await deps.setPublishAt({ channelId: job.channelId, videoId, publishAt: job.publishAt, containsSyntheticMedia: settings.containsSyntheticMedia, ...creds });
+          }
+          // The date itself, read back: private with exactly this time, or the step failed (the video is not marked scheduled).
+          const after = await deps.reads.snapshot({ channelId: job.channelId, videoId, ...creds });
+          if (after.privacyStatus === "private" && sameInstant(after.publishAt, job.publishAt)) steps.publishAt = "set";
+          else {
+            steps.publishAt = "failed";
+            note(`publishAt: read back as ${after.publishAt ?? "none"} (${after.privacyStatus ?? "no privacy status"})`);
+          }
+        }
         return void (await saveSteps(job, steps));
       }
       step = "record";

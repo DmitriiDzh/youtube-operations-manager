@@ -120,7 +120,7 @@ export function PublishingUploads({ channelId, visible, refreshKey }: { channelI
   const detail = (row: UploadRow): string | null => {
     const steps = (() => {
       try {
-        return JSON.parse(row.stepsJson) as { verify?: { mismatches?: string[] }; notes?: string[] };
+        return JSON.parse(row.stepsJson) as { verify?: { mismatches?: string[] }; notes?: string[]; publishAt?: string };
       } catch {
         return {};
       }
@@ -133,8 +133,10 @@ export function PublishingUploads({ channelId, visible, refreshKey }: { channelI
       const reason = row.errorMessage?.replace(/^YouTube \w+ the video: /, "") ?? "";
       return row.errorCode && FAILED_KEYS.has(row.errorCode) ? t(`publishingUploads.failed.${row.errorCode}` as UiTextKey, { reason }) : row.errorMessage;
     }
-    if (row.status === "done" && row.errorCode === "verify_mismatch") return t("publishingUploads.result.verify_mismatch", { fields: (steps.verify?.mismatches ?? []).join(", ") });
-    if (row.status === "done" && row.errorCode === "step_failed") return t("publishingUploads.result.step_failed", { notes: (steps.notes ?? []).join("; ") });
+    // Owner msgs 3510/3511: a failed step before the date leaves the video private without one -- said with the step's error.
+    const withheld = steps.publishAt === "withheld" ? ` ${t("publishingUploads.result.publish_at_withheld")}` : "";
+    if (row.status === "done" && row.errorCode === "verify_mismatch") return t("publishingUploads.result.verify_mismatch", { fields: (steps.verify?.mismatches ?? []).join(", ") }) + withheld;
+    if (row.status === "done" && row.errorCode === "step_failed") return t("publishingUploads.result.step_failed", { notes: (steps.notes ?? []).join("; ") }) + withheld;
     if (row.status === "done" && row.errorCode === "publish_at_too_soon") return t("publishingUploads.result.publish_at_too_soon");
     return null;
   };

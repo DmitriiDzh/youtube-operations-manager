@@ -497,7 +497,7 @@ export function createUploadApprovalCore() {
     liveVideos: (channelId) => localHeldVideos(channelId),
     peerUploads: (channelId) => peerUploadsOf(channelId),
     insertsToday: (now) => videosInsertCallsSince(startOfYoutubeQuotaDay(now)),
-    async pending(now) {
+    async pending() {
       const rows = await listPublishingUploads({ statuses: ACTIVE_UPLOAD_STATUSES, limit: 500 });
       let units = 0;
       for (const row of rows) {
@@ -508,7 +508,7 @@ export function createUploadApprovalCore() {
             return {};
           }
         })();
-        units += estimateUploadUnits({ playlist: Boolean(settings.playlistId), deferredPublishAt: !row.publishAtAtInsert && isDeferredPublishAt(row.publishAt, now) });
+        units += estimateUploadUnits({ playlist: Boolean(settings.playlistId), deferredPublishAt: !row.publishAtAtInsert && isDeferredPublishAt(row.publishAt) });
       }
       return { inserts: rows.filter((row) => row.videoId === null).length, units };
     },
