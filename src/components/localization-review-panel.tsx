@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocalizationVersion } from "./use-localization-version";
 import { LoadingIndicator } from "./operation-progress";
 import { useT } from "./ui-text-provider";
+import { RequestTranslationDialog } from "./request-translation-dialog";
 import type { Translate, UiTextKey } from "@/lib/ui-text";
 
 // BL-227 (docs/roadmap/plans/LANGUAGES_REVIEW_PLAN.md §2, mockup approved in owner msg 3581): translation review by video. Left: the
@@ -39,6 +40,31 @@ type VideoInfo = { videoId: string; title: string; description: string; thumbnai
 type Upload = { video: string | null; slotId: string | null; publishAt: string | null } | null;
 type QueueEntry = { video: VideoInfo; upload: Upload; counts: Counts; languages: number };
 type Review = { video: VideoInfo; upload: Upload; languages: Language[]; counts: Counts };
+type RequestStatus = "requested" | "in_progress" | "done" | "partly_done" | "failed" | "cancelled";
+type TranslationRequest = {
+  requestId: string;
+  videoIds: string[];
+  languages: string[];
+  mode: "fill_missing" | "redo";
+  status: RequestStatus;
+  overdue: boolean;
+  claimedBy: "factory" | "worker" | null;
+  results: Array<{ videoId: string; changeSetId: string }>;
+  failReason: string | null;
+  note: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+/** Finished requests stay listed this long, so the owner sees what came of them. */
+const FINISHED_SHOWN_MS = 3 * 24 * 60 * 60 * 1000;
+const REQUEST_STATUS_CLASS: Record<RequestStatus, string> = {
+  requested: "bg-zinc-800 text-zinc-300",
+  in_progress: "bg-sky-950 text-sky-300",
+  done: "bg-green-950 text-green-400",
+  partly_done: "bg-amber-950 text-amber-400",
+  failed: "bg-red-950 text-red-400",
+  cancelled: "bg-zinc-800 text-zinc-500",
+};
 
 const VERDICT_ICON: Record<Verdict, string> = { pass: "✓", warn: "!", fail: "✗" };
 const VERDICT_TEXT: Record<Verdict, string> = { pass: "text-green-400", warn: "text-amber-400", fail: "text-red-400" };
@@ -85,7 +111,17 @@ function CheckLine({ check, agent }: { check: Check; agent: boolean }) {
   );
 }
 
-function LanguageRow({ language, busy, onDecide }: { language: Language; busy: boolean; onDecide: (language: Language, action: "approve" | "reject") => void }) {
+function LanguageRow({
+  language,
+  busy,
+  onDecide,
+  onRedo,
+}: {
+  language: Language;
+  busy: boolean;
+  onDecide: (language: Language, action: "approve" | "reject") => void;
+  onRedo: (language: Language) => void;
+}) {
   const t = useT();
   const [expanded, setExpanded] = useState(false);
   const [showPassed, setShowPassed] = useState(false);
@@ -163,6 +199,11 @@ function LanguageRow({ language, busy, onDecide }: { language: Language; busy: b
             {t("langReview.approve")}
           </button>
         )}
+        {open && language.verdict !== "pass" && (
+          <button type="button" disabled={busy} onClick={() => onRedo(language)} className="rounded-lg border border-indigo-800 px-3 py-1 text-xs font-medium text-indigo-300 hover:border-indigo-500 disabled:opacity-40">
+            {t("langReview.requestRedo")}
+          </button>
+        )}
         {open && (
           <button type="button" disabled={busy} onClick={() => onDecide(language, "reject")} className="rounded-lg border border-zinc-700 px-3 py-1 text-xs font-medium text-zinc-300 hover:border-zinc-500 disabled:opacity-40">
             {t("langReview.reject")}
@@ -175,11 +216,17 @@ function LanguageRow({ language, busy, onDecide }: { language: Language; busy: b
 
 export function LocalizationReviewPanel({
   channelId,
+  channelLanguages,
   sendBusy,
   onSend,
   onChanged,
+  requestsVersion,
 }: {
   channelId: string;
+  /** The channel's languages (the Languages table's columns), offered in a request. */
+  channelLanguages: string[];
+  /** Bumped by the caller after it made a request, so the list reloads. */
+  requestsVersion?: number;
   sendBusy: boolean;
   /** Starts the send of these sets' approved changes of these videos (the caller's batch runner). */
   onSend: (changeSetIds: string[], videoIds: string[]) => void;
@@ -195,6 +242,8 @@ export function LocalizationReviewPanel({
   const [showOriginal, setShowOriginal] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [requests, setRequests] = useState<TranslationRequest[]>([]);
+  const [redoFor, setRedoFor] = useState<Language | null>(null);
   const reviewRequest = useRef(0);
   const base = `/api/channels/${encodeURIComponent(channelId)}`;
 
@@ -236,9 +285,32 @@ export function LocalizationReviewPanel({
     [base, t]
   );
 
+  const loadRequests = useCallback(async () => {
+    try {
+      const res = await fetch(`${base}/localization-requests`);
+      const data = await res.json();
+      if (res.ok) setRequests((data.requests ?? []) as TranslationRequest[]);
+    } catch {
+      // The list is secondary: the review still works without it.
+    }
+  }, [base]);
+
+  async function cancelRequest(requestId: string) {
+    setError(null);
+    const res = await fetch(`${base}/localization-requests/${encodeURIComponent(requestId)}/cancel`, { method: "POST" });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setError(errorText(t, data, t("common.errorStatus", { status: res.status })));
+    }
+    await loadRequests();
+  }
+
   useEffect(() => {
     void loadQueue();
   }, [loadQueue]);
+  useEffect(() => {
+    void loadRequests();
+  }, [loadRequests, requestsVersion]);
   useEffect(() => {
     if (selected) void loadReview(selected);
     else setReview(null);
@@ -246,8 +318,9 @@ export function LocalizationReviewPanel({
   // Rows written or changed elsewhere (another computer, an agent's report) show up within ~15 s.
   const refreshQuietly = useCallback(() => {
     void loadQueue();
+    void loadRequests();
     if (selected) void loadReview(selected, true);
-  }, [loadQueue, loadReview, selected]);
+  }, [loadQueue, loadRequests, loadReview, selected]);
   useLocalizationVersion(channelId, refreshQuietly);
 
   async function decide(targets: Array<{ row: Row; action: "approve" | "reject" }>) {
@@ -293,9 +366,51 @@ export function LocalizationReviewPanel({
 
   if (queue === null) return <LoadingIndicator className="text-sm text-zinc-500" />;
 
+  const now = Date.now();
+  const shownRequests = requests.filter(
+    (request) => request.status === "requested" || request.status === "in_progress" || (request.status !== "cancelled" && now - Date.parse(request.updatedAt) < FINISHED_SHOWN_MS)
+  );
+  const titleOf = (videoId: string) => queue.find((entry) => entry.video.videoId === videoId)?.video.title ?? (review?.video.videoId === videoId ? review.video.title : videoId);
+
   return (
     <div className="space-y-3">
       {error && <div className="rounded-lg border border-red-900 bg-red-950/50 p-3 text-sm text-red-400">{error}</div>}
+      {shownRequests.length > 0 && (
+        <div className="rounded-lg border border-zinc-800 bg-zinc-950 p-2.5">
+          <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">{t("langRequest.listTitle", { count: shownRequests.length })}</p>
+          <ul className="space-y-1 text-xs">
+            {shownRequests.map((request) => (
+              <li key={request.requestId} className="flex flex-wrap items-center gap-2">
+                <span className={`rounded px-1.5 py-0.5 text-[10px] ${REQUEST_STATUS_CLASS[request.status]}`}>{t(`langRequest.status.${request.status}` as UiTextKey)}</span>
+                {request.overdue && <span className="rounded bg-red-950 px-1.5 py-0.5 text-[10px] text-red-400">{t("langRequest.overdue")}</span>}
+                <span className="text-zinc-300">
+                  {request.videoIds.length === 1 ? titleOf(request.videoIds[0]) : t("langRequest.videos", { count: request.videoIds.length })} · {request.languages.join(", ")}
+                  {request.mode === "redo" ? ` · ${t("langRequest.modeRedo")}` : ""}
+                </span>
+                <span className="text-zinc-500">{formatDisplayDateTime(request.createdAt)}</span>
+                {request.status === "partly_done" && <span className="text-amber-400">{t("langRequest.partly", { done: request.results.length, total: request.videoIds.length })}</span>}
+                {request.failReason && <span className="text-red-400">{request.failReason}</span>}
+                {(request.status === "requested" || request.status === "in_progress") && (
+                  <button type="button" onClick={() => void cancelRequest(request.requestId)} className="ml-auto text-zinc-500 hover:text-zinc-300">
+                    {t("langRequest.cancelRequest")}
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {redoFor && review && (
+        <RequestTranslationDialog
+          channelId={channelId}
+          videoIds={[review.video.videoId]}
+          languages={channelLanguages}
+          defaultLanguages={[redoFor.language]}
+          redo={{ changeId: (redoFor.title ?? redoFor.description)!.changeId }}
+          onClose={() => setRedoFor(null)}
+          onCreated={() => void loadRequests()}
+        />
+      )}
       {queue.length === 0 ? (
         <p className="text-sm text-zinc-500">{t("langReview.queueEmpty")}</p>
       ) : (
@@ -394,7 +509,7 @@ export function LocalizationReviewPanel({
 
                 <div className="space-y-2">
                   {shown.map((language) => (
-                    <LanguageRow key={language.language} language={language} busy={busy} onDecide={decideLanguage} />
+                    <LanguageRow key={language.language} language={language} busy={busy} onDecide={decideLanguage} onRedo={setRedoFor} />
                   ))}
                 </div>
 

@@ -9,6 +9,7 @@ import { formatDisplayDate, formatDisplayDateTime, resolvePublishDate } from "@/
 import { VideoDetailModal } from "./video-detail-modal";
 import { ChangeSetReview } from "./change-set-review";
 import { LocalizationReviewPanel } from "./localization-review-panel";
+import { RequestTranslationDialog } from "./request-translation-dialog";
 import { ConfirmDialog } from "./confirm-dialog";
 import { useRecentSyncConfirm } from "./recent-sync-confirm";
 import { postChannelSync } from "./channel-sync-client";
@@ -292,6 +293,9 @@ export function LanguagesManager() {
 
   const [changeSets, setChangeSets] = useState<ChangeSetSummary[]>([]);
   const [subTab, setSubTab] = useState<SubTab>("by_video");
+  // BL-227 stage 2: the request dialog for the selected videos, and a counter that makes the review's request list reload.
+  const [requestOpen, setRequestOpen] = useState<string[] | null>(null);
+  const [requestsVersion, setRequestsVersion] = useState(0);
   // BL-198: approved sets ticked for «Отправить вместе», and the open summary/conflict window.
   const [sendTogetherIds, setSendTogetherIds] = useState<string[]>([]);
   const [sendTogetherOpen, setSendTogetherOpen] = useState<string[] | null>(null);
@@ -1440,6 +1444,8 @@ export function LanguagesManager() {
             {subTab === "by_video" ? (
               <LocalizationReviewPanel
                 channelId={channelId}
+                channelLanguages={overview?.languages ?? []}
+                requestsVersion={requestsVersion}
                 sendBusy={sendRunner.busy}
                 onChanged={() => void fetchChangeSets(channelId)}
                 onSend={sendVideos}
@@ -1598,6 +1604,19 @@ export function LanguagesManager() {
             </p>
           )}
 
+          {requestOpen && channelId && (
+            <RequestTranslationDialog
+              channelId={channelId}
+              videoIds={requestOpen}
+              languages={overview?.languages ?? []}
+              defaultLanguages={[...new Set((overview?.videos ?? []).filter((v) => requestOpen.includes(v.videoId)).flatMap((v) => v.missingLanguages))]}
+              onClose={() => setRequestOpen(null)}
+              onCreated={() => {
+                setRequestsVersion((n) => n + 1);
+                setSubTab("by_video");
+              }}
+            />
+          )}
           {selectedIds.size > 0 && (
             <div className="relative flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800 bg-zinc-950/60 px-4 py-2 text-sm">
               <div className="flex items-center gap-3">
@@ -1607,6 +1626,12 @@ export function LanguagesManager() {
                 </button>
               </div>
               <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setRequestOpen([...selectedIds])}
+                  className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500"
+                >
+                  {t("langRequest.button")}
+                </button>
                 <button
                   onClick={startBulkGenerate}
                   className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500"
