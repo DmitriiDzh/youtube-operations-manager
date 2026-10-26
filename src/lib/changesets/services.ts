@@ -108,6 +108,13 @@ type ServiceDependencies = {
     info(payload: { event: string; context?: Record<string, unknown> }): void;
     error(payload: { event: string; context?: Record<string, unknown> }): void;
   };
+  /**
+   * BL-227 (ADR 0052): records each approve/reject next to the then-current check report's verdict. Informational only -- a
+   * failure is logged and never fails the decision itself. Optional: absent = nothing recorded.
+   */
+  decisionLog?: {
+    record(channelId: string, decisions: Array<{ changeId: string; action: "approve" | "reject" }>): Promise<void>;
+  };
 };
 
 function toIso(date: Date): string {
@@ -447,6 +454,15 @@ async function persistChangeSet(
 }
 
 export function createChangeSetServices(deps: ServiceDependencies) {
+  async function logDecisions(channelId: string, changeIds: string[], action: "approve" | "reject"): Promise<void> {
+    if (!deps.decisionLog || changeIds.length === 0) return;
+    try {
+      await deps.decisionLog.record(channelId, changeIds.map((changeId) => ({ changeId, action })));
+    } catch (error) {
+      deps.logger.error({ event: "changesets.decision_log_failed", context: { channelId, count: changeIds.length, error: error instanceof Error ? error.message : String(error) } });
+    }
+  }
+
   return {
     /**
      * Generic ChangeSet creation from a set of already-classified/validated field
@@ -784,6 +800,7 @@ export function createChangeSetServices(deps: ServiceDependencies) {
 
         const patch = { approvalStatus: "approved" as const, approvedValue: target.proposedValue, conflictStatus: target.conflictStatus };
         await deps.changeSetStore.updateChange(target.id, patch);
+        await logDecisions(parsedInput.channelId, [target.id], "approve");
 
         const updatedChanges = changes.map((c) => (c.id === target.id ? { ...c, ...patch } : c));
         const newStatus = computeChangeSetStatus(updatedChanges);
@@ -812,6 +829,7 @@ export function createChangeSetServices(deps: ServiceDependencies) {
 
         const patch = { approvalStatus: "rejected" as const, approvedValue: null, conflictStatus: target.conflictStatus };
         await deps.changeSetStore.updateChange(target.id, patch);
+        await logDecisions(parsedInput.channelId, [target.id], "reject");
 
         const updatedChanges = changes.map((c) => (c.id === target.id ? { ...c, ...patch } : c));
         const newStatus = computeChangeSetStatus(updatedChanges);
@@ -851,6 +869,7 @@ export function createChangeSetServices(deps: ServiceDependencies) {
           );
         }
 
+        await logDecisions(parsedInput.channelId, toApprove.map((c) => c.id), "approve");
         const approvedIds = new Set(toApprove.map((c) => c.id));
         const updatedChanges = changes.map((c) =>
           approvedIds.has(c.id) ? { ...c, approvalStatus: "approved" as const, approvedValue: c.proposedValue } : c
@@ -885,6 +904,7 @@ export function createChangeSetServices(deps: ServiceDependencies) {
           );
         }
 
+        await logDecisions(parsedInput.channelId, toReject.map((c) => c.id), "reject");
         const rejectedIds = new Set(toReject.map((c) => c.id));
         const updatedChanges = changes.map((c) =>
           rejectedIds.has(c.id) ? { ...c, approvalStatus: "rejected" as const, approvedValue: null } : c

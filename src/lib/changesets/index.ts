@@ -35,6 +35,13 @@ export function createChangeSetCore() {
     channelLanguageBaseline: { getExpectedDefaultLanguage: async (channelId) => (await getChannelExpectedLanguages(channelId)).defaultLanguage },
     idGenerator: createIdGenerator(),
     logger: createDefaultLogger(),
+    // BL-227 (ADR 0052): each approve/reject is recorded next to the then-current check report's verdict.
+    decisionLog: {
+      async record(channelId, decisions) {
+        const ids = createIdGenerator();
+        await changeDrafts.recordDecisions({ channelId, decisions: decisions.map((decision) => ({ id: ids(), ...decision })) });
+      },
+    },
   });
 }
 

@@ -58,7 +58,8 @@ async function buildWorkbookBuffer(rows: Array<Record<string, string>>, channelI
   return Buffer.from(await workbook.xlsx.writeBuffer());
 }
 
-function createFixture(options: { channelBaseline?: string | null } = {}) {
+function createFixture(options: { channelBaseline?: string | null; decisionLogFails?: boolean } = {}) {
+  const decisions: Array<{ channelId: string; changeId: string; action: string }> = [];
   let channel = makeChannel();
   let videos: StoredVideoRecord[] = [makeVideo()];
   const changeSets = new Map<string, StoredChangeSetRecord>();
@@ -148,10 +149,17 @@ function createFixture(options: { channelBaseline?: string | null } = {}) {
     ...(options.channelBaseline !== undefined ? { channelLanguageBaseline: { getExpectedDefaultLanguage: async () => options.channelBaseline ?? null } } : {}),
     idGenerator: () => `id-${++idCounter}`,
     logger: { info() {}, error() {} },
+    decisionLog: {
+      async record(channelId: string, list: Array<{ changeId: string; action: "approve" | "reject" }>) {
+        if (options.decisionLogFails) throw new Error("document unavailable");
+        for (const entry of list) decisions.push({ channelId, ...entry });
+      },
+    },
   });
 
   return {
     services,
+    decisions,
     setVideos: (next: StoredVideoRecord[]) => {
       videos = next;
     },
@@ -718,4 +726,29 @@ test("BL-226 (review): a conflicting title does not count as on its way, and a c
   const created = await services.createChangeSetFromImport({ channelId: "UC_TEST", filename: "import.xlsx", buffer });
   const detail = await services.getChangeSet({ channelId: "UC_TEST", changeSetId: created.changeSet.id });
   assert.deepEqual(detail.untitledTranslations, [{ videoId: "v1", language: "it" }]);
+});
+
+
+test("BL-227 AC-LR-08: approve, reject and the bulk forms each record a decision; a failing log never fails the decision", async () => {
+  const { services, decisions } = createFixture();
+  const buffer = await buildWorkbookBuffer([
+    { video_id: "v1", language: "es", title: "Hola", description: "Desc", remote_title: "", remote_description: "" },
+  ]);
+  const created = await services.createChangeSetFromImport({ channelId: "UC_TEST", filename: "import.xlsx", buffer });
+  const detail = await services.getChangeSet({ channelId: "UC_TEST", changeSetId: created.changeSet.id });
+  const [title, description] = detail.changes;
+  await services.approveChange({ channelId: "UC_TEST", changeSetId: created.changeSet.id, changeId: title.id });
+  await services.rejectChange({ channelId: "UC_TEST", changeSetId: created.changeSet.id, changeId: title.id });
+  await services.approveAllValid({ channelId: "UC_TEST", changeSetId: created.changeSet.id });
+  assert.deepEqual(decisions.map((d) => [d.changeId, d.action]), [
+    [title.id, "approve"],
+    [title.id, "reject"],
+    [description.id, "approve"],
+  ]);
+
+  const failing = createFixture({ decisionLogFails: true });
+  const again = await failing.services.createChangeSetFromImport({ channelId: "UC_TEST", filename: "import.xlsx", buffer });
+  const changes = (await failing.services.getChangeSet({ channelId: "UC_TEST", changeSetId: again.changeSet.id })).changes;
+  const result = await failing.services.approveChange({ channelId: "UC_TEST", changeSetId: again.changeSet.id, changeId: changes[0].id });
+  assert.equal(result.change.approvalStatus, "approved");
 });
