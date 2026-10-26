@@ -272,15 +272,15 @@ async function loadRevalidated(
     if (read?.alignedFrom && read.alignedTo) languageAlignments.push({ videoId, from: read.alignedFrom, to: read.alignedTo });
   }
 
-  // BL-226: translations this set would leave without a title -- every change not rejected and valid counts (approved, or still to
-  // decide), against the synced copy. Shown before approval; a title from another set sent together is checked by the send.
+  // BL-226: translations this set would leave without a title -- every change not rejected, valid and without a conflict counts
+  // (approved, or still to decide; a conflicting change is never sent), against the synced copy. Shown before approval; a title from another set sent together is checked by the send.
   const untitled: UntitledTranslation[] = [];
   const ownLanguageOf = new Map(videos.map((video) => [video.videoId, video.defaultLanguage]));
   for (const videoId of new Set(finalChanges.map((change) => change.videoId))) {
     const read = videoRead(videoId);
     if (!read) continue;
     const ownLanguage = read.alignedTo ?? ownLanguageOf.get(videoId) ?? channelBaseline;
-    const onTheirWay = finalChanges.filter((change) => change.videoId === videoId && change.approvalStatus !== "rejected" && change.validationStatus === "valid");
+    const onTheirWay = finalChanges.filter((change) => change.videoId === videoId && change.approvalStatus !== "rejected" && change.validationStatus === "valid" && change.conflictStatus === "none");
     const languages = untitledTranslations(
       { isOwnLanguage: (language) => sameLanguage(language, ownLanguage), title: (language) => read.current(language, "title") },
       onTheirWay.map((change) => ({ language: change.language, field: change.field, proposedValue: change.proposedValue, changeType: change.changeType }))
