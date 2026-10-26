@@ -47,10 +47,13 @@ Change sets are kept in the `change-drafts` Automerge document per channel, sync
 (`src/lib/sync-gateway/change-drafts/`). Everything new that the second computer must also see goes into the same document. All
 new keys are optional: documents saved before them lack the keys, and every reader defaults them.
 
-- `provenance[*]` (write-once per set) gains three fields:
+- Write-once details of each set (three fields):
   - `notesJson`: changeId → the agent's note;
   - `originalsJson`: videoId → sha256 of the original title + "\n" + description at creation;
-  - `createdBy`: `owner` | `factory` | `worker` | `agent`, server-stamped from the caller.
+  - `createdBy`: `owner` | `factory` | `worker` | `agent`, server-stamped from the caller (an MCP call is `agent`, the Web UI
+    and the CLI `owner`).
+  These live in their own optional map `setDetails` keyed by change set id (not inside `provenance`, which is projected 1:1 to
+  SQL).
 - `checkReports?: Record<reportId, DraftCheckReport>`, append-only:
   `{ id, changeSetId, reportedAt, reportedBy, entriesJson }`. `entriesJson` holds
   `[{ language, field, verdict, checks: [{ id, result, detail }], note, backTranslation }]`.
@@ -102,15 +105,16 @@ fail on the description row.
   - It returns `{ reportId, reportedAt, replaced: <previous id | null> }`.
 - `agent_localization_report_checks`: the same tool for the channel's worker, own channel only (`WORKER_FACTORY_TOOLS`,
   BL-217), Agent API 4.8.0.
+- The "channel's languages" for `tracked_language` are the Languages table's columns: the tracked ones plus every language the
+  channel's videos already have.
 - `ai_localization_create_change_set` gains an optional `note` (≤ 1000 characters) on each proposal. This is additive: the
   existing flow is unchanged.
-- `changeset_get` (Web and MCP) gains `review`: the current report, the author, notes, original-changed flags and the
-  read-time checks. This is additive.
+- The review itself is read on the Web routes (§6). An agent sees what it reported in its own call's answer; `changeset_get` is unchanged (a read tool for reports can follow if the Operator asks).
 
 ## 6. Web
 
-- `GET /api/channels/[channelId]/localization-review`: the queue. It lists the videos that have changes not yet written in
-  sets that are `in_review` / `partially_approved` / `approved`, with per-video verdict counts.
+- `GET /api/channels/[channelId]/localization-review`: the queue -- the videos with a change that is not rejected and not yet
+  written, with per-video verdict counts. A set that cannot be read (logged) is skipped, not an error for the whole queue.
 - `GET /api/channels/[channelId]/localization-review/[videoId]`: one video. It returns the original, and per language the rows
   with the changes of every set (the ids the existing approve/reject routes take), checks, report, note, author, the
   original-changed flag and the weekly-plan slot.

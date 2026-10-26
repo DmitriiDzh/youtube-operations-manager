@@ -14,7 +14,7 @@ counted the description in UTF-16 units, while YouTube counts it in bytes.
 ## Decision
 
 1. **Reports, notes, authorship, original hashes and decision records live in the `change-drafts` Automerge document**, beside
-   the change sets they describe, as optional, append-only maps (`checkReports`, `decisions`) and write-once provenance fields
+   the change sets they describe, as optional, append-only maps (`checkReports`, `decisions`) and a write-once map `setDetails`
    (`notesJson`, `originalsJson`, `createdBy`).
    - Reason: change sets already sync between computers through this document. A report kept anywhere else would leave the other
      computer showing "not checked yet".
