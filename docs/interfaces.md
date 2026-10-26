@@ -1228,6 +1228,15 @@ A second agent role, separate from the channel agents. Technical contract only (
   - **BL-225 weekly publishing plan tools (Factory API 1.33.0, ADR 0051, `docs/roadmap/plans/WEEKLY_PUBLISHING_PLAN.md`).** One
     plan per channel and week (a Monday), in the `publishing_plans` sync family (the same on every computer). Nothing is sent to
     YouTube by these tools; an approved slot's package is uploaded and scheduled by the owner's computer (stage 3, ADR 0051 §7).
+    - **Translation requests** (BL-227 stage 2, same release 1.34.0): `factory_localization_requests_list` (READ, `{ channelId,
+      status? }` -> `{ requests }` newest first) and the WRITE tools `factory_localization_request_claim` (`{ channelId, requestId }`,
+      one claim wins, else `request_not_claimable` 409), `factory_localization_request_complete` (`{ channelId, requestId, results:
+      [{ videoId, changeSetId }] }` -> `done` | `partly_done`; each set must be the channel's and hold changes of that video) and
+      `factory_localization_request_fail` (`{ channelId, requestId, reason }`). A request: `{ requestId, videoIds, languages, mode:
+      fill_missing | redo, fields: both | title | description, note, redoOfChangeId, status: requested | in_progress | done |
+      partly_done | failed | cancelled, overdue (3 h unclaimed, or 3 h claimed without a result), claimedBy, claimedAt, results,
+      failReason, createdAt, updatedAt }`. The worker's `agent_localization_requests_list` / `_request_claim` / `_complete` /
+      `_fail` act on its own channel only.
     - **`factory_localization_report_checks`** (WRITE, synced with the change set, device mutation gate first, BL-227) `{ channelId,
       changeSetId, entries: [{ language, field: title | description, verdict: pass | warn | fail, checks: [{ id, result, detail }]
       (<= 50), note? (<= 1000), backTranslation? (<= 6000) }] (1-200) }` -> `{ reportId, reportedAt, replaced }`. Each entry must
@@ -1422,6 +1431,9 @@ Every route: a Web session (401) and the active channel (403); `DomainError` →
 - `GET /api/channels/[channelId]/localization-review` — BL-227, read only: `{ videos: [{ video, upload, counts, languages }] }`, the
   videos with a change not rejected and not yet written; `GET .../localization-review/[videoId]` → `{ review }` (one row per
   language with every set's changes, checks, the agent's report and note; `null` when nothing waits).
+- `GET|POST /api/channels/[channelId]/localization-requests` — BL-227 stage 2: list the channel's translation requests, or make one
+  (`{ videoIds, languages, mode?, fields?, note?, redoOfChangeId? }` -> 201 `{ request }`; a video not synced on the channel:
+  `not_found`); `POST .../localization-requests/[requestId]/cancel` (a finished one: `request_not_claimable` 409).
 - `POST /api/channels/[channelId]/change-sets/send-together/plan` — BL-198, read only: `{ changeSetIds, videoIds? }` (BL-227) →
   `{ videoCount, changeCount, languageCount, estimatedUnits, conflicts[], untitled[], inFlightBatchId, inFlightCoversSelection }`
   (`untitled`, BL-226: `[{ videoId, videoTitle, language }]`, translations the send would leave without a title)

@@ -1100,7 +1100,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   - Общий запуск: `useBatchSendRunner` (`send-approved-button.tsx`).
 - Схема не менялась.
 
-### 2.9ay Проверка переводов по видео, проверки и отчёты агента (BL-227, `docs/roadmap/plans/LANGUAGES_REVIEW_PLAN.md`, ADR 0052) — **IMPLEMENTED (этап 1) на ветке `feature/bl-227-languages-review`, не влито в `dev`**
+### 2.9ay Проверка переводов по видео, проверки и отчёты агента (BL-227, `docs/roadmap/plans/LANGUAGES_REVIEW_PLAN.md`, ADR 0052) — **IMPLEMENTED (этапы 1–2) на ветке `feature/bl-227-languages-review`, не влито в `dev`**
 
 - **Общий модуль `src/lib/shared-localization-checks/`** (§M): проверки одного названия/описания (`checkLocalizedField`,
   pass/warn/fail): название 1–100 символов, описание ≤ 5000 байт UTF-8, `<` `>`, письменность ja/ko/zh — провалы; язык видео,
@@ -1117,8 +1117,11 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   только свой канал); `ai_localization_create_change_set` — необязательный `note` у предложения.
 - **Web:** `GET .../localization-review` и `.../localization-review/[videoId]`; `send-together` (и план) принимают `videoIds`.
   Вкладка «Языки» → подвкладка «По видео» (первая, по умолчанию): очередь видео и экран одного видео.
-- **Не сделано (этапы 2–3):** «Запросить переделку» и очередь заявок, новая компоновка раздела. Этап 4 (автоодобрение) не
-  назначен.
+- **Этап 2 — заявки на перевод:** карта `translationRequests` в документе `change-drafts` (requested → in_progress → done /
+  partly_done / failed, отмена владельцем; просрочка 3 ч считается при чтении); инструменты `factory_localization_requests_list`
+  / `_request_claim` / `_complete` / `_fail` и `agent_*` своего канала; маршруты `.../localization-requests`; в UI — «Запросить
+  перевод у агента» для отмеченных видео, «Запросить переделку» у языка с замечаниями, список заявок над очередью.
+- **Этап 4 (автоодобрение) не назначен.**
 
 ### 2.9av Одно хранилище секретов компьютера и скачивание моделей из закрытых репозиториев Hugging Face (BL-134 / BL-199, FO-REQ-0028, `docs/roadmap/plans/DEVICE_SECRETS_PLAN.md`, ADR 0042) — **IMPLEMENTED** (влито в `dev` 2026-10-18, 24d45d67)
 
