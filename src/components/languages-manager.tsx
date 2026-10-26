@@ -8,6 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatDisplayDate, formatDisplayDateTime, resolvePublishDate } from "@/lib/shared-formatting";
 import { VideoDetailModal } from "./video-detail-modal";
 import { ChangeSetReview } from "./change-set-review";
+import { LocalizationReviewPanel } from "./localization-review-panel";
 import { ConfirmDialog } from "./confirm-dialog";
 import { useRecentSyncConfirm } from "./recent-sync-confirm";
 import { postChannelSync } from "./channel-sync-client";
@@ -94,9 +95,11 @@ type ChangeSetSummary = {
   writtenCount?: number;
 };
 
-type SubTab = "in_progress" | "approved" | "written" | "rejected" | "all";
+type SubTab = "by_video" | "in_progress" | "approved" | "written" | "rejected" | "all";
 
 const SUB_TABS: Array<{ value: SubTab; label: UiTextKey }> = [
+  // BL-227 (LANGUAGES_REVIEW_PLAN.md): the review by video, first and opened by default (owner msg 3581).
+  { value: "by_video", label: "languages.subTab.byVideo" },
   { value: "in_progress", label: "languages.subTab.inProgress" },
   { value: "approved", label: "languages.subTab.approved" },
   { value: "written", label: "languages.subTab.written" },
@@ -110,6 +113,7 @@ function isFullyWritten(cs: ChangeSetSummary): boolean {
 }
 
 function matchesSubTab(cs: ChangeSetSummary, subTab: SubTab): boolean {
+  if (subTab === "by_video") return false;
   if (subTab === "all") return true;
   // In progress = still needs a decision; Approved = fully decided and waiting to be sent (partially_approved included);
   // Written = every approved change is on YouTube (BL-198, owner msg 2999: «Одобренные = Ожидающие отправку»).
@@ -287,7 +291,7 @@ export function LanguagesManager() {
   const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
 
   const [changeSets, setChangeSets] = useState<ChangeSetSummary[]>([]);
-  const [subTab, setSubTab] = useState<SubTab>("in_progress");
+  const [subTab, setSubTab] = useState<SubTab>("by_video");
   // BL-198: approved sets ticked for «Отправить вместе», and the open summary/conflict window.
   const [sendTogetherIds, setSendTogetherIds] = useState<string[]>([]);
   const [sendTogetherOpen, setSendTogetherOpen] = useState<string[] | null>(null);
@@ -1100,6 +1104,17 @@ export function LanguagesManager() {
       void fetchOverview(channelId);
     },
   });
+  // BL-227: «Отправить одобренное этого видео» -- the same send-together route, only these videos' changes.
+  const sendVideos = (changeSetIds: string[], videoIds: string[]) => {
+    if (!channelId) return;
+    void sendRunner.start(() =>
+      fetch(`/api/channels/${encodeURIComponent(channelId)}/change-sets/send-together`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ changeSetIds, videoIds }),
+      })
+    );
+  };
   // A ticked set that left «Одобренные» (sent, rejected, deleted) is not sent with the next ones.
   const sendTogetherSelection = useMemo(
     () => sendTogetherIds.filter((id) => changeSets.some((cs) => cs.id === id && matchesSubTab(cs, "approved"))),
@@ -1418,11 +1433,18 @@ export function LanguagesManager() {
                   {t("sendTogether.button", { count: sendTogetherSelection.length })}
                 </button>
               )}
-              <span className="text-xs text-zinc-500">{t("languages.queue.awaiting", { count: filteredChangeSets.length })}</span>
+              {subTab !== "by_video" && <span className="text-xs text-zinc-500">{t("languages.queue.awaiting", { count: filteredChangeSets.length })}</span>}
             </div>
           </div>
           <div className="p-4">
-            {filteredChangeSets.length === 0 ? (
+            {subTab === "by_video" ? (
+              <LocalizationReviewPanel
+                channelId={channelId}
+                sendBusy={sendRunner.busy}
+                onChanged={() => void fetchChangeSets(channelId)}
+                onSend={sendVideos}
+              />
+            ) : filteredChangeSets.length === 0 ? (
               <p className="text-sm text-zinc-500">{t("languages.queue.empty")}</p>
             ) : (
               <div className="space-y-2">
