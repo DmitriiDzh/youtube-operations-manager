@@ -21,6 +21,8 @@ const bodySchema = z
     dryRun: z.boolean().optional(),
     // BL-227: only these videos' changes («Отправить одобренное этого видео»).
     videoIds: z.array(z.string().min(1)).min(1).max(500).optional(),
+    // BL-227 review: only these changes (the review screen's approved rows).
+    changeIds: z.array(z.string().min(1)).min(1).max(5000).optional(),
   })
   .strict();
 

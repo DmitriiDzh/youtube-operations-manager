@@ -32,6 +32,7 @@ export const languages: Record<keyof typeof en, string> = {
   "langReview.verdict.fail": "Есть ошибки",
   "langReview.unchecked": "ещё не проверено",
   "langReview.noTitleChange": "Нового названия нет",
+  "langReview.deletion": "Удалить этот язык у видео",
   "langReview.untitled": "На этом языке нет названия: YouTube не примет всё видео. Отклоните описание или получите название.",
   "langReview.originalChanged": "Оригинал изменился после того, как сделан этот перевод",
   "langReview.passed": "{count, plural, one {# проверка пройдена} few {# проверки пройдено} many {# проверок пройдено} other {# проверки пройдено}}",

@@ -1438,7 +1438,7 @@ Every route: a Web session (401) and the active channel (403); `DomainError` →
   `{ videoCount, changeCount, languageCount, estimatedUnits, conflicts[], untitled[], inFlightBatchId, inFlightCoversSelection }`
   (`untitled`, BL-226: `[{ videoId, videoTitle, language }]`, translations the send would leave without a title)
 - `POST /api/channels/[channelId]/change-sets/send-together` — BL-198: `{ changeSetIds, resolutions?: [{ videoId, language,
-  changeSetId }], dryRun?, videoIds? (BL-227: only these videos' changes) }` → 201 `{ batchId, changeCount, videoCount, rejectedChangeIds }`. Errors:
+  changeSetId }], dryRun?, videoIds? (BL-227: only these videos' changes), changeIds? (BL-227: only these changes -- the review screen's approved rows) }` → 201 `{ batchId, changeCount, videoCount, rejectedChangeIds }`. Errors:
   - `send_merge_conflicts` (409, `details.conflicts`);
   - `send_untitled_translations` (409, `details.untitled`, BL-226; also from the one-set send) -- checked before anything is
     rejected or created;

@@ -199,12 +199,18 @@ export function createSendApprovedServices(deps: SendApprovedDeps) {
   }
 
   /** The selection's sendable, not yet written changes, each tagged with its set; refuses unknown sets and sets of another channel. */
-  async function gather(channelId: string, changeSetIds: string[], videoIds?: string[]): Promise<{ sets: SetInfo[]; changes: Tagged[] }> {
+  async function gather(channelId: string, changeSetIds: string[], videoIds?: string[], changeIds?: string[]): Promise<{ sets: SetInfo[]; changes: Tagged[] }> {
     // BL-227: `videoIds` keeps only those videos' changes (a send from the review screen of one video); an empty list sends nothing.
     if (videoIds !== undefined && videoIds.length === 0) {
       throw new DomainError({ code: "validation_failed", message: "videoIds must name at least one video", details: { videoIds } });
     }
     const onlyVideos = videoIds ? new Set(videoIds) : null;
+    // BL-227 review: `changeIds` keeps exactly the changes the review screen shows as approved (an older set's hidden variant of the
+    // same field is not sent, and two sets never collide).
+    if (changeIds !== undefined && changeIds.length === 0) {
+      throw new DomainError({ code: "validation_failed", message: "changeIds must name at least one change", details: { changeIds } });
+    }
+    const onlyChanges = changeIds ? new Set(changeIds) : null;
     const sets: SetInfo[] = [];
     const changes: Tagged[] = [];
     const written = await writtenAtByChangeId(channelId);
@@ -222,6 +228,7 @@ export function createSendApprovedServices(deps: SendApprovedDeps) {
       const listed = (await deps.changeSets.listChanges(changeSetId)).map((change) => (holds ? { ...change, remoteHolds: holds(change) } : change));
       for (const change of excludeAlreadyWritten(selectSendableChanges(listed), written)) {
         if (onlyVideos && !onlyVideos.has(change.videoId)) continue;
+        if (onlyChanges && !onlyChanges.has(change.id)) continue;
         changes.push({ ...change, fromSet: changeSetId });
       }
     }
@@ -282,8 +289,8 @@ export function createSendApprovedServices(deps: SendApprovedDeps) {
   }
 
   /** BL-198 (AC-ST-01): read only -- what a send of these sets would create, and what must be decided first. */
-  async function planSendTogether(input: { channelId: string; changeSetIds: string[]; videoIds?: string[] }): Promise<SendTogetherPlan> {
-    const { sets, changes } = await gather(input.channelId, input.changeSetIds, input.videoIds);
+  async function planSendTogether(input: { channelId: string; changeSetIds: string[]; videoIds?: string[]; changeIds?: string[] }): Promise<SendTogetherPlan> {
+    const { sets, changes } = await gather(input.channelId, input.changeSetIds, input.videoIds, input.changeIds);
     const units = findConflictUnits(changes);
     // Changes in a conflict unit may still lose; the in-flight check (like the create path's) looks at the ones that surely go in.
     const contested = new Set(units.flatMap((unit) => unit.changes.map((change) => change.id)));
@@ -314,6 +321,8 @@ export function createSendApprovedServices(deps: SendApprovedDeps) {
     dryRun?: boolean;
     /** BL-227: only these videos' changes. */
     videoIds?: string[];
+    /** BL-227 review: only these changes. */
+    changeIds?: string[];
   }): Promise<SendTogetherResult> {
     const dryRun = input.dryRun === true;
     // AC-SEND-02 / AC-ST-07: with Live writes off a live send refuses before touching anything, so no batch row is left behind
@@ -326,7 +335,7 @@ export function createSendApprovedServices(deps: SendApprovedDeps) {
     }
 
     return serialized(input.channelId, async () => {
-      const { sets, changes } = await gather(input.channelId, input.changeSetIds, input.videoIds);
+      const { sets, changes } = await gather(input.channelId, input.changeSetIds, input.videoIds, input.changeIds);
       // Changes a real batch already wrote (and that were not edited since) are not sent a second time: that would only spend quota and a backup
       // to hit the pre-write conflict check against the value that is already live (AC-SEND-13).
       if (changes.length === 0) {

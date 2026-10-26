@@ -20,6 +20,7 @@ type Row = {
   changeId: string;
   changeSetId: string;
   field: "title" | "description";
+  changeType: string;
   baselineValue: string;
   proposedValue: string;
   approvalStatus: "pending" | "approved" | "rejected";
@@ -87,6 +88,13 @@ const CHECK_KEYS: Record<string, UiTextKey> = {
  * publishedAt is only when it was uploaded). */
 const releaseOf = (video: VideoInfo, upload: Upload): string | null => upload?.publishAt ?? (video.privacyStatus === "public" ? video.publishedAt : null);
 
+/** The change a redo replaces: the first open row with a problem (else the first open row). */
+const redoTarget = (language: Language): Row => {
+  const open = [language.title, language.description].filter((row): row is Row => row !== null && !row.written && row.approvalStatus !== "rejected");
+  const failing = (row: Row) => row.validationStatus === "invalid" || row.checks.some((c) => c.result !== "pass") || (row.report?.verdict ?? "pass") !== "pass";
+  return open.find(failing) ?? open[0] ?? (language.title ?? language.description)!;
+};
+
 const rows = (language: Language) => [language.title, language.description].filter((row): row is Row => row !== null);
 const isOpen = (row: Row) => !row.written && row.approvalStatus !== "rejected";
 const canApprove = (language: Language) =>
@@ -150,8 +158,13 @@ function LanguageRow({
         {language.unchecked && <div className="mt-1 text-[10px] text-zinc-500">{t("langReview.unchecked")}</div>}
       </div>
       <div className="min-w-0 text-xs">
-        {language.title ? <p className="text-sm font-medium text-zinc-100">{language.title.proposedValue}</p> : <p className="text-zinc-500">{t("langReview.noTitleChange")}</p>}
-        {language.description && (
+        {present.some((row) => row.changeType === "delete") && <p className="text-sm font-medium text-red-300">{t("langReview.deletion")}</p>}
+        {language.title?.changeType === "delete" ? null : language.title ? (
+          <p className="text-sm font-medium text-zinc-100">{language.title.proposedValue}</p>
+        ) : (
+          <p className="text-zinc-500">{t("langReview.noTitleChange")}</p>
+        )}
+        {language.description && language.description.changeType !== "delete" && (
           <div
             role="button"
             tabIndex={0}
@@ -231,8 +244,8 @@ export function LocalizationReviewPanel({
   /** BL-227 stage 3: what waits for the owner, for the section's strip. */
   onSummary?: (summary: { waiting: number; approvedNotWritten: number; openRequests: number }) => void;
   sendBusy: boolean;
-  /** Starts the send of these sets' approved changes of these videos (the caller's batch runner). */
-  onSend: (changeSetIds: string[], videoIds: string[]) => void;
+  /** Starts the send of exactly these approved changes (of these sets and videos), through the caller's batch runner. */
+  onSend: (changeSetIds: string[], videoIds: string[], changeIds: string[]) => void;
   /** Called after an approve/reject, so the caller can refresh its set list. */
   onChanged?: () => void;
 }) {
@@ -418,7 +431,7 @@ export function LocalizationReviewPanel({
           videoIds={[review.video.videoId]}
           languages={channelLanguages}
           defaultLanguages={[redoFor.language]}
-          redo={{ changeId: (redoFor.title ?? redoFor.description)!.changeId }}
+          redo={{ changeId: redoTarget(redoFor).changeId }}
           onClose={() => setRedoFor(null)}
           onCreated={() => void loadRequests()}
         />
@@ -531,7 +544,7 @@ export function LocalizationReviewPanel({
                   <button
                     type="button"
                     disabled={sendBusy || approvedRows.length === 0}
-                    onClick={() => onSend([...new Set(approvedRows.map((row) => row.changeSetId))], [review.video.videoId])}
+                    onClick={() => onSend([...new Set(approvedRows.map((row) => row.changeSetId))], [review.video.videoId], approvedRows.map((row) => row.changeId))}
                     className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-40"
                   >
                     {t("langReview.send", { count: approvedRows.length })}

@@ -102,3 +102,11 @@ test("AC-LR-12 (read half) and counts: the agent's note and author show; written
   const written = buildVideoReview(input([set("A", "2026-10-26T11:31:00Z", changes)], { writtenChangeIds: new Set(["t", "d"]) }));
   assert.equal(needsReview(written), false);
 });
+
+test("review finding 1: a proposed deletion of a language is not a fail -- its empty text is not checked and it is not 'untitled'", () => {
+  const review = buildVideoReview(
+    input([set("D", "2026-10-26T11:31:00Z", [change("t", "it", "title", "", { changeType: "delete" }), change("d", "it", "description", "", { changeType: "delete" })])])
+  );
+  const it = review.languages[0];
+  assert.deepEqual([it.verdict, it.untitled, it.title?.checks, it.title?.changeType], ["pass", false, [], "delete"]);
+});

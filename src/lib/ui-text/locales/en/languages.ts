@@ -29,6 +29,7 @@ export const languages = {
   "langReview.verdict.fail": "Errors",
   "langReview.unchecked": "not checked yet",
   "langReview.noTitleChange": "No new title",
+  "langReview.deletion": "Remove this language from the video",
   "langReview.untitled": "No title in this language: YouTube would refuse the whole video. Reject the description or get a title.",
   "langReview.originalChanged": "The original changed after this translation was made",
   "langReview.passed": "{count, plural, one {# check passed} other {# checks passed}}",

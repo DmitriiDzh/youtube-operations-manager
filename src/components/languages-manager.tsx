@@ -1112,13 +1112,13 @@ export function LanguagesManager() {
     },
   });
   // BL-227: «Отправить одобренное этого видео» -- the same send-together route, only these videos' changes.
-  const sendVideos = (changeSetIds: string[], videoIds: string[]) => {
+  const sendVideos = (changeSetIds: string[], videoIds: string[], changeIds: string[]) => {
     if (!channelId) return;
     void sendRunner.start(() =>
       fetch(`/api/channels/${encodeURIComponent(channelId)}/change-sets/send-together`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ changeSetIds, videoIds }),
+        body: JSON.stringify({ changeSetIds, videoIds, changeIds }),
       })
     );
   };

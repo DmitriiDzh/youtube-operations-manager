@@ -55,6 +55,8 @@ export type ReviewRow = {
   changeId: string;
   changeSetId: string;
   field: "title" | "description";
+  /** "delete" for a proposed removal of the language (its text is not checked). */
+  changeType: string;
   baselineValue: string;
   proposedValue: string;
   approvalStatus: ReviewChange["approvalStatus"];
@@ -125,6 +127,7 @@ export function buildVideoReview(input: ReviewVideoInput): VideoReview {
       changeId: change.id,
       changeSetId: set.changeSet.id,
       field: change.field,
+      changeType: change.changeType,
       baselineValue: change.baselineValue,
       proposedValue: change.proposedValue,
       approvalStatus: change.approvalStatus,
@@ -132,7 +135,8 @@ export function buildVideoReview(input: ReviewVideoInput): VideoReview {
       validationError: change.validationError,
       conflictStatus: change.conflictStatus,
       written: input.writtenChangeIds.has(change.id),
-      checks: checkLocalizedField({
+      // A proposed deletion has no text to check (its proposed value is empty by design).
+      checks: change.changeType === "delete" ? [] : checkLocalizedField({
         language: change.language,
         field: change.field,
         value: change.proposedValue,
@@ -165,7 +169,7 @@ export function buildVideoReview(input: ReviewVideoInput): VideoReview {
     rows.set(key, { title, description });
     for (const row of [title, description]) {
       if (row && row.approvalStatus !== "rejected" && row.validationStatus === "valid" && row.conflictStatus === "none" && !row.written) {
-        onTheirWay.push({ language, field: row.field, proposedValue: row.proposedValue });
+        onTheirWay.push({ language, field: row.field, proposedValue: row.proposedValue, ...(row.changeType === "delete" ? { changeType: "delete" as const } : {}) });
       }
     }
   }
