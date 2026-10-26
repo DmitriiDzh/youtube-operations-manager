@@ -130,7 +130,7 @@ fail on the description row.
 - **AC-LR-05:** timestamps. The original has 00:00, 05:12 and 1:02:03; a translation with 00:00 and 05:12 warns with "2 of 3".
   The same three in a different order warns too.
 - **AC-LR-06:** reporting twice keeps both reports; the second is current and `replaced` names the first. Reporting for another
-  channel's set refuses with `change_set_not_found`. An entry for a language the set doesn't have refuses with
+  channel's set refuses with `not_found`. An entry for a language the set doesn't have refuses with
   `validation_failed`.
 - **AC-LR-07:** the worker's tool is refused for another channel's set (`CHANNEL_NOT_ACTIVE`).
 - **AC-LR-08:** approve and then reject one change: two decision records, each naming the then-current report id and its verdict

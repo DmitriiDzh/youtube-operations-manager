@@ -3,7 +3,7 @@ import test from "node:test";
 import * as Automerge from "@automerge/automerge";
 import { getStoredChangeById, getStoredChangeSet, upsertChannel } from "@/lib/db";
 import { DomainError, type ChannelDraftDocument, type DraftChange, type DraftChangeSet, type DraftProvenance } from "./contracts";
-import { createChangeDraftsCore, type ServiceDependencies } from "./services";
+import { checkReportEntries, createChangeDraftsCore, latestCheckReport, type ServiceDependencies } from "./services";
 import { createChangeDraftsCache } from "./cache";
 import type { ChangeDraftsStoreAdapter } from "./adapters/automerge-store";
 import type { DiscardedDocumentBackupStore } from "./adapters/discarded-backup-store";
@@ -1708,4 +1708,107 @@ test("AC-MEM-05: a write whose save fails after the change drops the live docume
   const onDisk = Automerge.load<ChannelDraftDocument>((await inner.loadDocumentBytes(CHANNEL))!);
   assert.equal(onDisk.changes["c-1"]!.proposedValue, "v1");
   assert.equal((await core.getDocument({ channelId: CHANNEL })).changes["c-1"]!.proposedValue, "v1");
+});
+
+// BL-227 (docs/roadmap/plans/LANGUAGES_REVIEW_PLAN.md AC-LR-06/08/13, ADR 0052): check reports, set details and decision records live
+// in the channel's document. Expected values by hand from FO-MSG-0025 §2a: reports are append-only and the newest is current; a
+// decision names the report and verdict current for its (language, field) at that moment.
+
+async function setWithTwoChanges(core: ReturnType<typeof createChangeDraftsCore>) {
+  await core.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-1", source: "ai_localization" });
+  for (const [changeId, field] of [["c-t", "title"], ["c-d", "description"]] as const) {
+    await core.addChange({ channelId: CHANNEL, changeId, changeSetId: "cs-1", videoId: "v1", language: "it", field, baselineValue: "", proposedValue: `it ${field}`, changeType: "add" });
+  }
+}
+const entry = (field: "title" | "description", verdict: "pass" | "warn" | "fail") => ({
+  language: "it",
+  field,
+  verdict,
+  checks: [{ id: "length", result: verdict, detail: "d" }],
+});
+
+test("BL-227 AC-LR-06: a second report keeps the first, becomes current and names the one it replaced", async () => {
+  const core = createChangeDraftsCore(makeDeps({ store: fakeStore() }));
+  await setWithTwoChanges(core);
+  const first = await core.addCheckReport({ channelId: CHANNEL, id: "r-1", changeSetId: "cs-1", reportedBy: "worker", entries: [entry("title", "fail")] });
+  assert.equal(first.replacedId, null);
+  const second = await core.addCheckReport({ channelId: CHANNEL, id: "r-2", changeSetId: "cs-1", reportedBy: "worker", entries: [entry("title", "pass"), entry("description", "warn")] });
+  assert.equal(second.replacedId, "r-1");
+  const doc = await core.getDocument({ channelId: CHANNEL });
+  assert.deepEqual(Object.keys(doc.checkReports ?? {}).sort(), ["r-1", "r-2"]);
+  assert.equal(latestCheckReport(doc, "cs-1")?.id, "r-2");
+  assert.deepEqual(checkReportEntries(latestCheckReport(doc, "cs-1")).map((e) => [e.field, e.verdict, e.note, e.backTranslation]), [
+    ["title", "pass", null, null],
+    ["description", "warn", null, null],
+  ]);
+});
+
+test("BL-227 AC-LR-06: a report on an unknown set, or for a language/field the set does not have, is refused and nothing is stored", async () => {
+  const core = createChangeDraftsCore(makeDeps({ store: fakeStore() }));
+  await setWithTwoChanges(core);
+  await assert.rejects(
+    core.addCheckReport({ channelId: CHANNEL, id: "r-x", changeSetId: "cs-nope", reportedBy: "factory", entries: [entry("title", "pass")] }),
+    (error: unknown) => error instanceof DomainError && error.code === "not_found"
+  );
+  await assert.rejects(
+    core.addCheckReport({ channelId: CHANNEL, id: "r-y", changeSetId: "cs-1", reportedBy: "factory", entries: [{ ...entry("title", "pass"), language: "de" }] }),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
+  );
+  const doc = await core.getDocument({ channelId: CHANNEL });
+  assert.deepEqual(Object.keys(doc.checkReports ?? {}), []);
+});
+
+test("BL-227 AC-LR-08: approve then reject records two decisions with the then-current report and verdict (null without a report)", async () => {
+  const core = createChangeDraftsCore(makeDeps({ store: fakeStore() }));
+  await setWithTwoChanges(core);
+  const [beforeReport] = await core.recordDecisions({ channelId: CHANNEL, decisions: [{ id: "d-0", changeId: "c-d", action: "approve" }] });
+  assert.deepEqual([beforeReport.reportId, beforeReport.verdict], [null, null]);
+  await core.addCheckReport({ channelId: CHANNEL, id: "r-1", changeSetId: "cs-1", reportedBy: "worker", entries: [entry("title", "warn")] });
+  const [approve] = await core.recordDecisions({ channelId: CHANNEL, decisions: [{ id: "d-1", changeId: "c-t", action: "approve" }] });
+  await core.addCheckReport({ channelId: CHANNEL, id: "r-2", changeSetId: "cs-1", reportedBy: "worker", entries: [entry("title", "fail")] });
+  const [reject] = await core.recordDecisions({ channelId: CHANNEL, decisions: [{ id: "d-2", changeId: "c-t", action: "reject" }] });
+  assert.deepEqual([approve.action, approve.reportId, approve.verdict], ["approve", "r-1", "warn"]);
+  assert.deepEqual([reject.action, reject.reportId, reject.verdict], ["reject", "r-2", "fail"]);
+  // The description has no entry in r-2: no verdict for it.
+  const [desc] = await core.recordDecisions({ channelId: CHANNEL, decisions: [{ id: "d-3", changeId: "c-d", action: "reject" }] });
+  assert.deepEqual([desc.reportId, desc.verdict], [null, null]);
+  const doc = await core.getDocument({ channelId: CHANNEL });
+  assert.equal(Object.keys(doc.decisions ?? {}).length, 4);
+});
+
+test("BL-227: set details are written once; purging the set removes its details, reports and decisions", async () => {
+  const core = createChangeDraftsCore(makeDeps({ store: fakeStore() }));
+  await setWithTwoChanges(core);
+  await core.createSetDetails({ channelId: CHANNEL, changeSetId: "cs-1", createdBy: "worker", notes: { "c-t": "shortened" }, originals: { v1: "abc" } });
+  await assert.rejects(
+    core.createSetDetails({ channelId: CHANNEL, changeSetId: "cs-1", createdBy: "worker", notes: {}, originals: {} }),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
+  );
+  await core.addCheckReport({ channelId: CHANNEL, id: "r-1", changeSetId: "cs-1", reportedBy: "worker", entries: [entry("title", "pass")] });
+  await core.recordDecisions({ channelId: CHANNEL, decisions: [{ id: "d-1", changeId: "c-t", action: "approve" }] });
+  let doc = await core.getDocument({ channelId: CHANNEL });
+  assert.equal(JSON.parse(doc.setDetails?.["cs-1"].notesJson ?? "{}")["c-t"], "shortened");
+  await core.purgeChangeSets({ channelId: CHANNEL, changeSetIds: ["cs-1"] });
+  doc = await core.getDocument({ channelId: CHANNEL });
+  assert.deepEqual([Object.keys(doc.setDetails ?? {}), Object.keys(doc.checkReports ?? {}), Object.keys(doc.decisions ?? {})], [[], [], []]);
+});
+
+test("BL-227 AC-LR-13: a document saved before these maps existed reads as not checked and takes a report", async () => {
+  const store = fakeStore();
+  const old = Automerge.from<Omit<ChannelDraftDocument, "setDetails" | "checkReports" | "decisions">>({
+    channelId: CHANNEL,
+    changeSets: {
+      "cs-1": { id: "cs-1", channelId: CHANNEL, source: "ai_localization", status: "in_review", importedFilename: null, schemaVersion: null, exportedAt: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    },
+    changes: {
+      "c-t": { id: "c-t", changeSetId: "cs-1", videoId: "v1", language: "it", field: "title", baselineValue: "", proposedValue: "x", changeType: "add", validationStatus: "valid", validationError: null, conflictStatus: "none", approvalStatus: "pending", approvedValue: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    },
+  });
+  await store.saveDocumentBytes(CHANNEL, Automerge.save(old));
+  const core = createChangeDraftsCore(makeDeps({ store }));
+  let doc = await core.getDocument({ channelId: CHANNEL });
+  assert.equal(latestCheckReport(doc, "cs-1"), null);
+  await core.addCheckReport({ channelId: CHANNEL, id: "r-1", changeSetId: "cs-1", reportedBy: "factory", entries: [entry("title", "pass")] });
+  doc = await core.getDocument({ channelId: CHANNEL });
+  assert.equal(latestCheckReport(doc, "cs-1")?.id, "r-1");
 });

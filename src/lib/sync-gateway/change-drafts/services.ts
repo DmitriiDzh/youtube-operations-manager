@@ -6,11 +6,18 @@ import {
   type DraftChange,
   type DraftChangeSet,
   type DraftProvenance,
+  type DraftCheckReport,
+  type DraftDecision,
+  type DraftSetDetails,
+  type CheckReportEntry,
   type FieldConflict,
   type MergeResult,
 } from "./contracts";
 import {
   addChangeInputSchema,
+  addCheckReportInputSchema,
+  createSetDetailsInputSchema,
+  recordDecisionsInputSchema,
   bulkPatchChangesInputSchema,
   channelIdInputSchema,
   createChangeSetInputSchema,
@@ -68,6 +75,30 @@ const MUTABLE_CHANGE_FIELDS = [
   "approvalStatus",
   "approvedValue",
 ] as const satisfies readonly (keyof DraftChange)[];
+
+/**
+ * BL-227 (ADR 0052): the current check report of a set -- the newest by `reportedAt`, then `id`; null when there is none ("not
+ * checked yet"). Older reports stay as history.
+ */
+export function latestCheckReport(doc: Pick<ChannelDraftDocument, "checkReports">, changeSetId: string): DraftCheckReport | null {
+  let latest: DraftCheckReport | null = null;
+  for (const report of Object.values(doc.checkReports ?? {})) {
+    if (report.changeSetId !== changeSetId) continue;
+    if (!latest || report.reportedAt > latest.reportedAt || (report.reportedAt === latest.reportedAt && report.id > latest.id)) latest = report;
+  }
+  return latest;
+}
+
+/** The entries of a report (its JSON parsed); [] for an unreadable one, never a throw on read. */
+export function checkReportEntries(report: Pick<DraftCheckReport, "entriesJson"> | null): CheckReportEntry[] {
+  if (!report) return [];
+  try {
+    const parsed = JSON.parse(report.entriesJson) as unknown;
+    return Array.isArray(parsed) ? (parsed as CheckReportEntry[]) : [];
+  } catch {
+    return [];
+  }
+}
 
 function emptyDocument(channelId: string): Automerge.Doc<ChannelDraftDocument> {
   return Automerge.from<ChannelDraftDocument>({
@@ -596,6 +627,108 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
      * `src/lib/changesets/services.ts` only ever passes changes belonging to a single change
      * set/channel in one call.
      */
+    /** BL-227: a set's write-once details (author, notes, original hashes), saved right after the set. */
+    async createSetDetails(input: unknown): Promise<DraftSetDetails> {
+      const parsed = parseWithSchema(createSetDetailsInputSchema, input, "createSetDetails input");
+      const doc = await loadOrCreateDocument(parsed.channelId);
+      if (!doc.changeSets[parsed.changeSetId]) {
+        throw new DomainError({ code: "not_found", message: "Change set not found", details: { changeSetId: parsed.changeSetId } });
+      }
+      if (doc.setDetails?.[parsed.changeSetId]) {
+        throw new DomainError({ code: "validation_failed", message: "This change set already has its details", details: { changeSetId: parsed.changeSetId } });
+      }
+      const details: DraftSetDetails = {
+        changeSetId: parsed.changeSetId,
+        createdBy: parsed.createdBy,
+        notesJson: JSON.stringify(parsed.notes),
+        originalsJson: JSON.stringify(parsed.originals),
+        createdAt: new Date().toISOString(),
+      };
+      const next = Automerge.change(doc, `create set details ${parsed.changeSetId}`, (draft) => {
+        if (!draft.setDetails) draft.setDetails = {};
+        draft.setDetails[parsed.changeSetId] = details;
+      });
+      await saveDocument(parsed.channelId, next);
+      return details;
+    },
+
+    /**
+     * BL-227: adds one check report to a set (append-only; the newest is current). Every entry must name a (language, field) the
+     * set has a change for. Returns the report and the id of the report it replaces as current (null for the first).
+     */
+    async addCheckReport(input: unknown): Promise<{ report: DraftCheckReport; replacedId: string | null }> {
+      const parsed = parseWithSchema(addCheckReportInputSchema, input, "addCheckReport input");
+      const doc = await loadOrCreateDocument(parsed.channelId);
+      if (!doc.changeSets[parsed.changeSetId]) {
+        throw new DomainError({ code: "not_found", message: "Change set not found for this channel", details: { changeSetId: parsed.changeSetId } });
+      }
+      const targets = new Set(
+        Object.values(doc.changes)
+          .filter((change) => change.changeSetId === parsed.changeSetId)
+          .map((change) => `${change.language.toLowerCase()}\u0000${change.field}`)
+      );
+      const unknown = parsed.entries.filter((entry) => !targets.has(`${entry.language.toLowerCase()}\u0000${entry.field}`));
+      if (unknown.length > 0) {
+        throw new DomainError({
+          code: "validation_failed",
+          message: "A report entry names a language and field this change set has no change for",
+          details: { entries: unknown.map((entry) => ({ language: entry.language, field: entry.field })) },
+        });
+      }
+      const replaced = latestCheckReport(doc, parsed.changeSetId);
+      const entries: CheckReportEntry[] = parsed.entries.map((entry) => ({
+        language: entry.language,
+        field: entry.field,
+        verdict: entry.verdict,
+        checks: entry.checks,
+        note: entry.note ?? null,
+        backTranslation: entry.backTranslation ?? null,
+      }));
+      // Never before the current one, so the new report is always the current one even on a clock behind the other computer's.
+      const now = new Date().toISOString();
+      const reportedAt = replaced && replaced.reportedAt >= now ? new Date(Date.parse(replaced.reportedAt) + 1).toISOString() : now;
+      const report: DraftCheckReport = { id: parsed.id, changeSetId: parsed.changeSetId, reportedAt, reportedBy: parsed.reportedBy, entriesJson: JSON.stringify(entries) };
+      const next = Automerge.change(doc, `add check report ${parsed.id}`, (draft) => {
+        if (!draft.checkReports) draft.checkReports = {};
+        draft.checkReports[parsed.id] = report;
+      });
+      await saveDocument(parsed.channelId, next);
+      return { report, replacedId: replaced?.id ?? null };
+    },
+
+    /**
+     * BL-227: records the owner's approve/reject of changes, each with the report and verdict current for its (language, field) at
+     * this moment. Informational only: nothing reads it to decide anything.
+     */
+    async recordDecisions(input: unknown): Promise<DraftDecision[]> {
+      const parsed = parseWithSchema(recordDecisionsInputSchema, input, "recordDecisions input");
+      const doc = await loadOrCreateDocument(parsed.channelId);
+      const now = new Date().toISOString();
+      const records: DraftDecision[] = parsed.decisions.map((decision) => {
+        const change = doc.changes[decision.changeId];
+        if (!change) throw new DomainError({ code: "not_found", message: "Change not found", details: { changeId: decision.changeId } });
+        const report = latestCheckReport(doc, change.changeSetId);
+        const entry = checkReportEntries(report).find(
+          (candidate) => candidate.field === change.field && candidate.language.toLowerCase() === change.language.toLowerCase()
+        );
+        return {
+          id: decision.id,
+          changeId: change.id,
+          changeSetId: change.changeSetId,
+          action: decision.action,
+          reportId: entry ? report!.id : null,
+          verdict: entry?.verdict ?? null,
+          decidedAt: now,
+        };
+      });
+      const next = Automerge.change(doc, `record ${records.length} decisions`, (draft) => {
+        if (!draft.decisions) draft.decisions = {};
+        for (const record of records) draft.decisions[record.id] = record;
+      });
+      await saveDocument(parsed.channelId, next);
+      return records;
+    },
+
     async bulkPatchChanges(input: unknown): Promise<DraftChange[]> {
       const parsed = parseWithSchema(bulkPatchChangesInputSchema, input, "bulkPatchChanges input");
       const doc = await loadOrCreateDocument(parsed.channelId);
@@ -915,9 +1048,16 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
         const provenanceIds = Object.entries(before.provenance ?? {})
           .filter(([, entry]) => targetIds.has(entry.changeSetId))
           .map(([id]) => id);
+        // BL-227: a purged set's details, reports and decision records go with it.
+        const detailIds = Object.keys(before.setDetails ?? {}).filter((id) => targetIds.has(id));
+        const reportIds = Object.entries(before.checkReports ?? {}).filter(([, report]) => targetIds.has(report.changeSetId)).map(([id]) => id);
+        const decisionIds = Object.entries(before.decisions ?? {}).filter(([, record]) => targetIds.has(record.changeSetId)).map(([id]) => id);
         const after = Automerge.change(before, (draft) => {
           for (const id of changeIds) delete draft.changes[id];
           for (const id of provenanceIds) delete draft.provenance![id];
+          for (const id of detailIds) delete draft.setDetails![id];
+          for (const id of reportIds) delete draft.checkReports![id];
+          for (const id of decisionIds) delete draft.decisions![id];
           for (const id of targetIds) delete draft.changeSets[id];
         });
         await saveDocument(parsed.channelId, after);

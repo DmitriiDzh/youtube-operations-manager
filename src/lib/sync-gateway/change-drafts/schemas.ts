@@ -208,3 +208,57 @@ export const resolveConflictInputSchema = z
     winningActorId: z.string().min(1),
   })
   .strict();
+
+// BL-227 (ADR 0052): set details, check reports and decision records.
+const SET_AUTHORS = ["owner", "factory", "worker", "agent"] as const;
+const VERDICTS = ["pass", "warn", "fail"] as const;
+
+export const createSetDetailsInputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    changeSetId: z.string().min(1),
+    createdBy: z.enum(SET_AUTHORS),
+    notes: z.record(z.string(), z.string()),
+    originals: z.record(z.string(), z.string()),
+  })
+  .strict();
+
+export const checkReportEntrySchema = z
+  .object({
+    language: z.string().min(1).max(35),
+    field: z.enum(["title", "description"]),
+    verdict: z.enum(VERDICTS),
+    checks: z
+      .array(z.object({ id: z.string().min(1).max(64), result: z.enum(VERDICTS), detail: z.string().max(500) }).strict())
+      .max(50),
+    note: z.string().max(1000).nullable().optional(),
+    backTranslation: z.string().max(6000).nullable().optional(),
+  })
+  .strict();
+
+export const addCheckReportInputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    id: z.string().min(1),
+    changeSetId: z.string().min(1),
+    reportedBy: z.enum(SET_AUTHORS),
+    entries: z.array(checkReportEntrySchema).min(1).max(200),
+  })
+  .strict();
+
+export const recordDecisionsInputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    decisions: z
+      .array(
+        z
+          .object({
+            id: z.string().min(1),
+            changeId: z.string().min(1),
+            action: z.enum(["approve", "reject"]),
+          })
+          .strict()
+      )
+      .min(1),
+  })
+  .strict();

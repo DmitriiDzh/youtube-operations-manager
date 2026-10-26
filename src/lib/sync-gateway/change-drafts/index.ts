@@ -27,6 +27,6 @@ export function createChangeDraftsCoreForProduction() {
   });
 }
 
-export { createChangeDraftsCore } from "./services";
+export { createChangeDraftsCore, latestCheckReport, checkReportEntries } from "./services";
 export type { ChangeDraftsCore, ServiceDependencies } from "./services";
 export * from "./contracts";

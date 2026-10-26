@@ -130,6 +130,59 @@ export type ChannelDraftDocument = {
   changeSets: Record<string, DraftChangeSet>;
   changes: Record<string, DraftChange>;
   provenance?: Record<string, DraftProvenance>;
+  /** BL-227 (ADR 0052): write-once details of a set, keyed by change set id. Optional for the same reason as `provenance`. */
+  setDetails?: Record<string, DraftSetDetails>;
+  /** BL-227: agents' check reports, append-only (the newest of a set is current). Optional, as above. */
+  checkReports?: Record<string, DraftCheckReport>;
+  /** BL-227: the owner's approve/reject records next to the then-current verdict, append-only. Optional, as above. */
+  decisions?: Record<string, DraftDecision>;
+};
+
+/** Who made a change set -- server-stamped from the caller, never caller-supplied. */
+export type SetAuthor = "owner" | "factory" | "worker" | "agent";
+
+/**
+ * BL-227 (ADR 0052): what a change set's creator said about it, written once with the set. Not in SQL (the projection mirrors
+ * `change_sets`/`changes`/provenance only); read from the document.
+ */
+export type DraftSetDetails = {
+  changeSetId: string;
+  createdBy: SetAuthor;
+  /** JSON: changeId → the agent's note for that change. */
+  notesJson: string;
+  /** JSON: videoId → sha256 hex of the original title + "\n" + description when the set was made. */
+  originalsJson: string;
+  createdAt: string;
+};
+
+export type CheckVerdict = "pass" | "warn" | "fail";
+/** One entry of an agent's report: its verdict on one (language, field) of the set, and the checks behind it. */
+export type CheckReportEntry = {
+  language: string;
+  field: ChangeField;
+  verdict: CheckVerdict;
+  checks: Array<{ id: string; result: CheckVerdict; detail: string }>;
+  note: string | null;
+  backTranslation: string | null;
+};
+/** BL-227: one check report on a set; `entriesJson` is `CheckReportEntry[]` as JSON (one Automerge string, never merged inside). */
+export type DraftCheckReport = {
+  id: string;
+  changeSetId: string;
+  reportedAt: string;
+  reportedBy: SetAuthor;
+  entriesJson: string;
+};
+
+/** BL-227: one approve/reject of a change, with the report and verdict that were current then (null = no report). */
+export type DraftDecision = {
+  id: string;
+  changeId: string;
+  changeSetId: string;
+  action: "approve" | "reject";
+  reportId: string | null;
+  verdict: CheckVerdict | null;
+  decidedAt: string;
 };
 
 /**
