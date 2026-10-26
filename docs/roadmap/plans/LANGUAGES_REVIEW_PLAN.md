@@ -1,7 +1,7 @@
 # Languages: translation review by video, checks and agent reports (BL-227)
 
 Status: **Stage 1 assigned** (owner, Telegram msg 3581, 2026-10-26: «Да» to the mockup and stage 1, after msgs 3567/3575/3578).
-Stage 2 (translation request queue) and stage 3 (section layout) follow on the same branch, merged once. Stage 4 (auto-approve) is
+Stage 2 (translation request queue) and stage 3 (section layout) follow on the same branch, merged once (owner msg 3585: «Делай все в одной ветке и потом общий мердж»). Stage 4 (auto-approve) is
 **not assigned** — asked twice (msgs 3575, 3578), no answer. ADR 0052. Operator input: DEV-MSG-0006 → FO-MSG-0025 (with §2a).
 
 ## 1. Why
@@ -148,6 +148,46 @@ fail on the description row.
 - **AC-LR-13:** a document saved before this change (no `checkReports` / `decisions` / new provenance fields) loads, syncs and
   reads as "not checked yet".
 - **AC-LR-14:** every new UI string has en and ru keys.
+
+## 7a. Stage 2: translation requests (FO-MSG-0025 §1, option A)
+
+- **What the owner does.** «Запросить перевод» on one video or on several selected in the video table, and «Запросить переделку» on
+  a language row of the review screen. The request dialog asks for:
+  - the languages (default: every language of the channel the video lacks; for a redo, that language);
+  - the mode: `fill_missing` (default) or `redo`;
+  - the fields: both (default), title only or description only;
+  - an optional note (≤ 1000 characters).
+- **Where it lives.** It goes in the `change-drafts` document, map `translationRequests` (synced, like the sets it produces):
+  `{ id, videoIds, languages, mode, fields, note, redoOfChangeId, originalsJson, status, claimedBy, claimedAt, result, failReason,
+  createdAt, updatedAt }`. `result` lists `{ videoId, changeSetId }`.
+- **Status:**
+  - `requested` → `in_progress` (claimed) → `done` (every video has a set) | `partly_done` (some do) | `failed` (with a reason);
+  - `overdue` is derived on read: 3 h after creation without a claim, or 3 h after the claim without a completion;
+  - the owner can cancel a request that is not done (`cancelled`).
+- **Tools** (Factory API 1.35.0; the worker's `agent_*` own channel only, Agent API 4.9.0):
+  - `factory_localization_requests_list` (`{ channelId, status? }`, newest first) — READ;
+  - `factory_localization_request_claim` — WRITE. It is atomic in this process: the first claim of a `requested` request wins,
+    later ones get `request_not_claimable`. A claim the other computer made at the same moment is resolved by the document merge:
+    one claimant stays, and it is shown;
+  - `factory_localization_request_complete` (`{ channelId, requestId, results: [{ videoId, changeSetId }] }`; each set must be the
+    channel's and hold changes of that video) — WRITE;
+  - `factory_localization_request_fail` (`{ channelId, requestId, reason }`) — WRITE.
+  Only the claimant's role may complete or fail it (factory or worker). A request never approves, rejects or sends anything.
+- **Web:**
+  - `POST .../localization-requests` (create);
+  - `GET .../localization-requests` (list);
+  - `POST .../localization-requests/[id]/cancel`.
+  The «По видео» tab shows open requests with their status, and a video's open request next to it in the table.
+
+Acceptance (stage 2):
+- **AC-LR-20:** create → `requested`; claim → `in_progress` with the claimant; a second claim → `request_not_claimable`.
+- **AC-LR-21:** completing with sets for 2 of 3 videos → `partly_done`; with all 3 → `done`. A set of another channel, or one
+  without changes of that video, is refused with `validation_failed`.
+- **AC-LR-22:** fail without a claim → `request_not_claimable`; fail after the claim → `failed` with the reason.
+- **AC-LR-23:** overdue: created 3 h + 1 min ago and unclaimed → overdue; claimed 1 h ago → not overdue.
+- **AC-LR-24:** the worker's tools see and act only on its own channel's requests (`CHANNEL_NOT_ACTIVE`).
+- **AC-LR-25:** cancelling a done request is refused; cancelling a requested one → `cancelled`, and a claim then fails.
+- **AC-LR-26:** a redo request from a row carries `redoOfChangeId`, `mode: redo` and that language.
 
 ## 8. Risks
 
