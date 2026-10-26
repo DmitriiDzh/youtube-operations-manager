@@ -73,7 +73,8 @@ export function checkLocalizedField(input: LocalizedFieldInput): LocalizationChe
     add("description_bytes", bytes > DESCRIPTION_MAX_BYTES, "fail", `The description has ${bytes} bytes; YouTube allows ${DESCRIPTION_MAX_BYTES}`, `${bytes} of ${DESCRIPTION_MAX_BYTES} bytes`);
   }
   add("angle_brackets", hasAngleBrackets(input.value), "fail", "YouTube refuses < and > in a title or description");
-  add("own_language", input.ownLanguage !== null && sameLanguage(input.language, input.ownLanguage), "fail", `${input.language} is the video's own language: its text is the video's title and description, not a translation`);
+  // A warning, not a failure: an XLSX row in the video's own language legitimately edits its title/description (PROJECT_SPEC §16).
+  add("own_language", input.ownLanguage !== null && sameLanguage(input.language, input.ownLanguage), "warn", `${input.language} is the video's own language: this edits the video's own title and description, it is not a translation`);
 
   const isOwnScript = ownScript(input.language);
   if (isOwnScript) {

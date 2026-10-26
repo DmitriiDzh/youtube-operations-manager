@@ -38,10 +38,10 @@ test("AC-LR-02: the title limit is 100 characters counted as code points; an emp
   assert.equal(result(base({ value: "   " }), "title_length"), "fail");
 });
 
-test("angle brackets and the video's own language fail", () => {
+test("angle brackets fail; the video's own language only warns (an XLSX row there edits the original, PROJECT_SPEC §16)", () => {
   assert.equal(result(base({ value: "Titel <b>" }), "angle_brackets"), "fail");
   assert.equal(result(base({ field: "description", value: "a > b", original: "x" }), "angle_brackets"), "fail");
-  assert.equal(result(base({ language: "EN" }), "own_language"), "fail");
+  assert.equal(result(base({ language: "EN" }), "own_language"), "warn");
   assert.equal(result(base({}), "own_language"), "pass");
 });
 

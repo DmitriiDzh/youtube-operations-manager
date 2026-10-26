@@ -1,7 +1,6 @@
 import type { ProgressReporter } from "@/lib/operation-progress";
+import { failedChecks } from "@/lib/shared-localization-checks";
 import {
-  YOUTUBE_DESCRIPTION_MAX_LENGTH,
-  YOUTUBE_TITLE_MAX_LENGTH,
   classifyFieldChange,
   currentRemoteValueFor,
   isValidLanguageCode,
@@ -232,16 +231,16 @@ async function requireChannel(deps: ServiceDependencies, channelId: string): Pro
 function classifyAndValidateField(
   currentRemoteValue: string,
   proposedValue: string,
-  field: "title" | "description"
+  field: "title" | "description",
+  language: string
 ): Pick<GeneratedFieldOutcome, "changeType" | "validationStatus" | "validationError"> {
-  const trimmed = proposedValue.trim();
-  const maxLength = field === "title" ? YOUTUBE_TITLE_MAX_LENGTH : YOUTUBE_DESCRIPTION_MAX_LENGTH;
-
+  // BL-227 (ADR 0052): the field rules are the shared checks' failures (a description counted in bytes, < >, ja/ko/zh script).
   let validationError: string | null = null;
-  if (trimmed.length === 0) {
+  if (proposedValue.trim().length === 0) {
     validationError = `AI-generated ${field} is empty after generation/editing`;
-  } else if (proposedValue.length > maxLength) {
-    validationError = `${field} exceeds ${maxLength} characters (${proposedValue.length})`;
+  } else {
+    const failed = failedChecks({ language, field, value: proposedValue, original: "", ownLanguage: null, trackedLanguages: [] });
+    if (failed.length > 0) validationError = failed.map((check) => check.detail).join("; ");
   }
 
   return {
@@ -385,7 +384,7 @@ export function createAiLocalizationServices(deps: ServiceDependencies) {
             ]
           ).map(({ field, proposedValue }) => {
             const currentRemoteValue = currentRemoteValueFor(target.video, target.language, field, channelBaseline);
-            const classified = classifyAndValidateField(currentRemoteValue, proposedValue, field);
+            const classified = classifyAndValidateField(currentRemoteValue, proposedValue, field, target.language);
             return {
               videoId: target.videoId,
               language: target.language,
@@ -502,7 +501,7 @@ export function createAiLocalizationServices(deps: ServiceDependencies) {
             if (proposedValue === undefined) continue;
 
             const currentRemoteValue = currentRemoteValueFor(video, proposal.language, field, channelBaseline);
-            const classified = classifyAndValidateField(currentRemoteValue, proposedValue, field);
+            const classified = classifyAndValidateField(currentRemoteValue, proposedValue, field, proposal.language);
 
             if (classified.changeType === "unchanged" && classified.validationStatus === "valid") continue;
 

@@ -73,7 +73,7 @@ channel's tracked languages. Output: `[{ id, result: pass|warn|fail, detail }]`.
 | `title_length` | title 1–100 characters (code points, after trim) | fail |
 | `description_bytes` | description ≤ 5000 UTF-8 bytes | fail |
 | `angle_brackets` | no `<` or `>` | fail |
-| `own_language` | not the video's own language | fail |
+| `own_language` | not the video's own language (an XLSX row there legitimately edits the original, PROJECT_SPEC §16) | warn |
 | `script` | ja: has kana/kanji; ko: has hangul; zh-*: has CJK ideographs; and Latin letters are not the majority | fail |
 | `tracked_language` | one of the channel's tracked languages | warn |
 | `identical_to_original` | differs from the original (trimmed) | warn |

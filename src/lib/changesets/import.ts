@@ -13,12 +13,11 @@ import {
 import { DomainError } from "./contracts";
 import type { ImportRowError, ParsedFieldOutcome, ParsedRowResult, ParsedWorkbook, StoredVideoRecord } from "./contracts";
 import {
-  YOUTUBE_DESCRIPTION_MAX_LENGTH,
-  YOUTUBE_TITLE_MAX_LENGTH,
   classifyFieldChange,
   readWithChannelBaseline,
   isValidLanguageCode,
 } from "./diff";
+import { failedChecks } from "@/lib/shared-localization-checks";
 
 // Resource-safety limits (docs/PROJECT_SPEC.md §7 "Resource safety"): bound file size
 // and row count so a malformed/huge workbook cannot exhaust memory or hang the import.
@@ -192,15 +191,9 @@ export async function parseAndValidateWorkbook(args: {
       field: "title" | "description";
       proposedRaw: string;
       baselineRaw: string;
-      maxLength: number;
     }> = [
-      { field: "title", proposedRaw: titleRaw, baselineRaw: remoteTitle, maxLength: YOUTUBE_TITLE_MAX_LENGTH },
-      {
-        field: "description",
-        proposedRaw: descriptionRaw,
-        baselineRaw: remoteDescription,
-        maxLength: YOUTUBE_DESCRIPTION_MAX_LENGTH,
-      },
+      { field: "title", proposedRaw: titleRaw, baselineRaw: remoteTitle },
+      { field: "description", proposedRaw: descriptionRaw, baselineRaw: remoteDescription },
     ];
 
     for (const spec of fieldSpecs) {
@@ -209,10 +202,9 @@ export async function parseAndValidateWorkbook(args: {
 
       const read = readWithChannelBaseline(syncedVideo, args.channelBaseline ?? null);
       const currentRemoteValue = read.current(language, spec.field);
-      const validationError =
-        spec.proposedRaw.length > spec.maxLength
-          ? `${spec.field} exceeds ${spec.maxLength} characters (${spec.proposedRaw.length})`
-          : null;
+      // BL-227 (ADR 0052): the shared checks' failures (a description counted in bytes, < >, ja/ko/zh script).
+      const failed = failedChecks({ language, field: spec.field, value: spec.proposedRaw, original: "", ownLanguage: null, trackedLanguages: [] });
+      const validationError = failed.length > 0 ? failed.map((check) => check.detail).join("; ") : null;
 
       fields.push({
         videoId,

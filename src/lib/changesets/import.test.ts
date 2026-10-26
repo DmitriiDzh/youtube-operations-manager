@@ -225,3 +225,20 @@ test("summarizeParsedWorkbook: matches the mutually-exclusive row categories (va
   assert.equal(summary.conflicts, 0);
   assert.equal(summary.localizationRows, 4);
 });
+
+test("BL-227 AC-LR-01: a description over 5000 UTF-8 bytes is invalid even under 5000 characters; 5000 bytes is valid", async () => {
+  // 1667 × "あ" (3 bytes) + "ab" = 5003 bytes in 1669 characters; 1666 × "あ" + "ab" = exactly 5000 bytes.
+  const video = makeVideo();
+  const buffer = await buildWorkbookBuffer({
+    rows: [
+      { video_id: "v1", language: "ja", title: "", description: "あ".repeat(1667) + "ab", remote_title: "", remote_description: "" },
+      { video_id: "v1", language: "ko", title: "", description: "あ".repeat(1666) + "ab", remote_title: "", remote_description: "" },
+    ],
+  });
+  const parsed = await parseAndValidateWorkbook({ buffer, channelId: "UC_TEST", syncedVideos: [video] });
+  const byLanguage = new Map(parsed.rows.map((row) => [row.fields[0]?.language, row.fields[0]]));
+  assert.equal(byLanguage.get("ja")?.validationStatus, "invalid");
+  assert.match(byLanguage.get("ja")?.validationError ?? "", /5003 bytes/);
+  // ko written in kana fails the ko script check -- only the byte count is asserted here.
+  assert.doesNotMatch(byLanguage.get("ko")?.validationError ?? "", /bytes/);
+});

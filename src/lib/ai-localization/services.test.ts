@@ -854,3 +854,16 @@ test("BL-178 В2: whatever language the channel has configured is used (ja), and
   await build(noBaseline, { channelLanguageBaseline: { getExpectedDefaultLanguage: async () => null } }).generateProposals({ channelId: "UC_TEST", videoIds: ["v1"], targetLanguages: ["es"] });
   assert.equal(noBaseline.calledWith[0].sourceLanguage, "ja");
 });
+
+test("BL-227 AC-LR-01/03: a generated ja description over 5000 bytes, or a ja title in Latin letters, is invalid", async () => {
+  const { build } = makeFixture();
+  const provider = fixedProvider(() => ({ status: "ok", title: "Mushroom hut | 3 Hours", description: "あ".repeat(1667) + "ab" }));
+  const services = build(provider);
+  const result = await services.generateProposals({ channelId: "UC_TEST", videoIds: ["v1"], targetLanguages: ["ja"] });
+  const title = result.results[0].fields.find((f) => f.field === "title")!;
+  const description = result.results[0].fields.find((f) => f.field === "description")!;
+  assert.equal(title.validationStatus, "invalid");
+  assert.match(title.validationError ?? "", /script/);
+  assert.equal(description.validationStatus, "invalid");
+  assert.match(description.validationError ?? "", /5003 bytes/);
+});
