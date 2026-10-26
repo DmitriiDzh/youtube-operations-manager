@@ -848,6 +848,15 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     description:
       "Save this channel's weekly publishing plan as a draft (`agent_publishing_plan_save`: a Monday weekStart, the channel's time zone, slots with date and local publish time), as factory_publishing_plan_save. Synced to the other computers; only the owner approves, revokes or vetoes a slot in the app, and changing an approved slot needs him again. Nothing is sent to YouTube. Logged.",
   },
+  // BL-227 (LANGUAGES_REVIEW_PLAN.md §5, ADR 0052): a check report on a translation change set of this channel.
+  {
+    id: "localization_draft.report_checks",
+    mcpTools: ["agent_localization_report_checks"],
+    domain: "localization_draft",
+    permission: "DRAFT",
+    description:
+      "Attach a check report to a translation change set of this channel (`agent_localization_report_checks`: per language and field a verdict pass | warn | fail with its checks, an optional note and back-translation), as factory_localization_report_checks. Every report is kept, the newest is current and shown to the owner next to the app's own checks; the owner's approve/reject is recorded next to it. A report never approves, rejects or sends. Logged.",
+  },
   // BL-218 (stage 4, owner msg 3402): paid work the Operator's way, within the owner's switches and limits.
   {
     id: "channel_production.factory_sessions",

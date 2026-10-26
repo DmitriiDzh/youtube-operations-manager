@@ -120,6 +120,7 @@ function LanguageRow({ language, busy, onDecide }: { language: Language; busy: b
             role="button"
             tabIndex={0}
             onClick={() => setExpanded((v) => !v)}
+            // ui-text-ignore: key names, not interface text
             onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && setExpanded((v) => !v)}
             className={`mt-1 cursor-pointer whitespace-pre-wrap text-zinc-400 ${expanded ? "" : "line-clamp-2"}`}
           >
