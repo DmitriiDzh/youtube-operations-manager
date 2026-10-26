@@ -31,6 +31,7 @@ export const errors: Record<keyof typeof en, string> = {
   "errors.media_container_stuck": "Контейнер пода не запустился вовремя ни на одном из хостов; запустите сессию ещё раз.",
   "errors.media_runtime_activation_disabled": "Владелец не разрешил Оператору менять активную среду пода.",
   "errors.send_merge_conflicts": "Выбранные наборы меняют одни и те же поля. Выберите, какой вариант отправить.",
+  "errors.send_untitled_translations": "Ничего не отправлено: у перевода не будет названия, а тогда YouTube не примет всё видео. Одобрите название этого языка или отклоните его описание (с пометкой «нет названия») и отправьте снова.",
   "errors.duplicate_target_in_row": "Два выбранных изменения меняют одно и то же поле одного видео — оставьте одно.",
   "errors.send_already_in_progress": "Эти изменения уже отправляются.",
   "errors.ledger_row_not_found": "Запись пакета не найдена.",

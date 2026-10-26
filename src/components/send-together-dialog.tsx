@@ -16,6 +16,8 @@ type Plan = {
   languageCount: number;
   estimatedUnits: number;
   conflicts: Conflict[];
+  /** BL-226: translations the send would leave without a title (the send is refused until each is fixed). Absent from an older server. */
+  untitled?: Array<{ videoId: string; videoTitle: string | null; language: string }>;
   inFlightBatchId: string | null;
   inFlightCoversSelection: boolean;
 };
@@ -80,7 +82,8 @@ export function SendTogetherDialog({
 
   const unresolved = plan ? plan.conflicts.filter((conflict) => !choices[unitKey(conflict)]).length : 0;
   const blockedByPending = plan !== null && plan.inFlightBatchId !== null && !plan.inFlightCoversSelection;
-  const canConfirm = plan !== null && plan.changeCount > 0 && unresolved === 0 && !blockedByPending;
+  const untitled = plan?.untitled ?? [];
+  const canConfirm = plan !== null && plan.changeCount > 0 && unresolved === 0 && !blockedByPending && untitled.length === 0;
 
   function confirm() {
     if (!plan) return;
@@ -115,6 +118,18 @@ export function SendTogetherDialog({
         </p>
       )}
       {blockedByPending && <p className="text-xs text-amber-300">{t("sendTogether.finishPendingFirst")}</p>}
+      {untitled.length > 0 && (
+        <div className="space-y-1 rounded-lg border border-red-900 bg-red-950/40 p-3 text-xs text-red-300">
+          <p>{t("sendTogether.untitled.intro", { count: untitled.length })}</p>
+          <ul className="space-y-0.5">
+            {untitled.map((entry) => (
+              <li key={`${entry.videoId}\u0000${entry.language}`}>
+                {t("sendTogether.untitled.item", { video: entry.videoTitle ?? entry.videoId, language: entry.language })}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {plan && plan.conflicts.length > 0 && (
         <div className="space-y-2">
           <p className="text-xs text-amber-300">{t("sendTogether.conflicts.intro", { count: plan.conflicts.length })}</p>

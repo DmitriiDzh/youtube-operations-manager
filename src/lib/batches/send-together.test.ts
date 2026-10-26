@@ -27,7 +27,7 @@ function change(id: string, videoId: string, language: string, field: Field, ext
   };
 }
 
-function build(sets: Record<string, { channelId: string; changes: SendableChangeCandidate[] }>, options: { liveWrites?: boolean } = {}) {
+function build(sets: Record<string, { channelId: string; changes: SendableChangeCandidate[] }>, options: { liveWrites?: boolean; titles?: Record<string, Record<string, string>> } = {}) {
   const batches: Batch[] = [];
   const rows = new Map<string, LedgerRow[]>();
   const rejected: Array<{ changeSetId: string; changeId: string }> = [];
@@ -95,6 +95,18 @@ function build(sets: Record<string, { channelId: string; changes: SendableChange
       async videoTitles() {
         return new Map([["v1", "Video one"]]);
       },
+      // BL-226: the synced copy's titles per video and language; the videos' own language is `en`. Absent: not wired.
+      ...(options.titles
+        ? {
+            async currentTitles() {
+              const titles = options.titles ?? {};
+              return (videoId: string) =>
+                titles[videoId] === undefined
+                  ? null
+                  : { isOwnLanguage: (language: string) => language === "en", title: (language: string) => titles[videoId][language] ?? "" };
+            },
+          }
+        : {}),
     },
   });
   const rowsOf = (batchId: string) => (rows.get(batchId) ?? []).map((row) => ({ videoId: row.videoId, changeIds: row.changeIds }));
@@ -370,4 +382,44 @@ test("review: a set with no change in a unit's field is not an option for it, an
   assert.equal(error.code, "validation_failed");
   assert.deepEqual(h.rejected, []);
   assert.equal(h.batches.length, 0);
+});
+
+// BL-226: YouTube refuses a whole video whose translation would have no title (live 2026-10-26, "The request metadata is invalid.").
+// Expected by hand: the plan names each such (video, language) before sending, the send refuses them before creating or rejecting
+// anything, and a title on YouTube already or a title from another set sent together is enough.
+
+test("BL-226: a description whose title was rejected, for a language the video has no title in, is named in the plan and refuses the send", async () => {
+  const h = build(
+    { A: { channelId: "UC_A", changes: [change("a1", "v1", "it", "description"), change("a2", "v1", "it", "title", { approvalStatus: "rejected", approvedValue: null }), change("a3", "v1", "de", "title"), change("a4", "v1", "de", "description")] } },
+    { titles: { v1: {} } }
+  );
+  const plan = await h.service.planSendTogether({ channelId: "UC_A", changeSetIds: ["A"] });
+  assert.deepEqual(plan.untitled, [{ videoId: "v1", videoTitle: "Video one", language: "it" }]);
+  const error = await rejection(h.service.createBatchForChangeSets({ channelId: "UC_A", changeSetIds: ["A"] }));
+  assert.equal(error.code, "send_untitled_translations");
+  assert.deepEqual((error.details as { untitled: unknown }).untitled, [{ videoId: "v1", videoTitle: "Video one", language: "it" }]);
+  assert.equal(h.batches.length, 0);
+  assert.deepEqual(h.rejected, []);
+});
+
+test("BL-226: the same description goes when the video already has a title in that language on YouTube", async () => {
+  const h = build({ A: { channelId: "UC_A", changes: [change("a1", "v1", "it", "description")] } }, { titles: { v1: { it: "Titolo" } } });
+  assert.deepEqual((await h.service.planSendTogether({ channelId: "UC_A", changeSetIds: ["A"] })).untitled, []);
+  const result = await h.service.createBatchForChangeSets({ channelId: "UC_A", changeSetIds: ["A"] });
+  assert.deepEqual(h.rowsOf(result.batch.id), [{ videoId: "v1", changeIds: ["a1"] }]);
+});
+
+test("BL-226: a title from another set sent together completes the translation (the owner's two sets of 2026-10-26)", async () => {
+  const h = build(
+    {
+      A: { channelId: "UC_A", changes: [change("a1", "v1", "it", "description"), change("a2", "v1", "it", "title", { approvalStatus: "rejected", approvedValue: null })] },
+      B: { channelId: "UC_A", changes: [change("b1", "v1", "it", "title")] },
+    },
+    { titles: { v1: {} } }
+  );
+  assert.deepEqual((await h.service.planSendTogether({ channelId: "UC_A", changeSetIds: ["A", "B"] })).untitled, []);
+  const result = await h.service.createBatchForChangeSets({ channelId: "UC_A", changeSetIds: ["A", "B"] });
+  assert.deepEqual(h.rowsOf(result.batch.id), [{ videoId: "v1", changeIds: ["a1", "b1"] }]);
+  // Alone, set A still cannot go.
+  assert.equal((await rejection(h.service.createBatchForChangeSets({ channelId: "UC_A", changeSetIds: ["A"] }))).code, "send_untitled_translations");
 });

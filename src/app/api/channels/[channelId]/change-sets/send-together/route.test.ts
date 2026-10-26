@@ -74,7 +74,7 @@ test("send-together: no session 401; an empty or unknown-field body 400; another
 });
 
 test("send-together plan: answers the plan and never creates anything", async () => {
-  const plan = { videoCount: 3, changeCount: 7, languageCount: 2, estimatedUnits: 156, conflicts: [], inFlightBatchId: null, inFlightCoversSelection: false };
+  const plan = { videoCount: 3, changeCount: 7, languageCount: 2, estimatedUnits: 156, conflicts: [], untitled: [], inFlightBatchId: null, inFlightCoversSelection: false };
   const handler = createSendTogetherPlanHandler({ getSession: async () => ({ user: { id: "u1" } }), channelAccess: allow, core: { planSendTogether: async () => plan } });
   const res = await handler(post({ changeSetIds: ["A", "B"] }), params);
   assert.equal(res.status, 200);

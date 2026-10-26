@@ -450,6 +450,9 @@ Key MCP tools:
     defaultAudioLanguage }]`: synced videos whose language fields differ from the baseline, case-insensitive; a Batch aligns
     such a video's `defaultLanguage` when it writes it, PROJECT_SPEC §14). `get_change_set` (Web and MCP) also returns
     `languageAlignments` `[{ videoId, from, to }]`.
+  - BL-226 (2026-10-26, additive, no version bump): `get_change_set` (Web and MCP) also returns `untitledTranslations`
+    `[{ videoId, language }]` -- translations the set would leave without a title (every change not rejected and valid, against
+    the synced copy); YouTube refuses the whole video then.
   - BL-178 part C (2026-10-13, additive, no version bump): `agent_get_channel_context` also returns `missingTranslations`
     `{ videoCount, byLanguage, videos: [{ videoId, missingLanguages }] }` -- public or scheduled videos lacking a tracked
     language (no title, or no description where the original has one), measured against the channel's language.
@@ -1409,10 +1412,13 @@ Every route: a Web session (401) and the active channel (403); `DomainError` →
 
 - `GET /api/channels` — list locally synchronized channels
 - `POST /api/channels/[channelId]/change-sets/send-together/plan` — BL-198, read only: `{ changeSetIds }` →
-  `{ videoCount, changeCount, languageCount, estimatedUnits, conflicts[], inFlightBatchId, inFlightCoversSelection }`
+  `{ videoCount, changeCount, languageCount, estimatedUnits, conflicts[], untitled[], inFlightBatchId, inFlightCoversSelection }`
+  (`untitled`, BL-226: `[{ videoId, videoTitle, language }]`, translations the send would leave without a title)
 - `POST /api/channels/[channelId]/change-sets/send-together` — BL-198: `{ changeSetIds, resolutions?: [{ videoId, language,
   changeSetId }], dryRun? }` → 201 `{ batchId, changeCount, videoCount, rejectedChangeIds }`. Errors:
   - `send_merge_conflicts` (409, `details.conflicts`);
+  - `send_untitled_translations` (409, `details.untitled`, BL-226; also from the one-set send) -- checked before anything is
+    rejected or created;
   - `send_already_in_progress` (409, `details.batchId`, `coversSelection`);
   - `send_nothing_to_send`;
   - `live_writes_disabled`.

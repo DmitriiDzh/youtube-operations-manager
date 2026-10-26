@@ -828,3 +828,28 @@ test("BL-178 B: when the shared language settings cannot be read, the row fails 
   assert.match((row as { error: string }).error, /could not be read \(corrupt document\)/);
   assert.deepEqual(harness.fetchFreshCalls, []);
 });
+
+test("BL-226: a translation the write would leave without a title fails that video by name before anything is sent; the other video still goes", async () => {
+  // Live 2026-10-26: an approved `it` description whose `it` title was rejected made YouTube refuse the whole video ("The request
+  // metadata is invalid."). Expected by hand: v1 (no `it` title on the video, none in the changes) is FAILED naming `it`; v2 has an
+  // `it` title on YouTube already, so its description alone is fine.
+  const harness = createHarness({
+    freshByVideoId: {
+      v1: { snippet: { title: "T", description: "D", defaultLanguage: "en" }, localizations: {} },
+      v2: { snippet: { title: "T", description: "D", defaultLanguage: "en" }, localizations: { it: { title: "Titolo", description: "" } } },
+    },
+  });
+  const batch = await createApprovedBatch(
+    harness,
+    { channelId: "UC_TEST", dryRun: true, selections: [{ videoId: "v1", changeIds: ["c1"] }, { videoId: "v2", changeIds: ["c2"] }] },
+    { c1: { language: "it", field: "description" }, c2: { language: "it", field: "description" } }
+  );
+
+  const result = await harness.services.prepareBatchExecution({ batchId: batch.id, credentialRef: { userId: "user-1" } });
+
+  const byVideo = new Map(result.rows.map((row) => [row.videoId, row]));
+  assert.equal(byVideo.get("v1")?.status, "FAILED");
+  const failed = byVideo.get("v1") as { error?: string } | undefined;
+  assert.match(failed?.error ?? "", /\bit\b.*title/);
+  assert.equal(byVideo.get("v2")?.status, "DRY_RUN_COMPLETE");
+});

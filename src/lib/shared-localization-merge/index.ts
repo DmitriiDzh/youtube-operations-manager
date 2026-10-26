@@ -64,6 +64,32 @@ export function localeKeyFor(localizations: Record<string, FreshVideoLocale>, la
   return Object.keys(localizations).find((key) => sameLanguage(key, language)) ?? null;
 }
 
+/**
+ * BL-226: the translations a set of field changes would leave without a title -- YouTube refuses a `videos.update` whose
+ * `localizations` hold a language with an empty title, the whole write with every language of the video ("The request metadata
+ * is invalid.", live 2026-10-26: an approved description sent while its over-long title was rejected). A language counts when a
+ * change writes into it (not a delete: removal wins, see below) and it is not the video's own language (that text is the snippet);
+ * its title is the title change's value when there is one, else the title the video has now. One rule for the review screen, the
+ * send and the write itself. Languages are named once, as the first change spells them.
+ */
+export function untitledTranslations(
+  current: { isOwnLanguage(language: string): boolean; title(language: string): string },
+  changes: readonly LocalizationFieldChange[]
+): string[] {
+  const byLanguage = new Map<string, { language: string; deleted: boolean; title: string | null }>();
+  for (const change of changes) {
+    if (current.isOwnLanguage(change.language)) continue;
+    const key = change.language.toLowerCase();
+    const entry = byLanguage.get(key) ?? { language: change.language, deleted: false, title: null };
+    if (change.changeType === "delete") entry.deleted = true;
+    else if (change.field === "title") entry.title = change.proposedValue;
+    byLanguage.set(key, entry);
+  }
+  return [...byLanguage.values()]
+    .filter((entry) => !entry.deleted && (entry.title ?? current.title(entry.language)).trim().length === 0)
+    .map((entry) => entry.language);
+}
+
 export type SafeLocalizationsPayload = {
   /**
    * ALWAYS present. `videos.update` rejects a request that adds/changes `localizations` without
@@ -149,6 +175,24 @@ export function buildSafeLocalizationsPayload<Change extends LocalizationFieldCh
 
   for (const language of languagesToDelete) {
     delete localizations[language];
+  }
+
+  // BL-226: fail closed before the write instead of YouTube's opaque refusal of the whole video. The caller already removed what it
+  // can (the review screen and the send name these languages first); reaching here means the video's title went missing meanwhile.
+  const untitled = untitledTranslations(
+    {
+      isOwnLanguage: (language) => sameLanguage(language, fresh.snippet.defaultLanguage),
+      title: (language) => {
+        const key = localeKeyFor(fresh.localizations, language);
+        return key === null ? "" : fresh.localizations[key].title;
+      },
+    },
+    changes
+  );
+  if (untitled.length > 0) {
+    throw new Error(
+      `Nothing was sent: the translation ${untitled.join(", ")} would have no title, and YouTube refuses the whole video then. Approve a title for ${untitled.length === 1 ? "that language" : "those languages"} or reject the description, then send again.`
+    );
   }
 
   return { snippet, localizations };
