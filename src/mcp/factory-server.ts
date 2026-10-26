@@ -145,7 +145,10 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 // BL-225 (WEEKLY_PUBLISHING_PLAN.md, ADR 0051; FO-REQ-0040): 1.33.0 -- factory_publishing_plan_save (WRITE, local: the channel's
 // weekly plan, synced between the computers), factory_publishing_plan_get / factory_publishing_plan_list (READ). Agents draft;
 // only the owner approves, revokes, vetoes and restores slots in the Web UI. Additive.
-export const FACTORY_API_VERSION = "1.33.0";
+// BL-227 (LANGUAGES_REVIEW_PLAN.md, ADR 0052; FO-MSG-0025): 1.34.0 -- factory_localization_report_checks (WRITE, local only: a check
+// report on a change set -- per (language, field) a verdict pass | warn | fail with its checks, an optional note and back-translation;
+// append-only, the newest is current and shown to the owner on the review screen). It approves, rejects and sends nothing. Additive.
+export const FACTORY_API_VERSION = "1.34.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -222,6 +225,7 @@ export const FACTORY_TOOL_NAMES = [
   "factory_publishing_plan_save",
   "factory_publishing_plan_get",
   "factory_publishing_plan_list",
+  "factory_localization_report_checks",
   // BL-184: storyboards -- versions, submitting for the owner's review, answers to the owner's comments; reads.
   "factory_storyboard_create",
   "factory_storyboard_update",
@@ -290,6 +294,8 @@ export const FACTORY_WRITE_TOOL_NAMES = [
   "factory_channel_save_branding",
   // BL-225: a channel's weekly plan (synced to the other computers; only the owner approves it, in the Web UI).
   "factory_publishing_plan_save",
+  // BL-227: a check report on a change set (synced with the set; only the owner approves or rejects, in the Web UI).
+  "factory_localization_report_checks",
   // BL-184: storyboard versions, submissions and answers (synced to the other computers; nothing is generated or charged).
   "factory_storyboard_create",
   "factory_storyboard_update",
@@ -414,6 +420,10 @@ export type FactoryToolDeps = {
     save(input: unknown, by?: "factory" | "worker"): Promise<Record<string, unknown>>;
     get(input: unknown): Promise<Record<string, unknown>>;
     list(input: unknown): Promise<Record<string, unknown>>;
+  };
+  /** BL-227 (ADR 0052): check reports on change sets (the localization-review module validates every input itself). `by`: the Operator or a worker. */
+  localizationChecks: {
+    report(input: unknown, by?: "factory" | "worker"): Promise<Record<string, unknown>>;
   };
   /** BL-184: storyboards (the module validates every input strictly itself; every write is the Operator's). */
   storyboards: {
@@ -1447,6 +1457,28 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
       inputSchema: planListInput,
     },
     async (args) => successResult(await deps.publishingPlans.list(parseInput(planListInput, args)))
+  );
+
+  // -- BL-227 (LANGUAGES_REVIEW_PLAN.md §5, ADR 0052): check reports on change sets. The module checks every bound itself.
+  const reportChecksInput = z
+    .object({
+      channelId: z.string().min(1).max(64),
+      changeSetId: z.string().min(1).max(64),
+      entries: z.array(z.object({}).passthrough()).min(1).max(200),
+    })
+    .strict();
+  registerTool(
+    "factory_localization_report_checks",
+    {
+      description:
+        "Attach a check report to a translation change set (1.34.0), shown to the owner on the review screen (Языки) next to the app's own checks: { channelId, changeSetId, entries: [{ language, field: title | description, verdict: pass | warn | fail, checks: [{ id (1-64), result: pass | warn | fail, detail (<= 500) }] (<= 50), note? (<= 1000, shown under the language), backTranslation? (<= 6000, shown folded) }] (1-200) } -> { reportId, reportedAt, replaced (the report this one replaces as current, or null) }. Call it again after a re-check: every report is kept, the newest is current. Each entry must name a language and field the set has a change for, else validation_failed with details.entries; a set that is not this channel's: not_found. A report decides nothing: only the owner approves, rejects and sends, in the app; the owner's decision is recorded next to your verdict. Nothing is sent to YouTube. Passes the device mutation gate.",
+      inputSchema: reportChecksInput,
+    },
+    async (args) => {
+      const input = parseInput(reportChecksInput, args);
+      await deps.assertMutationAllowed();
+      return successResult(await deps.localizationChecks.report(input));
+    }
   );
 
   // -- BL-184 (FO-REQ-0024, STORYBOARD_PLAN.md §2.6): storyboards. The schemas here name the fields; the storyboards module checks

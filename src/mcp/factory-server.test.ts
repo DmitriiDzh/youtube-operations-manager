@@ -36,6 +36,7 @@ const EXPECTED_TOOLS = [
   "factory_live_get_status",
   "factory_live_map_sources",
   "factory_live_save_localizations",
+  "factory_localization_report_checks",
   "factory_media_activate_runtime",
   "factory_media_adopt_template",
   "factory_media_cancel_job",
@@ -108,6 +109,7 @@ function registeredNames(): string[] {
       channelLocalizations: {} as never,
       channelBranding: {} as never,
       publishingPlans: {} as never,
+      localizationChecks: {} as never,
       storyboards: {} as never,
       jobs: {} as never,
       videos: {} as never,
@@ -152,6 +154,7 @@ test("AC-FO-09 (amended by ADR 0025/0026): writes are exactly the named media/se
     "factory_hold_restart",
     "factory_live_map_sources",
     "factory_live_save_localizations",
+    "factory_localization_report_checks",
     "factory_media_activate_runtime",
     "factory_media_adopt_template",
     "factory_media_cancel_job",
@@ -243,6 +246,8 @@ test("§2.5(3): the factory route and endpoint reach only the allowlisted module
     "@/lib/publishing-plans",
     // BL-225 stage 2: the composition of the plan's progress from the publishing scan (no write).
     "@/lib/publishing-plan-progress",
+    // BL-227 (LANGUAGES_REVIEW_PLAN.md §5): the localization-review module's check report (it decides nothing).
+    "@/lib/localization-review",
     // BL-184 (STORYBOARD_PLAN.md §2.6): the storyboards module for the factory_storyboard_* tools.
     "@/lib/storyboards",
     // BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.7): the shared jobs pool for factory_jobs_list (read-only).
@@ -310,7 +315,8 @@ test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.23.0 
   // BL-220 (RESTART_WHEN_IDLE_PLAN.md "Factory API 1.30.0"): three new tools, additive -> 1.30.0.
   // BL-223 (CHANNEL_BRANDING_PLAN.md §5: "Minor version bump"): two new tools, additive -> 1.32.0.
   // BL-225 (WEEKLY_PUBLISHING_PLAN.md stage 1 item 5): three new tools, additive -> 1.33.0.
-  assert.equal(FACTORY_API_VERSION, "1.33.0");
+  // BL-227 (LANGUAGES_REVIEW_PLAN.md §5: "Factory API 1.34.0"): one new tool, additive -> 1.34.0.
+  assert.equal(FACTORY_API_VERSION, "1.34.0");
   const agentOperations = await readFile("src/lib/agent-operations/contracts.ts", "utf8");
   assert.equal(agentOperations.includes("FACTORY_API_VERSION"), false);
 });

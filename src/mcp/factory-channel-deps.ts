@@ -1,5 +1,6 @@
 import { agentChannelBranding, createChannelBrandingAgentCore } from "@/lib/channel-branding";
 import { createPublishingPlansAgentCore } from "@/lib/publishing-plans";
+import { reportLocalizationChecks } from "@/lib/localization-review";
 import { publishingPlanProgress } from "@/lib/publishing-plan-progress";
 import { createChannelLocalizationsOperatorCore, operatorChannelLocalizations } from "@/lib/channel-localizations";
 import { createGeminiMediaCore } from "@/lib/gemini-media";
@@ -18,7 +19,7 @@ import type { FactoryToolDeps } from "./factory-server";
  * approval, start or stop (`session-approval-inventory.test.ts`). The factory route adds the media, logical-path and channel-list
  * parts.
  */
-export type FactoryChannelDeps = Pick<FactoryToolDeps, "plans" | "gemini" | "live" | "channelLocalizations" | "channelBranding" | "publishingPlans" | "storyboards" | "videos" | "jobs">;
+export type FactoryChannelDeps = Pick<FactoryToolDeps, "plans" | "gemini" | "live" | "channelLocalizations" | "channelBranding" | "publishingPlans" | "localizationChecks" | "storyboards" | "videos" | "jobs">;
 
 export function createFactoryChannelDeps(): FactoryChannelDeps {
   return {
@@ -86,6 +87,10 @@ export function createFactoryChannelDeps(): FactoryChannelDeps {
       save: async (input, by = "factory") => ({ ...(await createPublishingPlansAgentCore(publishingPlanProgress).save(input, by)) }),
       get: async (input) => ({ ...(await createPublishingPlansAgentCore(publishingPlanProgress).get(input)) }),
       list: async (input) => ({ ...(await createPublishingPlansAgentCore(publishingPlanProgress).list(input)) }),
+    },
+    // BL-227 (ADR 0052): check reports on change sets -- a report decides nothing (only the owner approves, in the Web UI).
+    localizationChecks: {
+      report: async (input, by = "factory") => ({ ...(await reportLocalizationChecks(input, by)) }),
     },
     // BL-184 (STORYBOARD_PLAN.md §2.6): storyboards; every write is the Operator's (the owner decides in the Web UI only).
     storyboards: {

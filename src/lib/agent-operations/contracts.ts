@@ -82,7 +82,10 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT",
 // 4.7.0 (BL-225, WEEKLY_PUBLISHING_PLAN.md, ADR 0051): agent_publishing_plan_save (DRAFT) / agent_publishing_plan_get /
 // agent_publishing_plan_list (READ) -- the worker's own channel's weekly publishing plan, as the factory_publishing_plan_* tools
 // (Factory API 1.33.0). Only the owner approves a slot, in the app. Additive.
-export const AGENT_API_VERSION = "4.7.0";
+// 4.8.0 (BL-227, LANGUAGES_REVIEW_PLAN.md, ADR 0052): agent_localization_report_checks (DRAFT) -- a check report on a translation
+// change set of the worker's own channel, as factory_localization_report_checks (Factory API 1.34.0); ai_localization_create_change_set's
+// proposals gain an optional note. Only the owner approves, rejects and sends, in the app. Additive.
+export const AGENT_API_VERSION = "4.8.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry
