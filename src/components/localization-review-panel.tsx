@@ -57,6 +57,10 @@ const CHECK_KEYS: Record<string, UiTextKey> = {
   characters: "langReview.check.characters",
 };
 
+/** The release date: the upload's scheduled time, or the publish time of a video that is out; null = none yet (a private upload's
+ * publishedAt is only when it was uploaded). */
+const releaseOf = (video: VideoInfo, upload: Upload): string | null => upload?.publishAt ?? (video.privacyStatus === "public" ? video.publishedAt : null);
+
 const rows = (language: Language) => [language.title, language.description].filter((row): row is Row => row !== null);
 const isOpen = (row: Row) => !row.written && row.approvalStatus !== "rejected";
 const canApprove = (language: Language) =>
@@ -112,9 +116,15 @@ function LanguageRow({ language, busy, onDecide }: { language: Language; busy: b
       <div className="min-w-0 text-xs">
         {language.title ? <p className="text-sm font-medium text-zinc-100">{language.title.proposedValue}</p> : <p className="text-zinc-500">{t("langReview.noTitleChange")}</p>}
         {language.description && (
-          <button type="button" onClick={() => setExpanded((v) => !v)} className={`mt-1 block w-full whitespace-pre-wrap text-left text-zinc-400 ${expanded ? "" : "line-clamp-2"}`}>
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={() => setExpanded((v) => !v)}
+            onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && setExpanded((v) => !v)}
+            className={`mt-1 cursor-pointer whitespace-pre-wrap text-zinc-400 ${expanded ? "" : "line-clamp-2"}`}
+          >
             {language.description.proposedValue}
-          </button>
+          </div>
         )}
         <div className="mt-2 space-y-0.5">
           {language.untitled && <div className="text-red-400">✗ {t("langReview.untitled")}</div>}
@@ -307,7 +317,9 @@ export function LocalizationReviewPanel({
                 <div className="min-w-0">
                   <div className="truncate text-xs text-zinc-200">{entry.upload?.video ? `${entry.upload.video} · ` : ""}{entry.video.title}</div>
                   <div className="text-[11px] text-zinc-500">
-                    {t("langReview.queueMeta", { date: entry.upload?.publishAt ? formatDisplayDateTime(entry.upload.publishAt) : entry.video.publishedAt ? formatDisplayDateTime(entry.video.publishedAt) : "—", count: entry.languages })}
+                    {releaseOf(entry.video, entry.upload)
+                      ? t("langReview.queueMeta", { date: formatDisplayDateTime(releaseOf(entry.video, entry.upload)!), count: entry.languages })
+                      : t("langReview.queueMetaNoDate", { count: entry.languages })}
                   </div>
                   <div className="mt-0.5 flex flex-wrap gap-1 text-[10px]">
                     {entry.counts.pass > 0 && <span className="rounded bg-green-950 px-1.5 text-green-400">✓ {entry.counts.pass}</span>}
@@ -335,15 +347,15 @@ export function LocalizationReviewPanel({
                   <div className="min-w-0">
                     <p className="text-sm font-semibold text-zinc-100">{review.upload?.video ? `${review.upload.video} · ` : ""}{review.video.title}</p>
                     <div className="mt-1 flex flex-wrap gap-1.5 text-[11px] text-zinc-400">
-                      {(review.upload?.publishAt || review.video.publishedAt) && (
-                        <span className="rounded-full border border-zinc-700 px-2">{t("langReview.releaseAt", { date: formatDisplayDateTime(review.upload?.publishAt ?? review.video.publishedAt ?? "") })}</span>
-                      )}
+                      <span className="rounded-full border border-zinc-700 px-2">
+                        {releaseOf(review.video, review.upload) ? t("langReview.releaseAt", { date: formatDisplayDateTime(releaseOf(review.video, review.upload)!) }) : t("langReview.noDate")}
+                      </span>
                       {review.upload?.slotId && <span className="rounded-full border border-zinc-700 px-2">{t("langReview.slot", { slot: review.upload.slotId })}</span>}
                       {review.video.privacyStatus && <span className="rounded-full border border-zinc-700 px-2">{review.video.privacyStatus}</span>}
                       {review.video.ownLanguage && <span className="rounded-full border border-zinc-700 px-2">{t("langReview.original", { language: review.video.ownLanguage })}</span>}
                     </div>
                     <p className="mt-1 text-[11px] text-zinc-500">
-                      {t("langReview.madeBy", { author: author ? t(`langReview.author.${author}` as UiTextKey) : t("langReview.author.unknown"), date: setTime ? formatDisplayDateTime(setTime) : "—" })}
+                      {author ? t("langReview.madeBy", { author: t(`langReview.author.${author}` as UiTextKey), date: setTime ? formatDisplayDateTime(setTime) : "—" }) : t("langReview.madeAt", { date: setTime ? formatDisplayDateTime(setTime) : "—" })}
                       {" · "}
                       {reportAt ? t("langReview.reportAt", { date: formatDisplayDateTime(reportAt) }) : t("langReview.noReport")}
                     </p>

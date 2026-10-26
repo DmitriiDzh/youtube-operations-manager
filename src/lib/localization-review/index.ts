@@ -8,6 +8,7 @@ import { createChangeDraftsCoreForProduction, checkReportEntries, latestCheckRep
 import { createChannelVideoStoreAdapter } from "@/lib/channel-video-store";
 import { getChannelExpectedLanguages, getChannelTargetLanguages, listPublishingUploads } from "@/lib/db";
 import { originalFingerprint } from "@/lib/shared-localization-checks/fingerprint";
+import { createDefaultLogger } from "@/lib/shared-logger";
 import { reportChecks } from "./report";
 import { buildVideoReview, needsReview, type ReviewChange, type ReviewSetInput, type VideoReview } from "./review";
 
@@ -49,10 +50,16 @@ async function loadReviews(channelId: string, onlyVideoId?: string): Promise<Vid
   }
   for (const set of sets) {
     const changes: ReviewChange[] = [];
-    for (let page = 1; ; page++) {
-      const result = await changeSets.getChangeSet({ channelId, changeSetId: set.id, page, pageSize: PAGE, ...(onlyVideoId ? { videoId: onlyVideoId } : {}) });
-      changes.push(...(result.changes as ReviewChange[]));
-      if (page * PAGE >= result.pagination.total) break;
+    try {
+      for (let page = 1; ; page++) {
+        const result = await changeSets.getChangeSet({ channelId, changeSetId: set.id, page, pageSize: PAGE, ...(onlyVideoId ? { videoId: onlyVideoId } : {}) });
+        changes.push(...(result.changes as ReviewChange[]));
+        if (page * PAGE >= result.pagination.total) break;
+      }
+    } catch (error) {
+      // One unreadable set (e.g. a projection row its document no longer has) must not hide every other video's review.
+      createDefaultLogger().error({ event: "localization_review.set_unreadable", context: { channelId, changeSetId: set.id, error: error instanceof Error ? error.message : String(error) } });
+      continue;
     }
     const open = changes.filter((change) => change.approvalStatus !== "rejected" && !written.has(change.id));
     if (open.length === 0) continue;
@@ -70,8 +77,9 @@ async function loadReviews(channelId: string, onlyVideoId?: string): Promise<Vid
   const videoIds = new Set(setInputs.flatMap((set) => [...set.videoIds]));
   if (videoIds.size === 0) return [];
   const baseline = (await getChannelExpectedLanguages(channelId)).defaultLanguage;
-  const tracked = await getChannelTargetLanguages(channelId);
   const videos = new Map((await createChannelVideoStoreAdapter().listVideosByChannel(channelId)).map((video) => [video.videoId, video]));
+  // The channel's languages as the Languages table shows them: the tracked ones and every language its videos already have.
+  const tracked = [...new Set([...(await getChannelTargetLanguages(channelId)), ...[...videos.values()].flatMap((video) => Object.keys(video.existingLocalizations ?? {}))])];
   const uploads = new Map<string, { video: string | null; slotId: string | null; publishAt: string | null }>();
   for (const upload of await listPublishingUploads({ channelId, limit: 500 })) {
     if (upload.videoId && !uploads.has(upload.videoId)) uploads.set(upload.videoId, { video: upload.video, slotId: upload.slotId ?? null, publishAt: upload.publishAt ?? null });
