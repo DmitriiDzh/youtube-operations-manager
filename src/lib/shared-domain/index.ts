@@ -46,6 +46,7 @@ export type DomainErrorCode =
   | "send_nothing_to_send"
   | "send_merge_conflicts"
   | "send_untitled_translations"
+  | "request_not_claimable"
   | "duplicate_target_in_row"
   | "send_already_in_progress"
   | "ledger_row_not_found"

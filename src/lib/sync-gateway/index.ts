@@ -42,7 +42,7 @@ export { DomainError, isDomainError } from "./change-drafts/contracts";
 export type { FieldConflict } from "./change-drafts/contracts";
 // BL-227 (ADR 0052): check reports, set details and decision records of the change-drafts document.
 export { latestCheckReport, checkReportEntries } from "./change-drafts";
-export type { CheckReportEntry, CheckVerdict, DraftCheckReport, DraftDecision, DraftSetDetails, SetAuthor } from "./change-drafts/contracts";
+export type { CheckReportEntry, CheckVerdict, DraftCheckReport, DraftDecision, DraftSetDetails, DraftTranslationRequest, SetAuthor, TranslationRequestStatus } from "./change-drafts/contracts";
 
 export { createEditorialProfileCoreForProduction } from "./editorial-profile";
 export type { EditorialProfileDocument, FieldConflict as EditorialProfileFieldConflict } from "./editorial-profile";

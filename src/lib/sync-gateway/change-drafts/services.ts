@@ -9,6 +9,7 @@ import {
   type DraftCheckReport,
   type DraftDecision,
   type DraftSetDetails,
+  type DraftTranslationRequest,
   type CheckReportEntry,
   type FieldConflict,
   type MergeResult,
@@ -18,6 +19,11 @@ import {
   addCheckReportInputSchema,
   createSetDetailsInputSchema,
   recordDecisionsInputSchema,
+  createTranslationRequestInputSchema,
+  claimTranslationRequestInputSchema,
+  completeTranslationRequestInputSchema,
+  failTranslationRequestInputSchema,
+  cancelTranslationRequestInputSchema,
   bulkPatchChangesInputSchema,
   channelIdInputSchema,
   createChangeSetInputSchema,
@@ -727,6 +733,133 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
       });
       await saveDocument(parsed.channelId, next);
       return records;
+    },
+
+    /** BL-227 stage 2: the owner's translation request (status `requested`). */
+    async createTranslationRequest(input: unknown): Promise<DraftTranslationRequest> {
+      const parsed = parseWithSchema(createTranslationRequestInputSchema, input, "createTranslationRequest input");
+      const doc = await loadOrCreateDocument(parsed.channelId);
+      if (doc.translationRequests?.[parsed.id]) {
+        throw new DomainError({ code: "validation_failed", message: "A request with this id exists", details: { id: parsed.id } });
+      }
+      const now = new Date().toISOString();
+      const request: DraftTranslationRequest = {
+        id: parsed.id,
+        videoIdsJson: JSON.stringify([...new Set(parsed.videoIds)]),
+        languagesJson: JSON.stringify([...new Set(parsed.languages)]),
+        mode: parsed.mode,
+        fields: parsed.fields,
+        note: parsed.note,
+        redoOfChangeId: parsed.redoOfChangeId,
+        originalsJson: JSON.stringify(parsed.originals),
+        status: "requested",
+        claimedBy: null,
+        claimedAt: null,
+        resultJson: "[]",
+        failReason: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      const next = Automerge.change(doc, `create translation request ${parsed.id}`, (draft) => {
+        if (!draft.translationRequests) draft.translationRequests = {};
+        draft.translationRequests[parsed.id] = request;
+      });
+      await saveDocument(parsed.channelId, next);
+      return request;
+    },
+
+    /** BL-227 stage 2: an agent takes a `requested` request (serialized per channel in this process: the first claim wins). */
+    async claimTranslationRequest(input: unknown): Promise<DraftTranslationRequest> {
+      const parsed = parseWithSchema(claimTranslationRequestInputSchema, input, "claimTranslationRequest input");
+      const doc = await loadOrCreateDocument(parsed.channelId);
+      const existing = doc.translationRequests?.[parsed.requestId];
+      if (!existing) throw new DomainError({ code: "not_found", message: "Translation request not found for this channel", details: { requestId: parsed.requestId } });
+      if (existing.status !== "requested") {
+        throw new DomainError({ code: "request_not_claimable", message: `This request is ${existing.status}; only a requested one can be claimed`, details: { requestId: parsed.requestId, status: existing.status, claimedBy: existing.claimedBy } });
+      }
+      const now = new Date().toISOString();
+      const next = Automerge.change(doc, `claim translation request ${parsed.requestId}`, (draft) => {
+        const request = draft.translationRequests![parsed.requestId];
+        request.status = "in_progress";
+        request.claimedBy = parsed.by;
+        request.claimedAt = now;
+        request.updatedAt = now;
+      });
+      await saveDocument(parsed.channelId, next);
+      return next.translationRequests![parsed.requestId];
+    },
+
+    /**
+     * BL-227 stage 2: the claimant hands in the sets it made -- `done` when every requested video has one, `partly_done` otherwise.
+     * Each set must be in this channel's document and hold changes of its video.
+     */
+    async completeTranslationRequest(input: unknown): Promise<DraftTranslationRequest> {
+      const parsed = parseWithSchema(completeTranslationRequestInputSchema, input, "completeTranslationRequest input");
+      const doc = await loadOrCreateDocument(parsed.channelId);
+      const existing = doc.translationRequests?.[parsed.requestId];
+      if (!existing) throw new DomainError({ code: "not_found", message: "Translation request not found for this channel", details: { requestId: parsed.requestId } });
+      if (existing.status !== "in_progress" || existing.claimedBy !== parsed.by) {
+        throw new DomainError({ code: "request_not_claimable", message: "Only the agent that claimed this request can complete it, while it is in progress", details: { requestId: parsed.requestId, status: existing.status, claimedBy: existing.claimedBy } });
+      }
+      const videoIds = JSON.parse(existing.videoIdsJson) as string[];
+      const refused = parsed.results.filter(
+        (result) =>
+          !videoIds.includes(result.videoId) ||
+          !doc.changeSets[result.changeSetId] ||
+          !Object.values(doc.changes).some((change) => change.changeSetId === result.changeSetId && change.videoId === result.videoId)
+      );
+      if (refused.length > 0) {
+        throw new DomainError({ code: "validation_failed", message: "Each result must name a requested video and a change set of this channel holding changes of that video", details: { refused } });
+      }
+      const covered = new Set(parsed.results.map((result) => result.videoId));
+      const now = new Date().toISOString();
+      const next = Automerge.change(doc, `complete translation request ${parsed.requestId}`, (draft) => {
+        const request = draft.translationRequests![parsed.requestId];
+        request.status = videoIds.every((videoId) => covered.has(videoId)) ? "done" : "partly_done";
+        request.resultJson = JSON.stringify(parsed.results);
+        request.updatedAt = now;
+      });
+      await saveDocument(parsed.channelId, next);
+      return next.translationRequests![parsed.requestId];
+    },
+
+    /** BL-227 stage 2: the claimant gives up on a request, with the reason the owner sees. */
+    async failTranslationRequest(input: unknown): Promise<DraftTranslationRequest> {
+      const parsed = parseWithSchema(failTranslationRequestInputSchema, input, "failTranslationRequest input");
+      const doc = await loadOrCreateDocument(parsed.channelId);
+      const existing = doc.translationRequests?.[parsed.requestId];
+      if (!existing) throw new DomainError({ code: "not_found", message: "Translation request not found for this channel", details: { requestId: parsed.requestId } });
+      if (existing.status !== "in_progress" || existing.claimedBy !== parsed.by) {
+        throw new DomainError({ code: "request_not_claimable", message: "Only the agent that claimed this request can fail it, while it is in progress", details: { requestId: parsed.requestId, status: existing.status, claimedBy: existing.claimedBy } });
+      }
+      const now = new Date().toISOString();
+      const next = Automerge.change(doc, `fail translation request ${parsed.requestId}`, (draft) => {
+        const request = draft.translationRequests![parsed.requestId];
+        request.status = "failed";
+        request.failReason = parsed.reason;
+        request.updatedAt = now;
+      });
+      await saveDocument(parsed.channelId, next);
+      return next.translationRequests![parsed.requestId];
+    },
+
+    /** BL-227 stage 2: the owner withdraws a request that is not finished. */
+    async cancelTranslationRequest(input: unknown): Promise<DraftTranslationRequest> {
+      const parsed = parseWithSchema(cancelTranslationRequestInputSchema, input, "cancelTranslationRequest input");
+      const doc = await loadOrCreateDocument(parsed.channelId);
+      const existing = doc.translationRequests?.[parsed.requestId];
+      if (!existing) throw new DomainError({ code: "not_found", message: "Translation request not found for this channel", details: { requestId: parsed.requestId } });
+      if (existing.status !== "requested" && existing.status !== "in_progress") {
+        throw new DomainError({ code: "request_not_claimable", message: `This request is ${existing.status} and cannot be cancelled`, details: { requestId: parsed.requestId, status: existing.status } });
+      }
+      const now = new Date().toISOString();
+      const next = Automerge.change(doc, `cancel translation request ${parsed.requestId}`, (draft) => {
+        const request = draft.translationRequests![parsed.requestId];
+        request.status = "cancelled";
+        request.updatedAt = now;
+      });
+      await saveDocument(parsed.channelId, next);
+      return next.translationRequests![parsed.requestId];
     },
 
     async bulkPatchChanges(input: unknown): Promise<DraftChange[]> {

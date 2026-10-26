@@ -262,3 +262,37 @@ export const recordDecisionsInputSchema = z
       .min(1),
   })
   .strict();
+
+// BL-227 stage 2: translation requests.
+export const createTranslationRequestInputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    id: z.string().min(1),
+    videoIds: z.array(z.string().min(1)).min(1).max(200),
+    languages: z.array(z.string().min(1).max(35)).min(1).max(40),
+    mode: z.enum(["fill_missing", "redo"]),
+    fields: z.enum(["both", "title", "description"]),
+    note: z.string().max(1000).nullable(),
+    redoOfChangeId: z.string().min(1).nullable(),
+    originals: z.record(z.string(), z.string()),
+  })
+  .strict();
+
+export const claimTranslationRequestInputSchema = z
+  .object({ channelId: z.string().min(1), requestId: z.string().min(1), by: z.enum(["factory", "worker"]) })
+  .strict();
+
+export const completeTranslationRequestInputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    requestId: z.string().min(1),
+    by: z.enum(["factory", "worker"]),
+    results: z.array(z.object({ videoId: z.string().min(1), changeSetId: z.string().min(1) }).strict()).min(1).max(200),
+  })
+  .strict();
+
+export const failTranslationRequestInputSchema = z
+  .object({ channelId: z.string().min(1), requestId: z.string().min(1), by: z.enum(["factory", "worker"]), reason: z.string().min(1).max(1000) })
+  .strict();
+
+export const cancelTranslationRequestInputSchema = z.object({ channelId: z.string().min(1), requestId: z.string().min(1) }).strict();

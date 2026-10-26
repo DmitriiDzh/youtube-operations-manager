@@ -136,6 +136,30 @@ export type ChannelDraftDocument = {
   checkReports?: Record<string, DraftCheckReport>;
   /** BL-227: the owner's approve/reject records next to the then-current verdict, append-only. Optional, as above. */
   decisions?: Record<string, DraftDecision>;
+  /** BL-227 stage 2: the owner's translation requests to the channel's agents. Optional, as above. */
+  translationRequests?: Record<string, DraftTranslationRequest>;
+};
+
+export type TranslationRequestStatus = "requested" | "in_progress" | "done" | "partly_done" | "failed" | "cancelled";
+/** BL-227 stage 2 (FO-MSG-0025 §1): a translation request; `videoIdsJson`, `languagesJson`, `originalsJson`, `resultJson` are JSON. */
+export type DraftTranslationRequest = {
+  id: string;
+  videoIdsJson: string;
+  languagesJson: string;
+  mode: "fill_missing" | "redo";
+  fields: "both" | "title" | "description";
+  note: string | null;
+  redoOfChangeId: string | null;
+  /** videoId → the original's fingerprint when the request was made. */
+  originalsJson: string;
+  status: TranslationRequestStatus;
+  claimedBy: "factory" | "worker" | null;
+  claimedAt: string | null;
+  /** `[{ videoId, changeSetId }]` once completed. */
+  resultJson: string;
+  failReason: string | null;
+  createdAt: string;
+  updatedAt: string;
 };
 
 /** Who made a change set -- server-stamped from the caller, never caller-supplied. */

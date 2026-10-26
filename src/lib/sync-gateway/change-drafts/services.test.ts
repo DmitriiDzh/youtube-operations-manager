@@ -1812,3 +1812,57 @@ test("BL-227 AC-LR-13: a document saved before these maps existed reads as not c
   doc = await core.getDocument({ channelId: CHANNEL });
   assert.equal(latestCheckReport(doc, "cs-1")?.id, "r-1");
 });
+
+// BL-227 stage 2 (LANGUAGES_REVIEW_PLAN.md §7a, AC-LR-20/21/22/25): the translation request lifecycle in the channel's document.
+async function requestFor3Videos(core: ReturnType<typeof createChangeDraftsCore>) {
+  return core.createTranslationRequest({ channelId: CHANNEL, id: "q-1", videoIds: ["v1", "v2", "v3"], languages: ["it", "ja"], mode: "fill_missing", fields: "both", note: null, redoOfChangeId: null, originals: {} });
+}
+async function setFor(core: ReturnType<typeof createChangeDraftsCore>, setId: string, videoId: string) {
+  await core.createChangeSet({ channelId: CHANNEL, changeSetId: setId, source: "ai_localization" });
+  await core.addChange({ channelId: CHANNEL, changeId: `${setId}-c`, changeSetId: setId, videoId, language: "it", field: "title", baselineValue: "", proposedValue: "x", changeType: "add" });
+}
+const notClaimable = (error: unknown) => error instanceof DomainError && error.code === "request_not_claimable";
+
+test("BL-227 AC-LR-20: a request starts requested; the first claim takes it, a second is refused", async () => {
+  const core = createChangeDraftsCore(makeDeps({ store: fakeStore() }));
+  assert.equal((await requestFor3Videos(core)).status, "requested");
+  const claimed = await core.claimTranslationRequest({ channelId: CHANNEL, requestId: "q-1", by: "worker" });
+  assert.deepEqual([claimed.status, claimed.claimedBy, typeof claimed.claimedAt], ["in_progress", "worker", "string"]);
+  await assert.rejects(core.claimTranslationRequest({ channelId: CHANNEL, requestId: "q-1", by: "factory" }), notClaimable);
+  await assert.rejects(core.claimTranslationRequest({ channelId: CHANNEL, requestId: "q-x", by: "worker" }), (e: unknown) => e instanceof DomainError && e.code === "not_found");
+});
+
+test("BL-227 AC-LR-21: sets for 2 of 3 videos -> partly_done; all 3 -> done; a set without that video's changes is refused", async () => {
+  const core = createChangeDraftsCore(makeDeps({ store: fakeStore() }));
+  await requestFor3Videos(core);
+  await core.claimTranslationRequest({ channelId: CHANNEL, requestId: "q-1", by: "worker" });
+  for (const [setId, videoId] of [["s1", "v1"], ["s2", "v2"], ["s3", "v3"]]) await setFor(core, setId, videoId);
+  await assert.rejects(
+    core.completeTranslationRequest({ channelId: CHANNEL, requestId: "q-1", by: "worker", results: [{ videoId: "v1", changeSetId: "s2" }] }),
+    (e: unknown) => e instanceof DomainError && e.code === "validation_failed"
+  );
+  await assert.rejects(core.completeTranslationRequest({ channelId: CHANNEL, requestId: "q-1", by: "factory", results: [{ videoId: "v1", changeSetId: "s1" }] }), notClaimable);
+  const partly = await core.completeTranslationRequest({ channelId: CHANNEL, requestId: "q-1", by: "worker", results: [{ videoId: "v1", changeSetId: "s1" }, { videoId: "v2", changeSetId: "s2" }] });
+  assert.equal(partly.status, "partly_done");
+
+  const other = createChangeDraftsCore(makeDeps({ store: fakeStore() }));
+  await requestFor3Videos(other);
+  await other.claimTranslationRequest({ channelId: CHANNEL, requestId: "q-1", by: "worker" });
+  for (const [setId, videoId] of [["s1", "v1"], ["s2", "v2"], ["s3", "v3"]]) await setFor(other, setId, videoId);
+  const done = await other.completeTranslationRequest({ channelId: CHANNEL, requestId: "q-1", by: "worker", results: [{ videoId: "v1", changeSetId: "s1" }, { videoId: "v2", changeSetId: "s2" }, { videoId: "v3", changeSetId: "s3" }] });
+  assert.deepEqual([done.status, JSON.parse(done.resultJson).length], ["done", 3]);
+});
+
+test("BL-227 AC-LR-22/25: fail needs the claim; cancel works until finished and then a claim fails", async () => {
+  const core = createChangeDraftsCore(makeDeps({ store: fakeStore() }));
+  await requestFor3Videos(core);
+  await assert.rejects(core.failTranslationRequest({ channelId: CHANNEL, requestId: "q-1", by: "worker", reason: "no source" }), notClaimable);
+  await core.claimTranslationRequest({ channelId: CHANNEL, requestId: "q-1", by: "worker" });
+  const failed = await core.failTranslationRequest({ channelId: CHANNEL, requestId: "q-1", by: "worker", reason: "no source text" });
+  assert.deepEqual([failed.status, failed.failReason], ["failed", "no source text"]);
+  await assert.rejects(core.cancelTranslationRequest({ channelId: CHANNEL, requestId: "q-1" }), notClaimable);
+
+  await core.createTranslationRequest({ channelId: CHANNEL, id: "q-2", videoIds: ["v1"], languages: ["de"], mode: "redo", fields: "title", note: "shorter", redoOfChangeId: "c-9", originals: { v1: "fp" } });
+  assert.equal((await core.cancelTranslationRequest({ channelId: CHANNEL, requestId: "q-2" })).status, "cancelled");
+  await assert.rejects(core.claimTranslationRequest({ channelId: CHANNEL, requestId: "q-2", by: "worker" }), notClaimable);
+});
