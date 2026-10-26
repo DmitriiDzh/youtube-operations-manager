@@ -221,12 +221,15 @@ export function LocalizationReviewPanel({
   onSend,
   onChanged,
   requestsVersion,
+  onSummary,
 }: {
   channelId: string;
   /** The channel's languages (the Languages table's columns), offered in a request. */
   channelLanguages: string[];
   /** Bumped by the caller after it made a request, so the list reloads. */
   requestsVersion?: number;
+  /** BL-227 stage 3: what waits for the owner, for the section's strip. */
+  onSummary?: (summary: { waiting: number; approvedNotWritten: number; openRequests: number }) => void;
   sendBusy: boolean;
   /** Starts the send of these sets' approved changes of these videos (the caller's batch runner). */
   onSend: (changeSetIds: string[], videoIds: string[]) => void;
@@ -363,6 +366,15 @@ export function LocalizationReviewPanel({
   }, [review]);
   const author = languages.flatMap(rows).find((row) => row.createdBy)?.createdBy ?? null;
   const setTime = languages.flatMap(rows).map((row) => row.setCreatedAt).sort().at(-1) ?? null;
+
+  useEffect(() => {
+    if (!onSummary || queue === null) return;
+    onSummary({
+      waiting: queue.filter((entry) => entry.counts.pending > 0).length,
+      approvedNotWritten: queue.filter((entry) => entry.counts.approvedNotWritten > 0).length,
+      openRequests: requests.filter((request) => request.status === "requested" || request.status === "in_progress").length,
+    });
+  }, [queue, requests, onSummary]);
 
   if (queue === null) return <LoadingIndicator className="text-sm text-zinc-500" />;
 

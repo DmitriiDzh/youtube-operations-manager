@@ -8,6 +8,11 @@ export const languages: Record<keyof typeof en, string> = {
   "languages.subTab.approved": "Одобренные",
   "languages.subTab.rejected": "Отклонённые",
   "languages.subTab.all": "Все",
+  "languages.settings.title": "Настройки языков: языки канала, переводы канала, импорт XLSX",
+  "languages.waiting.review": "видео ждут проверки",
+  "languages.waiting.approved": "видео одобрены, не отправлены",
+  "languages.waiting.requests": "заявок на перевод в работе",
+  "languages.waiting.missing": "видео без части переводов",
   // BL-227 (LANGUAGES_REVIEW_PLAN.md): translation review by video.
   "languages.subTab.byVideo": "По видео",
   "langReview.check.title_length": "Длина названия",

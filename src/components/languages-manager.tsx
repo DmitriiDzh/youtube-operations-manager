@@ -340,6 +340,9 @@ export function LanguagesManager() {
 
   // --- XLSX import/export (secondary, bulk path) ---
   const [importOpen, setImportOpen] = useState(false);
+  // BL-227 stage 3: the folded settings block, and what the review tab reports for the «что ждёт вас» strip.
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [reviewSummary, setReviewSummary] = useState<{ waiting: number; approvedNotWritten: number; openRequests: number } | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [previewSummary, setPreviewSummary] = useState<ImportSummary | null>(null);
   const [previewErrors, setPreviewErrors] = useState<ImportRowError[]>([]);
@@ -1369,6 +1372,20 @@ export function LanguagesManager() {
     );
   }
 
+  const goTo = (id: string, tab?: SubTab) => {
+    if (tab) {
+      setOpenChangeSetId(null);
+      setSubTab(tab);
+    }
+    document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+  const waitingItems = [
+    { key: "review", count: reviewSummary?.waiting ?? 0, label: t("languages.waiting.review"), urgent: true, onClick: () => goTo("languages-review", "by_video") },
+    { key: "approved", count: reviewSummary?.approvedNotWritten ?? 0, label: t("languages.waiting.approved"), urgent: true, onClick: () => goTo("languages-review", "by_video") },
+    { key: "requests", count: reviewSummary?.openRequests ?? 0, label: t("languages.waiting.requests"), urgent: false, onClick: () => goTo("languages-review", "by_video") },
+    { key: "missing", count: (overview?.videos ?? []).filter((video) => video.missingLanguages.length > 0).length, label: t("languages.waiting.missing"), urgent: false, onClick: () => goTo("languages-table") },
+  ];
+
   return (
     <div className="space-y-4">
       <OperationOverlay state={op.state} onCancel={op.requestCancel} onClose={op.reset} />
@@ -1379,35 +1396,36 @@ export function LanguagesManager() {
       )}
 
       {channelId && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+        <div className="flex flex-wrap items-center gap-2">
           {recentSync.dialog}
+          {/* BL-227 stage 3 (LANGUAGES_REVIEW_PLAN.md §7b): what waits for the owner, first; each item opens its place. */}
+          {waitingItems.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              onClick={item.onClick}
+              className={`rounded-xl border px-3 py-2 text-left text-xs transition-colors ${item.count > 0 && item.urgent ? "border-red-900 bg-red-950/30 text-zinc-200 hover:border-red-700" : "border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-600"}`}
+            >
+              <span className="mr-1.5 text-base font-semibold text-zinc-100">{item.count}</span>
+              {item.label}
+            </button>
+          ))}
+          <span className="flex-1" />
+          <span className="text-xs text-zinc-500">
+            {t("languages.lastSynced", { when: lastSyncedAt ? formatDisplayDateTime(lastSyncedAt) : t("common.never") })}
+          </span>
           <button
             onClick={recentSync.request}
             disabled={syncing}
-            className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50"
+            className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:border-zinc-500 disabled:opacity-50"
           >
             {syncing ? t("common.syncing") : t("common.syncNow")}
           </button>
-          <p className="text-xs text-zinc-500">
-            {t("languages.lastSynced", { when: lastSyncedAt ? formatDisplayDateTime(lastSyncedAt) : t("common.never") })}
-          </p>
-        </div>
-      )}
-
-      {channelId && <LanguageDefaultsPanel channelId={channelId} supportedLanguages={supportedLanguages} />}
-
-      {/* BL-210: the channel's own name and description in other languages, under the base language they translate. */}
-      {channelId && <ChannelLocalizationsPanel channelId={channelId} />}
-
-      {channelId && (
-        <div className="rounded-xl border border-dashed border-zinc-800 bg-zinc-900/50 px-4 py-3 text-xs text-zinc-500">
-          <span className="font-medium text-zinc-400">{t("languages.recommended.title")}</span>{" "}
-          {t("languages.recommended.body")}
         </div>
       )}
 
       {channelId && (
-        <div className="rounded-xl border border-zinc-800 bg-zinc-900">
+        <div id="languages-review" className="rounded-xl border border-zinc-800 bg-zinc-900">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800 px-4 py-3">
             <div className="flex gap-1 rounded-lg bg-zinc-950 p-1">
               {SUB_TABS.map((tab) => (
@@ -1445,6 +1463,7 @@ export function LanguagesManager() {
               <LocalizationReviewPanel
                 channelId={channelId}
                 channelLanguages={overview?.languages ?? []}
+                onSummary={setReviewSummary}
                 requestsVersion={requestsVersion}
                 sendBusy={sendRunner.busy}
                 onChanged={() => void fetchChangeSets(channelId)}
@@ -1528,7 +1547,7 @@ export function LanguagesManager() {
       )}
 
       {overview && (
-        <div className="rounded-xl border border-zinc-800 bg-zinc-900">
+        <div id="languages-table" className="rounded-xl border border-zinc-800 bg-zinc-900">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800 px-4 py-3">
             <input
               type="text"
@@ -1771,6 +1790,31 @@ export function LanguagesManager() {
         </div>
       )}
 
+      {/* BL-227 stage 3: the settings used rarely -- the channel's language defaults, its own translations, recommended languages
+          and the XLSX import -- folded at the bottom. */}
+      {channelId && (
+        <div id="languages-settings" className="rounded-xl border border-zinc-800 bg-zinc-900/60">
+          <button
+            type="button"
+            onClick={() => setSettingsOpen((v) => !v)}
+            className="flex w-full items-center justify-between px-4 py-3 text-sm font-medium text-zinc-300"
+          >
+            <span>{t("languages.settings.title")}</span>
+            <span className="text-xs text-zinc-500">{settingsOpen ? t("languages.import.hide") : t("languages.import.show")}</span>
+          </button>
+          {settingsOpen && (
+            <div className="space-y-4 border-t border-zinc-800 p-4">
+      {channelId && <LanguageDefaultsPanel channelId={channelId} supportedLanguages={supportedLanguages} />}
+
+      {/* BL-210: the channel's own name and description in other languages, under the base language they translate. */}
+      {channelId && <ChannelLocalizationsPanel channelId={channelId} />}
+
+      {channelId && (
+        <div className="rounded-xl border border-dashed border-zinc-800 bg-zinc-900/50 px-4 py-3 text-xs text-zinc-500">
+          <span className="font-medium text-zinc-400">{t("languages.recommended.title")}</span>{" "}
+          {t("languages.recommended.body")}
+        </div>
+      )}
       {channelId && (
         <div className="rounded-xl border border-zinc-800 bg-zinc-900">
           <button
@@ -1864,6 +1908,11 @@ export function LanguagesManager() {
                   )}
                 </div>
               )}
+            </div>
+          )}
+        </div>
+      )}
+
             </div>
           )}
         </div>

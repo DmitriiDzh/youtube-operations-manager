@@ -5,6 +5,11 @@ export const languages = {
   "languages.subTab.approved": "Approved",
   "languages.subTab.rejected": "Rejected",
   "languages.subTab.all": "All",
+  "languages.settings.title": "Language settings: channel defaults, the channel's own translations, XLSX import",
+  "languages.waiting.review": "videos waiting for review",
+  "languages.waiting.approved": "videos approved, not sent",
+  "languages.waiting.requests": "translation requests in work",
+  "languages.waiting.missing": "videos missing translations",
   // BL-227 (LANGUAGES_REVIEW_PLAN.md): translation review by video.
   "languages.subTab.byVideo": "By video",
   "langReview.check.title_length": "Title length",
