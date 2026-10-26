@@ -1,6 +1,6 @@
 import { agentChannelBranding, createChannelBrandingAgentCore } from "@/lib/channel-branding";
 import { createPublishingPlansAgentCore } from "@/lib/publishing-plans";
-import { reportLocalizationChecks } from "@/lib/localization-review";
+import { claimTranslationRequest, completeTranslationRequest, failTranslationRequest, listTranslationRequests, reportLocalizationChecks } from "@/lib/localization-review";
 import { publishingPlanProgress } from "@/lib/publishing-plan-progress";
 import { createChannelLocalizationsOperatorCore, operatorChannelLocalizations } from "@/lib/channel-localizations";
 import { createGeminiMediaCore } from "@/lib/gemini-media";
@@ -91,6 +91,10 @@ export function createFactoryChannelDeps(): FactoryChannelDeps {
     // BL-227 (ADR 0052): check reports on change sets -- a report decides nothing (only the owner approves, in the Web UI).
     localizationChecks: {
       report: async (input, by = "factory") => ({ ...(await reportLocalizationChecks(input, by)) }),
+      listRequests: async (input) => ({ ...(await listTranslationRequests(input)) }),
+      claimRequest: async (input, by = "factory") => ({ ...(await claimTranslationRequest(input, by)) }),
+      completeRequest: async (input, by = "factory") => ({ ...(await completeTranslationRequest(input, by)) }),
+      failRequest: async (input, by = "factory") => ({ ...(await failTranslationRequest(input, by)) }),
     },
     // BL-184 (STORYBOARD_PLAN.md §2.6): storyboards; every write is the Operator's (the owner decides in the Web UI only).
     storyboards: {

@@ -37,6 +37,10 @@ const EXPECTED_TOOLS = [
   "factory_live_map_sources",
   "factory_live_save_localizations",
   "factory_localization_report_checks",
+  "factory_localization_request_claim",
+  "factory_localization_request_complete",
+  "factory_localization_request_fail",
+  "factory_localization_requests_list",
   "factory_media_activate_runtime",
   "factory_media_adopt_template",
   "factory_media_cancel_job",
@@ -155,6 +159,9 @@ test("AC-FO-09 (amended by ADR 0025/0026): writes are exactly the named media/se
     "factory_live_map_sources",
     "factory_live_save_localizations",
     "factory_localization_report_checks",
+    "factory_localization_request_claim",
+    "factory_localization_request_complete",
+    "factory_localization_request_fail",
     "factory_media_activate_runtime",
     "factory_media_adopt_template",
     "factory_media_cancel_job",
@@ -195,7 +202,8 @@ test("AC-FO-09 (amended by ADR 0025/0026): writes are exactly the named media/se
     // factory_video_get_cost. BL-210 (CHANNEL_LOCALIZATIONS_PLAN.md §5): the channel translations read is factory_channel_get_localizations
     // (the pattern gains channel_get; the requirement "every non-write tool is a read" is unchanged).
     // BL-220 (RESTART_WHEN_IDLE_PLAN.md): factory_restart_status is the plan's status read (the pattern gains restart_status).
-    if (!writes.has(name)) assert.match(name, /^factory_(get|list|media_(get|list|storage|capacity)|plan_(get|list|todo)|gemini_(get|list)|live_(get|list)|channel_get|storyboard_(get|list)|publishing_plan_(get|list)|jobs_list|video_(list|get_cost)|restart_status)_?/, `${name} must be a read`);
+    // BL-227 stage 2: + localization_requests_list (the request list is a read; claim / complete / fail are writes).
+    if (!writes.has(name)) assert.match(name, /^factory_(get|list|media_(get|list|storage|capacity)|plan_(get|list|todo)|gemini_(get|list)|live_(get|list)|channel_get|storyboard_(get|list)|publishing_plan_(get|list)|localization_requests_list|jobs_list|video_(list|get_cost)|restart_status)_?/, `${name} must be a read`);
     assert.doesNotMatch(name, /_(set|issue|revoke)_|workspace|token|approve|reject/, `${name} must not touch paths, workspaces or tokens, or approve for anyone`);
   }
 });

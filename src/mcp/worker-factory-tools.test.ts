@@ -69,6 +69,19 @@ function fakeDeps() {
         calls.push(`checks.report:${JSON.stringify(input)}:${String(by)}`);
         return { ok: true };
       },
+      listRequests: note("requests.list"),
+      claimRequest: async (input: unknown, by: unknown) => {
+        calls.push(`requests.claim:${JSON.stringify(input)}:${String(by)}`);
+        return { ok: true };
+      },
+      completeRequest: async (input: unknown, by: unknown) => {
+        calls.push(`requests.complete:${JSON.stringify(input)}:${String(by)}`);
+        return { ok: true };
+      },
+      failRequest: async (input: unknown, by: unknown) => {
+        calls.push(`requests.fail:${JSON.stringify(input)}:${String(by)}`);
+        return { ok: true };
+      },
     },
     storyboards: {
       create: note("sb.create"), update: note("sb.update"), get: note("sb.get"), list: note("sb.list"), submit: note("sb.submit"),
@@ -159,8 +172,8 @@ test("AC-WF-05/06: the worker gets exactly the listed tools, renamed, and none o
   const names = workerFactoryTools(() => deps, TROPICO, async () => undefined).map((tool) => tool.name).sort();
   assert.deepEqual(names, [...WORKER_FACTORY_TOOL_NAMES].sort());
   // BL-223: + agent_channel_get_branding / agent_channel_save_branding (36 -> 38). BL-225: + agent_publishing_plan_save / _get /
-  // _list (38 -> 41). BL-227: + agent_localization_report_checks (41 -> 42).
-  assert.equal(names.length, 42);
+  // _list (38 -> 41). BL-227: + agent_localization_report_checks and the four request tools (41 -> 46).
+  assert.equal(names.length, 46);
   for (const forbidden of ["agent_plan_move", "agent_media_pull_model", "agent_media_list_models", "agent_media_create_runtime", "agent_media_get_gpu_stats", "agent_channel_get_localizations", "agent_channel_save_localizations"]) {
     assert.ok(!names.includes(forbidden), forbidden);
   }
@@ -283,4 +296,17 @@ test("BL-227 AC-LR-07: agent_localization_report_checks reaches the report for t
   assert.deepEqual(calls, []);
   await pinned.localizationChecks.report({ channelId: TROPICO, changeSetId: "cs-1", entries });
   assert.deepEqual(calls, [`checks.report:${JSON.stringify({ channelId: TROPICO, changeSetId: "cs-1", entries })}:worker`]);
+});
+
+
+test("BL-227 AC-LR-24: the request tools act on the worker's own channel only, recorded as a worker's", async () => {
+  const { deps, calls } = fakeDeps();
+  const pinned = pinFactoryDepsToChannel(() => deps, TROPICO, async () => undefined);
+  await assert.rejects(pinned.localizationChecks.listRequests({ channelId: JAPAN }), code("CHANNEL_NOT_ACTIVE"));
+  await assert.rejects(pinned.localizationChecks.claimRequest({ channelId: JAPAN, requestId: "q-1" }), code("CHANNEL_NOT_ACTIVE"));
+  await assert.rejects(pinned.localizationChecks.completeRequest({ channelId: JAPAN, requestId: "q-1", results: [] }), code("CHANNEL_NOT_ACTIVE"));
+  await assert.rejects(pinned.localizationChecks.failRequest({ channelId: JAPAN, requestId: "q-1", reason: "x" }), code("CHANNEL_NOT_ACTIVE"));
+  assert.deepEqual(calls, []);
+  await pinned.localizationChecks.claimRequest({ channelId: TROPICO, requestId: "q-1" });
+  assert.deepEqual(calls, [`requests.claim:${JSON.stringify({ channelId: TROPICO, requestId: "q-1" })}:worker`]);
 });

@@ -84,7 +84,9 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT",
 // (Factory API 1.33.0). Only the owner approves a slot, in the app. Additive.
 // 4.8.0 (BL-227, LANGUAGES_REVIEW_PLAN.md, ADR 0052): agent_localization_report_checks (DRAFT) -- a check report on a translation
 // change set of the worker's own channel, as factory_localization_report_checks (Factory API 1.34.0); ai_localization_create_change_set's
-// proposals gain an optional note. Only the owner approves, rejects and sends, in the app. Additive.
+// proposals gain an optional note; stage 2 (same release): agent_localization_requests_list (READ) and agent_localization_request_claim /
+// _complete / _fail (DRAFT) -- the owner's translation requests for the worker's own channel. Only the owner approves, rejects and
+// sends, in the app. Additive.
 export const AGENT_API_VERSION = "4.8.0";
 
 /**

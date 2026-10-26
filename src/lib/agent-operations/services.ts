@@ -857,6 +857,22 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     description:
       "Attach a check report to a translation change set of this channel (`agent_localization_report_checks`: per language and field a verdict pass | warn | fail with its checks, an optional note and back-translation), as factory_localization_report_checks. Every report is kept, the newest is current and shown to the owner next to the app's own checks; the owner's approve/reject is recorded next to it. A report never approves, rejects or sends. Logged.",
   },
+  {
+    id: "localization_draft.read_translation_requests",
+    mcpTools: ["agent_localization_requests_list"],
+    domain: "localization_draft",
+    permission: "READ",
+    description:
+      "BL-227 stage 2: the owner's translation requests for this channel, newest first (`agent_localization_requests_list`), as factory_localization_requests_list -- poll it for new work (status requested).",
+  },
+  {
+    id: "localization_draft.work_translation_requests",
+    mcpTools: ["agent_localization_request_claim", "agent_localization_request_complete", "agent_localization_request_fail"],
+    domain: "localization_draft",
+    permission: "DRAFT",
+    description:
+      "BL-227 stage 2: take the owner's translation request (`agent_localization_request_claim`, one claim wins), hand in the change sets made for it (`agent_localization_request_complete`, one set per video) or give up with a reason (`agent_localization_request_fail`), as the factory_localization_request_* tools. The sets still wait for the owner's review; nothing is sent. Logged.",
+  },
   // BL-218 (stage 4, owner msg 3402): paid work the Operator's way, within the owner's switches and limits.
   {
     id: "channel_production.factory_sessions",

@@ -147,6 +147,10 @@ export const MCP_TOOL_CLASSIFICATION: Readonly<Record<string, McpToolClass>> = O
   agent_publishing_plan_list: "bound",
   // BL-227 (ADR 0052): a check report on a change set of the worker's own channel.
   agent_localization_report_checks: "bound",
+  agent_localization_requests_list: "bound",
+  agent_localization_request_claim: "bound",
+  agent_localization_request_complete: "bound",
+  agent_localization_request_fail: "bound",
   agent_gemini_get_job: "bound",
   // BL-218 (stage 4): paid work the Operator's way, within the owner's switches and limits, for the bound channel only.
   agent_factory_start_session: "bound",

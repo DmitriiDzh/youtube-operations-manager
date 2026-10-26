@@ -4,16 +4,20 @@
 // else depends on it except the Web routes and the factory tools. It approves, rejects and sends nothing itself.
 import { createChangeSetCore, readWithChannelBaseline } from "@/lib/changesets";
 import { createSendApprovedCore } from "@/lib/batches";
-import { createChangeDraftsCoreForProduction, checkReportEntries, latestCheckReport } from "@/lib/sync-gateway";
+import { createChangeDraftsCoreForProduction, checkReportEntries, latestCheckReport, type DraftTranslationRequest } from "@/lib/sync-gateway";
 import { createChannelVideoStoreAdapter } from "@/lib/channel-video-store";
 import { getChannelExpectedLanguages, getChannelTargetLanguages, listPublishingUploads } from "@/lib/db";
 import { originalFingerprint } from "@/lib/shared-localization-checks/fingerprint";
 import { createDefaultLogger } from "@/lib/shared-logger";
+import { randomUUID } from "node:crypto";
+import { DomainError } from "@/lib/shared-domain";
 import { reportChecks } from "./report";
+import { completeRequestInputSchema, createRequestInputSchema, failRequestInputSchema, listRequestsInputSchema, parseOrRefuse, requestRefInputSchema, toRequestView, type TranslationRequestView } from "./requests";
 import { buildVideoReview, needsReview, type ReviewChange, type ReviewSetInput, type VideoReview } from "./review";
 
 export { reportChecksInputSchema, type ReportChecksInput } from "./report";
 export type { VideoReview, ReviewLanguage, ReviewRow, ReviewVerdict } from "./review";
+export type { TranslationRequestView } from "./requests";
 
 /** An agent's check report on a change set of `channelId` (the set must be that channel's: `not_found` otherwise). */
 export async function reportLocalizationChecks(input: unknown, by: "factory" | "worker") {
@@ -126,4 +130,67 @@ export async function listLocalizationReviewQueue(channelId: string): Promise<Re
 /** One video's review, or null when nothing of it waits for the owner. */
 export async function getLocalizationReview(channelId: string, videoId: string): Promise<VideoReview | null> {
   return (await loadReviews(channelId, videoId)).find((review) => review.video.videoId === videoId) ?? null;
+}
+
+// -- BL-227 stage 2 (LANGUAGES_REVIEW_PLAN.md §7a): translation requests. The owner creates and cancels (Web); an agent lists, claims,
+// completes and fails (MCP). Nothing here approves, rejects or sends.
+
+/** The owner's request: every video must be one of the channel's synced videos. */
+export async function createTranslationRequest(channelId: string, input: unknown): Promise<TranslationRequestView> {
+  const parsed = parseOrRefuse(createRequestInputSchema, input, "translation request");
+  const videos = new Map((await createChannelVideoStoreAdapter().listVideosByChannel(channelId)).map((video) => [video.videoId, video]));
+  const unknown = parsed.videoIds.filter((videoId) => !videos.has(videoId));
+  if (unknown.length > 0) {
+    throw new DomainError({ code: "not_found", message: "A requested video is not one of this channel's synced videos", details: { videoIds: unknown } });
+  }
+  const originals = Object.fromEntries(parsed.videoIds.map((videoId) => [videoId, originalFingerprint(videos.get(videoId)!.title, videos.get(videoId)!.description)]));
+  const stored = await createChangeDraftsCoreForProduction().createTranslationRequest({
+    channelId,
+    id: randomUUID(),
+    videoIds: parsed.videoIds,
+    languages: parsed.languages,
+    mode: parsed.mode,
+    fields: parsed.fields,
+    note: parsed.note && parsed.note.length > 0 ? parsed.note : null,
+    redoOfChangeId: parsed.redoOfChangeId ?? null,
+    originals,
+  });
+  return toRequestView(stored, Date.now());
+}
+
+/** A channel's requests, newest first (optionally one status). A channel with no document yet has none. */
+export async function listTranslationRequests(input: unknown): Promise<{ requests: TranslationRequestView[] }> {
+  const parsed = parseOrRefuse(listRequestsInputSchema, input, "list input");
+  let document: { translationRequests?: Record<string, DraftTranslationRequest> } | null = null;
+  try {
+    document = await createChangeDraftsCoreForProduction().getDocument({ channelId: parsed.channelId });
+  } catch {
+    document = null;
+  }
+  const now = Date.now();
+  const requests = Object.values(document?.translationRequests ?? {})
+    .filter((request) => !parsed.status || request.status === parsed.status)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .map((request) => toRequestView(request, now));
+  return { requests };
+}
+
+export async function cancelTranslationRequest(channelId: string, requestId: string): Promise<TranslationRequestView> {
+  const ref = parseOrRefuse(requestRefInputSchema, { channelId, requestId }, "request");
+  return toRequestView(await createChangeDraftsCoreForProduction().cancelTranslationRequest(ref), Date.now());
+}
+
+export async function claimTranslationRequest(input: unknown, by: "factory" | "worker"): Promise<{ request: TranslationRequestView }> {
+  const ref = parseOrRefuse(requestRefInputSchema, input, "claim input");
+  return { request: toRequestView(await createChangeDraftsCoreForProduction().claimTranslationRequest({ ...ref, by }), Date.now()) };
+}
+
+export async function completeTranslationRequest(input: unknown, by: "factory" | "worker"): Promise<{ request: TranslationRequestView }> {
+  const parsed = parseOrRefuse(completeRequestInputSchema, input, "complete input");
+  return { request: toRequestView(await createChangeDraftsCoreForProduction().completeTranslationRequest({ ...parsed, by }), Date.now()) };
+}
+
+export async function failTranslationRequest(input: unknown, by: "factory" | "worker"): Promise<{ request: TranslationRequestView }> {
+  const parsed = parseOrRefuse(failRequestInputSchema, input, "fail input");
+  return { request: toRequestView(await createChangeDraftsCoreForProduction().failTranslationRequest({ ...parsed, by }), Date.now()) };
 }

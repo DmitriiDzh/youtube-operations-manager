@@ -148,6 +148,10 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
     // BL-227: the check-report surface is a fake that records what reached it.
     localizationChecks: {
       report: async (input, by) => (mediaCalls.push(`checks.report:${(input as { changeSetId: string }).changeSetId}:${by ?? "factory"}`), { reportId: "r-1", reportedAt: "t", replaced: null }),
+      listRequests: async (input) => (mediaCalls.push(`requests.list:${(input as { channelId: string }).channelId}`), { requests: [] }),
+      claimRequest: async (input, by) => (mediaCalls.push(`requests.claim:${(input as { requestId: string }).requestId}:${by ?? "factory"}`), { request: {} }),
+      completeRequest: async (input, by) => (mediaCalls.push(`requests.complete:${(input as { requestId: string }).requestId}:${by ?? "factory"}`), { request: {} }),
+      failRequest: async (input, by) => (mediaCalls.push(`requests.fail:${(input as { requestId: string }).requestId}:${by ?? "factory"}`), { request: {} }),
     },
     // BL-184: the storyboards module is a fake that records what reached it.
     storyboards: {
@@ -332,6 +336,10 @@ test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exact
     "factory_live_map_sources",
     "factory_live_save_localizations",
     "factory_localization_report_checks",
+    "factory_localization_request_claim",
+    "factory_localization_request_complete",
+    "factory_localization_request_fail",
+    "factory_localization_requests_list",
     "factory_media_activate_runtime",
     "factory_media_adopt_template",
     "factory_media_cancel_job",
@@ -494,6 +502,10 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
       "factory_publishing_plan_get",
       "factory_publishing_plan_list",
       "factory_localization_report_checks",
+      "factory_localization_requests_list",
+      "factory_localization_request_claim",
+      "factory_localization_request_complete",
+      "factory_localization_request_fail",
       "factory_storyboard_create",
       "factory_storyboard_update",
       "factory_storyboard_get",
@@ -542,6 +554,9 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
       "factory_channel_save_branding",
       "factory_publishing_plan_save",
       "factory_localization_report_checks",
+      "factory_localization_request_claim",
+      "factory_localization_request_complete",
+      "factory_localization_request_fail",
       "factory_storyboard_create",
       "factory_storyboard_update",
       "factory_storyboard_submit",
@@ -1539,4 +1554,17 @@ test("BL-227: factory_localization_report_checks passes the gate first and refus
   const body = await (await endpoint.handle(rpc(call("factory_localization_report_checks", { ...ok, approve: true }), withToken(token)))).json();
   assert.equal(Boolean(body.result?.isError ?? body.error), true);
   assert.deepEqual(toolDeps.mediaCalls, []);
+});
+
+
+// BL-227 stage 2 (LANGUAGES_REVIEW_PLAN.md §7a): the request tools -- the list is a read; claim, complete and fail pass the gate first.
+test("BL-227: factory_localization_requests_list is a read; claim / complete / fail pass the gate first", async () => {
+  const { endpoint, tokenServices, toolDeps } = setupWithDeps();
+  const { token } = await tokenServices.issueToken({});
+  const send = async (tool: string, args: Record<string, unknown>) => toolResult(await endpoint.handle(rpc(call(tool, args), withToken(token))));
+  assert.equal((await send("factory_localization_requests_list", { channelId: "UC_A" })).isError, false);
+  assert.equal((await send("factory_localization_request_claim", { channelId: "UC_A", requestId: "q-1" })).isError, false);
+  assert.equal((await send("factory_localization_request_complete", { channelId: "UC_A", requestId: "q-1", results: [{ videoId: "v1", changeSetId: "s1" }] })).isError, false);
+  assert.equal((await send("factory_localization_request_fail", { channelId: "UC_A", requestId: "q-1", reason: "no source" })).isError, false);
+  assert.deepEqual(toolDeps.mediaCalls, ["requests.list:UC_A", "gate", "requests.claim:q-1:factory", "gate", "requests.complete:q-1:factory", "gate", "requests.fail:q-1:factory"]);
 });

@@ -147,7 +147,10 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 // only the owner approves, revokes, vetoes and restores slots in the Web UI. Additive.
 // BL-227 (LANGUAGES_REVIEW_PLAN.md, ADR 0052; FO-MSG-0025): 1.34.0 -- factory_localization_report_checks (WRITE, local only: a check
 // report on a change set -- per (language, field) a verdict pass | warn | fail with its checks, an optional note and back-translation;
-// append-only, the newest is current and shown to the owner on the review screen). It approves, rejects and sends nothing. Additive.
+// append-only, the newest is current and shown to the owner on the review screen); stage 2 (same release): the owner's translation
+// requests -- factory_localization_requests_list (READ), factory_localization_request_claim / _complete / _fail (WRITE, local). A
+// request is claimed once (request_not_claimable otherwise) and completed with the change sets made for it. Nothing here approves,
+// rejects or sends. Additive.
 export const FACTORY_API_VERSION = "1.34.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
@@ -226,6 +229,10 @@ export const FACTORY_TOOL_NAMES = [
   "factory_publishing_plan_get",
   "factory_publishing_plan_list",
   "factory_localization_report_checks",
+  "factory_localization_requests_list",
+  "factory_localization_request_claim",
+  "factory_localization_request_complete",
+  "factory_localization_request_fail",
   // BL-184: storyboards -- versions, submitting for the owner's review, answers to the owner's comments; reads.
   "factory_storyboard_create",
   "factory_storyboard_update",
@@ -294,8 +301,12 @@ export const FACTORY_WRITE_TOOL_NAMES = [
   "factory_channel_save_branding",
   // BL-225: a channel's weekly plan (synced to the other computers; only the owner approves it, in the Web UI).
   "factory_publishing_plan_save",
-  // BL-227: a check report on a change set (synced with the set; only the owner approves or rejects, in the Web UI).
+  // BL-227: a check report on a change set (synced with the set; only the owner approves or rejects, in the Web UI), and taking,
+  // completing or failing the owner's translation request (synced; the sets it produces still wait for the owner).
   "factory_localization_report_checks",
+  "factory_localization_request_claim",
+  "factory_localization_request_complete",
+  "factory_localization_request_fail",
   // BL-184: storyboard versions, submissions and answers (synced to the other computers; nothing is generated or charged).
   "factory_storyboard_create",
   "factory_storyboard_update",
@@ -424,6 +435,11 @@ export type FactoryToolDeps = {
   /** BL-227 (ADR 0052): check reports on change sets (the localization-review module validates every input itself). `by`: the Operator or a worker. */
   localizationChecks: {
     report(input: unknown, by?: "factory" | "worker"): Promise<Record<string, unknown>>;
+    /** Stage 2: the owner's translation requests (the module validates every input itself). */
+    listRequests(input: unknown): Promise<Record<string, unknown>>;
+    claimRequest(input: unknown, by?: "factory" | "worker"): Promise<Record<string, unknown>>;
+    completeRequest(input: unknown, by?: "factory" | "worker"): Promise<Record<string, unknown>>;
+    failRequest(input: unknown, by?: "factory" | "worker"): Promise<Record<string, unknown>>;
   };
   /** BL-184: storyboards (the module validates every input strictly itself; every write is the Operator's). */
   storyboards: {
@@ -1478,6 +1494,60 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
       const input = parseInput(reportChecksInput, args);
       await deps.assertMutationAllowed();
       return successResult(await deps.localizationChecks.report(input));
+    }
+  );
+
+  // -- BL-227 stage 2 (LANGUAGES_REVIEW_PLAN.md §7a): the owner's translation requests. The module checks every bound itself.
+  const REQUEST_SHAPE =
+    "Request: { requestId, videoIds, languages, mode: fill_missing (only languages the video lacks) | redo (replace these languages), fields: both | title | description, note (the owner's, or null), redoOfChangeId (the rejected change a redo replaces, or null), status: requested | in_progress | done | partly_done | failed | cancelled, overdue (3 h unclaimed, or 3 h claimed without a result), claimedBy: factory | worker | null, claimedAt, results: [{ videoId, changeSetId }], failReason, createdAt, updatedAt }. Read the source text from the video itself (agent_get_video_context / factory tools); make one change set per video with ai_localization_create_change_set.";
+  const requestListInput = z.object({ channelId: z.string().min(1).max(64), status: z.enum(["requested", "in_progress", "done", "partly_done", "failed", "cancelled"]).optional() }).strict();
+  const requestRefInput = z.object({ channelId: z.string().min(1).max(64), requestId: z.string().min(1).max(64) }).strict();
+  const requestCompleteInput = z
+    .object({ channelId: z.string().min(1).max(64), requestId: z.string().min(1).max(64), results: z.array(z.object({ videoId: z.string(), changeSetId: z.string() }).strict()).min(1).max(200) })
+    .strict();
+  const requestFailInput = z.object({ channelId: z.string().min(1).max(64), requestId: z.string().min(1).max(64), reason: z.string().min(1).max(1000) }).strict();
+  registerTool(
+    "factory_localization_requests_list",
+    {
+      description: `The owner's translation requests of a channel, newest first (1.34.0): { channelId, status? } -> { requests }. Poll it to find new work (status requested). Read-only. ${REQUEST_SHAPE}`,
+      inputSchema: requestListInput,
+    },
+    async (args) => successResult(await deps.localizationChecks.listRequests(parseInput(requestListInput, args)))
+  );
+  registerTool(
+    "factory_localization_request_claim",
+    {
+      description: `Take a requested translation request before working on it (1.34.0): { channelId, requestId } -> { request } (status in_progress, claimedBy you). Only one claim wins: a request that is not requested any more answers request_not_claimable with details.status / claimedBy; unknown: not_found. Passes the device mutation gate. ${REQUEST_SHAPE}`,
+      inputSchema: requestRefInput,
+    },
+    async (args) => {
+      const input = parseInput(requestRefInput, args);
+      await deps.assertMutationAllowed();
+      return successResult(await deps.localizationChecks.claimRequest(input));
+    }
+  );
+  registerTool(
+    "factory_localization_request_complete",
+    {
+      description: `Hand in the change sets you made for a request you claimed (1.34.0): { channelId, requestId, results: [{ videoId, changeSetId }] } -> { request } (done when every requested video has a set, else partly_done). Each set must be this channel's and hold changes of that video (validation_failed with details.refused); not your claim, or not in progress: request_not_claimable. The sets still wait for the owner's review; nothing is sent. Passes the device mutation gate. ${REQUEST_SHAPE}`,
+      inputSchema: requestCompleteInput,
+    },
+    async (args) => {
+      const input = parseInput(requestCompleteInput, args);
+      await deps.assertMutationAllowed();
+      return successResult(await deps.localizationChecks.completeRequest(input));
+    }
+  );
+  registerTool(
+    "factory_localization_request_fail",
+    {
+      description: `Give up on a request you claimed, with the reason the owner sees (1.34.0): { channelId, requestId, reason (1-1000) } -> { request } (status failed). Not your claim, or not in progress: request_not_claimable. Passes the device mutation gate. ${REQUEST_SHAPE}`,
+      inputSchema: requestFailInput,
+    },
+    async (args) => {
+      const input = parseInput(requestFailInput, args);
+      await deps.assertMutationAllowed();
+      return successResult(await deps.localizationChecks.failRequest(input));
     }
   );
 
