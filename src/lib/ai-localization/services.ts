@@ -150,6 +150,7 @@ type ServiceDependencies = {
       channelId: string;
       source: ChangeSet["source"];
       changes: ChangeToPersist[];
+      details?: { createdBy: "owner" | "factory" | "worker" | "agent"; notes: Record<string, string> };
     }): Promise<ChangeSet>;
   };
   profileStore: {
@@ -461,6 +462,8 @@ export function createAiLocalizationServices(deps: ServiceDependencies) {
 
         const seenTargets = new Set<string>();
         const changesToPersist: ChangeToPersist[] = [];
+        // BL-227: the agent's note of each proposal, on every change made from it.
+        const notes: Record<string, string> = {};
 
         for (const proposal of parsedInput.proposals as ReviewedProposal[]) {
           if (!isValidLanguageCode(proposal.language)) {
@@ -505,8 +508,10 @@ export function createAiLocalizationServices(deps: ServiceDependencies) {
 
             if (classified.changeType === "unchanged" && classified.validationStatus === "valid") continue;
 
+            const changeId = deps.idGenerator();
+            if (proposal.note) notes[changeId] = proposal.note;
             changesToPersist.push({
-              id: deps.idGenerator(),
+              id: changeId,
               videoId: proposal.videoId,
               language: proposal.language,
               field,
@@ -560,6 +565,8 @@ export function createAiLocalizationServices(deps: ServiceDependencies) {
             channelId: channel.channelId,
             source: "ai_localization",
             changes: changesToPersist,
+            // Server-stamped: an MCP call is an agent's, the Web UI and the CLI are the owner's.
+            details: { createdBy: callOrigin.createdVia === "mcp" ? "agent" : "owner", notes },
           });
         } catch (error) {
           // The Change Set WAS stored but reads back incomplete (`change_set_incomplete`): it exists and is visible, so it must carry its

@@ -24,6 +24,7 @@ import {
 } from "./schemas";
 import { sameLanguage } from "@/lib/shared-language-baseline";
 import { untitledTranslations } from "@/lib/shared-localization-merge";
+import type { SetAuthor } from "@/lib/sync-gateway";
 
 const MAX_PREVIEW_ERRORS_RETURNED = 200;
 const DEFAULT_PAGE_SIZE = 50;
@@ -114,6 +115,14 @@ type ServiceDependencies = {
    */
   decisionLog?: {
     record(channelId: string, decisions: Array<{ changeId: string; action: "approve" | "reject" }>): Promise<void>;
+  };
+  /**
+   * BL-227 (ADR 0052): a new set's write-once details -- who made it, the agent's notes per change, and each video's original
+   * fingerprint (`originalFingerprint`). Best-effort: a failure is logged, the set stands. Optional: absent = no details.
+   */
+  setDetails?: {
+    create(input: { channelId: string; changeSetId: string; createdBy: SetAuthor; notes: Record<string, string>; originals: Record<string, string> }): Promise<void>;
+    fingerprint(title: string, description: string): string;
   };
 };
 
@@ -394,6 +403,8 @@ async function persistChangeSet(
     schemaVersion: string | null;
     exportedAt: string | null;
     changesToPersist: ChangeToPersist[];
+    /** BL-227: who made the set and the agent's notes by change id (absent = the owner, no notes). */
+    details?: { createdBy: SetAuthor; notes: Record<string, string> };
   }
 ): Promise<ChangeSet> {
   const status = computeChangeSetStatus(
@@ -422,6 +433,22 @@ async function persistChangeSet(
     source: input.source,
     changesToPersist: input.changesToPersist,
   });
+
+  if (deps.setDetails) {
+    try {
+      const videoIds = new Set(input.changesToPersist.map((change) => change.videoId));
+      const originals: Record<string, string> = {};
+      for (const video of await deps.channelStore.listVideosByChannel(input.channelId)) {
+        if (videoIds.has(video.videoId)) originals[video.videoId] = deps.setDetails.fingerprint(video.title, video.description);
+      }
+      const notes = Object.fromEntries(
+        Object.entries(input.details?.notes ?? {}).filter(([changeId]) => input.changesToPersist.some((change) => change.id === changeId))
+      );
+      await deps.setDetails.create({ channelId: input.channelId, changeSetId, createdBy: input.details?.createdBy ?? "owner", notes, originals });
+    } catch (error) {
+      deps.logger.error({ event: "changesets.set_details_failed", context: { changeSetId, error: error instanceof Error ? error.message : String(error) } });
+    }
+  }
 
   const storedChangeSet = await deps.changeSetStore.getChangeSet(changeSetId);
   if (!storedChangeSet) {
@@ -475,6 +502,8 @@ export function createChangeSetServices(deps: ServiceDependencies) {
       channelId: string;
       source: ChangeSet["source"];
       changes: ChangeToPersist[];
+      /** BL-227: who made the set and the agent's notes by change id. */
+      details?: { createdBy: SetAuthor; notes: Record<string, string> };
     }): Promise<ChangeSet> {
       try {
         const channel = await requireChannel(deps, input.channelId);
@@ -485,6 +514,7 @@ export function createChangeSetServices(deps: ServiceDependencies) {
           schemaVersion: null,
           exportedAt: null,
           changesToPersist: input.changes,
+          details: input.details,
         });
 
         deps.logger.info({

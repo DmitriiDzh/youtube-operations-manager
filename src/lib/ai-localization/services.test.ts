@@ -47,11 +47,11 @@ function makeFixture(videos: StoredVideoRecord[] = [makeVideo()]) {
     },
   };
 
-  const persistedChangeSets: Array<{ channelId: string; source: ChangeSet["source"]; changes: unknown[] }> = [];
+  const persistedChangeSets: Array<{ channelId: string; source: ChangeSet["source"]; changes: unknown[]; details?: { createdBy: string; notes: Record<string, string> } }> = [];
   let idCounter = 0;
 
   const changeSetServices = {
-    async createChangeSetFromProposals(input: { channelId: string; source: ChangeSet["source"]; changes: unknown[] }) {
+    async createChangeSetFromProposals(input: { channelId: string; source: ChangeSet["source"]; changes: unknown[]; details?: { createdBy: "owner" | "factory" | "worker" | "agent"; notes: Record<string, string> } }) {
       persistedChangeSets.push(input);
       const now = new Date().toISOString();
       const cs: ChangeSet = {
@@ -866,4 +866,29 @@ test("BL-227 AC-LR-01/03: a generated ja description over 5000 bytes, or a ja ti
   assert.match(title.validationError ?? "", /script/);
   assert.equal(description.validationStatus, "invalid");
   assert.match(description.validationError ?? "", /5003 bytes/);
+});
+
+
+test("BL-227 AC-LR-12: a proposal's note goes with every change made from it; an MCP call is an agent's, the Web UI the owner's", async () => {
+  const { build, persistedChangeSets } = makeFixture();
+  const services = build(fixedProvider(() => ({ status: "ok", title: "x", description: "y" })));
+  await services.createChangeSetFromGeneration(
+    {
+      channelId: "UC_TEST",
+      proposals: [
+        { videoId: "v1", language: "es", title: "Gatos", description: "Descripción", note: "title shortened" },
+        { videoId: "v1", language: "fr", title: "Chats" },
+      ],
+    },
+    { createdVia: "mcp", agentApiVersion: "4.8.0" }
+  );
+  const set = persistedChangeSets[0];
+  const changes = set.changes as Array<{ id: string; language: string }>;
+  const noted = changes.filter((change) => change.language === "es").map((change) => change.id).sort();
+  assert.equal(set.details?.createdBy, "agent");
+  assert.deepEqual(Object.keys(set.details?.notes ?? {}).sort(), noted);
+  assert.ok(Object.values(set.details?.notes ?? {}).every((note) => note === "title shortened"));
+
+  await services.createChangeSetFromGeneration({ channelId: "UC_TEST", proposals: [{ videoId: "v1", language: "de", title: "Katzen" }] }, { createdVia: "web_ui", agentApiVersion: null });
+  assert.deepEqual(persistedChangeSets[1].details, { createdBy: "owner", notes: {} });
 });

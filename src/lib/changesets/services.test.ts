@@ -60,6 +60,7 @@ async function buildWorkbookBuffer(rows: Array<Record<string, string>>, channelI
 
 function createFixture(options: { channelBaseline?: string | null; decisionLogFails?: boolean } = {}) {
   const decisions: Array<{ channelId: string; changeId: string; action: string }> = [];
+  const setDetails: Array<{ changeSetId: string; createdBy: string; notes: Record<string, string>; originals: Record<string, string> }> = [];
   let channel = makeChannel();
   let videos: StoredVideoRecord[] = [makeVideo()];
   const changeSets = new Map<string, StoredChangeSetRecord>();
@@ -149,6 +150,12 @@ function createFixture(options: { channelBaseline?: string | null; decisionLogFa
     ...(options.channelBaseline !== undefined ? { channelLanguageBaseline: { getExpectedDefaultLanguage: async () => options.channelBaseline ?? null } } : {}),
     idGenerator: () => `id-${++idCounter}`,
     logger: { info() {}, error() {} },
+    setDetails: {
+      async create(input: { changeSetId: string; createdBy: "owner" | "factory" | "worker" | "agent"; notes: Record<string, string>; originals: Record<string, string> }) {
+        setDetails.push(input);
+      },
+      fingerprint: (title: string, description: string) => `fp(${title}|${description})`,
+    },
     decisionLog: {
       async record(channelId: string, list: Array<{ changeId: string; action: "approve" | "reject" }>) {
         if (options.decisionLogFails) throw new Error("document unavailable");
@@ -160,6 +167,7 @@ function createFixture(options: { channelBaseline?: string | null; decisionLogFa
   return {
     services,
     decisions,
+    setDetails,
     setVideos: (next: StoredVideoRecord[]) => {
       videos = next;
     },
@@ -751,4 +759,15 @@ test("BL-227 AC-LR-08: approve, reject and the bulk forms each record a decision
   const changes = (await failing.services.getChangeSet({ channelId: "UC_TEST", changeSetId: again.changeSet.id })).changes;
   const result = await failing.services.approveChange({ channelId: "UC_TEST", changeSetId: again.changeSet.id, changeId: changes[0].id });
   assert.equal(result.change.approvalStatus, "approved");
+});
+
+
+test("BL-227 AC-LR-09 (creation half): a new set records its author and each of its videos' original fingerprint", async () => {
+  const { services, setDetails } = createFixture();
+  const buffer = await buildWorkbookBuffer([
+    { video_id: "v1", language: "es", title: "Hola", description: "", remote_title: "", remote_description: "" },
+  ]);
+  const created = await services.createChangeSetFromImport({ channelId: "UC_TEST", filename: "import.xlsx", buffer });
+  // makeVideo(): title "Video 1", description "Description 1".
+  assert.deepEqual(setDetails, [{ channelId: "UC_TEST", changeSetId: created.changeSet.id, createdBy: "owner", notes: {}, originals: { v1: "fp(Video 1|Description 1)" } }]);
 });

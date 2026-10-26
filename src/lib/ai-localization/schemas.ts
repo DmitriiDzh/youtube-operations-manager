@@ -45,6 +45,8 @@ export const reviewedProposalSchema = z
     language: z.string().min(1),
     title: z.string().min(1).optional(),
     description: z.string().min(1).optional(),
+    // BL-227 (ADR 0052): the agent's note on this proposal (e.g. "title shortened to fit 100"), shown on the review screen.
+    note: z.string().min(1).max(1000).optional(),
   })
   .strict();
 

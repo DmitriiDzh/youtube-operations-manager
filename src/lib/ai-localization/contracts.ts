@@ -171,4 +171,6 @@ export type ReviewedProposal = {
   language: string;
   title?: string;
   description?: string;
+  /** BL-227 (ADR 0052): the agent's note on this proposal, shown on the review screen. */
+  note?: string;
 };

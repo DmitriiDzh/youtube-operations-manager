@@ -5,6 +5,7 @@ import { getChannelExpectedLanguages } from "@/lib/db";
 import { createIdGenerator } from "./adapters/store";
 import { createAutomergeBackedChangeSetStoreAdapter } from "./adapters/change-drafts-store";
 import { createChangeSetServices } from "./services";
+import { originalFingerprint } from "@/lib/shared-localization-checks/fingerprint";
 
 // Cutover, 2026-09-21 (AUTOMERGE_MIGRATION_PLAN.md §6 CD2, docs/decisions/0006-*.md): writes now
 // go through src/lib/change-drafts/ (Automerge) instead of directly to SQL -- this is the single
@@ -36,6 +37,12 @@ export function createChangeSetCore() {
     idGenerator: createIdGenerator(),
     logger: createDefaultLogger(),
     // BL-227 (ADR 0052): each approve/reject is recorded next to the then-current check report's verdict.
+    setDetails: {
+      create: async (input) => {
+        await changeDrafts.createSetDetails(input);
+      },
+      fingerprint: originalFingerprint,
+    },
     decisionLog: {
       async record(channelId, decisions) {
         const ids = createIdGenerator();
