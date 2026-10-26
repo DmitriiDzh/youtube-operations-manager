@@ -690,3 +690,32 @@ test("BL-178: the change set lists the videos whose language the send will align
   const detail = await services.getChangeSet({ channelId: "UC_TEST", changeSetId: created.changeSet.id });
   assert.deepEqual(detail.languageAlignments, [{ videoId: "v1", from: "es", to: "en" }]);
 });
+
+test("BL-226: the change set names the translations it would leave without a title, so the review screen shows them before approval", async () => {
+  // Expected by hand: v1 has no `it` title on YouTube and the `it` title row is too long (invalid), so its `it` description would
+  // go alone -> named. v1's `fr` already has a title on YouTube, so a description alone is fine; `de` comes with its title.
+  const { services, setVideos } = createFixture({ channelBaseline: "en" });
+  setVideos([makeVideo({ existingLocalizations: { fr: { title: "Titre", description: "" } } })]);
+  const buffer = await buildWorkbookBuffer([
+    { video_id: "v1", language: "it", title: "x".repeat(101), description: "Descrizione", remote_title: "", remote_description: "" },
+    { video_id: "v1", language: "fr", title: "", description: "Description fr", remote_title: "Titre", remote_description: "" },
+    { video_id: "v1", language: "de", title: "Titel", description: "Beschreibung", remote_title: "", remote_description: "" },
+  ]);
+  const created = await services.createChangeSetFromImport({ channelId: "UC_TEST", filename: "import.xlsx", buffer });
+  const detail = await services.getChangeSet({ channelId: "UC_TEST", changeSetId: created.changeSet.id });
+  assert.deepEqual(detail.untitledTranslations, [{ videoId: "v1", language: "it" }]);
+});
+
+test("BL-226 (review): a conflicting title does not count as on its way, and a conflicting description is not flagged", async () => {
+  // Expected by hand: the `it` title row's baseline ("Old") no longer matches YouTube's (none) -> conflict, never sent, so the `it`
+  // description goes alone -> named. The `de` description's baseline ("Alt") mismatches too -> conflict, never sent -> not named.
+  const { services, setVideos } = createFixture({ channelBaseline: "en" });
+  setVideos([makeVideo()]);
+  const buffer = await buildWorkbookBuffer([
+    { video_id: "v1", language: "it", title: "Titolo", description: "Descrizione", remote_title: "Old", remote_description: "" },
+    { video_id: "v1", language: "de", title: "", description: "Beschreibung", remote_title: "", remote_description: "Alt" },
+  ]);
+  const created = await services.createChangeSetFromImport({ channelId: "UC_TEST", filename: "import.xlsx", buffer });
+  const detail = await services.getChangeSet({ channelId: "UC_TEST", changeSetId: created.changeSet.id });
+  assert.deepEqual(detail.untitledTranslations, [{ videoId: "v1", language: "it" }]);
+});

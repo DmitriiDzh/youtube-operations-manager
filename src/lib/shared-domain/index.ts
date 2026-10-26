@@ -45,6 +45,7 @@ export type DomainErrorCode =
   | "batch_already_running"
   | "send_nothing_to_send"
   | "send_merge_conflicts"
+  | "send_untitled_translations"
   | "duplicate_target_in_row"
   | "send_already_in_progress"
   | "ledger_row_not_found"

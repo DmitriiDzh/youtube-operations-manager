@@ -104,6 +104,8 @@ export function ChangeSetReview({
   const [changes, setChanges] = useState<Change[]>([]);
   // BL-178: videos whose language a send aligns to the channel's (PROJECT_SPEC §14, 2026-10-12).
   const [languageAlignments, setLanguageAlignments] = useState<Array<{ videoId: string; from: string; to: string }>>([]);
+  // BL-226: translations this set would leave without a title (YouTube refuses the whole video then).
+  const [untitled, setUntitled] = useState<Array<{ videoId: string; language: string }>>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("pending");
@@ -143,6 +145,7 @@ export function ChangeSetReview({
       setChangeSet(data.changeSet);
       setChanges(data.changes);
       setLanguageAlignments(Array.isArray(data.languageAlignments) ? data.languageAlignments : []);
+      setUntitled(Array.isArray(data.untitledTranslations) ? data.untitledTranslations : []);
     } catch (e) {
       if (!quiet) setError(String(e));
     } finally {
@@ -345,10 +348,26 @@ export function ChangeSetReview({
         </div>
       )}
 
+      {untitled.length > 0 && (
+        <div className="rounded-lg border border-red-900 bg-red-950/40 p-3 text-xs text-red-300">
+          <p>{t("changeSet.review.untitledNotice", { count: untitled.length })}</p>
+          <ul className="mt-1 space-y-0.5 font-mono">
+            {untitled.map((u) => (
+              <li key={`${u.videoId}\u0000${u.language}`}>{t("changeSet.review.untitledItem", { videoId: u.videoId, language: u.language })}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <div className="space-y-2">
         {loading && <LoadingIndicator className="text-sm text-zinc-500" />}
         {!loading && changes.length === 0 && <p className="text-sm text-zinc-500">{t("changeSet.review.noMatch")}</p>}
-        {changes.map((change) => (
+        {changes.map((change) => {
+          const isUntitled =
+            change.field === "description" &&
+            change.approvalStatus !== "rejected" &&
+            untitled.some((u) => u.videoId === change.videoId && u.language.toLowerCase() === change.language.toLowerCase());
+          return (
           <div key={change.id} className="rounded-lg border border-zinc-800 bg-zinc-900 p-3">
             <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
               <span className="font-medium text-zinc-300">{change.videoId}</span>
@@ -365,6 +384,9 @@ export function ChangeSetReview({
               )}
               {change.validationStatus === "invalid" && (
                 <span className="rounded bg-red-900/40 px-1.5 py-0.5 text-[10px] uppercase text-red-400">{t("changeSet.review.invalidBadge")}</span>
+              )}
+              {isUntitled && (
+                <span className="rounded bg-red-900/40 px-1.5 py-0.5 text-[10px] uppercase text-red-400">{t("changeSet.review.untitledBadge")}</span>
               )}
               <span
                 className={`ml-auto rounded px-1.5 py-0.5 text-[10px] uppercase ${
@@ -397,6 +419,20 @@ export function ChangeSetReview({
               </p>
             )}
 
+            {isUntitled && <p className="mt-2 text-xs text-red-400">{t("changeSet.review.untitledExplanation")}</p>}
+            {/* BL-226: an approved description without a title can be rejected here (the send refuses it as it is). */}
+            {isUntitled && change.approvalStatus === "approved" && (
+              <div className="mt-3 flex gap-2">
+                <button
+                  onClick={() => handleAction(change.id, "reject")}
+                  disabled={busyChangeId === change.id}
+                  className="rounded-lg border border-zinc-700 px-3 py-1 text-xs font-medium text-zinc-300 hover:border-zinc-500 disabled:opacity-40"
+                >
+                  {t("changeSet.review.reject")}
+                </button>
+              </div>
+            )}
+
             {change.approvalStatus === "pending" && (
               <div className="mt-3 flex gap-2">
                 <button
@@ -416,7 +452,8 @@ export function ChangeSetReview({
               </div>
             )}
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

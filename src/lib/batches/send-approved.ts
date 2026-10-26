@@ -1,4 +1,5 @@
 import { sameLanguage } from "@/lib/shared-language-baseline";
+import { untitledTranslations } from "@/lib/shared-localization-merge";
 import { languageKey, mergeCollision } from "./targets";
 import { UNITS_PER_WRITTEN_VIDEO } from "@/lib/quota-guard";
 import { DomainError, TERMINAL_LEDGER_STATUSES, type Batch, type LedgerRow } from "./contracts";
@@ -42,6 +43,12 @@ export type SendApprovedDeps = {
      * language is gone). Absent = no change counts as held.
      */
     remoteHolds?(channelId: string): Promise<(change: SendableChangeCandidate) => boolean>;
+    /**
+     * BL-226: read once per call -- per video of the channel's synced copy (read against its language baseline), whether a language
+     * is the video's own and the title it has in a language now. `null` for a video that is not synced (the write checks it then).
+     * Absent = no check before the write.
+     */
+    currentTitles?(channelId: string): Promise<(videoId: string) => { isOwnLanguage(language: string): boolean; title(language: string): string } | null>;
   };
 };
 
@@ -87,12 +94,17 @@ export type MergeConflict = { videoId: string; videoTitle: string | null; langua
 /** For each conflict unit, the set whose variant is kept. */
 export type MergeResolution = { videoId: string; language: string; field?: string | null; changeSetId: string };
 
+/** BL-226: a translation the send would leave without a title (YouTube would refuse that whole video). */
+export type UntitledTranslation = { videoId: string; videoTitle: string | null; language: string };
+
 export type SendTogetherPlan = {
   videoCount: number;
   changeCount: number;
   languageCount: number;
   estimatedUnits: number;
   conflicts: MergeConflict[];
+  /** BL-226: translations without a title among these changes -- the send is refused until each is fixed. */
+  untitled: UntitledTranslation[];
   /** A live batch not yet finished already holds some of these changes (ADR 0020 §5). */
   inFlightBatchId: string | null;
   /** Whether that batch holds every change of this selection (then it can simply be continued). */
@@ -231,6 +243,28 @@ export function createSendApprovedServices(deps: SendApprovedDeps) {
     }));
   }
 
+  /** BL-226: per video, the languages these changes would leave without a title (the shared rule, against the synced copy). */
+  async function findUntitled(channelId: string, changes: SendableChangeCandidate[]): Promise<UntitledTranslation[]> {
+    if (!deps.changeSets.currentTitles || changes.length === 0) return [];
+    const current = await deps.changeSets.currentTitles(channelId);
+    const byVideo = new Map<string, SendableChangeCandidate[]>();
+    for (const change of changes) byVideo.set(change.videoId, [...(byVideo.get(change.videoId) ?? []), change]);
+    const found: Array<{ videoId: string; language: string }> = [];
+    for (const [videoId, list] of byVideo) {
+      const read = current(videoId);
+      if (!read) continue;
+      const fieldChanges = list.flatMap((change) =>
+        change.language && change.field
+          ? [{ language: change.language, field: change.field, proposedValue: change.proposedValue, changeType: change.changeType as "add" | "modify" | "unchanged" | "delete" | undefined }]
+          : []
+      );
+      for (const language of untitledTranslations(read, fieldChanges)) found.push({ videoId, language });
+    }
+    if (found.length === 0) return [];
+    const titles = deps.changeSets.videoTitles ? await deps.changeSets.videoTitles(channelId) : new Map<string, string>();
+    return found.map((entry) => ({ ...entry, videoTitle: titles.get(entry.videoId) ?? null }));
+  }
+
   function groupByVideo(changes: SendableChangeCandidate[]): Map<string, string[]> {
     const byVideo = new Map<string, string[]>();
     for (const change of changes) {
@@ -256,6 +290,7 @@ export function createSendApprovedServices(deps: SendApprovedDeps) {
       languageCount: new Set(changes.map((change) => languageKey(change.language))).size,
       estimatedUnits: videoCount * UNITS_PER_WRITTEN_VIDEO,
       conflicts: await describeConflicts(input.channelId, sets, units),
+      untitled: await findUntitled(input.channelId, changes),
       inFlightBatchId: inFlight?.batchId ?? null,
       inFlightCoversSelection: inFlight?.covers ?? false,
     };
@@ -339,6 +374,17 @@ export function createSendApprovedServices(deps: SendApprovedDeps) {
           code: "send_merge_conflicts",
           message: "These choices still leave two change sets changing the same place. Choose again.",
           details: { conflicts: await describeConflicts(input.channelId, sets, leftover) },
+        });
+      }
+
+      // BL-226: a translation left without a title would make YouTube refuse its whole video -- refused here, before anything is
+      // rejected or created, naming each one (the owner approves a title or rejects the description, then sends again).
+      const untitled = await findUntitled(input.channelId, selected);
+      if (untitled.length > 0) {
+        throw new DomainError({
+          code: "send_untitled_translations",
+          message: `Nothing was sent: ${untitled.map((entry) => `${entry.videoId} (${entry.language})`).join(", ")} would get a translation without a title, and YouTube refuses the whole video then. Approve a title for that language or reject its description, then send again.`,
+          details: { untitled },
         });
       }
 

@@ -13,6 +13,7 @@ import { createBatchServices } from "./services";
 import { createSendApprovedServices } from "./send-approved";
 import { createChangeSetCore, readWithChannelBaseline, remoteHoldsApprovedValue } from "@/lib/changesets";
 import { createChannelVideoStoreAdapter } from "@/lib/channel-video-store";
+import { sameLanguage } from "@/lib/shared-language-baseline";
 
 function createRealClock() {
   return {
@@ -84,6 +85,19 @@ export function createSendApprovedCore() {
             changeType: change.changeType ?? "modify",
             approvedValue: change.approvedValue,
           });
+      },
+      // BL-226: the same synced copy, for the titles a translation would keep.
+      async currentTitles(channelId) {
+        const baseline = (await getChannelExpectedLanguages(channelId)).defaultLanguage;
+        const byVideo = new Map(
+          (await videoStore.listVideosByChannel(channelId)).map((video) => {
+            const read = readWithChannelBaseline(video, baseline);
+            // A video without its own language gets the channel's at the write (owner exception 2026-10-02).
+            const ownLanguage = read.alignedTo ?? video.defaultLanguage ?? baseline;
+            return [video.videoId, { isOwnLanguage: (language: string) => sameLanguage(language, ownLanguage), title: (language: string) => read.current(language, "title") }];
+          })
+        );
+        return (videoId) => byVideo.get(videoId) ?? null;
       },
       // Through the change-set service, so the set's status is recomputed exactly as a rejection in the Languages tab does.
       async rejectChange(input) {

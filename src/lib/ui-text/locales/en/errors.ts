@@ -32,6 +32,7 @@ export const errors = {
   "errors.media_container_stuck": "The pod's container did not start in time on any host tried; start the session again.",
   "errors.media_runtime_activation_disabled": "The owner has not allowed the Factory Operator to change the active pod runtime.",
   "errors.send_merge_conflicts": "The selected change sets change the same fields. Choose which variant to send.",
+  "errors.send_untitled_translations": "Nothing was sent: a translation would have no title, and YouTube refuses the whole video then. Approve a title for that language or reject its description (marked «no title»), then send again.",
   "errors.duplicate_target_in_row": "Two selected changes target the same field of one video — keep one of them.",
   "errors.send_already_in_progress": "These changes are already being sent.",
   "errors.ledger_row_not_found": "The batch entry was not found.",

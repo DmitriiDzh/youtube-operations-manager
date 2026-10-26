@@ -979,6 +979,9 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   параметром; им пользуются `live-streams/localizations.ts` (пределы видео) и `channel-localizations` (пределы канала).
 - **Общий модуль `src/lib/shared-localization-merge/`** (BL-207, §M): `buildSafeLocalizationsPayload`, `checkDefaultLanguage`,
   `localeKeyFor` — вынесены из `batches/merge.ts` (тот реэкспортирует); им пользуются Batches и `live-localizations`.
+  BL-226: `untitledTranslations` — правило «перевод без названия» (YouTube отклоняет всё видео: «The request metadata is
+  invalid.»). Одно правило для экрана набора (`getChangeSet.untitledTranslations`), отправки (`planSendTogether.untitled`, отказ
+  `send_untitled_translations`) и самой записи (`buildSafeLocalizationsPayload` бросает до `videos.update`).
 - **Общий модуль `src/lib/youtube-video-fields/`** (BL-186, §M): лимиты и списки полей видео (500 символов тегов, 2 МБ обложки,
   категории, лицензии, тип картинки по байтам, `hasAngleBrackets` — BL-207); публикация реэкспортирует их без изменений.
 - **Риски:** RISK-125 (ключ в командной строке ffmpeg), RISK-126 (T9 нужен раз в ~2 ч).
@@ -1081,6 +1084,10 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   - Коллизии разных наборов:
     - Коллизия — одно и то же (видео, язык, поле) или удаление языка рядом с любым изменением этого языка.
     - Без `resolutions` сервис отвечает `send_merge_conflicts`.
+  - BL-226: перевод, который останется без названия (по сохранённой копии видео; название из другого набора той же отправки
+    засчитывается), — `send_untitled_translations` до любых отклонений и до создания пакета; план показывает их в `untitled`.
+    Предел: план считает до выбора вариантов, поэтому случай «один набор удаляет язык, другой даёт только описание» он не
+    покажет — его откажет сама отправка после выбора (ничего не отклонено и не создано).
     - При живой отправке невыбранные варианты отклоняются через `createChangeSetCore().rejectChange`. Пробный прогон их только не включает.
     - В аудит пишется событие `MERGE` по строкам.
   - Отправка одного набора (ADR 0020) идёт через тот же сервис без изменений.

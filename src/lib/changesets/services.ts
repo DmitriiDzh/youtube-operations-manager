@@ -22,6 +22,8 @@ import {
   parseWithSchema,
   proposeLocalizationDeletionInputSchema,
 } from "./schemas";
+import { sameLanguage } from "@/lib/shared-language-baseline";
+import { untitledTranslations } from "@/lib/shared-localization-merge";
 
 const MAX_PREVIEW_ERRORS_RETURNED = 200;
 const DEFAULT_PAGE_SIZE = 50;
@@ -211,11 +213,17 @@ async function loadRevalidated(
   deps: ServiceDependencies,
   channelId: string,
   changeSetId: string
-): Promise<{ changeSet: StoredChangeSetRecord; changes: StoredChangeRecord[]; languageAlignments: LanguageAlignment[] }> {
+): Promise<{
+  changeSet: StoredChangeSetRecord;
+  changes: StoredChangeRecord[];
+  languageAlignments: LanguageAlignment[];
+  untitledTranslations: UntitledTranslation[];
+}> {
   const changeSet = await requireChangeSet(deps, channelId, changeSetId);
   const storedChanges = await deps.changeSetStore.listChangesByChangeSet(changeSetId);
   const videos = await deps.channelStore.listVideosByChannel(channelId);
-  const videoRead = buildCurrentRemoteLookup(videos, await channelBaselineOf(deps, channelId));
+  const channelBaseline = await channelBaselineOf(deps, channelId);
+  const videoRead = buildCurrentRemoteLookup(videos, channelBaseline);
 
   const revalidated = storedChanges.map((change) => {
     const read = videoRead(change.videoId);
@@ -264,8 +272,27 @@ async function loadRevalidated(
     if (read?.alignedFrom && read.alignedTo) languageAlignments.push({ videoId, from: read.alignedFrom, to: read.alignedTo });
   }
 
-  return { changeSet, changes: finalChanges, languageAlignments };
+  // BL-226: translations this set would leave without a title -- every change not rejected, valid and without a conflict counts
+  // (approved, or still to decide; a conflicting change is never sent), against the synced copy. Shown before approval; a title from another set sent together is checked by the send.
+  const untitled: UntitledTranslation[] = [];
+  const ownLanguageOf = new Map(videos.map((video) => [video.videoId, video.defaultLanguage]));
+  for (const videoId of new Set(finalChanges.map((change) => change.videoId))) {
+    const read = videoRead(videoId);
+    if (!read) continue;
+    const ownLanguage = read.alignedTo ?? ownLanguageOf.get(videoId) ?? channelBaseline;
+    const onTheirWay = finalChanges.filter((change) => change.videoId === videoId && change.approvalStatus !== "rejected" && change.validationStatus === "valid" && change.conflictStatus === "none");
+    const languages = untitledTranslations(
+      { isOwnLanguage: (language) => sameLanguage(language, ownLanguage), title: (language) => read.current(language, "title") },
+      onTheirWay.map((change) => ({ language: change.language, field: change.field, proposedValue: change.proposedValue, changeType: change.changeType }))
+    );
+    for (const language of languages) untitled.push({ videoId, language });
+  }
+
+  return { changeSet, changes: finalChanges, languageAlignments, untitledTranslations: untitled };
 }
+
+/** BL-226: a translation of this set that would have no title (YouTube refuses the whole video then). */
+type UntitledTranslation = { videoId: string; language: string };
 
 /** BL-178 (PROJECT_SPEC §14, 2026-10-12): a send sets this video's defaultLanguage from `from` to the channel's `to`. */
 type LanguageAlignment = { videoId: string; from: string; to: string };
@@ -687,12 +714,14 @@ export function createChangeSetServices(deps: ServiceDependencies) {
       pagination: { page: number; pageSize: number; total: number };
       /** BL-178: videos whose language the send aligns to the channel's (whole set, not only this page). Additive. */
       languageAlignments?: LanguageAlignment[];
+      /** BL-226: translations this set would leave without a title (whole set). Additive. */
+      untitledTranslations?: UntitledTranslation[];
     }> {
       const parsedInput = parseWithSchema(getChangeSetInputSchema, input, "get change set input");
 
       try {
         await requireChannel(deps, parsedInput.channelId);
-        const { changeSet, changes, languageAlignments } = await loadRevalidated(deps, parsedInput.channelId, parsedInput.changeSetId);
+        const { changeSet, changes, languageAlignments, untitledTranslations: untitled } = await loadRevalidated(deps, parsedInput.channelId, parsedInput.changeSetId);
 
         let filtered = changes;
         if (parsedInput.language) {
@@ -721,6 +750,7 @@ export function createChangeSetServices(deps: ServiceDependencies) {
           changes: pageItems,
           pagination: { page, pageSize, total: filtered.length },
           languageAlignments,
+          untitledTranslations: untitled,
         };
       } catch (error) {
         throw mapUnknownError(error, "not_found");
