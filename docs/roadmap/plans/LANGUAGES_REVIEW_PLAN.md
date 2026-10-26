@@ -189,6 +189,14 @@ Acceptance (stage 2):
 - **AC-LR-25:** cancelling a done request is refused; cancelling a requested one → `cancelled`, and a claim then fails.
 - **AC-LR-26:** a redo request from a row carries `redoOfChangeId`, `mode: redo` and that language.
 
+## 7b. Stage 3: the section's layout
+
+- **On top, «что ждёт вас»:** videos waiting for review, videos approved but not sent, requests in progress, and videos missing
+  translations. Each opens its place: the «По видео» tab or the video table. Sync and the last sync time sit on the same line.
+- **Folded «Настройки языков» at the bottom:** the channel's language defaults, its own translations, recommended languages and the
+  XLSX import.
+- **The intro is rewritten.** The old one said nothing is written to YouTube from this tab; the send buttons do write.
+
 ## 8. Risks
 
 - Automerge document growth from reports: each report is a JSON string, at most ~200 entries × a few kB. Retention already purges
