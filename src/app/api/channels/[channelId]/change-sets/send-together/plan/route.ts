@@ -7,7 +7,8 @@ import { DomainError } from "@/lib/batches/contracts";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
 
-const bodySchema = z.object({ changeSetIds: z.array(z.string().min(1)).min(1).max(50) }).strict();
+// BL-227: videoIds keeps only those videos' changes (the review screen's send of one video).
+const bodySchema = z.object({ changeSetIds: z.array(z.string().min(1)).min(1).max(50), videoIds: z.array(z.string().min(1)).min(1).max(500).optional() }).strict();
 
 type PlanRouteDeps = {
   getSession: () => Promise<{ user?: { id?: string | null } } | null>;
@@ -36,7 +37,7 @@ export function createSendTogetherPlanHandler(
       if (!parsed.success) {
         return NextResponse.json({ error: "validation_failed", message: "changeSetIds (1-50) is required" }, { status: 400 });
       }
-      return NextResponse.json(await deps.core.planSendTogether({ channelId, changeSetIds: parsed.data.changeSetIds }));
+      return NextResponse.json(await deps.core.planSendTogether({ channelId, changeSetIds: parsed.data.changeSetIds, ...(parsed.data.videoIds ? { videoIds: parsed.data.videoIds } : {}) }));
     } catch (error) {
       if (error instanceof DomainError) {
         return NextResponse.json(

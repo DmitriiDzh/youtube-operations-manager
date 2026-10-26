@@ -423,3 +423,13 @@ test("BL-226: a title from another set sent together completes the translation (
   // Alone, set A still cannot go.
   assert.equal((await rejection(h.service.createBatchForChangeSets({ channelId: "UC_A", changeSetIds: ["A"] }))).code, "send_untitled_translations");
 });
+
+// BL-227 (LANGUAGES_REVIEW_PLAN.md AC-LR-11): «Отправить одобренное этого видео» -- the same send, only the named videos' changes.
+test("BL-227 AC-LR-11: videoIds sends only those videos' changes; an empty list is refused", async () => {
+  const h = build(setsAB());
+  const plan = await h.service.planSendTogether({ channelId: "UC_A", changeSetIds: ["A", "B"], videoIds: ["v2"] });
+  assert.deepEqual([plan.videoCount, plan.changeCount], [1, 3]);
+  const result = await h.service.createBatchForChangeSets({ channelId: "UC_A", changeSetIds: ["A", "B"], videoIds: ["v2"] });
+  assert.deepEqual(h.rowsOf(result.batch.id), [{ videoId: "v2", changeIds: ["a3", "a4", "b2"] }]);
+  assert.equal((await rejection(h.service.createBatchForChangeSets({ channelId: "UC_A", changeSetIds: ["A"], videoIds: [] }))).code, "validation_failed");
+});
