@@ -4856,7 +4856,7 @@ On branch `feature/bl-229-music-library`. No schema change; no YouTube call; not
   `genres[{id, title, label?, color? #rrggbb, playlist?, status active|stub, batches, tracks, seconds, neverUsedSeconds,
   daysLeft?}]`, `batches[{batch, genre id|null, playlist?, briefVersion?, tracks, date?, source?, reviewed?, accepted?}]`,
   `tracksWithoutGenre`. Unknown fields are stripped; a wrong required field, a duplicate genre, a batch naming an unlisted genre or
-  `accepted > reviewed` makes the whole file unreadable with the first issue as the reason.
+  `accepted > reviewed` or `accepted` without `reviewed` makes the whole file unreadable (an optional text may be null = not given) with the first issue as the reason.
 - **View** (`services.ts`, pure): hours = `round(seconds / 360) / 10`; acceptance = `round(accepted / reviewed × 100)`, null when
   reviewed is 0 or absent; stale when strictly older than 24 h; batches grouped under their genre, genre-less batches under the
   "without a genre" group, which exists only when `tracksWithoutGenre > 0`.
@@ -4868,7 +4868,8 @@ On branch `feature/bl-229-music-library`. No schema change; no YouTube call; not
 - **Definition.** `PlanDefinition.reviewForm` and `PlanGroup.genre` / `.reviewForm` live in the plan's `definition_json` (no column).
   `schemas.ts`: `reviewFieldSchema`, `reviewFormSchema`, `genreSchema` are plain `z.object` (unknown keys stripped); the wave
   (`groupSchema`) and plan schemas stay strict. `validateDefinition` refuses a field id used twice across the plan's form plus one
-  wave's (`duplicateFieldIds`). `normalizeGroup` keeps absent = unchanged on an upsert, null = cleared.
+  wave's (`duplicateFieldIds`). `normalizeGroup` keeps absent = unchanged on an upsert, null = cleared. `cloneGroup` copies `genre`, `reviewForm` and
+  `reviewReasons` to the new wave.
 - **Answers.** `review-forms.ts` (pure): `effectiveFields(plan, groupId)` = plan fields then the wave's; `checkAnswers` refuses with
   `plan_answer_*` (unknown id, wrong type, out of range, unknown option, then required missing) and returns the answers in the form's
   order; `keepFittingAnswers` drops, on applying a peer verdict, answers whose field no longer fits (the verdict is kept). The owner
@@ -4878,7 +4879,9 @@ On branch `feature/bl-229-music-library`. No schema change; no YouTube call; not
   version 6 (`sync-gateway/generation-plans/contracts.ts`) carries the forms, the genre and `answers` on verdict rows, history
   entries and sent verdicts; reads 1-6, strict at every level. `generationPlansReportVersionFor` writes 6 only when the report holds
   such content, else 5 (the old build keeps reading it). The screen prefills the form of a rated attempt with its saved answers
-  (`savedAnswersOf` / `withSavedAnswers`, rating and chips unchanged).
+  (`savedAnswersOf` / `withSavedAnswers`, applied in `draftOpenedFor` on every draft reset, and to the "sent, waiting" verdicts of
+  a peer plan; rating and chips unchanged). A re-check answer keeps the stored verdict's answers on the current row
+  (`takeRecheckAnswer`); its history row has none. `errors.plan_answer_*` give the screen a text per refusal code.
 - **Screen.** `genre-review-model.ts` (pure): `reasonRowsFor` (two rows only for a genre wave, else `reasonChipsFor`),
   `formSectionsFor`, `missingRequired`, `toggleAnswer`, `answersToSend`, `safeGenreColor` / `genreTintStyle` (`--genre-color`).
   `plan-review-screen.tsx` renders `GenreHeader`, the tint, the chip rows and `ReviewFormSection`; `submit` refuses locally while a

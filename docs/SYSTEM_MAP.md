@@ -1141,7 +1141,8 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   плюс волны (`generation-plans/schemas.ts`, `review-forms.ts`). Вердикт: `answers`, коды `plan_answer_unknown_field` /
   `_wrong_type` / `_out_of_range` / `_unknown_option` / `_required`; хранятся в вердикте, истории и исходящих вердиктах (схема
   **v111** `answers_json`), видны в `owner_verdict`; отчёт планов **версии 6** — только когда в нём есть форма, жанр или ответы, иначе версия 5 (старая сборка читает его до
-  первого такого плана); оценённая попытка открывается с сохранёнными ответами; Factory API
+  первого такого плана); оценённая попытка открывается с сохранёнными ответами (и на плане другого компьютера); копия волны
+  (`factory_plan_clone_group`) сохраняет жанр, вопросы и фишки; Factory API
   1.35.0, Agent API 4.9.0. Экран проверки: полоса жанра и цвет (`genre-review-model.ts`), две строки фишек для волны с жанром,
   вопросы под кнопками вердикта; значок жанра в списке планов.
 

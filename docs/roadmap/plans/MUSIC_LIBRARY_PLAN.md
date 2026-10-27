@@ -43,14 +43,16 @@ files. `listen` is dropped. The rating stays 1–10.
   - Field ids are unique across the plan's form plus each wave's form (two waves may reuse an id).
   - Accepted by `factory_plan_create`, `factory_plan_import`, `factory_plan_update` (`reviewForm`, null clears; `upsertGroups`
     with `genre` / `reviewForm`, absent keeps, null clears). Chips (`reviewReasons`) can be changed at any time, mid-review
-    included.
+    included. `factory_plan_clone_group` copies the wave's `genre`, `reviewForm` and `reviewReasons` to the new wave (a re-run of
+  a batch keeps its genre review).
 - **Verdict.** An optional `answers: { <fieldId>: true | false | 1..10 | "<option>" }` next to `rating`, `reasons`, `note`,
   checked against the attempt's effective forms (the plan's plus its wave's). Refused with its own code: unknown field id,
   wrong type, out of range, unknown option, a missing required field (for accept AND reject). No scope or rule field exists.
   Stored with the verdict and in the verdict history (schema migration), shown to the factory in the `owner_verdict` event
   (`factory_plan_get`), and carried with verdicts given on the other computer (plans report version 6, written only while the report
   carries a form, a genre or answers -- otherwise version 5 as before, so an old build keeps reading it until the first such
-  plan). Re-check answers take no `answers`. An already-rated attempt opens with its saved answers in the form (FO-REQ-0043 §B
+  plan). Re-check answers take no `answers`; the attempt's current verdict keeps the answers it had (its history row of the answer
+  has none). An already-rated attempt opens with its saved answers in the form (FO-REQ-0043 §B
   item 4); changing the verdict sends them as edited.
 - **Screen.** A wave with a `genre` shows a header (icon + title); its colour tints the frame, the primary verdict buttons and
   the progress bar. Chips: for a genre wave two labelled rows, general (the plan's chips, else the media kind's defaults) then
