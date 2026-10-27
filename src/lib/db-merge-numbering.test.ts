@@ -55,7 +55,9 @@ test("merge numbering: the current schema is 90 with both branches' tables", asy
   // v107: BL-215 worker_action_log (WORKER_CAPABILITIES_PLAN.md: a new additive migration).
   // v108: BL-220 restart_requests + restart_holds (RESTART_WHEN_IDLE_PLAN.md: a new additive migration).
   // v109: BL-223 channel_branding + channel_branding_events (CHANNEL_BRANDING_PLAN.md: a new additive migration).
-  assert.equal(SCHEMA_CURRENT_VERSION, 110); // BL-225 stage 2: publishing_uploads.slot_id
+  // v110: BL-225 stage 2 publishing_uploads.slot_id.
+  // v111: BL-228 system_topic_state + system_topic_commands (SYSTEM_TOPIC_PLAN.md: a new additive migration, not a renumbering).
+  assert.equal(SCHEMA_CURRENT_VERSION, 111);
   await withDb(async (client) => {
     await initializeDatabaseSchema(client);
     const t = await tables(client);

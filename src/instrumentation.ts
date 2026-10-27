@@ -89,6 +89,41 @@ async function startServerSession() {
     console.warn(`[restart-when-idle] not started: ${error instanceof Error ? error.message : String(error)}`);
   }
 
+  // BL-228 (SYSTEM_TOPIC_PLAN.md, ADR 0053): the owner's commands in the HUB "System" topic. Its own loop (AGENTS.md §M): with the
+  // switch off, outside the Mac service, or without the token and the ids, a tick is one local read and no Telegram call (AC-SYS-13);
+  // otherwise one 25 s long poll after another. It writes rows (the offset, the audit trail), so it waits while an import / migration
+  // holds the lock or in recovery mode, like the other loops. A stop signal ends the pending long poll at once, so a restart never
+  // waits for it.
+  try {
+    const { createSystemTopicCore, SYSTEM_TOPIC_IDLE_TICK_MS, SYSTEM_TOPIC_ERROR_BACKOFF_MS } = await import("@/lib/system-topic");
+    const systemTopic = createSystemTopicCore();
+    const { rawSqlClient: systemSqlClient } = await import("@/lib/db");
+    const { assertDeviceAvailableForMutation: assertSystemMayWrite } = await import("@/lib/device-mutation-gate");
+    const systemStop = new AbortController();
+    process.once("SIGINT", () => systemStop.abort());
+    process.once("SIGTERM", () => systemStop.abort());
+    const systemTopicLoop = async () => {
+      if (systemStop.signal.aborted) return;
+      let nextMs = SYSTEM_TOPIC_IDLE_TICK_MS;
+      try {
+        await assertSystemMayWrite(systemSqlClient);
+        const { polled } = await systemTopic.tick(systemStop.signal);
+        if (polled) nextMs = 500;
+      } catch (error) {
+        const paused = error instanceof Error && (error.name === "OperationLockError" || error.name === "RecoveryModeError");
+        if (!paused) {
+          // Already redacted by the module (no token in it).
+          console.warn(`[system-topic] ${error instanceof Error ? error.message : String(error)}`);
+          nextMs = SYSTEM_TOPIC_ERROR_BACKOFF_MS;
+        }
+      }
+      setTimeout(() => void systemTopicLoop(), nextMs).unref();
+    };
+    setTimeout(() => void systemTopicLoop(), 15_000).unref();
+  } catch (error) {
+    console.warn(`[system-topic] not started: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
   // Session lease (architecture-audit review, round 3): Live writes are honored only while this web
   // server keeps renewing it, so ANY end of the session -- including a crash or Windows
   // `taskkill /F` / a closed console window, where no signal handler runs -- makes them lapse within

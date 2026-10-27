@@ -218,6 +218,9 @@ export type DomainErrorCode =
   | "gemini_job_not_found"
   // BL-220 (RESTART_WHEN_IDLE_PLAN.md AC-RI-07): only the macOS system service can restart itself (launchd starts the next run).
   | "restart_needs_service"
+  // BL-228 (SYSTEM_TOPIC_PLAN.md, ADR 0053): the System topic's listening switch outside the Mac service, or without its token/ids.
+  | "system_topic_needs_service"
+  | "system_topic_incomplete"
   // BL-188 stage 2: a Gemini job already sent to Google (or finished) cannot be cancelled.
   | "gemini_cancel_too_late"
   // BL-188 stage 2: an action on another computer's job or session that cannot be sent (the computer, job or session is not
