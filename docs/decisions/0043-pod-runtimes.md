@@ -48,3 +48,17 @@ New models need newer nodes (FLUX 3 Image Klein, 2026-10-15), and the Operator c
 - Each profile takes ≈ 2.1 GB on the volume. Pruning is manual for now (RISK entry).
 - An older build rejects a template file with the new optional field. The owner updates Mac and Windows together (answer Д).
 - Factory API minor bump (new tools, `runtimeId` on start_session, `media_runtime_incompatible`).
+
+## Amendment 1 — a GitHub read token for private repositories (BL-230, 2026-10-27)
+
+**Assigned by** the owner, Telegram msg 3689, option A. Plan: `docs/roadmap/plans/PRIVATE_RUNTIME_REPOS_PLAN.md`.
+
+- Decision 4's "never receives … any secret except `COMFY_TOKEN`" no longer holds for **build** pods: a build pod gets the
+  owner's GitHub read token as `YTM_GIT_TOKEN` when the token is stored on this computer (device-secret slot `github`, ADR
+  0042) and the profile names an `https://github.com/` repository. Session pods still get no token.
+- The build script sends it only to github.com, as a one-shot `http.extraheader` on `git`'s own command, never in a URL, a remote
+  or `.git/config`; it unsets the variable after the clones and refuses `.ready` when the token, or its header form, appears
+  anywhere in the runtime folder.
+- Decision 3: at creation every github.com source is checked on GitHub (`/commits/{ref}`), without a token first and with it only
+  after a 404. A hidden repository with no token stored is `runtime_repo_private_needs_token`. The allow-list is unchanged.
+- Accepted: the token lives in the build pod's env for the build's life (RISK-137), as `HF_TOKEN` does on the pull pod.
