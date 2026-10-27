@@ -1,7 +1,8 @@
 # HUB "System" topic: owner commands the Manager executes (BL-228)
 
 Status: **assigned** (owner, Telegram msg 3598, 2026-10-27: «Делай обе задачи, System и по музыке. Каждую в своей ветке»).
-Request: FO-REQ-0042 (Operator, with its answers of 2026-10-27). Reply: DEV-RESP-0043 Part 1 (questions Q1–Q6). ADR 0053.
+Request: FO-REQ-0042 (Operator, with its answers of 2026-10-27). Reply: DEV-RESP-0043 Part 1 (questions Q1–Q6). ADR 0053 +
+Amendment 1. **Scope changed** (owner msgs 3602, 3607; FO-RESP-0043 H1–H4, Q5, Q6): the hub relays, the Manager does only paid approvals.
 
 ## 1. Why
 
@@ -9,97 +10,79 @@ The Operator, the Producer and the channel agents run in Claude Code. Its auto m
 so the owner's «да» on Telegram cannot stop a running factory job or approve a paid call. The owner wants to command these from
 the HUB group's "System" topic, and the Manager (not an agent) executes them.
 
-## 2. Scope
+## 2. Scope (as amended, owner msg 3607)
 
-1. **Telegram Bot API gateway** `src/lib/telegram-bot-gateway/`: the only module that calls `api.telegram.org`
-   (`getUpdates`, `sendMessage`). The token is read from `device-secrets` for every call; it never reaches a log, an error
-   text, the browser or an AI provider. A mechanical inventory test fails if any other production file calls the Bot API.
-2. **Module `src/lib/system-topic/`** (feature module, AGENTS.md §M: the app works with it off or removed):
-   - settings: owner Telegram user id, group chat id, topic thread id, the per-computer listening switch (off by default,
-     refused off the Mac service), and the path of the factory's `commands.json`;
-   - a poller (long-poll `getUpdates`, offset kept in the DB) that keeps only messages from the configured chat + topic +
-     owner user id; everything else is dropped and counted;
-   - a fixed command parser: `help`, `status [<channel>]`, `stop <channel> <jobId|plan>`, `go <channel>`, `approve <id>`,
-     `deny <id>`. Anything else gets a one-line "unknown command, see help";
-   - the command runners (§3–§5) and an audit row per command (who, text, result, time).
-3. **Settings → «System (Telegram)»** card: token (masked `type="text"`, device-secrets), the three ids, the switch with a
-   visible caption, the last poll time, the last 20 commands with results. All texts in every UI language.
-4. **No MCP tool** in stage 1 besides the result files agents already read; agents never command System.
+The HUB bot is polled by the factory's hub (`hub_bot.py`). The hub keeps `status` / `stop` / `go` (FO-RESP-0043 H4). The Manager
+makes no Telegram call and runs no factory script. It does exactly one thing: one-time paid-call approvals, each needing the
+owner's `approve <id>` in the topic AND one Confirm in the Manager's Web UI.
 
-## 3. `status` and `go` — factory commands from the factory's own config (AGENTS.md §B)
+1. **Module `src/lib/system-topic/`** (feature module, AGENTS.md §M; off by default; the switch only on the Mac service):
+   settings (owner user id, group id, topic id, the switch, the requests folder), the relay secret (hash only), the audit of the
+   relayed commands, the outbox, the requests and their state. Schema v111.
+2. **Grammar:** `help`, `approve <id>`, `deny <id>`. `status` / `stop` / `go` get one line: "handled by the hub in each channel's
+   topic". Anything else: "unknown command, see help".
+3. **Relay (loopback only, `Authorization: Bearer <relay secret>`; FO-RESP-0043 H1):**
+   - `POST /api/system-topic/inbound` `{updateId, messageId, chatId, threadId, fromId, date, text}` → `{replies: string[]}`. A
+     message that is not the owner's in the configured chat and topic is dropped silently (counter only); a repeated `updateId` gets
+     no second run or reply.
+   - `GET /api/system-topic/outbox` → `{messages: [{id, text}]}`, each message handed out once (the hub polls every 5 s and posts).
+   - The secret is generated in the Settings card, shown once, stored as SHA-256 and compared in constant time; "generate a new one"
+     replaces it.
+4. **Settings → AI agent → «System (Telegram)»:** the ids, the requests folder, the switch with a visible caption, the relay secret,
+   the relay's state, the requests approved in the topic with Confirm / Deny (no native dialogs), the last requests and commands.
+5. **No MCP tool.** Agents write the request file only; they never approve.
 
-The Manager holds the command grammar only. Script paths, the workflow name and channel short names come from the
-factory-owned `00 YT Operator/System/commands.json` (DEV-RESP-0043 Q1), read on each command, never written:
+## 3–4. `status`, `go`, `stop`
 
-- `status [<channel>]` runs the configured `status.argv` (+ `channelArg <name>`) without a shell, 60 s timeout, and posts the
-  output cut to 3500 characters;
-- `go <channel>` removes the channel's `stopFile`, runs `go.argv` detached in the channel root, and posts the new job id
-  (Q4) or "started".
-- A channel `root` in the config must equal that channel's workspace path on this computer (`channel-workspaces`), otherwise the
-  command is refused (`channel_root_mismatch`). Relative paths resolve inside the root and may not leave it.
+Hub-side (FO-RESP-0043 H4). The Manager keeps none of the factory config, process-stop or launch logic planned here before.
 
-## 4. `stop` — fails closed
+## 5. `approve <id>` / `deny <id>` — one-time approvals (as amended)
 
-`stop <channel> <jobId>` stops a job only when all hold: the record is `<root>/<jobsDir>/<jobId>.json`; `device` equals this
-computer's host name; `status` is `running`; the record has `pidStartedAt` and `cmdline`; the live process `pid` has the same
-start time and command line (`ps -o lstart=,command=`); its process group is not the Manager's own. Then: create `stopFile`;
-SIGTERM to the group; after 30 s SIGKILL if still alive; write `status: "stopped"`, `stoppedBy: "owner"`, `stoppedAt` into the
-record (atomic replace); post the last log line. A record without `pidStartedAt`/`cmdline` (before factory bundle 2.5.41):
-only the STOP file is created and the reply says the process was not stopped. `stop <channel> plan` stops every running job of
-the channel whose workflow is the configured `go` workflow (Q3).
-
-## 5. `approve <id>` / `deny <id>` — one-time approvals
-
-- An agent writes `00 YT Operator/System/requests/<id>.json` (`format`, `id`, `createdAt`, `requestedBy`, `action`, `args`,
-  `costEstimateUsd`, `reason`). The poller scans the folder each tick and posts each new request once: id, action, short
-  arguments, the **Manager's own** cost estimate, the request hash (first 8 hex of SHA-256 of the canonical JSON of
-  `{action, args}`).
-- Allowlist: `factory_media_start_session` (cap $2 = the template's GPU rate × the stated maximum hours, auto-stop required) and
-  `factory_gemini_create_job` (cap $1 from Gemini's price table). The existing day/month limits stay the ceiling.
-- `approve <id>`: refused when the request is unknown, already used, denied, older than 2 h from `createdAt` (or `createdAt` in
-  the future), the file's hash differs from the posted one, the args fail the tool's own schema, or the estimate is over the
-  cap. Otherwise the Manager calls the same service function the MCP tool calls, in process, with the actor
-  `owner (System)`, marks the request used **before** the call, and writes `<id>.result.json` (`status: done | refused |
-  failed | expired`, `at`, `result` or `error`).
-- Request state (posted, hash, used, denied) lives in the DB, so a restart neither forgets a use nor re-posts.
-- This is the owner's explicit, per-call authorization of a paid call (AGENTS.md §K.2, PROJECT_SPEC §21): nothing else in the
-  app may start one through System.
+- An agent writes `00 YT Operator/System/requests/<id>.json` (`format: 1`, `id` = the file name, `createdAt`, `requestedBy`,
+  `action`, `args`, `costEstimateUsd`, `reason`). The scan (every 10 s while the feature is on) posts each new request once through
+  the outbox: id, action, short arguments, the **Manager's own** estimate, the hash (first 8 hex of SHA-256 of the canonical JSON of
+  `{action, args}`). A file that does not parse as JSON yet is read again next time; a wrong shape is refused once.
+- Allowlist (the same schema and service code as the MCP tool, composed in `src/composition/system-topic-approvals.ts`):
+  - `factory_media_start_session`: `maxMinutes`, `maxUsd` and `releaseWhenDone: true` required (Q5). Estimate = the saved GPU rate
+    × `maxMinutes` / 60. Refused over $2 (estimate or `maxUsd`), or when the factory switch, per-session, day or month limits would
+    hold it.
+  - `factory_gemini_create_job`: the Gemini module's dry-run estimate and limits; refused over $1; `dryRun` cannot be approved.
+  - Anything else is posted as refused.
+- States: `posted` → `approved_in_topic` (the owner's `approve`) → `confirmed` (the Web Confirm, set before the call) → `done` /
+  `failed`; also `denied`, `expired` (past 2 h from `createdAt`, or `createdAt` in the future), `refused`.
+- Confirm re-checks: approved in the topic and not used, 2 h, the file's hash equals the posted one, the schema, the cap and the
+  limits. It runs the call in process, writes `<id>.result.json` atomically (`format`, `id`, `status: done | refused | failed |
+  expired | denied`, `at`, `result` | `error`) and queues the result line for the topic. The Gemini job is created with the actor
+  `owner (System)`; the media module records a factory session as `factory` (its own actor is fixed), and System's audit, result file
+  and log name the owner.
+- All state is in the DB; a restart neither forgets a use nor re-posts.
 
 ## 6. Never
 
-Show tokens or keys; publish, delete or reschedule videos; touch live streams, uploads or the Manager's own process; run a shell;
-execute any text that is not one of the six commands.
+Show tokens, keys or the relay secret; publish, delete or reschedule videos; touch live streams, uploads or the Manager's own
+process; run a shell or a factory script; call Telegram; execute any text that is not one of the commands; run a paid call without
+the owner's Web Confirm.
 
-## 7. Acceptance, worked out by hand
+## 7. Acceptance, worked out by hand (as amended)
 
-- AC-SYS-01 A message `status` from another user id in the topic gets no reply and no audit row with a result; a counter rises.
-- AC-SYS-02 `status` from the owner in another topic of the group is ignored.
-- AC-SYS-03 `status tropico` runs the configured argv once with `--channel tropico` and posts its output; 5000 characters of
-  output are posted as 3500 + "…".
-- AC-SYS-04 `stop tropico <jobId>` on a running record whose `pidStartedAt` matches but `cmdline` differs: no signal is sent,
-  STOP is created, the reply says why.
-- AC-SYS-05 `stop` on a record of device `Windows-PC`: refused, no STOP, no signal.
-- AC-SYS-06 `stop` on a matching job: SIGTERM to the group, record `stopped`/`owner`, STOP exists; a process that ignores
-  SIGTERM gets SIGKILL after 30 s.
-- AC-SYS-07 `go tropico` with a config `root` different from the channel's workspace path: refused, STOP kept, nothing run.
-- AC-SYS-08 A request created 2 h 1 min ago: `approve` → `expired`, the tool is not called.
-- AC-SYS-09 `approve` twice: the first calls the tool once, the second → `used`, the tool still called once.
-- AC-SYS-10 The request file's `args.maxHours` changed after posting: `approve` → refused (hash), the tool not called.
-- AC-SYS-11 A media session estimate of $2.01 → refused (cap); $2.00 → allowed.
+- AC-SYS-01 A message from another user id in the topic: no reply, no audit row, the dropped counter rises.
+- AC-SYS-02 The owner in another topic of the group (or another chat): ignored the same way.
+- AC-SYS-08 A request created 2 h 1 min ago: `expired`, the tool is not called (also when confirmed at 2 h 1 min).
+- AC-SYS-09 `approve` twice, Confirm twice: the tool is called once; the second Confirm and a later `approve` say "used".
+- AC-SYS-10 The file's `args.maxMinutes` changed after posting: Confirm → refused (hash), the tool not called.
+- AC-SYS-11 An estimate of $2.01 → refused; $2.00 → posted ($2.00/h × 60 min; $2.01/h × 60 min).
 - AC-SYS-12 An action outside the allowlist is posted as refused and cannot be approved.
-- AC-SYS-13 With the switch off, the poller makes no Bot API call.
-- AC-SYS-14 No log line, API response or error text contains the token (test with a token-shaped secret).
-- Live, with the Operator: FO-REQ-0042's own acceptance (status, stop of a scratch job, go, a $0 approval twice, an expired one).
+- AC-SYS-14 The relay secret is returned only when generated; it is in no log, view or other answer.
+- Also: a Web Confirm without the topic `approve` is refused; a wrong bearer gets 401; a non-loopback call 403; a duplicate
+  `updateId` gets no second reply; a non-owner message is a silent drop.
+- (AC-SYS-03..07, 13 described the hub-side commands and the poller; they are dropped from the Manager's scope.)
+- Live, with the Operator: a $0 approval twice, an expired one, after the hub relay is in place.
 
-## 8. Stages (one branch, one merge)
+## 8. Stages
 
-1. Gateway, settings card, poller, `help` + `status`.
-2. `stop` + `go`.
-3. Approvals.
+One branch, one merge: the module, the relay, the approvals and the card. The hub side is the Operator's (FO-RESP-0043 H3).
 
 ## 9. Risks
 
-- A stolen Telegram account can approve paid calls up to the caps (owner's choice asked in msg 3600; recorded in
-  TECHNICAL_DEBT when answered).
-- Two computers polling one bot: prevented by the Mac-only switch.
-- The factory config is trusted input from the factory side: argv runs without a shell, inside the channel root only.
+- The relay cannot prove the owner wrote a topic message: mitigated by the Web Confirm (RISK-136).
+- The media module records the started session as the factory's (see §5).

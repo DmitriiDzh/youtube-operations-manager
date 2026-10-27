@@ -4844,29 +4844,27 @@ Owner msgs 3439/3444/3449/3451/3453. On branch `feature/content-ux-redesign`. No
 - **Tab badges.** `content-tab-badges.ts`: video-projects (edit + package phases), the calendar's `coverage.due`, the live overview's
   health (bad / noData / revoked while live); local reads once a minute.
 
-## BL-228 — owner commands in the HUB "System" topic (ADR 0053, stage 1)
+## BL-228 — one-time paid approvals through the HUB "System" topic (ADR 0053 + Amendment 1)
 
-Plan: `docs/roadmap/plans/SYSTEM_TOPIC_PLAN.md`. Stage 1 is built on `feature/bl-228-system-topic` (not merged).
+Plan: `docs/roadmap/plans/SYSTEM_TOPIC_PLAN.md`. Built on `feature/bl-228-system-topic` (not merged).
 
-- **Gateway.** `src/lib/telegram-bot-gateway/` is the only caller of the Telegram Bot API (`getUpdates`, `sendMessage`); an inventory
-  test enforces it. The token -- the EXISTING HUB bot's (owner msg 3602), not a new bot -- is a per-call argument read from
-  device-secrets (slot `telegram_system_bot`) and is redacted from every error text before it leaves the gateway, including Node
-  fetch failures that name the URL.
-- **Inbound is pluggable.** The HUB bot may already be polled by the HUB process, and two `getUpdates` consumers on one bot steal
-  each other's updates. So messages come from a `SystemInbox` adapter chosen by the `inboxSource` setting: `none` (default, nothing
-  received) or `bot_get_updates` (`adapters/bot-get-updates-inbox.ts`). A HUB hand-over adapter is expected later. Replies always go
-  through the gateway's `sendMessage`.
-- **Module.** `src/lib/system-topic/` holds the settings and poll state (schema v111, one-row `system_topic_state`), the audit trail
-  (`system_topic_commands`, keyed by Telegram update id) and the runners. The loop in `src/instrumentation.ts` asks the source only
-  when the per-computer switch is on, the process is the Mac service, a source is chosen and the token and the three ids are set;
-  otherwise a tick is one local read. The database gate is checked again after the (long) receive, before the first write: when it
-  is closed nothing is written and the cursor stays. Per poll: keep only messages from the owner's user id in the configured chat and topic (everything else only
-  raises a counter), claim each kept update's audit row (an existing row means it already ran), store the source's new cursor, then run the
-  commands one by one and reply in the topic.
-- **Factory config.** `status` reads the factory-owned `commands.json` on every command (schema in `schemas.ts` only) and runs
-  `status.argv` with `spawn` (no shell, own process group, a minimal environment so the Manager's own secrets never reach it, 60 s
-  timeout). A named channel's `root` must equal that channel's workspace path on this computer; relative paths in argv must stay
-  inside it. Output is cut to 3500 characters + "…".
-- **Limits (stage 1).** `stop`, `go`, `approve` and `deny` are parsed and answered "not available yet". The child gets `PATH` from
-  the Manager's own environment: under launchd that may not include the folder of the factory's interpreter, so the factory should
-  name it by absolute path in `argv`.
+- **Split (owner msgs 3602/3607, FO-RESP-0043 H4).** The factory's hub (`hub_bot.py`) polls the existing HUB bot and keeps
+  `status` / `stop` / `go`. The Manager makes no Telegram call and runs no factory script. It only approves one-time paid calls.
+- **Relay.** The hub calls `POST /api/system-topic/inbound` for each System topic message and polls `GET /api/system-topic/outbox`
+  every 5 s. Both require a loopback request (`isLoopbackRequest`, 403) and `Authorization: Bearer <relay secret>` (401); they do
+  not use a Web session. The secret is generated in Settings and shown once; only its SHA-256 is stored, and the check compares the
+  hashes with `timingSafeEqual`. An inbound message is kept only if the chat, thread and sender ids match the settings; anything
+  else only raises a counter. The audit row (primary key: update id) is claimed before the command runs. The outbox hands each row
+  out once (one `UPDATE … RETURNING`); that GET checks the device mutation gate itself, because `src/proxy.ts` gates only mutating
+  methods.
+- **Requests.** Every 10 s while the feature is on, the scan in `src/instrumentation.ts` reads `<requests>/<id>.json`. The id is
+  the file stem and must match `^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,127}$`. Each new request is posted once with the Manager's estimate
+  and the `{action, args}` hash, or refused / expired once. `approve` only moves `posted` → `approved_in_topic`. The Web Confirm
+  re-reads and re-hashes the file and re-checks the schema, the cap and the limits. Then a compare-and-set
+  (`approved_in_topic` → `confirmed`) marks it used before the call; only one confirm can win it. The call runs in process through
+  `src/composition/system-topic-approvals.ts`, which calls `createFactoryMediaDeps().startSession` / `createGeminiMediaCore().createJob`
+  with the MCP tools' schemas. That keeps the factory and Gemini limits as the ceiling, and the module itself imports neither.
+  `<id>.result.json` is written through a temporary file and a rename.
+- **Limits.** The media module records an approved session as the factory's (`requestedBy: factory`); only Gemini takes the actor
+  `owner (System)`. A media start held by a device limit is recorded `failed` (it waits for the owner in Servers). The relay cannot
+  prove who wrote a topic message (RISK-136); the Web Confirm is the mitigation.
