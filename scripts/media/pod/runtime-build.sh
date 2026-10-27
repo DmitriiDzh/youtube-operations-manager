@@ -15,6 +15,8 @@ set -uo pipefail
 # --- BL-230 helpers (also sourced by scripts/media/pod/runtime-build.test.ts; they read only their arguments and the two vars). ---
 # The token for the leak check, NOT exported (pip and its builds never see it); YTM_GIT_TOKEN itself is unset after the clones.
 GUARD_TOKEN="${YTM_GIT_TOKEN:-}"
+# No terminal: git must fail at once instead of asking for a user name (a private repository without a usable token).
+export GIT_TERMINAL_PROMPT=0
 # git with the token as a one-shot `http.https://github.com/.extraheader` for a github.com URL ($1) when YTM_GIT_TOKEN is set; plain
 # git otherwise. The -c goes before the sub-command, so nothing is written to any config; tracing is off while the header exists.
 git_net() { # url git-args...
@@ -29,7 +31,11 @@ git_net() { # url git-args...
         git -c "http.https://github.com/.extraheader=$hdr" "$@" || rc=$?
         hdr=""
         [ "$traced" = 1 ] && set -x
-        return "$rc"
+        # GitHub answers 401 to an expired or revoked token even for a PUBLIC repository: one plain retry keeps public sources
+        # working (a private one fails both times, as before).
+        [ "$rc" = 0 ] && return 0
+        git "$@"
+        return $?
       fi ;;
   esac
   git "$@"
@@ -52,7 +58,9 @@ leak_free() { # dir
 # A failed clone's hint: a private github.com repository needs the owner's token.
 clone_hint() { # repo
   case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
-    https://github.com/*) [ -n "$GUARD_TOKEN" ] || printf '%s' " (a private GitHub repository needs the GitHub token in Settings -> Cloud APIs)" ;;
+    https://github.com/*)
+      if [ -n "$GUARD_TOKEN" ]; then printf '%s' " (the stored GitHub token may have expired or cannot see this repository: check it in Settings -> Cloud APIs)"
+      else printf '%s' " (a private GitHub repository needs the GitHub token in Settings -> Cloud APIs)"; fi ;;
   esac
 }
 # Sourced (the test): stop here, before anything touches /workspace.

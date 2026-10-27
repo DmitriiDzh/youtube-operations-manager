@@ -20,7 +20,7 @@ const REAL_GIT = (() => {
   }
 })();
 
-function fixture() {
+function fixture(options: { refuseHeader?: boolean } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), "ytm-bl230-"));
   const work = path.join(dir, "work");
   const bare = path.join(dir, "bare.git");
@@ -39,6 +39,8 @@ function fixture() {
     [
       "#!/usr/bin/env bash",
       `printf '%s\\n' "$*" >> '${log}'`,
+      // BL-230 review: an expired token -- GitHub answers 401 to the header even for a public repository.
+      ...(options.refuseHeader ? [`case "$*" in *extraheader*) exit 128 ;; esac`] : []),
       `exec '${REAL_GIT}' -c 'url.file://${bare}.insteadOf=https://github.com/owner/private-nodes' -c 'url.file://${bare}.insteadOf=https://example.com/owner/nodes' -c protocol.file.allow=always "$@"`,
       "",
     ].join("\n")
@@ -86,6 +88,23 @@ test("AC-PR-14: another host, or no YTM_GIT_TOKEN, gets no header", { skip }, ()
     assert.equal(none.status, 0, none.stderr);
     const log = readFileSync(f.log, "utf8");
     assert.ok(!log.includes("extraheader") && !log.includes(TOKEN), log);
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("AC-PR-14: a refused header (expired token) is retried once without it, so a public repository still clones", { skip }, () => {
+  const f = fixture({ refuseHeader: true });
+  try {
+    const dest = path.join(f.dir, "dest");
+    const result = run({ ...f.env, YTM_GIT_TOKEN: TOKEN }, `clone_at https://github.com/owner/private-nodes ${f.sha} '${dest}'`);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(execFileSync(REAL_GIT, ["-C", dest, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(), f.sha);
+    const network = readFileSync(f.log, "utf8").split("\n").filter((c) => / (fetch|clone) /.test(` ${c} `));
+    assert.deepEqual(network.map((c) => c.startsWith(`-c ${HEADER} `)), [true, false], network.join("\n"));
+    assert.equal(run({ ...f.env, YTM_GIT_TOKEN: TOKEN }, "clone_hint https://github.com/owner/x").stdout.includes("may have expired"), true);
+    assert.equal(run({ ...f.env, YTM_GIT_TOKEN: "" }, "clone_hint https://github.com/owner/x").stdout.includes("needs the GitHub token"), true);
+    assert.equal(run({ ...f.env, YTM_GIT_TOKEN: TOKEN }, "clone_hint https://huggingface.co/owner/x").stdout, "");
   } finally {
     rmSync(f.dir, { recursive: true, force: true });
   }

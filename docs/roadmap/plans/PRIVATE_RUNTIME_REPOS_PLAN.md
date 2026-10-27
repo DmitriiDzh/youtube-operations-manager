@@ -41,12 +41,15 @@ a private repository fails, and only on the paid build pod.
      `git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic <base64 of x-access-token:TOKEN>" …`, only when
      `YTM_GIT_TOKEN` is set. The `-c` goes before the sub-command, so nothing is written to `.git/config`. The remote URL has no
      credential. Tracing (`set -x`) is switched off while the header is built and used.
+   - A git command refused with the header is retried once without it: GitHub answers 401 to an expired or revoked token even for
+     a public repository, so a dead token must not break ComfyUI's own clone. `GIT_TERMINAL_PROMPT=0`: git never waits for a user.
    - After the clones, `unset YTM_GIT_TOKEN` (pip and its builds never see it).
    - A leak check runs before `.ready` and in every `finish`: `grep -rqF` of the token and of its base64 header form over the whole
      runtime folder, `build.log` included. On a hit, everything in the folder except `runtime.json` and `.lock` is deleted,
      `build.log` is emptied, and the build fails with `a credential was found in the runtime folder; it was removed`. The check
      never prints a matching line.
-   - A failed github.com clone says that a private repository needs the GitHub token in Settings → Cloud APIs.
+   - A failed github.com clone says that a private repository needs the GitHub token in Settings → Cloud APIs, or, with a token
+     given, that it may have expired or cannot see the repository.
 7. **Session pods** get no token: they only run built runtimes, and the session module has no access to the slot.
 8. **Factory API 1.36.0:** `factory_media_create_runtime` documents the check and the new errors. No tool sets, reads or shows
    the token; the owner enters it in the Web UI only.
@@ -101,7 +104,8 @@ Expected values come from the rules above and GitHub's REST API docs (404 for a 
 - **AC-PR-14** (shell, the script's own functions against a local bare repository): with `YTM_GIT_TOKEN=T` a github.com fetch is
   given exactly `http.https://github.com/.extraheader=AUTHORIZATION: basic base64("x-access-token:T")`; another host and an
   unset variable get no header; after `clone_at` the checkout is at the commit, and `.git/config` holds neither `T` nor
-  `extraheader`; the remote URL is the plain one.
+  `extraheader`; the remote URL is the plain one. A header refused by the server is retried once without it (public repository +
+  expired token still clones).
 - **AC-PR-15** (shell): the leak check fails on a folder holding `T` or its base64 header form (in a nested file and in
   `build.log`), passes on a clean folder and when no token was given, and prints neither form.
 
