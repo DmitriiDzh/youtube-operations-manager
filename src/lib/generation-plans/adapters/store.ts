@@ -31,7 +31,7 @@ import {
   type StoredGenerationPlanRecheck,
   type StoredGenerationPlanResult,
 } from "@/lib/db";
-import type { PlanDefinition, PlanEvent, PlanPickRecord, PlanRecheck, PlanRecheckAnswer, PlanRecheckVerdict, PlanResultRow } from "../contracts";
+import type { PlanAnswers, PlanDefinition, PlanEvent, PlanPickRecord, PlanRecheck, PlanRecheckAnswer, PlanRecheckVerdict, PlanResultRow } from "../contracts";
 import type { PlanStore, StoredPlan } from "../services";
 
 // BL-143: the plans module's only door to the database (DEVELOPMENT_PLAYBOOK §6.2). JSON columns are written and read only here.
@@ -44,6 +44,13 @@ function parseJson<T>(text: string | null | undefined, fallback: T): T {
     return fallback;
   }
 }
+
+/** BL-229 part B: stored answers (a field to spread; null, empty or unreadable = none). */
+function answersFromDb(text: string | null | undefined): { answers?: PlanAnswers } {
+  const answers = parseJson<PlanAnswers | null>(text, null);
+  return answers && typeof answers === "object" && !Array.isArray(answers) && Object.keys(answers).length > 0 ? { answers } : {};
+}
+const answersToDb = (answers: PlanAnswers | undefined) => (answers && Object.keys(answers).length > 0 ? JSON.stringify(answers) : null);
 
 function planFromDb(row: StoredGenerationPlan): StoredPlan {
   return {
@@ -79,6 +86,7 @@ function resultFromDb(row: StoredGenerationPlanResult): PlanResultRow {
     checks: parseJson(row.checksJson, []),
     metrics: parseJson(row.metricsJson, {}),
     referenceIds: parseJson<string[]>(row.referenceIdsJson, []),
+    ...answersFromDb(row.answersJson),
     at: row.at.toISOString(),
   };
 }
@@ -174,6 +182,7 @@ export function createPlanStore(): PlanStore {
           checksJson: r.checks.length > 0 ? JSON.stringify(r.checks) : null,
           metricsJson: Object.keys(r.metrics).length > 0 ? JSON.stringify(r.metrics) : null,
           referenceIdsJson: r.referenceIds && r.referenceIds.length > 0 ? JSON.stringify(r.referenceIds) : null,
+          answersJson: answersToDb(r.answers),
           at: new Date(r.at),
         }))
       ),
@@ -213,6 +222,7 @@ export function createPlanStore(): PlanStore {
         recheckId: v.recheckId ?? null,
         kept: v.kept ? 1 : null,
         reviewSeconds: v.reviewSeconds ?? null,
+        answersJson: answersToDb(v.answers),
       }),
     listPeerVerdicts: async (sinceIso) =>
       (await listGenerationPlanPeerVerdicts(sinceIso)).map((r) => ({
@@ -230,6 +240,7 @@ export function createPlanStore(): PlanStore {
         ...(r.recheckId ? { recheckId: r.recheckId } : {}),
         ...(r.kept ? { kept: true } : {}),
         ...(r.reviewSeconds !== null && r.reviewSeconds !== undefined ? { reviewSeconds: r.reviewSeconds } : {}),
+        ...answersFromDb(r.answersJson),
       })),
     // BL-175 (VISUAL_REVIEW_PLAN.md §2.2/§2.6): picks on this device's plans, and pick actions given here on other devices' plans.
     listPicks: async (planId) => (await listGenerationPlanPicks(planId)).map(pickFromDb),
@@ -281,6 +292,7 @@ export function createPlanStore(): PlanStore {
         recheckId: h.recheckId ?? null,
         kept: h.kept ? 1 : null,
         reviewSeconds: h.reviewSeconds ?? null,
+        answersJson: answersToDb(h.answers),
       }),
     listVerdictHistory: async (planId) =>
       (await listGenerationPlanVerdictHistory(planId)).map((h) => ({
@@ -296,6 +308,7 @@ export function createPlanStore(): PlanStore {
         ...(h.recheckId ? { recheckId: h.recheckId } : {}),
         ...(h.kept ? { kept: true } : {}),
         ...(h.reviewSeconds !== null && h.reviewSeconds !== undefined ? { reviewSeconds: h.reviewSeconds } : {}),
+        ...answersFromDb(h.answersJson),
       })),
     // BL-173: the plan's re-checks.
     insertRecheck: (planId, r) =>

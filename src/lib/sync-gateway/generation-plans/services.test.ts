@@ -28,8 +28,8 @@ test("AC-GP2-02: own report ignored; newer replaces older; older not accepted; f
   await assert.rejects(c.mergeIncoming(bytes(report("win", "2026-10-07T12:30:00Z"))), /in the future/);
   // BL-157 (SERVERS_MEDIA_PLAN.md §B): this build reads versions 1 and 2. BL-162 (MEDIA_UX_REDESIGN_PLAN.md §5.2) adds version 3,
   // BL-173 (PLAN_RECHECKS_PLAN.md §2.7, AC-RC-10a) version 4, BL-175 (VISUAL_REVIEW_PLAN.md §2.6) version 5, so the first
-  // version it cannot read is now 6.
-  await assert.rejects(c.mergeIncoming(bytes({ ...report("win", "2026-10-07T11:40:00Z"), version: 6 })), /version 6 is newer/);
+  // version it cannot read was 6; BL-229 part B (MUSIC_LIBRARY_PLAN.md §3) adds version 6, so it is now 7.
+  await assert.rejects(c.mergeIncoming(bytes({ ...report("win", "2026-10-07T11:40:00Z"), version: 7 })), /version 7 is newer/);
   await assert.rejects(c.mergeIncoming(new TextEncoder().encode("{")), /unreadable JSON/);
   // A verdict naming an absolute or escaping job output path is not a valid report.
   const bad = report("win", "2026-10-07T11:45:00Z", {

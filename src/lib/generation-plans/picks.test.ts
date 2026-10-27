@@ -443,7 +443,8 @@ test("AC-VR-10: a version 5 report with picks, none-fits, handled ids, pick targ
   assert.equal(Object.hasOwn(plan.review[0], "media"), false, "the reader derives media itself");
   const report = await reportOf(mac, "mac-id", "MAC");
   assert.equal(generationPlansReportSchema.safeParse({ ...report, version: 4 }).success, true);
-  assert.equal(generationPlansReportSchema.safeParse({ ...report, version: 6 }).success, false);
+  // BL-229 part B: version 6 exists now (forms, genre, answers); the first unknown version is 7.
+  assert.equal(generationPlansReportSchema.safeParse({ ...report, version: 7 }).success, false);
   void win;
 });
 

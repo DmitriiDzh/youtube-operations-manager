@@ -87,7 +87,10 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT",
 // proposals gain an optional note; stage 2 (same release): agent_localization_requests_list (READ) and agent_localization_request_claim /
 // _complete / _fail (DRAFT) -- the owner's translation requests for the worker's own channel. Only the owner approves, rejects and
 // sends, in the app. Additive.
-export const AGENT_API_VERSION = "4.8.0";
+// 4.9.0 (BL-229 part B, MUSIC_LIBRARY_PLAN.md §3, ADR 0054 amendment 1): agent_plan_create / _import / _update take the plan's
+// reviewForm and the waves' genre and reviewForm, and owner_verdict events (agent_plan_get) carry answers, as the factory_plan_*
+// tools (Factory API 1.35.0). Additive.
+export const AGENT_API_VERSION = "4.9.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry

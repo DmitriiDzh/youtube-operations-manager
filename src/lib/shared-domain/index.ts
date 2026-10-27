@@ -206,6 +206,13 @@ export type DomainErrorCode =
   // BL-173 (PLAN_RECHECKS_PLAN.md §2.2/§2.3): a re-check id already used for other content; a re-check that is no longer open.
   | "plan_recheck_exists"
   | "plan_recheck_closed"
+  // BL-229 part B (MUSIC_LIBRARY_PLAN.md §3): a verdict's review-form answers -- an id not in the attempt's form, a value of the
+  // wrong type, outside 1..10, not one of the options, or a required question left unanswered.
+  | "plan_answer_unknown_field"
+  | "plan_answer_wrong_type"
+  | "plan_answer_out_of_range"
+  | "plan_answer_unknown_option"
+  | "plan_answer_required"
   // BL-174 (GEMINI_MEDIA_PLAN.md §2.6): Google's Gemini API through the `gemini-media` module.
   | "gemini_disabled"
   | "gemini_key_missing"

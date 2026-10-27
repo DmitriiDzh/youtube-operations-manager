@@ -544,6 +544,8 @@ export function planEvents(jobs: PlanJobRow[], sessions: PlanSessionRow[], resul
             ...(h.recheckId ? { recheckId: h.recheckId } : {}),
             // BL-175 phase 3 (FO-REQ-0018 §G): the owner's seconds on the attempt before this verdict.
             ...(h.reviewSeconds !== undefined ? { reviewSeconds: h.reviewSeconds } : {}),
+            // BL-229 part B: the owner's answers to the review form with this verdict.
+            ...(h.answers ? { answers: h.answers } : {}),
           },
         });
       }
@@ -563,6 +565,7 @@ export function planEvents(jobs: PlanJobRow[], sessions: PlanSessionRow[], resul
         ...(r.markers.length > 0 ? { markers: r.markers } : {}),
         ...(r.note ? { note: r.note } : {}),
         ...(overrides(r) ? { overridesValidator: true } : {}),
+        ...(r.reportedBy === "owner" && r.answers ? { answers: r.answers } : {}),
       },
     });
   }
