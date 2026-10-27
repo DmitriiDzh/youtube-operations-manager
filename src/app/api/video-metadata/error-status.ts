@@ -62,6 +62,7 @@ const DOMAIN_ERROR_STATUS = {
   github_unavailable: 502,
   github_token_missing: 422,
   github_token_invalid: 422,
+  github_token_forbidden: 403,
   runtime_repo_private_needs_token: 422,
   runtime_repo_not_visible_to_token: 403,
   media_runtime_incompatible: 409,

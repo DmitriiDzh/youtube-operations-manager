@@ -85,6 +85,7 @@ export type DomainErrorCode =
   | "github_unavailable"
   | "github_token_missing"
   | "github_token_invalid"
+  | "github_token_forbidden"
   | "runtime_repo_private_needs_token"
   | "runtime_repo_not_visible_to_token"
   | "media_runtime_incompatible"

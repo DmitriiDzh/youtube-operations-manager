@@ -68,6 +68,16 @@ export function createGithubClient(args: { fetchImpl?: Fetch; authorize?: Author
     if (token && response.status === 401) {
       throw new DomainError({ code: "github_token_invalid", message: "GitHub did not accept the stored token (HTTP 401): it may have expired or been revoked. Enter a new read token in Settings → Cloud APIs.", details: { ...context, status: 401 } });
     }
+    // Review M2: a 403 to a token that is not a rate limit (x-ratelimit-remaining 0, or a Retry-After) means the token may not read
+    // this: a fine-grained token without Contents: read, or one not authorized for the organization's SSO.
+    const rateLimited = response.header?.("x-ratelimit-remaining") === "0" || response.retryAfter !== null;
+    if (token && response.status === 403 && !rateLimited) {
+      throw new DomainError({
+        code: "github_token_forbidden",
+        message: "GitHub refused the stored token here (HTTP 403): give the token read access to the repository's contents (Contents: Read-only), or authorize it for the organization's SAML SSO, in GitHub's token settings.",
+        details: { ...context, status: 403 },
+      });
+    }
     return response;
   }
 

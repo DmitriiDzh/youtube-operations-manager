@@ -28,6 +28,7 @@ export const errors: Record<keyof typeof en, string> = {
   "errors.github_unavailable": "GitHub недоступен или отклонил запрос. Попробуйте позже.",
   "errors.github_token_missing": "На этом компьютере нет токена GitHub. Введите токен чтения в Настройках → Облачные API.",
   "errors.github_token_invalid": "GitHub не принял сохранённый токен (истёк или отозван?). Введите новый токен чтения в Настройках → Облачные API.",
+  "errors.github_token_forbidden": "GitHub отклонил сохранённый токен для этого запроса: дайте ему доступ на чтение содержимого репозитория (Contents: Read-only) или разрешите его для SSO организации.",
   "errors.runtime_repo_private_needs_token": "Без токена GitHub не показывает этот репозиторий: он закрытый или его нет. Если он закрытый, введите токен чтения GitHub в Настройках → Облачные API.",
   "errors.runtime_repo_not_visible_to_token": "Сохранённый токен GitHub не видит этот репозиторий: дайте токену доступ к нему или проверьте адрес и коммит.",
   "errors.media_runtime_incompatible": "В среде пода нет узлов, нужных этому шаблону; ничего не запущено.",

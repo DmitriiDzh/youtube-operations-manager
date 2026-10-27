@@ -29,6 +29,7 @@ export const errors = {
   "errors.github_unavailable": "GitHub could not be reached or refused the request. Try again later.",
   "errors.github_token_missing": "No GitHub token is stored on this computer. Enter a read token in Settings → Cloud APIs.",
   "errors.github_token_invalid": "GitHub did not accept the stored token (expired or revoked?). Enter a new read token in Settings → Cloud APIs.",
+  "errors.github_token_forbidden": "GitHub refused the stored token here: give it read access to the repository's contents (Contents: Read-only), or authorize it for the organization's SSO.",
   "errors.runtime_repo_private_needs_token": "GitHub does not show this repository without a token: it is private or does not exist. If it is private, enter a GitHub read token in Settings → Cloud APIs.",
   "errors.runtime_repo_not_visible_to_token": "The stored GitHub token cannot see this repository: give the token access to it, or check the address and commit.",
   "errors.media_runtime_incompatible": "The pod runtime lacks nodes this template needs; nothing was started.",

@@ -154,7 +154,9 @@ export function GithubTokenSettings() {
           onCancel={() => setConfirmClear(false)}
           onConfirm={() => {
             setConfirmClear(false);
-            void run(() => call({ method: "DELETE" }), t("githubToken.removed")).then(() => setEditing(true));
+            void run(() => call({ method: "DELETE" }), t("githubToken.removed")).then((next) => {
+              if (next) setEditing(true);
+            });
           }}
         />
       )}

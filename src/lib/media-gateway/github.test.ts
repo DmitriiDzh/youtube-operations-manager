@@ -109,3 +109,18 @@ test("parseGithubTokenExpiration: GitHub's 'YYYY-MM-DD HH:MM:SS UTC' and an offs
   assert.equal(parseGithubTokenExpiration("soon"), null);
   assert.equal(parseGithubTokenExpiration(null), null);
 });
+
+test("review M2: a 403 to the token that is not a rate limit is github_token_forbidden (Contents read / SSO), never 'unavailable'; a rate-limited 403 stays github_unavailable", async () => {
+  const forbidden = fakeWithHeaders(() => ({ status: 403, body: { message: "Resource not accessible by personal access token" }, headers: { "x-ratelimit-remaining": "4999" } }));
+  const client = createGithubClient({ fetchImpl: forbidden.fetchImpl, authorize: async () => {} });
+  for (const call of [() => client.resolveCommit("DmitriiDzh", "ComfyUI-See-through", SHA, { token: T }), () => client.whoami(T)]) {
+    await assert.rejects(call(), (e: unknown) => isDomainError(e) && e.code === "github_token_forbidden" && /Contents/.test(e.message) && /SSO/.test(e.message) && !/unavailable/i.test(e.message) && !e.message.includes(T));
+  }
+  const limited = fakeWithHeaders(() => ({ status: 403, body: { message: "API rate limit exceeded" }, headers: { "x-ratelimit-remaining": "0" } }));
+  await assert.rejects(
+    createGithubClient({ fetchImpl: limited.fetchImpl, authorize: async () => {} }).resolveCommit("DmitriiDzh", "ComfyUI-See-through", SHA, { token: T }),
+    (e: unknown) => isDomainError(e) && e.code === "github_unavailable"
+  );
+  const noToken = fakeWithHeaders(() => ({ status: 403, body: {}, headers: { "x-ratelimit-remaining": "10" } }));
+  await assert.rejects(createGithubClient({ fetchImpl: noToken.fetchImpl, authorize: async () => {} }).resolveCommit("o", "r", SHA), (e: unknown) => isDomainError(e) && e.code === "github_unavailable");
+});
