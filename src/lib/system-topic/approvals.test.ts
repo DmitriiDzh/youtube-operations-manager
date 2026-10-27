@@ -245,3 +245,17 @@ test("a missing requests folder is a scan error, not a crash", async () => {
   h.files.list = async () => null;
   await assert.rejects(h.approvals.scan(), new RegExp(`the requests folder ${DIR.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} does not exist`));
 });
+
+test("at boot, a request left `confirmed` (the process died during the call) becomes failed with a result file; it is never run", async () => {
+  const h = harness();
+  await posted(h);
+  await say(h, 1, "approve r1");
+  await h.requests.transition("r1", ["approved_in_topic"], { state: "confirmed", confirmedAt: h.clock.now });
+  assert.equal(await h.approvals.sweepInterrupted(), 1);
+  assert.equal(h.requests.rows.get("r1")!.state, "failed");
+  assert.equal(h.files.results.get("r1")!.status, "failed");
+  assert.match(String(h.files.results.get("r1")!.error), /interrupted by a server restart/);
+  assert.match(h.store.outbox.at(-1)!.text, /^Request r1: failed -- interrupted by a server restart/);
+  assert.equal(h.action.runs.length, 0);
+  assert.equal(await h.approvals.sweepInterrupted(), 0);
+});

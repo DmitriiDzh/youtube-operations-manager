@@ -100,11 +100,21 @@ async function startServerSession() {
     const { rawSqlClient: systemSqlClient } = await import("@/lib/db");
     const { assertDeviceAvailableForMutation: assertSystemMayWrite } = await import("@/lib/device-mutation-gate");
     const systemTopic = getSystemTopicCore();
+    let systemSwept = false;
+    let lastSystemWarning: string | null = null;
     const systemScanLoop = async () => {
       try {
         await assertSystemMayWrite(systemSqlClient);
+        if (!systemSwept) {
+          // A request a dead process was running is failed (outcome unknown), so the factory's watcher gets its result file.
+          await systemTopic.approvals.sweepInterrupted();
+          systemSwept = true;
+        }
         await systemTopic.approvals.scan().then(
-          (result) => (result.scanned ? systemTopic.topic.recordScan(null) : undefined),
+          (result) => {
+            if (result.scanned) lastSystemWarning = null;
+            return result.scanned ? systemTopic.topic.recordScan(null) : undefined;
+          },
           async (error: unknown) => {
             await systemTopic.topic.recordScan(error instanceof Error ? error.message : String(error));
             throw error;
@@ -112,7 +122,10 @@ async function startServerSession() {
         );
       } catch (error) {
         const paused = error instanceof Error && (error.name === "OperationLockError" || error.name === "RecoveryModeError");
-        if (!paused) console.warn(`[system-topic] ${error instanceof Error ? error.message : String(error)}`);
+        const message = error instanceof Error ? error.message : String(error);
+        // The same error every 10 s (e.g. the requests folder not created yet) is logged once; the card shows it meanwhile.
+        if (!paused && message !== lastSystemWarning) console.warn(`[system-topic] ${message}`);
+        if (!paused) lastSystemWarning = message;
       }
       setTimeout(() => void systemScanLoop(), SYSTEM_TOPIC_SCAN_TICK_MS).unref();
     };

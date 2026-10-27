@@ -4865,6 +4865,7 @@ Plan: `docs/roadmap/plans/SYSTEM_TOPIC_PLAN.md`. Built on `feature/bl-228-system
   `src/composition/system-topic-approvals.ts`, which calls `createFactoryMediaDeps().startSession` / `createGeminiMediaCore().createJob`
   with the MCP tools' schemas. That keeps the factory and Gemini limits as the ceiling, and the module itself imports neither.
   `<id>.result.json` is written through a temporary file and a rename.
+  At boot, a request still `confirmed` (the process ended during the call) becomes `failed` with its result file; it never reruns.
 - **Limits.** The media module records an approved session as the factory's (`requestedBy: factory`); only Gemini takes the actor
   `owner (System)`. A media start held by a device limit is recorded `failed` (it waits for the owner in Servers). The relay cannot
   prove who wrote a topic message (RISK-136); the Web Confirm is the mitigation.

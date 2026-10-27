@@ -389,6 +389,22 @@ export function createSystemApprovals(deps: SystemApprovalsDeps) {
       return { scanned: true };
     },
 
+    /**
+     * At boot only: a request left `confirmed` was being run when the process ended (a Confirm runs only in this process, so nothing
+     * can still be in flight). Its outcome is unknown: it becomes `failed`, with a result file, never run again.
+     */
+    async sweepInterrupted(): Promise<number> {
+      const state = await deps.readState();
+      let count = 0;
+      for (const row of await deps.store.listByStates(["confirmed"])) {
+        const swept = await finish(state.requestsPath, row, ["confirmed"], "failed", {
+          error: "interrupted by a server restart; the outcome is unknown -- check Servers / Gemini jobs",
+        });
+        if (swept) count += 1;
+      }
+      return count;
+    },
+
     async list(): Promise<{ waiting: SystemRequestView[]; recent: SystemRequestView[] }> {
       const [waiting, recent] = await Promise.all([deps.store.listByStates(["approved_in_topic"]), deps.store.recent(20)]);
       return { waiting: waiting.map(toView), recent: recent.map(toView) };

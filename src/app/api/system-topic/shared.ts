@@ -41,6 +41,8 @@ function failure(error: unknown): NextResponse {
   if (isDomainError(error)) {
     return NextResponse.json({ error: error.code, message: error.message, details: error.details }, { status: getVideoMetadataErrorStatus(error.code) });
   }
+  // Logged here only (the relay secret never enters an error); the answer stays generic.
+  console.error(`[system-topic] ${error instanceof Error ? error.message : String(error)}`);
   return NextResponse.json({ error: "internal_error", message: "The System topic request could not be handled" }, { status: 500 });
 }
 
