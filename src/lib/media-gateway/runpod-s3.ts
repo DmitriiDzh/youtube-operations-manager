@@ -213,10 +213,18 @@ export function createRunpodS3Client(config: RunpodS3Config, deps: { fetchImpl?:
       const response = await signedFetch("HEAD", objectUrl(key));
       if (response.status === 404) return null;
       if (!response.ok) throw failure(response, "HEAD", key);
+      const headSize = Number(response.headers.get("content-length") ?? "0") || 0;
+      if (headSize > 0) {
+        return { size: headSize, etag: response.headers.get("etag"), lastModified: response.headers.get("last-modified") };
+      }
+      // 2026-10-27 (See-through jobs c6a46cfa/a3dcf0a4): RunPod's HEAD answered a 7 KB .json with no usable Content-Length while
+      // LIST showed its size, so the puller read 0 bytes = "not there yet" forever. An object with no size on HEAD takes the
+      // size LIST reports for exactly this key; a key LIST does not show keeps the HEAD answer (0 = still "not visible yet").
+      const listed = (await listObjects({ prefix: key })).objects.find((o) => o.key === key);
       return {
-        size: Number(response.headers.get("content-length") ?? "0") || 0,
-        etag: response.headers.get("etag"),
-        lastModified: response.headers.get("last-modified"),
+        size: listed?.size ?? 0,
+        etag: response.headers.get("etag") ?? listed?.etag ?? null,
+        lastModified: response.headers.get("last-modified") ?? listed?.lastModified ?? null,
       };
     },
 

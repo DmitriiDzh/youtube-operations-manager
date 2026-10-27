@@ -301,3 +301,26 @@ test("parseListObjectsXml reads CommonPrefixes as folders", () => {
   assert.deepEqual(parsed.prefixes, ["ytm/runtimes/a-runtime/", "ytm/runtimes/probe1/"]);
   assert.deepEqual(parsed.objects, []);
 });
+
+// 2026-10-27: RunPod's HEAD gave a 7 346-byte .json no usable Content-Length while LIST showed it, and the puller waited forever.
+test("headObject takes the LIST size of exactly that key when HEAD gives none; a key LIST does not show stays 0", async () => {
+  const key = "exchange/job1/seethrough_layers.json";
+  const listXml = `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><Name>vol123</Name><IsTruncated>false</IsTruncated>
+<Contents><Key>${key}</Key><LastModified>2026-10-27T18:01:38.000Z</LastModified><ETag>"j"</ETag><Size>7346</Size></Contents>
+<Contents><Key>${key}.bak</Key><Size>5</Size></Contents></ListBucketResult>`;
+  const { fetchImpl, calls } = fakeFetch((call) =>
+    call.init.method === "HEAD" ? new Response(null, { status: 200 }) : new Response(listXml, { status: 200, headers: { "content-type": "application/xml" } })
+  );
+  const client = createRunpodS3Client(CONFIG, { fetchImpl, authorize: noAuth });
+  assert.deepEqual(await client.headObject(key), { size: 7346, etag: '"j"', lastModified: "2026-10-27T18:01:38.000Z" });
+  assert.equal(calls[1].url.searchParams.get("prefix"), key);
+  // the listing shows only a longer key: the object itself is still not visible -> 0, never the neighbour's 5 bytes
+  assert.deepEqual((await client.headObject("exchange/job1/other.json"))?.size, 0);
+});
+
+test("headObject with a Content-Length makes no LIST call", async () => {
+  const { fetchImpl, calls } = fakeFetch(() => new Response(null, { status: 200, headers: { "content-length": "9" } }));
+  const client = createRunpodS3Client(CONFIG, { fetchImpl, authorize: noAuth });
+  assert.equal((await client.headObject("exchange/job1/a.png"))?.size, 9);
+  assert.equal(calls.length, 1);
+});
