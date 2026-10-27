@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -20,7 +20,7 @@ const REAL_GIT = (() => {
   }
 })();
 
-function fixture(options: { refuseHeader?: boolean } = {}) {
+function fixture(options: { refuseHeader?: boolean; refuseShallow?: boolean } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), "ytm-bl230-"));
   const work = path.join(dir, "work");
   const bare = path.join(dir, "bare.git");
@@ -41,6 +41,8 @@ function fixture(options: { refuseHeader?: boolean } = {}) {
       `printf '%s\\n' "$*" >> '${log}'`,
       // BL-230 review: an expired token -- GitHub answers 401 to the header even for a public repository.
       ...(options.refuseHeader ? [`case "$*" in *extraheader*) exit 128 ;; esac`] : []),
+      // Review M1: a server that refuses a shallow fetch by sha -- clone_at's fallback (partial clone + checkout) runs.
+      ...(options.refuseShallow ? [`case "$*" in *"fetch -q --depth"*) exit 128 ;; esac`] : []),
       `exec '${REAL_GIT}' -c 'url.file://${bare}.insteadOf=https://github.com/owner/private-nodes' -c 'url.file://${bare}.insteadOf=https://example.com/owner/nodes' -c protocol.file.allow=always "$@"`,
       "",
     ].join("\n")
@@ -107,6 +109,69 @@ test("AC-PR-14: a refused header (expired token) is retried once without it, so 
     assert.equal(run({ ...f.env, YTM_GIT_TOKEN: TOKEN }, "clone_hint https://huggingface.co/owner/x").stdout, "");
   } finally {
     rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("AC-PR-14 (review M1): the fallback's clone AND its checkout (which fetches a partial clone's blobs) carry the header", { skip }, () => {
+  const f = fixture({ refuseShallow: true });
+  try {
+    const dest = path.join(f.dir, "dest");
+    const result = run({ ...f.env, YTM_GIT_TOKEN: TOKEN }, `clone_at https://github.com/owner/private-nodes ${f.sha} '${dest}'`);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(execFileSync(REAL_GIT, ["-C", dest, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(), f.sha);
+    const calls = readFileSync(f.log, "utf8").split("\n").filter(Boolean);
+    const clone = calls.find((c) => / clone /.test(` ${c} `));
+    const checkout = calls.find((c) => c.includes(`checkout -q ${f.sha}`));
+    assert.ok(clone?.startsWith(`-c ${HEADER} `), clone);
+    assert.ok(checkout?.startsWith(`-c ${HEADER} `), checkout);
+    assert.ok(!readFileSync(path.join(dest, ".git", "config"), "utf8").includes("extraheader"));
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("review L1/L3: a retry is logged; under set -x neither the token nor its header form reaches the console", { skip }, () => {
+  const f = fixture({ refuseHeader: true });
+  try {
+    const result = spawnSync("bash", ["-x", "-c", `source '${SCRIPT}'; set -x; clone_at https://github.com/owner/private-nodes ${f.sha} '${path.join(f.dir, "d")}'; leak_free '${f.dir}'; clone_hint https://github.com/o/r`], {
+      env: { ...f.env, YTM_GIT_TOKEN: TOKEN },
+      encoding: "utf8",
+    });
+    const b64 = Buffer.from(`x-access-token:${TOKEN}`).toString("base64");
+    assert.ok(result.stderr.includes("+"), "tracing was on");
+    assert.ok(!result.stderr.includes(TOKEN) && !result.stderr.includes(b64) && !result.stdout.includes(TOKEN), result.stderr);
+    assert.match(result.stderr, /retrying without the GitHub token/);
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("review L4: the script switches git tracing off and turns header redaction on", () => {
+  const result = run({ ...process.env, GIT_TRACE: "1", GIT_CURL_VERBOSE: "1", GIT_TRACE_CURL: "1", GIT_TRACE_PACKET: "1" }, 'printf "%s|%s|%s|%s|%s|%s" "${GIT_TRACE-unset}" "${GIT_CURL_VERBOSE-unset}" "${GIT_TRACE_CURL-unset}" "${GIT_TRACE_PACKET-unset}" "$GIT_TRACE_REDACT" "$GIT_TERMINAL_PROMPT"');
+  assert.equal(result.stdout, "unset|unset|unset|unset|1|0");
+});
+
+test("review L2 + wipe_leaked: an unreadable folder is not clean (2); the wipe keeps only the profile, the lock and an empty log", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "ytm-bl230-wipe-"));
+  try {
+    const locked = path.join(dir, "locked");
+    mkdirSync(path.join(locked, "sub"), { recursive: true });
+    writeFileSync(path.join(locked, "sub", "f"), "x");
+    chmodSync(path.join(locked, "sub"), 0o000);
+    const unreadable = run({ ...process.env, YTM_GIT_TOKEN: TOKEN }, `leak_free '${locked}'`);
+    chmodSync(path.join(locked, "sub"), 0o755);
+    if (process.getuid?.() !== 0) assert.equal(unreadable.status, 2);
+
+    const r = path.join(dir, "rt");
+    mkdirSync(path.join(r, "ComfyUI", "custom_nodes"), { recursive: true });
+    for (const name of ["runtime.json", ".lock", "build.log", "req.txt", ".ready"]) writeFileSync(path.join(r, name), name === "build.log" ? TOKEN : name);
+    const wiped = run(process.env, `wipe_leaked '${r}'`);
+    assert.equal(wiped.status, 0, wiped.stderr);
+    assert.deepEqual(readdirSync(r).sort(), [".lock", "build.log", "runtime.json"]);
+    assert.equal(readFileSync(path.join(r, "build.log"), "utf8"), "");
+    assert.equal(readFileSync(path.join(r, "runtime.json"), "utf8"), "runtime.json");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
