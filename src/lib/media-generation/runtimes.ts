@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { RunpodS3Client } from "@/lib/media-gateway";
-import { DomainError, RUNTIME_ID_PATTERN, type MediaSettings } from "./contracts";
+import { DomainError, isDomainError, RUNTIME_ID_PATTERN, type MediaSettings } from "./contracts";
 import type { MediaControlEvent, PullActor } from "./models";
 import { parseWithSchema } from "./schemas";
 
@@ -198,8 +198,10 @@ export type RuntimeDeps = {
   s3(): Promise<RunpodS3Client>;
   github: {
     listReleases(owner: string, repo: string): Promise<Array<{ tag: string; name: string | null; publishedAt: string | null; prerelease: boolean }>>;
-    resolveCommit(owner: string, repo: string, ref: string): Promise<{ commit: string; date: string | null }>;
+    resolveCommit(owner: string, repo: string, ref: string, options?: { token?: string | null }): Promise<{ commit: string; date: string | null }>;
   };
+  /** BL-230: the owner's GitHub read token on this computer (device-secret slot `github`), or null; asked only after a 404. */
+  githubToken?: () => Promise<string | null>;
   getSettings(): Promise<MediaSettings>;
   events: { record(event: MediaControlEvent): Promise<void> };
   clock: { now(): Date };
@@ -218,6 +220,46 @@ function parseJson<T>(schema: z.ZodType<T>, text: string | null): T | null {
 }
 
 export function createRuntimeServices(deps: RuntimeDeps) {
+  /**
+   * BL-230: `ref` of a GitHub repository -- without a token first (a public repository never depends on it). GitHub answers 404 for
+   * a repository it does not show: then the owner's token, when one is stored, is tried once; without one the repository may be
+   * private (`runtime_repo_private_needs_token`). A 422 (no such commit) stays `not_found`. No error carries the token.
+   */
+  async function resolveGithubRef(url: string, gh: { owner: string; repo: string }, ref: string): Promise<{ commit: string; date: string | null }> {
+    const hidden = (error: unknown) => isDomainError(error) && error.code === "not_found" && (error.details as Record<string, unknown> | undefined)?.missing === "repository";
+    try {
+      return await deps.github.resolveCommit(gh.owner, gh.repo, ref);
+    } catch (error) {
+      if (!hidden(error)) throw error;
+    }
+    const token = (await deps.githubToken?.()) ?? null;
+    if (!token) {
+      throw new DomainError({
+        code: "runtime_repo_private_needs_token",
+        message: `GitHub does not show ${url} without a token: it is private or does not exist. If it is private, the owner enters a GitHub read token with access to it in Settings → Cloud APIs, then create the runtime again.`,
+        details: { repo: url, ref },
+      });
+    }
+    try {
+      return await deps.github.resolveCommit(gh.owner, gh.repo, ref, { token });
+    } catch (error) {
+      if (!hidden(error)) throw error;
+      throw new DomainError({
+        code: "runtime_repo_not_visible_to_token",
+        message: `GitHub does not show ${url} even with the stored token: the token has no access to it, or it does not exist. The owner gives the token access to this repository (or check the address).`,
+        details: { repo: url, ref },
+      });
+    }
+  }
+
+  /** BL-230: an exact commit must exist in its GitHub repository (GitHub answers it for its own sha). */
+  async function checkGithubCommit(url: string, gh: { owner: string; repo: string }, commit: string): Promise<void> {
+    const resolved = await resolveGithubRef(url, gh, commit);
+    if (resolved.commit !== commit) {
+      throw new DomainError({ code: "validation_failed", message: `GitHub resolved ${commit} in ${url} to another commit (${resolved.commit}); give the full 40-hex commit.`, details: { repo: url, commit, resolved: resolved.commit } });
+    }
+  }
+
   async function readProfile(s3: RunpodS3Client, runtimeId: string): Promise<RuntimeProfile | null> {
     return parseJson(runtimeFileSchema, await s3.getObjectText(runtimeKey(runtimeId, "runtime.json")));
   }
@@ -360,12 +402,20 @@ export function createRuntimeServices(deps: RuntimeDeps) {
         throw new DomainError({ code: "validation_failed", message: `A runtime profile ${parsed.runtimeId} already exists; profiles are never edited -- create one with a new id.`, details: { runtimeId: parsed.runtimeId } });
       }
 
+      // BL-230 (PRIVATE_RUNTIME_REPOS_PLAN.md AC-PR-07..10): every GitHub source is checked now -- a ComfyUI tag or branch is resolved,
+      // an exact commit (ComfyUI's or a pack's) must exist -- so a private or mistyped repository fails here, not on the paid pod.
       let commit: string;
-      if (COMMIT.test(parsed.comfy.ref.toLowerCase())) commit = parsed.comfy.ref.toLowerCase();
-      else {
-        const gh = githubRepoOf(comfyRepo);
-        if (!gh) throw new DomainError({ code: "validation_failed", message: "Only a GitHub ComfyUI repository can be given a tag or branch; give an exact commit instead.", details: { repo: comfyRepo } });
-        commit = (await deps.github.resolveCommit(gh.owner, gh.repo, parsed.comfy.ref)).commit;
+      const comfyGh = githubRepoOf(comfyRepo);
+      if (COMMIT.test(parsed.comfy.ref.toLowerCase())) {
+        commit = parsed.comfy.ref.toLowerCase();
+        if (comfyGh) await checkGithubCommit(comfyRepo, comfyGh, commit);
+      } else {
+        if (!comfyGh) throw new DomainError({ code: "validation_failed", message: "Only a GitHub ComfyUI repository can be given a tag or branch; give an exact commit instead.", details: { repo: comfyRepo } });
+        commit = (await resolveGithubRef(comfyRepo, comfyGh, parsed.comfy.ref)).commit;
+      }
+      for (const node of parsed.customNodes ?? []) {
+        const gh = githubRepoOf(node.repo);
+        if (gh) await checkGithubCommit(node.repo, gh, node.commit);
       }
 
       const profile: RuntimeProfile = {

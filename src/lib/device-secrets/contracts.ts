@@ -7,8 +7,11 @@ import type { EncryptedPayload } from "@/lib/shared-crypto";
 
 export const DEVICE_SECRETS_KEY_FILE_NAME = "device-secrets.key";
 
-/** `runpod`: the RunPod key + S3 pair (a JSON set, media-generation). `gemini`: the Gemini key. `huggingface`: the HF read token. */
-export const DEVICE_SECRET_NAMES = ["runpod", "gemini", "huggingface"] as const;
+/**
+ * `runpod`: the RunPod key + S3 pair (a JSON set, media-generation). `gemini`: the Gemini key. `huggingface`: the HF read token.
+ * `github`: the owner's GitHub read token for private pod-runtime repositories (BL-230, media-generation).
+ */
+export const DEVICE_SECRET_NAMES = ["runpod", "gemini", "huggingface", "github"] as const;
 export type DeviceSecretName = (typeof DEVICE_SECRET_NAMES)[number];
 
 /** `set`: a row and a readable key file. `none`: nothing stored. The key file is missing / unusable while a row exists. */

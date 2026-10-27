@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { isDomainError } from "@/lib/shared-domain";
-import { createRunpodApiClient, extractList, retryAfterSeconds, toPod } from "./runpod-api";
+import { createRunpodApiClient, extractList, redactPodEnv, retryAfterSeconds, toPod } from "./runpod-api";
 
 // Expected request shapes come from docs.runpod.io/api-reference-v2/openapi.json (2026-10-05) and
 // PHASE_14_PLAN.md (terminate = DELETE, never stop), not from this implementation.
@@ -501,4 +501,12 @@ test("retryAfterSeconds: seconds, an HTTP date, or null", () => {
   assert.equal(retryAfterSeconds("1.5"), null);
   assert.equal(retryAfterSeconds("-1"), null);
   assert.equal(retryAfterSeconds(null), null);
+});
+
+// BL-230 (PRIVATE_RUNTIME_REPOS_PLAN.md AC-PR-13): the runtime build pod's GitHub token is masked in every pod read, as HF_TOKEN is.
+test("AC-PR-13: redactPodEnv masks YTM_GIT_TOKEN (and HF_TOKEN), keeps a plain value; a pod read never shows the token", () => {
+  const T = "github_pat_" + "R3d4c7M3x1".repeat(8) + "_qq";
+  assert.deepEqual(redactPodEnv({ YTM_GIT_TOKEN: T, HF_TOKEN: "hf_x", YTM_RUNTIME_ID: "rt-1" }), { YTM_GIT_TOKEN: "[redacted]", HF_TOKEN: "[redacted]", YTM_RUNTIME_ID: "rt-1" });
+  const pod = toPod({ id: "p1", name: "ytm-runtime-build-abcdef12", desiredStatus: "RUNNING", env: { YTM_GIT_TOKEN: T } });
+  assert.ok(!JSON.stringify(pod).includes(T));
 });

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { RunpodS3Client } from "@/lib/media-gateway";
+import { createGithubClient, type RunpodS3Client } from "@/lib/media-gateway";
 import { DEFAULT_MEDIA_SETTINGS, isDomainError, type MediaSettings } from "./contracts";
 import type { MediaControlEvent } from "./models";
 import { assertActiveRuntimeUnchanged, createRuntimeServices, isAllowedSource, runtimeKey } from "./runtimes";
@@ -40,9 +40,10 @@ function harness(settings: Partial<MediaSettings> = {}) {
     s3: async () => s3,
     github: {
       listReleases: async () => [{ tag: "v0.41.0", name: "v0.41.0", publishedAt: "2026-10-16T10:00:00Z", prerelease: false }],
+      // GitHub answers a full 40-hex sha with that same commit (REST docs: commits/{ref}), a tag with the commit it names.
       resolveCommit: async (owner, repo, ref) => {
         resolved.push(`${owner}/${repo}@${ref}`);
-        return { commit: SHA, date: null };
+        return { commit: /^[0-9a-f]{40}$/.test(ref) ? ref : SHA, date: null };
       },
     },
     getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, ...settings }),
@@ -80,7 +81,8 @@ test("AC-RT-08: defaults -- the switch on, the five allowed sources, $0.5 per te
 test("AC-RT-02: a ComfyUI tag is resolved to its 40-hex commit through GitHub; the stored profile holds the commit; created event", async () => {
   const h = harness();
   const runtime = await h.services.createRuntime(valid(), { actor: "factory" });
-  assert.deepEqual(h.resolved, ["comfyanonymous/ComfyUI@v0.41.0"]);
+  // BL-230 (PRIVATE_RUNTIME_REPOS_PLAN.md §4, requirement changed by owner msg 3689): every GitHub pack's commit is checked too.
+  assert.deepEqual(h.resolved, ["comfyanonymous/ComfyUI@v0.41.0", `kijai/ComfyUI-KJNodes@${NODE_SHA}`]);
   const stored = JSON.parse(h.objects.get(runtimeKey("comfy-0410-flux3", "runtime.json"))!);
   assert.deepEqual(stored.comfy, { repo: "https://github.com/comfyanonymous/ComfyUI", commit: SHA, ref: "v0.41.0" });
   assert.deepEqual(stored.customNodes, [{ repo: "https://github.com/kijai/ComfyUI-KJNodes", commit: NODE_SHA }]);
@@ -90,10 +92,13 @@ test("AC-RT-02: a ComfyUI tag is resolved to its 40-hex commit through GitHub; t
   assert.deepEqual(h.events.map((e) => [e.actor, e.action, e.subject]), [["factory", "runtime_created", "comfy-0410-flux3"]]);
 });
 
-test("AC-RT-02: an exact commit is stored as given with no GitHub call; the same id twice is refused (profiles are never edited)", async () => {
+// BL-230 (PRIVATE_RUNTIME_REPOS_PLAN.md §4): the "no GitHub call" of AC-RT-02 is superseded -- an exact GitHub commit is now checked
+// to exist (a private or mistyped repository fails at creation, not on the paid build pod); it is still stored exactly as given.
+test("AC-RT-02: an exact commit is stored as given (GitHub only confirms it); the same id twice is refused (profiles are never edited)", async () => {
   const h = harness();
   await h.services.createRuntime(valid({ comfy: { ref: SHA.toUpperCase() } }));
-  assert.deepEqual(h.resolved, []);
+  assert.deepEqual(h.resolved, [`comfyanonymous/ComfyUI@${SHA}`, `kijai/ComfyUI-KJNodes@${NODE_SHA}`]);
+  assert.equal(JSON.parse(h.objects.get(runtimeKey("comfy-0410-flux3", "runtime.json"))!).comfy.commit, SHA);
   await assert.rejects(h.services.createRuntime(valid()), (e: unknown) => isDomainError(e) && e.code === "validation_failed" && /never edited/.test((e as Error).message));
 });
 
@@ -220,4 +225,102 @@ test("FO-MSG-0019: listRuntimes lists only the runtime folders (never the venv f
   const list = await h.services.listRuntimes();
   assert.deepEqual(list.runtimes.map((r) => r.runtimeId), ["comfy-0410-flux3"]);
   assert.deepEqual(h.folderListings, ["ytm/runtimes/"]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// BL-230 (PRIVATE_RUNTIME_REPOS_PLAN.md AC-PR-07..10): every github.com source is checked at creation through the real gateway
+// child over a fake GitHub that follows its REST docs -- 404 for a repository the caller cannot see, 422 for an unknown commit,
+// 401 for a refused token. `T` is a token-shaped fake.
+// ---------------------------------------------------------------------------------------------------------------------------
+const T = "github_pat_" + "P4r1v4t3X0".repeat(8) + "_zz";
+const PRIVATE = "https://github.com/DmitriiDzh/ComfyUI-See-through";
+const PRIVATE_SHA = "cd93ccb9880cee561e88ee59b61dff384867066d";
+
+function privateHarness(options: { token?: string | null; tokenSees?: boolean; tokenValid?: boolean; unknownCommit?: boolean } = {}) {
+  const objects = new Map<string, string>();
+  const requests: Array<{ url: string; authorization: string | null }> = [];
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    const authorization = new Headers(init?.headers).get("authorization");
+    requests.push({ url, authorization });
+    const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    if (authorization && options.tokenValid === false) return json(401, { message: "Bad credentials" });
+    const m = /\/repos\/([^/]+)\/([^/]+)\/commits\/([^/?]+)$/.exec(url);
+    if (!m) return json(404, { message: "Not Found" });
+    const isPrivate = m[1] === "DmitriiDzh";
+    if (isPrivate && !(authorization === `Bearer ${T}` && options.tokenSees !== false)) return json(404, { message: "Not Found" });
+    if (options.unknownCommit && isPrivate) return json(422, { message: `No commit found for SHA: ${m[3]}` });
+    const sha = /^[0-9a-f]{40}$/.test(m[3]) ? m[3] : SHA;
+    return json(200, { sha, commit: { committer: { date: "2026-10-20T10:00:00Z" } } });
+  }) as typeof fetch;
+  const s3 = {
+    async headObject(key: string) {
+      return objects.has(key) ? { size: 1, etag: null, lastModified: null } : null;
+    },
+    async getObjectText(key: string) {
+      return objects.get(key) ?? null;
+    },
+    async putObject(key: string, body: string | Uint8Array) {
+      objects.set(key, String(body));
+    },
+  } as unknown as RunpodS3Client;
+  let tokenReads = 0;
+  const services = createRuntimeServices({
+    s3: async () => s3,
+    github: createGithubClient({ fetchImpl, authorize: async () => {} }),
+    githubToken: async () => (tokenReads++, options.token ?? null),
+    getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, runtimeSourceAllowlist: [...DEFAULT_MEDIA_SETTINGS.runtimeSourceAllowlist, "https://github.com/DmitriiDzh/"] }),
+    events: { record: async () => {} },
+    clock: { now: () => new Date("2026-10-27T10:00:00Z") },
+  });
+  return { services, objects, requests, tokenReads: () => tokenReads };
+}
+
+const withPrivatePack = () => valid({ runtimeId: "see-through-1", customNodes: [{ repo: PRIVATE, commit: PRIVATE_SHA }] });
+const noToken = (e: unknown) => !(e instanceof Error && e.message.includes(T)) && !JSON.stringify((e as { details?: unknown }).details ?? {}).includes(T);
+
+test("AC-PR-07: a private GitHub pack (404 without a token) and no token stored -> runtime_repo_private_needs_token, nothing written", async () => {
+  const h = privateHarness({ token: null });
+  await assert.rejects(h.services.createRuntime(withPrivatePack()), (e: unknown) => isDomainError(e) && e.code === "runtime_repo_private_needs_token" && (e.details as Record<string, unknown>).repo === PRIVATE);
+  assert.equal(h.objects.size, 0);
+  assert.ok(h.requests.every((r) => r.authorization === null), "no token was ever sent");
+});
+
+test("AC-PR-08: with the token stored the private pack is checked once with it, the public ComfyUI without it; the profile is written", async () => {
+  const h = privateHarness({ token: T });
+  await h.services.createRuntime(withPrivatePack());
+  const stored = JSON.parse(h.objects.get(runtimeKey("see-through-1", "runtime.json"))!);
+  assert.deepEqual(stored.customNodes, [{ repo: PRIVATE, commit: PRIVATE_SHA }]);
+  assert.ok(!JSON.stringify(stored).includes(T));
+  const withToken = h.requests.filter((r) => r.authorization !== null);
+  assert.deepEqual(withToken, [{ url: `https://api.github.com/repos/DmitriiDzh/ComfyUI-See-through/commits/${PRIVATE_SHA}`, authorization: `Bearer ${T}` }]);
+  assert.ok(h.requests.some((r) => r.url.includes("/comfyanonymous/ComfyUI/commits/v0.41.0") && r.authorization === null));
+});
+
+test("AC-PR-09: the token cannot see it -> runtime_repo_not_visible_to_token; a refused token -> github_token_invalid; nothing written, no token in errors", async () => {
+  const hidden = privateHarness({ token: T, tokenSees: false });
+  await assert.rejects(hidden.services.createRuntime(withPrivatePack()), (e: unknown) => isDomainError(e) && e.code === "runtime_repo_not_visible_to_token" && noToken(e));
+  assert.equal(hidden.objects.size, 0);
+  const refused = privateHarness({ token: T, tokenValid: false });
+  await assert.rejects(refused.services.createRuntime(withPrivatePack()), (e: unknown) => isDomainError(e) && e.code === "github_token_invalid" && noToken(e));
+  assert.equal(refused.objects.size, 0);
+});
+
+test("AC-PR-10: an unlisted repository is refused before any GitHub call; huggingface.co is not checked; an unknown commit is not_found", async () => {
+  const outside = privateHarness({ token: T });
+  await assert.rejects(
+    outside.services.createRuntime(valid({ customNodes: [{ repo: "https://github.com/stranger/ComfyUI-X", commit: PRIVATE_SHA }] })),
+    (e: unknown) => isDomainError(e) && e.code === "validation_failed"
+  );
+  assert.equal(outside.requests.length, 0);
+  assert.equal(outside.tokenReads(), 0);
+
+  const hf = privateHarness({ token: null });
+  await hf.services.createRuntime(valid({ runtimeId: "hf-pack-1", customNodes: [{ repo: "https://huggingface.co/someone/nodes", commit: PRIVATE_SHA }] }));
+  assert.ok(hf.requests.every((r) => !r.url.includes("huggingface")) && hf.requests.length === 1, "only ComfyUI's tag was asked");
+  assert.equal(hf.tokenReads(), 0, "a public repository never reads the token");
+
+  const unknown = privateHarness({ token: T, unknownCommit: true });
+  await assert.rejects(unknown.services.createRuntime(withPrivatePack()), (e: unknown) => isDomainError(e) && e.code === "not_found");
+  assert.equal(unknown.objects.size, 0);
 });

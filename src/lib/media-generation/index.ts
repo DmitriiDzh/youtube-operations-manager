@@ -1,5 +1,6 @@
 import { getDeviceSecrets } from "@/lib/device-secrets";
 import { createHfTokenServices } from "./hf-token";
+import { createGithubTokenServices } from "./github-token";
 import { createRuntimeServices } from "./runtimes";
 import { createRuntimeBuildServices } from "./runtime-builds";
 import { createRuntimeTestServices } from "./runtime-tests";
@@ -124,6 +125,9 @@ function buildCore(jobScheduling: JobScheduling) {
   // BL-134 (FO-REQ-0028, ADR 0042): the Hugging Face read token lives in the shared device-secret store.
   const hub = createHuggingFaceClient();
   const hfToken = createHfTokenServices({ slot: getDeviceSecrets().slot("huggingface"), hub });
+  // BL-230 (ADR 0043 amendment 1): the GitHub read token for private runtime repositories, in the same store; one GitHub client.
+  const github = createGithubClient();
+  const githubToken = createGithubTokenServices({ slot: getDeviceSecrets().slot("github"), github });
   // BL-200 (FO-REQ-0029, ADR 0043): pod runtime profiles on the network volume, built on CPU pods (stage 2).
   const runtimeBuilds = createRuntimeBuildServices({
     store: createRuntimeBuildStore(),
@@ -131,6 +135,8 @@ function buildCore(jobScheduling: JobScheduling) {
     // The installed app's own copy (Mac and Windows both run from the repository checkout, `scripts/` included).
     // LF only (review): a Windows checkout with autocrlf would otherwise upload a CRLF start script that bash cannot run.
     readPodScript: async (name) => (await readFile(path.join(process.cwd(), "scripts", "media", "pod", name), "utf8")).replace(/\r\n/g, "\n"),
+    // BL-230: the build pod gets the token in its env (YTM_GIT_TOKEN) only for a profile with a github.com repository.
+    githubToken: () => githubToken.readGithubToken(),
     events: createMediaControlEventSink(),
     generateId: () => randomUUID(),
     clock: { now },
@@ -138,7 +144,8 @@ function buildCore(jobScheduling: JobScheduling) {
   });
   const runtimes = createRuntimeServices({
     s3: () => base.s3(),
-    github: createGithubClient(),
+    github,
+    githubToken: () => githubToken.readGithubToken(),
     getSettings: () => base.getSettings(),
     events: createMediaControlEventSink(),
     clock: { now },
@@ -551,6 +558,10 @@ function buildCore(jobScheduling: JobScheduling) {
     setHfToken: hfToken.setHfToken,
     testHfToken: hfToken.testHfToken,
     clearHfToken: hfToken.clearHfToken,
+    getGithubToken: githubToken.getGithubToken,
+    setGithubToken: githubToken.setGithubToken,
+    testGithubToken: githubToken.testGithubToken,
+    clearGithubToken: githubToken.clearGithubToken,
     /** BL-134: for the password-encrypted cloud-keys file only (`cloud-credentials-transfer`), never a route. */
     exportHfTokenForTransfer: hfToken.readHfToken,
     checkHfTokenForImport: hfToken.checkHfTokenForImport,
