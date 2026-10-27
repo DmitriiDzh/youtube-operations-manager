@@ -441,7 +441,7 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.34.0", // BL-227: factory_localization_report_checks; 1.33.0 (BL-225): factory_publishing_plan_save / _get / _list; 1.32.0 (BL-223): factory_channel_get_branding / factory_channel_save_branding; 1.31.0 (BL-221: factory_video_list gains youtubeVideoId / hasVideoFile (additive); 1.30.0 (BL-220): the three restart tools
+    factoryApiVersion: "1.35.0", // BL-229 part B: plan review forms, wave genre, verdict answers; 1.34.0 (BL-227): factory_localization_report_checks; 1.33.0 (BL-225): factory_publishing_plan_save / _get / _list; 1.32.0 (BL-223): factory_channel_get_branding / factory_channel_save_branding; 1.31.0 (BL-221: factory_video_list gains youtubeVideoId / hasVideoFile (additive); 1.30.0 (BL-220): the three restart tools
     tools: [
       "factory_get_capabilities",
       "factory_list_logical_paths",

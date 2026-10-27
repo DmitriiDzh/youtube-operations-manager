@@ -567,4 +567,16 @@ export const production = {
   "serversAnalytics.who.agent": "Channel agent (approved by you)",
   "serversAnalytics.who.other_computer": "Another computer",
   "serversAnalytics.who.otherComputerNamed": "Computer {computer}",
+  // BL-229 part B (MUSIC_LIBRARY_PLAN.md §3): a wave's genre and the review form on the review screen.
+  "review.genre.label": "Genre: {genre}",
+  "review.genre.caption": "genre of this batch",
+  "review.genre.generalReasons": "General problems",
+  "review.genre.genreReasons": "Problems of {genre}",
+  "review.form.general": "General questions",
+  "review.form.genre": "Questions for {genre}",
+  "review.form.required": "Required",
+  "review.form.yes": "Yes",
+  "review.form.no": "No",
+  "review.form.requiredHint": "{count, plural, one {Answer the question marked * to accept or reject.} other {Answer the # questions marked * to accept or reject.}}",
+  "review.form.requiredFirst": "{count, plural, one {Answer the required question first.} other {Answer the # required questions first.}}",
 } as const;

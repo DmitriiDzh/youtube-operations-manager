@@ -568,4 +568,16 @@ export const production: Record<keyof typeof en, string> = {
   "serversAnalytics.who.agent": "Агент канала (с вашим одобрением)",
   "serversAnalytics.who.other_computer": "Другой компьютер",
   "serversAnalytics.who.otherComputerNamed": "Компьютер {computer}",
+  // BL-229 часть B: жанр волны и вопросы оценки на экране проверки.
+  "review.genre.label": "Жанр: {genre}",
+  "review.genre.caption": "жанр этой партии",
+  "review.genre.generalReasons": "Общие проблемы",
+  "review.genre.genreReasons": "Проблемы жанра {genre}",
+  "review.form.general": "Общие вопросы",
+  "review.form.genre": "Вопросы жанра {genre}",
+  "review.form.required": "Обязательный вопрос",
+  "review.form.yes": "Да",
+  "review.form.no": "Нет",
+  "review.form.requiredHint": "{count, plural, one {Ответьте на # вопрос со звёздочкой *, чтобы принять или отклонить.} few {Ответьте на # вопроса со звёздочкой *, чтобы принять или отклонить.} many {Ответьте на # вопросов со звёздочкой *, чтобы принять или отклонить.} other {Ответьте на # вопроса со звёздочкой *, чтобы принять или отклонить.}}",
+  "review.form.requiredFirst": "{count, plural, one {Сначала ответьте на # обязательный вопрос.} few {Сначала ответьте на # обязательных вопроса.} many {Сначала ответьте на # обязательных вопросов.} other {Сначала ответьте на # обязательного вопроса.}}",
 };

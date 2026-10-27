@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { RECHECKS_WAVE, type PlanEvent, type PlanMediaKind, type PlanNotice, type PlanStageCounts, type PlanStageKind, type PlanView } from "@/lib/generation-plans/contracts";
+import { RECHECKS_WAVE, type PlanEvent, type PlanGenre, type PlanMediaKind, type PlanNotice, type PlanStageCounts, type PlanStageKind, type PlanView } from "@/lib/generation-plans/contracts";
 import type { SharedPlan } from "@/lib/sync-gateway";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import type { Translate, UiTextKey } from "@/lib/ui-text";
@@ -13,7 +13,8 @@ import { PlanReviewScreen, resultLabel, type PeerReviewSource } from "./plan-rev
 import { ToggleSwitch } from "./toggle-switch";
 import { VideoPicker } from "./video-picker";
 import { Popover } from "./popover";
-import { useT } from "./ui-text-provider";
+import { useT, useUiText } from "./ui-text-provider";
+import { planGenres, safeGenreColor, tintOver } from "./genre-review-model";
 
 // BL-143 (ADR 0029, GENERATION_PLANS_PLAN.md §3): Media → Plans. Every number comes from the plans core, which derives
 // it from the jobs, sessions and results when read -- this view only shows it. Polls while the tab is open.
@@ -182,7 +183,32 @@ function waitingCount(view: PlanView): number {
 const keyOf = (device: PlanCardDevice, planId: string) => (device ? `${device.deviceId}\u0000${planId}` : planId);
 
 /** One row of the Plans list, whichever device the plan lives on (BL-162 AC-UX-14). */
-type ListRow = { key: string; planId: string; title: string; status: string; spendUsd: number; budgetUsd: number | null; waiting: number; rechecks: number; generated: { value: number; total: number; percent: number } | null; device: PlanCardDevice };
+type ListRow = { key: string; planId: string; title: string; status: string; spendUsd: number; budgetUsd: number | null; waiting: number; rechecks: number; generated: { value: number; total: number; percent: number } | null; device: PlanCardDevice; genres: PlanGenre[] };
+
+/** BL-229 part B (AC-MR-10): the genres of a plan's waves, each as its icon and title in its colour. */
+function GenreBadges({ genres }: { genres: readonly PlanGenre[] }) {
+  const { t } = useUiText();
+  if (genres.length === 0) return null;
+  return (
+    <>
+      {genres.map((g) => {
+        const color = safeGenreColor(g.color);
+        return (
+          <span
+            key={g.id}
+            title={t("review.genre.label", { genre: g.title })}
+            className="inline-flex items-center gap-1 rounded-full border border-zinc-700 px-2 py-0.5 text-xs text-zinc-100"
+            style={color ? { borderColor: color, backgroundColor: tintOver(color, 22) } : undefined}
+          >
+            <span aria-hidden="true">{g.icon}</span>
+            {/* ui-text-ignore: the genre's own title (data) */}
+            <span>{g.title}</span>
+          </span>
+        );
+      })}
+    </>
+  );
+}
 
 function generatedOf(t: Translate, stages: PlanView["progress"]["stages"]): ListRow["generated"] {
   const generate = stages.find((s) => s.kind === "in_app");
@@ -273,14 +299,16 @@ export function PlansPanel({
 
   // BL-162 (AC-UX-14, FO-REQ-0013 §2.1/§2.6): one list -- this device's plans and the other devices' plans of this channel.
   const inFilter = (status: string) => (filter === "active" ? status === "active" : status !== "active");
+  // BL-229 part B: a peer plan's genres come from its report's waves (report v6).
+  const peerGenresOf = (device: PlanCardDevice, planId: string) => planGenres(peers.find((d) => d.deviceId === device?.deviceId)?.plans.find((p) => p.planId === planId)?.groups);
   const peerModels = peers.flatMap((d) => d.plans.map((p) => peerPlanModel(p, { deviceId: d.deviceId, hostname: d.hostname, updatedAt: d.updatedAt, stale: d.stale, version: d.version }, outgoing, outgoingNotes, outgoingPicks)));
   const rows: ListRow[] = [
     ...(plans ?? [])
       .filter((p) => inFilter(p.plan.status) && planShownUnder(kind, p.progress.mediaKinds))
-      .map((p) => ({ key: keyOf(null, p.plan.planId), planId: p.plan.planId, title: p.plan.title, status: p.plan.status, spendUsd: p.progress.spend.usd, budgetUsd: p.plan.budget.usd, waiting: waitingCount(p), rechecks: p.progress.rechecksOpen ?? 0, generated: generatedOf(t, p.progress.stages), device: null })),
+      .map((p) => ({ key: keyOf(null, p.plan.planId), planId: p.plan.planId, title: p.plan.title, status: p.plan.status, spendUsd: p.progress.spend.usd, budgetUsd: p.plan.budget.usd, waiting: waitingCount(p), rechecks: p.progress.rechecksOpen ?? 0, generated: generatedOf(t, p.progress.stages), device: null, genres: planGenres(p.plan.groups) })),
     ...peerModels
       .filter((m) => inFilter(m.status) && planShownUnder(kind, m.progress.mediaKinds))
-      .map((m) => ({ key: keyOf(m.device, m.planId), planId: m.planId, title: m.title, status: m.status, spendUsd: m.progress.spend.usd, budgetUsd: m.progress.budget.usd, waiting: m.waiting, rechecks: m.rechecks, generated: generatedOf(t, m.progress.stages), device: m.device })),
+      .map((m) => ({ key: keyOf(m.device, m.planId), planId: m.planId, title: m.title, status: m.status, spendUsd: m.progress.spend.usd, budgetUsd: m.progress.budget.usd, waiting: m.waiting, rechecks: m.rechecks, generated: generatedOf(t, m.progress.stages), device: m.device, genres: peerGenresOf(m.device, m.planId) })),
   ];
   const anyPeer = rows.some((r) => r.device !== null);
   // BL-184 stage 3: every active plan's waiting tracks, counted under each kind tab it shows under (the tab bar's badges).
@@ -331,6 +359,7 @@ export function PlansPanel({
                 <div className="flex flex-wrap items-baseline gap-2 text-sm">
                   <span className="font-medium text-zinc-100">{r.title}</span>
                   <span className="font-mono text-xs text-zinc-500">{r.planId}</span>
+                  <GenreBadges genres={r.genres} />
                   {r.status !== "active" && <span className="text-xs text-zinc-400">{planStatusLabel(t, r.status)}</span>}
                   <span className="ml-auto text-xs text-zinc-400">
                     {r.budgetUsd !== null ? t("plans.spendOf", { spent: r.spendUsd.toFixed(2), budget: r.budgetUsd.toFixed(2) }) : t("unit.usd", { value: r.spendUsd.toFixed(2) })}
@@ -362,7 +391,15 @@ export function PlansPanel({
         {error && <p className="text-xs text-red-400">{error}</p>}
       </div>
       {/* Keyed by the plan (review): another plan never inherits an open note editor or folded waves. */}
-      {selectedModel && <PlanDetailCard key={selected ?? undefined} model={selectedModel} onChanged={load} onReview={(wave) => review(selectedModel.planId, selectedModel.device, wave)} />}
+      {selectedModel && (
+        <PlanDetailCard
+          key={selected ?? undefined}
+          model={selectedModel}
+          genres={selectedModel.device ? peerGenresOf(selectedModel.device, selectedModel.planId) : planGenres(detail?.plan.groups)}
+          onChanged={load}
+          onReview={(wave) => review(selectedModel.planId, selectedModel.device, wave)}
+        />
+      )}
       {selected && !selectedModel && <p className="text-xs text-zinc-500">{t("plans.loadingPlan")}</p>}
     </div>
   );
@@ -417,7 +454,7 @@ function Kpi({ label, value, sub, tone = "text-zinc-100", bar, onClick }: { labe
   );
 }
 
-function PlanDetailCard({ model, onChanged, onReview }: { model: PlanCardModel; onChanged: () => void; onReview: (wave?: string) => void }) {
+function PlanDetailCard({ model, genres = [], onChanged, onReview }: { model: PlanCardModel; genres?: readonly PlanGenre[]; onChanged: () => void; onReview: (wave?: string) => void }) {
   const t = useT();
   // BL-157 (AC-MV-07): a moved plan's event names both channels.
   const { nameOf } = useChannelNames();
@@ -469,7 +506,10 @@ function PlanDetailCard({ model, onChanged, onReview }: { model: PlanCardModel; 
       {/* Header: the title, one line of facts, the description folded to one line; the actions on the right (AC-UX-08). */}
       <div className="flex flex-wrap items-start gap-3">
         <div className="min-w-0 flex-1 space-y-1">
-          <h3 className="text-lg font-semibold text-zinc-100">{model.title}</h3>
+          <h3 className="flex flex-wrap items-center gap-2 text-lg font-semibold text-zinc-100">
+            {model.title}
+            <GenreBadges genres={genres} />
+          </h3>
           <p className="text-xs text-zinc-500">
             {/* ui-text-ignore: "Factory Operator" is a product name */}
             <span className="font-mono">{model.planId}</span> · {model.owner === "factory" ? "Factory Operator" : t("plans.ownerYou")} · {t("plans.created", { date: formatDisplayDateTime(model.createdAt) })} · {planStatusLabel(t, model.status)}
