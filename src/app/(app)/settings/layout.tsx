@@ -28,6 +28,7 @@ import { LiveStreamsSettings } from "@/components/live-streams-settings";
 import { DeviceAutoSyncSettings } from "@/components/device-auto-sync-settings";
 import { AppVersionInfo } from "@/components/app-version-info";
 import { RestartWhenIdleSettings } from "@/components/restart-when-idle-settings";
+import { SystemTopicSettings } from "@/components/system-topic-settings";
 import { InfoTooltip } from "@/components/info-tooltip";
 import { FeatureErrorBoundary } from "@/components/feature-error-boundary";
 import { UiLanguageSettings } from "@/components/ui-language-settings";
@@ -134,6 +135,10 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
         </FeatureErrorBoundary>
         <FeatureErrorBoundary label={section("settingsCard.producerToken")}>
           <ProducerAgentTokenSettings />
+        </FeatureErrorBoundary>
+        {/* BL-228 (ADR 0053): the owner's commands in the HUB "System" topic, carried out by this app. */}
+        <FeatureErrorBoundary label={section("settingsCards.systemTopic.title")}>
+          <SystemTopicSettings />
         </FeatureErrorBoundary>
         <FeatureErrorBoundary label={section("settingsCard.aiProviders")}>
           <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">

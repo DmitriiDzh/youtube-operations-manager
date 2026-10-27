@@ -2113,3 +2113,15 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Effect:** an agent asking the non-uploading computer may see `packaged` for a slot whose upload failed elsewhere.
 - **Possible fix:** carry `slotId`, status and code in the `publishing-uploads` per-device report and merge it into the progress port.
 - **Gate(s):** none. **Status:** open; re-check after the first real week of approved slots.
+
+## RISK-136 — The System topic relay cannot prove the owner wrote a topic message — OPEN, 2026-10-27
+
+- **What:** BL-228 (ADR 0053 Amendment 1) takes the HUB "System" topic's messages from the hub (`hub_bot.py`) over a loopback
+  relay. The Manager checks the chat, topic and sender id the hub passes on, but it cannot check them against Telegram itself: a
+  stolen owner Telegram account, a compromised hub, or a local process holding the relay secret could produce an `approve <id>`.
+- **Mitigation (owner msg 3607, FO-RESP-0043 H4):** `approve` in the topic only marks a request `approved_in_topic`; the paid call
+  runs only after the owner's Confirm in the Manager's Web UI (a signed-in session), within 2 h, with the file's hash unchanged, within
+  $2 (GPU session) / $1 (Gemini job) and the existing day/month limits, at most once. The relay secret is kept only as its SHA-256.
+- **Effect:** a forged `approve` alone starts nothing; it can only add a request to the card's "waiting for your confirm" list.
+- **Gate(s):** none. **Status:** open. **Re-evaluate** if anything is ever allowed to run on the topic's `approve` alone (without the
+  Web confirm), if the relay is opened beyond loopback, or if a request is ever found `approved_in_topic` that the owner did not send.

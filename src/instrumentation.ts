@@ -89,6 +89,51 @@ async function startServerSession() {
     console.warn(`[restart-when-idle] not started: ${error instanceof Error ? error.message : String(error)}`);
   }
 
+  // BL-228 (SYSTEM_TOPIC_PLAN.md, ADR 0053 Amendment 1): the paid-call requests the factory writes for the owner's approval in the
+  // HUB "System" topic. Its own loop (AGENTS.md §M): every 10 s, and only while the owner's switch is on under the Mac service, the
+  // requests folder is scanned -- each new request is queued once for the hub to post, open ones past 2 h expire. The topic's
+  // messages themselves reach this app through the hub's relay routes, not through this loop; nothing here calls Telegram. It
+  // writes rows, so it waits while an import / migration holds the lock or in recovery mode, like the other loops.
+  try {
+    const { getSystemTopicCore } = await import("@/composition/system-topic-approvals");
+    const { SYSTEM_TOPIC_SCAN_TICK_MS } = await import("@/lib/system-topic");
+    const { rawSqlClient: systemSqlClient } = await import("@/lib/db");
+    const { assertDeviceAvailableForMutation: assertSystemMayWrite } = await import("@/lib/device-mutation-gate");
+    const systemTopic = getSystemTopicCore();
+    let systemSwept = false;
+    let lastSystemWarning: string | null = null;
+    const systemScanLoop = async () => {
+      try {
+        await assertSystemMayWrite(systemSqlClient);
+        if (!systemSwept) {
+          // A request a dead process was running is failed (outcome unknown), so the factory's watcher gets its result file.
+          await systemTopic.approvals.sweepInterrupted();
+          systemSwept = true;
+        }
+        await systemTopic.approvals.scan().then(
+          (result) => {
+            if (result.scanned) lastSystemWarning = null;
+            return result.scanned ? systemTopic.topic.recordScan(null) : undefined;
+          },
+          async (error: unknown) => {
+            await systemTopic.topic.recordScan(error instanceof Error ? error.message : String(error));
+            throw error;
+          }
+        );
+      } catch (error) {
+        const paused = error instanceof Error && (error.name === "OperationLockError" || error.name === "RecoveryModeError");
+        const message = error instanceof Error ? error.message : String(error);
+        // The same error every 10 s (e.g. the requests folder not created yet) is logged once; the card shows it meanwhile.
+        if (!paused && message !== lastSystemWarning) console.warn(`[system-topic] ${message}`);
+        if (!paused) lastSystemWarning = message;
+      }
+      setTimeout(() => void systemScanLoop(), SYSTEM_TOPIC_SCAN_TICK_MS).unref();
+    };
+    setTimeout(() => void systemScanLoop(), 20_000).unref();
+  } catch (error) {
+    console.warn(`[system-topic] not started: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
   // Session lease (architecture-audit review, round 3): Live writes are honored only while this web
   // server keeps renewing it, so ANY end of the session -- including a crash or Windows
   // `taskkill /F` / a closed console window, where no signal handler runs -- makes them lapse within
