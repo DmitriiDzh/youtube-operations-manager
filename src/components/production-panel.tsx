@@ -41,6 +41,7 @@ import { GeminiCreateCard } from "./gemini-media-create";
 import { GeminiServersCard, type GeminiTodayFigure } from "./gemini-servers-card";
 import { usd as geminiUsd } from "./gemini-media-settings";
 import { FeatureErrorBoundary } from "./feature-error-boundary";
+import { MusicLibraryCard } from "./music-library-card";
 export { MEDIA_TABS, SERVERS_TABS };
 
 /** The balance is a RunPod call: on open, on demand, and once a minute while Production is open. */
@@ -295,6 +296,7 @@ export function MediaPanel({
   /** Where "now running" leads: Servers → Sessions. */
   sessionsHref?: string;
 }) {
+  const t = useT();
   const [ownTab, setOwnTab] = useState<MediaTab>("music");
   const tab = routeTab ?? ownTab;
   const setTab = onTabChange ?? setOwnTab;
@@ -314,6 +316,12 @@ export function MediaPanel({
       </div>
       <div className={kindTab ? "space-y-6" : "hidden"}>
         {tab === "video" ? <StoryboardVideoLinks channelId={activeChannelId} active={!paused} onOpen={(id) => onOpenStoryboard?.(id, "video")} /> : null}
+        {kind === "audio" ? (
+          // BL-229 part A: the factory's library per genre, above the plans (its own module, AGENTS.md §M).
+          <FeatureErrorBoundary label={`${t("nav.media")} — ${t("musicLibrary.title")}`}>
+            <MusicLibraryCard key={activeChannelId ?? ""} channelId={activeChannelId} active={!paused} />
+          </FeatureErrorBoundary>
+        ) : null}
         <PlansPanel kind={kind} active={kindTab && !paused} onReview={onReviewPlan} onWaitingByKind={setPlansWaiting} />
         {kind === "image" || kind === "video" ? <GeminiCreateCard key={kind} activeChannelId={activeChannelId} kind={kind} /> : null}
         <JobsCard activeChannelId={activeChannelId} kind={kind} />
