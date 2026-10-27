@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { createAssetCatalogCore } from "@/lib/asset-catalog";
 import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
@@ -13,7 +13,9 @@ import { createGeminiSettingsCoreForProduction, createGeminiSpendShareCoreForPro
 import { createGeminiFiles } from "./adapters/files";
 import { createGeminiWorkspace } from "./adapters/workspace";
 import { createGeminiStore } from "./adapters/store";
-import { createGeminiMediaServices, type GeminiMediaDeps } from "./services";
+import { GEMINI_LIMITS } from "./contracts";
+import type { CreateJobInput } from "./schemas";
+import { createGeminiMediaServices, namedInputs, type GeminiMediaDeps } from "./services";
 import { changedSharedLimits, createGeminiSettingsSync, type GeminiSharedValue } from "./settings-sync";
 import { createGeminiSpendSharePublisher } from "./spend-share";
 import { createGeminiWorker } from "./worker";
@@ -32,6 +34,24 @@ export { accountWideSpend, geminiKeyFingerprint, GEMINI_FINGERPRINT_LABEL, GEMIN
 export { createGeminiSpendSharePublisher, GEMINI_SPEND_REPUBLISH_MS } from "./spend-share";
 export { changedSharedLimits, createGeminiSettingsSync, planGeminiPeerApply, sharedLimitValues } from "./settings-sync";
 export type { GeminiSettingsSyncStatus, GeminiSettingsConflictView, GeminiPendingSetting, GeminiSharedValue } from "./settings-sync";
+
+/**
+ * BL-228 (independent review 6): the SHA-256 of each input file a job names (path relative to the channel's Sent to YTM -> hex),
+ * read with the same resolver and reader a job uses. Read-only; throws when a file cannot be read. For the System topic's
+ * one-time approvals, which bind an approval to the exact files.
+ */
+export async function geminiInputHashes(input: Pick<CreateJobInput, "channelId" | "kind" | "image" | "video">): Promise<Record<string, string>> {
+  const workspaces = createChannelWorkspacesCore();
+  const workspace = createGeminiWorkspace(async (channelId) => workspaces.getWorkspace({ channelId }));
+  const files = createGeminiFiles();
+  const out: Record<string, string> = {};
+  for (const { path: relativePath } of namedInputs(input)) {
+    const resolved = await workspace.resolveInput(input.channelId, relativePath);
+    const data = await files.readInput(resolved, GEMINI_LIMITS.inputBytes);
+    out[relativePath] = createHash("sha256").update(data).digest("hex");
+  }
+  return out;
+}
 
 const CORE_KEY = Symbol.for("youtube-operations-manager.gemini-media-core");
 

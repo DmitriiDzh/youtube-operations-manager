@@ -16,7 +16,7 @@ import {
   upsertGenerationPlanResults,
 } from "@/lib/db";
 
-// BL-229 part B (MUSIC_LIBRARY_PLAN.md §3): schema v111 keeps the owner's answers with a verdict, its history and a verdict sent
+// BL-229 part B (MUSIC_LIBRARY_PLAN.md §3): schema v112 keeps the owner's answers with a verdict, its history and a verdict sent
 // to another computer -- against a real migrated database in a temporary folder.
 
 async function withDb(fn: (db: ReturnType<typeof createIsolatedDb>, client: ReturnType<typeof createLibsqlClient>) => Promise<void>) {
@@ -33,13 +33,13 @@ async function withDb(fn: (db: ReturnType<typeof createIsolatedDb>, client: Retu
 
 const ANSWERS = JSON.stringify({ "g.no_vocals": true, "g.background": 7, "rj.tempo": "right" });
 
-test("v111 adds a nullable answers_json to the three verdict tables; running it again changes nothing", () =>
+test("v112 adds a nullable answers_json to the three verdict tables; running it again changes nothing", () =>
   withDb(async (_db, client) => {
     for (const table of ["generation_plan_results", "generation_plan_verdict_history", "generation_plan_peer_verdicts"]) {
       const columns = (await client.execute(`PRAGMA table_info(${table})`)).rows.map((r) => [r.name, r.notnull]);
       assert.deepEqual(columns.find(([name]) => name === "answers_json"), ["answers_json", 0], table);
     }
-    await SCHEMA_MIGRATIONS.find((m) => m.version === 111)!.apply(client);
+    await SCHEMA_MIGRATIONS.find((m) => m.version === 112)!.apply(client);
   }));
 
 test("answers are written and read back with the verdict, the history row and the peer verdict; absent stays null", () =>

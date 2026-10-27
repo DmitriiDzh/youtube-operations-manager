@@ -4844,6 +4844,34 @@ Owner msgs 3439/3444/3449/3451/3453. On branch `feature/content-ux-redesign`. No
 - **Tab badges.** `content-tab-badges.ts`: video-projects (edit + package phases), the calendar's `coverage.due`, the live overview's
   health (bad / noData / revoked while live); local reads once a minute.
 
+## BL-228 — one-time paid approvals through the HUB "System" topic (ADR 0053 + Amendment 1)
+
+Plan: `docs/roadmap/plans/SYSTEM_TOPIC_PLAN.md`. Built on `feature/bl-228-system-topic` (not merged).
+
+- **Split (owner msgs 3602/3607, FO-RESP-0043 H4).** The factory's hub (`hub_bot.py`) polls the existing HUB bot and keeps
+  `status` / `stop` / `go`. The Manager makes no Telegram call and runs no factory script. It only approves one-time paid calls.
+- **Relay.** The hub calls `POST /api/system-topic/inbound` for each System topic message and polls `GET /api/system-topic/outbox`
+  every 5 s. Both require a loopback request (`isLoopbackRequest`, 403) and `Authorization: Bearer <relay secret>` (401); they do
+  not use a Web session. The secret is generated in Settings and shown once; only its SHA-256 is stored, and the check compares the
+  hashes with `timingSafeEqual`. An inbound message is kept only if the chat, thread and sender ids match the settings; anything
+  else only raises a counter. The audit row (primary key: update id) is claimed before the command runs. The outbox hands each row
+  out once (one `UPDATE … RETURNING`); that GET checks the device mutation gate itself, because `src/proxy.ts` gates only mutating
+  methods.
+- **Requests.** Every 10 s while the feature is on, the scan in `src/instrumentation.ts` reads `<requests>/<id>.json`. The id is
+  the file stem and must match `^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,127}$`. Each new request is posted once with the Manager's estimate
+  and the `{action, args}` hash, or refused / expired once. `approve` only moves `posted` → `approved_in_topic`. The Web Confirm
+  re-reads the file and requires its `{action, args}` to equal the stored ones as canonical JSON (the 8-hex hash is display only),
+  re-computes the full SHA-256 fingerprint (it also covers a Gemini job's input files), and re-checks the schema, the cap and the
+  limits; the call runs with the stored args. Then a compare-and-set
+  (`approved_in_topic` → `confirmed`) marks it used before the call; only one confirm can win it. The call runs in process through
+  `src/composition/system-topic-approvals.ts`, which calls `createFactoryMediaDeps().startSession` / `createGeminiMediaCore().createJob`
+  with the MCP tools' schemas. That keeps the factory and Gemini limits as the ceiling, and the module itself imports neither.
+  `<id>.result.json` is written through a temporary file and a rename.
+  At boot, a request still `confirmed` from before this process started, and not in flight here, becomes `failed` with its result
+  file; it never reruns. The free `factory_media_get_gpu_availability` (FO-RESP-0045) is the acceptance-test action.
+- **Limits.** The media module records an approved session as the factory's (`requestedBy: factory`); only Gemini takes the actor
+  `owner (System)`. A media start held by a device limit is recorded `failed` (it waits for the owner in Servers). The relay cannot
+  prove who wrote a topic message (RISK-136); the Web Confirm is the mitigation.
 ## BL-229 — the music library per genre (part A, ADR 0054)
 
 On branch `feature/bl-229-music-library`. No schema change; no YouTube call; nothing written.
@@ -4874,7 +4902,7 @@ On branch `feature/bl-229-music-library`. No schema change; no YouTube call; not
   `plan_answer_*` (unknown id, wrong type, out of range, unknown option, then required missing) and returns the answers in the form's
   order; `keepFittingAnswers` drops, on applying a peer verdict, answers whose field no longer fits (the verdict is kept). The owner
   verdict checks against this device's definition, a peer verdict against the owning device's report.
-- **Storage / events / sync.** Schema v111 adds `answers_json` to `generation_plan_results`, `generation_plan_verdict_history` and
+- **Storage / events / sync.** Schema v112 adds `answers_json` to `generation_plan_results`, `generation_plan_verdict_history` and
   `generation_plan_peer_verdicts` (the store adapter maps empty to null). `planEvents` adds `answers` to `owner_verdict`. Plans report
   version 6 (`sync-gateway/generation-plans/contracts.ts`) carries the forms, the genre and `answers` on verdict rows, history
   entries and sent verdicts; reads 1-6, strict at every level. `generationPlansReportVersionFor` writes 6 only when the report holds

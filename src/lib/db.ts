@@ -5681,6 +5681,71 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
   {
     version: 111,
     description:
+      "system_topic_state + system_topic_commands + system_topic_outbox + system_topic_requests -- BL-228 (SYSTEM_TOPIC_PLAN.md, ADR 0053 Amendment 1; FO-REQ-0042, FO-RESP-0043): the System topic's settings on this computer (owner user id, group and topic ids, the switch, the requests folder), the relay secret's hash, the dropped-message counter; the audit trail of the owner's relayed commands (one row per Telegram update id); the messages queued for the hub to post; and the one-time paid-call requests with their state. Additive, idempotent, device-local",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS system_topic_state (" +
+          "id INTEGER PRIMARY KEY CHECK (id = 1), " +
+          "owner_user_id TEXT, " +
+          "chat_id TEXT, " +
+          "thread_id TEXT, " +
+          "enabled INTEGER NOT NULL DEFAULT 0, " +
+          "requests_path TEXT, " +
+          "relay_secret_hash TEXT, " +
+          "relay_secret_created_at INTEGER, " +
+          "dropped_count INTEGER NOT NULL DEFAULT 0, " +
+          "last_inbound_at INTEGER, " +
+          "last_outbox_at INTEGER, " +
+          "last_scan_at INTEGER, " +
+          "last_scan_error TEXT, " +
+          "updated_at INTEGER)"
+      );
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS system_topic_commands (" +
+          "update_id INTEGER PRIMARY KEY, " +
+          "from_user_id TEXT NOT NULL, " +
+          "text TEXT NOT NULL, " +
+          "command TEXT, " +
+          "status TEXT NOT NULL, " +
+          "result_text TEXT, " +
+          "received_at INTEGER NOT NULL, " +
+          "finished_at INTEGER)"
+      );
+      await client.execute("CREATE INDEX IF NOT EXISTS system_topic_commands_received_idx ON system_topic_commands (received_at)");
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS system_topic_outbox (" +
+          "id TEXT PRIMARY KEY, " +
+          "text TEXT NOT NULL, " +
+          "created_at INTEGER NOT NULL, " +
+          "delivered_at INTEGER)"
+      );
+      await client.execute("CREATE INDEX IF NOT EXISTS system_topic_outbox_pending_idx ON system_topic_outbox (delivered_at, created_at)");
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS system_topic_requests (" +
+          "id TEXT PRIMARY KEY, " +
+          "action TEXT, " +
+          "args_json TEXT, " +
+          "hash TEXT, " +
+          "fingerprint TEXT, " +
+          "created_at INTEGER, " +
+          "requested_by TEXT, " +
+          "reason TEXT, " +
+          "agent_estimate_usd REAL, " +
+          "estimate_usd REAL, " +
+          "state TEXT NOT NULL, " +
+          "refusal TEXT, " +
+          "seen_at INTEGER NOT NULL, " +
+          "approved_at INTEGER, " +
+          "confirmed_at INTEGER, " +
+          "finished_at INTEGER, " +
+          "result_json TEXT)"
+      );
+      await client.execute("CREATE INDEX IF NOT EXISTS system_topic_requests_state_idx ON system_topic_requests (state, seen_at)");
+    },
+  },
+  {
+    version: 112,
+    description:
       "answers_json on generation_plan_results / generation_plan_verdict_history / generation_plan_peer_verdicts -- BL-229 part B (MUSIC_LIBRARY_PLAN.md §3, ADR 0054 amendment 1; FO-REQ-0043 §B): the owner's answers to a plan's review form, kept with the verdict, its history and verdicts sent from this computer. Additive, nullable (null = no answers), device-local",
     apply: async (client) => {
       for (const table of ["generation_plan_results", "generation_plan_verdict_history", "generation_plan_peer_verdicts"]) {

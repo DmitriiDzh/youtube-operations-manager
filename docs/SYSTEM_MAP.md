@@ -1126,7 +1126,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   языков» внизу.
 - **Этап 4 (автоодобрение) не назначен.**
 
-### 2.9az Библиотека музыки по жанрам и оценка партий (BL-229, FO-REQ-0043, `docs/roadmap/plans/MUSIC_LIBRARY_PLAN.md`, ADR 0054 + поправка 1) — **части A и B IMPLEMENTED на ветке `feature/bl-229-music-library`, не влито в `dev`**
+### 2.9az Библиотека музыки по жанрам и оценка партий (BL-229, FO-REQ-0043, `docs/roadmap/plans/MUSIC_LIBRARY_PLAN.md`, ADR 0054 + поправка 1) — **IMPLEMENTED, влито в `dev` 2026-10-27; приёмка — партия music-014**
 
 - **Модуль `src/lib/music-library/`** (§M, только чтение): снимок фабрики `<папка канала>/99 Data Exchange/Sent to YTM/music/library.json`
   через `workspace-exchange.resolveWorkspaceFile` (ссылка наружу — отказ), папка — того канала, что в запросе (`channel-workspaces`).
@@ -1140,7 +1140,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   #rrggbb, эмодзи) и `reviewForm`; поля `yes_no` / `scale_1_10` / `choice`, лишние ключи внутри срезаются, id уникальны в форме плана
   плюс волны (`generation-plans/schemas.ts`, `review-forms.ts`). Вердикт: `answers`, коды `plan_answer_unknown_field` /
   `_wrong_type` / `_out_of_range` / `_unknown_option` / `_required`; хранятся в вердикте, истории и исходящих вердиктах (схема
-  **v111** `answers_json`), видны в `owner_verdict`; отчёт планов **версии 6** — только когда в нём есть форма, жанр или ответы, иначе версия 5 (старая сборка читает его до
+  **v112** `answers_json`), видны в `owner_verdict`; отчёт планов **версии 6** — только когда в нём есть форма, жанр или ответы, иначе версия 5 (старая сборка читает его до
   первого такого плана); оценённая попытка открывается с сохранёнными ответами (и на плане другого компьютера); копия волны
   (`factory_plan_clone_group`) сохраняет жанр, вопросы и фишки; Factory API
   1.35.0, Agent API 4.9.0. Экран проверки: полоса жанра и цвет (`genre-review-model.ts`), две строки фишек для волны с жанром,
@@ -1183,6 +1183,17 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Проверка входов (BL-201, FO-REQ-0030, Factory API 1.24.0):** `runtime-graph-check.ts` сверяет граф шаблона с `/object_info` среды (`getObjectInfo`): обязательные входы, списки, диапазоны и типы. Неизвестный вход — только предупреждение. Результат лежит в `test.json` → `templates[].invalid`, и отказ `media_runtime_incompatible` при запуске и при создании задачи учитывает его для той же версии шаблона.
 - **Зависший контейнер (BL-202, FO-REQ-0031, схема v98):** если контейнер пода не запустился за `containerStartMinutes` (3 мин, до 7) после размещения, под удаляется, попытка пишется в журнал запусков как `container_stuck`, и сессия ставится заново до `containerStuckRetries` раз (1), иначе `media_container_stuck`. У сессии видна стадия `startStage` (+`stageSince`). В журнале запусков `containerSeconds` / `bootSeconds`. Тот же предел для подов сборки среды. Исключить машину нельзя: REST API RunPod этого не умеет.
 - Не входят: свой Docker-образ, удаление старых сред с тома (RISK-132), прогон генерации в проверке.
+
+### 2.9ba Разовые одобрения платных вызовов через тему «System» группы HUB (BL-228, FO-REQ-0042, FO-RESP-0043, `docs/roadmap/plans/SYSTEM_TOPIC_PLAN.md`, ADR 0053 + Amendment 1) — **IMPLEMENTED, влито в `dev` 2026-10-27 (`071258e6`); сторона хаба — у Оператора, приёмка впереди**
+
+- **Разделение (владелец, msgs 3602/3607):** бота HUB опрашивает хаб фабрики (`hub_bot.py`); `status`/`stop`/`go` — у хаба. Manager не вызывает Telegram и не запускает скриптов фабрики; он делает только разовые одобрения платных вызовов: `approve <id>` владельца в теме И кнопка «Подтвердить» в Web UI.
+- **Модуль** `src/lib/system-topic/` (§M: выключен по умолчанию, включается только на службе Mac): `contracts` / `schemas` / `parser` (`help`, `approve <id>`, `deny <id>`; на `status`/`stop`/`go` — «handled by the hub in each channel's topic») / `services` (настройки, секрет связи, входящие, исходящие) / `approvals` (заявки) / `adapters` (`store`, `requests` — таблица заявок и папка заявок: читается, пишется только `<id>.result.json` через временный файл и rename).
+  - Схема v111: `system_topic_state` (id владельца, группы, темы, переключатель, папка заявок, SHA-256 секрета связи, счётчик отброшенных, последние вызовы), `system_topic_commands` (аудит по update id), `system_topic_outbox` (очередь для хаба), `system_topic_requests` (заявки и их состояние). Все — device-local.
+- **Связь с хабом (только loopback, `Authorization: Bearer <секрет связи>`):** `POST /api/system-topic/inbound` → `{replies}` (не владелец / не та тема — молча отброшено, только счётчик; повторный `updateId` — без второго ответа); `GET /api/system-topic/outbox` → `{messages}`, каждое выдаётся один раз. Секрет создаётся в карточке, показывается один раз, хранится только SHA-256, сравнение за постоянное время.
+- **Заявки:** цикл в `src/instrumentation.ts` раз в 10 с (пока включено) просматривает папку `System/requests`: новая заявка публикуется один раз (своя оценка Manager'а, хеш = первые 8 hex SHA-256 канонического JSON `{action, args}`) или отклоняется. Разрешены только `factory_media_start_session` (нужны `maxMinutes`, `maxUsd`, `releaseWhenDone: true`; оценка = цена × минуты / 60, где цена — `gpu.maxPricePerHr` сессии, иначе шаблона, иначе сохранённая; потолок $2 и лимиты фабрики; задержанный лимитом старт отзывается), `factory_gemini_create_job` (dry-run модуля Gemini; потолок $1; SHA-256 входных файлов входит в отпечаток заявки) и бесплатное тестовое `factory_media_get_gpu_availability` (FO-RESP-0045, $0). Связка — `src/composition/system-topic-approvals.ts` (та же схема и тот же код, что у инструментов MCP; модуль system-topic не импортирует медиа-модули).
+  - Состояния: `posted` → `approved_in_topic` → `confirmed` (до вызова) → `done`/`failed`; также `denied`, `expired` (старше 2 ч или из будущего), `refused`. «Подтвердить» проверяет всё заново (2 ч, точное совпадение `{action, args}` файла с сохранёнными — 8 hex только для показа —, полный отпечаток с входными файлами, схема, потолок, лимиты) и выполняет вызов с сохранёнными аргументами, пишет `<id>.result.json` и строку в очередь для темы. Заявка, оставшаяся `confirmed` после падения процесса (подтверждена до старта этого процесса и не выполняется сейчас), при старте становится `failed` (исход неизвестен) с файлом результата и никогда не повторяется.
+- **UI:** «Настройки» → «ИИ-агент» → «System (Telegram)» (`SystemTopicSettings`): id, папка заявок, переключатель с подписью, секрет связи, состояние связи, заявки «ждут подтверждения» с «Подтвердить»/«Отклонить», последние заявки и команды. Маршруты владельца (сессия): `/api/system-topic` (GET/PUT), `/relay-secret` (POST), `/requests/[id]/confirm`, `/requests/[id]/deny` (POST).
+- **Принятый разрыв:** связь не доказывает, что сообщение в теме написал владелец — смягчено подтверждением в Web UI (RISK-136). Медиа-модуль записывает сессию как `factory` (его исполнитель зафиксирован); аудит System и файл результата называют владельца.
 
 ## 3. Где вносить изменения
 
