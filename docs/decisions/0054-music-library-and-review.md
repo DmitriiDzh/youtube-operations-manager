@@ -36,6 +36,7 @@ Part B no longer has its own files or screen. Decisions 2–4 change as follows:
   (they are the factory's own rules), never stored; a verdict's `answers` may name only field ids of the attempt's effective form,
   with a value of the field's type; a required field must be answered for either verdict. Still no scope or rule field.
 - **Answers travel with the verdict** (result row, verdict history, `owner_verdict` event, peer verdicts in plans report
-  version 6). Applied from the other computer, an answer whose field no longer exists is dropped and the verdict is kept: the
+  version 6, written only while the report carries forms, a genre or answers -- otherwise version 5, so the old build keeps reading
+  it). An already-rated attempt opens with its saved answers. Applied from the other computer, an answer whose field no longer exists is dropped and the verdict is kept: the
   owner's verdict is never lost to a later form change.
 - `listen` is not built. The rating stays 1–10; form scales are `scale_1_10`.

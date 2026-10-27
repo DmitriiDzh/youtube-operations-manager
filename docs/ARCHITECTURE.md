@@ -4876,7 +4876,9 @@ On branch `feature/bl-229-music-library`. No schema change; no YouTube call; not
 - **Storage / events / sync.** Schema v111 adds `answers_json` to `generation_plan_results`, `generation_plan_verdict_history` and
   `generation_plan_peer_verdicts` (the store adapter maps empty to null). `planEvents` adds `answers` to `owner_verdict`. Plans report
   version 6 (`sync-gateway/generation-plans/contracts.ts`) carries the forms, the genre and `answers` on verdict rows, history
-  entries and sent verdicts; reads 1-6, strict at every level.
+  entries and sent verdicts; reads 1-6, strict at every level. `generationPlansReportVersionFor` writes 6 only when the report holds
+  such content, else 5 (the old build keeps reading it). The screen prefills the form of a rated attempt with its saved answers
+  (`savedAnswersOf` / `withSavedAnswers`, rating and chips unchanged).
 - **Screen.** `genre-review-model.ts` (pure): `reasonRowsFor` (two rows only for a genre wave, else `reasonChipsFor`),
   `formSectionsFor`, `missingRequired`, `toggleAnswer`, `answersToSend`, `safeGenreColor` / `genreTintStyle` (`--genre-color`).
   `plan-review-screen.tsx` renders `GenreHeader`, the tint, the chip rows and `ReviewFormSection`; `submit` refuses locally while a

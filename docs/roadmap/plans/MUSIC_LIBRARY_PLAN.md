@@ -48,8 +48,10 @@ files. `listen` is dropped. The rating stays 1–10.
   checked against the attempt's effective forms (the plan's plus its wave's). Refused with its own code: unknown field id,
   wrong type, out of range, unknown option, a missing required field (for accept AND reject). No scope or rule field exists.
   Stored with the verdict and in the verdict history (schema migration), shown to the factory in the `owner_verdict` event
-  (`factory_plan_get`), and carried with verdicts given on the other computer (plans report version 6, so both computers update
-  together). Re-check answers take no `answers`.
+  (`factory_plan_get`), and carried with verdicts given on the other computer (plans report version 6, written only while the report
+  carries a form, a genre or answers -- otherwise version 5 as before, so an old build keeps reading it until the first such
+  plan). Re-check answers take no `answers`. An already-rated attempt opens with its saved answers in the form (FO-REQ-0043 §B
+  item 4); changing the verdict sends them as edited.
 - **Screen.** A wave with a `genre` shows a header (icon + title); its colour tints the frame, the primary verdict buttons and
   the progress bar. Chips: for a genre wave two labelled rows, general (the plan's chips, else the media kind's defaults) then
   the genre's; any other wave keeps today's rule (its own list replaces the plan's). Questions sit under the verdict buttons,
@@ -100,7 +102,11 @@ genre or form.
 - AC-MR-07 A verdict with answers on the other computer's plan is checked against that computer's report (same codes), sent in
   report version 6, and applied there with its answers in the verdict, the history and the event. A field the factory removed
   before it was applied is dropped; the verdict is kept.
-- AC-MR-08 This build writes report version 6 and still reads 1–6.
+- AC-MR-08 This build reads report versions 1–6; it writes 6 only when the report carries a form, a genre or an answer, and 5
+  otherwise (no version 6 key anywhere, parsed by the version 5 schema). One stored answer makes it 6.
+- AC-MR-11 A rated attempt with answers {g.no_vocals: true, rj.instruments: false, rj.tempo: "right"} opens with exactly those
+  answers chosen (a copy); the rating and chips start empty as before; changing rj.tempo to "faster" and replacing the verdict
+  sends {g.no_vocals: true, rj.instruments: false, rj.tempo: "faster"}.
 - AC-MR-09 Chips on wave 014: general row [голос / вокал, щелчок / провал], genre row [барабаны / бит]; on wave 015 one row
   [голос / вокал, щелчок / провал], the same result as before BL-229.
 - AC-MR-10 On wave 014 the header reads «🌾 Sounds of Rural Japan»; Accept and Reject are disabled with the hint until
@@ -115,5 +121,6 @@ genre or form.
 ## 6. Risks
 
 - The snapshot format is the factory's contract (Q7); until it lands the card shows «нет сводки».
-- Report version 6: a computer still on version 5 refuses the other's report, so both computers update together; the Operator
-  creates no plan with `reviewForm` / `genre` until both run it (FO-RESP-0044).
+- Report version 6: written only once a plan has a form or genre (or a verdict has answers); until then the report stays version
+  5 and an old build keeps reading it. From the first such plan a computer still on version 5 refuses it, so both computers must
+  run this build before the Operator creates one (FO-RESP-0044).
