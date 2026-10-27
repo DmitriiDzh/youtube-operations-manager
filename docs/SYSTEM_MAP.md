@@ -1126,6 +1126,26 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   языков» внизу.
 - **Этап 4 (автоодобрение) не назначен.**
 
+### 2.9az Библиотека музыки по жанрам и оценка партий (BL-229, FO-REQ-0043, `docs/roadmap/plans/MUSIC_LIBRARY_PLAN.md`, ADR 0054 + поправка 1) — **IMPLEMENTED, влито в `dev` 2026-10-27; приёмка — партия music-014**
+
+- **Модуль `src/lib/music-library/`** (§M, только чтение): снимок фабрики `<папка канала>/99 Data Exchange/Sent to YTM/music/library.json`
+  через `workspace-exchange.resolveWorkspaceFile` (ссылка наружу — отказ), папка — того канала, что в запросе (`channel-workspaces`).
+  Формат — `schemas.ts`, предложение фабрике (Q7/Q8): `format: 1`, `generatedAt`, `genres[]`, `batches[]`, `tracksWithoutGenre`;
+  лишние поля игнорируются, ошибка в обязательном — весь файл «не прочитать». Чистая модель вида (`services.ts`): часы с одним
+  знаком, доля принятых (нет процента при 0 проверенных), «устарело» старше 24 ч.
+- **Web:** `GET /api/channels/[channelId]/music-library` (сессия + активный канал): `no_workspace` / `workspace_unavailable` /
+  `no_file` / `unreadable` / `ok`. Медиа → «Музыка»: карточка «Библиотека по жанрам» над планами (`music-library-card.tsx`).
+- Фабричные профили, CSV, журнал и длительности Manager не читает; ничего не пишет; MCP нет.
+- **Часть B — оценка партии в обзоре плана** (новых экранов и файлов нет): у плана `reviewForm`, у волны `genre` (id, название,
+  #rrggbb, эмодзи) и `reviewForm`; поля `yes_no` / `scale_1_10` / `choice`, лишние ключи внутри срезаются, id уникальны в форме плана
+  плюс волны (`generation-plans/schemas.ts`, `review-forms.ts`). Вердикт: `answers`, коды `plan_answer_unknown_field` /
+  `_wrong_type` / `_out_of_range` / `_unknown_option` / `_required`; хранятся в вердикте, истории и исходящих вердиктах (схема
+  **v112** `answers_json`), видны в `owner_verdict`; отчёт планов **версии 6** — только когда в нём есть форма, жанр или ответы, иначе версия 5 (старая сборка читает его до
+  первого такого плана); оценённая попытка открывается с сохранёнными ответами (и на плане другого компьютера); копия волны
+  (`factory_plan_clone_group`) сохраняет жанр, вопросы и фишки; Factory API
+  1.35.0, Agent API 4.9.0. Экран проверки: полоса жанра и цвет (`genre-review-model.ts`), две строки фишек для волны с жанром,
+  вопросы под кнопками вердикта; значок жанра в списке планов.
+
 ### 2.9av Одно хранилище секретов компьютера и скачивание моделей из закрытых репозиториев Hugging Face (BL-134 / BL-199, FO-REQ-0028, `docs/roadmap/plans/DEVICE_SECRETS_PLAN.md`, ADR 0042) — **IMPLEMENTED** (влито в `dev` 2026-10-18, 24d45d67)
 
 - **`src/lib/device-secrets/`** — единственный владелец введённых в Настройках секретов этого компьютера.
@@ -1164,7 +1184,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Зависший контейнер (BL-202, FO-REQ-0031, схема v98):** если контейнер пода не запустился за `containerStartMinutes` (3 мин, до 7) после размещения, под удаляется, попытка пишется в журнал запусков как `container_stuck`, и сессия ставится заново до `containerStuckRetries` раз (1), иначе `media_container_stuck`. У сессии видна стадия `startStage` (+`stageSince`). В журнале запусков `containerSeconds` / `bootSeconds`. Тот же предел для подов сборки среды. Исключить машину нельзя: REST API RunPod этого не умеет.
 - Не входят: свой Docker-образ, удаление старых сред с тома (RISK-132), прогон генерации в проверке.
 
-### 2.9az Разовые одобрения платных вызовов через тему «System» группы HUB (BL-228, FO-REQ-0042, FO-RESP-0043, `docs/roadmap/plans/SYSTEM_TOPIC_PLAN.md`, ADR 0053 + Amendment 1) — **IMPLEMENTED на ветке `feature/bl-228-system-topic`, не влито в `dev`; сторона хаба — у Оператора**
+### 2.9ba Разовые одобрения платных вызовов через тему «System» группы HUB (BL-228, FO-REQ-0042, FO-RESP-0043, `docs/roadmap/plans/SYSTEM_TOPIC_PLAN.md`, ADR 0053 + Amendment 1) — **IMPLEMENTED, влито в `dev` 2026-10-27 (`071258e6`); сторона хаба — у Оператора, приёмка впереди**
 
 - **Разделение (владелец, msgs 3602/3607):** бота HUB опрашивает хаб фабрики (`hub_bot.py`); `status`/`stop`/`go` — у хаба. Manager не вызывает Telegram и не запускает скриптов фабрики; он делает только разовые одобрения платных вызовов: `approve <id>` владельца в теме И кнопка «Подтвердить» в Web UI.
 - **Модуль** `src/lib/system-topic/` (§M: выключен по умолчанию, включается только на службе Mac): `contracts` / `schemas` / `parser` (`help`, `approve <id>`, `deny <id>`; на `status`/`stop`/`go` — «handled by the hub in each channel's topic») / `services` (настройки, секрет связи, входящие, исходящие) / `approvals` (заявки) / `adapters` (`store`, `requests` — таблица заявок и папка заявок: читается, пишется только `<id>.result.json` через временный файл и rename).

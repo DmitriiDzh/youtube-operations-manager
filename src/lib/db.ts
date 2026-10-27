@@ -1072,6 +1072,8 @@ export const generationPlanResults = sqliteTable(
     /** Schema v68 (BL-143 phase 3): the plan references nearest to this attempt (A/B listening). */
     referenceIdsJson: text("reference_ids_json"),
     at: integer("at", { mode: "timestamp" }).notNull(),
+    /** Schema v111 (BL-229 part B, ADR 0054 amendment 1): the owner's answers to the review form with this verdict (null = none). */
+    answersJson: text("answers_json"),
   },
   (table) => [primaryKey({ columns: [table.planId, table.stageId, table.itemKey, table.attemptRef] }), index("generation_plan_results_at_idx").on(table.planId, table.at)]
 );
@@ -1114,6 +1116,8 @@ export const generationPlanPeerVerdicts = sqliteTable(
     kept: integer("kept"),
     /** Schema v85 (BL-175 phase 3, FO-REQ-0018 §G): the owner's seconds on the attempt before this verdict (null = not measured). */
     reviewSeconds: integer("review_seconds"),
+    /** Schema v111 (BL-229 part B): the owner's answers to the review form with this verdict (null = none). */
+    answersJson: text("answers_json"),
   },
   (table) => [index("generation_plan_peer_verdicts_at_idx").on(table.at)]
 );
@@ -1202,6 +1206,8 @@ export const generationPlanVerdictHistory = sqliteTable(
     kept: integer("kept"),
     /** Schema v85 (BL-175 phase 3, FO-REQ-0018 §G): the owner's seconds on the attempt before this verdict (null = not measured). */
     reviewSeconds: integer("review_seconds"),
+    /** Schema v111 (BL-229 part B): the owner's answers to the review form with this verdict (null = none). */
+    answersJson: text("answers_json"),
   },
   (table) => [index("generation_plan_verdict_history_plan_idx").on(table.planId, table.itemKey, table.attemptRef)]
 );
@@ -5735,6 +5741,20 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
           "result_json TEXT)"
       );
       await client.execute("CREATE INDEX IF NOT EXISTS system_topic_requests_state_idx ON system_topic_requests (state, seen_at)");
+    },
+  },
+  {
+    version: 112,
+    description:
+      "answers_json on generation_plan_results / generation_plan_verdict_history / generation_plan_peer_verdicts -- BL-229 part B (MUSIC_LIBRARY_PLAN.md §3, ADR 0054 amendment 1; FO-REQ-0043 §B): the owner's answers to a plan's review form, kept with the verdict, its history and verdicts sent from this computer. Additive, nullable (null = no answers), device-local",
+    apply: async (client) => {
+      for (const table of ["generation_plan_results", "generation_plan_verdict_history", "generation_plan_peer_verdicts"]) {
+        try {
+          await client.execute(`ALTER TABLE ${table} ADD COLUMN answers_json TEXT`);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
     },
   },
 ];
@@ -11414,6 +11434,7 @@ export async function upsertGenerationPlanResults(rows: Array<typeof generationP
         checksJson: row.checksJson ?? null,
         metricsJson: row.metricsJson ?? null,
         referenceIdsJson: row.referenceIdsJson ?? null,
+        answersJson: row.answersJson ?? null,
         at: row.at,
       };
       await tx

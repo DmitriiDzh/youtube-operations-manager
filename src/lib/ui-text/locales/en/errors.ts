@@ -158,6 +158,12 @@ export const errors = {
   "errors.plan_mismatch": "This does not match the plan.",
   "errors.plan_invalid": "The plan is not valid.",
   "errors.plan_verdict_exists": "This track already has a verdict.",
+  // BL-229 part B: a verdict's answers do not fit the review form.
+  "errors.plan_answer_unknown_field": "One of the answers is to a question this track's form does not have. Reload the review and answer again.",
+  "errors.plan_answer_wrong_type": "One of the answers has the wrong kind of value for its question.",
+  "errors.plan_answer_out_of_range": "A scale answer must be a whole number from 1 to 10.",
+  "errors.plan_answer_unknown_option": "One of the answers is not among its question's options. Reload the review and choose again.",
+  "errors.plan_answer_required": "Answer the required questions (marked *) first.",
   "errors.plan_recheck_exists": "A re-check with this id already exists with other content.",
   "errors.plan_recheck_closed": "This re-check is no longer open.",
   "errors.gemini_disabled": "Generation through Gemini is turned off on this computer (Settings → Cloud APIs).",

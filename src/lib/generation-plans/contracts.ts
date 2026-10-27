@@ -25,6 +25,17 @@ export type PlanActor = "factory" | "owner";
 export type PlanParamValue = string | number | boolean;
 
 export type PlanStage = { stageId: string; title: string; kind: PlanStageKind };
+
+/** BL-229 part B (MUSIC_LIBRARY_PLAN.md §3, ADR 0054 amendment 1): the question types of a review form. */
+export const PLAN_REVIEW_FIELD_TYPES = ["yes_no", "scale_1_10", "choice"] as const;
+export type PlanReviewFieldType = (typeof PLAN_REVIEW_FIELD_TYPES)[number];
+/** One question of a plan's or a wave's review form; `options` only for `choice`. */
+export type PlanReviewField = { id: string; type: PlanReviewFieldType; question: string; options?: string[]; required?: boolean };
+export type PlanReviewForm = { fields: PlanReviewField[] };
+/** BL-229 part B: a wave's genre as the factory copies it from its profile (the review screen's header and colour). */
+export type PlanGenre = { id: string; title: string; color: string; icon: string };
+/** The owner's answers with a verdict: a field id → true/false (yes_no), 1..10 (scale_1_10) or one of the options (choice). */
+export type PlanAnswers = Record<string, boolean | number | string>;
 /**
  * `note` is the factory's context for the wave; `ownerNote` (BL-157, SERVERS_MEDIA_PLAN.md AC-WV-04) is the owner's own note on
  * it, kept apart so neither overwrites the other -- present only once the owner wrote one.
@@ -37,6 +48,10 @@ export type PlanGroup = {
   ownerNote?: string | null;
   /** BL-175 (VISUAL_REVIEW_PLAN.md §2.5): the reason chips of this wave's review (wins over the plan's); absent = not set. */
   reviewReasons?: string[];
+  /** BL-229 part B: the wave's genre; with one, the review shows the plan's chips AND the wave's (two rows). */
+  genre?: PlanGenre;
+  /** BL-229 part B: the genre's questions, asked after the plan's. */
+  reviewForm?: PlanReviewForm;
 };
 export type PlanItem = {
   itemKey: string;
@@ -70,6 +85,8 @@ export type PlanDefinition = {
   reviewRejected?: boolean;
   /** BL-175 (§2.5): the reason chips of the plan's review (a wave's own list wins); absent = the media kind's defaults. */
   reviewReasons?: string[];
+  /** BL-229 part B: the general questions of every attempt's review. */
+  reviewForm?: PlanReviewForm;
 };
 
 export type GenerationPlan = {
@@ -177,6 +194,8 @@ export type PlanResultRow = {
   metrics: Record<string, number | string | boolean | null>;
   /** BL-143 phase 3: plan references nearest to this attempt (the validator's nearest library tracks), for A/B. */
   referenceIds?: string[];
+  /** BL-229 part B: the owner's answers to the review form with this verdict; absent = none. */
+  answers?: PlanAnswers;
   at: string;
 };
 
@@ -398,7 +417,7 @@ export type PlanReviewBatch = {
  * answer to a re-check carries its `recheckId`; `kept` = the owner kept the verdict and only wrote a note (not a verdict: it
  * changes nothing and gives no `owner_verdict` event; `result` repeats the verdict it kept).
  */
-export type PlanVerdictHistoryEntry = { result: "accepted" | "rejected"; rating: number | null; note: string | null; device: string; at: string; recheckId?: string; kept?: boolean };
+export type PlanVerdictHistoryEntry = { result: "accepted" | "rejected"; rating: number | null; note: string | null; device: string; at: string; recheckId?: string; kept?: boolean; answers?: PlanAnswers };
 
 /** The full stored row (the history of a plan, every attempt). */
 export type PlanVerdictHistoryRow = PlanVerdictHistoryEntry & {
@@ -613,6 +632,12 @@ export function planMismatch(message: string, details: Record<string, unknown>):
 /** BL-157 (AC-TC-04): a verdict on an attempt that already has one, without `replace`. */
 export function planVerdictExists(message: string, existing: PlanExistingVerdict): DomainError {
   return new DomainError({ code: "plan_verdict_exists", message, details: { existing } });
+}
+/** BL-229 part B: the refusal codes of a verdict's `answers` (each its own, so the screen and the factory can tell them apart). */
+export const PLAN_ANSWER_ERROR_CODES = ["plan_answer_unknown_field", "plan_answer_wrong_type", "plan_answer_out_of_range", "plan_answer_unknown_option", "plan_answer_required"] as const;
+export type PlanAnswerErrorCode = (typeof PLAN_ANSWER_ERROR_CODES)[number];
+export function planAnswerRefused(code: PlanAnswerErrorCode, message: string, details: Record<string, unknown>): DomainError {
+  return new DomainError({ code, message, details });
 }
 export function planInvalid(message: string, details: Record<string, unknown> = {}): DomainError {
   return new DomainError({ code: "plan_invalid", message, details });

@@ -27,7 +27,10 @@ import {
   type PlanChannelWork,
   type PlanDefinition,
   type PlanEvent,
+  type PlanGenre,
   type PlanGroup,
+  type PlanReviewField,
+  type PlanReviewForm,
   type PlanItem,
   type PlanMarker,
   type PlanMoveResult,
@@ -58,6 +61,7 @@ import {
 import { createHash } from "node:crypto";
 import type { GenerationPlansReport, SharedClaim, SharedGroupNote, SharedPickAction, SharedPlan, SharedRecheck, SharedVerdict } from "@/lib/sync-gateway";
 import { applyPickAction, coveredRefs, pickFlagsOf, pickStateOf, settledRefs, withdrawPickOnReject, withSentPicks, type PickEvent, type PickOutcome } from "./picks";
+import { checkAnswers, duplicateFieldIds, effectiveFields, keepFittingAnswers, normalizeForm, normalizeGenre } from "./review-forms";
 import { inAppAttempts, pickableRefs, planEvents, planMediaKinds, planProgress, planTodo, reviewBatches, reviewCandidates, secondFloor, type PlanJobRow, type PlanSessionRow } from "./progress";
 import {
   cloneGroupInputSchema,
@@ -369,7 +373,16 @@ function normalizeChecks(checks: ReportRowInput["checks"]): PlanCheck[] {
   }));
 }
 
-function normalizeGroup(group: { groupId: string; title?: string; dependsOn?: string | null; note?: string | null; ownerNote?: string | null; reviewReasons?: string[] | null }): PlanGroup {
+function normalizeGroup(group: {
+  groupId: string;
+  title?: string;
+  dependsOn?: string | null;
+  note?: string | null;
+  ownerNote?: string | null;
+  reviewReasons?: string[] | null;
+  genre?: PlanGenre | null;
+  reviewForm?: PlanReviewForm | null;
+}): PlanGroup {
   // BL-157 (AC-WV-04): the owner's note survives a factory upsert of the same group (the factory never sends it).
   // BL-175 (§2.5): a wave's own reason chips only when it has some (null or an empty list = none of its own).
   return {
@@ -379,7 +392,16 @@ function normalizeGroup(group: { groupId: string; title?: string; dependsOn?: st
     note: group.note ?? null,
     ...(group.ownerNote ? { ownerNote: group.ownerNote } : {}),
     ...(group.reviewReasons && group.reviewReasons.length > 0 ? { reviewReasons: [...group.reviewReasons] } : {}),
+    // BL-229 part B: the wave's genre and the genre's questions (null clears; an empty form is no form).
+    ...(normalizeGenre(group.genre) ? { genre: normalizeGenre(group.genre)! } : {}),
+    ...(normalizeForm(group.reviewForm) ? { reviewForm: normalizeForm(group.reviewForm)! } : {}),
   };
+}
+
+/** BL-229 part B: the plan's general questions as a field to spread (none = absent). */
+function planFormField(form: PlanReviewForm | null | undefined): { reviewForm?: PlanReviewForm } {
+  const normalized = normalizeForm(form);
+  return normalized ? { reviewForm: normalized } : {};
 }
 
 /** The whole-definition rules (AC-GP-01): unique ids, at most one in-app and one owner-review stage, known references. */
@@ -395,6 +417,8 @@ export function validateDefinition(definition: PlanDefinition): void {
     if (g.dependsOn !== null && (g.dependsOn === g.groupId || !groupIds.has(g.dependsOn))) problems.push(`group ${g.groupId} depends on unknown group ${g.dependsOn}`);
   }
   for (const id of dup(definition.items.map((i) => i.itemKey))) problems.push(`item ${id} appears twice`);
+  // BL-229 part B: a question id names one question of an attempt's form (the plan's plus its wave's).
+  for (const d of duplicateFieldIds(definition)) problems.push(d.groupId === null ? `review field ${d.fieldId} appears twice in the plan's form` : `review field ${d.fieldId} of group ${d.groupId} is also in the plan's form or twice in the group's`);
   for (const id of dup((definition.references ?? []).map((r) => r.id))) problems.push(`reference ${id} appears twice`);
   if ((definition.references ?? []).length > PLAN_LIMITS.references) problems.push(`more than ${PLAN_LIMITS.references} references`);
   for (const item of definition.items) {
@@ -436,6 +460,14 @@ function sharedPicksOf(records: readonly PlanPickRecord[], live: ReadonlySet<str
 }
 
 /** BL-175 (§2.5): the plan's and each wave's own reason chips, as the review screen reads them. */
+/** BL-229 part B: what the review screen needs of the forms -- the plan's questions and each wave's genre and questions. */
+export type PlanReviewForms = { plan: PlanReviewField[]; groups: Record<string, { genre: PlanGenre | null; fields: PlanReviewField[] }> };
+export function reviewFormsOf(definition: { reviewForm?: PlanReviewForm | null; groups: ReadonlyArray<{ groupId: string; genre?: PlanGenre | null; reviewForm?: PlanReviewForm | null }> }): PlanReviewForms {
+  const groups: PlanReviewForms["groups"] = Object.create(null) as PlanReviewForms["groups"];
+  for (const g of definition.groups) if (g.genre || (g.reviewForm?.fields.length ?? 0) > 0) groups[g.groupId] = { genre: g.genre ?? null, fields: [...(g.reviewForm?.fields ?? [])] };
+  return { plan: [...(definition.reviewForm?.fields ?? [])], groups };
+}
+
 function reviewReasonsOf(definition: PlanDefinition): { plan: string[] | null; groups: Record<string, string[]> } {
   // A null-prototype map: a group id like "constructor" must be an ordinary key here.
   const groups = Object.create(null) as Record<string, string[]>;
@@ -686,6 +718,8 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         // BL-173: a re-check's answer says so; a kept one is a note, not a verdict.
         ...(h.recheckId ? { recheckId: h.recheckId.slice(0, 120) } : {}),
         ...(h.kept ? { kept: true } : {}),
+        // BL-229 part B (report v6): the answers given with the verdict.
+        ...(h.answers ? { answers: h.answers } : {}),
       }));
   }
 
@@ -720,6 +754,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       note: from ? from[0].trim() || null : current.note,
       device: from ? from[1] : await ownLabel(),
       at: current.at,
+      ...(current.answers ? { answers: current.answers } : {}),
     };
     await deps.store.insertVerdictHistory(planId, row);
     history.push(row);
@@ -776,7 +811,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
 
   /** A verdict another device sent, as a review-stage row (the screen shows it as given). */
   function sharedVerdictRow(v: SharedVerdict, reviewStageId: string): PlanResultRow {
-    return { stageId: reviewStageId, itemKey: v.itemKey, attemptRef: v.attemptRef, result: v.result, reportedBy: "owner", note: v.note, rating: v.rating, reasons: v.reasons, markers: v.markers, auditionFile: null, checks: [], metrics: {}, at: v.at };
+    return { stageId: reviewStageId, itemKey: v.itemKey, attemptRef: v.attemptRef, result: v.result, reportedBy: "owner", note: v.note, rating: v.rating, reasons: v.reasons, markers: v.markers, auditionFile: null, checks: [], metrics: {}, ...(v.answers ? { answers: v.answers } : {}), at: v.at };
   }
 
   /** The queue as the owner sees it on this device: a verdict on its way from another device already counts as given. */
@@ -791,7 +826,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       void _notChosen;
       return {
         ...rest,
-        verdict: { stageId: reviewStageId, itemKey: entry.itemKey, attemptRef: entry.attemptRef, result: v.result, reportedBy: "owner", note: v.note, rating: v.rating, reasons: v.reasons, markers: v.markers, auditionFile: null, checks: [], metrics: {}, at: v.at },
+        verdict: { stageId: reviewStageId, itemKey: entry.itemKey, attemptRef: entry.attemptRef, result: v.result, reportedBy: "owner", note: v.note, rating: v.rating, reasons: v.reasons, markers: v.markers, auditionFile: null, checks: [], metrics: {}, ...(v.answers ? { answers: v.answers } : {}), at: v.at },
         pendingFrom: p.from,
       };
     });
@@ -1216,7 +1251,10 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
     const older = stored !== undefined && stored.reportedBy === "owner" && Math.floor(Date.parse(answer.at) / 1000) < Math.floor(Date.parse(stored.at) / 1000);
     let rowChanged: PlanResultRow | null = null;
     if (!answer.kept && recheck.status !== "withdrawn" && !superseded && !older) {
-      rowChanged = { stageId: reviewStageId, itemKey: recheck.itemKey, attemptRef: recheck.attemptRef, result: answer.result, reportedBy: "owner", note: rowNote, rating: answer.rating, reasons: answer.reasons, markers: answer.markers, auditionFile: null, checks: [], metrics: {}, at: answer.at };
+      // BL-229 part B (review): a re-check answer takes no form answers -- the stored verdict's answers carry forward (the
+      // history row of the answer stays without them).
+      const carried = stored?.reportedBy === "owner" && stored.answers ? { answers: stored.answers } : {};
+      rowChanged = { stageId: reviewStageId, itemKey: recheck.itemKey, attemptRef: recheck.attemptRef, result: answer.result, reportedBy: "owner", note: rowNote, rating: answer.rating, reasons: answer.reasons, markers: answer.markers, auditionFile: null, checks: [], metrics: {}, ...carried, at: answer.at };
       await deps.store.upsertResults(row.id, [rowChanged]);
     }
     const kept: PlanVerdictHistoryRow = {
@@ -1317,6 +1355,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         references: (parsed.references ?? []).map(normalizeReference),
         ...(parsed.reviewRejected !== undefined ? { reviewRejected: parsed.reviewRejected } : {}),
         ...(parsed.reviewReasons && parsed.reviewReasons.length > 0 ? { reviewReasons: [...parsed.reviewReasons] } : {}),
+        ...planFormField(parsed.reviewForm),
       };
       validateDefinition(definition);
       const at = now();
@@ -1355,11 +1394,12 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         stages: file.stages as PlanStage[],
         groups: groupIds.map((groupId) => {
           const given = (file.groups ?? []).find((g) => (g.groupId ?? g.id) === groupId);
-          return normalizeGroup({ groupId, title: given?.title, dependsOn: given?.dependsOn, note: given?.note, reviewReasons: given?.reviewReasons });
+          return normalizeGroup({ groupId, title: given?.title, dependsOn: given?.dependsOn, note: given?.note, reviewReasons: given?.reviewReasons, genre: given?.genre, reviewForm: given?.reviewForm });
         }),
         references: (file.references ?? []).map(normalizeReference),
         ...(typeof file.reviewRejected === "boolean" ? { reviewRejected: file.reviewRejected } : {}),
         ...(file.reviewReasons && file.reviewReasons.length > 0 ? { reviewReasons: [...file.reviewReasons] } : {}),
+        ...planFormField(file.reviewForm),
         items: file.items.map((i) =>
           normalizeItem({ itemKey: i.itemKey, groupId: i.group ?? null, templateLabel: i.templateId ?? null, variant: i.variant, targetCount: i.targetCount, mode: i.mode, maxAttempts: i.maxAttempts, params: i.params, seeds: i.seeds, pickTarget: i.pickTarget })
         ),
@@ -1463,6 +1503,8 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
               const next = parsed.reviewReasons === undefined ? d.reviewReasons : parsed.reviewReasons;
               return next && next.length > 0 ? { reviewReasons: [...next] } : {};
             })(),
+            // BL-229 part B: null removes the plan's questions; absent keeps them.
+            ...planFormField(parsed.reviewForm === undefined ? d.reviewForm : parsed.reviewForm),
           },
         };
       });
@@ -1663,7 +1705,10 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
           throw planVerdictExists(`${parsed.itemKey} ${parsed.attemptRef} already has a verdict`, { result: current.result, rating: current.rating, device, at: current.at });
         }
       }
-      const result = resultRow({ ...parsed, stageId: stage.stageId }, "owner", now().toISOString());
+      // BL-229 part B: the answers fit the attempt's questions (the plan's plus its wave's), required ones included.
+      const itemGroup = row.definition.items.find((i) => i.itemKey === parsed.itemKey)?.groupId ?? null;
+      const answers = checkAnswers(effectiveFields(row.definition, itemGroup), parsed.answers);
+      const result: PlanResultRow = { ...resultRow({ ...parsed, stageId: stage.stageId }, "owner", now().toISOString()), ...(answers ? { answers } : {}) };
       const picks = await deps.store.listPicks(row.id);
       const before = reviewEntries(row, jobs, results, picks);
       await seedHistory(row.id, history, current);
@@ -1680,6 +1725,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         device: label,
         at: result.at,
         ...secondsOf(parsed.reviewSeconds),
+        ...(answers ? { answers } : {}),
       };
       await deps.store.insertVerdictHistory(row.id, given);
       history.push(given);
@@ -2256,6 +2302,8 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
           throw planVerdictExists(`${parsed.itemKey} ${parsed.attemptRef} already has a verdict`, { result: theirs.result, rating: theirs.rating, device, at: theirs.at });
         }
       }
+      // BL-229 part B: checked against that computer's report -- its plan's questions and the attempt's wave's.
+      const answers = checkAnswers(effectiveFields({ reviewForm: plan.reviewForm, groups: plan.groups }, entry.groupId), parsed.answers);
       const verdict: SharedVerdict = {
         verdictId: deps.generateId(),
         planId: parsed.planId,
@@ -2269,6 +2317,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         note: parsed.note ?? null,
         at: now().toISOString(),
         ...secondsOf(parsed.reviewSeconds),
+        ...(answers ? { answers } : {}),
       };
       await deps.store.insertPeerVerdict(verdict);
       await serializedPerPlan(parsed.planId, () => endTrackClaim(parsed.deviceId, parsed.planId, parsed.itemKey, parsed.attemptRef));
@@ -2636,6 +2685,9 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
               a++;
               continue;
             }
+            // BL-229 part B: the answers whose question still exists here (a later form change never loses the verdict).
+            const fitting = keepFittingAnswers(effectiveFields(row.definition, row.definition.items.find((i) => i.itemKey === verdict.itemKey)?.groupId ?? null), verdict.answers);
+            const answersField = fitting ? { answers: fitting } : {};
             // The verdict stored before the history existed goes into it first (review round 2).
             await seedHistory(row.id, history, stored);
             if (older) {
@@ -2653,6 +2705,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
                 device: from,
                 at: verdict.at,
                 ...secondsOf(verdict.reviewSeconds),
+                ...answersField,
               };
               await deps.store.insertVerdictHistory(row.id, keptRow);
               history.push(keptRow);
@@ -2675,6 +2728,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
               auditionFile: null,
               checks: [],
               metrics: {},
+              ...answersField,
               at: verdict.at,
             };
             await deps.store.upsertResults(row.id, [row2]);
@@ -2691,6 +2745,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
               device: from,
               at: verdict.at,
               ...secondsOf(verdict.reviewSeconds),
+              ...answersField,
             };
             await deps.store.insertVerdictHistory(row.id, appliedRow);
             history.push(appliedRow);
@@ -2801,6 +2856,8 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
           // BL-175 (v5): each item's pick target, so the other computer can tell when its picks decide the item.
           items: plan.items.map((i) => ({ itemKey: i.itemKey, groupId: i.groupId, templateLabel: i.templateLabel ?? i.templateId, targetCount: i.targetCount, mode: i.mode, pickTarget: pickTargetOf(i) })),
           ...(plan.reviewReasons && plan.reviewReasons.length > 0 ? { reviewReasons: plan.reviewReasons } : {}),
+          // BL-229 part B (v6): the plan's questions (the waves carry their genre and questions in `groups`).
+          ...(plan.reviewForm ? { reviewForm: plan.reviewForm } : {}),
           // BL-175 (v5): the active picks and "none fits", for the other computer's grid and counts, and which of its pick
           // actions this computer already weighed (so it stops showing them as "sent").
           ...sharedPicksOf(picks, liveOf(row, jobs, results)),
@@ -2847,7 +2904,19 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         return {
           definition: {
             ...row.definition,
-            groups: [...row.definition.groups, { groupId: parsed.newGroupId, title: parsed.title ?? parsed.newGroupId, dependsOn: parsed.groupId, note: null }],
+            // BL-229 part B (review): a re-run of a batch keeps its genre review -- the genre, its questions and its chips.
+            groups: [
+              ...row.definition.groups,
+              {
+                groupId: parsed.newGroupId,
+                title: parsed.title ?? parsed.newGroupId,
+                dependsOn: parsed.groupId,
+                note: null,
+                ...(source.genre ? { genre: { ...source.genre } } : {}),
+                ...(source.reviewForm ? { reviewForm: structuredClone(source.reviewForm) } : {}),
+                ...(source.reviewReasons ? { reviewReasons: [...source.reviewReasons] } : {}),
+              },
+            ],
             items: [...row.definition.items, ...copies],
           },
         };
@@ -2886,6 +2955,8 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       reviewReasons: { plan: string[] | null; groups: Record<string, string[]> };
       /** BL-175 (§2.2): each item's pick target and active "none fits". */
       pickItems: Array<{ itemKey: string; pickTarget: number; noneFits: PlanNoneFitsView | null }>;
+      /** BL-229 part B: the plan's questions and each wave's genre and questions. */
+      reviewForms: PlanReviewForms;
     }> {
       const { planId } = parseWithSchema(getPlanInputSchema.pick({ planId: true }), input, "plan id");
       const row = await requirePlan(planId);
@@ -2902,6 +2973,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         claims: await more.claimsOn(await ownDeviceId(), row.id),
         reviewReasons: reviewReasonsOf(row.definition),
         pickItems: pickItemsOf(row, picks),
+        reviewForms: reviewFormsOf(row.definition),
       };
     },
 

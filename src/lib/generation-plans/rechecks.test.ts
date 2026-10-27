@@ -425,7 +425,8 @@ test("AC-RC-10a: a version 4 report with re-checks, a current file and answers v
   assert.deepEqual(plan.rechecks?.map((r) => [r.recheckId, r.kind, r.markers]), [["C14-XL_V03_s1803__q1", "question", [{ start: 25, end: 35, note: null }]]], "only the open one");
   assert.equal(plan.review.find((e) => e.itemKey === V04.itemKey)?.currentFile, REVISED);
   assert.deepEqual(plan.review.find((e) => e.itemKey === V04.itemKey)?.history?.map((h) => h.recheckId ?? null), [null, "C14-XL_V04_s1811__r1"]);
-  assert.equal(generationPlansReportSchema.safeParse({ ...report, version: 6 }).success, false);
+  // BL-229 part B: version 6 exists now (forms, genre, answers); the first unknown version is 7.
+  assert.equal(generationPlansReportSchema.safeParse({ ...report, version: 7 }).success, false);
   const v3 = { ...report, version: 3, plans: [{ ...plan, rechecks: undefined, review: plan.review.map((e) => ({ ...e, currentFile: undefined, history: e.history?.map((h) => ({ result: h.result, rating: h.rating, note: h.note, device: h.device, at: h.at })) })) }] };
   assert.equal(generationPlansReportSchema.safeParse(JSON.parse(JSON.stringify(v3))).success, true);
 });

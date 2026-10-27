@@ -75,6 +75,7 @@ export {
   createGenerationPlansShareCore,
   GENERATION_PLANS_REPORT_FORMAT,
   GENERATION_PLANS_REPORT_VERSION,
+  generationPlansReportVersionFor,
   generationPlansReportSchema,
   jobOutputPathSchema,
   createReviewPresence,

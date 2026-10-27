@@ -44,8 +44,11 @@ import { MediaImageViewer, type ImageViewerHandle, type ViewerPin } from "./medi
 import { MediaVideoPlayer, type VideoMarker, type VideoPlayerHandle } from "./media-video-player";
 import { VisualReviewLayer, type LayerEntry, type LayerHandle, type LayerMode } from "./visual-review-layer";
 import { useDialogFocus } from "./use-dialog-focus";
-import { attemptLabel, fpsFromMetrics, isVisual, loopFromMetrics, questionStart, reasonChipsFor, sharedEntryMedia, totalFromContentRange, VISUAL_REASON_KEYS, visualKeyAction } from "./visual-review-model";
+import { attemptLabel, fpsFromMetrics, isVisual, loopFromMetrics, questionStart, sharedEntryMedia, totalFromContentRange, VISUAL_REASON_KEYS, visualKeyAction } from "./visual-review-model";
 import { FeedPreview, SeamFrames } from "./visual-review-tools";
+import { answersToSend, formSectionsFor, genreOf, genreTintStyle, missingRequired, NO_REVIEW_FORMS, reasonRowsFor, reviewFormsOfShared, savedAnswersOf, tintOver, toggleAnswer, withSavedAnswers, type ReviewFormsView } from "./genre-review-model";
+import type { PlanAnswers, PlanGenre, PlanReviewField } from "@/lib/generation-plans/contracts";
+import type { ReasonChips } from "./visual-review-model";
 
 // BL-143 (MEDIA_REVIEW_TOOLS.md §2 group A + the owner's additions, msg 1939): the owner's listening review of a plan --
 // a queue of attempts waiting for a verdict, the player with the waveform and the validator's time findings, keyboard
@@ -311,10 +314,11 @@ const CLAIMS_REFRESH_MS = 3_000;
 const AUTO_MOVE_WINDOW_MS = 20_000;
 
 /** BL-175 (§2.4): `pending` = a mark on a picture or clip waiting for its own note (typed when it is set). */
-type Draft = { reasons: string[]; rating: number | null; note: string; marks: PlanMarker[]; openMark: number | null; pending: PlanMarker | null };
+/** BL-229 part B: `answers` = the owner's answers to the review form (absent = none yet). */
+type Draft = { reasons: string[]; rating: number | null; note: string; marks: PlanMarker[]; openMark: number | null; pending: PlanMarker | null; answers?: PlanAnswers };
 const emptyDraft = (): Draft => ({ reasons: [], rating: null, note: "", marks: [], openMark: null, pending: null });
 /** Nothing typed, chosen or marked yet. */
-export const draftIsEmpty = (d: Draft) => d.reasons.length === 0 && d.rating === null && !d.note.trim() && d.marks.length === 0 && d.openMark === null && d.pending === null;
+export const draftIsEmpty = (d: Draft) => d.reasons.length === 0 && d.rating === null && !d.note.trim() && d.marks.length === 0 && d.openMark === null && d.pending === null && Object.keys(d.answers ?? {}).length === 0;
 /** BL-175 (review round 1): the mark waiting for its note as a verdict sends it -- with its note; "needs_note" while it has none. Exported for its test. */
 export function pendingMarkOf(d: Pick<Draft, "pending">): PlanMarker | null | "needs_note" {
   if (!d.pending) return null;
@@ -453,11 +457,13 @@ type PeerQueueResponse = {
       noneFits?: Array<{ itemKey: string; note: string | null; device: string; at: string; attempts: number }>;
       handledPicks?: string[];
       reviewReasons?: string[];
-      groups?: Array<{ groupId: string; reviewReasons?: string[] }>;
+      groups?: Array<{ groupId: string; reviewReasons?: string[]; genre?: PlanGenre; reviewForm?: { fields: PlanReviewField[] } }>;
+      /** BL-229 part B (report v6): the plan's general questions. */
+      reviewForm?: { fields: PlanReviewField[] };
     }>;
   }>;
   /** BL-173: an answer to a re-check carries its `recheckId`; `kept` = the verdict kept with a note. */
-  outgoing: Array<{ planId: string; ownerDeviceId: string; itemKey: string; attemptRef: string; result: "accepted" | "rejected"; rating: number | null; at: string; note?: string | null; recheckId?: string; kept?: boolean }>;
+  outgoing: Array<{ planId: string; ownerDeviceId: string; itemKey: string; attemptRef: string; result: "accepted" | "rejected"; rating: number | null; at: string; note?: string | null; recheckId?: string; kept?: boolean; answers?: PlanAnswers }>;
   /** BL-175: the pick actions sent from here (each weighed there once; until then they count here). */
   outgoingPicks?: Array<SentPickAction & { ownerDeviceId: string; planId: string }>;
 };
@@ -479,7 +485,8 @@ export function peerQueue(data: PeerQueueResponse, source: PeerReviewSource, pla
     // A verdict sent from here that is newer than what that device shows is the one that counts (it is on its way).
     // Whole seconds: the owning device stores times to the second, so the applied copy of a verdict sent at …:12.345 reads …:12.000.
     if (!sent || (entry.verdict && Math.floor(Date.parse(entry.verdict.at) / 1000) >= Math.floor(Date.parse(sent.at) / 1000))) return entry;
-    return { ...entry, verdict: { stageId: "owner_review", itemKey: entry.itemKey, attemptRef: entry.attemptRef, result: sent.result, reportedBy: "owner" as const, note: `${SENT_NOTE_PREFIX}${device}`, rating: sent.rating, reasons: [], markers: [], auditionFile: null, checks: [], metrics: {}, at: sent.at } };
+    // BL-229 part B: with its answers, so the form opens with what was sent (review).
+    return { ...entry, verdict: { stageId: "owner_review", itemKey: entry.itemKey, attemptRef: entry.attemptRef, result: sent.result, reportedBy: "owner" as const, note: `${SENT_NOTE_PREFIX}${device}`, rating: sent.rating, reasons: [], markers: [], auditionFile: null, checks: [], metrics: {}, ...(sent.answers ? { answers: sent.answers } : {}), at: sent.at } };
   });
   // BL-175 (§2.6): picks sent from here and not yet weighed there already settle their attempts here.
   const sentPicks = (data.outgoingPicks ?? []).filter((a) => a.ownerDeviceId === source.deviceId && a.planId === planId);
@@ -526,7 +533,7 @@ export function peerRecheckEntries(data: PeerQueueResponse, source: PeerReviewSo
     if (!sent) return entry;
     return {
       ...entry,
-      verdict: { stageId: "owner_review", itemKey: shared.itemKey, attemptRef: shared.attemptRef, result: sent.result, reportedBy: "owner" as const, note: `${SENT_NOTE_PREFIX}${device}`, rating: sent.rating, reasons: [], markers: [], auditionFile: null, checks: [], metrics: {}, at: sent.at },
+      verdict: { stageId: "owner_review", itemKey: shared.itemKey, attemptRef: shared.attemptRef, result: sent.result, reportedBy: "owner" as const, note: `${SENT_NOTE_PREFIX}${device}`, rating: sent.rating, reasons: [], markers: [], auditionFile: null, checks: [], metrics: {}, ...(sent.answers ? { answers: sent.answers } : {}), at: sent.at },
       ...(sent.kept ? { pendingKept: true } : {}),
     };
   });
@@ -539,6 +546,15 @@ function walkOf<E extends PlanReviewEntry>(lists: { entries: E[]; rechecks: Plan
 
 /** One entry of the screen: a track of the plan's queue, or an open re-check (`recheck`). BL-175: `pickSent` = picked from here, on its way. */
 type ScreenEntry = PlanReviewEntry & { recheck?: PlanRecheck; pendingKept?: boolean; pickSent?: true };
+
+/**
+ * The draft an attempt opens with (BL-175 kept drafts; BL-229 part B: plus its saved form answers when the draft has none, so a
+ * reset on the same rated attempt -- a filter or wave change, a move to the same index -- never loses them). Exported for its test.
+ */
+export function draftOpenedFor(kept: KeptDrafts, target: (DraftOwner & { verdict: { at: string; answers?: PlanAnswers } | null }) | undefined): Draft {
+  if (!target) return emptyDraft();
+  return withSavedAnswers(draftBack(kept, target), savedAnswersOf(target));
+}
 
 /** BL-175 (review rounds 1 and 2): the pictures' kept drafts, each with the verdict time it was written against. */
 export type KeptDrafts = Map<string, { draft: Draft; verdictAt: string | null }>;
@@ -691,6 +707,8 @@ export function PlanReviewScreen({
   const [seamFramesOn, setSeamFramesOn] = useState(false);
   const [compareKey, setCompareKey] = useState<string | null>(null);
   const [reviewReasons, setReviewReasons] = useState<{ plan: string[] | null; groups: Record<string, string[]> }>({ plan: null, groups: {} });
+  // BL-229 part B: the plan's questions and each wave's genre and questions.
+  const [reviewForms, setReviewForms] = useState<ReviewFormsView>(NO_REVIEW_FORMS);
   const [pickItems, setPickItems] = useState<Map<string, ItemPickInfo>>(new Map());
   const [noneFitsDraft, setNoneFitsDraft] = useState<{ itemKey: string; note: string; rerun: boolean } | null>(null);
   const noneFitsForm = useRef<HTMLFormElement | null>(null);
@@ -723,7 +741,8 @@ export function PlanReviewScreen({
           setReferences(peerDevice ? (peerPlan?.references ?? []) : (data.references ?? []));
           setBatches(peerDevice ? (peerPlan?.batches ?? []) : (data.batches ?? []));
           // BL-175 (§2.5/§2.2): the reason chips of the plan and its waves, and each item's pick target and "none fits".
-          const own = data as { reviewReasons?: { plan: string[] | null; groups: Record<string, string[]> }; pickItems?: Array<{ itemKey: string } & ItemPickInfo> };
+          const own = data as { reviewReasons?: { plan: string[] | null; groups: Record<string, string[]> }; pickItems?: Array<{ itemKey: string } & ItemPickInfo>; reviewForms?: ReviewFormsView };
+          setReviewForms(peerDevice ? reviewFormsOfShared(peerPlan) : (own.reviewForms ?? NO_REVIEW_FORMS));
           if (peerDevice) {
             const groups: Record<string, string[]> = Object.create(null) as Record<string, string[]>;
             for (const g of peerPlan?.groups ?? []) if (g.reviewReasons && g.reviewReasons.length > 0) groups[g.groupId] = g.reviewReasons;
@@ -791,6 +810,16 @@ export function PlanReviewScreen({
   }, [base]);
 
   const entry: ScreenEntry | null = entries && entries.length > 0 ? entries[Math.min(index, entries.length - 1)] : null;
+  // FO-REQ-0043 §B item 4 (BL-229 part B): an already-rated attempt opens with its saved answers in the form, so changing the
+  // verdict sends them as edited. Only the form: the rating and chips start fresh, as before. Once per attempt and verdict.
+  const savedAnswers = savedAnswersOf(entry);
+  const prefillKey = entry && savedAnswers ? `${entryKey(entry)}\u0000${entry.verdict?.at ?? ""}` : null;
+  const savedRef = useRef(savedAnswers);
+  savedRef.current = savedAnswers;
+  useEffect(() => {
+    if (prefillKey === null) return;
+    setDraft((d) => withSavedAnswers(d, savedRef.current));
+  }, [prefillKey]);
   // Review round 1: the attempt on screen now, for an answer that arrives after the owner moved on.
   const onScreen = useRef<string | null>(null);
   useEffect(() => {
@@ -854,7 +883,8 @@ export function PlanReviewScreen({
     const from = entries?.[Math.min(index, entries.length - 1)];
     if (from && isVisual(screenMedia(from))) keepDraft(visualDrafts.current, from, draft);
   }, [draft, entries, index]);
-  const draftFor = useCallback((target: ScreenEntry | undefined): Draft => (target ? draftBack(visualDrafts.current, target) : emptyDraft()), []);
+  // BL-229 part B (review): every fresh or kept draft of a rated attempt comes with its saved answers.
+  const draftFor = useCallback((target: ScreenEntry | undefined): Draft => draftOpenedFor(visualDrafts.current, target), []);
   const go = useCallback(
     (to: number) => {
       if (!entries || entries.length === 0) return;
@@ -940,6 +970,15 @@ export function PlanReviewScreen({
         setMessage({ tone: "error", text: t("review.pin.saveFirst") });
         return;
       }
+      // BL-229 part B: the required questions first, for an accept and a reject alike (A / R say so too).
+      const sections = formSectionsFor(reviewForms, entry.groupId);
+      const formFields = [...sections.general, ...sections.genre];
+      const unanswered = missingRequired(formFields, draft.answers);
+      if (unanswered.length > 0) {
+        setMessage({ tone: "error", text: t("review.form.requiredFirst", { count: unanswered.length }) });
+        return;
+      }
+      const answers = answersToSend(formFields, draft.answers);
       // BL-175 (§2.2): rejecting the picked attempt withdraws its pick -- asked first.
       if (result === "rejected" && entry.picked && !pickedConfirmed) {
         setConfirmRejectPicked(true);
@@ -972,6 +1011,7 @@ export function PlanReviewScreen({
             markers: marks,
             ...(draft.note.trim() ? { note: draft.note.trim() } : {}),
             ...secondsField(reviewSecondsOf([draftKeyOf(entry)])),
+            ...(answers ? { answers } : {}),
           });
           reviewMs.current.delete(draftKeyOf(entry));
           setMessage({ tone: "ok", text: t("review.verdictSaved", { item: entry.itemKey, result: resultLabel(t, result) }) });
@@ -1005,7 +1045,7 @@ export function PlanReviewScreen({
         }
       });
     },
-    [answerRecheck, awaitTrack, base, busy, draft, draftFor, entry, filter, index, load, onChanged, reviewSecondsOf, runBusy, skipFresh, stopB, t, wave]
+    [answerRecheck, awaitTrack, base, busy, draft, draftFor, entry, filter, index, load, onChanged, reviewForms, reviewSecondsOf, runBusy, skipFresh, stopB, t, wave]
   );
 
   // BL-157 (AC-TC-01): this computer claims the waiting track on screen (and the wave it took), renewed every minute;
@@ -1492,7 +1532,34 @@ export function PlanReviewScreen({
   const itemStrip = entry && visualEntry ? visualWalk.filter((e) => e.itemKey === entry.itemKey) : [];
   const currentNoneFits = entry ? (pickItems.get(entry.itemKey)?.noneFits ?? null) : null;
   const currentPickTarget = entry ? (pickItems.get(entry.itemKey)?.pickTarget ?? 1) : 1;
-  const chips = entry ? reasonChipsFor(currentMedia, entry.groupId, reviewReasons, REVIEW_REASONS) : null;
+  // BL-229 part B (AC-MR-09/10): a wave with a genre -- its header and colour, two rows of chips, and its questions.
+  const reasonRows = entry ? reasonRowsFor(currentMedia, entry.groupId, reviewReasons, REVIEW_REASONS, reviewForms) : null;
+  const screenGenre = genreOf(reviewForms, entry?.groupId ?? (wave !== null && wave !== RECHECKS_WAVE ? wave : null));
+  const tint = genreTintStyle(screenGenre);
+  const formSections = entry && !entry.recheck ? formSectionsFor(reviewForms, entry.groupId) : { general: [], genre: [] };
+  const unanswered = missingRequired([...formSections.general, ...formSections.genre], draft.answers);
+  const verdictBlocked = unanswered.length > 0;
+  const toggleReason = (reason: string) => setDraft((d) => ({ ...d, reasons: d.reasons.includes(reason) ? d.reasons.filter((r) => r !== reason) : [...d.reasons, reason] }));
+  /** One row of reason chips (a plan's or wave's own, the image / video defaults, or music's ten with their icons). */
+  const chipButtons = (chips: ReasonChips) =>
+    chips.source === "audio"
+      ? REVIEW_REASONS.map((reason) => {
+          const on = draft.reasons.includes(reason);
+          return (
+            <button key={reason} type="button" aria-pressed={on} onClick={() => toggleReason(reason)} className={`flex items-center gap-1.5 rounded-full border px-3 py-1 text-sm transition-colors ${on ? "border-red-400 bg-red-500/25 text-red-100" : "border-zinc-700 bg-zinc-900 text-zinc-200 hover:border-zinc-500"}`}>
+              <span aria-hidden="true">{REVIEW_REASON_ICONS[reason]}</span>
+              {t(REVIEW_REASON_KEYS[reason])}
+            </button>
+          );
+        })
+      : chips.values.map((reason) => {
+          const on = draft.reasons.includes(reason);
+          return (
+            <button key={reason} type="button" aria-pressed={on} onClick={() => toggleReason(reason)} className={`rounded-full border px-3 py-1 text-sm transition-colors ${on ? "border-red-400 bg-red-500/25 text-red-100" : "border-zinc-700 bg-zinc-900 text-zinc-200 hover:border-zinc-500"}`}>
+              {chips.source === "custom" ? reason : reasonLabel(t, reason)}
+            </button>
+          );
+        });
   const openLayer = (mode: LayerMode, fromLayer = false) => {
     setAgainst(null);
     if (mode === "compare" && !comparable) {
@@ -1584,7 +1651,9 @@ export function PlanReviewScreen({
   // fill the screen and scroll on their own: the player with the verdict under it, the auto-check, and the wave's queue (owner,
   // msg 2276: the queue on the right).
   return (
-    <div className="flex h-[calc(100vh-6.25rem)] min-h-[34rem] flex-col overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900">
+    <div style={tint ? { ...tint, borderColor: "var(--genre-color)" } : undefined} className="flex h-[calc(100vh-6.25rem)] min-h-[34rem] flex-col overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900">
+      {/* BL-229 part B (AC-MR-10): the wave's genre, obvious at the top, in its colour. */}
+      {screenGenre && <GenreHeader genre={screenGenre} />}
       {/* The toolbar (AC-UX-04): back, whose plan, the wave picker, progress, the validator filter, the wave's details, View. */}
       <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 px-3 py-2">
         <button type="button" onClick={onClose} className={toolButton}>
@@ -1659,7 +1728,7 @@ export function PlanReviewScreen({
         {entries && entries.length > 0 && (
           <div className="flex items-center gap-2 text-xs text-zinc-400">
             <div className="h-1.5 w-24 overflow-hidden rounded bg-zinc-800">
-              <div className="h-full bg-emerald-500" style={{ width: `${Math.round((reviewedHere / entries.length) * 100)}%` }} />
+              <div className="h-full bg-emerald-500" style={{ width: `${Math.round((reviewedHere / entries.length) * 100)}%`, ...(tint ? { backgroundColor: "var(--genre-color)" } : {}) }} />
             </div>
             {t("review.progress", { reviewed: reviewedHere, total: entries.length })}
           </div>
@@ -2104,13 +2173,13 @@ export function PlanReviewScreen({
                   )}
                   <div className="flex flex-wrap items-center gap-3">
                     {/* Owner, msg 2269 p.4: calm tinted decisions with their key, not two loud fills. */}
-                    <button type="button" disabled={busy || (entry.recheck !== undefined && entry.verdict !== null)} onClick={() => void submit("accepted")} className="flex items-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-5 py-2.5 text-base font-medium text-emerald-200 transition-colors hover:border-emerald-400/70 hover:bg-emerald-500/20 disabled:opacity-50">
+                    <button type="button" disabled={busy || verdictBlocked || (entry.recheck !== undefined && entry.verdict !== null)} onClick={() => void submit("accepted")} style={tint ? { borderColor: "var(--genre-color)", backgroundColor: tintOver("var(--genre-color)", 22) } : undefined} className="flex items-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-5 py-2.5 text-base font-medium text-emerald-200 transition-colors hover:border-emerald-400/70 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50">
                       <span aria-hidden="true">✓</span>
                       {t("review.accept")}
                       {/* ui-text-ignore: a keyboard key */}
                       <kbd className="ml-1 rounded border border-emerald-500/40 px-1.5 text-xs font-normal text-emerald-300/80">A</kbd>
                     </button>
-                    <button type="button" disabled={busy || (entry.recheck !== undefined && entry.verdict !== null)} onClick={() => void submit("rejected")} className="flex items-center gap-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-5 py-2.5 text-base font-medium text-rose-200 transition-colors hover:border-rose-400/70 hover:bg-rose-500/20 disabled:opacity-50">
+                    <button type="button" disabled={busy || verdictBlocked || (entry.recheck !== undefined && entry.verdict !== null)} onClick={() => void submit("rejected")} style={tint ? { borderColor: "var(--genre-color)" } : undefined} className="flex items-center gap-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-5 py-2.5 text-base font-medium text-rose-200 transition-colors hover:border-rose-400/70 hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-50">
                       <span aria-hidden="true">✗</span>
                       {t("review.reject")}
                       {/* ui-text-ignore: a keyboard key */}
@@ -2125,44 +2194,40 @@ export function PlanReviewScreen({
                       ))}
                     </div>
                   </div>
+                  {verdictBlocked && (
+                    <p className="text-xs text-amber-300" role="status">
+                      {t("review.form.requiredHint", { count: unanswered.length })}
+                    </p>
+                  )}
+                  {/* BL-229 part B: the review form under the verdict -- the general questions, then the genre's. */}
+                  {(formSections.general.length > 0 || formSections.genre.length > 0) && (
+                    <div className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-900/60 p-3">
+                      <ReviewFormSection title={t("review.form.general")} fields={formSections.general} answers={draft.answers} onAnswer={(id, value) => setDraft((d) => ({ ...d, answers: toggleAnswer(d.answers, id, value) }))} />
+                      <ReviewFormSection title={t("review.form.genre", { genre: screenGenre?.title ?? "" })} fields={formSections.genre} answers={draft.answers} onAnswer={(id, value) => setDraft((d) => ({ ...d, answers: toggleAnswer(d.answers, id, value) }))} />
+                    </div>
+                  )}
                   <div className="space-y-1.5">
                     <p className="text-xs text-zinc-400">
                       {t("review.reasons.label")} <span className="text-zinc-600">· {t("review.reasons.hint")}</span>
                     </p>
-                    <div className="flex flex-wrap gap-2">
-                      {/* BL-175 (§D): a plan's or wave's own chips, or the image / video defaults; music keeps its ten below. */}
-                      {chips && chips.source !== "audio"
-                        ? chips.values.map((reason) => {
-                            const on = draft.reasons.includes(reason);
-                            return (
-                              <button
-                                key={reason}
-                                type="button"
-                                aria-pressed={on}
-                                onClick={() => setDraft((d) => ({ ...d, reasons: on ? d.reasons.filter((r) => r !== reason) : [...d.reasons, reason] }))}
-                                className={`rounded-full border px-3 py-1 text-sm transition-colors ${on ? "border-red-400 bg-red-500/25 text-red-100" : "border-zinc-700 bg-zinc-900 text-zinc-200 hover:border-zinc-500"}`}
-                              >
-                                {chips.source === "custom" ? reason : reasonLabel(t, reason)}
-                              </button>
-                            );
-                          })
-                        : null}
-                      {chips && chips.source === "audio" && REVIEW_REASONS.map((reason) => {
-                        const on = draft.reasons.includes(reason);
-                        return (
-                          <button
-                            key={reason}
-                            type="button"
-                            aria-pressed={on}
-                            onClick={() => setDraft((d) => ({ ...d, reasons: on ? d.reasons.filter((r) => r !== reason) : [...d.reasons, reason] }))}
-                            className={`flex items-center gap-1.5 rounded-full border px-3 py-1 text-sm transition-colors ${on ? "border-red-400 bg-red-500/25 text-red-100" : "border-zinc-700 bg-zinc-900 text-zinc-200 hover:border-zinc-500"}`}
-                          >
-                            <span aria-hidden="true">{REVIEW_REASON_ICONS[reason]}</span>
-                            {t(REVIEW_REASON_KEYS[reason])}
-                          </button>
-                        );
-                      })}
-                    </div>
+                    {/* BL-175 (§D): a plan's or wave's own chips, or the image / video defaults; music keeps its ten. BL-229 part B: a wave
+                        with a genre shows the general chips, then the genre's, each row named. */}
+                    {reasonRows?.kind === "genre" ? (
+                      <div className="space-y-2">
+                        <div className="space-y-1">
+                          <p className="text-[11px] uppercase tracking-wide text-zinc-500">{t("review.genre.generalReasons")}</p>
+                          <div className="flex flex-wrap gap-2">{chipButtons(reasonRows.general)}</div>
+                        </div>
+                        {reasonRows.genre.length > 0 && (
+                          <div className="space-y-1">
+                            <p className="text-[11px] uppercase tracking-wide text-zinc-500">{t("review.genre.genreReasons", { genre: screenGenre?.title ?? "" })}</p>
+                            <div className="flex flex-wrap gap-2">{chipButtons({ source: "custom", values: reasonRows.genre })}</div>
+                          </div>
+                        )}
+                      </div>
+                    ) : reasonRows ? (
+                      <div className="flex flex-wrap gap-2">{chipButtons(reasonRows.chips)}</div>
+                    ) : null}
                   </div>
                   <textarea value={draft.note} onChange={(e) => setDraft((d) => ({ ...d, note: e.target.value }))} rows={3} maxLength={2000} placeholder={t("review.notePlaceholder")} className="w-full resize-y rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
                   <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-400">
@@ -2564,4 +2629,68 @@ export function PlanReviewScreen({
 function HoldFocus({ formRef }: { formRef: React.RefObject<HTMLFormElement | null> }) {
   useDialogFocus(formRef);
   return null;
+}
+
+// ui-text-ignore: a CSS variable with its fallback colour
+const GENRE_COLOR_VAR = "var(--genre-color, #3f3f46)";
+
+/** BL-229 part B (AC-MR-10): the genre of the wave on screen -- its icon and title on a band of its colour. */
+export function GenreHeader({ genre }: { genre: PlanGenre }) {
+  const { t } = useUiText();
+  return (
+    <div className="flex items-center gap-2 border-b border-zinc-800 px-3 py-1.5" style={{ backgroundColor: tintOver(GENRE_COLOR_VAR, 22, "#18181b") }} aria-label={t("review.genre.label", { genre: genre.title })}>
+      <span aria-hidden="true" className="text-lg leading-none">{genre.icon}</span>
+      {/* ui-text-ignore: the genre's own title (data) */}
+      <span className="text-sm font-semibold text-zinc-50">{genre.title}</span>
+      <span className="text-[11px] uppercase tracking-wide text-zinc-300">{t("review.genre.caption")}</span>
+    </div>
+  );
+}
+
+/** BL-229 part B: one section of the review form -- yes/no as two buttons, a scale as 10, a choice as one per option. */
+export function ReviewFormSection({ title, fields, answers, onAnswer }: { title: string; fields: PlanReviewField[]; answers: PlanAnswers | undefined; onAnswer: (fieldId: string, value: boolean | number | string) => void }) {
+  const { t } = useUiText();
+  if (fields.length === 0) return null;
+  const option = (field: PlanReviewField, value: boolean | number | string, label: string, wide = true) => {
+    const on = answers?.[field.id] === value;
+    return (
+      <button
+        key={String(value)}
+        type="button"
+        aria-pressed={on}
+        onClick={() => onAnswer(field.id, value)}
+        className={`rounded-md border text-sm transition-colors ${wide ? "px-3 py-1" : "h-8 w-8"} ${on ? "border-sky-400 bg-sky-500/25 text-sky-50" : "border-zinc-700 bg-zinc-950 text-zinc-200 hover:border-zinc-500"}`}
+      >
+        {label}
+      </button>
+    );
+  };
+  return (
+    <div className="space-y-2">
+      <p className="text-[11px] uppercase tracking-wide text-zinc-500">{title}</p>
+      {fields.map((field) => {
+        const missing = field.required === true && !Object.hasOwn(answers ?? {}, field.id);
+        return (
+          <div key={field.id} className="flex flex-wrap items-center gap-2">
+            <span className={`min-w-0 text-sm ${missing ? "text-amber-200" : "text-zinc-200"}`}>
+              {/* ui-text-ignore: the factory's own question (data) */}
+              {field.question}
+              {field.required ? (
+                <span className="ml-1 text-amber-300" title={t("review.form.required")} aria-label={t("review.form.required")}>
+                  *
+                </span>
+              ) : null}
+            </span>
+            <span className="flex flex-wrap gap-1">
+              {field.type === "yes_no"
+                ? [option(field, true, t("review.form.yes")), option(field, false, t("review.form.no"))]
+                : field.type === "scale_1_10"
+                  ? Array.from({ length: 10 }, (_, i) => option(field, i + 1, String(i + 1), false))
+                  : (field.options ?? []).map((o) => option(field, o, o))}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
 }

@@ -148,6 +148,12 @@ const DOMAIN_ERROR_STATUS = {
   plan_mismatch: 422,
   plan_invalid: 422,
   plan_verdict_exists: 409,
+  // BL-229 part B: a verdict's answers do not fit the review form.
+  plan_answer_unknown_field: 422,
+  plan_answer_wrong_type: 422,
+  plan_answer_out_of_range: 422,
+  plan_answer_unknown_option: 422,
+  plan_answer_required: 422,
   plan_recheck_exists: 409,
   plan_recheck_closed: 409,
   gemini_disabled: 409,

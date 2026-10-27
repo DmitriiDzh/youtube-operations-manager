@@ -6,7 +6,7 @@ import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-
 import { createExchangeFs, resolveExchangeFile } from "@/lib/workspace-exchange";
 import { appDataPaths, linkMediaSessionToPlan } from "@/lib/db";
 import { randomUUID } from "node:crypto";
-import { createGenerationPlansShareCoreForProduction, createReviewPresenceForProduction, GENERATION_PLANS_REPORT_FORMAT, GENERATION_PLANS_REPORT_VERSION } from "@/lib/sync-gateway";
+import { createGenerationPlansShareCoreForProduction, createReviewPresenceForProduction, GENERATION_PLANS_REPORT_FORMAT, generationPlansReportVersionFor } from "@/lib/sync-gateway";
 import { createMediaGenerationCore, isDomainError } from "@/lib/media-generation";
 import { createVideoProjectsServiceForProduction } from "@/lib/video-projects";
 import { createPlanStore } from "./adapters/store";
@@ -96,14 +96,17 @@ export async function publishGenerationPlansShare(): Promise<void> {
   await core.applyPeerGroupNotes().catch((error: unknown) => console.warn(`[generation-plans] could not apply other devices' wave notes: ${error instanceof Error ? error.message : String(error)}`));
   // BL-175 (VISUAL_REVIEW_PLAN.md §2.6): and their picks -- after the verdicts, so a rejection that came with them is known.
   await core.applyPeerPicks().catch((error: unknown) => console.warn(`[generation-plans] could not apply other devices' picks: ${error instanceof Error ? error.message : String(error)}`));
+  const plans = await core.buildSharedPlans();
+  const verdicts = await core.outgoingVerdicts();
   await createGenerationPlansShareCoreForProduction().publishLocalReport({
     format: GENERATION_PLANS_REPORT_FORMAT,
-    version: GENERATION_PLANS_REPORT_VERSION,
+    // BL-229 part B: version 6 only once the report carries forms, a genre or answers; until then 5, as the old build reads.
+    version: generationPlansReportVersionFor({ plans, verdicts }),
     deviceId: config.deviceId,
     hostname: host,
     updatedAt: new Date().toISOString(),
-    plans: await core.buildSharedPlans(),
-    verdicts: await core.outgoingVerdicts(),
+    plans,
+    verdicts,
     // BL-157 (AC-TC-01): this device's "being reviewed here" claims.
     claims: await core.ownClaims(),
     // BL-162 (v3): the wave notes written here on other devices' plans.

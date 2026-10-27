@@ -29,6 +29,32 @@ const sharedRegionSchema = z.object({ x: z.number().min(0).max(1), y: z.number()
 const sharedMarkerSchema = z.object({ start: z.number(), end: z.number().nullable(), note: z.string().max(200).nullable(), region: sharedRegionSchema.optional() }).strict();
 /** BL-175 (v5): a plan's or a wave's own reason chips. */
 const sharedReasonsSchema = z.array(z.string().max(60)).max(20);
+/**
+ * BL-229 part B (v6, MUSIC_LIBRARY_PLAN.md §3): a verdict's answers to the review form, a review form and a wave's genre, as the
+ * owning device stores them (already checked there; here only bounded). Strict like every level of the report.
+ */
+const sharedAnswersSchema = z
+  .record(z.string().min(1).max(64), z.union([z.boolean(), z.number().int().min(1).max(10), z.string().max(60)]))
+  .refine((a) => Object.keys(a).length <= 40, "at most 40 answers");
+const sharedReviewFormSchema = z
+  .object({
+    fields: z
+      .array(
+        z
+          .object({
+            id: z.string().min(1).max(64),
+            type: z.enum(["yes_no", "scale_1_10", "choice"]),
+            question: z.string().max(200),
+            options: z.array(z.string().max(60)).max(10).optional(),
+            required: z.boolean().optional(),
+          })
+          .strict()
+      )
+      .max(20),
+  })
+  .strict();
+const sharedGenreSchema = z.object({ id: z.string().max(64), title: z.string().max(100), color: z.string().regex(/^#[0-9a-fA-F]{6}$/), icon: z.string().max(16) }).strict();
+
 /** BL-175 (v5): who picked an attempt, when, and the note given with it. */
 const sharedPickMarkSchema = z.object({ device: z.string().max(255), at: isoSchema, note: z.string().max(2000).nullable() }).strict();
 
@@ -47,6 +73,8 @@ const sharedResultRowSchema = z
     checks: z.array(looseRecord).max(50),
     metrics: looseRecord,
     referenceIds: z.array(z.string().max(64)).max(5).default([]),
+    /** BL-229 part B (v6): the owner's answers with a verdict. */
+    answers: sharedAnswersSchema.optional(),
     at: isoSchema,
   })
   .strict();
@@ -63,6 +91,8 @@ export const sharedVerdictHistorySchema = z
     /** BL-173 (v4): the re-check this answers; `kept` = the verdict was kept with a note (not a verdict). */
     recheckId: z.string().max(120).optional(),
     kept: z.boolean().optional(),
+    /** BL-229 part B (v6): the answers given with the verdict. */
+    answers: sharedAnswersSchema.optional(),
   })
   .strict();
 
@@ -196,6 +226,9 @@ export const sharedPlanSchema = z
             ownerNoteAt: z.string().datetime({ offset: true }).nullable().optional(),
             /** BL-175 (v5): the wave's own reason chips. */
             reviewReasons: sharedReasonsSchema.optional(),
+            /** BL-229 part B (v6): the wave's genre and the genre's questions. */
+            genre: sharedGenreSchema.optional(),
+            reviewForm: sharedReviewFormSchema.optional(),
           })
           .strict()
       )
@@ -217,6 +250,8 @@ export const sharedPlanSchema = z
       .max(1000),
     /** BL-175 (v5): the plan's own reason chips. */
     reviewReasons: sharedReasonsSchema.optional(),
+    /** BL-229 part B (v6): the plan's general questions. */
+    reviewForm: sharedReviewFormSchema.optional(),
     /** BL-175 (v5): the plan's active picks and "none fits" (what the other computer's grid and counts show). */
     picks: z.array(z.object({ itemKey: z.string().max(120), attemptRef: z.string().max(120), device: z.string().max(255), at: isoSchema, note: z.string().max(2000).nullable() }).strict()).max(5000).optional(),
     noneFits: z.array(z.object({ itemKey: z.string().max(120), note: z.string().max(2000).nullable(), device: z.string().max(255), at: isoSchema, attempts: z.number().int().min(0) }).strict()).max(1000).optional(),
@@ -266,6 +301,8 @@ export const sharedVerdictSchema = z
     kept: z.boolean().optional(),
     /** BL-175 phase 3 (v5, FO-REQ-0018 §G): the owner's seconds on the attempt before this verdict. */
     reviewSeconds: z.number().int().min(0).max(86_400).optional(),
+    /** BL-229 part B (v6): the answers to the review form, checked on this device against the owning device's report. */
+    answers: sharedAnswersSchema.optional(),
   })
   .strict();
 
@@ -311,13 +348,40 @@ export const sharedPickActionSchema = z
  * plans' active `picks` / `noneFits` and `handledPicks`, entries' `picked` / `notChosen`, and the pick actions sent to other
  * devices (`picks`, with `covered`); phase 3 (§8) adds the owner's `reviewSeconds` on verdicts and pick actions.
  * Read: 1-5; a version 4 build refuses it, so both computers update again.
+ * BL-229 part B (MUSIC_LIBRARY_PLAN.md §3, ADR 0054 amendment 1): version 6 adds the plan's `reviewForm`, each wave's `genre`
+ * and `reviewForm`, and `answers` on verdicts, history entries and the verdicts sent to other devices. Read: 1-6. Written as 6
+ * only when the report carries such content (`generationPlansReportVersionFor`), else as 5: a version 5 build keeps reading this
+ * computer's report until the first plan with a form or genre, and refuses it from then on (update both computers before that).
  */
-export const GENERATION_PLANS_REPORT_VERSION = 5;
+export const GENERATION_PLANS_REPORT_VERSION = 6;
+
+/**
+ * BL-229 part B (follow-up): the version a report is WRITTEN with -- 6 only when it carries version 6 content (a plan's
+ * `reviewForm`, a wave's `genre` / `reviewForm`, or `answers` on a verdict, a history entry or a verdict sent to another device);
+ * otherwise 5, exactly as before, so a computer still on a version 5 build keeps reading this one until the first such plan.
+ */
+export function generationPlansReportVersionFor(report: { plans: ReadonlyArray<SharedPlanContent>; verdicts: ReadonlyArray<object> }): 5 | 6 {
+  const has = (value: unknown) => value !== undefined && value !== null;
+  const v6 =
+    report.verdicts.some((v) => has((v as { answers?: unknown }).answers)) ||
+    report.plans.some(
+      (p) =>
+        has(p.reviewForm) ||
+        p.groups.some((g) => has(g.genre) || has(g.reviewForm)) ||
+        p.review.some((e) => has(e.verdict?.answers) || e.stages.some((r) => has(r.answers)) || (e.history ?? []).some((h) => has(h.answers)))
+    );
+  return v6 ? 6 : 5;
+}
+type SharedPlanContent = {
+  reviewForm?: unknown;
+  groups: ReadonlyArray<{ genre?: unknown; reviewForm?: unknown }>;
+  review: ReadonlyArray<{ verdict: { answers?: unknown } | null; stages: ReadonlyArray<{ answers?: unknown }>; history?: ReadonlyArray<{ answers?: unknown }> }>;
+};
 
 export const generationPlansReportSchema = z
   .object({
     format: z.literal(GENERATION_PLANS_REPORT_FORMAT),
-    version: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]),
+    version: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5), z.literal(6)]),
     deviceId: z.string().min(1).max(128),
     hostname: z.string().max(255).nullable(),
     updatedAt: z.string().datetime({ offset: true }),

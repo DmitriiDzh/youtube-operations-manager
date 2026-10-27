@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { parseWithSchema } from "@/lib/shared-domain";
-import { PLAN_ITEM_MODES, PLAN_PICK_ACTIONS, PLAN_RECHECK_KINDS, PLAN_RESULTS, PLAN_STAGE_KINDS, PLAN_STATUSES } from "./contracts";
+import { PLAN_ITEM_MODES, PLAN_PICK_ACTIONS, PLAN_RECHECK_KINDS, PLAN_RESULTS, PLAN_REVIEW_FIELD_TYPES, PLAN_STAGE_KINDS, PLAN_STATUSES } from "./contracts";
 
 export { parseWithSchema };
 
@@ -33,6 +33,16 @@ export const PLAN_LIMITS = Object.freeze({
   /** BL-175: a plan's or a wave's own reason chips (each as long as a verdict's reason). */
   reviewReasons: 20,
   reasonChars: 60,
+  /** BL-229 part B: a review form's questions, a choice's options, a question's and a genre title's length, the answers given. */
+  formFields: 20,
+  choiceOptionsMin: 2,
+  choiceOptions: 10,
+  questionChars: 200,
+  optionChars: 60,
+  genreTitleChars: 100,
+  iconChars: 16,
+  iconGraphemes: 2,
+  answers: 40,
 });
 
 export const planIdSchema = z.string().trim().regex(PLAN_ID_PATTERN, "a plan id: 2-80 letters, digits, '.', '_' or '-'");
@@ -50,6 +60,72 @@ const reviewReasonsSchema = z
   .max(PLAN_LIMITS.reviewReasons)
   .refine((list) => new Set(list).size === list.length, "each reason once");
 
+// -- BL-229 part B (MUSIC_LIBRARY_PLAN.md §3, ADR 0054 amendment 1): review forms and a wave's genre ------------------------
+// Inside these objects unknown keys are STRIPPED, never stored and never refused: the factory copies its own (`rule`,
+// `fails_when`, `fails_below`) from its genre profiles. The objects that hold them (a wave, a plan) stay strict.
+
+const FIELD_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const fieldIdSchema = z.string().regex(FIELD_ID_PATTERN, "a field id: up to 64 letters, digits, '.', '_' or '-'");
+
+function graphemesOf(text: string): string[] {
+  return [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)].map((g) => g.segment);
+}
+/**
+ * One emoji (a flag or a sequence is one grapheme): at most 2 graphemes and 16 characters, EVERY grapheme an emoji (it holds an
+ * Extended_Pictographic or Regional_Indicator code point), and no letters, digits or spaces.
+ */
+export function isGenreIcon(value: string): boolean {
+  const graphemes = graphemesOf(value);
+  return (
+    value.length >= 1 &&
+    value.length <= PLAN_LIMITS.iconChars &&
+    graphemes.length <= PLAN_LIMITS.iconGraphemes &&
+    graphemes.every((g) => /[\p{Extended_Pictographic}\p{Regional_Indicator}]/u.test(g)) &&
+    !/[\p{L}\p{N}\s]/u.test(value)
+  );
+}
+
+export const reviewFieldSchema = z
+  .object({
+    id: fieldIdSchema,
+    type: z.enum(PLAN_REVIEW_FIELD_TYPES),
+    question: z.string().trim().min(1).max(PLAN_LIMITS.questionChars),
+    options: z.array(z.string().trim().min(1).max(PLAN_LIMITS.optionChars)).optional(),
+    required: z.boolean().optional(),
+  })
+  .superRefine((field, ctx) => {
+    if (field.type !== "choice") {
+      if (field.options !== undefined) ctx.addIssue({ code: "custom", message: `options belong to a choice field only (${field.id} is ${field.type})`, path: ["options"] });
+      return;
+    }
+    const options = field.options ?? [];
+    if (options.length < PLAN_LIMITS.choiceOptionsMin || options.length > PLAN_LIMITS.choiceOptions) {
+      ctx.addIssue({ code: "custom", message: `a choice field has ${PLAN_LIMITS.choiceOptionsMin}-${PLAN_LIMITS.choiceOptions} options (${field.id} has ${options.length})`, path: ["options"] });
+    } else if (new Set(options).size !== options.length) {
+      ctx.addIssue({ code: "custom", message: `each option once (${field.id})`, path: ["options"] });
+    }
+  });
+
+export const reviewFormSchema = z
+  .object({ fields: z.array(reviewFieldSchema).max(PLAN_LIMITS.formFields) })
+  .superRefine((form, ctx) => {
+    const ids = form.fields.map((f) => f.id);
+    const twice = ids.find((id, i) => ids.indexOf(id) !== i);
+    if (twice !== undefined) ctx.addIssue({ code: "custom", message: `field ${twice} appears twice in one form`, path: ["fields"] });
+  });
+
+export const genreSchema = z.object({
+  id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, "a genre id: up to 64 letters, digits, '.', '_' or '-'"),
+  title: z.string().trim().min(1).max(PLAN_LIMITS.genreTitleChars),
+  color: z.string().regex(/^#[0-9a-fA-F]{6}$/, "a colour as #rrggbb"),
+  icon: z.string().refine(isGenreIcon, `one emoji (at most ${PLAN_LIMITS.iconGraphemes} graphemes and ${PLAN_LIMITS.iconChars} characters)`),
+});
+
+/** The owner's answers as sent; each id and value is checked against the attempt's form by the services (own refusal codes). */
+const answersInputSchema = z
+  .record(z.string().min(1).max(64), z.unknown())
+  .refine((a) => Object.keys(a).length <= PLAN_LIMITS.answers, `at most ${PLAN_LIMITS.answers} answers`);
+
 export const stageSchema = z.object({ stageId: stageIdSchema, title: titleSchema, kind: z.enum(PLAN_STAGE_KINDS) }).strict();
 export const groupSchema = z
   .object({
@@ -59,6 +135,9 @@ export const groupSchema = z
     note: noteSchema.nullable().optional(),
     /** BL-175: this wave's own reason chips (null clears them). */
     reviewReasons: reviewReasonsSchema.nullable().optional(),
+    /** BL-229 part B: the wave's genre and the genre's questions (null clears; absent keeps on an upsert). */
+    genre: genreSchema.nullable().optional(),
+    reviewForm: reviewFormSchema.nullable().optional(),
   })
   .strict();
 export const itemSchema = z
@@ -116,6 +195,8 @@ export const createPlanInputSchema = z
     reviewRejected: z.boolean().optional(),
     /** BL-175: the plan's own reason chips (a wave's list wins). */
     reviewReasons: reviewReasonsSchema.optional(),
+    /** BL-229 part B: the general questions of the review. */
+    reviewForm: reviewFormSchema.optional(),
   })
   .strict();
 export type CreatePlanInput = z.infer<typeof createPlanInputSchema>;
@@ -144,6 +225,8 @@ export const updatePlanInputSchema = z
     reviewRejected: z.boolean().optional(),
     /** BL-175: the plan's own reason chips; null removes them. */
     reviewReasons: reviewReasonsSchema.nullable().optional(),
+    /** BL-229 part B: the plan's general questions; null removes them. */
+    reviewForm: reviewFormSchema.nullable().optional(),
   })
   .strict();
 export type UpdatePlanInput = z.infer<typeof updatePlanInputSchema>;
@@ -236,6 +319,8 @@ export const ownerVerdictInputSchema = z
     replace: z.boolean().optional(),
     reviewSeconds: reviewSecondsSchema,
     ...verdictFieldsSchema,
+    /** BL-229 part B: the answers to the attempt's review form (plan + wave). */
+    answers: answersInputSchema.optional(),
   })
   .strict();
 
@@ -252,6 +337,8 @@ export const peerVerdictInputSchema = z
     replace: z.boolean().optional(),
     reviewSeconds: reviewSecondsSchema,
     ...verdictFieldsSchema,
+    /** BL-229 part B: checked against that device's report (its plan's and wave's forms). */
+    answers: answersInputSchema.optional(),
   })
   .strict();
 
@@ -394,6 +481,8 @@ export const importFileSchema = z
     reviewRejected: z.boolean().optional(),
     /** BL-175: the plan's own reason chips. */
     reviewReasons: reviewReasonsSchema.optional(),
+    /** BL-229 part B: the plan's general questions. */
+    reviewForm: reviewFormSchema.optional(),
     /** FO-MSG-0010: the file's waves with their titles; `groupId` or `id`. Groups only named by items keep their id as title. */
     groups: z
       .array(
@@ -406,6 +495,9 @@ export const importFileSchema = z
             note: noteSchema.nullable().optional(),
             /** BL-175: the wave's own reason chips. */
             reviewReasons: reviewReasonsSchema.optional(),
+            /** BL-229 part B: the wave's genre and questions. */
+            genre: genreSchema.optional(),
+            reviewForm: reviewFormSchema.optional(),
           })
           .passthrough()
       )
