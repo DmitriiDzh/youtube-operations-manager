@@ -89,42 +89,34 @@ async function startServerSession() {
     console.warn(`[restart-when-idle] not started: ${error instanceof Error ? error.message : String(error)}`);
   }
 
-  // BL-228 (SYSTEM_TOPIC_PLAN.md, ADR 0053): the owner's commands in the HUB "System" topic. Its own loop (AGENTS.md §M): with the
-  // switch off, outside the Mac service, or without the token and the ids, a tick is one local read and no Telegram call (AC-SYS-13);
-  // otherwise one 25 s long poll after another. It writes rows (the offset, the audit trail), so it waits while an import / migration
-  // holds the lock or in recovery mode, like the other loops. A stop signal ends the pending long poll at once, so a restart never
-  // waits for it.
+  // BL-228 (SYSTEM_TOPIC_PLAN.md, ADR 0053 Amendment 1): the paid-call requests the factory writes for the owner's approval in the
+  // HUB "System" topic. Its own loop (AGENTS.md §M): every 10 s, and only while the owner's switch is on under the Mac service, the
+  // requests folder is scanned -- each new request is queued once for the hub to post, open ones past 2 h expire. The topic's
+  // messages themselves reach this app through the hub's relay routes, not through this loop; nothing here calls Telegram. It
+  // writes rows, so it waits while an import / migration holds the lock or in recovery mode, like the other loops.
   try {
-    const { createSystemTopicCore, SYSTEM_TOPIC_IDLE_TICK_MS, SYSTEM_TOPIC_ERROR_BACKOFF_MS } = await import("@/lib/system-topic");
-    const systemTopic = createSystemTopicCore();
+    const { getSystemTopicCore } = await import("@/composition/system-topic-approvals");
+    const { SYSTEM_TOPIC_SCAN_TICK_MS } = await import("@/lib/system-topic");
     const { rawSqlClient: systemSqlClient } = await import("@/lib/db");
     const { assertDeviceAvailableForMutation: assertSystemMayWrite } = await import("@/lib/device-mutation-gate");
-    const systemMayWrite = () =>
-      assertSystemMayWrite(systemSqlClient).then(
-        () => true,
-        () => false
-      );
-    const systemStop = new AbortController();
-    process.once("SIGINT", () => systemStop.abort());
-    process.once("SIGTERM", () => systemStop.abort());
-    const systemTopicLoop = async () => {
-      if (systemStop.signal.aborted) return;
-      let nextMs = SYSTEM_TOPIC_IDLE_TICK_MS;
+    const systemTopic = getSystemTopicCore();
+    const systemScanLoop = async () => {
       try {
         await assertSystemMayWrite(systemSqlClient);
-        const { polled } = await systemTopic.tick({ signal: systemStop.signal, mayWrite: systemMayWrite });
-        if (polled) nextMs = 500;
+        await systemTopic.approvals.scan().then(
+          (result) => (result.scanned ? systemTopic.topic.recordScan(null) : undefined),
+          async (error: unknown) => {
+            await systemTopic.topic.recordScan(error instanceof Error ? error.message : String(error));
+            throw error;
+          }
+        );
       } catch (error) {
         const paused = error instanceof Error && (error.name === "OperationLockError" || error.name === "RecoveryModeError");
-        if (!paused) {
-          // Already redacted by the module (no token in it).
-          console.warn(`[system-topic] ${error instanceof Error ? error.message : String(error)}`);
-          nextMs = SYSTEM_TOPIC_ERROR_BACKOFF_MS;
-        }
+        if (!paused) console.warn(`[system-topic] ${error instanceof Error ? error.message : String(error)}`);
       }
-      setTimeout(() => void systemTopicLoop(), nextMs).unref();
+      setTimeout(() => void systemScanLoop(), SYSTEM_TOPIC_SCAN_TICK_MS).unref();
     };
-    setTimeout(() => void systemTopicLoop(), 15_000).unref();
+    setTimeout(() => void systemScanLoop(), 20_000).unref();
   } catch (error) {
     console.warn(`[system-topic] not started: ${error instanceof Error ? error.message : String(error)}`);
   }

@@ -221,6 +221,9 @@ export type DomainErrorCode =
   // BL-228 (SYSTEM_TOPIC_PLAN.md, ADR 0053): the System topic's listening switch outside the Mac service, or without its token/ids.
   | "system_topic_needs_service"
   | "system_topic_incomplete"
+  | "system_topic_disabled"
+  | "system_topic_request_not_found"
+  | "system_topic_request_state"
   // BL-188 stage 2: a Gemini job already sent to Google (or finished) cannot be cancelled.
   | "gemini_cancel_too_late"
   // BL-188 stage 2: an action on another computer's job or session that cannot be sent (the computer, job or session is not

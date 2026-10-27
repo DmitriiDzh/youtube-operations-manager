@@ -1,60 +1,61 @@
-import type { ProcessResult, SystemCommandRow, SystemInboxMessage, SystemTopicDeps, SystemTopicState, SystemTopicStore } from "./contracts";
+import type { SystemApprovalAction, SystemRequestFiles, SystemRequestRow, SystemRequestStore } from "./approvals";
+import { createSystemApprovals } from "./approvals";
+import type { SystemCommandRow, SystemInboundMessage, SystemTopicState, SystemTopicStore } from "./contracts";
+import { createSystemTopic } from "./services";
 
-// BL-228: in-memory fakes for the System topic's tests (no database, no network, no child process). Not a test file itself, so the
+// BL-228: in-memory fakes for the System topic's tests (no database, no network, no file system). Not a test file itself, so the
 // test runner does not pick it up; nothing in production imports it.
 
 export const OWNER = 331110302;
 export const CHAT = -1001234567890;
 export const TOPIC = 42;
-export const TOKEN = "1234567890:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsawQ";
-export const TROPICO_ID = "UCa2amtpeOmgP-HkiLKPm1gg";
-export const TROPICO_ROOT = "/Volumes/T9/YouTube/01 Tropico Jazz";
-export const CONFIG_PATH = "/Volumes/T9/YouTube/00 YT Operator/System/commands.json";
-export const STATUS_ARGV = ["python3", "/Volumes/T9/YouTube/00 YT Operator/90 Scripts/factory_status.py"];
+export const DIR = "/Volumes/T9/YouTube/00 YT Operator/System/requests";
+export const T0 = Date.parse("2026-10-27T10:00:00.000Z");
 
-export const CONFIG = {
-  format: 1,
-  channels: { tropico: { channelId: TROPICO_ID, root: TROPICO_ROOT } },
-  status: { argv: STATUS_ARGV, channelArg: "--channel" },
-  go: { argv: ["python3", "06 Workflows/factory_launch.py", "start", "13 Weekly_Plan v1", "run"], cwd: "channelRoot" },
-  stopFile: "06 Workflows/_data/weekly-plan/STOP",
-  jobsDir: "06 Workflows/_data/jobs",
-};
-
-export function memoryStore(initial: Partial<SystemTopicState> = {}): SystemTopicStore & { state: SystemTopicState; rows: Map<number, SystemCommandRow> } {
+export function memoryStore(initial: Partial<SystemTopicState> = {}): SystemTopicStore & { state: SystemTopicState; rows: Map<number, SystemCommandRow>; outbox: Array<{ id: string; text: string; createdAt: number; deliveredAt: number | null }> } {
   const state: SystemTopicState = {
     ownerUserId: String(OWNER),
     chatId: String(CHAT),
     threadId: String(TOPIC),
-    listening: true,
-    commandsPath: CONFIG_PATH,
-    inboxSource: "bot_get_updates",
-    pollOffset: null,
+    enabled: true,
+    requestsPath: DIR,
+    relaySecretHash: null,
+    relaySecretCreatedAt: null,
     droppedCount: 0,
-    lastPollAt: null,
-    lastPollError: null,
+    lastInboundAt: null,
+    lastOutboxAt: null,
+    lastScanAt: null,
+    lastScanError: null,
     updatedAt: null,
     ...initial,
   };
   const rows = new Map<number, SystemCommandRow>();
+  const outbox: Array<{ id: string; text: string; createdAt: number; deliveredAt: number | null }> = [];
   return {
     state,
     rows,
+    outbox,
     async read() {
       return { ...state };
     },
     async saveSettings(settings, at) {
       Object.assign(state, settings, { updatedAt: at });
     },
-    async recordPoll(input) {
-      state.pollOffset = input.offset;
-      state.droppedCount += input.dropped;
-      state.lastPollAt = input.at;
-      state.lastPollError = input.error;
+    async setRelaySecretHash(hash, at) {
+      state.relaySecretHash = hash;
+      state.relaySecretCreatedAt = at;
+    },
+    async recordInbound({ dropped, at }) {
+      state.droppedCount += dropped;
+      state.lastInboundAt = at;
+    },
+    async recordScan({ at, error }) {
+      state.lastScanAt = at;
+      state.lastScanError = error;
     },
     async claimCommand(row) {
       if (rows.has(row.updateId)) return false;
-      rows.set(row.updateId, { ...row, status: "received", resultText: null, replyError: null, finishedAt: null });
+      rows.set(row.updateId, { ...row, status: "received", resultText: null, finishedAt: null });
       return true;
     },
     async finishCommand(updateId, patch) {
@@ -64,84 +65,125 @@ export function memoryStore(initial: Partial<SystemTopicState> = {}): SystemTopi
     async recentCommands(limit) {
       return [...rows.values()].sort((a, b) => b.receivedAt - a.receivedAt || b.updateId - a.updateId).slice(0, limit);
     },
+    async enqueueOutbox(row) {
+      outbox.push({ ...row, deliveredAt: null });
+    },
+    async takeOutbox(at, limit) {
+      const out = outbox.filter((m) => m.deliveredAt === null).slice(0, limit);
+      for (const m of out) m.deliveredAt = at;
+      state.lastOutboxAt = at;
+      return out.map(({ id, text }) => ({ id, text }));
+    },
   };
 }
 
-export function message(updateId: number, text: string, overrides: { from?: number; chat?: number; thread?: number | null } = {}): SystemInboxMessage {
+export function memoryRequestStore(): SystemRequestStore & { rows: Map<string, SystemRequestRow> } {
+  const rows = new Map<string, SystemRequestRow>();
   return {
-    updateId,
-    messageId: updateId,
-    chatId: overrides.chat ?? CHAT,
-    threadId: overrides.thread === undefined ? TOPIC : overrides.thread,
-    fromId: overrides.from ?? OWNER,
-    text,
-    date: null,
+    rows,
+    async get(id) {
+      return rows.get(id) ?? null;
+    },
+    async insert(row) {
+      if (rows.has(row.id)) return false;
+      rows.set(row.id, { ...row });
+      return true;
+    },
+    async transition(id, from, patch) {
+      const row = rows.get(id);
+      if (!row || !from.includes(row.state)) return false;
+      rows.set(id, { ...row, ...patch });
+      return true;
+    },
+    async listByStates(states) {
+      return [...rows.values()].filter((r) => states.includes(r.state));
+    },
+    async recent(limit) {
+      return [...rows.values()].sort((a, b) => b.seenAt - a.seenAt).slice(0, limit);
+    },
   };
 }
 
-export type Harness = {
-  deps: SystemTopicDeps;
-  store: ReturnType<typeof memoryStore>;
-  /** Each receive asked of the fake inbound source, with the cursor it was given. */
-  receiveCalls: Array<{ cursor: number | null; signal: AbortSignal | undefined }>;
-  sent: Array<{ chatId: string; threadId: number | null; text: string }>;
-  runs: Array<{ argv: readonly string[]; cwd: string | undefined; timeoutMs: number }>;
-  logs: Array<{ event: string; context: Record<string, unknown> }>;
-  /** Messages the next receive returns (each call takes the next batch; an Error is thrown). The next cursor is one past the newest. */
-  batches: Array<SystemInboxMessage[] | Error>;
-};
-
-export function harness(options: {
-  state?: Partial<SystemTopicState>;
-  token?: string | null;
-  service?: boolean;
-  config?: unknown;
-  workspace?: string | null;
-  result?: ProcessResult;
-} = {}): Harness {
-  const store = memoryStore(options.state);
-  let token = options.token === undefined ? TOKEN : options.token;
-  const h: Harness = { store, receiveCalls: [], sent: [], runs: [], logs: [], batches: [], deps: undefined as unknown as SystemTopicDeps };
-  let now = Date.parse("2026-10-27T10:00:00.000Z");
-  h.deps = {
-    store,
-    replies: {
-      async sendMessage(_token, input) {
-        h.sent.push(input);
-        return { messageId: 1 };
-      },
+export function memoryFiles(): SystemRequestFiles & { files: Map<string, string>; results: Map<string, Record<string, unknown>> } {
+  const files = new Map<string, string>();
+  const results = new Map<string, Record<string, unknown>>();
+  return {
+    files,
+    results,
+    async list() {
+      return [...files.keys(), ...[...results.keys()].map((id) => `${id}.result.json`)];
     },
-    inboxes: {
-      bot_get_updates: {
-        async receive(input) {
-          h.receiveCalls.push({ cursor: input.cursor, signal: input.signal });
-          const next = h.batches.shift() ?? [];
-          if (next instanceof Error) throw next;
-          const newest = next.reduce((max, m) => Math.max(max, m.updateId + 1), input.cursor ?? 0);
-          return { messages: next, nextCursor: next.length > 0 ? newest : input.cursor };
-        },
-      },
+    async read(_dir, name) {
+      return files.get(name) ?? null;
     },
-    token: {
-      read: async () => token,
-      hasToken: async () => token !== null,
-      botId: async () => (token ? token.split(":")[0] : null),
-      write: async (value) => {
-        token = value;
-      },
-      clear: async () => {
-        token = null;
-      },
+    async writeResult(_dir, id, text) {
+      results.set(id, JSON.parse(text) as Record<string, unknown>);
     },
-    readConfigFile: async () => (options.config === undefined ? JSON.stringify(CONFIG) : options.config === null ? null : typeof options.config === "string" ? options.config : JSON.stringify(options.config)),
-    channelWorkspacePath: async (channelId) => (channelId === TROPICO_ID ? (options.workspace === undefined ? TROPICO_ROOT : options.workspace) : null),
-    runProcess: async (argv, opts) => {
-      h.runs.push({ argv, cwd: opts.cwd, timeoutMs: opts.timeoutMs });
-      return options.result ?? { output: "all good\n", exitCode: 0, timedOut: false, error: null };
-    },
-    serviceMode: () => options.service ?? true,
-    clock: () => (now += 1000),
-    log: (event, context) => h.logs.push({ event, context }),
   };
-  return h;
+}
+
+export function inbound(updateId: number, text: string, overrides: { from?: number; chat?: number; thread?: number | null } = {}): SystemInboundMessage {
+  return { updateId, messageId: updateId, chatId: overrides.chat ?? CHAT, threadId: overrides.thread === undefined ? TOPIC : overrides.thread, fromId: overrides.from ?? OWNER, date: null, text };
+}
+
+/** An allowlisted action whose estimate, refusal and run are set by the test; every run is recorded. */
+export function fakeAction(options: { estimateUsd?: number | null; refusal?: string | null; capUsd?: number; fail?: string } = {}) {
+  const runs: Array<{ args: Record<string, unknown>; actor: string }> = [];
+  const action: SystemApprovalAction = {
+    capUsd: options.capUsd ?? 2,
+    parse: (args) => (args && typeof args === "object" && typeof (args as Record<string, unknown>).maxMinutes === "number" ? { ok: true, args: args as Record<string, unknown> } : { ok: false, error: "maxMinutes is required" }),
+    check: async () => ({ estimateUsd: options.estimateUsd === undefined ? 1.5 : options.estimateUsd, refusal: options.refusal ?? null }),
+    run: async (args, actor) => {
+      runs.push({ args, actor });
+      return options.fail ? { ok: false, error: options.fail } : { ok: true, result: { sessionId: "s-1" } };
+    },
+    summary: (args) => `${String(args.maxMinutes)} min`,
+  };
+  return { action, runs };
+}
+
+export function requestFile(id: string, overrides: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    format: 1,
+    id,
+    createdAt: new Date(T0).toISOString(),
+    requestedBy: "operator",
+    action: "factory_media_start_session",
+    args: { channelId: "UCa2amtpeOmgP-HkiLKPm1gg", maxMinutes: 60, maxUsd: 2, releaseWhenDone: true },
+    costEstimateUsd: 1.2,
+    reason: "render V52",
+    ...overrides,
+  });
+}
+
+/** The whole module on fakes: the topic core with its approvals, a clock the test moves. */
+export function harness(options: { state?: Partial<SystemTopicState>; service?: boolean; action?: ReturnType<typeof fakeAction> } = {}) {
+  const store = memoryStore(options.state);
+  const requests = memoryRequestStore();
+  const files = memoryFiles();
+  const action = options.action ?? fakeAction();
+  const clock = { now: T0 + 60_000 };
+  const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+  let ids = 0;
+  const approvals = createSystemApprovals({
+    store: requests,
+    files,
+    actions: { factory_media_start_session: action.action },
+    readState: () => store.read(),
+    serviceMode: () => options.service ?? true,
+    enqueue: (text) => store.enqueueOutbox({ id: `o${++ids}`, text, createdAt: clock.now }),
+    clock: () => clock.now,
+    log: (event, context) => logs.push({ event, context }),
+  });
+  const topic = createSystemTopic({
+    store,
+    serviceMode: () => options.service ?? true,
+    clock: () => clock.now,
+    newId: () => `o${++ids}`,
+    randomBytes: () => Buffer.alloc(32, ++ids),
+    approvals: approvals.commands,
+    log: (event, context) => logs.push({ event, context }),
+  });
+  const outboxTexts = () => store.outbox.map((m) => m.text);
+  return { store, requests, files, action, clock, logs, approvals, topic, outboxTexts };
 }

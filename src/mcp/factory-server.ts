@@ -573,7 +573,7 @@ const gpuPlanInput = z
     maxPricePerHr: z.number().gt(0).max(1000).nullable().optional(),
   })
   .strict();
-const startSessionInput = z
+export const startSessionInput = z
   .object({
     channelId: z.string().min(1).max(64),
     maxMinutes: z.number().int().min(1).max(1440).optional(),

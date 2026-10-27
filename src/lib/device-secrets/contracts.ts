@@ -7,12 +7,8 @@ import type { EncryptedPayload } from "@/lib/shared-crypto";
 
 export const DEVICE_SECRETS_KEY_FILE_NAME = "device-secrets.key";
 
-/**
- * `runpod`: the RunPod key + S3 pair (a JSON set, media-generation). `gemini`: the Gemini key. `huggingface`: the HF read token.
- * `telegram_system_bot`: the HUB bot's token for the System topic (BL-228, ADR 0053; owner msg 3602: the existing HUB bot) -- never
- * carried to another computer.
- */
-export const DEVICE_SECRET_NAMES = ["runpod", "gemini", "huggingface", "telegram_system_bot"] as const;
+/** `runpod`: the RunPod key + S3 pair (a JSON set, media-generation). `gemini`: the Gemini key. `huggingface`: the HF read token. */
+export const DEVICE_SECRET_NAMES = ["runpod", "gemini", "huggingface"] as const;
 export type DeviceSecretName = (typeof DEVICE_SECRET_NAMES)[number];
 
 /** `set`: a row and a readable key file. `none`: nothing stored. The key file is missing / unusable while a row exists. */
