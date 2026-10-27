@@ -24,6 +24,7 @@ import { RunpodConnectionSettings } from "@/components/media-generation-settings
 import { GeminiMediaSettings } from "@/components/gemini-media-settings";
 import { CloudCredentialsTransfer } from "@/components/cloud-credentials-transfer";
 import { HfTokenSettings } from "@/components/hf-token-settings";
+import { GithubTokenSettings } from "@/components/github-token-settings";
 import { LiveStreamsSettings } from "@/components/live-streams-settings";
 import { DeviceAutoSyncSettings } from "@/components/device-auto-sync-settings";
 import { AppVersionInfo } from "@/components/app-version-info";
@@ -171,6 +172,10 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
         </FeatureErrorBoundary>
         <FeatureErrorBoundary label={section("hfToken.title")}>
           <HfTokenSettings />
+        </FeatureErrorBoundary>
+        {/* BL-230: the GitHub read token for private pod-runtime repositories, next to the Hugging Face token. */}
+        <FeatureErrorBoundary label={section("githubToken.title")}>
+          <GithubTokenSettings />
         </FeatureErrorBoundary>
         <FeatureErrorBoundary label={section("cloudKeys.title")}>
           <CloudCredentialsTransfer />
