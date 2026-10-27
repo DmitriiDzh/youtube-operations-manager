@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { PlanReviewField } from "@/lib/generation-plans/contracts";
+import type { PlanAnswers, PlanReviewField } from "@/lib/generation-plans/contracts";
 import type { UiLanguage } from "@/lib/ui-text";
-import { answersToSend, formSectionsFor, genreOf, genreTintStyle, missingRequired, planGenres, reasonRowsFor, reviewFormsOfShared, safeGenreColor, toggleAnswer, type ReviewFormsView } from "./genre-review-model";
+import { answersToSend, formSectionsFor, genreOf, genreTintStyle, missingRequired, planGenres, reasonRowsFor, reviewFormsOfShared, safeGenreColor, savedAnswersOf, toggleAnswer, withSavedAnswers, type ReviewFormsView } from "./genre-review-model";
 import { GenreHeader, REVIEW_REASONS, ReviewFormSection } from "./plan-review-screen";
 import { UiTextProvider } from "./ui-text-provider";
 import { reasonChipsFor } from "./visual-review-model";
@@ -88,4 +88,28 @@ test("AC-MR-10: the header reads «🌾 Sounds of Rural Japan»; a scale is 10 b
   );
   assert.deepEqual(buttons.filter(([, on]) => on === "true").map(([label]) => label), ["7"]);
   assert.equal((form.match(/aria-label="Обязательный вопрос"/g) ?? []).length, 2);
+});
+
+test("FO-REQ-0043 §B item 4: a rated attempt opens with its saved answers; editing them changes what a replacing verdict sends", () => {
+  const saved = { "g.no_vocals": true, "rj.instruments": false, "rj.tempo": "right" };
+  const rated = { verdict: { answers: saved } };
+  const fresh: { reasons: string[]; rating: number | null; answers?: PlanAnswers } = { reasons: [], rating: null };
+  const opened = withSavedAnswers(fresh, savedAnswersOf(rated));
+  assert.deepEqual(opened, { reasons: [], rating: null, answers: { "g.no_vocals": true, "rj.instruments": false, "rj.tempo": "right" } });
+  assert.notEqual(opened.answers, saved, "a copy: editing never changes the stored verdict on screen");
+  // Only the form is prefilled: the rating and chips start fresh as before.
+  assert.equal(opened.rating, null);
+  assert.deepEqual(opened.reasons, []);
+  // The owner changes the tempo; a replacing verdict sends the edited answers.
+  const edited = toggleAnswer(opened.answers, "rj.tempo", "faster");
+  const all = [...GENERAL, ...GENRE_FIELDS];
+  assert.deepEqual(answersToSend(all, edited), { "g.no_vocals": true, "rj.instruments": false, "rj.tempo": "faster" });
+  // A draft that already holds answers (kept while moving between attempts) keeps them.
+  assert.deepEqual(withSavedAnswers({ answers: { "g.no_vocals": false } }, savedAnswersOf(rated)), { answers: { "g.no_vocals": false } });
+  // Nothing to prefill: no verdict, a verdict without answers, a re-check.
+  assert.equal(savedAnswersOf({ verdict: null }), undefined);
+  assert.equal(savedAnswersOf({ verdict: {} }), undefined);
+  assert.equal(savedAnswersOf({ verdict: { answers: {} } }), undefined);
+  assert.equal(savedAnswersOf({ ...rated, recheck: { recheckId: "q1" } }), undefined);
+  assert.equal(savedAnswersOf(null), undefined);
 });

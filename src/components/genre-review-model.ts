@@ -92,3 +92,18 @@ export function planGenres(groups: ReadonlyArray<{ genre?: PlanGenre | null }> |
   for (const g of groups ?? []) if (g.genre && !out.some((x) => x.id === g.genre!.id)) out.push(g.genre);
   return out;
 }
+
+/**
+ * FO-REQ-0043 §B item 4 ("the Manager shows what is saved"): the answers an already-rated attempt opens with -- its verdict's
+ * stored answers (a copy), or none for an attempt without a verdict, without answers, or a re-check (its form is not shown).
+ */
+export function savedAnswersOf(entry: { verdict: { answers?: PlanAnswers } | null; recheck?: unknown } | null | undefined): PlanAnswers | undefined {
+  if (!entry || entry.recheck || !entry.verdict?.answers || Object.keys(entry.verdict.answers).length === 0) return undefined;
+  return { ...entry.verdict.answers };
+}
+
+/** The draft an attempt opens with: its saved answers, unless the draft already holds answers of its own (a kept one). */
+export function withSavedAnswers<D extends { answers?: PlanAnswers }>(draft: D, saved: PlanAnswers | undefined): D {
+  if (!saved || Object.keys(draft.answers ?? {}).length > 0) return draft;
+  return { ...draft, answers: { ...saved } };
+}

@@ -46,7 +46,7 @@ import { VisualReviewLayer, type LayerEntry, type LayerHandle, type LayerMode } 
 import { useDialogFocus } from "./use-dialog-focus";
 import { attemptLabel, fpsFromMetrics, isVisual, loopFromMetrics, questionStart, sharedEntryMedia, totalFromContentRange, VISUAL_REASON_KEYS, visualKeyAction } from "./visual-review-model";
 import { FeedPreview, SeamFrames } from "./visual-review-tools";
-import { answersToSend, formSectionsFor, genreOf, genreTintStyle, missingRequired, NO_REVIEW_FORMS, reasonRowsFor, reviewFormsOfShared, tintOver, toggleAnswer, type ReviewFormsView } from "./genre-review-model";
+import { answersToSend, formSectionsFor, genreOf, genreTintStyle, missingRequired, NO_REVIEW_FORMS, reasonRowsFor, reviewFormsOfShared, savedAnswersOf, tintOver, toggleAnswer, withSavedAnswers, type ReviewFormsView } from "./genre-review-model";
 import type { PlanAnswers, PlanGenre, PlanReviewField } from "@/lib/generation-plans/contracts";
 import type { ReasonChips } from "./visual-review-model";
 
@@ -800,6 +800,16 @@ export function PlanReviewScreen({
   }, [base]);
 
   const entry: ScreenEntry | null = entries && entries.length > 0 ? entries[Math.min(index, entries.length - 1)] : null;
+  // FO-REQ-0043 §B item 4 (BL-229 part B): an already-rated attempt opens with its saved answers in the form, so changing the
+  // verdict sends them as edited. Only the form: the rating and chips start fresh, as before. Once per attempt and verdict.
+  const savedAnswers = savedAnswersOf(entry);
+  const prefillKey = entry && savedAnswers ? `${entryKey(entry)}\u0000${entry.verdict?.at ?? ""}` : null;
+  const savedRef = useRef(savedAnswers);
+  savedRef.current = savedAnswers;
+  useEffect(() => {
+    if (prefillKey === null) return;
+    setDraft((d) => withSavedAnswers(d, savedRef.current));
+  }, [prefillKey]);
   // Review round 1: the attempt on screen now, for an answer that arrives after the owner moved on.
   const onScreen = useRef<string | null>(null);
   useEffect(() => {
