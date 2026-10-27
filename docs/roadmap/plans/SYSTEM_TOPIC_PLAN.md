@@ -43,19 +43,25 @@ Hub-side (FO-RESP-0043 H4). The Manager keeps none of the factory config, proces
   the outbox: id, action, short arguments, the **Manager's own** estimate, the hash (first 8 hex of SHA-256 of the canonical JSON of
   `{action, args}`). A file that does not parse as JSON yet is read again next time; a wrong shape is refused once.
 - Allowlist (the same schema and service code as the MCP tool, composed in `src/composition/system-topic-approvals.ts`):
-  - `factory_media_start_session`: `maxMinutes`, `maxUsd` and `releaseWhenDone: true` required (Q5). Estimate = the saved GPU rate
-    × `maxMinutes` / 60. Refused over $2 (estimate or `maxUsd`), or when the factory switch, per-session, day or month limits would
-    hold it.
-  - `factory_gemini_create_job`: the Gemini module's dry-run estimate and limits; refused over $1; `dryRun` cannot be approved.
+  - `factory_media_start_session`: `maxMinutes`, `maxUsd` and `releaseWhenDone: true` required (Q5). Estimate = rate ×
+    `maxMinutes` / 60, the rate being the session's `gpu.maxPricePerHr`, else its template's, else the saved GPU price; the post says
+    "maxUsd $X is the hard bound". Refused over $2 (estimate or `maxUsd`), or when the factory switch, per-session, day or month
+    limits would hold it. A start a device limit still holds is withdrawn (the factory stop path) and recorded `failed`.
+  - `factory_gemini_create_job`: the Gemini module's dry-run estimate and limits; refused over $1; `dryRun` cannot be approved. The
+    SHA-256 of each input file (frames, references) is part of the request's fingerprint; an unreadable one is refused at posting,
+    a changed one at Confirm.
+  - `factory_media_get_gpu_availability` (FO-RESP-0045): a free test action ($0), the tool's own schema, the same two steps.
   - Anything else is posted as refused.
 - States: `posted` → `approved_in_topic` (the owner's `approve`) → `confirmed` (the Web Confirm, set before the call) → `done` /
   `failed`; also `denied`, `expired` (past 2 h from `createdAt`, or `createdAt` in the future), `refused`.
-- Confirm re-checks: approved in the topic and not used, 2 h, the file's hash equals the posted one, the schema, the cap and the
-  limits. It runs the call in process, writes `<id>.result.json` atomically (`format`, `id`, `status: done | refused | failed |
+- Confirm re-checks: approved in the topic and not used, 2 h, the re-read file's `{action, args}` equal (canonical JSON) to the
+  stored ones -- the 8-hex hash is display only --, the input files' fingerprint (full SHA-256), the schema, the cap and the
+  limits. It runs with the STORED args (what the owner saw on the card), never the re-read file's. It runs the call in process, writes `<id>.result.json` atomically (`format`, `id`, `status: done | refused | failed |
   expired | denied`, `at`, `result` | `error`) and queues the result line for the topic. The Gemini job is created with the actor
   `owner (System)`; the media module records a factory session as `factory` (its own actor is fixed), and System's audit, result file
   and log name the owner.
-- All state is in the DB; a restart neither forgets a use nor re-posts.
+- All state is in the DB; a restart neither forgets a use nor re-posts. At boot, a request confirmed before this process started
+  and not in flight becomes `failed` (outcome unknown), with its result file.
 
 ## 6. Never
 

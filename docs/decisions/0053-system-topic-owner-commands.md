@@ -54,3 +54,7 @@ Owner msgs 3602 and 3607; FO-RESP-0043 H1–H4, Q5, Q6. This replaces Decision i
    item 6, and `factory_media_start_session` also needs `maxMinutes`, `maxUsd` and `releaseWhenDone: true` (Q5). Results go to
    `<id>.result.json` only (Q6).
 5. **Accepted gap:** the relay cannot prove the owner wrote a topic message. The in-app Confirm is the mitigation (RISK-136).
+6. **Review of BL-228 (2026-10-27).** Confirm binds to exact content: the stored `{action, args}` must equal the re-read file's
+   (canonical JSON), the full SHA-256 fingerprint also covers a Gemini job's input files, and the call runs with the stored args.
+   The 8-hex hash is display only. A free test action `factory_media_get_gpu_availability` (FO-RESP-0045) goes through the same
+   two steps.

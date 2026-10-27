@@ -4860,12 +4860,15 @@ Plan: `docs/roadmap/plans/SYSTEM_TOPIC_PLAN.md`. Built on `feature/bl-228-system
 - **Requests.** Every 10 s while the feature is on, the scan in `src/instrumentation.ts` reads `<requests>/<id>.json`. The id is
   the file stem and must match `^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,127}$`. Each new request is posted once with the Manager's estimate
   and the `{action, args}` hash, or refused / expired once. `approve` only moves `posted` → `approved_in_topic`. The Web Confirm
-  re-reads and re-hashes the file and re-checks the schema, the cap and the limits. Then a compare-and-set
+  re-reads the file and requires its `{action, args}` to equal the stored ones as canonical JSON (the 8-hex hash is display only),
+  re-computes the full SHA-256 fingerprint (it also covers a Gemini job's input files), and re-checks the schema, the cap and the
+  limits; the call runs with the stored args. Then a compare-and-set
   (`approved_in_topic` → `confirmed`) marks it used before the call; only one confirm can win it. The call runs in process through
   `src/composition/system-topic-approvals.ts`, which calls `createFactoryMediaDeps().startSession` / `createGeminiMediaCore().createJob`
   with the MCP tools' schemas. That keeps the factory and Gemini limits as the ceiling, and the module itself imports neither.
   `<id>.result.json` is written through a temporary file and a rename.
-  At boot, a request still `confirmed` (the process ended during the call) becomes `failed` with its result file; it never reruns.
+  At boot, a request still `confirmed` from before this process started, and not in flight here, becomes `failed` with its result
+  file; it never reruns. The free `factory_media_get_gpu_availability` (FO-RESP-0045) is the acceptance-test action.
 - **Limits.** The media module records an approved session as the factory's (`requestedBy: factory`); only Gemini takes the actor
   `owner (System)`. A media start held by a device limit is recorded `failed` (it waits for the owner in Servers). The relay cannot
   prove who wrote a topic message (RISK-136); the Web Confirm is the mitigation.
