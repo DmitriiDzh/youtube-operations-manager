@@ -1192,7 +1192,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
   );
   planWrite(
     "factory_plan_clone_group",
-    "Build the next wave from a group: { planId, groupId, newGroupId, title?, paramsPatch? (merged into every copied item's params), seeds? (replace the copied seeds) } -> { plan, progress }. Items are copied as '<newGroupId>/<rest of the key>' with no attempts or results; the new group dependsOn the source.",
+    "Build the next wave from a group: { planId, groupId, newGroupId, title?, paramsPatch? (merged into every copied item's params), seeds? (replace the copied seeds) } -> { plan, progress }. Items are copied as '<newGroupId>/<rest of the key>' with no attempts or results; the new group dependsOn the source. 1.35.0: the new group also takes the source's genre, reviewForm and reviewReasons (a re-run of a batch keeps its genre review).",
     z.object({ planId: z.string(), groupId: z.string(), newGroupId: z.string(), title: z.string().optional(), paramsPatch: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(), seeds: z.array(z.number().int()).optional() }).strict(),
     (input) => deps.plans.cloneGroup(input)
   );

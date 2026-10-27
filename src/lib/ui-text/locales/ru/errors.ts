@@ -157,6 +157,12 @@ export const errors: Record<keyof typeof en, string> = {
   "errors.plan_mismatch": "Это не соответствует плану.",
   "errors.plan_invalid": "План неверный.",
   "errors.plan_verdict_exists": "У этого трека уже есть оценка.",
+  // BL-229 часть B: ответы вердикта не подходят к форме оценки.
+  "errors.plan_answer_unknown_field": "Один из ответов — на вопрос, которого нет в форме этого трека. Обновите проверку и ответьте снова.",
+  "errors.plan_answer_wrong_type": "Один из ответов не того вида, что нужен для его вопроса.",
+  "errors.plan_answer_out_of_range": "Ответ по шкале — целое число от 1 до 10.",
+  "errors.plan_answer_unknown_option": "Один из ответов не входит в варианты своего вопроса. Обновите проверку и выберите снова.",
+  "errors.plan_answer_required": "Сначала ответьте на обязательные вопросы (отмечены *).",
   "errors.plan_recheck_exists": "Повторная проверка с этим id уже есть, с другим содержанием.",
   "errors.plan_recheck_closed": "Эта повторная проверка уже закрыта.",
   "errors.gemini_disabled": "Генерация через Gemini выключена на этом компьютере (Настройки → Облачные API).",

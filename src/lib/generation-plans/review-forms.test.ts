@@ -442,3 +442,40 @@ test("AC-MR-08: without forms, a genre or answers the report is written as versi
   assert.equal(generationPlansReportVersionFor({ plans, verdicts: [base] }), 5);
   assert.equal(generationPlansReportVersionFor({ plans, verdicts: [{ ...base, answers: { "g.no_vocals": true } }] }), 6);
 });
+
+// -- independent review of BL-229 ---------------------------------------------------------------------------------------------
+
+test("review 3: answering a re-check keeps the stored verdict's answers on the current row; the answer's history row has none", async () => {
+  const mac = await created();
+  await mac.services.recordOwnerVerdict({ planId: PLAN, ...A014, result: "accepted", rating: 7, answers: ANSWERS });
+  await mac.services.requestRecheck({ planId: PLAN, ...A014, recheckId: "q1", kind: "question", title: "голос?", note: "is there a voice at 0:25?" });
+  await mac.services.answerRecheck({ planId: PLAN, recheckId: "q1", result: "rejected", rating: 3 });
+  const row = (await mac.store.listResults(PLAN)).find((r) => r.stageId === "owner_review" && r.itemKey === A014.itemKey);
+  assert.deepEqual([row?.result, row?.rating, row?.answers], ["rejected", 3, { "g.no_vocals": true, "g.background": 7, "rj.instruments": false, "rj.tempo": "right" }]);
+  const history = (await mac.store.listVerdictHistory(PLAN)).filter((h) => h.itemKey === A014.itemKey);
+  assert.deepEqual(history.map((h) => [h.recheckId ?? null, h.answers ?? null]), [
+    [null, { "g.no_vocals": true, "g.background": 7, "rj.instruments": false, "rj.tempo": "right" }],
+    ["q1", null],
+  ]);
+});
+
+test("review 7: every grapheme of a genre icon is an emoji; at most 2 graphemes and 16 characters", () => {
+  assert.equal(isGenreIcon("🌾"), true);
+  assert.equal(isGenreIcon("🇯🇵"), true, "a flag (two regional indicators) is one grapheme");
+  assert.equal(isGenreIcon("🌾🇯🇵"), true);
+  assert.equal(isGenreIcon("🌾<"), false);
+  assert.equal(isGenreIcon("<🌾"), false);
+  assert.equal(isGenreIcon("🌾-"), false);
+  assert.equal(isGenreIcon("🌾🌾🌾"), false);
+});
+
+test("review 8: cloning a wave (a re-run of a batch) keeps its genre, questions and chips", async () => {
+  const mac = await created();
+  await mac.services.cloneGroup({ planId: PLAN, groupId: "014", newGroupId: "014b" });
+  const clone = (await definition(mac)).groups.find((g) => g.groupId === "014b");
+  assert.deepEqual([clone?.genre, clone?.reviewForm?.fields.map((f) => f.id), clone?.reviewReasons, clone?.dependsOn], [GENRE, ["rj.instruments", "rj.tempo"], ["барабаны / бит"], "014"]);
+  // A wave without a genre clones without one.
+  await mac.services.cloneGroup({ planId: PLAN, groupId: "015", newGroupId: "015b" });
+  const plain = (await definition(mac)).groups.find((g) => g.groupId === "015b");
+  assert.deepEqual([plain?.genre, plain?.reviewForm, plain?.reviewReasons], [undefined, undefined, undefined]);
+});

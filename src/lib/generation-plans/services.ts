@@ -1251,7 +1251,10 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
     const older = stored !== undefined && stored.reportedBy === "owner" && Math.floor(Date.parse(answer.at) / 1000) < Math.floor(Date.parse(stored.at) / 1000);
     let rowChanged: PlanResultRow | null = null;
     if (!answer.kept && recheck.status !== "withdrawn" && !superseded && !older) {
-      rowChanged = { stageId: reviewStageId, itemKey: recheck.itemKey, attemptRef: recheck.attemptRef, result: answer.result, reportedBy: "owner", note: rowNote, rating: answer.rating, reasons: answer.reasons, markers: answer.markers, auditionFile: null, checks: [], metrics: {}, at: answer.at };
+      // BL-229 part B (review): a re-check answer takes no form answers -- the stored verdict's answers carry forward (the
+      // history row of the answer stays without them).
+      const carried = stored?.reportedBy === "owner" && stored.answers ? { answers: stored.answers } : {};
+      rowChanged = { stageId: reviewStageId, itemKey: recheck.itemKey, attemptRef: recheck.attemptRef, result: answer.result, reportedBy: "owner", note: rowNote, rating: answer.rating, reasons: answer.reasons, markers: answer.markers, auditionFile: null, checks: [], metrics: {}, ...carried, at: answer.at };
       await deps.store.upsertResults(row.id, [rowChanged]);
     }
     const kept: PlanVerdictHistoryRow = {
@@ -2901,7 +2904,19 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         return {
           definition: {
             ...row.definition,
-            groups: [...row.definition.groups, { groupId: parsed.newGroupId, title: parsed.title ?? parsed.newGroupId, dependsOn: parsed.groupId, note: null }],
+            // BL-229 part B (review): a re-run of a batch keeps its genre review -- the genre, its questions and its chips.
+            groups: [
+              ...row.definition.groups,
+              {
+                groupId: parsed.newGroupId,
+                title: parsed.title ?? parsed.newGroupId,
+                dependsOn: parsed.groupId,
+                note: null,
+                ...(source.genre ? { genre: { ...source.genre } } : {}),
+                ...(source.reviewForm ? { reviewForm: structuredClone(source.reviewForm) } : {}),
+                ...(source.reviewReasons ? { reviewReasons: [...source.reviewReasons] } : {}),
+              },
+            ],
             items: [...row.definition.items, ...copies],
           },
         };

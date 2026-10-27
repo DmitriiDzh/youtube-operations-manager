@@ -67,16 +67,20 @@ const reviewReasonsSchema = z
 const FIELD_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const fieldIdSchema = z.string().regex(FIELD_ID_PATTERN, "a field id: up to 64 letters, digits, '.', '_' or '-'");
 
-function graphemesOf(text: string): number {
-  return [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)].length;
+function graphemesOf(text: string): string[] {
+  return [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)].map((g) => g.segment);
 }
-/** One emoji (a flag or a sequence is one grapheme), at most 2 graphemes and 16 characters, and no letters, digits or spaces. */
+/**
+ * One emoji (a flag or a sequence is one grapheme): at most 2 graphemes and 16 characters, EVERY grapheme an emoji (it holds an
+ * Extended_Pictographic or Regional_Indicator code point), and no letters, digits or spaces.
+ */
 export function isGenreIcon(value: string): boolean {
+  const graphemes = graphemesOf(value);
   return (
     value.length >= 1 &&
     value.length <= PLAN_LIMITS.iconChars &&
-    graphemesOf(value) <= PLAN_LIMITS.iconGraphemes &&
-    /[\p{Extended_Pictographic}\p{Regional_Indicator}]/u.test(value) &&
+    graphemes.length <= PLAN_LIMITS.iconGraphemes &&
+    graphemes.every((g) => /[\p{Extended_Pictographic}\p{Regional_Indicator}]/u.test(g)) &&
     !/[\p{L}\p{N}\s]/u.test(value)
   );
 }
