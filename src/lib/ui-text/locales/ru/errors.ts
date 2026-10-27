@@ -167,6 +167,8 @@ export const errors: Record<keyof typeof en, string> = {
   "errors.gemini_limit_exceeded": "Запрос превышает лимит расходов на Gemini.",
   "errors.gemini_request_exists": "Задание Gemini с этим id запроса уже есть, с другим содержанием.",
   "errors.restart_needs_service": "Перезапуск, когда никто не работает, есть только у системной службы Mac (она сама запускает приложение снова). Перезапустите приложение обычным способом.",
+  "errors.system_topic_needs_service": "Слушать тему System может только системная служба Mac, а этот сервер — не она.",
+  "errors.system_topic_incomplete": "Перед включением сохраните токен бота и заполните user id владельца, id группы и id темы.",
   "errors.gemini_job_not_found": "Задание Gemini не найдено.",
   "errors.gemini_input_unavailable": "Входная картинка недоступна.",
   "errors.gemini_workspace_unavailable": "У канала нет рабочей папки на этом компьютере.",

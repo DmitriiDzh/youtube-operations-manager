@@ -159,6 +159,8 @@ const DOMAIN_ERROR_STATUS = {
   gemini_request_exists: 409,
   gemini_job_not_found: 404,
   restart_needs_service: 409,
+  system_topic_needs_service: 409,
+  system_topic_incomplete: 409,
   gemini_cancel_too_late: 409,
   media_job_command_invalid: 409,
   gemini_input_unavailable: 422,
