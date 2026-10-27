@@ -349,10 +349,34 @@ export const sharedPickActionSchema = z
  * devices (`picks`, with `covered`); phase 3 (§8) adds the owner's `reviewSeconds` on verdicts and pick actions.
  * Read: 1-5; a version 4 build refuses it, so both computers update again.
  * BL-229 part B (MUSIC_LIBRARY_PLAN.md §3, ADR 0054 amendment 1): version 6 adds the plan's `reviewForm`, each wave's `genre`
- * and `reviewForm`, and `answers` on verdicts, history entries and the verdicts sent to other devices. Read: 1-6; a version 5
- * build refuses it, so both computers update together (the factory creates no plan with a form or genre before that).
+ * and `reviewForm`, and `answers` on verdicts, history entries and the verdicts sent to other devices. Read: 1-6. Written as 6
+ * only when the report carries such content (`generationPlansReportVersionFor`), else as 5: a version 5 build keeps reading this
+ * computer's report until the first plan with a form or genre, and refuses it from then on (update both computers before that).
  */
 export const GENERATION_PLANS_REPORT_VERSION = 6;
+
+/**
+ * BL-229 part B (follow-up): the version a report is WRITTEN with -- 6 only when it carries version 6 content (a plan's
+ * `reviewForm`, a wave's `genre` / `reviewForm`, or `answers` on a verdict, a history entry or a verdict sent to another device);
+ * otherwise 5, exactly as before, so a computer still on a version 5 build keeps reading this one until the first such plan.
+ */
+export function generationPlansReportVersionFor(report: { plans: ReadonlyArray<SharedPlanContent>; verdicts: ReadonlyArray<object> }): 5 | 6 {
+  const has = (value: unknown) => value !== undefined && value !== null;
+  const v6 =
+    report.verdicts.some((v) => has((v as { answers?: unknown }).answers)) ||
+    report.plans.some(
+      (p) =>
+        has(p.reviewForm) ||
+        p.groups.some((g) => has(g.genre) || has(g.reviewForm)) ||
+        p.review.some((e) => has(e.verdict?.answers) || e.stages.some((r) => has(r.answers)) || (e.history ?? []).some((h) => has(h.answers)))
+    );
+  return v6 ? 6 : 5;
+}
+type SharedPlanContent = {
+  reviewForm?: unknown;
+  groups: ReadonlyArray<{ genre?: unknown; reviewForm?: unknown }>;
+  review: ReadonlyArray<{ verdict: { answers?: unknown } | null; stages: ReadonlyArray<{ answers?: unknown }>; history?: ReadonlyArray<{ answers?: unknown }> }>;
+};
 
 export const generationPlansReportSchema = z
   .object({

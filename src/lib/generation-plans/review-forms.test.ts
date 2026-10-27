@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { GENERATION_PLANS_REPORT_VERSION, generationPlansReportSchema, type GenerationPlansReport, type SharedClaim, type SharedGroupNote, type SharedPickAction, type SharedVerdict } from "@/lib/sync-gateway";
+import { GENERATION_PLANS_REPORT_VERSION, generationPlansReportSchema, generationPlansReportVersionFor, type GenerationPlansReport, type SharedClaim, type SharedGroupNote, type SharedPickAction, type SharedVerdict } from "@/lib/sync-gateway";
 import { isDomainError, type PlanEvent, type PlanPickRecord, type PlanRecheck, type PlanResultRow, type PlanVerdictHistoryRow } from "./contracts";
 import type { PlanJobRow } from "./progress";
 import { isGenreIcon } from "./schemas";
@@ -401,4 +401,44 @@ test("AC-MR-08: version 6 stays strict -- an answer outside 1..10 or a form fiel
   const again = JSON.parse(JSON.stringify(await mac.report())) as GenerationPlansReport;
   (again.plans[0].reviewForm!.fields[0] as Record<string, unknown>).rule = "x";
   assert.equal(generationPlansReportSchema.safeParse(again).success, false);
+});
+
+// -- report version follow-up: 6 only with version 6 content ----------------------------------------------------------------
+
+/** Every key anywhere in a JSON value (to prove a version 5 report holds none of version 6's). */
+function keysOf(value: unknown, out = new Set<string>()): Set<string> {
+  if (Array.isArray(value)) for (const v of value) keysOf(v, out);
+  else if (value && typeof value === "object") {
+    for (const [k, v] of Object.entries(value)) {
+      out.add(k);
+      keysOf(v, out);
+    }
+  }
+  return out;
+}
+
+test("AC-MR-08: without forms, a genre or answers the report is written as version 5 with no version 6 key; one answer makes it 6", async () => {
+  const plain = await created(planInput({ reviewForm: undefined, groups: [{ groupId: "014" }, { groupId: "015" }] }));
+  await plain.services.recordOwnerVerdict({ planId: PLAN, ...A014, result: "accepted", rating: 8 });
+  const plans = await plain.services.buildSharedPlans();
+  const verdicts = await plain.services.outgoingVerdicts();
+  assert.equal(generationPlansReportVersionFor({ plans, verdicts }), 5);
+  const keys = keysOf(plans);
+  for (const k of ["reviewForm", "genre", "answers"]) assert.equal(keys.has(k), false, k);
+
+  // A form alone (no answer yet) is version 6 content.
+  const formed = await created();
+  assert.equal(generationPlansReportVersionFor({ plans: await formed.services.buildSharedPlans(), verdicts: [] }), 6);
+
+  // One answer on a plan whose form was later removed: the stored answer alone still makes it 6.
+  await formed.services.recordOwnerVerdict({ planId: PLAN, ...A015, result: "accepted", answers: { "g.no_vocals": true } });
+  await formed.services.updatePlan({ planId: PLAN, reviewForm: null, upsertGroups: [{ groupId: "014", genre: null, reviewForm: null }] });
+  const after = await formed.services.buildSharedPlans();
+  assert.equal(keysOf(after).has("genre") || keysOf(after).has("reviewForm"), false);
+  assert.equal(generationPlansReportVersionFor({ plans: after, verdicts: [] }), 6);
+
+  // A verdict sent to another computer with answers is version 6 too, and without them it is not.
+  const base = { verdictId: "win-0001", planId: PLAN, ownerDeviceId: "mac-1", ...A014, result: "accepted" as const, rating: null, reasons: [], markers: [], note: null, at: "2026-10-27T12:00:00.000Z" };
+  assert.equal(generationPlansReportVersionFor({ plans, verdicts: [base] }), 5);
+  assert.equal(generationPlansReportVersionFor({ plans, verdicts: [{ ...base, answers: { "g.no_vocals": true } }] }), 6);
 });
