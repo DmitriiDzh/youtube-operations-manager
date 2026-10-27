@@ -54,6 +54,13 @@ export const WORKER_FACTORY_TOOLS: Readonly<Record<string, { agentName: string; 
   factory_gemini_get_job: { agentName: "agent_gemini_get_job", writes: false },
   // BL-225 (ADR 0051, FO-REQ-0040): the channel's weekly publishing plan -- a draft for the owner's approval, own channel only.
   factory_publishing_plan_save: { agentName: "agent_publishing_plan_save", writes: true },
+  // BL-227 (ADR 0052): a check report on a change set of the worker's own channel.
+  factory_localization_report_checks: { agentName: "agent_localization_report_checks", writes: true },
+  // BL-227 stage 2: the owner's translation requests of the worker's own channel.
+  factory_localization_requests_list: { agentName: "agent_localization_requests_list", writes: false },
+  factory_localization_request_claim: { agentName: "agent_localization_request_claim", writes: true },
+  factory_localization_request_complete: { agentName: "agent_localization_request_complete", writes: true },
+  factory_localization_request_fail: { agentName: "agent_localization_request_fail", writes: true },
   factory_publishing_plan_get: { agentName: "agent_publishing_plan_get", writes: false },
   factory_publishing_plan_list: { agentName: "agent_publishing_plan_list", writes: false },
   // BL-218 (stage 4, owner msg 3402 "может, как оператор"): paid work, exactly as the Operator does it -- a session the worker starts
@@ -284,6 +291,14 @@ export function pinFactoryDepsToChannel(
     channelBranding: {
       get: async (input) => deps().channelBranding.get(pinChannel(input, channelId) as { channelId: string }),
       save: async (input) => deps().channelBranding.save(pinChannel(input, channelId) as Parameters<FactoryToolDeps["channelBranding"]["save"]>[0], "worker"),
+    },
+    // BL-227: a check report on a set of the worker's own channel (a report decides nothing).
+    localizationChecks: {
+      report: byChannel((input) => deps().localizationChecks.report(input, "worker")),
+      listRequests: byChannel((input) => deps().localizationChecks.listRequests(input)),
+      claimRequest: byChannel((input) => deps().localizationChecks.claimRequest(input, "worker")),
+      completeRequest: byChannel((input) => deps().localizationChecks.completeRequest(input, "worker")),
+      failRequest: byChannel((input) => deps().localizationChecks.failRequest(input, "worker")),
     },
     // BL-225: the weekly plan of the worker's own channel, saved as a worker's (never a decision: the surface has none).
     publishingPlans: {

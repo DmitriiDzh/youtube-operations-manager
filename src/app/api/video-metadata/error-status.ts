@@ -24,6 +24,7 @@ const DOMAIN_ERROR_STATUS = {
   send_nothing_to_send: 409,
   send_merge_conflicts: 409,
   send_untitled_translations: 409,
+  request_not_claimable: 409,
   duplicate_target_in_row: 400,
   send_already_in_progress: 409,
   ledger_row_not_found: 404,

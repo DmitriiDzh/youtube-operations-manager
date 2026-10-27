@@ -6,11 +6,24 @@ import {
   type DraftChange,
   type DraftChangeSet,
   type DraftProvenance,
+  type DraftCheckReport,
+  type DraftDecision,
+  type DraftSetDetails,
+  type DraftTranslationRequest,
+  type CheckReportEntry,
   type FieldConflict,
   type MergeResult,
 } from "./contracts";
 import {
   addChangeInputSchema,
+  addCheckReportInputSchema,
+  createSetDetailsInputSchema,
+  recordDecisionsInputSchema,
+  createTranslationRequestInputSchema,
+  claimTranslationRequestInputSchema,
+  completeTranslationRequestInputSchema,
+  failTranslationRequestInputSchema,
+  cancelTranslationRequestInputSchema,
   bulkPatchChangesInputSchema,
   channelIdInputSchema,
   createChangeSetInputSchema,
@@ -68,6 +81,30 @@ const MUTABLE_CHANGE_FIELDS = [
   "approvalStatus",
   "approvedValue",
 ] as const satisfies readonly (keyof DraftChange)[];
+
+/**
+ * BL-227 (ADR 0052): the current check report of a set -- the newest by `reportedAt`, then `id`; null when there is none ("not
+ * checked yet"). Older reports stay as history.
+ */
+export function latestCheckReport(doc: Pick<ChannelDraftDocument, "checkReports">, changeSetId: string): DraftCheckReport | null {
+  let latest: DraftCheckReport | null = null;
+  for (const report of Object.values(doc.checkReports ?? {})) {
+    if (report.changeSetId !== changeSetId) continue;
+    if (!latest || report.reportedAt > latest.reportedAt || (report.reportedAt === latest.reportedAt && report.id > latest.id)) latest = report;
+  }
+  return latest;
+}
+
+/** The entries of a report (its JSON parsed); [] for an unreadable one, never a throw on read. */
+export function checkReportEntries(report: Pick<DraftCheckReport, "entriesJson"> | null): CheckReportEntry[] {
+  if (!report) return [];
+  try {
+    const parsed = JSON.parse(report.entriesJson) as unknown;
+    return Array.isArray(parsed) ? (parsed as CheckReportEntry[]) : [];
+  } catch {
+    return [];
+  }
+}
 
 function emptyDocument(channelId: string): Automerge.Doc<ChannelDraftDocument> {
   return Automerge.from<ChannelDraftDocument>({
@@ -596,6 +633,235 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
      * `src/lib/changesets/services.ts` only ever passes changes belonging to a single change
      * set/channel in one call.
      */
+    /** BL-227: a set's write-once details (author, notes, original hashes), saved right after the set. */
+    async createSetDetails(input: unknown): Promise<DraftSetDetails> {
+      const parsed = parseWithSchema(createSetDetailsInputSchema, input, "createSetDetails input");
+      const doc = await loadOrCreateDocument(parsed.channelId);
+      if (!doc.changeSets[parsed.changeSetId]) {
+        throw new DomainError({ code: "not_found", message: "Change set not found", details: { changeSetId: parsed.changeSetId } });
+      }
+      if (doc.setDetails?.[parsed.changeSetId]) {
+        throw new DomainError({ code: "validation_failed", message: "This change set already has its details", details: { changeSetId: parsed.changeSetId } });
+      }
+      const details: DraftSetDetails = {
+        changeSetId: parsed.changeSetId,
+        createdBy: parsed.createdBy,
+        notesJson: JSON.stringify(parsed.notes),
+        originalsJson: JSON.stringify(parsed.originals),
+        createdAt: new Date().toISOString(),
+      };
+      const next = Automerge.change(doc, `create set details ${parsed.changeSetId}`, (draft) => {
+        if (!draft.setDetails) draft.setDetails = {};
+        draft.setDetails[parsed.changeSetId] = details;
+      });
+      await saveDocument(parsed.channelId, next);
+      return details;
+    },
+
+    /**
+     * BL-227: adds one check report to a set (append-only; the newest is current). Every entry must name a (language, field) the
+     * set has a change for. Returns the report and the id of the report it replaces as current (null for the first).
+     */
+    async addCheckReport(input: unknown): Promise<{ report: DraftCheckReport; replacedId: string | null }> {
+      const parsed = parseWithSchema(addCheckReportInputSchema, input, "addCheckReport input");
+      const doc = await loadOrCreateDocument(parsed.channelId);
+      if (!doc.changeSets[parsed.changeSetId]) {
+        throw new DomainError({ code: "not_found", message: "Change set not found for this channel", details: { changeSetId: parsed.changeSetId } });
+      }
+      const targets = new Set(
+        Object.values(doc.changes)
+          .filter((change) => change.changeSetId === parsed.changeSetId)
+          .map((change) => `${change.language.toLowerCase()}\u0000${change.field}`)
+      );
+      const unknown = parsed.entries.filter((entry) => !targets.has(`${entry.language.toLowerCase()}\u0000${entry.field}`));
+      if (unknown.length > 0) {
+        throw new DomainError({
+          code: "validation_failed",
+          message: "A report entry names a language and field this change set has no change for",
+          details: { entries: unknown.map((entry) => ({ language: entry.language, field: entry.field })) },
+        });
+      }
+      const replaced = latestCheckReport(doc, parsed.changeSetId);
+      const entries: CheckReportEntry[] = parsed.entries.map((entry) => ({
+        language: entry.language,
+        field: entry.field,
+        verdict: entry.verdict,
+        checks: entry.checks,
+        note: entry.note ?? null,
+        backTranslation: entry.backTranslation ?? null,
+      }));
+      // Never before the current one, so the new report is always the current one even on a clock behind the other computer's.
+      const now = new Date().toISOString();
+      const reportedAt = replaced && replaced.reportedAt >= now ? new Date(Date.parse(replaced.reportedAt) + 1).toISOString() : now;
+      const report: DraftCheckReport = { id: parsed.id, changeSetId: parsed.changeSetId, reportedAt, reportedBy: parsed.reportedBy, entriesJson: JSON.stringify(entries) };
+      const next = Automerge.change(doc, `add check report ${parsed.id}`, (draft) => {
+        if (!draft.checkReports) draft.checkReports = {};
+        draft.checkReports[parsed.id] = report;
+      });
+      await saveDocument(parsed.channelId, next);
+      return { report, replacedId: replaced?.id ?? null };
+    },
+
+    /**
+     * BL-227: records the owner's approve/reject of changes, each with the report and verdict current for its (language, field) at
+     * this moment. Informational only: nothing reads it to decide anything.
+     */
+    async recordDecisions(input: unknown): Promise<DraftDecision[]> {
+      const parsed = parseWithSchema(recordDecisionsInputSchema, input, "recordDecisions input");
+      const doc = await loadOrCreateDocument(parsed.channelId);
+      const now = new Date().toISOString();
+      const records: DraftDecision[] = parsed.decisions.map((decision) => {
+        const change = doc.changes[decision.changeId];
+        if (!change) throw new DomainError({ code: "not_found", message: "Change not found", details: { changeId: decision.changeId } });
+        const report = latestCheckReport(doc, change.changeSetId);
+        const entry = checkReportEntries(report).find(
+          (candidate) => candidate.field === change.field && candidate.language.toLowerCase() === change.language.toLowerCase()
+        );
+        return {
+          id: decision.id,
+          changeId: change.id,
+          changeSetId: change.changeSetId,
+          action: decision.action,
+          reportId: entry ? report!.id : null,
+          verdict: entry?.verdict ?? null,
+          decidedAt: now,
+        };
+      });
+      const next = Automerge.change(doc, `record ${records.length} decisions`, (draft) => {
+        if (!draft.decisions) draft.decisions = {};
+        for (const record of records) draft.decisions[record.id] = record;
+      });
+      await saveDocument(parsed.channelId, next);
+      return records;
+    },
+
+    /** BL-227 stage 2: the owner's translation request (status `requested`). */
+    async createTranslationRequest(input: unknown): Promise<DraftTranslationRequest> {
+      const parsed = parseWithSchema(createTranslationRequestInputSchema, input, "createTranslationRequest input");
+      const doc = await loadOrCreateDocument(parsed.channelId);
+      if (doc.translationRequests?.[parsed.id]) {
+        throw new DomainError({ code: "validation_failed", message: "A request with this id exists", details: { id: parsed.id } });
+      }
+      const now = new Date().toISOString();
+      const request: DraftTranslationRequest = {
+        id: parsed.id,
+        videoIdsJson: JSON.stringify([...new Set(parsed.videoIds)]),
+        languagesJson: JSON.stringify([...new Set(parsed.languages)]),
+        mode: parsed.mode,
+        fields: parsed.fields,
+        note: parsed.note,
+        redoOfChangeId: parsed.redoOfChangeId,
+        originalsJson: JSON.stringify(parsed.originals),
+        status: "requested",
+        claimedBy: null,
+        claimedAt: null,
+        resultJson: "[]",
+        failReason: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      const next = Automerge.change(doc, `create translation request ${parsed.id}`, (draft) => {
+        if (!draft.translationRequests) draft.translationRequests = {};
+        draft.translationRequests[parsed.id] = request;
+      });
+      await saveDocument(parsed.channelId, next);
+      return request;
+    },
+
+    /** BL-227 stage 2: an agent takes a `requested` request (serialized per channel in this process: the first claim wins). */
+    async claimTranslationRequest(input: unknown): Promise<DraftTranslationRequest> {
+      const parsed = parseWithSchema(claimTranslationRequestInputSchema, input, "claimTranslationRequest input");
+      const doc = await loadOrCreateDocument(parsed.channelId);
+      const existing = doc.translationRequests?.[parsed.requestId];
+      if (!existing) throw new DomainError({ code: "not_found", message: "Translation request not found for this channel", details: { requestId: parsed.requestId } });
+      if (existing.status !== "requested") {
+        throw new DomainError({ code: "request_not_claimable", message: `This request is ${existing.status}; only a requested one can be claimed`, details: { requestId: parsed.requestId, status: existing.status, claimedBy: existing.claimedBy } });
+      }
+      const now = new Date().toISOString();
+      const next = Automerge.change(doc, `claim translation request ${parsed.requestId}`, (draft) => {
+        const request = draft.translationRequests![parsed.requestId];
+        request.status = "in_progress";
+        request.claimedBy = parsed.by;
+        request.claimedAt = now;
+        request.updatedAt = now;
+      });
+      await saveDocument(parsed.channelId, next);
+      return next.translationRequests![parsed.requestId];
+    },
+
+    /**
+     * BL-227 stage 2: the claimant hands in the sets it made -- `done` when every requested video has one, `partly_done` otherwise.
+     * Each set must be in this channel's document and hold changes of its video.
+     */
+    async completeTranslationRequest(input: unknown): Promise<DraftTranslationRequest> {
+      const parsed = parseWithSchema(completeTranslationRequestInputSchema, input, "completeTranslationRequest input");
+      const doc = await loadOrCreateDocument(parsed.channelId);
+      const existing = doc.translationRequests?.[parsed.requestId];
+      if (!existing) throw new DomainError({ code: "not_found", message: "Translation request not found for this channel", details: { requestId: parsed.requestId } });
+      if (existing.status !== "in_progress" || existing.claimedBy !== parsed.by) {
+        throw new DomainError({ code: "request_not_claimable", message: "Only the agent that claimed this request can complete it, while it is in progress", details: { requestId: parsed.requestId, status: existing.status, claimedBy: existing.claimedBy } });
+      }
+      const videoIds = JSON.parse(existing.videoIdsJson) as string[];
+      const refused = parsed.results.filter(
+        (result) =>
+          !videoIds.includes(result.videoId) ||
+          !doc.changeSets[result.changeSetId] ||
+          !Object.values(doc.changes).some((change) => change.changeSetId === result.changeSetId && change.videoId === result.videoId)
+      );
+      if (refused.length > 0) {
+        throw new DomainError({ code: "validation_failed", message: "Each result must name a requested video and a change set of this channel holding changes of that video", details: { refused } });
+      }
+      const covered = new Set(parsed.results.map((result) => result.videoId));
+      const now = new Date().toISOString();
+      const next = Automerge.change(doc, `complete translation request ${parsed.requestId}`, (draft) => {
+        const request = draft.translationRequests![parsed.requestId];
+        request.status = videoIds.every((videoId) => covered.has(videoId)) ? "done" : "partly_done";
+        request.resultJson = JSON.stringify(parsed.results);
+        request.updatedAt = now;
+      });
+      await saveDocument(parsed.channelId, next);
+      return next.translationRequests![parsed.requestId];
+    },
+
+    /** BL-227 stage 2: the claimant gives up on a request, with the reason the owner sees. */
+    async failTranslationRequest(input: unknown): Promise<DraftTranslationRequest> {
+      const parsed = parseWithSchema(failTranslationRequestInputSchema, input, "failTranslationRequest input");
+      const doc = await loadOrCreateDocument(parsed.channelId);
+      const existing = doc.translationRequests?.[parsed.requestId];
+      if (!existing) throw new DomainError({ code: "not_found", message: "Translation request not found for this channel", details: { requestId: parsed.requestId } });
+      if (existing.status !== "in_progress" || existing.claimedBy !== parsed.by) {
+        throw new DomainError({ code: "request_not_claimable", message: "Only the agent that claimed this request can fail it, while it is in progress", details: { requestId: parsed.requestId, status: existing.status, claimedBy: existing.claimedBy } });
+      }
+      const now = new Date().toISOString();
+      const next = Automerge.change(doc, `fail translation request ${parsed.requestId}`, (draft) => {
+        const request = draft.translationRequests![parsed.requestId];
+        request.status = "failed";
+        request.failReason = parsed.reason;
+        request.updatedAt = now;
+      });
+      await saveDocument(parsed.channelId, next);
+      return next.translationRequests![parsed.requestId];
+    },
+
+    /** BL-227 stage 2: the owner withdraws a request that is not finished. */
+    async cancelTranslationRequest(input: unknown): Promise<DraftTranslationRequest> {
+      const parsed = parseWithSchema(cancelTranslationRequestInputSchema, input, "cancelTranslationRequest input");
+      const doc = await loadOrCreateDocument(parsed.channelId);
+      const existing = doc.translationRequests?.[parsed.requestId];
+      if (!existing) throw new DomainError({ code: "not_found", message: "Translation request not found for this channel", details: { requestId: parsed.requestId } });
+      if (existing.status !== "requested" && existing.status !== "in_progress") {
+        throw new DomainError({ code: "request_not_claimable", message: `This request is ${existing.status} and cannot be cancelled`, details: { requestId: parsed.requestId, status: existing.status } });
+      }
+      const now = new Date().toISOString();
+      const next = Automerge.change(doc, `cancel translation request ${parsed.requestId}`, (draft) => {
+        const request = draft.translationRequests![parsed.requestId];
+        request.status = "cancelled";
+        request.updatedAt = now;
+      });
+      await saveDocument(parsed.channelId, next);
+      return next.translationRequests![parsed.requestId];
+    },
+
     async bulkPatchChanges(input: unknown): Promise<DraftChange[]> {
       const parsed = parseWithSchema(bulkPatchChangesInputSchema, input, "bulkPatchChanges input");
       const doc = await loadOrCreateDocument(parsed.channelId);
@@ -915,9 +1181,16 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
         const provenanceIds = Object.entries(before.provenance ?? {})
           .filter(([, entry]) => targetIds.has(entry.changeSetId))
           .map(([id]) => id);
+        // BL-227: a purged set's details, reports and decision records go with it.
+        const detailIds = Object.keys(before.setDetails ?? {}).filter((id) => targetIds.has(id));
+        const reportIds = Object.entries(before.checkReports ?? {}).filter(([, report]) => targetIds.has(report.changeSetId)).map(([id]) => id);
+        const decisionIds = Object.entries(before.decisions ?? {}).filter(([, record]) => targetIds.has(record.changeSetId)).map(([id]) => id);
         const after = Automerge.change(before, (draft) => {
           for (const id of changeIds) delete draft.changes[id];
           for (const id of provenanceIds) delete draft.provenance![id];
+          for (const id of detailIds) delete draft.setDetails![id];
+          for (const id of reportIds) delete draft.checkReports![id];
+          for (const id of decisionIds) delete draft.decisions![id];
           for (const id of targetIds) delete draft.changeSets[id];
         });
         await saveDocument(parsed.channelId, after);

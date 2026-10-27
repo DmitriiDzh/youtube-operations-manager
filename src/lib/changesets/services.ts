@@ -24,6 +24,7 @@ import {
 } from "./schemas";
 import { sameLanguage } from "@/lib/shared-language-baseline";
 import { untitledTranslations } from "@/lib/shared-localization-merge";
+import type { SetAuthor } from "@/lib/sync-gateway";
 
 const MAX_PREVIEW_ERRORS_RETURNED = 200;
 const DEFAULT_PAGE_SIZE = 50;
@@ -107,6 +108,21 @@ type ServiceDependencies = {
   logger: {
     info(payload: { event: string; context?: Record<string, unknown> }): void;
     error(payload: { event: string; context?: Record<string, unknown> }): void;
+  };
+  /**
+   * BL-227 (ADR 0052): records each approve/reject next to the then-current check report's verdict. Informational only -- a
+   * failure is logged and never fails the decision itself. Optional: absent = nothing recorded.
+   */
+  decisionLog?: {
+    record(channelId: string, decisions: Array<{ changeId: string; action: "approve" | "reject" }>): Promise<void>;
+  };
+  /**
+   * BL-227 (ADR 0052): a new set's write-once details -- who made it, the agent's notes per change, and each video's original
+   * fingerprint (`originalFingerprint`). Best-effort: a failure is logged, the set stands. Optional: absent = no details.
+   */
+  setDetails?: {
+    create(input: { channelId: string; changeSetId: string; createdBy: SetAuthor; notes: Record<string, string>; originals: Record<string, string> }): Promise<void>;
+    fingerprint(title: string, description: string): string;
   };
 };
 
@@ -387,6 +403,8 @@ async function persistChangeSet(
     schemaVersion: string | null;
     exportedAt: string | null;
     changesToPersist: ChangeToPersist[];
+    /** BL-227: who made the set and the agent's notes by change id (absent = the owner, no notes). */
+    details?: { createdBy: SetAuthor; notes: Record<string, string> };
   }
 ): Promise<ChangeSet> {
   const status = computeChangeSetStatus(
@@ -415,6 +433,22 @@ async function persistChangeSet(
     source: input.source,
     changesToPersist: input.changesToPersist,
   });
+
+  if (deps.setDetails) {
+    try {
+      const videoIds = new Set(input.changesToPersist.map((change) => change.videoId));
+      const originals: Record<string, string> = {};
+      for (const video of await deps.channelStore.listVideosByChannel(input.channelId)) {
+        if (videoIds.has(video.videoId)) originals[video.videoId] = deps.setDetails.fingerprint(video.title, video.description);
+      }
+      const notes = Object.fromEntries(
+        Object.entries(input.details?.notes ?? {}).filter(([changeId]) => input.changesToPersist.some((change) => change.id === changeId))
+      );
+      await deps.setDetails.create({ channelId: input.channelId, changeSetId, createdBy: input.details?.createdBy ?? "owner", notes, originals });
+    } catch (error) {
+      deps.logger.error({ event: "changesets.set_details_failed", context: { changeSetId, error: error instanceof Error ? error.message : String(error) } });
+    }
+  }
 
   const storedChangeSet = await deps.changeSetStore.getChangeSet(changeSetId);
   if (!storedChangeSet) {
@@ -447,6 +481,15 @@ async function persistChangeSet(
 }
 
 export function createChangeSetServices(deps: ServiceDependencies) {
+  async function logDecisions(channelId: string, changeIds: string[], action: "approve" | "reject"): Promise<void> {
+    if (!deps.decisionLog || changeIds.length === 0) return;
+    try {
+      await deps.decisionLog.record(channelId, changeIds.map((changeId) => ({ changeId, action })));
+    } catch (error) {
+      deps.logger.error({ event: "changesets.decision_log_failed", context: { channelId, count: changeIds.length, error: error instanceof Error ? error.message : String(error) } });
+    }
+  }
+
   return {
     /**
      * Generic ChangeSet creation from a set of already-classified/validated field
@@ -459,6 +502,8 @@ export function createChangeSetServices(deps: ServiceDependencies) {
       channelId: string;
       source: ChangeSet["source"];
       changes: ChangeToPersist[];
+      /** BL-227: who made the set and the agent's notes by change id. */
+      details?: { createdBy: SetAuthor; notes: Record<string, string> };
     }): Promise<ChangeSet> {
       try {
         const channel = await requireChannel(deps, input.channelId);
@@ -469,6 +514,7 @@ export function createChangeSetServices(deps: ServiceDependencies) {
           schemaVersion: null,
           exportedAt: null,
           changesToPersist: input.changes,
+          details: input.details,
         });
 
         deps.logger.info({
@@ -784,6 +830,7 @@ export function createChangeSetServices(deps: ServiceDependencies) {
 
         const patch = { approvalStatus: "approved" as const, approvedValue: target.proposedValue, conflictStatus: target.conflictStatus };
         await deps.changeSetStore.updateChange(target.id, patch);
+        await logDecisions(parsedInput.channelId, [target.id], "approve");
 
         const updatedChanges = changes.map((c) => (c.id === target.id ? { ...c, ...patch } : c));
         const newStatus = computeChangeSetStatus(updatedChanges);
@@ -812,6 +859,7 @@ export function createChangeSetServices(deps: ServiceDependencies) {
 
         const patch = { approvalStatus: "rejected" as const, approvedValue: null, conflictStatus: target.conflictStatus };
         await deps.changeSetStore.updateChange(target.id, patch);
+        await logDecisions(parsedInput.channelId, [target.id], "reject");
 
         const updatedChanges = changes.map((c) => (c.id === target.id ? { ...c, ...patch } : c));
         const newStatus = computeChangeSetStatus(updatedChanges);
@@ -851,6 +899,7 @@ export function createChangeSetServices(deps: ServiceDependencies) {
           );
         }
 
+        await logDecisions(parsedInput.channelId, toApprove.map((c) => c.id), "approve");
         const approvedIds = new Set(toApprove.map((c) => c.id));
         const updatedChanges = changes.map((c) =>
           approvedIds.has(c.id) ? { ...c, approvalStatus: "approved" as const, approvedValue: c.proposedValue } : c
@@ -885,6 +934,7 @@ export function createChangeSetServices(deps: ServiceDependencies) {
           );
         }
 
+        await logDecisions(parsedInput.channelId, toReject.map((c) => c.id), "reject");
         const rejectedIds = new Set(toReject.map((c) => c.id));
         const updatedChanges = changes.map((c) =>
           rejectedIds.has(c.id) ? { ...c, approvalStatus: "rejected" as const, approvedValue: null } : c

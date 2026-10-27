@@ -208,3 +208,91 @@ export const resolveConflictInputSchema = z
     winningActorId: z.string().min(1),
   })
   .strict();
+
+// BL-227 (ADR 0052): set details, check reports and decision records.
+const SET_AUTHORS = ["owner", "factory", "worker", "agent"] as const;
+const VERDICTS = ["pass", "warn", "fail"] as const;
+
+export const createSetDetailsInputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    changeSetId: z.string().min(1),
+    createdBy: z.enum(SET_AUTHORS),
+    notes: z.record(z.string(), z.string()),
+    originals: z.record(z.string(), z.string()),
+  })
+  .strict();
+
+export const checkReportEntrySchema = z
+  .object({
+    language: z.string().min(1).max(35),
+    field: z.enum(["title", "description"]),
+    verdict: z.enum(VERDICTS),
+    checks: z
+      .array(z.object({ id: z.string().min(1).max(64), result: z.enum(VERDICTS), detail: z.string().max(500) }).strict())
+      .max(50),
+    note: z.string().max(1000).nullable().optional(),
+    backTranslation: z.string().max(6000).nullable().optional(),
+  })
+  .strict();
+
+export const addCheckReportInputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    id: z.string().min(1),
+    changeSetId: z.string().min(1),
+    reportedBy: z.enum(SET_AUTHORS),
+    entries: z.array(checkReportEntrySchema).min(1).max(200),
+  })
+  .strict();
+
+export const recordDecisionsInputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    decisions: z
+      .array(
+        z
+          .object({
+            id: z.string().min(1),
+            changeId: z.string().min(1),
+            action: z.enum(["approve", "reject"]),
+          })
+          .strict()
+      )
+      .min(1),
+  })
+  .strict();
+
+// BL-227 stage 2: translation requests.
+export const createTranslationRequestInputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    id: z.string().min(1),
+    videoIds: z.array(z.string().min(1)).min(1).max(200),
+    languages: z.array(z.string().min(1).max(35)).min(1).max(40),
+    mode: z.enum(["fill_missing", "redo"]),
+    fields: z.enum(["both", "title", "description"]),
+    note: z.string().max(1000).nullable(),
+    redoOfChangeId: z.string().min(1).nullable(),
+    originals: z.record(z.string(), z.string()),
+  })
+  .strict();
+
+export const claimTranslationRequestInputSchema = z
+  .object({ channelId: z.string().min(1), requestId: z.string().min(1), by: z.enum(["factory", "worker"]) })
+  .strict();
+
+export const completeTranslationRequestInputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    requestId: z.string().min(1),
+    by: z.enum(["factory", "worker"]),
+    results: z.array(z.object({ videoId: z.string().min(1), changeSetId: z.string().min(1) }).strict()).min(1).max(200),
+  })
+  .strict();
+
+export const failTranslationRequestInputSchema = z
+  .object({ channelId: z.string().min(1), requestId: z.string().min(1), by: z.enum(["factory", "worker"]), reason: z.string().min(1).max(1000) })
+  .strict();
+
+export const cancelTranslationRequestInputSchema = z.object({ channelId: z.string().min(1), requestId: z.string().min(1) }).strict();

@@ -4006,6 +4006,10 @@ Owner exception 2026-10-12 (msg 2665), recorded in `docs/PROJECT_SPEC.md` §14 a
       first);
     - a video whose old-language entry differs from its snippet ("ambiguous") is read as it is, and the Batch refuses it.
   - `getChangeSet` returns `languageAlignments` for the approval screen.
+  - BL-227 (ADR 0052): creation validates fields with `shared-localization-checks` (description in bytes, < >, ja/ko/zh script);
+    each new set gets `setDetails` in the change-drafts document (author, agent notes, original fingerprints); approve/reject append
+    `decisions`; agents add `checkReports` (`factory_`/`agent_localization_report_checks`). The review by video
+    (`src/lib/localization-review/`) merges every set's changes of a video into one row per language.
   - BL-226: `getChangeSet` also returns `untitledTranslations`; the send refuses them (`send_untitled_translations`) and the merge
     throws before the write (`untitledTranslations`, `shared-localization-merge`). Basis: YouTube refused a whole video whose `it`
     translation had only a description (2026-10-26, audit events 2456/2459); the official `videos` reference does not state it.

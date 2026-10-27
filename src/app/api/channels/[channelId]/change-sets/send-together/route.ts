@@ -19,6 +19,10 @@ const bodySchema = z
       .max(5000)
       .optional(),
     dryRun: z.boolean().optional(),
+    // BL-227: only these videos' changes («Отправить одобренное этого видео»).
+    videoIds: z.array(z.string().min(1)).min(1).max(500).optional(),
+    // BL-227 review: only these changes (the review screen's approved rows).
+    changeIds: z.array(z.string().min(1)).min(1).max(5000).optional(),
   })
   .strict();
 
@@ -48,7 +52,7 @@ export function createSendTogetherHandler(
       await deps.channelAccess.assertActiveChannel({ userId: session.user.id, channelId });
       const parsed = bodySchema.safeParse(await request.json().catch(() => null));
       if (!parsed.success) {
-        return NextResponse.json({ error: "validation_failed", message: "changeSetIds (1-50) is required; resolutions and dryRun are optional" }, { status: 400 });
+        return NextResponse.json({ error: "validation_failed", message: "changeSetIds (1-50) is required; resolutions, dryRun and videoIds (1-500) are optional" }, { status: 400 });
       }
 
       const result = await deps.core.createBatchForChangeSets({ channelId, ...parsed.data });
