@@ -18,7 +18,9 @@ a private repository fails, and only on the paid build pod.
    - The check is `GET /user` through the existing media-gateway child `media-gateway/github.ts`, with `Authorization: Bearer`
      and no redirect followed. The answer gives the login, and the header `github-authentication-token-expiration` the expiry.
    - The view: `state`, `login`, `status` (`ok` | `invalid`), `expiresAt`, `verifiedAt`, `updatedAt`. Never the token.
-   - Errors: `github_token_missing` (test with none stored), `github_token_invalid` (GitHub answered 401 to the token).
+   - Errors: `github_token_missing` (test with none stored), `github_token_invalid` (GitHub answered 401 to the token),
+     `github_token_forbidden` (a 403 to the token that is not a rate limit: no Contents read, or the organization's SSO not
+     authorized; review M2).
 3. **Web:** a «GitHub» card after the Hugging Face card in Settings → Cloud APIs (`GithubTokenSettings`), routes
    `/api/media-generation/github-token` (GET/PUT/DELETE) and `/test` (POST), session required. The input is the masked
    `type="text"` `MaskedSecretInput`. Texts in en and ru. Remove asks through `ConfirmDialog`.
@@ -43,7 +45,12 @@ a private repository fails, and only on the paid build pod.
      credential. Tracing (`set -x`) is switched off while the header is built and used.
    - A git command refused with the header is retried once without it: GitHub answers 401 to an expired or revoked token even for
      a public repository, so a dead token must not break ComfyUI's own clone. `GIT_TERMINAL_PROMPT=0`: git never waits for a user.
-   - After the clones, `unset YTM_GIT_TOKEN` (pip and its builds never see it).
+   - After the clones, `unset YTM_GIT_TOKEN`: later child processes do not inherit it. It is NOT gone: it stays in the pod's PID 1
+     env (`/proc/1/environ`) for the pod's life, so pip, build backends and any profile code CAN read it, and the RunPod console
+     shows it in the pod's env (review L5).
+   - The fallback's checkout of the partial clone fetches blobs, so it carries the header too (review M1). Git tracing variables
+     are unset and `GIT_TRACE_REDACT=1`; tracing is off whenever the token is near, so `set -x` never prints it. The retry
+     without the header is logged. A leak check that cannot read the folder (grep exit 2) counts as a leak.
    - A leak check runs before `.ready` and in every `finish`: `grep -rqF` of the token and of its base64 header form over the whole
      runtime folder, `build.log` included. On a hit, everything in the folder except `runtime.json` and `.lock` is deleted,
      `build.log` is emptied, and the build fails with `a credential was found in the runtime folder; it was removed`. The check
@@ -111,7 +118,11 @@ Expected values come from the rules above and GitHub's REST API docs (404 for a 
 
 ## Risks
 
-- The token sits in the build pod's env for the pod's life (≤ 30 min), readable by the code the build runs — the same class as
+- An unreadable stored token (this computer's key file missing or unusable) fails every build start of a profile naming
+  github.com — every profile — with `device_secret_unreadable`, as an unreadable HF token fails every pull that needs it; the
+  owner removes and re-enters it (review L6).
+- The token sits in the build pod's env for the pod's life (≤ 30 min), readable by the code the build runs (PID 1's env survives the
+  `unset`) and shown in the RunPod console's pod env — the same class as
   `HF_TOKEN` on the pull pod. A fine-grained, read-only, one-repository token with an expiry bounds it (RISK-137).
 - The header is in `git`'s argument list inside the pod while git runs (the pod is single-purpose; RunPod shows only `entrypoint`).
 - Every profile names github.com (ComfyUI), so with a token stored every build pod receives it.

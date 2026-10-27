@@ -2129,8 +2129,11 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 ## RISK-137 — The GitHub read token sits in the runtime build pod's env for the build's life — OPEN, 2026-10-27
 
 - **What:** BL-230 (ADR 0043 amendment 1). A build pod whose profile names github.com gets the owner's GitHub token as
-  `YTM_GIT_TOKEN` for its whole life (≤ 30 min), the same class as `HF_TOKEN` on the pull pod. The code the build runs (the profile's
-  repositories, pip packages) could read it before the script unsets it, and RunPod's console shows pod env to the account holder.
+  `YTM_GIT_TOKEN` for its whole life (≤ 30 min), the same class as `HF_TOKEN` on the pull pod. The script's `unset` only keeps it
+  out of later child processes' own env: it stays in the pod's PID 1 env (`/proc/1/environ`), so the code the build runs (the
+  profile's repositories, pip and its build backends) CAN read it at any time, and RunPod's console shows it in the pod's env to the
+  account holder. An unreadable stored token (key file missing or unusable) fails every build start, as an unreadable HF token
+  fails the pulls that need it, until the owner removes and re-enters it.
   The header is in `git`'s argument list inside the pod while git runs. Every profile names github.com (ComfyUI), so with a token
   stored every build pod receives it. `build.log` lives on the shared volume during the build.
 - **Bounds:** the owner creates a fine-grained, read-only (Contents: Read), one-repository token with an expiry; the token is
