@@ -5,6 +5,7 @@ import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { createDefaultLogger } from "@/lib/shared-logger";
 import { createTelegramBotGateway } from "@/lib/telegram-bot-gateway";
 import type { BotTokenPort } from "./contracts";
+import { createBotGetUpdatesInbox } from "./adapters/bot-get-updates-inbox";
 import { runFactoryProcess } from "./adapters/process";
 import { createSystemTopicStore } from "./adapters/store";
 import { createSystemTopic, type SystemTopic } from "./services";
@@ -54,10 +55,15 @@ export function createSystemTopicCore(): SystemTopic {
   if (existing) return existing;
   const logger = createDefaultLogger();
   const workspaces = createChannelWorkspacesCore();
+  const gateway = createTelegramBotGateway();
+  const token = tokenPort();
   const core = createSystemTopic({
     store: createSystemTopicStore(rawSqlClient),
-    telegram: createTelegramBotGateway(),
-    token: tokenPort(),
+    replies: gateway,
+    // Owner msg 3602: the HUB bot may be polled by the HUB process already, so getUpdates is one source the owner picks, never
+    // the default (`none`). A HUB hand-over source is expected later (one more entry here).
+    inboxes: { bot_get_updates: createBotGetUpdatesInbox({ getUpdates: (t, input) => gateway.getUpdates(t, input), readToken: () => token.read() }) },
+    token,
     readConfigFile,
     channelWorkspacePath: async (channelId) => {
       const result = await workspaces.getWorkspace({ channelId });

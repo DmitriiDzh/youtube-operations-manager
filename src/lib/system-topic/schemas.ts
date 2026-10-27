@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { TELEGRAM_BOT_TOKEN_PATTERN } from "@/lib/telegram-bot-gateway";
+import { SYSTEM_INBOX_SOURCES } from "./contracts";
 
 // BL-228 (SYSTEM_TOPIC_PLAN.md §2-§3, ADR 0053): the one place the module's input shapes live -- the owner's settings, the bot
 // token, and the factory-owned commands.json (DEV-RESP-0043 Part 1; the factory may still change it, so it is defined here only).
@@ -18,6 +19,7 @@ export const systemTopicSettingsInputSchema = z
     threadId: optionalText(/^[1-9]\d{0,15}$/, "the topic id is a positive number"),
     listening: z.boolean(),
     commandsPath: optionalText(/^\/.{1,1000}$/, "the commands.json path must be an absolute path"),
+    inboxSource: z.enum(SYSTEM_INBOX_SOURCES),
   })
   .strict();
 

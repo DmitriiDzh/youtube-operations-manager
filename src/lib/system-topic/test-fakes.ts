@@ -1,5 +1,4 @@
-import type { TelegramUpdate } from "@/lib/telegram-bot-gateway";
-import type { ProcessResult, SystemCommandRow, SystemTopicDeps, SystemTopicState, SystemTopicStore } from "./contracts";
+import type { ProcessResult, SystemCommandRow, SystemInboxMessage, SystemTopicDeps, SystemTopicState, SystemTopicStore } from "./contracts";
 
 // BL-228: in-memory fakes for the System topic's tests (no database, no network, no child process). Not a test file itself, so the
 // test runner does not pick it up; nothing in production imports it.
@@ -29,6 +28,7 @@ export function memoryStore(initial: Partial<SystemTopicState> = {}): SystemTopi
     threadId: String(TOPIC),
     listening: true,
     commandsPath: CONFIG_PATH,
+    inboxSource: "bot_get_updates",
     pollOffset: null,
     droppedCount: 0,
     lastPollAt: null,
@@ -67,28 +67,28 @@ export function memoryStore(initial: Partial<SystemTopicState> = {}): SystemTopi
   };
 }
 
-export function message(updateId: number, text: string, overrides: { from?: number; chat?: number; thread?: number | null } = {}): TelegramUpdate {
+export function message(updateId: number, text: string, overrides: { from?: number; chat?: number; thread?: number | null } = {}): SystemInboxMessage {
   return {
     updateId,
-    message: {
-      messageId: updateId,
-      chatId: overrides.chat ?? CHAT,
-      threadId: overrides.thread === undefined ? TOPIC : overrides.thread,
-      from: { id: overrides.from ?? OWNER, isBot: false, username: null },
-      text,
-    },
+    messageId: updateId,
+    chatId: overrides.chat ?? CHAT,
+    threadId: overrides.thread === undefined ? TOPIC : overrides.thread,
+    fromId: overrides.from ?? OWNER,
+    text,
+    date: null,
   };
 }
 
 export type Harness = {
   deps: SystemTopicDeps;
   store: ReturnType<typeof memoryStore>;
-  getUpdatesCalls: Array<{ offset: number | null }>;
+  /** Each receive asked of the fake inbound source, with the cursor it was given. */
+  receiveCalls: Array<{ cursor: number | null; signal: AbortSignal | undefined }>;
   sent: Array<{ chatId: string; threadId: number | null; text: string }>;
   runs: Array<{ argv: readonly string[]; cwd: string | undefined; timeoutMs: number }>;
   logs: Array<{ event: string; context: Record<string, unknown> }>;
-  /** Updates the next getUpdates returns (each call takes the next batch; an Error is thrown). */
-  batches: Array<TelegramUpdate[] | Error>;
+  /** Messages the next receive returns (each call takes the next batch; an Error is thrown). The next cursor is one past the newest. */
+  batches: Array<SystemInboxMessage[] | Error>;
 };
 
 export function harness(options: {
@@ -101,20 +101,25 @@ export function harness(options: {
 } = {}): Harness {
   const store = memoryStore(options.state);
   let token = options.token === undefined ? TOKEN : options.token;
-  const h: Harness = { store, getUpdatesCalls: [], sent: [], runs: [], logs: [], batches: [], deps: undefined as unknown as SystemTopicDeps };
+  const h: Harness = { store, receiveCalls: [], sent: [], runs: [], logs: [], batches: [], deps: undefined as unknown as SystemTopicDeps };
   let now = Date.parse("2026-10-27T10:00:00.000Z");
   h.deps = {
     store,
-    telegram: {
-      async getUpdates(_token, input) {
-        h.getUpdatesCalls.push({ offset: input.offset });
-        const next = h.batches.shift() ?? [];
-        if (next instanceof Error) throw next;
-        return next;
-      },
+    replies: {
       async sendMessage(_token, input) {
         h.sent.push(input);
         return { messageId: 1 };
+      },
+    },
+    inboxes: {
+      bot_get_updates: {
+        async receive(input) {
+          h.receiveCalls.push({ cursor: input.cursor, signal: input.signal });
+          const next = h.batches.shift() ?? [];
+          if (next instanceof Error) throw next;
+          const newest = next.reduce((max, m) => Math.max(max, m.updateId + 1), input.cursor ?? 0);
+          return { messages: next, nextCursor: next.length > 0 ? newest : input.cursor };
+        },
       },
     },
     token: {

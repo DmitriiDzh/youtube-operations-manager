@@ -9,9 +9,9 @@ import { MaskedSecretInput } from "./masked-secret-input";
 import { ToggleSwitch } from "./toggle-switch";
 import { useT } from "./ui-text-provider";
 
-// BL-228 (docs/roadmap/plans/SYSTEM_TOPIC_PLAN.md §2 item 3, ADR 0053): Settings → AI agent → «System (Telegram)». The bot token
+// BL-228 (docs/roadmap/plans/SYSTEM_TOPIC_PLAN.md §2 item 3, ADR 0053): Settings → AI agent → «System (Telegram)». The HUB bot's token
 // (a masked text field, never type="password"; it never comes back from the server, only `hasToken`), the three ids, the factory's
-// commands.json path, this computer's listening switch, the poll state and the last 20 commands. Every text is a ui-text key.
+// commands.json path, this computer's listening switch, the inbound source (polling the HUB bot from here, off by default), the poll state and the last 20 commands. Every text is a ui-text key.
 
 type CommandStatus = "received" | "done" | "failed" | "refused" | "usage" | "unknown" | "not_available";
 type CommandView = { updateId: number; text: string; status: CommandStatus; resultText: string | null; replyError: string | null; receivedAt: string };
@@ -21,6 +21,7 @@ type View = {
   threadId: string | null;
   listening: boolean;
   commandsPath: string | null;
+  inboxSource: "none" | "bot_get_updates";
   hasToken: boolean;
   botId: string | null;
   serviceMode: boolean;
@@ -30,7 +31,7 @@ type View = {
   lastPollError: string | null;
   recent: CommandView[];
 };
-type Draft = { ownerUserId: string; chatId: string; threadId: string; listening: boolean; commandsPath: string };
+type Draft = { ownerUserId: string; chatId: string; threadId: string; listening: boolean; commandsPath: string; inboxSource: "none" | "bot_get_updates" };
 
 const ROUTE = "/api/system-topic";
 const POLL_MS = 15_000;
@@ -54,6 +55,7 @@ const draftOf = (view: View): Draft => ({
   threadId: view.threadId ?? "",
   listening: view.listening,
   commandsPath: view.commandsPath ?? "",
+  inboxSource: view.inboxSource,
 });
 
 export function SystemTopicSettings() {
@@ -214,6 +216,17 @@ export function SystemTopicSettings() {
         <span className="text-sm text-zinc-300">{t("settingsCards.systemTopic.listen")}</span>
       </div>
       {!view.serviceMode && <p className="text-xs text-amber-400">{t("settingsCards.systemTopic.notService")}</p>}
+      {/* Owner msg 3602: the HUB bot may already be polled by the HUB itself, so polling it from here is a separate, explicit choice. */}
+      <div className="flex items-center gap-2">
+        <ToggleSwitch
+          label={t("settingsCards.systemTopic.pollBot")}
+          checked={draft.inboxSource === "bot_get_updates"}
+          disabled={busy}
+          onChange={(checked) => edit({ inboxSource: checked ? "bot_get_updates" : "none" })}
+        />
+        <span className="text-sm text-zinc-300">{t("settingsCards.systemTopic.pollBot")}</span>
+      </div>
+      <p className="text-xs text-zinc-500">{t("settingsCards.systemTopic.pollBotWarning")}</p>
 
       <button type="button" onClick={() => void saveSettings()} disabled={busy || !dirty} className={primaryButton}>
         {busy ? t("common.saving") : t("settingsCards.systemTopic.save")}

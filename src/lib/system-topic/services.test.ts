@@ -162,18 +162,63 @@ test("a message delivered twice (same update id) is run once", async () => {
   assert.equal(h.sent.length, 1);
 });
 
-test("the stored offset is passed to the next getUpdates", async () => {
+test("the source's next cursor is stored and passed to the next receive", async () => {
   const h = harness();
   const topic = createSystemTopic(h.deps);
   h.batches.push([message(600, "help", { from: 5 }), message(601, "help", { from: 5 })]);
   await topic.tick();
   await topic.tick();
-  assert.deepEqual(h.getUpdatesCalls, [{ offset: null }, { offset: 602 }]);
+  assert.deepEqual(h.receiveCalls.map((c) => c.cursor), [null, 602]);
 });
 
-test("AC-SYS-13: with the switch off, outside the Mac service, without the token or without an id, no Telegram call is made", async () => {
+test("owner msg 3602: the inbound source is `none` by default -- nothing is received, and a source without an adapter is the same", async () => {
+  for (const h of [harness({ state: { inboxSource: "none" } }), (() => {
+    const x = harness();
+    x.deps.inboxes = {};
+    return x;
+  })()]) {
+    h.batches.push([message(650, "status")]);
+    assert.deepEqual(await createSystemTopic(h.deps).tick(), { polled: false });
+    assert.equal(h.receiveCalls.length, 0);
+    assert.equal((await createSystemTopic(h.deps).view()).active, false);
+  }
+});
+
+test("the database gate closed during the long wait: nothing is written, the cursor stays, nothing runs or replies", async () => {
+  const h = harness();
+  h.batches.push([message(660, "status"), message(661, "x", { from: 5 })]);
+  const result = await createSystemTopic(h.deps).tick({ mayWrite: async () => false });
+  assert.deepEqual(result, { polled: false });
+  assert.equal(h.receiveCalls.length, 1);
+  assert.equal(h.store.rows.size, 0);
+  assert.equal(h.store.state.pollOffset, null);
+  assert.equal(h.store.state.droppedCount, 0);
+  assert.equal(h.store.state.lastPollAt, null);
+  assert.deepEqual(h.runs, []);
+  assert.deepEqual(h.sent, []);
+});
+
+test("a stop signal during the receive ends the tick quietly: no error stored, the signal reached the source", async () => {
+  const h = harness();
+  const stop = new AbortController();
+  h.deps.inboxes = {
+    bot_get_updates: {
+      async receive(input) {
+        h.receiveCalls.push({ cursor: input.cursor, signal: input.signal });
+        stop.abort();
+        throw Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
+      },
+    },
+  };
+  assert.deepEqual(await createSystemTopic(h.deps).tick({ signal: stop.signal }), { polled: false });
+  assert.equal(h.receiveCalls[0].signal, stop.signal);
+  assert.equal(h.store.state.lastPollError, null);
+});
+
+test("AC-SYS-13: with the switch off, outside the Mac service, without the token, an id or a source, nothing is received", async () => {
   const variants = [
     harness({ state: { listening: false } }),
+    harness({ state: { inboxSource: "none" } }),
     harness({ service: false }),
     harness({ token: null }),
     harness({ state: { threadId: null } }),
@@ -183,7 +228,7 @@ test("AC-SYS-13: with the switch off, outside the Mac service, without the token
   for (const h of variants) {
     h.batches.push([message(700, "status")]);
     assert.deepEqual(await createSystemTopic(h.deps).tick(), { polled: false });
-    assert.equal(h.getUpdatesCalls.length, 0);
+    assert.equal(h.receiveCalls.length, 0);
     assert.equal(h.sent.length, 0);
   }
 });
@@ -220,14 +265,14 @@ test("view: hasToken and the bot id, never the token", async () => {
 
 test("saveSettings: turning listening on outside the Mac service is refused (system_topic_needs_service), nothing saved", async () => {
   const h = harness({ service: false, state: { listening: false } });
-  const input = { ownerUserId: String(OWNER), chatId: String(CHAT), threadId: String(TOPIC), listening: true, commandsPath: CONFIG_PATH };
+  const input = { ownerUserId: String(OWNER), chatId: String(CHAT), threadId: String(TOPIC), listening: true, commandsPath: CONFIG_PATH, inboxSource: "bot_get_updates" };
   await assert.rejects(createSystemTopic(h.deps).saveSettings(input), (e: unknown) => isDomainError(e) && e.code === "system_topic_needs_service");
   assert.equal(h.store.state.listening, false);
 });
 
 test("saveSettings: listening without the token or an id is refused (system_topic_incomplete); off it saves anything valid", async () => {
   const noToken = harness({ token: null, state: { listening: false } });
-  const full = { ownerUserId: String(OWNER), chatId: String(CHAT), threadId: String(TOPIC), listening: true, commandsPath: CONFIG_PATH };
+  const full = { ownerUserId: String(OWNER), chatId: String(CHAT), threadId: String(TOPIC), listening: true, commandsPath: CONFIG_PATH, inboxSource: "bot_get_updates" };
   await assert.rejects(createSystemTopic(noToken.deps).saveSettings(full), (e: unknown) => isDomainError(e) && e.code === "system_topic_incomplete");
   const noTopic = harness({ state: { listening: false } });
   await assert.rejects(createSystemTopic(noTopic.deps).saveSettings({ ...full, threadId: "" }), (e: unknown) => isDomainError(e) && e.code === "system_topic_incomplete");
@@ -241,8 +286,8 @@ test("saveSettings: listening without the token or an id is refused (system_topi
 
 test("saveSettings: ids must be numbers (the group's negative), the path absolute", async () => {
   const h = harness({ state: { listening: false } });
-  const base = { ownerUserId: String(OWNER), chatId: String(CHAT), threadId: String(TOPIC), listening: false, commandsPath: CONFIG_PATH };
-  for (const bad of [{ ownerUserId: "abc" }, { chatId: "1001234567890" }, { threadId: "-4" }, { commandsPath: "relative/commands.json" }, { extra: 1 }]) {
+  const base = { ownerUserId: String(OWNER), chatId: String(CHAT), threadId: String(TOPIC), listening: false, commandsPath: CONFIG_PATH, inboxSource: "none" };
+  for (const bad of [{ ownerUserId: "abc" }, { chatId: "1001234567890" }, { threadId: "-4" }, { commandsPath: "relative/commands.json" }, { inboxSource: "hub_webhook" }, { extra: 1 }]) {
     await assert.rejects(createSystemTopic(h.deps).saveSettings({ ...base, ...bad }), (e: unknown) => isDomainError(e) && e.code === "validation_failed", JSON.stringify(bad));
   }
 });

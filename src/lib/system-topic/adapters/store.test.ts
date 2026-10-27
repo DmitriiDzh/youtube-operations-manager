@@ -34,14 +34,14 @@ test("v111: both tables exist and the migration converges when run again", () =>
 test("a fresh database: nothing set, listening off, no offset, nothing dropped", () =>
   withDb(async (client) => {
     const state = await createSystemTopicStore(client).read();
-    assert.deepEqual(state, { ownerUserId: null, chatId: null, threadId: null, listening: false, commandsPath: null, pollOffset: null, droppedCount: 0, lastPollAt: null, lastPollError: null, updatedAt: null });
+    assert.deepEqual(state, { ownerUserId: null, chatId: null, threadId: null, listening: false, commandsPath: null, inboxSource: "none", pollOffset: null, droppedCount: 0, lastPollAt: null, lastPollError: null, updatedAt: null });
   }));
 
 test("settings and poll state are kept apart; the dropped counter adds up", () =>
   withDb(async (client) => {
     const store = createSystemTopicStore(client);
     await store.recordPoll({ offset: 10, dropped: 2, at: 1000, error: null });
-    await store.saveSettings({ ownerUserId: "331110302", chatId: "-1001234567890", threadId: "42", listening: true, commandsPath: "/x/commands.json" }, 2000);
+    await store.saveSettings({ ownerUserId: "331110302", chatId: "-1001234567890", threadId: "42", listening: true, commandsPath: "/x/commands.json", inboxSource: "bot_get_updates" }, 2000);
     await store.recordPoll({ offset: 12, dropped: 3, at: 3000, error: "Telegram getUpdates refused: Conflict" });
     assert.deepEqual(await store.read(), {
       ownerUserId: "331110302",
@@ -49,6 +49,7 @@ test("settings and poll state are kept apart; the dropped counter adds up", () =
       threadId: "42",
       listening: true,
       commandsPath: "/x/commands.json",
+      inboxSource: "bot_get_updates",
       pollOffset: 12,
       droppedCount: 5,
       lastPollAt: 3000,

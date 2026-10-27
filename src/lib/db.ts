@@ -5675,7 +5675,7 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
   {
     version: 111,
     description:
-      "system_topic_state + system_topic_commands -- BL-228 (SYSTEM_TOPIC_PLAN.md, ADR 0053; FO-REQ-0042): the System topic's settings on this computer (owner user id, group and topic ids, the listening switch, the factory config path), the getUpdates offset, the dropped-message counter and the last poll, and the audit trail of the owner's commands (one row per Telegram update id). Additive, idempotent, device-local",
+      "system_topic_state + system_topic_commands -- BL-228 (SYSTEM_TOPIC_PLAN.md, ADR 0053; FO-REQ-0042): the System topic's settings on this computer (owner user id, group and topic ids, the listening switch, the factory config path, the inbound source), the inbound cursor, the dropped-message counter and the last poll, and the audit trail of the owner's commands (one row per Telegram update id). Additive, idempotent, device-local",
     apply: async (client) => {
       await client.execute(
         "CREATE TABLE IF NOT EXISTS system_topic_state (" +
@@ -5685,6 +5685,7 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
           "thread_id TEXT, " +
           "listening INTEGER NOT NULL DEFAULT 0, " +
           "commands_path TEXT, " +
+          "inbox_source TEXT NOT NULL DEFAULT 'none', " +
           "poll_offset INTEGER, " +
           "dropped_count INTEGER NOT NULL DEFAULT 0, " +
           "last_poll_at INTEGER, " +

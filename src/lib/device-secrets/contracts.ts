@@ -9,7 +9,8 @@ export const DEVICE_SECRETS_KEY_FILE_NAME = "device-secrets.key";
 
 /**
  * `runpod`: the RunPod key + S3 pair (a JSON set, media-generation). `gemini`: the Gemini key. `huggingface`: the HF read token.
- * `telegram_system_bot`: the System topic bot's token (BL-228, ADR 0053) -- never carried to another computer.
+ * `telegram_system_bot`: the HUB bot's token for the System topic (BL-228, ADR 0053; owner msg 3602: the existing HUB bot) -- never
+ * carried to another computer.
  */
 export const DEVICE_SECRET_NAMES = ["runpod", "gemini", "huggingface", "telegram_system_bot"] as const;
 export type DeviceSecretName = (typeof DEVICE_SECRET_NAMES)[number];

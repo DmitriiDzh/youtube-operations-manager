@@ -4849,13 +4849,19 @@ Owner msgs 3439/3444/3449/3451/3453. On branch `feature/content-ux-redesign`. No
 Plan: `docs/roadmap/plans/SYSTEM_TOPIC_PLAN.md`. Stage 1 is built on `feature/bl-228-system-topic` (not merged).
 
 - **Gateway.** `src/lib/telegram-bot-gateway/` is the only caller of the Telegram Bot API (`getUpdates`, `sendMessage`); an inventory
-  test enforces it. The token is a per-call argument read from device-secrets (slot `telegram_system_bot`) and is redacted from every
-  error text before it leaves the gateway, including Node fetch failures that name the URL.
+  test enforces it. The token -- the EXISTING HUB bot's (owner msg 3602), not a new bot -- is a per-call argument read from
+  device-secrets (slot `telegram_system_bot`) and is redacted from every error text before it leaves the gateway, including Node
+  fetch failures that name the URL.
+- **Inbound is pluggable.** The HUB bot may already be polled by the HUB process, and two `getUpdates` consumers on one bot steal
+  each other's updates. So messages come from a `SystemInbox` adapter chosen by the `inboxSource` setting: `none` (default, nothing
+  received) or `bot_get_updates` (`adapters/bot-get-updates-inbox.ts`). A HUB hand-over adapter is expected later. Replies always go
+  through the gateway's `sendMessage`.
 - **Module.** `src/lib/system-topic/` holds the settings and poll state (schema v111, one-row `system_topic_state`), the audit trail
-  (`system_topic_commands`, keyed by Telegram update id) and the runners. The loop in `src/instrumentation.ts` long-polls (25 s) only
-  when the per-computer switch is on, the process is the Mac service, and the token and the three ids are set; otherwise a tick is
-  one local read. Per poll: keep only messages from the owner's user id in the configured chat and topic (everything else only
-  raises a counter), claim each kept update's audit row (an existing row means it already ran), store the new offset, then run the
+  (`system_topic_commands`, keyed by Telegram update id) and the runners. The loop in `src/instrumentation.ts` asks the source only
+  when the per-computer switch is on, the process is the Mac service, a source is chosen and the token and the three ids are set;
+  otherwise a tick is one local read. The database gate is checked again after the (long) receive, before the first write: when it
+  is closed nothing is written and the cursor stays. Per poll: keep only messages from the owner's user id in the configured chat and topic (everything else only
+  raises a counter), claim each kept update's audit row (an existing row means it already ran), store the source's new cursor, then run the
   commands one by one and reply in the topic.
 - **Factory config.** `status` reads the factory-owned `commands.json` on every command (schema in `schemas.ts` only) and runs
   `status.argv` with `spawn` (no shell, own process group, a minimal environment so the Manager's own secrets never reach it, 60 s

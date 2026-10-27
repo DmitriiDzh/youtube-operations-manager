@@ -99,6 +99,11 @@ async function startServerSession() {
     const systemTopic = createSystemTopicCore();
     const { rawSqlClient: systemSqlClient } = await import("@/lib/db");
     const { assertDeviceAvailableForMutation: assertSystemMayWrite } = await import("@/lib/device-mutation-gate");
+    const systemMayWrite = () =>
+      assertSystemMayWrite(systemSqlClient).then(
+        () => true,
+        () => false
+      );
     const systemStop = new AbortController();
     process.once("SIGINT", () => systemStop.abort());
     process.once("SIGTERM", () => systemStop.abort());
@@ -107,7 +112,7 @@ async function startServerSession() {
       let nextMs = SYSTEM_TOPIC_IDLE_TICK_MS;
       try {
         await assertSystemMayWrite(systemSqlClient);
-        const { polled } = await systemTopic.tick(systemStop.signal);
+        const { polled } = await systemTopic.tick({ signal: systemStop.signal, mayWrite: systemMayWrite });
         if (polled) nextMs = 500;
       } catch (error) {
         const paused = error instanceof Error && (error.name === "OperationLockError" || error.name === "RecoveryModeError");

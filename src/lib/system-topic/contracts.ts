@@ -1,4 +1,3 @@
-import type { TelegramUpdate } from "@/lib/telegram-bot-gateway";
 import type { SystemCommandsConfig } from "./schemas";
 
 /**
@@ -6,6 +5,35 @@ import type { SystemCommandsConfig } from "./schemas";
  * topic, executed by the Manager. A feature module (AGENTS.md §M): off by default, and nothing else in the app depends on it.
  * Stage 1: the settings, the poller, `help` and `status`; `stop`, `go`, `approve`, `deny` are parsed and answered "not available yet".
  */
+
+/**
+ * Where the topic's messages come from (owner, msg 3602: the System topic is one topic of the EXISTING HUB bot, which another process
+ * may already poll -- two getUpdates consumers on one bot steal each other's updates). `none` (the default): nothing is received.
+ * `bot_get_updates`: this app long-polls the bot itself -- only when nothing else polls it. A source the HUB hands messages over
+ * through is expected later; each source is one `SystemInbox` adapter, and everything after it is the same.
+ */
+export const SYSTEM_INBOX_SOURCES = ["none", "bot_get_updates"] as const;
+export type SystemInboxSource = (typeof SYSTEM_INBOX_SOURCES)[number];
+
+/** One received message, whatever the source. `updateId` is unique per message and the audit trail's key (a message runs once). */
+export type SystemInboxMessage = {
+  updateId: number;
+  messageId: number | null;
+  chatId: number | null;
+  threadId: number | null;
+  fromId: number | null;
+  text: string | null;
+  /** Telegram's send time (unix seconds) when the source knows it. */
+  date: number | null;
+};
+
+/**
+ * An inbound source. `cursor` is the source's own position (getUpdates: the offset), kept in the database between calls; the source
+ * returns the next one. It may wait (a long poll) and must end its wait when `signal` fires. Its errors carry no secret.
+ */
+export type SystemInbox = {
+  receive(input: { cursor: number | null; signal?: AbortSignal }): Promise<{ messages: SystemInboxMessage[]; nextCursor: number | null }>;
+};
 
 /** The long-poll wait per getUpdates call. */
 export const SYSTEM_TOPIC_POLL_TIMEOUT_SECONDS = 25;
@@ -48,6 +76,8 @@ export type SystemTopicSettings = {
   listening: boolean;
   /** The factory-owned commands.json (absolute path); read on every command, never written. */
   commandsPath: string | null;
+  /** Where messages come from (default `none`). */
+  inboxSource: SystemInboxSource;
 };
 
 export type SystemTopicState = SystemTopicSettings & {
@@ -85,8 +115,8 @@ export type ProcessResult = { output: string; exitCode: number | null; timedOut:
 
 export type ProcessRunnerPort = (argv: readonly string[], options: { cwd: string | undefined; timeoutMs: number }) => Promise<ProcessResult>;
 
-export type TelegramPort = {
-  getUpdates(token: string, input: { offset: number | null; timeoutSeconds: number; signal?: AbortSignal }): Promise<TelegramUpdate[]>;
+/** The replies: always the bot's sendMessage, whatever the inbound source. */
+export type TelegramReplyPort = {
   sendMessage(token: string, input: { chatId: string; threadId: number | null; text: string }): Promise<{ messageId: number | null }>;
 };
 
@@ -102,7 +132,9 @@ export type BotTokenPort = {
 
 export type SystemTopicDeps = {
   store: SystemTopicStore;
-  telegram: TelegramPort;
+  replies: TelegramReplyPort;
+  /** The inbound adapters by source; a source without one receives nothing. */
+  inboxes: Partial<Record<Exclude<SystemInboxSource, "none">, SystemInbox>>;
   token: BotTokenPort;
   /** The factory config's text (null when the file does not exist). */
   readConfigFile(path: string): Promise<string | null>;
@@ -120,7 +152,7 @@ export type SystemTopicView = SystemTopicSettings & {
   hasToken: boolean;
   botId: string | null;
   serviceMode: boolean;
-  /** Whether the poller runs now (switch on, service, token and ids). */
+  /** Whether the poller runs now (switch on, service, token, ids and an inbound source with an adapter). */
   active: boolean;
   droppedCount: number;
   lastPollAt: string | null;

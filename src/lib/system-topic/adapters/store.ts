@@ -14,6 +14,7 @@ const EMPTY: SystemTopicState = {
   threadId: null,
   listening: false,
   commandsPath: null,
+  inboxSource: "none",
   pollOffset: null,
   droppedCount: 0,
   lastPollAt: null,
@@ -47,6 +48,7 @@ export function createSystemTopicStore(client: Client): SystemTopicStore {
         threadId: str(row.thread_id),
         listening: Number(row.listening) === 1,
         commandsPath: str(row.commands_path),
+        inboxSource: String(row.inbox_source) === "bot_get_updates" ? "bot_get_updates" : "none",
         pollOffset: num(row.poll_offset),
         droppedCount: Number(row.dropped_count ?? 0),
         lastPollAt: num(row.last_poll_at),
@@ -57,8 +59,8 @@ export function createSystemTopicStore(client: Client): SystemTopicStore {
     async saveSettings(settings, at) {
       await ensureRow();
       await client.execute({
-        sql: "UPDATE system_topic_state SET owner_user_id = ?, chat_id = ?, thread_id = ?, listening = ?, commands_path = ?, updated_at = ? WHERE id = 1",
-        args: [settings.ownerUserId, settings.chatId, settings.threadId, settings.listening ? 1 : 0, settings.commandsPath, at],
+        sql: "UPDATE system_topic_state SET owner_user_id = ?, chat_id = ?, thread_id = ?, listening = ?, commands_path = ?, inbox_source = ?, updated_at = ? WHERE id = 1",
+        args: [settings.ownerUserId, settings.chatId, settings.threadId, settings.listening ? 1 : 0, settings.commandsPath, settings.inboxSource, at],
       });
     },
     async recordPoll(input) {

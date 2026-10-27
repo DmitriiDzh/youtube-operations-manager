@@ -1,13 +1,14 @@
 import path from "node:path";
-import { fitTelegramText, redactTelegramToken, type TelegramUpdate } from "@/lib/telegram-bot-gateway";
+import { fitTelegramText, redactTelegramToken } from "@/lib/telegram-bot-gateway";
 import { DomainError, parseWithSchema } from "@/lib/shared-domain";
 import {
   SYSTEM_STATUS_OUTPUT_LIMIT,
   SYSTEM_STATUS_TIMEOUT_MS,
-  SYSTEM_TOPIC_POLL_TIMEOUT_SECONDS,
   SYSTEM_TOPIC_RECENT_COMMANDS,
   type SystemCommand,
   type SystemCommandStatus,
+  type SystemInbox,
+  type SystemInboxMessage,
   type SystemTopicDeps,
   type SystemTopicState,
   type SystemTopicView,
@@ -44,8 +45,12 @@ function inside(root: string, target: string): boolean {
 export function createSystemTopic(deps: SystemTopicDeps) {
   const log = deps.log ?? (() => undefined);
 
+  function inboxOf(state: SystemTopicState): SystemInbox | null {
+    return state.inboxSource === "none" ? null : (deps.inboxes[state.inboxSource] ?? null);
+  }
+
   async function isActive(state: SystemTopicState): Promise<boolean> {
-    return state.listening && deps.serviceMode() && settingsComplete(state) && (await deps.token.hasToken());
+    return state.listening && deps.serviceMode() && settingsComplete(state) && inboxOf(state) !== null && (await deps.token.hasToken());
   }
 
   async function view(): Promise<SystemTopicView> {
@@ -57,6 +62,7 @@ export function createSystemTopic(deps: SystemTopicDeps) {
       threadId: state.threadId,
       listening: state.listening,
       commandsPath: state.commandsPath,
+      inboxSource: state.inboxSource,
       hasToken,
       botId,
       serviceMode: deps.serviceMode(),
@@ -145,10 +151,9 @@ export function createSystemTopic(deps: SystemTopicDeps) {
   }
 
   /** True when the message is the owner's, in the configured chat and topic, with text (plan §2, AC-SYS-01/02). */
-  function accepted(state: SystemTopicState, update: TelegramUpdate): boolean {
-    const message = update.message;
-    if (!message || message.text === null || !message.from || message.threadId === null) return false;
-    return String(message.chatId) === state.chatId && String(message.threadId) === state.threadId && String(message.from.id) === state.ownerUserId;
+  function accepted(state: SystemTopicState, message: SystemInboxMessage): boolean {
+    if (message.text === null || message.chatId === null || message.threadId === null || message.fromId === null) return false;
+    return String(message.chatId) === state.chatId && String(message.threadId) === state.threadId && String(message.fromId) === state.ownerUserId;
   }
 
   return {
@@ -184,40 +189,44 @@ export function createSystemTopic(deps: SystemTopicDeps) {
     },
 
     /**
-     * One long poll. With the switch off, outside the service, or without the token or the ids, it makes no Telegram call
-     * (AC-SYS-13). Order: claim each kept message's audit row (unique update id: a message is never run twice), store the new offset
-     * and the dropped count, then run the claimed commands one by one and reply in the topic.
+     * One receive from the configured inbound source. With the switch off, outside the service, without the token (the replies need
+     * it), the ids or a source, nothing is asked of any source (AC-SYS-13). Order: claim each kept message's audit row (unique update
+     * id: a message is never run twice), store the source's new cursor and the dropped count, then run the claimed commands one by one
+     * and reply in the topic. `mayWrite` is asked after the (long) receive and before the first write: an import / migration that
+     * started during the wait must not see these rows -- nothing is written and the cursor stays, so the source sends them again.
      */
-    async tick(signal?: AbortSignal): Promise<{ polled: boolean }> {
+    async tick(options: { signal?: AbortSignal; mayWrite?: () => Promise<boolean> } = {}): Promise<{ polled: boolean }> {
+      const { signal } = options;
+      const mayWrite = options.mayWrite ?? (async () => true);
       const state = await deps.store.read();
       if (!state.listening || !deps.serviceMode() || !settingsComplete(state)) return { polled: false };
+      const inbox = inboxOf(state);
+      if (!inbox) return { polled: false };
       const token = await deps.token.read();
       if (!token) return { polled: false };
-      let updates: TelegramUpdate[];
+      let received: { messages: SystemInboxMessage[]; nextCursor: number | null };
       try {
-        updates = await deps.telegram.getUpdates(token, { offset: state.pollOffset, timeoutSeconds: SYSTEM_TOPIC_POLL_TIMEOUT_SECONDS, signal });
+        received = await inbox.receive({ cursor: state.pollOffset, signal });
       } catch (error) {
         if (signal?.aborted) return { polled: false };
         const message = redactTelegramToken(error instanceof Error ? error.message : String(error), token);
-        await deps.store.recordPoll({ offset: state.pollOffset, dropped: 0, at: deps.clock(), error: message });
+        if (await mayWrite()) await deps.store.recordPoll({ offset: state.pollOffset, dropped: 0, at: deps.clock(), error: message });
         throw new Error(message);
       }
-      let offset = state.pollOffset;
+      if (!(await mayWrite())) return { polled: false };
       let dropped = 0;
       const claimed: Array<{ updateId: number; text: string; command: SystemCommand }> = [];
-      for (const update of [...updates].sort((a, b) => a.updateId - b.updateId)) {
-        if (offset !== null && update.updateId < offset) continue;
-        offset = Math.max(offset ?? 0, update.updateId + 1);
+      for (const update of [...received.messages].sort((a, b) => a.updateId - b.updateId)) {
         if (!accepted(state, update)) {
           dropped += 1;
           continue;
         }
-        const text = update.message!.text!;
+        const text = update.text!;
         const command = parseSystemCommand(text);
         const fresh = await deps.store.claimCommand({ updateId: update.updateId, fromUserId: state.ownerUserId!, text: text.slice(0, 4096), command: command.kind, receivedAt: deps.clock() });
         if (fresh) claimed.push({ updateId: update.updateId, text, command });
       }
-      await deps.store.recordPoll({ offset, dropped, at: deps.clock(), error: null });
+      await deps.store.recordPoll({ offset: received.nextCursor, dropped, at: deps.clock(), error: null });
       if (dropped > 0) log("system_topic.dropped", { count: dropped });
       for (const item of claimed) {
         let outcome: Outcome;
@@ -229,7 +238,7 @@ export function createSystemTopic(deps: SystemTopicDeps) {
         const reply = fitTelegramText(redactTelegramToken(outcome.text, token));
         let replyError: string | null = null;
         try {
-          await deps.telegram.sendMessage(token, { chatId: state.chatId!, threadId: Number(state.threadId), text: reply });
+          await deps.replies.sendMessage(token, { chatId: state.chatId!, threadId: Number(state.threadId), text: reply });
         } catch (error) {
           replyError = redactTelegramToken(error instanceof Error ? error.message : String(error), token);
         }
