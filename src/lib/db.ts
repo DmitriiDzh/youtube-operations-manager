@@ -5720,6 +5720,7 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
           "action TEXT, " +
           "args_json TEXT, " +
           "hash TEXT, " +
+          "fingerprint TEXT, " +
           "created_at INTEGER, " +
           "requested_by TEXT, " +
           "reason TEXT, " +

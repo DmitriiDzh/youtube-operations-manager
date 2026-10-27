@@ -73,7 +73,7 @@ test("a request: inserted once; it moves only from the state it is in", () =>
   withDb(async (client) => {
     const store = createSystemRequestStore(client);
     const row: SystemRequestRow = {
-      id: "r1", action: "factory_media_start_session", argsJson: "{}", hash: "ea625a79", createdAt: 1, requestedBy: "operator", reason: null,
+      id: "r1", action: "factory_media_start_session", argsJson: "{}", hash: "ea625a79", fingerprint: "f".repeat(64), createdAt: 1, requestedBy: "operator", reason: null,
       agentEstimateUsd: 1.2, estimateUsd: 1.5, state: "posted", refusal: null, seenAt: 2, approvedAt: null, confirmedAt: null, finishedAt: null, resultJson: null,
     };
     assert.equal(await store.insert(row), true);

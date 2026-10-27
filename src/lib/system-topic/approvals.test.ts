@@ -259,3 +259,126 @@ test("at boot, a request left `confirmed` (the process died during the call) bec
   assert.equal(h.action.runs.length, 0);
   assert.equal(await h.approvals.sweepInterrupted(), 0);
 });
+
+// -- Independent review of BL-228 -------------------------------------------------------------------------------------------------
+
+test("review 1: Confirm compares the whole { action, args }, not the 8-hex hash -- a colliding display hash is still refused", async () => {
+  // Every text hashes the same: the display hash and the fingerprint can no longer tell two requests apart.
+  const h = harness({ hash: () => "0".repeat(64) });
+  await posted(h);
+  await say(h, 1, "approve r1");
+  h.files.files.set("r1.json", requestFile("r1", { args: { channelId: "UCa2amtpeOmgP-HkiLKPm1gg", maxMinutes: 61, maxUsd: 2, releaseWhenDone: true } }));
+  const view = await h.approvals.confirm("r1");
+  assert.equal(view.state, "refused");
+  assert.match(view.refusal ?? "", /changed after it was posted/);
+  assert.equal(h.action.runs.length, 0);
+});
+
+test("review 1: the same request written again with other key order and spacing still runs, with the STORED args", async () => {
+  const h = harness();
+  await posted(h);
+  await say(h, 1, "approve r1");
+  h.files.files.set(
+    "r1.json",
+    `{ "reason": "render V52", "args": { "releaseWhenDone": true, "maxUsd": 2, "maxMinutes": 60, "channelId": "UCa2amtpeOmgP-HkiLKPm1gg" },
+       "action": "factory_media_start_session", "requestedBy": "operator", "createdAt": "${new Date(T0).toISOString()}", "id": "r1", "format": 1 }`
+  );
+  assert.equal((await h.approvals.confirm("r1")).state, "done");
+  assert.deepEqual(h.action.runs.map((r) => r.args), [{ channelId: "UCa2amtpeOmgP-HkiLKPm1gg", maxMinutes: 60, maxUsd: 2, releaseWhenDone: true }]);
+});
+
+test("review 6: an input file that changed after posting is refused at Confirm; one that cannot be read is refused at the scan", async () => {
+  const inputs = { "frames/a.png": "a".repeat(64) };
+  const action = fakeAction();
+  action.action.inputHashes = async () => ({ ...inputs });
+  const h = harness({ action });
+  await posted(h);
+  assert.equal(h.requests.rows.get("r1")!.state, "posted");
+  assert.match(h.requests.rows.get("r1")!.fingerprint ?? "", /^[0-9a-f]{64}$/);
+  await say(h, 1, "approve r1");
+  inputs["frames/a.png"] = "b".repeat(64);
+  const view = await h.approvals.confirm("r1");
+  assert.equal(view.state, "refused");
+  assert.equal(view.refusal, "an input file changed after the request was posted");
+  assert.equal(action.runs.length, 0);
+
+  const unreadable = fakeAction();
+  unreadable.action.inputHashes = async () => {
+    throw new Error("frames/a.png is missing");
+  };
+  const u = harness({ action: unreadable });
+  await posted(u);
+  assert.equal(u.requests.rows.get("r1")!.state, "refused");
+  assert.equal(u.requests.rows.get("r1")!.refusal, "an input file cannot be read: frames/a.png is missing");
+});
+
+function slowAction() {
+  const action = fakeAction();
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const run = action.action.run;
+  action.action.run = async (args, actor) => {
+    await gate;
+    return run(args, actor);
+  };
+  return { action, release: () => release() };
+}
+
+test("review 2: a sweep while a Confirm of this process is running leaves it alone; it ends done, no failed result file", async () => {
+  const slow = slowAction();
+  // Even a process start after the confirm time (a clock step) does not let the sweep take an in-flight confirm.
+  const h = harness({ action: slow.action, processStartedAt: T0 + 10 * HOUR });
+  await posted(h);
+  await say(h, 1, "approve r1");
+  const confirming = h.approvals.confirm("r1");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.requests.rows.get("r1")!.state, "confirmed");
+  assert.equal(await h.approvals.sweepInterrupted(), 0);
+  assert.equal(h.files.results.has("r1"), false);
+  slow.release();
+  assert.equal((await confirming).state, "done");
+  assert.equal(h.files.results.get("r1")!.status, "done");
+  assert.equal(slow.action.runs.length, 1);
+});
+
+test("review 2: a row confirmed at or after this process started is not swept; review 3: nothing is swept off the Mac service", async () => {
+  const h = harness({ processStartedAt: T0 });
+  await posted(h);
+  await say(h, 1, "approve r1");
+  await h.requests.transition("r1", ["approved_in_topic"], { state: "confirmed", confirmedAt: T0 + MIN });
+  assert.equal(await h.approvals.sweepInterrupted(), 0);
+  assert.equal(h.requests.rows.get("r1")!.state, "confirmed");
+
+  const off = harness({ service: false });
+  await off.requests.insert({ ...h.requests.rows.get("r1")!, confirmedAt: T0 - HOUR });
+  assert.equal(await off.approvals.sweepInterrupted(), 0);
+  assert.equal(off.requests.rows.get("r1")!.state, "confirmed");
+});
+
+test("review 7: two Confirms at once with a slow call: exactly one tool call; the other is refused as used", async () => {
+  const slow = slowAction();
+  const h = harness({ action: slow.action });
+  await posted(h);
+  await say(h, 1, "approve r1");
+  const both = Promise.allSettled([h.approvals.confirm("r1"), h.approvals.confirm("r1")]);
+  await new Promise((resolve) => setImmediate(resolve));
+  slow.release();
+  const [a, b] = await both;
+  const outcomes = [a, b].map((r) => r.status);
+  assert.deepEqual(outcomes.sort(), ["fulfilled", "rejected"]);
+  const rejected = [a, b].find((r) => r.status === "rejected") as PromiseRejectedResult;
+  assert.ok(isDomainError(rejected.reason) && rejected.reason.code === "system_topic_request_state");
+  assert.equal(slow.action.runs.length, 1);
+  assert.equal(h.requests.rows.get("r1")!.state, "done");
+});
+
+test("FO-RESP-0045: a free action ($0 estimate, $0 cap) goes through the same two steps and runs once", async () => {
+  const h = harness({ action: fakeAction({ estimateUsd: 0, capUsd: 0 }) });
+  await posted(h);
+  assert.equal(h.requests.rows.get("r1")!.state, "posted");
+  assert.match(h.store.outbox[0].text, /Estimate \(YT Manager\): \$0\.00/);
+  await assert.rejects(h.approvals.confirm("r1"), (e: unknown) => isDomainError(e) && e.code === "system_topic_request_state");
+  await say(h, 1, "approve r1");
+  assert.equal((await h.approvals.confirm("r1")).state, "done");
+  assert.equal(h.action.runs.length, 1);
+});

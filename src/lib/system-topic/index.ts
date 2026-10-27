@@ -22,6 +22,14 @@ export function isSystemTopicServiceMode(): boolean {
 export type SystemTopicCore = { topic: SystemTopic; approvals: SystemApprovals };
 
 const CORE_KEY = Symbol.for("youtube-operations-manager.system-topic");
+const STARTED_KEY = Symbol.for("youtube-operations-manager.system-topic.process-started-at");
+
+/** When this server process started (the first bundle to load this module sets it; instrumentation loads it at boot). */
+function processStartedAt(): number {
+  const holder = globalThis as unknown as Record<symbol, number | undefined>;
+  return (holder[STARTED_KEY] ??= Date.now());
+}
+processStartedAt();
 
 /** One instance per process (the routes and the server's scan loop are separate bundles). The first caller's actions win. */
 export function createSystemTopicCore(actions: Readonly<Record<string, SystemApprovalAction>>): SystemTopicCore {
@@ -41,6 +49,7 @@ export function createSystemTopicCore(actions: Readonly<Record<string, SystemApp
     serviceMode: isSystemTopicServiceMode,
     enqueue,
     clock,
+    processStartedAt: processStartedAt(),
     log,
   });
   const topic = createSystemTopic({

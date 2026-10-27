@@ -157,7 +157,7 @@ export function requestFile(id: string, overrides: Record<string, unknown> = {})
 }
 
 /** The whole module on fakes: the topic core with its approvals, a clock the test moves. */
-export function harness(options: { state?: Partial<SystemTopicState>; service?: boolean; action?: ReturnType<typeof fakeAction> } = {}) {
+export function harness(options: { state?: Partial<SystemTopicState>; service?: boolean; action?: ReturnType<typeof fakeAction>; processStartedAt?: number; hash?: (text: string) => string } = {}) {
   const store = memoryStore(options.state);
   const requests = memoryRequestStore();
   const files = memoryFiles();
@@ -173,6 +173,8 @@ export function harness(options: { state?: Partial<SystemTopicState>; service?: 
     serviceMode: () => options.service ?? true,
     enqueue: (text) => store.enqueueOutbox({ id: `o${++ids}`, text, createdAt: clock.now }),
     clock: () => clock.now,
+    processStartedAt: options.processStartedAt ?? T0 + 30 * 60_000,
+    ...(options.hash ? { hash: options.hash } : {}),
     log: (event, context) => logs.push({ event, context }),
   });
   const topic = createSystemTopic({

@@ -23,7 +23,10 @@ export type SystemRequestRow = {
   id: string;
   action: string | null;
   argsJson: string | null;
+  /** Display only: the first 8 hex of SHA-256 of the canonical `{ action, args }`. */
   hash: string | null;
+  /** The full SHA-256 (64 hex) of the canonical `{ action, args, inputs }` (inputs: each input file's SHA-256), as posted. */
+  fingerprint: string | null;
   createdAt: number | null;
   requestedBy: string | null;
   reason: string | null;
@@ -72,6 +75,11 @@ export type SystemApprovalAction = {
   run(args: Record<string, unknown>, actor: string): Promise<{ ok: true; result: unknown } | { ok: false; error: string }>;
   /** The arguments in short, for the post. */
   summary(args: Record<string, unknown>): string;
+  /**
+   * The SHA-256 of each input file the call reads (path → hex), part of the fingerprint; absent for an action without inputs.
+   * Throws when a file cannot be read (the request is then refused).
+   */
+  inputHashes?(args: Record<string, unknown>): Promise<Record<string, string>>;
 };
 
 export type SystemApprovalsDeps = {
@@ -82,6 +90,10 @@ export type SystemApprovalsDeps = {
   serviceMode(): boolean;
   enqueue(text: string): Promise<void>;
   clock(): number;
+  /** When this process started: only a request confirmed before it can be left over from a dead process. */
+  processStartedAt: number;
+  /** SHA-256 hex of a text (injected in tests). */
+  hash?(text: string): string;
   log?(event: string, context: Record<string, unknown>): void;
 };
 
@@ -110,9 +122,9 @@ export function canonicalJson(value: unknown): string {
   return JSON.stringify(value) ?? "null";
 }
 
-/** The request hash the owner sees: the first 8 hex of SHA-256 of the canonical JSON of `{ action, args }`. */
-export function requestHash(action: string, args: unknown): string {
-  return sha256Hex(canonicalJson({ action, args })).slice(0, 8);
+/** The request hash the owner sees: the first 8 hex of SHA-256 of the canonical JSON of `{ action, args }`. Display only. */
+export function requestHash(action: string, args: unknown, hash: (text: string) => string = sha256Hex): string {
+  return hash(canonicalJson({ action, args })).slice(0, 8);
 }
 
 const money = (usd: number | null) => (usd === null ? "unknown" : `$${usd.toFixed(2)}`);
@@ -121,7 +133,7 @@ function expiredAt(createdAt: number | null, now: number): boolean {
   return createdAt === null || now - createdAt > SYSTEM_REQUEST_TTL_MS || createdAt > now;
 }
 
-export type SystemRequestView = Omit<SystemRequestRow, "argsJson" | "resultJson" | "createdAt" | "seenAt" | "approvedAt" | "confirmedAt" | "finishedAt"> & {
+export type SystemRequestView = Omit<SystemRequestRow, "fingerprint" | "argsJson" | "resultJson" | "createdAt" | "seenAt" | "approvedAt" | "confirmedAt" | "finishedAt"> & {
   args: unknown;
   result: unknown;
   createdAt: string | null;
@@ -133,6 +145,15 @@ export type SystemRequestView = Omit<SystemRequestRow, "argsJson" | "resultJson"
 
 export function createSystemApprovals(deps: SystemApprovalsDeps) {
   const log = deps.log ?? (() => undefined);
+  const hasher = deps.hash ?? sha256Hex;
+  /** Confirms of this process in progress, per request id (never swept as interrupted while above 0). */
+  const inFlight = new Map<string, number>();
+  const enter = (id: string) => inFlight.set(id, (inFlight.get(id) ?? 0) + 1);
+  const leave = (id: string) => {
+    const left = (inFlight.get(id) ?? 1) - 1;
+    if (left <= 0) inFlight.delete(id);
+    else inFlight.set(id, left);
+  };
   const iso = (value: number | null) => (value === null ? null : new Date(value).toISOString());
   const parseJson = (text: string | null): unknown => {
     if (text === null) return null;
@@ -144,7 +165,8 @@ export function createSystemApprovals(deps: SystemApprovalsDeps) {
   };
 
   function toView(row: SystemRequestRow): SystemRequestView {
-    const { argsJson, resultJson, ...rest } = row;
+    const { argsJson, resultJson, fingerprint: _fingerprint, ...rest } = row;
+    void _fingerprint;
     return {
       ...rest,
       args: parseJson(argsJson),
@@ -193,7 +215,24 @@ export function createSystemApprovals(deps: SystemApprovalsDeps) {
     return true;
   }
 
-  /** The file read again and checked as at posting; the args to run with, or a refusal text. */
+  /** The input files' hashes and the full fingerprint of `{ action, args, inputs }`; a refusal text when an input cannot be read. */
+  async function fingerprintOf(action: SystemApprovalAction, actionName: string, args: Record<string, unknown>): Promise<{ ok: true; fingerprint: string } | { ok: false; refusal: string }> {
+    let inputs: Record<string, string> = {};
+    if (action.inputHashes) {
+      try {
+        inputs = await action.inputHashes(args);
+      } catch (error) {
+        return { ok: false, refusal: `an input file cannot be read: ${error instanceof Error ? error.message : String(error)}` };
+      }
+    }
+    return { ok: true, fingerprint: hasher(canonicalJson({ action: actionName, args, inputs })) };
+  }
+
+  /**
+   * At Confirm: the file read again must hold exactly the posted `{ action, args }` (canonical JSON equality, not the 8-hex display
+   * hash), and the input files must be unchanged (the full fingerprint). The call then runs with the STORED args -- what the owner
+   * saw on the card -- never the re-read file's.
+   */
   async function recheckFile(dir: string, row: SystemRequestRow): Promise<{ ok: true; args: Record<string, unknown>; action: SystemApprovalAction } | { ok: false; refusal: string }> {
     const text = await deps.files.read(dir, `${row.id}.json`);
     if (text === null) return { ok: false, refusal: "the request file is gone" };
@@ -205,12 +244,18 @@ export function createSystemApprovals(deps: SystemApprovalsDeps) {
     }
     const parsed = systemRequestFileSchema.safeParse(json);
     if (!parsed.success || parsed.data.id !== row.id) return { ok: false, refusal: "the request file no longer matches format 1" };
-    const hash = requestHash(parsed.data.action, parsed.data.args);
-    if (hash !== row.hash) return { ok: false, refusal: `the request changed after it was posted (hash ${hash}, posted ${row.hash})` };
-    const action = deps.actions[parsed.data.action];
-    if (!action) return { ok: false, refusal: `action ${parsed.data.action} is not allowed here` };
-    const args = action.parse(parsed.data.args);
+    if (row.action === null || row.argsJson === null || row.fingerprint === null) return { ok: false, refusal: "the request was not posted" };
+    const stored = JSON.parse(row.argsJson) as unknown;
+    if (canonicalJson({ action: parsed.data.action, args: parsed.data.args }) !== canonicalJson({ action: row.action, args: stored })) {
+      return { ok: false, refusal: `the request changed after it was posted (hash ${requestHash(parsed.data.action, parsed.data.args, hasher)}, posted ${row.hash})` };
+    }
+    const action = deps.actions[row.action];
+    if (!action) return { ok: false, refusal: `action ${row.action} is not allowed here` };
+    const args = action.parse(stored);
     if (!args.ok) return { ok: false, refusal: `the arguments fail the tool's schema: ${args.error}` };
+    const fingerprint = await fingerprintOf(action, row.action, stored as Record<string, unknown>);
+    if (!fingerprint.ok) return fingerprint;
+    if (fingerprint.fingerprint !== row.fingerprint) return { ok: false, refusal: "an input file changed after the request was posted" };
     return { ok: true, args: args.args, action };
   }
 
@@ -247,6 +292,7 @@ export function createSystemApprovals(deps: SystemApprovalsDeps) {
       action: null,
       argsJson: null,
       hash: null,
+      fingerprint: null,
       createdAt: null,
       requestedBy: null,
       reason: null,
@@ -277,7 +323,7 @@ export function createSystemApprovals(deps: SystemApprovalsDeps) {
       ...base,
       action: request.action,
       argsJson: JSON.stringify(request.args),
-      hash: requestHash(request.action, request.args),
+      hash: requestHash(request.action, request.args, hasher),
       createdAt: Date.parse(request.createdAt),
       requestedBy: request.requestedBy,
       reason: request.reason ?? null,
@@ -288,9 +334,11 @@ export function createSystemApprovals(deps: SystemApprovalsDeps) {
     if (!action) return refuse(row, `action ${request.action} is not allowed here (allowed: ${Object.keys(deps.actions).join(", ")})`);
     const args = action.parse(request.args);
     if (!args.ok) return refuse(row, `the arguments fail the tool's schema: ${args.error}`);
+    const fingerprint = await fingerprintOf(action, request.action, request.args);
+    if (!fingerprint.ok) return refuse(row, fingerprint.refusal);
     const checked = await estimate(action, args.args);
     if (checked.refusal) return refuse({ ...row, estimateUsd: checked.estimateUsd }, checked.refusal);
-    if (!(await deps.store.insert({ ...row, estimateUsd: checked.estimateUsd }))) return;
+    if (!(await deps.store.insert({ ...row, fingerprint: fingerprint.fingerprint, estimateUsd: checked.estimateUsd }))) return;
     await deps.enqueue(
       [
         `Paid-call request ${id} from ${request.requestedBy}`,
@@ -394,9 +442,12 @@ export function createSystemApprovals(deps: SystemApprovalsDeps) {
      * can still be in flight). Its outcome is unknown: it becomes `failed`, with a result file, never run again.
      */
     async sweepInterrupted(): Promise<number> {
+      if (!deps.serviceMode()) return 0;
       const state = await deps.readState();
       let count = 0;
       for (const row of await deps.store.listByStates(["confirmed"])) {
+        // A Confirm of THIS process (still running, or confirmed after it started) is never swept.
+        if (inFlight.has(row.id) || (row.confirmedAt !== null && row.confirmedAt >= deps.processStartedAt)) continue;
         const swept = await finish(state.requestsPath, row, ["confirmed"], "failed", {
           error: "interrupted by a server restart; the outcome is unknown -- check Servers / Gemini jobs",
         });
@@ -441,20 +492,26 @@ export function createSystemApprovals(deps: SystemApprovalsDeps) {
         await finish(dir, row, ["approved_in_topic"], "refused", { refusal: checked.refusal });
         return settle();
       }
-      // Used BEFORE the call: only one confirm can win this.
-      if (!(await deps.store.transition(id, ["approved_in_topic"], { state: "confirmed", confirmedAt: deps.clock() }))) {
-        const latest = (await deps.store.get(id)) ?? row;
-        throw new DomainError({ code: "system_topic_request_state", message: stateText(latest), details: { id, state: latest.state } });
-      }
-      log("system_topic.request_confirmed", { id, action: row.action, estimateUsd: checked.estimateUsd });
-      let outcome: { ok: true; result: unknown } | { ok: false; error: string };
+      // In flight from before the mark until the result is written, so a sweep can never take it for a dead process's.
+      enter(id);
       try {
-        outcome = await file.action.run(file.args, SYSTEM_APPROVAL_ACTOR);
-      } catch (error) {
-        outcome = { ok: false, error: error instanceof Error ? error.message : String(error) };
+        // Used BEFORE the call: only one confirm can win this.
+        if (!(await deps.store.transition(id, ["approved_in_topic"], { state: "confirmed", confirmedAt: deps.clock() }))) {
+          const latest = (await deps.store.get(id)) ?? row;
+          throw new DomainError({ code: "system_topic_request_state", message: stateText(latest), details: { id, state: latest.state } });
+        }
+        log("system_topic.request_confirmed", { id, action: row.action, estimateUsd: checked.estimateUsd });
+        let outcome: { ok: true; result: unknown } | { ok: false; error: string };
+        try {
+          outcome = await file.action.run(file.args, SYSTEM_APPROVAL_ACTOR);
+        } catch (error) {
+          outcome = { ok: false, error: error instanceof Error ? error.message : String(error) };
+        }
+        if (outcome.ok) await finish(dir, row, ["confirmed"], "done", { result: outcome.result });
+        else await finish(dir, row, ["confirmed"], "failed", { error: outcome.error });
+      } finally {
+        leave(id);
       }
-      if (outcome.ok) await finish(dir, row, ["confirmed"], "done", { result: outcome.result });
-      else await finish(dir, row, ["confirmed"], "failed", { error: outcome.error });
       return settle();
     },
 
