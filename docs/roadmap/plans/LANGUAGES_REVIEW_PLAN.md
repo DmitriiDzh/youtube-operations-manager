@@ -164,7 +164,7 @@ fail on the description row.
   - `requested` → `in_progress` (claimed) → `done` (every video has a set) | `partly_done` (some do) | `failed` (with a reason);
   - `overdue` is derived on read: 3 h after creation without a claim, or 3 h after the claim without a completion;
   - the owner can cancel a request that is not done (`cancelled`).
-- **Tools** (Factory API 1.35.0; the worker's `agent_*` own channel only, Agent API 4.9.0):
+- **Tools** (Factory API 1.34.0, shipped together with stage 1; the worker's `agent_*` own channel only, Agent API 4.8.0):
   - `factory_localization_requests_list` (`{ channelId, status? }`, newest first) — READ;
   - `factory_localization_request_claim` — WRITE. It is atomic in this process: the first claim of a `requested` request wins,
     later ones get `request_not_claimable`. A claim the other computer made at the same moment is resolved by the document merge:
