@@ -4862,3 +4862,22 @@ On branch `feature/bl-229-music-library`. No schema change; no YouTube call; not
   "without a genre" group, which exists only when `tracksWithoutGenre > 0`.
 - **Route / UI.** `GET /api/channels/[channelId]/music-library` (session + active channel) returns the 5-state result as is;
   `MusicLibraryCard` (Media → Music, above the plans, inside a `FeatureErrorBoundary`) polls it once a minute.
+
+### BL-229 part B — the batch review inside the plan review (ADR 0054 amendment 1)
+
+- **Definition.** `PlanDefinition.reviewForm` and `PlanGroup.genre` / `.reviewForm` live in the plan's `definition_json` (no column).
+  `schemas.ts`: `reviewFieldSchema`, `reviewFormSchema`, `genreSchema` are plain `z.object` (unknown keys stripped); the wave
+  (`groupSchema`) and plan schemas stay strict. `validateDefinition` refuses a field id used twice across the plan's form plus one
+  wave's (`duplicateFieldIds`). `normalizeGroup` keeps absent = unchanged on an upsert, null = cleared.
+- **Answers.** `review-forms.ts` (pure): `effectiveFields(plan, groupId)` = plan fields then the wave's; `checkAnswers` refuses with
+  `plan_answer_*` (unknown id, wrong type, out of range, unknown option, then required missing) and returns the answers in the form's
+  order; `keepFittingAnswers` drops, on applying a peer verdict, answers whose field no longer fits (the verdict is kept). The owner
+  verdict checks against this device's definition, a peer verdict against the owning device's report.
+- **Storage / events / sync.** Schema v111 adds `answers_json` to `generation_plan_results`, `generation_plan_verdict_history` and
+  `generation_plan_peer_verdicts` (the store adapter maps empty to null). `planEvents` adds `answers` to `owner_verdict`. Plans report
+  version 6 (`sync-gateway/generation-plans/contracts.ts`) carries the forms, the genre and `answers` on verdict rows, history
+  entries and sent verdicts; reads 1-6, strict at every level.
+- **Screen.** `genre-review-model.ts` (pure): `reasonRowsFor` (two rows only for a genre wave, else `reasonChipsFor`),
+  `formSectionsFor`, `missingRequired`, `toggleAnswer`, `answersToSend`, `safeGenreColor` / `genreTintStyle` (`--genre-color`).
+  `plan-review-screen.tsx` renders `GenreHeader`, the tint, the chip rows and `ReviewFormSection`; `submit` refuses locally while a
+  required answer is missing (the A / R keys too). `generation-plans-panel.tsx` shows `GenreBadges`.
