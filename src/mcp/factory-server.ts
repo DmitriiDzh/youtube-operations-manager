@@ -614,7 +614,7 @@ const capacityLogInput = z
   .object({ since: z.string().datetime().optional(), gpuTypeId: z.string().min(1).max(128).optional(), limit: z.number().int().min(1).max(500).optional() })
   .strict();
 // BL-172: the shape only; the media core checks the CUDA version against its own list.
-const gpuAvailabilityInput = z
+export const gpuAvailabilityInput = z
   .object({
     gpuTypeIds: z.array(z.string().min(1).max(128)).min(1).max(50).optional(),
     dataCenterIds: z.array(z.string().min(1).max(32)).min(1).max(50).optional(),

@@ -20,6 +20,10 @@ function services(overrides: Partial<SystemApprovalServices> = {}) {
   const base: SystemApprovalServices = {
     mediaSettings: async () => okSettings(),
     startSession: async (args) => (calls.push(["start", args]), { session: { sessionId: "s1" }, approved: true, heldBy: null }),
+    endSession: async (sessionId) => (calls.push(["end", sessionId]), { session: { sessionId, status: "rejected" } }),
+    templateMaxPricePerHr: async (templateId) => (templateId === "tpl-capped" ? 0.9 : null),
+    gpuAvailability: async (args) => (calls.push(["gpu", args]), { availability: [] }),
+    geminiInputHashes: async (args) => (calls.push(["hashes", args]), { "frames/a.png": "a".repeat(64) }),
     geminiCreateJob: async (args, actor) => (calls.push(["gemini", args, actor]), args.dryRun ? { dryRun: true, estimateUsd: 0.39, allowed: true, refusal: null } : { job: { jobId: "g1" } }),
     ...overrides,
   };
@@ -65,12 +69,36 @@ test("media: the factory switch and limits stay the ceiling; an unknown GPU pric
   assert.match((await check(okSettings({ price: null }))).refusal ?? "", /price is unknown/);
 });
 
-test("media: run calls the factory start once; a start held for the owner is a failure, not done", async () => {
+test("media: run calls the factory start once", async () => {
   const { actions, calls } = services();
   assert.deepEqual(await actions.factory_media_start_session.run(media(), "owner (System)"), { ok: true, result: { session: { sessionId: "s1" }, approved: true, heldBy: null } });
   assert.deepEqual(calls, [["start", media()]]);
-  const held = services({ startSession: async () => ({ approved: false, heldBy: "the device's daily limit" }) }).actions.factory_media_start_session;
-  assert.deepEqual(await held.run(media(), "owner (System)"), { ok: false, error: "held for the owner in Servers: the device's daily limit" });
+});
+
+test("review 4: a start held by a limit is withdrawn through the factory stop path, then reported failed", async () => {
+  const held = services({ startSession: async () => ({ session: { sessionId: "s9" }, approved: false, heldBy: "the device's daily limit" }) });
+  assert.deepEqual(await held.actions.factory_media_start_session.run(media(), "owner (System)"), { ok: false, error: "held by a limit: the device's daily limit; the session was withdrawn" });
+  assert.deepEqual(held.calls, [["end", "s9"]]);
+  const stuck = services({
+    startSession: async () => ({ session: { sessionId: "s9" }, approved: false, heldBy: "x" }),
+    endSession: async () => {
+      throw new Error("RunPod unreachable");
+    },
+  });
+  assert.deepEqual(await stuck.actions.factory_media_start_session.run(media(), "owner (System)"), { ok: false, error: "held by a limit: x; withdrawing session s9 failed: RunPod unreachable" });
+});
+
+test("review 5: the rate is the session's own GPU cap, else its template's, else the saved price; the post names maxUsd as the bound", async () => {
+  const check = (args: Record<string, unknown>) => services().actions.factory_media_start_session.check(args);
+  // $1.80/h (own cap) × 60 min = $1.80.
+  assert.equal((await check(media({ gpu: { candidates: ["NVIDIA L4"], maxPricePerHr: 1.8 } }))).estimateUsd, 1.8);
+  // $0.90/h (the template's cap) × 60 min = $0.90.
+  assert.equal((await check(media({ templateId: "tpl-capped" }))).estimateUsd, 0.9);
+  // A template without a cap: the saved $1.20/h × 60 min = $1.20.
+  assert.equal((await check(media({ templateId: "tpl-plain" }))).estimateUsd, 1.2);
+  // $2.40/h × 60 = $2.40: over the cap (refused by the generic cap check).
+  assert.equal((await check(media({ gpu: { candidates: ["H100"], maxPricePerHr: 2.4 } }))).estimateUsd, 2.4);
+  assert.equal(services().actions.factory_media_start_session.summary(media()), `channel ${CHANNEL}, 60 min; maxUsd $2 is the hard bound`);
 });
 
 const gemini = { channelId: CHANNEL, kind: "image", model: "gemini-nano-banana-2.1", prompt: "a rainy street", image: { size: "1K", aspectRatio: "16:9" } };
@@ -97,6 +125,25 @@ test("gemini: a dry-run refusal (its own limits) refuses the request", async () 
   assert.deepEqual(await create.check(gemini), { estimateUsd: 0.4, refusal: "over the per-day limit" });
 });
 
-test("only the two actions are allowlisted", () => {
-  assert.deepEqual(Object.keys(services().actions).sort(), ["factory_gemini_create_job", "factory_media_start_session"]);
+test("review 6: a Gemini approval is bound to the SHA-256 of its input files", async () => {
+  const { actions, calls } = services();
+  const withFrame = { ...gemini, kind: "video", model: "gemini-omni-1.1-flash", image: undefined, video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 4, inputs: { firstFrame: "frames/a.png" } } };
+  assert.deepEqual(await actions.factory_gemini_create_job.inputHashes!(withFrame), { "frames/a.png": "a".repeat(64) });
+  assert.deepEqual(calls, [["hashes", withFrame]]);
+});
+
+test("FO-RESP-0045: factory_media_get_gpu_availability is a free action -- the tool's schema, $0, the same service call", async () => {
+  const { actions, calls } = services();
+  const gpu = actions.factory_media_get_gpu_availability;
+  assert.equal(gpu.capUsd, 0);
+  assert.deepEqual(gpu.parse({ gpuTypeIds: ["NVIDIA L4"], minVramGb: 24 }), { ok: true, args: { gpuTypeIds: ["NVIDIA L4"], minVramGb: 24 } });
+  assert.equal(gpu.parse({ gpuTypeIds: [] }).ok, false);
+  assert.equal(gpu.parse({ extra: 1 }).ok, false);
+  assert.deepEqual(await gpu.check({}), { estimateUsd: 0, refusal: null });
+  assert.deepEqual(await gpu.run({ minVramGb: 24 }, "owner (System)"), { ok: true, result: { availability: [] } });
+  assert.deepEqual(calls, [["gpu", { minVramGb: 24 }]]);
+});
+
+test("only the three actions are allowlisted", () => {
+  assert.deepEqual(Object.keys(services().actions).sort(), ["factory_gemini_create_job", "factory_media_get_gpu_availability", "factory_media_start_session"]);
 });

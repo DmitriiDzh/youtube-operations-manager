@@ -1,15 +1,16 @@
 import { createFactoryMediaDeps } from "@/app/api/mcp/factory-media-deps";
-import { createGeminiMediaCore } from "@/lib/gemini-media";
+import { createGeminiMediaCore, geminiInputHashes } from "@/lib/gemini-media";
+import { createMediaGenerationCore } from "@/lib/media-generation";
 import { createJobInputSchema as geminiCreateJobSchema } from "@/lib/gemini-media/schemas";
 import { createSystemTopicCore, type SystemApprovalAction, type SystemTopicCore } from "@/lib/system-topic";
-import { startSessionInput } from "@/mcp/factory-server";
+import { gpuAvailabilityInput, startSessionInput } from "@/mcp/factory-server";
 
 /**
  * BL-228 (SYSTEM_TOPIC_PLAN.md §5 as amended, ADR 0053 Amendment 1; FO-RESP-0043 Q5, owner msg 3607): the two paid actions an owner
  * may approve through the System topic, composed at the app layer (AGENTS.md §M: system-topic imports no media module). Each one is
- * the SAME schema and service code as its Factory MCP tool -- `factory_media_start_session` through the factory media wiring, and
- * `factory_gemini_create_job` through the Gemini core -- so the owner's factory and Gemini limits stay the ceiling. On top: the
- * Manager's own estimate and per-approval cap.
+ * the SAME schema and service code as its Factory MCP tool -- `factory_media_start_session` (and the free test action
+ * `factory_media_get_gpu_availability`, FO-RESP-0045) through the factory media wiring, and `factory_gemini_create_job` through the
+ * Gemini core -- so the owner's factory and Gemini limits stay the ceiling. On top: the Manager's own estimate and per-approval cap.
  */
 
 const round2 = (value: number) => Math.round(value * 100) / 100;
@@ -27,6 +28,13 @@ type FactoryMediaSettings = {
 export type SystemApprovalServices = {
   mediaSettings(): Promise<FactoryMediaSettings>;
   startSession(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+  /** Withdraws a session the factory started (a pending one ends at no cost): the factory stop path. */
+  endSession(sessionId: string): Promise<unknown>;
+  /** The registry template's own GPU price cap, or null (no template, none set). */
+  templateMaxPricePerHr(templateId: string): Promise<number | null>;
+  gpuAvailability(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+  /** Each input file's SHA-256 (throws when one cannot be read). */
+  geminiInputHashes(args: Record<string, unknown>): Promise<Record<string, string>>;
   geminiCreateJob(args: Record<string, unknown>, actor: string): Promise<Record<string, unknown>>;
 };
 
@@ -34,6 +42,13 @@ export function productionApprovalServices(): SystemApprovalServices {
   return {
     mediaSettings: async () => (await createFactoryMediaDeps().getSettings()).settings as FactoryMediaSettings,
     startSession: (args) => createFactoryMediaDeps().startSession(args as Parameters<ReturnType<typeof createFactoryMediaDeps>["startSession"]>[0]),
+    endSession: (sessionId) => createFactoryMediaDeps().endSession({ sessionId }),
+    templateMaxPricePerHr: async (templateId) => {
+      const template = (await createMediaGenerationCore().listWorkflowTemplates()).find((t) => t.templateId === templateId);
+      return template?.gpu?.maxPricePerHr ?? null;
+    },
+    gpuAvailability: (args) => createFactoryMediaDeps().gpuAvailability(args as Parameters<ReturnType<typeof createFactoryMediaDeps>["gpuAvailability"]>[0]),
+    geminiInputHashes: (args) => geminiInputHashes(args as Parameters<typeof geminiInputHashes>[0]),
     geminiCreateJob: (args, actor) => createGeminiMediaCore().createJob(args, actor) as Promise<Record<string, unknown>>,
   };
 }
@@ -62,11 +77,13 @@ export function createSystemApprovalActions(services: SystemApprovalServices): R
     },
     async check(args) {
       const settings = await services.mediaSettings();
-      const price = settings.gpu.onDemandPricePerHr;
       const maxMinutes = Number(args.maxMinutes);
       const maxUsd = Number(args.maxUsd);
+      // Review 5: the highest rate this session may land on -- its own GPU price cap, else its template's, else the saved price.
+      const own = (args.gpu as { maxPricePerHr?: number | null } | undefined)?.maxPricePerHr ?? null;
+      const fromTemplate = own === null && typeof args.templateId === "string" ? await services.templateMaxPricePerHr(args.templateId) : null;
+      const price = own ?? fromTemplate ?? settings.gpu.onDemandPricePerHr;
       if (price === null) return { estimateUsd: null, refusal: "the GPU's price is unknown (Servers → Setup)" };
-      // The GPU rate the media module itself uses for a session's estimate, times the session's minutes.
       const estimateUsd = round2((price * maxMinutes) / 60);
       const limits = settings.limits;
       const refusal = !settings.factorySessionsEnabled
@@ -85,14 +102,24 @@ export function createSystemApprovalActions(services: SystemApprovalServices): R
     async run(args) {
       try {
         const result = await services.startSession(args);
-        // A start held by a device limit is pending for the owner in Servers: nothing runs, so it is not done.
-        if (result.approved === false) return { ok: false, error: `held for the owner in Servers: ${String(result.heldBy ?? "a limit")}` };
+        // A start held by a limit would stay pending for the owner in Servers -- a second, duplicate request. It is withdrawn.
+        if (result.approved === false) {
+          const reason = String(result.heldBy ?? "a limit");
+          const sessionId = (result.session as { sessionId?: unknown } | undefined)?.sessionId;
+          if (typeof sessionId !== "string") return { ok: false, error: `held by a limit: ${reason}; the session id is unknown, so it was not withdrawn` };
+          try {
+            await services.endSession(sessionId);
+          } catch (error) {
+            return { ok: false, error: `held by a limit: ${reason}; withdrawing session ${sessionId} failed: ${errorText(error)}` };
+          }
+          return { ok: false, error: `held by a limit: ${reason}; the session was withdrawn` };
+        }
         return { ok: true, result };
       } catch (error) {
         return { ok: false, error: errorText(error) };
       }
     },
-    summary: (args) => `channel ${String(args.channelId)}, ${String(args.maxMinutes)} min, max $${String(args.maxUsd)}${args.templateId ? `, template ${String(args.templateId)}` : ""}`,
+    summary: (args) => `channel ${String(args.channelId)}, ${String(args.maxMinutes)} min${args.templateId ? `, template ${String(args.templateId)}` : ""}; maxUsd $${String(args.maxUsd)} is the hard bound`,
   };
 
   const geminiCreate: SystemApprovalAction = {
@@ -118,9 +145,29 @@ export function createSystemApprovalActions(services: SystemApprovalServices): R
       }
     },
     summary: (args) => `channel ${String(args.channelId)}, ${String(args.kind)} ${String(args.model)}`,
+    // Review 6: the approval is bound to the exact input files (frames, references).
+    inputHashes: (args) => services.geminiInputHashes(args),
   };
 
-  return { factory_media_start_session: mediaStart, factory_gemini_create_job: geminiCreate };
+  // FO-RESP-0045: a free action for the acceptance test -- the same flow (topic approve + Web Confirm, once, 2 h), no charge.
+  const gpuAvailability: SystemApprovalAction = {
+    capUsd: 0,
+    parse(args) {
+      const parsed = gpuAvailabilityInput.safeParse(args);
+      return parsed.success ? { ok: true, args: parsed.data as Record<string, unknown> } : { ok: false, error: issueText(parsed.error.issues) };
+    },
+    check: async () => ({ estimateUsd: 0, refusal: null }),
+    async run(args) {
+      try {
+        return { ok: true, result: await services.gpuAvailability(args) };
+      } catch (error) {
+        return { ok: false, error: errorText(error) };
+      }
+    },
+    summary: (args) => (Object.keys(args).length === 0 ? "(no arguments; free, a read)" : `${JSON.stringify(args)} (free, a read)`),
+  };
+
+  return { factory_media_start_session: mediaStart, factory_gemini_create_job: geminiCreate, factory_media_get_gpu_availability: gpuAvailability };
 }
 
 /** The process's System topic core with the real actions (the routes and the scan loop). */
