@@ -24,3 +24,18 @@ decides whether feedback is global or genre-only.
 
 - The card shows nothing until the factory writes the snapshot.
 - Playback on a computer requires the channel workspace there.
+
+## Amendment 1 (2026-10-27, owner msgs 3610–3614; DEV-MSG-0009, FO-RESP-0044)
+
+Part B no longer has its own files or screen. Decisions 2–4 change as follows:
+
+- **The batch review is the plan review.** A batch is a generation plan with one wave per batch. The plan carries the general
+  form and chips, each wave its `genre` (id, title, colour, icon) and the genre's form and chips, all copied by the factory from
+  its profile. `review.json` and `answers.json` are dropped; the Manager writes no file for the review.
+- **Answers are strict, the definitions are lenient inside.** Unknown keys inside `genre`, `reviewForm` and a field are stripped
+  (they are the factory's own rules), never stored; a verdict's `answers` may name only field ids of the attempt's effective form,
+  with a value of the field's type; a required field must be answered for either verdict. Still no scope or rule field.
+- **Answers travel with the verdict** (result row, verdict history, `owner_verdict` event, peer verdicts in plans report
+  version 6). Applied from the other computer, an answer whose field no longer exists is dropped and the verdict is kept: the
+  owner's verdict is never lost to a later form change.
+- `listen` is not built. The rating stays 1–10; form scales are `scale_1_10`.

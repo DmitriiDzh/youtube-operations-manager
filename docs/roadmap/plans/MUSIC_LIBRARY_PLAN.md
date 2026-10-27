@@ -27,19 +27,39 @@ answers.
   date, source, accepted/reviewed). The snapshot's age is shown; older than 24 h is marked stale. No workspace / no file /
   unreadable file each have their own empty state.
 
-## 3. Part B — batch review (after the mockup and the Operator's answers Q9–Q13)
+## 3. Part B — batch review inside the plan review (changed 2026-10-27)
 
-- The factory writes `Sent to YTM/music-review/<batch>/review.json` (tracks, check results, the form). The Manager shows each
-  track with a player (listening hint), the check results and the form; the owner answers per track (`keep`/`reject`, free
-  text).
-- Answers are saved only as `{track, fieldId → value, verdict, text, reviewer, device, at}`. An unknown field id, a value of the
-  wrong type or out of range, and any scope/rule field are refused (strict schema). There is no UI path to choose a scope or
-  edit a rule, profile or batch genre.
-- Answers sync between computers (sync-gateway family); the newer answer for a track wins. The Mac writes
-  `From YTM/music-review/<batch>/answers.json` after each change.
-- MCP: `factory_music_review_list`, `factory_music_review_get(batch)`; a batch is complete when every track has a verdict.
+DEV-MSG-0009 / FO-RESP-0044 and the owner (msgs 3610–3614) replaced `review.json` / `answers.json`: a batch is a normal
+generation plan (`music-014`, one wave per batch) and is reviewed on the existing plan review screen. No new screen, no new
+files. `listen` is dropped. The rating stays 1–10.
 
-## 4. Acceptance (Part A), worked out by hand
+- **Plan definition (all optional, existing plans unchanged).**
+  - plan `reviewForm: { fields[] }` = the general questions; plan `reviewReasons` = the general problem chips (exists);
+  - wave `genre: { id, title, color #rrggbb, icon }` (icon: one emoji, at most 2 graphemes and 16 characters);
+  - wave `reviewForm: { fields[] }` = the genre's questions; wave `reviewReasons` = the genre's chips (exists).
+  - A field is `{ id, type: yes_no | scale_1_10 | choice, question, options? (choice only, 2–10 distinct), required? }`, at
+    most 20 per form. Inside `genre`, `reviewForm` and a field, unknown keys (the Operator's `rule`, `fails_when`,
+    `fails_below`) are stripped, not refused; a wave's own top-level keys stay strict.
+  - Field ids are unique across the plan's form plus each wave's form (two waves may reuse an id).
+  - Accepted by `factory_plan_create`, `factory_plan_import`, `factory_plan_update` (`reviewForm`, null clears; `upsertGroups`
+    with `genre` / `reviewForm`, absent keeps, null clears). Chips (`reviewReasons`) can be changed at any time, mid-review
+    included.
+- **Verdict.** An optional `answers: { <fieldId>: true | false | 1..10 | "<option>" }` next to `rating`, `reasons`, `note`,
+  checked against the attempt's effective forms (the plan's plus its wave's). Refused with its own code: unknown field id,
+  wrong type, out of range, unknown option, a missing required field (for accept AND reject). No scope or rule field exists.
+  Stored with the verdict and in the verdict history (schema migration), shown to the factory in the `owner_verdict` event
+  (`factory_plan_get`), and carried with verdicts given on the other computer (plans report version 6, so both computers update
+  together). Re-check answers take no `answers`.
+- **Screen.** A wave with a `genre` shows a header (icon + title); its colour tints the frame, the primary verdict buttons and
+  the progress bar. Chips: for a genre wave two labelled rows, general (the plan's chips, else the media kind's defaults) then
+  the genre's; any other wave keeps today's rule (its own list replaces the plan's). Questions sit under the verdict buttons,
+  general first: yes/no = two buttons, scale = 10 buttons, choice = one button per option; a required one is marked and the
+  verdict buttons stay disabled, with a hint, until it is answered. The plans list shows the genre badge of plans whose waves
+  have one. Complete = the wave's `group_reviewed`, as today.
+
+## 4. Acceptance, worked out by hand
+
+### 4.1 Part A
 
 - AC-ML-01 A snapshot with genre `rural-japan-control` (13 batches × 30 tracks, 390 tracks, 70 200 s, never used 36 000 s,
   daysLeft 41) shows one row «Sounds of Rural Japan»: 13 batches, 390 tracks, 19.5 h, 10.0 h never used, 41 days left.
@@ -53,12 +73,47 @@ answers.
   else).
 - AC-ML-08 A `library.json` that is a symlink to a file outside the workspace is refused.
 
+
+### 4.2 Part B
+
+Forms used below: plan `reviewReasons` [голос / вокал, щелчок / провал], plan `reviewForm` = g.no_vocals (yes_no, required),
+g.background (scale_1_10); wave `014` with `genre` {rural-japan-control, Sounds of Rural Japan, #4f9d69, 🌾}, `reviewReasons`
+[барабаны / бит], `reviewForm` = rj.instruments (yes_no, required), rj.tempo (choice: slower, right, faster); wave `015` without
+genre or form.
+
+- AC-MR-01 A field sent with `rule`, `fails_when` and `fails_below` is stored as exactly `{id, type, question, required}`; a genre
+  with an extra `profileVersion` is stored without it; a wave with an unknown top-level key is refused (`validation_failed`).
+- AC-MR-02 Refused at create: choice without options, with 1, with 11, or with a repeated option; options on a yes_no; colour
+  `green`; icon `ab`, `🌾🌾🌾` (3 graphemes) or 17 characters. Accepted: icon `🌧️`.
+- AC-MR-03 g.no_vocals in both the plan's and wave 014's form → `plan_invalid`; the same id twice in one form → refused; rj.tempo
+  in the forms of two different waves → accepted.
+- AC-MR-04 `factory_plan_update` with `reviewForm: null` clears the plan form; `upsertGroups` [{groupId 014, title}] keeps the
+  genre and form; with `genre: null` clears the genre. Changing plan and wave `reviewReasons` mid-review shows the new chips on
+  the next review read.
+- AC-MR-05 On an attempt of wave 014: accepted with {g.no_vocals: true, rj.instruments: false, g.background: 7, rj.tempo:
+  "right"} is stored as given. Refused: {…, x: 1} `plan_answer_unknown_field`; g.background "7" or rj.instruments 1
+  `plan_answer_wrong_type`; g.background 0, 11 or 7.5 `plan_answer_out_of_range`; rj.tempo "fast" `plan_answer_unknown_option`;
+  rejected without rj.instruments `plan_answer_required`. On wave 015: rj.tempo is an unknown field; g.no_vocals is still
+  required. A plan without forms takes a verdict without answers exactly as before.
+- AC-MR-06 The stored verdict, its history row and its `owner_verdict` event carry `answers`; a verdict without answers carries
+  none (no empty object).
+- AC-MR-07 A verdict with answers on the other computer's plan is checked against that computer's report (same codes), sent in
+  report version 6, and applied there with its answers in the verdict, the history and the event. A field the factory removed
+  before it was applied is dropped; the verdict is kept.
+- AC-MR-08 This build writes report version 6 and still reads 1–6.
+- AC-MR-09 Chips on wave 014: general row [голос / вокал, щелчок / провал], genre row [барабаны / бит]; on wave 015 one row
+  [голос / вокал, щелчок / провал], the same result as before BL-229.
+- AC-MR-10 On wave 014 the header reads «🌾 Sounds of Rural Japan»; Accept and Reject are disabled with the hint until
+  g.no_vocals and rj.instruments are answered; the scale shows 10 buttons 1–10. The plans list shows the badge «🌾 Sounds of
+  Rural Japan» on the plan.
+
 ## 5. Stages (one branch, one merge)
 
 1. Part A.
-2. Part B (form, answers, sync, MCP, answers.json) after the mockup is approved.
+2. Part B (forms in the plan, answers with the verdict, report v6, the genre on the review screen).
 
 ## 6. Risks
 
 - The snapshot format is the factory's contract (Q7); until it lands the card shows «нет сводки».
-- The Windows computer may not have the channel workspace (Q13): Part B's player would then not work there.
+- Report version 6: a computer still on version 5 refuses the other's report, so both computers update together; the Operator
+  creates no plan with `reviewForm` / `genre` until both run it (FO-RESP-0044).
