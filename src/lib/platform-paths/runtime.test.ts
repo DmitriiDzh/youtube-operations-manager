@@ -38,3 +38,25 @@ test("getProductionAppPaths wipes a stale leftover directory at its PID-keyed si
   );
   assert.ok(!fs.existsSync(staleMarkerFile), "the stale leftover file must be gone -- a reused PID must never inherit a previous process's state");
 });
+
+// 2026-10-27: every test process left its singleton directory behind (6,247 of them filled the Mac's disk). A process that
+// used the singleton must leave nothing in the temp dir once it has exited.
+test("the singleton directory is removed when the process that used it exits", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const script = [
+    'const fs = require("node:fs");',
+    'const { getProductionAppPaths } = require(process.argv[1]);',
+    "const dir = getProductionAppPaths().appDataDir;",
+    "fs.mkdirSync(dir, { recursive: true });",
+    'fs.writeFileSync(require("node:path").join(dir, "probe.txt"), "x");',
+    "process.stdout.write(String(process.pid));",
+  ].join("\n");
+  const child = spawnSync(process.execPath, ["--import", "tsx", "-e", script, path.join(__dirname, "runtime.ts")], {
+    env: { ...process.env, NODE_TEST_CONTEXT: "child-v8" },
+    encoding: "utf8",
+  });
+  assert.equal(child.status, 0, child.stderr);
+  const childDir = path.join(os.tmpdir(), `youtube-ops-manager-test-singleton-${child.stdout.trim()}`);
+  assert.ok(/^\d+$/.test(child.stdout.trim()), `the child printed its pid: ${child.stdout}`);
+  assert.equal(fs.existsSync(childDir), false, "the exited process's singleton directory must be gone");
+});

@@ -41,6 +41,16 @@ export function getProductionAppPaths(): AppPaths {
     // Safe unconditionally: this branch only ever runs under the test runner, and the directory
     // itself is nothing but this kind of disposable, single-run temp state.
     fs.rmSync(testHomedir, { recursive: true, force: true });
+    // 2026-10-27: the wipe above only covered reuse; nothing removed the directory when the process
+    // ended, so every test file and build left ~2.5 MB behind (6,247 of them, 16 GB, filled the Mac's
+    // disk). Remove it on exit -- best effort, the next run's wipe still covers a crash.
+    process.once("exit", () => {
+      try {
+        fs.rmSync(testHomedir, { recursive: true, force: true });
+      } catch {
+        // a leftover is harmless: the wipe before first use handles it
+      }
+    });
     cachedAppPaths = resolveAppPaths({
       platform: process.platform,
       env: {},
