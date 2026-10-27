@@ -157,7 +157,12 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 // options? (choice only, 2-10 distinct), required? }, unknown keys inside stripped; field ids unique across the plan's form plus a
 // wave's. The owner's verdict carries answers { fieldId: true | false | 1..10 | "<option>" }, shown in owner_verdict events
 // (factory_plan_get). Additive.
-export const FACTORY_API_VERSION = "1.35.0";
+// BL-230 (PRIVATE_RUNTIME_REPOS_PLAN.md, ADR 0043 amendment 1, owner msg 3689): 1.36.0 -- factory_media_create_runtime checks every
+// github.com source on GitHub (ComfyUI's ref and each pack's commit), without a token first; a repository GitHub hides is
+// runtime_repo_private_needs_token (no token stored here), runtime_repo_not_visible_to_token (the stored token cannot see it) or
+// github_token_invalid / github_token_forbidden (403: no Contents read, or SSO not authorized); an unknown commit is not_found. The owner's GitHub read token is entered in the Web UI only and reaches only
+// the runtime build pod; no tool sets, reads or shows it. Additive in shape; a create that passed before can now be refused.
+export const FACTORY_API_VERSION = "1.36.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -814,7 +819,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_media_create_runtime",
     {
       description:
-        "Create a pod runtime profile (1.23.0): { runtimeId (3-63 lower-case letters, digits, '-'), name?, description?, comfy: { repo? (default https://github.com/comfyanonymous/ComfyUI), ref (a tag or branch, resolved to its exact commit now, or an exact 40-hex commit) }, customNodes?: [{ repo, commit (exactly 40 hex) }], pip?: ['name==version'; torch, torchvision and torchaudio come from the pod image and cannot be pinned] }; two node packs may not share a folder (repository) name. Every repository must be HTTPS and under the owner's allowed sources (Servers → Setup; settings.runtimeSourceAllowlist in factory_media_get_settings), otherwise validation_failed lists the refused ones. A profile is never edited: the same runtimeId twice is refused -- create a new one. Nothing is built, started or charged here. Recorded as created by the Factory Operator.",
+        "Create a pod runtime profile (1.23.0): { runtimeId (3-63 lower-case letters, digits, '-'), name?, description?, comfy: { repo? (default https://github.com/comfyanonymous/ComfyUI), ref (a tag or branch, resolved to its exact commit now, or an exact 40-hex commit) }, customNodes?: [{ repo, commit (exactly 40 hex) }], pip?: ['name==version'; torch, torchvision and torchaudio come from the pod image and cannot be pinned] }; two node packs may not share a folder (repository) name. Every repository must be HTTPS and under the owner's allowed sources (Servers → Setup; settings.runtimeSourceAllowlist in factory_media_get_settings), otherwise validation_failed lists the refused ones. 1.36.0: every github.com repository's ref or commit is then checked on GitHub -- an unknown commit, tag or branch is not_found; a repository GitHub does not show without a token (private, or absent) is runtime_repo_private_needs_token (details.repo) when the owner has stored no GitHub token on this computer -- ask the owner to enter a read-only GitHub token with access to it in Settings → Cloud APIs, then create again --, runtime_repo_not_visible_to_token when the stored token cannot see it either (the owner gives the token access to that repository), github_token_invalid when GitHub refuses the token (expired or revoked: the owner enters a new one), github_token_forbidden when GitHub answers 403 to the token (the owner gives it Contents: Read-only on that repository or authorizes it for the organization's SSO). The build of such a runtime clones private github.com repositories with that token; you never see or pass it. A profile is never edited: the same runtimeId twice is refused -- create a new one. Nothing is built, started or charged here. Recorded as created by the Factory Operator.",
       inputSchema: createRuntimeInput,
     },
     async (args) => {

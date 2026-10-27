@@ -15,10 +15,22 @@ const RID = "comfy-0410-flux3";
 const SETTINGS: Partial<MediaSettings> = { datacenterId: "EU-RO-1", networkVolumeId: "vol1", templateId: "tpl1", gpuTypeId: "NVIDIA GeForce RTX 4090", gpuFallbackIds: ["NVIDIA RTX A5000", "NVIDIA L40S"] };
 const gpu = (id: string, price: number) => ({ id, displayName: id, memoryInGb: 24, secureCloud: true, communityCloud: false, onDemandPricePerHr: price, spotPricePerHr: null, estimatedAvailability: "High", dataCenters: [{ id: "EU-RO-1", countryCode: "RO", estimatedAvailability: "High" }], cudaVersions: [] });
 
-function harness(options: { settings?: Partial<MediaSettings>; templateRaw?: Record<string, unknown>; scripts?: Record<string, string>; noCapacity?: string[]; stuckPods?: number } = {}) {
+function harness(
+  options: {
+    settings?: Partial<MediaSettings>;
+    templateRaw?: Record<string, unknown>;
+    scripts?: Record<string, string>;
+    noCapacity?: string[];
+    stuckPods?: number;
+    /** BL-230: the stored profile's text, the GitHub token on this computer, a createPod failure message. */
+    profile?: string;
+    githubToken?: string | null;
+    createPodFails?: string;
+  } = {}
+) {
   let now = new Date("2026-10-18T15:00:00Z");
   const objects = new Map<string, string>();
-  objects.set(runtimeKey(RID, "runtime.json"), "{}");
+  objects.set(runtimeKey(RID, "runtime.json"), options.profile ?? "{}");
   const events: MediaControlEvent[] = [];
   const created: CreatePodInput[] = [];
   const pods = new Map<string, { id: string; name: string; status: string; containerUptimeSec: number | null }>();
@@ -48,6 +60,10 @@ function harness(options: { settings?: Partial<MediaSettings>; templateRaw?: Rec
     },
     async createPod(input: CreatePodInput) {
       created.push(input);
+      if (options.createPodFails) {
+        const { DomainError } = await import("./contracts");
+        throw new DomainError({ code: "runpod_api_unavailable", message: options.createPodFails, details: { status: 400, body: { echo: options.createPodFails } } });
+      }
       if (options.noCapacity?.includes(input.gpu?.id ?? "")) {
         const { DomainError } = await import("./contracts");
         throw new DomainError({ code: "runpod_api_unavailable", message: "RunPod API returned HTTP 400: This GPU and data center combination could not be placed.", details: { status: 400 } });
@@ -78,6 +94,7 @@ function harness(options: { settings?: Partial<MediaSettings>; templateRaw?: Rec
     },
     base: { getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, ...SETTINGS, ...options.settings }), resolveRunpodClient: async () => client, s3: async () => s3 },
     readPodScript: async (name) => scripts[name],
+    ...(options.githubToken !== undefined ? { githubToken: async () => options.githubToken ?? null } : {}),
     events: { record: async (e) => void events.push(e) },
     // The first id is fixed (the pod name test); a retry gets its own.
     generateId: () => (ids++ === 0 ? "abcdef12-0000-0000-0000-000000000000" : `retry${ids}0-0000-0000-0000-000000000000`),
@@ -263,4 +280,38 @@ test("FO-REQ-0031: once the build container was seen running, a later answer wit
   assert.equal(job.status, "running");
   assert.deepEqual(h.terminated, []);
   assert.ok(job.containerStartedAt);
+});
+
+// BL-230 (PRIVATE_RUNTIME_REPOS_PLAN.md AC-PR-11/12): the build pod gets the owner's GitHub token in its env -- never in its
+// entrypoint -- only when the token is stored AND the profile names a github.com repository; any error text that echoes the pod
+// request has the token replaced before it is stored, audited or thrown. `T` is a token-shaped fake.
+const T = "github_pat_" + "B0u1l2d3Q4".repeat(8) + "_kk";
+const GITHUB_PROFILE = JSON.stringify({ comfy: { repo: "https://github.com/comfyanonymous/ComfyUI", commit: "a".repeat(40) }, customNodes: [{ repo: "https://github.com/DmitriiDzh/ComfyUI-See-through", commit: "b".repeat(40) }] });
+const NON_GITHUB_PROFILE = JSON.stringify({ comfy: { repo: "https://huggingface.co/someone/ComfyUI", commit: "a".repeat(40) }, customNodes: [] });
+
+test("AC-PR-11: token stored + a github.com profile -> env YTM_GIT_TOKEN, entrypoint without it; otherwise no env", async () => {
+  const h = harness({ profile: GITHUB_PROFILE, githubToken: T });
+  const { job } = await h.services.startRuntimeBuild({ runtimeId: RID });
+  assert.deepEqual(h.created[0].env, { YTM_GIT_TOKEN: T });
+  assert.deepEqual(h.created[0].entrypoint, ["bash", "/workspace/ytm/runtime-build.sh", RID]);
+  assert.ok(!JSON.stringify(job).includes(T), "the job record does not carry it");
+  assert.ok(!JSON.stringify(h.events).includes(T), "the audit does not carry it");
+
+  for (const [profile, token] of [[GITHUB_PROFILE, null], [NON_GITHUB_PROFILE, T], ["not json", T]] as const) {
+    const other = harness({ profile, githubToken: token });
+    await other.services.startRuntimeBuild({ runtimeId: RID });
+    assert.equal(other.created[0].env, undefined, `${profile} / ${token ? "token" : "no token"}`);
+  }
+});
+
+test("AC-PR-12: a createPod failure that echoes the token -> the job error, the audit and the thrown error carry [redacted], never the token", async () => {
+  const h = harness({ profile: GITHUB_PROFILE, githubToken: T, createPodFails: `RunPod API returned HTTP 400: bad env {"YTM_GIT_TOKEN":"${T}"}` });
+  await assert.rejects(h.services.startRuntimeBuild({ runtimeId: RID }), (e: unknown) => {
+    const text = JSON.stringify({ message: (e as Error).message, details: (e as { details?: unknown }).details });
+    return !text.includes(T) && text.includes("[redacted]");
+  });
+  const [job] = await h.services.listRuntimeBuilds();
+  assert.equal(job.status, "failed");
+  assert.ok(job.error?.includes("[redacted]") && !job.error.includes(T), job.error ?? "");
+  assert.ok(!JSON.stringify(h.events).includes(T));
 });

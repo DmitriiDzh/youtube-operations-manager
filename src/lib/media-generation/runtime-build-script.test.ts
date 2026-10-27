@@ -1,0 +1,211 @@
+import assert from "node:assert/strict";
+import { execFileSync, spawnSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+// BL-230 (PRIVATE_RUNTIME_REPOS_PLAN.md AC-PR-14/15): the build script's own functions, sourced, against a local bare repository.
+// A `git` shim records every argument list and maps the https URLs to that repository (insteadOf), so no network is touched. The
+// expected header is computed here from the rule (base64 of "x-access-token:<token>"), not read from the script.
+
+const SCRIPT = path.join(process.cwd(), "scripts", "media", "pod", "runtime-build.sh");
+const TOKEN = "github_pat_" + "A1b2C3d4E5".repeat(8) + "_xy";
+const HEADER = `http.https://github.com/.extraheader=AUTHORIZATION: basic ${Buffer.from(`x-access-token:${TOKEN}`).toString("base64")}`;
+const REAL_GIT = (() => {
+  try {
+    return execFileSync("bash", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+  } catch {
+    return "";
+  }
+})();
+
+function fixture(options: { refuseHeader?: boolean; refuseShallow?: boolean } = {}) {
+  const dir = mkdtempSync(path.join(tmpdir(), "ytm-bl230-"));
+  const work = path.join(dir, "work");
+  const bare = path.join(dir, "bare.git");
+  const env = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+  execFileSync(REAL_GIT, ["init", "-q", work], { env });
+  writeFileSync(path.join(work, "nodes.py"), "NODE_CLASS_MAPPINGS = {}\n");
+  execFileSync(REAL_GIT, ["-C", work, "add", "."], { env });
+  execFileSync(REAL_GIT, ["-C", work, "commit", "-q", "-m", "one"], { env });
+  const sha = execFileSync(REAL_GIT, ["-C", work, "rev-parse", "HEAD"], { env, encoding: "utf8" }).trim();
+  execFileSync(REAL_GIT, ["clone", "-q", "--bare", work, bare], { env });
+  const shim = path.join(dir, "bin");
+  mkdirSync(shim);
+  const log = path.join(dir, "git.log");
+  writeFileSync(
+    path.join(shim, "git"),
+    [
+      "#!/usr/bin/env bash",
+      `printf '%s\\n' "$*" >> '${log}'`,
+      // BL-230 review: an expired token -- GitHub answers 401 to the header even for a public repository.
+      ...(options.refuseHeader ? [`case "$*" in *extraheader*) exit 128 ;; esac`] : []),
+      // Review M1: a server that refuses a shallow fetch by sha -- clone_at's fallback (partial clone + checkout) runs.
+      ...(options.refuseShallow ? [`case "$*" in *"fetch -q --depth"*) exit 128 ;; esac`] : []),
+      `exec '${REAL_GIT}' -c 'url.file://${bare}.insteadOf=https://github.com/owner/private-nodes' -c 'url.file://${bare}.insteadOf=https://example.com/owner/nodes' -c protocol.file.allow=always "$@"`,
+      "",
+    ].join("\n")
+  );
+  chmodSync(path.join(shim, "git"), 0o755);
+  return { dir, sha, log, env: { ...env, PATH: `${shim}:${process.env.PATH ?? ""}` } };
+}
+
+/** Sources the script (it stops before touching /workspace) and runs one command line with its functions. */
+function run(env: NodeJS.ProcessEnv, command: string) {
+  return spawnSync("bash", ["-c", `source '${SCRIPT}'; ${command}`], { env, encoding: "utf8" });
+}
+
+const skip = !REAL_GIT ? "git is not installed" : false;
+
+test("AC-PR-14: with YTM_GIT_TOKEN a github.com fetch gets the one-shot header; the checkout is at the commit; .git/config holds no credential", { skip }, () => {
+  const f = fixture();
+  try {
+    const dest = path.join(f.dir, "dest");
+    const result = run({ ...f.env, YTM_GIT_TOKEN: TOKEN }, `clone_at https://github.com/owner/private-nodes ${f.sha} '${dest}'`);
+    assert.equal(result.status, 0, result.stderr);
+    const calls = readFileSync(f.log, "utf8").split("\n").filter(Boolean);
+    const network = calls.filter((c) => / (fetch|clone) /.test(` ${c} `));
+    assert.ok(network.length >= 1, calls.join("\n"));
+    for (const call of network) assert.ok(call.startsWith(`-c ${HEADER} `), call);
+    // Only the network commands carry it (init, remote add, checkout do not).
+    assert.equal(calls.filter((c) => c.includes(TOKEN)).length, 0, "the raw token never reaches git's arguments");
+    assert.equal(calls.filter((c) => c.includes("extraheader")).length, network.length);
+    assert.equal(execFileSync("git", ["-C", dest, "rev-parse", "HEAD"], { env: f.env, encoding: "utf8" }).trim(), f.sha);
+    const config = readFileSync(path.join(dest, ".git", "config"), "utf8");
+    assert.ok(!config.includes(TOKEN) && !config.includes("extraheader") && !config.includes(HEADER.split("basic ")[1]), config);
+    assert.match(config, /url = https:\/\/github\.com\/owner\/private-nodes\n/);
+    assert.ok(!result.stdout.includes(TOKEN) && !result.stderr.includes(TOKEN));
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("AC-PR-14: another host, or no YTM_GIT_TOKEN, gets no header", { skip }, () => {
+  const f = fixture();
+  try {
+    const other = run({ ...f.env, YTM_GIT_TOKEN: TOKEN }, `clone_at https://example.com/owner/nodes ${f.sha} '${path.join(f.dir, "a")}'`);
+    assert.equal(other.status, 0, other.stderr);
+    const none = run({ ...f.env, YTM_GIT_TOKEN: "" }, `clone_at https://github.com/owner/private-nodes ${f.sha} '${path.join(f.dir, "b")}'`);
+    assert.equal(none.status, 0, none.stderr);
+    const log = readFileSync(f.log, "utf8");
+    assert.ok(!log.includes("extraheader") && !log.includes(TOKEN), log);
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("AC-PR-14: a refused header (expired token) is retried once without it, so a public repository still clones", { skip }, () => {
+  const f = fixture({ refuseHeader: true });
+  try {
+    const dest = path.join(f.dir, "dest");
+    const result = run({ ...f.env, YTM_GIT_TOKEN: TOKEN }, `clone_at https://github.com/owner/private-nodes ${f.sha} '${dest}'`);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(execFileSync(REAL_GIT, ["-C", dest, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(), f.sha);
+    const network = readFileSync(f.log, "utf8").split("\n").filter((c) => / (fetch|clone) /.test(` ${c} `));
+    assert.deepEqual(network.map((c) => c.startsWith(`-c ${HEADER} `)), [true, false], network.join("\n"));
+    assert.equal(run({ ...f.env, YTM_GIT_TOKEN: TOKEN }, "clone_hint https://github.com/owner/x").stdout.includes("may have expired"), true);
+    assert.equal(run({ ...f.env, YTM_GIT_TOKEN: "" }, "clone_hint https://github.com/owner/x").stdout.includes("needs the GitHub token"), true);
+    assert.equal(run({ ...f.env, YTM_GIT_TOKEN: TOKEN }, "clone_hint https://huggingface.co/owner/x").stdout, "");
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("AC-PR-14 (review M1): the fallback's clone AND its checkout (which fetches a partial clone's blobs) carry the header", { skip }, () => {
+  const f = fixture({ refuseShallow: true });
+  try {
+    const dest = path.join(f.dir, "dest");
+    const result = run({ ...f.env, YTM_GIT_TOKEN: TOKEN }, `clone_at https://github.com/owner/private-nodes ${f.sha} '${dest}'`);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(execFileSync(REAL_GIT, ["-C", dest, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(), f.sha);
+    const calls = readFileSync(f.log, "utf8").split("\n").filter(Boolean);
+    const clone = calls.find((c) => / clone /.test(` ${c} `));
+    const checkout = calls.find((c) => c.includes(`checkout -q ${f.sha}`));
+    assert.ok(clone?.startsWith(`-c ${HEADER} `), clone);
+    assert.ok(checkout?.startsWith(`-c ${HEADER} `), checkout);
+    assert.ok(!readFileSync(path.join(dest, ".git", "config"), "utf8").includes("extraheader"));
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("review L1/L3: a retry is logged; under set -x neither the token nor its header form reaches the console", { skip }, () => {
+  const f = fixture({ refuseHeader: true });
+  try {
+    const result = spawnSync("bash", ["-x", "-c", `source '${SCRIPT}'; set -x; clone_at https://github.com/owner/private-nodes ${f.sha} '${path.join(f.dir, "d")}'; leak_free '${f.dir}'; clone_hint https://github.com/o/r`], {
+      env: { ...f.env, YTM_GIT_TOKEN: TOKEN },
+      encoding: "utf8",
+    });
+    const b64 = Buffer.from(`x-access-token:${TOKEN}`).toString("base64");
+    assert.ok(result.stderr.includes("+"), "tracing was on");
+    assert.ok(!result.stderr.includes(TOKEN) && !result.stderr.includes(b64) && !result.stdout.includes(TOKEN), result.stderr);
+    assert.match(result.stderr, /retrying without the GitHub token/);
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("review L4: the script switches git tracing off and turns header redaction on", () => {
+  const result = run({ ...process.env, GIT_TRACE: "1", GIT_CURL_VERBOSE: "1", GIT_TRACE_CURL: "1", GIT_TRACE_PACKET: "1" }, 'printf "%s|%s|%s|%s|%s|%s" "${GIT_TRACE-unset}" "${GIT_CURL_VERBOSE-unset}" "${GIT_TRACE_CURL-unset}" "${GIT_TRACE_PACKET-unset}" "$GIT_TRACE_REDACT" "$GIT_TERMINAL_PROMPT"');
+  assert.equal(result.stdout, "unset|unset|unset|unset|1|0");
+});
+
+test("review L2 + wipe_leaked: an unreadable folder is not clean (2); the wipe keeps only the profile, the lock and an empty log", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "ytm-bl230-wipe-"));
+  try {
+    const locked = path.join(dir, "locked");
+    mkdirSync(path.join(locked, "sub"), { recursive: true });
+    writeFileSync(path.join(locked, "sub", "f"), "x");
+    chmodSync(path.join(locked, "sub"), 0o000);
+    const unreadable = run({ ...process.env, YTM_GIT_TOKEN: TOKEN }, `leak_free '${locked}'`);
+    chmodSync(path.join(locked, "sub"), 0o755);
+    if (process.getuid?.() !== 0) assert.equal(unreadable.status, 2);
+
+    const r = path.join(dir, "rt");
+    mkdirSync(path.join(r, "ComfyUI", "custom_nodes"), { recursive: true });
+    for (const name of ["runtime.json", ".lock", "build.log", "req.txt", ".ready"]) writeFileSync(path.join(r, name), name === "build.log" ? TOKEN : name);
+    const wiped = run(process.env, `wipe_leaked '${r}'`);
+    assert.equal(wiped.status, 0, wiped.stderr);
+    assert.deepEqual(readdirSync(r).sort(), [".lock", "build.log", "runtime.json"]);
+    assert.equal(readFileSync(path.join(r, "build.log"), "utf8"), "");
+    assert.equal(readFileSync(path.join(r, "runtime.json"), "utf8"), "runtime.json");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("AC-PR-15: the leak check fails on the token or its header form anywhere in the folder, passes on a clean one, prints nothing", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "ytm-bl230-leak-"));
+  try {
+    const clean = path.join(dir, "clean");
+    mkdirSync(path.join(clean, "ComfyUI", "custom_nodes", "x"), { recursive: true });
+    writeFileSync(path.join(clean, "build.log"), "[3s] node x@abc\n");
+    writeFileSync(path.join(clean, "ComfyUI", "custom_nodes", "x", "nodes.py"), "pass\n");
+    const raw = path.join(dir, "raw");
+    mkdirSync(path.join(raw, "ComfyUI", "custom_nodes", "x", ".git"), { recursive: true });
+    writeFileSync(path.join(raw, "ComfyUI", "custom_nodes", "x", ".git", "config"), `[remote "origin"]\n\turl = https://x-access-token:${TOKEN}@github.com/o/r\n`);
+    const header = path.join(dir, "header");
+    mkdirSync(header);
+    writeFileSync(path.join(header, "build.log"), `trace: AUTHORIZATION: basic ${Buffer.from(`x-access-token:${TOKEN}`).toString("base64")}\n`);
+
+    const env = { ...process.env, YTM_GIT_TOKEN: TOKEN };
+    for (const [folder, expected] of [[clean, 0], [raw, 1], [header, 1]] as const) {
+      const result = run(env, `leak_free '${folder}'`);
+      assert.equal(result.status, expected, folder);
+      assert.equal(result.stdout + result.stderr, "", "the check prints nothing");
+    }
+    assert.equal(run({ ...process.env, YTM_GIT_TOKEN: "" }, `leak_free '${raw}'`).status, 0, "no token given: nothing to look for");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("AC-PR-14: the script unsets YTM_GIT_TOKEN after the clones, checks the folder before .ready, and never puts the token in a URL", () => {
+  const text = readFileSync(SCRIPT, "utf8");
+  const unset = text.indexOf("unset YTM_GIT_TOKEN");
+  assert.ok(unset > text.indexOf("done < <(spec nodes)") && unset < text.indexOf('"$R/venv/bin/python" -m pip install'), "unset between the clones and pip");
+  assert.ok(text.indexOf('leak_free "$R" || finish false') < text.indexOf('touch "$R/.ready"'), "leak check before .ready");
+  assert.ok(!/@github\.com/.test(text), "no credential in a URL");
+  assert.ok(!/\bexport\s+GUARD_TOKEN/.test(text), "the leak-check copy is never exported");
+});

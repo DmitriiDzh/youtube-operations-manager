@@ -61,6 +61,8 @@ export type RuntimeBuildDeps = {
   base: { getSettings(): Promise<MediaSettings>; resolveRunpodClient(): Promise<RunpodApiClient>; s3(): Promise<RunpodS3Client> };
   /** This version's copy of a pod-side script (production: `scripts/media/pod/<name>` of the installed app). */
   readPodScript(name: PodScriptName): Promise<string>;
+  /** BL-230: the owner's GitHub read token on this computer, or null; given to a build pod whose profile names github.com. */
+  githubToken?: () => Promise<string | null>;
   events: { record(event: MediaControlEvent): Promise<void> };
   generateId(): string;
   clock: { now(): Date };
@@ -81,6 +83,37 @@ function parseJobs(json: string | null): RuntimeBuildJob[] {
 /** The last 50 finished builds plus every running one (the full history is the audit table). */
 function trimJobs(jobs: RuntimeBuildJob[]): RuntimeBuildJob[] {
   return [...jobs.filter((j) => j.status === "running"), ...jobs.filter((j) => j.status !== "running").slice(-50)];
+}
+
+/** BL-230: whether a stored profile (`runtime.json` text) names an `https://github.com/` repository (ComfyUI or a node pack). */
+export function profileNamesGithub(text: string | null): boolean {
+  if (!text) return false;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return false;
+  }
+  const record = (value: unknown): Record<string, unknown> => (value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {});
+  const p = record(parsed);
+  const repos = [record(p.comfy).repo, ...(Array.isArray(p.customNodes) ? p.customNodes.map((n) => record(n).repo) : [])];
+  return repos.some((repo) => typeof repo === "string" && /^https:\/\/github\.com\//i.test(repo));
+}
+
+/** BL-230: the token replaced in a text that may echo the pod request (a RunPod 400), before it is stored, audited or thrown. */
+export function scrubSecret(text: string, secret: string | null): string {
+  return secret ? text.split(secret).join("[redacted]") : text;
+}
+
+/** BL-230: an error whose message or details carry the token, rebuilt without it (same code); any other error as it is. */
+export function scrubError(error: unknown, secret: string | null): unknown {
+  if (!secret) return error;
+  const message = error instanceof Error ? error.message : String(error);
+  const details = error instanceof DomainError ? error.details : undefined;
+  const detailsText = details === undefined ? "" : JSON.stringify(details);
+  if (!message.includes(secret) && !detailsText.includes(secret)) return error;
+  const code = error instanceof DomainError ? error.code : "media_session_start_failed";
+  return new DomainError({ code, message: scrubSecret(message, secret), ...(details === undefined ? {} : { details: JSON.parse(scrubSecret(detailsText, secret)) }) });
 }
 
 /** `build.json` as the build pod writes it, or null when it is not in that shape. */
@@ -197,6 +230,25 @@ export function createRuntimeBuildServices(deps: RuntimeBuildDeps) {
       throw new DomainError({ code: "not_found", message: `No runtime profile ${runtimeId} on the network volume.`, details: { runtimeId } });
     }
     if (await s3.headObject(`${RUNTIMES_PREFIX}${runtimeId}/.ready`)) return { job: null, alreadyBuilt: true };
+    // BL-230 (AC-PR-11): the owner's GitHub token goes to the pod's env only when it is stored here AND the profile names github.com.
+    const gitToken = deps.githubToken && profileNamesGithub(await s3.getObjectText(runtimeKey(runtimeId, "runtime.json"))) ? await deps.githubToken() : null;
+    try {
+      const placed = { ...settings, datacenterId: settings.datacenterId, networkVolumeId: settings.networkVolumeId, templateId: settings.templateId };
+      return await placeBuild(runtimeId, actor, stuckRetries, placed, s3, gitToken);
+    } catch (error) {
+      throw scrubError(error, gitToken);
+    }
+  }
+
+  async function placeBuild(
+    runtimeId: string,
+    actor: PullActor,
+    stuckRetries: number,
+    settings: MediaSettings & { datacenterId: string; networkVolumeId: string; templateId: string },
+    s3: RunpodS3Client,
+    gitToken: string | null
+  ): Promise<{ job: RuntimeBuildJob | null; alreadyBuilt: boolean }> {
+    const scrub = (text: string) => scrubSecret(text, gitToken);
     const running = (await readJobs()).find((j) => j.runtimeId === runtimeId && j.status === "running");
     if (running) throw new DomainError({ code: "media_session_conflict", message: `Runtime ${runtimeId} is already being built (since ${running.startedAt}).`, details: { runtimeId, jobId: running.jobId } });
 
@@ -240,8 +292,10 @@ export function createRuntimeBuildServices(deps: RuntimeBuildDeps) {
             dataCenterId: settings.datacenterId,
             disk: BUILD_POD_DISK_GB,
             mounts: { network: [{ volumeId: settings.networkVolumeId, path: "/workspace" }] },
-            // Replaces the image's own start: the pod runs the build script and nothing else (no ports, no token, no secret).
+            // Replaces the image's own start: the pod runs the build script and nothing else (no ports). BL-230: the GitHub read token,
+            // when needed, is in the env only (masked in every pod read), never in the entrypoint RunPod shows.
             entrypoint: ["bash", "/workspace/ytm/runtime-build.sh", runtimeId],
+            ...(gitToken ? { env: { YTM_GIT_TOKEN: gitToken } } : {}),
             startSsh: false,
           });
           podId = pod.id;
@@ -256,18 +310,18 @@ export function createRuntimeBuildServices(deps: RuntimeBuildDeps) {
             gpuTypeId = candidate.gpuTypeId;
             break;
           }
-          failures.push(`${candidate.gpuTypeId}: ${error instanceof Error ? error.message : String(error)}`);
+          failures.push(scrub(`${candidate.gpuTypeId}: ${error instanceof Error ? error.message : String(error)}`));
         }
       }
       if (!podId) throw new DomainError({ code: "media_no_capacity", message: `No GPU could be placed for the build: ${failures.join("; ")}`, details: { runtimeId } });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = scrub(error instanceof Error ? error.message : String(error));
       let orphan: { id: string } | undefined;
       try {
         orphan = await findLivePodByName(client, podName);
       } catch (lookupError) {
         // The pod MAY exist and bill: the reservation stays (with the error) and the poll repeats the name search.
-        await saveJob({ ...reserved, error: `pod creation failed (${message}); RunPod could not be asked whether the pod exists (${lookupError instanceof Error ? lookupError.message : String(lookupError)}); the poll re-checks` });
+        await saveJob({ ...reserved, error: `pod creation failed (${message}); RunPod could not be asked whether the pod exists (${scrub(lookupError instanceof Error ? lookupError.message : String(lookupError))}); the poll re-checks` });
         throw error;
       }
       if (!orphan) {
