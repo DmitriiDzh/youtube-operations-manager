@@ -463,7 +463,7 @@ type PeerQueueResponse = {
     }>;
   }>;
   /** BL-173: an answer to a re-check carries its `recheckId`; `kept` = the verdict kept with a note. */
-  outgoing: Array<{ planId: string; ownerDeviceId: string; itemKey: string; attemptRef: string; result: "accepted" | "rejected"; rating: number | null; at: string; note?: string | null; recheckId?: string; kept?: boolean }>;
+  outgoing: Array<{ planId: string; ownerDeviceId: string; itemKey: string; attemptRef: string; result: "accepted" | "rejected"; rating: number | null; at: string; note?: string | null; recheckId?: string; kept?: boolean; answers?: PlanAnswers }>;
   /** BL-175: the pick actions sent from here (each weighed there once; until then they count here). */
   outgoingPicks?: Array<SentPickAction & { ownerDeviceId: string; planId: string }>;
 };
@@ -485,7 +485,8 @@ export function peerQueue(data: PeerQueueResponse, source: PeerReviewSource, pla
     // A verdict sent from here that is newer than what that device shows is the one that counts (it is on its way).
     // Whole seconds: the owning device stores times to the second, so the applied copy of a verdict sent at …:12.345 reads …:12.000.
     if (!sent || (entry.verdict && Math.floor(Date.parse(entry.verdict.at) / 1000) >= Math.floor(Date.parse(sent.at) / 1000))) return entry;
-    return { ...entry, verdict: { stageId: "owner_review", itemKey: entry.itemKey, attemptRef: entry.attemptRef, result: sent.result, reportedBy: "owner" as const, note: `${SENT_NOTE_PREFIX}${device}`, rating: sent.rating, reasons: [], markers: [], auditionFile: null, checks: [], metrics: {}, at: sent.at } };
+    // BL-229 part B: with its answers, so the form opens with what was sent (review).
+    return { ...entry, verdict: { stageId: "owner_review", itemKey: entry.itemKey, attemptRef: entry.attemptRef, result: sent.result, reportedBy: "owner" as const, note: `${SENT_NOTE_PREFIX}${device}`, rating: sent.rating, reasons: [], markers: [], auditionFile: null, checks: [], metrics: {}, ...(sent.answers ? { answers: sent.answers } : {}), at: sent.at } };
   });
   // BL-175 (§2.6): picks sent from here and not yet weighed there already settle their attempts here.
   const sentPicks = (data.outgoingPicks ?? []).filter((a) => a.ownerDeviceId === source.deviceId && a.planId === planId);
@@ -532,7 +533,7 @@ export function peerRecheckEntries(data: PeerQueueResponse, source: PeerReviewSo
     if (!sent) return entry;
     return {
       ...entry,
-      verdict: { stageId: "owner_review", itemKey: shared.itemKey, attemptRef: shared.attemptRef, result: sent.result, reportedBy: "owner" as const, note: `${SENT_NOTE_PREFIX}${device}`, rating: sent.rating, reasons: [], markers: [], auditionFile: null, checks: [], metrics: {}, at: sent.at },
+      verdict: { stageId: "owner_review", itemKey: shared.itemKey, attemptRef: shared.attemptRef, result: sent.result, reportedBy: "owner" as const, note: `${SENT_NOTE_PREFIX}${device}`, rating: sent.rating, reasons: [], markers: [], auditionFile: null, checks: [], metrics: {}, ...(sent.answers ? { answers: sent.answers } : {}), at: sent.at },
       ...(sent.kept ? { pendingKept: true } : {}),
     };
   });
@@ -545,6 +546,15 @@ function walkOf<E extends PlanReviewEntry>(lists: { entries: E[]; rechecks: Plan
 
 /** One entry of the screen: a track of the plan's queue, or an open re-check (`recheck`). BL-175: `pickSent` = picked from here, on its way. */
 type ScreenEntry = PlanReviewEntry & { recheck?: PlanRecheck; pendingKept?: boolean; pickSent?: true };
+
+/**
+ * The draft an attempt opens with (BL-175 kept drafts; BL-229 part B: plus its saved form answers when the draft has none, so a
+ * reset on the same rated attempt -- a filter or wave change, a move to the same index -- never loses them). Exported for its test.
+ */
+export function draftOpenedFor(kept: KeptDrafts, target: (DraftOwner & { verdict: { at: string; answers?: PlanAnswers } | null }) | undefined): Draft {
+  if (!target) return emptyDraft();
+  return withSavedAnswers(draftBack(kept, target), savedAnswersOf(target));
+}
 
 /** BL-175 (review rounds 1 and 2): the pictures' kept drafts, each with the verdict time it was written against. */
 export type KeptDrafts = Map<string, { draft: Draft; verdictAt: string | null }>;
@@ -873,7 +883,8 @@ export function PlanReviewScreen({
     const from = entries?.[Math.min(index, entries.length - 1)];
     if (from && isVisual(screenMedia(from))) keepDraft(visualDrafts.current, from, draft);
   }, [draft, entries, index]);
-  const draftFor = useCallback((target: ScreenEntry | undefined): Draft => (target ? draftBack(visualDrafts.current, target) : emptyDraft()), []);
+  // BL-229 part B (review): every fresh or kept draft of a rated attempt comes with its saved answers.
+  const draftFor = useCallback((target: ScreenEntry | undefined): Draft => draftOpenedFor(visualDrafts.current, target), []);
   const go = useCallback(
     (to: number) => {
       if (!entries || entries.length === 0) return;

@@ -113,3 +113,58 @@ test("FO-REQ-0043 §B item 4: a rated attempt opens with its saved answers; edit
   assert.equal(savedAnswersOf({ ...rated, recheck: { recheckId: "q1" } }), undefined);
   assert.equal(savedAnswersOf(null), undefined);
 });
+
+// -- independent review of BL-229 ---------------------------------------------------------------------------------------------
+
+test("review 1: a verdict sent from here to another computer's plan keeps its answers in the 'sent, waiting' verdict (track and re-check)", async () => {
+  const { peerQueue, peerRecheckEntries } = await import("./plan-review-screen");
+  const answers = { "g.no_vocals": true, "rj.tempo": "right" };
+  const entry = { itemKey: "014/V01", groupId: "014", attemptRef: "job:1", jobId: null, seed: null, params: {}, stages: [], verdict: null, playable: true };
+  const recheck = { recheckId: "q1", itemKey: "014/V01", attemptRef: "job:1", kind: "question", title: "голос?", note: "is there a voice", auditionFile: null, markers: [], checks: [], metrics: {}, previousVerdict: null, openedAt: "2026-10-27T12:00:00.000Z", extraStage: null };
+  const data = {
+    devices: [{ deviceId: "mac-1", hostname: "MAC", plans: [{ planId: "music-014", review: [entry], items: [{ itemKey: "014/V01", groupId: "014" }], rechecks: [recheck] }] }],
+    outgoing: [
+      { planId: "music-014", ownerDeviceId: "mac-1", itemKey: "014/V01", attemptRef: "job:1", result: "accepted", rating: null, at: "2026-10-27T12:10:00.000Z", answers },
+      { planId: "music-014", ownerDeviceId: "mac-1", itemKey: "014/V01", attemptRef: "job:1", result: "accepted", rating: null, at: "2026-10-27T12:11:00.000Z", recheckId: "q1", answers },
+    ],
+  } as unknown as Parameters<typeof peerQueue>[0];
+  const source = { deviceId: "mac-1", hostname: "MAC" };
+  const [track] = peerQueue(data, source, "music-014");
+  assert.deepEqual([track.verdict?.note, track.verdict?.answers], ["sent, waiting for MAC", { "g.no_vocals": true, "rj.tempo": "right" }]);
+  assert.deepEqual(savedAnswersOf(track), { "g.no_vocals": true, "rj.tempo": "right" }, "the form opens with them");
+  const [sent] = peerRecheckEntries(data, source, "music-014");
+  assert.deepEqual(sent.verdict?.answers, { "g.no_vocals": true, "rj.tempo": "right" });
+  // Without answers there is no answers key (unchanged for every other plan).
+  const plain = { ...data, outgoing: [{ ...data.outgoing[0], answers: undefined }] } as unknown as Parameters<typeof peerQueue>[0];
+  assert.equal("answers" in (peerQueue(plain, source, "music-014")[0].verdict ?? {}), false);
+});
+
+test("review 2: every draft reset on a rated attempt restores its saved answers; a kept draft with its own answers wins", async () => {
+  const { draftOpenedFor, keepDraft } = await import("./plan-review-screen");
+  const rated = { itemKey: "014/V01", attemptRef: "job:1", verdict: { at: "2026-10-27T12:00:00.000Z", answers: { "g.no_vocals": true } } };
+  const kept = new Map();
+  // A fresh draft (filter or wave change, the same index again): the saved answers, nothing else.
+  assert.deepEqual(draftOpenedFor(kept, rated), { reasons: [], rating: null, note: "", marks: [], openMark: null, pending: null, answers: { "g.no_vocals": true } });
+  // A kept draft written against this verdict with its own answers keeps them; one without answers gets the saved ones.
+  const own = { reasons: ["x"], rating: 4, note: "", marks: [], openMark: null, pending: null, answers: { "g.no_vocals": false } };
+  keepDraft(kept, rated, own);
+  assert.deepEqual(draftOpenedFor(kept, rated), own);
+  const noAnswers = { ...own, answers: undefined };
+  keepDraft(kept, rated, noAnswers);
+  assert.deepEqual(draftOpenedFor(kept, rated), { ...own, answers: { "g.no_vocals": true } });
+  // An attempt without a verdict, and no attempt: a fresh empty draft.
+  assert.deepEqual(draftOpenedFor(new Map(), { itemKey: "014/V02", attemptRef: "job:2", verdict: null }).answers, undefined);
+  assert.deepEqual(draftOpenedFor(new Map(), undefined).answers, undefined);
+});
+
+test("review 6: each answer refusal code has its own text in English and Russian", async () => {
+  const { PLAN_ANSWER_ERROR_CODES } = await import("@/lib/generation-plans/contracts");
+  const { DICTIONARIES } = await import("@/lib/ui-text");
+  for (const code of PLAN_ANSWER_ERROR_CODES) {
+    for (const language of ["en", "ru"] as const) {
+      const text = (DICTIONARIES[language] as Record<string, string>)[`errors.${code}`];
+      assert.equal(typeof text === "string" && text.length > 0, true, `${language} errors.${code}`);
+    }
+  }
+  assert.equal(PLAN_ANSWER_ERROR_CODES.length, 5);
+});
