@@ -4843,3 +4843,22 @@ Owner msgs 3439/3444/3449/3451/3453. On branch `feature/content-ux-redesign`. No
   `concurrentViewers` when nobody watches; owner msg 3453); otherwise no count stays unknown. Producer API 1.12.0.
 - **Tab badges.** `content-tab-badges.ts`: video-projects (edit + package phases), the calendar's `coverage.due`, the live overview's
   health (bad / noData / revoked while live); local reads once a minute.
+
+## BL-229 — the music library per genre (part A, ADR 0054)
+
+On branch `feature/bl-229-music-library`. No schema change; no YouTube call; nothing written.
+
+- **Source.** One factory snapshot per channel, `<workspace>/99 Data Exchange/Sent to YTM/music/library.json`. The adapter
+  (`music-library/adapters/files.ts`) validates the workspace, `lstat`s the path (nothing there = `no_file`), then resolves it with
+  `workspace-exchange.resolveWorkspaceFile` (real file strictly inside the workspace, a regular file; any refusal = `unreadable`),
+  refuses a file over 5 MB unread, and reads it as text. The channel in the request only picks its own workspace.
+- **Format** (`music-library/schemas.ts`, a proposal until the factory answers DEV-RESP-0043 Q7/Q8): `format: 1`, `generatedAt`,
+  `genres[{id, title, label?, color? #rrggbb, playlist?, status active|stub, batches, tracks, seconds, neverUsedSeconds,
+  daysLeft?}]`, `batches[{batch, genre id|null, playlist?, briefVersion?, tracks, date?, source?, reviewed?, accepted?}]`,
+  `tracksWithoutGenre`. Unknown fields are stripped; a wrong required field, a duplicate genre, a batch naming an unlisted genre or
+  `accepted > reviewed` makes the whole file unreadable with the first issue as the reason.
+- **View** (`services.ts`, pure): hours = `round(seconds / 360) / 10`; acceptance = `round(accepted / reviewed × 100)`, null when
+  reviewed is 0 or absent; stale when strictly older than 24 h; batches grouped under their genre, genre-less batches under the
+  "without a genre" group, which exists only when `tracksWithoutGenre > 0`.
+- **Route / UI.** `GET /api/channels/[channelId]/music-library` (session + active channel) returns the 5-state result as is;
+  `MusicLibraryCard` (Media → Music, above the plans, inside a `FeatureErrorBoundary`) polls it once a minute.

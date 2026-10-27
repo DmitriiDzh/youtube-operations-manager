@@ -1126,6 +1126,17 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   языков» внизу.
 - **Этап 4 (автоодобрение) не назначен.**
 
+### 2.9az Библиотека музыки по жанрам (BL-229 часть A, FO-REQ-0043 §A, `docs/roadmap/plans/MUSIC_LIBRARY_PLAN.md`, ADR 0054) — **часть A IMPLEMENTED на ветке `feature/bl-229-music-library`, не влито в `dev`; часть B (оценка партий) PLANNED**
+
+- **Модуль `src/lib/music-library/`** (§M, только чтение): снимок фабрики `<папка канала>/99 Data Exchange/Sent to YTM/music/library.json`
+  через `workspace-exchange.resolveWorkspaceFile` (ссылка наружу — отказ), папка — того канала, что в запросе (`channel-workspaces`).
+  Формат — `schemas.ts`, предложение фабрике (Q7/Q8): `format: 1`, `generatedAt`, `genres[]`, `batches[]`, `tracksWithoutGenre`;
+  лишние поля игнорируются, ошибка в обязательном — весь файл «не прочитать». Чистая модель вида (`services.ts`): часы с одним
+  знаком, доля принятых (нет процента при 0 проверенных), «устарело» старше 24 ч.
+- **Web:** `GET /api/channels/[channelId]/music-library` (сессия + активный канал): `no_workspace` / `workspace_unavailable` /
+  `no_file` / `unreadable` / `ok`. Медиа → «Музыка»: карточка «Библиотека по жанрам» над планами (`music-library-card.tsx`).
+- Фабричные профили, CSV, журнал и длительности Manager не читает; ничего не пишет; MCP нет.
+
 ### 2.9av Одно хранилище секретов компьютера и скачивание моделей из закрытых репозиториев Hugging Face (BL-134 / BL-199, FO-REQ-0028, `docs/roadmap/plans/DEVICE_SECRETS_PLAN.md`, ADR 0042) — **IMPLEMENTED** (влито в `dev` 2026-10-18, 24d45d67)
 
 - **`src/lib/device-secrets/`** — единственный владелец введённых в Настройках секретов этого компьютера.
