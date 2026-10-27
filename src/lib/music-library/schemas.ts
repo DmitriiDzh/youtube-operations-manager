@@ -30,8 +30,8 @@ import { z } from "zod";
 //     "tracksWithoutGenre": 0                                 // tracks no genre profile covers (never used in a mix)
 //   }
 //
-// Unknown extra fields are ignored (the factory may add more). A missing or wrong required field, a genre named twice, a batch
-// naming a genre the snapshot does not list, or more accepted than reviewed tracks makes the whole file unreadable -- it is never
+// Unknown extra fields are ignored (the factory may add more). An optional text may also be null (= not given). A missing or wrong required field, a genre named twice, a batch
+// naming a genre the snapshot does not list, `accepted` without `reviewed`, or more accepted than reviewed tracks makes the whole file unreadable -- it is never
 // half-shown.
 
 const count = z.number().int().nonnegative();
@@ -41,9 +41,9 @@ const text = z.string().min(1).max(200);
 export const musicGenreSchema = z.object({
   id: text,
   title: text,
-  label: z.string().max(40).optional(),
-  color: z.string().regex(/^#[0-9a-fA-F]{6}$/, "must be #rrggbb").optional(),
-  playlist: z.string().max(100).optional(),
+  label: z.string().max(40).nullish(),
+  color: z.string().regex(/^#[0-9a-fA-F]{6}$/, "must be #rrggbb").nullish(),
+  playlist: z.string().max(100).nullish(),
   status: z.enum(["active", "stub"]),
   batches: count,
   tracks: count,
@@ -56,15 +56,19 @@ export const musicBatchSchema = z
   .object({
     batch: text,
     genre: text.nullable(),
-    playlist: z.string().max(100).optional(),
-    briefVersion: z.string().max(40).optional(),
+    playlist: z.string().max(100).nullish(),
+    briefVersion: z.string().max(40).nullish(),
     tracks: count,
     date: z.string().max(40).nullable().optional(),
-    source: z.string().max(100).optional(),
+    source: z.string().max(100).nullish(),
     reviewed: count.optional(),
     accepted: count.optional(),
   })
-  .refine((b) => b.accepted === undefined || b.accepted <= (b.reviewed ?? 0), { message: "accepted is more than reviewed", path: ["accepted"] });
+  .superRefine((b, ctx) => {
+    if (b.accepted === undefined) return;
+    if (b.reviewed === undefined) ctx.addIssue({ code: "custom", message: "accepted is given without reviewed", path: ["accepted"] });
+    else if (b.accepted > b.reviewed) ctx.addIssue({ code: "custom", message: "accepted is more than reviewed", path: ["accepted"] });
+  });
 
 export const musicLibrarySnapshotSchema = z
   .object({

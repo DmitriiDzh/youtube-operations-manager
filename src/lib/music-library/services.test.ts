@@ -131,6 +131,8 @@ test("AC-ML-06: not JSON, no genres, or any wrong required field makes the whole
     ["unknown status", (() => { const raw = snapshot(); (raw.genres[0] as { status: string }).status = "retired"; return raw; })(), /^genres\.0\.status: /],
     ["bad colour", (() => { const raw = snapshot(); (raw.genres[0] as { color: string }).color = "green"; return raw; })(), /^genres\.0\.color: must be #rrggbb/],
     ["negative tracks", (() => { const raw = snapshot(); (raw.batches[3] as { tracks: number }).tracks = -1; return raw; })(), /^batches\.3\.tracks: /],
+    ["accepted without reviewed", (() => { const raw = snapshot(); Object.assign(raw.batches[4], { accepted: 5 }); return raw; })(), /^batches\.4\.accepted: accepted is given without reviewed/],
+    ["accepted 0 without reviewed", (() => { const raw = snapshot(); Object.assign(raw.batches[4], { accepted: 0 }); return raw; })(), /^batches\.4\.accepted: accepted is given without reviewed/],
     ["accepted over reviewed", (() => { const raw = snapshot(); Object.assign(raw.batches[0], { reviewed: 10, accepted: 11 }); return raw; })(), /^batches\.0\.accepted: accepted is more than reviewed/],
     ["unknown genre", (() => { const raw = snapshot(); (raw.batches[13] as { genre: string }).genre = "jazz"; return raw; })(), /batch "014" names genre "jazz", which is not in genres/],
     ["genre twice", (() => { const raw = snapshot(); raw.genres.push({ ...raw.genres[1] }); return raw; })(), /genre "sleep-rain" is listed twice/],
@@ -190,4 +192,18 @@ test("AC-ML-07: channel A's request looks up only channel A's workspace and read
   assert.deepEqual(asked, ["UC_A"]);
   assert.deepEqual(read, ["/ws/A"]);
   assert.equal((result as { view: { withoutGenre: { tracks: number } } }).view.withoutGenre.tracks, 2);
+});
+
+test("review 4: null is 'not given' for the optional texts (label, color, playlist, briefVersion, source, date)", () => {
+  const raw = snapshot();
+  Object.assign(raw.genres[0], { label: null, color: null, playlist: null });
+  Object.assign(raw.batches[2], { playlist: null, briefVersion: null, source: null, date: null });
+  const v = view(raw);
+  assert.deepEqual([v.genres[0].label, v.genres[0].color, v.genres[0].playlist], [null, null, null]);
+  const b = v.genres[0].batchRows[2];
+  assert.deepEqual([b.playlist, b.briefVersion, b.source, b.date], [null, null, null, null]);
+  // A wrong type is still refused.
+  const bad = snapshot();
+  Object.assign(bad.genres[0], { color: 5 });
+  assert.equal(parseSnapshot(JSON.stringify(bad)).ok, false);
 });
