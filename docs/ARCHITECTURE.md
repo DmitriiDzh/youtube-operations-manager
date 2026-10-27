@@ -4843,3 +4843,24 @@ Owner msgs 3439/3444/3449/3451/3453. On branch `feature/content-ux-redesign`. No
   `concurrentViewers` when nobody watches; owner msg 3453); otherwise no count stays unknown. Producer API 1.12.0.
 - **Tab badges.** `content-tab-badges.ts`: video-projects (edit + package phases), the calendar's `coverage.due`, the live overview's
   health (bad / noData / revoked while live); local reads once a minute.
+
+## BL-228 — owner commands in the HUB "System" topic (ADR 0053, stage 1)
+
+Plan: `docs/roadmap/plans/SYSTEM_TOPIC_PLAN.md`. Stage 1 is built on `feature/bl-228-system-topic` (not merged).
+
+- **Gateway.** `src/lib/telegram-bot-gateway/` is the only caller of the Telegram Bot API (`getUpdates`, `sendMessage`); an inventory
+  test enforces it. The token is a per-call argument read from device-secrets (slot `telegram_system_bot`) and is redacted from every
+  error text before it leaves the gateway, including Node fetch failures that name the URL.
+- **Module.** `src/lib/system-topic/` holds the settings and poll state (schema v111, one-row `system_topic_state`), the audit trail
+  (`system_topic_commands`, keyed by Telegram update id) and the runners. The loop in `src/instrumentation.ts` long-polls (25 s) only
+  when the per-computer switch is on, the process is the Mac service, and the token and the three ids are set; otherwise a tick is
+  one local read. Per poll: keep only messages from the owner's user id in the configured chat and topic (everything else only
+  raises a counter), claim each kept update's audit row (an existing row means it already ran), store the new offset, then run the
+  commands one by one and reply in the topic.
+- **Factory config.** `status` reads the factory-owned `commands.json` on every command (schema in `schemas.ts` only) and runs
+  `status.argv` with `spawn` (no shell, own process group, a minimal environment so the Manager's own secrets never reach it, 60 s
+  timeout). A named channel's `root` must equal that channel's workspace path on this computer; relative paths in argv must stay
+  inside it. Output is cut to 3500 characters + "…".
+- **Limits (stage 1).** `stop`, `go`, `approve` and `deny` are parsed and answered "not available yet". The child gets `PATH` from
+  the Manager's own environment: under launchd that may not include the folder of the factory's interpreter, so the factory should
+  name it by absolute path in `argv`.
