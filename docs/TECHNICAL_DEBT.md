@@ -2125,3 +2125,18 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Effect:** a forged `approve` alone starts nothing; it can only add a request to the card's "waiting for your confirm" list.
 - **Gate(s):** none. **Status:** open. **Re-evaluate** if anything is ever allowed to run on the topic's `approve` alone (without the
   Web confirm), if the relay is opened beyond loopback, or if a request is ever found `approved_in_topic` that the owner did not send.
+
+## RISK-137 — The GitHub read token sits in the runtime build pod's env for the build's life — OPEN, 2026-10-27
+
+- **What:** BL-230 (ADR 0043 amendment 1). A build pod whose profile names github.com gets the owner's GitHub token as
+  `YTM_GIT_TOKEN` for its whole life (≤ 30 min), the same class as `HF_TOKEN` on the pull pod. The code the build runs (the profile's
+  repositories, pip packages) could read it before the script unsets it, and RunPod's console shows pod env to the account holder.
+  The header is in `git`'s argument list inside the pod while git runs. Every profile names github.com (ComfyUI), so with a token
+  stored every build pod receives it. `build.log` lives on the shared volume during the build.
+- **Bounds:** the owner creates a fine-grained, read-only (Contents: Read), one-repository token with an expiry; the token is
+  unset after the clones, scrubbed from every error, job record and audit, masked in pod reads, never in the entrypoint, a URL,
+  a remote or `.git/config`; a leak check refuses `.ready` and wipes the folder when it finds the token or its header form; session
+  pods never get it; no API, MCP tool or `.ytmkeys` section carries it.
+- **Re-evaluate:** when a token with write scope is ever needed, when the profile's own code is no longer the owner's allow-listed
+  sources, or when RunPod offers secrets that are not plain pod env.
+- **Gate(s):** none. **Status:** open.

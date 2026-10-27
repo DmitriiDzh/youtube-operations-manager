@@ -4577,7 +4577,7 @@ Plan: `docs/roadmap/plans/VIDEO_COST_PLAN.md` §2 stages 2-4 (criteria 3-9). Sch
   at exact 40-hex commits (a tag is resolved through the media gateway's GitHub child at create time) and pinned pip extras. Every
   repo must sit under the owner's allow-list. The volume is the store every computer shares, so profiles have no sync family.
 - **Build** (`runtime-builds.ts`). A pod on the cheapest GPU of the owner's list in the volume's datacenter (40 GB disk; the next GPU on no capacity) runs the GPU template's own image (`imageName`; none = refused,
-  never a fallback image) with the entrypoint `bash /workspace/ytm/runtime-build.sh <id>`, no ports, no env. The script clones each
+  never a fallback image) with the entrypoint `bash /workspace/ytm/runtime-build.sh <id>`, no ports, no env (BL-230: except `YTM_GIT_TOKEN`, below). The script clones each
   repo at its commit (verified with `rev-parse`), makes a venv from the image's Python with a `.pth` to the image's site-packages
   (torch is never downloaded: probe 1), installs the requirements without torch/torchvision/torchaudio, writes `.ready` last and
   then `build.json`. The watch loop reads the verdict and terminates the pod (a build is finished only once the pod is confirmed
@@ -4587,6 +4587,12 @@ Plan: `docs/roadmap/plans/VIDEO_COST_PLAN.md` §2 stages 2-4 (criteria 3-9). Sch
     a second build of one profile.
   - `ensurePodScripts` uploads this version's `scripts/media/pod/{pod-start.sh,runtime-build.sh}` to `ytm/` when the volume's copy
     differs, before a build and before a session on a runtime. Both computers run from the repository checkout.
+- **Private GitHub repositories (BL-230, ADR 0043 amendment 1).** The owner's GitHub read token lives in the device-secret slot
+  `github` (Settings → Cloud APIs, `github-token.ts`). `createRuntime` checks every github.com source's ref or commit through the
+  gateway's GitHub child, without a token first and with it only after a 404 (`runtime_repo_private_needs_token` /
+  `runtime_repo_not_visible_to_token`). A build pod whose profile names github.com gets the token as `YTM_GIT_TOKEN` (env only,
+  scrubbed from errors, masked in pod reads); the script sends it as a one-shot `http.extraheader` to github.com only, unsets it
+  after the clones and refuses `.ready` if the token or its header form appears under the runtime folder. Session pods never get it.
 - **Sessions.** `runtimeId` on a request: absent = the active runtime, `null` = the image's built-in ComfyUI. A runtime without
   `.ready` is refused (`media_runtime_not_ready`) before the row, and again at approve before the pod. The pod's env gets
   `YTM_RUNTIME_ID` next to its own `COMFY_TOKEN` and nothing else; `pod-start.sh` then runs that runtime's ComfyUI with its venv and
