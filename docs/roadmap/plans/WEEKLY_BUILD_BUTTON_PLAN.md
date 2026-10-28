@@ -39,8 +39,8 @@ thumbnail). New music generation is out of scope.
 4. **Routes (Web session, active channel; no MCP tool):** `GET /api/channels/[channelId]/weekly-build` (readiness + status),
    `POST …/dry-run` `{days}`, `POST …/start` `{days, wake?}`, `POST …/stop`; `GET/PUT /api/weekly-build/settings`
    `{pythonPath}` (this computer's database, like the ffmpeg folder).
-5. **The card «Сборка недели»** on Content → Week plan, above the plan panel: the factory's one-line status, days (1–14,
-   default 7), «Собрать неделю» → the confirmation lists the dry run's steps → «Запустить»; while the job runs: its state and
+5. **The card «Сборка недели»** on Content → Week plan, above the plan panel: the factory's one-line status, the calendar of
+   picked dates (below), «Собрать N дней» → the confirmation lists the dry run's steps → «Запустить»; while the job runs: its state and
    «Стоп»; the slot table (date, status, video, length, problems of a failed slot); built slots → «Нужна упаковка» with
    «Разбудить агента» (`auto --wake`, shown through the same dry-run confirmation: it also builds open slots and clears STOP);
    the Python path field. Stop is a stop switch in `src/proxy.ts` (passes recovery mode, not the operation lock). Refreshes every 30 s while visible and a job runs, otherwise on
@@ -50,6 +50,17 @@ thumbnail). New music generation is out of scope.
 `agent_publishing_plan_save`); the Manager only shows the factory's state (FO-REQ-0046 item 4, option a — one writer of the
 plan). Packaging by hand without an agent is a later item if the owner asks. No restart-when-idle reason: the job is detached
 and survives a restart.
+
+## Picked dates (owner msgs 3753/3755)
+
+The owner picks the dates on a calendar; only they are built (`auto --dates d1,d2,…`, bundle 2.5.42, the Operator's rules):
+tomorrow … today + 28; a date with a planned or retryable failed slot is built, a built/packaged/building one is shown as
+`exists`; dates after the last planned day become one new plan with exactly those days; anything else refuses the whole request
+(`bad_dates`: `out_of_range`, `date_taken`, `no_slot_inside_plan`, `failed_no_retry`) -> `weekly_build_bad_dates` (422) with each
+date's reason. The factory checks the dates only inside the job, so the Manager runs the dry run before every start with dates.
+The Manager checks the range and the dates' form itself first (`validation_failed`). The calendar shows Monday-first weeks, greys
+out dates outside the range and dates whose slot is being built, built, packaged or failed for good. «Разбудить агента» sends
+neither dates nor days (`auto --wake`). `--days N` stays in the API.
 
 ## Security
 

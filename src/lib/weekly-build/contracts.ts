@@ -11,6 +11,9 @@ export const MIN_BUNDLE_VERSION = "2.5.42";
 export const WEEKLY_BUILD_DAYS_MIN = 1;
 export const WEEKLY_BUILD_DAYS_MAX = 14;
 export const WEEKLY_BUILD_DAYS_DEFAULT = 7;
+/** Picked dates (owner msg 3755): from tomorrow to today + 28, the factory's own range for `auto --dates`. */
+export const WEEKLY_BUILD_DATE_FIRST_OFFSET = 1;
+export const WEEKLY_BUILD_DATE_LAST_OFFSET = 28;
 
 /** Why the build cannot run here now; the card explains each. */
 export type WeeklyBuildBlockCode = "workspace_missing" | "launcher_missing" | "bundle_too_old" | "python_missing" | "launcher_check_failed";
@@ -31,6 +34,8 @@ export type WeeklyBuildSlot = {
   hours: number | null;
   problems: string[];
   retryable: boolean;
+  /** The factory plan the slot belongs to (status lists the slots of every open plan). */
+  plan: string | null;
 };
 
 export type WeeklyBuildJob = {
@@ -63,10 +68,13 @@ export type WeeklyBuildView = {
   running: boolean;
 };
 
-export type WeeklyBuildStep = { step: "draft" | "run" | "package_request" | "wait" | string; text: string; slots: string[] };
+export type WeeklyBuildStep = { step: "draft" | "run" | "exists" | "package_request" | "wait" | string; text: string; slots: string[]; dates: string[] };
 
 /** `wake`: the dry run of «Разбудить агента» (`auto --wake`), confirmed like a start (it builds open slots too). */
-export type WeeklyBuildDryRun = { days: number; wake: boolean; steps: WeeklyBuildStep[]; plan: string | null; stopped: boolean };
+export type WeeklyBuildDryRun = { days: number | null; dates: string[] | null; wake: boolean; steps: WeeklyBuildStep[]; plan: string | null; stopped: boolean };
+
+/** One refused date of a dry run (`weekly_build_bad_dates`, details.dates). */
+export type WeeklyBuildBadDate = { date: string; error: "out_of_range" | "date_taken" | "no_slot_inside_plan" | "failed_no_retry" | string; message: string };
 
 export type WeeklyBuildStarted = { jobId: string; log: string; pid: number | null; clearedStop: boolean };
 

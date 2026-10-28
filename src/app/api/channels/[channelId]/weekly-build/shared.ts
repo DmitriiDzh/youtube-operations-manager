@@ -50,12 +50,12 @@ export function weeklyBuildHandler(deps: WeeklyBuildRouteDeps, run: (args: { cor
   };
 }
 
-/** `{ days, wake? }`; a body that is not a JSON object is an empty one (the module then refuses the missing days). */
-export async function readBuildBody(request: Request): Promise<{ days: unknown; wake?: unknown }> {
+/** `{ dates } | { days }`, plus `wake?`; a body that is not a JSON object is an empty one (the module refuses it). */
+export async function readBuildBody(request: Request): Promise<{ dates?: unknown; days?: unknown; wake?: unknown }> {
   try {
     const body: unknown = await request.json();
-    return body && typeof body === "object" && !Array.isArray(body) ? (body as { days: unknown; wake?: unknown }) : { days: undefined };
+    return body && typeof body === "object" && !Array.isArray(body) ? (body as { dates?: unknown; days?: unknown; wake?: unknown }) : {};
   } catch {
-    return { days: undefined };
+    return {};
   }
 }

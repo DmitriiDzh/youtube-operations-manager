@@ -3,9 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { UiTextKey } from "@/lib/ui-text";
 import {
-  WEEKLY_BUILD_DAYS_DEFAULT,
-  WEEKLY_BUILD_DAYS_MAX,
-  WEEKLY_BUILD_DAYS_MIN,
+  WEEKLY_BUILD_DATE_FIRST_OFFSET,
+  WEEKLY_BUILD_DATE_LAST_OFFSET,
+  type WeeklyBuildBadDate,
   type WeeklyBuildDryRun,
   type WeeklyBuildSettings,
   type WeeklyBuildSlot,
@@ -31,9 +31,19 @@ const SLOT_STYLES: Record<string, string> = {
   skipped: "bg-zinc-800 text-zinc-500 ring-zinc-700",
 };
 const KNOWN_SLOT = new Set(Object.keys(SLOT_STYLES));
-const KNOWN_STEP = new Set(["draft", "run", "package_request", "wait"]);
+const KNOWN_STEP = new Set(["draft", "run", "exists", "package_request", "wait"]);
 
-type ApiError = { error?: string; message?: string };
+type ApiError = { error?: string; message?: string; details?: { dates?: WeeklyBuildBadDate[] } };
+const BAD_DATE_CODES = new Set(["out_of_range", "date_taken", "no_slot_inside_plan", "failed_no_retry"]);
+/** Slots the factory would only show as existing, or cannot build again: not pickable. */
+const TAKEN = new Set(["building", "built", "packaged"]);
+
+/** The local YYYY-MM-DD `offset` days after `base` (the server checks the same range on the same computer's clock). */
+function ymd(base: Date, offset: number): string {
+  const d = new Date(base.getFullYear(), base.getMonth(), base.getDate() + offset);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
 
 function when(iso: string | null): string {
   if (!iso) return "";
@@ -47,8 +57,9 @@ export function WeeklyBuildCard({ channelId, visible }: { channelId: string | nu
   const t = useT();
   const [view, setView] = useState<WeeklyBuildView | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  // The field is a draft string (review #2): clamped only when sent, so it can be cleared and retyped.
-  const [daysText, setDaysText] = useState(String(WEEKLY_BUILD_DAYS_DEFAULT));
+  // Owner msg 3755: the dates to build are picked on a calendar; only they are built.
+  const [picked, setPicked] = useState<string[]>([]);
+  const [badDates, setBadDates] = useState<WeeklyBuildBadDate[]>([]);
   const [busy, setBusy] = useState<"check" | "start" | "stop" | "wake" | "python" | "refresh" | null>(null);
   const [dryRun, setDryRun] = useState<WeeklyBuildDryRun | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -59,8 +70,6 @@ export function WeeklyBuildCard({ channelId, visible }: { channelId: string | nu
   // The channel the card shows now: an answer for another channel (switched meanwhile) is dropped (review #7).
   const currentBase = useRef(base);
   currentBase.current = base;
-
-  const days = Math.min(WEEKLY_BUILD_DAYS_MAX, Math.max(WEEKLY_BUILD_DAYS_MIN, Number.parseInt(daysText, 10) || WEEKLY_BUILD_DAYS_DEFAULT));
 
   const errorText = useCallback(
     async (res: Response) => {
@@ -88,6 +97,8 @@ export function WeeklyBuildCard({ channelId, visible }: { channelId: string | nu
   useEffect(() => {
     setView(null);
     setDryRun(null);
+    setPicked([]);
+    setBadDates([]);
     setNotice(null);
     setActionError(null);
   }, [channelId]);
@@ -112,8 +123,12 @@ export function WeeklyBuildCard({ channelId, visible }: { channelId: string | nu
 
   async function post<T>(path: string, body: unknown): Promise<T | null> {
     setActionError(null);
+    setBadDates([]);
     const res = await fetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     if (!res.ok) {
+      const copy = res.clone();
+      const body = (await copy.json().catch(() => ({}))) as ApiError;
+      if (body.error === "weekly_build_bad_dates" && body.details?.dates?.length) setBadDates(body.details.dates);
       setActionError(await errorText(res));
       return null;
     }
@@ -125,18 +140,22 @@ export function WeeklyBuildCard({ channelId, visible }: { channelId: string | nu
     setBusy(wake ? "wake" : "check");
     setNotice(null);
     try {
-      const result = await post<WeeklyBuildDryRun>("/dry-run", { days, wake });
+      const result = await post<WeeklyBuildDryRun>("/dry-run", wake ? { wake } : { dates: picked });
       if (result) setDryRun(result);
     } finally {
       setBusy(null);
     }
   }
 
-  async function start(wake: boolean) {
+  async function start(confirmed: WeeklyBuildDryRun) {
+    const wake = confirmed.wake;
     setBusy(wake ? "wake" : "start");
     try {
-      const result = await post<{ jobId: string }>("/start", { days, wake });
-      if (result) setNotice(wake ? t("weeklyBuild.packaging.woken") : t("weeklyBuild.started", { jobId: result.jobId }));
+      const result = await post<{ jobId: string }>("/start", wake ? { wake } : { dates: confirmed.dates });
+      if (result) {
+        setNotice(wake ? t("weeklyBuild.packaging.woken") : t("weeklyBuild.started", { jobId: result.jobId }));
+        if (!wake) setPicked([]);
+      }
       setDryRun(null);
       await load();
     } finally {
@@ -216,33 +235,26 @@ export function WeeklyBuildCard({ channelId, visible }: { channelId: string | nu
       {view?.statusError && <p className="rounded-md border border-red-900 bg-red-950/40 px-3 py-2 text-sm text-red-300">{t("weeklyBuild.statusUnreadable", { message: view.statusError })}</p>}
 
       {ready && (
-        <div className="flex flex-wrap items-end gap-3">
-          <label className="flex flex-col gap-1 text-sm text-zinc-400">
-            {t("weeklyBuild.days")}
-            <input
-              type="text"
-              inputMode="numeric"
-              value={daysText}
-              onChange={(e) => setDaysText(e.target.value.replace(/\D/g, "").slice(0, 2))}
-              onBlur={() => setDaysText(String(days))}
-              className="w-20 rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100"
-            />
-          </label>
+        <div className="space-y-3">
+          <DatePicker slots={status?.slots ?? []} picked={picked} badDates={badDates} disabled={busy !== null || view?.running === true} onChange={setPicked} />
+          <div className="flex flex-wrap items-center gap-3">
           <ActionButton
             busy={busy === "check"}
             busyLabel={t("weeklyBuild.checking")}
-            disabled={busy !== null || view?.running === true}
+            disabled={busy !== null || view?.running === true || picked.length === 0}
             onClick={() => void askBuild(false)}
             className="rounded-md bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-40"
           >
-            {t("weeklyBuild.build")}
+            {picked.length > 0 ? t("weeklyBuild.buildPicked", { count: picked.length }) : t("weeklyBuild.build")}
           </ActionButton>
+          {picked.length === 0 && <span className="text-sm text-zinc-500">{t("weeklyBuild.pickHint")}</span>}
           {view?.running && (
             <ActionButton busy={busy === "stop"} busyLabel={t("weeklyBuild.stopping")} disabled={busy !== null || status?.stopped === true} onClick={() => void stop()} className="rounded-md border border-red-800 px-4 py-2 text-sm font-medium text-red-300 hover:bg-red-950/50 disabled:opacity-40">
               {t("weeklyBuild.stop")}
             </ActionButton>
           )}
           {readiness?.ready && <span className="text-xs text-zinc-500">{t("weeklyBuild.bundle", { bundle: readiness.bundle })}</span>}
+          </div>
         </div>
       )}
 
@@ -314,12 +326,12 @@ export function WeeklyBuildCard({ channelId, visible }: { channelId: string | nu
       {dryRun && (
         <ConfirmDialog
           title={t(dryRun.wake ? "weeklyBuild.confirm.wakeTitle" : "weeklyBuild.confirm.title")}
-          description={t("weeklyBuild.confirm.description", { days: dryRun.days })}
+          description={dryRun.dates ? t("weeklyBuild.confirm.descriptionDates", { count: dryRun.dates.length, dates: dryRun.dates.map(dayLabel).join(", ") }) : t("weeklyBuild.confirm.descriptionWake")}
           confirmLabel={t("weeklyBuild.confirm.start")}
           confirmBusyLabel={busy === "start" || busy === "wake" ? t("weeklyBuild.confirm.starting") : null}
           confirmDisabled={dryRun.steps.every((step) => step.step === "wait") || busy !== null}
           onCancel={() => setDryRun(null)}
-          onConfirm={() => void start(dryRun.wake)}
+          onConfirm={() => void start(dryRun)}
         >
           <div className="space-y-2 text-sm">
             <p className="text-zinc-400">{dryRun.plan ? t("weeklyBuild.confirm.plan", { plan: dryRun.plan }) : t("weeklyBuild.confirm.newPlan")}</p>
@@ -331,6 +343,7 @@ export function WeeklyBuildCard({ channelId, visible }: { channelId: string | nu
                   <li key={i}>
                     {KNOWN_STEP.has(step.step) ? t(`weeklyBuild.step.${step.step}` as UiTextKey) : step.step}
                     <span className="block text-xs text-zinc-500">{step.text}</span>
+                    {step.dates.length > 0 && <span className="block text-xs text-zinc-500">{t("weeklyBuild.step.dates", { dates: step.dates.map(dayLabel).join(", ") })}</span>}
                     {step.slots.length > 0 && <span className="block text-xs text-zinc-500">{t("weeklyBuild.step.slots", { slots: step.slots.join(", ") })}</span>}
                   </li>
                 ))}
@@ -367,5 +380,92 @@ function SlotRow({ slot }: { slot: WeeklyBuildSlot }) {
       </td>
       <td className="whitespace-nowrap px-3 py-2 text-zinc-300">{slot.hours !== null ? t("weeklyBuild.hours", { hours: slot.hours }) : "—"}</td>
     </tr>
+  );
+}
+
+/** "2026-11-03" -> "03.11". */
+function dayLabel(date: string): string {
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? `${date.slice(8, 10)}.${date.slice(5, 7)}` : date;
+}
+
+/**
+ * The dates to build, from tomorrow to today + 28 (the factory's range), in Monday-first weeks. A date whose slot is already being
+ * built, built or packaged -- or failed for good -- cannot be picked; its status shows. A date the factory refused is outlined red
+ * with its reason under the calendar.
+ */
+function DatePicker({ slots, picked, badDates, disabled, onChange }: { slots: WeeklyBuildSlot[]; picked: string[]; badDates: WeeklyBuildBadDate[]; disabled: boolean; onChange(next: string[]): void }) {
+  const t = useT();
+  const today = new Date();
+  const first = ymd(today, WEEKLY_BUILD_DATE_FIRST_OFFSET);
+  const last = ymd(today, WEEKLY_BUILD_DATE_LAST_OFFSET);
+  const firstDate = new Date(today.getFullYear(), today.getMonth(), today.getDate() + WEEKLY_BUILD_DATE_FIRST_OFFSET);
+  const lead = (firstDate.getDay() + 6) % 7; // days back to Monday
+  const span = WEEKLY_BUILD_DATE_LAST_OFFSET - WEEKLY_BUILD_DATE_FIRST_OFFSET + 1 + lead;
+  const cells = Array.from({ length: Math.ceil(span / 7) * 7 }, (_, i) => ymd(today, WEEKLY_BUILD_DATE_FIRST_OFFSET - lead + i));
+  const byDate = new Map<string, WeeklyBuildSlot>();
+  for (const slot of slots) if (!byDate.has(slot.date) || slot.status !== "skipped") byDate.set(slot.date, slot);
+  const refused = new Map(badDates.map((b) => [b.date, b]));
+  const chosen = new Set(picked);
+  const toggle = (date: string) => onChange(chosen.has(date) ? picked.filter((d) => d !== date) : [...picked, date].sort());
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm text-zinc-300">{t("weeklyBuild.pick.title")}</p>
+        {picked.length > 0 && (
+          <button type="button" disabled={disabled} onClick={() => onChange([])} className="text-sm text-zinc-400 underline-offset-2 hover:text-zinc-200 hover:underline disabled:opacity-40">
+            {t("weeklyBuild.pick.clear")}
+          </button>
+        )}
+      </div>
+      <div className="grid max-w-xl grid-cols-7 gap-1 text-center text-xs" role="group" aria-label={t("weeklyBuild.pick.title")}>
+        {[1, 2, 3, 4, 5, 6, 7].map((n) => (
+          <span key={n} className="py-1 text-zinc-500">
+            {t(`weeklyBuild.wd.${n}` as UiTextKey)}
+          </span>
+        ))}
+        {cells.map((date) => {
+          const inRange = date >= first && date <= last;
+          const slot = byDate.get(date);
+          const taken = slot ? TAKEN.has(slot.status) || (slot.status === "failed" && !slot.retryable) : false;
+          const selectable = inRange && !taken;
+          const on = chosen.has(date);
+          const bad = refused.get(date);
+          const label = slot && KNOWN_SLOT.has(slot.status) ? t(`weeklyBuild.slot.${slot.status}` as UiTextKey) : (slot?.status ?? "");
+          return (
+            <button
+              key={date}
+              type="button"
+              aria-pressed={on}
+              disabled={disabled || !selectable}
+              title={slot ? `${dayLabel(date)} · ${label}${slot.video ? ` · ${slot.video}` : ""}` : dayLabel(date)}
+              onClick={() => toggle(date)}
+              className={`flex min-h-12 flex-col items-center justify-center rounded-md border px-1 py-1 transition-colors ${
+                !inRange
+                  ? "border-transparent text-zinc-700"
+                  : on
+                    ? "border-violet-500 bg-violet-600 font-semibold text-white"
+                    : taken
+                      ? "border-zinc-800 bg-zinc-900 text-zinc-500"
+                      : "border-zinc-700 bg-zinc-950 text-zinc-200 hover:border-violet-500"
+              } ${bad ? "ring-2 ring-red-500" : ""} disabled:cursor-not-allowed`}
+            >
+              <span>{dayLabel(date)}</span>
+              {inRange && slot && slot.status !== "skipped" && <span className={`mt-0.5 rounded px-1 text-[10px] ring-1 ${on ? "bg-white/15 text-white ring-white/30" : (SLOT_STYLES[slot.status] ?? SLOT_STYLES.planned)}`}>{label}</span>}
+            </button>
+          );
+        })}
+      </div>
+      {badDates.length > 0 && (
+        <ul className="space-y-0.5 text-sm text-red-300">
+          {badDates.map((b) => (
+            <li key={b.date}>
+              {dayLabel(b.date)}: {BAD_DATE_CODES.has(b.error) ? t(`weeklyBuild.bad.${b.error}` as UiTextKey) : b.error}
+              {b.message && <span className="block text-xs text-red-300/70">{b.message}</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }

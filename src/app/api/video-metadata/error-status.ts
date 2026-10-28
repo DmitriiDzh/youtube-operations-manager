@@ -66,6 +66,7 @@ const DOMAIN_ERROR_STATUS = {
   weekly_build_unavailable: 409,
   weekly_build_job_running: 409,
   weekly_build_failed: 502,
+  weekly_build_bad_dates: 422,
   runtime_repo_private_needs_token: 422,
   runtime_repo_not_visible_to_token: 403,
   media_runtime_incompatible: 409,

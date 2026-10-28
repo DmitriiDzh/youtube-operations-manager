@@ -91,6 +91,7 @@ export type DomainErrorCode =
   | "weekly_build_unavailable"
   | "weekly_build_job_running"
   | "weekly_build_failed"
+  | "weekly_build_bad_dates"
   | "runtime_repo_private_needs_token"
   | "runtime_repo_not_visible_to_token"
   | "media_runtime_incompatible"

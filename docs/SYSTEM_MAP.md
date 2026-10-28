@@ -1214,8 +1214,9 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Настройка:** путь к Python — `app_settings.weekly_build_settings` (`/api/weekly-build/settings`); пусто — обычные папки, потом PATH.
 - **Маршруты владельца** `/api/channels/[channelId]/weekly-build` (GET), `/dry-run`, `/start`, `/stop` (POST); MCP-инструмента нет
   (`no-agent.test.ts`). Ошибки: `weekly_build_unavailable` (409, `details.code`), `weekly_build_job_running` (409), `weekly_build_failed` (502).
-- **Web:** карточка «Сборка недели» над планом на вкладке Контент → «План недели» (`src/components/weekly-build-card.tsx`): дни,
-  «Собрать неделю» → подтверждение с пробным прогоном, ход и «Стоп», таблица слотов с проблемами, «Нужна упаковка» →
+- **Web:** карточка «Сборка недели» над планом на вкладке Контент → «План недели» (`src/components/weekly-build-card.tsx`): календарь
+  дат (завтра … +28, только отмеченные; `auto --dates`, перед запуском всегда пробный прогон, отказ фабрики `bad_dates` →
+  `weekly_build_bad_dates` 422 с причиной по дате), «Собрать N дней» → подтверждение с пробным прогоном, ход и «Стоп», таблица слотов с проблемами, «Нужна упаковка» →
   «Разбудить агента» (`auto --wake`). Задача отсоединена запускатором: перезапуск сервера её не останавливает.
 - **Риск:** RISK-138.
 

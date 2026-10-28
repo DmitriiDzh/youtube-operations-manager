@@ -6,7 +6,7 @@ import test from "node:test";
 import { isPathInsideOrEqual } from "@/lib/local-path-validation";
 import { isDomainError } from "@/lib/shared-domain";
 import { scriptEnv, type RunScript, type ScriptResult } from "./host";
-import { compareVersions, createWeeklyBuildServices, parseJsonOutput, type WeeklyBuildDeps } from "./services";
+import { compareVersions, createWeeklyBuildServices, localDate, parseJsonOutput, validateDates, type WeeklyBuildDeps } from "./services";
 
 // BL-231 acceptance (WEEKLY_BUILD_BUTTON_PLAN.md "Acceptance", unit items 1-9). Expected argv and codes come from the plan and
 // the factory's documented commands (FO-REQ-0046, Operator's answer of 2026-10-28), not from the implementation.
@@ -271,6 +271,71 @@ test("review #1/#9: the wake dry run passes --wake; a missing Python is looked u
     await missing.view("UC1");
     await missing.view("UC1");
     assert.equal(lookups, 2);
+  } finally {
+    await c.cleanup();
+  }
+});
+
+// Picked dates (owner msg 3755; the factory's rules from the Operator, FO-REQ-0046 dates): tomorrow .. today + 28, real and
+// distinct; the dry run runs before every start with dates; the factory's bad_dates refusal keeps its per-date reasons.
+const NOW = new Date(2026, 9, 28, 14, 0, 0).getTime(); // 28 Oct 2026, 14:00 local
+
+test("dates: tomorrow .. today+28 accepted (sorted); today, +29, unreal, duplicate, empty refused", () => {
+  assert.equal(localDate(NOW), "2026-10-28");
+  assert.deepEqual(validateDates(["2026-11-25", "2026-10-29"], NOW), ["2026-10-29", "2026-11-25"]);
+  for (const bad of [["2026-10-28"], ["2026-11-26"], ["2026-11-31"], ["2026-11-03", "2026-11-03"], [], "2026-11-03", [20261103]]) {
+    assert.throws(() => validateDates(bad, NOW), (e: unknown) => isDomainError(e) && e.code === "validation_failed", JSON.stringify(bad));
+  }
+});
+
+test("dates: the dry run and the start pass --dates; the start runs the dry run first", async () => {
+  const c = await channel();
+  try {
+    const h = harness(c.ws, factory());
+    h.deps.now = () => NOW;
+    const core = createWeeklyBuildServices(h.deps);
+    const dry = await core.dryRun("UC1", { dates: ["2026-11-05", "2026-11-03"] });
+    assert.deepEqual(dry.dates, ["2026-11-03", "2026-11-05"]);
+    assert.deepEqual(h.calls.find((call) => call.args[4] === "auto")!.args, ["-B", c.launcher, "run", WF, "auto", "--dates", "2026-11-03,2026-11-05", "--dry-run", "--json"]);
+    h.calls.length = 0;
+    await core.start("UC1", { dates: ["2026-11-03"] });
+    const order = h.calls.map((call) => call.args.slice(2).join(" "));
+    const dryAt = order.indexOf(`run ${WF} auto --dates 2026-11-03 --dry-run --json`);
+    const startAt = order.indexOf(`start ${WF} auto --dates 2026-11-03 --json`);
+    assert.ok(dryAt >= 0 && startAt > dryAt, order.join(" | "));
+  } finally {
+    await c.cleanup();
+  }
+});
+
+test("dates: the factory's bad_dates -> weekly_build_bad_dates with each date's reason; no start", async () => {
+  const c = await channel();
+  try {
+    const refusal = { exitCode: 1, stdout: JSON.stringify({ error: "bad_dates", dates: [{ date: "2026-11-03", error: "date_taken", message: "V70 already on 2026-11-03" }] }), stderr: "", timedOut: false };
+    const base = factory();
+    const h = harness(c.ws, (args) => (args[0] === "run" && args[2] === "auto" ? refusal : base(args)));
+    h.deps.now = () => NOW;
+    const core = createWeeklyBuildServices(h.deps);
+    for (const action of [() => core.dryRun("UC1", { dates: ["2026-11-03"] }), () => core.start("UC1", { dates: ["2026-11-03"] })]) {
+      await assert.rejects(action(), (e: unknown) => {
+        assert.ok(isDomainError(e));
+        assert.equal(e.code, "weekly_build_bad_dates");
+        assert.deepEqual((e.details as { dates: unknown }).dates, [{ date: "2026-11-03", error: "date_taken", message: "V70 already on 2026-11-03" }]);
+        return true;
+      });
+    }
+    assert.equal(h.calls.filter((call) => call.args[2] === "start").length, 0);
+  } finally {
+    await c.cleanup();
+  }
+});
+
+test("a wake alone names neither dates nor days", async () => {
+  const c = await channel();
+  try {
+    const h = harness(c.ws, factory());
+    await h.core.start("UC1", { wake: true });
+    assert.deepEqual(h.calls.find((call) => call.args[2] === "start")!.args, ["-B", c.launcher, "start", WF, "auto", "--wake", "--json"]);
   } finally {
     await c.cleanup();
   }

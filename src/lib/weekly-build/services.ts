@@ -2,6 +2,8 @@ import path from "node:path";
 import { DomainError } from "@/lib/shared-domain";
 import {
   MIN_BUNDLE_VERSION,
+  WEEKLY_BUILD_DATE_FIRST_OFFSET,
+  WEEKLY_BUILD_DATE_LAST_OFFSET,
   WEEKLY_BUILD_DAYS_MAX,
   WEEKLY_BUILD_DAYS_MIN,
   WEEKLY_PLAN_WORKFLOW,
@@ -100,6 +102,7 @@ export function parseStatus(raw: Record<string, unknown>): WeeklyBuildStatus | n
       hours: num(s.hours),
       problems: Array.isArray(s.problems) ? s.problems.map((p) => (typeof p === "string" ? p : JSON.stringify(p))) : [],
       retryable: s.retryable === true,
+      plan: str(s.plan),
     });
   }
   const parsedJob: WeeklyBuildJob | null =
@@ -128,6 +131,53 @@ function validateDays(days: unknown): number {
     throw new DomainError({ code: "validation_failed", message: `days must be a whole number from ${WEEKLY_BUILD_DAYS_MIN} to ${WEEKLY_BUILD_DAYS_MAX}`, details: { days } });
   }
   return days;
+}
+
+/** The local calendar date `offsetDays` after `nowMs` (the factory checks dates on this same computer's clock). */
+export function localDate(nowMs: number, offsetDays = 0): string {
+  const d = new Date(nowMs);
+  d.setDate(d.getDate() + offsetDays);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const isRealDate = (value: string) => DATE_PATTERN.test(value) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
+
+/** Picked dates (owner msg 3755): real, distinct, from tomorrow to today + 28 (the factory's range, FO-REQ-0046); sorted. */
+export function validateDates(dates: unknown, nowMs: number): string[] {
+  const first = localDate(nowMs, WEEKLY_BUILD_DATE_FIRST_OFFSET);
+  const last = localDate(nowMs, WEEKLY_BUILD_DATE_LAST_OFFSET);
+  const invalid = (message: string) => new DomainError({ code: "validation_failed", message, details: { dates, first, last } });
+  if (!Array.isArray(dates) || dates.length === 0 || dates.length > WEEKLY_BUILD_DATE_LAST_OFFSET) throw invalid(`dates must be a list of 1 to ${WEEKLY_BUILD_DATE_LAST_OFFSET} dates`);
+  if (!dates.every((d): d is string => typeof d === "string" && isRealDate(d))) throw invalid("every date must be a real YYYY-MM-DD date");
+  const sorted = [...new Set(dates)].sort();
+  if (sorted.length !== dates.length) throw invalid("a date is listed twice");
+  if (sorted[0] < first || sorted[sorted.length - 1] > last) throw invalid(`dates must lie from ${first} to ${last}`);
+  return sorted;
+}
+
+type BuildInput = { dates?: unknown; days?: unknown; wake?: unknown };
+type Selection = { args: string[]; dates: string[] | null; days: number | null; wake: boolean };
+
+/** Picked dates, or a number of days; a wake alone may name neither (it only asks for the open plans' built slots). */
+function selection(input: BuildInput, nowMs: number): Selection {
+  const wake = input.wake === true;
+  if (input.dates !== undefined) {
+    const dates = validateDates(input.dates, nowMs);
+    return { args: ["--dates", dates.join(",")], dates, days: null, wake };
+  }
+  if (input.days === undefined && wake) return { args: [], dates: null, days: null, wake };
+  const days = validateDays(input.days);
+  return { args: ["--days", String(days)], dates: null, days, wake };
+}
+
+function badDates(parsed: Record<string, unknown>): DomainError {
+  const dates = (Array.isArray(parsed.dates) ? parsed.dates : []).flatMap((item) => {
+    const d = obj(item);
+    return d ? [{ date: str(d.date) ?? "", error: str(d.error) ?? "", message: str(d.message) ?? "" }] : [];
+  });
+  return new DomainError({ code: "weekly_build_bad_dates", message: str(parsed.message) ?? "The factory refused the picked dates.", details: { dates } });
 }
 
 type Ready = { workspace: string; launcher: string; python: string; bundle: string };
@@ -224,6 +274,22 @@ export function createWeeklyBuildServices(deps: WeeklyBuildDeps) {
     return status;
   }
 
+  async function runDryRun(ctx: Ready, sel: Selection): Promise<Omit<WeeklyBuildDryRun, "stopped">> {
+    const args = ["run", WEEKLY_PLAN_WORKFLOW, "auto", ...sel.args, "--dry-run", ...(sel.wake ? ["--wake"] : []), "--json"];
+    const result = await runLauncher(ctx, args, DRY_RUN_TIMEOUT_MS);
+    const parsed = parseJsonOutput(result.stdout);
+    if (result.exitCode !== 0) {
+      if (parsed?.error === "bad_dates") throw badDates(parsed);
+      throw failed("dry run", result);
+    }
+    if (!parsed || !Array.isArray(parsed.steps)) throw failed("dry run (unreadable answer)", { ...result, exitCode: 0 });
+    const steps: WeeklyBuildStep[] = parsed.steps.flatMap((item) => {
+      const st = obj(item);
+      return st && str(st.step) ? [{ step: str(st.step)!, text: str(st.text) ?? "", slots: strings(st.slots), dates: strings(st.dates) }] : [];
+    });
+    return { days: sel.days, dates: sel.dates, wake: sel.wake, steps, plan: str(parsed.plan) };
+  }
+
   async function exclusive<T>(channelId: string, run: () => Promise<T>): Promise<T> {
     if (busy.has(channelId)) {
       throw new DomainError({ code: "weekly_build_job_running", message: "A start or stop of this channel's weekly build is already in progress.", details: { channelId } });
@@ -248,38 +314,30 @@ export function createWeeklyBuildServices(deps: WeeklyBuildDeps) {
       }
     },
 
-    async dryRun(channelId: string, input: { days: unknown; wake?: unknown }): Promise<WeeklyBuildDryRun> {
-      const days = validateDays(input.days);
+    async dryRun(channelId: string, input: BuildInput): Promise<WeeklyBuildDryRun> {
+      const sel = selection(input, deps.now());
       const ctx = await requireReady(channelId);
-      const args = ["run", WEEKLY_PLAN_WORKFLOW, "auto", "--days", String(days), "--dry-run", ...(input.wake === true ? ["--wake"] : []), "--json"];
-      const result = await runLauncher(ctx, args, DRY_RUN_TIMEOUT_MS);
-      if (result.exitCode !== 0) throw failed("dry run", result);
-      const parsed = parseJsonOutput(result.stdout);
-      if (!parsed || !Array.isArray(parsed.steps)) throw failed("dry run (unreadable answer)", { ...result, exitCode: 0 });
-      const steps: WeeklyBuildStep[] = parsed.steps.flatMap((item) => {
-        const s = obj(item);
-        return s && str(s.step) ? [{ step: str(s.step)!, text: str(s.text) ?? "", slots: strings(s.slots) }] : [];
-      });
       const status = await readStatus(ctx).catch(() => null);
-      return { days, wake: input.wake === true, steps, plan: str(parsed.plan), stopped: status?.stopped ?? false };
+      return { ...(await runDryRun(ctx, sel)), stopped: status?.stopped ?? false };
     },
 
-    async start(channelId: string, input: { days: unknown; wake?: unknown }): Promise<WeeklyBuildStarted> {
-      const days = validateDays(input.days);
-      const wake = input.wake === true;
+    async start(channelId: string, input: BuildInput): Promise<WeeklyBuildStarted> {
+      const sel = selection(input, deps.now());
       return exclusive(channelId, async () => {
         const ctx = await requireReady(channelId);
         const status = await readStatus(ctx);
         if (isRunningState(status.job?.state)) {
           throw new DomainError({ code: "weekly_build_job_running", message: `The weekly build already runs (job ${status.job!.jobId}).`, details: { jobId: status.job!.jobId } });
         }
+        // The factory checks picked dates only inside the job: the dry run must pass first (Operator, FO-REQ-0046 dates).
+        if (sel.dates) await runDryRun(ctx, sel);
         let clearedStop = false;
         if (status.stopped) {
           const go = await runLauncher(ctx, ["run", WEEKLY_PLAN_WORKFLOW, "go"]);
           if (go.exitCode !== 0) throw failed("clearing STOP (go)", go);
           clearedStop = true;
         }
-        const result = await runLauncher(ctx, ["start", WEEKLY_PLAN_WORKFLOW, "auto", "--days", String(days), ...(wake ? ["--wake"] : []), "--json"]);
+        const result = await runLauncher(ctx, ["start", WEEKLY_PLAN_WORKFLOW, "auto", ...sel.args, ...(sel.wake ? ["--wake"] : []), "--json"]);
         const parsed = parseJsonOutput(result.stdout);
         if (result.exitCode !== 0) {
           if (parsed?.error === "job_running") {

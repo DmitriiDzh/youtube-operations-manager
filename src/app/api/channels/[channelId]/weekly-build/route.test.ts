@@ -19,7 +19,7 @@ function deps(options: { session?: boolean; active?: boolean } = {}) {
     },
     core: {
       view: async () => (calls.push("view"), { readiness: { ready: true, bundle: "2.5.42", python: "/p" }, status: null, statusError: null, running: false }),
-      dryRun: async () => (calls.push("dryRun"), { days: 7, wake: false, steps: [], plan: null, stopped: false }),
+      dryRun: async () => (calls.push("dryRun"), { days: 7, dates: null, wake: false, steps: [], plan: null, stopped: false }),
       start: async (_id, input) => (calls.push(`start:${JSON.stringify(input)}`), { jobId: "J", log: "", pid: 1, clearedStop: false }),
       stop: async () => (calls.push("stop"), { stopped: true as const }),
     },
