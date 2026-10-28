@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { UiTextKey } from "@/lib/ui-text";
 import {
   WEEKLY_BUILD_DAYS_DEFAULT,
@@ -47,7 +47,8 @@ export function WeeklyBuildCard({ channelId, visible }: { channelId: string | nu
   const t = useT();
   const [view, setView] = useState<WeeklyBuildView | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [days, setDays] = useState(WEEKLY_BUILD_DAYS_DEFAULT);
+  // The field is a draft string (review #2): clamped only when sent, so it can be cleared and retyped.
+  const [daysText, setDaysText] = useState(String(WEEKLY_BUILD_DAYS_DEFAULT));
   const [busy, setBusy] = useState<"check" | "start" | "stop" | "wake" | "python" | "refresh" | null>(null);
   const [dryRun, setDryRun] = useState<WeeklyBuildDryRun | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -55,6 +56,11 @@ export function WeeklyBuildCard({ channelId, visible }: { channelId: string | nu
   const [python, setPython] = useState("");
 
   const base = channelId ? `/api/channels/${encodeURIComponent(channelId)}/weekly-build` : null;
+  // The channel the card shows now: an answer for another channel (switched meanwhile) is dropped (review #7).
+  const currentBase = useRef(base);
+  currentBase.current = base;
+
+  const days = Math.min(WEEKLY_BUILD_DAYS_MAX, Math.max(WEEKLY_BUILD_DAYS_MIN, Number.parseInt(daysText, 10) || WEEKLY_BUILD_DAYS_DEFAULT));
 
   const errorText = useCallback(
     async (res: Response) => {
@@ -70,15 +76,18 @@ export function WeeklyBuildCard({ channelId, visible }: { channelId: string | nu
     try {
       const res = await fetch(base, { cache: "no-store" });
       if (!res.ok) throw new Error(await errorText(res));
-      setView((await res.json()) as WeeklyBuildView);
+      const next = (await res.json()) as WeeklyBuildView;
+      if (currentBase.current !== base) return;
+      setView(next);
       setLoadError(null);
     } catch (error) {
-      setLoadError(error instanceof Error ? error.message : String(error));
+      if (currentBase.current === base) setLoadError(error instanceof Error ? error.message : String(error));
     }
   }, [base, errorText]);
 
   useEffect(() => {
     setView(null);
+    setDryRun(null);
     setNotice(null);
     setActionError(null);
   }, [channelId]);
@@ -111,11 +120,12 @@ export function WeeklyBuildCard({ channelId, visible }: { channelId: string | nu
     return (await res.json()) as T;
   }
 
-  async function askBuild() {
-    setBusy("check");
+  /** «Собрать неделю» and «Разбудить агента» both show the factory's dry run first: a wake also builds open slots (review #1). */
+  async function askBuild(wake: boolean) {
+    setBusy(wake ? "wake" : "check");
     setNotice(null);
     try {
-      const result = await post<WeeklyBuildDryRun>("/dry-run", { days });
+      const result = await post<WeeklyBuildDryRun>("/dry-run", { days, wake });
       if (result) setDryRun(result);
     } finally {
       setBusy(null);
@@ -212,11 +222,9 @@ export function WeeklyBuildCard({ channelId, visible }: { channelId: string | nu
             <input
               type="text"
               inputMode="numeric"
-              value={String(days)}
-              onChange={(e) => {
-                const n = Number(e.target.value.replace(/\D/g, ""));
-                if (Number.isInteger(n)) setDays(Math.min(WEEKLY_BUILD_DAYS_MAX, Math.max(WEEKLY_BUILD_DAYS_MIN, n || WEEKLY_BUILD_DAYS_MIN)));
-              }}
+              value={daysText}
+              onChange={(e) => setDaysText(e.target.value.replace(/\D/g, "").slice(0, 2))}
+              onBlur={() => setDaysText(String(days))}
               className="w-20 rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100"
             />
           </label>
@@ -224,7 +232,7 @@ export function WeeklyBuildCard({ channelId, visible }: { channelId: string | nu
             busy={busy === "check"}
             busyLabel={t("weeklyBuild.checking")}
             disabled={busy !== null || view?.running === true}
-            onClick={() => void askBuild()}
+            onClick={() => void askBuild(false)}
             className="rounded-md bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {t("weeklyBuild.build")}
@@ -261,7 +269,7 @@ export function WeeklyBuildCard({ channelId, visible }: { channelId: string | nu
             <p className="text-zinc-300">{t("weeklyBuild.packaging.text")}</p>
             {request?.pending && <p className="text-zinc-400">{t("weeklyBuild.packaging.requested", { at: when(request.writtenAt) })}</p>}
           </div>
-          <ActionButton busy={busy === "wake"} busyLabel={t("weeklyBuild.packaging.waking")} disabled={busy !== null || view?.running === true} onClick={() => void start(true)} className="rounded-md border border-amber-700 px-4 py-2 text-sm font-medium text-amber-200 hover:bg-amber-950/60 disabled:opacity-40">
+          <ActionButton busy={busy === "wake"} busyLabel={t("weeklyBuild.packaging.waking")} disabled={busy !== null || view?.running === true} onClick={() => void askBuild(true)} className="rounded-md border border-amber-700 px-4 py-2 text-sm font-medium text-amber-200 hover:bg-amber-950/60 disabled:opacity-40">
             {t("weeklyBuild.packaging.wake")}
           </ActionButton>
         </div>
@@ -305,13 +313,13 @@ export function WeeklyBuildCard({ channelId, visible }: { channelId: string | nu
 
       {dryRun && (
         <ConfirmDialog
-          title={t("weeklyBuild.confirm.title")}
+          title={t(dryRun.wake ? "weeklyBuild.confirm.wakeTitle" : "weeklyBuild.confirm.title")}
           description={t("weeklyBuild.confirm.description", { days: dryRun.days })}
           confirmLabel={t("weeklyBuild.confirm.start")}
-          confirmBusyLabel={busy === "start" ? t("weeklyBuild.confirm.starting") : null}
-          confirmDisabled={dryRun.steps.length === 0 || busy !== null}
+          confirmBusyLabel={busy === "start" || busy === "wake" ? t("weeklyBuild.confirm.starting") : null}
+          confirmDisabled={dryRun.steps.every((step) => step.step === "wait") || busy !== null}
           onCancel={() => setDryRun(null)}
-          onConfirm={() => void start(false)}
+          onConfirm={() => void start(dryRun.wake)}
         >
           <div className="space-y-2 text-sm">
             <p className="text-zinc-400">{dryRun.plan ? t("weeklyBuild.confirm.plan", { plan: dryRun.plan }) : t("weeklyBuild.confirm.newPlan")}</p>

@@ -258,3 +258,20 @@ test("parseJsonOutput takes the last line when text precedes the JSON", () => {
   assert.equal(parseJsonOutput("not json"), null);
   assert.equal(parseJsonOutput("[1,2]"), null);
 });
+
+test("review #1/#9: the wake dry run passes --wake; a missing Python is looked up again next time", async () => {
+  const c = await channel();
+  try {
+    const h = harness(c.ws, factory());
+    const dry = await h.core.dryRun("UC1", { days: 7, wake: true });
+    assert.equal(dry.wake, true);
+    assert.deepEqual(h.calls.find((call) => call.args[4] === "auto")!.args, ["-B", c.launcher, "run", WF, "auto", "--days", "7", "--dry-run", "--wake", "--json"]);
+    let lookups = 0;
+    const missing = createWeeklyBuildServices({ ...h.deps, findPython: async () => (lookups++, null) });
+    await missing.view("UC1");
+    await missing.view("UC1");
+    assert.equal(lookups, 2);
+  } finally {
+    await c.cleanup();
+  }
+});

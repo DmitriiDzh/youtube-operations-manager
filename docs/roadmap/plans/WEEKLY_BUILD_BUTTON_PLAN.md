@@ -27,7 +27,8 @@ thumbnail). New music generation is out of scope.
    - `workspace_missing` — the channel has no workspace folder on this computer (Settings → Channels);
    - `launcher_missing` — no regular file `06 Workflows/factory_launch.py` inside the workspace (after symlinks);
    - `bundle_too_old` — `06 Workflows/factory.json` → `workflow_bundle` is below 2.5.42 (no `auto` / `--json` there);
-   - `python_missing` — no Python 3.9+ found (the configured path, then the usual folders, then PATH);
+   - `python_missing` — no Python 3.9+ found (the configured path, then the usual folders on a Mac, then PATH; on Windows only
+     PATH, so the path is set there);
    - `launcher_check_failed` — `check` did not exit 0 (its output is shown).
    `check` is cached per channel while the launcher file and `factory.json` keep their size and mtime, for 5 minutes.
 3. **How a script is run:** `execFile(python, ["-B", launcher, ...args])`, never a shell; cwd = the channel workspace; a
@@ -41,7 +42,8 @@ thumbnail). New music generation is out of scope.
 5. **The card «Сборка недели»** on Content → Week plan, above the plan panel: the factory's one-line status, days (1–14,
    default 7), «Собрать неделю» → the confirmation lists the dry run's steps → «Запустить»; while the job runs: its state and
    «Стоп»; the slot table (date, status, video, length, problems of a failed slot); built slots → «Нужна упаковка» with
-   «Разбудить агента» (`auto --wake`); the Python path field. Refreshes every 30 s while visible and a job runs, otherwise on
+   «Разбудить агента» (`auto --wake`, shown through the same dry-run confirmation: it also builds open slots and clears STOP);
+   the Python path field. Stop is a stop switch in `src/proxy.ts` (passes recovery mode, not the operation lock). Refreshes every 30 s while visible and a job runs, otherwise on
    open and «Обновить». All text en + ru.
 
 **Not built (decided):** the plan still reaches the Manager through the channel worker (`13 push` →
@@ -52,8 +54,9 @@ and survives a restart.
 ## Security
 
 The server runs a Python file from a synced, agent-writable folder. Mitigations: the button exists only in the Web UI (session +
-active channel; a source-scan test proves no MCP/agent module names the module); `check` must pass (launcher hash = the pinned
-bundle's template, bundle = its manifest) and the bundle must be ≥ 2.5.42 before each run; the Python path comes only from
+active channel; a source-scan test proves no MCP/agent module names the module); `check` must pass and the bundle must be
+≥ 2.5.42 before each run (`check` is the launcher's own report: it compares itself with the pinned bundle's template and the
+bundle with its manifest, so it vouches for an honest launcher only, not against a rewritten one); the Python path comes only from
 this computer's settings; no shell, fixed arguments (days is an integer 1–14), a minimal environment. What remains (a tampered
 registry that still matches its own manifest, or an agent that rewrites both) is RISK-138 — the same trust the agents already
 have when they run these scripts themselves.

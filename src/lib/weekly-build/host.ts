@@ -23,7 +23,8 @@ export const runScript: RunScript = (file, args, options) =>
       (error, stdout, stderr) => {
         if (!error) return resolve({ exitCode: 0, stdout, stderr, timedOut: false });
         const err = error as NodeJS.ErrnoException & { code?: number | string; killed?: boolean; signal?: string | null };
-        const timedOut = Boolean(err.killed && err.signal);
+        // A kill for too much output is not a timeout (review #5).
+        const timedOut = Boolean(err.killed && err.signal) && err.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
         resolve({ exitCode: typeof err.code === "number" ? err.code : -1, stdout: stdout ?? "", stderr: stderr || err.message, timedOut });
       }
     );

@@ -148,7 +148,8 @@ export function createWeeklyBuildServices(deps: WeeklyBuildDeps) {
     const cached = pythonCache.get(key);
     if (cached && deps.now() - cached.at < CACHE_MS) return cached.python;
     const found = await deps.findPython(configured);
-    pythonCache.set(key, { python: found, at: deps.now() });
+    // Only a found Python is remembered (review #9): one installed after a miss is seen at the next refresh.
+    if (found) pythonCache.set(key, { python: found, at: deps.now() });
     return found;
   }
 
@@ -188,7 +189,7 @@ export function createWeeklyBuildServices(deps: WeeklyBuildDeps) {
     const py = await python();
     if (!py) return blocked("python_missing", "No Python 3.9+ found on this computer; set its path below.", bundle);
     const ctx: Ready = { workspace, launcher, python: py, bundle: bundle! };
-    const key = [launcherStat.size, launcherStat.mtimeMs, factoryStat?.size, factoryStat?.mtimeMs, py].join(":");
+    const key = [workspace, launcherStat.size, launcherStat.mtimeMs, factoryStat?.size, factoryStat?.mtimeMs, py].join(":");
     const passed = checkPassed.get(channelId);
     if (!passed || passed.key !== key || deps.now() - passed.at >= CACHE_MS) {
       const result = await runLauncher(ctx, ["check"]);
@@ -260,7 +261,7 @@ export function createWeeklyBuildServices(deps: WeeklyBuildDeps) {
         return s && str(s.step) ? [{ step: str(s.step)!, text: str(s.text) ?? "", slots: strings(s.slots) }] : [];
       });
       const status = await readStatus(ctx).catch(() => null);
-      return { days, steps, plan: str(parsed.plan), stopped: status?.stopped ?? false };
+      return { days, wake: input.wake === true, steps, plan: str(parsed.plan), stopped: status?.stopped ?? false };
     },
 
     async start(channelId: string, input: { days: unknown; wake?: unknown }): Promise<WeeklyBuildStarted> {

@@ -65,7 +65,8 @@ export type WeeklyBuildView = {
 
 export type WeeklyBuildStep = { step: "draft" | "run" | "package_request" | "wait" | string; text: string; slots: string[] };
 
-export type WeeklyBuildDryRun = { days: number; steps: WeeklyBuildStep[]; plan: string | null; stopped: boolean };
+/** `wake`: the dry run of «Разбудить агента» (`auto --wake`), confirmed like a start (it builds open slots too). */
+export type WeeklyBuildDryRun = { days: number; wake: boolean; steps: WeeklyBuildStep[]; plan: string | null; stopped: boolean };
 
 export type WeeklyBuildStarted = { jobId: string; log: string; pid: number | null; clearedStop: boolean };
 
