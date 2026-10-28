@@ -1195,7 +1195,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **UI:** «Настройки» → «ИИ-агент» → «System (Telegram)» (`SystemTopicSettings`): id, папка заявок, переключатель с подписью, секрет связи, состояние связи, заявки «ждут подтверждения» с «Подтвердить»/«Отклонить», последние заявки и команды. Маршруты владельца (сессия): `/api/system-topic` (GET/PUT), `/relay-secret` (POST), `/requests/[id]/confirm`, `/requests/[id]/deny` (POST).
 - **Принятый разрыв:** связь не доказывает, что сообщение в теме написал владелец — смягчено подтверждением в Web UI (RISK-136). Медиа-модуль записывает сессию как `factory` (его исполнитель зафиксирован); аудит System и файл результата называют владельца.
 
-### 2.9bb Закрытые репозитории GitHub в средах пода (BL-230, owner msg 3689, `docs/roadmap/plans/PRIVATE_RUNTIME_REPOS_PLAN.md`, ADR 0043 Amendment 1) — **IMPLEMENTED на ветке `feature/bl-230-private-runtime-repos`, не влито**
+### 2.9bb Закрытые репозитории GitHub в средах пода (BL-230, owner msg 3689, `docs/roadmap/plans/PRIVATE_RUNTIME_REPOS_PLAN.md`, ADR 0043 Amendment 1) — **IMPLEMENTED, влито в `dev` 2026-10-27 (`edda8e18`)**
 
 - **Токен:** ячейка `github` в `device-secrets` (без смены схемы); `media-generation/github-token.ts` (как `hf-token.ts`): сохранить после `GET /user`, показать (состояние, логин, `expiresAt` из `github-authentication-token-expiration`, время), проверить, удалить. Формы `github_pat_…` / `ghp_…` — регулярное выражение до вызова. Ошибки `github_token_missing`, `github_token_invalid`.
 - **Шлюз:** `media-gateway/github.ts` — токен на вызов (Bearer, `redirect: "error"`), `whoami`; 404 → `not_found` + `details.missing: "repository"`, 422 → `"ref"`. `http.ts` отдаёт заголовки ответа (`header`).
@@ -1203,6 +1203,21 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Под сборки:** `YTM_GIT_TOKEN` в env, только если токен сохранён и в профиле есть github.com; в ошибках, записи задачи и аудите — `[redacted]`; в чтениях пода замаскирован (`redactPodEnv`). Поды сессий токен не получают.
 - **`runtime-build.sh`:** `git -c http.https://github.com/.extraheader=…` только для github.com; `unset` после клонов (в env PID 1 токен остаётся — RISK-137); 403 к токену — `github_token_forbidden`; нечитаемый сохранённый токен валит каждый старт сборки; проверка утечки (токен и base64-заголовок, вся папка среды с `build.log`) перед `.ready` и в `finish` — при находке папка очищается и сборка падает.
 - **UI:** «Настройки» → «Облачные API» → карточка «GitHub» (`GithubTokenSettings`); маршруты `/api/media-generation/github-token` (+`/test`), нужна сессия. Нет раздела в `.ytmkeys`, нет пути через MCP (RISK-137).
+
+### 2.9bc «Собрать неделю»: сборка недели фабрики из Web UI (BL-231, FO-REQ-0046, `docs/roadmap/plans/WEEKLY_BUILD_BUTTON_PLAN.md`, ADR 0055) — **IMPLEMENTED на ветке `feature/bl-231-build-week-button`, не влито; приёмка — после перевода каналов на пакет 2.5.42**
+
+- **Модуль `src/lib/weekly-build/`** (§M; только `channel-workspaces` и `local-path-validation`): запускает запускатор канала
+  `<рабочая папка>/06 Workflows/factory_launch.py` (`check`, `13 status --json`, `auto --dry-run --json`, `start … auto [--wake]
+  --json`, `stop`, `go`) Python этого компьютера через `execFile` без оболочки, с минимальным окружением (`host.ts`), и читает JSON.
+  Перед каждым запуском: запускатор — файл внутри папки, пакет ≥ 2.5.42 в `factory.json`, `check` прошёл (кэш 5 мин). Своих
+  записей нет; план в Manager по-прежнему присылает работник канала (`13 push`).
+- **Настройка:** путь к Python — `app_settings.weekly_build_settings` (`/api/weekly-build/settings`); пусто — обычные папки, потом PATH.
+- **Маршруты владельца** `/api/channels/[channelId]/weekly-build` (GET), `/dry-run`, `/start`, `/stop` (POST); MCP-инструмента нет
+  (`no-agent.test.ts`). Ошибки: `weekly_build_unavailable` (409, `details.code`), `weekly_build_job_running` (409), `weekly_build_failed` (502).
+- **Web:** карточка «Сборка недели» над планом на вкладке Контент → «План недели» (`src/components/weekly-build-card.tsx`): дни,
+  «Собрать неделю» → подтверждение с пробным прогоном, ход и «Стоп», таблица слотов с проблемами, «Нужна упаковка» →
+  «Разбудить агента» (`auto --wake`). Задача отсоединена запускатором: перезапуск сервера её не останавливает.
+- **Риск:** RISK-138.
 
 ## 3. Где вносить изменения
 

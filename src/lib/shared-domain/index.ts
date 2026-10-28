@@ -86,6 +86,11 @@ export type DomainErrorCode =
   | "github_token_missing"
   | "github_token_invalid"
   | "github_token_forbidden"
+  // BL-231 (WEEKLY_BUILD_BUTTON_PLAN.md): the factory's weekly build cannot run on this computer now (details.code says why),
+  // a build job is already running, or the factory script failed / answered something unreadable.
+  | "weekly_build_unavailable"
+  | "weekly_build_job_running"
+  | "weekly_build_failed"
   | "runtime_repo_private_needs_token"
   | "runtime_repo_not_visible_to_token"
   | "media_runtime_incompatible"
