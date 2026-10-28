@@ -142,7 +142,11 @@ export function localDate(nowMs: number, offsetDays = 0): string {
 }
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
-const isRealDate = (value: string) => DATE_PATTERN.test(value) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
+const isRealDate = (value: string) => {
+  if (!DATE_PATTERN.test(value)) return false;
+  const d = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === value; // month 13 or day 00 is NaN (review 2 #1)
+};
 
 /** Picked dates (owner msg 3755): real, distinct, from tomorrow to today + 28 (the factory's range, FO-REQ-0046); sorted. */
 export function validateDates(dates: unknown, nowMs: number): string[] {

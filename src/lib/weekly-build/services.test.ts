@@ -283,7 +283,7 @@ const NOW = new Date(2026, 9, 28, 14, 0, 0).getTime(); // 28 Oct 2026, 14:00 loc
 test("dates: tomorrow .. today+28 accepted (sorted); today, +29, unreal, duplicate, empty refused", () => {
   assert.equal(localDate(NOW), "2026-10-28");
   assert.deepEqual(validateDates(["2026-11-25", "2026-10-29"], NOW), ["2026-10-29", "2026-11-25"]);
-  for (const bad of [["2026-10-28"], ["2026-11-26"], ["2026-11-31"], ["2026-11-03", "2026-11-03"], [], "2026-11-03", [20261103]]) {
+  for (const bad of [["2026-10-28"], ["2026-11-26"], ["2026-11-31"], ["2026-13-01"], ["2026-11-00"], ["2026-11-03", "2026-11-03"], [], "2026-11-03", [20261103]]) {
     assert.throws(() => validateDates(bad, NOW), (e: unknown) => isDomainError(e) && e.code === "validation_failed", JSON.stringify(bad));
   }
 });

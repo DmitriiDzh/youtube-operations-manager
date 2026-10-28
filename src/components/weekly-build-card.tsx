@@ -89,6 +89,10 @@ export function WeeklyBuildCard({ channelId, visible }: { channelId: string | nu
       if (currentBase.current !== base) return;
       setView(next);
       setLoadError(null);
+      // A picked date that is no longer pickable (its slot started building, or it fell out of the range at midnight) is dropped,
+      // and refusals belong to the last request only (review 2 #2/#3).
+      setPicked((current) => current.filter((date) => isPickable(date, next.status?.slots ?? [])));
+      setBadDates([]);
     } catch (error) {
       if (currentBase.current === base) setLoadError(error instanceof Error ? error.message : String(error));
     }
@@ -236,7 +240,14 @@ export function WeeklyBuildCard({ channelId, visible }: { channelId: string | nu
 
       {ready && (
         <div className="space-y-3">
-          <DatePicker slots={status?.slots ?? []} picked={picked} badDates={badDates} disabled={busy !== null || view?.running === true} onChange={setPicked} />
+          <DatePicker
+            slots={status?.slots ?? []}
+            picked={picked}
+            badDates={badDates}
+            disabled={busy !== null || view?.running === true}
+            onChange={setPicked}
+            onBadDateTouched={(date) => setBadDates((current) => current.filter((b) => b.date !== date))}
+          />
           <div className="flex flex-wrap items-center gap-3">
           <ActionButton
             busy={busy === "check"}
@@ -329,7 +340,7 @@ export function WeeklyBuildCard({ channelId, visible }: { channelId: string | nu
           description={dryRun.dates ? t("weeklyBuild.confirm.descriptionDates", { count: dryRun.dates.length, dates: dryRun.dates.map(dayLabel).join(", ") }) : t("weeklyBuild.confirm.descriptionWake")}
           confirmLabel={t("weeklyBuild.confirm.start")}
           confirmBusyLabel={busy === "start" || busy === "wake" ? t("weeklyBuild.confirm.starting") : null}
-          confirmDisabled={dryRun.steps.every((step) => step.step === "wait") || busy !== null}
+          confirmDisabled={dryRun.steps.every((step) => step.step === "wait" || step.step === "exists") || busy !== null}
           onCancel={() => setDryRun(null)}
           onConfirm={() => void start(dryRun)}
         >
@@ -383,6 +394,13 @@ function SlotRow({ slot }: { slot: WeeklyBuildSlot }) {
   );
 }
 
+/** Inside tomorrow .. today + 28 and not already being built, built, packaged or failed for good. */
+function isPickable(date: string, slots: readonly WeeklyBuildSlot[]): boolean {
+  const today = new Date();
+  if (date < ymd(today, WEEKLY_BUILD_DATE_FIRST_OFFSET) || date > ymd(today, WEEKLY_BUILD_DATE_LAST_OFFSET)) return false;
+  return !slots.some((slot) => slot.date === date && (TAKEN.has(slot.status) || (slot.status === "failed" && !slot.retryable)));
+}
+
 /** "2026-11-03" -> "03.11". */
 function dayLabel(date: string): string {
   return /^\d{4}-\d{2}-\d{2}$/.test(date) ? `${date.slice(8, 10)}.${date.slice(5, 7)}` : date;
@@ -393,7 +411,22 @@ function dayLabel(date: string): string {
  * built, built or packaged -- or failed for good -- cannot be picked; its status shows. A date the factory refused is outlined red
  * with its reason under the calendar.
  */
-function DatePicker({ slots, picked, badDates, disabled, onChange }: { slots: WeeklyBuildSlot[]; picked: string[]; badDates: WeeklyBuildBadDate[]; disabled: boolean; onChange(next: string[]): void }) {
+function DatePicker({
+  slots,
+  picked,
+  badDates,
+  disabled,
+  onChange,
+  onBadDateTouched,
+}: {
+  slots: WeeklyBuildSlot[];
+  picked: string[];
+  badDates: WeeklyBuildBadDate[];
+  disabled: boolean;
+  onChange(next: string[]): void;
+  /** A refused date was toggled: its outline and reason go (review 2 #3). */
+  onBadDateTouched(date: string): void;
+}) {
   const t = useT();
   const today = new Date();
   const first = ymd(today, WEEKLY_BUILD_DATE_FIRST_OFFSET);
@@ -406,14 +439,23 @@ function DatePicker({ slots, picked, badDates, disabled, onChange }: { slots: We
   for (const slot of slots) if (!byDate.has(slot.date) || slot.status !== "skipped") byDate.set(slot.date, slot);
   const refused = new Map(badDates.map((b) => [b.date, b]));
   const chosen = new Set(picked);
-  const toggle = (date: string) => onChange(chosen.has(date) ? picked.filter((d) => d !== date) : [...picked, date].sort());
+  const toggle = (date: string) => {
+    onBadDateTouched(date);
+    onChange(chosen.has(date) ? picked.filter((d) => d !== date) : [...picked, date].sort());
+  };
 
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-zinc-300">{t("weeklyBuild.pick.title")}</p>
         {picked.length > 0 && (
-          <button type="button" disabled={disabled} onClick={() => onChange([])} className="text-sm text-zinc-400 underline-offset-2 hover:text-zinc-200 hover:underline disabled:opacity-40">
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => {
+              for (const date of picked) onBadDateTouched(date);
+              onChange([]);
+            }} className="text-sm text-zinc-400 underline-offset-2 hover:text-zinc-200 hover:underline disabled:opacity-40">
             {t("weeklyBuild.pick.clear")}
           </button>
         )}
