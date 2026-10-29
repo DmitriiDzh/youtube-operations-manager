@@ -100,7 +100,7 @@ export const languages = {
   "languages.move.targetLabel": "New language code (from YouTube's list)",
   "languages.move.confirm": "Propose the move",
   "languages.move.proposed":
-    "Move {from} → {to} proposed: {moved} video(s) get {to}; {kept} already have {to} (kept, only {from} removed); skipped: {own} where it is the video's own language, {empty} with an empty text. Review the new Change Set below.",
+    "Move {from} → {to} proposed: {moved} video(s) get {to}; {kept} already have {to} (kept, only {from} removed); skipped: {own} where it is the video's own language, {empty} with an empty text. Review the new Change Set below. A video whose own language differs from the channel's language is also set to the channel's language in the same write; the Change Set lists such videos before approval.",
   "languages.move.nothing":
     "Nothing to move from {from} to {to}: skipped {own} where it is the video's own language and {empty} with an empty text.",
   "languages.move.keptTitle": "{count} video(s) already have the new language -- compare the texts",

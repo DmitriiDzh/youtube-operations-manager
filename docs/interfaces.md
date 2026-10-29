@@ -455,10 +455,15 @@ Key MCP tools:
     `toLanguage` case-insensitively). Creates one draft source `deletion` Change Set on the caller's own channel: per video with
     `fromLanguage`, a `delete` pair for it and an `add` pair for `toLanguage` carrying the synced text byte-for-byte. Output
     `{ changeSet | null, fromLanguage, toLanguage, movedVideoIds, targetAlreadyPresent: [{ videoId, from, to }],
-    skippedOwnLanguageVideoIds, skippedEmptyTextVideoIds }`. A video that already has `toLanguage` keeps it (only `fromLanguage` is
-    deleted). Never approves or writes; the owner approves and sends. The Web UI equivalent is `POST
-    /api/channels/[channelId]/localizations/languages/[language]/propose-move` (`{ toLanguage }`). New error code
-    `send_unpaired_language_move` (409): a send (or a manual Batches selection) that would carry a move's delete without its add.
+    skippedOwnLanguageVideoIds, skippedEmptyTextVideoIds, notCarryingSourceVideoIds }` (`skippedEmptyTextVideoIds`: empty `from`
+    title -- an empty description is moved as `""`; `notCarryingSourceVideoIds`: only with `videoIds`, named videos without
+    `fromLanguage`). A video that already has `toLanguage` keeps it (only `fromLanguage` is deleted; that delete becomes a CONFLICT
+    at write time if `toLanguage` holds no title any more). Never approves or writes; the owner approves and sends. As for every
+    Batch write, a video whose own language differs from the channel's language baseline is also aligned to the baseline in the
+    same `videos.update` (PROJECT_SPEC §14, FO-REQ-0022); `get_change_set`'s `languageAlignments` lists such videos before approval.
+    The Web UI equivalent is `POST /api/channels/[channelId]/localizations/languages/[language]/propose-move` (`{ toLanguage }`).
+    New error code `send_unpaired_language_move` (409): a send (or a manual Batches selection) that would carry only one half of a
+    move (the delete without the add, or the add without the delete), unless the other half is already on YouTube.
   - BL-229 part B (2026-10-27, Agent API 4.9.0, additive): `agent_plan_create` / `_import` / `_update` take the plan's
     `reviewForm` and the waves' `genre` / `reviewForm`, and `owner_verdict` events (`agent_plan_get`) carry `answers`, as the
     `factory_plan_*` tools (Factory API 1.35.0; contract in `docs/roadmap/plans/MUSIC_LIBRARY_PLAN.md` §3).

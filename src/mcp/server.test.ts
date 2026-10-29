@@ -6478,6 +6478,7 @@ test("BL-232: agent_localization_propose_language_move drafts through proposeLan
       targetAlreadyPresent: [],
       skippedOwnLanguageVideoIds: [],
       skippedEmptyTextVideoIds: [],
+      notCarryingSourceVideoIds: [],
     };
   };
   const channelAccess = makeChannelAccessCoreStub();

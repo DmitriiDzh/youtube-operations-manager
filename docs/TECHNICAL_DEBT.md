@@ -2165,7 +2165,8 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
   (`live_streams.localizations_json`), which the move does not touch: a later live apply of a set that still holds `zh-Hans`
   adds `zh-Hans` back (it keeps other languages, so `zh-CN` stays and the video carries both).
   Second gap: the pairing rule (`unpairedDeletes`) exists only from this build on. The move set syncs to the owner's other computer
-  (Automerge); a build there without BL-232 would send a partly approved move's delete without its add, losing the text.
+  (Automerge); a build there without BL-232 would send a partly approved move's delete without its add, losing the text, and has
+  no write-time check that the target language still holds the text (`missingMoveTargets`).
 - **Bounds:** the live writer only adds/updates languages of its stored set, never deletes; the owner or the worker re-saves the
   stream's set with `zh-CN` (`agent_live_save_localizations`) before the next live apply. A move set is sent only from a build
   with BL-232: both computers update before the first send (or the owner approves every change of the set before sending).
