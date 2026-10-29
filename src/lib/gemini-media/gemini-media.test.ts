@@ -54,9 +54,9 @@ function memoryStore(): GeminiStore & { jobs: Map<string, StoredGeminiMediaJob>;
     async getJobByRequest(createdBy: string, requestId: string) {
       return [...state.jobs.values()].find((j) => j.createdBy === createdBy && j.requestId === requestId) ?? null;
     },
-    async listJobs(filter: { channelId?: string; statuses?: readonly string[]; createdSince?: Date; storyboardId?: string; limit: number }) {
+    async listJobs(filter: { channelId?: string; statuses?: readonly string[]; createdSince?: Date; storyboardId?: string; kinds?: readonly string[]; limit: number }) {
       return [...state.jobs.values()]
-        .filter((j) => (filter.channelId === undefined || j.channelId === filter.channelId) && (filter.statuses === undefined || filter.statuses.includes(j.status)) && (filter.createdSince === undefined || j.createdAt >= filter.createdSince) && (filter.storyboardId === undefined || j.storyboardId === filter.storyboardId))
+        .filter((j) => (filter.kinds === undefined || filter.kinds.includes(j.kind)) && (filter.channelId === undefined || j.channelId === filter.channelId) && (filter.statuses === undefined || filter.statuses.includes(j.status)) && (filter.createdSince === undefined || j.createdAt >= filter.createdSince) && (filter.storyboardId === undefined || j.storyboardId === filter.storyboardId))
         .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || (a.jobId < b.jobId ? 1 : -1))
         .slice(0, filter.limit)
         .map((j) => ({ ...j }));

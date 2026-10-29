@@ -63,7 +63,7 @@ export type GeminiStore = {
   insertJob(row: StoredGeminiMediaJob): Promise<boolean>;
   getJob(jobId: string): Promise<StoredGeminiMediaJob | null>;
   getJobByRequest(createdBy: string, requestId: string): Promise<StoredGeminiMediaJob | null>;
-  listJobs(filter: { channelId?: string; statuses?: readonly GeminiMediaJobStatusValue[]; createdSince?: Date; storyboardId?: string; limit: number }): Promise<StoredGeminiMediaJob[]>;
+  listJobs(filter: { channelId?: string; statuses?: readonly GeminiMediaJobStatusValue[]; createdSince?: Date; storyboardId?: string; kinds?: readonly StoredGeminiMediaJob["kind"][]; limit: number }): Promise<StoredGeminiMediaJob[]>;
   updateJob(jobId: string, fromStatus: GeminiMediaJobStatusValue, set: Partial<StoredGeminiMediaJob>): Promise<boolean>;
 };
 
@@ -835,6 +835,7 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
       const rows = await deps.store.listJobs({
         ...(input.channelId ? { channelId: input.channelId } : {}),
         ...(input.status ? { statuses: [input.status as GeminiJobStatus] } : {}),
+        ...(input.kinds ? { kinds: input.kinds } : {}),
         limit: input.limit ?? 20,
       });
       return { jobs: rows.map(jobView) };

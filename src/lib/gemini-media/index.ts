@@ -9,6 +9,7 @@ import { getDeviceSecrets } from "@/lib/device-secrets";
 import { createGeminiApiClient, isMediaGatewayEnabled } from "@/lib/media-gateway";
 import { createStoryboardGateForProduction } from "@/lib/storyboards";
 import { createVideoProjectsServiceForProduction } from "@/lib/video-projects";
+import { createVoiceResolverForProduction } from "@/lib/voice-registry";
 import { createGeminiSettingsCoreForProduction, createGeminiSpendShareCoreForProduction } from "@/lib/sync-gateway";
 import { createGeminiFiles } from "./adapters/files";
 import { createGeminiWorkspace } from "./adapters/workspace";
@@ -107,6 +108,8 @@ function buildDeps(): GeminiMediaDeps {
     videoLink: { resolve: (input) => createVideoProjectsServiceForProduction().resolveJobVideo(input) },
     // BL-193 (ADR 0039): the other computers' Gemini spend, for the limits shared by every computer on one key.
     peerSpendReports: () => createGeminiSpendShareCoreForProduction().listPeerReports(),
+    // BL-236 (ADR 0057): a speech job speaks only an APPROVED voice of its channel (the shared voice registry's resolver).
+    voices: { resolve: (input) => createVoiceResolverForProduction().resolve(input) },
     log: (line) => console.warn(line),
   };
 }

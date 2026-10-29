@@ -113,6 +113,8 @@ export const getJobsInputSchema = z
     channelId: z.string().trim().min(1).max(64).optional(),
     status: z.enum(GEMINI_JOB_STATUSES).optional(),
     limit: z.number().int().min(1).max(GEMINI_LIMITS.listMax).optional(),
+    /** BL-236: only these kinds (the speech surface lists speech takes and voice designs; factory_gemini_get_job cannot pass it). */
+    kinds: z.array(z.enum(["image", "video", "speech", "voice_design"])).min(1).max(4).optional(),
   })
   .strict();
 
