@@ -36,6 +36,8 @@ export type PendingChange = {
    * behavior (`@/lib/shared-localization-merge`; docs/PROJECT_SPEC.md §16, 2026-09-20 deletion-policy update).
    */
   changeType?: "add" | "modify" | "unchanged" | "delete";
+  /** BL-232 (review): a language move's delete -- the language its text moves to (`missingMoveTargets`). */
+  moveTargetLanguage?: string | null;
 };
 
 /** Reads the CURRENT value of one (language, field) pair from a fresh fetch -- the
@@ -142,4 +144,27 @@ export function classifyFreshStateAgainstAttempt(
   if (allMatchBaseline) return "matches_baseline";
 
   return "diverged";
+}
+
+/**
+ * BL-232 (review): a language move's delete removes the old code on the promise that the new code holds the text. Before the write,
+ * on the FRESH fetch: every delete with a `moveTargetLanguage` needs that language to still hold a non-empty title after this write
+ * -- either this row adds it (a non-empty title change, not a delete), or the video already has it and this row does not delete it
+ * too (a removal of the target from another set sent together). Returns the ids of the deletes that would leave the video with
+ * neither language; the caller makes the row a CONFLICT, so nothing is written.
+ */
+export function missingMoveTargets(
+  changes: readonly PendingChange[],
+  fresh: FreshVideoContext
+): string[] {
+  return changes
+    .filter((change) => {
+      const target = change.moveTargetLanguage;
+      if (change.changeType !== "delete" || !target) return false;
+      const touching = changes.filter((other) => sameLanguage(other.language, target));
+      if (touching.some((other) => other.changeType === "delete")) return true;
+      if (touching.some((other) => other.field === "title" && other.proposedValue.trim().length > 0)) return false;
+      return readCurrentValue(fresh, target, "title").trim().length === 0;
+    })
+    .map((change) => change.id);
 }

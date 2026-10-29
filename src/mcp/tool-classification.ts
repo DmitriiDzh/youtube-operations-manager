@@ -49,6 +49,8 @@ export const MCP_TOOL_CLASSIFICATION: Readonly<Record<string, McpToolClass>> = O
   analytics_weekly_report_get: "bound",
   ai_localization_generate: "bound",
   ai_localization_create_change_set: "bound",
+  // BL-232: a draft Change Set moving a localization to another language code -- the agent's own channel only, never approved by it.
+  agent_localization_propose_language_move: "bound",
   agent_get_capabilities: "bound",
   agent_get_channel_context: "bound",
   agent_get_video_context: "bound",

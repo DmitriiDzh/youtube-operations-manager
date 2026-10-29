@@ -274,6 +274,12 @@ export function LanguagesManager() {
   const [pendingRemoveLanguage, setPendingRemoveLanguage] = useState<{ language: string; hasRealData: boolean } | null>(
     null
   );
+  // BL-232 (PRD-REQ-0043): «move this language to another code» -- the open dialog (source language + typed target), and the last
+  // proposal's videos that already had the target (both texts, for the owner to compare before approving).
+  const [pendingMoveLanguage, setPendingMoveLanguage] = useState<{ language: string; toLanguage: string } | null>(null);
+  const [moveKeptTargets, setMoveKeptTargets] = useState<
+    Array<{ videoId: string; from: { title: string; description: string }; to: { title: string; description: string } }>
+  >([]);
   // Hard allowlist for "which languages can be added" (owner instruction, 2026-09-21: "Пользователь
   // не может добавить язык, которого не будет в этом списке") -- YouTube's own real, official
   // `i18nLanguages.list` set (hardcoded, `src/lib/youtube-supported-languages.ts`, not fetched
@@ -498,6 +504,52 @@ export function LanguagesManager() {
         setOpenChangeSetId(changeSet.id);
         await fetchChangeSets(channelId);
       }
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setTrackedLanguageBusy(false);
+    }
+  }
+
+  async function performProposeLanguageMove(fromLanguage: string, toLanguage: string) {
+    if (!channelId) return;
+    setTrackedLanguageBusy(true);
+    setTrackedLanguageNotice(null);
+    setMoveKeptTargets([]);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/channels/${encodeURIComponent(channelId)}/localizations/languages/${encodeURIComponent(fromLanguage)}/propose-move`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ toLanguage }) }
+      );
+      const data = await res.json();
+      if (!res.ok) {
+        setError(errorText(t, data, t("common.errorStatus", { status: res.status })));
+        return;
+      }
+      const result = data as {
+        changeSet: { id: string } | null;
+        movedVideoIds: string[];
+        targetAlreadyPresent: Array<{ videoId: string; from: { title: string; description: string }; to: { title: string; description: string } }>;
+        skippedOwnLanguageVideoIds: string[];
+        skippedEmptyTextVideoIds: string[];
+      };
+      const counts = {
+        from: fromLanguage,
+        to: toLanguage,
+        moved: result.movedVideoIds.length,
+        kept: result.targetAlreadyPresent.length,
+        own: result.skippedOwnLanguageVideoIds.length,
+        empty: result.skippedEmptyTextVideoIds.length,
+      };
+      if (!result.changeSet) {
+        setTrackedLanguageNotice(t("languages.move.nothing", counts));
+        return;
+      }
+      setTrackedLanguageNotice(t("languages.move.proposed", counts));
+      setMoveKeptTargets(result.targetAlreadyPresent);
+      setOpenChangeSetId(result.changeSet.id);
+      await fetchChangeSets(channelId);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -1622,6 +1674,33 @@ export function LanguagesManager() {
               {trackedLanguageNotice}
             </p>
           )}
+          {moveKeptTargets.length > 0 && (
+            <details className="border-b border-zinc-800 bg-zinc-950 px-4 py-2 text-xs text-zinc-300">
+              <summary className="cursor-pointer text-amber-300">{t("languages.move.keptTitle", { count: moveKeptTargets.length })}</summary>
+              <ul className="mt-2 space-y-2">
+                {moveKeptTargets.map((entry) => {
+                  const video = overview?.videos.find((v) => v.videoId === entry.videoId);
+                  return (
+                    <li key={entry.videoId} className="rounded border border-zinc-800 p-2">
+                      <div className="font-medium text-zinc-100">{video?.title ?? entry.videoId}</div>
+                      <div className="mt-1 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                        <div>
+                          <div className="text-zinc-500">{t("languages.move.keptRemoved")}</div>
+                          <div className="font-medium">{entry.from.title}</div>
+                          <div className="whitespace-pre-wrap text-zinc-400">{entry.from.description}</div>
+                        </div>
+                        <div>
+                          <div className="text-zinc-500">{t("languages.move.keptStays")}</div>
+                          <div className="font-medium">{entry.to.title}</div>
+                          <div className="whitespace-pre-wrap text-zinc-400">{entry.to.description}</div>
+                        </div>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </details>
+          )}
 
           {requestOpen && channelId && (
             <RequestTranslationDialog
@@ -1707,6 +1786,17 @@ export function LanguagesManager() {
                         >
                           &#10005;
                         </button>
+                        {(overview?.videos ?? []).some((v) => v.presentLanguages.includes(lang)) && (
+                          <button
+                            onClick={() => setPendingMoveLanguage({ language: lang, toLanguage: "" })}
+                            disabled={trackedLanguageBusy}
+                            className="text-zinc-600 hover:text-indigo-300 disabled:opacity-50"
+                            title={t("languages.move.columnTitle", { language: lang })}
+                            aria-label={t("languages.move.columnTitle", { language: lang })}
+                          >
+                            &#8644;
+                          </button>
+                        )}
                       </div>
                       {(missingCountByLanguage.get(lang) ?? 0) > 0 && (
                         <button
@@ -1933,6 +2023,32 @@ export function LanguagesManager() {
         >
           {renderVideoLocalizationDetail(expandedVideo)}
         </VideoDetailModal>
+      )}
+
+      {pendingMoveLanguage && (
+        <ConfirmDialog
+          title={t("languages.move.dialogTitle", { language: pendingMoveLanguage.language })}
+          description={t("languages.move.dialogDescription", { language: pendingMoveLanguage.language })}
+          confirmLabel={t("languages.move.confirm")}
+          confirmDisabled={pendingMoveLanguage.toLanguage.trim().length === 0}
+          onCancel={() => setPendingMoveLanguage(null)}
+          onConfirm={() => {
+            const { language, toLanguage } = pendingMoveLanguage;
+            setPendingMoveLanguage(null);
+            void performProposeLanguageMove(language, toLanguage.trim());
+          }}
+        >
+          <label className="block text-xs text-zinc-400">
+            {t("languages.move.targetLabel")}
+            <input
+              type="text"
+              value={pendingMoveLanguage.toLanguage}
+              onChange={(e) => setPendingMoveLanguage({ ...pendingMoveLanguage, toLanguage: e.target.value })}
+              placeholder="zh-CN"
+              className="mt-1 block w-40 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-100"
+            />
+          </label>
+        </ConfirmDialog>
       )}
 
       {pendingRemoveLanguage && (

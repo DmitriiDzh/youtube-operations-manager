@@ -6,12 +6,20 @@ import {
   type ChangeType,
   type ImportRowError,
   type ImportSummary,
+  type LanguageMoveResult,
+  languageMoveMarker,
   type StoredChangeRecord,
   type StoredChangeSetRecord,
   type StoredChannelRecord,
   type StoredVideoRecord,
 } from "./contracts";
-import { computeChangeSetStatus, currentRemoteValueFor, readWithChannelBaseline, revalidateChangeAgainstCurrentRemote } from "./diff";
+import {
+  computeChangeSetStatus,
+  currentRemoteValueFor,
+  isValidLanguageCode,
+  readWithChannelBaseline,
+  revalidateChangeAgainstCurrentRemote,
+} from "./diff";
 import { classifyRowForSummary, parseAndValidateWorkbook, summarizeParsedWorkbook } from "./import";
 import {
   changeActionInputSchema,
@@ -20,8 +28,10 @@ import {
   importWorkbookInputSchema,
   listChangeSetsInputSchema,
   parseWithSchema,
+  proposeLanguageMoveInputSchema,
   proposeLocalizationDeletionInputSchema,
 } from "./schemas";
+import { isSupportedYoutubeLanguageCode, suggestYoutubeLanguageCode } from "@/lib/youtube-supported-languages";
 import { sameLanguage } from "@/lib/shared-language-baseline";
 import { untitledTranslations } from "@/lib/shared-localization-merge";
 import type { SetAuthor } from "@/lib/sync-gateway";
@@ -648,6 +658,190 @@ export function createChangeSetServices(deps: ServiceDependencies) {
       } catch (error) {
         const mapped = mapUnknownError(error, "validation_failed");
         deps.logger.error({ event: "changesets.propose_localization_deletion.error", context: { code: mapped.code } });
+        throw mapped;
+      }
+    },
+
+    /**
+     * BL-232 (PRD-REQ-0043, owner msgs 3782/3784): moves a localization from `fromLanguage` to `toLanguage` (e.g. zh-Hans -> zh-CN)
+     * on every video of the channel that has it (or exactly `videoIds`), keeping the title and description byte-for-byte -- no new
+     * translation. One source:"deletion" Change Set: per video a "delete" pair for `fromLanguage` plus an "add" pair for
+     * `toLanguage` carrying the synced `fromLanguage` text. The Batch writes a video's approved changes in ONE `videos.update`
+     * through the shared merge (delete applied last, other languages kept), so nothing new reaches YouTube until the owner approves
+     * and sends it; the two halves are only sent together (`batches/targets.ts` `unpairedMoveHalves`), and a delete is refused at write time when the
+     * target holds no text any more (`batches/merge.ts` `missingMoveTargets`, via the set's `schemaVersion` marker).
+     *
+     * Never touched: a video whose own language (or the channel baseline a write would give it) is `fromLanguage` or `toLanguage`
+     * (its text lives on the snippet), and one whose `fromLanguage` title or description is empty. A video that already has
+     * `toLanguage` keeps it unchanged and only loses `fromLanguage` (owner msg 3784); both texts are returned (and noted on its
+     * changes) for review. `createdBy` records who asked (BL-227 set details).
+     */
+    async proposeLanguageMove(
+      input: unknown,
+      options: { createdBy?: SetAuthor } = {}
+    ): Promise<LanguageMoveResult> {
+      const parsedInput = parseWithSchema(proposeLanguageMoveInputSchema, input, "language move input");
+      const fromLanguage = parsedInput.fromLanguage.trim();
+      const toLanguage = parsedInput.toLanguage.trim();
+      if (!isValidLanguageCode(fromLanguage)) {
+        throw new DomainError({ code: "validation_failed", message: `"${fromLanguage}" is not a language code`, details: { fromLanguage } });
+      }
+      if (!isSupportedYoutubeLanguageCode(toLanguage)) {
+        const suggestion = suggestYoutubeLanguageCode(toLanguage);
+        throw new DomainError({
+          code: "validation_failed",
+          message: `"${toLanguage}" is not in YouTube's supported language list${suggestion ? ` (did you mean "${suggestion}"?)` : ""}`,
+          details: { toLanguage, ...(suggestion ? { suggestion } : {}) },
+        });
+      }
+      if (sameLanguage(fromLanguage, toLanguage)) {
+        throw new DomainError({
+          code: "validation_failed",
+          message: "The source and target language are the same language",
+          details: { fromLanguage, toLanguage },
+        });
+      }
+
+      try {
+        const channel = await requireChannel(deps, parsedInput.channelId);
+        const channelBaseline = await channelBaselineOf(deps, channel.channelId);
+        const allVideos = await deps.channelStore.listVideosByChannel(channel.channelId);
+
+        let candidates: StoredVideoRecord[];
+        if (parsedInput.videoIds) {
+          const byId = new Map(allVideos.map((v) => [v.videoId, v]));
+          candidates = [...new Set(parsedInput.videoIds)].map((id) => {
+            const video = byId.get(id);
+            if (!video) {
+              throw new DomainError({ code: "not_found", message: "Video not found for this channel", details: { channelId: channel.channelId, videoId: id } });
+            }
+            return video;
+          });
+        } else {
+          candidates = allVideos;
+        }
+
+        const keyIn = (localizations: Record<string, unknown>, language: string) =>
+          Object.keys(localizations).find((key) => sameLanguage(key, language)) ?? null;
+        const result: Omit<LanguageMoveResult, "changeSet"> = {
+          fromLanguage,
+          toLanguage,
+          movedVideoIds: [],
+          targetAlreadyPresent: [],
+          skippedOwnLanguageVideoIds: [],
+          skippedEmptyTextVideoIds: [],
+          notCarryingSourceVideoIds: [],
+        };
+        const changesToPersist: ChangeToPersist[] = [];
+        const notes: Record<string, string> = {};
+
+        for (const video of candidates) {
+          const fromKey = keyIn(video.existingLocalizations, fromLanguage);
+          const ownLanguages = [video.defaultLanguage, channelBaseline];
+          const touchesOwnLanguage = ownLanguages.some((own) => sameLanguage(own, fromLanguage) || sameLanguage(own, toLanguage));
+          if (touchesOwnLanguage) {
+            // Listed only when the video is concerned: it carries `fromLanguage` or one of the two codes is its own language.
+            if (fromKey || ownLanguages.some((own) => sameLanguage(own, fromLanguage))) result.skippedOwnLanguageVideoIds.push(video.videoId);
+            continue;
+          }
+          if (!fromKey) {
+            // Named explicitly but without the source language: reported, never silently dropped (review of BL-232).
+            if (parsedInput.videoIds) result.notCarryingSourceVideoIds.push(video.videoId);
+            continue;
+          }
+
+          const read = (language: string, field: "title" | "description") => currentRemoteValueFor(video, language, field, channelBaseline);
+          const from = { title: read(fromKey, "title"), description: read(fromKey, "description") };
+          // Only an empty title blocks the move (YouTube refuses a translation without one); an empty description is copied as "".
+          if (from.title.trim().length === 0) {
+            result.skippedEmptyTextVideoIds.push(video.videoId);
+            continue;
+          }
+
+          const toKey = keyIn(video.existingLocalizations, toLanguage);
+          const deleteIds: string[] = [];
+          for (const field of ["title", "description"] as const) {
+            const id = deps.idGenerator();
+            deleteIds.push(id);
+            changesToPersist.push({
+              id,
+              videoId: video.videoId,
+              language: fromKey,
+              field,
+              baselineValue: from[field],
+              proposedValue: "",
+              changeType: "delete",
+              validationStatus: "valid",
+              validationError: null,
+              conflictStatus: "none",
+            });
+          }
+
+          if (toKey) {
+            const to = { title: read(toKey, "title"), description: read(toKey, "description") };
+            result.targetAlreadyPresent.push({ videoId: video.videoId, from, to });
+            // Both titles next to the delete on the review screen (owner msg 3784: compare before approving); data, not interface text.
+            const note = `${toKey} = «${to.title}» · ${fromKey} = «${from.title}»`;
+            for (const id of deleteIds) notes[id] = note;
+            continue;
+          }
+
+          result.movedVideoIds.push(video.videoId);
+          // An empty description needs no change of its own: the new language is created with description "" (the merge's default),
+          // byte-for-byte the source's.
+          for (const field of from.description === "" ? (["title"] as const) : (["title", "description"] as const)) {
+            changesToPersist.push({
+              id: deps.idGenerator(),
+              videoId: video.videoId,
+              language: toLanguage,
+              field,
+              baselineValue: read(toLanguage, field),
+              proposedValue: from[field],
+              changeType: "add",
+              validationStatus: "valid",
+              validationError: null,
+              conflictStatus: "none",
+            });
+          }
+        }
+
+        if (changesToPersist.length === 0) {
+          deps.logger.info({
+            event: "changesets.propose_language_move.nothing_to_propose",
+            context: { channelId: channel.channelId, fromLanguage, toLanguage, skippedOwn: result.skippedOwnLanguageVideoIds.length, skippedEmpty: result.skippedEmptyTextVideoIds.length },
+          });
+          return { changeSet: null, ...result };
+        }
+
+        const changeSet = await persistChangeSet(deps, {
+          channelId: channel.channelId,
+          source: "deletion",
+          // Shown as the set's name on the review screen (change-set-review uses importedFilename before the source label).
+          importedFilename: `${fromLanguage} → ${toLanguage}`,
+          // The marker the Batch pre-write check reads (`parseLanguageMoveMarker`): which language each delete moves to.
+          schemaVersion: languageMoveMarker(fromLanguage, toLanguage),
+          exportedAt: null,
+          changesToPersist,
+          details: { createdBy: options.createdBy ?? "owner", notes },
+        });
+
+        deps.logger.info({
+          event: "changesets.propose_language_move.success",
+          context: {
+            channelId: channel.channelId,
+            changeSetId: changeSet.id,
+            fromLanguage,
+            toLanguage,
+            moved: result.movedVideoIds.length,
+            targetAlreadyPresent: result.targetAlreadyPresent.length,
+            skippedOwn: result.skippedOwnLanguageVideoIds.length,
+            skippedEmpty: result.skippedEmptyTextVideoIds.length,
+          },
+        });
+        return { changeSet, ...result };
+      } catch (error) {
+        const mapped = mapUnknownError(error, "validation_failed");
+        deps.logger.error({ event: "changesets.propose_language_move.error", context: { code: mapped.code } });
         throw mapped;
       }
     },

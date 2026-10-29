@@ -96,6 +96,19 @@ export const languages: Record<keyof typeof en, string> = {
   "langRequest.status.failed": "ошибка",
   "langRequest.status.cancelled": "отозвана",
 
+  "languages.move.columnTitle": "Перенести «{language}» на другой код языка (тот же текст)",
+  "languages.move.dialogTitle": "Перенести «{language}» на другой код языка?",
+  "languages.move.dialogDescription":
+    "Каждое видео с «{language}» получит новый код с точно теми же названием и описанием и потеряет «{language}». Ничего не переводится заново. Это только предложение (Change Set): вы одобряете и отправляете его как обычно.",
+  "languages.move.targetLabel": "Новый код языка (из списка YouTube)",
+  "languages.move.confirm": "Предложить перенос",
+  "languages.move.proposed":
+    "Перенос {from} → {to} предложен: {moved} видео получат {to}; у {kept} {to} уже есть (остаётся, удаляется только {from}); пропущено: {own} — это собственный язык видео, {empty} — с пустым текстом. Проверьте новый Change Set ниже. Видео, чей собственный язык отличается от языка канала, в той же записи получит язык канала; Change Set показывает такие видео до одобрения.",
+  "languages.move.nothing":
+    "Нечего переносить из {from} в {to}: пропущено {own} — это собственный язык видео, {empty} — с пустым текстом.",
+  "languages.move.keptTitle": "У {count} видео новый язык уже есть — сравните тексты",
+  "languages.move.keptRemoved": "Удаляется (старый код)",
+  "languages.move.keptStays": "Остаётся без изменений (новый код)",
   "languages.nothingToProposeDeletion":
     "Для «{language}» предлагать нечего: у всех подходящих видео это их собственный язык по умолчанию, а этот механизм его никогда не трогает (пропущено: {skipped}).",
   "languages.deletionProposed":

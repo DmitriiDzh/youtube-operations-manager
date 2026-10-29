@@ -31,13 +31,14 @@ import {
   checkDefaultLanguage,
   classifyFreshStateAgainstAttempt,
   detectPreWriteConflict,
+  missingMoveTargets,
   readCurrentValue,
   toLanguageView,
   type FreshVideoContext,
   type PendingChange,
 } from "./merge";
 import { readAgainstBaseline, sameLanguage } from "@/lib/shared-language-baseline";
-import { sameTarget } from "./targets";
+import { sameTarget, unpairedMoveHalves } from "./targets";
 import { YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
 import { runWithQuotaContext, type QuotaContext } from "@/lib/youtube-quota";
 import { beginBatchExecution, endBatchExecution, isBatchCancelRequested, requestBatchCancelFlag } from "./execution-control";
@@ -105,6 +106,12 @@ type ClockDeps = {
 
 type ChangeSetStoreDeps = {
   getChange(changeId: string): Promise<PendingChangeRecord | null>;
+  /**
+   * BL-232: every change of the change set `changeId` belongs to, each with whether the channel's synced copy already holds its
+   * approved value. Lets `createBatch` refuse one half of a language move without the other (`unpairedMoveHalves`). Optional: absent = no
+   * pairing check (older fixtures).
+   */
+  listSetChanges?(changeId: string): Promise<Array<{ id: string; videoId: string; changeType?: string; onYoutube: boolean }>>;
 };
 
 type AuthResolverDeps = {
@@ -411,10 +418,46 @@ export function createBatchServices(deps: ServiceDependencies) {
     return change;
   }
 
+  /**
+   * BL-232: a row with a language move's change must also carry the move's other half on that video (the removal of `from` and the
+   * addition of `to`), unless that half is already on YouTube -- the same rule the send service applies (`unpairedMoveHalves`), here
+   * for any other path (the Batches tab's manual selection). Each move set is loaded once per `createBatch` (`loaded`).
+   */
+  async function assertLanguageMovesComplete(
+    videoId: string,
+    rowChanges: PendingChangeRecord[],
+    loaded: Array<Awaited<ReturnType<NonNullable<ChangeSetStoreDeps["listSetChanges"]>>>>
+  ): Promise<void> {
+    const listSetChanges = changeSetStore.listSetChanges;
+    if (!listSetChanges || !rowChanges.some((change) => change.languageMove)) return;
+    const setOf = async (changeId: string) => {
+      const known = loaded.find((set) => set.some((change) => change.id === changeId));
+      if (known) return known;
+      const set = await listSetChanges(changeId);
+      loaded.push(set);
+      return set;
+    };
+    const setChanges = new Map<string, Awaited<ReturnType<typeof setOf>>>();
+    for (const change of rowChanges) {
+      if (change.languageMove) setChanges.set(change.id, await setOf(change.id));
+    }
+    const onYoutube = new Set([...setChanges.values()].flat().filter((change) => change.onYoutube).map((change) => change.id));
+    const unpaired = unpairedMoveHalves(rowChanges, (change) => setChanges.get(change.id) ?? [], (partner) => onYoutube.has(partner.id));
+    if (unpaired.length > 0) {
+      const languages = [...new Set(unpaired.map((change) => change.language))];
+      throw new DomainError({
+        code: "send_unpaired_language_move",
+        message: `Video ${videoId} would get only one half of a language move (${languages.join(", ")}): select the removal of the old code and the new code together, or neither.`,
+        details: { videoId, languages, changeIds: unpaired.map((change) => change.id) },
+      });
+    }
+  }
+
   async function createBatch(rawInput: CreateBatchInput): Promise<Batch> {
     const input = parseWithSchema(createBatchInputSchema, rawInput, "createBatch input");
 
     const seenVideoIds = new Set<string>();
+    const loadedMoveSets: Parameters<typeof assertLanguageMovesComplete>[2] = [];
     for (const selection of input.selections) {
       if (seenVideoIds.has(selection.videoId)) {
         throw new DomainError({
@@ -436,6 +479,7 @@ export function createBatchServices(deps: ServiceDependencies) {
         rowChanges.push(change);
       }
       assertNoDuplicateTargets(selection.videoId, rowChanges);
+      await assertLanguageMovesComplete(selection.videoId, rowChanges, loadedMoveSets);
     }
 
     const batchId = idGenerator();
@@ -638,6 +682,7 @@ export function createBatchServices(deps: ServiceDependencies) {
       baselineValue: change.baselineValue,
       proposedValue: change.proposedValue,
       changeType: change.changeType,
+      moveTargetLanguage: change.changeType === "delete" ? (change.languageMove?.toLanguage ?? null) : null,
     }));
   }
 
@@ -771,6 +816,11 @@ export function createBatchServices(deps: ServiceDependencies) {
     const conflict = detectPreWriteConflict(pendingChanges, fresh, alignedDefaultLanguage ? { channelBaseline: baselineLanguage } : {});
     if (conflict.status === "conflict") {
       return { outcome: "CONFLICT", conflictingChangeIds: conflict.conflictingChangeIds };
+    }
+    // BL-232 (review): a language move's delete only while its target language still holds the text (or this row writes it).
+    const movedAway = missingMoveTargets(pendingChanges, fresh);
+    if (movedAway.length > 0) {
+      return { outcome: "CONFLICT", conflictingChangeIds: movedAway };
     }
 
     if (args.captureBackupNow) {

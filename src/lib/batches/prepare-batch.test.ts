@@ -72,6 +72,9 @@ function createFakeStore() {
         approvalStatus: entry.approvalStatus ?? "approved",
         validationStatus: entry.validationStatus ?? "valid",
         conflictStatus: entry.conflictStatus ?? "none",
+        // BL-232: a delete and a language move's marker pass through when a test sets them.
+        ...(entry.changeType ? { changeType: entry.changeType } : {}),
+        ...(entry.languageMove ? { languageMove: entry.languageMove } : {}),
       });
     },
     async getChange(changeId: string) {
@@ -852,4 +855,35 @@ test("BL-226: a translation the write would leave without a title fails that vid
   const failed = byVideo.get("v1") as { error?: string } | undefined;
   assert.match(failed?.error ?? "", /\bit\b.*title/);
   assert.equal(byVideo.get("v2")?.status, "DRY_RUN_COMPLETE");
+});
+
+// BL-232 review item 1 (requirement: the move must never leave a video without Chinese): a move's delete of zh-Hans whose target
+// zh-CN was there at proposal time but is gone at write time is a CONFLICT -- nothing is backed up, merged or written.
+test("BL-232: a language move's zh-Hans delete when zh-CN is gone at write time -> CONFLICT, no backup, no payload", async () => {
+  const harness = createHarness({
+    freshByVideoId: { v1: { snippet: { title: "T", description: "D", defaultLanguage: "en" }, localizations: { "zh-Hans": { title: "旧", description: "旧描述" } } } },
+  });
+  const move = { fromLanguage: "zh-Hans", toLanguage: "zh-CN" };
+  const row = await dryRunOne(harness, {
+    dt: { language: "zh-Hans", field: "title", baselineValue: "旧", proposedValue: "", changeType: "delete", languageMove: move },
+    dd: { language: "zh-Hans", field: "description", baselineValue: "旧描述", proposedValue: "", changeType: "delete", languageMove: move },
+  });
+  assert.equal(row.status, "CONFLICT");
+  assert.equal(harness.backupWrites.length, 0);
+});
+
+test("BL-232: the same delete with zh-CN still holding a title is prepared normally (zh-Hans removed, zh-CN kept byte-for-byte)", async () => {
+  const harness = createHarness({
+    freshByVideoId: {
+      v1: { snippet: { title: "T", description: "D", defaultLanguage: "en" }, localizations: { "zh-Hans": { title: "旧", description: "旧描述" }, "zh-CN": { title: "新", description: "新描述" } } },
+    },
+  });
+  const move = { fromLanguage: "zh-Hans", toLanguage: "zh-CN" };
+  const row = await dryRunOne(harness, {
+    dt: { language: "zh-Hans", field: "title", baselineValue: "旧", proposedValue: "", changeType: "delete", languageMove: move },
+    dd: { language: "zh-Hans", field: "description", baselineValue: "旧描述", proposedValue: "", changeType: "delete", languageMove: move },
+  });
+  assert.equal(row.status, "DRY_RUN_COMPLETE");
+  assert.ok(row.status === "DRY_RUN_COMPLETE");
+  assert.deepEqual(row.payload.localizations, { "zh-CN": { title: "新", description: "新描述" } });
 });

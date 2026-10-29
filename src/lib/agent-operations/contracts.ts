@@ -90,7 +90,9 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT",
 // 4.9.0 (BL-229 part B, MUSIC_LIBRARY_PLAN.md §3, ADR 0054 amendment 1): agent_plan_create / _import / _update take the plan's
 // reviewForm and the waves' genre and reviewForm, and owner_verdict events (agent_plan_get) carry answers, as the factory_plan_*
 // tools (Factory API 1.35.0). Additive.
-export const AGENT_API_VERSION = "4.9.0";
+// 4.10.0 (BL-232, PRD-REQ-0043): agent_localization_propose_language_move (DRAFT) -- a draft Change Set moving a localization of
+// the worker's own channel to another language code (zh-Hans -> zh-CN), same text; only the owner approves and sends it. Additive.
+export const AGENT_API_VERSION = "4.10.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry
