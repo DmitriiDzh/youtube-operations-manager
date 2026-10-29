@@ -1,0 +1,28 @@
+// BL-237: контроль диска -- карточка «Диск» в Серверы → Сессии и уведомление о нехватке места в колокольчике.
+export const diskGuard = {
+  "disk.title": "Диск",
+  "disk.info":
+    "Свободное место на дисках, куда пишет приложение этого компьютера. Сервер проверяет его каждые 15 минут: ниже порога в колокольчике появляется уведомление, а если здесь включена тема System — в Telegram уходит одно сообщение. Повторно — только после того, как место вернулось до порога + 2 ГБ и снова упало, или через 24 часа.",
+  "disk.volume.appData": "Данные приложения",
+  "disk.volume.program": "Папка программы",
+  "disk.volume.free": "свободно {free} из {total}",
+  "disk.volumesError": "Не удалось прочитать диск: {error}",
+  "disk.alert": "Мало места на диске: свободно {free}, меньше {threshold} ГБ (с {since}).",
+  "disk.lastCheck": "Последняя автоматическая проверка: {at}",
+  "disk.consumers.title": "Самые большие папки приложения",
+  "disk.consumers.measure": "Измерить папки",
+  "disk.consumers.measuring": "Измеряю…",
+  "disk.consumers.hint": "Занимает несколько секунд; папка, которая считается дольше, показана как «не меньше».",
+  "disk.consumer.liveStreamsBuffer": "Буфер трансляций",
+  "disk.consumer.backups": "Резервные копии базы",
+  "disk.consumer.nextCache": "Кэш сборки (.next/cache)",
+  "disk.consumer.tempDir": "Временная папка",
+  "disk.consumer.atLeast": "не меньше {size}",
+  "disk.threshold.label": "Предупреждать ниже, ГБ",
+  "disk.threshold.save": "Сохранить",
+  "disk.threshold.saved": "Сохранено",
+  "disk.threshold.invalid": "Число от 1 до 10000",
+  "disk.bell.title": "Диск",
+  "disk.bell.low": "Мало места на диске этого компьютера: свободно {free}, меньше {threshold} ГБ.",
+  "disk.bell.open": "Открыть",
+} as const;

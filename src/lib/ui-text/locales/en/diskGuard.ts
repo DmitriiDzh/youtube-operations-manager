@@ -1,0 +1,28 @@
+// BL-237: the disk guard -- the «Disk» card under Servers → Sessions and the header bell's low-disk notice.
+export const diskGuard = {
+  "disk.title": "Disk",
+  "disk.info":
+    "Free space on the disks this computer's app writes to. The server checks it every 15 minutes: below the threshold a notice appears in the bell and, when the System topic is on here, one message goes to Telegram. It repeats only after the space recovered to the threshold + 2 GB and fell again, or after 24 hours.",
+  "disk.volume.appData": "App data",
+  "disk.volume.program": "Program folder",
+  "disk.volume.free": "{free} free of {total}",
+  "disk.volumesError": "The disk could not be read: {error}",
+  "disk.alert": "Low disk space: {free} free, below {threshold} GB (since {since}).",
+  "disk.lastCheck": "Last automatic check: {at}",
+  "disk.consumers.title": "The app's biggest folders",
+  "disk.consumers.measure": "Measure folders",
+  "disk.consumers.measuring": "Measuring…",
+  "disk.consumers.hint": "Takes a few seconds; a folder that takes longer is shown as “at least”.",
+  "disk.consumer.liveStreamsBuffer": "Live-streams buffer",
+  "disk.consumer.backups": "Database backups",
+  "disk.consumer.nextCache": "Build cache (.next/cache)",
+  "disk.consumer.tempDir": "Temp folder",
+  "disk.consumer.atLeast": "at least {size}",
+  "disk.threshold.label": "Alert below, GB",
+  "disk.threshold.save": "Save",
+  "disk.threshold.saved": "Saved",
+  "disk.threshold.invalid": "A number from 1 to 10000",
+  "disk.bell.title": "Disk",
+  "disk.bell.low": "Low disk space on this computer: {free} free, below {threshold} GB.",
+  "disk.bell.open": "Open",
+} as const;

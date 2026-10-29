@@ -8,6 +8,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { PlanChannelWork } from "@/lib/generation-plans/contracts";
 import { otherChannelEntries, type ChannelWorkEntry } from "./channel-work";
 import { useChannelNames } from "./use-channel-names";
+import Link from "next/link";
+import { gbLabel } from "./disk-guard-card";
 
 /**
  * Automatic device sync notifications (docs/roadmap/plans/DEVICE_AUTO_SYNC_PLAN.md §3.7): a bell in
@@ -51,6 +53,9 @@ const LIVE_NOTICE_TEXT: Record<LiveNotice["kind"], UiTextKey> = {
   live_segment_switch_failed: "live.bell.segmentSwitchFailed",
 };
 const LIVE_STREAM_HREF = "/content/streams";
+// BL-237: this computer's low-disk alert (the server's 15-minute check), opening Servers → Sessions where the «Диск» card is.
+type DiskNotice = { freeBytes: number; thresholdGb: number; since: string };
+const DISK_HREF = "/servers/sessions";
 
 const STATE_LABEL: Record<SyncStatus["state"], UiTextKey> = {
   disabled: "deviceSync.state.disabled",
@@ -104,6 +109,7 @@ export function DeviceSyncBell({
   const entries = otherChannelEntries(t, channelWork, activeChannelId);
   const [status, setStatus] = useState<SyncStatus | null>(null);
   const [liveNotices, setLiveNotices] = useState<LiveNotice[]>([]);
+  const [diskNotice, setDiskNotice] = useState<DiskNotice | null>(null);
   const [open, setOpen] = useState(false);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -115,8 +121,13 @@ export function DeviceSyncBell({
         .then((r) => (r.ok ? (r.json() as Promise<{ notices: LiveNotice[] }>) : { notices: [] }))
         .then((body) => setLiveNotices(body.notices ?? []))
         .catch(() => undefined);
+      const disk = fetch("/api/disk-guard/notice")
+        .then((r) => (r.ok ? (r.json() as Promise<{ notice: DiskNotice | null }>) : { notice: null }))
+        .then((body) => setDiskNotice(body.notice ?? null))
+        .catch(() => undefined);
       const res = await fetch("/api/device-sync/status");
       await live;
+      await disk;
       if (!res.ok) return;
       setStatus((await res.json()) as SyncStatus);
     } catch {
@@ -193,7 +204,7 @@ export function DeviceSyncBell({
   };
 
   const notices = status?.notices ?? [];
-  const attention = notices.length > 0 || liveNotices.some((n) => n.kind !== "live_stream_source_missing");
+  const attention = notices.length > 0 || diskNotice !== null || liveNotices.some((n) => n.kind !== "live_stream_source_missing");
   const dotClass = attention
     ? "bg-red-500"
     : status?.state === "waiting" || status?.state === "busy" || status?.state === "folder_unreachable"
@@ -215,6 +226,17 @@ export function DeviceSyncBell({
 
       {open && (
         <div className="absolute right-0 z-50 mt-2 max-h-[80vh] w-96 space-y-3 overflow-y-auto rounded-xl border border-zinc-700 bg-zinc-900 p-4 shadow-xl">
+          {diskNotice && (
+            <div className="space-y-2 border-b border-zinc-800 pb-3">
+              <h3 className="text-sm font-semibold text-zinc-100">{t("disk.bell.title")}</h3>
+              <div className="flex items-start gap-2 rounded-lg border border-red-800 bg-zinc-950 p-2.5">
+                <p className="min-w-0 flex-1 text-xs text-zinc-200">{t("disk.bell.low", { free: gbLabel(t, diskNotice.freeBytes), threshold: diskNotice.thresholdGb })}</p>
+                <Link href={DISK_HREF} onClick={() => setOpen(false)} className="shrink-0 rounded-md bg-indigo-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-indigo-500">
+                  {t("disk.bell.open")}
+                </Link>
+              </div>
+            </div>
+          )}
           {entries.length > 0 && (
             <div className="space-y-2 border-b border-zinc-800 pb-3">
               <h3 className="text-sm font-semibold text-zinc-100">{t("channelWork.title")}</h3>
