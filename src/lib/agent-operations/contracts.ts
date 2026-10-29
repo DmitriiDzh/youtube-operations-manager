@@ -92,7 +92,10 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT",
 // tools (Factory API 1.35.0). Additive.
 // 4.10.0 (BL-232, PRD-REQ-0043): agent_localization_propose_language_move (DRAFT) -- a draft Change Set moving a localization of
 // the worker's own channel to another language code (zh-Hans -> zh-CN), same text; only the owner approves and sends it. Additive.
-export const AGENT_API_VERSION = "4.10.0";
+// 4.11.0 (BL-233, FO-REQ-0047): agent_live_get_status gains `encoders` (the stream encoder's speed, recent speed, bitrate, output
+// time and lag) and `upload` (whether an upload on this computer is limited or held for the streams), as factory_live_get_status
+// (Factory API 1.37.0). Additive.
+export const AGENT_API_VERSION = "4.11.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry

@@ -350,3 +350,21 @@ test("addVideos: a missing workspace stops the batch with its own error (every f
     (e: unknown) => e instanceof DomainError && e.code === "live_stream_workspace_unavailable"
   );
 });
+
+// BL-233 (FO-REQ-0047 ask 1): the stream's own bitrate is saved with its settings -- a whole 1000..12000, null back to the
+// computer's, absent left as it is -- and shown in the overview (null when never set).
+test("BL-233: saveSettings stores the stream's own bitrate; null clears it; absent keeps it; out of range is refused", async () => {
+  const h = harness();
+  const base = { title: "Cuban Jazz Radio", description: "", privacyStatus: "unlisted", madeForKids: false, orderMode: "sequence" } as const;
+  await h.services.saveSettings("UC1", base);
+  assert.equal((await h.services.getOverview("UC1")).stream?.settings.bitrateKbps, null);
+  await h.services.saveSettings("UC1", { ...base, bitrateKbps: 4000 });
+  assert.equal((await h.services.getOverview("UC1")).stream?.settings.bitrateKbps, 4000);
+  await h.services.saveSettings("UC1", { ...base, title: "Renamed" });
+  assert.equal((await h.services.getOverview("UC1")).stream?.settings.bitrateKbps, 4000, "absent = unchanged");
+  for (const bad of [999, 12001, 4000.5, "4000"]) {
+    await assert.rejects(() => h.services.saveSettings("UC1", { ...base, bitrateKbps: bad }), (e: unknown) => e instanceof DomainError && e.code === "validation_failed", String(bad));
+  }
+  await h.services.saveSettings("UC1", { ...base, bitrateKbps: null });
+  assert.equal((await h.services.getOverview("UC1")).stream?.settings.bitrateKbps, null);
+});

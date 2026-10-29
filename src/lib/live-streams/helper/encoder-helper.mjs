@@ -179,6 +179,8 @@ export async function runHelper(options) {
     }, Math.min(10_000, options.stallMs ?? STALL_MS));
     watchdog.unref?.();
     let outTime = 0;
+    // BL-233: when this ffmpeg run began, so a reader can tell how far the output lags the clock (-re sends in real time).
+    const runStartedAt = io.now();
     /** @type {Record<string, string>} */
     let block = {};
     createInterface({ input: child.stdout }).on("line", (line) => {
@@ -203,6 +205,9 @@ export async function runHelper(options) {
           dropFrames: block.drop_frames ? Number(block.drop_frames) : null,
           dupFrames: block.dup_frames ? Number(block.dup_frames) : null,
           speed: block.speed ?? null,
+          runStartedAt,
+          // BL-233 review: when this block arrived -- the heartbeat rewrites the status later with the same progress.
+          at: io.now(),
         };
         block = {};
         if (outTime > lastGrownOutTime) {

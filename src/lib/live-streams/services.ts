@@ -52,6 +52,8 @@ export type StoredStreamRow = {
   videoSettingsJson?: string | null;
   /** Schema v101 (BL-207): the stream's title/description translations as stored JSON; null = none. */
   localizationsJson?: string | null;
+  /** Schema v113 (BL-233): the stream's own encoder bitrate; null = this computer's setting. */
+  bitrateKbps?: number | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -77,7 +79,7 @@ export type LiveStreamsDependencies = {
     getStream(channelId: string): Promise<StoredStreamRow | null>;
     upsertStream(row: Omit<StoredStreamRow, "positionUpdatedAt" | "onSince" | "passOrderJson" | "nextPassOrderJson" | "streamId" | "broadcastId"> & Partial<StoredStreamRow>): Promise<void>;
     /** Some columns of an existing row only (never the stream's ids, intent or position). */
-    updateStream(channelId: string, set: Partial<Pick<StoredStreamRow, "title" | "description" | "privacyStatus" | "madeForKids" | "orderMode" | "videoSettingsJson" | "localizationsJson" | "updatedAt">>): Promise<boolean>;
+    updateStream(channelId: string, set: Partial<Pick<StoredStreamRow, "title" | "description" | "privacyStatus" | "madeForKids" | "orderMode" | "videoSettingsJson" | "localizationsJson" | "bitrateKbps" | "updatedAt">>): Promise<boolean>;
     listVideos(channelId: string): Promise<StoredVideoRow[]>;
     upsertVideo(row: StoredVideoRow): Promise<void>;
     updateVideo(channelId: string, videoId: string, set: Partial<Omit<StoredVideoRow, "channelId" | "videoId" | "addedAt">>): Promise<boolean>;
@@ -176,7 +178,7 @@ export function createLiveStreamsServices(deps: LiveStreamsDependencies) {
           ? {
               channelId,
               intent: row.intent,
-              settings: { title: row.title, description: row.description, privacyStatus: row.privacyStatus, madeForKids: row.madeForKids, orderMode: row.orderMode },
+              settings: { title: row.title, description: row.description, privacyStatus: row.privacyStatus, madeForKids: row.madeForKids, orderMode: row.orderMode, bitrateKbps: row.bitrateKbps ?? null },
               streamId: row.streamId,
               broadcastId: row.broadcastId,
               onSince: row.onSince?.toISOString() ?? null,
@@ -191,7 +193,7 @@ export function createLiveStreamsServices(deps: LiveStreamsDependencies) {
     async saveSettings(channelId: string, input: unknown): Promise<StreamSettingsInput> {
       const settings = parseWithSchema(streamSettingsSchema, input, "live stream settings");
       const now = deps.clock();
-      // Only the five settings columns of an existing row (independent review): rewriting the whole row could undo a Start
+      // Only the settings columns of an existing row (independent review): rewriting the whole row could undo a Start
       // or a YouTube-ended stop that landed between the read and the write.
       const updated = await deps.store.updateStream(channelId, { ...settings, updatedAt: now });
       if (!updated) {

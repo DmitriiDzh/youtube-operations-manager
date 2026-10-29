@@ -1497,6 +1497,9 @@ export const liveStreams = sqliteTable("live_streams", {
   /** Schema v101 (BL-207, LIVE_LOCALIZATIONS_PLAN.md §2 stage 2): the stream's title/description translations, JSON
    * `{ "<lang>": { title, description } }` validated by live-streams on read and write; null = none. Device-local, like the row. */
   localizationsJson: text("localizations_json"),
+  /** Schema v113 (BL-233, FO-REQ-0047): the stream's own encoder bitrate in kbit/s (1000..12000, checked by live-streams); null =
+   * this computer's setting. Device-local, like the row. */
+  bitrateKbps: integer("bitrate_kbps"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
 });
@@ -5754,6 +5757,18 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         } catch (error) {
           if (!isDuplicateColumnError(error)) throw error;
         }
+      }
+    },
+  },
+  {
+    version: 113,
+    description:
+      "live_streams.bitrate_kbps -- BL-233 (FO-REQ-0047; owner msgs 3786/3788): a stream's own encoder bitrate, used at encoder start instead of this computer's setting. Additive, nullable (null = the computer's setting), device-local",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE live_streams ADD COLUMN bitrate_kbps INTEGER");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
       }
     },
   },

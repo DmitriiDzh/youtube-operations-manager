@@ -863,6 +863,19 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Схема v86:** `live_streams`, `live_stream_videos`, `live_stream_events`, `live_stream_sources` (только этот компьютер); настройки — `app_settings.live_streams_settings`.
 - **Web:** Контент → «Видео» | «Трансляции» (`/content/streams`, активный канал; на Windows — только чтение из отчёта), Настройки → «Трансляции»; API `/api/channels/[channelId]/live-stream/**`, `/api/live-streams/settings`, `/api/live-streams/notices`.
 - **Оператор (Factory API 1.14.0):** `factory_live_get_status`, `factory_live_map_sources`; с 1.27.0 (BL-207) — `factory_live_save_localizations` и `factory_live_get_status.localizations`.
+- **BL-233 трансляции и загрузка видео делят канал Mac (FO-REQ-0047, ветка `feature/bl-233-live-upload-bandwidth`, схема v113):**
+  - Свой битрейт трансляции: `live_streams.bitrate_kbps` (null = настройка компьютера), сохраняется с настройками трансляции
+    (целое 1000..12000); `supervisor.encoderBitrateFor` при запуске энкодера (событие `encoder_start.bitrateSource`).
+  - Общий модуль `src/lib/upload-bandwidth/` (§M, чистый, без импорта модулей): пока на компьютере включена трансляция, загрузка
+    не быстрее `uploadCapMbps` (настройки трансляций компьютера, по умолчанию 2, 0 = без лимита); трансляция ниже 0.97x
+    `uploadGuardMinutes` минут (3, 0 = выкл.) — новые куски не начинаются, пока все потоки минуту держат 0.99x, не дольше 30 мин.
+    Скорость — за последнюю минуту по `outTime` (у ffmpeg `speed` — среднее с начала прогона).
+  - Сборка в `src/composition/upload-bandwidth.ts` из `live-streams.readLiveUploadLoad()` (`encoder-load.ts`: speed/bitrate/outTime/
+    отставание из `status.json`; хелпер пишет `progress.runStartedAt`); раннер загрузок получает `bandwidth` (instrumentation),
+    шлюз записи — `pace` у `putVideoUploadChunk` (тело куска срезами по 64 КБ). Удержание/снятие — события `upload_held`/
+    `upload_released` в истории трансляции.
+  - Factory API 1.37.0 / Agent API 4.11.0: `factory_live_get_status.encoders` и `.upload`; Web — поля в «Настройки → Трансляции»,
+    битрейт в настройках трансляции, строка «загрузка ограничена / на паузе» (`GET /api/publishing/upload-bandwidth`).
 - **Аналитика эфиров (BL-211..214, `docs/roadmap/plans/LIVE_ANALYTICS_PLAN.md`, ветка `feature/bl-211-live-viewer-samples`):** замеры опроса → `live_viewer_samples` (v105); общий модуль `src/lib/live-analytics/` (§M, не зависит от `live-streams`): сводка (`summarise.ts`: интервал ≤ 10 мин относится к первому замеру, длиннее — пропуск; обрывы — `encoder_run_exit` не `pass_end`), часовой цикл выгрузки YouTube Analytics по завершённым трансляциям (`collect.ts` → `live_broadcast_analytics`, v106; через час и финально через 4 дня; через read gateway `queryOwnVideoReport`). Web: карточка «Эфиры» (`live-stream-analytics.tsx`), `GET .../live-stream/analytics?days=1..90`. Producer API 1.11.0: `producer_live_analytics` (только данные этого компьютера). **BL-222 (план §6, в `dev`, 952d6e68):** компьютер с трансляцией раз в 5 минут публикует готовые сводки (1/7/30/90 дней по каждому каналу с замерами за 90 дней) в per-device отчёт `ytm-live-analytics` v1 (`sync-gateway/live-analytics`, семейство `live_analytics`, 18-е); маршрут отвечает своими замерами, а если их нет — новейшей сводкой другого компьютера (`source: local | peer`); карточка «Эфиры» показывается и там, где трансляция идёт на другом компьютере, с подписью, откуда данные. Без вызовов YouTube.
 - **BL-187 (этап 1 `docs/roadmap/plans/LIVE_STREAMS_FIELDS_PLAN.md`, ветка `feature/live-streams-fields-and-picker`, не в `dev`):**
   окно «Добавить видео…» — итоговые файлы `Vn` из `04 Videos/` с галочками (`picker.ts`, `picker-service.ts`,

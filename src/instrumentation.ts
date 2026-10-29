@@ -540,7 +540,9 @@ async function startServerSession() {
   try {
     // Review #1 (BL-225): the runner asks the weekly plan again before a slot's row starts and before its date (§M: composed here).
     const { planSlotDecisions } = await import("@/composition/publishing-plan-slots");
-    uploads = (await import("@/lib/publishing")).createUploadRunnerCore({ slotDecisions: planSlotDecisions });
+    // BL-233 (FO-REQ-0047): while a live stream runs here the upload keeps to its share of the uplink (§M: composed here).
+    const { createUploadBandwidth } = await import("@/composition/upload-bandwidth");
+    uploads = (await import("@/lib/publishing")).createUploadRunnerCore({ slotDecisions: planSlotDecisions, bandwidth: createUploadBandwidth() });
   } catch (error) {
     console.warn(`[publishing] uploads not started: ${error instanceof Error ? error.message : String(error)}`);
   }

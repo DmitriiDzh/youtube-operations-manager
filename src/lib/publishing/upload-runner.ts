@@ -103,7 +103,8 @@ export type UploadRunnerDeps = {
   liveWritesEnabled(): Promise<boolean>;
   gateway: {
     begin(args: { accessToken: string; resource: InsertResource; contentLength: number; contentType: string; notifySubscribers: boolean }): Promise<{ sessionUri: string }>;
-    putChunk(args: { accessToken: string; sessionUri: string; chunk: Buffer; start: number; total: number; contentType: string }): Promise<UploadHttpProgress>;
+    /** `pace` (BL-233): waits before each slice of the body while the upload is limited; absent = sent at full speed. */
+    putChunk(args: { accessToken: string; sessionUri: string; chunk: Buffer; start: number; total: number; contentType: string; pace?: (bytes: number) => Promise<void> }): Promise<UploadHttpProgress>;
     queryOffset(args: { accessToken: string; sessionUri: string; total: number }): Promise<UploadHttpProgress>;
     setThumbnail(credentials: unknown, videoId: string, image: { mimeType: string; bytes: Buffer }): Promise<void>;
     addToPlaylist(credentials: unknown, videoId: string, playlistId: string): Promise<void>;
@@ -154,6 +155,16 @@ export type UploadRunnerDeps = {
   clock: { now(): Date };
   /** The next YouTube quota day (midnight Pacific). */
   nextQuotaReset(now: Date): Date;
+  /**
+   * BL-233 (FO-REQ-0047): the upload's share of this computer's uplink while live streams run here (the app layer plugs in the
+   * live-streams reader; absent = never limited). `mayStart` is asked before an upload starts or resumes and before every chunk
+   * -- false holds it with nothing sent or asked; `chunkBytes` sizes a limited chunk; `pace` paces each chunk's body.
+   */
+  bandwidth?: {
+    mayStart(): Promise<boolean>;
+    chunkBytes(defaultBytes: number): number;
+    pace(bytes: number): Promise<void>;
+  };
   /** Bytes per request (a multiple of 256 KB) and how long one tick keeps sending. */
   chunkBytes: number;
   sliceMs: number;
@@ -407,14 +418,17 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
     let current = job;
     let hashChecked = false;
     try {
-      if (current.status === "queued") {
-        // Review #1: a slot vetoed since the row was queued -- the row stops here, before anything is read or sent.
-        if (job.slotId && deps.slotDecision && (await deps.slotDecision(job.channelId, job.slotId))?.kind === "vetoed") {
-          if (await deps.store.update(job.id, "queued", { status: "cancelled", errorCode: "slot_vetoed", finishedAt: now(), updatedAt: now() })) {
-            await deps.audit({ channelId: job.channelId, videoId: null, detail: { event: "publishing.upload_cancelled_slot_vetoed", uploadId: job.id, video: job.video, slotId: job.slotId } });
-          }
-          return;
+      // Review #1: a slot vetoed since the row was queued -- the row stops here, before anything is read or sent (and before a hold:
+      // a vetoed row is cancelled even while uploads are held, BL-233 review).
+      if (current.status === "queued" && job.slotId && deps.slotDecision && (await deps.slotDecision(job.channelId, job.slotId))?.kind === "vetoed") {
+        if (await deps.store.update(job.id, "queued", { status: "cancelled", errorCode: "slot_vetoed", finishedAt: now(), updatedAt: now() })) {
+          await deps.audit({ channelId: job.channelId, videoId: null, detail: { event: "publishing.upload_cancelled_slot_vetoed", uploadId: job.id, video: job.video, slotId: job.slotId } });
         }
+        return;
+      }
+      // BL-233: held while a live stream here starves -- before anything is read, hashed or asked (the next tick asks again).
+      if (deps.bandwidth && !(await deps.bandwidth.mayStart())) return;
+      if (current.status === "queued") {
         // The files must still be what the owner approved: the same manifest, a video of the same size.
         const manifest = await deps.files.resolve(job.channelId, pkg.manifestPath);
         if (!manifest || (await deps.files.sha256(manifest.path)) !== job.manifestSha256) return fail(job, "package_changed", "The package changed on disk after it was approved.");
@@ -472,7 +486,9 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
       }
       const deadline = now().getTime() + deps.sliceMs;
       while (stored < current.totalBytes && now().getTime() < deadline) {
-        const length = Math.min(deps.chunkBytes, current.totalBytes - stored);
+        // BL-233: a hold starts between chunks only (a chunk in flight finishes at the limit); the session stays as it is.
+        if (deps.bandwidth && !(await deps.bandwidth.mayStart())) break;
+        const length = Math.min(deps.bandwidth ? deps.bandwidth.chunkBytes(deps.chunkBytes) : deps.chunkBytes, current.totalBytes - stored);
         const last = stored + length === current.totalBytes;
         if (!stepsOf(current).finalChunkSentAt && publishTimePassed(current)) {
           // Review should-fix 2: the video would go public the moment it is made, before its thumbnail and playlist.
@@ -487,7 +503,8 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
         // The lease is renewed before every chunk: a slow chunk never lets another process take the upload (re-check nit).
         if (!(await deps.store.claim(current.id, deps.runnerId, new Date(now().getTime() + LEASE_MS + 10 * 60_000), now()))) return;
         const chunk = await deps.files.readChunk(videoFile.path, stored, length);
-        const progress = await deps.gateway.putChunk({ accessToken: token, sessionUri: current.sessionUri as string, chunk, start: stored, total: current.totalBytes, contentType });
+        const pace = deps.bandwidth ? (bytes: number) => deps.bandwidth!.pace(bytes) : undefined;
+        const progress = await deps.gateway.putChunk({ accessToken: token, sessionUri: current.sessionUri as string, chunk, start: stored, total: current.totalBytes, contentType, ...(pace ? { pace } : {}) });
         if ("expired" in progress) return onExpired(current, pkg, creds);
         if (progress.done) return adopt(current, pkg, progress.videoId, "uploaded");
         stored = progress.storedBytes;

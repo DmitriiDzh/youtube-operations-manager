@@ -22,10 +22,13 @@ type Settings = {
   encoder: Encoder;
   alertMinutes: number;
   ffmpegDir: string | null;
+  uploadCapMbps: number;
+  uploadGuardMinutes: number;
   host: { ok: true } | { ok: false; reason: string };
 };
 
-const NUMBER_FIELDS = ["bufferDepth", "warnBelowGb", "refuseBelowGb", "bitrateKbps", "alertMinutes"] as const;
+// BL-233 (FO-REQ-0047): the upload limit while live (Mbit/s, 0 = none) and the minutes before an upload pauses (0 = never).
+const NUMBER_FIELDS = ["bufferDepth", "warnBelowGb", "refuseBelowGb", "bitrateKbps", "alertMinutes", "uploadCapMbps", "uploadGuardMinutes"] as const;
 type NumberField = (typeof NUMBER_FIELDS)[number];
 const RANGES: Record<NumberField, [number, number, boolean]> = {
   bufferDepth: [1, 6, true],
@@ -33,6 +36,8 @@ const RANGES: Record<NumberField, [number, number, boolean]> = {
   refuseBelowGb: [1, 1000, false],
   bitrateKbps: [1000, 12000, true],
   alertMinutes: [1, 60, true],
+  uploadCapMbps: [0, 100, false],
+  uploadGuardMinutes: [0, 60, true],
 };
 
 const inputClass = "w-24 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm text-zinc-100 disabled:opacity-50";
@@ -44,6 +49,8 @@ function parseField(field: NumberField, text: string): number | null {
   const trimmed = text.trim().replace(",", ".");
   if (!(integer ? /^\d{1,6}$/ : /^\d{1,4}(\.\d{1,2})?$/).test(trimmed)) return null;
   const value = Number(trimmed);
+  // BL-233: the upload limit is 0 (none) or at least 0.5 Mbit/s, as the server checks.
+  if (field === "uploadCapMbps" && value > 0 && value < 0.5) return null;
   return value >= min && value <= max ? value : null;
 }
 
@@ -63,6 +70,8 @@ export function LiveStreamsSettings() {
     refuseBelowGb: "",
     bitrateKbps: "",
     alertMinutes: "",
+    uploadCapMbps: "",
+    uploadGuardMinutes: "",
     encoder: "h264_videotoolbox",
     ffmpegDir: "",
   });
@@ -78,6 +87,8 @@ export function LiveStreamsSettings() {
       refuseBelowGb: String(data.refuseBelowGb),
       bitrateKbps: String(data.bitrateKbps),
       alertMinutes: String(data.alertMinutes),
+      uploadCapMbps: String(data.uploadCapMbps),
+      uploadGuardMinutes: String(data.uploadGuardMinutes),
       encoder: data.encoder,
       ffmpegDir: data.ffmpegDir ?? "",
     });
@@ -143,6 +154,8 @@ export function LiveStreamsSettings() {
     refuseBelowGb: t("liveSettings.refuseBelowGb"),
     bitrateKbps: t("liveSettings.bitrateKbps"),
     alertMinutes: t("liveSettings.alertMinutes"),
+    uploadCapMbps: t("liveSettings.uploadCapMbps"),
+    uploadGuardMinutes: t("liveSettings.uploadGuardMinutes"),
   };
 
   return (
@@ -178,6 +191,7 @@ export function LiveStreamsSettings() {
         ))}
       </div>
       {parsed.refuseBelowGb !== null && parsed.warnBelowGb !== null && parsed.refuseBelowGb >= parsed.warnBelowGb && <p className="text-xs text-red-400">{t("liveSettings.refuseBelowWarn")}</p>}
+      <p className="text-xs text-zinc-500">{t("liveSettings.upload.hint")}</p>
       <label className="flex flex-wrap items-center gap-2 text-sm text-zinc-400">
         <span>{t("liveSettings.encoder")}</span>
         <select value={drafts.encoder} onChange={(e) => setDrafts((current) => ({ ...current, encoder: e.target.value as Encoder }))} disabled={busy} className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm text-zinc-100">

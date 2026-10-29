@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { DEFAULT_LIVE_STREAMS_SETTINGS, DomainError, LIVE_ENCODERS, type LiveStreamsSettings } from "./contracts";
+import { DEFAULT_LIVE_STREAMS_SETTINGS, DomainError, LIVE_BITRATE_MAX_KBPS, LIVE_BITRATE_MIN_KBPS, LIVE_ENCODERS, type LiveStreamsSettings } from "./contracts";
 import { parseWithSchema } from "./schemas";
 
 // ---------------------------------------------------------------------------
@@ -14,10 +14,14 @@ const settingsPatchSchema = z
     bufferDepth: z.number().int().min(1).max(6),
     warnBelowGb: z.number().min(1).max(1000),
     refuseBelowGb: z.number().min(1).max(1000),
-    bitrateKbps: z.number().int().min(1000).max(12000),
+    bitrateKbps: z.number().int().min(LIVE_BITRATE_MIN_KBPS).max(LIVE_BITRATE_MAX_KBPS),
     encoder: z.enum(LIVE_ENCODERS),
     alertMinutes: z.number().int().min(1).max(60),
     ffmpegDir: z.string().trim().min(1).max(500).nullable(),
+    // BL-233: Mbit/s (0 = no limit); whole minutes (0 = never held).
+    // 0 or at least 0.5: a smaller limit would make one 256 KB chunk take minutes (independent review).
+    uploadCapMbps: z.number().finite().min(0).max(100).refine((v) => v === 0 || v >= 0.5, "0 (no limit) or at least 0.5 Mbit/s"),
+    uploadGuardMinutes: z.number().int().min(0).max(60),
   })
   .partial()
   .strict();

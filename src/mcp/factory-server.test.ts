@@ -268,6 +268,8 @@ test("§2.5(3): the factory route and endpoint reach only the allowlisted module
     "@/lib/video-costs",
     // BL-220 (RESTART_WHEN_IDLE_PLAN.md): the restart-when-idle module for the factory restart tools (holds as `factory`).
     "@/lib/restart-when-idle",
+    // BL-233 (FO-REQ-0047): the upload's bandwidth state for factory_live_get_status (read-only; it holds no upload code).
+    "@/lib/upload-bandwidth",
     "@/mcp/factory-server",
     "@/mcp/factory-channel-deps",
   ]);
@@ -324,7 +326,8 @@ test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.23.0 
   // BL-223 (CHANNEL_BRANDING_PLAN.md §5: "Minor version bump"): two new tools, additive -> 1.32.0.
   // BL-225 (WEEKLY_PUBLISHING_PLAN.md stage 1 item 5): three new tools, additive -> 1.33.0.
   // BL-227 (LANGUAGES_REVIEW_PLAN.md §5: "Factory API 1.34.0"): one new tool, additive -> 1.34.0.
-  assert.equal(FACTORY_API_VERSION, "1.36.0"); // BL-230: factory_media_create_runtime checks github.com sources (new errors) -> 1.36.0. 1.35.0 = BL-229 part B (MUSIC_LIBRARY_PLAN.md §3): review forms, genre, answers -- additive -> 1.35.0.
+  // BL-233 (FO-REQ-0047 ask 3): factory_live_get_status gains `encoders` and `upload`, additive -> 1.37.0.
+  assert.equal(FACTORY_API_VERSION, "1.37.0"); // BL-230: factory_media_create_runtime checks github.com sources (new errors) -> 1.36.0. 1.35.0 = BL-229 part B (MUSIC_LIBRARY_PLAN.md §3): review forms, genre, answers -- additive -> 1.35.0.
   const agentOperations = await readFile("src/lib/agent-operations/contracts.ts", "utf8");
   assert.equal(agentOperations.includes("FACTORY_API_VERSION"), false);
 });

@@ -3940,6 +3940,31 @@ Plan: `docs/roadmap/plans/LIVE_STREAMS_PLAN.md` (FO-REQ-0019). Schema v86, Facto
   when a peer reports the channel.
 - **Other computers** see the `live-streams` per-device report (`sync-gateway/live-streams`, strict fixed codes); the Operator reads
   `factory_live_get_status` and maps files with `factory_live_map_sources`. Bell notices: down, ended by YouTube, next video missing.
+- **Streams and an upload share the Mac's uplink** (BL-233, FO-REQ-0047; owner msgs 3786/3788). Two encoders at 6000k plus a
+  4.7 GB upload over ~10 Mbit/s Wi-Fi starved a stream (0.676x, `videoIngestionStarved`).
+  - A stream's own bitrate: `live_streams.bitrate_kbps` (v113, null = the computer's `bitrateKbps`), saved with the stream's settings;
+    `supervisor.encoderBitrateFor` picks it at encoder start; a stored value outside 1000..12000 never reaches ffmpeg.
+  - `src/lib/upload-bandwidth/` (shared, pure, imports no feature module) is the upload governor. Its `load()` is composed in
+    `src/composition/upload-bandwidth.ts` from `live-streams.readLiveUploadLoad()` (the computer's settings `uploadCapMbps` 2 /
+    `uploadGuardMinutes` 3, the streams whose intent is on, and each encoder's reading from `status.json` -- `encoder-load.ts`);
+    the governor is handed to publishing's upload runner by `instrumentation.ts` and registered on `globalThis` for the readers.
+  - Rules: any stream on → the upload is paced to the limit (0 = none); none → unlimited. A stream measured below 0.97x for the
+    guard minutes → no new chunk (the row stays `uploading`, its session kept; nothing is read, hashed or asked while held) until
+    every measured stream holds ≥ 0.99x for a minute, at most 30 minutes; after a ceiling release it is not held again until the
+    streams recover. A gap (stale or not-running status) neither starves nor recovers; a hold for a stream turned off or no longer
+    listed ends at once (`stream_off`); a failed read still ends a hold at the ceiling; no upload asking for 30 s forgets the hold and
+    the timings (`no_upload`), and a gap of more than 90 s between evaluations or samples restarts the measuring. The speed is
+    measured from `outTime` over the last 30-90 s, because ffmpeg's `speed=` is the average since its run began; ffmpeg's figure is
+    used until the window fills. Each progress block carries its own time (`progress.at`), because the helper's 10-s heartbeat
+    rewrites the status with the old output time; for helpers started before that, an unchanged output time is taken only after
+    20 s (a stall). The limit is 0 or at least 0.5 Mbit/s.
+  - Pacing: the write gateway's `putVideoUploadChunk` takes `pace`; `nodeUploadHttp` then writes the chunk body in 64 KB slices,
+    each after a token-bucket wait (burst ≤ 0.25 s), honouring backpressure -- the request (Content-Length, Content-Range) is the
+    same. A limited chunk is about a minute of sending in whole 256 KB units (≤ 8 MB). A hold never stalls a PUT in flight (socket
+    timeout 10 min, lease 12 min): the chunk in flight finishes at the limit.
+  - Holds and releases are `upload_held` / `upload_released` events in the starving stream's history and a server log line.
+    `factory_live_get_status` (1.37.0) returns `encoders` (speed, recentSpeed, bitrate, target, outTime, lag -- from the helper's new
+    `progress.runStartedAt`, else estimated from the speed) and `upload`; the Web UI shows a line from `GET /api/publishing/upload-bandwidth`.
 - **Adding by checkboxes** (BL-187, `docs/roadmap/plans/LIVE_STREAMS_FIELDS_PLAN.md` §2.4; `picker.ts`, `picker-service.ts`,
   `adapters/picker-files.ts`, `src/components/live-stream-add-videos-dialog.tsx`). `GET .../live-stream/rotation/candidates`
   lists the video files under `04 Videos/` (the shared `workspace-videos` walk; `?all=1` adds source clips and folders without a

@@ -418,7 +418,9 @@ Details (proposed in msg 2577, accepted in msg 2578):
   - ffmpeg (detected path and features);
   - buffer folder, buffer depth and disk thresholds;
   - bitrate;
-  - alert minutes.
+  - alert minutes;
+  - (BL-233, FO-REQ-0047) the upload limit while a stream runs here (Mbit/s, 0 = none) and the minutes a stream may starve before
+    an upload pauses (0 = never). A stream's own bitrate is set with its texts on the «Трансляции» page (empty = this setting).
 - Every text in English and Russian.
 
 ## 4. Acceptance criteria (fixed before the code)

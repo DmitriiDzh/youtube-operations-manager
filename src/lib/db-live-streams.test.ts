@@ -169,6 +169,27 @@ test("v101: localizations_json is null on a new row, set by an update, kept by o
   });
 });
 
+// BL-233 (FO-REQ-0047 ask 1): schema v113 adds the stream's own bitrate -- null until saved (the computer's setting is used), set by
+// an update, kept by writes of other columns and by a whole-row write without it, cleared by null; the migration converges.
+test("v113: bitrate_kbps is null on a new row, set by an update, kept by other writes, cleared by null", async () => {
+  await withDb(async (database, client) => {
+    const columns = await client.execute("PRAGMA table_info(live_streams)");
+    assert.ok(columns.rows.some((row) => row.name === "bitrate_kbps"));
+    const v113 = SCHEMA_MIGRATIONS.find((m) => m.version === 113);
+    assert.ok(v113, "schema v113 exists");
+    await v113.apply(client);
+    assert.ok(SCHEMA_CURRENT_VERSION >= 113);
+    await upsertLiveStream(stream(), database);
+    assert.equal((await getLiveStream("UC1", database))?.bitrateKbps, null);
+    assert.equal(await updateLiveStream("UC1", { bitrateKbps: 4000 }, database), true);
+    await updateLiveStream("UC1", { title: "Other", updatedAt: T }, database);
+    await upsertLiveStream(stream({ title: "Again" }), database);
+    assert.equal((await getLiveStream("UC1", database))?.bitrateKbps, 4000);
+    assert.equal(await updateLiveStream("UC1", { bitrateKbps: null }, database), true);
+    assert.equal((await getLiveStream("UC1", database))?.bitrateKbps, null);
+  });
+});
+
 // BL-211 (LIVE_ANALYTICS_PLAN.md stage 1): schema v105 keeps viewer samples per channel; null viewers stay null; a second
 // sample at the same instant is ignored; a range is [from, to), oldest first.
 test("v105: live_viewer_samples per channel, oldest first, [from, to), null kept, same instant ignored", () =>

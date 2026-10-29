@@ -1,3 +1,4 @@
+import { once } from "node:events";
 import { Readable } from "node:stream";
 import { request as httpsRequest } from "node:https";
 import type { youtube_v3 } from "googleapis";
@@ -52,10 +53,46 @@ export type VideoInsertResource = {
 
 export type UploadHttpResponse = { status: number; headers: Record<string, string | string[] | undefined>; body: string };
 
-/** The one HTTPS call shape the upload needs; injectable so the protocol is tested without the network. */
-export type UploadHttp = (args: { method: "POST" | "PUT"; url: string; headers: Record<string, string>; body?: Buffer }) => Promise<UploadHttpResponse>;
+/**
+ * BL-233 (FO-REQ-0047): waits until `bytes` more of a request body may be sent. The upload runner's bandwidth limit while live
+ * streams run on this computer; the request itself (headers, Content-Length, Content-Range) is unchanged.
+ */
+export type UploadPace = (bytes: number) => Promise<void>;
 
-export const nodeUploadHttp: UploadHttp = ({ method, url, headers, body }) =>
+/** The one HTTPS call shape the upload needs; injectable so the protocol is tested without the network. */
+export type UploadHttp = (args: { method: "POST" | "PUT"; url: string; headers: Record<string, string>; body?: Buffer; pace?: UploadPace }) => Promise<UploadHttpResponse>;
+
+/** A paced body goes in slices of this size, each after `pace` allows it. */
+export const PACED_SLICE_BYTES = 64 * 1024;
+
+/**
+ * Writes `body` to a request in `PACED_SLICE_BYTES` slices, each after `pace`, honouring backpressure, then ends it. Any failure
+ * (pace, the socket) destroys the request, so its own error settles the call. Exported for its test.
+ */
+export async function writePacedBody(
+  req: { write(chunk: Buffer): boolean; end(): void; destroy(error?: Error): void; destroyed?: unknown; once(event: "drain" | "error" | "close", listener: (...args: unknown[]) => void): unknown },
+  body: Buffer,
+  pace: UploadPace
+): Promise<void> {
+  try {
+    for (let offset = 0; offset < body.length; offset += PACED_SLICE_BYTES) {
+      const slice = body.subarray(offset, Math.min(body.length, offset + PACED_SLICE_BYTES));
+      await pace(slice.length);
+      // Destroyed meanwhile (a timeout, a socket error): its own error settles the call; nothing more is written.
+      if (req.destroyed) return;
+      if (!req.write(slice)) {
+        const emitter = req as unknown as NodeJS.EventEmitter;
+        const closed = await Promise.race([once(emitter, "drain").then(() => false), once(emitter, "close").then(() => true)]);
+        if (closed || req.destroyed) return;
+      }
+    }
+    req.end();
+  } catch (error) {
+    req.destroy(error instanceof Error ? error : new Error(String(error)));
+  }
+}
+
+export const nodeUploadHttp: UploadHttp = ({ method, url, headers, body, pace }) =>
   new Promise((resolve, reject) => {
     const req = httpsRequest(url, { method, headers, timeout: REQUEST_TIMEOUT_MS }, (res) => {
       const parts: Buffer[] = [];
@@ -65,7 +102,8 @@ export const nodeUploadHttp: UploadHttp = ({ method, url, headers, body }) =>
     });
     req.on("timeout", () => req.destroy(new Error("upload request timed out")));
     req.on("error", reject);
-    if (body) req.end(body);
+    if (body && pace) void writePacedBody(req, body, pace);
+    else if (body) req.end(body);
     else req.end();
   });
 
@@ -158,7 +196,7 @@ export type UploadProgress = { done: true; videoId: string } | { done: false; st
  * Caller calls `assertLiveWritesAuthorized()` first.
  */
 export async function putVideoUploadChunk(
-  args: { accessToken: string; sessionUri: string; chunk: Buffer; start: number; total: number; contentType: string },
+  args: { accessToken: string; sessionUri: string; chunk: Buffer; start: number; total: number; contentType: string; pace?: UploadPace },
   http: UploadHttp = nodeUploadHttp
 ): Promise<UploadProgress> {
   assertGoogleUploadUrl(args.sessionUri);
@@ -177,6 +215,7 @@ export async function putVideoUploadChunk(
       "Content-Range": `bytes ${args.start}-${last}/${args.total}`,
     },
     body: args.chunk,
+    ...(args.pace ? { pace: args.pace } : {}),
   });
   return progressOf(response, "chunk");
 }

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DomainError } from "./contracts";
-import { beginResumableVideoUpload, putVideoUploadChunk, queryVideoUploadOffset, type UploadHttp, type VideoInsertResource } from "./upload";
+import { EventEmitter } from "node:events";
+import { beginResumableVideoUpload, PACED_SLICE_BYTES, putVideoUploadChunk, queryVideoUploadOffset, writePacedBody, type UploadHttp, type VideoInsertResource } from "./upload";
 
 // BL-182 (ADR 0037). Expected requests and answers follow Google's "Resumable Uploads" guide for the YouTube Data API
 // (developers.google.com/youtube/v3/guides/using_resumable_upload_protocol):
@@ -109,4 +110,90 @@ test("start: paid promotion goes as the paidProductPlacementDetails part, named 
   await beginResumableVideoUpload({ accessToken: "tok", resource, contentLength: 10, contentType: "video/mp4", notifySubscribers: true }, http);
   assert.equal(calls[0].url, "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status,paidProductPlacementDetails&notifySubscribers=true");
   assert.deepEqual(JSON.parse(String(calls[0].body)).paidProductPlacementDetails, { hasPaidProductPlacement: true });
+});
+
+// BL-233 (FO-REQ-0047): the bandwidth limit while live paces the body of a chunk; the request itself is the same request.
+test("chunk with a pace: the same headers and body reach the request, and the pace travels with it", async () => {
+  const { http, calls } = fake([{ status: 308, headers: { range: "bytes=0-262143" } }]);
+  const pace = async () => undefined;
+  await putVideoUploadChunk({ accessToken: "tok", sessionUri: SESSION, chunk: Buffer.alloc(262144, 7), start: 0, total: 3 * 262144, contentType: "video/mp4", pace }, http);
+  assert.equal(calls[0].headers["Content-Range"], "bytes 0-262143/786432");
+  assert.equal(calls[0].headers["Content-Length"], "262144");
+  assert.equal((calls[0] as { pace?: unknown }).pace, pace);
+});
+
+class FakeRequest extends EventEmitter {
+  written: Buffer[] = [];
+  ended = false;
+  destroyed: Error | null = null;
+  full = false;
+  write(chunk: Buffer) {
+    this.written.push(Buffer.from(chunk));
+    return !this.full;
+  }
+  end() {
+    this.ended = true;
+  }
+  destroy(error?: Error) {
+    this.destroyed = error ?? new Error("destroyed");
+  }
+}
+
+test("paced body: every byte in order, in 64 KB slices each paced first, then the request ends", async () => {
+  const body = Buffer.from(Array.from({ length: 3 * PACED_SLICE_BYTES + 100 }, (_, i) => i % 251));
+  const req = new FakeRequest();
+  const asked: number[] = [];
+  await writePacedBody(req, body, async (bytes) => void asked.push(bytes));
+  assert.deepEqual(asked, [PACED_SLICE_BYTES, PACED_SLICE_BYTES, PACED_SLICE_BYTES, 100]);
+  assert.ok(Buffer.concat(req.written).equals(body));
+  assert.equal(req.ended, true);
+});
+
+test("paced body: backpressure waits for drain; a failing pace or a socket error destroys the request and never ends it", async () => {
+  const req = new FakeRequest();
+  req.full = true;
+  const done = writePacedBody(req, Buffer.alloc(2 * PACED_SLICE_BYTES), async () => undefined);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(req.written.length, 1, "waits for drain before the next slice");
+  req.full = false;
+  req.emit("drain");
+  await done;
+  assert.equal(req.written.length, 2);
+  assert.equal(req.ended, true);
+
+  const failing = new FakeRequest();
+  await writePacedBody(failing, Buffer.alloc(10), async () => {
+    throw new Error("stop");
+  });
+  assert.equal(failing.ended, false);
+  assert.equal(failing.destroyed?.message, "stop");
+
+  const broken = new FakeRequest();
+  broken.full = true;
+  const pending = writePacedBody(broken, Buffer.alloc(2 * PACED_SLICE_BYTES), async () => undefined);
+  await new Promise((resolve) => setImmediate(resolve));
+  broken.emit("error", new Error("ECONNRESET"));
+  await pending;
+  assert.equal(broken.ended, false);
+  assert.equal(broken.destroyed?.message, "ECONNRESET");
+});
+
+test("review: a request destroyed while the body is paced is never written to again, and the writer does not hang", async () => {
+  const req = new FakeRequest();
+  let calls = 0;
+  await writePacedBody(req, Buffer.alloc(3 * PACED_SLICE_BYTES), async () => {
+    calls += 1;
+    if (calls === 2) req.destroy(new Error("timeout"));
+  });
+  assert.equal(req.written.length, 1, "nothing written after the destroy");
+  assert.equal(req.ended, false);
+
+  const closing = new FakeRequest();
+  closing.full = true;
+  const pending = writePacedBody(closing, Buffer.alloc(2 * PACED_SLICE_BYTES), async () => undefined);
+  await new Promise((resolve) => setImmediate(resolve));
+  closing.emit("close"); // closed without an error event while waiting for drain
+  await pending;
+  assert.equal(closing.written.length, 1);
+  assert.equal(closing.ended, false);
 });

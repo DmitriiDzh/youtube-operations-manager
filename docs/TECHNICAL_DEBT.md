@@ -2171,4 +2171,15 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
   stream's set with `zh-CN` (`agent_live_save_localizations`) before the next live apply. A move set is sent only from a build
   with BL-232: both computers update before the first send (or the owner approves every change of the set before sending).
 - **Re-evaluate:** if a live stream's video is in a move, or when the live set gets a rename of its own.
+
+## RISK-140 — The upload limit while live is a fixed number, and only the app's own upload is limited — OPEN, 2026-10-29
+
+- **What:** BL-233 (FO-REQ-0047). While a stream runs on this computer a YouTube upload is held to `uploadCapMbps` (default
+  2 Mbit/s) and paused while a stream starves. The limit is not measured from the uplink (the request's "uplink − bitrates −
+  margin" option), so a slower link (another Wi-Fi, a busy evening) can still starve a stream until the guard holds the upload.
+  Other traffic on the Mac -- Syncthing catching up after a reboot (the morning starvation of 2026-10-29), browser downloads, a
+  second app -- is not limited at all. The guard's recent speed is measured only while an upload runs.
+- **Bounds:** the guard holds the upload after `uploadGuardMinutes` below 0.97x (≤ 30 minutes per hold), the owner can lower the
+  limit or a stream's own bitrate, and `factory_live_get_status.encoders` shows each stream's speed and lag at any time.
+- **Re-evaluate:** when a stream starves with the upload held or with no upload running, or when the Mac moves to a wired link.
 - **Gate(s):** none. **Status:** open.

@@ -1,5 +1,5 @@
 import path from "node:path";
-import { DomainError, type LiveStreamsSettings } from "./contracts";
+import { DomainError, LIVE_BITRATE_MAX_KBPS, LIVE_BITRATE_MIN_KBPS, type LiveStreamsSettings } from "./contracts";
 import type { LiveStreamBuffer } from "./buffer";
 import { scrubSecrets } from "./playback.mjs";
 
@@ -55,7 +55,19 @@ export type SupervisorStream = {
   nextPassOrderJson: string | null;
   positionIndex: number;
   positionOffsetSeconds: number;
+  /** BL-233 (schema v113): the stream's own encoder bitrate; null/absent = this computer's setting. */
+  bitrateKbps?: number | null;
 };
+
+/**
+ * BL-233 (FO-REQ-0047 ask 1): the bitrate an encoder starts with -- the stream's own when it is a whole number within the
+ * setting's bounds, else this computer's. A stored value outside the bounds (a damaged row) never reaches ffmpeg.
+ */
+export function encoderBitrateFor(stream: Pick<SupervisorStream, "bitrateKbps">, settings: Pick<LiveStreamsSettings, "bitrateKbps">): { bitrateKbps: number; source: "stream" | "computer" } {
+  const own = stream.bitrateKbps;
+  if (typeof own === "number" && Number.isInteger(own) && own >= LIVE_BITRATE_MIN_KBPS && own <= LIVE_BITRATE_MAX_KBPS) return { bitrateKbps: own, source: "stream" };
+  return { bitrateKbps: settings.bitrateKbps, source: "computer" };
+}
 
 /** `freshPass`: a new pass from the rotation's start (Start). `rebuild`: Restart -- the rotation as it is now, keeping the video playing. */
 export type StartOptions = { freshPass: boolean; rebuild?: boolean; playable?: readonly string[] };
@@ -358,13 +370,14 @@ export function createStreamSupervisor(deps: SupervisorDependencies) {
 
     const durations = await durationsOf(channelId);
     const token = deps.newToken();
+    const bitrate = encoderBitrateFor(stream, settings);
     const plan = {
       protocol: HELPER_PROTOCOL,
       token,
       ffmpegPath: tools.ffmpegPath,
       ffprobePath: tools.ffprobePath,
       ingestUrl: ingestion.rtmpsIngestionAddress.replace(/\/+$/, ""),
-      encoder: { codec: settings.encoder, bitrateKbps: settings.bitrateKbps },
+      encoder: { codec: settings.encoder, bitrateKbps: bitrate.bitrateKbps },
       pass: { number: passNumber, videos: pass.order.map((id) => ({ videoId: id, file: deps.buffer.fileOf(channelId, id), duration: durations.get(id) ?? 0 })), startIndex: pass.index, startOffset: pass.offset },
       nextPass: null,
       playable,
@@ -373,7 +386,7 @@ export function createStreamSupervisor(deps: SupervisorDependencies) {
     await deps.files.writeAtomic(path.join(dirOf(channelId), "plan.json"), JSON.stringify(plan, null, 1));
     const pid = await deps.process.spawnHelper(dirOf(channelId), ingestion.streamName);
     await deps.files.writeAtomic(helperFile(channelId), JSON.stringify({ pid, token, startedAt: deps.clock().getTime(), protocol: HELPER_PROTOCOL } satisfies HelperRecord));
-    await deps.streams.event(channelId, "encoder_start", { pid, passNumber, index: pass.index, offset: pass.offset, encoder: settings.encoder, bitrateKbps: settings.bitrateKbps });
+    await deps.streams.event(channelId, "encoder_start", { pid, passNumber, index: pass.index, offset: pass.offset, encoder: settings.encoder, bitrateKbps: bitrate.bitrateKbps, bitrateSource: bitrate.source });
     return { pid };
   }
 
@@ -524,6 +537,13 @@ export function createStreamSupervisor(deps: SupervisorDependencies) {
 
     /** The helper's last status, running or not (the page and the bell). */
     readStatus,
+
+    /** BL-233: the bitrate the running encoder was started with (`plan.json`); null without a plan. */
+    async readPlanBitrateKbps(channelId: string): Promise<number | null> {
+      const plan = parseJson<{ encoder?: { bitrateKbps?: unknown } }>(await deps.files.read(path.join(dirOf(channelId), "plan.json")));
+      const value = plan?.encoder?.bitrateKbps;
+      return typeof value === "number" && Number.isFinite(value) ? value : null;
+    },
   };
 }
 
