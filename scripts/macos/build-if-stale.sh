@@ -68,6 +68,8 @@ if [ -n "$NEED_BUILD" ]; then
   # without the guard that initializes -- and migrates -- the real database with whatever sources are checked out
   # (RISK-63's root cause). Every route is dynamic, so nothing is prerendered from data; the real migration happens
   # when the server starts (with its pre-migration backup).
+  # BL-237: `npm run build`'s prebuild step first caps Next.js's build cache (scripts/next-cache-trim.mjs): over 5 GB, or
+  # YTOM_NEXT_CACHE_LIMIT_GB, .next/cache/turbopack is removed and the build log says so.
   NODE_TEST_CONTEXT=1 npm run build
   # The marker must name what was actually built: if the checkout changed while building, record nothing.
   if [ -n "$CURRENT_REV" ] && [ "$(git rev-parse HEAD 2>/dev/null || echo "")" != "$CURRENT_REV" ]; then
