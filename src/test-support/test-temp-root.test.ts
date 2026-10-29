@@ -145,6 +145,11 @@ test("--test-isolation other than \"process\" is refused (tests in one process c
   assert.equal(refusedRunnerArgs(["--test-isolation=process"]), null);
   assert.equal(refusedRunnerArgs(["--test-isolation", "process"]), null);
   assert.equal(refusedRunnerArgs(["--test-name-pattern", "none"]), null);
+  // node's earlier, experimental name for the same option: refused the same way.
+  for (const args of [["--experimental-test-isolation=none"], ["--experimental-test-isolation", "none"], ["--experimental-test-isolation"]]) {
+    assert.match(refusedRunnerArgs(args) ?? "", /--experimental-test-isolation .* is refused/, JSON.stringify(args));
+  }
+  assert.equal(refusedRunnerArgs(["--experimental-test-isolation=process"]), null);
 });
 
 test("end to end: the runner refuses --test-isolation none before running anything, and leaves no run folder", () =>

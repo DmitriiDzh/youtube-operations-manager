@@ -102,6 +102,7 @@ export const VALUE_OPTIONS = new Set([
   "--test-timeout",
   "--test-shard",
   "--test-isolation",
+  "--experimental-test-isolation",
   "--test-coverage-include",
   "--test-coverage-exclude",
   "--experimental-test-coverage-include",
@@ -125,6 +126,9 @@ export function testRunnerArgs(extra, defaultPattern = "src/**/*.test.ts") {
   return ["--import", "tsx", "--test", ...options, ...(targets.length > 0 ? targets : [defaultPattern])];
 }
 
+/** The runner's isolation options (the current name and node's earlier experimental one). */
+const ISOLATION_OPTIONS = ["--test-isolation", "--experimental-test-isolation"];
+
 /**
  * Why these runner arguments are refused, or null. `--test-isolation=none` runs every test file inside the runner's own
  * process, which node does not mark as a test process (NODE_TEST_CONTEXT): the app's test redirect (`isRunningUnderTestRunner`)
@@ -134,9 +138,11 @@ export function testRunnerArgs(extra, defaultPattern = "src/**/*.test.ts") {
 export function refusedRunnerArgs(extra) {
   for (let i = 0; i < extra.length; i++) {
     const arg = extra[i];
-    const value = arg.startsWith("--test-isolation=") ? arg.slice("--test-isolation=".length) : arg === "--test-isolation" ? (extra[i + 1] ?? "(no value)") : undefined;
-    if (value !== undefined && value !== "process") {
-      return `--test-isolation ${value} is refused: tests must each run in their own process, or they could reach the real app-data (only "process" is allowed).`;
+    for (const option of ISOLATION_OPTIONS) {
+      const value = arg.startsWith(`${option}=`) ? arg.slice(option.length + 1) : arg === option ? (extra[i + 1] ?? "(no value)") : undefined;
+      if (value !== undefined && value !== "process") {
+        return `${option} ${value} is refused: tests must each run in their own process, or they could reach the real app-data (only "process" is allowed).`;
+      }
     }
   }
   return null;
