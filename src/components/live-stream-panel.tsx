@@ -14,6 +14,8 @@ import { LiveStreamLocalizationsCard } from "./live-stream-localizations";
 import type { LiveLocalizationsView } from "@/lib/live-streams/localizations";
 import { LiveStreamSegmentsCard, type SegmentsViewData } from "./live-stream-segments";
 import { LiveStreamAnalyticsCard } from "./live-stream-analytics";
+import { LiveStreamLibraryCard, LiveStreamSourceSwitch } from "./live-stream-library";
+import type { LiveSourceMode, SelectedSegmentView } from "@/lib/live-streams";
 import { LoadingIndicator } from "./operation-progress";
 import { ToggleSwitch } from "./toggle-switch";
 import { useT } from "./ui-text-provider";
@@ -82,6 +84,9 @@ type Overview = {
   channelDefaultLanguage?: string | null;
   /** BL-207: the stream's translations, their warnings and the last localizations step. */
   localizations?: LiveLocalizationsView | null;
+  /** BL-234: what the stream plays (null/absent = videos) and the selection from the segment library. */
+  sourceMode?: LiveSourceMode;
+  segmentSelection?: SelectedSegmentView[];
   /** BL-186 stage 3: the last video settings summary (any age). */
   videoSettingsLast?: { at: string; detail: Record<string, unknown> } | null;
   events: Array<{ id: string; at: string; kind: string; detail: Record<string, unknown> }>;
@@ -241,7 +246,12 @@ export function LiveStreamPanel({ channelId, visible }: { channelId: string | nu
             <LiveStreamAnalyticsCard base={base!} visible={visible} />
           </div>
           <div className="max-w-4xl space-y-6">
-            <RotationCard overview={overview} base={base!} onChanged={load} />
+            <LiveStreamSourceSwitch base={base!} mode={overview.sourceMode ?? "videos"} hasStream={overview.stream !== null} onChanged={load} />
+            {(overview.sourceMode ?? "videos") === "segments" ? (
+              <LiveStreamLibraryCard base={base!} selection={overview.segmentSelection ?? []} onChanged={load} />
+            ) : (
+              <RotationCard overview={overview} base={base!} onChanged={load} />
+            )}
             <details className="group rounded-xl border border-zinc-800 bg-zinc-900">
               <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-zinc-200 hover:text-white">{t("live.settingsGroup")}</summary>
               <div className="space-y-6 border-t border-zinc-800 p-3">
@@ -339,6 +349,11 @@ function StatusCard({ overview, base, onChanged }: { overview: Overview; base: s
   const on = overview.stream?.intent === "on";
   const status = overview.encoder.status;
   const playing = status?.position.videoId ? overview.rotation.find((v) => v.videoId === status.position.videoId) : null;
+  // BL-234: in segments mode the item playing is a library segment; its track comes from the sidecar by the offset.
+  const segmentsMode = (overview.sourceMode ?? "videos") === "segments";
+  const playingSegment = status?.position.videoId ? (overview.segmentSelection ?? []).find((s) => s.id === status.position.videoId) : undefined;
+  const playingTrack = playingSegment ? [...playingSegment.tracks].reverse().find((track) => track.startSec <= status!.position.offset) : undefined;
+  const sourceCount = segmentsMode ? (overview.segmentSelection ?? []).length : overview.rotation.length;
   const preview = overview.startPreview;
   const settings = overview.stream?.settings ?? EMPTY_SETTINGS;
   const ready = overview.module.enabled && overview.module.host.ok;
@@ -377,12 +392,13 @@ function StatusCard({ overview, base, onChanged }: { overview: Overview; base: s
         <div className="space-y-1 text-sm text-zinc-300">
           <p>
             {t("live.status.nowPlaying", {
-              title: playing?.title ?? status.position.videoId ?? "—",
+              title: playing?.title ?? playingSegment?.title ?? status.position.videoId ?? "—",
               n: String(status.position.index + 1),
-              total: String(status.passVideoIds?.length ?? overview.rotation.length),
+              total: String(status.passVideoIds?.length ?? sourceCount),
               at: clock(status.position.offset),
             })}
           </p>
+          {playingTrack && <p className="text-xs text-zinc-400">{t("live.status.track", { track: playingTrack.title })}</p>}
           {status.missingVideoId && <p className="text-xs text-amber-300">{t("live.status.missing", { videoId: status.missingVideoId })}</p>}
           {status.lastExit && <p className="text-xs text-zinc-500">{t("live.status.lastExit", { at: new Date(status.lastExit.at).toLocaleString(t.language), cause: causeText(t, status.lastExit.cause) })}</p>}
           {status.progress.bitrate && (
@@ -397,7 +413,7 @@ function StatusCard({ overview, base, onChanged }: { overview: Overview; base: s
       {on && overview.youtube && <YoutubeHealth youtube={overview.youtube} />}
       <div className="flex flex-wrap gap-2">
         {!on && (
-          <button onClick={() => setDialog("start")} disabled={busy || !ready || overview.rotation.length === 0 || !settings.title.trim()} className={primaryClass}>
+          <button onClick={() => setDialog("start")} disabled={busy || !ready || sourceCount === 0 || !settings.title.trim()} className={primaryClass}>
             {t("live.action.start")}
           </button>
         )}
@@ -435,8 +451,8 @@ function StatusCard({ overview, base, onChanged }: { overview: Overview; base: s
         )}
       </div>
       {on && overview.videoSettings && <VideoApplyStatus overview={overview} />}
-      {!on && overview.rotation.length === 0 && <p className="text-xs text-zinc-500">{t("live.start.needRotation")}</p>}
-      {!on && overview.rotation.length > 0 && !settings.title.trim() && <p className="text-xs text-zinc-500">{t("live.start.needTitle")}</p>}
+      {!on && sourceCount === 0 && <p className="text-xs text-zinc-500">{t(segmentsMode ? "live.start.needSegments" : "live.start.needRotation")}</p>}
+      {!on && sourceCount > 0 && !settings.title.trim() && <p className="text-xs text-zinc-500">{t("live.start.needTitle")}</p>}
       {busy && <LoadingIndicator className="text-xs text-zinc-400" />}
       <StatusNotice
         notice={error ? { tone: "error", text: error } : notice ? { tone: "ok", text: notice } : null}
@@ -1069,6 +1085,12 @@ const EVENT_KEYS: Record<string, UiTextKey> = {
   localizations_saved: "live.event.localizationsSaved",
   upload_held: "live.event.uploadHeld",
   upload_released: "live.event.uploadReleased",
+  source_mode_changed: "live.event.sourceModeChanged",
+  library_add: "live.event.libraryAdd",
+  library_remove: "live.event.libraryRemove",
+  library_reorder: "live.event.libraryReorder",
+  segment_refused: "live.event.segmentRefused",
+  segment_library_unavailable: "live.event.segmentLibraryUnavailable",
 };
 
 const UPLOAD_RELEASE_KEYS: Record<string, UiTextKey> = {
@@ -1097,6 +1119,14 @@ function HistoryCard({ overview }: { overview: Overview }) {
                 ? `${stepLabel(t, detail.step)} · ${detail.ok ? t("live.yes") : String(detail.error ?? "—")}`
                 : event.kind === "localizations_saved" && Array.isArray(detail.languages)
                 ? detail.languages.join(", ") || "—"
+                : event.kind === "source_mode_changed" && typeof detail.to === "string"
+                ? t(detail.to === "segments" ? "live.source.segments" : "live.source.videos")
+                : event.kind === "segment_refused" && typeof detail.seq === "number"
+                ? `seg-${String(detail.seq).padStart(6, "0")}${typeof detail.reason === "string" ? ` · ${detail.reason}` : ""}`
+                : event.kind === "library_add" && Array.isArray(detail.seqs)
+                ? detail.seqs.map((seq) => `seg-${String(seq).padStart(6, "0")}`).join(", ")
+                : event.kind === "library_remove" && typeof detail.seq === "number"
+                ? `seg-${String(detail.seq).padStart(6, "0")}`
                 : event.kind === "upload_held" && typeof detail.speed === "number"
                 ? `${detail.speed.toFixed(3)}×`
                 : event.kind === "upload_released" && typeof detail.releaseReason === "string"
