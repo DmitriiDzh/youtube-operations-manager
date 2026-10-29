@@ -12,7 +12,10 @@
 // 1.11.0 (BL-214, LIVE_ANALYTICS_PLAN.md stage 4): the READ tool producer_live_analytics (additive).
 // 1.12.0 (BL-221, owner msg 3453): producer_live_analytics counts a sample taken while live without a viewer count as 0 viewers
 // (YouTube omits concurrentViewers when nobody watches): averageViewers / peakViewers are 0, not null, for such time. Same shape.
-export const PRODUCER_API_VERSION = "1.12.0";
+// 1.13.0 (BL-235, owner msgs 3806/3807): agent_get_publishing_calendar -- coverage.due is "fewer than 7 covered days in a row"
+// (a release with every tracked translation, the channel's zone), coverage.coveredDaysInARow; gapDates are the channel's days not
+// covered (gapDatesTimeZone), missingTranslationDates; entries can be kind published_pending (date passed < 24 h, not synced yet).
+export const PRODUCER_API_VERSION = "1.13.0";
 
 /** The channel agent's READ tools the Producer gets; each call names its channel and runs in that channel's agent scope. */
 export const PRODUCER_CHANNEL_TOOLS: Readonly<Record<string, { capability: string }>> = Object.freeze({

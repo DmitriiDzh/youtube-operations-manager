@@ -716,7 +716,7 @@ test("AC-PR-07 / AC-PR-10: the Producer's own tools -- its channels with their f
   // BL-191 (SUGGESTED_SOURCES_PLAN.md AC-SS-08, FO-REQ-0026 §4.1): 1.9.0 adds the READ channel tool agent_get_stored_suggested_sources.
   // BL-214 (LIVE_ANALYTICS_PLAN.md stage 4): 1.11.0 adds the READ tool producer_live_analytics; the DRAFT list is unchanged.
   assert.ok(PRODUCER_TOOL_NAMES.includes("producer_live_analytics"));
-  assert.equal(PRODUCER_API_VERSION, "1.12.0"); // 1.12.0 (BL-221): a live sample without a count is 0 viewers; 1.10.0 (BL-209): the calendar read's uploads gain automatic / progressPercent / finishedAt; 1.8.0 (BL-182 stage 2): the calendar read lists packages and uploads
+  assert.equal(PRODUCER_API_VERSION, "1.13.0"); // 1.13.0 (BL-235): the calendar read's due / gapDates from the daily coverage, published_pending; 1.12.0 (BL-221): a live sample without a count is 0 viewers; 1.10.0 (BL-209): the calendar read's uploads gain automatic / progressPercent / finishedAt; 1.8.0 (BL-182 stage 2): the calendar read lists packages and uploads
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_stored_suggested_sources"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_publishing_calendar"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_video_comments"));

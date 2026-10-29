@@ -857,14 +857,15 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 
 - **BL-235 одно покрытие дней публикации (сообщения владельца 3806/3807, ветка `feature/bl-235-coverage`; `docs/ARCHITECTURE.md` §47.6):**
   - Общий модуль `src/lib/publishing-coverage/` (§M, без модулей-фич): день (дата в поясе канала) `covered` — видео опубликовано
-    или запланировано на этот день и у него все отслеживаемые переводы (правило «Языков», `shared-language-baseline.missingTrackedLanguages`);
-    `missing_translations` — видео есть, переводов не хватает; `gap` — нет (просроченное, без даты, эфир не закрывают). `asOf` —
+    (публичное), запланировано или «время прошло, ещё не синхронизировано» (меньше 24 ч) на этот день и у него все отслеживаемые переводы (правило «Языков», `shared-language-baseline.missingTrackedLanguages`);
+    `missing_translations` — видео есть, переводов не хватает; `gap` — нет (просроченное ≥ 24 ч, без даты, по ссылке, запись эфира приложения, эфир не закрывают). `asOf` —
     последняя синхронизация канала. Правило видео календаря перенесено сюда (`rules.ts`).
   - Пояс канала: пояс его последнего плана недели, иначе пояс владельца, иначе UTC (`src/composition/publishing-coverage.ts`).
   - «Календарь»: клетки — дни канала, пустые дни и жёлтые «без всех переводов» — из покрытия; напоминание, значок и колокольчик: due =
     закрыто подряд меньше 7 дней. «План недели»: строка «Закрыто N из 7 · без видео · без переводов» (одобрения не меняются).
   - MCP (только чтение): `factory_publishing_coverage` (Factory API 1.39.0), `agent_publishing_coverage` (Agent API 4.13.0);
-    `agent_get_publishing_calendar.coverage.due` — по тому же правилу.
+    `agent_get_publishing_calendar` — `coverage.due`, `gapDates`, `missingTranslationDates` по тому же правилу (Producer API 1.13.0).
+    Пояс канала кешируется на 5 мин.
 
 ### 2.9am Круглосуточная трансляция своих открытых видео канала (BL-176, FO-REQ-0019, ADR 0036, `docs/roadmap/plans/LIVE_STREAMS_PLAN.md`) — **IMPLEMENTED, влито в `dev` (`1c102a2`); реальные записи в YouTube (spike B) и приёмка §4.2 ещё не проводились**
 

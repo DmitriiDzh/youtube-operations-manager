@@ -4204,18 +4204,25 @@ Plan: `docs/roadmap/plans/PUBLISHING_PLAN.md`. Owner: msgs 2698, 2702 and 2707.
   date itself, so DST never shifts them) `covered` | `missing_translations` | `gap`. Required translations = the shared
   `missingTrackedLanguages` (moved from `localization/services.ts` to `shared-language-baseline`): tracked languages minus the
   video's own language, read against the channel's language, non-empty title and (where the original has one) description. Overdue
-  never covers. A day with several videos is covered if one qualifies; its `missingLanguages` are the most complete video's.
+  never covers; a private video whose `publishAt` passed less than 24 h ago is `published_pending` and does (YouTube published it,
+  the copy learns it at the next sync -- so a release day is no false gap). Only releases viewers see count: unlisted videos and the
+  recordings of the app's own live broadcasts (`listAppBroadcastIds`, a port given by the composition) do not. A day with several
+  videos is covered if one qualifies; its `missingLanguages` are the most complete video's.
   `index.ts`: input `{ channelId, days 1..30 (7), fromDate? }`, `asOf` = the channel's `lastSyncedAt`; `not_found` for a channel
   never synced here.
 - **Zone.** `src/composition/publishing-coverage.ts`: the zone of the channel's newest weekly plan (the plans are kept in the
-  channel's time), else the owner's zone (`analytics_sync_timezone`), else UTC; the result names its source.
+  channel's time); no plan, an invalid zone or a failed read: the owner's zone (`analytics_sync_timezone`), else UTC; the result
+  names its source. Cached per channel for 5 min (the alerts poll every channel each minute), dropped when the Operator or a worker
+  saves that channel's plan here. The calendar and the alerts hand the rows they read to the coverage (`CoveragePreRead`): one read.
 - **Users.** The calendar route and the alerts route pass `dailyCoverage` to `createPublishingCalendarCore`: the reminder
   (`coverage.due`, the badge, the bell) is "fewer than 7 covered days in a row from today", `coverage.coveredDaysInARow` is added and
   `dayCoverage` (14 days) drives the grid -- cells are the channel's days, its times are the channel's, gaps and the yellow
   "missing translations" days (tooltip with the languages) come from it. A failing coverage read leaves the older rule (§M). The
   plan route returns `{ plan, coverage }` (the plan's week in its zone) for the line «Закрыто N из 7 · без видео · без переводов»;
   approvals are untouched. MCP: `factory_publishing_coverage` and the worker's `agent_publishing_coverage` (channel-pinned);
-  `agent_get_publishing_calendar` gets the same `due` (MCP server wiring).
+  `agent_get_publishing_calendar` gets the same `due`, and its `gapDates` / `missingTranslationDates` come from the coverage (channel
+  dates). In the calendar the cells, hover texts, «covered through» and the overdue list use the channel's time; it opens on the
+  channel's today; packages sit on their planned date as a day.
 
 ### 47.3 Stage 2 — publishing defaults, release packages, upload and schedule
 

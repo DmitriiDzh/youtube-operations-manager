@@ -101,7 +101,9 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT",
 // 4.13.0 (BL-235, owner msgs 3806/3807): agent_publishing_coverage (READ) -- the worker's own channel's publishing days from today in
 // the channel's zone, covered | missing_translations | gap (a video published or scheduled with every tracked translation), as
 // factory_publishing_coverage (Factory API 1.39.0); agent_get_publishing_calendar's coverage.due follows the same rule (fewer than 7
-// covered days in a row) and gains coverage.coveredDaysInARow. Additive.
+// covered days in a row) and gains coverage.coveredDaysInARow; its gapDates become the channel's days not covered (with
+// gapDatesTimeZone and missingTranslationDates), and entries may be kind published_pending (publishAt passed < 24 h ago, the copy
+// not synced yet). Producer API 1.13.0 the same.
 export const AGENT_API_VERSION = "4.13.0";
 
 /**

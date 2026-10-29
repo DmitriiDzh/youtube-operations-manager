@@ -453,9 +453,11 @@ Key MCP tools:
   - BL-235 (2026-10-29, Agent API 4.13.0, additive; owner msgs 3806/3807): `agent_publishing_coverage` (READ, domain
     `channel_production`, capability `channel_production.read_publishing_coverage`) -- `factory_publishing_coverage` (Factory API
     1.39.0, below) for the bound channel only (another channel or none named → `CHANNEL_NOT_ACTIVE`, before any read).
-    `agent_get_publishing_calendar`'s `coverage.due` now follows the same rule -- fewer than `thresholdDays` (7) covered days in a row
-    from today in the channel's zone -- and `coverage.coveredDaysInARow` is added (absent if the coverage read failed: then the
-    older rule, the latest scheduled time within 7 days). The Producer's copy of that tool changes the same way.
+    `agent_get_publishing_calendar` gives the same answer (Producer API 1.13.0 for its copy): `coverage.due` = fewer than
+    `thresholdDays` (7) covered days in a row from today in the channel's zone, plus `coverage.coveredDaysInARow`; `gapDates` = the
+    next 14 days (channel's dates, `gapDatesTimeZone`) whose status is not `covered`, plus `missingTranslationDates`; entries may be
+    kind `published_pending` (publishAt passed < 24 h ago, copy still private). If the coverage read fails: the older rule (latest
+    scheduled time within 7 days; `gapDates` UTC days, `gapDatesTimeZone: "UTC"`, `missingTranslationDates: null`).
   - BL-234 (2026-10-29, Agent API 4.12.0, additive): `agent_live_get_status` gains `sources`, as `factory_live_get_status`
     (Factory API 1.38.0, below). Switching the source and choosing segments stay the owner's, in the app (no tool).
   - BL-233 (2026-10-29, Agent API 4.11.0, additive): `agent_live_get_status` gains `encoders` and `upload`, as
@@ -1297,16 +1299,19 @@ A second agent role, separate from the channel agents. Technical contract only (
       asOf (the channel's last sync on this computer, ISO 8601; null = never), timeZone, timeZoneSource: publishing_plan | owner | utc,
       trackedLanguages, channelLanguage, from, to, days: [{ date (YYYY-MM-DD in timeZone; the first is today there), status: covered |
       missing_translations | gap, videoIds (published + scheduled videos of the day, time order), missingLanguages ([] unless
-      missing_translations: the day's most complete video's), videos: [{ videoId, title, kind: published | scheduled | overdue, at,
-      missingLanguages }] }], summary: { covered, missingTranslations, gaps, coveredDaysInARow } }`; `not_found` when the channel was
+      missing_translations: the day's most complete video's), videos: [{ videoId, title, kind: published | scheduled |
+      published_pending | overdue | unlisted | live_recording, at, missingLanguages }] }], summary: { covered, missingTranslations, gaps, coveredDaysInARow } }`; `not_found` when the channel was
       never synced here.
-    - Rule: a video covers its day (in `timeZone`) when it is published that day (public or unlisted, at its publish time) or
-      scheduled for it (private, future `publishAt`) and lacks no required translation. Required = the channel's tracked languages
+    - Rule: a release covers its day (in `timeZone`) when it is published that day (public, at its publish time), scheduled for it
+      (private, future `publishAt`) or published-pending (`publishAt` passed less than 24 h ago, the copy still private: YouTube
+      published it, the next sync shows it) and lacks no required translation. Required = the channel's tracked languages
       minus the video's own language, read against the channel's language (`missingTrackedLanguages`, the Languages tab's rule): an
       entry with a non-empty title and, where the original has a description, a non-empty description. No tracked languages = none
-      required. Overdue (`publishAt` passed, copy not public), undated private uploads, live/upcoming broadcasts and rows the latest
-      sync no longer returned never cover. Several videos on a day: covered if one qualifies. Plan approvals do not count.
-    - `timeZone`: the zone of the channel's newest weekly plan, else the owner's own zone (Settings), else UTC.
+      required. Never a release: unlisted videos, recordings of live broadcasts this app ran (its segments and viewer samples),
+      overdue videos (`publishAt` passed 24 h ago or more, copy not public), undated private uploads, live/upcoming broadcasts and
+      rows the latest sync no longer returned. Several videos on a day: covered if one qualifies. Plan approvals do not count.
+    - `timeZone`: the zone of the channel's newest weekly plan (kept 5 min per channel, read again after a plan save here); no
+      plan, an invalid zone or a failed read: the owner's own zone (Settings); else UTC.
   - **BL-220 restart-when-idle tools (Factory API 1.30.0, ADR 0049, `docs/roadmap/plans/RESTART_WHEN_IDLE_PLAN.md`).** While a
     restart request is open (the owner's button, or `scripts/macos/restart-when-idle.sh`), the server checks every 15 s and, once
     nothing waits, records `restarting` and sends itself SIGTERM (the system service starts the new build). Only under the macOS
