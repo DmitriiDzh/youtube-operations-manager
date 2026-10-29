@@ -13,7 +13,7 @@ import type { BatchItem } from "drizzle-orm/batch";
 import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "@/lib/batches/ledger-state";
 import { getProductionAppPaths, isRunningUnderTestRunner, resolveLegacyDbPath } from "@/lib/platform-paths";
-import { copyDatabaseConsistently, isMissingTableError, pruneMigrationBackups } from "@/lib/db-backup";
+import { copyDatabaseConsistently, isMissingTableError, recordSuccessfulMigration } from "@/lib/db-backup";
 import {
   assertSupportedSchemaVersion,
   readSchemaVersion,
@@ -6320,6 +6320,8 @@ async function initializeDatabase() {
   // pre-migration backup, never the live DB. Loaded lazily: `@/lib/snapshot` imports this module.
   // The hooks never throw.
   let syncHooks: { beforeMigrations: (backupPath: string) => Promise<void>; afterMigrations: () => Promise<void> } | null = null;
+  // BL-237: the copy this boot took before migrating; old copies are trimmed only once the migrations SUCCEEDED.
+  let migrationBackupPath: string | null = null;
   try {
     await initializeDatabaseSchema(rawClient, {
       beforeMigrations: async () => {
@@ -6328,9 +6330,7 @@ async function initializeDatabase() {
           `pre-migration-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.db`
         );
         await copyDatabaseConsistently(rawClient, destPath);
-        // BL-237: only after the new backup is written -- the newest 10 of each kind stay, this one always. Housekeeping:
-        // a failure here never stops the migration.
-        await pruneMigrationBackups(appPaths.migrationBackupsDir, { protect: [destPath] }).catch(() => []);
+        migrationBackupPath = destPath;
         syncHooks = await import("@/lib/snapshot")
           .then(({ createSyncPreservingMigrationHooks }) => createSyncPreservingMigrationHooks(rawClient))
           .catch(() => null);
@@ -6338,6 +6338,12 @@ async function initializeDatabase() {
       },
     });
     await (syncHooks as { afterMigrations: () => Promise<void> } | null)?.afterMigrations();
+    // BL-237: only now -- a failing migration is retried and every retry takes another copy; trimming then would delete the
+    // clean copy from before the upgrade. The newest 10 stay, this one always. Housekeeping: a failure never stops the boot.
+    const writtenBeforeMigrating = migrationBackupPath as string | null; // assigned inside the hook above
+    if (writtenBeforeMigrating) {
+      await recordSuccessfulMigration(appPaths.migrationBackupsDir, { at: Date.now(), justWritten: writtenBeforeMigrating }).catch(() => []);
+    }
   } finally {
     if (lockAcquired) await releaseOperationLock(rawClient);
   }

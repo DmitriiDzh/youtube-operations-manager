@@ -1,4 +1,4 @@
-import { mkdir, readdir, rm, stat } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseBackupError, type SqlExecutor } from "./contracts";
 
@@ -67,11 +67,32 @@ export async function copyDatabaseConsistently(
  */
 export const MIGRATION_BACKUPS_KEEP = 10;
 export const RETAINED_BACKUP_PREFIXES = ["pre-migration", "pre-auto-import"] as const;
+const PRE_MIGRATION_PREFIX = "pre-migration";
+/**
+ * When the last schema migration succeeded (milliseconds, as text), written in `backups/migrations/` by
+ * {@link recordSuccessfulMigration}. Migrations are not transactional: a failing one is retried (every few seconds, and by
+ * every restart), and each attempt takes a new pre-migration copy -- of a database the failed attempts may already have
+ * changed. The OLDEST copy taken since the last success is the clean one from before the upgrade, the one way back to the
+ * previous build: retention never deletes it.
+ */
+export const MIGRATION_SUCCESS_MARKER = ".last-successful-migration";
+
+const BACKUP_NAME = (prefix: string) => new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-(\\d+)-[0-9A-Za-z]+\\.db$`);
+
+async function readSuccessMarker(dir: string): Promise<number> {
+  try {
+    const value = Number((await readFile(path.join(dir, MIGRATION_SUCCESS_MARKER), "utf8")).trim());
+    return Number.isFinite(value) ? value : 0;
+  } catch {
+    return 0;
+  }
+}
 
 /**
  * Deletes the older automatic backups in `dir`, keeping the newest `keep` of each prefix -- newest by the millisecond
- * timestamp in the name (`<prefix>-<ms>-<suffix>.db`, the form every writer uses). `protect` (the backup just written) is
- * never deleted, wherever it sorts. Returns the names deleted. Called after a new backup was written successfully.
+ * timestamp in the name (`<prefix>-<ms>-<suffix>.db`, the form every writer uses). Never deleted: `protect` (the backup
+ * just written), and the oldest `pre-migration` copy taken since the last successful migration (see
+ * {@link MIGRATION_SUCCESS_MARKER}). Returns the names deleted.
  */
 export async function pruneMigrationBackups(
   dir: string,
@@ -88,17 +109,36 @@ export async function pruneMigrationBackups(
   }
   const removed: string[] = [];
   for (const prefix of prefixes) {
-    const pattern = new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-(\\d+)-[0-9A-Za-z]+\\.db$`);
+    const pattern = BACKUP_NAME(prefix);
     const ours = names
       .map((name) => ({ name, at: Number(pattern.exec(name)?.[1] ?? NaN) }))
       .filter((entry) => Number.isFinite(entry.at))
       .sort((a, b) => b.at - a.at || b.name.localeCompare(a.name));
+    const kept = new Set<string>();
+    if (prefix === PRE_MIGRATION_PREFIX) {
+      const lastSuccess = await readSuccessMarker(dir);
+      const sinceSuccess = ours.filter((entry) => entry.at > lastSuccess);
+      const preUpgrade = sinceSuccess[sinceSuccess.length - 1];
+      if (preUpgrade) kept.add(preUpgrade.name);
+    }
     for (const entry of ours.slice(keep)) {
       const full = path.join(dir, entry.name);
-      if (protectedPaths.has(path.resolve(full))) continue;
+      if (kept.has(entry.name) || protectedPaths.has(path.resolve(full))) continue;
       await rm(full, { force: true });
       removed.push(entry.name);
     }
   }
+  return removed;
+}
+
+/**
+ * After the schema migrations SUCCEEDED (only then): trims the pre-migration copies to the newest 10 -- the one just
+ * written and the clean pre-upgrade copy always stay -- and records the success, so the next upgrade's own first copy
+ * becomes the protected one. Never called while a migration fails: every retry's copy stays until one attempt succeeds.
+ */
+export async function recordSuccessfulMigration(dir: string, input: { at: number; justWritten?: string | null }): Promise<string[]> {
+  const removed = await pruneMigrationBackups(dir, { prefixes: [PRE_MIGRATION_PREFIX], protect: input.justWritten ? [input.justWritten] : [] });
+  await mkdir(dir, { recursive: true });
+  await writeFile(path.join(dir, MIGRATION_SUCCESS_MARKER), String(input.at), "utf8");
   return removed;
 }

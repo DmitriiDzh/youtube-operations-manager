@@ -415,9 +415,11 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
       },
     });
     if (!mode.acceptDivergentLineage) {
-      await pruneAutoImportBackups(deps.migrationBackupsDir).catch(() => []);
+      const justWritten = "backupPath" in result ? [result.backupPath] : [];
+      await pruneMigrationBackups(deps.migrationBackupsDir, { prefixes: [AUTO_IMPORT_BACKUP_PREFIX], protect: justWritten }).catch(() => []);
       // BL-237: the same retention for the backups taken before schema migrations (newest 10 stay), run whenever a new
-      // automatic backup was written -- so the copies collected before this rule shrink without waiting for a migration.
+      // automatic backup was written -- so the copies collected before this rule shrink without waiting for a migration. The
+      // clean copy from before an upgrade that has not succeeded yet is never deleted (db-backup's success marker).
       await pruneMigrationBackups(deps.migrationBackupsDir, { prefixes: ["pre-migration"] }).catch(() => []);
     }
     return result;

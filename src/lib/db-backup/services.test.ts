@@ -2,8 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import { createLibsqlClient } from "@/lib/libsql-client";
-import { copyDatabaseConsistently, isMissingTableError, MIGRATION_BACKUPS_KEEP, pruneMigrationBackups, RETAINED_BACKUP_PREFIXES } from "./services";
-import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { copyDatabaseConsistently, isMissingTableError, MIGRATION_BACKUPS_KEEP, MIGRATION_SUCCESS_MARKER, pruneMigrationBackups, recordSuccessfulMigration, RETAINED_BACKUP_PREFIXES } from "./services";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { DatabaseBackupError } from "./contracts";
 import { withTempDir } from "@/test-support/temp-dir";
 
@@ -74,6 +74,8 @@ test("the newest 10 pre-migration and the newest 10 pre-auto-import stay; the ol
     const migrations = Array.from({ length: 13 }, (_, i) => `pre-migration-${1_790_000_000_000 + i}-ab${i}cd.db`);
     const imports = Array.from({ length: 11 }, (_, i) => `pre-auto-import-${1_791_000_000_000 + i}-0f0f0f0${i % 10}.db`);
     await seed(dir, [...migrations, ...imports]);
+    // The last upgrade succeeded after all these copies (review blocker: before a success the oldest copy is kept).
+    await writeFile(path.join(dir, MIGRATION_SUCCESS_MARKER), "9999999999999");
     const removed = await pruneMigrationBackups(dir);
     assert.deepEqual(removed.sort(), [migrations[0], migrations[1], migrations[2], imports[0]].sort());
     const left = await readdir(dir);
@@ -86,6 +88,8 @@ test("newest is by the timestamp in the name, not by the order of the names as t
     // 999 sorts after 1000 as text, but is older.
     const names = ["pre-migration-999-aaaaaa.db", ...Array.from({ length: 10 }, (_, i) => `pre-migration-${1000 + i}-aaaaaa.db`)];
     await seed(dir, names);
+    // The last upgrade succeeded after all these copies (review blocker: before a success the oldest copy is kept).
+    await writeFile(path.join(dir, MIGRATION_SUCCESS_MARKER), "9999999999999");
     assert.deepEqual(await pruneMigrationBackups(dir), ["pre-migration-999-aaaaaa.db"]);
   }));
 
@@ -117,6 +121,8 @@ test("other backups, malformed names and sub-folders are never touched", () =>
       "notes.txt",
     ];
     await seed(dir, [...others, ...Array.from({ length: 12 }, (_, i) => `pre-migration-${4000 + i}-eeeeee.db`)]);
+    // The last upgrade succeeded after all these copies (review blocker: before a success the oldest copy is kept).
+    await writeFile(path.join(dir, MIGRATION_SUCCESS_MARKER), "9999999999999");
     await mkdir(path.join(dir, "manual"));
     await seed(path.join(dir, "manual"), ["pre-migration-1-ffffff.db"]);
     const removed = await pruneMigrationBackups(dir);
@@ -128,4 +134,48 @@ test("other backups, malformed names and sub-folders are never touched", () =>
 
 test("a missing folder prunes nothing and does not throw", async () => {
   assert.deepEqual(await pruneMigrationBackups(path.join("/nonexistent-ytm", "backups", "migrations")), []);
+});
+
+// Independent review (BL-237 blocker): migrations are not transactional, and a failing one is retried -- every attempt takes a
+// new pre-migration copy. Requirement: the backup taken before an upgrade survives until that upgrade succeeds; after a later
+// success, the normal retention applies.
+
+test("a failing upgrade retried 12 times keeps its first (clean) copy, whatever prunes run meanwhile", () =>
+  withTempDir("db-backup-retention-", async (dir) => {
+    // An earlier successful upgrade, and its 10 newest copies.
+    await seed(dir, Array.from({ length: 10 }, (_, i) => `pre-migration-${500 + i}-aaaaaa.db`));
+    await recordSuccessfulMigration(dir, { at: 600 });
+    // The new build's first attempt, then 11 retries, each with its own copy and a prune (e.g. an automatic import's).
+    for (let attempt = 0; attempt < 12; attempt++) {
+      await seed(dir, [`pre-migration-${1000 + attempt}-bbbbbb.db`]);
+      await pruneMigrationBackups(dir, { prefixes: ["pre-migration"] });
+      assert.ok((await readdir(dir)).includes("pre-migration-1000-bbbbbb.db"), `after attempt ${attempt + 1}`);
+    }
+    const left = (await readdir(dir)).filter((n) => n.startsWith("pre-migration-"));
+    assert.equal(left.length, 11, "the newest 10 plus the clean pre-upgrade copy");
+  }));
+
+test("after the upgrade finally succeeds, its first copy is no longer special: the next prune keeps just the newest 10", () =>
+  withTempDir("db-backup-retention-", async (dir) => {
+    await seed(dir, Array.from({ length: 13 }, (_, i) => `pre-migration-${1000 + i}-cccccc.db`));
+    // Success after the 13th attempt: the clean copy (1000) and the one just written both stay.
+    const removed = await recordSuccessfulMigration(dir, { at: 2000, justWritten: path.join(dir, "pre-migration-1012-cccccc.db") });
+    assert.deepEqual(removed.sort(), ["pre-migration-1001-cccccc.db", "pre-migration-1002-cccccc.db"]);
+    assert.equal(await readFile(path.join(dir, MIGRATION_SUCCESS_MARKER), "utf8"), "2000");
+    // A later prune (the next automatic import): ordinary retention.
+    assert.deepEqual(await pruneMigrationBackups(dir, { prefixes: ["pre-migration"] }), ["pre-migration-1000-cccccc.db"]);
+    // The next upgrade's first copy is now the protected one.
+    await seed(dir, ["pre-migration-3000-dddddd.db"]);
+    await seed(dir, Array.from({ length: 10 }, (_, i) => `pre-migration-${3001 + i}-dddddd.db`));
+    await pruneMigrationBackups(dir, { prefixes: ["pre-migration"] });
+    assert.ok((await readdir(dir)).includes("pre-migration-3000-dddddd.db"));
+  }));
+
+test("the boot prunes pre-migration copies only after the migrations succeeded, never inside the backup hook", async () => {
+  const source = await readFile(path.join(process.cwd(), "src", "lib", "db.ts"), "utf8");
+  const boot = source.slice(source.indexOf("async function initializeDatabase()"), source.indexOf("function startDatabaseInitialization"));
+  const hook = boot.slice(boot.indexOf("beforeMigrations: async"), boot.indexOf("afterMigrations();"));
+  assert.ok(!/prune|recordSuccessfulMigration/.test(hook), "no pruning while migrating");
+  assert.ok(boot.indexOf("recordSuccessfulMigration(") > boot.indexOf("await initializeDatabaseSchema("));
+  assert.ok(!/pruneMigrationBackups/.test(boot));
 });

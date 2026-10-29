@@ -533,6 +533,8 @@ test("BL-237: an automatic import also trims the pre-migration backups to the ne
     await mkdir(backups, { recursive: true });
     const migrations = Array.from({ length: 12 }, (_, i) => `pre-migration-${1000 + i}-abc123.db`);
     for (const name of [...migrations, "pre-take-theirs-1-abcdef01.db"]) await writeFile(path.join(backups, name), "");
+    // The last upgrade succeeded after these copies (db-backup's marker); before a success the oldest copy would be kept.
+    await writeFile(path.join(backups, ".last-successful-migration"), "5000");
     await addResearchChannel(a.client, "UC1");
     await a.runner.tick();
     await b.runner.tick();
@@ -541,6 +543,7 @@ test("BL-237: an automatic import also trims the pre-migration backups to the ne
     assert.ok(!left.includes(migrations[0]) && !left.includes(migrations[1]), "the two oldest pre-migration backups are gone");
     assert.equal(left.filter((n) => n.startsWith("pre-migration-")).length, 10);
     assert.equal(left.filter((n) => n.startsWith("pre-auto-import-")).length, 1, "the import's own new backup stays");
+    assert.ok(left.includes(".last-successful-migration"));
     assert.ok(left.includes("pre-take-theirs-1-abcdef01.db"));
     a.client.close();
     b.client.close();
