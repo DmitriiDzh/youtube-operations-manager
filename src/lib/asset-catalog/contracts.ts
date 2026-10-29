@@ -26,6 +26,8 @@ export const ASSET_TYPES = [
   "video_loop",
   // BL-174: a video generated through Google's Gemini API (Omni; Veo until BL-180), registered by `gemini-media`.
   "generated_video",
+  // BL-236: a speech take generated through Gemini TTS or ElevenLabs (`gemini-media`, `elevenlabs-speech`).
+  "generated_audio",
   "source_video_clip",
   "audio_track",
   "project_file",

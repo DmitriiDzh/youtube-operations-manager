@@ -1356,7 +1356,9 @@ export const geminiMediaJobs = sqliteTable(
     channelId: text("channel_id").notNull(),
     requestId: text("request_id"),
     requestHash: text("request_hash").notNull(),
-    kind: text("kind", { enum: ["image", "video"] }).notNull(),
+    // BL-236 (ADR 0057): `speech` (one take in a designed voice) and `voice_design` (a paid voice design, recorded done/failed).
+    // The SQL column is TEXT, so no migration: older builds never read these rows' kind back into their own type.
+    kind: text("kind", { enum: ["image", "video", "speech", "voice_design"] }).notNull(),
     model: text("model").notNull(),
     prompt: text("prompt").notNull(),
     paramsJson: text("params_json").notNull(),
@@ -15688,7 +15690,7 @@ export async function listVideoCostSessionsWithoutJobs(database: AppDb = db): Pr
 export type VideoCostGeminiJobRow = {
   jobId: string;
   channelId: string;
-  kind: "image" | "video";
+  kind: "image" | "video" | "speech" | "voice_design";
   model: string;
   status: "queued" | "submitting" | "running" | "done" | "failed";
   estimateUsd: number;

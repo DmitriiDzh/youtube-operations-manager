@@ -26,6 +26,8 @@ const KEY_CHECK_TIMEOUT_MS = 30_000;
 export const GEMINI_IMAGE_TIMEOUT_MS = 5 * 60_000;
 /** BL-179: an Omni video is generated within the one call -- Google documents no time; 8 s of video took minutes in its demos. */
 export const GEMINI_INTERACTIONS_VIDEO_TIMEOUT_MS = 15 * 60_000;
+/** BL-236: one speech take (a 60 s story) or one designed voice with its sample. */
+export const GEMINI_SPEECH_TIMEOUT_MS = 3 * 60_000;
 const DOWNLOAD_TIMEOUT_MS = 10 * 60_000;
 const MAX_REDIRECTS = 5;
 /** A video clip is at most 8 s; 500 MB is far above any real one and stops an endless stream. */
@@ -116,6 +118,39 @@ export type GeminiInteractionsVideoRequest = {
   aspectRatio: string;
   resolution: string;
   durationSeconds: number;
+};
+
+/**
+ * BL-236 (FO-REQ-0050, ADR 0057): one speech take through the Interactions API with a designed voice. UNVERIFIED against Google's
+ * own reference (no call was made while building it; the owner makes the first paid one): the request field names
+ * (`response_format.type = "audio"`, `speech_config.voice`, `speech_config.style`) follow the Operator's research R-0005 and the
+ * speech-generation page it cites; the parser below accepts every documented answer shape it knows of.
+ */
+export type GeminiSpeechRequest = {
+  model: string;
+  text: string;
+  /** The designed voice's id as Google returned it (e.g. `voices/voice_abc`). */
+  voice: string;
+  /** A natural-language direction ("tell this like a bedtime story"), optional. */
+  style: string | null;
+};
+
+export type GeminiSpeechResult = {
+  /** The audio as Google sent it: raw PCM (`audio/L16;codec=pcm;rate=24000`) or a container (`audio/wav`); null = none came back. */
+  audio: { mimeType: string; data: Buffer } | null;
+  usage: GeminiUsage | null;
+  status: string | null;
+  blockReason: string | null;
+};
+
+/** BL-236: a voice designed from a text description (`POST /v1beta/voices`, `type: "prompted"`). UNVERIFIED field names, as above. */
+export type GeminiVoiceDesignRequest = { description: string; sampleText: string; displayName: string };
+
+export type GeminiVoiceDesignResult = {
+  /** The persistent voice id to speak with (Google keeps a designed voice about a year; at most 200 per project). */
+  voiceId: string | null;
+  sample: { mimeType: string; data: Buffer } | null;
+  usage: GeminiUsage | null;
 };
 
 export type GeminiInteractionsVideoResult = {
@@ -358,6 +393,62 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; longWaitFetchIm
     return null;
   }
 
+  /** The model-output blocks of an Interactions answer: `steps[]` (since May 2026), falling back to the legacy `outputs[]`. */
+  function outputBlocks(body: Record<string, unknown>): Array<Record<string, unknown>> {
+    const blocks: Array<Record<string, unknown>> = [];
+    const steps = Array.isArray(body.steps) ? body.steps.map(asRecord) : null;
+    if (steps) {
+      for (const step of steps) {
+        if (asString(step.type) !== "model_output") continue;
+        for (const block of Array.isArray(step.content) ? step.content.map(asRecord) : []) blocks.push(block);
+      }
+    } else if (Array.isArray(body.outputs)) {
+      for (const block of body.outputs.map(asRecord)) blocks.push(block);
+    }
+    return blocks;
+  }
+
+  /**
+   * BL-236: the audio of an answer, tolerant (UNVERIFIED shapes): an Interactions `audio` block (`data` + `mime_type`), else the
+   * classic generateContent `candidates[0].content.parts[].inlineData` / `inline_data`. Several audio blocks (a long text split
+   * by Google) are joined only when they are all the same raw PCM format; otherwise the first is kept.
+   */
+  function finalAudio(body: Record<string, unknown>): { mimeType: string; data: Buffer } | null {
+    const found: Array<{ mimeType: string; data: Buffer }> = [];
+    for (const block of outputBlocks(body)) {
+      if (asString(block.type) !== "audio") continue;
+      const data = asString(block.data);
+      if (data) found.push({ mimeType: (asString(block.mime_type) ?? asString(block.mimeType) ?? "audio/L16;codec=pcm;rate=24000").toLowerCase(), data: Buffer.from(data, "base64") });
+    }
+    if (found.length === 0) {
+      const candidates = Array.isArray(body.candidates) ? body.candidates.map(asRecord) : [];
+      const parts = candidates.length > 0 ? asRecord(candidates[0].content).parts : null;
+      for (const part of Array.isArray(parts) ? parts.map(asRecord) : []) {
+        const inline = asRecord(part.inlineData ?? part.inline_data);
+        const data = asString(inline.data);
+        const mime = asString(inline.mimeType) ?? asString(inline.mime_type);
+        if (data && (mime === null || mime.toLowerCase().startsWith("audio/"))) found.push({ mimeType: (mime ?? "audio/L16;codec=pcm;rate=24000").toLowerCase(), data: Buffer.from(data, "base64") });
+      }
+    }
+    if (found.length === 0) return null;
+    if (found.length > 1 && found.every((a) => a.mimeType === found[0].mimeType && !a.mimeType.includes("wav"))) {
+      return { mimeType: found[0].mimeType, data: Buffer.concat(found.map((a) => a.data)) };
+    }
+    return found[0];
+  }
+
+  /** BL-236: the generateContent-style counts too (`usageMetadata`), mapped onto the Interactions names (UNVERIFIED for TTS). */
+  function speechUsageOf(body: Record<string, unknown>): GeminiUsage | null {
+    const direct = usageOf(body.usage);
+    if (direct) return direct;
+    const meta = asRecord(body.usageMetadata ?? body.usage_metadata);
+    const input = tokenCount(meta.promptTokenCount ?? meta.prompt_token_count);
+    const output = tokenCount(meta.candidatesTokenCount ?? meta.candidates_token_count);
+    const thought = tokenCount(meta.thoughtsTokenCount ?? meta.thoughts_token_count);
+    if (input === null && output === null && thought === null) return null;
+    return { inputTokens: input ?? 0, outputTokens: output ?? 0, thoughtTokens: thought ?? 0, outputByModality: {} };
+  }
+
   return {
     /** The key check: one `models.list` page. 400/401/403 → `gemini_key_invalid`; 402 → `gemini_payment_required` (the key itself is valid). */
     async checkKey(apiKey: string): Promise<void> {
@@ -419,6 +510,57 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; longWaitFetchIm
       const errors = Array.isArray(body.errors) ? body.errors.map(asRecord) : [];
       const blockCode = errors.map((e) => asString(e.code)?.toLowerCase() ?? null).find((c) => c !== null && GEMINI_BLOCKED_CODES.has(c)) ?? null;
       return { video: finalVideo(body), usage: usageOf(body.usage), status: asString(body.status), blockReason: blockCode };
+    },
+
+    /**
+     * BL-236 (FO-REQ-0050): one speech take with a designed voice, synchronous (`store:false`: Google keeps nothing). The request
+     * shape is UNVERIFIED (see `GeminiSpeechRequest`). There is deliberately no function here that clones or replicates a voice
+     * from recorded audio (owner: designed voices only); `no-clone.test.ts` keeps it that way.
+     */
+    async generateSpeech(apiKey: string, request: GeminiSpeechRequest): Promise<GeminiSpeechResult> {
+      const context = { call: "interactions.create", model: request.model, modality: "audio" };
+      const body = asRecord(
+        await call(apiKey, "POST", "/v1beta/interactions", context, {
+          timeoutMs: GEMINI_SPEECH_TIMEOUT_MS,
+          body: {
+            model: request.model,
+            input: [{ type: "text", text: request.text }],
+            response_format: { type: "audio" },
+            speech_config: { voice: request.voice, ...(request.style ? { style: request.style } : {}) },
+            store: false,
+          },
+        })
+      );
+      const errors = Array.isArray(body.errors) ? body.errors.map(asRecord) : [];
+      const blockCode = errors.map((e) => asString(e.code)?.toLowerCase() ?? null).find((c) => c !== null && GEMINI_BLOCKED_CODES.has(c)) ?? null;
+      return { audio: finalAudio(body), usage: speechUsageOf(body), status: asString(body.status), blockReason: blockCode };
+    },
+
+    /**
+     * BL-236: designs ONE voice from a text description (`POST /v1beta/voices`, `type: "prompted"`) and returns its persistent id
+     * with the sample Google spoke. UNVERIFIED field names: the id is read from `voice_id`, `id` or `name`; the sample from
+     * `sample_audio`, `sample`, `preview` or `audio` (`data` + `mime_type`).
+     */
+    async designVoice(apiKey: string, request: GeminiVoiceDesignRequest): Promise<GeminiVoiceDesignResult> {
+      const context = { call: "voices.create", type: "prompted" };
+      const body = asRecord(
+        await call(apiKey, "POST", "/v1beta/voices", context, {
+          timeoutMs: GEMINI_SPEECH_TIMEOUT_MS,
+          body: { type: "prompted", display_name: request.displayName, description: request.description, sample_text: request.sampleText },
+        })
+      );
+      const voice = asRecord(body.voice ?? body);
+      const voiceId = asString(voice.voice_id) ?? asString(voice.voiceId) ?? asString(voice.id) ?? asString(voice.name);
+      let sample: GeminiVoiceDesignResult["sample"] = null;
+      for (const key of ["sample_audio", "sampleAudio", "sample", "preview", "audio"]) {
+        const block = asRecord(voice[key] ?? body[key]);
+        const data = asString(block.data);
+        if (data) {
+          sample = { mimeType: (asString(block.mime_type) ?? asString(block.mimeType) ?? "audio/L16;codec=pcm;rate=24000").toLowerCase(), data: Buffer.from(data, "base64") };
+          break;
+        }
+      }
+      return { voiceId, sample, usage: speechUsageOf(body) };
     },
 
     /**

@@ -27,8 +27,8 @@ import { createGeminiWorker } from "./worker";
 // ---------------------------------------------------------------------------
 
 export * from "./contracts";
-export { estimateImageUsd, estimateVideoUsd, imageCostFromTable, imageCostFromUsage, modelCatalog } from "./pricing";
-export { createGeminiMediaServices, settingsFromJson, type GeminiMediaDeps, type GeminiStore } from "./services";
+export { estimateImageUsd, estimateSpeechUsd, estimateVideoUsd, imageCostFromTable, imageCostFromUsage, modelCatalog, speechCostFloor, speechCostFromUsage, speechPricesAt } from "./pricing";
+export { createGeminiMediaServices, settingsFromJson, GEMINI_VOICE_DESIGN_PRICE_MODEL, type GeminiDesignedVoice, type GeminiMediaDeps, type GeminiStore } from "./services";
 export { createGeminiWorker } from "./worker";
 export { accountWideSpend, geminiKeyFingerprint, GEMINI_FINGERPRINT_LABEL, GEMINI_PEER_STALE_AFTER_MS } from "./account";
 export { createGeminiSpendSharePublisher, GEMINI_SPEND_REPUBLISH_MS } from "./spend-share";

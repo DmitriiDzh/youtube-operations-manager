@@ -254,6 +254,25 @@ export type DomainErrorCode =
   | "gemini_unavailable"
   | "gemini_rate_limited"
   | "gemini_request_rejected"
+  // BL-236 (FO-REQ-0050, ADR 0057): speech, the channel voice registry and ElevenLabs.
+  | "voice_not_approved"
+  | "voice_not_found"
+  | "voice_name_taken"
+  | "voice_invalid_state"
+  | "voice_registry_unavailable"
+  | "elevenlabs_disabled"
+  | "elevenlabs_key_missing"
+  | "elevenlabs_key_invalid"
+  | "elevenlabs_payment_required"
+  | "elevenlabs_limit_exceeded"
+  | "elevenlabs_request_exists"
+  | "elevenlabs_job_not_found"
+  | "elevenlabs_invalid_params"
+  | "elevenlabs_input_unavailable"
+  | "elevenlabs_workspace_unavailable"
+  | "elevenlabs_unavailable"
+  | "elevenlabs_rate_limited"
+  | "elevenlabs_request_rejected"
   // BL-176 (docs/roadmap/plans/LIVE_STREAMS_PLAN.md) -- VIDEO_REFUSED: a video cannot enter a live-stream rotation (not public,
   // not this channel's, its file missing or unusable); details.reason says which. WORKSPACE_UNAVAILABLE: the channel has no
   // usable workspace folder on this computer. NOT_FOUND: the video is not in the channel's rotation.
