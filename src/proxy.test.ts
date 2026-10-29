@@ -400,6 +400,8 @@ test("AC-H4: stop switches are exempt from recovery mode only; the operation loc
     // BL-161: revoking the Producer's token is the same kind of stop switch.
     ["DELETE", "/api/producer-agent-token"],
     ["POST", "/api/channel-connections/disconnect"],
+    // BL-231: STOP of the factory's weekly build.
+    ["POST", "/api/channels/UC1/weekly-build/stop"],
   ];
   const neighbours: Array<[string, string]> = [
     ["PUT", "/api/settings"],
@@ -414,6 +416,8 @@ test("AC-H4: stop switches are exempt from recovery mode only; the operation loc
     ["DELETE", "/api/logical-paths"],
     ["POST", "/api/channel-connections/disconnect/extra"],
     ["PUT", "/api/channel-workspaces"],
+    ["POST", "/api/channels/UC1/weekly-build/start"],
+    ["POST", "/api/channels/UC1/weekly-build/stop/extra"],
   ];
   const call = (method: string, pathname: string) => proxy(new NextRequest(new Request(`http://localhost${pathname}`, { method })));
 

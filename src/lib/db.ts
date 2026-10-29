@@ -15302,6 +15302,17 @@ export async function setLiveStreamsSettingsJson(json: string, database: AppDb =
   await setAppSetting(LIVE_STREAMS_SETTINGS_KEY, json, database);
 }
 
+const WEEKLY_BUILD_SETTINGS_KEY = "weekly_build_settings";
+
+/** BL-231: the weekly-build module's settings on this computer (JSON: the Python path), `null` before the first save. */
+export async function getWeeklyBuildSettingsJson(database: AppDb = db): Promise<string | null> {
+  return getAppSetting(WEEKLY_BUILD_SETTINGS_KEY, database);
+}
+
+export async function setWeeklyBuildSettingsJson(json: string, database: AppDb = db): Promise<void> {
+  await setAppSetting(WEEKLY_BUILD_SETTINGS_KEY, json, database);
+}
+
 // ---------------------------------------------------------------------------
 // BL-194 stage 1 (ADR 0040): this computer's video reservations, and the video numbers other tables already know.
 // ---------------------------------------------------------------------------

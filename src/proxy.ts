@@ -72,6 +72,9 @@ const EXEMPT_STOP_SWITCH_ROUTES = new Set([
   "POST /api/channel-connections/disconnect",
 ]);
 
+/** BL-231 (review #3): STOP of the factory's weekly build only writes the STOP file -- a stop switch, per channel. */
+const STOP_SWITCH_ROUTE_PATTERNS = [/^POST \/api\/channels\/[^/]+\/weekly-build\/stop$/];
+
 function isExemptReadOnlyPath(pathname: string): boolean {
   if (EXEMPT_READ_ONLY_PATHS.has(pathname)) return true;
   return EXEMPT_READ_ONLY_PATH_SUFFIXES.some((suffix) => pathname.endsWith(suffix));
@@ -96,7 +99,8 @@ export async function proxy(request: NextRequest) {
   if (isExemptReadOnlyPath(pathname)) {
     return NextResponse.next();
   }
-  const isStopSwitch = EXEMPT_STOP_SWITCH_ROUTES.has(`${request.method} ${pathname}`);
+  const route = `${request.method} ${pathname}`;
+  const isStopSwitch = EXEMPT_STOP_SWITCH_ROUTES.has(route) || STOP_SWITCH_ROUTE_PATTERNS.some((pattern) => pattern.test(route));
 
   try {
     if (isStopSwitch) {

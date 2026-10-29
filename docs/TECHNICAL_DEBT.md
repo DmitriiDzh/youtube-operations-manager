@@ -2143,3 +2143,17 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Re-evaluate:** when a token with write scope is ever needed, when the profile's own code is no longer the owner's allow-listed
   sources, or when RunPod offers secrets that are not plain pod env.
 - **Gate(s):** none. **Status:** open.
+
+## RISK-138 — «Собрать неделю» runs a Python file from the synced channel folder — OPEN, 2026-10-28
+
+- **What:** BL-231 (ADR 0055). The owner's button makes the server run `<workspace>/06 Workflows/factory_launch.py` with this
+  computer's Python, as the server's user. The file and the registry bundle it loads are in folders the agents can write. `check`
+  proves only that the launcher equals the pinned bundle's template and the bundle equals its own manifest: whoever can rewrite
+  the registry bundle and its manifest together (or `factory.json`'s registry path) controls what runs.
+- **Bounds:** Web session + active channel only, no MCP path (source-scan test); the launcher must be a regular file inside the
+  workspace after symlinks; bundle ≥ 2.5.42 and `check` exit 0 before every run; fixed arguments (days an integer 1–14), no shell;
+  a minimal environment, so the server's own secrets are not in the script's env; the Python path only from this computer's
+  settings. The agents already run these same scripts as the same user, so the button adds no new capability to them.
+- **Re-evaluate:** when the registry gets signed releases, when a channel folder is shared with anyone outside the owner's agents,
+  or when the server runs as a different user than the agents.
+- **Gate(s):** none. **Status:** open.
