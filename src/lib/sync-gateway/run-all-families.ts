@@ -18,6 +18,8 @@ import { createVideoReservationsSyncRunnerForProduction } from "./video-reservat
 import { createVideoCostsSyncRunnerForProduction } from "./video-costs-sync";
 import { createGeminiSpendSyncRunnerForProduction } from "./gemini-spend-sync";
 import { createGeminiSettingsSyncRunnerForProduction } from "./gemini-settings-sync";
+import { createElevenlabsSpendSyncRunnerForProduction } from "./elevenlabs-spend-sync";
+import { createElevenlabsSettingsSyncRunnerForProduction } from "./elevenlabs-settings-sync";
 
 /** Runs one family's cycle and unconditionally records its outcome to `sync_family_status`
  * (2026-09-23, Merge-tab redesign) -- regardless of whether it resolved or threw, so the
@@ -48,7 +50,7 @@ async function runAndRecord<T>(
  * process-wide guard in `runAllSyncFamiliesOnce` below.
  */
 async function runAllOnce() {
-  const [changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards, mediaJobs, geminiSpend, geminiSettings, videoReservations, videoCosts, liveAnalytics, publishingPlans] = await Promise.all([
+  const [changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards, mediaJobs, geminiSpend, geminiSettings, videoReservations, videoCosts, liveAnalytics, publishingPlans, elevenlabsSpend, elevenlabsSettings] = await Promise.all([
     runAndRecord("change_drafts", () => createChangeDraftsSyncCoreForProduction().runSyncCycle()),
     runAndRecord("editorial_profile", () => createEditorialProfileSyncRunnerForProduction().runSyncCycle()),
     runAndRecord("ai_connections", () => createAiConnectionsCatalogSyncRunnerForProduction().runSyncCycle()),
@@ -84,8 +86,12 @@ async function runAllOnce() {
     runAndRecord("live_analytics", () => createLiveAnalyticsSyncRunnerForProduction().runSyncCycle()),
     // BL-225 (ADR 0051): each channel's weekly publishing plans (the agents' slots, the owner's approvals and vetoes), the same everywhere.
     runAndRecord("publishing_plans", () => createPublishingPlansSyncRunnerForProduction().runSyncCycle()),
+    // BL-236 (owner msg 3823): this computer's ElevenLabs characters (under its key's fingerprint) out, the other devices' in.
+    runAndRecord("elevenlabs_spend", () => createElevenlabsSpendSyncRunnerForProduction().runSyncCycle()),
+    // BL-236: the ElevenLabs character limits (one Automerge document; elevenlabs-speech applies it on its own tick).
+    runAndRecord("elevenlabs_settings", () => createElevenlabsSettingsSyncRunnerForProduction().runSyncCycle()),
   ]);
-  return { changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards, mediaJobs, geminiSpend, geminiSettings, videoReservations, videoCosts, liveAnalytics, publishingPlans };
+  return { changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards, mediaJobs, geminiSpend, geminiSettings, videoReservations, videoCosts, liveAnalytics, publishingPlans, elevenlabsSpend, elevenlabsSettings };
 }
 
 type AllFamiliesResult = Awaited<ReturnType<typeof runAllOnce>>;

@@ -14,6 +14,10 @@ import {
   type GeminiImageResult,
   type GeminiInteractionsVideoRequest,
   type GeminiInteractionsVideoResult,
+  type GeminiSpeechRequest,
+  type GeminiSpeechResult,
+  type GeminiVoiceDesignRequest,
+  type GeminiVoiceDesignResult,
 } from "@/lib/media-gateway";
 import { ceil4 } from "@/lib/shared-money";
 import { DomainError, isDomainError } from "@/lib/shared-domain";
@@ -50,9 +54,9 @@ function memoryStore(): GeminiStore & { jobs: Map<string, StoredGeminiMediaJob>;
     async getJobByRequest(createdBy: string, requestId: string) {
       return [...state.jobs.values()].find((j) => j.createdBy === createdBy && j.requestId === requestId) ?? null;
     },
-    async listJobs(filter: { channelId?: string; statuses?: readonly string[]; createdSince?: Date; storyboardId?: string; limit: number }) {
+    async listJobs(filter: { channelId?: string; statuses?: readonly string[]; createdSince?: Date; storyboardId?: string; kinds?: readonly string[]; limit: number }) {
       return [...state.jobs.values()]
-        .filter((j) => (filter.channelId === undefined || j.channelId === filter.channelId) && (filter.statuses === undefined || filter.statuses.includes(j.status)) && (filter.createdSince === undefined || j.createdAt >= filter.createdSince) && (filter.storyboardId === undefined || j.storyboardId === filter.storyboardId))
+        .filter((j) => (filter.kinds === undefined || filter.kinds.includes(j.kind)) && (filter.channelId === undefined || j.channelId === filter.channelId) && (filter.statuses === undefined || filter.statuses.includes(j.status)) && (filter.createdSince === undefined || j.createdAt >= filter.createdSince) && (filter.storyboardId === undefined || j.storyboardId === filter.storyboardId))
         .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || (a.jobId < b.jobId ? 1 : -1))
         .slice(0, filter.limit)
         .map((j) => ({ ...j }));
@@ -85,6 +89,18 @@ function fakeApi() {
       status: "completed",
       blockReason: null,
     }),
+    // BL-236: 20 s of 24 kHz mono 16-bit PCM (960,000 bytes), Google counting 40 input and 300 audio tokens.
+    generateSpeech: async (): Promise<GeminiSpeechResult> => ({
+      audio: { mimeType: "audio/l16;codec=pcm;rate=24000", data: Buffer.alloc(960_000, 3) },
+      usage: { inputTokens: 40, outputTokens: 300, thoughtTokens: 0, outputByModality: { audio: 300 } },
+      status: "completed",
+      blockReason: null,
+    }),
+    designVoice: async (): Promise<GeminiVoiceDesignResult> => ({
+      voiceId: "voices/voice_designed1",
+      sample: { mimeType: "audio/l16;codec=pcm;rate=24000", data: Buffer.alloc(240_000, 5) },
+      usage: null,
+    }),
     downloadVideo: async (_uri: string, dest: string) => {
       const data = Buffer.from("MP4DATA");
       await mkdir(path.dirname(dest), { recursive: true });
@@ -108,6 +124,14 @@ function fakeApi() {
     async downloadVideo(apiKey: string, uri: string, dest: string) {
       calls.push({ method: "downloadVideo", apiKey, request: { uri, dest } });
       return behaviour.downloadVideo(uri, dest);
+    },
+    async generateSpeech(apiKey: string, request: GeminiSpeechRequest) {
+      calls.push({ method: "generateSpeech", apiKey, request });
+      return behaviour.generateSpeech();
+    },
+    async designVoice(apiKey: string, request: GeminiVoiceDesignRequest) {
+      calls.push({ method: "designVoice", apiKey, request });
+      return behaviour.designVoice();
     },
   };
   return { api, calls, behaviour };
@@ -145,6 +169,8 @@ async function harness(options: { now?: Date; enabled?: boolean; withKey?: boole
   const failWrites = { value: false };
   type VideoInput = Parameters<NonNullable<GeminiMediaDeps["videoLink"]>["resolve"]>[0];
   const video = { calls: [] as VideoInput[], answer: (async () => null) as (input: VideoInput) => Promise<string | null> };
+  // BL-236: a fake voice registry -- one APPROVED Gemini voice "Sumire" on UC1; anything else is not approved.
+  const voiceCalls: Array<{ channelId: string; provider: string; voice: string }> = [];
   const gate = {
     calls: [] as Array<Parameters<GeminiMediaDeps["storyboardGate"]["check"]>[0]>,
     answer: (async () => null) as (input: Parameters<GeminiMediaDeps["storyboardGate"]["check"]>[0]) => Promise<Awaited<ReturnType<GeminiMediaDeps["storyboardGate"]["check"]>>>,
@@ -212,6 +238,13 @@ async function harness(options: { now?: Date; enabled?: boolean; withKey?: boole
         return video.answer(input);
       },
     },
+    voices: {
+      async resolve(input) {
+        voiceCalls.push(input);
+        if (input.channelId === "UC1" && (input.voice === "Sumire" || input.voice === "vc_sumire")) return { voiceId: "vc_sumire", name: "Sumire", providerVoiceId: "voices/voice_sumire" };
+        throw new DomainError({ code: "voice_not_approved", message: `No approved gemini voice ${input.voice} on ${input.channelId}.`, details: { voice: input.voice } });
+      },
+    },
     // BL-193: the other computers' spend reports, when a test sets them.
     ...(options.peerSpendReports ? { peerSpendReports: options.peerSpendReports, log: () => undefined } : {}),
   };
@@ -238,6 +271,7 @@ async function harness(options: { now?: Date; enabled?: boolean; withKey?: boole
     runTick,
     gate,
     video,
+    voiceCalls,
     keyFileText: () => keyFileText,
     storedKey: () => secretStore.rows.get("gemini") ?? null,
     failWrites,
@@ -1507,6 +1541,180 @@ test("BL-188 AC 8: a cancel that loses the race to the worker's claim is refused
     };
     await expectCode(h.services.cancelJob("gm_race"), "gemini_cancel_too_late");
     assert.equal(h.store.jobs.get("gm_race")!.status, "submitting");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// BL-236 (FO-REQ-0050, ADR 0057): speech. Expected amounts by hand from the Gemini TTS prices R-0005 records (Flash TTS $0.50 in /
+// $9 audio out per 1M tokens until 2026-12-31, then $1 / $18; audio 25 tokens per second) and the estimate rule of the plan (5
+// characters a second, input at 3 characters a token), never from the implementation.
+// ---------------------------------------------------------------------------------------------------------------------------
+
+const speechJob = (overrides: Record<string, unknown> = {}) => ({ channelId: "UC1", model: "gemini-3.8-flash-tts", voice: "Sumire", text: "x".repeat(100), ...overrides });
+
+test("AC-SP-01: a speech estimate is 20 s (100 chars / 5) x 25 tokens x $9/M + 34 input tokens x $0.50/M = $0.0046; from 2027-01-01 the doubled rate: $0.0091", async () => {
+  const before = await harness({ now: new Date(2026, 9, 29, 12) });
+  const after = await harness({ now: new Date(2027, 0, 2, 12) });
+  try {
+    const a = (await before.services.createSpeechJob({ ...speechJob(), dryRun: true }, "factory")) as { estimateUsd: number; allowed: boolean };
+    assert.equal(a.estimateUsd, 0.0046);
+    assert.equal(a.allowed, true);
+    const b = (await after.services.createSpeechJob({ ...speechJob(), dryRun: true }, "factory")) as { estimateUsd: number };
+    assert.equal(b.estimateUsd, 0.0091);
+  } finally {
+    await before.cleanup();
+    await after.cleanup();
+  }
+});
+
+test("AC-SP-02: a speech job speaks the APPROVED voice's provider id with the style; take-1.wav at Google's 24 kHz, manifest written last with kind speech", async () => {
+  const h = await harness();
+  try {
+    const created = (await h.services.createSpeechJob(speechJob({ style: "like a bedtime story" }), "factory")) as { job: { jobId: string; kind: string; status: string; params: unknown } };
+    assert.equal(created.job.kind, "speech");
+    assert.equal(created.job.status, "queued");
+    assert.deepEqual(created.job.params, { voice: { voiceId: "vc_sumire", name: "Sumire", providerVoiceId: "voices/voice_sumire" }, style: "like a bedtime story" });
+    assert.deepEqual(h.voiceCalls, [{ channelId: "UC1", provider: "gemini", voice: "Sumire" }]);
+    await h.runTick();
+    const sent = h.calls.find((c) => c.method === "generateSpeech");
+    assert.deepEqual(sent?.request, { model: "gemini-3.8-flash-tts", text: "x".repeat(100), voice: "voices/voice_sumire", style: "like a bedtime story" });
+    const job = h.store.jobs.get(created.job.jobId)!;
+    assert.equal(job.status, "done");
+    const dir = path.join(h.fromYtm, "gemini", created.job.jobId);
+    const wav = await readFile(path.join(dir, "take-1.wav"));
+    assert.equal(wav.length, 44 + 960_000);
+    assert.equal(wav.readUInt32LE(24), 24_000, "the sample rate Google delivered, not resampled");
+    assert.deepEqual(h.order, ["write take-1.wav", "manifest"], "the manifest is written last");
+    const manifest = JSON.parse(await readFile(path.join(dir, "manifest.json"), "utf8"));
+    assert.equal(manifest.kind, "speech");
+    assert.deepEqual(manifest.outputs.map((o: Record<string, unknown>) => [o.path, o.kind, o.mimeType, o.sampleRateHz, o.durationSeconds]), [[`gemini/${created.job.jobId}/take-1.wav`, "audio", "audio/wav", 24_000, 20]]);
+    assert.equal(h.registered[0].assetType, "generated_audio");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("AC-SP-03: the cost is never below the file's length: Google's 40 in / 300 out = $0.0028, the 20 s file is 500 tokens x $9/M = $0.0045", async () => {
+  const h = await harness();
+  try {
+    const created = (await h.services.createSpeechJob(speechJob(), "factory")) as { job: { jobId: string } };
+    await h.runTick();
+    const job = h.store.jobs.get(created.job.jobId)!;
+    assert.equal(job.costUsd, 0.0045);
+    assert.equal(job.costBasis, "usage");
+    // Google counting more than the file: its count (40 x 0.5 + 1000 x 9 = 9,020 per million → $0.0091).
+    h.behaviour.generateSpeech = async () => ({ audio: { mimeType: "audio/l16;codec=pcm;rate=24000", data: Buffer.alloc(960_000) }, usage: { inputTokens: 40, outputTokens: 1000, thoughtTokens: 0, outputByModality: {} }, status: "completed", blockReason: null });
+    const second = (await h.services.createSpeechJob(speechJob({ text: "y".repeat(100) }), "factory")) as { job: { jobId: string } };
+    await h.runTick();
+    assert.equal(h.store.jobs.get(second.job.jobId)!.costUsd, 0.0091);
+    // Without counts: the file at the table price.
+    h.behaviour.generateSpeech = async () => ({ audio: { mimeType: "audio/l16;codec=pcm;rate=24000", data: Buffer.alloc(960_000) }, usage: null, status: "completed", blockReason: null });
+    const third = (await h.services.createSpeechJob(speechJob({ text: "z".repeat(100) }), "factory")) as { job: { jobId: string } };
+    await h.runTick();
+    const row = h.store.jobs.get(third.job.jobId)!;
+    assert.deepEqual([row.costUsd, row.costBasis], [0.0045, "price_table"]);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("AC-SP-04: a voice that is not approved for this channel is refused before any charge; a dry run reports it as the refusal", async () => {
+  const h = await harness();
+  try {
+    await expectCode(h.services.createSpeechJob(speechJob({ voice: "Stranger" }), "factory"), "voice_not_approved");
+    await expectCode(h.services.createSpeechJob(speechJob({ channelId: "UC2" }), "factory"), "voice_not_approved");
+    assert.equal(h.store.jobs.size, 0);
+    const dry = (await h.services.createSpeechJob({ ...speechJob({ voice: "Stranger" }), dryRun: true }, "factory")) as { allowed: boolean; refusal: { code: string } };
+    assert.equal(dry.allowed, false);
+    assert.equal(dry.refusal.code, "voice_not_approved");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("AC-SP-05: the owner's switch off or no key refuses speech; a queued take is failed unsent at 0 when the switch goes off", async () => {
+  const off = await harness({ enabled: false });
+  const noKey = await harness({ withKey: false });
+  const later = await harness();
+  try {
+    await expectCode(off.services.createSpeechJob(speechJob(), "factory"), "gemini_disabled");
+    await expectCode(noKey.services.createSpeechJob(speechJob(), "factory"), "gemini_key_missing");
+    const created = (await later.services.createSpeechJob(speechJob(), "factory")) as { job: { jobId: string } };
+    await later.services.updateSettings({ enabled: false });
+    await later.runTick();
+    const row = later.store.jobs.get(created.job.jobId)!;
+    assert.deepEqual([row.status, row.errorCode, row.costUsd, row.costBasis], ["failed", "gemini_disabled", 0, "not_charged"]);
+    assert.equal(later.calls.filter((c) => c.method === "generateSpeech").length, 0);
+  } finally {
+    await off.cleanup();
+    await noKey.cleanup();
+    await later.cleanup();
+  }
+});
+
+test("AC-SP-06: a repeated requestId with the same take returns the first job; with other words it is gemini_request_exists", async () => {
+  const h = await harness();
+  try {
+    const first = (await h.services.createSpeechJob(speechJob({ requestId: "greet-1" }), "factory")) as { job: { jobId: string } };
+    const again = (await h.services.createSpeechJob(speechJob({ requestId: "greet-1" }), "factory")) as { job: { jobId: string }; replayed: boolean };
+    assert.equal(again.job.jobId, first.job.jobId);
+    assert.equal(again.replayed, true);
+    await expectCode(h.services.createSpeechJob(speechJob({ requestId: "greet-1", text: "different words" }), "factory"), "gemini_request_exists");
+    assert.equal(h.store.jobs.size, 1);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("AC-SP-07: speech takes text only -- an audio field is refused by the schema; an image model or unknown model is gemini_invalid_params; the per-job limit holds", async () => {
+  const h = await harness({ settings: { maxUsdPerJob: 0.001 } });
+  try {
+    await expectCode(h.services.createSpeechJob({ ...speechJob(), referenceAudio: "voice.wav" }, "factory"), "validation_failed");
+    await expectCode(h.services.createSpeechJob({ ...speechJob(), audio: "AAAA" }, "factory"), "validation_failed");
+    const details = await expectCode(h.services.createSpeechJob(speechJob({ model: "gemini-3-pro-image" }), "factory"), "gemini_invalid_params");
+    assert.equal(details.field, "model");
+    const limit = await expectCode(h.services.createSpeechJob(speechJob(), "factory"), "gemini_limit_exceeded");
+    assert.equal(limit.limit, "per_job");
+    // factory_gemini_create_job's own path never makes speech.
+    await expectCode(h.services.createJob({ channelId: "UC1", kind: "speech", model: "gemini-3.8-flash-tts", prompt: "hi" }, "factory"), "validation_failed");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("AC-SP-08: a voice design is paid and recorded: refused when the switch is off, otherwise a done voice_design job with its cost (the 5 s sample: 125 tokens x $9/M = $0.0012)", async () => {
+  const off = await harness({ enabled: false });
+  const h = await harness();
+  try {
+    await expectCode(off.services.designVoice({ channelId: "UC1", description: "soft warm voice", displayName: "Sumire" }, "factory"), "gemini_disabled");
+    assert.equal(off.calls.length, 0);
+    const designed = await h.services.designVoice({ channelId: "UC1", description: "young adult woman, soft warm voice", displayName: "Sumire" }, "factory");
+    assert.equal(designed.providerVoiceId, "voices/voice_designed1");
+    assert.equal(designed.sample.extension, "wav");
+    assert.equal(designed.sample.durationSeconds, 5);
+    const row = h.store.jobs.get(designed.jobId)!;
+    assert.deepEqual([row.kind, row.status, row.costUsd, row.costBasis], ["voice_design", "done", 0.0012, "price_table"]);
+    assert.equal((await h.services.spend()).todayUsd, 0.0012, "a design counts in the spend");
+    const sent = h.calls.find((c) => c.method === "designVoice")!.request as Record<string, unknown>;
+    assert.equal(sent.description, "young adult woman, soft warm voice");
+  } finally {
+    await off.cleanup();
+    await h.cleanup();
+  }
+});
+
+test("review item 7: the boot sweep leaves a voice design whose own call may still be running; an older one is failed at its estimate", async () => {
+  const h = await harness();
+  try {
+    const now = new Date(h.clock.at);
+    const base = { channelId: "UC1", requestId: null, requestHash: "h", kind: "voice_design" as const, model: "gemini-3.8-flash-tts", prompt: "d", paramsJson: "{}", inputsJson: "[]", status: "submitting" as const, remoteName: null, estimateUsd: 0.002, costUsd: null, costBasis: null, outputsJson: null, error: null, errorCode: null, attempts: 1, nextAttemptAt: null, createdBy: "factory", createdAt: now, submittedAt: now, finishedAt: null, storyboardId: null, storyboardVersion: null, segmentId: null, video: null };
+    await h.store.insertJob({ ...base, jobId: "gm_running", updatedAt: new Date(now.getTime() - 60_000) });
+    await h.store.insertJob({ ...base, jobId: "gm_old", updatedAt: new Date(now.getTime() - 30 * 60_000) });
+    await h.worker.bootSweep();
+    assert.equal(h.store.jobs.get("gm_running")!.status, "submitting");
+    assert.deepEqual([h.store.jobs.get("gm_old")!.status, h.store.jobs.get("gm_old")!.costBasis], ["failed", "unknown_outcome"]);
   } finally {
     await h.cleanup();
   }

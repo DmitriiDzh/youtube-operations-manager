@@ -1,13 +1,16 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import type { StoredGeminiMediaJob } from "@/lib/db";
-import type { GeminiImageResult, GeminiInlineImage, GeminiInteractionsVideoResult } from "@/lib/media-gateway";
+import { GEMINI_SPEECH_TIMEOUT_MS, type GeminiImageResult, type GeminiInlineImage, type GeminiInteractionsVideoResult, type GeminiSpeechResult } from "@/lib/media-gateway";
+import { audioFileOf } from "@/lib/shared-audio";
 import {
   GEMINI_ACTIVE_STATUSES,
   GEMINI_IMAGE_MODELS,
   GEMINI_LIMITS,
   GEMINI_MANIFEST_FILE,
   GEMINI_OUTPUT_SUBDIR,
+  GEMINI_SPEECH,
+  GEMINI_SPEECH_MODELS,
   GEMINI_VIDEO_MODELS,
   isDomainError,
   ownEntry,
@@ -17,9 +20,11 @@ import {
   type GeminiJobInput,
   type GeminiJobManifest,
   type GeminiJobOutput,
-  type GeminiVideoParams,
+  type GeminiJobParams,
+  type GeminiSpeechParams,
 } from "./contracts";
-import { imageCostFromTable, imageCostFromUsage, videoCostFromUsage } from "./pricing";
+import type { GeminiVideoParams } from "./contracts";
+import { imageCostFromTable, imageCostFromUsage, speechCostFloor, speechCostFromUsage, videoCostFromUsage } from "./pricing";
 import { createGeminiMediaServices, jobView, type GeminiMediaDeps } from "./services";
 
 // BL-174 (GEMINI_MEDIA_PLAN.md §2.4): runs queued jobs and collects running videos. One `tick()` every few seconds from
@@ -36,6 +41,9 @@ const VIDEO_EXTENSIONS: Readonly<Record<string, string>> = Object.freeze({ "vide
 
 /** BL-179: an Omni video Google delivered as a Files API URI is collected by the next poll, from `remoteName`. */
 const isDownloadUri = (remoteName: string) => remoteName.startsWith("https://") || remoteName.startsWith("http://");
+
+/** Review item 7: how long a voice design's own call may still be running (its timeout plus a minute). */
+const VOICE_DESIGN_CALL_WINDOW_MS = GEMINI_SPEECH_TIMEOUT_MS + 60_000;
 
 type Failure = { errorCode: GeminiJobErrorCode; error: string; costUsd: number; costBasis: GeminiCostBasis };
 
@@ -118,7 +126,7 @@ export function createGeminiWorker(deps: GeminiMediaDeps) {
       if (existing) return { assetId: existing.assetId, note: null };
       const asset = await deps.assets.register({
         channelId: job.channelId,
-        assetType: output.kind === "video" ? "generated_video" : "generated_image",
+        assetType: output.kind === "video" ? "generated_video" : output.kind === "audio" ? "generated_audio" : "generated_image",
         referenceKind: "local_path",
         referenceValue: output.localPath,
         title: `${job.model} ${output.kind} ${job.jobId}`,
@@ -132,7 +140,7 @@ export function createGeminiWorker(deps: GeminiMediaDeps) {
   }
 
   async function writeManifest(job: StoredGeminiMediaJob, dir: string, outputs: GeminiJobOutput[], costUsd: number, costBasis: GeminiCostBasis, finishedAt: Date): Promise<void> {
-    const params = JSON.parse(job.paramsJson) as GeminiImageParams | GeminiVideoParams;
+    const params = JSON.parse(job.paramsJson) as GeminiJobParams;
     const inputs = JSON.parse(job.inputsJson) as GeminiJobInput[];
     const manifest: GeminiJobManifest = {
       schema: "ytm.gemini-job-manifest",
@@ -154,7 +162,17 @@ export function createGeminiWorker(deps: GeminiMediaDeps) {
       finishedAt: finishedAt.toISOString(),
       device: await deps.device(),
       video: job.video ?? null,
-      outputs: outputs.map((o) => ({ path: o.path, kind: o.kind, mimeType: o.mimeType, bytes: o.bytes, sha256: o.sha256, assetId: o.assetId, note: o.note })),
+      outputs: outputs.map((o) => ({
+        path: o.path,
+        kind: o.kind,
+        mimeType: o.mimeType,
+        bytes: o.bytes,
+        sha256: o.sha256,
+        assetId: o.assetId,
+        note: o.note,
+        // BL-236: an audio take's real sample rate and length (as Google delivered it, no resampling).
+        ...(o.kind === "audio" ? { sampleRateHz: o.sampleRateHz ?? null, durationSeconds: o.durationSeconds ?? null } : {}),
+      })),
     };
     await deps.files.writeManifest(path.join(dir, GEMINI_MANIFEST_FILE), manifest);
   }
@@ -369,6 +387,70 @@ export function createGeminiWorker(deps: GeminiMediaDeps) {
     await finish(job, "submitting", claimed.dir, [output], costUsd, costBasis);
   }
 
+  /**
+   * BL-236 (FO-REQ-0050, ADR 0057): one speech take, synchronous. Saved as `take-1.wav` (raw PCM wrapped in a WAV header at Google's
+   * own rate -- no resampling, owner msg 3815; a WAV kept as it is; any other container keeps its extension). Priced by Google's
+   * counts, never below the file's own length at the table price; without counts, the file's length at the table price.
+   */
+  async function runSpeech(job: StoredGeminiMediaJob): Promise<void> {
+    const claimed = await claim(job);
+    if (!claimed) return;
+    const params = JSON.parse(job.paramsJson) as GeminiSpeechParams;
+    if (!deps.api.generateSpeech) {
+      await fail(job, "submitting", notCharged("gemini_invalid_request", "Speech is not available on this server; the job was not sent."));
+      return;
+    }
+    let result: GeminiSpeechResult;
+    try {
+      result = await deps.api.generateSpeech(claimed.apiKey, { model: job.model, text: job.prompt, voice: params.voice.providerVoiceId, style: params.style });
+    } catch (error) {
+      const verdict = classify(job, error);
+      if (verdict.retry) await retryOrFail(job, claimed.attempts, verdict.errorCode, verdict.message);
+      else await fail(job, "submitting", verdict.failure);
+      return;
+    }
+    const at = job.submittedAt ?? job.createdAt;
+    const file = result.audio ? audioFileOf(result.audio, GEMINI_SPEECH.defaultSampleRateHz) : null;
+    const charged = result.usage ? speechCostFromUsage(job.model, result.usage, file?.durationSeconds ?? null, at) : null;
+    if (!file || file.data.length === 0) {
+      // The image rule: only a terminal refusal or a completed answer with Google's counts decides the cost; anything else may
+      // still be generating and charged -- its estimate.
+      const refused = result.blockReason !== null || (result.status !== null && ["failed", "cancelled", "incomplete"].includes(result.status));
+      const completedWithCounts = result.status === "completed" && charged !== null;
+      if (!refused && !completedWithCounts) {
+        await fail(job, "submitting", maybeCharged(job, "gemini_unavailable", `Google answered without audio, a final status or token counts (status ${result.status ?? "none"}); it may have been charged.`));
+        return;
+      }
+      const reason = result.blockReason ?? (result.status && result.status !== "completed" ? `status ${result.status}` : "no audio in the answer");
+      await fail(job, "submitting", { errorCode: "gemini_blocked", error: `Google returned no audio (${reason}).`, costUsd: charged ?? 0, costBasis: charged !== null ? "usage" : "not_charged" });
+      return;
+    }
+    const floor = file.durationSeconds !== null ? speechCostFloor(job.model, file.durationSeconds, at) : null;
+    const costUsd = charged ?? floor ?? job.estimateUsd;
+    const costBasis: GeminiCostBasis = charged !== null ? "usage" : "price_table";
+    const name = `take-1.${file.extension}`;
+    const localPath = path.join(claimed.dir, name);
+    let output: GeminiJobOutput;
+    try {
+      const written = await deps.files.writeOutput(localPath, file.data);
+      const base = { path: relativeOutput(job, name), localPath, kind: "audio" as const, mimeType: file.mimeType, bytes: written.bytes, sha256: written.sha256, sampleRateHz: file.sampleRateHz, durationSeconds: file.durationSeconds };
+      output = { ...base, ...(await registerAsset(job, base)) };
+    } catch (error) {
+      await deps.store.updateJob(job.jobId, "submitting", {
+        status: "failed",
+        errorCode: "gemini_output_failed",
+        error: `The speech was generated (and charged) but could not be written: ${error instanceof Error ? error.message : String(error)}`.slice(0, 2000),
+        costUsd,
+        costBasis,
+        nextAttemptAt: null,
+        finishedAt: now(),
+        updatedAt: now(),
+      });
+      return;
+    }
+    await finish(job, "submitting", claimed.dir, [output], costUsd, costBasis);
+  }
+
   async function pollVideo(job: StoredGeminiMediaJob): Promise<void> {
     const later = (ms: number, note?: string) =>
       deps.store.updateJob(job.jobId, "running", { nextAttemptAt: new Date(now().getTime() + ms), ...(note ? { error: note.slice(0, 2000) } : {}), updatedAt: now() });
@@ -466,13 +548,16 @@ export function createGeminiWorker(deps: GeminiMediaDeps) {
         }
         // BL-180: a job queued for a model that has since been removed (a Veo preview) is never sent -- before the in-flight
         // cap, so it never waits behind running jobs (review).
-        if (!(job.kind === "image" ? ownEntry(GEMINI_IMAGE_MODELS, job.model) : ownEntry(GEMINI_VIDEO_MODELS, job.model))) {
+        // BL-236: a speech job is checked against the speech models; a voice design is never queued (sent at once by its call).
+        const offered =
+          job.kind === "image" ? ownEntry(GEMINI_IMAGE_MODELS, job.model) : job.kind === "video" ? ownEntry(GEMINI_VIDEO_MODELS, job.model) : job.kind === "speech" ? ownEntry(GEMINI_SPEECH_MODELS, job.model) : undefined;
+        if (!offered) {
           await fail(job, "queued", notCharged("gemini_invalid_request", `${job.model} is no longer offered here (removed with BL-180); the job was not sent.`));
           continue;
         }
         if (inFlight.size >= GEMINI_LIMITS.inFlightPerProcess) break;
         if (job.nextAttemptAt && job.nextAttemptAt.getTime() > at) continue;
-        started.push(track(job.jobId, () => (job.kind === "image" ? runImage(job) : runInteractionsVideo(job))));
+        started.push(track(job.jobId, () => (job.kind === "image" ? runImage(job) : job.kind === "speech" ? runSpeech(job) : runInteractionsVideo(job))));
       }
       const running = (await deps.store.listJobs({ statuses: ["running"], limit: 200 })).reverse();
       for (const job of running) {
@@ -489,8 +574,12 @@ export function createGeminiWorker(deps: GeminiMediaDeps) {
      */
     async bootSweep(): Promise<number> {
       const stuck = await deps.store.listJobs({ statuses: ["submitting"], limit: 1000 });
+      const at = now().getTime();
       for (const job of stuck) {
         if (inFlight.has(job.jobId)) continue;
+        // Review item 7: a voice design is sent by its own call (another route bundle of this process may be waiting on it now), not
+        // by this worker: left alone while its call may still be running; the tick's stale sweep fails it later if it was abandoned.
+        if (job.kind === "voice_design" && at - job.updatedAt.getTime() < VOICE_DESIGN_CALL_WINDOW_MS) continue;
         await fail(job, "submitting", maybeCharged(job, "gemini_interrupted", "The app stopped while the request was with Google; it may have been charged."));
       }
       return stuck.length;

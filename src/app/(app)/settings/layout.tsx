@@ -22,6 +22,7 @@ import { ChannelConnectionsSettings } from "@/components/channel-connections-set
 import { SyncFolderSettings } from "@/components/sync-folder-settings";
 import { RunpodConnectionSettings } from "@/components/media-generation-settings";
 import { GeminiMediaSettings } from "@/components/gemini-media-settings";
+import { ElevenlabsSettings } from "@/components/elevenlabs-settings";
 import { CloudCredentialsTransfer } from "@/components/cloud-credentials-transfer";
 import { HfTokenSettings } from "@/components/hf-token-settings";
 import { GithubTokenSettings } from "@/components/github-token-settings";
@@ -169,6 +170,10 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
         </FeatureErrorBoundary>
         <FeatureErrorBoundary label={section("settingsCard.gemini")}>
           <GeminiMediaSettings />
+        </FeatureErrorBoundary>
+        {/* BL-236 (ADR 0057): ElevenLabs speech -- its key, switch (off by default) and character limits; fails on its own. */}
+        <FeatureErrorBoundary label={section("speech.el.title")}>
+          <ElevenlabsSettings />
         </FeatureErrorBoundary>
         <FeatureErrorBoundary label={section("hfToken.title")}>
           <HfTokenSettings />

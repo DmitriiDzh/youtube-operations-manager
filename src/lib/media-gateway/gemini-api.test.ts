@@ -379,3 +379,96 @@ test("BL-179 review: a Files API reference becomes its download link; a JSON ans
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// -- BL-236 (FO-REQ-0050, ADR 0057): speech and voice design. The request shape follows the Operator's research R-0005 and the
+// speech-generation page it cites (UNVERIFIED: no call was made); the answers below are the documented shapes the parser must
+// accept: an Interactions `audio` block of raw PCM, and the classic generateContent `candidates[].content.parts[].inlineData`.
+
+const pcm = Buffer.alloc(4800, 1); // 0.1 s of 16-bit mono PCM at 24 kHz
+
+test("generateSpeech: one Interactions call with the text, response_format audio, the voice id and style in speech_config; store:false; the key only in x-goog-api-key", async () => {
+  const authorized: string[] = [];
+  const { fetchImpl, calls } = fakeFetch(() => ({
+    status: 200,
+    body: {
+      status: "completed",
+      steps: [{ type: "model_output", content: [{ type: "audio", mime_type: "audio/L16;codec=pcm;rate=24000", data: pcm.toString("base64") }] }],
+      usage: { total_input_tokens: 40, total_output_tokens: 3, output_tokens_by_modality: [{ modality: "audio", tokens: 3 }] },
+    },
+  }));
+  const api = createGeminiApiClient({ fetchImpl, authorize: async (category) => void authorized.push(category) });
+  const result = await api.generateSpeech(KEY, { model: "gemini-3.8-flash-tts", text: "Hello there.", voice: "voices/voice_abc", style: "warm, slow" });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://generativelanguage.googleapis.com/v1beta/interactions");
+  assert.equal(headersOf(calls[0])["x-goog-api-key"], KEY);
+  assert.deepEqual(authorized, ["gemini_api"]);
+  const body = JSON.parse(String(calls[0].init.body));
+  assert.deepEqual(body, {
+    model: "gemini-3.8-flash-tts",
+    input: [{ type: "text", text: "Hello there." }],
+    response_format: { type: "audio" },
+    speech_config: { voice: "voices/voice_abc", style: "warm, slow" },
+    store: false,
+  });
+  assert.equal(result.audio?.mimeType, "audio/l16;codec=pcm;rate=24000");
+  assert.deepEqual(result.audio?.data, pcm);
+  assert.deepEqual(result.usage, { inputTokens: 40, outputTokens: 3, thoughtTokens: 0, outputByModality: { audio: 3 } });
+  assert.equal(result.status, "completed");
+});
+
+test("generateSpeech: no style -> speech_config carries only the voice; the classic inlineData answer and usageMetadata are read too", async () => {
+  const { fetchImpl, calls } = fakeFetch(() => ({
+    status: 200,
+    body: {
+      candidates: [{ content: { parts: [{ inlineData: { mimeType: "audio/L16;codec=pcm;rate=24000", data: pcm.toString("base64") } }] } }],
+      usageMetadata: { promptTokenCount: 12, candidatesTokenCount: 250 },
+    },
+  }));
+  const api = createGeminiApiClient({ fetchImpl, authorize: async () => undefined });
+  const result = await api.generateSpeech(KEY, { model: "gemini-3.8-flash-lite-tts", text: "Hi", voice: "v1", style: null });
+  assert.deepEqual(JSON.parse(String(calls[0].init.body)).speech_config, { voice: "v1" });
+  assert.deepEqual(result.audio?.data, pcm);
+  assert.deepEqual(result.usage, { inputTokens: 12, outputTokens: 250, thoughtTokens: 0, outputByModality: {} });
+});
+
+test("generateSpeech: an answer without audio gives audio null (never a guess); a blocked answer names its code", async () => {
+  const { fetchImpl } = fakeFetch(() => ({ status: 200, body: { status: "failed", errors: [{ code: "SAFETY" }] } }));
+  const api = createGeminiApiClient({ fetchImpl, authorize: async () => undefined });
+  const result = await api.generateSpeech(KEY, { model: "gemini-3.8-flash-tts", text: "x", voice: "v", style: null });
+  assert.equal(result.audio, null);
+  assert.equal(result.usage, null);
+  assert.equal(result.blockReason, "safety");
+});
+
+test("designVoice: POST /v1beta/voices type prompted with the description and sample text; reads the voice id and the sample", async () => {
+  const { fetchImpl, calls } = fakeFetch(() => ({
+    status: 200,
+    body: { name: "voices/voice_sumire1", sample_audio: { mime_type: "audio/L16;codec=pcm;rate=24000", data: pcm.toString("base64") } },
+  }));
+  const api = createGeminiApiClient({ fetchImpl, authorize: async () => undefined });
+  const result = await api.designVoice(KEY, { description: "young adult woman, soft warm voice", sampleText: "Hello!", displayName: "Sumire" });
+  assert.equal(calls[0].url, "https://generativelanguage.googleapis.com/v1beta/voices");
+  assert.equal(calls[0].init.method, "POST");
+  assert.deepEqual(JSON.parse(String(calls[0].init.body)), { type: "prompted", display_name: "Sumire", description: "young adult woman, soft warm voice", sample_text: "Hello!" });
+  assert.equal(result.voiceId, "voices/voice_sumire1");
+  assert.deepEqual(result.sample?.data, pcm);
+});
+
+test("designVoice: a refused key is gemini_key_invalid; nothing is retried", async () => {
+  const { fetchImpl, calls } = fakeFetch(() => ({ status: 403, body: { error: { code: 403, message: "denied" } } }));
+  const api = createGeminiApiClient({ fetchImpl, authorize: async () => undefined });
+  await expectError(api.designVoice(KEY, { description: "d", sampleText: "s", displayName: "n" }), "gemini_key_invalid");
+  assert.equal(calls.length, 1);
+});
+
+test("review item 5: several raw-PCM audio blocks are each cut to whole 16-bit frames before they are joined", async () => {
+  const a = Buffer.from([1, 2, 3]); // an odd byte at the end of the first block
+  const b = Buffer.from([4, 5, 6, 7]);
+  const { fetchImpl } = fakeFetch(() => ({
+    status: 200,
+    body: { status: "completed", steps: [{ type: "model_output", content: [a, b].map((d) => ({ type: "audio", mime_type: "audio/L16;codec=pcm;rate=24000", data: d.toString("base64") })) }] },
+  }));
+  const api = createGeminiApiClient({ fetchImpl, authorize: async () => undefined });
+  const result = await api.generateSpeech(KEY, { model: "gemini-3.8-flash-tts", text: "x", voice: "v", style: null });
+  assert.deepEqual([...(result.audio?.data ?? [])], [1, 2, 4, 5, 6, 7]);
+});

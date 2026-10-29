@@ -84,7 +84,7 @@ const RESTART_HOLD_WRITES: Readonly<Record<string, (args: ToolArgs) => WorkerWri
 export function describeWorkerWrite(tool: string, args: unknown): WorkerWriteDescription | null {
   const fields = typeof args === "object" && args !== null ? (args as Record<string, unknown>) : undefined;
   // A Gemini dry run spends nothing and writes nothing.
-  if (tool === "agent_gemini_create_job" && fields?.dryRun === true) return null;
+  if ((tool === "agent_gemini_create_job" || tool === "agent_speech_create_job") && fields?.dryRun === true) return null;
   if (WORKER_FACTORY_WRITE_TOOL_NAMES.includes(tool)) return describeLocalWrite(fields);
   const restart = RESTART_HOLD_WRITES[tool];
   if (restart) return restart(fields);
@@ -115,7 +115,7 @@ export function fromToolResult(
             ? text((result.hold as { holdId?: unknown } | undefined)?.holdId)
             : tool === "agent_factory_start_session"
             ? text((result.session as { sessionId?: unknown } | undefined)?.sessionId)
-            : tool === "agent_gemini_create_job" || tool === "agent_factory_create_job"
+            : tool === "agent_gemini_create_job" || tool === "agent_factory_create_job" || tool === "agent_speech_create_job"
               ? text((result.job as { jobId?: unknown; id?: unknown } | undefined)?.jobId) ?? text((result.job as { id?: unknown } | undefined)?.id)
               : tool === "agent_plan_create" || tool === "agent_storyboard_create"
             ? text((result.plan as { planId?: unknown } | undefined)?.planId) ?? text((result.storyboard as { storyboardId?: unknown } | undefined)?.storyboardId)

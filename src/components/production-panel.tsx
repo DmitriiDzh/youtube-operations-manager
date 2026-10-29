@@ -42,6 +42,7 @@ import { GeminiServersCard, type GeminiTodayFigure } from "./gemini-servers-card
 import { usd as geminiUsd } from "./gemini-media-settings";
 import { FeatureErrorBoundary } from "./feature-error-boundary";
 import { MusicLibraryCard } from "./music-library-card";
+import { ChannelVoicesPanel } from "./channel-voices-panel";
 export { MEDIA_TABS, SERVERS_TABS };
 
 /** The balance is a RunPod call: on open, on demand, and once a minute while Production is open. */
@@ -320,6 +321,12 @@ export function MediaPanel({
           // BL-229 part A: the factory's library per genre, above the plans (its own module, AGENTS.md §M).
           <FeatureErrorBoundary label={`${t("nav.media")} — ${t("musicLibrary.title")}`}>
             <MusicLibraryCard key={activeChannelId ?? ""} channelId={activeChannelId} active={!paused} />
+          </FeatureErrorBoundary>
+        ) : null}
+        {kind === "audio" ? (
+          // BL-236 (ADR 0057): the channel's designed voices -- listen to the previews, approve one; its own module and fetches.
+          <FeatureErrorBoundary label={`${t("nav.media")} — ${t("speech.voices.title")}`}>
+            <ChannelVoicesPanel key={activeChannelId ?? ""} channelId={activeChannelId} />
           </FeatureErrorBoundary>
         ) : null}
         <PlansPanel kind={kind} active={kindTab && !paused} onReview={onReviewPlan} onWaitingByKind={setPlansWaiting} />

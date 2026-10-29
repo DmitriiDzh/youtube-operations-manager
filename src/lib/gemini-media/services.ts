@@ -30,10 +30,28 @@ import {
   type GeminiStoryboardLink,
   type GeminiVideoLink,
   type GeminiVideoParams,
+  type GeminiSpeechParams,
+  type GeminiVoiceDesignParams,
+  type GeminiVoiceResolver,
+  type GeminiJobParams,
+  GEMINI_SPEECH,
 } from "./contracts";
+import { audioFileOf } from "@/lib/shared-audio";
 import { accountWideSpend, geminiKeyFingerprint } from "./account";
-import { estimateImageUsd, estimateVideoUsd, modelCatalog } from "./pricing";
-import { checkJobRules, createJobInputSchema, getJobsInputSchema, parseWithSchema, setKeyInputSchema, updateSettingsInputSchema, type CreateJobInput } from "./schemas";
+import { estimateImageUsd, estimateSpeechUsd, estimateVideoUsd, modelCatalog, speechCostFloor, speechCostFromUsage } from "./pricing";
+import {
+  checkJobRules,
+  checkSpeechJobRules,
+  createJobInputSchema,
+  createSpeechJobInputSchema,
+  designVoiceInputSchema,
+  getJobsInputSchema,
+  parseWithSchema,
+  setKeyInputSchema,
+  updateSettingsInputSchema,
+  type CreateJobInput,
+  type CreateSpeechJobInput,
+} from "./schemas";
 
 // BL-174 (GEMINI_MEDIA_PLAN.md §2.2–§2.7): the key, the owner's settings and limits, the spend, and job creation / reads.
 // The worker that runs jobs is `./worker.ts` (same dependencies). Pure logic over injected ports; `./index.ts` wires the
@@ -45,11 +63,11 @@ export type GeminiStore = {
   insertJob(row: StoredGeminiMediaJob): Promise<boolean>;
   getJob(jobId: string): Promise<StoredGeminiMediaJob | null>;
   getJobByRequest(createdBy: string, requestId: string): Promise<StoredGeminiMediaJob | null>;
-  listJobs(filter: { channelId?: string; statuses?: readonly GeminiMediaJobStatusValue[]; createdSince?: Date; storyboardId?: string; limit: number }): Promise<StoredGeminiMediaJob[]>;
+  listJobs(filter: { channelId?: string; statuses?: readonly GeminiMediaJobStatusValue[]; createdSince?: Date; storyboardId?: string; kinds?: readonly StoredGeminiMediaJob["kind"][]; limit: number }): Promise<StoredGeminiMediaJob[]>;
   updateJob(jobId: string, fromStatus: GeminiMediaJobStatusValue, set: Partial<StoredGeminiMediaJob>): Promise<boolean>;
 };
 
-export type GeminiApiPort = Pick<GeminiApiClient, "checkKey" | "generateImage" | "generateVideo" | "downloadVideo">;
+export type GeminiApiPort = Pick<GeminiApiClient, "checkKey" | "generateImage" | "generateVideo" | "downloadVideo"> & Partial<Pick<GeminiApiClient, "generateSpeech" | "designVoice">>;
 
 export type ResolvedInputFile = { path: string; bytes: number; identity?: { dev: number; ino: number } };
 
@@ -76,7 +94,7 @@ export type GeminiMediaDeps = {
   workspace: GeminiWorkspacePort;
   files: GeminiFilesPort;
   assets: {
-    register(input: { channelId: string; assetType: "generated_image" | "generated_video"; referenceKind: "local_path"; referenceValue: string; title: string; provenance: Record<string, unknown> }): Promise<{ assetId: string }>;
+    register(input: { channelId: string; assetType: "generated_image" | "generated_video" | "generated_audio"; referenceKind: "local_path"; referenceValue: string; title: string; provenance: Record<string, unknown> }): Promise<{ assetId: string }>;
     findByLocalPath(channelId: string, localPath: string): Promise<{ assetId: string } | null>;
   };
   device(): Promise<{ deviceId: string | null; hostname: string | null }>;
@@ -96,8 +114,21 @@ export type GeminiMediaDeps = {
    * computer is known (tests); a read that fails counts the others as 0 and is logged, as RunPod's shared cap does (ADR 0028 §5).
    */
   peerSpendReports?(): Promise<GeminiPeerSpendReport[]>;
+  /** BL-236 (ADR 0057): the channel's voice registry (absent: speech jobs are refused, `voice_registry_unavailable`). */
+  voices?: GeminiVoiceResolver;
   log?(line: string): void;
 };
+
+/** BL-236: what a paid voice design gives back to the voice registry -- Google's voice id and its sample as a file to keep. */
+export type GeminiDesignedVoice = {
+  jobId: string;
+  providerVoiceId: string;
+  sample: { data: Buffer; extension: string; mimeType: string; sampleRateHz: number | null; durationSeconds: number | null };
+  costUsd: number;
+};
+
+/** The model a voice design is priced at (Google names none for `POST /v1beta/voices`; the dearer speech model, never under-counted). */
+export const GEMINI_VOICE_DESIGN_PRICE_MODEL = "gemini-3.8-flash-tts";
 
 const round4 = (value: number) => Math.round(value * 10_000) / 10_000;
 
@@ -137,7 +168,7 @@ export function jobView(row: StoredGeminiMediaJob): GeminiJobView {
     kind: row.kind,
     model: row.model,
     prompt: row.prompt,
-    params: parseJson<GeminiImageParams | GeminiVideoParams>(row.paramsJson, { size: "", aspectRatio: "" }),
+    params: parseJson<GeminiJobParams>(row.paramsJson, { size: "", aspectRatio: "" }),
     inputs: parseJson<GeminiJobInput[]>(row.inputsJson, []),
     status: row.status,
     estimateUsd: row.estimateUsd,
@@ -190,8 +221,23 @@ function requestHash(input: CreateJobInput): string {
   return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
 }
 
+/** BL-236: what a speech take asks for (the voice as GIVEN, so a retry with the same words matches), independent of when. */
+function speechRequestHash(input: CreateSpeechJobInput): string {
+  const canonical = {
+    channelId: input.channelId,
+    kind: "speech",
+    model: input.model,
+    voice: input.voice,
+    text: input.text,
+    style: input.style ?? null,
+    ...(input.videoNumber ? { videoNumber: input.videoNumber } : {}),
+  };
+  return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+}
+
 /** The inputs a create names, in a fixed order, with their roles. */
-export function namedInputs(input: Pick<CreateJobInput, "kind" | "image" | "video">): Array<{ role: GeminiInputRole; path: string }> {
+export function namedInputs(input: { kind: string; image?: CreateJobInput["image"]; video?: CreateJobInput["video"] }): Array<{ role: GeminiInputRole; path: string }> {
+  if (input.kind !== "image" && input.kind !== "video") return []; // BL-236: speech names no file (text only)
   if (input.kind === "image") return (input.image?.inputs?.images ?? []).map((p) => ({ role: "image" as const, path: p }));
   const inputs = input.video?.inputs ?? {};
   return [
@@ -448,7 +494,7 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
         limits,
         spend: current,
         pricesAsOf: GEMINI_PRICES_AS_OF,
-        models: modelCatalog(),
+        models: modelCatalog(now()),
       };
     },
 
@@ -559,6 +605,184 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
       });
     },
 
+    /**
+     * BL-236 (FO-REQ-0050, ADR 0057): one speech take in an APPROVED voice of the channel (the registry resolves the name or id),
+     * with the same switch, key, limits, lock, replay and dry-run as an image or video job. Text only: nothing is read from disk.
+     */
+    async createSpeechJob(raw: unknown, actor: string) {
+      const input = parseWithSchema(createSpeechJobInputSchema, raw, "Gemini speech job");
+      const hash = speechRequestHash(input);
+      return deps.withCreateLock(async () => {
+        if (input.requestId && !input.dryRun) {
+          const existing = await deps.store.getJobByRequest(actor, input.requestId);
+          if (existing) {
+            if (existing.requestHash !== hash) {
+              throw new DomainError({ code: "gemini_request_exists", message: `Request id ${input.requestId} was already used for a different job (${existing.jobId}).`, details: { requestId: input.requestId, jobId: existing.jobId } });
+            }
+            return { job: jobView(existing), replayed: true };
+          }
+        }
+        checkSpeechJobRules(input);
+        const settings = await getSettings();
+        const preconditionRefusal: GeminiRefusal | null = !settings.enabled
+          ? { code: "gemini_disabled", message: "Generation through Gemini is turned off on this computer (Settings → Cloud APIs)." }
+          : (await deps.secret.state()) !== "set"
+            ? { code: "gemini_key_missing", message: "No Gemini API key is stored on this computer (Settings → Cloud APIs)." }
+            : null;
+        if (preconditionRefusal && !input.dryRun) throw new DomainError({ code: preconditionRefusal.code, message: preconditionRefusal.message });
+        if (!(await deps.isChannelConnected(input.channelId))) {
+          throw new DomainError({ code: "gemini_workspace_unavailable", message: `${input.channelId} is not a channel connected on this computer (factory_list_channels).`, details: { channelId: input.channelId } });
+        }
+        await deps.workspace.resolveOutputRoot(input.channelId);
+        if (!deps.voices) throw new DomainError({ code: "voice_registry_unavailable", message: "The channel voice registry is not available on this server." });
+        // Before the estimate, the limits and any charge: only an approved voice of this channel speaks (a dry run reports it).
+        let voice: GeminiSpeechParams["voice"] | null = null;
+        let voiceRefusal: GeminiRefusal | null = null;
+        try {
+          voice = await deps.voices.resolve({ channelId: input.channelId, provider: "gemini", voice: input.voice });
+        } catch (error) {
+          if (!input.dryRun || !isDomainError(error) || error.code !== "voice_not_approved") throw error;
+          voiceRefusal = { code: "voice_not_approved", message: error.message, details: error.details as Record<string, unknown> | undefined };
+        }
+        const video = await resolveVideo({ channelId: input.channelId, videoNumber: input.videoNumber ?? null, storyboardId: null });
+        const estimateUsd = estimateSpeechUsd({ model: input.model, textChars: input.text.length, styleChars: input.style?.length ?? 0, at: now() });
+        if (!Number.isFinite(estimateUsd) || estimateUsd <= 0) throw new DomainError({ code: "gemini_invalid_params", message: "No price is known for these settings.", details: { field: "model" } });
+        const current = await spend();
+        const refusal = preconditionRefusal ?? voiceRefusal ?? limitRefusal(settings, current, estimateUsd);
+        if (input.dryRun) return { dryRun: true, estimateUsd, allowed: refusal === null, refusal, spend: current };
+        if (refusal) throw new DomainError({ code: refusal.code, message: refusal.message, details: refusal.details });
+        const at = now();
+        const params: GeminiSpeechParams = { voice: voice!, style: input.style ?? null };
+        const row: StoredGeminiMediaJob = {
+          jobId: `gm_${deps.generateId()}`,
+          channelId: input.channelId,
+          requestId: input.requestId ?? null,
+          requestHash: hash,
+          kind: "speech",
+          model: input.model,
+          prompt: input.text,
+          paramsJson: JSON.stringify(params),
+          inputsJson: "[]",
+          status: "queued",
+          remoteName: null,
+          estimateUsd,
+          costUsd: null,
+          costBasis: null,
+          outputsJson: null,
+          error: null,
+          errorCode: null,
+          attempts: 0,
+          nextAttemptAt: null,
+          createdBy: actor,
+          createdAt: at,
+          submittedAt: null,
+          finishedAt: null,
+          updatedAt: at,
+          storyboardId: null,
+          storyboardVersion: null,
+          segmentId: null,
+          video,
+        };
+        if (!(await deps.store.insertJob(row))) {
+          throw new DomainError({ code: "gemini_request_exists", message: `Request id ${input.requestId} was just used.`, details: { requestId: input.requestId } });
+        }
+        return { job: jobView(row) };
+      });
+    },
+
+    /**
+     * BL-236 (ADR 0057): designs ONE voice from a description -- paid, so it passes the same switch, key and limits as a job and is
+     * recorded as a `voice_design` job (its cost counts in the spend like any other). The voice registry calls this and keeps the
+     * sample as a preview; nothing here touches the registry. No audio is ever sent (designed voices only).
+     */
+    async designVoice(raw: unknown, actor: string): Promise<GeminiDesignedVoice> {
+      const input = parseWithSchema(designVoiceInputSchema, raw, "Gemini voice design");
+      const sampleText = input.sampleText ?? GEMINI_SPEECH.defaultSampleText;
+      if (!deps.api.designVoice) throw new DomainError({ code: "gemini_unavailable", message: "Voice design is not available on this server.", details: { outcome: "not_sent" } });
+      const row = await deps.withCreateLock(async () => {
+        const settings = await getSettings();
+        if (!settings.enabled) throw new DomainError({ code: "gemini_disabled", message: "Generation through Gemini is turned off on this computer (Settings → Cloud APIs)." });
+        if ((await deps.secret.state()) !== "set") throw new DomainError({ code: "gemini_key_missing", message: "No Gemini API key is stored on this computer (Settings → Cloud APIs)." });
+        if (!(await deps.isChannelConnected(input.channelId))) {
+          throw new DomainError({ code: "gemini_workspace_unavailable", message: `${input.channelId} is not a channel connected on this computer (factory_list_channels).`, details: { channelId: input.channelId } });
+        }
+        const estimateUsd = estimateSpeechUsd({ model: GEMINI_VOICE_DESIGN_PRICE_MODEL, textChars: sampleText.length, styleChars: input.description.length, at: now() });
+        const refusal = limitRefusal(settings, await spend(), estimateUsd);
+        if (refusal) throw new DomainError({ code: refusal.code, message: refusal.message, details: refusal.details });
+        const at = now();
+        const params: GeminiVoiceDesignParams = { description: input.description, sampleText, providerVoiceId: null };
+        const inserted: StoredGeminiMediaJob = {
+          jobId: `gm_${deps.generateId()}`,
+          channelId: input.channelId,
+          requestId: null,
+          requestHash: createHash("sha256").update(JSON.stringify({ kind: "voice_design", channelId: input.channelId, description: input.description, sampleText })).digest("hex"),
+          kind: "voice_design",
+          model: GEMINI_VOICE_DESIGN_PRICE_MODEL,
+          prompt: input.description,
+          paramsJson: JSON.stringify(params),
+          inputsJson: "[]",
+          // Sent at once (never queued): `submitting` reserves its estimate; a stop mid-call is failed at it by the boot sweep.
+          status: "submitting",
+          remoteName: null,
+          estimateUsd,
+          costUsd: null,
+          costBasis: null,
+          outputsJson: null,
+          error: null,
+          errorCode: null,
+          attempts: 1,
+          nextAttemptAt: null,
+          createdBy: actor,
+          createdAt: at,
+          submittedAt: at,
+          finishedAt: null,
+          updatedAt: at,
+          storyboardId: null,
+          storyboardVersion: null,
+          segmentId: null,
+          video: null,
+        };
+        await deps.store.insertJob(inserted);
+        return inserted;
+      });
+      const failRow = async (errorCode: string, error: string, costUsd: number, costBasis: GeminiCostBasis) => {
+        await deps.store.updateJob(row.jobId, "submitting", { status: "failed", errorCode, error: error.slice(0, 2000), costUsd, costBasis, finishedAt: now(), updatedAt: now() });
+      };
+      let apiKey: string | null;
+      try {
+        apiKey = await readApiKey();
+      } catch (error) {
+        await failRow("gemini_key_missing", error instanceof Error ? error.message : String(error), 0, "not_charged");
+        throw error;
+      }
+      if (!apiKey) {
+        await failRow("gemini_key_missing", "The Gemini API key was removed from this computer.", 0, "not_charged");
+        throw new DomainError({ code: "gemini_key_missing", message: "No Gemini API key is stored on this computer (Settings → Cloud APIs)." });
+      }
+      let result: Awaited<ReturnType<NonNullable<GeminiApiPort["designVoice"]>>>;
+      try {
+        result = await deps.api.designVoice(apiKey, { description: input.description, sampleText, displayName: input.displayName });
+      } catch (error) {
+        // Provably unsent, or refused by Google: nothing charged. Sent and then lost: counted at its estimate (never under-counted).
+        const details = isDomainError(error) ? ((error.details ?? {}) as Record<string, unknown>) : {};
+        const charged = !isDomainError(error) || details.outcome === "unknown";
+        await failRow(isDomainError(error) ? error.code : "gemini_unavailable", error instanceof Error ? error.message : String(error), charged ? row.estimateUsd : 0, charged ? "unknown_outcome" : "not_charged");
+        throw error;
+      }
+      const at = row.submittedAt ?? row.createdAt;
+      const sample = result.sample ? audioFileOf(result.sample, GEMINI_SPEECH.defaultSampleRateHz) : null;
+      const counted = result.usage ? speechCostFromUsage(row.model, result.usage, sample?.durationSeconds ?? null, at) : null;
+      const costUsd = counted ?? (sample?.durationSeconds != null ? Math.max(speechCostFloor(row.model, sample.durationSeconds, at), 0) : row.estimateUsd);
+      const costBasis: GeminiCostBasis = counted !== null ? "usage" : "price_table";
+      if (!result.voiceId || !sample) {
+        await failRow("gemini_output_failed", `Google answered without ${!result.voiceId ? "a voice id" : "a sample"}; it may have been charged.`, Math.max(costUsd, row.estimateUsd), "unknown_outcome");
+        throw new DomainError({ code: "gemini_unavailable", message: "Google designed no usable voice (no voice id or no sample in the answer).", details: { outcome: "answered", jobId: row.jobId } });
+      }
+      const params: GeminiVoiceDesignParams = { description: input.description, sampleText, providerVoiceId: result.voiceId };
+      await deps.store.updateJob(row.jobId, "submitting", { status: "done", paramsJson: JSON.stringify(params), costUsd, costBasis, finishedAt: now(), updatedAt: now() });
+      return { jobId: row.jobId, providerVoiceId: result.voiceId, sample, costUsd };
+    },
+
     /** BL-184 stage 3 (B5): the channel's video jobs that render a storyboard's segments (its takes), newest first. */
     async listJobsByStoryboard(channelId: string, storyboardId: string): Promise<GeminiJobView[]> {
       return (await deps.store.listJobs({ channelId, storyboardId, limit: 500 })).map(jobView);
@@ -611,6 +835,7 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
       const rows = await deps.store.listJobs({
         ...(input.channelId ? { channelId: input.channelId } : {}),
         ...(input.status ? { statuses: [input.status as GeminiJobStatus] } : {}),
+        ...(input.kinds ? { kinds: input.kinds } : {}),
         limit: input.limit ?? 20,
       });
       return { jobs: rows.map(jobView) };

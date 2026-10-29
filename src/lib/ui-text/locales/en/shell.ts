@@ -189,6 +189,7 @@ export const shell = {
   "conflicts.decideLater": "Decide later — the differences stay listed in Merge",
   "conflicts.productionSettings": "Servers settings",
   "conflicts.geminiSettings": "Gemini limits",
+  "conflicts.elevenlabsSettings": "ElevenLabs limits",
   "conflicts.snapshotGroup": "Batches, audit, Research and Decisions",
   "conflicts.thisComputer": "This computer",
   "conflicts.otherComputer": "The other computer",

@@ -104,7 +104,10 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT",
 // covered days in a row) and gains coverage.coveredDaysInARow; its gapDates become the channel's days not covered (with
 // gapDatesTimeZone and missingTranslationDates), and entries may be kind published_pending (publishAt passed < 24 h ago, the copy
 // not synced yet). Producer API 1.13.0 the same.
-export const AGENT_API_VERSION = "4.13.0";
+// 4.14.0 (BL-236, FO-REQ-0050, ADR 0057): agent_speech_get_status (READ), agent_speech_create_job (EXECUTE: a paid speech take for
+// the worker's own channel within each provider's switch and limits; a dryRun is free), agent_speech_get_job (READ), agent_voice_list
+// (READ: the channel's designed voices). Designing and approving a voice stay with the owner and the Operator. Additive.
+export const AGENT_API_VERSION = "4.14.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry

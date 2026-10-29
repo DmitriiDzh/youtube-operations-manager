@@ -1,5 +1,5 @@
 import { ceil4 } from "@/lib/shared-money";
-import { GEMINI_IMAGE_MODELS, GEMINI_LIMITS, GEMINI_VIDEO_MODELS, ownEntry } from "./contracts";
+import { GEMINI_IMAGE_MODELS, GEMINI_LIMITS, GEMINI_SPEECH, GEMINI_SPEECH_MODELS, GEMINI_SPEECH_PRICE_CHANGE_AT, GEMINI_VIDEO_MODELS, ownEntry } from "./contracts";
 
 // BL-174 (GEMINI_MEDIA_PLAN.md §2.3): estimates before a call and costs after it, from the official price table
 // (`GEMINI_PRICES_AS_OF`). Pure. Every amount goes through `ceil4` (USD, 4 decimals, rounded up).
@@ -84,8 +84,56 @@ export function imageCostFromTable(model: string, size: string, images: number):
   return ceil4((imageTokens * spec.imageOutPerM * images) / PER_M);
 }
 
+// -- BL-236 (ADR 0057): speech ------------------------------------------------------------------------------------------------
+
+/** A speech model's token prices at an instant: the promotional rate, or the doubled one from `GEMINI_SPEECH_PRICE_CHANGE_AT`. */
+export function speechPricesAt(model: string, at: Date): { inputPerM: number; audioOutPerM: number } {
+  const spec = ownEntry(GEMINI_SPEECH_MODELS, model);
+  if (!spec) throw new Error(`no price for ${model}`);
+  return at.getTime() >= Date.parse(GEMINI_SPEECH_PRICE_CHANGE_AT) ? spec.afterChange : { inputPerM: spec.inputPerM, audioOutPerM: spec.audioOutPerM };
+}
+
+/** The input tokens of a speech request: the text and the style at 3 characters per token (the image/video estimate's rate). */
+function speechInputTokens(textChars: number, styleChars: number): number {
+  return Math.ceil((textChars + styleChars) / 3);
+}
+
+/**
+ * The estimate of one speech take: its length guessed at `GEMINI_SPEECH.estimateCharsPerSecond` (rounded up to whole seconds),
+ * 25 audio tokens a second at the audio rate, plus the text and style as input -- at the prices in force at `at`.
+ */
+export function estimateSpeechUsd(args: { model: string; textChars: number; styleChars: number; at: Date }): number {
+  const prices = speechPricesAt(args.model, args.at);
+  const seconds = Math.max(1, Math.ceil(args.textChars / GEMINI_SPEECH.estimateCharsPerSecond));
+  const audioTokens = seconds * GEMINI_SPEECH.audioTokensPerSecond;
+  return ceil4((audioTokens * prices.audioOutPerM + speechInputTokens(args.textChars, args.styleChars) * prices.inputPerM) / PER_M);
+}
+
+/** The table price of audio alone: its seconds (rounded up) x 25 tokens x the audio rate at `at`. */
+export function speechCostFloor(model: string, durationSeconds: number, at: Date): number {
+  const prices = speechPricesAt(model, at);
+  return ceil4((Math.ceil(durationSeconds) * GEMINI_SPEECH.audioTokensPerSecond * prices.audioOutPerM) / PER_M);
+}
+
+/**
+ * The cost of a finished speech take from Google's counts: input at the input rate, every output and thought token at the audio
+ * rate (TTS lists no separate text rate: never under-counted) -- and never below the saved file's own length at the table price.
+ */
+export function speechCostFromUsage(
+  model: string,
+  usage: { inputTokens: number; outputTokens: number; thoughtTokens: number; outputByModality: Record<string, number> },
+  durationSeconds: number | null,
+  at: Date
+): number {
+  const prices = speechPricesAt(model, at);
+  const splitTotal = Object.values(usage.outputByModality).reduce((sum, n) => sum + n, 0);
+  const totalOut = Math.max(usage.outputTokens, splitTotal);
+  const counted = ceil4((usage.inputTokens * prices.inputPerM + (totalOut + usage.thoughtTokens) * prices.audioOutPerM) / PER_M);
+  return durationSeconds !== null ? Math.max(counted, speechCostFloor(model, durationSeconds, at)) : counted;
+}
+
 /** The model catalog with prices, for the operator's status read. */
-export function modelCatalog() {
+export function modelCatalog(at: Date = new Date()) {
   return [
     ...Object.entries(GEMINI_IMAGE_MODELS).map(([model, spec]) => ({
       model,
@@ -110,5 +158,20 @@ export function modelCatalog() {
         ? { usdPerMillionTokens: { input: spec.tokenPricing.inputPerM, textAndThinkingOutput: spec.tokenPricing.textOutPerM, videoOutput: spec.tokenPricing.videoOutPerM } }
         : {}),
     })),
+    // BL-236: speech models -- the prices in force now, the date they double and the doubled ones.
+    ...Object.entries(GEMINI_SPEECH_MODELS).map(([model, spec]) => {
+      const now = speechPricesAt(model, at);
+      return {
+        model,
+        kind: "speech" as const,
+        label: spec.label,
+        audioTokensPerSecond: GEMINI_SPEECH.audioTokensPerSecond,
+        usdPerMinute: ceil4((60 * GEMINI_SPEECH.audioTokensPerSecond * now.audioOutPerM) / PER_M),
+        usdPerMillionTokens: { input: now.inputPerM, audioOutput: now.audioOutPerM },
+        pricesChangeAt: GEMINI_SPEECH_PRICE_CHANGE_AT,
+        usdPerMillionTokensAfterChange: { input: spec.afterChange.inputPerM, audioOutput: spec.afterChange.audioOutPerM },
+        maxTextChars: GEMINI_SPEECH.maxTextChars,
+      };
+    }),
   ];
 }

@@ -27,6 +27,10 @@ export const production = {
   "geminiField.maxUsdPerDay": "Gemini: daily spend limit",
   "geminiField.maxUsdPerMonth": "Gemini: monthly spend limit",
   "geminiField.maxActiveJobs": "Gemini: jobs queued or running at once",
+  "elevenlabsField.maxCharsPerJob": "ElevenLabs: most characters per take",
+  "elevenlabsField.maxCharsPerDay": "ElevenLabs: daily character limit",
+  "elevenlabsField.maxCharsPerMonth": "ElevenLabs: monthly character limit",
+  "elevenlabsField.maxActiveJobs": "ElevenLabs: takes queued or running at once",
 
   "settingsSync.intro": "These settings are the same on all your computers: a change here reaches the others within about a minute (RunPod keys stay on each computer).",
   "settingsSync.fromOther": "From the other computer: {fields} ({time}).",

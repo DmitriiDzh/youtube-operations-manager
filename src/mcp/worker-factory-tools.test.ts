@@ -47,6 +47,21 @@ function fakeDeps() {
         return note("gemini.getJobs")(input);
       },
     },
+    // BL-236: speech and voices -- a jobId is looked up by id alone (like the providers), so the pinning must check its channel.
+    speech: {
+      getStatus: note("speech.getStatus"),
+      createJob: async (input: unknown) => {
+        if ((input as { requestId?: string }).requestId === "used-by-japan") throw new DomainError({ code: "elevenlabs_request_exists", message: "requestId used by job el_J", details: { jobId: "el_J" } });
+        return note("speech.createJob")(input);
+      },
+      getJobs: async (input: unknown) => {
+        const jobId = (input as { jobId?: string }).jobId;
+        if (jobId === "el_J") return { provider: "elevenlabs", job: { jobId, channelId: JAPAN } };
+        if (jobId === "gm_T") return { provider: "gemini", job: { jobId, channelId: TROPICO } };
+        return note("speech.getJobs")(input);
+      },
+    },
+    voices: { list: note("voices.list"), design: note("voices.design"), approve: note("voices.approve"), update: note("voices.update") },
     live: { getStatus: note("live.getStatus"), mapSources: note("live.mapSources"), setLocalizations: note("live.setLocalizations") },
     channelLocalizations: { get: note("cl.get"), save: note("cl.save") },
     channelBranding: {
@@ -174,9 +189,10 @@ test("AC-WF-05/06: the worker gets exactly the listed tools, renamed, and none o
   assert.deepEqual(names, [...WORKER_FACTORY_TOOL_NAMES].sort());
   // BL-223: + agent_channel_get_branding / agent_channel_save_branding (36 -> 38). BL-225: + agent_publishing_plan_save / _get /
   // _list (38 -> 41). BL-227: + agent_localization_report_checks and the four request tools (41 -> 46). BL-235: +
-  // agent_publishing_coverage (46 -> 47).
-  assert.equal(names.length, 47);
-  for (const forbidden of ["agent_plan_move", "agent_media_pull_model", "agent_media_list_models", "agent_media_create_runtime", "agent_media_get_gpu_stats", "agent_channel_get_localizations", "agent_channel_save_localizations"]) {
+  // agent_publishing_coverage (46 -> 47). BL-236 (ADR 0057): + agent_speech_get_status / _create_job / _get_job and agent_voice_list
+  // (47 -> 51); no voice design or approval tool (owner and Operator only).
+  assert.equal(names.length, 51);
+  for (const forbidden of ["agent_plan_move", "agent_media_pull_model", "agent_media_list_models", "agent_media_create_runtime", "agent_media_get_gpu_stats", "agent_channel_get_localizations", "agent_channel_save_localizations", "agent_voice_design", "agent_voice_pick", "agent_voice_update"]) {
     assert.ok(!names.includes(forbidden), forbidden);
   }
   assert.ok(names.every((name) => name.startsWith("agent_")));
@@ -332,4 +348,24 @@ test("BL-235: agent_publishing_coverage reaches the coverage for the own channel
   const tooMany = (await tool.handler({ channelId: TROPICO, days: 31 })) as { isError?: boolean };
   assert.equal(tooMany.isError, true);
   assert.equal(calls.length, 1);
+});
+
+// BL-236 (FO-REQ-0050 §3, ADR 0057): a channel worker speaks only for its own channel, reads only its own voices and jobs, and can
+// neither design, approve (pick), rename nor archive a voice.
+test("BL-236: agent speech tools are pinned to the worker's channel; voice design / pick / update are refused", async () => {
+  const { deps, calls } = fakeDeps();
+  const pinned = pinFactoryDepsToChannel(() => deps, TROPICO, async () => undefined);
+  await assert.rejects(async () => pinned.speech.createJob({ provider: "gemini", channelId: JAPAN, voice: "Sumire", text: "hi" }), code("CHANNEL_NOT_ACTIVE"));
+  await pinned.speech.createJob({ provider: "gemini", channelId: TROPICO, voice: "Sumire", text: "hi" });
+  await assert.rejects(async () => pinned.speech.createJob({ provider: "elevenlabs", channelId: TROPICO, voice: "Sumire", text: "hi", requestId: "used-by-japan" }), (error: unknown) => isDomainError(error) && error.code === "elevenlabs_request_exists" && !JSON.stringify(error.details ?? {}).includes("el_J"));
+  await assert.rejects(async () => pinned.speech.getJobs({ jobId: "el_J" }), code("gemini_job_not_found"));
+  assert.equal(((await pinned.speech.getJobs({ jobId: "gm_T" })) as { job: { channelId: string } }).job.channelId, TROPICO);
+  await pinned.speech.getJobs({});
+  await assert.rejects(async () => pinned.voices.list({ channelId: JAPAN }), code("CHANNEL_NOT_ACTIVE"));
+  await pinned.voices.list({ channelId: TROPICO });
+  for (const call of [() => pinned.voices.design({ channelId: TROPICO }), () => pinned.voices.approve({ channelId: TROPICO }), () => pinned.voices.update({ channelId: TROPICO })]) {
+    await assert.rejects(async () => call(), code("AGENT_SESSION_OPERATOR_ONLY"));
+  }
+  assert.ok(calls.includes(`speech.getJobs:${JSON.stringify({ channelId: TROPICO })}`), "a list without a channel is this channel's");
+  assert.ok(!calls.some((c) => c.startsWith("voices.design") || c.startsWith("voices.approve") || c.startsWith("voices.update")));
 });

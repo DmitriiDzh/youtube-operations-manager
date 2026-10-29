@@ -125,7 +125,8 @@ export function buildOwnRuns(rows: OwnRunRows): SharedCostRun[] {
       channelId: g.channelId,
       video: safeVideo(g.video),
       label: label(g.model),
-      mediaKind: g.kind,
+      // BL-236: speech and a recorded voice design are audio.
+      mediaKind: g.kind === "image" || g.kind === "video" ? g.kind : "audio",
       storyboardId: safeId(g.storyboardId),
       storyboardVersion: g.storyboardVersion,
       segmentId: safeId(g.segmentId),

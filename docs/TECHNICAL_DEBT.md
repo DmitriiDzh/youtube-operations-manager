@@ -2197,3 +2197,32 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Re-evaluate:** if the generator moves the library to the internal disk, if streams replay because the T9 dropped, or when the
   shared report should show segments.
 - **Gate(s):** none. **Status:** open.
+
+## RISK-142 — ElevenLabs jobs are not in the shared media-jobs list — OPEN, 2026-10-29
+
+- **What:** BL-236 (ADR 0057). The limits and the spend are shared since owner msg 3823 (families `elevenlabs_settings`,
+  `elevenlabs_spend`), but ElevenLabs takes are not in the shared media-jobs report: its `source` enum is strict, and an older build
+  would reject the whole report of a computer that sends a new source (losing that computer's RunPod and Gemini jobs too). So another
+  computer sees ElevenLabs spend (in the totals) but not the takes themselves. `stop.sh`'s media-idle check looks at Gemini only
+  (restart-when-idle waits for ElevenLabs, `elevenlabs_job`).
+- **Bounds:** each computer's own Settings card and `factory_speech_get_job` list its takes; the shared totals hold the limits.
+- **Re-evaluate:** when the media-jobs report gets a new version that every running build reads (then add `source: elevenlabs`).
+- **Gate(s):** none. **Status:** open.
+
+## RISK-143 — The speech providers' request and answer fields are unverified — OPEN, 2026-10-29
+
+- **What:** BL-236 was built without any call to Gemini or ElevenLabs. Unverified: Gemini's `speech_config` / `response_format` audio
+  fields, `POST /v1beta/voices` and its answer, the TTS prices; ElevenLabs' `eleven_v4` id, the `character-cost` header, the design and
+  save fields, which output formats the Starter plan allows.
+- **Bounds:** parsers are tolerant (documented shapes and twins); an answer without audio or a voice id is never guessed (failed,
+  counted at the estimate when it may have been charged); cost never below a saved file's length (Gemini).
+- **Re-evaluate:** at the owner's first paid calls; fix field names from the real answers.
+- **Gate(s):** none. **Status:** open.
+
+## RISK-144 — A Gemini designed voice lives about a year; a project holds at most 200 — OPEN, 2026-10-29
+
+- **What:** BL-236. Each Gemini preview is its own designed voice on Google's side; the registry stores its id but cannot renew it,
+  and archived or unapproved previews are not deleted at Google (no delete call is implemented).
+- **Bounds:** Gemini designs default to 1 preview; a speech job with an expired voice fails at Google, not charged.
+- **Re-evaluate:** before the first voice is a year old, or near 150 designed voices.
+- **Gate(s):** none. **Status:** open.

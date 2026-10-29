@@ -80,6 +80,12 @@ export const WORKER_FACTORY_TOOLS: Readonly<Record<string, { agentName: string; 
   factory_plan_rerun: { agentName: "agent_plan_rerun", writes: true },
   factory_gemini_get_status: { agentName: "agent_gemini_get_status", writes: false },
   factory_gemini_create_job: { agentName: "agent_gemini_create_job", writes: true },
+  // BL-236 (ADR 0057, FO-REQ-0050 §3): speech takes for this channel on the same paid terms (the owner's switch and limits of each
+  // provider), and its voices read-only. Designing and approving a voice stay with the owner and the Operator (no agent tool).
+  factory_speech_get_status: { agentName: "agent_speech_get_status", writes: false },
+  factory_speech_create_job: { agentName: "agent_speech_create_job", writes: true },
+  factory_speech_get_job: { agentName: "agent_speech_get_job", writes: false },
+  factory_voice_list: { agentName: "agent_voice_list", writes: false },
 });
 
 /** BL-218: the Operator's media wiring a channel route injects (sessions and jobs); without it those tools refuse. */
@@ -281,6 +287,41 @@ export function pinFactoryDepsToChannel(
         if (record(answer.job).channelId !== channelId) throw notFound;
         return answer;
       },
+    },
+    // BL-236: speech for this channel only. A job id of another channel's is "not found" (the providers ignore channelId when a
+    // jobId is given, so the job's own channel is checked here); a reused requestId never names another channel's job.
+    speech: {
+      getStatus: () => deps().speech.getStatus(),
+      createJob: byChannel(async (input) => {
+        try {
+          return await deps().speech.createJob(input);
+        } catch (error) {
+          if (isDomainError(error) && (error.code === "gemini_request_exists" || error.code === "elevenlabs_request_exists")) {
+            throw new DomainError({ code: error.code, message: "This requestId was already used for another request; choose a new requestId." });
+          }
+          throw error;
+        }
+      }),
+      getJobs: async (input) => {
+        const pinned = pinChannel(input, channelId, true);
+        if (typeof pinned.jobId !== "string") return deps().speech.getJobs(pinned);
+        const notFound = new DomainError({ code: "gemini_job_not_found", message: `No speech job ${pinned.jobId} on this computer.`, details: { jobId: pinned.jobId } });
+        let answer: Record<string, unknown>;
+        try {
+          answer = await deps().speech.getJobs(pinned);
+        } catch {
+          throw notFound;
+        }
+        if (record(answer.job).channelId !== channelId) throw notFound;
+        return answer;
+      },
+    },
+    // BL-236: the channel's voices, read-only; design, approval and rename/archive are the owner's and the Operator's.
+    voices: {
+      list: byChannel((input) => deps().voices.list(input)),
+      design: refused,
+      approve: refused,
+      update: refused,
     },
     live: {
       getStatus: async (input) => deps().live.getStatus({ ...record(input), channelId: pinChannel(input, channelId, true).channelId as string }),

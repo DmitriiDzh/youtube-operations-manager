@@ -5,6 +5,7 @@ import { publishingPlanProgress } from "@/lib/publishing-plan-progress";
 import { createChannelPublishingCoverage, invalidateChannelTimeZone } from "@/composition/publishing-coverage";
 import { createChannelLocalizationsOperatorCore, operatorChannelLocalizations } from "@/lib/channel-localizations";
 import { createGeminiMediaCore } from "@/lib/gemini-media";
+import { createSpeechForProduction, voiceRegistryForProduction } from "@/composition/speech";
 import { uploadBandwidthReport, uploadBandwidthStatus } from "@/lib/upload-bandwidth";
 import { collectLiveEncoderReadings, collectLiveSourceStatus, collectLiveStreamEntries, createLiveSegmentSettingsCore, createLiveStreamsCore, createStreamLocalizationsCore, getLiveStreamsDeviceId, listPeerLiveStreams, localizationsStatusEntry } from "@/lib/live-streams";
 import { createGenerationPlansCore } from "@/lib/generation-plans";
@@ -21,7 +22,7 @@ import type { FactoryToolDeps } from "./factory-server";
  * approval, start or stop (`session-approval-inventory.test.ts`). The factory route adds the media, logical-path and channel-list
  * parts.
  */
-export type FactoryChannelDeps = Pick<FactoryToolDeps, "plans" | "gemini" | "live" | "channelLocalizations" | "channelBranding" | "publishingPlans" | "publishingCoverage" | "localizationChecks" | "storyboards" | "videos" | "jobs">;
+export type FactoryChannelDeps = Pick<FactoryToolDeps, "plans" | "gemini" | "speech" | "voices" | "live" | "channelLocalizations" | "channelBranding" | "publishingPlans" | "publishingCoverage" | "localizationChecks" | "storyboards" | "videos" | "jobs">;
 
 export function createFactoryChannelDeps(): FactoryChannelDeps {
   return {
@@ -48,6 +49,19 @@ export function createFactoryChannelDeps(): FactoryChannelDeps {
       getStatus: async () => ({ ...(await createGeminiMediaCore().getStatus()) }),
       createJob: async (input) => ({ ...(await createGeminiMediaCore().createJob(input, "factory")) }),
       getJobs: async (input) => ({ ...(await createGeminiMediaCore().getJobs(input)) }),
+    },
+    // BL-236 (ADR 0057): speech through Gemini TTS / ElevenLabs and the channel voice registry (src/composition/speech.ts); every
+    // job, design and relayed approval is the factory's.
+    speech: {
+      getStatus: async () => ({ ...(await createSpeechForProduction().getStatus()) }),
+      createJob: async (input) => ({ ...(await createSpeechForProduction().createJob(input, "factory")) }),
+      getJobs: async (input) => ({ ...(await createSpeechForProduction().getJobs(input)) }),
+    },
+    voices: {
+      list: async (input) => ({ ...(await (await voiceRegistryForProduction()).list(input)) }),
+      design: async (input) => ({ ...(await (await voiceRegistryForProduction()).design(input, "factory")) }),
+      approve: async (input) => ({ ...(await (await voiceRegistryForProduction()).approve(input, "factory")) }),
+      update: async (input) => ({ ...(await (await voiceRegistryForProduction()).update(input)) }),
     },
     // BL-176 (LIVE_STREAMS_PLAN.md §3.4/§3.11): live streams -- this computer's and the other computers' status (fixed codes,
     // never a key or URL), and the Operator's map of videos to original files (it only offers files; the owner builds rotations).

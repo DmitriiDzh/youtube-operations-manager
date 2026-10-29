@@ -9,6 +9,7 @@ import { getDeviceSecrets } from "@/lib/device-secrets";
 import { createGeminiApiClient, isMediaGatewayEnabled } from "@/lib/media-gateway";
 import { createStoryboardGateForProduction } from "@/lib/storyboards";
 import { createVideoProjectsServiceForProduction } from "@/lib/video-projects";
+import { createVoiceResolverForProduction } from "@/lib/voice-registry";
 import { createGeminiSettingsCoreForProduction, createGeminiSpendShareCoreForProduction } from "@/lib/sync-gateway";
 import { createGeminiFiles } from "./adapters/files";
 import { createGeminiWorkspace } from "./adapters/workspace";
@@ -27,8 +28,8 @@ import { createGeminiWorker } from "./worker";
 // ---------------------------------------------------------------------------
 
 export * from "./contracts";
-export { estimateImageUsd, estimateVideoUsd, imageCostFromTable, imageCostFromUsage, modelCatalog } from "./pricing";
-export { createGeminiMediaServices, settingsFromJson, type GeminiMediaDeps, type GeminiStore } from "./services";
+export { estimateImageUsd, estimateSpeechUsd, estimateVideoUsd, imageCostFromTable, imageCostFromUsage, modelCatalog, speechCostFloor, speechCostFromUsage, speechPricesAt } from "./pricing";
+export { createGeminiMediaServices, settingsFromJson, GEMINI_VOICE_DESIGN_PRICE_MODEL, type GeminiDesignedVoice, type GeminiMediaDeps, type GeminiStore } from "./services";
 export { createGeminiWorker } from "./worker";
 export { accountWideSpend, geminiKeyFingerprint, GEMINI_FINGERPRINT_LABEL, GEMINI_PEER_STALE_AFTER_MS } from "./account";
 export { createGeminiSpendSharePublisher, GEMINI_SPEND_REPUBLISH_MS } from "./spend-share";
@@ -107,6 +108,8 @@ function buildDeps(): GeminiMediaDeps {
     videoLink: { resolve: (input) => createVideoProjectsServiceForProduction().resolveJobVideo(input) },
     // BL-193 (ADR 0039): the other computers' Gemini spend, for the limits shared by every computer on one key.
     peerSpendReports: () => createGeminiSpendShareCoreForProduction().listPeerReports(),
+    // BL-236 (ADR 0057): a speech job speaks only an APPROVED voice of its channel (the shared voice registry's resolver).
+    voices: { resolve: (input) => createVoiceResolverForProduction().resolve(input) },
     log: (line) => console.warn(line),
   };
 }

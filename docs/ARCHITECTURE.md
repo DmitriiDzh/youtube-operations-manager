@@ -5002,3 +5002,25 @@ On branch `feature/bl-229-music-library`. No schema change; no YouTube call; not
   `formSectionsFor`, `missingRequired`, `toggleAnswer`, `answersToSend`, `safeGenreColor` / `genreTintStyle` (`--genre-color`).
   `plan-review-screen.tsx` renders `GenreHeader`, the tint, the chip rows and `ReviewFormSection`; `submit` refuses locally while a
   required answer is missing (the A / R keys too). `generation-plans-panel.tsx` shows `GenreBadges`.
+
+## BL-236 — speech in designed channel voices (ADR 0057)
+
+- **Flow (Gemini):** `factory_speech_create_job { provider: gemini }` → `src/composition/speech.ts` → `gemini-media.createSpeechJob`
+  (lock; replay by requestId; `checkSpeechJobRules`; switch / key; the voice resolved through the injected `GeminiVoiceResolver` →
+  `voice-registry`; estimate `estimateSpeechUsd` at now; USD limits) → row `kind: speech`, `queued` → worker `runSpeech` (claim CAS →
+  `gemini-api.generateSpeech` with the voice's provider id and style → `shared-audio.audioFileOf` → `take-1.wav` → asset
+  `generated_audio` → manifest last) → `done` with `speechCostFromUsage` (never below `speechCostFloor` of the file).
+- **Flow (ElevenLabs):** the same surface → `elevenlabs-speech.createJob` (character limits per job / day / month + active jobs on this
+  computer) → its worker → `elevenlabs-api.textToSpeech` (binary answer, `character-cost` header) → `take-1.mp3` (or `.wav` for
+  `pcm_*`) → manifest last → `done`, cost = charged characters × list price.
+- **Voices:** `factory_voice_design` → `voice-registry.design` (name check first) → provider port `design` (each paid call recorded as
+  a `voice_design` job by the provider module) → preview files → draft row. The owner's pick (Web `POST …/voices/[voiceId]/approve`,
+  or `factory_voice_pick`) → provider port `save` (ElevenLabs `POST /v1/text-to-voice`; Gemini: the preview's id) → `approved`.
+- **Boundaries:** the registry imports no provider; the providers import only the registry's resolver; `composition/speech.ts` is the
+  only place that knows both; generation-plans and the jobs pool know the `elevenlabs` folder as a contract string only.
+- **Shared ElevenLabs limits and spend (owner msg 3823):** `elevenlabs-speech/settings-sync.ts` (the Gemini rules on the sync-gateway
+  `elevenlabs-settings` document) applies the four character limits on the share loop (`instrumentation.ts`, 30 s) and publishes an
+  owner's change on save; `spend-share.ts` writes this computer's `elevenlabs-spend` report; `account.ts` sums the peers with the same
+  key fingerprint; `createJob` / `designVoice` check day and month against that sum (`usage().account`).
+- **Limitations:** ElevenLabs takes are outside the shared jobs report (RISK-142); provider fields unverified
+  (RISK-143); Gemini designed voices expire / are capped (RISK-144).

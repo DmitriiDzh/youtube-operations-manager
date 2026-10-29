@@ -13,7 +13,7 @@ import { errorText, uiMessageText } from "@/lib/ui-text";
 // routes; adds no new way to resolve anything.
 
 /** `source` (BL-193): which shared settings document -- Servers → Setup (media) or the Gemini limits -- and so which resolve route. */
-type SettingConflict = { field: string; values: unknown[]; thisComputer: unknown; source?: "media" | "gemini" };
+type SettingConflict = { field: string; values: unknown[]; thisComputer: unknown; source?: "media" | "gemini" | "elevenlabs" };
 type ActorConflict = {
   family: "change_drafts" | "editorial_profile" | "ai_connections" | "channel_language_settings" | "channel_publishing_settings";
   key: string;
@@ -89,11 +89,14 @@ export function useConflictCenter(enabled: boolean): ConflictCenterState {
       fetchJson<{ channels: Array<{ channelId: string; title: string; isActive: boolean }> }>(t, "/api/channel-connections"),
       // BL-193 (ADR 0039): the Gemini limits, shared like the Setup settings; unavailable (module off or broken) = none listed.
       fetchJson<{ conflicts?: SettingConflict[] }>(t, "/api/gemini-media/settings-sync"),
+      // BL-236 (owner msg 3823): the ElevenLabs character limits, shared the same way.
+      fetchJson<{ conflicts?: SettingConflict[] }>(t, "/api/elevenlabs-speech/settings-sync"),
     ]);
-    const [settingsRes, statusRes, aiRes, channelsRes, geminiRes] = settled;
+    const [settingsRes, statusRes, aiRes, channelsRes, geminiRes, elevenlabsRes] = settled;
     setSettings([
       ...(settingsRes.status === "fulfilled" ? (settingsRes.value.conflicts ?? []).map((c) => ({ ...c, source: "media" as const })) : []),
       ...(geminiRes.status === "fulfilled" ? (geminiRes.value.conflicts ?? []).map((c) => ({ ...c, source: "gemini" as const })) : []),
+      ...(elevenlabsRes.status === "fulfilled" ? (elevenlabsRes.value.conflicts ?? []).map((c) => ({ ...c, source: "elevenlabs" as const })) : []),
     ]);
     // RunPod not set up on this device: Production has no settings to compare -- not an error worth showing.
     if (statusRes.status === "fulfilled") setDivergence((statusRes.value.notices ?? []).some((n) => n.kind === "divergence" && n.snapshotId));
@@ -266,7 +269,12 @@ export function ConflictCenter({
   const post = (url: string, body: unknown) => fetchJson(t, url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
   const keepSetting = (c: SettingConflict, value: unknown) =>
-    act(() => post(c.source === "gemini" ? "/api/gemini-media/settings-sync/resolve" : "/api/media-generation/settings-sync/resolve", { field: c.field, value }));
+    act(() =>
+      post(
+        c.source === "gemini" ? "/api/gemini-media/settings-sync/resolve" : c.source === "elevenlabs" ? "/api/elevenlabs-speech/settings-sync/resolve" : "/api/media-generation/settings-sync/resolve",
+        { field: c.field, value }
+      )
+    );
   const keepActor = (c: ActorConflict, actor: string) =>
     act(() =>
       c.family === "change_drafts"
@@ -302,18 +310,18 @@ export function ConflictCenter({
         </button>
       )}
 
-      {(["media", "gemini"] as const).map((source) => {
+      {(["media", "gemini", "elevenlabs"] as const).map((source) => {
         const list = state.settings.filter((c) => (c.source ?? "media") === source);
         if (list.length === 0) return null;
         return (
           <section key={source} className="space-y-3">
-            <h3 className="text-sm font-semibold text-zinc-200">{t(source === "gemini" ? "conflicts.geminiSettings" : "conflicts.productionSettings")}</h3>
+            <h3 className="text-sm font-semibold text-zinc-200">{t(source === "gemini" ? "conflicts.geminiSettings" : source === "elevenlabs" ? "conflicts.elevenlabsSettings" : "conflicts.productionSettings")}</h3>
             {list.map((c) => {
               // Normally one of the two values is this computer's own (it keeps it until the choice); if not, both are shown as versions.
               const mine = c.values.find((v) => JSON.stringify(v) === JSON.stringify(c.thisComputer));
               const [left, right] = mine !== undefined ? [mine, c.values.find((v) => v !== mine) ?? c.values[1]] : [c.values[0], c.values[1]];
               // BL-193: a Gemini limit is labelled as one (the Setup settings have a daily cap of the same field name).
-              const labelField = source === "gemini" ? `gemini.${c.field}` : c.field;
+              const labelField = source === "media" ? c.field : `${source}.${c.field}`;
               return (
                 <div key={`${source}.${c.field}`} className="space-y-2 rounded-xl border border-amber-800/60 bg-amber-950/10 p-3">
                   <p className="text-sm font-medium text-zinc-100">{settingLabel(t, labelField)}</p>

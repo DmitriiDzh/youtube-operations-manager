@@ -189,6 +189,7 @@ export const shell: Record<keyof typeof en, string> = {
   "conflicts.decideLater": "Решить позже — различия останутся на вкладке «Слияние»",
   "conflicts.productionSettings": "Настройки серверов",
   "conflicts.geminiSettings": "Лимиты Gemini",
+  "conflicts.elevenlabsSettings": "Лимиты ElevenLabs",
   "conflicts.snapshotGroup": "Пакеты, журнал, исследования и решения",
   "conflicts.thisComputer": "Этот компьютер",
   "conflicts.otherComputer": "Другой компьютер",

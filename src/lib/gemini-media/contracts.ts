@@ -63,6 +63,55 @@ export const GEMINI_VIDEO_MODELS: Readonly<Record<string, GeminiVideoModelSpec>>
   // gone -- Google shuts them down on 2026-10-22 and names Omni as the replacement (owner, Telegram msg 2902: removed now).
 });
 
+// ---------------------------------------------------------------------------
+// BL-236 (FO-REQ-0050, ADR 0057): speech -- one take of text in a designed voice, a third job kind next to image and video (same
+// table, key, switch, limits, spend, worker and folder). Prices from the Gemini pricing page as the Operator's research R-0005
+// read it on 2026-10-29 (UNVERIFIED here: no page or API was read while building): a promotional rate until 2026-12-31, then
+// double. Audio output is billed at 25 tokens per second of audio.
+// ---------------------------------------------------------------------------
+
+export const GEMINI_SPEECH_PRICES_AS_OF = "2026-10-29";
+
+/** The instant Google's announced doubling applies (UTC midnight -- the earlier reading of "from 2027-01-01", so never under-counted). */
+export const GEMINI_SPEECH_PRICE_CHANGE_AT = "2027-01-01T00:00:00.000Z";
+
+export type GeminiSpeechModelSpec = {
+  label: string;
+  /** USD per 1M tokens before `GEMINI_SPEECH_PRICE_CHANGE_AT`; from then on `afterChange`. */
+  inputPerM: number;
+  audioOutPerM: number;
+  afterChange: { inputPerM: number; audioOutPerM: number };
+};
+
+/** The one list of speech models (owner msg 3815: Gemini 3.8 Flash TTS and its Lite). */
+export const GEMINI_SPEECH_MODELS: Readonly<Record<string, GeminiSpeechModelSpec>> = Object.freeze({
+  "gemini-3.8-flash-tts": { label: "Gemini 3.8 Flash TTS", inputPerM: 0.5, audioOutPerM: 9, afterChange: { inputPerM: 1, audioOutPerM: 18 } },
+  "gemini-3.8-flash-lite-tts": { label: "Gemini 3.8 Flash-Lite TTS", inputPerM: 0.5, audioOutPerM: 6, afterChange: { inputPerM: 1, audioOutPerM: 12 } },
+});
+
+export const GEMINI_SPEECH = Object.freeze({
+  /** Audio tokens per second of audio (the pricing page). */
+  audioTokensPerSecond: 25,
+  /**
+   * The estimate's speaking rate: 5 characters per second covers Japanese (~330 characters a minute) and so over-estimates English
+   * (~900 a minute) about threefold -- the estimate gates the limits; the cost is Google's count (never below the file's length).
+   */
+  estimateCharsPerSecond: 5,
+  /**
+   * Review item 9: one take must finish inside the call's timeout (`GEMINI_SPEECH_TIMEOUT_MS`, 6 min). 2,500 characters is ~2.8 min of
+   * English or ~7.5 min of Japanese audio at our conservative 5 characters a second; even at real time a Japanese take this long would
+   * not fit 6 minutes, so the limit errs short: a 60 s story is ~900 English / ~350 Japanese characters. Longer texts are split by the
+   * Operator into takes. (Gemini TTS also caps input at about 8K tokens -- far above this.)
+   */
+  maxTextChars: 2500,
+  maxStyleChars: 1000,
+  /** The rate Gemini speaks raw PCM at when the answer does not name one (owner msg 3815: kept as delivered, no resampling). */
+  defaultSampleRateHz: 24_000,
+  /** Voice design: the sample text Google speaks when none is given, and its bounds. */
+  defaultSampleText: "Hello! It's so nice to see you again. Let me tell you a little story.",
+  maxDescriptionChars: 1000,
+});
+
 export const GEMINI_IMAGE_ASPECT_RATIOS = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"] as const;
 export const GEMINI_VIDEO_ASPECT_RATIOS = ["16:9", "9:16"] as const;
 export const GEMINI_VIDEO_RESOLUTIONS = ["720p", "1080p", "4k"] as const;
@@ -146,11 +195,22 @@ export type GeminiInputRole = "image" | "first_frame" | "last_frame" | "referenc
 
 export type GeminiJobInput = { role: GeminiInputRole; path: string; mimeType: string; bytes: number; sha256: string };
 
+/** BL-236: `speech` is one take of text in a designed voice; `voice_design` records a paid voice design (never queued). */
+export type GeminiJobKind = "image" | "video" | "speech" | "voice_design";
+
+/** BL-236: the media a job kind makes, for every list that groups by media (shared jobs, video costs, spend). */
+export function geminiMediaKindOf(kind: GeminiJobKind): "image" | "video" | "audio" {
+  return kind === "image" ? "image" : kind === "video" ? "video" : "audio";
+}
+
 export type GeminiJobOutput = {
   /** Relative to the channel's `99 Data Exchange/From YTM/`, `/` separators: `gemini/<jobId>/image-1.png`. */
   path: string;
   localPath: string;
-  kind: "image" | "video";
+  kind: "image" | "video" | "audio";
+  /** BL-236: an audio output's sample rate as written (Gemini: its own, kept), and its length in seconds. */
+  sampleRateHz?: number | null;
+  durationSeconds?: number | null;
   mimeType: string;
   bytes: number;
   sha256: string;
@@ -160,15 +220,20 @@ export type GeminiJobOutput = {
 
 export type GeminiImageParams = { size: string; aspectRatio: string };
 export type GeminiVideoParams = { resolution: string; aspectRatio: string; durationSeconds: number; personGeneration?: string };
+/** BL-236: the approved voice a speech job speaks with (resolved from the channel's voice registry at creation), and the style. */
+export type GeminiSpeechParams = { voice: { voiceId: string; name: string; providerVoiceId: string }; style: string | null };
+/** BL-236: a recorded voice design: the registry voice it is for (null until the registry stores it) and Google's voice id. */
+export type GeminiVoiceDesignParams = { description: string; sampleText: string; providerVoiceId: string | null };
+export type GeminiJobParams = GeminiImageParams | GeminiVideoParams | GeminiSpeechParams | GeminiVoiceDesignParams;
 
 export type GeminiJobView = {
   jobId: string;
   channelId: string;
   requestId: string | null;
-  kind: "image" | "video";
+  kind: GeminiJobKind;
   model: string;
   prompt: string;
-  params: GeminiImageParams | GeminiVideoParams;
+  params: GeminiJobParams;
   inputs: GeminiJobInput[];
   status: GeminiJobStatus;
   estimateUsd: number;
@@ -233,7 +298,16 @@ export type GeminiKeyView = { configured: boolean; keyHint: string | null; statu
 
 export type GeminiLimitName = "per_job" | "per_day" | "per_month" | "active_jobs";
 
-export type GeminiRefusal = { code: "gemini_limit_exceeded" | "gemini_disabled" | "gemini_key_missing" | "storyboard_not_approved"; message: string; details?: Record<string, unknown> };
+export type GeminiRefusal = { code: "gemini_limit_exceeded" | "gemini_disabled" | "gemini_key_missing" | "storyboard_not_approved" | "voice_not_approved"; message: string; details?: Record<string, unknown> };
+
+/**
+ * BL-236 (ADR 0057, AGENTS.md §M): the channel's voice registry as a speech job sees it, injected (`./index.ts` wires the shared
+ * `voice-registry` module; this module knows nothing else about voices). Resolves a name or id to an APPROVED voice of that channel
+ * and provider, or throws `voice_not_approved`.
+ */
+export type GeminiVoiceResolver = {
+  resolve(input: { channelId: string; provider: "gemini"; voice: string }): Promise<{ voiceId: string; name: string; providerVoiceId: string }>;
+};
 
 /** The manifest written last into the job's folder (§2.4); every field copied explicitly, no key, no billing data. */
 export type GeminiJobManifest = {
@@ -241,10 +315,10 @@ export type GeminiJobManifest = {
   schemaVersion: 1;
   jobId: string;
   channelId: string;
-  kind: "image" | "video";
+  kind: GeminiJobKind;
   model: string;
   prompt: string;
-  params: GeminiImageParams | GeminiVideoParams;
+  params: GeminiJobParams;
   inputs: Array<{ role: GeminiInputRole; path: string; bytes: number; sha256: string }>;
   status: "done";
   estimateUsd: number;
@@ -257,7 +331,7 @@ export type GeminiJobManifest = {
   device: { deviceId: string | null; hostname: string | null };
   /** BL-194 (ADR 0040/0041): the channel's video number this job is made for (`V49`), null = not linked; its cost is `costUsd`. */
   video: string | null;
-  outputs: Array<{ path: string; kind: "image" | "video"; mimeType: string; bytes: number; sha256: string; assetId: string | null; note: string | null }>;
+  outputs: Array<{ path: string; kind: "image" | "video" | "audio"; mimeType: string; bytes: number; sha256: string; assetId: string | null; note: string | null; sampleRateHz?: number | null; durationSeconds?: number | null }>;
 };
 
 /** A table entry by its OWN key only: "toString", "constructor" or "__proto__" are never a model, size or extension (review round 1). */

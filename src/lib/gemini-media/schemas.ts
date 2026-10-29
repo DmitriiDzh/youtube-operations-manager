@@ -6,6 +6,8 @@ import {
   GEMINI_JOB_STATUSES,
   GEMINI_LIMITS,
   GEMINI_PERSON_GENERATION,
+  GEMINI_SPEECH,
+  GEMINI_SPEECH_MODELS,
   GEMINI_VIDEO_ASPECT_RATIOS,
   GEMINI_VIDEO_DURATIONS,
   GEMINI_VIDEO_MODELS,
@@ -68,12 +70,51 @@ export const createJobInputSchema = z
 
 export type CreateJobInput = z.infer<typeof createJobInputSchema>;
 
+/**
+ * BL-236 (FO-REQ-0050, ADR 0057): one speech take. Text only -- the schema takes no audio, file or URL of any kind, so no
+ * recorded voice can ever be sent (owner: designed voices only, no cloning). `voice` is the registry's name or id of an
+ * APPROVED voice of this channel (resolved at creation).
+ */
+export const createSpeechJobInputSchema = z
+  .object({
+    channelId: z.string().trim().min(1).max(64),
+    model: z.string().min(1).max(80),
+    voice: z.string().trim().min(1).max(80),
+    text: z.string().trim().min(1).max(GEMINI_SPEECH.maxTextChars),
+    style: z.string().trim().min(1).max(GEMINI_SPEECH.maxStyleChars).optional(),
+    requestId: z.string().regex(GEMINI_REQUEST_ID_PATTERN, "a request id: up to 120 letters, digits, '.', '_' or '-'").optional(),
+    dryRun: z.boolean().optional(),
+    videoNumber: z.string().regex(/^V[1-9][0-9]{0,5}$/, "a video number such as V49").optional(),
+  })
+  .strict();
+
+export type CreateSpeechJobInput = z.infer<typeof createSpeechJobInputSchema>;
+
+/** BL-236: one designed voice (a description and the line its sample speaks; never audio). */
+export const designVoiceInputSchema = z
+  .object({
+    channelId: z.string().trim().min(1).max(64),
+    description: z.string().trim().min(1).max(GEMINI_SPEECH.maxDescriptionChars),
+    sampleText: z.string().trim().min(1).max(500).optional(),
+    displayName: z.string().trim().min(1).max(80),
+  })
+  .strict();
+
+/** BL-236: the speech rules beyond the shape -- a known speech model. */
+export function checkSpeechJobRules(input: CreateSpeechJobInput): void {
+  if (!ownEntry(GEMINI_SPEECH_MODELS, input.model)) {
+    throw geminiInvalidParams("model", `${input.model} is not a speech model here (${Object.keys(GEMINI_SPEECH_MODELS).join(", ")}).`);
+  }
+}
+
 export const getJobsInputSchema = z
   .object({
     jobId: z.string().min(1).max(80).optional(),
     channelId: z.string().trim().min(1).max(64).optional(),
     status: z.enum(GEMINI_JOB_STATUSES).optional(),
     limit: z.number().int().min(1).max(GEMINI_LIMITS.listMax).optional(),
+    /** BL-236: only these kinds (the speech surface lists speech takes and voice designs; factory_gemini_get_job cannot pass it). */
+    kinds: z.array(z.enum(["image", "video", "speech", "voice_design"])).min(1).max(4).optional(),
   })
   .strict();
 

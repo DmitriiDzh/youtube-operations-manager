@@ -9,8 +9,8 @@ import type { CommandView } from "./commands";
 
 /** A peer whose report is older than this is shown as "not heard from since …" (its jobs may have moved on). */
 export const POOL_PEER_STALE_AFTER_MS = 5 * 60_000;
-/** The `99 Data Exchange/From YTM/` subfolders the two modules write job outputs into. */
-export const POOL_JOB_OUTPUT_SUBDIRS = ["media", "gemini"] as const;
+/** The `99 Data Exchange/From YTM/` subfolders the modules write job outputs into (BL-236: `elevenlabs`, a contract string only). */
+export const POOL_JOB_OUTPUT_SUBDIRS = ["media", "gemini", "elevenlabs"] as const;
 
 export type PoolMediaKind = "audio" | "image" | "video";
 

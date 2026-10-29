@@ -5,7 +5,7 @@
 import type { Translate, UiTextKey } from "@/lib/ui-text";
 
 /** Servers → Setup fields (BL-150), in the words the Setup page uses. */
-export const SETTING_LABELS: Record<string, { labelKey: UiTextKey; unit?: "usd" | "usd_per_hr" | "minutes" | "seconds" | "gb" }> = {
+export const SETTING_LABELS: Record<string, { labelKey: UiTextKey; unit?: "usd" | "usd_per_hr" | "minutes" | "seconds" | "gb" | "chars" }> = {
   datacenterId: { labelKey: "setupField.datacenterId" },
   gpuTypeId: { labelKey: "setupField.gpuTypeId" },
   cloudType: { labelKey: "setupField.cloudType" },
@@ -33,6 +33,11 @@ export const SETTING_LABELS: Record<string, { labelKey: UiTextKey; unit?: "usd" 
   "gemini.maxUsdPerDay": { labelKey: "geminiField.maxUsdPerDay", unit: "usd" },
   "gemini.maxUsdPerMonth": { labelKey: "geminiField.maxUsdPerMonth", unit: "usd" },
   "gemini.maxActiveJobs": { labelKey: "geminiField.maxActiveJobs" },
+  // BL-236 (owner msg 3823): the shared ElevenLabs character limits, `elevenlabs.<field>`.
+  "elevenlabs.maxCharsPerJob": { labelKey: "elevenlabsField.maxCharsPerJob", unit: "chars" },
+  "elevenlabs.maxCharsPerDay": { labelKey: "elevenlabsField.maxCharsPerDay", unit: "chars" },
+  "elevenlabs.maxCharsPerMonth": { labelKey: "elevenlabsField.maxCharsPerMonth", unit: "chars" },
+  "elevenlabs.maxActiveJobs": { labelKey: "elevenlabsField.maxActiveJobs" },
 };
 
 export function settingLabel(t: Translate, field: string): string {
@@ -56,6 +61,8 @@ export function formatValue(t: Translate, value: unknown, unit?: (typeof SETTING
         return t("unit.seconds", { value: String(value) });
       case "gb":
         return t("unit.gb", { value: String(value) });
+      case "chars":
+        return t("unit.chars", { value: String(value) });
       default:
         return String(value);
     }

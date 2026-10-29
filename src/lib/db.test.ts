@@ -965,12 +965,14 @@ test("getGatewayTrafficLast24h: every category reports a zeroed row before any c
     assert.deepEqual(
       windows.map((w) => w.category).sort(),
       // BL-174 (GEMINI_MEDIA_PLAN.md §2.1): the media gateway's Gemini child adds its own counter, `gemini_api`; BL-200 adds
-      // `github_api` (pod runtime profiles: ComfyUI releases, tag -> commit).
+      // `github_api` (pod runtime profiles: ComfyUI releases, tag -> commit); BL-236 (ADR 0057) `elevenlabs_api`, the new
+      // ElevenLabs child (speech, voice design) gets its own counter.
       [
         "analytics_reads",
         "cloud_monitoring_reads",
         "comfyui_api",
         "data_api_reads",
+        "elevenlabs_api",
         "gemini_api",
         "github_api",
         "huggingface_api",
@@ -1084,7 +1086,8 @@ test("getSyncFamilyStatuses: every family (nineteen since BL-225) reports a neve
 
     assert.deepEqual(
       statuses.map((s) => s.family).sort(),
-      ["agent_tokens", "ai_connections", "change_drafts", "channel_language_settings", "channel_publishing_settings", "editorial_profile", "gemini_settings", "gemini_spend", "generation_plans", "live_analytics", "live_streams", "media_jobs", "media_sessions", "media_settings", "publishing_plans", "publishing_uploads", "storyboards", "video_costs", "video_reservations"]
+      // BL-236 (owner msg 3823): + elevenlabs_settings, elevenlabs_spend (shared ElevenLabs limits and spend).
+      ["agent_tokens", "ai_connections", "change_drafts", "channel_language_settings", "channel_publishing_settings", "editorial_profile", "elevenlabs_settings", "elevenlabs_spend", "gemini_settings", "gemini_spend", "generation_plans", "live_analytics", "live_streams", "media_jobs", "media_sessions", "media_settings", "publishing_plans", "publishing_uploads", "storyboards", "video_costs", "video_reservations"]
     );
     for (const s of statuses) {
       assert.equal(s.lastSyncedAt, null);

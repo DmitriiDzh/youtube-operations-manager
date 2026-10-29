@@ -932,6 +932,31 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     description:
       "A paid Gemini image or video job for this channel (`agent_gemini_create_job`), as factory_gemini_create_job: only while the owner's Gemini switch is on and within the owner's per-day / per-month limits (a dry run is free). Logged.",
   },
+  // BL-236 (FO-REQ-0050 §3, ADR 0057): speech takes for this channel on the same paid terms; its voices read-only (designing and
+  // approving a voice stay with the owner and the Operator -- no capability names them).
+  {
+    id: "channel_production.speech_status",
+    mcpTools: ["agent_speech_get_status", "agent_speech_get_job"],
+    domain: "channel_production",
+    permission: "READ",
+    description:
+      "Speech through Gemini TTS or ElevenLabs: each provider's switch, limits (Gemini in USD, ElevenLabs in characters) and usage, models and prices (`agent_speech_get_status`), and this channel's speech jobs (`agent_speech_get_job`), as factory_speech_get_status / _get_job.",
+  },
+  {
+    id: "channel_production.voices",
+    mcpTools: ["agent_voice_list"],
+    domain: "channel_production",
+    permission: "READ",
+    description: "This channel's designed voices and their previews (`agent_voice_list`), as factory_voice_list. Only an approved voice speaks.",
+  },
+  {
+    id: "channel_production.speech_jobs",
+    mcpTools: ["agent_speech_create_job"],
+    domain: "channel_production",
+    permission: "EXECUTE",
+    description:
+      "A paid speech take for this channel in one of its approved voices (`agent_speech_create_job`), as factory_speech_create_job: only while that provider's owner switch is on and within its limits (a dry run is free). Logged.",
+  },
   {
     id: "youtube_writes.list_worker_actions",
     mcpTools: ["agent_list_worker_actions"],

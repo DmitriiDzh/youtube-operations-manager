@@ -124,6 +124,18 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
       createJob: async (input) => (mediaCalls.push(`gemini.create:${(input as { channelId: string; dryRun?: boolean }).channelId}${(input as { dryRun?: boolean }).dryRun ? ":dry" : ""}${(input as { videoNumber?: string }).videoNumber ? `:${(input as { videoNumber?: string }).videoNumber}` : ""}`), { job: { jobId: "gm_1" } }),
       getJobs: async (input) => (mediaCalls.push(`gemini.get:${(input as { jobId?: string }).jobId ?? ""}`), { jobs: [] }),
     },
+    // BL-236: speech and voices are fakes that record what reached them.
+    speech: {
+      getStatus: async () => (mediaCalls.push("speech.status"), { providers: {} }),
+      createJob: async (input) => (mediaCalls.push(`speech.create:${(input as { provider: string }).provider}:${(input as { channelId: string }).channelId}${(input as { dryRun?: boolean }).dryRun ? ":dry" : ""}`), { provider: (input as { provider: string }).provider, job: { jobId: "gm_s1", channelId: (input as { channelId: string }).channelId } }),
+      getJobs: async (input) => (mediaCalls.push(`speech.get:${(input as { jobId?: string }).jobId ?? ""}`), (input as { jobId?: string }).jobId ? { provider: "gemini", job: { jobId: (input as { jobId: string }).jobId, channelId: (input as { jobId: string }).jobId === "gm_other" ? "UC_B" : "UC_A" } } : { jobs: [] }),
+    },
+    voices: {
+      list: async (input) => (mediaCalls.push(`voices.list:${(input as { channelId: string }).channelId}`), { voices: [] }),
+      design: async (input) => (mediaCalls.push(`voices.design:${(input as { channelId: string }).channelId}`), { voice: {} }),
+      approve: async (input) => (mediaCalls.push(`voices.pick:${(input as { channelId: string }).channelId}`), { voice: {} }),
+      update: async (input) => (mediaCalls.push(`voices.update:${(input as { channelId: string }).channelId}`), { voice: {} }),
+    },
     live: {
       getStatus: async (input) => (mediaCalls.push(`live.status:${input.channelId ?? ""}`), { streams: [] }),
       mapSources: async (input) => (mediaCalls.push(`live.map:${input.channelId}:${input.items.length}`), { results: [] }),
@@ -399,7 +411,16 @@ test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exact
     "factory_video_create",
     "factory_video_get_cost",
     "factory_video_list",
-  ].concat(["factory_hold_restart", "factory_release_hold", "factory_restart_status"]).sort()); // BL-220: the three restart tools (1.30.0)
+  ].concat(["factory_hold_restart", "factory_release_hold", "factory_restart_status"], [
+    // BL-236 (1.40.0): speech and the channel voice registry.
+    "factory_speech_create_job",
+    "factory_speech_get_job",
+    "factory_speech_get_status",
+    "factory_voice_design",
+    "factory_voice_list",
+    "factory_voice_pick",
+    "factory_voice_update",
+  ]).sort()); // BL-220: the three restart tools (1.30.0)
   assert.equal(names.some((n) => /approve|reject/.test(n)), false, "no tool approves or rejects a session for anyone");
   assert.deepEqual([...FACTORY_TOOL_NAMES].sort(), names);
 });
@@ -446,7 +467,7 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.39.0", // BL-235: factory_publishing_coverage; 1.38.0 = BL-234: factory_live_get_status gains sources; BL-233: factory_live_get_status gains encoders / upload; 1.36.0 = BL-230: runtime creation checks github.com sources; 1.35.0 = BL-229 part B: plan review forms, wave genre, verdict answers; 1.34.0 (BL-227): factory_localization_report_checks; 1.33.0 (BL-225): factory_publishing_plan_save / _get / _list; 1.32.0 (BL-223): factory_channel_get_branding / factory_channel_save_branding; 1.31.0 (BL-221: factory_video_list gains youtubeVideoId / hasVideoFile (additive); 1.30.0 (BL-220): the three restart tools
+    factoryApiVersion: "1.40.0", // BL-236: factory_speech_* and factory_voice_*; 1.39.0 = BL-235: factory_publishing_coverage; 1.38.0 = BL-234: factory_live_get_status gains sources; BL-233: factory_live_get_status gains encoders / upload; 1.36.0 = BL-230: runtime creation checks github.com sources; 1.35.0 = BL-229 part B: plan review forms, wave genre, verdict answers; 1.34.0 (BL-227): factory_localization_report_checks; 1.33.0 (BL-225): factory_publishing_plan_save / _get / _list; 1.32.0 (BL-223): factory_channel_get_branding / factory_channel_save_branding; 1.31.0 (BL-221: factory_video_list gains youtubeVideoId / hasVideoFile (additive); 1.30.0 (BL-220): the three restart tools
     tools: [
       "factory_get_capabilities",
       "factory_list_logical_paths",
@@ -496,6 +517,13 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
       "factory_gemini_get_status",
       "factory_gemini_create_job",
       "factory_gemini_get_job",
+      "factory_speech_get_status",
+      "factory_speech_create_job",
+      "factory_speech_get_job",
+      "factory_voice_list",
+      "factory_voice_design",
+      "factory_voice_pick",
+      "factory_voice_update",
       "factory_live_get_status",
       "factory_live_map_sources",
       "factory_live_save_localizations",
@@ -554,6 +582,10 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
       "factory_plan_request_recheck",
       "factory_plan_withdraw_recheck",
       "factory_gemini_create_job",
+      "factory_speech_create_job",
+      "factory_voice_design",
+      "factory_voice_pick",
+      "factory_voice_update",
       "factory_live_map_sources",
       "factory_live_save_localizations",
       "factory_channel_save_localizations",
@@ -1589,4 +1621,44 @@ test("BL-235: factory_publishing_coverage reads the coverage; days out of 1..30 
   }
   // A read: the device mutation gate is never asked.
   assert.deepEqual(mediaCalls, ["coverage.get:UC_A:default", "coverage.get:UC_A:30"]);
+});
+
+// BL-236 (FO-REQ-0050, ADR 0057): a paid speech take and every voice change pass the device mutation gate first; a dry run and the
+// reads do not; the schemas are strict -- in particular no tool takes audio (designed voices only, never cloned).
+test("BL-236: factory_speech_create_job / factory_voice_* pass the gate first (a dry run and the reads do not); no audio field is accepted", async () => {
+  const { endpoint, tokenServices, toolDeps } = setupWithDeps();
+  const { token } = await tokenServices.issueToken({});
+  const take = { provider: "gemini", channelId: "UC_A", voice: "Sumire", text: "Hello!" };
+  assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_speech_create_job", take), withToken(token))))).isError, false);
+  assert.deepEqual(toolDeps.mediaCalls, ["gate", "speech.create:gemini:UC_A"]);
+  for (const [name, args, reached] of [
+    ["factory_speech_create_job", { ...take, dryRun: true }, "speech.create:gemini:UC_A:dry"],
+    ["factory_speech_get_status", {}, "speech.status"],
+    ["factory_speech_get_job", { jobId: "gm_1" }, "speech.get:gm_1"],
+    ["factory_voice_list", { channelId: "UC_A" }, "voices.list:UC_A"],
+  ] as const) {
+    toolDeps.mediaCalls.length = 0;
+    assert.equal((await toolResult(await endpoint.handle(rpc(call(name, { ...args }), withToken(token))))).isError, false, name);
+    assert.deepEqual(toolDeps.mediaCalls, [reached], name);
+  }
+  for (const [name, args, reached] of [
+    ["factory_voice_design", { channelId: "UC_A", provider: "elevenlabs", name: "Sumire", description: "young adult woman, soft warm voice" }, "voices.design:UC_A"],
+    ["factory_voice_pick", { channelId: "UC_A", voiceId: "vc_1", previewId: "p2" }, "voices.pick:UC_A"],
+    ["factory_voice_update", { channelId: "UC_A", voiceId: "vc_1", archived: true }, "voices.update:UC_A"],
+  ] as const) {
+    toolDeps.mediaCalls.length = 0;
+    assert.equal((await toolResult(await endpoint.handle(rpc(call(name, { ...args }), withToken(token))))).isError, false, name);
+    assert.deepEqual(toolDeps.mediaCalls, ["gate", reached], name);
+  }
+  for (const [name, args] of [
+    ["factory_speech_create_job", { ...take, audio: "AAAA" }],
+    ["factory_speech_create_job", { ...take, provider: "openai" }],
+    ["factory_voice_design", { channelId: "UC_A", provider: "gemini", name: "S", description: "soft warm voice of a woman", referenceAudio: "real.wav" }],
+    ["factory_voice_list", { channelId: "UC_A", extra: 1 }],
+  ] as const) {
+    toolDeps.mediaCalls.length = 0;
+    const body = await (await endpoint.handle(rpc(call(name, { ...args }), withToken(token)))).json();
+    assert.equal(body.result?.isError, true, `${name} ${JSON.stringify(args)}`);
+    assert.deepEqual(toolDeps.mediaCalls, [], "nothing reached the gate or the module");
+  }
 });

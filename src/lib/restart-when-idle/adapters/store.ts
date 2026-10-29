@@ -3,6 +3,7 @@ import { MEDIA_SESSION_NON_TERMINAL_STATUSES } from "@/lib/media-generation/cont
 
 const SESSIONS_HOLDING = MEDIA_SESSION_NON_TERMINAL_STATUSES.filter((status) => status !== "pending");
 import { GEMINI_ACTIVE_STATUSES } from "@/lib/gemini-media/contracts";
+import { ELEVENLABS_ACTIVE_STATUSES } from "@/lib/elevenlabs-speech/contracts";
 import type { RestartHoldOwner, RestartHoldRow, RestartRequestRow, RestartRequestStatus, RestartStore } from "../contracts";
 
 // BL-220: the restart requests and holds (SCHEMA_MIGRATIONS v108) and the read-only checks of the other modules' device-local tables
@@ -122,6 +123,8 @@ export function createTableReaders(client: Client) {
     mediaSessions: () => ids(`SELECT id FROM media_sessions WHERE status IN (${marks(SESSIONS_HOLDING)}) ORDER BY created_at`, SESSIONS_HOLDING),
     mediaJobs: () => ids(`SELECT id FROM media_jobs WHERE status IN (${marks(MEDIA_JOB_BUSY_STATUSES)}) ORDER BY created_at`, MEDIA_JOB_BUSY_STATUSES),
     geminiJobs: () => ids(`SELECT job_id AS id FROM gemini_media_jobs WHERE status IN (${marks(GEMINI_ACTIVE_STATUSES)}) ORDER BY created_at`, GEMINI_ACTIVE_STATUSES),
+    // BL-236: ElevenLabs takes and voice designs (its own table; a take cut by a restart would be failed at its characters).
+    elevenlabsJobs: () => ids(`SELECT job_id AS id FROM elevenlabs_speech_jobs WHERE status IN (${marks(ELEVENLABS_ACTIVE_STATUSES)}) ORDER BY created_at`, ELEVENLABS_ACTIVE_STATUSES),
     uploads: () => ids(`SELECT id FROM publishing_uploads WHERE status IN (${marks(UPLOAD_BUSY_STATUSES)}) ORDER BY created_at`, UPLOAD_BUSY_STATUSES),
     batches: () => ids("SELECT id FROM batches WHERE status = 'RUNNING' ORDER BY id", []),
     /** `gateway_call_events.occurred_at` is unix seconds. */

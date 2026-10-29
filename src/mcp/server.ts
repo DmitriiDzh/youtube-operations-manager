@@ -4063,7 +4063,7 @@ export function createMcpServer(
     "agent_restart_status",
     {
       description:
-        "BL-220 (ADR 0049): restart when idle on this computer: {} -> { request (the open restart request, or null), waitingFor: [{ kind: media_session | media_job | gemini_job | upload | live_stream | operation_lock | operation | batch | hold | mcp_quiet | check_failed, count, ids, until }], holds: [{ holdId, heldBy (factory | owner | worker:<channelId>), reason, createdAt, until, active }], lastRestart, quietMinutes, serviceMode }. Once a request is open, the server restarts itself (the system service starts the new build) when waitingFor is empty. This call does not count as an MCP call for the quiet window. Local read only.",
+        "BL-220 (ADR 0049): restart when idle on this computer: {} -> { request (the open restart request, or null), waitingFor: [{ kind: media_session | media_job | gemini_job | elevenlabs_job (1.40.0) | upload | live_stream | operation_lock | operation | batch | hold | mcp_quiet | check_failed, count, ids, until }], holds: [{ holdId, heldBy (factory | owner | worker:<channelId>), reason, createdAt, until, active }], lastRestart, quietMinutes, serviceMode }. Once a request is open, the server restarts itself (the system service starts the new build) when waitingFor is empty. This call does not count as an MCP call for the quiet window. Local read only.",
       inputSchema: z.object({}).strict(),
     },
     async () => {

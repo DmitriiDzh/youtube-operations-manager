@@ -60,7 +60,8 @@ test("merge numbering: the current schema is 90 with both branches' tables", asy
   // v112: BL-229 part B answers_json on the plan verdict tables (MUSIC_LIBRARY_PLAN.md §3: renumbered from v111 at the merge after BL-228).
   // v113: BL-233 live_streams.bitrate_kbps (FO-REQ-0047: a new additive migration, not a renumbering).
   // v114: BL-234 live_streams.source_mode + live_stream_library_segments (FO-REQ-0048: a new additive migration, not a renumbering).
-  assert.equal(SCHEMA_CURRENT_VERSION, 114);
+  // v115: BL-236 channel_voices + elevenlabs_speech_jobs (FO-REQ-0050, ADR 0057: a new additive migration, not a renumbering).
+  assert.equal(SCHEMA_CURRENT_VERSION, 115);
   await withDb(async (client) => {
     await initializeDatabaseSchema(client);
     const t = await tables(client);

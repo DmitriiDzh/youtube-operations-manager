@@ -26,6 +26,8 @@ export type MediaSettingsDocument = {
 export type SettingsMapKind = { format: string; genesisActor: string };
 export const MEDIA_SETTINGS_KIND: SettingsMapKind = Object.freeze({ format: "ytm-media-settings", genesisActor: "6d656469612d73657474696e67733031" }); // hex of "media-settings01"
 export const GEMINI_SETTINGS_KIND: SettingsMapKind = Object.freeze({ format: "ytm-gemini-settings", genesisActor: "67656d696e692d73657474696e677331" }); // hex of "gemini-settings1"
+/** BL-236 (owner msg 3823): the ElevenLabs character limits' own document, the same engine. */
+export const ELEVENLABS_SETTINGS_KIND: SettingsMapKind = Object.freeze({ format: "ytm-elevenlabs-settings", genesisActor: "656c6576656e6c6162732d7365747331" }); // hex of "elevenlabs-sets1"
 
 /**
  * A field set to DIFFERENT values on two devices before they met. Two devices that wrote the same value are not a conflict

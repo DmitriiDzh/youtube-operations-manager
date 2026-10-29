@@ -20,6 +20,8 @@ export const merge: Record<keyof typeof en, string> = {
   "handoff.family.publishingPlans": "Планы публикаций",
   "handoff.family.geminiSpend": "Расходы Gemini",
   "handoff.family.geminiSettings": "Лимиты Gemini",
+  "handoff.family.elevenlabsSpend": "Расход ElevenLabs",
+  "handoff.family.elevenlabsSettings": "Лимиты ElevenLabs",
 
   "handoff.requestFailed": "Запрос к {url} не выполнен ({status})",
   "handoff.justNow": "только что",

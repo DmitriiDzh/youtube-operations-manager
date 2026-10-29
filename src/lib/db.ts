@@ -1356,7 +1356,9 @@ export const geminiMediaJobs = sqliteTable(
     channelId: text("channel_id").notNull(),
     requestId: text("request_id"),
     requestHash: text("request_hash").notNull(),
-    kind: text("kind", { enum: ["image", "video"] }).notNull(),
+    // BL-236 (ADR 0057): `speech` (one take in a designed voice) and `voice_design` (a paid voice design, recorded done/failed).
+    // The SQL column is TEXT, so no migration: older builds never read these rows' kind back into their own type.
+    kind: text("kind", { enum: ["image", "video", "speech", "voice_design"] }).notNull(),
     model: text("model").notNull(),
     prompt: text("prompt").notNull(),
     paramsJson: text("params_json").notNull(),
@@ -1387,6 +1389,76 @@ export const geminiMediaJobs = sqliteTable(
     uniqueIndex("gemini_media_jobs_request_idx").on(table.createdBy, table.requestId),
     index("gemini_media_jobs_status_idx").on(table.status, table.nextAttemptAt),
     index("gemini_media_jobs_created_idx").on(table.createdAt),
+  ]
+);
+
+/**
+ * Schema v115 (BL-236, FO-REQ-0050, ADR 0057): a channel's designed voices (no cloning: a voice is only ever designed from a text
+ * description). Written by `src/lib/voice-registry/` only. `previews_json`: the design's samples, kept as files under the channel's
+ * `99 Data Exchange/From YTM/<provider>/voices/<voiceId>/`; the owner approves one, which becomes the voice. A name is unique per
+ * channel and provider among the voices that are not archived (the partial unique index of the migration). Device-local.
+ */
+export const channelVoices = sqliteTable(
+  "channel_voices",
+  {
+    voiceId: text("voice_id").primaryKey(),
+    channelId: text("channel_id").notNull(),
+    name: text("name").notNull(),
+    provider: text("provider", { enum: ["gemini", "elevenlabs"] }).notNull(),
+    providerVoiceId: text("provider_voice_id"),
+    description: text("description").notNull(),
+    model: text("model"),
+    status: text("status", { enum: ["draft", "approved", "archived"] }).notNull(),
+    previewsJson: text("previews_json").notNull(),
+    approvedPreviewId: text("approved_preview_id"),
+    error: text("error"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    createdBy: text("created_by").notNull(),
+    approvedAt: integer("approved_at", { mode: "timestamp_ms" }),
+    approvedBy: text("approved_by"),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [index("channel_voices_channel_idx").on(table.channelId, table.provider)]
+);
+
+/**
+ * Schema v115 (BL-236, ADR 0057): one ElevenLabs speech take (or a recorded voice design) for a channel -- the `elevenlabs-speech`
+ * module's own table, shaped like `gemini_media_jobs`. Limits are in characters (`chars`); money is a list-price estimate only
+ * (the owner's subscription pays). Device-local.
+ */
+export const elevenlabsSpeechJobs = sqliteTable(
+  "elevenlabs_speech_jobs",
+  {
+    jobId: text("job_id").primaryKey(),
+    channelId: text("channel_id").notNull(),
+    requestId: text("request_id"),
+    requestHash: text("request_hash").notNull(),
+    kind: text("kind", { enum: ["speech", "voice_design"] }).notNull(),
+    model: text("model").notNull(),
+    text: text("text").notNull(),
+    paramsJson: text("params_json").notNull(),
+    status: text("status", { enum: ["queued", "submitting", "running", "done", "failed"] }).notNull(),
+    chars: integer("chars").notNull(),
+    estimateUsd: real("estimate_usd").notNull(),
+    costUsd: real("cost_usd"),
+    costBasis: text("cost_basis"),
+    chargedChars: integer("charged_chars"),
+    outputsJson: text("outputs_json"),
+    error: text("error"),
+    errorCode: text("error_code"),
+    attempts: integer("attempts").notNull(),
+    nextAttemptAt: integer("next_attempt_at", { mode: "timestamp_ms" }),
+    createdBy: text("created_by").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    submittedAt: integer("submitted_at", { mode: "timestamp_ms" }),
+    finishedAt: integer("finished_at", { mode: "timestamp_ms" }),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+    video: text("video"),
+  },
+  (table) => [
+    uniqueIndex("elevenlabs_speech_jobs_request_idx").on(table.createdBy, table.requestId),
+    index("elevenlabs_speech_jobs_status_idx").on(table.status, table.nextAttemptAt),
+    index("elevenlabs_speech_jobs_created_idx").on(table.createdAt),
   ]
 );
 
@@ -5830,6 +5902,63 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       await client.execute("CREATE INDEX IF NOT EXISTS live_stream_library_segments_order_idx ON live_stream_library_segments (channel_id, rotation_index)");
     },
   },
+  {
+    version: 115,
+    description:
+      "channel_voices + elevenlabs_speech_jobs -- BL-236 (FO-REQ-0050, ADR 0057): a channel's designed voices (Gemini / ElevenLabs; designed from a description only, never cloned) and the ElevenLabs speech takes. Additive (two new tables), device-local",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS channel_voices (
+        voice_id TEXT PRIMARY KEY NOT NULL,
+        channel_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        provider_voice_id TEXT,
+        description TEXT NOT NULL,
+        model TEXT,
+        status TEXT NOT NULL,
+        previews_json TEXT NOT NULL,
+        approved_preview_id TEXT,
+        error TEXT,
+        created_at INTEGER NOT NULL,
+        created_by TEXT NOT NULL,
+        approved_at INTEGER,
+        approved_by TEXT,
+        updated_at INTEGER NOT NULL
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS channel_voices_channel_idx ON channel_voices (channel_id, provider)");
+      await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS channel_voices_name_idx ON channel_voices (channel_id, provider, name) WHERE status != 'archived'");
+      await client.execute(`CREATE TABLE IF NOT EXISTS elevenlabs_speech_jobs (
+        job_id TEXT PRIMARY KEY NOT NULL,
+        channel_id TEXT NOT NULL,
+        request_id TEXT,
+        request_hash TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        model TEXT NOT NULL,
+        text TEXT NOT NULL,
+        params_json TEXT NOT NULL,
+        status TEXT NOT NULL,
+        chars INTEGER NOT NULL,
+        estimate_usd REAL NOT NULL,
+        cost_usd REAL,
+        cost_basis TEXT,
+        charged_chars INTEGER,
+        outputs_json TEXT,
+        error TEXT,
+        error_code TEXT,
+        attempts INTEGER NOT NULL,
+        next_attempt_at INTEGER,
+        created_by TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        submitted_at INTEGER,
+        finished_at INTEGER,
+        updated_at INTEGER NOT NULL,
+        video TEXT
+      )`);
+      await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS elevenlabs_speech_jobs_request_idx ON elevenlabs_speech_jobs (created_by, request_id)");
+      await client.execute("CREATE INDEX IF NOT EXISTS elevenlabs_speech_jobs_status_idx ON elevenlabs_speech_jobs (status, next_attempt_at)");
+      await client.execute("CREATE INDEX IF NOT EXISTS elevenlabs_speech_jobs_created_idx ON elevenlabs_speech_jobs (created_at)");
+    },
+  },
 ];
 
 /**
@@ -8386,7 +8515,9 @@ export type GatewayTrafficCategory =
   // BL-174 -- Google's Gemini API (Nano Banana images, Omni video), the media gateway's `gemini-api.ts` child.
   | "gemini_api"
   // BL-200 -- GitHub's public API (ComfyUI releases, tag -> commit for pod runtime profiles), the media gateway's `github.ts`.
-  | "github_api";
+  | "github_api"
+  // BL-236 -- ElevenLabs' API (speech, voice design), the media gateway's `elevenlabs-api.ts` child.
+  | "elevenlabs_api";
 
 export type GatewayTrafficWindow = {
   category: GatewayTrafficCategory;
@@ -8411,6 +8542,7 @@ const GATEWAY_TRAFFIC_CATEGORIES: readonly GatewayTrafficCategory[] = [
   "huggingface_api",
   "gemini_api",
   "github_api",
+  "elevenlabs_api",
 ];
 
 // Kept well past the 24h window this table exists to answer (owner instruction, 2026-09-22:
@@ -8477,9 +8609,9 @@ export async function getGatewayTrafficLast24h(
   }));
 }
 
-export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens" | "live_streams" | "channel_language_settings" | "channel_publishing_settings" | "publishing_uploads" | "storyboards" | "media_jobs" | "gemini_spend" | "gemini_settings" | "video_reservations" | "video_costs" | "live_analytics" | "publishing_plans";
+export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens" | "live_streams" | "channel_language_settings" | "channel_publishing_settings" | "publishing_uploads" | "storyboards" | "media_jobs" | "gemini_spend" | "gemini_settings" | "video_reservations" | "video_costs" | "live_analytics" | "publishing_plans" | "elevenlabs_spend" | "elevenlabs_settings";
 
-const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings", "agent_tokens", "live_streams", "channel_language_settings", "channel_publishing_settings", "publishing_uploads", "storyboards", "media_jobs", "gemini_spend", "gemini_settings", "video_reservations", "video_costs", "live_analytics", "publishing_plans"];
+const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings", "agent_tokens", "live_streams", "channel_language_settings", "channel_publishing_settings", "publishing_uploads", "storyboards", "media_jobs", "gemini_spend", "gemini_settings", "video_reservations", "video_costs", "live_analytics", "publishing_plans", "elevenlabs_spend", "elevenlabs_settings"];
 
 export type SyncFamilyStatusRow = {
   family: SyncFamily;
@@ -11737,7 +11869,7 @@ export async function getGeminiMediaJobByRequest(createdBy: string, requestId: s
 
 /** Newest first; optional channel and status filters. */
 export async function listGeminiMediaJobs(
-  filter: { channelId?: string; statuses?: readonly GeminiMediaJobStatusValue[]; createdSince?: Date; storyboardId?: string; limit: number },
+  filter: { channelId?: string; statuses?: readonly GeminiMediaJobStatusValue[]; createdSince?: Date; storyboardId?: string; kinds?: readonly StoredGeminiMediaJob["kind"][]; limit: number },
   database: AppDb = db
 ): Promise<StoredGeminiMediaJob[]> {
   const conditions = [
@@ -11745,6 +11877,7 @@ export async function listGeminiMediaJobs(
     // BL-184 stage 3: a storyboard's takes (schema v90).
     filter.storyboardId === undefined ? undefined : eq(geminiMediaJobs.storyboardId, filter.storyboardId),
     filter.statuses === undefined ? undefined : inArray(geminiMediaJobs.status, [...filter.statuses]),
+    filter.kinds === undefined ? undefined : inArray(geminiMediaJobs.kind, [...filter.kinds]),
     filter.createdSince === undefined ? undefined : gte(geminiMediaJobs.createdAt, filter.createdSince),
   ].filter((c) => c !== undefined);
   return database
@@ -15601,6 +15734,113 @@ export async function listSpendJobFacts(database: AppDb = db): Promise<SpendJobF
     .from(mediaJobs);
 }
 
+// ---------------------------------------------------------------------------
+// BL-236 (ADR 0057) -- a channel's designed voices (written by `src/lib/voice-registry/` only) and the ElevenLabs speech takes
+// (written by `src/lib/elevenlabs-speech/` only).
+// ---------------------------------------------------------------------------
+
+export type StoredChannelVoice = typeof channelVoices.$inferSelect;
+
+export async function insertChannelVoice(row: typeof channelVoices.$inferInsert, database: AppDb = db): Promise<boolean> {
+  try {
+    const rows = await database.insert(channelVoices).values(row).onConflictDoNothing().returning({ voiceId: channelVoices.voiceId });
+    return rows.length === 1;
+  } catch (error) {
+    // The partial unique index (a name taken among the channel's voices that are not archived) is a refusal, not a crash.
+    if (String(error).includes("UNIQUE")) return false;
+    throw error;
+  }
+}
+
+export async function getChannelVoice(voiceId: string, database: AppDb = db): Promise<StoredChannelVoice | null> {
+  const [row] = await database.select().from(channelVoices).where(eq(channelVoices.voiceId, voiceId));
+  return row ?? null;
+}
+
+export async function listChannelVoices(filter: { channelId: string; provider?: StoredChannelVoice["provider"] }, database: AppDb = db): Promise<StoredChannelVoice[]> {
+  const conditions = [eq(channelVoices.channelId, filter.channelId), filter.provider === undefined ? undefined : eq(channelVoices.provider, filter.provider)].filter((c) => c !== undefined);
+  return database.select().from(channelVoices).where(and(...conditions)).orderBy(desc(channelVoices.createdAt), desc(channelVoices.voiceId));
+}
+
+/** Compare-and-set on the voice's status; a rename that hits the unique index answers false. */
+export async function updateChannelVoice(
+  voiceId: string,
+  fromStatus: StoredChannelVoice["status"],
+  set: Partial<Omit<typeof channelVoices.$inferInsert, "voiceId" | "channelId" | "provider" | "createdAt" | "createdBy">>,
+  database: AppDb = db
+): Promise<boolean> {
+  try {
+    const rows = await database
+      .update(channelVoices)
+      .set(set)
+      .where(and(eq(channelVoices.voiceId, voiceId), eq(channelVoices.status, fromStatus)))
+      .returning({ voiceId: channelVoices.voiceId });
+    return rows.length === 1;
+  } catch (error) {
+    if (String(error).includes("UNIQUE")) return false;
+    throw error;
+  }
+}
+
+const ELEVENLABS_SPEECH_SETTINGS_KEY = "elevenlabs_speech_settings";
+
+export async function getElevenlabsSpeechSettingsJson(database: AppDb = db): Promise<string | null> {
+  return getAppSetting(ELEVENLABS_SPEECH_SETTINGS_KEY, database);
+}
+
+export async function setElevenlabsSpeechSettingsJson(json: string, database: AppDb = db): Promise<void> {
+  await setAppSetting(ELEVENLABS_SPEECH_SETTINGS_KEY, json, database);
+}
+
+export type StoredElevenlabsSpeechJob = typeof elevenlabsSpeechJobs.$inferSelect;
+export type ElevenlabsSpeechJobStatusValue = StoredElevenlabsSpeechJob["status"];
+
+export async function insertElevenlabsSpeechJob(row: typeof elevenlabsSpeechJobs.$inferInsert, database: AppDb = db): Promise<boolean> {
+  const rows = await database.insert(elevenlabsSpeechJobs).values(row).onConflictDoNothing().returning({ jobId: elevenlabsSpeechJobs.jobId });
+  return rows.length === 1;
+}
+
+export async function getElevenlabsSpeechJob(jobId: string, database: AppDb = db): Promise<StoredElevenlabsSpeechJob | null> {
+  const [row] = await database.select().from(elevenlabsSpeechJobs).where(eq(elevenlabsSpeechJobs.jobId, jobId));
+  return row ?? null;
+}
+
+export async function getElevenlabsSpeechJobByRequest(createdBy: string, requestId: string, database: AppDb = db): Promise<StoredElevenlabsSpeechJob | null> {
+  const [row] = await database.select().from(elevenlabsSpeechJobs).where(and(eq(elevenlabsSpeechJobs.createdBy, createdBy), eq(elevenlabsSpeechJobs.requestId, requestId)));
+  return row ?? null;
+}
+
+export async function listElevenlabsSpeechJobs(
+  filter: { channelId?: string; statuses?: readonly ElevenlabsSpeechJobStatusValue[]; createdSince?: Date; limit: number },
+  database: AppDb = db
+): Promise<StoredElevenlabsSpeechJob[]> {
+  const conditions = [
+    filter.channelId === undefined ? undefined : eq(elevenlabsSpeechJobs.channelId, filter.channelId),
+    filter.statuses === undefined ? undefined : inArray(elevenlabsSpeechJobs.status, [...filter.statuses]),
+    filter.createdSince === undefined ? undefined : gte(elevenlabsSpeechJobs.createdAt, filter.createdSince),
+  ].filter((c) => c !== undefined);
+  return database
+    .select()
+    .from(elevenlabsSpeechJobs)
+    .where(conditions.length > 0 ? and(...conditions) : undefined)
+    .orderBy(desc(elevenlabsSpeechJobs.createdAt), desc(elevenlabsSpeechJobs.jobId))
+    .limit(filter.limit);
+}
+
+export async function updateElevenlabsSpeechJob(
+  jobId: string,
+  fromStatus: ElevenlabsSpeechJobStatusValue,
+  set: Partial<Omit<typeof elevenlabsSpeechJobs.$inferInsert, "jobId" | "channelId" | "createdBy" | "createdAt">>,
+  database: AppDb = db
+): Promise<boolean> {
+  const rows = await database
+    .update(elevenlabsSpeechJobs)
+    .set(set)
+    .where(and(eq(elevenlabsSpeechJobs.jobId, jobId), eq(elevenlabsSpeechJobs.status, fromStatus)))
+    .returning({ jobId: elevenlabsSpeechJobs.jobId });
+  return rows.length === 1;
+}
+
 /** BL-219: this computer's Gemini jobs -- who created them, their outputs, their error code. Read-only. */
 export type SpendGeminiFact = { jobId: string; createdBy: string; outputsJson: string | null; errorCode: string | null };
 
@@ -15688,7 +15928,7 @@ export async function listVideoCostSessionsWithoutJobs(database: AppDb = db): Pr
 export type VideoCostGeminiJobRow = {
   jobId: string;
   channelId: string;
-  kind: "image" | "video";
+  kind: "image" | "video" | "speech" | "voice_design";
   model: string;
   status: "queued" | "submitting" | "running" | "done" | "failed";
   estimateUsd: number;

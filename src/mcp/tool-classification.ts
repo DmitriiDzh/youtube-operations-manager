@@ -167,6 +167,11 @@ export const MCP_TOOL_CLASSIFICATION: Readonly<Record<string, McpToolClass>> = O
   agent_plan_rerun: "bound",
   agent_gemini_get_status: "bound",
   agent_gemini_create_job: "bound",
+  // BL-236 (ADR 0057): speech takes for the bound channel (paid, within each provider's switch and limits) and its voices (read).
+  agent_speech_get_status: "bound",
+  agent_speech_create_job: "bound",
+  agent_speech_get_job: "bound",
+  agent_voice_list: "bound",
   // BL-161: the Producer role's own tools.
   producer_get_capabilities: "producer-only",
   producer_list_channels: "producer-only",

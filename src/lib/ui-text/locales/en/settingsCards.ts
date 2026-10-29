@@ -295,6 +295,7 @@ export const settingsCards = {
   "settingsCards.restartIdle.until": "until {time}",
   "settingsCards.restartIdle.reason.media_session": "{count, plural, one {# media session} other {# media sessions}} not finished",
   "settingsCards.restartIdle.reason.media_job": "{count, plural, one {# media job} other {# media jobs}} queued or running",
+  "settingsCards.restartIdle.reason.elevenlabs_job": "{count, plural, one {# ElevenLabs take} other {# ElevenLabs takes}} queued or being sent",
   "settingsCards.restartIdle.reason.gemini_job": "{count, plural, one {# Gemini job} other {# Gemini jobs}} queued or running",
   "settingsCards.restartIdle.reason.upload": "{count, plural, one {# upload} other {# uploads}} being sent",
   "settingsCards.restartIdle.reason.live_stream": "{count, plural, one {# live stream} other {# live streams}} starting, stopping or switching",

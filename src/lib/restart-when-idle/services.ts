@@ -133,6 +133,7 @@ export function createRestartWhenIdle(deps: RestartWhenIdleDependencies) {
       ["media_session", "mediaSessions"],
       ["media_job", "mediaJobs"],
       ["gemini_job", "geminiJobs"],
+      ["elevenlabs_job", "elevenlabsJobs"],
       ["upload", "uploads"],
       ["live_stream", "liveStreams"],
       ["operation", "operations"],

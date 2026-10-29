@@ -43,6 +43,12 @@ test("resolveAppPaths: Windows resolves under APPDATA", () => {
   assert.equal(result.geminiSettingsDocDir, path.join(result.appDataDir, "gemini-settings-doc"));
   assert.equal(result.geminiSettingsSyncFallbackDir, path.join(result.appDataDir, "gemini-settings-sync-local"));
   assert.equal(result.geminiSettingsDiscardedBackupsDir, path.join(result.appDataDir, "gemini-settings-discarded-backups"));
+  // BL-236 (owner msg 3823): the ElevenLabs spend report and limits document.
+  assert.equal(result.elevenlabsSpendShareDir, path.join(result.appDataDir, "elevenlabs-spend-share"));
+  assert.equal(result.elevenlabsSpendSyncFallbackDir, path.join(result.appDataDir, "elevenlabs-spend-sync-local"));
+  assert.equal(result.elevenlabsSettingsDocDir, path.join(result.appDataDir, "elevenlabs-settings-doc"));
+  assert.equal(result.elevenlabsSettingsSyncFallbackDir, path.join(result.appDataDir, "elevenlabs-settings-sync-local"));
+  assert.equal(result.elevenlabsSettingsDiscardedBackupsDir, path.join(result.appDataDir, "elevenlabs-settings-discarded-backups"));
   assert.equal(result.liveStreamsShareDir, path.join(result.appDataDir, "live-streams-share"));
   assert.equal(result.liveStreamsSyncFallbackDir, path.join(result.appDataDir, "live-streams-sync-local"));
   assert.equal(result.aiConnectionsCatalogDiscardedBackupsDir, path.join(result.appDataDir, "ai-connections-catalog-discarded-backups"));

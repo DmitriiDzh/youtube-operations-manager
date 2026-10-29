@@ -160,7 +160,9 @@ export function auditionContentType(file: string): string | null {
  * directly (`From YTM/gemini/<jobId>/image-1.png`) -- Gemini's outputs are reviewed where they are, without a copy into Sent to
  * YTM. A contract string (the Gemini module's folder name), not an import: the plans module stays independent of it.
  */
-export const PLAN_JOB_OUTPUT_SUBDIRS: readonly string[] = ["gemini"];
+// BL-236 (ADR 0057): ElevenLabs takes are reviewed in place too (`From YTM/elevenlabs/<jobId>/take-1.mp3`), and so are Gemini speech
+// takes (same `gemini` folder). A contract string only: generation-plans imports no speech module.
+export const PLAN_JOB_OUTPUT_SUBDIRS: readonly string[] = ["gemini", "elevenlabs"];
 
 /**
  * BL-175 (§2.2, review of round 4): a verdict at the review stage that forbids a pick -- the owner's `rejected`, or a relayed

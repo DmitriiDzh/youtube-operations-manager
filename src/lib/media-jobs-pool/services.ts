@@ -52,6 +52,11 @@ export function geminiOutputPath(relativeToFromYtm: string): string | null {
   return `From YTM/${p}`;
 }
 
+/** BL-236: a Gemini job's media -- speech and a recorded voice design make audio. */
+export function geminiPoolKind(kind: GeminiJobView["kind"]): PoolMediaKind {
+  return kind === "image" ? "image" : kind === "video" ? "video" : "audio";
+}
+
 const clip = (text: string, max: number) => (text.length > max ? text.slice(0, max) : text);
 const errorCodeOf = (code: string | null | undefined) => (code && /^[a-z0-9_]{1,64}$/.test(code) ? code : null);
 
@@ -88,7 +93,7 @@ export function toSharedGeminiJob(job: GeminiJobView): SharedMediaJob {
     jobId: job.jobId,
     source: "gemini",
     channelId: job.channelId,
-    mediaKind: job.kind,
+    mediaKind: geminiPoolKind(job.kind),
     status: job.status,
     createdBy: job.createdBy,
     label: clip(job.model, 160),
@@ -194,7 +199,7 @@ export async function mergePool(input: MergeInput): Promise<PoolView> {
     });
   }
   for (const job of input.own.gemini) {
-    if (job.channelId !== input.channelId || !kindMatches(job.kind)) continue;
+    if (job.channelId !== input.channelId || !kindMatches(geminiPoolKind(job.kind))) continue;
     const shared = toSharedGeminiJob(job);
     seen.add(`gemini:${job.jobId}`);
     rows.push({
