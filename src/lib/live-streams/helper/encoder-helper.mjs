@@ -206,6 +206,8 @@ export async function runHelper(options) {
           dupFrames: block.dup_frames ? Number(block.dup_frames) : null,
           speed: block.speed ?? null,
           runStartedAt,
+          // BL-233 review: when this block arrived -- the heartbeat rewrites the status later with the same progress.
+          at: io.now(),
         };
         block = {};
         if (outTime > lastGrownOutTime) {

@@ -69,3 +69,11 @@ test("BL-233: bad stored upload values fall back to their own defaults; out-of-r
   await assert.rejects(() => settings.update({ uploadGuardMinutes: 2.5 }), DomainError);
   await assert.rejects(() => settings.update({ uploadGuardMinutes: 61 }), DomainError);
 });
+
+test("review: the upload limit is 0 or at least 0.5 Mbit/s, on save and when read back", async () => {
+  const { settings } = store({ ok: true });
+  await assert.rejects(() => settings.update({ uploadCapMbps: 0.4 }), DomainError);
+  assert.equal((await settings.update({ uploadCapMbps: 0.5 })).uploadCapMbps, 0.5);
+  assert.equal(liveStreamsSettingsFromJson(JSON.stringify({ uploadCapMbps: 0.1 })).uploadCapMbps, 2);
+  assert.equal(liveStreamsSettingsFromJson(JSON.stringify({ uploadCapMbps: 0 })).uploadCapMbps, 0);
+});

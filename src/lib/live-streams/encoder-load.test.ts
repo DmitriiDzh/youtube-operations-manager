@@ -57,3 +57,11 @@ test("a damaged progress (strings, missing fields) gives nulls, never a throw", 
   const reading = encoderReading({ channelId: "U", intentOn: false, targetBitrateKbps: Number.NaN, status: status({ progress: { outTime: "12", speed: 3, bitrate: 7, runStartedAt: "x" } }) }, NOW);
   assert.deepEqual([reading.outTimeSeconds, reading.speed, reading.bitrateKbps, reading.lagSeconds, reading.targetBitrateKbps], [null, 3, null, null, null]);
 });
+
+test("review: the progress block's own time is used for the lag and returned; a heartbeat's later write does not add lag", () => {
+  // Block at NOW-7 s with 3,560 s sent, run began 3,600 s before that block: 40 s behind. The status was rewritten at NOW-2 s.
+  const progressAt = NOW - 7_000;
+  const reading = encoderReading({ channelId: "U", intentOn: true, targetBitrateKbps: null, status: status({ progress: { outTime: 3560, speed: "0.989x", runStartedAt: progressAt - 3_600_000, at: progressAt } }) }, NOW);
+  assert.deepEqual([reading.progressAt, reading.lagSeconds, reading.lagEstimated], [progressAt, 40, false]);
+  assert.equal(encoderReading({ channelId: "U", intentOn: true, targetBitrateKbps: null, status: status({ progress: { outTime: 1, speed: "1x" } }) }, NOW).progressAt, null);
+});

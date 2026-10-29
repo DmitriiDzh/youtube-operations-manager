@@ -16,6 +16,8 @@ export type EncoderReading = {
   running: boolean;
   /** When the helper wrote the status (ms); null without one. */
   sampledAt: number | null;
+  /** When ffmpeg reported the progress below (`progress.at`); null for a helper started before it was stamped. */
+  progressAt: number | null;
   /** Seconds of output sent in the current ffmpeg run. */
   outTimeSeconds: number | null;
   /** ffmpeg's `speed=` -- the average since the run began (1.0 = real time). */
@@ -62,10 +64,13 @@ export function encoderReading(input: { channelId: string; intentOn: boolean; st
   const outTime = finite(progress.outTime);
   const speed = parseEncoderSpeed(progress.speed);
   const runStartedAt = finite(progress.runStartedAt);
+  const progressAt = finite(progress.at);
+  // The output time belongs to the progress block's time, not to a later heartbeat's write.
+  const outAt = progressAt ?? updatedAt;
   let lagSeconds: number | null = null;
   let lagEstimated = false;
-  if (running && outTime !== null && updatedAt !== null) {
-    if (runStartedAt !== null && runStartedAt <= updatedAt) lagSeconds = Math.max(0, (updatedAt - runStartedAt) / 1000 - outTime);
+  if (running && outTime !== null && outAt !== null) {
+    if (runStartedAt !== null && runStartedAt <= outAt) lagSeconds = Math.max(0, (outAt - runStartedAt) / 1000 - outTime);
     else if (speed !== null && speed > 0) {
       lagSeconds = Math.max(0, outTime * (1 / speed - 1));
       lagEstimated = true;
@@ -78,6 +83,7 @@ export function encoderReading(input: { channelId: string; intentOn: boolean; st
     helperState,
     running,
     sampledAt: updatedAt,
+    progressAt: running ? progressAt : null,
     outTimeSeconds: running ? outTime : null,
     speed: running ? speed : null,
     bitrateKbps: running ? round(parseEncoderBitrateKbps(progress.bitrate), 1) : null,

@@ -1193,3 +1193,10 @@ test("BL-233: without a bandwidth reader the chunks go unpaced at the usual size
   assert.equal(h.row().status, "done");
   assert.deepEqual(seen, [undefined, undefined, undefined]);
 });
+
+test("review: a queued row whose slot was vetoed is cancelled even while uploads are held", async () => {
+  const bw = bandwidth({ held: true });
+  const h = harness([job({ slotId: "slot-1" })], { bandwidth: bw.deps, slotDecision: async () => ({ kind: "vetoed" }) as never });
+  await h.runner.tick();
+  assert.deepEqual([h.row().status, h.row().errorCode, h.yt.log], ["cancelled", "slot_vetoed", []]);
+});

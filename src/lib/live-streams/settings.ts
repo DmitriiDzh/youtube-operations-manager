@@ -19,7 +19,8 @@ const settingsPatchSchema = z
     alertMinutes: z.number().int().min(1).max(60),
     ffmpegDir: z.string().trim().min(1).max(500).nullable(),
     // BL-233: Mbit/s (0 = no limit); whole minutes (0 = never held).
-    uploadCapMbps: z.number().finite().min(0).max(100),
+    // 0 or at least 0.5: a smaller limit would make one 256 KB chunk take minutes (independent review).
+    uploadCapMbps: z.number().finite().min(0).max(100).refine((v) => v === 0 || v >= 0.5, "0 (no limit) or at least 0.5 Mbit/s"),
     uploadGuardMinutes: z.number().int().min(0).max(60),
   })
   .partial()

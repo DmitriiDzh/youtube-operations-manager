@@ -70,7 +70,7 @@ export const PACED_SLICE_BYTES = 64 * 1024;
  * (pace, the socket) destroys the request, so its own error settles the call. Exported for its test.
  */
 export async function writePacedBody(
-  req: { write(chunk: Buffer): boolean; end(): void; destroy(error?: Error): void; once(event: "drain" | "error", listener: (...args: unknown[]) => void): unknown },
+  req: { write(chunk: Buffer): boolean; end(): void; destroy(error?: Error): void; destroyed?: unknown; once(event: "drain" | "error" | "close", listener: (...args: unknown[]) => void): unknown },
   body: Buffer,
   pace: UploadPace
 ): Promise<void> {
@@ -78,7 +78,13 @@ export async function writePacedBody(
     for (let offset = 0; offset < body.length; offset += PACED_SLICE_BYTES) {
       const slice = body.subarray(offset, Math.min(body.length, offset + PACED_SLICE_BYTES));
       await pace(slice.length);
-      if (!req.write(slice)) await once(req as unknown as NodeJS.EventEmitter, "drain");
+      // Destroyed meanwhile (a timeout, a socket error): its own error settles the call; nothing more is written.
+      if (req.destroyed) return;
+      if (!req.write(slice)) {
+        const emitter = req as unknown as NodeJS.EventEmitter;
+        const closed = await Promise.race([once(emitter, "drain").then(() => false), once(emitter, "close").then(() => true)]);
+        if (closed || req.destroyed) return;
+      }
     }
     req.end();
   } catch (error) {

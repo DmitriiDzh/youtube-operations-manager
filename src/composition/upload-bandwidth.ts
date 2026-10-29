@@ -16,7 +16,15 @@ export function createUploadBandwidth(): UploadBandwidthGovernor {
         streamsOn: load.streamsOn,
         capMbps: load.capMbps,
         guardMinutes: load.guardMinutes,
-        encoders: load.encoders.map((e) => ({ channelId: e.channelId, running: e.running, sampledAt: e.sampledAt ?? 0, outTimeSeconds: e.outTimeSeconds, speed: e.speed })),
+        encoders: load.encoders.map((e) => ({
+          channelId: e.channelId,
+          intentOn: e.intentOn,
+          running: e.running,
+          sampledAt: e.sampledAt ?? 0,
+          progressAt: e.progressAt,
+          outTimeSeconds: e.outTimeSeconds,
+          speed: e.speed,
+        })),
       };
     },
     clock: () => Date.now(),

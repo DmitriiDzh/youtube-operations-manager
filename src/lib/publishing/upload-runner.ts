@@ -417,17 +417,18 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
     if (!pkg || !settings) return fail(job, "job_damaged", "The approved package of this upload cannot be read.");
     let current = job;
     let hashChecked = false;
-    // BL-233: held while a live stream here starves -- before anything is read, hashed or asked (the next tick asks again).
-    if (deps.bandwidth && !(await deps.bandwidth.mayStart())) return;
     try {
-      if (current.status === "queued") {
-        // Review #1: a slot vetoed since the row was queued -- the row stops here, before anything is read or sent.
-        if (job.slotId && deps.slotDecision && (await deps.slotDecision(job.channelId, job.slotId))?.kind === "vetoed") {
-          if (await deps.store.update(job.id, "queued", { status: "cancelled", errorCode: "slot_vetoed", finishedAt: now(), updatedAt: now() })) {
-            await deps.audit({ channelId: job.channelId, videoId: null, detail: { event: "publishing.upload_cancelled_slot_vetoed", uploadId: job.id, video: job.video, slotId: job.slotId } });
-          }
-          return;
+      // Review #1: a slot vetoed since the row was queued -- the row stops here, before anything is read or sent (and before a hold:
+      // a vetoed row is cancelled even while uploads are held, BL-233 review).
+      if (current.status === "queued" && job.slotId && deps.slotDecision && (await deps.slotDecision(job.channelId, job.slotId))?.kind === "vetoed") {
+        if (await deps.store.update(job.id, "queued", { status: "cancelled", errorCode: "slot_vetoed", finishedAt: now(), updatedAt: now() })) {
+          await deps.audit({ channelId: job.channelId, videoId: null, detail: { event: "publishing.upload_cancelled_slot_vetoed", uploadId: job.id, video: job.video, slotId: job.slotId } });
         }
+        return;
+      }
+      // BL-233: held while a live stream here starves -- before anything is read, hashed or asked (the next tick asks again).
+      if (deps.bandwidth && !(await deps.bandwidth.mayStart())) return;
+      if (current.status === "queued") {
         // The files must still be what the owner approved: the same manifest, a video of the same size.
         const manifest = await deps.files.resolve(job.channelId, pkg.manifestPath);
         if (!manifest || (await deps.files.sha256(manifest.path)) !== job.manifestSha256) return fail(job, "package_changed", "The package changed on disk after it was approved.");

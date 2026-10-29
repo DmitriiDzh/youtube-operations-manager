@@ -49,6 +49,8 @@ function parseField(field: NumberField, text: string): number | null {
   const trimmed = text.trim().replace(",", ".");
   if (!(integer ? /^\d{1,6}$/ : /^\d{1,4}(\.\d{1,2})?$/).test(trimmed)) return null;
   const value = Number(trimmed);
+  // BL-233: the upload limit is 0 (none) or at least 0.5 Mbit/s, as the server checks.
+  if (field === "uploadCapMbps" && value > 0 && value < 0.5) return null;
   return value >= min && value <= max ? value : null;
 }
 

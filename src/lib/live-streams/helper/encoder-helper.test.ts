@@ -183,6 +183,9 @@ test("BL-233: the running status's progress carries the run's start time, the ou
   assert.equal(running.progress.bitrate, "2200.0kbits/s");
   assert.equal(typeof running.progress.runStartedAt, "number");
   assert.ok((running.progress.runStartedAt as number) >= 1_000_000, "the helper's clock at the run's start");
+  // Review: each block carries when it arrived, so a heartbeat's later write time is never paired with its output time.
+  assert.equal(typeof running.progress.at, "number");
+  assert.ok((running.progress.at as number) >= (running.progress.runStartedAt as number));
 });
 
 // With a real ffmpeg and a real helper process against a local RTMP listener (skipped where ffmpeg is missing).

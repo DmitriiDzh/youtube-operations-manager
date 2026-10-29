@@ -30,6 +30,10 @@ export const SPEED_WINDOW_MIN_MS = 30_000;
 export const SPEED_WINDOW_KEEP_MS = 90_000;
 /** A limited chunk is sized to take about this long, in whole 256 KB units (YouTube's resumable granularity), at least one. */
 export const LIMITED_CHUNK_SECONDS = 60;
+/** Without `progressAt`: an unchanged output time counts as a stall only after this long (progress every 5 s, heartbeat every 10 s). */
+export const LEGACY_STALL_MS = 20_000;
+/** No upload asked for this long: the hold and the streams' timings are forgotten (the next upload starts measuring afresh). */
+export const IDLE_FORGET_MS = 30_000;
 const GRANULARITY = 256 * 1024;
 
 /** One stream encoder on this computer as its helper last reported it. */
@@ -37,8 +41,16 @@ export type EncoderSample = {
   channelId: string;
   /** The helper is sending (fresh status, state running). Otherwise a gap. */
   running: boolean;
-  /** When the helper wrote the sample (ms). */
+  /** When the helper wrote the status (ms): its freshness. A heartbeat rewrites it without new progress. */
   sampledAt: number;
+  /**
+   * When ffmpeg reported `outTimeSeconds` (the helper's `progress.at`, review of BL-233): the time the output time belongs to.
+   * Absent (a helper started before this change): `sampledAt`, and a sample whose output time did not move is taken only once
+   * it is `LEGACY_STALL_MS` after the last one (a heartbeat repeats the old output time with a new write time).
+   */
+  progressAt?: number | null;
+  /** The owner's intent for the stream is on (off or no longer listed: a hold for it ends). */
+  intentOn?: boolean;
   /** Seconds of output sent in the current run. */
   outTimeSeconds: number | null;
   /** ffmpeg's own speed (average since the run began). */
@@ -55,7 +67,10 @@ export type LiveLoad = {
 
 export type UploadBandwidthEvent =
   | { kind: "upload_held"; at: number; channelId: string; speed: number | null }
-  | { kind: "upload_released"; at: number; reason: "recovered" | "ceiling" | "no_stream" | "guard_off"; channelId: string | null; heldMs: number };
+  | { kind: "upload_released"; at: number; reason: UploadReleaseReason; channelId: string | null; heldMs: number };
+
+/** stream_off: the stream held for was turned off or removed; no_upload: no upload asked for 30 s (cancelled or finished). */
+export type UploadReleaseReason = "recovered" | "ceiling" | "no_stream" | "guard_off" | "stream_off" | "no_upload";
 
 export type UploadBandwidthMode = "uncapped" | "capped" | "held";
 
@@ -82,9 +97,11 @@ export type GuardMemory = {
   heldSince: number | null;
   heldForChannelId: string | null;
   ceilingReleasedAt: number | null;
+  /** The last evaluation: a pause longer than the keep window between two means the streams' timings are stale. */
+  lastStepAt: number | null;
 };
 
-export const newGuardMemory = (): GuardMemory => ({ streams: new Map(), heldSince: null, heldForChannelId: null, ceilingReleasedAt: null });
+export const newGuardMemory = (): GuardMemory => ({ streams: new Map(), heldSince: null, heldForChannelId: null, ceilingReleasedAt: null, lastStepAt: null });
 
 const finiteOrNull = (value: number | null | undefined): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
 
@@ -105,6 +122,9 @@ export function stepGuard(memory: GuardMemory, load: LiveLoad, now: number): { m
   const guardMs = Math.max(0, Math.floor(load.guardMinutes)) * 60_000;
   const speeds: Record<string, number | null> = {};
   const seen = new Set<string>();
+  // Nothing evaluated for longer than the keep window (no upload asked): what was measured then says nothing now.
+  if (memory.lastStepAt !== null && now - memory.lastStepAt > SPEED_WINDOW_KEEP_MS) memory.streams.clear();
+  memory.lastStepAt = now;
   for (const encoder of load.encoders) {
     seen.add(encoder.channelId);
     const channel = memory.streams.get(encoder.channelId) ?? { samples: [], belowSince: null, aboveSince: null };
@@ -118,10 +138,17 @@ export function stepGuard(memory: GuardMemory, load: LiveLoad, now: number): { m
       continue;
     }
     if (out !== null) {
-      const previous = channel.samples.at(-1);
-      if (previous && out < previous.out) channel.samples = []; // a new run starts its output time from 0
-      if (!previous || encoder.sampledAt > previous.at) channel.samples.push({ at: encoder.sampledAt, out });
-      channel.samples = channel.samples.filter((s) => encoder.sampledAt - s.at <= SPEED_WINDOW_KEEP_MS);
+      const stamped = finiteOrNull(encoder.progressAt);
+      const at = stamped ?? encoder.sampledAt;
+      let previous = channel.samples.at(-1);
+      if (previous && (out < previous.out || at - previous.at > SPEED_WINDOW_KEEP_MS)) {
+        // A new run (its output time restarts at 0), or a long gap in the samples: measure afresh.
+        Object.assign(channel, { samples: [], belowSince: null, aboveSince: null });
+        previous = undefined;
+      }
+      const legacyRepeat = stamped === null && previous !== undefined && out === previous.out && at - previous.at < LEGACY_STALL_MS;
+      if ((!previous || at > previous.at) && !legacyRepeat) channel.samples.push({ at, out });
+      channel.samples = channel.samples.filter((s) => at - s.at <= SPEED_WINDOW_KEEP_MS);
     }
     const speed = recentSpeed(channel.samples) ?? finiteOrNull(encoder.speed);
     speeds[encoder.channelId] = speed;
@@ -144,7 +171,7 @@ export function stepGuard(memory: GuardMemory, load: LiveLoad, now: number): { m
   const measured = [...memory.streams.entries()].filter(([id]) => speeds[id] !== null && speeds[id] !== undefined);
   const recovered = measured.length > 0 && measured.every(([, c]) => c.aboveSince !== null && now - c.aboveSince >= RECOVERY_MS);
 
-  const release = (reason: "recovered" | "ceiling" | "no_stream" | "guard_off") => {
+  const release = (reason: UploadReleaseReason) => {
     events.push({ kind: "upload_released", at: now, reason, channelId: memory.heldForChannelId, heldMs: now - (memory.heldSince ?? now) });
     memory.heldSince = null;
     memory.heldForChannelId = null;
@@ -157,8 +184,10 @@ export function stepGuard(memory: GuardMemory, load: LiveLoad, now: number): { m
     return { mode: "uncapped", speeds, events };
   }
   if (recovered) memory.ceilingReleasedAt = null;
+  const heldFor = memory.heldForChannelId === null ? undefined : load.encoders.find((e) => e.channelId === memory.heldForChannelId);
   if (memory.heldSince !== null) {
     if (guardMs === 0) release("guard_off");
+    else if (memory.heldForChannelId !== null && (!heldFor || heldFor.intentOn === false)) release("stream_off");
     else if (now - memory.heldSince >= HOLD_CEILING_MS) {
       release("ceiling");
       memory.ceilingReleasedAt = now;
@@ -177,6 +206,25 @@ export function stepGuard(memory: GuardMemory, load: LiveLoad, now: number): { m
   }
   const mode: UploadBandwidthMode = memory.heldSince !== null ? "held" : load.capMbps > 0 ? "capped" : "uncapped";
   return { mode, speeds, events };
+}
+
+/** A hold past the 30-minute ceiling ends even when the streams cannot be read (review of BL-233). */
+export function releaseAtCeiling(memory: GuardMemory, now: number): UploadBandwidthEvent | null {
+  if (memory.heldSince === null || now - memory.heldSince < HOLD_CEILING_MS) return null;
+  const event: UploadBandwidthEvent = { kind: "upload_released", at: now, reason: "ceiling", channelId: memory.heldForChannelId, heldMs: now - memory.heldSince };
+  memory.heldSince = null;
+  memory.heldForChannelId = null;
+  memory.ceilingReleasedAt = now;
+  return event;
+}
+
+/** No upload asked for `IDLE_FORGET_MS`: the hold and the timings are dropped, so the next upload is judged afresh. */
+export function forgetIdle(memory: GuardMemory, now: number): UploadBandwidthEvent | null {
+  const event: UploadBandwidthEvent | null =
+    memory.heldSince === null ? null : { kind: "upload_released", at: now, reason: "no_upload", channelId: memory.heldForChannelId, heldMs: now - memory.heldSince };
+  Object.assign(memory, { heldSince: null, heldForChannelId: null, ceilingReleasedAt: null, lastStepAt: null });
+  memory.streams.clear();
+  return event;
 }
 
 /** Bytes per second for a limit in Mbit/s (decimal megabits, as a link is rated). */
@@ -222,9 +270,16 @@ export function createUploadBandwidthGovernor(deps: {
     try {
       load = await deps.load();
     } catch (error) {
-      // The streams cannot be read: the last known state stands (an upload is never stopped by a failed read, only kept as it was).
+      // The streams cannot be read: the last known state stands (an upload is never stopped by a failed read), except that a hold
+      // still ends at its 30-minute ceiling.
       deps.onLoadError?.(error);
-      state = { ...state, evaluatedAt: now };
+      const ceiling = releaseAtCeiling(memory, now);
+      state = {
+        ...state,
+        ...(ceiling ? { mode: state.capMbps > 0 && state.streamsOn > 0 ? ("capped" as const) : ("uncapped" as const), heldSince: null, heldForChannelId: null, ceilingReleasedAt: memory.ceilingReleasedAt } : {}),
+        evaluatedAt: now,
+      };
+      if (ceiling) await emit([ceiling]);
       return state;
     }
     const capMbps = Number.isFinite(load.capMbps) && load.capMbps > 0 ? load.capMbps : 0;
@@ -241,14 +296,29 @@ export function createUploadBandwidthGovernor(deps: {
       evaluatedAt: now,
       lastAskedAt: state.lastAskedAt,
     };
-    for (const event of step.events) {
+    await emit(step.events);
+    return state;
+  }
+
+  async function emit(events: UploadBandwidthEvent[]): Promise<void> {
+    for (const event of events) {
       try {
         await deps.onEvent?.(event);
       } catch {
         // a note that could not be written never changes what the upload does
       }
     }
-    return state;
+  }
+
+  /** Marks an upload as asking now; after `IDLE_FORGET_MS` without one, the old hold and timings are dropped first. */
+  async function asked(): Promise<void> {
+    const now = deps.clock();
+    if (state.lastAskedAt !== null && now - state.lastAskedAt > IDLE_FORGET_MS) {
+      const event = forgetIdle(memory, now);
+      state = { ...state, mode: state.mode === "held" ? (state.capMbps > 0 && state.streamsOn > 0 ? "capped" : "uncapped") : state.mode, heldSince: null, heldForChannelId: null, ceilingReleasedAt: null, evaluatedAt: null };
+      if (event) await emit([event]);
+    }
+    state = { ...state, lastAskedAt: now };
   }
 
   /** Reads the streams again when the last reading is older than `REFRESH_MS` (one reading at a time). */
@@ -267,7 +337,7 @@ export function createUploadBandwidthGovernor(deps: {
     refresh,
     /** Whether a new chunk (or a new upload) may start now. */
     async mayStart(): Promise<boolean> {
-      state = { ...state, lastAskedAt: deps.clock() };
+      await asked();
       return (await refresh()).mode !== "held";
     },
     /** The size of the next chunk (see `limitedChunkBytes`). */
@@ -277,7 +347,7 @@ export function createUploadBandwidthGovernor(deps: {
     /** Waits until `bytes` more may be sent at the limit now (no wait without one). Called before each slice of a request body. */
     async pace(bytes: number): Promise<void> {
       // Bytes flowing = an upload under way (a limited chunk can take a minute between two `mayStart` asks).
-      state = { ...state, lastAskedAt: deps.clock() };
+      await asked();
       await refresh();
       const limit = rate();
       const now = deps.clock();

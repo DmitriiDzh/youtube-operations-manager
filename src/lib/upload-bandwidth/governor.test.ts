@@ -4,6 +4,8 @@ import {
   createUploadBandwidthGovernor,
   HOLD_CEILING_MS,
   limitedChunkBytes,
+  newGuardMemory,
+  stepGuard,
   uploadBandwidthReport,
   uploadBandwidthStatus,
   registerUploadBandwidthGovernor,
@@ -285,4 +287,131 @@ test("an upload sending a long limited chunk stays active for the readers; 30 s 
   assert.equal(uploadBandwidthStatus(w.now())?.uploadActive, true);
   w.advance(31_000);
   assert.equal(uploadBandwidthStatus(w.now())?.uploadActive, false);
+});
+
+// Independent review of BL-233 (2026-10-29). The helper writes a status on every ffmpeg progress block (every 5 s) AND a heartbeat
+// every 10 s that repeats the last progress with a fresh write time. A 1.00x stream must read about 1.00 either way.
+function heartbeatRun(options: { stamped: boolean; heartbeatOffsetS: number; speed: number; seconds: number }) {
+  const memory = newGuardMemory();
+  const speeds: number[] = [];
+  const t0 = 1_000_000;
+  for (let t = 100; t < options.seconds; t += 5) {
+    const lastProgress = Math.floor(t / 5) * 5; // ffmpeg's last block
+    const lastHeartbeat = Math.floor((t - options.heartbeatOffsetS) / 10) * 10 + options.heartbeatOffsetS;
+    const writtenAt = Math.max(lastProgress, lastHeartbeat);
+    const sample = {
+      channelId: "UCa",
+      intentOn: true,
+      running: true,
+      sampledAt: t0 + writtenAt * 1000,
+      progressAt: options.stamped ? t0 + lastProgress * 1000 : null,
+      outTimeSeconds: lastProgress * options.speed,
+      speed: options.speed,
+    };
+    const step = stepGuard(memory, { streamsOn: 1, capMbps: 2, guardMinutes: 3, encoders: [sample] }, t0 + t * 1000 + 300);
+    if (t > 200) speeds.push(step.speeds.UCa ?? Number.NaN);
+  }
+  return speeds;
+}
+
+test("review: heartbeat rewrites do not skew the recent speed -- stamped progress, and old helpers without the stamp", () => {
+  for (const stamped of [true, false]) {
+    for (const offset of [1, 2.5, 4, 4.9]) {
+      const speeds = heartbeatRun({ stamped, heartbeatOffsetS: offset, speed: 1, seconds: 2_000 });
+      assert.ok(speeds.every((v) => v >= 0.99 && v <= 1.01), `stamped=${stamped} offset=${offset}: ${Math.min(...speeds)}..${Math.max(...speeds)}`);
+    }
+  }
+  // A real 0.9x stream still reads as starving.
+  assert.ok(heartbeatRun({ stamped: true, heartbeatOffsetS: 2.5, speed: 0.9, seconds: 600 }).every((v) => Math.abs(v - 0.9) < 0.005));
+});
+
+test("review: an output time that stops moving still reads as a stall, stamped or not", () => {
+  const memory = newGuardMemory();
+  const t0 = 5_000_000;
+  let last = 0;
+  for (let t = 0; t <= 300; t += 5) {
+    const out = t <= 120 ? t : 120; // ffmpeg stalls at 120 s (a dead link): progress blocks keep coming with the same out_time
+    last = stepGuard(memory, { streamsOn: 1, capMbps: 2, guardMinutes: 1, encoders: [{ channelId: "UCa", intentOn: true, running: true, sampledAt: t0 + t * 1000, progressAt: null, outTimeSeconds: out, speed: 1 }] }, t0 + t * 1000).speeds.UCa ?? 1;
+  }
+  assert.ok(last < 0.5, `stalled stream read ${last}`);
+});
+
+test("review: a hold ends when the stream it was held for is turned off or no longer listed, while another stream runs", async () => {
+  for (const how of ["off", "gone"] as const) {
+    let encoders: EncoderSample[] = [];
+    let now = 0;
+    const events: UploadBandwidthEvent[] = [];
+    const governor = createUploadBandwidthGovernor({
+      clock: () => now,
+      sleep: async (ms) => void (now += ms),
+      load: async () => ({ streamsOn: encoders.filter((e) => e.intentOn !== false).length, capMbps: 2, guardMinutes: 1, encoders }),
+      onEvent: (e) => void events.push(e),
+    });
+    const sample = (channelId: string, out: number, speed: number, intentOn = true): EncoderSample => ({ channelId, intentOn, running: intentOn, sampledAt: now, progressAt: now, outTimeSeconds: out, speed });
+    for (let t = 0; t <= 120; t += 5) {
+      now = t * 1000;
+      encoders = [sample("UCa", t * 0.5, 0.5), sample("UCb", t, 1)];
+      await governor.mayStart();
+    }
+    assert.equal(governor.state().heldForChannelId, "UCa");
+    now += 5_000;
+    encoders = how === "off" ? [sample("UCa", 60, 0.5, false), sample("UCb", 125, 1)] : [sample("UCb", 125, 1)];
+    assert.equal(await governor.mayStart(), true, how);
+    const release = events.find((e) => e.kind === "upload_released");
+    assert.equal(release && release.kind === "upload_released" && release.reason, "stream_off", how);
+  }
+});
+
+test("review: a failed read while held still ends the hold at the 30-minute ceiling", async () => {
+  let fail = false;
+  let now = 0;
+  let out = 0;
+  const events: UploadBandwidthEvent[] = [];
+  const governor = createUploadBandwidthGovernor({
+    clock: () => now,
+    sleep: async (ms) => void (now += ms),
+    load: async () => {
+      if (fail) throw new Error("db locked");
+      return { streamsOn: 1, capMbps: 2, guardMinutes: 1, encoders: [{ channelId: "UCa", intentOn: true, running: true, sampledAt: now, progressAt: now, outTimeSeconds: out, speed: 0.5 }] };
+    },
+    onEvent: (e) => void events.push(e),
+  });
+  for (; now <= 120_000; now += 5_000, out += 2.5) await governor.mayStart();
+  assert.equal(governor.state().mode, "held");
+  const heldSince = governor.state().heldSince!;
+  fail = true;
+  let free = false;
+  while (!free && now < heldSince + 40 * 60_000) {
+    now += 5_000;
+    free = await governor.mayStart();
+  }
+  assert.equal(free, true, "released despite the failed reads");
+  assert.ok(now - heldSince <= HOLD_CEILING_MS + 5_000);
+  const release = events.find((e) => e.kind === "upload_released");
+  assert.equal(release && release.kind === "upload_released" && release.reason, "ceiling");
+});
+
+test("review: no upload for 30 s forgets the hold; the next upload is not held on the first upload's old timings", async () => {
+  const w = world({ guardMinutes: 3 });
+  // Upload A: the stream sends at 0.5x for 2.5 minutes (not yet 3): belowSince is set.
+  w.stream("UCa", 0.5, { reported: 0.5 });
+  assert.equal(await w.run(150_000), true);
+  // No upload asks for 10 minutes; the stream is fine again, but ffmpeg's run average still reads 0.95.
+  w.stream("UCa", 1, { reported: 0.95 });
+  w.advance(10 * 60_000);
+  // Upload B: never held in its first 3 minutes on A's old timing.
+  assert.equal(await w.governor.mayStart(), true);
+  assert.equal(await w.run(3 * 60_000), true);
+  assert.equal(w.events.filter((e) => e.kind === "upload_held").length, 0);
+
+  // A held upload that is cancelled leaves no hold behind: the next ask, 31 s later, starts afresh.
+  const h = world({ guardMinutes: 1 });
+  h.stream("UCa", 0.5);
+  assert.equal(await h.run(2 * 60_000), false);
+  h.stream("UCa", 1, { reported: 1 });
+  h.advance(31_000);
+  assert.equal(await h.governor.mayStart(), true);
+  assert.equal(h.governor.state().heldSince, null);
+  const release = h.events.find((e) => e.kind === "upload_released");
+  assert.equal(release && release.kind === "upload_released" && release.reason, "no_upload");
 });

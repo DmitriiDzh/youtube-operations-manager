@@ -1076,6 +1076,8 @@ const UPLOAD_RELEASE_KEYS: Record<string, UiTextKey> = {
   ceiling: "live.uploadRelease.ceiling",
   no_stream: "live.uploadRelease.no_stream",
   guard_off: "live.uploadRelease.guard_off",
+  stream_off: "live.uploadRelease.stream_off",
+  no_upload: "live.uploadRelease.no_upload",
 };
 
 function HistoryCard({ overview }: { overview: Overview }) {

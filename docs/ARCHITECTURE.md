@@ -3951,8 +3951,13 @@ Plan: `docs/roadmap/plans/LIVE_STREAMS_PLAN.md` (FO-REQ-0019). Schema v86, Facto
   - Rules: any stream on → the upload is paced to the limit (0 = none); none → unlimited. A stream measured below 0.97x for the
     guard minutes → no new chunk (the row stays `uploading`, its session kept; nothing is read, hashed or asked while held) until
     every measured stream holds ≥ 0.99x for a minute, at most 30 minutes; after a ceiling release it is not held again until the
-    streams recover. A gap (stale or not-running status) neither starves nor recovers. The speed is measured from `outTime` over the
-    last 30-90 s, because ffmpeg's `speed=` is the average since its run began; ffmpeg's figure is used until the window fills.
+    streams recover. A gap (stale or not-running status) neither starves nor recovers; a hold for a stream turned off or no longer
+    listed ends at once (`stream_off`); a failed read still ends a hold at the ceiling; no upload asking for 30 s forgets the hold and
+    the timings (`no_upload`), and a gap of more than 90 s between evaluations or samples restarts the measuring. The speed is
+    measured from `outTime` over the last 30-90 s, because ffmpeg's `speed=` is the average since its run began; ffmpeg's figure is
+    used until the window fills. Each progress block carries its own time (`progress.at`), because the helper's 10-s heartbeat
+    rewrites the status with the old output time; for helpers started before that, an unchanged output time is taken only after
+    20 s (a stall). The limit is 0 or at least 0.5 Mbit/s.
   - Pacing: the write gateway's `putVideoUploadChunk` takes `pace`; `nodeUploadHttp` then writes the chunk body in 64 KB slices,
     each after a token-bucket wait (burst ≤ 0.25 s), honouring backpressure -- the request (Content-Length, Content-Range) is the
     same. A limited chunk is about a minute of sending in whole 256 KB units (≤ 8 MB). A hold never stalls a PUT in flight (socket

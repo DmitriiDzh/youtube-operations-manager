@@ -177,3 +177,23 @@ test("paced body: backpressure waits for drain; a failing pace or a socket error
   assert.equal(broken.ended, false);
   assert.equal(broken.destroyed?.message, "ECONNRESET");
 });
+
+test("review: a request destroyed while the body is paced is never written to again, and the writer does not hang", async () => {
+  const req = new FakeRequest();
+  let calls = 0;
+  await writePacedBody(req, Buffer.alloc(3 * PACED_SLICE_BYTES), async () => {
+    calls += 1;
+    if (calls === 2) req.destroy(new Error("timeout"));
+  });
+  assert.equal(req.written.length, 1, "nothing written after the destroy");
+  assert.equal(req.ended, false);
+
+  const closing = new FakeRequest();
+  closing.full = true;
+  const pending = writePacedBody(closing, Buffer.alloc(2 * PACED_SLICE_BYTES), async () => undefined);
+  await new Promise((resolve) => setImmediate(resolve));
+  closing.emit("close"); // closed without an error event while waiting for drain
+  await pending;
+  assert.equal(closing.written.length, 1);
+  assert.equal(closing.ended, false);
+});
