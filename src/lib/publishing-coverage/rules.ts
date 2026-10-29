@@ -32,11 +32,17 @@ export function currentRows<T extends CalendarSourceVideo>(videos: readonly T[],
 /**
  * - `published`: public (or unlisted), at its publish time.
  * - `scheduled`: not public, with a `publishAt` still ahead.
- * - `overdue`: not public, with a `publishAt` already passed -- the stored copy is older than the publication (a sync shows it
- *   published) or YouTube did not publish it; either way it is not "covered" any more.
+ * - `published_pending` (BL-235 review): not public, its `publishAt` passed less than `PUBLISH_PENDING_MS` (24 h) ago -- YouTube
+ *   publishes at that time, and the copy only learns it at the next sync (up to 6 h later). It still counts as the day's release,
+ *   so a release day is not reported as a gap between the publish time and the next sync.
+ * - `overdue`: not public, with a `publishAt` passed 24 h ago or more -- YouTube did not publish it, or no sync has run since;
+ *   either way it is not "covered" any more.
  * - `unscheduled`: private without a date (uploaded, waiting).
  */
-export type CalendarEntryKind = "published" | "scheduled" | "overdue" | "unscheduled";
+export type CalendarEntryKind = "published" | "scheduled" | "published_pending" | "overdue" | "unscheduled";
+
+/** How long after its `publishAt` a video the copy still shows not public counts as published (BL-235 review item 1). */
+export const PUBLISH_PENDING_MS = 24 * 3_600_000;
 
 export type CalendarEntry = { videoId: string; title: string; kind: CalendarEntryKind; privacyStatus: string; at: string | null };
 
@@ -49,6 +55,9 @@ export function classifyCalendarVideo(video: CalendarSourceVideo, now: Date): Ca
   const base = { videoId: video.videoId, title: video.title, privacyStatus: video.privacyStatus };
   if (video.privacyStatus === "public" || video.privacyStatus === "unlisted") return { ...base, kind: "published", at: video.publishedAt };
   if (isScheduledVideo(video, now.getTime())) return { ...base, kind: "scheduled", at: video.publishAt };
-  if (video.publishAt && !Number.isNaN(Date.parse(video.publishAt))) return { ...base, kind: "overdue", at: video.publishAt };
+  if (video.publishAt && !Number.isNaN(Date.parse(video.publishAt))) {
+    const passedMs = now.getTime() - Date.parse(video.publishAt);
+    return { ...base, kind: passedMs < PUBLISH_PENDING_MS ? "published_pending" : "overdue", at: video.publishAt };
+  }
   return { ...base, kind: "unscheduled", at: null };
 }

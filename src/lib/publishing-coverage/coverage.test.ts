@@ -81,44 +81,67 @@ test("BL-235: a week of every case -- covered, missing translations, gaps, the z
   assert.deepEqual(report.summary, { covered: 3, missingTranslations: 2, gaps: 2, coveredDaysInARow: 1 });
 });
 
-test("BL-235: a video published that day covers it; overdue, live and undated videos never do", () => {
+test("BL-235: a public video covers its day; overdue, unlisted, live and undated videos never do", () => {
+  // Review item 4 (owner msg 3806: "a video scheduled to go out / uploaded" = a release viewers can see): an unlisted video is not
+  // a release, so it does not cover its day (BL-182's calendar still shows it as published; the coverage does not count it).
   const report = run(
     [
+      // Private, its date (11-04 11:00 Tokyo = 02:00Z) passed 25 h before now and the copy still shows it private -> overdue.
+      video("O1", { publishAt: "2026-11-04T02:00:00.000Z" }),
       // Public since 10:00 Tokyo on 11-05 -> covers 11-05 (published at its publish time).
       video("P1", { privacyStatus: "public", publishedAt: "2026-11-05T01:00:00.000Z" }),
-      // Private with a date that passed (11-05 11:00 Tokyo, before now) while the copy shows it not public -> overdue.
-      video("O1", { publishAt: "2026-11-05T02:00:00.000Z" }),
-      // Unlisted counts as published (the calendar's rule): 11-06 12:00 Tokyo.
+      // Unlisted on 11-06 12:00 Tokyo -> not a release: 11-06 stays a gap.
       video("U1", { privacyStatus: "unlisted", publishedAt: "2026-11-06T03:00:00.000Z" }),
       // An upcoming live broadcast scheduled for 11-07 is not a release.
       video("L1", { publishAt: "2026-11-07T03:00:00.000Z", liveBroadcastContent: "upcoming" }),
     ],
-    { days: 3 }
+    { fromDate: "2026-11-04", days: 4 }
   );
   assert.deepEqual(
-    report.days.map((d) => [d.date, d.status, d.videoIds]),
+    report.days.map((d) => [d.date, d.status, d.videoIds, d.videos.map((v) => [v.videoId, v.kind])]),
     [
-      ["2026-11-05", "covered", ["P1"]],
-      ["2026-11-06", "covered", ["U1"]],
-      ["2026-11-07", "gap", []],
-    ]
-  );
-  // The overdue video is shown on its day for information (in time order: P1 01:00Z, O1 02:00Z), but it is not one of the
-  // day's videoIds.
-  assert.deepEqual(
-    report.days[0].videos.map((v) => [v.videoId, v.kind]),
-    [
-      ["P1", "published"],
-      ["O1", "overdue"],
+      ["2026-11-04", "gap", [], [["O1", "overdue"]]],
+      ["2026-11-05", "covered", ["P1"], [["P1", "published"]]],
+      ["2026-11-06", "gap", [], [["U1", "unlisted"]]],
+      ["2026-11-07", "gap", [], []],
     ]
   );
 });
 
 test("BL-235: an overdue video alone leaves its day a gap", () => {
-  const report = run([video("O1", { publishAt: "2026-11-05T02:00:00.000Z" })], { days: 1 });
+  const report = run([video("O1", { publishAt: "2026-11-04T02:00:00.000Z" })], { fromDate: "2026-11-04", days: 1 });
   assert.equal(report.days[0].status, "gap");
   assert.deepEqual(report.days[0].videoIds, []);
   assert.deepEqual(report.summary, { covered: 0, missingTranslations: 0, gaps: 1, coveredDaysInARow: 0 });
+});
+
+// Review item 1: YouTube publishes a scheduled video at its publishAt, but the copy shows it only after the next sync (up to 6 h).
+// A video whose publishAt passed less than 24 h ago and that is still private in the copy is `published_pending` and covers its
+// day (translations still required); 24 h or more after, it is overdue. Zone UTC, release 2026-11-05 12:00Z.
+test("BL-235: release day -- 1 min and 23 h after the publish time the day is covered (pending), 25 h after it is a gap", () => {
+  const release = video("R1", { publishAt: "2026-11-05T12:00:00.000Z" });
+  const at = (now: string) => run([release], { timeZone: "UTC", fromDate: "2026-11-05", days: 1, now: new Date(now) }).days[0];
+  const oneMinute = at("2026-11-05T12:01:00.000Z");
+  assert.deepEqual([oneMinute.status, oneMinute.videoIds, oneMinute.videos[0].kind], ["covered", ["R1"], "published_pending"]);
+  const almostDay = at("2026-11-06T11:00:00.000Z");
+  assert.deepEqual([almostDay.status, almostDay.videos[0].kind], ["covered", "published_pending"]);
+  const dayAndHour = at("2026-11-06T13:00:00.000Z");
+  assert.deepEqual([dayAndHour.status, dayAndHour.videoIds, dayAndHour.videos[0].kind], ["gap", [], "overdue"]);
+});
+
+test("BL-235: a pending release still needs its translations", () => {
+  const day = run([video("R2", { publishAt: "2026-11-05T12:00:00.000Z", localizations: { de: FULL.de, ja: FULL.ja } })], {
+    timeZone: "UTC",
+    fromDate: "2026-11-05",
+    days: 1,
+    now: new Date("2026-11-05T12:01:00.000Z"),
+  }).days[0];
+  assert.deepEqual([day.status, day.missingLanguages], ["missing_translations", ["es"]]);
+});
+
+test("BL-235: the recording of a live broadcast the app ran is not a release", () => {
+  const report = run([video("LIVE1", { privacyStatus: "public", publishedAt: "2026-11-05T01:00:00.000Z" })], { days: 1, liveBroadcastIds: new Set(["LIVE1"]) });
+  assert.deepEqual([report.days[0].status, report.days[0].videos[0].kind], ["gap", "live_recording"]);
 });
 
 test("BL-235: the video's own language is never required", () => {

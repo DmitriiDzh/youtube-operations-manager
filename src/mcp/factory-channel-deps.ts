@@ -2,7 +2,7 @@ import { agentChannelBranding, createChannelBrandingAgentCore } from "@/lib/chan
 import { createPublishingPlansAgentCore } from "@/lib/publishing-plans";
 import { claimTranslationRequest, completeTranslationRequest, failTranslationRequest, listTranslationRequests, reportLocalizationChecks } from "@/lib/localization-review";
 import { publishingPlanProgress } from "@/lib/publishing-plan-progress";
-import { createChannelPublishingCoverage } from "@/composition/publishing-coverage";
+import { createChannelPublishingCoverage, invalidateChannelTimeZone } from "@/composition/publishing-coverage";
 import { createChannelLocalizationsOperatorCore, operatorChannelLocalizations } from "@/lib/channel-localizations";
 import { createGeminiMediaCore } from "@/lib/gemini-media";
 import { uploadBandwidthReport, uploadBandwidthStatus } from "@/lib/upload-bandwidth";
@@ -111,7 +111,13 @@ export function createFactoryChannelDeps(): FactoryChannelDeps {
     // BL-225 (ADR 0051): the weekly publishing plan -- the agents' surface of the module has no decision function, so nothing here
     // approves a slot or reaches YouTube; the save is synced to the other computers.
     publishingPlans: {
-      save: async (input, by = "factory") => ({ ...(await createPublishingPlansAgentCore(publishingPlanProgress).save(input, by)) }),
+      save: async (input, by = "factory") => {
+        const result = { ...(await createPublishingPlansAgentCore(publishingPlanProgress).save(input, by)) };
+        // BL-235: the plan's zone is the channel's coverage zone -- read it again on the next coverage read.
+        const channelId = (input as { channelId?: unknown } | null)?.channelId;
+        if (typeof channelId === "string") invalidateChannelTimeZone(channelId);
+        return result;
+      },
       get: async (input) => ({ ...(await createPublishingPlansAgentCore(publishingPlanProgress).get(input)) }),
       list: async (input) => ({ ...(await createPublishingPlansAgentCore(publishingPlanProgress).list(input)) }),
     },

@@ -64,7 +64,7 @@ import { createAutoPrivateUpload, type AutoUploadWaiting, type SlotDecision } fr
 import { estimateUploadUnits, isDeferredPublishAt } from "./publish-dates";
 import type { G1ProbeRecord } from "./contracts";
 import { agentUploadOf, createPublishingCalendarReads } from "./calendar-reads";
-import type { PublishingCoverageResult } from "@/lib/publishing-coverage";
+import type { CoveragePreRead, PublishingCoverageResult } from "@/lib/publishing-coverage";
 import { createG1Probe } from "./g1-probe";
 import { createPublishingSettingsService } from "./settings-service";
 
@@ -134,7 +134,7 @@ export function createG1ProbeCore(options: { announce?: (videoId: string) => voi
 
 /** BL-182 stage 1: the publishing calendar and the 7-day reminder, from the local copy only. */
 /** `dailyCoverage` (BL-235): the shared daily coverage with the channel's zone, given by the app layer (`src/composition`). */
-export function createPublishingCalendarCore(options: { dailyCoverage?: (channelId: string, days: number) => Promise<PublishingCoverageResult> } = {}) {
+export function createPublishingCalendarCore(options: { dailyCoverage?: (channelId: string, days: number, preRead: CoveragePreRead) => Promise<PublishingCoverageResult> } = {}) {
   const store = createChannelVideoStoreAdapter();
   return createPublishingCalendarReads({
     ...(options.dailyCoverage ? { dailyCoverage: options.dailyCoverage } : {}),
@@ -147,6 +147,10 @@ export function createPublishingCalendarCore(options: { dailyCoverage?: (channel
         publishAt: video.publishAt,
         liveBroadcastContent: video.liveBroadcastContent ?? null,
         syncedAtMs: video.lastSyncedAt.getTime(),
+        // BL-235: the language fields, so the daily coverage reuses these rows instead of reading them again.
+        description: video.description,
+        defaultLanguage: video.defaultLanguage,
+        localizations: video.existingLocalizations,
       }));
     },
     getChannel: (channelId) => store.getChannel(channelId),
