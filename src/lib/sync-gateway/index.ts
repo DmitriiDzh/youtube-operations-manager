@@ -134,6 +134,13 @@ export { createGeminiSpendSyncRunnerForProduction } from "./gemini-spend-sync";
 export { createGeminiSettingsCoreForProduction } from "./gemini-settings";
 export type { GeminiSettingsCore } from "./gemini-settings";
 export { createGeminiSettingsSyncRunnerForProduction } from "./gemini-settings-sync";
+// BL-236 (owner msg 3823): the ElevenLabs spend report and limits document, as Gemini's.
+export { createElevenlabsSpendShareCoreForProduction, ELEVENLABS_SPEND_REPORT_FORMAT, ELEVENLABS_SPEND_REPORT_VERSION, elevenlabsSpendReportSchema } from "./elevenlabs-spend";
+export type { ElevenlabsSpendReport, ElevenlabsSpendShareCore } from "./elevenlabs-spend";
+export { createElevenlabsSpendSyncRunnerForProduction } from "./elevenlabs-spend-sync";
+export { createElevenlabsSettingsCoreForProduction } from "./elevenlabs-settings";
+export type { ElevenlabsSettingsCore } from "./elevenlabs-settings";
+export { createElevenlabsSettingsSyncRunnerForProduction } from "./elevenlabs-settings-sync";
 // BL-184: a channel's storyboards (versions from the Operator, comments and decisions from the owner), one document per channel.
 export { createStoryboardsCoreForProduction } from "./storyboards";
 export type {

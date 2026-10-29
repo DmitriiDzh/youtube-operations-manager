@@ -24,7 +24,7 @@ type Status = {
   limits: Limits;
   outputFormat: string;
   outputFormats: string[];
-  usage: { todayChars: number; monthChars: number; activeJobs: number; monthUsd: number };
+  usage: { todayChars: number; monthChars: number; activeJobs: number; monthUsd: number; account?: { todayChars: number; monthChars: number; monthUsd: number; keyKnown: boolean; otherComputers: unknown[] } };
   subscription?: { tier?: string | null; characterCount?: number | null; characterLimit?: number | null; errorCode?: string } | null;
 };
 
@@ -292,9 +292,18 @@ function SpeechCard({ status, onChanged, onSubscription }: { status: Status; onC
         </select>
       </label>
       <p className="text-xs text-zinc-500">{t("speech.el.formatHint")}</p>
+      <p className="text-xs text-zinc-500">{t("speech.el.limits.shared")}</p>
+      {/* BL-236 (owner msg 3823): the totals of every computer on this key -- what the daily and monthly limits are checked against. */}
       <p className="text-sm text-zinc-300">
-        {t("speech.el.usage", { today: numbers.format(status.usage.todayChars), month: numbers.format(status.usage.monthChars), usd: `$${status.usage.monthUsd.toFixed(2)}` })}
+        {t("speech.el.usageAccount", {
+          today: numbers.format(status.usage.account?.todayChars ?? status.usage.todayChars),
+          month: numbers.format(status.usage.account?.monthChars ?? status.usage.monthChars),
+          usd: `$${(status.usage.account?.monthUsd ?? status.usage.monthUsd).toFixed(2)}`,
+        })}
       </p>
+      {(status.usage.account?.otherComputers.length ?? 0) > 0 && (
+        <p className="text-xs text-zinc-500">{t("speech.el.usageThisComputer", { today: numbers.format(status.usage.todayChars), month: numbers.format(status.usage.monthChars) })}</p>
+      )}
       {sub && sub.errorCode ? (
         <p className="text-xs text-amber-400">{t("speech.el.subscriptionUnavailable", { code: sub.errorCode })}</p>
       ) : sub && sub.characterLimit != null ? (

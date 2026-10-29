@@ -35,6 +35,7 @@ export const common = {
   "unit.minutes": "{value} min",
   "unit.seconds": "{value} s",
   "unit.gb": "{value} GB",
+  "unit.chars": "{value} characters",
 
   "duration.seconds": "{s}s",
   "duration.minutesSeconds": "{m} min {s}s",

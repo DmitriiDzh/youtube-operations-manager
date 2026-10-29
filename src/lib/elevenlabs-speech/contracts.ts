@@ -80,6 +80,19 @@ export const DEFAULT_ELEVENLABS_SETTINGS: ElevenlabsSettings = Object.freeze({
   outputFormat: "mp3_44100_128",
 });
 
+/** BL-236 (owner msg 3823): the settings every computer shares. The switch and the output format stay per computer. */
+export const ELEVENLABS_SHARED_LIMIT_FIELDS = ["maxCharsPerJob", "maxCharsPerDay", "maxCharsPerMonth", "maxActiveJobs"] as const satisfies readonly (keyof ElevenlabsSettings)[];
+export type ElevenlabsSharedLimitField = (typeof ELEVENLABS_SHARED_LIMIT_FIELDS)[number];
+
+/** BL-236: another computer on the SAME ElevenLabs key (same fingerprint), as its latest spend report shows it. */
+export type ElevenlabsPeerUsage = { deviceId: string; hostname: string | null; todayChars: number; monthChars: number; todayUsd: number; monthUsd: number; updatedAt: string; stale: boolean };
+
+/** BL-236: a peer's spend report as elevenlabs-speech reads it (the sync-gateway `elevenlabs-spend` report, structurally). */
+export type ElevenlabsPeerSpendReport = { deviceId: string; hostname: string | null; keyFingerprint: string | null; updatedAt: string; usedTodayChars: number; usedMonthChars: number; spentTodayUsd: number; spentMonthUsd: number };
+
+/** BL-236: every computer on this key -- what the per-day and per-month character limits are checked against. */
+export type ElevenlabsAccountUsage = { todayChars: number; monthChars: number; todayUsd: number; monthUsd: number; keyKnown: boolean; otherComputers: ElevenlabsPeerUsage[] };
+
 export const ELEVENLABS_JOB_STATUSES = ["queued", "submitting", "running", "done", "failed"] as const;
 export type ElevenlabsJobStatus = (typeof ELEVENLABS_JOB_STATUSES)[number];
 export const ELEVENLABS_ACTIVE_STATUSES: readonly ElevenlabsJobStatus[] = ["queued", "submitting", "running"];
@@ -139,6 +152,8 @@ export type ElevenlabsUsage = {
   /** The list-price USD of the same (an estimate; the subscription pays). */
   todayUsd: number;
   monthUsd: number;
+  /** BL-236 (owner msg 3823): this computer plus every other computer on the same key (from their spend reports). */
+  account: ElevenlabsAccountUsage;
 };
 
 export type ElevenlabsKeyView = { configured: boolean; keyHint: string | null; status: "ok" | "payment_required" | null; verifiedAt: string | null; updatedAt: string | null };

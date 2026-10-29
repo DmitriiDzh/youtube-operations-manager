@@ -11,6 +11,9 @@ import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-
 import { createElevenlabsApiClient, isMediaGatewayEnabled } from "@/lib/media-gateway";
 import { createVideoProjectsServiceForProduction } from "@/lib/video-projects";
 import { createVoiceResolverForProduction } from "@/lib/voice-registry";
+import { createElevenlabsSettingsCoreForProduction, createElevenlabsSpendShareCoreForProduction } from "@/lib/sync-gateway";
+import { changedSharedLimits, createElevenlabsSettingsSync, type ElevenlabsSharedValue } from "./settings-sync";
+import { createElevenlabsSpendSharePublisher } from "./spend-share";
 import { createExchangeFs, resolveFromYtmDir } from "@/lib/workspace-exchange";
 import { createElevenlabsStore } from "./adapters/store";
 import { DomainError } from "./contracts";
@@ -25,6 +28,10 @@ import { createElevenlabsWorker } from "./worker";
 export * from "./contracts";
 export { createElevenlabsSpeechServices, settingsFromJson, listPriceUsd, countedChars, type ElevenlabsSpeechDeps, type ElevenlabsStore, type ElevenlabsDesignedVoice } from "./services";
 export { createElevenlabsWorker } from "./worker";
+export { accountWideUsage, elevenlabsKeyFingerprint, ELEVENLABS_FINGERPRINT_LABEL, ELEVENLABS_PEER_STALE_AFTER_MS } from "./account";
+export { createElevenlabsSpendSharePublisher, ELEVENLABS_SPEND_REPUBLISH_MS } from "./spend-share";
+export { changedSharedLimits, createElevenlabsSettingsSync, planElevenlabsPeerApply, sharedLimitValues } from "./settings-sync";
+export type { ElevenlabsSettingsSyncStatus, ElevenlabsSettingsConflictView, ElevenlabsPendingSetting, ElevenlabsSharedValue } from "./settings-sync";
 
 const CORE_KEY = Symbol.for("youtube-operations-manager.elevenlabs-speech-core");
 
@@ -93,12 +100,71 @@ function buildDeps(): ElevenlabsSpeechDeps {
     clock: { now: () => new Date() },
     generateId: () => randomUUID(),
     withCreateLock: serialLock(),
+    // BL-236 (owner msg 3823): the other computers' ElevenLabs use, for the limits shared by every computer on one key.
+    peerSpendReports: () => createElevenlabsSpendShareCoreForProduction().listPeerReports(),
+    log: (line) => console.warn(line),
   };
+}
+
+function hostName(): string | null {
+  try {
+    return hostname().slice(0, 255) || null;
+  } catch {
+    return null;
+  }
 }
 
 function buildCore() {
   const deps = buildDeps();
-  return { ...createElevenlabsSpeechServices(deps), worker: createElevenlabsWorker(deps) };
+  const services = createElevenlabsSpeechServices(deps);
+
+  // -- BL-236 (owner msg 3823): the character limits shared with the other computers (sync-gateway `elevenlabs-settings`), exactly
+  // as the Gemini limits (ADR 0039).
+  const settingsSync = createElevenlabsSettingsSync({
+    shared: createElevenlabsSettingsCoreForProduction(),
+    getSettings: () => services.getSettings(),
+    applyUpdate: (patch) => services.updateSettings(patch),
+    clock: deps.clock,
+  });
+  /** An owner's save: validated and stored as before, then the limits it changed are shared (a failure to share never fails the save). */
+  const updateSettings = (input: unknown) =>
+    settingsSync.exclusive(async () => {
+      const before = await services.getSettings();
+      const after = await services.updateSettings(input);
+      const changed = changedSharedLimits(before, after);
+      if (Object.keys(changed).length > 0) {
+        await createElevenlabsSettingsCoreForProduction()
+          .publishChanged(changed as Record<string, ElevenlabsSharedValue>)
+          .catch((error: unknown) => console.warn(`[elevenlabs-settings] the change was saved here but not shared: ${error instanceof Error ? error.message : String(error)}`));
+      }
+      return after;
+    });
+  /** The owner picked one value of a conflicted limit: shared at once, applied here at once. */
+  const resolveSettingConflict = async (input: { field: string; value: ElevenlabsSharedValue }) => {
+    await settingsSync.exclusive(() => createElevenlabsSettingsCoreForProduction().resolveConflict(input));
+    return settingsSync.tick();
+  };
+
+  // -- BL-236: this computer's use for the other computers (sync-gateway `elevenlabs-spend`).
+  const publishSpendShare = createElevenlabsSpendSharePublisher({
+    localUsage: (at) => services.localUsage(at),
+    keyFingerprint: () => services.keyFingerprint(),
+    deviceId: async () => (await deps.device()).deviceId,
+    hostname: hostName,
+    publish: (report) => createElevenlabsSpendShareCoreForProduction().publishLocalReport(report),
+    now: () => deps.clock.now(),
+  });
+
+  return {
+    ...services,
+    updateSettings,
+    resolveSettingConflict,
+    syncSharedSettings: () => settingsSync.tick(),
+    getSettingsSyncStatus: () => settingsSync.status(),
+    peekSettingsSync: () => settingsSync.peek(),
+    publishSpendShare,
+    worker: createElevenlabsWorker(deps),
+  };
 }
 
 export type ElevenlabsSpeechCore = ReturnType<typeof buildCore>;

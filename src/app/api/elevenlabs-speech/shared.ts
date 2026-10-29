@@ -8,7 +8,7 @@ import { createElevenlabsSpeechCore, isDomainError, type ElevenlabsSpeechCore } 
 // output format and the usage. Every handler: Web session required (401), a thin call into the one core, DomainError -> status. No
 // route ever returns the key (only its last 4 characters). Never reachable from MCP.
 
-export type ElevenlabsRouteCore = Pick<ElevenlabsSpeechCore, "getKey" | "setKey" | "testKey" | "clearKey" | "getSettings" | "updateSettings" | "getStatus" | "getJobs">;
+export type ElevenlabsRouteCore = Pick<ElevenlabsSpeechCore, "getKey" | "setKey" | "testKey" | "clearKey" | "getSettings" | "updateSettings" | "getStatus" | "getJobs" | "getSettingsSyncStatus" | "peekSettingsSync" | "resolveSettingConflict">;
 
 export type ElevenlabsRouteDeps = {
   getSession: () => Promise<{ user?: { id?: string | null } } | null>;

@@ -15,5 +15,5 @@ Acceptance (Operator + owner): design "Sumire" in both providers, approve one pr
 with each, review blind in the plan review (`auditionFile: From YTM/<provider>/<jobId>/take-1.*`). First paid calls by the owner.
 
 Text per take: Gemini ≤ 2,500 characters (6-minute call), ElevenLabs ≤ 5,000 (4.5-minute call; owner's default limit 2,000) -- so
-one take always finishes inside its call. Known gaps: RISK-142 (ElevenLabs per computer, not in the shared jobs report), RISK-143 (unverified provider
+one take always finishes inside its call. Known gaps: RISK-142 (ElevenLabs takes not in the shared jobs list; its limits and spend are shared, owner msg 3823), RISK-143 (unverified provider
 fields), RISK-144 (Gemini voice lifetime and project limit).

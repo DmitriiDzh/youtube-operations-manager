@@ -36,6 +36,7 @@ export const common: Record<keyof typeof en, string> = {
   "unit.minutes": "{value} мин",
   "unit.seconds": "{value} с",
   "unit.gb": "{value} ГБ",
+  "unit.chars": "{value} симв.",
 
   "duration.seconds": "{s} с",
   "duration.minutesSeconds": "{m} мин {s} с",

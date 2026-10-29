@@ -1304,8 +1304,10 @@ A second agent role, separate from the channel agents. Technical contract only (
       gatewayEnabled, limits (the Gemini USD limits), spend, models [{ model, label, audioTokensPerSecond, usdPerMinute,
       usdPerMillionTokens, pricesChangeAt, usdPerMillionTokensAfterChange, maxTextChars }], defaultModel, sampleRateHz: 24000,
       outputFile }, elevenlabs: { units: characters, enabled, keyConfigured, keyHint, keyStatus, gatewayEnabled, limits {
-      maxCharsPerJob, maxCharsPerDay, maxCharsPerMonth, maxActiveJobs }, outputFormat, outputFormats, usage { todayChars, monthChars,
-      activeChars, activeJobs, todayUsd, monthUsd }, pricesAsOf, defaultModel, models [{ model, label, usdPer1kChars, maxChars }],
+      maxCharsPerJob, maxCharsPerDay, maxCharsPerMonth, maxActiveJobs } (shared by every computer, owner msg 3823), outputFormat (this
+      computer's), outputFormats, usage { todayChars, monthChars, activeChars, activeJobs, todayUsd, monthUsd (this computer), account {
+      todayChars, monthChars, todayUsd, monthUsd, keyKnown, otherComputers } (every computer on the same key: what day / month limits
+      check) }, pricesAsOf, defaultModel, models [{ model, label, usdPer1kChars, maxChars }],
       designModel } } }` (an unreadable provider: `{ available: false, errorCode }`).
     - **`factory_speech_create_job`** (WRITE, gated; `dryRun` is a read) `{ provider: gemini | elevenlabs, channelId, voice (name or
       voiceId of an APPROVED voice of this channel and provider), text, model?, style? (Gemini only), outputFormat? (ElevenLabs only),
@@ -1488,6 +1490,8 @@ Every route: a Web session (401) and the active channel (403); `DomainError` →
 
 ### Speech API (BL-236, ADR 0057)
 
+- `GET /api/elevenlabs-speech/settings-sync` (the shared limits on this computer: applied, held, conflicts) and `POST
+  /api/elevenlabs-speech/settings-sync/resolve` (`{ field, value }`: the owner's pick of a conflicted limit) -- as Gemini's.
 - `GET /api/elevenlabs-speech` (`?subscription=1` also reads the account's characters from ElevenLabs) → the ElevenLabs status +
   `jobs` (10 newest); `PUT` / `DELETE /api/elevenlabs-speech/key` (`{ apiKey }`, checked with ElevenLabs before it is stored; answers
   only the last 4 characters); `POST /api/elevenlabs-speech/key/test`; `PUT /api/elevenlabs-speech/settings` (`{ enabled?,

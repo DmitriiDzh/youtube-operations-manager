@@ -32,7 +32,8 @@ adult voices.
    category `elevenlabs_api`; key in `xi-api-key` to that origin only; no redirect). Key in the device-secret slot `elevenlabs`
    (last 4 shown). Switch off by default per computer: then no take or design is sent (the only calls left are the owner's free ones --
    checking a key, reading the account's characters on request, saving an approved voice). Limits per take / day / month in characters
-   plus active jobs; USD is a list-price estimate for spend views only.
+   plus active jobs, shared by every computer with the day / month summed over the computers on the same key (see Deviations); USD is a
+   list-price estimate for spend views only.
 7. **(Review fixes)** A design reserves its draft row (the name) BEFORE the paid call; a failed design archives it with the error,
    unwritten previews leave a draft with the error. One take must fit the call's timeout: Gemini ≤ 2,500 characters with a 6-minute
    long-wait call, ElevenLabs ≤ 5,000 characters with a 4.5-minute call (under fetch's 300 s header wait). A `pcm_*` ElevenLabs format
@@ -46,9 +47,14 @@ adult voices.
 
 ## Deviations from the approved design (documented)
 
-- **ElevenLabs limits and usage are per computer** — no Automerge settings/spend families for it in this branch (Gemini has them).
-  The account-wide truth is ElevenLabs' own character count, shown on the Settings card on demand (`GET /v1/user/subscription`).
-  Re-evaluate when ElevenLabs runs on two computers (TECHNICAL_DEBT RISK-142).
+- **ElevenLabs limits and spend are shared like Gemini's** (owner, Telegram 2026-10-29, msg 3823: «как у других API»): the four
+  character limits (per take, day, month, active jobs) live in their own Automerge document, sync family `elevenlabs_settings`
+  (`ytm-elevenlabs-settings`, the media-settings engine, ADR 0030's rules: a save publishes only what it changed, local values seed
+  the document, a value set differently on two computers is a conflict held until the owner picks one -- startup window / Merge, group
+  «Лимиты ElevenLabs»); the switch and the output format stay per computer. Each computer publishes its characters and list-price USD
+  for today and the month in a per-device report, family `elevenlabs_spend` (`ytm-elevenlabs-spend` v1), named by an HMAC fingerprint of
+  its key (`ytm/elevenlabs-key-fingerprint/v1`); the day and month limits are checked against the sum over the computers with the same
+  fingerprint (ADR 0039's rules). ElevenLabs' own character count stays on the Settings card on demand.
 - **ElevenLabs jobs are not in the shared media-jobs report** (its `source` enum is strict; widening it breaks older builds'
   parsing). Gemini speech jobs are there (as `audio`). RISK-142.
 - (Review item 3) **restart-when-idle waits for ElevenLabs takes and designs** too: a new reason `elevenlabs_job` (queued,

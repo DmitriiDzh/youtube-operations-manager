@@ -1269,6 +1269,10 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   `instrumentation.ts`), шлюз `media-gateway/elevenlabs-api.ts` (единственный путь к `api.elevenlabs.io`, категория `elevenlabs_api`);
   выключено по умолчанию, лимиты в символах; USD — оценка по прайсу. Без клонирования (`no-clone.test.ts`). Перезапуск по простою
   ждёт и задания ElevenLabs (`elevenlabs_job`). Один дубль: Gemini ≤ 2500 символов, ElevenLabs ≤ 5000 (укладывается в таймаут вызова).
+  Лимиты символов ElevenLabs общие для всех компьютеров (семья `elevenlabs_settings`, документ `ytm-elevenlabs-settings`, правила как у
+  лимитов Gemini, конфликты — группа «Лимиты ElevenLabs»; `/api/elevenlabs-speech/settings-sync`, `.../resolve`), расход суммируется по
+  компьютерам с тем же ключом (семья `elevenlabs_spend`, отчёт `ytm-elevenlabs-spend`, отпечаток `ytm/elevenlabs-key-fingerprint/v1`;
+  цикл 30 с в `instrumentation.ts`). Переключатель и формат файла — свои у каждого компьютера.
 - **MCP:** `factory_speech_*`, `factory_voice_*` (Factory API 1.40.0), `agent_speech_*`, `agent_voice_list` (Agent API 4.14.0).
 - **Web:** Настройки → Облачные API → ElevenLabs; Медиа → Музыка → «Голоса»; `/api/elevenlabs-speech*`, `/api/channels/[channelId]/voices*`.
 - **Риски:** RISK-142, RISK-143, RISK-144.

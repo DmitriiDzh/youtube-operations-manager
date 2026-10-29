@@ -2198,14 +2198,15 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
   shared report should show segments.
 - **Gate(s):** none. **Status:** open.
 
-## RISK-142 — ElevenLabs speech is per computer: limits, usage and the shared jobs report — OPEN, 2026-10-29
+## RISK-142 — ElevenLabs jobs are not in the shared media-jobs list — OPEN, 2026-10-29
 
-- **What:** BL-236 (ADR 0057). ElevenLabs' character limits and usage are this computer's (no shared settings/spend family as Gemini
-  has, ADR 0039); its jobs are not in the shared media-jobs report (the report's `source` enum is strict; widening it breaks older
-  builds). restart-when-idle waits for them (`elevenlabs_job`); `stop.sh`'s media-idle check does not.
-- **Bounds:** the switch is off by default per computer; the Settings card reads the account's own character count on demand; a take
-  cut by a hard stop is failed at its characters by the boot sweep and never re-sent; the owner's subscription caps the real spend.
-- **Re-evaluate:** when ElevenLabs is switched on on a second computer, or the shared report gains a new source version.
+- **What:** BL-236 (ADR 0057). The limits and the spend are shared since owner msg 3823 (families `elevenlabs_settings`,
+  `elevenlabs_spend`), but ElevenLabs takes are not in the shared media-jobs report: its `source` enum is strict, and an older build
+  would reject the whole report of a computer that sends a new source (losing that computer's RunPod and Gemini jobs too). So another
+  computer sees ElevenLabs spend (in the totals) but not the takes themselves. `stop.sh`'s media-idle check looks at Gemini only
+  (restart-when-idle waits for ElevenLabs, `elevenlabs_job`).
+- **Bounds:** each computer's own Settings card and `factory_speech_get_job` list its takes; the shared totals hold the limits.
+- **Re-evaluate:** when the media-jobs report gets a new version that every running build reads (then add `source: elevenlabs`).
 - **Gate(s):** none. **Status:** open.
 
 ## RISK-143 — The speech providers' request and answer fields are unverified — OPEN, 2026-10-29

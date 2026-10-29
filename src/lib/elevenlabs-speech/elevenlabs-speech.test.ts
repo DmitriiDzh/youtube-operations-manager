@@ -8,7 +8,9 @@ import { createDeviceSecrets, createMemoryDeviceSecretStore } from "@/lib/device
 import type { StoredElevenlabsSpeechJob } from "@/lib/db";
 import type { ElevenlabsSpeechRequest, ElevenlabsSpeechResult, ElevenlabsVoiceDesignResult } from "@/lib/media-gateway";
 import { DomainError, isDomainError } from "@/lib/shared-domain";
+import { elevenlabsKeyFingerprint } from "./account";
 import { charCount } from "./contracts";
+import { createElevenlabsSpendSharePublisher } from "./spend-share";
 import { createElevenlabsSpeechServices, type ElevenlabsSpeechDeps, type ElevenlabsStore } from "./services";
 import { createElevenlabsWorker } from "./worker";
 
@@ -57,7 +59,7 @@ function memoryStore(): ElevenlabsStore & { jobs: Map<string, StoredElevenlabsSp
   };
 }
 
-async function harness(options: { enabled?: boolean; withKey?: boolean; settings?: Record<string, unknown>; now?: Date } = {}) {
+async function harness(options: { enabled?: boolean; withKey?: boolean; settings?: Record<string, unknown>; now?: Date; peerSpendReports?: ElevenlabsSpeechDeps["peerSpendReports"] } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "elevenlabs-speech-"));
   const fromYtm = path.join(root, "From YTM");
   await mkdir(fromYtm, { recursive: true });
@@ -138,6 +140,7 @@ async function harness(options: { enabled?: boolean; withKey?: boolean; settings
     clock: { now: () => new Date(clock.at) },
     generateId: () => `id${++id}`,
     withCreateLock: async (run) => run(),
+    ...(options.peerSpendReports ? { peerSpendReports: options.peerSpendReports, log: () => undefined } : {}),
   };
   const services = createElevenlabsSpeechServices(deps);
   const worker = createElevenlabsWorker(deps);
@@ -385,4 +388,66 @@ test("review item 7: the boot sweep leaves a voice design whose call may still b
   } finally {
     await h.cleanup();
   }
+});
+
+// BL-236 (owner, Telegram 2026-10-29, msg 3823): the day and month character limits hold for every computer on the same ElevenLabs key.
+const peer = (deviceId: string, apiKey: string, at: Date, today: number, month: number) => ({
+  deviceId,
+  hostname: deviceId,
+  keyFingerprint: elevenlabsKeyFingerprint(apiKey),
+  updatedAt: at.toISOString(),
+  usedTodayChars: today,
+  usedMonthChars: month,
+  spentTodayUsd: 0,
+  spentMonthUsd: 0,
+});
+
+test("AC-EL-SH-04: another computer's characters on the same key count against the daily limit (200 there + 100 here > 250)", async () => {
+  const h = await harness({ settings: { maxCharsPerDay: 250, maxCharsPerMonth: 100_000 }, peerSpendReports: async () => [peer("pc", KEY, new Date(2026, 9, 29, 14), 200, 200)] });
+  try {
+    const details = await expectCode(h.services.createJob(take(), "factory"), "elevenlabs_limit_exceeded");
+    assert.deepEqual([details.limit, details.usedChars, details.otherComputersChars], ["per_day", 200, 200]);
+    const usage = await h.services.usage();
+    assert.deepEqual([usage.account.todayChars, usage.account.keyKnown, usage.account.otherComputers.length], [200, true, 1]);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("AC-EL-SH-05: the month sums too -- yesterday's 350 elsewhere + 100 here > 400 -- while the day is free", async () => {
+  const h = await harness({ settings: { maxCharsPerDay: 1_000, maxCharsPerMonth: 400 }, peerSpendReports: async () => [peer("pc", KEY, new Date(2026, 9, 28, 20), 50, 350)] });
+  try {
+    const details = await expectCode(h.services.createJob(take(), "factory"), "elevenlabs_limit_exceeded");
+    assert.deepEqual([details.limit, details.usedChars], ["per_month", 350]);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("AC-EL-SH-06: a computer on a different ElevenLabs key is not summed", async () => {
+  const h = await harness({ settings: { maxCharsPerDay: 250 }, peerSpendReports: async () => [peer("pc", "sk_other_account_key_000000000", new Date(2026, 9, 29, 14), 9_000, 9_000)] });
+  try {
+    const created = (await h.services.createJob(take(), "factory")) as { job: { jobId: string } };
+    assert.ok(created.job.jobId);
+    assert.equal((await h.services.usage()).account.todayChars, 100);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("AC-EL-SH-07: the spend report carries this computer's characters and the key's fingerprint (never the key)", async () => {
+  const published: unknown[] = [];
+  const publish = createElevenlabsSpendSharePublisher({
+    localUsage: async () => ({ todayChars: 120, monthChars: 900, todayUsd: 0.0096, monthUsd: 0.072 }),
+    keyFingerprint: async () => elevenlabsKeyFingerprint(KEY),
+    deviceId: async () => "mac",
+    hostname: () => "mac",
+    publish: async (report) => void published.push(report),
+    now: () => new Date("2026-10-29T12:00:00Z"),
+  });
+  assert.equal(await publish(), true);
+  assert.equal(await publish(), false, "nothing changed: not rewritten within 5 minutes");
+  const [report] = published as Array<Record<string, unknown>>;
+  assert.deepEqual([report.format, report.usedTodayChars, report.usedMonthChars, report.keyFingerprint], ["ytm-elevenlabs-spend", 120, 900, elevenlabsKeyFingerprint(KEY)]);
+  assert.equal(JSON.stringify(report).includes(KEY), false);
 });

@@ -28,6 +28,10 @@ export const production: Record<keyof typeof en, string> = {
   "geminiField.maxUsdPerDay": "Gemini: лимит расходов в день",
   "geminiField.maxUsdPerMonth": "Gemini: лимит расходов в месяц",
   "geminiField.maxActiveJobs": "Gemini: заданий в очереди или в работе одновременно",
+  "elevenlabsField.maxCharsPerJob": "ElevenLabs: символов на дубль",
+  "elevenlabsField.maxCharsPerDay": "ElevenLabs: дневной лимит символов",
+  "elevenlabsField.maxCharsPerMonth": "ElevenLabs: месячный лимит символов",
+  "elevenlabsField.maxActiveJobs": "ElevenLabs: дублей в очереди или в работе одновременно",
 
   "settingsSync.intro": "Эти настройки одинаковы на всех ваших компьютерах: изменение здесь доходит до остальных примерно за минуту (ключи RunPod остаются на каждом компьютере свои).",
   "settingsSync.fromOther": "С другого компьютера: {fields} ({time}).",

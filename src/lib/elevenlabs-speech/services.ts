@@ -30,7 +30,9 @@ import {
   type ElevenlabsSpeechParams,
   type ElevenlabsUsage,
   type ElevenlabsVoiceResolver,
+  type ElevenlabsPeerSpendReport,
 } from "./contracts";
+import { accountWideUsage, elevenlabsKeyFingerprint } from "./account";
 import { checkJobRules, createJobInputSchema, designVoiceInputSchema, getJobsInputSchema, parseWithSchema, setKeyInputSchema, updateSettingsInputSchema, type CreateJobInput } from "./schemas";
 
 // BL-236 (ADR 0057): the key, the owner's switch and character limits, the usage, job creation and reads, voice design and saving.
@@ -68,6 +70,9 @@ export type ElevenlabsSpeechDeps = {
   clock: { now(): Date };
   generateId(): string;
   withCreateLock<T>(run: () => Promise<T>): Promise<T>;
+  /** BL-236 (owner msg 3823): the other computers' latest ElevenLabs spend reports (absent: none known; a failed read counts 0). */
+  peerSpendReports?(): Promise<ElevenlabsPeerSpendReport[]>;
+  log?(line: string): void;
 };
 
 const round4 = (value: number) => Math.round(value * 10_000) / 10_000;
@@ -211,7 +216,52 @@ export function createElevenlabsSpeechServices(deps: ElevenlabsSpeechDeps) {
     }
   }
 
+  // BL-236 (owner msg 3823): the stored key's fingerprint, recomputed only when the stored key changes (its version).
+  let fingerprintCache: { version: string; value: string } | null = null;
+  /** The stored key's fingerprint, or null when no usable key is stored here (then nothing is shared or summed). Never throws. */
+  async function keyFingerprint(): Promise<string | null> {
+    try {
+      const info = await deps.secret.info();
+      if (!info) return null;
+      if (fingerprintCache && fingerprintCache.version === info.version) return fingerprintCache.value;
+      const read = await readApiKeyWithVersion();
+      if (!read) return null;
+      const value = elevenlabsKeyFingerprint(read.value);
+      fingerprintCache = { version: read.version, value };
+      return value;
+    } catch {
+      return null;
+    }
+  }
+
+  /** BL-236: this computer's use plus every other computer's on the same key (ADR 0039's rule); the others count 0 when unreadable. */
   async function usage(at: Date = now()): Promise<ElevenlabsUsage> {
+    const local = await localUsage(at);
+    const fingerprint = await keyFingerprint();
+    let others: ReturnType<typeof accountWideUsage> = { otherTodayChars: 0, otherMonthChars: 0, otherTodayUsd: 0, otherMonthUsd: 0, otherComputers: [] };
+    if (fingerprint && deps.peerSpendReports) {
+      try {
+        const [peers, device] = await Promise.all([deps.peerSpendReports(), deps.device()]);
+        others = accountWideUsage({ peers, ownDeviceId: device.deviceId, ownFingerprint: fingerprint, dayStart: startOfLocalDay(at), monthStart: startOfLocalMonth(at), now: at });
+      } catch (error) {
+        deps.log?.(`[elevenlabs-speech] other computers' ElevenLabs use unknown, counted as 0: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    return {
+      ...local,
+      account: {
+        todayChars: local.todayChars + others.otherTodayChars,
+        monthChars: local.monthChars + others.otherMonthChars,
+        todayUsd: round4(local.todayUsd + others.otherTodayUsd),
+        monthUsd: round4(local.monthUsd + others.otherMonthUsd),
+        keyKnown: fingerprint !== null,
+        otherComputers: others.otherComputers,
+      },
+    };
+  }
+
+  /** This computer's own use (what its spend report publishes for the others). */
+  async function localUsage(at: Date = now()): Promise<Omit<ElevenlabsUsage, "account">> {
     const dayStart = startOfLocalDay(at).getTime();
     const [thisMonth, active] = await Promise.all([
       deps.store.listJobs({ createdSince: startOfLocalMonth(at), limit: 100_000 }),
@@ -232,8 +282,14 @@ export function createElevenlabsSpeechServices(deps: ElevenlabsSpeechDeps) {
   function limitRefusal(settings: ElevenlabsSettings, current: ElevenlabsUsage, chars: number): ElevenlabsRefusal | null {
     const refuse = (limit: ElevenlabsLimitName, message: string, details: Record<string, unknown>): ElevenlabsRefusal => ({ code: "elevenlabs_limit_exceeded", message, details: { limit, ...details, chars } });
     if (chars > settings.maxCharsPerJob) return refuse("per_job", `The take is ${chars} characters, over the per-job limit of ${settings.maxCharsPerJob}.`, { limitChars: settings.maxCharsPerJob });
-    if (current.todayChars + chars > settings.maxCharsPerDay) return refuse("per_day", `${current.todayChars} characters used or reserved today + ${chars} is over the daily limit of ${settings.maxCharsPerDay}.`, { limitChars: settings.maxCharsPerDay, usedChars: current.todayChars });
-    if (current.monthChars + chars > settings.maxCharsPerMonth) return refuse("per_month", `${current.monthChars} characters used or reserved this month + ${chars} is over the monthly limit of ${settings.maxCharsPerMonth}.`, { limitChars: settings.maxCharsPerMonth, usedChars: current.monthChars });
+    // BL-236 (owner msg 3823): the daily and monthly limits hold for the key -- every computer on it -- not for this computer alone.
+    const today = current.account.todayChars;
+    const month = current.account.monthChars;
+    const otherToday = today - current.todayChars;
+    const otherMonth = month - current.monthChars;
+    const elsewhere = (n: number) => (n > 0 ? ` (${n} of them on your other computers)` : "");
+    if (today + chars > settings.maxCharsPerDay) return refuse("per_day", `${today} characters used or reserved today${elsewhere(otherToday)} + ${chars} is over the daily limit of ${settings.maxCharsPerDay}.`, { limitChars: settings.maxCharsPerDay, usedChars: today, ...(otherToday > 0 ? { otherComputersChars: otherToday } : {}) });
+    if (month + chars > settings.maxCharsPerMonth) return refuse("per_month", `${month} characters used or reserved this month${elsewhere(otherMonth)} + ${chars} is over the monthly limit of ${settings.maxCharsPerMonth}.`, { limitChars: settings.maxCharsPerMonth, usedChars: month, ...(otherMonth > 0 ? { otherComputersChars: otherMonth } : {}) });
     if (current.activeJobs + 1 > settings.maxActiveJobs) return refuse("active_jobs", `${current.activeJobs} ElevenLabs jobs are already queued or running (limit ${settings.maxActiveJobs}).`, { maxActiveJobs: settings.maxActiveJobs, activeJobs: current.activeJobs });
     return null;
   }
@@ -254,6 +310,8 @@ export function createElevenlabsSpeechServices(deps: ElevenlabsSpeechDeps) {
     readApiKey,
     getSettings,
     usage,
+    localUsage,
+    keyFingerprint,
 
     async getKey(): Promise<ElevenlabsKeyView> {
       return keyView();

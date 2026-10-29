@@ -504,6 +504,27 @@ async function startServerSession() {
   };
   setTimeout(() => void geminiShareLoop(), 45_000).unref();
 
+  // BL-236 (owner msg 3823, ADR 0057): the same for ElevenLabs -- this computer's characters for the other computers on the same key
+  // (`elevenlabs-spend`), and the shared character limits applied here (`elevenlabs-settings`). Its own loop (AGENTS.md §M).
+  const elevenlabsShareLoop = async () => {
+    if (!elevenlabs) return;
+    try {
+      await elevenlabs.publishSpendShare();
+    } catch (error) {
+      console.warn(`[elevenlabs-spend] the spend report was not published: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    try {
+      await assertDeviceAvailableForMutation(rawSqlClient);
+      const status = await elevenlabs.syncSharedSettings();
+      if (status.error) console.warn(`[elevenlabs-settings] ${status.error}`);
+    } catch (error) {
+      const paused = error instanceof Error && (error.name === "OperationLockError" || error.name === "RecoveryModeError");
+      if (!paused) console.warn(`[elevenlabs-settings] ${error instanceof Error ? error.message : String(error)}`);
+    }
+    setTimeout(() => void elevenlabsShareLoop(), GEMINI_SHARE_TICK_MS).unref();
+  };
+  setTimeout(() => void elevenlabsShareLoop(), 47_000).unref();
+
   // BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.1/§2.3): this computer's media jobs (RunPod and Gemini) for the other computers, and the
   // actions they sent for them (stage 2: applied here through the same services and limits as a local click), in its own
   // loop (AGENTS.md §M: a slow or broken jobs module never delays the others). The report file the sync-gateway `media-jobs`

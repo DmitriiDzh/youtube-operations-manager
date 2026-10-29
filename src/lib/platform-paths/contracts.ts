@@ -120,6 +120,12 @@ export type AppPaths = {
   geminiSettingsDocDir: string;
   geminiSettingsSyncFallbackDir: string;
   geminiSettingsDiscardedBackupsDir: string;
+  /** BL-236 (owner msg 3823): the ElevenLabs spend report and limits document, as Gemini's. */
+  elevenlabsSpendShareDir: string;
+  elevenlabsSpendSyncFallbackDir: string;
+  elevenlabsSettingsDocDir: string;
+  elevenlabsSettingsSyncFallbackDir: string;
+  elevenlabsSettingsDiscardedBackupsDir: string;
   /** BL-184: the per-channel storyboards documents (sync-gateway `storyboards`). */
   storyboardsDocDir: string;
   storyboardsSyncFallbackDir: string;
