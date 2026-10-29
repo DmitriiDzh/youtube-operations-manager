@@ -67,6 +67,7 @@ export function LiveStreamSourceSwitch({
   mode,
   hasStream,
   segmentsReady,
+  videosReady,
   onChanged,
 }: {
   base: string;
@@ -74,6 +75,8 @@ export function LiveStreamSourceSwitch({
   hasStream: boolean;
   /** A selected segment passed its check: only then can the stream be switched to segments (the server checks it too). */
   segmentsReady: boolean;
+  /** A rotation video passed its check (or has the owner's override): only then back to videos (the server checks it too). */
+  videosReady: boolean;
   onChanged: () => Promise<void>;
 }) {
   const t = useT();
@@ -98,7 +101,12 @@ export function LiveStreamSourceSwitch({
             role="radio"
             aria-checked={mode === option.mode}
             onClick={() => option.mode !== mode && setTarget(option.mode)}
-            disabled={busy || !hasStream || (option.mode === "segments" && mode !== "segments" && !segmentsReady)}
+            disabled={
+              busy ||
+              !hasStream ||
+              (option.mode === "segments" && mode !== "segments" && !segmentsReady) ||
+              (option.mode === "videos" && mode !== "videos" && !videosReady)
+            }
             className={`rounded-md px-3 py-1 text-xs ${mode === option.mode ? "bg-zinc-100 font-medium text-zinc-900" : "text-zinc-300 hover:bg-zinc-800"} disabled:opacity-50`}
           >
             {t(option.key)}
@@ -107,6 +115,7 @@ export function LiveStreamSourceSwitch({
       </div>
       {!hasStream && <p className="text-xs text-zinc-500">{t("live.source.needSettings")}</p>}
       {hasStream && mode === "videos" && !segmentsReady && <p className="text-xs text-zinc-500">{t("live.source.needSegments")}</p>}
+      {hasStream && mode === "segments" && !videosReady && <p className="text-xs text-zinc-500">{t("live.source.needVideos")}</p>}
       {busy && <LoadingIndicator className="text-xs text-zinc-400" />}
       <StatusNotice
         notice={error ? { tone: "error", text: error } : notice ? { tone: "ok", text: notice } : null}

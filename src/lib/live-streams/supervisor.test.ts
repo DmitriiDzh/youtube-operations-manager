@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DEFAULT_LIVE_STREAMS_SETTINGS, DomainError } from "./contracts";
-import { createStreamSupervisor, drawPassOrder, encoderBitrateFor, playablePass, type HelperStatus, type SupervisorDependencies, type SupervisorStream, type ViewerSample } from "./supervisor";
+import { createStreamSupervisor, drawPassOrder, noteSourceChanged, encoderBitrateFor, playablePass, type HelperStatus, type SupervisorDependencies, type SupervisorStream, type ViewerSample } from "./supervisor";
 
 // BL-176 acceptance for the server side of a running stream (LIVE_STREAMS_PLAN.md §3.1, §3.6–§3.8, §4.1 "Recovery";
 // ADR 0036 §4–5). Fakes stand in for files, processes, YouTube and the store.
@@ -683,4 +683,48 @@ test("BL-234: Start in segments mode with nothing playable is refused with the s
   };
   await assert.rejects(h.supervisor.startEncoder("UC1", { freshPass: true }), (error: unknown) => error instanceof DomainError && (error.details as { reason: string }).reason === "no_segments_selected");
   assert.deepEqual(h.spawned, []);
+});
+
+// Re-review of BL-234: the videos source answers an empty list (no error) for an empty or all-refused rotation -- e.g. after a switch
+// back to videos. On a running stream that must not become an empty next pass either: it is a refusal (replay, `source_refused` once).
+test("re-review: an empty rotation on a running stream never produces an empty next pass; the helper replays", async () => {
+  const h = harness();
+  await h.supervisor.startEncoder("UC1", { freshPass: true });
+  h.setPlayable([]);
+  for (let i = 0; i < 6; i++) {
+    h.status({ passVideoIds: [A, B, C], position: { index: 2, videoId: C, offset: 5 + i * 15 } });
+    await h.supervisor.tick("UC1");
+    assert.equal(h.stream().nextPassOrderJson, null);
+    assert.equal(JSON.parse(h.files.get("/appdata/live-streams/UC1/plan.json")!).nextPass, null);
+    h.advance(15_000);
+  }
+  assert.deepEqual(h.events.filter((e) => e.kind === "source_refused").map((e) => e.detail), [{ reason: "no_playable_videos" }]);
+});
+
+test("re-review: a source change (noteSourceChanged) ends the wait after a refusal -- the first draw in the new mode is not delayed", async () => {
+  const h = harness({ stream: { channelId: "UC-gen" } });
+  h.deps.streams.videos = async () => [...videoItems, ...segmentItems];
+  h.files.set("/appdata/live-streams/UC-gen/status.json", "");
+  await h.supervisor.startEncoder("UC-gen", { freshPass: true }).catch(() => undefined);
+  let answer: string[] = [];
+  let asked = 0;
+  h.deps.streams.recheck = async () => {
+    asked += 1;
+    return answer;
+  };
+  const tickAt = async (offset: number) => {
+    h.files.set(
+      "/appdata/live-streams/UC-gen/status.json",
+      JSON.stringify({ protocol: 1, token: "tok-1", pid: 500, state: "running", passNumber: 1, passVideoIds: [A, B, C], position: { index: 2, videoId: C, offset }, lastExit: null, progress: {}, updatedAt: NOW.getTime() })
+    );
+    await h.supervisor.tick("UC-gen");
+  };
+  await tickAt(5);
+  await tickAt(10);
+  assert.equal(asked, 1, "within a minute of the refusal the source is not asked again");
+  answer = [S2, S1];
+  noteSourceChanged("UC-gen");
+  await tickAt(15);
+  assert.equal(asked, 2, "asked at once after the change");
+  assert.equal(h.stream().nextPassOrderJson, JSON.stringify([S2, S1]));
 });

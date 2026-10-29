@@ -521,6 +521,7 @@ export const liveStreams = {
   "live.source.confirm": "Switch",
   "live.source.saved": "Saved. It applies from the next pass.",
   "live.library.title": "Segments",
+  "live.source.needVideos": "To switch back to published videos, first add at least one video that passes its check to the rotation (below).",
   "live.library.titlePreparing": "Segments (preparation)",
   "live.library.preparingHint": "The stream plays published videos now. Choose and order segments here; once one has passed its check you can switch the stream to segments above.",
   "live.source.needSegments": "To switch to segments, first add at least one segment that passes its check (Segments (preparation) below).",

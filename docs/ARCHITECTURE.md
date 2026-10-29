@@ -3954,7 +3954,9 @@ Plan: `docs/roadmap/plans/LIVE_STREAMS_PLAN.md` (FO-REQ-0019). Schema v86, Facto
     the last checks stand (`segment_library_unavailable`); none → `live_stream_video_refused` with `no_segments_selected` /
     `no_playable_segments` / the library's reason, never an empty pass. At the next-pass draw of a running stream any refusal draws
     nothing (the helper replays its pass), is an event once per change (`source_refused`) and is retried at most every 60 s
-    (`SOURCE_RETRY_MS`); the library's state is an event per change (`segment_library_unavailable` / `_available`).
+    (`SOURCE_RETRY_MS`; a mode switch or selection change ends the wait, `noteSourceChanged`); the library's state is an event per
+    change (`segment_library_unavailable` / `_available`). An empty videos answer on a running stream is a refusal too
+    (`no_playable_videos`); the switch back to videos needs a playable rotation video (`live_stream_no_ready_videos`, 409).
   - The owner's switch (`PUT .../live-stream/source`) drops the already drawn next pass, so it applies at the next pass (at the
     latest the one after) or at once with Restart / the next Start. Switching to segments is refused (`live_stream_no_ready_segments`,
     409) until a selected segment passed its check; the selection is prepared in videos mode («Сегменты (подготовка)»). In segments

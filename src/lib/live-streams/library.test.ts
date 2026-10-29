@@ -62,6 +62,7 @@ function harness(options: { names?: string[]; texts?: Record<string, string>; pr
   const events: Array<{ kind: string; detail: Record<string, unknown> }> = [];
   const updates: number[] = [];
   const locks = { count: 0 };
+  const rotation = { ready: true, sourceChanges: 0 };
   const states = new Map<string, string>();
   const stream = options.stream === false ? null : { sourceMode: null as string | null, nextPassCleared: 0, positionIndex: 0, positionOffsetSeconds: 0, passOrderJson: null };
   const deps: LibraryDependencies = {
@@ -134,8 +135,11 @@ function harness(options: { names?: string[]; texts?: Record<string, string>; pr
       return fn();
     },
     libraryState: { get: (channelId) => states.get(channelId) ?? null, set: (channelId, state) => void states.set(channelId, state) },
+    rotationReady: async () => rotation.ready,
+    sourceChanged: () => void (rotation.sourceChanges += 1),
   };
   return {
+    rotation,
     updates,
     locks,
     library: createSegmentLibrary(deps),
@@ -439,4 +443,23 @@ test("segmentSourceStatus: the current segment and its track by offset; minutes 
   assert.equal(videos.current, null);
   assert.equal(videos.library, null, "videos mode: the library is not looked at");
   assert.deepEqual(videos.selection, { segments: 0, playable: 0, minutes: 0 });
+});
+
+// Re-review of BL-234: switching back to videos is refused unless the rotation has a video that can play (an empty rotation would leave
+// the stream nothing to draw); a successful switch and a selection change tell the supervisor at once.
+test("re-review: switch to videos refused with an empty or unplayable rotation; switches and selection changes are signalled", async () => {
+  const h = harness();
+  await h.library.addSegments("UC1", { seqs: [1] });
+  await h.library.setSourceMode("UC1", { mode: "segments" });
+  const signalled = h.rotation.sourceChanges;
+  assert.ok(signalled >= 1, "the switch is signalled");
+  h.rotation.ready = false;
+  const refused = await refusal(h.library.setSourceMode("UC1", { mode: "videos" }));
+  assert.equal(refused.code, "live_stream_no_ready_videos");
+  assert.equal(h.stream?.sourceMode, "segments", "nothing switched");
+  await h.library.addSegments("UC1", { seqs: [2] });
+  assert.equal(h.rotation.sourceChanges, signalled + 1, "a selection change in segments mode is signalled");
+  h.rotation.ready = true;
+  assert.deepEqual(await h.library.setSourceMode("UC1", { mode: "videos" }), { mode: "videos", changed: true });
+  assert.equal(h.rotation.sourceChanges, signalled + 2);
 });

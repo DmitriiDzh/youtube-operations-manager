@@ -17,6 +17,7 @@ export const errors: Record<keyof typeof en, string> = {
   "errors.WRITE_CHANNEL_UNRESOLVED": "Не удалось определить активный канал для этого входа.",
   "errors.CHANNEL_NOT_ACTIVE": "Этот канал не активен. Сначала переключитесь на него.",
   "errors.live_stream_no_ready_segments": "Перед переключением на сегменты выберите хотя бы один сегмент, прошедший проверку.",
+  "errors.live_stream_no_ready_videos": "Перед переключением на опубликованные видео добавьте в ротацию хотя бы одно видео, прошедшее проверку.",
   "errors.change_not_approvable": "Это изменение нельзя одобрить.",
   "errors.batch_invalid_selection": "Выбор для пакета неверный.",
   "errors.batch_not_found": "Пакет не найден.",

@@ -47,7 +47,7 @@ import { createRotationPicker } from "./picker-service";
 import { streamReportEntry, type StreamReportEntry } from "./report";
 import { createLiveStreamsServices } from "./services";
 import { createLiveStreamsSettings, liveStreamsHost } from "./settings";
-import { createStreamSupervisor, isChannelLockBusy, withChannelLock, type HelperStatus } from "./supervisor";
+import { createStreamSupervisor, isChannelLockBusy, noteSourceChanged, withChannelLock, type HelperStatus } from "./supervisor";
 import { encoderReading, type EncoderReading } from "./encoder-load";
 import { createStreamVideoSettings } from "./video-settings";
 
@@ -103,6 +103,8 @@ export function createSegmentLibraryCore(): SegmentLibrary & { readPoster(channe
     event: async (channelId, kind, detail) => insertLiveStreamEvent({ id: randomUUID(), channelId, at: new Date(), kind, detailJson: JSON.stringify(detail) }),
     clock: () => new Date(),
     withLock: (channelId, fn) => withChannelLock(channelId, fn),
+    rotationReady: async (channelId) => (await listLiveStreamVideos(channelId)).some((v) => v.checkStatus === "ok" || Boolean(v.guardOverrideReason)),
+    sourceChanged: (channelId) => noteSourceChanged(channelId),
     libraryState: { get: (channelId) => libraryStates().get(channelId) ?? null, set: (channelId, state) => void libraryStates().set(channelId, state) },
   });
   return { ...library, readPoster: (channelId, seq) => files.readBytes(channelId, segmentFile(seq, "jpg"), 8 * 1024 * 1024) };

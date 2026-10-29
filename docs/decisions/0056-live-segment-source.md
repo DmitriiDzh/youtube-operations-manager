@@ -61,3 +61,11 @@ The first build let the owner switch to `segments` with an empty selection and d
 empty pass was never redrawn and blacked the stream out. Fixed: the selection is prepared in videos mode, the switch needs a ready
 segment, and no source refusal ever writes an empty next pass (decisions 1, 5, 6 above). The status lists the library only in segments
 mode (`library: null` in videos mode), at most every 30 s.
+
+## Amendment 2 (2026-10-29, re-review of BL-234)
+
+The way back is guarded the same way: switching to `videos` is refused (`live_stream_no_ready_videos`) unless a rotation video passed
+its check or has the owner's override. On a running stream an empty answer from the videos source (an empty or all-refused rotation) is
+a refusal too (`source_refused` with `no_playable_videos`, the helper replays) -- no source writes an empty next pass. A mode switch or
+a selection change ends the supervisor's minute of waiting after a refusal (`noteSourceChanged`). A stream that is not running keeps
+the old rule: Start refuses an empty rotation.

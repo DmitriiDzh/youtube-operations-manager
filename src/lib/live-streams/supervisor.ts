@@ -132,6 +132,20 @@ export const HELPER_STOP_GRACE_MS = 10_000;
 /** BL-234: after the source refused the next pass, it is asked again at most this often (a tick runs every 15 s). */
 export const SOURCE_RETRY_MS = 60_000;
 
+const SOURCE_GENERATION_KEY = Symbol.for("ytom.liveStreams.sourceGeneration");
+function sourceGenerations(): Map<string, number> {
+  const g = globalThis as typeof globalThis & { [SOURCE_GENERATION_KEY]?: Map<string, number> };
+  return (g[SOURCE_GENERATION_KEY] ??= new Map());
+}
+const sourceGeneration = (channelId: string) => sourceGenerations().get(channelId) ?? 0;
+/**
+ * BL-234 (re-review): the stream's source changed -- the owner switched the mode or edited the selection. A refusal remembered before
+ * it no longer delays the next draw (process-wide: the routes and the background loop build separate supervisors).
+ */
+export function noteSourceChanged(channelId: string): void {
+  sourceGenerations().set(channelId, sourceGeneration(channelId) + 1);
+}
+
 const LOCKS_KEY = Symbol.for("ytom.liveStreams.channelLocks");
 type GlobalWithLocks = typeof globalThis & { [LOCKS_KEY]?: Map<string, Promise<unknown>> };
 
@@ -228,7 +242,7 @@ export function createStreamSupervisor(deps: SupervisorDependencies) {
   const youtubeFile = (channelId: string) => path.join(dirOf(channelId), "youtube.json");
   const lastMissing = new Map<string, string | null>();
   /** BL-234: the last reason the source refused the next pass, per stream (recorded once per change), and when it was asked. */
-  const lastRefusal = new Map<string, { reason: string; at: number }>();
+  const lastRefusal = new Map<string, { reason: string; at: number; generation: number }>();
 
   async function readStatus(channelId: string) {
     return parseJson<HelperStatus>(await deps.files.read(statusFile(channelId)));
@@ -478,18 +492,28 @@ export function createStreamSupervisor(deps: SupervisorDependencies) {
           // `no_segments_selected` included (independent review, item 1c: an empty next pass blacked the stream out for good) --
           // draws nothing: the helper replays its pass, and a later tick draws again once the source can play. The reason goes into
           // the history once per change; after a refusal the source is asked again at most every SOURCE_RETRY_MS (review item 2).
+          // Re-review: an empty answer from the videos source (an empty or all-refused rotation) is a refusal too on a running stream,
+          // and a mode switch or a selection change (`noteSourceChanged`) ends the wait at once.
+          const generation = sourceGeneration(channelId);
           const refusal = lastRefusal.get(channelId);
           const now = deps.clock().getTime();
           let playable: string[] | null = null;
-          if (!refusal || now - refusal.at >= SOURCE_RETRY_MS) {
+          if (!refusal || refusal.generation !== generation || now - refusal.at >= SOURCE_RETRY_MS) {
+            let reason: string | null = null;
             try {
               playable = await deps.streams.recheck(channelId);
-              lastRefusal.delete(channelId);
+              if (playable.length === 0) {
+                playable = null;
+                reason = "no_playable_videos";
+              }
             } catch (error) {
               if (!(error instanceof DomainError) || error.code !== "live_stream_video_refused") throw error;
-              const reason = String((error.details as { reason?: unknown } | undefined)?.reason ?? "unknown");
+              reason = String((error.details as { reason?: unknown } | undefined)?.reason ?? "unknown");
+            }
+            if (reason === null) lastRefusal.delete(channelId);
+            else {
               if (refusal?.reason !== reason) await deps.streams.event(channelId, "source_refused", { reason });
-              lastRefusal.set(channelId, { reason, at: now });
+              lastRefusal.set(channelId, { reason, at: now, generation });
             }
           }
           if (playable === null) return { running: true as const, status, buffer: { order, index: Math.min(status.position.index, Math.max(0, order.length - 1)), nextFirst: null } };

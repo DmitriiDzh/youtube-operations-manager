@@ -253,6 +253,7 @@ export function LiveStreamPanel({ channelId, visible }: { channelId: string | nu
               mode={overview.sourceMode ?? "videos"}
               hasStream={overview.stream !== null}
               segmentsReady={(overview.segmentSelection ?? []).some((s) => s.check.status === "ok")}
+              videosReady={overview.rotation.some((v) => v.check.status === "ok" || v.override !== null)}
               onChanged={load}
             />
             {(overview.sourceMode ?? "videos") === "segments" ? (

@@ -179,6 +179,10 @@ export type LibraryDependencies = {
   withLock<T>(channelId: string, fn: () => Promise<T>): Promise<T>;
   /** The library's last known state per stream, kept across calls, so `segment_library_unavailable` is one event per change. */
   libraryState: { get(channelId: string): string | null; set(channelId: string, state: string): void };
+  /** Whether the rotation has a video that can play (its last check passed or the owner overrode the guard): the switch back to videos. */
+  rotationReady(channelId: string): Promise<boolean>;
+  /** The source changed (mode or selection): the supervisor's wait after a refusal ends (`noteSourceChanged`). */
+  sourceChanged(channelId: string): void;
 };
 
 const SIDECAR_MAX_BYTES = 1024 * 1024;
@@ -267,7 +271,10 @@ export function createSegmentLibrary(deps: LibraryDependencies) {
   /** Review item 1d: in segments mode a selection change drops the next pass already drawn, so it applies at the next pass. */
   async function changedSelection(channelId: string): Promise<void> {
     const stream = await deps.store.getStream(channelId);
-    if (sourceModeOf(stream) === "segments") await deps.withLock(channelId, () => deps.store.clearNextPass(channelId));
+    if (sourceModeOf(stream) === "segments") {
+      await deps.withLock(channelId, () => deps.store.clearNextPass(channelId));
+      deps.sourceChanged(channelId);
+    }
   }
 
   /** The selection's rows; refused when the channel has no stream row yet (its settings were never saved). */
@@ -320,7 +327,16 @@ export function createSegmentLibrary(deps: LibraryDependencies) {
           details: { channelId },
         });
       }
+      // Re-review: nor back to videos without a rotation video that can play.
+      if (mode === "videos" && !(await deps.rotationReady(channelId))) {
+        throw new DomainError({
+          code: "live_stream_no_ready_videos",
+          message: "Add at least one video that passed its check to the rotation before switching the stream to published videos",
+          details: { channelId },
+        });
+      }
       await deps.withLock(channelId, () => deps.store.setSourceMode(channelId, mode));
+      deps.sourceChanged(channelId);
       await deps.event(channelId, "source_mode_changed", { from: previous, to: mode });
       return { mode, changed: true };
     },
