@@ -1,6 +1,6 @@
 // BL-237 (owner, Telegram 2026-10-30, msgs 3864-3866): a cap on Next.js's build cache. Turbopack's cache
 // (.next/cache/turbopack) only grows -- it reached 16 GB on the Mac. Before a build, when `.next/cache` is larger than the
-// limit (5 GB, or YTOM_NEXT_CACHE_LIMIT_GB), `.next/cache/turbopack` is removed: the next build is slower once and the
+// limit (5 GB, or YTOM_NEXT_CACHE_LIMIT_GB) and turbopack alone is over half of it, `.next/cache/turbopack` is removed: the next build is slower once and the
 // cache starts again. Nothing else in `.next` is touched. Called by `npm run build`'s prebuild step, so every build on every
 // computer (the Mac's build-if-stale.sh, Windows start.bat/update.bat, a developer's build) gets it. Plain Node, no shell.
 //
@@ -43,7 +43,9 @@ export async function folderBytes(dir) {
 }
 
 /**
- * Trims `<root>/.next/cache`: over `limitBytes` -> `.next/cache/turbopack` is removed. Returns what it measured and did.
+ * Trims `<root>/.next/cache`: over `limitBytes` -> `.next/cache/turbopack` is removed, but only when turbopack is what fills
+ * it (over half the limit by itself); otherwise removing it would not bring the cache under the limit and every build would
+ * start cold for nothing, so it is kept and the log says what fills the cache. Returns what it measured and did.
  * `dryRun` measures only.
  * @param {{ root: string; limitBytes: number; dryRun?: boolean; log?: (line: string) => void }} options
  */
@@ -56,12 +58,17 @@ export async function trimNextCache({ root, limitBytes, dryRun = false, log = ()
     log(`[next-cache] .next/cache is ${gb(bytes)} GB (limit ${gb(limitBytes)} GB): kept`);
     return { bytes, limitBytes, removed: false };
   }
+  const turbopackBytes = await folderBytes(turbopackDir);
+  if (turbopackBytes <= limitBytes / 2) {
+    log(`[next-cache] .next/cache is ${gb(bytes)} GB, over the ${gb(limitBytes)} GB limit, but .next/cache/turbopack is only ${gb(turbopackBytes)} GB: kept (something else fills the cache)`);
+    return { bytes, limitBytes, removed: false };
+  }
   if (dryRun) {
-    log(`[next-cache] .next/cache is ${gb(bytes)} GB, over the ${gb(limitBytes)} GB limit (check only: nothing removed)`);
+    log(`[next-cache] .next/cache is ${gb(bytes)} GB (turbopack ${gb(turbopackBytes)} GB), over the ${gb(limitBytes)} GB limit (check only: nothing removed)`);
     return { bytes, limitBytes, removed: false };
   }
   await rm(turbopackDir, { recursive: true, force: true });
-  log(`[next-cache] .next/cache was ${gb(bytes)} GB, over the ${gb(limitBytes)} GB limit: removed .next/cache/turbopack (the next build rebuilds it)`);
+  log(`[next-cache] .next/cache was ${gb(bytes)} GB (turbopack ${gb(turbopackBytes)} GB), over the ${gb(limitBytes)} GB limit: removed .next/cache/turbopack (the next build rebuilds it)`);
   return { bytes, limitBytes, removed: true };
 }
 

@@ -47,6 +47,16 @@ test("at or under the limit nothing is removed (the limit counts the whole .next
     assert.deepEqual((await readdir(path.join(root, ".next", "cache"))).sort(), ["images", "turbopack"]);
   }));
 
+test("over the limit but turbopack is small: nothing is removed (removing it would not get under the limit)", () =>
+  withTempDir("next-cache-", async (root) => {
+    await fakeNextFolder(root, 900, 3000);
+    const lines: string[] = [];
+    const result = await trimNextCache({ root, limitBytes: 2000, log: (line: string) => lines.push(line) });
+    assert.equal(result.removed, false);
+    assert.deepEqual((await readdir(path.join(root, ".next", "cache"))).sort(), ["images", "turbopack"]);
+    assert.match(lines[0], /turbopack is only/);
+  }));
+
 test("a check run measures only, even over the limit", () =>
   withTempDir("next-cache-", async (root) => {
     await fakeNextFolder(root, 3000, 0);
