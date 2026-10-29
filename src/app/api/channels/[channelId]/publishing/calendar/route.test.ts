@@ -16,7 +16,7 @@ function deps(reads: string[]): PublishingCalendarDeps {
     },
     getCalendar: async ({ channelId }) => {
       reads.push(channelId);
-      return { channelId, lastSyncedAt: null, entries: [], coverage: { coveredThrough: null, scheduledCount: 0, unscheduledCount: 0, daysCovered: 0, due: true, thresholdDays: 7 } };
+      return { channelId, lastSyncedAt: null, entries: [], coverage: { coveredThrough: null, scheduledCount: 0, unscheduledCount: 0, daysCovered: 0, due: true, thresholdDays: 7 }, dayCoverage: null };
     },
   };
 }

@@ -3,6 +3,8 @@ import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { createPublishingPlansOwnerCore, type PublishingPlansOwnerSurface } from "@/lib/publishing-plans";
+import { weekPublishingCoverage } from "@/composition/publishing-coverage";
+import type { PublishingCoverageResult } from "@/lib/publishing-coverage";
 import { publishingPlanProgress } from "@/lib/publishing-plan-progress";
 import { DomainError } from "@/lib/shared-domain";
 import { getVideoMetadataErrorStatus } from "../../../video-metadata/error-status";
@@ -16,6 +18,11 @@ export type PublishingPlanRouteDeps = {
   getSession: () => Promise<{ user?: { id?: string | null } } | null>;
   assertActiveChannel: (args: { userId: string; channelId: string }) => Promise<void>;
   service: () => PublishingPlansOwnerSurface;
+  /**
+   * BL-235 (owner msgs 3806/3807): what YouTube shows for the plan's week -- each day covered / missing translations / gap, from the
+   * shared coverage in the plan's zone. Shown next to the approvals; decides nothing. Absent or failing: `coverage: null`.
+   */
+  coverage?: (channelId: string, weekStart: string, timeZone: string) => Promise<PublishingCoverageResult>;
 };
 
 const defaultDeps = (): PublishingPlanRouteDeps => ({
@@ -25,6 +32,7 @@ const defaultDeps = (): PublishingPlanRouteDeps => ({
   },
   // BL-225 stage 2: the slots' package progress from the publishing scan (the composition module; §M).
   service: () => createPublishingPlansOwnerCore(publishingPlanProgress),
+  coverage: weekPublishingCoverage,
 });
 
 function errorResponse(error: unknown) {
@@ -56,9 +64,13 @@ export function createPublishingPlanRouteHandlers(deps: PublishingPlanRouteDeps 
     /** The channel's plans, newest week first, and how many slots wait for the owner (the tab's badge). */
     list: (_request: Request, context: Params<Base>) => guarded(context, async ({ channelId }) => NextResponse.json(await deps.service().ownerList(channelId))),
 
-    /** One plan with every slot. */
+    /** One plan with every slot, and (BL-235) the week's coverage on YouTube -- null when it could not be read. */
     detail: (_request: Request, context: Params<Base & { weekStart: string }>) =>
-      guarded(context, async ({ channelId, weekStart }) => NextResponse.json(await deps.service().ownerGet(channelId, weekStart))),
+      guarded(context, async ({ channelId, weekStart }) => {
+        const { plan } = await deps.service().ownerGet(channelId, weekStart);
+        const coverage = deps.coverage ? await deps.coverage(channelId, weekStart, plan.timeZone).catch(() => null) : null;
+        return NextResponse.json({ plan, coverage });
+      }),
 
     /** POST `{ action: approve | revoke | veto | restore, slots: [{ slotId, contentHash? }] }`. */
     decide: (request: Request, context: Params<Base & { weekStart: string }>) =>

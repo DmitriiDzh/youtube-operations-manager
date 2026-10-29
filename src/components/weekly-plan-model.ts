@@ -133,3 +133,23 @@ export function changedField(slot: Pick<PlanSlotDto, "date" | "publishAt" | "len
 export function lengthLabel(seconds: number): { unit: "h" | "min"; value: number } {
   return seconds >= 3600 ? { unit: "h", value: Math.round(seconds / 3600) } : { unit: "min", value: Math.max(1, Math.round(seconds / 60)) };
 }
+
+/** BL-235: the week's coverage on YouTube as the route gives it (the shared publishing coverage, the plan's zone). */
+export type WeekCoverageDto = {
+  asOf: string | null;
+  days: Array<{ date: string; status: "covered" | "missing_translations" | "gap"; missingLanguages: string[] }>;
+  summary: { covered: number; missingTranslations: number; gaps: number };
+};
+
+/**
+ * BL-235 (owner msg 3806): the line «Закрыто 4 из 7 · без видео: … · без переводов: …» -- the days without a video and the days
+ * whose video lacks translations (with the languages), in date order. Pure: the panel formats the dates.
+ */
+export function weekCoverageLine(coverage: WeekCoverageDto): { covered: number; total: number; gaps: string[]; missing: Array<{ date: string; languages: string[] }> } {
+  return {
+    covered: coverage.summary.covered,
+    total: coverage.days.length,
+    gaps: coverage.days.filter((day) => day.status === "gap").map((day) => day.date),
+    missing: coverage.days.filter((day) => day.status === "missing_translations").map((day) => ({ date: day.date, languages: day.missingLanguages })),
+  };
+}

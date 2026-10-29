@@ -29,7 +29,10 @@ test("classification: public = published at its publish time; private + future p
     at: "2026-10-12T12:00:00Z",
   });
   assert.equal(classifyCalendarVideo(v({ videoId: "b", publishAt: "2026-10-14T12:00:00Z" }), NOW)?.kind, "scheduled");
-  assert.equal(classifyCalendarVideo(v({ videoId: "c", publishAt: "2026-10-13T10:00:00Z" }), NOW)?.kind, "overdue");
+  // BL-235 review item 1 (a requirement change): a date passed less than 24 h ago is the publication YouTube made and the copy
+  // has not synced yet (`published_pending`); 24 h or more is overdue.
+  assert.equal(classifyCalendarVideo(v({ videoId: "c", publishAt: "2026-10-13T10:00:00Z" }), NOW)?.kind, "published_pending");
+  assert.equal(classifyCalendarVideo(v({ videoId: "c2", publishAt: "2026-10-12T11:00:00Z" }), NOW)?.kind, "overdue");
   assert.equal(classifyCalendarVideo(v({ videoId: "d" }), NOW)?.kind, "unscheduled");
   assert.equal(classifyCalendarVideo(v({ videoId: "e", privacyStatus: "unlisted" }), NOW)?.kind, "published");
 });

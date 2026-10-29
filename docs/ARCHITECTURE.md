@@ -4152,7 +4152,8 @@ Plan: `docs/roadmap/plans/PUBLISHING_PLAN.md`. Owner: msgs 2698, 2702 and 2707.
   - YouTube has no "scheduled" status: a scheduled video is a non-public video with a future `publishAt`.
   - Each video is one of: published (public or unlisted), scheduled, overdue (the date has passed but the copy is not public yet)
     or unscheduled (private without a date). Live broadcasts are left out.
-  - The coverage is the latest future `publishAt`. The reminder is due when that is less than 7 days away, or when there is none.
+  - The coverage is the latest future `publishAt`. The reminder is due when that is less than 7 days away, or when there is none. Since BL-235 the routes wire the daily coverage and the reminder is "fewer than 7 covered days in a row" (§47.6); this rule
+    remains only as the fallback when that read fails.
   - The shared rule `isScheduledVideo` (`shared-formatting`) also drives «Видео».
   - Rows the latest channel sync did not return are left out (`currentRows`: row sync time older than the channel's). The sync
     never deletes rows, so a video deleted in Studio would otherwise keep the channel "covered".
@@ -4191,6 +4192,37 @@ Plan: `docs/roadmap/plans/PUBLISHING_PLAN.md`. Owner: msgs 2698, 2702 and 2707.
   - A new time within the margin is refused as `publish_at_too_soon` (en/ru text).
 - **`agent_get_publishing_calendar`** (READ; Agent API 3.16.0, Producer API 1.7.0): a ±14-day window in UTC days, plus the undated
   uploads, the coverage and the gap dates. Agents get no upload or schedule tool.
+
+### 47.6 One publishing coverage (BL-235, owner msgs 3806/3807)
+
+- **Why.** The calendar (gaps by any published/scheduled video), «План недели» (approvals) and the factory's own plan file disagreed
+  about what is "done". The owner's rule: a publishing day is covered when a video is uploaded, scheduled for that day (or already
+  published that day) AND has all its translations -- computed from the YouTube data YT Manager already syncs.
+- **Shared module `src/lib/publishing-coverage/`** (§M: imports no feature module). `rules.ts` holds the per-video calendar rule
+  (moved from `publishing/calendar.ts`, re-exported there): published / scheduled / overdue / unscheduled, live left out, stale rows
+  (`currentRows`). `coverage.ts` (pure): per day of the range (YYYY-MM-DD in the channel's zone, `zoned-time`; days advanced on the
+  date itself, so DST never shifts them) `covered` | `missing_translations` | `gap`. Required translations = the shared
+  `missingTrackedLanguages` (moved from `localization/services.ts` to `shared-language-baseline`): tracked languages minus the
+  video's own language, read against the channel's language, non-empty title and (where the original has one) description. Overdue
+  never covers; a private video whose `publishAt` passed less than 24 h ago is `published_pending` and does (YouTube published it,
+  the copy learns it at the next sync -- so a release day is no false gap). Only releases viewers see count: unlisted videos and the
+  recordings of the app's own live broadcasts (`listAppBroadcastIds`, a port given by the composition) do not. A day with several
+  videos is covered if one qualifies; its `missingLanguages` are the most complete video's.
+  `index.ts`: input `{ channelId, days 1..30 (7), fromDate? }`, `asOf` = the channel's `lastSyncedAt`; `not_found` for a channel
+  never synced here.
+- **Zone.** `src/composition/publishing-coverage.ts`: the zone of the channel's newest weekly plan (the plans are kept in the
+  channel's time); no plan, an invalid zone or a failed read: the owner's zone (`analytics_sync_timezone`), else UTC; the result
+  names its source. Cached per channel for 5 min (the alerts poll every channel each minute), dropped when the Operator or a worker
+  saves that channel's plan here. The calendar and the alerts hand the rows they read to the coverage (`CoveragePreRead`): one read.
+- **Users.** The calendar route and the alerts route pass `dailyCoverage` to `createPublishingCalendarCore`: the reminder
+  (`coverage.due`, the badge, the bell) is "fewer than 7 covered days in a row from today", `coverage.coveredDaysInARow` is added and
+  `dayCoverage` (14 days) drives the grid -- cells are the channel's days, its times are the channel's, gaps and the yellow
+  "missing translations" days (tooltip with the languages) come from it. A failing coverage read leaves the older rule (§M). The
+  plan route returns `{ plan, coverage }` (the plan's week in its zone) for the line «Закрыто N из 7 · без видео · без переводов»;
+  approvals are untouched. MCP: `factory_publishing_coverage` and the worker's `agent_publishing_coverage` (channel-pinned);
+  `agent_get_publishing_calendar` gets the same `due`, and its `gapDates` / `missingTranslationDates` come from the coverage (channel
+  dates). In the calendar the cells, hover texts, «covered through» and the overdue list use the channel's time; it opens on the
+  channel's today; packages sit on their planned date as a day.
 
 ### 47.3 Stage 2 — publishing defaults, release packages, upload and schedule
 

@@ -1,5 +1,6 @@
 import type { StoredPublishingUpload } from "@/lib/db";
-import { buildPublishingCalendar, currentRows, PUBLISHING_REMINDER_DAYS, type CalendarEntry, type CalendarSourceVideo, type PublishingCoverage } from "./calendar";
+import type { CoveragePreRead, CoverageSourceVideo, PublishingCoverageResult } from "@/lib/publishing-coverage";
+import { buildPublishingCalendar, currentRows, PUBLISHING_REMINDER_DAYS, type CalendarEntry, type PublishingCoverage } from "./calendar";
 
 // BL-182 stage 1: the calendar and the reminder read from the local copy of the channel's videos -- never a YouTube call. The data
 // age (`lastSyncedAt`) always comes with them, so a stale copy is never shown as current (FO-REQ-0023 §4 C3, D4).
@@ -9,6 +10,11 @@ export type PublishingCalendarResult = {
   lastSyncedAt: string | null;
   entries: CalendarEntry[];
   coverage: PublishingCoverage;
+  /**
+   * BL-235: the next 14 days in the channel's time zone, each covered / missing_translations / gap (the shared coverage); null
+   * when it was not wired or its read failed -- the calendar then keeps its own gaps.
+   */
+  dayCoverage: PublishingCoverageResult | null;
 };
 
 export type PublishingAlert = { channelId: string; lastSyncedAt: string | null } & PublishingCoverage;
@@ -23,8 +29,16 @@ export type AgentPublishingCalendar = {
   entries: CalendarEntry[];
   /** Private videos without a date (any upload date). */
   unscheduled: CalendarEntry[];
-  /** UTC dates from today through the next 13 days with no published or scheduled video. */
+  /**
+   * Today and the next 13 days that are not covered. With the daily coverage (BL-235, Agent API 4.13.0): dates in the channel's
+   * zone (`gapDatesTimeZone`) whose status is not `covered` (no release, or a release missing translations); without it: UTC
+   * dates with no published, scheduled or pending video.
+   */
   gapDates: string[];
+  /** BL-235: those of `gapDates` that have a release missing translations; null without the daily coverage. */
+  missingTranslationDates: string[] | null;
+  /** The zone `gapDates` are dates in: the channel's, or "UTC" without the daily coverage. */
+  gapDatesTimeZone: string;
   /** BL-182 stage 2 (FO-REQ-0023 §4 C4): the release packages in this computer's copy of the workspace, and this computer's uploads. */
   packages: AgentPackages;
   uploads: AgentUpload[];
@@ -75,24 +89,49 @@ export function agentUploadOf(
 }
 
 export type PublishingCalendarDeps = {
-  listVideos(channelId: string): Promise<CalendarSourceVideo[]>;
+  /** The channel's rows; with their language fields (BL-235) the daily coverage reuses them. */
+  listVideos(channelId: string): Promise<CoverageSourceVideo[]>;
   /** Fails closed unless `channelId` is the caller's active channel (AGENTS.md §F); used by the agent read only. */
   assertActiveChannel?(args: { userId: string | null; channelId: string }): Promise<void>;
   getChannel(channelId: string): Promise<{ lastSyncedAt: Date | null } | null>;
   clock: { now(): Date };
   thresholdDays?: number;
+  /**
+   * BL-235: the shared daily coverage (`@/lib/publishing-coverage`, with the channel's zone); absent = the older reminder rule. It
+   * gets the rows and the sync time already read here (review item 2: read once).
+   */
+  dailyCoverage?(channelId: string, days: number, preRead: CoveragePreRead): Promise<PublishingCoverageResult>;
   /** BL-182 stage 2: the agent read's packages and uploads (absent: none listed). */
   packages?(channelId: string): Promise<AgentPackages>;
   uploads?(channelId: string): Promise<AgentUpload[]>;
 };
 
+/** The calendar's gap window: today and the next 13 days (FO-REQ-0023 §4 C1). */
+const CALENDAR_GAP_DAYS = 14;
+
 export function createPublishingCalendarReads(deps: PublishingCalendarDeps) {
   const threshold = deps.thresholdDays ?? PUBLISHING_REMINDER_DAYS;
+  /** The daily coverage, or null when not wired or failed: a broken coverage never takes the calendar down (AGENTS.md §M). */
+  async function readDailyCoverage(channelId: string, days: number, preRead: CoveragePreRead): Promise<PublishingCoverageResult | null> {
+    if (!deps.dailyCoverage) return null;
+    try {
+      return await deps.dailyCoverage(channelId, days, preRead);
+    } catch {
+      return null;
+    }
+  }
+  /** BL-235 (owner msg 3806): with the daily coverage, the reminder is "fewer than `threshold` covered days in a row from today". */
+  function withDailyDue(coverage: PublishingCoverage, daily: PublishingCoverageResult | null): PublishingCoverage {
+    if (!daily) return coverage;
+    const inARow = daily.summary.coveredDaysInARow;
+    return { ...coverage, due: inARow < threshold, coveredDaysInARow: inARow };
+  }
   return {
     async getCalendar(input: { channelId: string }): Promise<PublishingCalendarResult> {
       const [videos, channel] = await Promise.all([deps.listVideos(input.channelId), deps.getChannel(input.channelId)]);
+      const dayCoverage = await readDailyCoverage(input.channelId, Math.max(threshold, CALENDAR_GAP_DAYS), { channel, videos });
       const { entries, coverage } = buildPublishingCalendar(currentRows(videos, channel?.lastSyncedAt?.getTime() ?? null), deps.clock.now(), threshold);
-      return { channelId: input.channelId, lastSyncedAt: channel?.lastSyncedAt?.toISOString() ?? null, entries, coverage };
+      return { channelId: input.channelId, lastSyncedAt: channel?.lastSyncedAt?.toISOString() ?? null, entries, coverage: withDailyDue(coverage, dayCoverage), dayCoverage };
     },
     /**
      * BL-182 stage 1 (FO-REQ-0023 §4 C4): the read-only calendar for agents and the Producer -- the past and the next 14 days, the
@@ -106,17 +145,28 @@ export function createPublishingCalendarReads(deps: PublishingCalendarDeps) {
       if (!deps.assertActiveChannel) throw new Error("The publishing calendar read needs the active-channel check.");
       await deps.assertActiveChannel({ userId, channelId: input.channelId });
       const now = deps.clock.now();
-      const { channelId, lastSyncedAt, entries, coverage } = await this.getCalendar({ channelId: input.channelId });
+      const { channelId, lastSyncedAt, entries, coverage, dayCoverage } = await this.getCalendar({ channelId: input.channelId });
       const dayMs = 86_400_000;
       const todayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
       const fromMs = todayUtc - 14 * dayMs;
       const toMs = todayUtc + 15 * dayMs; // through the end of the 14th day ahead
       const dated = entries.filter((entry) => entry.at !== null && Date.parse(entry.at) >= fromMs && Date.parse(entry.at) < toMs);
-      const filledDays = new Set(dated.filter((entry) => entry.kind === "published" || entry.kind === "scheduled").map((entry) => (entry.at as string).slice(0, 10)));
-      const gapDates: string[] = [];
-      for (let offset = 0; offset < 14; offset += 1) {
-        const day = new Date(todayUtc + offset * dayMs).toISOString().slice(0, 10);
-        if (!filledDays.has(day)) gapDates.push(day);
+      // BL-235 review item 3: with the daily coverage, the gaps are its days that are not covered (the channel's dates, the
+      // translation check included) -- one answer with `coverage.due`; without it, UTC days without a release (the older rule).
+      let gapDates: string[];
+      let missingTranslationDates: string[] | null = null;
+      if (dayCoverage) {
+        gapDates = dayCoverage.days.filter((day) => day.status !== "covered").map((day) => day.date);
+        missingTranslationDates = dayCoverage.days.filter((day) => day.status === "missing_translations").map((day) => day.date);
+      } else {
+        const filledDays = new Set(
+          dated.filter((entry) => entry.kind === "published" || entry.kind === "scheduled" || entry.kind === "published_pending").map((entry) => (entry.at as string).slice(0, 10))
+        );
+        gapDates = [];
+        for (let offset = 0; offset < 14; offset += 1) {
+          const day = new Date(todayUtc + offset * dayMs).toISOString().slice(0, 10);
+          if (!filledDays.has(day)) gapDates.push(day);
+        }
       }
       return {
         channelId,
@@ -126,6 +176,8 @@ export function createPublishingCalendarReads(deps: PublishingCalendarDeps) {
         entries: dated,
         unscheduled: entries.filter((entry) => entry.kind === "unscheduled"),
         gapDates,
+        missingTranslationDates,
+        gapDatesTimeZone: dayCoverage ? dayCoverage.timeZone : "UTC",
         packages: deps.packages ? await deps.packages(channelId).catch((): AgentPackages => ({ status: "unavailable" })) : { status: "unavailable" },
         uploads: deps.uploads ? await deps.uploads(channelId) : [],
       };
@@ -135,8 +187,10 @@ export function createPublishingCalendarReads(deps: PublishingCalendarDeps) {
     async getAlert(input: { channelId: string }): Promise<PublishingAlert | null> {
       const channel = await deps.getChannel(input.channelId);
       if (!channel?.lastSyncedAt) return null;
-      const { coverage } = buildPublishingCalendar(currentRows(await deps.listVideos(input.channelId), channel.lastSyncedAt.getTime()), deps.clock.now(), threshold);
-      return { channelId: input.channelId, lastSyncedAt: channel.lastSyncedAt.toISOString(), ...coverage };
+      const videos = await deps.listVideos(input.channelId);
+      const daily = await readDailyCoverage(input.channelId, threshold, { channel, videos });
+      const { coverage } = buildPublishingCalendar(currentRows(videos, channel.lastSyncedAt.getTime()), deps.clock.now(), threshold);
+      return { channelId: input.channelId, lastSyncedAt: channel.lastSyncedAt.toISOString(), ...withDailyDue(coverage, daily) };
     },
   };
 }

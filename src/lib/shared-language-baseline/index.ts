@@ -85,3 +85,27 @@ export function baselineValueStillHolds(
   }
   return false;
 }
+
+/**
+ * BL-178 part C (§3.3 C2), moved here from `localization/services.ts` in BL-235 so the publishing coverage uses the same rule
+ * (AGENTS.md §M): the tracked languages a video lacks, read against the channel's language -- no entry, an empty title, or an
+ * empty description where the original has one. The original's own language is never "missing": the channel's language for an
+ * aligned or ambiguous reading, else the video's own default language (the channel's when it has none). Sorted.
+ */
+export function missingTrackedLanguages(video: VideoLanguageView, trackedLanguages: readonly string[], channelBaseline: string | null): string[] {
+  const reading = readAgainstBaseline(video, channelBaseline);
+  // Measured against the channel's language (plan §3.3 C2): an ambiguous video's own label is a recognition error too -- its
+  // original is the baseline's; its entries are kept as they are (one of them may be a real translation). Review item 7.
+  const original = reading.kind === "as_is" ? (video.defaultLanguage ?? channelBaseline) : reading.to;
+  const localizations = reading.kind === "aligned" ? reading.view.localizations : video.localizations;
+  const originalHasDescription = video.description.trim() !== "";
+  return trackedLanguages
+    .filter((language) => !sameLanguage(language, original))
+    .filter((language) => {
+      const key = Object.keys(localizations).find((k) => sameLanguage(k, language));
+      if (!key) return true;
+      const entry = localizations[key];
+      return entry.title.trim() === "" || (originalHasDescription && entry.description.trim() === "");
+    })
+    .sort();
+}

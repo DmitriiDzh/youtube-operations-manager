@@ -38,7 +38,8 @@ async function files(dir: string): Promise<string[]> {
 }
 
 /** Tools whose names match but only read: the publishing calendar, and the analytics milestones of published uploads (BL-166). */
-const KNOWN_READS = new Set(["agent_get_publishing_calendar", "producer_upload_milestones"]);
+/** BL-235 (owner msgs 3806/3807, a new requirement): `agent_publishing_coverage` reads which days are covered -- it writes nothing. */
+const KNOWN_READS = new Set(["agent_get_publishing_calendar", "producer_upload_milestones", "agent_publishing_coverage"]);
 /**
  * BL-225 (FO-REQ-0040, ADR 0051 §6 -- a new requirement, not a relaxation of this one): a channel worker drafts its weekly
  * publishing plan. The draft neither uploads nor schedules anything: only the owner's approval of a slot in the Web UI does, and

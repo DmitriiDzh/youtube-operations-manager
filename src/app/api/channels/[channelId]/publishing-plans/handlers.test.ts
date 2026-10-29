@@ -59,3 +59,28 @@ test("AC-WP-12: the module's refusals keep their codes: a stale hash is 409, an 
   const missing = make({ refuse: new DomainError({ code: "publishing_plan_not_found", message: "none" }) });
   assert.equal((await missing.handlers.detail(new Request("http://x/"), ctx({ channelId: "UC_active", weekStart: "2026-11-02" }))).status, 404);
 });
+
+// BL-235 (owner msgs 3806/3807): one plan comes with its week's coverage on YouTube (the plan's week and zone); the plan's own
+// answer is unchanged, and a failing coverage read leaves `coverage: null` instead of failing the plan.
+test("BL-235: the plan's week coverage is read for weekStart in the plan's zone and returned next to the plan", async () => {
+  const asked: unknown[] = [];
+  const deps: PublishingPlanRouteDeps = {
+    getSession: async () => ({ user: { id: "u1" } }),
+    assertActiveChannel: async () => undefined,
+    service: () => ({
+      ownerList: async () => ({ plans: [], waiting: 0 }),
+      ownerGet: async () => ({ plan: { weekStart: "2026-11-02", timeZone: "Asia/Tokyo" } as never }),
+      decide: async () => ({ plan: {} as never, decided: [] }),
+    }),
+    coverage: async (...args) => {
+      asked.push(args);
+      return { summary: { covered: 4 } } as never;
+    },
+  };
+  const res = await createPublishingPlanRouteHandlers(deps).detail(new Request("http://x/"), ctx({ channelId: "UC_active", weekStart: "2026-11-02" }));
+  assert.deepEqual(await res.json(), { plan: { weekStart: "2026-11-02", timeZone: "Asia/Tokyo" }, coverage: { summary: { covered: 4 } } });
+  assert.deepEqual(asked, [["UC_active", "2026-11-02", "Asia/Tokyo"]]);
+  const failing = await createPublishingPlanRouteHandlers({ ...deps, coverage: async () => Promise.reject(new Error("down")) }).detail(new Request("http://x/"), ctx({ channelId: "UC_active", weekStart: "2026-11-02" }));
+  assert.equal(failing.status, 200);
+  assert.equal((await failing.json()).coverage, null);
+});
