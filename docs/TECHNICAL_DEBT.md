@@ -2157,3 +2157,14 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Re-evaluate:** when the registry gets signed releases, when a channel folder is shared with anyone outside the owner's agents,
   or when the server runs as a different user than the agents.
 - **Gate(s):** none. **Status:** open.
+
+## RISK-139 — A language move does not rename a live stream's stored translations — OPEN, 2026-10-29
+
+- **What:** BL-232. `proposeLanguageMove` moves `zh-Hans` → `zh-CN` on the videos (Change Set + Batch). The live-localizations
+  writer (`src/lib/live-localizations/`, ADR 0045) writes a broadcast's video from its own stored set
+  (`live_streams.localizations_json`), which the move does not touch: a later live apply of a set that still holds `zh-Hans`
+  adds `zh-Hans` back (it keeps other languages, so `zh-CN` stays and the video carries both).
+- **Bounds:** the live writer only adds/updates languages of its stored set, never deletes; the owner or the worker re-saves the
+  stream's set with `zh-CN` (`agent_live_save_localizations`) before the next live apply.
+- **Re-evaluate:** if a live stream's video is in a move, or when the live set gets a rename of its own.
+- **Gate(s):** none. **Status:** open.

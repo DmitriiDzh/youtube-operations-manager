@@ -450,6 +450,15 @@ Key MCP tools:
     defaultAudioLanguage }]`: synced videos whose language fields differ from the baseline, case-insensitive; a Batch aligns
     such a video's `defaultLanguage` when it writes it, PROJECT_SPEC §14). `get_change_set` (Web and MCP) also returns
     `languageAlignments` `[{ videoId, from, to }]`.
+  - BL-232 (2026-10-29, Agent API 4.10.0, additive): `agent_localization_propose_language_move` (DRAFT) -- input
+    `{ channelId, fromLanguage, toLanguage, videoIds? }` (strict; `toLanguage` from YouTube's supported list, `fromLanguage` ≠
+    `toLanguage` case-insensitively). Creates one draft source `deletion` Change Set on the caller's own channel: per video with
+    `fromLanguage`, a `delete` pair for it and an `add` pair for `toLanguage` carrying the synced text byte-for-byte. Output
+    `{ changeSet | null, fromLanguage, toLanguage, movedVideoIds, targetAlreadyPresent: [{ videoId, from, to }],
+    skippedOwnLanguageVideoIds, skippedEmptyTextVideoIds }`. A video that already has `toLanguage` keeps it (only `fromLanguage` is
+    deleted). Never approves or writes; the owner approves and sends. The Web UI equivalent is `POST
+    /api/channels/[channelId]/localizations/languages/[language]/propose-move` (`{ toLanguage }`). New error code
+    `send_unpaired_language_move` (409): a send (or a manual Batches selection) that would carry a move's delete without its add.
   - BL-229 part B (2026-10-27, Agent API 4.9.0, additive): `agent_plan_create` / `_import` / `_update` take the plan's
     `reviewForm` and the waves' `genre` / `reviewForm`, and `owner_verdict` events (`agent_plan_get`) carry `answers`, as the
     `factory_plan_*` tools (Factory API 1.35.0; contract in `docs/roadmap/plans/MUSIC_LIBRARY_PLAN.md` §3).
