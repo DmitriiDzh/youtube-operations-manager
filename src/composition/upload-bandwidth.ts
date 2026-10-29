@@ -1,15 +1,15 @@
-import { createUploadBandwidthGovernor, registerUploadBandwidthGovernor, type UploadBandwidthEvent, type UploadBandwidthGovernor, type UploadLiveLoad } from "@/lib/publishing";
+import { createUploadBandwidthGovernor, registerUploadBandwidthGovernor, type LiveLoad, type UploadBandwidthEvent, type UploadBandwidthGovernor } from "@/lib/upload-bandwidth";
 
 /**
  * BL-233 (FO-REQ-0047, AGENTS.md §M): the upload's share of this computer's uplink while live streams run here, composed at the
- * app layer -- publishing and live-streams import each other nowhere. The governor reads the streams' settings and encoders
- * through live-streams' own reader (local files and settings only) and notes each hold and release in the starving stream's
- * history and the server log. One governor per process, registered for the readers (the Operator's status, the Web UI).
- * live-streams failing to load (or switched off) leaves uploads unlimited.
+ * app layer from the shared `upload-bandwidth` module -- publishing and live-streams import each other nowhere. The governor
+ * reads the streams' settings and encoders through live-streams' own reader (local files and settings only) and notes each hold
+ * and release in the starving stream's history and the server log. One governor per process, registered for the readers (the
+ * Operator's status, the Web UI). Live streams switched off: unlimited; a failed read keeps the last state (unlimited if none).
  */
 export function createUploadBandwidth(): UploadBandwidthGovernor {
   const governor = createUploadBandwidthGovernor({
-    async load(): Promise<UploadLiveLoad> {
+    async load(): Promise<LiveLoad> {
       const { readLiveUploadLoad } = await import("@/lib/live-streams");
       const load = await readLiveUploadLoad();
       return {

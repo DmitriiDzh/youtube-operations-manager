@@ -6,6 +6,7 @@ import { formatDisplayDateTime, formatDisplayDateUtc } from "@/lib/shared-format
 import { errorText, type UiTextKey } from "@/lib/ui-text";
 import { ConfirmDialog } from "./confirm-dialog";
 import { useT } from "./ui-text-provider";
+import { UploadBandwidthNote } from "./upload-bandwidth-note";
 import { useUtcLocalHint } from "./utc-time-field";
 
 type UploadRow = {
@@ -145,6 +146,8 @@ export function PublishingUploads({ channelId, visible, refreshKey }: { channelI
   return (
     <div className="space-y-2">
       <h4 className="text-sm font-medium text-zinc-200">{t("publishingUploads.title")}</h4>
+      {/* BL-233: limited or paused while a live stream runs on this computer. */}
+      <UploadBandwidthNote />
       {error && <p className="text-xs text-red-400">{error}</p>}
       <ul className="divide-y divide-zinc-800 rounded-lg border border-zinc-800">
         {rows.map((row) => {

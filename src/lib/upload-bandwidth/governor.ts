@@ -13,8 +13,8 @@
 // average since its run began: hours into a run it barely moves when the link starves, and never climbs back to 0.99 after.
 // ffmpeg's figure is used only until a minute of samples is there.
 //
-// Pure and clock-injected: the live streams are read by a function the app layer plugs in (AGENTS.md §M -- publishing imports no
-// live-streams code); absent, uploads are never limited.
+// Pure and clock-injected: the live streams are read by a function the app layer plugs in (AGENTS.md §M -- this module, publishing
+// and live-streams import one another nowhere); without it uploads are never limited.
 // ---------------------------------------------------------------------------
 
 export const STARVING_BELOW_SPEED = 0.97;
@@ -306,4 +306,36 @@ export function uploadBandwidthStatus(now: number = Date.now()): (UploadBandwidt
   const state = governor.state();
   // The runner asks before every chunk and every 5 s while held: an ask within the last 30 s means an upload is under way.
   return { ...state, uploadActive: state.lastAskedAt !== null && now - state.lastAskedAt < 30_000 };
+}
+
+/** BL-233: the upload's limit as the Operator and the Web UI see it (codes and numbers only). */
+export type UploadBandwidthReport = {
+  /** An upload on this computer is being sent or held now. */
+  active: boolean;
+  /** What applies to an upload now: none (no stream on, or limit 0), limited (at capMbps), held (no new chunk: a stream starves). */
+  limit: "none" | "limited" | "held";
+  capMbps: number;
+  guardMinutes: number;
+  heldSince: string | null;
+  heldForChannelId: string | null;
+  /** The last hold that ended at the 30-minute ceiling (not held again until the streams recover). */
+  ceilingReleasedAt: string | null;
+  /** The speed each stream is judged by, over the last minute (only while an upload is under way). */
+  speeds: Record<string, number | null>;
+};
+
+const iso = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString());
+
+export function uploadBandwidthReport(state: (UploadBandwidthState & { uploadActive: boolean }) | null): UploadBandwidthReport | null {
+  if (!state) return null;
+  return {
+    active: state.uploadActive,
+    limit: state.mode === "held" ? "held" : state.mode === "capped" ? "limited" : "none",
+    capMbps: state.capMbps,
+    guardMinutes: state.guardMinutes,
+    heldSince: iso(state.heldSince),
+    heldForChannelId: state.heldForChannelId,
+    ceilingReleasedAt: iso(state.ceilingReleasedAt),
+    speeds: state.uploadActive ? Object.fromEntries(Object.entries(state.speeds).map(([id, v]) => [id, v === null ? null : Math.round(v * 1000) / 1000])) : {},
+  };
 }

@@ -17,6 +17,7 @@ import { LiveStreamAnalyticsCard } from "./live-stream-analytics";
 import { LoadingIndicator } from "./operation-progress";
 import { ToggleSwitch } from "./toggle-switch";
 import { useT } from "./ui-text-provider";
+import { UploadBandwidthNote } from "./upload-bandwidth-note";
 
 // BL-176 (docs/roadmap/plans/LIVE_STREAMS_PLAN.md §3.9/§3.10/§3.12): Content → «Трансляции» for the active channel. Top to
 // bottom in the order the owner works: what the stream is doing now and its buttons; the texts the next Start sends; the
@@ -24,7 +25,8 @@ import { useT } from "./ui-text-provider";
 // and each opens a dialog first that shows exactly what will be sent (the dry run). Everything else here is local.
 
 type Privacy = "public" | "unlisted" | "private";
-type Settings = { title: string; description: string; privacyStatus: Privacy; madeForKids: boolean; orderMode: "sequence" | "shuffle" };
+/** `bitrateKbps` (BL-233): the stream's own encoder bitrate; null = this computer's setting. */
+type Settings = { title: string; description: string; privacyStatus: Privacy; madeForKids: boolean; orderMode: "sequence" | "shuffle"; bitrateKbps: number | null };
 type RotationVideo = {
   videoId: string;
   title: string | null;
@@ -41,7 +43,7 @@ type HelperStatus = {
   passVideoIds?: string[];
   position: { index: number; videoId: string | null; offset: number };
   lastExit: { at: number; cause: string; code: number | null } | null;
-  progress: { bitrate?: string | null };
+  progress: { bitrate?: string | null; speed?: string | null };
   missingVideoId?: string | null;
   updatedAt: number;
 };
@@ -94,7 +96,7 @@ type VideoApplyResult = { broadcastId: string; ok: boolean; steps: VideoApplySte
 
 type StreamState = "off" | "ended_by_youtube" | "starting" | "live" | "replaying" | "no_source" | "reconnecting";
 
-const EMPTY_SETTINGS: Settings = { title: "", description: "", privacyStatus: "unlisted", madeForKids: false, orderMode: "sequence" };
+const EMPTY_SETTINGS: Settings = { title: "", description: "", privacyStatus: "unlisted", madeForKids: false, orderMode: "sequence", bitrateKbps: null };
 const POLL_MS = 15_000;
 const cardClass = "space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4";
 const inputClass = "rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm text-zinc-100 disabled:opacity-50";
@@ -383,9 +385,15 @@ function StatusCard({ overview, base, onChanged }: { overview: Overview; base: s
           </p>
           {status.missingVideoId && <p className="text-xs text-amber-300">{t("live.status.missing", { videoId: status.missingVideoId })}</p>}
           {status.lastExit && <p className="text-xs text-zinc-500">{t("live.status.lastExit", { at: new Date(status.lastExit.at).toLocaleString(t.language), cause: causeText(t, status.lastExit.cause) })}</p>}
-          {status.progress.bitrate && <p className="text-xs text-zinc-500">{t("live.status.bitrate", { bitrate: status.progress.bitrate })}</p>}
+          {status.progress.bitrate && (
+            <p className="text-xs text-zinc-500">
+              {t("live.status.bitrate", { bitrate: status.progress.bitrate })}
+              {status.progress.speed ? ` · ${t("live.status.speed", { speed: status.progress.speed })}` : ""}
+            </p>
+          )}
         </div>
       )}
+      {on && <UploadBandwidthNote />}
       {on && overview.youtube && <YoutubeHealth youtube={overview.youtube} />}
       <div className="flex flex-wrap gap-2">
         {!on && (
@@ -664,8 +672,20 @@ function SettingsCard({ overview, base, onChanged }: { overview: Overview; base:
     });
   }, [savedKey]);
 
+  // BL-233: the stream's own bitrate as typed (text, never a native number widget); empty = this computer's setting.
+  const [bitrateText, setBitrateText] = useState(saved.bitrateKbps === null ? "" : String(saved.bitrateKbps));
+  const savedBitrate = saved.bitrateKbps;
+  useEffect(() => setBitrateText(savedBitrate === null ? "" : String(savedBitrate)), [savedBitrate]);
+  const bitrateValid = bitrateText.trim() === "" || (/^\d{4,5}$/.test(bitrateText.trim()) && Number(bitrateText) >= 1000 && Number(bitrateText) <= 12000);
+  const changeBitrate = (text: string) => {
+    setBitrateText(text);
+    const trimmed = text.trim();
+    if (trimmed === "") setDraft((current) => ({ ...current, bitrateKbps: null }));
+    else if (/^\d{4,5}$/.test(trimmed) && Number(trimmed) >= 1000 && Number(trimmed) <= 12000) setDraft((current) => ({ ...current, bitrateKbps: Number(trimmed) }));
+  };
+
   const dirty = JSON.stringify(draft) !== savedKey;
-  const valid = draft.title.trim().length >= 1 && draft.title.length <= 100 && draft.description.length <= 5000;
+  const valid = draft.title.trim().length >= 1 && draft.title.length <= 100 && draft.description.length <= 5000 && bitrateValid;
   const onAir = overview.stream?.intent === "on" && !!overview.stream.broadcastId;
 
   /** `working`: the blocking window's text (a YouTube write); without it the save button shows it is working. */
@@ -729,7 +749,21 @@ function SettingsCard({ overview, base, onChanged }: { overview: Overview; base:
           <ToggleSwitch checked={draft.madeForKids} onChange={(next) => setDraft({ ...draft, madeForKids: next })} disabled={busy} label={t("live.field.madeForKids")} />
           <span>{t("live.field.madeForKids")}</span>
         </span>
+        <label className="flex items-center gap-2">
+          <span className="text-zinc-400">{t("live.field.bitrate")}</span>
+          <input
+            type="text"
+            inputMode="numeric"
+            value={bitrateText}
+            onChange={(e) => changeBitrate(e.target.value)}
+            placeholder={t("live.field.bitratePlaceholder")}
+            disabled={busy}
+            aria-label={t("live.field.bitrate")}
+            className={`${inputClass} w-44 ${bitrateValid ? "" : "border-red-700"}`}
+          />
+        </label>
       </div>
+      <p className="text-xs text-zinc-500">{bitrateValid ? t("live.field.bitrateHint") : <span className="text-red-400">{t("live.field.bitrateInvalid")}</span>}</p>
       <div className="flex flex-wrap gap-2">
         <ActionButton busy={saving} busyLabel={t("common.saving")} doneSignal={savedSignal} onClick={() => void run(() => requestJson(`${base}/settings`, json("PUT", draft), t("settings.saveFailed"), t), t("live.settings.saved"))} disabled={busy || !dirty || !valid} className={primaryClass}>
           {onAir ? t("live.settings.saveNext") : t("live.settings.save")}
@@ -1033,6 +1067,15 @@ const EVENT_KEYS: Record<string, UiTextKey> = {
   video_settings_step: "live.event.videoSettingsStep",
   video_settings_applied: "live.event.videoSettingsApplied",
   localizations_saved: "live.event.localizationsSaved",
+  upload_held: "live.event.uploadHeld",
+  upload_released: "live.event.uploadReleased",
+};
+
+const UPLOAD_RELEASE_KEYS: Record<string, UiTextKey> = {
+  recovered: "live.uploadRelease.recovered",
+  ceiling: "live.uploadRelease.ceiling",
+  no_stream: "live.uploadRelease.no_stream",
+  guard_off: "live.uploadRelease.guard_off",
 };
 
 function HistoryCard({ overview }: { overview: Overview }) {
@@ -1052,6 +1095,10 @@ function HistoryCard({ overview }: { overview: Overview }) {
                 ? `${stepLabel(t, detail.step)} · ${detail.ok ? t("live.yes") : String(detail.error ?? "—")}`
                 : event.kind === "localizations_saved" && Array.isArray(detail.languages)
                 ? detail.languages.join(", ") || "—"
+                : event.kind === "upload_held" && typeof detail.speed === "number"
+                ? `${detail.speed.toFixed(3)}×`
+                : event.kind === "upload_released" && typeof detail.releaseReason === "string"
+                ? UPLOAD_RELEASE_KEYS[detail.releaseReason] ? t(UPLOAD_RELEASE_KEYS[detail.releaseReason]) : detail.releaseReason
                 : typeof detail.method === "string"
                 ? detail.method
                 : typeof detail.videoId === "string"

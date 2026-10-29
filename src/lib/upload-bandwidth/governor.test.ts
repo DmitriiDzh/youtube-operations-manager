@@ -4,10 +4,11 @@ import {
   createUploadBandwidthGovernor,
   HOLD_CEILING_MS,
   limitedChunkBytes,
+  uploadBandwidthReport,
   type EncoderSample,
   type LiveLoad,
   type UploadBandwidthEvent,
-} from "./upload-bandwidth";
+} from "./governor";
 
 // BL-233 acceptance (FO-REQ-0047, the brief's acceptance list; fixed before the code):
 // - during an upload with a live stream on, the upload is held to the limit; with no stream it is not limited;
@@ -245,4 +246,13 @@ test("a failed read of the streams keeps the last state; an upload is never stop
   now += 10_000;
   assert.equal(await governor.mayStart(), true);
   assert.equal(governor.state().mode, "uncapped");
+});
+
+test("the report: held / limited / none in codes, times in ISO, speeds only while an upload is under way", () => {
+  const base = { capMbps: 2, guardMinutes: 3, streamsOn: 2, heldForChannelId: null, ceilingReleasedAt: null, speeds: { UCc: 0.6764 }, evaluatedAt: 0, lastAskedAt: 0 };
+  assert.equal(uploadBandwidthReport(null), null);
+  const held = uploadBandwidthReport({ ...base, mode: "held", heldSince: Date.UTC(2026, 9, 29, 14, 10), heldForChannelId: "UCc", uploadActive: true })!;
+  assert.deepEqual([held.limit, held.heldSince, held.heldForChannelId, held.speeds.UCc, held.active], ["held", "2026-10-29T14:10:00.000Z", "UCc", 0.676, true]);
+  assert.equal(uploadBandwidthReport({ ...base, mode: "capped", heldSince: null, uploadActive: false })!.limit, "limited");
+  assert.deepEqual(uploadBandwidthReport({ ...base, mode: "uncapped", heldSince: null, uploadActive: false })!.speeds, {});
 });

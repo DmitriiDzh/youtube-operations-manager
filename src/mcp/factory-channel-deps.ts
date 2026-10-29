@@ -4,7 +4,8 @@ import { claimTranslationRequest, completeTranslationRequest, failTranslationReq
 import { publishingPlanProgress } from "@/lib/publishing-plan-progress";
 import { createChannelLocalizationsOperatorCore, operatorChannelLocalizations } from "@/lib/channel-localizations";
 import { createGeminiMediaCore } from "@/lib/gemini-media";
-import { collectLiveStreamEntries, createLiveSegmentSettingsCore, createLiveStreamsCore, createStreamLocalizationsCore, getLiveStreamsDeviceId, listPeerLiveStreams, localizationsStatusEntry } from "@/lib/live-streams";
+import { uploadBandwidthReport, uploadBandwidthStatus } from "@/lib/upload-bandwidth";
+import { collectLiveEncoderReadings, collectLiveStreamEntries, createLiveSegmentSettingsCore, createLiveStreamsCore, createStreamLocalizationsCore, getLiveStreamsDeviceId, listPeerLiveStreams, localizationsStatusEntry } from "@/lib/live-streams";
 import { createGenerationPlansCore } from "@/lib/generation-plans";
 import { createStoryboardsServiceForProduction } from "@/lib/storyboards";
 import { createVideoProjectsServiceForProduction } from "@/lib/video-projects";
@@ -63,7 +64,29 @@ export function createFactoryChannelDeps(): FactoryChannelDeps {
         // BL-207 (1.27.0): this computer's translations -- the set, its warnings and the last step, in codes.
         const localizationsCore = createStreamLocalizationsCore();
         const localizations = await Promise.all(ownChannels.map(async (channelId) => localizationsStatusEntry(channelId, await localizationsCore.view(channelId))));
-        return { streams, segments, localizations };
+        // BL-233 (1.37.0): this computer's encoders in numbers, and whether an upload here is limited or held for them.
+        const upload = uploadBandwidthReport(uploadBandwidthStatus(now));
+        const encoders = (await collectLiveEncoderReadings(now))
+          .filter((e) => !input.channelId || e.channelId === input.channelId)
+          .map((e) => ({
+            channelId: e.channelId,
+            helperState: e.helperState,
+            running: e.running,
+            sampledAt: e.sampledAt === null ? null : new Date(e.sampledAt).toISOString(),
+            speed: e.speed,
+            recentSpeed: upload?.speeds[e.channelId] ?? null,
+            bitrateKbps: e.bitrateKbps,
+            targetBitrateKbps: e.targetBitrateKbps,
+            outTimeSeconds: e.outTimeSeconds === null ? null : Math.round(e.outTimeSeconds),
+            lagSeconds: e.lagSeconds,
+            lagEstimated: e.lagEstimated,
+          }));
+        // The per-stream speeds are on `encoders` (recentSpeed), not repeated here.
+        // Asked for one channel (a channel worker always is), another channel's id is not shown.
+        const uploadOut = upload
+          ? (({ speeds, ...rest }) => (void speeds, { ...rest, heldForChannelId: input.channelId && rest.heldForChannelId !== input.channelId ? null : rest.heldForChannelId }))(upload)
+          : null;
+        return { streams, segments, localizations, encoders, upload: uploadOut };
       },
       mapSources: async (input) => ({ results: await createLiveStreamsCore().setSources(input.channelId, { items: input.items }, "factory") }),
       // BL-207: the stream's translations, replaced as a whole (refused whole, nothing half-saved); local only.

@@ -502,15 +502,6 @@ export function createPackageComposerCore() {
     join: deps.join,
   });
 }
-export {
-  createUploadBandwidthGovernor,
-  registerUploadBandwidthGovernor,
-  uploadBandwidthStatus,
-  type LiveLoad as UploadLiveLoad,
-  type UploadBandwidthEvent,
-  type UploadBandwidthGovernor,
-  type UploadBandwidthState,
-} from "./upload-bandwidth";
 export type { ComposerFolder, PackageDraft } from "./package-composer";
 
 /** BL-182 stage 2: the owner's approval of release-package uploads (queued here; the runner sends them). */
