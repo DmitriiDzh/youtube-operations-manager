@@ -71,7 +71,7 @@ export type UploadBandwidthState = {
   /** The speed each running stream is judged by (recent where measured, else ffmpeg's), null in a gap. */
   speeds: Record<string, number | null>;
   evaluatedAt: number | null;
-  /** The last time an upload asked whether it may send (an upload is under way or held when this is recent). */
+  /** The last time an upload asked whether it may send or sent a slice (an upload is under way or held when this is recent). */
   lastAskedAt: number | null;
 };
 
@@ -162,7 +162,11 @@ export function stepGuard(memory: GuardMemory, load: LiveLoad, now: number): { m
     else if (now - memory.heldSince >= HOLD_CEILING_MS) {
       release("ceiling");
       memory.ceilingReleasedAt = now;
-    } else if (recovered) release("recovered");
+    } else if (recovered && (memory.heldForChannelId === null || measured.some(([id]) => id === memory.heldForChannelId))) {
+      // The stream the upload was held for must itself be measured and back: another stream keeping up while it is in a gap
+      // (its encoder reconnecting) says nothing about whether it would starve again.
+      release("recovered");
+    }
   } else if (guardMs > 0 && memory.ceilingReleasedAt === null) {
     const starving = measured.find(([, c]) => c.belowSince !== null && now - c.belowSince >= guardMs);
     if (starving) {
@@ -272,6 +276,8 @@ export function createUploadBandwidthGovernor(deps: {
     },
     /** Waits until `bytes` more may be sent at the limit now (no wait without one). Called before each slice of a request body. */
     async pace(bytes: number): Promise<void> {
+      // Bytes flowing = an upload under way (a limited chunk can take a minute between two `mayStart` asks).
+      state = { ...state, lastAskedAt: deps.clock() };
       await refresh();
       const limit = rate();
       const now = deps.clock();

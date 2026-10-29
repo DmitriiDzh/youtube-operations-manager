@@ -5,6 +5,8 @@ import {
   HOLD_CEILING_MS,
   limitedChunkBytes,
   uploadBandwidthReport,
+  uploadBandwidthStatus,
+  registerUploadBandwidthGovernor,
   type EncoderSample,
   type LiveLoad,
   type UploadBandwidthEvent,
@@ -255,4 +257,32 @@ test("the report: held / limited / none in codes, times in ISO, speeds only whil
   assert.deepEqual([held.limit, held.heldSince, held.heldForChannelId, held.speeds.UCc, held.active], ["held", "2026-10-29T14:10:00.000Z", "UCc", 0.676, true]);
   assert.equal(uploadBandwidthReport({ ...base, mode: "capped", heldSince: null, uploadActive: false })!.limit, "limited");
   assert.deepEqual(uploadBandwidthReport({ ...base, mode: "uncapped", heldSince: null, uploadActive: false })!.speeds, {});
+});
+
+test("a held upload is released as recovered only when the stream it was held for is back -- not while that stream is in a gap", async () => {
+  const w = world({ guardMinutes: 1 });
+  w.stream("UCa", 0.5);
+  w.stream("UCb", 1);
+  assert.equal(await w.run(2 * 60_000), false);
+  assert.equal(w.governor.state().heldForChannelId, "UCa");
+  w.freeze("UCa"); // its encoder reconnects: a gap
+  assert.equal(await w.run(5 * 60_000), false, "the other stream keeping up does not release the hold");
+  w.stream("UCa", 1); // back, and keeping up
+  let released = false;
+  for (let i = 0; i < 36 && !released; i += 1) released = await w.run(5_000);
+  assert.equal(released, true);
+  const release = w.events.find((e) => e.kind === "upload_released");
+  assert.equal(release && release.kind === "upload_released" && release.reason, "recovered");
+});
+
+test("an upload sending a long limited chunk stays active for the readers; 30 s without an ask or a slice it is not", async () => {
+  const w = world({ capMbps: 2 });
+  w.stream("UCa", 1);
+  registerUploadBandwidthGovernor(w.governor);
+  await w.governor.mayStart();
+  // 45 s of sending one chunk at the limit (about 11 MB at 250 kB/s), no ask in between.
+  await send(w, 11_250_000);
+  assert.equal(uploadBandwidthStatus(w.now())?.uploadActive, true);
+  w.advance(31_000);
+  assert.equal(uploadBandwidthStatus(w.now())?.uploadActive, false);
 });
