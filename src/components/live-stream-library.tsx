@@ -62,7 +62,20 @@ function Poster({ base, seq, show }: { base: string; seq: number; show: boolean 
 }
 
 /** The owner's switch between the two sources, with a dialog saying when it applies. */
-export function LiveStreamSourceSwitch({ base, mode, hasStream, onChanged }: { base: string; mode: LiveSourceMode; hasStream: boolean; onChanged: () => Promise<void> }) {
+export function LiveStreamSourceSwitch({
+  base,
+  mode,
+  hasStream,
+  segmentsReady,
+  onChanged,
+}: {
+  base: string;
+  mode: LiveSourceMode;
+  hasStream: boolean;
+  /** A selected segment passed its check: only then can the stream be switched to segments (the server checks it too). */
+  segmentsReady: boolean;
+  onChanged: () => Promise<void>;
+}) {
   const t = useT();
   const [target, setTarget] = useState<LiveSourceMode | null>(null);
   const [busy, setBusy] = useState(false);
@@ -85,7 +98,7 @@ export function LiveStreamSourceSwitch({ base, mode, hasStream, onChanged }: { b
             role="radio"
             aria-checked={mode === option.mode}
             onClick={() => option.mode !== mode && setTarget(option.mode)}
-            disabled={busy || !hasStream}
+            disabled={busy || !hasStream || (option.mode === "segments" && mode !== "segments" && !segmentsReady)}
             className={`rounded-md px-3 py-1 text-xs ${mode === option.mode ? "bg-zinc-100 font-medium text-zinc-900" : "text-zinc-300 hover:bg-zinc-800"} disabled:opacity-50`}
           >
             {t(option.key)}
@@ -93,6 +106,7 @@ export function LiveStreamSourceSwitch({ base, mode, hasStream, onChanged }: { b
         ))}
       </div>
       {!hasStream && <p className="text-xs text-zinc-500">{t("live.source.needSettings")}</p>}
+      {hasStream && mode === "videos" && !segmentsReady && <p className="text-xs text-zinc-500">{t("live.source.needSegments")}</p>}
       {busy && <LoadingIndicator className="text-xs text-zinc-400" />}
       <StatusNotice
         notice={error ? { tone: "error", text: error } : notice ? { tone: "ok", text: notice } : null}
@@ -128,7 +142,20 @@ export function LiveStreamSourceSwitch({ base, mode, hasStream, onChanged }: { b
 }
 
 /** The stream's selection from the segment library: order, remove (from the stream only), add from the library. */
-export function LiveStreamLibraryCard({ base, selection, onChanged }: { base: string; selection: SelectedSegmentView[]; onChanged: () => Promise<void> }) {
+export function LiveStreamLibraryCard({
+  base,
+  selection,
+  preparing,
+  hasStream,
+  onChanged,
+}: {
+  base: string;
+  selection: SelectedSegmentView[];
+  /** The stream still plays videos: the selection is being prepared for a switch. */
+  preparing: boolean;
+  hasStream: boolean;
+  onChanged: () => Promise<void>;
+}) {
   const t = useT();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -164,9 +191,10 @@ export function LiveStreamLibraryCard({ base, selection, onChanged }: { base: st
   return (
     <div className={cardClass}>
       <h3 className="flex items-center gap-1.5 text-base font-medium text-zinc-100">
-        {t("live.library.title")}
+        {t(preparing ? "live.library.titlePreparing" : "live.library.title")}
         <InfoTooltip>{t("live.library.info")}</InfoTooltip>
       </h3>
+      {preparing && <p className="text-xs text-zinc-400">{t("live.library.preparingHint")}</p>}
       {selection.length === 0 ? (
         <p className="text-sm text-zinc-500">{t("live.library.empty")}</p>
       ) : (
@@ -204,7 +232,7 @@ export function LiveStreamLibraryCard({ base, selection, onChanged }: { base: st
         </>
       )}
       <div className="border-t border-zinc-800 pt-3">
-        <button onClick={() => setDialogOpen(true)} disabled={busy} className={primaryClass}>
+        <button onClick={() => setDialogOpen(true)} disabled={busy || !hasStream} className={primaryClass}>
           {t("live.library.open")}
         </button>
       </div>

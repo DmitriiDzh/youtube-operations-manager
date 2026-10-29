@@ -3952,11 +3952,14 @@ Plan: `docs/roadmap/plans/LIVE_STREAMS_PLAN.md` (FO-REQ-0019). Schema v86, Facto
     + offset, replay of the playable copies). `recheckLiveSource` dispatches by mode for Start, Restart, encoder starts and the
     next-pass draw: a missing/unreadable selected segment is left out (`segment_refused`, once per change); the library unreadable →
     the last checks stand (`segment_library_unavailable`); none → `live_stream_video_refused` with `no_segments_selected` /
-    `no_playable_segments` / the library's reason, never an empty pass at Start. At the next-pass draw of a running stream the
-    refusal is an event once per change (`source_refused`): `no_segments_selected` draws an empty next pass (as an empty rotation:
-    no source), any other reason draws nothing (the helper replays its pass).
+    `no_playable_segments` / the library's reason, never an empty pass. At the next-pass draw of a running stream any refusal draws
+    nothing (the helper replays its pass), is an event once per change (`source_refused`) and is retried at most every 60 s
+    (`SOURCE_RETRY_MS`); the library's state is an event per change (`segment_library_unavailable` / `_available`).
   - The owner's switch (`PUT .../live-stream/source`) drops the already drawn next pass, so it applies at the next pass (at the
-    latest the one after) or at once with Restart / the next Start. No MCP tool reaches it or the selection; the status carries
+    latest the one after) or at once with Restart / the next Start. Switching to segments is refused (`live_stream_no_ready_segments`,
+    409) until a selected segment passed its check; the selection is prepared in videos mode («Сегменты (подготовка)»). In segments
+    mode every selection change drops the drawn next pass too. The switch and the selection's writes take `withChannelLock`; an add
+    is one `INSERT … SELECT MAX+1` (`appendLiveStreamLibrarySegment`). No MCP tool reaches it or the selection; the status carries
     `sources` (Factory 1.38.0, Agent 4.12.0). The shared report keeps `playing: null` for a segment (its id is not a video id).
 - **Streams and an upload share the Mac's uplink** (BL-233, FO-REQ-0047; owner msgs 3786/3788). Two encoders at 6000k plus a
   4.7 GB upload over ~10 Mbit/s Wi-Fi starved a stream (0.676x, `videoIngestionStarved`).

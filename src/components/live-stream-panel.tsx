@@ -246,11 +246,25 @@ export function LiveStreamPanel({ channelId, visible }: { channelId: string | nu
             <LiveStreamAnalyticsCard base={base!} visible={visible} />
           </div>
           <div className="max-w-4xl space-y-6">
-            <LiveStreamSourceSwitch base={base!} mode={overview.sourceMode ?? "videos"} hasStream={overview.stream !== null} onChanged={load} />
+            {/* BL-234 (review item 1a): the segment selection is prepared while the stream still plays videos; the switch to
+                segments is offered only once a selected segment passed its check. */}
+            <LiveStreamSourceSwitch
+              base={base!}
+              mode={overview.sourceMode ?? "videos"}
+              hasStream={overview.stream !== null}
+              segmentsReady={(overview.segmentSelection ?? []).some((s) => s.check.status === "ok")}
+              onChanged={load}
+            />
             {(overview.sourceMode ?? "videos") === "segments" ? (
-              <LiveStreamLibraryCard base={base!} selection={overview.segmentSelection ?? []} onChanged={load} />
+              <>
+                <LiveStreamLibraryCard base={base!} selection={overview.segmentSelection ?? []} preparing={false} hasStream={overview.stream !== null} onChanged={load} />
+                <RotationCard overview={overview} base={base!} onChanged={load} />
+              </>
             ) : (
-              <RotationCard overview={overview} base={base!} onChanged={load} />
+              <>
+                <RotationCard overview={overview} base={base!} onChanged={load} />
+                <LiveStreamLibraryCard base={base!} selection={overview.segmentSelection ?? []} preparing hasStream={overview.stream !== null} onChanged={load} />
+              </>
             )}
             <details className="group rounded-xl border border-zinc-800 bg-zinc-900">
               <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-zinc-200 hover:text-white">{t("live.settingsGroup")}</summary>
