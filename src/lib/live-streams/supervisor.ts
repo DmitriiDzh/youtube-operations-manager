@@ -78,9 +78,12 @@ export type SupervisorDependencies = {
   streams: {
     get(channelId: string): Promise<SupervisorStream | null>;
     update(channelId: string, set: Partial<Omit<SupervisorStream, "channelId">> & { positionUpdatedAt?: Date; onSince?: Date | null }): Promise<boolean>;
-    /** The rotation in order with the original's path and durations. */
-    videos(channelId: string): Promise<Array<{ videoId: string; originalPath: string; videoDurationSeconds: number | null; originalDurationSeconds: number | null }>>;
-    /** §3.4: re-reads the rotation from YouTube; the playable ids in rotation order. */
+    /**
+     * The rotation in order with the original's path and durations. BL-234: every item a pass may name -- the rotation's videos and
+     * the selected library segments (`kind: "segment"`, id `seg-<seq>`) -- so a pass drawn before a source switch still finds its files.
+     */
+    videos(channelId: string): Promise<Array<{ videoId: string; originalPath: string; videoDurationSeconds: number | null; originalDurationSeconds: number | null; kind?: "video" | "segment" }>>;
+    /** §3.4: re-reads the rotation from YouTube; the playable ids in rotation order. BL-234: in `segments` mode, the selection's. */
     recheck(channelId: string): Promise<string[]>;
     event(channelId: string, kind: string, detail: Record<string, unknown>, at?: Date): Promise<void>;
     /** BL-211: keeps one completed broadcast poll (viewers null = YouTube gave no count). */
@@ -246,7 +249,7 @@ export function createStreamSupervisor(deps: SupervisorDependencies) {
   }
 
   async function bufferVideos(channelId: string) {
-    return (await deps.streams.videos(channelId)).map((v) => ({ videoId: v.videoId, originalPath: v.originalPath, videoDurationSeconds: v.videoDurationSeconds }));
+    return (await deps.streams.videos(channelId)).map((v) => ({ videoId: v.videoId, originalPath: v.originalPath, videoDurationSeconds: v.videoDurationSeconds, ...(v.kind ? { kind: v.kind } : {}) }));
   }
 
   async function durationsOf(channelId: string) {

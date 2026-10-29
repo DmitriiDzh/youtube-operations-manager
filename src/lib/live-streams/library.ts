@@ -34,6 +34,8 @@ export function seqOfSegmentId(id: string): number | null {
   return match ? Number(match[1]) : null;
 }
 export const isSegmentId = (id: string) => SEGMENT_ID.test(id);
+/** A workspace-relative path inside the library (the video picker leaves these out: a segment is not a published video). */
+export const isLibraryPath = (relativePath: string) => relativePath.startsWith(`${LIBRARY_FOLDER}/`);
 export function segmentFile(seq: number, kind: "mp4" | "json" | "jpg"): string {
   return `${LIBRARY_FOLDER}/${segmentId(seq)}.${kind}`;
 }

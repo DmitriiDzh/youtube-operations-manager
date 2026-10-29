@@ -1,6 +1,7 @@
 import path from "node:path";
 import { DURATION_TOLERANCE_SECONDS, MAX_AUDIO_CHANNELS, SUPPORTED_AUDIO_SAMPLE_RATES, type ProbeResult } from "./contracts";
 import { canCopyIntoBuffer, checkOriginal, planBuffer } from "./rotation";
+import { checkSegmentMedia } from "./library";
 
 // ---------------------------------------------------------------------------
 // BL-176 (LIVE_STREAMS_PLAN.md §3.5, decided by the owner in msgs 2575/2578) -- the rolling buffer: copies of the
@@ -21,7 +22,8 @@ export type BufferFs = {
 
 export type BufferMissingReason = "source_unavailable" | "disk_full" | "copy_failed" | "check_failed";
 
-export type BufferVideo = { videoId: string; originalPath: string; videoDurationSeconds: number | null };
+/** BL-234: `kind: "segment"` = a library segment (`seg-<seq>`): checked by ffprobe alone, never against a YouTube duration. */
+export type BufferVideo = { videoId: string; originalPath: string; videoDurationSeconds: number | null; kind?: "video" | "segment" };
 
 export type BufferDependencies = {
   fs: BufferFs;
@@ -35,8 +37,9 @@ export type BufferDependencies = {
   now(): number;
 };
 
-const COPY_NAME = /^([A-Za-z0-9_-]{11})\.mp4$/;
-const PART_NAME = /^[A-Za-z0-9_-]{11}\.mp4\.part$/;
+// A YouTube video id (11 characters) or, since BL-234, a library segment's id (`seg-<6 digits>`, 10 characters).
+const COPY_NAME = /^([A-Za-z0-9_-]{11}|seg-\d{6})\.mp4$/;
+const PART_NAME = /^([A-Za-z0-9_-]{11}|seg-\d{6})\.mp4\.part$/;
 
 export function createLiveStreamBuffer(deps: BufferDependencies) {
   const dirOf = (channelId: string) => path.join(deps.bufferRoot, channelId);
@@ -67,11 +70,15 @@ export function createLiveStreamBuffer(deps: BufferDependencies) {
         await deps.fs.remove(part).catch(() => undefined);
         return { ok: false, reason: "check_failed", detail: `the copy has ${copied ?? "no"} bytes, the original ${source.bytes}` };
       }
-      const problem = checkOriginal(await deps.probe(part), video.videoDurationSeconds, {
-        toleranceSeconds: DURATION_TOLERANCE_SECONDS,
-        sampleRates: SUPPORTED_AUDIO_SAMPLE_RATES,
-        maxChannels: MAX_AUDIO_CHANNELS,
-      });
+      const probe = await deps.probe(part);
+      const problem =
+        video.kind === "segment"
+          ? checkSegmentMedia(probe)
+          : checkOriginal(probe, video.videoDurationSeconds, {
+              toleranceSeconds: DURATION_TOLERANCE_SECONDS,
+              sampleRates: SUPPORTED_AUDIO_SAMPLE_RATES,
+              maxChannels: MAX_AUDIO_CHANNELS,
+            });
       if (problem) {
         await deps.fs.remove(part).catch(() => undefined);
         return { ok: false, reason: "check_failed", detail: problem };

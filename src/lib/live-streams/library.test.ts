@@ -6,6 +6,7 @@ import {
   checkSegmentMedia,
   completeSegments,
   createSegmentLibrary,
+  isLibraryPath,
   parseSidecar,
   segmentFile,
   segmentId,
@@ -149,6 +150,9 @@ test("ids: seg-<6 digits> both ways; files under 04 Videos/Live Segments; a YouT
   assert.equal(seqOfSegmentId("seg-7"), null);
   assert.equal(segmentFile(42, "mp4"), "04 Videos/Live Segments/seg-000042.mp4");
   assert.equal(segmentFile(42, "json"), "04 Videos/Live Segments/seg-000042.json");
+  assert.equal(isLibraryPath("04 Videos/Live Segments/seg-000042.mp4"), true);
+  assert.equal(isLibraryPath("04 Videos/10 October/1013 V47/V47.mp4"), false, "the video picker keeps published videos");
+  assert.equal(isLibraryPath("04 Videos/Live Segments Old/x.mp4"), false);
   assert.equal(sourceModeOf(null), "videos");
   assert.equal(sourceModeOf({ sourceMode: null }), "videos");
   assert.equal(sourceModeOf({ sourceMode: "segments" }), "segments");

@@ -178,3 +178,73 @@ test("buffer: on the last video of a pass the first of the next pass is copied",
     assert.deepEqual(result.copied, [C, B]);
     assert.deepEqual(await listBuffer(), [`${B}.mp4`, `${C}.mp4`]);
   }));
+
+// BL-234 (FO-REQ-0048, ADR 0056): library segments go through the same buffer. A segment has no YouTube duration -- it is copied on
+// the ffprobe check alone (a video without one is still refused); a segment of the wrong format is not copied; and every file the
+// buffer removes or renames is inside its own folder on the internal disk, never in the library.
+const S1 = "seg-000001";
+const S2 = "seg-000002";
+const SEGMENTS: BufferVideo[] = [S1, S2].map((videoId) => ({ videoId, originalPath: `04 Videos/Live Segments/${videoId}.mp4`, videoDurationSeconds: null, kind: "segment" }));
+const segmentsAt = (currentIndex: number) => ({ order: [S1, S2], currentIndex, nextPassFirst: S1, depth: 2, refuseBelowBytes: 5 * GB, videos: SEGMENTS });
+
+async function writeSegments(originals: string) {
+  const dir = path.join(originals, "04 Videos", "Live Segments");
+  await (await import("node:fs/promises")).mkdir(dir, { recursive: true });
+  for (const id of [S1, S2]) await writeFile(path.join(dir, `${id}.mp4`), `segment ${id}`);
+  return dir;
+}
+
+test("buffer (segments): copied with no YouTube duration; the library keeps every file; removals stay in the buffer folder", async () => {
+  const touched: string[] = [];
+  const realFs = createBufferFs();
+  await withFolders(
+    async ({ buffer, listBuffer, originals, root }) => {
+      const library = await writeSegments(originals);
+      const first = await buffer.sync("UC1", segmentsAt(0));
+      assert.deepEqual(first.copied, [S1, S2]);
+      assert.equal(first.missing, null);
+      assert.deepEqual(await listBuffer(), [`${S1}.mp4`, `${S2}.mp4`]);
+      // The pass moves on and the selection shrinks to S2 only: S1's copy goes, the library file stays.
+      await buffer.sync("UC1", { order: [S2], currentIndex: 0, nextPassFirst: S2, depth: 2, refuseBelowBytes: 5 * GB, videos: SEGMENTS });
+      assert.deepEqual(await listBuffer(), [`${S2}.mp4`]);
+      assert.deepEqual((await readdir(library)).sort(), [`${S1}.mp4`, `${S2}.mp4`]);
+      assert.ok(touched.length > 0);
+      for (const file of touched) assert.ok(file.startsWith(path.join(root, "UC1") + path.sep), `${file} is in the buffer folder`);
+    },
+    {
+      fs: {
+        remove: async (file) => {
+          touched.push(file);
+          await realFs.remove(file);
+        },
+        rename: async (from, to) => {
+          touched.push(from, to);
+          await realFs.rename(from, to);
+        },
+      },
+    }
+  );
+});
+
+test("buffer (segments): a video with no YouTube duration is still refused (the segment rule is for segments only)", () =>
+  withFolders(async ({ buffer }) => {
+    const result = await buffer.sync("UC1", at(0, { nextPassFirst: null }));
+    assert.equal(result.missing, null, "videos with their YouTube duration copy as before");
+    const noDuration = await buffer.sync("UC2", { ...at(0), videos: VIDEOS.map((v) => ({ ...v, videoDurationSeconds: null })) });
+    assert.equal(noDuration.missing?.reason, "check_failed");
+    assert.equal(noDuration.missing?.detail, "duration_unknown");
+  }));
+
+test("buffer (segments): a segment of the wrong format is not copied and leaves no file behind", () =>
+  withFolders(
+    async ({ buffer, listBuffer, originals }) => {
+      await writeSegments(originals);
+      const result = await buffer.sync("UC1", segmentsAt(0));
+      assert.deepEqual(result.copied, []);
+      assert.equal(result.missing?.videoId, S1);
+      assert.equal(result.missing?.reason, "check_failed");
+      assert.equal(result.missing?.detail, "audio_unsupported");
+      assert.deepEqual(await listBuffer(), []);
+    },
+    { probe: { audio: { codec: "mp3", sampleRate: 44100, channels: 2 } } }
+  ));

@@ -400,3 +400,34 @@ test("an ffmpeg whose output time keeps growing is not stopped by the stall watc
   clearInterval(ticker);
   assert.deepEqual(kills, []);
 });
+
+// BL-234 (FO-REQ-0048, ADR 0056): the helper is source-blind -- a pass of library segments (ids `seg-<seq>`) plays, ends, moves to
+// the next pass, resumes by index + offset after a crash and replays only what is playable, exactly as a pass of videos.
+const S1 = { videoId: "seg-000001", file: "/buf/UC1/seg-000001.mp4", duration: 10 };
+const S2 = { videoId: "seg-000002", file: "/buf/UC1/seg-000002.mp4", duration: 10 };
+const segmentPlan = (extra: Record<string, unknown> = {}) =>
+  basePlan({ pass: { number: 1, videos: [S1, S2], startIndex: 0, startOffset: 0 }, nextPass: { number: 2, videos: [S2, S1] }, playable: [S1.videoId, S2.videoId], ...extra });
+
+test("BL-234: a pass of segments ends and the next pass of segments plays, as with videos", async () => {
+  const h = harness({ steps: [{ progress: [5, 20], exit: { code: 0 } }, { progress: [3], exit: { code: 0 } }], files: [S1.file, S2.file], plan: segmentPlan(), stopAfterRuns: 2 });
+  await h.run();
+  assert.deepEqual(events(h).map((e) => e.kind).slice(0, 4), ["run_start", "run_exit", "pass_end", "run_start"]);
+  assert.match(h.runs[1].list, new RegExp(`file '${S2.file}'\\nfile '${S1.file}'`));
+});
+
+test("BL-234: a crash in the second segment resumes at that segment and offset (position by segment + offset)", async () => {
+  const h = harness({ steps: [{ progress: [5, 13.5], exit: { code: 1 } }, { progress: [1], exit: { code: 0 } }], files: [S1.file, S2.file], plan: segmentPlan(), stopAfterRuns: 2 });
+  await h.run();
+  const second = events(h).filter((e) => e.kind === "run_start")[1];
+  assert.deepEqual([second.videoId, second.index, second.inpoint], [S2.videoId, 1, 3.5]);
+  const status = h.statuses.find((s) => (s.position as { videoId: string }).videoId === S2.videoId);
+  assert.ok(status, "the status names the segment playing");
+});
+
+test("BL-234: a missing segment copy replays only the playable segments present", async () => {
+  const h = harness({ steps: [{ progress: [4], exit: { code: 0 } }], files: [S1.file], plan: segmentPlan({ pass: { number: 1, videos: [S2, S1], startIndex: 0, startOffset: 0 } }), stopAfterRuns: 1 });
+  await h.run();
+  const replay = events(h).find((e) => e.kind === "replay_start");
+  assert.deepEqual(replay?.videos, [S1.videoId]);
+  assert.equal(replay?.missingVideoId, S2.videoId);
+});

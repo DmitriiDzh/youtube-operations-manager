@@ -11,6 +11,7 @@ import {
   VIDEOS_FOLDER,
   walkVideosFolder,
 } from "@/lib/workspace-videos";
+import { isLibraryPath } from "../library";
 import type { PickerDependencies } from "../picker-service";
 
 // BL-187 (LIVE_STREAMS_FIELDS_PLAN.md §2.4): the picker's reads of the channel workspace. The walk is the shared
@@ -50,7 +51,9 @@ export function createPickerFiles(): Pick<PickerDependencies, "validateWorkspace
       const result = await validateOperatorDirectoryPath(workspace);
       return result.ok ? { ok: true } : { ok: false, reason: result.reason };
     },
-    listVideoFiles: (workspace) => walkVideosFolder({ listDir: (p) => files.listDir(p), join: (...parts) => path.join(...parts) }, workspace, isVideoFileName),
+    // BL-234: the segment library (`04 Videos/Live Segments/`) is not offered as published videos.
+    listVideoFiles: async (workspace) =>
+      (await walkVideosFolder({ listDir: (p) => files.listDir(p), join: (...parts) => path.join(...parts) }, workspace, isVideoFileName)).filter((file) => !isLibraryPath(file)),
     async describe(workspace, relativePath) {
       const file = await resolve(workspace, relativePath);
       if (!file) return null;

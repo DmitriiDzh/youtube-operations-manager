@@ -532,3 +532,77 @@ test("BL-211: a sample that cannot be written never breaks the poll -- result, p
   assert.deepEqual(h.events.filter((e) => e.kind === "viewer_sample_failed").map((e) => e.detail), [{ broadcastId: "BC1" }]);
   assert.equal(h.stream().intent, "on");
 });
+
+// BL-234 (FO-REQ-0048, ADR 0056): a stream in `segments` mode runs on the same engine. The pass is the selection's segment ids in the
+// owner's order, with their probed durations; the buffer is told which items are segments (ffprobe only); a switch of source applies at
+// the next pass drawn (the items of the pass playing still resolve); a recheck that refuses leaves the plan as it is (the helper keeps
+// its pass), never an empty next pass.
+const S1 = "seg-000001";
+const S2 = "seg-000002";
+const segmentItems = [
+  { videoId: S2, originalPath: "04 Videos/Live Segments/seg-000002.mp4", videoDurationSeconds: null, originalDurationSeconds: 1812.5, kind: "segment" as const },
+  { videoId: S1, originalPath: "04 Videos/Live Segments/seg-000001.mp4", videoDurationSeconds: null, originalDurationSeconds: 1790, kind: "segment" as const },
+];
+const videoItems = [A, B, C].map((videoId) => ({ videoId, originalPath: `04 Videos/${videoId}.mp4`, videoDurationSeconds: 7382, originalDurationSeconds: 7382.3 }));
+
+test("BL-234: segments mode -- the pass is the selection in the owner's order with probed durations; the buffer knows they are segments", async () => {
+  const h = harness({ playable: [S2, S1] });
+  h.deps.streams.videos = async () => [...videoItems, ...segmentItems];
+  const synced: Array<Array<{ videoId: string; kind?: string; videoDurationSeconds: number | null }>> = [];
+  const original = h.deps.buffer.sync;
+  h.deps.buffer.sync = async (c, args) => {
+    synced.push(args.videos.map((v) => ({ videoId: v.videoId, kind: v.kind, videoDurationSeconds: v.videoDurationSeconds })));
+    return original(c, args);
+  };
+  await h.supervisor.startEncoder("UC1", { freshPass: true });
+  const plan = JSON.parse(h.files.get("/appdata/live-streams/UC1/plan.json")!);
+  assert.deepEqual(plan.pass.videos.map((v: { videoId: string; duration: number; file: string }) => [v.videoId, v.duration, v.file]), [
+    [S2, 1812.5, "/appdata/live-streams/UC1/seg-000002.mp4"],
+    [S1, 1790, "/appdata/live-streams/UC1/seg-000001.mp4"],
+  ]);
+  assert.deepEqual(plan.playable, [S2, S1]);
+  assert.deepEqual(synced[0].filter((v) => v.kind === "segment").map((v) => [v.videoId, v.videoDurationSeconds]), [[S2, null], [S1, null]]);
+  assert.ok(synced[0].some((v) => v.videoId === A && v.kind === undefined), "video items unchanged");
+});
+
+test("BL-234: a source switch applies at the next pass drawn; the pass playing keeps its videos (still resolvable)", async () => {
+  const h = harness();
+  h.deps.streams.videos = async () => [...videoItems, ...segmentItems];
+  await h.supervisor.startEncoder("UC1", { freshPass: true });
+  // The owner switches to segments while B plays: the recheck now answers in segments.
+  h.setPlayable([S2, S1]);
+  h.status({ passVideoIds: [A, B, C], position: { index: 1, videoId: B, offset: 50 } });
+  await h.supervisor.tick("UC1");
+  assert.equal(h.stream().nextPassOrderJson, null, "not drawn before the last video");
+  assert.deepEqual(h.syncs.at(-1), { order: [A, B, C], currentIndex: 1, nextPassFirst: null }, "the videos still playing stay in the buffer");
+  h.status({ passVideoIds: [A, B, C], position: { index: 2, videoId: C, offset: 5 } });
+  await h.supervisor.tick("UC1");
+  assert.equal(h.stream().nextPassOrderJson, JSON.stringify([S2, S1]));
+  const plan = JSON.parse(h.files.get("/appdata/live-streams/UC1/plan.json")!);
+  assert.deepEqual(plan.nextPass.videos.map((v: { videoId: string; duration: number }) => [v.videoId, v.duration]), [[S2, 1812.5], [S1, 1790]]);
+  assert.deepEqual(h.syncs.at(-1), { order: [A, B, C], currentIndex: 2, nextPassFirst: S2 });
+});
+
+test("BL-234: a recheck that refuses at the pass end (no playable segment) leaves the plan alone -- the helper keeps its pass", async () => {
+  const h = harness({ playable: [S2, S1] });
+  h.deps.streams.videos = async () => segmentItems;
+  await h.supervisor.startEncoder("UC1", { freshPass: true });
+  h.deps.streams.recheck = async () => {
+    throw new DomainError({ code: "live_stream_video_refused", message: "None of the selected segments can be played", details: { reason: "no_playable_segments" } });
+  };
+  h.status({ passVideoIds: [S2, S1], position: { index: 1, videoId: S1, offset: 5 } });
+  await assert.rejects(h.supervisor.tick("UC1"), (error: unknown) => error instanceof DomainError && (error.details as { reason: string }).reason === "no_playable_segments");
+  const plan = JSON.parse(h.files.get("/appdata/live-streams/UC1/plan.json")!);
+  assert.equal(plan.nextPass, null, "no empty next pass written");
+  assert.equal(h.stream().nextPassOrderJson, null);
+  assert.equal(h.stream().positionIndex, 1, "the position was still carried");
+});
+
+test("BL-234: Start in segments mode with nothing playable is refused with the source's reason, nothing spawned", async () => {
+  const h = harness();
+  h.deps.streams.recheck = async () => {
+    throw new DomainError({ code: "live_stream_video_refused", message: "No segment is selected for this stream", details: { reason: "no_segments_selected" } });
+  };
+  await assert.rejects(h.supervisor.startEncoder("UC1", { freshPass: true }), (error: unknown) => error instanceof DomainError && (error.details as { reason: string }).reason === "no_segments_selected");
+  assert.deepEqual(h.spawned, []);
+});
