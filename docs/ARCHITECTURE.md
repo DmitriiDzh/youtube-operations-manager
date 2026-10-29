@@ -4152,7 +4152,8 @@ Plan: `docs/roadmap/plans/PUBLISHING_PLAN.md`. Owner: msgs 2698, 2702 and 2707.
   - YouTube has no "scheduled" status: a scheduled video is a non-public video with a future `publishAt`.
   - Each video is one of: published (public or unlisted), scheduled, overdue (the date has passed but the copy is not public yet)
     or unscheduled (private without a date). Live broadcasts are left out.
-  - The coverage is the latest future `publishAt`. The reminder is due when that is less than 7 days away, or when there is none.
+  - The coverage is the latest future `publishAt`. The reminder is due when that is less than 7 days away, or when there is none. Since BL-235 the routes wire the daily coverage and the reminder is "fewer than 7 covered days in a row" (§47.6); this rule
+    remains only as the fallback when that read fails.
   - The shared rule `isScheduledVideo` (`shared-formatting`) also drives «Видео».
   - Rows the latest channel sync did not return are left out (`currentRows`: row sync time older than the channel's). The sync
     never deletes rows, so a video deleted in Studio would otherwise keep the channel "covered".
