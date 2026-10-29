@@ -2183,3 +2183,17 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
   limit or a stream's own bitrate, and `factory_live_get_status.encoders` shows each stream's speed and lag at any time.
 - **Re-evaluate:** when a stream starves with the upload held or with no upload running, or when the Mac moves to a wired link.
 - **Gate(s):** none. **Status:** open.
+
+## RISK-141 — A segments stream depends on the T9 library and its buffer like a video stream — OPEN, 2026-10-29
+
+- **What:** BL-234 (FO-REQ-0048, ADR 0056). The segment library lives in the channel workspace on the T9. With the drive away the
+  recheck keeps the last checks, so a stream (or its restart) goes on with the buffer's copies (the playing segment and the next
+  ones) and then replays them, as a video stream does; a segment that is first refused by the buffer's ffprobe check after copying
+  blocks the copies behind it until the next recheck (the helper replays). The buffer holds `bufferDepth` segments of ~0.5–0.8 GB
+  each on the internal disk (more than one copy only while switching sources), within the existing refuse/warn levels. Another
+  computer sees a segments stream with `playing: null` (the shared report has no segment field).
+- **Bounds:** the library is only read; a missing/unreadable selected segment is skipped and logged at every recheck; none playable
+  is refused with a reason (never an empty pass); the disk thresholds of §3.5 apply to segment copies too.
+- **Re-evaluate:** if the generator moves the library to the internal disk, if streams replay because the T9 dropped, or when the
+  shared report should show segments.
+- **Gate(s):** none. **Status:** open.

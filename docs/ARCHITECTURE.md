@@ -3940,6 +3940,29 @@ Plan: `docs/roadmap/plans/LIVE_STREAMS_PLAN.md` (FO-REQ-0019). Schema v86, Facto
   when a peer reports the channel.
 - **Other computers** see the `live-streams` per-device report (`sync-gateway/live-streams`, strict fixed codes); the Operator reads
   `factory_live_get_status` and maps files with `factory_live_map_sources`. Bell notices: down, ended by YouTube, next video missing.
+- **A second source: the segment library** (BL-234, FO-REQ-0048 as changed by the owner, msgs 3792/3793/3795; ADR 0056).
+  - `live_streams.source_mode` (v114; null = `videos`, unchanged) chooses what the stream plays. `segments` = the owner's
+    selection (`live_stream_library_segments`, device-local, in order, with the facts of its last check) from the channel's
+    library `<workspace>/04 Videos/Live Segments/seg-<6 digits>.mp4` + sidecar `.json` (+ poster `.jpg`), written by the Operator's
+    generator as `.part` then renamed. `library.ts` lists only complete segments whose sidecar parses with the file's `seq`; it has
+    no write, rename or delete of a library file (`adapters/library-files.ts` reads through `resolveWorkspaceFile`, ffprobe cached by
+    path/size/mtime). No YouTube read: a segment is checked by ffprobe only (picture, AAC 44.1/48 kHz ≤ 2 ch, known duration).
+  - One engine: a segment's id in a pass is `seg-<seq>`; the supervisor's items are both sources' (`index.liveSourceItems`), the
+    buffer checks a segment copy with `checkSegmentMedia` instead of the YouTube duration, the helper is unchanged (resume by index
+    + offset, replay of the playable copies). `recheckLiveSource` dispatches by mode for Start, Restart, encoder starts and the
+    next-pass draw: a missing/unreadable selected segment is left out (`segment_refused`, once per change); the library unreadable →
+    the last checks stand (`segment_library_unavailable`); none → `live_stream_video_refused` with `no_segments_selected` /
+    `no_playable_segments` / the library's reason, never an empty pass. At the next-pass draw of a running stream any refusal draws
+    nothing (the helper replays its pass), is an event once per change (`source_refused`) and is retried at most every 60 s
+    (`SOURCE_RETRY_MS`; a mode switch or selection change ends the wait, `noteSourceChanged`); the library's state is an event per
+    change (`segment_library_unavailable` / `_available`). An empty videos answer on a running stream is a refusal too
+    (`no_playable_videos`); the switch back to videos needs a playable rotation video (`live_stream_no_ready_videos`, 409).
+  - The owner's switch (`PUT .../live-stream/source`) drops the already drawn next pass, so it applies at the next pass (at the
+    latest the one after) or at once with Restart / the next Start. Switching to segments is refused (`live_stream_no_ready_segments`,
+    409) until a selected segment passed its check; the selection is prepared in videos mode («Сегменты (подготовка)»). In segments
+    mode every selection change drops the drawn next pass too. The switch and the selection's writes take `withChannelLock`; an add
+    is one `INSERT … SELECT MAX+1` (`appendLiveStreamLibrarySegment`). No MCP tool reaches it or the selection; the status carries
+    `sources` (Factory 1.38.0, Agent 4.12.0). The shared report keeps `playing: null` for a segment (its id is not a video id).
 - **Streams and an upload share the Mac's uplink** (BL-233, FO-REQ-0047; owner msgs 3786/3788). Two encoders at 6000k plus a
   4.7 GB upload over ~10 Mbit/s Wi-Fi starved a stream (0.676x, `videoIngestionStarved`).
   - A stream's own bitrate: `live_streams.bitrate_kbps` (v113, null = the computer's `bitrateKbps`), saved with the stream's settings;

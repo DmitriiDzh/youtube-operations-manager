@@ -219,6 +219,7 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
   live_stream_videos: authorized("our own public videos in a live-stream rotation, with their privacy re-read from YouTube (BL-176)"),
   live_stream_events: authorized("our channels' live-broadcast audit trail and YouTube status changes (BL-176)"),
   live_stream_sources: notApiData("the Operator's map of our videos to local files (BL-176)"),
+  live_stream_library_segments: notApiData("the owner's selection of locally generated live segments: titles, durations and track names from the generator's sidecars (BL-234)"),
   live_stream_segments: authorized("our channels' live-stream segment broadcasts: ids, YouTube's start/end times and recording state (BL-205)"),
   live_broadcast_analytics: authorized("YouTube Analytics API data of our own ended broadcasts (BL-212): analytics, III.E.4.b"),
   live_viewer_samples: authorized("our own broadcasts' concurrent viewers and stream state, sampled by the stream's poll (BL-211): statistics, III.E.4.b"),

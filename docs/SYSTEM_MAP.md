@@ -876,6 +876,17 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
     `upload_released` в истории трансляции.
   - Factory API 1.37.0 / Agent API 4.11.0: `factory_live_get_status.encoders` и `.upload`; Web — поля в «Настройки → Трансляции»,
     битрейт в настройках трансляции, строка «загрузка ограничена / на паузе» (`GET /api/publishing/upload-bandwidth`).
+- **BL-234 второй источник трансляции — библиотека сегментов (FO-REQ-0048, ADR 0056, ветка `feature/bl-234-live-segments`, схема v114):**
+  - `live_streams.source_mode` (null = `videos`) и `live_stream_library_segments` (выбор владельца по порядку, факты последней
+    проверки); переключает только владелец в Web UI (`PUT .../live-stream/source`), действует со следующего прохода или сразу с
+    «Перезапустить энкодер» / «Старт».
+  - `live-streams/library.ts` (+ `adapters/library-files.ts`, только чтение): библиотека `<папка канала>/04 Videos/Live Segments/
+    seg-<seq>.mp4|.json|.jpg`, только готовые (без `.part`, sidecar с тем же seq), ffprobe без сравнения с YouTube; `recheck` по
+    режиму (`index.recheckLiveSource`) — пропуск отсутствующих/нечитаемых с событием, без диска — последние проверки, ни одного —
+    отказ с причиной. Буфер и хелпер те же (id `seg-<seq>`); файлы библиотеки приложение не удаляет.
+  - Web: карточка «Что играет трансляция», выбор сегментов и диалог библиотеки (`live-stream-library.tsx`); API
+    `.../live-stream/library` (GET/POST/PUT), `.../library/[seq]` (DELETE), `.../library/[seq]/poster`.
+  - Factory API 1.38.0 / Agent API 4.12.0: `factory_live_get_status.sources` (режим, библиотека, выбор, текущий сегмент и трек).
 - **Аналитика эфиров (BL-211..214, `docs/roadmap/plans/LIVE_ANALYTICS_PLAN.md`, ветка `feature/bl-211-live-viewer-samples`):** замеры опроса → `live_viewer_samples` (v105); общий модуль `src/lib/live-analytics/` (§M, не зависит от `live-streams`): сводка (`summarise.ts`: интервал ≤ 10 мин относится к первому замеру, длиннее — пропуск; обрывы — `encoder_run_exit` не `pass_end`), часовой цикл выгрузки YouTube Analytics по завершённым трансляциям (`collect.ts` → `live_broadcast_analytics`, v106; через час и финально через 4 дня; через read gateway `queryOwnVideoReport`). Web: карточка «Эфиры» (`live-stream-analytics.tsx`), `GET .../live-stream/analytics?days=1..90`. Producer API 1.11.0: `producer_live_analytics` (только данные этого компьютера). **BL-222 (план §6, в `dev`, 952d6e68):** компьютер с трансляцией раз в 5 минут публикует готовые сводки (1/7/30/90 дней по каждому каналу с замерами за 90 дней) в per-device отчёт `ytm-live-analytics` v1 (`sync-gateway/live-analytics`, семейство `live_analytics`, 18-е); маршрут отвечает своими замерами, а если их нет — новейшей сводкой другого компьютера (`source: local | peer`); карточка «Эфиры» показывается и там, где трансляция идёт на другом компьютере, с подписью, откуда данные. Без вызовов YouTube.
 - **BL-187 (этап 1 `docs/roadmap/plans/LIVE_STREAMS_FIELDS_PLAN.md`, ветка `feature/live-streams-fields-and-picker`, не в `dev`):**
   окно «Добавить видео…» — итоговые файлы `Vn` из `04 Videos/` с галочками (`picker.ts`, `picker-service.ts`,

@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
 import { authOptions } from "@/lib/auth";
 import { createChannelAccessCore } from "@/lib/channel-access";
-import { getChannelExpectedLanguages, latestLiveStreamEvent, listLiveStreamEvents } from "@/lib/db";
+import { getChannelExpectedLanguages, getLiveStream, latestLiveStreamEvent, listLiveStreamEvents } from "@/lib/db";
 import { createLiveStreamVideoFields } from "@/composition/live-stream-video-fields";
 import { createLiveStreamLocalizations } from "@/composition/live-stream-localizations";
 import { createLiveAnalyticsCore } from "@/lib/live-analytics";
@@ -18,7 +18,9 @@ import {
   createStreamVideoSettingsCore,
   createStreamLocalizationsCore,
   createLiveSegmentSettingsCore,
+  createSegmentLibraryCore,
   isDomainError,
+  sourceModeOf,
 } from "@/lib/live-streams";
 
 // BL-176 (LIVE_STREAMS_PLAN.md §3.9/§3.12): the owner's routes for a channel's live stream. Every handler: a Web session
@@ -58,6 +60,14 @@ export type LiveStreamRouteCore = {
   applyVideoSettings(channelId: string, credentialRef: { userId: string }): Promise<unknown>;
   /** BL-213: the «Эфиры» summary over the last `days` (local samples and events, no YouTube call). */
   liveAnalytics(channelId: string, days: number): Promise<unknown>;
+  /** BL-234: the stream's source (videos | segments) -- the owner's switch, local only; no agent tool reaches it. */
+  setSourceMode(channelId: string, body: unknown): Promise<unknown>;
+  /** BL-234: the channel's segment library (read-only) and the stream's selection from it (local only; files are never touched). */
+  listLibrary(channelId: string): Promise<unknown>;
+  readLibraryPoster(channelId: string, seq: number): Promise<Uint8Array | null>;
+  addSegments(channelId: string, body: unknown): Promise<unknown>;
+  removeSegment(channelId: string, seq: number): Promise<void>;
+  reorderSegments(channelId: string, body: unknown): Promise<void>;
 };
 
 
@@ -79,10 +89,11 @@ export function createLiveStreamRouteCore(): LiveStreamRouteCore {
   const videoSettings = createStreamVideoSettingsCore();
   const localizations = createStreamLocalizationsCore();
   const liveAnalytics = createLiveAnalyticsCore();
+  const library = createSegmentLibraryCore();
   return {
     liveAnalytics: (channelId, days) => liveAnalytics.summary(channelId, days),
     async overview(channelId) {
-      const [view, module, running, events, preview, youtube, entries, peers, video, lastApply, languages, segments, translations] = await Promise.all([
+      const [view, module, running, events, preview, youtube, entries, peers, video, lastApply, languages, segments, translations, stored, selection] = await Promise.all([
         rotation.getOverview(channelId),
         settings.get(),
         supervisor.runningHelper(channelId),
@@ -96,9 +107,15 @@ export function createLiveStreamRouteCore(): LiveStreamRouteCore {
         getChannelExpectedLanguages(channelId),
         createLiveSegmentSettingsCore().view(channelId),
         localizations.view(channelId),
+        getLiveStream(channelId),
+        library.selection(channelId),
       ]);
       return {
         ...view,
+        // BL-234: what the stream plays (the owner's switch) and the selection from the segment library (the library itself is its
+        // own read: listing the folder is left to the dialog).
+        sourceMode: sourceModeOf(stored),
+        segmentSelection: selection,
         // BL-186: null = never saved; a stored value that fails the schema is reported, never replaced by defaults.
         videoSettings: video.ok ? video.settings : null,
         videoSettingsProblem: video.ok ? null : video.problem,
@@ -147,6 +164,12 @@ export function createLiveStreamRouteCore(): LiveStreamRouteCore {
     saveSegments: (channelId, body) => createLiveSegmentSettingsCore().save(channelId, body),
     previewApplyVideoSettings: (channelId) => broadcasts.previewApplyVideoSettings(channelId),
     applyVideoSettings: (channelId, credentialRef) => broadcasts.applyVideoSettingsAgain(channelId, credentialRef),
+    setSourceMode: (channelId, body) => library.setSourceMode(channelId, body),
+    listLibrary: (channelId) => library.listLibrary(channelId),
+    readLibraryPoster: (channelId, seq) => library.readPoster(channelId, seq),
+    addSegments: (channelId, body) => library.addSegments(channelId, body),
+    removeSegment: (channelId, seq) => library.removeSegment(channelId, { seq }),
+    reorderSegments: (channelId, body) => library.reorderSegments(channelId, body),
   };
 }
 
@@ -194,4 +217,9 @@ export async function readJsonBody(request: Request): Promise<{ ok: true; body: 
   } catch {
     return { ok: false, response: NextResponse.json({ error: "validation_failed", message: "Request body must be valid JSON" }, { status: 400 }) };
   }
+}
+
+/** BL-234: a library segment's seq from the path -- 1 to 6 digits, else null (a 400 before the module). */
+export function seqParam(value: string | undefined): number | null {
+  return value && /^\d{1,6}$/.test(value) ? Number(value) : null;
 }

@@ -11,6 +11,10 @@ import { createLiveStreamThumbnailHandlers } from "./thumbnail/route";
 import { createLiveStreamVideoSettingsPutHandler } from "./video-settings/route";
 import { createLiveStreamLocalizationsHandlers } from "./localizations/route";
 import { createLiveStreamAnalyticsGetHandler } from "./analytics/route";
+import { createSourceModePutHandler } from "./source/route";
+import { createLibraryHandlers } from "./library/route";
+import { createLibrarySegmentDeleteHandler } from "./library/[seq]/route";
+import { createLibraryPosterGetHandler } from "./library/[seq]/poster/route";
 import { createStreamLocalizations } from "@/lib/live-streams/localizations";
 import { readStoredVideoSettings } from "@/lib/live-streams/video-settings";
 import type { LiveStreamRouteCore, LiveStreamRouteDeps } from "./shared";
@@ -209,4 +213,33 @@ test("BL-213: analytics route -- 401 without a session, 403 for another channel,
   assert.equal((await get(deps())).status, 200);
   assert.equal((await get(deps(), "?days=30")).status, 200);
   assert.deepEqual(calls, ['liveAnalytics:["UC1",7]', 'liveAnalytics:["UC1",30]']);
+});
+
+// BL-234 (FO-REQ-0048, ADR 0056): the source switch and the segment library are the owner's Web routes -- a session (401) and the
+// active channel (403, wrong channel fails closed) before the module; a seq that is not 1-6 digits is a 400 before the module.
+test("BL-234: source switch and library routes -- 401/403 before the module, the body and seq passed through, bad seq 400", async () => {
+  calls.length = 0;
+  const put = (body: unknown) => new Request("http://localhost/x", { method: "PUT", body: JSON.stringify(body), headers: { "content-type": "application/json" } });
+  const get = () => new Request("http://localhost/x", { method: "GET" });
+  const seqCtx = (seq: string, channelId = "UC1") => ({ params: Promise.resolve({ channelId, seq }) });
+  assert.equal((await createSourceModePutHandler(deps({ session: false }))(put({ mode: "segments" }), ctx())).status, 401);
+  assert.equal((await createSourceModePutHandler(deps({ activeChannel: "UC2" }))(put({ mode: "segments" }), ctx())).status, 403);
+  assert.equal((await createLibraryHandlers(deps({ activeChannel: "UC2" })).GET(get(), ctx())).status, 403);
+  assert.equal((await createLibraryHandlers(deps({ activeChannel: "UC2" })).POST(post({ seqs: [1] }), ctx())).status, 403);
+  assert.equal((await createLibrarySegmentDeleteHandler(deps({ activeChannel: "UC2" }))(new Request("http://localhost/x", { method: "DELETE" }), seqCtx("1"))).status, 403);
+  assert.equal((await createLibraryPosterGetHandler(deps({ session: false }))(get(), seqCtx("1"))).status, 401);
+  assert.deepEqual(calls, []);
+
+  assert.equal((await createSourceModePutHandler(deps())(put({ mode: "segments" }), ctx())).status, 200);
+  assert.equal((await createLibraryHandlers(deps()).POST(post({ seqs: [3, 1] }), ctx())).status, 201);
+  assert.equal((await createLibraryHandlers(deps()).PUT(put({ seqs: [1, 3] }), ctx())).status, 200);
+  assert.equal((await createLibrarySegmentDeleteHandler(deps())(new Request("http://localhost/x", { method: "DELETE" }), seqCtx("000003"))).status, 200);
+  assert.deepEqual(calls, ['setSourceMode:["UC1",{"mode":"segments"}]', 'addSegments:["UC1",{"seqs":[3,1]}]', 'reorderSegments:["UC1",{"seqs":[1,3]}]', 'removeSegment:["UC1",3]']);
+
+  calls.length = 0;
+  for (const bad of ["abc", "1234567", "-1", "1.5"]) {
+    assert.equal((await createLibrarySegmentDeleteHandler(deps())(new Request("http://localhost/x", { method: "DELETE" }), seqCtx(bad))).status, 400, bad);
+    assert.equal((await createLibraryPosterGetHandler(deps())(get(), seqCtx(bad))).status, 400, bad);
+  }
+  assert.deepEqual(calls, []);
 });

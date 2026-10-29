@@ -607,6 +607,21 @@ Details (proposed in msg 2577, accepted in msg 2578):
   (`videoIngestionStarved`) for a poll, and ffmpeg caught up by itself. A wired connection is advised for 24/7 streams.
 - **Quota:** 1 unit per live call as listed; the Cloud Console check is still owed.
 
+## 6a. A second source: the segment library (BL-234, FO-REQ-0048, ADR 0056, 2026-10-29)
+
+- A stream's source mode (`live_streams.source_mode`, v114): `videos` (§3.4, unchanged) or `segments` -- the owner's selection from
+  `<workspace>/04 Videos/Live Segments/seg-<seq>.mp4` + `.json` sidecar (+ `.jpg` poster) that the Operator's generator writes.
+  The library is never consumed: segments are not deleted after playing, and the app deletes no library file.
+- Screens (§3.12): «Что играет трансляция» (the owner's switch, Web only; segments only once a selected segment passed its check),
+  the rotation and the segment selection («Сегменты (подготовка)» while videos play) with posters, durations and tracks, ↑↓, remove
+  (from the stream only) and «Добавить сегменты…».
+- Engine (§3.5/§3.6): unchanged; segment ids `seg-<seq>` in passes, buffer and helper; ffprobe-only checks; no public-only guard.
+- A switch applies at the next pass (the drawn next pass is dropped), at the latest the pass after, or at once with Restart / Start;
+  in segments mode a selection change drops the drawn next pass too. A source refusal never draws an empty pass (the helper replays).
+- Acceptance (automated): `library.test.ts`, the BL-234 cases of `buffer.test.ts`, `supervisor.test.ts`,
+  `helper/encoder-helper.test.ts`, the routes and `factory-server.test.ts` (no tool reaches the switch). On the Mac: the owner
+  switches Japan first, then Tropico, after the Operator's test segments.
+
 ## 7. Not in phase 1
 - **Phase 2:**
   - Stop, Start and rotation edits from Windows;

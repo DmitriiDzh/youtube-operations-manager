@@ -2,6 +2,7 @@ import { randomBytes, randomInt, randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
+import { appendLiveStreamLibrarySegment, listLiveStreamLibrarySegments, updateLiveStreamLibrarySegment, deleteLiveStreamLibrarySegment, setLiveStreamLibrarySegmentOrder } from "@/lib/db";
 import { getChannelExpectedLanguages, listLiveStreamEventsOfKind, listLiveStreamSegments, latestLiveStreamEvent, getStoredChannel, listOpenLiveStreamSegments, updateLiveStreamSegment, insertLiveStreamSegment, countLiveStreamEvents,
   getLiveStream,
   getLiveWritesEnabled,
@@ -24,6 +25,8 @@ import { createLiveStreamsShareCoreForProduction, LIVE_STREAMS_REPORT_FORMAT, LI
 import { getBootstrapDeviceId } from "./adapters/device-id";
 import { createBufferFs } from "./adapters/buffer-fs";
 import { createLiveStreamsFiles } from "./adapters/files";
+import { createLibraryFiles } from "./adapters/library-files";
+import { createSegmentLibrary, segmentFile, segmentSourceStatus, sourceModeOf, type LibraryUnavailableReason, type SegmentLibrary } from "./library";
 import { createPickerFiles } from "./adapters/picker-files";
 import { createHelperProcess, createSupervisorFiles } from "./adapters/helper-process";
 import { createLiveStreamsStore } from "./adapters/store";
@@ -44,7 +47,7 @@ import { createRotationPicker } from "./picker-service";
 import { streamReportEntry, type StreamReportEntry } from "./report";
 import { createLiveStreamsServices } from "./services";
 import { createLiveStreamsSettings, liveStreamsHost } from "./settings";
-import { createStreamSupervisor, isChannelLockBusy, withChannelLock, type HelperStatus } from "./supervisor";
+import { createStreamSupervisor, isChannelLockBusy, noteSourceChanged, withChannelLock, type HelperStatus } from "./supervisor";
 import { encoderReading, type EncoderReading } from "./encoder-load";
 import { createStreamVideoSettings } from "./video-settings";
 
@@ -68,6 +71,94 @@ export function createLiveStreamsCore() {
 }
 
 export type LiveStreamsCore = ReturnType<typeof createLiveStreamsCore>;
+
+const LIBRARY_STATE_KEY = Symbol.for("ytom.liveStreams.libraryState");
+const LIBRARY_STATUS_KEY = Symbol.for("ytom.liveStreams.libraryStatusCache");
+const globals = globalThis as typeof globalThis & { [key: symbol]: unknown };
+/** BL-234 review item 2: the library's last state per stream, process-wide (the cores are built per call). */
+const libraryStates = () => (globals[LIBRARY_STATE_KEY] ??= new Map<string, string>()) as Map<string, string>;
+/** BL-234 review item 5: the status's library listing, kept 30 s per stream (the status is read often; the folder is on the T9). */
+const LIBRARY_STATUS_TTL_MS = 30_000;
+const libraryStatusCache = () => (globals[LIBRARY_STATUS_KEY] ??= new Map<string, { at: number; library: { ok: true } | { ok: false; reason: LibraryUnavailableReason } }>()) as Map<string, { at: number; library: { ok: true } | { ok: false; reason: LibraryUnavailableReason } }>;
+
+/** BL-234 (FO-REQ-0048, ADR 0056): the segment library of a channel and the stream's selection from it. Local only, no YouTube call. */
+export function createSegmentLibraryCore(): SegmentLibrary & { readPoster(channelId: string, seq: number): Promise<Uint8Array | null> } {
+  const workspaces = createChannelWorkspacesCore();
+  const files = createLibraryFiles(async (channelId) => workspaces.getWorkspace({ channelId }));
+  const library = createSegmentLibrary({
+    ...files,
+    store: {
+      getStream: (channelId) => getLiveStream(channelId),
+      // The next pass drawn in the old mode is dropped, so the next draw is in the new one (the switch applies at the next pass).
+      setSourceMode: (channelId, mode) => updateLiveStream(channelId, { sourceMode: mode, nextPassOrderJson: null, updatedAt: new Date() }),
+      list: (channelId) => listLiveStreamLibrarySegments(channelId),
+      clearNextPass: async (channelId) => {
+        await updateLiveStream(channelId, { nextPassOrderJson: null, updatedAt: new Date() });
+      },
+      append: (row) => appendLiveStreamLibrarySegment(row),
+      update: (channelId, seq, set) => updateLiveStreamLibrarySegment(channelId, seq, set),
+      remove: (channelId, seq) => deleteLiveStreamLibrarySegment(channelId, seq),
+      setOrder: (channelId, seqs) => setLiveStreamLibrarySegmentOrder(channelId, seqs),
+    },
+    event: async (channelId, kind, detail) => insertLiveStreamEvent({ id: randomUUID(), channelId, at: new Date(), kind, detailJson: JSON.stringify(detail) }),
+    clock: () => new Date(),
+    withLock: (channelId, fn) => withChannelLock(channelId, fn),
+    rotationReady: async (channelId) => (await listLiveStreamVideos(channelId)).some((v) => v.checkStatus === "ok" || Boolean(v.guardOverrideReason)),
+    sourceChanged: (channelId) => noteSourceChanged(channelId),
+    libraryState: { get: (channelId) => libraryStates().get(channelId) ?? null, set: (channelId, state) => void libraryStates().set(channelId, state) },
+  });
+  return { ...library, readPoster: (channelId, seq) => files.readBytes(channelId, segmentFile(seq, "jpg"), 8 * 1024 * 1024) };
+}
+
+/**
+ * BL-234: the stream's recheck by its source -- the rotation's public videos (YouTube) or the selected library segments (the files).
+ * Start, Restart, every encoder start and every next-pass draw go through it, so a source switch applies there.
+ */
+export async function recheckLiveSource(channelId: string): Promise<string[]> {
+  return sourceModeOf(await getLiveStream(channelId)) === "segments"
+    ? createSegmentLibraryCore().recheck(channelId)
+    : (await createLiveStreamsCore().recheckRotation(channelId)).playable;
+}
+
+/** BL-234: every item a pass may name -- the rotation's videos and the selected segments -- with its file and durations. */
+async function liveSourceItems(channelId: string) {
+  const [videos, segments] = await Promise.all([listLiveStreamVideos(channelId), createSegmentLibraryCore().items(channelId)]);
+  return [...videos, ...segments];
+}
+
+/**
+ * BL-234: the source part of `factory_live_get_status` for this computer's streams: the mode, the selection, the library's
+ * availability and, in segments mode, the segment and track playing. Local reads only (the library folder is listed, nothing probed).
+ */
+export async function collectLiveSourceStatus(channelIds: readonly string[]) {
+  const supervisor = createStreamSupervisorCore();
+  const workspaces = createChannelWorkspacesCore();
+  const files = createLibraryFiles(async (channelId) => workspaces.getWorkspace({ channelId }));
+  return Promise.all(
+    channelIds.map(async (channelId) => {
+      const [stream, rows, status] = await Promise.all([getLiveStream(channelId), listLiveStreamLibrarySegments(channelId), supervisor.readStatus(channelId)]);
+      const sourceMode = sourceModeOf(stream);
+      // Review item 5: the folder is not listed in videos mode (library: null), and at most every 30 s in segments mode.
+      let library: { ok: true } | { ok: false; reason: LibraryUnavailableReason } | null = null;
+      if (sourceMode === "segments") {
+        const cached = libraryStatusCache().get(channelId);
+        if (cached && Date.now() - cached.at < LIBRARY_STATUS_TTL_MS) library = cached.library;
+        else {
+          const listing = await files.listLibrary(channelId);
+          library = listing.ok ? { ok: true } : { ok: false, reason: listing.reason };
+          libraryStatusCache().set(channelId, { at: Date.now(), library });
+        }
+      }
+      return segmentSourceStatus({
+        channelId,
+        sourceMode,
+        rows,
+        library,
+        position: status ? { segmentId: status.position.videoId, offsetSeconds: status.position.offset } : null,
+      });
+    })
+  );
+}
 
 /** BL-186: the stream's own video and broadcast settings and its thumbnail, saved on this computer. Local only. */
 export function createStreamVideoSettingsCore() {
@@ -141,8 +232,9 @@ export function createStreamSupervisorCore() {
     streams: {
       get: (channelId) => getLiveStream(channelId),
       update: (channelId, set) => updateLiveStream(channelId, { ...set, updatedAt: new Date() }),
-      videos: (channelId) => listLiveStreamVideos(channelId),
-      recheck: async (channelId) => (await createLiveStreamsCore().recheckRotation(channelId)).playable,
+      // BL-234: both sources' items (a pass drawn before a source switch still finds its files); the recheck by the stream's source.
+      videos: (channelId) => liveSourceItems(channelId),
+      recheck: (channelId) => recheckLiveSource(channelId),
       event,
       sample: (channelId, sample) => insertLiveViewerSample({ channelId, ...sample }),
     },
@@ -177,7 +269,7 @@ export function createLiveBroadcastsCore(options: LiveVideoWriters = {}) {
       update: (channelId, set) => updateLiveStream(channelId, { ...set, updatedAt: new Date() }),
       event: async (channelId, kind, detail) => insertLiveStreamEvent({ id: randomUUID(), channelId, at: new Date(), kind, detailJson: JSON.stringify(detail) }),
     },
-    rotation: { recheck: async (channelId) => (await createLiveStreamsCore().recheckRotation(channelId)).playable },
+    rotation: { recheck: (channelId) => recheckLiveSource(channelId) },
     youtube: createLiveStreamsYoutubeWrites(),
     supervisor: createStreamSupervisorCore(),
     clock: () => new Date(),
@@ -421,6 +513,7 @@ export type { LiveStreamsRunner } from "./runner";
 export * from "./contracts";
 export type { PickerRow, PickerRowState, PickerVideo, MatchSource } from "./picker";
 export type { PickerResult } from "./picker-service";
+export { LIBRARY_FOLDER, LIVE_SOURCE_MODES, segmentId, sourceModeOf, type LiveSourceMode, type LibrarySegmentView, type SelectedSegmentView } from "./library";
 export { checkOriginal, checkPublicOnly, classifyRunEnd, locatePlayback, passLength, planBuffer, canCopyIntoBuffer } from "./rotation";
 
 export type { LocalizationsPort, VideoFieldsPort, VideoApplyResult } from "./video-apply";

@@ -260,6 +260,10 @@ export type DomainErrorCode =
   | "live_stream_video_refused"
   | "live_stream_workspace_unavailable"
   | "live_stream_video_not_found"
+  // BL-234 (review item 1b): a stream is switched to segments only with at least one selected segment that passed its check.
+  | "live_stream_no_ready_segments"
+  // BL-234 (re-review): and back to videos only with at least one rotation video that passed its check.
+  | "live_stream_no_ready_videos"
   // BL-207 (LIVE_LOCALIZATIONS_PLAN.md AC-LL-10): the channel has no live stream on this computer (nothing to attach translations to).
   | "live_stream_not_found"
   // HOST_UNSUPPORTED: the module can be switched on only on the Mac running as the system service (ADR 0036 §1).

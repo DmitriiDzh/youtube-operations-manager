@@ -804,7 +804,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     domain: "channel_production",
     permission: "READ",
     description:
-      "This channel's live stream status, segments, translations, encoder speed and lag, and the upload limit (`agent_live_get_status`), as factory_live_get_status for this channel.",
+      "This channel's live stream status, segments, translations, encoder speed and lag, the upload limit, and the stream's source (published videos or the segment library, with the segment and track playing) (`agent_live_get_status`), as factory_live_get_status for this channel. Switching the source is the owner's, in the app.",
   },
   {
     id: "channel_production.write_live",
