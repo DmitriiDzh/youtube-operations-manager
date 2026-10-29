@@ -32,7 +32,9 @@ stream UI instead of videos, and the stream loops over them like today's rotatio
    segment is checked again from the library: a missing or unreadable one is left out of the pass and logged (`segment_refused`,
    once per change); with the library unreadable the last checks stand (the buffer's copies keep playing, as a video stream does
    without the drive); none selected or none playable is refused with its reason (`no_segments_selected`, `no_playable_segments`,
-   or the library's), never an empty pass.
+   or the library's), never an empty pass at Start. For a running stream the refusal at the next-pass draw is recorded once per
+   change (`source_refused`): no segment selected any more (the owner's choice) draws an empty next pass, as an empty rotation does
+   (the stream then reports no source); selected segments that cannot play draw nothing, and the helper replays its pass.
 6. **When a switch applies:** where rotation edits apply -- at the next pass (the next pass already drawn is dropped so the next draw
    is in the new mode; at the latest the pass after, if the helper reached the end in between), or at once with «Перезапустить
    энкодер» or the next Start.

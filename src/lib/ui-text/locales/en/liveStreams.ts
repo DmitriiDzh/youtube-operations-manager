@@ -553,4 +553,5 @@ export const liveStreams = {
   "live.event.libraryReorder": "Segment order changed",
   "live.event.segmentRefused": "Segment skipped",
   "live.event.segmentLibraryUnavailable": "Segment library unavailable",
+  "live.event.sourceRefused": "Next pass not drawn: nothing to play",
 } as const;

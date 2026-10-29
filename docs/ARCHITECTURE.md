@@ -3952,7 +3952,9 @@ Plan: `docs/roadmap/plans/LIVE_STREAMS_PLAN.md` (FO-REQ-0019). Schema v86, Facto
     + offset, replay of the playable copies). `recheckLiveSource` dispatches by mode for Start, Restart, encoder starts and the
     next-pass draw: a missing/unreadable selected segment is left out (`segment_refused`, once per change); the library unreadable →
     the last checks stand (`segment_library_unavailable`); none → `live_stream_video_refused` with `no_segments_selected` /
-    `no_playable_segments` / the library's reason, never an empty pass (a refusal in a tick leaves the plan alone).
+    `no_playable_segments` / the library's reason, never an empty pass at Start. At the next-pass draw of a running stream the
+    refusal is an event once per change (`source_refused`): `no_segments_selected` draws an empty next pass (as an empty rotation:
+    no source), any other reason draws nothing (the helper replays its pass).
   - The owner's switch (`PUT .../live-stream/source`) drops the already drawn next pass, so it applies at the next pass (at the
     latest the one after) or at once with Restart / the next Start. No MCP tool reaches it or the selection; the status carries
     `sources` (Factory 1.38.0, Agent 4.12.0). The shared report keeps `playing: null` for a segment (its id is not a video id).

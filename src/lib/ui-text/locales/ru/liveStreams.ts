@@ -555,4 +555,5 @@ export const liveStreams: Record<keyof typeof en, string> = {
   "live.event.libraryReorder": "Порядок сегментов изменён",
   "live.event.segmentRefused": "Сегмент пропущен",
   "live.event.segmentLibraryUnavailable": "Библиотека сегментов недоступна",
+  "live.event.sourceRefused": "Следующий проход не собран: нечего играть",
 };

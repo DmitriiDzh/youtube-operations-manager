@@ -1091,6 +1091,7 @@ const EVENT_KEYS: Record<string, UiTextKey> = {
   library_reorder: "live.event.libraryReorder",
   segment_refused: "live.event.segmentRefused",
   segment_library_unavailable: "live.event.segmentLibraryUnavailable",
+  source_refused: "live.event.sourceRefused",
 };
 
 const UPLOAD_RELEASE_KEYS: Record<string, UiTextKey> = {

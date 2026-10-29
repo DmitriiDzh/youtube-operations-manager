@@ -583,7 +583,7 @@ test("BL-234: a source switch applies at the next pass drawn; the pass playing k
   assert.deepEqual(h.syncs.at(-1), { order: [A, B, C], currentIndex: 2, nextPassFirst: S2 });
 });
 
-test("BL-234: a recheck that refuses at the pass end (no playable segment) leaves the plan alone -- the helper keeps its pass", async () => {
+test("BL-234: selected segments that cannot play at the pass end leave the plan alone (the helper replays) and say why once", async () => {
   const h = harness({ playable: [S2, S1] });
   h.deps.streams.videos = async () => segmentItems;
   await h.supervisor.startEncoder("UC1", { freshPass: true });
@@ -591,11 +591,40 @@ test("BL-234: a recheck that refuses at the pass end (no playable segment) leave
     throw new DomainError({ code: "live_stream_video_refused", message: "None of the selected segments can be played", details: { reason: "no_playable_segments" } });
   };
   h.status({ passVideoIds: [S2, S1], position: { index: 1, videoId: S1, offset: 5 } });
-  await assert.rejects(h.supervisor.tick("UC1"), (error: unknown) => error instanceof DomainError && (error.details as { reason: string }).reason === "no_playable_segments");
+  await h.supervisor.tick("UC1");
+  await h.supervisor.tick("UC1");
   const plan = JSON.parse(h.files.get("/appdata/live-streams/UC1/plan.json")!);
   assert.equal(plan.nextPass, null, "no empty next pass written");
   assert.equal(h.stream().nextPassOrderJson, null);
   assert.equal(h.stream().positionIndex, 1, "the position was still carried");
+  assert.deepEqual(h.events.filter((e) => e.kind === "source_refused").map((e) => e.detail), [{ reason: "no_playable_segments" }], "once per change");
+  assert.deepEqual(h.syncs.at(-1), { order: [S2, S1], currentIndex: 1, nextPassFirst: null }, "the buffer is still kept");
+});
+
+test("BL-234: no segment selected any more (the owner removed them all) draws an empty next pass, as an empty rotation does", async () => {
+  const h = harness({ playable: [S2, S1] });
+  h.deps.streams.videos = async () => segmentItems;
+  await h.supervisor.startEncoder("UC1", { freshPass: true });
+  h.deps.streams.recheck = async () => {
+    throw new DomainError({ code: "live_stream_video_refused", message: "No segment is selected", details: { reason: "no_segments_selected" } });
+  };
+  h.status({ passVideoIds: [S2, S1], position: { index: 1, videoId: S1, offset: 5 } });
+  await h.supervisor.tick("UC1");
+  assert.equal(h.stream().nextPassOrderJson, "[]");
+  const plan = JSON.parse(h.files.get("/appdata/live-streams/UC1/plan.json")!);
+  assert.deepEqual([plan.nextPass.number, plan.nextPass.videos, plan.playable], [2, [], []]);
+  assert.deepEqual(h.events.filter((e) => e.kind === "source_refused").map((e) => e.detail), [{ reason: "no_segments_selected" }]);
+});
+
+test("BL-234: any other recheck failure (a YouTube read in videos mode) still fails the tick as before", async () => {
+  const h = harness();
+  await h.supervisor.startEncoder("UC1", { freshPass: true });
+  h.deps.streams.recheck = async () => {
+    throw new Error("quotaExceeded");
+  };
+  h.status({ passVideoIds: [A, B, C], position: { index: 2, videoId: C, offset: 5 } });
+  await assert.rejects(h.supervisor.tick("UC1"), /quotaExceeded/);
+  assert.equal(h.events.some((e) => e.kind === "source_refused"), false);
 });
 
 test("BL-234: Start in segments mode with nothing playable is refused with the source's reason, nothing spawned", async () => {

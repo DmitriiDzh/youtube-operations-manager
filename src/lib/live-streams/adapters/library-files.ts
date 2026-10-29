@@ -62,7 +62,7 @@ export function createLibraryFiles(
     async readBytes(channelId, relativePath, maxBytes) {
       const file = await resolve(channelId, relativePath);
       if (!file || file.bytes > maxBytes) return null;
-      return files.readHead(file.path, maxBytes).catch(() => null);
+      return files.readHead(file.path, file.bytes).catch(() => null);
     },
     async readText(channelId, relativePath, maxBytes) {
       const file = await resolve(channelId, relativePath);
