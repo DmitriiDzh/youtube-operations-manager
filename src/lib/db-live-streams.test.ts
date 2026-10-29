@@ -19,6 +19,11 @@ import {
   listLiveStreamSources,
   listLiveStreamVideos,
   listLiveStreams,
+  listLiveStreamLibrarySegments,
+  upsertLiveStreamLibrarySegment,
+  updateLiveStreamLibrarySegment,
+  deleteLiveStreamLibrarySegment,
+  setLiveStreamLibrarySegmentOrder,
   SCHEMA_CURRENT_VERSION,
   SCHEMA_MIGRATIONS,
   setLiveStreamRotationOrder,
@@ -226,4 +231,38 @@ test("v106: sampled broadcasts with first/last sample; live_broadcast_analytics 
     const stored = await listLiveBroadcastAnalytics(["B1", "B9"], database);
     assert.deepEqual(stored.map((r) => [r.broadcastId, r.status, r.attempts, r.collectedAt?.getTime(), r.dataJson, r.error]), [["B1", "collected", 2, at(30).getTime(), "{}", null]]);
     assert.deepEqual(await listLiveBroadcastAnalytics([], database), []);
+  }));
+
+// BL-234 (FO-REQ-0048, ADR 0056): schema v114 adds the stream's source mode (null = videos, as before) and the selection from the
+// segment library -- per channel, in the owner's order, the order settable only to exactly the selection; the migration converges.
+test("v114: source_mode null on a new row; library selection per channel, ordered, order only to exactly the selection", () =>
+  withDb(async (database, client) => {
+    const columns = await client.execute("PRAGMA table_info(live_streams)");
+    assert.ok(columns.rows.some((row) => row.name === "source_mode"));
+    const v114 = SCHEMA_MIGRATIONS.find((m) => m.version === 114);
+    assert.ok(v114, "schema v114 exists");
+    await v114.apply(client);
+    await v114.apply(client);
+    await upsertLiveStream(stream(), database);
+    assert.equal((await getLiveStream("UC1", database))?.sourceMode, null);
+    assert.equal(await updateLiveStream("UC1", { sourceMode: "segments" }, database), true);
+    assert.equal((await getLiveStream("UC1", database))?.sourceMode, "segments");
+    const seg = (channelId: string, seq: number, rotationIndex: number) => ({
+      channelId, seq, rotationIndex, title: `S${seq}`, durationSeconds: 1800, sidecarDurationSeconds: 1800, bytes: 1, tracksJson: "[]", checkStatus: "ok" as const, checkReason: null, checkedAt: T, addedAt: T,
+    });
+    await upsertLiveStreamLibrarySegment(seg("UC1", 7, 1), database);
+    await upsertLiveStreamLibrarySegment(seg("UC1", 3, 0), database);
+    await upsertLiveStreamLibrarySegment(seg("UC2", 9, 0), database);
+    assert.deepEqual((await listLiveStreamLibrarySegments("UC1", database)).map((r) => r.seq), [3, 7]);
+    assert.equal(await setLiveStreamLibrarySegmentOrder("UC1", [7], database), false);
+    assert.equal(await setLiveStreamLibrarySegmentOrder("UC1", [7, 9], database), false);
+    assert.equal(await setLiveStreamLibrarySegmentOrder("UC1", [7, 7], database), false);
+    assert.equal(await setLiveStreamLibrarySegmentOrder("UC1", [7, 3], database), true);
+    assert.deepEqual((await listLiveStreamLibrarySegments("UC1", database)).map((r) => r.seq), [7, 3]);
+    assert.equal(await updateLiveStreamLibrarySegment("UC1", 3, { checkStatus: "refused", checkReason: "audio_unsupported" }, database), true);
+    assert.equal(await updateLiveStreamLibrarySegment("UC1", 9, { checkStatus: "refused" }, database), false);
+    assert.equal(await deleteLiveStreamLibrarySegment("UC1", 9, database), false);
+    assert.equal(await deleteLiveStreamLibrarySegment("UC1", 7, database), true);
+    assert.deepEqual((await listLiveStreamLibrarySegments("UC1", database)).map((r) => [r.seq, r.checkStatus]), [[3, "refused"]]);
+    assert.deepEqual((await listLiveStreamLibrarySegments("UC2", database)).map((r) => r.seq), [9]);
   }));

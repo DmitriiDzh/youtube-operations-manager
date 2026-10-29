@@ -1500,6 +1500,9 @@ export const liveStreams = sqliteTable("live_streams", {
   /** Schema v113 (BL-233, FO-REQ-0047): the stream's own encoder bitrate in kbit/s (1000..12000, checked by live-streams); null =
    * this computer's setting. Device-local, like the row. */
   bitrateKbps: integer("bitrate_kbps"),
+  /** Schema v114 (BL-234, FO-REQ-0048, ADR 0056): what the stream plays -- `videos` (the rotation of published videos) or `segments`
+   * (the owner's selection from the channel's segment library); null = `videos`. Set by the owner only. Device-local, like the row. */
+  sourceMode: text("source_mode", { enum: ["videos", "segments"] }),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
 });
@@ -1675,6 +1678,33 @@ export const liveStreamSources = sqliteTable(
     setAt: integer("set_at", { mode: "timestamp_ms" }).notNull(),
   },
   (table) => [primaryKey({ columns: [table.channelId, table.videoId] })]
+);
+
+/**
+ * Schema v114 (BL-234, FO-REQ-0048, ADR 0056): the owner's selection from a channel's segment library
+ * (`<workspace>/04 Videos/Live Segments/seg-<seq>.mp4` + sidecar), one row per segment, in the owner's order -- the `segments`
+ * source's rotation. The facts of its last check (title, durations, bytes, tracks) are kept so the status works while the library's
+ * drive is away. Removing a row never touches the file. Device-local.
+ */
+export const liveStreamLibrarySegments = sqliteTable(
+  "live_stream_library_segments",
+  {
+    channelId: text("channel_id").notNull(),
+    seq: integer("seq").notNull(),
+    rotationIndex: integer("rotation_index").notNull(),
+    title: text("title"),
+    /** The probed duration of the file (what the encoder plays); the sidecar's `durationSec` is kept beside it. */
+    durationSeconds: real("duration_seconds"),
+    sidecarDurationSeconds: real("sidecar_duration_seconds"),
+    bytes: integer("bytes"),
+    /** JSON `[{ title, startSec }]` from the sidecar. */
+    tracksJson: text("tracks_json"),
+    checkStatus: text("check_status", { enum: ["ok", "refused", "unchecked"] }).notNull(),
+    checkReason: text("check_reason"),
+    checkedAt: integer("checked_at", { mode: "timestamp_ms" }),
+    addedAt: integer("added_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.channelId, table.seq] }), index("live_stream_library_segments_order_idx").on(table.channelId, table.rotationIndex)]
 );
 
 export const mediaExchangeInputs = sqliteTable(
@@ -5770,6 +5800,34 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       } catch (error) {
         if (!isDuplicateColumnError(error)) throw error;
       }
+    },
+  },
+  {
+    version: 114,
+    description:
+      "live_streams.source_mode + live_stream_library_segments -- BL-234 (FO-REQ-0048, ADR 0056): a stream plays either its rotation of published videos (null/videos) or the owner's selection from the channel's segment library (segments). Additive (nullable column, new table), device-local",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE live_streams ADD COLUMN source_mode TEXT");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
+      await client.execute(`CREATE TABLE IF NOT EXISTS live_stream_library_segments (
+        channel_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        rotation_index INTEGER NOT NULL,
+        title TEXT,
+        duration_seconds REAL,
+        sidecar_duration_seconds REAL,
+        bytes INTEGER,
+        tracks_json TEXT,
+        check_status TEXT NOT NULL,
+        check_reason TEXT,
+        checked_at INTEGER,
+        added_at INTEGER NOT NULL,
+        PRIMARY KEY (channel_id, seq)
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS live_stream_library_segments_order_idx ON live_stream_library_segments (channel_id, rotation_index)");
     },
   },
 ];
@@ -15304,6 +15362,66 @@ export async function upsertLiveStreamSource(row: typeof liveStreamSources.$infe
 
 export async function listLiveStreamSources(channelId: string, database: AppDb = db): Promise<StoredLiveStreamSource[]> {
   return database.select().from(liveStreamSources).where(eq(liveStreamSources.channelId, channelId)).orderBy(asc(liveStreamSources.videoId));
+}
+
+export type StoredLiveStreamLibrarySegment = typeof liveStreamLibrarySegments.$inferSelect;
+
+/** BL-234: the channel's selected library segments in the owner's order. */
+export async function listLiveStreamLibrarySegments(channelId: string, database: AppDb = db): Promise<StoredLiveStreamLibrarySegment[]> {
+  return database
+    .select()
+    .from(liveStreamLibrarySegments)
+    .where(eq(liveStreamLibrarySegments.channelId, channelId))
+    .orderBy(asc(liveStreamLibrarySegments.rotationIndex), asc(liveStreamLibrarySegments.seq));
+}
+
+/** BL-234: adds a segment to the selection or replaces its row (same channel and seq). */
+export async function upsertLiveStreamLibrarySegment(row: typeof liveStreamLibrarySegments.$inferInsert, database: AppDb = db): Promise<void> {
+  const { channelId, seq, addedAt, ...rest } = row;
+  void addedAt;
+  await database
+    .insert(liveStreamLibrarySegments)
+    .values(row)
+    .onConflictDoUpdate({ target: [liveStreamLibrarySegments.channelId, liveStreamLibrarySegments.seq], set: { ...rest, channelId, seq } });
+}
+
+export async function updateLiveStreamLibrarySegment(
+  channelId: string,
+  seq: number,
+  set: Partial<Omit<typeof liveStreamLibrarySegments.$inferInsert, "channelId" | "seq" | "addedAt">>,
+  database: AppDb = db
+): Promise<boolean> {
+  const rows = await database
+    .update(liveStreamLibrarySegments)
+    .set(set)
+    .where(and(eq(liveStreamLibrarySegments.channelId, channelId), eq(liveStreamLibrarySegments.seq, seq)))
+    .returning({ seq: liveStreamLibrarySegments.seq });
+  return rows.length > 0;
+}
+
+/** BL-234: removes a segment from the selection only (the library file is never touched). */
+export async function deleteLiveStreamLibrarySegment(channelId: string, seq: number, database: AppDb = db): Promise<boolean> {
+  const rows = await database
+    .delete(liveStreamLibrarySegments)
+    .where(and(eq(liveStreamLibrarySegments.channelId, channelId), eq(liveStreamLibrarySegments.seq, seq)))
+    .returning({ seq: liveStreamLibrarySegments.seq });
+  return rows.length > 0;
+}
+
+/** BL-234: sets the selection's order to exactly `seqs`; false (nothing written) unless they are the selection's segments. */
+export async function setLiveStreamLibrarySegmentOrder(channelId: string, seqs: readonly number[], database: AppDb = db): Promise<boolean> {
+  return database.transaction(async (tx) => {
+    const current = await tx.select({ seq: liveStreamLibrarySegments.seq }).from(liveStreamLibrarySegments).where(eq(liveStreamLibrarySegments.channelId, channelId));
+    const known = new Set(current.map((r) => r.seq));
+    if (seqs.length !== known.size || new Set(seqs).size !== seqs.length || seqs.some((seq) => !known.has(seq))) return false;
+    for (const [index, seq] of seqs.entries()) {
+      await tx
+        .update(liveStreamLibrarySegments)
+        .set({ rotationIndex: index })
+        .where(and(eq(liveStreamLibrarySegments.channelId, channelId), eq(liveStreamLibrarySegments.seq, seq)));
+    }
+    return true;
+  });
 }
 
 const LIVE_STREAMS_SETTINGS_KEY = "live_streams_settings";

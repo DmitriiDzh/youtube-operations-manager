@@ -256,6 +256,7 @@ export const SNAPSHOT_DEVICE_LOCAL_TABLES: Readonly<Record<string, string>> = Ob
   live_stream_videos: "this computer's live-stream rotations (BL-176); the original paths are in this computer's copy of the channel folder",
   live_stream_events: "this computer's live-stream audit trail and history (BL-176)",
   live_stream_sources: "the Operator's map of videos to original files on this computer (BL-176)",
+  live_stream_library_segments: "this computer's live-stream selections from the channel's segment library (BL-234); the files are in this computer's copy of the channel folder",
   live_stream_segments: "this computer's live-stream segments (BL-205): the broadcasts of its own stream, recordings and playlist state",
   live_broadcast_analytics: "this computer's YouTube Analytics of its own ended broadcasts (BL-212); pulled where the stream ran",
   live_viewer_samples: "this computer's live-stream viewer samples (BL-211); a stream runs from this computer only",
