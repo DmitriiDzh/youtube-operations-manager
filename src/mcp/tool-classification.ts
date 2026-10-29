@@ -147,6 +147,8 @@ export const MCP_TOOL_CLASSIFICATION: Readonly<Record<string, McpToolClass>> = O
   agent_publishing_plan_save: "bound",
   agent_publishing_plan_get: "bound",
   agent_publishing_plan_list: "bound",
+  // BL-235: the worker's own channel's publishing coverage (a read).
+  agent_publishing_coverage: "bound",
   // BL-227 (ADR 0052): a check report on a change set of the worker's own channel.
   agent_localization_report_checks: "bound",
   agent_localization_requests_list: "bound",

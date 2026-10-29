@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { createChannelConnectionsCore } from "@/lib/channel-connections";
+import { dailyPublishingCoverage } from "@/composition/publishing-coverage";
 import { createPublishingCalendarCore, type PublishingAlert } from "@/lib/publishing";
 
 export type PublishingAlertsDeps = {
@@ -13,7 +14,8 @@ export type PublishingAlertsDeps = {
 };
 
 export function defaultPublishingAlertsDeps(): PublishingAlertsDeps {
-  const calendar = createPublishingCalendarCore();
+  // BL-235: the badge and the bell use the same rule as the calendar's reminder (covered days in a row, the channel's zone).
+  const calendar = createPublishingCalendarCore({ dailyCoverage: dailyPublishingCoverage });
   return {
     getSession: () => getServerSession(authOptions),
     activeChannelId: (userId) => createChannelAccessCore().getActiveChannelId(userId),

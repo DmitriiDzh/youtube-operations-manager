@@ -104,3 +104,82 @@ test("AC-AU-12: an upload's automatic flag, progressPercent and finishedAt in th
   const done = agentUploadOf({ ...base, status: "done", automatic: true, storedBytes: 1000, totalBytes: 1000, videoId: "vid1", finishedAt: new Date("2026-10-21T13:05:00Z") });
   assert.deepEqual([done.automatic, done.progressPercent, done.finishedAt, done.videoId], [true, 100, "2026-10-21T13:05:00.000Z", "vid1"]);
 });
+
+// BL-235 (owner msg 3806): with the shared daily coverage wired, the reminder and the alert follow it -- "fewer than 7 covered days
+// in a row from today" -- even when a video is scheduled far ahead (`far`, 30.11: the older rule says "not due"). A failing
+// coverage read never takes the calendar down: the older rule answers and `dayCoverage` is null.
+function dailyStub(inARow: number, asked: number[] = []) {
+  return async (_channelId: string, days: number) => {
+    asked.push(days);
+    return {
+      channelId: "UC_A",
+      asOf: "2026-10-13T10:00:00.000Z",
+      timeZone: "Asia/Tokyo",
+      timeZoneSource: "publishing_plan" as const,
+      trackedLanguages: [],
+      channelLanguage: null,
+      from: "2026-10-13",
+      to: "2026-10-26",
+      days: [],
+      summary: { covered: inARow, missingTranslations: 0, gaps: 0, coveredDaysInARow: inARow },
+    };
+  };
+}
+
+function readsWithDaily(dailyCoverage: (channelId: string, days: number) => ReturnType<ReturnType<typeof dailyStub>>) {
+  return createPublishingCalendarReads({
+    listVideos: async () => VIDEOS,
+    getChannel: async () => ({ lastSyncedAt: new Date("2026-10-13T10:00:00Z") }),
+    clock: { now: () => NOW },
+    dailyCoverage,
+  });
+}
+
+test("BL-235: the calendar's reminder is due with fewer than 7 covered days in a row; 7 is enough; 14 days are asked", async () => {
+  const asked: number[] = [];
+  const short = await readsWithDaily(dailyStub(2, asked)).getCalendar({ channelId: "UC_A" });
+  assert.deepEqual([short.coverage.due, short.coverage.coveredDaysInARow, short.coverage.coveredThrough], [true, 2, "2026-11-30T12:00:00Z"]);
+  assert.equal(short.dayCoverage?.timeZone, "Asia/Tokyo");
+  assert.deepEqual(asked, [14]);
+  const enough = await readsWithDaily(dailyStub(7)).getCalendar({ channelId: "UC_A" });
+  assert.equal(enough.coverage.due, false);
+});
+
+test("BL-235: the alert (badge and bell) follows the same rule over 7 days", async () => {
+  const asked: number[] = [];
+  const alert = await readsWithDaily(dailyStub(6, asked)).getAlert({ channelId: "UC_A" });
+  assert.deepEqual([alert?.due, alert?.coveredDaysInARow], [true, 6]);
+  assert.deepEqual(asked, [7]);
+});
+
+test("BL-235: a failing coverage read leaves the older rule and no day coverage", async () => {
+  const calendar = await readsWithDaily(async () => {
+    throw new Error("coverage down");
+  }).getCalendar({ channelId: "UC_A" });
+  assert.deepEqual([calendar.coverage.due, calendar.dayCoverage, calendar.coverage.coveredDaysInARow], [false, null, undefined]);
+});
+
+// BL-235 review item 3: the agents' calendar gives one answer -- with the daily coverage, `gapDates` are its days that are not
+// covered (the channel's dates, the translation check included) and `missingTranslationDates` those with a release lacking
+// translations; without it, UTC days as before (the first test above).
+test("BL-235: agent calendar gaps come from the daily coverage, in the channel's dates", async () => {
+  const calendar = await createPublishingCalendarReads({
+    listVideos: async () => VIDEOS,
+    getChannel: async () => ({ lastSyncedAt: new Date("2026-10-13T10:00:00Z") }),
+    assertActiveChannel: async () => undefined,
+    clock: { now: () => NOW },
+    dailyCoverage: async (channelId, days, preRead) => ({
+      ...(await dailyStub(1)(channelId, days)),
+      days: [
+        { date: "2026-10-13", status: "covered" as const, videoIds: ["s1"], missingLanguages: [], videos: [] },
+        { date: "2026-10-14", status: "missing_translations" as const, videoIds: ["s2"], missingLanguages: ["es"], videos: [] },
+        { date: "2026-10-15", status: "gap" as const, videoIds: [], missingLanguages: [], videos: [] },
+      ],
+      // The coverage got the rows this read already has.
+      trackedLanguages: preRead.videos.length === VIDEOS.length ? ["es"] : [],
+    }),
+  }).getAgentCalendar({ credentialRef: { userId: "u1" }, channelId: "UC_A" });
+  assert.deepEqual(calendar.gapDates, ["2026-10-14", "2026-10-15"]);
+  assert.deepEqual(calendar.missingTranslationDates, ["2026-10-14"]);
+  assert.equal(calendar.gapDatesTimeZone, "Asia/Tokyo");
+});

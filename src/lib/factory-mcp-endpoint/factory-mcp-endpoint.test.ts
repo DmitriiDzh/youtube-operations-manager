@@ -145,6 +145,10 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
       get: async (input) => (mediaCalls.push(`plan.get:${(input as { weekStart: string }).weekStart}`), { plan: {} }),
       list: async (input) => (mediaCalls.push(`plan.list:${(input as { channelId: string }).channelId}`), { plans: [] }),
     },
+    // BL-235: the publishing coverage is a fake that records what reached it.
+    publishingCoverage: {
+      get: async (input) => (mediaCalls.push(`coverage.get:${input.channelId}:${input.days ?? "default"}`), { channelId: input.channelId, days: [] }),
+    },
     // BL-227: the check-report surface is a fake that records what reached it.
     localizationChecks: {
       report: async (input, by) => (mediaCalls.push(`checks.report:${(input as { changeSetId: string }).changeSetId}:${by ?? "factory"}`), { reportId: "r-1", reportedAt: "t", replaced: null }),
@@ -381,6 +385,7 @@ test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exact
     "factory_plan_todo",
     "factory_plan_update",
     "factory_plan_withdraw_recheck",
+    "factory_publishing_coverage",
     "factory_publishing_plan_get",
     "factory_publishing_plan_list",
     "factory_publishing_plan_save",
@@ -441,7 +446,7 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.38.0", // BL-234: factory_live_get_status gains sources; BL-233: factory_live_get_status gains encoders / upload; 1.36.0 = BL-230: runtime creation checks github.com sources; 1.35.0 = BL-229 part B: plan review forms, wave genre, verdict answers; 1.34.0 (BL-227): factory_localization_report_checks; 1.33.0 (BL-225): factory_publishing_plan_save / _get / _list; 1.32.0 (BL-223): factory_channel_get_branding / factory_channel_save_branding; 1.31.0 (BL-221: factory_video_list gains youtubeVideoId / hasVideoFile (additive); 1.30.0 (BL-220): the three restart tools
+    factoryApiVersion: "1.39.0", // BL-235: factory_publishing_coverage; 1.38.0 = BL-234: factory_live_get_status gains sources; BL-233: factory_live_get_status gains encoders / upload; 1.36.0 = BL-230: runtime creation checks github.com sources; 1.35.0 = BL-229 part B: plan review forms, wave genre, verdict answers; 1.34.0 (BL-227): factory_localization_report_checks; 1.33.0 (BL-225): factory_publishing_plan_save / _get / _list; 1.32.0 (BL-223): factory_channel_get_branding / factory_channel_save_branding; 1.31.0 (BL-221: factory_video_list gains youtubeVideoId / hasVideoFile (additive); 1.30.0 (BL-220): the three restart tools
     tools: [
       "factory_get_capabilities",
       "factory_list_logical_paths",
@@ -501,6 +506,7 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
       "factory_publishing_plan_save",
       "factory_publishing_plan_get",
       "factory_publishing_plan_list",
+      "factory_publishing_coverage",
       "factory_localization_report_checks",
       "factory_localization_requests_list",
       "factory_localization_request_claim",
@@ -1567,4 +1573,20 @@ test("BL-227: factory_localization_requests_list is a read; claim / complete / f
   assert.equal((await send("factory_localization_request_complete", { channelId: "UC_A", requestId: "q-1", results: [{ videoId: "v1", changeSetId: "s1" }] })).isError, false);
   assert.equal((await send("factory_localization_request_fail", { channelId: "UC_A", requestId: "q-1", reason: "no source" })).isError, false);
   assert.deepEqual(toolDeps.mediaCalls, ["requests.list:UC_A", "gate", "requests.claim:q-1:factory", "gate", "requests.complete:q-1:factory", "gate", "requests.fail:q-1:factory"]);
+});
+
+// BL-235 (owner msgs 3806/3807): factory_publishing_coverage is a read (no gate), strict -- days 1..30, no other field -- and passes
+// channelId and days to the coverage as given.
+test("BL-235: factory_publishing_coverage reads the coverage; days out of 1..30 or an unknown field are refused before it", async () => {
+  const { endpoint, tokenServices, toolDeps } = setupWithDeps();
+  const mediaCalls = toolDeps.mediaCalls;
+  const { token } = await tokenServices.issueToken({});
+  assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_publishing_coverage", { channelId: "UC_A" }), withToken(token))))).isError, false);
+  assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_publishing_coverage", { channelId: "UC_A", days: 30 }), withToken(token))))).isError, false);
+  for (const bad of [{ channelId: "UC_A", days: 0 }, { channelId: "UC_A", days: 31 }, { channelId: "UC_A", fromDate: "2026-11-02" }, {}]) {
+    const body = await (await endpoint.handle(rpc(call("factory_publishing_coverage", bad), withToken(token)))).json();
+    assert.equal(Boolean(body.result?.isError ?? body.error), true, JSON.stringify(bad));
+  }
+  // A read: the device mutation gate is never asked.
+  assert.deepEqual(mediaCalls, ["coverage.get:UC_A:default", "coverage.get:UC_A:30"]);
 });

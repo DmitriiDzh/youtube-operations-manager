@@ -64,6 +64,7 @@ function fakeDeps() {
       get: note("plan.get"),
       list: note("plan.list"),
     },
+    publishingCoverage: { get: note("coverage.get") },
     localizationChecks: {
       report: async (input: unknown, by: unknown) => {
         calls.push(`checks.report:${JSON.stringify(input)}:${String(by)}`);
@@ -172,8 +173,9 @@ test("AC-WF-05/06: the worker gets exactly the listed tools, renamed, and none o
   const names = workerFactoryTools(() => deps, TROPICO, async () => undefined).map((tool) => tool.name).sort();
   assert.deepEqual(names, [...WORKER_FACTORY_TOOL_NAMES].sort());
   // BL-223: + agent_channel_get_branding / agent_channel_save_branding (36 -> 38). BL-225: + agent_publishing_plan_save / _get /
-  // _list (38 -> 41). BL-227: + agent_localization_report_checks and the four request tools (41 -> 46).
-  assert.equal(names.length, 46);
+  // _list (38 -> 41). BL-227: + agent_localization_report_checks and the four request tools (41 -> 46). BL-235: +
+  // agent_publishing_coverage (46 -> 47).
+  assert.equal(names.length, 47);
   for (const forbidden of ["agent_plan_move", "agent_media_pull_model", "agent_media_list_models", "agent_media_create_runtime", "agent_media_get_gpu_stats", "agent_channel_get_localizations", "agent_channel_save_localizations"]) {
     assert.ok(!names.includes(forbidden), forbidden);
   }
@@ -309,4 +311,25 @@ test("BL-227 AC-LR-24: the request tools act on the worker's own channel only, r
   assert.deepEqual(calls, []);
   await pinned.localizationChecks.claimRequest({ channelId: TROPICO, requestId: "q-1" });
   assert.deepEqual(calls, [`requests.claim:${JSON.stringify({ channelId: TROPICO, requestId: "q-1" })}:worker`]);
+});
+
+// BL-235 (owner msgs 3806/3807): the worker reads its own channel's publishing coverage only -- another channel, or none named,
+// fails closed with CHANNEL_NOT_ACTIVE before the coverage is read.
+test("BL-235: agent_publishing_coverage reaches the coverage for the own channel only", async () => {
+  const { deps, calls } = fakeDeps();
+  const pinned = pinFactoryDepsToChannel(() => deps, TROPICO, async () => undefined);
+  await assert.rejects(pinned.publishingCoverage.get({ channelId: JAPAN, days: 7 }), code("CHANNEL_NOT_ACTIVE"));
+  await assert.rejects(pinned.publishingCoverage.get({} as { channelId: string }), code("CHANNEL_NOT_ACTIVE"));
+  assert.deepEqual(calls, []);
+  await pinned.publishingCoverage.get({ channelId: TROPICO, days: 14 });
+  assert.deepEqual(calls, [`coverage.get:{"channelId":"${TROPICO}","days":14}`]);
+
+  const tool = workerFactoryTools(() => deps, TROPICO, async () => undefined).find((entry) => entry.name === "agent_publishing_coverage");
+  assert.ok(tool);
+  const wrong = (await tool.handler({ channelId: JAPAN })) as { isError?: boolean; content: Array<{ text: string }> };
+  assert.equal(wrong.isError, true);
+  assert.equal(JSON.parse(wrong.content[0].text).error.code, "CHANNEL_NOT_ACTIVE");
+  const tooMany = (await tool.handler({ channelId: TROPICO, days: 31 })) as { isError?: boolean };
+  assert.equal(tooMany.isError, true);
+  assert.equal(calls.length, 1);
 });

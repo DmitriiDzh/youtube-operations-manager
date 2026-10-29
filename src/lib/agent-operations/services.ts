@@ -848,6 +848,15 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     description:
       "Save this channel's weekly publishing plan as a draft (`agent_publishing_plan_save`: a Monday weekStart, the channel's time zone, slots with date and local publish time), as factory_publishing_plan_save. Synced to the other computers; only the owner approves, revokes or vetoes a slot in the app, and changing an approved slot needs him again. Nothing is sent to YouTube. Logged.",
   },
+  // BL-235 (owner msgs 3806/3807): the one answer to "is this publishing day covered" for the worker's own channel.
+  {
+    id: "channel_production.read_publishing_coverage",
+    mcpTools: ["agent_publishing_coverage"],
+    domain: "channel_production",
+    permission: "READ",
+    description:
+      "This channel's publishing days from today in its time zone (`agent_publishing_coverage`, days 1-30, default 7), as factory_publishing_coverage: each covered (a video published or scheduled that day with every tracked translation), missing_translations (with the languages) or gap, the video ids per day, covered days in a row and asOf (the synced copy's age). The same answer as the owner's calendar and weekly plan. A LOCAL read.",
+  },
   // BL-232 (PRD-REQ-0043): move a localization to another language code (zh-Hans -> zh-CN), same text, as a draft for the owner.
   {
     id: "localization_draft.propose_language_move",

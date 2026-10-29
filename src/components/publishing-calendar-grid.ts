@@ -1,8 +1,18 @@
 // BL-182 stage 1 (FO-REQ-0023 §4 C1): the calendar's month grid, in the viewer's local time zone -- pure, so it is tested on its own.
 // Weeks start on Monday (the owner's locale); a day's key is its local YYYY-MM-DD.
 
+import { formatZonedDateAndTime } from "@/lib/zoned-time";
+
 // BL-182 stage 2: "package" -- a ready release package on its planned day, not uploaded yet (FO-REQ-0023 §4 C1); it fills no gap.
-export type GridEntry = { videoId: string; title: string; kind: "published" | "scheduled" | "overdue" | "unscheduled" | "package"; at: string | null };
+// BL-235 review: "published_pending" -- its date passed less than 24 h ago, the copy not synced yet (it counts as the day's release).
+// `day`: a fixed calendar day (a package's planned date) instead of the day of `at`.
+export type GridEntry = {
+  videoId: string;
+  title: string;
+  kind: "published" | "scheduled" | "published_pending" | "overdue" | "unscheduled" | "package";
+  at: string | null;
+  day?: string;
+};
 
 function pad2(value: number): string {
   return String(value).padStart(2, "0");
@@ -31,14 +41,19 @@ export function monthWeeks(year: number, month: number): Date[][] {
   return weeks;
 }
 
-/** Dated entries by their local day, each day in time order. Undated entries are not on the grid. */
-export function entriesByDay(entries: readonly GridEntry[]): Map<string, GridEntry[]> {
+/** The day of an instant: in `timeZone` (BL-235: the channel's, as the coverage counts days) or, without one, the viewer's own. */
+export function dayKeyIn(value: Date, timeZone: string | null): string {
+  return timeZone ? formatZonedDateAndTime(value, timeZone).localDate : localDayKey(value);
+}
+
+/** Dated entries by their day (local, or in `timeZone`), each day in time order. Undated entries are not on the grid. */
+export function entriesByDay(entries: readonly GridEntry[], timeZone: string | null = null): Map<string, GridEntry[]> {
   const byDay = new Map<string, GridEntry[]>();
   for (const entry of entries) {
     if (!entry.at) continue;
     const at = new Date(entry.at);
     if (Number.isNaN(at.getTime())) continue;
-    const key = localDayKey(at);
+    const key = entry.day ?? dayKeyIn(at, timeZone);
     byDay.set(key, [...(byDay.get(key) ?? []), entry]);
   }
   // By instant, not by string: `...:00Z` and `...:00.000Z` are the same time (review).
@@ -55,8 +70,26 @@ export function gapDays(now: Date, byDay: Map<string, GridEntry[]>, days: number
   for (let offset = 0; offset < days; offset += 1) {
     const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset);
     const key = localDayKey(day);
-    const filled = (byDay.get(key) ?? []).some((entry) => entry.kind === "published" || entry.kind === "scheduled");
+    const filled = (byDay.get(key) ?? []).some((entry) => entry.kind === "published" || entry.kind === "scheduled" || entry.kind === "published_pending");
     if (!filled) gaps.add(key);
   }
   return gaps;
+}
+
+/** BL-235: the shared coverage's days as the grid reads them -- the gaps, and the days whose videos lack translations. */
+export type CoverageDayLike = { date: string; status: "covered" | "missing_translations" | "gap"; missingLanguages: string[] };
+
+export function coverageMarks(days: readonly CoverageDayLike[]): { gaps: Set<string>; missing: Map<string, string[]> } {
+  const gaps = new Set<string>();
+  const missing = new Map<string, string[]>();
+  for (const day of days) {
+    if (day.status === "gap") gaps.add(day.date);
+    else if (day.status === "missing_translations") missing.set(day.date, day.missingLanguages);
+  }
+  return { gaps, missing };
+}
+
+/** BL-235 review item 6: the month (0-11) and year of a YYYY-MM-DD day -- the channel's today opens its own month. */
+export function monthOfDay(day: string): { year: number; month: number } {
+  return { year: Number(day.slice(0, 4)), month: Number(day.slice(5, 7)) - 1 };
 }

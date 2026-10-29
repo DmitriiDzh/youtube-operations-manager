@@ -105,7 +105,7 @@ export function PublishingPackages({ channelId, visible }: { channelId: string |
       }
       if (calendarRes.ok) {
         const calendar = (await calendarRes.json()) as { entries?: Array<{ kind: string; at: string | null }> };
-        setTakenDays(new Set((calendar.entries ?? []).filter((e) => (e.kind === "published" || e.kind === "scheduled") && e.at).map((e) => (e.at as string).slice(0, 10))));
+        setTakenDays(new Set((calendar.entries ?? []).filter((e) => (e.kind === "published" || e.kind === "scheduled" || e.kind === "published_pending") && e.at).map((e) => (e.at as string).slice(0, 10))));
       }
       setError(null);
     } catch (e) {

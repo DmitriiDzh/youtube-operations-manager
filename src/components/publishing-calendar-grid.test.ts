@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { entriesByDay, gapDays, localDayKey, monthWeeks, type GridEntry } from "./publishing-calendar-grid";
+import { coverageMarks, entriesByDay, gapDays, localDayKey, monthWeeks, type GridEntry } from "./publishing-calendar-grid";
 
 // BL-182 stage 1 (FO-REQ-0023 §4 C1): a month view whose weeks start on Monday, videos placed on their local day, and the gaps --
 // days of the next two weeks with no published or scheduled video. Calendar facts below are from the real 2026 calendar.
@@ -53,4 +53,21 @@ test("a ready package on its planned day does not fill the gap", () => {
   const byDay = entriesByDay([{ videoId: "04 Videos/x/V65_release.json", title: "V65", kind: "package", at: at(2026, 9, 16, 15) }]);
   assert.equal(byDay.get("2026-10-16")?.length, 1);
   assert.ok(gapDays(now, byDay).has("2026-10-16"));
+});
+
+// BL-235: with the channel's zone the grid puts a video on the channel's day, as the coverage counts it -- 16:00Z on 6 Nov is
+// 01:00 on 7 Nov in Tokyo (UTC+9); the coverage's gaps and translation days are read as they come.
+test("BL-235: entries go on the channel's day when its zone is given", () => {
+  const byDay = entriesByDay([{ videoId: "v", title: "v", kind: "scheduled", at: "2026-11-06T16:00:00.000Z" }], "Asia/Tokyo");
+  assert.deepEqual([...byDay.keys()], ["2026-11-07"]);
+});
+
+test("BL-235: coverage marks -- gaps and the days missing translations with their languages; covered days are neither", () => {
+  const marks = coverageMarks([
+    { date: "2026-11-05", status: "covered", missingLanguages: [] },
+    { date: "2026-11-06", status: "gap", missingLanguages: [] },
+    { date: "2026-11-08", status: "missing_translations", missingLanguages: ["es"] },
+  ]);
+  assert.deepEqual([...marks.gaps], ["2026-11-06"]);
+  assert.deepEqual([...marks.missing], [["2026-11-08", ["es"]]]);
 });

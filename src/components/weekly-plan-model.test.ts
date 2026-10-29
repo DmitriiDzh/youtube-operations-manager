@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { changedField, defaultWeek, lengthLabel, mondayOf, pipelineOf, shiftWeek, slotsToApprove, tileCounts, wallParts, zonedParts, type PlanSlotDto } from "./weekly-plan-model";
+import { changedField, defaultWeek, lengthLabel, mondayOf, pipelineOf, shiftWeek, slotsToApprove, tileCounts, wallParts, weekCoverageLine, zonedParts, type PlanSlotDto } from "./weekly-plan-model";
 
 // BL-225 (WEEKLY_PUBLISHING_PLAN.md stage 1 item 6, AC-WP-15): the screen's pure rules. Values by hand: 2026-10-26 is a Monday,
 // 2026-11-01 its Sunday; 18:00 in Tokyo is 09:00Z, which is 10:00 in Berlin (CET, UTC+1, after 25.10); 23:30Z on 31.10 is 08:30 on Sunday 1.11 in Tokyo.
@@ -86,4 +86,23 @@ test("BL-225 stage 2: a package's length on the row -- whole hours from one hour
   assert.deepEqual(lengthLabel(3 * 3600 + 600), { unit: "h", value: 3 });
   assert.deepEqual(lengthLabel(3599), { unit: "min", value: 60 });
   assert.deepEqual(lengthLabel(20), { unit: "min", value: 1 });
+});
+
+// BL-235 (owner msg 3806): «План недели» shows what YouTube has for the week next to the approvals -- the owner's example: «Закрыто 4
+// из 7 · без видео: 6, 7, 8 нояб. · без переводов: …».
+test("BL-235: the week's coverage line -- covered of 7, the days without a video, the days without translations with languages", () => {
+  const line = weekCoverageLine({
+    asOf: "2026-11-02T10:00:00.000Z",
+    days: [
+      { date: "2026-11-02", status: "covered", missingLanguages: [] },
+      { date: "2026-11-03", status: "covered", missingLanguages: [] },
+      { date: "2026-11-04", status: "covered", missingLanguages: [] },
+      { date: "2026-11-05", status: "covered", missingLanguages: [] },
+      { date: "2026-11-06", status: "gap", missingLanguages: [] },
+      { date: "2026-11-07", status: "missing_translations", missingLanguages: ["es", "ja"] },
+      { date: "2026-11-08", status: "gap", missingLanguages: [] },
+    ],
+    summary: { covered: 4, missingTranslations: 1, gaps: 2 },
+  });
+  assert.deepEqual(line, { covered: 4, total: 7, gaps: ["2026-11-06", "2026-11-08"], missing: [{ date: "2026-11-07", languages: ["es", "ja"] }] });
 });
