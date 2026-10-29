@@ -79,6 +79,7 @@ import { createGenerationPlansCore, type GenerationPlan, type GenerationPlanServ
 import { createReachReportsCore, type ReachReportsCore } from "@/lib/reach-reports";
 import { getChannelReachInputObjectSchema, getReachStatusInputSchema, getReportingTrafficSourcesInputObjectSchema } from "@/lib/reach-reports/schemas";
 import { createPublishingCalendarCore, type PublishingCalendarCore } from "@/lib/publishing";
+import { dailyPublishingCoverage } from "@/composition/publishing-coverage";
 import { getAgentPublishingCalendarInputSchema } from "@/lib/publishing/schemas";
 import { createMarketAssignmentCore, type MarketAssignmentCore } from "@/lib/market-assignments";
 import { assertAgentSession, getAgentSession, runInAgentSession } from "@/lib/agent-session";
@@ -762,7 +763,7 @@ export function createMcpToolHandlers(
   // BL-171 (docs/roadmap/plans/VIDEO_COMMENTS_PLAN.md) -- the stored comments of the channel's own videos; its own module. Read-only.
   videoCommentsCore: Pick<VideoCommentsCore, "listStoredComments"> = createVideoCommentsCore(),
   // BL-182 stage 1 (FO-REQ-0023 §4 C4) -- the publishing calendar, a local read; registered directly (AGENTS.md §M).
-  publishingCalendarCore: Pick<PublishingCalendarCore, "getAgentCalendar"> = createPublishingCalendarCore()
+  publishingCalendarCore: Pick<PublishingCalendarCore, "getAgentCalendar"> = createPublishingCalendarCore({ dailyCoverage: dailyPublishingCoverage })
 ) {
   async function resolveCredentialRef(explicitCredentialRef: unknown) {
     return auth.resolveEffectiveCredentialRef({

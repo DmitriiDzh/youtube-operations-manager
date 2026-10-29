@@ -2,6 +2,7 @@ import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { createChannelAccessCore } from "@/lib/channel-access";
+import { dailyPublishingCoverage } from "@/composition/publishing-coverage";
 import { createPublishingCalendarCore, type PublishingCalendarResult } from "@/lib/publishing";
 import { DomainError } from "@/lib/shared-domain";
 import { getVideoMetadataErrorStatus } from "../../../../video-metadata/error-status";
@@ -22,7 +23,8 @@ export function createPublishingCalendarHandler(
     assertActiveChannel: async (args) => {
       await createChannelAccessCore().assertActiveChannel(args);
     },
-    getCalendar: (input) => createPublishingCalendarCore().getCalendar(input),
+    // BL-235: the gaps, the days missing translations and the reminder from the shared daily coverage (the channel's zone).
+    getCalendar: (input) => createPublishingCalendarCore({ dailyCoverage: dailyPublishingCoverage }).getCalendar(input),
   }
 ) {
   return async function GET(_request: Request, { params }: { params: Promise<{ channelId: string }> }) {

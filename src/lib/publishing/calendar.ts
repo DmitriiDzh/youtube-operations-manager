@@ -21,9 +21,15 @@ export type PublishingCoverage = {
   unscheduledCount: number;
   /** Whole days from now to `coveredThrough` (rounded down); 0 when nothing is scheduled. */
   daysCovered: number;
-  /** The reminder: coverage ends within `thresholdDays`. */
+  /**
+   * The reminder. With the daily coverage (BL-235, the calendar route, the alerts and the agents' calendar): fewer than
+   * `thresholdDays` covered days in a row from today -- a covered day has a published or scheduled video with every required
+   * translation (`@/lib/publishing-coverage`). Without it: the latest scheduled time is within `thresholdDays`.
+   */
   due: boolean;
   thresholdDays: number;
+  /** BL-235: covered days in a row from today in the channel's zone; absent when the daily coverage was not read. */
+  coveredDaysInARow?: number;
 };
 
 export function buildPublishingCalendar(

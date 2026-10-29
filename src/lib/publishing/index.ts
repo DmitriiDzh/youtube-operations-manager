@@ -64,6 +64,7 @@ import { createAutoPrivateUpload, type AutoUploadWaiting, type SlotDecision } fr
 import { estimateUploadUnits, isDeferredPublishAt } from "./publish-dates";
 import type { G1ProbeRecord } from "./contracts";
 import { agentUploadOf, createPublishingCalendarReads } from "./calendar-reads";
+import type { PublishingCoverageResult } from "@/lib/publishing-coverage";
 import { createG1Probe } from "./g1-probe";
 import { createPublishingSettingsService } from "./settings-service";
 
@@ -132,9 +133,11 @@ export function createG1ProbeCore(options: { announce?: (videoId: string) => voi
 }
 
 /** BL-182 stage 1: the publishing calendar and the 7-day reminder, from the local copy only. */
-export function createPublishingCalendarCore() {
+/** `dailyCoverage` (BL-235): the shared daily coverage with the channel's zone, given by the app layer (`src/composition`). */
+export function createPublishingCalendarCore(options: { dailyCoverage?: (channelId: string, days: number) => Promise<PublishingCoverageResult> } = {}) {
   const store = createChannelVideoStoreAdapter();
   return createPublishingCalendarReads({
+    ...(options.dailyCoverage ? { dailyCoverage: options.dailyCoverage } : {}),
     async listVideos(channelId) {
       return (await store.listVideosByChannel(channelId)).map((video) => ({
         videoId: video.videoId,

@@ -1,4 +1,5 @@
 import type { StoredPublishingUpload } from "@/lib/db";
+import type { PublishingCoverageResult } from "@/lib/publishing-coverage";
 import { buildPublishingCalendar, currentRows, PUBLISHING_REMINDER_DAYS, type CalendarEntry, type CalendarSourceVideo, type PublishingCoverage } from "./calendar";
 
 // BL-182 stage 1: the calendar and the reminder read from the local copy of the channel's videos -- never a YouTube call. The data
@@ -9,6 +10,11 @@ export type PublishingCalendarResult = {
   lastSyncedAt: string | null;
   entries: CalendarEntry[];
   coverage: PublishingCoverage;
+  /**
+   * BL-235: the next 14 days in the channel's time zone, each covered / missing_translations / gap (the shared coverage); null
+   * when it was not wired or its read failed -- the calendar then keeps its own gaps.
+   */
+  dayCoverage: PublishingCoverageResult | null;
 };
 
 export type PublishingAlert = { channelId: string; lastSyncedAt: string | null } & PublishingCoverage;
@@ -81,18 +87,42 @@ export type PublishingCalendarDeps = {
   getChannel(channelId: string): Promise<{ lastSyncedAt: Date | null } | null>;
   clock: { now(): Date };
   thresholdDays?: number;
+  /** BL-235: the shared daily coverage (`@/lib/publishing-coverage`, with the channel's zone); absent = the older reminder rule. */
+  dailyCoverage?(channelId: string, days: number): Promise<PublishingCoverageResult>;
   /** BL-182 stage 2: the agent read's packages and uploads (absent: none listed). */
   packages?(channelId: string): Promise<AgentPackages>;
   uploads?(channelId: string): Promise<AgentUpload[]>;
 };
 
+/** The calendar's gap window: today and the next 13 days (FO-REQ-0023 §4 C1). */
+const CALENDAR_GAP_DAYS = 14;
+
 export function createPublishingCalendarReads(deps: PublishingCalendarDeps) {
   const threshold = deps.thresholdDays ?? PUBLISHING_REMINDER_DAYS;
+  /** The daily coverage, or null when not wired or failed: a broken coverage never takes the calendar down (AGENTS.md §M). */
+  async function readDailyCoverage(channelId: string, days: number): Promise<PublishingCoverageResult | null> {
+    if (!deps.dailyCoverage) return null;
+    try {
+      return await deps.dailyCoverage(channelId, days);
+    } catch {
+      return null;
+    }
+  }
+  /** BL-235 (owner msg 3806): with the daily coverage, the reminder is "fewer than `threshold` covered days in a row from today". */
+  function withDailyDue(coverage: PublishingCoverage, daily: PublishingCoverageResult | null): PublishingCoverage {
+    if (!daily) return coverage;
+    const inARow = daily.summary.coveredDaysInARow;
+    return { ...coverage, due: inARow < threshold, coveredDaysInARow: inARow };
+  }
   return {
     async getCalendar(input: { channelId: string }): Promise<PublishingCalendarResult> {
-      const [videos, channel] = await Promise.all([deps.listVideos(input.channelId), deps.getChannel(input.channelId)]);
+      const [videos, channel, dayCoverage] = await Promise.all([
+        deps.listVideos(input.channelId),
+        deps.getChannel(input.channelId),
+        readDailyCoverage(input.channelId, Math.max(threshold, CALENDAR_GAP_DAYS)),
+      ]);
       const { entries, coverage } = buildPublishingCalendar(currentRows(videos, channel?.lastSyncedAt?.getTime() ?? null), deps.clock.now(), threshold);
-      return { channelId: input.channelId, lastSyncedAt: channel?.lastSyncedAt?.toISOString() ?? null, entries, coverage };
+      return { channelId: input.channelId, lastSyncedAt: channel?.lastSyncedAt?.toISOString() ?? null, entries, coverage: withDailyDue(coverage, dayCoverage), dayCoverage };
     },
     /**
      * BL-182 stage 1 (FO-REQ-0023 §4 C4): the read-only calendar for agents and the Producer -- the past and the next 14 days, the
@@ -135,8 +165,9 @@ export function createPublishingCalendarReads(deps: PublishingCalendarDeps) {
     async getAlert(input: { channelId: string }): Promise<PublishingAlert | null> {
       const channel = await deps.getChannel(input.channelId);
       if (!channel?.lastSyncedAt) return null;
-      const { coverage } = buildPublishingCalendar(currentRows(await deps.listVideos(input.channelId), channel.lastSyncedAt.getTime()), deps.clock.now(), threshold);
-      return { channelId: input.channelId, lastSyncedAt: channel.lastSyncedAt.toISOString(), ...coverage };
+      const [videos, daily] = await Promise.all([deps.listVideos(input.channelId), readDailyCoverage(input.channelId, threshold)]);
+      const { coverage } = buildPublishingCalendar(currentRows(videos, channel.lastSyncedAt.getTime()), deps.clock.now(), threshold);
+      return { channelId: input.channelId, lastSyncedAt: channel.lastSyncedAt.toISOString(), ...withDailyDue(coverage, daily) };
     },
   };
 }

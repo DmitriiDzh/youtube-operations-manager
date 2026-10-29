@@ -5,7 +5,8 @@ import { formatDisplayDate, formatDisplayDateTime } from "@/lib/shared-formattin
 import type { UiTextKey } from "@/lib/ui-text";
 import { SkeletonLines } from "./busy-feedback";
 import { useRecentSyncConfirm } from "./recent-sync-confirm";
-import { entriesByDay, gapDays, localDayKey, monthWeeks, type GridEntry } from "./publishing-calendar-grid";
+import { coverageMarks, entriesByDay, gapDays, localDayKey, monthWeeks, type CoverageDayLike, type GridEntry } from "./publishing-calendar-grid";
+import { formatZonedDateAndTime } from "@/lib/zoned-time";
 import { useT } from "./ui-text-provider";
 import { VideoDetailModal } from "./video-detail-modal";
 import { VideoDetailsPanel } from "./video-details-panel";
@@ -20,7 +21,12 @@ type CalendarResponse = {
   channelId: string;
   lastSyncedAt: string | null;
   entries: Array<GridEntry & { privacyStatus: string }>;
-  coverage: { coveredThrough: string | null; scheduledCount: number; unscheduledCount: number; daysCovered: number; due: boolean; thresholdDays: number };
+  coverage: { coveredThrough: string | null; scheduledCount: number; unscheduledCount: number; daysCovered: number; due: boolean; thresholdDays: number; coveredDaysInARow?: number };
+  /**
+   * BL-235 (owner msg 3806): the shared coverage of the next 14 days in the channel's zone -- the one answer to "is this day
+   * covered" (a video published or scheduled that day with every tracked translation). Null: the calendar keeps its own gaps.
+   */
+  dayCoverage: { timeZone: string; from: string; days: CoverageDayLike[] } | null;
 };
 
 const KIND_STYLES: Record<GridEntry["kind"], string> = {
@@ -140,8 +146,15 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
 
   const recentSync = useRecentSyncConfirm(data?.lastSyncedAt, () => void sync());
   const now = useMemo(() => new Date(), [data]); // eslint-disable-line react-hooks/exhaustive-deps -- "now" moves with each load
-  const byDay = useMemo(() => entriesByDay([...(data?.entries ?? []), ...packageEntries]), [data, packageEntries]);
-  const gaps = useMemo(() => gapDays(now, byDay), [now, byDay]);
+  // BL-235: with the shared coverage the grid's days are the channel's (its zone), as the coverage counts them, and the gaps and the
+  // days missing translations are the coverage's; without it, the viewer's days and the calendar's own gaps (as before).
+  const zone = data?.dayCoverage?.timeZone ?? null;
+  const byDay = useMemo(() => entriesByDay([...(data?.entries ?? []), ...packageEntries], zone), [data, packageEntries, zone]);
+  const marks = useMemo(() => (data?.dayCoverage ? coverageMarks(data.dayCoverage.days) : null), [data]);
+  const gaps = useMemo(() => marks?.gaps ?? gapDays(now, byDay), [marks, now, byDay]);
+  const missingTranslations = marks?.missing ?? new Map<string, string[]>();
+  /** The time shown in a cell: the channel's when its zone is known (the cell is its day), else the viewer's. */
+  const cellTime = (iso: string) => (zone ? formatZonedDateAndTime(new Date(iso), zone).localTime : timeOf(iso));
   // BL-221: each empty day ahead, in date order, gets the next ready package without a date as a suggestion.
   const gapSuggestion = useMemo(() => {
     const out = new Map<string, string>();
@@ -151,7 +164,7 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
     return out;
   }, [gaps, readyUndated]);
   const weeks = useMemo(() => monthWeeks(cursor.year, cursor.month), [cursor]);
-  const todayKey = localDayKey(now);
+  const todayKey = data?.dayCoverage?.from ?? localDayKey(now);
   const undated = (data?.entries ?? []).filter((entry) => entry.kind === "unscheduled");
   const overdue = (data?.entries ?? []).filter((entry) => entry.kind === "overdue");
 
@@ -203,7 +216,14 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
                   })
                 : t("publishingCalendar.nothingScheduled")}
             </p>
-            {coverage.due && <p className="text-sm text-amber-300">{t("publishingCalendar.reminder", { threshold: coverage.thresholdDays })}</p>}
+            {coverage.due && (
+              <p className="text-sm text-amber-300">
+                {t(coverage.coveredDaysInARow === undefined ? "publishingCalendar.reminder" : "publishingCalendar.reminderCovered", { threshold: coverage.thresholdDays })}
+              </p>
+            )}
+            {coverage.coveredDaysInARow !== undefined && (
+              <p className="text-sm text-zinc-300">{t("publishingCalendar.coveredInARow", { count: coverage.coveredDaysInARow })}</p>
+            )}
             <p className="text-xs text-zinc-500">
               {coverage.unscheduledCount > 0 && <span className="mr-3">{t("publishingCalendar.unscheduledCount", { count: coverage.unscheduledCount })}</span>}
               {overdue.length > 0 && <span>{t("publishingCalendar.overdueCount", { count: overdue.length })}</span>}
@@ -211,6 +231,7 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
           </div>
           <div className="flex items-center gap-3 text-xs text-zinc-500">
             {data.lastSyncedAt && <span>{t("publishingCalendar.dataAge", { time: formatDisplayDateTime(data.lastSyncedAt) })}</span>}
+            {zone && <span title={t("publishingCalendar.zoneHint")}>{t("publishingCalendar.zone", { zone })}</span>}
             {recentSync.dialog}
             <button
               type="button"
@@ -252,6 +273,7 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
             <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-sm bg-amber-600" />{t("publishingCalendar.legend.overdue")}</span>
             <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-sm border border-dashed border-violet-600" />{t("publishingCalendar.legend.package")}</span>
             <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-sm border border-dashed border-amber-500" />{t("publishingCalendar.legend.gap")}</span>
+            {marks && <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-sm border-2 border-yellow-400" />{t("publishingCalendar.legend.missingTranslations")}</span>}
           </div>
         </div>
 
@@ -266,12 +288,14 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
             const inMonth = day.getMonth() === cursor.month;
             const entries = byDay.get(key) ?? [];
             const isGap = gaps.has(key);
+            const missing = missingTranslations.get(key);
             const isToday = key === todayKey;
             return (
               <div
                 key={key}
                 aria-current={isToday ? "date" : undefined}
-                className={`min-h-24 rounded-md border p-1 ${isGap ? "border-dashed border-amber-600/70" : "border-zinc-800"} ${inMonth ? "bg-zinc-950" : "bg-zinc-950/40 opacity-60"} ${isToday ? "ring-1 ring-sky-700" : ""} ${selectedDay === key ? "ring-1 ring-zinc-400" : ""}`}
+                title={missing ? t("publishingCalendar.missingHint", { languages: missing.join(", ") }) : undefined}
+                className={`min-h-24 rounded-md border p-1 ${isGap ? "border-dashed border-amber-600/70" : missing ? "border-2 border-yellow-400/80" : "border-zinc-800"} ${inMonth ? "bg-zinc-950" : "bg-zinc-950/40 opacity-60"} ${isToday ? "ring-1 ring-sky-700" : ""} ${selectedDay === key ? "ring-1 ring-zinc-400" : ""}`}
               >
                 <button
                   type="button"
@@ -290,7 +314,7 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
                         title={`${entry.title}\n${t("publishingCalendar.packageHint")}`}
                         className={`block w-full truncate rounded border px-1 py-0.5 text-left text-[11px] ${KIND_STYLES.package}`}
                       >
-                        {entry.at ? `${timeOf(entry.at)} ` : ""}
+                        {entry.at ? `${cellTime(entry.at)} ` : ""}
                         {entry.title}
                       </span>
                     ) : (
@@ -302,10 +326,13 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
                       aria-label={entry.at ? `${entry.title}. ${t("publishingCalendar.timeHint", { local: timeOf(entry.at), utc: utcTimeOf(entry.at) })}` : entry.title}
                       className={`block w-full truncate rounded border px-1 py-0.5 text-left text-[11px] ${KIND_STYLES[entry.kind]}`}
                     >
-                      {entry.at ? `${timeOf(entry.at)} ` : ""}
+                      {entry.at ? `${cellTime(entry.at)} ` : ""}
                       {entry.title}
                     </button>
                     )
+                  )}
+                  {missing && (
+                    <div className="text-center text-[10px] text-yellow-300">{t("publishingCalendar.missingShort", { languages: missing.join(", ") })}</div>
                   )}
                   {isGap && entries.length === 0 && (
                     <div className="text-center text-[10px] text-amber-300/80">
@@ -327,6 +354,12 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
                 {t("publishingCalendar.dayClose")}
               </button>
             </div>
+            {missingTranslations.has(selectedDay) && (
+              <p className="text-xs text-yellow-300">{t("publishingCalendar.missingHint", { languages: missingTranslations.get(selectedDay)!.join(", ") })}</p>
+            )}
+            {gaps.has(selectedDay) && (byDay.get(selectedDay) ?? []).some((entry) => entry.kind === "overdue") && (
+              <p className="text-xs text-amber-300">{t("publishingCalendar.dayOverdueGap")}</p>
+            )}
             {(byDay.get(selectedDay) ?? []).length === 0 ? (
               <p className="text-xs text-zinc-500">
                 {gaps.has(selectedDay)
@@ -347,7 +380,7 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
                         {entry.title}
                       </button>
                     )}
-                    {entry.at && <span className="shrink-0 text-xs text-zinc-500">{timeOf(entry.at)}</span>}
+                    {entry.at && <span className="shrink-0 text-xs text-zinc-500">{cellTime(entry.at)}</span>}
                     {entry.kind !== "package" && views.get(entry.videoId) != null && (
                       <span className="shrink-0 text-xs tabular-nums text-zinc-400">{t("pipeline.views", { count: views.get(entry.videoId)! })}</span>
                     )}

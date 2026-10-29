@@ -22,3 +22,8 @@ export async function channelTimeZone(channelId: string): Promise<{ timeZone: st
 export function createChannelPublishingCoverage(): PublishingCoverageReads {
   return createPublishingCoverageCore({ timeZoneOf: channelTimeZone });
 }
+
+/** The calendar's, the alerts' and the agents' calendar hook: `days` from today in the channel's zone. */
+export function dailyPublishingCoverage(channelId: string, days: number) {
+  return createChannelPublishingCoverage().get({ channelId, days });
+}
