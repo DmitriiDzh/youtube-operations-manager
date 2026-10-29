@@ -93,6 +93,19 @@ export const languages = {
   "langRequest.status.failed": "failed",
   "langRequest.status.cancelled": "withdrawn",
 
+  "languages.move.columnTitle": "Move \"{language}\" to another language code (same text)",
+  "languages.move.dialogTitle": "Move \"{language}\" to another language code?",
+  "languages.move.dialogDescription":
+    "Every video with \"{language}\" gets the new code with exactly the same title and description, and loses \"{language}\". Nothing is translated again. This only proposes a Change Set: you approve it and send it as usual.",
+  "languages.move.targetLabel": "New language code (from YouTube's list)",
+  "languages.move.confirm": "Propose the move",
+  "languages.move.proposed":
+    "Move {from} → {to} proposed: {moved} video(s) get {to}; {kept} already have {to} (kept, only {from} removed); skipped: {own} where it is the video's own language, {empty} with an empty text. Review the new Change Set below.",
+  "languages.move.nothing":
+    "Nothing to move from {from} to {to}: skipped {own} where it is the video's own language and {empty} with an empty text.",
+  "languages.move.keptTitle": "{count} video(s) already have the new language -- compare the texts",
+  "languages.move.keptRemoved": "Removed (old code)",
+  "languages.move.keptStays": "Kept unchanged (new code)",
   "languages.nothingToProposeDeletion":
     "Nothing to propose for \"{language}\" -- every matching video has it as their own default language, which this mechanism never touches ({skipped} skipped).",
   "languages.deletionProposed":
