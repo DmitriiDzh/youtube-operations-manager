@@ -1,6 +1,6 @@
 import { sameLanguage } from "@/lib/shared-language-baseline";
 import { untitledTranslations } from "@/lib/shared-localization-merge";
-import { languageKey, mergeCollision } from "./targets";
+import { languageKey, mergeCollision, unpairedDeletes } from "./targets";
 import { UNITS_PER_WRITTEN_VIDEO } from "@/lib/quota-guard";
 import { DomainError, TERMINAL_LEDGER_STATUSES, type Batch, type LedgerRow } from "./contracts";
 import { isApprovalStillValid } from "./services";
@@ -199,7 +199,12 @@ export function createSendApprovedServices(deps: SendApprovedDeps) {
   }
 
   /** The selection's sendable, not yet written changes, each tagged with its set; refuses unknown sets and sets of another channel. */
-  async function gather(channelId: string, changeSetIds: string[], videoIds?: string[], changeIds?: string[]): Promise<{ sets: SetInfo[]; changes: Tagged[] }> {
+  async function gather(
+    channelId: string,
+    changeSetIds: string[],
+    videoIds?: string[],
+    changeIds?: string[]
+  ): Promise<{ sets: SetInfo[]; changes: Tagged[]; unpairedIn: (selection: Tagged[]) => Tagged[] }> {
     // BL-227: `videoIds` keeps only those videos' changes (a send from the review screen of one video); an empty list sends nothing.
     if (videoIds !== undefined && videoIds.length === 0) {
       throw new DomainError({ code: "validation_failed", message: "videoIds must name at least one video", details: { videoIds } });
@@ -213,6 +218,7 @@ export function createSendApprovedServices(deps: SendApprovedDeps) {
     const onlyChanges = changeIds ? new Set(changeIds) : null;
     const sets: SetInfo[] = [];
     const changes: Tagged[] = [];
+    const allBySet = new Map<string, SendableChangeCandidate[]>();
     const written = await writtenAtByChangeId(channelId);
     const holds = deps.changeSets.remoteHolds ? await deps.changeSets.remoteHolds(channelId) : null;
     for (const changeSetId of [...new Set(changeSetIds)]) {
@@ -226,13 +232,25 @@ export function createSendApprovedServices(deps: SendApprovedDeps) {
       }
       sets.push({ id: changeSet.id, source: changeSet.source ?? null, createdAt: changeSet.createdAt ?? null });
       const listed = (await deps.changeSets.listChanges(changeSetId)).map((change) => (holds ? { ...change, remoteHolds: holds(change) } : change));
+      allBySet.set(changeSetId, listed);
       for (const change of excludeAlreadyWritten(selectSendableChanges(listed), written)) {
         if (onlyVideos && !onlyVideos.has(change.videoId)) continue;
         if (onlyChanges && !onlyChanges.has(change.id)) continue;
         changes.push({ ...change, fromSet: changeSetId });
       }
     }
-    return { sets, changes };
+    // BL-232: a delete whose own set also changes another language of the video (a language move) goes only with that change.
+    const listedById = new Map([...allBySet.values()].flat().map((change) => [change.id, change]));
+    const unpairedIn = (selection: Tagged[]) =>
+      unpairedDeletes(
+        selection,
+        (change) => allBySet.get(change.fromSet) ?? [],
+        (partner) => {
+          const listedPartner = listedById.get(partner.id);
+          return listedPartner !== undefined && listedPartner.approvalStatus === "approved" && isChangeWritten(listedPartner, written);
+        }
+      );
+    return { sets, changes, unpairedIn };
   }
 
   async function describeConflicts(channelId: string, sets: SetInfo[], units: ConflictUnit[]): Promise<MergeConflict[]> {
@@ -335,7 +353,7 @@ export function createSendApprovedServices(deps: SendApprovedDeps) {
     }
 
     return serialized(input.channelId, async () => {
-      const { sets, changes } = await gather(input.channelId, input.changeSetIds, input.videoIds, input.changeIds);
+      const { sets, changes, unpairedIn } = await gather(input.channelId, input.changeSetIds, input.videoIds, input.changeIds);
       // Changes a real batch already wrote (and that were not edited since) are not sent a second time: that would only spend quota and a backup
       // to hit the pre-write conflict check against the value that is already live (AC-SEND-13).
       if (changes.length === 0) {
@@ -396,6 +414,18 @@ export function createSendApprovedServices(deps: SendApprovedDeps) {
 
       // BL-226: a translation left without a title would make YouTube refuse its whole video -- refused here, before anything is
       // rejected or created, naming each one (the owner approves a title or rejects the description, then sends again).
+      // BL-232: a language move's delete never goes without its add (the text would be lost) -- refused before anything is rejected
+      // or created; a delete whose add lost a merge choice is unpaired as well.
+      const unpairedNow = unpairedIn(selected);
+      if (unpairedNow.length > 0) {
+        const pairs = [...new Map(unpairedNow.map((change) => [`${change.videoId} ${change.language ?? ""}`, { videoId: change.videoId, language: change.language ?? "" }])).values()];
+        throw new DomainError({
+          code: "send_unpaired_language_move",
+          message: `Nothing was sent: ${pairs.map((pair) => `${pair.videoId} (${pair.language})`).join(", ")} would lose a language without getting the language it moves to. Approve both halves of the move for that video, or reject both, then send again.`,
+          details: { unpaired: pairs },
+        });
+      }
+
       const untitled = await findUntitled(input.channelId, selected);
       if (untitled.length > 0) {
         throw new DomainError({

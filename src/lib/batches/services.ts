@@ -37,7 +37,7 @@ import {
   type PendingChange,
 } from "./merge";
 import { readAgainstBaseline, sameLanguage } from "@/lib/shared-language-baseline";
-import { sameTarget } from "./targets";
+import { sameTarget, unpairedDeletes } from "./targets";
 import { YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
 import { runWithQuotaContext, type QuotaContext } from "@/lib/youtube-quota";
 import { beginBatchExecution, endBatchExecution, isBatchCancelRequested, requestBatchCancelFlag } from "./execution-control";
@@ -105,6 +105,12 @@ type ClockDeps = {
 
 type ChangeSetStoreDeps = {
   getChange(changeId: string): Promise<PendingChangeRecord | null>;
+  /**
+   * BL-232: every change of the change set `changeId` belongs to, each with whether the channel's synced copy already holds its
+   * approved value. Lets `createBatch` refuse a language move's delete without its add (`unpairedDeletes`). Optional: absent = no
+   * pairing check (older fixtures).
+   */
+  listSetChanges?(changeId: string): Promise<Array<{ id: string; videoId: string; changeType?: string; onYoutube: boolean }>>;
 };
 
 type AuthResolverDeps = {
@@ -411,6 +417,29 @@ export function createBatchServices(deps: ServiceDependencies) {
     return change;
   }
 
+  /**
+   * BL-232: a row that deletes a language must also carry every other change its change set makes on that video (a language move:
+   * delete `from` + add `to`), unless that change is already on YouTube -- the same rule the send service applies
+   * (`unpairedDeletes`), here for any other path (the Batches tab's manual selection).
+   */
+  async function assertLanguageMovesComplete(videoId: string, rowChanges: PendingChangeRecord[]): Promise<void> {
+    if (!changeSetStore.listSetChanges || !rowChanges.some((change) => change.changeType === "delete")) return;
+    const setChanges = new Map<string, Awaited<ReturnType<NonNullable<ChangeSetStoreDeps["listSetChanges"]>>>>();
+    for (const change of rowChanges) {
+      if (change.changeType === "delete") setChanges.set(change.id, await changeSetStore.listSetChanges(change.id));
+    }
+    const onYoutube = new Set([...setChanges.values()].flat().filter((change) => change.onYoutube).map((change) => change.id));
+    const unpaired = unpairedDeletes(rowChanges, (change) => setChanges.get(change.id) ?? [], (partner) => onYoutube.has(partner.id));
+    if (unpaired.length > 0) {
+      const languages = [...new Set(unpaired.map((change) => change.language))];
+      throw new DomainError({
+        code: "send_unpaired_language_move",
+        message: `Video ${videoId} would lose ${languages.join(", ")} without the language it is moved to: select both halves of the move, or neither.`,
+        details: { videoId, languages, changeIds: unpaired.map((change) => change.id) },
+      });
+    }
+  }
+
   async function createBatch(rawInput: CreateBatchInput): Promise<Batch> {
     const input = parseWithSchema(createBatchInputSchema, rawInput, "createBatch input");
 
@@ -436,6 +465,7 @@ export function createBatchServices(deps: ServiceDependencies) {
         rowChanges.push(change);
       }
       assertNoDuplicateTargets(selection.videoId, rowChanges);
+      await assertLanguageMovesComplete(selection.videoId, rowChanges);
     }
 
     const batchId = idGenerator();

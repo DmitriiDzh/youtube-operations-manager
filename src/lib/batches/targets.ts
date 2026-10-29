@@ -31,3 +31,24 @@ export function mergeCollision(a: TargetedChange, b: TargetedChange): boolean {
 export function languageKey(language: string | undefined): string {
   return (language ?? "").trim().toLowerCase();
 }
+
+/**
+ * BL-232 (language move, PRD-REQ-0043): a change set that deletes a language of a video AND changes another language of that same
+ * video (`changesets.proposeLanguageMove`: delete `zh-Hans` + add `zh-CN` with the same text) is one unit -- sending the delete
+ * without the add would lose the text. Returns the deletes in `selected` whose same-set, same-video non-delete changes are neither
+ * in `selected` nor already on YouTube. A set of deletes only (the ordinary language removal) has no partners and is never affected.
+ */
+export function unpairedDeletes<C extends { id: string; videoId: string; changeType?: string }>(
+  selected: readonly C[],
+  setChangesOf: (change: C) => ReadonlyArray<{ id: string; videoId: string; changeType?: string }>,
+  alreadyOnYoutube: (partner: { id: string }) => boolean
+): C[] {
+  const selectedIds = new Set(selected.map((change) => change.id));
+  return selected.filter(
+    (change) =>
+      change.changeType === "delete" &&
+      setChangesOf(change).some(
+        (partner) => partner.videoId === change.videoId && partner.changeType !== "delete" && !selectedIds.has(partner.id) && !alreadyOnYoutube(partner)
+      )
+  );
+}

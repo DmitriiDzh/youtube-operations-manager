@@ -78,6 +78,10 @@ export function createChangeSetStoreAdapter() {
  */
 export function createChangeSetReaderAdapter() {
   return {
+    /** BL-232: the change set a change belongs to (null when the change is unknown). */
+    async changeSetIdOf(changeId: string): Promise<string | null> {
+      return (await getStoredChangeById(changeId))?.changeSetId ?? null;
+    },
     async getChangeSet(changeSetId: string): Promise<{ id: string; channelId: string; source: string; createdAt: string } | null> {
       const changeSet = await getStoredChangeSet(changeSetId);
       return changeSet ? { id: changeSet.id, channelId: changeSet.channelId, source: changeSet.source, createdAt: changeSet.createdAt.toISOString() } : null;

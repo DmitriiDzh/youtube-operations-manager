@@ -741,3 +741,52 @@ test("AC-ST-11: a de delete next to a de title in one row stays allowed (PROJECT
   const batch = await harness.services.createBatch({ channelId: "UC_TEST", selections: [{ videoId: "v2", changeIds: ["e1", "e2"] }] });
   assert.deepEqual((await harness.services.listLedgerRows(batch.id))[0].changeIds, ["e1", "e2"]);
 });
+
+// BL-232 (PRD-REQ-0043): the Batches tab's manual selection must not send a language move's delete without its add (the Chinese text
+// would be lost) -- the same rule as the send service. A set of deletes only (the ordinary language removal) is unaffected.
+test("BL-232: a manual row with a move's delete but not its add is refused; with both, or the add already on YouTube, it is created", async () => {
+  const harness = createHarness();
+  const set = [
+    { id: "dt", videoId: "v1", changeType: "delete" as const, language: "zh-Hans", field: "title" as const },
+    { id: "dd", videoId: "v1", changeType: "delete" as const, language: "zh-Hans", field: "description" as const },
+    { id: "at", videoId: "v1", changeType: "add" as const, language: "zh-CN", field: "title" as const },
+    { id: "ad", videoId: "v1", changeType: "add" as const, language: "zh-CN", field: "description" as const },
+  ];
+  for (const change of set) harness.store.registerApprovedChange(change);
+  let onYoutube = new Set<string>();
+  const services = createBatchServices({
+    batchStore: harness.store,
+    changeSetStore: {
+      getChange: (id: string) => harness.store.getChange(id),
+      listSetChanges: async () => set.map((change) => ({ id: change.id, videoId: change.videoId, changeType: change.changeType, onYoutube: onYoutube.has(change.id) })),
+    },
+    authResolver: createUnusedDependencyStub("authResolver") as never,
+    writeContext: createUnusedDependencyStub("writeContext") as never,
+    youtubeApi: createUnusedDependencyStub("youtubeApi") as never,
+    backup: createUnusedDependencyStub("backup") as never,
+    audit: { async record() {} },
+    clock: { async wait() {} },
+    idGenerator: (() => {
+      let n = 0;
+      return () => `bl232-${++n}`;
+    })(),
+    logger: { info() {}, error() {} },
+  });
+
+  await assert.rejects(
+    () => services.createBatch({ channelId: "UC_TEST", selections: [{ videoId: "v1", changeIds: ["dt", "dd"] }] }),
+    (error: unknown) => error instanceof DomainError && error.code === "send_unpaired_language_move"
+  );
+  await assert.rejects(
+    () => services.createBatch({ channelId: "UC_TEST", selections: [{ videoId: "v1", changeIds: ["dt", "dd", "at"] }] }),
+    (error: unknown) => error instanceof DomainError && error.code === "send_unpaired_language_move"
+  );
+  assert.equal((await services.listBatchesByChannel("UC_TEST")).length, 0);
+
+  const both = await services.createBatch({ channelId: "UC_TEST", selections: [{ videoId: "v1", changeIds: ["dt", "dd", "at", "ad"] }] });
+  assert.deepEqual((await services.listLedgerRows(both.id))[0].changeIds, ["dt", "dd", "at", "ad"]);
+
+  onYoutube = new Set(["at", "ad"]);
+  const deleteOnly = await services.createBatch({ channelId: "UC_TEST", selections: [{ videoId: "v1", changeIds: ["dt", "dd"] }] });
+  assert.deepEqual((await services.listLedgerRows(deleteOnly.id))[0].changeIds, ["dt", "dd"]);
+});

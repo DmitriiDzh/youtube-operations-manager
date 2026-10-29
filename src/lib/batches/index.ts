@@ -37,7 +37,34 @@ export function createBatchCore() {
 
   return createBatchServices({
     batchStore: createBatchStoreAdapter(),
-    changeSetStore: createChangeSetStoreAdapter(),
+    changeSetStore: {
+      ...createChangeSetStoreAdapter(),
+      // BL-232: the change's whole set, each change marked when the synced copy already holds its approved value (BL-198's rule).
+      async listSetChanges(changeId: string) {
+        const reader = createChangeSetReaderAdapter();
+        const changeSetId = await reader.changeSetIdOf(changeId);
+        if (!changeSetId) return [];
+        const changeSet = await reader.getChangeSet(changeSetId);
+        if (!changeSet) return [];
+        const baseline = (await getChannelExpectedLanguages(changeSet.channelId)).defaultLanguage;
+        const byVideo = new Map(
+          (await createChannelVideoStoreAdapter().listVideosByChannel(changeSet.channelId)).map((video) => [video.videoId, readWithChannelBaseline(video, baseline)])
+        );
+        return (await reader.listChanges(changeSetId)).map((change) => ({
+          id: change.id,
+          videoId: change.videoId,
+          changeType: change.changeType,
+          onYoutube:
+            change.approvalStatus === "approved" &&
+            remoteHoldsApprovedValue(byVideo.get(change.videoId) ?? null, {
+              language: change.language ?? "",
+              field: change.field ?? "title",
+              changeType: change.changeType ?? "modify",
+              approvedValue: change.approvedValue,
+            }),
+        }));
+      },
+    },
     authResolver: { resolve: resolveGoogleCredentials },
     writeContext,
     youtubeApi: createBatchYoutubeApiAdapter(),
