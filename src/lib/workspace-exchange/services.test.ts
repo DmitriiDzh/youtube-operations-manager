@@ -55,6 +55,22 @@ test("a From YTM symlink pointing outside the workspace is refused with the call
     await assert.rejects(resolveFromYtmDir(args(workspace)), /unavailable: 99 Data Exchange is not a plain folder/);
   }));
 
+test("concurrent first calls both get the folder: one creating it between the other's check and mkdir is not an error", () =>
+  withWorkspace(async (workspace) => {
+    const results = await Promise.all(Array.from({ length: 8 }, () => resolveFromYtmDir(args(workspace))));
+    const expected = path.join(await realpath(workspace), "99 Data Exchange", "From YTM");
+    assert.deepEqual(results, Array(8).fill(expected));
+    assert.deepEqual((await readdir(path.join(workspace, "99 Data Exchange"))).sort(), ["From YTM", "Sent to YTM"]);
+  }));
+
+test("a mkdir failure that leaves no plain folder behind is still refused", () =>
+  withWorkspace(async (workspace) => {
+    const fs = createExchangeFs();
+    const failing = { ...fs, mkdir: async () => { throw new Error("EACCES: permission denied"); } };
+    await assert.rejects(resolveFromYtmDir({ ...args(workspace), fs: failing }), /unavailable: 99 Data Exchange could not be created \(EACCES/);
+    assert.deepEqual(await readdir(workspace), []);
+  }));
+
 test("a failed workspace validation is refused before anything is created", () =>
   withWorkspace(async (workspace) => {
     await assert.rejects(resolveFromYtmDir({ ...args(workspace), validateWorkspacePath: async () => ({ ok: false, reason: "path is inside the app-data directory" }) }), /unavailable: path is inside/);

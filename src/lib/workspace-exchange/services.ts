@@ -23,7 +23,12 @@ export async function resolveFromYtmDir(args: ResolveFromYtmDirArgs): Promise<st
       try {
         await args.fs.mkdir(folder);
       } catch (error) {
-        throw args.unavailable(`${label} could not be created (${error instanceof Error ? error.message : String(error)})`);
+        // Two first calls at once: the other one created the folder between our lstat and mkdir (BL-236 review). A plain
+        // folder now in its place is what we wanted; anything else is still refused.
+        const now = await args.fs.lstat(folder);
+        if (!now || now.isSymbolicLink || !now.isDirectory) {
+          throw args.unavailable(`${label} could not be created (${error instanceof Error ? error.message : String(error)})`);
+        }
       }
     }
   }
