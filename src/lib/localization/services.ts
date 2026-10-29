@@ -25,7 +25,7 @@ import {
 // looser `isValidLanguageCode` BCP-47-ish regex from `@/lib/changesets/diff`, unchanged.
 import { isSupportedYoutubeLanguageCode } from "@/lib/youtube-supported-languages";
 import { createHash } from "node:crypto";
-import { readAgainstBaseline, sameLanguage } from "@/lib/shared-language-baseline";
+import { missingTrackedLanguages, readAgainstBaseline, sameLanguage } from "@/lib/shared-language-baseline";
 
 type ServiceDependencies = {
   channelStore: {
@@ -83,28 +83,15 @@ function computeOverviewRow(video: StoredVideoRecord, languages: string[], chann
 }
 
 /**
- * BL-178 part C (§3.3 C2): the tracked languages this video lacks, read against the channel's language -- no entry, an empty
- * title, or an empty description where the original has one. The original's own language is never "missing".
+ * BL-178 part C (§3.3 C2): the tracked languages this video lacks, read against the channel's language. The rule is the shared
+ * `missingTrackedLanguages` (`@/lib/shared-language-baseline`, BL-235: the publishing coverage uses it too).
  */
 export function missingTrackedTranslations(video: StoredVideoRecord, trackedLanguages: string[], channelBaseline: string | null): string[] {
-  const reading = readAgainstBaseline(
+  return missingTrackedLanguages(
     { defaultLanguage: video.defaultLanguage, title: video.title, description: video.description, localizations: video.existingLocalizations },
+    trackedLanguages,
     channelBaseline
   );
-  // Measured against the channel's language (plan §3.3 C2): an ambiguous video's own label is a recognition error too -- its
-  // original is the baseline's; its entries are kept as they are (one of them may be a real translation). Review item 7.
-  const original = reading.kind === "as_is" ? (video.defaultLanguage ?? channelBaseline) : reading.to;
-  const localizations = reading.kind === "aligned" ? reading.view.localizations : video.existingLocalizations;
-  const originalHasDescription = video.description.trim() !== "";
-  return trackedLanguages
-    .filter((language) => !sameLanguage(language, original))
-    .filter((language) => {
-      const key = Object.keys(localizations).find((k) => sameLanguage(k, language));
-      if (!key) return true;
-      const entry = localizations[key];
-      return entry.title.trim() === "" || (originalHasDescription && entry.description.trim() === "");
-    })
-    .sort();
 }
 
 /**
