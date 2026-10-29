@@ -81,6 +81,14 @@ as before. video-details and playlist-management are plugged in by the app layer
 so this module still imports no other feature module (AGENTS.md §M). Without them, Start works as before and says the settings
 were not applied. A channel that may not switch recording off gets its broadcast with recording on (spike C, `fix/live-recording-fallback`).
 
+## Amendment 2026-10-29 (BL-233, FO-REQ-0047; owner msgs 3786/3788)
+
+Two encoders at 6000k and a video upload did not fit the Mac's Wi-Fi uplink (about 10 Mbit/s): a stream starved. A stream may
+now have its own encoder bitrate (`live_streams.bitrate_kbps`, schema v113; empty = this computer's setting). A YouTube upload on
+the computer that runs streams keeps to a share of the uplink -- a fixed limit while any stream is on, and a pause while a stream
+sends below 0.97x for a few minutes, at most 30 minutes -- through the shared `src/lib/upload-bandwidth/` module composed at the app
+layer (AGENTS.md §M). Restarting an encoder with a new bitrate is still not a YouTube write (decision 4). RISK-139.
+
 ## Alternatives rejected
 
 - **All originals on the internal disk:** 47 GB does not fit in 30 GB free.
