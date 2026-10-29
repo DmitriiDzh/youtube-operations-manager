@@ -92,11 +92,44 @@ export function testRunEnv(baseEnv, root) {
   return { ...baseEnv, TMPDIR: root, TMP: root, TEMP: root };
 }
 
-/** The test runner's arguments: the default pattern unless files or patterns were given; options always first. */
+/** Runner options that take a value: `--name value` keeps the value with its option (as well as `--name=value`). */
+export const VALUE_OPTIONS = new Set([
+  "--test-name-pattern",
+  "--test-skip-pattern",
+  "--test-reporter",
+  "--test-reporter-destination",
+  "--test-concurrency",
+  "--test-timeout",
+  "--test-shard",
+  "--test-isolation",
+  "--test-coverage-include",
+  "--test-coverage-exclude",
+  "--experimental-test-coverage-include",
+  "--import",
+  "--require",
+]);
+
+/**
+ * The test runner's arguments: the default pattern unless files or patterns were given; options always first.
+ * @param {string[]} extra
+ */
 export function testRunnerArgs(extra, defaultPattern = "src/**/*.test.ts") {
-  const options = extra.filter((arg) => arg.startsWith("-"));
-  const targets = extra.filter((arg) => !arg.startsWith("-"));
+  const options = [];
+  const targets = [];
+  for (let i = 0; i < extra.length; i++) {
+    const arg = extra[i];
+    if (!arg.startsWith("-")) targets.push(arg);
+    else if (VALUE_OPTIONS.has(arg) && i + 1 < extra.length) options.push(arg, extra[++i]);
+    else options.push(arg);
+  }
   return ["--import", "tsx", "--test", ...options, ...(targets.length > 0 ? targets : [defaultPattern])];
+}
+
+/** A process ended by a signal exits with 128 + the signal's number (the shell convention); 1 when the number is unknown. */
+export function exitCodeFor(code, signal, signals = os.constants.signals) {
+  if (code !== null && code !== undefined) return code;
+  if (signal) return signals[signal] ? 128 + signals[signal] : 1;
+  return 0;
 }
 
 /**

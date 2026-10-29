@@ -12,6 +12,7 @@ import {
   testRunnerArgs,
   testRunRootName,
   tsxCacheFolderName,
+  exitCodeFor,
 } from "../../scripts/test-temp-root.mjs";
 
 // BL-237 (owner, Telegram 2026-10-30, msgs 3864-3866). Requirements: every temporary folder of a test run lives under ONE
@@ -73,6 +74,19 @@ test("the run's environment points TMPDIR, TMP and TEMP at the run folder and ke
 test("the runner's arguments: the whole suite by default, only the given files otherwise, options first", () => {
   assert.deepEqual(testRunnerArgs([]), ["--import", "tsx", "--test", "src/**/*.test.ts"]);
   assert.deepEqual(testRunnerArgs(["src/a.test.ts", "--test-name-pattern=x"]), ["--import", "tsx", "--test", "--test-name-pattern=x", "src/a.test.ts"]);
+  // The space form keeps the value with its option (it is not a file); a flag without a value stays alone.
+  assert.deepEqual(testRunnerArgs(["--test-name-pattern", "backup retention", "src/a.test.ts"]), ["--import", "tsx", "--test", "--test-name-pattern", "backup retention", "src/a.test.ts"]);
+  assert.deepEqual(testRunnerArgs(["--test-only", "--test-concurrency", "2"]), ["--import", "tsx", "--test", "--test-only", "--test-concurrency", "2", "src/**/*.test.ts"]);
+});
+
+test("the run's exit code: the runner's own, or 128 + the signal's number when a signal ended it", () => {
+  const signals = { SIGINT: 2, SIGTERM: 15, SIGHUP: 1 } as unknown as typeof import("node:os").constants.signals;
+  assert.equal(exitCodeFor(0, null, signals), 0);
+  assert.equal(exitCodeFor(1, null, signals), 1);
+  assert.equal(exitCodeFor(null, "SIGINT", signals), 130);
+  assert.equal(exitCodeFor(null, "SIGTERM", signals), 143);
+  assert.equal(exitCodeFor(null, "SIGHUP", signals), 129);
+  assert.equal(exitCodeFor(null, "SIGNOPE" as NodeJS.Signals, signals), 1);
 });
 
 test("end to end: a test's mkdtemp lands in the run folder, and nothing of the run is left afterwards", () =>

@@ -7,7 +7,7 @@
 //
 //   npm test                                       the whole suite (src/**/*.test.ts)
 //   npm test -- src/lib/x.test.ts                  only these files or patterns
-//   npm test -- --test-name-pattern=word           options for node's test runner (the `--name=value` form)
+//   npm test -- --test-name-pattern=word           options for node's test runner (`--name=value` or `--name value`)
 //
 // Plain Node, no shell: it works the same on Windows.
 import { spawn } from "node:child_process";
@@ -15,7 +15,7 @@ import { mkdirSync, symlinkSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { removeWithRetry, sweepStaleTestRunRoots, testRunEnv, testRunnerArgs, testRunRootName, tsxCacheFolderName } from "./test-temp-root.mjs";
+import { exitCodeFor, removeWithRetry, sweepStaleTestRunRoots, testRunEnv, testRunnerArgs, testRunRootName, tsxCacheFolderName } from "./test-temp-root.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const base = os.tmpdir();
@@ -39,8 +39,8 @@ const child = spawn(process.execPath, testRunnerArgs(process.argv.slice(2)), {
   stdio: "inherit",
 });
 
-// Ctrl+C / a stop reaches the test runner; this process waits for it to end and then cleans up.
-for (const signal of ["SIGINT", "SIGTERM"]) {
+// Ctrl+C / a stop / a closed terminal reaches the test runner; this process waits for it to end and then cleans up.
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
   process.on(signal, () => {
     if (child.exitCode === null) child.kill(signal);
   });
@@ -49,7 +49,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
 child.on("exit", async (code, signal) => {
   const removed = await removeWithRetry(root);
   if (!removed) console.warn(`[run-tests] could not remove ${root}; the next run removes it once it is 2 h old`);
-  process.exit(code ?? (signal ? 1 : 0));
+  process.exit(exitCodeFor(code, signal));
 });
 child.on("error", async (error) => {
   console.error(`[run-tests] could not start the test runner: ${error.message}`);
