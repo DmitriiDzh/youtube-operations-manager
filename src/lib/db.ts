@@ -15375,6 +15375,27 @@ export async function listLiveStreamLibrarySegments(channelId: string, database:
     .orderBy(asc(liveStreamLibrarySegments.rotationIndex), asc(liveStreamLibrarySegments.seq));
 }
 
+/**
+ * BL-234 (review item 4): appends a segment at the end of the selection in ONE statement -- its index is the channel's largest + 1,
+ * computed by the insert itself, so two adds at once never share an index. Null (nothing written) when the seq is already selected.
+ */
+export async function appendLiveStreamLibrarySegment(
+  row: Omit<typeof liveStreamLibrarySegments.$inferInsert, "rotationIndex">,
+  database: AppDb = db
+): Promise<number | null> {
+  const ms = (d: Date | null | undefined) => (d ? d.getTime() : null);
+  const rows = await database.all<{ rotation_index: number }>(sql`
+    INSERT INTO live_stream_library_segments
+      (channel_id, seq, rotation_index, title, duration_seconds, sidecar_duration_seconds, bytes, tracks_json, check_status, check_reason, checked_at, added_at)
+    SELECT ${row.channelId}, ${row.seq}, COALESCE(MAX(rotation_index) + 1, 0), ${row.title ?? null}, ${row.durationSeconds ?? null},
+      ${row.sidecarDurationSeconds ?? null}, ${row.bytes ?? null}, ${row.tracksJson ?? null}, ${row.checkStatus}, ${row.checkReason ?? null},
+      ${ms(row.checkedAt)}, ${ms(row.addedAt)}
+    FROM live_stream_library_segments WHERE channel_id = ${row.channelId}
+    ON CONFLICT (channel_id, seq) DO NOTHING
+    RETURNING rotation_index`);
+  return rows.length > 0 ? Number(rows[0].rotation_index) : null;
+}
+
 /** BL-234: adds a segment to the selection or replaces its row (same channel and seq). */
 export async function upsertLiveStreamLibrarySegment(row: typeof liveStreamLibrarySegments.$inferInsert, database: AppDb = db): Promise<void> {
   const { channelId, seq, addedAt, ...rest } = row;

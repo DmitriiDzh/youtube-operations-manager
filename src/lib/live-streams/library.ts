@@ -156,15 +156,29 @@ export type LibraryDependencies = {
   probe(path: string): Promise<ProbeResult>;
   store: {
     getStream(channelId: string): Promise<{ sourceMode?: string | null; positionIndex: number; positionOffsetSeconds: number; passOrderJson: string | null } | null>;
+    /** Sets the mode and drops the next pass already drawn (the switch applies at the next pass). */
     setSourceMode(channelId: string, mode: LiveSourceMode): Promise<boolean>;
+    /** Drops the next pass already drawn, so a selection change applies at the next pass (review of BL-234, item 1d). */
+    clearNextPass(channelId: string): Promise<void>;
     list(channelId: string): Promise<StoredLibrarySegmentRow[]>;
-    upsert(row: StoredLibrarySegmentRow): Promise<void>;
+    /**
+     * Adds a row at the end of the selection in one atomic statement (its index = the largest + 1); null when the seq is already
+     * selected. Two adds at once never share an index (review of BL-234, item 4).
+     */
+    append(row: Omit<StoredLibrarySegmentRow, "rotationIndex">): Promise<number | null>;
     update(channelId: string, seq: number, set: Partial<Omit<StoredLibrarySegmentRow, "channelId" | "seq" | "addedAt">>): Promise<boolean>;
     remove(channelId: string, seq: number): Promise<boolean>;
     setOrder(channelId: string, seqs: readonly number[]): Promise<boolean>;
   };
   event(channelId: string, kind: string, detail: Record<string, unknown>): Promise<void>;
   clock: () => Date;
+  /**
+   * The stream's own lock (the supervisor's `withChannelLock`): the mode switch and the selection's writes never interleave with a
+   * tick's next-pass draw (review item 3). Never taken by `recheck`, which runs inside the tick's lock.
+   */
+  withLock<T>(channelId: string, fn: () => Promise<T>): Promise<T>;
+  /** The library's last known state per stream, kept across calls, so `segment_library_unavailable` is one event per change. */
+  libraryState: { get(channelId: string): string | null; set(channelId: string, state: string): void };
 };
 
 const SIDECAR_MAX_BYTES = 1024 * 1024;
@@ -250,6 +264,12 @@ export function createSegmentLibrary(deps: LibraryDependencies) {
     return { ok: true, sidecar: parsed.sidecar, durationSeconds: probe.durationSeconds!, bytes: file.bytes };
   }
 
+  /** Review item 1d: in segments mode a selection change drops the next pass already drawn, so it applies at the next pass. */
+  async function changedSelection(channelId: string): Promise<void> {
+    const stream = await deps.store.getStream(channelId);
+    if (sourceModeOf(stream) === "segments") await deps.withLock(channelId, () => deps.store.clearNextPass(channelId));
+  }
+
   /** The selection's rows; refused when the channel has no stream row yet (its settings were never saved). */
   async function requireStream(channelId: string) {
     const stream = await deps.store.getStream(channelId);
@@ -292,7 +312,15 @@ export function createSegmentLibrary(deps: LibraryDependencies) {
       const stream = await requireStream(channelId);
       const previous = sourceModeOf(stream);
       if (previous === mode) return { mode, changed: false };
-      await deps.store.setSourceMode(channelId, mode);
+      // Review item 1b: never switch to segments without one segment that passed its check -- the stream would have nothing to play.
+      if (mode === "segments" && !(await deps.store.list(channelId)).some((r) => r.checkStatus === "ok")) {
+        throw new DomainError({
+          code: "live_stream_no_ready_segments",
+          message: "Choose at least one segment that passed its check before switching the stream to segments",
+          details: { channelId },
+        });
+      }
+      await deps.withLock(channelId, () => deps.store.setSourceMode(channelId, mode));
       await deps.event(channelId, "source_mode_changed", { from: previous, to: mode });
       return { mode, changed: true };
     },
@@ -307,9 +335,7 @@ export function createSegmentLibrary(deps: LibraryDependencies) {
       const listing = await deps.listLibrary(channelId);
       if (!listing.ok) throw new DomainError({ code: "live_stream_workspace_unavailable", message: `The segment library cannot be read: ${UNAVAILABLE_TEXT[listing.reason]}`, details: { channelId, reason: listing.reason } });
       const complete = new Set(completeSegments(listing.names).map((s) => s.seq));
-      const rows = await deps.store.list(channelId);
-      const have = new Set(rows.map((r) => r.seq));
-      let next = rows.reduce((max, r) => Math.max(max, r.rotationIndex + 1), 0);
+      const have = new Set((await deps.store.list(channelId)).map((r) => r.seq));
       const added: SelectedSegmentView[] = [];
       const refused: Array<{ seq: number; reason: SegmentRefusal; message: string }> = [];
       for (const seq of seqs) {
@@ -325,10 +351,9 @@ export function createSegmentLibrary(deps: LibraryDependencies) {
           continue;
         }
         const now = deps.clock();
-        const row: StoredLibrarySegmentRow = {
+        const row: Omit<StoredLibrarySegmentRow, "rotationIndex"> = {
           channelId,
           seq,
-          rotationIndex: next++,
           title: checked.sidecar.title,
           durationSeconds: checked.durationSeconds,
           sidecarDurationSeconds: checked.sidecar.durationSec,
@@ -339,28 +364,33 @@ export function createSegmentLibrary(deps: LibraryDependencies) {
           checkedAt: now,
           addedAt: now,
         };
-        await deps.store.upsert(row);
-        added.push(selectedView(row));
+        const rotationIndex = await deps.withLock(channelId, () => deps.store.append(row));
+        if (rotationIndex !== null) added.push(selectedView({ ...row, rotationIndex }));
       }
-      if (added.length > 0) await deps.event(channelId, "library_add", { seqs: added.map((a) => a.seq) });
+      if (added.length > 0) {
+        await changedSelection(channelId);
+        await deps.event(channelId, "library_add", { seqs: added.map((a) => a.seq) });
+      }
       return { added, refused };
     },
 
     /** Removes a segment from the selection only: the library file stays. Applied at the next pass (or now, with Restart). */
     async removeSegment(channelId: string, input: unknown): Promise<void> {
       const { seq } = parseWithSchema(removeSegmentSchema, input, "live stream segment");
-      if (!(await deps.store.remove(channelId, seq))) {
+      if (!(await deps.withLock(channelId, () => deps.store.remove(channelId, seq)))) {
         throw new DomainError({ code: "live_stream_video_not_found", message: "The segment is not in this stream's selection", details: { seq } });
       }
+      await changedSelection(channelId);
       await deps.event(channelId, "library_remove", { seq });
     },
 
     /** The new order must name exactly the selection's segments. Applied at the next pass (or now, with Restart). */
     async reorderSegments(channelId: string, input: unknown): Promise<void> {
       const { seqs } = parseWithSchema(reorderSegmentsSchema, input, "live stream segment order");
-      if (!(await deps.store.setOrder(channelId, seqs))) {
+      if (!(await deps.withLock(channelId, () => deps.store.setOrder(channelId, seqs)))) {
         throw new DomainError({ code: "validation_failed", message: "The order must list exactly the selected segments, once each", details: { seqs } });
       }
+      await changedSelection(channelId);
       await deps.event(channelId, "library_reorder", { seqs });
     },
 
@@ -377,9 +407,16 @@ export function createSegmentLibrary(deps: LibraryDependencies) {
         throw new DomainError({ code: "live_stream_video_refused", message: "No segment is selected for this stream (choose segments from the library)", details: { channelId, reason: "no_segments_selected" } });
       }
       const listing = await deps.listLibrary(channelId);
+      // Review item 2: the library's state is an event once per change (unavailable with its reason, available again), never per call.
+      const state = listing.ok ? "available" : listing.reason;
+      const previousState = deps.libraryState.get(channelId);
+      if (previousState !== state) {
+        deps.libraryState.set(channelId, state);
+        if (!listing.ok) await deps.event(channelId, "segment_library_unavailable", { reason: listing.reason, kept: rows.filter((r) => r.checkStatus === "ok").length });
+        else if (previousState !== null) await deps.event(channelId, "segment_library_available", {});
+      }
       if (!listing.ok) {
         const kept = rows.filter((r) => r.checkStatus === "ok").map((r) => segmentId(r.seq));
-        await deps.event(channelId, "segment_library_unavailable", { reason: listing.reason, kept: kept.length });
         if (kept.length === 0) {
           throw new DomainError({ code: "live_stream_video_refused", message: `No selected segment can be played: ${UNAVAILABLE_TEXT[listing.reason]}`, details: { channelId, reason: listing.reason } });
         }
@@ -392,21 +429,22 @@ export function createSegmentLibrary(deps: LibraryDependencies) {
         const checked = complete.has(row.seq) ? await inspect(channelId, row.seq) : ({ ok: false, reason: "not_in_library", detail: `${segmentId(row.seq)} is not complete in the library` } as const);
         if (checked.ok) {
           playable.push(segmentId(row.seq));
-          await deps.store.update(channelId, row.seq, {
-            checkStatus: "ok",
-            checkReason: null,
-            checkedAt: now,
+          const facts = {
             title: checked.sidecar.title,
             durationSeconds: checked.durationSeconds,
             sidecarDurationSeconds: checked.sidecar.durationSec,
             bytes: checked.bytes,
             tracksJson: JSON.stringify(checked.sidecar.tracks),
-          });
+          };
+          // Review item 2: an unchanged row is not written again at every recheck.
+          const same = row.checkStatus === "ok" && (Object.keys(facts) as Array<keyof typeof facts>).every((k) => row[k] === facts[k]);
+          if (!same) await deps.store.update(channelId, row.seq, { checkStatus: "ok", checkReason: null, checkedAt: now, ...facts });
           continue;
         }
         const changed = row.checkStatus !== "refused" || row.checkReason !== checked.reason;
+        if (!changed) continue;
         await deps.store.update(channelId, row.seq, { checkStatus: "refused", checkReason: checked.reason, checkedAt: now });
-        if (changed) await deps.event(channelId, "segment_refused", { seq: row.seq, reason: checked.reason });
+        await deps.event(channelId, "segment_refused", { seq: row.seq, reason: checked.reason });
       }
       if (playable.length === 0) {
         throw new DomainError({ code: "live_stream_video_refused", message: "None of the selected segments can be played (missing from the library or not a playable video)", details: { channelId, reason: "no_playable_segments" } });
@@ -438,12 +476,13 @@ export function segmentSourceStatus(args: {
   channelId: string;
   sourceMode: LiveSourceMode;
   rows: readonly StoredLibrarySegmentRow[];
-  library: { ok: true } | { ok: false; reason: LibraryUnavailableReason };
+  /** null = not looked at (videos mode). */
+  library: { ok: true } | { ok: false; reason: LibraryUnavailableReason } | null;
   position: { segmentId: string | null; offsetSeconds: number } | null;
 }): {
   channelId: string;
   sourceMode: LiveSourceMode;
-  library: { available: boolean; reason: LibraryUnavailableReason | null };
+  library: { available: boolean; reason: LibraryUnavailableReason | null } | null;
   selection: { segments: number; playable: number; minutes: number };
   current: { seq: number; title: string | null; offsetSeconds: number; track: string | null } | null;
 } {
@@ -455,7 +494,7 @@ export function segmentSourceStatus(args: {
   return {
     channelId: args.channelId,
     sourceMode: args.sourceMode,
-    library: { available: args.library.ok, reason: args.library.ok ? null : args.library.reason },
+    library: args.library === null ? null : { available: args.library.ok, reason: args.library.ok ? null : args.library.reason },
     selection: { segments: args.rows.length, playable: playable.length, minutes: Math.round(seconds / 60) },
     current: seq === null ? null : { seq, title: row?.title ?? null, offsetSeconds: offset, track: row ? (trackAt(tracksOf(row.tracksJson), offset)?.title ?? null) : null },
   };

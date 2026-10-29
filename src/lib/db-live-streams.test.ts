@@ -24,6 +24,7 @@ import {
   updateLiveStreamLibrarySegment,
   deleteLiveStreamLibrarySegment,
   setLiveStreamLibrarySegmentOrder,
+  appendLiveStreamLibrarySegment,
   SCHEMA_CURRENT_VERSION,
   SCHEMA_MIGRATIONS,
   setLiveStreamRotationOrder,
@@ -265,4 +266,17 @@ test("v114: source_mode null on a new row; library selection per channel, ordere
     assert.equal(await deleteLiveStreamLibrarySegment("UC1", 7, database), true);
     assert.deepEqual((await listLiveStreamLibrarySegments("UC1", database)).map((r) => [r.seq, r.checkStatus]), [[3, "refused"]]);
     assert.deepEqual((await listLiveStreamLibrarySegments("UC2", database)).map((r) => r.seq), [9]);
+  }));
+
+// BL-234 review item 4: two adds at the same moment never share a rotation index; an already selected seq is not added twice.
+test("v114: appendLiveStreamLibrarySegment -- concurrent appends get distinct indexes; a repeated seq is refused (null)", () =>
+  withDb(async (database) => {
+    const row = (seq: number) => ({ channelId: "UC1", seq, title: null, durationSeconds: 1800, sidecarDurationSeconds: 1800, bytes: 1, tracksJson: "[]", checkStatus: "ok" as const, checkReason: null, checkedAt: T, addedAt: T });
+    const indexes = await Promise.all([1, 2, 3, 4, 5].map((seq) => appendLiveStreamLibrarySegment(row(seq), database)));
+    assert.deepEqual([...indexes].sort(), [0, 1, 2, 3, 4]);
+    assert.equal(await appendLiveStreamLibrarySegment(row(3), database), null);
+    assert.equal(await appendLiveStreamLibrarySegment({ ...row(9), channelId: "UC2" }, database), 0, "per channel");
+    const listed = await listLiveStreamLibrarySegments("UC1", database);
+    assert.equal(new Set(listed.map((r) => r.rotationIndex)).size, 5);
+    assert.equal(listed[0].checkedAt?.getTime(), T.getTime());
   }));

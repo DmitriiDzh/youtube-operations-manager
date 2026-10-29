@@ -601,7 +601,11 @@ test("BL-234: selected segments that cannot play at the pass end leave the plan 
   assert.deepEqual(h.syncs.at(-1), { order: [S2, S1], currentIndex: 1, nextPassFirst: null }, "the buffer is still kept");
 });
 
-test("BL-234: no segment selected any more (the owner removed them all) draws an empty next pass, as an empty rotation does", async () => {
+// Rewritten after the independent review of BL-234 (item 1, BLOCKER): this test used to expect an empty next pass for
+// `no_segments_selected`. That was wrong against the request ("with zero playable selected segments the stream reports a clear reason
+// instead of crashing" -- and must keep going): an empty pass, once written, was never redrawn (`"[]"` is truthy) and left the helper in
+// waiting_for_source for good. Every source refusal now draws nothing; the helper replays, and the next draw happens once the source plays.
+test("BL-234 (review 1c): no segment selected any more draws NO next pass -- the helper replays; nothing empty is ever written", async () => {
   const h = harness({ playable: [S2, S1] });
   h.deps.streams.videos = async () => segmentItems;
   await h.supervisor.startEncoder("UC1", { freshPass: true });
@@ -610,10 +614,55 @@ test("BL-234: no segment selected any more (the owner removed them all) draws an
   };
   h.status({ passVideoIds: [S2, S1], position: { index: 1, videoId: S1, offset: 5 } });
   await h.supervisor.tick("UC1");
-  assert.equal(h.stream().nextPassOrderJson, "[]");
-  const plan = JSON.parse(h.files.get("/appdata/live-streams/UC1/plan.json")!);
-  assert.deepEqual([plan.nextPass.number, plan.nextPass.videos, plan.playable], [2, [], []]);
+  assert.equal(h.stream().nextPassOrderJson, null);
+  assert.equal(JSON.parse(h.files.get("/appdata/live-streams/UC1/plan.json")!).nextPass, null);
   assert.deepEqual(h.events.filter((e) => e.kind === "source_refused").map((e) => e.detail), [{ reason: "no_segments_selected" }]);
+});
+
+test("BL-234 (review 1, regression): switch while the selection is empty, then add segments -- the next pass is drawn from them", async () => {
+  // The stream plays videos; the owner switches to segments (the old UI let the selection be empty) and adds segments a bit later.
+  const h = harness();
+  h.deps.streams.videos = async () => [...videoItems, ...segmentItems];
+  await h.supervisor.startEncoder("UC1", { freshPass: true });
+  let selection: string[] = [];
+  h.deps.streams.recheck = async () => {
+    if (selection.length === 0) throw new DomainError({ code: "live_stream_video_refused", message: "No segment is selected", details: { reason: "no_segments_selected" } });
+    return selection;
+  };
+  h.status({ passVideoIds: [A, B, C], position: { index: 2, videoId: C, offset: 5 } });
+  await h.supervisor.tick("UC1");
+  assert.equal(h.stream().nextPassOrderJson, null, "nothing drawn while nothing is selected");
+  selection = [S2, S1];
+  h.advance(61_000);
+  h.status({ passVideoIds: [A, B, C], position: { index: 2, videoId: C, offset: 70 } });
+  await h.supervisor.tick("UC1");
+  assert.equal(h.stream().nextPassOrderJson, JSON.stringify([S2, S1]));
+  assert.deepEqual(JSON.parse(h.files.get("/appdata/live-streams/UC1/plan.json")!).nextPass.videos.map((v: { videoId: string }) => v.videoId), [S2, S1]);
+});
+
+test("BL-234 (review 1c/2): over many ticks of refusals the helper never gets an empty next pass, and the source is asked at most once a minute", async () => {
+  const h = harness({ playable: [S2, S1] });
+  h.deps.streams.videos = async () => segmentItems;
+  await h.supervisor.startEncoder("UC1", { freshPass: true });
+  const reasons = ["no_segments_selected", "no_playable_segments", "workspace_unavailable"];
+  let asked = 0;
+  h.deps.streams.recheck = async () => {
+    const reason = reasons[Math.floor(asked / 2) % reasons.length];
+    asked += 1;
+    throw new DomainError({ code: "live_stream_video_refused", message: "refused", details: { reason } });
+  };
+  for (let i = 0; i < 40; i++) {
+    h.status({ passVideoIds: [S2, S1], position: { index: 1, videoId: S1, offset: 5 + i * 15 } });
+    await h.supervisor.tick("UC1");
+    const plan = JSON.parse(h.files.get("/appdata/live-streams/UC1/plan.json")!);
+    assert.ok(plan.nextPass === null || plan.nextPass.videos.length > 0, "never an empty next pass");
+    assert.ok(h.stream().nextPassOrderJson === null || JSON.parse(h.stream().nextPassOrderJson!).length > 0);
+    h.advance(15_000);
+  }
+  assert.ok(asked <= 11, `asked ${asked} times in 10 minutes`);
+  assert.ok(asked >= 9);
+  const logged = h.events.filter((e) => e.kind === "source_refused").map((e) => (e.detail as { reason: string }).reason);
+  for (let k = 1; k < logged.length; k++) assert.notEqual(logged[k], logged[k - 1], "once per change");
 });
 
 test("BL-234: any other recheck failure (a YouTube read in videos mode) still fails the tick as before", async () => {

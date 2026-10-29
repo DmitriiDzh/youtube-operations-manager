@@ -129,6 +129,8 @@ const HELPER_PROTOCOL = 1;
 export const HELPER_STALE_MS = 60_000;
 /** How long a stopped helper gets to exit before its group is killed. */
 export const HELPER_STOP_GRACE_MS = 10_000;
+/** BL-234: after the source refused the next pass, it is asked again at most this often (a tick runs every 15 s). */
+export const SOURCE_RETRY_MS = 60_000;
 
 const LOCKS_KEY = Symbol.for("ytom.liveStreams.channelLocks");
 type GlobalWithLocks = typeof globalThis & { [LOCKS_KEY]?: Map<string, Promise<unknown>> };
@@ -225,8 +227,8 @@ export function createStreamSupervisor(deps: SupervisorDependencies) {
   const eventsOffsetFile = (channelId: string) => path.join(dirOf(channelId), "events.offset");
   const youtubeFile = (channelId: string) => path.join(dirOf(channelId), "youtube.json");
   const lastMissing = new Map<string, string | null>();
-  /** BL-234: the last reason the source refused the next pass, per stream (recorded once per change). */
-  const lastRefusal = new Map<string, string | null>();
+  /** BL-234: the last reason the source refused the next pass, per stream (recorded once per change), and when it was asked. */
+  const lastRefusal = new Map<string, { reason: string; at: number }>();
 
   async function readStatus(channelId: string) {
     return parseJson<HelperStatus>(await deps.files.read(statusFile(channelId)));
@@ -472,22 +474,23 @@ export function createStreamSupervisor(deps: SupervisorDependencies) {
         await deps.streams.update(channelId, { positionIndex: status.position.index, positionOffsetSeconds: status.position.offset, positionUpdatedAt: deps.clock() });
 
         if (status.position.index >= order.length - 1 && !nextOrder) {
-          // BL-234: the segment source refuses with a reason instead of answering an empty list. No segment selected (the owner's
-          // choice) draws an empty next pass, as an empty rotation does: the stream reports no source. Selected segments that cannot
-          // play now (missing, unreadable, the library away) draw nothing: the helper replays its pass. Either way the reason goes
-          // into the history once per change.
-          let playable: string[] | null;
-          try {
-            playable = await deps.streams.recheck(channelId);
-            lastRefusal.delete(channelId);
-          } catch (error) {
-            if (!(error instanceof DomainError) || error.code !== "live_stream_video_refused") throw error;
-            const reason = String((error.details as { reason?: unknown } | undefined)?.reason ?? "unknown");
-            if (lastRefusal.get(channelId) !== reason) {
-              lastRefusal.set(channelId, reason);
-              await deps.streams.event(channelId, "source_refused", { reason });
+          // BL-234: the segment source refuses with a reason instead of answering an empty list. A refusal -- whatever its reason,
+          // `no_segments_selected` included (independent review, item 1c: an empty next pass blacked the stream out for good) --
+          // draws nothing: the helper replays its pass, and a later tick draws again once the source can play. The reason goes into
+          // the history once per change; after a refusal the source is asked again at most every SOURCE_RETRY_MS (review item 2).
+          const refusal = lastRefusal.get(channelId);
+          const now = deps.clock().getTime();
+          let playable: string[] | null = null;
+          if (!refusal || now - refusal.at >= SOURCE_RETRY_MS) {
+            try {
+              playable = await deps.streams.recheck(channelId);
+              lastRefusal.delete(channelId);
+            } catch (error) {
+              if (!(error instanceof DomainError) || error.code !== "live_stream_video_refused") throw error;
+              const reason = String((error.details as { reason?: unknown } | undefined)?.reason ?? "unknown");
+              if (refusal?.reason !== reason) await deps.streams.event(channelId, "source_refused", { reason });
+              lastRefusal.set(channelId, { reason, at: now });
             }
-            playable = reason === "no_segments_selected" ? [] : null;
           }
           if (playable === null) return { running: true as const, status, buffer: { order, index: Math.min(status.position.index, Math.max(0, order.length - 1)), nextFirst: null } };
           nextOrder = drawPassOrder(playable, stream.orderMode, deps.random, order.at(-1) ?? null);

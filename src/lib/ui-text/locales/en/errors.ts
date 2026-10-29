@@ -17,6 +17,7 @@ export const errors = {
   "errors.WRITE_CHANNEL_MISMATCH": "This write is for a different channel than the active one. Nothing was written.",
   "errors.WRITE_CHANNEL_UNRESOLVED": "The active channel could not be determined for this sign-in.",
   "errors.CHANNEL_NOT_ACTIVE": "This channel is not the active one. Switch to it first.",
+  "errors.live_stream_no_ready_segments": "Choose at least one segment that passed its check before switching the stream to segments.",
   "errors.change_not_approvable": "This change cannot be approved.",
   "errors.batch_invalid_selection": "The selection for this batch is not valid.",
   "errors.batch_not_found": "The batch was not found.",

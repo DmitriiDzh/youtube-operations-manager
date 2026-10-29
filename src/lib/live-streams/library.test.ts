@@ -60,6 +60,9 @@ function harness(options: { names?: string[]; texts?: Record<string, string>; pr
   let unavailable = options.unavailable ?? null;
   const rows: StoredLibrarySegmentRow[] = [];
   const events: Array<{ kind: string; detail: Record<string, unknown> }> = [];
+  const updates: number[] = [];
+  const locks = { count: 0 };
+  const states = new Map<string, string>();
   const stream = options.stream === false ? null : { sourceMode: null as string | null, nextPassCleared: 0, positionIndex: 0, positionOffsetSeconds: 0, passOrderJson: null };
   const deps: LibraryDependencies = {
     async listLibrary() {
@@ -93,12 +96,17 @@ function harness(options: { names?: string[]; texts?: Record<string, string>; pr
       async list(channelId) {
         return rows.filter((r) => r.channelId === channelId).sort((a, b) => a.rotationIndex - b.rotationIndex);
       },
-      async upsert(row) {
-        const i = rows.findIndex((r) => r.channelId === row.channelId && r.seq === row.seq);
-        if (i >= 0) rows[i] = row;
-        else rows.push(row);
+      async append(row) {
+        if (rows.some((r) => r.channelId === row.channelId && r.seq === row.seq)) return null;
+        const rotationIndex = rows.filter((r) => r.channelId === row.channelId).reduce((max, r) => Math.max(max, r.rotationIndex + 1), 0);
+        rows.push({ ...row, rotationIndex });
+        return rotationIndex;
+      },
+      async clearNextPass() {
+        if (stream) stream.nextPassCleared += 1;
       },
       async update(channelId, seq, set) {
+        updates.push(seq);
         const row = rows.find((r) => r.channelId === channelId && r.seq === seq);
         if (!row) return false;
         Object.assign(row, set);
@@ -121,8 +129,15 @@ function harness(options: { names?: string[]; texts?: Record<string, string>; pr
       events.push({ kind, detail });
     },
     clock: () => NOW,
+    async withLock(_channelId, fn) {
+      locks.count += 1;
+      return fn();
+    },
+    libraryState: { get: (channelId) => states.get(channelId) ?? null, set: (channelId, state) => void states.set(channelId, state) },
   };
   return {
+    updates,
+    locks,
     library: createSegmentLibrary(deps),
     rows,
     events,
@@ -330,17 +345,68 @@ test("recheck with the library unreadable (the drive away): the last checks stan
   assert.equal((refused.details as { reason: string }).reason, "workspace_not_configured");
 });
 
-test("setSourceMode: the owner's switch is audited; same mode changes nothing; no stream row or a bad mode is refused", async () => {
+test("setSourceMode: refused without a segment that passed its check (review item 1b); then audited, under the stream's lock", async () => {
   const h = harness();
+  const empty = await refusal(h.library.setSourceMode("UC1", { mode: "segments" }));
+  assert.equal(empty.code, "live_stream_no_ready_segments");
+  assert.equal(h.stream?.sourceMode, null, "nothing switched");
+  // A selected segment whose last check failed is not enough either.
+  h.rows.push({ channelId: "UC1", seq: 9, rotationIndex: 0, title: null, durationSeconds: null, sidecarDurationSeconds: null, bytes: null, tracksJson: null, checkStatus: "refused", checkReason: "not_in_library", checkedAt: NOW, addedAt: NOW });
+  assert.equal((await refusal(h.library.setSourceMode("UC1", { mode: "segments" }))).code, "live_stream_no_ready_segments");
+  await h.library.addSegments("UC1", { seqs: [1] });
+  const locksBefore = h.locks.count;
   assert.deepEqual(await h.library.setSourceMode("UC1", { mode: "segments" }), { mode: "segments", changed: true });
   assert.equal(h.stream?.sourceMode, "segments");
-  assert.equal(h.stream?.nextPassCleared, 1, "the store drops the next pass drawn in the old mode");
+  assert.ok(h.locks.count > locksBefore, "the switch takes the stream's lock (review item 3)");
   assert.deepEqual(h.events.filter((e) => e.kind === "source_mode_changed").map((e) => e.detail), [{ from: "videos", to: "segments" }]);
   assert.deepEqual(await h.library.setSourceMode("UC1", { mode: "segments" }), { mode: "segments", changed: false });
   assert.equal(h.events.filter((e) => e.kind === "source_mode_changed").length, 1);
+  // Back to videos needs no segment.
+  assert.deepEqual(await h.library.setSourceMode("UC1", { mode: "videos" }), { mode: "videos", changed: true });
   assert.equal((await refusal(h.library.setSourceMode("UC1", { mode: "generated" }))).code, "validation_failed");
   assert.equal((await refusal(h.library.setSourceMode("UC1", { mode: "segments", by: "agent" }))).code, "validation_failed");
   assert.equal((await refusal(harness({ stream: false }).library.setSourceMode("UC1", { mode: "segments" }))).code, "validation_failed");
+});
+
+test("review item 1a/1d: the selection is built in videos mode without touching the pass; in segments mode every change drops the drawn next pass", async () => {
+  const h = harness();
+  await h.library.addSegments("UC1", { seqs: [1, 2] });
+  await h.library.reorderSegments("UC1", { seqs: [2, 1] });
+  assert.equal(h.stream?.nextPassCleared, 0, "videos mode: the video pass is not disturbed");
+  await h.library.setSourceMode("UC1", { mode: "segments" });
+  const afterSwitch = h.stream!.nextPassCleared;
+  await h.library.addSegments("UC1", { seqs: [3] });
+  assert.equal(h.stream!.nextPassCleared, afterSwitch + 1, "add");
+  await h.library.reorderSegments("UC1", { seqs: [3, 2, 1] });
+  assert.equal(h.stream!.nextPassCleared, afterSwitch + 2, "reorder");
+  await h.library.removeSegment("UC1", { seq: 3 });
+  assert.equal(h.stream!.nextPassCleared, afterSwitch + 3, "remove");
+  await h.library.addSegments("UC1", { seqs: [1] });
+  assert.equal(h.stream!.nextPassCleared, afterSwitch + 3, "nothing added: nothing dropped");
+});
+
+test("review item 2: repeated rechecks -- the library's state is one event per change, unchanged rows are not rewritten", async () => {
+  const h = harness();
+  await h.library.addSegments("UC1", { seqs: [1, 2] });
+  await h.library.recheck("UC1");
+  const writes = h.updates.length;
+  for (let i = 0; i < 5; i++) await h.library.recheck("UC1");
+  assert.equal(h.updates.length, writes, "nothing changed: no store writes");
+  h.setUnavailable("workspace_unavailable");
+  for (let i = 0; i < 10; i++) assert.deepEqual(await h.library.recheck("UC1"), ["seg-000001", "seg-000002"]);
+  assert.equal(h.events.filter((e) => e.kind === "segment_library_unavailable").length, 1, "once while it stays away");
+  h.setUnavailable(null);
+  for (let i = 0; i < 3; i++) await h.library.recheck("UC1");
+  assert.equal(h.events.filter((e) => e.kind === "segment_library_available").length, 1);
+  h.setUnavailable("workspace_unavailable");
+  await h.library.recheck("UC1");
+  assert.equal(h.events.filter((e) => e.kind === "segment_library_unavailable").length, 2, "away again: a new event");
+  // A refused segment is written and logged once, not at every recheck.
+  h.setUnavailable(null);
+  h.setNames(["seg-000002.mp4", "seg-000002.json"]);
+  const before = h.updates.length;
+  for (let i = 0; i < 4; i++) await h.library.recheck("UC1");
+  assert.equal(h.updates.length - before, 1);
 });
 
 test("items: each selected segment as the buffer needs it -- its library file and its probed duration, no YouTube duration", async () => {
@@ -369,7 +435,8 @@ test("segmentSourceStatus: the current segment and its track by offset; minutes 
   const away = segmentSourceStatus({ channelId: "UC1", sourceMode: "segments", rows, library: { ok: false, reason: "workspace_unavailable" }, position: { segmentId: "seg-000001", offsetSeconds: 10 } });
   assert.deepEqual(away.library, { available: false, reason: "workspace_unavailable" });
   assert.equal(away.current?.track, "Track A");
-  const videos = segmentSourceStatus({ channelId: "UC1", sourceMode: "videos", rows: [], library: { ok: true }, position: { segmentId: "AAAAAAAAAA1", offsetSeconds: 10 } });
+  const videos = segmentSourceStatus({ channelId: "UC1", sourceMode: "videos", rows: [], library: null, position: { segmentId: "AAAAAAAAAA1", offsetSeconds: 10 } });
   assert.equal(videos.current, null);
+  assert.equal(videos.library, null, "videos mode: the library is not looked at");
   assert.deepEqual(videos.selection, { segments: 0, playable: 0, minutes: 0 });
 });
