@@ -125,6 +125,23 @@ export function testRunnerArgs(extra, defaultPattern = "src/**/*.test.ts") {
   return ["--import", "tsx", "--test", ...options, ...(targets.length > 0 ? targets : [defaultPattern])];
 }
 
+/**
+ * Why these runner arguments are refused, or null. `--test-isolation=none` runs every test file inside the runner's own
+ * process, which node does not mark as a test process (NODE_TEST_CONTEXT): the app's test redirect (`isRunningUnderTestRunner`)
+ * would then not apply and a test could open the REAL app-data database. So it is refused.
+ * @param {string[]} extra
+ */
+export function refusedRunnerArgs(extra) {
+  for (let i = 0; i < extra.length; i++) {
+    const arg = extra[i];
+    const value = arg.startsWith("--test-isolation=") ? arg.slice("--test-isolation=".length) : arg === "--test-isolation" ? (extra[i + 1] ?? "(no value)") : undefined;
+    if (value !== undefined && value !== "process") {
+      return `--test-isolation ${value} is refused: tests must each run in their own process, or they could reach the real app-data (only "process" is allowed).`;
+    }
+  }
+  return null;
+}
+
 /** A process ended by a signal exits with 128 + the signal's number (the shell convention); 1 when the number is unknown. */
 export function exitCodeFor(code, signal, signals = os.constants.signals) {
   if (code !== null && code !== undefined) return code;

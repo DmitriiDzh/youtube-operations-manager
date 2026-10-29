@@ -13,6 +13,7 @@ import {
   testRunRootName,
   tsxCacheFolderName,
   exitCodeFor,
+  refusedRunnerArgs,
 } from "../../scripts/test-temp-root.mjs";
 
 // BL-237 (owner, Telegram 2026-10-30, msgs 3864-3866). Requirements: every temporary folder of a test run lives under ONE
@@ -135,4 +136,24 @@ test("end to end: a failing test still removes the run folder and the run fails"
     const result = spawnSync(process.execPath, [path.resolve(process.cwd(), "scripts", "run-tests.mjs"), probe], { env, encoding: "utf8", timeout: 60_000 });
     assert.notEqual(result.status, 0);
     assert.deepEqual((await readdir(base)).sort(), ["fail.test.mjs", tsxCacheFolderName()].sort());
+  }));
+
+test("--test-isolation other than \"process\" is refused (tests in one process could reach the real app-data)", () => {
+  for (const args of [["--test-isolation=none"], ["--test-isolation", "none", "src/a.test.ts"], ["--test-isolation"]]) {
+    assert.match(refusedRunnerArgs(args) ?? "", /refused/, JSON.stringify(args));
+  }
+  assert.equal(refusedRunnerArgs(["--test-isolation=process"]), null);
+  assert.equal(refusedRunnerArgs(["--test-isolation", "process"]), null);
+  assert.equal(refusedRunnerArgs(["--test-name-pattern", "none"]), null);
+});
+
+test("end to end: the runner refuses --test-isolation none before running anything, and leaves no run folder", () =>
+  withTempDir("ytm-runner-", async (base) => {
+    const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: base, TMP: base, TEMP: base };
+    delete env.NODE_TEST_CONTEXT;
+    delete env.NODE_TEST_WORKER_ID;
+    const result = spawnSync(process.execPath, [path.resolve(process.cwd(), "scripts", "run-tests.mjs"), "--test-isolation", "none"], { env, encoding: "utf8", timeout: 60_000 });
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /refused/);
+    assert.deepEqual(await readdir(base), []);
   }));

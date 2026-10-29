@@ -15,7 +15,13 @@ import { mkdirSync, symlinkSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { exitCodeFor, removeWithRetry, sweepStaleTestRunRoots, testRunEnv, testRunnerArgs, testRunRootName, tsxCacheFolderName } from "./test-temp-root.mjs";
+import { exitCodeFor, refusedRunnerArgs, removeWithRetry, sweepStaleTestRunRoots, testRunEnv, testRunnerArgs, testRunRootName, tsxCacheFolderName } from "./test-temp-root.mjs";
+
+const refused = refusedRunnerArgs(process.argv.slice(2));
+if (refused) {
+  console.error(`[run-tests] ${refused}`);
+  process.exit(2);
+}
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const base = os.tmpdir();
