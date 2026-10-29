@@ -5035,10 +5035,12 @@ On branch `feature/bl-229-music-library`. No schema change; no YouTube call; not
   alone over half of it → remove `.next/cache/turbopack` only; a failure never stops the build.
 - **Migration backup retention:** `db-backup.pruneMigrationBackups(dir, { keep = 10, prefixes = [pre-migration, pre-auto-import],
   protect })` sorts each prefix by the millisecond timestamp in the name and deletes all but the newest 10 per prefix, never a
-  protected path, and never the oldest `pre-migration` copy newer than `.last-successful-migration` (migrations are not
-  transactional and a failing one is retried with a new copy each time: that oldest copy is the clean one from before the
-  upgrade). `db.ts` calls `recordSuccessfulMigration` only after `initializeDatabaseSchema` succeeded (prune, then write the
-  marker); `device-sync` prunes after an automatic import, protecting the backup it just wrote (`importHandoff` returns `backupPath`). Per prefix, not one pool: frequent automatic imports must not push out the last copy
+  protected path, and never the upgrade's first copy named in `.last-successful-migration` (JSON: `pendingUpgradeCopy`,
+  `lastSuccessAt`, `lastProtectedCopy`) -- migrations are not transactional and a failing one is retried with a new copy each
+  time, so that first copy is the clean one from before the upgrade; kept by NAME, so a clock set back cannot lose it.
+  `db.ts` follows `createMigrationBackups`: `takeCopy()` in `beforeMigrations` (records the name first, then copies; never
+  prunes), `succeeded()` only after `initializeDatabaseSchema` went through (prune when a copy was taken, protecting this
+  start's copy and the first copy, then the record; written on every successful start that finds it missing or stale); `device-sync` prunes after an automatic import, protecting the backup it just wrote (`importHandoff` returns `backupPath`). Per prefix, not one pool: frequent automatic imports must not push out the last copy
   taken before a schema migration.
 - **Disk guard:** `src/lib/disk-guard/` — `services.ts` (pure rule `decideDiskAlert`: not alerting + below → raise; alerting + ≥
   threshold + 2 GB → clear; alerting + below + ≥ 24 h since the last alert → raise again; state saved before the message goes out),
