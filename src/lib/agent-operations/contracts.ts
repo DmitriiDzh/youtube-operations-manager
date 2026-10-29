@@ -95,7 +95,10 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT",
 // 4.11.0 (BL-233, FO-REQ-0047): agent_live_get_status gains `encoders` (the stream encoder's speed, recent speed, bitrate, output
 // time and lag) and `upload` (whether an upload on this computer is limited or held for the streams), as factory_live_get_status
 // (Factory API 1.37.0). Additive.
-export const AGENT_API_VERSION = "4.11.0";
+// 4.12.0 (BL-234, FO-REQ-0048): agent_live_get_status gains `sources` (the stream's source mode videos | segments, the segment
+// library's availability, the selection's size and minutes, and the segment and track playing), as factory_live_get_status (Factory
+// API 1.38.0). Switching the source stays the owner's, in the app. Additive.
+export const AGENT_API_VERSION = "4.12.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry

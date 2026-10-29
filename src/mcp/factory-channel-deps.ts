@@ -5,7 +5,7 @@ import { publishingPlanProgress } from "@/lib/publishing-plan-progress";
 import { createChannelLocalizationsOperatorCore, operatorChannelLocalizations } from "@/lib/channel-localizations";
 import { createGeminiMediaCore } from "@/lib/gemini-media";
 import { uploadBandwidthReport, uploadBandwidthStatus } from "@/lib/upload-bandwidth";
-import { collectLiveEncoderReadings, collectLiveStreamEntries, createLiveSegmentSettingsCore, createLiveStreamsCore, createStreamLocalizationsCore, getLiveStreamsDeviceId, listPeerLiveStreams, localizationsStatusEntry } from "@/lib/live-streams";
+import { collectLiveEncoderReadings, collectLiveSourceStatus, collectLiveStreamEntries, createLiveSegmentSettingsCore, createLiveStreamsCore, createStreamLocalizationsCore, getLiveStreamsDeviceId, listPeerLiveStreams, localizationsStatusEntry } from "@/lib/live-streams";
 import { createGenerationPlansCore } from "@/lib/generation-plans";
 import { createStoryboardsServiceForProduction } from "@/lib/storyboards";
 import { createVideoProjectsServiceForProduction } from "@/lib/video-projects";
@@ -86,7 +86,10 @@ export function createFactoryChannelDeps(): FactoryChannelDeps {
         const uploadOut = upload
           ? (({ speeds, ...rest }) => (void speeds, { ...rest, heldForChannelId: input.channelId && rest.heldForChannelId !== input.channelId ? null : rest.heldForChannelId }))(upload)
           : null;
-        return { streams, segments, localizations, encoders, upload: uploadOut };
+        // BL-234 (1.38.0): this computer's source per stream -- videos | segments, the selection, the library and, in segments mode,
+        // the segment and track playing (from the generator's sidecar). Local reads only.
+        const sources = await collectLiveSourceStatus(ownChannels);
+        return { streams, segments, localizations, encoders, upload: uploadOut, sources };
       },
       mapSources: async (input) => ({ results: await createLiveStreamsCore().setSources(input.channelId, { items: input.items }, "factory") }),
       // BL-207: the stream's translations, replaced as a whole (refused whole, nothing half-saved); local only.
