@@ -15,12 +15,14 @@ import {
   slotsToApprove,
   tileCounts,
   wallParts,
+  weekCoverageLine,
   zonedParts,
   type PipelineStep,
   type PipelineStepState,
   type PlanDto,
   type PlanSlotDto,
   type PlanSummaryDto,
+  type WeekCoverageDto,
 } from "./weekly-plan-model";
 
 // BL-225 (FO-REQ-0040; WEEKLY_PUBLISHING_PLAN.md stage 1 item 6; owner msgs 3511 and 3534, the approved mockup): Контент → «План
@@ -82,6 +84,8 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
   const [summaries, setSummaries] = useState<PlanSummaryDto[] | null>(null);
   const [week, setWeek] = useState<string | null>(null);
   const [plan, setPlan] = useState<PlanDto | "none" | null>(null);
+  // BL-235: what YouTube has for the shown week (the shared coverage), next to the approvals; null when unknown.
+  const [coverage, setCoverage] = useState<{ weekStart: string; value: WeekCoverageDto } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>("week");
@@ -123,7 +127,9 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
         return;
       }
       if (!res.ok) throw new Error(String(res.status));
-      setPlan(((await res.json()) as { plan: PlanDto }).plan);
+      const body = (await res.json()) as { plan: PlanDto; coverage?: WeekCoverageDto | null };
+      setPlan(body.plan);
+      setCoverage(body.coverage ? { weekStart: body.plan.weekStart, value: body.coverage } : null);
       setError(null);
     } catch {
       setError(t("weekPlan.loadFailed"));
@@ -194,6 +200,8 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
   const firstRelease = shown?.slots.find((s) => !s.vetoed);
   const vetoedCount = shown ? shown.counts.vetoed : 0;
   const units = toApprove.length * estimateUploadUnits({ playlist: true, deferredPublishAt: true });
+  const weekCoverage = shown && coverage?.weekStart === shown.weekStart ? weekCoverageLine(coverage.value) : null;
+  const dayLabel = (date: string) => new Intl.DateTimeFormat(language, { day: "numeric", month: "short", timeZone: "UTC" }).format(new Date(`${date}T00:00:00Z`));
 
   return (
     <section className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4 sm:p-5">
@@ -249,6 +257,24 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
               value={firstRelease ? t("weekPlan.firstReleaseValue", { weekday: t(weekdayKey(wallParts(firstRelease.publishAt).weekday)), day: wallParts(firstRelease.publishAt).day, time: wallParts(firstRelease.publishAt).time }) : t("weekPlan.none")}
             />
           </div>
+
+          {weekCoverage && (
+            // BL-235 (owner msg 3806): the truth on YouTube next to the approvals -- a day is closed when a video is scheduled or
+            // published on it with every tracked translation. It decides nothing here.
+            <p
+              title={t("weekPlan.coverage.hint", { time: coverage?.value.asOf ? at(coverage.value.asOf) : t("weekPlan.coverage.never") })}
+              className={`rounded-lg border px-4 py-2 text-sm ${weekCoverage.covered === weekCoverage.total ? "border-emerald-900 bg-emerald-950/30 text-emerald-200" : "border-yellow-800/70 bg-yellow-950/20 text-zinc-200"}`}
+            >
+              <span className="font-medium">{t("weekPlan.coverage.closed", { covered: weekCoverage.covered, total: weekCoverage.total })}</span>
+              {weekCoverage.gaps.length > 0 && <span> · {t("weekPlan.coverage.gaps", { days: weekCoverage.gaps.map(dayLabel).join(", ") })}</span>}
+              {weekCoverage.missing.length > 0 && (
+                <span>
+                  {" "}
+                  · {t("weekPlan.coverage.missing", { days: weekCoverage.missing.map((m) => `${dayLabel(m.date)} (${m.languages.join(", ")})`).join(", ") })}
+                </span>
+              )}
+            </p>
+          )}
 
           {actionError && <p className="rounded-md border border-amber-900 bg-amber-950/40 px-3 py-2 text-sm text-amber-200">{actionError}</p>}
 

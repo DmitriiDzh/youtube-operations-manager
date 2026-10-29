@@ -628,6 +628,12 @@ export const content = {
   "weekPlan.confirm.afterUpload": "The video is already on YouTube as private: we remove its release date, and it stays private.",
   "weekPlan.confirm.yes": "Pull",
   "weekPlan.confirm.cancel": "Cancel",
+  // BL-235: what YouTube has for the week (the shared publishing coverage), next to the approvals.
+  "weekPlan.coverage.closed": "Closed {covered} of {total}",
+  "weekPlan.coverage.gaps": "no video: {days}",
+  "weekPlan.coverage.missing": "missing translations: {days}",
+  "weekPlan.coverage.hint": "On YouTube, by the synced copy of {time}: a day is closed when a video is scheduled or published on it with every tracked translation. Approvals do not count here.",
+  "weekPlan.coverage.never": "never (not synced on this computer)",
   "weekPlan.bar.summary": "{count, plural, one {# slot} other {# slots}} to approve · upload ≈ {units} quota units",
   "weekPlan.bar.summaryVetoed": "{count, plural, one {# slot} other {# slots}} to approve ({vetoed} pulled) · upload ≈ {units} quota units",
   "weekPlan.bar.allApproved": "Every slot of the week is approved.",

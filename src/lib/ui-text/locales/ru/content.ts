@@ -632,6 +632,12 @@ export const content: Record<keyof typeof en, string> = {
   "weekPlan.confirm.afterUpload": "Видео уже на YouTube приватно: дату выхода уберём, видео останется приватным.",
   "weekPlan.confirm.yes": "Снять",
   "weekPlan.confirm.cancel": "Отмена",
+  // BL-235: что есть на YouTube на эту неделю (общее покрытие публикаций), рядом с одобрениями.
+  "weekPlan.coverage.closed": "Закрыто {covered} из {total}",
+  "weekPlan.coverage.gaps": "без видео: {days}",
+  "weekPlan.coverage.missing": "без переводов: {days}",
+  "weekPlan.coverage.hint": "На YouTube, по синхронизированной копии на {time}: день закрыт, если на него запланировано или опубликовано видео со всеми отслеживаемыми переводами. Одобрения здесь не учитываются.",
+  "weekPlan.coverage.never": "никогда (на этом компьютере не синхронизировано)",
   "weekPlan.bar.summary": "{count, plural, one {# слот} few {# слота} many {# слотов} other {# слота}} к одобрению · загрузка ≈ {units} ед. квоты",
   "weekPlan.bar.summaryVetoed": "{count, plural, one {# слот} few {# слота} many {# слотов} other {# слота}} к одобрению (снято: {vetoed}) · загрузка ≈ {units} ед. квоты",
   "weekPlan.bar.allApproved": "Все слоты недели одобрены.",

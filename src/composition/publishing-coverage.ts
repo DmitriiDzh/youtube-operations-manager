@@ -27,3 +27,8 @@ export function createChannelPublishingCoverage(): PublishingCoverageReads {
 export function dailyPublishingCoverage(channelId: string, days: number) {
   return createChannelPublishingCoverage().get({ channelId, days });
 }
+
+/** «План недели»: the plan's week (weekStart .. +6) in the plan's own zone. */
+export function weekPublishingCoverage(channelId: string, weekStart: string, timeZone: string) {
+  return createPublishingCoverageCore({ timeZoneOf: async () => ({ timeZone, source: "publishing_plan" }) }).get({ channelId, days: 7, fromDate: weekStart });
+}
