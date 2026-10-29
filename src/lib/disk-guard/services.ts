@@ -88,7 +88,7 @@ export function diskAlertMessage(input: { hostname: string; volumes: DiskVolume[
     const sorted = [...input.consumers].sort((a, b) => b.bytes - a.bytes);
     lines.push(`App folders: ${sorted.map((c) => `${CONSUMER_LABEL[c.key]} ${c.complete ? "" : "at least "}${gbText(c.bytes)}`).join(", ")}.`);
   }
-  lines.push("Servers -> Disk in the app shows the details.");
+  lines.push("Details: Servers -> Sessions -> Disk in the app.");
   return lines.join("\n");
 }
 

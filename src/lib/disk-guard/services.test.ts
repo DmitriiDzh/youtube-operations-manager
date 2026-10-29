@@ -181,5 +181,5 @@ test("the message lists every volume and works without any folder sizes", () => 
     volumes: [{ labels: ["appData"], path: "C:\\Users\\x", freeBytes: 3 * GB, totalBytes: 256 * GB }],
     consumers: [],
   });
-  assert.equal(text, "Low disk space on Win-PC: below 20 GB free.\nC:\\Users\\x: 3.0 GB free of 256.0 GB\nServers -> Disk in the app shows the details.");
+  assert.equal(text, "Low disk space on Win-PC: below 20 GB free.\nC:\\Users\\x: 3.0 GB free of 256.0 GB\nDetails: Servers -> Sessions -> Disk in the app.");
 });
