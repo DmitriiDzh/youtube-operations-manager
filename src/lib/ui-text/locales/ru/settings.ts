@@ -97,6 +97,8 @@ export const settings: Record<keyof typeof en, string> = {
   "gemini.jobs.none": "Заданий пока нет.",
   "gemini.jobs.image": "картинка",
   "gemini.jobs.video": "видео",
+  "gemini.jobs.speech": "речь",
+  "gemini.jobs.voiceDesign": "дизайн голоса",
   "gemini.jobs.estimate": "≈ {amount}",
   "gemini.jobs.output": "99 Data Exchange/From YTM/{path}",
   "gemini.jobs.status.queued": "в очереди",

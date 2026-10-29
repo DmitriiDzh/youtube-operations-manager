@@ -96,6 +96,8 @@ export const settings = {
   "gemini.jobs.none": "No jobs yet.",
   "gemini.jobs.image": "image",
   "gemini.jobs.video": "video",
+  "gemini.jobs.speech": "speech",
+  "gemini.jobs.voiceDesign": "voice design",
   "gemini.jobs.estimate": "≈ {amount}",
   "gemini.jobs.output": "99 Data Exchange/From YTM/{path}",
   "gemini.jobs.status.queued": "queued",

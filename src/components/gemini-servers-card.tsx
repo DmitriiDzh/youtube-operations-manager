@@ -15,7 +15,7 @@ import { useT } from "./ui-text-provider";
 
 type Job = {
   jobId: string;
-  kind: "image" | "video";
+  kind: "image" | "video" | "speech" | "voice_design";
   model: string;
   status: "queued" | "submitting" | "running" | "done" | "failed";
   estimateUsd: number;
@@ -132,7 +132,7 @@ export function GeminiServersCard({ onToday }: { onToday?: (figure: GeminiTodayF
                     <div className="flex flex-wrap items-baseline gap-x-2">
                       <span className="text-zinc-500">{new Date(job.createdAt).toLocaleString(t.language)}</span>
                       <span className="text-zinc-200">{job.model}</span>
-                      <span className="text-zinc-500">{job.kind === "image" ? t("gemini.jobs.image") : t("gemini.jobs.video")}</span>
+                      <span className="text-zinc-500">{job.kind === "image" ? t("gemini.jobs.image") : job.kind === "video" ? t("gemini.jobs.video") : job.kind === "speech" ? t("gemini.jobs.speech") : t("gemini.jobs.voiceDesign")}</span>
                       <span className={statusTone[job.status]}>{statusLabel[job.status]}</span>
                       <span className="text-zinc-400">{job.costUsd !== null ? usd(job.costUsd) : t("gemini.jobs.estimate", { amount: usd(job.estimateUsd) })}</span>
                     </div>

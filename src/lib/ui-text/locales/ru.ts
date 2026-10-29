@@ -32,7 +32,8 @@ import { shell } from "./ru/shell";
 import { storyboards } from "./ru/storyboards";
 import { musicLibrary } from "./ru/musicLibrary";
 import { weeklyBuild } from "./ru/weeklyBuild";
+import { speech } from "./ru/speech";
 
-export const ruAreas = { common, shell, settings, production, media, languages, batches, decisions, research, researchData, analytics, content, merge, settingsCards, errors, analyticsLabels, liveStreams, storyboards, musicLibrary, weeklyBuild } as const;
+export const ruAreas = { common, shell, settings, production, media, languages, batches, decisions, research, researchData, analytics, content, merge, settingsCards, errors, analyticsLabels, liveStreams, storyboards, musicLibrary, weeklyBuild, speech } as const;
 
-export const ru: Record<UiTextKey, string> = { ...common, ...shell, ...settings, ...production, ...media, ...languages, ...batches, ...decisions, ...research, ...researchData, ...analytics, ...content, ...merge, ...settingsCards, ...errors, ...analyticsLabels, ...liveStreams, ...storyboards, ...musicLibrary, ...weeklyBuild };
+export const ru: Record<UiTextKey, string> = { ...common, ...shell, ...settings, ...production, ...media, ...languages, ...batches, ...decisions, ...research, ...researchData, ...analytics, ...content, ...merge, ...settingsCards, ...errors, ...analyticsLabels, ...liveStreams, ...storyboards, ...musicLibrary, ...weeklyBuild, ...speech };
