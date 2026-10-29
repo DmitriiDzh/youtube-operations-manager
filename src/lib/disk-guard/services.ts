@@ -97,6 +97,16 @@ export function createDiskGuard(deps: DiskGuardDeps) {
   const readSettings = async () => diskGuardSettingsFromJson(await deps.getSettingsJson());
   const readState = async () => diskGuardStateFromJson(await deps.getStateJson());
   const iso = (value: number | null) => (value === null ? null : new Date(value).toISOString());
+  // One folder measurement at a time (review): a second request while one runs gets the running one's result, so repeated
+  // clicks or two open tabs never walk $TMPDIR in parallel.
+  let measuring: Promise<DiskConsumer[]> | null = null;
+  const measureOnce = (): Promise<DiskConsumer[]> =>
+    (measuring ??= deps
+      .measureConsumers()
+      .catch(() => [] as DiskConsumer[])
+      .finally(() => {
+        measuring = null;
+      }));
 
   function noticeOf(state: DiskGuardState, settings: DiskGuardSettings): DiskGuardNotice | null {
     if (!state.alertActive || state.lastFreeBytes === null || state.lastAlertAt === null) return null;
@@ -123,7 +133,7 @@ export function createDiskGuard(deps: DiskGuardDeps) {
       // Saved before the message goes out: a failing post never makes the next check alert again.
       await deps.setStateJson(JSON.stringify({ ...decision.state, lastCheckAt: now, lastFreeBytes: lowest, lastError: null }));
       if (!decision.raise) return { raised: false, posted: false, freeBytes: lowest };
-      const consumers = await deps.measureConsumers().catch(() => []);
+      const consumers = await measureOnce();
       let posted = false;
       try {
         posted = await deps.postSystemMessage(diskAlertMessage({ hostname: deps.hostname(), volumes, thresholdGb: settings.thresholdGb, consumers }));
@@ -150,7 +160,7 @@ export function createDiskGuard(deps: DiskGuardDeps) {
       } catch (error) {
         volumesError = error instanceof Error ? error.message : String(error);
       }
-      const consumers = options.measure ? await deps.measureConsumers().catch(() => []) : null;
+      const consumers = options.measure ? await measureOnce() : null;
       return { settings, volumes, volumesError, notice: noticeOf(state, settings), lastCheckAt: iso(state.lastCheckAt), consumers };
     },
 

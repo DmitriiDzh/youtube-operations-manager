@@ -183,3 +183,35 @@ test("the message lists every volume and works without any folder sizes", () => 
   });
   assert.equal(text, "Low disk space on Win-PC: below 20 GB free.\nC:\\Users\\x: 3.0 GB free of 256.0 GB\nDetails: Servers -> Sessions -> Disk in the app.");
 });
+
+test("only one folder measurement runs at a time: a second request meanwhile gets the same result", async () => {
+  let started = 0;
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const store: { s: string | null } = { s: null };
+  const guard = createDiskGuard({
+    volumes: async () => [{ labels: ["appData"], path: "/x", freeBytes: 100 * GB, totalBytes: 200 * GB }],
+    measureConsumers: async () => {
+      started++;
+      await gate;
+      return [{ key: "backups", path: "/b", bytes: GB, complete: true }];
+    },
+    getSettingsJson: async () => null,
+    setSettingsJson: async () => undefined,
+    getStateJson: async () => store.s,
+    setStateJson: async (json) => void (store.s = json),
+    postSystemMessage: async () => true,
+    hostname: () => "h",
+    clock: () => T0,
+  });
+  const first = guard.view({ measure: true });
+  const second = guard.view({ measure: true });
+  await new Promise((resolve) => setImmediate(resolve));
+  release();
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(started, 1);
+  assert.deepEqual(a.consumers, b.consumers);
+  // Once it finished, a new request measures again.
+  await guard.view({ measure: true });
+  assert.equal(started, 2);
+});

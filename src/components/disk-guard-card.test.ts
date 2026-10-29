@@ -4,7 +4,8 @@ import path from "node:path";
 import test from "node:test";
 import { en } from "@/lib/ui-text/locales/en";
 import { ru } from "@/lib/ui-text/locales/ru";
-import { gbLabel, parseThresholdGb } from "./disk-guard-card";
+import { parseThresholdGb } from "./disk-guard-card";
+import { gbLabel } from "./gb-label";
 
 // BL-237: the «Диск» card -- the threshold is a number of GB from 1 to 10000 (the module's own range), typed in a plain text
 // field (no locale-dependent number widget); sizes read as GB (10^9 bytes, one decimal); the card is its own failure domain
@@ -39,4 +40,5 @@ test("Servers → Sessions renders the disk card inside its own FeatureErrorBoun
   assert.match(bell, /fetch\("\/api\/disk-guard\/notice"\)/);
   assert.match(bell, /DISK_HREF = "\/servers\/sessions"/);
   assert.match(bell, /diskNotice !== null/);
+  assert.match(bell, /from "\.\/gb-label"/, "the bell does not import the card component");
 });

@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { errorText, type Translate, type UiTextKey } from "@/lib/ui-text";
+import { errorText, type UiTextKey } from "@/lib/ui-text";
+import { gbLabel } from "./gb-label";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { InfoTooltip } from "./info-tooltip";
 import { LoadingIndicator } from "./operation-progress";
@@ -25,11 +26,6 @@ type View = {
 
 const GB = 1_000_000_000;
 const buttonClass = "rounded-lg border border-zinc-700 px-3 py-1 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-50";
-
-/** Bytes as "12.3 GB" (exported for the bell and the test). */
-export function gbLabel(t: Translate, bytes: number): string {
-  return t("unit.gb", { value: (bytes / GB).toFixed(1) });
-}
 
 /** The threshold field's value as a number of GB, or null when it is not one from 1 to 10000 (exported for the test). */
 export function parseThresholdGb(text: string): number | null {

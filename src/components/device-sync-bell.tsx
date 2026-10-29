@@ -9,7 +9,7 @@ import type { PlanChannelWork } from "@/lib/generation-plans/contracts";
 import { otherChannelEntries, type ChannelWorkEntry } from "./channel-work";
 import { useChannelNames } from "./use-channel-names";
 import Link from "next/link";
-import { gbLabel } from "./disk-guard-card";
+import { gbLabel } from "./gb-label";
 
 /**
  * Automatic device sync notifications (docs/roadmap/plans/DEVICE_AUTO_SYNC_PLAN.md §3.7): a bell in
