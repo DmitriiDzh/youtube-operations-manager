@@ -771,3 +771,160 @@ test("BL-227 AC-LR-09 (creation half): a new set records its author and each of 
   // makeVideo(): title "Video 1", description "Description 1".
   assert.deepEqual(setDetails, [{ channelId: "UC_TEST", changeSetId: created.changeSet.id, createdBy: "owner", notes: {}, originals: { v1: "fp(Video 1|Description 1)" } }]);
 });
+
+// ---------------------------------------------------------------------------
+// BL-232 proposeLanguageMove (PRD-REQ-0043, owner msgs 3782/3784). Acceptance from the request, fixed before implementation:
+// a video with `from` gets one change set entry pair "delete from" + "add to" with the SAME title/description (byte-for-byte, no new
+// translation); no other language is touched; a video whose own language is `from`/`to` is never touched and is listed; a video that
+// already has `to` keeps it and only loses `from` (both texts listed); an empty `from` text is skipped and listed; from = to, an
+// unknown target code, a video of another channel and a malformed code are refused. The set starts pending (an agent never approves).
+// ---------------------------------------------------------------------------
+
+const ZH_TITLE = "爵士咖啡馆 · 放松音乐  ";
+const ZH_DESC = "第一行\n第二行 — 带有空格和表情 ☕\n";
+
+test("proposeLanguageMove: a zh-Hans video gets delete zh-Hans + add zh-CN with the identical text, nothing for other languages", async () => {
+  const { services, setVideos, setDetails } = createFixture();
+  setVideos([
+    makeVideo({
+      videoId: "v1",
+      defaultLanguage: "en",
+      existingLocalizations: { "zh-Hans": { title: ZH_TITLE, description: ZH_DESC }, es: { title: "ES", description: "ES d" } },
+    }),
+    makeVideo({ videoId: "v2", defaultLanguage: "en", existingLocalizations: { es: { title: "ES2", description: "ES2 d" } } }),
+  ]);
+
+  const result = await services.proposeLanguageMove({ channelId: "UC_TEST", fromLanguage: "zh-Hans", toLanguage: "zh-CN" }, { createdBy: "agent" });
+
+  assert.deepEqual(result.movedVideoIds, ["v1"]);
+  assert.deepEqual(result.targetAlreadyPresent, []);
+  assert.deepEqual(result.skippedOwnLanguageVideoIds, []);
+  assert.deepEqual(result.skippedEmptyTextVideoIds, []);
+  assert.ok(result.changeSet);
+  assert.equal(result.changeSet.source, "deletion");
+  assert.equal(result.changeSet.totalChanges, 4);
+  assert.equal(result.changeSet.approvedCount, 0, "a new set is never approved");
+  assert.equal(result.changeSet.pendingCount, 4);
+
+  const detail = await services.getChangeSet({ channelId: "UC_TEST", changeSetId: result.changeSet.id });
+  const summary = detail.changes
+    .map((c) => `${c.videoId}|${c.language}|${c.field}|${c.changeType}|${c.baselineValue}|${c.proposedValue}`)
+    .sort();
+  assert.deepEqual(summary, [
+    `v1|zh-CN|description|add||${ZH_DESC}`,
+    `v1|zh-CN|title|add||${ZH_TITLE}`,
+    `v1|zh-Hans|description|delete|${ZH_DESC}|`,
+    `v1|zh-Hans|title|delete|${ZH_TITLE}|`,
+  ]);
+  assert.equal(setDetails.at(-1)?.createdBy, "agent");
+});
+
+test("proposeLanguageMove: never touches a video whose own language is the source or the target, and lists it", async () => {
+  const { services, setVideos } = createFixture();
+  setVideos([
+    makeVideo({ videoId: "own-from", defaultLanguage: "zh-Hans", existingLocalizations: {} }),
+    makeVideo({ videoId: "own-to", defaultLanguage: "zh-CN", existingLocalizations: { "zh-Hans": { title: "T", description: "D" } } }),
+    // Own language "zh-CN" but no zh-Hans entry: nothing to do, not listed.
+    makeVideo({ videoId: "own-to-clean", defaultLanguage: "zh-CN", existingLocalizations: {} }),
+  ]);
+
+  const result = await services.proposeLanguageMove({ channelId: "UC_TEST", fromLanguage: "zh-Hans", toLanguage: "zh-CN" });
+
+  assert.equal(result.changeSet, null);
+  assert.deepEqual(result.skippedOwnLanguageVideoIds.sort(), ["own-from", "own-to"]);
+  assert.deepEqual(result.movedVideoIds, []);
+});
+
+test("proposeLanguageMove: the channel's language baseline counts as the video's own language (a write would give it that language)", async () => {
+  const { services, setVideos } = createFixture({ channelBaseline: "zh-CN" });
+  setVideos([makeVideo({ videoId: "v1", defaultLanguage: null, existingLocalizations: { "zh-Hans": { title: "T", description: "D" } } })]);
+
+  const result = await services.proposeLanguageMove({ channelId: "UC_TEST", fromLanguage: "zh-Hans", toLanguage: "zh-CN" });
+
+  assert.equal(result.changeSet, null);
+  assert.deepEqual(result.skippedOwnLanguageVideoIds, ["v1"]);
+});
+
+test("proposeLanguageMove: a video that already has the target keeps it -- only the source is deleted, both texts are listed", async () => {
+  const { services, setVideos, setDetails } = createFixture();
+  setVideos([
+    makeVideo({
+      videoId: "v1",
+      defaultLanguage: "en",
+      existingLocalizations: {
+        "zh-Hans": { title: "旧标题", description: "旧描述" },
+        "zh-cn": { title: "新标题", description: "新描述" },
+      },
+    }),
+  ]);
+
+  const result = await services.proposeLanguageMove({ channelId: "UC_TEST", fromLanguage: "zh-Hans", toLanguage: "zh-CN" });
+
+  assert.deepEqual(result.movedVideoIds, []);
+  assert.deepEqual(result.targetAlreadyPresent, [
+    { videoId: "v1", from: { title: "旧标题", description: "旧描述" }, to: { title: "新标题", description: "新描述" } },
+  ]);
+  assert.ok(result.changeSet);
+  const detail = await services.getChangeSet({ channelId: "UC_TEST", changeSetId: result.changeSet.id });
+  assert.deepEqual(detail.changes.map((c) => `${c.language}|${c.field}|${c.changeType}`).sort(), ["zh-Hans|description|delete", "zh-Hans|title|delete"]);
+  const notes = Object.values(setDetails.at(-1)?.notes ?? {});
+  assert.equal(notes.length, 2);
+  assert.match(notes[0]!, /新标题/);
+  assert.match(notes[0]!, /旧标题/);
+});
+
+test("proposeLanguageMove: an empty source title or description is skipped and listed", async () => {
+  const { services, setVideos } = createFixture();
+  setVideos([
+    makeVideo({ videoId: "no-desc", existingLocalizations: { "zh-Hans": { title: "T", description: "" } } }),
+    makeVideo({ videoId: "blank-title", existingLocalizations: { "zh-Hans": { title: "  ", description: "D" } } }),
+    makeVideo({ videoId: "ok", existingLocalizations: { "zh-Hans": { title: "T", description: "D" } } }),
+  ]);
+
+  const result = await services.proposeLanguageMove({ channelId: "UC_TEST", fromLanguage: "zh-Hans", toLanguage: "zh-CN" });
+
+  assert.deepEqual(result.skippedEmptyTextVideoIds.sort(), ["blank-title", "no-desc"]);
+  assert.deepEqual(result.movedVideoIds, ["ok"]);
+  assert.equal(result.changeSet?.totalChanges, 4);
+});
+
+test("proposeLanguageMove: the source code matches case-insensitively and keeps the video's own spelling in the delete", async () => {
+  const { services, setVideos } = createFixture();
+  setVideos([makeVideo({ videoId: "v1", existingLocalizations: { "zh-hans": { title: "T", description: "D" } } })]);
+
+  const result = await services.proposeLanguageMove({ channelId: "UC_TEST", fromLanguage: "zh-Hans", toLanguage: "zh-CN" });
+
+  const detail = await services.getChangeSet({ channelId: "UC_TEST", changeSetId: result.changeSet!.id });
+  assert.deepEqual([...new Set(detail.changes.filter((c) => c.changeType === "delete").map((c) => c.language))], ["zh-hans"]);
+});
+
+test("proposeLanguageMove: refuses from = to (also by case), an unsupported target and a malformed source; nothing is created", async () => {
+  const { services, setVideos } = createFixture();
+  setVideos([makeVideo({ existingLocalizations: { "zh-Hans": { title: "T", description: "D" } } })]);
+
+  for (const input of [
+    { fromLanguage: "zh-CN", toLanguage: "zh-CN" },
+    { fromLanguage: "zh-cn", toLanguage: "zh-CN" },
+    { fromLanguage: "zh-Hans", toLanguage: "zh-cn" },
+    { fromLanguage: "zh-Hans", toLanguage: "xx-NOPE" },
+    { fromLanguage: "zh Hans!", toLanguage: "zh-CN" },
+  ]) {
+    await assert.rejects(services.proposeLanguageMove({ channelId: "UC_TEST", ...input }), (error: unknown) => error instanceof DomainError && error.code === "validation_failed");
+  }
+  assert.deepEqual(await services.listChangeSets({ channelId: "UC_TEST" }), []);
+});
+
+test("proposeLanguageMove: a video of another channel (or unknown) fails closed; an unsynced channel is not_found", async () => {
+  const { services, setVideos } = createFixture();
+  setVideos([makeVideo({ existingLocalizations: { "zh-Hans": { title: "T", description: "D" } } })]);
+
+  await assert.rejects(
+    services.proposeLanguageMove({ channelId: "UC_TEST", fromLanguage: "zh-Hans", toLanguage: "zh-CN", videoIds: ["v1", "other-channel-video"] }),
+    (error: unknown) => error instanceof DomainError && error.code === "not_found"
+  );
+  await assert.rejects(
+    services.proposeLanguageMove({ channelId: "UC_OTHER", fromLanguage: "zh-Hans", toLanguage: "zh-CN" }),
+    (error: unknown) => error instanceof DomainError && error.code === "not_found"
+  );
+  assert.deepEqual(await services.listChangeSets({ channelId: "UC_TEST" }), []);
+});

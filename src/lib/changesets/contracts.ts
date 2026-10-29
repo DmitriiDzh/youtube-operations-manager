@@ -170,3 +170,25 @@ export type StoredVideoRecord = {
   etag: string | null;
   lastSyncedAt: Date;
 };
+
+/** BL-232: one language's title/description of a video, as synced. */
+export type LocaleText = { title: string; description: string };
+
+/**
+ * BL-232 (PRD-REQ-0043): what `proposeLanguageMove` made and what it left out. `changeSet` is null when no video needs a change.
+ * - `movedVideoIds`: the video gets `toLanguage` with exactly its `fromLanguage` text, and loses `fromLanguage` (one write).
+ * - `targetAlreadyPresent`: the video already has `toLanguage`; it is kept unchanged and only `fromLanguage` is removed (owner msg
+ *   3784). Both texts are listed so the owner can compare them before approving.
+ * - `skippedOwnLanguageVideoIds`: `fromLanguage` or `toLanguage` is the video's own language (or the channel's language baseline,
+ *   which a write would give it) -- never touched.
+ * - `skippedEmptyTextVideoIds`: the `fromLanguage` entry has an empty title or description -- nothing reliable to move.
+ */
+export type LanguageMoveResult = {
+  changeSet: ChangeSet | null;
+  fromLanguage: string;
+  toLanguage: string;
+  movedVideoIds: string[];
+  targetAlreadyPresent: Array<{ videoId: string; from: LocaleText; to: LocaleText }>;
+  skippedOwnLanguageVideoIds: string[];
+  skippedEmptyTextVideoIds: string[];
+};
