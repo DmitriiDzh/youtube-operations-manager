@@ -147,6 +147,24 @@ export function countedChars(row: Pick<StoredElevenlabsSpeechJob, "status" | "ch
   return row.chargedChars ?? row.chars;
 }
 
+/** The sample rate an output format names (`pcm_24000` → 24000; `mp3_44100_128` → 44100); 24 kHz when it names none. */
+export function rateOfFormat(format: string): number {
+  const n = Number(format.split("_")[1]);
+  return Number.isInteger(n) && n >= 8000 ? n : 24_000;
+}
+
+/**
+ * Review item 1: the audio ElevenLabs answered, as a file. A `pcm_*` format asked for is raw 16-bit PCM at THAT format's rate whatever
+ * mime the answer carries (octet-stream, none, mpeg by a default) -- wrapped as a WAV; any other format keeps the answer's container.
+ */
+export function audioOfFormat(format: string, audio: { mimeType: string | null; data: Buffer }) {
+  if (format.startsWith("pcm_")) {
+    const rate = rateOfFormat(format);
+    return audioFileOf({ mimeType: `audio/pcm;rate=${rate}`, data: audio.data }, rate);
+  }
+  return audioFileOf({ mimeType: audio.mimeType ?? "audio/mpeg", data: audio.data }, rateOfFormat(format));
+}
+
 export type ElevenlabsDesignedVoice = {
   jobId: string;
   model: string;
@@ -300,7 +318,7 @@ export function createElevenlabsSpeechServices(deps: ElevenlabsSpeechDeps) {
         ...(options.subscription ? { subscription } : {}),
         pricesAsOf: ELEVENLABS_PRICES_AS_OF,
         defaultModel: ELEVENLABS_DEFAULT_MODEL,
-        models: Object.entries(ELEVENLABS_SPEECH_MODELS).map(([model, spec]) => ({ model, kind: "speech" as const, label: spec.label, usdPer1kChars: spec.usdPer1kChars, maxChars: spec.maxChars })),
+        models: Object.entries(ELEVENLABS_SPEECH_MODELS).map(([model, spec]) => ({ model, kind: "speech" as const, label: spec.label, usdPer1kChars: spec.usdPer1kChars, maxChars: Math.min(spec.maxChars, ELEVENLABS_LIMITS.maxTextChars) })),
         designModel: ELEVENLABS_DESIGN_MODEL,
       };
     },
@@ -443,7 +461,7 @@ export function createElevenlabsSpeechServices(deps: ElevenlabsSpeechDeps) {
         await failRow(isDomainError(error) ? error.code : "elevenlabs_unavailable", error instanceof Error ? error.message : String(error), !isDomainError(error) || details.outcome === "unknown");
         throw error;
       }
-      const previews = result.previews.slice(0, count).map((p) => ({ generatedVoiceId: p.generatedVoiceId, audio: audioFileOf({ mimeType: p.mimeType, data: p.data }, 24_000) }));
+      const previews = result.previews.slice(0, count).map((p) => ({ generatedVoiceId: p.generatedVoiceId, audio: audioOfFormat(settings.outputFormat, { mimeType: p.mimeType, data: p.data }) }));
       if (previews.length === 0) {
         await failRow("elevenlabs_output_failed", "ElevenLabs answered without a preview; it may have been charged.", true);
         throw new DomainError({ code: "elevenlabs_unavailable", message: "ElevenLabs designed no preview.", details: { outcome: "answered", jobId: row.jobId } });

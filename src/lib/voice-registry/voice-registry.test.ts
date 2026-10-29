@@ -59,17 +59,26 @@ function fakeProvider(kind: "gemini" | "elevenlabs") {
   return { port, calls };
 }
 
-async function harness() {
+async function harness(options: { failWriteAt?: number } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "voice-registry-"));
   const store = memoryStore();
   const gemini = fakeProvider("gemini");
   const elevenlabs = fakeProvider("elevenlabs");
   let id = 0;
   const workspaces: Record<string, string> = { UC1: path.join(root, "ws1"), UC2: path.join(root, "ws2") };
-  for (const dir of Object.values(workspaces)) await mkdir(dir, { recursive: true });
+  // Both exchange folders exist, as in a real workspace (two first calls at once would race to create them).
+  for (const dir of Object.values(workspaces)) for (const sub of ["From YTM", "Sent to YTM"]) await mkdir(path.join(dir, "99 Data Exchange", sub), { recursive: true });
   const services = createVoiceRegistryServices({
     store,
-    files: createVoiceFiles(async (channelId) => (workspaces[channelId] ? { configured: true as const, path: workspaces[channelId] } : { configured: false as const })),
+    files: (() => {
+      const real = createVoiceFiles(async (channelId) => (workspaces[channelId] ? { configured: true as const, path: workspaces[channelId] } : { configured: false as const }));
+      let writes = 0;
+      return { ...real, write: async (p: string, data: Buffer) => {
+        writes += 1;
+        if (options.failWriteAt === writes) throw new Error("disk full");
+        return real.write(p, data);
+      } };
+    })(),
     providers: { gemini: gemini.port, elevenlabs: elevenlabs.port },
     clock: { now: () => new Date(Date.UTC(2026, 9, 29, 12)) },
     generateId: () => `id${++id}`,
@@ -188,6 +197,49 @@ test("AC-VR-06: rename keeps names unique; an archived voice frees its name and 
     assert.equal((await h.services.list({ channelId: "UC1", includeArchived: true })).voices.length, 3);
     const file = await h.services.previewFile("UC1", b.voiceId, "p1");
     assert.equal(String(await readFile(file.localPath)), "AUDIO-1");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("review item 2: two concurrent designs with the same name -- the draft is reserved first, so only one pays", async () => {
+  const h = await harness();
+  try {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const design0 = h.elevenlabs.port.design;
+    h.elevenlabs.port.design = async (input, actor) => {
+      await gate;
+      return design0(input, actor);
+    };
+    const first = h.services.design(design(), "factory");
+    const second = h.services.design(design(), "factory");
+    const secondResult = await second.then(() => "ok", (error: unknown) => (isDomainError(error) ? error.code : "other"));
+    release();
+    await first;
+    assert.equal(secondResult, "voice_name_taken");
+    assert.equal(h.elevenlabs.calls.filter((c) => c.method === "design").length, 1, "only one paid design");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("review item 2: a failed design archives its reserved draft (the name is free again); previews that cannot be written leave a draft with the error", async () => {
+  const h = await harness({ failWriteAt: 2 });
+  try {
+    const design0 = h.gemini.port.design;
+    h.gemini.port.design = async () => {
+      throw new Error("provider refused");
+    };
+    await assert.rejects(h.services.design(design({ provider: "gemini" }), "factory"), /provider refused/);
+    const archived = (await h.services.list({ channelId: "UC1", includeArchived: true })).voices;
+    assert.deepEqual(archived.map((v) => [v.status, v.error?.includes("provider refused")]), [["archived", true]]);
+    h.gemini.port.design = design0;
+    await expectCode(h.services.design(design(), "factory"), "voice_registry_unavailable");
+    const [draft] = (await h.services.list({ channelId: "UC1", provider: "elevenlabs" })).voices;
+    assert.equal(draft.status, "draft");
+    assert.equal(draft.previews.length, 1, "the one preview written before the failure is kept");
+    assert.match(draft.error ?? "", /2 of 3 previews could not be written/);
   } finally {
     await h.cleanup();
   }

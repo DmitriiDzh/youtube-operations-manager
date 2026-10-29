@@ -52,6 +52,14 @@ test("AC-RI-01 (real database): the table readers name exactly the busy rows of 
     for (const status of ["queued", "submitting", "running", "done", "failed"]) await gemini(`g-${status}`, status);
     assert.deepEqual((await readers.geminiJobs()).sort(), ["g-queued", "g-running", "g-submitting"]);
 
+    // BL-236: ElevenLabs takes (queued, submitting, running) keep the restart waiting; done / failed do not.
+    const elRequired = (await client.execute("PRAGMA table_info(elevenlabs_speech_jobs)")).rows.filter((row) => Number(row.notnull) === 1 && row.dflt_value === null && row.name !== "job_id" && row.name !== "status").map((row) => String(row.name));
+    for (const status of ["queued", "submitting", "running", "done", "failed"]) {
+      const columns = ["job_id", "status", ...elRequired];
+      await client.execute({ sql: `INSERT INTO elevenlabs_speech_jobs (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`, args: [`e-${status}`, status, ...elRequired.map(() => 0)] });
+    }
+    assert.deepEqual((await readers.elevenlabsJobs()).sort(), ["e-queued", "e-running", "e-submitting"]);
+
     const uploadCols = (await client.execute("PRAGMA table_info(publishing_uploads)")).rows.filter((row) => Number(row.notnull) === 1 && row.dflt_value === null).map((row) => String(row.name));
     const upload = async (id: string, status: string) => {
       const others = uploadCols.filter((name) => name !== "id" && name !== "status" && name !== "video" && name !== "channel_id");

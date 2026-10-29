@@ -21,6 +21,7 @@ type Voice = {
   status: "draft" | "approved" | "archived";
   previews: Preview[];
   approvedPreviewId: string | null;
+  error: string | null;
   createdAt: string;
 };
 
@@ -148,6 +149,7 @@ export function ChannelVoicesPanel({ channelId }: { channelId: string | null | u
                 )}
               </div>
               <p className="text-xs text-zinc-500">{voice.description}</p>
+              {voice.error && <p className="text-xs text-amber-400">{voice.error}</p>}
               <div className="grid gap-2 sm:grid-cols-3">
                 {voice.previews.map((preview, index) => (
                   <div key={preview.previewId} className={`space-y-1 rounded-lg border p-2 ${voice.approvedPreviewId === preview.previewId ? "border-emerald-700" : "border-zinc-800"}`}>

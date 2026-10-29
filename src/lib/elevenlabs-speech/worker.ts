@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { StoredElevenlabsSpeechJob } from "@/lib/db";
-import { audioFileOf } from "@/lib/shared-audio";
+import { ELEVENLABS_SPEECH_TIMEOUT_MS } from "@/lib/media-gateway";
 import {
   ELEVENLABS_ACTIVE_STATUSES,
   ELEVENLABS_LIMITS,
@@ -14,22 +14,17 @@ import {
   type ElevenlabsJobOutput,
   type ElevenlabsSpeechParams,
 } from "./contracts";
-import { createElevenlabsSpeechServices, jobView, listPriceUsd, type ElevenlabsSpeechDeps } from "./services";
+import { audioOfFormat, createElevenlabsSpeechServices, jobView, listPriceUsd, rateOfFormat, type ElevenlabsSpeechDeps } from "./services";
 
 // BL-236 (ADR 0057): runs queued ElevenLabs takes. One `tick()` every few seconds from `src/instrumentation.ts`; every status
 // change is a compare-and-set from the status the job was read in. Money rules as gemini-media's: provably never received or
 // refused by ElevenLabs → not charged; sent and then lost → its characters at the list price ("unknown_outcome", never
 // under-counted); done → the characters ElevenLabs reports (else the text's) at the list price.
 
+/** Review item 7: how long a voice design's own call may still be running (its timeout plus a minute). */
+const VOICE_DESIGN_CALL_WINDOW_MS = ELEVENLABS_SPEECH_TIMEOUT_MS + 60_000;
+
 type Failure = { errorCode: string; error: string; charged: boolean };
-
-const FALLBACK_RATE_HZ = 24_000;
-
-/** The sample rate an output format names (`pcm_24000` → 24000; `mp3_44100_128` → 44100), for raw PCM and the manifest. */
-function rateOfFormat(format: string): number {
-  const n = Number(format.split("_")[1]);
-  return Number.isInteger(n) && n >= 8000 ? n : FALLBACK_RATE_HZ;
-}
 
 export function createElevenlabsWorker(deps: ElevenlabsSpeechDeps) {
   const services = createElevenlabsSpeechServices(deps);
@@ -115,7 +110,7 @@ export function createElevenlabsWorker(deps: ElevenlabsSpeechDeps) {
     const chargedChars = result.chargedChars ?? job.chars;
     const costUsd = listPriceUsd(job.model, chargedChars);
     const costBasis: ElevenlabsCostBasis = "list_price";
-    const file = audioFileOf(result.audio, rateOfFormat(params.outputFormat));
+    const file = audioOfFormat(params.outputFormat, result.audio);
     const name = `take-1.${file.extension}`;
     const localPath = path.join(dir, name);
     let output: ElevenlabsJobOutput;
@@ -237,8 +232,11 @@ export function createElevenlabsWorker(deps: ElevenlabsSpeechDeps) {
     /** At startup: a job left `submitting` was cut mid-call -- failed at its characters (it may have been charged). */
     async bootSweep(): Promise<number> {
       const stuck = await deps.store.listJobs({ statuses: ["submitting"], limit: 1000 });
+      const at = now().getTime();
       for (const job of stuck) {
         if (inFlight.has(job.jobId)) continue;
+        // Review item 7: a voice design is sent by its own call, not by this worker -- left alone while that call may still run.
+        if (job.kind === "voice_design" && at - job.updatedAt.getTime() < VOICE_DESIGN_CALL_WINDOW_MS) continue;
         await fail(job, "submitting", { errorCode: "elevenlabs_interrupted", error: "The app stopped while the request was with ElevenLabs; it may have been charged.", charged: true });
       }
       return stuck.length;

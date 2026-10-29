@@ -14,5 +14,6 @@ characters, default `mp3_44100_128`; designed voices only, no cloning; adult voi
 Acceptance (Operator + owner): design "Sumire" in both providers, approve one preview each, make the same greeting and a 45 s story
 with each, review blind in the plan review (`auditionFile: From YTM/<provider>/<jobId>/take-1.*`). First paid calls by the owner.
 
-Known gaps: RISK-142 (ElevenLabs per computer, not in the shared jobs report or restart wait), RISK-143 (unverified provider
+Text per take: Gemini ≤ 2,500 characters (6-minute call), ElevenLabs ≤ 5,000 (4.5-minute call; owner's default limit 2,000) -- so
+one take always finishes inside its call. Known gaps: RISK-142 (ElevenLabs per computer, not in the shared jobs report), RISK-143 (unverified provider
 fields), RISK-144 (Gemini voice lifetime and project limit).

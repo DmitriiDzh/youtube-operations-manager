@@ -27,7 +27,8 @@ import { asNumber, asRecord, asString } from "./json";
 
 export const ELEVENLABS_API_BASE_URL = "https://api.elevenlabs.io";
 const KEY_CHECK_TIMEOUT_MS = 30_000;
-export const ELEVENLABS_SPEECH_TIMEOUT_MS = 3 * 60_000;
+/** Review item 9: under fetch's own 300 s wait for response headers; one take is at most 5,000 characters (`elevenlabs-speech`). */
+export const ELEVENLABS_SPEECH_TIMEOUT_MS = 270_000;
 /** A 10,000-character take is a few minutes of audio; 100 MB is far above any real answer and stops an endless stream. */
 export const ELEVENLABS_MAX_AUDIO_BYTES = 100 * 1024 * 1024;
 
@@ -43,7 +44,8 @@ export type ElevenlabsSpeechResult = {
 export type ElevenlabsVoiceDesignRequest = { description: string; text: string | null; modelId: string; outputFormat: string };
 
 export type ElevenlabsVoiceDesignResult = {
-  previews: Array<{ generatedVoiceId: string; mimeType: string; data: Buffer; durationSeconds: number | null }>;
+  /** `mimeType` null when ElevenLabs named none (the caller knows the format it asked for). */
+  previews: Array<{ generatedVoiceId: string; mimeType: string | null; data: Buffer; durationSeconds: number | null }>;
   /** The text the previews speak (ElevenLabs' own when it generated it). */
   text: string | null;
 };
@@ -155,6 +157,14 @@ export function createElevenlabsApiClient(args: { fetchImpl?: Fetch; authorize?:
         throw unavailable(context)("request", error instanceof Error ? error.message : String(error), undefined, error);
       }
       const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
+      // Review item 6: an answer over the cap is never read whole. ElevenLabs made (and charged) it: not retried, counted at its estimate.
+      const oversized = (bytes: number) =>
+        new DomainError({ code: "elevenlabs_unavailable", message: `The audio is ${bytes} bytes, over the ${ELEVENLABS_MAX_AUDIO_BYTES}-byte limit; it was not saved (it may have been charged).`, details: { ...context, outcome: "unknown", oversized: true, status: response.status } });
+      const declared = Number(response.headers.get("content-length") ?? "");
+      if (response.ok && Number.isFinite(declared) && declared > ELEVENLABS_MAX_AUDIO_BYTES) {
+        await response.body?.cancel().catch(() => undefined);
+        throw oversized(declared);
+      }
       let data: Buffer;
       try {
         data = Buffer.from(await response.arrayBuffer());
@@ -171,7 +181,7 @@ export function createElevenlabsApiClient(args: { fetchImpl?: Fetch; authorize?:
         if (response.ok) throw new DomainError({ code: "elevenlabs_unavailable", message: "ElevenLabs answered with JSON, not audio; it may have been charged.", details: { ...context, outcome: "unknown", status: response.status } });
         throw failure({ status: response.status, body }, context);
       }
-      if (data.length > ELEVENLABS_MAX_AUDIO_BYTES) throw new DomainError({ code: "elevenlabs_unavailable", message: `The audio is ${data.length} bytes, over the limit.`, details: { ...context, outcome: "answered" } });
+      if (data.length > ELEVENLABS_MAX_AUDIO_BYTES) throw oversized(data.length);
       const charged = count(response.headers.get("character-cost") ?? response.headers.get("x-character-count"));
       return { audio: { mimeType: contentType.split(";")[0] || "audio/mpeg", data }, chargedChars: charged, requestId: response.headers.get("request-id") };
     },
@@ -187,7 +197,7 @@ export function createElevenlabsApiClient(args: { fetchImpl?: Fetch; authorize?:
         const id = asString(preview.generated_voice_id) ?? asString(preview.generatedVoiceId);
         const audio = asString(preview.audio_base_64) ?? asString(preview.audioBase64);
         if (!id || !audio) continue;
-        previews.push({ generatedVoiceId: id, mimeType: (asString(preview.media_type) ?? asString(preview.mediaType) ?? "audio/mpeg").toLowerCase(), data: Buffer.from(audio, "base64"), durationSeconds: asNumber(preview.duration_secs ?? preview.durationSecs) });
+        previews.push({ generatedVoiceId: id, mimeType: (asString(preview.media_type) ?? asString(preview.mediaType))?.toLowerCase() ?? null, data: Buffer.from(audio, "base64"), durationSeconds: asNumber(preview.duration_secs ?? preview.durationSecs) });
       }
       return { previews, text: asString(body.text) };
     },

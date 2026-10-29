@@ -24,6 +24,7 @@ const REASON_KEYS: Record<string, UiTextKey> = {
   media_session: "settingsCards.restartIdle.reason.media_session",
   media_job: "settingsCards.restartIdle.reason.media_job",
   gemini_job: "settingsCards.restartIdle.reason.gemini_job",
+  elevenlabs_job: "settingsCards.restartIdle.reason.elevenlabs_job",
   upload: "settingsCards.restartIdle.reason.upload",
   live_stream: "settingsCards.restartIdle.reason.live_stream",
   operation_lock: "settingsCards.restartIdle.reason.operation_lock",

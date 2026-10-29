@@ -86,7 +86,9 @@ export function createVoicesRouteHandlers(deps: VoicesRouteDeps = defaultDeps())
       guarded(context, async ({ channelId, voiceId, previewId }) => {
         const file = await (await deps.registry()).previewFile(channelId, decodeURIComponent(voiceId), decodeURIComponent(previewId));
         const data = await deps.readFile(file.localPath);
-        return new Response(new Uint8Array(data), { status: 200, headers: { "content-type": file.mimeType, "content-length": String(data.length), "cache-control": "private, max-age=300" } });
+        // Review item 8: only an audio type is served as such (a stored type is never trusted to be HTML or script), never sniffed.
+        const type = /^audio\/[a-z0-9.+-]+$/i.test(file.mimeType) ? file.mimeType : "application/octet-stream";
+        return new Response(new Uint8Array(data), { status: 200, headers: { "content-type": type, "content-length": String(data.length), "cache-control": "private, max-age=300", "x-content-type-options": "nosniff" } });
       }),
   };
 }

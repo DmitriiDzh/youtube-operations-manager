@@ -58,6 +58,7 @@ export function voiceView(row: StoredChannelVoice): VoiceView {
     status: row.status,
     previews: parsePreviews(row.previewsJson),
     approvedPreviewId: row.approvedPreviewId ?? null,
+    error: row.error ?? null,
     createdAt: row.createdAt.toISOString(),
     createdBy: row.createdBy,
     approvedAt: row.approvedAt ? row.approvedAt.toISOString() : null,
@@ -118,6 +119,15 @@ export function createVoiceRegistryServices(deps: VoiceRegistryDeps) {
     if (taken) throw new DomainError({ code: "voice_name_taken", message: `This channel already has a ${provider} voice named "${taken.name}" (${taken.voiceId}).`, details: { name, voiceId: taken.voiceId } });
   }
 
+  // Review item 2: the name check and the draft's insert run one at a time per channel and provider in this process.
+  const nameLocks = new Map<string, Promise<unknown>>();
+  async function withNameLock<T>(key: string, run: () => Promise<T>): Promise<T> {
+    const previous = nameLocks.get(key) ?? Promise.resolve();
+    const result = previous.then(run, run);
+    nameLocks.set(key, result.catch(() => undefined));
+    return result;
+  }
+
   function providerOf(provider: VoiceProvider): VoiceProviderPort {
     const port = deps.providers[provider];
     if (!port) throw new DomainError({ code: "voice_registry_unavailable", message: `Voices of ${provider} cannot be designed or approved on this server.`, details: { provider } });
@@ -139,36 +149,16 @@ export function createVoiceRegistryServices(deps: VoiceRegistryDeps) {
 
     /**
      * Designs a voice from its description (PAID, through the provider's own gate) and keeps every preview as a file; the voice is
-     * a draft until the owner approves one preview. The name is checked first, so a taken name never costs a design.
+     * a draft until the owner approves one preview. Review item 2: the draft row is inserted FIRST (under a per-channel lock, and the
+     * database's unique name index), so a taken name -- even by a design running at the same moment -- is refused before anything is
+     * paid. A design that fails archives its row (the name is free again) with the error; previews that cannot be written leave the
+     * row a draft with the error and the previews that were written, so a paid design is never lost silently.
      */
     async design(raw: unknown, actor: string): Promise<{ voice: VoiceView }> {
       const input = parseWithSchema(designVoiceSchema, raw, "voice design");
       const provider = providerOf(input.provider);
-      await assertNameFree(input.channelId, input.provider, input.name, null);
       const root = await deps.files.outputRoot(input.channelId);
       const voiceId = `vc_${deps.generateId()}`;
-      const designed = await provider.design(
-        { channelId: input.channelId, name: input.name, description: input.description, previewText: input.previewText ?? null, count: input.previews ?? (input.provider === "elevenlabs" ? 3 : 1), model: input.model ?? null },
-        actor
-      );
-      if (designed.previews.length === 0) throw new DomainError({ code: "voice_registry_unavailable", message: "The provider designed no preview.", details: { provider: input.provider } });
-      const previews: VoicePreview[] = [];
-      for (const [index, preview] of designed.previews.entries()) {
-        const fileName = `preview-${index + 1}.${preview.audio.extension}`;
-        const relative = `${input.provider}/${VOICE_PREVIEWS_SUBDIR}/${voiceId}/${fileName}`;
-        const written = await deps.files.write(deps.files.join(root, input.provider, VOICE_PREVIEWS_SUBDIR, voiceId, fileName), preview.audio.data);
-        previews.push({
-          previewId: `p${index + 1}`,
-          file: relative,
-          mimeType: preview.audio.mimeType,
-          bytes: written.bytes,
-          sha256: written.sha256,
-          sampleRateHz: preview.audio.sampleRateHz,
-          durationSeconds: preview.audio.durationSeconds,
-          providerRef: preview.providerRef,
-          jobId: preview.jobId,
-        });
-      }
       const at = now();
       const row: StoredChannelVoice = {
         voiceId,
@@ -177,18 +167,59 @@ export function createVoiceRegistryServices(deps: VoiceRegistryDeps) {
         provider: input.provider,
         providerVoiceId: null,
         description: input.description,
-        model: designed.model,
+        model: input.model ?? null,
         status: "draft",
-        previewsJson: JSON.stringify(previews),
+        previewsJson: "[]",
         approvedPreviewId: null,
+        error: null,
         createdAt: at,
         createdBy: actor,
         approvedAt: null,
         approvedBy: null,
         updatedAt: at,
       };
-      if (!(await deps.store.insert(row))) throw new DomainError({ code: "voice_name_taken", message: `The name "${input.name}" was just taken.`, details: { name: input.name } });
-      return { voice: voiceView(row) };
+      await withNameLock(`${input.channelId}\u0000${input.provider}`, async () => {
+        await assertNameFree(input.channelId, input.provider, input.name, null);
+        if (!(await deps.store.insert(row))) throw new DomainError({ code: "voice_name_taken", message: `The name "${input.name}" was just taken.`, details: { name: input.name } });
+      });
+      const message = (error: unknown) => (error instanceof Error ? error.message : String(error)).slice(0, 1000);
+      let designed: Awaited<ReturnType<VoiceProviderPort["design"]>>;
+      try {
+        designed = await provider.design(
+          { channelId: input.channelId, name: input.name, description: input.description, previewText: input.previewText ?? null, count: input.previews ?? (input.provider === "elevenlabs" ? 3 : 1), model: input.model ?? null },
+          actor
+        );
+        if (designed.previews.length === 0) throw new DomainError({ code: "voice_registry_unavailable", message: "The provider designed no preview.", details: { provider: input.provider } });
+      } catch (error) {
+        await deps.store.update(voiceId, "draft", { status: "archived", error: `The design failed: ${message(error)}`, updatedAt: now() });
+        throw error;
+      }
+      const previews: VoicePreview[] = [];
+      try {
+        for (const [index, preview] of designed.previews.entries()) {
+          const fileName = `preview-${index + 1}.${preview.audio.extension}`;
+          const relative = `${input.provider}/${VOICE_PREVIEWS_SUBDIR}/${voiceId}/${fileName}`;
+          const written = await deps.files.write(deps.files.join(root, input.provider, VOICE_PREVIEWS_SUBDIR, voiceId, fileName), preview.audio.data);
+          previews.push({
+            previewId: `p${index + 1}`,
+            file: relative,
+            mimeType: preview.audio.mimeType,
+            bytes: written.bytes,
+            sha256: written.sha256,
+            sampleRateHz: preview.audio.sampleRateHz,
+            durationSeconds: preview.audio.durationSeconds,
+            providerRef: preview.providerRef,
+            jobId: preview.jobId,
+          });
+        }
+      } catch (error) {
+        const failed = `${designed.previews.length - previews.length} of ${designed.previews.length} previews could not be written: ${message(error)}`;
+        await deps.store.update(voiceId, "draft", { previewsJson: JSON.stringify(previews), model: designed.model ?? row.model, error: failed, updatedAt: now() });
+        throw new DomainError({ code: "voice_registry_unavailable", message: `The voice was designed (and paid) but ${failed}. It stays a draft (${voiceId}).`, details: { voiceId, written: previews.length } });
+      }
+      const set = { previewsJson: JSON.stringify(previews), model: designed.model ?? row.model, updatedAt: now() };
+      await deps.store.update(voiceId, "draft", set);
+      return { voice: voiceView({ ...row, ...set }) };
     },
 
     /** The owner's pick (in the app, or relayed by the Operator): one preview of a draft becomes the voice the provider speaks with. */

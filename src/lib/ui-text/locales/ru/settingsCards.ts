@@ -296,6 +296,7 @@ export const settingsCards: Record<keyof typeof en, string> = {
   "settingsCards.restartIdle.until": "до {time}",
   "settingsCards.restartIdle.reason.media_session": "{count, plural, one {# медиасессия не завершена} few {# медиасессии не завершены} other {# медиасессий не завершено}}",
   "settingsCards.restartIdle.reason.media_job": "{count, plural, one {# медиазадача в очереди или в работе} few {# медиазадачи в очереди или в работе} other {# медиазадач в очереди или в работе}}",
+  "settingsCards.restartIdle.reason.elevenlabs_job": "{count, plural, one {# дубль ElevenLabs в очереди или отправляется} few {# дубля ElevenLabs в очереди или отправляются} many {# дублей ElevenLabs в очереди или отправляются} other {# дубля ElevenLabs в очереди или отправляются}}",
   "settingsCards.restartIdle.reason.gemini_job": "{count, plural, one {# задача Gemini в очереди или в работе} few {# задачи Gemini в очереди или в работе} other {# задач Gemini в очереди или в работе}}",
   "settingsCards.restartIdle.reason.upload": "{count, plural, one {# загрузка отправляется} few {# загрузки отправляются} other {# загрузок отправляется}}",
   "settingsCards.restartIdle.reason.live_stream": "{count, plural, one {# трансляция запускается, останавливается или переключается} few {# трансляции запускаются, останавливаются или переключаются} other {# трансляций запускается, останавливается или переключается}}",

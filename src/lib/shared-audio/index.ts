@@ -24,9 +24,22 @@ export function pcmFormatOfMime(mimeType: string, fallbackRateHz: number): PcmFo
   return { sampleRateHz, channels, bitsPerSample: 16 };
 }
 
-/** A canonical 44-byte RIFF/WAVE header followed by the little-endian PCM samples. */
-export function pcmToWav(pcm: Buffer, format: PcmFormat): Buffer {
-  const blockAlign = format.channels * (format.bitsPerSample / 8);
+/** The bytes of one sample frame (all channels). */
+export function blockAlignOf(format: PcmFormat): number {
+  return format.channels * (format.bitsPerSample / 8);
+}
+
+/** PCM cut to whole sample frames (an odd trailing byte would make a WAV some players refuse, and a wrong length). */
+export function trimToFrames(pcm: Buffer, format: PcmFormat): Buffer {
+  const align = blockAlignOf(format);
+  const whole = pcm.length - (pcm.length % align);
+  return whole === pcm.length ? pcm : pcm.subarray(0, whole);
+}
+
+/** A canonical 44-byte RIFF/WAVE header followed by the little-endian PCM samples, cut to whole sample frames first. */
+export function pcmToWav(rawPcm: Buffer, format: PcmFormat): Buffer {
+  const blockAlign = blockAlignOf(format);
+  const pcm = trimToFrames(rawPcm, format);
   const header = Buffer.alloc(44);
   header.write("RIFF", 0, "ascii");
   header.writeUInt32LE(36 + pcm.length, 4);
@@ -78,8 +91,9 @@ export function audioFileOf(audio: { mimeType: string; data: Buffer }, fallbackR
   const mime = audio.mimeType.toLowerCase();
   const pcm = pcmFormatOfMime(mime, fallbackRateHz);
   if (pcm) {
-    const wav = pcmToWav(audio.data, pcm);
-    return { data: wav, extension: "wav", mimeType: "audio/wav", sampleRateHz: pcm.sampleRateHz, durationSeconds: audio.data.length / (pcm.sampleRateHz * pcm.channels * 2) };
+    const frames = trimToFrames(audio.data, pcm);
+    const wav = pcmToWav(frames, pcm);
+    return { data: wav, extension: "wav", mimeType: "audio/wav", sampleRateHz: pcm.sampleRateHz, durationSeconds: frames.length / (pcm.sampleRateHz * blockAlignOf(pcm)) };
   }
   const info = wavInfo(audio.data);
   if (info || mime.startsWith("audio/wav") || mime.startsWith("audio/x-wav") || mime.startsWith("audio/wave")) {

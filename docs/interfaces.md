@@ -1352,7 +1352,7 @@ A second agent role, separate from the channel agents. Technical contract only (
     system service; a request open 24 h becomes `expired`.
     - **`factory_restart_status`** (READ, local; not counted as an MCP call, so polling it never delays a restart) `{}` →
       `{ request: { id, status: open | restarting, requestedBy: owner | developer, requestedAt, restartingAt, ... } | null,
-      waitingFor: [{ kind: media_session | media_job | gemini_job | upload | live_stream | operation_lock | operation | batch | hold |
+      waitingFor: [{ kind: media_session | media_job | gemini_job | elevenlabs_job (1.40.0, BL-236) | upload | live_stream | operation_lock | operation | batch | hold |
       mcp_quiet | check_failed, count, ids (≤ 5), until | null }], holds: [{ holdId, heldBy: factory | owner | worker:<channelId>,
       reason, createdAt, until, releasedAt, releasedBy, active }], lastRestart: { finishedAt, fromVersion, fromSchema, toVersion,
       toSchema, waitedMinutes, requestedBy, ... } | null, quietMinutes (1-30, default 3), serviceMode }`. A reader that fails is

@@ -25,11 +25,11 @@ function fixture(options: { serviceMode?: boolean } = {}) {
     quiet: null as number | null,
     nextId: 0,
   };
-  const busy: Record<"mediaSessions" | "mediaJobs" | "geminiJobs" | "uploads" | "liveStreams" | "operations" | "batches", string[]> & {
+  const busy: Record<"mediaSessions" | "mediaJobs" | "geminiJobs" | "elevenlabsJobs" | "uploads" | "liveStreams" | "operations" | "batches", string[]> & {
     operationLock: string | null;
     lastMcpCallAt: number | null;
     failing: Set<string>;
-  } = { mediaSessions: [], mediaJobs: [], geminiJobs: [], uploads: [], liveStreams: [], operations: [], batches: [], operationLock: null, lastMcpCallAt: null, failing: new Set() };
+  } = { mediaSessions: [], mediaJobs: [], geminiJobs: [], elevenlabsJobs: [], uploads: [], liveStreams: [], operations: [], batches: [], operationLock: null, lastMcpCallAt: null, failing: new Set() };
   const guard = async <T>(name: string, value: T): Promise<T> => {
     if (busy.failing.has(name)) throw new Error(`${name} unavailable`);
     return value;
@@ -38,6 +38,7 @@ function fixture(options: { serviceMode?: boolean } = {}) {
     mediaSessions: () => guard("mediaSessions", busy.mediaSessions),
     mediaJobs: () => guard("mediaJobs", busy.mediaJobs),
     geminiJobs: () => guard("geminiJobs", busy.geminiJobs),
+    elevenlabsJobs: () => guard("elevenlabsJobs", busy.elevenlabsJobs),
     uploads: () => guard("uploads", busy.uploads),
     liveStreams: () => guard("liveStreams", busy.liveStreams),
     operations: () => guard("operations", busy.operations),
@@ -95,6 +96,8 @@ test("AC-RI-01: each of the eight reasons alone keeps the request waiting, and w
     ["media_session", (f) => void (f.busy.mediaSessions = ["S1"])],
     ["media_job", (f) => void (f.busy.mediaJobs = ["J1"])],
     ["gemini_job", (f) => void (f.busy.geminiJobs = ["G1"])],
+    // BL-236 (ADR 0057): an ElevenLabs take queued or being sent keeps the restart waiting too.
+    ["elevenlabs_job", (f) => void (f.busy.elevenlabsJobs = ["el_1"])],
     ["upload", (f) => void (f.busy.uploads = ["U1"])],
     ["live_stream", (f) => void (f.busy.liveStreams = ["UC1:switching"])],
     ["operation_lock", (f) => void (f.busy.operationLock = "import")],

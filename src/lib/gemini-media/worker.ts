@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import type { StoredGeminiMediaJob } from "@/lib/db";
-import type { GeminiImageResult, GeminiInlineImage, GeminiInteractionsVideoResult, GeminiSpeechResult } from "@/lib/media-gateway";
+import { GEMINI_SPEECH_TIMEOUT_MS, type GeminiImageResult, type GeminiInlineImage, type GeminiInteractionsVideoResult, type GeminiSpeechResult } from "@/lib/media-gateway";
 import { audioFileOf } from "@/lib/shared-audio";
 import {
   GEMINI_ACTIVE_STATUSES,
@@ -41,6 +41,9 @@ const VIDEO_EXTENSIONS: Readonly<Record<string, string>> = Object.freeze({ "vide
 
 /** BL-179: an Omni video Google delivered as a Files API URI is collected by the next poll, from `remoteName`. */
 const isDownloadUri = (remoteName: string) => remoteName.startsWith("https://") || remoteName.startsWith("http://");
+
+/** Review item 7: how long a voice design's own call may still be running (its timeout plus a minute). */
+const VOICE_DESIGN_CALL_WINDOW_MS = GEMINI_SPEECH_TIMEOUT_MS + 60_000;
 
 type Failure = { errorCode: GeminiJobErrorCode; error: string; costUsd: number; costBasis: GeminiCostBasis };
 
@@ -571,8 +574,12 @@ export function createGeminiWorker(deps: GeminiMediaDeps) {
      */
     async bootSweep(): Promise<number> {
       const stuck = await deps.store.listJobs({ statuses: ["submitting"], limit: 1000 });
+      const at = now().getTime();
       for (const job of stuck) {
         if (inFlight.has(job.jobId)) continue;
+        // Review item 7: a voice design is sent by its own call (another route bundle of this process may be waiting on it now), not
+        // by this worker: left alone while its call may still be running; the tick's stale sweep fails it later if it was abandoned.
+        if (job.kind === "voice_design" && at - job.updatedAt.getTime() < VOICE_DESIGN_CALL_WINDOW_MS) continue;
         await fail(job, "submitting", maybeCharged(job, "gemini_interrupted", "The app stopped while the request was with Google; it may have been charged."));
       }
       return stuck.length;

@@ -64,5 +64,6 @@ export const setKeyInputSchema = z
 export function checkJobRules(input: CreateJobInput, model: string): void {
   const spec = ownEntry(ELEVENLABS_SPEECH_MODELS, model);
   if (!spec) throw elevenlabsInvalidParams("model", `${model} is not a speech model here (${Object.keys(ELEVENLABS_SPEECH_MODELS).join(", ")}).`);
-  if (charCount(input.text) > spec.maxChars) throw elevenlabsInvalidParams("text", `${model} takes at most ${spec.maxChars} characters in one take.`);
+  const max = Math.min(spec.maxChars, ELEVENLABS_LIMITS.maxTextChars);
+  if (charCount(input.text) > max) throw elevenlabsInvalidParams("text", `${model} takes at most ${max} characters in one take here (one take must finish within the call's time limit).`);
 }

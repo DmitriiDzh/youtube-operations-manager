@@ -1704,3 +1704,18 @@ test("AC-SP-08: a voice design is paid and recorded: refused when the switch is 
     await h.cleanup();
   }
 });
+
+test("review item 7: the boot sweep leaves a voice design whose own call may still be running; an older one is failed at its estimate", async () => {
+  const h = await harness();
+  try {
+    const now = new Date(h.clock.at);
+    const base = { channelId: "UC1", requestId: null, requestHash: "h", kind: "voice_design" as const, model: "gemini-3.8-flash-tts", prompt: "d", paramsJson: "{}", inputsJson: "[]", status: "submitting" as const, remoteName: null, estimateUsd: 0.002, costUsd: null, costBasis: null, outputsJson: null, error: null, errorCode: null, attempts: 1, nextAttemptAt: null, createdBy: "factory", createdAt: now, submittedAt: now, finishedAt: null, storyboardId: null, storyboardVersion: null, segmentId: null, video: null };
+    await h.store.insertJob({ ...base, jobId: "gm_running", updatedAt: new Date(now.getTime() - 60_000) });
+    await h.store.insertJob({ ...base, jobId: "gm_old", updatedAt: new Date(now.getTime() - 30 * 60_000) });
+    await h.worker.bootSweep();
+    assert.equal(h.store.jobs.get("gm_running")!.status, "submitting");
+    assert.deepEqual([h.store.jobs.get("gm_old")!.status, h.store.jobs.get("gm_old")!.costBasis], ["failed", "unknown_outcome"]);
+  } finally {
+    await h.cleanup();
+  }
+});

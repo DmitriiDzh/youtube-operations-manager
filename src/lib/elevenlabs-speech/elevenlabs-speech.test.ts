@@ -338,3 +338,51 @@ test("AC-EL-09: a voice design is paid -- refused when off; otherwise its previe
     await h.cleanup();
   }
 });
+
+test("review item 1: a pcm_44100 take answered as octet-stream is a WAV at 44.1 kHz; a preview with no media type under PCM is a WAV, not .mp3", async () => {
+  const h = await harness({ settings: { outputFormat: "pcm_44100" } });
+  try {
+    h.behaviour.textToSpeech = async () => ({ audio: { mimeType: "application/octet-stream", data: Buffer.alloc(88_200) }, chargedChars: null, requestId: null });
+    const { job } = (await h.services.createJob(take(), "factory")) as { job: { jobId: string } };
+    await h.runTick();
+    const wav = await readFile(path.join(h.fromYtm, "elevenlabs", job.jobId, "take-1.wav"));
+    assert.equal(wav.readUInt32LE(24), 44_100);
+    const output = JSON.parse(h.store.jobs.get(job.jobId)!.outputsJson!)[0];
+    assert.deepEqual([output.mimeType, output.sampleRateHz, output.durationSeconds], ["audio/wav", 44_100, 1]);
+    h.behaviour.designVoice = async () => ({ previews: [{ generatedVoiceId: "g1", mimeType: null, data: Buffer.alloc(88_200), durationSeconds: null }], text: null });
+    const designed = await h.services.designVoice({ channelId: "UC1", description: "soft warm voice", count: 1 }, "factory");
+    assert.deepEqual([designed.previews[0].audio.extension, designed.previews[0].audio.sampleRateHz], ["wav", 44_100]);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("review item 6: an oversized answer is not retried and is counted as charged at its estimate", async () => {
+  const h = await harness();
+  try {
+    h.behaviour.textToSpeech = async () => {
+      throw new DomainError({ code: "elevenlabs_unavailable", message: "too big", details: { outcome: "unknown", oversized: true } });
+    };
+    const { job } = (await h.services.createJob(take(), "factory")) as { job: { jobId: string } };
+    await h.runTick();
+    const row = h.store.jobs.get(job.jobId)!;
+    assert.deepEqual([row.status, row.costBasis, row.costUsd, row.attempts], ["failed", "unknown_outcome", 0.008, 1]);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("review item 7: the boot sweep leaves a voice design whose call may still be running; a take left half-sent is failed", async () => {
+  const h = await harness();
+  try {
+    const now = new Date(h.clock.at);
+    const base = { channelId: "UC1", requestId: null, requestHash: "h", model: "eleven_ttv_v3", text: "t", paramsJson: "{}", status: "submitting" as const, chars: 100, estimateUsd: 0.008, costUsd: null, costBasis: null, chargedChars: null, outputsJson: null, error: null, errorCode: null, attempts: 1, nextAttemptAt: null, createdBy: "factory", createdAt: now, submittedAt: now, finishedAt: null, updatedAt: new Date(now.getTime() - 30_000), video: null };
+    await h.store.insertJob({ ...base, jobId: "el_design", kind: "voice_design" });
+    await h.store.insertJob({ ...base, jobId: "el_take", kind: "speech", model: "eleven_v4" });
+    await h.worker.bootSweep();
+    assert.equal(h.store.jobs.get("el_design")!.status, "submitting");
+    assert.deepEqual([h.store.jobs.get("el_take")!.status, h.store.jobs.get("el_take")!.errorCode], ["failed", "elevenlabs_interrupted"]);
+  } finally {
+    await h.cleanup();
+  }
+});

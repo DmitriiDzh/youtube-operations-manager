@@ -2198,13 +2198,13 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
   shared report should show segments.
 - **Gate(s):** none. **Status:** open.
 
-## RISK-142 — ElevenLabs speech is per computer: limits, usage, shared jobs report and restart wait — OPEN, 2026-10-29
+## RISK-142 — ElevenLabs speech is per computer: limits, usage and the shared jobs report — OPEN, 2026-10-29
 
 - **What:** BL-236 (ADR 0057). ElevenLabs' character limits and usage are this computer's (no shared settings/spend family as Gemini
   has, ADR 0039); its jobs are not in the shared media-jobs report (the report's `source` enum is strict; widening it breaks older
-  builds) and restart-when-idle does not wait for them.
+  builds). restart-when-idle waits for them (`elevenlabs_job`); `stop.sh`'s media-idle check does not.
 - **Bounds:** the switch is off by default per computer; the Settings card reads the account's own character count on demand; a take
-  cut by a restart is failed at its characters by the boot sweep and never re-sent; the owner's subscription caps the real spend.
+  cut by a hard stop is failed at its characters by the boot sweep and never re-sent; the owner's subscription caps the real spend.
 - **Re-evaluate:** when ElevenLabs is switched on on a second computer, or the shared report gains a new source version.
 - **Gate(s):** none. **Status:** open.
 

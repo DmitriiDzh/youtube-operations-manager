@@ -112,3 +112,26 @@ test("createVoiceFromDesign saves the chosen preview (POST /v1/text-to-voice) an
   assert.deepEqual(await api.getSubscription(KEY), { tier: "starter", characterCount: 1234, characterLimit: 30000, nextResetAt: "2027-01-01T00:00:00.000Z" });
   assert.equal(calls[1].url, "https://api.elevenlabs.io/v1/user/subscription");
 });
+
+test("review item 6: a declared content-length over the cap is refused before the body is read -- outcome unknown (made, maybe charged), oversized", async () => {
+  let read = false;
+  const body = new ReadableStream({
+    pull(controller) {
+      read = true;
+      controller.enqueue(new Uint8Array(4));
+      controller.close();
+    },
+  }, { highWaterMark: 0 });
+  const { fetchImpl } = fakeFetch(() => new Response(body, { status: 200, headers: { "content-type": "audio/mpeg", "content-length": String(200 * 1024 * 1024) } }));
+  const api = createElevenlabsApiClient({ fetchImpl, authorize: async () => undefined });
+  const details = await expectError(api.textToSpeech(KEY, { voiceId: "v", text: "t", modelId: "m", outputFormat: "mp3_44100_128" }), "elevenlabs_unavailable");
+  assert.deepEqual([details.outcome, details.oversized], ["unknown", true]);
+  assert.equal(read, false, "the body was not read");
+});
+
+test("review item 1: a design preview without media_type keeps mimeType null (the caller decides by the format it asked for)", async () => {
+  const { fetchImpl } = fakeFetch(() => json(200, { previews: [{ audio_base_64: Buffer.from("PCM").toString("base64"), generated_voice_id: "g" }] }));
+  const api = createElevenlabsApiClient({ fetchImpl, authorize: async () => undefined });
+  const result = await api.designVoice(KEY, { description: "d", text: null, modelId: "eleven_ttv_v3", outputFormat: "pcm_24000" });
+  assert.equal(result.previews[0].mimeType, null);
+});

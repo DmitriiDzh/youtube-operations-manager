@@ -32,6 +32,7 @@ const voice = (overrides: Record<string, unknown> = {}) => ({
   status: "draft" as const,
   previewsJson: "[]",
   approvedPreviewId: null,
+  error: null,
   createdAt: new Date(1),
   createdBy: "factory",
   approvedAt: null,

@@ -26,8 +26,11 @@ const KEY_CHECK_TIMEOUT_MS = 30_000;
 export const GEMINI_IMAGE_TIMEOUT_MS = 5 * 60_000;
 /** BL-179: an Omni video is generated within the one call -- Google documents no time; 8 s of video took minutes in its demos. */
 export const GEMINI_INTERACTIONS_VIDEO_TIMEOUT_MS = 15 * 60_000;
-/** BL-236: one speech take (a 60 s story) or one designed voice with its sample. */
-export const GEMINI_SPEECH_TIMEOUT_MS = 3 * 60_000;
+/**
+ * BL-236: one speech take (at most 2,500 characters, `GEMINI_SPEECH.maxTextChars`) or one designed voice with its sample. Review item 9:
+ * 6 minutes, sent through the long-wait transport (fetch alone gives up after 300 s without response headers, as for Omni).
+ */
+export const GEMINI_SPEECH_TIMEOUT_MS = 6 * 60_000;
 const DOWNLOAD_TIMEOUT_MS = 10 * 60_000;
 const MAX_REDIRECTS = 5;
 /** A video clip is at most 8 s; 500 MB is far above any real one and stops an endless stream. */
@@ -432,7 +435,11 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; longWaitFetchIm
     }
     if (found.length === 0) return null;
     if (found.length > 1 && found.every((a) => a.mimeType === found[0].mimeType && !a.mimeType.includes("wav"))) {
-      return { mimeType: found[0].mimeType, data: Buffer.concat(found.map((a) => a.data)) };
+      // Review item 5: each block is cut to whole 16-bit frames before joining -- an odd byte at a block's end would shift every
+      // sample after it (noise). Raw PCM from Gemini is 16-bit; channels from the mime (default 1).
+      const channels = Number(/channels=(\d)/.exec(found[0].mimeType)?.[1] ?? "1") || 1;
+      const align = 2 * channels;
+      return { mimeType: found[0].mimeType, data: Buffer.concat(found.map((a) => a.data.subarray(0, a.data.length - (a.data.length % align)))) };
     }
     return found[0];
   }
@@ -522,6 +529,7 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; longWaitFetchIm
       const body = asRecord(
         await call(apiKey, "POST", "/v1beta/interactions", context, {
           timeoutMs: GEMINI_SPEECH_TIMEOUT_MS,
+          longWait: true,
           body: {
             model: request.model,
             input: [{ type: "text", text: request.text }],
@@ -546,6 +554,7 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; longWaitFetchIm
       const body = asRecord(
         await call(apiKey, "POST", "/v1beta/voices", context, {
           timeoutMs: GEMINI_SPEECH_TIMEOUT_MS,
+          longWait: true,
           body: { type: "prompted", display_name: request.displayName, description: request.description, sample_text: request.sampleText },
         })
       );

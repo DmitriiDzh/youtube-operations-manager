@@ -460,3 +460,15 @@ test("designVoice: a refused key is gemini_key_invalid; nothing is retried", asy
   await expectError(api.designVoice(KEY, { description: "d", sampleText: "s", displayName: "n" }), "gemini_key_invalid");
   assert.equal(calls.length, 1);
 });
+
+test("review item 5: several raw-PCM audio blocks are each cut to whole 16-bit frames before they are joined", async () => {
+  const a = Buffer.from([1, 2, 3]); // an odd byte at the end of the first block
+  const b = Buffer.from([4, 5, 6, 7]);
+  const { fetchImpl } = fakeFetch(() => ({
+    status: 200,
+    body: { status: "completed", steps: [{ type: "model_output", content: [a, b].map((d) => ({ type: "audio", mime_type: "audio/L16;codec=pcm;rate=24000", data: d.toString("base64") })) }] },
+  }));
+  const api = createGeminiApiClient({ fetchImpl, authorize: async () => undefined });
+  const result = await api.generateSpeech(KEY, { model: "gemini-3.8-flash-tts", text: "x", voice: "v", style: null });
+  assert.deepEqual([...(result.audio?.data ?? [])], [1, 2, 4, 5, 6, 7]);
+});

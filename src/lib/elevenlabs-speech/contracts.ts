@@ -7,7 +7,9 @@ export { DomainError, isDomainError };
 // in an APPROVED designed voice of the channel, run by the Factory Operator (or a channel's worker) within the owner's limits. A
 // feature module shaped like `gemini-media` (AGENTS.md §M): it reaches ElevenLabs only through the media gateway's
 // `elevenlabs-api.ts`, knows voices only through an injected resolver, and imports no other feature module. Switched off (the
-// default) or without a key it makes no network call.
+// default) it generates and charges nothing: no take or design is sent. Review item 10: the only calls it still makes then are the
+// owner's own free ones -- checking a key when it is saved or tested, reading the account's characters on the Settings card on
+// request, and saving an approved voice -- each only with a stored key and the media gateway on.
 //
 // Owner decisions (Telegram 2026-10-29 msgs 3814-3817): the cheapest subscription -- limits are counted in CHARACTERS (per job,
 // per day, per month) plus the active jobs, not in dollars; the dollar figure is a list-price estimate for the spend views only.
@@ -35,7 +37,13 @@ export const ELEVENLABS_OUTPUT_FORMATS = ["mp3_44100_128", "mp3_44100_192", "mp3
 export type ElevenlabsOutputFormat = (typeof ELEVENLABS_OUTPUT_FORMATS)[number];
 
 export const ELEVENLABS_LIMITS = Object.freeze({
-  maxTextChars: 10_000,
+  /**
+   * Review item 9: one take must finish inside the call's timeout (`ELEVENLABS_SPEECH_TIMEOUT_MS`, 4.5 min -- under fetch's own 300 s
+   * wait for response headers). ElevenLabs renders several times faster than real time; 5,000 characters is ~5.5 min of English audio
+   * (~15 min of Japanese), so it is capped here below the models' 10,000 and the owner's default per-take limit is 2,000. A 60 s story
+   * is ~900 English characters.
+   */
+  maxTextChars: 5_000,
   /** ElevenLabs asks for 100-1000 characters of preview text; this default is spoken when none is given. */
   defaultPreviewText:
     "Hello, and welcome back! I'm so glad you're here. Let me tell you a little story tonight, something warm and quiet, just for the two of us.",

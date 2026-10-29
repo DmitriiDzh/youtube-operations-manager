@@ -1267,7 +1267,8 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   задания разрешают голос только через резолвер (`voice_not_approved`).
 - **ElevenLabs** `src/lib/elevenlabs-speech/` (таблица `elevenlabs_speech_jobs`, слот секрета `elevenlabs`, воркер в
   `instrumentation.ts`), шлюз `media-gateway/elevenlabs-api.ts` (единственный путь к `api.elevenlabs.io`, категория `elevenlabs_api`);
-  выключено по умолчанию, лимиты в символах; USD — оценка по прайсу. Без клонирования (`no-clone.test.ts`).
+  выключено по умолчанию, лимиты в символах; USD — оценка по прайсу. Без клонирования (`no-clone.test.ts`). Перезапуск по простою
+  ждёт и задания ElevenLabs (`elevenlabs_job`). Один дубль: Gemini ≤ 2500 символов, ElevenLabs ≤ 5000 (укладывается в таймаут вызова).
 - **MCP:** `factory_speech_*`, `factory_voice_*` (Factory API 1.40.0), `agent_speech_*`, `agent_voice_list` (Agent API 4.14.0).
 - **Web:** Настройки → Облачные API → ElevenLabs; Медиа → Музыка → «Голоса»; `/api/elevenlabs-speech*`, `/api/channels/[channelId]/voices*`.
 - **Риски:** RISK-142, RISK-143, RISK-144.

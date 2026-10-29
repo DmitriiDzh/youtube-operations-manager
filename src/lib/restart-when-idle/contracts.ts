@@ -51,6 +51,8 @@ export type RestartWaitingKind =
   | "media_session"
   | "media_job"
   | "gemini_job"
+  /** BL-236: an ElevenLabs speech take or voice design queued or being sent. */
+  | "elevenlabs_job"
   | "upload"
   | "live_stream"
   | "operation_lock"
@@ -107,6 +109,8 @@ export type RestartBusyReaders = {
   mediaJobs(): Promise<string[]>;
   /** Gemini jobs queued, submitting or running. */
   geminiJobs(): Promise<string[]>;
+  /** BL-236 (ADR 0057): ElevenLabs takes / voice designs queued, submitting or running. */
+  elevenlabsJobs(): Promise<string[]>;
   /** Uploads being sent or finished (uploading, processing, finishing). */
   uploads(): Promise<string[]>;
   /** Live streams being started, stopped or switched (a running stream is not one). */

@@ -53,6 +53,8 @@ export type VoiceView = {
   status: VoiceStatus;
   previews: VoicePreview[];
   approvedPreviewId: string | null;
+  /** Review item 2: why a design failed (the voice archived) or why some previews were not written (still a draft); null = none. */
+  error: string | null;
   createdAt: string;
   createdBy: string;
   approvedAt: string | null;

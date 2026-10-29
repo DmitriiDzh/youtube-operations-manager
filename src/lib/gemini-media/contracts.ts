@@ -97,8 +97,13 @@ export const GEMINI_SPEECH = Object.freeze({
    * (~900 a minute) about threefold -- the estimate gates the limits; the cost is Google's count (never below the file's length).
    */
   estimateCharsPerSecond: 5,
-  /** Gemini TTS takes about 8K input tokens; 5,000 characters stays well inside it (a 60 s story is ~900 English characters). */
-  maxTextChars: 5000,
+  /**
+   * Review item 9: one take must finish inside the call's timeout (`GEMINI_SPEECH_TIMEOUT_MS`, 6 min). 2,500 characters is ~2.8 min of
+   * English or ~7.5 min of Japanese audio at our conservative 5 characters a second; even at real time a Japanese take this long would
+   * not fit 6 minutes, so the limit errs short: a 60 s story is ~900 English / ~350 Japanese characters. Longer texts are split by the
+   * Operator into takes. (Gemini TTS also caps input at about 8K tokens -- far above this.)
+   */
+  maxTextChars: 2500,
   maxStyleChars: 1000,
   /** The rate Gemini speaks raw PCM at when the answer does not name one (owner msg 3815: kept as delivered, no resampling). */
   defaultSampleRateHz: 24_000,

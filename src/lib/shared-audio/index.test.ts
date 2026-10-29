@@ -43,3 +43,13 @@ test("audioFileOf: PCM becomes a .wav at its own rate (no resampling); a WAV is 
 test("wavInfo refuses bytes that are not a RIFF/WAVE file", () => {
   assert.equal(wavInfo(Buffer.from("not a wav file at all")), null);
 });
+
+test("review item 4: an odd PCM byte count is cut to whole frames -- 48,001 bytes of 24 kHz mono is 48,000 data bytes, exactly 1 s", () => {
+  const file = audioFileOf({ mimeType: "audio/L16;codec=pcm;rate=24000", data: Buffer.alloc(48_001, 1) }, 24_000);
+  assert.equal(file.data.length, 44 + 48_000);
+  assert.equal(file.data.readUInt32LE(40), 48_000);
+  assert.equal(file.data.readUInt32LE(4), 36 + 48_000);
+  assert.equal(file.durationSeconds, 1);
+  // Stereo: 4-byte frames; 10 bytes keep 8.
+  assert.equal(pcmToWav(Buffer.alloc(10), { sampleRateHz: 24_000, channels: 2, bitsPerSample: 16 }).readUInt32LE(40), 8);
+});

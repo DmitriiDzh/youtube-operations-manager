@@ -30,8 +30,13 @@ adult voices.
 4. **ElevenLabs is its own feature module** (`src/lib/elevenlabs-speech`, table `elevenlabs_speech_jobs`), shaped like
    gemini-media, reaching `api.elevenlabs.io` only through the new gateway child `src/lib/media-gateway/elevenlabs-api.ts` (traffic
    category `elevenlabs_api`; key in `xi-api-key` to that origin only; no redirect). Key in the device-secret slot `elevenlabs`
-   (last 4 shown). Switch off by default per computer; limits per take / day / month in characters plus active jobs; USD is a
-   list-price estimate for spend views only.
+   (last 4 shown). Switch off by default per computer: then no take or design is sent (the only calls left are the owner's free ones --
+   checking a key, reading the account's characters on request, saving an approved voice). Limits per take / day / month in characters
+   plus active jobs; USD is a list-price estimate for spend views only.
+7. **(Review fixes)** A design reserves its draft row (the name) BEFORE the paid call; a failed design archives it with the error,
+   unwritten previews leave a draft with the error. One take must fit the call's timeout: Gemini ≤ 2,500 characters with a 6-minute
+   long-wait call, ElevenLabs ≤ 5,000 characters with a 4.5-minute call (under fetch's 300 s header wait). A `pcm_*` ElevenLabs format
+   is saved as WAV at that format's rate whatever mime comes back. Boot sweeps leave a voice design whose own call may still run.
 5. **One MCP surface for both providers** (Factory API 1.40.0): `factory_speech_get_status` / `_create_job` / `_get_job`,
    `factory_voice_list` / `_design` / `_pick` / `_update`. The approval relay is named `pick`, not `approve`: no factory tool
    approves for anyone (AC-FO-09). Channel workers (Agent API 4.14.0): `agent_speech_*` pinned to their channel on the BL-218
@@ -46,8 +51,8 @@ adult voices.
   Re-evaluate when ElevenLabs runs on two computers (TECHNICAL_DEBT RISK-142).
 - **ElevenLabs jobs are not in the shared media-jobs report** (its `source` enum is strict; widening it breaks older builds'
   parsing). Gemini speech jobs are there (as `audio`). RISK-142.
-- **restart-when-idle does not wait for ElevenLabs takes** (seconds long; a take cut by a restart is failed at its characters by
-  the boot sweep, never re-sent). RISK-142.
+- (Review item 3) **restart-when-idle waits for ElevenLabs takes and designs** too: a new reason `elevenlabs_job` (queued,
+  submitting or running rows of `elevenlabs_speech_jobs`), like `gemini_job`. `stop.sh`'s media-idle check still looks at Gemini only.
 
 ## Unverified (no provider call was made while building; the owner makes the first paid ones)
 
