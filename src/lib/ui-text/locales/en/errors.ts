@@ -38,7 +38,7 @@ export const errors = {
   "errors.media_runtime_activation_disabled": "The owner has not allowed the Factory Operator to change the active pod runtime.",
   "errors.send_merge_conflicts": "The selected change sets change the same fields. Choose which variant to send.",
   "errors.send_untitled_translations": "Nothing was sent: a translation would have no title, and YouTube refuses the whole video then. Approve a title for that language or reject its description (marked «no title»), then send again.",
-  "errors.send_unpaired_language_move": "Nothing was sent: a video would lose a language without getting the language it is moved to. Approve both halves of the move for that video (the removal and the new language), or reject both, then send again.",
+  "errors.send_unpaired_language_move": "Nothing was sent: only one half of a language move would go to YouTube. The removal of the old code and the new code are sent together: approve both for that video, or reject both, then send again.",
   "errors.duplicate_target_in_row": "Two selected changes target the same field of one video — keep one of them.",
   "errors.send_already_in_progress": "These changes are already being sent.",
   "errors.ledger_row_not_found": "The batch entry was not found.",

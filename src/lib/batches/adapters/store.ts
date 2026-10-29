@@ -20,6 +20,7 @@ import {
   transitionLedgerRowStatus,
 } from "@/lib/db";
 import { createIdGenerator, type PendingChangeRecord } from "../contracts";
+import { parseLanguageMoveMarker } from "@/lib/changesets/contracts";
 
 export function createBatchStoreAdapter() {
   return {
@@ -54,6 +55,8 @@ export function createChangeSetStoreAdapter() {
     async getChange(changeId: string): Promise<PendingChangeRecord | null> {
       const change = await getStoredChangeById(changeId);
       if (!change) return null;
+      // BL-232 (review): a change of a language-move set carries the move (the set's marker).
+      const move = parseLanguageMoveMarker((await getStoredChangeSet(change.changeSetId))?.schemaVersion);
 
       return {
         id: change.id,
@@ -67,6 +70,7 @@ export function createChangeSetStoreAdapter() {
         validationStatus: change.validationStatus,
         conflictStatus: change.conflictStatus,
         changeType: change.changeType,
+        languageMove: move,
       };
     },
   };

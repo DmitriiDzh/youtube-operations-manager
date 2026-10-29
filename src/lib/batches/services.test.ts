@@ -86,13 +86,21 @@ function createFakeStore() {
     callLog,
     changes,
     /** Test-only helper: registers a changesets Change as approved/valid/non-conflicting. */
-    registerApprovedChange(entry: { id: string; videoId: string; language?: string; field?: "title" | "description"; changeType?: "add" | "modify" | "unchanged" | "delete" }) {
+    registerApprovedChange(entry: {
+      id: string;
+      videoId: string;
+      language?: string;
+      field?: "title" | "description";
+      changeType?: "add" | "modify" | "unchanged" | "delete";
+      languageMove?: { fromLanguage: string; toLanguage: string };
+    }) {
       changes.set(entry.id, {
         id: entry.id,
         videoId: entry.videoId,
         language: entry.language ?? "es",
         field: entry.field ?? "title",
         ...(entry.changeType ? { changeType: entry.changeType } : {}),
+        ...(entry.languageMove ? { languageMove: entry.languageMove } : {}),
         baselineValue: "baseline",
         proposedValue: "proposed",
         approvedValue: "proposed",
@@ -744,7 +752,7 @@ test("AC-ST-11: a de delete next to a de title in one row stays allowed (PROJECT
 
 // BL-232 (PRD-REQ-0043): the Batches tab's manual selection must not send a language move's delete without its add (the Chinese text
 // would be lost) -- the same rule as the send service. A set of deletes only (the ordinary language removal) is unaffected.
-test("BL-232: a manual row with a move's delete but not its add is refused; with both, or the add already on YouTube, it is created", async () => {
+test("BL-232: a manual row with only one half of a move is refused; with both, or the other half already on YouTube, it is created", async () => {
   const harness = createHarness();
   const set = [
     { id: "dt", videoId: "v1", changeType: "delete" as const, language: "zh-Hans", field: "title" as const },
@@ -752,13 +760,15 @@ test("BL-232: a manual row with a move's delete but not its add is refused; with
     { id: "at", videoId: "v1", changeType: "add" as const, language: "zh-CN", field: "title" as const },
     { id: "ad", videoId: "v1", changeType: "add" as const, language: "zh-CN", field: "description" as const },
   ];
-  for (const change of set) harness.store.registerApprovedChange(change);
+  const move = { fromLanguage: "zh-Hans", toLanguage: "zh-CN" };
+  for (const change of set) harness.store.registerApprovedChange({ ...change, languageMove: move });
+  let loads = 0;
   let onYoutube = new Set<string>();
   const services = createBatchServices({
     batchStore: harness.store,
     changeSetStore: {
       getChange: (id: string) => harness.store.getChange(id),
-      listSetChanges: async () => set.map((change) => ({ id: change.id, videoId: change.videoId, changeType: change.changeType, onYoutube: onYoutube.has(change.id) })),
+      listSetChanges: async () => (loads++, set).map((change) => ({ id: change.id, videoId: change.videoId, changeType: change.changeType, onYoutube: onYoutube.has(change.id) })),
     },
     authResolver: createUnusedDependencyStub("authResolver") as never,
     writeContext: createUnusedDependencyStub("writeContext") as never,
@@ -781,10 +791,17 @@ test("BL-232: a manual row with a move's delete but not its add is refused; with
     () => services.createBatch({ channelId: "UC_TEST", selections: [{ videoId: "v1", changeIds: ["dt", "dd", "at"] }] }),
     (error: unknown) => error instanceof DomainError && error.code === "send_unpaired_language_move"
   );
+  // Review of BL-232: the add alone is refused too (its text could be stale when the delete follows).
+  await assert.rejects(
+    () => services.createBatch({ channelId: "UC_TEST", selections: [{ videoId: "v1", changeIds: ["at", "ad"] }] }),
+    (error: unknown) => error instanceof DomainError && error.code === "send_unpaired_language_move"
+  );
   assert.equal((await services.listBatchesByChannel("UC_TEST")).length, 0);
 
+  loads = 0;
   const both = await services.createBatch({ channelId: "UC_TEST", selections: [{ videoId: "v1", changeIds: ["dt", "dd", "at", "ad"] }] });
   assert.deepEqual((await services.listLedgerRows(both.id))[0].changeIds, ["dt", "dd", "at", "ad"]);
+  assert.equal(loads, 1, "the move set is loaded once per createBatch, not once per change");
 
   onYoutube = new Set(["at", "ad"]);
   const deleteOnly = await services.createBatch({ channelId: "UC_TEST", selections: [{ videoId: "v1", changeIds: ["dt", "dd"] }] });

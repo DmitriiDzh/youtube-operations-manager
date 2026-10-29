@@ -327,6 +327,12 @@ export type PendingChangeRecord = {
    * behaves exactly like "add"/"modify"/"unchanged" everywhere it is read.
    */
   changeType?: "add" | "modify" | "unchanged" | "delete";
+  /**
+   * BL-232 (review): set when the change belongs to a language-move set (`changesets.proposeLanguageMove`, marked in the set's
+   * `schemaVersion`): the move's two codes. `createBatch` then checks the move's halves go together, and the pre-write check refuses
+   * a delete when the target language would hold no title after the write (`missingMoveTargets`). Absent/null for every other change.
+   */
+  languageMove?: { fromLanguage: string; toLanguage: string } | null;
 };
 
 /** BL-178 (PROJECT_SPEC §14, owner 2026-10-12): the write sets a mislabelled video's defaultLanguage from `from` to the channel's `to`. */

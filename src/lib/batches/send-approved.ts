@@ -1,6 +1,6 @@
 import { sameLanguage } from "@/lib/shared-language-baseline";
 import { untitledTranslations } from "@/lib/shared-localization-merge";
-import { languageKey, mergeCollision, unpairedDeletes } from "./targets";
+import { languageKey, mergeCollision, unpairedMoveHalves } from "./targets";
 import { UNITS_PER_WRITTEN_VIDEO } from "@/lib/quota-guard";
 import { DomainError, TERMINAL_LEDGER_STATUSES, type Batch, type LedgerRow } from "./contracts";
 import { isApprovalStillValid } from "./services";
@@ -239,10 +239,10 @@ export function createSendApprovedServices(deps: SendApprovedDeps) {
         changes.push({ ...change, fromSet: changeSetId });
       }
     }
-    // BL-232: a delete whose own set also changes another language of the video (a language move) goes only with that change.
+    // BL-232: a language move's removal and addition (same set, same video) go only together, unless the other half is on YouTube.
     const listedById = new Map([...allBySet.values()].flat().map((change) => [change.id, change]));
     const unpairedIn = (selection: Tagged[]) =>
-      unpairedDeletes(
+      unpairedMoveHalves(
         selection,
         (change) => allBySet.get(change.fromSet) ?? [],
         (partner) => {
@@ -412,20 +412,21 @@ export function createSendApprovedServices(deps: SendApprovedDeps) {
         });
       }
 
-      // BL-226: a translation left without a title would make YouTube refuse its whole video -- refused here, before anything is
-      // rejected or created, naming each one (the owner approves a title or rejects the description, then sends again).
-      // BL-232: a language move's delete never goes without its add (the text would be lost) -- refused before anything is rejected
-      // or created; a delete whose add lost a merge choice is unpaired as well.
+      // BL-232: a language move's removal never goes without its addition (the text would be lost), nor the addition without the
+      // removal (its text could be stale by then) -- refused before anything is rejected or created; a half that lost a merge choice
+      // leaves the other unpaired as well.
       const unpairedNow = unpairedIn(selected);
       if (unpairedNow.length > 0) {
         const pairs = [...new Map(unpairedNow.map((change) => [`${change.videoId} ${change.language ?? ""}`, { videoId: change.videoId, language: change.language ?? "" }])).values()];
         throw new DomainError({
           code: "send_unpaired_language_move",
-          message: `Nothing was sent: ${pairs.map((pair) => `${pair.videoId} (${pair.language})`).join(", ")} would lose a language without getting the language it moves to. Approve both halves of the move for that video, or reject both, then send again.`,
+          message: `Nothing was sent: ${pairs.map((pair) => `${pair.videoId} (${pair.language})`).join(", ")} would send only one half of a language move (the removal of the old code and the new code go together). Approve both halves for that video, or reject both, then send again.`,
           details: { unpaired: pairs },
         });
       }
 
+      // BL-226: a translation left without a title would make YouTube refuse its whole video -- refused here, before anything is
+      // rejected or created, naming each one (the owner approves a title or rejects the description, then sends again).
       const untitled = await findUntitled(input.channelId, selected);
       if (untitled.length > 0) {
         throw new DomainError({

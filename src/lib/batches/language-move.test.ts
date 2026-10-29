@@ -3,7 +3,9 @@
 //  - after the write a video has zh-CN with exactly the previous zh-Hans title/description and no zh-Hans;
 //  - no other language gets new or changed text; defaultLanguage and every other snippet field are untouched;
 //  - the read-back counts the write as done only when zh-CN holds the text AND zh-Hans is gone;
-//  - a delete is never sent without its add (a partial approval would lose the Chinese text), on the send path and the manual one;
+//  - a delete is never sent without its add (a partial approval would lose the Chinese text), nor the add without the delete (its
+//    text could be stale by the time the delete follows; review of BL-232), on the send path and the manual one;
+//  - at write time a move's delete is refused (CONFLICT) when the target language no longer holds text (review of BL-232);
 //  - an ordinary language removal (deletes only) keeps working.
 
 import assert from "node:assert/strict";
@@ -12,8 +14,8 @@ import type { Batch, LedgerRow, LedgerStatus } from "./contracts";
 import { DomainError } from "./contracts";
 import type { SendableChangeCandidate } from "./adapters/store";
 import { createSendApprovedServices } from "./send-approved";
-import { buildSafeLocalizationsPayload, classifyFreshStateAgainstAttempt, detectPreWriteConflict, type PendingChange } from "./merge";
-import { unpairedDeletes } from "./targets";
+import { buildSafeLocalizationsPayload, classifyFreshStateAgainstAttempt, detectPreWriteConflict, missingMoveTargets, type PendingChange } from "./merge";
+import { unpairedMoveHalves } from "./targets";
 import type { FreshVideoContext } from "@/lib/shared-localization-merge";
 
 const ZH_TITLE = "爵士咖啡馆 · 放松音乐  ";
@@ -84,17 +86,52 @@ test("read-back: done only when zh-CN holds the text and zh-Hans is gone", () =>
   assert.equal(classifyFreshStateAgainstAttempt(moveChanges(), nothingHappened), "matches_baseline");
 });
 
-test("unpairedDeletes: a delete is unpaired when its set's other change on the same video is neither selected nor on YouTube", () => {
-  const set = [
+test("unpairedMoveHalves: either half is unpaired when the other half (same set, same video) is neither selected nor on YouTube", () => {
+  type C = { id: string; videoId: string; changeType: string };
+  const set: C[] = [
     { id: "d", videoId: "v1", changeType: "delete" },
     { id: "a", videoId: "v1", changeType: "add" },
     { id: "d2", videoId: "v2", changeType: "delete" },
   ];
   const of = () => set;
-  assert.deepEqual(unpairedDeletes([set[0]!], of, () => false).map((c) => c.id), ["d"]);
-  assert.deepEqual(unpairedDeletes([set[0]!, set[1]!], of, () => false), []);
-  assert.deepEqual(unpairedDeletes([set[0]!], of, (p) => p.id === "a"), [], "the add already on YouTube");
-  assert.deepEqual(unpairedDeletes([set[2]!], of, () => false), [], "a delete-only video has no partner");
+  const ids = (list: C[]) => list.map((c) => c.id);
+  assert.deepEqual(ids(unpairedMoveHalves([set[0]!], of, () => false)), ["d"]);
+  assert.deepEqual(ids(unpairedMoveHalves([set[1]!], of, () => false)), ["a"], "the add alone");
+  assert.deepEqual(unpairedMoveHalves([set[0]!, set[1]!], of, () => false), []);
+  assert.deepEqual(unpairedMoveHalves([set[0]!], of, (p) => p.id === "a"), [], "the add already on YouTube");
+  assert.deepEqual(unpairedMoveHalves([set[1]!], of, (p) => p.id === "d"), [], "the delete already on YouTube");
+  assert.deepEqual(unpairedMoveHalves([set[2]!], of, () => false), [], "a delete-only video has no partner");
+});
+
+// --- write-time check of the move's target (review item 1) -----------------------------------------------------------------------
+
+function moveDelete(id: string, field: "title" | "description", baselineValue: string): PendingChange {
+  return { id, language: "zh-Hans", field, baselineValue, proposedValue: "", changeType: "delete", moveTargetLanguage: "zh-CN" };
+}
+
+test("missingMoveTargets: a delete-only move (zh-CN already there at proposal) is refused when zh-CN is gone or empty at write time", () => {
+  const deletes = [moveDelete("d-t", "title", ZH_TITLE), moveDelete("d-d", "description", ZH_DESC)];
+  const zhCnRemoved = fresh({ "zh-Hans": { title: ZH_TITLE, description: ZH_DESC } });
+  assert.deepEqual(missingMoveTargets(deletes, zhCnRemoved), ["d-t", "d-d"]);
+  const zhCnEmptied = fresh({ "zh-Hans": { title: ZH_TITLE, description: ZH_DESC }, "zh-CN": { title: " ", description: "x" } });
+  assert.deepEqual(missingMoveTargets(deletes, zhCnEmptied), ["d-t", "d-d"]);
+  const zhCnThere = fresh({ "zh-Hans": { title: ZH_TITLE, description: ZH_DESC }, "zh-cn": { title: "新标题", description: "" } });
+  assert.deepEqual(missingMoveTargets(deletes, zhCnThere), []);
+});
+
+test("missingMoveTargets: the row's own add of the target counts; a removal of the target sent in the same row is refused", () => {
+  const withAdd = moveChanges().map((change) => (change.changeType === "delete" ? { ...change, moveTargetLanguage: "zh-CN" } : change));
+  assert.deepEqual(missingMoveTargets(withAdd, fresh({ "zh-Hans": { title: ZH_TITLE, description: ZH_DESC } })), []);
+
+  const removalTogether: PendingChange[] = [
+    moveDelete("d-t", "title", ZH_TITLE),
+    moveDelete("d-d", "description", ZH_DESC),
+    { id: "x-t", language: "zh-CN", field: "title", baselineValue: "新标题", proposedValue: "", changeType: "delete" },
+  ];
+  const bothThere = fresh({ "zh-Hans": { title: ZH_TITLE, description: ZH_DESC }, "zh-CN": { title: "新标题", description: "新描述" } });
+  assert.deepEqual(missingMoveTargets(removalTogether, bothThere), ["d-t", "d-d"]);
+  // An ordinary delete (no move) is never this check's business.
+  assert.deepEqual(missingMoveTargets([{ ...moveDelete("o", "title", ZH_TITLE), moveTargetLanguage: null }], fresh({})), []);
 });
 
 // --- the send service ------------------------------------------------------------------------------------------------------------
@@ -185,8 +222,19 @@ test("send: a selection of only the delete's ids (review screen changeIds) is re
   assert.equal(batches.length, 0);
 });
 
-test("send: the add approved but the delete not yet is allowed (nothing lost: both languages stay until the delete is sent)", async () => {
-  const { service, rows } = build(moveSet({ dt: { approvalStatus: "pending", approvedValue: null }, dd: { approvalStatus: "pending", approvedValue: null } }));
+// Requirement changed by the BL-232 review (coordinator, 2026-10-29): an add sent alone copies text that may be stale by the time
+// the delete follows, so both halves go together. The first version allowed this case.
+test("send: the add approved but the delete not yet is refused too (both halves go together)", async () => {
+  const { service, batches } = build(moveSet({ dt: { approvalStatus: "pending", approvedValue: null }, dd: { approvalStatus: "pending", approvedValue: null } }));
+  await assert.rejects(
+    service.createBatchForChangeSets({ channelId: "UC_A", changeSetIds: ["MOVE"] }),
+    (error: unknown) => error instanceof DomainError && error.code === "send_unpaired_language_move"
+  );
+  assert.equal(batches.length, 0);
+});
+
+test("send: the add alone is allowed once the delete is already on YouTube (zh-Hans gone in the synced copy)", async () => {
+  const { service, rows } = build(moveSet(), { holds: (change) => change.changeType === "delete" });
   const result = await service.createBatchForChangeSets({ channelId: "UC_A", changeSetIds: ["MOVE"] });
   assert.deepEqual([...rows.get(result.batch.id)![0]!.changeIds].sort(), ["ad", "at"]);
 });
