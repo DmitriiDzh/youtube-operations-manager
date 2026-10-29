@@ -191,6 +191,9 @@ export const content: Record<keyof typeof en, string> = {
   "publishingCalendar.overdue.title": "Дата прошла",
   "publishingCalendar.overdue.hint": "Дата уже прошла, но в этой копии видео ещё не публичные. Синхронизируйте, чтобы увидеть, опубликовал ли их YouTube.",
   "publishingCalendar.timeHint": "{local} по вашему времени · {utc} UTC",
+  "publishingCalendar.timeHintChannel": "{channel} по времени канала · {own} ваше · {utc} UTC",
+  "publishingCalendar.legend.published_pending": "Время прошло, ещё не синхронизировано",
+  "publishingCalendar.pendingHint": "Время публикации прошло меньше 24 ч назад, а в этой копии видео ещё приватное: YouTube его уже опубликовал, следующая синхронизация это покажет. Оно считается выпуском этого дня; через 24 ч — «Дата прошла».",
   // BL-235: общее покрытие (видео опубликовано или запланировано на день со всеми отслеживаемыми переводами), в поясе канала.
   "publishingCalendar.reminderCovered": "Закрыто меньше {threshold} дней подряд — закрытый день: видео запланировано или опубликовано и у него есть все переводы.",
   "publishingCalendar.coveredInARow": "{count, plural, one {Закрыт # день подряд} few {Закрыто # дня подряд} many {Закрыто # дней подряд} other {Закрыто # дня подряд}} с сегодняшнего (видео со всеми переводами)",

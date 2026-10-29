@@ -187,6 +187,9 @@ export const content = {
   "publishingCalendar.overdue.title": "Past their date",
   "publishingCalendar.overdue.hint": "Their date has passed but this copy still shows them as not public. Sync to see whether YouTube published them.",
   "publishingCalendar.timeHint": "{local} your time · {utc} UTC",
+  "publishingCalendar.timeHintChannel": "{channel} channel time · {own} your time · {utc} UTC",
+  "publishingCalendar.legend.published_pending": "Date passed, not synced yet",
+  "publishingCalendar.pendingHint": "Its publish time passed less than 24 h ago, but this copy still shows it private: YouTube has published it and the next sync will show it. It counts as this day's release; after 24 h it counts as past its date.",
   // BL-235: the shared coverage (a video published or scheduled that day with every tracked translation), in the channel's zone.
   "publishingCalendar.reminderCovered": "Fewer than {threshold} days in a row are covered — a covered day has a video scheduled or published with all its translations.",
   "publishingCalendar.coveredInARow": "{count, plural, one {# day in a row covered from today} other {# days in a row covered from today}} (video with all translations)",
