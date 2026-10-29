@@ -89,6 +89,9 @@ export type ProbeResult = MediaProbe;
 
 /** The H.264 encoders the stream can use. Which is the default waits for spike B (plan §6.1): videotoolbox does not pad to CBR. */
 export const LIVE_ENCODERS = ["h264_videotoolbox", "libx264"] as const;
+/** The encoder bitrate's bounds, for this computer's setting and a stream's own (BL-233). */
+export const LIVE_BITRATE_MIN_KBPS = 1000;
+export const LIVE_BITRATE_MAX_KBPS = 12000;
 export type LiveEncoder = (typeof LIVE_ENCODERS)[number];
 
 /** This computer's live-streams settings (plan §3.12 "Settings → Трансляции"). */
@@ -107,6 +110,16 @@ export type LiveStreamsSettings = {
   alertMinutes: number;
   /** A folder holding ffmpeg and ffprobe, tried before the usual install folders; `null` = search. */
   ffmpegDir: string | null;
+  /**
+   * BL-233 (FO-REQ-0047): a YouTube upload on this computer is held to this many Mbit/s while any stream here is on, so the
+   * encoders keep the uplink (the Mac's Wi-Fi, about 10 Mbit/s); 0 = no limit. No stream on: the upload is never limited.
+   */
+  uploadCapMbps: number;
+  /**
+   * BL-233: an upload is held (no new chunk) once a stream here has sent below 0.97x for this many minutes in a row, until every
+   * stream is back at 0.99x for a minute -- at most 30 minutes, then it goes on at the limit. 0 = never held.
+   */
+  uploadGuardMinutes: number;
 };
 
 export const DEFAULT_LIVE_STREAMS_SETTINGS: LiveStreamsSettings = Object.freeze({
@@ -118,4 +131,6 @@ export const DEFAULT_LIVE_STREAMS_SETTINGS: LiveStreamsSettings = Object.freeze(
   encoder: "h264_videotoolbox",
   alertMinutes: 5,
   ffmpegDir: null,
+  uploadCapMbps: 2,
+  uploadGuardMinutes: 3,
 });

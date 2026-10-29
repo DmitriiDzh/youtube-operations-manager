@@ -46,3 +46,26 @@ test("on the service host the switch turns on; ranges and the refuse < warn rule
   await assert.rejects(() => s.settings.update({ refuseBelowGb: 10 }), (e: unknown) => e instanceof DomainError && e.code === "validation_failed");
   assert.deepEqual((await s.settings.get()).host, { ok: true });
 });
+
+// BL-233 (FO-REQ-0047 ask 2): the upload limit while live -- 2 Mbit/s by default, 0 = no limit -- and the starvation guard, 3
+// minutes by default, 0 = never held. Per computer, like every setting here.
+test("BL-233: upload limit 2 Mbit/s and guard 3 minutes by default; 0 is a valid value for both", async () => {
+  const s = liveStreamsSettingsFromJson(null);
+  assert.deepEqual([s.uploadCapMbps, s.uploadGuardMinutes], [2, 3]);
+  const { settings } = store({ ok: true });
+  const saved = await settings.update({ uploadCapMbps: 0, uploadGuardMinutes: 0 });
+  assert.deepEqual([saved.uploadCapMbps, saved.uploadGuardMinutes], [0, 0]);
+  assert.equal((await settings.update({ uploadCapMbps: 1.5 })).uploadCapMbps, 1.5);
+});
+
+test("BL-233: bad stored upload values fall back to their own defaults; out-of-range input is refused", async () => {
+  for (const bad of [-1, 101, "2", null, Number.NaN]) {
+    assert.equal(liveStreamsSettingsFromJson(JSON.stringify({ uploadCapMbps: bad, bitrateKbps: 4000 })).uploadCapMbps, 2, String(bad));
+  }
+  for (const bad of [-1, 61, 1.5, "3"]) assert.equal(liveStreamsSettingsFromJson(JSON.stringify({ uploadGuardMinutes: bad })).uploadGuardMinutes, 3, String(bad));
+  const { settings } = store({ ok: true });
+  await assert.rejects(() => settings.update({ uploadCapMbps: -0.5 }), DomainError);
+  await assert.rejects(() => settings.update({ uploadCapMbps: 100.5 }), DomainError);
+  await assert.rejects(() => settings.update({ uploadGuardMinutes: 2.5 }), DomainError);
+  await assert.rejects(() => settings.update({ uploadGuardMinutes: 61 }), DomainError);
+});

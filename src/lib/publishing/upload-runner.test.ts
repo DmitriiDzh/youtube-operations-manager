@@ -1111,3 +1111,85 @@ test("review #1: a slot re-approved with a new time -> the date step writes the 
   for (let i = 0; i < 10 && manual.row().status !== "done"; i += 1) await runner.tick();
   assert.deepEqual(manual.publishAtWrites, ["2026-10-24T12:00:00.000Z"], "the owner approved this date himself");
 });
+
+// BL-233 (FO-REQ-0047): the upload's share of the uplink while live streams run. Acceptance: a held upload sends nothing and asks
+// YouTube nothing (no read, no hash, no session query); it keeps its session and goes on from the stored byte once released; a
+// limited chunk is sized by the limit and paced; without a bandwidth reader the runner works as before; uploads still finish.
+function bandwidth(options: { held?: boolean; chunk?: number } = {}) {
+  const state = { held: options.held ?? false, asked: 0, paced: [] as number[] };
+  return {
+    state,
+    deps: {
+      mayStart: async () => {
+        state.asked += 1;
+        return !state.held;
+      },
+      chunkBytes: (n: number) => options.chunk ?? n,
+      pace: async (bytes: number) => void state.paced.push(bytes),
+    },
+  };
+}
+
+test("BL-233: a held queued upload starts nothing -- no hash, no identity read, no session -- and starts once released", async () => {
+  const bw = bandwidth({ held: true });
+  let hashed = 0;
+  const h = harness([job()], { bandwidth: bw.deps });
+  const sha = h.deps.files.sha256;
+  h.deps.files.sha256 = async (p) => ((hashed += 1), sha(p));
+  for (let i = 0; i < 5; i += 1) await h.runner.tick();
+  assert.deepEqual([h.row().status, h.yt.log, hashed], ["queued", [], 0]);
+  bw.state.held = false;
+  await h.runAll();
+  assert.equal(h.row().status, "done");
+  assert.equal(h.yt.videos.length, 1);
+});
+
+test("BL-233: a hold between chunks keeps the session; released, the upload resumes from the stored byte and finishes", async () => {
+  const bw = bandwidth();
+  const h = harness([job()], { bandwidth: bw.deps });
+  // Hold right after the first chunk: the gateway's put answers, then the next ask says no.
+  const put = h.deps.gateway.putChunk;
+  h.deps.gateway.putChunk = async (args) => {
+    const answer = await put(args);
+    bw.state.held = true;
+    return answer;
+  };
+  await h.runner.tick();
+  assert.deepEqual([h.row().status, h.row().storedBytes], ["uploading", 4]);
+  const sessionUri = h.row().sessionUri;
+  for (let i = 0; i < 3; i += 1) await h.runner.tick();
+  assert.deepEqual(h.yt.log, ["begin https://www.googleapis.com/upload/youtube/v3/videos?s=1", "put 0-3"], "held: nothing asked or sent");
+  h.deps.gateway.putChunk = put;
+  bw.state.held = false;
+  await h.runAll();
+  assert.equal(h.row().status, "done");
+  assert.equal(h.row().sessionUri, sessionUri, "the same session");
+  assert.deepEqual(h.yt.log.slice(0, 5), ["begin https://www.googleapis.com/upload/youtube/v3/videos?s=1", "put 0-3", "query", "put 4-7", "put 8-9"]);
+});
+
+test("BL-233: a limited chunk is sized by the limit and every chunk goes with the pace; the bytes stay in order", async () => {
+  const bw = bandwidth({ chunk: 2 });
+  const paces: unknown[] = [];
+  const h = harness([job()], { bandwidth: bw.deps });
+  const put = h.deps.gateway.putChunk;
+  h.deps.gateway.putChunk = async (args) => {
+    paces.push(args.pace);
+    await args.pace?.(args.chunk.length);
+    return put(args);
+  };
+  await h.runAll();
+  assert.equal(h.row().status, "done");
+  assert.deepEqual(h.yt.log.filter((l) => l.startsWith("put")), ["put 0-1", "put 2-3", "put 4-5", "put 6-7", "put 8-9"]);
+  assert.deepEqual(bw.state.paced, [2, 2, 2, 2, 2]);
+  assert.ok(paces.every((p) => typeof p === "function"));
+});
+
+test("BL-233: without a bandwidth reader the chunks go unpaced at the usual size", async () => {
+  const h = harness([job()]);
+  const seen: Array<unknown> = [];
+  const put = h.deps.gateway.putChunk;
+  h.deps.gateway.putChunk = async (args) => (seen.push(args.pace), put(args));
+  await h.runAll();
+  assert.equal(h.row().status, "done");
+  assert.deepEqual(seen, [undefined, undefined, undefined]);
+});
