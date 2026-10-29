@@ -1,4 +1,4 @@
-import { mkdir, stat } from "node:fs/promises";
+import { mkdir, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseBackupError, type SqlExecutor } from "./contracts";
 
@@ -55,4 +55,50 @@ export async function copyDatabaseConsistently(
   await client.execute({ sql: "VACUUM INTO ?", args: [destPath] });
 
   return { path: destPath };
+}
+
+/**
+ * BL-237 (owner, Telegram 2026-10-30, msgs 3864-3866): how many automatic database backups of each kind
+ * `backups/migrations/` keeps -- the newest {@link MIGRATION_BACKUPS_KEEP} `pre-migration-*` (taken before a schema
+ * migration) and, separately, the newest {@link MIGRATION_BACKUPS_KEEP} `pre-auto-import-*` (taken before an automatic
+ * device-sync import). Separate counts, so a day of frequent automatic imports never pushes out the last copy from
+ * before a migration. Every other file there (`pre-take-theirs-*`, `pre-superseded-*`, `pre-import-*`,
+ * `pre-api-retention-*`, anything else) and every other folder (`backups/manual/`, per-channel backups) is never touched.
+ */
+export const MIGRATION_BACKUPS_KEEP = 10;
+export const RETAINED_BACKUP_PREFIXES = ["pre-migration", "pre-auto-import"] as const;
+
+/**
+ * Deletes the older automatic backups in `dir`, keeping the newest `keep` of each prefix -- newest by the millisecond
+ * timestamp in the name (`<prefix>-<ms>-<suffix>.db`, the form every writer uses). `protect` (the backup just written) is
+ * never deleted, wherever it sorts. Returns the names deleted. Called after a new backup was written successfully.
+ */
+export async function pruneMigrationBackups(
+  dir: string,
+  options: { keep?: number; prefixes?: readonly string[]; protect?: readonly string[] } = {}
+): Promise<string[]> {
+  const keep = options.keep ?? MIGRATION_BACKUPS_KEEP;
+  const prefixes = options.prefixes ?? RETAINED_BACKUP_PREFIXES;
+  const protectedPaths = new Set((options.protect ?? []).map((p) => path.resolve(p)));
+  let names: string[];
+  try {
+    names = await readdir(dir);
+  } catch {
+    return [];
+  }
+  const removed: string[] = [];
+  for (const prefix of prefixes) {
+    const pattern = new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-(\\d+)-[0-9A-Za-z]+\\.db$`);
+    const ours = names
+      .map((name) => ({ name, at: Number(pattern.exec(name)?.[1] ?? NaN) }))
+      .filter((entry) => Number.isFinite(entry.at))
+      .sort((a, b) => b.at - a.at || b.name.localeCompare(a.name));
+    for (const entry of ours.slice(keep)) {
+      const full = path.join(dir, entry.name);
+      if (protectedPaths.has(path.resolve(full))) continue;
+      await rm(full, { force: true });
+      removed.push(entry.name);
+    }
+  }
+  return removed;
 }

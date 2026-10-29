@@ -13,7 +13,7 @@ import type { BatchItem } from "drizzle-orm/batch";
 import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "@/lib/batches/ledger-state";
 import { getProductionAppPaths, isRunningUnderTestRunner, resolveLegacyDbPath } from "@/lib/platform-paths";
-import { copyDatabaseConsistently, isMissingTableError } from "@/lib/db-backup";
+import { copyDatabaseConsistently, isMissingTableError, pruneMigrationBackups } from "@/lib/db-backup";
 import {
   assertSupportedSchemaVersion,
   readSchemaVersion,
@@ -6328,6 +6328,9 @@ async function initializeDatabase() {
           `pre-migration-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.db`
         );
         await copyDatabaseConsistently(rawClient, destPath);
+        // BL-237: only after the new backup is written -- the newest 10 of each kind stay, this one always. Housekeeping:
+        // a failure here never stops the migration.
+        await pruneMigrationBackups(appPaths.migrationBackupsDir, { protect: [destPath] }).catch(() => []);
         syncHooks = await import("@/lib/snapshot")
           .then(({ createSyncPreservingMigrationHooks }) => createSyncPreservingMigrationHooks(rawClient))
           .catch(() => null);
