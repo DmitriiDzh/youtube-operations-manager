@@ -1257,6 +1257,21 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   «Разбудить агента» (`auto --wake`). Задача отсоединена запускатором: перезапуск сервера её не останавливает.
 - **Риск:** RISK-138.
 
+### 2.9bd Речь голосами канала: Gemini TTS, реестр голосов, ElevenLabs (BL-236, FO-REQ-0050, `docs/roadmap/plans/SUMIRE_VOICE_PLAN.md`, ADR 0057) — **IMPLEMENTED на ветке `feature/bl-236-sumire-voice`, не влито; вызовы провайдеров проверены только на подделках**
+
+- **Gemini:** вид задания `speech` (и запись платного дизайна `voice_design`) в `src/lib/gemini-media/` — та же таблица, ключ,
+  переключатель, лимиты в USD, расход, воркер, папка; шлюз `gemini-api.ts`: `generateSpeech`, `designVoice`. Файл `take-1.wav` на
+  родных 24 кГц (общий модуль `src/lib/shared-audio`: PCM → WAV), manifest kind `speech`; цена — счётчики Google, не ниже длины файла.
+- **Реестр голосов** `src/lib/voice-registry/` (общий, §M; таблица `channel_voices`, схема v115): дизайн по описанию → превью-файлы
+  в `From YTM/<provider>/voices/<voiceId>/` → владелец одобряет одно → голос говорит. Провайдеры — порты из `src/composition/speech.ts`;
+  задания разрешают голос только через резолвер (`voice_not_approved`).
+- **ElevenLabs** `src/lib/elevenlabs-speech/` (таблица `elevenlabs_speech_jobs`, слот секрета `elevenlabs`, воркер в
+  `instrumentation.ts`), шлюз `media-gateway/elevenlabs-api.ts` (единственный путь к `api.elevenlabs.io`, категория `elevenlabs_api`);
+  выключено по умолчанию, лимиты в символах; USD — оценка по прайсу. Без клонирования (`no-clone.test.ts`).
+- **MCP:** `factory_speech_*`, `factory_voice_*` (Factory API 1.40.0), `agent_speech_*`, `agent_voice_list` (Agent API 4.14.0).
+- **Web:** Настройки → Облачные API → ElevenLabs; Медиа → Музыка → «Голоса»; `/api/elevenlabs-speech*`, `/api/channels/[channelId]/voices*`.
+- **Риски:** RISK-142, RISK-143, RISK-144.
+
 ## 3. Где вносить изменения
 
 | Задача | Где |
