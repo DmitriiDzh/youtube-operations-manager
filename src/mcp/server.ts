@@ -26,7 +26,7 @@ import {
   playlistRemoveVideosInputSchema,
 } from "@/lib/playlist-management/schemas";
 import { createChangeSetCore, type ChangeSetCore } from "@/lib/changesets";
-import { getChangeSetInputSchema, listChangeSetsInputSchema } from "@/lib/changesets/schemas";
+import { getChangeSetInputSchema, listChangeSetsInputSchema, proposeLanguageMoveInputSchema } from "@/lib/changesets/schemas";
 import { createBatchCore, type BatchCore } from "@/lib/batches";
 import { createChannelSyncCore, type ChannelSyncCore } from "@/lib/channel-sync";
 import { createChannelAccessCore, type ChannelAccessCore } from "@/lib/channel-access";
@@ -141,7 +141,7 @@ type PlaylistManagementCoreSubset = Pick<
 // fails the build if any such symbol is ever referenced from this file.
 type ChangeSetCoreSubset = Pick<
   ChangeSetCore,
-  "listChangeSets" | "getChangeSet" | "previewImport" | "createChangeSetFromImport"
+  "listChangeSets" | "getChangeSet" | "previewImport" | "createChangeSetFromImport" | "proposeLanguageMove"
 >;
 type BatchCoreSubset = Pick<BatchCore, "listBatchesByChannel" | "getBatchWithLedgerRows">;
 
@@ -359,6 +359,7 @@ type McpToolHandlers = {
   analyticsWeeklyReportGet: (input: unknown) => Promise<ToolResponse>;
   aiLocalizationGenerate: (input: unknown) => Promise<ToolResponse>;
   aiLocalizationCreateChangeSet: (input: unknown) => Promise<ToolResponse>;
+  agentLocalizationProposeLanguageMove: (input: unknown) => Promise<ToolResponse>;
   agentGetCapabilities: (input: unknown) => Promise<ToolResponse>;
   agentGetChannelContext: (input: unknown) => Promise<ToolResponse>;
   agentGetVideoContext: (input: unknown) => Promise<ToolResponse>;
@@ -1358,6 +1359,30 @@ export function createMcpToolHandlers(
           createdVia: "mcp",
           agentApiVersion: AGENT_API_VERSION,
         });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /**
+     * BL-232 (PRD-REQ-0043): a channel agent prepares the move of a localization to another language code (zh-Hans -> zh-CN) as a
+     * DRAFT Change Set -- the same `changesets.proposeLanguageMove` the owner's Languages-tab button uses. Local persistence only
+     * (gated like `aiLocalizationCreateChangeSet`); every change starts pending, only the owner approves and sends it in the app.
+     */
+    async agentLocalizationProposeLanguageMove(input: unknown): Promise<ToolResponse> {
+      const parsedInput = proposeLanguageMoveInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
+        const result = await operationsCore.proposeLanguageMove(parsedInput.data, { createdBy: "agent" });
         return toolSuccessResult(result as unknown as Record<string, unknown>);
       } catch (error) {
         return toolErrorResult(error);
@@ -2612,6 +2637,9 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     // changesetCreateFromImport above.
     aiLocalizationCreateChangeSet: async (input) =>
       (await assertMcpDeviceAvailable()) ?? handlers.aiLocalizationCreateChangeSet(input),
+    // BL-232: persists a draft Change Set locally -- gated like aiLocalizationCreateChangeSet.
+    agentLocalizationProposeLanguageMove: async (input) =>
+      (await assertMcpDeviceAvailable()) ?? handlers.agentLocalizationProposeLanguageMove(input),
     // Pure local read (instance metadata + a static capability list) -- ungated.
     agentGetCapabilities: handlers.agentGetCapabilities,
     // Pure local reads over the existing sync mirror -- ungated, same as changeset_list above.
@@ -3401,6 +3429,16 @@ export function createMcpServer(
       inputSchema: createChangeSetFromGenerationInputSchema,
     },
     (args) => handlers.aiLocalizationCreateChangeSet(args)
+  );
+
+  registerTool(
+    "agent_localization_propose_language_move",
+    {
+      description:
+        "Prepare, as a DRAFT Change Set for the owner, the move of an existing localization from one language code to another on this channel's videos (e.g. fromLanguage \"zh-Hans\" -> toLanguage \"zh-CN\"): per video one removal of fromLanguage plus one addition of toLanguage carrying exactly the same synced title and description (byte-for-byte, nothing is translated). videoIds omitted = every synced video of the channel that has fromLanguage. toLanguage must be a code from YouTube's supported list; the two codes must differ. Left out and listed: videos whose own language (or the channel's language baseline) is fromLanguage or toLanguage (skippedOwnLanguageVideoIds), videos whose fromLanguage title is empty (skippedEmptyTextVideoIds; an empty description is moved as \"\"), and -- with videoIds -- named videos that have no fromLanguage (notCarryingSourceVideoIds). A video that already has toLanguage keeps it unchanged and only loses fromLanguage (targetAlreadyPresent, with both texts); that removal is refused at write time if toLanguage holds no title any more. Returns { changeSet (null when nothing to do), fromLanguage, toLanguage, movedVideoIds, targetAlreadyPresent, skippedOwnLanguageVideoIds, skippedEmptyTextVideoIds, notCarryingSourceVideoIds }. Never writes to YouTube and never approves: every change starts pending; only the owner approves and sends it in the app (one videos.update per video, removal and addition always together). As for every Batch write, a video whose own language differs from the channel's language baseline is also aligned to the baseline in that same write (PROJECT_SPEC §14, FO-REQ-0022); changeset_get's languageAlignments lists such videos before approval. Reads the last synced copy -- run channel_sync first if YouTube changed since. Requires channelId to be the caller's own channel.",
+      inputSchema: proposeLanguageMoveInputSchema,
+    },
+    (args) => handlers.agentLocalizationProposeLanguageMove(args)
   );
 
   registerTool(

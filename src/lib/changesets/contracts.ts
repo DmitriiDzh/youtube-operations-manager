@@ -170,3 +170,43 @@ export type StoredVideoRecord = {
   etag: string | null;
   lastSyncedAt: Date;
 };
+
+/** BL-232: one language's title/description of a video, as synced. */
+export type LocaleText = { title: string; description: string };
+
+/**
+ * BL-232 (PRD-REQ-0043): what `proposeLanguageMove` made and what it left out. `changeSet` is null when no video needs a change.
+ * - `movedVideoIds`: the video gets `toLanguage` with exactly its `fromLanguage` text, and loses `fromLanguage` (one write).
+ * - `targetAlreadyPresent`: the video already has `toLanguage`; it is kept unchanged and only `fromLanguage` is removed (owner msg
+ *   3784). Both texts are listed so the owner can compare them before approving.
+ * - `skippedOwnLanguageVideoIds`: `fromLanguage` or `toLanguage` is the video's own language (or the channel's language baseline,
+ *   which a write would give it) -- never touched.
+ * - `skippedEmptyTextVideoIds`: the `fromLanguage` entry has an empty title -- nothing to move (an empty description is copied as "").
+ * - `notCarryingSourceVideoIds`: only with `videoIds` -- a named video that has no `fromLanguage` entry (nothing to do for it).
+ */
+export type LanguageMoveResult = {
+  changeSet: ChangeSet | null;
+  fromLanguage: string;
+  toLanguage: string;
+  movedVideoIds: string[];
+  targetAlreadyPresent: Array<{ videoId: string; from: LocaleText; to: LocaleText }>;
+  skippedOwnLanguageVideoIds: string[];
+  skippedEmptyTextVideoIds: string[];
+  notCarryingSourceVideoIds: string[];
+};
+
+/**
+ * BL-232 (review): a language-move set is marked in its `schemaVersion` (unused by deletion sets), so the Batch pre-write check can
+ * tell which language each of its deletes moves to and refuse the write when that language holds no text any more.
+ */
+const LANGUAGE_MOVE_MARKER = "language-move/1";
+
+export function languageMoveMarker(fromLanguage: string, toLanguage: string): string {
+  return `${LANGUAGE_MOVE_MARKER} ${fromLanguage} ${toLanguage}`;
+}
+
+export function parseLanguageMoveMarker(schemaVersion: string | null | undefined): { fromLanguage: string; toLanguage: string } | null {
+  const parts = (schemaVersion ?? "").split(" ");
+  if (parts.length !== 3 || parts[0] !== LANGUAGE_MOVE_MARKER || !parts[1] || !parts[2]) return null;
+  return { fromLanguage: parts[1], toLanguage: parts[2] };
+}

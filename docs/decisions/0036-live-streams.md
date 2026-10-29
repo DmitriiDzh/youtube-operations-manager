@@ -87,7 +87,7 @@ Two encoders at 6000k and a video upload did not fit the Mac's Wi-Fi uplink (abo
 now have its own encoder bitrate (`live_streams.bitrate_kbps`, schema v113; empty = this computer's setting). A YouTube upload on
 the computer that runs streams keeps to a share of the uplink -- a fixed limit while any stream is on, and a pause while a stream
 sends below 0.97x for a few minutes, at most 30 minutes -- through the shared `src/lib/upload-bandwidth/` module composed at the app
-layer (AGENTS.md §M). Restarting an encoder with a new bitrate is still not a YouTube write (decision 4). RISK-139.
+layer (AGENTS.md §M). Restarting an encoder with a new bitrate is still not a YouTube write (decision 4). RISK-140.
 
 ## Alternatives rejected
 

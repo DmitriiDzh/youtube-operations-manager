@@ -54,9 +54,22 @@ export const proposeLocalizationDeletionInputSchema = z
   })
   .strict();
 
+// BL-232 (PRD-REQ-0043, owner msgs 3782/3784): move a localization from one language code to another (e.g. zh-Hans -> zh-CN),
+// keeping its title and description byte-for-byte. Codes are checked in the service (the target must be a YouTube-supported code).
+export const proposeLanguageMoveInputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    fromLanguage: z.string().min(1).max(35),
+    toLanguage: z.string().min(1).max(35),
+    // Omitted = every video on the channel that has `fromLanguage`; given = exactly those videos (each must belong to the channel).
+    videoIds: z.array(z.string().min(1)).min(1).optional(),
+  })
+  .strict();
+
 export type ImportWorkbookInput = z.infer<typeof importWorkbookInputSchema>;
 export type ListChangeSetsInput = z.infer<typeof listChangeSetsInputSchema>;
 export type GetChangeSetInput = z.infer<typeof getChangeSetInputSchema>;
 export type ChangeActionInput = z.infer<typeof changeActionInputSchema>;
 export type ChangeSetBulkActionInput = z.infer<typeof changeSetBulkActionInputSchema>;
 export type ProposeLocalizationDeletionInput = z.infer<typeof proposeLocalizationDeletionInputSchema>;
+export type ProposeLanguageMoveInput = z.infer<typeof proposeLanguageMoveInputSchema>;

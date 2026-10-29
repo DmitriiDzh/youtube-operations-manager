@@ -848,6 +848,15 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     description:
       "Save this channel's weekly publishing plan as a draft (`agent_publishing_plan_save`: a Monday weekStart, the channel's time zone, slots with date and local publish time), as factory_publishing_plan_save. Synced to the other computers; only the owner approves, revokes or vetoes a slot in the app, and changing an approved slot needs him again. Nothing is sent to YouTube. Logged.",
   },
+  // BL-232 (PRD-REQ-0043): move a localization to another language code (zh-Hans -> zh-CN), same text, as a draft for the owner.
+  {
+    id: "localization_draft.propose_language_move",
+    mcpTools: ["agent_localization_propose_language_move"],
+    domain: "localization_draft",
+    permission: "DRAFT",
+    description:
+      "Prepare a draft Change Set that moves an existing localization of this channel's videos from one language code to another (`agent_localization_propose_language_move`, e.g. zh-Hans -> zh-CN): per video the removal of the old code plus the new code with exactly the same title and description, sent by the owner as one write per video. Videos where either code is the video's own language, or whose old text is empty, are left out and listed; a video that already has the new code keeps it and only loses the old one. Never approves, never writes to YouTube.",
+  },
   // BL-227 (LANGUAGES_REVIEW_PLAN.md §5, ADR 0052): a check report on a translation change set of this channel.
   {
     id: "localization_draft.report_checks",
