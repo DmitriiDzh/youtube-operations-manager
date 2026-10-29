@@ -212,12 +212,13 @@ test("review item 2: two concurrent designs with the same name -- the draft is r
       await gate;
       return design0(input, actor);
     };
-    const first = h.services.design(design(), "factory");
-    const second = h.services.design(design(), "factory");
-    const secondResult = await second.then(() => "ok", (error: unknown) => (isDomainError(error) ? error.code : "other"));
+    // Either may reach the reservation first; the reservation comes before the paid call, so the other is refused unpaid.
+    const both = Promise.allSettled([h.services.design(design(), "factory"), h.services.design(design(), "factory")]);
     release();
-    await first;
-    assert.equal(secondResult, "voice_name_taken");
+    const results = await both;
+    assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+    const refused = results.find((r) => r.status === "rejected") as PromiseRejectedResult;
+    assert.ok(isDomainError(refused.reason) && refused.reason.code === "voice_name_taken");
     assert.equal(h.elevenlabs.calls.filter((c) => c.method === "design").length, 1, "only one paid design");
   } finally {
     await h.cleanup();
