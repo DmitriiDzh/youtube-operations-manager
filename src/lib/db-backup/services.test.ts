@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { createLibsqlClient } from "@/lib/libsql-client";
 import { copyDatabaseConsistently, createMigrationBackups, isMissingTableError, MIGRATION_BACKUPS_KEEP, MIGRATION_SUCCESS_MARKER, pruneMigrationBackups, readMigrationBackupState, RETAINED_BACKUP_PREFIXES } from "./services";
-import { initializeDatabaseSchema } from "@/lib/db";
+import { initializeDatabaseSchema, SCHEMA_BASELINE_VERSION, SCHEMA_CURRENT_VERSION } from "@/lib/db";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { DatabaseBackupError } from "./contracts";
 import { withTempDir } from "@/test-support/temp-dir";
@@ -150,9 +150,18 @@ function bootSession(dir: string, clock: { t: number }, copies: string[]) {
   });
 }
 
-async function boot(dir: string, clock: { t: number }, copies: string[], migrate: (takeCopy: () => Promise<string>) => Promise<void>) {
+/** The upgrade every test boot runs unless it says otherwise: schema 100 -> 110. */
+const V100_TO_110 = { fromVersion: 100, toVersion: 110 };
+
+async function boot(
+  dir: string,
+  clock: { t: number },
+  copies: string[],
+  migrate: (takeCopy: () => Promise<string>) => Promise<void>,
+  versions = V100_TO_110
+) {
   const session = bootSession(dir, clock, copies);
-  await migrate(() => session.takeCopy());
+  await migrate(() => session.takeCopy(versions));
   await session.succeeded();
 }
 
@@ -186,7 +195,7 @@ test("no record at all (first start on this build), 12 failed attempts with prun
     assert.ok(left.includes(copies[12]), "the copy of the successful start survives");
     assert.equal(left.length, 11, "newest 10 + C1");
     const state = await readMigrationBackupState(dir);
-    assert.deepEqual(state, { pendingUpgradeCopy: null, lastSuccessAt: clock.t, lastProtectedCopy: copies[0] });
+    assert.deepEqual(state, { pendingUpgradeCopy: null, pendingFromVersion: null, pendingToVersion: null, lastSuccessAt: clock.t, lastProtectedCopy: copies[0] });
     // After the success, ordinary retention: the next prune keeps just the newest 10.
     assert.deepEqual(await pruneMigrationBackups(dir, { prefixes: ["pre-migration"] }), [copies[0]]);
   }));
@@ -227,16 +236,56 @@ test("the upgrade's first copy is kept by NAME: a clock set back after the last 
     assert.equal((await readMigrationBackupState(dir)).lastProtectedCopy, newC1);
   }));
 
-test("a crash between recording C1's name and writing it: the next attempt's copy becomes C1", () =>
+test("a crash in the middle of the copy: the half-written file is never recorded as C1; the next complete copy is", () =>
   withTempDir("db-backup-retention-", async (dir) => {
     const clock = { t: 1000 };
-    const crashing = createMigrationBackups({ dir, copy: async () => Promise.reject(new Error("killed")), now: () => clock.t, suffix: () => "dead00" });
-    await assert.rejects(() => crashing.takeCopy());
-    assert.equal((await readMigrationBackupState(dir)).pendingUpgradeCopy, "pre-migration-1000-dead00.db");
+    const crashing = createMigrationBackups({
+      dir,
+      copy: async (destPath) => {
+        await writeFile(destPath, "trunc"); // VACUUM INTO interrupted: a partial file is left
+        throw new Error("killed");
+      },
+      now: () => clock.t,
+      suffix: () => "dead00",
+    });
+    await assert.rejects(() => crashing.takeCopy(V100_TO_110));
+    assert.equal((await readMigrationBackupState(dir)).pendingUpgradeCopy, null);
     clock.t = 2000;
     const copies: string[] = [];
     await assert.rejects(() => boot(dir, clock, copies, failing));
     assert.equal((await readMigrationBackupState(dir)).pendingUpgradeCopy, copies[0]);
+  }));
+
+test("partly applied migrations: retries start from higher versions below the target and keep the first copy", () =>
+  withTempDir("db-backup-retention-", async (dir) => {
+    const clock = { t: 1000 };
+    const copies: string[] = [];
+    await assert.rejects(() => boot(dir, clock, copies, failing, { fromVersion: 100, toVersion: 110 }));
+    for (const fromVersion of [103, 105, 109]) {
+      clock.t += 10;
+      await assert.rejects(() => boot(dir, clock, copies, failing, { fromVersion, toVersion: 110 }));
+    }
+    // A fixed build for the same upgrade (a later target, the database still below the old one) keeps it too.
+    clock.t += 10;
+    await assert.rejects(() => boot(dir, clock, copies, failing, { fromVersion: 109, toVersion: 111 }));
+    const state = await readMigrationBackupState(dir);
+    assert.equal(state.pendingUpgradeCopy, copies[0]);
+    assert.deepEqual([state.pendingFromVersion, state.pendingToVersion], [100, 110]);
+  }));
+
+test("a crash between \"migrations ok\" and succeeded(), directly followed by another upgrade: the new upgrade's copy is its C1", () =>
+  withTempDir("db-backup-retention-", async (dir) => {
+    const clock = { t: 1000 };
+    const copies: string[] = [];
+    // Upgrade 100 -> 110: the copy is recorded, the migrations went through, the process died before succeeded().
+    const crashed = bootSession(dir, clock, copies);
+    await crashed.takeCopy({ fromVersion: 100, toVersion: 110 });
+    // The next start is already a new build: 110 -> 115, failing.
+    clock.t = 2000;
+    await assert.rejects(() => boot(dir, clock, copies, failing, { fromVersion: 110, toVersion: 115 }));
+    const state = await readMigrationBackupState(dir);
+    assert.equal(state.pendingUpgradeCopy, copies[1], "the copy at version 110, not the old upgrade's");
+    assert.deepEqual([state.pendingFromVersion, state.pendingToVersion], [110, 115]);
   }));
 
 test("a start with nothing to migrate prunes nothing, but writes a missing or stale record (it heals)", () =>
@@ -246,12 +295,12 @@ test("a start with nothing to migrate prunes nothing, but writes a missing or st
     const clock = { t: 5000 };
     await boot(dir, clock, [], async () => undefined);
     assert.equal((await preMigration(dir)).length, 14, "no migration ran: nothing pruned");
-    assert.deepEqual(await readMigrationBackupState(dir), { pendingUpgradeCopy: null, lastSuccessAt: 5000, lastProtectedCopy: null });
+    assert.deepEqual(await readMigrationBackupState(dir), { pendingUpgradeCopy: null, pendingFromVersion: null, pendingToVersion: null, lastSuccessAt: 5000, lastProtectedCopy: null });
     // A stale "upgrade pending" record (a crash after the migrations, before the record) is cleared on the next good start.
     await writeFile(path.join(dir, MIGRATION_SUCCESS_MARKER), JSON.stringify({ pendingUpgradeCopy: names[0], lastSuccessAt: 1, lastProtectedCopy: null }));
     clock.t = 6000;
     await boot(dir, clock, [], async () => undefined);
-    assert.deepEqual(await readMigrationBackupState(dir), { pendingUpgradeCopy: null, lastSuccessAt: 6000, lastProtectedCopy: null });
+    assert.deepEqual(await readMigrationBackupState(dir), { pendingUpgradeCopy: null, pendingFromVersion: null, pendingToVersion: null, lastSuccessAt: 6000, lastProtectedCopy: null });
   }));
 
 test("the real schema initialization: a fresh database migrates, the copy is taken inside the hook, the record after it", () =>
@@ -261,14 +310,20 @@ test("the real schema initialization: a fresh database migrates, the copy is tak
     const session = createMigrationBackups({ dir, copy: async (destPath) => void (await copyDatabaseConsistently(client, destPath)), now: () => 7000, suffix: () => "real00" });
     let stateInsideHook: unknown = "not called";
     await initializeDatabaseSchema(client, {
-      beforeMigrations: async () => {
-        await session.takeCopy();
+      beforeMigrations: async ({ fromVersion, pendingMigrations }) => {
+        await session.takeCopy({ fromVersion, toVersion: Math.max(...pendingMigrations.map((m) => m.version)) });
         stateInsideHook = await readMigrationBackupState(dir);
       },
     });
-    assert.deepEqual(stateInsideHook, { pendingUpgradeCopy: "pre-migration-7000-real00.db", lastSuccessAt: null, lastProtectedCopy: null });
+    assert.deepEqual(stateInsideHook, {
+      pendingUpgradeCopy: "pre-migration-7000-real00.db",
+      pendingFromVersion: SCHEMA_BASELINE_VERSION,
+      pendingToVersion: SCHEMA_CURRENT_VERSION,
+      lastSuccessAt: null,
+      lastProtectedCopy: null,
+    });
     await session.succeeded();
-    assert.deepEqual(await readMigrationBackupState(dir), { pendingUpgradeCopy: null, lastSuccessAt: 7000, lastProtectedCopy: "pre-migration-7000-real00.db" });
+    assert.deepEqual(await readMigrationBackupState(dir), { pendingUpgradeCopy: null, pendingFromVersion: null, pendingToVersion: null, lastSuccessAt: 7000, lastProtectedCopy: "pre-migration-7000-real00.db" });
     assert.deepEqual(await preMigration(dir), ["pre-migration-7000-real00.db"]);
     client.close();
   }));

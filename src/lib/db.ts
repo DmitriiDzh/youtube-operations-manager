@@ -6320,8 +6320,8 @@ async function initializeDatabase() {
   // pre-migration backup, never the live DB. Loaded lazily: `@/lib/snapshot` imports this module.
   // The hooks never throw.
   let syncHooks: { beforeMigrations: (backupPath: string) => Promise<void>; afterMigrations: () => Promise<void> } | null = null;
-  // BL-237: the pre-migration copies in the order `db-backup.createMigrationBackups` defines -- the copy (the upgrade's first
-  // copy recorded by name first) inside the hook, the prune and the success record only after the migrations went through.
+  // BL-237: the pre-migration copies in the order `db-backup.createMigrationBackups` defines -- the copy (recorded as the
+  // upgrade's first copy by name once complete) inside the hook, the prune and the success record only after the migrations went through.
   const migrationBackups = createMigrationBackups({
     dir: appPaths.migrationBackupsDir,
     copy: async (destPath) => {
@@ -6332,8 +6332,9 @@ async function initializeDatabase() {
   });
   try {
     await initializeDatabaseSchema(rawClient, {
-      beforeMigrations: async () => {
-        const destPath = await migrationBackups.takeCopy();
+      beforeMigrations: async ({ fromVersion, pendingMigrations }) => {
+        const toVersion = Math.max(fromVersion, ...pendingMigrations.map((migration) => migration.version));
+        const destPath = await migrationBackups.takeCopy({ fromVersion, toVersion });
         syncHooks = await import("@/lib/snapshot")
           .then(({ createSyncPreservingMigrationHooks }) => createSyncPreservingMigrationHooks(rawClient))
           .catch(() => null);
