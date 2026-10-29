@@ -1638,7 +1638,7 @@ function makeLedgerRow(overrides: Partial<import("@/lib/batches/contracts").Ledg
 
 function makeOperationsCoreStub(): Pick<
   ChangeSetCore,
-  "listChangeSets" | "getChangeSet" | "previewImport" | "createChangeSetFromImport"
+  "listChangeSets" | "getChangeSet" | "previewImport" | "createChangeSetFromImport" | "proposeLanguageMove"
 > &
   Pick<BatchCore, "listBatchesByChannel" | "getBatchWithLedgerRows"> {
   return {
@@ -1673,6 +1673,9 @@ function makeOperationsCoreStub(): Pick<
       errors: [],
       totalErrors: 0,
     }),
+    proposeLanguageMove: async () => {
+      throw new Error("proposeLanguageMove not stubbed for this test");
+    },
     listBatchesByChannel: async () => [makeBatch()],
     getBatchWithLedgerRows: async () => ({ batch: makeBatch(), ledgerRows: [makeLedgerRow()] }),
   };
@@ -2894,7 +2897,7 @@ test("MCP agent_get_capabilities returns version/capabilities/permission-model w
   // (docs/roadmap/plans/PHASE_11_PLAN.md AC-P11-11).
   // Bumped 0.15.0 -> 1.0.0, Phase 12 (AC-P12-13): breaking agent-contract change -> MAJOR.
   // MINOR 3.16.0 (BL-182 stage 1): new READ capability video_context.query_publishing_calendar. Previously 3.15.0 (BL-181).
-  assert.equal(payload.agentApiVersion, "4.9.0"); // MINOR 4.9.0 (BL-229 part B, MUSIC_LIBRARY_PLAN.md §3): plan review forms, genre, answers; MINOR 4.8.0 (BL-227, LANGUAGES_REVIEW_PLAN.md §5): agent_localization_report_checks, proposal note; MINOR 4.7.0 (BL-225, WEEKLY_PUBLISHING_PLAN.md stage 1 item 5): agent_publishing_plan_save / _get / _list; MINOR 4.6.0 (BL-223, CHANNEL_BRANDING_PLAN.md §5 "Minor version bump"): agent_channel_get_branding / agent_channel_save_branding; MINOR 4.5.0 (BL-221): agent_video_list gains youtubeVideoId / hasVideoFile; MINOR 4.4.0 (BL-220, RESTART_WHEN_IDLE_PLAN.md "Agent API 4.4.0"): agent_restart_status, agent_hold_restart, agent_release_hold; MINOR 4.3.0 (BL-218): paid work the Operator's way; MINOR 4.2.0 (BL-217): channel_production tools; MINOR 4.1.0 (BL-216): agent_set_privacy; MAJOR 4.0.0 (BL-215, ADR 0048): playlist_delete owner-only and "public" refused for a channel agent, youtube_writes capabilities + EXECUTE, agent_list_worker_actions; MINOR 3.20.0 (BL-209): agent_get_publishing_calendar uploads gain automatic / progressPercent / finishedAt (additive); MINOR 3.19.0 (BL-193): agent_get_media_limits gains accountSpentTodayUsd / otherDevicesSpentTodayUsd (additive); MINOR 3.18.0 (BL-191, SUGGESTED_SOURCES_PLAN.md §2): new READ capability analytics.query_stored_suggested_sources; MINOR 3.17.0 (BL-182 stage 2): agent_get_publishing_calendar lists the release packages and this computer's uploads; MINOR 3.13.0 (BL-171, VIDEO_COMMENTS_PLAN.md §2): new READ capability video_context.query_video_comments; MINOR 3.12.0 (BL-170, EXPERIMENT_ARMS_PLAN.md §2 "Reads"): new READ capability decision_engine.query_experiment_results, experiment arms in the hypothesis trail; MINOR 3.11.0 (BL-169, VIDEO_SEARCH_TERMS_PLAN.md §2): new READ capability analytics.query_stored_search_terms; MINOR 3.10.0 (BL-168, VIDEO_BREAKDOWNS_PLAN.md §2 "Reads"): new READ capability analytics.query_stored_breakdowns; MINOR 3.9.0 (BL-166, VIDEO_MILESTONES_PLAN.md §2 "Versions"): new READ capability analytics.query_video_milestones; MINOR 3.6.0 (BL-135): agent_release_media_session + releaseWhenDone; MINOR 3.5.0 (BL-132): media template input parameters (image/audio/video), job inputs[], template source/models; before that 3.3.0 (Factory Operator access, logical path registry tools) on top of 3.2.0 + MINOR 3.4.0: the seven media_generation capabilities (Phase 14 slice 5) and agent_get_media_limits openSessions/maxConcurrentSessions/activeSessionCount (slice 6)
+  assert.equal(payload.agentApiVersion, "4.10.0"); // MINOR 4.10.0 (BL-232): agent_localization_propose_language_move; MINOR 4.9.0 (BL-229 part B, MUSIC_LIBRARY_PLAN.md §3): plan review forms, genre, answers; MINOR 4.8.0 (BL-227, LANGUAGES_REVIEW_PLAN.md §5): agent_localization_report_checks, proposal note; MINOR 4.7.0 (BL-225, WEEKLY_PUBLISHING_PLAN.md stage 1 item 5): agent_publishing_plan_save / _get / _list; MINOR 4.6.0 (BL-223, CHANNEL_BRANDING_PLAN.md §5 "Minor version bump"): agent_channel_get_branding / agent_channel_save_branding; MINOR 4.5.0 (BL-221): agent_video_list gains youtubeVideoId / hasVideoFile; MINOR 4.4.0 (BL-220, RESTART_WHEN_IDLE_PLAN.md "Agent API 4.4.0"): agent_restart_status, agent_hold_restart, agent_release_hold; MINOR 4.3.0 (BL-218): paid work the Operator's way; MINOR 4.2.0 (BL-217): channel_production tools; MINOR 4.1.0 (BL-216): agent_set_privacy; MAJOR 4.0.0 (BL-215, ADR 0048): playlist_delete owner-only and "public" refused for a channel agent, youtube_writes capabilities + EXECUTE, agent_list_worker_actions; MINOR 3.20.0 (BL-209): agent_get_publishing_calendar uploads gain automatic / progressPercent / finishedAt (additive); MINOR 3.19.0 (BL-193): agent_get_media_limits gains accountSpentTodayUsd / otherDevicesSpentTodayUsd (additive); MINOR 3.18.0 (BL-191, SUGGESTED_SOURCES_PLAN.md §2): new READ capability analytics.query_stored_suggested_sources; MINOR 3.17.0 (BL-182 stage 2): agent_get_publishing_calendar lists the release packages and this computer's uploads; MINOR 3.13.0 (BL-171, VIDEO_COMMENTS_PLAN.md §2): new READ capability video_context.query_video_comments; MINOR 3.12.0 (BL-170, EXPERIMENT_ARMS_PLAN.md §2 "Reads"): new READ capability decision_engine.query_experiment_results, experiment arms in the hypothesis trail; MINOR 3.11.0 (BL-169, VIDEO_SEARCH_TERMS_PLAN.md §2): new READ capability analytics.query_stored_search_terms; MINOR 3.10.0 (BL-168, VIDEO_BREAKDOWNS_PLAN.md §2 "Reads"): new READ capability analytics.query_stored_breakdowns; MINOR 3.9.0 (BL-166, VIDEO_MILESTONES_PLAN.md §2 "Versions"): new READ capability analytics.query_video_milestones; MINOR 3.6.0 (BL-135): agent_release_media_session + releaseWhenDone; MINOR 3.5.0 (BL-132): media template input parameters (image/audio/video), job inputs[], template source/models; before that 3.3.0 (Factory Operator access, logical path registry tools) on top of 3.2.0 + MINOR 3.4.0: the seven media_generation capabilities (Phase 14 slice 5) and agent_get_media_limits openSessions/maxConcurrentSessions/activeSessionCount (slice 6)
   assert.ok(
     payload.capabilities.some(
       (c: { id: string; permission: string }) => c.id === "channel_workspace.get_channel_workspace" && c.permission === "READ"
@@ -6457,4 +6460,50 @@ test("re-review: the agent's plan view drops error texts at any depth and passes
   assert.deepEqual(seen, [{ planId: "mine", latest: true }, { planId: "mine", since: "2026-10-07T09:00:00.000Z" }]);
   const listed = JSON.stringify(parseToolJson(await handlers.agentListGenerationPlans({ channelId: "UC_1" })));
   assert.ok(!listed.includes("RunPod said"), "spend sessions carry no stop reason");
+});
+
+// BL-232 (PRD-REQ-0043): a channel worker can prepare the zh-Hans -> zh-CN move with its own token -- as a DRAFT only. Acceptance:
+// the tool exists in a channel session, persists through the shared `proposeLanguageMove` marked as the agent's, refuses another
+// channel before reaching the core, and no tool a channel session registers can approve or send a change set.
+test("BL-232: agent_localization_propose_language_move drafts through proposeLanguageMove as the agent; another channel fails closed", async () => {
+  const calls: Array<{ input: unknown; options: unknown }> = [];
+  const operationsCore = makeOperationsCoreStub();
+  operationsCore.proposeLanguageMove = async (input: unknown, options?: unknown) => {
+    calls.push({ input, options });
+    return {
+      changeSet: makeChangeSet(),
+      fromLanguage: "zh-Hans",
+      toLanguage: "zh-CN",
+      movedVideoIds: ["v1"],
+      targetAlreadyPresent: [],
+      skippedOwnLanguageVideoIds: [],
+      skippedEmptyTextVideoIds: [],
+    };
+  };
+  const channelAccess = makeChannelAccessCoreStub();
+  channelAccess.assertActiveChannel = async (args: { channelId: string }) => {
+    if (args.channelId !== "UC_1") throw new DomainError({ code: "CHANNEL_NOT_ACTIVE", message: "not this channel" });
+    return args.channelId;
+  };
+  const handlers = createMcpToolHandlers(makeCoreStub(), makeAuthStub(), operationsCore, undefined, channelAccess);
+
+  const ok = await handlers.agentLocalizationProposeLanguageMove({ channelId: "UC_1", fromLanguage: "zh-Hans", toLanguage: "zh-CN" });
+  assert.equal(ok.isError, undefined);
+  assert.deepEqual(calls, [{ input: { channelId: "UC_1", fromLanguage: "zh-Hans", toLanguage: "zh-CN" }, options: { createdBy: "agent" } }]);
+  assert.deepEqual(JSON.parse(ok.content[0]?.text ?? "{}").movedVideoIds, ["v1"]);
+
+  const foreign = await handlers.agentLocalizationProposeLanguageMove({ channelId: "UC_OTHER", fromLanguage: "zh-Hans", toLanguage: "zh-CN" });
+  assert.equal(foreign.isError, true);
+  assert.equal(JSON.parse(foreign.content[0]?.text ?? "{}").error.code, "CHANNEL_NOT_ACTIVE");
+  const unknownField = await handlers.agentLocalizationProposeLanguageMove({ channelId: "UC_1", fromLanguage: "zh-Hans", toLanguage: "zh-CN", approve: true });
+  assert.equal(unknownField.isError, true, "an extra field (e.g. approve) is refused by the strict schema");
+  assert.equal(calls.length, 1, "neither refused call reached the core");
+});
+
+test("BL-232: a channel session registers the language-move tool and no tool that approves, rejects or sends a change set", () => {
+  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true, agentSession: TEST_AGENT_SESSION });
+  const tools = Object.keys((server as unknown as { _registeredTools?: Record<string, unknown> })._registeredTools ?? {});
+  assert.ok(tools.includes("agent_localization_propose_language_move"));
+  const approving = tools.filter((name) => /approve|reject|send|batch_(create|execute|run)|changeset_(apply|execute)/.test(name));
+  assert.deepEqual(approving, []);
 });
