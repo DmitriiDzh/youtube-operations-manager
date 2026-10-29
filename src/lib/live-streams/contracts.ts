@@ -41,6 +41,11 @@ export type StreamSettingsInput = {
   privacyStatus: LivePrivacy;
   madeForKids: boolean;
   orderMode: LiveOrderMode;
+  /**
+   * BL-233 (FO-REQ-0047 ask 1): the stream's own encoder bitrate (kbit/s, a whole 1000..12000), used at the next encoder start;
+   * null = this computer's setting. Absent in a save = left as it is.
+   */
+  bitrateKbps?: number | null;
 };
 
 /** A new stream row's texts and order, until the owner saves them. */
@@ -61,7 +66,7 @@ export type RotationVideoView = {
 export type StreamView = {
   channelId: string;
   intent: "on" | "off";
-  settings: StreamSettingsInput;
+  settings: StreamSettingsInput & { bitrateKbps: number | null };
   streamId: string | null;
   broadcastId: string | null;
   onSince: string | null;

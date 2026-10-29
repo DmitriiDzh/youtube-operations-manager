@@ -58,7 +58,8 @@ test("merge numbering: the current schema is 90 with both branches' tables", asy
   // v110: BL-225 stage 2 publishing_uploads.slot_id.
   // v111: BL-228 system_topic_state + system_topic_commands (SYSTEM_TOPIC_PLAN.md: a new additive migration, not a renumbering).
   // v112: BL-229 part B answers_json on the plan verdict tables (MUSIC_LIBRARY_PLAN.md §3: renumbered from v111 at the merge after BL-228).
-  assert.equal(SCHEMA_CURRENT_VERSION, 112);
+  // v113: BL-233 live_streams.bitrate_kbps (FO-REQ-0047: a new additive migration, not a renumbering).
+  assert.equal(SCHEMA_CURRENT_VERSION, 113);
   await withDb(async (client) => {
     await initializeDatabaseSchema(client);
     const t = await tables(client);

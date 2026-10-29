@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DEFAULT_LIVE_STREAMS_SETTINGS, DomainError } from "./contracts";
-import { createStreamSupervisor, drawPassOrder, playablePass, type HelperStatus, type SupervisorDependencies, type SupervisorStream, type ViewerSample } from "./supervisor";
+import { createStreamSupervisor, drawPassOrder, encoderBitrateFor, playablePass, type HelperStatus, type SupervisorDependencies, type SupervisorStream, type ViewerSample } from "./supervisor";
 
 // BL-176 acceptance for the server side of a running stream (LIVE_STREAMS_PLAN.md §3.1, §3.6–§3.8, §4.1 "Recovery";
 // ADR 0036 §4–5). Fakes stand in for files, processes, YouTube and the store.
@@ -157,6 +157,29 @@ test("startEncoder: the key goes to the helper's stdin only; plan.json and helpe
   assert.deepEqual(JSON.parse(h.files.get("/appdata/live-streams/UC1/helper.json")!).pid, pid);
   assert.deepEqual([h.stream().passNumber, h.stream().positionIndex], [1, 0]);
   assert.equal(h.events.at(-1)?.kind, "encoder_start");
+});
+
+// BL-233 (FO-REQ-0047 ask 1): a stream's own bitrate overrides this computer's at encoder start; absent, the computer's is used.
+// The computer's default is 6000 (DEFAULT_LIVE_STREAMS_SETTINGS); the stream's own value must be a whole 1000..12000.
+test("BL-233: the stream's own bitrate goes to the encoder; without one the computer's setting does", async () => {
+  const own = harness({ stream: { bitrateKbps: 4000 } });
+  await own.supervisor.startEncoder("UC1", { freshPass: true });
+  assert.equal(JSON.parse(own.files.get("/appdata/live-streams/UC1/plan.json")!).encoder.bitrateKbps, 4000);
+  assert.deepEqual([own.events.at(-1)?.detail.bitrateKbps, own.events.at(-1)?.detail.bitrateSource], [4000, "stream"]);
+  assert.equal(await own.supervisor.readPlanBitrateKbps("UC1"), 4000);
+
+  const none = harness({ stream: { bitrateKbps: null } });
+  await none.supervisor.startEncoder("UC1", { freshPass: true });
+  assert.equal(JSON.parse(none.files.get("/appdata/live-streams/UC1/plan.json")!).encoder.bitrateKbps, 6000);
+  assert.equal(none.events.at(-1)?.detail.bitrateSource, "computer");
+});
+
+test("BL-233: a stored stream bitrate outside 1000..12000 or not whole falls back to the computer's", () => {
+  for (const bad of [999, 12001, 4000.5, Number.NaN, undefined, null]) {
+    assert.deepEqual(encoderBitrateFor({ bitrateKbps: bad as number | null | undefined }, { bitrateKbps: 5000 }), { bitrateKbps: 5000, source: "computer" }, String(bad));
+  }
+  assert.deepEqual(encoderBitrateFor({ bitrateKbps: 1000 }, { bitrateKbps: 5000 }), { bitrateKbps: 1000, source: "stream" });
+  assert.deepEqual(encoderBitrateFor({ bitrateKbps: 12000 }, { bitrateKbps: 5000 }), { bitrateKbps: 12000, source: "stream" });
 });
 
 test("startEncoder: a video that turned private is left out of the pass it hands the helper", async () => {

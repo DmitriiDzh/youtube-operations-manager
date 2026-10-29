@@ -2,7 +2,7 @@ import { z } from "zod";
 import { parseWithSchema } from "@/lib/shared-domain";
 import { SUPPORTED_YOUTUBE_LANGUAGES } from "@/lib/youtube-supported-languages";
 import { TAG_MAX_CHARACTERS, TAGS_MAX_CHARACTERS, tagsLength, VIDEO_CATEGORY_IDS, VIDEO_LICENSES } from "@/lib/youtube-video-fields";
-import { LIVE_CLOSED_CAPTIONS, LIVE_LATENCIES, LIVE_ORDER_MODES, LIVE_PRIVACY_STATUSES, MAX_STREAM_PLAYLISTS, MIN_OVERRIDE_REASON_LENGTH } from "./contracts";
+import { LIVE_BITRATE_MAX_KBPS, LIVE_BITRATE_MIN_KBPS, LIVE_CLOSED_CAPTIONS, LIVE_LATENCIES, LIVE_ORDER_MODES, LIVE_PRIVACY_STATUSES, MAX_STREAM_PLAYLISTS, MIN_OVERRIDE_REASON_LENGTH } from "./contracts";
 
 export { parseWithSchema };
 
@@ -20,6 +20,8 @@ export const streamSettingsSchema = z
     privacyStatus: z.enum(LIVE_PRIVACY_STATUSES),
     madeForKids: z.boolean(),
     orderMode: z.enum(LIVE_ORDER_MODES),
+    // BL-233: the stream's own bitrate; null = this computer's; absent = unchanged.
+    bitrateKbps: z.number().int().min(LIVE_BITRATE_MIN_KBPS).max(LIVE_BITRATE_MAX_KBPS).nullable().optional(),
   })
   .strict();
 

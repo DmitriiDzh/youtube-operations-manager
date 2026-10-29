@@ -313,7 +313,7 @@ const uploadsPlaylistOf = (channelId: string) => (channelId.startsWith("UC") ? `
  * BL-182 stage 2 (ADR 0037): the background upload runner of this computer. Every write goes through the write gateway right after
  * the Live writes check; every read through the read gateway; the deferred publish time through video-details' own write path.
  */
-export function createUploadRunnerCore(options: { slotDecisions?: (channelId: string) => Promise<Map<string, SlotDecision>> } = {}) {
+export function createUploadRunnerCore(options: { slotDecisions?: (channelId: string) => Promise<Map<string, SlotDecision>>; bandwidth?: UploadRunnerDeps["bandwidth"] } = {}) {
   const workspaces = createChannelWorkspacesCore();
   const writeContext = createWriteContextCore();
   const uploads = createPublishingYoutubeWrites();
@@ -412,6 +412,8 @@ export function createUploadRunnerCore(options: { slotDecisions?: (channelId: st
     device: () => thisDevice(),
     clock: { now: () => new Date() },
     nextQuotaReset: (now) => nextYoutubeQuotaReset(now),
+    // BL-233 (FO-REQ-0047): the share of the uplink while live streams run here, plugged in by the app layer (absent: unlimited).
+    ...(options.bandwidth ? { bandwidth: options.bandwidth } : {}),
     chunkBytes: 32 * 256 * 1024, // 8 MB
     sliceMs: 50_000,
     runnerId: `${hostname()}:${process.pid}:${randomUUID()}`,
@@ -500,6 +502,15 @@ export function createPackageComposerCore() {
     join: deps.join,
   });
 }
+export {
+  createUploadBandwidthGovernor,
+  registerUploadBandwidthGovernor,
+  uploadBandwidthStatus,
+  type LiveLoad as UploadLiveLoad,
+  type UploadBandwidthEvent,
+  type UploadBandwidthGovernor,
+  type UploadBandwidthState,
+} from "./upload-bandwidth";
 export type { ComposerFolder, PackageDraft } from "./package-composer";
 
 /** BL-182 stage 2: the owner's approval of release-package uploads (queued here; the runner sends them). */

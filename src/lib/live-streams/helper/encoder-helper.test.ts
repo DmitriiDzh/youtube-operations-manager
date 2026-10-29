@@ -173,6 +173,18 @@ test("status carries the adoption token, the pid, the position and the progress"
   assert.equal(status.lastExit.cause, "encoder_exit");
 });
 
+// BL-233 (FO-REQ-0047 ask 3): the progress names when the ffmpeg run began, so the lag (clock since then - output time) can be shown.
+test("BL-233: the running status's progress carries the run's start time, the output time, the bitrate and ffmpeg's speed", async () => {
+  const h = harness({ steps: [{ progress: [12], exit: { code: 1 } }], files: [A.file, B.file], plan: basePlan(), stopAfterRuns: 1 });
+  await h.run();
+  const running = h.statuses.find((s) => s.state === "running") as { progress: Record<string, unknown> } | undefined;
+  assert.ok(running, "a running status was written");
+  assert.equal(running.progress.outTime, 12);
+  assert.equal(running.progress.bitrate, "2200.0kbits/s");
+  assert.equal(typeof running.progress.runStartedAt, "number");
+  assert.ok((running.progress.runStartedAt as number) >= 1_000_000, "the helper's clock at the run's start");
+});
+
 // With a real ffmpeg and a real helper process against a local RTMP listener (skipped where ffmpeg is missing).
 test("real helper process: streams the pass, reports its position, keeps the key out of its files, stops on SIGTERM", async (t) => {
   const { detectFfmpeg, runTool } = await import("@/lib/ffmpeg-host");

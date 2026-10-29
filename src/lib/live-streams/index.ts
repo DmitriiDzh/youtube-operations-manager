@@ -1,5 +1,6 @@
 import { randomBytes, randomInt, randomUUID } from "node:crypto";
 import os from "node:os";
+import path from "node:path";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { getChannelExpectedLanguages, listLiveStreamEventsOfKind, listLiveStreamSegments, latestLiveStreamEvent, getStoredChannel, listOpenLiveStreamSegments, updateLiveStreamSegment, insertLiveStreamSegment, countLiveStreamEvents,
   getLiveStream,
@@ -43,7 +44,8 @@ import { createRotationPicker } from "./picker-service";
 import { streamReportEntry, type StreamReportEntry } from "./report";
 import { createLiveStreamsServices } from "./services";
 import { createLiveStreamsSettings, liveStreamsHost } from "./settings";
-import { createStreamSupervisor, isChannelLockBusy, withChannelLock } from "./supervisor";
+import { createStreamSupervisor, isChannelLockBusy, withChannelLock, type HelperStatus } from "./supervisor";
+import { encoderReading, type EncoderReading } from "./encoder-load";
 import { createStreamVideoSettings } from "./video-settings";
 
 // BL-176 (docs/roadmap/plans/LIVE_STREAMS_PLAN.md, ADR 0036): the live-streams module wired to its real adapters.
@@ -213,6 +215,49 @@ export async function collectLiveStreamEntries(now: number = Date.now()): Promis
   );
 }
 
+/** BL-233: a note in a stream's history from outside the module (the upload's bandwidth guard, composed in the app layer). */
+export async function noteLiveStreamEvent(channelId: string, kind: "upload_held" | "upload_released", detail: Record<string, unknown>): Promise<void> {
+  await insertLiveStreamEvent({ id: randomUUID(), channelId, at: new Date(), kind, detailJson: JSON.stringify(detail) });
+}
+
+function jsonOrNull<T>(text: string | null): T | null {
+  if (!text) return null;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * BL-233 (FO-REQ-0047 ask 3): every stream encoder on this computer as its helper last reported it -- speed, bitrate, output time,
+ * lag -- from the stream folder's `status.json` and `plan.json`. Local file reads only (no process check, no YouTube call): cheap
+ * enough for the upload's bandwidth limit to read every few seconds. Never a key or URL.
+ */
+export async function collectLiveEncoderReadings(now: number = Date.now()): Promise<EncoderReading[]> {
+  const files = createSupervisorFiles();
+  const root = getProductionAppPaths().liveStreamsBufferDir;
+  return Promise.all(
+    (await listLiveStreams()).map(async (stream) => {
+      const dir = path.join(root, stream.channelId);
+      const [status, plan] = await Promise.all([files.read(path.join(dir, "status.json")), files.read(path.join(dir, "plan.json"))]);
+      const target = jsonOrNull<{ encoder?: { bitrateKbps?: unknown } }>(plan)?.encoder?.bitrateKbps;
+      return encoderReading({ channelId: stream.channelId, intentOn: stream.intent === "on", status: jsonOrNull<HelperStatus>(status), targetBitrateKbps: typeof target === "number" ? target : null }, now);
+    })
+  );
+}
+
+/**
+ * BL-233: what the upload's bandwidth limit needs from this module (the app layer passes it on; publishing imports nothing of
+ * this module, AGENTS.md §M). Switched off, nothing runs here: no stream on, no reading.
+ */
+export async function readLiveUploadLoad(now: number = Date.now()): Promise<{ streamsOn: number; capMbps: number; guardMinutes: number; encoders: EncoderReading[] }> {
+  const settings = await createLiveStreamsSettingsCore().get();
+  if (!settings.enabled) return { streamsOn: 0, capMbps: settings.uploadCapMbps, guardMinutes: settings.uploadGuardMinutes, encoders: [] };
+  const encoders = await collectLiveEncoderReadings(now);
+  return { streamsOn: encoders.filter((e) => e.intentOn).length, capMbps: settings.uploadCapMbps, guardMinutes: settings.uploadGuardMinutes, encoders };
+}
+
 /**
  * BL-220 (RESTART_WHEN_IDLE_PLAN.md AC-RI-01/02): the streams on this computer that are being started, stopped or switched right now
  * -- the owner's Start (with its video settings), Go live, Stop or Edit holds its own lock, and a segment switch keeps its marker until
@@ -370,6 +415,7 @@ export function createLiveStreamsNoticesCore() {
 
 export { getBootstrapDeviceId as getLiveStreamsDeviceId } from "./adapters/device-id";
 export type { LiveNotice } from "./notices";
+export type { EncoderReading } from "./encoder-load";
 export type { StreamReportEntry, LiveStreamState } from "./report";
 export type { LiveStreamsRunner } from "./runner";
 export * from "./contracts";
