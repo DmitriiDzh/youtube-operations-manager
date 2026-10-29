@@ -10,8 +10,9 @@ export const DEVICE_SECRETS_KEY_FILE_NAME = "device-secrets.key";
 /**
  * `runpod`: the RunPod key + S3 pair (a JSON set, media-generation). `gemini`: the Gemini key. `huggingface`: the HF read token.
  * `github`: the owner's GitHub read token for private pod-runtime repositories (BL-230, media-generation).
+ * `elevenlabs`: the ElevenLabs API key (BL-236, elevenlabs-speech; hint: its last 4 characters).
  */
-export const DEVICE_SECRET_NAMES = ["runpod", "gemini", "huggingface", "github"] as const;
+export const DEVICE_SECRET_NAMES = ["runpod", "gemini", "huggingface", "github", "elevenlabs"] as const;
 export type DeviceSecretName = (typeof DEVICE_SECRET_NAMES)[number];
 
 /** `set`: a row and a readable key file. `none`: nothing stored. The key file is missing / unusable while a row exists. */

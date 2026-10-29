@@ -452,6 +452,33 @@ async function startServerSession() {
   };
   setTimeout(() => void geminiLoop(), 10_000).unref();
 
+  // BL-236 (ADR 0057): the ElevenLabs speech worker -- its own loop and module (AGENTS.md §M), the same gate and shape as Gemini's:
+  // a take left mid-call by a dead process is failed at its characters first, then due queued takes are sent every 5 s. With the
+  // owner's switch off (the default) or nothing queued, a tick makes no outbound call.
+  let elevenlabs: import("@/lib/elevenlabs-speech").ElevenlabsSpeechCore | null = null;
+  try {
+    elevenlabs = (await import("@/lib/elevenlabs-speech")).createElevenlabsSpeechCore();
+  } catch (error) {
+    console.warn(`[elevenlabs-speech] not started: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  let elevenlabsSwept = false;
+  const elevenlabsLoop = async () => {
+    if (!elevenlabs) return;
+    try {
+      await assertDeviceAvailableForMutation(rawSqlClient);
+      if (!elevenlabsSwept) {
+        await elevenlabs.worker.bootSweep();
+        elevenlabsSwept = true;
+      }
+      await elevenlabs.worker.tick();
+    } catch (error) {
+      const paused = error instanceof Error && (error.name === "OperationLockError" || error.name === "RecoveryModeError");
+      if (!paused) console.warn(`[elevenlabs-speech] ${error instanceof Error ? error.message : String(error)}`);
+    }
+    setTimeout(() => void elevenlabsLoop(), GEMINI_TICK_MS).unref();
+  };
+  setTimeout(() => void elevenlabsLoop(), 12_000).unref();
+
   // BL-193 (ADR 0039): this computer's Gemini spend for the other computers on the same key (the sync-gateway `gemini-spend`
   // report: written when it changed, at least every 5 minutes), and the shared Gemini limits applied here (the `gemini-settings`
   // document: seed, then apply what the other computers saved). In its own loop, so a slow worker tick never delays it and a
