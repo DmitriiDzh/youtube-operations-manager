@@ -15592,6 +15592,27 @@ export async function setLiveStreamsSettingsJson(json: string, database: AppDb =
   await setAppSetting(LIVE_STREAMS_SETTINGS_KEY, json, database);
 }
 
+const DISK_GUARD_SETTINGS_KEY = "disk_guard_settings";
+const DISK_GUARD_STATE_KEY = "disk_guard_state";
+
+/** BL-237: the disk guard's settings on this computer (JSON: the free-space threshold), `null` before the first save. */
+export async function getDiskGuardSettingsJson(database: AppDb = db): Promise<string | null> {
+  return getAppSetting(DISK_GUARD_SETTINGS_KEY, database);
+}
+
+export async function setDiskGuardSettingsJson(json: string, database: AppDb = db): Promise<void> {
+  await setAppSetting(DISK_GUARD_SETTINGS_KEY, json, database);
+}
+
+/** BL-237: the disk guard's alert state on this computer (JSON), `null` before the first check. */
+export async function getDiskGuardStateJson(database: AppDb = db): Promise<string | null> {
+  return getAppSetting(DISK_GUARD_STATE_KEY, database);
+}
+
+export async function setDiskGuardStateJson(json: string, database: AppDb = db): Promise<void> {
+  await setAppSetting(DISK_GUARD_STATE_KEY, json, database);
+}
+
 const WEEKLY_BUILD_SETTINGS_KEY = "weekly_build_settings";
 
 /** BL-231: the weekly-build module's settings on this computer (JSON: the Python path), `null` before the first save. */
