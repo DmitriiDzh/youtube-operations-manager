@@ -19,6 +19,8 @@ import { createFactoryMcpServer, FACTORY_API_VERSION, FACTORY_TOOL_NAMES, FACTOR
 // factory_release_hold (local writes).
 // BL-223 (CHANNEL_BRANDING_PLAN.md §5): factory_channel_get_branding (a read) and factory_channel_save_branding (a local write).
 // BL-225 (WEEKLY_PUBLISHING_PLAN.md stage 1 item 5): factory_publishing_plan_save (a local write), _get and _list (reads).
+// BL-236 (ADR 0057, FO-REQ-0050): factory_speech_get_status / _get_job and factory_voice_list (reads); factory_speech_create_job,
+// factory_voice_design, factory_voice_pick (the owner's relayed pick) and factory_voice_update (writes).
 const EXPECTED_TOOLS = [
   "factory_channel_get_branding",
   "factory_channel_get_localizations",
@@ -88,6 +90,9 @@ const EXPECTED_TOOLS = [
   "factory_publishing_plan_save",
   "factory_release_hold",
   "factory_restart_status",
+  "factory_speech_create_job",
+  "factory_speech_get_job",
+  "factory_speech_get_status",
   "factory_storyboard_attach_render",
   "factory_storyboard_create",
   "factory_storyboard_get",
@@ -98,6 +103,10 @@ const EXPECTED_TOOLS = [
   "factory_video_create",
   "factory_video_get_cost",
   "factory_video_list",
+  "factory_voice_design",
+  "factory_voice_list",
+  "factory_voice_pick",
+  "factory_voice_update",
 ];
 
 function registeredNames(): string[] {
@@ -110,6 +119,8 @@ function registeredNames(): string[] {
       media: {} as never,
       plans: {} as never,
       gemini: {} as never,
+      speech: {} as never,
+      voices: {} as never,
       live: {} as never,
       channelLocalizations: {} as never,
       channelBranding: {} as never,
@@ -190,12 +201,17 @@ test("AC-FO-09 (amended by ADR 0025/0026): writes are exactly the named media/se
     "factory_plan_withdraw_recheck",
     "factory_publishing_plan_save",
     "factory_release_hold",
+    "factory_speech_create_job",
     "factory_storyboard_attach_render",
     "factory_storyboard_create",
     "factory_storyboard_reply",
     "factory_storyboard_submit",
     "factory_storyboard_update",
     "factory_video_create",
+    // BL-236 (ADR 0057): a paid voice design, the owner's relayed pick of a preview and a rename / archive (local).
+    "factory_voice_design",
+    "factory_voice_pick",
+    "factory_voice_update",
   ]);
   const writes = new Set<string>(FACTORY_WRITE_TOOL_NAMES);
   for (const name of FACTORY_TOOL_NAMES) {
@@ -205,7 +221,8 @@ test("AC-FO-09 (amended by ADR 0025/0026): writes are exactly the named media/se
     // (the pattern gains channel_get; the requirement "every non-write tool is a read" is unchanged).
     // BL-220 (RESTART_WHEN_IDLE_PLAN.md): factory_restart_status is the plan's status read (the pattern gains restart_status).
     // BL-227 stage 2: + localization_requests_list (the request list is a read; claim / complete / fail are writes).
-    if (!writes.has(name)) assert.match(name, /^factory_(get|list|media_(get|list|storage|capacity)|plan_(get|list|todo)|gemini_(get|list)|live_(get|list)|channel_get|storyboard_(get|list)|publishing_plan_(get|list)|publishing_coverage|localization_requests_list|jobs_list|video_(list|get_cost)|restart_status)_?/, `${name} must be a read`);
+    // BL-236: + speech_get (status and jobs) and voice_list -- reads; the speech create and the voice changes are writes.
+    if (!writes.has(name)) assert.match(name, /^factory_(get|list|media_(get|list|storage|capacity)|plan_(get|list|todo)|gemini_(get|list)|live_(get|list)|channel_get|storyboard_(get|list)|publishing_plan_(get|list)|publishing_coverage|localization_requests_list|jobs_list|video_(list|get_cost)|restart_status|speech_get|voice_list)_?/, `${name} must be a read`);
     assert.doesNotMatch(name, /_(set|issue|revoke)_|workspace|token|approve|reject/, `${name} must not touch paths, workspaces or tokens, or approve for anyone`);
   }
 });
@@ -246,6 +263,8 @@ test("§2.5(3): the factory route and endpoint reach only the allowlisted module
     "@/lib/generation-plans",
     // BL-174 (GEMINI_MEDIA_PLAN.md §2.7): the Gemini media module for the factory_gemini_* tools.
     "@/lib/gemini-media",
+    // BL-236 (ADR 0057): the speech surface and the voice registry, composed over gemini-media / elevenlabs-speech.
+    "@/composition/speech",
     // BL-176 (LIVE_STREAMS_PLAN.md §3.11): the live-streams module for factory_live_get_status / factory_live_map_sources.
     "@/lib/live-streams",
     // BL-210 (CHANNEL_LOCALIZATIONS_PLAN.md §5): the channel-localizations module's Operator surface (no apply) for the factory_channel_* tools.
@@ -332,7 +351,7 @@ test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.23.0 
   // BL-227 (LANGUAGES_REVIEW_PLAN.md §5: "Factory API 1.34.0"): one new tool, additive -> 1.34.0.
   // BL-233 (FO-REQ-0047 ask 3): factory_live_get_status gains `encoders` and `upload`, additive -> 1.37.0.
   // BL-234 (FO-REQ-0048): factory_live_get_status gains `sources`, additive -> 1.38.0.
-  assert.equal(FACTORY_API_VERSION, "1.39.0"); // BL-235: factory_publishing_coverage (additive) -> 1.39.0. // BL-230: factory_media_create_runtime checks github.com sources (new errors) -> 1.36.0. 1.35.0 = BL-229 part B (MUSIC_LIBRARY_PLAN.md §3): review forms, genre, answers -- additive -> 1.35.0.
+  assert.equal(FACTORY_API_VERSION, "1.40.0"); // BL-236: speech and voice tools (additive) -> 1.40.0. // BL-235: factory_publishing_coverage (additive) -> 1.39.0. // BL-230: factory_media_create_runtime checks github.com sources (new errors) -> 1.36.0. 1.35.0 = BL-229 part B (MUSIC_LIBRARY_PLAN.md §3): review forms, genre, answers -- additive -> 1.35.0.
   const agentOperations = await readFile("src/lib/agent-operations/contracts.ts", "utf8");
   assert.equal(agentOperations.includes("FACTORY_API_VERSION"), false);
 });

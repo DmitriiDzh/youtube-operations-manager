@@ -174,7 +174,14 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 // BL-235 (owner msgs 3806/3807): 1.39.0 -- factory_publishing_coverage (READ, local): per day from today in the channel's time zone,
 // covered | missing_translations | gap -- a day is covered when a video is published or scheduled on it with every tracked
 // translation (the same answer as the Content calendar and «План недели»), with asOf (the synced copy's age). Additive.
-export const FACTORY_API_VERSION = "1.39.0";
+// BL-236 (FO-REQ-0050, ADR 0057): 1.40.0 -- speech in a channel's designed voices through Gemini TTS or ElevenLabs, one
+// provider-neutral surface: factory_speech_get_status (READ), factory_speech_create_job (WRITE, paid; a dryRun is a read),
+// factory_speech_get_job (READ); the channel voice registry: factory_voice_list (READ), factory_voice_design (WRITE, paid: a voice from
+// a text description, kept as a draft with its previews), factory_voice_pick (WRITE: relays the owner's pick of one preview -- named "pick", not "approve": no factory tool approves for
+// anyone, AC-FO-09),
+// factory_voice_update (WRITE: rename / archive). Designed voices only -- no tool takes audio. factory_gemini_create_job is unchanged
+// (no speech there). Additive.
+export const FACTORY_API_VERSION = "1.40.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -236,6 +243,14 @@ export const FACTORY_TOOL_NAMES = [
   "factory_gemini_get_status",
   "factory_gemini_create_job",
   "factory_gemini_get_job",
+  // BL-236: speech (Gemini TTS / ElevenLabs) and the channel voice registry.
+  "factory_speech_get_status",
+  "factory_speech_create_job",
+  "factory_speech_get_job",
+  "factory_voice_list",
+  "factory_voice_design",
+  "factory_voice_pick",
+  "factory_voice_update",
   // BL-176: live streams -- their status (read) and the map of videos to their original files (a local write).
   "factory_live_get_status",
   "factory_live_map_sources",
@@ -316,6 +331,11 @@ export const FACTORY_WRITE_TOOL_NAMES = [
   "factory_plan_withdraw_recheck",
   // BL-174: a paid Gemini job (only within the owner's limits; a dry-run passes no gate).
   "factory_gemini_create_job",
+  // BL-236: a paid speech take (a dry-run passes no gate), a paid voice design, the owner's relayed pick, a rename / archive.
+  "factory_speech_create_job",
+  "factory_voice_design",
+  "factory_voice_pick",
+  "factory_voice_update",
   // BL-176: the map of videos to original files (local only; nothing reaches YouTube, nothing starts a stream).
   "factory_live_map_sources",
   // BL-207: the stream's translations (local only; written to YouTube only by the app after the owner's Start).
@@ -424,6 +444,22 @@ export type FactoryToolDeps = {
     getStatus(): Promise<Record<string, unknown>>;
     createJob(input: unknown): Promise<Record<string, unknown>>;
     getJobs(input: unknown): Promise<Record<string, unknown>>;
+  };
+  /**
+   * BL-236 (ADR 0057): speech through Gemini TTS or ElevenLabs (`src/composition/speech.ts`; each provider module validates its
+   * input strictly and enforces its owner's switch and limits).
+   */
+  speech: {
+    getStatus(): Promise<Record<string, unknown>>;
+    createJob(input: unknown): Promise<Record<string, unknown>>;
+    getJobs(input: unknown): Promise<Record<string, unknown>>;
+  };
+  /** BL-236: the channel voice registry (the module validates every input strictly and checks the voice is the channel's). */
+  voices: {
+    list(input: unknown): Promise<Record<string, unknown>>;
+    design(input: unknown): Promise<Record<string, unknown>>;
+    approve(input: unknown): Promise<Record<string, unknown>>;
+    update(input: unknown): Promise<Record<string, unknown>>;
   };
   /** BL-176: live streams (the module validates every input strictly itself). */
   live: {
@@ -1325,6 +1361,130 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
       inputSchema: geminiGetJobInput,
     },
     async (args) => successResult(await deps.gemini.getJobs(parseInput(geminiGetJobInput, args)))
+  );
+
+  // -- BL-236 (FO-REQ-0050, ADR 0057): speech and the channel voice registry. The modules validate every field; the schemas here
+  // name them. No tool sets a key, a switch or a limit, and no tool takes audio (designed voices only, never cloned).
+
+  const speechProvider = z.enum(["gemini", "elevenlabs"]);
+  const speechCreateInput = z
+    .object({
+      provider: speechProvider,
+      channelId: z.string().min(1).max(64),
+      voice: z.string().min(1).max(80),
+      text: z.string().min(1).max(10_000),
+      model: z.string().min(1).max(80).optional(),
+      style: z.string().min(1).max(1000).optional(),
+      outputFormat: z.string().min(1).max(40).optional(),
+      requestId: z.string().min(1).max(120).optional(),
+      dryRun: z.boolean().optional(),
+      videoNumber: z.string().min(1).max(12).optional(),
+    })
+    .strict();
+  const speechGetJobInput = z
+    .object({
+      jobId: z.string().min(1).max(80).optional(),
+      provider: speechProvider.optional(),
+      channelId: z.string().min(1).max(64).optional(),
+      status: z.enum(["queued", "submitting", "running", "done", "failed"]).optional(),
+      limit: z.number().int().min(1).max(50).optional(),
+    })
+    .strict();
+  const voiceListInput = z.object({ channelId: z.string().min(1).max(64), provider: speechProvider.optional(), includeArchived: z.boolean().optional() }).strict();
+  const voiceDesignInput = z
+    .object({
+      channelId: z.string().min(1).max(64),
+      provider: speechProvider,
+      name: z.string().min(1).max(60),
+      description: z.string().min(1).max(1000),
+      previewText: z.string().min(1).max(1000).optional(),
+      previews: z.number().int().min(1).max(3).optional(),
+      model: z.string().min(1).max(80).optional(),
+    })
+    .strict();
+  const voiceApproveInput = z.object({ channelId: z.string().min(1).max(64), voiceId: z.string().min(1).max(90), previewId: z.string().min(1).max(4) }).strict();
+  const voiceUpdateInput = z.object({ channelId: z.string().min(1).max(64), voiceId: z.string().min(1).max(90), name: z.string().min(1).max(60).optional(), archived: z.literal(true).optional() }).strict();
+
+  registerTool(
+    "factory_speech_get_status",
+    {
+      description:
+        "Speech (TTS) through Gemini or ElevenLabs (1.40.0): what you may do now, per provider. -> { providers: { gemini: { units: 'usd', enabled (the owner's Gemini switch, shared with images/video), keyConfigured, keyHint (last 4), keyStatus, gatewayEnabled, limits: { maxUsdPerJob, maxUsdPerDay, maxUsdPerMonth, maxActiveJobs } (the Gemini limits, shared with images/video), spend (as factory_gemini_get_status), models: [{ model, label, audioTokensPerSecond, usdPerMinute, usdPerMillionTokens: { input, audioOutput }, pricesChangeAt (the announced doubling, 2027-01-01), usdPerMillionTokensAfterChange, maxTextChars }], defaultModel, sampleRateHz (24000: Google's own, not resampled), outputFile }, elevenlabs: { units: 'characters', enabled (its own switch, off by default), keyConfigured, keyHint (last 4), keyStatus, gatewayEnabled, limits: { maxCharsPerJob, maxCharsPerDay, maxCharsPerMonth, maxActiveJobs }, outputFormat (the owner's, default mp3_44100_128), outputFormats, usage: { todayChars, monthChars, activeChars, activeJobs, todayUsd, monthUsd (list-price estimate; the subscription pays) }, pricesAsOf, defaultModel, models: [{ model, label, usdPer1kChars, maxChars }], designModel } } } -- a provider that cannot be read shows { available: false, errorCode }. Limits and usage are this computer's (ElevenLabs) / as Gemini's. Never a key. Read-only.",
+      inputSchema: emptyInput,
+    },
+    async () => successResult(await deps.speech.getStatus())
+  );
+
+  registerTool(
+    "factory_speech_create_job",
+    {
+      description:
+        "Speak ONE take of text in an APPROVED voice of the channel (1.40.0), paid: { provider: 'gemini' | 'elevenlabs', channelId, voice (the voice's name or voiceId from factory_voice_list -- approved, this channel, this provider), text (Gemini <= 5000 characters; ElevenLabs <= the model's limit, 10000 for eleven_v4; a 60 s story is about 900 English characters -- one take, no stitching), model? (Gemini: gemini-3.8-flash-tts (default) | gemini-3.8-flash-lite-tts; ElevenLabs: eleven_v4 (default) | eleven_v3 | eleven_multilingual_v2 | eleven_flash_v2_5), style? (Gemini only: a natural-language direction, e.g. 'like a bedtime story, warm and slow'; ElevenLabs refuses it -- write audio tags such as [whispers] [laughs] [pause] into the text instead), outputFormat? (ElevenLabs only: mp3_44100_128 (default; the owner's setting) | mp3_44100_192 | mp3_44100_96 | mp3_44100_64 | pcm_24000 | pcm_44100 | pcm_48000 (saved as WAV) -- a higher format may need a higher ElevenLabs plan), requestId? (yours: the same id with the same take returns the first job; other content: gemini_request_exists / elevenlabs_request_exists), dryRun? (true: only the estimate -- Gemini { estimateUsd, allowed, refusal, spend }; ElevenLabs { chars, estimateUsd, allowed, refusal, usage } -- nothing stored), videoNumber? ('V49') } -> { provider, job } (status queued; sent within seconds). Output in the channel's 99 Data Exchange/From YTM/<gemini|elevenlabs>/<jobId>/take-1.<wav|mp3> with manifest.json written last (kind speech, the sample rate and length); review it with factory_plan_report auditionFile 'From YTM/<provider>/<jobId>/take-1.wav'. Gemini: a WAV at Google's own 24 kHz, priced by Google's token counts and never below the file's length (25 audio tokens a second); ElevenLabs: limits in characters (a Japanese character is one), cost the characters at the list price. Refusals: voice_not_approved (details.reason: not_found | draft | archived | other_provider), gemini_disabled / elevenlabs_disabled (the owner's switch), gemini_key_missing / elevenlabs_key_missing, gemini_limit_exceeded (USD) / elevenlabs_limit_exceeded (details.limit per_job | per_day | per_month | active_jobs, with limitChars, usedChars, chars), gemini_invalid_params / elevenlabs_invalid_params (details.field), gemini_workspace_unavailable / elevenlabs_workspace_unavailable, video_not_found, validation_failed. No audio is ever taken: designed voices only. Recorded as done by the Factory Operator.",
+      inputSchema: speechCreateInput,
+    },
+    async (args) => {
+      const input = parseInput(speechCreateInput, args);
+      if (!input.dryRun) await deps.assertMutationAllowed();
+      return successResult(await deps.speech.createJob(input));
+    }
+  );
+
+  registerTool(
+    "factory_speech_get_job",
+    {
+      description:
+        "One speech job by jobId (gm_… Gemini, el_… ElevenLabs) -> { provider, job }, or the newest speech jobs and voice designs -> { jobs: [{ provider, ...job }] } (optional provider, channelId, status, limit <= 50, default 20; newest first) (1.40.0). Job (Gemini): as factory_gemini_get_job with kind speech | voice_design, prompt = the text, params { voice: { voiceId, name, providerVoiceId }, style } and outputs [{ path, kind: audio, mimeType, bytes, sha256, sampleRateHz, durationSeconds, assetId }]; (ElevenLabs): { jobId, channelId, requestId, kind: speech | voice_design, model, text, params { voice, outputFormat }, status, chars, chargedChars, estimateUsd, costUsd, costBasis: list_price | not_charged | unknown_outcome, outputs, error, errorCode (elevenlabs_blocked, elevenlabs_invalid_request, elevenlabs_rate_limited / elevenlabs_unavailable after 3 attempts, elevenlabs_payment_required (plan or characters), elevenlabs_key_invalid, elevenlabs_key_missing, elevenlabs_disabled, elevenlabs_interrupted, elevenlabs_output_failed, media_gateway_disabled), attempts, createdBy, createdAt, submittedAt, finishedAt, video }. Unknown id: gemini_job_not_found / elevenlabs_job_not_found. Read-only.",
+      inputSchema: speechGetJobInput,
+    },
+    async (args) => successResult(await deps.speech.getJobs(parseInput(speechGetJobInput, args)))
+  );
+
+  const VOICE_SHAPE =
+    "Voice: { voiceId, channelId, name, provider: gemini | elevenlabs, providerVoiceId (what the provider speaks with; null for a draft), description, model, status: draft | approved | archived, previews: [{ previewId (p1..p3), file (relative to the channel's 99 Data Exchange/From YTM/, e.g. elevenlabs/voices/<voiceId>/preview-1.mp3 -- play it in place, or report it as an auditionFile 'From YTM/<file>'), mimeType, bytes, sha256, sampleRateHz, durationSeconds, providerRef, jobId (the paid design) }], approvedPreviewId, createdAt, createdBy, approvedAt, approvedBy, updatedAt }.";
+
+  registerTool(
+    "factory_voice_list",
+    { description: `A channel's designed voices on this computer (1.40.0): { channelId, provider?, includeArchived? (default false) } -> { voices } (newest first). ${VOICE_SHAPE} Read-only, local.`, inputSchema: voiceListInput },
+    async (args) => successResult(await deps.voices.list(parseInput(voiceListInput, args)))
+  );
+
+  registerTool(
+    "factory_voice_design",
+    {
+      description: `Design a voice for a channel from a TEXT DESCRIPTION (1.40.0), paid: { channelId, provider: gemini | elevenlabs, name (<= 60; unique per channel and provider among voices not archived -- voice_name_taken, checked before anything is paid), description (10-1000 characters, e.g. 'young adult woman ~20, soft warm voice, calm, slightly playful, clear neutral English, cozy storyteller' -- an ADULT voice; never a real person, a seiyuu or an existing character), previewText? (what the previews say; ElevenLabs: 100-1000 characters), previews? (1-3; default ElevenLabs 3 from one call, Gemini 1 -- each Gemini preview is its own designed voice and its own paid design; Google keeps a designed voice about a year, at most 200 per project), model? } -> { voice } (status draft, its previews saved as files in From YTM/<provider>/voices/<voiceId>/). Paid through the provider's own switch, key and limits and recorded as a voice_design job (factory_speech_get_job). The voice speaks only after the owner approves one preview (in the app, or relayed with factory_voice_pick). No audio is taken: designed, never cloned. Refusals: voice_name_taken, gemini_disabled / elevenlabs_disabled, *_key_missing, *_limit_exceeded, voice_registry_unavailable (no workspace folder), validation_failed. ${VOICE_SHAPE}`,
+      inputSchema: voiceDesignInput,
+    },
+    async (args) => {
+      const input = parseInput(voiceDesignInput, args);
+      await deps.assertMutationAllowed();
+      return successResult(await deps.voices.design(input));
+    }
+  );
+
+  registerTool(
+    "factory_voice_pick",
+    {
+      description: `Relay the OWNER's pick of a draft voice's preview (1.40.0) -- only what the owner chose: { channelId, voiceId, previewId } -> { voice } (approved; ElevenLabs saves the chosen design as a voice of the account and its voice_id becomes providerVoiceId; Gemini keeps the preview's voice id). Refusals: voice_not_found (another channel's voice, or no such preview id on a draft), voice_invalid_state (not a draft), elevenlabs_key_missing. Recorded as approved by the Factory Operator. ${VOICE_SHAPE}`,
+      inputSchema: voiceApproveInput,
+    },
+    async (args) => {
+      const input = parseInput(voiceApproveInput, args);
+      await deps.assertMutationAllowed();
+      return successResult(await deps.voices.approve(input));
+    }
+  );
+
+  registerTool(
+    "factory_voice_update",
+    {
+      description: `Rename or archive a channel's voice (1.40.0): { channelId, voiceId, name? (unique per channel and provider among voices not archived), archived?: true } -> { voice }. An archived voice no longer speaks and frees its name; it cannot be changed or brought back. Refusals: voice_not_found, voice_name_taken, voice_invalid_state (archived). Local only. ${VOICE_SHAPE}`,
+      inputSchema: voiceUpdateInput,
+    },
+    async (args) => {
+      const input = parseInput(voiceUpdateInput, args);
+      await deps.assertMutationAllowed();
+      return successResult(await deps.voices.update(input));
+    }
   );
 
   // -- BL-176 (LIVE_STREAMS_PLAN.md §3.4/§3.11): live streams. Reads the module's fixed-code status; the map is a local write.
