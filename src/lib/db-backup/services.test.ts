@@ -2,8 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import { createLibsqlClient } from "@/lib/libsql-client";
-import { copyDatabaseConsistently, isMissingTableError, MIGRATION_BACKUPS_KEEP, MIGRATION_SUCCESS_MARKER, pruneMigrationBackups, recordSuccessfulMigration, RETAINED_BACKUP_PREFIXES } from "./services";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { copyDatabaseConsistently, createMigrationBackups, isMissingTableError, MIGRATION_BACKUPS_KEEP, MIGRATION_SUCCESS_MARKER, pruneMigrationBackups, readMigrationBackupState, RETAINED_BACKUP_PREFIXES } from "./services";
+import { initializeDatabaseSchema } from "@/lib/db";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { DatabaseBackupError } from "./contracts";
 import { withTempDir } from "@/test-support/temp-dir";
 
@@ -74,8 +75,6 @@ test("the newest 10 pre-migration and the newest 10 pre-auto-import stay; the ol
     const migrations = Array.from({ length: 13 }, (_, i) => `pre-migration-${1_790_000_000_000 + i}-ab${i}cd.db`);
     const imports = Array.from({ length: 11 }, (_, i) => `pre-auto-import-${1_791_000_000_000 + i}-0f0f0f0${i % 10}.db`);
     await seed(dir, [...migrations, ...imports]);
-    // The last upgrade succeeded after all these copies (review blocker: before a success the oldest copy is kept).
-    await writeFile(path.join(dir, MIGRATION_SUCCESS_MARKER), "9999999999999");
     const removed = await pruneMigrationBackups(dir);
     assert.deepEqual(removed.sort(), [migrations[0], migrations[1], migrations[2], imports[0]].sort());
     const left = await readdir(dir);
@@ -88,8 +87,6 @@ test("newest is by the timestamp in the name, not by the order of the names as t
     // 999 sorts after 1000 as text, but is older.
     const names = ["pre-migration-999-aaaaaa.db", ...Array.from({ length: 10 }, (_, i) => `pre-migration-${1000 + i}-aaaaaa.db`)];
     await seed(dir, names);
-    // The last upgrade succeeded after all these copies (review blocker: before a success the oldest copy is kept).
-    await writeFile(path.join(dir, MIGRATION_SUCCESS_MARKER), "9999999999999");
     assert.deepEqual(await pruneMigrationBackups(dir), ["pre-migration-999-aaaaaa.db"]);
   }));
 
@@ -121,8 +118,6 @@ test("other backups, malformed names and sub-folders are never touched", () =>
       "notes.txt",
     ];
     await seed(dir, [...others, ...Array.from({ length: 12 }, (_, i) => `pre-migration-${4000 + i}-eeeeee.db`)]);
-    // The last upgrade succeeded after all these copies (review blocker: before a success the oldest copy is kept).
-    await writeFile(path.join(dir, MIGRATION_SUCCESS_MARKER), "9999999999999");
     await mkdir(path.join(dir, "manual"));
     await seed(path.join(dir, "manual"), ["pre-migration-1-ffffff.db"]);
     const removed = await pruneMigrationBackups(dir);
@@ -136,46 +131,144 @@ test("a missing folder prunes nothing and does not throw", async () => {
   assert.deepEqual(await pruneMigrationBackups(path.join("/nonexistent-ytm", "backups", "migrations")), []);
 });
 
-// Independent review (BL-237 blocker): migrations are not transactional, and a failing one is retried -- every attempt takes a
-// new pre-migration copy. Requirement: the backup taken before an upgrade survives until that upgrade succeeds; after a later
-// success, the normal retention applies.
+// Independent review (BL-237 blocker, two rounds): migrations are not transactional, and a failing one is retried -- every
+// attempt takes a new pre-migration copy. Requirement: the copy taken before an upgrade (its FIRST copy, C1) survives until
+// that upgrade succeeds, whatever prunes run meanwhile, with or without an earlier record, and whatever the clock says; after
+// the success the normal retention applies. Every successful start writes the record, so a missing or stale one heals.
 
-test("a failing upgrade retried 12 times keeps its first (clean) copy, whatever prunes run meanwhile", () =>
+/** A boot with the same order db.ts uses: takeCopy inside the migration, succeeded() only after it went through. */
+function bootSession(dir: string, clock: { t: number }, copies: string[]) {
+  let n = 0;
+  return createMigrationBackups({
+    dir,
+    copy: async (destPath) => {
+      await writeFile(destPath, "copy");
+      copies.push(path.basename(destPath));
+    },
+    now: () => clock.t,
+    suffix: () => `s${String(n++).padStart(4, "0")}`,
+  });
+}
+
+async function boot(dir: string, clock: { t: number }, copies: string[], migrate: (takeCopy: () => Promise<string>) => Promise<void>) {
+  const session = bootSession(dir, clock, copies);
+  await migrate(() => session.takeCopy());
+  await session.succeeded();
+}
+
+const failing = async (takeCopy: () => Promise<string>) => {
+  await takeCopy();
+  throw new Error("migration 116 failed");
+};
+const passing = async (takeCopy: () => Promise<string>) => {
+  await takeCopy();
+};
+
+async function preMigration(dir: string) {
+  return (await readdir(dir)).filter((n) => n.startsWith("pre-migration-")).sort();
+}
+
+test("no record at all (first start on this build), 12 failed attempts with prunes in between, then success: C1 survives", () =>
   withTempDir("db-backup-retention-", async (dir) => {
-    // An earlier successful upgrade, and its 10 newest copies.
-    await seed(dir, Array.from({ length: 10 }, (_, i) => `pre-migration-${500 + i}-aaaaaa.db`));
-    await recordSuccessfulMigration(dir, { at: 600 });
-    // The new build's first attempt, then 11 retries, each with its own copy and a prune (e.g. an automatic import's).
+    await seed(dir, Array.from({ length: 15 }, (_, i) => `pre-migration-${100 + i}-old000.db`)); // older upgrades' copies
+    const clock = { t: 1000 };
+    const copies: string[] = [];
     for (let attempt = 0; attempt < 12; attempt++) {
-      await seed(dir, [`pre-migration-${1000 + attempt}-bbbbbb.db`]);
-      await pruneMigrationBackups(dir, { prefixes: ["pre-migration"] });
-      assert.ok((await readdir(dir)).includes("pre-migration-1000-bbbbbb.db"), `after attempt ${attempt + 1}`);
+      clock.t += 3000;
+      await assert.rejects(() => boot(dir, clock, copies, failing));
+      await pruneMigrationBackups(dir, { prefixes: ["pre-migration"] }); // e.g. an automatic import meanwhile
+      assert.ok((await preMigration(dir)).includes(copies[0]), `C1 after attempt ${attempt + 1}`);
     }
-    const left = (await readdir(dir)).filter((n) => n.startsWith("pre-migration-"));
-    assert.equal(left.length, 11, "the newest 10 plus the clean pre-upgrade copy");
+    clock.t += 3000;
+    await boot(dir, clock, copies, passing);
+    const left = await preMigration(dir);
+    assert.ok(left.includes(copies[0]), "C1 survives the success's own prune");
+    assert.ok(left.includes(copies[12]), "the copy of the successful start survives");
+    assert.equal(left.length, 11, "newest 10 + C1");
+    const state = await readMigrationBackupState(dir);
+    assert.deepEqual(state, { pendingUpgradeCopy: null, lastSuccessAt: clock.t, lastProtectedCopy: copies[0] });
+    // After the success, ordinary retention: the next prune keeps just the newest 10.
+    assert.deepEqual(await pruneMigrationBackups(dir, { prefixes: ["pre-migration"] }), [copies[0]]);
   }));
 
-test("after the upgrade finally succeeds, its first copy is no longer special: the next prune keeps just the newest 10", () =>
+test("a stale record from an earlier upgrade, then a new upgrade failing 12 times: the NEW C1 survives", () =>
   withTempDir("db-backup-retention-", async (dir) => {
-    await seed(dir, Array.from({ length: 13 }, (_, i) => `pre-migration-${1000 + i}-cccccc.db`));
-    // Success after the 13th attempt: the clean copy (1000) and the one just written both stay.
-    const removed = await recordSuccessfulMigration(dir, { at: 2000, justWritten: path.join(dir, "pre-migration-1012-cccccc.db") });
-    assert.deepEqual(removed.sort(), ["pre-migration-1001-cccccc.db", "pre-migration-1002-cccccc.db"]);
-    assert.equal(await readFile(path.join(dir, MIGRATION_SUCCESS_MARKER), "utf8"), "2000");
-    // A later prune (the next automatic import): ordinary retention.
-    assert.deepEqual(await pruneMigrationBackups(dir, { prefixes: ["pre-migration"] }), ["pre-migration-1000-cccccc.db"]);
-    // The next upgrade's first copy is now the protected one.
-    await seed(dir, ["pre-migration-3000-dddddd.db"]);
-    await seed(dir, Array.from({ length: 10 }, (_, i) => `pre-migration-${3001 + i}-dddddd.db`));
-    await pruneMigrationBackups(dir, { prefixes: ["pre-migration"] });
-    assert.ok((await readdir(dir)).includes("pre-migration-3000-dddddd.db"));
+    const clock = { t: 1000 };
+    const copies: string[] = [];
+    await boot(dir, clock, copies, passing); // the earlier upgrade, recorded
+    const earlierC1 = copies[0];
+    for (let i = 0; i < 12; i++) {
+      clock.t += 3000;
+      await assert.rejects(() => boot(dir, clock, copies, failing));
+      await pruneMigrationBackups(dir, { prefixes: ["pre-migration"] });
+    }
+    const newC1 = copies[1];
+    assert.ok((await preMigration(dir)).includes(newC1));
+    assert.equal((await readMigrationBackupState(dir)).pendingUpgradeCopy, newC1);
+    assert.ok(!(await preMigration(dir)).includes(earlierC1), "the earlier upgrade's copy follows ordinary retention");
   }));
 
-test("the boot prunes pre-migration copies only after the migrations succeeded, never inside the backup hook", async () => {
-  const source = await readFile(path.join(process.cwd(), "src", "lib", "db.ts"), "utf8");
-  const boot = source.slice(source.indexOf("async function initializeDatabase()"), source.indexOf("function startDatabaseInitialization"));
-  const hook = boot.slice(boot.indexOf("beforeMigrations: async"), boot.indexOf("afterMigrations();"));
-  assert.ok(!/prune|recordSuccessfulMigration/.test(hook), "no pruning while migrating");
-  assert.ok(boot.indexOf("recordSuccessfulMigration(") > boot.indexOf("await initializeDatabaseSchema("));
-  assert.ok(!/pruneMigrationBackups/.test(boot));
-});
+test("the upgrade's first copy is kept by NAME: a clock set back after the last success does not lose it", () =>
+  withTempDir("db-backup-retention-", async (dir) => {
+    const clock = { t: 900_000 };
+    const copies: string[] = [];
+    await boot(dir, clock, copies, passing); // the last success, recorded with a clock that was ahead
+    clock.t = 1000; // set back: the new upgrade's copies all carry times BEFORE that success
+    for (let i = 0; i < 12; i++) {
+      clock.t += 10;
+      await assert.rejects(() => boot(dir, clock, copies, failing));
+      await pruneMigrationBackups(dir, { prefixes: ["pre-migration"] });
+    }
+    const newC1 = copies[1];
+    assert.ok((await preMigration(dir)).includes(newC1), "kept although its time sorts before the last success");
+    clock.t += 10;
+    await boot(dir, clock, copies, passing);
+    assert.ok((await preMigration(dir)).includes(newC1));
+    assert.equal((await readMigrationBackupState(dir)).lastProtectedCopy, newC1);
+  }));
+
+test("a crash between recording C1's name and writing it: the next attempt's copy becomes C1", () =>
+  withTempDir("db-backup-retention-", async (dir) => {
+    const clock = { t: 1000 };
+    const crashing = createMigrationBackups({ dir, copy: async () => Promise.reject(new Error("killed")), now: () => clock.t, suffix: () => "dead00" });
+    await assert.rejects(() => crashing.takeCopy());
+    assert.equal((await readMigrationBackupState(dir)).pendingUpgradeCopy, "pre-migration-1000-dead00.db");
+    clock.t = 2000;
+    const copies: string[] = [];
+    await assert.rejects(() => boot(dir, clock, copies, failing));
+    assert.equal((await readMigrationBackupState(dir)).pendingUpgradeCopy, copies[0]);
+  }));
+
+test("a start with nothing to migrate prunes nothing, but writes a missing or stale record (it heals)", () =>
+  withTempDir("db-backup-retention-", async (dir) => {
+    const names = Array.from({ length: 14 }, (_, i) => `pre-migration-${100 + i}-old000.db`);
+    await seed(dir, names);
+    const clock = { t: 5000 };
+    await boot(dir, clock, [], async () => undefined);
+    assert.equal((await preMigration(dir)).length, 14, "no migration ran: nothing pruned");
+    assert.deepEqual(await readMigrationBackupState(dir), { pendingUpgradeCopy: null, lastSuccessAt: 5000, lastProtectedCopy: null });
+    // A stale "upgrade pending" record (a crash after the migrations, before the record) is cleared on the next good start.
+    await writeFile(path.join(dir, MIGRATION_SUCCESS_MARKER), JSON.stringify({ pendingUpgradeCopy: names[0], lastSuccessAt: 1, lastProtectedCopy: null }));
+    clock.t = 6000;
+    await boot(dir, clock, [], async () => undefined);
+    assert.deepEqual(await readMigrationBackupState(dir), { pendingUpgradeCopy: null, lastSuccessAt: 6000, lastProtectedCopy: null });
+  }));
+
+test("the real schema initialization: a fresh database migrates, the copy is taken inside the hook, the record after it", () =>
+  withTempDir("db-backup-boot-", async (root) => {
+    const dir = path.join(root, "backups", "migrations");
+    const client = createLibsqlClient({ url: `file:${path.join(root, "live.db")}` });
+    const session = createMigrationBackups({ dir, copy: async (destPath) => void (await copyDatabaseConsistently(client, destPath)), now: () => 7000, suffix: () => "real00" });
+    let stateInsideHook: unknown = "not called";
+    await initializeDatabaseSchema(client, {
+      beforeMigrations: async () => {
+        await session.takeCopy();
+        stateInsideHook = await readMigrationBackupState(dir);
+      },
+    });
+    assert.deepEqual(stateInsideHook, { pendingUpgradeCopy: "pre-migration-7000-real00.db", lastSuccessAt: null, lastProtectedCopy: null });
+    await session.succeeded();
+    assert.deepEqual(await readMigrationBackupState(dir), { pendingUpgradeCopy: null, lastSuccessAt: 7000, lastProtectedCopy: "pre-migration-7000-real00.db" });
+    assert.deepEqual(await preMigration(dir), ["pre-migration-7000-real00.db"]);
+    client.close();
+  }));

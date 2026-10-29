@@ -13,7 +13,7 @@ import type { BatchItem } from "drizzle-orm/batch";
 import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "@/lib/batches/ledger-state";
 import { getProductionAppPaths, isRunningUnderTestRunner, resolveLegacyDbPath } from "@/lib/platform-paths";
-import { copyDatabaseConsistently, isMissingTableError, recordSuccessfulMigration } from "@/lib/db-backup";
+import { copyDatabaseConsistently, createMigrationBackups, isMissingTableError } from "@/lib/db-backup";
 import {
   assertSupportedSchemaVersion,
   readSchemaVersion,
@@ -6320,17 +6320,20 @@ async function initializeDatabase() {
   // pre-migration backup, never the live DB. Loaded lazily: `@/lib/snapshot` imports this module.
   // The hooks never throw.
   let syncHooks: { beforeMigrations: (backupPath: string) => Promise<void>; afterMigrations: () => Promise<void> } | null = null;
-  // BL-237: the copy this boot took before migrating; old copies are trimmed only once the migrations SUCCEEDED.
-  let migrationBackupPath: string | null = null;
+  // BL-237: the pre-migration copies in the order `db-backup.createMigrationBackups` defines -- the copy (the upgrade's first
+  // copy recorded by name first) inside the hook, the prune and the success record only after the migrations went through.
+  const migrationBackups = createMigrationBackups({
+    dir: appPaths.migrationBackupsDir,
+    copy: async (destPath) => {
+      await copyDatabaseConsistently(rawClient, destPath);
+    },
+    now: () => Date.now(),
+    suffix: () => Math.random().toString(36).slice(2, 8),
+  });
   try {
     await initializeDatabaseSchema(rawClient, {
       beforeMigrations: async () => {
-        const destPath = path.join(
-          appPaths.migrationBackupsDir,
-          `pre-migration-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.db`
-        );
-        await copyDatabaseConsistently(rawClient, destPath);
-        migrationBackupPath = destPath;
+        const destPath = await migrationBackups.takeCopy();
         syncHooks = await import("@/lib/snapshot")
           .then(({ createSyncPreservingMigrationHooks }) => createSyncPreservingMigrationHooks(rawClient))
           .catch(() => null);
@@ -6338,12 +6341,8 @@ async function initializeDatabase() {
       },
     });
     await (syncHooks as { afterMigrations: () => Promise<void> } | null)?.afterMigrations();
-    // BL-237: only now -- a failing migration is retried and every retry takes another copy; trimming then would delete the
-    // clean copy from before the upgrade. The newest 10 stay, this one always. Housekeeping: a failure never stops the boot.
-    const writtenBeforeMigrating = migrationBackupPath as string | null; // assigned inside the hook above
-    if (writtenBeforeMigrating) {
-      await recordSuccessfulMigration(appPaths.migrationBackupsDir, { at: Date.now(), justWritten: writtenBeforeMigrating }).catch(() => []);
-    }
+    // Housekeeping: a failure here never stops the boot (the next successful start writes the record again).
+    await migrationBackups.succeeded().catch(() => []);
   } finally {
     if (lockAcquired) await releaseOperationLock(rawClient);
   }

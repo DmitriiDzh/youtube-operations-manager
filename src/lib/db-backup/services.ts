@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseBackupError, type SqlExecutor } from "./contracts";
 
@@ -68,31 +68,50 @@ export async function copyDatabaseConsistently(
 export const MIGRATION_BACKUPS_KEEP = 10;
 export const RETAINED_BACKUP_PREFIXES = ["pre-migration", "pre-auto-import"] as const;
 const PRE_MIGRATION_PREFIX = "pre-migration";
+const BACKUP_NAME = (prefix: string) => new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-(\\d+)-[0-9A-Za-z]+\\.db$`);
+
 /**
- * When the last schema migration succeeded (milliseconds, as text), written in `backups/migrations/` by
- * {@link recordSuccessfulMigration}. Migrations are not transactional: a failing one is retried (every few seconds, and by
- * every restart), and each attempt takes a new pre-migration copy -- of a database the failed attempts may already have
- * changed. The OLDEST copy taken since the last success is the clean one from before the upgrade, the one way back to the
- * previous build: retention never deletes it.
+ * The pre-migration copies' bookkeeping in `backups/migrations/` (JSON). Migrations are not transactional: a failing one is
+ * retried (every few seconds, and at every restart) and each attempt takes a new copy -- of a database the failed attempts
+ * may already have changed. So the FIRST copy of an upgrade (`pendingUpgradeCopy`, recorded by NAME before it is written,
+ * never by clock order) is the clean one, the one way back to the previous build: no prune deletes it while the upgrade has
+ * not succeeded. Every successful start writes the file again (`lastSuccessAt`, `pendingUpgradeCopy: null`), so a missing or
+ * stale file heals on the next start; `lastProtectedCopy` names the upgrade's first copy of the last success.
  */
 export const MIGRATION_SUCCESS_MARKER = ".last-successful-migration";
 
-const BACKUP_NAME = (prefix: string) => new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-(\\d+)-[0-9A-Za-z]+\\.db$`);
+export type MigrationBackupState = { pendingUpgradeCopy: string | null; lastSuccessAt: number | null; lastProtectedCopy: string | null };
 
-async function readSuccessMarker(dir: string): Promise<number> {
+export async function readMigrationBackupState(dir: string): Promise<MigrationBackupState> {
+  const empty: MigrationBackupState = { pendingUpgradeCopy: null, lastSuccessAt: null, lastProtectedCopy: null };
   try {
-    const value = Number((await readFile(path.join(dir, MIGRATION_SUCCESS_MARKER), "utf8")).trim());
-    return Number.isFinite(value) ? value : 0;
+    const parsed: unknown = JSON.parse(await readFile(path.join(dir, MIGRATION_SUCCESS_MARKER), "utf8"));
+    if (!parsed || typeof parsed !== "object") return empty;
+    const raw = parsed as Record<string, unknown>;
+    const name = (value: unknown) => (typeof value === "string" && BACKUP_NAME(PRE_MIGRATION_PREFIX).test(value) ? value : null);
+    return {
+      pendingUpgradeCopy: name(raw.pendingUpgradeCopy),
+      lastSuccessAt: typeof raw.lastSuccessAt === "number" && Number.isFinite(raw.lastSuccessAt) ? raw.lastSuccessAt : null,
+      lastProtectedCopy: name(raw.lastProtectedCopy),
+    };
   } catch {
-    return 0;
+    return empty;
   }
+}
+
+async function writeMigrationBackupState(dir: string, state: MigrationBackupState): Promise<void> {
+  await mkdir(dir, { recursive: true });
+  const target = path.join(dir, MIGRATION_SUCCESS_MARKER);
+  const temporary = `${target}.${process.pid}.tmp`;
+  await writeFile(temporary, JSON.stringify(state), "utf8");
+  await rename(temporary, target);
 }
 
 /**
  * Deletes the older automatic backups in `dir`, keeping the newest `keep` of each prefix -- newest by the millisecond
  * timestamp in the name (`<prefix>-<ms>-<suffix>.db`, the form every writer uses). Never deleted: `protect` (the backup
- * just written), and the oldest `pre-migration` copy taken since the last successful migration (see
- * {@link MIGRATION_SUCCESS_MARKER}). Returns the names deleted.
+ * just written), and the first copy of an upgrade that has not succeeded yet ({@link MIGRATION_SUCCESS_MARKER}). Returns
+ * the names deleted.
  */
 export async function pruneMigrationBackups(
   dir: string,
@@ -116,10 +135,8 @@ export async function pruneMigrationBackups(
       .sort((a, b) => b.at - a.at || b.name.localeCompare(a.name));
     const kept = new Set<string>();
     if (prefix === PRE_MIGRATION_PREFIX) {
-      const lastSuccess = await readSuccessMarker(dir);
-      const sinceSuccess = ours.filter((entry) => entry.at > lastSuccess);
-      const preUpgrade = sinceSuccess[sinceSuccess.length - 1];
-      if (preUpgrade) kept.add(preUpgrade.name);
+      const { pendingUpgradeCopy } = await readMigrationBackupState(dir);
+      if (pendingUpgradeCopy) kept.add(pendingUpgradeCopy);
     }
     for (const entry of ours.slice(keep)) {
       const full = path.join(dir, entry.name);
@@ -132,13 +149,42 @@ export async function pruneMigrationBackups(
 }
 
 /**
- * After the schema migrations SUCCEEDED (only then): trims the pre-migration copies to the newest 10 -- the one just
- * written and the clean pre-upgrade copy always stay -- and records the success, so the next upgrade's own first copy
- * becomes the protected one. Never called while a migration fails: every retry's copy stays until one attempt succeeds.
+ * A start's pre-migration backups, in the order the boot must follow (`db.ts` and its tests use exactly this):
+ * `takeCopy()` inside `beforeMigrations` (records the upgrade's first copy by name BEFORE writing it -- a crash in between
+ * leaves a name whose file is missing, which the next attempt replaces; never prunes), then `succeeded()` only once the
+ * migrations went through: when a copy was taken, prune to the newest 10 protecting this start's copy AND the upgrade's
+ * first copy, and only then write the state (success, no pending upgrade). Written on every successful start, also when
+ * nothing was migrated, so a missing or stale state heals.
  */
-export async function recordSuccessfulMigration(dir: string, input: { at: number; justWritten?: string | null }): Promise<string[]> {
-  const removed = await pruneMigrationBackups(dir, { prefixes: [PRE_MIGRATION_PREFIX], protect: input.justWritten ? [input.justWritten] : [] });
-  await mkdir(dir, { recursive: true });
-  await writeFile(path.join(dir, MIGRATION_SUCCESS_MARKER), String(input.at), "utf8");
-  return removed;
+export function createMigrationBackups(deps: { dir: string; copy(destPath: string): Promise<void>; now(): number; suffix(): string }) {
+  let written: string | null = null;
+  return {
+    async takeCopy(): Promise<string> {
+      const name = `${PRE_MIGRATION_PREFIX}-${deps.now()}-${deps.suffix()}.db`;
+      const state = await readMigrationBackupState(deps.dir);
+      const pendingExists = state.pendingUpgradeCopy !== null && (await pathExists(path.join(deps.dir, state.pendingUpgradeCopy)));
+      if (!pendingExists) await writeMigrationBackupState(deps.dir, { ...state, pendingUpgradeCopy: name });
+      const destPath = path.join(deps.dir, name);
+      await deps.copy(destPath);
+      written = destPath;
+      return destPath;
+    },
+
+    async succeeded(): Promise<string[]> {
+      const state = await readMigrationBackupState(deps.dir);
+      let removed: string[] = [];
+      if (written) {
+        const protect = [written, ...(state.pendingUpgradeCopy ? [path.join(deps.dir, state.pendingUpgradeCopy)] : [])];
+        removed = await pruneMigrationBackups(deps.dir, { prefixes: [PRE_MIGRATION_PREFIX], protect });
+      }
+      // Nothing migrated and the record already says "succeeded, nothing pending": no write on every start.
+      if (!written && state.pendingUpgradeCopy === null && state.lastSuccessAt !== null) return removed;
+      await writeMigrationBackupState(deps.dir, {
+        pendingUpgradeCopy: null,
+        lastSuccessAt: deps.now(),
+        lastProtectedCopy: written ? (state.pendingUpgradeCopy ?? path.basename(written)) : state.lastProtectedCopy,
+      });
+      return removed;
+    },
+  };
 }
