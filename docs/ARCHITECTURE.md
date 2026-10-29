@@ -5038,8 +5038,9 @@ On branch `feature/bl-229-music-library`. No schema change; no YouTube call; not
   protected path, and never the upgrade's first copy named in `.last-successful-migration` (JSON: `pendingUpgradeCopy`,
   `lastSuccessAt`, `lastProtectedCopy`) -- migrations are not transactional and a failing one is retried with a new copy each
   time, so that first copy is the clean one from before the upgrade; kept by NAME, so a clock set back cannot lose it.
-  `db.ts` follows `createMigrationBackups`: `takeCopy()` in `beforeMigrations` (records the name first, then copies; never
-  prunes), `succeeded()` only after `initializeDatabaseSchema` went through (prune when a copy was taken, protecting this
+  `db.ts` follows `createMigrationBackups`: `takeCopy({ fromVersion, toVersion })` in `beforeMigrations` (copies, then records
+  the name with both versions once the copy is complete; a recorded first copy is replaced only when its file is gone or this
+  start upgrades from at or above its recorded target -- that upgrade finished without its success being recorded; never prunes), `succeeded()` only after `initializeDatabaseSchema` went through (prune when a copy was taken, protecting this
   start's copy and the first copy, then the record; written on every successful start that finds it missing or stale); `device-sync` prunes after an automatic import, protecting the backup it just wrote (`importHandoff` returns `backupPath`). Per prefix, not one pool: frequent automatic imports must not push out the last copy
   taken before a schema migration.
 - **Disk guard:** `src/lib/disk-guard/` — `services.ts` (pure rule `decideDiskAlert`: not alerting + below → raise; alerting + ≥
