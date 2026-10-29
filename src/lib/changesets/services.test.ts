@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import ExcelJS from "exceljs";
-import { DomainError } from "./contracts";
+import { DomainError, parseLanguageMoveMarker } from "./contracts";
 import type { StoredChangeRecord, StoredChangeSetRecord, StoredChannelRecord, StoredVideoRecord } from "./contracts";
 import { createChangeSetServices } from "./services";
 
@@ -817,6 +817,8 @@ test("proposeLanguageMove: a zh-Hans video gets delete zh-Hans + add zh-CN with 
     `v1|zh-Hans|title|delete|${ZH_TITLE}|`,
   ]);
   assert.equal(setDetails.at(-1)?.createdBy, "agent");
+  // The marker the write-time check reads: which language each delete of this set moves to.
+  assert.deepEqual(parseLanguageMoveMarker(detail.changeSet.schemaVersion), { fromLanguage: "zh-Hans", toLanguage: "zh-CN" });
 });
 
 test("proposeLanguageMove: never touches a video whose own language is the source or the target, and lists it", async () => {
@@ -873,7 +875,9 @@ test("proposeLanguageMove: a video that already has the target keeps it -- only 
   assert.match(notes[0]!, /旧标题/);
 });
 
-test("proposeLanguageMove: an empty source title or description is skipped and listed", async () => {
+// Requirement corrected by the BL-232 review: only an empty TITLE blocks a move (YouTube refuses a translation without one); an empty
+// description is moved as "" byte-for-byte. The first version also skipped an empty description, leaving such videos on zh-Hans forever.
+test("proposeLanguageMove: an empty source title is skipped and listed; an empty description is moved as \"\"", async () => {
   const { services, setVideos } = createFixture();
   setVideos([
     makeVideo({ videoId: "no-desc", existingLocalizations: { "zh-Hans": { title: "T", description: "" } } }),
@@ -883,9 +887,28 @@ test("proposeLanguageMove: an empty source title or description is skipped and l
 
   const result = await services.proposeLanguageMove({ channelId: "UC_TEST", fromLanguage: "zh-Hans", toLanguage: "zh-CN" });
 
-  assert.deepEqual(result.skippedEmptyTextVideoIds.sort(), ["blank-title", "no-desc"]);
-  assert.deepEqual(result.movedVideoIds, ["ok"]);
-  assert.equal(result.changeSet?.totalChanges, 4);
+  assert.deepEqual(result.skippedEmptyTextVideoIds, ["blank-title"]);
+  assert.deepEqual(result.movedVideoIds.sort(), ["no-desc", "ok"]);
+  const detail = await services.getChangeSet({ channelId: "UC_TEST", changeSetId: result.changeSet!.id });
+  const noDesc = detail.changes.filter((c) => c.videoId === "no-desc").map((c) => `${c.language}|${c.field}|${c.changeType}|${c.baselineValue}|${c.proposedValue}`).sort();
+  // The new zh-CN entry is created by its title; its description is the merge's "" -- the same bytes as the source's.
+  assert.deepEqual(noDesc, ["zh-CN|title|add||T", "zh-Hans|description|delete||", "zh-Hans|title|delete|T|"]);
+});
+
+test("proposeLanguageMove: named videoIds without the source language are reported, not dropped silently", async () => {
+  const { services, setVideos } = createFixture();
+  setVideos([
+    makeVideo({ videoId: "has", existingLocalizations: { "zh-Hans": { title: "T", description: "D" } } }),
+    makeVideo({ videoId: "lacks", existingLocalizations: { es: { title: "E", description: "E" } } }),
+  ]);
+
+  const named = await services.proposeLanguageMove({ channelId: "UC_TEST", fromLanguage: "zh-Hans", toLanguage: "zh-CN", videoIds: ["has", "lacks"] });
+  assert.deepEqual(named.movedVideoIds, ["has"]);
+  assert.deepEqual(named.notCarryingSourceVideoIds, ["lacks"]);
+
+  // The whole-channel form lists nothing there: a video without zh-Hans is simply not concerned.
+  const whole = await services.proposeLanguageMove({ channelId: "UC_TEST", fromLanguage: "zh-Hans", toLanguage: "zh-CN" });
+  assert.deepEqual(whole.notCarryingSourceVideoIds, []);
 });
 
 test("proposeLanguageMove: the source code matches case-insensitively and keeps the video's own spelling in the delete", async () => {

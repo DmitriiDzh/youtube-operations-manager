@@ -7,6 +7,7 @@ import {
   type ImportRowError,
   type ImportSummary,
   type LanguageMoveResult,
+  languageMoveMarker,
   type StoredChangeRecord,
   type StoredChangeSetRecord,
   type StoredChannelRecord,
@@ -667,7 +668,8 @@ export function createChangeSetServices(deps: ServiceDependencies) {
      * translation. One source:"deletion" Change Set: per video a "delete" pair for `fromLanguage` plus an "add" pair for
      * `toLanguage` carrying the synced `fromLanguage` text. The Batch writes a video's approved changes in ONE `videos.update`
      * through the shared merge (delete applied last, other languages kept), so nothing new reaches YouTube until the owner approves
-     * and sends it; a delete is never sent without its add (`batches/targets.ts` `unpairedDeletes`).
+     * and sends it; the two halves are only sent together (`batches/targets.ts` `unpairedMoveHalves`), and a delete is refused at write time when the
+     * target holds no text any more (`batches/merge.ts` `missingMoveTargets`, via the set's `schemaVersion` marker).
      *
      * Never touched: a video whose own language (or the channel baseline a write would give it) is `fromLanguage` or `toLanguage`
      * (its text lives on the snippet), and one whose `fromLanguage` title or description is empty. A video that already has
@@ -728,6 +730,7 @@ export function createChangeSetServices(deps: ServiceDependencies) {
           targetAlreadyPresent: [],
           skippedOwnLanguageVideoIds: [],
           skippedEmptyTextVideoIds: [],
+          notCarryingSourceVideoIds: [],
         };
         const changesToPersist: ChangeToPersist[] = [];
         const notes: Record<string, string> = {};
@@ -741,11 +744,16 @@ export function createChangeSetServices(deps: ServiceDependencies) {
             if (fromKey || ownLanguages.some((own) => sameLanguage(own, fromLanguage))) result.skippedOwnLanguageVideoIds.push(video.videoId);
             continue;
           }
-          if (!fromKey) continue;
+          if (!fromKey) {
+            // Named explicitly but without the source language: reported, never silently dropped (review of BL-232).
+            if (parsedInput.videoIds) result.notCarryingSourceVideoIds.push(video.videoId);
+            continue;
+          }
 
           const read = (language: string, field: "title" | "description") => currentRemoteValueFor(video, language, field, channelBaseline);
           const from = { title: read(fromKey, "title"), description: read(fromKey, "description") };
-          if (from.title.trim().length === 0 || from.description.trim().length === 0) {
+          // Only an empty title blocks the move (YouTube refuses a translation without one); an empty description is copied as "".
+          if (from.title.trim().length === 0) {
             result.skippedEmptyTextVideoIds.push(video.videoId);
             continue;
           }
@@ -779,7 +787,9 @@ export function createChangeSetServices(deps: ServiceDependencies) {
           }
 
           result.movedVideoIds.push(video.videoId);
-          for (const field of ["title", "description"] as const) {
+          // An empty description needs no change of its own: the new language is created with description "" (the merge's default),
+          // byte-for-byte the source's.
+          for (const field of from.description === "" ? (["title"] as const) : (["title", "description"] as const)) {
             changesToPersist.push({
               id: deps.idGenerator(),
               videoId: video.videoId,
@@ -808,7 +818,8 @@ export function createChangeSetServices(deps: ServiceDependencies) {
           source: "deletion",
           // Shown as the set's name on the review screen (change-set-review uses importedFilename before the source label).
           importedFilename: `${fromLanguage} → ${toLanguage}`,
-          schemaVersion: null,
+          // The marker the Batch pre-write check reads (`parseLanguageMoveMarker`): which language each delete moves to.
+          schemaVersion: languageMoveMarker(fromLanguage, toLanguage),
           exportedAt: null,
           changesToPersist,
           details: { createdBy: options.createdBy ?? "owner", notes },

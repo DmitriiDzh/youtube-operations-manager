@@ -181,7 +181,8 @@ export type LocaleText = { title: string; description: string };
  *   3784). Both texts are listed so the owner can compare them before approving.
  * - `skippedOwnLanguageVideoIds`: `fromLanguage` or `toLanguage` is the video's own language (or the channel's language baseline,
  *   which a write would give it) -- never touched.
- * - `skippedEmptyTextVideoIds`: the `fromLanguage` entry has an empty title or description -- nothing reliable to move.
+ * - `skippedEmptyTextVideoIds`: the `fromLanguage` entry has an empty title -- nothing to move (an empty description is copied as "").
+ * - `notCarryingSourceVideoIds`: only with `videoIds` -- a named video that has no `fromLanguage` entry (nothing to do for it).
  */
 export type LanguageMoveResult = {
   changeSet: ChangeSet | null;
@@ -191,4 +192,21 @@ export type LanguageMoveResult = {
   targetAlreadyPresent: Array<{ videoId: string; from: LocaleText; to: LocaleText }>;
   skippedOwnLanguageVideoIds: string[];
   skippedEmptyTextVideoIds: string[];
+  notCarryingSourceVideoIds: string[];
 };
+
+/**
+ * BL-232 (review): a language-move set is marked in its `schemaVersion` (unused by deletion sets), so the Batch pre-write check can
+ * tell which language each of its deletes moves to and refuse the write when that language holds no text any more.
+ */
+const LANGUAGE_MOVE_MARKER = "language-move/1";
+
+export function languageMoveMarker(fromLanguage: string, toLanguage: string): string {
+  return `${LANGUAGE_MOVE_MARKER} ${fromLanguage} ${toLanguage}`;
+}
+
+export function parseLanguageMoveMarker(schemaVersion: string | null | undefined): { fromLanguage: string; toLanguage: string } | null {
+  const parts = (schemaVersion ?? "").split(" ");
+  if (parts.length !== 3 || parts[0] !== LANGUAGE_MOVE_MARKER || !parts[1] || !parts[2]) return null;
+  return { fromLanguage: parts[1], toLanguage: parts[2] };
+}
