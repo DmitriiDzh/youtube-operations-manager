@@ -171,7 +171,10 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 // videos | segments, the library's availability, the selected segments' count / playable count / minutes and, in segments mode, the
 // segment playing with its title and the track playing from the sidecar). In segments mode `streams[].playing` is null (a segment is
 // not a YouTube video). Only the owner switches the source, in the app: no tool does. Additive.
-export const FACTORY_API_VERSION = "1.38.0";
+// BL-235 (owner msgs 3806/3807): 1.39.0 -- factory_publishing_coverage (READ, local): per day from today in the channel's time zone,
+// covered | missing_translations | gap -- a day is covered when a video is published or scheduled on it with every tracked
+// translation (the same answer as the Content calendar and «План недели»), with asOf (the synced copy's age). Additive.
+export const FACTORY_API_VERSION = "1.39.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -248,6 +251,8 @@ export const FACTORY_TOOL_NAMES = [
   "factory_publishing_plan_save",
   "factory_publishing_plan_get",
   "factory_publishing_plan_list",
+  // BL-235: which days ahead are covered on YouTube (a video published or scheduled with every tracked translation), a read.
+  "factory_publishing_coverage",
   "factory_localization_report_checks",
   "factory_localization_requests_list",
   "factory_localization_request_claim",
@@ -451,6 +456,13 @@ export type FactoryToolDeps = {
     save(input: unknown, by?: "factory" | "worker"): Promise<Record<string, unknown>>;
     get(input: unknown): Promise<Record<string, unknown>>;
     list(input: unknown): Promise<Record<string, unknown>>;
+  };
+  /**
+   * BL-235: the shared publishing coverage of a channel (`@/lib/publishing-coverage`, with the channel's zone): the module validates
+   * the input strictly itself. A local read.
+   */
+  publishingCoverage: {
+    get(input: { channelId: string; days?: number }): Promise<Record<string, unknown>>;
   };
   /** BL-227 (ADR 0052): check reports on change sets (the localization-review module validates every input itself). `by`: the Operator or a worker. */
   localizationChecks: {
@@ -1494,6 +1506,18 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
       inputSchema: planListInput,
     },
     async (args) => successResult(await deps.publishingPlans.list(parseInput(planListInput, args)))
+  );
+
+  // -- BL-235 (owner msgs 3806/3807): the one answer to "is this publishing day covered", from the synced copy. A read.
+  const coverageInput = z.object({ channelId: z.string().min(1).max(64), days: z.number().int().min(1).max(30).optional() }).strict();
+  registerTool(
+    "factory_publishing_coverage",
+    {
+      description:
+        "Which publishing days of a channel are covered on YouTube (1.39.0) -- the same answer as the owner's Content calendar and «План недели»: { channelId, days? (1-30, default 7) } -> { channelId, asOf (when this computer last synced the channel's videos, ISO 8601; null = never: do not trust the days), timeZone, timeZoneSource: publishing_plan (the zone of the channel's newest weekly plan) | owner (no plan: the owner's own zone) | utc, trackedLanguages, channelLanguage, from, to, days: [{ date (YYYY-MM-DD in timeZone, from today there), status: covered | missing_translations | gap, videoIds (the published and scheduled videos of the day, time order), missingLanguages ([] unless missing_translations: the languages the day's most complete video lacks), videos: [{ videoId, title, kind: published | scheduled | overdue, at (ISO 8601), missingLanguages }] }], summary: { covered, missingTranslations, gaps, coveredDaysInARow (covered days one after another from today; 0 when today is not) } }. Rule: a day is covered when a video is published on it (public or unlisted, at its publish time) or scheduled for it (private with a future publishAt) AND it has every required translation -- the channel's tracked languages (Languages tab) minus the video's own language, read against the channel's language, each with a non-empty title and, where the original has a description, a non-empty description. missing_translations: such a video is there but none has them all. gap: none -- an overdue video (its publishAt passed while the copy still shows it not public), a private upload without a date or a live broadcast never covers (overdue ones are listed in `videos` for information). No tracked languages: nothing is required. Approvals of the weekly plan do not count here. Unknown channel (not synced on this computer): not_found. A LOCAL read, never a YouTube call; the copy is refreshed when the owner's dashboard loads or he syncs.",
+      inputSchema: coverageInput,
+    },
+    async (args) => successResult(await deps.publishingCoverage.get(parseInput(coverageInput, args)))
   );
 
   // -- BL-227 (LANGUAGES_REVIEW_PLAN.md §5, ADR 0052): check reports on change sets. The module checks every bound itself.

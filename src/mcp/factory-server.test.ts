@@ -82,6 +82,7 @@ const EXPECTED_TOOLS = [
   "factory_plan_todo",
   "factory_plan_update",
   "factory_plan_withdraw_recheck",
+  "factory_publishing_coverage",
   "factory_publishing_plan_get",
   "factory_publishing_plan_list",
   "factory_publishing_plan_save",
@@ -113,6 +114,7 @@ function registeredNames(): string[] {
       channelLocalizations: {} as never,
       channelBranding: {} as never,
       publishingPlans: {} as never,
+      publishingCoverage: {} as never,
       localizationChecks: {} as never,
       storyboards: {} as never,
       jobs: {} as never,
@@ -203,7 +205,7 @@ test("AC-FO-09 (amended by ADR 0025/0026): writes are exactly the named media/se
     // (the pattern gains channel_get; the requirement "every non-write tool is a read" is unchanged).
     // BL-220 (RESTART_WHEN_IDLE_PLAN.md): factory_restart_status is the plan's status read (the pattern gains restart_status).
     // BL-227 stage 2: + localization_requests_list (the request list is a read; claim / complete / fail are writes).
-    if (!writes.has(name)) assert.match(name, /^factory_(get|list|media_(get|list|storage|capacity)|plan_(get|list|todo)|gemini_(get|list)|live_(get|list)|channel_get|storyboard_(get|list)|publishing_plan_(get|list)|localization_requests_list|jobs_list|video_(list|get_cost)|restart_status)_?/, `${name} must be a read`);
+    if (!writes.has(name)) assert.match(name, /^factory_(get|list|media_(get|list|storage|capacity)|plan_(get|list|todo)|gemini_(get|list)|live_(get|list)|channel_get|storyboard_(get|list)|publishing_plan_(get|list)|publishing_coverage|localization_requests_list|jobs_list|video_(list|get_cost)|restart_status)_?/, `${name} must be a read`);
     assert.doesNotMatch(name, /_(set|issue|revoke)_|workspace|token|approve|reject/, `${name} must not touch paths, workspaces or tokens, or approve for anyone`);
   }
 });
@@ -254,6 +256,8 @@ test("§2.5(3): the factory route and endpoint reach only the allowlisted module
     "@/lib/publishing-plans",
     // BL-225 stage 2: the composition of the plan's progress from the publishing scan (no write).
     "@/lib/publishing-plan-progress",
+    // BL-235: the publishing coverage with the channel's zone (the shared coverage module + the plan's zone; a local read).
+    "@/composition/publishing-coverage",
     // BL-227 (LANGUAGES_REVIEW_PLAN.md §5): the localization-review module's check report (it decides nothing).
     "@/lib/localization-review",
     // BL-184 (STORYBOARD_PLAN.md §2.6): the storyboards module for the factory_storyboard_* tools.
@@ -328,7 +332,7 @@ test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.23.0 
   // BL-227 (LANGUAGES_REVIEW_PLAN.md §5: "Factory API 1.34.0"): one new tool, additive -> 1.34.0.
   // BL-233 (FO-REQ-0047 ask 3): factory_live_get_status gains `encoders` and `upload`, additive -> 1.37.0.
   // BL-234 (FO-REQ-0048): factory_live_get_status gains `sources`, additive -> 1.38.0.
-  assert.equal(FACTORY_API_VERSION, "1.38.0"); // BL-230: factory_media_create_runtime checks github.com sources (new errors) -> 1.36.0. 1.35.0 = BL-229 part B (MUSIC_LIBRARY_PLAN.md §3): review forms, genre, answers -- additive -> 1.35.0.
+  assert.equal(FACTORY_API_VERSION, "1.39.0"); // BL-235: factory_publishing_coverage (additive) -> 1.39.0. // BL-230: factory_media_create_runtime checks github.com sources (new errors) -> 1.36.0. 1.35.0 = BL-229 part B (MUSIC_LIBRARY_PLAN.md §3): review forms, genre, answers -- additive -> 1.35.0.
   const agentOperations = await readFile("src/lib/agent-operations/contracts.ts", "utf8");
   assert.equal(agentOperations.includes("FACTORY_API_VERSION"), false);
 });

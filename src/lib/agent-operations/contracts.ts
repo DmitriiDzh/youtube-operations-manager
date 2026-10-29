@@ -98,7 +98,11 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT",
 // 4.12.0 (BL-234, FO-REQ-0048): agent_live_get_status gains `sources` (the stream's source mode videos | segments, the segment
 // library's availability, the selection's size and minutes, and the segment and track playing), as factory_live_get_status (Factory
 // API 1.38.0). Switching the source stays the owner's, in the app. Additive.
-export const AGENT_API_VERSION = "4.12.0";
+// 4.13.0 (BL-235, owner msgs 3806/3807): agent_publishing_coverage (READ) -- the worker's own channel's publishing days from today in
+// the channel's zone, covered | missing_translations | gap (a video published or scheduled with every tracked translation), as
+// factory_publishing_coverage (Factory API 1.39.0); agent_get_publishing_calendar's coverage.due follows the same rule (fewer than 7
+// covered days in a row) and gains coverage.coveredDaysInARow. Additive.
+export const AGENT_API_VERSION = "4.13.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry

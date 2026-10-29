@@ -63,6 +63,8 @@ export const WORKER_FACTORY_TOOLS: Readonly<Record<string, { agentName: string; 
   factory_localization_request_fail: { agentName: "agent_localization_request_fail", writes: true },
   factory_publishing_plan_get: { agentName: "agent_publishing_plan_get", writes: false },
   factory_publishing_plan_list: { agentName: "agent_publishing_plan_list", writes: false },
+  // BL-235: which days ahead are covered on YouTube (video published or scheduled with every tracked translation), own channel only.
+  factory_publishing_coverage: { agentName: "agent_publishing_coverage", writes: false },
   // BL-218 (stage 4, owner msg 3402 "может, как оператор"): paid work, exactly as the Operator does it -- a session the worker starts
   // is approved by itself only within the owner's factory limits and while the owner's factory-sessions switch is on (otherwise it
   // waits for the owner), Gemini jobs only within the owner's Gemini switch and limits. Only for this channel; each call is logged.
@@ -305,6 +307,10 @@ export function pinFactoryDepsToChannel(
       save: byChannel((input) => deps().publishingPlans.save(input, "worker")),
       get: byChannel((input) => deps().publishingPlans.get(input)),
       list: byChannel((input) => deps().publishingPlans.list(input)),
+    },
+    // BL-235: the coverage of the worker's own channel (a read).
+    publishingCoverage: {
+      get: async (input) => deps().publishingCoverage.get(pinChannel(input, channelId) as { channelId: string; days?: number }),
     },
     storyboards: {
       create: byChannel((input) => deps().storyboards.create(input)),
