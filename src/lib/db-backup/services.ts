@@ -58,14 +58,14 @@ export async function copyDatabaseConsistently(
 }
 
 /**
- * BL-237 (owner, Telegram 2026-10-30, msgs 3864-3866): how many automatic database backups of each kind
+ * BL-237 (owner, Telegram 2026-10-30, msgs 3864-3866; 5 since msg 3871, 2026-10-31): how many automatic database backups of each kind
  * `backups/migrations/` keeps -- the newest {@link MIGRATION_BACKUPS_KEEP} `pre-migration-*` (taken before a schema
  * migration) and, separately, the newest {@link MIGRATION_BACKUPS_KEEP} `pre-auto-import-*` (taken before an automatic
  * device-sync import). Separate counts, so a day of frequent automatic imports never pushes out the last copy from
  * before a migration. Every other file there (`pre-take-theirs-*`, `pre-superseded-*`, `pre-import-*`,
  * `pre-api-retention-*`, anything else) and every other folder (`backups/manual/`, per-channel backups) is never touched.
  */
-export const MIGRATION_BACKUPS_KEEP = 10;
+export const MIGRATION_BACKUPS_KEEP = 5;
 export const RETAINED_BACKUP_PREFIXES = ["pre-migration", "pre-auto-import"] as const;
 const PRE_MIGRATION_PREFIX = "pre-migration";
 const BACKUP_NAME = (prefix: string) => new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-(\\d+)-[0-9A-Za-z]+\\.db$`);
@@ -162,7 +162,7 @@ export async function pruneMigrationBackups(
  * A start's pre-migration backups, in the order the boot must follow (`db.ts` and its tests use exactly this):
  * `takeCopy({ fromVersion, toVersion })` inside `beforeMigrations` copies first and records the copy as the upgrade's first
  * one only once the copy is complete (a crash mid-copy never leaves a truncated file protected); it never prunes. Then
- * `succeeded()` only once the migrations went through: when a copy was taken, prune to the newest 10 protecting this start's
+ * `succeeded()` only once the migrations went through: when a copy was taken, prune to the newest 5 protecting this start's
  * copy AND the upgrade's first copy, and only then write the state (success, no pending upgrade). Written on every successful
  * start that finds it missing or stale, so it heals.
  *

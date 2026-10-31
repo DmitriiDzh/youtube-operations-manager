@@ -57,7 +57,7 @@ test("isMissingTableError rejects an unrelated error", () => {
   assert.equal(isMissingTableError(new Error("CLIENT_CLOSED: The client is closed")), false);
 });
 
-// BL-237 (owner, Telegram 2026-10-30, msgs 3864-3866): backups/migrations keeps the newest 10 automatic backups (pre-migration
+// BL-237 (owner, Telegram 2026-10-30, msgs 3864-3866; count 5 since msg 3871, 2026-10-31): backups/migrations keeps the newest 5 automatic backups (pre-migration
 // and pre-auto-import, each counted on its own -- see MIGRATION_BACKUPS_KEEP), deletes the older ones after a new backup
 // was written, never the one just written, and never anything else (manual/, per-channel, other kinds of backup).
 
@@ -65,45 +65,45 @@ async function seed(dir: string, names: string[]) {
   for (const name of names) await writeFile(path.join(dir, name), "x");
 }
 
-test("the retention count is 10 of each automatic kind", () => {
-  assert.equal(MIGRATION_BACKUPS_KEEP, 10);
+test("the retention count is 5 of each automatic kind", () => {
+  assert.equal(MIGRATION_BACKUPS_KEEP, 5);
   assert.deepEqual([...RETAINED_BACKUP_PREFIXES], ["pre-migration", "pre-auto-import"]);
 });
 
-test("the newest 10 pre-migration and the newest 10 pre-auto-import stay; the older ones are deleted", () =>
+test("the newest 5 pre-migration and the newest 5 pre-auto-import stay; the older ones are deleted", () =>
   withTempDir("db-backup-retention-", async (dir) => {
-    const migrations = Array.from({ length: 13 }, (_, i) => `pre-migration-${1_790_000_000_000 + i}-ab${i}cd.db`);
-    const imports = Array.from({ length: 11 }, (_, i) => `pre-auto-import-${1_791_000_000_000 + i}-0f0f0f0${i % 10}.db`);
+    const migrations = Array.from({ length: 8 }, (_, i) => `pre-migration-${1_790_000_000_000 + i}-ab${i}cd.db`);
+    const imports = Array.from({ length: 6 }, (_, i) => `pre-auto-import-${1_791_000_000_000 + i}-0f0f0f0${i % 10}.db`);
     await seed(dir, [...migrations, ...imports]);
     const removed = await pruneMigrationBackups(dir);
     assert.deepEqual(removed.sort(), [migrations[0], migrations[1], migrations[2], imports[0]].sort());
     const left = await readdir(dir);
-    assert.equal(left.filter((n) => n.startsWith("pre-migration-")).length, 10);
-    assert.equal(left.filter((n) => n.startsWith("pre-auto-import-")).length, 10);
+    assert.equal(left.filter((n) => n.startsWith("pre-migration-")).length, 5);
+    assert.equal(left.filter((n) => n.startsWith("pre-auto-import-")).length, 5);
   }));
 
 test("newest is by the timestamp in the name, not by the order of the names as text", () =>
   withTempDir("db-backup-retention-", async (dir) => {
     // 999 sorts after 1000 as text, but is older.
-    const names = ["pre-migration-999-aaaaaa.db", ...Array.from({ length: 10 }, (_, i) => `pre-migration-${1000 + i}-aaaaaa.db`)];
+    const names = ["pre-migration-999-aaaaaa.db", ...Array.from({ length: 5 }, (_, i) => `pre-migration-${1000 + i}-aaaaaa.db`)];
     await seed(dir, names);
     assert.deepEqual(await pruneMigrationBackups(dir), ["pre-migration-999-aaaaaa.db"]);
   }));
 
 test("the backup just written is never deleted, even when its name sorts as the oldest", () =>
   withTempDir("db-backup-retention-", async (dir) => {
-    const newer = Array.from({ length: 10 }, (_, i) => `pre-migration-${2000 + i}-bbbbbb.db`);
+    const newer = Array.from({ length: 5 }, (_, i) => `pre-migration-${2000 + i}-bbbbbb.db`);
     await seed(dir, [...newer, "pre-migration-5-cccccc.db"]);
     const removed = await pruneMigrationBackups(dir, { protect: [path.join(dir, "pre-migration-5-cccccc.db")] });
     assert.deepEqual(removed, []);
-    assert.equal((await readdir(dir)).length, 11);
+    assert.equal((await readdir(dir)).length, 6);
   }));
 
-test("10 or fewer of a kind: nothing is deleted", () =>
+test("5 or fewer of a kind: nothing is deleted", () =>
   withTempDir("db-backup-retention-", async (dir) => {
-    await seed(dir, Array.from({ length: 10 }, (_, i) => `pre-migration-${3000 + i}-dddddd.db`));
+    await seed(dir, Array.from({ length: 5 }, (_, i) => `pre-migration-${3000 + i}-dddddd.db`));
     assert.deepEqual(await pruneMigrationBackups(dir), []);
-    assert.equal((await readdir(dir)).length, 10);
+    assert.equal((await readdir(dir)).length, 5);
   }));
 
 test("other backups, malformed names and sub-folders are never touched", () =>
@@ -117,7 +117,7 @@ test("other backups, malformed names and sub-folders are never touched", () =>
       "pre-migration-1-aaaaaa.db.bak",
       "notes.txt",
     ];
-    await seed(dir, [...others, ...Array.from({ length: 12 }, (_, i) => `pre-migration-${4000 + i}-eeeeee.db`)]);
+    await seed(dir, [...others, ...Array.from({ length: 7 }, (_, i) => `pre-migration-${4000 + i}-eeeeee.db`)]);
     await mkdir(path.join(dir, "manual"));
     await seed(path.join(dir, "manual"), ["pre-migration-1-ffffff.db"]);
     const removed = await pruneMigrationBackups(dir);
@@ -193,10 +193,10 @@ test("no record at all (first start on this build), 12 failed attempts with prun
     const left = await preMigration(dir);
     assert.ok(left.includes(copies[0]), "C1 survives the success's own prune");
     assert.ok(left.includes(copies[12]), "the copy of the successful start survives");
-    assert.equal(left.length, 11, "newest 10 + C1");
+    assert.equal(left.length, 6, "newest 5 + C1");
     const state = await readMigrationBackupState(dir);
     assert.deepEqual(state, { pendingUpgradeCopy: null, pendingFromVersion: null, pendingToVersion: null, lastSuccessAt: clock.t, lastProtectedCopy: copies[0] });
-    // After the success, ordinary retention: the next prune keeps just the newest 10.
+    // After the success, ordinary retention: the next prune keeps just the newest 5.
     assert.deepEqual(await pruneMigrationBackups(dir, { prefixes: ["pre-migration"] }), [copies[0]]);
   }));
 

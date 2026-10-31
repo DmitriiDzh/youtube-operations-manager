@@ -5033,8 +5033,8 @@ On branch `feature/bl-229-music-library`. No schema change; no YouTube call; not
   database singleton `youtube-ops-manager-test-singleton-<pid>` — lands inside), and removes the folder when the runner exits.
 - **Build cache cap:** `prebuild` → `scripts/next-cache-trim.mjs`: `.next/cache` over 5 GB (`YTOM_NEXT_CACHE_LIMIT_GB`) and turbopack
   alone over half of it → remove `.next/cache/turbopack` only; a failure never stops the build.
-- **Migration backup retention:** `db-backup.pruneMigrationBackups(dir, { keep = 10, prefixes = [pre-migration, pre-auto-import],
-  protect })` sorts each prefix by the millisecond timestamp in the name and deletes all but the newest 10 per prefix, never a
+- **Migration backup retention:** `db-backup.pruneMigrationBackups(dir, { keep = 5, prefixes = [pre-migration, pre-auto-import],
+  protect })` sorts each prefix by the millisecond timestamp in the name and deletes all but the newest 5 per prefix, never a
   protected path, and never the upgrade's first copy named in `.last-successful-migration` (JSON: `pendingUpgradeCopy`,
   `lastSuccessAt`, `lastProtectedCopy`) -- migrations are not transactional and a failing one is retried with a new copy each
   time, so that first copy is the clean one from before the upgrade; kept by NAME, so a clock set back cannot lose it.
