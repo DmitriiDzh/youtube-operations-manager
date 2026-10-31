@@ -5052,3 +5052,26 @@ On branch `feature/bl-229-music-library`. No schema change; no YouTube call; not
   `/api/disk-guard` (statfs now; folder sizes only with `?measure=1`, one measurement at a time per process — a second request
   shares the running one).
 - **Limitations:** RISK-145.
+
+## BL-238 — local video cleanup after upload (FO-REQ-0051, ADR 0058)
+
+- **Module:** `src/lib/local-video-cleanup/`.
+  - `allowlist.ts`: `isAllowedReleaseVideo`, the one pattern; pure.
+  - `decide.ts`: pure. `decideLocally` → `decideOnYoutube` → `decideOnContent`. Each returns delete / wait / refuse / done.
+  - `adapters/fs.ts`:
+    - `inspectReleaseFile` walks every component with lstat (a symlink, a non-folder or a non-file ends it), and checks
+      realpath == the walked path;
+    - `writeTombstone`: tmp `wx` + fsync + rename + folder fsync + read-back compare;
+    - `unlinkReleaseVideo` re-checks the allowlist, dev/ino/size and the tombstone right before `unlink`.
+  - `services.ts`: the sweep, one at a time. The waits are kept in memory for the card.
+  - `index.ts`: wires `db.ts` (`listPublishingUploads`, `listAllLiveStreamVideoRefs`, log helpers), channel workspaces, the read
+    gateway (`getVideosCleanupState`, the approver's credentials with the read scope), ffprobe, and the CSV through `resolveFromYtmDir`.
+- **Order per upload:** local facts first, so a file that cannot go costs no read. Then one `videos.list` per 50 ids per approver.
+  Then sha256 (only when the package froze one) and duration (only without `fileDetails.fileSize`), then tombstone, then unlink,
+  then log + CSV. A refusal is logged once (unique `upload_id`) and never re-checked. A crash between tombstone and unlink is
+  completed at the next sweep only if the tombstone names the same bytes and video.
+- **Independence:** publishing, video-projects and live-streams do not know the module. The tombstone needs no reader:
+  - `video-projects` takes "published" from `V<n>_youtube.json` / the registry / the upload row;
+  - `package-scan` clears problems once the record exists;
+  - the live picker lists only existing files.
+- **Limitations:** RISK-146.
