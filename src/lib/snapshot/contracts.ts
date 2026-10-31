@@ -253,6 +253,7 @@ export const SNAPSHOT_DEVICE_LOCAL_TABLES: Readonly<Record<string, string>> = Ob
   // BL-236 (ADR 0057): device-local like the Gemini jobs -- the voices and takes this computer made; their files are in the channel folder.
   channel_voices: "this device's designed voices of a channel and their previews (BL-236); the preview files land in the channel folder",
   elevenlabs_speech_jobs: "this device's ElevenLabs speech takes (BL-236); their files land in this device's copy of the channel folder",
+  local_video_cleanup_log: "the release files this device deleted or refused (BL-238); the files were on this device",
   publishing_uploads: "this computer's upload queue (BL-182, ADR 0037): approved release packages and each step's outcome; a package uploads from the computer that has its files",
   video_reservations: "the video numbers THIS computer reserved (BL-194, ADR 0040); the other computers learn them from its video-reservations report, never from a copied database",
   live_streams: "this computer's 24/7 live streams (BL-176, ADR 0036): the owner's intent and the YouTube broadcast ids; a stream runs from this computer only",

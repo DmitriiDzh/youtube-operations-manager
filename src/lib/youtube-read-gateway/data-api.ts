@@ -949,6 +949,42 @@ export async function getVideoUploadState(youtube: youtube_v3.Youtube, videoId: 
   };
 }
 
+/** BL-238 (ADR 0058 §3): what the local video cleanup checks before it deletes a release's local file. */
+export type VideoCleanupState = {
+  uploadStatus: string | null;
+  processingStatus: string | null;
+  privacyStatus: string | null;
+  publishAt: string | null;
+  /** `fileDetails.fileSize` -- "the uploaded file's size in bytes" (owner only); null = not returned. */
+  fileSize: number | null;
+  /** `contentDetails.duration` (ISO 8601), as YouTube gives it. */
+  duration: string | null;
+};
+
+/**
+ * BL-238: `videos.list part=status,processingDetails,fileDetails,contentDetails` for up to 50 of the channel's own videos in one call
+ * (1 unit). A video YouTube does not return (deleted, or not ours) is absent from the map.
+ */
+export async function getVideosCleanupState(youtube: youtube_v3.Youtube, videoIds: readonly string[]): Promise<Map<string, VideoCleanupState>> {
+  if (videoIds.length === 0 || videoIds.length > 50) throw new Error("getVideosCleanupState takes 1 to 50 video ids");
+  const res = await youtube.videos.list({ part: ["status", "processingDetails", "fileDetails", "contentDetails"], id: [...videoIds], maxResults: 50 });
+  const out = new Map<string, VideoCleanupState>();
+  for (const item of res.data.items ?? []) {
+    if (!item.id) continue;
+    const size = item.fileDetails?.fileSize;
+    const fileSize = size === undefined || size === null || size === "" ? null : Number(size);
+    out.set(item.id, {
+      uploadStatus: item.status?.uploadStatus ?? null,
+      processingStatus: item.processingDetails?.processingStatus ?? null,
+      privacyStatus: item.status?.privacyStatus ?? null,
+      publishAt: item.status?.publishAt ?? null,
+      fileSize: fileSize !== null && Number.isSafeInteger(fileSize) ? fileSize : null,
+      duration: item.contentDetails?.duration ?? null,
+    });
+  }
+  return out;
+}
+
 export type PlaylistPrivacyStatus = "private" | "public" | "unlisted";
 
 export type PlaylistMetadata = {

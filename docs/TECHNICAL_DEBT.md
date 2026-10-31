@@ -2236,3 +2236,15 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
   Telegram only from a computer whose System topic is active (elsewhere the bell alone shows it); folder sizes stop at ~8 s each
   and are then a lower bound.
 - **Gate(s):** none (disk hygiene only). **Approval required from:** none to leave open.
+
+## RISK-146 — The local video cleanup deletes permanently; YouTube's file size is trusted as proof — OPEN, 2026-10-31
+
+- **Affected components:** `src/lib/local-video-cleanup` (BL-238, ADR 0058).
+- **Risk:** a deleted mp4 is gone for good (owner's decision: no Trash). The proof that YouTube holds the same file is
+  `fileDetails.fileSize` equal to the local size (plus the package's sha256 when it froze one), else the duration within 2 s.
+  A same-size, different-content file would pass without a sha256. A deleted video cannot return to a videos-mode live rotation.
+  Only uploads made through YT Manager after the switch went on are covered; older ones are not (variant B not decided).
+  A crash in the middle of a tombstone write leaves `….deleted.json.tmp-<pid>-<ms>` in the release folder; the cleanup never deletes it
+  (it is outside the allowlist), so it stays until removed by hand.
+- **Gate(s):** none (the owner's switch, off by default, per computer and channel). **Approval required from:** the owner, to widen it
+  (backfill, variant B).

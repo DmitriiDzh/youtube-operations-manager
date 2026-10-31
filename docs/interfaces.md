@@ -1822,6 +1822,14 @@ Session and the ACTIVE channel required (ADR 0004); the channel comes from the a
 - `PUT /api/channels/[channelId]/storyboards/[storyboardId]/video` `{ videoNumber: "V49" | null }` and `POST /api/generation-plans/[planId]/video` `{ videoNumber }` — the owner's video picker. `GET /api/channels/[channelId]/videos` stays the channel's synced YouTube videos (`channel-sync`), hence the name `video-projects`.
 - RunPod `POST /api/media-generation/jobs` and Gemini `POST /api/gemini-media/jobs` accept `videoNumber` (the same rules as the Factory tools).
 
+### Local video cleanup API (BL-238, ADR 0058, Content → «Публикация»)
+
+- `GET /api/channels/[channelId]/local-video-cleanup` → `{ channelId, enabled, enabledAt, freedBytes, deletedCount, waiting: [{ video, reason, checkedAt }], recent: [{ video, action: deleted | refused, reason, bytes, at, path }] }` for THIS computer. `PUT` with `{ enabled: boolean }` sets the owner's switch and returns the same view. Both require a session and the active channel. There is no MCP tool.
+- **File contract (the Operator's workflow bundle):** after a delete, `V<n> <channel>.mp4.deleted.json` sits next to where the mp4 was:
+  `{ "schema": "deleted-video/1", "file", "bytes", "sha256" | null, "durationSec" | null, "youtubeVideoId", "privacyStatus", "publishAt" | null, "deletedAt" (ISO), "deletedBy": "ytm-cleanup", "tempDeleted": [] }`.
+  `factory_video_list` keeps such a video `published`; its `hasVideoFile` becomes false.
+- **Log:** `99 Data Exchange/From YTM/cleanup-log.csv`, header `at,channelId,video,videoId,action,reason,bytes,path`, one line per delete or refusal.
+
 ### Servers analytics API (BL-219, `docs/roadmap/plans/SERVERS_ANALYTICS_PLAN.md`, Servers → «Аналитика»)
 
 Read-only, signed-in owner only (401 otherwise); no RunPod, Gemini or YouTube call. Every computer's cost runs (video-costs) plus this
