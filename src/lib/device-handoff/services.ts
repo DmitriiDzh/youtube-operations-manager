@@ -209,9 +209,9 @@ export async function importHandoff(params: {
       });
 
       if (unresolved.length > 0) {
-        return { status: "activated_recovery_mode", manifest, unresolved };
+        return { status: "activated_recovery_mode", manifest, unresolved, backupPath };
       }
-      return { status: "activated_normal", manifest };
+      return { status: "activated_normal", manifest, backupPath };
     } finally {
       // The working copy is a throwaway, private intermediate -- never the source of truth for
       // anything after this function returns (the live DB and the published snapshot are).

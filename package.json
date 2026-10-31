@@ -6,11 +6,11 @@
   "scripts": {
     "predev": "node scripts/write-build-info.mjs",
     "dev": "next dev -H 127.0.0.1",
-    "prebuild": "node scripts/write-build-info.mjs",
+    "prebuild": "node scripts/write-build-info.mjs && node scripts/next-cache-trim.mjs",
     "build": "next build",
     "start": "next start -H 127.0.0.1",
     "lint": "eslint",
-    "test": "node --import tsx --test \"src/**/*.test.ts\"",
+    "test": "node scripts/run-tests.mjs",
     "cli:video-metadata": "node --import tsx src/cli/video-metadata.ts",
     "cli:publishing-g1": "node --import tsx src/cli/publishing-g1.ts",
     "operation-lock": "node --import tsx src/cli/operation-lock.ts",

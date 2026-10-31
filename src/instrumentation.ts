@@ -134,6 +134,30 @@ async function startServerSession() {
     console.warn(`[system-topic] not started: ${error instanceof Error ? error.message : String(error)}`);
   }
 
+  // BL-237 (owner msgs 3864-3866): the disk guard. Every 15 minutes (first a few minutes after start) the free space of the
+  // app-data and program volumes; below the threshold one bell notice and one System-topic message, again only after a
+  // recovery or 24 h. Its own loop (AGENTS.md §M); it writes its state row, so it waits during an import / migration or in
+  // recovery mode like the other loops. Every computer runs it; only one with the System topic on also posts there.
+  try {
+    const { getDiskGuardCore } = await import("@/composition/disk-guard");
+    const { DISK_GUARD_FIRST_CHECK_MS, DISK_GUARD_TICK_MS } = await import("@/lib/disk-guard");
+    const { rawSqlClient: diskSqlClient } = await import("@/lib/db");
+    const { assertDeviceAvailableForMutation: assertDiskMayWrite } = await import("@/lib/device-mutation-gate");
+    const diskLoop = async () => {
+      try {
+        await assertDiskMayWrite(diskSqlClient);
+        await getDiskGuardCore().tick();
+      } catch (error) {
+        const paused = error instanceof Error && (error.name === "OperationLockError" || error.name === "RecoveryModeError");
+        if (!paused) console.warn(`[disk-guard] ${error instanceof Error ? error.message : String(error)}`);
+      }
+      setTimeout(() => void diskLoop(), DISK_GUARD_TICK_MS).unref();
+    };
+    setTimeout(() => void diskLoop(), DISK_GUARD_FIRST_CHECK_MS).unref();
+  } catch (error) {
+    console.warn(`[disk-guard] not started: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
   // Session lease (architecture-audit review, round 3): Live writes are honored only while this web
   // server keeps renewing it, so ANY end of the session -- including a crash or Windows
   // `taskkill /F` / a closed console window, where no signal handler runs -- makes them lapse within

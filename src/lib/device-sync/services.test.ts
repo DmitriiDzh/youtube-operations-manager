@@ -525,6 +525,27 @@ test("AC-AS-13: backup retention prunes only automatic-import backups", () =>
     assert.ok(left.includes("pre-take-theirs-1-abcdef01.db"));
   }));
 
+test("BL-237: an automatic import also trims the pre-migration backups to the newest 5, other kinds untouched", () =>
+  withTempDir("device-sync-", async (root) => {
+    const a = await makeDevice(root, "a");
+    const b = await makeDevice(root, "b");
+    const backups = path.join(root, "b-backups");
+    await mkdir(backups, { recursive: true });
+    const migrations = Array.from({ length: 7 }, (_, i) => `pre-migration-${1000 + i}-abc123.db`);
+    for (const name of [...migrations, "pre-take-theirs-1-abcdef01.db"]) await writeFile(path.join(backups, name), "");
+    await addResearchChannel(a.client, "UC1");
+    await a.runner.tick();
+    await b.runner.tick();
+    assert.deepEqual(await researchIds(b.client), ["UC1"], "the import itself happened");
+    const left = await readdir(backups);
+    assert.ok(!left.includes(migrations[0]) && !left.includes(migrations[1]), "the two oldest pre-migration backups are gone");
+    assert.equal(left.filter((n) => n.startsWith("pre-migration-")).length, 5);
+    assert.equal(left.filter((n) => n.startsWith("pre-auto-import-")).length, 1, "the import's own new backup stays");
+    assert.ok(left.includes("pre-take-theirs-1-abcdef01.db"));
+    a.client.close();
+    b.client.close();
+  }));
+
 test("an automatic import records the new head and leaves the device clean", () =>
   withTempDir("device-sync-", async (root) => {
     const a = await makeDevice(root, "a");

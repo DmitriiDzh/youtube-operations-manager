@@ -13,7 +13,7 @@ import type { BatchItem } from "drizzle-orm/batch";
 import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "@/lib/batches/ledger-state";
 import { getProductionAppPaths, isRunningUnderTestRunner, resolveLegacyDbPath } from "@/lib/platform-paths";
-import { copyDatabaseConsistently, isMissingTableError } from "@/lib/db-backup";
+import { copyDatabaseConsistently, createMigrationBackups, isMissingTableError } from "@/lib/db-backup";
 import {
   assertSupportedSchemaVersion,
   readSchemaVersion,
@@ -6320,14 +6320,21 @@ async function initializeDatabase() {
   // pre-migration backup, never the live DB. Loaded lazily: `@/lib/snapshot` imports this module.
   // The hooks never throw.
   let syncHooks: { beforeMigrations: (backupPath: string) => Promise<void>; afterMigrations: () => Promise<void> } | null = null;
+  // BL-237: the pre-migration copies in the order `db-backup.createMigrationBackups` defines -- the copy (recorded as the
+  // upgrade's first copy by name once complete) inside the hook, the prune and the success record only after the migrations went through.
+  const migrationBackups = createMigrationBackups({
+    dir: appPaths.migrationBackupsDir,
+    copy: async (destPath) => {
+      await copyDatabaseConsistently(rawClient, destPath);
+    },
+    now: () => Date.now(),
+    suffix: () => Math.random().toString(36).slice(2, 8),
+  });
   try {
     await initializeDatabaseSchema(rawClient, {
-      beforeMigrations: async () => {
-        const destPath = path.join(
-          appPaths.migrationBackupsDir,
-          `pre-migration-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.db`
-        );
-        await copyDatabaseConsistently(rawClient, destPath);
+      beforeMigrations: async ({ fromVersion, pendingMigrations }) => {
+        const toVersion = Math.max(fromVersion, ...pendingMigrations.map((migration) => migration.version));
+        const destPath = await migrationBackups.takeCopy({ fromVersion, toVersion });
         syncHooks = await import("@/lib/snapshot")
           .then(({ createSyncPreservingMigrationHooks }) => createSyncPreservingMigrationHooks(rawClient))
           .catch(() => null);
@@ -6335,6 +6342,8 @@ async function initializeDatabase() {
       },
     });
     await (syncHooks as { afterMigrations: () => Promise<void> } | null)?.afterMigrations();
+    // Housekeeping: a failure here never stops the boot (the next successful start writes the record again).
+    await migrationBackups.succeeded().catch(() => []);
   } finally {
     if (lockAcquired) await releaseOperationLock(rawClient);
   }
@@ -15587,6 +15596,27 @@ export async function getLiveStreamsSettingsJson(database: AppDb = db): Promise<
 
 export async function setLiveStreamsSettingsJson(json: string, database: AppDb = db): Promise<void> {
   await setAppSetting(LIVE_STREAMS_SETTINGS_KEY, json, database);
+}
+
+const DISK_GUARD_SETTINGS_KEY = "disk_guard_settings";
+const DISK_GUARD_STATE_KEY = "disk_guard_state";
+
+/** BL-237: the disk guard's settings on this computer (JSON: the free-space threshold), `null` before the first save. */
+export async function getDiskGuardSettingsJson(database: AppDb = db): Promise<string | null> {
+  return getAppSetting(DISK_GUARD_SETTINGS_KEY, database);
+}
+
+export async function setDiskGuardSettingsJson(json: string, database: AppDb = db): Promise<void> {
+  await setAppSetting(DISK_GUARD_SETTINGS_KEY, json, database);
+}
+
+/** BL-237: the disk guard's alert state on this computer (JSON), `null` before the first check. */
+export async function getDiskGuardStateJson(database: AppDb = db): Promise<string | null> {
+  return getAppSetting(DISK_GUARD_STATE_KEY, database);
+}
+
+export async function setDiskGuardStateJson(json: string, database: AppDb = db): Promise<void> {
+  await setAppSetting(DISK_GUARD_STATE_KEY, json, database);
 }
 
 const WEEKLY_BUILD_SETTINGS_KEY = "weekly_build_settings";

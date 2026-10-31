@@ -39,6 +39,7 @@ import type { PlanMediaKind } from "@/lib/generation-plans/contracts";
 import { StoryboardsPanel, StoryboardVideoLinks } from "./storyboards-panel";
 import { GeminiCreateCard } from "./gemini-media-create";
 import { GeminiServersCard, type GeminiTodayFigure } from "./gemini-servers-card";
+import { DiskGuardCard } from "./disk-guard-card";
 import { usd as geminiUsd } from "./gemini-media-settings";
 import { FeatureErrorBoundary } from "./feature-error-boundary";
 import { MusicLibraryCard } from "./music-library-card";
@@ -232,6 +233,10 @@ export function ServersPanel({
         {/* BL-193 (owner msgs 2864/2867): Gemini next to RunPod, failing on its own (AGENTS.md §M). */}
         <FeatureErrorBoundary label={`${t("nav.servers")} — ${t("gemini.servers.title")}`}>
           <GeminiServersCard onToday={setGeminiToday} />
+        </FeatureErrorBoundary>
+        {/* BL-237: this computer's disk, failing on its own (AGENTS.md §M). */}
+        <FeatureErrorBoundary label={`${t("nav.servers")} — ${t("disk.title")}`}>
+          <DiskGuardCard />
         </FeatureErrorBoundary>
       </div>
       {/* BL-219: Servers → «Аналитика», failing on its own (AGENTS.md §M). */}

@@ -2226,3 +2226,13 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Bounds:** Gemini designs default to 1 preview; a speech job with an expired voice fails at Google, not charged.
 - **Re-evaluate:** before the first voice is a year old, or near 150 designed voices.
 - **Gate(s):** none. **Status:** open.
+
+## RISK-145 — Disk hygiene covers the app's own growth, not every path — OPEN, 2026-10-30
+
+- **Affected components:** `scripts/run-tests.mjs`, `src/lib/db-backup` (`pruneMigrationBackups`), `src/lib/disk-guard` (BL-237).
+- **Gaps:** a test file run directly (`node --import tsx --test <file>`, not `npm test`) still leaves its temp folders behind; the
+  temp folders left by runs before BL-237 are not removed (they are not `ytm-test-run-*`); `pre-take-theirs-*`, `pre-superseded-*`,
+  `pre-import-*` and `pre-api-retention-*` backups are not capped (few, written on rare owner actions); the disk alert reaches
+  Telegram only from a computer whose System topic is active (elsewhere the bell alone shows it); folder sizes stop at ~8 s each
+  and are then a lower bound.
+- **Gate(s):** none (disk hygiene only). **Approval required from:** none to leave open.

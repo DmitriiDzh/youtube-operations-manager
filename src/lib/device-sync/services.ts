@@ -1,9 +1,9 @@
 import { API_DATA_RETENTION_DAYS } from "@/lib/youtube-data-policy/contracts";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { mkdir, readdir, rm, stat } from "node:fs/promises";
+import { mkdir, rm, stat } from "node:fs/promises";
 import { createLibsqlClient } from "@/lib/libsql-client";
-import { copyDatabaseConsistently } from "@/lib/db-backup";
+import { copyDatabaseConsistently, pruneMigrationBackups } from "@/lib/db-backup";
 import { exportHandoff, importHandoff, isDeviceInRecoveryMode, RecoveryModeError } from "@/lib/device-handoff";
 import { getOperationLock, OperationLockError, releaseStaleExportLock } from "@/lib/operation-lock";
 import {
@@ -179,25 +179,9 @@ export async function pruneOwnSnapshots(params: {
   return removed;
 }
 
-/** Prunes only this feature's own automatic-import backups (never a manual or "take theirs" one). */
+/** Prunes only this feature's own automatic-import backups (never a manual or "take theirs" one) -- BL-237's shared rule. */
 export async function pruneAutoImportBackups(dir: string, keep = DEVICE_SYNC_KEEP_AUTO_IMPORT_BACKUPS): Promise<string[]> {
-  let names: string[];
-  try {
-    names = await readdir(dir);
-  } catch {
-    return [];
-  }
-  const re = new RegExp(`^${AUTO_IMPORT_BACKUP_PREFIX}-(\\d+)-[0-9a-f]{8}\\.db$`);
-  const ours = names
-    .map((name) => ({ name, at: Number(re.exec(name)?.[1] ?? NaN) }))
-    .filter((entry) => Number.isFinite(entry.at))
-    .sort((a, b) => b.at - a.at);
-  const removed: string[] = [];
-  for (const entry of ours.slice(keep)) {
-    await rm(path.join(dir, entry.name), { force: true });
-    removed.push(entry.name);
-  }
-  return removed;
+  return pruneMigrationBackups(dir, { keep, prefixes: [AUTO_IMPORT_BACKUP_PREFIX] });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -431,7 +415,12 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
       },
     });
     if (!mode.acceptDivergentLineage) {
-      await pruneAutoImportBackups(deps.migrationBackupsDir).catch(() => []);
+      const justWritten = "backupPath" in result ? [result.backupPath] : [];
+      await pruneMigrationBackups(deps.migrationBackupsDir, { prefixes: [AUTO_IMPORT_BACKUP_PREFIX], protect: justWritten }).catch(() => []);
+      // BL-237: the same retention for the backups taken before schema migrations (newest 5 stay), run whenever a new
+      // automatic backup was written -- so the copies collected before this rule shrink without waiting for a migration. The
+      // clean copy from before an upgrade that has not succeeded yet is never deleted (db-backup's success marker).
+      await pruneMigrationBackups(deps.migrationBackupsDir, { prefixes: ["pre-migration"] }).catch(() => []);
     }
     return result;
   }

@@ -13,5 +13,6 @@ export type ExportHandoffResult = {
 
 export type ImportHandoffResult =
   | { status: "duplicate_noop"; manifest: SnapshotManifest }
-  | { status: "activated_normal"; manifest: SnapshotManifest }
-  | { status: "activated_recovery_mode"; manifest: SnapshotManifest; unresolved: UnresolvedExecutionRow[] };
+  /** `backupPath`: the pre-import backup this import wrote (BL-237: retention never deletes it). */
+  | { status: "activated_normal"; manifest: SnapshotManifest; backupPath: string }
+  | { status: "activated_recovery_mode"; manifest: SnapshotManifest; unresolved: UnresolvedExecutionRow[]; backupPath: string };
