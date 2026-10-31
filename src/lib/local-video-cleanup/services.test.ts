@@ -48,6 +48,9 @@ function harness(opts: {
   files?: Map<string, CleanupInspected>;
   noWorkspace?: boolean;
   onSha?: () => Promise<void>;
+  /** The channels stored on this computer (none unless a test names them). */
+  channels?: string[];
+  clock?: () => number;
 }) {
   let settings: string | null = opts.enabled === false ? null : JSON.stringify({ channels: { [CH]: { enabled: true, enabledAt: ENABLED_AT } } });
   const files = opts.files ?? new Map(opts.uploads.map((u) => [u.videoFile, { kind: "file" as const, bytes: u.totalBytes as number, tombstone: null, absolutePath: `${WS}/${u.videoFile}`, identity: { dev: 1, ino: Number(u.id.slice(3)) } }]));
@@ -60,6 +63,7 @@ function harness(opts: {
   const deps: LocalVideoCleanupDeps = {
     getSettingsJson: async () => settings,
     setSettingsJson: async (json) => void (settings = json),
+    channelIds: async () => opts.channels ?? [],
     doneUploads: async (_channelId, since) => opts.uploads.filter((u) => (u.finishedAt ?? 0) >= since),
     activeUploadFiles: async () => new Set(),
     liveRotation: async () => [],
@@ -103,19 +107,45 @@ function harness(opts: {
       freed: async () => ({ bytes: log.filter((e) => e.action === "deleted").reduce((s, e) => s + (e.bytes ?? 0), 0), count: log.filter((e) => e.action === "deleted").length }),
     },
     newId: () => `log-${++id}`,
-    clock: () => 2_000_000,
+    clock: opts.clock ?? (() => 2_000_000),
     note: () => undefined,
   };
   return { cleanup: createLocalVideoCleanup(deps), log, csv, reads, tombstones, unlinked, files, settings: () => settings };
 }
 
-test("AC-4: the switch is off by default -- nothing is read or deleted", async () => {
-  const h = harness({ uploads: [upload(72)], enabled: false });
+// AC-4 changed by the owner (msg 3900, "Сделай по дефолту переключатель включённым"): the switch is ON by default. It still cleans
+// only uploads finished from the moment it went on (msg 3893: new uploads first, the old ones later), and the owner's "off" stays.
+test("AC-4: on by default -- a channel without a setting is switched on at the first sweep; uploads finished before stay", async () => {
+  const FIRST = 3_000_000;
+  const h = harness({ uploads: [upload(71, { finishedAt: FIRST - 1 })], enabled: false, channels: [CH], clock: () => FIRST });
+  await h.cleanup.tick();
+  assert.deepEqual(h.reads, [], "the upload finished before the switch went on is not checked");
+  assert.deepEqual(h.unlinked, []);
+  const view = await h.cleanup.view(CH);
+  assert.equal(view.enabled, true);
+  assert.equal(view.enabledAt, new Date(FIRST).toISOString());
+  assert.deepEqual(parseCleanupSettings(null), { channels: {} });
+});
+
+test("AC-4: on by default -- an upload finished after the default switched on is cleaned", async () => {
+  const h = harness({ uploads: [upload(72, { finishedAt: 2_500_000 })], enabled: false, channels: [CH] });
+  await h.cleanup.tick();
+  assert.deepEqual(h.unlinked, [upload(72).videoFile], "switched on at 2_000_000, the upload finished at 2_500_000");
+});
+
+test("AC-4: the owner's 'off' is kept -- the default never switches a channel back on", async () => {
+  const h = harness({ uploads: [upload(72)], enabled: false, channels: [CH] });
+  await h.cleanup.setEnabled(CH, false);
   await h.cleanup.tick();
   assert.deepEqual(h.reads, []);
   assert.deepEqual(h.unlinked, []);
   assert.equal((await h.cleanup.view(CH)).enabled, false);
-  assert.deepEqual(parseCleanupSettings(null), { channels: {} });
+});
+
+test("AC-4: the card of a channel never swept yet shows the switch on (the default is stored when it is first shown)", async () => {
+  const h = harness({ uploads: [], enabled: false });
+  assert.equal((await h.cleanup.view(CH)).enabled, true);
+  assert.equal((JSON.parse(h.settings() as string) as { channels: Record<string, { enabled: boolean }> }).channels[CH]?.enabled, true);
 });
 
 test("AC-4: only uploads finished after the switch went on; turning it on again keeps the first time", async () => {

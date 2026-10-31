@@ -2246,5 +2246,5 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
   Only uploads made through YT Manager after the switch went on are covered; older ones are not (variant B not decided).
   A crash in the middle of a tombstone write leaves `….deleted.json.tmp-<pid>-<ms>` in the release folder; the cleanup never deletes it
   (it is outside the allowlist), so it stays until removed by hand.
-- **Gate(s):** none (the owner's switch, off by default, per computer and channel). **Approval required from:** the owner, to widen it
+- **Gate(s):** none (the owner's switch, on by default since owner msg 3900 -- from the first sweep on, older uploads untouched -- per computer and channel). **Approval required from:** the owner, to widen it
   (backfill, variant B).

@@ -51,8 +51,10 @@ right after YouTube has finished processing it. He set a HARD rule: never touch 
      names the same bytes and video.
 
    `tempDeleted` is always `[]`.
-5. **Switch per channel, per computer** (`app_settings`, never synced: the file exists on one computer), off by default. It is
-   set only by the owner in the Web UI; no MCP or agent path reaches it. Turning it on stores `enabledAt`.
+5. **Switch per channel, per computer** (`app_settings`, never synced: the file exists on one computer), **on by default**
+   (owner msg 3900, 2026-10-31; was off): a channel without a setting gets `{enabled: true, enabledAt: now}` at the first sweep or
+   when its card is first shown, so only uploads finished from then on are cleaned; an owner's "off" is stored and kept. It is
+   changed only by the owner in the Web UI; no MCP or agent path reaches it. Turning it on stores `enabledAt`.
 6. **Log:**
    - every delete and refusal goes to the table `local_video_cleanup_log` (schema v116, device-local), with path, bytes, videoId and
      reason, and as a line in the channel's `99 Data Exchange/From YTM/cleanup-log.csv`. A CSV failure is noted, never a reason to
@@ -89,7 +91,8 @@ right after YouTube has finished processing it. He set a HARD rule: never touch 
     the video not returned / rejected / failed.
 - AC-3: A tombstone that fails to write or read back leaves the mp4 untouched. A successful delete leaves the tombstone with the
   contract fields and removes ONLY the mp4: every other file in the folder stays byte-identical.
-- AC-4: The switch is off by default. With it off nothing is read or deleted. Uploads finished before `enabledAt` are never touched.
+- AC-4 (changed by owner msg 3900): The switch is on by default, from the first sweep on this computer; the owner's "off" is kept.
+  With it off nothing is read or deleted. Uploads finished before `enabledAt` are never touched.
 - AC-5: Tombstone + mp4 after a crash: the delete completes only when the tombstone matches (bytes, videoId); otherwise it is refused.
   Tombstone without mp4: logged once as a recovered delete.
 - AC-6: Every delete and refusal is logged once (DB + CSV line). A refused upload is not checked again.
