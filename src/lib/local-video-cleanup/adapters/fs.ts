@@ -104,14 +104,15 @@ export async function writeTombstone(videoPath: string, tombstone: VideoTombston
   const text = `${JSON.stringify(tombstone, null, 2)}\n`;
   const handle = await open(temporary, "wx");
   try {
-    await handle.writeFile(text, "utf8");
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-  try {
+    try {
+      await handle.writeFile(text, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
     await rename(temporary, target);
   } catch (error) {
+    // Review: no temporary file is left in the release folder after a failed write (disk full, I/O error) or rename.
     await unlink(temporary).catch(() => undefined);
     throw error;
   }

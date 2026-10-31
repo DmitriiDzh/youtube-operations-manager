@@ -36,9 +36,14 @@ right after YouTube has finished processing it. He set a HARD rule: never touch 
    - the local size equals the uploaded bytes, and the sha256 equals the package's when the package has one;
    - no live rotation (any channel) names the video or the file, and no active upload names the file.
 
-   A check that can still change (processing, privacy, date, reads off, workspace unavailable, in use) **waits** and is checked
-   again later. A check that proves the file is not the uploaded one (sizes, hash, duration, path, symlink, the video missing,
-   rejected or failed on YouTube) **refuses**: logged once, and that upload is never tried again.
+   - A check that can still change **waits** and is checked again later. Waits: processing, privacy or date, reads off, the
+     workspace unreachable (checked before the path, so a missing disk never turns into a refusal), in use, the video not returned
+     by YouTube, the upload finished with a problem code (read-back mismatch, a failed step: kept for the owner), the delete failing.
+   - A check that proves the file is not the uploaded one **refuses**: sizes, hash, duration, path, symlink, rejected or failed on
+     YouTube. A refusal is logged once, and that upload is never tried again.
+   - An mp4 already gone is logged once: as `deleted` (`recovered`) when this cleanup's own tombstone for that video is there (a
+     crash cut the log entry), else as `refused` (`file_missing`, gone by hand).
+   - The switch is read again right before the tombstone, so turning it off stops a running sweep.
 4. **Tombstone first.** `V<n> <channel>.mp4.deleted.json` (schema `deleted-video/1`, the Operator's contract):
    - it is written to a temporary file, fsynced, renamed, its folder fsynced, then read back and compared;
    - only then is the mp4 unlinked. If the tombstone cannot be written or read back, nothing is deleted;
@@ -86,4 +91,5 @@ right after YouTube has finished processing it. He set a HARD rule: never touch 
   contract fields and removes ONLY the mp4: every other file in the folder stays byte-identical.
 - AC-4: The switch is off by default. With it off nothing is read or deleted. Uploads finished before `enabledAt` are never touched.
 - AC-5: Tombstone + mp4 after a crash: the delete completes only when the tombstone matches (bytes, videoId); otherwise it is refused.
+  Tombstone without mp4: logged once as a recovered delete.
 - AC-6: Every delete and refusal is logged once (DB + CSV line). A refused upload is not checked again.

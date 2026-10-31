@@ -15701,6 +15701,25 @@ export async function sumLocalVideoCleanupFreed(channelId: string, database: App
   return { bytes: rows.reduce((sum, r) => sum + (r.bytes ?? 0), 0), count: rows.length };
 }
 
+/**
+ * BL-238 (review): the channel's finished uploads of this computer from `since` on that the cleanup has not logged yet -- filtered
+ * in SQL, so the work does not grow with the channel's history and no row is cut off by a limit.
+ */
+export async function listPublishingUploadsForCleanup(channelId: string, since: Date, database: AppDb = db): Promise<StoredPublishingUpload[]> {
+  return database
+    .select()
+    .from(publishingUploads)
+    .where(
+      and(
+        eq(publishingUploads.channelId, channelId),
+        eq(publishingUploads.status, "done"),
+        gte(publishingUploads.finishedAt, since),
+        sql`NOT EXISTS (SELECT 1 FROM local_video_cleanup_log l WHERE l.upload_id = ${publishingUploads.id})`
+      )
+    )
+    .orderBy(asc(publishingUploads.finishedAt));
+}
+
 /** BL-238: every live rotation entry of this computer (all channels): the video and its original file, workspace-relative. */
 export async function listAllLiveStreamVideoRefs(database: AppDb = db): Promise<Array<{ channelId: string; videoId: string; originalPath: string | null }>> {
   return database.select({ channelId: liveStreamVideos.channelId, videoId: liveStreamVideos.videoId, originalPath: liveStreamVideos.originalPath }).from(liveStreamVideos);

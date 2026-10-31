@@ -35,7 +35,20 @@ const ytOk = (bytes: number, over: Partial<CleanupYoutubeState> = {}): CleanupYo
   ...over,
 });
 
-function harness(opts: { uploads: CleanupUpload[]; enabled?: boolean; yt?: (id: string) => CleanupYoutubeState | undefined; ytThrows?: boolean; tombstoneFails?: boolean; files?: Map<string, CleanupInspected> }) {
+function harnessWithoutWorkspace(uploads: CleanupUpload[]) {
+  return harness({ uploads, noWorkspace: true });
+}
+
+function harness(opts: {
+  uploads: CleanupUpload[];
+  enabled?: boolean;
+  yt?: (id: string) => CleanupYoutubeState | undefined;
+  ytThrows?: boolean;
+  tombstoneFails?: boolean;
+  files?: Map<string, CleanupInspected>;
+  noWorkspace?: boolean;
+  onSha?: () => Promise<void>;
+}) {
   let settings: string | null = opts.enabled === false ? null : JSON.stringify({ channels: { [CH]: { enabled: true, enabledAt: ENABLED_AT } } });
   const files = opts.files ?? new Map(opts.uploads.map((u) => [u.videoFile, { kind: "file" as const, bytes: u.totalBytes as number, tombstone: null, absolutePath: `${WS}/${u.videoFile}`, identity: { dev: 1, ino: Number(u.id.slice(3)) } }]));
   const log: CleanupLogEntry[] = [];
@@ -47,10 +60,10 @@ function harness(opts: { uploads: CleanupUpload[]; enabled?: boolean; yt?: (id: 
   const deps: LocalVideoCleanupDeps = {
     getSettingsJson: async () => settings,
     setSettingsJson: async (json) => void (settings = json),
-    doneUploads: async () => opts.uploads,
+    doneUploads: async (_channelId, since) => opts.uploads.filter((u) => (u.finishedAt ?? 0) >= since),
     activeUploadFiles: async () => new Set(),
     liveRotation: async () => [],
-    workspace: async () => WS,
+    workspace: async () => (opts.noWorkspace ? null : WS),
     async readYoutube({ videoIds }) {
       reads.push(videoIds);
       if (opts.ytThrows) throw new Error("quota");
@@ -64,7 +77,10 @@ function harness(opts: { uploads: CleanupUpload[]; enabled?: boolean; yt?: (id: 
     },
     fs: {
       inspect: async (_ws, rel) => files.get(rel) ?? { kind: "missing", tombstone: null },
-      sha256: async () => "ab".repeat(32),
+      async sha256() {
+        await opts.onSha?.();
+        return "ab".repeat(32);
+      },
       probeDuration: async () => 10800,
       async writeTombstone(_p, t) {
         if (opts.tombstoneFails) throw new Error("read-only");
@@ -156,7 +172,7 @@ test("AC-2: waits are not logged and are retried; they show on the card", async 
   assert.deepEqual((await h.cleanup.view(CH)).waiting, []);
 });
 
-test("AC-2: YouTube unreadable is a wait; the video missing on YouTube or another size is a refusal, logged once", async () => {
+test("AC-2: YouTube unreadable or not returning the video is a wait (the file is kept); another size is a refusal, logged once", async () => {
   const quota = harness({ uploads: [upload(72)], ytThrows: true });
   await quota.cleanup.tick();
   assert.deepEqual(quota.log, []);
@@ -164,14 +180,15 @@ test("AC-2: YouTube unreadable is a wait; the video missing on YouTube or anothe
 
   const gone = harness({ uploads: [upload(72)], yt: () => undefined });
   await gone.cleanup.tick();
-  await gone.cleanup.tick();
-  assert.deepEqual(gone.log.map((e) => [e.action, e.reason]), [["refused", "video_not_on_youtube"]]);
-  assert.equal(gone.reads.length, 1, "a refused upload is not read again");
+  assert.deepEqual(gone.log, []);
+  assert.deepEqual((await gone.cleanup.view(CH)).waiting.map((w) => w.reason), ["video_not_on_youtube"]);
   assert.deepEqual(gone.unlinked, []);
 
   const size = harness({ uploads: [upload(72)], yt: () => ytOk(999) });
   await size.cleanup.tick();
+  await size.cleanup.tick();
   assert.deepEqual(size.log.map((e) => [e.action, e.reason]), [["refused", "size_mismatch_youtube"]]);
+  assert.equal(size.reads.length, 1, "a refused upload is not read again");
   assert.deepEqual(size.unlinked, []);
 });
 
@@ -207,9 +224,42 @@ test("50 videos per YouTube read", async () => {
   assert.equal(h.unlinked.length, 51);
 });
 
-test("an mp4 already gone (with or without a tombstone) is not read, deleted or logged", async () => {
+test("an mp4 already gone: our own tombstone logs the delete once (a crash cut its entry); without it 'file_missing' -- no read, no unlink", async () => {
   const u = upload(72);
-  const h = harness({ uploads: [u], files: new Map([[u.videoFile, { kind: "missing", tombstone: null }]]) });
+  const ours: VideoTombstone = { schema: "deleted-video/1", file: "V72 Tropico Jazz.mp4", bytes: 1072, sha256: null, durationSec: 1, youtubeVideoId: u.videoId as string, privacyStatus: "public", publishAt: null, deletedAt: "x", deletedBy: "ytm-cleanup", tempDeleted: [] };
+  const recovered = harness({ uploads: [u], files: new Map([[u.videoFile, { kind: "missing", tombstone: ours }]]) });
+  await recovered.cleanup.tick();
+  await recovered.cleanup.tick();
+  assert.deepEqual([recovered.reads, recovered.unlinked], [[], []]);
+  assert.deepEqual(recovered.log.map((e) => [e.action, e.reason, e.bytes]), [["deleted", "recovered", 1072]]);
+  assert.equal((await recovered.cleanup.view(CH)).freedBytes, 1072);
+
+  const byHand = harness({ uploads: [u], files: new Map([[u.videoFile, { kind: "missing", tombstone: null }]]) });
+  await byHand.cleanup.tick();
+  assert.deepEqual([byHand.reads, byHand.unlinked], [[], []]);
+  assert.deepEqual(byHand.log.map((e) => [e.action, e.reason]), [["refused", "file_missing"]]);
+});
+
+test("the workspace not reachable: every upload waits, nothing is logged (review #1)", async () => {
+  const noWs = harnessWithoutWorkspace([upload(72), upload(73)]);
+  await noWs.cleanup.tick();
+  assert.deepEqual(noWs.log, []);
+  assert.deepEqual((await noWs.cleanup.view(CH)).waiting.map((w) => w.reason), ["workspace_unavailable", "workspace_unavailable"]);
+});
+
+test("switched off during a sweep: nothing more is deleted (review #4)", async () => {
+  const uploads = [upload(71), upload(72)];
+  let cleanupRef: ReturnType<typeof harness>["cleanup"] | null = null;
+  const h = harness({ uploads, onSha: async () => void (await cleanupRef?.setEnabled(CH, false)) });
+  cleanupRef = h.cleanup;
+  uploads.forEach((u) => (u.sha256 = "ab".repeat(32)));
   await h.cleanup.tick();
-  assert.deepEqual([h.reads, h.unlinked, h.log], [[], [], []]);
+  assert.deepEqual(h.unlinked, []);
+});
+
+test("two switch changes at once for two channels both stick (review #5)", async () => {
+  const h = harness({ uploads: [], enabled: false });
+  await Promise.all([h.cleanup.setEnabled("UC-A", true), h.cleanup.setEnabled("UC-B", true)]);
+  const saved = JSON.parse(h.settings() as string) as { channels: Record<string, { enabled: boolean }> };
+  assert.deepEqual(Object.keys(saved.channels).sort(), ["UC-A", "UC-B"]);
 });

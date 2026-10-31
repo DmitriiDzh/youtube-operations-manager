@@ -3,7 +3,7 @@
 
 import { isAllowedReleaseVideo } from "./allowlist";
 import type { CleanupDecision, CleanupRefuseReason, CleanupWaitReason, VideoTombstone } from "./contracts";
-import { CLEANUP_DURATION_TOLERANCE_SECONDS } from "./contracts";
+import { CLEANUP_DELETED_BY, CLEANUP_DURATION_TOLERANCE_SECONDS } from "./contracts";
 
 export type CleanupUploadFacts = {
   video: string;
@@ -11,6 +11,8 @@ export type CleanupUploadFacts = {
   videoId: string | null;
   storedBytes: number | null;
   totalBytes: number | null;
+  /** The publishing runner's problem code on a finished upload (null = finished cleanly). */
+  errorCode?: string | null;
 };
 
 export type LocalFileFacts =
@@ -40,15 +42,20 @@ const refuse = (reason: CleanupRefuseReason): CleanupDecision => ({ action: "ref
 export function decideLocally(args: { upload: CleanupUploadFacts; channelName: string; local: LocalFileFacts; inLiveRotation: boolean; uploadActive: boolean }): CleanupDecision | null {
   const { upload, local } = args;
   if (!upload.videoId || upload.totalBytes === null || upload.storedBytes !== upload.totalBytes) return refuse("upload_incomplete");
-  if (!isAllowedReleaseVideo(upload.videoFile, upload.video, args.channelName)) return refuse("path_not_allowed");
+  // Review #1: an unreachable workspace (no channel name either) waits -- never a refusal that would stick after the disk is back.
   if (local.kind === "unavailable") return wait("workspace_unavailable");
+  if (!isAllowedReleaseVideo(upload.videoFile, upload.video, args.channelName)) return refuse("path_not_allowed");
   if (local.kind === "symlink") return refuse("symlink");
   if (local.kind === "not_a_file") return refuse("not_a_file");
-  if (local.kind === "missing") return { action: "done" };
+  if (local.kind === "missing") {
+    const own = local.tombstone && local.tombstone.deletedBy === CLEANUP_DELETED_BY && local.tombstone.youtubeVideoId === upload.videoId;
+    return own && local.tombstone ? { action: "recovered", bytes: local.tombstone.bytes } : refuse("file_missing");
+  }
   if (local.tombstone && (local.tombstone.youtubeVideoId !== upload.videoId || local.tombstone.bytes !== local.bytes)) return refuse("tombstone_mismatch");
   if (local.bytes !== upload.totalBytes) return refuse("size_mismatch_upload");
   if (args.inLiveRotation) return wait("in_live_rotation");
   if (args.uploadActive) return wait("upload_active");
+  if (upload.errorCode) return wait("upload_problem");
   return null;
 }
 
@@ -58,7 +65,7 @@ const REJECTED_UPLOAD = new Set(["rejected", "failed", "deleted"]);
 export function decideOnYoutube(args: { localBytes: number; youtube: YoutubeVideoFacts }): CleanupDecision {
   const yt = args.youtube;
   if (yt.kind === "unavailable") return wait("youtube_unavailable");
-  if (yt.kind === "missing") return refuse("video_not_on_youtube");
+  if (yt.kind === "missing") return wait("video_not_on_youtube");
   if (yt.uploadStatus && REJECTED_UPLOAD.has(yt.uploadStatus)) return refuse("youtube_rejected");
   if (yt.processingStatus === "failed" || yt.processingStatus === "terminated") return refuse("youtube_rejected");
   if (yt.processingStatus !== "succeeded" && yt.uploadStatus !== "processed") return wait("processing");

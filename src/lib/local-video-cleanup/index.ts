@@ -10,6 +10,7 @@ import {
   listLocalVideoCleanupLog,
   listLocalVideoCleanupLoggedUploadIds,
   listPublishingUploads,
+  listPublishingUploadsForCleanup,
   setLocalVideoCleanupSettingsJson,
   sumLocalVideoCleanupFreed,
   type StoredPublishingUpload,
@@ -55,6 +56,7 @@ function uploadOf(row: StoredPublishingUpload): CleanupUpload | null {
     videoId: row.videoId,
     storedBytes: row.storedBytes,
     totalBytes: row.totalBytes,
+    errorCode: row.errorCode,
     finishedAt: row.finishedAt ? row.finishedAt.getTime() : null,
     sha256: typeof pkg.videoSha256 === "string" && /^[0-9a-f]{64}$/i.test(pkg.videoSha256) ? pkg.videoSha256 : null,
   };
@@ -80,8 +82,8 @@ function createLocalVideoCleanupCore(): LocalVideoCleanup {
   return createLocalVideoCleanup({
     getSettingsJson: () => getLocalVideoCleanupSettingsJson(),
     setSettingsJson: (json) => setLocalVideoCleanupSettingsJson(json),
-    async doneUploads(channelId) {
-      const rows = await listPublishingUploads({ channelId, statuses: ["done"], limit: 1000 });
+    async doneUploads(channelId, since) {
+      const rows = await listPublishingUploadsForCleanup(channelId, new Date(since));
       return rows.map(uploadOf).filter((u): u is CleanupUpload => u !== null);
     },
     async activeUploadFiles() {

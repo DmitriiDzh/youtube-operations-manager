@@ -41,6 +41,10 @@ export type CleanupWaitReason =
   | "in_live_rotation"
   | "upload_active"
   | "cannot_verify"
+  /** The publishing runner finished the upload with a problem (read-back mismatch, a failed step): the owner may still redo it. */
+  | "upload_problem"
+  /** YouTube does not return the video (deleted, or not visible to the approver's account now): the file is kept. */
+  | "video_not_on_youtube"
   /** The tombstone could not be written or read back, or the unlink failed: nothing was deleted (or only the tombstone is there). */
   | "delete_failed";
 
@@ -54,16 +58,17 @@ export type CleanupRefuseReason =
   | "size_mismatch_youtube"
   | "sha256_mismatch"
   | "duration_mismatch"
-  | "video_not_on_youtube"
   | "youtube_rejected"
-  | "tombstone_mismatch";
+  | "tombstone_mismatch"
+  /** The mp4 is already gone without this cleanup's tombstone (deleted by hand): nothing to do, logged once. */
+  | "file_missing";
 
 export type CleanupDecision =
   | { action: "delete" }
   | { action: "wait"; reason: CleanupWaitReason }
   | { action: "refuse"; reason: CleanupRefuseReason }
-  /** The mp4 is already gone and its tombstone is there (a finished delete, or one done by hand with a tombstone). */
-  | { action: "done" };
+  /** The mp4 is gone and this cleanup's own tombstone for this video is there: a delete whose log entry was cut by a crash. */
+  | { action: "recovered"; bytes: number };
 
 export type CleanupChannelSetting = { enabled: boolean; enabledAt: number | null };
 export type CleanupSettings = { channels: Record<string, CleanupChannelSetting> };

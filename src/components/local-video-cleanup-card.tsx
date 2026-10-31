@@ -30,6 +30,8 @@ const REASON_TEXT: Record<string, UiTextKey> = {
   in_live_rotation: "cleanup.reason.inLiveRotation",
   upload_active: "cleanup.reason.uploadActive",
   cannot_verify: "cleanup.reason.cannotVerify",
+  upload_problem: "cleanup.reason.uploadProblem",
+  file_missing: "cleanup.reason.fileMissing",
   delete_failed: "cleanup.reason.deleteFailed",
   path_not_allowed: "cleanup.reason.pathNotAllowed",
   symlink: "cleanup.reason.symlink",
@@ -66,6 +68,13 @@ export function LocalVideoCleanupCard({ channelId, visible }: { channelId: strin
     }
   }, [channelId, t]);
 
+  // Review: another channel starts from nothing -- no view, no open confirmation of the previous channel.
+  useEffect(() => {
+    setView(null);
+    setConfirming(false);
+    setError(null);
+  }, [channelId]);
+
   useEffect(() => {
     if (visible) void load();
   }, [visible, load]);
@@ -101,7 +110,7 @@ export function LocalVideoCleanupCard({ channelId, visible }: { channelId: strin
         <InfoTooltip>{t("cleanup.info")}</InfoTooltip>
       </h3>
       {error && <p className="text-xs text-red-400">{error}</p>}
-      {view && (
+      {view && view.channelId === channelId && (
         <>
           <div className="flex items-center gap-3">
             <ToggleSwitch tone="violet" label={t("cleanup.switch")} checked={view.enabled || confirming} disabled={saving} onChange={(checked) => (checked ? setConfirming(true) : (setConfirming(false), void save(false)))} />
@@ -126,8 +135,8 @@ export function LocalVideoCleanupCard({ channelId, visible }: { channelId: strin
             <div>
               <p className="text-xs font-medium text-zinc-300">{t("cleanup.waitingTitle")}</p>
               <ul className="mt-1 space-y-0.5 text-xs text-zinc-400">
-                {view.waiting.map((w) => (
-                  <li key={w.video}>
+                {view.waiting.map((w, i) => (
+                  <li key={`${w.video}-${i}`}>
                     {w.video}: {reason(w.reason)}
                   </li>
                 ))}
@@ -138,10 +147,10 @@ export function LocalVideoCleanupCard({ channelId, visible }: { channelId: strin
             <div>
               <p className="text-xs font-medium text-zinc-300">{t("cleanup.recentTitle")}</p>
               <ul className="mt-1 space-y-0.5 text-xs text-zinc-400">
-                {view.recent.map((e) => (
-                  <li key={`${e.video}-${e.at}`} title={e.path}>
+                {view.recent.map((e, i) => (
+                  <li key={`${e.video}-${e.at}-${i}`} title={e.path}>
                     {formatDisplayDateTime(e.at)} · {e.video} ·{" "}
-                    {e.action === "deleted" ? t("cleanup.deleted", { size: gbLabel(t, e.bytes ?? 0) }) : <span className="text-amber-300">{t("cleanup.refused", { reason: reason(e.reason) })}</span>}
+                    {e.action === "deleted" ? t(e.reason === "recovered" ? "cleanup.recovered" : "cleanup.deleted", { size: gbLabel(t, e.bytes ?? 0) }) : <span className="text-amber-300">{t("cleanup.refused", { reason: reason(e.reason) })}</span>}
                   </li>
                 ))}
               </ul>

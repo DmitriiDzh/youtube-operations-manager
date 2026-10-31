@@ -59,6 +59,10 @@ test("AC-2 local: each failing fact gives its own reason, none deletes", () => {
   assert.deepEqual(local({ upload: { ...upload, videoFile: "04 Videos/Live Segments/V72 Tropico Jazz.mp4" } }), { action: "refuse", reason: "path_not_allowed" });
   assert.deepEqual(local({ channelName: "Japan Countryside Music" }), { action: "refuse", reason: "path_not_allowed" });
   assert.deepEqual(local({ local: { kind: "unavailable" } }), { action: "wait", reason: "workspace_unavailable" });
+  // ADR §3: the workspace not reachable WAITS -- also when its name (the channel's) could not be read: never a lasting refusal.
+  assert.deepEqual(local({ local: { kind: "unavailable" }, channelName: "" }), { action: "wait", reason: "workspace_unavailable" });
+  // An upload the runner finished with a problem is kept for the owner (review #6).
+  assert.deepEqual(local({ upload: { ...upload, errorCode: "verify_mismatch" } }), { action: "wait", reason: "upload_problem" });
   assert.deepEqual(local({ local: { kind: "symlink" } }), { action: "refuse", reason: "symlink" });
   assert.deepEqual(local({ local: { kind: "not_a_file" } }), { action: "refuse", reason: "not_a_file" });
   assert.deepEqual(local({ local: { ...file, bytes: 3_519_496_567 } }), { action: "refuse", reason: "size_mismatch_upload" });
@@ -80,9 +84,11 @@ const tombstone: VideoTombstone = {
   tempDeleted: [],
 };
 
-test("AC-5: mp4 gone with its tombstone is done; a matching tombstone next to the mp4 continues; a different one refuses", () => {
-  assert.deepEqual(local({ local: { kind: "missing", tombstone } }), { action: "done" });
-  assert.deepEqual(local({ local: { kind: "missing", tombstone: null } }), { action: "done" });
+test("AC-5: mp4 gone with our own tombstone is a recovered delete; gone otherwise is 'file_missing'; a tombstone next to the mp4 must match", () => {
+  assert.deepEqual(local({ local: { kind: "missing", tombstone } }), { action: "recovered", bytes: 3_519_496_568 });
+  assert.deepEqual(local({ local: { kind: "missing", tombstone: null } }), { action: "refuse", reason: "file_missing" });
+  assert.deepEqual(local({ local: { kind: "missing", tombstone: { ...tombstone, deletedBy: "operator" } } }), { action: "refuse", reason: "file_missing" });
+  assert.deepEqual(local({ local: { kind: "missing", tombstone: { ...tombstone, youtubeVideoId: "otherVideo1" } } }), { action: "refuse", reason: "file_missing" });
   assert.equal(local({ local: { ...file, tombstone } }), null);
   assert.deepEqual(local({ local: { ...file, tombstone: { ...tombstone, youtubeVideoId: "otherVideo1" } } }), { action: "refuse", reason: "tombstone_mismatch" });
   assert.deepEqual(local({ local: { ...file, tombstone: { ...tombstone, bytes: 1 } } }), { action: "refuse", reason: "tombstone_mismatch" });
@@ -109,7 +115,7 @@ test("AC-2 YouTube: public or private with a date, processed, same size: delete"
 
 test("AC-2 YouTube: waits and refusals", () => {
   assert.deepEqual(onYt({ kind: "unavailable" }), { action: "wait", reason: "youtube_unavailable" });
-  assert.deepEqual(onYt({ kind: "missing" }), { action: "refuse", reason: "video_not_on_youtube" });
+  assert.deepEqual(onYt({ kind: "missing" }), { action: "wait", reason: "video_not_on_youtube" });
   assert.deepEqual(onYt(yt({ uploadStatus: "uploaded", processingStatus: "processing" })), { action: "wait", reason: "processing" });
   assert.deepEqual(onYt(yt({ uploadStatus: "rejected", processingStatus: null })), { action: "refuse", reason: "youtube_rejected" });
   assert.deepEqual(onYt(yt({ uploadStatus: "failed", processingStatus: null })), { action: "refuse", reason: "youtube_rejected" });
