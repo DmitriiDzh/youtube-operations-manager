@@ -158,6 +158,28 @@ async function startServerSession() {
     console.warn(`[disk-guard] not started: ${error instanceof Error ? error.message : String(error)}`);
   }
 
+  // BL-238 (FO-REQ-0051, ADR 0058): the local video cleanup -- 3 minutes after the start, then every 30 minutes, it deletes the
+  // release mp4 of each of this computer's uploads that YouTube holds, on the channels whose switch is on here (off by default).
+  // Its own loop (AGENTS.md §M); it waits during an import / migration or in recovery mode like the other loops.
+  try {
+    const { getLocalVideoCleanupCore, CLEANUP_FIRST_SWEEP_DELAY_MS, CLEANUP_SWEEP_INTERVAL_MS } = await import("@/lib/local-video-cleanup");
+    const { rawSqlClient: cleanupSqlClient } = await import("@/lib/db");
+    const { assertDeviceAvailableForMutation: assertCleanupMayWrite } = await import("@/lib/device-mutation-gate");
+    const cleanupLoop = async () => {
+      try {
+        await assertCleanupMayWrite(cleanupSqlClient);
+        await getLocalVideoCleanupCore().tick();
+      } catch (error) {
+        const paused = error instanceof Error && (error.name === "OperationLockError" || error.name === "RecoveryModeError");
+        if (!paused) console.warn(`[local-video-cleanup] ${error instanceof Error ? error.message : String(error)}`);
+      }
+      setTimeout(() => void cleanupLoop(), CLEANUP_SWEEP_INTERVAL_MS).unref();
+    };
+    setTimeout(() => void cleanupLoop(), CLEANUP_FIRST_SWEEP_DELAY_MS).unref();
+  } catch (error) {
+    console.warn(`[local-video-cleanup] not started: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
   // Session lease (architecture-audit review, round 3): Live writes are honored only while this web
   // server keeps renewing it, so ANY end of the session -- including a crash or Windows
   // `taskkill /F` / a closed console window, where no signal handler runs -- makes them lapse within

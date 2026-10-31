@@ -8,6 +8,7 @@ import { FeatureErrorBoundary } from "@/components/feature-error-boundary";
 import { LiveStreamPanel } from "@/components/live-stream-panel";
 import { PublishingCalendar } from "@/components/publishing-calendar";
 import { PublishingPackages } from "@/components/publishing-packages";
+import { LocalVideoCleanupCard } from "@/components/local-video-cleanup-card";
 import { PublishingSettingsPanel } from "@/components/publishing-settings-panel";
 import { VideoProjectsPanel } from "@/components/video-projects-panel";
 import { WeeklyPlanPanel } from "@/components/weekly-plan-panel";
@@ -77,6 +78,10 @@ export default function ContentLayout({ children }: { children: ReactNode }) {
                 <VideoProjectsPanel channelId={channel?.id ?? null} visible={tab === "publishing"} />
               </FeatureErrorBoundary>
               <PublishingPackages channelId={channel?.id ?? null} visible={tab === "publishing"} />
+              {/* BL-238 (ADR 0058, AGENTS.md §M): the local video cleanup in its own boundary -- Publishing works without it. */}
+              <FeatureErrorBoundary label={t("cleanup.title")}>
+                <LocalVideoCleanupCard channelId={channel?.id ?? null} visible={tab === "publishing"} />
+              </FeatureErrorBoundary>
               {/* BL-221: the channel's publishing defaults are set rarely -- folded under the board and the packages. */}
               <details className="group rounded-xl border border-zinc-800 bg-zinc-900">
                 <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-zinc-200 hover:text-white">{t("publishingSettings.collapsedTitle")}</summary>

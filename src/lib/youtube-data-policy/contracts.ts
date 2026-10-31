@@ -215,6 +215,7 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
   gemini_media_jobs: notApiData("images and video generated through Google's Gemini API for a channel, with their prompts and costs (BL-174)"),
   channel_voices: notApiData("a channel's voices designed through Gemini or ElevenLabs from a text description, with their previews (BL-236)"),
   elevenlabs_speech_jobs: notApiData("speech takes generated through ElevenLabs for a channel, with their texts and characters (BL-236)"),
+  local_video_cleanup_log: authorized("our channels' release files this computer deleted after upload, with the video ids YouTube returned for them (BL-238)"),
   live_streams: authorized("our channels' live broadcast ids and texts, set by the owner (BL-176)"),
   publishing_uploads: authorized("our channels' uploads: the video ids YouTube returned and the titles and descriptions the owner approved (BL-182)"),
   video_reservations: notApiData("the video numbers this computer gave out for our channels, with the owner's working titles (BL-194)"),

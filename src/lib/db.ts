@@ -1463,6 +1463,28 @@ export const elevenlabsSpeechJobs = sqliteTable(
 );
 
 /**
+ * Schema v116 (BL-238, FO-REQ-0051, ADR 0058): the local video cleanup's log on this computer -- every release file it deleted and
+ * every one it refused, once per upload (a refused upload is never tried again). Waits are not logged. Device-local: the file is on
+ * this computer.
+ */
+export const localVideoCleanupLog = sqliteTable(
+  "local_video_cleanup_log",
+  {
+    id: text("id").primaryKey(),
+    channelId: text("channel_id").notNull(),
+    uploadId: text("upload_id").notNull(),
+    video: text("video").notNull(),
+    path: text("path").notNull(),
+    bytes: integer("bytes"),
+    videoId: text("video_id"),
+    action: text("action", { enum: ["deleted", "refused"] }).notNull(),
+    reason: text("reason"),
+    at: integer("at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [uniqueIndex("local_video_cleanup_log_upload_idx").on(table.uploadId), index("local_video_cleanup_log_channel_idx").on(table.channelId, table.at)]
+);
+
+/**
  * Schema v89 (BL-182 stage 2, PUBLISHING_PLAN.md §2 stage 2 item 5, ADR 0037): the upload queue of this computer -- one row per
  * approved release package, frozen as the owner approved it (package, publishing settings, publish time), with each step's
  * outcome, so a restart continues at the step and never uploads twice. At most one live row per channel and video (the unique
@@ -5957,6 +5979,27 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS elevenlabs_speech_jobs_request_idx ON elevenlabs_speech_jobs (created_by, request_id)");
       await client.execute("CREATE INDEX IF NOT EXISTS elevenlabs_speech_jobs_status_idx ON elevenlabs_speech_jobs (status, next_attempt_at)");
       await client.execute("CREATE INDEX IF NOT EXISTS elevenlabs_speech_jobs_created_idx ON elevenlabs_speech_jobs (created_at)");
+    },
+  },
+  {
+    version: 116,
+    description:
+      "local_video_cleanup_log -- BL-238 (FO-REQ-0051, ADR 0058): every release mp4 the local video cleanup deleted or refused, once per upload. Additive (one new table), device-local",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS local_video_cleanup_log (
+        id TEXT PRIMARY KEY NOT NULL,
+        channel_id TEXT NOT NULL,
+        upload_id TEXT NOT NULL,
+        video TEXT NOT NULL,
+        path TEXT NOT NULL,
+        bytes INTEGER,
+        video_id TEXT,
+        action TEXT NOT NULL,
+        reason TEXT,
+        at INTEGER NOT NULL
+      )`);
+      await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS local_video_cleanup_log_upload_idx ON local_video_cleanup_log (upload_id)");
+      await client.execute("CREATE INDEX IF NOT EXISTS local_video_cleanup_log_channel_idx ON local_video_cleanup_log (channel_id, at)");
     },
   },
 ];
@@ -15617,6 +15660,50 @@ export async function getDiskGuardStateJson(database: AppDb = db): Promise<strin
 
 export async function setDiskGuardStateJson(json: string, database: AppDb = db): Promise<void> {
   await setAppSetting(DISK_GUARD_STATE_KEY, json, database);
+}
+
+const LOCAL_VIDEO_CLEANUP_SETTINGS_KEY = "local_video_cleanup_settings";
+
+/** BL-238: the local video cleanup's per-channel switches on this computer (JSON), `null` before the first save. Never synced. */
+export async function getLocalVideoCleanupSettingsJson(database: AppDb = db): Promise<string | null> {
+  return getAppSetting(LOCAL_VIDEO_CLEANUP_SETTINGS_KEY, database);
+}
+
+export async function setLocalVideoCleanupSettingsJson(json: string, database: AppDb = db): Promise<void> {
+  await setAppSetting(LOCAL_VIDEO_CLEANUP_SETTINGS_KEY, json, database);
+}
+
+export type StoredLocalVideoCleanupLog = typeof localVideoCleanupLog.$inferSelect;
+
+/** BL-238: logs one delete or refusal; false when the upload already has its entry (once per upload). */
+export async function insertLocalVideoCleanupLog(row: StoredLocalVideoCleanupLog, database: AppDb = db): Promise<boolean> {
+  const result = await database.insert(localVideoCleanupLog).values(row).onConflictDoNothing({ target: localVideoCleanupLog.uploadId });
+  return result.rowsAffected > 0;
+}
+
+/** BL-238: the channel's log, newest first. */
+export async function listLocalVideoCleanupLog(channelId: string, limit: number, database: AppDb = db): Promise<StoredLocalVideoCleanupLog[]> {
+  return database.select().from(localVideoCleanupLog).where(eq(localVideoCleanupLog.channelId, channelId)).orderBy(desc(localVideoCleanupLog.at), desc(localVideoCleanupLog.id)).limit(limit);
+}
+
+/** BL-238: the uploads of the channel that already have their entry (deleted or refused). */
+export async function listLocalVideoCleanupLoggedUploadIds(channelId: string, database: AppDb = db): Promise<Set<string>> {
+  const rows = await database.select({ uploadId: localVideoCleanupLog.uploadId }).from(localVideoCleanupLog).where(eq(localVideoCleanupLog.channelId, channelId));
+  return new Set(rows.map((r) => r.uploadId));
+}
+
+/** BL-238: what the cleanup freed on the channel: the deleted files' bytes and count. */
+export async function sumLocalVideoCleanupFreed(channelId: string, database: AppDb = db): Promise<{ bytes: number; count: number }> {
+  const rows = await database
+    .select({ bytes: localVideoCleanupLog.bytes })
+    .from(localVideoCleanupLog)
+    .where(and(eq(localVideoCleanupLog.channelId, channelId), eq(localVideoCleanupLog.action, "deleted")));
+  return { bytes: rows.reduce((sum, r) => sum + (r.bytes ?? 0), 0), count: rows.length };
+}
+
+/** BL-238: every live rotation entry of this computer (all channels): the video and its original file, workspace-relative. */
+export async function listAllLiveStreamVideoRefs(database: AppDb = db): Promise<Array<{ channelId: string; videoId: string; originalPath: string | null }>> {
+  return database.select({ channelId: liveStreamVideos.channelId, videoId: liveStreamVideos.videoId, originalPath: liveStreamVideos.originalPath }).from(liveStreamVideos);
 }
 
 const WEEKLY_BUILD_SETTINGS_KEY = "weekly_build_settings";
