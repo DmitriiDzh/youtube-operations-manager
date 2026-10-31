@@ -40,7 +40,9 @@ export type CleanupWaitReason =
   | "workspace_unavailable"
   | "in_live_rotation"
   | "upload_active"
-  | "cannot_verify";
+  | "cannot_verify"
+  /** The tombstone could not be written or read back, or the unlink failed: nothing was deleted (or only the tombstone is there). */
+  | "delete_failed";
 
 /** Never -- the file is not proven to be the uploaded one, or the path is not one we may touch. Logged once, never tried again. */
 export type CleanupRefuseReason =

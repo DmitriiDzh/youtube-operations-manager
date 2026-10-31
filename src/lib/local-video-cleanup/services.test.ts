@@ -196,7 +196,7 @@ test("AC-3: a tombstone that cannot be written leaves the mp4 and logs nothing (
   await h.cleanup.tick();
   assert.deepEqual(h.unlinked, []);
   assert.deepEqual(h.log, []);
-  assert.equal((await h.cleanup.view(CH)).waiting.length, 1);
+  assert.deepEqual((await h.cleanup.view(CH)).waiting.map((w) => w.reason), ["delete_failed"]);
 });
 
 test("50 videos per YouTube read", async () => {

@@ -23,6 +23,7 @@ export const localVideoCleanup = {
   "cleanup.reason.inLiveRotation": "видео в ротации трансляции",
   "cleanup.reason.uploadActive": "загрузка этого файла ещё идёт",
   "cleanup.reason.cannotVerify": "файл не удалось проверить (ffprobe или хеш)",
+  "cleanup.reason.deleteFailed": "удаление не прошло (будет ещё попытка)",
   "cleanup.reason.pathNotAllowed": "это не собственный «V<n> <канал>.mp4» релиза",
   "cleanup.reason.symlink": "путь идёт через ссылку",
   "cleanup.reason.notAFile": "не обычный файл",

@@ -2244,5 +2244,7 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
   `fileDetails.fileSize` equal to the local size (plus the package's sha256 when it froze one), else the duration within 2 s.
   A same-size, different-content file would pass without a sha256. A deleted video cannot return to a videos-mode live rotation.
   Only uploads made through YT Manager after the switch went on are covered; older ones are not (variant B not decided).
+  A crash in the middle of a tombstone write leaves `….deleted.json.tmp-<pid>-<ms>` in the release folder; the cleanup never deletes it
+  (it is outside the allowlist), so it stays until removed by hand.
 - **Gate(s):** none (the owner's switch, off by default, per computer and channel). **Approval required from:** the owner, to widen it
   (backfill, variant B).

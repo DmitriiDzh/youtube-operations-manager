@@ -197,13 +197,13 @@ export function createLocalVideoCleanup(deps: LocalVideoCleanupDeps) {
       await deps.fs.writeTombstone(file.absolutePath, tombstone);
     } catch (error) {
       deps.note("local_video_cleanup.tombstone_failed", { channelId: upload.channelId, video: upload.video, error: error instanceof Error ? error.message : String(error) });
-      return settle(workspace, upload, { action: "wait", reason: "workspace_unavailable" }, file.bytes);
+      return settle(workspace, upload, { action: "wait", reason: "delete_failed" }, file.bytes);
     }
     try {
       await deps.fs.unlink({ workspace, relativePath: upload.videoFile, video: upload.video, channelName, expected: { ...file.identity, bytes: file.bytes, videoId: upload.videoId as string } });
     } catch (error) {
       deps.note("local_video_cleanup.unlink_failed", { channelId: upload.channelId, video: upload.video, error: error instanceof Error ? error.message : String(error) });
-      return settle(workspace, upload, { action: "wait", reason: "workspace_unavailable" }, file.bytes);
+      return settle(workspace, upload, { action: "wait", reason: "delete_failed" }, file.bytes);
     }
     waiting.get(upload.channelId)?.delete(upload.id);
     await record(workspace, upload, "deleted", null, file.bytes);

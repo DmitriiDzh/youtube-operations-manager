@@ -30,6 +30,7 @@ const REASON_TEXT: Record<string, UiTextKey> = {
   in_live_rotation: "cleanup.reason.inLiveRotation",
   upload_active: "cleanup.reason.uploadActive",
   cannot_verify: "cleanup.reason.cannotVerify",
+  delete_failed: "cleanup.reason.deleteFailed",
   path_not_allowed: "cleanup.reason.pathNotAllowed",
   symlink: "cleanup.reason.symlink",
   not_a_file: "cleanup.reason.notAFile",
