@@ -52,6 +52,8 @@ export type CleanupYoutubeState = {
 export type LocalVideoCleanupDeps = {
   getSettingsJson(): Promise<string | null>;
   setSettingsJson(json: string): Promise<void>;
+  /** Every channel stored on this computer (the switch is on by default for each, owner msg 3900). */
+  channelIds(): Promise<string[]>;
   /** This computer's finished uploads of the channel (status `done`) that finished at or after `since` and have no log entry yet. */
   doneUploads(channelId: string, since: number): Promise<CleanupUpload[]>;
   /** The relative video paths of this computer's uploads still running (any channel). */
@@ -332,7 +334,26 @@ export function createLocalVideoCleanup(deps: LocalVideoCleanupDeps) {
     await record(workspace, upload, "deleted", null, file.bytes);
   }
 
+  /**
+   * Owner msg 3900: the switch is ON by default. A channel this computer has no setting for yet gets one, on, from now -- so only
+   * uploads finished from that moment are cleaned (the older ones stay for stage 2's backfill), and the owner's own "off" is kept.
+   */
+  async function adoptDefaults(channelIds: string[]): Promise<void> {
+    const next = switching.then(async () => {
+      const current = await settings();
+      const missing = channelIds.filter((id) => !current.channels[id]);
+      if (missing.length === 0) return;
+      const now = deps.clock();
+      for (const id of missing) current.channels[id] = { enabled: true, enabledAt: now };
+      await deps.setSettingsJson(JSON.stringify(current));
+      deps.note("local_video_cleanup.default_on", { channelIds: missing });
+    });
+    switching = next.catch(() => undefined);
+    return next;
+  }
+
   async function sweep(): Promise<void> {
+    await adoptDefaults(await deps.channelIds());
     const current = await settings();
     for (const [channelId, setting] of Object.entries(current.channels)) {
       try {
@@ -385,6 +406,7 @@ export function createLocalVideoCleanup(deps: LocalVideoCleanupDeps) {
   }
 
   async function viewOf(channelId: string): Promise<CleanupChannelView> {
+    await adoptDefaults([channelId]);
     const setting = (await settings()).channels[channelId] ?? {
       enabled: false,
       enabledAt: null,

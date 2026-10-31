@@ -11,6 +11,7 @@ import {
   listLocalVideoCleanupLoggedUploadIds,
   listPublishingUploads,
   listPublishingUploadsForCleanup,
+  listStoredChannels,
   setLocalVideoCleanupSettingsJson,
   sumLocalVideoCleanupFreed,
   type StoredPublishingUpload,
@@ -82,6 +83,7 @@ function createLocalVideoCleanupCore(): LocalVideoCleanup {
   return createLocalVideoCleanup({
     getSettingsJson: () => getLocalVideoCleanupSettingsJson(),
     setSettingsJson: (json) => setLocalVideoCleanupSettingsJson(json),
+    channelIds: async () => (await listStoredChannels()).map((channel) => channel.channelId),
     async doneUploads(channelId, since) {
       const rows = await listPublishingUploadsForCleanup(channelId, new Date(since));
       return rows.map(uploadOf).filter((u): u is CleanupUpload => u !== null);

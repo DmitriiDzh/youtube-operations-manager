@@ -1294,7 +1294,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   - Затем sha256 из пакета, если он есть.
 - **Удаление:** метка `….mp4.deleted.json` (`deleted-video/1`, контракт Оператора) пишется через tmp + fsync + rename, затем перечитывается; только после этого unlink. Перед unlink повторно проверяются allowlist, dev/inode/размер и метка.
 - **Журнал:** «ждёт» не пишется и проверяется снова. «Отказ» и «удалён» пишутся один раз на загрузку в `local_video_cleanup_log` (v116, device-local) и строкой в `99 Data Exchange/From YTM/cleanup-log.csv`.
-- **Переключатель:** `app_settings.local_video_cleanup_settings`, на канал и компьютер, по умолчанию выкл., не синхронизируется. UI: карточка в Контент → Публикация (`LocalVideoCleanupCard`, своя `FeatureErrorBoundary`): переключатель с подтверждением, освобождено ГБ, ожидают, последние удаления/отказы. Маршрут `GET/PUT /api/channels/[channelId]/local-video-cleanup`; MCP-инструмента нет.
+- **Переключатель:** `app_settings.local_video_cleanup_settings`, на канал и компьютер, по умолчанию вкл. (сообщение владельца 3900: с первой проверки, старые загрузки не трогаются; «выкл.» владельца сохраняется), не синхронизируется. UI: карточка в Контент → Публикация (`LocalVideoCleanupCard`, своя `FeatureErrorBoundary`): переключатель с подтверждением, освобождено ГБ, ожидают, последние удаления/отказы. Маршрут `GET/PUT /api/channels/[channelId]/local-video-cleanup`; MCP-инструмента нет.
 - **Не в этом этапе:** очистка старых видео кнопкой владельца, предпросмотр `factory_cleanup_preview`, видео, загруженные не через YT Manager (вариант Б).
 
 ## 3. Где вносить изменения
