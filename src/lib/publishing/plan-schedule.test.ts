@@ -45,6 +45,9 @@ function row(over: Partial<StoredPublishingUpload> = {}): StoredPublishingUpload
     finishedAt: NOW,
     leaseOwner: null,
     leaseUntil: null,
+    // BL-239 (schema v117): the queue place (0: the order falls back to createdAt) and who queued it.
+    queueRank: 0,
+    queuedBy: null,
     automatic: true,
     slotId: "w44-mon",
     ...over,

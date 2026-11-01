@@ -116,3 +116,15 @@ every channel's reads without a worker per channel, and nothing else.
   `analytics.query_stored_suggested_sources`), stored data only, in the named channel's scope like every other channel tool. Its rows mark
   each suggesting video `ours` (any channel connected on the computer) or `external`; an external title is at most 30 days old.
 - **Not changed:** the Producer-only tools, the DRAFT tools, the permissions, the per-call channel scope.
+
+## Amendment 8 — the upload queue (BL-239, owner 2026-11-01, Telegram msgs 3928/3930; ADR 0059)
+
+- Producer API 1.14.0 adds four `producer-only` tools with a new permission `UPLOAD_QUEUE`: `producer_upload_queue_list` (reads this
+  computer's queue), `producer_upload_queue_add` (queues a ready release package under the owner's automatic-upload switch:
+  private, a date only from a slot he approved), `producer_upload_queue_move` and `producer_upload_queue_cancel` (a queued row of
+  any channel). This is the first Producer tool that changes something outside the proposal store; it changes only this computer's
+  queue, never a video on YouTube directly (the runner uploads with its identity check and Live writes).
+- `producer_get_capabilities` reports `permissions: ["READ", "DRAFT", "UPLOAD_QUEUE"]` and `uploadQueueTools`; the DRAFT list is
+  unchanged. The tools take a `channelId` (logged, `forChannelId` in the answer) except the list.
+- **Not changed:** the closed list of channel tools (all READ), the DRAFT tools, the per-call channel scope; channel agents and the
+  factory get none of these tools.

@@ -1535,6 +1535,14 @@ export const publishingUploads = sqliteTable(
      * uploaded video maps to its slot.
      */
     slotId: text("slot_id"),
+    /**
+     * Schema v117 (BL-239, UPLOAD_QUEUE_CONTROL_PLAN.md, ADR 0059): the row's place in this computer's queue of `queued` rows (one
+     * queue for every channel; lower starts first, then `createdAt`, then `id`). A new row gets its creation time in ms, so it joins
+     * the end; a move renumbers the queued rows 1..N.
+     */
+    queueRank: integer("queue_rank").notNull().default(0),
+    /** Schema v117 (BL-239): who queued the row -- `owner` (an approval), `automatic` (the switch), `producer`; null on older rows. */
+    queuedBy: text("queued_by"),
   },
   (table) => [index("publishing_uploads_status_idx").on(table.status, table.nextAttemptAt), index("publishing_uploads_channel_idx").on(table.channelId, table.createdAt)]
 );
@@ -6000,6 +6008,22 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       )`);
       await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS local_video_cleanup_log_upload_idx ON local_video_cleanup_log (upload_id)");
       await client.execute("CREATE INDEX IF NOT EXISTS local_video_cleanup_log_channel_idx ON local_video_cleanup_log (channel_id, at)");
+    },
+  },
+  {
+    version: 117,
+    description:
+      "publishing_uploads.queue_rank + queued_by -- BL-239 (UPLOAD_QUEUE_CONTROL_PLAN.md, ADR 0059; owner msgs 3928/3930): the order of this computer's queued uploads (backfilled from created_at) and who queued each row (backfilled from automatic). Additive, device-local",
+    apply: async (client) => {
+      for (const statement of ["ALTER TABLE publishing_uploads ADD COLUMN queue_rank INTEGER NOT NULL DEFAULT 0", "ALTER TABLE publishing_uploads ADD COLUMN queued_by TEXT"]) {
+        try {
+          await client.execute(statement);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
+      await client.execute("UPDATE publishing_uploads SET queue_rank = created_at WHERE queue_rank = 0");
+      await client.execute("UPDATE publishing_uploads SET queued_by = CASE WHEN automatic = 1 THEN 'automatic' ELSE 'owner' END WHERE queued_by IS NULL");
     },
   },
 ];
@@ -11965,7 +11989,8 @@ export type PublishingUploadStatus = StoredPublishingUpload["status"];
 export async function insertPublishingUploads(rows: Array<typeof publishingUploads.$inferInsert>, database: AppDb = db): Promise<boolean> {
   try {
     await database.transaction(async (tx) => {
-      for (const row of rows) await tx.insert(publishingUploads).values(row);
+      // BL-239: a row without a place joins the end of the queue (its creation time in ms; an approval's rows keep their order).
+      for (const [index, row] of rows.entries()) await tx.insert(publishingUploads).values({ ...row, queueRank: row.queueRank || row.createdAt.getTime() + index });
     });
     return true;
   } catch (error) {
@@ -12038,6 +12063,31 @@ export async function updatePublishingUpload(
     .returning({ id: publishingUploads.id });
   return rows.length > 0;
 }
+
+/**
+ * BL-239 (UPLOAD_QUEUE_CONTROL_PLAN.md §2): gives the queued rows `orderedIds` the places 1..N in that order, all or none -- false
+ * (nothing written) when one of them is no longer `queued` (the runner took it, or it was cancelled meanwhile).
+ */
+export async function reorderQueuedPublishingUploads(orderedIds: readonly string[], database: AppDb = db): Promise<boolean> {
+  try {
+    await database.transaction(async (tx) => {
+      for (const [index, id] of orderedIds.entries()) {
+        const rows = await tx
+          .update(publishingUploads)
+          .set({ queueRank: index + 1 })
+          .where(and(eq(publishingUploads.id, id), eq(publishingUploads.status, "queued")))
+          .returning({ id: publishingUploads.id });
+        if (rows.length === 0) throw new QueueChangedError();
+      }
+    });
+    return true;
+  } catch (error) {
+    if (error instanceof QueueChangedError) return false;
+    throw error;
+  }
+}
+
+class QueueChangedError extends Error {}
 
 export type StoredGenerationPlanReviewClaim = typeof generationPlanReviewClaims.$inferSelect;
 

@@ -90,8 +90,57 @@ const SLOT_MARGIN_MS = 15 * 60_000;
 const waitingKey = (entry: AutoUploadWaiting) => (entry.kind === "package" ? `package|${entry.channelId}|${entry.manifestSha256}` : `channel|${entry.channelId}`);
 
 /** What a package must be before its video is even looked at: ready by the scan's checks, with a manifest hash and a video hash. */
-function candidate(p: ScannedPackage): p is ScannedPackage & { pkg: NonNullable<ScannedPackage["pkg"]>; manifestSha256: string } {
+export function isQueueCandidate(p: ScannedPackage): p is ScannedPackage & { pkg: NonNullable<ScannedPackage["pkg"]>; manifestSha256: string } {
   return p.state === "ready" && p.pkg !== null && p.thumbnailPath !== null && p.manifestSha256 !== null && p.youtube === null;
+}
+const candidate = isQueueCandidate;
+
+/** What the per-package check reads, given by its caller (the automatic tick, or the Producer's add -- BL-239). */
+export type PackageCheckContext = {
+  /** Videos held by an upload row here, and those a peer reports. */
+  live: Set<string>;
+  peers: Map<string, { host: string | null; uploaded: boolean }>;
+  /** Manifest hashes that may not be queued again (the caller's own "tried" rule). */
+  tried: Set<string>;
+  /** The plan's decision on each slot of the channel; null: the plan module is off (no slot is vetoed, none gives a date). */
+  slots: Map<string, SlotDecision> | null;
+  videoFile(relativePath: string): Promise<{ path: string; bytes: number; mtimeMs: number } | null>;
+  /** The video's SHA-256 (lower-case hex); may throw. Called only once the size matched. */
+  videoHash(manifestSha256: string, file: { path: string; bytes: number; mtimeMs: number }): Promise<string>;
+  now(): Date;
+};
+
+export type PackageCheck =
+  | { ok: true; video: string; manifestSha256: string; videoSha256: string; slotPublishAt: string | null }
+  | { ok: false; reason: "not_ready" | "slot_vetoed" | "no_sha256" | "held" | "tried" | "size_mismatch" | "hash_failed"; video: string | null }
+  | { ok: false; reason: "hash_mismatch"; video: string; expected: string; actual: string };
+
+/**
+ * BL-239 (UPLOAD_QUEUE_CONTROL_PLAN.md §4; AGENTS.md §D): the one per-package check before a package is queued without a screen --
+ * by the owner's automatic-upload switch, or by the Producer under it. In this order: ready; a vetoed plan slot; a top-level
+ * `sha256` in the manifest; not held here or by a peer; not tried (the caller's rule); the video's size (free), and only then its
+ * SHA-256. On success, the date: an APPROVED slot's time more than 15 minutes ahead, else none (ADR 0051 §7).
+ */
+export async function checkPackageForQueue(p: ScannedPackage, ctx: PackageCheckContext): Promise<PackageCheck> {
+  if (!isQueueCandidate(p)) return { ok: false, reason: "not_ready", video: p.pkg?.video ?? null };
+  const video = p.pkg.video;
+  const slot = p.pkg.slotId && ctx.slots ? (ctx.slots.get(p.pkg.slotId) ?? { kind: "pending" as const }) : null;
+  if (slot?.kind === "vetoed") return { ok: false, reason: "slot_vetoed", video };
+  const expected = p.pkg.sha256 ?? null;
+  if (!expected) return { ok: false, reason: "no_sha256", video };
+  if (ctx.live.has(video) || ctx.peers.has(video)) return { ok: false, reason: "held", video };
+  if (ctx.tried.has(p.manifestSha256)) return { ok: false, reason: "tried", video };
+  const file = await ctx.videoFile(`${p.folder}/${p.pkg.files.video}`);
+  if (!file || file.bytes !== p.pkg.sizeBytes) return { ok: false, reason: "size_mismatch", video }; // a different size is never hashed
+  let actual: string;
+  try {
+    actual = await ctx.videoHash(p.manifestSha256, file);
+  } catch {
+    return { ok: false, reason: "hash_failed", video };
+  }
+  if (actual !== expected) return { ok: false, reason: "hash_mismatch", video, expected, actual };
+  const slotPublishAt = slot?.kind === "approved" && Date.parse(slot.publishAt) > ctx.now().getTime() + SLOT_MARGIN_MS ? slot.publishAt : null;
+  return { ok: true, video, manifestSha256: p.manifestSha256, videoSha256: expected, slotPublishAt };
 }
 
 export function createAutoPrivateUpload(deps: AutoUploadDeps) {
@@ -176,33 +225,18 @@ export function createAutoPrivateUpload(deps: AutoUploadDeps) {
           const slots = deps.slotDecisions ? await deps.slotDecisions(channel.channelId) : null;
           for (const p of scanned.packages) {
             if (!candidate(p)) continue;
-            // BL-225 stage 3 (FO-REQ-0040 item 5): a package whose plan slot the owner vetoed is skipped before anything else.
-            const slot = p.pkg.slotId && slots ? (slots.get(p.pkg.slotId) ?? { kind: "pending" as const }) : null;
-            if (slot?.kind === "vetoed") {
-              visited.add(`package|${channel.channelId}|${p.manifestSha256}`);
-              note({ kind: "package", channelId: channel.channelId, video: p.pkg.video, manifestSha256: p.manifestSha256, reason: "slot_vetoed" });
-              continue;
-            }
             visited.add(`package|${channel.channelId}|${p.manifestSha256}`);
-            const expected = p.pkg.sha256 ?? null;
-            if (!expected) continue; // no `sha256` in the manifest: the owner's approval only
-            if (live.has(p.pkg.video) || peers.has(p.pkg.video)) continue;
-            if (tried.has(p.manifestSha256)) continue; // one try per manifest version; a cancelled or failed one stays the owner's
-            const file = await deps.videoFile(channel.channelId, `${p.folder}/${p.pkg.files.video}`);
-            if (!file || file.bytes !== p.pkg.sizeBytes) continue; // the size first: free; a different size is never hashed
-            let actual: string;
-            try {
-              actual = await videoHash(p.manifestSha256, file);
-            } catch (error) {
-              note({ kind: "package", channelId: channel.channelId, video: p.pkg.video, manifestSha256: p.manifestSha256, reason: "hash_failed" });
-              void error;
-              continue;
-            }
-            if (actual !== expected) {
-              if (!deps.loggedMismatches.has(p.manifestSha256)) {
+            // BL-239: the one per-package check, shared with the Producer's add (BL-225 stage 3: a vetoed slot first of all).
+            const check = await checkPackageForQueue(p, { live, peers, tried, slots, videoFile: (relativePath) => deps.videoFile(channel.channelId, relativePath), videoHash, now: () => deps.now?.() ?? new Date() });
+            if (!check.ok) {
+              if (check.reason === "slot_vetoed" || check.reason === "hash_failed") {
+                note({ kind: "package", channelId: channel.channelId, video: p.pkg.video, manifestSha256: p.manifestSha256, reason: check.reason });
+              } else if (check.reason === "hash_mismatch" && !deps.loggedMismatches.has(p.manifestSha256)) {
                 deps.loggedMismatches.add(p.manifestSha256);
-                await deps.logMismatch({ channelId: channel.channelId, video: p.pkg.video, manifestSha256: p.manifestSha256, expected, actual }).catch(() => undefined);
+                await deps.logMismatch({ channelId: channel.channelId, video: p.pkg.video, manifestSha256: p.manifestSha256, expected: check.expected, actual: check.actual }).catch(() => undefined);
               }
+              // no `sha256` (the owner's approval only), held, tried once already (a cancelled or failed one stays the owner's), or
+              // a different size: skipped quietly, as before.
               continue;
             }
             // Hashing a large file takes a while: the owner may have switched it off meanwhile.
@@ -216,7 +250,7 @@ export function createAutoPrivateUpload(deps: AutoUploadDeps) {
             try {
               // BL-225 stage 3 (ADR 0051 §7): an approved slot still far enough ahead gives the upload its date (written last, after the
               // read-back); otherwise private without a date, as before -- the plan sets the date later when the slot is approved.
-              const slotPublishAt = slot?.kind === "approved" && Date.parse(slot.publishAt) > (deps.now?.() ?? new Date()).getTime() + SLOT_MARGIN_MS ? slot.publishAt : null;
+              const slotPublishAt = check.slotPublishAt;
               const queued = await deps.queue({ channelId: channel.channelId, userId: channel.userId, manifestPath: p.manifestPath, manifestSha256: p.manifestSha256, scanned, switchOn, slotPublishAt });
               tried.add(p.manifestSha256);
               result.queued.push({ channelId: channel.channelId, video: queued.video, uploadId: queued.id, manifestSha256: p.manifestSha256 });

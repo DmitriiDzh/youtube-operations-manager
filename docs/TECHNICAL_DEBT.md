@@ -2248,3 +2248,17 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
   (it is outside the allowlist), so it stays until removed by hand.
 - **Gate(s):** none (the owner's switch, on by default since owner msg 3900 -- from the first sweep on, older uploads untouched -- per computer and channel). **Approval required from:** the owner, to widen it
   (backfill, variant B).
+
+## RISK-147 — The Producer changes the upload queue; a few edges of the order are loose — OPEN, 2026-11-01
+
+- **Affected components:** `src/lib/publishing/upload-queue-control.ts`, `upload-runner.ts` `tick()`, the Producer's
+  `producer_upload_queue_*` tools (BL-239, ADR 0059).
+- **Risk:** an agent now decides which approved upload goes next, and can queue a private upload of a ready package on the computer
+  whose automatic-upload switch is on (bounded by the daily `videos.insert` bucket, the quota check, Live writes and the owner's
+  switch). Loose edges: a move that lands between the runner's read and its claim can let the previous first row start (no
+  harm: it was queued); a row paused before it started (e.g. sign-in needed) is not renumbered by a move and rejoins after the
+  renumbered rows; the add hashes a multi-GB video inside the MCP call, so a client timeout can drop the answer while the row is
+  still queued (a retry gets `upload_already_queued`); no ETA (no upload speed is stored). The queue is per computer: the list shows
+  only this computer's rows.
+- **Gate(s):** none (no new YouTube write path: the runner, identity check and Live writes are unchanged). **Approval required
+  from:** the owner, to let the Producer give a date or reach another computer's queue.

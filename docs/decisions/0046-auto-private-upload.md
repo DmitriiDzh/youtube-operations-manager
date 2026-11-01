@@ -90,3 +90,12 @@ checks and the runner means the automatic path cannot drift from the manual one.
   that date. The upload still inserts private without a date and writes it last (BL-224). Every other automatic row is as before:
   private, no date. A package whose slot is vetoed is never queued (`slot_vetoed`).
 - **§8 (one computer) now also decides who schedules approved slots** (owner msg 3537): the computer with the switch on.
+
+## Note (BL-239, ADR 0059, 2026-11-01; owner msgs 3928/3930)
+
+- The switch's standing approval also covers a package the **Producer** adds (`producer_upload_queue_add`) on the computer where the
+  switch is on (refused elsewhere): the same per-package check (now one function, `checkPackageForQueue`, used by both), the same
+  queue step, private, a date only from an approved slot. The row is marked `queued_by = producer`, not `automatic`.
+- §9 holds for the automatic tick unchanged. The Producer's add uses the same rule except that a version whose rows the Producer
+  itself queued and cancelled may be added again.
+- §10: the runner's re-hash now keys on the frozen `videoSha256`, which automatic and Producer rows carry (approval rows never do).

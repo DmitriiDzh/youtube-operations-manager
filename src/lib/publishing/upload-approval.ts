@@ -50,8 +50,11 @@ const sameSettings = (a: PublishingSettings, b: PublishingSettings) =>
 
 type Refuse = (code: ConstructorParameters<typeof DomainError>[0]["code"], message: string, details?: Record<string, unknown>) => DomainError;
 
-/** BL-209: who queued the rows -- the owner on the approval screen, or his automatic-upload switch (ADR 0046). */
-type QueueMode = { automatic: false } | { automatic: true; switchOn: boolean };
+/**
+ * Who queued the rows: the owner on the approval screen; his automatic-upload switch (BL-209, ADR 0046); or, since BL-239 (ADR 0059),
+ * the Producer under that switch. The switch's two kinds freeze the video's SHA-256 for the runner's check.
+ */
+type QueueMode = { kind: "owner" } | { kind: "automatic"; switchOn: boolean } | { kind: "producer"; switchOn: boolean; tokenId: string };
 
 /** The DomainError codes after which the automatic upload waits for a later tick instead of giving the package up (plan §2). */
 export const AUTO_UPLOAD_WAIT_CODES: ReadonlySet<string> = new Set(["upload_daily_limit", "quota_insufficient", "quota_unknown", "publishing_settings_changed"]);
@@ -144,7 +147,7 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
         thumbnailFile: `${folder}/${pkg.files.thumbnail}`,
         sizeBytes: pkg.sizeBytes,
         // Review L5: the runner checks an automatic row's file against it before a session starts.
-        ...(args.mode.automatic && pkg.sha256 ? { videoSha256: pkg.sha256 } : {}),
+        ...(args.mode.kind !== "owner" && pkg.sha256 ? { videoSha256: pkg.sha256 } : {}),
         // BL-225 stage 3 (ADR 0051 §8): a v2 package's translations (as the shared rules send them), its own AI flag and its slot.
         ...(packageLocalizationSet(pkg) ? { localizations: packageLocalizationSet(pkg)! } : {}),
         ...(typeof pkg.containsSyntheticMedia === "boolean" ? { containsSyntheticMedia: pkg.containsSyntheticMedia } : {}),
@@ -180,19 +183,26 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
         finishedAt: null,
         leaseOwner: null,
         leaseUntil: null,
-        automatic: args.mode.automatic,
+        automatic: args.mode.kind === "automatic",
+        // BL-239 (schema v117): who queued it; 0 = the end of the queue (the insert gives it its creation time in ms).
+        queuedBy: args.mode.kind,
+        queueRank: 0,
         // BL-225 stage 2 (ADR 0051): the plan slot a v2 package names (FO-REQ-0040 acceptance 4: each upload maps to its slot).
         slotId: pkg.slotId ?? null,
       };
     });
     if (!(await deps.insert(rows))) throw refuse("upload_already_queued", "One of the videos was queued meanwhile.");
     for (const row of rows) {
+      const mode = args.mode;
       const detail =
-        args.mode.automatic
+        mode.kind === "automatic"
           ? // ADR 0046 / plan §2 item 6: when, channel, package, manifest hash, the switch state and the resulting upload id.
             // BL-225 stage 3: with the approved plan slot it is for and that slot's time (null: no approved slot -- private, no date).
-            { event: "publishing.upload_auto_queued", at: now.toISOString(), channelId: row.channelId, uploadId: row.id, video: row.video, manifestSha256: row.manifestSha256, switchOn: args.mode.switchOn, publishAt: row.publishAt, uploadPrivate: true, publish: row.publishAt !== null, automatic: true, ...(row.slotId ? { slotId: row.slotId } : {}) }
-          : { event: "publishing.upload_approved", uploadId: row.id, video: row.video, publishAt: row.publishAt, uploadPrivate: true, publish: row.publishAt !== null, approvedBy: args.userId };
+            { event: "publishing.upload_auto_queued", at: now.toISOString(), channelId: row.channelId, uploadId: row.id, video: row.video, manifestSha256: row.manifestSha256, switchOn: mode.switchOn, publishAt: row.publishAt, uploadPrivate: true, publish: row.publishAt !== null, automatic: true, ...(row.slotId ? { slotId: row.slotId } : {}) }
+          : mode.kind === "producer"
+            ? // BL-239 (ADR 0059 §5): who (the Producer, its token), when, what, the switch state, the slot and its date (null: none).
+              { event: "publishing.upload_producer_queued", by: "producer", tokenId: mode.tokenId, at: now.toISOString(), channelId: row.channelId, uploadId: row.id, video: row.video, manifestSha256: row.manifestSha256, switchOn: mode.switchOn, publishAt: row.publishAt, uploadPrivate: true, publish: row.publishAt !== null, ...(row.slotId ? { slotId: row.slotId } : {}) }
+            : { event: "publishing.upload_approved", by: "owner", uploadId: row.id, video: row.video, publishAt: row.publishAt, uploadPrivate: true, publish: row.publishAt !== null, approvedBy: args.userId };
       await deps.audit({ channelId: args.channelId, detail });
     }
     return { uploads: rows.map((row) => ({ id: row.id, video: row.video, publishAt: row.publishAt })), estimatedUnits };
@@ -221,7 +231,7 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
 
       const scanned = await deps.scan(input.channelId);
       if (scanned.status !== "ok") throw refuse("validation_failed", scanned.status === "no_workspace" ? "This channel has no workspace folder on this computer." : `The workspace cannot be used: ${scanned.reason}`);
-      return queue({ channelId: input.channelId, userId: input.userId, items: input.items, view, scanned, acknowledgeUnknownQuota: input.acknowledgeUnknownQuota === true, mode: { automatic: false }, refuse, now });
+      return queue({ channelId: input.channelId, userId: input.userId, items: input.items, view, scanned, acknowledgeUnknownQuota: input.acknowledgeUnknownQuota === true, mode: { kind: "owner" }, refuse, now });
     },
 
     /**
@@ -258,7 +268,43 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
         view,
         scanned: input.scanned,
         acknowledgeUnknownQuota: false,
-        mode: { automatic: true, switchOn: input.switchOn },
+        mode: { kind: "automatic", switchOn: input.switchOn },
+        refuse,
+        now,
+      });
+      return { id: result.uploads[0].id, video: result.uploads[0].video, publishAt: result.uploads[0].publishAt };
+    },
+
+    /**
+     * BL-239 (UPLOAD_QUEUE_CONTROL_PLAN.md §4, ADR 0059): one package the Producer queues on this computer, under the owner's
+     * automatic-upload switch (its standing approval of private uploads from here). Exactly `queueAutomatic`'s checks and shape --
+     * private; a date only from an approved plan slot (the caller's check), never one the Producer gives -- marked `producer`.
+     */
+    async queueByProducer(input: {
+      channelId: string;
+      userId: string;
+      manifestPath: string;
+      manifestSha256: string;
+      scanned: Extract<PackageScanResult, { status: "ok" }>;
+      switchOn: boolean;
+      tokenId: string;
+      slotPublishAt?: string | null;
+    }): Promise<{ id: string; video: string; publishAt: string | null }> {
+      const now = deps.clock.now();
+      const refuse: Refuse = (code, message, details) => new DomainError({ code, message, details: { channelId: input.channelId, ...details } });
+      if (!input.switchOn) throw refuse("upload_auto_switch_off", "The automatic upload is switched off on this computer.");
+      const view = await deps.settings(input.channelId);
+      if (view.conflictedFields.length > 0) {
+        throw refuse("publishing_settings_changed", "Some publishing settings differ between the computers: choose them in Merge first.", { conflictedFields: view.conflictedFields });
+      }
+      const result = await queue({
+        channelId: input.channelId,
+        userId: input.userId,
+        items: [{ manifestPath: input.manifestPath, manifestSha256: input.manifestSha256, publishAt: input.slotPublishAt ?? null }],
+        view,
+        scanned: input.scanned,
+        acknowledgeUnknownQuota: false,
+        mode: { kind: "producer", switchOn: input.switchOn, tokenId: input.tokenId },
         refuse,
         now,
       });

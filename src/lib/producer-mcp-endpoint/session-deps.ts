@@ -16,6 +16,7 @@ import { createPortfolioOverviewServices, createUploadMilestonesServices } from 
 import { createReachReportsCore } from "@/lib/reach-reports";
 import { PRODUCER_API_VERSION } from "@/mcp/producer-tools";
 import { createLiveAnalyticsCore } from "@/lib/live-analytics";
+import { createUploadQueueControlCore, type SlotDecision } from "@/lib/publishing";
 import type { ProducerMcpSession } from "./index";
 
 // BL-161 / BL-166: the real deps of a Producer session -- what `src/app/api/mcp/producer/route.ts` hands the MCP server. Kept here,
@@ -35,7 +36,14 @@ async function resolveChannelUser(channelId: string): Promise<string | null> {
   return connected ? ((await getStoredChannel(channelId))?.connectedUserId ?? null) : null;
 }
 
-export function createProducerSessionDeps(session: ProducerMcpSession): ProducerSession {
+/**
+ * `slotDecisions` (BL-239): the weekly plan's slot decisions, from the composition layer (the Producer route passes them), so an
+ * upload the Producer adds gets a date only from a slot the owner approved, and a vetoed slot is refused.
+ */
+export function createProducerSessionDeps(
+  session: ProducerMcpSession,
+  options: { slotDecisions?: (channelId: string) => Promise<Map<string, SlotDecision>> } = {}
+): ProducerSession {
   const portfolio = createPortfolioOverviewServices({
     listChannels,
     async loadChannel(channel, range) {
@@ -95,6 +103,10 @@ export function createProducerSessionDeps(session: ProducerMcpSession): Producer
   });
   // BL-163: the Producer's side of the proposal store only; approving and applying are Web-UI routes.
   const proposals = createAgentProposalSubmitCore();
+  // BL-239 (ADR 0059, owner msgs 3928/3930): this computer's upload queue -- the only wiring of the queue control to an MCP
+  // endpoint (no-agent-upload-tool.test.ts). "Connected here" is the Producer's own rule (Settings → Channels).
+  const queue = () => createUploadQueueControlCore({ channelUser: resolveChannelUser, ...(options.slotDecisions ? { slotDecisions: options.slotDecisions } : {}) });
+  const producer = { kind: "producer" as const, tokenId: session.tokenId };
   return {
     tokenId: session.tokenId,
     reverify: () => session.reverify(),
@@ -111,6 +123,12 @@ export function createProducerSessionDeps(session: ProducerMcpSession): Producer
       submit: async (input) => ({ ...(await proposals.submitProducerProposal(input, { agentApiVersion: PRODUCER_API_VERSION })) }),
       list: async (input) => ({ ...(await proposals.listProducerProposals(input)) }),
       markDone: async (input) => ({ ...(await proposals.markProducerProposalsDone(input)) }),
+    },
+    uploadQueue: {
+      list: async () => ({ ...(await queue().list()) }),
+      add: async (input) => ({ ...(await queue().add(input, producer)) }),
+      move: async (input) => ({ ...(await queue().move(input, producer)) }),
+      cancel: async (input) => ({ ...(await queue().cancel(input, producer)) }),
     },
   };
 }

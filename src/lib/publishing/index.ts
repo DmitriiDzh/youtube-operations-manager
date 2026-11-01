@@ -29,6 +29,7 @@ import {
   insertPublishingUploads,
   listPublishingUploads,
   listQuotaCalls,
+  reorderQueuedPublishingUploads,
   rawSqlClient,
   removeLocalVideoRowIfUnreferenced,
   savePublishingG1Probe,
@@ -61,6 +62,7 @@ import { createPlanSchedule } from "./plan-schedule";
 import type { PublishingSettings } from "./settings";
 import { createUploadApproval } from "./upload-approval";
 import { createAutoPrivateUpload, type AutoUploadWaiting, type SlotDecision } from "./auto-upload";
+import { CANCELLED_BY_PRODUCER, createUploadQueueControl, queuePositions } from "./upload-queue-control";
 import { estimateUploadUnits, isDeferredPublishAt } from "./publish-dates";
 import type { G1ProbeRecord } from "./contracts";
 import { agentUploadOf, createPublishingCalendarReads } from "./calendar-reads";
@@ -606,6 +608,69 @@ export async function listChannelUploads(channelId: string) {
 }
 
 /**
+ * BL-239 (UPLOAD_QUEUE_CONTROL_PLAN.md §6): the owner's list -- the channel's uploads with each queued row's place in the shared
+ * queue of this computer (every channel) and the queue's length, so the ↑↓ arrows show what they change.
+ */
+export async function listChannelUploadsForOwner(channelId: string) {
+  const [rows, active] = await Promise.all([listChannelUploads(channelId), listPublishingUploads({ statuses: ACTIVE_UPLOAD_STATUSES, limit: 500 })]);
+  const { positions, length } = queuePositions(active);
+  return rows.map((row) => ({ ...row, queuePosition: positions.get(row.id) ?? null, queueLength: positions.has(row.id) ? length : null }));
+}
+
+/**
+ * BL-239 (UPLOAD_QUEUE_CONTROL_PLAN.md, ADR 0059; owner msgs 3928/3930): control of this computer's upload queue. Reached only by
+ * the Producer session's wiring (`src/lib/producer-mcp-endpoint/session-deps.ts`) and the owner's move route -- never by a channel
+ * worker or the factory endpoint (`no-agent-upload-tool.test.ts`). `slotDecisions` comes from the composition layer; `channelUser`
+ * is the caller's own rule for "connected here" (absent: the channel's stored connected user).
+ */
+export function createUploadQueueControlCore(
+  options: { slotDecisions?: (channelId: string) => Promise<Map<string, SlotDecision>>; channelUser?: (channelId: string) => Promise<string | null> } = {}
+) {
+  const scan = createPackageScanCore();
+  const approval = createUploadApprovalCore();
+  const files = createPackageScanReads();
+  const audit = ({ channelId, uploadId, detail }: { channelId: string; uploadId: string; detail: Record<string, unknown> }) =>
+    insertVideoEditAuditEvent({ channelId, videoId: `upload:${uploadId}`, eventType: "RESULT", detail });
+  return createUploadQueueControl({
+    listActive: () => listPublishingUploads({ statuses: ACTIVE_UPLOAD_STATUSES, limit: 500 }),
+    get: (uploadId) => getPublishingUpload(uploadId),
+    reorder: (orderedIds) => reorderQueuedPublishingUploads(orderedIds),
+    cancelQueued: (uploadId, set) => updatePublishingUpload(uploadId, "queued", set),
+    assertMutationAllowed: () => assertDeviceAvailableForMutation(rawSqlClient),
+    autoSwitchOn: () => getAutoPrivateUploadEnabled(),
+    async channelTitles() {
+      return new Map((await listStoredChannels()).map((channel) => [channel.channelId, channel.title]));
+    },
+    channelUser: options.channelUser ?? (async (channelId) => (await listStoredChannels()).find((channel) => channel.channelId === channelId)?.connectedUserId ?? null),
+    scan: (channelId) => scan.scan(channelId),
+    liveVideos: (channelId) => localHeldVideos(channelId),
+    peerUploads: (channelId) => peerUploadsOf(channelId),
+    // One try per manifest version, as for the automatic upload -- except a version whose rows the Producer itself queued and
+    // cancelled (review #4: a cancelled owner's or automatic row stays the owner's, so the Producer cannot replace his approval).
+    async blockedHashes(channelId) {
+      const rows = await listPublishingUploads({ channelId, limit: 5000 });
+      return new Set(rows.filter((row) => !(row.status === "cancelled" && row.errorCode === CANCELLED_BY_PRODUCER && row.queuedBy === "producer")).map((row) => row.manifestSha256));
+    },
+    ...(options.slotDecisions ? { slotDecisions: options.slotDecisions } : {}),
+    async videoFile(channelId, relativePath) {
+      const workspace = await files.workspace(channelId);
+      if (!workspace) return null;
+      const file = await files.resolveFile(workspace, relativePath);
+      if (!file) return null;
+      const info = await stat(file.path).catch(() => null);
+      return info ? { path: file.path, bytes: file.bytes, mtimeMs: info.mtimeMs } : null;
+    },
+    hashFile: (absolutePath) => sha256OfFile(absolutePath),
+    queue: (input) => approval.queueByProducer(input),
+    logMismatch: ({ channelId, video, manifestSha256, expected, actual }) =>
+      insertVideoEditAuditEvent({ channelId, videoId: `package:${video}`, eventType: "RESULT", detail: { event: "publishing.producer_upload_hash_mismatch", by: "producer", video, manifestSha256, expected, actual } }),
+    audit,
+    clock: { now: () => new Date() },
+  });
+}
+export type { QueueActor, UploadQueueControl } from "./upload-queue-control";
+
+/**
  * The owner cancels an upload that has not reached YouTube: a queued one, or one paused before its last byte. One whose video
  * exists (or may exist: every byte sent) is not cancelled -- it is finished, and the owner deletes the video in Studio if needed.
  */
@@ -614,7 +679,8 @@ export async function cancelUpload(channelId: string, uploadId: string): Promise
   if (!row || row.channelId !== channelId) return false;
   if (!isCancellable(row)) return false;
   const done = await updatePublishingUpload(uploadId, row.status, { status: "cancelled", finishedAt: new Date(), updatedAt: new Date() });
-  if (done) await insertVideoEditAuditEvent({ channelId, videoId: `upload:${uploadId}`, eventType: "RESULT", detail: { event: "publishing.upload_cancelled", uploadId, video: row.video } });
+  // BL-239: with who cancelled it (the Producer's cancels say `by: "producer"`).
+  if (done) await insertVideoEditAuditEvent({ channelId, videoId: `upload:${uploadId}`, eventType: "RESULT", detail: { event: "publishing.upload_cancelled", by: "owner", uploadId, video: row.video } });
   return done;
 }
 export type { UploadRunner, UploadSteps, ApprovedPackage } from "./upload-runner";

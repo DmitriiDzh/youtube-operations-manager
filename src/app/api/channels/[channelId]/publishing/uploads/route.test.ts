@@ -4,6 +4,7 @@ import { DomainError } from "@/lib/shared-domain";
 import { DEFAULT_PUBLISHING_SETTINGS } from "@/lib/publishing/settings";
 import { createPublishingUploadsHandlers } from "./route";
 import { createCancelUploadHandler } from "./[uploadId]/cancel/route";
+import { createMoveUploadHandler } from "./[uploadId]/move/route";
 
 // BL-182 stage 2: a Web session and the active channel are required to list, approve or cancel (ADR 0004, AGENTS.md §F); the
 // approver is the session's user; a body without items or the shown settings is a 400 and approves nothing.
@@ -65,4 +66,34 @@ test("release: only the active channel; 409 for an upload whose outcome is not u
   assert.equal((await handler(new Request("http://x/", { method: "POST" }), ctx2("UC_active", "unknown-1"))).status, 200);
   assert.equal((await handler(new Request("http://x/", { method: "POST" }), ctx2("UC_active", "done-1"))).status, 409);
   assert.notEqual((await handler(new Request("http://x/", { method: "POST" }), ctx2("UC_other", "unknown-1"))).status, 200);
+});
+
+// BL-239 (UPLOAD_QUEUE_CONTROL_PLAN.md AC-UQ-12; owner msg 3930): the owner's ↑/↓ -- a Web session and the active channel, the
+// direction up or down only, the session's user as the actor; a row that is not queued keeps its 409.
+test("AC-UQ-12: move -- 401 without a session, refused for another channel, up/down only, the owner as the actor", async () => {
+  const moved: unknown[] = [];
+  const make = (session: { user: { id: string } } | null) =>
+    createMoveUploadHandler({
+      getSession: async () => session,
+      assertActiveChannel,
+      moveStep: async (input, userId) => {
+        moved.push([input, userId]);
+        if (input.uploadId === "started") throw new DomainError({ code: "upload_not_movable", message: "not queued" });
+        return { moved: true };
+      },
+    });
+  const at = (uploadId: string, channelId = "UC_active") => ({ params: Promise.resolve({ channelId, uploadId }) });
+  assert.equal((await make(null)(post({ direction: "up" }), at("u1"))).status, 401);
+  const handler = make({ user: { id: "u-owner" } });
+  assert.notEqual((await handler(post({ direction: "up" }), at("u1", "UC_other"))).status, 200);
+  assert.equal((await handler(post({ direction: "top" }), at("u1"))).status, 400);
+  assert.equal((await handler(post({}), at("u1"))).status, 400);
+  assert.equal((await handler(post({ direction: "down" }), at("u1"))).status, 200);
+  const refused = await handler(post({ direction: "up" }), at("started"));
+  assert.equal(refused.status, 409);
+  assert.equal((await refused.json()).error, "upload_not_movable");
+  assert.deepEqual(moved, [
+    [{ channelId: "UC_active", uploadId: "u1", direction: "down" }, "u-owner"],
+    [{ channelId: "UC_active", uploadId: "started", direction: "up" }, "u-owner"],
+  ]);
 });

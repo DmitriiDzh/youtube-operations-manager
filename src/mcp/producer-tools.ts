@@ -5,6 +5,11 @@
  * suite otherwise, so no DRAFT or WRITE channel tool can be added by accident. Its DRAFT tools are its own proposal tools (BL-163) and
  * one channel tool the owner allowed by name (BL-170, `PRODUCER_DRAFT_CHANNEL_TOOLS`), all listed in `PRODUCER_DRAFT_TOOLS`: each only
  * proposes, and nothing changes until the owner approves it in the Web UI.
+ *
+ * BL-239 (owner msgs 3928/3930, ADR 0059 -- a new requirement lifting ADR 0037 §1 for these tools only): the Producer also controls
+ * this computer's upload queue with `PRODUCER_UPLOAD_QUEUE_TOOLS` (permission UPLOAD_QUEUE): it lists the queue, moves and cancels
+ * queued rows of any channel, and adds a ready release package under the owner's automatic-upload switch -- private, a date only
+ * from a weekly-plan slot the owner approved. Channel agents and the factory get none of them.
  */
 
 /** The Producer API's own version, independent of `AGENT_API_VERSION` and `FACTORY_API_VERSION`. */
@@ -15,7 +20,9 @@
 // 1.13.0 (BL-235, owner msgs 3806/3807): agent_get_publishing_calendar -- coverage.due is "fewer than 7 covered days in a row"
 // (a release with every tracked translation, the channel's zone), coverage.coveredDaysInARow; gapDates are the channel's days not
 // covered (gapDatesTimeZone), missingTranslationDates; entries can be kind published_pending (date passed < 24 h, not synced yet).
-export const PRODUCER_API_VERSION = "1.13.0";
+// 1.14.0 (BL-239, owner msgs 3928/3930, ADR 0059): the upload queue tools producer_upload_queue_list / _add / _move / _cancel and
+// the permission UPLOAD_QUEUE in producer_get_capabilities (additive).
+export const PRODUCER_API_VERSION = "1.14.0";
 
 /** The channel agent's READ tools the Producer gets; each call names its channel and runs in that channel's agent scope. */
 export const PRODUCER_CHANNEL_TOOLS: Readonly<Record<string, { capability: string }>> = Object.freeze({
@@ -84,7 +91,18 @@ export const PRODUCER_ONLY_TOOLS = [
   "producer_propose",
   "producer_list_proposals",
   "producer_mark_proposals_done",
+  "producer_upload_queue_list",
+  "producer_upload_queue_add",
+  "producer_upload_queue_move",
+  "producer_upload_queue_cancel",
 ] as const;
+
+/**
+ * BL-239 (UPLOAD_QUEUE_CONTROL_PLAN.md, ADR 0059): the Producer's upload queue tools -- exactly these four, the test pins the list.
+ * The list reads; add, move and cancel change this computer's queue (never a video on YouTube by themselves: the runner uploads, as
+ * for every queued row, with its identity check and Live writes before each write).
+ */
+export const PRODUCER_UPLOAD_QUEUE_TOOLS = ["producer_upload_queue_list", "producer_upload_queue_add", "producer_upload_queue_move", "producer_upload_queue_cancel"] as const;
 
 /**
  * BL-163 (FO-REQ-0014 §C, ADR 0034 Amendment 1): the Producer's DRAFT tools -- exactly these two, the test pins the list. They store
