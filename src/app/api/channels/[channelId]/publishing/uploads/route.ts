@@ -2,7 +2,7 @@ import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { createChannelAccessCore } from "@/lib/channel-access";
-import { createUploadApprovalCore, listChannelUploads, PUBLISHING_SETTING_FIELDS, type PublishingSettings } from "@/lib/publishing";
+import { createUploadApprovalCore, listChannelUploadsForOwner, PUBLISHING_SETTING_FIELDS, type PublishingSettings } from "@/lib/publishing";
 import { DomainError } from "@/lib/shared-domain";
 import { getVideoMetadataErrorStatus } from "../../../../video-metadata/error-status";
 
@@ -55,7 +55,8 @@ export function createPublishingUploadsHandlers(
     assertActiveChannel: async (args) => {
       await createChannelAccessCore().assertActiveChannel(args);
     },
-    list: (channelId) => listChannelUploads(channelId),
+    // BL-239: with each queued row's place in this computer's shared queue (the ↑↓ arrows).
+    list: (channelId) => listChannelUploadsForOwner(channelId),
     approve: (input) => createUploadApprovalCore().approve(input),
   }
 ) {

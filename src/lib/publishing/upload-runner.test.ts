@@ -58,6 +58,9 @@ function job(over: Partial<StoredPublishingUpload> = {}): StoredPublishingUpload
     finishedAt: null,
     leaseOwner: null,
     leaseUntil: null,
+    // BL-239 (schema v117): the queue place (0: the order falls back to createdAt) and who queued it.
+    queueRank: 0,
+    queuedBy: null,
     // BL-209 (schema v103): every row now carries `automatic`; these jobs are the owner's approvals.
     automatic: false,
     slotId: null,
@@ -1199,4 +1202,54 @@ test("review: a queued row whose slot was vetoed is cancelled even while uploads
   const h = harness([job({ slotId: "slot-1" })], { bandwidth: bw.deps, slotDecision: async () => ({ kind: "vetoed" }) as never });
   await h.runner.tick();
   assert.deepEqual([h.row().status, h.row().errorCode, h.yt.log], ["cancelled", "slot_vetoed", []]);
+});
+
+// BL-239 (UPLOAD_QUEUE_CONTROL_PLAN.md AC-UQ-01 / AC-UQ-02 / AC-UQ-09; owner msgs 3928/3930; ADR 0059): the queued rows start in the
+// queue's order (`queueRank`, then the older first), and that order only picks the next start -- a row being sent finishes its bytes
+// before any queued row begins. Each row has its own title so the order of the videos YouTube got shows which went first.
+const titled = (id: string, video: string, over: Partial<StoredPublishingUpload> = {}) =>
+  job({ id, video, publishAt: null, packageJson: JSON.stringify({ ...PKG, video, title: `Title ${video}` }), ...over });
+
+test("AC-UQ-01: a row moved to place 1 starts first, though it is newer; the older one starts after it", async () => {
+  const h = harness([
+    titled("a", "V65", { createdAt: NOW, queueRank: 2 }),
+    titled("b", "V66", { createdAt: new Date(NOW.getTime() + 60_000), queueRank: 1 }),
+  ]);
+  await h.runAll();
+  assert.deepEqual(h.yt.videos.map((v) => v.title), ["Title V66", "Title V65"]);
+  assert.deepEqual([h.row("a").status, h.row("b").status], ["done", "done"]);
+});
+
+test("AC-UQ-01: with equal places the older row starts first (the order before BL-239)", async () => {
+  const h = harness([titled("b", "V66", { createdAt: new Date(NOW.getTime() + 60_000) }), titled("a", "V65", { createdAt: NOW })]);
+  await h.runAll();
+  assert.deepEqual(h.yt.videos.map((v) => v.title), ["Title V65", "Title V66"]);
+});
+
+test("AC-UQ-02: a row being sent is never overtaken -- the queued row moved to place 1 starts only after its last byte", async () => {
+  const sending = titled("s", "V64", { status: "uploading", attempts: 1, createdAt: new Date(NOW.getTime() + 120_000), queueRank: 50 });
+  const h = harness([sending, titled("a", "V65", { createdAt: NOW, queueRank: 2 }), titled("b", "V66", { createdAt: new Date(NOW.getTime() + 60_000), queueRank: 1 })]);
+  // The sending row's session already holds 4 of its 10 bytes.
+  const { sessionUri } = await h.deps.gateway.begin({ accessToken: "t", resource: { snippet: { title: "Title V64", description: "" }, status: { privacyStatus: "private", selfDeclaredMadeForKids: false } }, contentLength: 10, contentType: "video/*", notifySubscribers: false });
+  await h.deps.gateway.putChunk({ accessToken: "t", sessionUri, chunk: VIDEO_BYTES.subarray(0, 4), start: 0, total: 10, contentType: "video/*" });
+  h.store.set("s", { ...h.row("s"), sessionUri, storedBytes: 4 });
+  h.yt.log.length = 0;
+  await h.runner.tick();
+  // The first tick only continues the sending row's session: asked where it stands, then the rest of its bytes; no new session.
+  assert.deepEqual(h.yt.log, ["query", "put 4-7", "put 8-9"]);
+  assert.deepEqual([h.row("a").status, h.row("b").status], ["queued", "queued"]);
+  await h.runAll();
+  assert.deepEqual(h.yt.videos.map((v) => v.title), ["Title V64", "Title V66", "Title V65"]);
+});
+
+test("AC-UQ-09: a Producer row (frozen SHA-256, not automatic) is hashed again before its session and fails on a mismatch", async () => {
+  const producerRow = job({ publishAt: null, automatic: false, queuedBy: "producer", packageJson: JSON.stringify({ ...PKG, videoSha256: "a".repeat(64) }) });
+  const changed = harness([producerRow]);
+  changed.deps.files.sha256 = async (path) => (path.endsWith(".mp4") ? "b".repeat(64) : "sha-approved");
+  await changed.runAll();
+  assert.deepEqual([changed.row().status, changed.row().errorCode, changed.yt.log], ["failed", "video_hash_mismatch", []]);
+  const same = harness([producerRow]);
+  same.deps.files.sha256 = async (path) => (path.endsWith(".mp4") ? "a".repeat(64) : "sha-approved");
+  await same.runAll();
+  assert.equal(same.row().status, "done");
 });

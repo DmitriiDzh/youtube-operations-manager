@@ -23,7 +23,7 @@ import {
 import { createAgentTokenServices } from "@/lib/agent-tokens/services";
 import { DomainError } from "@/lib/shared-domain";
 import { createMcpServer, type ProducerSession } from "@/mcp/server";
-import { PRODUCER_API_VERSION, PRODUCER_CHANNEL_TOOLS, PRODUCER_DRAFT_CHANNEL_TOOLS, PRODUCER_DRAFT_TOOLS, PRODUCER_TOOL_NAMES } from "@/mcp/producer-tools";
+import { PRODUCER_API_VERSION, PRODUCER_CHANNEL_TOOLS, PRODUCER_DRAFT_CHANNEL_TOOLS, PRODUCER_DRAFT_TOOLS, PRODUCER_TOOL_NAMES, PRODUCER_UPLOAD_QUEUE_TOOLS } from "@/mcp/producer-tools";
 import { MCP_TOOL_CLASSIFICATION } from "@/mcp/tool-classification";
 import { createProducerMcpEndpoint, type ProducerRefusedCall } from "./index";
 
@@ -86,6 +86,7 @@ function setup(initial: { enabled?: boolean } = {}) {
   const calls: Array<{ tool: string; channelId: string | null; outcome: string; errorCode: string | null }> = [];
   const refused: ProducerRefusedCall[] = [];
   const proposalCalls: Array<[string, Record<string, unknown>]> = [];
+  const queueCalls: Array<[string, Record<string, unknown>]> = [];
   const endpoint = createProducerMcpEndpoint({
     isConnectionEnabled: async () => state.enabled,
     verifyToken: (token) => tokens.verifyToken(token),
@@ -125,11 +126,30 @@ function setup(initial: { enabled?: boolean } = {}) {
             return { marked: [], notMarked: input.proposalIds };
           },
         },
+        uploadQueue: {
+          list: async () => {
+            queueCalls.push(["list", {}]);
+            return { autoUploadSwitchOn: true, inProgress: [], queue: [], queuedCount: 0, queuedBytes: 0 };
+          },
+          add: async (input) => {
+            queueCalls.push(["add", input]);
+            if (input.video === "V99") throw new DomainError({ code: "upload_auto_switch_off", message: "off here" });
+            return { upload: { uploadId: "up1", channelId: input.channelId, video: input.video, status: "queued" } };
+          },
+          move: async (input) => {
+            queueCalls.push(["move", input]);
+            return { uploadId: input.uploadId, channelId: input.channelId, position: input.position, moved: true };
+          },
+          cancel: async (input) => {
+            queueCalls.push(["cancel", input]);
+            return { uploadId: input.uploadId, channelId: input.channelId, status: "cancelled" };
+          },
+        },
       };
       return createMcpServer(undefined, { connectionEnabled: true, producerSession });
     },
   });
-  return { endpoint, tokens, state, calls, refused, proposalCalls };
+  return { endpoint, tokens, state, calls, refused, proposalCalls, queueCalls };
 }
 
 function rpc(body: unknown, headers: Record<string, string> = {}, method = "POST"): Request {
@@ -716,14 +736,18 @@ test("AC-PR-07 / AC-PR-10: the Producer's own tools -- its channels with their f
   // BL-191 (SUGGESTED_SOURCES_PLAN.md AC-SS-08, FO-REQ-0026 §4.1): 1.9.0 adds the READ channel tool agent_get_stored_suggested_sources.
   // BL-214 (LIVE_ANALYTICS_PLAN.md stage 4): 1.11.0 adds the READ tool producer_live_analytics; the DRAFT list is unchanged.
   assert.ok(PRODUCER_TOOL_NAMES.includes("producer_live_analytics"));
-  assert.equal(PRODUCER_API_VERSION, "1.13.0"); // 1.13.0 (BL-235): the calendar read's due / gapDates from the daily coverage, published_pending; 1.12.0 (BL-221): a live sample without a count is 0 viewers; 1.10.0 (BL-209): the calendar read's uploads gain automatic / progressPercent / finishedAt; 1.8.0 (BL-182 stage 2): the calendar read lists packages and uploads
+  // BL-239 (owner msgs 3928/3930, ADR 0059 -- the requirement changed: the Producer now controls the upload queue): 1.14.0 adds the
+  // four UPLOAD_QUEUE tools, so the permissions are READ, DRAFT and UPLOAD_QUEUE; the DRAFT list is unchanged.
+  assert.equal(PRODUCER_API_VERSION, "1.14.0"); // 1.13.0 (BL-235): the calendar read's due / gapDates from the daily coverage, published_pending; 1.12.0 (BL-221): a live sample without a count is 0 viewers; 1.10.0 (BL-209): the calendar read's uploads gain automatic / progressPercent / finishedAt; 1.8.0 (BL-182 stage 2): the calendar read lists packages and uploads
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_stored_suggested_sources"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_publishing_calendar"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_video_comments"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_experiment_results"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_stored_breakdowns"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_stored_search_terms"));
-  assert.deepEqual(capabilities.permissions, ["READ", "DRAFT"]);
+  assert.deepEqual(capabilities.permissions, ["READ", "DRAFT", "UPLOAD_QUEUE"]);
+  assert.deepEqual(capabilities.uploadQueueTools, ["producer_upload_queue_list", "producer_upload_queue_add", "producer_upload_queue_move", "producer_upload_queue_cancel"]);
+  assert.deepEqual([...PRODUCER_UPLOAD_QUEUE_TOOLS], ["producer_upload_queue_list", "producer_upload_queue_add", "producer_upload_queue_move", "producer_upload_queue_cancel"]);
   assert.deepEqual(capabilities.draftTools, ["producer_propose", "producer_mark_proposals_done", "create_experiment_proposal"]);
   assert.deepEqual([...PRODUCER_DRAFT_TOOLS], ["producer_propose", "producer_mark_proposals_done", "create_experiment_proposal"]);
   assert.deepEqual([...(capabilities.tools as string[])].sort(), [...PRODUCER_TOOL_NAMES].sort());
@@ -759,6 +783,7 @@ test("a token revoked mid-session is refused on its next call, before any channe
       uploadMilestones: async () => ({}),
       liveAnalytics: async () => ({}),
       proposals: { submit: async () => ({}), list: async () => ({}), markDone: async () => ({}) },
+      uploadQueue: { list: async () => ({}), add: async () => ({}), move: async () => ({}), cancel: async () => ({}) },
     },
   });
   const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<{ isError?: boolean }> }> })._registeredTools;
@@ -944,6 +969,7 @@ test("BL-163 AC-PR-05: no approve, reject or apply tool exists on any endpoint",
       uploadMilestones: async () => ({}),
       liveAnalytics: async () => ({}),
       proposals: { submit: async () => ({}), list: async () => ({}), markDone: async () => ({}) },
+      uploadQueue: { list: async () => ({}), add: async () => ({}), move: async () => ({}), cancel: async () => ({}) },
     },
   });
   const agent = createMcpServer(undefined, { connectionEnabled: true, agentSession: { tokenId: "t", channelId: "UC_PR_X", async reverify() {} } });
@@ -965,4 +991,55 @@ test("BL-214: producer_live_analytics takes real calendar dates, start before en
   const ok = await ask("2026-07-01", "2026-09-30");
   assert.equal(ok.isError, false);
   assert.deepEqual(payloadOf(ok.text), { startDate: "2026-07-01", endDate: "2026-09-30", source: "local", channels: [] });
+});
+
+// BL-239 (docs/roadmap/plans/UPLOAD_QUEUE_CONTROL_PLAN.md AC-UQ-11; owner msgs 3928/3930; ADR 0059): the Producer's upload queue
+// tools reach only the session's `uploadQueue`, take strict inputs, are logged under the channel they name and answer with it.
+test("BL-239 AC-UQ-11: the upload queue tools reach only the session's queue; inputs are strict; each call is logged", async () => {
+  const { endpoint, tokens, calls, refused, queueCalls } = setup();
+  const token = (await tokens.issueToken({})).token;
+  const listed = await toolResult(await endpoint.handle(rpc(call("producer_upload_queue_list"), bearer(token))));
+  assert.equal(listed.isError, false, listed.text);
+  assert.deepEqual(payloadOf(listed.text), { autoUploadSwitchOn: true, inProgress: [], queue: [], queuedCount: 0, queuedBytes: 0 });
+  const added = await toolResult(await endpoint.handle(rpc(call("producer_upload_queue_add", { channelId: "UC_PR_X", video: "V61" }), bearer(token))));
+  assert.equal(added.isError, false, added.text);
+  assert.equal(payloadOf(added.text).forChannelId, "UC_PR_X");
+  const off = await toolResult(await endpoint.handle(rpc(call("producer_upload_queue_add", { channelId: "UC_PR_Y", video: "V99" }), bearer(token))));
+  assert.equal(off.isError, true);
+  assert.equal((payloadOf(off.text).error as { code: string }).code, "upload_auto_switch_off");
+  await endpoint.handle(rpc(call("producer_upload_queue_move", { channelId: "UC_PR_Y", uploadId: "up2", position: 1 }), bearer(token)));
+  await endpoint.handle(rpc(call("producer_upload_queue_cancel", { channelId: "UC_PR_X", uploadId: "up1" }), bearer(token)));
+  // Refused at input, never reaching the queue: a date (the Producer never gives one), position 0, a missing channel.
+  for (const [name, args] of [
+    ["producer_upload_queue_add", { channelId: "UC_PR_X", video: "V61", publishAt: "2026-11-05T10:00:00Z" }],
+    ["producer_upload_queue_add", { channelId: "UC_PR_X", video: "V61", manifestSha256: "not-a-hash" }],
+    ["producer_upload_queue_move", { channelId: "UC_PR_X", uploadId: "up1", position: 0 }],
+    ["producer_upload_queue_move", { channelId: "UC_PR_X", uploadId: "up1", position: 1.5 }],
+    ["producer_upload_queue_cancel", { uploadId: "up1" }],
+  ] as const) {
+    const result = await toolResult(await endpoint.handle(rpc(call(name, args), bearer(token))));
+    assert.equal(result.isError, true, `${name} ${JSON.stringify(args)}`);
+  }
+  assert.deepEqual(queueCalls, [
+    ["list", {}],
+    ["add", { channelId: "UC_PR_X", video: "V61" }],
+    ["add", { channelId: "UC_PR_Y", video: "V99" }],
+    ["move", { channelId: "UC_PR_Y", uploadId: "up2", position: 1 }],
+    ["cancel", { channelId: "UC_PR_X", uploadId: "up1" }],
+  ]);
+  assert.deepEqual(calls.slice(0, 5).map((entry) => [entry.tool, entry.channelId, entry.outcome, entry.errorCode]), [
+    ["producer_upload_queue_list", null, "ok", null],
+    ["producer_upload_queue_add", "UC_PR_X", "ok", null],
+    ["producer_upload_queue_add", "UC_PR_Y", "error", "upload_auto_switch_off"],
+    ["producer_upload_queue_move", "UC_PR_Y", "ok", null],
+    ["producer_upload_queue_cancel", "UC_PR_X", "ok", null],
+  ]);
+  assert.equal(refused.length, 5, "each refused input is logged as refused");
+});
+
+test("BL-239 AC-UQ-11: a channel worker session never lists an upload queue tool; they are producer-only", () => {
+  const agent = createMcpServer(undefined, { connectionEnabled: true, agentSession: { tokenId: "t", channelId: "UC_PR_X", async reverify() {} } });
+  const names = Object.keys((agent as unknown as { _registeredTools: Record<string, unknown> })._registeredTools);
+  assert.deepEqual(names.filter((name) => /upload_queue/.test(name)), []);
+  for (const tool of PRODUCER_UPLOAD_QUEUE_TOOLS) assert.equal(MCP_TOOL_CLASSIFICATION[tool], "producer-only", tool);
 });

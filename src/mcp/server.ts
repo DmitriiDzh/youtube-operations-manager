@@ -91,6 +91,7 @@ import {
   PRODUCER_DRAFT_TOOLS,
   PRODUCER_RENAMED_CHANNEL_FIELD,
   PRODUCER_TOOL_NAMES,
+  PRODUCER_UPLOAD_QUEUE_TOOLS,
 } from "./producer-tools";
 import { listProducerProposalsInputSchema, markProposalsDoneInputSchema, submitProducerProposalInputSchema } from "@/lib/agent-proposals/schemas";
 import {
@@ -503,6 +504,16 @@ export type ProducerSession = {
     list(input: Record<string, unknown>): Promise<Record<string, unknown>>;
     markDone(input: Record<string, unknown>): Promise<Record<string, unknown>>;
   };
+  /**
+   * BL-239 (ADR 0059): this computer's upload queue, as the Producer controls it (`src/lib/producer-mcp-endpoint/session-deps.ts`
+   * wires the publishing module's queue control; nothing in src/mcp reaches it otherwise).
+   */
+  uploadQueue: {
+    list(): Promise<Record<string, unknown>>;
+    add(input: { channelId: string; video: string; manifestSha256?: string }): Promise<Record<string, unknown>>;
+    move(input: { channelId: string; uploadId: string; position: number }): Promise<Record<string, unknown>>;
+    cancel(input: { channelId: string; uploadId: string }): Promise<Record<string, unknown>>;
+  };
 };
 
 /** A real calendar date as YYYY-MM-DD (`calendarDateSchema`, shared with the analytics module's tool inputs). */
@@ -530,6 +541,25 @@ export const producerPortfolioOverviewInputSchema = z
   .refine((input) => Date.parse(`${input.endDate}T00:00:00Z`) - Date.parse(`${input.startDate}T00:00:00Z`) <= 365 * 24 * 60 * 60_000, {
     message: "at most 366 days",
   });
+
+/** BL-239 (ADR 0059): the Producer's upload queue tools' inputs. */
+const producerQueueChannelId = z.string().min(1).max(64).describe("The channel of the upload (one of producer_list_channels).");
+const producerQueueUploadId = z.string().min(1).max(64).describe("The upload's id (uploadId from producer_upload_queue_list).");
+export const producerUploadQueueAddInputSchema = z
+  .object({
+    channelId: producerQueueChannelId,
+    video: z.string().min(1).max(32).describe("The release's video number as in its package, e.g. V61."),
+    manifestSha256: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .optional()
+      .describe("Optional: the manifest's SHA-256 you mean; refused (upload_package_changed) when the package on disk is another version."),
+  })
+  .strict();
+export const producerUploadQueueMoveInputSchema = z
+  .object({ channelId: producerQueueChannelId, uploadId: producerQueueUploadId, position: z.number().int().min(1).describe("The new place, 1 = starts next; past the end = the end.") })
+  .strict();
+export const producerUploadQueueCancelInputSchema = z.object({ channelId: producerQueueChannelId, uploadId: producerQueueUploadId }).strict();
 
 /** The error code of a tool error answer, or null. */
 function toolErrorCode(result: ToolResponse): string | null {
@@ -3017,17 +3047,18 @@ export function createMcpServer(
     "producer_get_capabilities",
     {
       description:
-        "The Producer role's own report: its API version, its permissions (READ, plus DRAFT for its proposals only) and the tools it can call. Every channel tool needs `channelId` -- one of producer_list_channels -- and answers with `forChannelId`. No tool here writes, spends, or starts anything: the only DRAFT tools (draftTools) store a proposal or mark one read, and a proposal changes nothing until the owner approves it in YT Manager.",
+        "The Producer role's own report: its API version, its permissions (READ; DRAFT for its proposals only; UPLOAD_QUEUE for this computer's upload queue) and the tools it can call. Every channel tool needs `channelId` -- one of producer_list_channels -- and answers with `forChannelId`. No tool here writes to YouTube or spends money by itself: the DRAFT tools (draftTools) store a proposal or mark one read, and a proposal changes nothing until the owner approves it in YT Manager; the UPLOAD_QUEUE tools (uploadQueueTools) list, order, cancel and add rows of this computer's upload queue -- the app's own uploader then uploads a queued row as private, with its identity check, and only while the owner's Live writes switch is on; a date comes only from a weekly-plan slot the owner approved.",
       inputSchema: z.object({}).strict(),
     },
     async () =>
       toolSuccessResult({
         role: "producer",
         producerApiVersion: PRODUCER_API_VERSION,
-        permissions: ["READ", "DRAFT"],
+        permissions: ["READ", "DRAFT", "UPLOAD_QUEUE"],
         channelRequired: true,
         tools: [...PRODUCER_TOOL_NAMES],
         draftTools: [...PRODUCER_DRAFT_TOOLS],
+        uploadQueueTools: [...PRODUCER_UPLOAD_QUEUE_TOOLS],
       })
   );
 
@@ -3108,6 +3139,48 @@ export function createMcpServer(
       inputSchema: producerMarkProposalsDoneInputSchema,
     },
     async (args: z.infer<typeof producerMarkProposalsDoneInputSchema>) => toolSuccessResult(await producerSession!.proposals.markDone(args))
+  );
+
+  // BL-239 (docs/roadmap/plans/UPLOAD_QUEUE_CONTROL_PLAN.md, ADR 0059; owner msgs 3928/3930): this computer's upload queue. These
+  // tools reach only the session's `uploadQueue` (the publishing module's queue control); channel workers and the factory get none.
+  registerTool(
+    "producer_upload_queue_list",
+    {
+      description:
+        "This computer's upload queue -- ONE queue for every channel; one file is sent at a time. Returns `autoUploadSwitchOn` (the owner's automatic-upload switch here: producer_upload_queue_add works only while it is on), `inProgress` (rows being sent, processed by YouTube, finished, or paused: status uploading | processing | finishing | paused, with resumeStatus, pausedReason live_writes_off | quota_exceeded | upload_limit | auth, pausedUntil, progressPercent) and `queue` (the rows waiting, status queued, in the order they start: position 1 starts next). Every row: uploadId, channelId, channelTitle, video, title, sizeBytes, status, queuedBy (owner | automatic | producer), slotId (the weekly-plan slot, or null), publishAt (the date it will get, from an approved slot, or null) and publishAtSet (already on the video), createdAt; a queued row also bytesAhead (bytes still to send before it can start: the rest of the file being sent plus the queued rows before it). Also queuedCount and queuedBytes. No ETA (no upload speed is stored). Rows of other computers are not here. A local read, no YouTube call.",
+      inputSchema: z.object({}).strict(),
+    },
+    async () => toolSuccessResult(await producerSession!.uploadQueue.list())
+  );
+
+  registerTool(
+    "producer_upload_queue_add",
+    {
+      description:
+        "Queue one ready release package of a channel for upload on THIS computer: it joins the end of the queue (move it with producer_upload_queue_move). Only where the owner's automatic-upload switch is on (upload_auto_switch_off otherwise: that computer uploads). The package must pass the automatic upload's own checks: ready (agent_get_publishing_calendar lists packages and their problems), its manifest has a top-level `sha256`, the video file has exactly the manifest's size and SHA-256 (hashed now: a large file takes a while), not queued or uploaded here or on another computer, its weekly-plan slot not vetoed; and the owner's approval rules: the day's 100-upload bucket and the quota (an unknown quota is never accepted for him), tags within 500 characters, publishing settings not in conflict between computers. The video is uploaded PRIVATE. Its date comes only from the weekly-plan slot it names when the owner APPROVED that slot more than 15 minutes ahead; otherwise none, and the plan sets it when the owner approves the slot -- you never give a date. One try per manifest version: a version that already had an upload row here (the owner's, automatic, failed, done, or cancelled by the owner) is refused (upload_already_tried) and stays the owner's; one that only you cancelled can be added again. Input: channelId, video (e.g. V61), optional manifestSha256 (the version you mean). Returns { upload: { uploadId, channelId, video, status queued, queuedBy producer, slotId, publishAt, position, queueLength } } and forChannelId. Errors: upload_auto_switch_off, CHANNEL_NOT_ACTIVE (not connected here), package_no_workspace, package_workspace_unavailable, upload_package_not_ready (no such video number, or not ready: details.problems), upload_package_changed, validation_failed (two packages name the video: pass manifestSha256), upload_package_no_sha256, upload_already_queued, upload_slot_taken, upload_slot_vetoed, upload_already_tried, upload_video_mismatch (details.reason size | sha256 | unreadable), upload_daily_limit, quota_insufficient, quota_unknown, upload_tags_too_long, publishing_settings_changed, operation_lock_held / device_in_recovery_mode (the app is paused for a device handoff or recovery).",
+      inputSchema: producerUploadQueueAddInputSchema,
+    },
+    async (args: z.infer<typeof producerUploadQueueAddInputSchema>) => toolSuccessResult(await producerSession!.uploadQueue.add(args))
+  );
+
+  registerTool(
+    "producer_upload_queue_move",
+    {
+      description:
+        "Move a waiting upload (status queued) of any channel to another place in this computer's shared queue: position 1 starts next, a position past the end puts it last; the other queued rows keep their order. It only changes which queued row starts next: the row being sent, processed or finished is never interrupted. (A row whose channel hit YouTube's upload limit, or that waits for a retry, is passed over until then.) Input: channelId (the row's channel), uploadId, position. Returns { uploadId, channelId, video, from, position, queueLength, moved } and forChannelId. Errors: upload_not_found (no such upload of that channel here), upload_not_movable (it is not queued any more), upload_queue_changed (a queued row started or was cancelled meanwhile: nothing moved, list and try again), operation_lock_held / device_in_recovery_mode.",
+      inputSchema: producerUploadQueueMoveInputSchema,
+    },
+    async (args: z.infer<typeof producerUploadQueueMoveInputSchema>) => toolSuccessResult(await producerSession!.uploadQueue.move(args))
+  );
+
+  registerTool(
+    "producer_upload_queue_cancel",
+    {
+      description:
+        "Cancel an upload of any channel that has not started (status queued): it leaves the queue and nothing of it reaches YouTube. A row that started sending (or is paused, processing, finishing, done) is never cancelled here -- the owner decides about those in YT Manager. Its package can be added again with producer_upload_queue_add. Input: channelId (the row's channel), uploadId. Returns { uploadId, channelId, video, status cancelled } and forChannelId. Errors: upload_not_found, upload_not_cancellable (not queued, or it started meanwhile), operation_lock_held / device_in_recovery_mode.",
+      inputSchema: producerUploadQueueCancelInputSchema,
+    },
+    async (args: z.infer<typeof producerUploadQueueCancelInputSchema>) => toolSuccessResult(await producerSession!.uploadQueue.cancel(args))
   );
 
   registerTool(

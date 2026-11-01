@@ -181,4 +181,9 @@ export const MCP_TOOL_CLASSIFICATION: Readonly<Record<string, McpToolClass>> = O
   producer_propose: "producer-only",
   producer_list_proposals: "producer-only",
   producer_mark_proposals_done: "producer-only",
+  // BL-239 (ADR 0059): the Producer's upload queue tools -- on its endpoint only, never a channel worker's or the factory's.
+  producer_upload_queue_list: "producer-only",
+  producer_upload_queue_add: "producer-only",
+  producer_upload_queue_move: "producer-only",
+  producer_upload_queue_cancel: "producer-only",
 });

@@ -26,6 +26,11 @@ type UploadRow = {
   createdAt: string;
   /** BL-209: queued by the owner's automatic-upload switch (private, no date). */
   automatic?: boolean;
+  /** BL-239 (schema v117): who queued it -- owner, automatic or producer. */
+  queuedBy?: string | null;
+  /** BL-239: a queued row's place in this computer's shared queue (every channel), and the queue's length; null otherwise. */
+  queuePosition?: number | null;
+  queueLength?: number | null;
 };
 
 const ACTIVE = new Set(["queued", "uploading", "processing", "finishing", "paused"]);
@@ -68,6 +73,7 @@ export function PublishingUploads({ channelId, visible, refreshKey }: { channelI
   const [rows, setRows] = useState<UploadRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [releasing, setReleasing] = useState<string | null>(null);
+  const [moving, setMoving] = useState(false);
 
   const load = useCallback(async () => {
     if (!channelId) return;
@@ -99,6 +105,26 @@ export function PublishingUploads({ channelId, visible, refreshKey }: { channelI
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : t("publishingUploads.cancelFailed"));
+    }
+  }
+
+  /** BL-239: one place up or down in the shared queue of this computer (every channel). */
+  async function move(id: string, direction: "up" | "down") {
+    if (!channelId) return;
+    setMoving(true);
+    try {
+      const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/publishing/uploads/${encodeURIComponent(id)}/move`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ direction }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(errorText(t, data, t("publishingUploads.moveFailed")));
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t("publishingUploads.moveFailed"));
+    } finally {
+      setMoving(false);
     }
   }
 
@@ -150,12 +176,18 @@ export function PublishingUploads({ channelId, visible, refreshKey }: { channelI
       <UploadBandwidthNote />
       {error && <p className="text-xs text-red-400">{error}</p>}
       <ul className="divide-y divide-zinc-800 rounded-lg border border-zinc-800">
-        {rows.map((row) => {
+        {/* BL-239: the queued rows first, in the order they start; the rest as listed (newest first). */}
+        {[...rows.filter((row) => row.queuePosition != null).sort((a, b) => (a.queuePosition ?? 0) - (b.queuePosition ?? 0)), ...rows.filter((row) => row.queuePosition == null)].map((row) => {
           const percent = row.totalBytes > 0 ? Math.floor((row.storedBytes / row.totalBytes) * 100) : 0;
           const text = detail(row);
           return (
             <li key={row.id} className="flex flex-wrap items-center gap-2 px-3 py-2 text-xs">
               <span className="font-mono text-zinc-400">{row.video}</span>
+              {row.queuedBy === "producer" && (
+                <span className="rounded bg-violet-950/50 px-1.5 py-0.5 text-violet-200" title={t("publishingUploads.producerHint")}>
+                  {t("publishingUploads.producer")}
+                </span>
+              )}
               {row.automatic && (
                 <span className="rounded bg-sky-950/50 px-1.5 py-0.5 text-sky-200" title={t("publishingUploads.automaticHint")}>
                   {t("publishingUploads.automatic")}
@@ -167,6 +199,31 @@ export function PublishingUploads({ channelId, visible, refreshKey }: { channelI
               {row.publishAt && (
                 <span className="text-zinc-400">
                   <PublishTime publishAt={row.publishAt} set={isPublishAtSet(row)} />
+                </span>
+              )}
+              {row.status === "queued" && row.queuePosition != null && row.queueLength != null && (
+                <span className="flex items-center gap-1 text-zinc-400">
+                  {t("publishingUploads.queuePosition", { position: String(row.queuePosition), total: String(row.queueLength) })}
+                  <button
+                    type="button"
+                    onClick={() => void move(row.id, "up")}
+                    disabled={moving || row.queuePosition <= 1}
+                    aria-label={t("publishingUploads.moveUp")}
+                    title={t("publishingUploads.moveUp")}
+                    className="rounded border border-zinc-700 px-1.5 py-0.5 text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
+                  >
+                    ↑
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void move(row.id, "down")}
+                    disabled={moving || row.queuePosition >= row.queueLength}
+                    aria-label={t("publishingUploads.moveDown")}
+                    title={t("publishingUploads.moveDown")}
+                    className="rounded border border-zinc-700 px-1.5 py-0.5 text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
+                  >
+                    ↓
+                  </button>
                 </span>
               )}
               {row.videoId && (

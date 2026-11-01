@@ -314,6 +314,21 @@ export type DomainErrorCode =
   | "publishing_plan_slot_past"
   // Review #5 (BL-225): a package whose plan slot already has an upload on this computer.
   | "upload_slot_taken"
+  // BL-239 (UPLOAD_QUEUE_CONTROL_PLAN.md, ADR 0059) -- the upload queue's control. NOT_FOUND: no upload with that id on this computer
+  // for the named channel; NOT_MOVABLE / NOT_CANCELLABLE: the row is not `queued` (it started, finished or was cancelled);
+  // QUEUE_CHANGED: a queued row started or was cancelled while the move was made (nothing moved); AUTO_SWITCH_OFF: the Producer adds
+  // only on the computer whose automatic-upload switch is on; NO_SHA256: the manifest has no top-level `sha256`; VIDEO_MISMATCH: the
+  // video's size or SHA-256 is not the manifest's; SLOT_VETOED: the package's plan slot is vetoed; ALREADY_TRIED: this manifest
+  // version already had an upload here that was not a Producer cancel (it stays the owner's).
+  | "upload_not_found"
+  | "upload_not_movable"
+  | "upload_not_cancellable"
+  | "upload_queue_changed"
+  | "upload_auto_switch_off"
+  | "upload_package_no_sha256"
+  | "upload_video_mismatch"
+  | "upload_slot_vetoed"
+  | "upload_already_tried"
   // BL-194 stage 1 (docs/roadmap/plans/VIDEO_COST_PLAN.md, ADR 0040) -- video numbers. NOT_FOUND: no such video of the channel
   // that can be linked (unknown, or cancelled). IN_DISPUTE: two computers reserved the number; nothing is linked to it until the
   // losing computer takes another. WORKSPACE_UNAVAILABLE: the channel is not connected here, or its workspace folder (where the

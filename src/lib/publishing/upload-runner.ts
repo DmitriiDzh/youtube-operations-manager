@@ -405,9 +405,12 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
     return job.publishAtAtInsert && job.publishAt !== null && Date.parse(job.publishAt) - now().getTime() <= PUBLISH_AT_MARGIN_MS;
   }
 
-  /** BL-209 review L5: an automatic row whose video file's SHA-256 is no longer its manifest's (false for an approval's row). */
-  async function videoHashDiffers(job: StoredPublishingUpload, pkg: ApprovedPackage, filePath: string): Promise<boolean> {
-    if (!job.automatic || !pkg.videoSha256) return false;
+  /**
+   * BL-209 review L5: a row whose video file's SHA-256 is no longer its manifest's. Only a row that froze the hash -- an automatic
+   * one, or since BL-239 one the Producer queued -- is checked (false for an approval's row, which never freezes it).
+   */
+  async function videoHashDiffers(pkg: ApprovedPackage, filePath: string): Promise<boolean> {
+    if (!pkg.videoSha256) return false;
     return (await deps.files.sha256(filePath)).toLowerCase() !== pkg.videoSha256;
   }
 
@@ -436,7 +439,7 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
         if (!videoFile || videoFile.bytes !== job.totalBytes) return fail(job, "package_changed", "The video file changed or is missing since it was approved.");
         // Review L5: an automatic row was queued because the file matched its manifest's SHA-256; the file is hashed again before
         // anything reaches YouTube (not even the identity read). A mismatch fails the row for good -- never retried by itself.
-        if (await videoHashDiffers(job, pkg, videoFile.path)) return fail(job, VIDEO_HASH_MISMATCH, "The video file no longer matches the SHA-256 in its manifest, so the automatic upload stopped before anything was sent.");
+        if (await videoHashDiffers(pkg, videoFile.path)) return fail(job, VIDEO_HASH_MISMATCH, "The video file no longer matches the SHA-256 in its manifest, so the automatic upload stopped before anything was sent.");
         hashChecked = true;
         await identity(job);
         if (!(await deps.store.update(job.id, "queued", { status: "uploading", attempts: job.attempts + 1, sessionUri: null, storedBytes: 0, updatedAt: now() }))) return;
@@ -458,7 +461,7 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
       if (!videoFile || videoFile.bytes !== current.totalBytes) return failAfterError(current, "package_changed", "The video file changed or is missing during the upload.");
       if (!current.sessionUri) {
         // A new session after an expired one (no byte of it kept): the automatic row's file is checked again first.
-        if (!hashChecked && (await videoHashDiffers(current, pkg, videoFile.path))) {
+        if (!hashChecked && (await videoHashDiffers(pkg, videoFile.path))) {
           return fail(current, VIDEO_HASH_MISMATCH, "The video file no longer matches the SHA-256 in its manifest, so the automatic upload stopped before a new session.");
         }
         // Owner msgs 3510/3511 (FO-REQ-0040 item 4): the insert is private and never carries a publish time, whatever the date; the
@@ -790,7 +793,10 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
       const capHeld = new Set(pausedFor("upload_limit").map((job) => job.channelId));
       const liveWritesHeld = pausedFor("live_writes_off").some((job) => job.resumeStatus === "uploading");
       const sending = jobs.find((job) => job.status === "uploading");
-      const next = sending ?? (quotaHeld || liveWritesHeld ? undefined : jobs.find((job) => job.status === "queued" && !capHeld.has(job.channelId) && due(job)));
+      // BL-239 (ADR 0059): the queued rows start in the queue's order (`queueRank`, set by the owner's and the Producer's moves);
+      // the order only picks the next start -- a row being sent always goes on first (`sending ??`), never overtaken.
+      const queued = jobs.filter((job) => job.status === "queued").sort(compareQueueOrder);
+      const next = sending ?? (quotaHeld || liveWritesHeld ? undefined : queued.find((job) => !capHeld.has(job.channelId) && due(job)));
       if (next && due(next) && (await claim(next))) await upload(next);
     },
     /** Whether an upload is being sent or finished now (the idle watcher keeps the session while it is). */
@@ -798,6 +804,11 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
       return (await deps.store.listActive()).some((job) => job.status === "uploading" || job.status === "processing" || job.status === "finishing");
     },
   };
+}
+
+/** BL-239 (ADR 0059): the order of the queued rows -- their place, then the older first, then the id (always one order). */
+export function compareQueueOrder(a: Pick<StoredPublishingUpload, "queueRank" | "createdAt" | "id">, b: Pick<StoredPublishingUpload, "queueRank" | "createdAt" | "id">): number {
+  return a.queueRank - b.queueRank || a.createdAt.getTime() - b.createdAt.getTime() || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }
 
 /**
