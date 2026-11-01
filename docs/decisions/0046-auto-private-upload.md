@@ -97,5 +97,5 @@ checks and the runner means the automatic path cannot drift from the manual one.
   switch is on (refused elsewhere): the same per-package check (now one function, `checkPackageForQueue`, used by both), the same
   queue step, private, a date only from an approved slot. The row is marked `queued_by = producer`, not `automatic`.
 - §9 holds for the automatic tick unchanged. The Producer's add uses the same rule except that a version whose rows the Producer
-  itself cancelled may be added again.
+  itself queued and cancelled may be added again.
 - §10: the runner's re-hash now keys on the frozen `videoSha256`, which automatic and Producer rows carry (approval rows never do).
