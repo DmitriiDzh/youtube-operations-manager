@@ -4328,7 +4328,7 @@ is already set everywhere), 2734 (one merge for the whole stage).
 - **Calendar:** a ready package shows on its planned day at the channel's time (dashed violet, not clickable); it is not scheduled
   yet, so its day stays a gap. The folder is read at most every 5 minutes.
 - **Agents** (Agent API 3.17.0, Producer API 1.8.0): `agent_get_publishing_calendar` also lists the packages (state, problem codes,
-  video id) and this computer's uploads (since 3.20.0 / 1.10.0 with `automatic`, `progressPercent`, `finishedAt`, §47.5). No tool uploads, schedules or cancels (`no-agent-upload-tool.test.ts`).
+  video id) and this computer's uploads (since 3.20.0 / 1.10.0 with `automatic`, `progressPercent`, `finishedAt`, §47.5). No channel agent or factory tool uploads, schedules or cancels (`no-agent-upload-tool.test.ts`); the Producer's queue tools are §47.7.
 
 ### 47.5 Automatic private upload (BL-209, ADR 0046, `docs/roadmap/plans/AUTO_PRIVATE_UPLOAD_PLAN.md`)
 
@@ -4367,6 +4367,29 @@ is already set everywhere), 2734 (one merge for the whole stage).
   `automatic`, `progressPercent` (floor of stored / total bytes, null when the total is 0) and `finishedAt` (Agent API 3.20.0, Producer
   API 1.10.0; `calendar-reads.ts` `agentUploadOf`). No agent tool reaches the watcher, `queueAutomatic` or the setter
   (`no-agent-upload-tool.test.ts`, AC-AU-11).
+
+### 47.7 Upload queue control (BL-239, ADR 0059, `docs/roadmap/plans/UPLOAD_QUEUE_CONTROL_PLAN.md`)
+
+- **Order.** Schema v117 adds `publishing_uploads.queue_rank` (backfilled from `created_at`; a new row gets its creation time in ms,
+  an approval's rows + their index) and `queued_by` (`owner` / `automatic` / `producer`). The runner's `tick()` picks the next start
+  from the `queued` rows sorted by `compareQueueOrder` (rank, then `createdAt`, then id); `sending ?? next` is unchanged, so a row
+  being sent always goes on first. Processing/finishing rows keep their `createdAt` order.
+- **Control** (`publishing/upload-queue-control.ts`, wired by `createUploadQueueControlCore` in `index.ts`): `list` (rows in progress;
+  queued rows with position, channel title, size, `bytesAhead` = the sending row's remaining bytes + the queued sizes before; no ETA),
+  `move` (to a 1-based place; `reorderQueuedPublishingUploads` renumbers the queued rows 1..N in one transaction, all or none --
+  `upload_queue_changed` when one stopped being queued), `moveStep` (the owner's ±1), `cancel` (compare-and-set from `queued`;
+  the Producer's sets `error_code = cancelled_by_producer`), `add` (Producer only). Add, move and cancel pass the device mutation
+  gate. Every action is audited with `by` (`producer` + token id, `owner` + user id): `publishing.upload_queue_moved`,
+  `publishing.upload_producer_queued`, `publishing.upload_cancelled`.
+- **Add.** Refused unless this computer's `autoPrivateUploadEnabled` is on (the one uploading computer, ADR 0046 §8). Then
+  `checkPackageForQueue` (extracted from `auto-upload.ts`, used by both): ready, slot not vetoed, `sha256` in the manifest, not held
+  here or by a peer, not tried (`blockedHashes`: any row of the manifest hash except a Producer cancel), size, SHA-256; the switch is
+  read again; `upload-approval.ts` `queueByProducer` (the approval's queue step; private; `publishAt` only from an approved slot more
+  than 15 minutes ahead; `videoSha256` frozen). The runner's re-hash keys on the frozen `videoSha256` (automatic and Producer rows).
+- **Surfaces.** Producer API 1.14.0: `producer_upload_queue_list/_add/_move/_cancel` (`producer-only`, `session-deps.ts` wires the
+  core with `planSlotDecisions` passed by `src/app/api/mcp/producer/route.ts`). Owner: `POST /api/channels/[channelId]/publishing/
+  uploads/[uploadId]/move { direction }`; the uploads list (`publishing-uploads.tsx`) shows queued rows first in queue order with
+  «№ k из n в общей очереди» and ↑↓. `no-agent-upload-tool.test.ts` pins the exception to these four tools and the core's callers.
 
 ### 47.4 Not built yet
 

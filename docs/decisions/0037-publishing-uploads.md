@@ -2,7 +2,9 @@
 
 Status: Accepted (owner, Telegram msg 2702 for the G1 probe; msg 2707 for the plan's answers: order, rescheduling while private,
 the AI-use fix). §1 and §3 amended by [0046](0046-auto-private-upload.md) (2026-10-22): the owner's automatic-upload switch is a
-standing approval of private, undated uploads of ready packages whose video matches its manifest's SHA-256.
+standing approval of private, undated uploads of ready packages whose video matches its manifest's SHA-256. §1 amended again by
+[0059](0059-producer-upload-queue-control.md) (2026-11-01, owner msgs 3928/3930): the Producer orders the upload queue, cancels a
+queued upload and adds a ready package under that switch (private; a date only from a slot the owner approved).
 
 **Date:** 2026-10-13.
 - **Request:** FO-REQ-0023 (the Operator, from the owner's instruction 1110), relayed by the owner here on 2026-10-13 (msg 2698).
@@ -52,3 +54,10 @@ the G1 probe.
   video-details and publishing, each with its own approval.
 - If G1 shows uploads are locked, the upload stage waits for Google's audit. The calendar, the reminder and History do not depend
   on it.
+
+## Note (BL-239, ADR 0059, 2026-11-01)
+
+§1's "uploads or scheduling by an agent or the Producer" is lifted for the Producer's four upload queue tools only
+(`producer_upload_queue_list/_add/_move/_cancel`). Channel worker agents and the factory still get no upload tool; scheduling stays
+the owner's (a date only from his approved plan slot). AC-UP-14 (`no-agent-upload-tool.test.ts`) now allows exactly those four
+`producer-only` tools and pins `createUploadQueueControlCore` to the Producer session wiring and the owner's move route.
