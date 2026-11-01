@@ -4383,9 +4383,10 @@ is already set everywhere), 2734 (one merge for the whole stage).
   `publishing.upload_producer_queued`, `publishing.upload_cancelled`.
 - **Add.** Refused unless this computer's `autoPrivateUploadEnabled` is on (the one uploading computer, ADR 0046 §8). Then
   `checkPackageForQueue` (extracted from `auto-upload.ts`, used by both): ready, slot not vetoed, `sha256` in the manifest, not held
-  here or by a peer, not tried (`blockedHashes`: any row of the manifest hash except a Producer cancel), size, SHA-256; the switch is
+  here or by a peer, not tried (`blockedHashes`: any row of the manifest hash except a row the Producer both queued and cancelled), size, SHA-256; the switch is
   read again; `upload-approval.ts` `queueByProducer` (the approval's queue step; private; `publishAt` only from an approved slot more
-  than 15 minutes ahead; `videoSha256` frozen). The runner's re-hash keys on the frozen `videoSha256` (automatic and Producer rows).
+  than 15 minutes ahead; `videoSha256` frozen). The runner's re-hash keys on the frozen `videoSha256` (automatic and Producer rows); at the date step a slot no longer approved
+  withholds the date on automatic and Producer rows alike.
 - **Surfaces.** Producer API 1.14.0: `producer_upload_queue_list/_add/_move/_cancel` (`producer-only`, `session-deps.ts` wires the
   core with `planSlotDecisions` passed by `src/app/api/mcp/producer/route.ts`). Owner: `POST /api/channels/[channelId]/publishing/
   uploads/[uploadId]/move { direction }`; the uploads list (`publishing-uploads.tsx`) shows queued rows first in queue order with

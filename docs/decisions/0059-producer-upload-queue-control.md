@@ -32,9 +32,10 @@ the owner's approval of a weekly-plan slot be the approval of that slot's date.
      (ADR 0046 §8, ADR 0051);
    - the same per-package check as the automatic upload (one function, extracted from `auto-upload.ts`), then the approval's own
      queue step. The video is private; a date comes only from a weekly-plan slot the owner approved, more than 15 minutes ahead.
-     The Producer never gives a date and never approves a slot;
+     The Producer never gives a date and never approves a slot; a slot no longer approved when the runner reaches the date step
+     withholds the date, as for an automatic row;
    - the video's SHA-256 is frozen with the row and checked again by the runner before its session starts;
-   - one try per manifest version, except a version whose rows the Producer itself cancelled. A version the owner approved or
+   - one try per manifest version, except a version whose rows the Producer itself queued and cancelled. A version the owner approved or
      cancelled, an automatic try, a failure or a done upload stays the owner's.
 5. **Audit.** Every move, add and cancel is an audit event with who did it: `by: "producer"` with the token id, or `by: "owner"`
    with the Google user. Each row records who queued it (`queued_by`).

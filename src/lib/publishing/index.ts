@@ -645,10 +645,11 @@ export function createUploadQueueControlCore(
     scan: (channelId) => scan.scan(channelId),
     liveVideos: (channelId) => localHeldVideos(channelId),
     peerUploads: (channelId) => peerUploadsOf(channelId),
-    // One try per manifest version, as for the automatic upload -- except a version whose rows the Producer cancelled itself.
+    // One try per manifest version, as for the automatic upload -- except a version whose rows the Producer itself queued and
+    // cancelled (review #4: a cancelled owner's or automatic row stays the owner's, so the Producer cannot replace his approval).
     async blockedHashes(channelId) {
       const rows = await listPublishingUploads({ channelId, limit: 5000 });
-      return new Set(rows.filter((row) => !(row.status === "cancelled" && row.errorCode === CANCELLED_BY_PRODUCER)).map((row) => row.manifestSha256));
+      return new Set(rows.filter((row) => !(row.status === "cancelled" && row.errorCode === CANCELLED_BY_PRODUCER && row.queuedBy === "producer")).map((row) => row.manifestSha256));
     },
     ...(options.slotDecisions ? { slotDecisions: options.slotDecisions } : {}),
     async videoFile(channelId, relativePath) {

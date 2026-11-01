@@ -38,7 +38,7 @@ Sources:
    - the row freezes the manifest's `sha256`; the runner hashes the file again before its session starts (as for an automatic
      row; the runner's check now keys on the frozen hash, which only automatic and Producer rows carry);
    - one try per manifest version, as for the automatic upload, except that the Producer may queue again a version whose earlier
-     rows it cancelled itself: a version with any other row here (the owner's approval or cancel, an automatic try, a failure, a
+     rows it queued and cancelled itself: a version with any other row here (the owner's approval or cancel, an automatic try, a failure, a
      done upload) is refused (`upload_already_tried`) -- those stay the owner's;
    - the row is marked `queued_by = producer` (schema v117; `owner` / `automatic` for the others) and joins the end of the queue.
 5. **List (Producer).** This computer's queue: the rows in progress (uploading, processing, finishing, paused) and the queued rows
@@ -85,4 +85,8 @@ Sources:
   `producer-only`; no MCP / agent endpoint code reaches the approval, the runner, the automatic queue or the owner's cancel; the
   queue core is referenced only by the Producer session wiring, the owner's move route and the publishing module.
 - **AC-UQ-12** Owner move route: up/down move one place; unauthenticated 401; inactive channel refused; a non-queued row 409.
+- **AC-UQ-14** (independent review #1) A Producer row whose slot is no longer approved (pending, or vetoed) when the date step
+  comes gets no date (`withheld`), like an automatic row; an owner's own row keeps the date he approved.
+- **AC-UQ-15** (independent review #4) A row the owner approved (or the automatic upload queued) that the Producer cancelled stays
+  the owner's: the Producer cannot add that manifest version again (`upload_already_tried`); only rows it queued itself can be.
 - **AC-UQ-13** Schema v117: `queue_rank` and `queued_by` added and backfilled (rank = created_at; `queued_by` from `automatic`).

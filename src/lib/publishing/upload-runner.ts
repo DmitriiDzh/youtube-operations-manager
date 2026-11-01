@@ -439,7 +439,7 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
         if (!videoFile || videoFile.bytes !== job.totalBytes) return fail(job, "package_changed", "The video file changed or is missing since it was approved.");
         // Review L5: an automatic row was queued because the file matched its manifest's SHA-256; the file is hashed again before
         // anything reaches YouTube (not even the identity read). A mismatch fails the row for good -- never retried by itself.
-        if (await videoHashDiffers(pkg, videoFile.path)) return fail(job, VIDEO_HASH_MISMATCH, "The video file no longer matches the SHA-256 in its manifest, so the automatic upload stopped before anything was sent.");
+        if (await videoHashDiffers(pkg, videoFile.path)) return fail(job, VIDEO_HASH_MISMATCH, "The video file no longer matches the SHA-256 in its manifest, so the upload stopped before anything was sent.");
         hashChecked = true;
         await identity(job);
         if (!(await deps.store.update(job.id, "queued", { status: "uploading", attempts: job.attempts + 1, sessionUri: null, storedBytes: 0, updatedAt: now() }))) return;
@@ -462,7 +462,7 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
       if (!current.sessionUri) {
         // A new session after an expired one (no byte of it kept): the automatic row's file is checked again first.
         if (!hashChecked && (await videoHashDiffers(pkg, videoFile.path))) {
-          return fail(current, VIDEO_HASH_MISMATCH, "The video file no longer matches the SHA-256 in its manifest, so the automatic upload stopped before a new session.");
+          return fail(current, VIDEO_HASH_MISMATCH, "The video file no longer matches the SHA-256 in its manifest, so the upload stopped before a new session.");
         }
         // Owner msgs 3510/3511 (FO-REQ-0040 item 4): the insert is private and never carries a publish time, whatever the date; the
         // date is written last, after the thumbnail, the playlist and a passing read-back. The column stays (old rows) and is false.
@@ -668,7 +668,8 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
         const decision = await deps.slotDecision(job.channelId, job.slotId);
         if (decision?.kind === "vetoed") slotWithheld = "the slot was vetoed";
         else if (decision?.kind === "approved") publishAtNow = new Date(decision.publishAt).toISOString();
-        else if (job.automatic) slotWithheld = "the slot is no longer approved";
+        // BL-239 review #1: a Producer row's date also came only from the slot's approval (ADR 0059 §4).
+        else if (job.automatic || job.queuedBy === "producer") slotWithheld = "the slot is no longer approved";
       }
       if (publishAtNow !== job.publishAt && publishAtNow !== null) {
         if (!(await deps.store.update(job.id, "finishing", { publishAt: publishAtNow, updatedAt: now() }))) return;

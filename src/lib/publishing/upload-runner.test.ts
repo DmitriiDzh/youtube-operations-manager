@@ -1253,3 +1253,21 @@ test("AC-UQ-09: a Producer row (frozen SHA-256, not automatic) is hashed again b
   await same.runAll();
   assert.equal(same.row().status, "done");
 });
+
+// BL-239 independent review #1 (ADR 0059 §4, ADR 0051 §7: a Producer row's date comes only from the owner's slot approval): a slot no
+// longer approved before the date step withholds the date on a Producer row too, as on an automatic one.
+test("BL-239 review #1: a Producer row whose slot is no longer approved gets no date; vetoed likewise", async () => {
+  for (const decision of [{ kind: "pending" }, { kind: "vetoed" }] as const) {
+    const h = slotHarness(decision, {
+      automatic: false,
+      queuedBy: "producer",
+      status: "finishing",
+      videoId: "vid1",
+      stepsJson: JSON.stringify({ uploadedAt: NOW.toISOString(), thumbnail: "set", playlist: "added" }),
+    });
+    h.yt.videos.push(VID1_UPLOADED);
+    const runner = createUploadRunner(h.deps);
+    for (let i = 0; i < 10 && h.row().status !== "done"; i += 1) await runner.tick();
+    assert.deepEqual([JSON.parse(h.row().stepsJson).publishAt, h.publishAtWrites], ["withheld", []], decision.kind);
+  }
+});

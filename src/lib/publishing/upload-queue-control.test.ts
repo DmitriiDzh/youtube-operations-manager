@@ -141,7 +141,7 @@ function harness(rows: StoredPublishingUpload[], options: { packages?: ScannedPa
     scan: async () => ({ status: "ok", packages: options.packages ?? [] }),
     liveVideos: async () => new Set([...store.values()].filter((r) => ACTIVE.has(r.status) || r.status === "done").map((r) => r.video)),
     peerUploads: async () => new Map((options.peers ?? []).map((v) => [v, { host: "Windows", uploaded: false }])),
-    blockedHashes: async () => new Set([...store.values()].filter((r) => !(r.status === "cancelled" && r.errorCode === CANCELLED_BY_PRODUCER)).map((r) => r.manifestSha256)),
+    blockedHashes: async () => new Set([...store.values()].filter((r) => !(r.status === "cancelled" && r.errorCode === CANCELLED_BY_PRODUCER && r.queuedBy === "producer")).map((r) => r.manifestSha256)),
     ...(options.slots ? { slotDecisions: async () => options.slots! } : {}),
     videoFile: async (_channelId, relativePath) => ({ path: `/ws/${relativePath}`, bytes: options.fileBytes ?? 1000, mtimeMs: 1 }),
     hashFile: async (path) => {
@@ -288,9 +288,12 @@ test("AC-UQ-08: the add is refused, nothing queued, for every failed check; the 
 });
 
 test("AC-UQ-08: a version only the Producer cancelled can be added again; one the owner cancelled stays his", async () => {
-  const h = harness([row("old", { video: "V61", manifestSha256: "mf-V61", status: "cancelled", errorCode: CANCELLED_BY_PRODUCER })], { packages: [pkg("V61")] });
+  const h = harness([row("old", { video: "V61", manifestSha256: "mf-V61", status: "cancelled", errorCode: CANCELLED_BY_PRODUCER, queuedBy: "producer" })], { packages: [pkg("V61")] });
   const added = await h.control.add({ channelId: "UC_x", video: "V61" }, PRODUCER);
   assert.equal(added.upload.status, "queued");
+  // Review #4: the owner's approved row, cancelled by the Producer, stays his -- the Producer cannot queue it again under its name.
+  const owners = harness([row("own", { video: "V61", manifestSha256: "mf-V61", status: "cancelled", errorCode: CANCELLED_BY_PRODUCER, queuedBy: "owner" })], { packages: [pkg("V61")] });
+  await refused(owners.control.add({ channelId: "UC_x", video: "V61" }, PRODUCER), "upload_already_tried");
 });
 
 test("AC-UQ-10: the list -- rows in progress apart; queued rows in order with their place, channel title and the bytes ahead", async () => {
