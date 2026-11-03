@@ -128,3 +128,11 @@ every channel's reads without a worker per channel, and nothing else.
   unchanged. The tools take a `channelId` (logged, `forChannelId` in the answer) except the list.
 - **Not changed:** the closed list of channel tools (all READ), the DRAFT tools, the per-call channel scope; channel agents and the
   factory get none of these tools.
+
+## Amendment 9 — clips for review (BL-241, owner 2026-11-03, Telegram msgs 4010/4011; ADR 0061)
+
+- Producer API 1.15.0 adds four `producer-only` tools: `producer_clip_review_submit` and `producer_clip_review_withdraw` (DRAFT: a
+  request for the owner, taken back while pending) and `producer_clip_review_list` / `producer_clip_review_get` (READ). A clip is a file
+  already in a channel's folder; only the owner approves or returns it, in the Web UI.
+- `producer_get_capabilities` lists `clipReviewTools`; `draftTools` gains submit and withdraw; permissions unchanged.
+- **Not changed:** the closed list of channel tools, the per-call channel scope; channel agents and the factory get none of these tools.

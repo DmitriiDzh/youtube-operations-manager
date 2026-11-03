@@ -2275,3 +2275,14 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Mitigation:** both computers run BL-240 before agents remove vetoed slots or use `replacesSlotId` (stated in the release note).
 - **Gate(s):** none (no new YouTube write; nothing is ever scheduled by it). **Re-evaluate:** when upload rows are synced between
   the computers.
+
+## RISK-149 — Clips for review: a second offline answer does not count; the file is trusted between submit and play — OPEN, 2026-11-03
+
+- **Affected components:** `src/lib/clip-reviews/` (BL-241, ADR 0061).
+- **Risk:** the owner answers a clip on one computer while the other has not synced yet and answers it too: the earliest answer counts
+  on both, the later one (its comment included) stays only in the document, and the screen shows the first. The Producer may also
+  overwrite the clip's file after submitting it: the owner's player then shows the new file (the row says «Файл изменён» for a waiting
+  clip and approval is refused), but a clip already answered is not re-hashed, so its row does not say the file changed since.
+- **Mitigation:** the screen re-reads every minute and refuses a decision on a clip that is not pending here; approval re-hashes the
+  file; the plan states a reworked clip is a new submission.
+- **Gate(s):** none (nothing reaches YouTube). **Re-evaluate:** if the owner reports a lost comment, or answers start driving uploads.

@@ -1396,12 +1396,12 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
 
 - **Transport:** as the factory endpoint, with `Authorization: Bearer ytom_pr_...` (the same checks and codes; a channel or factory token is
   401 `AGENT_TOKEN_INVALID` here, and a producer token on `/api/mcp` and `/api/mcp/factory`). Re-verified on every tool call.
-- **Producer API version:** `1.12.0` (1.0.0, plus the three proposal tools in 1.1.0 (BL-163), plus `agent_get_video_milestones` and
+- **Producer API version:** `1.15.0` (1.0.0, plus the three proposal tools in 1.1.0 (BL-163), plus `agent_get_video_milestones` and
   `producer_upload_milestones` in 1.2.0 (BL-166), plus `agent_get_stored_breakdowns` in 1.3.0 (BL-168), plus `agent_get_stored_search_terms`
   in 1.4.0 (BL-169), plus `agent_get_experiment_results` and the proposal kind `experiment.link_video` in 1.5.0 (BL-170), plus
   `agent_get_video_comments` in 1.6.0 (BL-171), plus `agent_get_publishing_calendar` in 1.7.0 and its packages and uploads in 1.8.0
   (BL-182), plus `agent_get_stored_suggested_sources` in 1.9.0 (BL-191), plus the calendar uploads' `automatic` / `progressPercent` /
-  `finishedAt` in 1.10.0 (BL-209), plus `producer_live_analytics` in 1.11.0 (BL-214), and in 1.12.0 (BL-221, owner msg 3453) a sample taken while live without a viewer count counts as 0 viewers in its averages and peaks -- same shape), independent of `AGENT_API_VERSION` and the Factory API.
+  `finishedAt` in 1.10.0 (BL-209), plus `producer_live_analytics` in 1.11.0 (BL-214), and in 1.12.0 (BL-221, owner msg 3453) a sample taken while live without a viewer count counts as 0 viewers in its averages and peaks -- same shape), then `1.13.0` (BL-235, the calendar's daily coverage), `1.14.0` (BL-239, ADR 0059: the upload queue tools `producer_upload_queue_list/_add/_move/_cancel`, permission `UPLOAD_QUEUE`) and `1.15.0` (BL-241, ADR 0061: the clip review tools below; `clipReviewTools` in the capabilities, submit / withdraw in `draftTools`), independent of `AGENT_API_VERSION` and the Factory API.
 - **Channel tools** -- the channel agent's READ tools under their own names, each with the channel agent's own input and output plus a REQUIRED
   `channelId` (any channel `producer_list_channels` lists): `agent_get_channel_context` (includes the editorial profile), `channel_video_list`,
   `agent_get_video_context`, `agent_query_channel_analytics`, `agent_query_channel_breakdown` (both may read YouTube Analytics live, as for a channel
@@ -1464,6 +1464,25 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
     never marked. Decided proposals also leave 90 days after the decision; pending ones never expire.
   - These calls are logged under the `channelId` they name (null when none), and every answer to a call that names one carries
     `forChannelId`.
+- **Clip review tools (BL-241, `docs/roadmap/plans/CLIP_REVIEWS_PLAN.md`, ADR 0061).** `producer-only`; submit and withdraw are DRAFT, list and
+  get READ. Only the owner approves or returns a clip (Web UI, Контент → «Клипы»); no tool here can. Nothing reaches YouTube.
+  - `producer_clip_review_submit` `{ channelId, sceneId (1-80), clipPath, note (1-2000), startSec?, endSec? }` → `{ clip, forChannelId }`.
+    `clipPath` relative to the channel workspace (`/` between folders, no `..`, not absolute; the real path inside the workspace, a regular
+    file), `.mp4` / `.mov` / `.webm`, 30-120 s by ffprobe (±0.5 s), any size; `0 <= startSec < endSec <= duration`. Errors:
+    `CHANNEL_NOT_ACTIVE`, `clip_review_workspace_unavailable`, `clip_review_not_video`, `clip_review_file_unavailable` (`details.reason`),
+    `clip_review_probe_unavailable`, `clip_review_duration_out_of_range` (`details.durationSeconds`), `clip_review_duplicate`
+    (`details.clipId`), `clip_review_too_many_pending` (50 per channel), `validation_failed`, `operation_lock_held` / `device_in_recovery_mode`.
+  - `producer_clip_review_list` `{ channelId, status?, limit? (1-200, default 50) }` → `{ clips, pending, forChannelId }`, pending first
+    (oldest first), then the rest newest first. `producer_clip_review_get` `{ channelId, clipId }` → `{ clip, forChannelId }`
+    (`clip_review_not_found`). `producer_clip_review_withdraw` `{ channelId, clipId }` → `{ clip, forChannelId }` (a pending clip only:
+    `clip_review_not_pending`, `details.status`).
+  - A clip: `{ clipId, channelId, sceneId, clipPath, note, startSec, endSec, durationSeconds, sizeBytes, sha256, submittedAt, device,
+    status: pending | approved | returned | withdrawn, comment, decidedAt, decidedOn }`. Shared by both computers (sync family
+    `clip_reviews`); the earliest owner answer counts, a withdrawal only without one.
+- **Owner routes (Web session + active channel):** `GET /api/channels/[channelId]/clip-reviews` → `{ clips (each also `file: ok | missing |
+  changed` -- this computer's copy), waiting }`; `POST .../clip-reviews/[clipId]/decision` `{ action: approve | return, comment? }` (a return
+  needs a comment; 409 `clip_review_not_pending` / `clip_review_file_missing` / `clip_review_file_changed`); `GET .../clip-reviews/[clipId]/video`
+  (this computer's copy with HTTP Range, loopback requests only).
 - No WRITE, research or collection request, media session or job.
 
 ## API Route Handlers (selected)
