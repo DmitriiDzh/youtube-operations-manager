@@ -5105,3 +5105,21 @@ On branch `feature/bl-229-music-library`. No schema change; no YouTube call; not
   - `package-scan` clears problems once the record exists;
   - the live picker lists only existing files.
 - **Limitations:** RISK-146.
+
+## BL-241 — clips for review (ADR 0061)
+
+- **Module:** `src/lib/clip-reviews/` -- `contracts.ts` (ports, limits, views), `schemas.ts` (strict inputs; the owner's decision
+  schema needs a comment for a return), `model.ts` (pure: the deciding record, sort, video type, duration window), `services.ts`
+  (the Producer surface `submit/withdraw/list/get`, the owner surface `ownerList/decide/clipFile`), `adapters/files.ts` (the shared
+  `resolveWorkspaceFile`, `ffmpeg-host` probe, SHA-256 cached by path + size + mtime), `index.ts` (production wiring, one lock per
+  process).
+- **Store:** sync family `clip_reviews` (`sync-gateway/clip-reviews`, `-sync`): one Automerge document per channel, fixed genesis
+  actor, flat maps `clips` (written once) and `decisions` (fresh ids). The status is derived on read: the earliest owner decision
+  (time, then id), else the earliest Producer withdrawal, else pending -- so concurrent offline answers merge to one result.
+- **Checks:** submit -- mutation gate, channel connected here, workspace set, extension, the real path inside the workspace, 5–300 s
+  (±0.5), range within the clip, duplicate pending path, 50 pending. Decide -- the clip pending here; approve also needs this
+  computer's file to match the stored size and SHA-256. The video route re-resolves the path and streams with
+  `local-file-response` to loopback requests only.
+- **Surfaces:** Producer API 1.15.0 (`session-deps.ts` wires `createClipReviewsProducerCore`); owner routes under
+  `/api/channels/[channelId]/clip-reviews` (the only callers of `createClipReviewsOwnerCore`, pinned by a source scan).
+- **Limitations:** RISK-149.

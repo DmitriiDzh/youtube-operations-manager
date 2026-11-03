@@ -23,7 +23,7 @@ import {
 import { createAgentTokenServices } from "@/lib/agent-tokens/services";
 import { DomainError } from "@/lib/shared-domain";
 import { createMcpServer, type ProducerSession } from "@/mcp/server";
-import { PRODUCER_API_VERSION, PRODUCER_CHANNEL_TOOLS, PRODUCER_DRAFT_CHANNEL_TOOLS, PRODUCER_DRAFT_TOOLS, PRODUCER_TOOL_NAMES, PRODUCER_UPLOAD_QUEUE_TOOLS } from "@/mcp/producer-tools";
+import { PRODUCER_API_VERSION, PRODUCER_CHANNEL_TOOLS, PRODUCER_CLIP_REVIEW_TOOLS, PRODUCER_DRAFT_CHANNEL_TOOLS, PRODUCER_DRAFT_TOOLS, PRODUCER_TOOL_NAMES, PRODUCER_UPLOAD_QUEUE_TOOLS } from "@/mcp/producer-tools";
 import { MCP_TOOL_CLASSIFICATION } from "@/mcp/tool-classification";
 import { createProducerMcpEndpoint, type ProducerRefusedCall } from "./index";
 
@@ -87,6 +87,7 @@ function setup(initial: { enabled?: boolean } = {}) {
   const refused: ProducerRefusedCall[] = [];
   const proposalCalls: Array<[string, Record<string, unknown>]> = [];
   const queueCalls: Array<[string, Record<string, unknown>]> = [];
+  const clipCalls: Array<[string, Record<string, unknown>]> = [];
   const endpoint = createProducerMcpEndpoint({
     isConnectionEnabled: async () => state.enabled,
     verifyToken: (token) => tokens.verifyToken(token),
@@ -145,11 +146,21 @@ function setup(initial: { enabled?: boolean } = {}) {
             return { uploadId: input.uploadId, channelId: input.channelId, status: "cancelled" };
           },
         },
+        clipReviews: {
+          submit: async (input) => {
+            clipCalls.push(["submit", input]);
+            if (input.clipPath === "../outside.mp4") throw new DomainError({ code: "clip_review_file_unavailable", message: "outside" });
+            return { clip: { clipId: "clip_1", channelId: input.channelId, status: "pending" } };
+          },
+          withdraw: async (input) => (clipCalls.push(["withdraw", input]), { clip: { clipId: input.clipId, status: "withdrawn" } }),
+          list: async (input) => (clipCalls.push(["list", input]), { clips: [], pending: 0 }),
+          get: async (input) => (clipCalls.push(["get", input]), { clip: { clipId: input.clipId, status: "returned", comment: "darker" } }),
+        },
       };
       return createMcpServer(undefined, { connectionEnabled: true, producerSession });
     },
   });
-  return { endpoint, tokens, state, calls, refused, proposalCalls, queueCalls };
+  return { endpoint, tokens, state, calls, refused, proposalCalls, queueCalls, clipCalls };
 }
 
 function rpc(body: unknown, headers: Record<string, string> = {}, method = "POST"): Request {
@@ -738,7 +749,9 @@ test("AC-PR-07 / AC-PR-10: the Producer's own tools -- its channels with their f
   assert.ok(PRODUCER_TOOL_NAMES.includes("producer_live_analytics"));
   // BL-239 (owner msgs 3928/3930, ADR 0059 -- the requirement changed: the Producer now controls the upload queue): 1.14.0 adds the
   // four UPLOAD_QUEUE tools, so the permissions are READ, DRAFT and UPLOAD_QUEUE; the DRAFT list is unchanged.
-  assert.equal(PRODUCER_API_VERSION, "1.14.0"); // 1.13.0 (BL-235): the calendar read's due / gapDates from the daily coverage, published_pending; 1.12.0 (BL-221): a live sample without a count is 0 viewers; 1.10.0 (BL-209): the calendar read's uploads gain automatic / progressPercent / finishedAt; 1.8.0 (BL-182 stage 2): the calendar read lists packages and uploads
+  // BL-241 (owner msgs 4010/4011, ADR 0061 -- the requirement changed: the Producer submits clips for the owner's review): 1.15.0
+  // adds the four clip review tools; submit and withdraw are DRAFT (a request the owner decides), so the DRAFT list gains them.
+  assert.equal(PRODUCER_API_VERSION, "1.15.0"); // 1.14.0 (BL-239): the upload queue tools; 1.13.0 (BL-235): the calendar read's due / gapDates from the daily coverage, published_pending; 1.12.0 (BL-221): a live sample without a count is 0 viewers; 1.10.0 (BL-209): the calendar read's uploads gain automatic / progressPercent / finishedAt; 1.8.0 (BL-182 stage 2): the calendar read lists packages and uploads
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_stored_suggested_sources"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_publishing_calendar"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_video_comments"));
@@ -748,8 +761,10 @@ test("AC-PR-07 / AC-PR-10: the Producer's own tools -- its channels with their f
   assert.deepEqual(capabilities.permissions, ["READ", "DRAFT", "UPLOAD_QUEUE"]);
   assert.deepEqual(capabilities.uploadQueueTools, ["producer_upload_queue_list", "producer_upload_queue_add", "producer_upload_queue_move", "producer_upload_queue_cancel"]);
   assert.deepEqual([...PRODUCER_UPLOAD_QUEUE_TOOLS], ["producer_upload_queue_list", "producer_upload_queue_add", "producer_upload_queue_move", "producer_upload_queue_cancel"]);
-  assert.deepEqual(capabilities.draftTools, ["producer_propose", "producer_mark_proposals_done", "create_experiment_proposal"]);
-  assert.deepEqual([...PRODUCER_DRAFT_TOOLS], ["producer_propose", "producer_mark_proposals_done", "create_experiment_proposal"]);
+  assert.deepEqual(capabilities.clipReviewTools, ["producer_clip_review_submit", "producer_clip_review_list", "producer_clip_review_get", "producer_clip_review_withdraw"]);
+  assert.deepEqual([...PRODUCER_CLIP_REVIEW_TOOLS], ["producer_clip_review_submit", "producer_clip_review_list", "producer_clip_review_get", "producer_clip_review_withdraw"]);
+  assert.deepEqual(capabilities.draftTools, ["producer_propose", "producer_mark_proposals_done", "create_experiment_proposal", "producer_clip_review_submit", "producer_clip_review_withdraw"]);
+  assert.deepEqual([...PRODUCER_DRAFT_TOOLS], ["producer_propose", "producer_mark_proposals_done", "create_experiment_proposal", "producer_clip_review_submit", "producer_clip_review_withdraw"]);
   assert.deepEqual([...(capabilities.tools as string[])].sort(), [...PRODUCER_TOOL_NAMES].sort());
   assert.deepEqual(calls.map((entry) => [entry.tool, entry.channelId]), [
     ["producer_list_channels", null],
@@ -784,6 +799,7 @@ test("a token revoked mid-session is refused on its next call, before any channe
       liveAnalytics: async () => ({}),
       proposals: { submit: async () => ({}), list: async () => ({}), markDone: async () => ({}) },
       uploadQueue: { list: async () => ({}), add: async () => ({}), move: async () => ({}), cancel: async () => ({}) },
+      clipReviews: { submit: async () => ({}), withdraw: async () => ({}), list: async () => ({}), get: async () => ({}) },
     },
   });
   const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<{ isError?: boolean }> }> })._registeredTools;
@@ -970,6 +986,7 @@ test("BL-163 AC-PR-05: no approve, reject or apply tool exists on any endpoint",
       liveAnalytics: async () => ({}),
       proposals: { submit: async () => ({}), list: async () => ({}), markDone: async () => ({}) },
       uploadQueue: { list: async () => ({}), add: async () => ({}), move: async () => ({}), cancel: async () => ({}) },
+      clipReviews: { submit: async () => ({}), withdraw: async () => ({}), list: async () => ({}), get: async () => ({}) },
     },
   });
   const agent = createMcpServer(undefined, { connectionEnabled: true, agentSession: { tokenId: "t", channelId: "UC_PR_X", async reverify() {} } });
@@ -1042,4 +1059,54 @@ test("BL-239 AC-UQ-11: a channel worker session never lists an upload queue tool
   const names = Object.keys((agent as unknown as { _registeredTools: Record<string, unknown> })._registeredTools);
   assert.deepEqual(names.filter((name) => /upload_queue/.test(name)), []);
   for (const tool of PRODUCER_UPLOAD_QUEUE_TOOLS) assert.equal(MCP_TOOL_CLASSIFICATION[tool], "producer-only", tool);
+});
+
+// BL-241 (docs/roadmap/plans/CLIP_REVIEWS_PLAN.md AC-CR-14; owner msgs 4010/4011; ADR 0061): the clip review tools reach only the
+// session's `clipReviews`, take strict inputs (no status or decision field), are logged under the channel they name and answer with it.
+test("BL-241 AC-CR-14: the clip review tools reach only the session's clipReviews; inputs are strict; each call is logged", async () => {
+  const { endpoint, tokens, calls, refused, clipCalls } = setup();
+  const token = (await tokens.issueToken({})).token;
+  const submitArgs = { channelId: "UC_PR_X", sceneId: "bar-night", clipPath: "03 Images/Scenes/bar-night/preview_30s.mp4", note: "slower rain", startSec: 5, endSec: 25 };
+  const submitted = await toolResult(await endpoint.handle(rpc(call("producer_clip_review_submit", submitArgs), bearer(token))));
+  assert.equal(submitted.isError, false, submitted.text);
+  assert.deepEqual(payloadOf(submitted.text), { clip: { clipId: "clip_1", channelId: "UC_PR_X", status: "pending" }, forChannelId: "UC_PR_X" });
+  const outside = await toolResult(await endpoint.handle(rpc(call("producer_clip_review_submit", { ...submitArgs, clipPath: "../outside.mp4" }), bearer(token))));
+  assert.equal((payloadOf(outside.text).error as { code: string }).code, "clip_review_file_unavailable");
+  const got = await toolResult(await endpoint.handle(rpc(call("producer_clip_review_get", { channelId: "UC_PR_Y", clipId: "clip_9" }), bearer(token))));
+  assert.deepEqual(payloadOf(got.text), { clip: { clipId: "clip_9", status: "returned", comment: "darker" }, forChannelId: "UC_PR_Y" });
+  await endpoint.handle(rpc(call("producer_clip_review_list", { channelId: "UC_PR_X", status: "pending" }), bearer(token)));
+  await endpoint.handle(rpc(call("producer_clip_review_withdraw", { channelId: "UC_PR_X", clipId: "clip_1" }), bearer(token)));
+  // Refused at input, never reaching the module: a status or decision on submit, a missing channel, a bad clip id.
+  for (const [name, args] of [
+    ["producer_clip_review_submit", { ...submitArgs, status: "approved" }],
+    ["producer_clip_review_submit", { ...submitArgs, comment: "ok" }],
+    ["producer_clip_review_submit", { sceneId: "s", clipPath: "a.mp4", note: "n" }],
+    ["producer_clip_review_get", { channelId: "UC_PR_X", clipId: "../x" }],
+    ["producer_clip_review_withdraw", { clipId: "clip_1" }],
+  ] as const) {
+    const result = await toolResult(await endpoint.handle(rpc(call(name, args), bearer(token))));
+    assert.equal(result.isError, true, `${name} ${JSON.stringify(args)}`);
+  }
+  assert.deepEqual(clipCalls, [
+    ["submit", submitArgs],
+    ["submit", { ...submitArgs, clipPath: "../outside.mp4" }],
+    ["get", { channelId: "UC_PR_Y", clipId: "clip_9" }],
+    ["list", { channelId: "UC_PR_X", status: "pending" }],
+    ["withdraw", { channelId: "UC_PR_X", clipId: "clip_1" }],
+  ]);
+  assert.deepEqual(calls.slice(0, 5).map((entry) => [entry.tool, entry.channelId, entry.outcome, entry.errorCode]), [
+    ["producer_clip_review_submit", "UC_PR_X", "ok", null],
+    ["producer_clip_review_submit", "UC_PR_X", "error", "clip_review_file_unavailable"],
+    ["producer_clip_review_get", "UC_PR_Y", "ok", null],
+    ["producer_clip_review_list", "UC_PR_X", "ok", null],
+    ["producer_clip_review_withdraw", "UC_PR_X", "ok", null],
+  ]);
+  assert.equal(refused.length, 5, "each refused input is logged as refused");
+});
+
+test("BL-241 AC-CR-14: a channel worker session never lists a clip review tool; they are producer-only", () => {
+  const agent = createMcpServer(undefined, { connectionEnabled: true, agentSession: { tokenId: "t", channelId: "UC_PR_X", async reverify() {} } });
+  const names = Object.keys((agent as unknown as { _registeredTools: Record<string, unknown> })._registeredTools);
+  assert.deepEqual(names.filter((name) => /clip_review/.test(name)), []);
+  for (const tool of PRODUCER_CLIP_REVIEW_TOOLS) assert.equal(MCP_TOOL_CLASSIFICATION[tool], "producer-only", tool);
 });

@@ -42,9 +42,11 @@ export const shell: Record<keyof typeof en, string> = {
   "tabs.content.calendar": "Календарь",
   "tabs.content.publishing": "Ролики и релизы",
   "tabs.content.weekPlan": "План недели",
+  "tabs.content.clips": "Клипы",
   "contentTabs.badge.releases": "{count, plural, one {# ролик готов} few {# ролика готовы} many {# роликов готовы} other {# ролика готовы}} к следующему шагу (пакет или загрузка)",
   "contentTabs.badge.calendar": "Запланировано меньше чем на 7 дней вперёд",
   "contentTabs.badge.weekPlan": "{count, plural, one {# слот ждёт} few {# слота ждут} many {# слотов ждут} other {# слота ждут}} вашего одобрения",
+  "contentTabs.badge.clips": "{count, plural, one {# клип ждёт} few {# клипа ждут} many {# клипов ждут} other {# клипа ждут}} вашей проверки",
   "contentTabs.badge.stream": "Эфир идёт с проблемами (здоровье по YouTube)",
   "tabs.settings.about": "О программе",
 

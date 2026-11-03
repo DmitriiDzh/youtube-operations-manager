@@ -1301,6 +1301,22 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Переключатель:** `app_settings.local_video_cleanup_settings`, на канал и компьютер, по умолчанию вкл. (сообщение владельца 3900: с первой проверки, старые загрузки не трогаются; «выкл.» владельца сохраняется), не синхронизируется. UI: карточка в Контент → Публикация (`LocalVideoCleanupCard`, своя `FeatureErrorBoundary`): переключатель с подтверждением, освобождено ГБ, ожидают, последние удаления/отказы. Маршрут `GET/PUT /api/channels/[channelId]/local-video-cleanup`; MCP-инструмента нет.
 - **Не в этом этапе:** очистка старых видео кнопкой владельца, предпросмотр `factory_cleanup_preview`, видео, загруженные не через YT Manager (вариант Б).
 
+### 2.9bg Клипы на проверку (BL-241, owner msgs 4010/4011, ADR 0061, `docs/roadmap/plans/CLIP_REVIEWS_PLAN.md`) — **IMPLEMENTED на ветке `feature/bl-241-clip-reviews`, не влито**
+
+- **Модуль:** `src/lib/clip-reviews/` (§M: без других фич, Google и сети; файлы, канал и хранилище — порты). Клип — файл, уже лежащий в
+  папке канала (путь относительно рабочей папки), проверенный общим `workspace-exchange.resolveWorkspaceFile` при отправке и при
+  показе; `.mp4/.webm`, 5–300 с по `ffmpeg-host` (±0,5 с; без ffprobe — отказ), без ограничения размера; размер и SHA-256
+  запоминаются. Не больше 50 ожидающих на канал, тот же файл дважды — `clip_review_duplicate`.
+- **Хранение:** семейство синхронизации `clip_reviews` (документ Automerge на канал, `<данные приложения>/clip-reviews-doc`, подпапка
+  Syncthing `clip-reviews`): клипы (не меняются после отправки) и решения. Статус выводится: первое решение владельца, иначе отзыв
+  Продюсера. Схема БД не меняется.
+- **Продюсер (Producer API 1.15.0):** `producer_clip_review_submit` / `_withdraw` (DRAFT), `_list` / `_get` (READ), `producer-only`.
+  Работники каналов и фабрика их не получают; одобрения и возврата нет ни в одном MCP-пути (`clip-reviews/boundaries.test.ts`).
+- **Владелец:** маршруты `/api/channels/[channelId]/clip-reviews` (+ `/[clipId]/decision`, `/[clipId]/video` — HTTP Range, только
+  loopback), сессия и активный канал, аудит решений (`clip:<clipId>`). Вкладка Контент → «Клипы» (`src/components/clip-reviews-panel.tsx`,
+  чистая часть `clip-reviews-model.ts`): компактные строки, плеер раскрывается в строке с отрезком `#t=start,end`; «Одобрить» (нужен
+  тот самый файл на этом компьютере) и «Вернуть» (комментарий обязателен) с подтверждением в строке; значок ожидающих на вкладке.
+
 ## 3. Где вносить изменения
 
 | Задача | Где |

@@ -10,6 +10,10 @@
  * this computer's upload queue with `PRODUCER_UPLOAD_QUEUE_TOOLS` (permission UPLOAD_QUEUE): it lists the queue, moves and cancels
  * queued rows of any channel, and adds a ready release package under the owner's automatic-upload switch -- private, a date only
  * from a weekly-plan slot the owner approved. Channel agents and the factory get none of them.
+ *
+ * BL-241 (owner msgs 4010/4011, ADR 0061): the Producer submits clips for review with `PRODUCER_CLIP_REVIEW_TOOLS` -- a short clip
+ * already in a channel's folder, which only the owner approves or returns in the Web UI. Submit and withdraw are DRAFT (a request the
+ * owner decides), list and get READ. Channel agents and the factory get none of them.
  */
 
 /** The Producer API's own version, independent of `AGENT_API_VERSION` and `FACTORY_API_VERSION`. */
@@ -22,7 +26,9 @@
 // covered (gapDatesTimeZone), missingTranslationDates; entries can be kind published_pending (date passed < 24 h, not synced yet).
 // 1.14.0 (BL-239, owner msgs 3928/3930, ADR 0059): the upload queue tools producer_upload_queue_list / _add / _move / _cancel and
 // the permission UPLOAD_QUEUE in producer_get_capabilities (additive).
-export const PRODUCER_API_VERSION = "1.14.0";
+// 1.15.0 (BL-241, owner msgs 4010/4011, ADR 0061): the clip review tools producer_clip_review_submit / _list / _get / _withdraw;
+// producer_get_capabilities lists clipReviewTools, and submit / withdraw join draftTools (additive).
+export const PRODUCER_API_VERSION = "1.15.0";
 
 /** The channel agent's READ tools the Producer gets; each call names its channel and runs in that channel's agent scope. */
 export const PRODUCER_CHANNEL_TOOLS: Readonly<Record<string, { capability: string }>> = Object.freeze({
@@ -95,6 +101,10 @@ export const PRODUCER_ONLY_TOOLS = [
   "producer_upload_queue_add",
   "producer_upload_queue_move",
   "producer_upload_queue_cancel",
+  "producer_clip_review_submit",
+  "producer_clip_review_list",
+  "producer_clip_review_get",
+  "producer_clip_review_withdraw",
 ] as const;
 
 /**
@@ -105,11 +115,18 @@ export const PRODUCER_ONLY_TOOLS = [
 export const PRODUCER_UPLOAD_QUEUE_TOOLS = ["producer_upload_queue_list", "producer_upload_queue_add", "producer_upload_queue_move", "producer_upload_queue_cancel"] as const;
 
 /**
+ * BL-241 (CLIP_REVIEWS_PLAN.md, ADR 0061): the Producer's clip review tools -- exactly these four, the test pins the list. Submit and
+ * withdraw store a request or take it back; only the owner approves or returns a clip, in the Web UI (no MCP path reaches that).
+ */
+export const PRODUCER_CLIP_REVIEW_TOOLS = ["producer_clip_review_submit", "producer_clip_review_list", "producer_clip_review_get", "producer_clip_review_withdraw"] as const;
+
+/**
  * BL-163 (FO-REQ-0014 §C, ADR 0034 Amendment 1): the Producer's DRAFT tools -- exactly these two, the test pins the list. They store
  * a proposal, or mark a decided one read; neither changes the watchlist or the hypotheses. Approving, rejecting and applying are
- * Web-UI-only (`agent-proposal-approval-inventory.test.ts`).
+ * Web-UI-only (`agent-proposal-approval-inventory.test.ts`). BL-241 adds the clip review submit and withdraw: a request for the owner,
+ * taken back while still pending; only the owner decides it (`clip-reviews/boundaries.test.ts`).
  */
-export const PRODUCER_DRAFT_TOOLS = ["producer_propose", "producer_mark_proposals_done", "create_experiment_proposal"] as const;
+export const PRODUCER_DRAFT_TOOLS = ["producer_propose", "producer_mark_proposals_done", "create_experiment_proposal", "producer_clip_review_submit", "producer_clip_review_withdraw"] as const;
 
 /** Every tool the Producer endpoint lists, in order. */
 export const PRODUCER_TOOL_NAMES: readonly string[] = Object.freeze([
