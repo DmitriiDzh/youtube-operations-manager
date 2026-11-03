@@ -94,15 +94,16 @@ export default function ContentLayout({ children }: { children: ReactNode }) {
         </div>
         {/* BL-225 (ADR 0051, AGENTS.md §M): the weekly plan in its own boundary -- Content works without it. */}
         <div className={tab === "week-plan" ? undefined : "hidden"}>
-          {/* BL-231 (FO-REQ-0046, AGENTS.md §M): the factory's weekly build in its own boundary -- the plan works without it. */}
-          <div className="mb-4">
+          <FeatureErrorBoundary label={t("tabs.content.weekPlan")}>
+            <WeeklyPlanPanel channelId={channel?.id ?? null} visible={tab === "week-plan"} />
+          </FeatureErrorBoundary>
+          {/* BL-231 (FO-REQ-0046, AGENTS.md §M): the factory's weekly build in its own boundary -- the plan works without it. Below
+              the plan since owner msg 4008 (2026-11-03: not in active use now). */}
+          <div className="mt-4">
             <FeatureErrorBoundary label={t("weeklyBuild.title")}>
               <WeeklyBuildCard channelId={channel?.id ?? null} visible={tab === "week-plan"} />
             </FeatureErrorBoundary>
           </div>
-          <FeatureErrorBoundary label={t("tabs.content.weekPlan")}>
-            <WeeklyPlanPanel channelId={channel?.id ?? null} visible={tab === "week-plan"} />
-          </FeatureErrorBoundary>
         </div>
         <div className={tab === "calendar" ? undefined : "hidden"}>
           <FeatureErrorBoundary label={t("tabs.content.calendar")}>
