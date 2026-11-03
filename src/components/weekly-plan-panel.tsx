@@ -11,8 +11,10 @@ import {
   defaultWeek,
   lengthLabel,
   pipelineOf,
+  replacedToPull,
   shiftWeek,
   slotsToApprove,
+  splitVetoed,
   tileCounts,
   wallParts,
   weekCoverageLine,
@@ -90,6 +92,8 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
   const [actionError, setActionError] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>("week");
   const [confirmVeto, setConfirmVeto] = useState<string | null>(null);
+  // BL-240 (A): pulled slots sit under one closed row; opening it is for this visit only.
+  const [showVetoed, setShowVetoed] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
 
   useEffect(() => setMode(readMode()), []);
@@ -182,6 +186,25 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
 
   if (!channelId) return null;
 
+  const renderRow = (slot: PlanSlotDto, number: number) =>
+    shown ? (
+      <SlotRow
+        key={slot.slotId}
+        channelId={channelId}
+        slot={slot}
+        number={number}
+        plan={shown}
+        mode={mode}
+        ownerZone={ownerZone}
+        at={at}
+        busy={busy}
+        confirming={confirmVeto === slot.slotId}
+        onAskVeto={() => setConfirmVeto(slot.slotId)}
+        onCancelVeto={() => setConfirmVeto(null)}
+        onDecide={decide}
+      />
+    ) : null;
+
   const at = (iso: string) => {
     const p = zonedParts(iso, ownerZone);
     return `${p.day} ${p.time}`;
@@ -200,6 +223,9 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
   const firstRelease = shown?.slots.find((s) => !s.vetoed);
   const vetoedCount = shown ? shown.counts.vetoed : 0;
   const units = toApprove.length * estimateUploadUnits({ playlist: true, deferredPublishAt: true });
+  const groups = shown ? splitVetoed(shown.slots) : { live: [], vetoed: [] };
+  // BL-240 (C): the old slots «Одобрить неделю» would pull because a slot it approves replaces them.
+  const weekPulls = shown ? replacedToPull(shown.slots.filter((s) => toApprove.some((a) => a.slotId === s.slotId))) : [];
   const weekCoverage = shown && coverage?.weekStart === shown.weekStart ? weekCoverageLine(coverage.value) : null;
   const dayLabel = (date: string) => new Intl.DateTimeFormat(language, { day: "numeric", month: "short", timeZone: "UTC" }).format(new Date(`${date}T00:00:00Z`));
 
@@ -281,25 +307,27 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
           {shown.slots.length === 0 ? (
             <p className="rounded-lg border border-dashed border-zinc-700 px-4 py-6 text-center text-sm text-zinc-400">{t("weekPlan.emptyPlan")}</p>
           ) : (
-            <ul className="divide-y divide-zinc-800 overflow-hidden rounded-lg border border-zinc-800">
-              {shown.slots.map((slot, index) => (
-                <SlotRow
-                  key={slot.slotId}
-                  channelId={channelId}
-                  slot={slot}
-                  number={index + 1}
-                  plan={shown}
-                  mode={mode}
-                  ownerZone={ownerZone}
-                  at={at}
-                  busy={busy}
-                  confirming={confirmVeto === slot.slotId}
-                  onAskVeto={() => setConfirmVeto(slot.slotId)}
-                  onCancelVeto={() => setConfirmVeto(null)}
-                  onDecide={decide}
-                />
-              ))}
-            </ul>
+            <div className="space-y-2">
+              {groups.live.length > 0 && (
+                <ul className="divide-y divide-zinc-800 overflow-hidden rounded-lg border border-zinc-800">
+                  {groups.live.map(({ slot, number }) => renderRow(slot, number))}
+                </ul>
+              )}
+              {groups.vetoed.length > 0 && (
+                <div className="overflow-hidden rounded-lg border border-zinc-800">
+                  <button
+                    type="button"
+                    aria-expanded={showVetoed}
+                    onClick={() => setShowVetoed((open) => !open)}
+                    className="flex w-full items-center justify-between gap-3 px-4 py-2 text-left text-sm text-zinc-400 hover:bg-zinc-800/60"
+                  >
+                    <span>{t(showVetoed ? "weekPlan.vetoedGroup.hide" : "weekPlan.vetoedGroup.show", { count: groups.vetoed.length })}</span>
+                    <span aria-hidden>{showVetoed ? "▴" : "▾"}</span>
+                  </button>
+                  {showVetoed && <ul className="divide-y divide-zinc-800 border-t border-zinc-800">{groups.vetoed.map(({ slot, number }) => renderRow(slot, number))}</ul>}
+                </div>
+              )}
+            </div>
           )}
 
           {mode === "week" && shown.slots.length > 0 && (
@@ -310,6 +338,7 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
                   : shown.state === "approved"
                     ? t("weekPlan.bar.allApproved")
                     : t("weekPlan.bar.nothing")}
+                {weekPulls.length > 0 && <span className="block text-xs text-amber-300">{t("weekPlan.bar.replaces", { slots: weekPulls.map((r) => replacedLabel(t, r)).join(", ") })}</span>}
               </p>
               <ActionButton
                 busy={busy === "week"}
@@ -326,6 +355,14 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
       )}
     </section>
   );
+}
+
+/** BL-240: a replaced (or replacing) slot as the screen names it -- its day and time in the channel's zone, and its video. */
+function replacedLabel(t: ReturnType<typeof useT>, slot: { publishAt: string | null; video: string | null; slotId: string }): string {
+  if (!slot.publishAt) return slot.slotId;
+  const wall = wallParts(slot.publishAt);
+  const when = t("weekPlan.slotDay", { weekday: t(weekdayKey(wall.weekday)), day: `${wall.day} ${wall.time}` });
+  return slot.video ? t("weekPlan.replaces.slotVideo", { when, video: slot.video }) : when;
 }
 
 function Tile({ label, value }: { label: string; value: string }) {
@@ -384,7 +421,13 @@ function SlotRow(props: {
           : t("weekPlan.slot.title", { n: props.number });
 
   let meta: { text: string; tone: string };
-  if (slot.vetoed) meta = { text: t("weekPlan.vetoed", { at: at(slot.vetoed.at) }), tone: "text-red-300/80" };
+  const replacer = slot.vetoed?.replacedBy ? plan.slots.find((s) => s.slotId === slot.vetoed!.replacedBy) : undefined;
+  if (slot.vetoed?.replacedBy)
+    meta = {
+      text: t("weekPlan.replacedBy", { slot: replacer ? replacedLabel(t, { publishAt: replacer.publishAt, video: replacer.package?.video ?? null, slotId: replacer.slotId }) : slot.vetoed.replacedBy, at: at(slot.vetoed.at) }),
+      tone: "text-red-300/80",
+    };
+  else if (slot.vetoed) meta = { text: t("weekPlan.vetoed", { at: at(slot.vetoed.at) }), tone: "text-red-300/80" };
   else if (changed && slot.changedAfterApproval) {
     const previous = slot.changedAfterApproval.previous;
     const was =
@@ -441,6 +484,11 @@ function SlotRow(props: {
             </div>
           )}
           {meta.text && <div className={`truncate text-xs ${meta.tone}`}>{meta.text}</div>}
+          {slot.replaces && !slot.vetoed && (
+            <div className="truncate text-xs text-amber-300">
+              {t(replacedToPull([slot]).length > 0 && slot.approval !== "approved" ? "weekPlan.replaces.willPull" : "weekPlan.replaces.done", { slot: replacedLabel(t, slot.replaces) })}
+            </div>
+          )}
         </div>
         <div className="col-span-2 md:col-span-1" aria-label={t("weekPlan.pipelineLabel")}>
           {pipeline ? (

@@ -1008,6 +1008,9 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   - Этап 2: пакет `yt-release-package/2` (`slotId`, `localizations`, `containsSyntheticMedia`, `thumbnails` с одной основной; 2 МБ на
     каждую обложку — при сканировании и в «Новом пакете»); схема **v110** `publishing_uploads.slot_id`; модуль-композиция
     `src/lib/publishing-plan-progress/` (скан пакетов и строки загрузок этого компьютера → статусы слотов и данные пакета на экране).
+  - BL-240 (ADR 0060): снятые слоты свёрнуты в строку «Снятые слоты: N»; агент может удалить снятый слот без загрузки (вето
+    остаётся для загрузок, id занят — `slot_id_removed`); поле слота `replacesSlotId` — одобрение владельцем нового слота тем же
+    решением снимает заменённый (`replacedBy`). Factory API 1.41.0, Agent API 4.15.0.
   - Этап 3: автозагрузка (BL-209) ставит пакет одобренного и не снятого слота с его временем, снятый пропускает (решения слотов —
     `src/composition/publishing-plan-slots.ts`); загрузчик пишет переводы пакета первым шагом после обработки общим писателем
     `src/lib/shared-video-localizations/` (вынесен из live-localizations) и ИИ-метку пакета; дата — только после переводов, обложки,
