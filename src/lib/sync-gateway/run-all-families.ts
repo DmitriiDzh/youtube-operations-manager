@@ -20,6 +20,7 @@ import { createGeminiSpendSyncRunnerForProduction } from "./gemini-spend-sync";
 import { createGeminiSettingsSyncRunnerForProduction } from "./gemini-settings-sync";
 import { createElevenlabsSpendSyncRunnerForProduction } from "./elevenlabs-spend-sync";
 import { createElevenlabsSettingsSyncRunnerForProduction } from "./elevenlabs-settings-sync";
+import { createClipReviewsSyncRunnerForProduction } from "./clip-reviews-sync";
 
 /** Runs one family's cycle and unconditionally records its outcome to `sync_family_status`
  * (2026-09-23, Merge-tab redesign) -- regardless of whether it resolved or threw, so the
@@ -50,7 +51,7 @@ async function runAndRecord<T>(
  * process-wide guard in `runAllSyncFamiliesOnce` below.
  */
 async function runAllOnce() {
-  const [changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards, mediaJobs, geminiSpend, geminiSettings, videoReservations, videoCosts, liveAnalytics, publishingPlans, elevenlabsSpend, elevenlabsSettings] = await Promise.all([
+  const [changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards, mediaJobs, geminiSpend, geminiSettings, videoReservations, videoCosts, liveAnalytics, publishingPlans, elevenlabsSpend, elevenlabsSettings, clipReviews] = await Promise.all([
     runAndRecord("change_drafts", () => createChangeDraftsSyncCoreForProduction().runSyncCycle()),
     runAndRecord("editorial_profile", () => createEditorialProfileSyncRunnerForProduction().runSyncCycle()),
     runAndRecord("ai_connections", () => createAiConnectionsCatalogSyncRunnerForProduction().runSyncCycle()),
@@ -90,8 +91,10 @@ async function runAllOnce() {
     runAndRecord("elevenlabs_spend", () => createElevenlabsSpendSyncRunnerForProduction().runSyncCycle()),
     // BL-236: the ElevenLabs character limits (one Automerge document; elevenlabs-speech applies it on its own tick).
     runAndRecord("elevenlabs_settings", () => createElevenlabsSettingsSyncRunnerForProduction().runSyncCycle()),
+    // BL-241 (ADR 0061): each channel's clips for review (the Producer's submissions, the owner's decisions), the same everywhere.
+    runAndRecord("clip_reviews", () => createClipReviewsSyncRunnerForProduction().runSyncCycle()),
   ]);
-  return { changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards, mediaJobs, geminiSpend, geminiSettings, videoReservations, videoCosts, liveAnalytics, publishingPlans, elevenlabsSpend, elevenlabsSettings };
+  return { changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards, mediaJobs, geminiSpend, geminiSettings, videoReservations, videoCosts, liveAnalytics, publishingPlans, elevenlabsSpend, elevenlabsSettings, clipReviews };
 }
 
 type AllFamiliesResult = Awaited<ReturnType<typeof runAllOnce>>;

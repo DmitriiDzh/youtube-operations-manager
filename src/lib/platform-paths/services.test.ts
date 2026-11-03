@@ -49,6 +49,9 @@ test("resolveAppPaths: Windows resolves under APPDATA", () => {
   assert.equal(result.elevenlabsSettingsDocDir, path.join(result.appDataDir, "elevenlabs-settings-doc"));
   assert.equal(result.elevenlabsSettingsSyncFallbackDir, path.join(result.appDataDir, "elevenlabs-settings-sync-local"));
   assert.equal(result.elevenlabsSettingsDiscardedBackupsDir, path.join(result.appDataDir, "elevenlabs-settings-discarded-backups"));
+  assert.equal(result.clipReviewsDocDir, path.join(result.appDataDir, "clip-reviews-doc"));
+  assert.equal(result.clipReviewsSyncFallbackDir, path.join(result.appDataDir, "clip-reviews-sync-local"));
+  assert.equal(result.clipReviewsDiscardedBackupsDir, path.join(result.appDataDir, "clip-reviews-discarded-backups"));
   assert.equal(result.liveStreamsShareDir, path.join(result.appDataDir, "live-streams-share"));
   assert.equal(result.liveStreamsSyncFallbackDir, path.join(result.appDataDir, "live-streams-sync-local"));
   assert.equal(result.aiConnectionsCatalogDiscardedBackupsDir, path.join(result.appDataDir, "ai-connections-catalog-discarded-backups"));

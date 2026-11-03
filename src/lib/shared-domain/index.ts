@@ -312,6 +312,22 @@ export type DomainErrorCode =
   | "publishing_plan_changed"
   | "publishing_plan_slot_vetoed"
   | "publishing_plan_slot_past"
+  // BL-241 (CLIP_REVIEWS_PLAN.md, ADR 0061) -- clips for review. NOT_FOUND: no such clip in the channel; NOT_PENDING: the clip is
+  // decided or withdrawn (details.status); WORKSPACE_UNAVAILABLE: no workspace folder here; FILE_UNAVAILABLE: the path is not a
+  // regular file strictly inside the workspace (details.reason); NOT_VIDEO: not .mp4/.mov/.webm; DURATION_OUT_OF_RANGE: not 30-120 s;
+  // PROBE_UNAVAILABLE: the duration cannot be measured here; TOO_MANY_PENDING / DUPLICATE: the queue's limits; FILE_MISSING /
+  // FILE_CHANGED: an approval while this computer's copy is not the submitted file.
+  | "clip_review_not_found"
+  | "clip_review_not_pending"
+  | "clip_review_workspace_unavailable"
+  | "clip_review_file_unavailable"
+  | "clip_review_not_video"
+  | "clip_review_duration_out_of_range"
+  | "clip_review_probe_unavailable"
+  | "clip_review_too_many_pending"
+  | "clip_review_duplicate"
+  | "clip_review_file_missing"
+  | "clip_review_file_changed"
   // Review #5 (BL-225): a package whose plan slot already has an upload on this computer.
   | "upload_slot_taken"
   // BL-239 (UPLOAD_QUEUE_CONTROL_PLAN.md, ADR 0059) -- the upload queue's control. NOT_FOUND: no upload with that id on this computer

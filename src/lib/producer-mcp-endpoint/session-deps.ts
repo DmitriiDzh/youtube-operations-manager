@@ -17,6 +17,7 @@ import { createReachReportsCore } from "@/lib/reach-reports";
 import { PRODUCER_API_VERSION } from "@/mcp/producer-tools";
 import { createLiveAnalyticsCore } from "@/lib/live-analytics";
 import { createUploadQueueControlCore, type SlotDecision } from "@/lib/publishing";
+import { createClipReviewsProducerCore } from "@/lib/clip-reviews";
 import type { ProducerMcpSession } from "./index";
 
 // BL-161 / BL-166: the real deps of a Producer session -- what `src/app/api/mcp/producer/route.ts` hands the MCP server. Kept here,
@@ -129,6 +130,14 @@ export function createProducerSessionDeps(
       add: async (input) => ({ ...(await queue().add(input, producer)) }),
       move: async (input) => ({ ...(await queue().move(input, producer)) }),
       cancel: async (input) => ({ ...(await queue().cancel(input, producer)) }),
+    },
+    // BL-241 (ADR 0061): the clips for review -- the module's Producer surface only (submit, withdraw, list, get); the owner's
+    // decision is reachable only from the Web UI's clip-review routes (clip-reviews/boundaries.test.ts).
+    clipReviews: {
+      submit: async (input) => ({ ...(await createClipReviewsProducerCore().submit(input, { tokenId: session.tokenId })) }),
+      withdraw: async (input) => ({ ...(await createClipReviewsProducerCore().withdraw(input)) }),
+      list: async (input) => ({ ...(await createClipReviewsProducerCore().list(input)) }),
+      get: async (input) => ({ ...(await createClipReviewsProducerCore().get(input)) }),
     },
   };
 }

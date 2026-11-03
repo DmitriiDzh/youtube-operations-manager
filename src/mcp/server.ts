@@ -92,6 +92,7 @@ import {
   PRODUCER_RENAMED_CHANNEL_FIELD,
   PRODUCER_TOOL_NAMES,
   PRODUCER_UPLOAD_QUEUE_TOOLS,
+  PRODUCER_CLIP_REVIEW_TOOLS,
 } from "./producer-tools";
 import { listProducerProposalsInputSchema, markProposalsDoneInputSchema, submitProducerProposalInputSchema } from "@/lib/agent-proposals/schemas";
 import {
@@ -514,6 +515,16 @@ export type ProducerSession = {
     move(input: { channelId: string; uploadId: string; position: number }): Promise<Record<string, unknown>>;
     cancel(input: { channelId: string; uploadId: string }): Promise<Record<string, unknown>>;
   };
+  /**
+   * BL-241 (ADR 0061): the Producer's side of the clips for review -- submit, withdraw, list, get (`session-deps.ts` wires the
+   * clip-reviews module's Producer surface; the owner's decision is reachable only from the Web UI).
+   */
+  clipReviews: {
+    submit(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+    withdraw(input: { channelId: string; clipId: string }): Promise<Record<string, unknown>>;
+    list(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+    get(input: { channelId: string; clipId: string }): Promise<Record<string, unknown>>;
+  };
 };
 
 /** A real calendar date as YYYY-MM-DD (`calendarDateSchema`, shared with the analytics module's tool inputs). */
@@ -541,6 +552,35 @@ export const producerPortfolioOverviewInputSchema = z
   .refine((input) => Date.parse(`${input.endDate}T00:00:00Z`) - Date.parse(`${input.startDate}T00:00:00Z`) <= 365 * 24 * 60 * 60_000, {
     message: "at most 366 days",
   });
+
+/**
+ * BL-241 (ADR 0061): the Producer's clip review tools' inputs. Plain shapes here (the MCP layer lists them); the clip-reviews module
+ * checks them again with its own schemas (trimming, control characters, the limits) and the rules beyond the shape.
+ */
+const producerClipChannelId = z.string().min(1).max(64).describe("The channel of the clip (one of producer_list_channels).");
+const producerClipId = z.string().regex(/^[A-Za-z0-9_-]{1,40}$/).describe("The clip's id (clipId from producer_clip_review_submit or _list).");
+export const producerClipReviewSubmitInputSchema = z
+  .object({
+    channelId: producerClipChannelId,
+    sceneId: z.string().min(1).max(80).describe("A short label of the scene, e.g. bar-night (1-80 characters); a reworked clip of the same scene uses the same label."),
+    clipPath: z
+      .string()
+      .min(1)
+      .max(500)
+      .describe("The clip's file, relative to the channel's workspace folder, '/' between folders, e.g. '03 Images/Scenes/bar-night/preview_30s.mp4'."),
+    note: z.string().min(1).max(2000).describe("What changed / what to look at (1-2000 characters)."),
+    startSec: z.number().finite().min(0).optional().describe("Optional: where the owner's player starts, in seconds."),
+    endSec: z.number().finite().min(0).optional().describe("Optional: where the owner's player stops, in seconds."),
+  })
+  .strict();
+export const producerClipReviewListInputSchema = z
+  .object({
+    channelId: producerClipChannelId,
+    status: z.enum(["pending", "approved", "returned", "withdrawn"]).optional(),
+    limit: z.number().int().min(1).max(200).optional().describe("At most this many clips (default 50)."),
+  })
+  .strict();
+export const producerClipReviewOneInputSchema = z.object({ channelId: producerClipChannelId, clipId: producerClipId }).strict();
 
 /** BL-239 (ADR 0059): the Producer's upload queue tools' inputs. */
 const producerQueueChannelId = z.string().min(1).max(64).describe("The channel of the upload (one of producer_list_channels).");
@@ -3047,7 +3087,7 @@ export function createMcpServer(
     "producer_get_capabilities",
     {
       description:
-        "The Producer role's own report: its API version, its permissions (READ; DRAFT for its proposals only; UPLOAD_QUEUE for this computer's upload queue) and the tools it can call. Every channel tool needs `channelId` -- one of producer_list_channels -- and answers with `forChannelId`. No tool here writes to YouTube or spends money by itself: the DRAFT tools (draftTools) store a proposal or mark one read, and a proposal changes nothing until the owner approves it in YT Manager; the UPLOAD_QUEUE tools (uploadQueueTools) list, order, cancel and add rows of this computer's upload queue -- the app's own uploader then uploads a queued row as private, with its identity check, and only while the owner's Live writes switch is on; a date comes only from a weekly-plan slot the owner approved.",
+        "The Producer role's own report: its API version, its permissions (READ; DRAFT for its proposals only; UPLOAD_QUEUE for this computer's upload queue) and the tools it can call. Every channel tool needs `channelId` -- one of producer_list_channels -- and answers with `forChannelId`. No tool here writes to YouTube or spends money by itself: the DRAFT tools (draftTools) store a proposal or mark one read, and a proposal changes nothing until the owner approves it in YT Manager; the UPLOAD_QUEUE tools (uploadQueueTools) list, order, cancel and add rows of this computer's upload queue -- the app's own uploader then uploads a queued row as private, with its identity check, and only while the owner's Live writes switch is on; a date comes only from a weekly-plan slot the owner approved. The clip review tools (clipReviewTools) submit a clip already in a channel's folder for the owner to watch, and read his answer: only the owner approves or returns a clip, in YT Manager.",
       inputSchema: z.object({}).strict(),
     },
     async () =>
@@ -3059,6 +3099,7 @@ export function createMcpServer(
         tools: [...PRODUCER_TOOL_NAMES],
         draftTools: [...PRODUCER_DRAFT_TOOLS],
         uploadQueueTools: [...PRODUCER_UPLOAD_QUEUE_TOOLS],
+        clipReviewTools: [...PRODUCER_CLIP_REVIEW_TOOLS],
       })
   );
 
@@ -3181,6 +3222,47 @@ export function createMcpServer(
       inputSchema: producerUploadQueueCancelInputSchema,
     },
     async (args: z.infer<typeof producerUploadQueueCancelInputSchema>) => toolSuccessResult(await producerSession!.uploadQueue.cancel(args))
+  );
+
+  // BL-241 (docs/roadmap/plans/CLIP_REVIEWS_PLAN.md, ADR 0061; owner msgs 4010/4011): clips for review. These tools reach only the
+  // session's `clipReviews` (the clip-reviews module's Producer surface); the owner's approve / return is Web-UI-only.
+  registerTool(
+    "producer_clip_review_submit",
+    {
+      description:
+        "Ask the owner to watch a short clip and approve it or send it back -- he answers in YT Manager (Контент → «Клипы»), not in Telegram. The clip must already be a file in the channel's own folder (the Factory Operator renders it there; you never write into a channel folder): `clipPath` relative to the channel's workspace folder, '/' between folders, no '..' and no absolute path, the file's real path inside the folder (a symlink out of it is refused), .mp4, .mov or .webm, 30-120 s long by ffprobe (±0.5 s), any size. Optional `startSec` / `endSec`: the part to watch (0 <= startSec < endSec <= the clip's length). Its size and SHA-256 are stored: the owner approves exactly this file, so do not overwrite it while it waits (a changed file cannot be approved). Both computers see the clip (the channel folder syncs; a computer whose copy is missing says so). Returns { clip } with status pending and forChannelId. Errors: CHANNEL_NOT_ACTIVE (not connected here), clip_review_workspace_unavailable (no workspace folder here), clip_review_not_video, clip_review_file_unavailable (details.reason: not in the folder, outside it, not a regular file, a bad path), clip_review_probe_unavailable (the length cannot be measured here), clip_review_duration_out_of_range (details.durationSeconds), clip_review_duplicate (the same file already waits: details.clipId), clip_review_too_many_pending (50 per channel), validation_failed (a bad range or text), operation_lock_held / device_in_recovery_mode. Nothing reaches YouTube.",
+      inputSchema: producerClipReviewSubmitInputSchema,
+    },
+    async (args: z.infer<typeof producerClipReviewSubmitInputSchema>) => toolSuccessResult(await producerSession!.clipReviews.submit(args))
+  );
+
+  registerTool(
+    "producer_clip_review_list",
+    {
+      description:
+        "One channel's clips for review and the owner's answers: pending first (oldest first), then the rest newest first; optional `status` filter and `limit` (default 50, at most 200). Each clip: clipId, channelId, sceneId, clipPath, note, startSec, endSec (null when not given), durationSeconds, sizeBytes, sha256, submittedAt, device (the computer it was submitted on), status (pending | approved | returned | withdrawn), comment (the owner's words: always on a return, optional on an approval; null otherwise), decidedAt, decidedOn (the computer the answer was given on). Also `pending` (how many wait). Two computers' answers merge: the first answer the owner gave counts. A local read that changes nothing.",
+      inputSchema: producerClipReviewListInputSchema,
+    },
+    async (args: z.infer<typeof producerClipReviewListInputSchema>) => toolSuccessResult(await producerSession!.clipReviews.list(args))
+  );
+
+  registerTool(
+    "producer_clip_review_get",
+    {
+      description: "One clip for review by its clipId with the owner's answer: { clip } -- clipId, channelId, sceneId, clipPath, note, startSec, endSec (null when not given), durationSeconds, sizeBytes, sha256, submittedAt, device (the computer it was submitted on), status (pending | approved | returned | withdrawn), comment (the owner's words: always on a return, optional on an approval; null otherwise), decidedAt, decidedOn (the computer the answer was given on). Errors: clip_review_not_found (no such clip in that channel), CHANNEL_NOT_ACTIVE.",
+      inputSchema: producerClipReviewOneInputSchema,
+    },
+    async (args: z.infer<typeof producerClipReviewOneInputSchema>) => toolSuccessResult(await producerSession!.clipReviews.get(args))
+  );
+
+  registerTool(
+    "producer_clip_review_withdraw",
+    {
+      description:
+        "Take back a clip that still waits for the owner (status pending): it leaves his queue (status withdrawn). A clip he already answered is never withdrawn (clip_review_not_pending, details.status). Returns { clip } and forChannelId. Errors: clip_review_not_found, clip_review_not_pending, CHANNEL_NOT_ACTIVE, operation_lock_held / device_in_recovery_mode.",
+      inputSchema: producerClipReviewOneInputSchema,
+    },
+    async (args: z.infer<typeof producerClipReviewOneInputSchema>) => toolSuccessResult(await producerSession!.clipReviews.withdraw(args))
   );
 
   registerTool(

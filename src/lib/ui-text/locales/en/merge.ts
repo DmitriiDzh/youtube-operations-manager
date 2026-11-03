@@ -21,6 +21,7 @@ export const merge = {
   "handoff.family.geminiSettings": "Gemini limits",
   "handoff.family.elevenlabsSpend": "ElevenLabs spend",
   "handoff.family.elevenlabsSettings": "ElevenLabs limits",
+  "handoff.family.clipReviews": "Clips for review",
 
   "handoff.requestFailed": "Request to {url} failed ({status})",
   "handoff.justNow": "just now",

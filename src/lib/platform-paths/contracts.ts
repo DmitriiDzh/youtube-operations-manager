@@ -126,6 +126,10 @@ export type AppPaths = {
   elevenlabsSettingsDocDir: string;
   elevenlabsSettingsSyncFallbackDir: string;
   elevenlabsSettingsDiscardedBackupsDir: string;
+  /** BL-241 (ADR 0061): the per-channel clips-for-review documents (sync-gateway `clip-reviews`). */
+  clipReviewsDocDir: string;
+  clipReviewsSyncFallbackDir: string;
+  clipReviewsDiscardedBackupsDir: string;
   /** BL-184: the per-channel storyboards documents (sync-gateway `storyboards`). */
   storyboardsDocDir: string;
   storyboardsSyncFallbackDir: string;
