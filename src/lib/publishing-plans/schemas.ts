@@ -17,6 +17,8 @@ export const planSlotInputSchema = z
     publishAt: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/),
     lengthHint: z.string().max(PUBLISHING_PLAN_LIMITS.lengthHint).nullable().optional(),
     note: z.string().max(PUBLISHING_PLAN_LIMITS.note).nullable().optional(),
+    /** BL-240 (ADR 0060): the slot this one replaces; approving this one vetoes it. */
+    replacesSlotId: slotId.nullable().optional(),
   })
   .strict();
 

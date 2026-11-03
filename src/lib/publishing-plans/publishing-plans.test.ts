@@ -348,7 +348,9 @@ test("review #3: removing a slot with a standing approval (changed since), a vet
   await h.service.save({ channelId: CH, weekStart: WEEK, slots: [tokyoSlot("s1", "2026-10-26", "19:00")] }, "worker");
   await h.service.decide(CH, WEEK, { action: "veto", slots: [{ slotId: "s2" }] }, "u1");
   const error = await h.service.save({ channelId: CH, weekStart: WEEK, removeSlotIds: ["s1", "s2"] }, "worker").then(() => null, (e: unknown) => e);
-  assert.deepEqual(refusedOf(error).map((r) => [r.slotId, r.reason]).sort(), [["s1", "slot_approved"], ["s2", "slot_vetoed"]]);
+  // BL-240 (owner, Telegram msg 3998, ADR 0060) changed the requirement for s2: a vetoed slot without an upload may now be removed
+  // (AC-WP-41), so only s1's standing approval refuses the call.
+  assert.deepEqual(refusedOf(error).map((r) => [r.slotId, r.reason]).sort(), [["s1", "slot_approved"]]);
   // A revoked approval no longer stands: the slot can go.
   const s1 = slotOf((await h.service.get({ channelId: CH, weekStart: WEEK })).plan, "s1");
   await h.service.decide(CH, WEEK, { action: "approve", slots: [{ slotId: "s1", contentHash: s1.contentHash }] }, "u1");

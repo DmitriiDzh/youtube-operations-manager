@@ -1,8 +1,8 @@
 import { parseWithSchema } from "@/lib/shared-domain";
 import type { PublishingPlanDecision, PublishingPlanMeta, PublishingPlanSlot, PublishingPlansSnapshot } from "@/lib/sync-gateway";
 import { isValidIanaTimezone } from "@/lib/zoned-time";
-import { DomainError, PUBLISHING_PLAN_LIMITS, type PlanSaveRefusal, type PlanSlotDecision, type PlanSummary, type PlanView, type PublishingPlanActor, type PublishingPlansPorts } from "./contracts";
-import { addDays, contentHashOf, contentOf, decisionStateOf, instantOf, isCalendarDate, isMonday, planViewOf } from "./model";
+import { DomainError, PUBLISHING_PLAN_LIMITS, type PlanSaveRefusal, type PlanSlotDecision, type PlanSummary, type PlanView, type PublishingPlanActor, type PublishingPlansPorts, type ReplacedSlot } from "./contracts";
+import { addDays, contentHashOf, contentOf, decisionStateOf, instantOf, isCalendarDate, isMonday, planViewOf, slotViewOf, standingVetoOf } from "./model";
 import { getPlanInputSchema, listPlansInputSchema, ownerDecisionInputSchema, PLAN_LIST_DEFAULT_LIMIT, savePlanInputSchema } from "./schemas";
 
 // BL-225 (FO-REQ-0040 items 1, 5, 6; WEEKLY_PUBLISHING_PLAN.md stage 1 items 3-5; ADR 0051): what agents and the owner may do with a
@@ -28,10 +28,34 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
     return Object.values(snapshot.decisions).filter((d) => d.weekStart === weekStart);
   }
 
+  /** BL-240: a slot of the channel by its id, in whichever week holds it (ids are unique in a channel). */
+  const findSlot = (snapshot: PublishingPlansSnapshot, slotId: string): PublishingPlanSlot | null => Object.values(snapshot.slots).find((s) => s.slotId === slotId) ?? null;
+  /** BL-240: a removed slot whose veto still stands -- its id stays vetoed for the uploads and cannot be used again. */
+  const removedVetoed = (snapshot: PublishingPlansSnapshot, slotId: string): boolean =>
+    !findSlot(snapshot, slotId) && standingVetoOf(Object.values(snapshot.decisions).filter((d) => d.slotId === slotId)) !== null;
+
+  /** BL-240: the slots the given ones replace, as they stand (their own plan, decisions and package). */
+  async function replacedOf(channelId: string, snapshot: PublishingPlansSnapshot, slotIds: string[]): Promise<Map<string, ReplacedSlot>> {
+    const out = new Map<string, ReplacedSlot>();
+    for (const slotId of new Set(slotIds)) {
+      const slot = findSlot(snapshot, slotId);
+      const meta = slot ? snapshot.plans[slot.weekStart] : undefined;
+      if (!slot || !meta) {
+        out.set(slotId, { slotId, weekStart: null, publishAt: null, video: null, vetoed: removedVetoed(snapshot, slotId), released: false, found: false });
+        continue;
+      }
+      const progress = ports.progress ? ((await ports.progress(channelId, slot.weekStart, [slotId])).get(slotId) ?? null) : null;
+      const view = slotViewOf({ meta, slot, decisions: decisionsOf(snapshot, slot.weekStart).filter((d) => d.slotId === slotId), progress, now: ports.now() });
+      out.set(slotId, { slotId, weekStart: slot.weekStart, publishAt: slot.publishAt, video: view.package?.video ?? null, vetoed: view.vetoed !== null, released: view.released, found: true });
+    }
+    return out;
+  }
+
   async function viewOf(channelId: string, snapshot: PublishingPlansSnapshot, meta: PublishingPlanMeta): Promise<PlanView> {
     const slots = slotsOf(snapshot, meta.weekStart);
     const progress = ports.progress ? await ports.progress(channelId, meta.weekStart, slots.map((s) => s.slotId)) : new Map();
-    return planViewOf({ channelId, meta, slots, decisions: decisionsOf(snapshot, meta.weekStart), progress, now: ports.now() });
+    const replaced = await replacedOf(channelId, snapshot, slots.flatMap((s) => (s.replacesSlotId ? [s.replacesSlotId] : [])));
+    return planViewOf({ channelId, meta, slots, decisions: decisionsOf(snapshot, meta.weekStart), progress, now: ports.now(), replaced });
   }
 
   async function requirePlan(channelId: string, weekStart: string): Promise<{ snapshot: PublishingPlansSnapshot; meta: PublishingPlanMeta }> {
@@ -89,11 +113,16 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
           continue;
         }
         seen.add(input.slotId);
-        const content = contentOf({ date: input.date, publishAt: input.publishAt, lengthHint: input.lengthHint ?? null, note: input.note ?? null });
+        const content = contentOf({ date: input.date, publishAt: input.publishAt, lengthHint: input.lengthHint ?? null, note: input.note ?? null, ...(input.replacesSlotId ? { replacesSlotId: input.replacesSlotId } : {}) });
         const before = current.get(input.slotId);
         // Review #2: a slot id is unique in the channel (the uploads find a slot by its id alone).
         if (!before && otherWeeksIds.has(input.slotId)) {
           refused.push({ slotId: input.slotId, field: "slots", reason: "slot_id_in_other_week" });
+          continue;
+        }
+        // BL-240: a removed vetoed slot's id keeps its veto (the uploads still stop a package naming it): never a new slot.
+        if (!before && removedVetoed(snapshot, input.slotId)) {
+          refused.push({ slotId: input.slotId, field: "slots", reason: "slot_id_removed" });
           continue;
         }
         const same = before !== undefined && contentHashOf(existing!.timeZone, contentOf(before)) === contentHashOf(timeZone, content);
@@ -119,11 +148,20 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
           refused.push({ slotId: input.slotId, field: "publishAt", reason: "in_past" });
           continue;
         }
+        if (content.replacesSlotId === input.slotId) {
+          refused.push({ slotId: input.slotId, field: "replacesSlotId", reason: "replaces_self" });
+          continue;
+        }
+        if (content.replacesSlotId && !findSlot(snapshot, content.replacesSlotId) && !(parsed.slots ?? []).some((s) => s.slotId === content.replacesSlotId)) {
+          refused.push({ slotId: input.slotId, field: "replacesSlotId", reason: "replaces_unknown" });
+          continue;
+        }
         upserts.push({ ...content, weekStart, slotId: input.slotId, createdAt: before?.createdAt ?? stamp(), updatedAt: stamp(), updatedBy: by });
         changed.push(input.slotId);
       }
 
       const removes: string[] = [];
+      const vetoedRemoves: string[] = [];
       // Review #3: what the uploads say of the slots to remove (a slot whose video is on YouTube stays).
       const toRemove = [...new Set(parsed.removeSlotIds ?? [])];
       const uploads = toRemove.length > 0 && ports.progress ? await ports.progress(channelId, weekStart, toRemove) : new Map();
@@ -131,10 +169,18 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
         const slot = current.get(slotId);
         const state = slot && existing ? decisionStateOf(decisionsFor(slotId), contentHashOf(existing.timeZone, contentOf(slot))) : null;
         const upload = uploads.get(slotId);
+        const uploaded = Boolean(upload && (upload.videoId || ["uploading", "scheduled", "published"].includes(upload.status)));
         if (!slot) refused.push({ slotId, field: "removeSlotIds", reason: "unknown_slot" });
-        else if (state && (state.approved || state.superseded)) refused.push({ slotId, field: "removeSlotIds", reason: "slot_approved" });
-        else if (state?.vetoed) refused.push({ slotId, field: "removeSlotIds", reason: "slot_vetoed" });
-        else if (upload && (upload.videoId || ["uploading", "scheduled", "published"].includes(upload.status))) refused.push({ slotId, field: "removeSlotIds", reason: "slot_uploaded" });
+        else if (state?.vetoed) {
+          // BL-240 (ADR 0060): a vetoed slot may go, also one approved before the veto -- unless its video is on YouTube.
+          if (uploaded) refused.push({ slotId, field: "removeSlotIds", reason: "slot_uploaded" });
+          else if (seen.has(slotId)) refused.push({ slotId, field: "removeSlotIds", reason: "duplicate_slot" });
+          else {
+            removes.push(slotId);
+            vetoedRemoves.push(slotId);
+          }
+        } else if (state && (state.approved || state.superseded)) refused.push({ slotId, field: "removeSlotIds", reason: "slot_approved" });
+        else if (uploaded) refused.push({ slotId, field: "removeSlotIds", reason: "slot_uploaded" });
         else if (seen.has(slotId)) refused.push({ slotId, field: "removeSlotIds", reason: "duplicate_slot" });
         else removes.push(slotId);
       }
@@ -169,6 +215,9 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
         upserts,
         removes,
       });
+      for (const slotId of vetoedRemoves) {
+        await ports.audit({ channelId, weekStart, slotId, detail: { event: "publishing_plan.vetoed_slot_removed", at, weekStart, slotId, by } });
+      }
       const after = await requirePlan(channelId, weekStart);
       return { plan: await viewOf(channelId, after.snapshot, after.meta), changed, unlocked, removed: removes };
     });
@@ -192,7 +241,7 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
    * vetoed and not released -- or nothing is approved. Revoke: the slot is approved with the content shown. Veto / restore: the
    * slot exists and is not released. A decision that changes nothing writes nothing.
    */
-  async function decide(channelId: string, weekStart: string, input: unknown, userId: string): Promise<{ plan: PlanView; decided: string[] }> {
+  async function decide(channelId: string, weekStart: string, input: unknown, userId: string): Promise<{ plan: PlanView; decided: string[]; replacedVetoed: string[] }> {
     const { action, slots } = parseWithSchema(ownerDecisionInputSchema, input, "decision");
     return ports.withLock(async () => {
       const { snapshot, meta } = await requirePlan(channelId, weekStart);
@@ -213,6 +262,7 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
         targets.push(slot);
       }
       const kind = ({ approve: "approved", revoke: "revoked", veto: "vetoed", restore: "restored" } as const)[action];
+      const replacedVetoed: string[] = [];
       const effective = targets.filter((slot) =>
         action === "approve" ? slot.approval !== "approved" : action === "revoke" ? true : action === "veto" ? !slot.vetoed : Boolean(slot.vetoed)
       );
@@ -228,12 +278,41 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
           slotId: slot.slotId,
           kind,
           contentHash: slot.contentHash,
-          snapshot: { date: slot.date, publishAt: slot.publishAt, lengthHint: slot.lengthHint, note: slot.note, timeZone: meta.timeZone },
+          snapshot: { ...contentOf(slot), timeZone: meta.timeZone },
           by: "owner",
           device,
           at,
         }));
-        await ports.store.addDecisions(channelId, records);
+        // BL-240 (ADR 0060): approving a slot that replaces another vetoes that one in the same decision -- unless it is already
+        // vetoed, released or gone. It is the owner's own veto (restorable), recorded with the slot that replaced it.
+        const implied: Array<{ record: PublishingPlanDecision; publishAtUtc: string }> = [];
+        if (action === "approve") {
+          for (const slot of effective) {
+            const target = slot.replaces;
+            if (!target?.found || target.vetoed || target.released || implied.some((i) => i.record.slotId === target.slotId)) continue;
+            const targetSlot = findSlot(snapshot, target.slotId);
+            const targetMeta = targetSlot ? snapshot.plans[targetSlot.weekStart] : undefined;
+            if (!targetSlot || !targetMeta) continue;
+            const content = contentOf(targetSlot);
+            implied.push({
+              record: {
+                seq,
+                id: `pd_${ports.randomId()}`.slice(0, 40),
+                weekStart: targetSlot.weekStart,
+                slotId: targetSlot.slotId,
+                kind: "vetoed",
+                contentHash: contentHashOf(targetMeta.timeZone, content),
+                snapshot: { ...content, timeZone: targetMeta.timeZone },
+                by: "owner",
+                device,
+                at,
+                replacedBy: slot.slotId,
+              },
+              publishAtUtc: (instantOf(targetSlot.publishAt, targetMeta.timeZone) ?? new Date(0)).toISOString(),
+            });
+          }
+        }
+        await ports.store.addDecisions(channelId, [...records, ...implied.map((i) => i.record)]);
         for (const record of records) {
           const slot = byId.get(record.slotId)!;
           await ports.audit({
@@ -243,9 +322,18 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
             detail: { event: `publishing_plan.${kind}`, at, decisionId: record.id, weekStart, slotId: record.slotId, contentHash: record.contentHash, publishAt: slot.publishAt, timeZone: meta.timeZone, publishAtUtc: slot.publishAtUtc, by: userId, device },
           });
         }
+        for (const { record, publishAtUtc } of implied) {
+          await ports.audit({
+            channelId,
+            weekStart: record.weekStart,
+            slotId: record.slotId,
+            detail: { event: "publishing_plan.vetoed", at, decisionId: record.id, weekStart: record.weekStart, slotId: record.slotId, contentHash: record.contentHash, publishAt: record.snapshot.publishAt, timeZone: record.snapshot.timeZone, publishAtUtc, by: userId, device, replacedBy: record.replacedBy },
+          });
+        }
+        replacedVetoed.push(...implied.map((i) => i.record.slotId));
       }
       const after = await requirePlan(channelId, weekStart);
-      return { plan: await viewOf(channelId, after.snapshot, after.meta), decided: effective.map((s) => s.slotId) };
+      return { plan: await viewOf(channelId, after.snapshot, after.meta), decided: effective.map((s) => s.slotId), replacedVetoed };
     });
   }
 
@@ -272,6 +360,10 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
           slot.released ? { kind: "pending" } : slot.vetoed ? { kind: "vetoed" } : slot.approval === "approved" ? { kind: "approved", publishAt: slot.publishAtUtc } : { kind: "pending" }
         );
       }
+    }
+    // BL-240 (ADR 0060): a vetoed slot an agent removed stays vetoed -- a package that still names it is never uploaded.
+    for (const slotId of new Set(Object.values(snapshot.decisions).map((d) => d.slotId))) {
+      if (!decisions.has(slotId) && removedVetoed(snapshot, slotId)) decisions.set(slotId, { kind: "vetoed" });
     }
     return decisions;
   }

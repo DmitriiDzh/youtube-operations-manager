@@ -29,6 +29,11 @@ export type PublishingPlanSlotContent = {
   publishAt: string;
   lengthHint: string | null;
   note: string | null;
+  /**
+   * BL-240 (ADR 0060): the slot this one replaces (a slot id of the same channel, any week). Present only when set: a slot written
+   * before this field, or by a computer without it, has none.
+   */
+  replacesSlotId?: string;
 };
 
 export type PublishingPlanSlot = PublishingPlanSlotContent & {
@@ -60,6 +65,8 @@ export type PublishingPlanDecision = {
    * before this field (it orders as 0).
    */
   seq?: number;
+  /** BL-240 (ADR 0060): on a `vetoed` record written by the owner's approval of the slot that replaces this one: that slot's id. */
+  replacedBy?: string;
 };
 
 export type PublishingPlansDocument = {
