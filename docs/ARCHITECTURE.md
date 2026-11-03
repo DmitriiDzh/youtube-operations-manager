@@ -5116,7 +5116,7 @@ On branch `feature/bl-229-music-library`. No schema change; no YouTube call; not
 - **Store:** sync family `clip_reviews` (`sync-gateway/clip-reviews`, `-sync`): one Automerge document per channel, fixed genesis
   actor, flat maps `clips` (written once) and `decisions` (fresh ids). The status is derived on read: the earliest owner decision
   (time, then id), else the earliest Producer withdrawal, else pending -- so concurrent offline answers merge to one result.
-- **Checks:** submit -- mutation gate, channel connected here, workspace set, extension, the real path inside the workspace, 30–120 s
+- **Checks:** submit -- mutation gate, channel connected here, workspace set, extension, the real path inside the workspace, 5–300 s
   (±0.5), range within the clip, duplicate pending path, 50 pending. Decide -- the clip pending here; approve also needs this
   computer's file to match the stored size and SHA-256. The video route re-resolves the path and streams with
   `local-file-response` to loopback requests only.

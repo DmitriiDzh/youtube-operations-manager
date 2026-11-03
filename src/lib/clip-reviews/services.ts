@@ -66,7 +66,7 @@ export function createClipReviewsService(ports: ClipReviewsPorts) {
     await assertChannel(channelId);
     const workspace = await requireWorkspace(channelId);
     if (!clipVideoTypeOf(clipPath)) {
-      throw new DomainError({ code: "clip_review_not_video", message: "A clip is an .mp4, .mov or .webm file", details: { clipPath } });
+      throw new DomainError({ code: "clip_review_not_video", message: "A clip is an .mp4 or .webm file", details: { clipPath } });
     }
     const resolved = await ports.resolveFile(workspace, clipPath);
     if (!resolved.ok) throw new DomainError({ code: "clip_review_file_unavailable", message: `The clip file cannot be used: ${resolved.reason}`, details: { clipPath, reason: resolved.reason } });

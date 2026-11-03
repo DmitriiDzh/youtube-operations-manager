@@ -8,7 +8,7 @@ these tools only; ADR 0051's shared-document pattern is reused.
 
 ## Context
 
-The Producer asks the owner to look at short scene-loop clips (30–120 s, often over 50 MB) the Factory Operator rendered into the
+The Producer asks the owner to look at short scene-loop clips (15 s to a few minutes, often over 50 MB) the Factory Operator rendered into the
 channel's folder, and today the owner answers in Telegram. The owner wants the queue in the app: watch the clip, approve or send
 it back with a comment, on either of his two computers (the channel folder syncs to both by Syncthing).
 
@@ -22,7 +22,7 @@ it back with a comment, on either of his two computers (the channel folder syncs
    `producer_clip_review_get` (READ). Channel worker agents and the factory get none.
 3. **The clip is a file already in the channel folder**, named relative to the workspace root and resolved with the shared
    `workspace-exchange.resolveWorkspaceFile` (no `..`, no absolute path, the real path strictly inside the real workspace, a regular
-   file) at submit and again whenever it is served. Only `.mp4`, `.mov`, `.webm`; 30–120 s by ffprobe (±0.5 s), refused when it
+   file) at submit and again whenever it is served. Only `.mp4`, `.webm`; 5–300 s by ffprobe (±0.5 s), refused when it
    cannot be measured (fail closed); no size cap. The size and SHA-256 are stored: the owner approves exactly that file.
 4. **Only the owner decides**, in Контент → «Клипы» (Web session, active channel): approve (comment optional) or return (comment
    required), confirmed in the row. Approval needs this computer's file to be the submitted one. A decision on a clip that is no

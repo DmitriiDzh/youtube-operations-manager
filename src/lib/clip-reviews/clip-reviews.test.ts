@@ -95,17 +95,17 @@ test("AC-CR-01: a 30 s mp4 inside the workspace becomes a pending clip with its 
 
 test("AC-CR-04: a non-video extension is refused before the file is looked at; a missing file is refused", async () => {
   const { service, store } = setup({ files: { "a.txt": { bytes: 1, sha: SHA, duration: 30 }, "b.png": { bytes: 1, sha: SHA, duration: 30 }, "c.mkv": { bytes: 1, sha: SHA, duration: 30 } } });
-  for (const clipPath of ["a.txt", "b.png", "c.mkv"]) await refused(service.submit(submitInput({ clipPath }), producer), "clip_review_not_video");
+  for (const clipPath of ["a.txt", "b.png", "c.mkv", "d.mov"]) await refused(service.submit(submitInput({ clipPath }), producer), "clip_review_not_video");
   await refused(service.submit(submitInput({ clipPath: "03 Images/missing.mp4" }), producer), "clip_review_file_unavailable");
   assert.deepEqual((await store.read(CH)).clips, {});
 });
 
-test("AC-CR-05: 29 s and 121 s are refused, 29.6 s and 120.4 s accepted; no ffprobe is probe_unavailable; a bad range is validation_failed", async () => {
+test("AC-CR-05: 4 s and 301 s are refused, 4.6 s and 300.4 s accepted (range widened before merge: 15-20 s loop previews); no ffprobe is probe_unavailable; a bad range is validation_failed", async () => {
   const f = (duration: number | null): FakeFile => ({ bytes: 10, sha: SHA, duration });
-  const { service } = setup({ files: { "s29.mp4": f(29), "s121.mp4": f(121), "s29_6.mov": f(29.6), "s120_4.webm": f(120.4), "none.mp4": f(null), "s60.mp4": f(60) } });
-  for (const clipPath of ["s29.mp4", "s121.mp4"]) await refused(service.submit(submitInput({ clipPath }), producer), "clip_review_duration_out_of_range");
-  assert.equal((await service.submit(submitInput({ clipPath: "s29_6.mov" }), producer)).clip.status, "pending");
-  assert.equal((await service.submit(submitInput({ clipPath: "s120_4.webm" }), producer)).clip.durationSeconds, 120.4);
+  const { service } = setup({ files: { "s4.mp4": f(4), "s301.mp4": f(301), "s4_6.mp4": f(4.6), "s300_4.webm": f(300.4), "none.mp4": f(null), "s60.mp4": f(60) } });
+  for (const clipPath of ["s4.mp4", "s301.mp4"]) await refused(service.submit(submitInput({ clipPath }), producer), "clip_review_duration_out_of_range");
+  assert.equal((await service.submit(submitInput({ clipPath: "s4_6.mp4" }), producer)).clip.status, "pending");
+  assert.equal((await service.submit(submitInput({ clipPath: "s300_4.webm" }), producer)).clip.durationSeconds, 300.4);
   await refused(service.submit(submitInput({ clipPath: "none.mp4" }), producer), "clip_review_probe_unavailable");
   for (const range of [{ startSec: 20, endSec: 20 }, { startSec: 30, endSec: 10 }, { endSec: 61 }, { startSec: 60 }, { endSec: 0 }]) {
     await refused(service.submit(submitInput({ clipPath: "s60.mp4", ...range }), producer), "validation_failed");

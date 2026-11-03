@@ -57,7 +57,7 @@ export function clipVideoTypeOf(filePath: string): string | null {
   return CLIP_VIDEO_TYPES[path.extname(filePath).toLowerCase()] ?? null;
 }
 
-/** Whether a measured duration is a clip's length (30-120 s, with the tolerance). */
+/** Whether a measured duration is a clip's length (5-300 s, with the tolerance). */
 export function durationAccepted(seconds: number, limits: { minSeconds: number; maxSeconds: number; toleranceSeconds: number }): boolean {
   return seconds >= limits.minSeconds - limits.toleranceSeconds && seconds <= limits.maxSeconds + limits.toleranceSeconds;
 }

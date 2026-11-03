@@ -1468,7 +1468,7 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
   get READ. Only the owner approves or returns a clip (Web UI, Контент → «Клипы»); no tool here can. Nothing reaches YouTube.
   - `producer_clip_review_submit` `{ channelId, sceneId (1-80), clipPath, note (1-2000), startSec?, endSec? }` → `{ clip, forChannelId }`.
     `clipPath` relative to the channel workspace (`/` between folders, no `..`, not absolute; the real path inside the workspace, a regular
-    file), `.mp4` / `.mov` / `.webm`, 30-120 s by ffprobe (±0.5 s), any size; `0 <= startSec < endSec <= duration`. Errors:
+    file), `.mp4` / `.webm`, 5-300 s by ffprobe (±0.5 s), any size; `0 <= startSec < endSec <= duration`. Errors:
     `CHANNEL_NOT_ACTIVE`, `clip_review_workspace_unavailable`, `clip_review_not_video`, `clip_review_file_unavailable` (`details.reason`),
     `clip_review_probe_unavailable`, `clip_review_duration_out_of_range` (`details.durationSeconds`), `clip_review_duplicate`
     (`details.clipId`), `clip_review_too_many_pending` (50 per channel), `validation_failed`, `operation_lock_held` / `device_in_recovery_mode`.

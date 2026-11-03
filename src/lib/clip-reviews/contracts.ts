@@ -15,8 +15,9 @@ export const CLIP_REVIEW_LIMITS = Object.freeze({
   clipPath: 500,
   /** Pending clips per channel at most. */
   pending: 50,
-  minSeconds: 30,
-  maxSeconds: 120,
+  // Owner/Producer 2026-11-03: loop previews are 15-20 s, renders up to 2 min; the range is wide on purpose.
+  minSeconds: 5,
+  maxSeconds: 300,
   /** A rendered "30 s" preview may measure 29.97 s. */
   toleranceSeconds: 0.5,
   listDefault: 50,
@@ -24,7 +25,7 @@ export const CLIP_REVIEW_LIMITS = Object.freeze({
 });
 
 /** The video kinds a clip may be, by extension, with the type the browser is told. */
-export const CLIP_VIDEO_TYPES: Readonly<Record<string, string>> = Object.freeze({ ".mp4": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm" });
+export const CLIP_VIDEO_TYPES: Readonly<Record<string, string>> = Object.freeze({ ".mp4": "video/mp4", ".webm": "video/webm" });
 
 export type ClipReviewStatus = "pending" | "approved" | "returned" | "withdrawn";
 

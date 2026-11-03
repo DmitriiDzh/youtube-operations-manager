@@ -19,8 +19,8 @@ Sources:
    - `clipPath` is resolved with the shared `workspace-exchange.resolveWorkspaceFile`: relative, `/` between folders, no empty /
      `.` / `..` segment, not absolute; its REAL path (symlinks resolved) strictly inside the workspace's real path, a regular file
      (`clip_review_file_unavailable`, details.reason);
-   - extension `.mp4`, `.mov` or `.webm` only (`clip_review_not_video`);
-   - duration from ffprobe (the shared `ffmpeg-host`) between 30 and 120 seconds, with 0.5 s tolerance either side
+   - extension `.mp4` or `.webm` only (`.mov` dropped before merge: Chrome often cannot play `video/quicktime`) (`clip_review_not_video`);
+   - duration from ffprobe (the shared `ffmpeg-host`) between 5 and 300 seconds (widened before merge: the Producer's loop previews are 15–20 s), with 0.5 s tolerance either side
      (`clip_review_duration_out_of_range`, details.durationSeconds); no ffprobe here or an unreadable duration is refused
      (`clip_review_probe_unavailable`) -- fail closed. No size cap (a 100 MB file is fine);
    - `startSec` / `endSec` optional, both or one: `0 <= startSec < endSec <= duration` (`validation_failed`);
@@ -58,7 +58,7 @@ Sources:
 
 ## Acceptance criteria
 
-- **AC-CR-01** A submit naming an mp4 of 30–120 s inside the channel's workspace stores a pending clip with its size and SHA-256;
+- **AC-CR-01** A submit naming an mp4 of 5–300 s inside the channel's workspace stores a pending clip with its size and SHA-256;
   get/list return it with status `pending`, `comment: null`, `decidedAt: null`.
 - **AC-CR-02** A `clipPath` with a `..` segment, an absolute path, or a backslash is refused (`clip_review_file_unavailable`);
   nothing is stored.
@@ -66,7 +66,7 @@ Sources:
   and when the owner's route serves it (404).
 - **AC-CR-04** A non-video extension (`.txt`, `.png`, `.mkv`) is refused (`clip_review_not_video`); a missing file is refused
   (`clip_review_file_unavailable`).
-- **AC-CR-05** A duration of 29 s or 121 s is refused (`clip_review_duration_out_of_range`); 29.6 s and 120.4 s are accepted; no
+- **AC-CR-05** A duration of 4 s or 301 s is refused (`clip_review_duration_out_of_range`); 4.6 s and 300.4 s are accepted; no
   ffprobe is `clip_review_probe_unavailable`. `startSec >= endSec` or `endSec > duration` is `validation_failed`.
 - **AC-CR-06** A channel not connected on this computer is `CHANNEL_NOT_ACTIVE`; a channel without a workspace folder here is
   `clip_review_workspace_unavailable`. A clip id of channel A asked under channel B is `clip_review_not_found`.
