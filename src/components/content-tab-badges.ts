@@ -15,17 +15,20 @@ export type ContentTabBadges = {
   streamTrouble: boolean;
   /** BL-225: «План недели» -- the future, not vetoed slots of the channel's plans that wait for the owner's approval. */
   weekPlan: number;
+  /** BL-241: «Клипы» -- the channel's clips that wait for the owner's approval or return. */
+  clips: number;
 };
 
-const NONE: ContentTabBadges = { releases: 0, calendarDue: false, streamTrouble: false, weekPlan: 0 };
+const NONE: ContentTabBadges = { releases: 0, calendarDue: false, streamTrouble: false, weekPlan: 0, clips: 0 };
 const TROUBLE = new Set(["bad", "noData", "revoked"]);
 
-/** Pure: the badges from the four reads (each null when it failed; BL-225 added the plans). */
+/** Pure: the badges from the reads (each null when it failed; BL-225 added the plans, BL-241 the clips). */
 export function contentTabBadges(input: {
   projects: { videos: Array<PipelineProject> } | null;
   calendar: { lastSyncedAt: string | null; coverage: { due: boolean } } | null;
   live: { stream: { intent: string } | null; youtube: { lifeCycleStatus: string | null; healthStatus: string | null } | null } | null;
   plans?: { waiting: number } | null;
+  clips?: { waiting: number } | null;
 }): ContentTabBadges {
   const releases = (input.projects?.videos ?? []).filter((v) => {
     const phase = pipelinePhase(v, null);
@@ -35,7 +38,8 @@ export function contentTabBadges(input: {
   const yt = input.live?.youtube ?? null;
   const streamTrouble = input.live?.stream?.intent === "on" && yt?.lifeCycleStatus === "live" && TROUBLE.has(yt.healthStatus ?? "");
   const weekPlan = Math.max(0, input.plans?.waiting ?? 0);
-  return { releases, calendarDue, streamTrouble, weekPlan };
+  const clips = Math.max(0, input.clips?.waiting ?? 0);
+  return { releases, calendarDue, streamTrouble, weekPlan, clips };
 }
 
 async function getJson<T>(url: string): Promise<T | null> {
@@ -61,8 +65,9 @@ export function useContentTabBadges(channelId: string | null): ContentTabBadges 
         getJson<{ lastSyncedAt: string | null; coverage: { due: boolean } }>(`${base}/publishing/calendar`),
         getJson<{ stream: { intent: string } | null; youtube: { lifeCycleStatus: string | null; healthStatus: string | null } | null }>(`${base}/live-stream`),
         getJson<{ waiting: number }>(`${base}/publishing-plans`),
-      ]).then(([projects, calendar, live, plans]) => {
-        if (!cancelled) setBadges({ ...contentTabBadges({ projects, calendar, live, plans }), channelId });
+        getJson<{ waiting: number }>(`${base}/clip-reviews`),
+      ]).then(([projects, calendar, live, plans, clips]) => {
+        if (!cancelled) setBadges({ ...contentTabBadges({ projects, calendar, live, plans, clips }), channelId });
       });
     };
     read();

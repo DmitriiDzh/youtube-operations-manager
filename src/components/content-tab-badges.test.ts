@@ -19,8 +19,8 @@ test("BL-221: «Ролики и релизы» counts the numbers whose video or
     calendar: null,
     live: null,
   });
-  // BL-225 added the «План недели» count (no plans read here: 0).
-  assert.deepEqual(badges, { releases: 2, calendarDue: false, streamTrouble: false, weekPlan: 0 });
+  // BL-225 added the «План недели» count, BL-241 the «Клипы» count (neither read here: 0).
+  assert.deepEqual(badges, { releases: 2, calendarDue: false, streamTrouble: false, weekPlan: 0, clips: 0 });
 });
 
 test("BL-221: the calendar badge needs a synced channel that is due; the stream badge needs a live broadcast in trouble", () => {
@@ -40,4 +40,11 @@ test("BL-225: the week-plan badge is the plans' waiting count; a failed read giv
   assert.equal(contentTabBadges({ projects: null, calendar: null, live: null, plans: { waiting: 6 } }).weekPlan, 6);
   assert.equal(contentTabBadges({ projects: null, calendar: null, live: null, plans: null }).weekPlan, 0);
   assert.equal(contentTabBadges({ projects: null, calendar: null, live: null }).weekPlan, 0);
+});
+
+// BL-241 (CLIP_REVIEWS_PLAN.md AC-CR-15): «Клипы» shows how many clips wait for the owner; a failed read shows no badge.
+test("BL-241: the clips badge is the clips' waiting count; a failed read gives none", () => {
+  assert.equal(contentTabBadges({ projects: null, calendar: null, live: null, clips: { waiting: 3 } }).clips, 3);
+  assert.equal(contentTabBadges({ projects: null, calendar: null, live: null, clips: null }).clips, 0);
+  assert.equal(contentTabBadges({ projects: null, calendar: null, live: null, plans: { waiting: 2 } }).clips, 0);
 });
