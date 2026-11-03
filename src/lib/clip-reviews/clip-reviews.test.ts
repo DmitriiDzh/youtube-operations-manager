@@ -172,7 +172,9 @@ test("AC-CR-08: approval needs this computer's file to be the submitted one; a r
   files["b.mp4"] = { bytes: 101, sha: SHA, duration: 30 }; // another size
   delete files["c.mp4"];
   const listed = Object.fromEntries((await service.ownerList(CH)).clips.map((clip) => [clip.clipId, clip.file]));
-  assert.deepEqual(listed, { [a.clipId]: "changed", [b.clipId]: "changed", [c.clipId]: "missing" });
+  // Independent review (BL-241): the list checks the size only (no hashing on every badge poll), so a same-size swap shows "ok"
+  // there; the approval below still checks the SHA-256 and refuses it.
+  assert.deepEqual(listed, { [a.clipId]: "ok", [b.clipId]: "changed", [c.clipId]: "missing" });
   await refused(service.decide(CH, a.clipId, { action: "approve" }, "u"), "clip_review_file_changed");
   await refused(service.decide(CH, b.clipId, { action: "approve" }, "u"), "clip_review_file_changed");
   await refused(service.decide(CH, c.clipId, { action: "approve" }, "u"), "clip_review_file_missing");

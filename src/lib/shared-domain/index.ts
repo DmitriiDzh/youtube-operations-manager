@@ -314,7 +314,7 @@ export type DomainErrorCode =
   | "publishing_plan_slot_past"
   // BL-241 (CLIP_REVIEWS_PLAN.md, ADR 0061) -- clips for review. NOT_FOUND: no such clip in the channel; NOT_PENDING: the clip is
   // decided or withdrawn (details.status); WORKSPACE_UNAVAILABLE: no workspace folder here; FILE_UNAVAILABLE: the path is not a
-  // regular file strictly inside the workspace (details.reason); NOT_VIDEO: not .mp4/.mov/.webm; DURATION_OUT_OF_RANGE: not 30-120 s;
+  // regular file strictly inside the workspace (details.reason); NOT_VIDEO: not .mp4/.webm; DURATION_OUT_OF_RANGE: not 5-300 s;
   // PROBE_UNAVAILABLE: the duration cannot be measured here; TOO_MANY_PENDING / DUPLICATE: the queue's limits; FILE_MISSING /
   // FILE_CHANGED: an approval while this computer's copy is not the submitted file.
   | "clip_review_not_found"

@@ -150,7 +150,9 @@ export function createClipReviewsService(ports: ClipReviewsPorts) {
     const snapshot = await ports.store.read(channelId);
     const all = await views(channelId);
     const clips: OwnerClipView[] = [];
-    for (const view of all) clips.push({ ...view, file: await fileStateOf(snapshot.clips[view.clipId], view.status === "pending") });
+    // Review: the list (and the 60 s tab badge) checks the size only -- hashing ~100 MB clips on every poll is too costly; the
+    // SHA-256 is checked where it matters, when the owner approves (`decide`).
+    for (const view of all) clips.push({ ...view, file: await fileStateOf(snapshot.clips[view.clipId], false) });
     return { clips, waiting: all.filter((v) => v.status === "pending").length };
   }
 

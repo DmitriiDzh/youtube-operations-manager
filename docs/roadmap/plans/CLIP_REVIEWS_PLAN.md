@@ -74,7 +74,8 @@ Sources:
   (approve or return) on it is `clip_review_not_pending` (409) and writes nothing. Return without a comment is refused
   (`validation_failed`); with one, status `returned` and the comment readable by the Producer.
 - **AC-CR-08** Approval of a clip whose file on this computer differs from the submitted one (size or SHA-256) is
-  `clip_review_file_changed`; a missing file `clip_review_file_missing`; return still works.
+  `clip_review_file_changed`; a missing file `clip_review_file_missing`; return still works. The owner's list marks a clip `changed` by size only (no hashing
+  on every badge poll, independent review); the SHA-256 is checked at approval.
 - **AC-CR-09** Withdraw of a pending clip makes it `withdrawn`; withdraw of a decided clip is `clip_review_not_pending`; the owner
   cannot decide a withdrawn clip.
 - **AC-CR-10** Two computers: a clip submitted on the Mac is on Windows after one sync cycle; the owner returns it on Windows and the
