@@ -80,7 +80,8 @@ export type PlanSaveRefusal = {
     // BL-240 (ADR 0060): a removed vetoed slot's id stays taken; a slot cannot replace itself or a slot the channel does not have.
     | "slot_id_removed"
     | "replaces_self"
-    | "replaces_unknown";
+    | "replaces_unknown"
+    | "replaces_cycle";
 };
 
 /** BL-240 (ADR 0060): the slot a slot replaces, as it stands now. */

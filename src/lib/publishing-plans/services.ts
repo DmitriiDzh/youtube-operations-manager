@@ -156,6 +156,15 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
           refused.push({ slotId: input.slotId, field: "replacesSlotId", reason: "replaces_unknown" });
           continue;
         }
+        // Review: two slots replacing each other would both be pulled by one approval -- the week would release neither.
+        if (content.replacesSlotId) {
+          const sent = (parsed.slots ?? []).find((s) => s.slotId === content.replacesSlotId);
+          const targetReplaces = sent ? (sent.replacesSlotId ?? null) : (findSlot(snapshot, content.replacesSlotId)?.replacesSlotId ?? null);
+          if (targetReplaces === input.slotId) {
+            refused.push({ slotId: input.slotId, field: "replacesSlotId", reason: "replaces_cycle" });
+            continue;
+          }
+        }
         upserts.push({ ...content, weekStart, slotId: input.slotId, createdAt: before?.createdAt ?? stamp(), updatedAt: stamp(), updatedBy: by });
         changed.push(input.slotId);
       }

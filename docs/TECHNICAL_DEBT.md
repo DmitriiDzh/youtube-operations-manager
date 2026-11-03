@@ -2262,3 +2262,16 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
   only this computer's rows.
 - **Gate(s):** none (no new YouTube write path: the runner, identity check and Live writes are unchanged). **Approval required
   from:** the owner, to let the Producer give a date or reach another computer's queue.
+
+## RISK-148 — Removing a vetoed plan slot trusts this computer's view of its uploads and build — OPEN, 2026-11-03
+
+- **Affected components:** `src/lib/publishing-plans/services.ts` `save` (`removeSlotIds`) and `slotDecisions` (BL-240, ADR 0060).
+- **Risk:** an agent may remove a vetoed slot "whose video is not on YouTube", but that is checked against the upload rows of the
+  computer the save reaches. Saved on the computer that does not upload, a vetoed slot whose video IS uploaded can be removed: the
+  video stays private and undated (the veto still stands), but the owner loses its «Вернуть» row. The surviving veto is read only by
+  this build: a computer on an older build that has the automatic-upload switch on sees no decision for the removed id and may
+  upload its package private without a date. An owner's restore on one computer racing an agent's removal on the other frees the id
+  the same way.
+- **Mitigation:** both computers run BL-240 before agents remove vetoed slots or use `replacesSlotId` (stated in the release note).
+- **Gate(s):** none (no new YouTube write; nothing is ever scheduled by it). **Re-evaluate:** when upload rows are synced between
+  the computers.

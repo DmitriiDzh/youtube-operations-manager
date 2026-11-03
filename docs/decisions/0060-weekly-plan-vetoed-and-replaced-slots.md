@@ -38,7 +38,10 @@ approved before the veto, so the save refuses `slot_approved` (and a vetoed slot
 
 - Factory API 1.41.0, Agent API 4.15.0 (additive). `slot_vetoed` is no longer returned by the save.
 - A computer on an older build hashes a slot with `replacesSlotId` without it, so the two computers disagree on that slot's approval
-  until both run this build: update both before agents use the field. Slots without it are unaffected.
+  until both run this build; an older build also ignores a removed slot's surviving veto. Update both computers before agents use
+  the field or remove vetoed slots (RISK-148). Slots without it are unaffected.
+- "Not on YouTube" is checked against the upload rows of the computer the save reaches (RISK-148).
+- Two slots replacing each other are refused (`replaces_cycle`, from the independent review).
 
 ## Compatibility / migration impact
 

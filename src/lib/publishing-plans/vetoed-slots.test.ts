@@ -159,3 +159,13 @@ test("AC-WP-46: a replaced slot whose time has passed gets no veto record", asyn
   assert.deepEqual(result.replacedVetoed, []);
   assert.equal(slotOf(result.plan, "s1").vetoed, null);
 });
+
+test("review: two slots replacing each other are refused replaces_cycle (one save, or against a stored slot)", async () => {
+  const h = harness();
+  await week(h);
+  const together = await refusal(h.service.save({ channelId: CH, weekStart: WEEK, slots: [slot("s1", "2026-10-26", "15:00", { replacesSlotId: "s2" }), slot("s2", "2026-10-27", "18:00", { replacesSlotId: "s1" })] }, "worker"));
+  assert.deepEqual(refusedOf(together).map((r) => [r.slotId, r.reason]).sort(), [["s1", "replaces_cycle"], ["s2", "replaces_cycle"]]);
+  await h.service.save({ channelId: CH, weekStart: WEEK, slots: [slot("s1", "2026-10-26", "15:00", { replacesSlotId: "s2" })] }, "worker");
+  const later = await refusal(h.service.save({ channelId: CH, weekStart: WEEK, slots: [slot("s2", "2026-10-27", "18:00", { replacesSlotId: "s1" })] }, "worker"));
+  assert.deepEqual(refusedOf(later).map((r) => [r.slotId, r.reason]), [["s2", "replaces_cycle"]]);
+});
