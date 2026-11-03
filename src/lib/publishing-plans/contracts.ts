@@ -58,7 +58,7 @@ export type PlanSlotProgress = {
 /** Why an agent's save was refused, one entry per problem (`validation_failed`, `details.refused`). */
 export type PlanSaveRefusal = {
   slotId?: string;
-  field: "weekStart" | "timeZone" | "slots" | "date" | "publishAt" | "removeSlotIds";
+  field: "weekStart" | "timeZone" | "slots" | "date" | "publishAt" | "removeSlotIds" | "replacesSlotId";
   reason:
     | "week_start_invalid"
     | "week_start_not_monday"
@@ -76,7 +76,27 @@ export type PlanSaveRefusal = {
     // Review #2/#3: a slot id another week of the channel uses; removing a vetoed slot or one whose video is uploaded.
     | "slot_id_in_other_week"
     | "slot_vetoed"
-    | "slot_uploaded";
+    | "slot_uploaded"
+    // BL-240 (ADR 0060): a removed vetoed slot's id stays taken; a slot cannot replace itself or a slot the channel does not have.
+    | "slot_id_removed"
+    | "replaces_self"
+    | "replaces_unknown"
+    | "replaces_cycle";
+};
+
+/** BL-240 (ADR 0060): the slot a slot replaces, as it stands now. */
+export type ReplacedSlot = {
+  slotId: string;
+  /** The plan that holds it; null when not found. */
+  weekStart: string | null;
+  /** Its local wall time in its plan's zone; null when not found. */
+  publishAt: string | null;
+  /** The channel's video number of its package (`V66`), when the screen knows it. */
+  video: string | null;
+  vetoed: boolean;
+  released: boolean;
+  /** False: no slot with that id in the channel (any more). */
+  found: boolean;
 };
 
 export type PlanState = "empty" | "awaiting_approval" | "approved" | "past";
@@ -94,7 +114,10 @@ export type PlanSlotView = PublishingPlanSlotContent & {
    * Null when the slot is approved, or was never approved.
    */
   changedAfterApproval: { previous: PublishingPlanSlotContent & { timeZone: string }; approvedAt: string; changedAt: string; changedBy: PublishingPlanActor } | null;
-  vetoed: { at: string; device: string | null } | null;
+  /** BL-240: the slot this one replaces (approving this one vetoes it), or null. */
+  replaces: ReplacedSlot | null;
+  /** `replacedBy`: vetoed by the owner's approval of that slot (BL-240), not by his own veto. */
+  vetoed: { at: string; device: string | null; replacedBy?: string } | null;
   status: PlanSlotStatus;
   /** With `failed`: the code (stage 3). */
   statusCode: string | null;

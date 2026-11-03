@@ -3,7 +3,7 @@
 import { createHash } from "node:crypto";
 import type { PublishingPlanDecision, PublishingPlanMeta, PublishingPlanSlot, PublishingPlanSlotContent } from "@/lib/sync-gateway";
 import { formatZonedDateAndTime, zonedInstant } from "@/lib/zoned-time";
-import type { PlanSlotProgress, PlanSlotView, PlanState, PlanSummary, PlanView } from "./contracts";
+import type { PlanSlotProgress, PlanSlotView, PlanState, PlanSummary, PlanView, ReplacedSlot } from "./contracts";
 
 const DAY_MS = 86_400_000;
 
@@ -34,15 +34,32 @@ export function instantOf(publishAt: string, timeZone: string): Date | null {
   return back.localDate === match[1] && back.localTime === match[2] ? instant : null;
 }
 
-/** What an approval names (ADR 0051 §3): every field of the slot, with the plan's zone. */
+/**
+ * What an approval names (ADR 0051 §3): every field of the slot, with the plan's zone. BL-240 (ADR 0060): the replaced slot is
+ * appended only when set, so a slot without it keeps the hash it had before (every existing approval stands).
+ */
 export function contentHashOf(timeZone: string, content: PublishingPlanSlotContent): string {
-  return createHash("sha256").update(JSON.stringify([timeZone, content.date, content.publishAt, content.lengthHint ?? null, content.note ?? null])).digest("hex");
+  const fields: unknown[] = [timeZone, content.date, content.publishAt, content.lengthHint ?? null, content.note ?? null];
+  if (content.replacesSlotId) fields.push(content.replacesSlotId);
+  return createHash("sha256").update(JSON.stringify(fields)).digest("hex");
 }
 
-export const contentOf = (slot: PublishingPlanSlotContent): PublishingPlanSlotContent => ({ date: slot.date, publishAt: slot.publishAt, lengthHint: slot.lengthHint ?? null, note: slot.note ?? null });
+export const contentOf = (slot: PublishingPlanSlotContent): PublishingPlanSlotContent => ({
+  date: slot.date,
+  publishAt: slot.publishAt,
+  lengthHint: slot.lengthHint ?? null,
+  note: slot.note ?? null,
+  ...(slot.replacesSlotId ? { replacesSlotId: slot.replacesSlotId } : {}),
+});
 
 /** Review #7: the counter first (a decision made after another sorts after it), the wall clock and the id only as tiebreaks. */
 const byTime = (a: PublishingPlanDecision, b: PublishingPlanDecision) => (a.seq ?? 0) - (b.seq ?? 0) || Date.parse(a.at) - Date.parse(b.at) || a.id.localeCompare(b.id);
+
+/** BL-240: the newest `vetoed` / `restored` record of a slot says whether it is vetoed now (also after the slot was removed). */
+export function standingVetoOf(decisions: readonly PublishingPlanDecision[]): PublishingPlanDecision | null {
+  const veto = [...decisions].sort(byTime).filter((d) => d.kind === "vetoed" || d.kind === "restored").at(-1);
+  return veto?.kind === "vetoed" ? veto : null;
+}
 
 /** A slot's approval and veto, from its decisions (any order). */
 export function decisionStateOf(decisions: readonly PublishingPlanDecision[], contentHash: string) {
@@ -54,12 +71,12 @@ export function decisionStateOf(decisions: readonly PublishingPlanDecision[], co
   const lastApproved = approvals.filter((d) => d.kind === "approved").at(-1);
   const stillStanding = lastApproved && approvals.filter((d) => d.contentHash === lastApproved.contentHash).at(-1)?.kind === "approved";
   const superseded = !approved && lastApproved && lastApproved.contentHash !== contentHash && stillStanding ? lastApproved : null;
-  const veto = sorted.filter((d) => d.kind === "vetoed" || d.kind === "restored").at(-1);
+  const veto = standingVetoOf(sorted);
   return {
     approved,
     approvedAt: approved ? current!.at : null,
     superseded,
-    vetoed: veto?.kind === "vetoed" ? { at: veto.at, device: veto.device } : null,
+    vetoed: veto ? { at: veto.at, device: veto.device, ...(veto.replacedBy ? { replacedBy: veto.replacedBy } : {}) } : null,
   };
 }
 
@@ -69,6 +86,8 @@ export function slotViewOf(args: {
   decisions: readonly PublishingPlanDecision[];
   progress: PlanSlotProgress | null;
   now: Date;
+  /** BL-240: the slot named by `replacesSlotId`, as it stands (null: no such slot, or none named). */
+  replaces?: ReplacedSlot | null;
 }): PlanSlotView {
   const { meta, slot, now } = args;
   const content = contentOf(slot);
@@ -93,6 +112,7 @@ export function slotViewOf(args: {
     changedAfterApproval: state.superseded
       ? { previous: { ...state.superseded.snapshot }, approvedAt: state.superseded.at, changedAt: slot.updatedAt, changedBy: slot.updatedBy }
       : null,
+    replaces: content.replacesSlotId ? (args.replaces ?? { slotId: content.replacesSlotId, weekStart: null, publishAt: null, video: null, vetoed: false, released: false, found: false }) : null,
     vetoed: state.vetoed,
     status: state.vetoed ? "vetoed" : (args.progress?.status ?? "planned"),
     statusCode: state.vetoed ? null : (args.progress?.code ?? null),
@@ -122,9 +142,20 @@ export function planViewOf(args: {
   decisions: readonly PublishingPlanDecision[];
   progress: Map<string, PlanSlotProgress>;
   now: Date;
+  /** BL-240: the replaced slots, by their id. */
+  replaced?: Map<string, ReplacedSlot>;
 }): PlanView {
   const views = args.slots
-    .map((slot) => slotViewOf({ meta: args.meta, slot, decisions: args.decisions.filter((d) => d.slotId === slot.slotId), progress: args.progress.get(slot.slotId) ?? null, now: args.now }))
+    .map((slot) =>
+      slotViewOf({
+        meta: args.meta,
+        slot,
+        decisions: args.decisions.filter((d) => d.slotId === slot.slotId),
+        progress: args.progress.get(slot.slotId) ?? null,
+        now: args.now,
+        replaces: slot.replacesSlotId ? (args.replaced?.get(slot.replacesSlotId) ?? null) : null,
+      })
+    )
     .sort((a, b) => Date.parse(a.publishAtUtc) - Date.parse(b.publishAtUtc) || a.slotId.localeCompare(b.slotId));
   const live = views.filter((s) => !s.vetoed);
   const summary: PlanSummary = {

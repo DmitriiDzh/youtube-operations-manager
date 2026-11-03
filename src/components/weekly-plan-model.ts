@@ -15,7 +15,10 @@ export type PlanSlotDto = {
   approval: "approved" | "needs_approval";
   approvedAt: string | null;
   changedAfterApproval: { previous: { date: string; publishAt: string; lengthHint: string | null; note: string | null; timeZone: string }; approvedAt: string; changedAt: string; changedBy: "factory" | "worker" } | null;
-  vetoed: { at: string; device: string | null } | null;
+  /** BL-240: the slot this one replaces (approving this one pulls it), or null. */
+  replaces: { slotId: string; weekStart: string | null; publishAt: string | null; video: string | null; vetoed: boolean; released: boolean; found: boolean } | null;
+  /** `replacedBy`: pulled by the owner's approval of the slot that replaces it (BL-240). */
+  vetoed: { at: string; device: string | null; replacedBy?: string } | null;
   status: PlanSlotStatus;
   statusCode: string | null;
   videoId: string | null;
@@ -68,6 +71,24 @@ export function defaultWeek(plans: readonly Pick<PlanSummaryDto, "weekStart" | "
 /** The slots «Одобрить неделю» covers: not vetoed, not released, not approved -- each with the hash the screen shows. */
 export function slotsToApprove(plan: Pick<PlanDto, "slots">): Array<{ slotId: string; contentHash: string }> {
   return plan.slots.filter((s) => !s.vetoed && !s.released && s.approval === "needs_approval").map((s) => ({ slotId: s.slotId, contentHash: s.contentHash }));
+}
+
+/**
+ * BL-240 (A): the plan's slots in its order, split into the live ones and the pulled ones (listed under one closed row). `number`
+ * is the slot's place in the whole plan, so a slot keeps its «Слот N» whether the pulled ones are shown or not.
+ */
+export function splitVetoed<T extends Pick<PlanSlotDto, "vetoed">>(slots: readonly T[]): { live: Array<{ slot: T; number: number }>; vetoed: Array<{ slot: T; number: number }> } {
+  const numbered = slots.map((slot, i) => ({ slot, number: i + 1 }));
+  return { live: numbered.filter((s) => !s.slot.vetoed), vetoed: numbered.filter((s) => s.slot.vetoed) };
+}
+
+/** BL-240 (C): the replaced slots that approving these slots would pull -- found, not pulled yet, not past; each once. */
+export function replacedToPull(slots: ReadonlyArray<Pick<PlanSlotDto, "replaces">>): Array<NonNullable<PlanSlotDto["replaces"]>> {
+  const out: Array<NonNullable<PlanSlotDto["replaces"]>> = [];
+  for (const { replaces } of slots) {
+    if (replaces && replaces.found && !replaces.vetoed && !replaces.released && !out.some((r) => r.slotId === replaces.slotId)) out.push(replaces);
+  }
+  return out;
 }
 
 export type PipelineStep = "plan" | "video" | "package" | "youtube" | "date";

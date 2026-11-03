@@ -4907,6 +4907,12 @@ FO-REQ-0040; owner msgs 3511/3534; plan `docs/roadmap/plans/WEEKLY_PUBLISHING_PL
   Видео › Пакет › YouTube › Дата, actions), amber rows for a change after approval, struck-through vetoed rows with «Вернуть»,
   the inline veto confirmation, and in «Всю неделю» the bar with the count, the quota estimate (`estimateUploadUnits`) and «Одобрить
   неделю»; «По одному» gives «Одобрить» / «Отозвать» per slot. The tab's badge reads `waiting`.
+- **BL-240 (ADR 0060) -- pulled and replaced slots.** The screen lists vetoed slots under one closed row (`splitVetoed`, numbers
+  kept). `save` lets an agent remove a vetoed slot without an upload (also one approved before the veto) and audits it; the veto
+  outlives the slot (`standingVetoOf`: `slotDecisions` still answers `vetoed` for its id, and a new slot with that id is refused
+  `slot_id_removed`). A slot's optional `replacesSlotId` (same channel, any week) joins the content hash only when set; the view
+  carries `replaces` (the target as it stands). `decide` "approve" also writes a `vetoed` record with `replacedBy` for each replaced
+  slot not vetoed, released or gone, in the same change, audited; the week bar and the slot row say so before approving.
 - **Stage 2 -- package v2** (`publishing/packages.ts`): `RELEASE_PACKAGE_SCHEMAS` accepts `/1` and `/2`; v2 adds `slotId`,
   `localizations` (checked in `packageProblems` by `shared-localization-set` with a video's limits; `packageLocalizationSet` gives the
   form sent), `containsSyntheticMedia`, `thumbnails` (one default = `files.thumbnail`; the tests checked by the scan like the default,

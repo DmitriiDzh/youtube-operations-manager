@@ -27,7 +27,7 @@ function make(options: { session?: { user: { id: string } } | null; refuse?: Dom
       decide: async (...args) => {
         calls.push(["decide", ...args]);
         if (options.refuse) throw options.refuse;
-        return { plan: {} as never, decided: ["s1"] };
+        return { plan: {} as never, decided: ["s1"], replacedVetoed: [] };
       },
     }),
   };
@@ -70,7 +70,7 @@ test("BL-235: the plan's week coverage is read for weekStart in the plan's zone 
     service: () => ({
       ownerList: async () => ({ plans: [], waiting: 0 }),
       ownerGet: async () => ({ plan: { weekStart: "2026-11-02", timeZone: "Asia/Tokyo" } as never }),
-      decide: async () => ({ plan: {} as never, decided: [] }),
+      decide: async () => ({ plan: {} as never, decided: [], replacedVetoed: [] }),
     }),
     coverage: async (...args) => {
       asked.push(args);

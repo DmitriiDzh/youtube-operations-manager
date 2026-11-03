@@ -197,3 +197,35 @@ acceptance).
 - The computer where the automatic-upload switch is on uploads approved slots (ADR 0046 §8: one computer only).
 - A slot re-approved with a new time after its video was scheduled: the app moves the video's date itself (one `videos.update`,
   read back).
+
+## BL-240 -- vetoed slots: collapsed, removable, replaced (owner, Telegram msgs 3997/3998, 2026-11-03)
+
+Producer request (owner's question in the hub: old videos keep repeating in the plan). A replaced video's old slot stays next to the
+new one; the owner vetoes it, the vetoed row stays, and an agent cannot remove it (it was approved before the veto: `slot_approved`).
+The owner chose all three parts (ADR 0060).
+
+- **A. Collapsed.** «План недели» lists vetoed slots under one row «Отклонённые (N)», closed by default; opened, each keeps its
+  «Вернуть». Counts and tiles are unchanged.
+- **B. Removable.** An agent may remove a vetoed slot whose video is not on YouTube (no video id, not uploading/scheduled/published),
+  even if it was approved before the veto. The veto outlives the slot: the uploads keep treating its id as vetoed (a package naming
+  it is never uploaded), and the id cannot be used for a new slot (`slot_id_removed`). Each removal is audited on the computer.
+- **C. Replaces.** A slot may name the slot it replaces (`replacesSlotId`, a slot of the same channel, any week). The field is part
+  of what the owner approves (in the content hash only when set, so every existing approval keeps its hash). When the owner approves
+  a slot that replaces another, the same decision vetoes the replaced slot (unless it is already vetoed or released): one record
+  `vetoed` with `replacedBy`, audited like his own veto. The screen says before approving that the old slot will be vetoed, and
+  the old row says which slot replaced it. Restoring it stays possible.
+
+### Acceptance (written before the code; values by hand)
+
+- **AC-WP-40** A slot without `replacesSlotId` has the same content hash as before BL-240: SHA-256 of
+  `["Asia/Tokyo","2026-10-26","2026-10-26T15:00","≈ 3 ч",null]` (computed independently in the test).
+- **AC-WP-41** Approved, then vetoed, no upload: `removeSlotIds` removes it (`removed: [id]`), one audit event
+  `publishing_plan.vetoed_slot_removed`; the uploads' decision for the id is still `vetoed`.
+- **AC-WP-42** Vetoed with a video id: refused `slot_uploaded`. Approved and not vetoed: still `slot_approved`.
+- **AC-WP-43** A new slot reusing a removed vetoed slot's id: refused `slot_id_removed`.
+- **AC-WP-44** `replacesSlotId` naming itself: refused `replaces_self`; naming no slot of the channel: `replaces_unknown`.
+- **AC-WP-45** Adding `replacesSlotId` to an approved slot drops its approval (`unlocked`).
+- **AC-WP-46** Approving Y (replaces X, X approved, not vetoed): Y approved, X vetoed with `replacedBy: Y`, two audit events, the
+  uploads' decision for X is `vetoed`. X in another week works the same. X already vetoed or released: no new record for X.
+- **AC-WP-47** The screen model: vetoed slots split from the live ones in the plan's order; the approve confirmation names the
+  slots that will be vetoed.
