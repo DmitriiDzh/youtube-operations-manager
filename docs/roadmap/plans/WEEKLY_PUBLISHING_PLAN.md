@@ -280,3 +280,18 @@ empty, then packaged). The owner answered «да 1», «да 2а» to the propos
 - **AC-WP-58** `slot` stage: every BL-225/BL-240 acceptance test passes unchanged (hashes, states, uploads).
 - **AC-WP-59** The screen model: `awaiting_package` slots show no approve button and are not in «Одобрить все готовые»; the
   switch shows the stage; texts in en and ru.
+
+### Acceptance status (2026-11-04, branch `feature/bl-242-packaged-approval`)
+
+Tested against fakes only; nothing verified by eye or on the real plan yet.
+
+- AC-WP-50..56: `src/lib/publishing-plans/packaged-approval.test.ts` (hashes by hand with node:crypto); AC-WP-50 also
+  `sync-gateway/publishing-plans/services.test.ts` (the stage synced), the route's `handlers.test.ts` and `boundaries.test.ts` (no MCP
+  path sets it); AC-WP-56 `auto-upload.test.ts`, `upload-queue-control.test.ts`, `upload-runner.test.ts`; AC-WP-57
+  `plan-schedule.test.ts`; AC-WP-59 `src/components/weekly-plan-model.test.ts`.
+- AC-WP-58: the BL-225/BL-240 tests run in the `slot` stage, set on the test document before the first read; their expectations
+  are unchanged.
+- Interpretations: an approval made before the upload (no video id) also covers the video that upload made of the approved manifest
+  (otherwise every approved slot would need the owner again once uploaded); `planned` is also the state when some live slots are
+  approved and the rest wait for packages; approvals made in one stage do not count in the other (both directions); a veto carries
+  the fingerprint its slot's approval stood on, so it unschedules a video the slot took over by its package.
