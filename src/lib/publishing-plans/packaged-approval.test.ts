@@ -593,3 +593,31 @@ test("BL-243 AC-WP-77: after the video is deleted, the once-approved slot can be
   const { removed } = await h.service.save({ channelId: CH, weekStart: WEEK, removeSlotIds: ["s1"] }, "worker");
   assert.deepEqual(removed, ["s1"]);
 });
+
+// BL-243 review round 3, item 4 (AC-WP-77): save() reads the progress for its approval rule only when it can matter -- slots to
+// remove, or (packaged stage) a slot the older rule calls approved. Every save also reads it once for the plan view it returns
+// (unchanged), so: nothing approved -> 1 read, a standing packaged approval -> 2, the slot stage -> 1, a removal -> 2.
+test("BL-243 AC-WP-77: save() reads progress only for removals or a standing packaged approval", async () => {
+  const h = harness();
+  await week(h);
+  const reads = () => h.progressCalls.length;
+  let before = reads();
+  await h.service.save({ channelId: CH, weekStart: WEEK, slots: [slot("s2", "2026-10-27", "19:00")] }, "worker");
+  assert.equal(reads(), before + 1, "packaged, nothing approved: only the returned view's read");
+
+  h.progress.set("s1", packaged({ video: "V73" }, "vid73"));
+  await approve(h, "s1");
+  before = reads();
+  await h.service.save({ channelId: CH, weekStart: WEEK, slots: [slot("s2", "2026-10-27", "20:00")] }, "worker");
+  assert.equal(reads(), before + 2, "packaged with a standing approval: the rule's read too");
+
+  const slotStage = harness();
+  await week(slotStage);
+  await slotStage.service.setApprovalStage(CH, { stage: "slot" }, "u1");
+  await approve(slotStage, "s1");
+  const start = slotStage.progressCalls.length;
+  await slotStage.service.save({ channelId: CH, weekStart: WEEK, slots: [slot("s2", "2026-10-27", "20:00")] }, "worker");
+  assert.equal(slotStage.progressCalls.length, start + 1, "slot stage: only the returned view's read");
+  await slotStage.service.save({ channelId: CH, weekStart: WEEK, removeSlotIds: ["s2"] }, "worker");
+  assert.deepEqual(slotStage.progressCalls.slice(start + 1)[0], ["s2"], "a removal: the removed slots are read, as before");
+});

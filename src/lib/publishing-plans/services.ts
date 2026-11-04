@@ -148,12 +148,19 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
       // while it covers the slot's current package (a package whose video was deleted has none). One progress read for the week's
       // slots and the ones to remove; unreadable, the older rule below (it counts more approvals: never fewer refusals).
       const toRemove = [...new Set(parsed.removeSlotIds ?? [])];
+      // Review round 3: read only when it can matter -- slots to remove, or (packaged stage) a slot the older rule calls approved
+      // (the view can only count fewer). The `slot` stage reads only for removals, as before.
+      const standing = existing ? [...current.values()].filter((slot) => approvalStandsOn(stage, existing.timeZone, contentOf(slot), decisionsFor(slot.slotId))) : [];
+      // (A removal in the packaged stage also needs the view: an approval superseded by a retime still blocks under the older rule.)
+      const needsViews = stage === "packaged" && existing !== null && (standing.length > 0 || toRemove.length > 0);
       let progress: Map<string, PlanSlotProgress> | null = null;
-      if (ports.progress && (current.size > 0 || toRemove.length > 0)) {
-        progress = await ports.progress(channelId, weekStart, [...new Set([...current.keys(), ...toRemove])]).catch(() => null);
+      if (ports.progress && (needsViews || toRemove.length > 0)) {
+        // Without a standing approval only the removed slots' views are consulted (every other slot is unapproved either way).
+        const ids = needsViews && standing.length > 0 ? [...new Set([...current.keys(), ...toRemove])] : toRemove;
+        progress = await ports.progress(channelId, weekStart, ids).catch(() => null);
       }
       const views =
-        stage === "packaged" && existing && progress
+        needsViews && existing && progress
           ? new Map(planViewOf({ stage, channelId, meta: existing, slots: [...current.values()], decisions, progress, now }).slots.map((view) => [view.slotId, view]))
           : null;
       // BL-242: else an approval that counts in the channel's stage stands on the slot (whatever its package now).
