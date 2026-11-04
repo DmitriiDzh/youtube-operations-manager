@@ -500,7 +500,8 @@ function SlotRow(props: {
 
   const canAct = !slot.released;
   // The video may already be on YouTube: under way, scheduled, published, or uploaded private without a date (it has a video id).
-  const afterUpload = slot.videoId !== null || slot.status === "uploading" || slot.status === "scheduled" || slot.status === "published";
+  // BL-243: a video deleted on YouTube is not there any more (its id is kept only to show which one it was).
+  const afterUpload = !deletedOnYoutube(slot) && (slot.videoId !== null || slot.status === "uploading" || slot.status === "scheduled" || slot.status === "published");
 
   return (
     <li className={changed ? "bg-amber-950/20" : slot.vetoed ? "bg-zinc-950/40" : undefined}>
