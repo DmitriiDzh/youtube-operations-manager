@@ -376,8 +376,10 @@ Fixed values: channel `UC1`, last video sync `2026-11-04T08:00:00.000Z`; V73 rec
   approval stands; the plan schedule's guard keeps the date off). A vetoed slot whose progress is the deleted state can be removed.
   (review) Approved at 15:00 JST, moved by the agent to 12:00 JST, then deleted: `changedAfterApproval` null, and at 04:00Z the
   slot is released (not held to the old 06:00Z).
-- **AC-WP-71** Plan schedule: a done row of `vid73` (removed) with an approved or a vetoed slot -> no read, no write, `changed` 0; the
-  same row with the mark cleared -> written as before. Upload approval: a done (or failed) row of `vid73` on `s1` does not hold `s1`; one
+- **AC-WP-71** Plan schedule (rule of review round 2): a done row of `vid73` (removed) with an approved slot -> no read, no write,
+  `changed` 0; the list unreadable -> no date either (fail closed); the mark cleared -> dated as before. A vetoed slot's date is
+  removed whatever the mark or the list say (live read; a wrong mark never lets a vetoed video go public); YouTube says the video
+  does not exist -> no write, planSync `video_missing`, the row's date null, the next pass reads nothing. Upload approval: a done (or failed) row of `vid73` on `s1` does not hold `s1`; one
   under way still does.
 - **AC-WP-72** Calendar read: items `{ video: "V73", state: "deleted_on_youtube", videoId: "vid73", existsOnChannel: false, checkedAt:
   "2026-11-04T08:00:00.000Z", removedAt: "2026-11-03T19:54:00.000Z", problems: ["video_deleted_on_youtube"] }`; `missingOnChannel
@@ -385,6 +387,15 @@ Fixed values: channel `UC1`, last video sync `2026-11-04T08:00:00.000Z`; V73 rec
 - **AC-WP-73** `channel_video_list` with `videoIds: ["vid74", "vid73", "nope"]` -> `videos` [vid74], `removed [{ videoId: "vid73",
   removedAt: "2026-11-03T19:54:00.000Z" }]`, `notFound ["nope"]`, `total` 1; another channel's id is `notFound`; 51 ids or an empty
   list -> validation error; without `videoIds` the answer has exactly the previous keys.
+- **AC-WP-75** (review round 2) Deleted V73 alone on `s1`, an older failed row of V73 (no video id) and the removed row of
+  `vid73` -> the slot stays `failed`/`video_deleted_on_youtube`/`vid73` (also with the older row alone); a fresh V73 package on `s1`
+  -> `packaged` (the older row ignored), and a newer upload row of it -> `uploading`.
+- **AC-WP-76** (review round 2) Two deleted packages on `s1`: V72 uploaded 2026-11-01T10:00Z, V73 2026-11-02T10:00Z -> V73 speaks in
+  either order; without `uploadedAt`, the newer upload row here decides. The scan carries the record's `uploadedAt`.
+- **AC-WP-77** (review round 2) Packaged stage, s1 approved with V73/`vid73`, then deleted: retiming s1 unlocks nothing and removing
+  s1 succeeds; with the live package the retime lists s1 in `unlocked` and the removal is refused `slot_approved`.
+- **AC-WP-78** (review round 2) `channels.removed_check_at` (schema v118) moves only on a sync with `removedCheck: "done"`; a
+  package's `checkedAt` is that time; with none, a visible video is `existsOnChannel` null (never true), a removed one still false.
 - **AC-WP-74** Screens: the packages list labels the state («Удалён на YouTube» / "Deleted on YouTube") and the problem; the plan slot
   shows «Ролик удалён на YouTube» / "Video deleted on YouTube" and no approve button; texts in en and ru.
 
@@ -398,6 +409,8 @@ channel yet.
 - AC-WP-71: `src/lib/publishing/plan-schedule.test.ts` and `upload-runner.test.ts` (`holdsSlot`).
 - AC-WP-72: `src/lib/publishing/calendar-reads.test.ts`; AC-WP-73: `src/lib/channel-sync/services.test.ts`; AC-WP-74:
   `src/components/weekly-plan-model.test.ts` (texts: the ui-text key tests).
-- Interpretations (one rule, ADR 0063 §4): an unreadable removed list is "none known" for display and holds (the scan, the
+- Review round 2: AC-WP-75/76 `progress.test.ts`, AC-WP-77 `packaged-approval.test.ts`, AC-WP-78 `channel-sync/services.test.ts`,
+  `db-removed-videos.test.ts`, `package-scan.test.ts`; AC-WP-71 rewritten in `plan-schedule.test.ts` (the veto rule changed).
+- Interpretations (one rule, ADR 0063 §4; round 2: only dating fails closed, un-dating always asks YouTube): an unreadable removed list is "none known" for display and holds (the scan, the
   approval's slot holds, the progress -- which reuses the shown scan's ids plus every deleted package's own video id); only the
   plan schedule's writes fail closed (the channel's rows are skipped that pass).

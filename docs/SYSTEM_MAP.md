@@ -845,7 +845,8 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   - Пакеты релизов: `publishing/packages.ts`, `package-scan.ts` (`04 Videos/**/V*_release.json`, проверки по правилам YouTube,
     состояние по `Vn_youtube.json`; обход и чтения — общий `src/lib/workspace-videos/`, BL-187). BL-243 (ADR 0063): состояние
     `deleted_on_youtube` — видео записи помечено синхронизацией удалённым (`removed_on_youtube_at`); `uploaded_unknown` — его нет
-    в копии; у каждого пакета `existsOnChannel` и `checkedAt`.
+    в копии; у каждого пакета `existsOnChannel` и `checkedAt` (время завершённой проверки удалений — `channels.removed_check_at`,
+    схема v118).
   - Подтверждение: `upload-approval.ts` (хеш манифеста и показанные настройки, квота: корзина `videos.insert` 100 в день и
     `quota-guard.checkUnits`, другой компьютер — семейство `publishing-uploads`).
   - Загрузка: `upload-runner.ts`, таблица `publishing_uploads` (схема v89, только этот компьютер), цикл раз в 5 с в
