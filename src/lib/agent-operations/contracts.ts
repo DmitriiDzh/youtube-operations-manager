@@ -112,7 +112,10 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT",
 // 4.16.0 (BL-242, ADR 0062): agent_publishing_plan_get / _list as factory_publishing_plan_get / _list 1.42.0 -- approvalStage, the
 // state planned, approval awaiting_package, the slot's fingerprint and package.manifestSha256. Agents still never approve or set the
 // stage. Additive.
-export const AGENT_API_VERSION = "4.16.0";
+// 4.17.0 (BL-243, ADR 0063): agent_get_publishing_calendar -- the package state deleted_on_youtube, items' existsOnChannel /
+// checkedAt / removedAt, missingOnChannel; channel_video_list videoIds with removed / notFound; the plan tools' statusCode
+// video_deleted_on_youtube (factory 1.43.0). Additive.
+export const AGENT_API_VERSION = "4.17.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry

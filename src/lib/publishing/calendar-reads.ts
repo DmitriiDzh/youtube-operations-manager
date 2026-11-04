@@ -41,6 +41,11 @@ export type AgentPublishingCalendar = {
   gapDatesTimeZone: string;
   /** BL-182 stage 2 (FO-REQ-0023 §4 C4): the release packages in this computer's copy of the workspace, and this computer's uploads. */
   packages: AgentPackages;
+  /**
+   * BL-243 (Agent API 4.17.0): the packages whose uploaded video the channel sync found removed on YouTube (state
+   * `deleted_on_youtube`); [] when the packages are not readable. `lastSyncedAt` above is when that was last checked.
+   */
+  missingOnChannel: Array<{ video: string | null; videoId: string; removedAt: string }>;
   uploads: AgentUpload[];
 };
 
@@ -48,7 +53,20 @@ export type AgentPackages =
   | { status: "no_workspace" | "unavailable" }
   | {
       status: "ok";
-      items: Array<{ video: string | null; title: string | null; plannedPublishDate: string | null; state: string; problems: string[]; videoId: string | null }>;
+      items: Array<{
+        video: string | null;
+        title: string | null;
+        plannedPublishDate: string | null;
+        state: string;
+        problems: string[];
+        videoId: string | null;
+        /** BL-243: true -- in the synced copy, not removed; false -- removed on YouTube; null -- no upload, or not in the copy. */
+        existsOnChannel: boolean | null;
+        /** BL-243: when the channel's videos were last synced (ISO), what `existsOnChannel` stands on; null: never. */
+        checkedAt: string | null;
+        /** BL-243: when the sync found the video removed (ISO), else null. */
+        removedAt: string | null;
+      }>;
     };
 export type AgentUpload = {
   video: string;
@@ -168,6 +186,7 @@ export function createPublishingCalendarReads(deps: PublishingCalendarDeps) {
           if (!filledDays.has(day)) gapDates.push(day);
         }
       }
+      const packages: AgentPackages = deps.packages ? await deps.packages(channelId).catch((): AgentPackages => ({ status: "unavailable" })) : { status: "unavailable" };
       return {
         channelId,
         lastSyncedAt,
@@ -178,7 +197,9 @@ export function createPublishingCalendarReads(deps: PublishingCalendarDeps) {
         gapDates,
         missingTranslationDates,
         gapDatesTimeZone: dayCoverage ? dayCoverage.timeZone : "UTC",
-        packages: deps.packages ? await deps.packages(channelId).catch((): AgentPackages => ({ status: "unavailable" })) : { status: "unavailable" },
+        packages,
+        missingOnChannel:
+          packages.status === "ok" ? packages.items.flatMap((item) => (item.state === "deleted_on_youtube" && item.videoId && item.removedAt ? [{ video: item.video, videoId: item.videoId, removedAt: item.removedAt }] : [])) : [],
         uploads: deps.uploads ? await deps.uploads(channelId) : [],
       };
     },

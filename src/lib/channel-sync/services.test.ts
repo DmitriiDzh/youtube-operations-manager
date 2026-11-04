@@ -104,6 +104,13 @@ function createFakeStore() {
     async listVideosByChannel(channelId: string) {
       return (videos.get(channelId) ?? []).filter((video) => !removedAt.has(video.videoId));
     },
+    // BL-243: the hidden rows with their mark.
+    async listRemovedVideosByChannel(channelId: string) {
+      return (videos.get(channelId) ?? []).flatMap((video) => {
+        const at = removedAt.get(video.videoId);
+        return at ? [{ videoId: video.videoId, removedAt: at }] : [];
+      });
+    },
   };
 }
 
@@ -631,4 +638,42 @@ test("removed on YouTube: a hidden video back in the uploads is shown again even
   playlist.drops = ["v2"];
   await services.syncChannel({ credentialRef: { userId: "u1" } });
   assert.equal(store.removedAt.size, 0);
+});
+
+// BL-243 (WEEKLY_PUBLISHING_PLAN.md AC-WP-73): `videoIds` -- only the asked videos of the channel, in the order asked, plus which of
+// them a sync found removed on YouTube and which this copy does not have. Another channel's id is not found (channel scoping).
+test("BL-243 AC-WP-73: videoIds lists only those videos; removed and notFound say why the others are missing", async () => {
+  const { services, store, channelAccess } = createServicesFixture({ videoIds: ["vid74", "vid73", "vid72"] });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_TEST" });
+  await services.syncChannel({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST" });
+  store.removedAt.set("vid73", new Date("2026-11-03T19:54:00.000Z"));
+  store.videos.set("UC_OTHER", [{ ...(await store.listVideosByChannel("UC_TEST"))[0], videoId: "other1", channelId: "UC_OTHER" }]);
+
+  const result = (await services.listSyncedVideos({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_TEST",
+    videoIds: ["vid74", "vid73", "nope", "other1", "vid72", "vid74"],
+    fields: ["title"],
+  })) as Record<string, unknown>;
+  assert.deepEqual(Object.keys(result).sort(), ["channelId", "nextOffset", "notFound", "offset", "removed", "total", "videos"]);
+  assert.deepEqual((result.videos as Array<{ videoId: string }>).map((v) => v.videoId), ["vid74", "vid72"]);
+  assert.deepEqual(Object.keys((result.videos as object[])[0]).sort(), ["title", "videoId"]);
+  assert.equal(result.total, 2);
+  assert.equal(result.nextOffset, null);
+  assert.deepEqual(result.removed, [{ videoId: "vid73", removedAt: "2026-11-03T19:54:00.000Z" }]);
+  assert.deepEqual(result.notFound, ["nope", "other1"]);
+
+  // Bounds: 1-50 ids.
+  for (const videoIds of [[], Array.from({ length: 51 }, (_, i) => `v${i}`), [""]]) {
+    await assert.rejects(() => services.listSyncedVideos({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST", videoIds }));
+  }
+  const fifty = await services.listSyncedVideos({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST", videoIds: Array.from({ length: 50 }, (_, i) => `v${i}`) });
+  assert.equal((fifty as unknown as { notFound: string[] }).notFound.length, 50);
+
+  // Without videoIds: exactly the previous answers.
+  const plain = await services.listSyncedVideos({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST" });
+  assert.deepEqual(Object.keys(plain).sort(), ["channelId", "videos"]);
+  assert.deepEqual(plain.videos.map((v) => v.videoId).sort(), ["vid72", "vid74"]);
+  const paged = await services.listSyncedVideos({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST", limit: 1 });
+  assert.deepEqual(Object.keys(paged).sort(), ["channelId", "nextOffset", "offset", "total", "videos"]);
 });

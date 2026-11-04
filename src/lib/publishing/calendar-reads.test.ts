@@ -66,7 +66,9 @@ test("agent calendar: the release packages and this computer's uploads ride alon
     assertActiveChannel: async () => undefined,
     clock: { now: () => NOW },
   };
-  const items = [{ video: "V65", title: "T", plannedPublishDate: "2026-10-24", state: "not_ready", problems: ["thumbnail_missing"], videoId: null }];
+  // BL-243 (Agent API 4.17.0): an item also carries existsOnChannel / checkedAt / removedAt -- added to the fixture, the
+  // pass-through it checks is unchanged.
+  const items = [{ video: "V65", title: "T", plannedPublishDate: "2026-10-24", state: "not_ready", problems: ["thumbnail_missing"], videoId: null, existsOnChannel: null, checkedAt: null, removedAt: null }];
   // BL-209 (Agent API 3.20.0): an upload also carries automatic / progressPercent / finishedAt -- added to the fixture, the
   // pass-through it checks is unchanged.
   const uploads = [{ video: "V64", status: "paused", publishAt: "2026-10-23T12:00:00.000Z", videoId: null, pausedReason: "live_writes_off", errorCode: null, automatic: false, progressPercent: 0, finishedAt: null }];
@@ -80,6 +82,25 @@ test("agent calendar: the release packages and this computer's uploads ride alon
     },
   }).getAgentCalendar({ credentialRef: { userId: "u1" }, channelId: "UC_A" });
   assert.deepEqual([failed.packages, failed.uploads], [{ status: "unavailable" }, []]);
+});
+
+// BL-243 (WEEKLY_PUBLISHING_PLAN.md AC-WP-72): the deleted packages are summed up in `missingOnChannel`; none when the packages are
+// not readable.
+test("BL-243 AC-WP-72: missingOnChannel lists the packages whose video was deleted on YouTube", async () => {
+  const base = {
+    listVideos: async () => VIDEOS,
+    getChannel: async () => ({ lastSyncedAt: new Date("2026-11-04T08:00:00.000Z") }),
+    assertActiveChannel: async () => undefined,
+    clock: { now: () => NOW },
+  };
+  const v73 = { video: "V73", title: "T73", plannedPublishDate: "2026-11-09", state: "deleted_on_youtube", problems: ["video_deleted_on_youtube"], videoId: "vid73", existsOnChannel: false, checkedAt: "2026-11-04T08:00:00.000Z", removedAt: "2026-11-03T19:54:00.000Z" };
+  const v74 = { video: "V74", title: "T74", plannedPublishDate: "2026-11-10", state: "uploaded_private", problems: [], videoId: "vid74", existsOnChannel: true, checkedAt: "2026-11-04T08:00:00.000Z", removedAt: null };
+  const v75 = { video: "V75", title: "T75", plannedPublishDate: "2026-11-11", state: "uploaded_unknown", problems: [], videoId: "vid75", existsOnChannel: null, checkedAt: "2026-11-04T08:00:00.000Z", removedAt: null };
+  const ok = await createPublishingCalendarReads({ ...base, packages: async () => ({ status: "ok", items: [v73, v74, v75] }) }).getAgentCalendar({ credentialRef: { userId: "u1" }, channelId: "UC_A" });
+  assert.deepEqual(ok.missingOnChannel, [{ video: "V73", videoId: "vid73", removedAt: "2026-11-03T19:54:00.000Z" }]);
+  assert.equal(ok.lastSyncedAt, "2026-11-04T08:00:00.000Z");
+  const none = await createPublishingCalendarReads({ ...base, packages: async () => ({ status: "no_workspace" }) }).getAgentCalendar({ credentialRef: { userId: "u1" }, channelId: "UC_A" });
+  assert.deepEqual(none.missingOnChannel, []);
 });
 
 // BL-209 AC-AU-12 (AUTO_PRIVATE_UPLOAD_PLAN.md §2 item 7): the agents' calendar read reports, for each upload, whether it was queued

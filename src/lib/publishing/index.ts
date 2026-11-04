@@ -165,7 +165,18 @@ export function createPublishingCalendarCore(options: { dailyCoverage?: (channel
       if (result.status !== "ok") return { status: result.status === "no_workspace" ? "no_workspace" : "unavailable" };
       return {
         status: "ok",
-        items: result.packages.map((p) => ({ video: p.video, title: p.title, plannedPublishDate: p.plannedPublishDate, state: p.state, problems: p.problems.map((problem) => problem.code), videoId: p.youtube?.videoId ?? null })),
+        items: result.packages.map((p) => ({
+          video: p.video,
+          title: p.title,
+          plannedPublishDate: p.plannedPublishDate,
+          state: p.state,
+          problems: p.problems.map((problem) => problem.code),
+          videoId: p.youtube?.videoId ?? null,
+          // BL-243: whether the uploaded video is still on the channel, as of the copy's last sync.
+          existsOnChannel: p.existsOnChannel ?? null,
+          checkedAt: p.checkedAt ?? null,
+          removedAt: p.youtube?.removedAt ?? null,
+        })),
       };
     },
     async uploads(channelId) {
