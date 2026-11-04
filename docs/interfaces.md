@@ -799,7 +799,8 @@ Key MCP tools:
     `deleted_on_youtube` (its `Vn_youtube.json` names a video a complete sync marked removed on YouTube; problem
     `video_deleted_on_youtube`); `uploaded_unknown` means only "not in this copy yet", not a confirmation. Each item gains
     `existsOnChannel` (true | false | null; true only as of a completed removed check), `checkedAt` (when a sync last completed
-    the removed-on-YouTube check, `channels.removed_check_at`, schema v118, ISO, or null) and `removedAt`; the read gains
+    the removed-on-YouTube check, `channels.removed_check_at`, schema v118, ISO, or null; `true` also needs the video's YouTube
+    `publishedAt` not later than it) and `removedAt`; the read also has a top-level `checkedAt` (the same time); the read gains
     `missingOnChannel: [{ video, videoId, removedAt }]` (`[]` when packages are not ok). `channel_video_list` takes `videoIds` (1-50):
     `{ channelId, videos, total, offset, nextOffset, removed: [{ videoId, removedAt }], notFound: [videoId] }`, only the asked videos
     of the channel in the order asked; without `videoIds` the answers are unchanged.
