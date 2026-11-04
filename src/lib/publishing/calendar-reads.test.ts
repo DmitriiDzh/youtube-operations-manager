@@ -217,3 +217,26 @@ test("BL-243 AC-WP-72: the top-level checkedAt is the channel's removed-check ti
   const never = await createPublishingCalendarReads({ ...base, getChannel: async () => ({ lastSyncedAt: new Date("2026-11-05T08:00:00.000Z"), removedCheckAt: null }) }).getAgentCalendar({ credentialRef: { userId: "u1" }, channelId: "UC_A" });
   assert.equal(never.checkedAt, null);
 });
+
+// BL-243 review round 4, item 5: one channel read -- the calendar's own row gives the top-level checkedAt, and the same value goes to
+// the package scan, so the top and the items agree.
+test("BL-243: the calendar reads the channel once and hands its checkedAt to the packages", async () => {
+  let channelReads = 0;
+  const given: Array<{ checkedAt: string | null } | undefined> = [];
+  const calendar = await createPublishingCalendarReads({
+    listVideos: async () => VIDEOS,
+    getChannel: async () => {
+      channelReads += 1;
+      return { lastSyncedAt: new Date("2026-11-05T08:00:00.000Z"), removedCheckAt: new Date("2026-11-04T08:00:00.000Z") };
+    },
+    assertActiveChannel: async () => undefined,
+    clock: { now: () => NOW },
+    packages: async (_channelId, options) => {
+      given.push(options);
+      return { status: "ok", items: [] };
+    },
+  }).getAgentCalendar({ credentialRef: { userId: "u1" }, channelId: "UC_A" });
+  assert.equal(channelReads, 1);
+  assert.deepEqual(given, [{ checkedAt: "2026-11-04T08:00:00.000Z" }]);
+  assert.equal(calendar.checkedAt, "2026-11-04T08:00:00.000Z");
+});

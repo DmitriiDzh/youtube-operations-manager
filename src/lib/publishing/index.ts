@@ -160,8 +160,8 @@ export function createPublishingCalendarCore(options: { dailyCoverage?: (channel
       await createChannelAccessCore().assertActiveChannel(args);
     },
     clock: { now: () => new Date() },
-    async packages(channelId) {
-      const result = await createPackageScanCore().scan(channelId);
+    async packages(channelId, options) {
+      const result = await createPackageScanCore().scan(channelId, options);
       if (result.status !== "ok") return { status: result.status === "no_workspace" ? "no_workspace" : "unavailable" };
       return {
         status: "ok",
@@ -198,7 +198,7 @@ export function createPackageScanCore() {
   const scan = createPackageScanReads();
   const files = createWorkspaceVideoFiles();
   return {
-    scan: (channelId: string) => scan.reads.scan(channelId),
+    scan: (channelId: string, options?: { checkedAt?: string | null }) => scan.reads.scan(channelId, options),
     /**
      * A package's thumbnail for the preview: only an image under `04 Videos/` of the channel's workspace, reached through the
      * workspace rule, at most 10 MB; its type is read from its first bytes, never from its name. Null when it is none of that.

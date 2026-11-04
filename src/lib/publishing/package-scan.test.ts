@@ -329,3 +329,22 @@ test("BL-243 AC-WP-80: a video published after the removed check is not 'on the 
   const same = await createPackageScan(deps(uploadedFiles(), { videos: exact, removedVideos: async () => [], videosCheckedAt: async () => SYNCED })).scan("UC_t");
   assert.equal(same.status === "ok" ? same.packages.find((p) => p.video === "V74")?.existsOnChannel : "x", true, "published at the check's moment: seen");
 });
+
+// BL-243 review round 4, item 5: a caller's checkedAt (the calendar's) replaces the scan's own read of it.
+test("BL-243: scan(channelId, { checkedAt }) uses the given check time for every package", async () => {
+  let ownReads = 0;
+  const result = await createPackageScan(
+    deps(uploadedFiles(), {
+      videos: visible74,
+      removedVideos: async () => [],
+      videosCheckedAt: async () => {
+        ownReads += 1;
+        return "2026-10-01T00:00:00.000Z";
+      },
+    })
+  ).scan("UC_t", { checkedAt: SYNCED });
+  if (result.status !== "ok") return assert.fail(result.status);
+  assert.equal(ownReads, 0);
+  assert.deepEqual([...new Set(result.packages.map((p) => p.checkedAt))], [SYNCED]);
+  assert.equal(result.packages.find((p) => p.video === "V74")?.existsOnChannel, true);
+});

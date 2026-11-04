@@ -75,8 +75,10 @@ export function stripBom(text: string): string {
   return text.replace(/^﻿/, "");
 }
 
-/** The uploaded video's id from a `Vn_youtube.json` text; null when the text is not JSON or names no video. */
-/** The upload record's video id, and (BL-243) its `uploadedAt` when it carries a valid one. */
+/**
+ * The uploaded video's id from a `Vn_youtube.json` text, and (BL-243) its `uploadedAt` when it carries a valid time; null when the
+ * text is not JSON or names no video.
+ */
 export function parseUploadRecord(text: string): { videoId: string; uploadedAt?: string } | null {
   let value: unknown;
   try {

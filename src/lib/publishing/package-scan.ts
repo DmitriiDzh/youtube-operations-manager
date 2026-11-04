@@ -1,4 +1,4 @@
-import { VIDEO_DELETED_ON_YOUTUBE } from "@/lib/shared-video-presence";
+import { existsOnChannelOf, VIDEO_DELETED_ON_YOUTUBE } from "@/lib/shared-video-presence";
 import { parseUploadRecord, stripBom, VIDEOS_FOLDER, walkVideosFolder, type DirEntry } from "@/lib/workspace-videos";
 import {
   imageKindOf,
@@ -103,14 +103,6 @@ export type PackageScanDeps = {
   join(...parts: string[]): string;
   clock: { now(): Date };
 };
-
-/** BL-243: the completed removed check (`checkedAt`) could have seen a video YouTube dates `publishedAt`. Unknown either: no. */
-function seenByCheck(publishedAt: string | undefined, checkedAt: string | null): boolean {
-  if (!publishedAt || !checkedAt) return false;
-  const published = Date.parse(publishedAt);
-  const checked = Date.parse(checkedAt);
-  return Number.isFinite(published) && Number.isFinite(checked) && published <= checked;
-}
 
 /** `04 Videos/<MM Month>/<MMDD Vn>/Vn_release.json` (the shared `workspace-videos` walk). */
 function findManifests(deps: PackageScanDeps, workspace: string): Promise<string[]> {
@@ -245,16 +237,16 @@ export function createPackageScan(deps: PackageScanDeps) {
           ? { videoId: record.videoId, privacyStatus: null, publishAt: null, removedAt, uploadedAt }
           : { videoId: record.videoId, privacyStatus: uploaded?.privacyStatus ?? null, publishAt: uploaded?.publishAt ?? null, removedAt: null, uploadedAt }
         : null,
-      // BL-243 review: "on the channel" only as of a removed check that ran (checkedAt) and saw the video -- YouTube's publishedAt
-      // not after it (the copy keeps no "first seen" time); a removed mark is proof on its own.
-      existsOnChannel: !record ? null : removedAt !== undefined ? false : uploaded && seenByCheck(uploaded.publishedAt, copy.checkedAt) ? true : null,
+      // BL-243: the shared rule (ADR 0063 §1) -- the removed mark is proof; "on the channel" only as of a completed check that
+      // could have seen the video.
+      existsOnChannel: !record ? null : existsOnChannelOf({ removed: removedAt !== undefined, listed: uploaded !== undefined, publishedAt: uploaded?.publishedAt, checkedAt: copy.checkedAt }),
       pkg,
     };
   }
 
   return {
     /** Every package of the channel, by planned date (undated last), then by video number. */
-    async scan(channelId: string): Promise<PackageScanResult> {
+    async scan(channelId: string, options: { checkedAt?: string | null } = {}): Promise<PackageScanResult> {
       const workspace = await deps.workspace(channelId);
       if (!workspace) return { status: "no_workspace" };
       const validation = await deps.validateWorkspace(workspace);
@@ -265,7 +257,8 @@ export function createPackageScan(deps: PackageScanDeps) {
         // BL-243 (ADR 0063): an unreadable mark is "none known" (such packages read as before) and an unreadable sync time null --
         // never a failed scan.
         deps.removedVideos ? deps.removedVideos(channelId).catch(() => []) : Promise.resolve([]),
-        deps.videosCheckedAt ? deps.videosCheckedAt(channelId).catch(() => null) : Promise.resolve(null),
+        // BL-243: a caller that already read the check time (the calendar) passes it, so its own and the items' agree.
+        options.checkedAt !== undefined ? Promise.resolve(options.checkedAt) : deps.videosCheckedAt ? deps.videosCheckedAt(channelId).catch(() => null) : Promise.resolve(null),
         findManifests(deps, workspace),
       ]);
       const copy: Copy = { videos, removed: new Map(removed.map((video) => [video.videoId, video.removedAt])), checkedAt };
