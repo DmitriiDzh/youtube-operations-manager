@@ -290,3 +290,33 @@ test("BL-243 AC-WP-71: a veto removes the date whatever the local mark or the li
   assert.deepEqual(await gone.schedule.tick(), { changed: 0 });
   assert.equal(gone.state.reads, 1);
 });
+
+// BL-243 review round 3 (AC-WP-79): YouTube's "no such video" is not proof on its own (another account, a partial answer). Without the
+// removed mark of a completed owner sync it is a refusal like any other -- recorded, the row keeps its date, tried again after the
+// hour -- for a veto and for a date alike. With the mark (above) a veto's un-dating ends there.
+test("BL-243 AC-WP-79: not_found without a removed mark is refused and retried, for a veto and for dating", async () => {
+  const missing = { privacyStatus: null, publishAt: null, missing: true } as never;
+  const veto = harness(row(), { kind: "vetoed" }, missing, async () => new Set());
+  assert.deepEqual(await veto.schedule.tick(), { changed: 1 });
+  assert.deepEqual(veto.state.writes, []);
+  assert.equal(veto.state.row.publishAt, "2026-10-26T09:00:00.000Z", "the row keeps its date");
+  assert.deepEqual([veto.steps().planSync.action, veto.steps().planSync.result], ["unscheduled", "refused"]);
+  const reads = veto.state.reads;
+  await veto.schedule.tick();
+  assert.equal(veto.state.reads, reads, "not again within the hour");
+  veto.state.now = new Date(NOW.getTime() + RETRY_AFTER_MS + 1);
+  await veto.schedule.tick();
+  assert.equal(veto.state.reads, reads + 1, "tried again after the hour");
+
+  const unreadable = harness(row(), { kind: "vetoed" }, missing, async () => {
+    throw new Error("db down");
+  });
+  await unreadable.schedule.tick();
+  assert.equal(unreadable.steps().planSync.result, "refused", "an unreadable list is no mark");
+
+  const dating = harness(row({ publishAt: null, stepsJson: JSON.stringify({ ...OK_STEPS, publishAt: undefined }) }), { kind: "approved", publishAt: "2026-10-27T09:00:00.000Z" }, missing, async () => new Set());
+  assert.deepEqual(await dating.schedule.tick(), { changed: 1 });
+  assert.deepEqual(dating.state.writes, []);
+  assert.equal(dating.state.row.publishAt, null);
+  assert.deepEqual([dating.steps().planSync.action, dating.steps().planSync.result], ["scheduled", "refused"]);
+});
