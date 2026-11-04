@@ -170,4 +170,9 @@ test("AC-WP-59: the new texts exist in English and Russian", async () => {
   }
   assert.equal(ru["weekPlan.stage.toggle"], "Одобрять пустые слоты");
   assert.equal(ru["weekPlan.action.approveReady"], "Одобрить все готовые");
+  // Review #3: each hint says the other setting's approvals do not carry over and come back when switched back.
+  assert.match(en["weekPlan.stage.hintPackaged"], /do not count here; switching it back on brings them back/);
+  assert.match(en["weekPlan.stage.hintSlot"], /do not count here; switching it back off brings them back/);
+  assert.match(ru["weekPlan.stage.hintPackaged"], /не действуют; включите снова — вернутся/);
+  assert.match(ru["weekPlan.stage.hintSlot"], /не действуют; выключите снова — вернутся/);
 });
