@@ -39,6 +39,8 @@ export type PlanSlotDto = {
   /** BL-225 stage 2: the release package that names the slot. */
   package: { video: string; title: string; durationSeconds: number; languages: string[]; containsSyntheticMedia: boolean; thumbnailPath: string | null; testThumbnails: number; problems: string[]; manifestSha256?: string | null } | null;
   released: boolean;
+  /** BL-242 R3: the date the slot's uploaded video carries on YouTube (UTC), or null/absent. */
+  youtubePublishAt?: string | null;
   updatedAt: string;
   updatedBy: "factory" | "worker";
 };
@@ -94,6 +96,13 @@ export const canApprove = (s: Pick<PlanSlotDto, "vetoed" | "released" | "approva
 export function slotsToApprove(plan: Pick<PlanDto, "slots">): Array<{ slotId: string; contentHash: string }> {
   return plan.slots.filter(canApprove).map((s) => ({ slotId: s.slotId, contentHash: s.contentHash }));
 }
+
+/**
+ * BL-242 R3: the date a slot's video carries on YouTube while no approval of the slot counts (needs approval, or waits for its
+ * package) -- shown so the owner approves (the date moves to the slot's time) or vetoes (the date goes). Null otherwise.
+ */
+export const strayDateOf = (s: Pick<PlanSlotDto, "approval" | "vetoed"> & { youtubePublishAt?: string | null }): string | null =>
+  !s.vetoed && s.approval !== "approved" && s.youtubePublishAt ? s.youtubePublishAt : null;
 
 /** BL-242: the stage a plan list answer names; an older server names none and behaves as `slot`. */
 export const stageOf = (answer: { approvalStage?: ApprovalStage } | null | undefined): ApprovalStage => answer?.approvalStage ?? "slot";

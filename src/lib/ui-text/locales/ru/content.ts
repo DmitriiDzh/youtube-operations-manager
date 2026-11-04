@@ -669,6 +669,7 @@ export const content: Record<keyof typeof en, string> = {
   "weekPlan.stage.hintSlot": "Включено: одобряете слоты до пакета; если агент изменит слот, он снова ждёт вас. Одобрения, сделанные при выключенном, здесь не действуют; выключите снова — вернутся.",
   "weekPlan.stage.failed": "Настройка одобрения не сохранилась ({code}).",
   "weekPlan.awaitingPackage": "ждёт пакета",
+  "weekPlan.onYoutube": "на YouTube: {at}",
   "weekPlan.changed.package": "Пакет сменился после вашего одобрения — был {was}",
   "weekPlan.action.approveReady": "Одобрить все готовые",
   "weekPlan.bar.waitingPackages": "Слоты ждут пакетов: одобрять пока нечего.",

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { canApprove, changedField, defaultWeek, stageOf, lengthLabel, mondayOf, pipelineOf, replacedToPull, shiftWeek, slotsToApprove, splitVetoed, tileCounts, wallParts, weekCoverageLine, zonedParts, type PlanSlotDto } from "./weekly-plan-model";
+import { canApprove, changedField, defaultWeek, stageOf, strayDateOf, lengthLabel, mondayOf, pipelineOf, replacedToPull, shiftWeek, slotsToApprove, splitVetoed, tileCounts, wallParts, weekCoverageLine, zonedParts, type PlanSlotDto } from "./weekly-plan-model";
 
 // BL-225 (WEEKLY_PUBLISHING_PLAN.md stage 1 item 6, AC-WP-15): the screen's pure rules. Values by hand: 2026-10-26 is a Monday,
 // 2026-11-01 its Sunday; 18:00 in Tokyo is 09:00Z, which is 10:00 in Berlin (CET, UTC+1, after 25.10); 23:30Z on 31.10 is 08:30 on Sunday 1.11 in Tokyo.
@@ -175,4 +175,19 @@ test("AC-WP-59: the new texts exist in English and Russian", async () => {
   assert.match(en["weekPlan.stage.hintSlot"], /do not count here; switching it back off brings them back/);
   assert.match(ru["weekPlan.stage.hintPackaged"], /не действуют; включите снова — вернутся/);
   assert.match(ru["weekPlan.stage.hintSlot"], /не действуют; выключите снова — вернутся/);
+});
+
+// BL-242 R3 (re-review): a slot not approved whose video still carries a date on YouTube shows it («на YouTube: …»), so the owner sees
+// a date no approval counts for and moves it (approve) or removes it (veto). Approved or vetoed slots, or no date: nothing.
+test("R3: the stray YouTube date is shown on a slot that needs approval or awaits its package", async () => {
+  const at = "2026-10-27T09:00:00.000Z";
+  assert.equal(strayDateOf(slot({ approval: "needs_approval", youtubePublishAt: at })), at);
+  assert.equal(strayDateOf(slot({ approval: "awaiting_package", youtubePublishAt: at })), at);
+  assert.equal(strayDateOf(slot({ approval: "approved", youtubePublishAt: at })), null);
+  assert.equal(strayDateOf(slot({ approval: "needs_approval", youtubePublishAt: at, vetoed: { at: "x", device: null } })), null);
+  assert.equal(strayDateOf(slot({ approval: "needs_approval", youtubePublishAt: null })), null);
+  const en = (await import("@/lib/ui-text/locales/en/content")).content as Record<string, string>;
+  const ru = (await import("@/lib/ui-text/locales/ru/content")).content as Record<string, string>;
+  assert.equal(en["weekPlan.onYoutube"], "On YouTube: {at}");
+  assert.equal(ru["weekPlan.onYoutube"], "на YouTube: {at}");
 });

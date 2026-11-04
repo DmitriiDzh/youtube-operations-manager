@@ -665,6 +665,7 @@ export const content = {
   "weekPlan.stage.hintSlot": "On: you approve slots before they have a package; a slot changed by an agent needs you again. Approvals made with the switch off do not count here; switching it back off brings them back.",
   "weekPlan.stage.failed": "The approval setting was not saved ({code}).",
   "weekPlan.awaitingPackage": "waiting for its package",
+  "weekPlan.onYoutube": "On YouTube: {at}",
   "weekPlan.changed.package": "The package changed after your approval — was {was}",
   "weekPlan.action.approveReady": "Approve all ready",
   "weekPlan.bar.waitingPackages": "The slots are waiting for their packages: nothing to approve yet.",

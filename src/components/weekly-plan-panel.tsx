@@ -18,6 +18,7 @@ import {
   slotsToApprove,
   splitVetoed,
   stageOf,
+  strayDateOf,
   tileCounts,
   wallParts,
   weekCoverageLine,
@@ -531,6 +532,8 @@ function SlotRow(props: {
             </div>
           )}
           {meta.text && <div className={`truncate text-xs ${meta.tone}`}>{meta.text}</div>}
+          {/* BL-242 R3: a date on YouTube no approval of this slot counts for -- approving moves it, vetoing removes it. */}
+          {strayDateOf(slot) && <div className="truncate text-xs text-amber-300">{t("weekPlan.onYoutube", { at: at(strayDateOf(slot)!) })}</div>}
           {slot.replaces && !slot.vetoed && (
             <div className="truncate text-xs text-amber-300">
               {t(replacedToPull([slot]).length > 0 && slot.approval !== "approved" ? "weekPlan.replaces.willPull" : "weekPlan.replaces.done", { slot: replacedLabel(t, slot.replaces) })}
