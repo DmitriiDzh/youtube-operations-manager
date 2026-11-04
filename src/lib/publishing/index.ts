@@ -271,7 +271,7 @@ function createPackageScanReads() {
       return { channelId, defaultLanguage: baseline.defaultLanguage, defaultAudioLanguage: baseline.defaultAudioLanguage };
     },
     async videos(channelId) {
-      return (await videoStore.listVideosByChannel(channelId)).map((video) => ({ videoId: video.videoId, title: video.title, privacyStatus: video.privacyStatus, publishAt: video.publishAt }));
+      return (await videoStore.listVideosByChannel(channelId)).map((video) => ({ videoId: video.videoId, title: video.title, privacyStatus: video.privacyStatus, publishAt: video.publishAt, publishedAt: video.publishedAt }));
     },
     // BL-243: the removed mark and the copy's age, so a deleted video is not read as uploaded.
     async removedVideos(channelId) {

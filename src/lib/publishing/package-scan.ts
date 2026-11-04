@@ -89,8 +89,11 @@ export type PackageScanDeps = {
   /** ffprobe's duration in seconds; null when the file cannot be read as a video; "no_ffprobe" when ffprobe is not installed. */
   probeDuration(absolutePath: string, bytes: number): Promise<number | null | "no_ffprobe">;
   channel(channelId: string): Promise<ChannelExpectations>;
-  /** The channel's synced videos (the local copy). */
-  videos(channelId: string): Promise<Array<{ videoId: string; title: string; privacyStatus: string; publishAt: string | null }>>;
+  /**
+   * The channel's synced videos (the local copy). BL-243: `publishedAt` -- YouTube's `snippet.publishedAt` as synced; a video is
+   * "on the channel" only when it is not later than the completed removed check (else that check may not have seen it).
+   */
+  videos(channelId: string): Promise<Array<{ videoId: string; title: string; privacyStatus: string; publishAt: string | null; publishedAt?: string }>>;
   /** BL-243: the copy's videos a sync found removed on YouTube, with when (ISO). Absent: none known. */
   removedVideos?(channelId: string): Promise<Array<{ videoId: string; removedAt: string }>>;
   /** BL-243: when a channel sync last completed the removed check (ISO), or null when never. Absent: null. */
@@ -101,14 +104,12 @@ export type PackageScanDeps = {
   clock: { now(): Date };
 };
 
-/** BL-243: the upload record's `uploadedAt` (ISO), when it carries a valid one. */
-function uploadedAtOfRecord(text: string): string | null {
-  try {
-    const value = (JSON.parse(stripBom(text)) as { uploadedAt?: unknown } | null)?.uploadedAt;
-    return typeof value === "string" && Number.isFinite(Date.parse(value)) ? value : null;
-  } catch {
-    return null;
-  }
+/** BL-243: the completed removed check (`checkedAt`) could have seen a video YouTube dates `publishedAt`. Unknown either: no. */
+function seenByCheck(publishedAt: string | undefined, checkedAt: string | null): boolean {
+  if (!publishedAt || !checkedAt) return false;
+  const published = Date.parse(publishedAt);
+  const checked = Date.parse(checkedAt);
+  return Number.isFinite(published) && Number.isFinite(checked) && published <= checked;
 }
 
 /** `04 Videos/<MM Month>/<MMDD Vn>/Vn_release.json` (the shared `workspace-videos` walk). */
@@ -205,14 +206,12 @@ export function createPackageScan(deps: PackageScanDeps) {
       testThumbnails.push({ file: test.file, exists: file !== null, sizeBytes: file?.bytes ?? null, kind: file ? imageKindOf(await deps.readHead(file.path, 8)) : null });
     }
     const recordFile = await deps.resolveFile(workspace, `${folder}/${youtubeRecordFileName(pkg.video)}`);
-    let record: { videoId: string } | null = null;
-    // BL-243: when the record says the upload happened (`uploadedAt`), so the newest of two deleted uploads speaks for a slot.
-    let uploadedAt: string | null = null;
+    let record: { videoId: string; uploadedAt?: string } | null = null;
     if (recordFile) {
-      const text = await deps.readText(recordFile.path, MANIFEST_MAX_BYTES).catch(() => null);
-      record = text === null ? null : parseUploadRecord(text);
-      if (record && text !== null) uploadedAt = uploadedAtOfRecord(text);
+      record = await deps.readText(recordFile.path, MANIFEST_MAX_BYTES).then(parseUploadRecord, () => null);
     }
+    // BL-243: when the record says the upload happened, so the newest of two deleted uploads speaks for a slot.
+    const uploadedAt = record?.uploadedAt ?? null;
     const sameTitle = videos.find((video) => video.title === pkg.title);
     const problems = packageProblems(
       pkg,
@@ -246,8 +245,9 @@ export function createPackageScan(deps: PackageScanDeps) {
           ? { videoId: record.videoId, privacyStatus: null, publishAt: null, removedAt, uploadedAt }
           : { videoId: record.videoId, privacyStatus: uploaded?.privacyStatus ?? null, publishAt: uploaded?.publishAt ?? null, removedAt: null, uploadedAt }
         : null,
-      // BL-243 review: "on the channel" only as of a removed check that ran (checkedAt); a removed mark is proof on its own.
-      existsOnChannel: !record ? null : removedAt !== undefined ? false : uploaded && copy.checkedAt !== null ? true : null,
+      // BL-243 review: "on the channel" only as of a removed check that ran (checkedAt) and saw the video -- YouTube's publishedAt
+      // not after it (the copy keeps no "first seen" time); a removed mark is proof on its own.
+      existsOnChannel: !record ? null : removedAt !== undefined ? false : uploaded && seenByCheck(uploaded.publishedAt, copy.checkedAt) ? true : null,
       pkg,
     };
   }

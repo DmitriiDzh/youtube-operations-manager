@@ -298,8 +298,7 @@ export function createChannelSyncServices(deps: ServiceDependencies) {
         else hiddenRemovedVideoIds = await deps.channelStore.markVideosRemovedOnYoutube(channel.channelId, videoIds, syncedAt, listedAt);
 
         // BL-243: the removed check's own time only when it ran (the packages' `checkedAt`).
-        if (removedCheck === "done") await deps.channelStore.markChannelSynced(channel.channelId, syncedAt, syncedAt);
-        else await deps.channelStore.markChannelSynced(channel.channelId, syncedAt);
+        await deps.channelStore.markChannelSynced(channel.channelId, syncedAt, removedCheck === "done" ? syncedAt : undefined);
         progress?.counts(videoMetadata.length, videoMetadata.length);
 
         const storedChannel = await deps.channelStore.getChannel(channel.channelId);

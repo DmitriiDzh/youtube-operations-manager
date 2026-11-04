@@ -204,3 +204,16 @@ test("BL-235: agent calendar gaps come from the daily coverage, in the channel's
   assert.deepEqual(calendar.missingTranslationDates, ["2026-10-14"]);
   assert.equal(calendar.gapDatesTimeZone, "Asia/Tokyo");
 });
+
+// BL-243 review round 3, item 5 (AC-WP-72): the calendar carries the removed check's own time at the top, next to missingOnChannel
+// -- older than lastSyncedAt when later syncs skipped the check; null when no check completed.
+test("BL-243 AC-WP-72: the top-level checkedAt is the channel's removed-check time, not lastSyncedAt", async () => {
+  const base = { listVideos: async () => VIDEOS, assertActiveChannel: async () => undefined, clock: { now: () => NOW } };
+  const checked = await createPublishingCalendarReads({
+    ...base,
+    getChannel: async () => ({ lastSyncedAt: new Date("2026-11-05T08:00:00.000Z"), removedCheckAt: new Date("2026-11-04T08:00:00.000Z") }),
+  }).getAgentCalendar({ credentialRef: { userId: "u1" }, channelId: "UC_A" });
+  assert.deepEqual([checked.lastSyncedAt, checked.checkedAt], ["2026-11-05T08:00:00.000Z", "2026-11-04T08:00:00.000Z"]);
+  const never = await createPublishingCalendarReads({ ...base, getChannel: async () => ({ lastSyncedAt: new Date("2026-11-05T08:00:00.000Z"), removedCheckAt: null }) }).getAgentCalendar({ credentialRef: { userId: "u1" }, channelId: "UC_A" });
+  assert.equal(never.checkedAt, null);
+});

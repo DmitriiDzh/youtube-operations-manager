@@ -198,7 +198,8 @@ function uploadedFiles() {
     "04 Videos/11 November/1111 V75/V75_youtube.json": { text: JSON.stringify({ videoId: "vid75" }), bytes: 20 },
   };
 }
-const visible74 = async () => [{ videoId: "vid74", title: "Title V74", privacyStatus: "private", publishAt: null }];
+// (review round 3) vid74's YouTube publishedAt 2026-11-01T00:00Z is before the check, so the check saw it.
+const visible74 = async () => [{ videoId: "vid74", title: "Title V74", privacyStatus: "private", publishAt: null, publishedAt: "2026-11-01T00:00:00.000Z" }];
 
 test("BL-243 AC-WP-66: a removed video's package is deleted_on_youtube; unknown stays for a video not in the copy", async () => {
   const result = await createPackageScan(
@@ -225,7 +226,7 @@ test("BL-243 AC-WP-66: a removed video's package is deleted_on_youtube; unknown 
 test("BL-243 AC-WP-67: the mark cleared -> uploaded again; never synced -> checkedAt null; a removed video's title is not 'on the channel'", async () => {
   const back = await createPackageScan(
     deps(uploadedFiles(), {
-      videos: async () => [...(await visible74()), { videoId: "vid73", title: "Title V73", privacyStatus: "private", publishAt: null }],
+      videos: async () => [...(await visible74()), { videoId: "vid73", title: "Title V73", privacyStatus: "private", publishAt: null, publishedAt: "2026-11-01T00:00:00.000Z" }],
       removedVideos: async () => [],
       videosCheckedAt: async () => SYNCED,
     })
@@ -314,4 +315,17 @@ test("BL-243 AC-WP-78: no completed removed check -> existsOnChannel never true;
   assert.deepEqual([by.V73.state, by.V73.existsOnChannel], ["deleted_on_youtube", false]);
   assert.equal(by.V74.youtube?.uploadedAt, "2026-11-02T10:00:00.000Z");
   assert.equal(by.V73.youtube?.uploadedAt, null, "no uploadedAt in the record");
+});
+
+// BL-243 review round 3, item 6 (AC-WP-80): the copy keeps no "first seen" time, so "on the channel" (true) also needs YouTube's
+// publishedAt not later than the completed removed check -- a video published (or uploaded) after it is unknown (null).
+test("BL-243 AC-WP-80: a video published after the removed check is not 'on the channel' (null)", async () => {
+  const after = async () => [{ videoId: "vid74", title: "Title V74", privacyStatus: "private", publishAt: null, publishedAt: "2026-11-04T09:00:00.000Z" }];
+  const result = await createPackageScan(deps(uploadedFiles(), { videos: after, removedVideos: async () => [], videosCheckedAt: async () => SYNCED })).scan("UC_t");
+  if (result.status !== "ok") return assert.fail(result.status);
+  const v74 = result.packages.find((p) => p.video === "V74")!;
+  assert.deepEqual([v74.state, v74.existsOnChannel, v74.checkedAt], ["uploaded_private", null, SYNCED]);
+  const exact = async () => [{ videoId: "vid74", title: "Title V74", privacyStatus: "private", publishAt: null, publishedAt: SYNCED }];
+  const same = await createPackageScan(deps(uploadedFiles(), { videos: exact, removedVideos: async () => [], videosCheckedAt: async () => SYNCED })).scan("UC_t");
+  assert.equal(same.status === "ok" ? same.packages.find((p) => p.video === "V74")?.existsOnChannel : "x", true, "published at the check's moment: seen");
 });

@@ -46,6 +46,9 @@ export type AgentPublishingCalendar = {
    * `deleted_on_youtube`); [] when the packages are not readable. `lastSyncedAt` above is when that was last checked.
    */
   missingOnChannel: Array<{ video: string | null; videoId: string; removedAt: string }>;
+  /** BL-243 review round 3: when a channel sync last completed the removed-on-YouTube check (ISO), what `missingOnChannel` and
+   * the items' `existsOnChannel` stand on; null: never. Can be older than `lastSyncedAt`. */
+  checkedAt: string | null;
   uploads: AgentUpload[];
 };
 
@@ -111,7 +114,8 @@ export type PublishingCalendarDeps = {
   listVideos(channelId: string): Promise<CoverageSourceVideo[]>;
   /** Fails closed unless `channelId` is the caller's active channel (AGENTS.md §F); used by the agent read only. */
   assertActiveChannel?(args: { userId: string | null; channelId: string }): Promise<void>;
-  getChannel(channelId: string): Promise<{ lastSyncedAt: Date | null } | null>;
+  /** BL-243: `removedCheckAt` -- when a sync last completed the removed-on-YouTube check (absent: unknown, null). */
+  getChannel(channelId: string): Promise<{ lastSyncedAt: Date | null; removedCheckAt?: Date | null } | null>;
   clock: { now(): Date };
   thresholdDays?: number;
   /**
@@ -186,7 +190,11 @@ export function createPublishingCalendarReads(deps: PublishingCalendarDeps) {
           if (!filledDays.has(day)) gapDates.push(day);
         }
       }
-      const packages: AgentPackages = deps.packages ? await deps.packages(channelId).catch((): AgentPackages => ({ status: "unavailable" })) : { status: "unavailable" };
+      const [packages, channelRow] = await Promise.all([
+        deps.packages ? deps.packages(channelId).catch((): AgentPackages => ({ status: "unavailable" })) : Promise.resolve<AgentPackages>({ status: "unavailable" }),
+        // BL-243: the removed check's time, next to missingOnChannel (a failed read: unknown).
+        deps.getChannel(channelId).catch(() => null),
+      ]);
       return {
         channelId,
         lastSyncedAt,
@@ -198,6 +206,7 @@ export function createPublishingCalendarReads(deps: PublishingCalendarDeps) {
         missingTranslationDates,
         gapDatesTimeZone: dayCoverage ? dayCoverage.timeZone : "UTC",
         packages,
+        checkedAt: channelRow?.removedCheckAt?.toISOString() ?? null,
         missingOnChannel:
           packages.status === "ok" ? packages.items.flatMap((item) => (item.state === "deleted_on_youtube" && item.videoId && item.removedAt ? [{ video: item.video, videoId: item.videoId, removedAt: item.removedAt }] : [])) : [],
         uploads: deps.uploads ? await deps.uploads(channelId) : [],
