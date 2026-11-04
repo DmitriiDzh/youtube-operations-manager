@@ -1308,7 +1308,7 @@ A second agent role, separate from the channel agents. Technical contract only (
       packages is `state: planned`. A slot with a ready or uploaded package needs approval; its `contentHash` is the slot hash with
       `[video, manifestSha256, videoId|null]` appended and `fingerprint` names that package. Another manifest, another video or a
       changed slot needs the owner again; approvals made in the other stage do not count. A slot takes an already uploaded private
-      video when the package's `slotId` names it (the owner's approval then names the video id). `package` gains `manifestSha256`.
+      video when the package's `slotId` names it (the owner's approval then names the video id). `package` gains `manifestSha256`; a slot gains `youtubePublishAt` (its video's date on YouTube, or null).
       Uploads: an approved slot dates only the approved manifest (or, with a video id, that video).
   - **BL-236 speech and voices (Factory API 1.40.0, FO-REQ-0050, ADR 0057).** One surface over Gemini TTS and ElevenLabs
     (`src/composition/speech.ts`); designed voices only -- no tool takes audio. Keys, switches and limits are set in the Web UI only.

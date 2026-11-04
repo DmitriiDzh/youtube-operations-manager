@@ -1,8 +1,8 @@
 import { parseWithSchema } from "@/lib/shared-domain";
-import type { PublishingPlanDecision, PublishingPlanMeta, PublishingPlanSlot, PublishingPlansSnapshot } from "@/lib/sync-gateway";
+import type { PublishingPlanDecision, PublishingPlanMeta, PublishingPlanPackageFingerprint, PublishingPlanSlot, PublishingPlansSnapshot } from "@/lib/sync-gateway";
 import { isValidIanaTimezone } from "@/lib/zoned-time";
-import { DEFAULT_APPROVAL_STAGE, DomainError, PUBLISHING_PLAN_LIMITS, type PlanSaveRefusal, type PlanSlotDecision, type PlanSummary, type PlanView, type PublishingPlanActor, type PublishingPlanApprovalStage, type PublishingPlansPorts, type ReplacedSlot } from "./contracts";
-import { addDays, approvalStandsOn, contentHashOf, contentOf, decisionsForStage, decisionStateOf, instantOf, isCalendarDate, isMonday, planViewOf, slotViewOf, standingPackageApprovalOf, standingVetoOf, winningApprovalIds } from "./model";
+import { DEFAULT_APPROVAL_STAGE, DomainError, PUBLISHING_PLAN_LIMITS, type PlanSaveRefusal, type PlanSlotDecision, type PlanSlotProgress, type PlanSummary, type PlanView, type PublishingPlanActor, type PublishingPlanApprovalStage, type PublishingPlansPorts, type ReplacedSlot } from "./contracts";
+import { addDays, approvalStandsOn, contentHashOf, contentOf, decisionsForStage, decisionStateOf, instantOf, isCalendarDate, isMonday, planViewOf, slotViewOf, standingPackageApprovalOf, standingVetoOf, decisionOrder, lastApprovedPackageOf } from "./model";
 import { approvalStageInputSchema, getPlanInputSchema, listPlansInputSchema, ownerDecisionInputSchema, PLAN_LIST_DEFAULT_LIMIT, savePlanInputSchema } from "./schemas";
 
 // BL-225 (FO-REQ-0040 items 1, 5, 6; WEEKLY_PUBLISHING_PLAN.md stage 1 items 3-5; ADR 0051): what agents and the owner may do with a
@@ -23,18 +23,6 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
 
   /** BL-242 (ADR 0062 §1): the channel's approval stage; a document without one is in `packaged`. */
   const stageOf = (snapshot: PublishingPlansSnapshot): PublishingPlanApprovalStage => snapshot.approvalStage ?? DEFAULT_APPROVAL_STAGE;
-
-  /**
-   * BL-242 review #1 (ADR 0062 §4): the approvals that hold their video number, from every plan of the channel -- the same set for
-   * the screen and the uploads, so they cannot disagree.
-   */
-  const winnersOf = (snapshot: PublishingPlansSnapshot): Set<string> =>
-    winningApprovalIds(
-      Object.values(snapshot.slots).flatMap((slot) => {
-        const meta = snapshot.plans[slot.weekStart];
-        return meta ? [{ timeZone: meta.timeZone, content: contentOf(slot), decisions: Object.values(snapshot.decisions).filter((d) => d.weekStart === slot.weekStart && d.slotId === slot.slotId) }] : [];
-      })
-    );
 
   function slotsOf(snapshot: PublishingPlansSnapshot, weekStart: string): PublishingPlanSlot[] {
     return Object.values(snapshot.slots).filter((s) => s.weekStart === weekStart);
@@ -60,7 +48,7 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
         continue;
       }
       const progress = ports.progress ? ((await ports.progress(channelId, slot.weekStart, [slotId])).get(slotId) ?? null) : null;
-      const view = slotViewOf({ stage: stageOf(snapshot), winners: winnersOf(snapshot), meta, slot, decisions: decisionsOf(snapshot, slot.weekStart).filter((d) => d.slotId === slotId), progress, now: ports.now() });
+      const view = slotViewOf({ stage: stageOf(snapshot), meta, slot, decisions: decisionsOf(snapshot, slot.weekStart).filter((d) => d.slotId === slotId), progress, now: ports.now() });
       out.set(slotId, { slotId, weekStart: slot.weekStart, publishAt: slot.publishAt, video: view.package?.video ?? null, vetoed: view.vetoed !== null, released: view.released, found: true });
     }
     return out;
@@ -70,7 +58,7 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
     const slots = slotsOf(snapshot, meta.weekStart);
     const progress = ports.progress ? await ports.progress(channelId, meta.weekStart, slots.map((s) => s.slotId)) : new Map();
     const replaced = await replacedOf(channelId, snapshot, slots.flatMap((s) => (s.replacesSlotId ? [s.replacesSlotId] : [])));
-    return planViewOf({ stage: stageOf(snapshot), winners: winnersOf(snapshot), channelId, meta, slots, decisions: decisionsOf(snapshot, meta.weekStart), progress, now: ports.now(), replaced });
+    return planViewOf({ stage: stageOf(snapshot), channelId, meta, slots, decisions: decisionsOf(snapshot, meta.weekStart), progress, now: ports.now(), replaced });
   }
 
   async function requirePlan(channelId: string, weekStart: string): Promise<{ snapshot: PublishingPlansSnapshot; meta: PublishingPlanMeta }> {
@@ -275,7 +263,7 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
       const byId = new Map(view.slots.map((s) => [s.slotId, s]));
       const refuse = (code: "publishing_plan_slot_not_found" | "publishing_plan_changed" | "publishing_plan_slot_vetoed" | "publishing_plan_slot_past" | "publishing_plan_slot_not_packaged", slotId: string, message: string) =>
         new DomainError({ code, message, details: { channelId, weekStart, slotId } });
-      const targets = [];
+      const targets: PlanView["slots"] = [];
       for (const named of slots) {
         const slot = byId.get(named.slotId);
         if (!slot) throw refuse("publishing_plan_slot_not_found", named.slotId, `No slot ${named.slotId} in this plan`);
@@ -290,6 +278,11 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
         targets.push(slot);
       }
       const kind = ({ approve: "approved", revoke: "revoked", veto: "vetoed", restore: "restored" } as const)[action];
+      const vetoPackageOf = (slot: PlanView["slots"][number]) =>
+        stageOf(snapshot) !== "packaged"
+          ? null
+          : ((slot.package?.manifestSha256 ? { video: slot.package.video, manifestSha256: slot.package.manifestSha256, videoId: slot.videoId } : null) ??
+            lastApprovedPackageOf(decisionsForStage(decisionsOf(snapshot, weekStart).filter((d) => d.slotId === slot.slotId), "packaged")));
       const replacedVetoed: string[] = [];
       const effective = targets.filter((slot) =>
         action === "approve" ? slot.approval !== "approved" : action === "revoke" ? true : action === "veto" ? !slot.vetoed : Boolean(slot.vetoed)
@@ -310,8 +303,12 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
           by: "owner",
           device,
           at,
-          // BL-242: the fingerprint the shown hash was computed with (`packaged` stage only).
-          ...(slot.fingerprint ? { package: { ...slot.fingerprint } } : {}),
+          // BL-242: the fingerprint the shown hash was computed with (`packaged` stage only). R2: a veto names the slot's CURRENT package
+          // (else the package of its last approval not revoked), so it can remove the date of that video wherever its row was made.
+          ...(() => {
+            const named = kind === "vetoed" ? vetoPackageOf(slot) : kind === "restored" ? null : slot.fingerprint;
+            return named ? { package: { ...named } } : {};
+          })(),
         }));
         // BL-240 (ADR 0060): approving a slot that replaces another vetoes that one in the same decision -- unless it is already
         // vetoed, released or gone. It is the owner's own veto (restorable), recorded with the slot that replaced it.
@@ -390,47 +387,63 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
   async function slotDecisions(channelId: string): Promise<Map<string, PlanSlotDecision>> {
     const snapshot = await ports.store.read(channelId);
     const stage = stageOf(snapshot);
-    const winners = winnersOf(snapshot);
     const decisions = new Map<string, PlanSlotDecision>();
+    // BL-242 R2: the decisions that name a video (a counting approval, a standing veto with its package), to settle per video number.
+    const naming = new Map<string, { record: PublishingPlanDecision; kind: "approved" | "vetoed"; package: PublishingPlanPackageFingerprint }>();
     const seen = new Set<string>();
     for (const meta of Object.values(snapshot.plans)) {
       const planDecisions = decisionsOf(snapshot, meta.weekStart);
-      const view = planViewOf({ stage, winners, channelId, meta, slots: slotsOf(snapshot, meta.weekStart), decisions: planDecisions, progress: new Map(), now: ports.now() });
+      const slots = slotsOf(snapshot, meta.weekStart);
+      // BL-242 R1 (ADR 0062 §3): in the `packaged` stage the uploads read the same package progress as the screen; unreadable, it is
+      // empty -- no slot is approved (fail closed), the vetoes still apply.
+      let progress = new Map<string, PlanSlotProgress>();
+      if (stage === "packaged" && ports.progress) {
+        progress = await ports.progress(channelId, meta.weekStart, slots.map((s) => s.slotId)).catch(() => new Map<string, PlanSlotProgress>());
+      }
+      const view = planViewOf({ stage, channelId, meta, slots, decisions: planDecisions, progress, now: ports.now() });
       for (const slot of view.slots) {
         if (seen.has(slot.slotId)) {
-          // Review #2: an id in two plans schedules nothing, but a veto in either of them still stops it.
+          // Review #2: an id in two plans schedules nothing, but a veto in either of them still stops it (only rows made with that id).
           const vetoed = decisions.get(slot.slotId)?.kind === "vetoed" || (!slot.released && slot.vetoed !== null);
           decisions.set(slot.slotId, vetoed ? { kind: "vetoed" } : { kind: "pending" });
+          naming.delete(slot.slotId);
           continue;
         }
         seen.add(slot.slotId);
         if (stage === "packaged") {
-          // BL-242 (ADR 0062 §3): no package is seen here -- the slot's standing approval names the one the owner approved; the uploads
-          // date only that manifest (or that video). A veto carries it too, so it reaches a video the slot took over by its package.
-          const standing = standingPackageApprovalOf(
-            decisionsForStage(planDecisions.filter((d) => d.slotId === slot.slotId), "packaged"),
-            meta.timeZone,
-            contentOf(slot)
-          );
-          // Review #1/#2 (ADR 0062 §4): only an approval that still stands AND still holds its video number in the channel counts --
-          // for the date and for a veto's reach; otherwise a veto reaches only the rows made with this slot id.
-          const fingerprint = standing && winners.has(standing.id) ? { ...standing.package } : null;
-          decisions.set(
-            slot.slotId,
-            slot.released
-              ? { kind: "pending" }
-              : slot.vetoed
-                ? { kind: "vetoed", ...(fingerprint ? { package: fingerprint } : {}) }
-                : fingerprint
-                  ? { kind: "approved", publishAt: slot.publishAtUtc, package: fingerprint }
-                  : { kind: "pending" }
-          );
+          const ownDecisions = planDecisions.filter((d) => d.slotId === slot.slotId);
+          if (slot.released) decisions.set(slot.slotId, { kind: "pending" });
+          else if (slot.vetoed) {
+            // R2: the veto names the package it recorded (absent on a veto from before BL-242: only rows made with this slot id).
+            const veto = standingVetoOf(ownDecisions)!;
+            decisions.set(slot.slotId, { kind: "vetoed", ...(veto.package ? { package: { ...veto.package } } : {}) });
+            if (veto.package) naming.set(slot.slotId, { record: veto, kind: "vetoed", package: veto.package });
+          } else if (slot.approval === "approved" && slot.fingerprint) {
+            // R1: standing AND covering the slot's current package (the view's own rule).
+            const record = standingPackageApprovalOf(decisionsForStage(ownDecisions, "packaged"), meta.timeZone, contentOf(slot))!;
+            decisions.set(slot.slotId, { kind: "approved", publishAt: slot.publishAtUtc, package: { ...slot.fingerprint } });
+            naming.set(slot.slotId, { record, kind: "approved", package: slot.fingerprint });
+          } else decisions.set(slot.slotId, { kind: "pending" });
           continue;
         }
         decisions.set(
           slot.slotId,
           slot.released ? { kind: "pending" } : slot.vetoed ? { kind: "vetoed" } : slot.approval === "approved" ? { kind: "approved", publishAt: slot.publishAtUtc } : { kind: "pending" }
         );
+      }
+    }
+    // BL-242 R2 (ADR 0062 §4): for a video number the newest decision naming it decides. A counting approval -> its date (an older
+    // veto naming it loses its package: it reaches only rows made with its own slot id); a veto -> no date (an older approval naming
+    // it is pending). Defensive: two counting approvals of one video number are both pending (a package names one slot).
+    const byVideo = new Map<string, Array<[string, { record: PublishingPlanDecision; kind: "approved" | "vetoed" }]>>();
+    for (const [slotId, entry] of naming) byVideo.set(entry.package.video, [...(byVideo.get(entry.package.video) ?? []), [slotId, entry]]);
+    for (const group of byVideo.values()) {
+      if (group.length < 2) continue;
+      const approvals = group.filter(([, e]) => e.kind === "approved");
+      const newest = [...group].sort(([, a], [, b]) => decisionOrder(a.record, b.record)).at(-1)!;
+      for (const [slotId, entry] of group) {
+        if (entry.kind === "approved" && (approvals.length > 1 || newest[0] !== slotId)) decisions.set(slotId, { kind: "pending" });
+        if (entry.kind === "vetoed" && newest[0] !== slotId && newest[1].kind === "approved" && approvals.length === 1) decisions.set(slotId, { kind: "vetoed" });
       }
     }
     // BL-240 (ADR 0060): a vetoed slot an agent removed stays vetoed -- a package that still names it is never uploaded.

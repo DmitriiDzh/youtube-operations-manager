@@ -245,18 +245,21 @@ empty, then packaged). The owner answered «да 1», «да 2а» to the propos
   (`package`). A new package (another manifest), another video or a changed time/note needs the owner again. Approving a slot
   without a ready package is refused (`publishing_plan_slot_not_packaged`). Old approvals (no fingerprint) do not count in this
   stage. «Одобрить неделю» becomes «Одобрить все готовые»: the shown slots that need approval.
-- **C. The uploads' word.** `slotDecisions` returns an approved slot with the approved fingerprint. The automatic upload gives a
+- **C. The uploads' word.** An approval counts only while it is the slot's standing approval AND its fingerprint covers the
+  slot's CURRENT package (R1, re-review 2026-11-04): `slotDecisions` reads the same package progress as the screen, so both say
+  the same; a failed read approves nothing (pending) while the vetoes still apply. `slotDecisions` returns an approved slot with the approved fingerprint. The automatic upload gives a
   package the slot's date only when its manifest SHA-256 is the approved one (else it uploads without a date, as for a pending
   slot); the runner's date step re-checks the same; the plan schedule sets a date on a finished upload only when the approved
   fingerprint names it -- its video id, or (no video id approved) its manifest SHA-256.
 - **D. A slot takes an uploaded video (2а).** The worker points the package's `slotId` at the new slot (operations side). The slot
   then shows that package with its video id; the owner's one approval names the video id, and the plan schedule finds the
-  finished upload by that video id even though the upload row names the old slot. A video number belongs to the **newest**
-  standing owner approval naming it in the channel (counter, then time, then id); an older approval of another slot naming the same
-  video number does not count, on the screen or for the uploads -- that slot shows `needs_approval` / `awaiting_package` by its own
-  package. A veto names a package only from its slot's approval that still stands and still holds the video number; otherwise it
-  reaches only the upload rows made with its slot id. Two approved slots naming one video id schedule nothing (`pending`) only as
-  a defensive fallback. The old slot, once released, says nothing (BL-225).
+  finished upload by that video id even though the upload row names the old slot. A package names one slot, so at most one
+  counting approval names a video (R1); two counting approvals of one video number are both `pending` (defensive). A veto records
+  the slot's current package fingerprint when it is made (none: the package of the slot's last approval not revoked), R2. For a
+  video the newest decision naming it decides -- a counting approval gives its date, a standing veto removes the date; a newer
+  counting approval elsewhere beats an older veto; a restore cancels the veto. Nothing counts -> `pending`: the YouTube date stays
+  (BL-225), and the slot that holds the package shows it («на YouTube: …», R3) so the owner approves (moves it) or vetoes (removes
+  it). The old slot, once released, says nothing (BL-225).
 - `slot` stage: exactly the BL-225/BL-240 behaviour (hashes, decisions, uploads unchanged).
 - Agent API: `approval` gains `awaiting_package`, the plan state gains `planned`, the plan view gains `approvalStage` (additive,
   minor bump).
@@ -282,6 +285,12 @@ empty, then packaged). The owner answered «да 1», «да 2а» to the propos
   fingerprint names `vid1` -> one write with `new`'s time. Two approved live slots naming `vid1` -> no write. A finished upload
   whose manifest is the approved one (fingerprint without video id) -> the date; another manifest -> no write.
 - **AC-WP-58** `slot` stage: every BL-225/BL-240 acceptance test passes unchanged (hashes, states, uploads).
+- **AC-WP-60** (re-review) The package (V73, vid1) moves from A to B; the owner approves B -> B dates vid1; A counts nowhere.
+- **AC-WP-61** The package moves from an approved X back to A -> X counts nowhere, vid1 `pending` with its date kept, A
+  `needs_approval` showing the YouTube date; approving A gives A's time.
+- **AC-WP-62** X approved naming vid1 and dated; an agent edits X or the owner revokes X; the owner vetoes X -> vid1's date is removed.
+- **AC-WP-63** X vetoed naming vid1, then the package moves to B and B is approved -> B dates it; restoring X changes nothing.
+- **AC-WP-64** The progress read fails -> `slotDecisions` approves nothing; a recorded veto still applies.
 - **AC-WP-59** The screen model: `awaiting_package` slots show no approve button and are not in «Одобрить все готовые»; the
   switch shows the stage; texts in en and ru.
 
@@ -297,9 +306,9 @@ Tested against fakes only; nothing verified by eye or on the real plan yet.
   are unchanged.
 - Interpretations: an approval made before the upload (no video id) also covers the video that upload made of the approved manifest
   (otherwise every approved slot would need the owner again once uploaded); `planned` is also the state when some live slots are
-  approved and the rest wait for packages; approvals made in one stage do not count in the other (both directions); the newest
-  approval naming a video number wins (D); a veto carries a package only from a standing, winning approval (D). A slot id used
-  in two plans (possible only before review #2 of BL-225) is `pending`/`vetoed` without a package: its veto reaches only upload
-  rows made with that id.
-- AC-WP-60/61 (review of BL-242): `packaged-approval.test.ts` -- the package moving from A to B, the newer approval winning, the
-  veto's reach.
+  approved and the rest wait for packages; approvals made in one stage do not count in the other (both directions). Under R1 an
+  older approval of A whose fingerprint covers the package again (it came back to A) counts again: the owner approved that package
+  on A. A slot id used in two plans (possible only before review #2 of BL-225) is `pending`/`vetoed` without a package: its veto
+  reaches only upload rows made with that id.
+- AC-WP-60..64 (re-review of BL-242): `packaged-approval.test.ts` (with `decisionForRow`), and the stray date in
+  `weekly-plan-model.test.ts`.

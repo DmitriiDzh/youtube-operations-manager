@@ -4921,10 +4921,12 @@ FO-REQ-0040; owner msgs 3511/3534; plan `docs/roadmap/plans/WEEKLY_PUBLISHING_PL
   else `awaiting_package` (not `needsOwner`; plan state `planned`). The hash is `contentHashOf(zone, content, fingerprint)` (appended
   last); the slot's standing approval is the newest fingerprinted approve/revoke whose hash still matches the content
   (`standingPackageApprovalOf`), and it covers the current package when video and manifest match and its video id is null or the
-  same (an approval before the upload covers the video made of that manifest). `slotDecisions` -- which sees no package -- returns
-  that standing fingerprint with `approved`, and with `vetoed` the same fingerprint (a veto reaches a video only through a standing approval). Review #1: a video number
-  belongs to the channel's newest standing approval naming it (`winningApprovalIds`, computed from the whole snapshot and passed to
-  both `planViewOf` and `slotDecisions`); an older one on another slot counts nowhere. Publishing restates it (`slot-decision.ts`
+  same (an approval before the upload covers the video made of that manifest). `slotDecisions` reads the same `progress` port
+  (`composition/publishing-plan-slots.ts` passes `publishingPlanProgress`; a failed read approves nothing) and returns the view's
+  fingerprint with `approved`; a veto record stores the slot's package at decision time (else `lastApprovedPackageOf`) and
+  `vetoed` carries it. Per video number the newest of those decisions wins (a losing approval is `pending`, a losing veto loses its
+  package); two counting approvals of one number are both `pending`. The view's `youtubePublishAt` shows a date no approval counts
+  for («на YouTube: …»). Publishing restates it (`slot-decision.ts`
   `approvalNamesUpload`): the automatic upload / Producer add and the runner's date step date only that manifest; the plan schedule
   (`decisionForRow`) first looks for approvals naming the row's video id (one wins, two: pending; a veto naming it unschedules),
   else the row's own slot, whose fingerprint must name the row (video id, else manifest). Mixed builds: RISK-150.

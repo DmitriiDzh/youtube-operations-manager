@@ -136,6 +136,11 @@ export type PlanSlotView = PublishingPlanSlotContent & {
   videoId: string | null;
   /** BL-225 stage 2: the package that names the slot, or null. */
   package: PlanSlotPackage | null;
+  /**
+   * BL-242 R3: the date the slot's uploaded video carries on YouTube (UTC), or null. Shown when the slot is not approved: a date left
+   * by an approval that no longer counts, which the owner moves (approve) or removes (veto).
+   */
+  youtubePublishAt: string | null;
   /** The slot's time has passed (it can no longer be approved, vetoed or restored). */
   released: boolean;
   createdAt: string;

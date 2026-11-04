@@ -24,17 +24,17 @@ cannot leave its week, and the plan schedule finds a finished upload only by the
    state is `planned` when nothing else waits). The approval hash is the BL-225 slot hash with the package fingerprint
    `[video, manifestSha256, videoId|null]` appended, and the decision keeps the fingerprint. Any change of time, note, package
    or video needs the owner again. Approvals made without a fingerprint do not count in this stage.
-3. **The uploads check the fingerprint.** `slotDecisions` returns the approved fingerprint; the automatic upload and the runner's
+3. **The uploads check the fingerprint.** An approval counts only while it is the slot's standing approval and its fingerprint
+   covers the slot's current package: `slotDecisions` reads the same package progress as the screen (a failed read approves
+   nothing; vetoes still apply). `slotDecisions` returns the approved fingerprint; the automatic upload and the runner's
    date step give a date only to the approved manifest; the plan schedule dates a finished upload only when the fingerprint names
    it -- by video id when the approval carried one, else by manifest SHA-256.
 4. **A slot takes an uploaded video by its package.** The worker re-points the package's `slotId`; the owner's approval then names
-   the video id, and the plan schedule finds the upload by that video id, whatever slot its row was made for. Within a channel a
-   video number (`V73`) belongs to the **newest** standing owner approval that names it (counter, then time, then id): an older
-   approval on another slot naming the same video number does not count -- on the screen (that slot shows `needs_approval` or
-   `awaiting_package` by its own package) or for the uploads -- so two approvals never name one video (review of BL-242,
-   2026-11-04). A veto names a package only from its slot's approval that still stands and still holds the video number; otherwise
-   it reaches only the upload rows made with its slot id. Two approved slots naming the same video id stay `pending` in the plan
-   schedule only as a defensive fallback.
+   the video id, and the plan schedule finds the upload by that video id, whatever slot its row was made for. A package names one slot,
+   so at most one counting approval names a video; two of one video number are both `pending` (defensive). A veto records the
+   slot's current package (none: that of its last approval not revoked); for a video the newest decision naming it decides -- a
+   counting approval its date, a standing veto no date; a restore cancels the veto. Nothing counting leaves the date (BL-225) and
+   the slot holding the package shows it, so the owner approves or vetoes (re-review of BL-242, 2026-11-04).
 
 ## Alternatives
 

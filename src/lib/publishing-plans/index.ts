@@ -53,13 +53,16 @@ export function createPublishingPlansOwnerCore(progress?: PublishingPlansPorts["
   return ownerSurface(service(progress));
 }
 
-/** BL-225 stage 3: the slots' decisions for the uploads (the composition layer gives them to publishing); read-only. */
-export function createPublishingPlansUploadCore(): PublishingPlansUploadSurface {
-  return uploadSurface(service());
+/**
+ * BL-225 stage 3: the slots' decisions for the uploads (the composition layer gives them to publishing); read-only. BL-242 R1: with
+ * the same `progress` port the screen uses, so the uploads count an approval only while it covers the slot's current package.
+ */
+export function createPublishingPlansUploadCore(progress?: PublishingPlansPorts["progress"]): PublishingPlansUploadSurface {
+  return uploadSurface(service(progress));
 }
 
 export { createPublishingPlansService, agentSurface, ownerSurface, uploadSurface } from "./services";
 export type { PublishingPlansService, PublishingPlansAgentSurface, PublishingPlansOwnerSurface, PublishingPlansUploadSurface } from "./services";
-export { contentHashOf, instantOf, isMonday, weekEndOf, addDays, planViewOf, slotViewOf, decisionStateOf, needsOwner, fingerprintOf, packageReady } from "./model";
+export { contentHashOf, instantOf, isMonday, weekEndOf, addDays, planViewOf, slotViewOf, decisionStateOf, needsOwner, fingerprintOf, packageReady, lastApprovedPackageOf } from "./model";
 export * from "./contracts";
 export * from "./schemas";

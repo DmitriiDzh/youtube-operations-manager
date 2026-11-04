@@ -2284,6 +2284,8 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
   every packaged-stage approval as needing approval (the owner might approve the empty slot again there, which the `packaged`
   stage then ignores), and an upload computer on that build schedules nothing by them; its own slot-stage approvals still date
   any package of the slot. The new build shows approvals made on the old one as not counting (`packaged`).
+- **Also (R1):** the uploads now read the package scan (cached a minute): while it fails, no slot is approved for them, so an
+  upload due then goes private without a date until the plan schedule dates it once the scan reads again.
 - **Also:** a slot id found in two plans (left from before BL-225 review #2) carries no package in its decision, so its veto
   reaches only upload rows made with that id, not a video another slot took over.
 - **Mitigation:** the upload computer is the Mac (ADR 0046 §8); both computers update before the owner relies on the stage
