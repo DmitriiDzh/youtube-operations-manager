@@ -4,6 +4,12 @@
 
 export type PlanSlotStatus = "planned" | "built" | "packaged" | "uploading" | "scheduled" | "published" | "failed" | "vetoed";
 
+/** BL-242 (ADR 0062 §2): the package an approval names. */
+export type PackageFingerprintDto = { video: string; manifestSha256: string; videoId: string | null };
+
+/** BL-242 (ADR 0062 §1): the channel's approval stage (the switch «Одобрять пустые слоты» = `slot`). */
+export type ApprovalStage = "packaged" | "slot";
+
 export type PlanSlotDto = {
   slotId: string;
   date: string;
@@ -12,9 +18,17 @@ export type PlanSlotDto = {
   lengthHint: string | null;
   note: string | null;
   contentHash: string;
-  approval: "approved" | "needs_approval";
+  /** BL-242: `awaiting_package` -- the `packaged` stage, no ready or uploaded package yet: nothing to approve. */
+  approval: "approved" | "needs_approval" | "awaiting_package";
   approvedAt: string | null;
-  changedAfterApproval: { previous: { date: string; publishAt: string; lengthHint: string | null; note: string | null; timeZone: string }; approvedAt: string; changedAt: string; changedBy: "factory" | "worker" } | null;
+  /** BL-242: the package the approval names (the `packaged` stage), else null/absent. */
+  fingerprint?: PackageFingerprintDto | null;
+  changedAfterApproval: {
+    previous: { date: string; publishAt: string; lengthHint: string | null; note: string | null; timeZone: string; package?: PackageFingerprintDto };
+    approvedAt: string;
+    changedAt: string;
+    changedBy: "factory" | "worker";
+  } | null;
   /** BL-240: the slot this one replaces (approving this one pulls it), or null. */
   replaces: { slotId: string; weekStart: string | null; publishAt: string | null; video: string | null; vetoed: boolean; released: boolean; found: boolean } | null;
   /** `replacedBy`: pulled by the owner's approval of the slot that replaces it (BL-240). */
@@ -23,7 +37,7 @@ export type PlanSlotDto = {
   statusCode: string | null;
   videoId: string | null;
   /** BL-225 stage 2: the release package that names the slot. */
-  package: { video: string; title: string; durationSeconds: number; languages: string[]; containsSyntheticMedia: boolean; thumbnailPath: string | null; testThumbnails: number; problems: string[] } | null;
+  package: { video: string; title: string; durationSeconds: number; languages: string[]; containsSyntheticMedia: boolean; thumbnailPath: string | null; testThumbnails: number; problems: string[]; manifestSha256?: string | null } | null;
   released: boolean;
   updatedAt: string;
   updatedBy: "factory" | "worker";
@@ -33,7 +47,9 @@ export type PlanSummaryDto = {
   weekStart: string;
   weekEnd: string;
   timeZone: string;
-  state: "empty" | "awaiting_approval" | "approved" | "past";
+  /** BL-242: absent from an older server (read as `slot`, the behaviour it has). */
+  approvalStage?: ApprovalStage;
+  state: "empty" | "planned" | "awaiting_approval" | "approved" | "past";
   counts: { slots: number; approved: number; needsApproval: number; vetoed: number };
   firstRelease: string | null;
   createdAt: string;
@@ -68,10 +84,19 @@ export function defaultWeek(plans: readonly Pick<PlanSummaryDto, "weekStart" | "
   return ahead[0] ?? thisWeek;
 }
 
-/** The slots «Одобрить неделю» covers: not vetoed, not released, not approved -- each with the hash the screen shows. */
+/** A slot the owner can approve now: not vetoed, not released, needing approval (BL-242: never one waiting for its package). */
+export const canApprove = (s: Pick<PlanSlotDto, "vetoed" | "released" | "approval">): boolean => !s.vetoed && !s.released && s.approval === "needs_approval";
+
+/**
+ * The slots «Одобрить неделю» (BL-242 `packaged` stage: «Одобрить все готовые») covers: those the owner can approve now -- each
+ * with the hash the screen shows.
+ */
 export function slotsToApprove(plan: Pick<PlanDto, "slots">): Array<{ slotId: string; contentHash: string }> {
-  return plan.slots.filter((s) => !s.vetoed && !s.released && s.approval === "needs_approval").map((s) => ({ slotId: s.slotId, contentHash: s.contentHash }));
+  return plan.slots.filter(canApprove).map((s) => ({ slotId: s.slotId, contentHash: s.contentHash }));
 }
+
+/** BL-242: the stage a plan list answer names; an older server names none and behaves as `slot`. */
+export const stageOf = (answer: { approvalStage?: ApprovalStage } | null | undefined): ApprovalStage => answer?.approvalStage ?? "slot";
 
 /**
  * BL-240 (A): the plan's slots in its order, split into the live ones and the pulled ones (listed under one closed row). `number`
@@ -139,14 +164,18 @@ export function wallParts(publishAt: string): { day: string; time: string; weekd
   return { day: `${date.slice(8, 10)}.${date.slice(5, 7)}`, time: publishAt.slice(11, 16), weekday: (new Date(`${date}T00:00:00Z`).getUTCDay() + 6) % 7 };
 }
 
-/** Which field an agent changed after the owner approved (the first that differs, in the order the owner reads them). */
-export function changedField(slot: Pick<PlanSlotDto, "date" | "publishAt" | "lengthHint" | "note" | "changedAfterApproval">, timeZone: string): "time" | "length" | "note" | "zone" | null {
+/**
+ * Which field changed after the owner approved (the first that differs, in the order the owner reads them). BL-242: `package` --
+ * the slot is the same but its package is another one (another video or manifest) than the approved one.
+ */
+export function changedField(slot: Pick<PlanSlotDto, "date" | "publishAt" | "lengthHint" | "note" | "changedAfterApproval"> & { package?: PlanSlotDto["package"] }, timeZone: string): "time" | "length" | "note" | "zone" | "package" | null {
   const previous = slot.changedAfterApproval?.previous;
   if (!previous) return null;
   if (previous.publishAt !== slot.publishAt) return "time";
   if ((previous.lengthHint ?? null) !== (slot.lengthHint ?? null)) return "length";
   if ((previous.note ?? null) !== (slot.note ?? null)) return "note";
   if (previous.timeZone !== timeZone) return "zone";
+  if (previous.package && (previous.package.video !== slot.package?.video || previous.package.manifestSha256 !== (slot.package?.manifestSha256 ?? null))) return "package";
   return null;
 }
 
