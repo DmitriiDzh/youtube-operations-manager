@@ -628,3 +628,23 @@ test("AC-WP-31: an approved slot 15 minutes ahead or less is not given to the up
   await h.auto.tick();
   assert.equal(h.state.rows[0].publishAt, null);
 });
+
+// BL-242 (WEEKLY_PUBLISHING_PLAN.md AC-WP-56; ADR 0062 §3): in the `packaged` stage the slot's approval names the package the owner
+// approved (its manifest SHA-256). Only that manifest gets the slot's date; another one of the same slot uploads private without a
+// date, as for a pending slot. An approval naming no package (the `slot` stage) dates any package of the slot, as before.
+test("AC-WP-56: the approved manifest gets the slot's date; another manifest of the same slot none", async () => {
+  const approvedAa = new Map<string, SlotDecision>([["w44-fri", { kind: "approved", publishAt: "2026-10-30T09:00:00.000Z", package: { video: "V65", manifestSha256: "mf-aa", videoId: null } }]]);
+  const aa = scanned(release("V65", { slotId: "w44-fri", schemaVersion: 2 }), "mf-aa");
+  const same = harness({ packages: [aa], files: fileOf(aa), slots: approvedAa });
+  await same.auto.tick();
+  assert.deepEqual([same.state.rows.length, same.state.rows[0].publishAt], [1, "2026-10-30T09:00:00.000Z"]);
+  const bb = scanned(release("V65", { slotId: "w44-fri", schemaVersion: 2 }), "mf-bb");
+  const other = harness({ packages: [bb], files: fileOf(bb), slots: approvedAa });
+  await other.auto.tick();
+  assert.deepEqual([other.state.rows.length, other.state.rows[0].publishAt], [1, null], "uploaded private without a date");
+  // An approval that names an uploaded video (a video id) is not one of a package being uploaded now.
+  const byVideo = new Map<string, SlotDecision>([["w44-fri", { kind: "approved", publishAt: "2026-10-30T09:00:00.000Z", package: { video: "V65", manifestSha256: "mf-aa", videoId: "vid9" } }]]);
+  const fresh = harness({ packages: [aa], files: fileOf(aa), slots: byVideo });
+  await fresh.auto.tick();
+  assert.equal(fresh.state.rows[0].publishAt, null);
+});

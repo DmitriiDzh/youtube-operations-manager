@@ -4,9 +4,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { estimateUploadUnits } from "@/lib/publishing/publish-dates";
 import type { UiTextKey } from "@/lib/ui-text";
 import { ActionButton, SkeletonLines } from "./busy-feedback";
+import { ToggleSwitch } from "./toggle-switch";
 import { useT, useUiText } from "./ui-text-provider";
 import { useUserTimezone } from "./use-user-timezone";
 import {
+  canApprove,
   changedField,
   defaultWeek,
   lengthLabel,
@@ -15,10 +17,14 @@ import {
   shiftWeek,
   slotsToApprove,
   splitVetoed,
+  duplicateWarningOf,
+  stageOf,
+  strayDateOf,
   tileCounts,
   wallParts,
   weekCoverageLine,
   zonedParts,
+  type ApprovalStage,
   type PipelineStep,
   type PipelineStepState,
   type PlanDto,
@@ -59,6 +65,7 @@ const STEP_STYLES: Record<PipelineStepState, string> = {
 };
 const STATE_STYLES: Record<PlanSummaryDto["state"] | "none", string> = {
   awaiting_approval: "bg-amber-500/15 text-amber-300 ring-amber-500/30",
+  planned: "bg-sky-500/15 text-sky-300 ring-sky-500/30",
   approved: "bg-emerald-500/15 text-emerald-300 ring-emerald-500/30",
   past: "bg-zinc-700/40 text-zinc-300 ring-zinc-600/40",
   empty: "bg-zinc-700/40 text-zinc-300 ring-zinc-600/40",
@@ -68,6 +75,7 @@ const ERROR_KEYS: Record<string, UiTextKey> = {
   publishing_plan_changed: "weekPlan.error.changed",
   publishing_plan_slot_past: "weekPlan.error.past",
   publishing_plan_slot_vetoed: "weekPlan.error.vetoed",
+  publishing_plan_slot_not_packaged: "weekPlan.error.notPackaged",
 };
 
 /** The slot's channel time reads the same on the owner's clock (same date and time). */
@@ -84,6 +92,8 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
   const { language } = useUiText();
   const ownerZone = useUserTimezone();
   const [summaries, setSummaries] = useState<PlanSummaryDto[] | null>(null);
+  // BL-242 (ADR 0062 §1): the channel's approval stage -- the switch «Одобрять пустые слоты» (`slot`); null until the list is read.
+  const [stage, setStage] = useState<ApprovalStage | null>(null);
   const [week, setWeek] = useState<string | null>(null);
   const [plan, setPlan] = useState<PlanDto | "none" | null>(null);
   // BL-235: what YouTube has for the shown week (the shared coverage), next to the approvals; null when unknown.
@@ -113,8 +123,9 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
     try {
       const res = await fetch(base);
       if (!res.ok) throw new Error(String(res.status));
-      const body = (await res.json()) as { plans: PlanSummaryDto[] };
+      const body = (await res.json()) as { plans: PlanSummaryDto[]; approvalStage?: ApprovalStage };
       setSummaries(body.plans);
+      setStage(stageOf(body));
       setWeek((current) => current ?? defaultWeek(body.plans, zonedParts(new Date().toISOString(), null).ymd));
       setError(null);
     } catch {
@@ -174,6 +185,27 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
       void loadList();
     } catch {
       setActionError(t("weekPlan.error.generic", { code: "network" }));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /** BL-242: the owner switches the channel's approval stage; both the list and the shown week are read again. */
+  async function chooseStage(next: ApprovalStage) {
+    if (!base) return;
+    setBusy("stage");
+    setActionError(null);
+    try {
+      const res = await fetch(`${base}/approval-stage`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ stage: next }) });
+      const body = (await res.json().catch(() => ({}))) as { approvalStage?: ApprovalStage; error?: string };
+      if (!res.ok) {
+        setActionError(t("weekPlan.stage.failed", { code: body.error ?? String(res.status) }));
+        return;
+      }
+      setStage(stageOf(body));
+      await Promise.all([loadList(), loadPlan()]);
+    } catch {
+      setActionError(t("weekPlan.stage.failed", { code: "network" }));
     } finally {
       setBusy(null);
     }
@@ -261,6 +293,17 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
         </div>
       </div>
 
+      {stage && (
+        // BL-242 (ADR 0062 §1): how the owner approves -- the package (one approval per video, the default) or the empty slot.
+        <div className="flex flex-wrap items-center gap-3 text-sm">
+          <label className="flex items-center gap-2 text-zinc-300">
+            <ToggleSwitch tone="violet" checked={stage === "slot"} disabled={busy !== null} onChange={(on) => void chooseStage(on ? "slot" : "packaged")} label={t("weekPlan.stage.toggle")} />
+            <span>{t("weekPlan.stage.toggle")}</span>
+          </label>
+          <span className="text-xs text-zinc-500">{t(stage === "slot" ? "weekPlan.stage.hintSlot" : "weekPlan.stage.hintPackaged")}</span>
+        </div>
+      )}
+
       {error && <p className="rounded-md border border-red-900 bg-red-950/40 px-3 py-2 text-sm text-red-300">{error}</p>}
       {!summaries && !error && <SkeletonLines lines={4} />}
 
@@ -337,7 +380,9 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
                   ? t(vetoedCount > 0 ? "weekPlan.bar.summaryVetoed" : "weekPlan.bar.summary", { count: toApprove.length, vetoed: vetoedCount, units })
                   : shown.state === "approved"
                     ? t("weekPlan.bar.allApproved")
-                    : t("weekPlan.bar.nothing")}
+                    : shown.state === "planned"
+                      ? t("weekPlan.bar.waitingPackages")
+                      : t("weekPlan.bar.nothing")}
                 {weekPulls.length > 0 && <span className="block text-xs text-amber-300">{t("weekPlan.bar.replaces", { slots: weekPulls.map((r) => replacedLabel(t, r)).join(", ") })}</span>}
               </p>
               <ActionButton
@@ -347,7 +392,7 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
                 onClick={() => void decide("approve", toApprove, "week")}
                 className="rounded-md bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                {t("weekPlan.action.approveWeek")}
+                {t(shown.approvalStage === "packaged" ? "weekPlan.action.approveReady" : "weekPlan.action.approveWeek")}
               </ActionButton>
             </div>
           )}
@@ -437,13 +482,17 @@ function SlotRow(props: {
           : t("weekPlan.slotDay", { weekday: t(weekdayKey(wallParts(previous.publishAt).weekday)), day: `${wallParts(previous.publishAt).day} ${wallParts(previous.publishAt).time}` })
         : changed === "length"
           ? (previous.lengthHint ?? t("weekPlan.none"))
-          : previous.timeZone;
+          : changed === "package"
+            ? (previous.package?.video ?? t("weekPlan.none"))
+            : previous.timeZone;
     const actor = t(actorKey(slot.changedAfterApproval.changedBy, true));
-    const key = ({ time: "weekPlan.changed.time", length: "weekPlan.changed.length", note: "weekPlan.changed.note", zone: "weekPlan.changed.zone" } as const)[changed];
+    const key = ({ time: "weekPlan.changed.time", length: "weekPlan.changed.length", note: "weekPlan.changed.note", zone: "weekPlan.changed.zone", package: "weekPlan.changed.package" } as const)[changed];
     meta = { text: t(key, { actor, at: at(slot.changedAfterApproval.changedAt), was }), tone: "text-amber-300" };
   } else if (slot.status === "failed") meta = { text: t("weekPlan.failed", { code: slot.statusCode ?? "?" }), tone: "text-red-300" };
   else if (slot.released) meta = { text: t("weekPlan.released"), tone: "text-zinc-500" };
   else if (slot.approval === "approved") meta = { text: t("weekPlan.approved", { at: at(slot.approvedAt ?? slot.updatedAt) }), tone: "text-emerald-300" };
+  // BL-242: nothing to approve until the package is ready -- a short status, no button.
+  else if (slot.approval === "awaiting_package") meta = { text: t("weekPlan.awaitingPackage"), tone: "text-sky-300/80" };
   else if (mode === "one") meta = { text: t("weekPlan.notApproved"), tone: "text-zinc-400" };
   else meta = { text: slot.note ? t("weekPlan.agentNote", { note: slot.note }) : "", tone: "text-zinc-400" };
 
@@ -484,6 +533,10 @@ function SlotRow(props: {
             </div>
           )}
           {meta.text && <div className={`truncate text-xs ${meta.tone}`}>{meta.text}</div>}
+          {/* BL-242 R3: a date on YouTube no approval of this slot counts for -- approving moves it, vetoing removes it. */}
+          {strayDateOf(slot) && <div className="truncate text-xs text-amber-300">{t("weekPlan.onYoutube", { at: at(strayDateOf(slot)!) })}</div>}
+          {/* BL-242 round 3: two packages with one video number -- the uploads date neither. */}
+          {duplicateWarningOf(slot) && <div className="truncate text-xs text-amber-300">{t("weekPlan.duplicateVideo")}</div>}
           {slot.replaces && !slot.vetoed && (
             <div className="truncate text-xs text-amber-300">
               {t(replacedToPull([slot]).length > 0 && slot.approval !== "approved" ? "weekPlan.replaces.willPull" : "weekPlan.replaces.done", { slot: replacedLabel(t, slot.replaces) })}
@@ -515,7 +568,7 @@ function SlotRow(props: {
               {t("weekPlan.action.revoke")}
             </ActionButton>
           )}
-          {canAct && !slot.vetoed && mode === "one" && slot.approval !== "approved" && (
+          {canAct && mode === "one" && canApprove(slot) && (
             <ActionButton busy={props.busy === `approve:${slot.slotId}`} busyLabel={t("weekPlan.action.saving")} disabled={anyBusy} onClick={() => void props.onDecide("approve", [{ slotId: slot.slotId, contentHash: slot.contentHash }], `approve:${slot.slotId}`)} className="rounded-md bg-violet-600 px-3 py-1 text-sm font-semibold text-white hover:bg-violet-500 disabled:opacity-40">
               {t("weekPlan.action.approve")}
             </ActionButton>

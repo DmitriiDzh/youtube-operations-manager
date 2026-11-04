@@ -10,7 +10,7 @@
 import type { StoredPublishingUpload } from "@/lib/db";
 import { READ_BACK_RETRIES, READ_BACK_RETRY_DELAY_MS } from "@/lib/video-details/read-back";
 import type { PublishingSettings } from "./settings";
-import type { SlotDecision } from "./auto-upload";
+import { approvalNamesUpload, type SlotDecision } from "./slot-decision";
 
 /** The package as the owner approved it (frozen in `package_json`). Paths are relative to the channel workspace. */
 export type ApprovedPackage = {
@@ -667,9 +667,10 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
       if (job.publishAt !== null && steps.publishAt === undefined && job.slotId && deps.slotDecision) {
         const decision = await deps.slotDecision(job.channelId, job.slotId);
         if (decision?.kind === "vetoed") slotWithheld = "the slot was vetoed";
-        else if (decision?.kind === "approved") publishAtNow = new Date(decision.publishAt).toISOString();
+        // BL-242 (ADR 0062 §3): the approval must name this upload's manifest (and video); one of another package is not this one's.
+        else if (decision?.kind === "approved" && approvalNamesUpload(decision, { manifestSha256: job.manifestSha256, videoId })) publishAtNow = new Date(decision.publishAt).toISOString();
         // BL-239 review #1: a Producer row's date also came only from the slot's approval (ADR 0059 §4).
-        else if (job.automatic || job.queuedBy === "producer") slotWithheld = "the slot is no longer approved";
+        else if (job.automatic || job.queuedBy === "producer") slotWithheld = decision?.kind === "approved" ? "the slot's approval names another package" : "the slot is no longer approved";
       }
       if (publishAtNow !== job.publishAt && publishAtNow !== null) {
         if (!(await deps.store.update(job.id, "finishing", { publishAt: publishAtNow, updatedAt: now() }))) return;

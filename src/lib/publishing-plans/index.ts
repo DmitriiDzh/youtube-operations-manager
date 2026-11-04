@@ -36,7 +36,9 @@ function service(progress?: PublishingPlansPorts["progress"]): PublishingPlansSe
       return run;
     },
     // The owner's decisions are audited on the computer they were made on (the synced record names the device for the others).
-    audit: ({ channelId, weekStart, slotId, detail }) => insertVideoEditAuditEvent({ channelId, videoId: `plan:${weekStart}:${slotId}`, eventType: "RESULT", detail }),
+    // BL-242: the approval stage names no week or slot (`plan:approval_stage`).
+    audit: ({ channelId, weekStart, slotId, detail }) =>
+      insertVideoEditAuditEvent({ channelId, videoId: weekStart && slotId ? `plan:${weekStart}:${slotId}` : "plan:approval_stage", eventType: "RESULT", detail }),
     ...(progress ? { progress } : {}),
   });
 }
@@ -51,13 +53,16 @@ export function createPublishingPlansOwnerCore(progress?: PublishingPlansPorts["
   return ownerSurface(service(progress));
 }
 
-/** BL-225 stage 3: the slots' decisions for the uploads (the composition layer gives them to publishing); read-only. */
-export function createPublishingPlansUploadCore(): PublishingPlansUploadSurface {
-  return uploadSurface(service());
+/**
+ * BL-225 stage 3: the slots' decisions for the uploads (the composition layer gives them to publishing); read-only. BL-242 R1: with
+ * the same `progress` port the screen uses, so the uploads count an approval only while it covers the slot's current package.
+ */
+export function createPublishingPlansUploadCore(progress?: PublishingPlansPorts["progress"]): PublishingPlansUploadSurface {
+  return uploadSurface(service(progress));
 }
 
 export { createPublishingPlansService, agentSurface, ownerSurface, uploadSurface } from "./services";
 export type { PublishingPlansService, PublishingPlansAgentSurface, PublishingPlansOwnerSurface, PublishingPlansUploadSurface } from "./services";
-export { contentHashOf, instantOf, isMonday, weekEndOf, addDays, planViewOf, slotViewOf, decisionStateOf, needsOwner } from "./model";
+export { contentHashOf, instantOf, isMonday, weekEndOf, addDays, planViewOf, slotViewOf, decisionStateOf, needsOwner, fingerprintOf, packageReady, lastApprovedPackageOf } from "./model";
 export * from "./contracts";
 export * from "./schemas";

@@ -1011,6 +1011,12 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   - BL-240 (ADR 0060): снятые слоты свёрнуты в строку «Снятые слоты: N»; агент может удалить снятый слот без загрузки (вето
     остаётся для загрузок, id занят — `slot_id_removed`); поле слота `replacesSlotId` — одобрение владельцем нового слота тем же
     решением снимает заменённый (`replacedBy`). Factory API 1.41.0, Agent API 4.15.0.
+  - BL-242 (ADR 0062): этап одобрения канала `approvalStage` в документе планов (`packaged` по умолчанию, `slot` — поведение BL-225;
+    ставит только владелец тумблером «Одобрять пустые слоты», маршрут `/publishing-plans/approval-stage`, аудит
+    `publishing_plan.approval_stage`). В `packaged` слот без готового/загруженного пакета — `awaiting_package` (план `planned`),
+    одобрение — хеш слота с отпечатком пакета `[video, manifestSha256, videoId|null]`, решение хранит отпечаток; загрузки
+    (`src/lib/publishing/slot-decision.ts`) дают дату только одобренному манифесту, план-расписание находит загрузку по video id
+    одобрения (слот берёт уже загруженное видео через `slotId` пакета). Factory API 1.42.0, Agent API 4.16.0, Producer API 1.16.0.
   - Этап 3: автозагрузка (BL-209) ставит пакет одобренного и не снятого слота с его временем, снятый пропускает (решения слотов —
     `src/composition/publishing-plan-slots.ts`); загрузчик пишет переводы пакета первым шагом после обработки общим писателем
     `src/lib/shared-video-localizations/` (вынесен из live-localizations) и ИИ-метку пакета; дата — только после переводов, обложки,

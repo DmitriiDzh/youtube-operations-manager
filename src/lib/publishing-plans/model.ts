@@ -1,7 +1,7 @@
 // BL-225 (ADR 0051 §2-§5): what a plan and its slots are right now, worked out from what the document holds -- never stored twice.
 // Pure apart from hashing.
 import { createHash } from "node:crypto";
-import type { PublishingPlanDecision, PublishingPlanMeta, PublishingPlanSlot, PublishingPlanSlotContent } from "@/lib/sync-gateway";
+import type { PublishingPlanApprovalStage, PublishingPlanDecision, PublishingPlanMeta, PublishingPlanPackageFingerprint, PublishingPlanSlot, PublishingPlanSlotContent } from "@/lib/sync-gateway";
 import { formatZonedDateAndTime, zonedInstant } from "@/lib/zoned-time";
 import type { PlanSlotProgress, PlanSlotView, PlanState, PlanSummary, PlanView, ReplacedSlot } from "./contracts";
 
@@ -36,12 +36,82 @@ export function instantOf(publishAt: string, timeZone: string): Date | null {
 
 /**
  * What an approval names (ADR 0051 §3): every field of the slot, with the plan's zone. BL-240 (ADR 0060): the replaced slot is
- * appended only when set, so a slot without it keeps the hash it had before (every existing approval stands).
+ * appended only when set, so a slot without it keeps the hash it had before (every existing approval stands). BL-242 (ADR 0062
+ * §2): in the `packaged` stage the package fingerprint `[video, manifestSha256, videoId|null]` is appended last.
  */
-export function contentHashOf(timeZone: string, content: PublishingPlanSlotContent): string {
+export function contentHashOf(timeZone: string, content: PublishingPlanSlotContent, fingerprint?: PublishingPlanPackageFingerprint | null): string {
   const fields: unknown[] = [timeZone, content.date, content.publishAt, content.lengthHint ?? null, content.note ?? null];
   if (content.replacesSlotId) fields.push(content.replacesSlotId);
+  if (fingerprint) fields.push([fingerprint.video, fingerprint.manifestSha256, fingerprint.videoId ?? null]);
   return createHash("sha256").update(JSON.stringify(fields)).digest("hex");
+}
+
+/** BL-242: the fingerprint of the package the progress reports for a slot, or null (no package, or its manifest unreadable). */
+export function fingerprintOf(progress: PlanSlotProgress | null): PublishingPlanPackageFingerprint | null {
+  const pkg = progress?.package;
+  if (!progress || !pkg || !pkg.manifestSha256) return null;
+  return { video: pkg.video, manifestSha256: pkg.manifestSha256, videoId: progress.videoId ?? null };
+}
+
+/**
+ * BL-242 (ADR 0062 §2): the owner can approve the slot's package -- it is uploaded (a video id) or ready (packaged, no problems).
+ */
+export function packageReady(progress: PlanSlotProgress | null): boolean {
+  if (!fingerprintOf(progress)) return false;
+  return progress!.videoId != null || (progress!.status === "packaged" && progress!.package!.problems.length === 0);
+}
+
+/**
+ * BL-242: an approval made with `approved` names the package `current` is: the same video and manifest, and the same video id --
+ * an approval made before the upload (no video id) also covers the video that upload made of that manifest.
+ */
+export function fingerprintCovers(approved: PublishingPlanPackageFingerprint, current: PublishingPlanPackageFingerprint | null): boolean {
+  return current !== null && approved.video === current.video && approved.manifestSha256 === current.manifestSha256 && (approved.videoId === null || approved.videoId === current.videoId);
+}
+
+/**
+ * BL-242 (ADR 0062 §2): the decisions that count in a stage. `packaged`: approvals and revocations made with a fingerprint only (an
+ * approval of the empty slot does not count); `slot`: those made without one (BL-225). Vetoes and restores count in both.
+ */
+export function decisionsForStage(decisions: readonly PublishingPlanDecision[], stage: PublishingPlanApprovalStage): PublishingPlanDecision[] {
+  return decisions.filter((d) => (d.kind !== "approved" && d.kind !== "revoked") || (stage === "packaged" ? d.package !== undefined : d.package === undefined));
+}
+
+/**
+ * BL-242: in the `packaged` stage, the approval the slot stands on -- the newest approval or revocation (made with a fingerprint)
+ * whose hash still matches the slot's content now; null when that one is a revocation or there is none. The uploads (which see no
+ * package) and the screen use the same record, so both say the same.
+ */
+export function standingPackageApprovalOf(decisions: readonly PublishingPlanDecision[], timeZone: string, content: PublishingPlanSlotContent): (PublishingPlanDecision & { package: PublishingPlanPackageFingerprint }) | null {
+  const last = [...decisions]
+    .sort(byTime)
+    .filter((d) => (d.kind === "approved" || d.kind === "revoked") && d.package !== undefined && contentHashOf(timeZone, content, d.package) === d.contentHash)
+    .at(-1);
+  return last?.kind === "approved" ? (last as PublishingPlanDecision & { package: PublishingPlanPackageFingerprint }) : null;
+}
+
+/**
+ * BL-242 re-review R2 (ADR 0062 §4): the package of the slot's last approval not revoked since (made with a fingerprint), whatever
+ * the slot's content now -- what a veto names when the slot has no package any more, so the date that approval gave can be removed.
+ */
+export function lastApprovedPackageOf(decisions: readonly PublishingPlanDecision[]): PublishingPlanPackageFingerprint | null {
+  const approvals = [...decisions].sort(byTime).filter((d) => (d.kind === "approved" || d.kind === "revoked") && d.package !== undefined);
+  for (let i = approvals.length - 1; i >= 0; i -= 1) {
+    const record = approvals[i];
+    if (record.kind !== "approved") continue;
+    if (approvals.slice(i + 1).some((later) => later.kind === "revoked" && later.contentHash === record.contentHash)) continue;
+    return { ...record.package! };
+  }
+  return null;
+}
+
+/** The order of decisions (counter, then time, then id) -- the newest last. */
+export const decisionOrder = (a: PublishingPlanDecision, b: PublishingPlanDecision): number => byTime(a, b);
+
+/** BL-242: whether an approval stands on the slot's content now (a save that changes it lists it in `unlocked`). */
+export function approvalStandsOn(stage: PublishingPlanApprovalStage, timeZone: string, content: PublishingPlanSlotContent, decisions: readonly PublishingPlanDecision[]): boolean {
+  const counted = decisionsForStage(decisions, stage);
+  return stage === "packaged" ? standingPackageApprovalOf(counted, timeZone, content) !== null : decisionStateOf(counted, contentHashOf(timeZone, content)).approved;
 }
 
 export const contentOf = (slot: PublishingPlanSlotContent): PublishingPlanSlotContent => ({
@@ -81,6 +151,8 @@ export function decisionStateOf(decisions: readonly PublishingPlanDecision[], co
 }
 
 export function slotViewOf(args: {
+  /** BL-242 (ADR 0062 §1): the channel's approval stage. */
+  stage: PublishingPlanApprovalStage;
   meta: PublishingPlanMeta;
   slot: PublishingPlanSlot;
   decisions: readonly PublishingPlanDecision[];
@@ -91,8 +163,39 @@ export function slotViewOf(args: {
 }): PlanSlotView {
   const { meta, slot, now } = args;
   const content = contentOf(slot);
-  const contentHash = contentHashOf(meta.timeZone, content);
-  const state = decisionStateOf(args.decisions, contentHash);
+  const counted = decisionsForStage(args.decisions, args.stage);
+  // BL-242 (ADR 0062 §2): in the `packaged` stage the owner approves the slot with its package; until it has one ready or uploaded
+  // there is nothing to approve. The `slot` stage is BL-225's, unchanged.
+  let contentHash: string;
+  let approval: PlanSlotView["approval"];
+  let fingerprint: PlanSlotView["fingerprint"] = null;
+  let approvedAt: string | null;
+  let superseded: PublishingPlanDecision | null;
+  if (args.stage === "packaged") {
+    const current = fingerprintOf(args.progress);
+    const standing = standingPackageApprovalOf(counted, meta.timeZone, content);
+    if (standing && fingerprintCovers(standing.package, current)) {
+      contentHash = standing.contentHash;
+      approval = "approved";
+      fingerprint = standing.package;
+    } else if (packageReady(args.progress)) {
+      contentHash = contentHashOf(meta.timeZone, content, current);
+      approval = "needs_approval";
+      fingerprint = current;
+    } else {
+      contentHash = contentHashOf(meta.timeZone, content);
+      approval = "awaiting_package";
+    }
+    approvedAt = approval === "approved" ? standing!.at : null;
+    superseded = approval === "approved" ? null : (decisionStateOf(counted, contentHash).superseded ?? null);
+  } else {
+    contentHash = contentHashOf(meta.timeZone, content);
+    const own = decisionStateOf(counted, contentHash);
+    approval = own.approved ? "approved" : "needs_approval";
+    approvedAt = own.approvedAt;
+    superseded = own.superseded ?? null;
+  }
+  const state = { ...decisionStateOf(args.decisions, contentHash), superseded };
   // A stored slot's time is valid in the zone it was saved with; a later zone change could, in theory, land it in a skipped hour.
   const instant = instantOf(slot.publishAt, meta.timeZone) ?? zonedInstant({ localDate: slot.publishAt.slice(0, 10), localTime: slot.publishAt.slice(11, 16), timezone: meta.timeZone });
   // Review #3: the slot is released only once the latest time its video may come out has passed -- its own time, the approved time
@@ -107,10 +210,16 @@ export function slotViewOf(args: {
     ...content,
     publishAtUtc: instant.toISOString(),
     contentHash,
-    approval: state.approved ? "approved" : "needs_approval",
-    approvedAt: state.approvedAt,
+    approval,
+    fingerprint,
+    approvedAt,
     changedAfterApproval: state.superseded
-      ? { previous: { ...state.superseded.snapshot }, approvedAt: state.superseded.at, changedAt: slot.updatedAt, changedBy: slot.updatedBy }
+      ? {
+          previous: { ...state.superseded.snapshot, ...(state.superseded.package ? { package: { ...state.superseded.package } } : {}) },
+          approvedAt: state.superseded.at,
+          changedAt: slot.updatedAt,
+          changedBy: slot.updatedBy,
+        }
       : null,
     replaces: content.replacesSlotId ? (args.replaces ?? { slotId: content.replacesSlotId, weekStart: null, publishAt: null, video: null, vetoed: false, released: false, found: false }) : null,
     vetoed: state.vetoed,
@@ -118,6 +227,9 @@ export function slotViewOf(args: {
     statusCode: state.vetoed ? null : (args.progress?.code ?? null),
     videoId: args.progress?.videoId ?? null,
     package: args.progress?.package ?? null,
+    // Round 3 (b): only when the slot's CURRENT package names the video -- an upload row of the old slot alone does not count.
+    youtubePublishAt: args.progress?.package ? (args.progress.publishAt ?? null) : null,
+    duplicateVideo: false,
     released: releaseMs <= now.getTime(),
     createdAt: slot.createdAt,
     updatedAt: slot.updatedAt,
@@ -125,17 +237,22 @@ export function slotViewOf(args: {
   };
 }
 
-/** The plan's state (WEEKLY_PUBLISHING_PLAN.md stage 1 item 2). */
+/**
+ * The plan's state (WEEKLY_PUBLISHING_PLAN.md stage 1 item 2). BL-242: `planned` when nothing waits for the owner but a live
+ * future slot still waits for its package (`packaged` stage only).
+ */
 export function planStateOf(slots: readonly PlanSlotView[]): PlanState {
   if (slots.length === 0) return "empty";
   if (slots.some(needsOwner)) return "awaiting_approval";
-  return slots.every((s) => s.released) ? "past" : "approved";
+  if (slots.every((s) => s.released)) return "past";
+  return slots.some((s) => !s.vetoed && !s.released && s.approval === "awaiting_package") ? "planned" : "approved";
 }
 
 /** A slot the owner still has to decide on: not vetoed, not released, not approved. */
 export const needsOwner = (s: PlanSlotView): boolean => !s.vetoed && !s.released && s.approval === "needs_approval";
 
 export function planViewOf(args: {
+  stage: PublishingPlanApprovalStage;
   channelId: string;
   meta: PublishingPlanMeta;
   slots: readonly PublishingPlanSlot[];
@@ -148,6 +265,7 @@ export function planViewOf(args: {
   const views = args.slots
     .map((slot) =>
       slotViewOf({
+        stage: args.stage,
         meta: args.meta,
         slot,
         decisions: args.decisions.filter((d) => d.slotId === slot.slotId),
@@ -163,6 +281,7 @@ export function planViewOf(args: {
     weekStart: args.meta.weekStart,
     weekEnd: weekEndOf(args.meta.weekStart),
     timeZone: args.meta.timeZone,
+    approvalStage: args.stage,
     state: planStateOf(views),
     counts: {
       slots: views.length,

@@ -61,3 +61,7 @@ export const ownerDecisionInputSchema = z
     }
   });
 export type OwnerDecisionInput = z.infer<typeof ownerDecisionInputSchema>;
+
+/** BL-242 (ADR 0062 §1): the owner's approval stage of a channel (Web UI only; no agent tool takes it). */
+export const approvalStageInputSchema = z.object({ stage: z.enum(["packaged", "slot"]) }).strict();
+export type ApprovalStageInput = z.infer<typeof approvalStageInputSchema>;

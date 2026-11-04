@@ -109,7 +109,10 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT",
 // (READ: the channel's designed voices). Designing and approving a voice stay with the owner and the Operator. Additive.
 // 4.15.0 (BL-240, ADR 0060): agent_publishing_plan_save as factory_publishing_plan_save 1.41.0 -- slots gain replacesSlotId; a vetoed
 // slot without an upload may be removed. Additive.
-export const AGENT_API_VERSION = "4.15.0";
+// 4.16.0 (BL-242, ADR 0062): agent_publishing_plan_get / _list as factory_publishing_plan_get / _list 1.42.0 -- approvalStage, the
+// state planned, approval awaiting_package, the slot's fingerprint and package.manifestSha256. Agents still never approve or set the
+// stage. Additive.
+export const AGENT_API_VERSION = "4.16.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry

@@ -2276,6 +2276,23 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Gate(s):** none (no new YouTube write; nothing is ever scheduled by it). **Re-evaluate:** when upload rows are synced between
   the computers.
 
+## RISK-150 — Weekly plan approval stage: the two computers on different builds disagree — OPEN, 2026-11-04
+
+- **Affected components:** `src/lib/publishing-plans/` (`approvalStage`, fingerprinted decisions), `src/lib/publishing/`
+  `slot-decision.ts`, `auto-upload.ts`, `plan-schedule.ts` (BL-242, ADR 0062).
+- **Risk:** a build without BL-242 ignores `approvalStage` and the fingerprints. It computes the bare BL-225 slot hash, so it shows
+  every packaged-stage approval as needing approval (the owner might approve the empty slot again there, which the `packaged`
+  stage then ignores), and an upload computer on that build schedules nothing by them; its own slot-stage approvals still date
+  any package of the slot. The new build shows approvals made on the old one as not counting (`packaged`).
+- **Also (R1):** the uploads now read the package scan (cached a minute): while it fails, no slot is approved for them, so an
+  upload due then goes private without a date until the plan schedule dates it once the scan reads again.
+- **Also:** a slot id found in two plans (left from before BL-225 review #2) carries no package in its decision, so its veto
+  reaches only upload rows made with that id, not a video another slot took over.
+- **Mitigation:** the upload computer is the Mac (ADR 0046 §8); both computers update before the owner relies on the stage
+  (release note). Nothing is ever dated by a fingerprint the old build cannot read -- the failure direction is "no date".
+- **Gate(s):** none (no new YouTube write path; the same runner, identity check and Live writes). **Re-evaluate:** once both
+  computers run BL-242 (then close).
+
 ## RISK-149 — Clips for review: a second offline answer does not count; the file is trusted between submit and play — OPEN, 2026-11-03
 
 - **Affected components:** `src/lib/clip-reviews/` (BL-241, ADR 0061).

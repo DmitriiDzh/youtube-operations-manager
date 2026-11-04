@@ -7,6 +7,7 @@
 
 import { isDomainError } from "@/lib/shared-domain";
 import type { PackageScanResult, ScannedPackage } from "./package-scan";
+import { approvalNamesUpload, type SlotDecision } from "./slot-decision";
 import { AUTO_UPLOAD_WAIT_CODES } from "./upload-approval";
 
 /** `userId` null: the channel has no connected account on this computer (it is skipped, with the reason recorded). */
@@ -81,8 +82,7 @@ export type AutoUploadTickResult = {
   reasons: AutoUploadWaiting[];
 };
 
-/** BL-225 stage 3: a plan slot's decision as the uploads use it (the plan module's `PlanSlotDecision`, restated: §M). */
-export type SlotDecision = { kind: "approved"; publishAt: string } | { kind: "vetoed" } | { kind: "pending" };
+export type { SlotDecision, SlotPackageFingerprint } from "./slot-decision";
 
 /** A publish time must be more than this ahead to be queued with the upload (the approval's own margin). */
 const SLOT_MARGIN_MS = 15 * 60_000;
@@ -139,7 +139,9 @@ export async function checkPackageForQueue(p: ScannedPackage, ctx: PackageCheckC
     return { ok: false, reason: "hash_failed", video };
   }
   if (actual !== expected) return { ok: false, reason: "hash_mismatch", video, expected, actual };
-  const slotPublishAt = slot?.kind === "approved" && Date.parse(slot.publishAt) > ctx.now().getTime() + SLOT_MARGIN_MS ? slot.publishAt : null;
+  // BL-242: an approval of another manifest (the package changed since the owner saw it) gives no date.
+  const slotPublishAt =
+    slot?.kind === "approved" && approvalNamesUpload(slot, { manifestSha256: p.manifestSha256, videoId: null }) && Date.parse(slot.publishAt) > ctx.now().getTime() + SLOT_MARGIN_MS ? slot.publishAt : null;
   return { ok: true, video, manifestSha256: p.manifestSha256, videoSha256: expected, slotPublishAt };
 }
 

@@ -93,3 +93,21 @@ test("AC-WP-13: approvals of different slots made on both computers at once are 
     assert.deepEqual(Object.keys(read.slots).sort(), [slotKey(WEEK, "s1"), slotKey(WEEK, "s2")]);
   }
 });
+
+// BL-242 (ADR 0062 §1, AC-WP-50): the approval stage lives in the document, so both computers read the same stage after a sync; an
+// agent's save and a decision on the other computer keep it; a document without it reads as absent (the module's `packaged`).
+test("AC-WP-50: the owner's approval stage set on one computer is read on the other after one cycle and survives other changes", async () => {
+  const mac = computer();
+  const windows = computer();
+  await mac.savePlan(CH, { weekStart: WEEK, create: meta("factory"), updatedAt: "2026-10-25T07:06:00Z", updatedBy: "factory", upserts: [slot("s1", "2026-10-26", "18:00")], removes: [] });
+  await cycle(mac, windows);
+  assert.equal((await windows.read(CH)).approvalStage, undefined);
+  await windows.setApprovalStage(CH, "slot");
+  await mac.addDecisions(CH, [decision("d1", "s1")]);
+  await cycle(mac, windows);
+  for (const c of [mac, windows]) {
+    const snapshot = await c.read(CH);
+    assert.equal(snapshot.approvalStage, "slot");
+    assert.deepEqual(Object.keys(snapshot.decisions), ["d1"]);
+  }
+});

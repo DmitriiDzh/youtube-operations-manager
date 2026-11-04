@@ -6,7 +6,7 @@
 // (identity, backup, Live writes right before the write, read-back) and is read back again here before it is recorded.
 
 import type { StoredPublishingUpload } from "@/lib/db";
-import type { SlotDecision } from "./auto-upload";
+import { approvalNamesUpload, type SlotDecision } from "./slot-decision";
 import type { UploadSteps } from "./upload-runner";
 
 /** video-details' rule: a date within 15 minutes is neither written nor removed (the video could publish meanwhile). */
@@ -47,6 +47,26 @@ const sameInstant = (a: string | null, b: string | null) => (a === null || b ===
 export function checksPassed(steps: UploadSteps): boolean {
   const translations = steps.localizations === undefined || steps.localizations === "none" || steps.localizations === "verified";
   return translations && steps.thumbnail === "set" && steps.playlist !== "failed" && steps.verify?.result === "verified";
+}
+
+/**
+ * BL-242 (ADR 0062 §3-§4): the plan's decision on a finished upload. A slot whose approval names the row's video id takes it,
+ * whatever slot the row was made for (a slot took the uploaded video by its package); two such approved slots: nothing (pending).
+ * With no approval naming it, a veto standing on an approval of that video id removes its date. Otherwise the row's own slot
+ * decides -- an approval naming a package (`packaged` stage) only when it names this upload: its video id, or (none named) its
+ * manifest. Pure.
+ */
+export function decisionForRow(row: Pick<StoredPublishingUpload, "slotId" | "videoId" | "manifestSha256">, decisions: ReadonlyMap<string, SlotDecision>): SlotDecision | undefined {
+  if (row.videoId) {
+    const naming = [...decisions.values()].filter((d) => d.kind !== "pending" && d.package?.videoId === row.videoId);
+    const approved = naming.filter((d) => d.kind === "approved");
+    if (approved.length > 1) return { kind: "pending" };
+    if (approved.length === 1) return approved[0];
+    if (naming.length > 0) return { kind: "vetoed" };
+  }
+  const own = row.slotId ? decisions.get(row.slotId) : undefined;
+  if (own?.kind === "approved" && !approvalNamesUpload(own, { manifestSha256: row.manifestSha256, videoId: row.videoId })) return { kind: "pending" };
+  return own;
 }
 
 /** What the plan wants for the row's video now: a date, no date, or nothing (leave it). Pure. */
@@ -106,7 +126,7 @@ export function createPlanSchedule(deps: PlanScheduleDeps) {
           decisions = await deps.slotDecisions(row.channelId);
           byChannel.set(row.channelId, decisions);
         }
-        const want = desiredDate(row, decisions.get(row.slotId), deps.clock.now().getTime());
+        const want = desiredDate(row, decisionForRow(row, decisions), deps.clock.now().getTime());
         if (!want) continue;
         const steps = stepsOf(row);
         const action = want.publishAt === null ? "unscheduled" : "scheduled";

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { changedField, defaultWeek, lengthLabel, mondayOf, pipelineOf, replacedToPull, shiftWeek, slotsToApprove, splitVetoed, tileCounts, wallParts, weekCoverageLine, zonedParts, type PlanSlotDto } from "./weekly-plan-model";
+import { canApprove, changedField, defaultWeek, duplicateWarningOf, stageOf, strayDateOf, lengthLabel, mondayOf, pipelineOf, replacedToPull, shiftWeek, slotsToApprove, splitVetoed, tileCounts, wallParts, weekCoverageLine, zonedParts, type PlanSlotDto } from "./weekly-plan-model";
 
 // BL-225 (WEEKLY_PUBLISHING_PLAN.md stage 1 item 6, AC-WP-15): the screen's pure rules. Values by hand: 2026-10-26 is a Monday,
 // 2026-11-01 its Sunday; 18:00 in Tokyo is 09:00Z, which is 10:00 in Berlin (CET, UTC+1, after 25.10); 23:30Z on 31.10 is 08:30 on Sunday 1.11 in Tokyo.
@@ -128,4 +128,79 @@ test("AC-WP-47: approving names the replaced slots it would pull", () => {
     slot({ slotId: "n6" }),
   ]);
   assert.deepEqual(pulls.map((r) => r.slotId), ["o1"]);
+});
+
+// BL-242 (WEEKLY_PUBLISHING_PLAN.md AC-WP-59; ADR 0062): in the `packaged` stage a slot waiting for its package has nothing to approve
+// -- no approve button and not in «Одобрить все готовые»; the switch shows the stage the server names; a package changed after the
+// approval is named as such.
+test("AC-WP-59: a slot awaiting its package is never approvable and not in «Одобрить все готовые»", () => {
+  const plan = {
+    slots: [
+      slot({ slotId: "a", contentHash: "ha", approval: "awaiting_package" }),
+      slot({ slotId: "b", contentHash: "hb" }),
+      slot({ slotId: "c", contentHash: "hc", approval: "awaiting_package", changedAfterApproval: { previous: { date: "2026-10-26", publishAt: "2026-10-26T18:00", lengthHint: null, note: null, timeZone: "Asia/Tokyo" }, approvedAt: "x", changedAt: "y", changedBy: "worker" } }),
+    ],
+  };
+  assert.deepEqual(slotsToApprove(plan), [{ slotId: "b", contentHash: "hb" }]);
+  assert.equal(canApprove(plan.slots[0]), false);
+  assert.equal(canApprove(plan.slots[1]), true);
+  assert.equal(canApprove(slot({ approval: "approved" })), false);
+});
+
+test("AC-WP-59: the switch shows the server's stage (an older server without one behaves as the slot stage)", () => {
+  assert.equal(stageOf({ approvalStage: "packaged" }), "packaged");
+  assert.equal(stageOf({ approvalStage: "slot" }), "slot");
+  assert.equal(stageOf({}), "slot");
+});
+
+test("AC-WP-59: a package changed after the approval (same slot) is the field «package»; the slot's own fields still come first", () => {
+  const previous = { date: "2026-10-26", publishAt: "2026-10-26T18:00", lengthHint: null, note: null, timeZone: "Asia/Tokyo", package: { video: "V64", manifestSha256: "a".repeat(64), videoId: null } };
+  const pkg = { video: "V64", title: "T", durationSeconds: 1, languages: [], containsSyntheticMedia: false, thumbnailPath: null, testThumbnails: 0, problems: [], manifestSha256: "b".repeat(64) };
+  const changed = (over: Partial<PlanSlotDto>) => slot({ changedAfterApproval: { previous, approvedAt: "a", changedAt: "b", changedBy: "worker" }, package: pkg, ...over });
+  assert.equal(changedField(changed({}), "Asia/Tokyo"), "package");
+  assert.equal(changedField(changed({ package: { ...pkg, manifestSha256: "a".repeat(64) } }), "Asia/Tokyo"), null, "the approved package");
+  assert.equal(changedField(changed({ publishAt: "2026-10-26T19:00" }), "Asia/Tokyo"), "time");
+});
+
+test("AC-WP-59: the new texts exist in English and Russian", async () => {
+  const en = (await import("@/lib/ui-text/locales/en/content")).content as Record<string, string>;
+  const ru = (await import("@/lib/ui-text/locales/ru/content")).content as Record<string, string>;
+  for (const key of ["weekPlan.stage.toggle", "weekPlan.stage.hintPackaged", "weekPlan.stage.hintSlot", "weekPlan.stage.failed", "weekPlan.awaitingPackage", "weekPlan.action.approveReady", "weekPlan.state.planned", "weekPlan.bar.waitingPackages", "weekPlan.changed.package", "weekPlan.error.notPackaged"]) {
+    assert.ok(en[key] && ru[key] && en[key] !== ru[key], key);
+  }
+  assert.equal(ru["weekPlan.stage.toggle"], "Одобрять пустые слоты");
+  assert.equal(ru["weekPlan.action.approveReady"], "Одобрить все готовые");
+  // Review #3: each hint says the other setting's approvals do not carry over and come back when switched back.
+  assert.match(en["weekPlan.stage.hintPackaged"], /do not count here; switching it back on brings them back/);
+  assert.match(en["weekPlan.stage.hintSlot"], /do not count here; switching it back off brings them back/);
+  assert.match(ru["weekPlan.stage.hintPackaged"], /не действуют; включите снова — вернутся/);
+  assert.match(ru["weekPlan.stage.hintSlot"], /не действуют; выключите снова — вернутся/);
+});
+
+// BL-242 R3 (re-review): a slot not approved whose video still carries a date on YouTube shows it («на YouTube: …»), so the owner sees
+// a date no approval counts for and moves it (approve) or removes it (veto). Approved or vetoed slots, or no date: nothing.
+test("R3: the stray YouTube date is shown on a slot that needs approval or awaits its package", async () => {
+  const at = "2026-10-27T09:00:00.000Z";
+  assert.equal(strayDateOf(slot({ approval: "needs_approval", youtubePublishAt: at })), at);
+  assert.equal(strayDateOf(slot({ approval: "awaiting_package", youtubePublishAt: at })), at);
+  assert.equal(strayDateOf(slot({ approval: "approved", youtubePublishAt: at })), null);
+  assert.equal(strayDateOf(slot({ approval: "needs_approval", youtubePublishAt: at, vetoed: { at: "x", device: null } })), null);
+  assert.equal(strayDateOf(slot({ approval: "needs_approval", youtubePublishAt: null })), null);
+  const en = (await import("@/lib/ui-text/locales/en/content")).content as Record<string, string>;
+  const ru = (await import("@/lib/ui-text/locales/ru/content")).content as Record<string, string>;
+  assert.equal(en["weekPlan.onYoutube"], "On YouTube: {at}");
+  assert.equal(ru["weekPlan.onYoutube"], "на YouTube: {at}");
+});
+
+// BL-242 round 3 item 2: an approved slot whose video number another counting approval also names gets a warning line -- the uploads
+// give it no date. Shown only for such a slot.
+test("round 3: the duplicate video number warning is shown only on a flagged approved slot; texts in en and ru", async () => {
+  assert.equal(duplicateWarningOf(slot({ approval: "approved", duplicateVideo: true })), true);
+  assert.equal(duplicateWarningOf(slot({ approval: "approved", duplicateVideo: false })), false);
+  assert.equal(duplicateWarningOf(slot({ approval: "approved" })), false);
+  assert.equal(duplicateWarningOf(slot({ approval: "approved", duplicateVideo: true, vetoed: { at: "x", device: null } })), false);
+  const en = (await import("@/lib/ui-text/locales/en/content")).content as Record<string, string>;
+  const ru = (await import("@/lib/ui-text/locales/ru/content")).content as Record<string, string>;
+  assert.equal(ru["weekPlan.duplicateVideo"], "Ещё один пакет с тем же номером — дата не ставится");
+  assert.equal(en["weekPlan.duplicateVideo"], "Another package has the same video number — no date is set");
 });

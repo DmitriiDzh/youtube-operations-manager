@@ -4913,6 +4913,25 @@ FO-REQ-0040; owner msgs 3511/3534; plan `docs/roadmap/plans/WEEKLY_PUBLISHING_PL
   `slot_id_removed`). A slot's optional `replacesSlotId` (same channel, any week) joins the content hash only when set; the view
   carries `replaces` (the target as it stands). `decide` "approve" also writes a `vetoed` record with `replacedBy` for each replaced
   slot not vetoed, released or gone, in the same change, audited; the week bar and the slot row say so before approving.
+- **BL-242 (ADR 0062) -- one approval per packaged video.** The plans document's root `approvalStage` (`packaged` when absent, or
+  `slot`) is set only by the owner (`setApprovalStage`: one Automerge change, audited `publishing_plan.approval_stage`, route
+  `POST .../publishing-plans/approval-stage`). `decisionsForStage` counts approvals made with a package fingerprint in `packaged` and
+  those without one in `slot` (vetoes in both). In `packaged`, `slotViewOf` reads the fingerprint from the `progress` port
+  (`package.manifestSha256` from the scan, `videoId`): approvable (`packageReady`) when uploaded, or packaged with no problems --
+  else `awaiting_package` (not `needsOwner`; plan state `planned`). The hash is `contentHashOf(zone, content, fingerprint)` (appended
+  last); the slot's standing approval is the newest fingerprinted approve/revoke whose hash still matches the content
+  (`standingPackageApprovalOf`), and it covers the current package when video and manifest match and its video id is null or the
+  same (an approval before the upload covers the video made of that manifest). `slotDecisions` reads the same `progress` port
+  (`composition/publishing-plan-slots.ts` passes `publishingPlanProgress`; a failed read approves nothing) and returns the view's
+  fingerprint with `approved`; a veto record stores the slot's package at decision time (else `lastApprovedPackageOf`) and
+  `vetoed` carries it. Per video number the newest of those decisions wins (a losing approval is `pending`, a losing veto loses its
+  package); two counting approvals of one number are both `pending`. The view's `youtubePublishAt` (only with a current package) shows a date no approval counts
+  for («на YouTube: …»); `duplicateVideo` flags the defensive case. Round 3: `channelState` reads progress once for the channel's
+  live slots (not released by their own times, or vetoed) and gives `counting` (counting approvals by video number), used by the
+  views, `decide`'s fallback veto and `slotDecisions`; `progressWithUploads` ignores a slot's row of another video than its package. Publishing restates it (`slot-decision.ts`
+  `approvalNamesUpload`): the automatic upload / Producer add and the runner's date step date only that manifest; the plan schedule
+  (`decisionForRow`) first looks for approvals naming the row's video id (one wins, two: pending; a veto naming it unschedules),
+  else the row's own slot, whose fingerprint must name the row (video id, else manifest). Mixed builds: RISK-150.
 - **Stage 2 -- package v2** (`publishing/packages.ts`): `RELEASE_PACKAGE_SCHEMAS` accepts `/1` and `/2`; v2 adds `slotId`,
   `localizations` (checked in `packageProblems` by `shared-localization-set` with a video's limits; `packageLocalizationSet` gives the
   form sent), `containsSyntheticMedia`, `thumbnails` (one default = `files.thumbnail`; the tests checked by the scan like the default,

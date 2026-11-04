@@ -741,5 +741,7 @@ export function createPlanScheduleCore(options: { slotDecisions: (channelId: str
   });
 }
 export type { PlanSchedule } from "./plan-schedule";
-export { checksPassed, desiredDate } from "./plan-schedule";
+export { checksPassed, decisionForRow, desiredDate } from "./plan-schedule";
+export { approvalNamesUpload } from "./slot-decision";
+export type { SlotPackageFingerprint } from "./slot-decision";
 export type { SlotDecision } from "./auto-upload";

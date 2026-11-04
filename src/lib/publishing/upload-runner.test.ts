@@ -1271,3 +1271,20 @@ test("BL-239 review #1: a Producer row whose slot is no longer approved gets no 
     assert.deepEqual([JSON.parse(h.row().stepsJson).publishAt, h.publishAtWrites], ["withheld", []], decision.kind);
   }
 });
+
+// BL-242 (ADR 0062 §3): right before the date, the slot's approval must name this upload's manifest (the `packaged` stage). The
+// approved manifest gets the slot's time; an approval of another manifest withholds an automatic row's date (private, no date).
+test("AC-WP-56: the date step dates only the approved manifest", async () => {
+  const finishing = { status: "finishing" as const, videoId: "vid1", stepsJson: JSON.stringify({ uploadedAt: NOW.toISOString(), thumbnail: "set", playlist: "added" }) };
+  const run = async (manifestSha256: string) => {
+    const h = slotHarness({ kind: "approved", publishAt: "2026-10-25T12:00:00.000Z", package: { video: "V1", manifestSha256, videoId: null } }, finishing);
+    h.yt.videos.push(VID1_UPLOADED);
+    const runner = createUploadRunner(h.deps);
+    for (let i = 0; i < 10 && h.row().status !== "done"; i += 1) await runner.tick();
+    return h;
+  };
+  const approved = await run("sha-approved");
+  assert.deepEqual([approved.publishAtWrites, JSON.parse(approved.row().stepsJson).publishAt], [["2026-10-25T12:00:00.000Z"], "set"]);
+  const other = await run("sha-other");
+  assert.deepEqual([other.publishAtWrites, JSON.parse(other.row().stepsJson).publishAt], [[], "withheld"]);
+});

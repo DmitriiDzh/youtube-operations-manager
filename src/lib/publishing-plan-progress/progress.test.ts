@@ -58,7 +58,7 @@ test("AC-WP-23: ready -> packaged with the package's facts; the AI flag falls ba
     code: null,
     videoId: null,
     publishAt: null, // review #3 added the video's date (none before an upload)
-    package: { video: "V64", title: "Title V64", durationSeconds: 10800, languages: ["de", "ja"], containsSyntheticMedia: true, thumbnailPath: "04 Videos/10 October/1026 V64/T.jpg", testThumbnails: 2, problems: [] },
+    package: { video: "V64", title: "Title V64", durationSeconds: 10800, languages: ["de", "ja"], containsSyntheticMedia: true, thumbnailPath: "04 Videos/10 October/1026 V64/T.jpg", testThumbnails: 2, problems: [], manifestSha256: "m" }, // BL-242: the manifest's SHA-256 (ADR 0062 §2)
   });
   assert.equal(progressOfSlots([scanned("V64", "s1", {}, { containsSyntheticMedia: false })], ["s1"], true).get("s1")?.package?.containsSyntheticMedia, false);
 });
@@ -128,4 +128,15 @@ test("review #3: a scheduled row and an uploaded package give their video's date
   assert.equal(progressOfUploadRow(uploadRow(), NOW_MS)?.publishAt, "2026-10-26T09:00:00.000Z");
   const scheduled = scanned("V64", "s1", { state: "scheduled", youtube: { videoId: "abcdefghijk", privacyStatus: "private", publishAt: "2026-10-30T09:00:00Z" } });
   assert.equal(progressOfSlots([scheduled], ["s1"], true).get("s1")?.publishAt, "2026-10-30T09:00:00Z");
+});
+
+// Round 3 review of BL-242 (b): an upload row of a slot describes the slot's package only when it is of that package's video -- once
+// the slot names another package (the old video moved to another slot), the row is not that package's progress.
+test("round 3 (b): a slot's upload row of another video does not override its current package", async () => {
+  const { progressWithUploads } = await import("./progress");
+  const fromPackages = progressOfSlots([scanned("V80", "s1")], ["s1"], true);
+  const merged = progressWithUploads(fromPackages, [uploadRow({ video: "V73" })], ["s1"], NOW_MS);
+  assert.deepEqual(merged.get("s1"), fromPackages.get("s1"));
+  const same = progressWithUploads(progressOfSlots([scanned("V64", "s1")], ["s1"], true), [uploadRow({ video: "V64" })], ["s1"], NOW_MS);
+  assert.equal(same.get("s1")?.status, "scheduled");
 });

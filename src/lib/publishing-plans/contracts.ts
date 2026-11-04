@@ -1,8 +1,11 @@
 import { DomainError, isDomainError } from "@/lib/shared-domain";
-import type { PublishingPlanActor, PublishingPlansCore, PublishingPlanSlotContent } from "@/lib/sync-gateway";
+import type { PublishingPlanActor, PublishingPlanApprovalStage, PublishingPlanPackageFingerprint, PublishingPlansCore, PublishingPlanSlotContent } from "@/lib/sync-gateway";
 
 export { DomainError, isDomainError };
-export type { PublishingPlanActor, PublishingPlanSlotContent };
+export type { PublishingPlanActor, PublishingPlanApprovalStage, PublishingPlanPackageFingerprint, PublishingPlanSlotContent };
+
+/** BL-242 (ADR 0062 §1): the stage a document without `approvalStage` is in. */
+export const DEFAULT_APPROVAL_STAGE: PublishingPlanApprovalStage = "packaged";
 
 // ---------------------------------------------------------------------------
 // BL-225 (FO-REQ-0040, docs/roadmap/plans/WEEKLY_PUBLISHING_PLAN.md, ADR 0051): a channel's weekly publishing plan -- slots with a
@@ -42,6 +45,8 @@ export type PlanSlotPackage = {
   testThumbnails: number;
   /** The package's problems (codes), empty when ready. */
   problems: string[];
+  /** BL-242 (ADR 0062 §2): the manifest file's SHA-256 (null when it could not be read): part of what the owner approves. */
+  manifestSha256: string | null;
 };
 
 /** What the packages and uploads report for a slot (stages 2-3); null/absent: nothing yet. */
@@ -99,21 +104,28 @@ export type ReplacedSlot = {
   found: boolean;
 };
 
-export type PlanState = "empty" | "awaiting_approval" | "approved" | "past";
+/** BL-242: `planned` -- in the `packaged` stage, nothing waits for the owner but a live future slot still waits for its package. */
+export type PlanState = "empty" | "planned" | "awaiting_approval" | "approved" | "past";
 
 export type PlanSlotView = PublishingPlanSlotContent & {
   slotId: string;
   /** The instant of `publishAt` in the plan's zone (ISO, UTC). */
   publishAtUtc: string;
-  /** SHA-256 of the slot's content with the plan's zone: what an approval names. */
+  /**
+   * SHA-256 of the slot's content with the plan's zone: what an approval names. BL-242 `packaged` stage: with the package
+   * fingerprint appended (`fingerprint`); a slot waiting for its package shows the bare slot hash (it cannot be approved).
+   */
   contentHash: string;
-  approval: "approved" | "needs_approval";
+  /** BL-242: `awaiting_package` -- `packaged` stage, no ready or uploaded package yet: nothing for the owner to approve. */
+  approval: "approved" | "needs_approval" | "awaiting_package";
+  /** BL-242 (ADR 0062 §2): the package fingerprint `contentHash` was computed with (`packaged` stage), else null. */
+  fingerprint: PublishingPlanPackageFingerprint | null;
   approvedAt: string | null;
   /**
    * The slot was approved, then changed (by an agent): the content the owner approved and when; the slot needs him again.
    * Null when the slot is approved, or was never approved.
    */
-  changedAfterApproval: { previous: PublishingPlanSlotContent & { timeZone: string }; approvedAt: string; changedAt: string; changedBy: PublishingPlanActor } | null;
+  changedAfterApproval: { previous: PublishingPlanSlotContent & { timeZone: string; package?: PublishingPlanPackageFingerprint }; approvedAt: string; changedAt: string; changedBy: PublishingPlanActor } | null;
   /** BL-240: the slot this one replaces (approving this one vetoes it), or null. */
   replaces: ReplacedSlot | null;
   /** `replacedBy`: vetoed by the owner's approval of that slot (BL-240), not by his own veto. */
@@ -124,6 +136,16 @@ export type PlanSlotView = PublishingPlanSlotContent & {
   videoId: string | null;
   /** BL-225 stage 2: the package that names the slot, or null. */
   package: PlanSlotPackage | null;
+  /**
+   * BL-242 R3: the date the slot's uploaded video carries on YouTube (UTC), or null. Shown when the slot is not approved: a date left
+   * by an approval that no longer counts, which the owner moves (approve) or removes (veto).
+   */
+  youtubePublishAt: string | null;
+  /**
+   * BL-242 round 3: the slot's approval counts here, but another slot's counting approval names the same video number -- the uploads
+   * give neither a date (defensive: two packages with one number). False otherwise.
+   */
+  duplicateVideo: boolean;
   /** The slot's time has passed (it can no longer be approved, vetoed or restored). */
   released: boolean;
   createdAt: string;
@@ -137,6 +159,8 @@ export type PlanSummary = {
   /** The Sunday that ends the week. */
   weekEnd: string;
   timeZone: string;
+  /** BL-242 (ADR 0062 §1): the channel's approval stage (the same for every plan of the channel). */
+  approvalStage: PublishingPlanApprovalStage;
   state: PlanState;
   counts: { slots: number; approved: number; needsApproval: number; vetoed: number };
   /** The earliest slot not vetoed (UTC), or null. */
@@ -149,12 +173,15 @@ export type PlanSummary = {
 
 export type PlanView = PlanSummary & { slots: PlanSlotView[] };
 
-/** One local audit event per owner decision (`publishing_plan.approved` / `.revoked` / `.vetoed` / `.restored`). */
-export type PlanAuditEntry = { channelId: string; weekStart: string; slotId: string; detail: Record<string, unknown> };
+/**
+ * One local audit event per owner decision (`publishing_plan.approved` / `.revoked` / `.vetoed` / `.restored`); BL-242: the stage
+ * change `publishing_plan.approval_stage` names no week and no slot (null).
+ */
+export type PlanAuditEntry = { channelId: string; weekStart: string | null; slotId: string | null; detail: Record<string, unknown> };
 
 export type PublishingPlansPorts = {
   /** The sync family's operations the module uses (one document per channel, merged between the computers). */
-  store: Pick<PublishingPlansCore, "read" | "savePlan" | "addDecisions">;
+  store: Pick<PublishingPlansCore, "read" | "savePlan" | "addDecisions" | "setApprovalStage">;
   /** Whether the channel is connected on this computer. */
   isChannelConnected(channelId: string): Promise<boolean>;
   /** This computer's name for decisions ("Mac", a host name), or null. */
@@ -166,7 +193,10 @@ export type PublishingPlansPorts = {
   withLock<T>(fn: () => Promise<T>): Promise<T>;
   /** The owner's decisions, audited on this computer. */
   audit(entry: PlanAuditEntry): Promise<void>;
-  /** Stages 2-3: what the packages and uploads say of the slots, by slotId. Absent: nothing (stage 1). */
+  /**
+   * Stages 2-3: what the packages and uploads say of the slots, by slotId. Absent: nothing (stage 1). BL-242 round 3: one read may
+   * cover several weeks; `weekStart` is then "" (the production port reads the channel's packages and uploads whatever it says).
+   */
   progress?(channelId: string, weekStart: string, slotIds: string[]): Promise<Map<string, PlanSlotProgress>>;
 };
 
@@ -175,4 +205,12 @@ export type PublishingPlansPorts = {
  * `vetoed` (never upload it; once uploaded, remove its date), `pending` (not approved now: upload it, if at all, without a date and
  * leave any date as it is). A slot id found in two plans is `pending` (ambiguous: nothing is scheduled by it).
  */
-export type PlanSlotDecision = { kind: "approved"; publishAt: string } | { kind: "vetoed" } | { kind: "pending" };
+/**
+ * BL-242 (ADR 0062 §3): in the `packaged` stage an approved slot carries the fingerprint the owner approved -- the uploads date only
+ * that manifest (or, with a video id, that video); a vetoed slot carries the fingerprint of the approval it still stood on, so a
+ * veto reaches the video a slot took over by its package (BL-242 D).
+ */
+export type PlanSlotDecision =
+  | { kind: "approved"; publishAt: string; package?: PublishingPlanPackageFingerprint }
+  | { kind: "vetoed"; package?: PublishingPlanPackageFingerprint }
+  | { kind: "pending" };
