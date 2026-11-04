@@ -318,3 +318,12 @@ test("AC-UQ-10: the list -- rows in progress apart; queued rows in order with th
   assert.deepEqual([list.queue[0].title, list.queue[0].slotId, list.queue[0].publishAt, list.queue[0].publishAtSet], ["Title b", "w45-mon", "2026-11-03T15:00:00.000Z", false]);
   assert.deepEqual([list.queuedCount, list.queuedBytes], [2, 500]);
 });
+
+// BL-242 (ADR 0062 §3): the Producer's add uses the same check -- an approval of another manifest gives no date.
+test("AC-WP-56: the Producer's add gets the slot's date only for the approved manifest", async () => {
+  const fingerprint = (manifestSha256: string) => new Map([["w45-mon", { kind: "approved" as const, publishAt: "2026-11-03T15:00:00.000Z", package: { video: "V61", manifestSha256, videoId: null } }]]);
+  const named = harness([], { packages: [pkg("V61", {}, { slotId: "w45-mon" })], slots: fingerprint("mf-V61") });
+  assert.equal((await named.control.add({ channelId: "UC_x", video: "V61" }, PRODUCER)).upload.publishAt, "2026-11-03T15:00:00.000Z");
+  const other = harness([], { packages: [pkg("V61", {}, { slotId: "w45-mon" })], slots: fingerprint("mf-other") });
+  assert.equal((await other.control.add({ channelId: "UC_x", video: "V61" }, PRODUCER)).upload.publishAt, null);
+});

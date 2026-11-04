@@ -175,3 +175,67 @@ test("review #4: a quota refusal is recorded and nothing is read again until the
   await h.schedule.tick();
   assert.equal(h.state.row.publishAt, null, "after the reset the veto lands");
 });
+
+// BL-242 (WEEKLY_PUBLISHING_PLAN.md AC-WP-57; ADR 0062 §3-§4): a slot takes an uploaded video by its package; the owner's approval
+// then names the video id, and the plan schedule dates the finished upload by that video id although its row names the old slot.
+// Two approved slots naming the same video schedule nothing. An approval without a video id dates only its own manifest.
+function multiHarness(initial: StoredPublishingUpload, decisions: Map<string, SlotDecision>) {
+  const state = { row: { ...initial }, writes: [] as Array<string | null>, video: { privacyStatus: "private", publishAt: initial.publishAt as string | null } };
+  const schedule = createPlanSchedule({
+    rows: async () => [state.row],
+    slotDecisions: async () => decisions,
+    read: async () => ({ ...state.video }),
+    write: async (_row, publishAt) => {
+      state.writes.push(publishAt);
+      state.video.publishAt = publishAt;
+    },
+    update: async (_row, set) => {
+      state.row = { ...state.row, ...set };
+      return true;
+    },
+    audit: async () => undefined,
+    clock: { now: () => NOW },
+    liveWritesEnabled: async () => true,
+    dataReadsEnabled: async () => true,
+    nextQuotaReset: () => new Date("2026-10-26T07:00:00Z"),
+  });
+  return { state, schedule };
+}
+const dateless = (over: Partial<StoredPublishingUpload> = {}) => row({ slotId: "old", videoId: "vid1", manifestSha256: "mf-aa", publishAt: null, stepsJson: JSON.stringify({ ...OK_STEPS, publishAt: undefined }), ...over });
+const byVideo = (publishAt: string, videoId = "vid1"): SlotDecision => ({ kind: "approved", publishAt, package: { video: "V73", manifestSha256: "mf-aa", videoId } });
+
+test("AC-WP-57: a finished upload (slot old, vid1, no date) and an approved slot new naming vid1 -> one write with new's time", async () => {
+  const h = multiHarness(dateless(), new Map([["old", { kind: "pending" }], ["new", byVideo("2026-11-04T09:00:00.000Z")]]));
+  assert.deepEqual(await h.schedule.tick(), { changed: 1 });
+  assert.deepEqual(h.state.writes, ["2026-11-04T09:00:00.000Z"]);
+  // The old slot's own veto does not stop the slot that took the video over.
+  const vetoedOld = multiHarness(dateless(), new Map<string, SlotDecision>([["old", { kind: "vetoed" }], ["new", byVideo("2026-11-04T09:00:00.000Z")]]));
+  await vetoedOld.schedule.tick();
+  assert.deepEqual(vetoedOld.state.writes, ["2026-11-04T09:00:00.000Z"]);
+});
+
+test("AC-WP-57: two approved live slots naming vid1 -> no write", async () => {
+  const h = multiHarness(dateless(), new Map([["new", byVideo("2026-11-04T09:00:00.000Z")], ["other", byVideo("2026-11-05T09:00:00.000Z")]]));
+  assert.deepEqual(await h.schedule.tick(), { changed: 0 });
+  assert.deepEqual(h.state.writes, []);
+});
+
+test("AC-WP-57: an approval without a video id dates the upload of its manifest; another manifest -> no write", async () => {
+  const own = (manifestSha256: string): Map<string, SlotDecision> => new Map([["old", { kind: "approved", publishAt: "2026-11-04T09:00:00.000Z", package: { video: "V73", manifestSha256, videoId: null } }]]);
+  const same = multiHarness(dateless(), own("mf-aa"));
+  await same.schedule.tick();
+  assert.deepEqual(same.state.writes, ["2026-11-04T09:00:00.000Z"]);
+  const other = multiHarness(dateless(), own("mf-bb"));
+  assert.deepEqual(await other.schedule.tick(), { changed: 0 });
+  assert.deepEqual(other.state.writes, []);
+  // The row's own slot approved with another video id named: not this video.
+  const otherVideo = multiHarness(dateless(), new Map([["old", byVideo("2026-11-04T09:00:00.000Z", "vid2")]]));
+  assert.deepEqual(await otherVideo.schedule.tick(), { changed: 0 });
+});
+
+test("AC-WP-57: a veto of the slot that took the video (its approval named vid1) removes the video's date", async () => {
+  const scheduled = row({ slotId: "old", videoId: "vid1", manifestSha256: "mf-aa", publishAt: "2026-11-04T09:00:00.000Z" });
+  const h = multiHarness(scheduled, new Map<string, SlotDecision>([["old", { kind: "pending" }], ["new", { kind: "vetoed", package: { video: "V73", manifestSha256: "mf-aa", videoId: "vid1" } }]]));
+  await h.schedule.tick();
+  assert.deepEqual(h.state.writes, [null]);
+});
