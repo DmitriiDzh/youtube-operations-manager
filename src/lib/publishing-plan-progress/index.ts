@@ -28,15 +28,29 @@ async function packagesOf(channelId: string): Promise<Cached | null> {
   }
 }
 
+/** BL-243: the `uploadedAt` an upload row's steps recorded (ms), or null. */
+function uploadedAtOfSteps(stepsJson: string): number | null {
+  try {
+    const at = Date.parse(String((JSON.parse(stepsJson) as { uploadedAt?: unknown }).uploadedAt ?? ""));
+    return Number.isFinite(at) ? at : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The plan's progress port: the packages (`built`, `packaged`) and this computer's uploads (`uploading`, `failed`, `scheduled`, `published`). */
 export const publishingPlanProgress: NonNullable<PublishingPlansPorts["progress"]> = async (channelId, _weekStart, slotIds): Promise<Map<string, PlanSlotProgress>> => {
   const found = await packagesOf(channelId);
   // BL-225 stage 3: this computer's upload rows name their slot -- uploading, failed (with the step's code), scheduled, published.
   const rows = await listChannelUploads(channelId).catch(() => []);
-  // BL-243: of two deleted packages naming a slot, the one uploaded last speaks (its record's time, else its newest row here).
-  const rowTimes = new Map<string, number>();
-  for (const row of rows) if (row.videoId) rowTimes.set(row.videoId, Math.max(rowTimes.get(row.videoId) ?? 0, row.createdAt.getTime()));
-  const fromPackages = found ? progressOfSlots(found.packages, slotIds, found.synthetic, rowTimes) : new Map<string, PlanSlotProgress>();
+  // BL-243: of two deleted packages naming a slot, the one uploaded last speaks (its record's uploadedAt, else the upload time its
+  // row here recorded -- the same kind of time, never the row's creation).
+  const rowUploadTimes = new Map<string, number>();
+  for (const row of rows) {
+    const at = row.videoId ? uploadedAtOfSteps(row.stepsJson) : null;
+    if (row.videoId && at !== null) rowUploadTimes.set(row.videoId, Math.max(rowUploadTimes.get(row.videoId) ?? Number.NEGATIVE_INFINITY, at));
+  }
+  const fromPackages = found ? progressOfSlots(found.packages, slotIds, found.synthetic, rowUploadTimes) : new Map<string, PlanSlotProgress>();
   // BL-243: the rows of deleted videos and packages say nothing -- as the scan shown read them (no scan: none known).
   return progressWithUploads(fromPackages, rows, slotIds, Date.now(), {
     removedVideoIds: found?.removedVideoIds ?? new Set<string>(),

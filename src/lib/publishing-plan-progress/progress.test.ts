@@ -190,36 +190,55 @@ test("BL-243 AC-WP-69: a deleted package's rows say nothing even when another pa
   const { progressWithUploads } = await import("./progress");
   const noVideo = scanned("V80", "s1", { state: "not_ready", problems: [{ code: "video_missing" }] });
   const packages = [deleted73(), noVideo];
-  assert.deepEqual([...deletedVideosBySlot(packages)], [["s1", new Set(["V73"])]]);
+  // (round 3: each deleted package with its manifest and record time, to tell its tries from a fresh package's)
+  assert.deepEqual([...deletedVideosBySlot(packages)], [["s1", [{ video: "V73", manifestSha256: "m", uploadedAt: null }]]]);
   const merged = progressWithUploads(progressOfSlots(packages, ["s1"], false), [uploadRow({ video: "V73", videoId: "vid73" })], ["s1"], NOW_MS, { removedVideoIds: new Set(["vid73"]), deletedVideosBySlot: deletedVideosBySlot(packages) });
   assert.equal(merged.has("s1"), false);
 });
 
-// BL-243 review round 2, item 1 (AC-WP-75): once a package is deleted_on_youtube, no upload row of it (its number on that slot)
-// overrides the deleted progress -- not the removed video's own row, and not an older try (a failed one without a video id). A
-// fresh package with the same number counts only rows newer than the removed video's row.
-test("BL-243 AC-WP-75: an older row of a deleted package never brings it back (no approvable deleted video)", async () => {
+// BL-243 review round 2, item 1, and round 3, item 3 (AC-WP-75): once a package is deleted_on_youtube, no upload row of it (its
+// number on that slot) overrides the deleted progress -- not the removed video's own row, not an older try without a video id. A
+// fresh package with the same number counts only its own tries: rows naming its manifest, and, when that manifest is byte-identical
+// to the deleted one's, only rows newer than the deleted upload (record uploadedAt or the removed row); neither known: none.
+test("BL-243 AC-WP-75: no try of a deleted package ever counts again; a fresh same-number package counts only its own", async () => {
   const { progressWithUploads } = await import("./progress");
-  const olderFailed = uploadRow({ video: "V73", videoId: null, status: "failed", errorCode: "processing_rejected", createdAt: new Date("2026-10-20T00:00:00Z") });
-  const removedRow = uploadRow({ video: "V73", videoId: "vid73", createdAt: new Date("2026-10-24T00:00:00Z") });
+  const olderFailed = uploadRow({ video: "V73", manifestSha256: "m", videoId: null, status: "failed", errorCode: "processing_rejected", createdAt: new Date("2026-10-20T00:00:00Z") });
+  const removedRow = uploadRow({ video: "V73", manifestSha256: "m", videoId: "vid73", createdAt: new Date("2026-10-24T00:00:00Z") });
   const exclusions = (packages: ScannedPackage[]) => ({ removedVideoIds: new Set(["vid73"]), deletedVideosBySlot: deletedVideosBySlot(packages) });
   const alone = [deleted73()];
   const merged = progressWithUploads(progressOfSlots(alone, ["s1"], false), [olderFailed, removedRow], ["s1"], NOW_MS, exclusions(alone)).get("s1");
   assert.equal(merged?.status, "failed");
   assert.equal(merged?.code, "video_deleted_on_youtube");
   assert.equal(merged?.videoId, "vid73");
-  // The older row alone (the removed row is on another computer): still the deleted state.
+  // The older row alone (the removed row is on another computer, or past the capped read): still the deleted state.
   assert.equal(progressWithUploads(progressOfSlots(alone, ["s1"], false), [olderFailed], ["s1"], NOW_MS, exclusions(alone)).get("s1")?.code, "video_deleted_on_youtube");
 
-  // A fresh V73 package for the slot: the older failed try is not its progress; a new upload of it is.
-  const fresh = [deleted73(), scanned("V73", "s1", { manifestPath: "b/V73_release.json" })];
-  assert.equal(progressWithUploads(progressOfSlots(fresh, ["s1"], false), [olderFailed, removedRow], ["s1"], NOW_MS, exclusions(fresh)).get("s1")?.status, "packaged");
-  const newTry = uploadRow({ video: "V73", videoId: null, status: "uploading", createdAt: new Date("2026-10-25T00:00:00Z") });
-  assert.equal(progressWithUploads(progressOfSlots(fresh, ["s1"], false), [olderFailed, removedRow, newTry], ["s1"], NOW_MS, exclusions(fresh)).get("s1")?.status, "uploading");
+  // A fresh V73 with its own manifest "fresh": the deleted one's tries never count, the fresh one's own do.
+  const fresh = [deleted73(), scanned("V73", "s1", { manifestPath: "b/V73_release.json", manifestSha256: "fresh" })];
+  assert.equal(progressWithUploads(progressOfSlots(fresh, ["s1"], false), [olderFailed], ["s1"], NOW_MS, exclusions(fresh)).get("s1")?.status, "packaged", "no removed row here: still not counted");
+  const newTry = uploadRow({ video: "V73", manifestSha256: "fresh", videoId: null, status: "uploading", createdAt: new Date("2026-10-25T00:00:00Z") });
+  assert.equal(progressWithUploads(progressOfSlots(fresh, ["s1"], false), [olderFailed, newTry], ["s1"], NOW_MS, exclusions(fresh)).get("s1")?.status, "uploading");
+
+  // A byte-identical fresh manifest ("m"): only rows after the deleted upload; with no time known, none.
+  const twin = [deleted73(), scanned("V73", "s1", { manifestPath: "b/V73_release.json" })];
+  const laterTry = uploadRow({ video: "V73", manifestSha256: "m", videoId: null, status: "uploading", createdAt: new Date("2026-10-25T00:00:00Z") });
+  assert.equal(progressWithUploads(progressOfSlots(twin, ["s1"], false), [olderFailed, laterTry], ["s1"], NOW_MS, exclusions(twin)).get("s1")?.status, "packaged", "no time known: the rows are ignored");
+  assert.equal(progressWithUploads(progressOfSlots(twin, ["s1"], false), [olderFailed, removedRow, laterTry], ["s1"], NOW_MS, exclusions(twin)).get("s1")?.status, "uploading", "after the removed row");
+  const twinTimed = [scanned("V73", "s1", { ...deleted73(), youtube: { videoId: "vid73", privacyStatus: null, publishAt: null, removedAt: "2026-11-03T19:54:00.000Z", uploadedAt: "2026-10-22T00:00:00.000Z" } }), scanned("V73", "s1", { manifestPath: "b/V73_release.json" })];
+  assert.equal(progressWithUploads(progressOfSlots(twinTimed, ["s1"], false), [olderFailed, laterTry], ["s1"], NOW_MS, exclusions(twinTimed)).get("s1")?.status, "uploading", "after the record's uploadedAt");
 });
 
-// BL-243 review round 2, item 8 (AC-WP-76): of two deleted packages naming one slot, the one uploaded last speaks -- by its record's
-// uploadedAt, else by its newest upload row on this computer; never by the scan's order alone.
+// BL-243 review round 3, item 2 (AC-WP-79): a row whose plan change found the video gone (confirmed) is a failure with a code.
+test("BL-243 AC-WP-79: a row with planSync video_missing is failed video_deleted_on_youtube, never packaged", async () => {
+  const { progressOfUploadRow } = await import("./progress");
+  const steps = { localizations: "verified", thumbnail: "set", playlist: "added", verify: { result: "verified" }, publishAt: "set" };
+  assert.deepEqual(progressOfUploadRow(uploadRow({ publishAt: null, stepsJson: JSON.stringify({ ...steps, planSync: { action: "unscheduled", result: "video_missing" } }) }), NOW_MS), { status: "failed", code: "video_deleted_on_youtube", videoId: "vid64" });
+  assert.equal(progressOfUploadRow(uploadRow({ stepsJson: JSON.stringify({ ...steps, planSync: { action: "unscheduled", result: "refused" } }) }), NOW_MS)?.code, "plan_unscheduled_failed");
+});
+
+// BL-243 review round 2, item 8, and round 3, item 7 (AC-WP-76): of two deleted packages naming one slot, the one uploaded last
+// speaks -- by its record's uploadedAt, else by the uploadedAt its upload row here recorded (the same kind of time, never a row's
+// creation); never by the scan's order alone.
 test("BL-243 AC-WP-76: the newest deleted upload speaks for the slot", () => {
   const deleted = (video: string, videoId: string, uploadedAt: string | null) =>
     scanned(video, "s1", { state: "deleted_on_youtube", problems: [{ code: "video_deleted_on_youtube" }], youtube: { videoId, privacyStatus: null, publishAt: null, removedAt: "2026-11-03T19:54:00.000Z", uploadedAt }, existsOnChannel: false });
@@ -227,9 +246,9 @@ test("BL-243 AC-WP-76: the newest deleted upload speaks for the slot", () => {
   const newer = deleted("V73", "vid73", "2026-11-02T10:00:00.000Z");
   assert.equal(progressOfSlots([newer, older], ["s1"], false).get("s1")?.videoId, "vid73");
   assert.equal(progressOfSlots([older, newer], ["s1"], false).get("s1")?.videoId, "vid73");
-  // No uploadedAt in the records: the newer upload row here decides.
+  // No uploadedAt in the records: the upload times the rows recorded decide.
   const a = deleted("V72", "vid72", null);
   const b = deleted("V73", "vid73", null);
-  const rowTimes = new Map([["vid72", Date.parse("2026-11-02T00:00:00Z")], ["vid73", Date.parse("2026-11-01T00:00:00Z")]]);
-  assert.equal(progressOfSlots([b, a], ["s1"], false, rowTimes).get("s1")?.videoId, "vid72");
+  const rowUploadTimes = new Map([["vid72", Date.parse("2026-11-02T00:00:00Z")], ["vid73", Date.parse("2026-11-01T00:00:00Z")]]);
+  assert.equal(progressOfSlots([b, a], ["s1"], false, rowUploadTimes).get("s1")?.videoId, "vid72");
 });
