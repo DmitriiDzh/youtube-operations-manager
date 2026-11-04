@@ -262,6 +262,13 @@ function createPackageScanReads() {
     async videos(channelId) {
       return (await videoStore.listVideosByChannel(channelId)).map((video) => ({ videoId: video.videoId, title: video.title, privacyStatus: video.privacyStatus, publishAt: video.publishAt }));
     },
+    // BL-243: the removed mark and the copy's age, so a deleted video is not read as uploaded.
+    async removedVideos(channelId) {
+      return (await videoStore.listRemovedVideosByChannel(channelId)).map((video) => ({ videoId: video.videoId, removedAt: video.removedAt.toISOString() }));
+    },
+    async videosSyncedAt(channelId) {
+      return (await videoStore.getChannel(channelId))?.lastSyncedAt?.toISOString() ?? null;
+    },
     join: (...parts) => path.join(...parts),
     clock: { now: () => new Date() },
   };

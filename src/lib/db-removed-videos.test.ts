@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getStoredVideo, listStoredVideosByChannel, markVideosRemovedOnYoutube, upsertChannel, upsertVideos } from "@/lib/db";
+import { getStoredVideo, listRemovedVideosByChannel, listStoredVideosByChannel, markVideosRemovedOnYoutube, upsertChannel, upsertVideos } from "@/lib/db";
 
 const LISTED = new Date("2026-10-14T08:59:00Z"); // this read of the uploads began after the rows were last synced (2026-10-01)
 
@@ -66,4 +66,17 @@ test("a row saved after this read of the uploads began is never marked; a listed
   // e2 listed again (videos.list may still leave it out, so no upsert): the mark goes.
   await markVideosRemovedOnYoutube("UC_e", ["e1", "e2", "e3"], new Date("2026-10-14T10:01:00Z"), new Date("2026-10-14T10:00:00Z"));
   assert.deepEqual((await listStoredVideosByChannel("UC_e")).map((v) => v.videoId).sort(), ["e1", "e2", "e3"]);
+});
+
+test("BL-243: the removed videos are listed with their mark, only the channel's own; none once the video reappears", async () => {
+  await upsertChannel({ channelId: "UC_r", title: "R", thumbnailUrl: null, uploadsPlaylistId: "UU_r", connectedUserId: null });
+  await upsertChannel({ channelId: "UC_s", title: "S", thumbnailUrl: null, uploadsPlaylistId: "UU_s", connectedUserId: null });
+  await upsertVideos([video("r1", "UC_r"), video("r2", "UC_r"), video("s1", "UC_s")], new Date("2026-10-01T00:00:00Z"));
+  const at = new Date("2026-11-03T19:54:00.000Z");
+  await markVideosRemovedOnYoutube("UC_r", ["r1"], at, LISTED);
+  await markVideosRemovedOnYoutube("UC_s", [], at, LISTED);
+  assert.deepEqual(await listRemovedVideosByChannel("UC_r"), [{ videoId: "r2", title: "T r2", removedAt: at }]);
+  assert.deepEqual(await listRemovedVideosByChannel("UC_s"), [{ videoId: "s1", title: "T s1", removedAt: at }]);
+  await upsertVideos([video("r2", "UC_r")], new Date("2026-11-04T08:00:00.000Z"));
+  assert.deepEqual(await listRemovedVideosByChannel("UC_r"), []);
 });

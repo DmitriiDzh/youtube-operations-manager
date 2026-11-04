@@ -8977,6 +8977,18 @@ export async function listStoredVideosByChannel(channelId: string): Promise<Stor
 }
 
 /**
+ * BL-243: the channel's videos a complete sync found removed on YouTube (the rows `listStoredVideosByChannel` hides), with when.
+ * Read-only; the package scan, the plan schedule and `channel_video_list` tell a deleted video from one never synced.
+ */
+export async function listRemovedVideosByChannel(channelId: string): Promise<Array<{ videoId: string; title: string; removedAt: Date }>> {
+  const rows = await db
+    .select({ id: videos.id, title: videos.title, removedAt: videos.removedOnYoutubeAt })
+    .from(videos)
+    .where(and(eq(videos.channelId, channelId), isNotNull(videos.removedOnYoutubeAt)));
+  return rows.flatMap((row) => (row.removedAt ? [{ videoId: row.id, title: row.title, removedAt: row.removedAt }] : []));
+}
+
+/**
  * Owner, 2026-10-14 (Telegram msgs 2770/2775, option "б"): marks this channel's not-yet-marked videos whose ids are not in
  * `presentVideoIds` (a complete read of the channel's uploads) as removed on YouTube, and clears the mark of every listed
  * id (a listed video exists even when `videos.list` left it out). Rows are never deleted. Only rows last synced before
