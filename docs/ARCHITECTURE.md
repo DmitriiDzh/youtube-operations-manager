@@ -4247,7 +4247,10 @@ is already set everywhere), 2734 (one merge for the whole stage).
   count (commas, quotes around a tag with a space), chapters (first 0:00, at least three, each ≥ 10 s), the channel's language
   baseline, the video's size and ffprobe duration (`ffprobe_missing` apart from an unreadable file), a JPEG/PNG thumbnail ≤ 2 MB,
   and the same title already on the channel. State: not ready / ready / uploaded private / scheduled / published (by
-  `Vn_youtube.json` and the synced copy). The manifest's SHA-256 travels to the approval. Routes: `GET .../publishing/packages`,
+  `Vn_youtube.json` and the synced copy) / uploaded_unknown (the record's video is not in the copy yet) / deleted_on_youtube
+  (BL-243, ADR 0063: the copy has it with the sync's `removed_on_youtube_at` mark -- `listRemovedVideosByChannel`; problem
+  `video_deleted_on_youtube`, `youtube.removedAt`, privacy and date null). Every package carries `existsOnChannel` (true | false |
+  null) and `checkedAt` (the channel's `lastSyncedAt`). The manifest's SHA-256 travels to the approval. Routes: `GET .../publishing/packages`,
   `GET .../publishing/packages/thumbnail?path=` (an image under `04 Videos/` only, its type by its first bytes).
 - **Approval** (`publishing/upload-approval.ts`, `POST .../publishing/uploads`). It binds to what the owner saw: each manifest's hash
   and the settings shown; anything changed refuses the whole approval. Also refused: a package not ready, already uploaded, queued
@@ -4932,6 +4935,14 @@ FO-REQ-0040; owner msgs 3511/3534; plan `docs/roadmap/plans/WEEKLY_PUBLISHING_PL
   `approvalNamesUpload`): the automatic upload / Producer add and the runner's date step date only that manifest; the plan schedule
   (`decisionForRow`) first looks for approvals naming the row's video id (one wins, two: pending; a veto naming it unschedules),
   else the row's own slot, whose fingerprint must name the row (video id, else manifest). Mixed builds: RISK-150.
+- **BL-243 (ADR 0063) -- a video deleted on YouTube.** `markSharedSlots` leaves `deleted_on_youtube` packages out of every slot
+  group (they hold nothing, are never marked). `progressOfSlots` uses a deleted package only when no other package names its slot:
+  `failed` with `VIDEO_DELETED_ON_YOUTUBE_CODE`, the video id, no date; `progressWithUploads` drops rows whose video id is removed
+  (`removedVideoIdsOf`, or the deleted package's own id). `fingerprintOf` is null for that progress, so `packageReady` is false
+  (`awaiting_package`) and no standing approval covers it (`slotDecisions` -> `pending`); a vetoed such slot is removable. The plan
+  schedule skips rows of removed videos (dep `removedVideoIds`, a failed read skips the channel); the approval's `heldSlots` uses
+  `holdsSlot` (a finished row of a removed video holds no slot; its video number stays held). Agents: calendar `missingOnChannel`,
+  items' `existsOnChannel` / `checkedAt` / `removedAt`; `channel_video_list` `videoIds` with `removed` / `notFound`.
 - **Stage 2 -- package v2** (`publishing/packages.ts`): `RELEASE_PACKAGE_SCHEMAS` accepts `/1` and `/2`; v2 adds `slotId`,
   `localizations` (checked in `packageProblems` by `shared-localization-set` with a video's limits; `packageLocalizationSet` gives the
   form sent), `containsSyntheticMedia`, `thumbnails` (one default = `files.thumbnail`; the tests checked by the scan like the default,

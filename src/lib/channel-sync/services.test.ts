@@ -647,7 +647,9 @@ test("BL-243 AC-WP-73: videoIds lists only those videos; removed and notFound sa
   await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_TEST" });
   await services.syncChannel({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST" });
   store.removedAt.set("vid73", new Date("2026-11-03T19:54:00.000Z"));
-  store.videos.set("UC_OTHER", [{ ...(await store.listVideosByChannel("UC_TEST"))[0], videoId: "other1", channelId: "UC_OTHER" }]);
+  // Another channel's stored video (the fake store's rows by channel).
+  const rowsByChannel = store.videos;
+  rowsByChannel.set("UC_OTHER", [{ ...(await store.listVideosByChannel("UC_TEST"))[0], videoId: "other1", channelId: "UC_OTHER" }]);
 
   const result = (await services.listSyncedVideos({
     credentialRef: { userId: "user-1" },

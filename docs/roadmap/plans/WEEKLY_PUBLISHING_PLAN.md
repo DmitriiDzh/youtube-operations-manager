@@ -382,3 +382,17 @@ Fixed values: channel `UC1`, last video sync `2026-11-04T08:00:00.000Z`; V73 rec
   list -> validation error; without `videoIds` the answer has exactly the previous keys.
 - **AC-WP-74** Screens: the packages list labels the state («Удалён на YouTube» / "Deleted on YouTube") and the problem; the plan slot
   shows «Ролик удалён на YouTube» / "Video deleted on YouTube" and no approve button; texts in en and ru.
+
+### Acceptance status (2026-11-05, branch `feature/bl-243-deleted-videos`)
+
+Tested against fakes (and the real SQLite of the test run for the removed list) only; nothing verified by eye or on the real
+channel yet.
+
+- AC-WP-66..68: `src/lib/publishing/package-scan.test.ts`; the removed list `src/lib/db-removed-videos.test.ts`.
+- AC-WP-69: `src/lib/publishing-plan-progress/progress.test.ts`; AC-WP-70: `src/lib/publishing-plans/packaged-approval.test.ts`.
+- AC-WP-71: `src/lib/publishing/plan-schedule.test.ts` and `upload-runner.test.ts` (`holdsSlot`).
+- AC-WP-72: `src/lib/publishing/calendar-reads.test.ts`; AC-WP-73: `src/lib/channel-sync/services.test.ts`; AC-WP-74:
+  `src/components/weekly-plan-model.test.ts` (texts: the ui-text key tests).
+- Interpretations: a progress row of the deleted package's own video id is dropped even when the removed list cannot be read; a
+  failed removed-list read skips the plan schedule's rows of that channel (fail closed) but lets the upload approval and the
+  progress read go on as before (nothing removed known).
