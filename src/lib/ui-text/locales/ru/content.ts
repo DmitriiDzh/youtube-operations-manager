@@ -670,6 +670,7 @@ export const content: Record<keyof typeof en, string> = {
   "weekPlan.stage.failed": "Настройка одобрения не сохранилась ({code}).",
   "weekPlan.awaitingPackage": "ждёт пакета",
   "weekPlan.onYoutube": "на YouTube: {at}",
+  "weekPlan.duplicateVideo": "Ещё один пакет с тем же номером — дата не ставится",
   "weekPlan.changed.package": "Пакет сменился после вашего одобрения — был {was}",
   "weekPlan.action.approveReady": "Одобрить все готовые",
   "weekPlan.bar.waitingPackages": "Слоты ждут пакетов: одобрять пока нечего.",

@@ -41,6 +41,8 @@ export type PlanSlotDto = {
   released: boolean;
   /** BL-242 R3: the date the slot's uploaded video carries on YouTube (UTC), or null/absent. */
   youtubePublishAt?: string | null;
+  /** BL-242 round 3: another counting approval names the same video number -- the uploads give no date. */
+  duplicateVideo?: boolean;
   updatedAt: string;
   updatedBy: "factory" | "worker";
 };
@@ -103,6 +105,9 @@ export function slotsToApprove(plan: Pick<PlanDto, "slots">): Array<{ slotId: st
  */
 export const strayDateOf = (s: Pick<PlanSlotDto, "approval" | "vetoed"> & { youtubePublishAt?: string | null }): string | null =>
   !s.vetoed && s.approval !== "approved" && s.youtubePublishAt ? s.youtubePublishAt : null;
+
+/** BL-242 round 3: the warning «another package has the same number» on an approved, not vetoed slot the server flagged. */
+export const duplicateWarningOf = (s: Pick<PlanSlotDto, "approval" | "vetoed"> & { duplicateVideo?: boolean }): boolean => !s.vetoed && s.approval === "approved" && s.duplicateVideo === true;
 
 /** BL-242: the stage a plan list answer names; an older server names none and behaves as `slot`. */
 export const stageOf = (answer: { approvalStage?: ApprovalStage } | null | undefined): ApprovalStage => answer?.approvalStage ?? "slot";

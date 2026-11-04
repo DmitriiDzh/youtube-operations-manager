@@ -666,6 +666,7 @@ export const content = {
   "weekPlan.stage.failed": "The approval setting was not saved ({code}).",
   "weekPlan.awaitingPackage": "waiting for its package",
   "weekPlan.onYoutube": "On YouTube: {at}",
+  "weekPlan.duplicateVideo": "Another package has the same video number — no date is set",
   "weekPlan.changed.package": "The package changed after your approval — was {was}",
   "weekPlan.action.approveReady": "Approve all ready",
   "weekPlan.bar.waitingPackages": "The slots are waiting for their packages: nothing to approve yet.",

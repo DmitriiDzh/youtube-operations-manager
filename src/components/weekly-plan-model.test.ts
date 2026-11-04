@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { canApprove, changedField, defaultWeek, stageOf, strayDateOf, lengthLabel, mondayOf, pipelineOf, replacedToPull, shiftWeek, slotsToApprove, splitVetoed, tileCounts, wallParts, weekCoverageLine, zonedParts, type PlanSlotDto } from "./weekly-plan-model";
+import { canApprove, changedField, defaultWeek, duplicateWarningOf, stageOf, strayDateOf, lengthLabel, mondayOf, pipelineOf, replacedToPull, shiftWeek, slotsToApprove, splitVetoed, tileCounts, wallParts, weekCoverageLine, zonedParts, type PlanSlotDto } from "./weekly-plan-model";
 
 // BL-225 (WEEKLY_PUBLISHING_PLAN.md stage 1 item 6, AC-WP-15): the screen's pure rules. Values by hand: 2026-10-26 is a Monday,
 // 2026-11-01 its Sunday; 18:00 in Tokyo is 09:00Z, which is 10:00 in Berlin (CET, UTC+1, after 25.10); 23:30Z on 31.10 is 08:30 on Sunday 1.11 in Tokyo.
@@ -190,4 +190,17 @@ test("R3: the stray YouTube date is shown on a slot that needs approval or await
   const ru = (await import("@/lib/ui-text/locales/ru/content")).content as Record<string, string>;
   assert.equal(en["weekPlan.onYoutube"], "On YouTube: {at}");
   assert.equal(ru["weekPlan.onYoutube"], "на YouTube: {at}");
+});
+
+// BL-242 round 3 item 2: an approved slot whose video number another counting approval also names gets a warning line -- the uploads
+// give it no date. Shown only for such a slot.
+test("round 3: the duplicate video number warning is shown only on a flagged approved slot; texts in en and ru", async () => {
+  assert.equal(duplicateWarningOf(slot({ approval: "approved", duplicateVideo: true })), true);
+  assert.equal(duplicateWarningOf(slot({ approval: "approved", duplicateVideo: false })), false);
+  assert.equal(duplicateWarningOf(slot({ approval: "approved" })), false);
+  assert.equal(duplicateWarningOf(slot({ approval: "approved", duplicateVideo: true, vetoed: { at: "x", device: null } })), false);
+  const en = (await import("@/lib/ui-text/locales/en/content")).content as Record<string, string>;
+  const ru = (await import("@/lib/ui-text/locales/ru/content")).content as Record<string, string>;
+  assert.equal(ru["weekPlan.duplicateVideo"], "Ещё один пакет с тем же номером — дата не ставится");
+  assert.equal(en["weekPlan.duplicateVideo"], "Another package has the same video number — no date is set");
 });
