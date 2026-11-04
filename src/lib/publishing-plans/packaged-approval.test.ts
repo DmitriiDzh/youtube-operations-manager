@@ -294,3 +294,15 @@ test("AC-WP-56: a slot never approved in the packaged stage is pending; the plan
   assert.equal(plan.state, "approved");
   assert.deepEqual(plan.counts, { slots: 2, approved: 2, needsApproval: 0, vetoed: 0 });
 });
+
+// Review: an agent's edit never clears a veto (BL-225) -- the vetoed slot still names the video its last approval named, so the plan
+// schedule removes that video's date even after an agent moved the slot.
+test("AC-WP-56: a veto still names the last approved package after an agent changed the slot", async () => {
+  const h = harness();
+  await week(h);
+  h.progress.set("s1", packaged({}, "vid1"));
+  await approve(h, "s1");
+  await h.service.save({ channelId: CH, weekStart: WEEK, slots: [slot("s1", "2026-10-26", "18:00")] }, "worker");
+  await h.service.decide(CH, WEEK, { action: "veto", slots: [{ slotId: "s1" }] }, "u1");
+  assert.deepEqual((await h.service.slotDecisions(CH)).get("s1"), { kind: "vetoed", package: { video: "V64", manifestSha256: AA, videoId: "vid1" } });
+});

@@ -294,4 +294,4 @@ Tested against fakes only; nothing verified by eye or on the real plan yet.
 - Interpretations: an approval made before the upload (no video id) also covers the video that upload made of the approved manifest
   (otherwise every approved slot would need the owner again once uploaded); `planned` is also the state when some live slots are
   approved and the rest wait for packages; approvals made in one stage do not count in the other (both directions); a veto carries
-  the fingerprint its slot's approval stood on, so it unschedules a video the slot took over by its package.
+  the slot's last fingerprinted approval, whatever its content now, so it unschedules a video the slot took over by its package.

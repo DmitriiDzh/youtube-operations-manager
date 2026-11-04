@@ -400,12 +400,18 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
             contentOf(slot)
           );
           const fingerprint = standing ? { ...standing.package } : null;
+          // Review: an agent's edit never clears a veto -- so the veto names the slot's last fingerprinted approval whatever the slot's
+          // content now (a video it took over keeps losing its date even after the slot was moved).
+          const lastApproved = planDecisions
+            .filter((d) => d.slotId === slot.slotId && d.kind === "approved" && d.package !== undefined)
+            .sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0) || Date.parse(a.at) - Date.parse(b.at) || a.id.localeCompare(b.id))
+            .at(-1);
           decisions.set(
             slot.slotId,
             slot.released
               ? { kind: "pending" }
               : slot.vetoed
-                ? { kind: "vetoed", ...(fingerprint ? { package: fingerprint } : {}) }
+                ? { kind: "vetoed", ...(lastApproved?.package ? { package: { ...lastApproved.package } } : {}) }
                 : fingerprint
                   ? { kind: "approved", publishAt: slot.publishAtUtc, package: fingerprint }
                   : { kind: "pending" }
