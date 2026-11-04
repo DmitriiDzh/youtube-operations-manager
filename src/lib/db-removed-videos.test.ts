@@ -75,8 +75,8 @@ test("BL-243: the removed videos are listed with their mark, only the channel's 
   const at = new Date("2026-11-03T19:54:00.000Z");
   await markVideosRemovedOnYoutube("UC_r", ["r1"], at, LISTED);
   await markVideosRemovedOnYoutube("UC_s", [], at, LISTED);
-  assert.deepEqual(await listRemovedVideosByChannel("UC_r"), [{ videoId: "r2", title: "T r2", removedAt: at }]);
-  assert.deepEqual(await listRemovedVideosByChannel("UC_s"), [{ videoId: "s1", title: "T s1", removedAt: at }]);
+  assert.deepEqual(await listRemovedVideosByChannel("UC_r"), [{ videoId: "r2", removedAt: at }]);
+  assert.deepEqual(await listRemovedVideosByChannel("UC_s"), [{ videoId: "s1", removedAt: at }]);
   await upsertVideos([video("r2", "UC_r")], new Date("2026-11-04T08:00:00.000Z"));
   assert.deepEqual(await listRemovedVideosByChannel("UC_r"), []);
 });

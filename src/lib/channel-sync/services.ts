@@ -133,6 +133,16 @@ type ServiceDependencies = {
   channelAccess: ChannelAccessService;
 };
 
+/** One page of videos (`offset`, `limit`) with only the asked `fields` (plus `videoId`): the paged answers' shared part. */
+function pageOfVideos(all: SyncedVideo[], input: { fields?: readonly string[]; limit?: number; offset?: number }) {
+  const offset = input.offset ?? 0;
+  const page = input.limit === undefined ? all.slice(offset) : all.slice(offset, offset + input.limit);
+  const wanted = input.fields ? ["videoId", ...input.fields.filter((f) => f !== "videoId")] : null;
+  const videos = wanted ? page.map((video) => Object.fromEntries(wanted.map((field) => [field, video[field as keyof typeof video]]))) : page;
+  const end = offset + page.length;
+  return { videos, total: all.length, offset, nextOffset: end < all.length ? end : null };
+}
+
 function mapStoredChannel(record: StoredChannelRecord): SyncedChannel {
   return {
     channelId: record.channelId,
@@ -355,29 +365,25 @@ export function createChannelSyncServices(deps: ServiceDependencies) {
           channelId: parsedInput.channelId,
         });
 
-        const records = await deps.channelStore.listVideosByChannel(parsedInput.channelId);
+        // BL-243: with `videoIds` the removed list is read too, at the same time.
+        const [records, removed] = await Promise.all([
+          deps.channelStore.listVideosByChannel(parsedInput.channelId),
+          parsedInput.videoIds ? deps.channelStore.listRemovedVideosByChannel(parsedInput.channelId) : Promise.resolve([]),
+        ]);
         if (parsedInput.videoIds) {
           // BL-243: only the asked videos of THIS channel, in the order asked (each once); the rest are removed or not found.
           const asked = [...new Set(parsedInput.videoIds)];
           const byId = new Map(records.map((record) => [record.videoId, record]));
-          const removedById = new Map((await deps.channelStore.listRemovedVideosByChannel(parsedInput.channelId)).map((video) => [video.videoId, video.removedAt]));
-          const all = asked.flatMap((id) => {
+          const removedById = new Map(removed.map((video) => [video.videoId, video.removedAt]));
+          const found = asked.flatMap((id) => {
             const record = byId.get(id);
             return record ? [mapStoredVideo(record)] : [];
           });
-          const offset = parsedInput.offset ?? 0;
-          const page = parsedInput.limit === undefined ? all.slice(offset) : all.slice(offset, offset + parsedInput.limit);
-          const wanted = parsedInput.fields ? ["videoId", ...parsedInput.fields.filter((f) => f !== "videoId")] : null;
-          const videos = wanted ? page.map((video) => Object.fromEntries(wanted.map((field) => [field, video[field as keyof typeof video]]))) : page;
-          const end = offset + page.length;
           return parseWithSchema(
             listSyncedVideosByIdOutputSchema,
             {
               channelId: parsedInput.channelId,
-              videos,
-              total: all.length,
-              offset,
-              nextOffset: end < all.length ? end : null,
+              ...pageOfVideos(found, parsedInput),
               removed: asked.flatMap((id) => {
                 const at = byId.has(id) ? undefined : removedById.get(id);
                 return at ? [{ videoId: id, removedAt: at.toISOString() }] : [];
@@ -388,17 +394,9 @@ export function createChannelSyncServices(deps: ServiceDependencies) {
           );
         }
         if (parsedInput.fields || parsedInput.limit !== undefined || parsedInput.offset !== undefined) {
-          const all = records.map(mapStoredVideo);
-          const offset = parsedInput.offset ?? 0;
-          const page = parsedInput.limit === undefined ? all.slice(offset) : all.slice(offset, offset + parsedInput.limit);
-          const wanted = parsedInput.fields ? ["videoId", ...parsedInput.fields.filter((f) => f !== "videoId")] : null;
-          const videos = wanted
-            ? page.map((video) => Object.fromEntries(wanted.map((field) => [field, video[field as keyof typeof video]])))
-            : page;
-          const end = offset + page.length;
           return parseWithSchema(
             listSyncedVideosPagedOutputSchema,
-            { channelId: parsedInput.channelId, videos, total: all.length, offset, nextOffset: end < all.length ? end : null },
+            { channelId: parsedInput.channelId, ...pageOfVideos(records.map(mapStoredVideo), parsedInput) },
             "list synced videos paged output"
           );
         }

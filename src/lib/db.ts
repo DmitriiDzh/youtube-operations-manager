@@ -8980,12 +8980,12 @@ export async function listStoredVideosByChannel(channelId: string): Promise<Stor
  * BL-243: the channel's videos a complete sync found removed on YouTube (the rows `listStoredVideosByChannel` hides), with when.
  * Read-only; the package scan, the plan schedule and `channel_video_list` tell a deleted video from one never synced.
  */
-export async function listRemovedVideosByChannel(channelId: string): Promise<Array<{ videoId: string; title: string; removedAt: Date }>> {
+export async function listRemovedVideosByChannel(channelId: string): Promise<Array<{ videoId: string; removedAt: Date }>> {
   const rows = await db
-    .select({ id: videos.id, title: videos.title, removedAt: videos.removedOnYoutubeAt })
+    .select({ id: videos.id, removedAt: videos.removedOnYoutubeAt })
     .from(videos)
     .where(and(eq(videos.channelId, channelId), isNotNull(videos.removedOnYoutubeAt)));
-  return rows.flatMap((row) => (row.removedAt ? [{ videoId: row.id, title: row.title, removedAt: row.removedAt }] : []));
+  return rows.flatMap((row) => (row.removedAt ? [{ videoId: row.id, removedAt: row.removedAt }] : []));
 }
 
 /**
