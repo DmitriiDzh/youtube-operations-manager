@@ -14,7 +14,7 @@ import { describeBalance, MEDIA_TABS, SERVERS_TABS } from "./production-panel";
 // in two -- Servers (shared: Sessions, Models, Workflow templates; Setup on the right) and Media (the active channel's:
 // Plans, Jobs). The order of the remaining tabs is the AC-P14-26 order.
 // Changed requirement (BL-219, SERVERS_ANALYTICS_PLAN.md; owner msg 3415 a): an Analytics tab right after Sessions.
-test("AC-SM-01: Servers' tabs are Sessions, Models, Workflow templates (work, left) then Setup (right); Media's are Music, Images, Storyboards, Video (BL-184 stage 3)", () => {
+test("AC-SM-01: Servers' tabs are Sessions, Models, Workflow templates (work, left) then Setup (right); Media's are Music, Images, Storyboards, Video, Clips (BL-184 stage 3; BL-241 Clips, owner msg 4025)", () => {
   assert.deepEqual(
     SERVERS_TABS.map((tab) => [translate("en", tab.labelKey), tab.side]),
     [
@@ -28,8 +28,9 @@ test("AC-SM-01: Servers' tabs are Sessions, Models, Workflow templates (work, le
   assert.deepEqual(
     MEDIA_TABS.map((tab) => translate("en", tab.labelKey)),
     // BL-184 stage 3 (FO-REQ-0024 §4 A): the owner's layout (Telegram msgs 2741/2743) replaces Plans / Jobs with the four kind tabs;
-    // plans and jobs are their content.
-    ["Music", "Images", "Storyboards", "Video"]
+    // plans and jobs are their content. Changed requirement (owner msg 4025, 2026-11-04): «Клипы на проверку» moves from Content
+    // to Media, as the last tab.
+    ["Music", "Images", "Storyboards", "Video", "Clips"]
   );
 });
 

@@ -3,7 +3,6 @@
 import { useRouter, useSelectedLayoutSegment } from "next/navigation";
 import type { ReactNode } from "react";
 import { useAppChannel } from "@/components/app-channel";
-import { ClipReviewsPanel } from "@/components/clip-reviews-panel";
 import { ContentManager } from "@/components/content-manager";
 import { FeatureErrorBoundary } from "@/components/feature-error-boundary";
 import { LiveStreamPanel } from "@/components/live-stream-panel";
@@ -51,11 +50,6 @@ export default function ContentLayout({ children }: { children: ReactNode }) {
             {item.value === "week-plan" && badges.weekPlan > 0 && (
               <span className="ml-1.5 rounded-full bg-amber-500/90 px-1.5 text-[10px] font-semibold text-zinc-950" title={t("contentTabs.badge.weekPlan", { count: badges.weekPlan })}>
                 {badges.weekPlan}
-              </span>
-            )}
-            {item.value === "clips" && badges.clips > 0 && (
-              <span className="ml-1.5 rounded-full bg-amber-500/90 px-1.5 text-[10px] font-semibold text-zinc-950" title={t("contentTabs.badge.clips", { count: badges.clips })}>
-                {badges.clips}
               </span>
             )}
             {item.value === "calendar" && badges.calendarDue && (
@@ -110,12 +104,6 @@ export default function ContentLayout({ children }: { children: ReactNode }) {
               <WeeklyBuildCard channelId={channel?.id ?? null} visible={tab === "week-plan"} />
             </FeatureErrorBoundary>
           </div>
-        </div>
-        {/* BL-241 (ADR 0061, AGENTS.md §M): the clips for review in their own boundary -- Content works without them. */}
-        <div className={tab === "clips" ? undefined : "hidden"}>
-          <FeatureErrorBoundary label={t("tabs.content.clips")}>
-            <ClipReviewsPanel channelId={channel?.id ?? null} visible={tab === "clips"} />
-          </FeatureErrorBoundary>
         </div>
         <div className={tab === "calendar" ? undefined : "hidden"}>
           <FeatureErrorBoundary label={t("tabs.content.calendar")}>

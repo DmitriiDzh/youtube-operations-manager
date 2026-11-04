@@ -24,7 +24,7 @@ it back with a comment, on either of his two computers (the channel folder syncs
    `workspace-exchange.resolveWorkspaceFile` (no `..`, no absolute path, the real path strictly inside the real workspace, a regular
    file) at submit and again whenever it is served. Only `.mp4`, `.webm`; 5–300 s by ffprobe (±0.5 s), refused when it
    cannot be measured (fail closed); no size cap. The size and SHA-256 are stored: the owner approves exactly that file.
-4. **Only the owner decides**, in Контент → «Клипы» (Web session, active channel): approve (comment optional) or return (comment
+4. **Only the owner decides**, in Медиа → «Клипы» (moved from Контент 2026-11-04, owner msg 4025; Web session, active channel): approve (comment optional) or return (comment
    required), confirmed in the row. Approval needs this computer's file to be the submitted one. A decision on a clip that is no
    longer pending here is refused. Each decision is audited on its computer. The owner's surface is reachable only from the
    clip-review routes (source-scan test); no MCP path reaches it.

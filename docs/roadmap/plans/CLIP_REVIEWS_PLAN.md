@@ -35,7 +35,7 @@ Sources:
    required; optional `status`, `limit` 1–200, default 50), pending first (oldest first), then the rest newest first. Each clip:
    `{ clipId, channelId, sceneId, clipPath, note, startSec, endSec, durationSeconds, sizeBytes, sha256, submittedAt, device,
    status: pending | approved | returned | withdrawn, comment, decidedAt, decidedOn }`. Get one by `clipId` (`clip_review_not_found`).
-5. **The owner (Web UI only).** Контент → «Клипы»: the ACTIVE channel's clips, pending first. A row: scene, note, when submitted,
+5. **The owner (Web UI only).** Медиа → «Клипы» (moved from Контент 2026-11-04, owner msg 4025): the ACTIVE channel's clips, pending first. A row: scene, note, when submitted,
    status chip. Selecting a row expands an inline player that plays the clip from this computer's copy of the channel folder with
    HTTP Range (seek in a 100 MB file), starting at `startSec` and stopping at `endSec` (media fragment `#t=start,end`). If the file
    is not on this computer, or differs from what was submitted (size or SHA-256), the row says so. «Одобрить» and «Вернуть» with a
