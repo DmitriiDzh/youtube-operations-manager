@@ -49,12 +49,14 @@ export function createVideoProjectsService(deps: VideoProjectsDeps) {
 
   /** Everything the list is built from. `folders`/`registry` are null when the workspace cannot be read. */
   async function gather(channelId: string): Promise<{ input: VideoListInput; workspace: VideoListResult["workspace"]; workspaceReason: string | null }> {
-    const [device, own, peers, uploads, workspace] = await Promise.all([
+    const [device, own, peers, uploads, workspace, channelCopy] = await Promise.all([
       deps.ownDevice(),
       deps.store.list(channelId),
       deps.peers(),
       deps.uploads(channelId),
       deps.workspace(channelId).catch((error: unknown) => ({ status: "unavailable" as const, reason: error instanceof Error ? error.message : String(error) })),
+      // BL-243: the synced copy's word on the videos (unreadable: none known).
+      deps.channelCopy ? deps.channelCopy(channelId).catch(() => null) : Promise.resolve(null),
     ]);
     const input: VideoListInput = {
       channelId,
@@ -64,6 +66,7 @@ export function createVideoProjectsService(deps: VideoProjectsDeps) {
       registry: workspace.status === "ok" ? workspace.registry : null,
       uploads,
       uploadRecords: workspace.status === "ok" ? workspace.uploadRecords ?? [] : [],
+      channelCopy,
     };
     const reason = workspace.status === "unavailable" ? workspace.reason : workspace.status === "not_configured" ? "no workspace folder is set for the channel on this computer" : null;
     return { input, workspace: workspace.status, workspaceReason: reason };

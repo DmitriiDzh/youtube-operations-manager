@@ -114,7 +114,7 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT",
 // stage. Additive.
 // 4.17.0 (BL-243, ADR 0063): agent_get_publishing_calendar -- the package state deleted_on_youtube, items' existsOnChannel /
 // checkedAt / removedAt, missingOnChannel; channel_video_list videoIds with removed / notFound; the plan tools' statusCode
-// video_deleted_on_youtube (factory 1.43.0). Additive.
+// video_deleted_on_youtube and agent_video_list's existsOnChannel / removedAt (factory 1.43.0). Additive.
 export const AGENT_API_VERSION = "4.17.0";
 
 /**

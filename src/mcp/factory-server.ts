@@ -189,7 +189,8 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 // the state planned; a slot's approval gains awaiting_package (the packaged stage: no ready or uploaded package yet, nothing for the
 // owner to approve, change it freely) and the slot gains fingerprint; package gains manifestSha256. Additive.
 // BL-243 (owner msg 4039, ADR 0063): 1.43.0 -- a slot's statusCode gains video_deleted_on_youtube (status failed): its only package
-// names a video the sync found removed on YouTube -- nothing to approve, no date. Additive.
+// names a video the sync found removed on YouTube -- nothing to approve, no date; factory_video_list's videos gain existsOnChannel
+// and removedAt (a deleted video still says how far its number got, but existsOnChannel false). Additive.
 export const FACTORY_API_VERSION = "1.43.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
@@ -1834,7 +1835,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
 
   // -- BL-194 (VIDEO_COST_PLAN.md §2 stage 1, ADR 0040): video numbers. The video-projects module checks every bound and rule.
   const VIDEO_SHAPE =
-    "Video: { channelId, video ('V49'), number (49), workingTitle, state: in_work | packaged (Vn_release.json, or an upload under way) | published (Vn_youtube.json, the registry, or a finished upload) | cancelled, sources: [reservation | folder | registry | upload], folder (the MMDD Vn folder relative to the workspace, once made) , createdAt / deviceId / hostName / thisComputer (the reservation: when and on which computer; null for a video known only from the workspace or uploads), conflict: null | { reservations: [{ deviceId, hostName, thisComputer, reservedAt, workingTitle, state, replacedBy }] (the winner first), winnerDeviceId, thisComputerInvolved, thisComputerLoses, suggestedVideo } }.";
+    "Video: { channelId, video ('V49'), number (49), workingTitle, state: in_work | packaged (Vn_release.json, or an upload under way) | published (Vn_youtube.json, the registry, or a finished upload -- how far the number got here, NOT that the video is still on YouTube: read existsOnChannel) | cancelled, sources: [reservation | folder | registry | upload], folder (the MMDD Vn folder relative to the workspace, once made) , createdAt / deviceId / hostName / thisComputer (the reservation: when and on which computer; null for a video known only from the workspace or uploads), conflict: null | { reservations: [{ deviceId, hostName, thisComputer, reservedAt, workingTitle, state, replacedBy }] (the winner first), winnerDeviceId, thisComputerInvolved, thisComputerLoses, suggestedVideo }, youtubeVideoId (1.31.0), existsOnChannel (1.43.0: false -- a completed owner sync found that video removed on YouTube, i.e. deleted; true -- in the synced copy as of a completed removed check that could have seen it; null -- unknown: no video id, not in the copy yet, or no check completed), removedAt (1.43.0: when the sync found it removed, ISO, else null) }.";
   const videoCreateInput = z.object({ channelId: z.string().min(1).max(64), workingTitle: z.string().max(200).nullable().optional() }).strict();
   const videoListInput = z.object({ channelId: z.string().min(1).max(64), state: z.enum(["in_work", "packaged", "published", "cancelled"]).optional() }).strict();
   registerTool(

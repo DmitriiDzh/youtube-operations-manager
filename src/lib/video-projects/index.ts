@@ -2,7 +2,7 @@ import { hostname } from "node:os";
 import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
 import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
-import { listStoredVideosByChannel } from "@/lib/db";
+import { getStoredChannel, listRemovedVideosByChannel, listStoredVideosByChannel } from "@/lib/db";
 import { getProductionAppPaths } from "@/lib/platform-paths";
 import { createStoryboardsCoreForProduction, createVideoReservationsShareCoreForProduction } from "@/lib/sync-gateway";
 import { writeUploadRecordFile } from "@/lib/workspace-videos";
@@ -40,6 +40,15 @@ export function createVideoProjectsServiceForProduction(): VideoProjectsService 
       ownDevice: async () => ({ deviceId: (await bootstrap.ensureExists()).deviceId, hostName: hostLabel() }),
       isChannelConnected: async (channelId) => (await createChannelConnectionsCore().listConnectedChannels()).some((c) => c.channelId === channelId),
       workspace: createVideoProjectsWorkspace((channelId) => createChannelWorkspacesCore().getWorkspace({ channelId })),
+      // BL-243: the synced copy -- listed videos (YouTube's publishedAt), removed ones, the last completed removed check.
+      channelCopy: async (channelId) => {
+        const [listed, removed, channel] = await Promise.all([listStoredVideosByChannel(channelId), listRemovedVideosByChannel(channelId), getStoredChannel(channelId)]);
+        return {
+          listed: new Map(listed.map((v) => [v.videoId, v.publishedAt])),
+          removed: new Map(removed.map((v) => [v.videoId, v.removedAt.toISOString()])),
+          checkedAt: channel?.removedCheckAt?.toISOString() ?? null,
+        };
+      },
       // BL-221 «Привязать к видео»: the channel's synced videos (a local read) and the record written into the Vn folder.
       channelVideos: async (channelId) =>
         (await listStoredVideosByChannel(channelId)).map((v) => ({

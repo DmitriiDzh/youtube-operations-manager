@@ -31,7 +31,7 @@
 // 1.16.0 (BL-242, ADR 0062): producer_upload_queue_add -- in the packaged approval stage the date comes only from an approval of the
 // same manifest (a package changed since the owner approved it uploads without a date). Same shape.
 // 1.17.0 (BL-243, ADR 0063): agent_get_publishing_calendar -- deleted_on_youtube, existsOnChannel / checkedAt / removedAt,
-// missingOnChannel; channel_video_list videoIds with removed / notFound. Additive.
+// missingOnChannel and a top-level checkedAt; channel_video_list videoIds with removed / notFound. Additive.
 export const PRODUCER_API_VERSION = "1.17.0";
 
 /** The channel agent's READ tools the Producer gets; each call names its channel and runs in that channel's agent scope. */
