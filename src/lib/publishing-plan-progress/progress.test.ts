@@ -58,7 +58,7 @@ test("AC-WP-23: ready -> packaged with the package's facts; the AI flag falls ba
     code: null,
     videoId: null,
     publishAt: null, // review #3 added the video's date (none before an upload)
-    package: { video: "V64", title: "Title V64", durationSeconds: 10800, languages: ["de", "ja"], containsSyntheticMedia: true, thumbnailPath: "04 Videos/10 October/1026 V64/T.jpg", testThumbnails: 2, problems: [] },
+    package: { video: "V64", title: "Title V64", durationSeconds: 10800, languages: ["de", "ja"], containsSyntheticMedia: true, thumbnailPath: "04 Videos/10 October/1026 V64/T.jpg", testThumbnails: 2, problems: [], manifestSha256: "m" }, // BL-242: the manifest's SHA-256 (ADR 0062 §2)
   });
   assert.equal(progressOfSlots([scanned("V64", "s1", {}, { containsSyntheticMedia: false })], ["s1"], true).get("s1")?.package?.containsSyntheticMedia, false);
 });

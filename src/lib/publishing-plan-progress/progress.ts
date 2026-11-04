@@ -50,6 +50,8 @@ export function progressOfPackage(scanned: ScannedPackage, channelSyntheticMedia
       thumbnailPath: scanned.thumbnailPath,
       testThumbnails: (pkg.thumbnails ?? []).filter((t) => t.role === "test").length,
       problems: scanned.problems.map((p) => p.code),
+      // BL-242 (ADR 0062 §2): part of what the owner approves in the `packaged` stage.
+      manifestSha256: scanned.manifestSha256,
     },
   };
 }

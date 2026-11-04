@@ -1,9 +1,9 @@
 import { parseWithSchema } from "@/lib/shared-domain";
 import type { PublishingPlanDecision, PublishingPlanMeta, PublishingPlanSlot, PublishingPlansSnapshot } from "@/lib/sync-gateway";
 import { isValidIanaTimezone } from "@/lib/zoned-time";
-import { DomainError, PUBLISHING_PLAN_LIMITS, type PlanSaveRefusal, type PlanSlotDecision, type PlanSummary, type PlanView, type PublishingPlanActor, type PublishingPlansPorts, type ReplacedSlot } from "./contracts";
-import { addDays, contentHashOf, contentOf, decisionStateOf, instantOf, isCalendarDate, isMonday, planViewOf, slotViewOf, standingVetoOf } from "./model";
-import { getPlanInputSchema, listPlansInputSchema, ownerDecisionInputSchema, PLAN_LIST_DEFAULT_LIMIT, savePlanInputSchema } from "./schemas";
+import { DEFAULT_APPROVAL_STAGE, DomainError, PUBLISHING_PLAN_LIMITS, type PlanSaveRefusal, type PlanSlotDecision, type PlanSummary, type PlanView, type PublishingPlanActor, type PublishingPlanApprovalStage, type PublishingPlansPorts, type ReplacedSlot } from "./contracts";
+import { addDays, approvalStandsOn, contentHashOf, contentOf, decisionsForStage, decisionStateOf, instantOf, isCalendarDate, isMonday, planViewOf, slotViewOf, standingPackageApprovalOf, standingVetoOf } from "./model";
+import { approvalStageInputSchema, getPlanInputSchema, listPlansInputSchema, ownerDecisionInputSchema, PLAN_LIST_DEFAULT_LIMIT, savePlanInputSchema } from "./schemas";
 
 // BL-225 (FO-REQ-0040 items 1, 5, 6; WEEKLY_PUBLISHING_PLAN.md stage 1 items 3-5; ADR 0051): what agents and the owner may do with a
 // plan. Agents (the Factory Operator, a channel's worker) save, get and list; the owner approves, revokes, vetoes and restores. The
@@ -20,6 +20,9 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
       throw new DomainError({ code: "publishing_plan_channel_unavailable", message: "This channel is not connected on this computer", details: { channelId } });
     }
   }
+
+  /** BL-242 (ADR 0062 §1): the channel's approval stage; a document without one is in `packaged`. */
+  const stageOf = (snapshot: PublishingPlansSnapshot): PublishingPlanApprovalStage => snapshot.approvalStage ?? DEFAULT_APPROVAL_STAGE;
 
   function slotsOf(snapshot: PublishingPlansSnapshot, weekStart: string): PublishingPlanSlot[] {
     return Object.values(snapshot.slots).filter((s) => s.weekStart === weekStart);
@@ -45,7 +48,7 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
         continue;
       }
       const progress = ports.progress ? ((await ports.progress(channelId, slot.weekStart, [slotId])).get(slotId) ?? null) : null;
-      const view = slotViewOf({ meta, slot, decisions: decisionsOf(snapshot, slot.weekStart).filter((d) => d.slotId === slotId), progress, now: ports.now() });
+      const view = slotViewOf({ stage: stageOf(snapshot), meta, slot, decisions: decisionsOf(snapshot, slot.weekStart).filter((d) => d.slotId === slotId), progress, now: ports.now() });
       out.set(slotId, { slotId, weekStart: slot.weekStart, publishAt: slot.publishAt, video: view.package?.video ?? null, vetoed: view.vetoed !== null, released: view.released, found: true });
     }
     return out;
@@ -55,7 +58,7 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
     const slots = slotsOf(snapshot, meta.weekStart);
     const progress = ports.progress ? await ports.progress(channelId, meta.weekStart, slots.map((s) => s.slotId)) : new Map();
     const replaced = await replacedOf(channelId, snapshot, slots.flatMap((s) => (s.replacesSlotId ? [s.replacesSlotId] : [])));
-    return planViewOf({ channelId, meta, slots, decisions: decisionsOf(snapshot, meta.weekStart), progress, now: ports.now(), replaced });
+    return planViewOf({ stage: stageOf(snapshot), channelId, meta, slots, decisions: decisionsOf(snapshot, meta.weekStart), progress, now: ports.now(), replaced });
   }
 
   async function requirePlan(channelId: string, weekStart: string): Promise<{ snapshot: PublishingPlansSnapshot; meta: PublishingPlanMeta }> {
@@ -101,7 +104,9 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
       const current = new Map(slotsOf(snapshot, weekStart).map((s) => [s.slotId, s]));
       const decisions = decisionsOf(snapshot, weekStart);
       const decisionsFor = (slotId: string) => decisions.filter((d) => d.slotId === slotId);
-      const approvedNow = (slot: PublishingPlanSlot) => existing !== null && decisionStateOf(decisionsFor(slot.slotId), contentHashOf(existing.timeZone, contentOf(slot))).approved;
+      // BL-242: an approval that counts in the channel's stage stands on the slot (the `packaged` stage: whatever its package now).
+      const stage = stageOf(snapshot);
+      const approvedNow = (slot: PublishingPlanSlot) => existing !== null && approvalStandsOn(stage, existing.timeZone, contentOf(slot), decisionsFor(slot.slotId));
 
       const otherWeeksIds = new Set(Object.values(snapshot.slots).filter((s) => s.weekStart !== weekStart).map((s) => s.slotId));
       const seen = new Set<string>();
@@ -176,7 +181,7 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
       const uploads = toRemove.length > 0 && ports.progress ? await ports.progress(channelId, weekStart, toRemove) : new Map();
       for (const slotId of toRemove) {
         const slot = current.get(slotId);
-        const state = slot && existing ? decisionStateOf(decisionsFor(slotId), contentHashOf(existing.timeZone, contentOf(slot))) : null;
+        const state = slot && existing ? decisionStateOf(decisionsForStage(decisionsFor(slotId), stage), contentHashOf(existing.timeZone, contentOf(slot))) : null;
         const upload = uploads.get(slotId);
         const uploaded = Boolean(upload && (upload.videoId || ["uploading", "scheduled", "published"].includes(upload.status)));
         if (!slot) refused.push({ slotId, field: "removeSlotIds", reason: "unknown_slot" });
@@ -256,13 +261,15 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
       const { snapshot, meta } = await requirePlan(channelId, weekStart);
       const view = await viewOf(channelId, snapshot, meta);
       const byId = new Map(view.slots.map((s) => [s.slotId, s]));
-      const refuse = (code: "publishing_plan_slot_not_found" | "publishing_plan_changed" | "publishing_plan_slot_vetoed" | "publishing_plan_slot_past", slotId: string, message: string) =>
+      const refuse = (code: "publishing_plan_slot_not_found" | "publishing_plan_changed" | "publishing_plan_slot_vetoed" | "publishing_plan_slot_past" | "publishing_plan_slot_not_packaged", slotId: string, message: string) =>
         new DomainError({ code, message, details: { channelId, weekStart, slotId } });
       const targets = [];
       for (const named of slots) {
         const slot = byId.get(named.slotId);
         if (!slot) throw refuse("publishing_plan_slot_not_found", named.slotId, `No slot ${named.slotId} in this plan`);
         if (slot.released) throw refuse("publishing_plan_slot_past", named.slotId, `Slot ${named.slotId}'s time has passed`);
+        // BL-242 (ADR 0062 §2, AC-WP-53): in the `packaged` stage a slot without a ready or uploaded package has nothing to approve.
+        if (action === "approve" && slot.approval === "awaiting_package") throw refuse("publishing_plan_slot_not_packaged", named.slotId, `Slot ${named.slotId} has no ready package yet`);
         if (action === "approve" || action === "revoke") {
           if (named.contentHash !== slot.contentHash) throw refuse("publishing_plan_changed", named.slotId, `Slot ${named.slotId} changed since it was shown; reload the plan`);
           if (action === "approve" && slot.vetoed) throw refuse("publishing_plan_slot_vetoed", named.slotId, `Slot ${named.slotId} is vetoed; restore it first`);
@@ -291,6 +298,8 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
           by: "owner",
           device,
           at,
+          // BL-242: the fingerprint the shown hash was computed with (`packaged` stage only).
+          ...(slot.fingerprint ? { package: { ...slot.fingerprint } } : {}),
         }));
         // BL-240 (ADR 0060): approving a slot that replaces another vetoes that one in the same decision -- unless it is already
         // vetoed, released or gone. It is the owner's own veto (restorable), recorded with the slot that replaced it.
@@ -328,7 +337,7 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
             channelId,
             weekStart,
             slotId: record.slotId,
-            detail: { event: `publishing_plan.${kind}`, at, decisionId: record.id, weekStart, slotId: record.slotId, contentHash: record.contentHash, publishAt: slot.publishAt, timeZone: meta.timeZone, publishAtUtc: slot.publishAtUtc, by: userId, device },
+            detail: { event: `publishing_plan.${kind}`, at, decisionId: record.id, weekStart, slotId: record.slotId, contentHash: record.contentHash, publishAt: slot.publishAt, timeZone: meta.timeZone, publishAtUtc: slot.publishAtUtc, by: userId, device, ...(record.package ? { package: record.package } : {}) },
           });
         }
         for (const { record, publishAtUtc } of implied) {
@@ -347,15 +356,33 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
   }
 
   /**
+   * BL-242 (ADR 0062 §1, AC-WP-50): the owner's approval stage of the channel (Web UI only). One change and one audit event when it
+   * changes; the same stage again writes nothing.
+   */
+  async function setApprovalStage(channelId: string, input: unknown, userId: string): Promise<{ approvalStage: PublishingPlanApprovalStage; changed: boolean }> {
+    const { stage } = parseWithSchema(approvalStageInputSchema, input, "approval stage");
+    return ports.withLock(async () => {
+      const before = stageOf(await ports.store.read(channelId));
+      if (before === stage) return { approvalStage: stage, changed: false };
+      await ports.store.setApprovalStage(channelId, stage);
+      const device = await ports.deviceLabel();
+      await ports.audit({ channelId, weekStart: null, slotId: null, detail: { event: "publishing_plan.approval_stage", at: stamp(), from: before, to: stage, by: userId, device } });
+      return { approvalStage: stage, changed: true };
+    });
+  }
+
+  /**
    * BL-225 stage 3: every slot's decision for the uploads (`PlanSlotDecision`), by slot id. A released slot is `pending` (its time
    * has passed: nothing is scheduled or unscheduled by it any more); a slot id in two plans is `pending`.
    */
   async function slotDecisions(channelId: string): Promise<Map<string, PlanSlotDecision>> {
     const snapshot = await ports.store.read(channelId);
+    const stage = stageOf(snapshot);
     const decisions = new Map<string, PlanSlotDecision>();
     const seen = new Set<string>();
     for (const meta of Object.values(snapshot.plans)) {
-      const view = planViewOf({ channelId, meta, slots: slotsOf(snapshot, meta.weekStart), decisions: decisionsOf(snapshot, meta.weekStart), progress: new Map(), now: ports.now() });
+      const planDecisions = decisionsOf(snapshot, meta.weekStart);
+      const view = planViewOf({ stage, channelId, meta, slots: slotsOf(snapshot, meta.weekStart), decisions: planDecisions, progress: new Map(), now: ports.now() });
       for (const slot of view.slots) {
         if (seen.has(slot.slotId)) {
           // Review #2: an id in two plans schedules nothing, but a veto in either of them still stops it.
@@ -364,6 +391,27 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
           continue;
         }
         seen.add(slot.slotId);
+        if (stage === "packaged") {
+          // BL-242 (ADR 0062 §3): no package is seen here -- the slot's standing approval names the one the owner approved; the uploads
+          // date only that manifest (or that video). A veto carries it too, so it reaches a video the slot took over by its package.
+          const standing = standingPackageApprovalOf(
+            decisionsForStage(planDecisions.filter((d) => d.slotId === slot.slotId), "packaged"),
+            meta.timeZone,
+            contentOf(slot)
+          );
+          const fingerprint = standing ? { ...standing.package } : null;
+          decisions.set(
+            slot.slotId,
+            slot.released
+              ? { kind: "pending" }
+              : slot.vetoed
+                ? { kind: "vetoed", ...(fingerprint ? { package: fingerprint } : {}) }
+                : fingerprint
+                  ? { kind: "approved", publishAt: slot.publishAtUtc, package: fingerprint }
+                  : { kind: "pending" }
+          );
+          continue;
+        }
         decisions.set(
           slot.slotId,
           slot.released ? { kind: "pending" } : slot.vetoed ? { kind: "vetoed" } : slot.approval === "approved" ? { kind: "approved", publishAt: slot.publishAtUtc } : { kind: "pending" }
@@ -382,10 +430,12 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
     get,
     list: agentList,
     slotDecisions,
-    ownerList: async (channelId: string): Promise<{ plans: PlanSummary[]; waiting: number }> => {
+    ownerList: async (channelId: string): Promise<{ plans: PlanSummary[]; waiting: number; approvalStage: PublishingPlanApprovalStage }> => {
       const plans = await list(channelId);
-      return { plans, waiting: plans.reduce((sum, p) => sum + p.counts.needsApproval, 0) };
+      const approvalStage = stageOf(await ports.store.read(channelId));
+      return { plans, waiting: plans.reduce((sum, p) => sum + p.counts.needsApproval, 0), approvalStage };
     },
+    setApprovalStage,
     ownerGet: async (channelId: string, weekStart: string): Promise<{ plan: PlanView }> => {
       const { snapshot, meta } = await requirePlan(channelId, weekStart);
       return { plan: await viewOf(channelId, snapshot, meta) };
@@ -402,10 +452,15 @@ export function agentSurface(service: PublishingPlansAgentSurface): PublishingPl
   return { save: (input, by) => service.save(input, by), get: (input) => service.get(input), list: (input) => service.list(input) };
 }
 
-/** What the owner's Web UI routes get: the plans, one plan, and the decisions. */
-export type PublishingPlansOwnerSurface = Pick<PublishingPlansService, "ownerList" | "ownerGet" | "decide">;
+/** What the owner's Web UI routes get: the plans, one plan, the decisions and (BL-242) the approval stage. */
+export type PublishingPlansOwnerSurface = Pick<PublishingPlansService, "ownerList" | "ownerGet" | "decide" | "setApprovalStage">;
 export function ownerSurface(service: PublishingPlansOwnerSurface): PublishingPlansOwnerSurface {
-  return { ownerList: (channelId) => service.ownerList(channelId), ownerGet: (channelId, weekStart) => service.ownerGet(channelId, weekStart), decide: (channelId, weekStart, input, userId) => service.decide(channelId, weekStart, input, userId) };
+  return {
+    ownerList: (channelId) => service.ownerList(channelId),
+    ownerGet: (channelId, weekStart) => service.ownerGet(channelId, weekStart),
+    decide: (channelId, weekStart, input, userId) => service.decide(channelId, weekStart, input, userId),
+    setApprovalStage: (channelId, input, userId) => service.setApprovalStage(channelId, input, userId),
+  };
 }
 
 /** BL-225 stage 3: what the uploads read (the slots' decisions) -- never a save or a decision. */

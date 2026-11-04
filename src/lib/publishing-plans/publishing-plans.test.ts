@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createAutomergeCore, type DiscardedDocumentBackupStore, type DocumentByteStore } from "@/lib/sync-gateway/automerge-core";
-import { createPublishingPlansCore, emptyDocument } from "@/lib/sync-gateway/publishing-plans";
+import * as Automerge from "@automerge/automerge";
+import { createPublishingPlansCore, emptyDocument, genesisDocument } from "@/lib/sync-gateway/publishing-plans";
 import type { PublishingPlansDocument } from "@/lib/sync-gateway";
 import { agentSurface, createPublishingPlansService } from "./services";
 import { isDomainError, type PlanAuditEntry, type PlanView } from "./contracts";
@@ -15,6 +16,9 @@ const WEEK = "2026-10-26";
 
 function harness(startAt = "2026-10-25T07:00:00Z", connected = [CH]) {
   const bytes = new Map<string, Uint8Array>();
+  // BL-242 (AC-WP-58): these BL-225/BL-240 acceptance tests run in the `slot` stage, set on the channel's document before the first
+  // read (a new document is in `packaged`, ADR 0062 §1). Not for a channel this computer does not have (AC-WP-12 reads it empty).
+  if (connected.includes(CH)) bytes.set(CH, Automerge.save(Automerge.change(genesisDocument(CH), (d) => void (d.approvalStage = "slot"))));
   const store: DocumentByteStore = { loadDocumentBytes: async (k) => bytes.get(k) ?? null, saveDocumentBytes: async (k, b) => void bytes.set(k, b) };
   const backups = { backup: async () => ({ path: "/b", capturedAt: "" }) } as DiscardedDocumentBackupStore;
   const core = createPublishingPlansCore({ core: createAutomergeCore<PublishingPlansDocument>({ store, discardedBackupStore: backups, emptyDocument }), store });
@@ -275,7 +279,7 @@ test("AC-WP-14: the agents' list returns the newest weeks only (default 12, limi
 test("AC-WP-23: the slot shows its package progress; vetoed wins", async () => {
   const h = harness();
   await h.service.save({ channelId: CH, weekStart: WEEK, timeZone: "Asia/Tokyo", slots: [tokyoSlot("s1", "2026-10-26", "18:00"), tokyoSlot("s2", "2026-10-27", "18:00")] }, "factory");
-  const pkg = { video: "V64", title: "T", durationSeconds: 10800, languages: ["ja"], containsSyntheticMedia: true, thumbnailPath: null, testThumbnails: 0, problems: [] };
+  const pkg = { video: "V64", title: "T", durationSeconds: 10800, languages: ["ja"], containsSyntheticMedia: true, thumbnailPath: null, testThumbnails: 0, problems: [], manifestSha256: null };
   const withProgress = createPublishingPlansService({
     store: h.core,
     isChannelConnected: async () => true,

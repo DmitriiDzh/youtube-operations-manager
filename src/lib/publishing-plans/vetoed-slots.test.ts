@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 import { createAutomergeCore, type DiscardedDocumentBackupStore, type DocumentByteStore } from "@/lib/sync-gateway/automerge-core";
-import { createPublishingPlansCore, emptyDocument } from "@/lib/sync-gateway/publishing-plans";
+import * as Automerge from "@automerge/automerge";
+import { createPublishingPlansCore, emptyDocument, genesisDocument } from "@/lib/sync-gateway/publishing-plans";
 import type { PublishingPlansDocument } from "@/lib/sync-gateway";
 import { createPublishingPlansService } from "./services";
 import { isDomainError, type PlanAuditEntry, type PlanSlotProgress, type PlanView } from "./contracts";
@@ -17,6 +18,9 @@ const NEXT = "2026-11-02";
 function harness(progress?: Map<string, PlanSlotProgress>) {
   const clock = { now: new Date("2026-10-25T07:00:00Z") };
   const bytes = new Map<string, Uint8Array>();
+  // BL-242 (AC-WP-58): these BL-225/BL-240 acceptance tests run in the `slot` stage, set on the channel's document before the first
+  // read (a new document is in `packaged`, ADR 0062 §1).
+  bytes.set(CH, Automerge.save(Automerge.change(genesisDocument(CH), (d) => void (d.approvalStage = "slot"))));
   const store: DocumentByteStore = { loadDocumentBytes: async (k) => bytes.get(k) ?? null, saveDocumentBytes: async (k, b) => void bytes.set(k, b) };
   const backups = { backup: async () => ({ path: "/b", capturedAt: "" }) } as DiscardedDocumentBackupStore;
   const core = createPublishingPlansCore({ core: createAutomergeCore<PublishingPlansDocument>({ store, discardedBackupStore: backups, emptyDocument }), store });

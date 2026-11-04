@@ -165,6 +165,8 @@ export { createStoryboardsSyncRunnerForProduction } from "./storyboards-sync";
 export { createPublishingPlansCoreForProduction, createPublishingPlansCore, emptyDocument as emptyPublishingPlansDocument, slotKey as publishingPlanSlotKey } from "./publishing-plans";
 export type {
   PublishingPlanActor,
+  PublishingPlanApprovalStage,
+  PublishingPlanPackageFingerprint,
   PublishingPlanChange,
   PublishingPlanDecision,
   PublishingPlanDecisionKind,

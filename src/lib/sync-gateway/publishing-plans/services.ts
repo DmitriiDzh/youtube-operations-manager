@@ -1,6 +1,6 @@
 import * as Automerge from "@automerge/automerge";
 import type { AutomergeCore, DocumentByteStore } from "../automerge-core";
-import { slotKey, type MergeResult, type PublishingPlanChange, type PublishingPlanDecision, type PublishingPlansDocument, type PublishingPlansSnapshot } from "./contracts";
+import { slotKey, type MergeResult, type PublishingPlanApprovalStage, type PublishingPlanChange, type PublishingPlanDecision, type PublishingPlansDocument, type PublishingPlansSnapshot } from "./contracts";
 
 export type ServiceDependencies = { core: AutomergeCore<PublishingPlansDocument>; store: DocumentByteStore };
 
@@ -46,7 +46,13 @@ export function createPublishingPlansCore(deps: ServiceDependencies) {
     read(channelId: string): Promise<PublishingPlansSnapshot> {
       return serialized(async () => {
         const doc = await loadOrGenesis(channelId);
-        return { plans: clone(doc.plans ?? {}), slots: clone(doc.slots ?? {}), decisions: clone(doc.decisions ?? {}) };
+        return {
+          plans: clone(doc.plans ?? {}),
+          slots: clone(doc.slots ?? {}),
+          decisions: clone(doc.decisions ?? {}),
+          // BL-242: only the two known values; anything else (absent, or a future value) reads as absent (`packaged`).
+          ...(doc.approvalStage === "slot" || doc.approvalStage === "packaged" ? { approvalStage: doc.approvalStage } : {}),
+        };
       });
     },
 
@@ -76,6 +82,17 @@ export function createPublishingPlansCore(deps: ServiceDependencies) {
         const doc = await loadOrGenesis(channelId);
         const next = Automerge.change(doc, `decisions ${decisions.map((d) => `${d.kind} ${d.slotId}`).join(", ")}`, (draft) => {
           for (const decision of decisions) draft.decisions[decision.id] = clone(decision);
+        });
+        await deps.core.save(channelId, next);
+      });
+    },
+
+    /** BL-242 (ADR 0062 §1): the owner's approval stage of the channel, set in one change (the caller checks who may). */
+    setApprovalStage(channelId: string, stage: PublishingPlanApprovalStage): Promise<void> {
+      return serialized(async () => {
+        const doc = await loadOrGenesis(channelId);
+        const next = Automerge.change(doc, `approval stage ${stage}`, (draft) => {
+          draft.approvalStage = stage;
         });
         await deps.core.save(channelId, next);
       });

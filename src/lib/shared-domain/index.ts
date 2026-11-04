@@ -311,6 +311,7 @@ export type DomainErrorCode =
   | "publishing_plan_channel_unavailable"
   | "publishing_plan_changed"
   | "publishing_plan_slot_vetoed"
+  | "publishing_plan_slot_not_packaged"
   | "publishing_plan_slot_past"
   // BL-241 (CLIP_REVIEWS_PLAN.md, ADR 0061) -- clips for review. NOT_FOUND: no such clip in the channel; NOT_PENDING: the clip is
   // decided or withdrawn (details.status); WORKSPACE_UNAVAILABLE: no workspace folder here; FILE_UNAVAILABLE: the path is not a

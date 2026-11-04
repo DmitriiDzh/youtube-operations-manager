@@ -46,6 +46,15 @@ export type PublishingPlanSlot = PublishingPlanSlotContent & {
 
 export type PublishingPlanDecisionKind = "approved" | "revoked" | "vetoed" | "restored";
 
+/**
+ * BL-242 (ADR 0062): a channel's approval stage -- `packaged` (the owner approves a slot's package; the default when the document
+ * has none) or `slot` (the BL-225 behaviour: he approves the empty slot).
+ */
+export type PublishingPlanApprovalStage = "packaged" | "slot";
+
+/** BL-242 (ADR 0062 §2): the package an approval names -- its video number, its manifest's SHA-256 and, once uploaded, its video id. */
+export type PublishingPlanPackageFingerprint = { video: string; manifestSha256: string; videoId: string | null };
+
 /** The owner's decision on one slot; never edited, the newest one of its pair counts (ADR 0051 §3, §5). */
 export type PublishingPlanDecision = {
   id: string;
@@ -67,6 +76,11 @@ export type PublishingPlanDecision = {
   seq?: number;
   /** BL-240 (ADR 0060): on a `vetoed` record written by the owner's approval of the slot that replaces this one: that slot's id. */
   replacedBy?: string;
+  /**
+   * BL-242 (ADR 0062 §2): on a decision made in the `packaged` stage, the package fingerprint the slot's hash was computed with.
+   * Absent on a decision made in the `slot` stage (or before this field).
+   */
+  package?: PublishingPlanPackageFingerprint;
 };
 
 export type PublishingPlansDocument = {
@@ -79,10 +93,12 @@ export type PublishingPlansDocument = {
   slots: Record<string, PublishingPlanSlot>;
   /** By decision id. */
   decisions: Record<string, PublishingPlanDecision>;
+  /** BL-242 (ADR 0062 §1): set only by the owner; absent = `packaged`. An older build ignores it. */
+  approvalStage?: PublishingPlanApprovalStage;
 };
 
 /** The whole document as plain data (empty maps for a channel without a document yet). */
-export type PublishingPlansSnapshot = Pick<PublishingPlansDocument, "plans" | "slots" | "decisions">;
+export type PublishingPlansSnapshot = Pick<PublishingPlansDocument, "plans" | "slots" | "decisions" | "approvalStage">;
 
 /** One agent save, applied as one change: the plan made or updated, slots assigned whole, slots deleted. */
 export type PublishingPlanChange = {

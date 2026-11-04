@@ -36,7 +36,9 @@ function service(progress?: PublishingPlansPorts["progress"]): PublishingPlansSe
       return run;
     },
     // The owner's decisions are audited on the computer they were made on (the synced record names the device for the others).
-    audit: ({ channelId, weekStart, slotId, detail }) => insertVideoEditAuditEvent({ channelId, videoId: `plan:${weekStart}:${slotId}`, eventType: "RESULT", detail }),
+    // BL-242: the approval stage names no week or slot (`plan:approval_stage`).
+    audit: ({ channelId, weekStart, slotId, detail }) =>
+      insertVideoEditAuditEvent({ channelId, videoId: weekStart && slotId ? `plan:${weekStart}:${slotId}` : "plan:approval_stage", eventType: "RESULT", detail }),
     ...(progress ? { progress } : {}),
   });
 }
@@ -58,6 +60,6 @@ export function createPublishingPlansUploadCore(): PublishingPlansUploadSurface 
 
 export { createPublishingPlansService, agentSurface, ownerSurface, uploadSurface } from "./services";
 export type { PublishingPlansService, PublishingPlansAgentSurface, PublishingPlansOwnerSurface, PublishingPlansUploadSurface } from "./services";
-export { contentHashOf, instantOf, isMonday, weekEndOf, addDays, planViewOf, slotViewOf, decisionStateOf, needsOwner } from "./model";
+export { contentHashOf, instantOf, isMonday, weekEndOf, addDays, planViewOf, slotViewOf, decisionStateOf, needsOwner, fingerprintOf, packageReady } from "./model";
 export * from "./contracts";
 export * from "./schemas";
