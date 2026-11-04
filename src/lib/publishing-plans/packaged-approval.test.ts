@@ -568,3 +568,28 @@ test("BL-243 AC-WP-70: a deleted-only slot shows no changedAfterApproval and is 
   assert.equal(s1.changedAfterApproval, null);
   assert.equal(s1.released, true);
 });
+
+// BL-243 review round 2, item 4 (AC-WP-77): save() counts an approval as the view does -- in the packaged stage only while it
+// covers the slot's current package; a deleted video's package has none. So after the video is deleted the approved slot can be
+// removed (no slot_approved), and retiming it unlocks nothing. With a live package both stay as BL-242 has them.
+test("BL-243 AC-WP-77: after the video is deleted, the once-approved slot can be removed and a retime unlocks nothing", async () => {
+  const live = harness();
+  await week(live);
+  live.progress.set("s1", packaged({ video: "V73" }, "vid73"));
+  await approve(live, "s1");
+  const retimedLive = await live.service.save({ channelId: CH, weekStart: WEEK, slots: [slot("s1", "2026-10-26", "12:00")] }, "worker");
+  assert.deepEqual(retimedLive.unlocked, ["s1"], "a live package: the change needs the owner again");
+  const refusedLive = await refusal(live.service.save({ channelId: CH, weekStart: WEEK, removeSlotIds: ["s1"] }, "worker"));
+  assert.ok(isDomainError(refusedLive) && refusedLive.code === "validation_failed");
+  assert.deepEqual(((refusedLive as { details?: { refused?: Array<{ slotId: string; reason: string }> } }).details?.refused ?? []).map((r) => [r.slotId, r.reason]), [["s1", "slot_approved"]]);
+
+  const h = harness();
+  await week(h);
+  h.progress.set("s1", packaged({ video: "V73" }, "vid73"));
+  await approve(h, "s1");
+  h.progress.set("s1", deletedProgress());
+  const retimed = await h.service.save({ channelId: CH, weekStart: WEEK, slots: [slot("s1", "2026-10-26", "12:00")] }, "worker");
+  assert.deepEqual(retimed.unlocked, []);
+  const { removed } = await h.service.save({ channelId: CH, weekStart: WEEK, removeSlotIds: ["s1"] }, "worker");
+  assert.deepEqual(removed, ["s1"]);
+});

@@ -143,9 +143,25 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
       const current = new Map(slotsOf(snapshot, weekStart).map((s) => [s.slotId, s]));
       const decisions = decisionsOf(snapshot, weekStart);
       const decisionsFor = (slotId: string) => decisions.filter((d) => d.slotId === slotId);
-      // BL-242: an approval that counts in the channel's stage stands on the slot (the `packaged` stage: whatever its package now).
       const stage = stageOf(snapshot);
-      const approvedNow = (slot: PublishingPlanSlot) => existing !== null && approvalStandsOn(stage, existing.timeZone, contentOf(slot), decisionsFor(slot.slotId));
+      // BL-243 review round 2 (ADR 0063 §2): in the `packaged` stage an approval counts here exactly as the view counts it -- only
+      // while it covers the slot's current package (a package whose video was deleted has none). One progress read for the week's
+      // slots and the ones to remove; unreadable, the older rule below (it counts more approvals: never fewer refusals).
+      const toRemove = [...new Set(parsed.removeSlotIds ?? [])];
+      let progress: Map<string, PlanSlotProgress> | null = null;
+      if (ports.progress && (current.size > 0 || toRemove.length > 0)) {
+        progress = await ports.progress(channelId, weekStart, [...new Set([...current.keys(), ...toRemove])]).catch(() => null);
+      }
+      const views =
+        stage === "packaged" && existing && progress
+          ? new Map(planViewOf({ stage, channelId, meta: existing, slots: [...current.values()], decisions, progress, now }).slots.map((view) => [view.slotId, view]))
+          : null;
+      // BL-242: else an approval that counts in the channel's stage stands on the slot (whatever its package now).
+      const approvedNow = (slot: PublishingPlanSlot) => {
+        const view = views?.get(slot.slotId);
+        if (view) return view.approval === "approved";
+        return existing !== null && approvalStandsOn(stage, existing.timeZone, contentOf(slot), decisionsFor(slot.slotId));
+      };
 
       const otherWeeksIds = new Set(Object.values(snapshot.slots).filter((s) => s.weekStart !== weekStart).map((s) => s.slotId));
       const seen = new Set<string>();
@@ -215,9 +231,9 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
 
       const removes: string[] = [];
       const vetoedRemoves: string[] = [];
-      // Review #3: what the uploads say of the slots to remove (a slot whose video is on YouTube stays).
-      const toRemove = [...new Set(parsed.removeSlotIds ?? [])];
-      const uploads = toRemove.length > 0 && ports.progress ? await ports.progress(channelId, weekStart, toRemove) : new Map();
+      // Review #3: what the uploads say of the slots to remove (a slot whose video is on YouTube stays). The read above; it failed:
+      // read again here, as before (a failure refuses the save).
+      const uploads = toRemove.length > 0 && ports.progress ? (progress ?? (await ports.progress(channelId, weekStart, toRemove))) : new Map<string, PlanSlotProgress>();
       for (const slotId of toRemove) {
         const slot = current.get(slotId);
         const state = slot && existing ? decisionStateOf(decisionsForStage(decisionsFor(slotId), stage), contentHashOf(existing.timeZone, contentOf(slot))) : null;
@@ -233,7 +249,8 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
             removes.push(slotId);
             vetoedRemoves.push(slotId);
           }
-        } else if (state && (state.approved || state.superseded)) refused.push({ slotId, field: "removeSlotIds", reason: "slot_approved" });
+        } else if (views?.has(slotId) ? views.get(slotId)!.approval === "approved" || views.get(slotId)!.changedAfterApproval !== null : state && (state.approved || state.superseded))
+          refused.push({ slotId, field: "removeSlotIds", reason: "slot_approved" });
         else if (uploaded) refused.push({ slotId, field: "removeSlotIds", reason: "slot_uploaded" });
         else if (seen.has(slotId)) refused.push({ slotId, field: "removeSlotIds", reason: "duplicate_slot" });
         else removes.push(slotId);
