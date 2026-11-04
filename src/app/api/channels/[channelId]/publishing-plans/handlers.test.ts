@@ -18,7 +18,7 @@ function make(options: { session?: { user: { id: string } } | null; refuse?: Dom
       if (channelId !== "UC_active") throw new DomainError({ code: "CHANNEL_NOT_ACTIVE", message: "not the active channel" });
     },
     service: () => ({
-      ownerList: async (...args) => (calls.push(["list", ...args]), { plans: [], waiting: 0 }),
+      ownerList: async (...args) => (calls.push(["list", ...args]), { plans: [], waiting: 0, approvalStage: "packaged" as const }),
       ownerGet: async (...args) => {
         calls.push(["get", ...args]);
         if (options.refuse) throw options.refuse;
@@ -28,6 +28,11 @@ function make(options: { session?: { user: { id: string } } | null; refuse?: Dom
         calls.push(["decide", ...args]);
         if (options.refuse) throw options.refuse;
         return { plan: {} as never, decided: ["s1"], replacedVetoed: [] };
+      },
+      setApprovalStage: async (...args) => {
+        calls.push(["stage", ...args]);
+        if (options.refuse) throw options.refuse;
+        return { approvalStage: "slot" as const, changed: true };
       },
     }),
   };
@@ -68,9 +73,10 @@ test("BL-235: the plan's week coverage is read for weekStart in the plan's zone 
     getSession: async () => ({ user: { id: "u1" } }),
     assertActiveChannel: async () => undefined,
     service: () => ({
-      ownerList: async () => ({ plans: [], waiting: 0 }),
+      ownerList: async () => ({ plans: [], waiting: 0, approvalStage: "packaged" as const }),
       ownerGet: async () => ({ plan: { weekStart: "2026-11-02", timeZone: "Asia/Tokyo" } as never }),
       decide: async () => ({ plan: {} as never, decided: [], replacedVetoed: [] }),
+      setApprovalStage: async () => ({ approvalStage: "slot" as const, changed: true }),
     }),
     coverage: async (...args) => {
       asked.push(args);
@@ -83,4 +89,19 @@ test("BL-235: the plan's week coverage is read for weekStart in the plan's zone 
   const failing = await createPublishingPlanRouteHandlers({ ...deps, coverage: async () => Promise.reject(new Error("down")) }).detail(new Request("http://x/"), ctx({ channelId: "UC_active", weekStart: "2026-11-02" }));
   assert.equal(failing.status, 200);
   assert.equal((await failing.json()).coverage, null);
+});
+
+// BL-242 (ADR 0062 §1, AC-WP-50): the approval stage is the owner's -- a session and the active channel, the body and the user go to
+// the module; another channel or no session reaches nothing.
+test("AC-WP-50: the stage route needs a session and the active channel; it passes the body and the session's user", async () => {
+  const anonymous = make({ session: null });
+  assert.equal((await anonymous.handlers.setApprovalStage(post({ stage: "slot" }), ctx({ channelId: "UC_active" }))).status, 401);
+  const other = make();
+  assert.equal((await other.handlers.setApprovalStage(post({ stage: "slot" }), ctx({ channelId: "UC_other" }))).status, 403);
+  assert.deepEqual([...anonymous.calls, ...other.calls], []);
+  const { handlers, calls } = make();
+  const res = await handlers.setApprovalStage(post({ stage: "slot" }), ctx({ channelId: "UC_active" }));
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { approvalStage: "slot", changed: true });
+  assert.deepEqual(calls, [["stage", "UC_active", { stage: "slot" }, "u1"]]);
 });

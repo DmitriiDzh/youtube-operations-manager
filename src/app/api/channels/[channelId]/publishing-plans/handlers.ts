@@ -72,6 +72,16 @@ export function createPublishingPlanRouteHandlers(deps: PublishingPlanRouteDeps 
         return NextResponse.json({ plan, coverage });
       }),
 
+    /**
+     * BL-242 (ADR 0062 §1): POST `{ stage: packaged | slot }` -- the channel's approval stage (the switch «Одобрять пустые слоты»),
+     * synced to the other computer, audited here. The owner's only; no MCP path reaches it.
+     */
+    setApprovalStage: (request: Request, context: Params<Base>) =>
+      guarded(context, async ({ channelId }, userId) => {
+        const input = await request.json().catch(() => null);
+        return NextResponse.json(await deps.service().setApprovalStage(channelId, input, userId));
+      }),
+
     /** POST `{ action: approve | revoke | veto | restore, slots: [{ slotId, contentHash? }] }`. */
     decide: (request: Request, context: Params<Base & { weekStart: string }>) =>
       guarded(context, async ({ channelId, weekStart }, userId) => {
