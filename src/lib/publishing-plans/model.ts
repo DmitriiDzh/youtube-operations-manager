@@ -190,7 +190,9 @@ export function slotViewOf(args: {
       approval = "awaiting_package";
     }
     approvedAt = approval === "approved" ? standing!.at : null;
-    superseded = approval === "approved" ? null : (decisionStateOf(counted, contentHash).superseded ?? null);
+    // BL-243: a slot whose only package names a deleted video has nothing to approve -- no change after an approval either (and
+    // its time is not stretched to that approval's).
+    superseded = approval === "approved" || isDeletedOnYoutube(args.progress) ? null : (decisionStateOf(counted, contentHash).superseded ?? null);
   } else {
     contentHash = contentHashOf(meta.timeZone, content);
     const own = decisionStateOf(counted, contentHash);

@@ -551,3 +551,20 @@ test("BL-243 AC-WP-70: a vetoed slot whose video was deleted on YouTube can be r
   const { removed } = await h.service.save({ channelId: CH, weekStart: WEEK, removeSlotIds: ["s1"] }, "worker");
   assert.deepEqual(removed, ["s1"]);
 });
+
+// BL-243 review (AC-WP-70): a deleted-only slot has nothing to approve, so no change after an approval is reported either, and the
+// slot's release is not held back to the time of that old approval. Values by hand: s1 approved at 15:00 JST (06:00Z), the agent
+// moves it to 12:00 JST (03:00Z); at 04:00Z the slot's own time has passed and nothing else holds it.
+test("BL-243 AC-WP-70: a deleted-only slot shows no changedAfterApproval and is not held to the old approval's time", async () => {
+  const h = harness();
+  await week(h);
+  h.progress.set("s1", packaged({ video: "V73" }, "vid73"));
+  await approve(h, "s1");
+  await h.service.save({ channelId: CH, weekStart: WEEK, timeZone: "Asia/Tokyo", slots: [slot("s1", "2026-10-26", "12:00"), slot("s2", "2026-10-27", "18:00")] }, "worker");
+  assert.notEqual(slotOf(await get(h), "s1").changedAfterApproval, null, "a live package: the owner sees the change");
+  h.progress.set("s1", deletedProgress());
+  h.clock.now = new Date("2026-10-26T04:00:00Z");
+  const s1 = slotOf(await get(h), "s1");
+  assert.equal(s1.changedAfterApproval, null);
+  assert.equal(s1.released, true);
+});

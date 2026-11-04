@@ -186,7 +186,8 @@ export function PublishingPackages({ channelId, visible }: { channelId: string |
     total: packages.length,
     ready: packages.filter((p) => p.state === "ready").length,
     notReady: packages.filter((p) => p.state === "not_ready").length,
-    uploaded: packages.filter((p) => p.youtube !== null).length,
+    // BL-243: a video deleted on YouTube is not uploaded.
+    uploaded: packages.filter((p) => p.youtube !== null && p.state !== "deleted_on_youtube").length,
   };
   const problemText = (problem: Problem) => t(`publishingPackages.problem.${problem.code}` as UiTextKey, problem.params ?? {});
   const duration = (seconds: number) => t("duration.hoursMinutes", { h: Math.floor(seconds / 3600), m: Math.floor((seconds % 3600) / 60) });
