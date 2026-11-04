@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ScannedPackage } from "@/lib/publishing";
-import { progressOfSlots } from "./progress";
+import { deletedVideosBySlot, progressOfSlots } from "./progress";
 
 // BL-225 stage 2 (WEEKLY_PUBLISHING_PLAN.md AC-WP-23; FO-REQ-0040 item 6): a slot named by a ready v2 package is `packaged`, one
 // whose package is not ready but whose video is there is `built`; an uploaded package is `scheduled` / `published` by the
@@ -46,6 +46,8 @@ const scanned = (video: string, slotId: string | null, over: Partial<ScannedPack
   state: "ready",
   problems: [],
   youtube: null,
+  existsOnChannel: null,
+  checkedAt: null,
   pkg: pkgOf(video, slotId, pkgOver),
   manifestSha256: "m",
   ...over,
@@ -174,22 +176,60 @@ test("BL-243 AC-WP-69: deleted alone -> failed video_deleted_on_youtube; with an
 
   // A done, dated, verified upload row of vid73 (removed) says nothing; without the mark it would (BL-225).
   const row73 = uploadRow({ video: "V73", videoId: "vid73" });
-  const removed = new Set(["vid73"]);
-  assert.deepEqual(progressWithUploads(progressOfSlots([deleted73()], ["s1"], false), [row73], ["s1"], NOW_MS, removed).get("s1"), alone);
-  assert.deepEqual(progressWithUploads(progressOfSlots([deleted73(), scanned("V73", "s1", { manifestPath: "b/V73_release.json" })], ["s1"], false), [row73], ["s1"], NOW_MS, removed).get("s1")?.status, "packaged");
-  assert.deepEqual(progressWithUploads(progressOfSlots([deleted73()], ["s1"], false), [row73], ["s1"], NOW_MS).get("s1"), alone, "the deleted package's own video, the mark unread");
+  const excl = (packages: ScannedPackage[]) => ({ removedVideoIds: new Set(["vid73"]), deletedVideosBySlot: deletedVideosBySlot(packages) });
+  assert.deepEqual(progressWithUploads(progressOfSlots([deleted73()], ["s1"], false), [row73], ["s1"], NOW_MS, excl([deleted73()])).get("s1"), alone);
+  const freshSame = [deleted73(), scanned("V73", "s1", { manifestPath: "b/V73_release.json" })];
+  assert.equal(progressWithUploads(progressOfSlots(freshSame, ["s1"], false), [row73], ["s1"], NOW_MS, excl(freshSame)).get("s1")?.status, "packaged");
   assert.equal(progressWithUploads(progressOfSlots([scanned("V73", "s1", { state: "uploaded_unknown", youtube: { videoId: "vid73", privacyStatus: null, publishAt: null } })], ["s1"], false), [row73], ["s1"], NOW_MS).get("s1")?.status, "scheduled", "not removed: the row speaks (BL-225)");
 });
 
-// BL-243 review (AC-WP-69): the removed list could not be read, and the deleted V73 names its slot with V80, which has no progress
-// yet (its video file is missing) -- the done, dated row of vid73 must still say nothing: the deleted packages' own ids count.
-test("BL-243 AC-WP-69: a deleted package's own video is dropped even with no current progress and no removed list", async () => {
-  const { progressWithUploads, removedVideoIdsForProgress } = await import("./progress");
+// BL-243 review (AC-WP-69): deleted V73 names its slot with V80, which has no progress yet (its video file is missing) -- the done,
+// dated row of vid73 still says nothing. (Round 2: an unreadable removed list yields no deleted package at all, so the scan's ids
+// are the one source; the deleted packages' numbers by slot cover the rows without a video id.)
+test("BL-243 AC-WP-69: a deleted package's rows say nothing even when another package without progress names the slot", async () => {
+  const { progressWithUploads } = await import("./progress");
   const noVideo = scanned("V80", "s1", { state: "not_ready", problems: [{ code: "video_missing" }] });
   const packages = [deleted73(), noVideo];
-  const ids = removedVideoIdsForProgress(packages, []);
-  assert.deepEqual([...ids], ["vid73"]);
-  assert.deepEqual([...removedVideoIdsForProgress([scanned("V64", "s1")], ["vidX"])], ["vidX"], "the scan's ids, nothing added");
-  const merged = progressWithUploads(progressOfSlots(packages, ["s1"], false), [uploadRow({ video: "V73", videoId: "vid73" })], ["s1"], NOW_MS, ids);
+  assert.deepEqual([...deletedVideosBySlot(packages)], [["s1", new Set(["V73"])]]);
+  const merged = progressWithUploads(progressOfSlots(packages, ["s1"], false), [uploadRow({ video: "V73", videoId: "vid73" })], ["s1"], NOW_MS, { removedVideoIds: new Set(["vid73"]), deletedVideosBySlot: deletedVideosBySlot(packages) });
   assert.equal(merged.has("s1"), false);
+});
+
+// BL-243 review round 2, item 1 (AC-WP-75): once a package is deleted_on_youtube, no upload row of it (its number on that slot)
+// overrides the deleted progress -- not the removed video's own row, and not an older try (a failed one without a video id). A
+// fresh package with the same number counts only rows newer than the removed video's row.
+test("BL-243 AC-WP-75: an older row of a deleted package never brings it back (no approvable deleted video)", async () => {
+  const { progressWithUploads } = await import("./progress");
+  const olderFailed = uploadRow({ video: "V73", videoId: null, status: "failed", errorCode: "processing_rejected", createdAt: new Date("2026-10-20T00:00:00Z") });
+  const removedRow = uploadRow({ video: "V73", videoId: "vid73", createdAt: new Date("2026-10-24T00:00:00Z") });
+  const exclusions = (packages: ScannedPackage[]) => ({ removedVideoIds: new Set(["vid73"]), deletedVideosBySlot: deletedVideosBySlot(packages) });
+  const alone = [deleted73()];
+  const merged = progressWithUploads(progressOfSlots(alone, ["s1"], false), [olderFailed, removedRow], ["s1"], NOW_MS, exclusions(alone)).get("s1");
+  assert.equal(merged?.status, "failed");
+  assert.equal(merged?.code, "video_deleted_on_youtube");
+  assert.equal(merged?.videoId, "vid73");
+  // The older row alone (the removed row is on another computer): still the deleted state.
+  assert.equal(progressWithUploads(progressOfSlots(alone, ["s1"], false), [olderFailed], ["s1"], NOW_MS, exclusions(alone)).get("s1")?.code, "video_deleted_on_youtube");
+
+  // A fresh V73 package for the slot: the older failed try is not its progress; a new upload of it is.
+  const fresh = [deleted73(), scanned("V73", "s1", { manifestPath: "b/V73_release.json" })];
+  assert.equal(progressWithUploads(progressOfSlots(fresh, ["s1"], false), [olderFailed, removedRow], ["s1"], NOW_MS, exclusions(fresh)).get("s1")?.status, "packaged");
+  const newTry = uploadRow({ video: "V73", videoId: null, status: "uploading", createdAt: new Date("2026-10-25T00:00:00Z") });
+  assert.equal(progressWithUploads(progressOfSlots(fresh, ["s1"], false), [olderFailed, removedRow, newTry], ["s1"], NOW_MS, exclusions(fresh)).get("s1")?.status, "uploading");
+});
+
+// BL-243 review round 2, item 8 (AC-WP-76): of two deleted packages naming one slot, the one uploaded last speaks -- by its record's
+// uploadedAt, else by its newest upload row on this computer; never by the scan's order alone.
+test("BL-243 AC-WP-76: the newest deleted upload speaks for the slot", () => {
+  const deleted = (video: string, videoId: string, uploadedAt: string | null) =>
+    scanned(video, "s1", { state: "deleted_on_youtube", problems: [{ code: "video_deleted_on_youtube" }], youtube: { videoId, privacyStatus: null, publishAt: null, removedAt: "2026-11-03T19:54:00.000Z", uploadedAt }, existsOnChannel: false });
+  const older = deleted("V72", "vid72", "2026-11-01T10:00:00.000Z");
+  const newer = deleted("V73", "vid73", "2026-11-02T10:00:00.000Z");
+  assert.equal(progressOfSlots([newer, older], ["s1"], false).get("s1")?.videoId, "vid73");
+  assert.equal(progressOfSlots([older, newer], ["s1"], false).get("s1")?.videoId, "vid73");
+  // No uploadedAt in the records: the newer upload row here decides.
+  const a = deleted("V72", "vid72", null);
+  const b = deleted("V73", "vid73", null);
+  const rowTimes = new Map([["vid72", Date.parse("2026-11-02T00:00:00Z")], ["vid73", Date.parse("2026-11-01T00:00:00Z")]]);
+  assert.equal(progressOfSlots([b, a], ["s1"], false, rowTimes).get("s1")?.videoId, "vid72");
 });

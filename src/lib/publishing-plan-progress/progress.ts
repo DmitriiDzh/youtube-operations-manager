@@ -64,19 +64,33 @@ export function progressOfPackage(scanned: ScannedPackage, channelSyntheticMedia
 
 /**
  * The progress of each asked slot from every package of the channel that names it (v2 `slotId`). BL-243: a package whose video
- * was deleted on YouTube speaks for its slot only when no other package names it (even one with no progress yet).
+ * was deleted on YouTube speaks for its slot only when no other package names it (even one with no progress yet); of two such
+ * packages the one uploaded last speaks -- by its record's `uploadedAt`, else by its newest upload row here (`rowTimes`: video id
+ * -> that row's time), else the first in the scan's order.
  */
-export function progressOfSlots(packages: readonly ScannedPackage[], slotIds: readonly string[], channelSyntheticMedia: boolean): Map<string, PlanSlotProgress> {
+export function progressOfSlots(
+  packages: readonly ScannedPackage[],
+  slotIds: readonly string[],
+  channelSyntheticMedia: boolean,
+  rowTimes: ReadonlyMap<string, number> = new Map()
+): Map<string, PlanSlotProgress> {
   const wanted = new Set(slotIds);
   const result = new Map<string, PlanSlotProgress>();
   const named = new Set<string>();
-  const deleted = new Map<string, PlanSlotProgress>();
+  const deleted = new Map<string, { progress: PlanSlotProgress; at: number }>();
+  const uploadedAtOf = (scanned: ScannedPackage): number => {
+    const fromRecord = scanned.youtube?.uploadedAt ? Date.parse(scanned.youtube.uploadedAt) : NaN;
+    if (Number.isFinite(fromRecord)) return fromRecord;
+    return (scanned.youtube && rowTimes.get(scanned.youtube.videoId)) ?? Number.NEGATIVE_INFINITY;
+  };
   for (const scanned of packages) {
     const slotId = scanned.pkg?.slotId;
     if (!slotId || !wanted.has(slotId)) continue;
     if (scanned.state === "deleted_on_youtube") {
       const progress = progressOfPackage(scanned, channelSyntheticMedia);
-      if (progress && !deleted.has(slotId)) deleted.set(slotId, progress);
+      const at = uploadedAtOf(scanned);
+      const before = deleted.get(slotId);
+      if (progress && (!before || at > before.at)) deleted.set(slotId, { progress, at });
       continue;
     }
     named.add(slotId);
@@ -85,20 +99,28 @@ export function progressOfSlots(packages: readonly ScannedPackage[], slotIds: re
     const before = result.get(slotId);
     if (!before || RANK[progress.status] > RANK[before.status]) result.set(slotId, progress);
   }
-  for (const [slotId, progress] of deleted) if (!named.has(slotId)) result.set(slotId, progress);
+  for (const [slotId, { progress }] of deleted) if (!named.has(slotId)) result.set(slotId, progress);
   return result;
 }
 
-/**
- * BL-243 (ADR 0063): the video ids whose upload rows say nothing of their slots -- those the scan read as removed on YouTube, and
- * the video of every package the scan found deleted (so a row of it is dropped even when the removed list could not be read and
- * another package, with no progress yet, names the slot). One source: the scan the progress shows.
- */
-export function removedVideoIdsForProgress(packages: readonly ScannedPackage[], scanRemovedIds: readonly string[] = []): Set<string> {
-  const ids = new Set(scanRemovedIds);
-  for (const p of packages) if (p.state === "deleted_on_youtube" && p.youtube) ids.add(p.youtube.videoId);
-  return ids;
+/** BL-243: the video numbers of the packages the scan found deleted on YouTube, by the slot they name. */
+export function deletedVideosBySlot(packages: readonly ScannedPackage[]): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  for (const p of packages) {
+    const slotId = p.pkg?.slotId;
+    if (p.state !== "deleted_on_youtube" || !slotId || !p.pkg) continue;
+    out.set(slotId, new Set([...(out.get(slotId) ?? []), p.pkg.video]));
+  }
+  return out;
 }
+
+/** BL-243: what makes upload rows say nothing (from the scan the progress shows, so the two never disagree). */
+export type UploadRowExclusions = {
+  /** The video ids the scan read as removed on YouTube. */
+  removedVideoIds?: ReadonlySet<string>;
+  /** The video numbers of deleted packages, by slot (`deletedVideosBySlot`). */
+  deletedVideosBySlot?: ReadonlyMap<string, ReadonlySet<string>>;
+};
 
 /** BL-225 stage 3: an upload row as the progress reads it (this computer's `publishing_uploads`). */
 export type UploadRowForProgress = {
@@ -159,23 +181,36 @@ export function progressOfUploadRow(row: UploadRowForProgress, nowMs: number): P
 
 /**
  * The packages' progress, with each slot's newest upload row on this computer taking precedence (it knows the upload's steps).
- * BL-243: a row whose video the channel sync found removed on YouTube (`removedVideoIds`) says nothing of its slot.
+ * BL-243 (ADR 0063 §2): a row whose video the sync found removed says nothing of its slot, and neither does any other row of a
+ * deleted package (its video number on that slot -- an earlier failed try, say): a deleted video never becomes the slot's progress
+ * again through an older row. Only when a fresh package with the same number is the slot's current one do its rows count, and
+ * then only those newer than the removed video's own row.
  */
 export function progressWithUploads(
   fromPackages: Map<string, PlanSlotProgress>,
   rows: readonly UploadRowForProgress[],
   slotIds: readonly string[],
   nowMs: number,
-  removedVideoIds: ReadonlySet<string> = new Set()
+  exclude: UploadRowExclusions = {}
 ): Map<string, PlanSlotProgress> {
   const result = new Map(fromPackages);
   const wanted = new Set(slotIds);
+  const removed = exclude.removedVideoIds ?? new Set<string>();
+  const deletedBySlot = exclude.deletedVideosBySlot ?? new Map<string, ReadonlySet<string>>();
+  // The time of each slot's newest row of a removed video (a fresh same-number package counts only rows after it).
+  const removedRowAt = new Map<string, number>();
+  for (const row of rows) {
+    if (row.slotId && row.videoId !== null && removed.has(row.videoId)) removedRowAt.set(row.slotId, Math.max(removedRowAt.get(row.slotId) ?? Number.NEGATIVE_INFINITY, row.createdAt.getTime()));
+  }
   const newest = new Map<string, UploadRowForProgress>();
   for (const row of rows) {
     if (!row.slotId || !wanted.has(row.slotId)) continue;
-    // (the deleted package's own video id counts as removed even when the mark could not be read)
+    if (row.videoId !== null && removed.has(row.videoId)) continue;
     const own = fromPackages.get(row.slotId);
-    if (row.videoId !== null && (removedVideoIds.has(row.videoId) || (isDeletedOnYoutube(own) && own?.videoId === row.videoId))) continue;
+    if (row.video !== undefined && deletedBySlot.get(row.slotId)?.has(row.video)) {
+      const freshSameNumber = own?.package?.video === row.video && !isDeletedOnYoutube(own);
+      if (!freshSameNumber || row.createdAt.getTime() <= (removedRowAt.get(row.slotId) ?? Number.NEGATIVE_INFINITY)) continue;
+    }
     // BL-242 round 3 (b): a row of another video than the slot's current package (the old video moved to another slot) is not its
     // progress.
     const pkg = fromPackages.get(row.slotId)?.package;
