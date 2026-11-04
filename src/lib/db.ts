@@ -218,6 +218,10 @@ export const channels = sqliteTable("channels", {
   // doc comment. Written BEFORE a collection run starts, not after, so two concurrent triggers
   // (e.g. two open browser tabs) never both run a full collection (src/lib/analytics/staleness.ts).
   analyticsLastAutoCollectedAt: integer("analytics_last_auto_collected_at", { mode: "timestamp" }),
+  // Additive, SCHEMA_MIGRATIONS version 118 (BL-243, ADR 0063): when a channel sync last COMPLETED its removed-on-YouTube check
+  // (`removedCheck: "done"`) -- `lastSyncedAt` also moves on syncs that skipped it. Nullable, no default (RISK-89: this table is
+  // transferred); NULL = never checked, so no video is called "on the channel".
+  removedCheckAt: integer("removed_check_at", { mode: "timestamp" }),
 });
 
 export const videos = sqliteTable("videos", {
@@ -6026,6 +6030,18 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       await client.execute("UPDATE publishing_uploads SET queued_by = CASE WHEN automatic = 1 THEN 'automatic' ELSE 'owner' END WHERE queued_by IS NULL");
     },
   },
+  {
+    version: 118,
+    description:
+      "channels.removed_check_at -- BL-243 (ADR 0063; owner msg 4039): when a channel sync last completed its removed-on-YouTube check (lastSyncedAt also moves on syncs that skip it), what a package's existsOnChannel stands on. Additive, nullable, no default",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE channels ADD COLUMN removed_check_at INTEGER");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
+    },
+  },
 ];
 
 /**
@@ -6814,6 +6830,8 @@ export type StoredChannel = {
   analyticsLastAutoCollectedAt: Date | null;
   /** BL-118: when the channel was created on YouTube (RFC 3339); null until a sync recorded it. */
   publishedAt: string | null;
+  /** BL-243: when a sync last completed the removed-on-YouTube check; null: never. */
+  removedCheckAt: Date | null;
 };
 
 export type StoredVideo = {
@@ -6849,6 +6867,7 @@ function mapStoredChannel(row: typeof channels.$inferSelect): StoredChannel {
     lastSyncedAt: row.lastSyncedAt,
     analyticsLastAutoCollectedAt: row.analyticsLastAutoCollectedAt,
     publishedAt: row.publishedAt,
+    removedCheckAt: row.removedCheckAt ?? null,
   };
 }
 
@@ -6912,8 +6931,12 @@ export async function upsertChannel(input: {
     });
 }
 
-export async function markChannelSynced(channelId: string, syncedAt: Date): Promise<void> {
-  await db.update(channels).set({ lastSyncedAt: syncedAt }).where(eq(channels.id, channelId));
+/** BL-243: `removedCheckAt` -- given only when this sync completed the removed-on-YouTube check. */
+export async function markChannelSynced(channelId: string, syncedAt: Date, removedCheckAt?: Date): Promise<void> {
+  await db
+    .update(channels)
+    .set({ lastSyncedAt: syncedAt, ...(removedCheckAt ? { removedCheckAt } : {}) })
+    .where(eq(channels.id, channelId));
 }
 
 // `docs/decisions/0010-persistent-channel-connections.md` -- disconnecting a channel connection

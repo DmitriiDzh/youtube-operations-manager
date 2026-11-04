@@ -202,13 +202,14 @@ const visible74 = async () => [{ videoId: "vid74", title: "Title V74", privacySt
 
 test("BL-243 AC-WP-66: a removed video's package is deleted_on_youtube; unknown stays for a video not in the copy", async () => {
   const result = await createPackageScan(
-    deps(uploadedFiles(), { videos: visible74, removedVideos: async () => [{ videoId: "vid73", removedAt: REMOVED }], videosSyncedAt: async () => SYNCED })
+    deps(uploadedFiles(), { videos: visible74, removedVideos: async () => [{ videoId: "vid73", removedAt: REMOVED }], videosCheckedAt: async () => SYNCED })
   ).scan("UC_t");
   if (result.status !== "ok") return assert.fail(result.status);
   const by = Object.fromEntries(result.packages.map((p) => [p.video, p]));
   assert.equal(by.V73.state, "deleted_on_youtube");
   assert.deepEqual(by.V73.problems, [{ code: "video_deleted_on_youtube" }]);
-  assert.deepEqual(by.V73.youtube, { videoId: "vid73", privacyStatus: null, publishAt: null, removedAt: REMOVED });
+  // (review round 2 added the record's uploadedAt -- none in this record)
+  assert.deepEqual(by.V73.youtube, { videoId: "vid73", privacyStatus: null, publishAt: null, removedAt: REMOVED, uploadedAt: null });
   assert.equal(by.V73.existsOnChannel, false);
   assert.equal(by.V73.checkedAt, SYNCED);
   assert.equal(by.V74.state, "uploaded_private");
@@ -226,7 +227,7 @@ test("BL-243 AC-WP-67: the mark cleared -> uploaded again; never synced -> check
     deps(uploadedFiles(), {
       videos: async () => [...(await visible74()), { videoId: "vid73", title: "Title V73", privacyStatus: "private", publishAt: null }],
       removedVideos: async () => [],
-      videosSyncedAt: async () => SYNCED,
+      videosCheckedAt: async () => SYNCED,
     })
   ).scan("UC_t");
   if (back.status !== "ok") return assert.fail(back.status);
@@ -235,7 +236,7 @@ test("BL-243 AC-WP-67: the mark cleared -> uploaded again; never synced -> check
   assert.equal(v73.existsOnChannel, true);
   assert.deepEqual(v73.problems, []);
 
-  const never = await createPackageScan(deps(uploadedFiles(), { removedVideos: async () => [], videosSyncedAt: async () => null })).scan("UC_t");
+  const never = await createPackageScan(deps(uploadedFiles(), { removedVideos: async () => [], videosCheckedAt: async () => null })).scan("UC_t");
   if (never.status !== "ok") return assert.fail(never.status);
   assert.deepEqual(never.packages.map((p) => [p.video, p.state, p.checkedAt, p.existsOnChannel]), [
     ["V73", "uploaded_unknown", null, null],
@@ -282,7 +283,7 @@ test("BL-243: an unreadable removed list or sync time keeps the scan going (none
       removedVideos: async () => {
         throw new Error("db busy");
       },
-      videosSyncedAt: async () => {
+      videosCheckedAt: async () => {
         throw new Error("db busy");
       },
     })
@@ -297,4 +298,20 @@ test("BL-243: an unreadable removed list or sync time keeps the scan going (none
   assert.deepEqual(result.removedVideoIds, []);
   const read = await createPackageScan(deps(uploadedFiles(), { videos: visible74, removedVideos: async () => [{ videoId: "vid73", removedAt: REMOVED }] })).scan("UC_t");
   assert.deepEqual(read.status === "ok" ? read.removedVideoIds : null, ["vid73"]);
+});
+
+// BL-243 review round 2, items 3 and 8 (AC-WP-78, AC-WP-76): "on the channel" (true) needs a completed removed check -- without one
+// a visible video is unknown (null), while a removed mark still proves a deletion (false); the record's uploadedAt is carried.
+test("BL-243 AC-WP-78: no completed removed check -> existsOnChannel never true; a removed mark is still false; uploadedAt read", async () => {
+  const files = uploadedFiles();
+  files["04 Videos/11 November/1110 V74/V74_youtube.json"] = { text: JSON.stringify({ videoId: "vid74", uploadedAt: "2026-11-02T10:00:00.000Z" }), bytes: 40 };
+  const result = await createPackageScan(
+    deps(files, { videos: visible74, removedVideos: async () => [{ videoId: "vid73", removedAt: REMOVED }], videosCheckedAt: async () => null })
+  ).scan("UC_t");
+  if (result.status !== "ok") return assert.fail(result.status);
+  const by = Object.fromEntries(result.packages.map((p) => [p.video, p]));
+  assert.deepEqual([by.V74.state, by.V74.existsOnChannel, by.V74.checkedAt], ["uploaded_private", null, null]);
+  assert.deepEqual([by.V73.state, by.V73.existsOnChannel], ["deleted_on_youtube", false]);
+  assert.equal(by.V74.youtube?.uploadedAt, "2026-11-02T10:00:00.000Z");
+  assert.equal(by.V73.youtube?.uploadedAt, null, "no uploadedAt in the record");
 });

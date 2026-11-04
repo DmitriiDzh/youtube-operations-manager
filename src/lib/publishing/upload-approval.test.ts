@@ -32,6 +32,8 @@ function scanned(video: string, over: Partial<ScannedPackage> = {}): ScannedPack
     state: "ready",
     problems: [],
     youtube: null,
+    existsOnChannel: null,
+    checkedAt: null,
     manifestSha256: `sha-${video}`,
     pkg: {
       channelId: "UC_t",
@@ -58,7 +60,7 @@ function harness(packages: ScannedPackage[], over: Partial<UploadApprovalDeps> =
   const unitsAsked: number[] = [];
   let id = 0;
   const deps: UploadApprovalDeps = {
-    scan: async () => ({ status: "ok", packages }),
+    scan: async () => ({ status: "ok", removedVideoIds: [], packages }),
     settings: async () => ({ channelId: "UC_t", settings: SETTINGS, defaults: DEFAULT_PUBLISHING_SETTINGS, saved: ["playlistId"], conflictedFields: [] }),
     liveVideos: async () => new Set(),
     peerUploads: async () => new Map(),

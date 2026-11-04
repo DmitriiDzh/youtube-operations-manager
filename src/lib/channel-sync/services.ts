@@ -92,7 +92,8 @@ type ServiceDependencies = {
       /** BL-118: the channel's creation time on YouTube; `null`/`undefined` leaves a stored value untouched. */
       publishedAt?: string | null;
     }): Promise<void>;
-    markChannelSynced(channelId: string, syncedAt: Date): Promise<void>;
+    /** BL-243: `removedCheckAt` only when this sync completed the removed-on-YouTube check. */
+    markChannelSynced(channelId: string, syncedAt: Date, removedCheckAt?: Date): Promise<void>;
     listChannels(): Promise<StoredChannelRecord[]>;
     getChannel(channelId: string): Promise<StoredChannelRecord | null>;
     upsertVideos(
@@ -296,7 +297,9 @@ export function createChannelSyncServices(deps: ServiceDependencies) {
         else if (videoIds.length === 0) removedCheck = "skipped_empty_list";
         else hiddenRemovedVideoIds = await deps.channelStore.markVideosRemovedOnYoutube(channel.channelId, videoIds, syncedAt, listedAt);
 
-        await deps.channelStore.markChannelSynced(channel.channelId, syncedAt);
+        // BL-243: the removed check's own time only when it ran (the packages' `checkedAt`).
+        if (removedCheck === "done") await deps.channelStore.markChannelSynced(channel.channelId, syncedAt, syncedAt);
+        else await deps.channelStore.markChannelSynced(channel.channelId, syncedAt);
         progress?.counts(videoMetadata.length, videoMetadata.length);
 
         const storedChannel = await deps.channelStore.getChannel(channel.channelId);

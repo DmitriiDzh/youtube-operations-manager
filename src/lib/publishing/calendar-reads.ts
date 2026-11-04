@@ -60,9 +60,9 @@ export type AgentPackages =
         state: string;
         problems: string[];
         videoId: string | null;
-        /** BL-243: true -- in the synced copy, not removed; false -- removed on YouTube; null -- no upload, or not in the copy. */
+        /** BL-243: true -- in the copy, not removed, as of `checkedAt`; false -- removed on YouTube; null -- unknown. */
         existsOnChannel: boolean | null;
-        /** BL-243: when the channel's videos were last synced (ISO), what `existsOnChannel` stands on; null: never. */
+        /** BL-243: when a sync last completed the removed check (ISO; `channels.removed_check_at`); null: never. */
         checkedAt: string | null;
         /** BL-243: when the sync found the video removed (ISO), else null. */
         removedAt: string | null;

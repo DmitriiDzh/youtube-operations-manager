@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getStoredVideo, listRemovedVideosByChannel, listStoredVideosByChannel, markVideosRemovedOnYoutube, upsertChannel, upsertVideos } from "@/lib/db";
+import { getStoredChannel, getStoredVideo, listRemovedVideosByChannel, markChannelSynced, listStoredVideosByChannel, markVideosRemovedOnYoutube, upsertChannel, upsertVideos } from "@/lib/db";
 
 const LISTED = new Date("2026-10-14T08:59:00Z"); // this read of the uploads began after the rows were last synced (2026-10-01)
 
@@ -79,4 +79,16 @@ test("BL-243: the removed videos are listed with their mark, only the channel's 
   assert.deepEqual(await listRemovedVideosByChannel("UC_s"), [{ videoId: "s1", removedAt: at }]);
   await upsertVideos([video("r2", "UC_r")], new Date("2026-11-04T08:00:00.000Z"));
   assert.deepEqual(await listRemovedVideosByChannel("UC_r"), []);
+});
+
+test("BL-243 AC-WP-78 (schema v118): channels.removed_check_at is set only with a completed check; lastSyncedAt moves on every sync", async () => {
+  await upsertChannel({ channelId: "UC_k", title: "K", thumbnailUrl: null, uploadsPlaylistId: "UU_k", connectedUserId: null });
+  assert.equal((await getStoredChannel("UC_k"))?.removedCheckAt, null);
+  const checked = new Date("2026-11-04T08:00:00.000Z");
+  await markChannelSynced("UC_k", checked, checked);
+  const skipped = new Date("2026-11-05T08:00:00.000Z");
+  await markChannelSynced("UC_k", skipped);
+  const channel = await getStoredChannel("UC_k");
+  assert.equal(channel?.removedCheckAt?.toISOString(), "2026-11-04T08:00:00.000Z");
+  assert.equal(channel?.lastSyncedAt?.toISOString(), "2026-11-05T08:00:00.000Z");
 });

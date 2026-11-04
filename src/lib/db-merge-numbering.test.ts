@@ -63,7 +63,8 @@ test("merge numbering: the current schema is 90 with both branches' tables", asy
   // v115: BL-236 channel_voices + elevenlabs_speech_jobs (FO-REQ-0050, ADR 0057: a new additive migration, not a renumbering).
   // v116: BL-238 local_video_cleanup_log (FO-REQ-0051, ADR 0058: a new additive migration, not a renumbering).
   // v117: BL-239 publishing_uploads.queue_rank + queued_by (owner msgs 3928/3930, ADR 0059: a new additive migration, not a renumbering).
-  assert.equal(SCHEMA_CURRENT_VERSION, 117);
+  // v118: BL-243 channels.removed_check_at (ADR 0063: a new additive migration, not a renumbering).
+  assert.equal(SCHEMA_CURRENT_VERSION, 118);
   await withDb(async (client) => {
     await initializeDatabaseSchema(client);
     const t = await tables(client);

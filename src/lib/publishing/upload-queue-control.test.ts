@@ -103,7 +103,7 @@ function harness(rows: StoredPublishingUpload[], options: { packages?: ScannedPa
   let id = 0;
   const switchOn = () => (typeof options.switchOn === "function" ? options.switchOn() : (options.switchOn ?? true));
   const approval = createUploadApproval({
-    scan: async () => ({ status: "ok", packages: options.packages ?? [] }),
+    scan: async () => ({ status: "ok", removedVideoIds: [], packages: options.packages ?? [] }),
     settings: async () => ({ channelId: "UC_x", settings: SETTINGS, defaults: DEFAULT_PUBLISHING_SETTINGS, saved: [], conflictedFields: [] }),
     liveVideos: async () => new Set([...store.values()].filter((r) => ACTIVE.has(r.status) || r.status === "done").map((r) => r.video)),
     peerUploads: async () => new Map(),
@@ -138,7 +138,7 @@ function harness(rows: StoredPublishingUpload[], options: { packages?: ScannedPa
     autoSwitchOn: async () => switchOn(),
     channelTitles: async () => new Map([["UC_x", "Channel X"], ["UC_y", "Channel Y"]]),
     channelUser: async (channelId) => (options.connected === false ? null : channelId === "UC_x" ? "u-x" : null),
-    scan: async () => ({ status: "ok", packages: options.packages ?? [] }),
+    scan: async () => ({ status: "ok", removedVideoIds: [], packages: options.packages ?? [] }),
     liveVideos: async () => new Set([...store.values()].filter((r) => ACTIVE.has(r.status) || r.status === "done").map((r) => r.video)),
     peerUploads: async () => new Map((options.peers ?? []).map((v) => [v, { host: "Windows", uploaded: false }])),
     blockedHashes: async () => new Set([...store.values()].filter((r) => !(r.status === "cancelled" && r.errorCode === CANCELLED_BY_PRODUCER && r.queuedBy === "producer")).map((r) => r.manifestSha256)),

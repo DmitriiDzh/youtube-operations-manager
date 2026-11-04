@@ -46,14 +46,17 @@ export type ScannedPackage = {
   state: PackageState;
   problems: PackageProblem[];
   /** From `Vn_youtube.json`, once uploaded. BL-243: `removedAt` (ISO) when the sync found the video removed on YouTube. */
-  youtube: { videoId: string; privacyStatus: string | null; publishAt: string | null; removedAt?: string | null } | null;
+  youtube: { videoId: string; privacyStatus: string | null; publishAt: string | null; removedAt?: string | null; uploadedAt?: string | null } | null;
   /**
-   * BL-243 (always set by the scan): the uploaded video is in the synced copy and not removed (true), removed on YouTube (false), or
+   * BL-243: the uploaded video is in the synced copy, not removed, as of a completed removed check (true), removed on YouTube (false), or
    * unknown -- no upload record, or a video id the copy does not have (null).
    */
-  existsOnChannel?: boolean | null;
-  /** BL-243 (always set by the scan): when the channel's videos were last synced (ISO), what `existsOnChannel` stands on; null: never. */
-  checkedAt?: string | null;
+  existsOnChannel: boolean | null;
+  /**
+   * BL-243: when a channel sync last completed its removed-on-YouTube check (ISO; `channels.removed_check_at`), what
+   * `existsOnChannel` stands on; null: never (then no video is "on the channel" -- true needs it).
+   */
+  checkedAt: string | null;
   /** The parsed manifest, for the approval screen (null when it is not a valid one). */
   pkg: ReleasePackage | null;
   /** The manifest file's SHA-256: an approval names it, so a package changed after the owner saw it is refused. */
@@ -67,10 +70,10 @@ export type PackageScanResult =
       status: "ok";
       packages: ScannedPackage[];
       /**
-       * BL-243 (always set by the scan): the ids of the channel's videos the sync found removed, as this scan read them ([] when
+       * BL-243: the ids of the channel's videos the sync found removed, as this scan read them ([] when
        * that read failed: none known). The plan progress reuses them, so it never disagrees with the packages it shows.
        */
-      removedVideoIds?: string[];
+      removedVideoIds: string[];
     };
 
 export type PackageScanDeps = {
@@ -90,13 +93,23 @@ export type PackageScanDeps = {
   videos(channelId: string): Promise<Array<{ videoId: string; title: string; privacyStatus: string; publishAt: string | null }>>;
   /** BL-243: the copy's videos a sync found removed on YouTube, with when (ISO). Absent: none known. */
   removedVideos?(channelId: string): Promise<Array<{ videoId: string; removedAt: string }>>;
-  /** BL-243: when the channel's videos were last synced (ISO), or null when never. Absent: null. */
-  videosSyncedAt?(channelId: string): Promise<string | null>;
+  /** BL-243: when a channel sync last completed the removed check (ISO), or null when never. Absent: null. */
+  videosCheckedAt?(channelId: string): Promise<string | null>;
   /** Whether `workspace` is usable now (`local-path-validation`, re-run at use time). */
   validateWorkspace(workspace: string): Promise<{ ok: true } | { ok: false; reason: string }>;
   join(...parts: string[]): string;
   clock: { now(): Date };
 };
+
+/** BL-243: the upload record's `uploadedAt` (ISO), when it carries a valid one. */
+function uploadedAtOfRecord(text: string): string | null {
+  try {
+    const value = (JSON.parse(stripBom(text)) as { uploadedAt?: unknown } | null)?.uploadedAt;
+    return typeof value === "string" && Number.isFinite(Date.parse(value)) ? value : null;
+  } catch {
+    return null;
+  }
+}
 
 /** `04 Videos/<MM Month>/<MMDD Vn>/Vn_release.json` (the shared `workspace-videos` walk). */
 function findManifests(deps: PackageScanDeps, workspace: string): Promise<string[]> {
@@ -193,8 +206,12 @@ export function createPackageScan(deps: PackageScanDeps) {
     }
     const recordFile = await deps.resolveFile(workspace, `${folder}/${youtubeRecordFileName(pkg.video)}`);
     let record: { videoId: string } | null = null;
+    // BL-243: when the record says the upload happened (`uploadedAt`), so the newest of two deleted uploads speaks for a slot.
+    let uploadedAt: string | null = null;
     if (recordFile) {
-      record = await deps.readText(recordFile.path, MANIFEST_MAX_BYTES).then(parseUploadRecord, () => null);
+      const text = await deps.readText(recordFile.path, MANIFEST_MAX_BYTES).catch(() => null);
+      record = text === null ? null : parseUploadRecord(text);
+      if (record && text !== null) uploadedAt = uploadedAtOfRecord(text);
     }
     const sameTitle = videos.find((video) => video.title === pkg.title);
     const problems = packageProblems(
@@ -226,10 +243,11 @@ export function createPackageScan(deps: PackageScanDeps) {
       problems: state === "deleted_on_youtube" ? [{ code: VIDEO_DELETED_ON_YOUTUBE }] : record ? [] : problems,
       youtube: record
         ? removedAt !== undefined
-          ? { videoId: record.videoId, privacyStatus: null, publishAt: null, removedAt }
-          : { videoId: record.videoId, privacyStatus: uploaded?.privacyStatus ?? null, publishAt: uploaded?.publishAt ?? null, removedAt: null }
+          ? { videoId: record.videoId, privacyStatus: null, publishAt: null, removedAt, uploadedAt }
+          : { videoId: record.videoId, privacyStatus: uploaded?.privacyStatus ?? null, publishAt: uploaded?.publishAt ?? null, removedAt: null, uploadedAt }
         : null,
-      existsOnChannel: !record ? null : removedAt !== undefined ? false : uploaded ? true : null,
+      // BL-243 review: "on the channel" only as of a removed check that ran (checkedAt); a removed mark is proof on its own.
+      existsOnChannel: !record ? null : removedAt !== undefined ? false : uploaded && copy.checkedAt !== null ? true : null,
       pkg,
     };
   }
@@ -247,7 +265,7 @@ export function createPackageScan(deps: PackageScanDeps) {
         // BL-243 (ADR 0063): an unreadable mark is "none known" (such packages read as before) and an unreadable sync time null --
         // never a failed scan.
         deps.removedVideos ? deps.removedVideos(channelId).catch(() => []) : Promise.resolve([]),
-        deps.videosSyncedAt ? deps.videosSyncedAt(channelId).catch(() => null) : Promise.resolve(null),
+        deps.videosCheckedAt ? deps.videosCheckedAt(channelId).catch(() => null) : Promise.resolve(null),
         findManifests(deps, workspace),
       ]);
       const copy: Copy = { videos, removed: new Map(removed.map((video) => [video.videoId, video.removedAt])), checkedAt };
