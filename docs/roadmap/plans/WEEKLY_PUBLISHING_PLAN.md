@@ -358,6 +358,7 @@ Fixed values: channel `UC1`, last video sync `2026-11-04T08:00:00.000Z`; V73 rec
   `"2026-11-04T08:00:00.000Z"`. V74 -> `uploaded_private`, `existsOnChannel` true, `youtube.removedAt` null. V75 -> `uploaded_unknown`,
   `existsOnChannel` null. A ready package without a record -> `existsOnChannel` null.
 - **AC-WP-67** Scan boundaries: the mark cleared (the video reappeared) -> V73 is `uploaded_private` again, `existsOnChannel` true;
+  (review) the removed list and the sync time unreadable -> the scan still answers `ok`, V73 `uploaded_unknown`, `checkedAt` null;
   a channel never synced -> `checkedAt` null (V75 still `uploaded_unknown`); a ready package whose title equals the REMOVED video's
   title has no `same_title_on_channel`.
 - **AC-WP-68** Shared slots: deleted V73 and ready V80 name slot `s1` -> V80 stays `ready` with no problem, V73 stays
@@ -367,10 +368,14 @@ Fixed values: channel `UC1`, last video sync `2026-11-04T08:00:00.000Z`; V73 rec
   publishAt: null }` with its package; deleted V73 and ready V80 on `s1` -> V80's `packaged` (no video id); deleted V73 and V80 not
   ready without its video file -> no progress for `s1`. A done upload row of `vid73` (V73, `publishAt` set, verified) with
   `removedVideoIds = {vid73}` -> the slot stays as the packages say (deleted alone: the deleted state; with V80: V80's `packaged`).
+  (review) The removed list unreadable, deleted V73 with V80 without its video file on `s1`, the done row of `vid73` -> still no
+  progress for `s1` (the deleted packages' own ids count).
 - **AC-WP-70** Plan view, `packaged` stage: the deleted progress -> `approval` `awaiting_package`, `fingerprint` null, `status`
   `failed`, `statusCode` `video_deleted_on_youtube`, `youtubePublishAt` null; a standing approval made with V73's fingerprint (with
   or without `vid73`) does not count -- `slotDecisions` gives `pending` for the slot; the `slot` stage keeps BL-225's rule (the
   approval stands; the plan schedule's guard keeps the date off). A vetoed slot whose progress is the deleted state can be removed.
+  (review) Approved at 15:00 JST, moved by the agent to 12:00 JST, then deleted: `changedAfterApproval` null, and at 04:00Z the
+  slot is released (not held to the old 06:00Z).
 - **AC-WP-71** Plan schedule: a done row of `vid73` (removed) with an approved or a vetoed slot -> no read, no write, `changed` 0; the
   same row with the mark cleared -> written as before. Upload approval: a done (or failed) row of `vid73` on `s1` does not hold `s1`; one
   under way still does.
@@ -393,6 +398,6 @@ channel yet.
 - AC-WP-71: `src/lib/publishing/plan-schedule.test.ts` and `upload-runner.test.ts` (`holdsSlot`).
 - AC-WP-72: `src/lib/publishing/calendar-reads.test.ts`; AC-WP-73: `src/lib/channel-sync/services.test.ts`; AC-WP-74:
   `src/components/weekly-plan-model.test.ts` (texts: the ui-text key tests).
-- Interpretations: a progress row of the deleted package's own video id is dropped even when the removed list cannot be read; a
-  failed removed-list read skips the plan schedule's rows of that channel (fail closed) but lets the upload approval and the
-  progress read go on as before (nothing removed known).
+- Interpretations (one rule, ADR 0063 §4): an unreadable removed list is "none known" for display and holds (the scan, the
+  approval's slot holds, the progress -- which reuses the shown scan's ids plus every deleted package's own video id); only the
+  plan schedule's writes fail closed (the channel's rows are skipped that pass).

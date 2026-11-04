@@ -26,6 +26,13 @@ weekly-plan slot offered deleted V73 for approval, and the deleted upload kept i
 3. **Agents see it** in the calendar (`missingOnChannel`, per-item fields) and in `channel_video_list` (`videoIds` with
    `removed` / `notFound`). Additive: Agent API 4.17.0, Producer API 1.17.0, Factory API 1.43.0.
 
+4. **One rule for an unreadable removed list.** For display and holds it means "none known": the scan goes on (such packages read
+   as `uploaded_unknown`, `checkedAt` null when the sync time cannot be read either), the approval's slot holds stay as before,
+   and the plan progress uses the removed ids of the very scan it shows (never a second, fresher read) together with every deleted
+   package's own video id. Only the plan schedule's writes fail closed: it skips the channel's rows for that pass. The constant
+   `video_deleted_on_youtube` lives once, in `src/lib/shared-video-presence/` (pure; the scan, the plan, the progress and the
+   plan screen use it).
+
 ## Consequences
 
 - Read-only: no YouTube call is added. The mark is only as fresh as the last complete owner sync (`checkedAt`).

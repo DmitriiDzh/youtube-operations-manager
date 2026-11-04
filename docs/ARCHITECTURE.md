@@ -4938,7 +4938,9 @@ FO-REQ-0040; owner msgs 3511/3534; plan `docs/roadmap/plans/WEEKLY_PUBLISHING_PL
 - **BL-243 (ADR 0063) -- a video deleted on YouTube.** `markSharedSlots` leaves `deleted_on_youtube` packages out of every slot
   group (they hold nothing, are never marked). `progressOfSlots` uses a deleted package only when no other package names its slot:
   `failed` with `VIDEO_DELETED_ON_YOUTUBE_CODE`, the video id, no date; `progressWithUploads` drops rows whose video id is removed
-  (`removedVideoIdsOf`, or the deleted package's own id). `fingerprintOf` is null for that progress, so `packageReady` is false
+  (`removedVideoIdsForProgress`: the ids the shown scan read, `removedVideoIds` on its result, plus every deleted package's own
+  video id; the code is `src/lib/shared-video-presence/`). A deleted-only slot reports no `changedAfterApproval` (nothing to
+  approve; its release is not held to an old approval's time). `fingerprintOf` is null for that progress, so `packageReady` is false
   (`awaiting_package`) and no standing approval covers it (`slotDecisions` -> `pending`); a vetoed such slot is removable. The plan
   schedule skips rows of removed videos (dep `removedVideoIds`, a failed read skips the channel); the approval's `heldSlots` uses
   `holdsSlot` (a finished row of a removed video holds no slot; its video number stays held). Agents: calendar `missingOnChannel`,
