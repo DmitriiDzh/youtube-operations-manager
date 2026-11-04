@@ -1,5 +1,5 @@
 import { createPackageScanCore, createPublishingSettingsCore, listChannelUploads } from "@/lib/publishing";
-import type { PlanSlotProgress, PublishingPlansPorts } from "@/lib/publishing-plans";
+import type { PlanProgressMap, PlanSlotProgress, PublishingPlansPorts } from "@/lib/publishing-plans";
 import { deletedVideosBySlot, progressOfSlots, progressWithUploads } from "./progress";
 
 // BL-225 stage 2 (ADR 0051, AGENTS.md §M): the plan's `progress` port from the publishing module's package scan, given to the plan's
@@ -28,34 +28,21 @@ async function packagesOf(channelId: string): Promise<Cached | null> {
   }
 }
 
-/** BL-243: the `uploadedAt` an upload row's steps recorded (ms), or null. */
-function uploadedAtOfSteps(stepsJson: string): number | null {
-  try {
-    const at = Date.parse(String((JSON.parse(stepsJson) as { uploadedAt?: unknown }).uploadedAt ?? ""));
-    return Number.isFinite(at) ? at : null;
-  } catch {
-    return null;
-  }
-}
-
 /** The plan's progress port: the packages (`built`, `packaged`) and this computer's uploads (`uploading`, `failed`, `scheduled`, `published`). */
-export const publishingPlanProgress: NonNullable<PublishingPlansPorts["progress"]> = async (channelId, _weekStart, slotIds): Promise<Map<string, PlanSlotProgress>> => {
+export const publishingPlanProgress: NonNullable<PublishingPlansPorts["progress"]> = async (channelId, _weekStart, slotIds): Promise<PlanProgressMap> => {
   const found = await packagesOf(channelId);
   // BL-225 stage 3: this computer's upload rows name their slot -- uploading, failed (with the step's code), scheduled, published.
   const rows = await listChannelUploads(channelId).catch(() => []);
-  // BL-243: of two deleted packages naming a slot, the one uploaded last speaks (its record's uploadedAt, else the upload time its
-  // row here recorded -- the same kind of time, never the row's creation).
-  const rowUploadTimes = new Map<string, number>();
-  for (const row of rows) {
-    const at = row.videoId ? uploadedAtOfSteps(row.stepsJson) : null;
-    if (row.videoId && at !== null) rowUploadTimes.set(row.videoId, Math.max(rowUploadTimes.get(row.videoId) ?? Number.NEGATIVE_INFINITY, at));
-  }
-  const fromPackages = found ? progressOfSlots(found.packages, slotIds, found.synthetic, rowUploadTimes) : new Map<string, PlanSlotProgress>();
+  // BL-243: of two deleted packages naming a slot, the one uploaded last speaks (`uploadTimeOf`: record, else the row's own time).
+  const fromPackages = found ? progressOfSlots(found.packages, slotIds, found.synthetic, rows) : new Map<string, PlanSlotProgress>();
   // BL-243: the rows of deleted videos and packages say nothing -- as the scan shown read them (no scan: none known).
-  return progressWithUploads(fromPackages, rows, slotIds, Date.now(), {
+  const result: PlanProgressMap = progressWithUploads(fromPackages, rows, slotIds, Date.now(), {
     removedVideoIds: found?.removedVideoIds ?? new Set<string>(),
-    deletedVideosBySlot: found ? deletedVideosBySlot(found.packages) : new Map(),
+    deletedVideosBySlot: found ? deletedVideosBySlot(found.packages, rows) : new Map(),
   });
+  // Review round 4: say so when the packages could not be read (save()'s approval rule then keeps the older, stricter one).
+  if (!found) result.packagesUnavailable = true;
+  return result;
 };
 
 export { deletedVideosBySlot, progressOfPackage, progressOfSlots, progressOfUploadRow, progressWithUploads } from "./progress";

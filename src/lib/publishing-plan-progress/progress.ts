@@ -2,7 +2,8 @@
 // composition between `publishing` (the scan) and `publishing-plans` (the plan), so neither feature module imports the other. Pure:
 // the scanned packages and the channel's AI-flag setting come in; the slot statuses go out.
 
-import { isDeletedOnYoutube, VIDEO_DELETED_ON_YOUTUBE_CODE, type PlanSlotProgress } from "@/lib/publishing-plans";
+import type { PlanSlotProgress } from "@/lib/publishing-plans";
+import { isDeletedOnYoutube, VIDEO_DELETED_ON_YOUTUBE } from "@/lib/shared-video-presence";
 import type { ScannedPackage } from "@/lib/publishing";
 
 /** How far a status got, to pick one package when two name the same slot (the furthest one wins). */
@@ -24,7 +25,7 @@ export function progressOfPackage(scanned: ScannedPackage, channelSyntheticMedia
   switch (scanned.state) {
     case "deleted_on_youtube":
       status = "failed";
-      code = VIDEO_DELETED_ON_YOUTUBE_CODE;
+      code = VIDEO_DELETED_ON_YOUTUBE;
       break;
     case "ready":
       status = "packaged";
@@ -65,25 +66,20 @@ export function progressOfPackage(scanned: ScannedPackage, channelSyntheticMedia
 /**
  * The progress of each asked slot from every package of the channel that names it (v2 `slotId`). BL-243: a package whose video
  * was deleted on YouTube speaks for its slot only when no other package names it (even one with no progress yet); of two such
- * packages the one uploaded last speaks -- by the upload time of each: its record's `uploadedAt`, else the `uploadedAt` its upload
- * row here recorded (`rowUploadTimes`: video id -> that time; the same moment the runner writes into the record), never a row's
- * creation time; unknown for both: the first in the scan's order.
+ * packages the one uploaded last speaks -- by `uploadTimeOf` (its record's `uploadedAt`, else the one its upload row here
+ * recorded; never a row's creation time); unknown for both: the first in the scan's order.
  */
 export function progressOfSlots(
   packages: readonly ScannedPackage[],
   slotIds: readonly string[],
   channelSyntheticMedia: boolean,
-  rowUploadTimes: ReadonlyMap<string, number> = new Map()
+  uploadRows: readonly UploadRowForProgress[] = []
 ): Map<string, PlanSlotProgress> {
   const wanted = new Set(slotIds);
   const result = new Map<string, PlanSlotProgress>();
   const named = new Set<string>();
   const deleted = new Map<string, { progress: PlanSlotProgress; at: number }>();
-  const uploadedAtOf = (scanned: ScannedPackage): number => {
-    const fromRecord = scanned.youtube?.uploadedAt ? Date.parse(scanned.youtube.uploadedAt) : NaN;
-    if (Number.isFinite(fromRecord)) return fromRecord;
-    return (scanned.youtube && rowUploadTimes.get(scanned.youtube.videoId)) ?? Number.NEGATIVE_INFINITY;
-  };
+  const uploadedAtOf = (scanned: ScannedPackage): number => uploadTimeOf(scanned.youtube, rowOfVideo(uploadRows, scanned.youtube?.videoId)) ?? Number.NEGATIVE_INFINITY;
   for (const scanned of packages) {
     const slotId = scanned.pkg?.slotId;
     if (!slotId || !wanted.has(slotId)) continue;
@@ -107,14 +103,38 @@ export function progressOfSlots(
 /** BL-243: a package the scan found deleted on YouTube, as the upload rows of its slot are judged against it. */
 export type DeletedOnSlot = { video: string; manifestSha256: string | null; uploadedAt: number | null };
 
-/** BL-243: the packages the scan found deleted on YouTube, by the slot they name. */
-export function deletedVideosBySlot(packages: readonly ScannedPackage[]): Map<string, DeletedOnSlot[]> {
+/**
+ * BL-243 (review round 4): THE upload time of a video -- the record's `uploadedAt`, else the `uploadedAt` its upload row recorded
+ * (the runner writes the same moment into both); null when neither says. The one rule every comparison here uses.
+ */
+export function uploadTimeOf(record: { uploadedAt?: string | null } | null | undefined, row: { stepsJson: string } | null | undefined): number | null {
+  const fromRecord = record?.uploadedAt ? Date.parse(record.uploadedAt) : NaN;
+  if (Number.isFinite(fromRecord)) return fromRecord;
+  if (!row) return null;
+  try {
+    const at = Date.parse(String((JSON.parse(row.stepsJson) as { uploadedAt?: unknown }).uploadedAt ?? ""));
+    return Number.isFinite(at) ? at : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The newest upload row of a video id, or null. */
+function rowOfVideo(rows: readonly UploadRowForProgress[], videoId: string | undefined): UploadRowForProgress | null {
+  if (!videoId) return null;
+  let newest: UploadRowForProgress | null = null;
+  for (const row of rows) if (row.videoId === videoId && (!newest || row.createdAt.getTime() > newest.createdAt.getTime())) newest = row;
+  return newest;
+}
+
+/** BL-243: the packages the scan found deleted on YouTube, by the slot they name (with `uploadTimeOf` of each). */
+export function deletedVideosBySlot(packages: readonly ScannedPackage[], uploadRows: readonly UploadRowForProgress[] = []): Map<string, DeletedOnSlot[]> {
   const out = new Map<string, DeletedOnSlot[]>();
   for (const p of packages) {
     const slotId = p.pkg?.slotId;
     if (p.state !== "deleted_on_youtube" || !slotId || !p.pkg) continue;
-    const at = p.youtube?.uploadedAt ? Date.parse(p.youtube.uploadedAt) : NaN;
-    out.set(slotId, [...(out.get(slotId) ?? []), { video: p.pkg.video, manifestSha256: p.manifestSha256, uploadedAt: Number.isFinite(at) ? at : null }]);
+    const uploadedAt = uploadTimeOf(p.youtube, rowOfVideo(uploadRows, p.youtube?.videoId));
+    out.set(slotId, [...(out.get(slotId) ?? []), { video: p.pkg.video, manifestSha256: p.manifestSha256, uploadedAt }]);
   }
   return out;
 }
@@ -179,7 +199,7 @@ export function progressOfUploadRow(row: UploadRowForProgress, nowMs: number): P
     : steps.publishAt === "skipped_too_soon" ? "publish_at_too_soon"
     : steps.planSync?.result === "refused" || steps.planSync?.result === "mismatch" ? `plan_${steps.planSync.action ?? "change"}_failed`
     // BL-243: the plan found the video gone from YouTube (confirmed by the sync's mark) -- a failure with its code, never healthy.
-    : steps.planSync?.result === "video_missing" ? VIDEO_DELETED_ON_YOUTUBE_CODE
+    : steps.planSync?.result === "video_missing" ? VIDEO_DELETED_ON_YOUTUBE
     : null;
   if (failedStep) return { status: "failed", code: failedStep, videoId: row.videoId };
   // The date counts only once it is on the video: written by the upload (or an old row's insert), or by the plan afterwards.
@@ -196,6 +216,9 @@ export function progressOfUploadRow(row: UploadRowForProgress, nowMs: number): P
  * count, and only that package's own tries: the row names its manifest, and -- when the fresh manifest is byte-identical to a
  * deleted one's -- the row is newer than the deleted upload (its record's `uploadedAt`, or the removed video's own row here); with
  * neither time known such rows are all ignored. So no try of the deleted video ever counts.
+ * Review round 4 (whatever the package's state now -- also after the owner moved its `Vn_youtube.json` away for a re-upload): a
+ * row of a removed video blocks every row of the same number and manifest on that slot created up to its upload time
+ * (`uploadTimeOf`, else its creation); only later rows -- a new try -- count.
  */
 export function progressWithUploads(
   fromPackages: Map<string, PlanSlotProgress>,
@@ -208,12 +231,17 @@ export function progressWithUploads(
   const wanted = new Set(slotIds);
   const removed = exclude.removedVideoIds ?? new Set<string>();
   const deletedBySlot = exclude.deletedVideosBySlot ?? new Map<string, readonly DeletedOnSlot[]>();
-  // The time of each slot's newest row of a removed video, by video number (a cutoff for a byte-identical fresh manifest).
+  // The cutoff of each slot's rows of a removed video, by number (any manifest: for a byte-identical fresh one) and by number and
+  // manifest (for every row of that try): the removed row's upload time, else its creation.
   const removedRowAt = new Map<string, number>();
+  const removedTryAt = new Map<string, number>();
+  const tryKey = (row: UploadRowForProgress) => `${row.slotId}|${row.video}|${row.manifestSha256 ?? ""}`;
   for (const row of rows) {
     if (!row.slotId || row.videoId === null || !removed.has(row.videoId) || row.video === undefined) continue;
+    const at = Math.max(uploadTimeOf(null, row) ?? Number.NEGATIVE_INFINITY, row.createdAt.getTime());
     const key = `${row.slotId}|${row.video}`;
-    removedRowAt.set(key, Math.max(removedRowAt.get(key) ?? Number.NEGATIVE_INFINITY, row.createdAt.getTime()));
+    removedRowAt.set(key, Math.max(removedRowAt.get(key) ?? Number.NEGATIVE_INFINITY, at));
+    removedTryAt.set(tryKey(row), Math.max(removedTryAt.get(tryKey(row)) ?? Number.NEGATIVE_INFINITY, at));
   }
   /** Whether a row of a deleted package's number is the fresh current package's own try (see above). */
   const freshTry = (row: UploadRowForProgress, own: PlanSlotProgress | undefined, deletedHere: readonly DeletedOnSlot[]): boolean => {
@@ -228,6 +256,8 @@ export function progressWithUploads(
   for (const row of rows) {
     if (!row.slotId || !wanted.has(row.slotId)) continue;
     if (row.videoId !== null && removed.has(row.videoId)) continue;
+    // Review round 4: an older row of a removed video's try (same number and manifest) says nothing, whatever the package's state.
+    if (row.video !== undefined && row.createdAt.getTime() <= (removedTryAt.get(tryKey(row)) ?? Number.NEGATIVE_INFINITY)) continue;
     const own = fromPackages.get(row.slotId);
     const deletedHere = deletedBySlot.get(row.slotId) ?? [];
     if (row.video !== undefined && deletedHere.some((d) => d.video === row.video) && !freshTry(row, own, deletedHere)) continue;
