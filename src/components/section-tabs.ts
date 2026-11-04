@@ -21,6 +21,9 @@ export const MEDIA_TABS = [
   { value: "images", labelKey: "tabs.media.images", kind: "image" },
   { value: "storyboards", labelKey: "tabs.media.storyboards", kind: null },
   { value: "video", labelKey: "tabs.media.video", kind: "video" },
+  // BL-241 (CLIP_REVIEWS_PLAN.md item 5, owner msgs 4010/4011; moved from Content, owner msg 4025): the Producer's clips for
+  // review, approved or returned by the owner.
+  { value: "clips", labelKey: "tabs.media.clips", kind: null },
 ] as const;
 
 /** Where `/media` and the former Plans / Jobs addresses lead. */
@@ -42,8 +45,6 @@ export const CONTENT_TABS = [
   { value: "publishing", labelKey: "tabs.content.publishing" },
   // BL-225 (WEEKLY_PUBLISHING_PLAN.md stage 1 item 6, owner msg 3534): the week's publishing plan, approved by the owner.
   { value: "week-plan", labelKey: "tabs.content.weekPlan" },
-  // BL-241 (CLIP_REVIEWS_PLAN.md item 5, owner msgs 4010/4011): the Producer's clips for review, approved or returned by the owner.
-  { value: "clips", labelKey: "tabs.content.clips" },
   { value: "calendar", labelKey: "tabs.content.calendar" },
   { value: "streams", labelKey: "tabs.content.streams" },
 ] as const;

@@ -5121,5 +5121,7 @@ On branch `feature/bl-229-music-library`. No schema change; no YouTube call; not
   computer's file to match the stored size and SHA-256. The video route re-resolves the path and streams with
   `local-file-response` to loopback requests only.
 - **Surfaces:** Producer API 1.15.0 (`session-deps.ts` wires `createClipReviewsProducerCore`); owner routes under
-  `/api/channels/[channelId]/clip-reviews` (the only callers of `createClipReviewsOwnerCore`, pinned by a source scan).
+  `/api/channels/[channelId]/clip-reviews` (the only callers of `createClipReviewsOwnerCore`, pinned by a source scan). The owner's screen is Media → «Клипы»
+  (`MEDIA_TABS`, mounted by `production-panel.tsx` in its own error boundary, badge from `clip-reviews-badge.ts`); it moved from
+  Content on 2026-11-04 (owner msg 4025), and `/content/clips` redirects there.
 - **Limitations:** RISK-149.

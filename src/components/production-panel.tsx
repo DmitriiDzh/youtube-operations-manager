@@ -44,6 +44,8 @@ import { usd as geminiUsd } from "./gemini-media-settings";
 import { FeatureErrorBoundary } from "./feature-error-boundary";
 import { MusicLibraryCard } from "./music-library-card";
 import { ChannelVoicesPanel } from "./channel-voices-panel";
+import { ClipReviewsPanel } from "./clip-reviews-panel";
+import { useClipsWaiting } from "./clip-reviews-badge";
 export { MEDIA_TABS, SERVERS_TABS };
 
 /** The balance is a RunPod call: on open, on demand, and once a minute while Production is open. */
@@ -308,17 +310,25 @@ export function MediaPanel({
   const setTab = onTabChange ?? setOwnTab;
   // BL-184 stage 3: one plans list and one job log, filtered by the kind of the tab shown (switching kind tabs keeps them mounted).
   const kind = MEDIA_TABS.find((item) => item.value === tab)?.kind ?? null;
-  const kindTab = tab !== "storyboards";
-  // What waits for the owner under each tab: plans' tracks by kind (from the one plans list), storyboards in review.
+  const kindTab = kind !== null;
+  // What waits for the owner under each tab: plans' tracks by kind (from the one plans list), storyboards in review, clips.
   const [plansWaiting, setPlansWaiting] = useState<Partial<Record<PlanMediaKind, number>>>({});
   const [storyboardsWaiting, setStoryboardsWaiting] = useState(0);
-  const badges: Partial<Record<MediaTab, number>> = { music: plansWaiting.audio ?? 0, images: plansWaiting.image ?? 0, video: plansWaiting.video ?? 0, storyboards: storyboardsWaiting };
+  const clipsWaiting = useClipsWaiting(activeChannelId);
+  const badges: Partial<Record<MediaTab, number>> = { music: plansWaiting.audio ?? 0, images: plansWaiting.image ?? 0, video: plansWaiting.video ?? 0, storyboards: storyboardsWaiting, clips: clipsWaiting };
   return (
     <div className="max-w-5xl space-y-6">
       <NowRunningLine activeChannelId={activeChannelId} sessionsHref={sessionsHref} />
       <TabBar tabs={MEDIA_TABS} current={tab} onSelect={setTab} badges={badges} />
       <div className={tab === "storyboards" ? "space-y-6" : "hidden"}>
         <StoryboardsPanel channelId={activeChannelId} active={tab === "storyboards" && !paused} onOpen={(id) => onOpenStoryboard?.(id)} onWaiting={setStoryboardsWaiting} />
+      </div>
+      {/* BL-241 (ADR 0061, AGENTS.md §M; moved from Content, owner msg 4025): the clips for review in their own boundary -- Media
+          works without them. */}
+      <div className={tab === "clips" ? "space-y-6" : "hidden"}>
+        <FeatureErrorBoundary label={`${t("nav.media")} — ${t("tabs.media.clips")}`}>
+          <ClipReviewsPanel channelId={activeChannelId} visible={tab === "clips" && !paused} />
+        </FeatureErrorBoundary>
       </div>
       <div className={kindTab ? "space-y-6" : "hidden"}>
         {tab === "video" ? <StoryboardVideoLinks channelId={activeChannelId} active={!paused} onOpen={(id) => onOpenStoryboard?.(id, "video")} /> : null}
