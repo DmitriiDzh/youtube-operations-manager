@@ -6,7 +6,7 @@ import { createPublishingPlansCore, emptyDocument } from "@/lib/sync-gateway/pub
 import type { PublishingPlansDocument } from "@/lib/sync-gateway";
 import { agentSurface, createPublishingPlansService, ownerSurface } from "./services";
 import { decisionForRow } from "@/lib/publishing/plan-schedule";
-import { isDomainError, type PlanAuditEntry, type PlanSlotPackage, type PlanSlotProgress, type PlanView } from "./contracts";
+import { isDomainError, type PlanAuditEntry, type PlanProgressMap, type PlanSlotPackage, type PlanSlotProgress, type PlanView } from "./contracts";
 
 // BL-242 acceptance (docs/roadmap/plans/WEEKLY_PUBLISHING_PLAN.md "BL-242", AC-WP-50..56; ADR 0062). Expected values by hand:
 // Asia/Tokyo is UTC+9 (15:00 JST on 2026-10-26 is 06:00Z); 2026-10-26 is a Monday; the clock stands at 2026-10-25T07:00Z, before
@@ -35,7 +35,7 @@ const pkg = (over: Partial<PlanSlotPackage> = {}): PlanSlotPackage => ({
 });
 const packaged = (over: Partial<PlanSlotPackage> = {}, videoId: string | null = null): PlanSlotProgress => ({ status: "packaged", code: null, videoId, package: pkg(over) });
 
-function harness(options: { progressFails?: () => boolean } = {}) {
+function harness(options: { progressFails?: () => boolean; packagesUnavailable?: () => boolean } = {}) {
   const clock = { now: new Date("2026-10-25T07:00:00Z") };
   const bytes = new Map<string, Uint8Array>();
   const store: DocumentByteStore = { loadDocumentBytes: async (k) => bytes.get(k) ?? null, saveDocumentBytes: async (k, b) => void bytes.set(k, b) };
@@ -58,7 +58,10 @@ function harness(options: { progressFails?: () => boolean } = {}) {
     progress: async (_c, _w, ids) => {
       progressCalls.push([...ids].sort());
       if (options.progressFails?.()) throw new Error("the package scan failed");
-      return new Map([...progress].filter(([id]) => ids.includes(id)));
+      const answer: PlanProgressMap = new Map([...progress].filter(([id]) => ids.includes(id)));
+      // BL-243 round 4: the production port's flag for a package scan that could not be read.
+      if (options.packagesUnavailable?.()) answer.packagesUnavailable = true;
+      return answer;
     },
   });
   return { service, audits, core, progress, clock, progressCalls };
@@ -620,4 +623,21 @@ test("BL-243 AC-WP-77: save() reads progress only for removals or a standing pac
   assert.equal(slotStage.progressCalls.length, start + 1, "slot stage: only the returned view's read");
   await slotStage.service.save({ channelId: CH, weekStart: WEEK, removeSlotIds: ["s2"] }, "worker");
   assert.deepEqual(slotStage.progressCalls.slice(start + 1)[0], ["s2"], "a removal: the removed slots are read, as before");
+});
+
+// BL-243 review round 4, item 2 (AC-WP-77): the workspace is unavailable, so the progress holds no packages (flag
+// packagesUnavailable). save() must not read that as "no approval counts": it keeps the older, stricter rule -- the approved slot
+// stays unremovable (slot_approved) and a retime lists it in `unlocked`.
+test("BL-243 AC-WP-77: with the package scan unavailable save() keeps the older rule (no approval silently dropped)", async () => {
+  let unavailable = false;
+  const h = harness({ packagesUnavailable: () => unavailable });
+  await week(h);
+  h.progress.set("s1", packaged({ video: "V73" }, "vid73"));
+  await approve(h, "s1");
+  unavailable = true;
+  h.progress.delete("s1"); // no package known
+  const error = await refusal(h.service.save({ channelId: CH, weekStart: WEEK, removeSlotIds: ["s1"] }, "worker"));
+  assert.deepEqual(((error as { details?: { refused?: Array<{ slotId: string; reason: string }> } }).details?.refused ?? []).map((r) => [r.slotId, r.reason]), [["s1", "slot_approved"]]);
+  const retimed = await h.service.save({ channelId: CH, weekStart: WEEK, slots: [slot("s1", "2026-10-26", "12:00")] }, "worker");
+  assert.deepEqual(retimed.unlocked, ["s1"]);
 });

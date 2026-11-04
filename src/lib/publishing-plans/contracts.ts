@@ -1,5 +1,4 @@
 import { DomainError, isDomainError } from "@/lib/shared-domain";
-import { isDeletedOnYoutubeStatus, VIDEO_DELETED_ON_YOUTUBE } from "@/lib/shared-video-presence";
 import type { PublishingPlanActor, PublishingPlanApprovalStage, PublishingPlanPackageFingerprint, PublishingPlansCore, PublishingPlanSlotContent } from "@/lib/sync-gateway";
 
 export { DomainError, isDomainError };
@@ -50,16 +49,15 @@ export type PlanSlotPackage = {
   manifestSha256: string | null;
 };
 
-/**
- * BL-243 (WEEKLY_PUBLISHING_PLAN.md BL-243): the `failed` code of a slot whose only package names a video the channel sync found
- * removed on YouTube. Such a progress has no fingerprint: nothing to approve, and an earlier approval of it does not count.
- */
-export const VIDEO_DELETED_ON_YOUTUBE_CODE = VIDEO_DELETED_ON_YOUTUBE;
+// BL-243: a slot whose only package names a video deleted on YouTube is `failed` with `VIDEO_DELETED_ON_YOUTUBE`
+// (`@/lib/shared-video-presence`, `isDeletedOnYoutube`): no fingerprint, nothing to approve.
 
-/** BL-243: the progress says the slot's video was deleted on YouTube. */
-export function isDeletedOnYoutube(progress: Pick<PlanSlotProgress, "status" | "code"> | null | undefined): boolean {
-  return progress ? isDeletedOnYoutubeStatus(progress.status, progress.code) : false;
-}
+/**
+ * BL-243 review round 4: the progress port's answer. `packagesUnavailable` -- the package scan could not be read (the workspace is
+ * unavailable, say): the map holds only what the upload rows say, so a caller that must know the packages (save()'s approval
+ * rule) falls back to its older, stricter rule.
+ */
+export type PlanProgressMap = Map<string, PlanSlotProgress> & { packagesUnavailable?: true };
 
 /** What the packages and uploads report for a slot (stages 2-3); null/absent: nothing yet. */
 export type PlanSlotProgress = {
@@ -209,7 +207,7 @@ export type PublishingPlansPorts = {
    * Stages 2-3: what the packages and uploads say of the slots, by slotId. Absent: nothing (stage 1). BL-242 round 3: one read may
    * cover several weeks; `weekStart` is then "" (the production port reads the channel's packages and uploads whatever it says).
    */
-  progress?(channelId: string, weekStart: string, slotIds: string[]): Promise<Map<string, PlanSlotProgress>>;
+  progress?(channelId: string, weekStart: string, slotIds: string[]): Promise<PlanProgressMap>;
 };
 
 /**

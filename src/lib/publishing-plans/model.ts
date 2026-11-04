@@ -3,7 +3,8 @@
 import { createHash } from "node:crypto";
 import type { PublishingPlanApprovalStage, PublishingPlanDecision, PublishingPlanMeta, PublishingPlanPackageFingerprint, PublishingPlanSlot, PublishingPlanSlotContent } from "@/lib/sync-gateway";
 import { formatZonedDateAndTime, zonedInstant } from "@/lib/zoned-time";
-import { isDeletedOnYoutube, type PlanSlotProgress, type PlanSlotView, type PlanState, type PlanSummary, type PlanView, type ReplacedSlot } from "./contracts";
+import { isDeletedOnYoutube } from "@/lib/shared-video-presence";
+import { type PlanSlotProgress, type PlanSlotView, type PlanState, type PlanSummary, type PlanView, type ReplacedSlot } from "./contracts";
 
 const DAY_MS = 86_400_000;
 

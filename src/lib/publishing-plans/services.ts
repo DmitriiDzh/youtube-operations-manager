@@ -1,7 +1,8 @@
 import { parseWithSchema } from "@/lib/shared-domain";
 import type { PublishingPlanDecision, PublishingPlanMeta, PublishingPlanPackageFingerprint, PublishingPlanSlot, PublishingPlansSnapshot } from "@/lib/sync-gateway";
 import { isValidIanaTimezone } from "@/lib/zoned-time";
-import { DEFAULT_APPROVAL_STAGE, DomainError, isDeletedOnYoutube, PUBLISHING_PLAN_LIMITS, type PlanSaveRefusal, type PlanSlotDecision, type PlanSlotProgress, type PlanSummary, type PlanView, type PublishingPlanActor, type PublishingPlanApprovalStage, type PublishingPlansPorts, type ReplacedSlot } from "./contracts";
+import { isDeletedOnYoutube } from "@/lib/shared-video-presence";
+import { DEFAULT_APPROVAL_STAGE, DomainError, PUBLISHING_PLAN_LIMITS, type PlanSaveRefusal, type PlanSlotDecision, type PlanProgressMap, type PlanSlotProgress, type PlanSummary, type PlanView, type PublishingPlanActor, type PublishingPlanApprovalStage, type PublishingPlansPorts, type ReplacedSlot } from "./contracts";
 import { addDays, approvalStandsOn, contentHashOf, contentOf, decisionsForStage, decisionStateOf, instantOf, isCalendarDate, isMonday, planViewOf, slotViewOf, standingPackageApprovalOf, standingVetoOf, decisionOrder, lastApprovedPackageOf } from "./model";
 import { approvalStageInputSchema, getPlanInputSchema, listPlansInputSchema, ownerDecisionInputSchema, PLAN_LIST_DEFAULT_LIMIT, savePlanInputSchema } from "./schemas";
 
@@ -153,14 +154,15 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
       const standing = existing ? [...current.values()].filter((slot) => approvalStandsOn(stage, existing.timeZone, contentOf(slot), decisionsFor(slot.slotId))) : [];
       // (A removal in the packaged stage also needs the view: an approval superseded by a retime still blocks under the older rule.)
       const needsViews = stage === "packaged" && existing !== null && (standing.length > 0 || toRemove.length > 0);
-      let progress: Map<string, PlanSlotProgress> | null = null;
+      let progress: PlanProgressMap | null = null;
       if (ports.progress && (needsViews || toRemove.length > 0)) {
         // Without a standing approval only the removed slots' views are consulted (every other slot is unapproved either way).
         const ids = needsViews && standing.length > 0 ? [...new Set([...current.keys(), ...toRemove])] : toRemove;
         progress = await ports.progress(channelId, weekStart, ids).catch(() => null);
       }
+      // Round 4: a progress read without the packages (scan unavailable) says nothing of approvals -- the older rule then.
       const views =
-        needsViews && existing && progress
+        needsViews && existing && progress && !progress.packagesUnavailable
           ? new Map(planViewOf({ stage, channelId, meta: existing, slots: [...current.values()], decisions, progress, now }).slots.map((view) => [view.slotId, view]))
           : null;
       // BL-242: else an approval that counts in the channel's stage stands on the slot (whatever its package now).
