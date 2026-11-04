@@ -398,7 +398,8 @@ Fixed values: channel `UC1`, last video sync `2026-11-04T08:00:00.000Z`; V73 rec
 - **AC-WP-77** (review round 2) Packaged stage, s1 approved with V73/`vid73`, then deleted: retiming s1 unlocks nothing and removing
   s1 succeeds; with the live package the retime lists s1 in `unlocked` and the removal is refused `slot_approved`. (Round 3) The
   rule's progress read happens only with removals or a standing packaged approval: a save otherwise reads progress once (the
-  returned view), the slot stage reads the removed slots only.
+  returned view), the slot stage reads the removed slots only. (Round 4) The package scan unavailable (`packagesUnavailable`) -> the
+  older rule: the approved slot is refused `slot_approved` and a retime lists it in `unlocked`.
 - **AC-WP-78** (review round 2) `channels.removed_check_at` (schema v118) moves only on a sync with `removedCheck: "done"`; a
   package's `checkedAt` is that time; with none, a visible video is `existsOnChannel` null (never true), a removed one still false.
 - **AC-WP-79** (review round 3) YouTube's `not_found` without the removed mark (or with the list unreadable) -> `refused`, the row
@@ -407,6 +408,13 @@ Fixed values: channel `UC1`, last video sync `2026-11-04T08:00:00.000Z`; V73 rec
 - **AC-WP-80** (review round 3) Checked at 2026-11-04T08:00Z: vid74 published 2026-11-04T09:00Z -> `existsOnChannel` null; published
   exactly at the check -> true. The calendar's top-level `checkedAt` is the channel's removed-check time (older than
   `lastSyncedAt` after a skipped check; null when none).
+- **AC-WP-81** (review round 4) The owner moved V73's record away (the package is `ready`, no deleted package names `s1`); an old
+  failed try of V73 (manifest `m`, 10-20) and the removed row of `vid73` (manifest `m`, uploaded 10-24T02:00Z) -> `s1` is
+  `packaged`, approvable (not the old failure); a try created 10-24T01:00Z is still that try; a new one (11-05) counts; another
+  manifest's row is not that try.
+- **AC-WP-82** (review round 4) `agent_video_list` / `factory_video_list`: check 2026-11-04T08:00Z; V73 (`vid73` removed 11-03T19:54Z)
+  -> `existsOnChannel` false, `removedAt` set, state still `published`; V74 (published 11-01) -> true; V75 (published after the
+  check) -> null; no video id -> null; the copy unreadable -> null / null.
 - **AC-WP-74** Screens: the packages list labels the state («Удалён на YouTube» / "Deleted on YouTube") and the problem; the plan slot
   shows «Ролик удалён на YouTube» / "Video deleted on YouTube" and no approve button; texts in en and ru.
 
@@ -420,6 +428,9 @@ channel yet.
 - AC-WP-71: `src/lib/publishing/plan-schedule.test.ts` and `upload-runner.test.ts` (`holdsSlot`).
 - AC-WP-72: `src/lib/publishing/calendar-reads.test.ts`; AC-WP-73: `src/lib/channel-sync/services.test.ts`; AC-WP-74:
   `src/components/weekly-plan-model.test.ts` (texts: the ui-text key tests).
+- Review round 4: AC-WP-81 `progress.test.ts` (and `uploadTimeOf`), AC-WP-82 `video-projects.test.ts`, the shared rule
+  `shared-video-presence/index.test.ts`, the calendar's one channel read `calendar-reads.test.ts`, AC-WP-77 (scan unavailable)
+  `packaged-approval.test.ts`.
 - Review round 3: AC-WP-79 `plan-schedule.test.ts` and `progress.test.ts`; AC-WP-80 `package-scan.test.ts` and
   `calendar-reads.test.ts`; AC-WP-75/76/77 extended in place.
 - Review round 2: AC-WP-75/76 `progress.test.ts`, AC-WP-77 `packaged-approval.test.ts`, AC-WP-78 `channel-sync/services.test.ts`,

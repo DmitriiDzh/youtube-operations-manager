@@ -20,18 +20,26 @@ weekly-plan slot offered deleted V73 for approval, and the deleted upload kept i
    says `existsOnChannel` (true / false / null) and `checkedAt`, so an agent can tell a confirmation from an unknown.
    `checkedAt` is when a sync last COMPLETED the removed check (`channels.removed_check_at`, schema v118, additive, set only on
    `removedCheck: "done"`) -- `lastSyncedAt` also moves on syncs that skip the check. `true` needs that check AND the video's
-   YouTube `publishedAt` not later than it (the copy keeps no "first seen" time; a video published or uploaded after the check is
-   `null`); a removed mark is proof on its own (`false`). The calendar also gives `checkedAt` at its top, next to
-   `missingOnChannel`.
+   YouTube `publishedAt` not later than it; a removed mark is proof on its own (`false`). Trade-off (review round 4, kept small):
+   the `videos` table keeps no "first seen" or created-at time, and `snippet.publishedAt` becomes the publish time when a private
+   video goes public -- so a video checked while private and published after the check reads `null` (unknown) until the next
+   completed check. It is never wrongly `true`. The rule is one shared function (`existsOnChannelOf` in
+   `src/lib/shared-video-presence/`), used by the scan and by the video list (`agent_video_list` / `factory_video_list`, which
+   gain `existsOnChannel` and `removedAt`). The calendar gives `checkedAt` at its top, from the same channel row it hands to the
+   scan, so the top and the items agree.
 2. **A deleted video holds and dates nothing.** It holds no slot (scan marks, the approval's `heldSlots`), it is the slot's
    progress only when no other package names the slot (`failed` + `video_deleted_on_youtube`; of two deleted packages the one
    uploaded last -- the record's `uploadedAt`, else the `uploadedAt` its upload row recorded, never a row's creation time), and no
    upload row of a deleted package (its number on that slot, an older failed try included) overrides that progress. A fresh
    package with the same number counts only its own tries: rows naming its manifest, and when that manifest is byte-identical to
    the deleted one's, only rows newer than the deleted upload (the record's `uploadedAt`, or the removed video's row); with neither
-   time known, none -- so no try of the deleted video ever counts. It has no fingerprint: nothing to approve, no approval covers it -- in the view, in
+   time known, none -- so no try of the deleted video ever counts. Whatever the package's state (also after the owner moved its
+   record away for a re-upload), a row of a removed video blocks every row of the same number and manifest on that slot created up
+   to its upload time; only later rows -- a new try -- count. One time rule everywhere: `uploadTimeOf` (the record's
+   `uploadedAt`, else the row's recorded `uploadedAt`). It has no fingerprint: nothing to approve, no approval covers it -- in the view, in
    `slotDecisions` and in `save()` (removing or retiming the slot is not blocked by that approval; `save()` reads the progress for
-   this only when slots are removed or, in the packaged stage, an approval stands). The plan schedule never DATES
+   this only when slots are removed or, in the packaged stage, an approval stands; when the progress says the package scan was
+   unavailable -- `packagesUnavailable` -- it keeps the older, stricter rule). The plan schedule never DATES
    it. Its video NUMBER stays held for uploads, so a wrong mark can never cause a second upload of the same video.
 3. **Agents see it** in the calendar (`missingOnChannel`, per-item fields) and in `channel_video_list` (`videoIds` with
    `removed` / `notFound`). Additive: Agent API 4.17.0, Producer API 1.17.0, Factory API 1.43.0.

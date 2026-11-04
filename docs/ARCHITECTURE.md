@@ -4943,7 +4943,10 @@ FO-REQ-0040; owner msgs 3511/3534; plan `docs/roadmap/plans/WEEKLY_PUBLISHING_PL
   as removed (`removedVideoIds` on its result) and every row of a deleted package's number on its slot (`deletedVideosBySlot`; a
   fresh same-number package counts only rows naming its own manifest, and for a byte-identical manifest only rows after the deleted
   upload); of two deleted packages the newest upload speaks (record `uploadedAt`, else the row's recorded `uploadedAt`). A row with
-  planSync `video_missing` is `failed` `video_deleted_on_youtube`. The code is `src/lib/shared-video-presence/`. `save()` counts approvals as the view does in
+  planSync `video_missing` is `failed` `video_deleted_on_youtube`. Round 4: a removed video's row blocks every older row of its try
+  (number and manifest) on the slot whatever the package's state; one time rule `uploadTimeOf`; the progress port flags
+  `packagesUnavailable` (save() then keeps the older rule); `existsOnChannelOf` (shared) also feeds the video list's
+  `existsOnChannel` / `removedAt`. The code is `src/lib/shared-video-presence/`. `save()` counts approvals as the view does in
   the packaged stage (a deleted package's slot can be removed or retimed freely). A deleted-only slot reports no `changedAfterApproval` (nothing to
   approve; its release is not held to an old approval's time). `fingerprintOf` is null for that progress, so `packageReady` is false
   (`awaiting_package`) and no standing approval covers it (`slotDecisions` -> `pending`); a vetoed such slot is removable. The plan
