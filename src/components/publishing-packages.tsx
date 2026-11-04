@@ -25,7 +25,7 @@ type PackageRow = {
   thumbnailPath: string | null;
   sizeBytes: number | null;
   durationSeconds: number | null;
-  state: "not_ready" | "ready" | "uploaded_private" | "scheduled" | "published" | "uploaded_unknown";
+  state: "not_ready" | "ready" | "uploaded_private" | "scheduled" | "published" | "uploaded_unknown" | "deleted_on_youtube";
   problems: Problem[];
   youtube: { videoId: string } | null;
   manifestSha256: string | null;
@@ -40,6 +40,8 @@ const STATE_STYLE: Record<PackageRow["state"], string> = {
   scheduled: "bg-indigo-950/60 text-indigo-200",
   published: "bg-zinc-800 text-zinc-400",
   uploaded_unknown: "bg-amber-950/40 text-amber-200",
+  // BL-243: the channel sync found the uploaded video removed on YouTube.
+  deleted_on_youtube: "bg-red-950/50 text-red-300",
 };
 
 /** The planned day at the channel's UTC publish time, with the owner's own time for that day. */
@@ -264,7 +266,7 @@ export function PublishingPackages({ channelId, visible }: { channelId: string |
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-mono text-xs text-zinc-500">{p.video ?? p.manifestPath}</span>
                       <span className={`rounded px-1.5 py-0.5 text-[11px] ${STATE_STYLE[p.state]}`}>{t(`publishingPackages.state.${p.state}` as UiTextKey)}</span>
-                      {p.youtube && (
+                      {p.youtube && p.state !== "deleted_on_youtube" && (
                         <a href={`https://www.youtube.com/watch?v=${encodeURIComponent(p.youtube.videoId)}`} target="_blank" rel="noreferrer" className="text-xs text-zinc-400 underline hover:text-zinc-200">
                           {t("publishingPackages.openOnYoutube")}
                         </a>

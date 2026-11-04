@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { canApprove, changedField, defaultWeek, duplicateWarningOf, stageOf, strayDateOf, lengthLabel, mondayOf, pipelineOf, replacedToPull, shiftWeek, slotsToApprove, splitVetoed, tileCounts, wallParts, weekCoverageLine, zonedParts, type PlanSlotDto } from "./weekly-plan-model";
+import { canApprove, changedField, deletedOnYoutube, defaultWeek, duplicateWarningOf, stageOf, strayDateOf, lengthLabel, mondayOf, pipelineOf, replacedToPull, shiftWeek, slotsToApprove, splitVetoed, tileCounts, wallParts, weekCoverageLine, zonedParts, type PlanSlotDto } from "./weekly-plan-model";
 
 // BL-225 (WEEKLY_PUBLISHING_PLAN.md stage 1 item 6, AC-WP-15): the screen's pure rules. Values by hand: 2026-10-26 is a Monday,
 // 2026-11-01 its Sunday; 18:00 in Tokyo is 09:00Z, which is 10:00 in Berlin (CET, UTC+1, after 25.10); 23:30Z on 31.10 is 08:30 on Sunday 1.11 in Tokyo.
@@ -203,4 +203,16 @@ test("round 3: the duplicate video number warning is shown only on a flagged app
   const ru = (await import("@/lib/ui-text/locales/ru/content")).content as Record<string, string>;
   assert.equal(ru["weekPlan.duplicateVideo"], "Ещё один пакет с тем же номером — дата не ставится");
   assert.equal(en["weekPlan.duplicateVideo"], "Another package has the same video number — no date is set");
+});
+
+// BL-243 (WEEKLY_PUBLISHING_PLAN.md AC-WP-74): a slot whose only package names a video deleted on YouTube shows «Ролик удалён на
+// YouTube», has no approve button and is not in «Одобрить все готовые»; any other failure keeps its code.
+test("BL-243 AC-WP-74: the deleted slot is recognised, not approvable, not in the week's approval", () => {
+  const deleted = slot({ slotId: "d", status: "failed", statusCode: "video_deleted_on_youtube", approval: "awaiting_package", videoId: "vid73", contentHash: "hd" });
+  assert.equal(deletedOnYoutube(deleted), true);
+  assert.equal(deletedOnYoutube(slot({ status: "failed", statusCode: "thumbnail_failed" })), false);
+  assert.equal(deletedOnYoutube(slot({ status: "packaged", statusCode: "video_deleted_on_youtube" })), false);
+  assert.equal(canApprove(deleted), false);
+  assert.deepEqual(slotsToApprove({ slots: [deleted, slot({ slotId: "r", approval: "needs_approval", contentHash: "hr" })] }), [{ slotId: "r", contentHash: "hr" }]);
+  assert.deepEqual(pipelineOf(deleted)?.map((step) => step.state), ["done", "done", "done", "failed", "todo"]);
 });

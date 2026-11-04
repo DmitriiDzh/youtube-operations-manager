@@ -91,6 +91,9 @@ export function defaultWeek(plans: readonly Pick<PlanSummaryDto, "weekStart" | "
 /** A slot the owner can approve now: not vetoed, not released, needing approval (BL-242: never one waiting for its package). */
 export const canApprove = (s: Pick<PlanSlotDto, "vetoed" | "released" | "approval">): boolean => !s.vetoed && !s.released && s.approval === "needs_approval";
 
+/** BL-243: the slot's only package names a video the channel sync found removed on YouTube («Ролик удалён на YouTube»). */
+export const deletedOnYoutube = (s: Pick<PlanSlotDto, "status" | "statusCode">): boolean => s.status === "failed" && s.statusCode === "video_deleted_on_youtube";
+
 /**
  * The slots «Одобрить неделю» (BL-242 `packaged` stage: «Одобрить все готовые») covers: those the owner can approve now -- each
  * with the hash the screen shows.
