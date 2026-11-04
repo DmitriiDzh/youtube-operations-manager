@@ -90,6 +90,23 @@ export function standingPackageApprovalOf(decisions: readonly PublishingPlanDeci
   return last?.kind === "approved" ? (last as PublishingPlanDecision & { package: PublishingPlanPackageFingerprint }) : null;
 }
 
+/**
+ * BL-242 review #1 (WEEKLY_PUBLISHING_PLAN.md BL-242 D, ADR 0062 §4): in a channel a video number belongs to the NEWEST standing
+ * owner approval that names it (counter, then time, then id). Given every slot of the channel (any plan) with its decisions, the
+ * ids of the standing approvals that hold their video number; an older one on another slot does not count, on the screen or for
+ * the uploads, so two approvals can never name the same video.
+ */
+export function winningApprovalIds(slots: ReadonlyArray<{ timeZone: string; content: PublishingPlanSlotContent; decisions: readonly PublishingPlanDecision[] }>): Set<string> {
+  const byVideo = new Map<string, PublishingPlanDecision>();
+  for (const { timeZone, content, decisions } of slots) {
+    const standing = standingPackageApprovalOf(decisionsForStage(decisions, "packaged"), timeZone, content);
+    if (!standing) continue;
+    const before = byVideo.get(standing.package.video);
+    if (!before || byTime(before, standing) < 0) byVideo.set(standing.package.video, standing);
+  }
+  return new Set([...byVideo.values()].map((d) => d.id));
+}
+
 /** BL-242: whether an approval stands on the slot's content now (a save that changes it lists it in `unlocked`). */
 export function approvalStandsOn(stage: PublishingPlanApprovalStage, timeZone: string, content: PublishingPlanSlotContent, decisions: readonly PublishingPlanDecision[]): boolean {
   const counted = decisionsForStage(decisions, stage);
@@ -135,6 +152,8 @@ export function decisionStateOf(decisions: readonly PublishingPlanDecision[], co
 export function slotViewOf(args: {
   /** BL-242 (ADR 0062 §1): the channel's approval stage. */
   stage: PublishingPlanApprovalStage;
+  /** BL-242 review #1: the approvals that hold their video number in the channel (`winningApprovalIds`); absent: every one does. */
+  winners?: ReadonlySet<string>;
   meta: PublishingPlanMeta;
   slot: PublishingPlanSlot;
   decisions: readonly PublishingPlanDecision[];
@@ -155,7 +174,9 @@ export function slotViewOf(args: {
   let superseded: PublishingPlanDecision | null;
   if (args.stage === "packaged") {
     const current = fingerprintOf(args.progress);
-    const standing = standingPackageApprovalOf(counted, meta.timeZone, content);
+    const own = standingPackageApprovalOf(counted, meta.timeZone, content);
+    // An approval whose video number a newer approval of another slot holds does not count here.
+    const standing = own && (!args.winners || args.winners.has(own.id)) ? own : null;
     if (standing && fingerprintCovers(standing.package, current)) {
       contentHash = standing.contentHash;
       approval = "approved";
@@ -232,6 +253,7 @@ export const needsOwner = (s: PlanSlotView): boolean => !s.vetoed && !s.released
 
 export function planViewOf(args: {
   stage: PublishingPlanApprovalStage;
+  winners?: ReadonlySet<string>;
   channelId: string;
   meta: PublishingPlanMeta;
   slots: readonly PublishingPlanSlot[];
@@ -245,6 +267,7 @@ export function planViewOf(args: {
     .map((slot) =>
       slotViewOf({
         stage: args.stage,
+        ...(args.winners ? { winners: args.winners } : {}),
         meta: args.meta,
         slot,
         decisions: args.decisions.filter((d) => d.slotId === slot.slotId),

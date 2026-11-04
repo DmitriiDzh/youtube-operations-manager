@@ -251,8 +251,12 @@ empty, then packaged). The owner answered «да 1», «да 2а» to the propos
   fingerprint names it -- its video id, or (no video id approved) its manifest SHA-256.
 - **D. A slot takes an uploaded video (2а).** The worker points the package's `slotId` at the new slot (operations side). The slot
   then shows that package with its video id; the owner's one approval names the video id, and the plan schedule finds the
-  finished upload by that video id even though the upload row names the old slot. Two live approved slots naming the same video
-  id schedule nothing (ambiguous: `pending`). The old slot, once released, says nothing (BL-225).
+  finished upload by that video id even though the upload row names the old slot. A video number belongs to the **newest**
+  standing owner approval naming it in the channel (counter, then time, then id); an older approval of another slot naming the same
+  video number does not count, on the screen or for the uploads -- that slot shows `needs_approval` / `awaiting_package` by its own
+  package. A veto names a package only from its slot's approval that still stands and still holds the video number; otherwise it
+  reaches only the upload rows made with its slot id. Two approved slots naming one video id schedule nothing (`pending`) only as
+  a defensive fallback. The old slot, once released, says nothing (BL-225).
 - `slot` stage: exactly the BL-225/BL-240 behaviour (hashes, decisions, uploads unchanged).
 - Agent API: `approval` gains `awaiting_package`, the plan state gains `planned`, the plan view gains `approvalStage` (additive,
   minor bump).
@@ -293,5 +297,9 @@ Tested against fakes only; nothing verified by eye or on the real plan yet.
   are unchanged.
 - Interpretations: an approval made before the upload (no video id) also covers the video that upload made of the approved manifest
   (otherwise every approved slot would need the owner again once uploaded); `planned` is also the state when some live slots are
-  approved and the rest wait for packages; approvals made in one stage do not count in the other (both directions); a veto carries
-  the slot's last fingerprinted approval, whatever its content now, so it unschedules a video the slot took over by its package.
+  approved and the rest wait for packages; approvals made in one stage do not count in the other (both directions); the newest
+  approval naming a video number wins (D); a veto carries a package only from a standing, winning approval (D). A slot id used
+  in two plans (possible only before review #2 of BL-225) is `pending`/`vetoed` without a package: its veto reaches only upload
+  rows made with that id.
+- AC-WP-60/61 (review of BL-242): `packaged-approval.test.ts` -- the package moving from A to B, the newer approval winning, the
+  veto's reach.

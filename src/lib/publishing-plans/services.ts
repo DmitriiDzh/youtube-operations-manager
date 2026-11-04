@@ -2,7 +2,7 @@ import { parseWithSchema } from "@/lib/shared-domain";
 import type { PublishingPlanDecision, PublishingPlanMeta, PublishingPlanSlot, PublishingPlansSnapshot } from "@/lib/sync-gateway";
 import { isValidIanaTimezone } from "@/lib/zoned-time";
 import { DEFAULT_APPROVAL_STAGE, DomainError, PUBLISHING_PLAN_LIMITS, type PlanSaveRefusal, type PlanSlotDecision, type PlanSummary, type PlanView, type PublishingPlanActor, type PublishingPlanApprovalStage, type PublishingPlansPorts, type ReplacedSlot } from "./contracts";
-import { addDays, approvalStandsOn, contentHashOf, contentOf, decisionsForStage, decisionStateOf, instantOf, isCalendarDate, isMonday, planViewOf, slotViewOf, standingPackageApprovalOf, standingVetoOf } from "./model";
+import { addDays, approvalStandsOn, contentHashOf, contentOf, decisionsForStage, decisionStateOf, instantOf, isCalendarDate, isMonday, planViewOf, slotViewOf, standingPackageApprovalOf, standingVetoOf, winningApprovalIds } from "./model";
 import { approvalStageInputSchema, getPlanInputSchema, listPlansInputSchema, ownerDecisionInputSchema, PLAN_LIST_DEFAULT_LIMIT, savePlanInputSchema } from "./schemas";
 
 // BL-225 (FO-REQ-0040 items 1, 5, 6; WEEKLY_PUBLISHING_PLAN.md stage 1 items 3-5; ADR 0051): what agents and the owner may do with a
@@ -23,6 +23,18 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
 
   /** BL-242 (ADR 0062 §1): the channel's approval stage; a document without one is in `packaged`. */
   const stageOf = (snapshot: PublishingPlansSnapshot): PublishingPlanApprovalStage => snapshot.approvalStage ?? DEFAULT_APPROVAL_STAGE;
+
+  /**
+   * BL-242 review #1 (ADR 0062 §4): the approvals that hold their video number, from every plan of the channel -- the same set for
+   * the screen and the uploads, so they cannot disagree.
+   */
+  const winnersOf = (snapshot: PublishingPlansSnapshot): Set<string> =>
+    winningApprovalIds(
+      Object.values(snapshot.slots).flatMap((slot) => {
+        const meta = snapshot.plans[slot.weekStart];
+        return meta ? [{ timeZone: meta.timeZone, content: contentOf(slot), decisions: Object.values(snapshot.decisions).filter((d) => d.weekStart === slot.weekStart && d.slotId === slot.slotId) }] : [];
+      })
+    );
 
   function slotsOf(snapshot: PublishingPlansSnapshot, weekStart: string): PublishingPlanSlot[] {
     return Object.values(snapshot.slots).filter((s) => s.weekStart === weekStart);
@@ -48,7 +60,7 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
         continue;
       }
       const progress = ports.progress ? ((await ports.progress(channelId, slot.weekStart, [slotId])).get(slotId) ?? null) : null;
-      const view = slotViewOf({ stage: stageOf(snapshot), meta, slot, decisions: decisionsOf(snapshot, slot.weekStart).filter((d) => d.slotId === slotId), progress, now: ports.now() });
+      const view = slotViewOf({ stage: stageOf(snapshot), winners: winnersOf(snapshot), meta, slot, decisions: decisionsOf(snapshot, slot.weekStart).filter((d) => d.slotId === slotId), progress, now: ports.now() });
       out.set(slotId, { slotId, weekStart: slot.weekStart, publishAt: slot.publishAt, video: view.package?.video ?? null, vetoed: view.vetoed !== null, released: view.released, found: true });
     }
     return out;
@@ -58,7 +70,7 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
     const slots = slotsOf(snapshot, meta.weekStart);
     const progress = ports.progress ? await ports.progress(channelId, meta.weekStart, slots.map((s) => s.slotId)) : new Map();
     const replaced = await replacedOf(channelId, snapshot, slots.flatMap((s) => (s.replacesSlotId ? [s.replacesSlotId] : [])));
-    return planViewOf({ stage: stageOf(snapshot), channelId, meta, slots, decisions: decisionsOf(snapshot, meta.weekStart), progress, now: ports.now(), replaced });
+    return planViewOf({ stage: stageOf(snapshot), winners: winnersOf(snapshot), channelId, meta, slots, decisions: decisionsOf(snapshot, meta.weekStart), progress, now: ports.now(), replaced });
   }
 
   async function requirePlan(channelId: string, weekStart: string): Promise<{ snapshot: PublishingPlansSnapshot; meta: PublishingPlanMeta }> {
@@ -378,11 +390,12 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
   async function slotDecisions(channelId: string): Promise<Map<string, PlanSlotDecision>> {
     const snapshot = await ports.store.read(channelId);
     const stage = stageOf(snapshot);
+    const winners = winnersOf(snapshot);
     const decisions = new Map<string, PlanSlotDecision>();
     const seen = new Set<string>();
     for (const meta of Object.values(snapshot.plans)) {
       const planDecisions = decisionsOf(snapshot, meta.weekStart);
-      const view = planViewOf({ stage, channelId, meta, slots: slotsOf(snapshot, meta.weekStart), decisions: planDecisions, progress: new Map(), now: ports.now() });
+      const view = planViewOf({ stage, winners, channelId, meta, slots: slotsOf(snapshot, meta.weekStart), decisions: planDecisions, progress: new Map(), now: ports.now() });
       for (const slot of view.slots) {
         if (seen.has(slot.slotId)) {
           // Review #2: an id in two plans schedules nothing, but a veto in either of them still stops it.
@@ -399,19 +412,15 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
             meta.timeZone,
             contentOf(slot)
           );
-          const fingerprint = standing ? { ...standing.package } : null;
-          // Review: an agent's edit never clears a veto -- so the veto names the slot's last fingerprinted approval whatever the slot's
-          // content now (a video it took over keeps losing its date even after the slot was moved).
-          const lastApproved = planDecisions
-            .filter((d) => d.slotId === slot.slotId && d.kind === "approved" && d.package !== undefined)
-            .sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0) || Date.parse(a.at) - Date.parse(b.at) || a.id.localeCompare(b.id))
-            .at(-1);
+          // Review #1/#2 (ADR 0062 §4): only an approval that still stands AND still holds its video number in the channel counts --
+          // for the date and for a veto's reach; otherwise a veto reaches only the rows made with this slot id.
+          const fingerprint = standing && winners.has(standing.id) ? { ...standing.package } : null;
           decisions.set(
             slot.slotId,
             slot.released
               ? { kind: "pending" }
               : slot.vetoed
-                ? { kind: "vetoed", ...(lastApproved?.package ? { package: { ...lastApproved.package } } : {}) }
+                ? { kind: "vetoed", ...(fingerprint ? { package: fingerprint } : {}) }
                 : fingerprint
                   ? { kind: "approved", publishAt: slot.publishAtUtc, package: fingerprint }
                   : { kind: "pending" }

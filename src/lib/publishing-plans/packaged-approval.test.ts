@@ -5,6 +5,7 @@ import { createAutomergeCore, type DiscardedDocumentBackupStore, type DocumentBy
 import { createPublishingPlansCore, emptyDocument } from "@/lib/sync-gateway/publishing-plans";
 import type { PublishingPlansDocument } from "@/lib/sync-gateway";
 import { agentSurface, createPublishingPlansService, ownerSurface } from "./services";
+import { decisionForRow } from "@/lib/publishing/plan-schedule";
 import { isDomainError, type PlanAuditEntry, type PlanSlotPackage, type PlanSlotProgress, type PlanView } from "./contracts";
 
 // BL-242 acceptance (docs/roadmap/plans/WEEKLY_PUBLISHING_PLAN.md "BL-242", AC-WP-50..56; ADR 0062). Expected values by hand:
@@ -295,14 +296,95 @@ test("AC-WP-56: a slot never approved in the packaged stage is pending; the plan
   assert.deepEqual(plan.counts, { slots: 2, approved: 2, needsApproval: 0, vetoed: 0 });
 });
 
-// Review: an agent's edit never clears a veto (BL-225) -- the vetoed slot still names the video its last approval named, so the plan
-// schedule removes that video's date even after an agent moved the slot.
-test("AC-WP-56: a veto still names the last approved package after an agent changed the slot", async () => {
+// Independent review of BL-242 (2026-11-04), written before the fix. Rule (WEEKLY_PUBLISHING_PLAN.md BL-242 D, ADR 0062 §4): in a
+// channel, a video number belongs to the NEWEST standing owner approval that names it; an older approval on another slot naming the
+// same video number does not count -- on the screen or for the uploads. A veto names a package only from its slot's approval that
+// still stands and still holds that video number; otherwise it reaches only upload rows made with its slot id.
+const V73 = { video: "V73" };
+/** A finished upload made for slot s1 (the slot its package first named), video vid1, manifest aa. */
+const rowOfS1 = { slotId: "s1", videoId: "vid1", manifestSha256: AA };
+
+test("AC-WP-60: the package (V73, uploaded as vid1) moves from A to B and B is approved -> A is approved nowhere; vid1 gets B's time", async () => {
   const h = harness();
   await week(h);
-  h.progress.set("s1", packaged({}, "vid1"));
+  h.progress.set("s1", packaged(V73, "vid1"));
   await approve(h, "s1");
-  await h.service.save({ channelId: CH, weekStart: WEEK, slots: [slot("s1", "2026-10-26", "18:00")] }, "worker");
-  await h.service.decide(CH, WEEK, { action: "veto", slots: [{ slotId: "s1" }] }, "u1");
-  assert.deepEqual((await h.service.slotDecisions(CH)).get("s1"), { kind: "vetoed", package: { video: "V64", manifestSha256: AA, videoId: "vid1" } });
+  h.progress.delete("s1");
+  h.progress.set("s2", packaged(V73, "vid1"));
+  await approve(h, "s2");
+  const plan = await get(h);
+  assert.equal(slotOf(plan, "s1").approval, "awaiting_package");
+  assert.equal(slotOf(plan, "s2").approval, "approved");
+  const decisions = await h.service.slotDecisions(CH);
+  assert.deepEqual(decisions.get("s1"), { kind: "pending" }, "A's older approval of V73 does not count");
+  assert.deepEqual(decisions.get("s2"), { kind: "approved", publishAt: "2026-10-27T09:00:00.000Z", package: { video: "V73", manifestSha256: AA, videoId: "vid1" } });
+  assert.deepEqual(decisionForRow(rowOfS1, decisions), decisions.get("s2"), "the plan schedule dates vid1 at B's time (18:00 JST = 09:00Z)");
+});
+
+test("AC-WP-61: a newer approval on X naming V73 beats A's earlier pre-upload approval; re-approving A makes A the winner", async () => {
+  const h = harness();
+  await week(h);
+  h.progress.set("s1", packaged(V73));
+  await approve(h, "s1"); // A: (V73, aa, null)
+  h.progress.delete("s1");
+  h.progress.set("s2", packaged(V73, "vid1"));
+  await approve(h, "s2"); // X: (V73, aa, vid1), newer
+  h.progress.delete("s2");
+  h.progress.set("s1", packaged(V73, "vid1")); // the package is back on A
+  let plan = await get(h);
+  assert.equal(slotOf(plan, "s1").approval, "needs_approval", "A's approval would cover vid1, but X's is newer");
+  let decisions = await h.service.slotDecisions(CH);
+  assert.deepEqual(decisions.get("s1"), { kind: "pending" });
+  assert.equal(decisions.get("s2")?.kind, "approved");
+  assert.equal((decisionForRow(rowOfS1, decisions) as { publishAt?: string }).publishAt, "2026-10-27T09:00:00.000Z");
+
+  await approve(h, "s1");
+  plan = await get(h);
+  assert.equal(slotOf(plan, "s1").approval, "approved");
+  decisions = await h.service.slotDecisions(CH);
+  assert.deepEqual(decisions.get("s1"), { kind: "approved", publishAt: "2026-10-26T06:00:00.000Z", package: { video: "V73", manifestSha256: AA, videoId: "vid1" } });
+  assert.deepEqual(decisions.get("s2"), { kind: "pending" }, "X's approval is now the older one");
+  assert.deepEqual(decisionForRow(rowOfS1, decisions), decisions.get("s1"));
+});
+
+test("review #2: a veto names a package only from an approval that still stands and still holds the video number", async () => {
+  // Revoked before the veto: no package.
+  const revoked = harness();
+  await week(revoked);
+  revoked.progress.set("s1", packaged({}, "vid1"));
+  await approve(revoked, "s1");
+  const shown = slotOf(await get(revoked), "s1");
+  await revoked.service.decide(CH, WEEK, { action: "revoke", slots: [{ slotId: "s1", contentHash: shown.contentHash }] }, "u1");
+  await revoked.service.decide(CH, WEEK, { action: "veto", slots: [{ slotId: "s1" }] }, "u1");
+  assert.deepEqual((await revoked.service.slotDecisions(CH)).get("s1"), { kind: "vetoed" });
+
+  // Changed by an agent after the approval (it no longer stands): no package.
+  const edited = harness();
+  await week(edited);
+  edited.progress.set("s1", packaged({}, "vid1"));
+  await approve(edited, "s1");
+  await edited.service.save({ channelId: CH, weekStart: WEEK, slots: [slot("s1", "2026-10-26", "18:00")] }, "worker");
+  await edited.service.decide(CH, WEEK, { action: "veto", slots: [{ slotId: "s1" }] }, "u1");
+  assert.deepEqual((await edited.service.slotDecisions(CH)).get("s1"), { kind: "vetoed" });
+
+  // Its video number went to a newer approval of another slot: vetoing the old slot never touches that video.
+  const moved = harness();
+  await week(moved);
+  moved.progress.set("s1", packaged(V73, "vid1"));
+  await approve(moved, "s1");
+  moved.progress.delete("s1");
+  moved.progress.set("s2", packaged(V73, "vid1"));
+  await approve(moved, "s2");
+  await moved.service.decide(CH, WEEK, { action: "veto", slots: [{ slotId: "s1" }] }, "u1");
+  const decisions = await moved.service.slotDecisions(CH);
+  assert.deepEqual(decisions.get("s1"), { kind: "vetoed" });
+  assert.equal(decisionForRow(rowOfS1, decisions)?.kind, "approved", "vid1 keeps B's date");
+
+  // Still standing and the winner: the veto names it (AC-WP-56 case).
+  const standing = harness();
+  await week(standing);
+  standing.progress.set("s1", packaged({}, "vid1"));
+  await approve(standing, "s1");
+  await standing.service.decide(CH, WEEK, { action: "veto", slots: [{ slotId: "s1" }] }, "u1");
+  assert.deepEqual((await standing.service.slotDecisions(CH)).get("s1"), { kind: "vetoed", package: { video: "V64", manifestSha256: AA, videoId: "vid1" } });
 });

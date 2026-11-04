@@ -28,8 +28,13 @@ cannot leave its week, and the plan schedule finds a finished upload only by the
    date step give a date only to the approved manifest; the plan schedule dates a finished upload only when the fingerprint names
    it -- by video id when the approval carried one, else by manifest SHA-256.
 4. **A slot takes an uploaded video by its package.** The worker re-points the package's `slotId`; the owner's approval then names
-   the video id, and the plan schedule finds the upload by that video id, whatever slot its row was made for. Two live approved
-   slots naming the same video id schedule nothing.
+   the video id, and the plan schedule finds the upload by that video id, whatever slot its row was made for. Within a channel a
+   video number (`V73`) belongs to the **newest** standing owner approval that names it (counter, then time, then id): an older
+   approval on another slot naming the same video number does not count -- on the screen (that slot shows `needs_approval` or
+   `awaiting_package` by its own package) or for the uploads -- so two approvals never name one video (review of BL-242,
+   2026-11-04). A veto names a package only from its slot's approval that still stands and still holds the video number; otherwise
+   it reaches only the upload rows made with its slot id. Two approved slots naming the same video id stay `pending` in the plan
+   schedule only as a defensive fallback.
 
 ## Alternatives
 
