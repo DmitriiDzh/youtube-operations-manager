@@ -90,3 +90,21 @@ test("AGENTS.md §F: the shared video translations writer is created only by liv
   }
   assert.deepEqual(callers.sort(), ["lib/live-localizations/index.ts", "lib/publishing/index.ts", "lib/shared-video-localizations/index.ts"]);
 });
+
+// BL-242 (ADR 0062 §1, AC-WP-50): the approval stage is the owner's alone -- no MCP server, agent endpoint or MCP route names the
+// stage setter or its route, and the sync family's setter is called only by this module.
+test("AC-WP-50: no MCP path names the approval-stage setter; only publishing-plans calls the sync family's setter", async () => {
+  const roots = ["mcp", "app/api/mcp", "lib/agent-mcp-endpoint", "lib/producer-mcp-endpoint", "lib/factory-mcp-endpoint", "lib/agent-operations"];
+  const offenders: string[] = [];
+  for (const root of roots) {
+    for (const file of await files(path.join(SRC, root))) {
+      if (/\bsetApprovalStage\b|approval-stage|approvalStageInputSchema/.test(await readFile(file, "utf8"))) offenders.push(path.relative(SRC, file));
+    }
+  }
+  assert.deepEqual(offenders, []);
+  const callers: string[] = [];
+  for (const file of await files(SRC)) {
+    if (/\.setApprovalStage\(/.test(await readFile(file, "utf8"))) callers.push(path.relative(SRC, file));
+  }
+  assert.deepEqual(callers.sort(), ["app/api/channels/[channelId]/publishing-plans/handlers.ts", "lib/publishing-plans/services.ts"]);
+});

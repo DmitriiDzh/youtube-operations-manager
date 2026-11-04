@@ -28,7 +28,9 @@
 // the permission UPLOAD_QUEUE in producer_get_capabilities (additive).
 // 1.15.0 (BL-241, owner msgs 4010/4011, ADR 0061): the clip review tools producer_clip_review_submit / _list / _get / _withdraw;
 // producer_get_capabilities lists clipReviewTools, and submit / withdraw join draftTools (additive).
-export const PRODUCER_API_VERSION = "1.15.0";
+// 1.16.0 (BL-242, ADR 0062): producer_upload_queue_add -- in the packaged approval stage the date comes only from an approval of the
+// same manifest (a package changed since the owner approved it uploads without a date). Same shape.
+export const PRODUCER_API_VERSION = "1.16.0";
 
 /** The channel agent's READ tools the Producer gets; each call names its channel and runs in that channel's agent scope. */
 export const PRODUCER_CHANNEL_TOOLS: Readonly<Record<string, { capability: string }>> = Object.freeze({
