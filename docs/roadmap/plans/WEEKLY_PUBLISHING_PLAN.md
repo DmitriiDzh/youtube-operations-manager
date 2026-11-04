@@ -338,10 +338,10 @@ YouTube call is added; the only behaviour change on a write path is that nothing
   code `video_deleted_on_youtube` («Ролик удалён на YouTube»), its video id kept, no date, no package fingerprint: nothing to approve
   in the `packaged` stage, and an earlier approval of that package does not count. An upload row of a removed video says nothing of
   its slot. A vetoed slot whose video was deleted may be removed (its video is not on YouTube).
-- Writes: the plan schedule skips every upload row whose video is removed (no read, no write); a done upload row of a removed video
-  no longer holds its slot for the upload approval. The runner dates only the video it has just uploaded and read back, so it needs
-  no change. Not changed (known gap, stated): a done row of a removed video still holds its video NUMBER (`liveVideos`) -- a fresh
-  package with the same number is refused as held, never uploaded twice on a wrong mark.
+- Writes: the plan schedule skips every upload row whose video is removed (no read, no write); a finished (done or failed)
+  upload row of a removed video no longer holds its slot for the upload approval. The runner dates only the video it has just
+  uploaded and read back, so it needs no change. Not changed (known gap, stated): a row of a removed video still holds its video
+  NUMBER (`liveVideos`) -- a fresh package with the same number is refused as held, never uploaded twice on a wrong mark.
 - Agents: `agent_get_publishing_calendar` (and the Producer's) items gain `existsOnChannel`, `checkedAt`, `removedAt`; the calendar
   gains `missingOnChannel: [{ video, videoId, removedAt }]` (the deleted packages; [] when the packages are not readable);
   `lastSyncedAt` (already there) is the copy's age. `channel_video_list` gains `videoIds` (1-50 ids): only those of the channel, in
@@ -372,7 +372,8 @@ Fixed values: channel `UC1`, last video sync `2026-11-04T08:00:00.000Z`; V73 rec
   or without `vid73`) does not count -- `slotDecisions` gives `pending` for the slot; the `slot` stage keeps BL-225's rule (the
   approval stands; the plan schedule's guard keeps the date off). A vetoed slot whose progress is the deleted state can be removed.
 - **AC-WP-71** Plan schedule: a done row of `vid73` (removed) with an approved or a vetoed slot -> no read, no write, `changed` 0; the
-  same row with the mark cleared -> written as before. Upload approval: a done row of `vid73` on `s1` does not hold `s1`.
+  same row with the mark cleared -> written as before. Upload approval: a done (or failed) row of `vid73` on `s1` does not hold `s1`; one
+  under way still does.
 - **AC-WP-72** Calendar read: items `{ video: "V73", state: "deleted_on_youtube", videoId: "vid73", existsOnChannel: false, checkedAt:
   "2026-11-04T08:00:00.000Z", removedAt: "2026-11-03T19:54:00.000Z", problems: ["video_deleted_on_youtube"] }`; `missingOnChannel
   = [{ video: "V73", videoId: "vid73", removedAt: "2026-11-03T19:54:00.000Z" }]`; packages not readable -> `missingOnChannel` [].

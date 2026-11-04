@@ -500,3 +500,54 @@ test("round 3 item 3: slotDecisions reads progress once, for the live slots of e
   await h.service.slotDecisions(CH);
   assert.deepEqual(h.progressCalls, [["n1", "n2"]]);
 });
+
+// BL-243 (WEEKLY_PUBLISHING_PLAN.md AC-WP-70): a slot whose only package names a video the sync found removed on YouTube. The
+// progress (as the composition gives it, AC-WP-69): failed with video_deleted_on_youtube, the video id kept, no date.
+const deletedProgress = (): PlanSlotProgress => ({
+  status: "failed",
+  code: "video_deleted_on_youtube",
+  videoId: "vid73",
+  publishAt: null,
+  package: pkg({ video: "V73", problems: ["video_deleted_on_youtube"] }),
+});
+
+test("BL-243 AC-WP-70: a deleted video is nothing to approve; an earlier approval of it does not count; the slot stage keeps BL-225", async () => {
+  for (const approvedWith of ["vid73", null]) {
+    const h = harness();
+    await week(h);
+    h.progress.set("s1", { ...packaged({ video: "V73" }, approvedWith), publishAt: approvedWith ? "2026-10-26T06:00:00.000Z" : null });
+    await approve(h, "s1");
+    assert.equal(slotOf(await get(h), "s1").approval, "approved");
+    assert.equal((await h.service.slotDecisions(CH)).get("s1")?.kind, "approved");
+
+    h.progress.set("s1", deletedProgress());
+    const s1 = slotOf(await get(h), "s1");
+    assert.equal(s1.approval, "awaiting_package", `approved with ${approvedWith}`);
+    assert.equal(s1.fingerprint, null);
+    assert.equal(s1.status, "failed");
+    assert.equal(s1.statusCode, "video_deleted_on_youtube");
+    assert.equal(s1.videoId, "vid73");
+    assert.equal(s1.youtubePublishAt, null);
+    assert.deepEqual((await h.service.slotDecisions(CH)).get("s1"), { kind: "pending" });
+    const error = await refusal(approve(h, "s1"));
+    assert.ok(isDomainError(error) && error.code === "publishing_plan_slot_not_packaged");
+  }
+
+  // `slot` stage: the approval does not depend on the package (BL-225); the plan schedule's guard keeps the date off (AC-WP-71).
+  const h = harness();
+  await week(h);
+  await h.service.setApprovalStage(CH, { stage: "slot" }, "u1");
+  h.progress.set("s1", deletedProgress());
+  await approve(h, "s1");
+  assert.equal(slotOf(await get(h), "s1").approval, "approved");
+  assert.equal(slotOf(await get(h), "s1").statusCode, "video_deleted_on_youtube");
+});
+
+test("BL-243 AC-WP-70: a vetoed slot whose video was deleted on YouTube can be removed (its video is not on YouTube)", async () => {
+  const h = harness();
+  await week(h);
+  h.progress.set("s1", deletedProgress());
+  await h.service.decide(CH, WEEK, { action: "veto", slots: [{ slotId: "s1" }] }, "u1");
+  const { removed } = await h.service.save({ channelId: CH, weekStart: WEEK, removeSlotIds: ["s1"] }, "worker");
+  assert.deepEqual(removed, ["s1"]);
+});

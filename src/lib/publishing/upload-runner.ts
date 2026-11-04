@@ -848,5 +848,14 @@ export function holdsPackage(row: Pick<StoredPublishingUpload, "status" | "video
   return (ACTIVE as readonly string[]).includes(row.status) || row.status === "done" || row.videoId !== null || row.errorCode === "unknown_outcome";
 }
 
+/**
+ * BL-243: whether an upload row holds its weekly-plan slot -- as `holdsPackage`, except a finished row (done or failed) whose
+ * video the channel sync found removed on YouTube (that video is not the slot's any more). Its video NUMBER stays held (`holdsPackage`).
+ */
+export function holdsSlot(row: Pick<StoredPublishingUpload, "status" | "videoId" | "errorCode">, removedVideoIds: ReadonlySet<string>): boolean {
+  const finished = !(ACTIVE as readonly string[]).includes(row.status);
+  return holdsPackage(row) && !(finished && row.videoId !== null && removedVideoIds.has(row.videoId));
+}
+
 export type UploadRunner = ReturnType<typeof createUploadRunner>;
 export const ACTIVE_UPLOAD_STATUSES = ACTIVE;

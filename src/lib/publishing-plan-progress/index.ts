@@ -1,4 +1,4 @@
-import { createPackageScanCore, createPublishingSettingsCore, listChannelUploads } from "@/lib/publishing";
+import { createPackageScanCore, createPublishingSettingsCore, listChannelUploads, removedVideoIdsOf } from "@/lib/publishing";
 import type { PlanSlotProgress, PublishingPlansPorts } from "@/lib/publishing-plans";
 import { progressOfSlots, progressWithUploads } from "./progress";
 
@@ -33,7 +33,9 @@ export const publishingPlanProgress: NonNullable<PublishingPlansPorts["progress"
   const fromPackages = found ? progressOfSlots(found.packages, slotIds, found.synthetic) : new Map<string, PlanSlotProgress>();
   // BL-225 stage 3: this computer's upload rows name their slot -- uploading, failed (with the step's code), scheduled, published.
   const rows = await listChannelUploads(channelId).catch(() => []);
-  return progressWithUploads(fromPackages, rows, slotIds, Date.now());
+  // BL-243: a row of a video deleted on YouTube says nothing (an unreadable mark: none known, as before).
+  const removed = await removedVideoIdsOf(channelId).catch(() => new Set<string>());
+  return progressWithUploads(fromPackages, rows, slotIds, Date.now(), removed);
 };
 
 export { progressOfPackage, progressOfSlots, progressOfUploadRow, progressWithUploads } from "./progress";

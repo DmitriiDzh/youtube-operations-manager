@@ -49,6 +49,17 @@ export type PlanSlotPackage = {
   manifestSha256: string | null;
 };
 
+/**
+ * BL-243 (WEEKLY_PUBLISHING_PLAN.md BL-243): the `failed` code of a slot whose only package names a video the channel sync found
+ * removed on YouTube. Such a progress has no fingerprint: nothing to approve, and an earlier approval of it does not count.
+ */
+export const VIDEO_DELETED_ON_YOUTUBE_CODE = "video_deleted_on_youtube";
+
+/** BL-243: the progress says the slot's video was deleted on YouTube. */
+export function isDeletedOnYoutube(progress: Pick<PlanSlotProgress, "status" | "code"> | null | undefined): boolean {
+  return progress?.status === "failed" && progress.code === VIDEO_DELETED_ON_YOUTUBE_CODE;
+}
+
 /** What the packages and uploads report for a slot (stages 2-3); null/absent: nothing yet. */
 export type PlanSlotProgress = {
   status: Exclude<PlanSlotStatus, "planned" | "vetoed">;

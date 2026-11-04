@@ -57,7 +57,7 @@ import { createPackageScan, isPackageThumbnailPath, VIDEOS_FOLDER, type PackageS
 import { imageKindOf } from "./packages";
 import { createPackageComposer } from "./package-composer";
 import { authorizedOAuth, createPublishingFinishWrites, createPublishingYoutubeWrites, freshAccessToken } from "./adapters/youtube-writes";
-import { ACTIVE_UPLOAD_STATUSES, createUploadRunner, holdsPackage, isCancellable, syntheticMediaOf, UNKNOWN_OUTCOME_RELEASED, type ApprovedPackage, type UploadRunnerDeps } from "./upload-runner";
+import { ACTIVE_UPLOAD_STATUSES, createUploadRunner, holdsPackage, holdsSlot, isCancellable, syntheticMediaOf, UNKNOWN_OUTCOME_RELEASED, type ApprovedPackage, type UploadRunnerDeps } from "./upload-runner";
 import { createPlanSchedule } from "./plan-schedule";
 import type { PublishingSettings } from "./settings";
 import { createUploadApproval } from "./upload-approval";
@@ -547,7 +547,11 @@ export function createUploadApprovalCore() {
     },
     checkUnits: (units) => createQuotaGuardCore().checkUnits(units),
     // Review #5 (BL-225): the slots held by an upload here (queued, running, done, or with a video).
-    heldSlots: async (channelId) => new Set((await listPublishingUploads({ channelId, withSlot: true, limit: 5000 })).filter(holdsPackage).map((row) => row.slotId as string)),
+    // BL-243: a done row of a video deleted on YouTube holds no slot (its video NUMBER stays held: `liveVideos`).
+    heldSlots: async (channelId) => {
+      const [rows, removed] = await Promise.all([listPublishingUploads({ channelId, withSlot: true, limit: 5000 }), removedVideoIdsOf(channelId)]);
+      return new Set(rows.filter((row) => holdsSlot(row, removed)).map((row) => row.slotId as string));
+    },
     insert: (rows) => insertPublishingUploads(rows),
     newId: () => randomUUID(),
     audit: ({ channelId, detail }) => insertVideoEditAuditEvent({ channelId, videoId: `upload:${String(detail.uploadId ?? "")}`, eventType: "RESULT", detail }),
@@ -607,6 +611,14 @@ export function createAutoPrivateUploadCore(options: { slotDecisions?: (channelI
     loggedMismatches,
     warn: (message) => console.warn(`[publishing] auto upload: ${message}`),
   });
+}
+
+/**
+ * BL-243: the ids of the channel's videos the sync found removed on YouTube. An upload row of one of them holds no slot, is never
+ * dated or undated by the plan, and says nothing of its slot's progress. Read-only (the local copy).
+ */
+export async function removedVideoIdsOf(channelId: string): Promise<Set<string>> {
+  return new Set((await createChannelVideoStoreAdapter().listRemovedVideosByChannel(channelId)).map((video) => video.videoId));
 }
 
 /** The channel's uploads on this computer, newest first (the progress list in Content → «Публикация»). */
@@ -723,6 +735,7 @@ export function createPlanScheduleCore(options: { slotDecisions: (channelId: str
   return createPlanSchedule({
     rows: async () => (await listPublishingUploads({ statuses: ["done"], withSlot: true, limit: 2000 })).filter((row) => row.videoId !== null),
     slotDecisions: options.slotDecisions,
+    removedVideoIds: (channelId) => removedVideoIdsOf(channelId),
     async read(row) {
       const snapshot = await videoDetails.getSnapshot({ credentialRef: credentialRefOf(row), expectedChannelId: row.channelId, videoId: row.videoId as string });
       return { privacyStatus: snapshot.privacyStatus, publishAt: snapshot.publishAt };

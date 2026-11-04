@@ -2,7 +2,7 @@
 // composition between `publishing` (the scan) and `publishing-plans` (the plan), so neither feature module imports the other. Pure:
 // the scanned packages and the channel's AI-flag setting come in; the slot statuses go out.
 
-import type { PlanSlotProgress } from "@/lib/publishing-plans";
+import { isDeletedOnYoutube, VIDEO_DELETED_ON_YOUTUBE_CODE, type PlanSlotProgress } from "@/lib/publishing-plans";
 import type { ScannedPackage } from "@/lib/publishing";
 
 /** How far a status got, to pick one package when two name the same slot (the furthest one wins). */
@@ -13,13 +13,19 @@ const RANK: Record<PlanSlotProgress["status"], number> = { built: 1, packaged: 2
  * - not ready but its video file is there (no `video_missing`) -> `built`; not ready without the video -> nothing;
  * - ready -> `packaged`;
  * - uploaded (its `Vn_youtube.json`): `scheduled` / `published` by the channel's synced copy, otherwise still `packaged` with the
- *   video id (stage 3 adds `uploading` / `failed` from the upload rows).
+ *   video id (stage 3 adds `uploading` / `failed` from the upload rows);
+ * - BL-243: its video deleted on YouTube (`deleted_on_youtube`) -> `failed` with `video_deleted_on_youtube`, the video id, no date.
  */
 export function progressOfPackage(scanned: ScannedPackage, channelSyntheticMedia: boolean): PlanSlotProgress | null {
   const pkg = scanned.pkg;
   if (!pkg) return null;
   let status: PlanSlotProgress["status"] | null;
+  let code: string | null = null;
   switch (scanned.state) {
+    case "deleted_on_youtube":
+      status = "failed";
+      code = VIDEO_DELETED_ON_YOUTUBE_CODE;
+      break;
     case "ready":
       status = "packaged";
       break;
@@ -38,9 +44,9 @@ export function progressOfPackage(scanned: ScannedPackage, channelSyntheticMedia
   if (!status) return null;
   return {
     status,
-    code: null,
+    code,
     videoId: scanned.youtube?.videoId ?? null,
-    publishAt: scanned.youtube?.publishAt ?? null,
+    publishAt: code === null ? (scanned.youtube?.publishAt ?? null) : null,
     package: {
       video: pkg.video,
       title: pkg.title,
@@ -56,18 +62,30 @@ export function progressOfPackage(scanned: ScannedPackage, channelSyntheticMedia
   };
 }
 
-/** The progress of each asked slot from every package of the channel that names it (v2 `slotId`). */
+/**
+ * The progress of each asked slot from every package of the channel that names it (v2 `slotId`). BL-243: a package whose video
+ * was deleted on YouTube speaks for its slot only when no other package names it (even one with no progress yet).
+ */
 export function progressOfSlots(packages: readonly ScannedPackage[], slotIds: readonly string[], channelSyntheticMedia: boolean): Map<string, PlanSlotProgress> {
   const wanted = new Set(slotIds);
   const result = new Map<string, PlanSlotProgress>();
+  const named = new Set<string>();
+  const deleted = new Map<string, PlanSlotProgress>();
   for (const scanned of packages) {
     const slotId = scanned.pkg?.slotId;
     if (!slotId || !wanted.has(slotId)) continue;
+    if (scanned.state === "deleted_on_youtube") {
+      const progress = progressOfPackage(scanned, channelSyntheticMedia);
+      if (progress && !deleted.has(slotId)) deleted.set(slotId, progress);
+      continue;
+    }
+    named.add(slotId);
     const progress = progressOfPackage(scanned, channelSyntheticMedia);
     if (!progress) continue;
     const before = result.get(slotId);
     if (!before || RANK[progress.status] > RANK[before.status]) result.set(slotId, progress);
   }
+  for (const [slotId, progress] of deleted) if (!named.has(slotId)) result.set(slotId, progress);
   return result;
 }
 
@@ -128,13 +146,25 @@ export function progressOfUploadRow(row: UploadRowForProgress, nowMs: number): P
   return { status: Date.parse(row.publishAt) > nowMs ? "scheduled" : "published", code: null, videoId: row.videoId, publishAt: row.publishAt };
 }
 
-/** The packages' progress, with each slot's newest upload row on this computer taking precedence (it knows the upload's steps). */
-export function progressWithUploads(fromPackages: Map<string, PlanSlotProgress>, rows: readonly UploadRowForProgress[], slotIds: readonly string[], nowMs: number): Map<string, PlanSlotProgress> {
+/**
+ * The packages' progress, with each slot's newest upload row on this computer taking precedence (it knows the upload's steps).
+ * BL-243: a row whose video the channel sync found removed on YouTube (`removedVideoIds`) says nothing of its slot.
+ */
+export function progressWithUploads(
+  fromPackages: Map<string, PlanSlotProgress>,
+  rows: readonly UploadRowForProgress[],
+  slotIds: readonly string[],
+  nowMs: number,
+  removedVideoIds: ReadonlySet<string> = new Set()
+): Map<string, PlanSlotProgress> {
   const result = new Map(fromPackages);
   const wanted = new Set(slotIds);
   const newest = new Map<string, UploadRowForProgress>();
   for (const row of rows) {
     if (!row.slotId || !wanted.has(row.slotId)) continue;
+    // (the deleted package's own video id counts as removed even when the mark could not be read)
+    const own = fromPackages.get(row.slotId);
+    if (row.videoId !== null && (removedVideoIds.has(row.videoId) || (isDeletedOnYoutube(own) && own?.videoId === row.videoId))) continue;
     // BL-242 round 3 (b): a row of another video than the slot's current package (the old video moved to another slot) is not its
     // progress.
     const pkg = fromPackages.get(row.slotId)?.package;

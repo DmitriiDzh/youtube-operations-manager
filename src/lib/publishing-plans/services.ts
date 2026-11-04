@@ -1,7 +1,7 @@
 import { parseWithSchema } from "@/lib/shared-domain";
 import type { PublishingPlanDecision, PublishingPlanMeta, PublishingPlanPackageFingerprint, PublishingPlanSlot, PublishingPlansSnapshot } from "@/lib/sync-gateway";
 import { isValidIanaTimezone } from "@/lib/zoned-time";
-import { DEFAULT_APPROVAL_STAGE, DomainError, PUBLISHING_PLAN_LIMITS, type PlanSaveRefusal, type PlanSlotDecision, type PlanSlotProgress, type PlanSummary, type PlanView, type PublishingPlanActor, type PublishingPlanApprovalStage, type PublishingPlansPorts, type ReplacedSlot } from "./contracts";
+import { DEFAULT_APPROVAL_STAGE, DomainError, isDeletedOnYoutube, PUBLISHING_PLAN_LIMITS, type PlanSaveRefusal, type PlanSlotDecision, type PlanSlotProgress, type PlanSummary, type PlanView, type PublishingPlanActor, type PublishingPlanApprovalStage, type PublishingPlansPorts, type ReplacedSlot } from "./contracts";
 import { addDays, approvalStandsOn, contentHashOf, contentOf, decisionsForStage, decisionStateOf, instantOf, isCalendarDate, isMonday, planViewOf, slotViewOf, standingPackageApprovalOf, standingVetoOf, decisionOrder, lastApprovedPackageOf } from "./model";
 import { approvalStageInputSchema, getPlanInputSchema, listPlansInputSchema, ownerDecisionInputSchema, PLAN_LIST_DEFAULT_LIMIT, savePlanInputSchema } from "./schemas";
 
@@ -222,7 +222,8 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
         const slot = current.get(slotId);
         const state = slot && existing ? decisionStateOf(decisionsForStage(decisionsFor(slotId), stage), contentHashOf(existing.timeZone, contentOf(slot))) : null;
         const upload = uploads.get(slotId);
-        const uploaded = Boolean(upload && (upload.videoId || ["uploading", "scheduled", "published"].includes(upload.status)));
+        // BL-243: a video deleted on YouTube is not on YouTube -- its vetoed slot may go.
+        const uploaded = Boolean(upload && !isDeletedOnYoutube(upload) && (upload.videoId || ["uploading", "scheduled", "published"].includes(upload.status)));
         if (!slot) refused.push({ slotId, field: "removeSlotIds", reason: "unknown_slot" });
         else if (state?.vetoed) {
           // BL-240 (ADR 0060): a vetoed slot may go, also one approved before the veto -- unless its video is on YouTube.

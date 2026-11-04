@@ -140,3 +140,43 @@ test("round 3 (b): a slot's upload row of another video does not override its cu
   const same = progressWithUploads(progressOfSlots([scanned("V64", "s1")], ["s1"], true), [uploadRow({ video: "V64" })], ["s1"], NOW_MS);
   assert.equal(same.get("s1")?.status, "scheduled");
 });
+
+// BL-243 (WEEKLY_PUBLISHING_PLAN.md AC-WP-69): a package whose video was deleted on YouTube is the slot's word only when no other
+// package names the slot; then the slot is `failed` with `video_deleted_on_youtube`, the video id kept, no date. An upload row of a
+// removed video says nothing.
+const deleted73 = () =>
+  scanned("V73", "s1", {
+    state: "deleted_on_youtube",
+    problems: [{ code: "video_deleted_on_youtube" }],
+    youtube: { videoId: "vid73", privacyStatus: null, publishAt: null, removedAt: "2026-11-03T19:54:00.000Z" },
+    existsOnChannel: false,
+  });
+
+test("BL-243 AC-WP-69: deleted alone -> failed video_deleted_on_youtube; with another package naming the slot -> that one's word", async () => {
+  const { progressWithUploads } = await import("./progress");
+  const alone = progressOfSlots([deleted73()], ["s1"], false).get("s1");
+  assert.equal(alone?.status, "failed");
+  assert.equal(alone?.code, "video_deleted_on_youtube");
+  assert.equal(alone?.videoId, "vid73");
+  assert.equal(alone?.publishAt, null);
+  assert.equal(alone?.package?.video, "V73");
+  assert.deepEqual(alone?.package?.problems, ["video_deleted_on_youtube"]);
+
+  const withFresh = progressOfSlots([deleted73(), scanned("V80", "s1")], ["s1"], false).get("s1");
+  assert.equal(withFresh?.status, "packaged");
+  assert.equal(withFresh?.videoId, null);
+  assert.equal(withFresh?.package?.video, "V80");
+  // The order of the packages does not matter.
+  assert.equal(progressOfSlots([scanned("V80", "s1"), deleted73()], ["s1"], false).get("s1")?.package?.video, "V80");
+
+  const noVideo = scanned("V80", "s1", { state: "not_ready", problems: [{ code: "video_missing" }] });
+  assert.equal(progressOfSlots([deleted73(), noVideo], ["s1"], false).has("s1"), false, "another package names the slot: the deleted one is not its word");
+
+  // A done, dated, verified upload row of vid73 (removed) says nothing; without the mark it would (BL-225).
+  const row73 = uploadRow({ video: "V73", videoId: "vid73" });
+  const removed = new Set(["vid73"]);
+  assert.deepEqual(progressWithUploads(progressOfSlots([deleted73()], ["s1"], false), [row73], ["s1"], NOW_MS, removed).get("s1"), alone);
+  assert.deepEqual(progressWithUploads(progressOfSlots([deleted73(), scanned("V73", "s1", { manifestPath: "b/V73_release.json" })], ["s1"], false), [row73], ["s1"], NOW_MS, removed).get("s1")?.status, "packaged");
+  assert.deepEqual(progressWithUploads(progressOfSlots([deleted73()], ["s1"], false), [row73], ["s1"], NOW_MS).get("s1"), alone, "the deleted package's own video, the mark unread");
+  assert.equal(progressWithUploads(progressOfSlots([scanned("V73", "s1", { state: "uploaded_unknown", youtube: { videoId: "vid73", privacyStatus: null, publishAt: null } })], ["s1"], false), [row73], ["s1"], NOW_MS).get("s1")?.status, "scheduled", "not removed: the row speaks (BL-225)");
+});

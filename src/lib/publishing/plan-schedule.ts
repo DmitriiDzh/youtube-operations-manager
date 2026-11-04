@@ -18,6 +18,11 @@ export type PlanScheduleDeps = {
   /** This computer's finished uploads that name a plan slot and have a video. */
   rows(): Promise<StoredPublishingUpload[]>;
   slotDecisions(channelId: string): Promise<Map<string, SlotDecision>>;
+  /**
+   * BL-243: the channel's videos the sync found removed on YouTube -- their rows are never read or written (nothing to date). A
+   * failed read skips the channel's rows this pass (fail closed). Absent: none known.
+   */
+  removedVideoIds?(channelId: string): Promise<ReadonlySet<string>>;
   /** The video's privacy and date as YouTube has them now (read gateway, with the row's account). */
   read(row: StoredPublishingUpload): Promise<{ privacyStatus: string | null; publishAt: string | null }>;
   /** video-details' write: private, with this date or (null) none; the AI flag sent again (YouTube does not return it). */
@@ -118,9 +123,15 @@ export function createPlanSchedule(deps: PlanScheduleDeps) {
       if (!(await deps.liveWritesEnabled()) || !(await deps.dataReadsEnabled())) return { changed: 0 };
       const rows = await deps.rows();
       const byChannel = new Map<string, Map<string, SlotDecision>>();
+      const removedByChannel = new Map<string, ReadonlySet<string> | null>();
       let changed = 0;
       for (const row of rows) {
         if (!row.slotId || !row.videoId || row.status !== "done") continue;
+        if (!removedByChannel.has(row.channelId)) {
+          removedByChannel.set(row.channelId, deps.removedVideoIds ? await deps.removedVideoIds(row.channelId).catch(() => null) : new Set<string>());
+        }
+        const removed = removedByChannel.get(row.channelId);
+        if (!removed || removed.has(row.videoId)) continue;
         let decisions = byChannel.get(row.channelId);
         if (!decisions) {
           decisions = await deps.slotDecisions(row.channelId);

@@ -54,11 +54,17 @@ function row(over: Partial<StoredPublishingUpload> = {}): StoredPublishingUpload
   };
 }
 
-function harness(initial: StoredPublishingUpload, decision: SlotDecision | undefined, video: { privacyStatus: string; publishAt: string | null } = { privacyStatus: "private", publishAt: initial.publishAt }) {
+function harness(
+  initial: StoredPublishingUpload,
+  decision: SlotDecision | undefined,
+  video: { privacyStatus: string; publishAt: string | null } = { privacyStatus: "private", publishAt: initial.publishAt },
+  removedVideoIds?: () => Promise<ReadonlySet<string>>
+) {
   const state = { row: { ...initial }, video: { ...video }, writes: [] as Array<string | null>, audits: [] as Array<Record<string, unknown>>, reads: 0, liveWrites: true, dataReads: true, quotaOut: false, readBackWrong: false, now: NOW };
   const schedule = createPlanSchedule({
     rows: async () => [state.row],
     slotDecisions: async () => new Map(decision ? [["w44-mon", decision]] : []),
+    ...(removedVideoIds ? { removedVideoIds } : {}),
     read: async () => {
       state.reads += 1;
       if (state.quotaOut) throw new DomainError({ code: "youtube_quota_exceeded", message: "quota" });
@@ -238,4 +244,25 @@ test("AC-WP-57: a veto of the slot that took the video (its approval named vid1)
   const h = multiHarness(scheduled, new Map<string, SlotDecision>([["old", { kind: "pending" }], ["new", { kind: "vetoed", package: { video: "V73", manifestSha256: "mf-aa", videoId: "vid1" } }]]));
   await h.schedule.tick();
   assert.deepEqual(h.state.writes, [null]);
+});
+
+// BL-243 (WEEKLY_PUBLISHING_PLAN.md AC-WP-71): a video the channel sync found removed on YouTube is never dated or undated -- no
+// read, no write, nothing recorded; once the mark is cleared (it reappeared) the plan acts on it as before.
+test("BL-243 AC-WP-71: a removed video's row is skipped for an approved or a vetoed slot; the cleared mark acts again", async () => {
+  for (const decision of [{ kind: "approved", publishAt: "2026-10-27T09:00:00.000Z" }, { kind: "vetoed" }] as SlotDecision[]) {
+    const h = harness(row(), decision, undefined, async () => new Set(["vid64"]));
+    assert.deepEqual(await h.schedule.tick(), { changed: 0 });
+    assert.equal(h.state.reads, 0);
+    assert.deepEqual(h.state.writes, []);
+    assert.deepEqual(h.state.audits, []);
+    assert.equal(h.state.row.stepsJson, JSON.stringify(OK_STEPS));
+  }
+  const failed = harness(row(), { kind: "vetoed" }, undefined, async () => {
+    throw new Error("db down");
+  });
+  assert.deepEqual(await failed.schedule.tick(), { changed: 0 }, "an unreadable mark: fail closed");
+  assert.equal(failed.state.reads, 0);
+  const cleared = harness(row(), { kind: "vetoed" }, undefined, async () => new Set());
+  assert.deepEqual(await cleared.schedule.tick(), { changed: 1 });
+  assert.deepEqual(cleared.state.writes, [null]);
 });

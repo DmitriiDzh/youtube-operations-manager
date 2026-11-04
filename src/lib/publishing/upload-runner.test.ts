@@ -3,7 +3,7 @@ import test from "node:test";
 import type { StoredPublishingUpload } from "@/lib/db";
 import { DomainError } from "@/lib/shared-domain";
 import { DEFAULT_PUBLISHING_SETTINGS, type PublishingSettings } from "./settings";
-import { classifyUploadError, createUploadRunner, holdsPackage, isCancellable, isPublishAtSet, readBackMismatches, type ApprovedPackage, type InsertResource, type UploadRunnerDeps, type VideoReadBack } from "./upload-runner";
+import { classifyUploadError, createUploadRunner, holdsPackage, holdsSlot, isCancellable, isPublishAtSet, readBackMismatches, type ApprovedPackage, type InsertResource, type UploadRunnerDeps, type VideoReadBack } from "./upload-runner";
 
 // BL-182 stage 2 -- the upload runner against fakes (no real YouTube call, DEVELOPMENT_PLAYBOOK §6.11). Requirements: the
 // acceptance list in upload-runner.acceptance.test.ts (FO-REQ-0023 §4 B5–B7 and §5; ADR 0037; owner msgs 2725/2727; owner msgs
@@ -1287,4 +1287,20 @@ test("AC-WP-56: the date step dates only the approved manifest", async () => {
   assert.deepEqual([approved.publishAtWrites, JSON.parse(approved.row().stepsJson).publishAt], [["2026-10-25T12:00:00.000Z"], "set"]);
   const other = await run("sha-other");
   assert.deepEqual([other.publishAtWrites, JSON.parse(other.row().stepsJson).publishAt], [[], "withheld"]);
+});
+
+// BL-243 (WEEKLY_PUBLISHING_PLAN.md AC-WP-71): a done upload of a video the channel sync found removed on YouTube no longer holds
+// its weekly-plan slot; it still holds its video number (never uploaded twice on a wrong mark); every other row as before.
+test("BL-243 AC-WP-71: a done row of a removed video holds no slot; its number stays held; other rows unchanged", () => {
+  const removed = new Set(["vid73"]);
+  const done = { status: "done" as const, videoId: "vid73", errorCode: null };
+  assert.equal(holdsSlot(done, removed), false);
+  assert.equal(holdsPackage(done), true);
+  assert.equal(holdsSlot(done, new Set()), true, "the mark cleared: it holds again");
+  assert.equal(holdsSlot({ status: "done", videoId: "vid74", errorCode: null }, removed), true);
+  assert.equal(holdsSlot({ status: "queued", videoId: null, errorCode: null }, removed), true);
+  assert.equal(holdsSlot({ status: "failed", videoId: null, errorCode: "unknown_outcome" }, removed), true);
+  assert.equal(holdsSlot({ status: "cancelled", videoId: null, errorCode: null }, removed), false);
+  assert.equal(holdsSlot({ status: "failed", videoId: "vid73", errorCode: "thumbnail_failed" }, removed), false, "failed after the insert: the video is gone too");
+  assert.equal(holdsSlot({ status: "processing", videoId: "vid73", errorCode: null }, removed), true, "under way: the runner decides");
 });
