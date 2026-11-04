@@ -1,4 +1,5 @@
 import { DomainError, isDomainError } from "@/lib/shared-domain";
+import { isDeletedOnYoutubeStatus, VIDEO_DELETED_ON_YOUTUBE } from "@/lib/shared-video-presence";
 import type { PublishingPlanActor, PublishingPlanApprovalStage, PublishingPlanPackageFingerprint, PublishingPlansCore, PublishingPlanSlotContent } from "@/lib/sync-gateway";
 
 export { DomainError, isDomainError };
@@ -53,11 +54,11 @@ export type PlanSlotPackage = {
  * BL-243 (WEEKLY_PUBLISHING_PLAN.md BL-243): the `failed` code of a slot whose only package names a video the channel sync found
  * removed on YouTube. Such a progress has no fingerprint: nothing to approve, and an earlier approval of it does not count.
  */
-export const VIDEO_DELETED_ON_YOUTUBE_CODE = "video_deleted_on_youtube";
+export const VIDEO_DELETED_ON_YOUTUBE_CODE = VIDEO_DELETED_ON_YOUTUBE;
 
 /** BL-243: the progress says the slot's video was deleted on YouTube. */
 export function isDeletedOnYoutube(progress: Pick<PlanSlotProgress, "status" | "code"> | null | undefined): boolean {
-  return progress?.status === "failed" && progress.code === VIDEO_DELETED_ON_YOUTUBE_CODE;
+  return progress ? isDeletedOnYoutubeStatus(progress.status, progress.code) : false;
 }
 
 /** What the packages and uploads report for a slot (stages 2-3); null/absent: nothing yet. */

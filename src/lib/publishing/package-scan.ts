@@ -1,3 +1,4 @@
+import { VIDEO_DELETED_ON_YOUTUBE } from "@/lib/shared-video-presence";
 import { parseUploadRecord, stripBom, VIDEOS_FOLDER, walkVideosFolder, type DirEntry } from "@/lib/workspace-videos";
 import {
   imageKindOf,
@@ -29,9 +30,6 @@ export function isPackageThumbnailPath(relativePath: string): boolean {
  * confirmation it exists. `deleted_on_youtube` -- the copy has it with the sync's removed mark (`videos.removed_on_youtube_at`).
  */
 export type PackageState = "not_ready" | "ready" | "uploaded_private" | "scheduled" | "published" | "uploaded_unknown" | "deleted_on_youtube";
-
-/** BL-243: the problem a package whose uploaded video was deleted on YouTube carries. */
-export const VIDEO_DELETED_ON_YOUTUBE = "video_deleted_on_youtube";
 
 export type ScannedPackage = {
   /** The manifest, relative to the workspace (`/` between folders). */
@@ -65,7 +63,15 @@ export type ScannedPackage = {
 export type PackageScanResult =
   | { status: "no_workspace" }
   | { status: "workspace_unavailable"; reason: string }
-  | { status: "ok"; packages: ScannedPackage[] };
+  | {
+      status: "ok";
+      packages: ScannedPackage[];
+      /**
+       * BL-243 (always set by the scan): the ids of the channel's videos the sync found removed, as this scan read them ([] when
+       * that read failed: none known). The plan progress reuses them, so it never disagrees with the packages it shows.
+       */
+      removedVideoIds?: string[];
+    };
 
 export type PackageScanDeps = {
   /** The channel's workspace path on this computer, or null when not set (`channel-workspaces`). */
@@ -238,8 +244,10 @@ export function createPackageScan(deps: PackageScanDeps) {
       const [channel, videos, removed, checkedAt, manifests] = await Promise.all([
         deps.channel(channelId),
         deps.videos(channelId),
-        deps.removedVideos ? deps.removedVideos(channelId) : Promise.resolve([]),
-        deps.videosSyncedAt ? deps.videosSyncedAt(channelId) : Promise.resolve(null),
+        // BL-243 (ADR 0063): an unreadable mark is "none known" (such packages read as before) and an unreadable sync time null --
+        // never a failed scan.
+        deps.removedVideos ? deps.removedVideos(channelId).catch(() => []) : Promise.resolve([]),
+        deps.videosSyncedAt ? deps.videosSyncedAt(channelId).catch(() => null) : Promise.resolve(null),
         findManifests(deps, workspace),
       ]);
       const copy: Copy = { videos, removed: new Map(removed.map((video) => [video.videoId, video.removedAt])), checkedAt };
@@ -250,7 +258,7 @@ export function createPackageScan(deps: PackageScanDeps) {
       }
       const number = (p: ScannedPackage) => Number(/\d+/.exec(p.video ?? p.manifestPath.split("/").pop() ?? "")?.[0] ?? 0);
       packages.sort((a, b) => (a.plannedPublishDate ?? "9999") .localeCompare(b.plannedPublishDate ?? "9999") || number(a) - number(b));
-      return { status: "ok", packages: markSharedSlots(packages) };
+      return { status: "ok", packages: markSharedSlots(packages), removedVideoIds: [...copy.removed.keys()] };
     },
   };
 }

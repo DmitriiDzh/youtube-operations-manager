@@ -272,3 +272,29 @@ test("BL-243 AC-WP-68: a deleted package holds no slot and is never marked; uplo
     ["V80", "not_ready", ["slot_taken"]],
   ]);
 });
+
+// BL-243 review (AC-WP-66/67): the mark's and the sync time's reads never fail the scan -- an unreadable mark is "none known" (the
+// package reads as before: uploaded_unknown) and an unreadable sync time is null.
+test("BL-243: an unreadable removed list or sync time keeps the scan going (none known, checkedAt null)", async () => {
+  const result = await createPackageScan(
+    deps(uploadedFiles(), {
+      videos: visible74,
+      removedVideos: async () => {
+        throw new Error("db busy");
+      },
+      videosSyncedAt: async () => {
+        throw new Error("db busy");
+      },
+    })
+  ).scan("UC_t");
+  if (result.status !== "ok") return assert.fail(result.status);
+  assert.deepEqual(result.packages.map((p) => [p.video, p.state, p.checkedAt]), [
+    ["V73", "uploaded_unknown", null],
+    ["V74", "uploaded_private", null],
+    ["V75", "uploaded_unknown", null],
+    ["V76", "ready", null],
+  ]);
+  assert.deepEqual(result.removedVideoIds, []);
+  const read = await createPackageScan(deps(uploadedFiles(), { videos: visible74, removedVideos: async () => [{ videoId: "vid73", removedAt: REMOVED }] })).scan("UC_t");
+  assert.deepEqual(read.status === "ok" ? read.removedVideoIds : null, ["vid73"]);
+});

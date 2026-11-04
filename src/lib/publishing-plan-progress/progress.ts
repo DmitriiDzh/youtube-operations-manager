@@ -89,6 +89,17 @@ export function progressOfSlots(packages: readonly ScannedPackage[], slotIds: re
   return result;
 }
 
+/**
+ * BL-243 (ADR 0063): the video ids whose upload rows say nothing of their slots -- those the scan read as removed on YouTube, and
+ * the video of every package the scan found deleted (so a row of it is dropped even when the removed list could not be read and
+ * another package, with no progress yet, names the slot). One source: the scan the progress shows.
+ */
+export function removedVideoIdsForProgress(packages: readonly ScannedPackage[], scanRemovedIds: readonly string[] = []): Set<string> {
+  const ids = new Set(scanRemovedIds);
+  for (const p of packages) if (p.state === "deleted_on_youtube" && p.youtube) ids.add(p.youtube.videoId);
+  return ids;
+}
+
 /** BL-225 stage 3: an upload row as the progress reads it (this computer's `publishing_uploads`). */
 export type UploadRowForProgress = {
   slotId: string | null;

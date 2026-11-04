@@ -180,3 +180,16 @@ test("BL-243 AC-WP-69: deleted alone -> failed video_deleted_on_youtube; with an
   assert.deepEqual(progressWithUploads(progressOfSlots([deleted73()], ["s1"], false), [row73], ["s1"], NOW_MS).get("s1"), alone, "the deleted package's own video, the mark unread");
   assert.equal(progressWithUploads(progressOfSlots([scanned("V73", "s1", { state: "uploaded_unknown", youtube: { videoId: "vid73", privacyStatus: null, publishAt: null } })], ["s1"], false), [row73], ["s1"], NOW_MS).get("s1")?.status, "scheduled", "not removed: the row speaks (BL-225)");
 });
+
+// BL-243 review (AC-WP-69): the removed list could not be read, and the deleted V73 names its slot with V80, which has no progress
+// yet (its video file is missing) -- the done, dated row of vid73 must still say nothing: the deleted packages' own ids count.
+test("BL-243 AC-WP-69: a deleted package's own video is dropped even with no current progress and no removed list", async () => {
+  const { progressWithUploads, removedVideoIdsForProgress } = await import("./progress");
+  const noVideo = scanned("V80", "s1", { state: "not_ready", problems: [{ code: "video_missing" }] });
+  const packages = [deleted73(), noVideo];
+  const ids = removedVideoIdsForProgress(packages, []);
+  assert.deepEqual([...ids], ["vid73"]);
+  assert.deepEqual([...removedVideoIdsForProgress([scanned("V64", "s1")], ["vidX"])], ["vidX"], "the scan's ids, nothing added");
+  const merged = progressWithUploads(progressOfSlots(packages, ["s1"], false), [uploadRow({ video: "V73", videoId: "vid73" })], ["s1"], NOW_MS, ids);
+  assert.equal(merged.has("s1"), false);
+});

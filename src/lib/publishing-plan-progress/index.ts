@@ -1,6 +1,6 @@
-import { createPackageScanCore, createPublishingSettingsCore, listChannelUploads, removedVideoIdsOf } from "@/lib/publishing";
+import { createPackageScanCore, createPublishingSettingsCore, listChannelUploads } from "@/lib/publishing";
 import type { PlanSlotProgress, PublishingPlansPorts } from "@/lib/publishing-plans";
-import { progressOfSlots, progressWithUploads } from "./progress";
+import { progressOfSlots, progressWithUploads, removedVideoIdsForProgress } from "./progress";
 
 // BL-225 stage 2 (ADR 0051, AGENTS.md §M): the plan's `progress` port from the publishing module's package scan, given to the plan's
 // surfaces by the MCP deps and the Web routes. A scan reads the channel's whole `04 Videos/` folder, so one is kept for a minute per
@@ -8,7 +8,7 @@ import { progressOfSlots, progressWithUploads } from "./progress";
 
 const CACHE_KEY = Symbol.for("ytom.publishingPlanProgress.cache");
 const CACHE_MS = 60_000;
-type Cached = { at: number; packages: Parameters<typeof progressOfSlots>[0]; synthetic: boolean };
+type Cached = { at: number; packages: Parameters<typeof progressOfSlots>[0]; synthetic: boolean; removedVideoIds: Set<string> };
 type GlobalWithCache = typeof globalThis & { [CACHE_KEY]?: Map<string, Cached> };
 
 async function packagesOf(channelId: string): Promise<Cached | null> {
@@ -19,7 +19,8 @@ async function packagesOf(channelId: string): Promise<Cached | null> {
   try {
     const [scan, settings] = await Promise.all([createPackageScanCore().scan(channelId), createPublishingSettingsCore().read(channelId)]);
     if (scan.status !== "ok") return null;
-    const entry: Cached = { at: Date.now(), packages: scan.packages, synthetic: settings.settings.containsSyntheticMedia };
+    // BL-243: the removed ids this very scan read (none known when that read failed), never a second, fresher read.
+    const entry: Cached = { at: Date.now(), packages: scan.packages, synthetic: settings.settings.containsSyntheticMedia, removedVideoIds: removedVideoIdsForProgress(scan.packages, scan.removedVideoIds) };
     cache.set(channelId, entry);
     return entry;
   } catch {
@@ -33,9 +34,8 @@ export const publishingPlanProgress: NonNullable<PublishingPlansPorts["progress"
   const fromPackages = found ? progressOfSlots(found.packages, slotIds, found.synthetic) : new Map<string, PlanSlotProgress>();
   // BL-225 stage 3: this computer's upload rows name their slot -- uploading, failed (with the step's code), scheduled, published.
   const rows = await listChannelUploads(channelId).catch(() => []);
-  // BL-243: a row of a video deleted on YouTube says nothing (an unreadable mark: none known, as before).
-  const removed = await removedVideoIdsOf(channelId).catch(() => new Set<string>());
-  return progressWithUploads(fromPackages, rows, slotIds, Date.now(), removed);
+  // BL-243: a row of a video deleted on YouTube says nothing -- as the scan shown read it (no scan: none known).
+  return progressWithUploads(fromPackages, rows, slotIds, Date.now(), found?.removedVideoIds ?? new Set<string>());
 };
 
-export { progressOfPackage, progressOfSlots, progressOfUploadRow, progressWithUploads } from "./progress";
+export { progressOfPackage, progressOfSlots, progressOfUploadRow, progressWithUploads, removedVideoIdsForProgress } from "./progress";
