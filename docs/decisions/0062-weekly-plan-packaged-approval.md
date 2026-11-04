@@ -32,7 +32,8 @@ cannot leave its week, and the plan schedule finds a finished upload only by the
 4. **A slot takes an uploaded video by its package.** The worker re-points the package's `slotId`; the owner's approval then names
    the video id, and the plan schedule finds the upload by that video id, whatever slot its row was made for. A package names one slot,
    so at most one counting approval names a video; two of one video number are both `pending` (defensive). A veto records the
-   slot's current package (none: that of its last approval not revoked); for a video the newest decision naming it decides -- a
+   slot's current package (none: that of its last approval not revoked, unless another slot of the channel counts an approval for
+   that video number -- then none, and it reaches only rows made with its slot id); for a video the newest decision naming it decides -- a
    counting approval its date, a standing veto no date; a restore cancels the veto. Nothing counting leaves the date (BL-225) and
    the slot holding the package shows it, so the owner approves or vetoes (re-review of BL-242, 2026-11-04).
 

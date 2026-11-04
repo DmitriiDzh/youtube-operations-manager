@@ -141,6 +141,11 @@ export type PlanSlotView = PublishingPlanSlotContent & {
    * by an approval that no longer counts, which the owner moves (approve) or removes (veto).
    */
   youtubePublishAt: string | null;
+  /**
+   * BL-242 round 3: the slot's approval counts here, but another slot's counting approval names the same video number -- the uploads
+   * give neither a date (defensive: two packages with one number). False otherwise.
+   */
+  duplicateVideo: boolean;
   /** The slot's time has passed (it can no longer be approved, vetoed or restored). */
   released: boolean;
   createdAt: string;
@@ -188,7 +193,10 @@ export type PublishingPlansPorts = {
   withLock<T>(fn: () => Promise<T>): Promise<T>;
   /** The owner's decisions, audited on this computer. */
   audit(entry: PlanAuditEntry): Promise<void>;
-  /** Stages 2-3: what the packages and uploads say of the slots, by slotId. Absent: nothing (stage 1). */
+  /**
+   * Stages 2-3: what the packages and uploads say of the slots, by slotId. Absent: nothing (stage 1). BL-242 round 3: one read may
+   * cover several weeks; `weekStart` is then "" (the production port reads the channel's packages and uploads whatever it says).
+   */
   progress?(channelId: string, weekStart: string, slotIds: string[]): Promise<Map<string, PlanSlotProgress>>;
 };
 

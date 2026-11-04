@@ -74,6 +74,8 @@ export function progressOfSlots(packages: readonly ScannedPackage[], slotIds: re
 /** BL-225 stage 3: an upload row as the progress reads it (this computer's `publishing_uploads`). */
 export type UploadRowForProgress = {
   slotId: string | null;
+  /** The video number the row uploaded (`V73`); BL-242 round 3: a row of another video than the slot's package says nothing of it. */
+  video?: string;
   status: string;
   videoId: string | null;
   publishAt: string | null;
@@ -133,6 +135,10 @@ export function progressWithUploads(fromPackages: Map<string, PlanSlotProgress>,
   const newest = new Map<string, UploadRowForProgress>();
   for (const row of rows) {
     if (!row.slotId || !wanted.has(row.slotId)) continue;
+    // BL-242 round 3 (b): a row of another video than the slot's current package (the old video moved to another slot) is not its
+    // progress.
+    const pkg = fromPackages.get(row.slotId)?.package;
+    if (pkg && row.video !== undefined && row.video !== pkg.video) continue;
     const before = newest.get(row.slotId);
     if (!before || row.createdAt.getTime() > before.createdAt.getTime()) newest.set(row.slotId, row);
   }

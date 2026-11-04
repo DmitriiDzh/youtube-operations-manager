@@ -227,7 +227,9 @@ export function slotViewOf(args: {
     statusCode: state.vetoed ? null : (args.progress?.code ?? null),
     videoId: args.progress?.videoId ?? null,
     package: args.progress?.package ?? null,
-    youtubePublishAt: args.progress?.publishAt ?? null,
+    // Round 3 (b): only when the slot's CURRENT package names the video -- an upload row of the old slot alone does not count.
+    youtubePublishAt: args.progress?.package ? (args.progress.publishAt ?? null) : null,
+    duplicateVideo: false,
     released: releaseMs <= now.getTime(),
     createdAt: slot.createdAt,
     updatedAt: slot.updatedAt,

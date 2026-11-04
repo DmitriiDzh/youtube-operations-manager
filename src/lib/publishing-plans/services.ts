@@ -54,11 +54,49 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
     return out;
   }
 
-  async function viewOf(channelId: string, snapshot: PublishingPlansSnapshot, meta: PublishingPlanMeta): Promise<PlanView> {
+  type ChannelState = { progress: Map<string, PlanSlotProgress>; counting: Map<string, string[]> };
+
+  /**
+   * BL-242 round 3 (item 3): ONE progress read for the channel's live slots -- every slot not released by its own times, and every
+   * vetoed one (its video's date may still be ahead) -- plus the asked ones. Past slots are not asked. `counting`: in the `packaged`
+   * stage, the live slots whose approval counts (R1), by the video number they name. `failClosed`: a failed read is an empty one.
+   */
+  async function channelState(channelId: string, snapshot: PublishingPlansSnapshot, asked: readonly string[], failClosed = false): Promise<ChannelState> {
+    const stage = stageOf(snapshot);
+    const now = ports.now();
+    const ids = new Set(asked);
+    for (const meta of Object.values(snapshot.plans)) {
+      const bare = planViewOf({ stage, channelId, meta, slots: slotsOf(snapshot, meta.weekStart), decisions: decisionsOf(snapshot, meta.weekStart), progress: new Map(), now });
+      for (const slot of bare.slots) if (!slot.released || slot.vetoed) ids.add(slot.slotId);
+    }
+    let progress = new Map<string, PlanSlotProgress>();
+    if (ports.progress && ids.size > 0) {
+      const read = ports.progress(channelId, "", [...ids].sort());
+      progress = failClosed ? await read.catch(() => new Map<string, PlanSlotProgress>()) : await read;
+    }
+    const counting = new Map<string, string[]>();
+    if (stage === "packaged") {
+      for (const meta of Object.values(snapshot.plans)) {
+        const view = planViewOf({ stage, channelId, meta, slots: slotsOf(snapshot, meta.weekStart), decisions: decisionsOf(snapshot, meta.weekStart), progress, now });
+        for (const slot of view.slots) {
+          if (slot.vetoed || slot.released || slot.approval !== "approved" || !slot.fingerprint) continue;
+          counting.set(slot.fingerprint.video, [...(counting.get(slot.fingerprint.video) ?? []), slot.slotId]);
+        }
+      }
+    }
+    return { progress, counting };
+  }
+
+  async function viewOf(channelId: string, snapshot: PublishingPlansSnapshot, meta: PublishingPlanMeta, known?: ChannelState): Promise<PlanView> {
     const slots = slotsOf(snapshot, meta.weekStart);
-    const progress = ports.progress ? await ports.progress(channelId, meta.weekStart, slots.map((s) => s.slotId)) : new Map();
+    const state = known ?? (await channelState(channelId, snapshot, slots.map((s) => s.slotId)));
     const replaced = await replacedOf(channelId, snapshot, slots.flatMap((s) => (s.replacesSlotId ? [s.replacesSlotId] : [])));
-    return planViewOf({ stage: stageOf(snapshot), channelId, meta, slots, decisions: decisionsOf(snapshot, meta.weekStart), progress, now: ports.now(), replaced });
+    const view = planViewOf({ stage: stageOf(snapshot), channelId, meta, slots, decisions: decisionsOf(snapshot, meta.weekStart), progress: state.progress, now: ports.now(), replaced });
+    // Round 3 item 2: an approval the uploads turn pending because another counting approval names the same video number.
+    for (const slot of view.slots) {
+      if (slot.approval === "approved" && slot.fingerprint && !slot.vetoed && !slot.released) slot.duplicateVideo = (state.counting.get(slot.fingerprint.video)?.length ?? 0) > 1;
+    }
+    return view;
   }
 
   async function requirePlan(channelId: string, weekStart: string): Promise<{ snapshot: PublishingPlansSnapshot; meta: PublishingPlanMeta }> {
@@ -70,7 +108,8 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
 
   async function list(channelId: string): Promise<PlanSummary[]> {
     const snapshot = await ports.store.read(channelId);
-    const views = await Promise.all(Object.values(snapshot.plans).map((meta) => viewOf(channelId, snapshot, meta)));
+    const state = await channelState(channelId, snapshot, Object.values(snapshot.slots).map((s) => s.slotId));
+    const views = await Promise.all(Object.values(snapshot.plans).map((meta) => viewOf(channelId, snapshot, meta, state)));
     return views
       .sort((a, b) => b.weekStart.localeCompare(a.weekStart))
       .map((view): PlanSummary => {
@@ -259,7 +298,8 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
     const { action, slots } = parseWithSchema(ownerDecisionInputSchema, input, "decision");
     return ports.withLock(async () => {
       const { snapshot, meta } = await requirePlan(channelId, weekStart);
-      const view = await viewOf(channelId, snapshot, meta);
+      const state = await channelState(channelId, snapshot, slotsOf(snapshot, meta.weekStart).map((s) => s.slotId));
+      const view = await viewOf(channelId, snapshot, meta, state);
       const byId = new Map(view.slots.map((s) => [s.slotId, s]));
       const refuse = (code: "publishing_plan_slot_not_found" | "publishing_plan_changed" | "publishing_plan_slot_vetoed" | "publishing_plan_slot_past" | "publishing_plan_slot_not_packaged", slotId: string, message: string) =>
         new DomainError({ code, message, details: { channelId, weekStart, slotId } });
@@ -281,8 +321,14 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
       const vetoPackageOf = (slot: PlanView["slots"][number]) =>
         stageOf(snapshot) !== "packaged"
           ? null
-          : ((slot.package?.manifestSha256 ? { video: slot.package.video, manifestSha256: slot.package.manifestSha256, videoId: slot.videoId } : null) ??
-            lastApprovedPackageOf(decisionsForStage(decisionsOf(snapshot, weekStart).filter((d) => d.slotId === slot.slotId), "packaged")));
+          : slot.package?.manifestSha256
+            ? { video: slot.package.video, manifestSha256: slot.package.manifestSha256, videoId: slot.videoId }
+            : (() => {
+                // Round 3 (a): the fallback names the last approval's package only while no OTHER slot of the channel counts an
+                // approval for that video number -- else it would remove the date the owner gave there.
+                const last = lastApprovedPackageOf(decisionsForStage(decisionsOf(snapshot, weekStart).filter((d) => d.slotId === slot.slotId), "packaged"));
+                return last && !(state.counting.get(last.video) ?? []).some((id) => id !== slot.slotId) ? last : null;
+              })();
       const replacedVetoed: string[] = [];
       const effective = targets.filter((slot) =>
         action === "approve" ? slot.approval !== "approved" : action === "revoke" ? true : action === "veto" ? !slot.vetoed : Boolean(slot.vetoed)
@@ -391,15 +437,12 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
     // BL-242 R2: the decisions that name a video (a counting approval, a standing veto with its package), to settle per video number.
     const naming = new Map<string, { record: PublishingPlanDecision; kind: "approved" | "vetoed"; package: PublishingPlanPackageFingerprint }>();
     const seen = new Set<string>();
+    // BL-242 R1 (ADR 0062 §3): in the `packaged` stage the uploads read the same package progress as the screen -- one read for the
+    // channel's live slots (round 3); unreadable, it is empty: no slot is approved (fail closed), the vetoes still apply.
+    const progress = stage === "packaged" ? (await channelState(channelId, snapshot, [], true)).progress : new Map<string, PlanSlotProgress>();
     for (const meta of Object.values(snapshot.plans)) {
       const planDecisions = decisionsOf(snapshot, meta.weekStart);
       const slots = slotsOf(snapshot, meta.weekStart);
-      // BL-242 R1 (ADR 0062 §3): in the `packaged` stage the uploads read the same package progress as the screen; unreadable, it is
-      // empty -- no slot is approved (fail closed), the vetoes still apply.
-      let progress = new Map<string, PlanSlotProgress>();
-      if (stage === "packaged" && ports.progress) {
-        progress = await ports.progress(channelId, meta.weekStart, slots.map((s) => s.slotId)).catch(() => new Map<string, PlanSlotProgress>());
-      }
       const view = planViewOf({ stage, channelId, meta, slots, decisions: planDecisions, progress, now: ports.now() });
       for (const slot of view.slots) {
         if (seen.has(slot.slotId)) {

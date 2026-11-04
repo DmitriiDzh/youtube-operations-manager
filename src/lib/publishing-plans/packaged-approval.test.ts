@@ -44,6 +44,8 @@ function harness(options: { progressFails?: () => boolean } = {}) {
   const audits: PlanAuditEntry[] = [];
   // What the packages say of each slot; tests change it between reads.
   const progress = new Map<string, PlanSlotProgress>();
+  // Round 3 (item 3): every progress read, with the slot ids it asked for.
+  const progressCalls: string[][] = [];
   let n = 0;
   const service = createPublishingPlansService({
     store: core,
@@ -54,11 +56,12 @@ function harness(options: { progressFails?: () => boolean } = {}) {
     withLock: (fn) => fn(),
     audit: async (entry) => void audits.push(entry),
     progress: async (_c, _w, ids) => {
+      progressCalls.push([...ids].sort());
       if (options.progressFails?.()) throw new Error("the package scan failed");
       return new Map([...progress].filter(([id]) => ids.includes(id)));
     },
   });
-  return { service, audits, core, progress, clock };
+  return { service, audits, core, progress, clock, progressCalls };
 }
 
 const slot = (slotId: string, day: string, time: string, extra: Record<string, unknown> = {}) => ({ slotId, date: day, publishAt: `${day}T${time}`, lengthHint: "≈ 3 ч", ...extra });
@@ -435,4 +438,65 @@ test("AC-WP-64: the progress read fails -> slotDecisions approves nothing; a rec
   assert.deepEqual(decisions.get("s1"), { kind: "pending" });
   assert.deepEqual(decisions.get("s2"), { kind: "vetoed", package: { video: "V73", manifestSha256: AA, videoId: "vid1" } });
   assert.equal(decisionForRow(rowOfOld, decisions)?.kind, "vetoed");
+});
+
+// Round 3 review of BL-242 (2026-11-04), written before the fix (WEEKLY_PUBLISHING_PLAN.md BL-242 D, ADR 0062 §4):
+// (a) a veto of a slot without a current package records its last approval's package only if no other slot of the channel has a
+//     counting approval for that video number; otherwise none (it reaches only rows made with its slot id);
+// (b) the YouTube date shows only on the slot whose CURRENT package names the video -- an upload row keyed by the old slot does not;
+// item 2: a counting approval the uploads turn pending (two of one video number) is flagged on the screen;
+// item 3: slotDecisions reads progress once for the channel's live slots.
+const rowOnly = (publishAt: string): PlanSlotProgress => ({ status: "scheduled", code: null, videoId: "vid1", publishAt, package: null });
+
+test("AC-WP-65: vid1 uploaded for A, A approved; the package moves to B, B approved and dated; the owner vetoes A -> B keeps its date, A's veto has no package", async () => {
+  const h = harness();
+  await threeSlots(h);
+  h.progress.set("s1", uploaded());
+  await approve(h, "s1");
+  h.progress.set("s1", rowOnly(B_TIME)); // A keeps only its upload row (the package now names B)
+  h.progress.set("s2", uploaded(B_TIME));
+  await approve(h, "s2");
+  assert.equal(slotOf(await get(h), "s1").youtubePublishAt, null, "(b) A does not show the date: its current package does not name the video");
+  await h.service.decide(CH, WEEK, { action: "veto", slots: [{ slotId: "s1" }] }, "u1");
+  const vetoRecord = Object.values((await h.core.read(CH)).decisions).find((d) => d.kind === "vetoed" && d.slotId === "s1")!;
+  assert.equal(vetoRecord.package, undefined, "(a) B counts an approval for V73: the veto records none");
+  const decisions = await h.service.slotDecisions(CH);
+  assert.deepEqual(decisions.get("s1"), { kind: "vetoed" });
+  const rowOfA = { slotId: "s1", videoId: "vid1", manifestSha256: AA };
+  assert.deepEqual(decisionForRow(rowOfA, decisions), { kind: "approved", publishAt: B_TIME, package: { video: "V73", manifestSha256: AA, videoId: "vid1" } }, "B keeps its date");
+});
+
+test("round 3 (b): the YouTube date shows on the slot whose current package names the video, not on a slot with only its upload row", async () => {
+  const h = harness();
+  await threeSlots(h);
+  h.progress.set("s1", rowOnly(B_TIME));
+  h.progress.set("s2", uploaded(B_TIME));
+  const plan = await get(h);
+  assert.equal(slotOf(plan, "s1").youtubePublishAt, null);
+  assert.equal(slotOf(plan, "s2").youtubePublishAt, B_TIME);
+});
+
+test("round 3 item 2: two counting approvals of one video number -- both slots are flagged duplicateVideo on the screen", async () => {
+  const h = harness();
+  await threeSlots(h);
+  h.progress.set("s1", uploaded());
+  h.progress.set("s2", uploaded());
+  await approve(h, "s1");
+  assert.equal(slotOf(await get(h), "s1").duplicateVideo, false, "one approval: nothing to flag");
+  await approve(h, "s2");
+  const plan = await get(h);
+  assert.deepEqual([slotOf(plan, "s1").duplicateVideo, slotOf(plan, "s2").duplicateVideo, slotOf(plan, "s3").duplicateVideo], [true, true, false]);
+});
+
+test("round 3 item 3: slotDecisions reads progress once, for the live slots of every week (a past week is not asked)", async () => {
+  const h = harness();
+  await week(h); // s1 26.10, s2 27.10
+  await h.service.save({ channelId: CH, weekStart: "2026-11-02", timeZone: "Asia/Tokyo", slots: [slot("n1", "2026-11-02", "15:00"), slot("n2", "2026-11-03", "15:00")] }, "factory");
+  h.progressCalls.length = 0;
+  await h.service.slotDecisions(CH);
+  assert.deepEqual(h.progressCalls, [["n1", "n2", "s1", "s2"]]);
+  h.clock.now = new Date("2026-11-01T00:00:00Z"); // the first week is past
+  h.progressCalls.length = 0;
+  await h.service.slotDecisions(CH);
+  assert.deepEqual(h.progressCalls, [["n1", "n2"]]);
 });

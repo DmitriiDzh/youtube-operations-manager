@@ -255,10 +255,13 @@ empty, then packaged). The owner answered «да 1», «да 2а» to the propos
   then shows that package with its video id; the owner's one approval names the video id, and the plan schedule finds the
   finished upload by that video id even though the upload row names the old slot. A package names one slot, so at most one
   counting approval names a video (R1); two counting approvals of one video number are both `pending` (defensive). A veto records
-  the slot's current package fingerprint when it is made (none: the package of the slot's last approval not revoked), R2. For a
+  the slot's current package fingerprint when it is made (none: the package of the slot's last approval not revoked -- but only
+  while no other slot of the channel counts an approval for that video number; else none, and the veto reaches only rows made with
+  its slot id, round 3), R2. For a
   video the newest decision naming it decides -- a counting approval gives its date, a standing veto removes the date; a newer
   counting approval elsewhere beats an older veto; a restore cancels the veto. Nothing counts -> `pending`: the YouTube date stays
-  (BL-225), and the slot that holds the package shows it («на YouTube: …», R3) so the owner approves (moves it) or vetoes (removes
+  (BL-225), and the slot whose CURRENT package names the video shows it («на YouTube: …», R3; an upload row keyed by the old
+  slot alone shows nothing) so the owner approves (moves it) or vetoes (removes
   it). The old slot, once released, says nothing (BL-225).
 - `slot` stage: exactly the BL-225/BL-240 behaviour (hashes, decisions, uploads unchanged).
 - Agent API: `approval` gains `awaiting_package`, the plan state gains `planned`, the plan view gains `approvalStage` (additive,
@@ -291,6 +294,10 @@ empty, then packaged). The owner answered «да 1», «да 2а» to the propos
 - **AC-WP-62** X approved naming vid1 and dated; an agent edits X or the owner revokes X; the owner vetoes X -> vid1's date is removed.
 - **AC-WP-63** X vetoed naming vid1, then the package moves to B and B is approved -> B dates it; restoring X changes nothing.
 - **AC-WP-64** The progress read fails -> `slotDecisions` approves nothing; a recorded veto still applies.
+- **AC-WP-65** (round 3) vid1 uploaded for A, A approved; the package moves to B, B approved and dated; the owner vetoes A -> B
+  keeps its date, A's veto has no package, A shows no YouTube date. Two counting approvals of one video number are flagged on the
+  screen (`duplicateVideo`, «Ещё один пакет с тем же номером — дата не ставится»); `slotDecisions` reads progress once for the
+  channel's live slots.
 - **AC-WP-59** The screen model: `awaiting_package` slots show no approve button and are not in «Одобрить все готовые»; the
   switch shows the stage; texts in en and ru.
 
@@ -310,5 +317,5 @@ Tested against fakes only; nothing verified by eye or on the real plan yet.
   older approval of A whose fingerprint covers the package again (it came back to A) counts again: the owner approved that package
   on A. A slot id used in two plans (possible only before review #2 of BL-225) is `pending`/`vetoed` without a package: its veto
   reaches only upload rows made with that id.
-- AC-WP-60..64 (re-review of BL-242): `packaged-approval.test.ts` (with `decisionForRow`), and the stray date in
+- AC-WP-60..65 (re-reviews of BL-242): `packaged-approval.test.ts` (with `decisionForRow`), and the stray date in
   `weekly-plan-model.test.ts`.
