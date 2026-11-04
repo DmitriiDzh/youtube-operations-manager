@@ -246,23 +246,47 @@ test("AC-WP-57: a veto of the slot that took the video (its approval named vid1)
   assert.deepEqual(h.state.writes, [null]);
 });
 
-// BL-243 (WEEKLY_PUBLISHING_PLAN.md AC-WP-71): a video the channel sync found removed on YouTube is never dated or undated -- no
-// read, no write, nothing recorded; once the mark is cleared (it reappeared) the plan acts on it as before.
-test("BL-243 AC-WP-71: a removed video's row is skipped for an approved or a vetoed slot; the cleared mark acts again", async () => {
-  for (const decision of [{ kind: "approved", publishAt: "2026-10-27T09:00:00.000Z" }, { kind: "vetoed" }] as SlotDecision[]) {
-    const h = harness(row(), decision, undefined, async () => new Set(["vid64"]));
-    assert.deepEqual(await h.schedule.tick(), { changed: 0 });
-    assert.equal(h.state.reads, 0);
-    assert.deepEqual(h.state.writes, []);
-    assert.deepEqual(h.state.audits, []);
-    assert.equal(h.state.row.stepsJson, JSON.stringify(OK_STEPS));
-  }
-  const failed = harness(row(), { kind: "vetoed" }, undefined, async () => {
+// BL-243 (WEEKLY_PUBLISHING_PLAN.md AC-WP-71, rule of review round 2 / ADR 0063 §4): a video the channel sync found removed on YouTube
+// is never DATED -- no read, no write -- and an unreadable removed list dates nothing (fail closed). Removing a date (a veto) never
+// waits on the local mark or the list: it asks YouTube (`read`), and YouTube's "no such video" means there is nothing to remove.
+test("BL-243 AC-WP-71: dating skips a removed video and an unreadable list; the cleared mark dates again", async () => {
+  const approved = { kind: "approved", publishAt: "2026-10-27T09:00:00.000Z" } as SlotDecision;
+  const removed = harness(row(), approved, undefined, async () => new Set(["vid64"]));
+  assert.deepEqual(await removed.schedule.tick(), { changed: 0 });
+  assert.equal(removed.state.reads, 0);
+  assert.deepEqual(removed.state.writes, []);
+  assert.deepEqual(removed.state.audits, []);
+  assert.equal(removed.state.row.stepsJson, JSON.stringify(OK_STEPS));
+  const failed = harness(row(), approved, undefined, async () => {
     throw new Error("db down");
   });
-  assert.deepEqual(await failed.schedule.tick(), { changed: 0 }, "an unreadable mark: fail closed");
+  assert.deepEqual(await failed.schedule.tick(), { changed: 0 }, "an unreadable list: no date (fail closed)");
   assert.equal(failed.state.reads, 0);
-  const cleared = harness(row(), { kind: "vetoed" }, undefined, async () => new Set());
+  const cleared = harness(row(), approved, undefined, async () => new Set());
   assert.deepEqual(await cleared.schedule.tick(), { changed: 1 });
-  assert.deepEqual(cleared.state.writes, [null]);
+  assert.deepEqual(cleared.state.writes, ["2026-10-27T09:00:00.000Z"]);
+});
+
+test("BL-243 AC-WP-71: a veto removes the date whatever the local mark or the list say; YouTube's 'no such video' ends it", async () => {
+  const vetoed = { kind: "vetoed" } as SlotDecision;
+  // The mark says removed, but YouTube still has the video (a wrong mark): the veto's un-dating happens.
+  const marked = harness(row(), vetoed, undefined, async () => new Set(["vid64"]));
+  assert.deepEqual(await marked.schedule.tick(), { changed: 1 });
+  assert.deepEqual(marked.state.writes, [null]);
+  assert.equal(marked.state.row.publishAt, null);
+  // The list cannot be read: the veto still goes through.
+  const unreadable = harness(row(), vetoed, undefined, async () => {
+    throw new Error("db down");
+  });
+  assert.deepEqual(await unreadable.schedule.tick(), { changed: 1 });
+  assert.deepEqual(unreadable.state.writes, [null]);
+  // YouTube says there is no such video: nothing written, the row has no date any more, and the next pass reads nothing.
+  const gone = harness(row(), vetoed, { privacyStatus: null, publishAt: null, missing: true } as never, async () => new Set(["vid64"]));
+  assert.deepEqual(await gone.schedule.tick(), { changed: 1 });
+  assert.deepEqual(gone.state.writes, []);
+  assert.equal(gone.state.reads, 1);
+  assert.equal(gone.state.row.publishAt, null);
+  assert.deepEqual([gone.steps().planSync.action, gone.steps().planSync.result], ["unscheduled", "video_missing"]);
+  assert.deepEqual(await gone.schedule.tick(), { changed: 0 });
+  assert.equal(gone.state.reads, 1);
 });

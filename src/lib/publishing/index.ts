@@ -173,8 +173,8 @@ export function createPublishingCalendarCore(options: { dailyCoverage?: (channel
           problems: p.problems.map((problem) => problem.code),
           videoId: p.youtube?.videoId ?? null,
           // BL-243: whether the uploaded video is still on the channel, as of the copy's last sync.
-          existsOnChannel: p.existsOnChannel ?? null,
-          checkedAt: p.checkedAt ?? null,
+          existsOnChannel: p.existsOnChannel,
+          checkedAt: p.checkedAt,
           removedAt: p.youtube?.removedAt ?? null,
         })),
       };
@@ -277,8 +277,9 @@ function createPackageScanReads() {
     async removedVideos(channelId) {
       return (await videoStore.listRemovedVideosByChannel(channelId)).map((video) => ({ videoId: video.videoId, removedAt: video.removedAt.toISOString() }));
     },
-    async videosSyncedAt(channelId) {
-      return (await videoStore.getChannel(channelId))?.lastSyncedAt?.toISOString() ?? null;
+    // BL-243 review: when the removed check last ran -- not lastSyncedAt, which also moves on syncs that skip it.
+    async videosCheckedAt(channelId) {
+      return (await videoStore.getChannel(channelId))?.removedCheckAt?.toISOString() ?? null;
     },
     join: (...parts) => path.join(...parts),
     clock: { now: () => new Date() },
@@ -733,6 +734,12 @@ export async function releaseUnknownOutcome(channelId: string, uploadId: string)
  * veto removes the date, an approval or a re-approval with a new time sets it -- through video-details' write path (identity,
  * backup, Live writes right before the write, read-back). The slots' decisions come from the composition layer.
  */
+/** BL-243: video-details' definite "not found" for this video (its adapter sets `details.videoId`), not a mapped unknown error. */
+function isVideoNotFound(error: unknown, videoId: string): boolean {
+  const e = error as { code?: unknown; details?: { videoId?: unknown } } | null;
+  return e?.code === "not_found" && e.details?.videoId === videoId;
+}
+
 export function createPlanScheduleCore(options: { slotDecisions: (channelId: string) => Promise<Map<string, SlotDecision>> }) {
   const videoDetails = createVideoDetailsCore();
   const parse = <T,>(text: string): T | null => {
@@ -748,8 +755,14 @@ export function createPlanScheduleCore(options: { slotDecisions: (channelId: str
     slotDecisions: options.slotDecisions,
     removedVideoIds: (channelId) => removedVideoIdsOf(channelId),
     async read(row) {
-      const snapshot = await videoDetails.getSnapshot({ credentialRef: credentialRefOf(row), expectedChannelId: row.channelId, videoId: row.videoId as string });
-      return { privacyStatus: snapshot.privacyStatus, publishAt: snapshot.publishAt };
+      try {
+        const snapshot = await videoDetails.getSnapshot({ credentialRef: credentialRefOf(row), expectedChannelId: row.channelId, videoId: row.videoId as string });
+        return { privacyStatus: snapshot.privacyStatus, publishAt: snapshot.publishAt };
+      } catch (error) {
+        // BL-243: YouTube's own "no such video" (the adapter names the id) -- deleted; any other failure stays a failure.
+        if (isVideoNotFound(error, row.videoId as string)) return { privacyStatus: null, publishAt: null, missing: true };
+        throw error;
+      }
     },
     async write(row, publishAt) {
       const pkg = parse<ApprovedPackage>(row.packageJson) ?? ({} as ApprovedPackage);
