@@ -729,17 +729,17 @@ export async function releaseUnknownOutcome(channelId: string, uploadId: string)
   return done;
 }
 
-/**
- * BL-225 stage 3 (ADR 0051 §5, §7, §10; owner msg 3537): the weekly plan's changes to videos this computer uploaded for a slot -- a
- * veto removes the date, an approval or a re-approval with a new time sets it -- through video-details' write path (identity,
- * backup, Live writes right before the write, read-back). The slots' decisions come from the composition layer.
- */
 /** BL-243: video-details' definite "not found" for this video (its adapter sets `details.videoId`), not a mapped unknown error. */
 function isVideoNotFound(error: unknown, videoId: string): boolean {
   const e = error as { code?: unknown; details?: { videoId?: unknown } } | null;
   return e?.code === "not_found" && e.details?.videoId === videoId;
 }
 
+/**
+ * BL-225 stage 3 (ADR 0051 §5, §7, §10; owner msg 3537): the weekly plan's changes to videos this computer uploaded for a slot -- a
+ * veto removes the date, an approval or a re-approval with a new time sets it -- through video-details' write path (identity,
+ * backup, Live writes right before the write, read-back). The slots' decisions come from the composition layer.
+ */
 export function createPlanScheduleCore(options: { slotDecisions: (channelId: string) => Promise<Map<string, SlotDecision>> }) {
   const videoDetails = createVideoDetailsCore();
   const parse = <T,>(text: string): T | null => {
