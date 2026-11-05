@@ -49,10 +49,13 @@ weekly-plan slot offered deleted V73 for approval, and the deleted upload kept i
    read the list on its own (`removedVideoIdsOf`), so removed videos' rows still say nothing. Only DATING fails closed:
    the plan schedule gives no date to a removed video, nor to any video of the channel while the list cannot be read. Removing a
    date (a veto) never waits on the local mark or the list -- it goes through its own live read. YouTube's "no such video"
-   (`not_found` naming the id) is not proof on its own (another account, a partial answer): it ends the change only when the
+   (`not_found` naming the id with `reason: "no_item"` -- videos.list returned no item; an item without snippet/status is
+   `partial` and never counts) is not proof on its own (another account): it ends the change only when the
    removed mark of a completed owner check names that video too (recorded `video_missing`, the row's date cleared, shown as a
    failure `video_deleted_on_youtube`); otherwise it is `refused` like any other answer and tried again after the hour -- for a
-   veto and for a date alike. The constant
+   veto and for a date alike. `video_missing` holds only while the mark does: once a sync clears it (the video reappeared) the
+   row shows a plain failed plan change and the next pass asks YouTube again (a veto removes a date it finds). When the scan's
+   own removed-list read fails, the plan progress reads the list and scans again with it (packages and rows agree). The constant
    `video_deleted_on_youtube` lives once, in `src/lib/shared-video-presence/` (pure; the scan, the plan, the progress and the
    plan screen use it).
 

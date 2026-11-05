@@ -420,6 +420,12 @@ Fixed values: channel `UC1`, last video sync `2026-11-04T08:00:00.000Z`; V73 rec
 - **AC-WP-82** (review round 4) `agent_video_list` / `factory_video_list`: check 2026-11-04T08:00Z; V73 (`vid73` removed 11-03T19:54Z)
   -> `existsOnChannel` false, `removedAt` set, state still `published`; V74 (published 11-01) -> true; V75 (published after the
   check) -> null; no video id -> null; the copy unreadable -> null / null.
+- **AC-WP-83** (review round 6) `video_missing` holds only while the video is marked removed: once the mark is cleared (it
+  reappeared) the row shows `failed` `plan_<action>_failed`, the plan schedule asks YouTube again and re-applies the slot (a veto
+  removes a date it finds), and removing the vetoed slot is refused `slot_uploaded`. A not-found counts only when videos.list
+  returned no item for the id (`reason: "no_item"`); an item without snippet/status (`partial`) is refused and retried.
+- **AC-WP-84** (review round 6) The scan's removed-list read failed: the plan progress reads the list itself and scans again with
+  it, so the packages (deleted_on_youtube) and the rows agree; that read failing too -> none known.
 - **AC-WP-74** Screens: the packages list labels the state («Удалён на YouTube» / "Deleted on YouTube") and the problem; the plan slot
   shows «Ролик удалён на YouTube» / "Video deleted on YouTube" and no approve button; texts in en and ru.
 
@@ -433,6 +439,8 @@ channel yet.
 - AC-WP-71: `src/lib/publishing/plan-schedule.test.ts` and `upload-runner.test.ts` (`holdsSlot`).
 - AC-WP-72: `src/lib/publishing/calendar-reads.test.ts`; AC-WP-73: `src/lib/channel-sync/services.test.ts`; AC-WP-74:
   `src/components/weekly-plan-model.test.ts` (texts: the ui-text key tests).
+- Review round 6: AC-WP-83 `plan-schedule.test.ts`, `progress.test.ts`, `packaged-approval.test.ts`, `data-api.test.ts`
+  (`readVideoDetailsContext`); AC-WP-84 `package-scan.test.ts`.
 - Review round 4: AC-WP-81 `progress.test.ts` (and `uploadTimeOf`), AC-WP-82 `video-projects.test.ts`, the shared rule
   `shared-video-presence/index.test.ts`, the calendar's one channel read `calendar-reads.test.ts`, AC-WP-77 (scan unavailable)
   `packaged-approval.test.ts`.
