@@ -349,3 +349,24 @@ test("BL-243: scan(channelId, { checkedAt }) uses the given check time for every
   assert.deepEqual([...new Set(result.packages.map((p) => p.checkedAt))], [SYNCED]);
   assert.equal(result.packages.find((p) => p.video === "V74")?.existsOnChannel, true);
 });
+
+// BL-243 review round 6, item 2 (AC-WP-84): the scan's own removed-list read failed; the plan progress read the list itself and passes
+// it back in -- the packages then say deleted_on_youtube exactly as with a working read, so packages and rows agree.
+test("BL-243 AC-WP-84: a removed list passed in replaces a failed read; V73 is deleted_on_youtube again", async () => {
+  const failingRead = {
+    videos: visible74,
+    removedVideos: async (): Promise<Array<{ videoId: string; removedAt: string }>> => {
+      throw new Error("db busy");
+    },
+    videosCheckedAt: async () => SYNCED,
+  };
+  const without = await createPackageScan(deps(uploadedFiles(), failingRead)).scan("UC_t");
+  if (without.status !== "ok") return assert.fail(without.status);
+  assert.equal(without.removedVideoIds, null);
+  assert.equal(without.packages.find((p) => p.video === "V73")?.state, "uploaded_unknown");
+  const withList = await createPackageScan(deps(uploadedFiles(), failingRead)).scan("UC_t", { removedVideos: [{ videoId: "vid73", removedAt: REMOVED }] });
+  if (withList.status !== "ok") return assert.fail(withList.status);
+  assert.deepEqual(withList.removedVideoIds, ["vid73"]);
+  const v73 = withList.packages.find((p) => p.video === "V73")!;
+  assert.deepEqual([v73.state, v73.existsOnChannel, v73.youtube?.removedAt], ["deleted_on_youtube", false, REMOVED]);
+});

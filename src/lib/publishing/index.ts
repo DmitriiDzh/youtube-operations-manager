@@ -58,7 +58,7 @@ import { imageKindOf } from "./packages";
 import { createPackageComposer } from "./package-composer";
 import { authorizedOAuth, createPublishingFinishWrites, createPublishingYoutubeWrites, freshAccessToken } from "./adapters/youtube-writes";
 import { ACTIVE_UPLOAD_STATUSES, createUploadRunner, holdsPackage, holdsSlot, isCancellable, syntheticMediaOf, UNKNOWN_OUTCOME_RELEASED, type ApprovedPackage, type UploadRunnerDeps } from "./upload-runner";
-import { createPlanSchedule } from "./plan-schedule";
+import { createPlanSchedule, isVideoNotFound } from "./plan-schedule";
 import type { PublishingSettings } from "./settings";
 import { createUploadApproval } from "./upload-approval";
 import { createAutoPrivateUpload, type AutoUploadWaiting, type SlotDecision } from "./auto-upload";
@@ -198,7 +198,7 @@ export function createPackageScanCore() {
   const scan = createPackageScanReads();
   const files = createWorkspaceVideoFiles();
   return {
-    scan: (channelId: string, options?: { checkedAt?: string | null }) => scan.reads.scan(channelId, options),
+    scan: (channelId: string, options?: { checkedAt?: string | null; removedVideos?: Array<{ videoId: string; removedAt: string }> }) => scan.reads.scan(channelId, options),
     /**
      * A package's thumbnail for the preview: only an image under `04 Videos/` of the channel's workspace, reached through the
      * workspace rule, at most 10 MB; its type is read from its first bytes, never from its name. Null when it is none of that.
@@ -630,7 +630,12 @@ export function createAutoPrivateUploadCore(options: { slotDecisions?: (channelI
  * dated or undated by the plan, and says nothing of its slot's progress. Read-only (the local copy).
  */
 export async function removedVideoIdsOf(channelId: string): Promise<Set<string>> {
-  return new Set((await createChannelVideoStoreAdapter().listRemovedVideosByChannel(channelId)).map((video) => video.videoId));
+  return new Set((await removedVideosOf(channelId)).map((video) => video.videoId));
+}
+
+/** BL-243: the channel's videos the sync found removed, with when (ISO) -- the package scan's own input, for a caller to pass in. */
+export async function removedVideosOf(channelId: string): Promise<Array<{ videoId: string; removedAt: string }>> {
+  return (await createChannelVideoStoreAdapter().listRemovedVideosByChannel(channelId)).map((video) => ({ videoId: video.videoId, removedAt: video.removedAt.toISOString() }));
 }
 
 /** The channel's uploads on this computer, newest first (the progress list in Content → «Публикация»). */
@@ -727,12 +732,6 @@ export async function releaseUnknownOutcome(channelId: string, uploadId: string)
   const done = await updatePublishingUpload(uploadId, "failed", { errorCode: UNKNOWN_OUTCOME_RELEASED, updatedAt: new Date() });
   if (done) await insertVideoEditAuditEvent({ channelId, videoId: `upload:${uploadId}`, eventType: "RESULT", detail: { event: "publishing.unknown_outcome_released", uploadId, video: row.video } });
   return done;
-}
-
-/** BL-243: video-details' definite "not found" for this video (its adapter sets `details.videoId`), not a mapped unknown error. */
-function isVideoNotFound(error: unknown, videoId: string): boolean {
-  const e = error as { code?: unknown; details?: { videoId?: unknown } } | null;
-  return e?.code === "not_found" && e.details?.videoId === videoId;
 }
 
 /**

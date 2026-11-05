@@ -246,7 +246,7 @@ export function createPackageScan(deps: PackageScanDeps) {
 
   return {
     /** Every package of the channel, by planned date (undated last), then by video number. */
-    async scan(channelId: string, options: { checkedAt?: string | null } = {}): Promise<PackageScanResult> {
+    async scan(channelId: string, options: { checkedAt?: string | null; removedVideos?: Array<{ videoId: string; removedAt: string }> } = {}): Promise<PackageScanResult> {
       const workspace = await deps.workspace(channelId);
       if (!workspace) return { status: "no_workspace" };
       const validation = await deps.validateWorkspace(workspace);
@@ -256,7 +256,8 @@ export function createPackageScan(deps: PackageScanDeps) {
         deps.videos(channelId),
         // BL-243 (ADR 0063): an unreadable mark is "none known" (such packages read as before) and an unreadable sync time null --
         // never a failed scan.
-        deps.removedVideos ? deps.removedVideos(channelId).catch(() => null) : Promise.resolve([]),
+        // (round 6: a caller that read the list itself -- after this scan's read failed -- passes it)
+        options.removedVideos ? Promise.resolve(options.removedVideos) : deps.removedVideos ? deps.removedVideos(channelId).catch(() => null) : Promise.resolve([]),
         // BL-243: a caller that already read the check time (the calendar) passes it, so its own and the items' agree.
         options.checkedAt !== undefined ? Promise.resolve(options.checkedAt) : deps.videosCheckedAt ? deps.videosCheckedAt(channelId).catch(() => null) : Promise.resolve(null),
         findManifests(deps, workspace),
