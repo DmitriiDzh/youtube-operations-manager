@@ -274,9 +274,7 @@ function createPackageScanReads() {
       return (await videoStore.listVideosByChannel(channelId)).map((video) => ({ videoId: video.videoId, title: video.title, privacyStatus: video.privacyStatus, publishAt: video.publishAt, publishedAt: video.publishedAt }));
     },
     // BL-243: the removed mark and the copy's age, so a deleted video is not read as uploaded.
-    async removedVideos(channelId) {
-      return (await videoStore.listRemovedVideosByChannel(channelId)).map((video) => ({ videoId: video.videoId, removedAt: video.removedAt.toISOString() }));
-    },
+    removedVideos: (channelId) => removedVideosOf(channelId),
     // BL-243 review: when the removed check last ran -- not lastSyncedAt, which also moves on syncs that skip it.
     async videosCheckedAt(channelId) {
       return (await videoStore.getChannel(channelId))?.removedCheckAt?.toISOString() ?? null;
@@ -561,7 +559,8 @@ export function createUploadApprovalCore() {
     // Review #5 (BL-225): the slots held by an upload here (queued, running, done, or with a video).
     // BL-243: a done row of a video deleted on YouTube holds no slot (its video NUMBER stays held: `liveVideos`).
     heldSlots: async (channelId) => {
-      const [rows, removed] = await Promise.all([listPublishingUploads({ channelId, withSlot: true, limit: 5000 }), removedVideoIdsOf(channelId).catch(() => new Set<string>())]);
+      const [rows, removedList] = await Promise.all([listPublishingUploads({ channelId, withSlot: true, limit: 5000 }), removedVideosOf(channelId).catch(() => [])]);
+      const removed = new Map(removedList.map((video) => [video.videoId, video.removedAt]));
       return new Set(rows.filter((row) => holdsSlot(row, removed)).map((row) => row.slotId as string));
     },
     insert: (rows) => insertPublishingUploads(rows),

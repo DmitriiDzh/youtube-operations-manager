@@ -1289,18 +1289,25 @@ test("AC-WP-56: the date step dates only the approved manifest", async () => {
   assert.deepEqual([other.publishAtWrites, JSON.parse(other.row().stepsJson).publishAt], [[], "withheld"]);
 });
 
-// BL-243 (WEEKLY_PUBLISHING_PLAN.md AC-WP-71): a done upload of a video the channel sync found removed on YouTube no longer holds
-// its weekly-plan slot; it still holds its video number (never uploaded twice on a wrong mark); every other row as before.
-test("BL-243 AC-WP-71: a done row of a removed video holds no slot; its number stays held; other rows unchanged", () => {
-  const removed = new Set(["vid73"]);
-  const done = { status: "done" as const, videoId: "vid73", errorCode: null };
-  assert.equal(holdsSlot(done, removed), false);
+// BL-243 (AC-WP-71; review round 7 grace): a finished upload of a video the channel sync found removed on YouTube frees its
+// weekly-plan slot only when the mark is at least 24 h newer than the upload (steps.uploadedAt, else finishedAt); it always holds its
+// video number; every other row as before.
+test("BL-243 AC-WP-71: a removed video's finished row frees its slot only after the 24 h grace; its number stays held", () => {
+  const uploaded = { stepsJson: JSON.stringify({ uploadedAt: "2026-11-03T08:00:00.000Z" }), finishedAt: new Date("2026-11-03T09:00:00.000Z") };
+  const late = new Map([["vid73", "2026-11-04T19:54:00.000Z"]]); // 35 h 54 min after the upload
+  const early = new Map([["vid73", "2026-11-03T19:54:00.000Z"]]); // 11 h 54 min after: inside the grace
+  const done = { status: "done" as const, videoId: "vid73", errorCode: null, ...uploaded };
+  assert.equal(holdsSlot(done, late), false);
+  assert.equal(holdsSlot(done, early), true, "inside the grace: still held");
   assert.equal(holdsPackage(done), true);
-  assert.equal(holdsSlot(done, new Set()), true, "the mark cleared: it holds again");
-  assert.equal(holdsSlot({ status: "done", videoId: "vid74", errorCode: null }, removed), true);
-  assert.equal(holdsSlot({ status: "queued", videoId: null, errorCode: null }, removed), true);
-  assert.equal(holdsSlot({ status: "failed", videoId: null, errorCode: "unknown_outcome" }, removed), true);
-  assert.equal(holdsSlot({ status: "cancelled", videoId: null, errorCode: null }, removed), false);
-  assert.equal(holdsSlot({ status: "failed", videoId: "vid73", errorCode: "thumbnail_failed" }, removed), false, "failed after the insert: the video is gone too");
-  assert.equal(holdsSlot({ status: "processing", videoId: "vid73", errorCode: null }, removed), true, "under way: the runner decides");
+  assert.equal(holdsSlot(done, new Map()), true, "the mark cleared: it holds again");
+  // No steps.uploadedAt: finishedAt is the upload time.
+  assert.equal(holdsSlot({ ...done, stepsJson: "{}", finishedAt: new Date("2026-11-03T08:00:00.000Z") }, late), false);
+  assert.equal(holdsSlot({ ...done, stepsJson: "{}", finishedAt: null }, late), true, "no upload time known: held");
+  assert.equal(holdsSlot({ ...done, videoId: "vid74" }, late), true);
+  assert.equal(holdsSlot({ status: "queued", videoId: null, errorCode: null, stepsJson: "{}", finishedAt: null }, late), true);
+  assert.equal(holdsSlot({ status: "failed", videoId: null, errorCode: "unknown_outcome", stepsJson: "{}", finishedAt: null }, late), true);
+  assert.equal(holdsSlot({ status: "cancelled", videoId: null, errorCode: null, stepsJson: "{}", finishedAt: null }, late), false);
+  assert.equal(holdsSlot({ status: "failed", videoId: "vid73", errorCode: "thumbnail_failed", ...uploaded }, late), false, "failed after the insert: the video is gone too");
+  assert.equal(holdsSlot({ status: "processing", videoId: "vid73", errorCode: null, ...uploaded }, late), true, "under way: the runner decides");
 });

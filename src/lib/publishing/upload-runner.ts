@@ -8,6 +8,7 @@
 // writes off pauses a job (never fails it); quota and the channel's upload cap pause it until they reset.
 
 import type { StoredPublishingUpload } from "@/lib/db";
+import { removedMarkFreesSlot } from "@/lib/shared-video-presence";
 import { READ_BACK_RETRIES, READ_BACK_RETRY_DELAY_MS } from "@/lib/video-details/read-back";
 import type { PublishingSettings } from "./settings";
 import { approvalNamesUpload, type SlotDecision } from "./slot-decision";
@@ -850,11 +851,17 @@ export function holdsPackage(row: Pick<StoredPublishingUpload, "status" | "video
 
 /**
  * BL-243: whether an upload row holds its weekly-plan slot -- as `holdsPackage`, except a finished row (done or failed) whose
- * video the channel sync found removed on YouTube (that video is not the slot's any more). Its video NUMBER stays held (`holdsPackage`).
+ * video the channel sync found removed on YouTube (that video is not the slot's any more) -- and (review round 7) only when the
+ * mark is at least `REMOVED_MARK_GRACE_MS` newer than the row's upload (`steps.uploadedAt`, else `finishedAt`): a fresh upload
+ * missing from a lagging uploads playlist never frees its slot. Its video NUMBER stays held (`holdsPackage`).
+ * `removedVideos`: video id -> when it was marked removed.
  */
-export function holdsSlot(row: Pick<StoredPublishingUpload, "status" | "videoId" | "errorCode">, removedVideoIds: ReadonlySet<string>): boolean {
+export function holdsSlot(row: Pick<StoredPublishingUpload, "status" | "videoId" | "errorCode" | "stepsJson" | "finishedAt">, removedVideos: ReadonlyMap<string, string | Date>): boolean {
   const finished = !(ACTIVE as readonly string[]).includes(row.status);
-  return holdsPackage(row) && !(finished && row.videoId !== null && removedVideoIds.has(row.videoId));
+  if (!holdsPackage(row)) return false;
+  if (!finished || row.videoId === null || !removedVideos.has(row.videoId)) return true;
+  const uploadedAt = stepsOf(row).uploadedAt ?? row.finishedAt;
+  return !removedMarkFreesSlot({ removedAt: removedVideos.get(row.videoId), uploadedAt });
 }
 
 export type UploadRunner = ReturnType<typeof createUploadRunner>;

@@ -23,3 +23,13 @@ test("isDeletedOnYoutube: only failed with the shared code", () => {
   assert.equal(isDeletedOnYoutube({ status: "packaged", code: "video_deleted_on_youtube" }), false);
   assert.equal(isDeletedOnYoutube(null), false);
 });
+
+// BL-243 review round 7: the 24 h grace before a removed mark frees a slot for a second upload (values by hand).
+test("removedMarkFreesSlot: only a mark at least 24 h newer than the upload; unknown times never", async () => {
+  const { REMOVED_MARK_GRACE_MS, removedMarkFreesSlot } = await import("./index");
+  assert.equal(REMOVED_MARK_GRACE_MS, 86_400_000);
+  assert.equal(removedMarkFreesSlot({ uploadedAt: "2026-11-03T08:00:00.000Z", removedAt: "2026-11-04T07:59:59.999Z" }), false, "inside the grace");
+  assert.equal(removedMarkFreesSlot({ uploadedAt: "2026-11-03T08:00:00.000Z", removedAt: "2026-11-04T08:00:00.000Z" }), true, "exactly 24 h");
+  assert.equal(removedMarkFreesSlot({ uploadedAt: null, removedAt: "2026-11-04T08:00:00.000Z" }), false);
+  assert.equal(removedMarkFreesSlot({ uploadedAt: "2026-11-03T08:00:00.000Z", removedAt: null }), false);
+});
