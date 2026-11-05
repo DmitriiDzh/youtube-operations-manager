@@ -69,11 +69,6 @@ export type PackageScanResult =
   | {
       status: "ok";
       packages: ScannedPackage[];
-      /**
-       * BL-243: the ids of the channel's videos the sync found removed, as this scan read them; null when that read failed (the
-       * packages then read as if none were removed). The plan progress reuses them, so it never disagrees with the packages it shows.
-       */
-      removedVideoIds: string[] | null;
     };
 
 export type PackageScanDeps = {
@@ -270,7 +265,7 @@ export function createPackageScan(deps: PackageScanDeps) {
       }
       const number = (p: ScannedPackage) => Number(/\d+/.exec(p.video ?? p.manifestPath.split("/").pop() ?? "")?.[0] ?? 0);
       packages.sort((a, b) => (a.plannedPublishDate ?? "9999") .localeCompare(b.plannedPublishDate ?? "9999") || number(a) - number(b));
-      return { status: "ok", packages: markSharedSlots(packages), removedVideoIds: removed === null ? null : [...copy.removed.keys()] };
+      return { status: "ok", packages: markSharedSlots(packages) };
     },
   };
 }

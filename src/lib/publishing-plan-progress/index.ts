@@ -1,5 +1,6 @@
 import { createPackageScanCore, createPublishingSettingsCore, listChannelUploads, removedVideosOf } from "@/lib/publishing";
 import type { PlanProgressResult, PlanSlotProgress, PublishingPlansPorts } from "@/lib/publishing-plans";
+import { createPackagesReader, type PackagesEntry } from "./packages-cache";
 import { deletedVideosBySlot, progressOfSlots, progressWithUploads } from "./progress";
 
 // BL-225 stage 2 (ADR 0051, AGENTS.md §M): the plan's `progress` port from the publishing module's package scan, given to the plan's
@@ -7,31 +8,15 @@ import { deletedVideosBySlot, progressOfSlots, progressWithUploads } from "./pro
 // channel (the plan screen polls every minute; agents read on demand). A failed scan gives no progress -- never a wrong one.
 
 const CACHE_KEY = Symbol.for("ytom.publishingPlanProgress.cache");
-const CACHE_MS = 60_000;
-type Cached = { at: number; packages: Parameters<typeof progressOfSlots>[0] | null; synthetic: boolean; removedVideoIds: Set<string> };
-type GlobalWithCache = typeof globalThis & { [CACHE_KEY]?: Map<string, Cached> };
+type GlobalWithCache = typeof globalThis & { [CACHE_KEY]?: Map<string, PackagesEntry> };
 
-/**
- * BL-243 (round 8): ONE removed-list read, one answer for the packages and the rows -- handed to the one scan; that read failing,
- * both get "none known" (an empty list, never a second read). `packages` null: the scan failed (not cached).
- */
-async function packagesOf(channelId: string): Promise<Cached> {
-  const holder = globalThis as GlobalWithCache;
-  const cache = (holder[CACHE_KEY] ??= new Map());
-  const hit = cache.get(channelId);
-  if (hit && Date.now() - hit.at < CACHE_MS) return hit;
-  const removed = await removedVideosOf(channelId).catch(() => []);
-  const removedVideoIds = new Set(removed.map((video) => video.videoId));
-  try {
-    const [scan, settings] = await Promise.all([createPackageScanCore().scan(channelId, { removedVideos: removed }), createPublishingSettingsCore().read(channelId)]);
-    if (scan.status !== "ok") return { at: Date.now(), packages: null, synthetic: false, removedVideoIds };
-    const entry: Cached = { at: Date.now(), packages: scan.packages, synthetic: settings.settings.containsSyntheticMedia, removedVideoIds };
-    cache.set(channelId, entry);
-    return entry;
-  } catch {
-    return { at: Date.now(), packages: null, synthetic: false, removedVideoIds };
-  }
-}
+const packagesOf = createPackagesReader({
+  removedVideos: (channelId) => removedVideosOf(channelId),
+  scan: (channelId, removedVideos) => createPackageScanCore().scan(channelId, { removedVideos }),
+  synthetic: async (channelId) => (await createPublishingSettingsCore().read(channelId)).settings.containsSyntheticMedia,
+  now: () => Date.now(),
+  cache: ((globalThis as GlobalWithCache)[CACHE_KEY] ??= new Map()),
+});
 
 /** The plan's progress port: the packages (`built`, `packaged`) and this computer's uploads (`uploading`, `failed`, `scheduled`, `published`). */
 export const publishingPlanProgress: NonNullable<PublishingPlansPorts["progress"]> = async (channelId, _weekStart, slotIds): Promise<PlanProgressResult> => {

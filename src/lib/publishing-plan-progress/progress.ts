@@ -4,8 +4,6 @@
 
 import type { PlanSlotProgress } from "@/lib/publishing-plans";
 import { uploadTimeOf, VIDEO_DELETED_ON_YOUTUBE } from "@/lib/shared-video-presence";
-
-export { uploadTimeOf };
 import type { ScannedPackage } from "@/lib/publishing";
 
 /** How far a status got, to pick one package when two name the same slot (the furthest one wins). */

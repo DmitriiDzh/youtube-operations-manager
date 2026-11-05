@@ -95,7 +95,7 @@ function harness(initial: { packages: ScannedPackage[]; enabled?: boolean; files
   };
   let id = 0;
   const approvalDeps: UploadApprovalDeps = {
-    scan: async () => ({ status: "ok", removedVideoIds: [], packages: state.packages }),
+    scan: async () => ({ status: "ok", packages: state.packages }),
     settings: async () => ({ channelId: CHANNEL, settings: SETTINGS, defaults: DEFAULT_PUBLISHING_SETTINGS, saved: ["playlistId"], conflictedFields: [] }),
     liveVideos: async () => new Set(state.rows.filter(holdsPackage).map((row) => row.video)),
     peerUploads: async () => state.peers,
@@ -118,7 +118,7 @@ function harness(initial: { packages: ScannedPackage[]; enabled?: boolean; files
   const deps: AutoUploadDeps = {
     enabled: async () => state.enabled,
     channels: async () => state.channels,
-    scan: async () => (state.noWorkspace ? { status: "no_workspace" } : { status: "ok", removedVideoIds: [], packages: state.packages }),
+    scan: async () => (state.noWorkspace ? { status: "no_workspace" } : { status: "ok", packages: state.packages }),
     liveVideos: approvalDeps.liveVideos,
     peerUploads: approvalDeps.peerUploads,
     // Review M1: every row here counts as tried, automatic or the owner's, whatever its status.
@@ -256,7 +256,7 @@ test("AC-AU-07: a peer that starts the same package while the video is hashed st
   const auto = createAutoPrivateUpload({
     enabled: async () => h.state.enabled,
     channels: async () => [{ channelId: CHANNEL, userId: OWNER }],
-    scan: async () => ({ status: "ok", removedVideoIds: [], packages: [p] }),
+    scan: async () => ({ status: "ok", packages: [p] }),
     liveVideos: async () => new Set(),
     peerUploads: async () => new Map(),
     triedHashes: async () => new Set(),
@@ -267,7 +267,7 @@ test("AC-AU-07: a peer that starts the same package while the video is hashed st
     },
     queue: async (input) =>
       createUploadApproval({
-        scan: async () => ({ status: "ok", removedVideoIds: [], packages: [p] }),
+        scan: async () => ({ status: "ok", packages: [p] }),
         settings: async () => ({ channelId: CHANNEL, settings: SETTINGS, defaults: DEFAULT_PUBLISHING_SETTINGS, saved: [], conflictedFields: [] }),
         liveVideos: async () => new Set(),
         peerUploads: async () => h.state.peers,
@@ -349,7 +349,7 @@ test("an unknown quota is never acknowledged by the automatic path (it waits lik
   const p = scanned(release("V65"), "mf-1");
   const h = harness({ packages: [p], files: fileOf(p) });
   const approval = createUploadApproval({
-    scan: async () => ({ status: "ok", removedVideoIds: [], packages: [p] }),
+    scan: async () => ({ status: "ok", packages: [p] }),
     settings: async () => ({ channelId: CHANNEL, settings: SETTINGS, defaults: DEFAULT_PUBLISHING_SETTINGS, saved: [], conflictedFields: [] }),
     liveVideos: async () => new Set(),
     peerUploads: async () => new Map(),
@@ -362,11 +362,11 @@ test("an unknown quota is never acknowledged by the automatic path (it waits lik
     clock: { now: () => NOW },
   });
   await assert.rejects(
-    approval.queueAutomatic({ channelId: CHANNEL, userId: OWNER, manifestPath: p.manifestPath, manifestSha256: "mf-1", scanned: { status: "ok", removedVideoIds: [], packages: [p] }, switchOn: true }),
+    approval.queueAutomatic({ channelId: CHANNEL, userId: OWNER, manifestPath: p.manifestPath, manifestSha256: "mf-1", scanned: { status: "ok", packages: [p] }, switchOn: true }),
     (error: { code?: string }) => error.code === "quota_unknown"
   );
   await assert.rejects(
-    approval.queueAutomatic({ channelId: CHANNEL, userId: OWNER, manifestPath: p.manifestPath, manifestSha256: "mf-1", scanned: { status: "ok", removedVideoIds: [], packages: [p] }, switchOn: false }),
+    approval.queueAutomatic({ channelId: CHANNEL, userId: OWNER, manifestPath: p.manifestPath, manifestSha256: "mf-1", scanned: { status: "ok", packages: [p] }, switchOn: false }),
     (error: { code?: string }) => error.code === "validation_failed"
   );
   assert.equal(h.state.rows.length, 0);
@@ -379,7 +379,7 @@ test("the switch turned off while a video was hashed: nothing is queued", async 
   const auto = createAutoPrivateUpload({
     enabled: async () => ++reads === 1,
     channels: async () => [{ channelId: CHANNEL, userId: OWNER }],
-    scan: async () => ({ status: "ok", removedVideoIds: [], packages: [p] }),
+    scan: async () => ({ status: "ok", packages: [p] }),
     liveVideos: async () => new Set(),
     peerUploads: async () => new Map(),
     triedHashes: async () => new Set(),
@@ -436,7 +436,7 @@ test("waiting reasons: a refusal for one package (tags over 500 characters) is r
   const auto = createAutoPrivateUpload({
     enabled: async () => true,
     channels: async () => [{ channelId: CHANNEL, userId: OWNER }],
-    scan: async () => ({ status: "ok", removedVideoIds: [], packages: [p] }),
+    scan: async () => ({ status: "ok", packages: [p] }),
     liveVideos: async () => new Set(),
     peerUploads: async () => new Map(),
     triedHashes: async () => new Set(),
@@ -444,7 +444,7 @@ test("waiting reasons: a refusal for one package (tags over 500 characters) is r
     hashFile: async () => HASH_A,
     queue: (input) =>
       createUploadApproval({
-        scan: async () => ({ status: "ok", removedVideoIds: [], packages: [p] }),
+        scan: async () => ({ status: "ok", packages: [p] }),
         settings: async () => ({ channelId: CHANNEL, settings: { ...SETTINGS, channelTags: longTags }, defaults: DEFAULT_PUBLISHING_SETTINGS, saved: [], conflictedFields: [] }),
         liveVideos: async () => new Set(),
         peerUploads: async () => new Map(),
@@ -538,7 +538,7 @@ test("review L3: switched off while a video is hashed -- the standing reasons ar
   const auto = createAutoPrivateUpload({
     enabled: async () => ++reads === 1,
     channels: async () => [{ channelId: CHANNEL, userId: OWNER }],
-    scan: async () => ({ status: "ok", removedVideoIds: [], packages: [a] }),
+    scan: async () => ({ status: "ok", packages: [a] }),
     liveVideos: async () => new Set(),
     peerUploads: async () => new Map(),
     triedHashes: async () => new Set(),
@@ -571,7 +571,7 @@ test("review L4: one channel's failure does not stop the others; it is recorded 
     ],
     scan: async (channelId) => {
       if (channelId === "UC_broken") throw new Error("database is locked");
-      return { status: "ok", removedVideoIds: [], packages: [p] };
+      return { status: "ok", packages: [p] };
     },
     liveVideos: async () => new Set(queued),
     peerUploads: async () => new Map(),

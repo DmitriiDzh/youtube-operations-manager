@@ -296,10 +296,6 @@ test("BL-243: an unreadable removed list or sync time keeps the scan going (none
     ["V75", "uploaded_unknown", null],
     ["V76", "ready", null],
   ]);
-  // (round 5: null, not [], so the plan progress knows to read the list on its own)
-  assert.equal(result.removedVideoIds, null);
-  const read = await createPackageScan(deps(uploadedFiles(), { videos: visible74, removedVideos: async () => [{ videoId: "vid73", removedAt: REMOVED }] })).scan("UC_t");
-  assert.deepEqual(read.status === "ok" ? read.removedVideoIds : null, ["vid73"]);
 });
 
 // BL-243 review round 2, items 3 and 8 (AC-WP-78, AC-WP-76): "on the channel" (true) needs a completed removed check -- without one
@@ -362,11 +358,9 @@ test("BL-243 AC-WP-84: a removed list passed in replaces a failed read; V73 is d
   };
   const without = await createPackageScan(deps(uploadedFiles(), failingRead)).scan("UC_t");
   if (without.status !== "ok") return assert.fail(without.status);
-  assert.equal(without.removedVideoIds, null);
   assert.equal(without.packages.find((p) => p.video === "V73")?.state, "uploaded_unknown");
   const withList = await createPackageScan(deps(uploadedFiles(), failingRead)).scan("UC_t", { removedVideos: [{ videoId: "vid73", removedAt: REMOVED }] });
   if (withList.status !== "ok") return assert.fail(withList.status);
-  assert.deepEqual(withList.removedVideoIds, ["vid73"]);
   const v73 = withList.packages.find((p) => p.video === "V73")!;
   assert.deepEqual([v73.state, v73.existsOnChannel, v73.youtube?.removedAt], ["deleted_on_youtube", false, REMOVED]);
 });

@@ -261,17 +261,6 @@ test("BL-243 AC-WP-76: the newest deleted upload speaks for the slot", () => {
   assert.equal(progressOfSlots([b, a], ["s1"], false, rows).get("s1")?.videoId, "vid72");
 });
 
-// BL-243 review round 4, item 6: one time rule -- the record's uploadedAt, else the row's own steps.uploadedAt, never createdAt.
-test("BL-243: uploadTimeOf takes the record's uploadedAt, else the row's recorded uploadedAt, else nothing", async () => {
-  const { uploadTimeOf } = await import("./progress");
-  const row = { stepsJson: JSON.stringify({ uploadedAt: "2026-11-02T00:00:00.000Z" }) };
-  assert.equal(uploadTimeOf({ uploadedAt: "2026-11-01T00:00:00.000Z" }, row), Date.parse("2026-11-01T00:00:00.000Z"));
-  assert.equal(uploadTimeOf({ uploadedAt: null }, row), Date.parse("2026-11-02T00:00:00.000Z"));
-  assert.equal(uploadTimeOf(null, { stepsJson: "{}" }), null);
-  assert.equal(uploadTimeOf(null, { stepsJson: "{ broken" }), null);
-  assert.equal(uploadTimeOf(undefined, null), null);
-});
-
 // BL-243 review round 4, item 1 (AC-WP-81): the owner moved V73's Vn_youtube.json away to upload it again -- the package is ready,
 // no deleted package names the slot any more. The removed video's row (uploaded 10-24T02:00Z) still blocks every older row of the
 // number on that slot: the slot is packaged (approvable), not the old failure; a new try after it counts.
