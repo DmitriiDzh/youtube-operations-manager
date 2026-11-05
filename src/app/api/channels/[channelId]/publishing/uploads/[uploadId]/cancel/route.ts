@@ -5,6 +5,7 @@ import { createChannelAccessCore } from "@/lib/channel-access";
 import { cancelUpload } from "@/lib/publishing";
 import { DomainError } from "@/lib/shared-domain";
 import { getVideoMetadataErrorStatus } from "../../../../../../video-metadata/error-status";
+import { deviceGateErrorResponse } from "../../device-gate-error";
 
 export type CancelUploadDeps = {
   getSession: () => Promise<{ user?: { id?: string | null } } | null>;
@@ -35,6 +36,8 @@ export function createCancelUploadHandler(
       await deps.assertActiveChannel({ userId, channelId });
       return NextResponse.json({ cancelled: true, ...(await deps.cancel({ channelId, uploadId }, userId)) });
     } catch (error) {
+      const gate = deviceGateErrorResponse(error);
+      if (gate) return gate;
       if (error instanceof DomainError) {
         return NextResponse.json({ error: error.code, message: error.message, details: error.details }, { status: getVideoMetadataErrorStatus(error.code) });
       }

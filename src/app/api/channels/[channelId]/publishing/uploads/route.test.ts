@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DomainError } from "@/lib/shared-domain";
+import { OperationLockError, type OperationLock } from "@/lib/operation-lock";
+import { RecoveryModeError } from "@/lib/device-mutation-gate";
 import { DEFAULT_PUBLISHING_SETTINGS } from "@/lib/publishing/settings";
 import { createPublishingUploadsHandlers } from "./route";
 import { createCancelUploadHandler } from "./[uploadId]/cancel/route";
@@ -119,4 +121,23 @@ test("AC-UQ-12: move -- 401 without a session, refused for another channel, up/d
     [{ channelId: "UC_active", uploadId: "u1", direction: "down" }, "u-owner"],
     [{ channelId: "UC_active", uploadId: "started", direction: "up" }, "u-owner"],
   ]);
+});
+
+test("BL-244 review: the device gate's refusals keep their codes on cancel/stop and move (409 lock held, 423 recovery), not a 500", async () => {
+  const heldBy = { id: "singleton", operationType: "export", holderPid: 4242, acquiredAt: "2026-11-05T16:00:00.000Z" } as unknown as OperationLock;
+  const errors: Array<[Error, number, string]> = [
+    [new OperationLockError({ heldBy, stale: false }), 409, "operation_lock_held"],
+    [new RecoveryModeError([]), 423, "device_in_recovery_mode"],
+  ];
+  const at = (uploadId: string) => ({ params: Promise.resolve({ channelId: "UC_active", uploadId }) });
+  for (const [error, status, code] of errors) {
+    const cancel = createCancelUploadHandler({ getSession: async () => ({ user: { id: "u-owner" } }), assertActiveChannel, cancel: async () => { throw error; } });
+    const stopped = await cancel(new Request("http://x/", { method: "POST" }), at("u1"));
+    assert.equal(stopped.status, status);
+    assert.equal((await stopped.json()).error, code);
+    const move = createMoveUploadHandler({ getSession: async () => ({ user: { id: "u-owner" } }), assertActiveChannel, moveStep: async () => { throw error; } });
+    const moved = await move(post({ direction: "up" }), at("u1"));
+    assert.equal(moved.status, status);
+    assert.equal((await moved.json()).error, code);
+  }
 });

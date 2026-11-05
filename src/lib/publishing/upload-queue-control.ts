@@ -210,7 +210,7 @@ export function createUploadQueueControl(deps: UploadQueueControlDeps) {
         const row = await ownRow(input.channelId, input.uploadId);
         if (!isCancellable(row)) throw notCancellable(input, row);
         const now = deps.clock.now();
-        const stopped = await deps.stop(row.id, row.status, { status: "cancelled", ...(actor.kind === "producer" ? { errorCode: CANCELLED_BY_PRODUCER } : {}), finishedAt: now, updatedAt: now });
+        const stopped = await deps.stop(row.id, row.status, { status: "cancelled", errorCode: actor.kind === "producer" ? CANCELLED_BY_PRODUCER : null, finishedAt: now, updatedAt: now });
         if (!stopped) continue;
         const sending = isSending(row);
         await deps.audit({

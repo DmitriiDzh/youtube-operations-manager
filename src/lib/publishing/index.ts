@@ -659,7 +659,8 @@ export async function listChannelUploadsForOwner(channelId: string) {
 
 /**
  * BL-239 (UPLOAD_QUEUE_CONTROL_PLAN.md, ADR 0059; owner msgs 3928/3930): control of this computer's upload queue. Reached only by
- * the Producer session's wiring (`src/lib/producer-mcp-endpoint/session-deps.ts`) and the owner's move route -- never by a channel
+ * the Producer session's wiring (`src/lib/producer-mcp-endpoint/session-deps.ts`), the owner's move route and, through
+ * `cancelUpload`, the owner's cancel/stop route (BL-244) -- never by a channel
  * worker or the factory endpoint (`no-agent-upload-tool.test.ts`). `slotDecisions` comes from the composition layer; `channelUser`
  * is the caller's own rule for "connected here" (absent: the channel's stored connected user).
  */
