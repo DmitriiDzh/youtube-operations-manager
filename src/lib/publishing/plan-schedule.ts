@@ -79,6 +79,15 @@ export function decisionForRow(row: Pick<StoredPublishingUpload, "slotId" | "vid
   return own;
 }
 
+/**
+ * BL-243: video-details' definite "no such video" for this video -- videos.list returned no item for the id (`reason: "no_item"`).
+ * An item without snippet/status (`partial`) or a mapped unknown error is not one: refused and retried.
+ */
+export function isVideoNotFound(error: unknown, videoId: string): boolean {
+  const e = error as { code?: unknown; details?: { videoId?: unknown; reason?: unknown } } | null;
+  return e?.code === "not_found" && e.details?.videoId === videoId && e.details?.reason === "no_item";
+}
+
 /** What the plan wants for the row's video now: a date, no date, or nothing (leave it). Pure. */
 export function desiredDate(row: Pick<StoredPublishingUpload, "publishAt" | "stepsJson">, decision: SlotDecision | undefined, nowMs: number): { publishAt: string | null } | null {
   if (!decision || decision.kind === "pending") return null;
@@ -144,7 +153,12 @@ export function createPlanSchedule(deps: PlanScheduleDeps) {
           decisions = await deps.slotDecisions(row.channelId);
           byChannel.set(row.channelId, decisions);
         }
-        const want = desiredDate(row, decisionForRow(row, decisions), deps.clock.now().getTime());
+        const decision = decisionForRow(row, decisions);
+        // BL-243 review round 6: a `video_missing` row whose video is no longer marked removed (it reappeared) is not done -- its
+        // stored "no date" is not YouTube's word any more, so a veto asks YouTube again (the live read removes a date if there is
+        // one); an approval dates it as usual.
+        const reappeared = stepsOf(row).planSync?.result === "video_missing" && (await removedOf(row.channelId))?.has(row.videoId) === false;
+        const want = reappeared && decision?.kind === "vetoed" ? { publishAt: null } : desiredDate(row, decision, deps.clock.now().getTime());
         if (!want) continue;
         // BL-243 (ADR 0063 §4): a video the sync found removed is never dated; an unreadable list dates nothing of the channel
         // (fail closed). Removing a date never waits on the list: YouTube's own answer decides (`missing`: nothing to do).

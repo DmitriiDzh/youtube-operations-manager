@@ -3,7 +3,7 @@ import test from "node:test";
 import type { StoredPublishingUpload } from "@/lib/db";
 import { DomainError } from "@/lib/shared-domain";
 import type { SlotDecision } from "./auto-upload";
-import { createPlanSchedule, desiredDate, RETRY_AFTER_MS } from "./plan-schedule";
+import { createPlanSchedule, desiredDate, isVideoNotFound, RETRY_AFTER_MS } from "./plan-schedule";
 
 // BL-225 stage 3 (WEEKLY_PUBLISHING_PLAN.md AC-WP-32 and the owner's answer 2, msg 3537; ADR 0051 §5, §10; FO-REQ-0040 item 5).
 // Requirements: a vetoed slot's scheduled video loses its date and stays private, read back; a slot approved after its package was
@@ -319,4 +319,29 @@ test("BL-243 AC-WP-79: not_found without a removed mark is refused and retried, 
   assert.deepEqual(dating.state.writes, []);
   assert.equal(dating.state.row.publishAt, null);
   assert.deepEqual([dating.steps().planSync.action, dating.steps().planSync.result], ["scheduled", "refused"]);
+});
+
+// BL-243 review round 6 (AC-WP-83): video_missing does not stick once the mark is cleared (the video reappeared). The row says "no
+// date" from the earlier answer; the next pass asks YouTube again and re-applies the slot's wish -- a veto removes the date.
+test("BL-243 AC-WP-83: after video_missing and a cleared mark, a veto re-runs through the live read", async () => {
+  const missingSteps = JSON.stringify({ ...OK_STEPS, planSync: { at: NOW.toISOString(), action: "unscheduled", publishAt: null, result: "video_missing" } });
+  const back = harness(row({ publishAt: null, stepsJson: missingSteps }), { kind: "vetoed" }, { privacyStatus: "private", publishAt: "2026-10-26T09:00:00.000Z" }, async () => new Set());
+  assert.deepEqual(await back.schedule.tick(), { changed: 1 });
+  assert.equal(back.state.reads, 2, "read before and after");
+  assert.deepEqual(back.state.writes, [null]);
+  assert.equal(back.steps().planSync.result, "verified");
+  // Still marked removed: nothing to do (no read).
+  const still = harness(row({ publishAt: null, stepsJson: missingSteps }), { kind: "vetoed" }, { privacyStatus: "private", publishAt: "2026-10-26T09:00:00.000Z" }, async () => new Set(["vid64"]));
+  assert.deepEqual(await still.schedule.tick(), { changed: 0 });
+  assert.equal(still.state.reads, 0);
+});
+
+// BL-243 review round 6 (AC-WP-79): only video-details' "no item for the id" is a not-found; an item without snippet/status is not.
+test("BL-243 AC-WP-79: isVideoNotFound needs reason no_item for that video id", () => {
+  const error = (details: Record<string, unknown>) => new DomainError({ code: "not_found", message: "x", details });
+  assert.equal(isVideoNotFound(error({ videoId: "vid64", reason: "no_item" }), "vid64"), true);
+  assert.equal(isVideoNotFound(error({ videoId: "vid64", reason: "partial" }), "vid64"), false);
+  assert.equal(isVideoNotFound(error({ videoId: "vid64" }), "vid64"), false);
+  assert.equal(isVideoNotFound(error({ videoId: "other", reason: "no_item" }), "vid64"), false);
+  assert.equal(isVideoNotFound(new Error("network"), "vid64"), false);
 });

@@ -888,21 +888,34 @@ export async function getVideoDetailsContext(
   youtube: youtube_v3.Youtube,
   videoId: string
 ): Promise<VideoDetailsContext | null> {
+  const outcome = await readVideoDetailsContext(youtube, videoId);
+  return "context" in outcome ? outcome.context : null;
+}
+
+/**
+ * BL-243: the same read, telling why there is no context -- `no_item` (videos.list returned no item for the id: no such video for
+ * this account) or `partial` (an item without snippet/status).
+ */
+export async function readVideoDetailsContext(
+  youtube: youtube_v3.Youtube,
+  videoId: string
+): Promise<{ context: VideoDetailsContext } | { missing: "no_item" | "partial" }> {
   const res = await youtube.videos.list({
     part: ["snippet", "status", "recordingDetails", "paidProductPlacementDetails"],
     id: [videoId],
   });
 
   const item = res.data.items?.[0];
-  if (!item?.snippet || !item.status) return null;
+  if (!item) return { missing: "no_item" };
+  if (!item.snippet || !item.status) return { missing: "partial" };
 
-  return {
+  return { context: {
     etag: item.etag ?? null,
     snippet: item.snippet,
     status: item.status,
     recordingDate: item.recordingDetails?.recordingDate ?? null,
     paidProductPlacement: item.paidProductPlacementDetails?.hasPaidProductPlacement ?? null,
-  };
+  } };
 }
 
 /** BL-182 (ADR 0037): what YouTube says about an uploaded video -- the G1 probe's and the upload job's read-back. */

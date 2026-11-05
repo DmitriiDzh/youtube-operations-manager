@@ -230,7 +230,10 @@ test("BL-243 AC-WP-75: no try of a deleted package ever counts again; a later tr
 test("BL-243 AC-WP-79: a row with planSync video_missing is failed video_deleted_on_youtube, never packaged", async () => {
   const { progressOfUploadRow } = await import("./progress");
   const steps = { localizations: "verified", thumbnail: "set", playlist: "added", verify: { result: "verified" }, publishAt: "set" };
-  assert.deepEqual(progressOfUploadRow(uploadRow({ publishAt: null, stepsJson: JSON.stringify({ ...steps, planSync: { action: "unscheduled", result: "video_missing" } }) }), NOW_MS), { status: "failed", code: "video_deleted_on_youtube", videoId: "vid64" });
+  // Round 6: deleted only while the video is still marked removed; the mark cleared -> a plain failed plan change.
+  const missingRow = uploadRow({ publishAt: null, stepsJson: JSON.stringify({ ...steps, planSync: { action: "unscheduled", result: "video_missing" } }) });
+  assert.deepEqual(progressOfUploadRow(missingRow, NOW_MS, new Set(["vid64"])), { status: "failed", code: "video_deleted_on_youtube", videoId: "vid64" });
+  assert.deepEqual(progressOfUploadRow(missingRow, NOW_MS, new Set()), { status: "failed", code: "plan_unscheduled_failed", videoId: "vid64" });
   assert.equal(progressOfUploadRow(uploadRow({ stepsJson: JSON.stringify({ ...steps, planSync: { action: "unscheduled", result: "refused" } }) }), NOW_MS)?.code, "plan_unscheduled_failed");
 });
 

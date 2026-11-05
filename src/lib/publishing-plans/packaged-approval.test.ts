@@ -640,3 +640,14 @@ test("BL-243 AC-WP-77: with the package scan unavailable save() keeps the older 
   const retimed = await h.service.save({ channelId: CH, weekStart: WEEK, slots: [slot("s1", "2026-10-26", "12:00")] }, "worker");
   assert.deepEqual(retimed.unlocked, ["s1"]);
 });
+
+// BL-243 review round 6 (AC-WP-83): the mark cleared after video_missing -- the progress row shows a plain failed plan change (not
+// deleted), so the vetoed slot whose video is back on YouTube cannot be removed (slot_uploaded).
+test("BL-243 AC-WP-83: a vetoed slot whose video reappeared after video_missing is refused slot_uploaded", async () => {
+  const h = harness();
+  await week(h);
+  h.progress.set("s1", { status: "failed", code: "plan_unscheduled_failed", videoId: "vid73", package: pkg({ video: "V73" }) });
+  await h.service.decide(CH, WEEK, { action: "veto", slots: [{ slotId: "s1" }] }, "u1");
+  const error = await refusal(h.service.save({ channelId: CH, weekStart: WEEK, removeSlotIds: ["s1"] }, "worker"));
+  assert.deepEqual(((error as { details?: { refused?: Array<{ slotId: string; reason: string }> } }).details?.refused ?? []).map((r) => [r.slotId, r.reason]), [["s1", "slot_uploaded"]]);
+});

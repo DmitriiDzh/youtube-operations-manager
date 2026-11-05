@@ -15,6 +15,7 @@ import {
   getPublicVideoSnapshots,
   getPublicVideoTitles,
   getVideoDetailsContext,
+  readVideoDetailsContext,
   getVideosMetadataContextBatch,
   listSupportedLanguages,
   listUploadsPlaylistFirstPage,
@@ -1138,4 +1139,13 @@ test("getChannelBrandingContext reads the name, avatar, branding fields, banner 
   assert.deepEqual(receivedArgs, { part: ["snippet", "brandingSettings", "localizations"], id: ["UC1"] });
   const empty = fakeYoutubeClient({ channelsList: (async () => ({ data: { items: [] } })) as unknown as youtube_v3.Youtube["channels"]["list"] });
   assert.equal(await getChannelBrandingContext(empty, "UC1"), null);
+});
+
+// BL-243 review round 6: the read tells "no such video" (no item for the id) from an item YouTube returned without snippet/status.
+test("readVideoDetailsContext: no item -> no_item; an item without snippet/status -> partial", async () => {
+  const none = fakeYoutubeClient({ videosList: (async () => ({ data: { items: [] } })) as unknown as youtube_v3.Youtube["videos"]["list"] });
+  assert.deepEqual(await readVideoDetailsContext(none, "missing"), { missing: "no_item" });
+  const partial = fakeYoutubeClient({ videosList: (async () => ({ data: { items: [{ id: "v1", snippet: { title: "T" } }] } })) as unknown as youtube_v3.Youtube["videos"]["list"] });
+  assert.deepEqual(await readVideoDetailsContext(partial, "v1"), { missing: "partial" });
+  assert.equal(await getVideoDetailsContext(partial, "v1"), null, "the old read still says null for both");
 });

@@ -177,7 +177,11 @@ const ACTIVE = new Set(["queued", "uploading", "processing", "finishing", "pause
  * `scheduled` while its date is ahead and `published` once it passed; done without a date (uploaded before the slot was approved)
  * -> `packaged` with the video id. A cancelled row, or one released after an unknown outcome, says nothing.
  */
-export function progressOfUploadRow(row: UploadRowForProgress, nowMs: number): Pick<PlanSlotProgress, "status" | "code" | "videoId" | "publishAt"> | null {
+export function progressOfUploadRow(
+  row: UploadRowForProgress,
+  nowMs: number,
+  removedVideoIds: ReadonlySet<string> = new Set()
+): Pick<PlanSlotProgress, "status" | "code" | "videoId" | "publishAt"> | null {
   if (row.status === "cancelled" || row.errorCode === "unknown_outcome_released") return null;
   if (ACTIVE.has(row.status)) return { status: "uploading", code: null, videoId: row.videoId };
   if (row.status === "failed") return { status: "failed", code: row.errorCode ?? "failed", videoId: row.videoId };
@@ -197,7 +201,8 @@ export function progressOfUploadRow(row: UploadRowForProgress, nowMs: number): P
     : steps.publishAt === "skipped_too_soon" ? "publish_at_too_soon"
     : steps.planSync?.result === "refused" || steps.planSync?.result === "mismatch" ? `plan_${steps.planSync.action ?? "change"}_failed`
     // BL-243: the plan found the video gone from YouTube (confirmed by the sync's mark) -- a failure with its code, never healthy.
-    : steps.planSync?.result === "video_missing" ? VIDEO_DELETED_ON_YOUTUBE
+    // (round 6: only while the video is still marked removed; the mark cleared -- it reappeared -- a plain failed plan change)
+    : steps.planSync?.result === "video_missing" ? (row.videoId !== null && removedVideoIds.has(row.videoId) ? VIDEO_DELETED_ON_YOUTUBE : `plan_${steps.planSync.action ?? "change"}_failed`)
     : null;
   if (failedStep) return { status: "failed", code: failedStep, videoId: row.videoId };
   // The date counts only once it is on the video: written by the upload (or an old row's insert), or by the plan afterwards.
@@ -251,7 +256,7 @@ export function progressWithUploads(
     if (!before || row.createdAt.getTime() > before.createdAt.getTime()) newest.set(row.slotId, row);
   }
   for (const [slotId, row] of newest) {
-    const fromRow = progressOfUploadRow(row, nowMs);
+    const fromRow = progressOfUploadRow(row, nowMs, removed);
     if (!fromRow) continue;
     const before = result.get(slotId);
     result.set(slotId, { ...fromRow, videoId: fromRow.videoId ?? before?.videoId ?? null, publishAt: fromRow.publishAt ?? before?.publishAt ?? null, package: before?.package ?? null });
