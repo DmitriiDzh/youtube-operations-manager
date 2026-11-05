@@ -1,4 +1,4 @@
-import { createPackageScanCore, createPublishingSettingsCore, listChannelUploads, removedVideoIdsOf, removedVideosOf, type PackageScanResult } from "@/lib/publishing";
+import { createPackageScanCore, createPublishingSettingsCore, listChannelUploads, removedVideoIdsOf, removedVideosOf } from "@/lib/publishing";
 import type { PlanProgressResult, PlanSlotProgress, PublishingPlansPorts } from "@/lib/publishing-plans";
 import { deletedVideosBySlot, progressOfSlots, progressWithUploads } from "./progress";
 
@@ -17,15 +17,10 @@ async function packagesOf(channelId: string): Promise<Cached | null> {
   const hit = cache.get(channelId);
   if (hit && Date.now() - hit.at < CACHE_MS) return hit;
   try {
-    const core = createPackageScanCore();
-    const [first, settings] = await Promise.all([core.scan(channelId), createPublishingSettingsCore().read(channelId)]);
-    // BL-243 round 6: the scan's removed-list read failed -- read it here and scan again with it, so the packages (deleted_on_youtube,
-    // their fingerprints) and the rows agree. That read failing too: the scan as it was (none known).
-    let scan: PackageScanResult = first;
-    if (first.status === "ok" && first.removedVideoIds === null) {
-      const removed = await removedVideosOf(channelId).catch(() => null);
-      if (removed) scan = await core.scan(channelId, { removedVideos: removed });
-    }
+    // BL-243 round 7: the removed list read once, here, and handed to the one scan (packages and rows agree); that read failing,
+    // the scan's own rule ("none known").
+    const removed = await removedVideosOf(channelId).catch(() => null);
+    const [scan, settings] = await Promise.all([createPackageScanCore().scan(channelId, removed ? { removedVideos: removed } : {}), createPublishingSettingsCore().read(channelId)]);
     if (scan.status !== "ok") return null;
     // BL-243: the removed ids this very scan read (null when that read failed).
     const entry: Cached = { at: Date.now(), packages: scan.packages, synthetic: settings.settings.containsSyntheticMedia, removedVideoIds: scan.removedVideoIds ? new Set(scan.removedVideoIds) : null };

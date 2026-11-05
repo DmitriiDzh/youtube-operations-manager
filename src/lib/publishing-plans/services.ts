@@ -153,23 +153,7 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
       const decisions = decisionsOf(snapshot, weekStart);
       const decisionsFor = (slotId: string) => decisions.filter((d) => d.slotId === slotId);
       const stage = stageOf(snapshot);
-      // BL-243 (ADR 0063 §2): ONE progress read per save, as the returned view always needed -- the channel's live slots, the
-      // ones to remove and the ones sent. In the `packaged` stage an approval counts here as the view counts it (only while it
-      // covers the slot's current package; a deleted video's package has none); with the package scan unavailable, the older,
-      // stricter rule below. The removals' check and the returned view use the same read.
       const toRemove = [...new Set(parsed.removeSlotIds ?? [])];
-      const channel = await channelState(channelId, snapshot, [...new Set([...current.keys(), ...toRemove, ...(parsed.slots ?? []).map((s) => s.slotId)])]);
-      const views =
-        stage === "packaged" && existing && !channel.packagesUnavailable
-          ? new Map(planViewOf({ stage, channelId, meta: existing, slots: [...current.values()], decisions, progress: channel.progress, now }).slots.map((view) => [view.slotId, view]))
-          : null;
-      // BL-242: else an approval that counts in the channel's stage stands on the slot (whatever its package now).
-      const approvedNow = (slot: PublishingPlanSlot) => {
-        const view = views?.get(slot.slotId);
-        if (view) return view.approval === "approved";
-        return existing !== null && approvalStandsOn(stage, existing.timeZone, contentOf(slot), decisionsFor(slot.slotId));
-      };
-
       const otherWeeksIds = new Set(Object.values(snapshot.slots).filter((s) => s.weekStart !== weekStart).map((s) => s.slotId));
       const seen = new Set<string>();
       const upserts: PublishingPlanSlot[] = [];
@@ -235,6 +219,23 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
         upserts.push({ ...content, weekStart, slotId: input.slotId, createdAt: before?.createdAt ?? stamp(), updatedAt: stamp(), updatedBy: by });
         changed.push(input.slotId);
       }
+
+      // BL-243 (ADR 0063 §2): ONE progress read per save, as the returned view always needed -- the channel's live slots, the
+      // ones to remove and the ones sent. In the `packaged` stage an approval counts here as the view counts it (only while it
+      // covers the slot's current package; a deleted video's package has none); with the package scan unavailable, the older,
+      // stricter rule below. The removals' check and the returned view use the same read -- made after the slots' own (cheap)
+      // checks.
+      const channel = await channelState(channelId, snapshot, [...new Set([...current.keys(), ...toRemove, ...(parsed.slots ?? []).map((s) => s.slotId)])]);
+      const views =
+        stage === "packaged" && existing && !channel.packagesUnavailable
+          ? new Map(planViewOf({ stage, channelId, meta: existing, slots: [...current.values()], decisions, progress: channel.progress, now }).slots.map((view) => [view.slotId, view]))
+          : null;
+      // BL-242: else an approval that counts in the channel's stage stands on the slot (whatever its package now).
+      const approvedNow = (slot: PublishingPlanSlot) => {
+        const view = views?.get(slot.slotId);
+        if (view) return view.approval === "approved";
+        return existing !== null && approvalStandsOn(stage, existing.timeZone, contentOf(slot), decisionsFor(slot.slotId));
+      };
 
       const removes: string[] = [];
       const vetoedRemoves: string[] = [];

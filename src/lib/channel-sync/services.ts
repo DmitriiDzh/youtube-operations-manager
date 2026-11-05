@@ -386,7 +386,7 @@ export function createChannelSyncServices(deps: ServiceDependencies) {
               channelId: parsedInput.channelId,
               ...pageOfVideos(listed, parsedInput),
               removed: asked.flatMap((id) => {
-                const at = byId.has(id) ? undefined : removedById.get(id);
+                const at = removedById.get(id);
                 return at ? [{ videoId: id, removedAt: at.toISOString() }] : [];
               }),
               notFound: asked.filter((id) => !byId.has(id) && !removedById.has(id)),
