@@ -39,12 +39,14 @@ weekly-plan slot offered deleted V73 for approval, and the deleted upload kept i
    `slotDecisions` and in `save()` (removing or retiming the slot is not blocked by that approval; `save()` reads the progress for
    this once per save -- the read its returned view needs; when the port's `{ progress, packagesUnavailable }` says the package scan
    was unavailable it keeps the older, stricter rule). The plan schedule never DATES
-   it. Its video NUMBER stays held for uploads, so a wrong mark can never cause a second upload of the same video. Review round 7:
-   a removed mark frees the SLOT for another upload only when it is at least `REMOVED_MARK_GRACE_MS` (24 h,
-   `src/lib/shared-video-presence/`) newer than that upload (`steps.uploadedAt`, else `finishedAt`; the record's `uploadedAt` for a
-   package) -- a fresh private upload missing from a lagging uploads playlist can be marked removed by mistake. This applies to the
-   queue gate only (the approval's slot holds `holdsSlot`, and its check of deleted packages naming the slot, which every queue
-   path shares), never to what is shown.
+   it. Its video NUMBER stays held for uploads, so a wrong mark can never cause a second upload of the same video. Review round 8:
+   a fresh private upload missing from a lagging uploads playlist can be marked removed by mistake, so while the removed mark
+   stands it frees the SLOT for another upload only once the latest completed removed check (`channels.removed_check_at`) is at
+   least `REMOVED_MARK_GRACE_MS` (24 h, `src/lib/shared-video-presence/`, `removedMarkFreesSlot`) after the upload. The upload time is
+   `uploadTimeOf` (the record's `uploadedAt`, else the row's recorded one); unknown -- a linked or Operator-written record, no row --
+   is not a fresh upload and does not block; no completed check yet holds until one. A later check frees it, so a slot is never held
+   forever. The queue gate only (the approval's slot holds `holdsSlot`, and its check of deleted packages naming the slot, which
+   every queue path shares), never what is shown.
 3. **Agents see it** in the calendar (`missingOnChannel`, per-item fields) and in `channel_video_list` (`videoIds` with
    `removed` / `notFound`). Additive: Agent API 4.17.0, Producer API 1.17.0, Factory API 1.43.0.
 
@@ -70,6 +72,9 @@ weekly-plan slot offered deleted V73 for approval, and the deleted upload kept i
 
 - Read-only: no YouTube call is added. The mark is only as fresh as the last completed removed check (`checkedAt`); until a
   sync completes one after the update, `checkedAt` is null and no package says `true`.
+- Known follow-ups (review rounds 7-8, left as is): the plan progress's package walk can run next to the calendar's (two walks of
+  `04 Videos/` per minute at most) and some reads run in series; "deleted" is special-cased in several layers (scan, progress,
+  plan model, schedule, gate) rather than in one place.
 - Known follow-up (review round 3): the removed list is read in four places (the scan, the approval's slot holds, the plan
   schedule, `channel_video_list`), each with its own failure rule (§4). One shared read with one policy object would be cleaner;
   left as is for BL-243.
