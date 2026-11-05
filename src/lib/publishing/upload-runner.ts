@@ -8,7 +8,7 @@
 // writes off pauses a job (never fails it); quota and the channel's upload cap pause it until they reset.
 
 import type { StoredPublishingUpload } from "@/lib/db";
-import { removedMarkFreesSlot } from "@/lib/shared-video-presence";
+import { removedMarkFreesSlot, uploadTimeOf } from "@/lib/shared-video-presence";
 import { READ_BACK_RETRIES, READ_BACK_RETRY_DELAY_MS } from "@/lib/video-details/read-back";
 import type { PublishingSettings } from "./settings";
 import { approvalNamesUpload, type SlotDecision } from "./slot-decision";
@@ -851,17 +851,15 @@ export function holdsPackage(row: Pick<StoredPublishingUpload, "status" | "video
 
 /**
  * BL-243: whether an upload row holds its weekly-plan slot -- as `holdsPackage`, except a finished row (done or failed) whose
- * video the channel sync found removed on YouTube (that video is not the slot's any more) -- and (review round 7) only when the
- * mark is at least `REMOVED_MARK_GRACE_MS` newer than the row's upload (`steps.uploadedAt`, else `finishedAt`): a fresh upload
- * missing from a lagging uploads playlist never frees its slot. Its video NUMBER stays held (`holdsPackage`).
- * `removedVideos`: video id -> when it was marked removed.
+ * video the channel sync found removed on YouTube: that frees the slot once `removedMarkFreesSlot` says so (review round 8: the
+ * latest completed removed check, `checkedAt`, at least 24 h after the row's upload by `uploadTimeOf`; no upload time: freed). Its
+ * video NUMBER stays held (`holdsPackage`). `removedVideoIds`: the videos marked removed now.
  */
-export function holdsSlot(row: Pick<StoredPublishingUpload, "status" | "videoId" | "errorCode" | "stepsJson" | "finishedAt">, removedVideos: ReadonlyMap<string, string | Date>): boolean {
-  const finished = !(ACTIVE as readonly string[]).includes(row.status);
+export function holdsSlot(row: Pick<StoredPublishingUpload, "status" | "videoId" | "errorCode" | "stepsJson">, removedVideoIds: ReadonlySet<string>, checkedAt: string | Date | null): boolean {
   if (!holdsPackage(row)) return false;
-  if (!finished || row.videoId === null || !removedVideos.has(row.videoId)) return true;
-  const uploadedAt = stepsOf(row).uploadedAt ?? row.finishedAt;
-  return !removedMarkFreesSlot({ removedAt: removedVideos.get(row.videoId), uploadedAt });
+  const finished = !(ACTIVE as readonly string[]).includes(row.status);
+  if (!finished || row.videoId === null || !removedVideoIds.has(row.videoId)) return true;
+  return !removedMarkFreesSlot({ uploadedAt: uploadTimeOf(null, row), checkedAt });
 }
 
 export type UploadRunner = ReturnType<typeof createUploadRunner>;

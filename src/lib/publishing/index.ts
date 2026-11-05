@@ -559,9 +559,13 @@ export function createUploadApprovalCore() {
     // Review #5 (BL-225): the slots held by an upload here (queued, running, done, or with a video).
     // BL-243: a done row of a video deleted on YouTube holds no slot (its video NUMBER stays held: `liveVideos`).
     heldSlots: async (channelId) => {
-      const [rows, removedList] = await Promise.all([listPublishingUploads({ channelId, withSlot: true, limit: 5000 }), removedVideosOf(channelId).catch(() => [])]);
-      const removed = new Map(removedList.map((video) => [video.videoId, video.removedAt]));
-      return new Set(rows.filter((row) => holdsSlot(row, removed)).map((row) => row.slotId as string));
+      const [rows, removedList, channel] = await Promise.all([
+        listPublishingUploads({ channelId, withSlot: true, limit: 5000 }),
+        removedVideosOf(channelId).catch(() => []),
+        createChannelVideoStoreAdapter().getChannel(channelId).catch(() => null),
+      ]);
+      const removed = new Set(removedList.map((video) => video.videoId));
+      return new Set(rows.filter((row) => holdsSlot(row, removed, channel?.removedCheckAt ?? null)).map((row) => row.slotId as string));
     },
     insert: (rows) => insertPublishingUploads(rows),
     newId: () => randomUUID(),

@@ -25,15 +25,35 @@ export function existsOnChannelOf(args: { removed: boolean; listed: boolean; pub
 }
 
 /**
- * BL-243 review round 7 (ADR 0063 §2): how much newer than an upload a removed mark must be before it lets a SECOND upload of
- * that upload's plan slot be queued. A fresh private upload can be missing from a lagging uploads playlist, so a sync right after
- * it may mark it removed by mistake; within this time the mark never frees a slot for another upload. Display is not affected.
+ * BL-243 (ADR 0063 §2): THE upload time of a video -- the record's `uploadedAt`, else the `uploadedAt` its upload row recorded (the
+ * runner writes the same moment into both); null when neither says. The one rule the plan progress and the slot gate use.
+ */
+export function uploadTimeOf(record: { uploadedAt?: string | null } | null | undefined, row: { stepsJson: string } | null | undefined): number | null {
+  const fromRecord = record?.uploadedAt ? Date.parse(record.uploadedAt) : NaN;
+  if (Number.isFinite(fromRecord)) return fromRecord;
+  if (!row) return null;
+  try {
+    const at = Date.parse(String((JSON.parse(row.stepsJson) as { uploadedAt?: unknown }).uploadedAt ?? ""));
+    return Number.isFinite(at) ? at : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * BL-243 (ADR 0063 §2, review round 8): a fresh private upload can be missing from a lagging uploads playlist, so a removed check
+ * soon after it may mark it removed by mistake. While the mark stands, it frees the upload's plan slot for ANOTHER upload only once
+ * the latest completed removed check (`channels.removed_check_at`) is at least this long after the upload. The queue gate only.
  */
 export const REMOVED_MARK_GRACE_MS = 24 * 60 * 60 * 1000;
 
-/** The removed mark may free the upload's slot for another upload: it is at least `REMOVED_MARK_GRACE_MS` newer. Unknown: no. */
-export function removedMarkFreesSlot(args: { removedAt: string | Date | null | undefined; uploadedAt: string | Date | null | undefined }): boolean {
-  const removed = args.removedAt ? new Date(args.removedAt).getTime() : NaN;
-  const uploaded = args.uploadedAt ? new Date(args.uploadedAt).getTime() : NaN;
-  return Number.isFinite(removed) && Number.isFinite(uploaded) && removed - uploaded >= REMOVED_MARK_GRACE_MS;
+/**
+ * Whether a standing removed mark frees the upload's slot for another upload (`uploadedAt`: `uploadTimeOf`, ms or null; `checkedAt`:
+ * the channel's latest completed removed check). Unknown upload time -- not a fresh upload (a linked or Operator-written record,
+ * no row) -- frees it; unknown check time holds it until the next completed check sets one.
+ */
+export function removedMarkFreesSlot(args: { uploadedAt: number | null; checkedAt: string | Date | null | undefined }): boolean {
+  if (args.uploadedAt === null) return true;
+  const checked = args.checkedAt ? new Date(args.checkedAt).getTime() : NaN;
+  return Number.isFinite(checked) && checked - args.uploadedAt >= REMOVED_MARK_GRACE_MS;
 }

@@ -3,7 +3,9 @@
 // the scanned packages and the channel's AI-flag setting come in; the slot statuses go out.
 
 import type { PlanSlotProgress } from "@/lib/publishing-plans";
-import { VIDEO_DELETED_ON_YOUTUBE } from "@/lib/shared-video-presence";
+import { uploadTimeOf, VIDEO_DELETED_ON_YOUTUBE } from "@/lib/shared-video-presence";
+
+export { uploadTimeOf };
 import type { ScannedPackage } from "@/lib/publishing";
 
 /** How far a status got, to pick one package when two name the same slot (the furthest one wins). */
@@ -102,22 +104,6 @@ export function progressOfSlots(
 
 /** BL-243: a package the scan found deleted on YouTube, as the upload rows of its slot are judged against it. */
 export type DeletedOnSlot = { video: string; uploadedAt: number | null };
-
-/**
- * BL-243 (review round 4): THE upload time of a video -- the record's `uploadedAt`, else the `uploadedAt` its upload row recorded
- * (the runner writes the same moment into both); null when neither says. The one rule every comparison here uses.
- */
-export function uploadTimeOf(record: { uploadedAt?: string | null } | null | undefined, row: { stepsJson: string } | null | undefined): number | null {
-  const fromRecord = record?.uploadedAt ? Date.parse(record.uploadedAt) : NaN;
-  if (Number.isFinite(fromRecord)) return fromRecord;
-  if (!row) return null;
-  try {
-    const at = Date.parse(String((JSON.parse(row.stepsJson) as { uploadedAt?: unknown }).uploadedAt ?? ""));
-    return Number.isFinite(at) ? at : null;
-  } catch {
-    return null;
-  }
-}
 
 /** The newest upload row of a video id, or null. */
 function rowOfVideo(rows: readonly UploadRowForProgress[], videoId: string | undefined): UploadRowForProgress | null {

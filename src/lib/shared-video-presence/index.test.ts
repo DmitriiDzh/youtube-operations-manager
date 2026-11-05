@@ -24,12 +24,18 @@ test("isDeletedOnYoutube: only failed with the shared code", () => {
   assert.equal(isDeletedOnYoutube(null), false);
 });
 
-// BL-243 review round 7: the 24 h grace before a removed mark frees a slot for a second upload (values by hand).
-test("removedMarkFreesSlot: only a mark at least 24 h newer than the upload; unknown times never", async () => {
-  const { REMOVED_MARK_GRACE_MS, removedMarkFreesSlot } = await import("./index");
+// BL-243 review round 8: the 24 h grace is measured by the latest completed removed check, not the mark's first time (values by hand).
+test("removedMarkFreesSlot: a check 24 h after the upload frees; earlier holds; unknown upload frees; unknown check holds", async () => {
+  const { REMOVED_MARK_GRACE_MS, removedMarkFreesSlot, uploadTimeOf } = await import("./index");
+  const T0 = Date.parse("2026-11-03T08:00:00.000Z");
   assert.equal(REMOVED_MARK_GRACE_MS, 86_400_000);
-  assert.equal(removedMarkFreesSlot({ uploadedAt: "2026-11-03T08:00:00.000Z", removedAt: "2026-11-04T07:59:59.999Z" }), false, "inside the grace");
-  assert.equal(removedMarkFreesSlot({ uploadedAt: "2026-11-03T08:00:00.000Z", removedAt: "2026-11-04T08:00:00.000Z" }), true, "exactly 24 h");
-  assert.equal(removedMarkFreesSlot({ uploadedAt: null, removedAt: "2026-11-04T08:00:00.000Z" }), false);
-  assert.equal(removedMarkFreesSlot({ uploadedAt: "2026-11-03T08:00:00.000Z", removedAt: null }), false);
+  assert.equal(removedMarkFreesSlot({ uploadedAt: T0, checkedAt: "2026-11-03T10:00:00.000Z" }), false, "T0+2h");
+  assert.equal(removedMarkFreesSlot({ uploadedAt: T0, checkedAt: "2026-11-04T07:59:59.999Z" }), false);
+  assert.equal(removedMarkFreesSlot({ uploadedAt: T0, checkedAt: "2026-11-04T08:00:00.000Z" }), true, "exactly 24 h");
+  assert.equal(removedMarkFreesSlot({ uploadedAt: T0, checkedAt: "2026-11-04T10:00:00.000Z" }), true, "T0+26h");
+  assert.equal(removedMarkFreesSlot({ uploadedAt: null, checkedAt: "2026-11-03T10:00:00.000Z" }), true, "unknown upload time");
+  assert.equal(removedMarkFreesSlot({ uploadedAt: T0, checkedAt: null }), false, "no check time");
+  assert.equal(uploadTimeOf({ uploadedAt: "2026-11-03T08:00:00.000Z" }, null), T0);
+  assert.equal(uploadTimeOf(null, { stepsJson: JSON.stringify({ uploadedAt: "2026-11-03T08:00:00.000Z" }) }), T0);
+  assert.equal(uploadTimeOf({ uploadedAt: null }, { stepsJson: "{}" }), null);
 });
