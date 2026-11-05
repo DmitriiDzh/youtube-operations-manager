@@ -12102,12 +12102,53 @@ export async function listTriedManifestHashes(channelId: string, database: AppDb
  * Two processes on one database (e.g. a dev server beside the service) therefore never both send one upload.
  */
 export async function claimPublishingUpload(id: string, owner: string, until: Date, now: Date, database: AppDb = db): Promise<boolean> {
+  // BL-244 (ADR 0064): only an active row -- a row stopped meanwhile gives its runner no lease for another chunk.
   const rows = await database
     .update(publishingUploads)
     .set({ leaseOwner: owner, leaseUntil: until })
-    .where(and(eq(publishingUploads.id, id), or(isNull(publishingUploads.leaseUntil), lte(publishingUploads.leaseUntil, now), eq(publishingUploads.leaseOwner, owner))))
+    .where(
+      and(
+        eq(publishingUploads.id, id),
+        inArray(publishingUploads.status, ["queued", "uploading", "processing", "finishing", "paused"]),
+        or(isNull(publishingUploads.leaseUntil), lte(publishingUploads.leaseUntil, now), eq(publishingUploads.leaseOwner, owner))
+      )
+    )
     .returning({ id: publishingUploads.id });
   return rows.length > 0;
+}
+
+/**
+ * BL-244 (UPLOAD_QUEUE_CONTROL_PLAN.md BL-244, ADR 0064; owner msgs 4046/4050): stops an upload before anything of it can be on
+ * YouTube, in ONE statement: the row must still be in `fromStatus` (queued, uploading, or paused before it was processed), have no
+ * video id, no `finalChunkSentAt` in a readable `steps_json`, and -- once it started sending -- bytes still to send. The runner marks
+ * `finalChunkSentAt` with a compare-and-set on `uploading` before it sends the last chunk, so exactly one of the two wins. Returns
+ * the bytes stored at the stop, or null when nothing was written.
+ */
+export async function stopPublishingUploadBeforeYoutube(
+  id: string,
+  fromStatus: PublishingUploadStatus,
+  set: Partial<Omit<typeof publishingUploads.$inferInsert, "id" | "channelId" | "video" | "createdAt">>,
+  database: AppDb = db
+): Promise<{ storedBytes: number; totalBytes: number } | null> {
+  const u = publishingUploads;
+  const rows = await database
+    .update(u)
+    .set({ ...set, updatedAt: set.updatedAt ?? new Date() })
+    .where(
+      and(
+        eq(u.id, id),
+        eq(u.status, fromStatus),
+        isNull(u.videoId),
+        // A damaged steps_json is never read as "no last chunk" (CASE: json_type is not evaluated on it).
+        sql`CASE WHEN json_valid(${u.stepsJson}) THEN json_type(${u.stepsJson}, '$.finalChunkSentAt') IS NULL ELSE 0 END`,
+        or(
+          eq(u.status, "queued"),
+          and(sql`${u.storedBytes} < ${u.totalBytes}`, or(eq(u.status, "uploading"), and(eq(u.status, "paused"), inArray(u.resumeStatus, ["queued", "uploading"]))))
+        )
+      )
+    )
+    .returning({ storedBytes: u.storedBytes, totalBytes: u.totalBytes });
+  return rows[0] ?? null;
 }
 
 /** Updates a row only while it is in `fromStatus` (compare-and-set); false when it was not (nothing written). */

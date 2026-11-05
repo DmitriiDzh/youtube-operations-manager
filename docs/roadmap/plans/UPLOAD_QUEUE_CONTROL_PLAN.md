@@ -90,3 +90,66 @@ Sources:
 - **AC-UQ-15** (independent review #4) A row the owner approved (or the automatic upload queued) that the Producer cancelled stays
   the owner's: the Producer cannot add that manifest version again (`upload_already_tried`); only rows it queued itself can be.
 - **AC-UQ-13** Schema v117: `queue_rank` and `queued_by` added and backfilled (rank = created_at; `queued_by` from `automatic`).
+
+## BL-244: stop an upload that is being sent (ADR 0064)
+
+Source: the owner, Telegram 2026-11-05, msgs 4046/4050: «Можешь дать продюсеру останавливать начатые загрузки?» -- yes, a stop for
+both the owner (Web UI) and the Producer (MCP), through one shared function. Amends §3 above and ADR 0059 §3.
+
+### Behaviour
+
+1. **What can be stopped.** A row with no video id whose last chunk was never marked (`steps_json.finalChunkSentAt` absent) and
+   that still has bytes to send: `queued` (unchanged), `uploading` (new), or `paused` with `resume_status` `queued` / `uploading`
+   (the owner could already; now the Producer too: a paused-while-sending row is a started upload). Anything else is refused with
+   `upload_not_cancellable`: `processing`, `finishing`, `done`, `failed`, `cancelled`, and any row whose last chunk was marked --
+   from then on YouTube may have made the video, so the row runs to its end and the owner deletes the video in Studio if needed.
+2. **One statement.** The stop is a single conditional `UPDATE` (`stopPublishingUploadBeforeYoutube` in `db.ts`): the status, `video_id
+   IS NULL`, `stored_bytes < total_bytes` and the absence of `finalChunkSentAt` are checked by the same statement that writes
+   `cancelled`. The runner marks the last chunk with a compare-and-set on `uploading` before it sends it, so exactly one of the two
+   wins: the stop (the runner's mark fails and the last chunk is never sent) or the mark (the stop is refused,
+   `details.reason = final_chunk_sent`).
+3. **The runner after a stop.** Its next compare-and-set fails and it returns; its lease (`claim`) is taken only while the row is
+   active, so no further chunk starts after the stop -- at most the chunk already in flight finishes. It never marks the stopped
+   row failed or audits a failure that did not happen.
+4. **The row.** `cancelled`, `finished_at` / `updated_at` now; a Producer's stop sets `error_code = cancelled_by_producer` (so it
+   may queue the same manifest version again, as after its queued cancel); the owner's leaves `error_code` as it was. Like any
+   cancelled row without a video, it holds neither its package nor its weekly-plan slot.
+5. **Audit.** `publishing.upload_cancelled` for a queued row, `publishing.upload_stopped` for one that was sending (or paused
+   while sending), with `by` (owner + Google user / producer + token id), the status it had and `storedBytes` / `totalBytes` at the
+   stop (read from the stop's own statement).
+6. **YouTube.** No call: the abandoned resumable session expires by itself and no video exists before the last chunk.
+7. **Owner.** The uploads list in Content → «Публикация» shows «Остановить загрузку» on a row being sent (or paused while
+   sending) before its last chunk, with the app's own confirmation dialog; a queued row keeps «Отменить» without one. Same route
+   (`POST .../publishing/uploads/[uploadId]/cancel`), which now goes through the queue control's `cancel` as the owner.
+8. **Producer.** `producer_upload_queue_cancel` also stops such a row (one tool, as ADR 0059 has one cancel): Producer API 1.18.0.
+   Channel workers and the factory still get no upload tool.
+
+### Acceptance (written before the code)
+
+- **AC-STOP-01** A row `uploading`, `videoId` null, no `finalChunkSentAt`, stored < total: the Producer's stop makes it `cancelled`
+  with `cancelled_by_producer`, `finishedAt` / `updatedAt` = now; audit `publishing.upload_stopped`, `by: producer`, the token,
+  `status: uploading`, `storedBytes` / `totalBytes` as stored at the stop.
+- **AC-STOP-02** The same by the owner: `cancelled`, `errorCode` unchanged (null), `queuedBy` unchanged; audit `by: owner` with
+  the user id.
+- **AC-STOP-03** The mark wins: a row whose `finalChunkSentAt` is set one instant before the stop (the read saw none) is refused
+  `upload_not_cancellable` (`details.reason = final_chunk_sent`) and stays `uploading`; nothing audited.
+- **AC-STOP-04** Refused and unchanged: `processing`, `finishing`, `done`, `failed`, `cancelled`, `uploading` with a video id,
+  `uploading` with `finalChunkSentAt`, `paused` after its last chunk (`finalChunkSentAt`, or every byte stored).
+- **AC-STOP-05** Unchanged: `queued` is cancelled as before (event `publishing.upload_cancelled`); `paused` before its last chunk
+  is cancelled (owner and now Producer).
+- **AC-STOP-06** Another channel's row or an unknown id: `upload_not_found`, nothing changes.
+- **AC-STOP-07** After its own stop the Producer may add the same manifest version again; the owner's stop of a row keeps it his
+  (`upload_already_tried` for the Producer).
+- **AC-STOP-08** Runner: a row stopped after chunk 0-3 of 10 bytes (4-byte chunks) sends no further chunk -- in particular never
+  the last one (8-9) -- leaves the row `cancelled`, writes no `finalChunkSentAt`, audits no failure; YouTube has no video.
+- **AC-STOP-09** Runner: a stop that comes while the last chunk is being marked loses -- the row is marked first, the stop is
+  refused, the upload finishes and the video is adopted.
+- **AC-STOP-10** SQL (real SQLite): the conditional update cancels `queued`, `uploading` and `paused` rows before their last
+  chunk and returns the stored bytes; it writes nothing for a row with `finalChunkSentAt`, a video id, every byte stored, or any
+  other status; `claimPublishingUpload` takes no lease on a cancelled row.
+- **AC-STOP-11** A stopped row holds neither its package (`holdsPackage` false) nor its slot, and a new upload row of the same
+  video can be inserted.
+- **AC-STOP-12** Web UI: `isCancellable` is true for an `uploading` row before its last chunk; the stop button's texts exist in
+  every locale; the route passes the owner's user id.
+- **AC-STOP-13** MCP: `producer_upload_queue_cancel` is still the one cancel tool (four queue tools, producer-only), Producer API
+  1.18.0, its description names the stop.

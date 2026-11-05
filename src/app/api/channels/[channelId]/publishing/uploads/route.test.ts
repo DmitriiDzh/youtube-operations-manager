@@ -51,12 +51,35 @@ test("a refusal keeps its code and status (409 for a changed package)", async ()
   assert.equal((await res.json()).error, "upload_package_changed");
 });
 
-test("cancel: only the active channel; 409 when the upload already reached YouTube", async () => {
-  const handler = createCancelUploadHandler({ getSession: async () => ({ user: { id: "u" } }), assertActiveChannel, cancel: async (_c, id) => id === "queued-1" });
+// BL-244 (ADR 0064, AC-STOP-12): the owner's cancel / stop goes through the queue control as the owner -- the session's user is the
+// actor; a refusal keeps its code (409 not cancellable, 404 another channel's or unknown).
+test("cancel: only the active channel; the session's user stops it; 409 when the upload may be on YouTube, 404 when not found", async () => {
+  const calls: unknown[] = [];
+  const handler = createCancelUploadHandler({
+    getSession: async () => ({ user: { id: "u-owner" } }),
+    assertActiveChannel,
+    cancel: async (input, userId) => {
+      calls.push([input, userId]);
+      if (input.uploadId === "sent-1") throw new DomainError({ code: "upload_not_cancellable", message: "last chunk sent", details: { reason: "final_chunk_sent" } });
+      if (input.uploadId === "other-1") throw new DomainError({ code: "upload_not_found", message: "not here" });
+      return { uploadId: input.uploadId, status: "cancelled", previousStatus: "uploading" };
+    },
+  });
   const ctx2 = (channelId: string, uploadId: string) => ({ params: Promise.resolve({ channelId, uploadId }) });
-  assert.equal((await handler(new Request("http://x/", { method: "POST" }), ctx2("UC_active", "queued-1"))).status, 200);
-  assert.equal((await handler(new Request("http://x/", { method: "POST" }), ctx2("UC_active", "sent-1"))).status, 409);
-  assert.notEqual((await handler(new Request("http://x/", { method: "POST" }), ctx2("UC_other", "queued-1"))).status, 200);
+  const ok = await handler(new Request("http://x/", { method: "POST" }), ctx2("UC_active", "sending-1"));
+  assert.equal(ok.status, 200);
+  assert.deepEqual(await ok.json(), { cancelled: true, uploadId: "sending-1", status: "cancelled", previousStatus: "uploading" });
+  const refused = await handler(new Request("http://x/", { method: "POST" }), ctx2("UC_active", "sent-1"));
+  assert.deepEqual([refused.status, (await refused.json()).error], [409, "upload_not_cancellable"]);
+  assert.equal((await handler(new Request("http://x/", { method: "POST" }), ctx2("UC_active", "other-1"))).status, 404);
+  assert.notEqual((await handler(new Request("http://x/", { method: "POST" }), ctx2("UC_other", "sending-1"))).status, 200);
+  assert.deepEqual(calls, [
+    [{ channelId: "UC_active", uploadId: "sending-1" }, "u-owner"],
+    [{ channelId: "UC_active", uploadId: "sent-1" }, "u-owner"],
+    [{ channelId: "UC_active", uploadId: "other-1" }, "u-owner"],
+  ]);
+  const anonymous = createCancelUploadHandler({ getSession: async () => null, assertActiveChannel, cancel: async () => ({}) });
+  assert.equal((await anonymous(new Request("http://x/", { method: "POST" }), ctx2("UC_active", "sending-1"))).status, 401);
 });
 
 test("release: only the active channel; 409 for an upload whose outcome is not unknown", async () => {

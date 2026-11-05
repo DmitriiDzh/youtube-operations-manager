@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createLibsqlClient } from "@/lib/libsql-client";
-import { claimPublishingUpload, createIsolatedDb, getPublishingUpload, initializeDatabaseSchema, insertPublishingUploads, listPublishingUploads, updatePublishingUpload } from "@/lib/db";
+import { claimPublishingUpload, createIsolatedDb, getPublishingUpload, initializeDatabaseSchema, insertPublishingUploads, listPublishingUploads, stopPublishingUploadBeforeYoutube, updatePublishingUpload } from "@/lib/db";
 
 // BL-182 stage 2 (ADR 0037 §4, "never twice"; PUBLISHING_PLAN.md §2 stage 2 items 5–6): the upload queue keeps at most one live row
 // per channel and video -- a second approval of the same package is refused whole -- and a failed or cancelled row lets the package
@@ -98,4 +98,73 @@ test("an unknown outcome holds the package until released", () =>
     assert.equal(await insertPublishingUploads([row("b", "V65")], db), false);
     assert.equal(await updatePublishingUpload("a", "failed", { errorCode: "unknown_outcome_released" }, db), true);
     assert.equal(await insertPublishingUploads([row("c", "V65")], db), true);
+  }));
+
+// BL-244 AC-STOP-10/11 (UPLOAD_QUEUE_CONTROL_PLAN.md BL-244, ADR 0064; owner msgs 4046/4050): the stop is ONE conditional update.
+// It cancels a row only while nothing of it can be on YouTube -- no video id, the last chunk never marked (`finalChunkSentAt`), bytes
+// still to send -- and only from the status the caller read; anything else is left exactly as it was.
+test("BL-244 AC-STOP-10: the stop cancels queued, uploading and paused rows before their last chunk, and nothing else", () =>
+  withDb(async (db) => {
+    const at = new Date("2026-11-05T10:00:00Z");
+    const set = { status: "cancelled" as const, finishedAt: at, updatedAt: at };
+    const marked = JSON.stringify({ finalChunkSentAt: "2026-11-05T09:59:59.000Z" });
+    await insertPublishingUploads(
+      [
+        row("q", "V1"),
+        row("u", "V2", { status: "uploading", storedBytes: 400, sessionUri: "https://www.googleapis.com/upload/s" }),
+        row("p", "V3", { status: "paused", resumeStatus: "uploading", storedBytes: 600 }),
+        row("um", "V4", { status: "uploading", storedBytes: 900, stepsJson: marked }),
+        row("uv", "V5", { status: "uploading", storedBytes: 1000, videoId: "vid5" }),
+        row("ua", "V6", { status: "uploading", storedBytes: 1000 }),
+        row("pm", "V7", { status: "paused", resumeStatus: "uploading", storedBytes: 900, stepsJson: marked }),
+        row("pp", "V8", { status: "paused", resumeStatus: "processing", storedBytes: 1000, videoId: "vid8" }),
+        row("pr", "V9", { status: "processing", storedBytes: 1000, videoId: "vid9" }),
+        row("fi", "V10", { status: "finishing", storedBytes: 1000, videoId: "vid10" }),
+      ],
+      db
+    );
+    await insertPublishingUploads([row("d", "V11", { status: "done", storedBytes: 1000, videoId: "vid11" }), row("f", "V12", { status: "failed", storedBytes: 300 })], db);
+
+    assert.deepEqual(await stopPublishingUploadBeforeYoutube("q", "queued", set, db), { storedBytes: 0, totalBytes: 1000 });
+    assert.deepEqual(await stopPublishingUploadBeforeYoutube("u", "uploading", { ...set, errorCode: "cancelled_by_producer" }, db), { storedBytes: 400, totalBytes: 1000 });
+    assert.deepEqual(await stopPublishingUploadBeforeYoutube("p", "paused", set, db), { storedBytes: 600, totalBytes: 1000 });
+    const stopped = await getPublishingUpload("u", db);
+    assert.deepEqual([stopped?.status, stopped?.errorCode, stopped?.finishedAt?.toISOString(), stopped?.storedBytes], ["cancelled", "cancelled_by_producer", at.toISOString(), 400]);
+
+    // The status the caller read must still be the row's: a queued row the runner took meanwhile is not stopped as "queued".
+    assert.equal(await stopPublishingUploadBeforeYoutube("um", "queued", set, db), null);
+    const refused: Array<[string, "uploading" | "paused" | "processing" | "finishing" | "done" | "failed" | "cancelled"]> = [
+      ["um", "uploading"],
+      ["uv", "uploading"],
+      ["ua", "uploading"],
+      ["pm", "paused"],
+      ["pp", "paused"],
+      ["pr", "processing"],
+      ["fi", "finishing"],
+      ["d", "done"],
+      ["f", "failed"],
+      ["q", "cancelled"],
+    ];
+    for (const [id, status] of refused) {
+      const before = await getPublishingUpload(id, db);
+      assert.equal(await stopPublishingUploadBeforeYoutube(id, status, set, db), null, id);
+      assert.deepEqual(await getPublishingUpload(id, db), before, `${id} is unchanged`);
+    }
+  }));
+
+test("BL-244 AC-STOP-10: a damaged steps_json is never read as 'no last chunk' -- the stop writes nothing", () =>
+  withDb(async (db) => {
+    await insertPublishingUploads([row("u", "V1", { status: "uploading", storedBytes: 10, stepsJson: "{not json" })], db);
+    assert.equal(await stopPublishingUploadBeforeYoutube("u", "uploading", { status: "cancelled" }, db), null);
+    assert.equal((await getPublishingUpload("u", db))?.status, "uploading");
+  }));
+
+test("BL-244 AC-STOP-10/11: a stopped row gives no lease to a runner, holds no live slot, and its video can be queued again", () =>
+  withDb(async (db) => {
+    const t0 = new Date("2026-11-05T10:00:00Z");
+    await insertPublishingUploads([row("u", "V65", { status: "uploading", storedBytes: 400 })], db);
+    assert.equal(await claimPublishingUpload("u", "runner-1", new Date(t0.getTime() + 60_000), t0, db), true, "an active row is claimed");
+    assert.notEqual(await stopPublishingUploadBeforeYoutube("u", "uploading", { status: "cancelled", finishedAt: t0, updatedAt: t0 }, db), null);
+    assert.equal(await claimPublishingUpload("u", "runner-1", new Date(t0.getTime() + 120_000), t0, db), false, "not even the holder renews a stopped row");
+    assert.equal(await insertPublishingUploads([row("u2", "V65")], db), true, "the stopped row does not hold V65");
   }));

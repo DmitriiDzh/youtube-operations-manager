@@ -156,7 +156,9 @@ function harness(rows: StoredPublishingUpload[], over: Partial<UploadRunnerDeps>
       },
       claim: async (id, owner, until, at) => {
         const row = store.get(id);
-        if (!row || (row.leaseUntil && row.leaseUntil.getTime() > at.getTime() && row.leaseOwner !== owner)) return false;
+        // BL-244 (ADR 0064): as `claimPublishingUpload` -- only an active row is taken (a stopped one never is).
+        if (!row || !["queued", "uploading", "processing", "finishing", "paused"].includes(row.status)) return false;
+        if (row.leaseUntil && row.leaseUntil.getTime() > at.getTime() && row.leaseOwner !== owner) return false;
         store.set(id, { ...row, leaseOwner: owner, leaseUntil: until });
         return true;
       },
@@ -571,7 +573,16 @@ test("cancel only before YouTube: queued, or paused while sending with bytes lef
   assert.equal(isCancellable({ ...base, status: "paused", resumeStatus: "uploading" }), true);
   assert.equal(isCancellable({ ...base, status: "paused", resumeStatus: "uploading", storedBytes: 10 }), false, "the last byte is in: the video may exist");
   assert.equal(isCancellable({ ...base, status: "paused", resumeStatus: "processing", videoId: "v" }), false);
-  assert.equal(isCancellable({ ...base, status: "uploading" }), false, "sending right now: pause it first (Live writes off)");
+  // BL-244 (owner msgs 4046/4050, ADR 0064) changed this requirement: a row being sent before its last chunk is now stopped (it
+  // was "pause it first" under ADR 0037); once its last chunk is marked, or every byte is in, it still is not (AC-STOP-04, AC-STOP-12).
+  assert.equal(isCancellable({ ...base, status: "uploading" }), true, "sending, last chunk not marked: it can be stopped");
+  assert.equal(isCancellable({ ...base, status: "uploading", stepsJson: JSON.stringify({ finalChunkSentAt: "2026-10-13T12:00:00Z" }) }), false, "the last chunk is marked: the video may exist");
+  assert.equal(isCancellable({ ...base, status: "uploading", storedBytes: 10 }), false, "every byte is in");
+  assert.equal(isCancellable({ ...base, status: "uploading", videoId: "v" }), false);
+  assert.equal(isCancellable({ ...base, status: "processing", storedBytes: 10, videoId: "v" }), false);
+  assert.equal(isCancellable({ ...base, status: "finishing", storedBytes: 10, videoId: "v" }), false);
+  assert.equal(isCancellable({ ...base, status: "failed" }), false);
+  assert.equal(isCancellable({ ...base, status: "cancelled" }), false);
   assert.equal(isCancellable({ ...base, status: "done", videoId: "v" }), false);
 });
 
@@ -1309,4 +1320,119 @@ test("BL-243 AC-WP-85: the slot stays held until a removed check 24 h after the 
   assert.equal(holdsSlot({ status: "cancelled", videoId: null, errorCode: null, stepsJson: "{}" }, removed, null), false);
   assert.equal(holdsSlot({ status: "failed", videoId: "vid73", errorCode: "thumbnail_failed", stepsJson: done.stepsJson }, removed, "2026-11-04T10:00:00.000Z"), false, "failed after the insert");
   assert.equal(holdsSlot({ status: "processing", videoId: "vid73", errorCode: null, stepsJson: done.stepsJson }, removed, "2026-11-04T10:00:00.000Z"), true, "under way: the runner decides");
+});
+
+// BL-244 AC-STOP-08/09/11 (UPLOAD_QUEUE_CONTROL_PLAN.md BL-244, ADR 0064; owner msgs 4046/4050). A stop is the store's conditional
+// update; here it is applied to the fake store exactly as the plan states it (from the status read, no video, no last-chunk mark).
+function stopInStore(store: Map<string, StoredPublishingUpload>, id = "u1"): boolean {
+  const r = store.get(id)!;
+  if (r.status !== "uploading" || r.videoId !== null || r.storedBytes >= r.totalBytes || "finalChunkSentAt" in JSON.parse(r.stepsJson)) return false;
+  store.set(id, { ...r, status: "cancelled", errorCode: "cancelled_by_producer", finishedAt: NOW, updatedAt: NOW });
+  return true;
+}
+
+test("AC-STOP-08: a row stopped while its first chunk is in flight sends no further chunk, never the last; it stays cancelled, no failure", async () => {
+  const audits: Array<Record<string, unknown>> = [];
+  let h!: ReturnType<typeof harness>;
+  h = harness([job()], {
+    audit: async ({ detail }) => void audits.push(detail),
+  });
+  const put = h.deps.gateway.putChunk;
+  // The stop lands while chunk 0-3 is on the wire; that chunk finishes (YouTube keeps it), nothing after it goes.
+  h.deps.gateway.putChunk = async (args) => {
+    if (args.start === 0) assert.equal(stopInStore(h.store), true, "the stop wins: the last chunk is not marked yet");
+    return put(args);
+  };
+  const runner = createUploadRunner(h.deps);
+  for (let i = 0; i < 5; i += 1) {
+    await runner.tick();
+    h.clock.at = new Date(h.clock.at.getTime() + 31_000);
+  }
+  assert.deepEqual(h.yt.log.filter((l) => l.startsWith("put")), ["put 0-3"]);
+  assert.deepEqual([h.row().status, h.row().errorCode, h.row().storedBytes, h.row().videoId], ["cancelled", "cancelled_by_producer", 0, null]);
+  assert.equal("finalChunkSentAt" in JSON.parse(h.row().stepsJson), false);
+  assert.equal(h.yt.videos.length, 0, "no video exists on YouTube");
+  assert.deepEqual(audits.filter((a) => a.event === "publishing.upload_failed"), []);
+});
+
+test("AC-STOP-08: a row stopped between two chunks gets no lease for the next one -- 4-7 and 8-9 never go", async () => {
+  const h = harness([job()]);
+  const update = h.deps.store.update;
+  h.deps.store.update = async (id, from, set) => {
+    const ok = await update(id, from, set);
+    // Right after the runner stored 0-3, the stop lands (before the next chunk's lease).
+    if (ok && set.storedBytes === 4) assert.equal(stopInStore(h.store), true);
+    return ok;
+  };
+  const runner = createUploadRunner(h.deps);
+  for (let i = 0; i < 5; i += 1) {
+    await runner.tick();
+    h.clock.at = new Date(h.clock.at.getTime() + 31_000);
+  }
+  assert.deepEqual(h.yt.log.filter((l) => l.startsWith("put")), ["put 0-3"]);
+  assert.deepEqual([h.row().status, h.row().storedBytes], ["cancelled", 4]);
+  assert.equal(h.yt.videos.length, 0);
+});
+
+test("AC-STOP-08: a stop right before the last chunk is marked wins -- the mark fails, the last chunk never goes", async () => {
+  const h = harness([job()]);
+  const update = h.deps.store.update;
+  h.deps.store.update = async (id, from, set) => {
+    // The runner is about to mark the last chunk (8-9); the stop's statement runs first.
+    if (typeof set.stepsJson === "string" && set.stepsJson.includes("finalChunkSentAt")) assert.equal(stopInStore(h.store), true);
+    return update(id, from, set);
+  };
+  const runner = createUploadRunner(h.deps);
+  for (let i = 0; i < 5; i += 1) {
+    await runner.tick();
+    h.clock.at = new Date(h.clock.at.getTime() + 31_000);
+  }
+  assert.deepEqual(h.yt.log.filter((l) => l.startsWith("put")), ["put 0-3", "put 4-7"]);
+  assert.equal(h.row().status, "cancelled");
+  assert.equal("finalChunkSentAt" in JSON.parse(h.row().stepsJson), false);
+  assert.equal(h.yt.videos.length, 0);
+});
+
+test("AC-STOP-09: a stop right after the last chunk is marked loses -- refused, the upload finishes and the video is adopted", async () => {
+  const h = harness([job()]);
+  const refusedStops: boolean[] = [];
+  const update = h.deps.store.update;
+  h.deps.store.update = async (id, from, set) => {
+    const ok = await update(id, from, set);
+    // The mark itself: the first write of `finalChunkSentAt` while sending (later steps carry it on).
+    if (ok && from === "uploading" && refusedStops.length === 0 && typeof set.stepsJson === "string" && set.stepsJson.includes("finalChunkSentAt")) refusedStops.push(stopInStore(h.store));
+    return ok;
+  };
+  const runner = createUploadRunner(h.deps);
+  for (let i = 0; i < 30 && h.row().status !== "done"; i += 1) {
+    await runner.tick();
+    h.clock.at = new Date(h.clock.at.getTime() + 31_000);
+  }
+  assert.deepEqual(refusedStops, [false]);
+  assert.deepEqual([h.row().status, h.row().videoId], ["done", "vid1"]);
+  assert.equal(h.yt.videos.length, 1);
+});
+
+test("AC-STOP-08: a failure the runner meets after the stop is neither written over the cancelled row nor audited", async () => {
+  const audits: Array<Record<string, unknown>> = [];
+  const h = harness([job()], { audit: async ({ detail }) => void audits.push(detail) });
+  const put = h.deps.gateway.putChunk;
+  h.deps.gateway.putChunk = async (args) => {
+    if (args.start === 0) {
+      stopInStore(h.store);
+      // The chunk in flight is refused by YouTube (a 400): the runner would fail the row.
+      throw new DomainError({ code: "update_failed", message: "bad request", details: { status: 400, reason: "badRequest" } });
+    }
+    return put(args);
+  };
+  await createUploadRunner(h.deps).tick();
+  assert.deepEqual([h.row().status, h.row().errorCode], ["cancelled", "cancelled_by_producer"]);
+  assert.deepEqual(audits.filter((a) => a.event === "publishing.upload_failed"), []);
+});
+
+test("AC-STOP-11: a stopped row holds neither its package nor its slot", () => {
+  const stopped = { status: "cancelled" as const, videoId: null, errorCode: "cancelled_by_producer", stepsJson: JSON.stringify({}) };
+  assert.equal(holdsPackage(stopped), false);
+  assert.equal(holdsSlot(stopped, new Set(), null), false);
+  assert.equal(holdsPackage({ ...stopped, errorCode: null }), false, "the owner's stop too");
 });
