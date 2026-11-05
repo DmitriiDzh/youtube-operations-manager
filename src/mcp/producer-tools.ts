@@ -8,7 +8,7 @@
  *
  * BL-239 (owner msgs 3928/3930, ADR 0059 -- a new requirement lifting ADR 0037 §1 for these tools only): the Producer also controls
  * this computer's upload queue with `PRODUCER_UPLOAD_QUEUE_TOOLS` (permission UPLOAD_QUEUE): it lists the queue, moves and cancels
- * queued rows of any channel, and adds a ready release package under the owner's automatic-upload switch -- private, a date only
+ * queued rows of any channel (since BL-244, ADR 0064, it also stops a row being sent before its last chunk), and adds a ready release package under the owner's automatic-upload switch -- private, a date only
  * from a weekly-plan slot the owner approved. Channel agents and the factory get none of them.
  *
  * BL-241 (owner msgs 4010/4011, ADR 0061): the Producer submits clips for review with `PRODUCER_CLIP_REVIEW_TOOLS` -- a short clip
@@ -32,7 +32,9 @@
 // same manifest (a package changed since the owner approved it uploads without a date). Same shape.
 // 1.17.0 (BL-243, ADR 0063): agent_get_publishing_calendar -- deleted_on_youtube, existsOnChannel / checkedAt / removedAt,
 // missingOnChannel and a top-level checkedAt; channel_video_list videoIds with removed / notFound. Additive.
-export const PRODUCER_API_VERSION = "1.17.0";
+// 1.18.0 (BL-244, owner msgs 4046/4050, ADR 0064): producer_upload_queue_cancel also stops an upload being sent (or paused while
+// sending) before its last chunk; its result gains previousStatus / storedBytes / totalBytes; refusals carry details.reason. Same tool.
+export const PRODUCER_API_VERSION = "1.18.0";
 
 /** The channel agent's READ tools the Producer gets; each call names its channel and runs in that channel's agent scope. */
 export const PRODUCER_CHANNEL_TOOLS: Readonly<Record<string, { capability: string }>> = Object.freeze({

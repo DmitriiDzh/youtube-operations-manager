@@ -751,7 +751,7 @@ test("AC-PR-07 / AC-PR-10: the Producer's own tools -- its channels with their f
   // four UPLOAD_QUEUE tools, so the permissions are READ, DRAFT and UPLOAD_QUEUE; the DRAFT list is unchanged.
   // BL-241 (owner msgs 4010/4011, ADR 0061 -- the requirement changed: the Producer submits clips for the owner's review): 1.15.0
   // adds the four clip review tools; submit and withdraw are DRAFT (a request the owner decides), so the DRAFT list gains them.
-  assert.equal(PRODUCER_API_VERSION, "1.17.0"); // 1.17.0 (BL-243): the calendar read's deleted_on_youtube / missingOnChannel, channel_video_list videoIds; 1.16.0 (BL-242): the add dates only the approved manifest in the packaged stage; 1.14.0 (BL-239): the upload queue tools; 1.13.0 (BL-235): the calendar read's due / gapDates from the daily coverage, published_pending; 1.12.0 (BL-221): a live sample without a count is 0 viewers; 1.10.0 (BL-209): the calendar read's uploads gain automatic / progressPercent / finishedAt; 1.8.0 (BL-182 stage 2): the calendar read lists packages and uploads
+  assert.equal(PRODUCER_API_VERSION, "1.18.0"); // 1.18.0 (BL-244): producer_upload_queue_cancel also stops a row being sent before its last chunk; 1.17.0 (BL-243): the calendar read's deleted_on_youtube / missingOnChannel, channel_video_list videoIds; 1.16.0 (BL-242): the add dates only the approved manifest in the packaged stage; 1.14.0 (BL-239): the upload queue tools; 1.13.0 (BL-235): the calendar read's due / gapDates from the daily coverage, published_pending; 1.12.0 (BL-221): a live sample without a count is 0 viewers; 1.10.0 (BL-209): the calendar read's uploads gain automatic / progressPercent / finishedAt; 1.8.0 (BL-182 stage 2): the calendar read lists packages and uploads
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_stored_suggested_sources"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_publishing_calendar"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_video_comments"));
@@ -1052,6 +1052,18 @@ test("BL-239 AC-UQ-11: the upload queue tools reach only the session's queue; in
     ["producer_upload_queue_cancel", "UC_PR_X", "ok", null],
   ]);
   assert.equal(refused.length, 5, "each refused input is logged as refused");
+});
+
+// BL-244 AC-STOP-13 (UPLOAD_QUEUE_CONTROL_PLAN.md BL-244, ADR 0064): one cancel tool, which now also stops a row being sent before
+// its last chunk -- its description says so, and that a row whose last chunk went is refused.
+test("BL-244 AC-STOP-13: producer_upload_queue_cancel is the one cancel tool and its description names the stop", () => {
+  const producer = createMcpServer(undefined, { connectionEnabled: true, producerSession: { tokenId: "p1", async reverify() {} } as unknown as ProducerSession });
+  const tools = (producer as unknown as { _registeredTools: Record<string, { description?: string }> })._registeredTools;
+  assert.deepEqual(Object.keys(tools).filter((name) => /upload.*(stop|cancel)/.test(name)), ["producer_upload_queue_cancel"]);
+  const description = tools.producer_upload_queue_cancel.description ?? "";
+  assert.match(description, /being sent/);
+  assert.match(description, /last chunk/);
+  assert.match(description, /upload_not_cancellable/);
 });
 
 test("BL-239 AC-UQ-11: a channel worker session never lists an upload queue tool; they are producer-only", () => {
