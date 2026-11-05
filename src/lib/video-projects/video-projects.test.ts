@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { VideoReservationsReport } from "@/lib/sync-gateway";
 import type { VideoFolder, VideoRegistryRow } from "@/lib/workspace-videos";
-import { isDomainError, type LinkCandidate, type OwnReservation, type VideoProjectsDeps, type WorkspaceVideos } from "./contracts";
+import { isDomainError, type ChannelCopy, type LinkCandidate, type OwnReservation, type VideoProjectsDeps, type WorkspaceVideos } from "./contracts";
 import { folderDateNear, folderMonthDay, linkSuggestions } from "./linking";
 import { createVideoProjectsService } from "./services";
 
@@ -27,6 +27,10 @@ type Harness = {
   connected: string[];
   channelVideos: Record<string, LinkCandidate[]>;
   records: Array<{ channelId: string; relativePath: string; record: Record<string, unknown> }>;
+  /** BL-243: the synced copy per channel (absent: none known); an Error makes the read fail. */
+  copies?: Record<string, ChannelCopy | Error>;
+  /** BL-243 round 8: the video ids each channelCopy read asked for. */
+  copyAsked: string[][];
 };
 
 function harness(overrides: Partial<Harness> = {}) {
@@ -44,6 +48,7 @@ function harness(overrides: Partial<Harness> = {}) {
     connected: [UC1, UC2],
     channelVideos: {},
     records: [],
+    copyAsked: [],
     ...overrides,
   };
   let queue: Promise<unknown> = Promise.resolve();
@@ -85,6 +90,12 @@ function harness(overrides: Partial<Harness> = {}) {
       return v ?? null;
     },
     channelVideos: async (channelId) => h.channelVideos[channelId] ?? [],
+    channelCopy: async (channelId, videoIds) => {
+      h.copyAsked.push([...videoIds].sort());
+      const copy = h.copies?.[channelId];
+      if (copy instanceof Error) throw copy;
+      return copy ?? { listed: new Map(), removed: new Map(), checkedAt: null };
+    },
     writeUploadRecord: async (channelId, relativePath, record) => {
       h.records.push({ channelId, relativePath, record: record as Record<string, unknown> });
     },
@@ -575,4 +586,48 @@ test("BL-221 review: a video the registry names for another number is not linked
   assert.deepEqual(suggestions.suggested.map((c) => c.videoId), []);
   await rejects(service.linkVideo({ channelId: UC1, video: "V52", videoId: "publishd_52" }), "video_already_linked");
   assert.equal(h.records.length, 0);
+});
+
+// BL-243 review round 4, item 4 (AC-WP-82): the video list tells a deleted video apart, by the calendar's rule. Fixed values: removed
+// check completed 2026-11-04T08:00Z; V73's video vid73 removed at 2026-11-03T19:54Z; V74's vid74 listed, published 2026-11-01; V75's
+// vid75 listed but published after the check; V76 has no video id. The state still says how far the number got here.
+test("BL-243 AC-WP-82: agent/factory video list -- existsOnChannel and removedAt for each number's YouTube video", async () => {
+  const { h, service } = harness({
+    workspace: {
+      [UC1]: {
+        status: "ok",
+        folders: [
+          folder("04 Videos/11 November/1109 V73", "V73", ["V73_youtube.json"]),
+          folder("04 Videos/11 November/1110 V74", "V74", ["V74_youtube.json"]),
+          folder("04 Videos/11 November/1111 V75", "V75", ["V75_youtube.json"]),
+          folder("04 Videos/11 November/1112 V76", "V76"),
+        ],
+        registry: [],
+        uploadRecords: [
+          { video: "V73", videoId: "vid73" },
+          { video: "V74", videoId: "vid74" },
+          { video: "V75", videoId: "vid75" },
+        ],
+      },
+    },
+    copies: {
+      [UC1]: {
+        listed: new Map([["vid74", "2026-11-01T00:00:00.000Z"], ["vid75", "2026-11-04T09:00:00.000Z"]]),
+        removed: new Map([["vid73", "2026-11-03T19:54:00.000Z"]]),
+        checkedAt: "2026-11-04T08:00:00.000Z",
+      },
+    },
+  });
+  const by = new Map((await service.listVideos({ channelId: UC1 })).videos.map((v) => [v.video, [v.state, v.youtubeVideoId, v.existsOnChannel, v.removedAt]]));
+  assert.deepEqual(by.get("V73"), ["published", "vid73", false, "2026-11-03T19:54:00.000Z"]);
+  assert.deepEqual(by.get("V74"), ["published", "vid74", true, null]);
+  assert.deepEqual(by.get("V75"), ["published", "vid75", null, null]);
+  assert.deepEqual(by.get("V76"), ["in_work", null, null, null]);
+  // Round 8: only the YouTube videos the list names are read, by id.
+  assert.deepEqual(h.copyAsked, [["vid73", "vid74", "vid75"]]);
+
+  // The copy cannot be read: none known (never true, never false).
+  const failing = harness({ workspace: { [UC1]: { status: "ok", folders: [folder("04 Videos/11 November/1109 V73", "V73", ["V73_youtube.json"])], registry: [], uploadRecords: [{ video: "V73", videoId: "vid73" }] } }, copies: { [UC1]: new Error("db busy") } });
+  const v73 = (await failing.service.listVideos({ channelId: UC1 })).videos.find((v) => v.video === "V73")!;
+  assert.deepEqual([v73.existsOnChannel, v73.removedAt], [null, null]);
 });

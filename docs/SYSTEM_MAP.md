@@ -843,7 +843,10 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   - Дефолты публикации канала: `publishing/settings.ts`, семейство синхронизации `channel-publishing-settings` (документ на
     канал), конфликты в «Слиянии»; Контент → «Публикация», время — `UtcTimeField` (12:00 UTC по умолчанию).
   - Пакеты релизов: `publishing/packages.ts`, `package-scan.ts` (`04 Videos/**/V*_release.json`, проверки по правилам YouTube,
-    состояние по `Vn_youtube.json`; обход и чтения — общий `src/lib/workspace-videos/`, BL-187).
+    состояние по `Vn_youtube.json`; обход и чтения — общий `src/lib/workspace-videos/`, BL-187). BL-243 (ADR 0063): состояние
+    `deleted_on_youtube` — видео записи помечено синхронизацией удалённым (`removed_on_youtube_at`); `uploaded_unknown` — его нет
+    в копии; у каждого пакета `existsOnChannel` и `checkedAt` (время завершённой проверки удалений — `channels.removed_check_at`,
+    схема v118).
   - Подтверждение: `upload-approval.ts` (хеш манифеста и показанные настройки, квота: корзина `videos.insert` 100 в день и
     `quota-guard.checkUnits`, другой компьютер — семейство `publishing-uploads`).
   - Загрузка: `upload-runner.ts`, таблица `publishing_uploads` (схема v89, только этот компьютер), цикл раз в 5 с в
@@ -1017,6 +1020,10 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
     одобрение — хеш слота с отпечатком пакета `[video, manifestSha256, videoId|null]`, решение хранит отпечаток; загрузки
     (`src/lib/publishing/slot-decision.ts`) дают дату только одобренному манифесту, план-расписание находит загрузку по video id
     одобрения (слот берёт уже загруженное видео через `slotId` пакета). Factory API 1.42.0, Agent API 4.16.0, Producer API 1.16.0.
+  - BL-243 (ADR 0063): удалённый на YouTube пакет не держит слот, говорит за слот, только если других пакетов у слота нет
+    (`failed` + `video_deleted_on_youtube`, «Ролик удалён на YouTube»), одобрять нечего, прежнее одобрение не считается;
+    план-расписание не трогает удалённые видео. Агентам: `missingOnChannel` в календаре, `videoIds` в `channel_video_list`.
+    Factory API 1.43.0, Agent API 4.17.0, Producer API 1.17.0.
   - Этап 3: автозагрузка (BL-209) ставит пакет одобренного и не снятого слота с его временем, снятый пропускает (решения слотов —
     `src/composition/publishing-plan-slots.ts`); загрузчик пишет переводы пакета первым шагом после обработки общим писателем
     `src/lib/shared-video-localizations/` (вынесен из live-localizations) и ИИ-метку пакета; дата — только после переводов, обложки,

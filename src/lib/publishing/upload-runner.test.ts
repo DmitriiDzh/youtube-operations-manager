@@ -3,7 +3,7 @@ import test from "node:test";
 import type { StoredPublishingUpload } from "@/lib/db";
 import { DomainError } from "@/lib/shared-domain";
 import { DEFAULT_PUBLISHING_SETTINGS, type PublishingSettings } from "./settings";
-import { classifyUploadError, createUploadRunner, holdsPackage, isCancellable, isPublishAtSet, readBackMismatches, type ApprovedPackage, type InsertResource, type UploadRunnerDeps, type VideoReadBack } from "./upload-runner";
+import { classifyUploadError, createUploadRunner, holdsPackage, holdsSlot, isCancellable, isPublishAtSet, readBackMismatches, type ApprovedPackage, type InsertResource, type UploadRunnerDeps, type VideoReadBack } from "./upload-runner";
 
 // BL-182 stage 2 -- the upload runner against fakes (no real YouTube call, DEVELOPMENT_PLAYBOOK §6.11). Requirements: the
 // acceptance list in upload-runner.acceptance.test.ts (FO-REQ-0023 §4 B5–B7 and §5; ADR 0037; owner msgs 2725/2727; owner msgs
@@ -1287,4 +1287,26 @@ test("AC-WP-56: the date step dates only the approved manifest", async () => {
   assert.deepEqual([approved.publishAtWrites, JSON.parse(approved.row().stepsJson).publishAt], [["2026-10-25T12:00:00.000Z"], "set"]);
   const other = await run("sha-other");
   assert.deepEqual([other.publishAtWrites, JSON.parse(other.row().stepsJson).publishAt], [[], "withheld"]);
+});
+
+// BL-243 (AC-WP-71, AC-WP-85 -- review round 8 rule): a finished upload of a video marked removed frees its plan slot once the latest
+// completed removed check is at least 24 h after the upload (`uploadTimeOf`: steps.uploadedAt); no upload time: freed; it always holds
+// its video number. Scenario by hand: uploaded T0 = 2026-11-03T08:00Z, deleted, sync at T0+2h marks it; sync at T0+26h, mark stands.
+test("BL-243 AC-WP-85: the slot stays held until a removed check 24 h after the upload; unknown upload time frees it", () => {
+  const T0 = "2026-11-03T08:00:00.000Z";
+  const removed = new Set(["vid73"]);
+  const done = { status: "done" as const, videoId: "vid73", errorCode: null, stepsJson: JSON.stringify({ uploadedAt: T0 }) };
+  assert.equal(holdsSlot(done, removed, "2026-11-03T10:00:00.000Z"), true, "check at T0+2h: still held");
+  assert.equal(holdsSlot(done, removed, "2026-11-04T10:00:00.000Z"), false, "check at T0+26h, the mark standing: freed");
+  assert.equal(holdsSlot(done, removed, "2026-11-04T08:00:00.000Z"), false, "exactly 24 h");
+  assert.equal(holdsSlot(done, removed, null), true, "no completed check yet: held until one");
+  assert.equal(holdsSlot({ ...done, stepsJson: "{}" }, removed, "2026-11-03T10:00:00.000Z"), false, "no upload time: not a fresh upload, freed");
+  assert.equal(holdsSlot(done, new Set(), "2026-11-04T10:00:00.000Z"), true, "the mark cleared: held as normal");
+  assert.equal(holdsPackage(done), true, "its number stays held");
+  assert.equal(holdsSlot({ ...done, videoId: "vid74" }, removed, "2026-11-04T10:00:00.000Z"), true);
+  assert.equal(holdsSlot({ status: "queued", videoId: null, errorCode: null, stepsJson: "{}" }, removed, null), true);
+  assert.equal(holdsSlot({ status: "failed", videoId: null, errorCode: "unknown_outcome", stepsJson: "{}" }, removed, null), true);
+  assert.equal(holdsSlot({ status: "cancelled", videoId: null, errorCode: null, stepsJson: "{}" }, removed, null), false);
+  assert.equal(holdsSlot({ status: "failed", videoId: "vid73", errorCode: "thumbnail_failed", stepsJson: done.stepsJson }, removed, "2026-11-04T10:00:00.000Z"), false, "failed after the insert");
+  assert.equal(holdsSlot({ status: "processing", videoId: "vid73", errorCode: null, stepsJson: done.stepsJson }, removed, "2026-11-04T10:00:00.000Z"), true, "under way: the runner decides");
 });

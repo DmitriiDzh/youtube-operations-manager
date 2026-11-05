@@ -34,7 +34,7 @@ function harness(progress?: Map<string, PlanSlotProgress>) {
     randomId: () => `id${++n}`,
     withLock: (fn) => fn(),
     audit: async (entry) => void audits.push(entry),
-    ...(progress ? { progress: async (_c: string, _w: string, ids: string[]) => new Map([...progress].filter(([id]) => ids.includes(id))) } : {}),
+    ...(progress ? { progress: async (_c: string, _w: string, ids: string[]) => ({ progress: new Map([...progress].filter(([id]) => ids.includes(id))), packagesUnavailable: false }) } : {}),
   });
   return { service, audits, core, clock };
 }

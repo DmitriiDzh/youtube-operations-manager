@@ -1,3 +1,4 @@
+import { removedMarkFreesSlot, uploadTimeOf } from "@/lib/shared-video-presence";
 // BL-182 stage 2 (PUBLISHING_PLAN.md §2 stage 2 item 4; FO-REQ-0023 §4 B4; ADR 0037 §3): the owner's approval of a selection of
 // release packages. It binds to what the owner saw -- each manifest's hash and the publishing settings shown -- and is refused
 // whole when anything changed since, when a package is not ready or already queued, when a publish time is 15 minutes away or
@@ -93,6 +94,13 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
       }
       // Review #5: one upload per plan slot.
       if (found.pkg.slotId && heldSlots.has(found.pkg.slotId)) throw refuse("upload_slot_taken", `${found.pkg.video}: the plan slot ${found.pkg.slotId} already has an upload.`, { video: found.pkg.video, slotId: found.pkg.slotId });
+      // BL-243 (review round 8): a package marked deleted on YouTube frees its slot for this upload once the latest completed
+      // removed check (`checkedAt`) is at least 24 h after its upload (`uploadTimeOf` of its record; none: not a fresh upload,
+      // freed) -- a lagging uploads playlist can mark a fresh upload removed by mistake. The gate only.
+      const slotId = found.pkg.slotId;
+      if (slotId && scanned.packages.some((p) => p.state === "deleted_on_youtube" && p.pkg?.slotId === slotId && !removedMarkFreesSlot({ uploadedAt: uploadTimeOf(p.youtube, null), checkedAt: p.checkedAt }))) {
+        throw refuse("upload_slot_taken", `${found.pkg.video}: the plan slot ${slotId} has an upload marked deleted by a check less than 24 hours after it was made.`, { video: found.pkg.video, slotId, reason: "removed_mark_grace" });
+      }
       if (found.state !== "ready" || !found.thumbnailPath) throw refuse("upload_package_not_ready", `${found.pkg.video} is not ready to upload.`, { video: found.pkg.video, problems: found.problems });
       if (item.publishAt !== null) {
         const at = Date.parse(item.publishAt);

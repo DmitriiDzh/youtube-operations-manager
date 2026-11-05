@@ -8,6 +8,7 @@
 // writes off pauses a job (never fails it); quota and the channel's upload cap pause it until they reset.
 
 import type { StoredPublishingUpload } from "@/lib/db";
+import { removedMarkFreesSlot, uploadTimeOf } from "@/lib/shared-video-presence";
 import { READ_BACK_RETRIES, READ_BACK_RETRY_DELAY_MS } from "@/lib/video-details/read-back";
 import type { PublishingSettings } from "./settings";
 import { approvalNamesUpload, type SlotDecision } from "./slot-decision";
@@ -66,7 +67,7 @@ export type UploadSteps = {
    * BL-225 stage 3 (ADR 0051 §5, §10): the last change the plan made to the video's date after the upload -- a veto removed it, an
    * approval (or a re-approval with a new time) set it. Read back before it is stored.
    */
-  planSync?: { at: string; action: "scheduled" | "unscheduled"; publishAt: string | null; result: "verified" | "mismatch" | "refused"; reason?: string };
+  planSync?: { at: string; action: "scheduled" | "unscheduled"; publishAt: string | null; result: "verified" | "mismatch" | "refused" | "video_missing"; reason?: string };
   thumbnail?: "set" | "failed";
   playlist?: "added" | "already_there" | "none" | "failed";
   verify?: { result: "verified" | "mismatch"; mismatches: string[] };
@@ -846,6 +847,19 @@ export const UNKNOWN_OUTCOME_RELEASED = "unknown_outcome_released";
  */
 export function holdsPackage(row: Pick<StoredPublishingUpload, "status" | "videoId" | "errorCode">): boolean {
   return (ACTIVE as readonly string[]).includes(row.status) || row.status === "done" || row.videoId !== null || row.errorCode === "unknown_outcome";
+}
+
+/**
+ * BL-243: whether an upload row holds its weekly-plan slot -- as `holdsPackage`, except a finished row (done or failed) whose
+ * video the channel sync found removed on YouTube: that frees the slot once `removedMarkFreesSlot` says so (review round 8: the
+ * latest completed removed check, `checkedAt`, at least 24 h after the row's upload by `uploadTimeOf`; no upload time: freed). Its
+ * video NUMBER stays held (`holdsPackage`). `removedVideoIds`: the videos marked removed now.
+ */
+export function holdsSlot(row: Pick<StoredPublishingUpload, "status" | "videoId" | "errorCode" | "stepsJson">, removedVideoIds: ReadonlySet<string>, checkedAt: string | Date | null): boolean {
+  if (!holdsPackage(row)) return false;
+  const finished = !(ACTIVE as readonly string[]).includes(row.status);
+  if (!finished || row.videoId === null || !removedVideoIds.has(row.videoId)) return true;
+  return !removedMarkFreesSlot({ uploadedAt: uploadTimeOf(null, row), checkedAt });
 }
 
 export type UploadRunner = ReturnType<typeof createUploadRunner>;

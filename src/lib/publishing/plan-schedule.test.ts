@@ -3,7 +3,7 @@ import test from "node:test";
 import type { StoredPublishingUpload } from "@/lib/db";
 import { DomainError } from "@/lib/shared-domain";
 import type { SlotDecision } from "./auto-upload";
-import { createPlanSchedule, desiredDate, RETRY_AFTER_MS } from "./plan-schedule";
+import { createPlanSchedule, desiredDate, isVideoNotFound, RETRY_AFTER_MS } from "./plan-schedule";
 
 // BL-225 stage 3 (WEEKLY_PUBLISHING_PLAN.md AC-WP-32 and the owner's answer 2, msg 3537; ADR 0051 §5, §10; FO-REQ-0040 item 5).
 // Requirements: a vetoed slot's scheduled video loses its date and stays private, read back; a slot approved after its package was
@@ -54,11 +54,17 @@ function row(over: Partial<StoredPublishingUpload> = {}): StoredPublishingUpload
   };
 }
 
-function harness(initial: StoredPublishingUpload, decision: SlotDecision | undefined, video: { privacyStatus: string; publishAt: string | null } = { privacyStatus: "private", publishAt: initial.publishAt }) {
+function harness(
+  initial: StoredPublishingUpload,
+  decision: SlotDecision | undefined,
+  video: { privacyStatus: string; publishAt: string | null } = { privacyStatus: "private", publishAt: initial.publishAt },
+  removedVideoIds?: () => Promise<ReadonlySet<string>>
+) {
   const state = { row: { ...initial }, video: { ...video }, writes: [] as Array<string | null>, audits: [] as Array<Record<string, unknown>>, reads: 0, liveWrites: true, dataReads: true, quotaOut: false, readBackWrong: false, now: NOW };
   const schedule = createPlanSchedule({
     rows: async () => [state.row],
     slotDecisions: async () => new Map(decision ? [["w44-mon", decision]] : []),
+    ...(removedVideoIds ? { removedVideoIds } : {}),
     read: async () => {
       state.reads += 1;
       if (state.quotaOut) throw new DomainError({ code: "youtube_quota_exceeded", message: "quota" });
@@ -238,4 +244,121 @@ test("AC-WP-57: a veto of the slot that took the video (its approval named vid1)
   const h = multiHarness(scheduled, new Map<string, SlotDecision>([["old", { kind: "pending" }], ["new", { kind: "vetoed", package: { video: "V73", manifestSha256: "mf-aa", videoId: "vid1" } }]]));
   await h.schedule.tick();
   assert.deepEqual(h.state.writes, [null]);
+});
+
+// BL-243 (WEEKLY_PUBLISHING_PLAN.md AC-WP-71, rule of review round 2 / ADR 0063 §4): a video the channel sync found removed on YouTube
+// is never DATED -- no read, no write -- and an unreadable removed list dates nothing (fail closed). Removing a date (a veto) never
+// waits on the local mark or the list: it asks YouTube (`read`), and YouTube's "no such video" means there is nothing to remove.
+test("BL-243 AC-WP-71: dating skips a removed video and an unreadable list; the cleared mark dates again", async () => {
+  const approved = { kind: "approved", publishAt: "2026-10-27T09:00:00.000Z" } as SlotDecision;
+  const removed = harness(row(), approved, undefined, async () => new Set(["vid64"]));
+  assert.deepEqual(await removed.schedule.tick(), { changed: 0 });
+  assert.equal(removed.state.reads, 0);
+  assert.deepEqual(removed.state.writes, []);
+  assert.deepEqual(removed.state.audits, []);
+  assert.equal(removed.state.row.stepsJson, JSON.stringify(OK_STEPS));
+  const failed = harness(row(), approved, undefined, async () => {
+    throw new Error("db down");
+  });
+  assert.deepEqual(await failed.schedule.tick(), { changed: 0 }, "an unreadable list: no date (fail closed)");
+  assert.equal(failed.state.reads, 0);
+  const cleared = harness(row(), approved, undefined, async () => new Set());
+  assert.deepEqual(await cleared.schedule.tick(), { changed: 1 });
+  assert.deepEqual(cleared.state.writes, ["2026-10-27T09:00:00.000Z"]);
+});
+
+test("BL-243 AC-WP-71: a veto removes the date whatever the local mark or the list say; YouTube's 'no such video' ends it", async () => {
+  const vetoed = { kind: "vetoed" } as SlotDecision;
+  // The mark says removed, but YouTube still has the video (a wrong mark): the veto's un-dating happens.
+  const marked = harness(row(), vetoed, undefined, async () => new Set(["vid64"]));
+  assert.deepEqual(await marked.schedule.tick(), { changed: 1 });
+  assert.deepEqual(marked.state.writes, [null]);
+  assert.equal(marked.state.row.publishAt, null);
+  // The list cannot be read: the veto still goes through.
+  const unreadable = harness(row(), vetoed, undefined, async () => {
+    throw new Error("db down");
+  });
+  assert.deepEqual(await unreadable.schedule.tick(), { changed: 1 });
+  assert.deepEqual(unreadable.state.writes, [null]);
+  // YouTube says there is no such video (and the mark agrees): nothing written, the row keeps its last known date (round 7), and
+  // while the video stays marked removed the next pass reads nothing.
+  const gone = harness(row(), vetoed, { privacyStatus: null, publishAt: null, missing: true } as never, async () => new Set(["vid64"]));
+  assert.deepEqual(await gone.schedule.tick(), { changed: 1 });
+  assert.deepEqual(gone.state.writes, []);
+  assert.equal(gone.state.reads, 1);
+  assert.equal(gone.state.row.publishAt, "2026-10-26T09:00:00.000Z");
+  assert.deepEqual([gone.steps().planSync.action, gone.steps().planSync.result], ["unscheduled", "video_missing"]);
+  assert.deepEqual(await gone.schedule.tick(), { changed: 0 });
+  assert.equal(gone.state.reads, 1);
+});
+
+// BL-243 review round 3 (AC-WP-79): YouTube's "no such video" is not proof on its own (another account, a partial answer). Without the
+// removed mark of a completed owner sync it is a refusal like any other -- recorded, the row keeps its date, tried again after the
+// hour -- for a veto and for a date alike. With the mark (above) a veto's un-dating ends there.
+test("BL-243 AC-WP-79: not_found without a removed mark is refused and retried, for a veto and for dating", async () => {
+  const missing = { privacyStatus: null, publishAt: null, missing: true } as never;
+  const veto = harness(row(), { kind: "vetoed" }, missing, async () => new Set());
+  assert.deepEqual(await veto.schedule.tick(), { changed: 1 });
+  assert.deepEqual(veto.state.writes, []);
+  assert.equal(veto.state.row.publishAt, "2026-10-26T09:00:00.000Z", "the row keeps its date");
+  assert.deepEqual([veto.steps().planSync.action, veto.steps().planSync.result], ["unscheduled", "refused"]);
+  const reads = veto.state.reads;
+  await veto.schedule.tick();
+  assert.equal(veto.state.reads, reads, "not again within the hour");
+  veto.state.now = new Date(NOW.getTime() + RETRY_AFTER_MS + 1);
+  await veto.schedule.tick();
+  assert.equal(veto.state.reads, reads + 1, "tried again after the hour");
+
+  const unreadable = harness(row(), { kind: "vetoed" }, missing, async () => {
+    throw new Error("db down");
+  });
+  await unreadable.schedule.tick();
+  assert.equal(unreadable.steps().planSync.result, "refused", "an unreadable list is no mark");
+
+  const dating = harness(row({ publishAt: null, stepsJson: JSON.stringify({ ...OK_STEPS, publishAt: undefined }) }), { kind: "approved", publishAt: "2026-10-27T09:00:00.000Z" }, missing, async () => new Set());
+  assert.deepEqual(await dating.schedule.tick(), { changed: 1 });
+  assert.deepEqual(dating.state.writes, []);
+  assert.equal(dating.state.row.publishAt, null);
+  assert.deepEqual([dating.steps().planSync.action, dating.steps().planSync.result], ["scheduled", "refused"]);
+});
+
+// BL-243 review rounds 6-7 (AC-WP-83): video_missing does not stick once the mark is cleared (the video reappeared). The row kept its
+// last known date, so the normal veto path unschedules it -- with the usual hourly retries when the first try is refused or
+// mismatched. While the video is still marked removed, nothing is read.
+test("BL-243 AC-WP-83: after video_missing and a cleared mark, the veto unschedules, retrying after a failed try", async () => {
+  const earlier = new Date(NOW.getTime() - 2 * 60 * 60_000).toISOString();
+  const missingSteps = JSON.stringify({ ...OK_STEPS, planSync: { at: earlier, action: "unscheduled", publishAt: null, result: "video_missing" } });
+  const still = harness(row({ stepsJson: missingSteps }), { kind: "vetoed" }, undefined, async () => new Set(["vid64"]));
+  assert.deepEqual(await still.schedule.tick(), { changed: 0 });
+  assert.equal(still.state.reads, 0, "still marked removed: no read");
+  // Round 8: the list cannot be read -- the confirmed video_missing stands: skipped, no YouTube call, not downgraded.
+  const unreadable = harness(row({ stepsJson: missingSteps }), { kind: "vetoed" }, undefined, async () => {
+    throw new Error("db down");
+  });
+  assert.deepEqual(await unreadable.schedule.tick(), { changed: 0 });
+  assert.equal(unreadable.state.reads, 0);
+  assert.equal(unreadable.steps().planSync.result, "video_missing");
+
+  const back = harness(row({ stepsJson: missingSteps }), { kind: "vetoed" }, undefined, async () => new Set());
+  back.state.readBackWrong = true; // the first unschedule is read back with another date
+  assert.deepEqual(await back.schedule.tick(), { changed: 1 });
+  assert.equal(back.steps().planSync.result, "mismatch");
+  assert.equal(back.state.row.publishAt, "2026-10-26T09:00:00.000Z", "the row keeps its date after a failed try");
+  await back.schedule.tick();
+  assert.equal(back.steps().planSync.result, "mismatch", "not again within the hour");
+  back.state.readBackWrong = false;
+  back.state.now = new Date(NOW.getTime() + RETRY_AFTER_MS + 1);
+  assert.deepEqual(await back.schedule.tick(), { changed: 1 });
+  assert.equal(back.steps().planSync.result, "verified");
+  assert.equal(back.state.row.publishAt, null);
+});
+
+// BL-243 review round 6 (AC-WP-79): only video-details' "no item for the id" is a not-found; an item without snippet/status is not.
+test("BL-243 AC-WP-79: isVideoNotFound needs reason no_item for that video id", () => {
+  const error = (details: Record<string, unknown>) => new DomainError({ code: "not_found", message: "x", details });
+  assert.equal(isVideoNotFound(error({ videoId: "vid64", reason: "no_item" }), "vid64"), true);
+  assert.equal(isVideoNotFound(error({ videoId: "vid64", reason: "partial" }), "vid64"), false);
+  assert.equal(isVideoNotFound(error({ videoId: "vid64" }), "vid64"), false);
+  assert.equal(isVideoNotFound(error({ videoId: "other", reason: "no_item" }), "vid64"), false);
+  assert.equal(isVideoNotFound(new Error("network"), "vid64"), false);
 });

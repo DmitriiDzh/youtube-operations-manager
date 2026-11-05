@@ -1,5 +1,5 @@
 import { createGoogleOAuthClient } from "@/lib/auth";
-import { createYoutubeClient, getVideoDetailsContext } from "@/lib/youtube-read-gateway";
+import { createYoutubeClient, getVideoDetailsContext, readVideoDetailsContext } from "@/lib/youtube-read-gateway";
 import {
   applyVideoDetailsUpdate,
   assertLiveWritesAuthorized,
@@ -70,15 +70,16 @@ export function createVideoDetailsYoutubeApiAdapter() {
   return {
     async getSnapshot(args: { credentials: ResolvedCredentials; videoId: string }): Promise<VideoDetailsSnapshot> {
       const youtube = await createAuthorizedClient(args.credentials);
-      const context = await getVideoDetailsContext(youtube, args.videoId);
-      if (!context) {
+      const outcome = await readVideoDetailsContext(youtube, args.videoId);
+      if (!("context" in outcome)) {
+        // BL-243: `reason` -- no_item (videos.list returned no item for the id) or partial (no snippet/status).
         throw new DomainError({
           code: "not_found",
           message: "Video not found or missing required snippet/status data",
-          details: { videoId: args.videoId },
+          details: { videoId: args.videoId, reason: outcome.missing },
         });
       }
-      return toSnapshot(args.videoId, context);
+      return toSnapshot(args.videoId, outcome.context);
     },
 
     /**

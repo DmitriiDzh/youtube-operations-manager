@@ -1,6 +1,7 @@
+import { existsOnChannelOf } from "@/lib/shared-video-presence";
 import { isNamedAfterRelease, isVideoFileName, releaseManifestFileName, uploadRecordFileName, type VideoFolder, type VideoRegistryRow } from "@/lib/workspace-videos";
 import { VIDEO_NUMBER_PATTERN } from "@/lib/sync-gateway";
-import type { OwnReservation, ReservationView, UploadRecordLink, VideoConflict, VideoProject, VideoSource, VideoState } from "./contracts";
+import type { ChannelCopy, OwnReservation, ReservationView, UploadRecordLink, VideoConflict, VideoProject, VideoSource, VideoState } from "./contracts";
 
 // BL-194 stage 1 (VIDEO_COST_PLAN.md §2, ADR 0040): the pure rules -- the next number, the list of a channel's videos, and the
 // duplicates two computers made. No I/O.
@@ -32,6 +33,8 @@ export type VideoListInput = {
   uploads: Array<{ video: string; status: string; videoId?: string | null }>;
   /** BL-221: the videos the folders' `Vn_youtube.json` files name (absent: none read). */
   uploadRecords?: UploadRecordLink[];
+  /** BL-243: the synced copy (absent: none known -- `existsOnChannel` null, `removedAt` null). */
+  channelCopy?: ChannelCopy | null;
 };
 
 /** Every number of the channel the inputs know -- cancelled reservations included: a number is never given twice. */
@@ -119,6 +122,7 @@ export function buildVideoList(input: VideoListInput): VideoProject[] {
   }
 
   const suggestion = nextVideoNumber(knownNumbers(input));
+  const copy = input.channelCopy ?? null;
   const out: VideoProject[] = [];
   for (const [video, e] of entries) {
     const sorted = [...e.reservations].sort(byPrecedence);
@@ -137,6 +141,7 @@ export function buildVideoList(input: VideoListInput): VideoProject[] {
     const packaged = files.includes(releaseManifestFileName(video)) || e.uploads.some((s) => !DEAD_UPLOAD.has(s));
     const onlyCancelled = sorted.length > 0 && active.length === 0 && !e.folder && !e.registry && e.uploads.length === 0;
     const state: VideoState = published ? "published" : packaged ? "packaged" : onlyCancelled ? "cancelled" : "in_work";
+    const youtubeVideoId = e.recordId ?? e.uploadId ?? e.registryId;
     out.push({
       channelId: input.channelId,
       video,
@@ -150,7 +155,12 @@ export function buildVideoList(input: VideoListInput): VideoProject[] {
       hostName: lead?.hostName ?? null,
       thisComputer: lead?.thisComputer ?? false,
       conflict,
-      youtubeVideoId: e.recordId ?? e.uploadId ?? e.registryId,
+      youtubeVideoId,
+      // BL-243: the calendar's rule for "on the channel" (ADR 0063 §1).
+      existsOnChannel: youtubeVideoId
+        ? existsOnChannelOf({ removed: copy?.removed.has(youtubeVideoId) ?? false, listed: copy?.listed.has(youtubeVideoId) ?? false, publishedAt: copy?.listed.get(youtubeVideoId), checkedAt: copy?.checkedAt ?? null })
+        : null,
+      removedAt: youtubeVideoId ? (copy?.removed.get(youtubeVideoId) ?? null) : null,
       hasVideoFile: files.some((name) => isVideoFileName(name) && isNamedAfterRelease(name, video)),
       uploading: e.uploads.some((s) => !DEAD_UPLOAD.has(s) && !PUBLISHED_UPLOAD.has(s)),
     });

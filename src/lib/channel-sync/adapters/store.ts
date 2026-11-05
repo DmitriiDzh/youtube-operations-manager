@@ -1,6 +1,7 @@
 import {
   getStoredChannel,
   listStoredChannels,
+  listStoredVideosByIds,
   listStoredVideosByChannel,
   markChannelSynced,
   markVideosRemovedOnYoutube,
@@ -17,5 +18,6 @@ export function createChannelSyncStoreAdapter() {
     upsertVideos,
     listVideosByChannel: listStoredVideosByChannel,
     markVideosRemovedOnYoutube,
+    listVideosByIds: listStoredVideosByIds,
   };
 }

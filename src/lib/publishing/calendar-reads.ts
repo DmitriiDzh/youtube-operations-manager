@@ -41,6 +41,14 @@ export type AgentPublishingCalendar = {
   gapDatesTimeZone: string;
   /** BL-182 stage 2 (FO-REQ-0023 §4 C4): the release packages in this computer's copy of the workspace, and this computer's uploads. */
   packages: AgentPackages;
+  /**
+   * BL-243 (Agent API 4.17.0): the packages whose uploaded video the channel sync found removed on YouTube (state
+   * `deleted_on_youtube`); [] when the packages are not readable. Trust it as of `checkedAt` below (not `lastSyncedAt`).
+   */
+  missingOnChannel: Array<{ video: string | null; videoId: string; removedAt: string }>;
+  /** BL-243 review round 3: when a channel sync last completed the removed-on-YouTube check (ISO), what `missingOnChannel` and
+   * the items' `existsOnChannel` stand on; null: never. Can be older than `lastSyncedAt`. */
+  checkedAt: string | null;
   uploads: AgentUpload[];
 };
 
@@ -48,7 +56,20 @@ export type AgentPackages =
   | { status: "no_workspace" | "unavailable" }
   | {
       status: "ok";
-      items: Array<{ video: string | null; title: string | null; plannedPublishDate: string | null; state: string; problems: string[]; videoId: string | null }>;
+      items: Array<{
+        video: string | null;
+        title: string | null;
+        plannedPublishDate: string | null;
+        state: string;
+        problems: string[];
+        videoId: string | null;
+        /** BL-243: true -- in the copy, not removed, as of `checkedAt`; false -- removed on YouTube; null -- unknown. */
+        existsOnChannel: boolean | null;
+        /** BL-243: when a sync last completed the removed check (ISO; `channels.removed_check_at`); null: never. */
+        checkedAt: string | null;
+        /** BL-243: when the sync found the video removed (ISO), else null. */
+        removedAt: string | null;
+      }>;
     };
 export type AgentUpload = {
   video: string;
@@ -93,7 +114,8 @@ export type PublishingCalendarDeps = {
   listVideos(channelId: string): Promise<CoverageSourceVideo[]>;
   /** Fails closed unless `channelId` is the caller's active channel (AGENTS.md §F); used by the agent read only. */
   assertActiveChannel?(args: { userId: string | null; channelId: string }): Promise<void>;
-  getChannel(channelId: string): Promise<{ lastSyncedAt: Date | null } | null>;
+  /** BL-243: `removedCheckAt` -- when a sync last completed the removed-on-YouTube check (absent: unknown, null). */
+  getChannel(channelId: string): Promise<{ lastSyncedAt: Date | null; removedCheckAt?: Date | null } | null>;
   clock: { now(): Date };
   thresholdDays?: number;
   /**
@@ -101,8 +123,8 @@ export type PublishingCalendarDeps = {
    * gets the rows and the sync time already read here (review item 2: read once).
    */
   dailyCoverage?(channelId: string, days: number, preRead: CoveragePreRead): Promise<PublishingCoverageResult>;
-  /** BL-182 stage 2: the agent read's packages and uploads (absent: none listed). */
-  packages?(channelId: string): Promise<AgentPackages>;
+  /** BL-182 stage 2: the agent read's packages and uploads (absent: none listed). BL-243: `checkedAt` -- the calendar's own removed-check time, for the items. */
+  packages?(channelId: string, options?: { checkedAt: string | null }): Promise<AgentPackages>;
   uploads?(channelId: string): Promise<AgentUpload[]>;
 };
 
@@ -126,12 +148,16 @@ export function createPublishingCalendarReads(deps: PublishingCalendarDeps) {
     const inARow = daily.summary.coveredDaysInARow;
     return { ...coverage, due: inARow < threshold, coveredDaysInARow: inARow };
   }
+  /** The calendar, with the channel row it was built from (BL-243: the agent read takes the removed-check time from the same row). */
+  async function readCalendar(channelId: string): Promise<{ calendar: PublishingCalendarResult; channel: Awaited<ReturnType<PublishingCalendarDeps["getChannel"]>> }> {
+    const [videos, channel] = await Promise.all([deps.listVideos(channelId), deps.getChannel(channelId)]);
+    const dayCoverage = await readDailyCoverage(channelId, Math.max(threshold, CALENDAR_GAP_DAYS), { channel, videos });
+    const { entries, coverage } = buildPublishingCalendar(currentRows(videos, channel?.lastSyncedAt?.getTime() ?? null), deps.clock.now(), threshold);
+    return { calendar: { channelId, lastSyncedAt: channel?.lastSyncedAt?.toISOString() ?? null, entries, coverage: withDailyDue(coverage, dayCoverage), dayCoverage }, channel };
+  }
   return {
     async getCalendar(input: { channelId: string }): Promise<PublishingCalendarResult> {
-      const [videos, channel] = await Promise.all([deps.listVideos(input.channelId), deps.getChannel(input.channelId)]);
-      const dayCoverage = await readDailyCoverage(input.channelId, Math.max(threshold, CALENDAR_GAP_DAYS), { channel, videos });
-      const { entries, coverage } = buildPublishingCalendar(currentRows(videos, channel?.lastSyncedAt?.getTime() ?? null), deps.clock.now(), threshold);
-      return { channelId: input.channelId, lastSyncedAt: channel?.lastSyncedAt?.toISOString() ?? null, entries, coverage: withDailyDue(coverage, dayCoverage), dayCoverage };
+      return (await readCalendar(input.channelId)).calendar;
     },
     /**
      * BL-182 stage 1 (FO-REQ-0023 §4 C4): the read-only calendar for agents and the Producer -- the past and the next 14 days, the
@@ -145,7 +171,10 @@ export function createPublishingCalendarReads(deps: PublishingCalendarDeps) {
       if (!deps.assertActiveChannel) throw new Error("The publishing calendar read needs the active-channel check.");
       await deps.assertActiveChannel({ userId, channelId: input.channelId });
       const now = deps.clock.now();
-      const { channelId, lastSyncedAt, entries, coverage, dayCoverage } = await this.getCalendar({ channelId: input.channelId });
+      const { calendar, channel } = await readCalendar(input.channelId);
+      const { channelId, lastSyncedAt, entries, coverage, dayCoverage } = calendar;
+      // BL-243: the removed check's time from the same channel row, given to the scan too -- the top and the items agree.
+      const checkedAt = channel?.removedCheckAt?.toISOString() ?? null;
       const dayMs = 86_400_000;
       const todayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
       const fromMs = todayUtc - 14 * dayMs;
@@ -168,6 +197,7 @@ export function createPublishingCalendarReads(deps: PublishingCalendarDeps) {
           if (!filledDays.has(day)) gapDates.push(day);
         }
       }
+      const packages: AgentPackages = deps.packages ? await deps.packages(channelId, { checkedAt }).catch((): AgentPackages => ({ status: "unavailable" })) : { status: "unavailable" };
       return {
         channelId,
         lastSyncedAt,
@@ -178,7 +208,10 @@ export function createPublishingCalendarReads(deps: PublishingCalendarDeps) {
         gapDates,
         missingTranslationDates,
         gapDatesTimeZone: dayCoverage ? dayCoverage.timeZone : "UTC",
-        packages: deps.packages ? await deps.packages(channelId).catch((): AgentPackages => ({ status: "unavailable" })) : { status: "unavailable" },
+        packages,
+        checkedAt,
+        missingOnChannel:
+          packages.status === "ok" ? packages.items.flatMap((item) => (item.state === "deleted_on_youtube" && item.videoId && item.removedAt ? [{ video: item.video, videoId: item.videoId, removedAt: item.removedAt }] : [])) : [],
         uploads: deps.uploads ? await deps.uploads(channelId) : [],
       };
     },

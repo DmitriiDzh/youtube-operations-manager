@@ -68,6 +68,9 @@ function scanned(pkg: ReleasePackage, manifestSha256: string, fileBytes = pkg.si
     state: problems.length > 0 ? "not_ready" : "ready",
     problems,
     youtube: null,
+    // BL-243: required on every scanned package (no upload record: unknown).
+    existsOnChannel: null,
+    checkedAt: null,
     pkg,
     manifestSha256,
   };

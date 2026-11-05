@@ -3,7 +3,8 @@
 import { createHash } from "node:crypto";
 import type { PublishingPlanApprovalStage, PublishingPlanDecision, PublishingPlanMeta, PublishingPlanPackageFingerprint, PublishingPlanSlot, PublishingPlanSlotContent } from "@/lib/sync-gateway";
 import { formatZonedDateAndTime, zonedInstant } from "@/lib/zoned-time";
-import type { PlanSlotProgress, PlanSlotView, PlanState, PlanSummary, PlanView, ReplacedSlot } from "./contracts";
+import { isDeletedOnYoutube } from "@/lib/shared-video-presence";
+import { type PlanSlotProgress, type PlanSlotView, type PlanState, type PlanSummary, type PlanView, type ReplacedSlot } from "./contracts";
 
 const DAY_MS = 86_400_000;
 
@@ -46,10 +47,13 @@ export function contentHashOf(timeZone: string, content: PublishingPlanSlotConte
   return createHash("sha256").update(JSON.stringify(fields)).digest("hex");
 }
 
-/** BL-242: the fingerprint of the package the progress reports for a slot, or null (no package, or its manifest unreadable). */
+/**
+ * BL-242: the fingerprint of the package the progress reports for a slot, or null (no package, or its manifest unreadable). BL-243:
+ * null for a video deleted on YouTube -- nothing to approve, and no approval covers it.
+ */
 export function fingerprintOf(progress: PlanSlotProgress | null): PublishingPlanPackageFingerprint | null {
   const pkg = progress?.package;
-  if (!progress || !pkg || !pkg.manifestSha256) return null;
+  if (!progress || !pkg || !pkg.manifestSha256 || isDeletedOnYoutube(progress)) return null;
   return { video: pkg.video, manifestSha256: pkg.manifestSha256, videoId: progress.videoId ?? null };
 }
 
@@ -187,7 +191,9 @@ export function slotViewOf(args: {
       approval = "awaiting_package";
     }
     approvedAt = approval === "approved" ? standing!.at : null;
-    superseded = approval === "approved" ? null : (decisionStateOf(counted, contentHash).superseded ?? null);
+    // BL-243: a slot whose only package names a deleted video has nothing to approve -- no change after an approval either (and
+    // its time is not stretched to that approval's).
+    superseded = approval === "approved" || isDeletedOnYoutube(args.progress) ? null : (decisionStateOf(counted, contentHash).superseded ?? null);
   } else {
     contentHash = contentHashOf(meta.timeZone, content);
     const own = decisionStateOf(counted, contentHash);

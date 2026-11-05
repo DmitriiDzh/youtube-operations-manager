@@ -49,6 +49,15 @@ export type PlanSlotPackage = {
   manifestSha256: string | null;
 };
 
+// BL-243: a slot whose only package names a video deleted on YouTube is `failed` with `VIDEO_DELETED_ON_YOUTUBE`
+// (`@/lib/shared-video-presence`, `isDeletedOnYoutube`): no fingerprint, nothing to approve.
+
+/**
+ * BL-243: the progress port's answer. `packagesUnavailable` -- the package scan could not be read (the workspace is unavailable,
+ * say): `progress` holds only what the upload rows say, so save()'s approval rule falls back to its older, stricter rule.
+ */
+export type PlanProgressResult = { progress: Map<string, PlanSlotProgress>; packagesUnavailable: boolean };
+
 /** What the packages and uploads report for a slot (stages 2-3); null/absent: nothing yet. */
 export type PlanSlotProgress = {
   status: Exclude<PlanSlotStatus, "planned" | "vetoed">;
@@ -197,7 +206,7 @@ export type PublishingPlansPorts = {
    * Stages 2-3: what the packages and uploads say of the slots, by slotId. Absent: nothing (stage 1). BL-242 round 3: one read may
    * cover several weeks; `weekStart` is then "" (the production port reads the channel's packages and uploads whatever it says).
    */
-  progress?(channelId: string, weekStart: string, slotIds: string[]): Promise<Map<string, PlanSlotProgress>>;
+  progress?(channelId: string, weekStart: string, slotIds: string[]): Promise<PlanProgressResult>;
 };
 
 /**

@@ -75,16 +75,22 @@ export function stripBom(text: string): string {
   return text.replace(/^﻿/, "");
 }
 
-/** The uploaded video's id from a `Vn_youtube.json` text; null when the text is not JSON or names no video. */
-export function parseUploadRecord(text: string): { videoId: string } | null {
+/**
+ * The uploaded video's id from a `Vn_youtube.json` text, and (BL-243) its `uploadedAt` when it carries a valid time; null when the
+ * text is not JSON or names no video.
+ */
+export function parseUploadRecord(text: string): { videoId: string; uploadedAt?: string } | null {
   let value: unknown;
   try {
     value = JSON.parse(stripBom(text));
   } catch {
     return null;
   }
-  const videoId = value && typeof value === "object" ? (value as { videoId?: unknown }).videoId : undefined;
-  return typeof videoId === "string" && videoId !== "" ? { videoId } : null;
+  const record = value && typeof value === "object" ? (value as { videoId?: unknown; uploadedAt?: unknown }) : undefined;
+  const videoId = record?.videoId;
+  if (typeof videoId !== "string" || videoId === "") return null;
+  const uploadedAt = record?.uploadedAt;
+  return typeof uploadedAt === "string" && Number.isFinite(Date.parse(uploadedAt)) ? { videoId, uploadedAt } : { videoId };
 }
 
 /** The release number a `MMDD Vn` folder is named after (`0928 V39` → `V39`), upper-cased; null for any other name. */

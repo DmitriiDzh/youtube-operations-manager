@@ -56,6 +56,14 @@ export function createVideoProjectsService(deps: VideoProjectsDeps) {
       deps.uploads(channelId),
       deps.workspace(channelId).catch((error: unknown) => ({ status: "unavailable" as const, reason: error instanceof Error ? error.message : String(error) })),
     ]);
+    // BL-243: the synced copy's word on the YouTube videos the list names -- records, uploads, registry (unreadable: none known).
+    const named = [
+      ...(workspace.status === "ok" ? (workspace.uploadRecords ?? []).map((r) => r.videoId) : []),
+      ...uploads.flatMap((u) => (u.videoId ? [u.videoId] : [])),
+      ...(workspace.status === "ok" ? workspace.registry.flatMap((r) => (r.videoId ? [r.videoId] : [])) : []),
+    ];
+    const videoIds = [...new Set(named)];
+    const channelCopy = deps.channelCopy && videoIds.length > 0 ? await deps.channelCopy(channelId, videoIds).catch(() => null) : null;
     const input: VideoListInput = {
       channelId,
       own: { deviceId: device.deviceId, hostName: device.hostName, reservations: own },
@@ -64,6 +72,7 @@ export function createVideoProjectsService(deps: VideoProjectsDeps) {
       registry: workspace.status === "ok" ? workspace.registry : null,
       uploads,
       uploadRecords: workspace.status === "ok" ? workspace.uploadRecords ?? [] : [],
+      channelCopy,
     };
     const reason = workspace.status === "unavailable" ? workspace.reason : workspace.status === "not_configured" ? "no workspace folder is set for the channel on this computer" : null;
     return { input, workspace: workspace.status, workspaceReason: reason };

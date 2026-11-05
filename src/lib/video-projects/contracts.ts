@@ -18,6 +18,9 @@ export { VIDEO_NUMBER_PATTERN } from "@/lib/sync-gateway";
 export type VideoState = "in_work" | "packaged" | "published" | "cancelled";
 export const VIDEO_STATES: readonly VideoState[] = ["in_work", "packaged", "published", "cancelled"];
 
+/** BL-243: what the synced copy says of the channel's videos (for `existsOnChannel` / `removedAt`). */
+export type ChannelCopy = { listed: ReadonlyMap<string, string>; removed: ReadonlyMap<string, string>; checkedAt: string | null };
+
 /** Where the app knows a number from. */
 export type VideoSource = "reservation" | "folder" | "registry" | "upload";
 
@@ -84,6 +87,14 @@ export type VideoProject = {
   hasVideoFile: boolean;
   /** BL-221: an upload of this number on this computer is queued or running (not failed/cancelled) -- never linked by hand then. */
   uploading: boolean;
+  /**
+   * BL-243 (ADR 0063): whether `youtubeVideoId` is still on the channel, by the calendar's rule (`existsOnChannelOf`): false --
+   * a completed owner sync found it removed on YouTube (deleted; `state` still says how far the number got here); true -- in the
+   * synced copy as of a completed removed check; null -- unknown (no video id, not in the copy, or no check yet).
+   */
+  existsOnChannel: boolean | null;
+  /** BL-243: when the sync found `youtubeVideoId` removed (ISO), else null. */
+  removedAt: string | null;
 };
 
 /** BL-221: a synced video of the channel the owner may link a number to (a local read; never YouTube). */
@@ -122,6 +133,12 @@ export type VideoProjectsDeps = {
   isChannelConnected(channelId: string): Promise<boolean>;
   /** The channel workspace's `MMDD Vn` folders and `video_registry.csv`. */
   workspace(channelId: string): Promise<WorkspaceVideos>;
+  /**
+   * BL-243: the channel's synced copy as the removed check left it -- the listed videos with YouTube's publishedAt, the removed
+   * ones with when, and when a removed check last completed -- for `videoIds` only (the YouTube videos the list names). Absent or
+   * failing: none known (every video unknown).
+   */
+  channelCopy?(channelId: string, videoIds: string[]): Promise<ChannelCopy>;
   /** This computer's upload queue for the channel (`publishing_uploads`). */
   uploads(channelId: string): Promise<Array<{ video: string; status: string; videoId?: string | null }>>;
   /** The video a storyboard of the channel is linked to (the storyboards document), null when none or no such storyboard. */

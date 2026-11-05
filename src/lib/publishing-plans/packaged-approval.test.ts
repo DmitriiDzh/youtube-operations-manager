@@ -6,7 +6,7 @@ import { createPublishingPlansCore, emptyDocument } from "@/lib/sync-gateway/pub
 import type { PublishingPlansDocument } from "@/lib/sync-gateway";
 import { agentSurface, createPublishingPlansService, ownerSurface } from "./services";
 import { decisionForRow } from "@/lib/publishing/plan-schedule";
-import { isDomainError, type PlanAuditEntry, type PlanSlotPackage, type PlanSlotProgress, type PlanView } from "./contracts";
+import { isDomainError, type PlanAuditEntry, type PlanProgressResult, type PlanSlotPackage, type PlanSlotProgress, type PlanView } from "./contracts";
 
 // BL-242 acceptance (docs/roadmap/plans/WEEKLY_PUBLISHING_PLAN.md "BL-242", AC-WP-50..56; ADR 0062). Expected values by hand:
 // Asia/Tokyo is UTC+9 (15:00 JST on 2026-10-26 is 06:00Z); 2026-10-26 is a Monday; the clock stands at 2026-10-25T07:00Z, before
@@ -35,7 +35,7 @@ const pkg = (over: Partial<PlanSlotPackage> = {}): PlanSlotPackage => ({
 });
 const packaged = (over: Partial<PlanSlotPackage> = {}, videoId: string | null = null): PlanSlotProgress => ({ status: "packaged", code: null, videoId, package: pkg(over) });
 
-function harness(options: { progressFails?: () => boolean } = {}) {
+function harness(options: { progressFails?: () => boolean; packagesUnavailable?: () => boolean } = {}) {
   const clock = { now: new Date("2026-10-25T07:00:00Z") };
   const bytes = new Map<string, Uint8Array>();
   const store: DocumentByteStore = { loadDocumentBytes: async (k) => bytes.get(k) ?? null, saveDocumentBytes: async (k, b) => void bytes.set(k, b) };
@@ -58,7 +58,9 @@ function harness(options: { progressFails?: () => boolean } = {}) {
     progress: async (_c, _w, ids) => {
       progressCalls.push([...ids].sort());
       if (options.progressFails?.()) throw new Error("the package scan failed");
-      return new Map([...progress].filter(([id]) => ids.includes(id)));
+      // BL-243: the port's result, with the production port's flag for a package scan that could not be read.
+      const answer: PlanProgressResult = { progress: new Map([...progress].filter(([id]) => ids.includes(id))), packagesUnavailable: options.packagesUnavailable?.() ?? false };
+      return answer;
     },
   });
   return { service, audits, core, progress, clock, progressCalls };
@@ -499,4 +501,153 @@ test("round 3 item 3: slotDecisions reads progress once, for the live slots of e
   h.progressCalls.length = 0;
   await h.service.slotDecisions(CH);
   assert.deepEqual(h.progressCalls, [["n1", "n2"]]);
+});
+
+// BL-243 (WEEKLY_PUBLISHING_PLAN.md AC-WP-70): a slot whose only package names a video the sync found removed on YouTube. The
+// progress (as the composition gives it, AC-WP-69): failed with video_deleted_on_youtube, the video id kept, no date.
+const deletedProgress = (): PlanSlotProgress => ({
+  status: "failed",
+  code: "video_deleted_on_youtube",
+  videoId: "vid73",
+  publishAt: null,
+  package: pkg({ video: "V73", problems: ["video_deleted_on_youtube"] }),
+});
+
+test("BL-243 AC-WP-70: a deleted video is nothing to approve; an earlier approval of it does not count; the slot stage keeps BL-225", async () => {
+  for (const approvedWith of ["vid73", null]) {
+    const h = harness();
+    await week(h);
+    h.progress.set("s1", { ...packaged({ video: "V73" }, approvedWith), publishAt: approvedWith ? "2026-10-26T06:00:00.000Z" : null });
+    await approve(h, "s1");
+    assert.equal(slotOf(await get(h), "s1").approval, "approved");
+    assert.equal((await h.service.slotDecisions(CH)).get("s1")?.kind, "approved");
+
+    h.progress.set("s1", deletedProgress());
+    const s1 = slotOf(await get(h), "s1");
+    assert.equal(s1.approval, "awaiting_package", `approved with ${approvedWith}`);
+    assert.equal(s1.fingerprint, null);
+    assert.equal(s1.status, "failed");
+    assert.equal(s1.statusCode, "video_deleted_on_youtube");
+    assert.equal(s1.videoId, "vid73");
+    assert.equal(s1.youtubePublishAt, null);
+    assert.deepEqual((await h.service.slotDecisions(CH)).get("s1"), { kind: "pending" });
+    const error = await refusal(approve(h, "s1"));
+    assert.ok(isDomainError(error) && error.code === "publishing_plan_slot_not_packaged");
+  }
+
+  // `slot` stage: the approval does not depend on the package (BL-225); the plan schedule's guard keeps the date off (AC-WP-71).
+  const h = harness();
+  await week(h);
+  await h.service.setApprovalStage(CH, { stage: "slot" }, "u1");
+  h.progress.set("s1", deletedProgress());
+  await approve(h, "s1");
+  assert.equal(slotOf(await get(h), "s1").approval, "approved");
+  assert.equal(slotOf(await get(h), "s1").statusCode, "video_deleted_on_youtube");
+});
+
+test("BL-243 AC-WP-70: a vetoed slot whose video was deleted on YouTube can be removed (its video is not on YouTube)", async () => {
+  const h = harness();
+  await week(h);
+  h.progress.set("s1", deletedProgress());
+  await h.service.decide(CH, WEEK, { action: "veto", slots: [{ slotId: "s1" }] }, "u1");
+  const { removed } = await h.service.save({ channelId: CH, weekStart: WEEK, removeSlotIds: ["s1"] }, "worker");
+  assert.deepEqual(removed, ["s1"]);
+});
+
+// BL-243 review (AC-WP-70): a deleted-only slot has nothing to approve, so no change after an approval is reported either, and the
+// slot's release is not held back to the time of that old approval. Values by hand: s1 approved at 15:00 JST (06:00Z), the agent
+// moves it to 12:00 JST (03:00Z); at 04:00Z the slot's own time has passed and nothing else holds it.
+test("BL-243 AC-WP-70: a deleted-only slot shows no changedAfterApproval and is not held to the old approval's time", async () => {
+  const h = harness();
+  await week(h);
+  h.progress.set("s1", packaged({ video: "V73" }, "vid73"));
+  await approve(h, "s1");
+  await h.service.save({ channelId: CH, weekStart: WEEK, timeZone: "Asia/Tokyo", slots: [slot("s1", "2026-10-26", "12:00"), slot("s2", "2026-10-27", "18:00")] }, "worker");
+  assert.notEqual(slotOf(await get(h), "s1").changedAfterApproval, null, "a live package: the owner sees the change");
+  h.progress.set("s1", deletedProgress());
+  h.clock.now = new Date("2026-10-26T04:00:00Z");
+  const s1 = slotOf(await get(h), "s1");
+  assert.equal(s1.changedAfterApproval, null);
+  assert.equal(s1.released, true);
+});
+
+// BL-243 review round 2, item 4 (AC-WP-77): save() counts an approval as the view does -- in the packaged stage only while it
+// covers the slot's current package; a deleted video's package has none. So after the video is deleted the approved slot can be
+// removed (no slot_approved), and retiming it unlocks nothing. With a live package both stay as BL-242 has them.
+test("BL-243 AC-WP-77: after the video is deleted, the once-approved slot can be removed and a retime unlocks nothing", async () => {
+  const live = harness();
+  await week(live);
+  live.progress.set("s1", packaged({ video: "V73" }, "vid73"));
+  await approve(live, "s1");
+  const retimedLive = await live.service.save({ channelId: CH, weekStart: WEEK, slots: [slot("s1", "2026-10-26", "12:00")] }, "worker");
+  assert.deepEqual(retimedLive.unlocked, ["s1"], "a live package: the change needs the owner again");
+  const refusedLive = await refusal(live.service.save({ channelId: CH, weekStart: WEEK, removeSlotIds: ["s1"] }, "worker"));
+  assert.ok(isDomainError(refusedLive) && refusedLive.code === "validation_failed");
+  assert.deepEqual(((refusedLive as { details?: { refused?: Array<{ slotId: string; reason: string }> } }).details?.refused ?? []).map((r) => [r.slotId, r.reason]), [["s1", "slot_approved"]]);
+
+  const h = harness();
+  await week(h);
+  h.progress.set("s1", packaged({ video: "V73" }, "vid73"));
+  await approve(h, "s1");
+  h.progress.set("s1", deletedProgress());
+  const retimed = await h.service.save({ channelId: CH, weekStart: WEEK, slots: [slot("s1", "2026-10-26", "12:00")] }, "worker");
+  assert.deepEqual(retimed.unlocked, []);
+  const { removed } = await h.service.save({ channelId: CH, weekStart: WEEK, removeSlotIds: ["s1"] }, "worker");
+  assert.deepEqual(removed, ["s1"]);
+});
+
+// BL-243 review round 5, item 6 (AC-WP-77): save() reads the progress ONCE -- the read the returned view always needed (the channel's
+// live slots, the ones removed and the ones sent) also serves the approval rule and the removals' check. Every save: one read.
+test("BL-243 AC-WP-77: save() reads progress once, for the approval rule, the removals and the returned view", async () => {
+  const h = harness();
+  await week(h);
+  const reads = () => h.progressCalls.length;
+  let before = reads();
+  await h.service.save({ channelId: CH, weekStart: WEEK, slots: [slot("s2", "2026-10-27", "19:00")] }, "worker");
+  assert.equal(reads(), before + 1, "packaged, nothing approved");
+
+  h.progress.set("s1", packaged({ video: "V73" }, "vid73"));
+  await approve(h, "s1");
+  before = reads();
+  await h.service.save({ channelId: CH, weekStart: WEEK, slots: [slot("s2", "2026-10-27", "20:00")] }, "worker");
+  assert.equal(reads(), before + 1, "packaged with a standing approval");
+
+  const slotStage = harness();
+  await week(slotStage);
+  await slotStage.service.setApprovalStage(CH, { stage: "slot" }, "u1");
+  await approve(slotStage, "s1");
+  const start = slotStage.progressCalls.length;
+  await slotStage.service.save({ channelId: CH, weekStart: WEEK, slots: [slot("s2", "2026-10-27", "20:00")] }, "worker");
+  assert.equal(slotStage.progressCalls.length, start + 1, "slot stage");
+  await slotStage.service.save({ channelId: CH, weekStart: WEEK, removeSlotIds: ["s2"] }, "worker");
+  assert.equal(slotStage.progressCalls.length, start + 2, "a removal: the same one read");
+  assert.ok(slotStage.progressCalls[start + 1].includes("s2"), "the removed slot is in it");
+});
+
+// BL-243 review round 4, item 2 (AC-WP-77): the workspace is unavailable, so the progress holds no packages (flag
+// packagesUnavailable). save() must not read that as "no approval counts": it keeps the older, stricter rule -- the approved slot
+// stays unremovable (slot_approved) and a retime lists it in `unlocked`.
+test("BL-243 AC-WP-77: with the package scan unavailable save() keeps the older rule (no approval silently dropped)", async () => {
+  let unavailable = false;
+  const h = harness({ packagesUnavailable: () => unavailable });
+  await week(h);
+  h.progress.set("s1", packaged({ video: "V73" }, "vid73"));
+  await approve(h, "s1");
+  unavailable = true;
+  h.progress.delete("s1"); // no package known
+  const error = await refusal(h.service.save({ channelId: CH, weekStart: WEEK, removeSlotIds: ["s1"] }, "worker"));
+  assert.deepEqual(((error as { details?: { refused?: Array<{ slotId: string; reason: string }> } }).details?.refused ?? []).map((r) => [r.slotId, r.reason]), [["s1", "slot_approved"]]);
+  const retimed = await h.service.save({ channelId: CH, weekStart: WEEK, slots: [slot("s1", "2026-10-26", "12:00")] }, "worker");
+  assert.deepEqual(retimed.unlocked, ["s1"]);
+});
+
+// BL-243 review round 6 (AC-WP-83): the mark cleared after video_missing -- the progress row shows a plain failed plan change (not
+// deleted), so the vetoed slot whose video is back on YouTube cannot be removed (slot_uploaded).
+test("BL-243 AC-WP-83: a vetoed slot whose video reappeared after video_missing is refused slot_uploaded", async () => {
+  const h = harness();
+  await week(h);
+  h.progress.set("s1", { status: "failed", code: "plan_unscheduled_failed", videoId: "vid73", package: pkg({ video: "V73" }) });
+  await h.service.decide(CH, WEEK, { action: "veto", slots: [{ slotId: "s1" }] }, "u1");
+  const error = await refusal(h.service.save({ channelId: CH, weekStart: WEEK, removeSlotIds: ["s1"] }, "worker"));
+  assert.deepEqual(((error as { details?: { refused?: Array<{ slotId: string; reason: string }> } }).details?.refused ?? []).map((r) => [r.slotId, r.reason]), [["s1", "slot_uploaded"]]);
 });

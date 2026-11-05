@@ -9,6 +9,7 @@ import { useT, useUiText } from "./ui-text-provider";
 import { useUserTimezone } from "./use-user-timezone";
 import {
   canApprove,
+  deletedOnYoutube,
   changedField,
   defaultWeek,
   lengthLabel,
@@ -488,7 +489,8 @@ function SlotRow(props: {
     const actor = t(actorKey(slot.changedAfterApproval.changedBy, true));
     const key = ({ time: "weekPlan.changed.time", length: "weekPlan.changed.length", note: "weekPlan.changed.note", zone: "weekPlan.changed.zone", package: "weekPlan.changed.package" } as const)[changed];
     meta = { text: t(key, { actor, at: at(slot.changedAfterApproval.changedAt), was }), tone: "text-amber-300" };
-  } else if (slot.status === "failed") meta = { text: t("weekPlan.failed", { code: slot.statusCode ?? "?" }), tone: "text-red-300" };
+  } else if (deletedOnYoutube(slot)) meta = { text: t("weekPlan.deletedOnYoutube"), tone: "text-red-300" };
+  else if (slot.status === "failed") meta = { text: t("weekPlan.failed", { code: slot.statusCode ?? "?" }), tone: "text-red-300" };
   else if (slot.released) meta = { text: t("weekPlan.released"), tone: "text-zinc-500" };
   else if (slot.approval === "approved") meta = { text: t("weekPlan.approved", { at: at(slot.approvedAt ?? slot.updatedAt) }), tone: "text-emerald-300" };
   // BL-242: nothing to approve until the package is ready -- a short status, no button.
@@ -498,7 +500,8 @@ function SlotRow(props: {
 
   const canAct = !slot.released;
   // The video may already be on YouTube: under way, scheduled, published, or uploaded private without a date (it has a video id).
-  const afterUpload = slot.videoId !== null || slot.status === "uploading" || slot.status === "scheduled" || slot.status === "published";
+  // BL-243: a video deleted on YouTube is not there any more (its id is kept only to show which one it was).
+  const afterUpload = !deletedOnYoutube(slot) && (slot.videoId !== null || slot.status === "uploading" || slot.status === "scheduled" || slot.status === "published");
 
   return (
     <li className={changed ? "bg-amber-950/20" : slot.vetoed ? "bg-zinc-950/40" : undefined}>

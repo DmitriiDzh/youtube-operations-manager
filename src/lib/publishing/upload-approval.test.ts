@@ -32,6 +32,8 @@ function scanned(video: string, over: Partial<ScannedPackage> = {}): ScannedPack
     state: "ready",
     problems: [],
     youtube: null,
+    existsOnChannel: null,
+    checkedAt: null,
     manifestSha256: `sha-${video}`,
     pkg: {
       channelId: "UC_t",
@@ -263,4 +265,27 @@ test("review #5: a package whose slot is held by another video's upload is refus
   const h = harness([v2], { heldSlots: async () => new Set(["w44-mon"]) });
   await refusedWith(h.approval.approve({ channelId: "UC_t", userId: "u", items: [item("V65")], shownSettings: SETTINGS }), "upload_slot_taken");
   assert.deepEqual(h.inserted, []);
+});
+
+// BL-243 (AC-WP-85, review round 8 rule): a package marked deleted on YouTube frees its plan slot for another upload once the latest
+// completed removed check (the package's checkedAt) is at least 24 h after its upload (the record's uploadedAt); no upload time: not
+// a fresh upload, freed. Values by hand: V73 uploaded T0 = 2026-11-03T08:00Z; V80 ready for the same slot.
+test("BL-243 AC-WP-85: the deleted package holds its slot until a check 24 h after its upload; unknown upload time frees it", async () => {
+  const deleted = (checkedAt: string | null, uploadedAt: string | null) => {
+    const p = scanned("V73", { state: "deleted_on_youtube", problems: [{ code: "video_deleted_on_youtube" }], youtube: { videoId: "vid73", privacyStatus: null, publishAt: null, removedAt: "2026-11-03T10:00:00.000Z", uploadedAt }, existsOnChannel: false, checkedAt });
+    p.pkg = { ...p.pkg!, schemaVersion: 2, slotId: "s1" };
+    return p;
+  };
+  const fresh = scanned("V80");
+  fresh.pkg = { ...fresh.pkg!, schemaVersion: 2, slotId: "s1" };
+  const T0 = "2026-11-03T08:00:00.000Z";
+  const early = harness([deleted("2026-11-03T10:00:00.000Z", T0), fresh]);
+  await refusedWith(early.approval.approve({ channelId: "UC_t", userId: "u", items: [item("V80")], shownSettings: SETTINGS }), "upload_slot_taken");
+  assert.deepEqual(early.inserted, []);
+  const noCheck = harness([deleted(null, T0), fresh]);
+  await refusedWith(noCheck.approval.approve({ channelId: "UC_t", userId: "u", items: [item("V80")], shownSettings: SETTINGS }), "upload_slot_taken");
+  const later = harness([deleted("2026-11-04T10:00:00.000Z", T0), fresh]);
+  assert.deepEqual((await later.approval.approve({ channelId: "UC_t", userId: "u", items: [item("V80")], shownSettings: SETTINGS })).uploads.map((u) => u.video), ["V80"]);
+  const unknown = harness([deleted("2026-11-03T10:00:00.000Z", null), fresh]);
+  assert.deepEqual((await unknown.approval.approve({ channelId: "UC_t", userId: "u", items: [item("V80")], shownSettings: SETTINGS })).uploads.map((u) => u.video), ["V80"], "no upload time: freed");
 });

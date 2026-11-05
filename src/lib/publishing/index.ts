@@ -57,8 +57,8 @@ import { createPackageScan, isPackageThumbnailPath, VIDEOS_FOLDER, type PackageS
 import { imageKindOf } from "./packages";
 import { createPackageComposer } from "./package-composer";
 import { authorizedOAuth, createPublishingFinishWrites, createPublishingYoutubeWrites, freshAccessToken } from "./adapters/youtube-writes";
-import { ACTIVE_UPLOAD_STATUSES, createUploadRunner, holdsPackage, isCancellable, syntheticMediaOf, UNKNOWN_OUTCOME_RELEASED, type ApprovedPackage, type UploadRunnerDeps } from "./upload-runner";
-import { createPlanSchedule } from "./plan-schedule";
+import { ACTIVE_UPLOAD_STATUSES, createUploadRunner, holdsPackage, holdsSlot, isCancellable, syntheticMediaOf, UNKNOWN_OUTCOME_RELEASED, type ApprovedPackage, type UploadRunnerDeps } from "./upload-runner";
+import { createPlanSchedule, isVideoNotFound } from "./plan-schedule";
 import type { PublishingSettings } from "./settings";
 import { createUploadApproval } from "./upload-approval";
 import { createAutoPrivateUpload, type AutoUploadWaiting, type SlotDecision } from "./auto-upload";
@@ -160,12 +160,23 @@ export function createPublishingCalendarCore(options: { dailyCoverage?: (channel
       await createChannelAccessCore().assertActiveChannel(args);
     },
     clock: { now: () => new Date() },
-    async packages(channelId) {
-      const result = await createPackageScanCore().scan(channelId);
+    async packages(channelId, options) {
+      const result = await createPackageScanCore().scan(channelId, options);
       if (result.status !== "ok") return { status: result.status === "no_workspace" ? "no_workspace" : "unavailable" };
       return {
         status: "ok",
-        items: result.packages.map((p) => ({ video: p.video, title: p.title, plannedPublishDate: p.plannedPublishDate, state: p.state, problems: p.problems.map((problem) => problem.code), videoId: p.youtube?.videoId ?? null })),
+        items: result.packages.map((p) => ({
+          video: p.video,
+          title: p.title,
+          plannedPublishDate: p.plannedPublishDate,
+          state: p.state,
+          problems: p.problems.map((problem) => problem.code),
+          videoId: p.youtube?.videoId ?? null,
+          // BL-243: whether the uploaded video is still on the channel, as of the copy's last sync.
+          existsOnChannel: p.existsOnChannel,
+          checkedAt: p.checkedAt,
+          removedAt: p.youtube?.removedAt ?? null,
+        })),
       };
     },
     async uploads(channelId) {
@@ -187,7 +198,7 @@ export function createPackageScanCore() {
   const scan = createPackageScanReads();
   const files = createWorkspaceVideoFiles();
   return {
-    scan: (channelId: string) => scan.reads.scan(channelId),
+    scan: (channelId: string, options?: { checkedAt?: string | null; removedVideos?: Array<{ videoId: string; removedAt: string }> }) => scan.reads.scan(channelId, options),
     /**
      * A package's thumbnail for the preview: only an image under `04 Videos/` of the channel's workspace, reached through the
      * workspace rule, at most 10 MB; its type is read from its first bytes, never from its name. Null when it is none of that.
@@ -260,7 +271,13 @@ function createPackageScanReads() {
       return { channelId, defaultLanguage: baseline.defaultLanguage, defaultAudioLanguage: baseline.defaultAudioLanguage };
     },
     async videos(channelId) {
-      return (await videoStore.listVideosByChannel(channelId)).map((video) => ({ videoId: video.videoId, title: video.title, privacyStatus: video.privacyStatus, publishAt: video.publishAt }));
+      return (await videoStore.listVideosByChannel(channelId)).map((video) => ({ videoId: video.videoId, title: video.title, privacyStatus: video.privacyStatus, publishAt: video.publishAt, publishedAt: video.publishedAt }));
+    },
+    // BL-243: the removed mark and the copy's age, so a deleted video is not read as uploaded.
+    removedVideos: (channelId) => removedVideosOf(channelId),
+    // BL-243 review: when the removed check last ran -- not lastSyncedAt, which also moves on syncs that skip it.
+    async videosCheckedAt(channelId) {
+      return (await videoStore.getChannel(channelId))?.removedCheckAt?.toISOString() ?? null;
     },
     join: (...parts) => path.join(...parts),
     clock: { now: () => new Date() },
@@ -540,7 +557,16 @@ export function createUploadApprovalCore() {
     },
     checkUnits: (units) => createQuotaGuardCore().checkUnits(units),
     // Review #5 (BL-225): the slots held by an upload here (queued, running, done, or with a video).
-    heldSlots: async (channelId) => new Set((await listPublishingUploads({ channelId, withSlot: true, limit: 5000 })).filter(holdsPackage).map((row) => row.slotId as string)),
+    // BL-243: a done row of a video deleted on YouTube holds no slot (its video NUMBER stays held: `liveVideos`).
+    heldSlots: async (channelId) => {
+      const [rows, removedList, channel] = await Promise.all([
+        listPublishingUploads({ channelId, withSlot: true, limit: 5000 }),
+        removedVideosOf(channelId).catch(() => []),
+        createChannelVideoStoreAdapter().getChannel(channelId).catch(() => null),
+      ]);
+      const removed = new Set(removedList.map((video) => video.videoId));
+      return new Set(rows.filter((row) => holdsSlot(row, removed, channel?.removedCheckAt ?? null)).map((row) => row.slotId as string));
+    },
     insert: (rows) => insertPublishingUploads(rows),
     newId: () => randomUUID(),
     audit: ({ channelId, detail }) => insertVideoEditAuditEvent({ channelId, videoId: `upload:${String(detail.uploadId ?? "")}`, eventType: "RESULT", detail }),
@@ -600,6 +626,19 @@ export function createAutoPrivateUploadCore(options: { slotDecisions?: (channelI
     loggedMismatches,
     warn: (message) => console.warn(`[publishing] auto upload: ${message}`),
   });
+}
+
+/**
+ * BL-243: the ids of the channel's videos the sync found removed on YouTube. An upload row of one of them holds no slot, is never
+ * dated or undated by the plan, and says nothing of its slot's progress. Read-only (the local copy).
+ */
+export async function removedVideoIdsOf(channelId: string): Promise<Set<string>> {
+  return new Set((await removedVideosOf(channelId)).map((video) => video.videoId));
+}
+
+/** BL-243: the channel's videos the sync found removed, with when (ISO) -- the package scan's own input, for a caller to pass in. */
+export async function removedVideosOf(channelId: string): Promise<Array<{ videoId: string; removedAt: string }>> {
+  return (await createChannelVideoStoreAdapter().listRemovedVideosByChannel(channelId)).map((video) => ({ videoId: video.videoId, removedAt: video.removedAt.toISOString() }));
 }
 
 /** The channel's uploads on this computer, newest first (the progress list in Content → «Публикация»). */
@@ -716,9 +755,16 @@ export function createPlanScheduleCore(options: { slotDecisions: (channelId: str
   return createPlanSchedule({
     rows: async () => (await listPublishingUploads({ statuses: ["done"], withSlot: true, limit: 2000 })).filter((row) => row.videoId !== null),
     slotDecisions: options.slotDecisions,
+    removedVideoIds: (channelId) => removedVideoIdsOf(channelId),
     async read(row) {
-      const snapshot = await videoDetails.getSnapshot({ credentialRef: credentialRefOf(row), expectedChannelId: row.channelId, videoId: row.videoId as string });
-      return { privacyStatus: snapshot.privacyStatus, publishAt: snapshot.publishAt };
+      try {
+        const snapshot = await videoDetails.getSnapshot({ credentialRef: credentialRefOf(row), expectedChannelId: row.channelId, videoId: row.videoId as string });
+        return { privacyStatus: snapshot.privacyStatus, publishAt: snapshot.publishAt };
+      } catch (error) {
+        // BL-243: YouTube's own "no such video" (the adapter names the id) -- deleted; any other failure stays a failure.
+        if (isVideoNotFound(error, row.videoId as string)) return { privacyStatus: null, publishAt: null, missing: true };
+        throw error;
+      }
     },
     async write(row, publishAt) {
       const pkg = parse<ApprovedPackage>(row.packageJson) ?? ({} as ApprovedPackage);

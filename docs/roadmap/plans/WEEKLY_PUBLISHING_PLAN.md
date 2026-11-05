@@ -319,3 +319,146 @@ Tested against fakes only; nothing verified by eye or on the real plan yet.
   reaches only upload rows made with that id.
 - AC-WP-60..65 (re-reviews of BL-242): `packaged-approval.test.ts` (with `decisionForRow`), and the stray date in
   `weekly-plan-model.test.ts`.
+
+## BL-243 -- a video deleted on YouTube is not "uploaded" (owner, Telegram msg 4039 «да» to msg 4038, 2026-11-05)
+
+The channel sync already marks `videos.removed_on_youtube_at` when a complete owner sync no longer finds a video in the channel's
+uploads (cleared when it reappears). The package scan, the plan's progress, the calendar read and the plan schedule ignored the
+mark: deleted Japan V65-V73 read as `uploaded_unknown`, and slot 2026-11-09-1 offered deleted V73 for approval. Read-only: no
+YouTube call is added; the only behaviour change on a write path is that nothing dates, undates or holds a slot for a deleted video.
+
+- Package scan: a package whose `Vn_youtube.json` names a video the synced copy has with the removed mark is `deleted_on_youtube`
+  (problem `video_deleted_on_youtube`, `youtube.removedAt`, its privacy and date null: the stale row says nothing). `uploaded_unknown`
+  stays for a video id the copy does not have at all (uploaded after the last sync) -- not a confirmation it exists. Every package
+  gets `existsOnChannel` (true: in the copy, not removed; false: removed; null: no upload record, or not in the copy) and `checkedAt`
+  (the channel's last video sync, ISO; null when never synced). The same-title check reads only videos still on the channel.
+- Shared slots: a deleted package does not hold its slot and is never marked itself; the other packages naming the slot are judged
+  as if it were not there. `uploaded_unknown` still holds it (it may exist).
+- Plan progress: a deleted package is the slot's progress only when no other package names the slot; then the slot is `failed` with
+  code `video_deleted_on_youtube` («Ролик удалён на YouTube»), its video id kept, no date, no package fingerprint: nothing to approve
+  in the `packaged` stage, and an earlier approval of that package does not count. An upload row of a removed video says nothing of
+  its slot. A vetoed slot whose video was deleted may be removed (its video is not on YouTube).
+- Writes: the plan schedule skips every upload row whose video is removed (no read, no write); a finished (done or failed)
+  upload row of a removed video no longer holds its slot for the upload approval. The runner dates only the video it has just
+  uploaded and read back, so it needs no change. Not changed (known gap, stated): a row of a removed video still holds its video
+  NUMBER (`liveVideos`) -- a fresh package with the same number is refused as held, never uploaded twice on a wrong mark.
+- Agents: `agent_get_publishing_calendar` (and the Producer's) items gain `existsOnChannel`, `checkedAt`, `removedAt`; the calendar
+  gains `missingOnChannel: [{ video, videoId, removedAt }]` (the deleted packages; [] when the packages are not readable);
+  `lastSyncedAt` (already there) is the copy's age. `channel_video_list` gains `videoIds` (1-50 ids): only those of the channel, in
+  the order asked, plus `removed: [{ videoId, removedAt }]` and `notFound: [videoId]`. Agent API 4.17.0, Producer API 1.17.0, Factory
+  API 1.43.0 (the plan tools name the new code). Additive.
+
+### Acceptance (written before the code; values by hand)
+
+Fixed values: channel `UC1`, last video sync `2026-11-04T08:00:00.000Z`; V73 record `vid73`, the copy's row of `vid73` removed at
+`2026-11-03T19:54:00.000Z`; V74 record `vid74` (visible, private, no date); V75 record `vid75` not in the copy.
+
+- **AC-WP-66** Scan: V73 -> state `deleted_on_youtube`, problems `[{ code: "video_deleted_on_youtube" }]`, `youtube = { videoId: "vid73",
+  privacyStatus: null, publishAt: null, removedAt: "2026-11-03T19:54:00.000Z" }`, `existsOnChannel` false, `checkedAt`
+  `"2026-11-04T08:00:00.000Z"`. V74 -> `uploaded_private`, `existsOnChannel` true, `youtube.removedAt` null. V75 -> `uploaded_unknown`,
+  `existsOnChannel` null. A ready package without a record -> `existsOnChannel` null.
+- **AC-WP-67** Scan boundaries: the mark cleared (the video reappeared) -> V73 is `uploaded_private` again, `existsOnChannel` true;
+  (review) the removed list and the sync time unreadable -> the scan still answers `ok`, V73 `uploaded_unknown`, `checkedAt` null;
+  a channel never synced -> `checkedAt` null (V75 still `uploaded_unknown`); a ready package whose title equals the REMOVED video's
+  title has no `same_title_on_channel`.
+- **AC-WP-68** Shared slots: deleted V73 and ready V80 name slot `s1` -> V80 stays `ready` with no problem, V73 stays
+  `deleted_on_youtube`. Deleted V73 with ready V80 and V81 on `s1` -> V80 and V81 `slot_duplicate`. Uploaded-unknown V75 with ready V80
+  -> V80 `slot_taken` (unchanged).
+- **AC-WP-69** Progress: deleted V73 alone on `s1` -> `{ status: "failed", code: "video_deleted_on_youtube", videoId: "vid73",
+  publishAt: null }` with its package; deleted V73 and ready V80 on `s1` -> V80's `packaged` (no video id); deleted V73 and V80 not
+  ready without its video file -> no progress for `s1`. A done upload row of `vid73` (V73, `publishAt` set, verified) with
+  `removedVideoIds = {vid73}` -> the slot stays as the packages say (deleted alone: the deleted state; with V80: V80's `packaged`).
+  (review) The removed list unreadable, deleted V73 with V80 without its video file on `s1`, the done row of `vid73` -> still no
+  progress for `s1` (the deleted packages' own ids count).
+- **AC-WP-70** Plan view, `packaged` stage: the deleted progress -> `approval` `awaiting_package`, `fingerprint` null, `status`
+  `failed`, `statusCode` `video_deleted_on_youtube`, `youtubePublishAt` null; a standing approval made with V73's fingerprint (with
+  or without `vid73`) does not count -- `slotDecisions` gives `pending` for the slot; the `slot` stage keeps BL-225's rule (the
+  approval stands; the plan schedule's guard keeps the date off). A vetoed slot whose progress is the deleted state can be removed.
+  (review) Approved at 15:00 JST, moved by the agent to 12:00 JST, then deleted: `changedAfterApproval` null, and at 04:00Z the
+  slot is released (not held to the old 06:00Z).
+- **AC-WP-71** Plan schedule (rule of review round 2): a done row of `vid73` (removed) with an approved slot -> no read, no write,
+  `changed` 0; the list unreadable -> no date either (fail closed); the mark cleared -> dated as before. A vetoed slot's date is
+  removed whatever the mark or the list say (live read; a wrong mark never lets a vetoed video go public); YouTube says the video
+  does not exist AND the mark names it -> no write, planSync `video_missing`, the row's date null, the next pass reads nothing. Upload approval: a done (or failed) row of `vid73` on `s1` does not hold `s1`; one
+  under way still does.
+- **AC-WP-72** Calendar read: items `{ video: "V73", state: "deleted_on_youtube", videoId: "vid73", existsOnChannel: false, checkedAt:
+  "2026-11-04T08:00:00.000Z", removedAt: "2026-11-03T19:54:00.000Z", problems: ["video_deleted_on_youtube"] }`; `missingOnChannel
+  = [{ video: "V73", videoId: "vid73", removedAt: "2026-11-03T19:54:00.000Z" }]`; packages not readable -> `missingOnChannel` [].
+- **AC-WP-73** `channel_video_list` with `videoIds: ["vid74", "vid73", "nope"]` -> `videos` [vid74], `removed [{ videoId: "vid73",
+  removedAt: "2026-11-03T19:54:00.000Z" }]`, `notFound ["nope"]`, `total` 1; another channel's id is `notFound`; 51 ids or an empty
+  list -> validation error; without `videoIds` the answer has exactly the previous keys. (Round 5) With `videoIds` the answer also
+  has `checkedAt` (the channel's last completed removed check) -- `removed` is as of then; only the asked ids are read.
+- **AC-WP-75** (one rule, review round 5) An upload row counts for slot S only when created after the newest deleted upload of S
+  and its video number: the removed video's own row here (its upload time, else its creation), else the deleted package record's
+  `uploadedAt`; a deleted upload with no known time blocks every row of that number; the removed video's own row never counts; no
+  deleted upload of S and that number -> the row counts. The manifest is not part of the rule. Deleted V73 alone, an older failed
+  row and the removed row (10-24) -> `failed`/`video_deleted_on_youtube`/`vid73` (also with the older row alone, no time known). A
+  fresh V73 (any manifest), the record uploaded 10-22: a row of 10-20 -> not counted, a try of 10-25 -> `uploading`; with the
+  removed row (10-24) a try of 10-23 -> not counted; no time known -> even a later row is not counted.
+- **AC-WP-76** (review round 2) Two deleted packages on `s1`: V72 uploaded 2026-11-01T10:00Z, V73 2026-11-02T10:00Z -> V73 speaks in
+  either order; without `uploadedAt` in the records, the `uploadedAt` their upload rows recorded decides (never a row's creation
+  time). `parseUploadRecord` returns the record's `uploadedAt`.
+- **AC-WP-77** (review round 2) Packaged stage, s1 approved with V73/`vid73`, then deleted: retiming s1 unlocks nothing and removing
+  s1 succeeds; with the live package the retime lists s1 in `unlocked` and the removal is refused `slot_approved`. (Round 5) Every
+  save reads the progress once -- the read the returned view needs, which also serves the approval rule and the removals. (Round 4)
+  The package scan unavailable (`packagesUnavailable` in the port's `{ progress, packagesUnavailable }`) -> the older rule: the
+  approved slot is refused `slot_approved` and a retime lists it in `unlocked`.
+- **AC-WP-78** (review round 2) `channels.removed_check_at` (schema v118; round 5: set to `listedAt`, when the uploads list was
+  read, not the sync's end) moves only on a sync with `removedCheck: "done"`; a
+  package's `checkedAt` is that time; with none, a visible video is `existsOnChannel` null (never true), a removed one still false.
+- **AC-WP-79** (review round 3) YouTube's `not_found` without the removed mark (or with the list unreadable) -> `refused`, the row
+  keeps its date, tried again after the hour -- for a veto and for dating; a row whose planSync is `video_missing` shows `failed`
+  `video_deleted_on_youtube`, never `packaged`.
+- **AC-WP-80** (review round 3) Checked at 2026-11-04T08:00Z: vid74 published 2026-11-04T09:00Z -> `existsOnChannel` null; published
+  exactly at the check -> true. The calendar's top-level `checkedAt` is the channel's removed-check time (older than
+  `lastSyncedAt` after a skipped check; null when none).
+- **AC-WP-81** (review round 4, by the AC-WP-75 rule) The owner moved V73's record away (the package is `ready`, no deleted package
+  names `s1`); an old failed try of V73 (10-20) and the removed row of `vid73` (uploaded 10-24T02:00Z) -> `s1` is `packaged`,
+  approvable (not the old failure); a row created 10-24T01:00Z -> not counted; a new one (11-05) counts; an older row with another
+  manifest -> not counted either (round 5: the manifest is not part of the rule). When the scan or its removed-list read failed,
+  the plan progress reads the removed list on its own, so a removed video's rows still say nothing.
+- **AC-WP-82** (review round 4) `agent_video_list` / `factory_video_list`: check 2026-11-04T08:00Z; V73 (`vid73` removed 11-03T19:54Z)
+  -> `existsOnChannel` false, `removedAt` set, state still `published`; V74 (published 11-01) -> true; V75 (published after the
+  check) -> null; no video id -> null; the copy unreadable -> null / null.
+- **AC-WP-83** (review rounds 6-7) A confirmed `video_missing` keeps the row's last known date; while the video is marked removed
+  the row is skipped (no read). Once the mark is cleared (it reappeared) the row shows `failed` `plan_<action>_failed`, the normal
+  veto path unschedules the kept date -- a first try read back wrong is retried after the hour and then verified -- and removing
+  the vetoed slot is refused `slot_uploaded`. A not-found counts only when videos.list
+  returned no item for the id (`reason: "no_item"`); an item without snippet/status (`partial`) is refused and retried.
+- **AC-WP-84** (review rounds 6-8) The plan progress reads the removed list once -- one answer for the packages (its one scan) and
+  the rows; that read failing -> "none known" for both, never a second read. In the plan schedule a confirmed `video_missing`
+  stays skipped while the list cannot be read (no YouTube call). The video list reads presence by id for the videos it names.
+- **AC-WP-85** (review round 8 rule) A removed mark frees the plan slot for another upload once the latest completed removed check
+  is at least 24 h (`REMOVED_MARK_GRACE_MS`) after the upload (`uploadTimeOf`). By hand: uploaded T0 = 2026-11-03T08:00Z, deleted;
+  a sync at T0+2h marks it (check T0+2h) -> still held (`holdsSlot` true, a fresh package for the slot refused `upload_slot_taken`);
+  a sync at T0+26h (the mark standing, check T0+26h) -> freed; no upload time -> freed; no completed check -> held; the mark
+  cleared -> held as normal. Display is unchanged.
+- **AC-WP-74** Screens: the packages list labels the state («Удалён на YouTube» / "Deleted on YouTube") and the problem; the plan slot
+  shows «Ролик удалён на YouTube» / "Video deleted on YouTube" and no approve button; texts in en and ru.
+
+### Acceptance status (2026-11-05, branch `feature/bl-243-deleted-videos`)
+
+Tested against fakes (and the real SQLite of the test run for the removed list) only; nothing verified by eye or on the real
+channel yet.
+
+- AC-WP-66..68: `src/lib/publishing/package-scan.test.ts`; the removed list `src/lib/db-removed-videos.test.ts`.
+- AC-WP-69: `src/lib/publishing-plan-progress/progress.test.ts`; AC-WP-70: `src/lib/publishing-plans/packaged-approval.test.ts`.
+- AC-WP-71: `src/lib/publishing/plan-schedule.test.ts` and `upload-runner.test.ts` (`holdsSlot`).
+- AC-WP-72: `src/lib/publishing/calendar-reads.test.ts`; AC-WP-73: `src/lib/channel-sync/services.test.ts`; AC-WP-74:
+  `src/components/weekly-plan-model.test.ts` (texts: the ui-text key tests).
+- Review round 8: AC-WP-85 rewritten (`upload-runner.test.ts`, `upload-approval.test.ts`, `shared-video-presence/index.test.ts`),
+  `plan-schedule.test.ts` (unreadable list), `video-projects.test.ts` (by-id read).
+- Review round 7: AC-WP-83 rewritten (`plan-schedule.test.ts`), AC-WP-85 `upload-runner.test.ts`, `upload-approval.test.ts`,
+  `shared-video-presence/index.test.ts`.
+- Review round 6: AC-WP-83 `plan-schedule.test.ts`, `progress.test.ts`, `packaged-approval.test.ts`, `data-api.test.ts`
+  (`readVideoDetailsContext`); AC-WP-84 `package-scan.test.ts`.
+- Review round 4: AC-WP-81 `progress.test.ts` (and `uploadTimeOf`), AC-WP-82 `video-projects.test.ts`, the shared rule
+  `shared-video-presence/index.test.ts`, the calendar's one channel read `calendar-reads.test.ts`, AC-WP-77 (scan unavailable)
+  `packaged-approval.test.ts`.
+- Review round 3: AC-WP-79 `plan-schedule.test.ts` and `progress.test.ts`; AC-WP-80 `package-scan.test.ts` and
+  `calendar-reads.test.ts`; AC-WP-75/76/77 extended in place.
+- Review round 2: AC-WP-75/76 `progress.test.ts`, AC-WP-77 `packaged-approval.test.ts`, AC-WP-78 `channel-sync/services.test.ts`,
+  `db-removed-videos.test.ts`, `package-scan.test.ts`; AC-WP-71 rewritten in `plan-schedule.test.ts` (the veto rule changed).
+- Interpretations (one rule, ADR 0063 §4; round 2: only dating fails closed, un-dating always asks YouTube): an unreadable removed list is "none known" for display and holds (the scan, the
+  approval's slot holds, the progress -- which reuses the shown scan's ids plus every deleted package's own video id); only the
+  plan schedule's writes fail closed (the channel's rows are skipped that pass).

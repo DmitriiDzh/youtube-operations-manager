@@ -114,6 +114,11 @@ export const listSyncedVideosInputSchema = z
     /** Page size; with `offset` selects a page. Omitted (with no `offset`) = every video, as before. */
     limit: z.number().int().min(1).max(500).optional(),
     offset: z.number().int().min(0).optional(),
+    /**
+     * BL-243: only these videos (1-50 ids) of the channel, in the order asked; the answer also says which of them a sync found
+     * removed on YouTube and which this copy does not have. Omitted = every video, as before.
+     */
+    videoIds: z.array(z.string().min(1)).min(1).max(50).optional(),
   })
   .strict();
 
@@ -133,6 +138,18 @@ export const listSyncedVideosPagedOutputSchema = z
     offset: z.number().int().nonnegative(),
     /** `offset` of the next page, or `null` on the last page. */
     nextOffset: z.number().int().nonnegative().nullable(),
+  })
+  .strict();
+
+/** BL-243: the answer with `videoIds` -- the paged shape plus what was not listed and why. */
+export const listSyncedVideosByIdOutputSchema = listSyncedVideosPagedOutputSchema
+  .extend({
+    /** Asked ids a complete sync found removed on YouTube (deleted), with when (ISO). */
+    removed: z.array(z.object({ videoId: z.string(), removedAt: z.string() }).strict()),
+    /** Asked ids this copy does not have for the channel (never synced, uploaded after the last sync, or another channel's). */
+    notFound: z.array(z.string()),
+    /** When a channel sync last completed the removed-on-YouTube check (ISO); `removed` is as of then. Null: never. */
+    checkedAt: z.string().nullable(),
   })
   .strict();
 

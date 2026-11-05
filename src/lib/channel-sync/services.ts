@@ -16,6 +16,7 @@ import {
 import {
   listChannelsInputSchema,
   listChannelsOutputSchema,
+  listSyncedVideosByIdOutputSchema,
   listSyncedVideosInputSchema,
   listSyncedVideosPagedOutputSchema,
   listSyncedVideosOutputSchema,
@@ -32,6 +33,8 @@ export type StoredChannelRecord = {
   connectedUserId: string | null;
   connectedAt: Date;
   lastSyncedAt: Date | null;
+  /** BL-243: when a sync last completed the removed-on-YouTube check (absent in older stores: unknown). */
+  removedCheckAt?: Date | null;
 };
 
 export type StoredVideoRecord = {
@@ -91,7 +94,8 @@ type ServiceDependencies = {
       /** BL-118: the channel's creation time on YouTube; `null`/`undefined` leaves a stored value untouched. */
       publishedAt?: string | null;
     }): Promise<void>;
-    markChannelSynced(channelId: string, syncedAt: Date): Promise<void>;
+    /** BL-243: `removedCheckAt` only when this sync completed the removed-on-YouTube check. */
+    markChannelSynced(channelId: string, syncedAt: Date, removedCheckAt?: Date): Promise<void>;
     listChannels(): Promise<StoredChannelRecord[]>;
     getChannel(channelId: string): Promise<StoredChannelRecord | null>;
     upsertVideos(
@@ -117,6 +121,8 @@ type ServiceDependencies = {
       syncedAt: Date
     ): Promise<void>;
     listVideosByChannel(channelId: string): Promise<StoredVideoRecord[]>;
+    /** BL-243: the channel's stored videos among `videoIds`, visible and removed, each with its removed mark (one narrow select). */
+    listVideosByIds(channelId: string, videoIds: readonly string[]): Promise<Array<StoredVideoRecord & { removedAt: Date | null }>>;
     /**
      * Marks this channel's unmarked stored videos whose ids are not in `presentVideoIds` and that were last synced before
      * `listedAt`; clears the mark of every listed id. Returns the ids it marked.
@@ -129,6 +135,16 @@ type ServiceDependencies = {
   };
   channelAccess: ChannelAccessService;
 };
+
+/** One page of videos (`offset`, `limit`) with only the asked `fields` (plus `videoId`): the paged answers' shared part. */
+function pageOfVideos(all: SyncedVideo[], input: { fields?: readonly string[]; limit?: number; offset?: number }) {
+  const offset = input.offset ?? 0;
+  const page = input.limit === undefined ? all.slice(offset) : all.slice(offset, offset + input.limit);
+  const wanted = input.fields ? ["videoId", ...input.fields.filter((f) => f !== "videoId")] : null;
+  const videos = wanted ? page.map((video) => Object.fromEntries(wanted.map((field) => [field, video[field as keyof typeof video]]))) : page;
+  const end = offset + page.length;
+  return { videos, total: all.length, offset, nextOffset: end < all.length ? end : null };
+}
 
 function mapStoredChannel(record: StoredChannelRecord): SyncedChannel {
   return {
@@ -283,7 +299,8 @@ export function createChannelSyncServices(deps: ServiceDependencies) {
         else if (videoIds.length === 0) removedCheck = "skipped_empty_list";
         else hiddenRemovedVideoIds = await deps.channelStore.markVideosRemovedOnYoutube(channel.channelId, videoIds, syncedAt, listedAt);
 
-        await deps.channelStore.markChannelSynced(channel.channelId, syncedAt);
+        // BL-243: the removed check's own time (the packages' `checkedAt`) only when it ran -- as of when the uploads list was read.
+        await deps.channelStore.markChannelSynced(channel.channelId, syncedAt, removedCheck === "done" ? listedAt : undefined);
         progress?.counts(videoMetadata.length, videoMetadata.length);
 
         const storedChannel = await deps.channelStore.getChannel(channel.channelId);
@@ -352,19 +369,37 @@ export function createChannelSyncServices(deps: ServiceDependencies) {
           channelId: parsedInput.channelId,
         });
 
+        if (parsedInput.videoIds) {
+          // BL-243: only the asked videos of THIS channel, in the order asked (each once): narrow reads of those ids only -- their
+          // presence, the visible ones' rows, and the channel's last completed removed check (`checkedAt`).
+          const asked = [...new Set(parsedInput.videoIds)];
+          const [rows, channel] = await Promise.all([deps.channelStore.listVideosByIds(parsedInput.channelId, asked), deps.channelStore.getChannel(parsedInput.channelId)]);
+          const byId = new Map(rows.filter((row) => row.removedAt === null).map((row) => [row.videoId, row]));
+          const removedById = new Map(rows.flatMap((row) => (row.removedAt ? [[row.videoId, row.removedAt] as const] : [])));
+          const listed = asked.flatMap((id) => {
+            const record = byId.get(id);
+            return record ? [mapStoredVideo(record)] : [];
+          });
+          return parseWithSchema(
+            listSyncedVideosByIdOutputSchema,
+            {
+              channelId: parsedInput.channelId,
+              ...pageOfVideos(listed, parsedInput),
+              removed: asked.flatMap((id) => {
+                const at = removedById.get(id);
+                return at ? [{ videoId: id, removedAt: at.toISOString() }] : [];
+              }),
+              notFound: asked.filter((id) => !byId.has(id) && !removedById.has(id)),
+              checkedAt: channel?.removedCheckAt?.toISOString() ?? null,
+            },
+            "list synced videos by id output"
+          );
+        }
         const records = await deps.channelStore.listVideosByChannel(parsedInput.channelId);
         if (parsedInput.fields || parsedInput.limit !== undefined || parsedInput.offset !== undefined) {
-          const all = records.map(mapStoredVideo);
-          const offset = parsedInput.offset ?? 0;
-          const page = parsedInput.limit === undefined ? all.slice(offset) : all.slice(offset, offset + parsedInput.limit);
-          const wanted = parsedInput.fields ? ["videoId", ...parsedInput.fields.filter((f) => f !== "videoId")] : null;
-          const videos = wanted
-            ? page.map((video) => Object.fromEntries(wanted.map((field) => [field, video[field as keyof typeof video]])))
-            : page;
-          const end = offset + page.length;
           return parseWithSchema(
             listSyncedVideosPagedOutputSchema,
-            { channelId: parsedInput.channelId, videos, total: all.length, offset, nextOffset: end < all.length ? end : null },
+            { channelId: parsedInput.channelId, ...pageOfVideos(records.map(mapStoredVideo), parsedInput) },
             "list synced videos paged output"
           );
         }

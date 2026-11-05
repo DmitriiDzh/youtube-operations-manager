@@ -2,6 +2,8 @@
 // went through, which slots the week's approval covers, and a time in a zone. Shapes are the routes' answers, restated here so a
 // client component never imports the server module.
 
+import { isDeletedOnYoutube } from "@/lib/shared-video-presence";
+
 export type PlanSlotStatus = "planned" | "built" | "packaged" | "uploading" | "scheduled" | "published" | "failed" | "vetoed";
 
 /** BL-242 (ADR 0062 §2): the package an approval names. */
@@ -90,6 +92,9 @@ export function defaultWeek(plans: readonly Pick<PlanSummaryDto, "weekStart" | "
 
 /** A slot the owner can approve now: not vetoed, not released, needing approval (BL-242: never one waiting for its package). */
 export const canApprove = (s: Pick<PlanSlotDto, "vetoed" | "released" | "approval">): boolean => !s.vetoed && !s.released && s.approval === "needs_approval";
+
+/** BL-243: the slot's only package names a video the channel sync found removed on YouTube («Ролик удалён на YouTube»). */
+export const deletedOnYoutube = (s: Pick<PlanSlotDto, "status" | "statusCode">): boolean => isDeletedOnYoutube({ status: s.status, code: s.statusCode });
 
 /**
  * The slots «Одобрить неделю» (BL-242 `packaged` stage: «Одобрить все готовые») covers: those the owner can approve now -- each

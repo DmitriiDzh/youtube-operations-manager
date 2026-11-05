@@ -18,8 +18,18 @@ export type PlanScheduleDeps = {
   /** This computer's finished uploads that name a plan slot and have a video. */
   rows(): Promise<StoredPublishingUpload[]>;
   slotDecisions(channelId: string): Promise<Map<string, SlotDecision>>;
-  /** The video's privacy and date as YouTube has them now (read gateway, with the row's account). */
-  read(row: StoredPublishingUpload): Promise<{ privacyStatus: string | null; publishAt: string | null }>;
+  /**
+   * BL-243 (ADR 0063 §4): the channel's videos the sync found removed on YouTube. Only DATING consults it: a removed video is never
+   * given a date, and when this read fails no video of the channel is dated that pass (fail closed). Removing a date (a veto) never
+   * waits on it -- that goes to YouTube's own answer (`read`); a "no such video" answer ends the change only when this list (a
+   * completed owner removed-check) names the video too. Absent: none known.
+   */
+  removedVideoIds?(channelId: string): Promise<ReadonlySet<string>>;
+  /**
+   * The video's privacy and date as YouTube has them now (read gateway, with the row's account). BL-243: `missing` -- YouTube
+   * answered "no such video". Not proof on its own (another account, a partial answer): it ends a change only with the removed mark.
+   */
+  read(row: StoredPublishingUpload): Promise<{ privacyStatus: string | null; publishAt: string | null; missing?: boolean }>;
   /** video-details' write: private, with this date or (null) none; the AI flag sent again (YouTube does not return it). */
   write(row: StoredPublishingUpload, publishAt: string | null): Promise<void>;
   /** Stores the row's new date and steps (only while the row is still `done`). */
@@ -69,6 +79,15 @@ export function decisionForRow(row: Pick<StoredPublishingUpload, "slotId" | "vid
   return own;
 }
 
+/**
+ * BL-243: video-details' definite "no such video" for this video -- videos.list returned no item for the id (`reason: "no_item"`).
+ * An item without snippet/status (`partial`) or a mapped unknown error is not one: refused and retried.
+ */
+export function isVideoNotFound(error: unknown, videoId: string): boolean {
+  const e = error as { code?: unknown; details?: { videoId?: unknown; reason?: unknown } } | null;
+  return e?.code === "not_found" && e.details?.videoId === videoId && e.details?.reason === "no_item";
+}
+
 /** What the plan wants for the row's video now: a date, no date, or nothing (leave it). Pure. */
 export function desiredDate(row: Pick<StoredPublishingUpload, "publishAt" | "stepsJson">, decision: SlotDecision | undefined, nowMs: number): { publishAt: string | null } | null {
   if (!decision || decision.kind === "pending") return null;
@@ -99,6 +118,8 @@ export function createPlanSchedule(deps: PlanScheduleDeps) {
   /** One change, read before and after: refused when the video is not private or its date is within the margin. */
   async function change(row: StoredPublishingUpload, publishAt: string | null, action: "scheduled" | "unscheduled", at: string): Promise<NonNullable<UploadSteps["planSync"]>> {
     const before = await deps.read(row);
+    // BL-243: YouTube answered "no such video" -- the pass decides with the removed mark whether that is the end of it.
+    if (before.missing) return { at, action, publishAt, result: "video_missing", reason: "the video is not on YouTube" };
     // Public or unlisted already (by the owner in Studio, or released): the plan never takes a video back.
     if (before.privacyStatus !== "private") return { at, action, publishAt, result: "refused", reason: `video is ${before.privacyStatus ?? "unknown"}` };
     if (before.publishAt !== null && Date.parse(before.publishAt) <= deps.clock.now().getTime() + MARGIN_MS) {
@@ -118,6 +139,12 @@ export function createPlanSchedule(deps: PlanScheduleDeps) {
       if (!(await deps.liveWritesEnabled()) || !(await deps.dataReadsEnabled())) return { changed: 0 };
       const rows = await deps.rows();
       const byChannel = new Map<string, Map<string, SlotDecision>>();
+      const removedByChannel = new Map<string, ReadonlySet<string> | null>();
+      /** The channel's removed list, read once per pass; null when it cannot be read. */
+      const removedOf = async (channelId: string): Promise<ReadonlySet<string> | null> => {
+        if (!removedByChannel.has(channelId)) removedByChannel.set(channelId, deps.removedVideoIds ? await deps.removedVideoIds(channelId).catch(() => null) : new Set<string>());
+        return removedByChannel.get(channelId) ?? null;
+      };
       let changed = 0;
       for (const row of rows) {
         if (!row.slotId || !row.videoId || row.status !== "done") continue;
@@ -126,8 +153,22 @@ export function createPlanSchedule(deps: PlanScheduleDeps) {
           decisions = await deps.slotDecisions(row.channelId);
           byChannel.set(row.channelId, decisions);
         }
+        // BL-243 review round 7: a confirmed `video_missing` row keeps its last known date; while the video stays marked removed
+        // there is nothing to do (no read). Once the mark is cleared (the video reappeared) the normal path below sees that date --
+        // a veto unschedules it, with the usual hourly retries.
+        // (round 8: the list unreadable -- the confirmed answer stands: still skipped, no YouTube call)
+        if (stepsOf(row).planSync?.result === "video_missing") {
+          const removed = await removedOf(row.channelId);
+          if (removed === null || removed.has(row.videoId)) continue;
+        }
         const want = desiredDate(row, decisionForRow(row, decisions), deps.clock.now().getTime());
         if (!want) continue;
+        // BL-243 (ADR 0063 §4): a video the sync found removed is never dated; an unreadable list dates nothing of the channel
+        // (fail closed). Removing a date never waits on the list: YouTube's own answer decides (`missing`: nothing to do).
+        if (want.publishAt !== null) {
+          const removed = await removedOf(row.channelId);
+          if (!removed || removed.has(row.videoId)) continue;
+        }
         const steps = stepsOf(row);
         const action = want.publishAt === null ? "unscheduled" : "scheduled";
         const at = deps.clock.now().toISOString();
@@ -142,6 +183,12 @@ export function createPlanSchedule(deps: PlanScheduleDeps) {
           // Review #4: the quota is out -- recorded (the hourly retry applies to the row) and the whole pass waits for the reset.
           if (code === "youtube_quota_exceeded") quotaPausedUntil = deps.nextQuotaReset(deps.clock.now()).getTime();
           result = { at, action, publishAt: want.publishAt, result: "refused", reason: code ?? "unknown_error" };
+        }
+        // BL-243 review round 3: YouTube's "no such video" is final only when a completed owner removed-check also marked the video;
+        // otherwise it is a refusal like any other (tried again after the hour), so a wrong answer never lets a vetoed video keep its
+        // date. A confirmed one is recorded as `video_missing`; the row keeps its last known date (round 7).
+        if (result.result === "video_missing" && !(await removedOf(row.channelId))?.has(row.videoId)) {
+          result = { ...result, result: "refused", reason: "not_found without a removed mark from a completed sync" };
         }
         const stored = result.result === "verified" ? want.publishAt : row.publishAt;
         const nextSteps: UploadSteps = { ...steps, planSync: result, ...(result.result === "verified" && want.publishAt !== null ? { publishAt: "set" as const } : {}) };

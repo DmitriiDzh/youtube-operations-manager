@@ -23,13 +23,20 @@ function createFakeStore() {
   const upsertCalls: Array<{ channelId: string; connectedUserId?: string | null; publishedAt?: string | null }> = [];
   // Owner instruction 2026-10-14 (Telegram msg 2775): a video gone from YouTube is hidden with a mark, never deleted.
   const removedAt = new Map<string, Date>();
+  // BL-243 review round 2: when each channel's removed check last completed.
+  const removedCheckAt = new Map<string, Date>();
+  // BL-243 round 5: the listedAt each removed check was given (when the uploads list was read).
+  const listedAts: Date[] = [];
 
   return {
+    listedAts,
     channels,
+    removedCheckAt,
     videos,
     upsertCalls,
     removedAt,
     async markVideosRemovedOnYoutube(channelId: string, presentVideoIds: string[], at: Date, listedAt: Date) {
+      listedAts.push(listedAt);
       const present = new Set(presentVideoIds);
       for (const id of present) removedAt.delete(id);
       const marked: string[] = [];
@@ -61,16 +68,18 @@ function createFakeStore() {
         lastSyncedAt: existing?.lastSyncedAt ?? null,
       });
     },
-    async markChannelSynced(channelId: string, syncedAt: Date) {
+    async markChannelSynced(channelId: string, syncedAt: Date, checkedAt?: Date) {
       const existing = channels.get(channelId);
       if (!existing) return;
       channels.set(channelId, { ...existing, lastSyncedAt: syncedAt });
+      if (checkedAt) removedCheckAt.set(channelId, checkedAt);
     },
     async listChannels() {
       return [...channels.values()];
     },
     async getChannel(channelId: string) {
-      return channels.get(channelId) ?? null;
+      const channel = channels.get(channelId);
+      return channel ? { ...channel, removedCheckAt: removedCheckAt.get(channelId) ?? null } : null;
     },
     async upsertVideos(
       entries: Array<{
@@ -103,6 +112,10 @@ function createFakeStore() {
     },
     async listVideosByChannel(channelId: string) {
       return (videos.get(channelId) ?? []).filter((video) => !removedAt.has(video.videoId));
+    },
+    // BL-243: the asked rows of the channel, visible and removed, each with its mark (one select).
+    async listVideosByIds(channelId: string, videoIds: readonly string[]) {
+      return (videos.get(channelId) ?? []).filter((video) => videoIds.includes(video.videoId)).map((video) => ({ ...video, removedAt: removedAt.get(video.videoId) ?? null }));
     },
   };
 }
@@ -631,4 +644,74 @@ test("removed on YouTube: a hidden video back in the uploads is shown again even
   playlist.drops = ["v2"];
   await services.syncChannel({ credentialRef: { userId: "u1" } });
   assert.equal(store.removedAt.size, 0);
+});
+
+// BL-243 (WEEKLY_PUBLISHING_PLAN.md AC-WP-73): `videoIds` -- only the asked videos of the channel, in the order asked, plus which of
+// them a sync found removed on YouTube and which this copy does not have. Another channel's id is not found (channel scoping).
+test("BL-243 AC-WP-73: videoIds lists only those videos; removed and notFound say why the others are missing", async () => {
+  const { services, store, channelAccess } = createServicesFixture({ videoIds: ["vid74", "vid73", "vid72"] });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_TEST" });
+  await services.syncChannel({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST" });
+  store.removedAt.set("vid73", new Date("2026-11-03T19:54:00.000Z"));
+  store.removedCheckAt.set("UC_TEST", new Date("2026-11-04T08:00:00.000Z"));
+  // Another channel's stored video (the fake store's rows by channel).
+  const rowsByChannel = store.videos;
+  rowsByChannel.set("UC_OTHER", [{ ...(await store.listVideosByChannel("UC_TEST"))[0], videoId: "other1", channelId: "UC_OTHER" }]);
+
+  const result = (await services.listSyncedVideos({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_TEST",
+    videoIds: ["vid74", "vid73", "nope", "other1", "vid72", "vid74"],
+    fields: ["title"],
+  })) as Record<string, unknown>;
+  // (round 5: plus checkedAt -- when the removed check last completed; `removed` is as of then)
+  assert.deepEqual(Object.keys(result).sort(), ["channelId", "checkedAt", "nextOffset", "notFound", "offset", "removed", "total", "videos"]);
+  assert.equal(result.checkedAt, "2026-11-04T08:00:00.000Z");
+  assert.deepEqual((result.videos as Array<{ videoId: string }>).map((v) => v.videoId), ["vid74", "vid72"]);
+  assert.deepEqual(Object.keys((result.videos as object[])[0]).sort(), ["title", "videoId"]);
+  assert.equal(result.total, 2);
+  assert.equal(result.nextOffset, null);
+  assert.deepEqual(result.removed, [{ videoId: "vid73", removedAt: "2026-11-03T19:54:00.000Z" }]);
+  assert.deepEqual(result.notFound, ["nope", "other1"]);
+
+  // Bounds: 1-50 ids.
+  for (const videoIds of [[], Array.from({ length: 51 }, (_, i) => `v${i}`), [""]]) {
+    await assert.rejects(() => services.listSyncedVideos({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST", videoIds }));
+  }
+  const fifty = await services.listSyncedVideos({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST", videoIds: Array.from({ length: 50 }, (_, i) => `v${i}`) });
+  assert.equal((fifty as unknown as { notFound: string[] }).notFound.length, 50);
+
+  // Without videoIds: exactly the previous answers.
+  const plain = await services.listSyncedVideos({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST" });
+  assert.deepEqual(Object.keys(plain).sort(), ["channelId", "videos"]);
+  assert.deepEqual(plain.videos.map((v) => v.videoId).sort(), ["vid72", "vid74"]);
+  const paged = await services.listSyncedVideos({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST", limit: 1 });
+  assert.deepEqual(Object.keys(paged).sort(), ["channelId", "nextOffset", "offset", "total", "videos"]);
+});
+
+// BL-243 review round 2, item 3 (AC-WP-78): the time a removed check COMPLETED is kept apart from lastSyncedAt -- a sync that skipped
+// the check (empty uploads list, not the recorded owner) moves lastSyncedAt only, so a package's checkedAt never overstates.
+test("BL-243 AC-WP-78: removedCheckAt moves only on a sync whose removed check ran", async () => {
+  const { services, store, playlist, age } = createServicesFixture({ videoIds: ["v1", "v2"] });
+  const first = await services.syncChannel({ credentialRef: { userId: "u1" } });
+  assert.equal(first.removedCheck, "done");
+  // Round 5: the check's time is when the uploads list was read (listedAt), not the sync's end.
+  assert.equal(store.removedCheckAt.get("UC_MINE"), store.listedAts.at(-1));
+  // An earlier, fixed check time, so a move would show.
+  const EARLIER = new Date("2026-11-01T00:00:00.000Z");
+  store.removedCheckAt.set("UC_MINE", EARLIER);
+  age();
+  playlist.videoIds = [];
+  const skipped = await services.syncChannel({ credentialRef: { userId: "u1" } });
+  assert.equal(skipped.removedCheck, "skipped_empty_list");
+  assert.equal(store.channels.get("UC_MINE")?.lastSyncedAt?.toISOString(), skipped.syncedAt);
+  assert.equal(store.removedCheckAt.get("UC_MINE"), EARLIER, "not moved by the skipped check");
+  const stranger = await services.syncChannel({ credentialRef: { userId: "someone-else" }, channelId: "UC_MINE" });
+  assert.equal(stranger.removedCheck, "skipped_not_owner");
+  assert.equal(store.removedCheckAt.get("UC_MINE"), EARLIER);
+  playlist.videoIds = ["v1", "v2"];
+  const again = await services.syncChannel({ credentialRef: { userId: "u1" } });
+  assert.equal(again.removedCheck, "done");
+  assert.equal(store.removedCheckAt.get("UC_MINE"), store.listedAts.at(-1));
+  assert.ok(store.listedAts.at(-1)!.getTime() <= Date.parse(again.syncedAt), "listed before the sync ended");
 });
