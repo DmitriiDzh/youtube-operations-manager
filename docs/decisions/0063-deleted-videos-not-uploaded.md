@@ -39,7 +39,12 @@ weekly-plan slot offered deleted V73 for approval, and the deleted upload kept i
    `slotDecisions` and in `save()` (removing or retiming the slot is not blocked by that approval; `save()` reads the progress for
    this once per save -- the read its returned view needs; when the port's `{ progress, packagesUnavailable }` says the package scan
    was unavailable it keeps the older, stricter rule). The plan schedule never DATES
-   it. Its video NUMBER stays held for uploads, so a wrong mark can never cause a second upload of the same video.
+   it. Its video NUMBER stays held for uploads, so a wrong mark can never cause a second upload of the same video. Review round 7:
+   a removed mark frees the SLOT for another upload only when it is at least `REMOVED_MARK_GRACE_MS` (24 h,
+   `src/lib/shared-video-presence/`) newer than that upload (`steps.uploadedAt`, else `finishedAt`; the record's `uploadedAt` for a
+   package) -- a fresh private upload missing from a lagging uploads playlist can be marked removed by mistake. This applies to the
+   queue gate only (the approval's slot holds `holdsSlot`, and its check of deleted packages naming the slot, which every queue
+   path shares), never to what is shown.
 3. **Agents see it** in the calendar (`missingOnChannel`, per-item fields) and in `channel_video_list` (`videoIds` with
    `removed` / `notFound`). Additive: Agent API 4.17.0, Producer API 1.17.0, Factory API 1.43.0.
 
@@ -53,9 +58,11 @@ weekly-plan slot offered deleted V73 for approval, and the deleted upload kept i
    `partial` and never counts) is not proof on its own (another account): it ends the change only when the
    removed mark of a completed owner check names that video too (recorded `video_missing`, the row's date cleared, shown as a
    failure `video_deleted_on_youtube`); otherwise it is `refused` like any other answer and tried again after the hour -- for a
-   veto and for a date alike. `video_missing` holds only while the mark does: once a sync clears it (the video reappeared) the
-   row shows a plain failed plan change and the next pass asks YouTube again (a veto removes a date it finds). When the scan's
-   own removed-list read fails, the plan progress reads the list and scans again with it (packages and rows agree). The constant
+   veto and for a date alike. A confirmed `video_missing` keeps the row's last known date (round 7); while the video stays marked
+   removed the row is skipped. Once a sync clears the mark (the video reappeared) the row shows a plain failed plan change and the
+   normal veto path unschedules that date, with the usual hourly retries. When the scan's
+   own removed-list read fails, the packages and rows still agree: the plan progress reads the list once and hands it to its one
+   scan (round 7). The constant
    `video_deleted_on_youtube` lives once, in `src/lib/shared-video-presence/` (pure; the scan, the plan, the progress and the
    plan screen use it).
 
