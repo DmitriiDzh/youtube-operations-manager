@@ -288,7 +288,7 @@ test("AC-WP-23: the slot shows its package progress; vetoed wins", async () => {
     randomId: () => "x",
     withLock: (fn) => fn(),
     audit: async () => undefined,
-    progress: async () => new Map([["s1", { status: "packaged" as const, code: null, videoId: null, package: pkg }], ["s2", { status: "packaged" as const, code: null, videoId: null, package: pkg }]]),
+    progress: async () => ({ progress: new Map([["s1", { status: "packaged" as const, code: null, videoId: null, package: pkg }], ["s2", { status: "packaged" as const, code: null, videoId: null, package: pkg }]]), packagesUnavailable: false }), // BL-243: the port's result shape
   });
   await h.service.decide(CH, WEEK, { action: "veto", slots: [{ slotId: "s2" }] }, "u1");
   const { plan } = await withProgress.get({ channelId: CH, weekStart: WEEK });
@@ -369,7 +369,7 @@ test("review #3: removing a slot with a standing approval (changed since), a vet
     randomId: () => "y",
     withLock: (fn) => fn(),
     audit: async () => undefined,
-    progress: async () => new Map([["s3", { status: "packaged" as const, code: null, videoId: "vid3", package: null }]]),
+    progress: async () => ({ progress: new Map([["s3", { status: "packaged" as const, code: null, videoId: "vid3", package: null }]]), packagesUnavailable: false }), // BL-243: the port's result shape
   });
   const refusedUpload = await uploaded.save({ channelId: CH, weekStart: WEEK, removeSlotIds: ["s3"] }, "worker").then(() => null, (e: unknown) => e);
   assert.deepEqual(refusedUpload && refusedOf(refusedUpload).map((r) => [r.slotId, r.reason]), [["s3", "slot_uploaded"]]);

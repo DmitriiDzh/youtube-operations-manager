@@ -2,7 +2,7 @@ import { parseWithSchema } from "@/lib/shared-domain";
 import type { PublishingPlanDecision, PublishingPlanMeta, PublishingPlanPackageFingerprint, PublishingPlanSlot, PublishingPlansSnapshot } from "@/lib/sync-gateway";
 import { isValidIanaTimezone } from "@/lib/zoned-time";
 import { isDeletedOnYoutube } from "@/lib/shared-video-presence";
-import { DEFAULT_APPROVAL_STAGE, DomainError, PUBLISHING_PLAN_LIMITS, type PlanSaveRefusal, type PlanSlotDecision, type PlanProgressMap, type PlanSlotProgress, type PlanSummary, type PlanView, type PublishingPlanActor, type PublishingPlanApprovalStage, type PublishingPlansPorts, type ReplacedSlot } from "./contracts";
+import { DEFAULT_APPROVAL_STAGE, DomainError, PUBLISHING_PLAN_LIMITS, type PlanSaveRefusal, type PlanSlotDecision, type PlanProgressResult, type PlanSlotProgress, type PlanSummary, type PlanView, type PublishingPlanActor, type PublishingPlanApprovalStage, type PublishingPlansPorts, type ReplacedSlot } from "./contracts";
 import { addDays, approvalStandsOn, contentHashOf, contentOf, decisionsForStage, decisionStateOf, instantOf, isCalendarDate, isMonday, planViewOf, slotViewOf, standingPackageApprovalOf, standingVetoOf, decisionOrder, lastApprovedPackageOf } from "./model";
 import { approvalStageInputSchema, getPlanInputSchema, listPlansInputSchema, ownerDecisionInputSchema, PLAN_LIST_DEFAULT_LIMIT, savePlanInputSchema } from "./schemas";
 
@@ -48,14 +48,14 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
         out.set(slotId, { slotId, weekStart: null, publishAt: null, video: null, vetoed: removedVetoed(snapshot, slotId), released: false, found: false });
         continue;
       }
-      const progress = ports.progress ? ((await ports.progress(channelId, slot.weekStart, [slotId])).get(slotId) ?? null) : null;
+      const progress = ports.progress ? ((await ports.progress(channelId, slot.weekStart, [slotId])).progress.get(slotId) ?? null) : null;
       const view = slotViewOf({ stage: stageOf(snapshot), meta, slot, decisions: decisionsOf(snapshot, slot.weekStart).filter((d) => d.slotId === slotId), progress, now: ports.now() });
       out.set(slotId, { slotId, weekStart: slot.weekStart, publishAt: slot.publishAt, video: view.package?.video ?? null, vetoed: view.vetoed !== null, released: view.released, found: true });
     }
     return out;
   }
 
-  type ChannelState = { progress: Map<string, PlanSlotProgress>; counting: Map<string, string[]> };
+  type ChannelState = { progress: Map<string, PlanSlotProgress>; counting: Map<string, string[]>; packagesUnavailable: boolean };
 
   /**
    * BL-242 round 3 (item 3): ONE progress read for the channel's live slots -- every slot not released by its own times, and every
@@ -70,11 +70,19 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
       const bare = planViewOf({ stage, channelId, meta, slots: slotsOf(snapshot, meta.weekStart), decisions: decisionsOf(snapshot, meta.weekStart), progress: new Map(), now });
       for (const slot of bare.slots) if (!slot.released || slot.vetoed) ids.add(slot.slotId);
     }
-    let progress = new Map<string, PlanSlotProgress>();
+    let read: PlanProgressResult = { progress: new Map(), packagesUnavailable: false };
     if (ports.progress && ids.size > 0) {
-      const read = ports.progress(channelId, "", [...ids].sort());
-      progress = failClosed ? await read.catch(() => new Map<string, PlanSlotProgress>()) : await read;
+      const pending = ports.progress(channelId, "", [...ids].sort());
+      read = failClosed ? await pending.catch((): PlanProgressResult => ({ progress: new Map(), packagesUnavailable: true })) : await pending;
     }
+    return stateFrom(channelId, snapshot, read);
+  }
+
+  /** The counting approvals of `snapshot` over a progress already read (BL-243: save() reuses its one read for the view it returns). */
+  function stateFrom(channelId: string, snapshot: PublishingPlansSnapshot, read: PlanProgressResult): ChannelState {
+    const stage = stageOf(snapshot);
+    const now = ports.now();
+    const progress = read.progress;
     const counting = new Map<string, string[]>();
     if (stage === "packaged") {
       for (const meta of Object.values(snapshot.plans)) {
@@ -85,7 +93,7 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
         }
       }
     }
-    return { progress, counting };
+    return { progress, counting, packagesUnavailable: read.packagesUnavailable };
   }
 
   async function viewOf(channelId: string, snapshot: PublishingPlansSnapshot, meta: PublishingPlanMeta, known?: ChannelState): Promise<PlanView> {
@@ -145,25 +153,15 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
       const decisions = decisionsOf(snapshot, weekStart);
       const decisionsFor = (slotId: string) => decisions.filter((d) => d.slotId === slotId);
       const stage = stageOf(snapshot);
-      // BL-243 review round 2 (ADR 0063 §2): in the `packaged` stage an approval counts here exactly as the view counts it -- only
-      // while it covers the slot's current package (a package whose video was deleted has none). One progress read for the week's
-      // slots and the ones to remove; unreadable, the older rule below (it counts more approvals: never fewer refusals).
+      // BL-243 (ADR 0063 §2): ONE progress read per save, as the returned view always needed -- the channel's live slots, the
+      // ones to remove and the ones sent. In the `packaged` stage an approval counts here as the view counts it (only while it
+      // covers the slot's current package; a deleted video's package has none); with the package scan unavailable, the older,
+      // stricter rule below. The removals' check and the returned view use the same read.
       const toRemove = [...new Set(parsed.removeSlotIds ?? [])];
-      // Review round 3: read only when it can matter -- slots to remove, or (packaged stage) a slot the older rule calls approved
-      // (the view can only count fewer). The `slot` stage reads only for removals, as before.
-      const standing = existing ? [...current.values()].filter((slot) => approvalStandsOn(stage, existing.timeZone, contentOf(slot), decisionsFor(slot.slotId))) : [];
-      // (A removal in the packaged stage also needs the view: an approval superseded by a retime still blocks under the older rule.)
-      const needsViews = stage === "packaged" && existing !== null && (standing.length > 0 || toRemove.length > 0);
-      let progress: PlanProgressMap | null = null;
-      if (ports.progress && (needsViews || toRemove.length > 0)) {
-        // Without a standing approval only the removed slots' views are consulted (every other slot is unapproved either way).
-        const ids = needsViews && standing.length > 0 ? [...new Set([...current.keys(), ...toRemove])] : toRemove;
-        progress = await ports.progress(channelId, weekStart, ids).catch(() => null);
-      }
-      // Round 4: a progress read without the packages (scan unavailable) says nothing of approvals -- the older rule then.
+      const state = await channelState(channelId, snapshot, [...new Set([...current.keys(), ...toRemove, ...(parsed.slots ?? []).map((s) => s.slotId)])]);
       const views =
-        needsViews && existing && progress && !progress.packagesUnavailable
-          ? new Map(planViewOf({ stage, channelId, meta: existing, slots: [...current.values()], decisions, progress, now }).slots.map((view) => [view.slotId, view]))
+        stage === "packaged" && existing && !state.packagesUnavailable
+          ? new Map(planViewOf({ stage, channelId, meta: existing, slots: [...current.values()], decisions, progress: state.progress, now }).slots.map((view) => [view.slotId, view]))
           : null;
       // BL-242: else an approval that counts in the channel's stage stands on the slot (whatever its package now).
       const approvedNow = (slot: PublishingPlanSlot) => {
@@ -240,9 +238,8 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
 
       const removes: string[] = [];
       const vetoedRemoves: string[] = [];
-      // Review #3: what the uploads say of the slots to remove (a slot whose video is on YouTube stays). The read above; it failed:
-      // read again here, as before (a failure refuses the save).
-      const uploads = toRemove.length > 0 && ports.progress ? (progress ?? (await ports.progress(channelId, weekStart, toRemove))) : new Map<string, PlanSlotProgress>();
+      // Review #3: what the uploads say of the slots to remove (a slot whose video is on YouTube stays) -- the read above.
+      const uploads = state.progress;
       for (const slotId of toRemove) {
         const slot = current.get(slotId);
         const state = slot && existing ? decisionStateOf(decisionsForStage(decisionsFor(slotId), stage), contentHashOf(existing.timeZone, contentOf(slot))) : null;
@@ -283,7 +280,7 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
 
       const zoneChanges = existing !== null && existing.timeZone !== timeZone;
       if (existing && upserts.length === 0 && removes.length === 0 && !zoneChanges) {
-        return { plan: await viewOf(channelId, snapshot, existing), changed: [], unlocked: [], removed: [] };
+        return { plan: await viewOf(channelId, snapshot, existing, state), changed: [], unlocked: [], removed: [] };
       }
       const at = stamp();
       await ports.store.savePlan(channelId, {
@@ -299,7 +296,8 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
         await ports.audit({ channelId, weekStart, slotId, detail: { event: "publishing_plan.vetoed_slot_removed", at, weekStart, slotId, by } });
       }
       const after = await requirePlan(channelId, weekStart);
-      return { plan: await viewOf(channelId, after.snapshot, after.meta), changed, unlocked, removed: removes };
+      // The same read, counted over the saved plan (no second scan).
+      return { plan: await viewOf(channelId, after.snapshot, after.meta, stateFrom(channelId, after.snapshot, state)), changed, unlocked, removed: removes };
     });
   }
 

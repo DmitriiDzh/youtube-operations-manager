@@ -53,11 +53,10 @@ export type PlanSlotPackage = {
 // (`@/lib/shared-video-presence`, `isDeletedOnYoutube`): no fingerprint, nothing to approve.
 
 /**
- * BL-243 review round 4: the progress port's answer. `packagesUnavailable` -- the package scan could not be read (the workspace is
- * unavailable, say): the map holds only what the upload rows say, so a caller that must know the packages (save()'s approval
- * rule) falls back to its older, stricter rule.
+ * BL-243: the progress port's answer. `packagesUnavailable` -- the package scan could not be read (the workspace is unavailable,
+ * say): `progress` holds only what the upload rows say, so save()'s approval rule falls back to its older, stricter rule.
  */
-export type PlanProgressMap = Map<string, PlanSlotProgress> & { packagesUnavailable?: true };
+export type PlanProgressResult = { progress: Map<string, PlanSlotProgress>; packagesUnavailable: boolean };
 
 /** What the packages and uploads report for a slot (stages 2-3); null/absent: nothing yet. */
 export type PlanSlotProgress = {
@@ -207,7 +206,7 @@ export type PublishingPlansPorts = {
    * Stages 2-3: what the packages and uploads say of the slots, by slotId. Absent: nothing (stage 1). BL-242 round 3: one read may
    * cover several weeks; `weekStart` is then "" (the production port reads the channel's packages and uploads whatever it says).
    */
-  progress?(channelId: string, weekStart: string, slotIds: string[]): Promise<PlanProgressMap>;
+  progress?(channelId: string, weekStart: string, slotIds: string[]): Promise<PlanProgressResult>;
 };
 
 /**

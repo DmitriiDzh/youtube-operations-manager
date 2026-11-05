@@ -6,7 +6,7 @@ import { createPublishingPlansCore, emptyDocument } from "@/lib/sync-gateway/pub
 import type { PublishingPlansDocument } from "@/lib/sync-gateway";
 import { agentSurface, createPublishingPlansService, ownerSurface } from "./services";
 import { decisionForRow } from "@/lib/publishing/plan-schedule";
-import { isDomainError, type PlanAuditEntry, type PlanProgressMap, type PlanSlotPackage, type PlanSlotProgress, type PlanView } from "./contracts";
+import { isDomainError, type PlanAuditEntry, type PlanProgressResult, type PlanSlotPackage, type PlanSlotProgress, type PlanView } from "./contracts";
 
 // BL-242 acceptance (docs/roadmap/plans/WEEKLY_PUBLISHING_PLAN.md "BL-242", AC-WP-50..56; ADR 0062). Expected values by hand:
 // Asia/Tokyo is UTC+9 (15:00 JST on 2026-10-26 is 06:00Z); 2026-10-26 is a Monday; the clock stands at 2026-10-25T07:00Z, before
@@ -58,9 +58,8 @@ function harness(options: { progressFails?: () => boolean; packagesUnavailable?:
     progress: async (_c, _w, ids) => {
       progressCalls.push([...ids].sort());
       if (options.progressFails?.()) throw new Error("the package scan failed");
-      const answer: PlanProgressMap = new Map([...progress].filter(([id]) => ids.includes(id)));
-      // BL-243 round 4: the production port's flag for a package scan that could not be read.
-      if (options.packagesUnavailable?.()) answer.packagesUnavailable = true;
+      // BL-243: the port's result, with the production port's flag for a package scan that could not be read.
+      const answer: PlanProgressResult = { progress: new Map([...progress].filter(([id]) => ids.includes(id))), packagesUnavailable: options.packagesUnavailable?.() ?? false };
       return answer;
     },
   });
@@ -597,22 +596,21 @@ test("BL-243 AC-WP-77: after the video is deleted, the once-approved slot can be
   assert.deepEqual(removed, ["s1"]);
 });
 
-// BL-243 review round 3, item 4 (AC-WP-77): save() reads the progress for its approval rule only when it can matter -- slots to
-// remove, or (packaged stage) a slot the older rule calls approved. Every save also reads it once for the plan view it returns
-// (unchanged), so: nothing approved -> 1 read, a standing packaged approval -> 2, the slot stage -> 1, a removal -> 2.
-test("BL-243 AC-WP-77: save() reads progress only for removals or a standing packaged approval", async () => {
+// BL-243 review round 5, item 6 (AC-WP-77): save() reads the progress ONCE -- the read the returned view always needed (the channel's
+// live slots, the ones removed and the ones sent) also serves the approval rule and the removals' check. Every save: one read.
+test("BL-243 AC-WP-77: save() reads progress once, for the approval rule, the removals and the returned view", async () => {
   const h = harness();
   await week(h);
   const reads = () => h.progressCalls.length;
   let before = reads();
   await h.service.save({ channelId: CH, weekStart: WEEK, slots: [slot("s2", "2026-10-27", "19:00")] }, "worker");
-  assert.equal(reads(), before + 1, "packaged, nothing approved: only the returned view's read");
+  assert.equal(reads(), before + 1, "packaged, nothing approved");
 
   h.progress.set("s1", packaged({ video: "V73" }, "vid73"));
   await approve(h, "s1");
   before = reads();
   await h.service.save({ channelId: CH, weekStart: WEEK, slots: [slot("s2", "2026-10-27", "20:00")] }, "worker");
-  assert.equal(reads(), before + 2, "packaged with a standing approval: the rule's read too");
+  assert.equal(reads(), before + 1, "packaged with a standing approval");
 
   const slotStage = harness();
   await week(slotStage);
@@ -620,9 +618,10 @@ test("BL-243 AC-WP-77: save() reads progress only for removals or a standing pac
   await approve(slotStage, "s1");
   const start = slotStage.progressCalls.length;
   await slotStage.service.save({ channelId: CH, weekStart: WEEK, slots: [slot("s2", "2026-10-27", "20:00")] }, "worker");
-  assert.equal(slotStage.progressCalls.length, start + 1, "slot stage: only the returned view's read");
+  assert.equal(slotStage.progressCalls.length, start + 1, "slot stage");
   await slotStage.service.save({ channelId: CH, weekStart: WEEK, removeSlotIds: ["s2"] }, "worker");
-  assert.deepEqual(slotStage.progressCalls.slice(start + 1)[0], ["s2"], "a removal: the removed slots are read, as before");
+  assert.equal(slotStage.progressCalls.length, start + 2, "a removal: the same one read");
+  assert.ok(slotStage.progressCalls[start + 1].includes("s2"), "the removed slot is in it");
 });
 
 // BL-243 review round 4, item 2 (AC-WP-77): the workspace is unavailable, so the progress holds no packages (flag

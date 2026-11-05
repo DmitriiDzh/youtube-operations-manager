@@ -296,7 +296,8 @@ test("BL-243: an unreadable removed list or sync time keeps the scan going (none
     ["V75", "uploaded_unknown", null],
     ["V76", "ready", null],
   ]);
-  assert.deepEqual(result.removedVideoIds, []);
+  // (round 5: null, not [], so the plan progress knows to read the list on its own)
+  assert.equal(result.removedVideoIds, null);
   const read = await createPackageScan(deps(uploadedFiles(), { videos: visible74, removedVideos: async () => [{ videoId: "vid73", removedAt: REMOVED }] })).scan("UC_t");
   assert.deepEqual(read.status === "ok" ? read.removedVideoIds : null, ["vid73"]);
 });

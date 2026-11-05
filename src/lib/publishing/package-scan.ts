@@ -70,10 +70,10 @@ export type PackageScanResult =
       status: "ok";
       packages: ScannedPackage[];
       /**
-       * BL-243: the ids of the channel's videos the sync found removed, as this scan read them ([] when
-       * that read failed: none known). The plan progress reuses them, so it never disagrees with the packages it shows.
+       * BL-243: the ids of the channel's videos the sync found removed, as this scan read them; null when that read failed (the
+       * packages then read as if none were removed). The plan progress reuses them, so it never disagrees with the packages it shows.
        */
-      removedVideoIds: string[];
+      removedVideoIds: string[] | null;
     };
 
 export type PackageScanDeps = {
@@ -256,12 +256,12 @@ export function createPackageScan(deps: PackageScanDeps) {
         deps.videos(channelId),
         // BL-243 (ADR 0063): an unreadable mark is "none known" (such packages read as before) and an unreadable sync time null --
         // never a failed scan.
-        deps.removedVideos ? deps.removedVideos(channelId).catch(() => []) : Promise.resolve([]),
+        deps.removedVideos ? deps.removedVideos(channelId).catch(() => null) : Promise.resolve([]),
         // BL-243: a caller that already read the check time (the calendar) passes it, so its own and the items' agree.
         options.checkedAt !== undefined ? Promise.resolve(options.checkedAt) : deps.videosCheckedAt ? deps.videosCheckedAt(channelId).catch(() => null) : Promise.resolve(null),
         findManifests(deps, workspace),
       ]);
-      const copy: Copy = { videos, removed: new Map(removed.map((video) => [video.videoId, video.removedAt])), checkedAt };
+      const copy: Copy = { videos, removed: new Map((removed ?? []).map((video) => [video.videoId, video.removedAt])), checkedAt };
       const packages: ScannedPackage[] = [];
       for (const manifestPath of manifests) {
         const scanned = await scanOne(workspace, manifestPath, channel, copy);
@@ -269,7 +269,7 @@ export function createPackageScan(deps: PackageScanDeps) {
       }
       const number = (p: ScannedPackage) => Number(/\d+/.exec(p.video ?? p.manifestPath.split("/").pop() ?? "")?.[0] ?? 0);
       packages.sort((a, b) => (a.plannedPublishDate ?? "9999") .localeCompare(b.plannedPublishDate ?? "9999") || number(a) - number(b));
-      return { status: "ok", packages: markSharedSlots(packages), removedVideoIds: [...copy.removed.keys()] };
+      return { status: "ok", packages: markSharedSlots(packages), removedVideoIds: removed === null ? null : [...copy.removed.keys()] };
     },
   };
 }
