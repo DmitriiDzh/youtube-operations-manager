@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { isCancellable, isPublishAtSet } from "@/lib/publishing/upload-runner";
+import { isCancellable, isPublishAtSet, isSending } from "@/lib/publishing/upload-runner";
 import { formatDisplayDateTime, formatDisplayDateUtc } from "@/lib/shared-formatting";
 import { errorText, type UiTextKey } from "@/lib/ui-text";
 import { ConfirmDialog } from "./confirm-dialog";
@@ -73,6 +73,8 @@ export function PublishingUploads({ channelId, visible, refreshKey }: { channelI
   const [rows, setRows] = useState<UploadRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [releasing, setReleasing] = useState<string | null>(null);
+  /** BL-244: the upload being sent that the owner asked to stop (confirmed in the app's own dialog). */
+  const [stopping, setStopping] = useState<string | null>(null);
   const [moving, setMoving] = useState(false);
 
   const load = useCallback(async () => {
@@ -98,6 +100,7 @@ export function PublishingUploads({ channelId, visible, refreshKey }: { channelI
 
   async function cancel(id: string) {
     if (!channelId) return;
+    setStopping(null);
     try {
       const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/publishing/uploads/${encodeURIComponent(id)}/cancel`, { method: "POST" });
       const data = await res.json();
@@ -231,7 +234,13 @@ export function PublishingUploads({ channelId, visible, refreshKey }: { channelI
                   {t("publishingPackages.openOnYoutube")}
                 </a>
               )}
-              {isCancellable(row) && (
+              {/* BL-244 (ADR 0064): a row being sent before its last chunk is stopped after a confirmation; a waiting one is cancelled. */}
+              {isCancellable(row) && isSending(row) && (
+                <button type="button" onClick={() => setStopping(row.id)} className="ml-auto rounded border border-red-900 px-2 py-0.5 text-red-200 hover:bg-red-950/40">
+                  {t("publishingUploads.stop")}
+                </button>
+              )}
+              {isCancellable(row) && !isSending(row) && (
                 <button type="button" onClick={() => void cancel(row.id)} className="ml-auto rounded border border-zinc-700 px-2 py-0.5 text-zinc-300 hover:bg-zinc-800">
                   {t("publishingUploads.cancel")}
                 </button>
@@ -246,6 +255,16 @@ export function PublishingUploads({ channelId, visible, refreshKey }: { channelI
           );
         })}
       </ul>
+      {stopping && (
+        <ConfirmDialog
+          title={t("publishingUploads.stopTitle")}
+          description={t("publishingUploads.stopBody")}
+          confirmLabel={t("publishingUploads.stopConfirm")}
+          confirmVariant="danger"
+          onCancel={() => setStopping(null)}
+          onConfirm={() => void cancel(stopping)}
+        />
+      )}
       {releasing && (
         <ConfirmDialog
           title={t("publishingUploads.releaseTitle")}
