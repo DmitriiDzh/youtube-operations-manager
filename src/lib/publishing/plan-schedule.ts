@@ -156,7 +156,11 @@ export function createPlanSchedule(deps: PlanScheduleDeps) {
         // BL-243 review round 7: a confirmed `video_missing` row keeps its last known date; while the video stays marked removed
         // there is nothing to do (no read). Once the mark is cleared (the video reappeared) the normal path below sees that date --
         // a veto unschedules it, with the usual hourly retries.
-        if (stepsOf(row).planSync?.result === "video_missing" && (await removedOf(row.channelId))?.has(row.videoId)) continue;
+        // (round 8: the list unreadable -- the confirmed answer stands: still skipped, no YouTube call)
+        if (stepsOf(row).planSync?.result === "video_missing") {
+          const removed = await removedOf(row.channelId);
+          if (removed === null || removed.has(row.videoId)) continue;
+        }
         const want = desiredDate(row, decisionForRow(row, decisions), deps.clock.now().getTime());
         if (!want) continue;
         // BL-243 (ADR 0063 §4): a video the sync found removed is never dated; an unreadable list dates nothing of the channel

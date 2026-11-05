@@ -331,6 +331,13 @@ test("BL-243 AC-WP-83: after video_missing and a cleared mark, the veto unschedu
   const still = harness(row({ stepsJson: missingSteps }), { kind: "vetoed" }, undefined, async () => new Set(["vid64"]));
   assert.deepEqual(await still.schedule.tick(), { changed: 0 });
   assert.equal(still.state.reads, 0, "still marked removed: no read");
+  // Round 8: the list cannot be read -- the confirmed video_missing stands: skipped, no YouTube call, not downgraded.
+  const unreadable = harness(row({ stepsJson: missingSteps }), { kind: "vetoed" }, undefined, async () => {
+    throw new Error("db down");
+  });
+  assert.deepEqual(await unreadable.schedule.tick(), { changed: 0 });
+  assert.equal(unreadable.state.reads, 0);
+  assert.equal(unreadable.steps().planSync.result, "video_missing");
 
   const back = harness(row({ stepsJson: missingSteps }), { kind: "vetoed" }, undefined, async () => new Set());
   back.state.readBackWrong = true; // the first unschedule is read back with another date
