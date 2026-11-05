@@ -3,7 +3,7 @@
 // the scanned packages and the channel's AI-flag setting come in; the slot statuses go out.
 
 import type { PlanSlotProgress } from "@/lib/publishing-plans";
-import { isDeletedOnYoutube, VIDEO_DELETED_ON_YOUTUBE } from "@/lib/shared-video-presence";
+import { VIDEO_DELETED_ON_YOUTUBE } from "@/lib/shared-video-presence";
 import type { ScannedPackage } from "@/lib/publishing";
 
 /** How far a status got, to pick one package when two name the same slot (the furthest one wins). */
@@ -101,7 +101,7 @@ export function progressOfSlots(
 }
 
 /** BL-243: a package the scan found deleted on YouTube, as the upload rows of its slot are judged against it. */
-export type DeletedOnSlot = { video: string; manifestSha256: string | null; uploadedAt: number | null };
+export type DeletedOnSlot = { video: string; uploadedAt: number | null };
 
 /**
  * BL-243 (review round 4): THE upload time of a video -- the record's `uploadedAt`, else the `uploadedAt` its upload row recorded
@@ -134,7 +134,7 @@ export function deletedVideosBySlot(packages: readonly ScannedPackage[], uploadR
     const slotId = p.pkg?.slotId;
     if (p.state !== "deleted_on_youtube" || !slotId || !p.pkg) continue;
     const uploadedAt = uploadTimeOf(p.youtube, rowOfVideo(uploadRows, p.youtube?.videoId));
-    out.set(slotId, [...(out.get(slotId) ?? []), { video: p.pkg.video, manifestSha256: p.manifestSha256, uploadedAt }]);
+    out.set(slotId, [...(out.get(slotId) ?? []), { video: p.pkg.video, uploadedAt }]);
   }
   return out;
 }
@@ -152,8 +152,6 @@ export type UploadRowForProgress = {
   slotId: string | null;
   /** The video number the row uploaded (`V73`); BL-242 round 3: a row of another video than the slot's package says nothing of it. */
   video?: string;
-  /** BL-243: the manifest the row uploaded -- tells a fresh package's tries from the deleted one's of the same number. */
-  manifestSha256?: string;
   status: string;
   videoId: string | null;
   publishAt: string | null;
@@ -210,15 +208,10 @@ export function progressOfUploadRow(row: UploadRowForProgress, nowMs: number): P
 
 /**
  * The packages' progress, with each slot's newest upload row on this computer taking precedence (it knows the upload's steps).
- * BL-243 (ADR 0063 §2): a row whose video the sync found removed says nothing of its slot, and neither does any other row of a
- * deleted package (its video number on that slot -- an earlier failed try, say): a deleted video never becomes the slot's progress
- * again through an older row. Only when a fresh package with the same number is the slot's current one do rows of that number
- * count, and only that package's own tries: the row names its manifest, and -- when the fresh manifest is byte-identical to a
- * deleted one's -- the row is newer than the deleted upload (its record's `uploadedAt`, or the removed video's own row here); with
- * neither time known such rows are all ignored. So no try of the deleted video ever counts.
- * Review round 4 (whatever the package's state now -- also after the owner moved its `Vn_youtube.json` away for a re-upload): a
- * row of a removed video blocks every row of the same number and manifest on that slot created up to its upload time
- * (`uploadTimeOf`, else its creation); only later rows -- a new try -- count.
+ * BL-243 (ADR 0063 §2, one rule): a row counts for its slot only when it was created after the newest deleted upload of that slot
+ * and video number -- the removed video's own row here (its upload time, else its creation), else the deleted package's record
+ * (`uploadedAt`); a deleted upload whose time is unknown blocks every row of that number. The removed video's own row never
+ * counts. No deleted upload of that slot and number: the row counts. (The manifest is not part of the rule.)
  */
 export function progressWithUploads(
   fromPackages: Map<string, PlanSlotProgress>,
@@ -230,37 +223,26 @@ export function progressWithUploads(
   const result = new Map(fromPackages);
   const wanted = new Set(slotIds);
   const removed = exclude.removedVideoIds ?? new Set<string>();
-  const deletedBySlot = exclude.deletedVideosBySlot ?? new Map<string, readonly DeletedOnSlot[]>();
-  // The cutoff of each slot's rows of a removed video, by number (any manifest: for a byte-identical fresh one) and by number and
-  // manifest (for every row of that try): the removed row's upload time, else its creation.
-  const removedRowAt = new Map<string, number>();
-  const removedTryAt = new Map<string, number>();
-  const tryKey = (row: UploadRowForProgress) => `${row.slotId}|${row.video}|${row.manifestSha256 ?? ""}`;
+  // The newest deleted upload of each slot and number: the removed rows' times first, else the deleted packages' records.
+  const deletedAt = new Map<string, number>();
+  const key = (slotId: string, video: string) => `${slotId}|${video}`;
   for (const row of rows) {
-    if (!row.slotId || row.videoId === null || !removed.has(row.videoId) || row.video === undefined) continue;
-    const at = Math.max(uploadTimeOf(null, row) ?? Number.NEGATIVE_INFINITY, row.createdAt.getTime());
-    const key = `${row.slotId}|${row.video}`;
-    removedRowAt.set(key, Math.max(removedRowAt.get(key) ?? Number.NEGATIVE_INFINITY, at));
-    removedTryAt.set(tryKey(row), Math.max(removedTryAt.get(tryKey(row)) ?? Number.NEGATIVE_INFINITY, at));
+    if (!row.slotId || row.video === undefined || row.videoId === null || !removed.has(row.videoId)) continue;
+    const at = uploadTimeOf(null, row) ?? row.createdAt.getTime();
+    deletedAt.set(key(row.slotId, row.video), Math.max(deletedAt.get(key(row.slotId, row.video)) ?? Number.NEGATIVE_INFINITY, at));
   }
-  /** Whether a row of a deleted package's number is the fresh current package's own try (see above). */
-  const freshTry = (row: UploadRowForProgress, own: PlanSlotProgress | undefined, deletedHere: readonly DeletedOnSlot[]): boolean => {
-    const fresh = own?.package;
-    if (!fresh || isDeletedOnYoutube(own) || fresh.video !== row.video || !fresh.manifestSha256 || row.manifestSha256 !== fresh.manifestSha256) return false;
-    const sameManifest = deletedHere.filter((d) => d.video === row.video && d.manifestSha256 === fresh.manifestSha256);
-    if (sameManifest.length === 0) return true;
-    const times = [...sameManifest.map((d) => d.uploadedAt), removedRowAt.get(`${row.slotId}|${row.video}`) ?? null].filter((t): t is number => t !== null && Number.isFinite(t));
-    return times.length > 0 && row.createdAt.getTime() > Math.max(...times);
+  for (const [slotId, list] of exclude.deletedVideosBySlot ?? new Map<string, readonly DeletedOnSlot[]>()) {
+    for (const d of list) if (!deletedAt.has(key(slotId, d.video))) deletedAt.set(key(slotId, d.video), d.uploadedAt ?? Number.POSITIVE_INFINITY);
+  }
+  const counts = (row: UploadRowForProgress & { slotId: string }): boolean => {
+    if (row.videoId !== null && removed.has(row.videoId)) return false;
+    if (row.video === undefined) return true;
+    const cutoff = deletedAt.get(key(row.slotId, row.video));
+    return cutoff === undefined || row.createdAt.getTime() > cutoff;
   };
   const newest = new Map<string, UploadRowForProgress>();
   for (const row of rows) {
-    if (!row.slotId || !wanted.has(row.slotId)) continue;
-    if (row.videoId !== null && removed.has(row.videoId)) continue;
-    // Review round 4: an older row of a removed video's try (same number and manifest) says nothing, whatever the package's state.
-    if (row.video !== undefined && row.createdAt.getTime() <= (removedTryAt.get(tryKey(row)) ?? Number.NEGATIVE_INFINITY)) continue;
-    const own = fromPackages.get(row.slotId);
-    const deletedHere = deletedBySlot.get(row.slotId) ?? [];
-    if (row.video !== undefined && deletedHere.some((d) => d.video === row.video) && !freshTry(row, own, deletedHere)) continue;
+    if (!row.slotId || !wanted.has(row.slotId) || !counts({ ...row, slotId: row.slotId })) continue;
     // BL-242 round 3 (b): a row of another video than the slot's current package (the old video moved to another slot) is not its
     // progress.
     const pkg = fromPackages.get(row.slotId)?.package;
