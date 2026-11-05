@@ -54,6 +54,8 @@ could cancel only a row still `queued`.
 
 - A stopped row frees its package and its weekly-plan slot like any cancelled row without a video (`holdsPackage` false; the
   one-live-row index does not count `cancelled`), so the slot no longer shows "uploading".
+- The owner's cancel now passes the device mutation gate (`assertMutationAllowed`), like his move and the Producer's cancel: during a
+  device handoff or recovery it is refused (`operation_lock_held` / `device_in_recovery_mode`) instead of cancelling a queued row.
 - A stop that loses the race to the mark leaves an upload the owner wanted gone: it finishes privately and he deletes it in Studio.
   The window is one chunk's mark; the refusal says so.
 
