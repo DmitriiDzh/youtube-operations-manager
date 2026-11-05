@@ -72,6 +72,11 @@ weekly-plan slot offered deleted V73 for approval, and the deleted upload kept i
 
 - Read-only: no YouTube call is added. The mark is only as fresh as the last completed removed check (`checkedAt`); until a
   sync completes one after the update, `checkedAt` is null and no package says `true`.
+- Known follow-ups (final triage, `docs/TECHNICAL_DEBT.md` RISK-151): during the 24 h grace the screen (`markSharedSlots`) shows a
+  new package for the slot as ready while the gate refuses `removed_mark_grace`, and the automatic upload retries each tick (safe,
+  noisy); `packagesUnavailable` is also true for `no_workspace`; save() reads the progress even when its slot checks already
+  refused; `checkedAt` is repeated on every package; the grace rule is assembled twice (`heldSlots` and the gate);
+  `listVideoPresence` and `listStoredVideosByIds` overlap; and the altitude note below (one "effective upload" concept in the scan).
 - Known follow-ups (review rounds 7-8, left as is): the plan progress's package walk can run next to the calendar's (two walks of
   `04 Videos/` per minute at most) and some reads run in series; "deleted" is special-cased in several layers (scan, progress,
   plan model, schedule, gate) rather than in one place.

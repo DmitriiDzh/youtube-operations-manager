@@ -2276,6 +2276,24 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Gate(s):** none (no new YouTube write; nothing is ever scheduled by it). **Re-evaluate:** when upload rows are synced between
   the computers.
 
+## RISK-151 — Deleted on YouTube is special-cased across layers — OPEN, 2026-11-05
+
+- **Affected components:** `src/lib/publishing/` (`package-scan.ts`, `upload-approval.ts`, `upload-runner.ts` `holdsSlot`,
+  `plan-schedule.ts`), `src/lib/publishing-plan-progress/`, `src/lib/publishing-plans/`, `src/lib/shared-video-presence/`
+  (BL-243, ADR 0063).
+- **Risk:** "the video was deleted on YouTube" is decided in several places (the scan's state, the progress row rule, the plan
+  model's fingerprint, the plan schedule, the slot holds and the queue gate), each reading the removed list with its own failure
+  rule. A future change to one of them can make the layers disagree. Known rough edges (ADR 0063 Consequences): during the 24 h
+  grace the screen shows a new package for the slot as ready while the gate refuses `removed_mark_grace` (the automatic upload
+  retries each tick -- safe, noisy); `packagesUnavailable` is also true for `no_workspace`; save() reads the progress even when its
+  slot checks already refused; `checkedAt` is repeated on every package; the grace rule is assembled twice (`heldSlots` and the
+  gate); `listVideoPresence` and `listStoredVideosByIds` overlap.
+- **Mitigation:** the shared rules live once in `src/lib/shared-video-presence/` (`isDeletedOnYoutube`, `existsOnChannelOf`,
+  `uploadTimeOf`, `removedMarkFreesSlot`); every failure direction is "no date / no second upload / held", and each layer has
+  spec-derived tests (AC-WP-66..85).
+- **Gate(s):** none (no new YouTube write path). **Re-evaluate:** when the next change touches deleted videos -- introduce one
+  "effective upload" concept in the scan (the upload a package's slot counts, with its presence and time) that every layer reads.
+
 ## RISK-150 — Weekly plan approval stage: the two computers on different builds disagree — OPEN, 2026-11-04
 
 - **Affected components:** `src/lib/publishing-plans/` (`approvalStage`, fingerprinted decisions), `src/lib/publishing/`
