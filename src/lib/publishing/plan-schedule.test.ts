@@ -280,12 +280,13 @@ test("BL-243 AC-WP-71: a veto removes the date whatever the local mark or the li
   });
   assert.deepEqual(await unreadable.schedule.tick(), { changed: 1 });
   assert.deepEqual(unreadable.state.writes, [null]);
-  // YouTube says there is no such video: nothing written, the row has no date any more, and the next pass reads nothing.
+  // YouTube says there is no such video (and the mark agrees): nothing written, the row keeps its last known date (round 7), and
+  // while the video stays marked removed the next pass reads nothing.
   const gone = harness(row(), vetoed, { privacyStatus: null, publishAt: null, missing: true } as never, async () => new Set(["vid64"]));
   assert.deepEqual(await gone.schedule.tick(), { changed: 1 });
   assert.deepEqual(gone.state.writes, []);
   assert.equal(gone.state.reads, 1);
-  assert.equal(gone.state.row.publishAt, null);
+  assert.equal(gone.state.row.publishAt, "2026-10-26T09:00:00.000Z");
   assert.deepEqual([gone.steps().planSync.action, gone.steps().planSync.result], ["unscheduled", "video_missing"]);
   assert.deepEqual(await gone.schedule.tick(), { changed: 0 });
   assert.equal(gone.state.reads, 1);
@@ -321,19 +322,28 @@ test("BL-243 AC-WP-79: not_found without a removed mark is refused and retried, 
   assert.deepEqual([dating.steps().planSync.action, dating.steps().planSync.result], ["scheduled", "refused"]);
 });
 
-// BL-243 review round 6 (AC-WP-83): video_missing does not stick once the mark is cleared (the video reappeared). The row says "no
-// date" from the earlier answer; the next pass asks YouTube again and re-applies the slot's wish -- a veto removes the date.
-test("BL-243 AC-WP-83: after video_missing and a cleared mark, a veto re-runs through the live read", async () => {
-  const missingSteps = JSON.stringify({ ...OK_STEPS, planSync: { at: NOW.toISOString(), action: "unscheduled", publishAt: null, result: "video_missing" } });
-  const back = harness(row({ publishAt: null, stepsJson: missingSteps }), { kind: "vetoed" }, { privacyStatus: "private", publishAt: "2026-10-26T09:00:00.000Z" }, async () => new Set());
-  assert.deepEqual(await back.schedule.tick(), { changed: 1 });
-  assert.equal(back.state.reads, 2, "read before and after");
-  assert.deepEqual(back.state.writes, [null]);
-  assert.equal(back.steps().planSync.result, "verified");
-  // Still marked removed: nothing to do (no read).
-  const still = harness(row({ publishAt: null, stepsJson: missingSteps }), { kind: "vetoed" }, { privacyStatus: "private", publishAt: "2026-10-26T09:00:00.000Z" }, async () => new Set(["vid64"]));
+// BL-243 review rounds 6-7 (AC-WP-83): video_missing does not stick once the mark is cleared (the video reappeared). The row kept its
+// last known date, so the normal veto path unschedules it -- with the usual hourly retries when the first try is refused or
+// mismatched. While the video is still marked removed, nothing is read.
+test("BL-243 AC-WP-83: after video_missing and a cleared mark, the veto unschedules, retrying after a failed try", async () => {
+  const earlier = new Date(NOW.getTime() - 2 * 60 * 60_000).toISOString();
+  const missingSteps = JSON.stringify({ ...OK_STEPS, planSync: { at: earlier, action: "unscheduled", publishAt: null, result: "video_missing" } });
+  const still = harness(row({ stepsJson: missingSteps }), { kind: "vetoed" }, undefined, async () => new Set(["vid64"]));
   assert.deepEqual(await still.schedule.tick(), { changed: 0 });
-  assert.equal(still.state.reads, 0);
+  assert.equal(still.state.reads, 0, "still marked removed: no read");
+
+  const back = harness(row({ stepsJson: missingSteps }), { kind: "vetoed" }, undefined, async () => new Set());
+  back.state.readBackWrong = true; // the first unschedule is read back with another date
+  assert.deepEqual(await back.schedule.tick(), { changed: 1 });
+  assert.equal(back.steps().planSync.result, "mismatch");
+  assert.equal(back.state.row.publishAt, "2026-10-26T09:00:00.000Z", "the row keeps its date after a failed try");
+  await back.schedule.tick();
+  assert.equal(back.steps().planSync.result, "mismatch", "not again within the hour");
+  back.state.readBackWrong = false;
+  back.state.now = new Date(NOW.getTime() + RETRY_AFTER_MS + 1);
+  assert.deepEqual(await back.schedule.tick(), { changed: 1 });
+  assert.equal(back.steps().planSync.result, "verified");
+  assert.equal(back.state.row.publishAt, null);
 });
 
 // BL-243 review round 6 (AC-WP-79): only video-details' "no item for the id" is a not-found; an item without snippet/status is not.

@@ -153,12 +153,11 @@ export function createPlanSchedule(deps: PlanScheduleDeps) {
           decisions = await deps.slotDecisions(row.channelId);
           byChannel.set(row.channelId, decisions);
         }
-        const decision = decisionForRow(row, decisions);
-        // BL-243 review round 6: a `video_missing` row whose video is no longer marked removed (it reappeared) is not done -- its
-        // stored "no date" is not YouTube's word any more, so a veto asks YouTube again (the live read removes a date if there is
-        // one); an approval dates it as usual.
-        const reappeared = stepsOf(row).planSync?.result === "video_missing" && (await removedOf(row.channelId))?.has(row.videoId) === false;
-        const want = reappeared && decision?.kind === "vetoed" ? { publishAt: null } : desiredDate(row, decision, deps.clock.now().getTime());
+        // BL-243 review round 7: a confirmed `video_missing` row keeps its last known date; while the video stays marked removed
+        // there is nothing to do (no read). Once the mark is cleared (the video reappeared) the normal path below sees that date --
+        // a veto unschedules it, with the usual hourly retries.
+        if (stepsOf(row).planSync?.result === "video_missing" && (await removedOf(row.channelId))?.has(row.videoId)) continue;
+        const want = desiredDate(row, decisionForRow(row, decisions), deps.clock.now().getTime());
         if (!want) continue;
         // BL-243 (ADR 0063 §4): a video the sync found removed is never dated; an unreadable list dates nothing of the channel
         // (fail closed). Removing a date never waits on the list: YouTube's own answer decides (`missing`: nothing to do).
@@ -183,11 +182,11 @@ export function createPlanSchedule(deps: PlanScheduleDeps) {
         }
         // BL-243 review round 3: YouTube's "no such video" is final only when a completed owner removed-check also marked the video;
         // otherwise it is a refusal like any other (tried again after the hour), so a wrong answer never lets a vetoed video keep its
-        // date. A confirmed one: the video carries no date -- the row says so, and a veto has nothing left to remove.
+        // date. A confirmed one is recorded as `video_missing`; the row keeps its last known date (round 7).
         if (result.result === "video_missing" && !(await removedOf(row.channelId))?.has(row.videoId)) {
           result = { ...result, result: "refused", reason: "not_found without a removed mark from a completed sync" };
         }
-        const stored = result.result === "verified" || (result.result === "video_missing" && want.publishAt === null) ? want.publishAt : row.publishAt;
+        const stored = result.result === "verified" ? want.publishAt : row.publishAt;
         const nextSteps: UploadSteps = { ...steps, planSync: result, ...(result.result === "verified" && want.publishAt !== null ? { publishAt: "set" as const } : {}) };
         if (await deps.update(row, { publishAt: stored, stepsJson: JSON.stringify(nextSteps) })) {
           changed += 1;

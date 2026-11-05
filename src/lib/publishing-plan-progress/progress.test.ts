@@ -230,10 +230,13 @@ test("BL-243 AC-WP-75: no try of a deleted package ever counts again; a later tr
 test("BL-243 AC-WP-79: a row with planSync video_missing is failed video_deleted_on_youtube, never packaged", async () => {
   const { progressOfUploadRow } = await import("./progress");
   const steps = { localizations: "verified", thumbnail: "set", playlist: "added", verify: { result: "verified" }, publishAt: "set" };
-  // Round 6: deleted only while the video is still marked removed; the mark cleared -> a plain failed plan change.
-  const missingRow = uploadRow({ publishAt: null, stepsJson: JSON.stringify({ ...steps, planSync: { action: "unscheduled", result: "video_missing" } }) });
-  assert.deepEqual(progressOfUploadRow(missingRow, NOW_MS, new Set(["vid64"])), { status: "failed", code: "video_deleted_on_youtube", videoId: "vid64" });
-  assert.deepEqual(progressOfUploadRow(missingRow, NOW_MS, new Set()), { status: "failed", code: "plan_unscheduled_failed", videoId: "vid64" });
+  // Round 7: a counted row (its video not marked removed) with video_missing is a plain failed plan change; a removed video's row
+  // never reaches here (it is filtered out), so its kept date cannot make the slot look scheduled.
+  const missingRow = uploadRow({ stepsJson: JSON.stringify({ ...steps, planSync: { action: "unscheduled", result: "video_missing" } }) });
+  assert.deepEqual(progressOfUploadRow(missingRow, NOW_MS), { status: "failed", code: "plan_unscheduled_failed", videoId: "vid64" });
+  const { progressWithUploads } = await import("./progress");
+  const filtered = progressWithUploads(progressOfSlots([deleted73()], ["s1"], false), [{ ...missingRow, video: "V73", videoId: "vid73" }], ["s1"], NOW_MS, { removedVideoIds: new Set(["vid73"]) });
+  assert.equal(filtered.get("s1")?.code, "video_deleted_on_youtube", "the removed video's row with its kept date is ignored");
   assert.equal(progressOfUploadRow(uploadRow({ stepsJson: JSON.stringify({ ...steps, planSync: { action: "unscheduled", result: "refused" } }) }), NOW_MS)?.code, "plan_unscheduled_failed");
 });
 
