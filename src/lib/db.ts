@@ -9012,14 +9012,15 @@ export async function listRemovedVideosByChannel(channelId: string): Promise<Arr
 }
 
 /**
- * BL-243: the channel's stored videos as presence only -- id, YouTube's publishedAt and the removed mark -- never the full rows (the
- * video list's "is it on the channel").
+ * BL-243: the channel's stored videos among `videoIds` as presence only -- id, YouTube's publishedAt and the removed mark -- never
+ * the full rows (the video list's "is it on the channel").
  */
-export async function listVideoPresence(channelId: string): Promise<Array<{ videoId: string; publishedAt: string; removedAt: Date | null }>> {
+export async function listVideoPresence(channelId: string, videoIds: readonly string[]): Promise<Array<{ videoId: string; publishedAt: string; removedAt: Date | null }>> {
+  if (videoIds.length === 0) return [];
   const rows = await db
     .select({ id: videos.id, publishedAt: videos.publishedAt, removedAt: videos.removedOnYoutubeAt })
     .from(videos)
-    .where(eq(videos.channelId, channelId));
+    .where(and(eq(videos.channelId, channelId), inArray(videos.id, [...videoIds])));
   return rows.map((row) => ({ videoId: row.id, publishedAt: row.publishedAt, removedAt: row.removedAt ?? null }));
 }
 

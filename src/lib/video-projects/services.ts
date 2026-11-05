@@ -49,15 +49,21 @@ export function createVideoProjectsService(deps: VideoProjectsDeps) {
 
   /** Everything the list is built from. `folders`/`registry` are null when the workspace cannot be read. */
   async function gather(channelId: string): Promise<{ input: VideoListInput; workspace: VideoListResult["workspace"]; workspaceReason: string | null }> {
-    const [device, own, peers, uploads, workspace, channelCopy] = await Promise.all([
+    const [device, own, peers, uploads, workspace] = await Promise.all([
       deps.ownDevice(),
       deps.store.list(channelId),
       deps.peers(),
       deps.uploads(channelId),
       deps.workspace(channelId).catch((error: unknown) => ({ status: "unavailable" as const, reason: error instanceof Error ? error.message : String(error) })),
-      // BL-243: the synced copy's word on the videos (unreadable: none known).
-      deps.channelCopy ? deps.channelCopy(channelId).catch(() => null) : Promise.resolve(null),
     ]);
+    // BL-243: the synced copy's word on the YouTube videos the list names -- records, uploads, registry (unreadable: none known).
+    const named = [
+      ...(workspace.status === "ok" ? (workspace.uploadRecords ?? []).map((r) => r.videoId) : []),
+      ...uploads.flatMap((u) => (u.videoId ? [u.videoId] : [])),
+      ...(workspace.status === "ok" ? workspace.registry.flatMap((r) => (r.videoId ? [r.videoId] : [])) : []),
+    ];
+    const videoIds = [...new Set(named)];
+    const channelCopy = deps.channelCopy && videoIds.length > 0 ? await deps.channelCopy(channelId, videoIds).catch(() => null) : null;
     const input: VideoListInput = {
       channelId,
       own: { deviceId: device.deviceId, hostName: device.hostName, reservations: own },

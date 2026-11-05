@@ -99,11 +99,13 @@ test("BL-243 round 5: presence and by-id reads are the channel's own, narrow, an
   await upsertVideos([video("p1", "UC_p"), video("p2", "UC_p"), video("q1", "UC_q")], new Date("2026-10-01T00:00:00Z"));
   const at = new Date("2026-11-03T19:54:00.000Z");
   await markVideosRemovedOnYoutube("UC_p", ["p1"], at, LISTED);
-  const presence = (await listVideoPresence("UC_p")).sort((a, b) => a.videoId.localeCompare(b.videoId));
+  const presence = (await listVideoPresence("UC_p", ["p1", "p2"])).sort((a, b) => a.videoId.localeCompare(b.videoId));
   assert.deepEqual(presence, [
     { videoId: "p1", publishedAt: "2026-09-01T00:00:00Z", removedAt: null },
     { videoId: "p2", publishedAt: "2026-09-01T00:00:00Z", removedAt: at },
   ]);
   // (round 6: one select, removed rows included with their mark)
+  assert.deepEqual(await listVideoPresence("UC_p", ["p2", "q1", "nope"]), [{ videoId: "p2", publishedAt: "2026-09-01T00:00:00Z", removedAt: at }], "by id, this channel only");
+  assert.deepEqual(await listVideoPresence("UC_p", []), []);
   assert.deepEqual((await listStoredVideosByIds("UC_p", ["p1", "p2", "q1"])).map((v) => [v.videoId, v.removedAt]).sort(), [["p1", null], ["p2", at]], "this channel only, each with its mark");
 });

@@ -135,9 +135,10 @@ export type VideoProjectsDeps = {
   workspace(channelId: string): Promise<WorkspaceVideos>;
   /**
    * BL-243: the channel's synced copy as the removed check left it -- the listed videos with YouTube's publishedAt, the removed
-   * ones with when, and when a removed check last completed. Absent or failing: none known (every video unknown).
+   * ones with when, and when a removed check last completed -- for `videoIds` only (the YouTube videos the list names). Absent or
+   * failing: none known (every video unknown).
    */
-  channelCopy?(channelId: string): Promise<ChannelCopy>;
+  channelCopy?(channelId: string, videoIds: string[]): Promise<ChannelCopy>;
   /** This computer's upload queue for the channel (`publishing_uploads`). */
   uploads(channelId: string): Promise<Array<{ video: string; status: string; videoId?: string | null }>>;
   /** The video a storyboard of the channel is linked to (the storyboards document), null when none or no such storyboard. */

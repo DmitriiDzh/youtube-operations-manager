@@ -41,9 +41,9 @@ export function createVideoProjectsServiceForProduction(): VideoProjectsService 
       isChannelConnected: async (channelId) => (await createChannelConnectionsCore().listConnectedChannels()).some((c) => c.channelId === channelId),
       workspace: createVideoProjectsWorkspace((channelId) => createChannelWorkspacesCore().getWorkspace({ channelId })),
       // BL-243: the synced copy -- listed videos (YouTube's publishedAt), removed ones, the last completed removed check.
-      channelCopy: async (channelId) => {
-        // A narrow read: id, publishedAt and the mark only.
-        const [presence, channel] = await Promise.all([listVideoPresence(channelId), getStoredChannel(channelId)]);
+      channelCopy: async (channelId, videoIds) => {
+        // A narrow read: id, publishedAt and the mark only, of the named videos only.
+        const [presence, channel] = await Promise.all([listVideoPresence(channelId, videoIds), getStoredChannel(channelId)]);
         return {
           listed: new Map(presence.flatMap((v) => (v.removedAt ? [] : [[v.videoId, v.publishedAt] as const]))),
           removed: new Map(presence.flatMap((v) => (v.removedAt ? [[v.videoId, v.removedAt.toISOString()] as const] : []))),
