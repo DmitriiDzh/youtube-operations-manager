@@ -824,7 +824,9 @@ Key MCP tools:
     release packages with state and problems), `GET .../publishing/packages/thumbnail?path=`, `GET/POST .../publishing/uploads` (the
     uploads of this computer; approve a selection `{ items[{ manifestPath, manifestSha256, publishAt | null }], shownSettings,
     acknowledgeUnknownQuota? }`), `POST .../publishing/uploads/[uploadId]/cancel` (before YouTube only, else 409
-    `upload_not_cancellable`), `POST .../publishing/uploads/[uploadId]/release` (an `unknown_outcome` upload the owner found
+    `upload_not_cancellable`; since BL-244, ADR 0064, it also stops an upload being sent before its last chunk, as the session's
+    user, and answers `{ cancelled: true, uploadId, channelId, video, status, previousStatus, storedBytes, totalBytes }`; 404
+    `upload_not_found` for another channel's), `POST .../publishing/uploads/[uploadId]/release` (an `unknown_outcome` upload the owner found
     absent in Studio; else 409 `upload_not_releasable`). New refusals: `upload_package_not_ready`, `upload_package_changed`, `upload_already_queued`,
     `publishing_settings_changed`, `upload_daily_limit` (409); `publish_at_too_soon` (400); `quota_insufficient` / `quota_unknown`.
     `/api/settings` since BL-183: `analyticsSyncUtcTime`, `analyticsEveningUtcTime`, `userTimezone`.
@@ -1420,7 +1422,7 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
 
 - **Transport:** as the factory endpoint, with `Authorization: Bearer ytom_pr_...` (the same checks and codes; a channel or factory token is
   401 `AGENT_TOKEN_INVALID` here, and a producer token on `/api/mcp` and `/api/mcp/factory`). Re-verified on every tool call.
-- **Producer API version:** `1.17.0` (since BL-243, ADR 0063: the calendar read's `deleted_on_youtube`, `existsOnChannel` / `checkedAt` / `removedAt`, `missingOnChannel`; `channel_video_list` `videoIds` -- additive); `1.16.0` = BL-242 (ADR 0062: in the packaged approval stage `producer_upload_queue_add` dates only the manifest the owner approved -- same shape; before that `1.15.0`: 1.0.0, plus the three proposal tools in 1.1.0 (BL-163), plus `agent_get_video_milestones` and
+- **Producer API version:** `1.18.0` (since BL-244, ADR 0064: `producer_upload_queue_cancel` also stops an upload being sent, or paused, before its last chunk -- refused `upload_not_cancellable` with `details.reason` `final_chunk_sent` | `video_exists` | `status` | `changed` once it may be on YouTube; its result gains `previousStatus`, `storedBytes`, `totalBytes`; same tool); `1.17.0` = BL-243 (ADR 0063: the calendar read's `deleted_on_youtube`, `existsOnChannel` / `checkedAt` / `removedAt`, `missingOnChannel`; `channel_video_list` `videoIds` -- additive); `1.16.0` = BL-242 (ADR 0062: in the packaged approval stage `producer_upload_queue_add` dates only the manifest the owner approved -- same shape; before that `1.15.0`: 1.0.0, plus the three proposal tools in 1.1.0 (BL-163), plus `agent_get_video_milestones` and
   `producer_upload_milestones` in 1.2.0 (BL-166), plus `agent_get_stored_breakdowns` in 1.3.0 (BL-168), plus `agent_get_stored_search_terms`
   in 1.4.0 (BL-169), plus `agent_get_experiment_results` and the proposal kind `experiment.link_video` in 1.5.0 (BL-170), plus
   `agent_get_video_comments` in 1.6.0 (BL-171), plus `agent_get_publishing_calendar` in 1.7.0 and its packages and uploads in 1.8.0

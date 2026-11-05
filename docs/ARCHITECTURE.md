@@ -4396,6 +4396,13 @@ is already set everywhere), 2734 (one merge for the whole stage).
   core with `planSlotDecisions` passed by `src/app/api/mcp/producer/route.ts`). Owner: `POST /api/channels/[channelId]/publishing/
   uploads/[uploadId]/move { direction }`; the uploads list (`publishing-uploads.tsx`) shows queued rows first in queue order with
   «№ k из n в общей очереди» and ↑↓. `no-agent-upload-tool.test.ts` pins the exception to these four tools and the core's callers.
+- **Stop a running upload (BL-244, ADR 0064).** `cancel` is the one cancel for the Producer and the owner (`cancelUpload(input,
+  userId)` → the core as the owner): `isCancellable` (no video id, no `finalChunkSentAt`, bytes left once sending; queued,
+  uploading or paused), then `stopPublishingUploadBeforeYoutube` -- one `UPDATE` with the same conditions and the status read,
+  `RETURNING` the bytes. The runner's last-chunk mark is a compare-and-set on `uploading`, so one of the two wins; after a stop
+  the runner's next write fails, `claimPublishingUpload` gives no lease to an inactive row (no further chunk) and `fail()` writes
+  and audits nothing over a row it no longer holds. Audit `publishing.upload_stopped` (sending) / `publishing.upload_cancelled`
+  with `by`, status and bytes. No YouTube call: the resumable session expires. Owner UI: «Остановить загрузку» + `ConfirmDialog`.
 
 ### 47.4 Not built yet
 

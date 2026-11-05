@@ -26,6 +26,8 @@ the owner's approval of a weekly-plan slot be the approval of that slot's date.
    and the factory endpoint get none of them, and no MCP or agent endpoint code reaches the approval, the runner, the automatic
    queue or the owner's cancel; the queue control is wired only from the Producer session and the owner's move route.
 3. **Cancel** only a `queued` row (compare-and-set from `queued`). A row that started sending is never cancelled by the Producer.
+   *Amended by ADR 0064 (BL-244, owner msgs 4046/4050):* the same cancel also stops a row being sent, or paused, before its last
+   chunk, for the Producer and the owner alike.
 4. **Add** is the automatic upload under the owner's switch, triggered by the Producer:
    - only on the computer whose automatic-upload switch is on; elsewhere it is refused (`upload_auto_switch_off`). The switch is
      the standing approval of private uploads from that computer, and it marks the one computer that uploads and schedules
