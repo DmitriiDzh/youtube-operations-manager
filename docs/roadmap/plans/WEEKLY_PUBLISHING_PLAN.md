@@ -386,21 +386,25 @@ Fixed values: channel `UC1`, last video sync `2026-11-04T08:00:00.000Z`; V73 rec
   = [{ video: "V73", videoId: "vid73", removedAt: "2026-11-03T19:54:00.000Z" }]`; packages not readable -> `missingOnChannel` [].
 - **AC-WP-73** `channel_video_list` with `videoIds: ["vid74", "vid73", "nope"]` -> `videos` [vid74], `removed [{ videoId: "vid73",
   removedAt: "2026-11-03T19:54:00.000Z" }]`, `notFound ["nope"]`, `total` 1; another channel's id is `notFound`; 51 ids or an empty
-  list -> validation error; without `videoIds` the answer has exactly the previous keys.
-- **AC-WP-75** (review rounds 2-3) Deleted V73 (manifest `m`) alone on `s1`, an older failed row of V73 (no video id) and the
-  removed row of `vid73` -> the slot stays `failed`/`video_deleted_on_youtube`/`vid73` (also with the older row alone). A fresh V73
-  with manifest `fresh` -> the deleted one's rows never count (also with no removed row here), its own uploading row does. A
-  byte-identical fresh manifest `m` -> only rows after the deleted upload (the removed row, or the record's `uploadedAt`); no time
-  known -> none.
+  list -> validation error; without `videoIds` the answer has exactly the previous keys. (Round 5) With `videoIds` the answer also
+  has `checkedAt` (the channel's last completed removed check) -- `removed` is as of then; only the asked ids are read.
+- **AC-WP-75** (one rule, review round 5) An upload row counts for slot S only when created after the newest deleted upload of S
+  and its video number: the removed video's own row here (its upload time, else its creation), else the deleted package record's
+  `uploadedAt`; a deleted upload with no known time blocks every row of that number; the removed video's own row never counts; no
+  deleted upload of S and that number -> the row counts. The manifest is not part of the rule. Deleted V73 alone, an older failed
+  row and the removed row (10-24) -> `failed`/`video_deleted_on_youtube`/`vid73` (also with the older row alone, no time known). A
+  fresh V73 (any manifest), the record uploaded 10-22: a row of 10-20 -> not counted, a try of 10-25 -> `uploading`; with the
+  removed row (10-24) a try of 10-23 -> not counted; no time known -> even a later row is not counted.
 - **AC-WP-76** (review round 2) Two deleted packages on `s1`: V72 uploaded 2026-11-01T10:00Z, V73 2026-11-02T10:00Z -> V73 speaks in
   either order; without `uploadedAt` in the records, the `uploadedAt` their upload rows recorded decides (never a row's creation
   time). `parseUploadRecord` returns the record's `uploadedAt`.
 - **AC-WP-77** (review round 2) Packaged stage, s1 approved with V73/`vid73`, then deleted: retiming s1 unlocks nothing and removing
-  s1 succeeds; with the live package the retime lists s1 in `unlocked` and the removal is refused `slot_approved`. (Round 3) The
-  rule's progress read happens only with removals or a standing packaged approval: a save otherwise reads progress once (the
-  returned view), the slot stage reads the removed slots only. (Round 4) The package scan unavailable (`packagesUnavailable`) -> the
-  older rule: the approved slot is refused `slot_approved` and a retime lists it in `unlocked`.
-- **AC-WP-78** (review round 2) `channels.removed_check_at` (schema v118) moves only on a sync with `removedCheck: "done"`; a
+  s1 succeeds; with the live package the retime lists s1 in `unlocked` and the removal is refused `slot_approved`. (Round 5) Every
+  save reads the progress once -- the read the returned view needs, which also serves the approval rule and the removals. (Round 4)
+  The package scan unavailable (`packagesUnavailable` in the port's `{ progress, packagesUnavailable }`) -> the older rule: the
+  approved slot is refused `slot_approved` and a retime lists it in `unlocked`.
+- **AC-WP-78** (review round 2) `channels.removed_check_at` (schema v118; round 5: set to `listedAt`, when the uploads list was
+  read, not the sync's end) moves only on a sync with `removedCheck: "done"`; a
   package's `checkedAt` is that time; with none, a visible video is `existsOnChannel` null (never true), a removed one still false.
 - **AC-WP-79** (review round 3) YouTube's `not_found` without the removed mark (or with the list unreadable) -> `refused`, the row
   keeps its date, tried again after the hour -- for a veto and for dating; a row whose planSync is `video_missing` shows `failed`
@@ -408,10 +412,11 @@ Fixed values: channel `UC1`, last video sync `2026-11-04T08:00:00.000Z`; V73 rec
 - **AC-WP-80** (review round 3) Checked at 2026-11-04T08:00Z: vid74 published 2026-11-04T09:00Z -> `existsOnChannel` null; published
   exactly at the check -> true. The calendar's top-level `checkedAt` is the channel's removed-check time (older than
   `lastSyncedAt` after a skipped check; null when none).
-- **AC-WP-81** (review round 4) The owner moved V73's record away (the package is `ready`, no deleted package names `s1`); an old
-  failed try of V73 (manifest `m`, 10-20) and the removed row of `vid73` (manifest `m`, uploaded 10-24T02:00Z) -> `s1` is
-  `packaged`, approvable (not the old failure); a try created 10-24T01:00Z is still that try; a new one (11-05) counts; another
-  manifest's row is not that try.
+- **AC-WP-81** (review round 4, by the AC-WP-75 rule) The owner moved V73's record away (the package is `ready`, no deleted package
+  names `s1`); an old failed try of V73 (10-20) and the removed row of `vid73` (uploaded 10-24T02:00Z) -> `s1` is `packaged`,
+  approvable (not the old failure); a row created 10-24T01:00Z -> not counted; a new one (11-05) counts; an older row with another
+  manifest -> not counted either (round 5: the manifest is not part of the rule). When the scan or its removed-list read failed,
+  the plan progress reads the removed list on its own, so a removed video's rows still say nothing.
 - **AC-WP-82** (review round 4) `agent_video_list` / `factory_video_list`: check 2026-11-04T08:00Z; V73 (`vid73` removed 11-03T19:54Z)
   -> `existsOnChannel` false, `removedAt` set, state still `published`; V74 (published 11-01) -> true; V75 (published after the
   check) -> null; no video id -> null; the copy unreadable -> null / null.

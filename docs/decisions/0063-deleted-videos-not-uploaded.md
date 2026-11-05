@@ -19,7 +19,8 @@ weekly-plan slot offered deleted V73 for approval, and the deleted upload kept i
    `video_deleted_on_youtube`, `youtube.removedAt`); `uploaded_unknown` stays for a video the copy does not have. Every package
    says `existsOnChannel` (true / false / null) and `checkedAt`, so an agent can tell a confirmation from an unknown.
    `checkedAt` is when a sync last COMPLETED the removed check (`channels.removed_check_at`, schema v118, additive, set only on
-   `removedCheck: "done"`) -- `lastSyncedAt` also moves on syncs that skip the check. `true` needs that check AND the video's
+   `removedCheck: "done"`, to `listedAt` -- when the uploads list was read) -- `lastSyncedAt` also moves on syncs that skip the
+   check. `channel_video_list` with `videoIds` also returns it as `checkedAt` (narrow reads of the asked ids only). `true` needs that check AND the video's
    YouTube `publishedAt` not later than it; a removed mark is proof on its own (`false`). Trade-off (review round 4, kept small):
    the `videos` table keeps no "first seen" or created-at time, and `snippet.publishedAt` becomes the publish time when a private
    video goes public -- so a video checked while private and published after the check reads `null` (unknown) until the next
@@ -29,24 +30,23 @@ weekly-plan slot offered deleted V73 for approval, and the deleted upload kept i
    scan, so the top and the items agree.
 2. **A deleted video holds and dates nothing.** It holds no slot (scan marks, the approval's `heldSlots`), it is the slot's
    progress only when no other package names the slot (`failed` + `video_deleted_on_youtube`; of two deleted packages the one
-   uploaded last -- the record's `uploadedAt`, else the `uploadedAt` its upload row recorded, never a row's creation time), and no
-   upload row of a deleted package (its number on that slot, an older failed try included) overrides that progress. A fresh
-   package with the same number counts only its own tries: rows naming its manifest, and when that manifest is byte-identical to
-   the deleted one's, only rows newer than the deleted upload (the record's `uploadedAt`, or the removed video's row); with neither
-   time known, none -- so no try of the deleted video ever counts. Whatever the package's state (also after the owner moved its
-   record away for a re-upload), a row of a removed video blocks every row of the same number and manifest on that slot created up
-   to its upload time; only later rows -- a new try -- count. One time rule everywhere: `uploadTimeOf` (the record's
-   `uploadedAt`, else the row's recorded `uploadedAt`). It has no fingerprint: nothing to approve, no approval covers it -- in the view, in
+   uploaded last -- `uploadTimeOf`: the record's `uploadedAt`, else the `uploadedAt` its upload row recorded, never a row's
+   creation time). One rule for upload rows (review round 5): a row counts for slot S only when created after the newest deleted
+   upload of S and its video number -- the removed video's own row (its upload time, else its creation), else the deleted
+   package record's `uploadedAt`; a deleted upload with no known time blocks every row of the number; the removed video's own row
+   never counts; no deleted upload of S and the number -> the row counts. The manifest is not part of it. This holds whatever the
+   package's state, also after the owner moved its record away for a re-upload. It has no fingerprint: nothing to approve, no approval covers it -- in the view, in
    `slotDecisions` and in `save()` (removing or retiming the slot is not blocked by that approval; `save()` reads the progress for
-   this only when slots are removed or, in the packaged stage, an approval stands; when the progress says the package scan was
-   unavailable -- `packagesUnavailable` -- it keeps the older, stricter rule). The plan schedule never DATES
+   this once per save -- the read its returned view needs; when the port's `{ progress, packagesUnavailable }` says the package scan
+   was unavailable it keeps the older, stricter rule). The plan schedule never DATES
    it. Its video NUMBER stays held for uploads, so a wrong mark can never cause a second upload of the same video.
 3. **Agents see it** in the calendar (`missingOnChannel`, per-item fields) and in `channel_video_list` (`videoIds` with
    `removed` / `notFound`). Additive: Agent API 4.17.0, Producer API 1.17.0, Factory API 1.43.0.
 
 4. **One rule for an unreadable removed list.** For display and holds it means "none known": the scan goes on (such packages read
    as `uploaded_unknown`, `checkedAt` null when the check time cannot be read either), the approval's slot holds stay as before,
-   and the plan progress uses the removed ids of the very scan it shows (never a second, fresher read). Only DATING fails closed:
+   and the plan progress uses the removed ids of the very scan it shows; only when that scan or its removed-list read failed does it
+   read the list on its own (`removedVideoIdsOf`), so removed videos' rows still say nothing. Only DATING fails closed:
    the plan schedule gives no date to a removed video, nor to any video of the channel while the list cannot be read. Removing a
    date (a veto) never waits on the local mark or the list -- it goes through its own live read. YouTube's "no such video"
    (`not_found` naming the id) is not proof on its own (another account, a partial answer): it ends the change only when the

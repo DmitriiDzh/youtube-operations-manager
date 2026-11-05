@@ -4939,13 +4939,12 @@ FO-REQ-0040; owner msgs 3511/3534; plan `docs/roadmap/plans/WEEKLY_PUBLISHING_PL
   else the row's own slot, whose fingerprint must name the row (video id, else manifest). Mixed builds: RISK-150.
 - **BL-243 (ADR 0063) -- a video deleted on YouTube.** `markSharedSlots` leaves `deleted_on_youtube` packages out of every slot
   group (they hold nothing, are never marked). `progressOfSlots` uses a deleted package only when no other package names its slot:
-  `failed` with `VIDEO_DELETED_ON_YOUTUBE_CODE`, the video id, no date; `progressWithUploads` drops rows whose video id the shown scan read
-  as removed (`removedVideoIds` on its result) and every row of a deleted package's number on its slot (`deletedVideosBySlot`; a
-  fresh same-number package counts only rows naming its own manifest, and for a byte-identical manifest only rows after the deleted
-  upload); of two deleted packages the newest upload speaks (record `uploadedAt`, else the row's recorded `uploadedAt`). A row with
-  planSync `video_missing` is `failed` `video_deleted_on_youtube`. Round 4: a removed video's row blocks every older row of its try
-  (number and manifest) on the slot whatever the package's state; one time rule `uploadTimeOf`; the progress port flags
-  `packagesUnavailable` (save() then keeps the older rule); `existsOnChannelOf` (shared) also feeds the video list's
+  `failed` with `VIDEO_DELETED_ON_YOUTUBE` (`src/lib/shared-video-presence/`), the video id, no date; of two deleted packages the
+  newest upload speaks. A row with planSync `video_missing` is `failed` `video_deleted_on_youtube`. `progressWithUploads` (one rule,
+  review round 5): a row counts for its slot only when
+  created after the newest deleted upload of that slot and number (removed row's time, else the deleted record's `uploadedAt`;
+  unknown time blocks; manifest not part of it); one time rule `uploadTimeOf`; the progress port returns `{ progress,
+  packagesUnavailable }` (save() then keeps the older rule, and reads the progress once per save); `existsOnChannelOf` (shared) also feeds the video list's
   `existsOnChannel` / `removedAt`. The code is `src/lib/shared-video-presence/`. `save()` counts approvals as the view does in
   the packaged stage (a deleted package's slot can be removed or retimed freely). A deleted-only slot reports no `changedAfterApproval` (nothing to
   approve; its release is not held to an old approval's time). `fingerprintOf` is null for that progress, so `packageReady` is false

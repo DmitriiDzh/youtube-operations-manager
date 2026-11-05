@@ -804,7 +804,8 @@ Key MCP tools:
     `agent_video_list` / `factory_video_list` (Factory 1.43.0) videos gain `existsOnChannel` and `removedAt` by the same rule (a
     `published` number whose video was deleted says `existsOnChannel: false`); the read gains
     `missingOnChannel: [{ video, videoId, removedAt }]` (`[]` when packages are not ok). `channel_video_list` takes `videoIds` (1-50):
-    `{ channelId, videos, total, offset, nextOffset, removed: [{ videoId, removedAt }], notFound: [videoId] }`, only the asked videos
+    `{ channelId, videos, total, offset, nextOffset, removed: [{ videoId, removedAt }], notFound: [videoId], checkedAt }` (`removed`
+    as of `checkedAt`, the channel's last completed removed check, or null), only the asked videos
     of the channel in the order asked; without `videoIds` the answers are unchanged.
   - **`yt-release-package/2`** (BL-225 stage 2, ADR 0051; additive to `/1`, which still parses as before; a `/1` manifest's v2 fields
     are ignored): `slotId?` (1-40 of letters, digits, `_`, `-`: the weekly-plan slot), `localizations?` (`{ <YouTube language>: {
