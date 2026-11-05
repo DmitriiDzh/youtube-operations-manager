@@ -95,7 +95,7 @@ function pkg(video: string, over: Partial<ScannedPackage> = {}, pkgOver: Record<
 
 const ACTIVE = new Set(["queued", "uploading", "processing", "finishing", "paused"]);
 
-function harness(rows: StoredPublishingUpload[], options: { packages?: ScannedPackage[]; switchOn?: boolean | (() => boolean); slots?: Map<string, SlotDecision>; fileBytes?: number; fileHash?: string; peers?: string[]; connected?: boolean; race?: boolean } = {}) {
+function harness(rows: StoredPublishingUpload[], options: { packages?: ScannedPackage[]; switchOn?: boolean | (() => boolean); slots?: Map<string, SlotDecision>; fileBytes?: number; fileHash?: string; peers?: string[]; connected?: boolean; race?: boolean; markBeforeStop?: boolean } = {}) {
   const store = new Map(rows.map((r) => [r.id, { ...r }]));
   const audits: Array<Record<string, unknown>> = [];
   const hashed: string[] = [];
@@ -127,12 +127,20 @@ function harness(rows: StoredPublishingUpload[], options: { packages?: ScannedPa
       ids.forEach((i, index) => store.set(i, { ...store.get(i)!, queueRank: index + 1 }));
       return true;
     },
-    cancelQueued: async (uploadId, set) => {
-      if (options.race) return false; // the runner took the row between the read and the compare-and-set
+    // BL-244 (ADR 0064): the store's one conditional update, as the plan states it -- from the status read, no video id, the last
+    // chunk never marked, and (once sending) bytes still to send; null when it writes nothing.
+    stop: async (uploadId, fromStatus, set) => {
+      if (options.race) return null; // the runner took the row between the read and the compare-and-set
+      const before = store.get(uploadId);
+      // The runner marks the last chunk one instant before the stop's statement runs.
+      if (before && options.markBeforeStop) store.set(uploadId, { ...before, stepsJson: JSON.stringify({ finalChunkSentAt: NOW.toISOString() }) });
       const r = store.get(uploadId);
-      if (!r || r.status !== "queued") return false;
+      if (!r || r.status !== fromStatus || r.videoId !== null || "finalChunkSentAt" in JSON.parse(r.stepsJson)) return null;
+      const bytesLeft = r.storedBytes < r.totalBytes;
+      const ok = r.status === "queued" || (bytesLeft && (r.status === "uploading" || (r.status === "paused" && (r.resumeStatus === "queued" || r.resumeStatus === "uploading"))));
+      if (!ok) return null;
       store.set(uploadId, { ...r, ...set });
-      return true;
+      return { storedBytes: r.storedBytes, totalBytes: r.totalBytes };
     },
     assertMutationAllowed: async () => undefined,
     autoSwitchOn: async () => switchOn(),
@@ -214,16 +222,19 @@ test("AC-UQ-04: a move refuses an unknown id, another channel's row, a row that 
   assert.equal(h.audits.length + raced.audits.length, 0);
 });
 
-test("AC-UQ-05: the Producer cancels a queued row of any channel; never one that started; unknown or another channel's is not found", async () => {
-  const h = harness([row("a"), row("y", { channelId: "UC_y" }), row("s", { status: "uploading" }), row("p", { status: "paused", resumeStatus: "queued" }), row("d", { status: "done" })]);
+// BL-244 (owner msgs 4046/4050, ADR 0064) changed AC-UQ-05's requirement: a row being sent, or paused while sending, before its last
+// chunk is now stopped too (it was refused under ADR 0059 §3). What stays refused is a row that may have a video (see AC-STOP-04).
+// The audit gained who / the status it had / the bytes at the stop (AC-STOP-01); the result gained the same.
+test("AC-UQ-05: the Producer cancels a queued row of any channel; never one that may be on YouTube; unknown or another channel's is not found", async () => {
+  const h = harness([row("a"), row("y", { channelId: "UC_y" }), row("s", { status: "processing", storedBytes: 100, videoId: "v-s" }), row("p", { status: "paused", resumeStatus: "uploading", storedBytes: 100 }), row("d", { status: "done", storedBytes: 100, videoId: "v-d" })]);
   const result = await h.control.cancel({ channelId: "UC_y", uploadId: "y" }, PRODUCER);
-  assert.deepEqual(result, { uploadId: "y", channelId: "UC_y", video: "Y", status: "cancelled" });
+  assert.deepEqual(result, { uploadId: "y", channelId: "UC_y", video: "Y", status: "cancelled", previousStatus: "queued", storedBytes: 0, totalBytes: 100 });
   assert.deepEqual([h.store.get("y")!.status, h.store.get("y")!.errorCode, h.store.get("y")!.finishedAt?.toISOString()], ["cancelled", CANCELLED_BY_PRODUCER, NOW.toISOString()]);
   for (const id of ["s", "p", "d"]) await refused(h.control.cancel({ channelId: "UC_x", uploadId: id }, PRODUCER), "upload_not_cancellable");
   await refused(h.control.cancel({ channelId: "UC_x", uploadId: "y" }, PRODUCER), "upload_not_found");
   await refused(h.control.cancel({ channelId: "UC_x", uploadId: "zzz" }, PRODUCER), "upload_not_found");
-  assert.deepEqual([h.store.get("s")!.status, h.store.get("p")!.status, h.store.get("d")!.status], ["uploading", "paused", "done"]);
-  assert.deepEqual(h.audits, [{ event: "publishing.upload_cancelled", by: "producer", tokenId: "tok-1", at: NOW.toISOString(), uploadId: "y", video: "Y" }]);
+  assert.deepEqual([h.store.get("s")!.status, h.store.get("p")!.status, h.store.get("d")!.status], ["processing", "paused", "done"]);
+  assert.deepEqual(h.audits, [{ event: "publishing.upload_cancelled", by: "producer", tokenId: "tok-1", at: NOW.toISOString(), uploadId: "y", video: "Y", status: "queued", storedBytes: 0, totalBytes: 100 }]);
 });
 
 test("AC-UQ-05: a row the runner took between the read and the cancel is not cancelled", async () => {
@@ -326,4 +337,84 @@ test("AC-WP-56: the Producer's add gets the slot's date only for the approved ma
   assert.equal((await named.control.add({ channelId: "UC_x", video: "V61" }, PRODUCER)).upload.publishAt, "2026-11-03T15:00:00.000Z");
   const other = harness([], { packages: [pkg("V61", {}, { slotId: "w45-mon" })], slots: fingerprint("mf-other") });
   assert.equal((await other.control.add({ channelId: "UC_x", video: "V61" }, PRODUCER)).upload.publishAt, null);
+});
+
+// BL-244 -- stop an upload that is being sent (UPLOAD_QUEUE_CONTROL_PLAN.md BL-244, AC-STOP-01..07; ADR 0064; owner msgs 4046/4050:
+// the Producer and the owner stop a started upload through one function). Expected values by hand from the plan.
+const SENDING = { status: "uploading" as const, storedBytes: 40, totalBytes: 100, sessionUri: "https://www.googleapis.com/upload/s" };
+const MARKED = JSON.stringify({ finalChunkSentAt: "2026-11-01T11:59:00.000Z" });
+
+test("AC-STOP-01: the Producer stops a row being sent before its last chunk -- cancelled_by_producer, finished now, audited with the bytes", async () => {
+  const h = harness([row("u", { ...SENDING, queuedBy: "owner" })]);
+  const result = await h.control.cancel({ channelId: "UC_x", uploadId: "u" }, PRODUCER);
+  assert.deepEqual(result, { uploadId: "u", channelId: "UC_x", video: "U", status: "cancelled", previousStatus: "uploading", storedBytes: 40, totalBytes: 100 });
+  const r = h.store.get("u")!;
+  assert.deepEqual([r.status, r.errorCode, r.finishedAt?.toISOString(), r.updatedAt.toISOString(), r.queuedBy, r.videoId], ["cancelled", CANCELLED_BY_PRODUCER, NOW.toISOString(), NOW.toISOString(), "owner", null]);
+  assert.deepEqual(h.audits, [{ event: "publishing.upload_stopped", by: "producer", tokenId: "tok-1", at: NOW.toISOString(), uploadId: "u", video: "U", status: "uploading", storedBytes: 40, totalBytes: 100 }]);
+});
+
+test("AC-STOP-02: the owner's stop leaves the row his -- no Producer error code, who queued it unchanged; audited by the owner", async () => {
+  const h = harness([row("u", { ...SENDING, queuedBy: "automatic", automatic: true })]);
+  await h.control.cancel({ channelId: "UC_x", uploadId: "u" }, OWNER);
+  const r = h.store.get("u")!;
+  assert.deepEqual([r.status, r.errorCode, r.queuedBy], ["cancelled", null, "automatic"]);
+  assert.deepEqual(h.audits, [{ event: "publishing.upload_stopped", by: "owner", userId: "u-owner", at: NOW.toISOString(), uploadId: "u", video: "U", status: "uploading", storedBytes: 40, totalBytes: 100 }]);
+});
+
+test("AC-STOP-03: the runner marks the last chunk one instant before the stop -- refused (final_chunk_sent), the row keeps uploading", async () => {
+  const h = harness([row("u", SENDING)], { markBeforeStop: true });
+  await assert.rejects(h.control.cancel({ channelId: "UC_x", uploadId: "u" }, PRODUCER), (error: unknown) => isDomainError(error) && error.code === "upload_not_cancellable" && (error.details as { reason?: string } | undefined)?.reason === "final_chunk_sent");
+  assert.deepEqual([h.store.get("u")!.status, h.store.get("u")!.errorCode, h.audits.length], ["uploading", null, 0]);
+});
+
+test("AC-STOP-04: a row that has or may have a video is refused and unchanged -- by the Producer and by the owner", async () => {
+  const rows = [
+    row("pr", { status: "processing", storedBytes: 100, videoId: "v1" }),
+    row("fi", { status: "finishing", storedBytes: 100, videoId: "v2" }),
+    row("do", { status: "done", storedBytes: 100, videoId: "v3" }),
+    row("fa", { status: "failed", storedBytes: 30 }),
+    row("ca", { status: "cancelled", storedBytes: 30 }),
+    row("uv", { status: "uploading", storedBytes: 100, videoId: "v4" }),
+    row("um", { status: "uploading", storedBytes: 96, stepsJson: MARKED }),
+    row("pm", { status: "paused", resumeStatus: "uploading", storedBytes: 96, stepsJson: MARKED }),
+    row("pa", { status: "paused", resumeStatus: "uploading", storedBytes: 100 }),
+  ];
+  for (const actor of [PRODUCER, OWNER]) {
+    const h = harness(rows);
+    for (const r of rows) {
+      await refused(h.control.cancel({ channelId: "UC_x", uploadId: r.id }, actor), "upload_not_cancellable");
+      assert.deepEqual(h.store.get(r.id), r, `${r.id} is unchanged`);
+    }
+    assert.equal(h.audits.length, 0);
+  }
+});
+
+test("AC-STOP-05: a queued row is cancelled as before; a row paused before its last chunk is cancelled by the owner and the Producer", async () => {
+  const h = harness([row("q"), row("p1", { status: "paused", resumeStatus: "uploading", storedBytes: 60 }), row("p2", { status: "paused", resumeStatus: "queued" })]);
+  await h.control.cancel({ channelId: "UC_x", uploadId: "q" }, OWNER);
+  await h.control.cancel({ channelId: "UC_x", uploadId: "p1" }, PRODUCER);
+  await h.control.cancel({ channelId: "UC_x", uploadId: "p2" }, OWNER);
+  assert.deepEqual(["q", "p1", "p2"].map((id) => [h.store.get(id)!.status, h.store.get(id)!.errorCode]), [["cancelled", null], ["cancelled", CANCELLED_BY_PRODUCER], ["cancelled", null]]);
+  // Paused while sending is a started upload (a stop); paused before it started is still a cancel.
+  assert.deepEqual(h.audits.map((a) => [a.event, a.by, a.status, a.storedBytes]), [
+    ["publishing.upload_cancelled", "owner", "queued", 0],
+    ["publishing.upload_stopped", "producer", "paused", 60],
+    ["publishing.upload_cancelled", "owner", "paused", 0],
+  ]);
+});
+
+test("AC-STOP-06: another channel's row being sent, or an unknown id, is not found and not stopped", async () => {
+  const h = harness([row("u", { ...SENDING, channelId: "UC_y" })]);
+  await refused(h.control.cancel({ channelId: "UC_x", uploadId: "u" }, PRODUCER), "upload_not_found");
+  await refused(h.control.cancel({ channelId: "UC_x", uploadId: "nope" }, OWNER), "upload_not_found");
+  assert.deepEqual([h.store.get("u")!.status, h.audits.length], ["uploading", 0]);
+});
+
+test("AC-STOP-07: after its own stop the Producer may add the same manifest version again; after the owner's stop it may not", async () => {
+  const mine = harness([row("u", { ...SENDING, video: "V61", manifestSha256: "mf-V61", queuedBy: "producer" })], { packages: [pkg("V61")] });
+  await mine.control.cancel({ channelId: "UC_x", uploadId: "u" }, PRODUCER);
+  assert.equal((await mine.control.add({ channelId: "UC_x", video: "V61" }, PRODUCER)).upload.status, "queued");
+  const owners = harness([row("u", { ...SENDING, video: "V61", manifestSha256: "mf-V61", queuedBy: "producer" })], { packages: [pkg("V61")] });
+  await owners.control.cancel({ channelId: "UC_x", uploadId: "u" }, OWNER);
+  await refused(owners.control.add({ channelId: "UC_x", video: "V61" }, PRODUCER), "upload_already_tried");
 });

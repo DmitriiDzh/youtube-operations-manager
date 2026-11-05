@@ -1,6 +1,7 @@
 // BL-239 (docs/roadmap/plans/UPLOAD_QUEUE_CONTROL_PLAN.md; ADR 0059; owner msgs 3928/3930): control of this computer's upload
 // queue -- one queue for every channel. The Producer lists it, moves a queued row to another place, cancels a queued row and adds a
-// ready release package under the owner's automatic-upload switch; the owner moves a queued row one place up or down. A move only
+// ready release package under the owner's automatic-upload switch; the owner moves a queued row one place up or down. BL-244
+// (ADR 0064): the cancel also stops a row being sent before its last chunk, for the Producer and the owner alike. A move only
 // changes which queued row starts next: a row being sent or finished is never interrupted (the runner's `sending ??` rule). An add
 // passes the automatic upload's own per-package check and the approval's own queue: private, a date only from an approved plan slot.
 // Every move, add and cancel is audited with who did it.
@@ -9,7 +10,7 @@ import type { StoredPublishingUpload } from "@/lib/db";
 import { DomainError, type DomainErrorCode } from "@/lib/shared-domain";
 import { checkPackageForQueue, type SlotDecision } from "./auto-upload";
 import type { PackageScanResult } from "./package-scan";
-import { compareQueueOrder, isPublishAtSet, type ApprovedPackage } from "./upload-runner";
+import { compareQueueOrder, isCancellable, isPublishAtSet, isSending, type ApprovedPackage } from "./upload-runner";
 
 /** Who acts on the queue: the owner in the Web UI (his Google user), or the Producer (its token). */
 export type QueueActor = { kind: "owner"; userId: string } | { kind: "producer"; tokenId: string };
@@ -23,8 +24,11 @@ export type UploadQueueControlDeps = {
   get(uploadId: string): Promise<StoredPublishingUpload | null>;
   /** Gives the queued rows the places 1..N in this order, all or none; false when one of them is no longer queued. */
   reorder(orderedIds: string[]): Promise<boolean>;
-  /** Compare-and-set from `queued` only. */
-  cancelQueued(uploadId: string, set: Partial<StoredPublishingUpload>): Promise<boolean>;
+  /**
+   * BL-244 (ADR 0064): the store's one conditional update (`stopPublishingUploadBeforeYoutube`) -- from `fromStatus`, no video id,
+   * the last chunk never marked, bytes still to send once sending; the bytes stored at the stop, or null when nothing was written.
+   */
+  stop(uploadId: string, fromStatus: StoredPublishingUpload["status"], set: Partial<StoredPublishingUpload>): Promise<{ storedBytes: number; totalBytes: number } | null>;
   /** Refuses while the app is paused for a device handoff or recovery (the device mutation gate). */
   assertMutationAllowed(): Promise<void>;
   /** The automatic-upload switch of THIS computer (ADR 0046): the Producer adds only where it is on. */
@@ -82,6 +86,18 @@ export function queuedInOrder(rows: StoredPublishingUpload[]): StoredPublishingU
 export function queuePositions(rows: StoredPublishingUpload[]): { positions: Map<string, number>; length: number } {
   const queued = queuedInOrder(rows);
   return { positions: new Map(queued.map((row, index) => [row.id, index + 1])), length: queued.length };
+}
+
+/** Why a row cannot be cancelled: it may be on YouTube already (its last chunk went, or a video exists) or it is not active. */
+function notCancellable(input: { channelId: string; uploadId: string }, row: StoredPublishingUpload) {
+  const details = { channelId: input.channelId, uploadId: input.uploadId, status: row.status };
+  if (row.videoId !== null) {
+    return refuse("upload_not_cancellable", "This upload already made its video on YouTube; it is finished, not stopped. Delete the video in YouTube Studio if it is not wanted.", { ...details, reason: "video_exists" });
+  }
+  if (row.status === "uploading" || row.status === "paused") {
+    return refuse("upload_not_cancellable", "The last chunk of this upload was already sent, so the video may exist on YouTube; it is finished, not stopped. Delete the video in YouTube Studio if it is not wanted.", { ...details, reason: "final_chunk_sent" });
+  }
+  return refuse("upload_not_cancellable", `Only an upload that has not reached YouTube can be cancelled or stopped; this one is ${row.status}.`, { ...details, reason: "status" });
 }
 
 export function createUploadQueueControl(deps: UploadQueueControlDeps) {
@@ -180,16 +196,33 @@ export function createUploadQueueControl(deps: UploadQueueControlDeps) {
       return move({ channelId: input.channelId, uploadId: input.uploadId, position: Math.max(1, current + (input.direction === "up" ? -1 : 1)) }, actor);
     },
 
-    /** Cancels a row that is still `queued` (nothing of it reached YouTube); any other status is refused. */
+    /**
+     * Cancels a row that has not reached YouTube, or stops one being sent (BL-244, ADR 0064; owner msgs 4046/4050) -- the one function
+     * behind the Producer's `producer_upload_queue_cancel` and the owner's cancel / «Остановить загрузку». Allowed while nothing of
+     * it can be on YouTube (`isCancellable`: queued, uploading or paused, no video, the last chunk never marked, bytes left); the
+     * store's one conditional statement decides against the runner. The abandoned resumable session needs no call: it expires,
+     * and no video exists before the last chunk. A Producer's cancel marks the row `cancelled_by_producer`.
+     */
     async cancel(input: { channelId: string; uploadId: string }, actor: QueueActor) {
       await deps.assertMutationAllowed();
+      // Two tries: a queued row the runner started between the read and the write is read again and stopped as `uploading`.
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const row = await ownRow(input.channelId, input.uploadId);
+        if (!isCancellable(row)) throw notCancellable(input, row);
+        const now = deps.clock.now();
+        const stopped = await deps.stop(row.id, row.status, { status: "cancelled", errorCode: actor.kind === "producer" ? CANCELLED_BY_PRODUCER : null, finishedAt: now, updatedAt: now });
+        if (!stopped) continue;
+        const sending = isSending(row);
+        await deps.audit({
+          channelId: row.channelId,
+          uploadId: row.id,
+          detail: { event: sending ? "publishing.upload_stopped" : "publishing.upload_cancelled", ...actorDetail(actor), at: now.toISOString(), uploadId: row.id, video: row.video, status: row.status, storedBytes: stopped.storedBytes, totalBytes: stopped.totalBytes },
+        });
+        return { uploadId: row.id, channelId: row.channelId, video: row.video, status: "cancelled" as const, previousStatus: row.status, storedBytes: stopped.storedBytes, totalBytes: stopped.totalBytes };
+      }
       const row = await ownRow(input.channelId, input.uploadId);
-      if (row.status !== "queued") throw refuse("upload_not_cancellable", "Only a queued upload can be cancelled here; this one is not waiting any more.", { channelId: input.channelId, uploadId: input.uploadId, status: row.status });
-      const now = deps.clock.now();
-      const done = await deps.cancelQueued(row.id, { status: "cancelled", errorCode: actor.kind === "producer" ? CANCELLED_BY_PRODUCER : null, finishedAt: now, updatedAt: now });
-      if (!done) throw refuse("upload_not_cancellable", "The upload started meanwhile; it was not cancelled.", { channelId: input.channelId, uploadId: input.uploadId });
-      await deps.audit({ channelId: row.channelId, uploadId: row.id, detail: { event: "publishing.upload_cancelled", ...actorDetail(actor), at: now.toISOString(), uploadId: row.id, video: row.video } });
-      return { uploadId: row.id, channelId: row.channelId, video: row.video, status: "cancelled" as const };
+      if (!isCancellable(row)) throw notCancellable(input, row);
+      throw refuse("upload_not_cancellable", "The upload changed meanwhile; it was not cancelled. Look at the queue and try again.", { channelId: input.channelId, uploadId: input.uploadId, status: row.status, reason: "changed" });
     },
 
     /**

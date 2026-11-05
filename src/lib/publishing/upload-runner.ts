@@ -327,7 +327,8 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
 
   /** A terminal failure. A row whose video exists keeps it, so the package stays blocked (review B1). */
   async function fail(job: StoredPublishingUpload, code: string, message: string): Promise<void> {
-    await deps.store.update(job.id, job.status, { status: "failed", errorCode: code, errorMessage: message.slice(0, 2000), finishedAt: now(), updatedAt: now() });
+    // BL-244 (ADR 0064): a row stopped meanwhile stays cancelled -- no failure is written over it, and none is audited.
+    if (!(await deps.store.update(job.id, job.status, { status: "failed", errorCode: code, errorMessage: message.slice(0, 2000), finishedAt: now(), updatedAt: now() }))) return;
     await deps.audit({ channelId: job.channelId, videoId: job.videoId, detail: { event: "publishing.upload_failed", uploadId: job.id, video: job.video, code, message: message.slice(0, 500) } });
   }
 
@@ -815,18 +816,22 @@ export function compareQueueOrder(a: Pick<StoredPublishingUpload, "queueRank" | 
 }
 
 /**
- * Whether the owner may cancel an upload: only before it can have reached YouTube -- queued, or paused while sending with its last
- * chunk never sent. Once the last chunk went the video may exist (an answer can be lost), so it is finished instead (review B2).
+ * Whether an upload can still be cancelled or stopped (BL-244, ADR 0064; review B2 before it): only while nothing of it can be on
+ * YouTube -- no video id, its last chunk never marked, and once it started sending, bytes still to send: queued, being sent
+ * (`uploading`), or paused while queued or sending. Once the last chunk is marked the video may exist (an answer can be lost), so
+ * it is finished instead. The store's `stopPublishingUploadBeforeYoutube` checks the same in its one statement.
  */
 export function isCancellable(row: Pick<StoredPublishingUpload, "status" | "resumeStatus" | "videoId" | "storedBytes" | "totalBytes" | "stepsJson">): boolean {
+  if (row.videoId !== null) return false;
   if (row.status === "queued") return true;
-  return (
-    row.status === "paused" &&
-    (row.resumeStatus === "queued" || row.resumeStatus === "uploading") &&
-    row.videoId === null &&
-    row.storedBytes < row.totalBytes &&
-    !stepsOf(row).finalChunkSentAt
-  );
+  const sendable = row.storedBytes < row.totalBytes && !stepsOf(row).finalChunkSentAt;
+  if (row.status === "uploading") return sendable;
+  return row.status === "paused" && (row.resumeStatus === "queued" || row.resumeStatus === "uploading") && sendable;
+}
+
+/** BL-244: whether a cancellable row had started sending -- its cancel is a stop («Остановить загрузку», `publishing.upload_stopped`). */
+export function isSending(row: Pick<StoredPublishingUpload, "status" | "resumeStatus">): boolean {
+  return row.status === "uploading" || (row.status === "paused" && row.resumeStatus === "uploading");
 }
 
 /** Whether the upload's date is on the video (written, or in an old row's insert) -- not merely planned (independent review). */

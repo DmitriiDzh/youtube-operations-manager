@@ -5,21 +5,26 @@ import { createChannelAccessCore } from "@/lib/channel-access";
 import { cancelUpload } from "@/lib/publishing";
 import { DomainError } from "@/lib/shared-domain";
 import { getVideoMetadataErrorStatus } from "../../../../../../video-metadata/error-status";
+import { deviceGateErrorResponse } from "../../device-gate-error";
 
 export type CancelUploadDeps = {
   getSession: () => Promise<{ user?: { id?: string | null } } | null>;
   assertActiveChannel: (args: { userId: string; channelId: string }) => Promise<void>;
-  cancel: (channelId: string, uploadId: string) => Promise<boolean>;
+  cancel: (input: { channelId: string; uploadId: string }, userId: string) => Promise<Record<string, unknown>>;
 };
 
-/** BL-182 stage 2: cancels an upload that has not reached YouTube (queued, or paused before its last byte). 409 otherwise. */
+/**
+ * BL-182 stage 2: cancels an upload that has not reached YouTube; BL-244 (ADR 0064): also stops one being sent before its last
+ * chunk -- the session's user is the owner acting, through the queue control's one cancel. 409 `upload_not_cancellable` when it
+ * may be on YouTube already, 404 for an unknown id or another channel's.
+ */
 export function createCancelUploadHandler(
   deps: CancelUploadDeps = {
     getSession: () => getServerSession(authOptions),
     assertActiveChannel: async (args) => {
       await createChannelAccessCore().assertActiveChannel(args);
     },
-    cancel: (channelId, uploadId) => cancelUpload(channelId, uploadId),
+    cancel: (input, userId) => cancelUpload(input, userId),
   }
 ) {
   return async function POST(_request: Request, { params }: { params: Promise<{ channelId: string; uploadId: string }> }) {
@@ -29,11 +34,10 @@ export function createCancelUploadHandler(
     try {
       const { channelId, uploadId } = await params;
       await deps.assertActiveChannel({ userId, channelId });
-      if (!(await deps.cancel(channelId, uploadId))) {
-        return NextResponse.json({ error: "upload_not_cancellable", message: "Only an upload that has not reached YouTube can be cancelled." }, { status: 409 });
-      }
-      return NextResponse.json({ cancelled: true });
+      return NextResponse.json({ cancelled: true, ...(await deps.cancel({ channelId, uploadId }, userId)) });
     } catch (error) {
+      const gate = deviceGateErrorResponse(error);
+      if (gate) return gate;
       if (error instanceof DomainError) {
         return NextResponse.json({ error: error.code, message: error.message, details: error.details }, { status: getVideoMetadataErrorStatus(error.code) });
       }

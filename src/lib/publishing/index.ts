@@ -33,6 +33,7 @@ import {
   rawSqlClient,
   removeLocalVideoRowIfUnreferenced,
   savePublishingG1Probe,
+  stopPublishingUploadBeforeYoutube,
   updatePublishingUpload,
   type StoredPublishingUpload,
 } from "@/lib/db";
@@ -57,7 +58,7 @@ import { createPackageScan, isPackageThumbnailPath, VIDEOS_FOLDER, type PackageS
 import { imageKindOf } from "./packages";
 import { createPackageComposer } from "./package-composer";
 import { authorizedOAuth, createPublishingFinishWrites, createPublishingYoutubeWrites, freshAccessToken } from "./adapters/youtube-writes";
-import { ACTIVE_UPLOAD_STATUSES, createUploadRunner, holdsPackage, holdsSlot, isCancellable, syntheticMediaOf, UNKNOWN_OUTCOME_RELEASED, type ApprovedPackage, type UploadRunnerDeps } from "./upload-runner";
+import { ACTIVE_UPLOAD_STATUSES, createUploadRunner, holdsPackage, holdsSlot, syntheticMediaOf, UNKNOWN_OUTCOME_RELEASED, type ApprovedPackage, type UploadRunnerDeps } from "./upload-runner";
 import { createPlanSchedule, isVideoNotFound } from "./plan-schedule";
 import type { PublishingSettings } from "./settings";
 import { createUploadApproval } from "./upload-approval";
@@ -658,7 +659,8 @@ export async function listChannelUploadsForOwner(channelId: string) {
 
 /**
  * BL-239 (UPLOAD_QUEUE_CONTROL_PLAN.md, ADR 0059; owner msgs 3928/3930): control of this computer's upload queue. Reached only by
- * the Producer session's wiring (`src/lib/producer-mcp-endpoint/session-deps.ts`) and the owner's move route -- never by a channel
+ * the Producer session's wiring (`src/lib/producer-mcp-endpoint/session-deps.ts`), the owner's move route and, through
+ * `cancelUpload`, the owner's cancel/stop route (BL-244) -- never by a channel
  * worker or the factory endpoint (`no-agent-upload-tool.test.ts`). `slotDecisions` comes from the composition layer; `channelUser`
  * is the caller's own rule for "connected here" (absent: the channel's stored connected user).
  */
@@ -674,7 +676,7 @@ export function createUploadQueueControlCore(
     listActive: () => listPublishingUploads({ statuses: ACTIVE_UPLOAD_STATUSES, limit: 500 }),
     get: (uploadId) => getPublishingUpload(uploadId),
     reorder: (orderedIds) => reorderQueuedPublishingUploads(orderedIds),
-    cancelQueued: (uploadId, set) => updatePublishingUpload(uploadId, "queued", set),
+    stop: (uploadId, fromStatus, set) => stopPublishingUploadBeforeYoutube(uploadId, fromStatus, set),
     assertMutationAllowed: () => assertDeviceAvailableForMutation(rawSqlClient),
     autoSwitchOn: () => getAutoPrivateUploadEnabled(),
     async channelTitles() {
@@ -710,17 +712,12 @@ export function createUploadQueueControlCore(
 export type { QueueActor, UploadQueueControl } from "./upload-queue-control";
 
 /**
- * The owner cancels an upload that has not reached YouTube: a queued one, or one paused before its last byte. One whose video
- * exists (or may exist: every byte sent) is not cancelled -- it is finished, and the owner deletes the video in Studio if needed.
+ * The owner cancels an upload that has not reached YouTube, or stops one being sent before its last chunk (BL-244, ADR 0064) --
+ * through the queue control's one cancel, the same function as the Producer's. One whose video exists (or may exist: the last
+ * chunk went) is refused (`upload_not_cancellable`): it is finished, and the owner deletes the video in Studio if needed.
  */
-export async function cancelUpload(channelId: string, uploadId: string): Promise<boolean> {
-  const row = await getPublishingUpload(uploadId);
-  if (!row || row.channelId !== channelId) return false;
-  if (!isCancellable(row)) return false;
-  const done = await updatePublishingUpload(uploadId, row.status, { status: "cancelled", finishedAt: new Date(), updatedAt: new Date() });
-  // BL-239: with who cancelled it (the Producer's cancels say `by: "producer"`).
-  if (done) await insertVideoEditAuditEvent({ channelId, videoId: `upload:${uploadId}`, eventType: "RESULT", detail: { event: "publishing.upload_cancelled", by: "owner", uploadId, video: row.video } });
-  return done;
+export async function cancelUpload(input: { channelId: string; uploadId: string }, userId: string) {
+  return createUploadQueueControlCore().cancel(input, { kind: "owner", userId });
 }
 export type { UploadRunner, UploadSteps, ApprovedPackage } from "./upload-runner";
 export type { AutoPrivateUpload, AutoUploadTickResult, AutoUploadWaiting } from "./auto-upload";
