@@ -363,7 +363,7 @@ test("AC-STOP-02: the owner's stop leaves the row his -- no Producer error code,
 
 test("AC-STOP-03: the runner marks the last chunk one instant before the stop -- refused (final_chunk_sent), the row keeps uploading", async () => {
   const h = harness([row("u", SENDING)], { markBeforeStop: true });
-  await assert.rejects(h.control.cancel({ channelId: "UC_x", uploadId: "u" }, PRODUCER), (error: unknown) => isDomainError(error) && error.code === "upload_not_cancellable" && error.details?.reason === "final_chunk_sent");
+  await assert.rejects(h.control.cancel({ channelId: "UC_x", uploadId: "u" }, PRODUCER), (error: unknown) => isDomainError(error) && error.code === "upload_not_cancellable" && (error.details as { reason?: string } | undefined)?.reason === "final_chunk_sent");
   assert.deepEqual([h.store.get("u")!.status, h.store.get("u")!.errorCode, h.audits.length], ["uploading", null, 0]);
 });
 

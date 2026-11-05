@@ -1333,10 +1333,7 @@ function stopInStore(store: Map<string, StoredPublishingUpload>, id = "u1"): boo
 
 test("AC-STOP-08: a row stopped while its first chunk is in flight sends no further chunk, never the last; it stays cancelled, no failure", async () => {
   const audits: Array<Record<string, unknown>> = [];
-  let h!: ReturnType<typeof harness>;
-  h = harness([job()], {
-    audit: async ({ detail }) => void audits.push(detail),
-  });
+  const h = harness([job()], { audit: async ({ detail }) => void audits.push(detail) });
   const put = h.deps.gateway.putChunk;
   // The stop lands while chunk 0-3 is on the wire; that chunk finishes (YouTube keeps it), nothing after it goes.
   h.deps.gateway.putChunk = async (args) => {
