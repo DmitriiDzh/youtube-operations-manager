@@ -121,10 +121,8 @@ type ServiceDependencies = {
       syncedAt: Date
     ): Promise<void>;
     listVideosByChannel(channelId: string): Promise<StoredVideoRecord[]>;
-    /** BL-243: presence only (id, publishedAt, the removed mark) of the channel's stored videos among `videoIds`. */
-    listVideoPresence(channelId: string, videoIds: readonly string[]): Promise<Array<{ videoId: string; publishedAt: string; removedAt: Date | null }>>;
-    /** BL-243: the channel's visible stored videos among `videoIds` (full rows for those only). */
-    listVideosByIds(channelId: string, videoIds: readonly string[]): Promise<StoredVideoRecord[]>;
+    /** BL-243: the channel's stored videos among `videoIds`, visible and removed, each with its removed mark (one narrow select). */
+    listVideosByIds(channelId: string, videoIds: readonly string[]): Promise<Array<StoredVideoRecord & { removedAt: Date | null }>>;
     /**
      * Marks this channel's unmarked stored videos whose ids are not in `presentVideoIds` and that were last synced before
      * `listedAt`; clears the mark of every listed id. Returns the ids it marked.
@@ -301,8 +299,7 @@ export function createChannelSyncServices(deps: ServiceDependencies) {
         else if (videoIds.length === 0) removedCheck = "skipped_empty_list";
         else hiddenRemovedVideoIds = await deps.channelStore.markVideosRemovedOnYoutube(channel.channelId, videoIds, syncedAt, listedAt);
 
-        // BL-243: the removed check's own time only when it ran (the packages' `checkedAt`).
-        // BL-243: the check is as of when the uploads list was read (listedAt), not when the sync ended.
+        // BL-243: the removed check's own time (the packages' `checkedAt`) only when it ran -- as of when the uploads list was read.
         await deps.channelStore.markChannelSynced(channel.channelId, syncedAt, removedCheck === "done" ? listedAt : undefined);
         progress?.counts(videoMetadata.length, videoMetadata.length);
 
@@ -376,13 +373,9 @@ export function createChannelSyncServices(deps: ServiceDependencies) {
           // BL-243: only the asked videos of THIS channel, in the order asked (each once): narrow reads of those ids only -- their
           // presence, the visible ones' rows, and the channel's last completed removed check (`checkedAt`).
           const asked = [...new Set(parsedInput.videoIds)];
-          const [presence, found, channel] = await Promise.all([
-            deps.channelStore.listVideoPresence(parsedInput.channelId, asked),
-            deps.channelStore.listVideosByIds(parsedInput.channelId, asked),
-            deps.channelStore.getChannel(parsedInput.channelId),
-          ]);
-          const byId = new Map(found.map((record) => [record.videoId, record]));
-          const removedById = new Map(presence.flatMap((p) => (p.removedAt ? [[p.videoId, p.removedAt] as const] : [])));
+          const [rows, channel] = await Promise.all([deps.channelStore.listVideosByIds(parsedInput.channelId, asked), deps.channelStore.getChannel(parsedInput.channelId)]);
+          const byId = new Map(rows.filter((row) => row.removedAt === null).map((row) => [row.videoId, row]));
+          const removedById = new Map(rows.flatMap((row) => (row.removedAt ? [[row.videoId, row.removedAt] as const] : [])));
           const listed = asked.flatMap((id) => {
             const record = byId.get(id);
             return record ? [mapStoredVideo(record)] : [];

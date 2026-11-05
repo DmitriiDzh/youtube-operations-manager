@@ -113,12 +113,9 @@ function createFakeStore() {
     async listVideosByChannel(channelId: string) {
       return (videos.get(channelId) ?? []).filter((video) => !removedAt.has(video.videoId));
     },
-    // BL-243: presence (id, publishedAt, the mark) and the visible rows, for the asked ids of the channel only.
-    async listVideoPresence(channelId: string, videoIds: readonly string[]) {
-      return (videos.get(channelId) ?? []).filter((video) => videoIds.includes(video.videoId)).map((video) => ({ videoId: video.videoId, publishedAt: video.publishedAt, removedAt: removedAt.get(video.videoId) ?? null }));
-    },
+    // BL-243: the asked rows of the channel, visible and removed, each with its mark (one select).
     async listVideosByIds(channelId: string, videoIds: readonly string[]) {
-      return (videos.get(channelId) ?? []).filter((video) => videoIds.includes(video.videoId) && !removedAt.has(video.videoId));
+      return (videos.get(channelId) ?? []).filter((video) => videoIds.includes(video.videoId)).map((video) => ({ ...video, removedAt: removedAt.get(video.videoId) ?? null }));
     },
   };
 }

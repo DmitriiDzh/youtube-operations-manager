@@ -9024,14 +9024,17 @@ export async function listVideoPresence(channelId: string, videoIds?: readonly s
   return rows.map((row) => ({ videoId: row.id, publishedAt: row.publishedAt, removedAt: row.removedAt ?? null }));
 }
 
-/** BL-243: the channel's visible stored videos among `videoIds` (at most a page asked by id; never the whole channel). */
-export async function listStoredVideosByIds(channelId: string, videoIds: readonly string[]): Promise<StoredVideo[]> {
+/**
+ * BL-243: the channel's stored videos among `videoIds` -- visible and removed, each with its removed mark -- in one select (at most
+ * a page asked by id; never the whole channel).
+ */
+export async function listStoredVideosByIds(channelId: string, videoIds: readonly string[]): Promise<Array<StoredVideo & { removedAt: Date | null }>> {
   if (videoIds.length === 0) return [];
   const rows = await db
     .select()
     .from(videos)
-    .where(and(eq(videos.channelId, channelId), isNull(videos.removedOnYoutubeAt), inArray(videos.id, [...videoIds])));
-  return rows.map(mapStoredVideo);
+    .where(and(eq(videos.channelId, channelId), inArray(videos.id, [...videoIds])));
+  return rows.map((row) => ({ ...mapStoredVideo(row), removedAt: row.removedOnYoutubeAt ?? null }));
 }
 
 /**

@@ -158,10 +158,10 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
       // covers the slot's current package; a deleted video's package has none); with the package scan unavailable, the older,
       // stricter rule below. The removals' check and the returned view use the same read.
       const toRemove = [...new Set(parsed.removeSlotIds ?? [])];
-      const state = await channelState(channelId, snapshot, [...new Set([...current.keys(), ...toRemove, ...(parsed.slots ?? []).map((s) => s.slotId)])]);
+      const channel = await channelState(channelId, snapshot, [...new Set([...current.keys(), ...toRemove, ...(parsed.slots ?? []).map((s) => s.slotId)])]);
       const views =
-        stage === "packaged" && existing && !state.packagesUnavailable
-          ? new Map(planViewOf({ stage, channelId, meta: existing, slots: [...current.values()], decisions, progress: state.progress, now }).slots.map((view) => [view.slotId, view]))
+        stage === "packaged" && existing && !channel.packagesUnavailable
+          ? new Map(planViewOf({ stage, channelId, meta: existing, slots: [...current.values()], decisions, progress: channel.progress, now }).slots.map((view) => [view.slotId, view]))
           : null;
       // BL-242: else an approval that counts in the channel's stage stands on the slot (whatever its package now).
       const approvedNow = (slot: PublishingPlanSlot) => {
@@ -239,15 +239,15 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
       const removes: string[] = [];
       const vetoedRemoves: string[] = [];
       // Review #3: what the uploads say of the slots to remove (a slot whose video is on YouTube stays) -- the read above.
-      const uploads = state.progress;
+      const uploads = channel.progress;
       for (const slotId of toRemove) {
         const slot = current.get(slotId);
-        const state = slot && existing ? decisionStateOf(decisionsForStage(decisionsFor(slotId), stage), contentHashOf(existing.timeZone, contentOf(slot))) : null;
+        const decision = slot && existing ? decisionStateOf(decisionsForStage(decisionsFor(slotId), stage), contentHashOf(existing.timeZone, contentOf(slot))) : null;
         const upload = uploads.get(slotId);
         // BL-243: a video deleted on YouTube is not on YouTube -- its vetoed slot may go.
         const uploaded = Boolean(upload && !isDeletedOnYoutube(upload) && (upload.videoId || ["uploading", "scheduled", "published"].includes(upload.status)));
         if (!slot) refused.push({ slotId, field: "removeSlotIds", reason: "unknown_slot" });
-        else if (state?.vetoed) {
+        else if (decision?.vetoed) {
           // BL-240 (ADR 0060): a vetoed slot may go, also one approved before the veto -- unless its video is on YouTube.
           if (uploaded) refused.push({ slotId, field: "removeSlotIds", reason: "slot_uploaded" });
           else if (seen.has(slotId)) refused.push({ slotId, field: "removeSlotIds", reason: "duplicate_slot" });
@@ -255,7 +255,7 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
             removes.push(slotId);
             vetoedRemoves.push(slotId);
           }
-        } else if (views?.has(slotId) ? views.get(slotId)!.approval === "approved" || views.get(slotId)!.changedAfterApproval !== null : state && (state.approved || state.superseded))
+        } else if (views?.has(slotId) ? views.get(slotId)!.approval === "approved" || views.get(slotId)!.changedAfterApproval !== null : decision && (decision.approved || decision.superseded))
           refused.push({ slotId, field: "removeSlotIds", reason: "slot_approved" });
         else if (uploaded) refused.push({ slotId, field: "removeSlotIds", reason: "slot_uploaded" });
         else if (seen.has(slotId)) refused.push({ slotId, field: "removeSlotIds", reason: "duplicate_slot" });
@@ -280,7 +280,7 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
 
       const zoneChanges = existing !== null && existing.timeZone !== timeZone;
       if (existing && upserts.length === 0 && removes.length === 0 && !zoneChanges) {
-        return { plan: await viewOf(channelId, snapshot, existing, state), changed: [], unlocked: [], removed: [] };
+        return { plan: await viewOf(channelId, snapshot, existing, channel), changed: [], unlocked: [], removed: [] };
       }
       const at = stamp();
       await ports.store.savePlan(channelId, {
@@ -297,7 +297,7 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
       }
       const after = await requirePlan(channelId, weekStart);
       // The same read, counted over the saved plan (no second scan).
-      return { plan: await viewOf(channelId, after.snapshot, after.meta, stateFrom(channelId, after.snapshot, state)), changed, unlocked, removed: removes };
+      return { plan: await viewOf(channelId, after.snapshot, after.meta, stateFrom(channelId, after.snapshot, channel)), changed, unlocked, removed: removes };
     });
   }
 

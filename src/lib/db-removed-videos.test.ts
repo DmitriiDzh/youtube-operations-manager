@@ -106,5 +106,6 @@ test("BL-243 round 5: presence and by-id reads are the channel's own, narrow, an
   ]);
   assert.deepEqual(await listVideoPresence("UC_p", ["p2", "q1", "nope"]), [{ videoId: "p2", publishedAt: "2026-09-01T00:00:00Z", removedAt: at }]);
   assert.deepEqual(await listVideoPresence("UC_p", []), []);
-  assert.deepEqual((await listStoredVideosByIds("UC_p", ["p1", "p2", "q1"])).map((v) => v.videoId), ["p1"], "visible, this channel only");
+  // (round 6: one select, removed rows included with their mark)
+  assert.deepEqual((await listStoredVideosByIds("UC_p", ["p1", "p2", "q1"])).map((v) => [v.videoId, v.removedAt]).sort(), [["p1", null], ["p2", at]], "this channel only, each with its mark");
 });
