@@ -25,14 +25,18 @@ function createFakeStore() {
   const removedAt = new Map<string, Date>();
   // BL-243 review round 2: when each channel's removed check last completed.
   const removedCheckAt = new Map<string, Date>();
+  // BL-243 round 5: the listedAt each removed check was given (when the uploads list was read).
+  const listedAts: Date[] = [];
 
   return {
+    listedAts,
     channels,
     removedCheckAt,
     videos,
     upsertCalls,
     removedAt,
     async markVideosRemovedOnYoutube(channelId: string, presentVideoIds: string[], at: Date, listedAt: Date) {
+      listedAts.push(listedAt);
       const present = new Set(presentVideoIds);
       for (const id of present) removedAt.delete(id);
       const marked: string[] = [];
@@ -74,7 +78,8 @@ function createFakeStore() {
       return [...channels.values()];
     },
     async getChannel(channelId: string) {
-      return channels.get(channelId) ?? null;
+      const channel = channels.get(channelId);
+      return channel ? { ...channel, removedCheckAt: removedCheckAt.get(channelId) ?? null } : null;
     },
     async upsertVideos(
       entries: Array<{
@@ -108,12 +113,12 @@ function createFakeStore() {
     async listVideosByChannel(channelId: string) {
       return (videos.get(channelId) ?? []).filter((video) => !removedAt.has(video.videoId));
     },
-    // BL-243: the hidden rows with their mark.
-    async listRemovedVideosByChannel(channelId: string) {
-      return (videos.get(channelId) ?? []).flatMap((video) => {
-        const at = removedAt.get(video.videoId);
-        return at ? [{ videoId: video.videoId, removedAt: at }] : [];
-      });
+    // BL-243: presence (id, publishedAt, the mark) and the visible rows, for the asked ids of the channel only.
+    async listVideoPresence(channelId: string, videoIds: readonly string[]) {
+      return (videos.get(channelId) ?? []).filter((video) => videoIds.includes(video.videoId)).map((video) => ({ videoId: video.videoId, publishedAt: video.publishedAt, removedAt: removedAt.get(video.videoId) ?? null }));
+    },
+    async listVideosByIds(channelId: string, videoIds: readonly string[]) {
+      return (videos.get(channelId) ?? []).filter((video) => videoIds.includes(video.videoId) && !removedAt.has(video.videoId));
     },
   };
 }
@@ -651,6 +656,7 @@ test("BL-243 AC-WP-73: videoIds lists only those videos; removed and notFound sa
   await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_TEST" });
   await services.syncChannel({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST" });
   store.removedAt.set("vid73", new Date("2026-11-03T19:54:00.000Z"));
+  store.removedCheckAt.set("UC_TEST", new Date("2026-11-04T08:00:00.000Z"));
   // Another channel's stored video (the fake store's rows by channel).
   const rowsByChannel = store.videos;
   rowsByChannel.set("UC_OTHER", [{ ...(await store.listVideosByChannel("UC_TEST"))[0], videoId: "other1", channelId: "UC_OTHER" }]);
@@ -661,7 +667,9 @@ test("BL-243 AC-WP-73: videoIds lists only those videos; removed and notFound sa
     videoIds: ["vid74", "vid73", "nope", "other1", "vid72", "vid74"],
     fields: ["title"],
   })) as Record<string, unknown>;
-  assert.deepEqual(Object.keys(result).sort(), ["channelId", "nextOffset", "notFound", "offset", "removed", "total", "videos"]);
+  // (round 5: plus checkedAt -- when the removed check last completed; `removed` is as of then)
+  assert.deepEqual(Object.keys(result).sort(), ["channelId", "checkedAt", "nextOffset", "notFound", "offset", "removed", "total", "videos"]);
+  assert.equal(result.checkedAt, "2026-11-04T08:00:00.000Z");
   assert.deepEqual((result.videos as Array<{ videoId: string }>).map((v) => v.videoId), ["vid74", "vid72"]);
   assert.deepEqual(Object.keys((result.videos as object[])[0]).sort(), ["title", "videoId"]);
   assert.equal(result.total, 2);
@@ -690,7 +698,8 @@ test("BL-243 AC-WP-78: removedCheckAt moves only on a sync whose removed check r
   const { services, store, playlist, age } = createServicesFixture({ videoIds: ["v1", "v2"] });
   const first = await services.syncChannel({ credentialRef: { userId: "u1" } });
   assert.equal(first.removedCheck, "done");
-  assert.equal(store.removedCheckAt.get("UC_MINE")?.toISOString(), first.syncedAt);
+  // Round 5: the check's time is when the uploads list was read (listedAt), not the sync's end.
+  assert.equal(store.removedCheckAt.get("UC_MINE"), store.listedAts.at(-1));
   // An earlier, fixed check time, so a move would show.
   const EARLIER = new Date("2026-11-01T00:00:00.000Z");
   store.removedCheckAt.set("UC_MINE", EARLIER);
@@ -706,5 +715,6 @@ test("BL-243 AC-WP-78: removedCheckAt moves only on a sync whose removed check r
   playlist.videoIds = ["v1", "v2"];
   const again = await services.syncChannel({ credentialRef: { userId: "u1" } });
   assert.equal(again.removedCheck, "done");
-  assert.equal(store.removedCheckAt.get("UC_MINE")?.toISOString(), again.syncedAt);
+  assert.equal(store.removedCheckAt.get("UC_MINE"), store.listedAts.at(-1));
+  assert.ok(store.listedAts.at(-1)!.getTime() <= Date.parse(again.syncedAt), "listed before the sync ended");
 });

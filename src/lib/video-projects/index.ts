@@ -2,7 +2,7 @@ import { hostname } from "node:os";
 import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
 import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
-import { getStoredChannel, listRemovedVideosByChannel, listStoredVideosByChannel } from "@/lib/db";
+import { getStoredChannel, listStoredVideosByChannel, listVideoPresence } from "@/lib/db";
 import { getProductionAppPaths } from "@/lib/platform-paths";
 import { createStoryboardsCoreForProduction, createVideoReservationsShareCoreForProduction } from "@/lib/sync-gateway";
 import { writeUploadRecordFile } from "@/lib/workspace-videos";
@@ -42,10 +42,11 @@ export function createVideoProjectsServiceForProduction(): VideoProjectsService 
       workspace: createVideoProjectsWorkspace((channelId) => createChannelWorkspacesCore().getWorkspace({ channelId })),
       // BL-243: the synced copy -- listed videos (YouTube's publishedAt), removed ones, the last completed removed check.
       channelCopy: async (channelId) => {
-        const [listed, removed, channel] = await Promise.all([listStoredVideosByChannel(channelId), listRemovedVideosByChannel(channelId), getStoredChannel(channelId)]);
+        // A narrow read: id, publishedAt and the mark only.
+        const [presence, channel] = await Promise.all([listVideoPresence(channelId), getStoredChannel(channelId)]);
         return {
-          listed: new Map(listed.map((v) => [v.videoId, v.publishedAt])),
-          removed: new Map(removed.map((v) => [v.videoId, v.removedAt.toISOString()])),
+          listed: new Map(presence.flatMap((v) => (v.removedAt ? [] : [[v.videoId, v.publishedAt] as const]))),
+          removed: new Map(presence.flatMap((v) => (v.removedAt ? [[v.videoId, v.removedAt.toISOString()] as const] : []))),
           checkedAt: channel?.removedCheckAt?.toISOString() ?? null,
         };
       },

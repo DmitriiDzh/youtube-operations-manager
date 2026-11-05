@@ -9012,6 +9012,29 @@ export async function listRemovedVideosByChannel(channelId: string): Promise<Arr
 }
 
 /**
+ * BL-243: the channel's stored videos (optionally only `videoIds`) as presence only -- id, YouTube's publishedAt and the removed
+ * mark -- never the full rows. For "is it on the channel" answers (`channel_video_list` `videoIds`, the video list).
+ */
+export async function listVideoPresence(channelId: string, videoIds?: readonly string[]): Promise<Array<{ videoId: string; publishedAt: string; removedAt: Date | null }>> {
+  if (videoIds && videoIds.length === 0) return [];
+  const rows = await db
+    .select({ id: videos.id, publishedAt: videos.publishedAt, removedAt: videos.removedOnYoutubeAt })
+    .from(videos)
+    .where(videoIds ? and(eq(videos.channelId, channelId), inArray(videos.id, [...videoIds])) : eq(videos.channelId, channelId));
+  return rows.map((row) => ({ videoId: row.id, publishedAt: row.publishedAt, removedAt: row.removedAt ?? null }));
+}
+
+/** BL-243: the channel's visible stored videos among `videoIds` (at most a page asked by id; never the whole channel). */
+export async function listStoredVideosByIds(channelId: string, videoIds: readonly string[]): Promise<StoredVideo[]> {
+  if (videoIds.length === 0) return [];
+  const rows = await db
+    .select()
+    .from(videos)
+    .where(and(eq(videos.channelId, channelId), isNull(videos.removedOnYoutubeAt), inArray(videos.id, [...videoIds])));
+  return rows.map(mapStoredVideo);
+}
+
+/**
  * Owner, 2026-10-14 (Telegram msgs 2770/2775, option "б"): marks this channel's not-yet-marked videos whose ids are not in
  * `presentVideoIds` (a complete read of the channel's uploads) as removed on YouTube, and clears the mark of every listed
  * id (a listed video exists even when `videos.list` left it out). Rows are never deleted. Only rows last synced before

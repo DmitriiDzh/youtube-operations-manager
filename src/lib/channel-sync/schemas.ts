@@ -148,6 +148,8 @@ export const listSyncedVideosByIdOutputSchema = listSyncedVideosPagedOutputSchem
     removed: z.array(z.object({ videoId: z.string(), removedAt: z.string() }).strict()),
     /** Asked ids this copy does not have for the channel (never synced, uploaded after the last sync, or another channel's). */
     notFound: z.array(z.string()),
+    /** When a channel sync last completed the removed-on-YouTube check (ISO); `removed` is as of then. Null: never. */
+    checkedAt: z.string().nullable(),
   })
   .strict();
 

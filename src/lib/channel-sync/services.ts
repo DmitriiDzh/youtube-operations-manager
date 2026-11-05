@@ -33,6 +33,8 @@ export type StoredChannelRecord = {
   connectedUserId: string | null;
   connectedAt: Date;
   lastSyncedAt: Date | null;
+  /** BL-243: when a sync last completed the removed-on-YouTube check (absent in older stores: unknown). */
+  removedCheckAt?: Date | null;
 };
 
 export type StoredVideoRecord = {
@@ -119,8 +121,10 @@ type ServiceDependencies = {
       syncedAt: Date
     ): Promise<void>;
     listVideosByChannel(channelId: string): Promise<StoredVideoRecord[]>;
-    /** BL-243: the channel's stored videos a sync marked removed on YouTube (hidden from `listVideosByChannel`), with when. */
-    listRemovedVideosByChannel(channelId: string): Promise<Array<{ videoId: string; removedAt: Date }>>;
+    /** BL-243: presence only (id, publishedAt, the removed mark) of the channel's stored videos among `videoIds`. */
+    listVideoPresence(channelId: string, videoIds: readonly string[]): Promise<Array<{ videoId: string; publishedAt: string; removedAt: Date | null }>>;
+    /** BL-243: the channel's visible stored videos among `videoIds` (full rows for those only). */
+    listVideosByIds(channelId: string, videoIds: readonly string[]): Promise<StoredVideoRecord[]>;
     /**
      * Marks this channel's unmarked stored videos whose ids are not in `presentVideoIds` and that were last synced before
      * `listedAt`; clears the mark of every listed id. Returns the ids it marked.
@@ -298,7 +302,8 @@ export function createChannelSyncServices(deps: ServiceDependencies) {
         else hiddenRemovedVideoIds = await deps.channelStore.markVideosRemovedOnYoutube(channel.channelId, videoIds, syncedAt, listedAt);
 
         // BL-243: the removed check's own time only when it ran (the packages' `checkedAt`).
-        await deps.channelStore.markChannelSynced(channel.channelId, syncedAt, removedCheck === "done" ? syncedAt : undefined);
+        // BL-243: the check is as of when the uploads list was read (listedAt), not when the sync ended.
+        await deps.channelStore.markChannelSynced(channel.channelId, syncedAt, removedCheck === "done" ? listedAt : undefined);
         progress?.counts(videoMetadata.length, videoMetadata.length);
 
         const storedChannel = await deps.channelStore.getChannel(channel.channelId);
@@ -367,17 +372,18 @@ export function createChannelSyncServices(deps: ServiceDependencies) {
           channelId: parsedInput.channelId,
         });
 
-        // BL-243: with `videoIds` the removed list is read too, at the same time.
-        const [records, removed] = await Promise.all([
-          deps.channelStore.listVideosByChannel(parsedInput.channelId),
-          parsedInput.videoIds ? deps.channelStore.listRemovedVideosByChannel(parsedInput.channelId) : Promise.resolve([]),
-        ]);
         if (parsedInput.videoIds) {
-          // BL-243: only the asked videos of THIS channel, in the order asked (each once); the rest are removed or not found.
+          // BL-243: only the asked videos of THIS channel, in the order asked (each once): narrow reads of those ids only -- their
+          // presence, the visible ones' rows, and the channel's last completed removed check (`checkedAt`).
           const asked = [...new Set(parsedInput.videoIds)];
-          const byId = new Map(records.map((record) => [record.videoId, record]));
-          const removedById = new Map(removed.map((video) => [video.videoId, video.removedAt]));
-          const found = asked.flatMap((id) => {
+          const [presence, found, channel] = await Promise.all([
+            deps.channelStore.listVideoPresence(parsedInput.channelId, asked),
+            deps.channelStore.listVideosByIds(parsedInput.channelId, asked),
+            deps.channelStore.getChannel(parsedInput.channelId),
+          ]);
+          const byId = new Map(found.map((record) => [record.videoId, record]));
+          const removedById = new Map(presence.flatMap((p) => (p.removedAt ? [[p.videoId, p.removedAt] as const] : [])));
+          const listed = asked.flatMap((id) => {
             const record = byId.get(id);
             return record ? [mapStoredVideo(record)] : [];
           });
@@ -385,16 +391,18 @@ export function createChannelSyncServices(deps: ServiceDependencies) {
             listSyncedVideosByIdOutputSchema,
             {
               channelId: parsedInput.channelId,
-              ...pageOfVideos(found, parsedInput),
+              ...pageOfVideos(listed, parsedInput),
               removed: asked.flatMap((id) => {
                 const at = byId.has(id) ? undefined : removedById.get(id);
                 return at ? [{ videoId: id, removedAt: at.toISOString() }] : [];
               }),
               notFound: asked.filter((id) => !byId.has(id) && !removedById.has(id)),
+              checkedAt: channel?.removedCheckAt?.toISOString() ?? null,
             },
             "list synced videos by id output"
           );
         }
+        const records = await deps.channelStore.listVideosByChannel(parsedInput.channelId);
         if (parsedInput.fields || parsedInput.limit !== undefined || parsedInput.offset !== undefined) {
           return parseWithSchema(
             listSyncedVideosPagedOutputSchema,

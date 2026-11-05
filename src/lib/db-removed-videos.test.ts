@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getStoredChannel, getStoredVideo, listRemovedVideosByChannel, markChannelSynced, listStoredVideosByChannel, markVideosRemovedOnYoutube, upsertChannel, upsertVideos } from "@/lib/db";
+import { getStoredChannel, getStoredVideo, listRemovedVideosByChannel, listStoredVideosByIds, listVideoPresence, markChannelSynced, listStoredVideosByChannel, markVideosRemovedOnYoutube, upsertChannel, upsertVideos } from "@/lib/db";
 
 const LISTED = new Date("2026-10-14T08:59:00Z"); // this read of the uploads began after the rows were last synced (2026-10-01)
 
@@ -91,4 +91,20 @@ test("BL-243 AC-WP-78 (schema v118): channels.removed_check_at is set only with 
   const channel = await getStoredChannel("UC_k");
   assert.equal(channel?.removedCheckAt?.toISOString(), "2026-11-04T08:00:00.000Z");
   assert.equal(channel?.lastSyncedAt?.toISOString(), "2026-11-05T08:00:00.000Z");
+});
+
+test("BL-243 round 5: presence and by-id reads are the channel's own, narrow, and tell removed from visible", async () => {
+  await upsertChannel({ channelId: "UC_p", title: "P", thumbnailUrl: null, uploadsPlaylistId: "UU_p", connectedUserId: null });
+  await upsertChannel({ channelId: "UC_q", title: "Q", thumbnailUrl: null, uploadsPlaylistId: "UU_q", connectedUserId: null });
+  await upsertVideos([video("p1", "UC_p"), video("p2", "UC_p"), video("q1", "UC_q")], new Date("2026-10-01T00:00:00Z"));
+  const at = new Date("2026-11-03T19:54:00.000Z");
+  await markVideosRemovedOnYoutube("UC_p", ["p1"], at, LISTED);
+  const presence = (await listVideoPresence("UC_p")).sort((a, b) => a.videoId.localeCompare(b.videoId));
+  assert.deepEqual(presence, [
+    { videoId: "p1", publishedAt: "2026-09-01T00:00:00Z", removedAt: null },
+    { videoId: "p2", publishedAt: "2026-09-01T00:00:00Z", removedAt: at },
+  ]);
+  assert.deepEqual(await listVideoPresence("UC_p", ["p2", "q1", "nope"]), [{ videoId: "p2", publishedAt: "2026-09-01T00:00:00Z", removedAt: at }]);
+  assert.deepEqual(await listVideoPresence("UC_p", []), []);
+  assert.deepEqual((await listStoredVideosByIds("UC_p", ["p1", "p2", "q1"])).map((v) => v.videoId), ["p1"], "visible, this channel only");
 });
