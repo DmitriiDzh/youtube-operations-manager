@@ -759,7 +759,9 @@ Key MCP tools:
     `newestChannelDate`. BL-181 stage 1 (additive): `returnLag: [{ date, videoFirstReturnedAt, videoLagHours, channelFirstReturnedAt,
     channelLagHours }]`, newest first -- per date of the range, the first collection run on this computer that asked for it and got it
     back after an earlier run had asked and not got it, and the hours after its Pacific day ended (an upper bound; a date without
-    that proof is left out). ARCHITECTURE §14.13.1.
+    that proof is left out). ARCHITECTURE §14.13.1. BL-245 (2026-11-06, no shape change): the channel columns also count this
+    computer's hourly freshness probes (`analytics_freshness_probes`), so they are known to within an hour; the video columns still
+    come from the collection runs; `newestReturned` stays over the collection runs only.
   - `agent_get_reporting_status` (BL-181, Agent API 3.14.0, capability `analytics.query_reporting_status`, READ, channel-scoped) —
     `{ channelId, credentialRef? }` → Reach's status block (`job`, `firstFileExpectedBy`, `firstFileOverdue`, `lastAttempt`,
     `nextAutoCheckAt`, `importedFiles`, `files[]` with `lagHours` = createTime − endTime, `firstFileLag[{ date, createTime, lagHours }]`)

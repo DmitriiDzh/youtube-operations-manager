@@ -1096,6 +1096,11 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
     - Чтение источников трафика из отчёта Reporting: `agent_get_reporting_traffic_sources` (Agent API 3.15.0, по дням и кодам,
       для канала или одного видео; локально).
     - Analytics API: `returnLag` в `analytics_data_quality` (схема v87: `newest_*_date`).
+    - BL-245 (IMPLEMENTED на ветке `feature/bl-245-analytics-freshness-probe`): почасовая проба свежести
+      (`src/lib/analytics/freshness-probe.ts`, `instrumentation.ts`, :07 UTC каждого часа) — один канальный запрос на канал,
+      в `analytics_freshness_probes` (схема v119, локально, 45 дней, не в общем файле BL-151) только самая новая дата; `returnLag`
+      учитывает пробы, канальная задержка — с точностью до часа. Видео — нет. Выключается «Analytics reads»; 1 ед. Analytics на
+      канал в час на компьютер (в `quota_ledger`). ARCHITECTURE §14.13.1.
   - **Вечерний досбор.**
     - Настройка «Вечерний досбор», по умолчанию 22:05, `""` — выключено. С 2026-10-13 время задаётся в UTC (19:05 = 22:05 по
       Хельсинки летом), рядом в скобках — местное время (`UtcTimeField`, `src/lib/zoned-time/`).
