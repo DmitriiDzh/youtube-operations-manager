@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { UiTextKey } from "@/lib/ui-text";
 import { ActionButton, SkeletonLines } from "./busy-feedback";
+import { AttachmentDropZone, DecisionAttachments, useAttachmentComposer } from "./clip-attachments";
 import { canApprove, rangeOf, returnCommentReady, videoSrcOf, type ClipDto, type ClipStatus } from "./clip-reviews-model";
 import { useT, useUiText } from "./ui-text-provider";
 import { useUserTimezone } from "./use-user-timezone";
@@ -34,6 +35,12 @@ const ERROR_KEYS: Record<string, UiTextKey> = {
   clip_review_not_pending: "clipReviews.error.not_pending",
   clip_review_file_missing: "clipReviews.error.file_missing",
   clip_review_file_changed: "clipReviews.error.file_changed",
+  // BL-246: the answer's attachments.
+  clip_attachment_upload_unknown: "clipReviews.error.attachment_gone",
+  clip_attachment_upload_incomplete: "clipReviews.attach.waitUploads",
+  clip_attachment_too_many: "clipReviews.error.attachment_too_many",
+  clip_attachment_type_mismatch: "clipReviews.error.attachment_gone",
+  clip_attachment_upload_corrupt: "clipReviews.error.attachment_gone",
 };
 
 type Confirm = { clipId: string; action: "approve" | "return" } | null;
@@ -52,6 +59,8 @@ export function ClipReviewsPanel({ channelId, visible }: { channelId: string | n
   const [busy, setBusy] = useState<string | null>(null);
 
   const base = channelId ? `/api/channels/${encodeURIComponent(channelId)}/clip-reviews` : null;
+  // BL-246: the files on the answer being written (one answer at a time: the row's confirmation).
+  const composer = useAttachmentComposer(base, confirm?.clipId ?? null);
 
   const load = useCallback(async () => {
     if (!base) return;
@@ -87,6 +96,7 @@ export function ClipReviewsPanel({ channelId, visible }: { channelId: string | n
   );
 
   function ask(clipId: string, action: "approve" | "return") {
+    composer.clear(true);
     setConfirm({ clipId, action });
     setComment("");
     setActionError(null);
@@ -100,7 +110,7 @@ export function ClipReviewsPanel({ channelId, visible }: { channelId: string | n
       const res = await fetch(`${base}/${encodeURIComponent(clip.clipId)}/decision`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action, comment: comment.trim() || null }),
+        body: JSON.stringify({ action, comment: comment.trim() || null, ...(composer.uploadIds.length > 0 ? { attachments: composer.uploadIds } : {}) }),
       });
       const body = (await res.json().catch(() => ({}))) as { error?: string; message?: string };
       if (!res.ok) {
@@ -109,6 +119,8 @@ export function ClipReviewsPanel({ channelId, visible }: { channelId: string | n
         await load();
         return;
       }
+      // The server moved the staged files into the channel folder: nothing to drop.
+      composer.clear(false);
       setConfirm(null);
       setComment("");
       await load();
@@ -181,6 +193,7 @@ export function ClipReviewsPanel({ channelId, visible }: { channelId: string | n
                     {clip.comment}
                   </p>
                 )}
+                {clip.decisionId && clip.attachments.length > 0 && <DecisionAttachments base={base!} clipId={clip.clipId} decisionId={clip.decisionId} attachments={clip.attachments} />}
               </div>
             )}
             {clip.status === "pending" && !confirming && (
@@ -203,28 +216,42 @@ export function ClipReviewsPanel({ channelId, visible }: { channelId: string | n
             {clip.status === "pending" && confirming && (
               <div className={`space-y-2 rounded-md border px-3 py-2 ${confirming === "approve" ? "border-violet-800 bg-violet-950/30" : "border-red-900 bg-red-950/30"}`}>
                 <p className="text-sm font-medium text-zinc-100">{t(confirming === "approve" ? "clipReviews.confirm.approveTitle" : "clipReviews.confirm.returnTitle")}</p>
-                <textarea
-                  value={comment}
-                  onChange={(event) => setComment(event.target.value)}
-                  maxLength={2000}
-                  rows={confirming === "return" ? 3 : 2}
-                  aria-label={t(confirming === "approve" ? "clipReviews.confirm.approveComment" : "clipReviews.confirm.returnTitle")}
-                  placeholder={t(confirming === "approve" ? "clipReviews.confirm.approveComment" : "clipReviews.confirm.returnPlaceholder")}
-                  className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm text-zinc-100 placeholder:text-zinc-600"
-                />
+                <AttachmentDropZone composer={composer} disabled={rowBusy}>
+                  {(onPaste) => (
+                    <textarea
+                      value={comment}
+                      onChange={(event) => setComment(event.target.value)}
+                      onPaste={onPaste}
+                      maxLength={2000}
+                      rows={confirming === "return" ? 3 : 2}
+                      aria-label={t(confirming === "approve" ? "clipReviews.confirm.approveComment" : "clipReviews.confirm.returnTitle")}
+                      placeholder={t(confirming === "approve" ? "clipReviews.confirm.approveComment" : "clipReviews.confirm.returnPlaceholder")}
+                      className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm text-zinc-100 placeholder:text-zinc-600"
+                    />
+                  )}
+                </AttachmentDropZone>
                 <div className="flex items-center gap-2">
                   <ActionButton
                     busy={rowBusy}
                     busyLabel={t("clipReviews.action.saving")}
-                    disabled={busy !== null || (confirming === "return" && !returnCommentReady(comment))}
+                    disabled={busy !== null || !composer.ready || (confirming === "return" && !returnCommentReady(comment))}
                     onClick={() => void decide(clip, confirming)}
                     className={`rounded-md px-3 py-1 text-sm font-semibold text-white disabled:opacity-40 ${confirming === "approve" ? "bg-violet-600 hover:bg-violet-500" : "bg-red-700 hover:bg-red-600"}`}
                   >
                     {t(confirming === "approve" ? "clipReviews.confirm.approveYes" : "clipReviews.confirm.returnYes")}
                   </ActionButton>
-                  <button type="button" disabled={rowBusy} onClick={() => setConfirm(null)} className="rounded-md px-3 py-1 text-sm text-zinc-400 hover:text-zinc-200 disabled:opacity-40">
+                  <button
+                    type="button"
+                    disabled={rowBusy}
+                    onClick={() => {
+                      composer.clear(true);
+                      setConfirm(null);
+                    }}
+                    className="rounded-md px-3 py-1 text-sm text-zinc-400 hover:text-zinc-200 disabled:opacity-40"
+                  >
                     {t("clipReviews.action.cancel")}
                   </button>
+                  {!composer.ready && <span className="text-xs text-zinc-500">{t(composer.hasFailed ? "clipReviews.attach.removeFailed" : "clipReviews.attach.waitUploads")}</span>}
                 </div>
               </div>
             )}

@@ -4,6 +4,9 @@
 export type ClipStatus = "pending" | "approved" | "returned" | "withdrawn";
 export type ClipFileState = "ok" | "missing" | "changed";
 
+/** BL-246 (ADR 0065): one file the owner attached to his answer, as the owner's route sends it. */
+export type ClipAttachmentDto = { index: number; path: string; name: string; mime: string; size: number; sha256: string; file: ClipFileState };
+
 export type ClipDto = {
   clipId: string;
   channelId: string;
@@ -21,6 +24,9 @@ export type ClipDto = {
   decidedAt: string | null;
   decidedOn: string | null;
   file: ClipFileState;
+  /** BL-246: the deciding record's id (its attachments' folder), null while pending. */
+  decisionId: string | null;
+  attachments: ClipAttachmentDto[];
 };
 
 /** `m:ss` of a number of seconds (rounded down to the second): 65.4 -> "1:05", 120 -> "2:00". */
@@ -54,4 +60,35 @@ export function canApprove(clip: Pick<ClipDto, "status" | "file">): boolean {
 /** Whether a return comment can be sent (it is required: what to change). */
 export function returnCommentReady(text: string): boolean {
   return text.trim().length > 0 && text.length <= 2000;
+}
+
+// ---- BL-246 (CLIP_REVIEWS_PLAN.md items 10, 13, 16): the comment's attachments ----
+
+/** The address of one attachment through the owner's route (this computer's copy, loopback only). */
+export function attachmentSrcOf(base: string, clipId: string, decisionId: string, index: number): string {
+  return `${base}/${encodeURIComponent(clipId)}/attachments/${encodeURIComponent(decisionId)}/${index}`;
+}
+
+/** Shown as a picture (a thumbnail that opens the full size) rather than a link. */
+export function isImageMime(mime: string): boolean {
+  return ["image/png", "image/jpeg", "image/webp", "image/gif"].includes(mime);
+}
+
+/** Where each piece of a file starts, `pieceBytes` apart: 10 bytes in pieces of 4 -> [0, 4, 8]; an empty file has none. */
+export function pieceOffsetsOf(size: number, pieceBytes: number): number[] {
+  const offsets: number[] = [];
+  for (let offset = 0; offset < size; offset += pieceBytes) offsets.push(offset);
+  return offsets;
+}
+
+export type ComposerItemState = "uploading" | "ready" | "failed";
+
+/** The decision can be sent with its files: none uploading, none failed (a failed one is removed first). */
+export function attachmentsReady(items: ReadonlyArray<{ state: ComposerItemState }>): boolean {
+  return items.every((item) => item.state === "ready");
+}
+
+/** A whole percentage of a file sent (0..100). */
+export function percentOf(sent: number, size: number): number {
+  return size <= 0 ? 100 : Math.min(100, Math.floor((sent / size) * 100));
 }
