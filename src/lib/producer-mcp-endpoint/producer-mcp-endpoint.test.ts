@@ -154,7 +154,8 @@ function setup(initial: { enabled?: boolean } = {}) {
           },
           withdraw: async (input) => (clipCalls.push(["withdraw", input]), { clip: { clipId: input.clipId, status: "withdrawn" } }),
           list: async (input) => (clipCalls.push(["list", input]), { clips: [], pending: 0 }),
-          get: async (input) => (clipCalls.push(["get", input]), { clip: { clipId: input.clipId, status: "returned", comment: "darker" } }),
+          // BL-246 (AC-CR-25): the answer carries the deciding decision's attachments, passed through unchanged.
+          get: async (input) => (clipCalls.push(["get", input]), { clip: { clipId: input.clipId, status: "returned", comment: "darker", attachments: [PRODUCER_ATTACHMENT] } }),
         },
       };
       return createMcpServer(undefined, { connectionEnabled: true, producerSession });
@@ -751,7 +752,9 @@ test("AC-PR-07 / AC-PR-10: the Producer's own tools -- its channels with their f
   // four UPLOAD_QUEUE tools, so the permissions are READ, DRAFT and UPLOAD_QUEUE; the DRAFT list is unchanged.
   // BL-241 (owner msgs 4010/4011, ADR 0061 -- the requirement changed: the Producer submits clips for the owner's review): 1.15.0
   // adds the four clip review tools; submit and withdraw are DRAFT (a request the owner decides), so the DRAFT list gains them.
-  assert.equal(PRODUCER_API_VERSION, "1.18.0"); // 1.18.0 (BL-244): producer_upload_queue_cancel also stops a row being sent before its last chunk; 1.17.0 (BL-243): the calendar read's deleted_on_youtube / missingOnChannel, channel_video_list videoIds; 1.16.0 (BL-242): the add dates only the approved manifest in the packaged stage; 1.14.0 (BL-239): the upload queue tools; 1.13.0 (BL-235): the calendar read's due / gapDates from the daily coverage, published_pending; 1.12.0 (BL-221): a live sample without a count is 0 viewers; 1.10.0 (BL-209): the calendar read's uploads gain automatic / progressPercent / finishedAt; 1.8.0 (BL-182 stage 2): the calendar read lists packages and uploads
+  // BL-246 (owner msgs 4076/4078/4079, ADR 0065 -- the requirement changed: the owner's decisions carry attachments): 1.19.0, the
+  // clip review get / list answers gain `attachments`; no tool added.
+  assert.equal(PRODUCER_API_VERSION, "1.19.0"); // 1.19.0 (BL-246): clip review answers carry the owner's attachments; 1.18.0 (BL-244): producer_upload_queue_cancel also stops a row being sent before its last chunk; 1.17.0 (BL-243): the calendar read's deleted_on_youtube / missingOnChannel, channel_video_list videoIds; 1.16.0 (BL-242): the add dates only the approved manifest in the packaged stage; 1.14.0 (BL-239): the upload queue tools; 1.13.0 (BL-235): the calendar read's due / gapDates from the daily coverage, published_pending; 1.12.0 (BL-221): a live sample without a count is 0 viewers; 1.10.0 (BL-209): the calendar read's uploads gain automatic / progressPercent / finishedAt; 1.8.0 (BL-182 stage 2): the calendar read lists packages and uploads
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_stored_suggested_sources"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_publishing_calendar"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_video_comments"));
@@ -1073,6 +1076,15 @@ test("BL-239 AC-UQ-11: a channel worker session never lists an upload queue tool
   for (const tool of PRODUCER_UPLOAD_QUEUE_TOOLS) assert.equal(MCP_TOOL_CLASSIFICATION[tool], "producer-only", tool);
 });
 
+// BL-246 (CLIP_REVIEWS_PLAN.md item 17): one attachment exactly as the Producer reads it -- a workspace-relative path, never absolute.
+const PRODUCER_ATTACHMENT = {
+  path: "99 Data Exchange/From YTM/clip-reviews/clip_9/cd_1/shot.png",
+  name: "shot.png",
+  mime: "image/png",
+  size: 1024,
+  sha256: "c".repeat(64),
+};
+
 // BL-241 (docs/roadmap/plans/CLIP_REVIEWS_PLAN.md AC-CR-14; owner msgs 4010/4011; ADR 0061): the clip review tools reach only the
 // session's `clipReviews`, take strict inputs (no status or decision field), are logged under the channel they name and answer with it.
 test("BL-241 AC-CR-14: the clip review tools reach only the session's clipReviews; inputs are strict; each call is logged", async () => {
@@ -1085,7 +1097,7 @@ test("BL-241 AC-CR-14: the clip review tools reach only the session's clipReview
   const outside = await toolResult(await endpoint.handle(rpc(call("producer_clip_review_submit", { ...submitArgs, clipPath: "../outside.mp4" }), bearer(token))));
   assert.equal((payloadOf(outside.text).error as { code: string }).code, "clip_review_file_unavailable");
   const got = await toolResult(await endpoint.handle(rpc(call("producer_clip_review_get", { channelId: "UC_PR_Y", clipId: "clip_9" }), bearer(token))));
-  assert.deepEqual(payloadOf(got.text), { clip: { clipId: "clip_9", status: "returned", comment: "darker" }, forChannelId: "UC_PR_Y" });
+  assert.deepEqual(payloadOf(got.text), { clip: { clipId: "clip_9", status: "returned", comment: "darker", attachments: [PRODUCER_ATTACHMENT] }, forChannelId: "UC_PR_Y" });
   await endpoint.handle(rpc(call("producer_clip_review_list", { channelId: "UC_PR_X", status: "pending" }), bearer(token)));
   await endpoint.handle(rpc(call("producer_clip_review_withdraw", { channelId: "UC_PR_X", clipId: "clip_1" }), bearer(token)));
   // Refused at input, never reaching the module: a status or decision on submit, a missing channel, a bad clip id.
