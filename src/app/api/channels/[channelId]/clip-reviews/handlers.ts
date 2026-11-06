@@ -68,6 +68,11 @@ async function readPiece(request: Request, limit: number): Promise<Uint8Array | 
   return out;
 }
 
+/** RFC 5987 `ext-value`: `encodeURIComponent` leaves `' ( ) *` as they are, but they are not attr-chars (review). */
+export function rfc5987(value: string): string {
+  return encodeURIComponent(value).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+
 type Params<T> = { params: Promise<T> };
 type Base = { channelId: string };
 
@@ -140,7 +145,7 @@ export function createClipReviewRouteHandlers(deps: ClipReviewRouteDeps = defaul
         if (!/^\d{1,2}$/.test(index)) return NextResponse.json({ error: "clip_attachment_not_found", message: "No such attachment" }, { status: 404 });
         const file = await deps.service().attachmentFile(channelId, clipId, decisionId, Number(index));
         const response = streamLocalFile(file, file.type, request);
-        response.headers.set("content-disposition", `inline; filename*=UTF-8''${encodeURIComponent(file.name)}`);
+        response.headers.set("content-disposition", `inline; filename*=UTF-8''${rfc5987(file.name)}`);
         return response;
       }),
   };

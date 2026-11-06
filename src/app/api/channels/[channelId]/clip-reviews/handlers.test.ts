@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { DomainError } from "@/lib/shared-domain";
-import { createClipReviewRouteHandlers, type ClipReviewRouteDeps } from "./handlers";
+import { createClipReviewRouteHandlers, rfc5987, type ClipReviewRouteDeps } from "./handlers";
 
 // BL-241 AC-CR-11 (CLIP_REVIEWS_PLAN.md items 5-6; AGENTS.md §F; ADR 0029 decision 5): the owner's clip routes need a Web session
 // (401) and the ACTIVE channel (403); the video goes only to a loopback request (403) and honours HTTP Range (RFC 9110 §14: a
@@ -186,4 +186,10 @@ test("AC-CR-22: an attachment is served inline with its name and type; missing i
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("review 8: the file name in content-disposition is an RFC 5987 ext-value -- ' ( ) * are percent-encoded too", () => {
+  assert.equal(rfc5987("it's (final)*.png"), "it%27s%20%28final%29%2A.png");
+  assert.equal(rfc5987("a.txt"), "a.txt");
+  assert.equal(rfc5987("Скрин.png"), "%D0%A1%D0%BA%D1%80%D0%B8%D0%BD.png");
 });

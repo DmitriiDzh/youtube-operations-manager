@@ -115,6 +115,8 @@ export function ClipReviewsPanel({ channelId, visible }: { channelId: string | n
       const body = (await res.json().catch(() => ({}))) as { error?: string; message?: string };
       if (!res.ok) {
         const key = body.error ? ERROR_KEYS[body.error] : undefined;
+        // The clip was answered meanwhile: the server dropped the staged files, so the chips go too.
+        if (body.error === "clip_review_not_pending") composer.clear(false);
         setActionError({ clipId: clip.clipId, text: key ? t(key) : t("clipReviews.error.generic", { message: body.message ?? body.error ?? String(res.status) }) });
         await load();
         return;

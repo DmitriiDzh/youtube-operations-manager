@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type ReactNode } from "react";
-import { attachmentRefusalOf, CLIP_ATTACHMENT_ACCEPT, CLIP_ATTACHMENT_LIMITS, pastedNameOf } from "@/lib/clip-reviews/attachments";
+import { attachmentRefusalOf, CLIP_ATTACHMENT_ACCEPT, CLIP_ATTACHMENT_LIMITS, pastedFileNeedsName, pastedNameOf } from "@/lib/clip-reviews/attachments";
 import type { UiTextKey } from "@/lib/ui-text";
 import { attachmentSrcOf, attachmentsReady, isImageMime, percentOf, pieceOffsetsOf, type ClipAttachmentDto, type ComposerItemState } from "./clip-reviews-model";
 import { useT, useUiText } from "./ui-text-provider";
@@ -80,16 +80,21 @@ export function useAttachmentComposer(base: string | null, clipId: string | null
           body: JSON.stringify({ name: item.name, type: item.file.type, size: item.file.size, sha256 }),
         });
         if (!res.ok) return void (await failed(res));
-        const { uploadId } = (await res.json()) as { uploadId: string };
+        const { uploadId, name } = (await res.json()) as { uploadId: string; name: string };
         if (removed.current.has(item.key)) return discardOnServer(uploadId);
-        patch(item.key, { uploadId });
+        // The chip shows the name the file will have in the channel folder (review).
+        patch(item.key, { uploadId, name });
+        let complete = false;
         for (const offset of pieceOffsetsOf(item.file.size, CLIP_ATTACHMENT_LIMITS.pieceBytes)) {
           const piece = item.file.slice(offset, offset + CLIP_ATTACHMENT_LIMITS.pieceBytes);
           const sent = await fetch(`${base}/${encodeURIComponent(clipId)}/uploads/${encodeURIComponent(uploadId)}?offset=${offset}`, { method: "PUT", body: piece });
           if (removed.current.has(item.key)) return discardOnServer(uploadId);
           if (!sent.ok) return void (await failed(sent));
+          complete = ((await sent.json().catch(() => ({}))) as { complete?: boolean }).complete === true;
           patch(item.key, { sent: offset + piece.size });
         }
+        // Ready only when the server itself says the whole file arrived and passed its checks (review).
+        if (!complete) return patch(item.key, { state: "failed", error: t("clipReviews.attach.error.incomplete") });
         patch(item.key, { state: "ready", sent: item.file.size });
       } catch {
         await failed(null);
@@ -104,9 +109,11 @@ export function useAttachmentComposer(base: string | null, clipId: string | null
       const taken = files.slice(0, Math.max(0, room));
       setNotice(files.length > taken.length ? t("clipReviews.attach.tooMany", { max: CLIP_ATTACHMENT_LIMITS.files, count: files.length - taken.length }) : null);
       const fresh: Item[] = taken.map((original) => {
-        // A picture from the clipboard has no name of its own (or a generic "image.png"): pasted-<n>.<ext>.
-        const name = how === "pasted" ? pastedNameOf(++counter.current.pasted, original.type) : original.name;
-        const file = how === "pasted" ? new File([original], name, { type: original.type }) : original;
+        // A screenshot from the clipboard has no name of its own (or a generic "image.png"): pasted-<n>.<ext>. A file copied in
+        // Finder / Explorer keeps its real name (review).
+        const rename = how === "pasted" && pastedFileNeedsName(original.name);
+        const name = rename ? pastedNameOf(++counter.current.pasted, original.type) : original.name;
+        const file = rename ? new File([original], name, { type: original.type }) : original;
         const refusal = attachmentRefusalOf({ name, type: file.type, size: file.size });
         const picture = !refusal && isImageMime(file.type);
         return {
@@ -185,8 +192,8 @@ export function AttachmentDropZone({ composer, disabled, children }: { composer:
   const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
     const files = Array.from(event.clipboardData.files);
     if (files.length === 0 || disabled) return;
-    // A picture alone: keep it out of the text. Text with a picture (copied from a page): the text is pasted too.
-    if (!event.clipboardData.getData("text/plain")) event.preventDefault();
+    // Files taken from the paste never also put the clipboard's text (Finder's file name) into the comment (review).
+    event.preventDefault();
     composer.add(files, "pasted");
   };
   const onDragOver = (event: DragEvent<HTMLDivElement>) => {
@@ -238,7 +245,7 @@ export function AttachmentDropZone({ composer, disabled, children }: { composer:
             event.target.value = "";
           }}
         />
-        <span className="text-xs text-zinc-500">{t("clipReviews.attach.hint", { max: CLIP_ATTACHMENT_LIMITS.files, megabytes: 50 })}</span>
+        <span className="text-xs text-zinc-500">{t("clipReviews.attach.hint", { max: CLIP_ATTACHMENT_LIMITS.files, mebibytes: CLIP_ATTACHMENT_LIMITS.bytes / 1_048_576 })}</span>
       </div>
       {composer.notice && (
         <p role="status" className="text-xs text-amber-300">
@@ -272,15 +279,16 @@ export function AttachmentDropZone({ composer, disabled, children }: { composer:
                     <span className="text-[10px] text-zinc-500">{t("clipReviews.attach.uploading", { percent: percentOf(item.sent, item.file.size) })}</span>
                   </span>
                 )}
-                {item.state === "ready" && <span className="block text-[10px] text-zinc-500">{t("clipReviews.size", { megabytes: formatNumber(item.file.size / 1_048_576, { maximumFractionDigits: 1 }) })}</span>}
+                {item.state === "ready" && <span className="block text-[10px] text-zinc-500">{t("clipReviews.attach.size", { mebibytes: formatNumber(item.file.size / 1_048_576, { maximumFractionDigits: 1 }) })}</span>}
                 {item.state === "failed" && <span className="block text-[10px] text-red-300">{item.error}</span>}
               </span>
               <button
                 type="button"
                 onClick={() => composer.remove(item.key)}
+                disabled={disabled}
                 aria-label={t("clipReviews.attach.remove", { name: item.name })}
                 title={t("clipReviews.attach.remove", { name: item.name })}
-                className="shrink-0 rounded px-1 text-base leading-none text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
+                className="shrink-0 rounded px-1 text-base leading-none text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 disabled:opacity-40"
               >
                 <span aria-hidden>×</span>
               </button>
@@ -304,7 +312,7 @@ export function DecisionAttachments({ base, clipId, decisionId, attachments }: {
       <ul className="flex flex-wrap gap-2">
         {attachments.map((attachment) => {
           const src = attachmentSrcOf(base, clipId, decisionId, attachment.index);
-          const size = t("clipReviews.size", { megabytes: formatNumber(attachment.size / 1_048_576, { maximumFractionDigits: 1 }) });
+          const size = t("clipReviews.attach.size", { mebibytes: formatNumber(attachment.size / 1_048_576, { maximumFractionDigits: 1 }) });
           if (attachment.file !== "ok" || broken.has(attachment.index)) {
             const key: UiTextKey = attachment.file === "missing" ? "clipReviews.history.missing" : attachment.file === "changed" ? "clipReviews.history.changed" : "clipReviews.history.unavailable";
             return (
