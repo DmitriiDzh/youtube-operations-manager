@@ -109,7 +109,8 @@ Source: the owner, Telegram 2026-11-06, msgs 4076/4078/4079 («да»).
     `.md` UTF-8 text without NUL; `.json` UTF-8 that parses as JSON) -- otherwise `clip_attachment_type_mismatch`.
 12. **Names.** NFC; only the last segment after `/` or `\`; control characters removed; `< > : " | ? *` become `_`; whitespace runs one
     space; leading / trailing dots and spaces trimmed; `..`+ runs become one `.`; a Windows device name (`CON`, `PRN`, `AUX`, `NUL`,
-    `COM1-9`, `LPT1-9`) gets a leading `_`; the name before the extension at most 100 characters; the extension lowercased; an empty
+    `COM1-9`, `LPT1-9`) gets a leading `_`; the name before the extension at most 100 characters and 200 bytes in UTF-8 (file
+    systems count bytes); the extension lowercased; an empty
     name becomes `file-<n>` (n = the file's place, 1-based). Names that collide ignoring case get `-2`, `-3`, ... in order.
 13. **Upload (staging).** The panel sends each file to this computer's app data (never the channel folder: Syncthing must never carry
     a half-finished file) in pieces of at most 4 MiB, because every `/api` request passes the proxy, which keeps only the first 40 MB of
@@ -148,7 +149,7 @@ Source: the owner, Telegram 2026-11-06, msgs 4076/4078/4079 («да»).
   declared `""` is accepted as `image/png`.
 - **AC-CR-19** Names (by hand from item 12): `photo.PNG` → `photo.png`; `../../etc/passwd.png` → `passwd.png`;
   `C:\Users\x\shot.jpg` → `shot.jpg`; `a<NUL>b<US>.txt` → `ab.txt`; `what?<now>.md` → `what__now_.md`; `..png` (1st) → `file-1.png`;
-  `CON.txt` → `_CON.txt`; 300 × `x` + `.pdf` → 100 × `x` + `.pdf`; `  report   final .pdf` → `report final.pdf`; `a...b.json` →
+  `CON.txt` → `_CON.txt`; 300 × `x` + `.pdf` → 100 × `x` + `.pdf`; 90 × `漢` + `.txt` → 66 × `漢` + `.txt`; `  report   final .pdf` → `report final.pdf`; `a...b.json` →
   `a.b.json`; `e` + U+0301 + `.txt` → `é.txt`; the 2nd pasted PNG → `pasted-2.png`; `[shot.png, Shot.png, shot.png]` →
   `[shot.png, Shot-2.png, shot-3.png]`.
 - **AC-CR-20** Writing: a return with `hello` (5 bytes) as `note.txt` puts exactly those bytes at `99 Data Exchange/From

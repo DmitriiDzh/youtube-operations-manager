@@ -2320,4 +2320,8 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
   clip and approval is refused), but a clip already answered is not re-hashed, so its row does not say the file changed since.
 - **Mitigation:** the screen re-reads every minute and refuses a decision on a clip that is not pending here; approval re-hashes the
   file; the plan states a reworked clip is a new submission.
+- **Also (BL-246, ADR 0065):** an answer's attachments reach the other computer by Syncthing after the answer itself, so for a while
+  that computer (and a Producer reading there) names files it does not have yet; the row says «ещё не пришёл». A tool on the receiving
+  side that empties `From YTM` makes the same row say so for good -- the app never re-sends a file. Staged uploads of an abandoned
+  answer use disk (up to 10 × 50 MiB) until the 24 h sweep, which runs only when a new file is staged.
 - **Gate(s):** none (nothing reaches YouTube). **Re-evaluate:** if the owner reports a lost comment, or answers start driving uploads.

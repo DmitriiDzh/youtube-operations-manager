@@ -1424,7 +1424,8 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
 
 - **Transport:** as the factory endpoint, with `Authorization: Bearer ytom_pr_...` (the same checks and codes; a channel or factory token is
   401 `AGENT_TOKEN_INVALID` here, and a producer token on `/api/mcp` and `/api/mcp/factory`). Re-verified on every tool call.
-- **Producer API version:** `1.18.0` (since BL-244, ADR 0064: `producer_upload_queue_cancel` also stops an upload being sent, or paused, before its last chunk -- refused `upload_not_cancellable` with `details.reason` `final_chunk_sent` | `video_exists` | `status` | `changed` once it may be on YouTube; its result gains `previousStatus`, `storedBytes`, `totalBytes`; same tool); `1.17.0` = BL-243 (ADR 0063: the calendar read's `deleted_on_youtube`, `existsOnChannel` / `checkedAt` / `removedAt`, `missingOnChannel`; `channel_video_list` `videoIds` -- additive); `1.16.0` = BL-242 (ADR 0062: in the packaged approval stage `producer_upload_queue_add` dates only the manifest the owner approved -- same shape; before that `1.15.0`: 1.0.0, plus the three proposal tools in 1.1.0 (BL-163), plus `agent_get_video_milestones` and
+- **Producer API version:** `1.19.0` (since BL-246, ADR 0065: `producer_clip_review_get` / `_list` give each clip `attachments`, the
+  owner's files on the deciding answer -- additive, no tool added); `1.18.0` = BL-244, ADR 0064: `producer_upload_queue_cancel` also stops an upload being sent, or paused, before its last chunk -- refused `upload_not_cancellable` with `details.reason` `final_chunk_sent` | `video_exists` | `status` | `changed` once it may be on YouTube; its result gains `previousStatus`, `storedBytes`, `totalBytes`; same tool); `1.17.0` = BL-243 (ADR 0063: the calendar read's `deleted_on_youtube`, `existsOnChannel` / `checkedAt` / `removedAt`, `missingOnChannel`; `channel_video_list` `videoIds` -- additive); `1.16.0` = BL-242 (ADR 0062: in the packaged approval stage `producer_upload_queue_add` dates only the manifest the owner approved -- same shape; before that `1.15.0`: 1.0.0, plus the three proposal tools in 1.1.0 (BL-163), plus `agent_get_video_milestones` and
   `producer_upload_milestones` in 1.2.0 (BL-166), plus `agent_get_stored_breakdowns` in 1.3.0 (BL-168), plus `agent_get_stored_search_terms`
   in 1.4.0 (BL-169), plus `agent_get_experiment_results` and the proposal kind `experiment.link_video` in 1.5.0 (BL-170), plus
   `agent_get_video_comments` in 1.6.0 (BL-171), plus `agent_get_publishing_calendar` in 1.7.0 and its packages and uploads in 1.8.0
@@ -1505,12 +1506,21 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
     (`clip_review_not_found`). `producer_clip_review_withdraw` `{ channelId, clipId }` → `{ clip, forChannelId }` (a pending clip only:
     `clip_review_not_pending`, `details.status`).
   - A clip: `{ clipId, channelId, sceneId, clipPath, note, startSec, endSec, durationSeconds, sizeBytes, sha256, submittedAt, device,
-    status: pending | approved | returned | withdrawn, comment, decidedAt, decidedOn }`. Shared by both computers (sync family
+    status: pending | approved | returned | withdrawn, comment, decidedAt, decidedOn, attachments }`. `attachments` (1.19.0, BL-246,
+    ADR 0065): the files the owner attached to the deciding answer, `[]` otherwise -- `[{ path (relative to the channel workspace,
+    `99 Data Exchange/From YTM/clip-reviews/<clipId>/<decisionId>/<name>`), name, mime, size, sha256 }]`; they reach the other
+    computer by Syncthing, so check size and SHA-256 before relying on a fresh one. The Producer has no way to add attachments. Shared by both computers (sync family
     `clip_reviews`); the earliest owner answer counts, a withdrawal only without one.
 - **Owner routes (Web session + active channel):** `GET /api/channels/[channelId]/clip-reviews` → `{ clips (each also `file: ok | missing |
   changed` -- this computer's copy), waiting }`; `POST .../clip-reviews/[clipId]/decision` `{ action: approve | return, comment? }` (a return
   needs a comment; 409 `clip_review_not_pending` / `clip_review_file_missing` / `clip_review_file_changed`); `GET .../clip-reviews/[clipId]/video`
-  (this computer's copy with HTTP Range, loopback requests only).
+  (this computer's copy with HTTP Range, loopback requests only). BL-246 (ADR 0065): the list's clips also carry `decisionId` and
+  `attachments[]` with `index` and `file: ok | missing | changed`; `POST .../[clipId]/uploads` `{ name, type, size, sha256 }` →
+  `{ uploadId, name, mime }`; `PUT .../uploads/[uploadId]?offset=<n>` (a piece of at most 4 MiB) → `{ received, complete }`;
+  `DELETE .../uploads/[uploadId]`; the decision body takes `attachments: [uploadId]` (≤ 10); `GET .../[clipId]/attachments/[decisionId]/
+  [index]` (loopback only; 404 `clip_attachment_missing` / `clip_attachment_not_found`, 409 `clip_attachment_changed`). Codes:
+  `clip_attachment_too_many` 422, `_too_large` 413, `_type_not_allowed` / `_type_mismatch` 415, `_upload_unknown` 404,
+  `_upload_offset` / `_upload_incomplete` 409, `_upload_corrupt` 422, `_write_failed` 500.
 - No WRITE, research or collection request, media session or job.
 
 ## API Route Handlers (selected)

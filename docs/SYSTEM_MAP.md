@@ -1329,12 +1329,20 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Хранение:** семейство синхронизации `clip_reviews` (документ Automerge на канал, `<данные приложения>/clip-reviews-doc`, подпапка
   Syncthing `clip-reviews`): клипы (не меняются после отправки) и решения. Статус выводится: первое решение владельца, иначе отзыв
   Продюсера. Схема БД не меняется.
-- **Продюсер (Producer API 1.15.0):** `producer_clip_review_submit` / `_withdraw` (DRAFT), `_list` / `_get` (READ), `producer-only`.
+- **Продюсер (Producer API 1.15.0; 1.19.0 — вложения, BL-246):** `producer_clip_review_submit` / `_withdraw` (DRAFT), `_list` / `_get` (READ), `producer-only`.
   Работники каналов и фабрика их не получают; одобрения и возврата нет ни в одном MCP-пути (`clip-reviews/boundaries.test.ts`).
 - **Владелец:** маршруты `/api/channels/[channelId]/clip-reviews` (+ `/[clipId]/decision`, `/[clipId]/video` — HTTP Range, только
   loopback), сессия и активный канал, аудит решений (`clip:<clipId>`). Вкладка Медиа → «Клипы» (с 04.11, owner msg 4025; `/content/clips` ведёт туда; `src/components/clip-reviews-panel.tsx`,
   чистая часть `clip-reviews-model.ts`): компактные строки, плеер раскрывается в строке с отрезком `#t=start,end`; «Одобрить» (нужен
   тот самый файл на этом компьютере) и «Вернуть» (комментарий обязателен) с подтверждением в строке; значок ожидающих на вкладке (`clip-reviews-badge.ts`, своё чтение раз в минуту).
+- **Вложения к ответу (BL-246, owner msgs 4076/4078/4079, ADR 0065) — IMPLEMENTED (ветка `feature/bl-246-clip-comment-attachments`):**
+  вставка картинки (⌘V), перетаскивание, «Прикрепить файл» (`src/components/clip-attachments.tsx`); до 10 файлов по 50 МиБ,
+  png/jpg/webp/gif/pdf/txt/md/json/mp4/webm/mov — по расширению, заявленному типу и первым байтам (`clip-reviews/attachments.ts`).
+  Файл идёт частями по 4 МиБ (`/[clipId]/uploads`, `/uploads/[uploadId]`; прокси обрезает тело больше 40 МБ) во временную
+  папку `<данные приложения>/clip-review-uploads` (чистится через 24 ч); решение пишет файлы всё-или-ничего в
+  `<папка канала>/99 Data Exchange/From YTM/clip-reviews/<clipId>/<decisionId>/` (общие `workspace-exchange.resolveFromYtmFolder` /
+  `resolveFromYtmFolderFile`) и хранит `attachments` в решении. Показ — `/[clipId]/attachments/[decisionId]/[index]`, только loopback;
+  нет файла — «ещё не пришёл», другой — «изменён». Producer API 1.19.0: `attachments` в `_get` / `_list`.
 
 ## 3. Где вносить изменения
 
