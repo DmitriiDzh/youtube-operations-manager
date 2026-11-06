@@ -1297,6 +1297,9 @@ stages. Stage 1 collects and measures. Stage 2 would show provisional values, an
       to `returnLagOf` as channel-only runs, so `channelLagHours` is known to within an hour. Video lag is out of scope.
     - Cost: 1 Analytics unit per channel per hour per computer, logged in `quota_ledger` (label "Analytics freshness probe"). No
       quota-reserve check (BL-212's hourly pull has none either; the check itself costs Cloud Monitoring calls).
+    - Production servers only (`NODE_ENV=production`): a `npm run dev` server on the same DB never probes.
+    - Caveat: a probe asks `views` only, a collection run the overview metrics; a run's miss can be the proof for a probe's hit, so a
+      date right after the upgrade may show a later lag than the true one (still an upper bound) until probes have their own miss.
 - **Evening re-collect** (§14.6's daily boundary gets a second one).
   - Setting `analytics_evening_local_time`: default `22:05`, `""` = off. It must be later than the daily boundary, which the
     Settings API checks. Since 2026-10-13 it is `analytics_evening_utc_time` in UTC (§14.6, "UTC times").

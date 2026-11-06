@@ -768,21 +768,24 @@ async function startServerSession() {
   // every UTC hour (aligned to the clock, not to boot), so `returnLag` knows within the hour when a day first comes back. Every
   // computer that runs the server probes for itself (its rows stay local). Off with Settings → "Analytics reads". The next tick is
   // armed when this one starts, from the clock; a tick that finds the previous one still running is skipped (freshness-probe.ts).
-  const { createAnalyticsFreshnessProbeCore } = await import("@/lib/analytics");
-  const { msUntilNextProbe } = await import("@/lib/analytics/freshness-probe");
-  const freshnessProbe = createAnalyticsFreshnessProbeCore();
-  const freshnessProbeLoop = async () => {
-    // From a second ahead: a timer that fires a hair early (the wall clock moved) arms the NEXT hour, not this :07 again.
-    setTimeout(() => void freshnessProbeLoop(), 1_000 + msUntilNextProbe(new Date(Date.now() + 1_000))).unref();
-    try {
-      await assertDeviceAvailableForMutation(rawSqlClient);
-      await freshnessProbe.tick();
-    } catch (error) {
-      const paused = error instanceof Error && (error.name === "OperationLockError" || error.name === "RecoveryModeError");
-      if (!paused) console.warn(`[analytics-freshness] ${error instanceof Error ? error.message : String(error)}`);
-    }
-  };
-  setTimeout(() => void freshnessProbeLoop(), msUntilNextProbe(new Date())).unref();
+  // Production servers only (review finding 1): a worktree `npm run dev` on the same DB would otherwise probe with the owner's tokens too.
+  if (process.env.NODE_ENV === "production") {
+    const { createAnalyticsFreshnessProbeCore } = await import("@/lib/analytics");
+    const { msUntilNextProbe } = await import("@/lib/analytics/freshness-probe");
+    const freshnessProbe = createAnalyticsFreshnessProbeCore();
+    const freshnessProbeLoop = async () => {
+      // From a second ahead: a timer that fires a hair early (the wall clock moved) arms the NEXT hour, not this :07 again.
+      setTimeout(() => void freshnessProbeLoop(), 1_000 + msUntilNextProbe(new Date(Date.now() + 1_000))).unref();
+      try {
+        await assertDeviceAvailableForMutation(rawSqlClient);
+        await freshnessProbe.tick();
+      } catch (error) {
+        const paused = error instanceof Error && (error.name === "OperationLockError" || error.name === "RecoveryModeError");
+        if (!paused) console.warn(`[analytics-freshness] ${error instanceof Error ? error.message : String(error)}`);
+      }
+    };
+    setTimeout(() => void freshnessProbeLoop(), msUntilNextProbe(new Date())).unref();
+  }
 
   if (process.env.NODE_ENV !== "production") return;
   // Idle auto-shutdown: no request is in flight by definition, so reset, publish any unexported
