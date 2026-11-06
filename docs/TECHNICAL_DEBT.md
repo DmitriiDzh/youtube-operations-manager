@@ -2323,5 +2323,5 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Also (BL-246, ADR 0065):** an answer's attachments reach the other computer by Syncthing after the answer itself, so for a while
   that computer (and a Producer reading there) names files it does not have yet; the row says «ещё не пришёл». A tool on the receiving
   side that empties `From YTM` makes the same row say so for good -- the app never re-sends a file. Staged uploads of an abandoned
-  answer use disk (up to 10 × 50 MiB) until the 24 h sweep, which runs only when a new file is staged.
+  answer use disk (up to 10 × 50 MiB) until the 24 h sweep (when a new file is staged, and once at server start).
 - **Gate(s):** none (nothing reaches YouTube). **Re-evaluate:** if the owner reports a lost comment, or answers start driving uploads.

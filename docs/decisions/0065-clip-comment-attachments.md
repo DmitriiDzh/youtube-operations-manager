@@ -25,7 +25,9 @@ decision on either computer, and the channel folder already syncs to both by Syn
 3. **Upload in pieces to this computer's app data first.** Every `/api` request passes `src/proxy.ts`, and Next keeps only the first
    40 MB of a proxied body (`proxyClientMaxBodySize`) and silently drops the rest. Rather than raise that limit for every route (and
    hold 50 MB+ bodies in memory), the panel sends each file in pieces of at most 4 MiB to a staging folder in app data, with the
-   browser's SHA-256 checked at the last piece. The decision then names the staged uploads. Staging older than 24 h is removed.
+   browser's SHA-256 checked at the last piece. The decision then names the staged uploads. A staged upload idle for 24 h, or
+   whose clip is no longer pending, is removed (when a new file is staged, and once at server start); decision folders in the
+   workspace are never swept.
 4. **All or nothing.** Everything is checked before the workspace is touched; the files are copied under a temporary name in the new
    decision folder, their size and SHA-256 verified, renamed; only then is the decision recorded. A failed copy, check or record removes
    the decision folder; nothing is recorded.

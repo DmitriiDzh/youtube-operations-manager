@@ -98,7 +98,8 @@ Sources:
 Source: the owner, Telegram 2026-11-06, msgs 4076/4078/4079 («да»).
 
 10. **Attaching.** In the row's confirmation (approve or return) the owner can attach files to his comment: paste an image from the
-    clipboard (Cmd/Ctrl+V in the comment field; a clipboard image has no name and becomes `pasted-<n>.<ext>`), drop files on the
+    clipboard (Cmd/Ctrl+V in the comment field; a clipboard file without a name, or with the browser's generic `image.<ext>`, becomes
+    `pasted-<n>.<ext of its type>`; a file copied in Finder / Explorer keeps its name; the clipboard's text is not pasted with files), drop files on the
     comment box, or «Прикрепить файл» (a real button over a hidden file input). Each file shows as a chip (an image as a thumbnail)
     with its upload progress, its error, and × to remove it. The decision button waits until every chip is uploaded; a failed chip
     must be removed first.
@@ -118,7 +119,11 @@ Source: the owner, Telegram 2026-11-06, msgs 4076/4078/4079 («да»).
     (the browser's SHA-256) → `{ uploadId, name, mime }`; `PUT .../uploads/[uploadId]?offset=<n>` the next piece (refused at another
     offset or past the size: `clip_attachment_upload_offset`); the last piece checks the kind (item 11) and the SHA-256
     (`clip_attachment_upload_corrupt`) and drops the upload when either fails; `DELETE .../uploads/[uploadId]` drops it. An upload
-    belongs to one clip of one channel; staged uploads older than 24 h are removed.
+    belongs to one clip of one channel. An upload idle for 24 h (its last piece, the upload as a whole) is removed when a new one is
+    staged and by a sweep once at server start, which also removes uploads whose clip is no longer pending; a decision refused
+    because the clip was answered meanwhile removes the uploads it named. Decision folders in the workspace are never removed by a
+    sweep. A failed write answers a fixed message; its detail (paths) goes only to the server log. The chip is ready only when the
+    server answered `complete: true` for the last piece.
 14. **Writing.** `POST .../decision` `{ action, comment?, attachments?: [uploadId] }`. Before anything is written: the clip pending,
     approval's file check, at most 10 uploads, each complete and of this clip, kind and SHA-256 again. Then the decision's id is made,
     the files are copied to `<workspace>/99 Data Exchange/From YTM/clip-reviews/<clipId>/<decisionId>/<name>` (the folders made by the
@@ -171,6 +176,10 @@ Source: the owner, Telegram 2026-11-06, msgs 4076/4078/4079 («да»).
   pending or withdrawn clip has `[]`. Producer API 1.19.0; the Producer's clip tools are still exactly submit / list / get / withdraw.
 - **AC-CR-26** Channel and clip: staging, a piece, a decision or an attachment of a clip of channel A asked under channel B is
   `clip_review_not_found`; an upload staged for clip X used in a decision on clip Y is `clip_attachment_upload_unknown`.
+- **AC-CR-28** (independent review) A failed write's answer carries no path (the detail is logged); removing a chip runs under the
+  module lock; a decision or clip id that is not a plain folder name is refused before any folder is made; malformed attachment
+  entries in a synced record are skipped, the others keep their places; the start-up sweep removes idle (by the upload's last
+  activity), stray and no-longer-usable uploads and keeps one still being sent; `content-disposition` uses an RFC 5987 ext-value.
 - **AC-CR-27** Staging: a piece at a wrong offset or past the declared size is `clip_attachment_upload_offset`; a last piece whose
   SHA-256 differs from the declared one is `clip_attachment_upload_corrupt` and drops the upload; a decision naming an unfinished
   upload is `clip_attachment_upload_incomplete`; staged uploads older than 24 h are removed when a new one is staged.

@@ -5188,7 +5188,8 @@ On branch `feature/bl-229-music-library`. No schema change; no YouTube call; not
   Content on 2026-11-04 (owner msg 4025), and `/content/clips` redirects there.
 - **Attachments (BL-246, ADR 0065, plan items 10-17):** `attachments.ts` (pure, shared with the panel: limits, kinds by extension /
   declared type / first bytes, name sanitizing and case-insensitive de-duplication), `adapters/attachments.ts` (staging in
-  `clipReviewUploadsDir` as `<id>.json` + `<id>.part`, swept after 24 h; the decision-folder writer: a fresh
+  `clipReviewUploadsDir` as `<id>.json` + `<id>.part`, swept after 24 h idle (the later of the two files) and, once at server start
+  (`src/instrumentation.ts`, behind the device gate), also when the clip is no longer pending; the decision-folder writer: a fresh
   `From YTM/clip-reviews/<clipId>/<decisionId>/` through `workspace-exchange.resolveFromYtmFolder`, copy to a temporary name,
   re-hash, rename, the folder removed on any failure). Flow: `POST /[clipId]/uploads` → `PUT /uploads/[uploadId]?offset=` pieces of
   at most 4 MiB (the proxy buffers only 40 MB of a body and truncates silently, so no single-request upload) with the browser's
