@@ -180,7 +180,7 @@ export type {
 export { createPublishingPlansSyncRunnerForProduction } from "./publishing-plans-sync";
 // BL-241 (ADR 0061): a channel's clips for review (the Producer's submissions, the owner's approvals and returns), one document per channel.
 export { createClipReviewsCoreForProduction, createClipReviewsCore, emptyDocument as emptyClipReviewsDocument } from "./clip-reviews";
-export type { ClipReviewClip, ClipReviewDecision, ClipReviewDecisionKind, ClipReviewsCore, ClipReviewsDocument, ClipReviewsSnapshot } from "./clip-reviews";
+export type { ClipReviewAttachment, ClipReviewClip, ClipReviewDecision, ClipReviewDecisionKind, ClipReviewsCore, ClipReviewsDocument, ClipReviewsSnapshot } from "./clip-reviews";
 export { createClipReviewsSyncRunnerForProduction } from "./clip-reviews-sync";
 
 // BL-194 (ADR 0040): the video numbers each computer reserved, as a per-device report (the list and its conflicts: video-projects).

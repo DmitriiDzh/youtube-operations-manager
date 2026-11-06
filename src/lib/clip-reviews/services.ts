@@ -1,7 +1,22 @@
-import { parseWithSchema } from "@/lib/shared-domain";
-import { CLIP_REVIEW_LIMITS, DomainError, type ClipFileState, type ClipReviewClip, type ClipReviewDecision, type ClipReviewsPorts, type ClipReviewView, type OwnerClipView, type ResolvedClipFile } from "./contracts";
-import { clipVideoTypeOf, clipViewOf, durationAccepted, sortClipViews } from "./model";
-import { getClipInputSchema, listClipsInputSchema, ownerClipDecisionInputSchema, submitClipInputSchema, withdrawClipInputSchema } from "./schemas";
+import { parseWithSchema, type DomainErrorCode } from "@/lib/shared-domain";
+import { attachmentRefusalOf, attachmentRuleOf, CLIP_ATTACHMENT_LIMITS, headMatchesKind, sanitizeAttachmentName, textLooksValid, uniqueAttachmentNames } from "./attachments";
+import {
+  CLIP_ATTACHMENTS_FOLDER,
+  CLIP_REVIEW_LIMITS,
+  DomainError,
+  type ClipFileState,
+  type ClipReviewAttachment,
+  type ClipReviewClip,
+  type ClipReviewDecision,
+  type ClipReviewsPorts,
+  type ClipReviewView,
+  type OwnerAttachmentView,
+  type OwnerClipView,
+  type ResolvedClipFile,
+  type StagedAttachment,
+} from "./contracts";
+import { clipVideoTypeOf, clipViewOf, decidingRecordOf, durationAccepted, sortClipViews } from "./model";
+import { getClipInputSchema, listClipsInputSchema, ownerClipDecisionInputSchema, stageAttachmentInputSchema, submitClipInputSchema, uploadIdSchema, withdrawClipInputSchema } from "./schemas";
 
 // BL-241 (CLIP_REVIEWS_PLAN.md items 2-8, ADR 0061): what the Producer and the owner may do with a clip. The Producer submits,
 // withdraws, lists and gets; the owner lists, plays and decides. The two surfaces are built separately (`producerSurface`,
@@ -145,23 +160,179 @@ export function createClipReviewsService(ports: ClipReviewsPorts) {
     return { clips: all.filter((v) => !status || v.status === status).slice(0, limit ?? CLIP_REVIEW_LIMITS.listDefault), pending };
   }
 
+  /** BL-246: the deciding decision's attachments with this computer's copy, by size only (as the clips, AC-CR-08 / AC-CR-23). */
+  async function ownerAttachmentsOf(clip: ClipReviewClip, decisionId: string | null, attachments: readonly ClipReviewAttachment[]): Promise<OwnerAttachmentView[]> {
+    if (!decisionId || attachments.length === 0) return [];
+    const workspace = await ports.workspace(clip.channelId);
+    const out: OwnerAttachmentView[] = [];
+    for (const [index, attachment] of attachments.entries()) {
+      let file: ClipFileState = "missing";
+      if (workspace && attachment.path === attachmentPathOf(clip.clipId, decisionId, attachment.name)) {
+        const found = await ports.attachmentFiles.resolve(workspace, clip.clipId, decisionId, attachment.name).catch(() => null);
+        file = !found ? "missing" : found.bytes === attachment.size ? "ok" : "changed";
+      }
+      out.push({ ...attachment, index, file });
+    }
+    return out;
+  }
+
   /** The owner's list: every clip of the channel with this computer's copy (the pending ones hashed), and how many wait. */
   async function ownerList(channelId: string): Promise<{ clips: OwnerClipView[]; waiting: number }> {
     const snapshot = await ports.store.read(channelId);
     const all = await views(channelId);
+    const decisions = Object.values(snapshot.decisions);
     const clips: OwnerClipView[] = [];
     // Review: the list (and the 60 s tab badge) checks the size only -- hashing ~100 MB clips on every poll is too costly; the
     // SHA-256 is checked where it matters, when the owner approves (`decide`).
-    for (const view of all) clips.push({ ...view, file: await fileStateOf(snapshot.clips[view.clipId], false) });
+    for (const view of all) {
+      const clip = snapshot.clips[view.clipId];
+      const record = decidingRecordOf(view.clipId, decisions);
+      const decisionId = record?.id ?? null;
+      clips.push({ ...view, file: await fileStateOf(clip, false), decisionId, attachments: await ownerAttachmentsOf(clip, decisionId, view.attachments) });
+    }
     return { clips, waiting: all.filter((v) => v.status === "pending").length };
+  }
+
+  // ---- BL-246 (ADR 0065, CLIP_REVIEWS_PLAN.md items 10-16): the owner's comment attachments ----
+
+  const attachmentError = (code: DomainErrorCode, message: string, details: Record<string, unknown> = {}) => new DomainError({ code, message, details });
+
+  /** A pending clip of this channel (stage and pieces are only for a decision still to be made). */
+  async function requirePendingClip(channelId: string, clipId: string): Promise<ClipReviewClip> {
+    const { clip, decisions } = await requireClip(channelId, clipId);
+    const view = clipViewOf(clip, decisions);
+    if (view.status !== "pending") throw notPending(view);
+    return clip;
+  }
+
+  /** The staged upload of exactly this clip of this channel. */
+  async function requireStaged(channelId: string, clipId: string, uploadId: unknown) {
+    const id = uploadIdSchema.safeParse(uploadId);
+    const staged = id.success ? await ports.staging.get(id.data) : null;
+    if (!staged || staged.upload.channelId !== channelId || staged.upload.clipId !== clipId) {
+      throw attachmentError("clip_attachment_upload_unknown", "No such upload for this clip on this computer (send the file again)", { uploadId: id.success ? id.data : null });
+    }
+    return staged;
+  }
+
+  /** The whole staged file is its extension's kind and the browser's SHA-256 (item 11, item 13). */
+  async function verifyStaged(upload: StagedAttachment): Promise<void> {
+    const rule = attachmentRuleOf(upload.rawName);
+    let kindOk = false;
+    if (rule) {
+      kindOk = headMatchesKind(upload.rawName, await ports.staging.head(upload.uploadId, 64));
+      if (kindOk && (rule.kind === "text" || rule.kind === "json")) kindOk = textLooksValid(await ports.staging.readAll(upload.uploadId), rule.kind === "json");
+    }
+    if (!kindOk) throw attachmentError("clip_attachment_type_mismatch", `${upload.rawName || "The file"} is not the kind its name says`, { uploadId: upload.uploadId });
+    if ((await ports.staging.hash(upload.uploadId)) !== upload.sha256) {
+      throw attachmentError("clip_attachment_upload_corrupt", "The file arrived different from what the browser sent (send it again)", { uploadId: upload.uploadId });
+    }
+  }
+
+  /** Stages one file for the owner's next decision on a pending clip; its pieces follow (`appendAttachmentPiece`). */
+  async function stageAttachment(channelId: string, clipId: string, input: unknown): Promise<{ uploadId: string; name: string; mime: string }> {
+    const parsed = parseWithSchema(stageAttachmentInputSchema, input, "clip attachment");
+    await requirePendingClip(channelId, clipId);
+    const refusal = attachmentRefusalOf(parsed);
+    if (refusal === "type_not_allowed") {
+      throw attachmentError("clip_attachment_type_not_allowed", "Only png, jpg, webp, gif, pdf, txt, md, json, mp4, webm or mov files can be attached", { name: parsed.name });
+    }
+    if (refusal === "type_mismatch") throw attachmentError("clip_attachment_type_mismatch", `The file's type (${parsed.type}) is not its extension's`, { name: parsed.name, type: parsed.type });
+    if (refusal === "too_large") throw attachmentError("clip_attachment_too_large", `A file is at most ${CLIP_ATTACHMENT_LIMITS.bytes} bytes (50 MiB)`, { size: parsed.size, max: CLIP_ATTACHMENT_LIMITS.bytes });
+    if (refusal === "empty") throw attachmentError("validation_failed", "An empty file cannot be attached", { size: parsed.size });
+    // Abandoned comments do not pile up: older uploads are removed whenever a new one starts.
+    await ports.staging.removeOlderThan(new Date(ports.now().getTime() - CLIP_ATTACHMENT_LIMITS.stagedHours * 3_600_000)).catch(() => undefined);
+    const uploadId = Array.from({ length: 2 }, () => ports.randomId()).join("").replace(/[^a-f0-9]/g, "").padEnd(32, "0").slice(0, 32);
+    const upload: StagedAttachment = { uploadId, channelId, clipId, rawName: parsed.name, declaredType: parsed.type, size: parsed.size, sha256: parsed.sha256, createdAt: stamp() };
+    await ports.staging.create(upload);
+    return { uploadId, name: sanitizeAttachmentName(parsed.name, 1), mime: attachmentRuleOf(parsed.name)!.mime };
+  }
+
+  /** The next piece of a staged file at `offset` (exactly the bytes received so far); the last one checks the kind and the SHA-256. */
+  async function appendAttachmentPiece(channelId: string, clipId: string, uploadId: string, offset: number, bytes: Uint8Array): Promise<{ received: number; complete: boolean }> {
+    await requireClip(channelId, clipId);
+    if (bytes.length === 0 || bytes.length > CLIP_ATTACHMENT_LIMITS.pieceBytes) {
+      throw attachmentError("validation_failed", `A piece is 1..${CLIP_ATTACHMENT_LIMITS.pieceBytes} bytes`, { bytes: bytes.length });
+    }
+    return ports.withLock(async () => {
+      const staged = await requireStaged(channelId, clipId, uploadId);
+      if (!Number.isSafeInteger(offset) || offset !== staged.received || staged.received + bytes.length > staged.upload.size) {
+        throw attachmentError("clip_attachment_upload_offset", "This piece does not continue the file", { offset, received: staged.received, size: staged.upload.size });
+      }
+      const received = await ports.staging.append(staged.upload.uploadId, bytes);
+      const complete = received === staged.upload.size;
+      if (complete) {
+        try {
+          await verifyStaged(staged.upload);
+        } catch (error) {
+          await ports.staging.remove(staged.upload.uploadId).catch(() => undefined);
+          throw error;
+        }
+      }
+      return { received, complete };
+    });
+  }
+
+  /** The owner removed a chip (×): its staged file is dropped. */
+  async function discardAttachment(channelId: string, clipId: string, uploadId: string): Promise<{ removed: true }> {
+    await requireClip(channelId, clipId);
+    const staged = await requireStaged(channelId, clipId, uploadId);
+    await ports.staging.remove(staged.upload.uploadId);
+    return { removed: true };
+  }
+
+  /**
+   * BL-246: one attachment of a decision on this clip, from this computer's copy, for the owner's screen. The stored path must be
+   * exactly that decision's folder plus its name; it is resolved again by the shared rule; a file not here yet is
+   * `clip_attachment_missing`, a different one (size or SHA-256) `clip_attachment_changed` -- never served.
+   */
+  async function attachmentFile(channelId: string, clipId: string, decisionId: string, index: number): Promise<ResolvedClipFile & { type: string; name: string }> {
+    await requireClip(channelId, clipId);
+    const snapshot = await ports.store.read(channelId);
+    const decision = Object.hasOwn(snapshot.decisions, decisionId) ? snapshot.decisions[decisionId] : undefined;
+    const attachment = decision && decision.clipId === clipId && Number.isSafeInteger(index) && index >= 0 ? decision.attachments?.[index] : undefined;
+    const rule = attachment ? attachmentRuleOf(attachment.name) : null;
+    const notFound = () => attachmentError("clip_attachment_not_found", "No such attachment of this clip", { clipId, decisionId, index });
+    if (!attachment || !rule || attachment.path !== attachmentPathOf(clipId, decisionId, attachment.name)) throw notFound();
+    const workspace = await requireWorkspace(channelId);
+    let file: ResolvedClipFile | null;
+    try {
+      file = await ports.attachmentFiles.resolve(workspace, clipId, decisionId, attachment.name);
+    } catch {
+      throw notFound();
+    }
+    if (!file) throw attachmentError("clip_attachment_missing", "This file has not arrived on this computer yet", { clipId, decisionId, index });
+    if (file.bytes !== attachment.size || (await ports.hashFile(file.path)) !== attachment.sha256) {
+      throw attachmentError("clip_attachment_changed", "This file on this computer is not the one attached", { clipId, decisionId, index });
+    }
+    return { ...file, type: rule.kind === "text" || rule.kind === "json" ? "text/plain; charset=utf-8" : rule.mime, name: attachment.name };
   }
 
   /**
    * The owner's decision (Web UI only, ADR 0061 §4): the clip must be pending on this computer; approval also needs this computer's
    * file to be the submitted one (size and SHA-256). A refusal writes nothing.
+   *
+   * BL-246 (ADR 0065 §4): with attachments, everything is checked before the workspace is touched; then the files are written into
+   * the decision's folder and only then is the decision recorded. A failed write or record leaves no folder and no decision.
    */
   async function decide(channelId: string, clipId: string, input: unknown, userId: string): Promise<{ clip: OwnerClipView }> {
     const parsed = parseWithSchema(ownerClipDecisionInputSchema, input, "clip decision");
+    const uploadIds = parsed.attachments ?? [];
+    if (uploadIds.length > CLIP_ATTACHMENT_LIMITS.files) {
+      throw attachmentError("clip_attachment_too_many", `At most ${CLIP_ATTACHMENT_LIMITS.files} files per decision`, { count: uploadIds.length, max: CLIP_ATTACHMENT_LIMITS.files });
+    }
+    if (new Set(uploadIds).size !== uploadIds.length) throw attachmentError("validation_failed", "The same upload is attached twice", {});
+    await requireClip(channelId, clipId);
+    const staged: Array<{ upload: StagedAttachment; path: string }> = [];
+    for (const uploadId of uploadIds) {
+      const one = await requireStaged(channelId, clipId, uploadId);
+      if (one.received !== one.upload.size) {
+        throw attachmentError("clip_attachment_upload_incomplete", "A file has not finished uploading", { uploadId, received: one.received, size: one.upload.size });
+      }
+      await verifyStaged(one.upload);
+      staged.push(one);
+    }
+    const names = uniqueAttachmentNames(staged.map((one, i) => sanitizeAttachmentName(one.upload.rawName, i + 1)));
     return ports.withLock(async () => {
       const { clip, decisions } = await requireClip(channelId, clipId);
       const view = clipViewOf(clip, decisions);
@@ -173,14 +344,47 @@ export function createClipReviewsService(ports: ClipReviewsPorts) {
       if (parsed.action === "approve" && file === "changed") {
         throw new DomainError({ code: "clip_review_file_changed", message: "The clip's file on this computer is not the one the Producer submitted", details: { clipId } });
       }
+      const workspace = staged.length > 0 ? await requireWorkspace(channelId) : null;
       const comment = (parsed.comment ?? "").trim() || null;
       const kind = parsed.action === "approve" ? "approved" : "returned";
       const device = await ports.deviceLabel();
       const at = stamp();
-      const record: ClipReviewDecision = { id: `cd_${ports.randomId()}`.slice(0, 40), clipId, kind, by: "owner", comment, device, at };
-      await ports.store.addDecision(channelId, record);
-      await ports.audit({ channelId, clipId, detail: { event: `clip_review.${kind}`, at, decisionId: record.id, clipId, sceneId: clip.sceneId, clipPath: clip.clipPath, sha256: clip.sha256, comment, by: userId, device } });
-      return { clip: { ...clipViewOf(clip, [...decisions, record]), file } };
+      const id = `cd_${ports.randomId()}`.slice(0, 40);
+      const attachments: ClipReviewAttachment[] = staged.map((one, i) => ({
+        path: attachmentPathOf(clipId, id, names[i]),
+        name: names[i],
+        mime: attachmentRuleOf(one.upload.rawName)!.mime,
+        size: one.upload.size,
+        sha256: one.upload.sha256,
+      }));
+      if (workspace) {
+        try {
+          await ports.attachmentFiles.write(
+            workspace,
+            clipId,
+            id,
+            staged.map((one, i) => ({ sourcePath: one.path, name: names[i], size: one.upload.size, sha256: one.upload.sha256 }))
+          );
+        } catch (error) {
+          throw attachmentError("clip_attachment_write_failed", `The files could not be written into the channel folder: ${error instanceof Error ? error.message : String(error)}`, { clipId });
+        }
+      }
+      const record: ClipReviewDecision = { id, clipId, kind, by: "owner", comment, device, at, ...(attachments.length > 0 ? { attachments } : {}) };
+      try {
+        await ports.store.addDecision(channelId, record);
+      } catch (error) {
+        // All or nothing (item 14): the decision was not recorded, so its files must not stay in the channel folder.
+        if (workspace) await ports.attachmentFiles.remove(workspace, clipId, id).catch(() => undefined);
+        throw error;
+      }
+      for (const one of staged) await ports.staging.remove(one.upload.uploadId).catch(() => undefined);
+      await ports.audit({
+        channelId,
+        clipId,
+        detail: { event: `clip_review.${kind}`, at, decisionId: record.id, clipId, sceneId: clip.sceneId, clipPath: clip.clipPath, sha256: clip.sha256, comment, by: userId, device, attachments: attachments.map((a) => ({ path: a.path, size: a.size, sha256: a.sha256 })) },
+      });
+      const decided = clipViewOf(clip, [...decisions, record]);
+      return { clip: { ...decided, file, decisionId: id, attachments: attachments.map((a, index) => ({ ...a, index, file: "ok" as const })) } };
     });
   }
 
@@ -192,7 +396,12 @@ export function createClipReviewsService(ports: ClipReviewsPorts) {
     return file && type ? { ...file, type } : null;
   }
 
-  return { submit, withdraw, get, list, ownerList, decide, clipFile };
+  return { submit, withdraw, get, list, ownerList, decide, clipFile, stageAttachment, appendAttachmentPiece, discardAttachment, attachmentFile };
+}
+
+/** BL-246: where an attachment of a decision lives, relative to the workspace (`/` between folders). */
+export function attachmentPathOf(clipId: string, decisionId: string, name: string): string {
+  return `${CLIP_ATTACHMENTS_FOLDER}/${clipId}/${decisionId}/${name}`;
 }
 
 export type ClipReviewsService = ReturnType<typeof createClipReviewsService>;
@@ -203,8 +412,16 @@ export function producerSurface(service: ClipReviewsProducerSurface): ClipReview
   return { submit: (input, producer) => service.submit(input, producer), withdraw: (input) => service.withdraw(input), list: (input) => service.list(input), get: (input) => service.get(input) };
 }
 
-/** What the owner's Web UI routes get: the list, the decision, the file to play. */
-export type ClipReviewsOwnerSurface = Pick<ClipReviewsService, "ownerList" | "decide" | "clipFile">;
+/** What the owner's Web UI routes get: the list, the decision, the file to play; since BL-246 the attachments' staging and serving. */
+export type ClipReviewsOwnerSurface = Pick<ClipReviewsService, "ownerList" | "decide" | "clipFile" | "stageAttachment" | "appendAttachmentPiece" | "discardAttachment" | "attachmentFile">;
 export function ownerSurface(service: ClipReviewsOwnerSurface): ClipReviewsOwnerSurface {
-  return { ownerList: (channelId) => service.ownerList(channelId), decide: (channelId, clipId, input, userId) => service.decide(channelId, clipId, input, userId), clipFile: (channelId, clipId) => service.clipFile(channelId, clipId) };
+  return {
+    ownerList: (channelId) => service.ownerList(channelId),
+    decide: (channelId, clipId, input, userId) => service.decide(channelId, clipId, input, userId),
+    clipFile: (channelId, clipId) => service.clipFile(channelId, clipId),
+    stageAttachment: (channelId, clipId, input) => service.stageAttachment(channelId, clipId, input),
+    appendAttachmentPiece: (channelId, clipId, uploadId, offset, bytes) => service.appendAttachmentPiece(channelId, clipId, uploadId, offset, bytes),
+    discardAttachment: (channelId, clipId, uploadId) => service.discardAttachment(channelId, clipId, uploadId),
+    attachmentFile: (channelId, clipId, decisionId, index) => service.attachmentFile(channelId, clipId, decisionId, index),
+  };
 }

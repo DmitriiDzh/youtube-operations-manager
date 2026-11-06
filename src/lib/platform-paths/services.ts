@@ -92,6 +92,7 @@ export function resolveAppPaths(input: ResolveAppPathsInput): AppPaths {
     clipReviewsDocDir: path.join(appDataDir, "clip-reviews-doc"),
     clipReviewsSyncFallbackDir: path.join(appDataDir, "clip-reviews-sync-local"),
     clipReviewsDiscardedBackupsDir: path.join(appDataDir, "clip-reviews-discarded-backups"),
+    clipReviewUploadsDir: path.join(appDataDir, "clip-review-uploads"),
     storyboardsDocDir: path.join(appDataDir, "storyboards-doc"),
     storyboardsSyncFallbackDir: path.join(appDataDir, "storyboards-sync-local"),
     storyboardsDiscardedBackupsDir: path.join(appDataDir, "storyboards-discarded-backups"),

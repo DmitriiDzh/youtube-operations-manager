@@ -329,6 +329,24 @@ export type DomainErrorCode =
   | "clip_review_duplicate"
   | "clip_review_file_missing"
   | "clip_review_file_changed"
+  // BL-246 (ADR 0065, CLIP_REVIEWS_PLAN.md items 11-16): the owner's comment attachments. TOO_MANY: more than 10 in a decision;
+  // TOO_LARGE: over 50 MiB; TYPE_NOT_ALLOWED: an extension not on the list; TYPE_MISMATCH: the declared type or the first bytes are
+  // not the extension's kind; UPLOAD_*: a staged upload unknown here / of another clip, a piece not continuing it, the arrived file not
+  // the browser's (SHA-256), not finished; WRITE_FAILED: the channel folder could not take the files (nothing recorded);
+  // NOT_FOUND / MISSING / CHANGED: serving one -- no such attachment (or a stored path outside its decision folder), not on this
+  // computer yet, a different file here.
+  | "clip_attachment_too_many"
+  | "clip_attachment_too_large"
+  | "clip_attachment_type_not_allowed"
+  | "clip_attachment_type_mismatch"
+  | "clip_attachment_upload_unknown"
+  | "clip_attachment_upload_offset"
+  | "clip_attachment_upload_corrupt"
+  | "clip_attachment_upload_incomplete"
+  | "clip_attachment_write_failed"
+  | "clip_attachment_not_found"
+  | "clip_attachment_missing"
+  | "clip_attachment_changed"
   // Review #5 (BL-225): a package whose plan slot already has an upload on this computer.
   | "upload_slot_taken"
   // BL-239 (UPLOAD_QUEUE_CONTROL_PLAN.md, ADR 0059) -- the upload queue's control. NOT_FOUND: no upload with that id on this computer

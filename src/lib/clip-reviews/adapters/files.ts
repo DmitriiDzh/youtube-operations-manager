@@ -10,19 +10,23 @@ import type { ResolvedClipFile } from "../contracts";
 // (`ffmpeg-host`) and a SHA-256 of the file, remembered per path, size and modification time so the owner's list does not hash an
 // unchanged 100 MB file on every read.
 
+/** The shared workspace rule's arguments for this module (the set-time folder check re-run at use time, errors as plain `Error`). */
+export function workspaceRuleArgs(workspace: string) {
+  return {
+    workspace,
+    fs: createExchangeFs(),
+    validateWorkspacePath: async (candidate: string): Promise<{ ok: true } | { ok: false; reason: string }> => {
+      const result = await validateOperatorDirectoryPath(candidate);
+      return result.ok ? { ok: true } : { ok: false, reason: result.reason };
+    },
+    isPathInsideOrEqual,
+    unavailable: (reason: string) => new Error(reason),
+  };
+}
+
 export async function resolveClipFile(workspace: string, relativePath: string): Promise<({ ok: true } & ResolvedClipFile) | { ok: false; reason: string }> {
   try {
-    const file = await resolveWorkspaceFile({
-      workspace,
-      relativePath,
-      fs: createExchangeFs(),
-      validateWorkspacePath: async (candidate) => {
-        const result = await validateOperatorDirectoryPath(candidate);
-        return result.ok ? { ok: true } : { ok: false, reason: result.reason };
-      },
-      isPathInsideOrEqual,
-      unavailable: (reason) => new Error(reason),
-    });
+    const file = await resolveWorkspaceFile({ ...workspaceRuleArgs(workspace), relativePath });
     return { ok: true, path: file.path, bytes: file.bytes };
   } catch (error) {
     return { ok: false, reason: error instanceof Error ? error.message : String(error) };

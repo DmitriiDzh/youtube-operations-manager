@@ -1,8 +1,8 @@
 import { DomainError, isDomainError } from "@/lib/shared-domain";
-import type { ClipReviewClip, ClipReviewDecision, ClipReviewsSnapshot } from "@/lib/sync-gateway";
+import type { ClipReviewAttachment, ClipReviewClip, ClipReviewDecision, ClipReviewsSnapshot } from "@/lib/sync-gateway";
 
 export { DomainError, isDomainError };
-export type { ClipReviewClip, ClipReviewDecision };
+export type { ClipReviewAttachment, ClipReviewClip, ClipReviewDecision };
 
 // BL-241 (ADR 0061, docs/roadmap/plans/CLIP_REVIEWS_PLAN.md): clips for review. The Producer submits a short scene-loop clip that is
 // already in the channel's folder; only the owner approves or returns it, in the Web UI. A feature module of its own (AGENTS.md §M):
@@ -50,12 +50,43 @@ export type ClipReviewView = {
   decidedAt: string | null;
   /** The computer the deciding record was made on. */
   decidedOn: string | null;
+  /** BL-246 (ADR 0065): the files the owner attached to the deciding decision; [] otherwise (and for every older decision). */
+  attachments: ClipReviewAttachment[];
 };
 
 /** This computer's copy of the clip: the submitted file, missing here, or a different file now. */
 export type ClipFileState = "ok" | "missing" | "changed";
 
-export type OwnerClipView = ClipReviewView & { file: ClipFileState };
+/** BL-246: one attachment as the owner's screen reads it: its place in the decision (the serving route's index) and this computer's copy (by size). */
+export type OwnerAttachmentView = ClipReviewAttachment & { index: number; file: ClipFileState };
+
+export type OwnerClipView = Omit<ClipReviewView, "attachments"> & {
+  file: ClipFileState;
+  /** The deciding record's id (the attachments' folder), null while pending. */
+  decisionId: string | null;
+  attachments: OwnerAttachmentView[];
+};
+
+/** BL-246: the workspace folder the owner's attachments go into, below the workspace root (`/` between folders). */
+export const CLIP_ATTACHMENTS_FOLDER = "99 Data Exchange/From YTM/clip-reviews";
+
+/** BL-246: an upload staged on this computer (app data) for the owner's next decision on one clip. */
+export type StagedAttachment = {
+  uploadId: string;
+  channelId: string;
+  clipId: string;
+  /** The name as the browser gave it (sanitized when the decision is made, by its place). */
+  rawName: string;
+  /** The type the browser declared ("" when none). */
+  declaredType: string;
+  size: number;
+  /** The browser's SHA-256 of the whole file (hex), checked when the last piece arrives and again at the decision. */
+  sha256: string;
+  createdAt: string;
+};
+
+/** BL-246: a file to copy into the decision folder. */
+export type AttachmentToWrite = { sourcePath: string; name: string; size: number; sha256: string };
 
 /** A file the ports resolved inside the channel workspace (absolute: never sent to the browser or an agent). */
 export type ResolvedClipFile = { path: string; bytes: number };
@@ -87,4 +118,32 @@ export type ClipReviewsPorts = {
   withLock<T>(fn: () => Promise<T>): Promise<T>;
   /** An owner decision, recorded on the computer it was made on. */
   audit(entry: { channelId: string; clipId: string; detail: Record<string, unknown> }): Promise<void>;
+  /** BL-246: uploads staged in this computer's app data (never the channel folder) until a decision uses them. */
+  staging: {
+    create(upload: StagedAttachment): Promise<void>;
+    /** The upload, how many bytes arrived, and its file; null when unknown. */
+    get(uploadId: string): Promise<{ upload: StagedAttachment; received: number; path: string } | null>;
+    /** Appends bytes at the end (the service has checked the offset); answers the new length. */
+    append(uploadId: string, bytes: Uint8Array): Promise<number>;
+    /** The first `count` bytes. */
+    head(uploadId: string, count: number): Promise<Uint8Array>;
+    /** All bytes (a text attachment, at most 50 MiB). */
+    readAll(uploadId: string): Promise<Uint8Array>;
+    hash(uploadId: string): Promise<string>;
+    remove(uploadId: string): Promise<void>;
+    /** Removes uploads staged before `cutoff`. */
+    removeOlderThan(cutoff: Date): Promise<void>;
+  };
+  /** BL-246: the decision's folder `<workspace>/99 Data Exchange/From YTM/clip-reviews/<clipId>/<decisionId>/` (the shared rule). */
+  attachmentFiles: {
+    /**
+     * Makes the decision folder (refused when it already exists), copies each file under a temporary name, checks its size and
+     * SHA-256 and renames it. On any failure removes the folder it made, then throws.
+     */
+    write(workspace: string, clipId: string, decisionId: string, files: readonly AttachmentToWrite[]): Promise<void>;
+    /** Removes the decision folder (a decision that could not be recorded). */
+    remove(workspace: string, clipId: string, decisionId: string): Promise<void>;
+    /** One file of the decision folder: null when it (or its folder) is not here; throws when it is there but may not be used. */
+    resolve(workspace: string, clipId: string, decisionId: string, name: string): Promise<ResolvedClipFile | null>;
+  };
 };

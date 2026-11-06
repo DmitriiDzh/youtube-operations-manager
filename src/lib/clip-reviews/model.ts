@@ -42,6 +42,8 @@ export function clipViewOf(clip: ClipReviewClip, decisions: readonly ClipReviewD
     comment: record?.by === "owner" ? record.comment : null,
     decidedAt: record?.at ?? null,
     decidedOn: record?.device ?? null,
+    // BL-246: only an owner decision carries files; a decision stored without the field (older builds) reads [].
+    attachments: record?.by === "owner" ? (record.attachments ?? []).map((a) => ({ path: a.path, name: a.name, mime: a.mime, size: a.size, sha256: a.sha256 })) : [],
   };
 }
 
