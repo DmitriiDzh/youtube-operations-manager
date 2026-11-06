@@ -164,3 +164,79 @@ export async function resolveWorkspaceFile(
   if (!info || !info.isFile) throw args.unavailable(`${relative} is not a regular file`);
   return { path: realFile, bytes: info.size, ...(info.dev !== undefined && info.ino !== undefined ? { identity: { dev: info.dev, ino: info.ino } } : {}) };
 }
+
+/** A folder name under `From YTM/` a feature may use: letters, digits, `_`, `-` (no dots, so never `.` or `..`). */
+const FOLDER_SEGMENT = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * BL-246 (ADR 0065): the real path of `<workspace>/99 Data Exchange/From YTM/<segments...>`. With `create`, `From YTM` is made as in
+ * `resolveFromYtmDir` and each missing segment folder is made; without it, every folder must already exist and `null` answers "not
+ * here (yet)". Either way each folder must be a plain folder (no symlink, no file) whose real path lies strictly inside its parent's
+ * real path. Never writes a file itself.
+ */
+export async function resolveFromYtmFolder(args: ResolveFromYtmDirArgs & { segments: readonly string[]; create: boolean }): Promise<string | null> {
+  if (args.segments.length === 0 || args.segments.some((s) => !FOLDER_SEGMENT.test(s))) throw args.unavailable("not a From YTM folder");
+  let current: string;
+  if (args.create) {
+    current = await resolveFromYtmDir(args);
+  } else {
+    const validation = await args.validateWorkspacePath(args.workspace);
+    if (!validation.ok) throw args.unavailable(validation.reason);
+    const realWorkspace = await args.fs.realpath(args.workspace).catch(() => null);
+    if (!realWorkspace) throw args.unavailable("the workspace folder does not exist or is not accessible");
+    const exchange = path.join(realWorkspace, DATA_EXCHANGE_DIR_NAME);
+    const from = path.join(exchange, FROM_YTM_DIR_NAME);
+    for (const folder of [exchange, from]) {
+      const info = await args.fs.lstat(folder);
+      if (!info) return null;
+      if (info.isSymbolicLink || !info.isDirectory) throw args.unavailable(`${path.relative(realWorkspace, folder)} is not a plain folder inside the workspace`);
+    }
+    const realFrom = await args.fs.realpath(from).catch(() => null);
+    if (!realFrom || realFrom === realWorkspace || !args.isPathInsideOrEqual(realWorkspace, realFrom)) {
+      throw args.unavailable(`${DATA_EXCHANGE_DIR_NAME}/${FROM_YTM_DIR_NAME} resolves outside the workspace`);
+    }
+    current = realFrom;
+  }
+  for (const segment of args.segments) {
+    const folder = path.join(current, segment);
+    let info = await args.fs.lstat(folder);
+    if (!info && args.create) {
+      try {
+        await args.fs.mkdir(folder);
+      } catch (error) {
+        info = await args.fs.lstat(folder);
+        if (!info) throw args.unavailable(`${segment} could not be created (${error instanceof Error ? error.message : String(error)})`);
+      }
+      info = await args.fs.lstat(folder);
+    }
+    if (!info) return null;
+    if (info.isSymbolicLink || !info.isDirectory) throw args.unavailable(`${segment} is not a plain folder inside ${FROM_YTM_DIR_NAME}`);
+    const real = await args.fs.realpath(folder).catch(() => null);
+    if (!real || real === current || !args.isPathInsideOrEqual(current, real)) throw args.unavailable(`${segment} resolves outside its parent folder`);
+    current = real;
+  }
+  return current;
+}
+
+/**
+ * BL-246 (ADR 0065): one file directly inside `From YTM/<segments...>/` (read-only, nothing is created). `fileName` is one plain
+ * segment. `null` when the folder or the file is not here (yet); throws the caller's error when something is there but may not be
+ * used: a folder that is not plain, a file whose real path (symlinks resolved) is not strictly inside the folder's real path, or not
+ * a regular file.
+ */
+export async function resolveFromYtmFolderFile(
+  args: Omit<ResolveFromYtmDirArgs, "fs"> & { fs: ExchangeReadFs; segments: readonly string[]; fileName: string }
+): Promise<{ path: string; bytes: number } | null> {
+  const name = args.fileName;
+  if (!name || name === "." || name === ".." || name.length > 255 || /[/\\\u0000]/.test(name)) throw args.unavailable("not a file name");
+  const folder = await resolveFromYtmFolder({ ...args, create: false });
+  if (!folder) return null;
+  const candidate = path.join(folder, name);
+  if (!(await args.fs.lstat(candidate))) return null;
+  const realFile = await args.fs.realpath(candidate).catch(() => null);
+  if (!realFile) return null;
+  if (realFile === folder || !args.isPathInsideOrEqual(folder, realFile)) throw args.unavailable("the file is outside its folder");
+  const info = await args.fs.stat(realFile);
+  if (!info || !info.isFile) throw args.unavailable("not a regular file");
+  return { path: realFile, bytes: info.size };
+}

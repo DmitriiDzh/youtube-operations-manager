@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { isPathInsideOrEqual } from "@/lib/local-path-validation";
 import { createExchangeFs } from "./adapters/fs";
-import { jobOutputPathOf, resolveExchangeFile, resolveFromYtmDir, resolveFromYtmJobFile, resolveSentToYtmFile, resolveWorkspaceFile } from "./services";
+import { jobOutputPathOf, resolveExchangeFile, resolveFromYtmDir, resolveFromYtmFolder, resolveFromYtmFolderFile, resolveFromYtmJobFile, resolveSentToYtmFile, resolveWorkspaceFile } from "./services";
 
 // Behaviour fixed by ADR 0019 (amendment 2026-10-04): the folder is exactly <workspace>/99 Data Exchange/From YTM,
 // created when missing, refused when a symlink or a file sits at any of the three paths; nothing else is touched.
@@ -252,4 +252,69 @@ test("BL-176 resolveWorkspaceFile: a failed workspace validation is refused befo
       () => resolveWorkspaceFile({ ...args(workspace), validateWorkspacePath: async () => ({ ok: false as const, reason: "not set" }), relativePath: "ok.mp4" }),
       /unavailable: not set/
     );
+  }));
+
+// BL-246 (ADR 0065, CLIP_REVIEWS_PLAN.md items 14/16, AC-CR-21/22): a nested From YTM folder, made on write and only read on serve.
+
+const SEGMENTS = ["clip-reviews", "clip_1", "cd_1"];
+
+test("BL-246: resolveFromYtmFolder with create makes From YTM/clip-reviews/<clip>/<decision> and returns its real path", () =>
+  withWorkspace(async (workspace) => {
+    const dir = await resolveFromYtmFolder({ ...args(workspace), segments: SEGMENTS, create: true });
+    assert.equal(dir, path.join(await realpath(workspace), "99 Data Exchange", "From YTM", "clip-reviews", "clip_1", "cd_1"));
+    assert.deepEqual(await readdir(dir!), []);
+    assert.equal(await resolveFromYtmFolder({ ...args(workspace), segments: SEGMENTS, create: true }), dir);
+  }));
+
+test("BL-246: resolveFromYtmFolder without create answers null when a folder is not here yet and creates nothing", () =>
+  withWorkspace(async (workspace) => {
+    assert.equal(await resolveFromYtmFolder({ ...args(workspace), segments: SEGMENTS, create: false }), null);
+    assert.deepEqual(await readdir(workspace), []);
+    await mkdir(path.join(workspace, "99 Data Exchange", "From YTM", "clip-reviews"), { recursive: true });
+    assert.equal(await resolveFromYtmFolder({ ...args(workspace), segments: SEGMENTS, create: false }), null);
+  }));
+
+test("BL-246: a segment that is not a plain name (.., a dot, a slash, empty) is refused before anything is touched", () =>
+  withWorkspace(async (workspace) => {
+    for (const bad of [["clip-reviews", ".."], ["clip-reviews", "a.b"], ["clip-reviews", "a/b"], ["clip-reviews", ""], []]) {
+      await assert.rejects(resolveFromYtmFolder({ ...args(workspace), segments: bad, create: true }), /unavailable: not a From YTM folder/);
+    }
+    assert.deepEqual(await readdir(workspace), []);
+  }));
+
+test("BL-246: a symlinked segment folder (pointing outside the workspace) is refused on write and on read", () =>
+  withWorkspace(async (workspace) => {
+    const outside = await mkdtemp(path.join(tmpdir(), "workspace-exchange-outside-"));
+    try {
+      await mkdir(path.join(workspace, "99 Data Exchange", "From YTM", "clip-reviews"), { recursive: true });
+      await symlink(outside, path.join(workspace, "99 Data Exchange", "From YTM", "clip-reviews", "clip_1"));
+      await assert.rejects(resolveFromYtmFolder({ ...args(workspace), segments: SEGMENTS, create: true }), /not a plain folder/);
+      await assert.rejects(resolveFromYtmFolder({ ...args(workspace), segments: SEGMENTS, create: false }), /not a plain folder/);
+      assert.deepEqual(await readdir(outside), []);
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  }));
+
+test("BL-246: resolveFromYtmFolderFile returns a regular file inside the folder, null when absent, and refuses a symlink out of it", () =>
+  withWorkspace(async (workspace) => {
+    const outside = await mkdtemp(path.join(tmpdir(), "workspace-exchange-outside-"));
+    try {
+      const dir = (await resolveFromYtmFolder({ ...args(workspace), segments: SEGMENTS, create: true }))!;
+      await writeFile(path.join(dir, "note.txt"), "hello");
+      assert.deepEqual(await resolveFromYtmFolderFile({ ...args(workspace), segments: SEGMENTS, fileName: "note.txt" }), { path: path.join(dir, "note.txt"), bytes: 5 });
+      assert.equal(await resolveFromYtmFolderFile({ ...args(workspace), segments: SEGMENTS, fileName: "absent.txt" }), null);
+      assert.equal(await resolveFromYtmFolderFile({ ...args(workspace), segments: ["clip-reviews", "clip_1", "cd_2"], fileName: "note.txt" }), null);
+      await writeFile(path.join(outside, "secret.txt"), "secret");
+      await symlink(path.join(outside, "secret.txt"), path.join(dir, "link.txt"));
+      await assert.rejects(resolveFromYtmFolderFile({ ...args(workspace), segments: SEGMENTS, fileName: "link.txt" }), /outside its folder/);
+      await mkdir(path.join(dir, "sub"));
+      await assert.rejects(resolveFromYtmFolderFile({ ...args(workspace), segments: SEGMENTS, fileName: "sub" }), /not a regular file/);
+      for (const bad of ["../note.txt", "a/b.txt", "..", ""]) {
+        await assert.rejects(resolveFromYtmFolderFile({ ...args(workspace), segments: SEGMENTS, fileName: bad }), /not a file name/);
+      }
+      assert.ok((await lstat(path.join(dir, "note.txt"))).isFile());
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
   }));
