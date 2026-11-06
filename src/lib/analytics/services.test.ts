@@ -35,6 +35,8 @@ function createServicesFixture(opts: {
   authResolverError?: Error;
   /** BL-118: the channels' YouTube creation times (RFC 3339), by channel id. */
   channelPublishedAt?: Record<string, string>;
+  /** BL-245: the stored hourly freshness probes; absent = no probe store (the dependency is optional). */
+  freshnessProbes?: Array<{ channelId: string; probedAt: Date; requestedStartDate: string; requestedEndDate: string; newestChannelDate: string | null }>;
 }) {
   const channelAccess = createFakeChannelAccess();
   const analyticsCalls: Array<{ channelId: string; videoId: string }> = [];
@@ -253,6 +255,9 @@ function createServicesFixture(opts: {
     channelStore,
     settingsStore,
     collectionRunStore,
+    freshnessProbeStore: opts.freshnessProbes
+      ? { listByChannel: async (channelId: string) => opts.freshnessProbes!.filter((probe) => probe.channelId === channelId) }
+      : undefined,
     weeklyReportStore,
     clock,
     channelAccess,
@@ -2306,4 +2311,27 @@ test("AC-FS-03: a fresh mark without a run covering yesterday is still due", asy
   await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
   lastAutoCollectedAtByChannel.set("UC_A", new Date("2026-09-22T12:30:00Z"));
   assert.equal(await services.isAutoCollectionCurrent({ credentialRef: { userId: "user-1" }, channelId: "UC_A" }), false);
+});
+
+// BL-245 (owner 2026-11-06): the data quality report's `returnLag` counts the channel's hourly freshness probes next to its
+// collection runs; `newestReturned` stays what the COLLECTIONS got back (no run here -> null). Only this channel's probes count.
+// Hand-computed: 11-06 missed at 03:07Z, back at 04:07Z; its Pacific day ended 2026-11-07T08:00Z -> 20 h 7 min = 20.1.
+test("BL-245: the data quality report's returnLag uses the stored freshness probes; newestReturned ignores them", async () => {
+  const probe = (channelId: string, at: string, newest: string | null) => ({ channelId, probedAt: new Date(at), requestedStartDate: "2026-11-03", requestedEndDate: "2026-11-08", newestChannelDate: newest });
+  const { services, channelAccess } = createServicesFixture({
+    videosByChannel: { UC_A: [] },
+    analyticsResponses: {},
+    now: new Date("2026-11-08T05:00:00Z"),
+    freshnessProbes: [
+      probe("UC_A", "2026-11-08T03:07:00Z", "2026-11-05"),
+      probe("UC_A", "2026-11-08T04:07:00Z", "2026-11-06"),
+      probe("UC_B", "2026-11-08T02:07:00Z", "2026-11-04"), // another channel: must not prove a miss for UC_A
+    ],
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  const report = await services.getDataQualityReport({ credentialRef: { userId: "user-1" }, channelId: "UC_A", startDate: "2026-11-01", endDate: "2026-11-08" });
+  assert.deepEqual(report.returnLag, [
+    { date: "2026-11-06", videoFirstReturnedAt: null, videoLagHours: null, channelFirstReturnedAt: "2026-11-08T04:07:00.000Z", channelLagHours: 20.1 },
+  ]);
+  assert.equal(report.newestReturned, null);
 });

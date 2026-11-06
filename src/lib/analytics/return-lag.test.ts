@@ -86,3 +86,51 @@ test("returnLagOf: a range that ends before every run (a period the history back
   assert.deepEqual(returnLagOf(runs, "2025-01-01", "2025-01-31"), []);
   assert.deepEqual(returnLagOf([], "2026-10-01", "2026-10-31"), []);
 });
+
+// BL-245 (owner 2026-11-06): the hourly freshness probes are passed to returnLagOf as runs too -- channel level only
+// (`newestVideoDate: null`), asking [today UTC - 5, today UTC]. Expected values worked out by hand: 2026-11-06 is under Pacific
+// standard time (after the 11-01 switch), so its day ends 2026-11-07T08:00Z.
+const probeRun = (ranAt: string, requested: [string, string], newestChannelDate: string | null) => run(ranAt, requested, null, newestChannelDate);
+
+test("BL-245: hourly probes time a channel date to the hour; a probe that already has the date with no earlier miss proves nothing", () => {
+  const probes = [
+    probeRun("2026-11-08T03:07:00Z", ["2026-11-03", "2026-11-08"], "2026-11-05"),
+    probeRun("2026-11-08T04:07:00Z", ["2026-11-03", "2026-11-08"], "2026-11-06"),
+  ];
+  // 11-06: missing at 03:07Z, back at 04:07Z; 04:07Z - 2026-11-07T08:00Z = 20 h 7 min -> 20.1.
+  // 11-05: the first probe already had it, nothing earlier asked -> unknown, left out. No video column: probes say nothing about it.
+  assert.deepEqual(returnLagOf(probes, "2026-11-01", "2026-11-08"), [
+    { date: "2026-11-06", videoFirstReturnedAt: null, videoLagHours: null, channelFirstReturnedAt: "2026-11-08T04:07:00.000Z", channelLagHours: 20.1 },
+  ]);
+});
+
+test("BL-245: collection runs and probes together -- a run's miss is the proof for a probe's hit; the video lag stays the runs'", () => {
+  const mixed = [
+    // The daily run of 11-07 (yesterday = 11-06 asked): neither the videos nor the channel had 11-06 yet.
+    run("2026-11-07T12:05:00Z", ["2026-10-30", "2026-11-06"], "2026-11-05", "2026-11-05"),
+    probeRun("2026-11-08T04:07:00Z", ["2026-11-03", "2026-11-08"], "2026-11-06"),
+    // The daily run of 11-08: the videos' 11-06 is back.
+    run("2026-11-08T12:05:00Z", ["2026-10-31", "2026-11-07"], "2026-11-06", "2026-11-06"),
+  ];
+  // 11-06 channel: missed by the 11-07 run, first back at the 04:07Z probe -> 20.1. Video: missed 11-07, back at the 11-08 12:05Z
+  // run: 12:05Z - 2026-11-07T08:00Z = 28 h 5 min -> 28.1. 11-07: asked by the probe and the 11-08 run, never got -> left out.
+  assert.deepEqual(returnLagOf(mixed, "2026-11-01", "2026-11-08"), [
+    { date: "2026-11-06", videoFirstReturnedAt: "2026-11-08T12:05:00.000Z", videoLagHours: 28.1, channelFirstReturnedAt: "2026-11-08T04:07:00.000Z", channelLagHours: 20.1 },
+  ]);
+  // Without the run, the single probe proves nothing for 11-06.
+  assert.deepEqual(returnLagOf([mixed[1]], "2026-11-01", "2026-11-08"), []);
+});
+
+test("BL-245: a failed probe (no newest date) is not a miss; a probe whose range does not cover the date says nothing about it", () => {
+  const failedThenHit = [
+    probeRun("2026-11-08T03:07:00Z", ["2026-11-03", "2026-11-08"], null), // the query failed (or returned no rows)
+    probeRun("2026-11-08T04:07:00Z", ["2026-11-03", "2026-11-08"], "2026-11-06"),
+  ];
+  assert.deepEqual(returnLagOf(failedThenHit, "2026-11-06", "2026-11-06"), []);
+
+  const otherRangeThenHit = [
+    probeRun("2026-11-08T03:07:00Z", ["2026-11-01", "2026-11-05"], "2026-11-05"), // asked up to 11-05 only: no word on 11-06
+    probeRun("2026-11-08T04:07:00Z", ["2026-11-03", "2026-11-08"], "2026-11-06"),
+  ];
+  assert.deepEqual(returnLagOf(otherRangeThenHit, "2026-11-06", "2026-11-06"), []);
+});

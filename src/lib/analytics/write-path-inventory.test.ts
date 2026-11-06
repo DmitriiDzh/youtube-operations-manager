@@ -104,6 +104,8 @@ const ALLOWED_DB_WRITE_IMPORTS = new Set([
   "saveChannelDailyMetric", // this module's own channel-level daily totals table (BL-118)
   "advanceVideoHistory", // this module's own per-video history-coverage bookkeeping (BL-118)
   "recordAnalyticsEveningAttempt", // BL-181: this module's own evening re-collect bookkeeping (a setting of this device), never a video/channel row
+  "recordAnalyticsFreshnessProbe", // BL-245: this module's own hourly freshness probe rows (analytics_freshness_probes), never a video/channel row
+  "deleteAnalyticsFreshnessProbesBefore", // BL-245: the same table's 45-day retention
 ]);
 
 test("analytics write-path-inventory: adapters/store.ts imports no db.ts write function beyond its own allowlisted ones", async () => {

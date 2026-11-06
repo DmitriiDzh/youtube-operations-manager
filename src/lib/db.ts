@@ -2042,6 +2042,29 @@ export const analyticsCollectionRuns = sqliteTable(
 );
 
 /**
+ * SCHEMA_MIGRATIONS version 119 (BL-245, owner 2026-11-06): one row per hourly freshness probe of a channel -- a single
+ * channel-level Analytics query (`views` by `day` over the last few days) that records only the newest date the API returned,
+ * so `returnLag` can say within the hour when a day first came back. Never a collection run: nothing here moves
+ * `analytics_collection_runs`, staleness or coverage. Device-local (each computer measures what it got), never shared by
+ * BL-151, kept 45 days (`FRESHNESS_PROBE_RETENTION_DAYS`).
+ */
+export const analyticsFreshnessProbes = sqliteTable(
+  "analytics_freshness_probes",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    channelId: text("channel_id").notNull(),
+    probedAt: integer("probed_at", { mode: "timestamp" }).notNull(),
+    requestedStartDate: text("requested_start_date").notNull(),
+    requestedEndDate: text("requested_end_date").notNull(),
+    /** The newest `day` the API returned; NULL = no rows, or the query failed (`error`). */
+    newestChannelDate: text("newest_channel_date"),
+    /** A short reason the query failed; NULL = it answered. Never a token. */
+    error: text("error"),
+  },
+  (table) => [index("analytics_freshness_probes_channel_idx").on(table.channelId, table.probedAt)]
+);
+
+/**
  * SCHEMA_MIGRATIONS version 45 (BL-118) -- CHANNEL-level daily totals (views, watch time, subscribers...) collected with the per-video
  * metrics, so the agent's channel analytics can be read locally instead of a live Analytics API call every time. Same shape and
  * rules as `video_metrics_daily` (the API omits zero-activity days: absence is not zero), device-local like it.
@@ -6040,6 +6063,23 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       } catch (error) {
         if (!isDuplicateColumnError(error)) throw error;
       }
+    },
+  },
+  {
+    version: 119,
+    description:
+      "analytics_freshness_probes -- BL-245 (owner 2026-11-06): the hourly channel-level Analytics probe's newest returned date per channel, for an hourly returnLag. Additive (one new table), device-local",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS analytics_freshness_probes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+        channel_id TEXT NOT NULL,
+        probed_at INTEGER NOT NULL,
+        requested_start_date TEXT NOT NULL,
+        requested_end_date TEXT NOT NULL,
+        newest_channel_date TEXT,
+        error TEXT
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS analytics_freshness_probes_channel_idx ON analytics_freshness_probes (channel_id, probed_at)");
     },
   },
 ];
@@ -10669,6 +10709,51 @@ export async function listAnalyticsCollectionRunsByChannel(
     newestChannelDate: row.newestChannelDate ?? null,
     ranAt: row.ranAt,
   }));
+}
+
+// --- BL-245: hourly Analytics freshness probes ---------------------------------------------------------------------------
+
+export type StoredAnalyticsFreshnessProbe = {
+  channelId: string;
+  probedAt: Date;
+  requestedStartDate: string;
+  requestedEndDate: string;
+  newestChannelDate: string | null;
+  error: string | null;
+};
+
+export async function recordAnalyticsFreshnessProbe(input: StoredAnalyticsFreshnessProbe, database: AppDb = db): Promise<void> {
+  await database.insert(analyticsFreshnessProbes).values({
+    channelId: input.channelId,
+    probedAt: input.probedAt,
+    requestedStartDate: input.requestedStartDate,
+    requestedEndDate: input.requestedEndDate,
+    newestChannelDate: input.newestChannelDate,
+    error: input.error,
+  });
+}
+
+/** One channel's probes, oldest first. */
+export async function listAnalyticsFreshnessProbesByChannel(channelId: string, database: AppDb = db): Promise<StoredAnalyticsFreshnessProbe[]> {
+  const rows = await database
+    .select()
+    .from(analyticsFreshnessProbes)
+    .where(eq(analyticsFreshnessProbes.channelId, channelId))
+    .orderBy(asc(analyticsFreshnessProbes.probedAt), asc(analyticsFreshnessProbes.id));
+  return rows.map((row) => ({
+    channelId: row.channelId,
+    probedAt: row.probedAt,
+    requestedStartDate: row.requestedStartDate,
+    requestedEndDate: row.requestedEndDate,
+    newestChannelDate: row.newestChannelDate ?? null,
+    error: row.error ?? null,
+  }));
+}
+
+/** Retention: deletes every probe made before `cutoff`; returns how many. */
+export async function deleteAnalyticsFreshnessProbesBefore(cutoff: Date, database: AppDb = db): Promise<number> {
+  const result = await database.delete(analyticsFreshnessProbes).where(lt(analyticsFreshnessProbes.probedAt, cutoff));
+  return Number(result.rowsAffected ?? 0);
 }
 
 export type StoredWeeklyReport = {

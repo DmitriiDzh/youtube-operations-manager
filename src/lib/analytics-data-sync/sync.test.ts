@@ -318,3 +318,22 @@ test("BL-181: a peer's file of another type (a newer build that shared it by mis
       b.client.close();
     }
   }));
+
+// BL-245 (owner 2026-11-06): the hourly freshness probes measure what THIS computer got back and when; they are never shared
+// (a peer's probe would time another computer's asking) and never travel as collection runs (B would think the channel collected).
+test("BL-245: freshness probes stay out of the shared rows -- no probe table in the file, no probe passed off as a collection run", () =>
+  withTempDir("analytics-share-", async (root) => {
+    const a = await computer(root, "a");
+    try {
+      await a.database.run(
+        sql`INSERT INTO analytics_freshness_probes (channel_id, probed_at, requested_start_date, requested_end_date, newest_channel_date, error) VALUES ('UC1', ${T - 600}, '2026-10-02', '2026-10-07', '2026-10-05', NULL)`
+      );
+      const shared = await exportAnalyticsShareRows(0, T + 1, a.database);
+      assert.deepEqual(Object.keys(shared).sort(), ["channelMetrics", "channelStamps", "collectionRuns", "jobs", "reachRows", "reportFiles", "syncAttempts", "videoHistory", "videoMetrics"]);
+      assert.deepEqual(shared.collectionRuns, []);
+      assert.deepEqual(shared.channelMetrics, []);
+      assert.deepEqual(shared.channelStamps, []);
+    } finally {
+      a.client.close();
+    }
+  }));

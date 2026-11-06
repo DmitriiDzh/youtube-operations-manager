@@ -1286,6 +1286,20 @@ stages. Stage 1 collects and measures. Stage 2 would show provisional values, an
     - The value is an upper bound: it is when this app asked, not when Google published.
     - `newestReturned` is the maximum over all runs, so a catch-up or backfill recorded later cannot lower it.
     - `pacificDayEnd` uses the DST-aware `zonedInstant` (`staleness.ts`).
+  - **Hourly freshness probe (BL-245, owner 2026-11-06).** Runs alone give the lag only to the next run (once or twice a day).
+    - `src/lib/analytics/freshness-probe.ts`, started by `instrumentation.ts` at minute :07 of every UTC hour (clock-aligned,
+      `msUntilNextProbe`; device gate first; ticks never overlap). Every computer that runs the server probes for itself.
+    - Per connected channel: one `reports.query` (`ids=channel==…`, `metrics=views`, `dimensions=day`, [today UTC − 5 days, today
+      UTC], the date convention of BL-212's hourly pull) under the channel's own stored Google user, through the read gateway.
+    - Stores only the newest returned day, or a short error, in `analytics_freshness_probes` (schema v119, device-local, not in
+      snapshots or the BL-151 share file, deleted after 45 days). Reads switched off = the tick stores nothing.
+    - Never a collection run: staleness, coverage, catch-up and `newestReturned` ignore probes. `getDataQualityReport` passes them
+      to `returnLagOf` as channel-only runs, so `channelLagHours` is known to within an hour. Video lag is out of scope.
+    - Cost: 1 Analytics unit per channel per hour per computer, logged in `quota_ledger` (label "Analytics freshness probe"). No
+      quota-reserve check (BL-212's hourly pull has none either; the check itself costs Cloud Monitoring calls).
+    - Production servers only (`NODE_ENV=production`): a `npm run dev` server on the same DB never probes.
+    - Caveat: a probe asks `views` only, a collection run the overview metrics; a run's miss can be the proof for a probe's hit, so a
+      date right after the upgrade may show a later lag than the true one (still an upper bound) until probes have their own miss.
 - **Evening re-collect** (§14.6's daily boundary gets a second one).
   - Setting `analytics_evening_local_time`: default `22:05`, `""` = off. It must be later than the daily boundary, which the
     Settings API checks. Since 2026-10-13 it is `analytics_evening_utc_time` in UTC (§14.6, "UTC times").

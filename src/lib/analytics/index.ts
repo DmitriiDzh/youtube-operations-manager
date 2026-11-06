@@ -1,11 +1,12 @@
 import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { createChannelAccessCore } from "@/lib/channel-access";
-import { createAnalyticsStoreAdapter, createBreakdownStoreAdapter, createSearchTermStoreAdapter, createSuggestedSourceStoreAdapter, createVideoMilestoneStoreAdapter } from "./adapters/store";
+import { createAnalyticsStoreAdapter, createFreshnessProbeStoreAdapter, createBreakdownStoreAdapter, createSearchTermStoreAdapter, createSuggestedSourceStoreAdapter, createVideoMilestoneStoreAdapter } from "./adapters/store";
 import { createBreakdownServices, gateBreakdownCollection } from "./breakdowns";
 import { createSearchTermServices, gateSearchTermCollection } from "./search-terms";
 import { createSuggestedSourceServices, gateSuggestedSourceCollection } from "./suggested-sources";
 import { createVideoMilestoneServices, gateMilestoneCollection } from "./milestones";
-import { createAnalyticsYoutubeApiAdapter } from "./adapters/youtube-api";
+import { createAnalyticsYoutubeApiAdapter, queryChannelDaysAsUser } from "./adapters/youtube-api";
+import { createFreshnessProbe, FRESHNESS_PROBE_METRICS } from "./freshness-probe";
 import { createDefaultLogger } from "@/lib/shared-logger";
 import { createQuotaGuardCore } from "@/lib/quota-guard";
 import { quotaScoped } from "@/lib/youtube-quota";
@@ -43,6 +44,7 @@ export function createAnalyticsCore() {
     settingsStore: store.settingsStore,
     eveningAttemptStore: store.eveningAttemptStore,
     collectionRunStore: store.collectionRunStore,
+    freshnessProbeStore: store.freshnessProbeStore,
     weeklyReportStore: store.weeklyReportStore,
     clock: { now: () => new Date() },
     logger: createDefaultLogger(),
@@ -163,6 +165,21 @@ export function createAnalyticsCore() {
 }
 
 export type AnalyticsCore = ReturnType<typeof createAnalyticsCore>;
+
+/**
+ * BL-245: the hourly Analytics freshness probe (`freshness-probe.ts`), started by `instrumentation.ts`. Its calls are listed in the
+ * quota history under their own label (one `reports.query`, 1 Analytics unit, per connected channel per hour).
+ */
+export function createAnalyticsFreshnessProbeCore() {
+  const probe = createFreshnessProbe({
+    listChannels: listChannelConnections,
+    queryChannelDays: (args) => queryChannelDaysAsUser({ ...args, metricNames: FRESHNESS_PROBE_METRICS }),
+    store: createFreshnessProbeStoreAdapter(),
+    clock: { now: () => new Date() },
+    onIssue: (message) => backgroundLogger.info({ event: "analytics.freshness_probe", context: { message } }),
+  });
+  return { tick: quotaScoped(() => probe.tick(), { kind: "analytics_freshness_probe", id: null, label: "Analytics freshness probe" }) };
+}
 export type { AutoCollectAllResult, AutoCollectChannelOutcome, EveningChannelOutcome } from "./auto-collect-all";
 export { beginAllChannelsRun, endAllChannelsRun } from "./auto-collect-all";
 export { ANALYTICS_METRIC_NAMES, AUTO_COLLECTION_RANGE_DAYS, CHANNEL_BREAKDOWN_PRESETS, CHANNEL_OVERVIEW_METRIC_NAMES } from "./contracts";

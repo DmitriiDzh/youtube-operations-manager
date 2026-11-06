@@ -220,6 +220,15 @@ type ServiceDependencies = {
       }>
     >;
   };
+  /**
+   * BL-245: the hourly freshness probes of a channel (`freshness-probe.ts`), oldest first -- read by `getDataQualityReport` for
+   * `returnLag` only, never as collection runs. Absent = collection runs only.
+   */
+  freshnessProbeStore?: {
+    listByChannel(channelId: string): Promise<
+      Array<{ probedAt: Date; requestedStartDate: string; requestedEndDate: string; newestChannelDate: string | null }>
+    >;
+  };
   // Phase 8 follow-up, slice 4 (weekly reports) -- read/write of the frozen snapshot table.
   weeklyReportStore: {
     getByWeek(channelId: string, weekStartDate: string): Promise<{
@@ -316,7 +325,10 @@ function mapStoredWeeklyReport(row: {
  * and its newest date reached D, AND an earlier run that also asked for D got a newest date before D -- the proof that D was not
  * available yet. Otherwise D's first return is unknown (`null`): a run that asked for another range (a history catch-up, a backfill)
  * says nothing about D, and neither does the first run after the upgrade (review finding 1). An UPPER bound: the run shows when this
- * app asked, not when Google published -- runs happen at the daily boundaries (12:05 and the evening one).
+ * app asked, not when Google published. BL-245: the caller also passes the hourly freshness probes as runs (channel level only,
+ * `newestVideoDate: null`), so the channel lag is known to within an hour; the video lag still comes from the collection runs,
+ * which happen at the daily boundaries (12:05 and the evening one). A run or probe whose newest date is null (nothing returned,
+ * or a failed probe) is never counted as a miss.
  */
 export function returnLagOf(
   runs: ReadonlyArray<{ requestedStartDate: string; requestedEndDate: string; newestVideoDate?: string | null; newestChannelDate?: string | null; ranAt: Date }>,
@@ -1528,9 +1540,10 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
           channelId: parsedInput.channelId,
         });
 
-        const [runs, metricRecords] = await Promise.all([
+        const [runs, metricRecords, probes] = await Promise.all([
           deps.collectionRunStore.listByChannel(parsedInput.channelId),
           deps.metricStore.listMetricsByChannel(parsedInput.channelId),
+          deps.freshnessProbeStore ? deps.freshnessProbeStore.listByChannel(parsedInput.channelId) : Promise.resolve([]),
         ]);
         const datesWithAnyMetricRow = new Set(metricRecords.map((record) => record.metricDate));
         const now = deps.clock.now();
@@ -1559,8 +1572,22 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
             endDate: parsedInput.endDate,
             ...report,
             ...extras,
+            // What this computer's COLLECTIONS got back; the probes only time the first return (BL-245).
             newestReturned: newestReturnedOf(runs),
-            returnLag: returnLagOf(runs, parsedInput.startDate, parsedInput.endDate),
+            returnLag: returnLagOf(
+              [
+                ...runs,
+                ...probes.map((probe) => ({
+                  ranAt: probe.probedAt,
+                  requestedStartDate: probe.requestedStartDate,
+                  requestedEndDate: probe.requestedEndDate,
+                  newestVideoDate: null,
+                  newestChannelDate: probe.newestChannelDate,
+                })),
+              ],
+              parsedInput.startDate,
+              parsedInput.endDate
+            ),
           },
           "get data quality report output"
         );
