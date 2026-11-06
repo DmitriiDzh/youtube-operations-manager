@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -9,6 +9,7 @@ import type { ClipReviewDecision, ClipReviewsSnapshot } from "@/lib/sync-gateway
 import { createAttachmentFiles, createAttachmentStaging } from "./adapters/attachments";
 import { hashClipFile, resolveClipFile } from "./adapters/files";
 import type { ClipReviewsPorts } from "./contracts";
+import { wellFormedAttachments } from "./model";
 import { createClipReviewsService } from "./services";
 
 // BL-246 (docs/roadmap/plans/CLIP_REVIEWS_PLAN.md items 10-17, AC-CR-17..27; ADR 0065). A real temporary channel workspace, the real
@@ -55,6 +56,7 @@ async function world() {
   const clock = { t: Date.parse("2026-11-06T10:00:00.000Z") };
   let n = 0;
   const audits: Array<Record<string, unknown>> = [];
+  const logs: Array<Record<string, unknown>> = [];
   const ports: ClipReviewsPorts = {
     store,
     isChannelConnected: async () => true,
@@ -69,6 +71,7 @@ async function world() {
     randomId: () => (++n).toString(16).padStart(16, "0"),
     withLock: (fn) => fn(),
     audit: async (entry) => void audits.push(entry.detail),
+    logError: (event, context) => void logs.push({ event, ...context }),
     staging: createAttachmentStaging(stagingDir),
     attachmentFiles: createAttachmentFiles(),
   };
@@ -82,7 +85,7 @@ async function world() {
     return uploadId;
   };
   const decisionsFolder = (clipId: string) => path.join(workspace, "99 Data Exchange", "From YTM", "clip-reviews", clipId);
-  return { root, workspace, outside, stagingDir, store, clock, audits, service, ports, submit, upload, decisionsFolder };
+  return { root, workspace, outside, stagingDir, store, clock, audits, logs, service, ports, submit, upload, decisionsFolder };
 }
 
 async function withWorld(run: (w: World) => Promise<void>) {
@@ -340,4 +343,109 @@ test("AC-CR-27: a piece larger than 4 MiB is refused", () =>
     const size = 4 * 1024 * 1024 + 1;
     const { uploadId } = await w.service.stageAttachment(CH, clipId, { name: "v.mp4", type: "video/mp4", size, sha256: "a".repeat(64) });
     await refused(w.service.appendAttachmentPiece(CH, clipId, uploadId, 0, new Uint8Array(size)), "validation_failed");
+  }));
+
+// ---- Independent review of BL-246 (2026-11-06): fixes, each with its expected behaviour written by hand ----
+
+test("review 1: a failed write answers a fixed message without the computer's paths; the detail goes to the server log", () =>
+  withWorld(async (w) => {
+    const clipId = await w.submit();
+    const id = await w.upload(clipId, "note.txt", "hello");
+    const reason = `EACCES: permission denied, open '${w.workspace}/99 Data Exchange/From YTM/clip-reviews/x'`;
+    w.ports.attachmentFiles.write = async () => {
+      throw new Error(reason);
+    };
+    await assert.rejects(w.service.decide(CH, clipId, { action: "return", comment: "c", attachments: [id] }, "owner"), (error: unknown) => {
+      assert.ok(isDomainError(error) && error.code === "clip_attachment_write_failed");
+      assert.equal(error.message, "The files could not be written into the channel folder on this computer");
+      assert.deepEqual(error.details, { clipId });
+      return true;
+    });
+    assert.equal(w.logs.length, 1);
+    assert.equal(w.logs[0].event, "clip_review.attachments_write_failed");
+    assert.equal(w.logs[0].reason, reason);
+    assert.deepEqual(w.store.snapshot(CH).decisions, {});
+  }));
+
+test("review 2: removing a staged file runs under the module's lock", () =>
+  withWorld(async (w) => {
+    const clipId = await w.submit();
+    const id = await w.upload(clipId, "note.txt", "hello");
+    const original = w.ports.withLock;
+    let locked = 0;
+    w.ports.withLock = (fn) => {
+      locked++;
+      return original(fn);
+    };
+    await w.service.discardAttachment(CH, clipId, id);
+    assert.equal(locked, 1);
+    assert.deepEqual(await readdir(w.stagingDir), []);
+  }));
+
+test("review 5: a decision id that is not a plain folder name is refused before any folder is made", () =>
+  withWorld(async (w) => {
+    const files = createAttachmentFiles();
+    for (const [clipId, decisionId] of [["clip_1", "../evil"], ["clip_1", "a.b"], ["../x", "cd_1"], ["clip_1", ""]]) {
+      await assert.rejects(files.write(w.workspace, clipId, decisionId, []), /not a clip or decision folder name/);
+    }
+    assert.equal(await exists(path.join(w.workspace, "99 Data Exchange")), false);
+  }));
+
+test("review 6: malformed attachments from the other computer's document are skipped, never thrown on", () =>
+  withWorld(async (w) => {
+    const valid = { path: "99 Data Exchange/From YTM/clip-reviews/c/cd/a.txt", name: "a.txt", mime: "text/plain", size: 5, sha256: HELLO_SHA };
+    assert.deepEqual(wellFormedAttachments("x"), []);
+    assert.deepEqual(wellFormedAttachments(null), []);
+    assert.deepEqual(wellFormedAttachments([null, 3, { path: 1 }, { ...valid, size: -1 }, { ...valid, size: "5" }, valid]), [valid]);
+
+    const clipId = await w.submit();
+    const id = await w.upload(clipId, "a.txt", "hello");
+    const { clip } = await w.service.decide(CH, clipId, { action: "return", comment: "c", attachments: [id] }, "owner");
+    const record = w.store.snapshot(CH).decisions[clip.decisionId!];
+    record.attachments = [{ junk: true } as never, ...record.attachments!];
+    const owner = (await w.service.ownerList(CH)).clips[0];
+    assert.deepEqual(owner.attachments.map((a) => [a.index, a.name, a.file]), [[0, "a.txt", "ok"]]);
+    // The place the screen shows is the place the route serves.
+    assert.equal((await w.service.attachmentFile(CH, clipId, clip.decisionId!, 0)).name, "a.txt");
+    (record as { attachments: unknown }).attachments = "not a list";
+    assert.deepEqual((await w.service.get({ channelId: CH, clipId })).clip.attachments, []);
+  }));
+
+test("review 7: the start-up sweep removes idle, stray and no-longer-usable uploads, and keeps one still being sent", () =>
+  withWorld(async (w) => {
+    w.clock.t = Date.now();
+    const pending = await w.submit();
+    await writeFile(path.join(w.workspace, "03 Images", "b.mp4"), "0123456789");
+    const answered = await w.submit("03 Images/b.mp4");
+    const keep = await w.upload(pending, "keep.txt", "hello");
+    const gone = await w.upload(answered, "gone.txt", "hello");
+    await w.service.decide(CH, answered, { action: "return", comment: "c" }, "owner");
+    // An upload started 2 days ago whose last piece arrived just now: active as a whole, kept.
+    const body = Buffer.from("hello world");
+    const { uploadId: active } = await w.service.stageAttachment(CH, pending, { name: "active.txt", type: "", size: body.length, sha256: sha(body) });
+    await w.service.appendAttachmentPiece(CH, pending, active, 0, new Uint8Array(body.subarray(0, 5)));
+    const twoDaysAgo = new Date(Date.now() - 48 * 3_600_000);
+    await utimes(path.join(w.stagingDir, `${active}.json`), twoDaysAgo, twoDaysAgo);
+    // An upload idle for 2 days (both files): removed.
+    const { uploadId: idle } = await w.service.stageAttachment(CH, pending, { name: "idle.txt", type: "", size: 5, sha256: HELLO_SHA });
+    for (const ext of ["json", "part"]) await utimes(path.join(w.stagingDir, `${idle}.${ext}`), twoDaysAgo, twoDaysAgo);
+    // A stray piece without its description: removed.
+    const stray = "f".repeat(32);
+    await writeFile(path.join(w.stagingDir, `${stray}.part`), "x");
+
+    assert.deepEqual(await w.service.sweepStaged(), { removed: 3 });
+    const left = (await readdir(w.stagingDir)).sort();
+    assert.deepEqual(left, [`${active}.json`, `${active}.part`, `${keep}.json`, `${keep}.part`].sort());
+    assert.ok(!left.some((name) => name.startsWith(gone) || name.startsWith(idle) || name.startsWith(stray)));
+    // Nothing in the channel folder was touched by the sweep.
+    assert.equal(await exists(path.join(w.workspace, "99 Data Exchange")), false);
+  }));
+
+test("review 7: a decision refused because the clip was answered meanwhile removes the files it named", () =>
+  withWorld(async (w) => {
+    const clipId = await w.submit();
+    const id = await w.upload(clipId, "note.txt", "hello");
+    await w.service.decide(CH, clipId, { action: "approve" }, "owner");
+    await refused(w.service.decide(CH, clipId, { action: "return", comment: "c", attachments: [id] }, "owner"), "clip_review_not_pending");
+    assert.deepEqual(await readdir(w.stagingDir), []);
   }));

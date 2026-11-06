@@ -180,6 +180,22 @@ async function startServerSession() {
     console.warn(`[local-video-cleanup] not started: ${error instanceof Error ? error.message : String(error)}`);
   }
 
+  // BL-246 (ADR 0065, review): the clip-comment uploads staged in app data -- once, 90 s after the start, the ones idle for 24 h or whose
+  // clip is no longer pending are removed (the module also sweeps idle ones whenever a new file is staged). Waits behind the same
+  // device gate as the other loops (skipped quietly in recovery mode or under the operation lock). Never the channel folder.
+  setTimeout(async () => {
+    try {
+      const { rawSqlClient: clipSqlClient } = await import("@/lib/db");
+      const { assertDeviceAvailableForMutation: assertClipMayWrite } = await import("@/lib/device-mutation-gate");
+      await assertClipMayWrite(clipSqlClient);
+      const { sweepStagedClipAttachments } = await import("@/lib/clip-reviews");
+      await sweepStagedClipAttachments();
+    } catch (error) {
+      const paused = error instanceof Error && (error.name === "OperationLockError" || error.name === "RecoveryModeError");
+      if (!paused) console.warn(`[clip-reviews] staged uploads not swept: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }, 90_000).unref();
+
   // Session lease (architecture-audit review, round 3): Live writes are honored only while this web
   // server keeps renewing it, so ANY end of the session -- including a crash or Windows
   // `taskkill /F` / a closed console window, where no signal handler runs -- makes them lapse within

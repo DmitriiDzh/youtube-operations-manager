@@ -13,6 +13,8 @@ import { workspaceRuleArgs } from "./files";
 
 const UPLOAD_ID = /^[a-f0-9]{32}$/;
 const SUBFOLDER = "clip-reviews";
+/** The shared rule's folder segment (`workspace-exchange`): letters, digits, `_`, `-`. */
+const FOLDER_NAME = /^[A-Za-z0-9_-]{1,64}$/;
 
 async function sha256Of(file: string): Promise<string> {
   const hash = createHash("sha256");
@@ -27,6 +29,23 @@ export function createAttachmentStaging(dir: string): ClipReviewsPorts["staging"
   const files = (uploadId: string) => {
     if (!UPLOAD_ID.test(uploadId)) throw new Error("not an upload id");
     return { meta: path.join(dir, `${uploadId}.json`), part: path.join(dir, `${uploadId}.part`) };
+  };
+  /** Every upload id found (by either of its files) with the later of its files' modification times. */
+  const list = async () => {
+    const latest = new Map<string, number>();
+    for (const name of await readdir(dir).catch(() => [] as string[])) {
+      const match = /^([a-f0-9]{32})\.(json|part)$/.exec(name);
+      if (!match) continue;
+      const info = await stat(path.join(dir, name)).catch(() => null);
+      if (info) latest.set(match[1], Math.max(latest.get(match[1]) ?? 0, info.mtimeMs));
+    }
+    const out: Array<{ uploadId: string; upload: StagedAttachment | null; lastActivity: Date }> = [];
+    for (const [uploadId, mtime] of latest) {
+      const upload = await readFile(path.join(dir, `${uploadId}.json`), "utf8").then((text) => JSON.parse(text) as StagedAttachment, () => null);
+      const part = await stat(path.join(dir, `${uploadId}.part`)).catch(() => null);
+      out.push({ uploadId, upload: upload && part?.isFile() && upload.uploadId === uploadId ? upload : null, lastActivity: new Date(mtime) });
+    }
+    return out;
   };
   const remove = async (uploadId: string) => {
     const { meta, part } = files(uploadId);
@@ -66,14 +85,10 @@ export function createAttachmentStaging(dir: string): ClipReviewsPorts["staging"
     readAll: async (uploadId) => new Uint8Array(await readFile(files(uploadId).part)),
     hash: (uploadId) => sha256Of(files(uploadId).part),
     remove,
+    list,
     async removeOlderThan(cutoff) {
-      const names = await readdir(dir).catch(() => [] as string[]);
-      for (const name of names) {
-        const match = /^([a-f0-9]{32})\.(json|part)$/.exec(name);
-        if (!match) continue;
-        const info = await stat(path.join(dir, name)).catch(() => null);
-        if (info && info.mtimeMs < cutoff.getTime()) await remove(match[1]).catch(() => undefined);
-      }
+      // The upload as a whole (review): its .part changes with every piece, so one still being sent is never swept mid-way.
+      for (const entry of await list()) if (entry.lastActivity.getTime() < cutoff.getTime()) await remove(entry.uploadId).catch(() => undefined);
     },
   };
 }
@@ -93,6 +108,8 @@ export function createAttachmentFiles(): ClipReviewsPorts["attachmentFiles"] {
 
   return {
     async write(workspace, clipId, decisionId, list: readonly AttachmentToWrite[]) {
+      // Both names are checked before anything is made (review): the shared rule would refuse them later, after the mkdir.
+      if (!FOLDER_NAME.test(clipId) || !FOLDER_NAME.test(decisionId)) throw new Error("not a clip or decision folder name");
       const clipFolder = await resolveFromYtmFolder({ ...workspaceRuleArgs(workspace), segments: [SUBFOLDER, clipId], create: true });
       if (!clipFolder) throw new Error("the clip's folder could not be made");
       // A fresh folder per decision: an existing one (it never should) is refused rather than written into.

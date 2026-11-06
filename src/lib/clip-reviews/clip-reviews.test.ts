@@ -36,7 +36,7 @@ function memoryStore(): ClipReviewsPorts["store"] & { snapshot(channelId: string
 const unused = async (): Promise<never> => {
   throw new Error("not used in this test");
 };
-const unusedStaging: ClipReviewsPorts["staging"] = { create: unused, get: unused, append: unused, head: unused, readAll: unused, hash: unused, remove: unused, removeOlderThan: unused };
+const unusedStaging: ClipReviewsPorts["staging"] = { create: unused, get: unused, list: unused, append: unused, head: unused, readAll: unused, hash: unused, remove: unused, removeOlderThan: unused };
 const unusedAttachmentFiles: ClipReviewsPorts["attachmentFiles"] = { write: unused, remove: unused, resolve: unused };
 
 function setup(options: { files?: Record<string, FakeFile>; connected?: string[]; workspaces?: Record<string, string | null>; store?: ClipReviewsPorts["store"]; device?: string; clock?: { t: number } } = {}) {
@@ -62,6 +62,7 @@ function setup(options: { files?: Record<string, FakeFile>; connected?: string[]
     withLock: (fn) => fn(),
     audit: async (entry) => void audits.push(entry),
     // BL-246: these tests attach nothing; the attachment ports have their own tests (attachments-service.test.ts).
+    logError: () => undefined,
     staging: unusedStaging,
     attachmentFiles: unusedAttachmentFiles,
   };
@@ -337,7 +338,8 @@ test("AC-CR-02 / AC-CR-03: the real workspace rule refuses .., absolute paths, b
       randomId: () => "r1",
       withLock: (fn) => fn(),
       audit: async (entry) => void audits.push(entry),
-      staging: unusedStaging,
+      logError: () => undefined,
+    staging: unusedStaging,
       attachmentFiles: unusedAttachmentFiles,
     });
     for (const clipPath of ["../outside/secret.mp4", "03 Images/escape.mp4", path.join(outside, "secret.mp4"), "03 Images\\Scenes\\bar\\preview_30s.mp4"]) {

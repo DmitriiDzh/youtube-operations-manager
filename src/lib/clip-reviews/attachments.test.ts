@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { attachmentRefusalOf, CLIP_ATTACHMENT_LIMITS, declaredTypeFits, headMatchesKind, pastedNameOf, sanitizeAttachmentName, textLooksValid, uniqueAttachmentNames } from "./attachments";
+import { attachmentRefusalOf, CLIP_ATTACHMENT_LIMITS, declaredTypeFits, headMatchesKind, pastedFileNeedsName, pastedNameOf, sanitizeAttachmentName, textLooksValid, uniqueAttachmentNames } from "./attachments";
 
 // BL-246 (CLIP_REVIEWS_PLAN.md items 11-12, AC-CR-17/18/19). Every expected value is written by hand from the plan.
 
@@ -84,4 +84,17 @@ test("AC-CR-19: a pasted image is pasted-<n> by its type; colliding names get -2
   assert.equal(pastedNameOf(4, "image/webp"), "pasted-4.webp");
   assert.deepEqual(uniqueAttachmentNames(["shot.png", "Shot.png", "shot.png"]), ["shot.png", "Shot-2.png", "shot-3.png"]);
   assert.deepEqual(uniqueAttachmentNames(["a.txt", "b.txt"]), ["a.txt", "b.txt"]);
+});
+
+test("review 3: only a nameless or generic image.* paste is renamed; a file copied in Finder keeps its name; an unknown type gets no extension", () => {
+  assert.equal(pastedFileNeedsName(""), true);
+  assert.equal(pastedFileNeedsName("image.png"), true);
+  assert.equal(pastedFileNeedsName("Image.JPEG"), true);
+  assert.equal(pastedFileNeedsName("report.pdf"), false);
+  assert.equal(pastedFileNeedsName("image-final.png"), false);
+  assert.equal(pastedFileNeedsName("loop.mp4"), false);
+  assert.equal(pastedNameOf(3, "application/pdf"), "pasted-3.pdf");
+  assert.equal(pastedNameOf(1, "video/mp4"), "pasted-1.mp4");
+  assert.equal(pastedNameOf(2, "image/svg+xml"), "pasted-2");
+  assert.equal(attachmentRefusalOf({ name: pastedNameOf(2, "image/svg+xml"), type: "image/svg+xml", size: 10 }), "type_not_allowed");
 });

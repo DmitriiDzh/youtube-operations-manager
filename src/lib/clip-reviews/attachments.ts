@@ -157,10 +157,21 @@ export function sanitizeAttachmentName(raw: string, position: number): string {
   return `${base}${ext}`;
 }
 
-/** The name of the n-th image pasted from the clipboard (it has none): `pasted-<n>.<ext of its type>`. */
+/**
+ * The name of the n-th nameless file pasted from the clipboard: `pasted-<n>.<ext of its type>`; a type not on the list gets no
+ * extension (so the file is refused as not allowed, never passed off as a picture -- review).
+ */
 export function pastedNameOf(n: number, type: string): string {
-  const ext = Object.entries(CLIP_ATTACHMENT_TYPES).find(([, rule]) => rule.kind === "image" && rule.declared.includes(type.toLowerCase()))?.[0] ?? ".png";
+  const ext = Object.entries(CLIP_ATTACHMENT_TYPES).find(([, rule]) => rule.declared.includes(type.split(";")[0].trim().toLowerCase()))?.[0] ?? "";
   return `pasted-${n}${ext === ".jpeg" ? ".jpg" : ext}`;
+}
+
+/**
+ * Whether a pasted file needs a name of its own (review): a screenshot comes with none or with the browser's generic `image.<ext>`;
+ * a file copied in Finder / Explorer keeps its real name.
+ */
+export function pastedFileNeedsName(name: string): boolean {
+  return !name.trim() || /^image\.[a-z0-9]+$/iu.test(name.trim());
 }
 
 /** Names that collide ignoring case (macOS and Windows folders do) get `-2`, `-3`, ... before the extension, in order. */

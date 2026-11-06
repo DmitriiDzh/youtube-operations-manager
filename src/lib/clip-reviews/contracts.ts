@@ -118,6 +118,8 @@ export type ClipReviewsPorts = {
   withLock<T>(fn: () => Promise<T>): Promise<T>;
   /** An owner decision, recorded on the computer it was made on. */
   audit(entry: { channelId: string; clipId: string; detail: Record<string, unknown> }): Promise<void>;
+  /** BL-246 (review): a failure the owner sees only as a fixed message; its detail (absolute paths included) goes to the server log. */
+  logError(event: string, context: Record<string, unknown>): void;
   /** BL-246: uploads staged in this computer's app data (never the channel folder) until a decision uses them. */
   staging: {
     create(upload: StagedAttachment): Promise<void>;
@@ -127,11 +129,13 @@ export type ClipReviewsPorts = {
     append(uploadId: string, bytes: Uint8Array): Promise<number>;
     /** The first `count` bytes. */
     head(uploadId: string, count: number): Promise<Uint8Array>;
+    /** Every staged upload with the time of its last activity (the later of its two files' changes); `upload` null for a stray file. */
+    list(): Promise<Array<{ uploadId: string; upload: StagedAttachment | null; lastActivity: Date }>>;
     /** All bytes (a text attachment, at most 50 MiB). */
     readAll(uploadId: string): Promise<Uint8Array>;
     hash(uploadId: string): Promise<string>;
     remove(uploadId: string): Promise<void>;
-    /** Removes uploads staged before `cutoff`. */
+    /** Removes uploads whose last activity (the upload as a whole, not one file) is before `cutoff`. */
     removeOlderThan(cutoff: Date): Promise<void>;
   };
   /** BL-246: the decision's folder `<workspace>/99 Data Exchange/From YTM/clip-reviews/<clipId>/<decisionId>/` (the shared rule). */

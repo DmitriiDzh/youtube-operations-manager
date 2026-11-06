@@ -15,7 +15,7 @@ import {
   type ResolvedClipFile,
   type StagedAttachment,
 } from "./contracts";
-import { clipVideoTypeOf, clipViewOf, decidingRecordOf, durationAccepted, sortClipViews } from "./model";
+import { clipVideoTypeOf, clipViewOf, decidingRecordOf, durationAccepted, sortClipViews, wellFormedAttachments } from "./model";
 import { getClipInputSchema, listClipsInputSchema, ownerClipDecisionInputSchema, stageAttachmentInputSchema, submitClipInputSchema, uploadIdSchema, withdrawClipInputSchema } from "./schemas";
 
 // BL-241 (CLIP_REVIEWS_PLAN.md items 2-8, ADR 0061): what the Producer and the owner may do with a clip. The Producer submits,
@@ -276,9 +276,37 @@ export function createClipReviewsService(ports: ClipReviewsPorts) {
   /** The owner removed a chip (×): its staged file is dropped. */
   async function discardAttachment(channelId: string, clipId: string, uploadId: string): Promise<{ removed: true }> {
     await requireClip(channelId, clipId);
-    const staged = await requireStaged(channelId, clipId, uploadId);
-    await ports.staging.remove(staged.upload.uploadId);
-    return { removed: true };
+    // Under the lock (review): never in the middle of a piece being appended or a decision copying this file.
+    return ports.withLock(async () => {
+      const staged = await requireStaged(channelId, clipId, uploadId);
+      await ports.staging.remove(staged.upload.uploadId);
+      return { removed: true as const };
+    });
+  }
+
+  /**
+   * BL-246 (review): staged uploads that can no longer be used -- idle for 24 h (the upload as a whole), a stray file, or one whose
+   * clip is not pending any more (answered, withdrawn, or gone). Run once when the server starts. Never touches the channel folder.
+   */
+  async function sweepStaged(): Promise<{ removed: number }> {
+    const cutoff = ports.now().getTime() - CLIP_ATTACHMENT_LIMITS.stagedHours * 3_600_000;
+    let removed = 0;
+    const snapshots = new Map<string, Awaited<ReturnType<typeof ports.store.read>>>();
+    for (const entry of await ports.staging.list()) {
+      let drop = !entry.upload || entry.lastActivity.getTime() < cutoff;
+      if (!drop && entry.upload) {
+        const { channelId, clipId } = entry.upload;
+        if (!snapshots.has(channelId)) snapshots.set(channelId, await ports.store.read(channelId));
+        const snapshot = snapshots.get(channelId)!;
+        const clip = Object.hasOwn(snapshot.clips, clipId) ? snapshot.clips[clipId] : undefined;
+        drop = !clip || clipViewOf(clip, Object.values(snapshot.decisions)).status !== "pending";
+      }
+      if (drop) {
+        await ports.withLock(() => ports.staging.remove(entry.uploadId)).catch(() => undefined);
+        removed++;
+      }
+    }
+    return { removed };
   }
 
   /**
@@ -290,7 +318,8 @@ export function createClipReviewsService(ports: ClipReviewsPorts) {
     await requireClip(channelId, clipId);
     const snapshot = await ports.store.read(channelId);
     const decision = Object.hasOwn(snapshot.decisions, decisionId) ? snapshot.decisions[decisionId] : undefined;
-    const attachment = decision && decision.clipId === clipId && Number.isSafeInteger(index) && index >= 0 ? decision.attachments?.[index] : undefined;
+    // The same list (and so the same places) as the owner's screen: malformed entries skipped (review).
+    const attachment = decision && decision.clipId === clipId && decision.by === "owner" && Number.isSafeInteger(index) && index >= 0 ? wellFormedAttachments(decision.attachments)[index] : undefined;
     const rule = attachment ? attachmentRuleOf(attachment.name) : null;
     const notFound = () => attachmentError("clip_attachment_not_found", "No such attachment of this clip", { clipId, decisionId, index });
     if (!attachment || !rule || attachment.path !== attachmentPathOf(clipId, decisionId, attachment.name)) throw notFound();
@@ -336,7 +365,11 @@ export function createClipReviewsService(ports: ClipReviewsPorts) {
     return ports.withLock(async () => {
       const { clip, decisions } = await requireClip(channelId, clipId);
       const view = clipViewOf(clip, decisions);
-      if (view.status !== "pending") throw notPending(view);
+      if (view.status !== "pending") {
+        // The clip was answered meanwhile (perhaps on the other computer): these files can never be used, so they go now (review).
+        for (const one of staged) await ports.staging.remove(one.upload.uploadId).catch(() => undefined);
+        throw notPending(view);
+      }
       const file = await fileStateOf(clip, true);
       if (parsed.action === "approve" && file === "missing") {
         throw new DomainError({ code: "clip_review_file_missing", message: "The clip's file is not on this computer: it cannot be approved unseen", details: { clipId } });
@@ -366,7 +399,9 @@ export function createClipReviewsService(ports: ClipReviewsPorts) {
             staged.map((one, i) => ({ sourcePath: one.path, name: names[i], size: one.upload.size, sha256: one.upload.sha256 }))
           );
         } catch (error) {
-          throw attachmentError("clip_attachment_write_failed", `The files could not be written into the channel folder: ${error instanceof Error ? error.message : String(error)}`, { clipId });
+          // The fs error names absolute paths: it goes to this computer's log, never to the browser (review).
+          ports.logError("clip_review.attachments_write_failed", { channelId, clipId, decisionId: id, reason: error instanceof Error ? error.message : String(error) });
+          throw attachmentError("clip_attachment_write_failed", "The files could not be written into the channel folder on this computer", { clipId });
         }
       }
       const record: ClipReviewDecision = { id, clipId, kind, by: "owner", comment, device, at, ...(attachments.length > 0 ? { attachments } : {}) };
@@ -396,7 +431,7 @@ export function createClipReviewsService(ports: ClipReviewsPorts) {
     return file && type ? { ...file, type } : null;
   }
 
-  return { submit, withdraw, get, list, ownerList, decide, clipFile, stageAttachment, appendAttachmentPiece, discardAttachment, attachmentFile };
+  return { submit, withdraw, get, list, ownerList, decide, clipFile, stageAttachment, appendAttachmentPiece, discardAttachment, attachmentFile, sweepStaged };
 }
 
 /** BL-246: where an attachment of a decision lives, relative to the workspace (`/` between folders). */
