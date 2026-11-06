@@ -40,6 +40,9 @@ import {
   getAnalyticsEveningAttempt,
   recordAnalyticsEveningAttempt,
   getNewestVideoMetricDate,
+  recordAnalyticsFreshnessProbe,
+  listAnalyticsFreshnessProbesByChannel,
+  deleteAnalyticsFreshnessProbesBefore,
 } from "@/lib/db";
 import { utcCollectionSettingsStore } from "../utc-settings";
 
@@ -138,6 +141,14 @@ export function createSuggestedSourceStoreAdapter() {
   };
 }
 
+/** BL-245: the freshness probe's own rows (`freshness-probe.ts`). */
+export function createFreshnessProbeStoreAdapter() {
+  return {
+    record: (row: Parameters<typeof recordAnalyticsFreshnessProbe>[0]) => recordAnalyticsFreshnessProbe(row),
+    deleteBefore: (cutoff: Date) => deleteAnalyticsFreshnessProbesBefore(cutoff),
+  };
+}
+
 export function createAnalyticsStoreAdapter() {
   return {
     videoStore: {
@@ -196,6 +207,10 @@ export function createAnalyticsStoreAdapter() {
     collectionRunStore: {
       record: recordAnalyticsCollectionRun,
       listByChannel: listAnalyticsCollectionRunsByChannel,
+    },
+    // BL-245: the hourly freshness probes, read next to the runs for `returnLag` only.
+    freshnessProbeStore: {
+      listByChannel: (channelId: string) => listAnalyticsFreshnessProbesByChannel(channelId),
     },
     // Phase 8 follow-up, slice 4 (weekly reports) -- read/write of the frozen snapshot table.
     weeklyReportStore: {

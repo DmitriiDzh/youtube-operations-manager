@@ -259,7 +259,8 @@ export type DataQualityReportResult = {
   /** BL-181 (FO-REQ-0020 §2.4): the newest dates the Analytics API has returned to this computer (the maximum over its runs), and
    * when the newest video date first came back; null before any such run. A date after `videoDate` was not reported here yet. */
   newestReturned?: { videoDate: string | null; channelDate: string | null; ranAt: string } | null;
-  /** BL-181: per date of the range (newest first), the first run on this computer that got it back and its lag (`returnLagOf`). */
+  /** BL-181: per date of the range (newest first), the first run on this computer that got it back and its lag (`returnLagOf`).
+   * BL-245: the channel columns also count the hourly freshness probes, so they are known to within an hour. */
   returnLag?: DataQualityReturnLag[];
 };
 

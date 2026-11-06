@@ -2,6 +2,7 @@ import { createGoogleOAuthClient } from "@/lib/auth";
 import {
   createYoutubeClient,
   createYoutubeAnalyticsClient,
+  getAuthenticatedYoutubeAnalytics,
   getPublicVideoTitles,
   queryChannelAnalyticsReport,
   queryChannelBreakdownReport,
@@ -17,6 +18,20 @@ async function createAuthorizedClient(credentials: ResolvedCredentials) {
   });
 
   return createYoutubeAnalyticsClient(oauth2);
+}
+
+/**
+ * BL-245: the freshness probe's one query -- the same channel-level `dimensions=day` report the collection's channel totals use
+ * (`queryChannelAnalyticsReport`), under the channel's own stored Google user (a background read with no session, refreshed tokens
+ * saved back: the BL-212 path). The reads switch applies inside the client constructor.
+ */
+export async function queryChannelDaysAsUser(args: { channelId: string; userId: string; startDate: string; endDate: string; metricNames: readonly string[] }) {
+  return queryChannelAnalyticsReport(await getAuthenticatedYoutubeAnalytics(args.userId), {
+    channelId: args.channelId,
+    startDate: args.startDate,
+    endDate: args.endDate,
+    metricNames: args.metricNames,
+  });
 }
 
 export function createAnalyticsYoutubeApiAdapter() {
