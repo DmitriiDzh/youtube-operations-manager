@@ -1335,7 +1335,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   loopback), сессия и активный канал, аудит решений (`clip:<clipId>`). Вкладка Медиа → «Клипы» (с 04.11, owner msg 4025; `/content/clips` ведёт туда; `src/components/clip-reviews-panel.tsx`,
   чистая часть `clip-reviews-model.ts`): компактные строки, плеер раскрывается в строке с отрезком `#t=start,end`; «Одобрить» (нужен
   тот самый файл на этом компьютере) и «Вернуть» (комментарий обязателен) с подтверждением в строке; значок ожидающих на вкладке (`clip-reviews-badge.ts`, своё чтение раз в минуту).
-- **Вложения к ответу (BL-246, owner msgs 4076/4078/4079, ADR 0065) — IMPLEMENTED (ветка `feature/bl-246-clip-comment-attachments`):**
+- **Вложения к ответу (BL-246, owner msgs 4076/4078/4079, ADR 0065) — IMPLEMENTED (merged dev d07af41f):**
   вставка картинки (⌘V), перетаскивание, «Прикрепить файл» (`src/components/clip-attachments.tsx`); до 10 файлов по 50 МиБ,
   png/jpg/webp/gif/pdf/txt/md/json/mp4/webm/mov — по расширению, заявленному типу и первым байтам (`clip-reviews/attachments.ts`).
   Файл идёт частями по 4 МиБ (`/[clipId]/uploads`, `/uploads/[uploadId]`; прокси обрезает тело больше 40 МБ) во временную
