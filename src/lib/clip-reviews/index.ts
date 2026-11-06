@@ -4,7 +4,10 @@ import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { insertVideoEditAuditEvent, rawSqlClient } from "@/lib/db";
 import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
+import { getProductionAppPaths } from "@/lib/platform-paths/runtime";
+import { createDefaultLogger } from "@/lib/shared-logger";
 import { createClipReviewsCoreForProduction } from "@/lib/sync-gateway";
+import { createAttachmentFiles, createAttachmentStaging } from "./adapters/attachments";
 import { hashClipFile, probeClipDurationSeconds, resolveClipFile } from "./adapters/files";
 import { createClipReviewsService, ownerSurface, producerSurface, type ClipReviewsOwnerSurface, type ClipReviewsProducerSurface, type ClipReviewsService } from "./services";
 
@@ -45,12 +48,21 @@ function service(): ClipReviewsService {
     },
     // The owner's decisions are audited on the computer they were made on (the synced record names the device for the other).
     audit: ({ channelId, clipId, detail }) => insertVideoEditAuditEvent({ channelId, videoId: `clip:${clipId}`, eventType: "RESULT", detail }),
+    // BL-246 (ADR 0065): attachments staged in this computer's app data, then written into the channel's From YTM/clip-reviews.
+    logError: (event, context) => createDefaultLogger().error({ event, context }),
+    staging: createAttachmentStaging(getProductionAppPaths().clipReviewUploadsDir),
+    attachmentFiles: createAttachmentFiles(),
   });
 }
 
 /** The Producer's surface (its MCP endpoint only): submit, withdraw, list, get -- no decision. */
 export function createClipReviewsProducerCore(): ClipReviewsProducerSurface {
   return producerSurface(service());
+}
+
+/** BL-246 (review): the staged-uploads sweep the server runs once at start (`src/instrumentation.ts`); never the channel folder. */
+export function sweepStagedClipAttachments(): Promise<{ removed: number }> {
+  return service().sweepStaged();
 }
 
 /** The owner's surface: used only by the Web UI's clip-review routes (AC-CR-12 source scan). */
@@ -61,5 +73,7 @@ export function createClipReviewsOwnerCore(): ClipReviewsOwnerSurface {
 export { createClipReviewsService, producerSurface, ownerSurface } from "./services";
 export type { ClipReviewsService, ClipReviewsProducerSurface, ClipReviewsOwnerSurface } from "./services";
 export { clipViewOf, decidingRecordOf, sortClipViews, clipVideoTypeOf, durationAccepted } from "./model";
+export { attachmentPathOf } from "./services";
+export * from "./attachments";
 export * from "./contracts";
 export * from "./schemas";

@@ -33,6 +33,12 @@ function memoryStore(): ClipReviewsPorts["store"] & { snapshot(channelId: string
   };
 }
 
+const unused = async (): Promise<never> => {
+  throw new Error("not used in this test");
+};
+const unusedStaging: ClipReviewsPorts["staging"] = { create: unused, get: unused, list: unused, append: unused, head: unused, readAll: unused, hash: unused, remove: unused, removeOlderThan: unused };
+const unusedAttachmentFiles: ClipReviewsPorts["attachmentFiles"] = { write: unused, remove: unused, resolve: unused };
+
 function setup(options: { files?: Record<string, FakeFile>; connected?: string[]; workspaces?: Record<string, string | null>; store?: ClipReviewsPorts["store"]; device?: string; clock?: { t: number } } = {}) {
   const files: Record<string, FakeFile> = options.files ?? { "03 Images/Scenes/bar/preview_30s.mp4": { bytes: MB100, sha: SHA, duration: 30 } };
   const audits: Array<{ channelId: string; clipId: string; detail: Record<string, unknown> }> = [];
@@ -55,6 +61,10 @@ function setup(options: { files?: Record<string, FakeFile>; connected?: string[]
     randomId: () => `id${String(++n).padStart(4, "0")}${options.device ?? "Mac"}`,
     withLock: (fn) => fn(),
     audit: async (entry) => void audits.push(entry),
+    // BL-246: these tests attach nothing; the attachment ports have their own tests (attachments-service.test.ts).
+    logError: () => undefined,
+    staging: unusedStaging,
+    attachmentFiles: unusedAttachmentFiles,
   };
   return { service: createClipReviewsService(ports), audits, files, store, clock };
 }
@@ -86,6 +96,8 @@ test("AC-CR-01: a 30 s mp4 inside the workspace becomes a pending clip with its 
     comment: null,
     decidedAt: null,
     decidedOn: null,
+    // BL-246 (AC-CR-24/25): every clip view carries its deciding decision's attachments; a pending clip has none.
+    attachments: [],
   };
   assert.deepEqual(clip, expected);
   assert.match(clip.clipId, /^clip_/);
@@ -326,6 +338,9 @@ test("AC-CR-02 / AC-CR-03: the real workspace rule refuses .., absolute paths, b
       randomId: () => "r1",
       withLock: (fn) => fn(),
       audit: async (entry) => void audits.push(entry),
+      logError: () => undefined,
+    staging: unusedStaging,
+      attachmentFiles: unusedAttachmentFiles,
     });
     for (const clipPath of ["../outside/secret.mp4", "03 Images/escape.mp4", path.join(outside, "secret.mp4"), "03 Images\\Scenes\\bar\\preview_30s.mp4"]) {
       await refused(service.submit(submitInput({ clipPath }), producer), "clip_review_file_unavailable");

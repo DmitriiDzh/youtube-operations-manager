@@ -34,7 +34,9 @@
 // missingOnChannel and a top-level checkedAt; channel_video_list videoIds with removed / notFound. Additive.
 // 1.18.0 (BL-244, owner msgs 4046/4050, ADR 0064): producer_upload_queue_cancel also stops an upload being sent (or paused while
 // sending) before its last chunk; its result gains previousStatus / storedBytes / totalBytes; refusals carry details.reason. Same tool.
-export const PRODUCER_API_VERSION = "1.18.0";
+// 1.19.0 (BL-246, owner msgs 4076/4078/4079, ADR 0065): producer_clip_review_get / _list -- each clip gains `attachments` (the owner's
+// files on the deciding decision: { path (workspace-relative), name, mime, size, sha256 }; [] otherwise). Additive; no tool added.
+export const PRODUCER_API_VERSION = "1.19.0";
 
 /** The channel agent's READ tools the Producer gets; each call names its channel and runs in that channel's agent scope. */
 export const PRODUCER_CHANNEL_TOOLS: Readonly<Record<string, { capability: string }>> = Object.freeze({

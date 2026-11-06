@@ -77,3 +77,28 @@ test("AC-CR-10: clips and decisions added on both computers at once are all kept
     assert.deepEqual(Object.keys(read.decisions).sort(), ["d-mac", "d-win"]);
   }
 });
+
+// BL-246 (ADR 0065, CLIP_REVIEWS_PLAN.md item 15): a decision's attachments travel with it in the same document, and a decision
+// without the field (every one made before BL-246) stays exactly as it was -- the field is additive, nothing reads a schema.
+test("BL-246: a decision with attachments reaches the other computer whole; one without the field stays without it", async () => {
+  const mac = computer();
+  const windows = computer();
+  await mac.addClip(CH, clip("c1"));
+  await mac.addClip(CH, clip("c2"));
+  const withFiles: ClipReviewDecision = {
+    ...decision("d1", "c1", "returned"),
+    attachments: [
+      { path: "99 Data Exchange/From YTM/clip-reviews/c1/d1/shot.png", name: "shot.png", mime: "image/png", size: 2048, sha256: "d".repeat(64) },
+      { path: "99 Data Exchange/From YTM/clip-reviews/c1/d1/note.txt", name: "note.txt", mime: "text/plain", size: 5, sha256: "e".repeat(64) },
+    ],
+  };
+  await mac.addDecision(CH, withFiles);
+  await windows.addDecision(CH, decision("d2", "c2", "approved"));
+  await cycle(mac, windows);
+  for (const c of [mac, windows]) {
+    const read = await c.read(CH);
+    assert.deepEqual(read.decisions.d1, withFiles);
+    assert.deepEqual(read.decisions.d2, decision("d2", "c2", "approved"));
+    assert.equal("attachments" in read.decisions.d2, false);
+  }
+});

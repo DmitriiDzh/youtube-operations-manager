@@ -30,6 +30,19 @@ export type ClipReviewClip = {
 
 export type ClipReviewDecisionKind = "approved" | "returned" | "withdrawn";
 
+/**
+ * BL-246 (ADR 0065): a file the owner attached to his comment, written before the decision into
+ * `<workspace>/99 Data Exchange/From YTM/clip-reviews/<clipId>/<decisionId>/<name>` (Syncthing carries it to the other computer).
+ */
+export type ClipReviewAttachment = {
+  /** Relative to the channel workspace root, `/` between folders. */
+  path: string;
+  name: string;
+  mime: string;
+  size: number;
+  sha256: string;
+};
+
 /** A decision on one clip; never edited. The owner approves or returns, the Producer withdraws. */
 export type ClipReviewDecision = {
   id: string;
@@ -39,6 +52,11 @@ export type ClipReviewDecision = {
   comment: string | null;
   device: string | null;
   at: string;
+  /**
+   * BL-246: the owner's attachments. Optional and additive: absent on every decision made before BL-246 or without files (an older
+   * build reads the document without a schema and ignores the field).
+   */
+  attachments?: ClipReviewAttachment[];
 };
 
 export type ClipReviewsDocument = {

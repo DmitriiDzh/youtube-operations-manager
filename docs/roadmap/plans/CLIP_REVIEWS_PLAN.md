@@ -93,8 +93,100 @@ Sources:
 - **AC-CR-15** The tab badge counts the channel's pending clips; a failed read shows no badge.
 - **AC-CR-16** The list shows pending first (oldest first), then decided ones newest first.
 
+## BL-246 — attachments to the owner's comment (ADR 0065)
+
+Source: the owner, Telegram 2026-11-06, msgs 4076/4078/4079 («да»).
+
+10. **Attaching.** In the row's confirmation (approve or return) the owner can attach files to his comment: paste an image from the
+    clipboard (Cmd/Ctrl+V in the comment field; a clipboard file without a name, or with the browser's generic `image.<ext>`, becomes
+    `pasted-<n>.<ext of its type>`; a file copied in Finder / Explorer keeps its name; the clipboard's text is not pasted with files), drop files on the
+    comment box, or «Прикрепить файл» (a real button over a hidden file input). Each file shows as a chip (an image as a thumbnail)
+    with its upload progress, its error, and × to remove it. The decision button waits until every chip is uploaded; a failed chip
+    must be removed first.
+11. **Limits.** At most 10 files per decision; each 1 byte .. 50 MiB (52,428,800 bytes). Allowed by extension (case ignored): `.png
+    .jpg .jpeg .webp .gif .pdf .txt .md .json .mp4 .webm .mov`; anything else is `clip_attachment_type_not_allowed`. The type the
+    browser declares must be one of that extension's types (empty and `application/octet-stream` count as "not declared"); the file's
+    first bytes must be that kind (PNG / JPEG / WebP / GIF / `%PDF-` / ISO-BMFF `ftyp` or a QuickTime atom / EBML for WebM; `.txt` /
+    `.md` UTF-8 text without NUL; `.json` UTF-8 that parses as JSON) -- otherwise `clip_attachment_type_mismatch`.
+12. **Names.** NFC; only the last segment after `/` or `\`; control characters removed; `< > : " | ? *` become `_`; whitespace runs one
+    space; leading / trailing dots and spaces trimmed; `..`+ runs become one `.`; a Windows device name (`CON`, `PRN`, `AUX`, `NUL`,
+    `COM1-9`, `LPT1-9`) gets a leading `_`; the name before the extension at most 100 characters and 200 bytes in UTF-8 (file
+    systems count bytes); the extension lowercased; an empty
+    name becomes `file-<n>` (n = the file's place, 1-based). Names that collide ignoring case get `-2`, `-3`, ... in order.
+13. **Upload (staging).** The panel sends each file to this computer's app data (never the channel folder: Syncthing must never carry
+    a half-finished file) in pieces of at most 4 MiB, because every `/api` request passes the proxy, which keeps only the first 40 MB of
+    a body and silently drops the rest (`next.config.ts`). `POST .../clip-reviews/[clipId]/uploads` `{ name, type, size, sha256 }`
+    (the browser's SHA-256) → `{ uploadId, name, mime }`; `PUT .../uploads/[uploadId]?offset=<n>` the next piece (refused at another
+    offset or past the size: `clip_attachment_upload_offset`); the last piece checks the kind (item 11) and the SHA-256
+    (`clip_attachment_upload_corrupt`) and drops the upload when either fails; `DELETE .../uploads/[uploadId]` drops it. An upload
+    belongs to one clip of one channel. An upload idle for 24 h (its last piece, the upload as a whole) is removed when a new one is
+    staged and by a sweep once at server start, which also removes uploads whose clip is no longer pending; a decision refused
+    because the clip was answered meanwhile removes the uploads it named. Decision folders in the workspace are never removed by a
+    sweep. A failed write answers a fixed message; its detail (paths) goes only to the server log. The chip is ready only when the
+    server answered `complete: true` for the last piece.
+14. **Writing.** `POST .../decision` `{ action, comment?, attachments?: [uploadId] }`. Before anything is written: the clip pending,
+    approval's file check, at most 10 uploads, each complete and of this clip, kind and SHA-256 again. Then the decision's id is made,
+    the files are copied to `<workspace>/99 Data Exchange/From YTM/clip-reviews/<clipId>/<decisionId>/<name>` (the folders made by the
+    shared `workspace-exchange` rule: plain folders, real path inside the workspace) under a temporary name, their size and SHA-256
+    checked, and renamed; only then is the decision recorded. If a copy, a check or the record fails, the decision folder is removed
+    and nothing is recorded (all or nothing). The staged uploads are removed after the record.
+15. **The record.** The decision gains `attachments: [{ path, name, mime, size, sha256 }]` (`path` relative to the workspace, `/`
+    between folders); a decision without attachments has no such field. Older builds read the document without a schema (the maps
+    are copied, the views pick named fields), so they ignore it.
+16. **Showing.** The owner's list gives each clip `decisionId` and the deciding record's attachments, each with `index` and `file: ok |
+    missing | changed` (size only, as for clips). Images show as thumbnails (click opens the full size in a new tab); other files as
+    links; a missing one says «файл ещё не пришёл», a changed one «файл изменён». `GET .../clip-reviews/[clipId]/attachments/
+    [decisionId]/[index]` serves one to a loopback request only (`local-file-response`): the stored path must be exactly the decision
+    folder plus one name; it is resolved again with the shared rule (plain folders, the real file strictly inside the decision
+    folder's real path, a regular file); a missing file is 404 `clip_attachment_missing`, a different size or SHA-256 409
+    `clip_attachment_changed`. Text files are sent as `text/plain; charset=utf-8`.
+17. **Producer.** `producer_clip_review_get` / `_list` give each clip `attachments` (the deciding owner decision's, `[]` otherwise):
+    `{ path, name, mime, size, sha256 }`. Producer API 1.19.0, additive. The Producer gets no way to add attachments.
+
+### Acceptance criteria (BL-246)
+
+- **AC-CR-17** Limits: 10 uploads in one decision are recorded with 10 attachments; 11 are `clip_attachment_too_many` and nothing is
+  written or recorded. A size of 52,428,800 bytes is accepted at staging; 52,428,801 and 0 are `clip_attachment_too_large` /
+  `validation_failed`.
+- **AC-CR-18** Types: `.svg`, `.exe`, `.html` and a name without an extension are `clip_attachment_type_not_allowed`; a `.png`
+  declared `application/pdf` is `clip_attachment_type_mismatch`; a `.png` whose bytes start `%PDF-` is refused at its last piece
+  (`clip_attachment_type_mismatch`); a `.json` that does not parse and a `.txt` with a NUL byte are refused the same way; a real PNG
+  declared `""` is accepted as `image/png`.
+- **AC-CR-19** Names (by hand from item 12): `photo.PNG` → `photo.png`; `../../etc/passwd.png` → `passwd.png`;
+  `C:\Users\x\shot.jpg` → `shot.jpg`; `a<NUL>b<US>.txt` → `ab.txt`; `what?<now>.md` → `what__now_.md`; `..png` (1st) → `file-1.png`;
+  `CON.txt` → `_CON.txt`; 300 × `x` + `.pdf` → 100 × `x` + `.pdf`; 90 × `漢` + `.txt` → 66 × `漢` + `.txt`; `  report   final .pdf` → `report final.pdf`; `a...b.json` →
+  `a.b.json`; `e` + U+0301 + `.txt` → `é.txt`; the 2nd pasted PNG → `pasted-2.png`; `[shot.png, Shot.png, shot.png]` →
+  `[shot.png, Shot-2.png, shot-3.png]`.
+- **AC-CR-20** Writing: a return with `hello` (5 bytes) as `note.txt` puts exactly those bytes at `99 Data Exchange/From
+  YTM/clip-reviews/<clipId>/<decisionId>/note.txt`, leaves no temporary file, and records `{ path: "99 Data Exchange/From
+  YTM/clip-reviews/<clipId>/<decisionId>/note.txt", name: "note.txt", mime: "text/plain", size: 5, sha256:
+  "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" }`; the staged upload is gone.
+- **AC-CR-21** All or nothing: when recording the decision fails, the decision folder is removed and no decision exists; when the copy
+  of the 3rd of 3 files fails, no file of the decision remains and nothing is recorded; a refusal before writing (`not pending`,
+  approval with the clip file missing) creates no folder.
+- **AC-CR-22** Serving: 401 without a session, 403 for another channel than the active one, 403 for a non-loopback request; an `ok`
+  attachment is sent whole with its type; a stored path outside its decision folder (another decision's folder, `03 Images/x.png`, a
+  `..` segment) is 404 `clip_attachment_not_found`; a symlink in the decision folder to a file outside is refused (404); a missing
+  file is 404 `clip_attachment_missing`; same size other bytes 409 `clip_attachment_changed`.
+- **AC-CR-23** The owner's list carries `decisionId` and each attachment's `index` and `file` (missing when not here, changed when the
+  size differs).
+- **AC-CR-24** Compatibility: a decision stored without `attachments` reads `attachments: []` in the owner's list and in the Producer's
+  get and list.
+- **AC-CR-25** The Producer's get and list include the deciding owner decision's attachments `{ path, name, mime, size, sha256 }`; a
+  pending or withdrawn clip has `[]`. Producer API 1.19.0; the Producer's clip tools are still exactly submit / list / get / withdraw.
+- **AC-CR-26** Channel and clip: staging, a piece, a decision or an attachment of a clip of channel A asked under channel B is
+  `clip_review_not_found`; an upload staged for clip X used in a decision on clip Y is `clip_attachment_upload_unknown`.
+- **AC-CR-28** (independent review) A failed write's answer carries no path (the detail is logged); removing a chip runs under the
+  module lock; a decision or clip id that is not a plain folder name is refused before any folder is made; malformed attachment
+  entries in a synced record are skipped, the others keep their places; the start-up sweep removes idle (by the upload's last
+  activity), stray and no-longer-usable uploads and keeps one still being sent; `content-disposition` uses an RFC 5987 ext-value.
+- **AC-CR-27** Staging: a piece at a wrong offset or past the declared size is `clip_attachment_upload_offset`; a last piece whose
+  SHA-256 differs from the declared one is `clip_attachment_upload_corrupt` and drops the upload; a decision naming an unfinished
+  upload is `clip_attachment_upload_incomplete`; staged uploads older than 24 h are removed when a new one is staged.
+
 ## Not in scope
 
-- No upload, no YouTube call, no change to the clip file (the app never writes into the channel folder for this).
+- No upload, no YouTube call, no change to the clip file. Since BL-246 (ADR 0065) the app writes into the channel folder only the
+  owner's comment attachments, under `99 Data Exchange/From YTM/clip-reviews/`.
 - No comments thread or second round on the same clip: a reworked clip is a new submission (same `sceneId`).
 - No playback on a computer that does not have the file (Syncthing brings it; the row says it is missing).

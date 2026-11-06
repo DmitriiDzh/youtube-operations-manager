@@ -35,7 +35,8 @@ it back with a comment, on either of his two computers (the channel folder syncs
 
 ## Consequences
 
-- Nothing reaches YouTube; the app writes nothing into the channel folder.
+- Nothing reaches YouTube; the app writes nothing into the channel folder (amended by ADR 0065, BL-246: the owner's comment
+  attachments go into `99 Data Exchange/From YTM/clip-reviews/`, nothing else).
 - A reworked clip is a new submission (same `sceneId`); the old one keeps its decision.
 - Two computers deciding the same clip offline: the later decision is kept in the document but does not count (the earliest
   wins); the screen shows the counting one.

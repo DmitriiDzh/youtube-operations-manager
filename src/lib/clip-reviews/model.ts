@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { ClipReviewClip, ClipReviewDecision, ClipReviewStatus, ClipReviewView } from "./contracts";
+import type { ClipReviewAttachment, ClipReviewClip, ClipReviewDecision, ClipReviewStatus, ClipReviewView } from "./contracts";
 import { CLIP_VIDEO_TYPES } from "./contracts";
 
 // BL-241 (ADR 0061 §5): pure rules. The status is derived from the decisions, never stored, so two computers' documents merge
@@ -42,7 +42,26 @@ export function clipViewOf(clip: ClipReviewClip, decisions: readonly ClipReviewD
     comment: record?.by === "owner" ? record.comment : null,
     decidedAt: record?.at ?? null,
     decidedOn: record?.device ?? null,
+    // BL-246: only an owner decision carries files; a decision stored without the field (older builds) reads [].
+    attachments: record?.by === "owner" ? wellFormedAttachments(record.attachments) : [],
   };
+}
+
+/**
+ * BL-246 (review): the attachments of a record as the other computer's document carries them -- an entry that is not the expected
+ * shape is skipped (never thrown on, which would break the whole channel's list); a field that is not a list reads [].
+ */
+export function wellFormedAttachments(value: unknown): ClipReviewAttachment[] {
+  if (!Array.isArray(value)) return [];
+  const out: ClipReviewAttachment[] = [];
+  for (const entry of value as unknown[]) {
+    if (!entry || typeof entry !== "object") continue;
+    const a = entry as Record<string, unknown>;
+    if (typeof a.path !== "string" || typeof a.name !== "string" || typeof a.mime !== "string" || typeof a.sha256 !== "string") continue;
+    if (typeof a.size !== "number" || !Number.isSafeInteger(a.size) || a.size < 0) continue;
+    out.push({ path: a.path, name: a.name, mime: a.mime, size: a.size, sha256: a.sha256 });
+  }
+  return out;
 }
 
 /** Pending first, oldest first (the queue); then the rest, newest first. */
