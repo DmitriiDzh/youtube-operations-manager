@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { attachmentSrcOf, attachmentsReady, canApprove, clockOf, isImageMime, percentOf, pieceOffsetsOf, rangeOf, returnCommentReady, videoSrcOf } from "./clip-reviews-model";
+import { attachmentSrcOf, attachmentsReady, canApprove, clockOf, isImageMime, percentOf, pieceOffsetsOf, rangeOf, returnCommentReady, scenesOf, videoSrcOf, type ClipDto } from "./clip-reviews-model";
 
 // BL-241 (CLIP_REVIEWS_PLAN.md item 5, ADR 0061 §6): the player plays the Producer's range (a media fragment), the row shows it on
 // the clip's clock, and «Одобрить» needs a waiting clip whose file here is the submitted one.
@@ -63,4 +63,51 @@ test("BL-246: the decision waits for every file; a failed one must be removed fi
   assert.equal(percentOf(0, 10), 0);
   assert.equal(percentOf(4, 10), 40);
   assert.equal(percentOf(10, 10), 100);
+});
+
+// ---- BL-247 (CLIP_REVIEWS_PLAN.md AC-CR-29/30): versions of a scene, newest on top ----
+
+function clipOf(clipId: string, sceneId: string, submittedAt: string, status: ClipDto["status"] = "pending"): ClipDto {
+  return {
+    clipId, channelId: "UC1", sceneId, clipPath: `${clipId}.mp4`, note: "n", startSec: null, endSec: null, durationSeconds: 30, sizeBytes: 1,
+    submittedAt, device: null, status, comment: null, decidedAt: null, decidedOn: null, file: "ok", decisionId: null, attachments: [],
+  };
+}
+const shape = (scenes: ReturnType<typeof scenesOf>) =>
+  scenes.map((s) => ({ scene: s.sceneId, latest: [s.latest.clip.clipId, s.latest.version], earlier: s.earlier.map((v) => [v.clip.clipId, v.version]), waiting: s.waiting }));
+
+test("AC-CR-29: one row per scene, latest version on it, earlier ones newest first, numbered from the first submitted", () => {
+  const clips = [
+    clipOf("A1", "a", "2026-11-07T10:00:00.000Z", "returned"),
+    clipOf("B1", "b", "2026-11-07T10:01:00.000Z"),
+    clipOf("A2", "a", "2026-11-07T10:02:00.000Z", "returned"),
+    clipOf("A3", "a", "2026-11-07T10:03:00.000Z"),
+  ];
+  assert.deepEqual(shape(scenesOf(clips)), [
+    { scene: "a", latest: ["A3", 3], earlier: [["A2", 2], ["A1", 1]], waiting: true },
+    { scene: "b", latest: ["B1", 1], earlier: [], waiting: true },
+  ]);
+  // The same moment: numbered by clipId. Order of the input does not matter.
+  const same = scenesOf([clipOf("x2", "s", "2026-11-07T10:00:00.000Z"), clipOf("x1", "s", "2026-11-07T10:00:00.000Z")]);
+  assert.deepEqual(shape(same), [{ scene: "s", latest: ["x2", 2], earlier: [["x1", 1]], waiting: true }]);
+  // Scene labels match exactly: `A` and `a` are two scenes.
+  assert.equal(scenesOf([clipOf("u1", "A", "2026-11-07T10:00:00.000Z"), clipOf("u2", "a", "2026-11-07T10:01:00.000Z")]).length, 2);
+  assert.deepEqual(scenesOf([]), []);
+});
+
+test("AC-CR-30: waiting scenes first, then the others, each with the newest latest version on top", () => {
+  const clips = [
+    clipOf("a1", "a", "2026-11-07T10:03:00.000Z"),
+    clipOf("c1", "c", "2026-11-07T10:05:00.000Z", "approved"),
+    clipOf("b1", "b", "2026-11-07T10:04:00.000Z"),
+    clipOf("d1", "d", "2026-11-07T10:01:00.000Z", "returned"),
+  ];
+  assert.deepEqual(scenesOf(clips).map((s) => s.sceneId), ["b", "a", "c", "d"]);
+  // The latest version decided, an earlier one still waiting: the scene waits.
+  const mixed = scenesOf([clipOf("e1", "e", "2026-11-07T09:00:00.000Z"), clipOf("e2", "e", "2026-11-07T09:30:00.000Z", "approved"), clipOf("f1", "f", "2026-11-07T11:00:00.000Z", "approved")]);
+  assert.deepEqual(shape(mixed).map((s) => [s.scene, s.waiting]), [["e", true], ["f", false]]);
+  assert.equal(mixed[0].earlierWaiting, 1);
+  // The latest waits and an earlier one too: the row still says an earlier version waits.
+  const both = scenesOf([clipOf("g1", "g", "2026-11-07T09:00:00.000Z"), clipOf("g2", "g", "2026-11-07T09:30:00.000Z"), clipOf("g3", "g", "2026-11-07T09:40:00.000Z", "withdrawn")]);
+  assert.deepEqual([both[0].latest.clip.clipId, both[0].earlierWaiting], ["g3", 2]);
 });

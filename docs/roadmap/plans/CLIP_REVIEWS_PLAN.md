@@ -90,8 +90,9 @@ Sources:
 - **AC-CR-14** The Producer endpoint lists exactly `producer_clip_review_submit` / `_list` / `_get` / `_withdraw`, classified
   `producer-only`; a channel worker session lists none of them; inputs are strict (an unknown field such as `status: "approved"`
   on submit is refused at input); each call is logged under its channel and answers with `forChannelId`. Producer API 1.15.0.
-- **AC-CR-15** The tab badge counts the channel's pending clips; a failed read shows no badge.
-- **AC-CR-16** The list shows pending first (oldest first), then decided ones newest first.
+- **AC-CR-15** The tab badge counts the channel's pending clips (since BL-247: scenes with a pending version, AC-CR-31); a failed read shows no badge.
+- **AC-CR-16** The Producer's list shows pending first (oldest first), then decided ones newest first. (Since BL-247 the owner's
+  screen orders by AC-CR-30 instead -- owner msg 4085.)
 
 ## BL-246 — attachments to the owner's comment (ADR 0065)
 
@@ -183,6 +184,33 @@ Source: the owner, Telegram 2026-11-06, msgs 4076/4078/4079 («да»).
 - **AC-CR-27** Staging: a piece at a wrong offset or past the declared size is `clip_attachment_upload_offset`; a last piece whose
   SHA-256 differs from the declared one is `clip_attachment_upload_corrupt` and drops the upload; a decision naming an unfinished
   upload is `clip_attachment_upload_incomplete`; staged uploads older than 24 h are removed when a new one is staged.
+
+## BL-247 — versions of a scene, newest on top (owner msgs 4085/4087)
+
+Source: the owner, Telegram 2026-11-07, msg 4085 («добавить версионность, чтобы каждый раз правки клипа не приходили новой
+строкой. И новые поступления показывать на самом верху»), design accepted msg 4087 («да»). Screen only: the store, the
+Producer's tools and their order are unchanged; a version is derived, not stored.
+
+18. **Versions.** The owner's screen groups a channel's clips by `sceneId` (exact match). A scene's versions are numbered 1..n
+  by `submittedAt` (oldest = 1; the same moment by `clipId`). One row per scene shows its latest version, marked `v<n>` when there
+  is more than one; opened, it shows that version and below it every earlier version, newest first, each with its own status,
+  comment and attachments. An earlier version that still waits can be approved or returned from there; nothing is decided for it
+  automatically.
+  The numbers are derived on every read: a withdrawn submission keeps its number, and a version that reaches a computer late by
+  sync renumbers the later ones (accepted: refer to a version by its clip, not its number). A scene's row stays open, and an
+  answer being written stays on screen, when a newer version arrives; the row says how many earlier versions still wait.
+19. **Order.** Scenes with a waiting version first, then the others; within each, the scene whose latest version came last is on
+  top.
+20. **Waiting.** The line on the screen and the tab badge count scenes with at least one waiting version.
+
+- **AC-CR-29** Clips A1 (scene `a`, 10:00), B1 (`b`, 10:01), A2 (`a`, 10:02), A3 (`a`, 10:03) make two rows: `a` with latest A3
+  as v3 and earlier [A2 v2, A1 v1]; `b` with B1 as v1 and no earlier versions. Two clips submitted at the same moment are
+  numbered by `clipId`. Scene `A` and scene `a` are different scenes.
+- **AC-CR-30** Order: waiting `a` (latest 10:03), decided `c` (latest 10:05), waiting `b` (latest 10:04), decided `d` (latest
+  10:01) show as [`b`, `a`, `c`, `d`]. A scene whose latest version is decided but an earlier one waits counts as waiting.
+- **AC-CR-31** The owner's `waiting`: scene `a` with two waiting versions and scene `b` with one is 2; a decided or withdrawn
+  version is not counted.
+- **AC-CR-32** The Producer's list order (AC-CR-16) and fields are unchanged.
 
 ## Not in scope
 

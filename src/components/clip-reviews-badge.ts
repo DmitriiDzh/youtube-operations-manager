@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 
 // BL-241 (CLIP_REVIEWS_PLAN.md AC-CR-15; tab moved to Media, owner msg 4025): the «Клипы» tab's badge -- how many of the channel's
-// clips wait for the owner. Its own read once a minute, so Media works without the clips module; a failed read shows no badge.
+// scenes have a clip waiting for the owner (BL-247, AC-CR-31). Its own read once a minute, so Media works without the clips module; a failed read shows no badge.
 
 /** Pure: the badge from the read (null when it failed). */
 export function clipsWaitingBadge(read: { waiting: number } | null): number {
