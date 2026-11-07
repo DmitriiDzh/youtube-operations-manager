@@ -196,6 +196,9 @@ Producer's tools and their order are unchanged; a version is derived, not stored
   is more than one; opened, it shows that version and below it every earlier version, newest first, each with its own status,
   comment and attachments. An earlier version that still waits can be approved or returned from there; nothing is decided for it
   automatically.
+  The numbers are derived on every read: a withdrawn submission keeps its number, and a version that reaches a computer late by
+  sync renumbers the later ones (accepted: refer to a version by its clip, not its number). A scene's row stays open, and an
+  answer being written stays on screen, when a newer version arrives; the row says how many earlier versions still wait.
 19. **Order.** Scenes with a waiting version first, then the others; within each, the scene whose latest version came last is on
   top.
 20. **Waiting.** The line on the screen and the tab badge count scenes with at least one waiting version.

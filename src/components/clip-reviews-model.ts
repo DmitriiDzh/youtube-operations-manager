@@ -105,11 +105,14 @@ export type ClipScene = {
   earlier: ClipVersion[];
   /** At least one version waits for the owner. */
   waiting: boolean;
+  /** How many earlier versions still wait (the latest may wait too, or not). */
+  earlierWaiting: number;
 };
 
 /**
  * The screen's rows: the clips grouped by `sceneId` (exact match), versions numbered by `submittedAt` (the same moment by
- * `clipId`); waiting scenes first, then the others, each newest (by its latest version) on top.
+ * `clipId`); waiting scenes first, then the others, each newest (by its latest version) on top. A number is derived on every read:
+ * a withdrawn submission keeps its place, and a version that reaches this computer late by sync renumbers the later ones.
  */
 export function scenesOf(clips: readonly ClipDto[]): ClipScene[] {
   const bySubmission = (a: ClipDto, b: ClipDto) => a.submittedAt.localeCompare(b.submittedAt) || a.clipId.localeCompare(b.clipId);
@@ -122,7 +125,8 @@ export function scenesOf(clips: readonly ClipDto[]): ClipScene[] {
   const scenes: ClipScene[] = [...groups].map(([sceneId, group]) => {
     const versions = [...group].sort(bySubmission).map((clip, i) => ({ clip, version: i + 1 }));
     const latest = versions[versions.length - 1];
-    return { sceneId, latest, earlier: versions.slice(0, -1).reverse(), waiting: versions.some((v) => v.clip.status === "pending") };
+    const earlier = versions.slice(0, -1).reverse();
+    return { sceneId, latest, earlier, waiting: versions.some((v) => v.clip.status === "pending"), earlierWaiting: earlier.filter((v) => v.clip.status === "pending").length };
   });
   return scenes.sort((a, b) => Number(b.waiting) - Number(a.waiting) || bySubmission(b.latest.clip, a.latest.clip));
 }

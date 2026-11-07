@@ -106,4 +106,8 @@ test("AC-CR-30: waiting scenes first, then the others, each with the newest late
   // The latest version decided, an earlier one still waiting: the scene waits.
   const mixed = scenesOf([clipOf("e1", "e", "2026-11-07T09:00:00.000Z"), clipOf("e2", "e", "2026-11-07T09:30:00.000Z", "approved"), clipOf("f1", "f", "2026-11-07T11:00:00.000Z", "approved")]);
   assert.deepEqual(shape(mixed).map((s) => [s.scene, s.waiting]), [["e", true], ["f", false]]);
+  assert.equal(mixed[0].earlierWaiting, 1);
+  // The latest waits and an earlier one too: the row still says an earlier version waits.
+  const both = scenesOf([clipOf("g1", "g", "2026-11-07T09:00:00.000Z"), clipOf("g2", "g", "2026-11-07T09:30:00.000Z"), clipOf("g3", "g", "2026-11-07T09:40:00.000Z", "withdrawn")]);
+  assert.deepEqual([both[0].latest.clip.clipId, both[0].earlierWaiting], ["g3", 2]);
 });

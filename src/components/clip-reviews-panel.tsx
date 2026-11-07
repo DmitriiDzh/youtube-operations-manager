@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { UiTextKey } from "@/lib/ui-text";
 import { ActionButton, SkeletonLines } from "./busy-feedback";
 import { AttachmentDropZone, DecisionAttachments, useAttachmentComposer } from "./clip-attachments";
@@ -52,10 +52,10 @@ export function ClipReviewsPanel({ channelId, visible }: { channelId: string | n
   const { language, formatNumber } = useUiText();
   const ownerZone = useUserTimezone();
   const [clips, setClips] = useState<ClipDto[] | null>(null);
-  const [waiting, setWaiting] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<{ clipId: string; text: string } | null>(null);
-  // BL-247: several rows can be open at once (a scene and one of its earlier versions).
+  // BL-247: several rows can be open at once. A scene's row is opened by its scene (`scene:<sceneId>`), so a new version arriving
+  // keeps it open; an earlier version's row by its clipId.
   const [open, setOpen] = useState<ReadonlySet<string>>(() => new Set());
   const [confirm, setConfirm] = useState<Confirm>(null);
   const [comment, setComment] = useState("");
@@ -70,9 +70,8 @@ export function ClipReviewsPanel({ channelId, visible }: { channelId: string | n
     try {
       const res = await fetch(base);
       if (!res.ok) throw new Error(String(res.status));
-      const body = (await res.json()) as { clips: ClipDto[]; waiting: number };
+      const body = (await res.json()) as { clips: ClipDto[] };
       setClips(body.clips);
-      setWaiting(body.waiting);
       setError(null);
     } catch {
       setError(t("clipReviews.loadFailed"));
@@ -136,32 +135,42 @@ export function ClipReviewsPanel({ channelId, visible }: { channelId: string | n
     }
   }
 
+  const scenes = useMemo(() => scenesOf(clips ?? []), [clips]);
+
   if (!channelId) return null;
 
-  const scenes = scenesOf(clips ?? []);
   const waitingScenes = scenes.filter((scene) => scene.waiting);
   const answeredScenes = scenes.filter((scene) => !scene.waiting);
-  const toggle = (clipId: string) =>
+  const toggle = (key: string) =>
     setOpen((current) => {
       const next = new Set(current);
-      if (next.has(clipId)) next.delete(clipId);
-      else next.add(clipId);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
 
   /** A clip's row: a scene's latest version (with its earlier ones inside) or, nested, one earlier version. */
   const renderRow = (clip: ClipDto, version: number, scene: ClipScene | null) => {
-    const expanded = open.has(clip.clipId);
     const nested = scene === null;
-    const olderWaiting = scene !== null && clip.status !== "pending" && scene.earlier.some((v) => v.clip.status === "pending");
+    const openKey = scene ? `scene:${scene.sceneId}` : clip.clipId;
+    // An answer being written stays on screen even when a newer version moved its clip into «Earlier versions».
+    const expanded = open.has(openKey) || confirm?.clipId === clip.clipId;
+    const earlierWaiting = scene?.earlierWaiting ?? 0;
     const range = rangeOf(clip);
     const confirming = confirm?.clipId === clip.clipId ? confirm.action : null;
     const rowBusy = busy === clip.clipId;
     return (
-      <li key={clip.clipId} className={`rounded-lg border ${clip.status === "pending" ? "border-zinc-700 bg-zinc-900" : "border-zinc-800 bg-zinc-950/60"}`}>
+      <li key={openKey} className={`rounded-lg border ${clip.status === "pending" ? "border-zinc-700 bg-zinc-900" : "border-zinc-800 bg-zinc-950/60"}`}>
         <button
           type="button"
-          onClick={() => toggle(clip.clipId)}
+          onClick={() => {
+            // Closing the row being answered cancels that answer (its staged files go too).
+            if (expanded && confirm?.clipId === clip.clipId) {
+              composer.clear(true);
+              setConfirm(null);
+            }
+            if (open.has(openKey) || !expanded) toggle(openKey);
+          }}
           aria-expanded={expanded}
           title={t(expanded ? "clipReviews.collapse" : "clipReviews.expand")}
           className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-zinc-800/40"
@@ -180,8 +189,8 @@ export function ClipReviewsPanel({ channelId, visible }: { channelId: string | n
             </>
           )}
           <span className="min-w-0 flex-1 truncate text-sm text-zinc-400">{clip.note}</span>
-          {olderWaiting && (
-            <span className="shrink-0 rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] text-amber-300 ring-1 ring-amber-500/30">{t("clipReviews.versions.olderWaiting")}</span>
+          {earlierWaiting > 0 && (
+            <span className="shrink-0 rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] text-amber-300 ring-1 ring-amber-500/30">{t("clipReviews.versions.olderWaiting", { count: earlierWaiting })}</span>
           )}
           {clip.file !== "ok" && (
             <span className="shrink-0 rounded-full bg-orange-500/15 px-2 py-0.5 text-[11px] text-orange-300 ring-1 ring-orange-500/30">
@@ -314,7 +323,7 @@ export function ClipReviewsPanel({ channelId, visible }: { channelId: string | n
       {clips && clips.length === 0 && <p className="text-sm text-zinc-500">{t("clipReviews.empty")}</p>}
       {clips && clips.length > 0 && (
         <>
-          <p className={`text-sm font-medium ${waiting > 0 ? "text-amber-300" : "text-zinc-400"}`}>{waiting > 0 ? t("clipReviews.waiting", { count: waiting }) : t("clipReviews.noneWaiting")}</p>
+          <p className={`text-sm font-medium ${waitingScenes.length > 0 ? "text-amber-300" : "text-zinc-400"}`}>{waitingScenes.length > 0 ? t("clipReviews.waiting", { count: waitingScenes.length }) : t("clipReviews.noneWaiting")}</p>
           {waitingScenes.length > 0 && <ul className="space-y-2">{waitingScenes.map((scene) => renderRow(scene.latest.clip, scene.latest.version, scene))}</ul>}
           {answeredScenes.length > 0 && (
             <div className="space-y-2">
