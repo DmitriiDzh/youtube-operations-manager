@@ -8,6 +8,10 @@ export const clipReviews = {
   "clipReviews.waiting": "{count, plural, one {# clip waits} other {# clips wait}} for you",
   "clipReviews.noneWaiting": "Nothing waits for you",
   "clipReviews.decidedHeading": "Answered",
+  // BL-247: versions of a scene.
+  "clipReviews.version": "v{version}",
+  "clipReviews.versions.earlier": "Earlier versions",
+  "clipReviews.versions.olderWaiting": "An earlier version waits",
   "clipReviews.status.pending": "Waiting",
   "clipReviews.status.approved": "Approved",
   "clipReviews.status.returned": "Returned",

@@ -10,6 +10,10 @@ export const clipReviews: Record<keyof typeof en, string> = {
   "clipReviews.waiting": "{count, plural, one {# клип ждёт} few {# клипа ждут} many {# клипов ждут} other {# клипа ждут}} вас",
   "clipReviews.noneWaiting": "Ничего не ждёт вашего ответа",
   "clipReviews.decidedHeading": "С ответом",
+  // BL-247: versions of a scene.
+  "clipReviews.version": "v{version}",
+  "clipReviews.versions.earlier": "Предыдущие версии",
+  "clipReviews.versions.olderWaiting": "Ждёт предыдущая версия",
   "clipReviews.status.pending": "Ждёт",
   "clipReviews.status.approved": "Одобрен",
   "clipReviews.status.returned": "Возвращён",

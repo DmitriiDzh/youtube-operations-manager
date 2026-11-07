@@ -234,9 +234,27 @@ test("AC-CR-16: pending first, oldest first; then the decided ones, newest first
   const order = (await service.list({ channelId: CH })).clips.map((c) => c.clipId);
   assert.deepEqual(order, [ids.p1, ids.p2, ids.d2, ids.d1]);
   assert.deepEqual((await service.ownerList(CH)).clips.map((c) => c.clipId), [ids.p1, ids.p2, ids.d2, ids.d1]);
-  assert.equal((await service.ownerList(CH)).waiting, 2);
+  // BL-247 (AC-CR-31, owner msg 4085 -- requirement changed): `waiting` counts scenes, and p1/p2 are both scene bar-night.
+  assert.equal((await service.ownerList(CH)).waiting, 1);
   assert.deepEqual((await service.list({ channelId: CH, status: "returned" })).clips.map((c) => c.clipId), [ids.d2]);
   assert.deepEqual((await service.list({ channelId: CH, limit: 1 })).clips.map((c) => c.clipId), [ids.p1]);
+});
+
+test("AC-CR-31/32: the owner's waiting counts scenes with a pending version; the Producer's list is unchanged", async () => {
+  const files: Record<string, FakeFile> = {};
+  for (const name of ["a1", "a2", "a3", "b1", "c1"]) files[`${name}.mp4`] = { bytes: 5, sha: SHA, duration: 30 };
+  const { service, clock } = setup({ files });
+  const ids: Record<string, string> = {};
+  for (const [i, [name, sceneId]] of [["a1", "a"], ["a2", "a"], ["b1", "b"], ["c1", "c"], ["a3", "a"]].entries()) {
+    clock.t = Date.parse("2026-11-07T10:00:00.000Z") + i * 60_000;
+    ids[name] = (await service.submit(submitInput({ clipPath: `${name}.mp4`, sceneId }), producer)).clip.clipId;
+  }
+  await service.decide(CH, ids.a3, { action: "return", comment: "no" }, "u");
+  await service.decide(CH, ids.c1, { action: "approve" }, "u");
+  // Scene a: a1, a2 pending (a3 returned) -> 1; scene b -> 1; scene c decided -> 0.
+  assert.equal((await service.ownerList(CH)).waiting, 2);
+  // AC-CR-16 for the Producer: pending oldest first, then decided newest first, one entry per clip.
+  assert.deepEqual((await service.list({ channelId: CH })).clips.map((c) => c.clipId), [ids.a1, ids.a2, ids.b1, ids.a3, ids.c1]);
 });
 
 // AC-CR-10 at the module level: two computers, each with its own Automerge document, synced by exchanging their bytes.

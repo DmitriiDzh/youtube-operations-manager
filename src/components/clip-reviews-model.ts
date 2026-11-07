@@ -92,3 +92,37 @@ export function attachmentsReady(items: ReadonlyArray<{ state: ComposerItemState
 export function percentOf(sent: number, size: number): number {
   return size <= 0 ? 100 : Math.min(100, Math.floor((sent / size) * 100));
 }
+
+// ---- BL-247 (CLIP_REVIEWS_PLAN.md items 18-20, owner msgs 4085/4087): versions of a scene, newest on top ----
+
+/** One version of a scene: the clip and its number (1 = the first submitted). */
+export type ClipVersion = { clip: ClipDto; version: number };
+
+/** One row of the screen: a scene, its latest version and the earlier ones (newest first). */
+export type ClipScene = {
+  sceneId: string;
+  latest: ClipVersion;
+  earlier: ClipVersion[];
+  /** At least one version waits for the owner. */
+  waiting: boolean;
+};
+
+/**
+ * The screen's rows: the clips grouped by `sceneId` (exact match), versions numbered by `submittedAt` (the same moment by
+ * `clipId`); waiting scenes first, then the others, each newest (by its latest version) on top.
+ */
+export function scenesOf(clips: readonly ClipDto[]): ClipScene[] {
+  const bySubmission = (a: ClipDto, b: ClipDto) => a.submittedAt.localeCompare(b.submittedAt) || a.clipId.localeCompare(b.clipId);
+  const groups = new Map<string, ClipDto[]>();
+  for (const clip of clips) {
+    const group = groups.get(clip.sceneId);
+    if (group) group.push(clip);
+    else groups.set(clip.sceneId, [clip]);
+  }
+  const scenes: ClipScene[] = [...groups].map(([sceneId, group]) => {
+    const versions = [...group].sort(bySubmission).map((clip, i) => ({ clip, version: i + 1 }));
+    const latest = versions[versions.length - 1];
+    return { sceneId, latest, earlier: versions.slice(0, -1).reverse(), waiting: versions.some((v) => v.clip.status === "pending") };
+  });
+  return scenes.sort((a, b) => Number(b.waiting) - Number(a.waiting) || bySubmission(b.latest.clip, a.latest.clip));
+}

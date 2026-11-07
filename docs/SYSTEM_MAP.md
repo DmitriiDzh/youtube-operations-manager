@@ -1343,6 +1343,10 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   `<папка канала>/99 Data Exchange/From YTM/clip-reviews/<clipId>/<decisionId>/` (общие `workspace-exchange.resolveFromYtmFolder` /
   `resolveFromYtmFolderFile`) и хранит `attachments` в решении. Показ — `/[clipId]/attachments/[decisionId]/[index]`, только loopback;
   нет файла — «ещё не пришёл», другой — «изменён». Producer API 1.19.0: `attachments` в `_get` / `_list`.
+- **Версии сцены (BL-247, owner msgs 4085/4087, план п. 18–20) — IMPLEMENTED на `feature/bl-247-clip-versions`:** экран группирует
+  клипы по `sceneId` (чистая `scenesOf` в `clip-reviews-model.ts`): строка = сцена, последняя версия `v<n>`, внутри предыдущие
+  (на ожидающую можно ответить); сначала ждущие сцены, новые сверху. `waiting` владельца и значок считают сцены. Хранилище,
+  инструменты Продюсера и их порядок не менялись.
 
 ## 3. Где вносить изменения
 

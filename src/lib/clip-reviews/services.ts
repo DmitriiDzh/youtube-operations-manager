@@ -176,7 +176,8 @@ export function createClipReviewsService(ports: ClipReviewsPorts) {
     return out;
   }
 
-  /** The owner's list: every clip of the channel with this computer's copy (the pending ones hashed), and how many wait. */
+  /** The owner's list: every clip of the channel with this computer's copy, and how many scenes wait (BL-247, AC-CR-31: a scene
+   *  with at least one pending version counts once). */
   async function ownerList(channelId: string): Promise<{ clips: OwnerClipView[]; waiting: number }> {
     const snapshot = await ports.store.read(channelId);
     const all = await views(channelId);
@@ -190,7 +191,7 @@ export function createClipReviewsService(ports: ClipReviewsPorts) {
       const decisionId = record?.id ?? null;
       clips.push({ ...view, file: await fileStateOf(clip, false), decisionId, attachments: await ownerAttachmentsOf(clip, decisionId, view.attachments) });
     }
-    return { clips, waiting: all.filter((v) => v.status === "pending").length };
+    return { clips, waiting: new Set(all.filter((v) => v.status === "pending").map((v) => v.sceneId)).size };
   }
 
   // ---- BL-246 (ADR 0065, CLIP_REVIEWS_PLAN.md items 10-16): the owner's comment attachments ----

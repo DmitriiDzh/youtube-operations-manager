@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { UiTextKey } from "@/lib/ui-text";
 import { ActionButton, SkeletonLines } from "./busy-feedback";
 import { AttachmentDropZone, DecisionAttachments, useAttachmentComposer } from "./clip-attachments";
-import { canApprove, rangeOf, returnCommentReady, videoSrcOf, type ClipDto, type ClipStatus } from "./clip-reviews-model";
+import { canApprove, rangeOf, returnCommentReady, scenesOf, videoSrcOf, type ClipDto, type ClipScene, type ClipStatus } from "./clip-reviews-model";
 import { useT, useUiText } from "./ui-text-provider";
 import { useUserTimezone } from "./use-user-timezone";
 
@@ -13,6 +13,8 @@ import { useUserTimezone } from "./use-user-timezone";
 // one compact row), and what does it look like (the row opens an inline player on this computer's copy, at the Producer's range).
 // He answers in the row: «Одобрить» (a comment optional) or «Вернуть» (a comment required), each confirmed in the row itself --
 // never a browser dialog. Answered clips stay below, folded into the same compact rows.
+// BL-247 (CLIP_REVIEWS_PLAN.md items 18-20, owner msgs 4085/4087): one row per scene -- its latest version, `v<n>`; opened, the
+// earlier versions below it (each still answerable while it waits). Waiting scenes first, the newest on top.
 
 const STATUS_STYLES: Record<ClipStatus, string> = {
   pending: "bg-amber-500/15 text-amber-300 ring-amber-500/30",
@@ -53,7 +55,8 @@ export function ClipReviewsPanel({ channelId, visible }: { channelId: string | n
   const [waiting, setWaiting] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<{ clipId: string; text: string } | null>(null);
-  const [open, setOpen] = useState<string | null>(null);
+  // BL-247: several rows can be open at once (a scene and one of its earlier versions).
+  const [open, setOpen] = useState<ReadonlySet<string>>(() => new Set());
   const [confirm, setConfirm] = useState<Confirm>(null);
   const [comment, setComment] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
@@ -135,11 +138,22 @@ export function ClipReviewsPanel({ channelId, visible }: { channelId: string | n
 
   if (!channelId) return null;
 
-  const pending = (clips ?? []).filter((c) => c.status === "pending");
-  const answered = (clips ?? []).filter((c) => c.status !== "pending");
+  const scenes = scenesOf(clips ?? []);
+  const waitingScenes = scenes.filter((scene) => scene.waiting);
+  const answeredScenes = scenes.filter((scene) => !scene.waiting);
+  const toggle = (clipId: string) =>
+    setOpen((current) => {
+      const next = new Set(current);
+      if (next.has(clipId)) next.delete(clipId);
+      else next.add(clipId);
+      return next;
+    });
 
-  const renderRow = (clip: ClipDto) => {
-    const expanded = open === clip.clipId;
+  /** A clip's row: a scene's latest version (with its earlier ones inside) or, nested, one earlier version. */
+  const renderRow = (clip: ClipDto, version: number, scene: ClipScene | null) => {
+    const expanded = open.has(clip.clipId);
+    const nested = scene === null;
+    const olderWaiting = scene !== null && clip.status !== "pending" && scene.earlier.some((v) => v.clip.status === "pending");
     const range = rangeOf(clip);
     const confirming = confirm?.clipId === clip.clipId ? confirm.action : null;
     const rowBusy = busy === clip.clipId;
@@ -147,14 +161,28 @@ export function ClipReviewsPanel({ channelId, visible }: { channelId: string | n
       <li key={clip.clipId} className={`rounded-lg border ${clip.status === "pending" ? "border-zinc-700 bg-zinc-900" : "border-zinc-800 bg-zinc-950/60"}`}>
         <button
           type="button"
-          onClick={() => setOpen(expanded ? null : clip.clipId)}
+          onClick={() => toggle(clip.clipId)}
           aria-expanded={expanded}
           title={t(expanded ? "clipReviews.collapse" : "clipReviews.expand")}
           className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-zinc-800/40"
         >
           <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ${STATUS_STYLES[clip.status]}`}>{t(STATUS_KEYS[clip.status])}</span>
-          <span className="shrink-0 font-medium text-zinc-100">{clip.sceneId}</span>
+          {nested ? (
+            <span className="shrink-0 text-sm font-medium tabular-nums text-zinc-300">{t("clipReviews.version", { version })}</span>
+          ) : (
+            <>
+              <span className="shrink-0 font-medium text-zinc-100">{clip.sceneId}</span>
+              {version > 1 && (
+                <span className="shrink-0 rounded-full bg-sky-500/15 px-2 py-0.5 text-[11px] font-medium tabular-nums text-sky-300 ring-1 ring-sky-500/30">
+                  {t("clipReviews.version", { version })}
+                </span>
+              )}
+            </>
+          )}
           <span className="min-w-0 flex-1 truncate text-sm text-zinc-400">{clip.note}</span>
+          {olderWaiting && (
+            <span className="shrink-0 rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] text-amber-300 ring-1 ring-amber-500/30">{t("clipReviews.versions.olderWaiting")}</span>
+          )}
           {clip.file !== "ok" && (
             <span className="shrink-0 rounded-full bg-orange-500/15 px-2 py-0.5 text-[11px] text-orange-300 ring-1 ring-orange-500/30">
               {t(clip.file === "missing" ? "clipReviews.file.missing" : "clipReviews.file.changed")}
@@ -258,6 +286,12 @@ export function ClipReviewsPanel({ channelId, visible }: { channelId: string | n
               </div>
             )}
             {actionError?.clipId === clip.clipId && <p className="text-sm text-red-400">{actionError.text}</p>}
+            {scene && scene.earlier.length > 0 && (
+              <div className="space-y-1.5 border-t border-zinc-800 pt-3">
+                <h4 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">{t("clipReviews.versions.earlier")}</h4>
+                <ul className="space-y-1.5">{scene.earlier.map((earlier) => renderRow(earlier.clip, earlier.version, null))}</ul>
+              </div>
+            )}
           </div>
         )}
       </li>
@@ -281,11 +315,11 @@ export function ClipReviewsPanel({ channelId, visible }: { channelId: string | n
       {clips && clips.length > 0 && (
         <>
           <p className={`text-sm font-medium ${waiting > 0 ? "text-amber-300" : "text-zinc-400"}`}>{waiting > 0 ? t("clipReviews.waiting", { count: waiting }) : t("clipReviews.noneWaiting")}</p>
-          {pending.length > 0 && <ul className="space-y-2">{pending.map(renderRow)}</ul>}
-          {answered.length > 0 && (
+          {waitingScenes.length > 0 && <ul className="space-y-2">{waitingScenes.map((scene) => renderRow(scene.latest.clip, scene.latest.version, scene))}</ul>}
+          {answeredScenes.length > 0 && (
             <div className="space-y-2">
               <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">{t("clipReviews.decidedHeading")}</h3>
-              <ul className="space-y-1.5">{answered.map(renderRow)}</ul>
+              <ul className="space-y-1.5">{answeredScenes.map((scene) => renderRow(scene.latest.clip, scene.latest.version, scene))}</ul>
             </div>
           )}
         </>
