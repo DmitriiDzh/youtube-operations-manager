@@ -5200,3 +5200,26 @@ On branch `feature/bl-229-music-library`. No schema change; no YouTube call; not
   `resolveFromYtmFolderFile` (plain folders, the real file strictly inside), checks size and SHA-256 (`hashClipFile` cache); text
   kinds go out as `text/plain`. Producer API 1.19.0.
 - **Limitations:** RISK-149.
+
+## BL-248 — the owner's review decisions wake the Producer (ADR 0066)
+
+- **Module:** `src/lib/review-notify/` -- `contracts.ts` (kinds, notices, plan entries, ports, timings), `render.ts` (pure: file-name
+  parts `[A-Za-z0-9_-]` kept, else replaced, cut to 48 and suffixed `~<8 hex>` of the original; a plan pass id = the first 16 hex of
+  the SHA-256 of its sorted entry ids; the Markdown with YAML front matter, JSON-quoted, the comment in a fence it cannot close; no
+  writer name or write time), `services.ts` (`createReviewNotify`: `tick` / `view` / `updateSettings`; one run at a time),
+  `schemas.ts`, `adapters/fs.ts` (`createInboxWriter`: exists → skip, `.tmp-<random>` with `wx`, re-check, rename with retry,
+  temporary file removed on failure; `workspaceRootOf`), `index.ts` (barrel + the nudge registry on `globalThis`). No feature module,
+  no db.ts, no sync family (`boundaries.test.ts`).
+- **Composition:** `src/composition/review-notify.ts` -- pure mappers per source (`clipNoticesOf`: owner `approved`/`returned` with
+  attachments, a non-deciding later owner decision marked; `storyboardNoticesOf`: owner decisions, comments, replies and render
+  verdicts; `slotNoticesOf`: every slot decision; `planFeedOfActivity` / `planFeedOfPeerPlan`) and the production wiring (connected
+  channels, settings / state in `app_settings` keys `review_notify_settings` / `review_notify_state`, the ledger in
+  `review_notify_ledger`, the Inbox under the one common parent of the channel workspaces). `generation-plans` gained
+  `listPlanReviewActivity(since)` (history, active picks, `group_reviewed` times of this computer's plans).
+- **Tick:** off (the owner's setting, else the `00 YT Producer` folder's presence) → nothing read or recorded; first on → state
+  `activeSince` and `singlesFloor` (2026-11-08 the first time, else now); no Inbox folder → one logged error, nothing recorded; else
+  each source (a failure is reported, the others go on) → notices not in the ledger → file → ledger row. Plans: the feeds of one plan
+  merged across sources, the unseen entries written as one pass when a `group_reviewed` is at or after the earliest (2 s slack) or the
+  newest is 5 minutes old. The ledger is pruned hourly (90 days).
+- **Limits:** see RISK-152 (a second writer through Syncthing; the other computer's plan verdicts only as its report carries them; a
+  crash between a pass file and its ledger rows).

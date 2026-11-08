@@ -2276,6 +2276,20 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Gate(s):** none (no new YouTube write; nothing is ever scheduled by it). **Re-evaluate:** when upload rows are synced between
   the computers.
 
+## RISK-152 — Review notices: a second writer, and the other computer's plan verdicts seen only through its report — OPEN, 2026-11-08
+
+- **Affected components:** `src/lib/review-notify/`, `src/composition/review-notify.ts`, the «Будить Продюсера» card (BL-248, ADR 0066).
+- **Risk:** (1) the switch defaults to on wherever the workspace's `00 YT Producer` folder exists, and Syncthing syncs that folder,
+  so the second computer may write too. Single decisions give the same name and bytes (harmless once Syncthing delivered the first
+  copy), but plan passes are grouped by each writer's own timing and would differ (the Producer gets a plan's verdicts twice).
+  (2) Verdicts given on the other computer on its own plans are read from its plans report: only the last 10 verdicts of an attempt,
+  entries still in its review list and its last 50 events; reasons and marks only for an attempt's current verdict. (3) A crash
+  between a plan pass file and its ledger rows can repeat entries in the next pass.
+- **Mitigation:** the card tells the owner to keep it on on one computer; files carry no writer-specific bytes; the ledger is keyed by
+  the decision's own id; the Producer dedupes by decisionId.
+- **Gate(s):** none (no YouTube write, no paid call). **Re-evaluate:** when the second computer gets `00 YT Producer` locally or the
+  Producer reports a duplicate pass -- then store the switch's owner computer in a synced setting (one writer by construction).
+
 ## RISK-151 — Deleted on YouTube is special-cased across layers — OPEN, 2026-11-05
 
 - **Affected components:** `src/lib/publishing/` (`package-scan.ts`, `upload-approval.ts`, `upload-runner.ts` `holdsSlot`,
