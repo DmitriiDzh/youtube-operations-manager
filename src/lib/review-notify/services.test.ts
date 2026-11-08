@@ -33,18 +33,18 @@ function verdict(planId: string, itemKey: string, attemptRef: string, at: string
   return { entryId: `v|${planId}|${itemKey}|${attemptRef}|${at}|${result}`, type: "verdict", itemKey, attemptRef, groupId: "w1", at, device: "Mac", result, rating: 7, reasons: [], marks: [], note: null, ...over };
 }
 
-function harness(opts: { enabled?: boolean | null; producerFolder?: boolean; inboxThere?: boolean; now: string; singles?: ReviewDecisionNotice[]; plans?: PlanReviewFeed[]; failingSource?: boolean }) {
+function harness(opts: { enabled?: boolean | null; producerFolder?: boolean; inboxThere?: boolean; now: string; singles?: ReviewDecisionNotice[]; plans?: PlanReviewFeed[]; failingSource?: boolean; platform?: string }) {
   const files = new Map<string, string>();
   const ledger = new Map<string, ReviewLedgerEntry>();
   const store = { settings: opts.enabled === undefined || opts.enabled === null ? null : JSON.stringify({ enabled: opts.enabled, inboxPath: null }), state: null as string | null };
   const clock = { now: T(opts.now) };
   const logs: string[] = [];
-  const env = { singles: opts.singles ?? [], plans: opts.plans ?? [], inboxThere: opts.inboxThere ?? true, producerFolder: opts.producerFolder ?? true };
+  const env = { singles: opts.singles ?? [], plans: opts.plans ?? [], inboxThere: opts.inboxThere ?? true, producerFolder: opts.producerFolder ?? true, platform: opts.platform ?? "darwin", sweeps: 0, singlesErrors: [] as string[], failWrite: false, onWrite: null as null | (() => Promise<void>) };
   const writes: string[] = [];
   const ports: ReviewNotifyPorts = {
     decisionSources: [
       ...(opts.failingSource ? [{ name: "broken", list: async () => Promise.reject(new Error("document unreadable")) }] : []),
-      { name: "singles", list: async () => env.singles },
+      { name: "singles", list: async () => (env.singlesErrors.length > 0 ? { items: env.singles, errors: env.singlesErrors } : env.singles) },
     ],
     planSources: [{ name: "plans", list: async () => env.plans }],
     settings: { read: async () => store.settings, write: async (json) => void (store.settings = json) },
@@ -60,12 +60,19 @@ function harness(opts: { enabled?: boolean | null; producerFolder?: boolean; inb
       isDirectory: async () => env.inboxThere,
       async writeOnce(dir, name, content) {
         writes.push(name);
+        if (env.onWrite) await env.onWrite();
+        if (env.failWrite) throw new Error("crash mid-write");
         const key = `${dir}/${name}`;
         if (files.has(key)) return "exists";
         files.set(key, content);
         return "written";
       },
+      sweepTemp: async () => {
+        env.sweeps++;
+        return 0;
+      },
     },
+    platform: () => env.platform,
     now: () => clock.now,
     log: (event, context) => logs.push(`${event} ${JSON.stringify(context)}`),
   };
@@ -278,4 +285,117 @@ test("§9: a nudge never throws into the owner's decision, even when the registe
   });
   assert.doesNotThrow(() => nudgeReviewNotify());
   registerReviewNotifyNudge(null);
+});
+
+test("B1: the default is on only on macOS with the Producer folder; another platform with the folder is off and never sticky", async () => {
+  const win = harness({ now: "2026-11-08T09:31:00Z", singles: [clipNotice()], producerFolder: true, platform: "win32" });
+  assert.equal((await win.core.view()).enabled, false);
+  assert.equal((await win.core.view()).defaultEnabled, false);
+  assert.equal((await win.core.tick()).ran, false);
+  assert.deepEqual(win.writes, []);
+  const mac = harness({ now: "2026-11-08T09:31:00Z", singles: [clipNotice()], producerFolder: true, platform: "darwin" });
+  assert.equal((await mac.core.view()).defaultEnabled, true);
+  assert.equal((await mac.core.tick()).written.length, 1);
+  // Owner turned Windows on explicitly, then back to the default: off again (its default was never on, so nothing sticks).
+  await win.core.updateSettings({ enabled: true });
+  assert.equal((await win.core.tick()).ran, true);
+  await win.core.updateSettings({ enabled: null });
+  assert.equal((await win.core.tick()).ran, false);
+});
+
+test("B2: the card shows the effective state -- on and waiting while the folder of a default-on Mac is away", async () => {
+  const h = harness({ now: "2026-11-08T09:00:00Z", producerFolder: true });
+  await h.core.tick();
+  h.env.producerFolder = false;
+  h.env.inboxThere = false;
+  const view = await h.core.view();
+  assert.equal(view.enabled, true);
+  assert.equal(view.defaultEnabled, false);
+  assert.equal(view.waitingForFolder, true);
+  assert.equal(view.enabledSetting, null);
+});
+
+test("N10: while off, no old error is kept or shown", async () => {
+  const h = harness({ now: "2026-11-08T09:00:00Z", inboxThere: false });
+  await h.core.tick();
+  assert.ok((await h.core.view()).lastError);
+  await h.core.updateSettings({ enabled: false });
+  assert.equal((await h.core.view()).lastError, null);
+  await h.core.tick();
+  assert.equal(JSON.parse(h.store.state ?? "{}").lastError, null);
+});
+
+test("N8: a damaged stored floor never throws: it falls back to the enable time", async () => {
+  const h = harness({ now: "2026-11-08T12:00:00Z", singles: [clipNotice({ decidedAt: "2026-11-08T11:00:00.000Z" }), clipNotice({ decisionId: "d000000000000009", decidedAt: "2026-11-08T09:00:00.000Z" })] });
+  h.store.state = JSON.stringify({ activeSince: "2026-11-08T10:00:00.000Z", singlesFloor: "not a time", backfillDone: true, defaultOnSeen: true });
+  const result = await h.core.tick();
+  assert.deepEqual(result.errors, []);
+  assert.deepEqual(result.written, ["REVIEW-DECISION-clip-c1a2b3c4d5e6f7a8-d000000000000001.md"]);
+});
+
+test("N9: a tick asked for while one runs gives one more run right after it", async () => {
+  const h = harness({ now: "2026-11-08T09:31:00Z" });
+  await h.core.tick();
+  let release: () => void = () => undefined;
+  h.env.singles = [clipNotice()];
+  h.env.onWrite = () => new Promise<void>((resolve) => (release = resolve));
+  const first = h.core.tick();
+  await new Promise((r) => setTimeout(r, 10));
+  // A decision recorded mid-run, and its nudge.
+  h.env.singles = [clipNotice(), clipNotice({ decisionId: "d000000000000002" })];
+  h.env.onWrite = null;
+  const second = h.core.tick();
+  release();
+  await first;
+  await second;
+  assert.deepEqual(h.names(), ["REVIEW-DECISION-clip-c1a2b3c4d5e6f7a8-d000000000000001.md", "REVIEW-DECISION-clip-c1a2b3c4d5e6f7a8-d000000000000002.md"]);
+});
+
+test("N2: a source's per-channel errors are reported while its other items are written", async () => {
+  const h = harness({ now: "2026-11-08T09:31:00Z", singles: [clipNotice()] });
+  h.env.singlesErrors = ["UCbroken: document unreadable"];
+  const result = await h.core.tick();
+  assert.equal(result.written.length, 1);
+  assert.deepEqual(result.errors, ["singles: UCbroken: document unreadable"]);
+});
+
+test("N5: temporary files are swept at the start of every run with the Inbox there", async () => {
+  const h = harness({ now: "2026-11-08T09:31:00Z" });
+  await h.core.tick();
+  await h.core.tick();
+  assert.equal(h.env.sweeps, 2);
+});
+
+test("N6: a pass interrupted after its file was started is finished as exactly that pass, never a second file with its entries", async () => {
+  const e1 = verdict("p6", "i1", "a", "2026-11-08T10:00:00.000Z", "accepted");
+  const feed: PlanReviewFeed = { planId: "p6", channelId: "UCx", channelName: null, title: "T", video: null, entries: [e1], waveFinishedAt: [], ytmPlace: "x", readTool: "y" };
+  const h = harness({ now: "2026-11-08T09:00:00Z" });
+  await h.core.tick();
+  h.env.plans = [feed];
+  h.clock.now = T("2026-11-08T10:06:00Z");
+  h.env.failWrite = true;
+  await h.core.tick();
+  assert.deepEqual(JSON.parse(h.store.state ?? "{}").pendingPasses, { p6: [e1.entryId] });
+  // A new verdict arrives before the retry: the interrupted pass is written alone, the new one waits for its own pass.
+  const e2 = verdict("p6", "i2", "a", "2026-11-08T10:07:00.000Z", "rejected");
+  h.env.plans = [{ ...feed, entries: [e1, e2] }];
+  h.env.failWrite = false;
+  h.clock.now = T("2026-11-08T10:08:00Z");
+  const result = await h.core.tick();
+  const onlyFirst = createHash("sha256").update(e1.entryId, "utf8").digest("hex").slice(0, 16);
+  assert.deepEqual(result.written, [`REVIEW-DECISION-plan-p6-${onlyFirst}.md`]);
+  assert.deepEqual(JSON.parse(h.store.state ?? "{}").pendingPasses, {});
+});
+
+test("N1: the same verdict seen first among this computer's sent verdicts, then in the owning computer's report, is written once", async () => {
+  const id = "v|pw|i|a|2026-11-08T10:00:00Z|accepted";
+  const sent: PlanReviewFeed = { planId: "pw", channelId: "UCx", channelName: null, title: "W", video: null, entries: [verdict("pw", "i", "a", "2026-11-08T10:00:00.000Z", "accepted", { entryId: id })], waveFinishedAt: [], ytmPlace: "x", readTool: "y" };
+  const h = harness({ now: "2026-11-08T09:00:00Z" });
+  await h.core.tick();
+  h.env.plans = [sent];
+  h.clock.now = T("2026-11-08T10:06:00Z");
+  assert.equal((await h.core.tick()).written.length, 1);
+  h.env.plans = [{ ...sent, entries: [verdict("pw", "i", "a", "2026-11-08T10:00:00Z", "accepted", { entryId: id, device: "Win" })], waveFinishedAt: ["2026-11-08T10:00:01Z"] }];
+  h.clock.now = T("2026-11-08T10:20:00Z");
+  assert.deepEqual((await h.core.tick()).written, []);
 });

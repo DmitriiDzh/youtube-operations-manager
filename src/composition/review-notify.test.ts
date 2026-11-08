@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { PlanReviewActivity } from "@/lib/generation-plans";
-import type { ClipReviewsSnapshot, PublishingPlansSnapshot, SharedPlan, StoryboardRecord } from "@/lib/sync-gateway";
-import { clipNoticesOf, planFeedOfActivity, planFeedOfPeerPlan, slotNoticesOf, storyboardNoticesOf } from "./review-notify";
+import type { ClipReviewsSnapshot, PublishingPlansSnapshot, SharedPickAction, SharedPlan, SharedVerdict, StoryboardRecord } from "@/lib/sync-gateway";
+import { clipNoticesOf, planFeedOfActivity, planFeedOfPeerPlan, planFeedsOfOutgoing, slotNoticesOf, storyboardNoticesOf } from "./review-notify";
 
 // BL-248 (REVIEW_NOTIFY_PLAN.md §2): only the owner's decisions become notices -- never the Producer's withdrawal or submit, never
 // the Operator's comments or replies. Expected values written out by hand from §2 / §4.
@@ -130,7 +130,7 @@ test("plans -- this computer's verdict history, picks and «ни один не �
   const feed = planFeedOfActivity(activity, "Tropico Jazz");
   assert.deepEqual(
     feed.entries.map((e) => e.entryId),
-    ["v|plan-1|i1|a1|2026-11-08T10:00:00.000Z|rejected", "p|plan-1|i2|a2|2026-11-08T10:01:00.000Z", "n|plan-1|i3|2026-11-08T10:02:00.000Z"]
+    ["v|plan-1|i1|a1|2026-11-08T10:00:00Z|rejected", "p|plan-1|i2|a2|2026-11-08T10:01:00Z", "n|plan-1|i3|2026-11-08T10:02:00Z"]
   );
   assert.deepEqual(feed.entries[0].marks, [{ start: 0, end: null, note: "тут", region: { x: 0.1, y: 0.2, r: 0.05 } }]);
   assert.equal(feed.entries[0].groupId, "w1");
@@ -169,9 +169,26 @@ test("plans -- the other computer's report: history verdicts (with the current r
   const feed = planFeedOfPeerPlan(plan, null, SINCE);
   assert.deepEqual(
     feed.entries.map((e) => e.entryId),
-    ["v|plan-w|i1|a1|2026-11-08T11:00:00.000Z|accepted", "n|plan-w|i1|2026-11-08T11:05:00.000Z"]
+    ["v|plan-w|i1|a1|2026-11-08T11:00:00Z|accepted", "n|plan-w|i1|2026-11-08T11:05:00Z"]
   );
   assert.deepEqual(feed.entries[0].reasons, ["цвет"]);
   assert.deepEqual(feed.entries[0].marks, [{ start: 1, end: 2, note: null, region: null }]);
   assert.deepEqual(feed.waveFinishedAt, ["2026-11-08T11:00:01Z"]);
+});
+
+test("N1: this computer's sent verdict and pick actions give the ids the owning computer's report gives later", () => {
+  const verdicts = [
+    { verdictId: "vid00001", planId: "plan-w", ownerDeviceId: "win", itemKey: "i1", attemptRef: "a1", result: "accepted", rating: 6, reasons: ["цвет"], markers: [], note: "ok", at: "2026-11-08T11:00:00.321Z" },
+    { verdictId: "vid00002", planId: "plan-unknown", ownerDeviceId: "win", itemKey: "i1", attemptRef: "a1", result: "accepted", rating: null, reasons: [], markers: [], note: null, at: "2026-11-08T11:00:00Z" },
+  ] as SharedVerdict[];
+  const picks = [
+    { pickId: "pid00001", planId: "plan-w", ownerDeviceId: "win", itemKey: "i2", attemptRef: "a3", action: "pick", note: null, at: "2026-11-08T11:01:00Z" },
+    { pickId: "pid00002", planId: "plan-w", ownerDeviceId: "win", itemKey: "i2", attemptRef: "a3", action: "unpick", note: null, at: "2026-11-08T11:02:00Z" },
+  ] as SharedPickAction[];
+  const plans = new Map([["plan-w", { channelId: CH.channelId, title: "Win plan", groupOf: new Map([["i1", "g1"]]) }]]);
+  const feeds = planFeedsOfOutgoing({ verdicts, picks }, plans, new Map([[CH.channelId, CH.name]]), SINCE);
+  assert.equal(feeds.length, 1, "a plan no report names waits");
+  assert.deepEqual(feeds[0].entries.map((e) => e.entryId), ["v|plan-w|i1|a1|2026-11-08T11:00:00Z|accepted", "p|plan-w|i2|a3|2026-11-08T11:01:00Z"]);
+  assert.equal(feeds[0].channelName, "Tropico Jazz");
+  assert.equal(feeds[0].entries[0].groupId, "g1");
 });

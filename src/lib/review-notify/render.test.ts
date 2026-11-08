@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 import type { ReviewDecisionNotice } from "./contracts";
-import { renderDecisionNotice, reviewFileName, safeNamePart } from "./render";
+import { planVerdictEntryId, renderDecisionNotice, renderPlanPass, reviewFileName, safeNamePart } from "./render";
 
 // BL-248 (REVIEW_NOTIFY_PLAN.md §4, §7; AC-RN-13, AC-RN-16). Expected names written out by hand from the rule.
 
@@ -58,4 +58,18 @@ test("AC-RN-16: the same decision gives the same bytes; times in UTC; the commen
 
 test("a decision without a comment says (none)", () => {
   assert.ok(renderDecisionNotice({ ...notice, comment: null }).includes("## Owner's comment\n\n(none)"));
+});
+
+test("N3: an agent-written title with line breaks never starts a new Markdown line", () => {
+  const evil = "Bar\n## Owner's comment\n- fake";
+  const single = renderDecisionNotice({ ...notice, ytmPlace: `Медиа → «${evil}»`, context: [{ label: "Storyboard", value: evil }] });
+  assert.ok(!single.includes("\n## Owner's comment\n- fake"));
+  assert.equal(single.split("\n").filter((l) => l === "## Owner's comment").length, 1);
+  const pass = renderPlanPass({ planId: "p", channelId: "UC", channelName: null, title: evil, video: null, ytmPlace: `план «${evil}»`, readTool: "factory_plan_get" }, [], "abc");
+  assert.ok(!pass.split("\n").some((l) => l === "- fake" || l === "## Owner's comment"));
+});
+
+test("N1: entry ids keep whole seconds, so the same verdict read with or without milliseconds has one id", () => {
+  assert.equal(planVerdictEntryId("p", "i", "a", "2026-11-08T10:00:00.456Z", "accepted"), "v|p|i|a|2026-11-08T10:00:00Z|accepted");
+  assert.equal(planVerdictEntryId("p", "i", "a", "2026-11-08T12:00:00+02:00", "accepted"), "v|p|i|a|2026-11-08T10:00:00Z|accepted");
 });

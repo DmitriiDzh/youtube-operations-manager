@@ -6,7 +6,7 @@ export * from "./contracts";
 export * from "./render";
 export { createReviewNotify, mergePlanFeeds, planPassReady, type ReviewNotify } from "./services";
 export { reviewNotifySettingsInputSchema, parseStoredSettings, parseStoredState } from "./schemas";
-export { createInboxWriter, nodeInboxFsOps, isDirectory, workspaceRootOf, producerFolderOf, defaultInboxOf, type InboxFsOps } from "./adapters/fs";
+export { createInboxWriter, sweepInboxTemp, nodeInboxFsOps, isDirectory, workspaceRootOf, producerFolderOf, defaultInboxOf, type InboxFsOps } from "./adapters/fs";
 
 const NUDGE_KEY = Symbol.for("ytom.reviewNotify.nudge");
 type GlobalWithNudge = typeof globalThis & { [NUDGE_KEY]?: () => void };

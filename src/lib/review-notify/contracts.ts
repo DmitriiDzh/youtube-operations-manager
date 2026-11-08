@@ -20,6 +20,8 @@ export const REVIEW_NOTIFY_NUDGE_DELAY_MS = 2_000;
 export const PLAN_PASS_QUIET_MS = 5 * 60_000;
 /** A `group_reviewed` event this much before the pass's earliest entry still counts (event times have one-second resolution). */
 export const PLAN_WAVE_SLACK_MS = 2_000;
+/** A `.tmp-*` file left in the Inbox (a crash mid-write) is removed once it is this old. */
+export const REVIEW_NOTIFY_TEMP_MAX_AGE_MS = 60 * 60_000;
 /** Decisions older than this are never looked at (the scan window). */
 export const REVIEW_NOTIFY_WINDOW_MS = 30 * 24 * 60 * 60_000;
 /** Ledger rows older than this are removed (well past the scan window, so a removed row can never be found again). */
@@ -107,6 +109,13 @@ export const DEFAULT_REVIEW_NOTIFY_SETTINGS: ReviewNotifySettings = { enabled: n
 export type ReviewNotifyState = {
   /** When the switch was last seen turning on (the plan floor); null while it is off. */
   activeSince: string | null;
+  /**
+   * The default (never set) was seen ON here (a Mac with the Producer's folder): it then stays on while the folder is away, so a
+   * disconnected disk reads as "Inbox missing, retry", never as "off" (REVIEW_NOTIFY_PLAN.md §8).
+   */
+  defaultOnSeen: boolean;
+  /** N6: a plan pass being written (planId → its entry ids), finished first on the next run after a crash. */
+  pendingPasses: Record<string, string[]>;
   /** Single decisions are written from here: the backfill start the first time, `activeSince` after that. */
   singlesFloor: string | null;
   /** The first enable's backfill was set up (a later enable never backfills again). */
@@ -119,6 +128,8 @@ export type ReviewNotifyState = {
 };
 export const INITIAL_REVIEW_NOTIFY_STATE: ReviewNotifyState = {
   activeSince: null,
+  defaultOnSeen: false,
+  pendingPasses: {},
   singlesFloor: null,
   backfillDone: false,
   lastTickAt: null,
@@ -133,11 +144,16 @@ export type ReviewLedgerEntry = { key: string; kind: ReviewNoticeKind; fileName:
 
 export type InboxWriteOutcome = "written" | "exists";
 
+/** What a source read: its items, and the parts it could not read (one channel's document) -- reported, never stopping the rest. */
+export type SourceResult<T> = T[] | { items: T[]; errors: string[] };
+
 export type ReviewNotifyPorts = {
   /** Sources of single decisions; one failing never stops the others. */
-  decisionSources: ReadonlyArray<{ name: string; list(sinceIso: string): Promise<ReviewDecisionNotice[]> }>;
-  /** Sources of plan entries (this computer's plans, the other computer's plans from its report). */
-  planSources: ReadonlyArray<{ name: string; list(sinceIso: string): Promise<PlanReviewFeed[]> }>;
+  decisionSources: ReadonlyArray<{ name: string; list(sinceIso: string): Promise<SourceResult<ReviewDecisionNotice>> }>;
+  /** Sources of plan entries (this computer's plans, the other computer's plans from its report, this computer's verdicts on them). */
+  planSources: ReadonlyArray<{ name: string; list(sinceIso: string): Promise<SourceResult<PlanReviewFeed>> }>;
+  /** `process.platform`: the default is on only on macOS ("darwin"), where the Producer runs (ADR 0066 §4). */
+  platform(): string;
   settings: { read(): Promise<string | null>; write(json: string): Promise<void> };
   state: { read(): Promise<string | null>; write(json: string): Promise<void> };
   ledger: {
@@ -152,8 +168,10 @@ export type ReviewNotifyPorts = {
     /** Whether the workspace's `00 YT Producer` folder exists on this computer (the switch's default). */
     producerFolderExists(): Promise<boolean>;
     isDirectory(absolutePath: string): Promise<boolean>;
-    /** Writes `name` once (`.tmp-<random>` then rename); an existing file is left alone. */
+    /** Writes `name` once (`.tmp-<random>`, then published without replacing anything); an existing file is left alone. */
     writeOnce(dir: string, name: string, content: string): Promise<InboxWriteOutcome>;
+    /** Removes `.tmp-*` files of the folder last changed before `before` (a crash mid-write); answers how many. */
+    sweepTemp(dir: string, before: Date): Promise<number>;
   };
   now(): Date;
   log(event: string, context: Record<string, unknown>): void;
@@ -161,7 +179,10 @@ export type ReviewNotifyPorts = {
 
 /** The Settings card's view. */
 export type ReviewNotifyView = {
+  /** Whether the writer runs here now (the owner's setting, else the default, sticky once on). */
   enabled: boolean;
+  /** Never set, on because the default was on here before, while the default is not on now (the folder is not available). */
+  waitingForFolder: boolean;
   enabledSetting: boolean | null;
   defaultEnabled: boolean;
   inboxPath: string | null;

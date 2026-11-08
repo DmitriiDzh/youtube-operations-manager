@@ -13,6 +13,7 @@ import { useT } from "./ui-text-provider";
 
 type View = {
   enabled: boolean;
+  waitingForFolder: boolean;
   enabledSetting: boolean | null;
   defaultEnabled: boolean;
   inboxPath: string | null;
@@ -82,7 +83,8 @@ export function ReviewNotifySettings() {
   if (!view || !draft) return error ? <p className="text-sm text-amber-400">{error}</p> : null;
   const saved = draftOf(view);
   const dirty = draft.enabled !== saved.enabled || draft.inboxPath.trim() !== saved.inboxPath;
-  const shownEnabled = draft.enabled ?? view.defaultEnabled;
+  // Review B2: with no choice of the owner the switch shows what runs now (the default, or a default that stays on while away).
+  const shownEnabled = draft.enabled ?? (saved.enabled === null ? view.enabled : view.defaultEnabled);
   const at = (iso: string | null) => (iso ? formatDisplayDateTime(new Date(iso)) : t("common.never"));
 
   return (
@@ -97,7 +99,15 @@ export function ReviewNotifySettings() {
           <span className="text-sm text-zinc-300">{t("settingsCards.reviewNotify.toggle")}</span>
         </div>
         {draft.enabled === null ? (
-          <p className="text-xs text-zinc-500">{t(view.defaultEnabled ? "settingsCards.reviewNotify.defaultOn" : "settingsCards.reviewNotify.defaultOff")}</p>
+          <p className="text-xs text-zinc-500">
+            {t(
+              view.waitingForFolder && saved.enabled === null
+                ? "settingsCards.reviewNotify.waitingForFolder"
+                : view.defaultEnabled
+                  ? "settingsCards.reviewNotify.defaultOn"
+                  : "settingsCards.reviewNotify.defaultOff"
+            )}
+          </p>
         ) : (
           <button type="button" onClick={() => setDraft({ ...draft, enabled: null })} className="text-xs text-zinc-500 hover:text-zinc-300">
             {t("settingsCards.reviewNotify.useDefault")}

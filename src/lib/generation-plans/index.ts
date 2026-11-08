@@ -6,7 +6,7 @@ import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-
 import { createExchangeFs, resolveExchangeFile } from "@/lib/workspace-exchange";
 import { appDataPaths, linkMediaSessionToPlan } from "@/lib/db";
 import { randomUUID } from "node:crypto";
-import { createGenerationPlansShareCoreForProduction, createReviewPresenceForProduction, GENERATION_PLANS_REPORT_FORMAT, generationPlansReportVersionFor } from "@/lib/sync-gateway";
+import { createGenerationPlansShareCoreForProduction, createReviewPresenceForProduction, GENERATION_PLANS_REPORT_FORMAT, generationPlansReportVersionFor, type SharedPickAction, type SharedVerdict } from "@/lib/sync-gateway";
 import { createMediaGenerationCore, isDomainError } from "@/lib/media-generation";
 import { createVideoProjectsServiceForProduction } from "@/lib/video-projects";
 import { createPlanStore } from "./adapters/store";
@@ -60,6 +60,15 @@ export async function listPlanReviewActivity(sinceIso: string): Promise<PlanRevi
     });
   }
   return out;
+}
+
+/**
+ * BL-248 (review N1): the verdicts and pick actions given on THIS computer on the other computer's plans since `sinceIso` (as they
+ * travel in this computer's report). The composition layer writes them before the owning computer's report shows them applied.
+ */
+export async function listOutgoingPlanReviewActions(sinceIso: string): Promise<{ verdicts: SharedVerdict[]; picks: SharedPickAction[] }> {
+  const store = createPlanStore();
+  return { verdicts: await store.listPeerVerdicts(sinceIso), picks: await store.listPeerPicks(sinceIso) };
 }
 
 export function createGenerationPlansCore() {

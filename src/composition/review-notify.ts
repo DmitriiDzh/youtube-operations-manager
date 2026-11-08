@@ -10,7 +10,10 @@ import {
   setReviewNotifySettingsJson,
   setReviewNotifyStateJson,
 } from "@/lib/db";
-import { listPlanReviewActivity, type PlanReviewActivity } from "@/lib/generation-plans";
+import { stat } from "node:fs/promises";
+import path from "node:path";
+import { listOutgoingPlanReviewActions, listPlanReviewActivity, type PlanReviewActivity } from "@/lib/generation-plans";
+import { getProductionAppPaths } from "@/lib/platform-paths/runtime";
 import {
   createInboxWriter,
   createReviewNotify,
@@ -20,6 +23,7 @@ import {
   planPickEntryId,
   planVerdictEntryId,
   producerFolderOf,
+  sweepInboxTemp,
   workspaceRootOf,
   type PlanEntryMark,
   type PlanReviewEntry,
@@ -36,7 +40,9 @@ import {
   createStoryboardsCoreForProduction,
   type ClipReviewsSnapshot,
   type PublishingPlansSnapshot,
+  type SharedPickAction,
   type SharedPlan,
+  type SharedVerdict,
   type StoryboardCommentTarget,
   type StoryboardRecord,
 } from "@/lib/sync-gateway";
@@ -310,10 +316,100 @@ export function planFeedOfPeerPlan(plan: SharedPlan, channelName: string | null,
   };
 }
 
+/**
+ * Review N1: the verdicts and pick actions this computer gave on the other computer's plans, before that computer's report shows them
+ * applied. Their entry ids are the ones `planFeedOfPeerPlan` gives later (times in whole seconds), so one verdict is written once. A
+ * plan no report of the other computer names (channel unknown) waits until one does.
+ */
+export function planFeedsOfOutgoing(
+  actions: { verdicts: readonly SharedVerdict[]; picks: readonly SharedPickAction[] },
+  plans: ReadonlyMap<string, { channelId: string; title: string; groupOf: Map<string, string | null> }>,
+  names: ReadonlyMap<string, string | null>,
+  sinceMs: number
+): PlanReviewFeed[] {
+  const feeds = new Map<string, PlanReviewFeed>();
+  const feedOf = (planId: string) => {
+    const plan = plans.get(planId);
+    if (!plan) return null;
+    let feed = feeds.get(planId);
+    if (!feed) {
+      feed = { planId, channelId: plan.channelId, channelName: names.get(plan.channelId) ?? null, title: plan.title, video: null, entries: [], waveFinishedAt: [], ytmPlace: planPlace(planId, plan.title), readTool: `factory_plan_get ${json({ planId })}` };
+      feeds.set(planId, feed);
+    }
+    return { feed, groupOf: plan.groupOf };
+  };
+  for (const v of actions.verdicts) {
+    const target = after(v.at, sinceMs) ? feedOf(v.planId) : null;
+    if (!target) continue;
+    target.feed.entries.push({
+      entryId: planVerdictEntryId(v.planId, v.itemKey, v.attemptRef, v.at, v.result),
+      type: "verdict",
+      itemKey: v.itemKey,
+      attemptRef: v.attemptRef,
+      groupId: target.groupOf.get(v.itemKey) ?? null,
+      at: v.at,
+      device: null,
+      result: v.result,
+      rating: v.rating,
+      reasons: v.reasons,
+      marks: marksOf(v.markers),
+      note: v.kept ? `(re-check answered: verdict kept) ${v.note ?? ""}`.trim() : v.note,
+    });
+  }
+  for (const p of actions.picks) {
+    if (p.action !== "pick" && p.action !== "none_fits") continue;
+    const target = after(p.at, sinceMs) ? feedOf(p.planId) : null;
+    if (!target) continue;
+    const none = p.action === "none_fits";
+    target.feed.entries.push({
+      entryId: none ? planNoneFitsEntryId(p.planId, p.itemKey, p.at) : planPickEntryId(p.planId, p.itemKey, p.attemptRef ?? "", p.at),
+      type: none ? "none_fits" : "pick",
+      itemKey: p.itemKey,
+      attemptRef: none ? null : p.attemptRef,
+      groupId: target.groupOf.get(p.itemKey) ?? null,
+      at: p.at,
+      device: null,
+      result: null,
+      rating: null,
+      reasons: [],
+      marks: [],
+      note: p.note,
+    });
+  }
+  return [...feeds.values()].filter((f) => f.entries.length > 0);
+}
+
 // --- production wiring -----------------------------------------------------------------------------------------------------
 
-async function connectedChannels(): Promise<Channel[]> {
-  return (await createChannelConnectionsCore().listConnectedChannels()).map((c) => ({ channelId: c.channelId, name: c.title || null }));
+/** Review N7: the connected channels once per run (the sources run one after another within seconds). */
+let channelsMemo: { at: number; value: Promise<Channel[]> } | null = null;
+function connectedChannels(): Promise<Channel[]> {
+  if (!channelsMemo || Date.now() - channelsMemo.at > 10_000) {
+    const value = createChannelConnectionsCore()
+      .listConnectedChannels()
+      .then((list) => list.map((c) => ({ channelId: c.channelId, name: c.title || null })));
+    channelsMemo = { at: Date.now(), value };
+    value.catch(() => {
+      channelsMemo = null;
+    });
+  }
+  return channelsMemo.value;
+}
+
+/**
+ * Review N7: a channel's document is read again only when its file changed (size and mtime) -- every 30 s, most documents did not.
+ * Keyed by the document's file; a file that cannot be stat'ed is always read.
+ */
+const documentMemo = new Map<string, { signature: string; value: unknown }>();
+async function readDocument<T>(dir: string, channelId: string, read: () => Promise<T>): Promise<T> {
+  const file = path.join(dir, `${channelId.replace(/[^a-zA-Z0-9_-]/g, "_")}.automerge`);
+  const info = await stat(file).catch(() => null);
+  const signature = info ? `${info.size}:${info.mtimeMs}` : null;
+  const cached = documentMemo.get(file);
+  if (signature !== null && cached && cached.signature === signature) return cached.value as T;
+  const value = await read();
+  if (signature !== null) documentMemo.set(file, { signature, value });
+  return value;
 }
 
 async function workspaceRoot(): Promise<string | null> {
@@ -321,20 +417,38 @@ async function workspaceRoot(): Promise<string | null> {
   return workspaceRootOf(entries.map((e) => e.path).filter((p): p is string => typeof p === "string" && p.length > 0));
 }
 
-async function perChannel<T>(read: (channel: Channel) => Promise<T[]>): Promise<T[]> {
-  const out: T[] = [];
-  for (const channel of await connectedChannels()) out.push(...(await read(channel)));
-  return out;
+/** Review N2: one channel's broken document is reported and never stops the other channels. */
+async function perChannel<T>(read: (channel: Channel) => Promise<T[]>): Promise<{ items: T[]; errors: string[] }> {
+  const items: T[] = [];
+  const errors: string[] = [];
+  for (const channel of await connectedChannels()) {
+    try {
+      items.push(...(await read(channel)));
+    } catch (error) {
+      errors.push(`${channel.channelId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return { items, errors };
 }
 
 function createProductionReviewNotify(): ReviewNotify {
   const logger = createDefaultLogger();
+  const paths = getProductionAppPaths();
   const writeOnce = createInboxWriter();
   return createReviewNotify({
     decisionSources: [
-      { name: "clips", list: (since) => perChannel(async (ch) => clipNoticesOf(ch, await createClipReviewsCoreForProduction().read(ch.channelId), Date.parse(since))) },
-      { name: "storyboards", list: (since) => perChannel(async (ch) => storyboardNoticesOf(ch, await createStoryboardsCoreForProduction().read(ch.channelId), Date.parse(since))) },
-      { name: "weekly plans", list: (since) => perChannel(async (ch) => slotNoticesOf(ch, await createPublishingPlansCoreForProduction().read(ch.channelId), Date.parse(since))) },
+      {
+        name: "clips",
+        list: (since) => perChannel(async (ch) => clipNoticesOf(ch, await readDocument(paths.clipReviewsDocDir, ch.channelId, () => createClipReviewsCoreForProduction().read(ch.channelId)), Date.parse(since))),
+      },
+      {
+        name: "storyboards",
+        list: (since) => perChannel(async (ch) => storyboardNoticesOf(ch, await readDocument(paths.storyboardsDocDir, ch.channelId, () => createStoryboardsCoreForProduction().read(ch.channelId)), Date.parse(since))),
+      },
+      {
+        name: "weekly plans",
+        list: (since) => perChannel(async (ch) => slotNoticesOf(ch, await readDocument(paths.publishingPlansDocDir, ch.channelId, () => createPublishingPlansCoreForProduction().read(ch.channelId)), Date.parse(since))),
+      },
     ],
     planSources: [
       {
@@ -350,6 +464,17 @@ function createProductionReviewNotify(): ReviewNotify {
           const names = new Map((await connectedChannels()).map((c) => [c.channelId, c.name]));
           const reports = await createGenerationPlansShareCoreForProduction().listPeerReports();
           return reports.flatMap((r) => r.plans.map((p) => planFeedOfPeerPlan(p, names.get(p.channelId) ?? null, Date.parse(since)))).filter((f) => f.entries.length > 0);
+        },
+      },
+      {
+        name: "plans (sent from this computer)",
+        async list(since) {
+          const names = new Map((await connectedChannels()).map((c) => [c.channelId, c.name]));
+          const plans = new Map<string, { channelId: string; title: string; groupOf: Map<string, string | null> }>();
+          for (const report of await createGenerationPlansShareCoreForProduction().listPeerReports()) {
+            for (const p of report.plans) if (!plans.has(p.planId)) plans.set(p.planId, { channelId: p.channelId, title: p.title, groupOf: new Map(p.items.map((i) => [i.itemKey, i.groupId])) });
+          }
+          return planFeedsOfOutgoing(await listOutgoingPlanReviewActions(since), plans, names, Date.parse(since));
         },
       },
     ],
@@ -371,7 +496,9 @@ function createProductionReviewNotify(): ReviewNotify {
       },
       isDirectory: (absolutePath) => isDirectory(absolutePath),
       writeOnce: (dir, name, content) => writeOnce(dir, name, content),
+      sweepTemp: (dir, before) => sweepInboxTemp(dir, before),
     },
+    platform: () => process.platform,
     now: () => new Date(),
     log: (event, context) => logger.error({ event, context }),
   });

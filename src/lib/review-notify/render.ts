@@ -39,16 +39,29 @@ export function planPassId(entryIds: readonly string[]): string {
   return sha256Hex([...entryIds].sort().join("\n")).slice(0, 16);
 }
 
-/** The stable id of a plan verdict / pick / «ни один не подходит» (§4). */
-export const planVerdictEntryId = (planId: string, itemKey: string, attemptRef: string, at: string, result: string) => `v|${planId}|${itemKey}|${attemptRef}|${utcOf(at)}|${result}`;
-export const planPickEntryId = (planId: string, itemKey: string, attemptRef: string, at: string) => `p|${planId}|${itemKey}|${attemptRef}|${utcOf(at)}`;
-export const planNoneFitsEntryId = (planId: string, itemKey: string, at: string) => `n|${planId}|${itemKey}|${utcOf(at)}`;
+/**
+ * The stable id of a plan verdict / pick / «ни один не подходит» (§4). The time is in whole seconds: the same verdict read here (the
+ * verdicts this computer sent) and later in the owning computer's report must give the same id, whatever millisecond precision
+ * either side kept (review N1).
+ */
+export const planVerdictEntryId = (planId: string, itemKey: string, attemptRef: string, at: string, result: string) => `v|${planId}|${itemKey}|${attemptRef}|${utcSecondsOf(at)}|${result}`;
+export const planPickEntryId = (planId: string, itemKey: string, attemptRef: string, at: string) => `p|${planId}|${itemKey}|${attemptRef}|${utcSecondsOf(at)}`;
+export const planNoneFitsEntryId = (planId: string, itemKey: string, at: string) => `n|${planId}|${itemKey}|${utcSecondsOf(at)}`;
+
+/** An ISO time as UTC in whole seconds (`2026-11-08T10:00:00Z`); a value that is not a time stays as it is. */
+export function utcSecondsOf(at: string): string {
+  const ms = Date.parse(at);
+  return Number.isFinite(ms) ? `${new Date(Math.floor(ms / 1000) * 1000).toISOString().slice(0, 19)}Z` : at;
+}
 
 /** An ISO time as UTC with milliseconds; a value that is not a time stays as it is. */
 export function utcOf(at: string): string {
   const ms = Date.parse(at);
   return Number.isFinite(ms) ? new Date(ms).toISOString() : at;
 }
+
+/** One line of text: a line break inside a value would start a new Markdown line. */
+const oneLine = (value: string) => value.replace(/\s*[\r\n]+\s*/g, " ").trim();
 
 /** A YAML scalar: JSON's quoting is valid YAML (double-quoted), null stays null. */
 const yaml = (value: string | number | null) => (value === null ? "null" : typeof value === "number" ? String(value) : JSON.stringify(value));
@@ -61,14 +74,13 @@ function fenced(text: string): string {
 }
 
 /** Inline code that the value inside can never close. */
-function code(value: string): string {
+function code(raw: string): string {
+  const value = oneLine(raw);
   const longest = Math.max(0, ...[...value.matchAll(/`+/g)].map((m) => m[0].length));
   const ticks = "`".repeat(longest + 1);
   return longest > 0 ? `${ticks} ${value} ${ticks}` : `${ticks}${value}${ticks}`;
 }
 
-/** One line of text: a line break inside a value would start a new Markdown line. */
-const oneLine = (value: string) => value.replace(/\s*[\r\n]+\s*/g, " ").trim();
 
 const KIND_TITLE: Record<ReviewNoticeKind, string> = {
   clip: "clip",
@@ -101,12 +113,12 @@ export function renderDecisionNotice(notice: ReviewDecisionNotice): string {
       ["decidedOn", notice.decidedOn],
     ]),
     "",
-    `# Owner review decision: ${KIND_TITLE[notice.kind]} ${notice.status}`,
+    `# Owner review decision: ${KIND_TITLE[notice.kind]} ${oneLine(notice.status)}`,
     "",
     `- Channel: ${channelLine(notice.channelName, notice.channelId)}`,
     `- Item: ${code(notice.itemId)}`,
-    ...notice.context.map((line) => `- ${line.label}: ${oneLine(line.value)}`),
-    `- Status: **${notice.status}**`,
+    ...notice.context.map((line) => `- ${oneLine(line.label)}: ${oneLine(line.value)}`),
+    `- Status: **${oneLine(notice.status)}**`,
     `- Decided at: ${decidedAt} (UTC)`,
     `- Decided on: ${notice.decidedOn ? oneLine(notice.decidedOn) : "unknown"}`,
     `- Decision id: ${code(notice.decisionId)}`,
@@ -121,8 +133,8 @@ export function renderDecisionNotice(notice: ReviewDecisionNotice): string {
     "",
     "## Where to find it",
     "",
-    `- YT Manager: ${notice.ytmPlace}`,
-    `- Read: ${code(notice.readTool)}`,
+    `- YT Manager: ${oneLine(notice.ytmPlace)}`,
+    `- Read: ${code(oneLine(notice.readTool))}`,
     "",
   ];
   return lines.join("\n");
@@ -178,7 +190,7 @@ export function renderPlanPass(feed: Omit<PlanReviewFeed, "entries" | "waveFinis
       ["entries", sorted.length],
     ]),
     "",
-    `# Owner review pass: generation plan ${feed.title ? oneLine(feed.title) : feed.planId}`,
+    `# Owner review pass: generation plan ${feed.title ? oneLine(feed.title) : oneLine(feed.planId)}`,
     "",
     `- Channel: ${channelLine(feed.channelName, feed.channelId)}`,
     `- Plan: ${code(feed.planId)}${feed.title ? ` (${oneLine(feed.title)})` : ""}`,
@@ -193,8 +205,8 @@ export function renderPlanPass(feed: Omit<PlanReviewFeed, "entries" | "waveFinis
     ...sorted.flatMap(entryBlock),
     "## Where to find it",
     "",
-    `- YT Manager: ${feed.ytmPlace}`,
-    `- Read: ${code(feed.readTool)}`,
+    `- YT Manager: ${oneLine(feed.ytmPlace)}`,
+    `- Read: ${code(oneLine(feed.readTool))}`,
     "",
   ];
   return lines.join("\n");

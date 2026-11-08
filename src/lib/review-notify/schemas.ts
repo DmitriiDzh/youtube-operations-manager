@@ -32,12 +32,23 @@ export function parseStoredSettings(json: string | null): ReviewNotifySettings {
 
 const text = (value: unknown) => (typeof value === "string" ? value : null);
 
+function pendingOf(value: unknown): Record<string, string[]> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out: Record<string, string[]> = {};
+  for (const [planId, ids] of Object.entries(value as Record<string, unknown>)) {
+    if (Array.isArray(ids) && ids.every((id) => typeof id === "string")) out[planId] = ids as string[];
+  }
+  return out;
+}
+
 export function parseStoredState(json: string | null): ReviewNotifyState {
   if (!json) return { ...INITIAL_REVIEW_NOTIFY_STATE };
   try {
     const value = JSON.parse(json) as Record<string, unknown>;
     return {
       activeSince: text(value.activeSince),
+      defaultOnSeen: value.defaultOnSeen === true,
+      pendingPasses: pendingOf(value.pendingPasses),
       singlesFloor: text(value.singlesFloor),
       backfillDone: value.backfillDone === true,
       lastTickAt: text(value.lastTickAt),
