@@ -2065,6 +2065,23 @@ export const analyticsFreshnessProbes = sqliteTable(
 );
 
 /**
+ * SCHEMA_MIGRATIONS version 120 (BL-248, ADR 0066, REVIEW_NOTIFY_PLAN.md §5): the review-notify ledger -- every owner review
+ * decision (or plan verdict / pick) already written into the Producer's Inbox, with the file it went into. A file the Producer
+ * moved away is never written again, and a decision that reaches this computer late by sync (with its own, older time) is still
+ * found. Device-local (each writer keeps its own), never in a snapshot; rows older than 90 days are removed.
+ */
+export const reviewNotifyLedger = sqliteTable(
+  "review_notify_ledger",
+  {
+    entryKey: text("entry_key").primaryKey().notNull(),
+    kind: text("kind").notNull(),
+    fileName: text("file_name").notNull(),
+    recordedAt: integer("recorded_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => [index("review_notify_ledger_recorded_idx").on(table.recordedAt)]
+);
+
+/**
  * SCHEMA_MIGRATIONS version 45 (BL-118) -- CHANNEL-level daily totals (views, watch time, subscribers...) collected with the per-video
  * metrics, so the agent's channel analytics can be read locally instead of a live Analytics API call every time. Same shape and
  * rules as `video_metrics_daily` (the API omits zero-activity days: absence is not zero), device-local like it.
@@ -6080,6 +6097,20 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         error TEXT
       )`);
       await client.execute("CREATE INDEX IF NOT EXISTS analytics_freshness_probes_channel_idx ON analytics_freshness_probes (channel_id, probed_at)");
+    },
+  },
+  {
+    version: 120,
+    description:
+      "review_notify_ledger -- BL-248 (ADR 0066, owner msg 4094): the owner review decisions already written into the Producer's Inbox, so none is written twice. Additive (one new table), device-local",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS review_notify_ledger (
+        entry_key TEXT PRIMARY KEY NOT NULL,
+        kind TEXT NOT NULL,
+        file_name TEXT NOT NULL,
+        recorded_at INTEGER NOT NULL
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS review_notify_ledger_recorded_idx ON review_notify_ledger (recorded_at)");
     },
   },
 ];
@@ -10709,6 +10740,59 @@ export async function listAnalyticsCollectionRunsByChannel(
     newestChannelDate: row.newestChannelDate ?? null,
     ranAt: row.ranAt,
   }));
+}
+
+// --- BL-248: review-notify (the owner's review decisions wake the Producer) ------------------------------------------------
+
+const REVIEW_NOTIFY_SETTINGS_KEY = "review_notify_settings";
+const REVIEW_NOTIFY_STATE_KEY = "review_notify_state";
+
+/** BL-248: the «Будить Продюсера» settings of this computer (JSON), `null` before the first save. Never synced. */
+export async function getReviewNotifySettingsJson(database: AppDb = db): Promise<string | null> {
+  return getAppSetting(REVIEW_NOTIFY_SETTINGS_KEY, database);
+}
+
+export async function setReviewNotifySettingsJson(json: string, database: AppDb = db): Promise<void> {
+  await setAppSetting(REVIEW_NOTIFY_SETTINGS_KEY, json, database);
+}
+
+/** BL-248: the writer's own state on this computer (JSON, written only by its loop), `null` before its first run. */
+export async function getReviewNotifyStateJson(database: AppDb = db): Promise<string | null> {
+  return getAppSetting(REVIEW_NOTIFY_STATE_KEY, database);
+}
+
+export async function setReviewNotifyStateJson(json: string, database: AppDb = db): Promise<void> {
+  await setAppSetting(REVIEW_NOTIFY_STATE_KEY, json, database);
+}
+
+/** BL-248: which of `keys` the ledger already has. */
+export async function listReviewNotifyLedgerKeys(keys: readonly string[], database: AppDb = db): Promise<Set<string>> {
+  const found = new Set<string>();
+  for (let i = 0; i < keys.length; i += 500) {
+    const chunk = keys.slice(i, i + 500);
+    if (chunk.length === 0) continue;
+    const rows = await database.select({ entryKey: reviewNotifyLedger.entryKey }).from(reviewNotifyLedger).where(inArray(reviewNotifyLedger.entryKey, [...chunk]));
+    for (const row of rows) found.add(row.entryKey);
+  }
+  return found;
+}
+
+/** BL-248: records written decisions; a key already there keeps its first row. */
+export async function insertReviewNotifyLedgerEntries(entries: ReadonlyArray<{ key: string; kind: string; fileName: string }>, at: Date, database: AppDb = db): Promise<void> {
+  for (let i = 0; i < entries.length; i += 200) {
+    const chunk = entries.slice(i, i + 200);
+    if (chunk.length === 0) continue;
+    await database
+      .insert(reviewNotifyLedger)
+      .values(chunk.map((e) => ({ entryKey: e.key, kind: e.kind, fileName: e.fileName, recordedAt: at })))
+      .onConflictDoNothing();
+  }
+}
+
+/** BL-248: retention -- removes rows recorded before `cutoff`; returns how many. */
+export async function deleteReviewNotifyLedgerBefore(cutoff: Date, database: AppDb = db): Promise<number> {
+  const result = await database.delete(reviewNotifyLedger).where(lt(reviewNotifyLedger.recordedAt, cutoff));
+  return Number(result.rowsAffected ?? 0);
 }
 
 // --- BL-245: hourly Analytics freshness probes ---------------------------------------------------------------------------
