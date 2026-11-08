@@ -118,6 +118,11 @@ export type ClipReviewsPorts = {
   withLock<T>(fn: () => Promise<T>): Promise<T>;
   /** An owner decision, recorded on the computer it was made on. */
   audit(entry: { channelId: string; clipId: string; detail: Record<string, unknown> }): Promise<void>;
+  /**
+   * BL-248 (ADR 0066): "the owner just decided" -- the review-notify writer runs in a moment instead of at its next tick. Optional,
+   * never throws, never awaited: the decision is recorded already and never depends on it.
+   */
+  notifyOwnerDecision?(): void;
   /** BL-246 (review): a failure the owner sees only as a fixed message; its detail (absolute paths included) goes to the server log. */
   logError(event: string, context: Record<string, unknown>): void;
   /** BL-246: uploads staged in this computer's app data (never the channel folder) until a decision uses them. */

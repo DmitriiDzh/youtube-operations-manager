@@ -21,6 +21,7 @@ export const settings: Record<keyof typeof en, string> = {
   "settingsCard.logicalPaths": "Логические пути",
   "settingsCard.factoryToken": "Токен Factory Operator",
   "settingsCard.producerToken": "Токен Producer",
+  "settingsCard.reviewNotify": "Будить Продюсера",
   "settingsCard.aiProviders": "ИИ-провайдеры",
   "settingsCard.sync": "Синхронизация",
   "settingsCard.autoDeviceSync": "Автосинхронизация компьютеров",

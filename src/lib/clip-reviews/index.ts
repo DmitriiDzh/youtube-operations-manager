@@ -5,6 +5,7 @@ import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { insertVideoEditAuditEvent, rawSqlClient } from "@/lib/db";
 import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
 import { getProductionAppPaths } from "@/lib/platform-paths/runtime";
+import { nudgeReviewNotify } from "@/lib/review-notify";
 import { createDefaultLogger } from "@/lib/shared-logger";
 import { createClipReviewsCoreForProduction } from "@/lib/sync-gateway";
 import { createAttachmentFiles, createAttachmentStaging } from "./adapters/attachments";
@@ -52,6 +53,8 @@ function service(): ClipReviewsService {
     logError: (event, context) => createDefaultLogger().error({ event, context }),
     staging: createAttachmentStaging(getProductionAppPaths().clipReviewUploadsDir),
     attachmentFiles: createAttachmentFiles(),
+    // BL-248 (ADR 0066): an owner decision nudges the Producer's Inbox writer (the shared review-notify module).
+    notifyOwnerDecision: () => nudgeReviewNotify(),
   });
 }
 
@@ -72,7 +75,7 @@ export function createClipReviewsOwnerCore(): ClipReviewsOwnerSurface {
 
 export { createClipReviewsService, producerSurface, ownerSurface } from "./services";
 export type { ClipReviewsService, ClipReviewsProducerSurface, ClipReviewsOwnerSurface } from "./services";
-export { clipViewOf, decidingRecordOf, sortClipViews, clipVideoTypeOf, durationAccepted } from "./model";
+export { clipViewOf, decidingRecordOf, sortClipViews, clipVideoTypeOf, durationAccepted, wellFormedAttachments } from "./model";
 export { attachmentPathOf } from "./services";
 export * from "./attachments";
 export * from "./contracts";

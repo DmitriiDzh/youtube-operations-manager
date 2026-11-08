@@ -15,6 +15,7 @@ import { OperationsWorkspaceSettings } from "@/components/operations-workspace-s
 import { LogicalPathsSettings } from "@/components/logical-paths-settings";
 import { FactoryAgentTokenSettings } from "@/components/factory-agent-token-settings";
 import { ProducerAgentTokenSettings } from "@/components/producer-agent-token-settings";
+import { ReviewNotifySettings } from "@/components/review-notify-settings";
 import { OperatorCliSettings } from "@/components/operator-cli-settings";
 import { ReadGatewaySettings } from "@/components/read-gateway-settings";
 import { CloudConnectionSettings } from "@/components/cloud-connection-settings";
@@ -137,6 +138,10 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
         </FeatureErrorBoundary>
         <FeatureErrorBoundary label={section("settingsCard.producerToken")}>
           <ProducerAgentTokenSettings />
+        </FeatureErrorBoundary>
+        {/* BL-248 (ADR 0066): the owner's review decisions wake the Producer (files in its Inbox), this computer only. */}
+        <FeatureErrorBoundary label={section("settingsCard.reviewNotify")}>
+          <ReviewNotifySettings />
         </FeatureErrorBoundary>
         {/* BL-228 (ADR 0053): the owner's commands in the HUB "System" topic, carried out by this app. */}
         <FeatureErrorBoundary label={section("settingsCards.systemTopic.title")}>
