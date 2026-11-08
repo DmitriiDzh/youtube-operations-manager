@@ -20,6 +20,7 @@ export const settings = {
   "settingsCard.logicalPaths": "Logical paths",
   "settingsCard.factoryToken": "Factory Operator token",
   "settingsCard.producerToken": "Producer token",
+  "settingsCard.reviewNotify": "Wake the Producer",
   "settingsCard.aiProviders": "AI providers",
   "settingsCard.sync": "Sync",
   "settingsCard.autoDeviceSync": "Automatic device sync",

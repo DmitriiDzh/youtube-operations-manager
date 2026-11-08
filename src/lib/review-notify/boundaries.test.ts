@@ -34,8 +34,8 @@ test("AC-RN-14: review-notify imports no feature module, no db.ts, no sync famil
 
 test("§10: a feature module reaches review-notify only from its own index.ts, and only the nudge", async () => {
   const offenders: string[] = [];
-  for (const module of FEATURE_MODULES) {
-    for (const file of await files(path.join(SRC, "lib", module))) {
+  for (const featureModule of FEATURE_MODULES) {
+    for (const file of await files(path.join(SRC, "lib", featureModule))) {
       const text = await readFile(file, "utf8");
       const match = text.match(/import\s*\{([^}]*)\}\s*from\s*["']@\/lib\/review-notify["']/);
       if (!match && !text.includes("@/lib/review-notify")) continue;

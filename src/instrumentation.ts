@@ -803,6 +803,45 @@ async function startServerSession() {
     setTimeout(() => void freshnessProbeLoop(), msUntilNextProbe(new Date())).unref();
   }
 
+  // BL-248 (ADR 0066, REVIEW_NOTIFY_PLAN.md §9): the owner's review decisions wake the Producer -- every 30 s (first 45 s after the
+  // start) the writer puts one file per new owner decision into the Producer's Inbox, when «Будить Продюсера» is on here. An owner
+  // decision on this server nudges it (2 s later). Production servers only: a worktree's `next dev` on the same database must never
+  // write into the real Inbox. Its own loop (AGENTS.md §M); it writes its state rows, so it waits during an import / migration or in
+  // recovery mode like the other loops, and a failure never reaches the owner's decision.
+  if (process.env.NODE_ENV === "production") {
+    try {
+      const { getReviewNotifyCore } = await import("@/composition/review-notify");
+      const { REVIEW_NOTIFY_FIRST_TICK_MS, REVIEW_NOTIFY_NUDGE_DELAY_MS, REVIEW_NOTIFY_TICK_MS, registerReviewNotifyNudge } = await import("@/lib/review-notify");
+      const { rawSqlClient: notifySqlClient } = await import("@/lib/db");
+      const { assertDeviceAvailableForMutation: assertNotifyMayWrite } = await import("@/lib/device-mutation-gate");
+      const notifyOnce = async () => {
+        try {
+          await assertNotifyMayWrite(notifySqlClient);
+          await getReviewNotifyCore().tick();
+        } catch (error) {
+          const paused = error instanceof Error && (error.name === "OperationLockError" || error.name === "RecoveryModeError");
+          if (!paused) console.warn(`[review-notify] ${error instanceof Error ? error.message : String(error)}`);
+        }
+      };
+      const notifyLoop = async () => {
+        await notifyOnce();
+        setTimeout(() => void notifyLoop(), REVIEW_NOTIFY_TICK_MS).unref();
+      };
+      setTimeout(() => void notifyLoop(), REVIEW_NOTIFY_FIRST_TICK_MS).unref();
+      let nudgeTimer: ReturnType<typeof setTimeout> | null = null;
+      registerReviewNotifyNudge(() => {
+        if (nudgeTimer) return;
+        nudgeTimer = setTimeout(() => {
+          nudgeTimer = null;
+          void notifyOnce();
+        }, REVIEW_NOTIFY_NUDGE_DELAY_MS);
+        nudgeTimer.unref();
+      });
+    } catch (error) {
+      console.warn(`[review-notify] not started: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   if (process.env.NODE_ENV !== "production") return;
   // Idle auto-shutdown: no request is in flight by definition, so reset, publish any unexported
   // local changes, then exit. Deliberately NOT raced against a timeout: exiting while the export
