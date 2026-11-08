@@ -1348,7 +1348,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   (на ожидающую можно ответить); сначала ждущие сцены, новые сверху. `waiting` владельца и значок считают сцены. Хранилище,
   инструменты Продюсера и их порядок не менялись.
 
-### 2.9bh Решения владельца будят Продюсера (BL-248, FO-REQ-0052 + PRD-REQ-0063, ADR 0066, `docs/roadmap/plans/REVIEW_NOTIFY_PLAN.md`) — **IMPLEMENTED на ветке `feature/bl-248-review-notify`, не влито в dev**
+### 2.9bh Решения владельца будят Продюсера (BL-248, FO-REQ-0052 + PRD-REQ-0063, ADR 0066, `docs/roadmap/plans/REVIEW_NOTIFY_PLAN.md`) — **IMPLEMENTED, влито в `dev` (`b598da19`)**
 
 - **Что:** на каждое решение владельца в проверке — один Markdown-файл `REVIEW-DECISION-<kind>-<itemId>-<decisionId>.md` во
   `00 YT Producer/Inbox` (новый не-dot файл будит Продюсера, `wait_inbox.sh`). Виды: `clip` (одобрен / возвращён, комментарий,
