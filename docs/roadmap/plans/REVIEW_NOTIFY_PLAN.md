@@ -62,7 +62,8 @@ Written before the code, from the requirement. Expected values in the tests are 
      channel folder; where to find it in YTM (tab) and the read tool (`producer_clip_review_get <clipId>`,
      `factory_storyboard_get`, `factory_plan_get`, `factory_publishing_plan_get`).
 8. **One writer.** A per-computer switch «Будить Продюсера» (Settings → AI agent). Never set: ON when the workspace's
-   `00 YT Producer` folder exists on this computer, OFF otherwise. The Inbox folder setting: an absolute path; never set:
+   `00 YT Producer` folder exists on this computer, OFF otherwise. Once on by default it stays on while that folder is away (the
+   disk is not connected): that reads as "Inbox missing, retry", never as "switched off"; only the owner's explicit off turns it off. The Inbox folder setting: an absolute path; never set:
    `<workspace root>/00 YT Producer/Inbox`, where the workspace root is the one parent folder of every channel workspace set on
    this computer (none when they differ). The writer covers decisions made on either computer: the documents and the plans
    report bring the other computer's decisions here.

@@ -34,7 +34,9 @@ waited three hours until the owner asked.
    enough either. Rows are kept 90 days; decisions older than 30 days are never scanned.
 4. **One writer, a per-computer switch «Будить Продюсера»** (Settings → AI agent). Never set: ON when the workspace's
    `00 YT Producer` folder exists on this computer, OFF otherwise -- the Producer's Inbox is local where the Producer runs, and a
-   computer without that folder has nowhere to write. The owner's choice overrides the default either way. The Inbox folder is a
+   computer without that folder has nowhere to write. Once on by default it stays on while the folder is away (the folder and the
+   Inbox are on the same disk: a disconnected disk is "Inbox missing, retry", never "off", which would skip the decisions made
+   meanwhile). The owner's choice overrides the default either way. The Inbox folder is a
    setting (an absolute path); empty: `<workspace root>/00 YT Producer/Inbox`, where the workspace root is the one parent folder of
    every channel workspace set on this computer (there is no separate workspace-root setting; with no single parent the owner sets
    the path).

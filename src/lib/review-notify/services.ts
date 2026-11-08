@@ -72,10 +72,15 @@ export function createReviewNotify(ports: ReviewNotifyPorts) {
   const readState = async () => parseStoredState(await ports.state.read());
   const writeState = (state: ReviewNotifyState) => ports.state.write(JSON.stringify(state));
 
-  async function effective(settings: ReviewNotifySettings) {
+  /**
+   * The default (never set) is sticky once on: the Producer's folder and its Inbox live on the same disk, so a disk that is away for a
+   * while must read as "Inbox missing, retry" -- never as "switched off", which would start again from a later time and drop the
+   * decisions made meanwhile (REVIEW_NOTIFY_PLAN.md §6, §8). Only the owner's explicit `false` turns a writer off.
+   */
+  async function effective(settings: ReviewNotifySettings, state: ReviewNotifyState) {
     const defaultEnabled = await ports.inbox.producerFolderExists().catch(() => false);
     const defaultInboxPath = await ports.inbox.defaultPath().catch(() => null);
-    return { defaultEnabled, defaultInboxPath, enabled: settings.enabled ?? defaultEnabled, inboxPath: settings.inboxPath ?? defaultInboxPath };
+    return { defaultEnabled, defaultInboxPath, enabled: settings.enabled ?? (defaultEnabled || state.activeSince !== null), inboxPath: settings.inboxPath ?? defaultInboxPath };
   }
 
   /** The same error every 30 s (T9 not mounted) is logged once, until it changes. */
@@ -128,7 +133,7 @@ export function createReviewNotify(ports: ReviewNotifyPorts) {
     const now = ports.now();
     const settings = await readSettings();
     let state = await readState();
-    const { enabled, inboxPath } = await effective(settings);
+    const { enabled, inboxPath } = await effective(settings, state);
 
     if (!enabled) {
       // Off: nothing is read, written or recorded (AC-RN-11). The next time it goes on starts from then (§6).
@@ -207,7 +212,7 @@ export function createReviewNotify(ports: ReviewNotifyPorts) {
     async view(): Promise<ReviewNotifyView> {
       const settings = await readSettings();
       const state = await readState();
-      const eff = await effective(settings);
+      const eff = await effective(settings, state);
       return {
         enabled: eff.enabled,
         enabledSetting: settings.enabled,

@@ -250,3 +250,32 @@ test("settings: a field left out keeps its value; a relative Inbox path is refus
   await assert.rejects(() => h.core.updateSettings({ extra: 1 }));
   assert.equal((await h.core.updateSettings({ enabled: null })).enabled, true, "back to the default (folder present)");
 });
+
+test("§6/§8: a default-on writer whose disk goes away keeps waiting (Inbox missing), and writes the decisions made meanwhile", async () => {
+  const h = harness({ now: "2026-11-08T09:00:00Z", producerFolder: true });
+  assert.equal((await h.core.tick()).ran, true);
+  // The disk (both the Producer folder and its Inbox) is away; the owner decides meanwhile.
+  h.env.producerFolder = false;
+  h.env.inboxThere = false;
+  h.env.singles = [clipNotice({ decisionId: "f000000000000001", decidedAt: "2026-11-08T09:10:00.000Z" })];
+  h.clock.now = T("2026-11-08T09:11:00Z");
+  const away = await h.core.tick();
+  assert.equal(away.ran, true, "still on: the default does not turn off while the folder is away");
+  assert.equal(away.errors.length, 1);
+  assert.equal(h.ledger.size, 0);
+  assert.equal(JSON.parse(h.store.state ?? "{}").activeSince, "2026-11-08T09:00:00.000Z");
+  h.env.producerFolder = true;
+  h.env.inboxThere = true;
+  h.clock.now = T("2026-11-08T09:20:00Z");
+  assert.deepEqual((await h.core.tick()).written, ["REVIEW-DECISION-clip-c1a2b3c4d5e6f7a8-f000000000000001.md"]);
+});
+
+test("§9: a nudge never throws into the owner's decision, even when the registered loop throws", async () => {
+  const { registerReviewNotifyNudge, nudgeReviewNotify } = await import("./index");
+  nudgeReviewNotify(); // nothing registered: nothing happens
+  registerReviewNotifyNudge(() => {
+    throw new Error("broken loop");
+  });
+  assert.doesNotThrow(() => nudgeReviewNotify());
+  registerReviewNotifyNudge(null);
+});
