@@ -559,13 +559,16 @@ export function createStoryboardsService(ports: StoryboardsPorts) {
           stateChangedBy: null,
           replies: {},
         });
+        ports.notifyOwnerDecision?.();
         return { commentId: id };
       });
     },
 
     async ownerReply(channelId: string, storyboardId: string, input: unknown): Promise<{ replyId: string }> {
       const { commentId, text } = parseWithSchema(ownerReplyInputSchema, input, "reply");
-      return ports.withLock(async () => ({ replyId: await reply(channelId, await findRecord(channelId, storyboardId), commentId, "owner", text) }));
+      const replyId = await ports.withLock(async () => reply(channelId, await findRecord(channelId, storyboardId), commentId, "owner", text));
+      ports.notifyOwnerDecision?.();
+      return { replyId };
     },
 
     async ownerSetCommentState(channelId: string, storyboardId: string, input: unknown): Promise<void> {
@@ -628,6 +631,7 @@ export function createStoryboardsService(ports: StoryboardsPorts) {
         }
         const id = newId("rd");
         await ports.store.addRenderDecision(channelId, storyboardId, { id, renderId, kind, by: "owner", device: await ports.deviceLabel(), at: stamp(), note: note ?? null });
+        ports.notifyOwnerDecision?.();
         const view = rendersOf(await findRecord(channelId, storyboardId)).find((r) => r.renderId === renderId);
         return { decisionId: id, state: view?.state ?? kind };
       });
@@ -655,6 +659,7 @@ export function createStoryboardsService(ports: StoryboardsPorts) {
         }
         const id = newId("d");
         await ports.store.addDecision(channelId, storyboardId, { id, kind, versionNumber, contentHash: version.contentHash, by: "owner", device: await ports.deviceLabel(), at: stamp(), note: note ?? null });
+        ports.notifyOwnerDecision?.();
         return { decisionId: id, state: storyboardState(await findRecord(channelId, storyboardId)) };
       });
     },

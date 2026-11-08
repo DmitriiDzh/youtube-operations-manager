@@ -207,6 +207,8 @@ export type PublishingPlansPorts = {
    * cover several weeks; `weekStart` is then "" (the production port reads the channel's packages and uploads whatever it says).
    */
   progress?(channelId: string, weekStart: string, slotIds: string[]): Promise<PlanProgressResult>;
+  /** BL-248 (ADR 0066): "the owner just decided" -- the review-notify writer runs in a moment. Optional, never throws, never awaited. */
+  notifyOwnerDecision?(): void;
 };
 
 /**

@@ -10,7 +10,7 @@ import { createGenerationPlansShareCoreForProduction, createReviewPresenceForPro
 import { createMediaGenerationCore, isDomainError } from "@/lib/media-generation";
 import { createVideoProjectsServiceForProduction } from "@/lib/video-projects";
 import { createPlanStore } from "./adapters/store";
-import { PLAN_JOB_OUTPUT_SUBDIRS } from "./contracts";
+import { PLAN_JOB_OUTPUT_SUBDIRS, type PlanPickRecord, type PlanVerdictHistoryRow } from "./contracts";
 import { createGenerationPlanServices } from "./services";
 
 // BL-143 (ADR 0029): the generation plans core. Stateless apart from the database, so a new instance per call is fine.
@@ -19,6 +19,48 @@ import { createGenerationPlanServices } from "./services";
 export * from "./contracts";
 export { createGenerationPlanServices, validateDefinition, withPlanLock, type GenerationPlanServices, type PlanServiceDependencies, type PlanStore, type StoredPlan } from "./services";
 export { PLAN_LIMITS, PLAN_ID_PATTERN } from "./schemas";
+
+/**
+ * BL-248 (ADR 0066, REVIEW_NOTIFY_PLAN.md §2-§3): the owner's review activity on THIS computer's plans since `sinceIso` -- every
+ * verdict of the history (the other computer's included, once applied here), the active picks and «ни один не подходит», and when a
+ * wave was finished (`group_reviewed`). Read-only; the composition layer turns it into the Producer's review-pass files.
+ */
+export type PlanReviewActivity = {
+  planId: string;
+  channelId: string;
+  title: string;
+  video: string | null;
+  /** The wave of each item. */
+  groupOf: Record<string, string | null>;
+  history: PlanVerdictHistoryRow[];
+  picks: PlanPickRecord[];
+  waveFinishedAt: string[];
+};
+
+export async function listPlanReviewActivity(sinceIso: string): Promise<PlanReviewActivity[]> {
+  const store = createPlanStore();
+  const since = Date.parse(sinceIso);
+  const after = (iso: string) => Date.parse(iso) >= since;
+  const plans = (await store.listPlans({})).filter((p) => p.status === "active" || p.updatedAt.getTime() >= since || (p.closedAt !== null && p.closedAt.getTime() >= since));
+  const out: PlanReviewActivity[] = [];
+  for (const plan of plans) {
+    const history = (await store.listVerdictHistory(plan.id)).filter((h) => after(h.at));
+    const picks = (await store.listPicks(plan.id)).filter((p) => p.active && after(p.at));
+    const waveFinishedAt = (await store.listEvents(plan.id)).filter((e) => e.kind === "group_reviewed" && after(e.at)).map((e) => e.at);
+    if (history.length === 0 && picks.length === 0) continue;
+    out.push({
+      planId: plan.id,
+      channelId: plan.channelId,
+      title: plan.title,
+      video: plan.video ?? null,
+      groupOf: Object.fromEntries(plan.definition.items.map((i) => [i.itemKey, i.groupId ?? null])),
+      history,
+      picks,
+      waveFinishedAt,
+    });
+  }
+  return out;
+}
 
 export function createGenerationPlansCore() {
   const channels = createChannelConnectionsCore();

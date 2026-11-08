@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
+import { nudgeReviewNotify } from "@/lib/review-notify";
 import { createStoryboardsCoreForProduction } from "@/lib/sync-gateway";
 import { createVideoProjectsServiceForProduction } from "@/lib/video-projects";
 import { createStoryboardFiles } from "./adapters/files";
@@ -44,6 +45,8 @@ export function createStoryboardsServiceForProduction(): StoryboardsService {
         queue = run.catch(() => undefined);
         return run;
       },
+      // BL-248 (ADR 0066): the owner's decisions, comments and replies nudge the Producer's Inbox writer (review-notify).
+      notifyOwnerDecision: () => nudgeReviewNotify(),
     });
   }
   return holder[PRODUCTION_KEY];

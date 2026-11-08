@@ -430,6 +430,8 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
           });
         }
         replacedVetoed.push(...implied.map((i) => i.record.slotId));
+        // BL-248 (ADR 0066): the Producer's Inbox writer runs soon; it never throws and never holds the decision.
+        ports.notifyOwnerDecision?.();
       }
       const after = await requirePlan(channelId, weekStart);
       return { plan: await viewOf(channelId, after.snapshot, after.meta), decided: effective.map((s) => s.slotId), replacedVetoed };

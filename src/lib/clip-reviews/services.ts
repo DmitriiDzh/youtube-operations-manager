@@ -419,6 +419,8 @@ export function createClipReviewsService(ports: ClipReviewsPorts) {
         clipId,
         detail: { event: `clip_review.${kind}`, at, decisionId: record.id, clipId, sceneId: clip.sceneId, clipPath: clip.clipPath, sha256: clip.sha256, comment, by: userId, device, attachments: attachments.map((a) => ({ path: a.path, size: a.size, sha256: a.sha256 })) },
       });
+      // BL-248 (ADR 0066): the Producer's Inbox writer runs soon; it never throws and never holds the decision.
+      ports.notifyOwnerDecision?.();
       const decided = clipViewOf(clip, [...decisions, record]);
       return { clip: { ...decided, file, decisionId: id, attachments: attachments.map((a, index) => ({ ...a, index, file: "ok" as const })) } };
     });

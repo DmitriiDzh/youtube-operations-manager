@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { insertVideoEditAuditEvent } from "@/lib/db";
+import { nudgeReviewNotify } from "@/lib/review-notify";
 import { createPublishingPlansCoreForProduction } from "@/lib/sync-gateway";
 import type { PublishingPlansPorts } from "./contracts";
 import { agentSurface, createPublishingPlansService, ownerSurface, uploadSurface, type PublishingPlansAgentSurface, type PublishingPlansOwnerSurface, type PublishingPlansService, type PublishingPlansUploadSurface } from "./services";
@@ -40,6 +41,8 @@ function service(progress?: PublishingPlansPorts["progress"]): PublishingPlansSe
     audit: ({ channelId, weekStart, slotId, detail }) =>
       insertVideoEditAuditEvent({ channelId, videoId: weekStart && slotId ? `plan:${weekStart}:${slotId}` : "plan:approval_stage", eventType: "RESULT", detail }),
     ...(progress ? { progress } : {}),
+    // BL-248 (ADR 0066): the owner's slot decisions nudge the Producer's Inbox writer (review-notify).
+    notifyOwnerDecision: () => nudgeReviewNotify(),
   });
 }
 

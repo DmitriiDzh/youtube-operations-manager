@@ -63,4 +63,9 @@ export type StoryboardsPorts = {
   randomId(): string;
   /** Write operations of one process run one at a time (read the latest version, then write the next one). */
   withLock<T>(fn: () => Promise<T>): Promise<T>;
+  /**
+   * BL-248 (ADR 0066): "the owner just decided, commented or replied" -- the review-notify writer runs in a moment. Optional, never
+   * throws, never awaited: the owner's action is recorded already and never depends on it.
+   */
+  notifyOwnerDecision?(): void;
 };
