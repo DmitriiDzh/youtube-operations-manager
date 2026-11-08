@@ -32,7 +32,8 @@ Written before the code, from the requirement. Expected values in the tests are 
    - a wave finished: the plan has a `group_reviewed` event at or after the pass's earliest entry (minus 2 s: event times have
      one-second resolution), or
    - the plan was quiet for 5 minutes: the newest entry of the pass is 5 minutes old or more.
-   A decision that arrives later (the other computer's, by sync) joins the next pass of its plan.
+   A decision that arrives later (the other computer's, by sync) joins the next pass of its plan; a late-synced entry with an old
+   `at` can therefore split one wave across two files.
 4. **File name** `REVIEW-DECISION-<kind>-<itemId>-<decisionId>.md`.
    - `clip`: itemId = clipId, decisionId = the decision record's id.
    - `storyboard`: itemId = storyboardId, decisionId = the decision's, comment's or reply's id.
@@ -46,7 +47,7 @@ Written before the code, from the requirement. Expected values in the tests are 
      name. The whole name stays under 255 bytes.
    - Deterministic from the decision's own id: a retry, a restart or a second tick can never make a second name for it.
 5. **Written once, never rewritten, atomic.** If the file already exists it is left alone. Otherwise the content goes to
-   `.tmp-<random>` in the same folder (a dotfile: `wait_inbox.sh` ignores it), then is renamed to the final name. A failed write
+   `.tmp-<random>` in the same folder (a dotfile: `wait_inbox.sh` ignores it), then is published under the final name with a hard link that refuses an existing name (a checked rename where the volume has no hard links); `.tmp-*` files older than 1 h are swept. A failed write
    removes its temporary file. A decision that was written is recorded in this computer's notice ledger, so it is never written
    again even after the Producer moved the file away.
 6. **When the switch goes on (first time, default included).** `clip` / `storyboard` / `render` / `slot` decisions made since
@@ -61,8 +62,9 @@ Written before the code, from the requirement. Expected values in the tests are 
      the zone); status; the owner's comment verbatim in a fenced block; decidedAt; decidedOn; attachment paths relative to the
      channel folder; where to find it in YTM (tab) and the read tool (`producer_clip_review_get <clipId>`,
      `factory_storyboard_get`, `factory_plan_get`, `factory_publishing_plan_get`).
-8. **One writer.** A per-computer switch «Будить Продюсера» (Settings → AI agent). Never set: ON when the workspace's
-   `00 YT Producer` folder exists on this computer, OFF otherwise. Once on by default it stays on while that folder is away (the
+8. **One writer.** A per-computer switch «Будить Продюсера» (Settings → AI agent). Never set: ON only on macOS when the
+   workspace's `00 YT Producer` folder exists there (the Mac the Producer runs on; review B1 -- Syncthing creates the folder on the
+   other computer too), OFF everywhere else. The card shows the effective state. Once on by default it stays on while that folder is away (the
    disk is not connected): that reads as "Inbox missing, retry", never as "switched off"; only the owner's explicit off turns it off. The Inbox folder setting: an absolute path; never set:
    `<workspace root>/00 YT Producer/Inbox`, where the workspace root is the one parent folder of every channel workspace set on
    this computer (none when they differ). The writer covers decisions made on either computer: the documents and the plans
@@ -101,7 +103,9 @@ Written before the code, from the requirement. Expected values in the tests are 
   two different ids never the same name, shorter than 255 bytes.
 - **AC-RN-14** `src/lib/review-notify/` imports no feature module (clip-reviews, storyboards, generation-plans, publishing-plans,
   publishing) and no db.ts.
-- **AC-RN-15** The default: never set + `00 YT Producer` present → on; never set + absent → off; the owner's choice wins.
+- **AC-RN-15** The default: never set + macOS + `00 YT Producer` present → on; never set + another platform (win32) with the
+  folder present → off; never set + absent → off; the owner's choice wins (amended by review B1, 2026-11-08: the folder alone
+  would make two writers, since Syncthing creates it on both computers).
 - **AC-RN-16** The same decision rendered twice gives the same bytes (no write time or writer name in the file).
 - **AC-RN-17** A source that throws does not stop the other sources' files in the same tick.
 

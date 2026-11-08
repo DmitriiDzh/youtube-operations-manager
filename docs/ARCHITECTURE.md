@@ -5216,7 +5216,9 @@ On branch `feature/bl-229-music-library`. No schema change; no YouTube call; not
   channels, settings / state in `app_settings` keys `review_notify_settings` / `review_notify_state`, the ledger in
   `review_notify_ledger`, the Inbox under the one common parent of the channel workspaces). `generation-plans` gained
   `listPlanReviewActivity(since)` (history, active picks, `group_reviewed` times of this computer's plans).
-- **Tick:** off (the owner's setting, else the `00 YT Producer` folder's presence) → nothing read or recorded; first on → state
+- **Tick:** off (the owner's setting, else the default: macOS with the `00 YT Producer` folder, sticky once seen on) → nothing read
+  or recorded and the old error cleared; `.tmp-*` older than 1 h swept; a pass's entry ids stored before its file (finished as itself
+  after a crash); a tick asked for during a run gives one more run; sources report per-channel errors without stopping; first on → state
   `activeSince` and `singlesFloor` (2026-11-08 the first time, else now); no Inbox folder → one logged error, nothing recorded; else
   each source (a failure is reported, the others go on) → notices not in the ledger → file → ledger row. Plans: the feeds of one plan
   merged across sources, the unseen entries written as one pass when a `group_reviewed` is at or after the earliest (2 s slack) or the

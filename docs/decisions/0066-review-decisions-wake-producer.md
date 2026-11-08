@@ -28,15 +28,17 @@ waited three hours until the owner asked.
    sync (documents, plans report) and never pass through this server's routes; and the owner's decision must never fail or wait
    because the Inbox is missing (T9 not mounted) or the writer is broken. The nudge only makes the next run sooner.
 3. **Exactly once, by a ledger.** File names are deterministic from the decision's own id (a plan pass: the SHA-256 prefix of its
-   sorted entry ids), the file is written once (`.tmp-<random>` in the same folder, then rename; an existing file is never
-   replaced), and the decision's key goes into a new device-local table `review_notify_ledger` (schema v120). A cursor by time would
+   sorted entry ids), the file is written once (`.tmp-<random>` in the same folder, then published with a hard link that fails on
+   an existing name -- a checked rename only where the volume has no hard links; an existing file is never replaced; `.tmp-*` older
+   than 1 h are swept), and the decision's key goes into a new device-local table `review_notify_ledger` (schema v120). A cursor by time would
    miss a decision synced late with its own older time, and the Producer may move files out of its Inbox, so "the file exists" is not
    enough either. Rows are kept 90 days; decisions older than 30 days are never scanned.
-4. **One writer, a per-computer switch «Будить Продюсера»** (Settings → AI agent). Never set: ON when the workspace's
-   `00 YT Producer` folder exists on this computer, OFF otherwise -- the Producer's Inbox is local where the Producer runs, and a
-   computer without that folder has nowhere to write. Once on by default it stays on while the folder is away (the folder and the
-   Inbox are on the same disk: a disconnected disk is "Inbox missing, retry", never "off", which would skip the decisions made
-   meanwhile). The owner's choice overrides the default either way. The Inbox folder is a
+4. **One writer, a per-computer switch «Будить Продюсера»** (Settings → AI agent). Never set: ON only on macOS
+   (`process.platform === "darwin"`) when the workspace's `00 YT Producer` folder exists there -- the Mac the Producer runs on;
+   OFF everywhere else (review B1: the folder carries a `.stfolder`, Syncthing creates it on the other computer too, so the folder
+   alone would make two writers). Once on by default it stays on while the folder is away (the folder and the Inbox are on the same
+   disk: a disconnected disk is "Inbox missing, retry", never "off", which would skip the decisions made meanwhile); a computer whose
+   default was never on never becomes sticky. The card shows the effective state. The owner's choice overrides the default either way. The Inbox folder is a
    setting (an absolute path); empty: `<workspace root>/00 YT Producer/Inbox`, where the workspace root is the one parent folder of
    every channel workspace set on this computer (there is no separate workspace-root setting; with no single parent the owner sets
    the path).
@@ -52,13 +54,14 @@ waited three hours until the owner asked.
 ## Consequences
 
 - No YouTube call, no paid call, no MCP tool or API contract change: the Producer only reads files. Schema v120 (additive).
-- **Two writers are possible.** `00 YT Producer` carries a `.stfolder`: Syncthing syncs it, so the folder may exist on the second
-  computer too, and the default would turn the switch on there as well. Single decisions are harmless (same name, same bytes;
-  `exists → skip` once Syncthing delivered the first copy), but plan passes are grouped by each writer's own timing and would differ.
-  The card says to keep it on on one computer; the owner turns it off on the other (RISK-152).
+- **Two writers only by the owner's own choice.** The default is on only on the Mac; a second Mac with the folder, or the owner
+  turning it on on the other computer, would make two writers. Single decisions are harmless (same name, same bytes, the hard link
+  refuses an existing name), but plan passes are grouped by each writer's own timing and would differ (RISK-152).
 - The other computer's plan verdicts are seen only as far as its report carries them (the last 10 verdicts of an attempt, entries
   still in its review list, the last 50 events). Reasons and marks are known only for an attempt's current verdict there.
-- A crash between writing a plan pass file and recording its entries can, if new entries arrive meanwhile, give a second pass file
-  that repeats the first one's entries. Single decisions cannot be duplicated this way (same name, `exists → skip`).
+- A plan pass's entry ids are stored before its file is written and dropped after its ledger rows, so a crash in between is finished
+  as exactly that pass on the next run. This computer's own verdicts and picks on the other computer's plans are a source too; entry
+  times are whole seconds, so the same verdict read here and later in that computer's report is one entry.
+- A late-synced entry with an old `at` joins the next pass of its plan, so one wave can be split across two files.
 - Moving the writer to the other computer starts its own ledger: the backfill there repeats files the Producer already had (it dedupes
   by decisionId).
