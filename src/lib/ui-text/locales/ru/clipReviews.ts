@@ -10,6 +10,12 @@ export const clipReviews: Record<keyof typeof en, string> = {
   "clipReviews.waiting": "{count, plural, one {# сцена ждёт} few {# сцены ждут} many {# сцен ждут} other {# сцены ждут}} вас",
   "clipReviews.noneWaiting": "Ничего не ждёт вашего ответа",
   "clipReviews.decidedHeading": "С ответом",
+  // Сообщение владельца 4117: отвеченные сцены сворачиваются по категориям.
+  "clipReviews.group.returned": "Возвращены ({count})",
+  "clipReviews.group.approved": "Одобрены ({count})",
+  "clipReviews.group.withdrawn": "Отозваны ({count})",
+  "clipReviews.group.show": "Показать",
+  "clipReviews.group.hide": "Скрыть",
   // BL-247: versions of a scene.
   "clipReviews.version": "v{version}",
   "clipReviews.versions.earlier": "Предыдущие версии",
