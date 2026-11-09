@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { attachmentSrcOf, attachmentsReady, canApprove, clockOf, isImageMime, percentOf, pieceOffsetsOf, rangeOf, returnCommentReady, scenesOf, videoSrcOf, type ClipDto } from "./clip-reviews-model";
+import { answeredGroupsOf, attachmentSrcOf, attachmentsReady, canApprove, clockOf, isImageMime, openGroupsFrom, percentOf, pieceOffsetsOf, rangeOf, returnCommentReady, scenesOf, videoSrcOf, type ClipDto } from "./clip-reviews-model";
 
 // BL-241 (CLIP_REVIEWS_PLAN.md item 5, ADR 0061 §6): the player plays the Producer's range (a media fragment), the row shows it on
 // the clip's clock, and «Одобрить» needs a waiting clip whose file here is the submitted one.
@@ -110,4 +110,34 @@ test("AC-CR-30: waiting scenes first, then the others, each with the newest late
   // The latest waits and an earlier one too: the row still says an earlier version waits.
   const both = scenesOf([clipOf("g1", "g", "2026-11-07T09:00:00.000Z"), clipOf("g2", "g", "2026-11-07T09:30:00.000Z"), clipOf("g3", "g", "2026-11-07T09:40:00.000Z", "withdrawn")]);
   assert.deepEqual([both[0].latest.clip.clipId, both[0].earlierWaiting], ["g3", 2]);
+});
+
+// Owner msg 4117: what needs nothing from the owner folds away by category.
+test("msg 4117: answered scenes group by their latest answer (approved, returned, withdrawn); waiting scenes and empty groups stay out", () => {
+  const clip = (clipId: string, sceneId: string, status: ClipDto["status"], submittedAt: string) => ({ clipId, sceneId, status, submittedAt }) as ClipDto;
+  const scenes = scenesOf([
+    clip("a1", "P1", "returned", "2026-11-01T00:00:00Z"),
+    clip("a2", "P1", "approved", "2026-11-02T00:00:00Z"), // P1's latest is approved
+    clip("b1", "P2", "returned", "2026-11-03T00:00:00Z"),
+    clip("c1", "P3", "approved", "2026-11-04T00:00:00Z"),
+    clip("d1", "P4", "approved", "2026-11-05T00:00:00Z"),
+    clip("d2", "P4", "pending", "2026-11-06T00:00:00Z"), // waits: not in any group
+    clip("e1", "P5", "returned", "2026-11-07T00:00:00Z"),
+    clip("e2", "P5", "pending", "2026-11-08T00:00:00Z"), // latest pending: waits
+  ]);
+  const groups = answeredGroupsOf(scenes);
+  assert.deepEqual(
+    groups.map((g) => [g.status, g.scenes.map((s) => s.sceneId)]),
+    [
+      ["approved", ["P3", "P1"]],
+      ["returned", ["P2"]],
+    ]
+  );
+});
+
+test("msg 4117: the stored open categories read back; anything else reads as all folded", () => {
+  assert.deepEqual([...openGroupsFrom(null)], []);
+  assert.deepEqual([...openGroupsFrom("not json")], []);
+  assert.deepEqual([...openGroupsFrom('{"approved":true}')], []);
+  assert.deepEqual([...openGroupsFrom('["returned","pending","bogus","approved"]')].sort(), ["approved", "returned"]);
 });

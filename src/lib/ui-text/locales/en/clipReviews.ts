@@ -8,6 +8,12 @@ export const clipReviews = {
   "clipReviews.waiting": "{count, plural, one {# scene waits} other {# scenes wait}} for you",
   "clipReviews.noneWaiting": "Nothing waits for you",
   "clipReviews.decidedHeading": "Answered",
+  // Owner msg 4117: answered scenes fold away by category.
+  "clipReviews.group.returned": "Returned ({count})",
+  "clipReviews.group.approved": "Approved ({count})",
+  "clipReviews.group.withdrawn": "Withdrawn ({count})",
+  "clipReviews.group.show": "Show",
+  "clipReviews.group.hide": "Hide",
   // BL-247: versions of a scene.
   "clipReviews.version": "v{version}",
   "clipReviews.versions.earlier": "Earlier versions",

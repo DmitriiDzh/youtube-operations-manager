@@ -130,3 +130,29 @@ export function scenesOf(clips: readonly ClipDto[]): ClipScene[] {
   });
   return scenes.sort((a, b) => Number(b.waiting) - Number(a.waiting) || bySubmission(b.latest.clip, a.latest.clip));
 }
+
+/** An answered category: the scenes whose latest version carries that answer. */
+export type AnsweredGroup = { status: Exclude<ClipStatus, "pending">; scenes: ClipScene[] };
+
+const ANSWERED_ORDER: ReadonlyArray<Exclude<ClipStatus, "pending">> = ["approved", "returned", "withdrawn"];
+
+/**
+ * Owner msg 4117: what needs nothing from him folds away by category. The scenes nothing waits on, grouped by their latest
+ * version's answer (approved, returned, withdrawn), keeping the given order inside a group; empty groups are left out.
+ */
+export function answeredGroupsOf(scenes: readonly ClipScene[]): AnsweredGroup[] {
+  return ANSWERED_ORDER.map((status) => ({ status, scenes: scenes.filter((s) => !s.waiting && s.latest.clip.status === status) })).filter((g) => g.scenes.length > 0);
+}
+
+/** The answered categories the owner left open, as this browser stored them; anything unreadable reads as all folded. */
+export function openGroupsFrom(stored: string | null): Set<Exclude<ClipStatus, "pending">> {
+  const out = new Set<Exclude<ClipStatus, "pending">>();
+  if (!stored) return out;
+  try {
+    const value: unknown = JSON.parse(stored);
+    if (Array.isArray(value)) for (const v of value) if (ANSWERED_ORDER.includes(v as Exclude<ClipStatus, "pending">)) out.add(v as Exclude<ClipStatus, "pending">);
+  } catch {
+    // folded
+  }
+  return out;
+}

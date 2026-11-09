@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { UiTextKey } from "@/lib/ui-text";
 import { ActionButton, SkeletonLines } from "./busy-feedback";
 import { AttachmentDropZone, DecisionAttachments, useAttachmentComposer } from "./clip-attachments";
-import { canApprove, rangeOf, returnCommentReady, scenesOf, videoSrcOf, type ClipDto, type ClipScene, type ClipStatus } from "./clip-reviews-model";
+import { answeredGroupsOf, canApprove, openGroupsFrom, rangeOf, returnCommentReady, scenesOf, videoSrcOf, type ClipDto, type ClipScene, type ClipStatus } from "./clip-reviews-model";
 import { useT, useUiText } from "./ui-text-provider";
 import { useUserTimezone } from "./use-user-timezone";
 
@@ -45,6 +45,14 @@ const ERROR_KEYS: Record<string, UiTextKey> = {
   clip_attachment_upload_corrupt: "clipReviews.error.attachment_gone",
 };
 
+const GROUP_KEYS: Record<Exclude<ClipStatus, "pending">, UiTextKey> = {
+  approved: "clipReviews.group.approved",
+  returned: "clipReviews.group.returned",
+  withdrawn: "clipReviews.group.withdrawn",
+};
+// Owner msg 4117: which answered categories this browser keeps open (folded by default).
+const OPEN_GROUPS_KEY = "ytm.clipReviews.openGroups";
+
 type Confirm = { clipId: string; action: "approve" | "return" } | null;
 
 export function ClipReviewsPanel({ channelId, visible }: { channelId: string | null; visible: boolean }) {
@@ -60,6 +68,26 @@ export function ClipReviewsPanel({ channelId, visible }: { channelId: string | n
   const [confirm, setConfirm] = useState<Confirm>(null);
   const [comment, setComment] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
+  const [openGroups, setOpenGroups] = useState<ReadonlySet<Exclude<ClipStatus, "pending">>>(() => new Set());
+  useEffect(() => {
+    try {
+      setOpenGroups(openGroupsFrom(window.localStorage.getItem(OPEN_GROUPS_KEY)));
+    } catch {
+      // storage unavailable: everything stays folded
+    }
+  }, []);
+  const toggleGroup = (status: Exclude<ClipStatus, "pending">) =>
+    setOpenGroups((current) => {
+      const next = new Set(current);
+      if (next.has(status)) next.delete(status);
+      else next.add(status);
+      try {
+        window.localStorage.setItem(OPEN_GROUPS_KEY, JSON.stringify([...next]));
+      } catch {
+        // not remembered on this browser
+      }
+      return next;
+    });
 
   const base = channelId ? `/api/channels/${encodeURIComponent(channelId)}/clip-reviews` : null;
   // BL-246: the files on the answer being written (one answer at a time: the row's confirmation).
@@ -140,7 +168,7 @@ export function ClipReviewsPanel({ channelId, visible }: { channelId: string | n
   if (!channelId) return null;
 
   const waitingScenes = scenes.filter((scene) => scene.waiting);
-  const answeredScenes = scenes.filter((scene) => !scene.waiting);
+  const answeredGroups = answeredGroupsOf(scenes);
   const toggle = (key: string) =>
     setOpen((current) => {
       const next = new Set(current);
@@ -325,10 +353,29 @@ export function ClipReviewsPanel({ channelId, visible }: { channelId: string | n
         <>
           <p className={`text-sm font-medium ${waitingScenes.length > 0 ? "text-amber-300" : "text-zinc-400"}`}>{waitingScenes.length > 0 ? t("clipReviews.waiting", { count: waitingScenes.length }) : t("clipReviews.noneWaiting")}</p>
           {waitingScenes.length > 0 && <ul className="space-y-2">{waitingScenes.map((scene) => renderRow(scene.latest.clip, scene.latest.version, scene))}</ul>}
-          {answeredScenes.length > 0 && (
+          {answeredGroups.length > 0 && (
             <div className="space-y-2">
               <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">{t("clipReviews.decidedHeading")}</h3>
-              <ul className="space-y-1.5">{answeredScenes.map((scene) => renderRow(scene.latest.clip, scene.latest.version, scene))}</ul>
+              {answeredGroups.map((group) => {
+                const groupOpen = openGroups.has(group.status);
+                return (
+                  <div key={group.status} className="space-y-1.5">
+                    <button
+                      type="button"
+                      onClick={() => toggleGroup(group.status)}
+                      aria-expanded={groupOpen}
+                      title={t(groupOpen ? "clipReviews.group.hide" : "clipReviews.group.show")}
+                      className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm text-zinc-300 hover:bg-zinc-800/40"
+                    >
+                      <span aria-hidden className="text-zinc-500">
+                        {groupOpen ? "▾" : "▸"}
+                      </span>
+                      <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ${STATUS_STYLES[group.status]}`}>{t(GROUP_KEYS[group.status], { count: formatNumber(group.scenes.length) })}</span>
+                    </button>
+                    {groupOpen && <ul className="space-y-1.5">{group.scenes.map((scene) => renderRow(scene.latest.clip, scene.latest.version, scene))}</ul>}
+                  </div>
+                );
+              })}
             </div>
           )}
         </>
