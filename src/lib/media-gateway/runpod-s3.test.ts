@@ -314,8 +314,29 @@ test("headObject takes the LIST size of exactly that key when HEAD gives none; a
   const client = createRunpodS3Client(CONFIG, { fetchImpl, authorize: noAuth });
   assert.deepEqual(await client.headObject(key), { size: 7346, etag: '"j"', lastModified: "2026-10-27T18:01:38.000Z" });
   assert.equal(calls[1].url.searchParams.get("prefix"), key);
+  assert.equal(calls[1].url.searchParams.get("delimiter"), "/");
   // the listing shows only a longer key: the object itself is still not visible -> 0, never the neighbour's 5 bytes
   assert.deepEqual((await client.headObject("exchange/job1/other.json"))?.size, 0);
+});
+
+// 2026-11-11: a 0-byte marker (`.ready`) in a folder of ~20 000 files: a LIST without a delimiter walked the whole folder on
+// RunPod and timed out. ListObjectsV2 with prefix = the key and delimiter "/" lists the key itself under Contents (nothing
+// follows the prefix, so there is no delimiter to roll up at) and rolls deeper keys into CommonPrefixes.
+test("headObject of a 0-byte marker lists with delimiter '/' and reports it present with size 0", async () => {
+  const key = "ytm/runtimes/comfy-x/.ready";
+  const listXml = `<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>${key}</Key><ETag>"d41d8cd98f00b204e9800998ecf8427e"</ETag><Size>0</Size></Contents></ListBucketResult>`;
+  const { fetchImpl, calls } = fakeFetch((call) =>
+    call.init.method === "HEAD"
+      ? new Response(null, { status: 200, headers: { "content-length": "0", etag: '"d41d8cd98f00b204e9800998ecf8427e"' } })
+      : new Response(listXml, { status: 200, headers: { "content-type": "application/xml" } })
+  );
+  const client = createRunpodS3Client(CONFIG, { fetchImpl, authorize: noAuth });
+  const head = await client.headObject(key);
+  assert.notEqual(head, null);
+  assert.equal(head?.size, 0);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].url.searchParams.get("prefix"), key);
+  assert.equal(calls[1].url.searchParams.get("delimiter"), "/");
 });
 
 test("headObject with a Content-Length makes no LIST call", async () => {
