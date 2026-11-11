@@ -220,7 +220,11 @@ export function createRunpodS3Client(config: RunpodS3Config, deps: { fetchImpl?:
       // 2026-10-27 (See-through jobs c6a46cfa/a3dcf0a4): RunPod's HEAD answered a 7 KB .json with no usable Content-Length while
       // LIST showed its size, so the puller read 0 bytes = "not there yet" forever. An object with no size on HEAD takes the
       // size LIST reports for exactly this key; a key LIST does not show keeps the HEAD answer (0 = still "not visible yet").
-      const listed = (await listObjects({ prefix: key })).objects.find((o) => o.key === key);
+      // 2026-11-11 (Operator, factory_media_list_runtimes / start_session timing out): the LIST goes with delimiter "/". Without
+      // it RunPod walks everything under the prefix's folder -- for a runtime's 0-byte `.ready` that is its ~20 000-file venv, and
+      // the LIST outlived the 60 s timeout (with the delimiter: ~1 s). The key itself has no "/" past the prefix, so it is still
+      // listed as an object (ListObjectsV2: only keys with a delimiter after the prefix roll up into CommonPrefixes).
+      const listed = (await listObjects({ prefix: key, delimiter: "/" })).objects.find((o) => o.key === key);
       return {
         size: listed?.size ?? 0,
         etag: response.headers.get("etag") ?? listed?.etag ?? null,
