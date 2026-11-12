@@ -46,7 +46,7 @@ if defined PORT_BUSY (
 
 if not exist "node_modules" (
   echo Installing dependencies ^(first run only, this can take a few minutes^)...
-  call npm install
+  call npm ci
   if errorlevel 1 goto :fail
 )
 
@@ -83,7 +83,7 @@ if defined CURRENT_REV (
 
 if defined NEED_BUILD (
   echo Installing dependencies and building the application ^(no build found, or the checked-out commit changed since the last build^)...
-  call npm install
+  call npm ci
   if errorlevel 1 goto :fail
   call npm run build
   if errorlevel 1 goto :fail
