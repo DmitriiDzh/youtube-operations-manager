@@ -20,7 +20,7 @@ call "%~dp0stop.bat" /noconfirm
 if errorlevel 1 goto :fail
 
 echo Installing dependencies for this version...
-call npm install
+call npm ci
 if errorlevel 1 goto :fail
 
 echo Rebuilding...

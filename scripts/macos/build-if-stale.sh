@@ -63,7 +63,9 @@ fi
 if [ -n "$NEED_BUILD" ]; then
   echo "Installing dependencies and building the application (no complete build of the checked-out version found)..."
   rm -f "$BUILD_MARKER"
-  npm install
+  # npm ci: exactly the committed package-lock.json (fails if it and package.json disagree), under .npmrc's
+  # supply-chain guards (only allowScripts packages run install scripts; owner TG 4166, 2026-11-12).
+  npm ci
   # NODE_TEST_CONTEXT=1 keeps `next build` off the real app-data database: its page-data step loads the app, and
   # without the guard that initializes -- and migrates -- the real database with whatever sources are checked out
   # (RISK-63's root cause). Every route is dynamic, so nothing is prerendered from data; the real migration happens
