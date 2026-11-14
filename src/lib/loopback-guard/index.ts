@@ -16,7 +16,25 @@ function hostnameOfHostHeader(host: string): string | null {
   return match ? match[1].toLowerCase() : null;
 }
 
+/**
+ * BL-251 (REMOTE_ACCESS_PLAN.md AC-RA-2): headers a reverse proxy (tailscale serve) adds. A request carrying any of them came
+ * through a proxy from another device -- never "from this computer", whatever its Host says.
+ */
+export const PROXY_HEADERS = ["x-forwarded-for", "x-forwarded-host", "forwarded", "tailscale-user-login", "tailscale-user-name"] as const;
+
+export function hasProxyHeaders(headers: Headers): boolean {
+  return PROXY_HEADERS.some((name) => headers.get(name) !== null);
+}
+
+/** BL-251 AC-RA-1: REMOTE = Host is not a loopback name, or a proxy header is present. */
+export function isRemoteRequest(headers: Headers): boolean {
+  const hostname = hostnameOfHostHeader(headers.get("host") ?? "");
+  if (!hostname || !LOOPBACK_HOSTNAMES.has(hostname)) return true;
+  return hasProxyHeaders(headers);
+}
+
 export function isLoopbackRequest(headers: Headers): boolean {
+  if (hasProxyHeaders(headers)) return false; // BL-251: forwarded by tailscale serve (or any proxy) -> not this computer
   const host = headers.get("host");
   if (!host) return false;
   const hostname = hostnameOfHostHeader(host);

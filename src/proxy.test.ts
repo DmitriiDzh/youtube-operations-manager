@@ -5,20 +5,23 @@ import { proxy } from "./proxy";
 import { rawSqlClient } from "@/lib/db";
 import { acquireOperationLock, releaseOperationLock } from "@/lib/operation-lock";
 
+// A real HTTP request always carries Host (BL-251: a request without one is treated as remote and gated).
+const LOCAL = { host: "localhost:3000" };
+
 function mutatingRequest(pathname: string) {
-  return new NextRequest(new Request(`http://localhost${pathname}`, { method: "POST" }));
+  return new NextRequest(new Request(`http://localhost${pathname}`, { method: "POST", headers: LOCAL }));
 }
 
 function patchRequest(pathname: string) {
-  return new NextRequest(new Request(`http://localhost${pathname}`, { method: "PATCH" }));
+  return new NextRequest(new Request(`http://localhost${pathname}`, { method: "PATCH", headers: LOCAL }));
 }
 
 function putRequest(pathname: string) {
-  return new NextRequest(new Request(`http://localhost${pathname}`, { method: "PUT" }));
+  return new NextRequest(new Request(`http://localhost${pathname}`, { method: "PUT", headers: LOCAL }));
 }
 
 function readRequest(pathname: string) {
-  return new NextRequest(new Request(`http://localhost${pathname}`, { method: "GET" }));
+  return new NextRequest(new Request(`http://localhost${pathname}`, { method: "GET", headers: LOCAL }));
 }
 
 // AC-LOCK-01
@@ -370,7 +373,7 @@ test("proxy gates the decision-engine execute-experiment route like any other re
 test("proxy gates the channel-workspaces PUT route like any other real mutation", async () => {
   await acquireOperationLock(rawSqlClient, "export");
   try {
-    const response = await proxy(new NextRequest(new Request("http://localhost/api/channel-workspaces", { method: "PUT" })));
+    const response = await proxy(new NextRequest(new Request("http://localhost/api/channel-workspaces", { method: "PUT", headers: LOCAL })));
     assert.equal(response.status, 409);
   } finally {
     await releaseOperationLock(rawSqlClient);
@@ -382,7 +385,7 @@ test("proxy gates the channel-workspaces PUT route like any other real mutation"
 test("proxy gates issuing an agent token (POST) like any other real mutation", async () => {
   await acquireOperationLock(rawSqlClient, "export");
   try {
-    const response = await proxy(new NextRequest(new Request("http://localhost/api/agent-tokens", { method: "POST" })));
+    const response = await proxy(new NextRequest(new Request("http://localhost/api/agent-tokens", { method: "POST", headers: LOCAL })));
     assert.equal(response.status, 409);
   } finally {
     await releaseOperationLock(rawSqlClient);
@@ -419,7 +422,7 @@ test("AC-H4: stop switches are exempt from recovery mode only; the operation loc
     ["POST", "/api/channels/UC1/weekly-build/start"],
     ["POST", "/api/channels/UC1/weekly-build/stop/extra"],
   ];
-  const call = (method: string, pathname: string) => proxy(new NextRequest(new Request(`http://localhost${pathname}`, { method })));
+  const call = (method: string, pathname: string) => proxy(new NextRequest(new Request(`http://localhost${pathname}`, { method, headers: LOCAL })));
 
   await acquireOperationLock(rawSqlClient, "import");
   try {
@@ -457,7 +460,7 @@ test("AC-H4: stop switches are exempt from recovery mode only; the operation loc
 test("proxy gates the market-assignments PUT route like any other real mutation", async () => {
   await acquireOperationLock(rawSqlClient, "export");
   try {
-    const response = await proxy(new NextRequest(new Request("http://localhost/api/market-assignments", { method: "PUT" })));
+    const response = await proxy(new NextRequest(new Request("http://localhost/api/market-assignments", { method: "PUT", headers: LOCAL })));
     assert.equal(response.status, 409);
   } finally {
     await releaseOperationLock(rawSqlClient);

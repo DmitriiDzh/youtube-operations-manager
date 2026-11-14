@@ -5,6 +5,7 @@ import { assertDeviceAvailableForMutation, assertNoOperationLock } from "@/lib/d
 import { OperationLockError } from "@/lib/operation-lock";
 import { RecoveryModeError } from "@/lib/device-mutation-gate";
 import { recordActivity } from "@/lib/idle-shutdown";
+import { isRemoteRequest } from "@/lib/loopback-guard";
 
 // Next.js 16 renamed `middleware.ts` to `proxy.ts` (functionally identical) --
 // node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/proxy.md. Proxy
@@ -80,15 +81,69 @@ function isExemptReadOnlyPath(pathname: string): boolean {
   return EXEMPT_READ_ONLY_PATH_SUFFIXES.some((suffix) => pathname.endsWith(suffix));
 }
 
-export async function proxy(request: NextRequest) {
-  // Every `/api/*` request (this function's own matcher below) counts as real use of this
-  // server process, regardless of method or which specific route -- see idle-shutdown.ts's own
-  // doc comment for why this single choke point is sufficient (no separate heartbeat needed).
-  recordActivity();
+// BL-251 (docs/roadmap/plans/REMOTE_ACCESS_PLAN.md, ADR 0067): what a request from the owner's other devices (through
+// `tailscale serve`) may reach. Checked FIRST, before every exemption below. Mac-only: every agent endpoint, the device
+// handoff / sync, moving cloud keys, agent tokens, Google sign-in and cloud connection (their callbacks are localhost), the
+// remote-access settings themselves and the operation lock.
+const REMOTE_BLOCKED_PREFIXES = [
+  "/api/mcp",
+  "/api/device-handoff",
+  "/api/device-sync",
+  "/api/cloud-credentials",
+  "/api/agent-tokens",
+  "/api/factory-agent-token",
+  "/api/producer-agent-token",
+  "/api/cloud-connection",
+  "/api/operation-lock",
+  "/api/auth/signin/google",
+  "/api/auth/callback/google",
+  "/api/auth/callback/channel-connections",
+];
 
+function blocked(status: number, code: string, message: string, api: boolean) {
+  return api ? NextResponse.json({ error: code, message }, { status }) : new NextResponse(message, { status, headers: { "content-type": "text/plain; charset=utf-8" } });
+}
+
+async function remoteGate(request: NextRequest): Promise<NextResponse | null> {
+  const { pathname } = request.nextUrl;
+  const api = pathname.startsWith("/api/");
+  const { getRemoteAccess, isSameOriginMutation } = await import("@/lib/remote-access");
+  const remote = getRemoteAccess();
+  const state = await remote.state();
+  if (!state.enabled) return blocked(403, "remote_access_disabled", "Access from other devices is turned off on the Mac.", api);
+  const isMacOnly = REMOTE_BLOCKED_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`)) ||
+    (pathname === "/api/remote-access" && request.method !== "GET");
+  if (isMacOnly) return blocked(403, "remote_access_mac_only", "This works only on the Mac itself.", api);
+  if (MUTATING_METHODS.has(request.method) && !isSameOriginMutation(request.headers)) {
+    return blocked(403, "remote_access_bad_origin", "Refused: the request did not come from this app's own page.", api);
+  }
+  // A phone session must still be current: the same epoch (password change / switch-off end it) and the pinned Tailscale login.
+  const { getToken } = await import("next-auth/jwt");
+  const token = await getToken({ req: request, secret: process.env.NEXTAUTH_SECRET }).catch(() => null);
+  if (token) {
+    const login = request.headers.get("tailscale-user-login");
+    const valid = token.remote === true && (await remote.sessionValid(token.remoteEpoch, login));
+    if (!valid) {
+      if (pathname === "/api/auth/session") return NextResponse.json({}); // the page then shows the password form
+      if (api && !pathname.startsWith("/api/auth/")) return blocked(401, "unauthorized", "Sign in again with the password.", true);
+    }
+  }
+  return null;
+}
+
+export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
+  if (isRemoteRequest(request.headers)) {
+    const refused = await remoteGate(request);
+    if (refused) return refused;
+  }
+
   if (!pathname.startsWith("/api/")) return NextResponse.next();
+
+  // Every `/api/*` request counts as real use of this server process, regardless of method or which specific route -- see
+  // idle-shutdown.ts's own doc comment for why this single choke point is sufficient (no separate heartbeat needed).
+  recordActivity();
   if (!MUTATING_METHODS.has(request.method)) return NextResponse.next();
   if (pathname === "/api/mcp" || pathname.startsWith("/api/mcp/")) {
     return NextResponse.next();
@@ -129,5 +184,6 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/api/:path*"],
+  // BL-251: pages too (a remote request is gated before anything renders); static assets are not.
+  matcher: ["/api/:path*", "/((?!_next/static|_next/image|favicon.ico).*)"],
 };
