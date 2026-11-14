@@ -2,7 +2,7 @@ import { parseWithSchema } from "@/lib/shared-domain";
 import type { PublishingPlanDecision, PublishingPlanMeta, PublishingPlanPackageFingerprint, PublishingPlanSlot, PublishingPlansSnapshot } from "@/lib/sync-gateway";
 import { isValidIanaTimezone } from "@/lib/zoned-time";
 import { isDeletedOnYoutube } from "@/lib/shared-video-presence";
-import { DEFAULT_APPROVAL_STAGE, DomainError, PUBLISHING_PLAN_LIMITS, type PlanSaveRefusal, type PlanSlotDecision, type PlanProgressResult, type PlanSlotProgress, type PlanSummary, type PlanView, type PublishingPlanActor, type PublishingPlanApprovalStage, type PublishingPlansPorts, type ReplacedSlot } from "./contracts";
+import { DEFAULT_APPROVAL_STAGE, DomainError, PUBLISHING_PLAN_LIMITS, type PlanSaveRefusal, type PlanSlotDecision, type PlanProgressResult, type PlanSlotProgress, type PlanSummary, type PlanView, type PublishingPlanActor, type PublishingPlanApprovalStage, type PublishingPlansPorts, type ReplacedSlot, type SocialSlotState, SOCIAL_LOOKBACK_MS } from "./contracts";
 import { addDays, approvalStandsOn, contentHashOf, contentOf, decisionsForStage, decisionStateOf, instantOf, isCalendarDate, isMonday, planViewOf, slotViewOf, standingPackageApprovalOf, standingVetoOf, decisionOrder, lastApprovedPackageOf } from "./model";
 import { approvalStageInputSchema, getPlanInputSchema, listPlansInputSchema, ownerDecisionInputSchema, PLAN_LIST_DEFAULT_LIMIT, savePlanInputSchema } from "./schemas";
 
@@ -524,11 +524,48 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
     return decisions;
   }
 
+  /**
+   * BL-252 stage 2 (ADR 0068 amendment 1): what cross-posting reads -- the slots around now (from 36 h ago on) with their standing
+   * package approval, kept as separate facts (approved / vetoed / released), because `slotDecisions` turns a released slot `pending`
+   * while a social post goes out AT and after the slot's time. Fail closed: only the `packaged` stage counts (a slot-stage approval
+   * names no package); an unreadable package scan approves nothing; a slot id in two plans and two approvals of one video number
+   * approve nothing. Read-only; never a decision.
+   */
+  async function socialSlotStates(channelId: string): Promise<SocialSlotState[]> {
+    const snapshot = await ports.store.read(channelId);
+    if (stageOf(snapshot) !== "packaged") return [];
+    const now = ports.now();
+    const from = now.getTime() - SOCIAL_LOOKBACK_MS;
+    const ids = new Set<string>();
+    for (const meta of Object.values(snapshot.plans)) {
+      const bare = planViewOf({ stage: "packaged", channelId, meta, slots: slotsOf(snapshot, meta.weekStart), decisions: decisionsOf(snapshot, meta.weekStart), progress: new Map(), now });
+      for (const slot of bare.slots) if (Date.parse(slot.publishAtUtc) >= from) ids.add(slot.slotId);
+    }
+    if (ids.size === 0 || !ports.progress) return [];
+    const read = await ports.progress(channelId, "", [...ids].sort()).catch((): PlanProgressResult => ({ progress: new Map(), packagesUnavailable: true }));
+    if (read.packagesUnavailable) return [];
+    const out: SocialSlotState[] = [];
+    const seen = new Map<string, number>();
+    for (const meta of Object.values(snapshot.plans)) {
+      const view = planViewOf({ stage: "packaged", channelId, meta, slots: slotsOf(snapshot, meta.weekStart), decisions: decisionsOf(snapshot, meta.weekStart), progress: read.progress, now });
+      for (const slot of view.slots) {
+        if (!ids.has(slot.slotId)) continue;
+        seen.set(slot.slotId, (seen.get(slot.slotId) ?? 0) + 1);
+        const approved = slot.approval === "approved" && !!slot.fingerprint && !slot.vetoed;
+        out.push({ slotId: slot.slotId, weekStart: meta.weekStart, timeZone: meta.timeZone, publishAtUtc: slot.publishAtUtc, released: slot.released, vetoed: slot.vetoed !== null, approved, package: approved && slot.fingerprint ? { ...slot.fingerprint } : null });
+      }
+    }
+    const videos = new Map<string, number>();
+    for (const s of out) if (s.approved && s.package) videos.set(s.package.video, (videos.get(s.package.video) ?? 0) + 1);
+    return out.map((s) => ((seen.get(s.slotId) ?? 0) > 1 || (s.package && (videos.get(s.package.video) ?? 0) > 1) ? { ...s, approved: false, package: null } : s));
+  }
+
   return {
     save,
     get,
     list: agentList,
     slotDecisions,
+    socialSlotStates,
     ownerList: async (channelId: string): Promise<{ plans: PlanSummary[]; waiting: number; approvalStage: PublishingPlanApprovalStage }> => {
       const plans = await list(channelId);
       const approvalStage = stageOf(await ports.store.read(channelId));
@@ -560,6 +597,12 @@ export function ownerSurface(service: PublishingPlansOwnerSurface): PublishingPl
     decide: (channelId, weekStart, input, userId) => service.decide(channelId, weekStart, input, userId),
     setApprovalStage: (channelId, input, userId) => service.setApprovalStage(channelId, input, userId),
   };
+}
+
+/** BL-252 stage 2: what cross-posting reads (ADR 0068 amendment 1) -- never a save or a decision. */
+export type PublishingPlansSocialSurface = Pick<PublishingPlansService, "socialSlotStates">;
+export function socialSurface(service: PublishingPlansSocialSurface): PublishingPlansSocialSurface {
+  return { socialSlotStates: (channelId) => service.socialSlotStates(channelId) };
 }
 
 /** BL-225 stage 3: what the uploads read (the slots' decisions) -- never a save or a decision. */
