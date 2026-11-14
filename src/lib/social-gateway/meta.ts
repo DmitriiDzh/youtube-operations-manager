@@ -24,6 +24,16 @@ export const META_SCOPES = [
 
 const TIMEOUT_MS = 20_000;
 
+/** What a stored Page token can do right now (Meta's own answer): validity, granted scopes and the accounts it reaches. */
+export type MetaTokenInspection = {
+  valid: boolean;
+  scopes: string[];
+  /** Unix ms; null = does not expire on a schedule (a Page token from a long-lived user token). */
+  expiresAt: number | null;
+  page: { pageId: string; pageName: string } | null;
+  instagram: { igUserId: string; username: string | null } | null;
+};
+
 export type MetaPage = {
   pageId: string;
   pageName: string;
@@ -62,6 +72,34 @@ export function createMetaClient(args: { fetchImpl?: Fetch } = {}) {
   }
 
   return {
+    /**
+     * BL-252 stage 2 (AC-XP-8): the identity read before anything is posted -- `debug_token` (with the app token, so the Page token
+     * is never sent as the caller) gives validity and scopes; `/{page-id}` with the Page token gives the Page and its linked
+     * Instagram account. Read-only; tokens travel in the query string as Meta documents, and never appear in an error.
+     */
+    async inspectPageToken(input: { appId: string; appSecret: string; pageId: string; pageToken: string }): Promise<MetaTokenInspection> {
+      const d = new URL(`${META_GRAPH_BASE}/debug_token`);
+      d.searchParams.set("input_token", input.pageToken);
+      d.searchParams.set("access_token", `${input.appId}|${input.appSecret}`);
+      const debug = ((await getJson(d, "debug_token")).data ?? {}) as Record<string, unknown>;
+      const valid = debug.is_valid === true;
+      const scopes = Array.isArray(debug.scopes) ? debug.scopes.filter((s): s is string => typeof s === "string") : [];
+      const exp = typeof debug.expires_at === "number" && debug.expires_at > 0 ? debug.expires_at * 1000 : null;
+      if (!valid) return { valid: false, scopes, expiresAt: exp, page: null, instagram: null };
+      const u = new URL(`${META_GRAPH_BASE}/${encodeURIComponent(input.pageId)}`);
+      u.searchParams.set("fields", "id,name,instagram_business_account{id,username}");
+      u.searchParams.set("access_token", input.pageToken);
+      const p = await getJson(u, "page");
+      const ig = (p.instagram_business_account ?? null) as Record<string, unknown> | null;
+      return {
+        valid: true,
+        scopes,
+        expiresAt: exp,
+        page: typeof p.id === "string" ? { pageId: p.id, pageName: typeof p.name === "string" ? p.name : p.id } : null,
+        instagram: ig && typeof ig.id === "string" ? { igUserId: ig.id, username: typeof ig.username === "string" ? ig.username : null } : null,
+      };
+    },
+
     /** The consent dialog the owner's browser opens (Facebook Login for Business). */
     authorizeUrl(input: { appId: string; redirectUri: string; state: string }): string {
       const u = new URL(META_DIALOG_BASE);

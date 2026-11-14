@@ -86,3 +86,24 @@ test("errors: OAuth error 190 -> social_token_invalid, code 4 -> social_rate_lim
   }) as unknown as typeof fetch;
   await assert.rejects(createMetaClient({ fetchImpl: failing }).listPages("T"), (e: unknown) => e instanceof DomainError && e.code === "social_unavailable");
 });
+
+test("inspectPageToken: debug_token with the APP token (never the Page token as caller), then the Page with its Instagram", async () => {
+  const { calls, impl } = fakeFetch([
+    { status: 200, body: { data: { is_valid: true, scopes: ["pages_manage_posts", "instagram_content_publish"], expires_at: 0 } } },
+    { status: 200, body: { id: "111", name: "WWE", instagram_business_account: { id: "1784", username: "w" } } },
+  ]);
+  const out = await createMetaClient({ fetchImpl: impl }).inspectPageToken({ appId: "1", appSecret: "S", pageId: "111", pageToken: "PT" });
+  assert.deepEqual(out, { valid: true, scopes: ["pages_manage_posts", "instagram_content_publish"], expiresAt: null, page: { pageId: "111", pageName: "WWE" }, instagram: { igUserId: "1784", username: "w" } });
+  assert.match(calls[0].url.pathname, /\/debug_token$/);
+  assert.equal(calls[0].url.searchParams.get("input_token"), "PT");
+  assert.equal(calls[0].url.searchParams.get("access_token"), "1|S");
+  assert.match(calls[1].url.pathname, /\/111$/);
+  assert.equal(calls[1].url.searchParams.get("access_token"), "PT");
+});
+
+test("inspectPageToken: an invalid token stops after debug_token (no Page read)", async () => {
+  const { calls, impl } = fakeFetch([{ status: 200, body: { data: { is_valid: false, scopes: [] } } }]);
+  const out = await createMetaClient({ fetchImpl: impl }).inspectPageToken({ appId: "1", appSecret: "S", pageId: "111", pageToken: "PT" });
+  assert.equal(out.valid, false);
+  assert.equal(calls.length, 1);
+});

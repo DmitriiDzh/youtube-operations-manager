@@ -26,6 +26,14 @@ type Status = {
   callbackPath: string;
 };
 type Channel = { channelId: string; title: string };
+type Check = {
+  channelId: string;
+  ok: boolean;
+  problems: string[];
+  missingScopes: string[];
+  facebook: { name: string | null } | null;
+  instagram: { username: string | null } | null;
+};
 type Pick = {
   channelId: string;
   pages: {
@@ -88,6 +96,7 @@ export function SocialAccountsSettings() {
   const [appId, setAppId] = useState("");
   const [appSecret, setAppSecret] = useState("");
   const [confirmClear, setConfirmClear] = useState(false);
+  const [checks, setChecks] = useState<Record<string, Check>>({});
   const [confirmDisconnect, setConfirmDisconnect] = useState<{
     channelId: string;
     network: Network;
@@ -226,6 +235,17 @@ export function SocialAccountsSettings() {
       setPick(null);
       setMessage(t("social.connected"));
       await load();
+    });
+
+  const check = (channelId: string) =>
+    run(async () => {
+      const result = await requestJson<Check>(
+        `/api/social/meta/check?channelId=${encodeURIComponent(channelId)}`,
+        undefined,
+        t("social.check.failed"),
+        t,
+      );
+      setChecks((prev) => ({ ...prev, [channelId]: result }));
     });
 
   const disconnect = (target: { channelId: string; network: Network }) =>
@@ -395,15 +415,48 @@ export function SocialAccountsSettings() {
                 <span className="text-sm font-medium text-zinc-100">
                   {channel.title}
                 </span>
-                <button
-                  type="button"
-                  className={buttonClass}
-                  onClick={() => connect(channel.channelId)}
-                  disabled={busy || !status.metaApp.configured || !onHttps}
-                >
-                  {own.length ? t("social.reconnect") : t("social.connect")}
-                </button>
+                <div className="flex flex-wrap gap-2">
+                  {own.length > 0 && (
+                    <button
+                      type="button"
+                      className={buttonClass}
+                      onClick={() => check(channel.channelId)}
+                      disabled={busy}
+                    >
+                      {t("social.check.button")}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className={buttonClass}
+                    onClick={() => connect(channel.channelId)}
+                    disabled={busy || !status.metaApp.configured || !onHttps}
+                  >
+                    {own.length ? t("social.reconnect") : t("social.connect")}
+                  </button>
+                </div>
               </div>
+              {checks[channel.channelId] &&
+                (checks[channel.channelId].ok ? (
+                  <p className="text-xs text-emerald-400">
+                    {t("social.check.ok")}
+                  </p>
+                ) : (
+                  <ul className="space-y-0.5 text-xs text-amber-400">
+                    {checks[channel.channelId].problems.map((p) => (
+                      <li key={p}>
+                        {p === "scope_missing"
+                          ? t("social.check.scope_missing", {
+                              scopes:
+                                checks[channel.channelId].missingScopes.join(
+                                  ", ",
+                                ),
+                            })
+                          : t(`social.check.${p}` as UiTextKey)}
+                      </li>
+                    ))}
+                  </ul>
+                ))}
               {own.length === 0 ? (
                 <p className="text-xs text-zinc-500">
                   {t("social.notConnected")}

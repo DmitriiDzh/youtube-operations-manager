@@ -32,4 +32,12 @@ export const social = {
   "social.connected": "Connected.",
   "social.error.consent_cancelled": "The connection was cancelled in the Meta window.",
   "social.error.generic": "The connection failed ({code}).",
+  "social.check.button": "Check",
+  "social.check.ok": "Checked with Meta: the token is valid, the Page and Instagram match, every posting permission is granted.",
+  "social.check.failed": "The check with Meta failed.",
+  "social.check.token_invalid": "Meta says the token is no longer valid: connect again.",
+  "social.check.scope_missing": "Permissions not granted: {scopes}. Connect again and allow them in the Meta window.",
+  "social.check.page_mismatch": "The token now reaches another Page than the one stored: connect again.",
+  "social.check.instagram_mismatch": "Another Instagram account is linked to the Page now: connect again.",
+  "social.check.instagram_unlinked": "No Instagram account is linked to the Page any more: link it in the Page settings, then connect again.",
 } as const;

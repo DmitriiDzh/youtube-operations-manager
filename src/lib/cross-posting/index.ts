@@ -18,7 +18,7 @@ export function createCrossPostingCore(): CrossPostingCore {
     g[CORE_KEY] = createCrossPostingServices({
       store: createCrossPostingStore(),
       appSecret: secrets.slot("meta_app"),
-      sealer: { seal: (plaintext) => secrets.seal(plaintext) },
+      sealer: { seal: (plaintext) => secrets.seal(plaintext), open: (payload) => secrets.open(payload) },
       meta: createMetaClient(),
       now: () => Date.now(),
       randomId: () => randomBytes(24).toString("base64url"),

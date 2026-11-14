@@ -1,7 +1,7 @@
 import type { DeviceSecretSlot } from "@/lib/device-secrets";
 import type { EncryptedPayload } from "@/lib/shared-crypto";
 import type { MetaClient, MetaPage } from "@/lib/social-gateway";
-import { CONNECT_STATE_TTL_MS, DomainError, PENDING_PICK_TTL_MS, notConfigured, type MetaAppStatus, type PendingPageView, type SocialAccountRow, type SocialAccountView, type SocialNetwork } from "./contracts";
+import { CONNECT_STATE_TTL_MS, DomainError, META_POSTING_SCOPES, type AccountCheck, type AccountCheckProblem, PENDING_PICK_TTL_MS, notConfigured, type MetaAppStatus, type PendingPageView, type SocialAccountRow, type SocialAccountView, type SocialNetwork } from "./contracts";
 import { disconnectInputSchema, parseWithSchema, selectPageInputSchema, setMetaAppInputSchema, startConnectInputSchema } from "./schemas";
 
 // ---------------------------------------------------------------------------
@@ -25,7 +25,7 @@ export type CrossPostingStore = {
 export type CrossPostingDeps = {
   store: CrossPostingStore;
   appSecret: Pick<DeviceSecretSlot, "read" | "write" | "clear" | "info">;
-  sealer: { seal(plaintext: string): Promise<EncryptedPayload | null> };
+  sealer: { seal(plaintext: string): Promise<EncryptedPayload | null>; open(payload: EncryptedPayload): Promise<string | null> };
   meta: MetaClient;
   now: () => number;
   randomId: () => string;
@@ -58,6 +58,18 @@ export function createCrossPostingServices(deps: CrossPostingDeps) {
       // fall through
     }
     throw notConfigured();
+  }
+
+  async function openToken(sealedJson: string): Promise<string> {
+    let payload: EncryptedPayload | null = null;
+    try {
+      payload = JSON.parse(sealedJson) as EncryptedPayload;
+    } catch {
+      payload = null;
+    }
+    const token = payload ? await deps.sealer.open(payload) : null;
+    if (!token) throw new DomainError({ code: "device_secret_unreadable", message: "The stored token does not open with this computer's key; connect the account again." });
+    return token;
   }
 
   async function requireChannel(channelId: string) {
@@ -133,6 +145,40 @@ export function createCrossPostingServices(deps: CrossPostingDeps) {
       if (page.instagram) await deps.store.upsert({ ...base, network: "instagram", externalId: page.instagram.igUserId, displayName: page.instagram.username ?? page.pageName, username: page.instagram.username });
       else await deps.store.remove(pick.channelId, "instagram");
       return (await deps.store.list(pick.channelId)).map(view);
+    },
+
+    /**
+     * AC-XP-8 identity read: asks Meta what the stored Page token is (valid? scopes?) and which Page / Instagram account it reaches,
+     * and compares that with what this channel stored. Read-only; the token is opened here and never leaves the module.
+     */
+    async checkAccounts(channelId: string): Promise<AccountCheck> {
+      const rows = await deps.store.list(channelId);
+      const fb = rows.find((r) => r.network === "facebook");
+      if (!fb || !fb.pageId) throw new DomainError({ code: "not_found", message: `Channel ${channelId} has no connected Facebook Page.`, details: { channelId } });
+      const ig = rows.find((r) => r.network === "instagram") ?? null;
+      const app = await readApp();
+      const token = await openToken(fb.tokenSealed);
+      const live = await deps.meta.inspectPageToken({ appId: app.appId, appSecret: app.appSecret, pageId: fb.pageId, pageToken: token });
+      const problems: AccountCheckProblem[] = [];
+      const missingScopes = META_POSTING_SCOPES.filter((s) => !live.scopes.includes(s));
+      if (!live.valid) problems.push("token_invalid");
+      else {
+        if (missingScopes.length) problems.push("scope_missing");
+        if (live.page?.pageId !== fb.externalId) problems.push("page_mismatch");
+        if (ig && !live.instagram) problems.push("instagram_unlinked");
+        else if (ig && live.instagram && live.instagram.igUserId !== ig.externalId) problems.push("instagram_mismatch");
+      }
+      return {
+        channelId,
+        checkedAt: deps.now(),
+        ok: problems.length === 0,
+        problems,
+        missingScopes: live.valid ? missingScopes : [],
+        scopes: live.scopes,
+        tokenExpiresAt: live.expiresAt,
+        facebook: { stored: fb.externalId, live: live.page?.pageId ?? null, name: live.page?.pageName ?? null },
+        instagram: ig || live.instagram ? { stored: ig?.externalId ?? null, live: live.instagram?.igUserId ?? null, username: live.instagram?.username ?? null } : null,
+      };
     },
 
     async listAccounts(channelId: string | null): Promise<SocialAccountView[]> {

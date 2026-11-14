@@ -34,4 +34,12 @@ export const social: Record<keyof typeof en, string> = {
   "social.connected": "Подключено.",
   "social.error.consent_cancelled": "Подключение отменено в окне Meta.",
   "social.error.generic": "Подключить не удалось ({code}).",
+  "social.check.button": "Проверить",
+  "social.check.ok": "Проверено в Meta: токен действует, страница и Instagram совпадают, все разрешения на публикацию выданы.",
+  "social.check.failed": "Проверка в Meta не удалась.",
+  "social.check.token_invalid": "Meta сообщает, что токен больше не действует: подключите заново.",
+  "social.check.scope_missing": "Не выданы разрешения: {scopes}. Подключите заново и разрешите их в окне Meta.",
+  "social.check.page_mismatch": "Токен теперь ведёт к другой странице, чем сохранена: подключите заново.",
+  "social.check.instagram_mismatch": "К странице теперь привязан другой Instagram: подключите заново.",
+  "social.check.instagram_unlinked": "К странице больше не привязан Instagram: привяжите его в настройках страницы и подключите заново.",
 };
