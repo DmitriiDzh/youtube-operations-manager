@@ -1391,7 +1391,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 
 ## 4. Статус компонентов
 
-### 2.9bi Доступ с других устройств владельца через Tailscale (BL-251, ADR 0067, `docs/roadmap/plans/REMOTE_ACCESS_PLAN.md`) — **IMPLEMENTED на ветке `feature/bl-251-remote-access`, не влито**
+### 2.9bi Доступ с других устройств владельца через Tailscale (BL-251, ADR 0067, `docs/roadmap/plans/REMOTE_ACCESS_PLAN.md`) — **IMPLEMENTED, влито в `dev` (df9c1189), live 14.11; статусы оболочки с телефона — f88cde6f (ADR 0067 поправка 1)**
 - Сервер по-прежнему слушает 127.0.0.1; `tailscale serve` (`scripts/macos/remote-access.sh enable|disable|status`) отдаёт его в
   личную сеть владельца по HTTPS. Никакого LAN и Funnel.
 - `src/lib/loopback-guard`: запрос с заголовками прокси (`X-Forwarded-*`, `Forwarded`, `Tailscale-User-*`) — всегда удалённый,
