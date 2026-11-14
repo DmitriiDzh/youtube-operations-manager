@@ -9,7 +9,7 @@ import { LoadingIndicator } from "./operation-progress";
 import { useT } from "./ui-text-provider";
 
 // BL-252 (ADR 0068, CROSS_POSTING_PLAN.md) stage 1: Settings → Channels → Social networks. The Meta app (App ID + App Secret,
-// entered on the Mac only, never shown again), the two redirect addresses to enter in the Meta app, and per channel: connect its
+// entered on the Mac only, never shown again), the redirect address to enter in the Meta app, and per channel: connect its
 // Facebook Page + Instagram professional account (Meta's consent window, then the owner picks the Page), or disconnect.
 
 type Network = "facebook" | "instagram";
@@ -62,7 +62,6 @@ export function SocialAccountsSettings() {
   const [confirmDisconnect, setConfirmDisconnect] = useState<{ channelId: string; network: Network } | null>(null);
   const [pickId, setPickId] = useState<string | null>(null);
   const [pick, setPick] = useState<Pick | null>(null);
-  const [origin, setOrigin] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -79,7 +78,6 @@ export function SocialAccountsSettings() {
   }, [t]);
 
   useEffect(() => {
-    setOrigin(window.location.origin);
     const params = takeCallbackParams();
     if (params.error) {
       const key = `social.error.${params.error}` as UiTextKey;
@@ -158,7 +156,7 @@ export function SocialAccountsSettings() {
     );
   }
 
-  const callbackUrls = [`http://localhost:3000${status.callbackPath}`, ...(origin.startsWith("https://") ? [`${origin}${status.callbackPath}`] : [])];
+  const callbackUrls = [`http://localhost:3000${status.callbackPath}`];
   const pickChannel = pick ? channels.find((c) => c.channelId === pick.channelId) : null;
 
   return (

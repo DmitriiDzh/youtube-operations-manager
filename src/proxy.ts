@@ -107,8 +107,8 @@ const REMOTE_BLOCKED_PREFIXES = [
   "/api/logical-paths/value",
   "/api/system-topic/relay-secret",
   "/api/channel-connections/disconnect",
-  // BL-252 (ADR 0068): the Meta App Secret and forgetting a connected social account.
-  "/api/social/meta/app",
+  // BL-252 (ADR 0068, CROSS_POSTING_PLAN AC-XP-12): the Meta App Secret, connecting (and its callback) and forgetting a social account.
+  "/api/social/meta",
   "/api/social/disconnect",
 ];
 

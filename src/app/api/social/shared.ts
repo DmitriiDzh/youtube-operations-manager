@@ -3,12 +3,12 @@ import { NextResponse } from "next/server";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
 import { authOptions } from "@/lib/auth";
 import { createCrossPostingCore, DomainError, type CrossPostingCore } from "@/lib/cross-posting";
-import { isLoopbackRequest, isRemoteRequest } from "@/lib/loopback-guard";
+import { isLoopbackRequest } from "@/lib/loopback-guard";
 import { isDomainError } from "@/lib/shared-domain";
 
 // BL-252 (ADR 0068): the owner's routes for Settings → Channels → Social networks. Web session required (401); a thin call into
-// the one core; DomainError -> status. No route returns a token or the App Secret. Never reachable from MCP. Saving the App Secret
-// and disconnecting are Mac-only (proxy REMOTE_BLOCKED_PREFIXES); connecting also works from the owner's phone over Tailscale.
+// the one core; DomainError -> status. No route returns a token or the App Secret. Never reachable from MCP. Saving the App Secret,
+// connecting and disconnecting are Mac-only (proxy REMOTE_BLOCKED_PREFIXES, AC-XP-12); the phone may only read the card's state.
 
 export type SocialRouteDeps = {
   getSession: () => Promise<{ user?: { id?: string | null } } | null>;
@@ -57,13 +57,11 @@ function hostParts(host: string): { hostname: string; port: string } | null {
 }
 
 /**
- * The redirect URI Meta must send the owner back to -- the address the owner's browser is on: `http://localhost:<port>` on the
- * Mac, `https://<mac>.<tailnet>.ts.net` over Tailscale. Anything else (a foreign page aiming at localhost, an odd Host) is refused.
- * Both addresses are listed in the card to be entered once in the Meta app's "Valid OAuth Redirect URIs".
+ * The redirect URI Meta must send the owner back to: `http://localhost:<port>` on the Mac. Connecting is Mac-only
+ * (CROSS_POSTING_PLAN.md AC-XP-12; the proxy also refuses `/api/social/meta` remotely), so anything else is refused.
  */
 export function redirectUriFor(headers: Headers): string {
   const host = hostParts(headers.get("host") ?? "");
-  if (host && isRemoteRequest(headers) && host.hostname.endsWith(".ts.net")) return `https://${host.hostname}${META_CALLBACK_PATH}`;
   if (host && isLoopbackRequest(headers)) return `http://localhost${host.port ? `:${host.port}` : ""}${META_CALLBACK_PATH}`;
-  throw new DomainError({ code: "remote_access_mac_only", message: "Connect from the Mac (localhost) or from the owner's Tailscale address." });
+  throw new DomainError({ code: "remote_access_mac_only", message: "Social accounts are connected on the Mac itself (localhost)." });
 }

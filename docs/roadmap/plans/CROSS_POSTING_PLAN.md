@@ -114,6 +114,11 @@ run in parallel with the code. I prepare the texts and the demo video each revie
 - AC-XP-12 Connect / disconnect / token routes refuse remote (phone) requests; an OAuth callback with a missing, reused
   or foreign `state` is refused.
 - AC-XP-13 A channel only ever posts to the networks it connected; the per-channel list is the user's setting.
+- AC-XP-14 AI disclosure on by default (Producer 2026-11-14: our narration is an ElevenLabs voice; Meta requires labelling
+  realistic AI audio, ElevenLabs music terms ask for platform disclosure): every post carries the network's AI-generated
+  content flag where its API has one; where it has none (to be checked against the docs at stage 2, UNVERIFIED for the
+  Instagram/Facebook publishing APIs), the approval screen says so and the caption carries the channel's AI note. Never the
+  Instagram profile-level "AI-generated" toggle (that is for synthetic personas).
 
 ## Risks
 
