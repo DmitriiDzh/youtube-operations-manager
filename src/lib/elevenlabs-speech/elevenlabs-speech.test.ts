@@ -94,6 +94,8 @@ async function harness(options: { enabled?: boolean; withKey?: boolean; settings
   const account = { value: (options.account ?? { tier: "starter", characterCount: 500, characterLimit: null, nextResetAt: null }) as FakeAccount };
   const behaviour = {
     textToSpeech: async (): Promise<ElevenlabsSpeechResult> => ({ audio: { mimeType: "audio/mpeg", data: Buffer.from("ID3-take") }, chargedChars: 120, requestId: "r1" }),
+    soundGeneration: async (): Promise<ElevenlabsSpeechResult> => ({ audio: { mimeType: "audio/mpeg", data: Buffer.from("ID3-sfx") }, chargedChars: null, requestId: "r2" }),
+    composeMusic: async (): Promise<ElevenlabsSpeechResult> => ({ audio: { mimeType: "audio/mpeg", data: Buffer.from("ID3-music") }, chargedChars: null, requestId: "r3" }),
     designVoice: async (): Promise<ElevenlabsVoiceDesignResult> => ({
       previews: [1, 2, 3].map((n) => ({ generatedVoiceId: `gen${n}`, mimeType: "audio/mpeg", data: Buffer.from(`P${n}`), durationSeconds: 4 })),
       text: null,
@@ -113,6 +115,14 @@ async function harness(options: { enabled?: boolean; withKey?: boolean; settings
       async textToSpeech(apiKey, request: ElevenlabsSpeechRequest) {
         calls.push({ method: "textToSpeech", apiKey, request });
         return behaviour.textToSpeech();
+      },
+      async soundGeneration(apiKey, request) {
+        calls.push({ method: "soundGeneration", apiKey, request });
+        return behaviour.soundGeneration();
+      },
+      async composeMusic(apiKey, request) {
+        calls.push({ method: "composeMusic", apiKey, request });
+        return behaviour.composeMusic();
       },
       async designVoice(apiKey, request) {
         calls.push({ method: "designVoice", apiKey, request });
@@ -644,6 +654,116 @@ test("AC-EA-2b (review): a take sent before the read but finished after it still
     h.clock.at = new Date("2026-11-14T10:01:00.000Z");
     const m = await h.services.monthlyLimit(await h.services.getSettings(), await h.services.usage());
     assert.equal(m.usedChars, 29_000 + 2_000);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+// -- BL-253 (FO-REQ-0054, docs/roadmap/plans/ELEVENLABS_SFX_MUSIC_PLAN.md AC-1..AC-8): sound effects and music. Credits from
+// elevenlabs.io (14.11): sound effects 40 per second of a given length; music about 900 per minute.
+const sfx = (overrides: Record<string, unknown> = {}) => ({ channelId: "UC1", text: "soft felt ding", durationSeconds: 1.2, ...overrides });
+const music = (overrides: Record<string, unknown> = {}) => ({ channelId: "UC1", prompt: "light curious explainer, pizzicato, 100 bpm", durationSeconds: 90, ...overrides });
+
+test("BL-253 AC-1/AC-3: credits -- sfx 1.2 s = ceil(40 x 1.2) = 48, music 90 s = ceil(900 x 1.5) = 1350; a dry run sends and stores nothing", async () => {
+  const h = await harness();
+  const off = await harness({ enabled: false });
+  try {
+    const a = (await h.services.createSoundJob(sfx({ dryRun: true }), "factory", "sfx")) as Record<string, unknown>;
+    assert.deepEqual([a.dryRun, a.kind, a.credits, a.allowed], [true, "sfx", 48, true]);
+    const b = (await h.services.createSoundJob(music({ dryRun: true }), "factory", "music")) as Record<string, unknown>;
+    assert.deepEqual([b.credits, b.allowed], [1350, true]);
+    const c = (await h.services.createSoundJob(sfx({ durationSeconds: undefined, dryRun: true }), "factory", "sfx")) as Record<string, unknown>;
+    assert.equal(c.credits, 1200, "no duration: the 30 s maximum is reserved");
+    assert.equal(h.store.jobs.size, 0);
+    assert.equal(h.calls.length, 0);
+    const d = (await off.services.createSoundJob(sfx({ dryRun: true }), "factory", "sfx")) as { allowed: boolean; refusal: { code: string } };
+    assert.deepEqual([d.allowed, d.refusal.code], [false, "elevenlabs_disabled"]);
+    await expectCode(off.services.createSoundJob(sfx(), "factory", "sfx"), "elevenlabs_disabled");
+  } finally {
+    await h.cleanup();
+    await off.cleanup();
+  }
+});
+
+test("BL-253 AC-4/AC-6: the speech limits hold (credits); out-of-range fields are refused before anything is stored", async () => {
+  const h = await harness({ settings: { maxCharsPerJob: 1000 } });
+  try {
+    assert.equal((await expectCode(h.services.createSoundJob(music(), "factory", "music"), "elevenlabs_limit_exceeded")).limit, "per_job");
+    for (const bad of [sfx({ durationSeconds: 0.2 }), sfx({ durationSeconds: 31 }), sfx({ promptInfluence: 1.5 }), sfx({ text: "x".repeat(1001) }), sfx({ voice: "Sumire" })]) {
+      await expectCode(h.services.createSoundJob(bad, "factory", "sfx"), "validation_failed");
+    }
+    for (const bad of [music({ durationSeconds: 5 }), music({ durationSeconds: 181 }), music({ prompt: "" })]) {
+      await expectCode(h.services.createSoundJob(bad, "factory", "music"), "validation_failed");
+    }
+    assert.equal(h.store.jobs.size, 0);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("BL-253 AC-5/AC-8: the worker sends the sound and the music as ElevenLabs asks; sfx-1.mp3 / music-1.mp3, manifest last with kind and params", async () => {
+  const h = await harness();
+  try {
+    const s = (await h.services.createSoundJob(sfx({ promptInfluence: 0.6, loop: true }), "factory", "sfx")) as { job: { jobId: string; kind: string; chars: number } };
+    const m = (await h.services.createSoundJob(music(), "factory", "music")) as { job: { jobId: string } };
+    assert.deepEqual([s.job.kind, s.job.chars], ["sfx", 48]);
+    await h.runTick();
+    const sent = Object.fromEntries(h.calls.map((c) => [c.method, c.request]));
+    assert.deepEqual(sent.soundGeneration, { text: "soft felt ding", modelId: "eleven_text_to_sound_v2", outputFormat: "mp3_44100_128", durationSeconds: 1.2, promptInfluence: 0.6, loop: true });
+    assert.deepEqual(sent.composeMusic, { prompt: "light curious explainer, pizzicato, 100 bpm", modelId: "music_v2_5", outputFormat: "mp3_44100_128", durationMs: 90_000, forceInstrumental: true });
+    const rs = h.store.jobs.get(s.job.jobId)!;
+    const rm_ = h.store.jobs.get(m.job.jobId)!;
+    assert.deepEqual([rs.status, rs.chargedChars, rm_.status, rm_.chargedChars], ["done", 48, "done", 1350]);
+    assert.ok(h.order.includes("write sfx-1.mp3") && h.order.includes("write music-1.mp3"));
+    const man = JSON.parse(await readFile(path.join(h.fromYtm, "elevenlabs", s.job.jobId, "manifest.json"), "utf8"));
+    assert.deepEqual([man.kind, man.text, man.params.durationSeconds, man.params.loop, man.voice], ["sfx", "soft felt ding", 1.2, true, undefined]);
+    assert.equal(man.outputs[0].path, `elevenlabs/${s.job.jobId}/sfx-1.mp3`);
+    const got = (await h.services.getJobs({ jobId: m.job.jobId })) as { job: { kind: string; params: { forceInstrumental: boolean } } };
+    assert.deepEqual([got.job.kind, got.job.params.forceInstrumental], ["music", true]);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("BL-253 AC-2: a sound without a length reserves 1200 credits and is counted at 40 x the file's length (2 s of PCM = 80)", async () => {
+  const h = await harness();
+  try {
+    h.behaviour.soundGeneration = async () => ({ audio: { mimeType: "application/octet-stream", data: Buffer.alloc(24_000 * 2 * 2) }, chargedChars: null, requestId: "r9" });
+    const { job } = (await h.services.createSoundJob(sfx({ durationSeconds: undefined, outputFormat: "pcm_24000" }), "factory", "sfx")) as { job: { jobId: string; chars: number } };
+    assert.equal(job.chars, 1200);
+    await h.runTick();
+    const row = h.store.jobs.get(job.jobId)!;
+    assert.deepEqual([row.status, row.chargedChars], ["done", 80]);
+    assert.ok(h.order.includes("write sfx-1.wav"));
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("BL-253 AC-7: switched off, a queued sound is failed unsent (0 credits)", async () => {
+  const h = await harness();
+  try {
+    const { job } = (await h.services.createSoundJob(sfx(), "factory", "sfx")) as { job: { jobId: string } };
+    await h.services.updateSettings({ enabled: false });
+    await h.runTick();
+    const row = h.store.jobs.get(job.jobId)!;
+    assert.deepEqual([row.status, row.errorCode, row.chargedChars], ["failed", "elevenlabs_disabled", 0]);
+    assert.equal(h.calls.length, 0);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("BL-253 review 1/2: an automatic-length sfx in the default mp3 is counted from size x bitrate (16 000 bytes at 128 kbps = 1 s = 40); music is priced at $0.15 a minute", async () => {
+  const h = await harness();
+  try {
+    h.behaviour.soundGeneration = async () => ({ audio: { mimeType: "audio/mpeg", data: Buffer.alloc(16_000) }, chargedChars: null, requestId: "r10" });
+    const { job } = (await h.services.createSoundJob(sfx({ durationSeconds: undefined }), "factory", "sfx")) as { job: { jobId: string } };
+    const m = (await h.services.createSoundJob(music(), "factory", "music")) as { job: { jobId: string; estimateUsd: number } };
+    assert.equal(m.job.estimateUsd, 0.225, "90 s at $0.15 a minute");
+    await h.runTick();
+    assert.equal(h.store.jobs.get(job.jobId)!.chargedChars, 40);
+    assert.equal(h.store.jobs.get(m.job.jobId)!.costUsd, 0.225);
   } finally {
     await h.cleanup();
   }

@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { ServerPresence } from "@/components/server-presence";
 import { serverBootId } from "@/lib/server-presence/boot-id";
@@ -21,8 +21,23 @@ const geistMono = Geist_Mono({
 
 export async function generateMetadata(): Promise<Metadata> {
   const { language } = await requestUiLanguage();
-  return { title: "YouTube Operations Manager", description: translate(language, "app.description") };
+  return {
+    title: "YouTube Operations Manager",
+    description: translate(language, "app.description"),
+    // BL-254: the phone's home-screen icon and full-screen launch (manifest.ts); desktop browsers ignore these.
+    icons: { apple: "/icons/ytm-180.png" },
+    appleWebApp: { capable: true, title: "YTM", statusBarStyle: "black-translucent" },
+  };
 }
+
+// BL-254: the notch / home-indicator insets are usable (env(safe-area-inset-*)), and the browser bar takes the app's colour.
+// The theme colour only on a phone-sized screen (review 14.11: desktop Safari tinted its tab bar -- the desktop stays as it was).
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  themeColor: [{ media: "(max-width: 767.98px)", color: "#09090b" }],
+};
 
 export default async function RootLayout({
   children,

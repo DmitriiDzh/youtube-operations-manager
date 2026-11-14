@@ -1,7 +1,7 @@
 import path from "node:path";
 import { NextResponse } from "next/server";
 import { parseRange, streamLocalFile } from "@/lib/local-file-response";
-import { isLoopbackRequest } from "@/lib/loopback-guard";
+import { isOwnerBrowserRequest } from "@/lib/loopback-guard";
 import { AUDITION_CONTENT_TYPES, auditionContentType } from "@/lib/generation-plans/contracts";
 import { planErrorResponse } from "../../shared";
 
@@ -79,8 +79,9 @@ function createPlanFileGetHandler(
   respond: Responder = streamFile
 ) {
   return async function GET(request: Request, context: { params: Promise<{ planId: string }> }): Promise<Response> {
-    // A local file leaves this route only for a browser on this computer (ADR 0029 §5): loopback Host and Origin.
-    if (!isLoopbackRequest(request.headers)) return NextResponse.json({ error: "forbidden", message: "Local files are served only to this computer" }, { status: 403 });
+    // A local file leaves this route only for the owner's browser (ADR 0029 §5): this computer (loopback Host and Origin), or since
+    // BL-251 amendment 2 his other devices through the remote gate (owner msg 4275).
+    if (!isOwnerBrowserRequest(request.headers)) return NextResponse.json({ error: "forbidden", message: "Local files are served only to the owner's browser" }, { status: 403 });
     const session = await deps.getSession();
     const userId = session?.user?.id;
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

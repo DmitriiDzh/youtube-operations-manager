@@ -41,6 +41,11 @@ export type ElevenlabsSpeechResult = {
   requestId: string | null;
 };
 
+/** BL-253: a sound effect (POST /v1/sound-generation). Duration null = ElevenLabs picks it from the prompt. */
+export type ElevenlabsSoundRequest = { text: string; modelId: string; outputFormat: string; durationSeconds: number | null; promptInfluence: number | null; loop: boolean };
+/** BL-253: a music track (POST /v1/music) from a prompt. */
+export type ElevenlabsMusicRequest = { prompt: string; modelId: string; outputFormat: string; durationMs: number; forceInstrumental: boolean };
+
 export type ElevenlabsVoiceDesignRequest = { description: string; text: string | null; modelId: string; outputFormat: string };
 
 export type ElevenlabsVoiceDesignResult = {
@@ -126,6 +131,51 @@ export function createElevenlabsApiClient(args: { fetchImpl?: Fetch; authorize?:
     return asRecord(response.body);
   }
 
+  /** A POST whose answer is audio (binary): speech, a sound effect, music. Review item 6: an answer over the cap is never read whole. */
+  async function audioCall(apiKey: string, url: string, body: Record<string, unknown>, context: Record<string, unknown>): Promise<ElevenlabsSpeechResult> {
+    await authorized(context);
+    let response: Response;
+    try {
+      response = await fetchImpl(url, {
+        method: "POST",
+        headers: { accept: "audio/*, application/json", "xi-api-key": apiKey, "content-type": "application/json" },
+        body: JSON.stringify(body),
+        redirect: "error",
+        signal: AbortSignal.timeout(ELEVENLABS_SPEECH_TIMEOUT_MS),
+      });
+    } catch (error) {
+      throw unavailable(context)("request", error instanceof Error ? error.message : String(error), undefined, error);
+    }
+    const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
+    // Review item 6: an answer over the cap is never read whole. ElevenLabs made (and charged) it: not retried, counted at its estimate.
+    const oversized = (bytes: number) =>
+      new DomainError({ code: "elevenlabs_unavailable", message: `The audio is ${bytes} bytes, over the ${ELEVENLABS_MAX_AUDIO_BYTES}-byte limit; it was not saved (it may have been charged).`, details: { ...context, outcome: "unknown", oversized: true, status: response.status } });
+    const declared = Number(response.headers.get("content-length") ?? "");
+    if (response.ok && Number.isFinite(declared) && declared > ELEVENLABS_MAX_AUDIO_BYTES) {
+      await response.body?.cancel().catch(() => undefined);
+      throw oversized(declared);
+    }
+    let data: Buffer;
+    try {
+      data = Buffer.from(await response.arrayBuffer());
+    } catch (error) {
+      throw unavailable(context)("read", error instanceof Error ? error.message : String(error), response.status, error);
+    }
+    if (!response.ok || contentType.includes("application/json")) {
+      let said: unknown = null;
+      try {
+        said = JSON.parse(data.toString("utf8"));
+      } catch {
+        said = null;
+      }
+      if (response.ok) throw new DomainError({ code: "elevenlabs_unavailable", message: "ElevenLabs answered with JSON, not audio; it may have been charged.", details: { ...context, outcome: "unknown", status: response.status } });
+      throw failure({ status: response.status, body: said }, context);
+    }
+    if (data.length > ELEVENLABS_MAX_AUDIO_BYTES) throw oversized(data.length);
+    const charged = count(response.headers.get("character-cost") ?? response.headers.get("x-character-count"));
+    return { audio: { mimeType: contentType.split(";")[0] || "audio/mpeg", data }, chargedChars: charged, requestId: response.headers.get("request-id") };
+  }
+
   return {
     /** The key check and the account's character usage in one free read. 401/403 → `elevenlabs_key_invalid`. */
     async getSubscription(apiKey: string): Promise<ElevenlabsSubscription> {
@@ -142,49 +192,28 @@ export function createElevenlabsApiClient(args: { fetchImpl?: Fetch; authorize?:
     /** One take in a saved voice; the answer is the audio itself (binary). Never retried here. */
     async textToSpeech(apiKey: string, request: ElevenlabsSpeechRequest): Promise<ElevenlabsSpeechResult> {
       const context = { call: "text_to_speech", model: request.modelId, outputFormat: request.outputFormat };
-      await authorized(context);
       const url = `${baseUrl}/v1/text-to-speech/${encodeURIComponent(request.voiceId)}?output_format=${encodeURIComponent(request.outputFormat)}`;
-      let response: Response;
-      try {
-        response = await fetchImpl(url, {
-          method: "POST",
-          headers: { accept: "audio/*, application/json", "xi-api-key": apiKey, "content-type": "application/json" },
-          body: JSON.stringify({ text: request.text, model_id: request.modelId }),
-          redirect: "error",
-          signal: AbortSignal.timeout(ELEVENLABS_SPEECH_TIMEOUT_MS),
-        });
-      } catch (error) {
-        throw unavailable(context)("request", error instanceof Error ? error.message : String(error), undefined, error);
-      }
-      const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
-      // Review item 6: an answer over the cap is never read whole. ElevenLabs made (and charged) it: not retried, counted at its estimate.
-      const oversized = (bytes: number) =>
-        new DomainError({ code: "elevenlabs_unavailable", message: `The audio is ${bytes} bytes, over the ${ELEVENLABS_MAX_AUDIO_BYTES}-byte limit; it was not saved (it may have been charged).`, details: { ...context, outcome: "unknown", oversized: true, status: response.status } });
-      const declared = Number(response.headers.get("content-length") ?? "");
-      if (response.ok && Number.isFinite(declared) && declared > ELEVENLABS_MAX_AUDIO_BYTES) {
-        await response.body?.cancel().catch(() => undefined);
-        throw oversized(declared);
-      }
-      let data: Buffer;
-      try {
-        data = Buffer.from(await response.arrayBuffer());
-      } catch (error) {
-        throw unavailable(context)("read", error instanceof Error ? error.message : String(error), response.status, error);
-      }
-      if (!response.ok || contentType.includes("application/json")) {
-        let body: unknown = null;
-        try {
-          body = JSON.parse(data.toString("utf8"));
-        } catch {
-          body = null;
-        }
-        if (response.ok) throw new DomainError({ code: "elevenlabs_unavailable", message: "ElevenLabs answered with JSON, not audio; it may have been charged.", details: { ...context, outcome: "unknown", status: response.status } });
-        throw failure({ status: response.status, body }, context);
-      }
-      if (data.length > ELEVENLABS_MAX_AUDIO_BYTES) throw oversized(data.length);
-      const charged = count(response.headers.get("character-cost") ?? response.headers.get("x-character-count"));
-      return { audio: { mimeType: contentType.split(";")[0] || "audio/mpeg", data }, chargedChars: charged, requestId: response.headers.get("request-id") };
+      return audioCall(apiKey, url, { text: request.text, model_id: request.modelId }, context);
     },
+
+    /** BL-253: one sound effect; the answer is the audio itself. Never retried here. */
+    async soundGeneration(apiKey: string, request: ElevenlabsSoundRequest): Promise<ElevenlabsSpeechResult> {
+      const context = { call: "sound_generation", model: request.modelId, outputFormat: request.outputFormat };
+      const body: Record<string, unknown> = { text: request.text, model_id: request.modelId };
+      if (request.durationSeconds !== null) body.duration_seconds = request.durationSeconds;
+      if (request.promptInfluence !== null) body.prompt_influence = request.promptInfluence;
+      if (request.loop) body.loop = true;
+      return audioCall(apiKey, `${baseUrl}/v1/sound-generation?output_format=${encodeURIComponent(request.outputFormat)}`, body, context);
+    },
+
+    /** BL-253: one music track from a prompt; the answer is the audio itself. Never retried here. */
+    async composeMusic(apiKey: string, request: ElevenlabsMusicRequest): Promise<ElevenlabsSpeechResult> {
+      const context = { call: "music_compose", model: request.modelId, outputFormat: request.outputFormat };
+      const body = { prompt: request.prompt, music_length_ms: request.durationMs, force_instrumental: request.forceInstrumental, model_id: request.modelId };
+      return audioCall(apiKey, `${baseUrl}/v1/music?output_format=${encodeURIComponent(request.outputFormat)}`, body, context);
+    },
+
+
 
     /** Voice Design v3: previews of a voice made from a description (no audio is sent: designed, never cloned). */
     async designVoice(apiKey: string, request: ElevenlabsVoiceDesignRequest): Promise<ElevenlabsVoiceDesignResult> {

@@ -128,6 +128,7 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
     speech: {
       getStatus: async () => (mediaCalls.push("speech.status"), { providers: {} }),
       createJob: async (input) => (mediaCalls.push(`speech.create:${(input as { provider: string }).provider}:${(input as { channelId: string }).channelId}${(input as { dryRun?: boolean }).dryRun ? ":dry" : ""}`), { provider: (input as { provider: string }).provider, job: { jobId: "gm_s1", channelId: (input as { channelId: string }).channelId } }),
+      createSound: async (kind, input) => (mediaCalls.push(`sound.${kind}:${(input as { channelId: string }).channelId}${(input as { dryRun?: boolean }).dryRun ? ":dry" : ""}`), { provider: "elevenlabs", job: { jobId: "el_x1" } }),
       getJobs: async (input) => (mediaCalls.push(`speech.get:${(input as { jobId?: string }).jobId ?? ""}`), (input as { jobId?: string }).jobId ? { provider: "gemini", job: { jobId: (input as { jobId: string }).jobId, channelId: (input as { jobId: string }).jobId === "gm_other" ? "UC_B" : "UC_A" } } : { jobs: [] }),
     },
     voices: {
@@ -414,6 +415,8 @@ test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exact
   ].concat(["factory_hold_restart", "factory_release_hold", "factory_restart_status"], [
     // BL-236 (1.40.0): speech and the channel voice registry.
     "factory_speech_create_job",
+    "factory_music_create_job",
+    "factory_sfx_create_job",
     "factory_speech_get_job",
     "factory_speech_get_status",
     "factory_voice_design",
@@ -467,7 +470,7 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.44.0", // BL-250: elevenlabs accountLimit / monthlyLimit; BL-243: statusCode video_deleted_on_youtube; BL-242: plan approvalStage / planned / awaiting_package; 1.41.0 = BL-240: plan slots replacesSlotId; 1.40.0 = BL-236: factory_speech_* and factory_voice_*; 1.39.0 = BL-235: factory_publishing_coverage; 1.38.0 = BL-234: factory_live_get_status gains sources; BL-233: factory_live_get_status gains encoders / upload; 1.36.0 = BL-230: runtime creation checks github.com sources; 1.35.0 = BL-229 part B: plan review forms, wave genre, verdict answers; 1.34.0 (BL-227): factory_localization_report_checks; 1.33.0 (BL-225): factory_publishing_plan_save / _get / _list; 1.32.0 (BL-223): factory_channel_get_branding / factory_channel_save_branding; 1.31.0 (BL-221: factory_video_list gains youtubeVideoId / hasVideoFile (additive); 1.30.0 (BL-220): the three restart tools
+    factoryApiVersion: "1.45.0", // BL-253: factory_sfx_create_job / factory_music_create_job; BL-250: elevenlabs accountLimit / monthlyLimit; BL-243: statusCode video_deleted_on_youtube; BL-242: plan approvalStage / planned / awaiting_package; 1.41.0 = BL-240: plan slots replacesSlotId; 1.40.0 = BL-236: factory_speech_* and factory_voice_*; 1.39.0 = BL-235: factory_publishing_coverage; 1.38.0 = BL-234: factory_live_get_status gains sources; BL-233: factory_live_get_status gains encoders / upload; 1.36.0 = BL-230: runtime creation checks github.com sources; 1.35.0 = BL-229 part B: plan review forms, wave genre, verdict answers; 1.34.0 (BL-227): factory_localization_report_checks; 1.33.0 (BL-225): factory_publishing_plan_save / _get / _list; 1.32.0 (BL-223): factory_channel_get_branding / factory_channel_save_branding; 1.31.0 (BL-221: factory_video_list gains youtubeVideoId / hasVideoFile (additive); 1.30.0 (BL-220): the three restart tools
     tools: [
       "factory_get_capabilities",
       "factory_list_logical_paths",
@@ -520,6 +523,8 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
       "factory_speech_get_status",
       "factory_speech_create_job",
       "factory_speech_get_job",
+      "factory_sfx_create_job",
+      "factory_music_create_job",
       "factory_voice_list",
       "factory_voice_design",
       "factory_voice_pick",
@@ -583,6 +588,8 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
       "factory_plan_withdraw_recheck",
       "factory_gemini_create_job",
       "factory_speech_create_job",
+      "factory_sfx_create_job",
+      "factory_music_create_job",
       "factory_voice_design",
       "factory_voice_pick",
       "factory_voice_update",
@@ -1660,5 +1667,34 @@ test("BL-236: factory_speech_create_job / factory_voice_* pass the gate first (a
     const body = await (await endpoint.handle(rpc(call(name, { ...args }), withToken(token)))).json();
     assert.equal(body.result?.isError, true, `${name} ${JSON.stringify(args)}`);
     assert.deepEqual(toolDeps.mediaCalls, [], "nothing reached the gate or the module");
+  }
+});
+
+// BL-253 (FO-REQ-0054): a paid sound effect or music track passes the device mutation gate first; a dry run does not; the schemas are
+// strict (no voice, no audio input).
+test("BL-253: factory_sfx_create_job / factory_music_create_job pass the gate first (a dry run does not); unknown fields are refused", async () => {
+  const { endpoint, tokenServices, toolDeps } = setupWithDeps();
+  const { token } = await tokenServices.issueToken({});
+  const sfx = { channelId: "UC_A", text: "soft felt ding", durationSeconds: 1.2 };
+  const music = { channelId: "UC_A", prompt: "light curious explainer", durationSeconds: 90 };
+  for (const [name, args, reached] of [
+    ["factory_sfx_create_job", sfx, ["gate", "sound.sfx:UC_A"]],
+    ["factory_music_create_job", music, ["gate", "sound.music:UC_A"]],
+    ["factory_sfx_create_job", { ...sfx, dryRun: true }, ["sound.sfx:UC_A:dry"]],
+    ["factory_music_create_job", { ...music, dryRun: true }, ["sound.music:UC_A:dry"]],
+  ] as const) {
+    toolDeps.mediaCalls.length = 0;
+    assert.equal((await toolResult(await endpoint.handle(rpc(call(name, { ...args }), withToken(token))))).isError, false, name);
+    assert.deepEqual(toolDeps.mediaCalls, [...reached], name);
+  }
+  for (const [name, args] of [
+    ["factory_sfx_create_job", { ...sfx, voice: "Sumire" }],
+    ["factory_sfx_create_job", { ...sfx, audio: "AAAA" }],
+    ["factory_music_create_job", { channelId: "UC_A", prompt: "x" }],
+  ] as const) {
+    toolDeps.mediaCalls.length = 0;
+    const body = await (await endpoint.handle(rpc(call(name, { ...args }), withToken(token)))).json();
+    assert.equal(body.result?.isError, true, `${name} ${JSON.stringify(args)}`);
+    assert.deepEqual(toolDeps.mediaCalls, [], name);
   }
 });

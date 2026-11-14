@@ -1299,6 +1299,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   компьютерам с тем же ключом (семья `elevenlabs_spend`, отчёт `ytm-elevenlabs-spend`, отпечаток `ytm/elevenlabs-key-fingerprint/v1`;
   цикл 30 с в `instrumentation.ts`). Переключатель и формат файла — свои у каждого компьютера.
 - **MCP:** `factory_speech_*`, `factory_voice_*` (Factory API 1.40.0), `agent_speech_*`, `agent_voice_list` (Agent API 4.14.0).
+- **Звуковые эффекты и музыка (BL-253, ADR 0057 поправка 2, `ELEVENLABS_SFX_MUSIC_PLAN.md`):** виды заданий `sfx` (`/v1/sound-generation`) и `music` (`/v1/music`, `music_v2_5`) в `elevenlabs-speech`; `factory_sfx_create_job` / `factory_music_create_job` (Factory API 1.45.0), результат через `factory_speech_get_job`; тот же выключатель и лимиты, в кредитах (эффект 40/с, музыка ≈900/мин); файлы `sfx-1.*` / `music-1.*`. Воркерам каналов не выдано. **Влито в `dev` (a74e6280), live 14.11.**
 - **Web:** Настройки → Облачные API → ElevenLabs; Медиа → Музыка → «Голоса»; `/api/elevenlabs-speech*`, `/api/channels/[channelId]/voices*`.
 - **Риски:** RISK-142, RISK-143, RISK-144.
 
@@ -1391,7 +1392,13 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 
 ## 4. Статус компонентов
 
-### 2.9bi Доступ с других устройств владельца через Tailscale (BL-251, ADR 0067, `docs/roadmap/plans/REMOTE_ACCESS_PLAN.md`) — **IMPLEMENTED на ветке `feature/bl-251-remote-access`, не влито**
+### 2.9bj YT Manager на телефоне (BL-254, `docs/roadmap/plans/MOBILE_UI_PLAN.md`) — **этап 1 IMPLEMENTED** (dev b38a79f4)
+- Ниже 768 px: `AppShell` прячет боковое меню (`max-md:hidden`), внизу `PhoneNav` (Главная · Контент · Медиа · Аналитика ·
+  «Ещё» — лист с остальными разделами и выходом; Escape закрывает, фокус возвращается), шапка компактная и липкая; вкладки
+  разделов `.ytom-tabrow` листаются в одну строку; поля ввода 16 px — всё в `@media (max-width: 767.98px)`. `src/app/manifest.ts`,
+  `public/icons/ytm-*.png`, `appleWebApp`, viewport cover, цвет темы только на телефоне. Десктоп не меняется. Этапы 2–4 впереди.
+
+### 2.9bi Доступ с других устройств владельца через Tailscale (BL-251, ADR 0067, `docs/roadmap/plans/REMOTE_ACCESS_PLAN.md`) — **IMPLEMENTED, влито в `dev` (df9c1189), live 14.11; статусы оболочки с телефона — f88cde6f (ADR 0067 поправка 1)**
 - Сервер по-прежнему слушает 127.0.0.1; `tailscale serve` (`scripts/macos/remote-access.sh enable|disable|status`) отдаёт его в
   личную сеть владельца по HTTPS. Никакого LAN и Funnel.
 - `src/lib/loopback-guard`: запрос с заголовками прокси (`X-Forwarded-*`, `Forwarded`, `Tailscale-User-*`) — всегда удалённый,

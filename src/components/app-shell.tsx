@@ -6,7 +6,7 @@
 // every existing tab's own content component is rendered completely unchanged inside it.
 import Link, { useLinkStatus } from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState, type ComponentType, type MouseEvent, type ReactNode, type SVGProps } from "react";
+import { useEffect, useRef, useState, type ComponentType, type MouseEvent, type ReactNode, type SVGProps } from "react";
 import type { ChannelInfo } from "@/components/app-channel";
 import type { PlanChannelWork } from "@/lib/generation-plans/contracts";
 import { ChannelSwitcher } from "./channel-switcher";
@@ -49,6 +49,8 @@ export function AppShell<T extends string>(props: {
   storyboardEntries?: readonly ChannelWorkEntry[];
   /** A bell entry's button: switch to that channel, then open `href`. */
   onOpenChannelWork?: (channelId: string, href: string) => void;
+  /** BL-254: the sections on a phone's bottom bar (the rest are under «Ещё»). */
+  phonePrimary?: readonly T[];
   children: ReactNode;
 }) {
   const t = useT();
@@ -73,7 +75,8 @@ export function AppShell<T extends string>(props: {
   }
   return (
     <div className="flex min-h-screen">
-      <aside className="flex w-60 shrink-0 flex-col border-r border-border bg-sidebar">
+      {/* BL-254 (MOBILE_UI_PLAN.md): below 768 px the sidebar gives way to the bottom bar; every phone rule is max-md / md:hidden. */}
+      <aside className="flex w-60 shrink-0 flex-col border-r border-border bg-sidebar max-md:hidden">
         <div className="flex h-16 items-center gap-2 px-4">
           <div className="flex h-8 w-8 items-center justify-center rounded-md bg-accent text-sm font-bold text-white">
             {/* ui-text-ignore: the logo mark */}
@@ -112,28 +115,28 @@ export function AppShell<T extends string>(props: {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-16 shrink-0 items-center justify-between border-b border-border px-6">
-          <div className="flex items-center gap-3">
+        <header className="flex h-16 shrink-0 items-center justify-between border-b border-border px-6 max-md:sticky max-md:top-0 max-md:z-30 max-md:h-14 max-md:gap-2 max-md:bg-zinc-950 max-md:px-3 max-md:pt-[env(safe-area-inset-top)]">
+          <div className="flex items-center gap-3 max-md:min-w-0 max-md:gap-2">
             {props.channel?.thumbnail && (
               // eslint-disable-next-line @next/next/no-img-element
               <img
                 src={props.channel.thumbnail}
                 alt={props.channel.title}
-                className="h-9 w-9 rounded-full"
+                className="h-9 w-9 rounded-full max-md:h-8 max-md:w-8"
               />
             )}
-            <div>
-              <p className="text-xs text-muted">{t("shell.activeChannel")}</p>
-              <p className="text-sm font-medium">
+            <div className="max-md:min-w-0">
+              <p className="text-xs text-muted max-md:hidden">{t("shell.activeChannel")}</p>
+              <p className="text-sm font-medium max-md:truncate">
                 {props.channel?.title ?? (props.channelUnavailable ? t("shell.reconnectNeeded") : t("common.loading"))}
                 {props.channel?.videoCount && (
-                  <span className="ml-2 text-xs text-muted" title={t("shell.videoCountHint")}>{t("shell.videoCount", { count: Number(props.channel.videoCount) })}</span>
+                  <span className="ml-2 text-xs text-muted max-md:hidden" title={t("shell.videoCountHint")}>{t("shell.videoCount", { count: Number(props.channel.videoCount) })}</span>
                 )}
               </p>
             </div>
             <ChannelSwitcher channelWork={props.channelWork} />
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 max-md:shrink-0 max-md:gap-2">
             {/* BL-195 stage D: what runs in the background now (UI_FEEDBACK_CLARITY_PLAN.md §3). */}
             <FeatureErrorBoundary label={t("shell.activity")}>
               <ActivityIndicator />
@@ -151,7 +154,7 @@ export function AppShell<T extends string>(props: {
             </FeatureErrorBoundary>
             <button
               onClick={props.onSignOut}
-              className="rounded-full border border-border px-4 py-1.5 text-xs font-medium text-muted transition-colors hover:border-accent hover:text-white"
+              className="rounded-full border border-border px-4 py-1.5 text-xs font-medium text-muted transition-colors hover:border-accent hover:text-white max-md:hidden"
             >
               {t("shell.signOut")}
             </button>
@@ -168,9 +171,112 @@ export function AppShell<T extends string>(props: {
         <div className="relative h-0.5 shrink-0 overflow-hidden">
           {pendingValue && <div role="progressbar" aria-label={t("shell.navigating")} className="ytom-nav-progress absolute inset-y-0 w-1/3 bg-accent" />}
         </div>
-        <main className="flex-1 overflow-y-auto px-6 py-6">{props.children}</main>
+        <main className="flex-1 overflow-y-auto px-6 py-6 max-md:px-4 max-md:py-4 max-md:pb-[calc(5rem+env(safe-area-inset-bottom))]">{props.children}</main>
       </div>
+      <PhoneNav
+        items={props.navItems}
+        primary={props.phonePrimary ?? props.navItems.slice(0, 4).map((item) => item.value)}
+        selected={selected}
+        activeTab={props.activeTab}
+        onNavClick={onNavClick}
+        onSignOut={props.onSignOut}
+      />
     </div>
+  );
+}
+
+/**
+ * BL-254: a phone's bottom bar -- the primary sections and «Ещё», a sheet with every other section and sign-out. Hidden from
+ * 768 px up (md:hidden), so a desktop window never shows it.
+ */
+function PhoneNav<T extends string>(props: {
+  items: readonly NavItem<T>[];
+  primary: readonly T[];
+  selected: T | null;
+  activeTab: T | null;
+  onNavClick: (event: MouseEvent<HTMLAnchorElement>, value: T) => void;
+  onSignOut: () => void;
+}) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const pathname = usePathname();
+  const [openedAt, setOpenedAt] = useState(pathname);
+  if (open && openedAt !== pathname) setOpen(false); // a section chosen in the sheet closes it (adjust state during render)
+  const sheetRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    sheetRef.current?.querySelector<HTMLElement>("a, button")?.focus(); // focus moves into the sheet
+    const trigger = triggerRef.current;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      trigger?.focus(); // and back to «Ещё» when it closes
+    };
+  }, [open]);
+  const primary = props.items.filter((item) => props.primary.includes(item.value));
+  const rest = props.items.filter((item) => !props.primary.includes(item.value));
+  const restActive = rest.some((item) => item.value === props.selected);
+  const restBadge = rest.reduce((sum, item) => sum + (item.badge ?? 0), 0);
+  const cell = (active: boolean) =>
+    `relative flex min-h-[56px] flex-1 flex-col items-center justify-center gap-0.5 text-[11px] ${active ? "font-medium text-white" : "text-muted"}`;
+  const badge = (n: number | undefined, title?: string) =>
+    n ? (
+      <span title={title} className="absolute right-[calc(50%-1.4rem)] top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-semibold text-white">
+        {n}
+      </span>
+    ) : null;
+  return (
+    <>
+      <nav aria-label={t("shell.phoneNav")} className="fixed inset-x-0 bottom-0 z-40 flex border-t border-border bg-sidebar pb-[env(safe-area-inset-bottom)] md:hidden">
+        {primary.map((item) => {
+          const Icon = item.icon;
+          const active = item.value === props.selected;
+          return (
+            <Link key={item.value} href={item.href} aria-current={item.value === props.activeTab ? "page" : undefined} onClick={(event) => props.onNavClick(event, item.value)} className={cell(active)}>
+              <Icon className={active ? "h-6 w-6 text-accent" : "h-6 w-6"} />
+              <span className="max-w-full truncate px-1">{item.label}</span>
+              {badge(item.badge, item.badgeTitle)}
+            </Link>
+          );
+        })}
+        <button ref={triggerRef} type="button" aria-expanded={open} onClick={() => { setOpenedAt(pathname); setOpen(!open); }} className={cell(restActive || open)}>
+          <svg aria-hidden viewBox="0 0 24 24" className={restActive ? "h-6 w-6 text-accent" : "h-6 w-6"} fill="currentColor">
+            <circle cx="5" cy="12" r="1.8" />
+            <circle cx="12" cy="12" r="1.8" />
+            <circle cx="19" cy="12" r="1.8" />
+          </svg>
+          <span>{t("shell.more")}</span>
+          {badge(restBadge)}
+        </button>
+      </nav>
+      {open && (
+        <div className="fixed inset-0 z-50 md:hidden" role="dialog" aria-modal="true" aria-label={t("shell.more")}>
+          <button type="button" aria-label={t("shell.closeMenu")} className="absolute inset-0 bg-black/60" onClick={() => setOpen(false)} />
+          <div ref={sheetRef} className="absolute inset-x-0 bottom-0 max-h-[80vh] overflow-y-auto rounded-t-2xl border-t border-border bg-sidebar px-2 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-2">
+            <div aria-hidden className="mx-auto mb-2 h-1 w-10 rounded-full bg-zinc-700" />
+            {rest.map((item) => {
+              const Icon = item.icon;
+              const active = item.value === props.selected;
+              return (
+                <Link key={item.value} href={item.href} onClick={(event) => { props.onNavClick(event, item.value); if (item.href === pathname) setOpen(false); }} className={`flex min-h-[48px] items-center gap-3 rounded-lg px-3 text-[15px] ${active ? "bg-surface font-medium text-white" : "text-zinc-300"}`}>
+                  <Icon className={active ? "h-5 w-5 text-accent" : "h-5 w-5"} />
+                  {item.label}
+                  {!!item.badge && <span title={item.badgeTitle} className="ml-auto flex h-5 min-w-5 items-center justify-center rounded-full bg-red-600 px-1.5 text-[11px] font-semibold text-white">{item.badge}</span>}
+                </Link>
+              );
+            })}
+            <div className="my-2 border-t border-border" />
+            <button type="button" onClick={props.onSignOut} className="flex min-h-[48px] w-full items-center rounded-lg px-3 text-left text-[15px] text-zinc-300">
+              {t("shell.signOut")}
+            </button>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 

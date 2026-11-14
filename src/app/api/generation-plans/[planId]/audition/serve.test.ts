@@ -91,7 +91,9 @@ test("AC-GP-14: another plan's attempt, a path in the query, a symlink out, a di
     assert.equal(missing.status, 404);
     assert.match((await missing.json()).message, /not available on this device/);
     assert.equal((await get(handler(w.ws, {}, { session: false }), "itemKey=C1/F1&attemptRef=job:ok")).status, 401);
-    assert.equal((await get(h, "itemKey=C1/F1&attemptRef=job:ok", { host: "203.0.113.5:3000" })).status, 403, "not loopback");
+    // BL-251 amendment 2 (owner msg 4275): a request from the owner's phone through tailscale serve is served (the proxy's remote
+    // gate has checked the switch and the phone session before it gets here); a page aiming at localhost is still refused.
+    assert.equal((await get(h, "itemKey=C1/F1&attemptRef=job:ok", { host: "mac.tail1234.ts.net", "x-forwarded-for": "100.64.0.7", "tailscale-user-login": "owner@example.com" })).status, 200, "the owner's phone");
     assert.equal((await get(h, "itemKey=C1/F1&attemptRef=job:ok", { origin: "https://evil.example" })).status, 403, "a foreign page's origin");
   } finally {
     await w.cleanup();

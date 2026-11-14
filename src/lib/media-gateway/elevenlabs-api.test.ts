@@ -135,3 +135,24 @@ test("review item 1: a design preview without media_type keeps mimeType null (th
   const result = await api.designVoice(KEY, { description: "d", text: null, modelId: "eleven_ttv_v3", outputFormat: "pcm_24000" });
   assert.equal(result.previews[0].mimeType, null);
 });
+
+// BL-253: shapes from ElevenLabs' API reference (read 2026-11-14): `POST /v1/sound-generation?output_format=` with `{ text, model_id,
+// duration_seconds?, prompt_influence?, loop? }` (duration 0.5-30, null = automatic) and `POST /v1/music?output_format=` with
+// `{ prompt, music_length_ms, force_instrumental, model_id }`; both answer audio bytes.
+test("soundGeneration / composeMusic: the documented paths and bodies; an omitted duration is not sent; errors as speech", async () => {
+  const audio = Buffer.from("ID3-sfx");
+  const { fetchImpl, calls } = fakeFetch(() => new Response(audio, { status: 200, headers: { "content-type": "audio/mpeg" } }));
+  const api = createElevenlabsApiClient({ fetchImpl, authorize: async () => undefined });
+  await api.soundGeneration(KEY, { text: "soft ding", modelId: "eleven_text_to_sound_v2", outputFormat: "mp3_44100_128", durationSeconds: 1.2, promptInfluence: 0.5, loop: true });
+  await api.soundGeneration(KEY, { text: "whoosh", modelId: "eleven_text_to_sound_v2", outputFormat: "pcm_24000", durationSeconds: null, promptInfluence: null, loop: false });
+  const r = await api.composeMusic(KEY, { prompt: "curious pizzicato", modelId: "music_v2_5", outputFormat: "mp3_44100_128", durationMs: 90_000, forceInstrumental: true });
+  assert.equal(calls[0].url, "https://api.elevenlabs.io/v1/sound-generation?output_format=mp3_44100_128");
+  assert.deepEqual(JSON.parse(String(calls[0].init.body)), { text: "soft ding", model_id: "eleven_text_to_sound_v2", duration_seconds: 1.2, prompt_influence: 0.5, loop: true });
+  assert.deepEqual(JSON.parse(String(calls[1].init.body)), { text: "whoosh", model_id: "eleven_text_to_sound_v2" });
+  assert.equal(calls[2].url, "https://api.elevenlabs.io/v1/music?output_format=mp3_44100_128");
+  assert.deepEqual(JSON.parse(String(calls[2].init.body)), { prompt: "curious pizzicato", music_length_ms: 90_000, force_instrumental: true, model_id: "music_v2_5" });
+  assert.equal((calls[2].init.headers as Record<string, string>)["xi-api-key"], KEY);
+  assert.deepEqual(r.audio, { mimeType: "audio/mpeg", data: audio });
+  const refused = createElevenlabsApiClient({ fetchImpl: fakeFetch(() => json(402, { detail: { status: "quota_exceeded", message: "no credits" } })).fetchImpl, authorize: async () => undefined });
+  await expectError(refused.composeMusic(KEY, { prompt: "x", modelId: "music_v2_5", outputFormat: "mp3_44100_128", durationMs: 10_000, forceInstrumental: true }), "elevenlabs_payment_required");
+});

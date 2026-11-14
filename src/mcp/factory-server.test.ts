@@ -70,6 +70,7 @@ const EXPECTED_TOOLS = [
   "factory_media_storage_status",
   "factory_media_sync_templates",
   "factory_media_test_runtime",
+  "factory_music_create_job",
   "factory_plan_clone_group",
   "factory_plan_close",
   "factory_plan_create",
@@ -90,6 +91,7 @@ const EXPECTED_TOOLS = [
   "factory_publishing_plan_save",
   "factory_release_hold",
   "factory_restart_status",
+  "factory_sfx_create_job",
   "factory_speech_create_job",
   "factory_speech_get_job",
   "factory_speech_get_status",
@@ -188,6 +190,7 @@ test("AC-FO-09 (amended by ADR 0025/0026): writes are exactly the named media/se
     "factory_media_stop_session",
     "factory_media_sync_templates",
     "factory_media_test_runtime",
+    "factory_music_create_job",
     "factory_plan_clone_group",
     "factory_plan_close",
     "factory_plan_create",
@@ -201,6 +204,7 @@ test("AC-FO-09 (amended by ADR 0025/0026): writes are exactly the named media/se
     "factory_plan_withdraw_recheck",
     "factory_publishing_plan_save",
     "factory_release_hold",
+    "factory_sfx_create_job",
     "factory_speech_create_job",
     "factory_storyboard_attach_render",
     "factory_storyboard_create",
@@ -351,7 +355,7 @@ test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.23.0 
   // BL-227 (LANGUAGES_REVIEW_PLAN.md §5: "Factory API 1.34.0"): one new tool, additive -> 1.34.0.
   // BL-233 (FO-REQ-0047 ask 3): factory_live_get_status gains `encoders` and `upload`, additive -> 1.37.0.
   // BL-234 (FO-REQ-0048): factory_live_get_status gains `sources`, additive -> 1.38.0.
-  assert.equal(FACTORY_API_VERSION, "1.44.0"); // BL-250: elevenlabs accountLimit / monthlyLimit (additive); BL-243: statusCode video_deleted_on_youtube (additive); BL-242: plan approvalStage, state planned, approval awaiting_package (additive) -> 1.42.0. BL-240: plan slots replacesSlotId, vetoed slots removable (additive) -> 1.41.0. // BL-236: speech and voice tools (additive) -> 1.40.0. // BL-235: factory_publishing_coverage (additive) -> 1.39.0. // BL-230: factory_media_create_runtime checks github.com sources (new errors) -> 1.36.0. 1.35.0 = BL-229 part B (MUSIC_LIBRARY_PLAN.md §3): review forms, genre, answers -- additive -> 1.35.0.
+  assert.equal(FACTORY_API_VERSION, "1.45.0"); // BL-253: factory_sfx_create_job / factory_music_create_job (additive); BL-250: elevenlabs accountLimit / monthlyLimit (additive); BL-243: statusCode video_deleted_on_youtube (additive); BL-242: plan approvalStage, state planned, approval awaiting_package (additive) -> 1.42.0. BL-240: plan slots replacesSlotId, vetoed slots removable (additive) -> 1.41.0. // BL-236: speech and voice tools (additive) -> 1.40.0. // BL-235: factory_publishing_coverage (additive) -> 1.39.0. // BL-230: factory_media_create_runtime checks github.com sources (new errors) -> 1.36.0. 1.35.0 = BL-229 part B (MUSIC_LIBRARY_PLAN.md §3): review forms, genre, answers -- additive -> 1.35.0.
   const agentOperations = await readFile("src/lib/agent-operations/contracts.ts", "utf8");
   assert.equal(agentOperations.includes("FACTORY_API_VERSION"), false);
 });

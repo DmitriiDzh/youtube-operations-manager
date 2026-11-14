@@ -12,7 +12,13 @@ import {
   ELEVENLABS_DEFAULT_MODEL,
   ELEVENLABS_DESIGN_MODEL,
   ELEVENLABS_LIMITS,
+  ELEVENLABS_MUSIC_MODEL,
   ELEVENLABS_OUTPUT_FORMATS,
+  ELEVENLABS_SFX_MODEL,
+  ELEVENLABS_USD_PER_CREDIT,
+  musicCredits,
+  musicUsd,
+  sfxCredits,
   ELEVENLABS_PRICES_AS_OF,
   ELEVENLABS_SPEECH_MODELS,
   charCount,
@@ -28,7 +34,9 @@ import {
   type ElevenlabsKeyView,
   type ElevenlabsLimitName,
   type ElevenlabsMonthlyLimit,
+  type ElevenlabsMusicParams,
   type ElevenlabsRefusal,
+  type ElevenlabsSfxParams,
   type ElevenlabsSettings,
   type ElevenlabsSpeechParams,
   type ElevenlabsUsage,
@@ -36,7 +44,7 @@ import {
   type ElevenlabsPeerSpendReport,
 } from "./contracts";
 import { accountWideUsage, elevenlabsKeyFingerprint } from "./account";
-import { checkJobRules, createJobInputSchema, designVoiceInputSchema, getJobsInputSchema, parseWithSchema, setKeyInputSchema, updateSettingsInputSchema, type CreateJobInput } from "./schemas";
+import { checkJobRules, createJobInputSchema, createMusicInputSchema, createSfxInputSchema, designVoiceInputSchema, getJobsInputSchema, parseWithSchema, setKeyInputSchema, updateSettingsInputSchema, type CreateJobInput } from "./schemas";
 
 // BL-236 (ADR 0057): the key, the owner's switch and character limits, the usage, job creation and reads, voice design and saving.
 // The worker that runs jobs is `./worker.ts`. Pure logic over injected ports; `./index.ts` wires the real ones.
@@ -54,7 +62,7 @@ export type ElevenlabsStore = {
   updateJob(jobId: string, fromStatus: ElevenlabsSpeechJobStatusValue, set: Partial<StoredElevenlabsSpeechJob>): Promise<boolean>;
 };
 
-export type ElevenlabsApiPort = Pick<ElevenlabsApiClient, "getSubscription" | "textToSpeech" | "designVoice" | "createVoiceFromDesign">;
+export type ElevenlabsApiPort = Pick<ElevenlabsApiClient, "getSubscription" | "textToSpeech" | "designVoice" | "createVoiceFromDesign" | "soundGeneration" | "composeMusic">;
 
 export type ElevenlabsSpeechDeps = {
   store: ElevenlabsStore;
@@ -558,6 +566,80 @@ export function createElevenlabsSpeechServices(deps: ElevenlabsSpeechDeps) {
           kind: "speech",
           model,
           text: input.text,
+          paramsJson: JSON.stringify(params),
+          status: "queued",
+          chars,
+          estimateUsd,
+          costUsd: null,
+          costBasis: null,
+          chargedChars: null,
+          outputsJson: null,
+          error: null,
+          errorCode: null,
+          attempts: 0,
+          nextAttemptAt: null,
+          createdBy: actor,
+          createdAt: at,
+          submittedAt: null,
+          finishedAt: null,
+          updatedAt: at,
+          video,
+        };
+        if (!(await deps.store.insertJob(row))) throw new DomainError({ code: "elevenlabs_request_exists", message: `Request id ${input.requestId} was just used.`, details: { requestId: input.requestId } });
+        return { job: jobView(row) };
+      });
+    },
+
+    /**
+     * BL-253 (FO-REQ-0054): a sound effect (`kind: "sfx"`) or a music track (`kind: "music"`) -- paid, on the same switch and the same
+     * character (= credit) limits as speech; `text` holds the prompt. Credits: sfx 40/s of the given length (no length: the 30 s maximum
+     * is reserved, the worker counts the real length); music 900/min. A dry run sends and stores nothing.
+     */
+    async createSoundJob(raw: unknown, actor: string, kind: "sfx" | "music") {
+      const sfx = kind === "sfx" ? parseWithSchema(createSfxInputSchema, raw, "ElevenLabs sound effect job") : null;
+      const music = kind === "music" ? parseWithSchema(createMusicInputSchema, raw, "ElevenLabs music job") : null;
+      const input = (sfx ?? music)!;
+      const prompt = sfx ? sfx.text : music!.prompt;
+      const model = sfx ? ELEVENLABS_SFX_MODEL : ELEVENLABS_MUSIC_MODEL;
+      await ensureFreshAccount(await getSettings());
+      return deps.withCreateLock(async () => {
+        const settings = await getSettings();
+        const outputFormat = input.outputFormat ?? settings.outputFormat;
+        const params: ElevenlabsSfxParams | ElevenlabsMusicParams = sfx
+          ? { durationSeconds: sfx.durationSeconds ?? null, promptInfluence: sfx.promptInfluence ?? null, loop: sfx.loop ?? false, outputFormat }
+          : { durationSeconds: music!.durationSeconds, forceInstrumental: music!.forceInstrumental ?? true, outputFormat };
+        const hash = createHash("sha256").update(JSON.stringify({ kind, channelId: input.channelId, prompt, model, params, ...(input.videoNumber ? { videoNumber: input.videoNumber } : {}) })).digest("hex");
+        if (input.requestId && !input.dryRun) {
+          const existing = await deps.store.getJobByRequest(actor, input.requestId);
+          if (existing) {
+            if (existing.requestHash !== hash) throw new DomainError({ code: "elevenlabs_request_exists", message: `Request id ${input.requestId} was already used for a different job (${existing.jobId}).`, details: { requestId: input.requestId, jobId: existing.jobId } });
+            return { job: jobView(existing), replayed: true };
+          }
+        }
+        const precondition = await preconditions(settings);
+        if (precondition && !input.dryRun) throw new DomainError({ code: precondition.code, message: precondition.message });
+        await connected(input.channelId);
+        await deps.workspace.resolveOutputRoot(input.channelId);
+        let video: string | null = null;
+        if (deps.videoLink) video = await deps.videoLink.resolve({ channelId: input.channelId, videoNumber: input.videoNumber ?? null, storyboardId: null });
+        else if (input.videoNumber) throw new DomainError({ code: "video_not_found", message: "Video numbers are not available on this server", details: { videoNumber: input.videoNumber } });
+        const chars = sfx ? sfxCredits(sfx.durationSeconds ?? null) : musicCredits(music!.durationSeconds);
+        const estimateUsd = sfx ? ceil4(chars * ELEVENLABS_USD_PER_CREDIT) : musicUsd(chars);
+        const current = await usage();
+        const refusal = precondition ?? limitRefusal(settings, current, chars, await monthlyLimit(settings, current));
+        if (input.dryRun) {
+          return { dryRun: true, kind, chars, credits: chars, ...(sfx && sfx.durationSeconds === undefined ? { creditsNote: `no duration: ${chars} credits (30 s) reserved, counted at 40 per second of the result` } : {}), estimateUsd, allowed: refusal === null, refusal, usage: current };
+        }
+        if (refusal) throw new DomainError({ code: refusal.code, message: refusal.message, details: refusal.details });
+        const at = now();
+        const row: StoredElevenlabsSpeechJob = {
+          jobId: `el_${deps.generateId()}`,
+          channelId: input.channelId,
+          requestId: input.requestId ?? null,
+          requestHash: hash,
+          kind,
+          model,
+          text: prompt,
           paramsJson: JSON.stringify(params),
           status: "queued",
           chars,
