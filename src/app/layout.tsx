@@ -31,7 +31,13 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 // BL-254: the notch / home-indicator insets are usable (env(safe-area-inset-*)), and the browser bar takes the app's colour.
-export const viewport: Viewport = { width: "device-width", initialScale: 1, viewportFit: "cover", themeColor: "#09090b" };
+// The theme colour only on a phone-sized screen (review 14.11: desktop Safari tinted its tab bar -- the desktop stays as it was).
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  themeColor: [{ media: "(max-width: 767.98px)", color: "#09090b" }],
+};
 
 export default async function RootLayout({
   children,

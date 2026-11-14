@@ -118,8 +118,20 @@ function blocked(status: number, code: string, message: string, api: boolean) {
   return api ? NextResponse.json({ error: code, message }, { status }) : new NextResponse(message, { status, headers: { "content-type": "text/plain; charset=utf-8" } });
 }
 
+// BL-251 hardening (review 14.11): a remote API call needs a current phone session -- except the sign-in itself, the presence
+// ping the page makes before sign-in, and the remote-access status the login page reads.
+function remoteApiWithoutSession(pathname: string, method: string): boolean {
+  return pathname.startsWith("/api/auth/") || (method === "GET" && (pathname === "/api/presence" || pathname === "/api/remote-access"));
+}
+
 async function remoteGate(request: NextRequest): Promise<NextResponse | null> {
-  const { pathname } = request.nextUrl;
+  // The Mac-only list is matched on the decoded path (review 14.11: `/api/%6Fperation-lock` must not slip past it).
+  let pathname: string;
+  try {
+    pathname = decodeURIComponent(request.nextUrl.pathname);
+  } catch {
+    return blocked(400, "bad_request", "Malformed path.", true);
+  }
   const api = pathname.startsWith("/api/");
   const { getRemoteAccess, isSameOriginMutation } = await import("@/lib/remote-access");
   const remote = getRemoteAccess();
@@ -136,7 +148,7 @@ async function remoteGate(request: NextRequest): Promise<NextResponse | null> {
   const { getToken } = await import("next-auth/jwt");
   const token = await getToken({ req: request, secret: process.env.NEXTAUTH_SECRET }).catch(() => null);
   // operation-lock's GET has no session check of its own (it must answer while the database is down): a phone needs one here
-  if (statusRead && !token) return blocked(401, "unauthorized", "Sign in with the password.", true);
+  if (api && !token && !remoteApiWithoutSession(pathname, request.method)) return blocked(401, "unauthorized", "Sign in with the password.", true);
   if (token) {
     const login = request.headers.get("tailscale-user-login");
     const valid = token.remote === true && (await remote.sessionValid(token.remoteEpoch, login));

@@ -1392,6 +1392,12 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 
 ## 4. Статус компонентов
 
+### 2.9bj YT Manager на телефоне (BL-254, `docs/roadmap/plans/MOBILE_UI_PLAN.md`) — **этап 1 IMPLEMENTED** (dev b38a79f4)
+- Ниже 768 px: `AppShell` прячет боковое меню (`max-md:hidden`), внизу `PhoneNav` (Главная · Контент · Медиа · Аналитика ·
+  «Ещё» — лист с остальными разделами и выходом; Escape закрывает, фокус возвращается), шапка компактная и липкая; вкладки
+  разделов `.ytom-tabrow` листаются в одну строку; поля ввода 16 px — всё в `@media (max-width: 767.98px)`. `src/app/manifest.ts`,
+  `public/icons/ytm-*.png`, `appleWebApp`, viewport cover, цвет темы только на телефоне. Десктоп не меняется. Этапы 2–4 впереди.
+
 ### 2.9bi Доступ с других устройств владельца через Tailscale (BL-251, ADR 0067, `docs/roadmap/plans/REMOTE_ACCESS_PLAN.md`) — **IMPLEMENTED, влито в `dev` (df9c1189), live 14.11; статусы оболочки с телефона — f88cde6f (ADR 0067 поправка 1)**
 - Сервер по-прежнему слушает 127.0.0.1; `tailscale serve` (`scripts/macos/remote-access.sh enable|disable|status`) отдаёт его в
   личную сеть владельца по HTTPS. Никакого LAN и Funnel.
