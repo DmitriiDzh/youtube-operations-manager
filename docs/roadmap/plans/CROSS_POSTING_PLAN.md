@@ -139,3 +139,18 @@ the owner's approval (unless the owner decides so in Q2); channel worker or fact
   Q2b: may a post be approved from the phone (BL-251)?
 - Q3 Developer accounts: Meta for Developers, TikTok for Developers, Pinterest Developers, X Developer — created by the
   owner (stage 0).
+
+## Stage 0 findings — official docs (2026-11-14, before any code)
+
+| Network | Public posts to the owner's own accounts without a review? | Evidence (official) | Plan |
+|---|---|---|---|
+| Instagram | **Yes** — an app "only for a business I own or manage" gets Standard Access, App Review "Not required"; accounts must belong to people with a role on the app; 100 API posts / 24 h | developers.facebook.com instagram-platform/app-review, graph-api access-levels | **go**: Facebook Login for Business (needed for `upload_type=resumable` → rupload.facebook.com, a local file, no public URL) |
+| Facebook Page Reels | Unclear — no Pages Reels doc found (404) | — | probe at stage 1 |
+| Threads | Yes for **Threads testers on the app** (no advanced access) — the owner's own Threads account added as a tester | developers.facebook.com threads/posts | go, but video only by a **public `video_url`** (R3) |
+| TikTok | **No** — "All content posted by unaudited clients will be restricted to private viewing mode"; public needs the Content Posting audit (acceptance of a single-owner tool not stated) | developers.tiktok.com content-posting-api | private-only until an audit; redirect URIs must be `https` (no localhost) |
+| Pinterest | **No** — Trial pins are "only visible to their creator"; Standard is reviewed, needs a demo video and a privacy policy on a public domain clearly tied to the app (single users still reviewed) | developers.pinterest.com access-tiers | blocked until there is a public privacy-policy page |
+| X | Yes in principle (own account, `tweet.write` + media upload); pay-per-use; price not stated in the docs read | docs.x.com create-post, getting-access | go (paid) |
+
+Consequences: stage 1 = Meta only (Instagram first) as a vertical slice; no generic six-network abstraction yet. Stage 1
+alone posts nothing, so it stays on the branch and merges together with stage 2 (first real post). TikTok and Pinterest:
+the owner decides whether to apply for the reviews (TikTok audit; Pinterest needs a public privacy policy page).
