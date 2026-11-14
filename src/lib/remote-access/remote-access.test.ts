@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { isDomainError } from "@/lib/shared-domain";
-import { hasRemoteForwarding, isLoopbackRequest, isRemoteRequest } from "@/lib/loopback-guard";
+import { hasRemoteForwarding, isLoopbackRequest, isOwnerBrowserRequest, isRemoteRequest } from "@/lib/loopback-guard";
 import { isSameOriginMutation } from "./classify";
 import { createRemoteAccessServices, stateFromJson } from "./services";
 
@@ -114,4 +114,13 @@ test("a damaged state file never opens remote access; with a valid password the 
   const hex = "ab".repeat(16);
   assert.equal(stateFromJson(JSON.stringify({ passwordHash: hex, salt: hex })).enabled, true);
   assert.equal(stateFromJson(JSON.stringify({ enabled: false, passwordHash: hex, salt: hex })).enabled, false);
+});
+
+test("BL-251 amendment 2 (owner msg 4275): the owner's media goes to this Mac and to his phone through Tailscale, not to a web page aiming at localhost", () => {
+  const h = (o: Record<string, string>) => new Headers(o);
+  assert.equal(isOwnerBrowserRequest(h(NEXT_LOCAL)), true, "the Mac's own browser (Next's loopback x-forwarded-*)");
+  assert.equal(isOwnerBrowserRequest(h({ host: "localhost:3000" })), true, "a plain local request");
+  assert.equal(isOwnerBrowserRequest(h(TAILSCALE)), true, "the phone through tailscale serve (the proxy's remote gate has checked it)");
+  assert.equal(isOwnerBrowserRequest(h({ host: "127.0.0.1:3000", origin: "https://evil.example" })), false, "loopback Host, foreign Origin");
+  assert.equal(isOwnerBrowserRequest(h({ host: "127.0.0.1:3000", origin: "null" })), false, "an opaque origin");
 });

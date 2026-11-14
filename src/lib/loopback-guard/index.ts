@@ -65,3 +65,14 @@ export function isLoopbackRequest(headers: Headers): boolean {
     return false; // includes the literal `Origin: null` of a sandboxed/opaque context
   }
 }
+
+/**
+ * BL-251 amendment 2 (owner msg 4275: clips sent for review would not play on the phone): the owner's own media -- clips for
+ * review and their attachments, storyboard takes, plan auditions -- may also go to his other devices. A REMOTE request reaches
+ * a route only through the proxy's remote gate (the switch on, Mac-only paths refused, a current phone session: the password's
+ * epoch and the pinned Tailscale login), and the route still checks the session itself. What stays refused: a request with a
+ * loopback Host but a foreign Origin (a web page aiming at localhost) -- neither loopback nor remote.
+ */
+export function isOwnerBrowserRequest(headers: Headers): boolean {
+  return isLoopbackRequest(headers) || isRemoteRequest(headers);
+}

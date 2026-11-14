@@ -84,7 +84,9 @@ test("AC-VR-12: loopback only (403); a path never comes from the request -- any 
       asked++;
       return null;
     });
-    assert.equal((await get(h, "itemKey=W1/I&attemptRef=a1", "192.168.1.20:3000")).status, 403);
+    // BL-251 amendment 2: a page aiming at localhost (loopback Host, foreign Origin) is refused; remote requests are the proxy's.
+    const foreign = await h(new Request("http://127.0.0.1:3000/api/generation-plans/P1/preview?itemKey=W1/I&attemptRef=a1", { headers: { host: "127.0.0.1:3000", origin: "https://evil.example" } }), { params: Promise.resolve({ planId: "P1" }) });
+    assert.equal(foreign.status, 403);
     assert.equal((await get(h, "itemKey=W1/I&attemptRef=a1&path=/etc/passwd")).status, 400);
     assert.equal(asked, 0);
   } finally {
