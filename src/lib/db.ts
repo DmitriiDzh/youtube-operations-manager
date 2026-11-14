@@ -2082,6 +2082,27 @@ export const reviewNotifyLedger = sqliteTable(
 );
 
 /**
+ * SCHEMA_MIGRATIONS version 121 (BL-252, ADR 0068, CROSS_POSTING_PLAN.md): the social accounts each channel connected for
+ * cross-posting -- one row per (channel, network). The access token is sealed with this computer's device-secrets key
+ * (`token_sealed`, JSON of an EncryptedPayload), so the table is device-local and never in a snapshot.
+ */
+export const socialAccounts = sqliteTable(
+  "social_accounts",
+  {
+    channelId: text("channel_id").notNull(),
+    network: text("network", { enum: ["facebook", "instagram"] }).notNull(),
+    externalId: text("external_id").notNull(),
+    displayName: text("display_name").notNull(),
+    username: text("username"),
+    pageId: text("page_id"),
+    tokenSealed: text("token_sealed").notNull(),
+    tokenExpiresAt: integer("token_expires_at", { mode: "timestamp_ms" }),
+    connectedAt: integer("connected_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.channelId, table.network] })]
+);
+
+/**
  * SCHEMA_MIGRATIONS version 45 (BL-118) -- CHANNEL-level daily totals (views, watch time, subscribers...) collected with the per-video
  * metrics, so the agent's channel analytics can be read locally instead of a live Analytics API call every time. Same shape and
  * rules as `video_metrics_daily` (the API omits zero-activity days: absence is not zero), device-local like it.
@@ -6111,6 +6132,25 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         recorded_at INTEGER NOT NULL
       )`);
       await client.execute("CREATE INDEX IF NOT EXISTS review_notify_ledger_recorded_idx ON review_notify_ledger (recorded_at)");
+    },
+  },
+  {
+    version: 121,
+    description:
+      "social_accounts -- BL-252 (ADR 0068): the Facebook Page / Instagram account each channel connected for cross-posting, token sealed with the device key. Additive (one new table), device-local",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS social_accounts (
+        channel_id TEXT NOT NULL,
+        network TEXT NOT NULL,
+        external_id TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        username TEXT,
+        page_id TEXT,
+        token_sealed TEXT NOT NULL,
+        token_expires_at INTEGER,
+        connected_at INTEGER NOT NULL,
+        PRIMARY KEY (channel_id, network)
+      )`);
     },
   },
 ];
@@ -16618,4 +16658,32 @@ export async function getVideoInsightDataDates(channelId: string, database: AppD
     database.select({ date: sql<string | null>`max(${channelReachDaily.date})` }).from(channelReachDaily).where(eq(channelReachDaily.channelId, channelId)),
   ]);
   return { views: views[0]?.date ?? null, reach: reach[0]?.date ?? null };
+}
+
+// ---------------------------------------------------------------------------
+// BL-252 (ADR 0068): social_accounts -- the cross-posting accounts each channel connected (token sealed by the device key).
+// ---------------------------------------------------------------------------
+
+export type StoredSocialAccount = typeof socialAccounts.$inferSelect;
+
+export async function listSocialAccounts(channelId: string | null, database: AppDb = db): Promise<StoredSocialAccount[]> {
+  const query = database.select().from(socialAccounts);
+  const rows = channelId === null ? await query : await query.where(eq(socialAccounts.channelId, channelId));
+  return rows.sort((a, b) => a.channelId.localeCompare(b.channelId) || a.network.localeCompare(b.network));
+}
+
+export async function upsertSocialAccount(row: typeof socialAccounts.$inferInsert, database: AppDb = db): Promise<void> {
+  await database
+    .insert(socialAccounts)
+    .values(row)
+    .onConflictDoUpdate({
+      target: [socialAccounts.channelId, socialAccounts.network],
+      set: { externalId: row.externalId, displayName: row.displayName, username: row.username ?? null, pageId: row.pageId ?? null, tokenSealed: row.tokenSealed, tokenExpiresAt: row.tokenExpiresAt ?? null, connectedAt: row.connectedAt },
+    });
+}
+
+export async function deleteSocialAccounts(channelId: string, network: "facebook" | "instagram" | null, database: AppDb = db): Promise<number> {
+  const where = network === null ? eq(socialAccounts.channelId, channelId) : and(eq(socialAccounts.channelId, channelId), eq(socialAccounts.network, network));
+  const deleted = await database.delete(socialAccounts).where(where).returning({ channelId: socialAccounts.channelId });
+  return deleted.length;
 }

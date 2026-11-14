@@ -24,6 +24,7 @@ import { SyncFolderSettings } from "@/components/sync-folder-settings";
 import { RunpodConnectionSettings } from "@/components/media-generation-settings";
 import { GeminiMediaSettings } from "@/components/gemini-media-settings";
 import { ElevenlabsSettings } from "@/components/elevenlabs-settings";
+import { SocialAccountsSettings } from "@/components/social-accounts-settings";
 import { CloudCredentialsTransfer } from "@/components/cloud-credentials-transfer";
 import { HfTokenSettings } from "@/components/hf-token-settings";
 import { GithubTokenSettings } from "@/components/github-token-settings";
@@ -121,6 +122,10 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
       <div className={settingsSubTab === "channels" ? "space-y-6" : "hidden"}>
         <FeatureErrorBoundary label={section("settingsCard.channels")}>
           <ChannelConnectionsSettings />
+        </FeatureErrorBoundary>
+        {/* BL-252 (ADR 0068): each channel's social accounts for cross-posting; fails on its own. */}
+        <FeatureErrorBoundary label={section("social.title")}>
+          <SocialAccountsSettings />
         </FeatureErrorBoundary>
       </div>
 
