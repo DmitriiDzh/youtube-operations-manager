@@ -1391,6 +1391,16 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 
 ## 4. Статус компонентов
 
+### 2.9bi Доступ с других устройств владельца через Tailscale (BL-251, ADR 0067, `docs/roadmap/plans/REMOTE_ACCESS_PLAN.md`) — **IMPLEMENTED на ветке `feature/bl-251-remote-access`, не влито**
+- Сервер по-прежнему слушает 127.0.0.1; `tailscale serve` (`scripts/macos/remote-access.sh enable|disable|status`) отдаёт его в
+  личную сеть владельца по HTTPS. Никакого LAN и Funnel.
+- `src/lib/loopback-guard`: запрос с заголовками прокси (`X-Forwarded-*`, `Forwarded`, `Tailscale-User-*`) — всегда удалённый,
+  никогда не loopback (MCP и loopback-only маршруты остаются только для Mac). `src/proxy.ts` теперь видит и страницы: для
+  удалённых запросов — переключатель, Mac-only маршруты, проверка Origin, эпоха сессии, закреплённый логин Tailscale.
+- `src/lib/remote-access/` (модуль-фича): переключатель, пароль (scrypt), блокировка, эпоха; состояние в
+  `<app data>/remote-access.json` (не в базе, передача устройства его не переносит). NextAuth `remote-password` в `auth.ts`.
+  Карточка «Доступ с других устройств» в Настройки → Общие; форма пароля на странице входа на удалённом хосте.
+
 ### 4.0 Ключевые ограничения (не путать с «не реализовано» — это активные инварианты, которые должен знать любой агент, прежде чем предлагать write-функциональность)
 
 - **Approval ≠ применено к YouTube.** `Change.approvalStatus === "approved"` — это только локальная запись в SQLite (`docs/ARCHITECTURE.md` §6.9). Ни один код-путь в `src/lib/changesets/` не вызывает `googleapis`.

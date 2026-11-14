@@ -455,11 +455,47 @@ export const authOptions: NextAuthOptions = {
 
         try {
           const identity = await createChannelConnectionsCore().resolveChannelIdentityForActivation(channelId);
-          return { id: identity.userId, email: identity.email, name: identity.name, image: identity.image };
+          // BL-251: a phone session that switches channel stays a phone session (same epoch): the proxy keeps checking it.
+          const remote = existingToken.remote === true ? { remote: true, remoteEpoch: existingToken.remoteEpoch } : {};
+          return { id: identity.userId, email: identity.email, name: identity.name, image: identity.image, ...remote };
         } catch (err) {
           if (isDomainError(err)) return null;
           throw err;
         }
+      },
+    }),
+    // BL-251 (docs/roadmap/plans/REMOTE_ACCESS_PLAN.md, ADR 0067): the owner's password, from another device through
+    // `tailscale serve` only. Gives a session for the most recently connected channel's stored identity -- no Google
+    // round-trip, stored tokens untouched -- marked remote with the current epoch (a password change or switch-off ends it).
+    CredentialsProvider({
+      id: "remote-password",
+      name: "Password",
+      credentials: { password: { label: "Password", type: "password" } },
+      async authorize(credentials, req) {
+        const headers = new Headers((req as { headers?: Record<string, string> } | undefined)?.headers ?? {});
+        const { isRemoteRequest } = await import("./loopback-guard");
+        if (!isRemoteRequest(headers)) return null; // on the Mac itself the Google sign-in is the way in
+        const { getRemoteAccess } = await import("./remote-access");
+        const { isDomainError } = await import("./shared-domain");
+        let epoch: number;
+        try {
+          ({ epoch } = await getRemoteAccess().verifyPassword(credentials?.password, headers.get("tailscale-user-login")));
+        } catch (err) {
+          if (isDomainError(err)) throw new Error(err.code); // the login page shows why (wrong password, locked, off)
+          throw err;
+        }
+        const { createChannelConnectionsCore } = await import("./channel-connections");
+        const core = createChannelConnectionsCore();
+        const channels = (await core.listConnectedChannels()).sort((a, b) => b.connectedAt.localeCompare(a.connectedAt));
+        for (const c of channels) {
+          try {
+            const identity = await core.resolveChannelIdentityForActivation(c.channelId);
+            return { id: identity.userId, email: identity.email, name: identity.name, image: identity.image, remote: true, remoteEpoch: epoch };
+          } catch (err) {
+            if (!isDomainError(err)) throw err;
+          }
+        }
+        throw new Error("no_connected_channel");
       },
     }),
   ],
@@ -471,8 +507,8 @@ export const authOptions: NextAuthOptions = {
       // already has the real, correctly-scoped tokens. Its synthetic `account` carries no real
       // OAuth tokens, so running the upsert below unconditionally would silently null out that
       // identity's perfectly good, already-stored tokens.
-      if (account.provider === "channel-connections") {
-        return true;
+      if (account.provider === "channel-connections" || account.provider === "remote-password") {
+        return true; // BL-251: the password sign-in reuses a stored identity too -- never touch its tokens
       }
 
       // BL-197: a fresh Google sign-in may grant a different channel than the one remembered for this identity.
@@ -498,7 +534,13 @@ export const authOptions: NextAuthOptions = {
       }
       return session;
     },
-    async jwt({ token }) {
+    async jwt({ token, user }) {
+      // BL-251: a phone session carries its flag and epoch; the proxy checks them on every remote request.
+      const u = user as { remote?: unknown; remoteEpoch?: unknown } | undefined;
+      if (u && u.remote === true) {
+        token.remote = true;
+        token.remoteEpoch = u.remoteEpoch;
+      }
       return token;
     },
   },

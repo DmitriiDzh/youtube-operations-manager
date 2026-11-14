@@ -23,6 +23,11 @@ export type CredentialRef =
 
 export type DomainErrorCode =
   | "unauthorized"
+  // BL-251 (REMOTE_ACCESS_PLAN.md): access from the owner's other devices over Tailscale.
+  | "remote_access_disabled"
+  | "remote_access_locked"
+  | "remote_access_mac_only"
+  | "remote_access_bad_password"
   | "validation_failed"
   // BL-206 (GPU_STATS_PLAN.md AC-GS-08): a request whose fields are each valid but do not fit together (e.g. from after to).
   | "invalid_request"

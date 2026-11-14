@@ -5,6 +5,7 @@ export const settings = {
 
   "settingsCard.uiLanguage": "Interface language",
   "settingsCard.retention": "Retention",
+  "settingsCard.remoteAccess": "Access from other devices",
   "settingsCard.analyticsCollection": "Analytics collection",
   "settingsCard.liveWrites": "Live writes",
   "settingsCard.dataReads": "Data reads",

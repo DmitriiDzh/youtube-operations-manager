@@ -1,5 +1,6 @@
 "use client";
 
+import { isRemoteHost } from "./remote-host";
 import { useEffect, useState } from "react";
 import { signIn } from "next-auth/react";
 import { BlockingDialog } from "./blocking-dialog";
@@ -62,6 +63,9 @@ export function ConnectionHealthDialog({ health }: { health: ConnectionHealth[] 
               <p className="truncate text-xs text-zinc-500">{row.connectedEmail}</p>
               <p className={`text-xs ${row.state === "reauth_required" ? "text-red-400" : "text-amber-400"}`}>{describe(t, row)}</p>
             </div>
+            {isRemoteHost() ? (
+              <p className="shrink-0 text-xs text-zinc-500">{t("remoteAccess.onMacOnly")}</p>
+            ) : (
             <button
               onClick={() => {
                 // The Cloud grant has its own consent flow (a full-page redirect), separate from the channel sign-in.
@@ -72,6 +76,7 @@ export function ConnectionHealthDialog({ health }: { health: ConnectionHealth[] 
             >
               {row.kind === "cloud" ? t("relogin.reconnectCloud") : t("signIn.google")}
             </button>
+            )}
           </li>
         ))}
       </ul>

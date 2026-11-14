@@ -82,6 +82,8 @@ Additionally:
 
 **Status: NOT satisfied — and not currently planned.** The product's deployment model today is, and is expected to remain, local-first/single-operator (`docs/PROJECT_SPEC.md` §37) unless the project owner makes an explicit product decision to change it.
 
+**2026-11-14 (BL-251, ADR 0067, owner msgs 4210/4219):** the owner decided one narrow exposure: his own devices over his private Tailscale network (`tailscale serve`, never the LAN or the internet), behind a password. Addressed for that path: CSRF (a remote mutating request needs its own `Origin`), the reachability inventory (ADR 0067: MCP, handoff/sync, key transfer, agent tokens, Google/cloud connection, operation lock and the remote-access settings stay Mac-only; everything else needs the password session), the deployment assumptions (ADR 0067). Still open and accepted only inside that private network: RISK-07, RISK-06, RISK-01. RISK-153 covers the new path.
+
 ## Release boundary
 
 A **Git commit** is not automatically a **release**. A successful **build** is not automatically **production-ready**. Four distinct states:
@@ -2275,6 +2277,21 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Mitigation:** both computers run BL-240 before agents remove vetoed slots or use `replacesSlotId` (stated in the release note).
 - **Gate(s):** none (no new YouTube write; nothing is ever scheduled by it). **Re-evaluate:** when upload rows are synced between
   the computers.
+
+## RISK-153 — Access from other devices: the proxy headers and the Tailscale account are the trust boundary — OPEN, 2026-11-14
+
+- **Affected components:** `src/lib/remote-access/`, `src/lib/loopback-guard`, `src/proxy.ts`, `src/lib/auth.ts` (`remote-password`),
+  `scripts/macos/remote-access.sh` (BL-251, ADR 0067).
+- **Risk:** (1) remote is recognised by proxy headers or a non-loopback Host; a local process that reaches 127.0.0.1 is still
+  treated as the Mac (as before), and a proxy other than `tailscale serve` that adds none of the headers and keeps a loopback Host
+  would look local. (2) Whoever controls the owner's Tailscale account (or an unlocked phone with a live session) is one password
+  away from the app; the password is the owner's choice (≥ 8 characters). (3) A phone session is a 30-day NextAuth JWT, ended by
+  the epoch (password change / switch-off) but not listed or revocable one by one.
+- **Mitigation:** the switch is off by default and its state stays on this Mac; MCP and key/handoff/token routes are Mac-only; a
+  CSRF origin check; scrypt + persisted lockout; the first remote sign-in pins the Tailscale login; the script never uses Funnel;
+  after enabling, one real proxied request's headers are checked before the owner relies on it.
+- **Gate(s):** none for YouTube writes (Live writes unchanged). **Re-evaluate:** any exposure beyond the owner's tailnet, a
+  second person needing access, or a proxy other than `tailscale serve`.
 
 ## RISK-152 — Review notices: a second writer, and the other computer's plan verdicts seen only through its report — OPEN, 2026-11-08
 

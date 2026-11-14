@@ -1,5 +1,6 @@
 "use client";
 
+import { isRemoteHost } from "./remote-host";
 import { useT } from "./ui-text-provider";
 import { useEffect, useRef, useState } from "react";
 import { signIn } from "next-auth/react";
@@ -98,14 +99,16 @@ export function ChannelSwitcher({ channelWork }: { channelWork?: readonly PlanCh
               </li>
             ))}
           </ul>
-          <div className="border-t border-zinc-800 p-1">
-            <button
-              onClick={() => signIn("google")}
-              className="w-full rounded-md px-2 py-1.5 text-left text-sm font-medium text-indigo-400 hover:bg-zinc-800"
-            >
-              {t("channelSwitcher.connectNew")}
-            </button>
-          </div>
+          {!isRemoteHost() && (
+            <div className="border-t border-zinc-800 p-1">
+              <button
+                onClick={() => signIn("google")}
+                className="w-full rounded-md px-2 py-1.5 text-left text-sm font-medium text-indigo-400 hover:bg-zinc-800"
+              >
+                {t("channelSwitcher.connectNew")}
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -24,9 +24,10 @@ import { speech } from "./en/speech";
 import { diskGuard } from "./en/diskGuard";
 import { localVideoCleanup } from "./en/localVideoCleanup";
 import { clipReviews } from "./en/clipReviews";
+import { remoteAccess } from "./en/remoteAccess";
 
-export const enAreas = { common, shell, settings, production, media, languages, batches, decisions, research, researchData, analytics, content, merge, settingsCards, errors, analyticsLabels, liveStreams, storyboards, musicLibrary, weeklyBuild, speech, diskGuard, localVideoCleanup, clipReviews } as const;
+export const enAreas = { common, shell, settings, production, media, languages, batches, decisions, research, researchData, analytics, content, merge, settingsCards, errors, analyticsLabels, liveStreams, storyboards, musicLibrary, weeklyBuild, speech, diskGuard, localVideoCleanup, clipReviews, remoteAccess } as const;
 
-export const en = { ...common, ...shell, ...settings, ...production, ...media, ...languages, ...batches, ...decisions, ...research, ...researchData, ...analytics, ...content, ...merge, ...settingsCards, ...errors, ...analyticsLabels, ...liveStreams, ...storyboards, ...musicLibrary, ...weeklyBuild, ...speech, ...diskGuard, ...localVideoCleanup, ...clipReviews } as const;
+export const en = { ...common, ...shell, ...settings, ...production, ...media, ...languages, ...batches, ...decisions, ...research, ...researchData, ...analytics, ...content, ...merge, ...settingsCards, ...errors, ...analyticsLabels, ...liveStreams, ...storyboards, ...musicLibrary, ...weeklyBuild, ...speech, ...diskGuard, ...localVideoCleanup, ...clipReviews, ...remoteAccess } as const;
 
 export type UiTextKey = keyof typeof en;

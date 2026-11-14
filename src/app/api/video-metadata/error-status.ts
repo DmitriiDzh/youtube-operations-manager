@@ -4,6 +4,11 @@ const DOMAIN_ERROR_STATUS = {
   validation_failed: 400,
   invalid_request: 400,
   unauthorized: 401,
+  // BL-251: access from the owner's other devices (Tailscale).
+  remote_access_disabled: 403,
+  remote_access_locked: 429,
+  remote_access_mac_only: 403,
+  remote_access_bad_password: 401,
   AUTH_CALLBACK_INVALID: 401,
   AUTH_REFRESH_TOKEN_MISSING: 401,
   AUTH_USER_NOT_FOUND: 401,

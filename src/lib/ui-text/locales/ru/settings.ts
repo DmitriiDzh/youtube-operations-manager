@@ -6,6 +6,7 @@ export const settings: Record<keyof typeof en, string> = {
 
   "settingsCard.uiLanguage": "Язык интерфейса",
   "settingsCard.retention": "Хранение",
+  "settingsCard.remoteAccess": "Доступ с других устройств",
   "settingsCard.analyticsCollection": "Сбор аналитики",
   "settingsCard.liveWrites": "Запись в YouTube",
   "settingsCard.dataReads": "Чтение данных",
