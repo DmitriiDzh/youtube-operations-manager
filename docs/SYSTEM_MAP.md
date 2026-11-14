@@ -1299,7 +1299,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   компьютерам с тем же ключом (семья `elevenlabs_spend`, отчёт `ytm-elevenlabs-spend`, отпечаток `ytm/elevenlabs-key-fingerprint/v1`;
   цикл 30 с в `instrumentation.ts`). Переключатель и формат файла — свои у каждого компьютера.
 - **MCP:** `factory_speech_*`, `factory_voice_*` (Factory API 1.40.0), `agent_speech_*`, `agent_voice_list` (Agent API 4.14.0).
-- **Звуковые эффекты и музыка (BL-253, ADR 0057 поправка 2, `ELEVENLABS_SFX_MUSIC_PLAN.md`):** виды заданий `sfx` (`/v1/sound-generation`) и `music` (`/v1/music`, `music_v2_5`) в `elevenlabs-speech`; `factory_sfx_create_job` / `factory_music_create_job` (Factory API 1.45.0), результат через `factory_speech_get_job`; тот же выключатель и лимиты, в кредитах (эффект 40/с, музыка ≈900/мин); файлы `sfx-1.*` / `music-1.*`. Воркерам каналов не выдано. **На ветке, не влито.**
+- **Звуковые эффекты и музыка (BL-253, ADR 0057 поправка 2, `ELEVENLABS_SFX_MUSIC_PLAN.md`):** виды заданий `sfx` (`/v1/sound-generation`) и `music` (`/v1/music`, `music_v2_5`) в `elevenlabs-speech`; `factory_sfx_create_job` / `factory_music_create_job` (Factory API 1.45.0), результат через `factory_speech_get_job`; тот же выключатель и лимиты, в кредитах (эффект 40/с, музыка ≈900/мин); файлы `sfx-1.*` / `music-1.*`. Воркерам каналов не выдано. **Влито в `dev` (a74e6280), live 14.11.**
 - **Web:** Настройки → Облачные API → ElevenLabs; Медиа → Музыка → «Голоса»; `/api/elevenlabs-speech*`, `/api/channels/[channelId]/voices*`.
 - **Риски:** RISK-142, RISK-143, RISK-144.
 
