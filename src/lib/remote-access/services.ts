@@ -20,7 +20,9 @@ export function stateFromJson(json: string | null): RemoteAccessState {
   const hash = hex(raw.passwordHash);
   const salt = hex(raw.salt);
   return {
-    enabled: raw.enabled === true && hash !== null && salt !== null,
+    // Owner msg 4228: ON by default once a password exists; off only when the owner switched it off. Still nothing gets in without
+    // a password and `tailscale serve` running.
+    enabled: raw.enabled !== false && hash !== null && salt !== null,
     passwordHash: hash && salt ? hash : null,
     salt: hash && salt ? salt : null,
     epoch: Number.isInteger(raw.epoch) && (raw.epoch as number) > 0 ? (raw.epoch as number) : DEFAULT_REMOTE_ACCESS_STATE.epoch,
@@ -68,8 +70,10 @@ export function createRemoteAccessServices(deps: RemoteAccessDeps) {
           throw new DomainError({ code: "validation_failed", message: `The password needs at least ${REMOTE_ACCESS_LIMITS.minPasswordChars} characters.`, details: { field: "password" } });
         }
         const s = await load();
+        const raw = await deps.store.read().then((j) => { try { return j ? (JSON.parse(j) as Record<string, unknown>) : {}; } catch { return {}; } });
         const salt = randomBytes(16);
-        const next: RemoteAccessState = { ...s, passwordHash: await hashPassword(password, salt), salt: salt.toString("hex"), epoch: s.epoch + 1, failures: [], lockedUntil: null };
+        // owner msg 4228: setting a password turns access on unless the owner had switched it off explicitly
+        const next: RemoteAccessState = { ...s, enabled: raw.enabled !== false, passwordHash: await hashPassword(password, salt), salt: salt.toString("hex"), epoch: s.epoch + 1, failures: [], lockedUntil: null };
         await save(next);
         return statusOf(next);
       });

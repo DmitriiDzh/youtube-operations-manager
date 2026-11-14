@@ -66,7 +66,11 @@ test("AC-RA-4: password >= 8 characters, stored as a scrypt hash (never the pass
   assert.equal(await code(svc.setPassword("short7c")), "validation_failed");
   await svc.setPassword("correct horse");
   assert.equal(file()!.includes("correct horse"), false);
-  assert.equal(await code(svc.verifyPassword("correct horse", null)), "remote_access_disabled"); // switch still off
+  assert.equal((await svc.status()).enabled, true); // owner msg 4228: on by default once a password exists
+  await svc.setEnabled(false);
+  assert.equal(await code(svc.verifyPassword("correct horse", null)), "remote_access_disabled"); // switched off explicitly
+  await svc.setPassword("correct horse"); // a new password keeps an explicit off
+  assert.equal((await svc.status()).enabled, false);
   await svc.setEnabled(true);
   assert.equal(await code(svc.verifyPassword("wrong pass", null)), "remote_access_bad_password");
   assert.equal(await code(svc.verifyPassword("correct horse", null)), "ok");
@@ -103,8 +107,11 @@ test("AC-RA-6: a password change or the switch going off ends earlier phone sess
   assert.equal((await svc.status()).ownerLogin, null); // switch-off forgets the pinned login
 });
 
-test("a damaged state file never opens remote access", () => {
+test("a damaged state file never opens remote access; with a valid password the default is on (owner msg 4228)", () => {
   assert.equal(stateFromJson("{not json").enabled, false);
   assert.equal(stateFromJson(JSON.stringify({ enabled: true })).enabled, false); // no password
   assert.equal(stateFromJson(JSON.stringify({ enabled: true, passwordHash: "zz", salt: "zz" })).enabled, false);
+  const hex = "ab".repeat(16);
+  assert.equal(stateFromJson(JSON.stringify({ passwordHash: hex, salt: hex })).enabled, true);
+  assert.equal(stateFromJson(JSON.stringify({ enabled: false, passwordHash: hex, salt: hex })).enabled, false);
 });

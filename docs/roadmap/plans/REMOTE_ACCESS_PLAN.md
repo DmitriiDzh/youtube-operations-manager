@@ -10,7 +10,7 @@ owner's own tailnet only, never from the LAN or the internet. New ADR.
   owner's account) publishes it to the tailnet as `https://<mac>.<tailnet>.ts.net` with a real certificate. No Funnel.
 - A request is **remote** when its Host is not loopback OR it carries a proxy header (`X-Forwarded-For`, `X-Forwarded-Host`,
   `Forwarded`, `Tailscale-User-Login`) -- whatever `tailscale serve` does with Host.
-- New feature module `src/lib/remote-access/` (AGENTS.md §M): the switch «Доступ с других устройств» (default OFF), a password
+- New feature module `src/lib/remote-access/` (AGENTS.md §M): the switch «Доступ с других устройств» (ON by default once a password is set, owner msg 4228; off only when switched off), a password
   stored as a scrypt hash (app setting; never the password), a failed-attempt counter.
 - `src/lib/loopback-guard`: a request with a proxy header is never loopback -> every MCP endpoint and every loopback-only route
   stays Mac-only through tailscale serve too.

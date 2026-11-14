@@ -28,7 +28,7 @@ export type RemoteAccessState = {
 };
 
 export const DEFAULT_REMOTE_ACCESS_STATE: RemoteAccessState = Object.freeze({
-  enabled: false,
+  enabled: false, // no password yet; with one, the switch is on unless the owner turned it off (owner msg 4228)
   passwordHash: null,
   salt: null,
   epoch: 1,

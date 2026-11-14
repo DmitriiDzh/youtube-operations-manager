@@ -19,7 +19,7 @@ network-exposure gate (CSRF, a reachability inventory, deployment assumptions) t
   `x-forwarded-*` from the socket on EVERY request (loopback values for the Mac's own), so presence alone means nothing
   (security review C1). Remote = a non-loopback Host or forwarded host, a non-loopback forwarded-for address, or any
   `Tailscale-User-*` / `Forwarded` header. Such a request is never loopback: MCP and loopback-only routes stay Mac-only.
-- **The gate (`src/proxy.ts`, pages and APIs, before every exemption):** the switch «Доступ с других устройств» (default off) off
+- **The gate (`src/proxy.ts`, pages and APIs, before every exemption):** the switch «Доступ с других устройств» (on by default once a password is set, owner msg 4228) off
   → 403; MCP, device handoff / sync, moving or replacing cloud keys (Gemini, ElevenLabs, RunPod, HF, GitHub), agent tokens,
   Google sign-in / cloud connection (localhost callbacks), this computer's paths, the hub relay secret, disconnecting a
   channel, the operation lock and the remote-access settings → 403 Mac-only; a mutating method needs an `Origin` whose host is the request's
