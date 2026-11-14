@@ -67,6 +67,8 @@ const DOMAIN_ERROR_STATUS = {
   hf_gate_not_accepted: 403,
   github_unavailable: 502,
   social_not_configured: 409,
+  social_approval_stale: 409,
+  social_account_mismatch: 409,
   social_posting_disabled: 409,
   social_https_required: 409,
   social_unavailable: 502,

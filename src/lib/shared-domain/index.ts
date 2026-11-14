@@ -91,6 +91,8 @@ export type DomainErrorCode =
   | "github_unavailable"
   // BL-252 (ADR 0068): the social gateway (cross-posting).
   | "social_not_configured"
+  | "social_approval_stale"
+  | "social_account_mismatch"
   | "social_posting_disabled"
   | "social_https_required"
   | "social_unavailable"

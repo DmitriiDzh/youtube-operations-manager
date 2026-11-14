@@ -67,7 +67,8 @@ test("merge numbering: the current schema is 90 with both branches' tables", asy
   // v119: BL-245 analytics_freshness_probes (owner 2026-11-06: a new additive migration, not a renumbering).
   // v120: BL-248 review_notify_ledger (ADR 0066: a new additive migration, not a renumbering).
   // v121: BL-252 social_accounts (ADR 0068: a new additive migration, not a renumbering).
-  assert.equal(SCHEMA_CURRENT_VERSION, 121);
+  // v122: BL-252 social_post_jobs (ADR 0068 amendment 1: a new additive migration, not a renumbering).
+  assert.equal(SCHEMA_CURRENT_VERSION, 122);
   await withDb(async (client) => {
     await initializeDatabaseSchema(client);
     const t = await tables(client);
