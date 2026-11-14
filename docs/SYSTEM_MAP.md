@@ -1392,12 +1392,13 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 
 ## 4. Статус компонентов
 
-### 2.9bk Кросс-постинг в другие сети (BL-252, ADR 0068, `docs/roadmap/plans/CROSS_POSTING_PLAN.md`) — **этап 1 в ветке** (feature/bl-252-cross-posting)
+### 2.9bk Кросс-постинг в другие сети (BL-252, ADR 0068, `docs/roadmap/plans/CROSS_POSTING_PLAN.md`) — **этап 1 IMPLEMENTED** (dev 72a9ae25)
 - `src/lib/social-gateway/` — единственный шлюз к API соцсетей (сейчас `meta.ts`: окно согласия, обмен кода на долгий токен,
   `/me/accounts` с привязанным Instagram); `inventory.test.ts` не пускает другие файлы к хостам Meta.
 - `src/lib/cross-posting/` (модуль-фича): приложение Meta (App ID + App Secret, device secret `meta_app`), подключение канала
   (одноразовый `state` 15 мин, выбор страницы), `social_accounts` (v121, device-local, токен страницы запечатан ключом устройства).
-- Маршруты `/api/social/*` (сохранение секрета и отключение — только Mac); карточка «Соцсети» в Настройки → Каналы.
+- Маршруты `/api/social/*`: App Secret и отключение — только Mac; подключение — только с HTTPS-адреса Tailscale (Meta не
+  принимает http://localhost). Карточка «Соцсети» в Настройки → Каналы.
   Публикации пока нет (этап 2, только с одобрения владельца). TikTok/Pinterest на паузе.
 
 ### 2.9bj YT Manager на телефоне (BL-254, `docs/roadmap/plans/MOBILE_UI_PLAN.md`) — **этап 1 IMPLEMENTED** (dev b38a79f4)
