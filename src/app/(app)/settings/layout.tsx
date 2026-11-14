@@ -56,7 +56,7 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
   return (
     <>
     <div className="max-w-3xl">
-      <div className="mb-6 inline-flex gap-1 rounded-lg bg-zinc-950 p-1">
+      <div className="ytom-tabrow mb-6 inline-flex gap-1 rounded-lg bg-zinc-950 p-1">
         {SETTINGS_SUB_TABS.map((tab) => (
           <button
             key={tab.value}

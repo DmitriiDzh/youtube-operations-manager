@@ -63,3 +63,27 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .ytom-nav-progress { animation: none; left: 0; width: 100%; opacity: 0.6; }
 }
+
+/* BL-254 (docs/roadmap/plans/MOBILE_UI_PLAN.md): phone-only rules. Everything here is inside max-width 767.98px, so a desktop
+   window renders exactly as before. A section's tab row scrolls sideways on one line instead of wrapping. */
+@media (max-width: 767.98px) {
+  .ytom-tabrow {
+    display: flex;
+    flex-wrap: nowrap;
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .ytom-tabrow::-webkit-scrollbar {
+    display: none;
+  }
+  .ytom-tabrow > * {
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+  /* iOS zooms into inputs under 16 px: phones get 16 px fields. */
+  input, select, textarea {
+    font-size: 16px;
+  }
+}
