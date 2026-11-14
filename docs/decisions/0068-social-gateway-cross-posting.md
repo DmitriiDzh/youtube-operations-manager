@@ -46,3 +46,5 @@ network with an API; each channel connects its own, chosen in the UI), 4279 (bac
    runner; `publishing` and `publishing-plans` never import `cross-posting`.
 6. **App mode:** while the Meta app is in development mode, posts are visible only to the app's roles (Meta App Modes doc);
    public posts need the app Live, which needs a public Privacy Policy URL — an owner decision.
+7. **Social posts do not wait for YouTube** (owner msg 4360, «Оставь как есть»): an approved slot posts to its networks at its
+   time even if the YouTube upload did not happen -- the approval covers the whole package.

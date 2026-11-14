@@ -1392,7 +1392,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 
 ## 4. Статус компонентов
 
-### 2.9bk Кросс-постинг в другие сети (BL-252, ADR 0068, `docs/roadmap/plans/CROSS_POSTING_PLAN.md`) — **этап 1 IMPLEMENTED** (dev 72a9ae25)
+### 2.9bk Кросс-постинг в другие сети (BL-252, ADR 0068, `docs/roadmap/plans/CROSS_POSTING_PLAN.md`) — **этапы 1–2 IMPLEMENTED** (dev 72a9ae25, be7fecc6)
 - `src/lib/social-gateway/` — единственный шлюз к API соцсетей (сейчас `meta.ts`: окно согласия, обмен кода на долгий токен,
   `/me/accounts` с привязанным Instagram); `inventory.test.ts` не пускает другие файлы к хостам Meta.
 - `src/lib/cross-posting/` (модуль-фича): приложение Meta (App ID + App Secret, device secret `meta_app`), подключение канала
@@ -1400,7 +1400,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - Маршруты `/api/social/*`: App Secret и отключение — только Mac; подключение — только с HTTPS-адреса Tailscale (Meta не
   принимает http://localhost). Карточка «Соцсети» в Настройки → Каналы.
   Кнопка «Проверить» (AC-XP-8): ответ Meta о токене (действует, разрешения, страница, Instagram) против сохранённого.
-- **Этап 2 (ветка):** публикация идёт по слоту плана недели — блок `crossPost` в манифесте `yt-release-package/2`, одно
+- **Этап 2 (dev be7fecc6):** публикация идёт по слоту плана недели — блок `crossPost` в манифесте `yt-release-package/2`, одно
   одобрение владельца покрывает YouTube и соцсети (SHA-256 манифеста; sha256 видео обязателен). `publishing-plans`
   `socialSlotStates` (одобрение/вето/выпуск по отдельности, только этап packaged); `src/composition/cross-posting-plan.ts` +
   `cross-posting-runner.ts` (один исполнитель на процесс, тик раз в минуту из instrumentation). Шлюз: Instagram Reels
