@@ -39,7 +39,7 @@ export function AnalyticsTab({
 
   return (
     <div className="space-y-6">
-      <div className="flex gap-1 border-b border-zinc-800">
+      <div className="ytom-tabrow flex gap-1 border-b border-zinc-800">
         {SUB_TABS.map((tab) => (
           <button
             key={tab.key}

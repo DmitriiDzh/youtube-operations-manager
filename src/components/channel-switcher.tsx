@@ -55,13 +55,13 @@ export function ChannelSwitcher({ channelWork }: { channelWork?: readonly PlanCh
     <div className="relative" ref={containerRef}>
       <button
         onClick={() => setOpen((o) => !o)}
-        className="ml-2 rounded-full border border-border px-3 py-1 text-xs font-medium text-muted transition-colors hover:border-accent hover:text-white"
+        className="ml-2 rounded-full border border-border px-3 py-1 text-xs font-medium text-muted transition-colors hover:border-accent hover:text-white max-md:ml-0 max-md:whitespace-nowrap max-md:px-2.5"
       >
         {t("channelSwitcher.switch")}
       </button>
 
       {open && (
-        <div className="absolute left-0 z-50 mt-2 w-72 rounded-lg border border-zinc-700 bg-zinc-900 shadow-xl">
+        <div className="absolute left-0 z-50 mt-2 w-72 rounded-lg border border-zinc-700 bg-zinc-900 shadow-xl max-md:fixed max-md:inset-x-3 max-md:top-14 max-md:w-auto">
           <ul className="max-h-72 overflow-y-auto p-1">
             {channels === null && (
               <li className="px-3 py-2 text-xs text-zinc-500">{t("common.loading")}</li>

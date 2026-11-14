@@ -552,6 +552,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
     <AppShell
       navItems={navItemsWithBadges}
       activeTab={tab}
+      phonePrimary={["home", "content", "media", "analytics"]}
       onReviewDeviceSyncDivergence={() => router.push("/merge")}
       channel={channel ?? (channelSettled ? null : cachedHeaderChannel)}
       activeChannelId={summaryActiveChannelId}

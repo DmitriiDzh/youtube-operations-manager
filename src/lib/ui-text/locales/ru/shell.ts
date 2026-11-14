@@ -77,6 +77,10 @@ export const shell: Record<keyof typeof en, string> = {
   "shell.deviceSync": "Синхронизация компьютеров",
   "shell.navigating": "Открываю страницу…",
   "shell.signOut": "Выйти",
+  // BL-254: a phone's bottom bar and its «More» sheet.
+  "shell.phoneNav": "Разделы",
+  "shell.more": "Ещё",
+  "shell.closeMenu": "Закрыть меню",
   "shell.conflicts.ariaLabel": "Выберите, что оставить",
   "shell.switching.title": "Переключение канала…",
   "shell.switching.step": "Загружаем данные канала",

@@ -181,7 +181,7 @@ function TabBar<V extends string>({ tabs, current, onSelect, badges }: { tabs: R
   const setup = tabs.filter((item) => item.side === "setup");
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <div className="inline-flex flex-wrap gap-1 rounded-lg bg-zinc-950 p-1">{tabs.filter((item) => item.side !== "setup").map(button)}</div>
+      <div className="ytom-tabrow inline-flex flex-wrap gap-1 rounded-lg bg-zinc-950 p-1">{tabs.filter((item) => item.side !== "setup").map(button)}</div>
       {setup.length > 0 && <div className="ml-auto inline-flex gap-1 rounded-lg bg-zinc-950 p-1">{setup.map(button)}</div>}
     </div>
   );

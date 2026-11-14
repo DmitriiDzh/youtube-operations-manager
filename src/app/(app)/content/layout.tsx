@@ -31,7 +31,7 @@ export default function ContentLayout({ children }: { children: ReactNode }) {
   if (!tab) return <>{children}</>;
   return (
     <>
-      <div className="mb-4 inline-flex gap-1 rounded-lg bg-zinc-950 p-1" role="tablist">
+      <div className="ytom-tabrow mb-4 inline-flex gap-1 rounded-lg bg-zinc-950 p-1" role="tablist">
         {CONTENT_TABS.map((item) => (
           <button
             key={item.value}

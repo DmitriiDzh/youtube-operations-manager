@@ -77,6 +77,10 @@ export const shell = {
   "shell.deviceSync": "Device sync",
   "shell.navigating": "Opening the page…",
   "shell.signOut": "Sign out",
+  // BL-254: a phone's bottom bar and its «More» sheet.
+  "shell.phoneNav": "Sections",
+  "shell.more": "More",
+  "shell.closeMenu": "Close the menu",
   "shell.conflicts.ariaLabel": "Choose what to keep",
   "shell.switching.title": "Switching channel…",
   "shell.switching.step": "Loading the channel's data",
