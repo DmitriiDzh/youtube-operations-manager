@@ -115,6 +115,11 @@ run in parallel with the code. I prepare the texts and the demo video each revie
   (amended 2026-11-14: the Meta app enforces HTTPS and its validator refused http://localhost, owner msgs 4315/4319); an OAuth callback with a missing, reused
   or foreign `state` is refused.
 - AC-XP-13 A channel only ever posts to the networks it connected; the per-channel list is the user's setting.
+- AC-XP-15 Scheduling in one place (owner msg 4339): a post to any network is planned like a YouTube upload, in the same
+  interface -- one file, one day, several networks (YouTube + Instagram + Facebook...) from one entry; each network's own
+  time may differ. Where a network's API cannot schedule (Instagram), YTM publishes at the planned time itself (the
+  computer whose switch is on must be running then); where it can (Facebook Page `scheduled_publish_time`), the network
+  holds it. Approval covers the whole entry; changing it voids the approval (AC-XP-10).
 - AC-XP-14 AI disclosure on by default (Producer 2026-11-14: our narration is an ElevenLabs voice; Meta requires labelling
   realistic AI audio, ElevenLabs music terms ask for platform disclosure): every post carries the network's AI-generated
   content flag where its API has one; where it has none (to be checked against the docs at stage 2, UNVERIFIED for the
