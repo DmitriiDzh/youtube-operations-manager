@@ -121,6 +121,9 @@ run in parallel with the code. I prepare the texts and the demo video each revie
   running then) -- never hands a scheduled post to the network (Facebook `scheduled_publish_time` is not used): a veto or a
   change after approval must still stop it, and deleting posts is out of v1. Immediately before each mutating call: the
   approval hash, the switch and the identity read (AC-XP-8). Approval covers the whole entry; changing it voids it (AC-XP-10).
+- AC-XP-16 Publishing limits watched like the YouTube quota (owner msg 4356): per channel and network, "used N of the limit in
+  the last 24 h" (Instagram: `content_publishing_limit`; Facebook Reels: our own count, 30 per Page per 24 h, rolling). Near the
+  limit nothing is started and the reason is shown. Meta charges nothing for these calls.
 - AC-XP-14 AI disclosure on by default (Producer 2026-11-14: our narration is an ElevenLabs voice; Meta requires labelling
   realistic AI audio, ElevenLabs music terms ask for platform disclosure): every post carries the network's AI-generated
   content flag where its API has one -- verified 2026-11-14: `is_ai_generated=true` on the Instagram container and on the
