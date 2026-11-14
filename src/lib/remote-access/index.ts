@@ -7,7 +7,7 @@ import { createRemoteAccessServices, type RemoteAccessServices } from "./service
 // BL-251: the module's public surface. The state lives in `<app data>/remote-access.json` on THIS Mac (a device handoff copies
 // the database, never this file), written atomically with owner-only permissions.
 export * from "./contracts";
-export { hasProxyHeaders, isRemoteRequest, isSameOriginMutation, ownOrigin } from "./classify";
+export { hasRemoteForwarding, isRemoteRequest, isSameOriginMutation, ownHost } from "./classify";
 export { createRemoteAccessServices, stateFromJson, type RemoteAccessServices, type RemoteAccessStore } from "./services";
 
 const KEY = Symbol.for("youtube-operations-manager.remote-access");

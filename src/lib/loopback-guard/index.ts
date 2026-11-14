@@ -16,25 +16,41 @@ function hostnameOfHostHeader(host: string): string | null {
   return match ? match[1].toLowerCase() : null;
 }
 
-/**
- * BL-251 (REMOTE_ACCESS_PLAN.md AC-RA-2): headers a reverse proxy (tailscale serve) adds. A request carrying any of them came
- * through a proxy from another device -- never "from this computer", whatever its Host says.
- */
-export const PROXY_HEADERS = ["x-forwarded-for", "x-forwarded-host", "forwarded", "tailscale-user-login", "tailscale-user-name"] as const;
-
-export function hasProxyHeaders(headers: Headers): boolean {
-  return PROXY_HEADERS.some((name) => headers.get(name) !== null);
+/** A forwarded-for address of this computer: 127.x, ::1 or an IPv4-mapped 127.x (Next.js fills in the socket's own address). */
+function isLoopbackAddress(raw: string): boolean {
+  const a = raw.trim().replace(/^"|"$/g, "").replace(/^\[|\](:\d+)?$/g, "").toLowerCase();
+  return a === "::1" || a === "localhost" || /^127\./.test(a) || /^::ffff:127\./.test(a);
 }
 
-/** BL-251 AC-RA-1: REMOTE = Host is not a loopback name, or a proxy header is present. */
+/**
+ * BL-251 (REMOTE_ACCESS_PLAN.md AC-RA-1/2), measured 2026-11-14 on a real `tailscale serve` (1.104.7): it keeps the tailnet Host
+ * (`mac-mini.<tailnet>.ts.net`), sets `X-Forwarded-For` to the client's tailnet address and `X-Forwarded-Host`, and writes
+ * `Tailscale-User-Login/-Name` (overwriting forged ones). Next.js itself fills in `x-forwarded-for/-host/-proto/-port` from the
+ * socket on EVERY request (loopback values for a local one), so their mere presence means nothing: what counts is a
+ * `Tailscale-User-*` or `Forwarded` header, a non-loopback forwarded-for address, or a non-loopback forwarded host.
+ */
+export function hasRemoteForwarding(headers: Headers): boolean {
+  if (headers.get("tailscale-user-login") !== null || headers.get("tailscale-user-name") !== null) return true;
+  if (headers.get("forwarded") !== null) return true;
+  const xff = headers.get("x-forwarded-for");
+  if (xff !== null && xff.split(",").some((part) => part.trim() !== "" && !isLoopbackAddress(part))) return true;
+  const xfh = headers.get("x-forwarded-host");
+  if (xfh !== null) {
+    const hostname = hostnameOfHostHeader(xfh.split(",")[0]);
+    if (!hostname || !LOOPBACK_HOSTNAMES.has(hostname)) return true;
+  }
+  return false;
+}
+
+/** BL-251 AC-RA-1: REMOTE = Host is not a loopback name, or the request was forwarded from another device. */
 export function isRemoteRequest(headers: Headers): boolean {
   const hostname = hostnameOfHostHeader(headers.get("host") ?? "");
   if (!hostname || !LOOPBACK_HOSTNAMES.has(hostname)) return true;
-  return hasProxyHeaders(headers);
+  return hasRemoteForwarding(headers);
 }
 
 export function isLoopbackRequest(headers: Headers): boolean {
-  if (hasProxyHeaders(headers)) return false; // BL-251: forwarded by tailscale serve (or any proxy) -> not this computer
+  if (hasRemoteForwarding(headers)) return false; // BL-251: forwarded from another device -> not this computer
   const host = headers.get("host");
   if (!host) return false;
   const hostname = hostnameOfHostHeader(host);

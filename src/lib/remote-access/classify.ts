@@ -1,18 +1,25 @@
-import { hasProxyHeaders, isRemoteRequest } from "@/lib/loopback-guard";
+import { hasRemoteForwarding, isRemoteRequest } from "@/lib/loopback-guard";
 
-export { hasProxyHeaders, isRemoteRequest };
+export { hasRemoteForwarding, isRemoteRequest };
 
-/** The request's own origin as the browser on the phone sees it (scheme from the proxy, host from X-Forwarded-Host / Host). */
-export function ownOrigin(headers: Headers): string | null {
+/** The host the browser on the phone talked to (tailscale serve keeps it in Host and X-Forwarded-Host). */
+export function ownHost(headers: Headers): string | null {
   const host = headers.get("x-forwarded-host") ?? headers.get("host");
-  if (!host) return null;
-  const proto = (headers.get("x-forwarded-proto") ?? "https").split(",")[0].trim();
-  return `${proto}://${host.split(",")[0].trim()}`.toLowerCase();
+  return host ? host.split(",")[0].trim().toLowerCase() : null;
 }
 
-/** CSRF (the network-exposure gate): a mutating remote request must come from a page of this same origin. */
+/**
+ * CSRF (the network-exposure gate): a mutating remote request must come from a page of this same host. The scheme is not
+ * compared: `tailscale serve` sends no X-Forwarded-Proto, and Next.js then fills in `http` for an https page (review M1).
+ */
 export function isSameOriginMutation(headers: Headers): boolean {
   const origin = headers.get("origin");
-  const own = ownOrigin(headers);
-  return origin !== null && own !== null && origin.toLowerCase() === own;
+  const own = ownHost(headers);
+  if (origin === null || own === null) return false;
+  try {
+    const url = new URL(origin);
+    return (url.protocol === "https:" || url.protocol === "http:") && url.host.toLowerCase() === own;
+  } catch {
+    return false;
+  }
 }

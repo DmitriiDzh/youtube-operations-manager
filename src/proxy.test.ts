@@ -512,7 +512,9 @@ test("AC-HM-11: /api/mcp is not blocked by the operation lock, while another mut
 });
 
 // ---- BL-251 (docs/roadmap/plans/REMOTE_ACCESS_PLAN.md AC-RA-3/6): requests from the owner's other devices (tailscale serve).
-const TS = { host: "127.0.0.1:3000", "x-forwarded-for": "100.64.0.7", "x-forwarded-host": "mac.tail1234.ts.net", "x-forwarded-proto": "https", "tailscale-user-login": "owner@example.com" };
+// What a real `tailscale serve` delivered (measured 2026-11-14); and what Next.js adds to the Mac's own requests.
+const TS = { host: "mac.tail1234.ts.net", "x-forwarded-for": "100.64.0.7", "x-forwarded-host": "mac.tail1234.ts.net", "tailscale-user-login": "owner@example.com", "tailscale-user-name": "Owner" };
+const NEXT_LOCAL = { host: "127.0.0.1:3000", "x-forwarded-for": "::ffff:127.0.0.1", "x-forwarded-host": "127.0.0.1:3000", "x-forwarded-proto": "http", "x-forwarded-port": "3000" };
 const remoteReq = (method: string, pathname: string, extra: Record<string, string> = {}) =>
   new NextRequest(new Request(`http://127.0.0.1:3000${pathname}`, { method, headers: { ...TS, ...extra } }));
 
@@ -532,12 +534,17 @@ test("AC-RA-3: switch off -- every remote request is refused, a page and an API;
   assert.equal((await api.json()).error, "remote_access_disabled");
   assert.equal((await proxy(remoteReq("POST", "/api/device-handoff/export", { origin: "https://mac.tail1234.ts.net" }))).status, 403); // before its exemption
   assert.equal((await proxy(readRequest("/api/channels"))).status, 200);
+  // security review C1: the Mac's own request carries Next's loopback x-forwarded-* -- it must still pass with the switch off
+  assert.equal((await proxy(new NextRequest(new Request("http://127.0.0.1:3000/api/channels", { headers: NEXT_LOCAL })))).status, 200);
+  assert.equal((await proxy(new NextRequest(new Request("http://127.0.0.1:3000/home", { headers: NEXT_LOCAL })))).status, 200);
 });
 
 test("AC-RA-3: switch on -- MCP and Mac-only routes 403, CSRF origin enforced, the password callback passes", async () => {
   await remoteOn(true);
   const origin = { origin: "https://mac.tail1234.ts.net" };
-  for (const p of ["/api/mcp", "/api/mcp/factory", "/api/agent-tokens", "/api/cloud-credentials/export", "/api/auth/signin/google"]) {
+  for (const p of ["/api/mcp", "/api/mcp/factory", "/api/agent-tokens", "/api/cloud-credentials/export", "/api/auth/signin/google",
+    "/api/gemini-media/key", "/api/elevenlabs-speech/key", "/api/media-generation/credentials", "/api/logical-paths/value",
+    "/api/channel-connections/disconnect"]) {
     const r = await proxy(remoteReq("POST", p, origin));
     assert.equal(r.status, 403, p);
     assert.equal((await r.json()).error, "remote_access_mac_only", p);

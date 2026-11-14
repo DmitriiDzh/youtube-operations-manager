@@ -97,6 +97,16 @@ const REMOTE_BLOCKED_PREFIXES = [
   "/api/operation-lock",
   "/api/auth/signin/google",
   "/api/auth/callback/google",
+  // security review M2: replacing a cloud key (paid usage would go to another account), this computer's paths, the hub's
+  // relay secret and disconnecting a channel are the owner's on the Mac too.
+  "/api/gemini-media/key",
+  "/api/elevenlabs-speech/key",
+  "/api/media-generation/hf-token",
+  "/api/media-generation/github-token",
+  "/api/media-generation/credentials",
+  "/api/logical-paths/value",
+  "/api/system-topic/relay-secret",
+  "/api/channel-connections/disconnect",
 ];
 
 function blocked(status: number, code: string, message: string, api: boolean) {

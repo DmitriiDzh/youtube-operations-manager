@@ -4,7 +4,7 @@
 # the owner's devices through with HTTPS. Never Funnel (the public internet). Turn the switch on in Settings -> General ->
 # "Access from other devices" and set a password there too: without them every remote request is refused.
 #   remote-access.sh enable   -> tailscale serve --bg --https=443 http://127.0.0.1:<port>
-#   remote-access.sh disable  -> tailscale serve reset
+#   remote-access.sh disable  -> tailscale serve --https=443 off
 #   remote-access.sh status   -> what is served, and the address to open on the phone
 # Exit codes: 0 ok, 1 Tailscale missing / not signed in / the command failed, 2 bad usage.
 set -u
@@ -25,7 +25,7 @@ case "${1:-}" in
     echo "Served. On your phone (Tailscale on, same account) open: https://$(name)/"
     ;;
   disable)
-    "$TS" serve reset || exit 1
+    "$TS" serve --https=443 off || exit 1  # only ours: never `serve reset` (it would drop the owner's other serve setups)
     echo "Not served any more: other devices cannot reach YT Manager."
     ;;
   status)

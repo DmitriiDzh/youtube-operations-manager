@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { isDomainError } from "@/lib/shared-domain";
-import { hasProxyHeaders, isLoopbackRequest, isRemoteRequest } from "@/lib/loopback-guard";
+import { hasRemoteForwarding, isLoopbackRequest, isRemoteRequest } from "@/lib/loopback-guard";
 import { isSameOriginMutation } from "./classify";
 import { createRemoteAccessServices, stateFromJson } from "./services";
 
@@ -9,27 +9,39 @@ import { createRemoteAccessServices, stateFromJson } from "./services";
 
 const h = (o: Record<string, string>) => new Headers(o);
 
-test("AC-RA-1: a ts.net Host or any proxy header makes a request remote; plain loopback stays local", () => {
-  assert.equal(isRemoteRequest(h({ host: "mac-mini.tail1234.ts.net" })), true);
-  assert.equal(isRemoteRequest(h({ host: "127.0.0.1:3000", "x-forwarded-for": "100.64.0.7" })), true);
-  assert.equal(isRemoteRequest(h({ host: "localhost:3000", "tailscale-user-login": "owner@example.com" })), true);
+// Real header sets, measured 2026-11-14 (security review C1 + a real `tailscale serve` 1.104.7 on this Mac):
+// Next.js fills these in on EVERY request from the socket -- here a plain local `curl http://127.0.0.1:3000`.
+const NEXT_LOCAL = { host: "127.0.0.1:3000", "x-forwarded-for": "::ffff:127.0.0.1", "x-forwarded-host": "127.0.0.1:3000", "x-forwarded-proto": "http", "x-forwarded-port": "3000" };
+// What `tailscale serve` delivered for a tailnet request (forged Tailscale-User-Login / X-Forwarded-For were overwritten).
+const TAILSCALE = { host: "mac-mini.tail15ae15.ts.net", "x-forwarded-for": "100.92.125.11", "x-forwarded-host": "mac-mini.tail15ae15.ts.net", "tailscale-user-login": "owner@example.com", "tailscale-user-name": "Owner" };
+
+test("AC-RA-1: the Mac's own requests (with Next's loopback x-forwarded-*) are local; tailscale serve's are remote", () => {
+  assert.equal(isRemoteRequest(h(NEXT_LOCAL)), false);
+  assert.equal(isRemoteRequest(h({ ...NEXT_LOCAL, "x-forwarded-for": "::1" })), false);
+  assert.equal(isRemoteRequest(h({ ...NEXT_LOCAL, host: "localhost:3000", "x-forwarded-host": "localhost:3000", "x-forwarded-for": "127.0.0.1" })), false);
+  assert.equal(isRemoteRequest(h(TAILSCALE)), true);
+  // a proxy that rewrote Host to loopback is still caught by any one of its marks
+  assert.equal(isRemoteRequest(h({ ...NEXT_LOCAL, "x-forwarded-for": "100.92.125.11" })), true);
+  assert.equal(isRemoteRequest(h({ ...NEXT_LOCAL, "x-forwarded-host": "mac-mini.tail15ae15.ts.net" })), true);
+  assert.equal(isRemoteRequest(h({ ...NEXT_LOCAL, "tailscale-user-login": "owner@example.com" })), true);
+  assert.equal(isRemoteRequest(h({ ...NEXT_LOCAL, forwarded: "for=100.64.0.7" })), true);
+  assert.equal(isRemoteRequest(h({ ...NEXT_LOCAL, "x-forwarded-for": "100.64.0.7, 127.0.0.1" })), true);
   assert.equal(isRemoteRequest(h({})), true); // no Host at all: fail closed
-  assert.equal(isRemoteRequest(h({ host: "127.0.0.1:3000" })), false);
-  assert.equal(isRemoteRequest(h({ host: "localhost:3000" })), false);
-  assert.equal(hasProxyHeaders(h({ forwarded: "for=100.64.0.7" })), true);
+  assert.equal(hasRemoteForwarding(h(NEXT_LOCAL)), false);
 });
 
-test("AC-RA-2: isLoopbackRequest is false whenever a proxy header is present (MCP stays Mac-only through tailscale serve)", () => {
-  assert.equal(isLoopbackRequest(h({ host: "127.0.0.1:3000" })), true);
-  assert.equal(isLoopbackRequest(h({ host: "127.0.0.1:3000", "x-forwarded-host": "mac.tail1234.ts.net" })), false);
-  assert.equal(isLoopbackRequest(h({ host: "127.0.0.1:3000", "tailscale-user-login": "owner@example.com" })), false);
+test("AC-RA-2: isLoopbackRequest stays true for the Mac (agents keep working) and is false through tailscale serve", () => {
+  assert.equal(isLoopbackRequest(h(NEXT_LOCAL)), true);
+  assert.equal(isLoopbackRequest(h({ ...TAILSCALE, host: "127.0.0.1:3000" })), false);
+  assert.equal(isLoopbackRequest(h(TAILSCALE)), false);
 });
 
-test("CSRF: a remote mutation must carry this origin", () => {
-  const base = { host: "127.0.0.1:3000", "x-forwarded-host": "mac.tail1234.ts.net", "x-forwarded-proto": "https" };
-  assert.equal(isSameOriginMutation(h({ ...base, origin: "https://mac.tail1234.ts.net" })), true);
-  assert.equal(isSameOriginMutation(h({ ...base, origin: "https://evil.example" })), false);
-  assert.equal(isSameOriginMutation(h(base)), false); // no Origin
+test("CSRF: a remote mutation must come from a page of this same host (scheme not compared: no X-Forwarded-Proto)", () => {
+  assert.equal(isSameOriginMutation(h({ ...TAILSCALE, origin: "https://mac-mini.tail15ae15.ts.net" })), true);
+  assert.equal(isSameOriginMutation(h({ ...TAILSCALE, "x-forwarded-proto": "http", origin: "https://mac-mini.tail15ae15.ts.net" })), true);
+  assert.equal(isSameOriginMutation(h({ ...TAILSCALE, origin: "https://evil.example" })), false);
+  assert.equal(isSameOriginMutation(h({ ...TAILSCALE, origin: "null" })), false);
+  assert.equal(isSameOriginMutation(h(TAILSCALE)), false); // no Origin
 });
 
 function services(start = 1_000_000) {
