@@ -59,6 +59,9 @@ how it should look on a phone, as a professional UI/UX designer, **without chang
 ## Acceptance criteria
 - AC-M-1 At 390 × 844 no route scrolls the page sideways (an automated check over every route: `scrollWidth <= innerWidth`).
 - AC-M-2 At 1440 × 900 and 1280 × 800 every route renders pixel-identical before / after each stage (screenshot diff).
+  Stage 1 was checked by computed layout (sidebar 240 px, header 64 px, padding 24 px, bottom bar `display:none` at 1440 px)
+  on a sandboxed copy of the data, not by a pixel diff; the theme colour was then limited to phones (review: desktop Safari
+  tinted its tab bar). Later stages add a pixel diff of the same pages before / after.
 - AC-M-3 Every primary action of jobs 1–2 is reachable with one thumb: ≥ 44 px targets, inside the bottom 40 % of the
   screen or in a sticky bar.
 - AC-M-4 Inputs are ≥ 16 px on a phone (no iOS zoom); nothing depends on hover.

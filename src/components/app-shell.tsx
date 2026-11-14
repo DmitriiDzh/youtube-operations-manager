@@ -6,7 +6,7 @@
 // every existing tab's own content component is rendered completely unchanged inside it.
 import Link, { useLinkStatus } from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState, type ComponentType, type MouseEvent, type ReactNode, type SVGProps } from "react";
+import { useEffect, useRef, useState, type ComponentType, type MouseEvent, type ReactNode, type SVGProps } from "react";
 import type { ChannelInfo } from "@/components/app-channel";
 import type { PlanChannelWork } from "@/lib/generation-plans/contracts";
 import { ChannelSwitcher } from "./channel-switcher";
@@ -202,6 +202,21 @@ function PhoneNav<T extends string>(props: {
   const pathname = usePathname();
   const [openedAt, setOpenedAt] = useState(pathname);
   if (open && openedAt !== pathname) setOpen(false); // a section chosen in the sheet closes it (adjust state during render)
+  const sheetRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    sheetRef.current?.querySelector<HTMLElement>("a, button")?.focus(); // focus moves into the sheet
+    const trigger = triggerRef.current;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      trigger?.focus(); // and back to «Ещё» when it closes
+    };
+  }, [open]);
   const primary = props.items.filter((item) => props.primary.includes(item.value));
   const rest = props.items.filter((item) => !props.primary.includes(item.value));
   const restActive = rest.some((item) => item.value === props.selected);
@@ -228,7 +243,7 @@ function PhoneNav<T extends string>(props: {
             </Link>
           );
         })}
-        <button type="button" aria-expanded={open} onClick={() => { setOpenedAt(pathname); setOpen(!open); }} className={cell(restActive || open)}>
+        <button ref={triggerRef} type="button" aria-expanded={open} onClick={() => { setOpenedAt(pathname); setOpen(!open); }} className={cell(restActive || open)}>
           <svg aria-hidden viewBox="0 0 24 24" className={restActive ? "h-6 w-6 text-accent" : "h-6 w-6"} fill="currentColor">
             <circle cx="5" cy="12" r="1.8" />
             <circle cx="12" cy="12" r="1.8" />
@@ -241,7 +256,7 @@ function PhoneNav<T extends string>(props: {
       {open && (
         <div className="fixed inset-0 z-50 md:hidden" role="dialog" aria-modal="true" aria-label={t("shell.more")}>
           <button type="button" aria-label={t("shell.closeMenu")} className="absolute inset-0 bg-black/60" onClick={() => setOpen(false)} />
-          <div className="absolute inset-x-0 bottom-0 max-h-[80vh] overflow-y-auto rounded-t-2xl border-t border-border bg-sidebar px-2 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-2">
+          <div ref={sheetRef} className="absolute inset-x-0 bottom-0 max-h-[80vh] overflow-y-auto rounded-t-2xl border-t border-border bg-sidebar px-2 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-2">
             <div aria-hidden className="mx-auto mb-2 h-1 w-10 rounded-full bg-zinc-700" />
             {rest.map((item) => {
               const Icon = item.icon;

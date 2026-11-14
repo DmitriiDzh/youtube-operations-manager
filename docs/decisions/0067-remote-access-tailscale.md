@@ -56,3 +56,9 @@ ADR 0029 §5's loopback-only rule. They now accept `isOwnerBrowserRequest`: this
 through the proxy's remote gate (switch on, a current phone session: epoch + pinned Tailscale login) and still passes the
 route's own session check. A request with a loopback Host and a foreign Origin (a page aiming at localhost) stays refused.
 The System topic routes keep the loopback-only rule.
+
+**Amendment 3 (2026-11-14, independent review of amendments 1–2).** The proxy now requires a current phone session for every
+remote `/api/*` request, except the sign-in (`/api/auth/*`), the presence ping and the remote-access status read (both GET);
+before, a remote request without a cookie went on to the route, whose own session check was then the only barrier. The
+Mac-only list is matched on the decoded path (`/api/%6Dcp` is `/api/mcp`). The theme colour applies only below 768 px (desktop
+Safari had tinted its tab bar).

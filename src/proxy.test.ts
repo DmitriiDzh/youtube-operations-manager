@@ -605,3 +605,18 @@ test("BL-251 (msg 4236): the shell's status reads work from a phone session; the
     else process.env.NEXTAUTH_SECRET = previous;
   }
 });
+
+test("BL-251 hardening (review 14.11): a remote API call without a session stops at the proxy; sign-in, presence and the status read pass; an encoded Mac-only path is still Mac-only", async () => {
+  await remoteOn(true);
+  const origin = { origin: "https://mac.tail1234.ts.net" };
+  const media = await proxy(remoteReq("GET", "/api/channels/UC_A/clip-reviews/c1/video"));
+  assert.equal(media.status, 401, "a page via DNS rebinding or another tailnet device has no cookie: refused before the route");
+  assert.equal((await proxy(remoteReq("GET", "/api/presence"))).status, 200, "the page's presence ping before sign-in");
+  assert.equal((await proxy(remoteReq("GET", "/api/remote-access"))).status, 200, "the login page's status read");
+  assert.equal((await proxy(remoteReq("POST", "/api/auth/callback/remote-password", origin))).status, 200, "the sign-in itself");
+  const encoded = await proxy(remoteReq("POST", "/api/%6Dcp", origin));
+  assert.equal(encoded.status, 403);
+  assert.equal((await encoded.json()).error, "remote_access_mac_only");
+  // local requests are untouched: no session needed at the proxy
+  assert.equal((await proxy(new NextRequest(new Request("http://127.0.0.1:3000/api/channels/UC_A/clip-reviews/c1/video", { headers: { host: "127.0.0.1:3000" } })))).status, 200);
+});
