@@ -9,7 +9,7 @@ OK covers ElevenLabs on Producer requests within the YTM limits. Extends `src/li
   and `music` (POST `/v1/music`, model `music_v2_5`; `music_v1` is deprecated by ElevenLabs for 31.01.2027). Both through the
   media gateway's `elevenlabs-api.ts` (the one ElevenLabs gateway); the key never leaves YTM.
 - Factory API: `factory_sfx_create_job {channelId, text, durationSeconds? (0.5–30), promptInfluence? (0–1), loop?, outputFormat?,
-  requestId?, dryRun?, videoNumber?}` and `factory_music_create_job {channelId, prompt, durationSeconds (10–300),
+  requestId?, dryRun?, videoNumber?}` and `factory_music_create_job {channelId, prompt, durationSeconds (10–180: inside the call's 270 s timeout),
   forceInstrumental? (default true), outputFormat?, requestId?, dryRun?, videoNumber?}`; results with
   `factory_speech_get_job {jobId}` (kind `sfx` / `music`). Not given to channel workers (not asked).
 - Output: `99 Data Exchange/From YTM/elevenlabs/<jobId>/sfx-1.<ext>` / `music-1.<ext>`, manifest.json last
@@ -24,7 +24,7 @@ OK covers ElevenLabs on Producer requests within the YTM limits. Extends `src/li
 ## Acceptance criteria (before code)
 - AC-1 sfx with `durationSeconds: 1.2` is counted at ceil(40 × 1.2) = 48 credits; music 90 s at ceil(900 × 1.5) = 1,350.
 - AC-2 sfx without a duration reserves 1,200 credits for the limits; after the take it is counted at ceil(40 × the file's
-  length) (or the answer's `character-cost`), never more than 1,200.
+  length) (or the answer's `character-cost`), never more than 1,200; an mp3's length from its size and the format's bitrate.
 - AC-3 A dry run sends nothing and returns credits, the estimate and `allowed` / `refusal`; with the switch off or no key it
   still answers (refusal), a real job is refused.
 - AC-4 Over a limit (per job, day, month — the BL-250 account threshold included — or active jobs) the job is refused with
@@ -34,7 +34,7 @@ OK covers ElevenLabs on Producer requests within the YTM limits. Extends `src/li
   model_id}`; it writes `sfx-1.mp3` / `music-1.mp3` and the manifest last, registers the asset (`generated_audio`).
 - AC-6 Out-of-range inputs are refused before anything is stored (duration, prompt length, promptInfluence).
 - AC-7 Switching the module off fails queued sfx / music jobs unsent (0 credits), as speech.
-- AC-8 `factory_speech_get_job` returns an sfx / music job by id; speech-only listings keep working.
+- AC-8 `factory_speech_get_job` returns an sfx / music job by id; its listings include them (field `kind`), speech jobs unchanged.
 
 ## Not in scope
 Channel worker tools; composition plans / sections for music; stems; voice changer; the Settings card's wording beyond

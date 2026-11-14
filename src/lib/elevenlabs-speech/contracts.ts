@@ -43,13 +43,29 @@ export const ELEVENLABS_SFX_MODEL = "eleven_text_to_sound_v2";
 export const ELEVENLABS_MUSIC_MODEL = "music_v2_5";
 export const ELEVENLABS_AUDIO_PRICES_AS_OF = "2026-11-14";
 export const ELEVENLABS_SFX = Object.freeze({ creditsPerSecond: 40, minSeconds: 0.5, maxSeconds: 30, promptMaxChars: 1000 });
-export const ELEVENLABS_MUSIC = Object.freeze({ creditsPerMinute: 900, minSeconds: 10, maxSeconds: 300, promptMaxChars: 2000, usdPerMinute: 0.15 });
+/** maxSeconds 180 (review): a track must come back inside the call's 270 s timeout; the factory's use is 60-120 s. */
+export const ELEVENLABS_MUSIC = Object.freeze({ creditsPerMinute: 900, minSeconds: 10, maxSeconds: 180, promptMaxChars: 2000, usdPerMinute: 0.15 });
 /** List-price USD per credit for the spend views (the subscription pays): Eleven v4's per-character price. */
 export const ELEVENLABS_USD_PER_CREDIT = 0.08 / 1000;
 
 /** Credits a sound effect is counted at: 40/s of the given length, else the 30 s maximum reserved until its length is known. */
 export function sfxCredits(durationSeconds: number | null): number {
   return Math.ceil(ELEVENLABS_SFX.creditsPerSecond * (durationSeconds ?? ELEVENLABS_SFX.maxSeconds));
+}
+
+/** List-price USD of a music track (ElevenLabs API pricing: $0.15 per minute), from its credits. */
+export function musicUsd(credits: number): number {
+  return Math.ceil(((credits / ELEVENLABS_MUSIC.creditsPerMinute) * ELEVENLABS_MUSIC.usdPerMinute) * 10_000) / 10_000;
+}
+
+/**
+ * Seconds of a constant-bitrate mp3 from its size and the format's bitrate (`mp3_44100_128` → 128 kbps); null when the format names
+ * none. ElevenLabs encodes at the requested bitrate, so this is close enough to count an automatic-length sound effect (capped at its
+ * reservation anyway).
+ */
+export function mp3SecondsOf(format: string, bytes: number): number | null {
+  const m = /^mp3_\d+_(\d+)$/.exec(format);
+  return m ? (bytes * 8) / (Number(m[1]) * 1000) : null;
 }
 
 /** Credits a music track is counted at: 900 per minute of its length. */

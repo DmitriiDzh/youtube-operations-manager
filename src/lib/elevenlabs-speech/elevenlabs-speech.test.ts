@@ -692,7 +692,7 @@ test("BL-253 AC-4/AC-6: the speech limits hold (credits); out-of-range fields ar
     for (const bad of [sfx({ durationSeconds: 0.2 }), sfx({ durationSeconds: 31 }), sfx({ promptInfluence: 1.5 }), sfx({ text: "x".repeat(1001) }), sfx({ voice: "Sumire" })]) {
       await expectCode(h.services.createSoundJob(bad, "factory", "sfx"), "validation_failed");
     }
-    for (const bad of [music({ durationSeconds: 5 }), music({ durationSeconds: 301 }), music({ prompt: "" })]) {
+    for (const bad of [music({ durationSeconds: 5 }), music({ durationSeconds: 181 }), music({ prompt: "" })]) {
       await expectCode(h.services.createSoundJob(bad, "factory", "music"), "validation_failed");
     }
     assert.equal(h.store.jobs.size, 0);
@@ -749,6 +749,21 @@ test("BL-253 AC-7: switched off, a queued sound is failed unsent (0 credits)", a
     const row = h.store.jobs.get(job.jobId)!;
     assert.deepEqual([row.status, row.errorCode, row.chargedChars], ["failed", "elevenlabs_disabled", 0]);
     assert.equal(h.calls.length, 0);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("BL-253 review 1/2: an automatic-length sfx in the default mp3 is counted from size x bitrate (16 000 bytes at 128 kbps = 1 s = 40); music is priced at $0.15 a minute", async () => {
+  const h = await harness();
+  try {
+    h.behaviour.soundGeneration = async () => ({ audio: { mimeType: "audio/mpeg", data: Buffer.alloc(16_000) }, chargedChars: null, requestId: "r10" });
+    const { job } = (await h.services.createSoundJob(sfx({ durationSeconds: undefined }), "factory", "sfx")) as { job: { jobId: string } };
+    const m = (await h.services.createSoundJob(music(), "factory", "music")) as { job: { jobId: string; estimateUsd: number } };
+    assert.equal(m.job.estimateUsd, 0.225, "90 s at $0.15 a minute");
+    await h.runTick();
+    assert.equal(h.store.jobs.get(job.jobId)!.chargedChars, 40);
+    assert.equal(h.store.jobs.get(m.job.jobId)!.costUsd, 0.225);
   } finally {
     await h.cleanup();
   }

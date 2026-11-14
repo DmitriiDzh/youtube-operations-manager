@@ -10,6 +10,8 @@ import {
   ELEVENLABS_SFX_MODEL,
   ELEVENLABS_SPEECH_MODELS,
   ELEVENLABS_USD_PER_CREDIT,
+  mp3SecondsOf,
+  musicUsd,
   sfxCredits,
   isDomainError,
   ownEntry,
@@ -122,9 +124,11 @@ export function createElevenlabsWorker(deps: ElevenlabsSpeechDeps) {
     }
     const file = audioOfFormat(params.outputFormat, result.audio);
     // BL-253: a sound effect without a length reserved the 30 s maximum; it is counted at 40 credits per second of what came back.
-    const measured = job.kind === "sfx" && params.durationSeconds == null && file.durationSeconds ? Math.min(job.chars, sfxCredits(file.durationSeconds)) : null;
+    // An mp3 carries no length in its header here: its constant bitrate gives it (review finding 1).
+    const seconds = file.durationSeconds ?? mp3SecondsOf(params.outputFormat, file.data.length);
+    const measured = job.kind === "sfx" && params.durationSeconds == null && seconds ? Math.min(job.chars, sfxCredits(seconds)) : null;
     const chargedChars = result.chargedChars ?? measured ?? job.chars;
-    const costUsd = job.kind === "speech" ? listPriceUsd(job.model, chargedChars) : ceil4(chargedChars * ELEVENLABS_USD_PER_CREDIT);
+    const costUsd = job.kind === "speech" ? listPriceUsd(job.model, chargedChars) : job.kind === "music" ? musicUsd(chargedChars) : ceil4(chargedChars * ELEVENLABS_USD_PER_CREDIT);
     const costBasis: ElevenlabsCostBasis = "list_price";
     const stem = job.kind === "sfx" ? "sfx-1" : job.kind === "music" ? "music-1" : "take-1";
     const name = `${stem}.${file.extension}`;

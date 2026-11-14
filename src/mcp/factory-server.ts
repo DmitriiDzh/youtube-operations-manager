@@ -1493,7 +1493,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
   registerTool(
     "factory_sfx_create_job",
     {
-      description: `ONE sound effect through ElevenLabs Sound Effects (1.45.0, model eleven_text_to_sound_v2): { channelId, text (the sound, e.g. 'soft felt ding, short, warm'; <= 1000 characters), durationSeconds? (0.5-30; omitted: ElevenLabs picks it -- 1,200 credits (30 s) are reserved and the job is counted at 40 per second of the result), promptInfluence? (0-1, default 0.3: higher follows the prompt more literally), loop? (a seamless loop), ... } Credits: 40 per second (1.2 s = 48). Output: 99 Data Exchange/From YTM/elevenlabs/<jobId>/sfx-1.<mp3|wav>. ${SOUND_COMMON}`,
+      description: `ONE sound effect through ElevenLabs Sound Effects (1.45.0, model eleven_text_to_sound_v2): { channelId, text (the sound, e.g. 'soft felt ding, short, warm'; <= 1000 characters), durationSeconds? (0.5-30; omitted: ElevenLabs picks it -- 1,200 credits (30 s) are reserved against the limits until it finishes, then it is counted at 40 per second of the result; give it for a pack of short sounds so the reservations do not crowd the daily limit), promptInfluence? (0-1, default 0.3: higher follows the prompt more literally), loop? (a seamless loop), ... } Credits: 40 per second (1.2 s = 48). Output: 99 Data Exchange/From YTM/elevenlabs/<jobId>/sfx-1.<mp3|wav>. ${SOUND_COMMON}`,
       inputSchema: sfxCreateInput,
     },
     async (args) => {
@@ -1506,7 +1506,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
   registerTool(
     "factory_music_create_job",
     {
-      description: `ONE music track through ElevenLabs Music (1.45.0, model music_v2_5): { channelId, prompt (mood, instruments, tempo, structure; no artist names or song titles -- ElevenLabs Music terms; <= 2000 characters), durationSeconds (10-300), forceInstrumental? (default true: no vocals), ... } Credits: about 900 per minute (90 s = 1,350) -- the owner's per-job limit (default 2,000) allows about 2 minutes. Output: 99 Data Exchange/From YTM/elevenlabs/<jobId>/music-1.<mp3|wav>. ${SOUND_COMMON}`,
+      description: `ONE music track through ElevenLabs Music (1.45.0, model music_v2_5): { channelId, prompt (mood, instruments, tempo, structure; no artist names or song titles -- ElevenLabs Music terms; <= 2000 characters), durationSeconds (10-180: a longer track would not come back within the call's time limit), forceInstrumental? (default true: no vocals), ... } Credits: about 900 per minute (90 s = 1,350) -- the owner's per-job limit (default 2,000) allows about 2 minutes; list price $0.15 per minute. Output: 99 Data Exchange/From YTM/elevenlabs/<jobId>/music-1.<mp3|wav>. ${SOUND_COMMON}`,
       inputSchema: musicCreateInput,
     },
     async (args) => {

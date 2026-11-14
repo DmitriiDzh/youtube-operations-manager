@@ -17,6 +17,7 @@ import {
   ELEVENLABS_SFX_MODEL,
   ELEVENLABS_USD_PER_CREDIT,
   musicCredits,
+  musicUsd,
   sfxCredits,
   ELEVENLABS_PRICES_AS_OF,
   ELEVENLABS_SPEECH_MODELS,
@@ -623,7 +624,7 @@ export function createElevenlabsSpeechServices(deps: ElevenlabsSpeechDeps) {
         if (deps.videoLink) video = await deps.videoLink.resolve({ channelId: input.channelId, videoNumber: input.videoNumber ?? null, storyboardId: null });
         else if (input.videoNumber) throw new DomainError({ code: "video_not_found", message: "Video numbers are not available on this server", details: { videoNumber: input.videoNumber } });
         const chars = sfx ? sfxCredits(sfx.durationSeconds ?? null) : musicCredits(music!.durationSeconds);
-        const estimateUsd = ceil4(chars * ELEVENLABS_USD_PER_CREDIT);
+        const estimateUsd = sfx ? ceil4(chars * ELEVENLABS_USD_PER_CREDIT) : musicUsd(chars);
         const current = await usage();
         const refusal = precondition ?? limitRefusal(settings, current, chars, await monthlyLimit(settings, current));
         if (input.dryRun) {
