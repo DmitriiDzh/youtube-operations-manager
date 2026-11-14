@@ -28,6 +28,7 @@ export const errors: Record<keyof typeof en, string> = {
   "errors.hf_token_invalid": "Hugging Face не принял сохранённый токен. Введите новый токен чтения.",
   "errors.hf_gate_not_accepted": "Примите условия этого репозитория на Hugging Face под аккаунтом токена и попробуйте снова.",
   "errors.github_unavailable": "GitHub недоступен или отклонил запрос. Попробуйте позже.",
+  "errors.social_https_required": "Meta принимает только HTTPS-адрес: откройте YT Manager по адресу Tailscale (https://…ts.net) и подключите там.",
   "errors.social_not_configured": "Приложение соцсети ещё не настроено на этом компьютере.",
   "errors.social_unavailable": "Соцсеть недоступна. Попробуйте позже.",
   "errors.social_token_invalid": "Соцсеть отклонила подключение. Подключите аккаунт заново.",

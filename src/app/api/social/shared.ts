@@ -3,12 +3,12 @@ import { NextResponse } from "next/server";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
 import { authOptions } from "@/lib/auth";
 import { createCrossPostingCore, DomainError, type CrossPostingCore } from "@/lib/cross-posting";
-import { isLoopbackRequest } from "@/lib/loopback-guard";
+import { isRemoteRequest } from "@/lib/loopback-guard";
 import { isDomainError } from "@/lib/shared-domain";
 
 // BL-252 (ADR 0068): the owner's routes for Settings → Channels → Social networks. Web session required (401); a thin call into
-// the one core; DomainError -> status. No route returns a token or the App Secret. Never reachable from MCP. Saving the App Secret,
-// connecting and disconnecting are Mac-only (proxy REMOTE_BLOCKED_PREFIXES, AC-XP-12); the phone may only read the card's state.
+// the one core; DomainError -> status. No route returns a token or the App Secret. Never reachable from MCP. Saving the App Secret
+// is Mac-only (proxy REMOTE_BLOCKED_PREFIXES); connecting runs on the HTTPS Tailscale address (AC-XP-12 amended 14.11).
 
 export type SocialRouteDeps = {
   getSession: () => Promise<{ user?: { id?: string | null } } | null>;
@@ -57,11 +57,12 @@ function hostParts(host: string): { hostname: string; port: string } | null {
 }
 
 /**
- * The redirect URI Meta must send the owner back to: `http://localhost:<port>` on the Mac. Connecting is Mac-only
- * (CROSS_POSTING_PLAN.md AC-XP-12; the proxy also refuses `/api/social/meta` remotely), so anything else is refused.
+ * The redirect URI Meta must send the owner back to: `https://<mac>.<tailnet>.ts.net/...` -- the owner's own HTTPS address of this
+ * Mac (BL-251). Meta's app enforces HTTPS and refuses `http://localhost` (owner msgs 4315/4319, AC-XP-12 amended), so connecting is
+ * started from that address (on the Mac or another of the owner's devices); the remote gate has already checked the phone session.
  */
 export function redirectUriFor(headers: Headers): string {
   const host = hostParts(headers.get("host") ?? "");
-  if (host && isLoopbackRequest(headers)) return `http://localhost${host.port ? `:${host.port}` : ""}${META_CALLBACK_PATH}`;
-  throw new DomainError({ code: "remote_access_mac_only", message: "Social accounts are connected on the Mac itself (localhost)." });
+  if (host && !host.port && isRemoteRequest(headers) && host.hostname.endsWith(".ts.net")) return `https://${host.hostname}${META_CALLBACK_PATH}`;
+  throw new DomainError({ code: "social_https_required", message: "Meta accepts only an HTTPS return address: open YT Manager at its Tailscale address (https://<mac>.<tailnet>.ts.net) to connect." });
 }

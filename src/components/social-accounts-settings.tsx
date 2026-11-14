@@ -9,7 +9,7 @@ import { LoadingIndicator } from "./operation-progress";
 import { useT } from "./ui-text-provider";
 
 // BL-252 (ADR 0068, CROSS_POSTING_PLAN.md) stage 1: Settings → Channels → Social networks. The Meta app (App ID + App Secret,
-// entered on the Mac only, never shown again), the redirect address to enter in the Meta app, and per channel: connect its
+// entered on the Mac only, never shown again), the HTTPS Tailscale redirect address to enter in the Meta app (Meta refuses localhost), and per channel: connect its
 // Facebook Page + Instagram professional account (Meta's consent window, then the owner picks the Page), or disconnect.
 
 type Network = "facebook" | "instagram";
@@ -62,6 +62,7 @@ export function SocialAccountsSettings() {
   const [confirmDisconnect, setConfirmDisconnect] = useState<{ channelId: string; network: Network } | null>(null);
   const [pickId, setPickId] = useState<string | null>(null);
   const [pick, setPick] = useState<Pick | null>(null);
+  const [origin, setOrigin] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -78,6 +79,7 @@ export function SocialAccountsSettings() {
   }, [t]);
 
   useEffect(() => {
+    setOrigin(window.location.origin);
     const params = takeCallbackParams();
     if (params.error) {
       const key = `social.error.${params.error}` as UiTextKey;
@@ -156,7 +158,7 @@ export function SocialAccountsSettings() {
     );
   }
 
-  const callbackUrls = [`http://localhost:3000${status.callbackPath}`];
+  const onHttps = origin.startsWith("https://");
   const pickChannel = pick ? channels.find((c) => c.channelId === pick.channelId) : null;
 
   return (
@@ -192,13 +194,11 @@ export function SocialAccountsSettings() {
         {(appId || appSecret) && !validMetaApp(appId, appSecret) && <p className="text-xs text-amber-400">{t("social.meta.invalid")}</p>}
         <p className="text-xs text-zinc-500">{t("social.meta.macOnly")}</p>
         <p className="text-xs text-zinc-400">{t("social.meta.redirects")}</p>
-        <ul className="space-y-1">
-          {callbackUrls.map((u) => (
-            <li key={u}>
-              <code className="break-all rounded bg-zinc-950 px-1.5 py-0.5 text-xs text-zinc-300 select-all">{u}</code>
-            </li>
-          ))}
-        </ul>
+        {onHttps ? (
+          <code className="block break-all rounded bg-zinc-950 px-1.5 py-0.5 text-xs text-zinc-300 select-all">{`${origin}${status.callbackPath}`}</code>
+        ) : (
+          <p className="text-xs text-amber-400">{t("social.httpsOnly")}</p>
+        )}
       </section>
 
       {pick && (
@@ -231,7 +231,7 @@ export function SocialAccountsSettings() {
             <div key={channel.channelId} className="space-y-1 border-t border-zinc-800 pt-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-sm font-medium text-zinc-100">{channel.title}</span>
-                <button type="button" className={buttonClass} onClick={() => connect(channel.channelId)} disabled={busy || !status.metaApp.configured}>
+                <button type="button" className={buttonClass} onClick={() => connect(channel.channelId)} disabled={busy || !status.metaApp.configured || !onHttps}>
                   {own.length ? t("social.reconnect") : t("social.connect")}
                 </button>
               </div>

@@ -29,6 +29,7 @@ export const errors = {
   "errors.hf_token_invalid": "Hugging Face did not accept the stored token. Enter a new read token.",
   "errors.hf_gate_not_accepted": "Accept this repository's conditions on Hugging Face with the token's account, then try again.",
   "errors.github_unavailable": "GitHub could not be reached or refused the request. Try again later.",
+  "errors.social_https_required": "Meta accepts only an HTTPS address: open YT Manager at its Tailscale address (https://…ts.net) and connect there.",
   "errors.social_not_configured": "The social network app is not set up on this computer yet.",
   "errors.social_unavailable": "The social network could not be reached. Try again later.",
   "errors.social_token_invalid": "The social network rejected the connection. Connect the account again.",

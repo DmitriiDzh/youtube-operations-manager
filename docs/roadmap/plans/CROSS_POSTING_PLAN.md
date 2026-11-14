@@ -111,7 +111,8 @@ run in parallel with the code. I prepare the texts and the demo video each revie
   (hash mismatch → `social_approval_stale`); nothing is posted until it is approved again.
 - AC-XP-11 Dry-run returns the per-network payload preview and the validation result, makes no network call and
   contains no token.
-- AC-XP-12 Connect / disconnect / token routes refuse remote (phone) requests; an OAuth callback with a missing, reused
+- AC-XP-12 The App Secret route refuses remote (phone) requests; connecting runs only on the owner's HTTPS Tailscale address
+  (amended 2026-11-14: the Meta app enforces HTTPS and its validator refused http://localhost, owner msgs 4315/4319); an OAuth callback with a missing, reused
   or foreign `state` is refused.
 - AC-XP-13 A channel only ever posts to the networks it connected; the per-channel list is the user's setting.
 - AC-XP-14 AI disclosure on by default (Producer 2026-11-14: our narration is an ElevenLabs voice; Meta requires labelling
