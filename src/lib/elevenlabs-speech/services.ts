@@ -215,8 +215,9 @@ export function createElevenlabsSpeechServices(deps: ElevenlabsSpeechDeps) {
    * answer is stored as the account snapshot of that key (a key check reads it anyway). */
   async function checkKey(apiKey: string): Promise<"ok" | "payment_required"> {
     try {
+      const started = now();
       const sub = await deps.api.getSubscription(apiKey);
-      await storeSnapshot(sub, elevenlabsKeyFingerprint(apiKey));
+      await storeSnapshot(sub, elevenlabsKeyFingerprint(apiKey), started);
       return "ok";
     } catch (error) {
       if (isDomainError(error) && error.code === "elevenlabs_payment_required") return "payment_required";
@@ -225,9 +226,10 @@ export function createElevenlabsSpeechServices(deps: ElevenlabsSpeechDeps) {
   }
 
   // ---- BL-250 (owner msgs 4203/4205/4207): the account's monthly threshold, read from ElevenLabs and stored here.
-  async function storeSnapshot(sub: { tier: string | null; characterCount: number | null; characterLimit: number | null; nextResetAt: string | null }, keyFingerprint: string): Promise<ElevenlabsAccountSnapshot | null> {
+  async function storeSnapshot(sub: { tier: string | null; characterCount: number | null; characterLimit: number | null; nextResetAt: string | null }, keyFingerprint: string, readStartedAt: Date): Promise<ElevenlabsAccountSnapshot | null> {
     if (sub.characterLimit === null || !(sub.characterLimit > 0)) return null; // never store a missing limit
-    const snapshot: ElevenlabsAccountSnapshot = { tier: sub.tier, characterLimit: sub.characterLimit, characterCount: Math.max(0, sub.characterCount ?? 0), nextResetAt: sub.nextResetAt, readAt: now().toISOString(), keyFingerprint };
+    // review item 2: `readAt` is when the request LEFT, so a take submitted during the read is still counted after it.
+    const snapshot: ElevenlabsAccountSnapshot = { tier: sub.tier, characterLimit: sub.characterLimit, characterCount: Math.max(0, sub.characterCount ?? 0), nextResetAt: sub.nextResetAt, readAt: readStartedAt.toISOString(), keyFingerprint };
     await deps.store.setAccountJson(JSON.stringify(snapshot));
     return snapshot;
   }
@@ -249,9 +251,10 @@ export function createElevenlabsSpeechServices(deps: ElevenlabsSpeechDeps) {
       if (!(await deps.isGatewayEnabled())) return { errorCode: "media_gateway_disabled" };
       const read = await readApiKeyWithVersion();
       if (!read) return { errorCode: "elevenlabs_key_missing" };
+      const started = now();
       const sub = await deps.api.getSubscription(read.value);
       const fingerprint = elevenlabsKeyFingerprint(read.value);
-      return (await storeSnapshot(sub, fingerprint)) ?? { errorCode: "elevenlabs_no_character_limit" };
+      return (await storeSnapshot(sub, fingerprint, started)) ?? { errorCode: "elevenlabs_no_character_limit" };
     } catch (error) {
       deps.log?.(`[elevenlabs-speech] the account's characters could not be read, the stored threshold stays: ${error instanceof Error ? error.message : String(error)}`);
       return { errorCode: isDomainError(error) ? error.code : "elevenlabs_unavailable" };
@@ -286,7 +289,10 @@ export function createElevenlabsSpeechServices(deps: ElevenlabsSpeechDeps) {
       if (seen.has(row.jobId)) continue;
       seen.add(row.jobId);
       const isActive = (ELEVENLABS_ACTIVE_STATUSES as readonly string[]).includes(row.status);
-      if (isActive || (row.submittedAt && row.submittedAt.getTime() > since.getTime())) sum += countedChars(row);
+      // review item 2: a take sent before the read but finished after it may not have been charged when the account answered:
+      // it counts too (finishedAt after the read). Charged ones counted twice only err on the safe side.
+      const after = (d: Date | null | undefined) => !!d && d.getTime() > since.getTime();
+      if (isActive || after(row.submittedAt) || after(row.finishedAt)) sum += countedChars(row);
     }
     return sum;
   }
@@ -439,15 +445,21 @@ export function createElevenlabsSpeechServices(deps: ElevenlabsSpeechDeps) {
      * BL-250: the loop's account read -- once at server start, and once right after the stored reset date; only with the switch on, a
      * key stored and the gateway on (msg 4207: no periodic background read).
      */
-    async accountTick(state: { startedRead: boolean }): Promise<{ read: boolean; startedRead: boolean }> {
+    async accountTick(state: { startedRead: boolean; lastAttemptAt?: number | null }): Promise<{ read: boolean; startedRead: boolean; lastAttemptAt: number | null }> {
       const settings = await getSettings();
-      if (!(await mayReadAutomatically(settings))) return { read: false, startedRead: state.startedRead };
-      const snapshot = await accountSnapshot();
+      const last = state.lastAttemptAt ?? null;
+      if (!(await mayReadAutomatically(settings))) return { read: false, startedRead: state.startedRead, lastAttemptAt: last };
       const at = now();
-      const due = !state.startedRead || !snapshot || (pastReset(snapshot, at) && Date.parse(snapshot.readAt) < Date.parse(snapshot.nextResetAt!));
-      if (!due) return { read: false, startedRead: true };
+      if (!state.startedRead) {
+        await refreshAccount(); // the start read counts as done whether it worked or not (review item 1: no 30 s retries)
+        return { read: true, startedRead: true, lastAttemptAt: at.getTime() };
+      }
+      // right after the reset date: one read; a failed one is retried at most once an hour (msg 4207: no periodic reading)
+      const snapshot = await accountSnapshot();
+      const due = snapshot !== null && pastReset(snapshot, at) && Date.parse(snapshot.readAt) < Date.parse(snapshot.nextResetAt!) && (last === null || at.getTime() - last >= 60 * 60_000);
+      if (!due) return { read: false, startedRead: true, lastAttemptAt: last };
       await refreshAccount();
-      return { read: true, startedRead: true };
+      return { read: true, startedRead: true, lastAttemptAt: at.getTime() };
     },
 
     /** BL-250: the owner's «Обновить» (any switch state: the owner's own free read). */

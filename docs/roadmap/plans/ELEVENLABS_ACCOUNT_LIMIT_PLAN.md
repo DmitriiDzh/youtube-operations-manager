@@ -16,7 +16,8 @@ without the hourly background read). Amends ADR 0057 (the monthly limit was an o
 1. At server start (the first ElevenLabs loop tick), only when the switch is on, a key is stored and the media gateway is on.
 2. Before a take or a voice design when the snapshot is older than 10 minutes or its reset date has passed -- outside the create lock
    (a slow ElevenLabs never blocks job creation); a failed read keeps the stored snapshot.
-3. Once right after the stored reset date (the loop sees `now >= nextResetAt` and `readAt < nextResetAt`), switch on only.
+3. Once right after the stored reset date (the loop sees `now >= nextResetAt` and `readAt < nextResetAt`), switch on only; a failed
+   read there is retried at most once an hour, and the start read counts as done even when it fails (review: no 30 s retries).
 4. When the owner saves or checks the key (those calls already read the subscription: the result is stored instead of discarded).
 5. The owner's «Обновить» on the Settings card (any switch state: the owner's own free read).
 Never automatically while the switch is off (the module's promise, contracts.ts header).
@@ -42,6 +43,8 @@ The other computers are not added in B/C: `characterCount` already includes them
   fresher; a failed read still lets the take through on the stored snapshot.
 - AC-EA-6 The loop tick reads at start and right after the reset date, only with the switch on; never with the switch off.
 - AC-EA-7 Saving / checking the key stores the snapshot.
+- AC-EA-6b A failing account is read once at start (not every tick); a failed post-reset read retries at most hourly.
+- AC-EA-2b A take sent before the read but finished after it still counts (`readAt` = when the request left).
 - AC-EA-8 `getStatus` shows the stored snapshot (`account`) and `monthlyLimit { source, limitChars }` without any ElevenLabs call;
   every existing per-month test (the fallback) passes unchanged with no snapshot.
 

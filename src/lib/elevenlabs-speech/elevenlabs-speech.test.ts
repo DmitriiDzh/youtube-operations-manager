@@ -578,12 +578,12 @@ test("AC-EA-6: the loop reads at start and right after the reset date, only with
   const on = await harness({ account: ACCOUNT, now: new Date("2026-11-14T10:00:00.000Z") });
   try {
     off.subscriptionCalls.length = 0;
-    assert.deepEqual(await off.services.accountTick({ startedRead: false }), { read: false, startedRead: false });
+    assert.deepEqual(await off.services.accountTick({ startedRead: false }), { read: false, startedRead: false, lastAttemptAt: null });
     assert.equal(off.subscriptionCalls.length, 0);
     on.subscriptionCalls.length = 0;
     const first = await on.services.accountTick({ startedRead: false });
-    assert.deepEqual(first, { read: true, startedRead: true });
-    assert.deepEqual(await on.services.accountTick({ startedRead: true }), { read: false, startedRead: true }); // no periodic read
+    assert.deepEqual(first, { read: true, startedRead: true, lastAttemptAt: Date.parse("2026-11-14T10:00:00.000Z") });
+    assert.deepEqual(await on.services.accountTick({ startedRead: true, lastAttemptAt: first.lastAttemptAt }), { read: false, startedRead: true, lastAttemptAt: first.lastAttemptAt }); // no periodic read
     on.clock.at = new Date("2026-11-20T00:00:30.000Z");
     assert.equal((await on.services.accountTick({ startedRead: true })).read, true); // right after the reset date
     assert.equal((await on.services.accountTick({ startedRead: true })).read, false); // read after the reset: done
@@ -602,6 +602,48 @@ test("AC-EA-8: the status shows the stored threshold and what the monthly check 
     assert.deepEqual(s.accountLimit, { tier: "creator", characterLimit: 30_000, characterCount: 29_000, nextResetAt: ACCOUNT.nextResetAt, readAt: "2026-11-14T10:00:00.000Z" });
     assert.deepEqual(s.monthlyLimit, { source: "elevenlabs_account", limitChars: 30_000, usedChars: 29_000, resetAt: ACCOUNT.nextResetAt });
     assert.equal(h.subscriptionCalls.length, 0);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("AC-EA-6b (review): a failing account is not re-read every tick -- the start read is done once, a failed post-reset read retries at most hourly", async () => {
+  const h = await harness({ account: ACCOUNT, now: new Date("2026-11-14T10:00:00.000Z") });
+  try {
+    h.account.value = "fail"; // ElevenLabs stops answering after the key was saved
+    await h.store.setAccountJson(null);
+    let st: { startedRead: boolean; lastAttemptAt: number | null } = { startedRead: false, lastAttemptAt: null };
+    for (let i = 0; i < 5; i++) {
+      st = await h.services.accountTick(st);
+      h.clock.at = new Date(h.clock.at.getTime() + 30_000);
+    }
+    assert.equal(h.subscriptionCalls.length, 1); // five ticks, one read
+    // a stored snapshot whose reset passed, and ElevenLabs failing: one read, then nothing for the next hour
+    await h.store.setAccountJson(JSON.stringify({ ...ACCOUNT, readAt: "2026-11-14T10:00:00.000Z", keyFingerprint: elevenlabsKeyFingerprint(KEY) }));
+    h.clock.at = new Date("2026-11-20T00:00:10.000Z");
+    h.subscriptionCalls.length = 0;
+    for (let i = 0; i < 10; i++) {
+      st = await h.services.accountTick(st);
+      h.clock.at = new Date(h.clock.at.getTime() + 30_000);
+    }
+    assert.equal(h.subscriptionCalls.length, 1);
+    h.clock.at = new Date("2026-11-20T01:00:15.000Z");
+    st = await h.services.accountTick(st);
+    assert.equal(h.subscriptionCalls.length, 2); // an hour later: one retry
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("AC-EA-2b (review): a take sent before the read but finished after it still counts (it may not have been charged when the account answered)", async () => {
+  const h = await harness({ account: ACCOUNT, now: new Date("2026-11-14T10:00:00.000Z") });
+  try {
+    const inflight = doneJob("inflight", 2_000, new Date("2026-11-14T09:59:50.000Z"));
+    inflight.finishedAt = new Date("2026-11-14T10:00:20.000Z");
+    h.store.jobs.set("inflight", inflight);
+    h.clock.at = new Date("2026-11-14T10:01:00.000Z");
+    const m = await h.services.monthlyLimit(await h.services.getSettings(), await h.services.usage());
+    assert.equal(m.usedChars, 29_000 + 2_000);
   } finally {
     await h.cleanup();
   }

@@ -165,10 +165,11 @@ function buildCore() {
     publishSpendShare,
     /** BL-250: the loop's account read (at start, after the reset date; switch on only). The state lives with the one core. */
     accountTick: (() => {
-      const state = { startedRead: false };
+      const state: { startedRead: boolean; lastAttemptAt: number | null } = { startedRead: false, lastAttemptAt: null };
       return async () => {
         const result = await services.accountTick(state);
         state.startedRead = result.startedRead;
+        state.lastAttemptAt = result.lastAttemptAt;
         return result;
       };
     })(),
