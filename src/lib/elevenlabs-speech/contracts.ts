@@ -9,7 +9,8 @@ export { DomainError, isDomainError };
 // `elevenlabs-api.ts`, knows voices only through an injected resolver, and imports no other feature module. Switched off (the
 // default) it generates and charges nothing: no take or design is sent. Review item 10: the only calls it still makes then are the
 // owner's own free ones -- checking a key when it is saved or tested, reading the account's characters on the Settings card on
-// request, and saving an approved voice -- each only with a stored key and the media gateway on.
+// request, and saving an approved voice -- each only with a stored key and the media gateway on. BL-250: the automatic reads of the
+// account (at start, before a take, after the reset date) happen only with the switch ON.
 //
 // Owner decisions (Telegram 2026-10-29 msgs 3814-3817): the cheapest subscription -- limits are counted in CHARACTERS (per job,
 // per day, per month) plus the active jobs, not in dollars; the dollar figure is a list-price estimate for the spend views only.
@@ -159,6 +160,37 @@ export type ElevenlabsUsage = {
 export type ElevenlabsKeyView = { configured: boolean; keyHint: string | null; status: "ok" | "payment_required" | null; verifiedAt: string | null; updatedAt: string | null };
 
 export type ElevenlabsLimitName = "per_job" | "per_day" | "per_month" | "active_jobs";
+
+/**
+ * BL-250 (owner msgs 4203/4205/4207, docs/roadmap/plans/ELEVENLABS_ACCOUNT_LIMIT_PLAN.md): the account's subscription as last read on
+ * THIS computer -- its `characterLimit` is the monthly threshold ("храним как наш порог"). ElevenLabs counts credits; a take costs at
+ * most its text length, so text lengths are an upper bound for what is not yet charged.
+ */
+export type ElevenlabsAccountSnapshot = {
+  tier: string | null;
+  characterLimit: number;
+  characterCount: number;
+  nextResetAt: string | null;
+  readAt: string;
+  keyFingerprint: string;
+};
+
+/** BL-250: what the monthly check uses now: the account's threshold, or the owner's number when no snapshot exists for this key. */
+export type ElevenlabsMonthlyLimit = {
+  source: "elevenlabs_account" | "settings";
+  limitChars: number;
+  usedChars: number;
+  resetAt: string | null;
+  /** Only for source "settings": the other computers' share of usedChars. */
+  otherComputersChars?: number;
+};
+
+export const ELEVENLABS_ACCOUNT_REFRESH = Object.freeze({
+  /** A take or a design reads the account first when the stored snapshot is older than this (msg 4206). */
+  beforeJobMaxAgeMs: 10 * 60_000,
+  /** How far back to look for this computer's jobs submitted after a read (a job may wait in the queue). */
+  jobLookbackMs: 7 * 24 * 60 * 60_000,
+});
 
 export type ElevenlabsRefusal = { code: "elevenlabs_limit_exceeded" | "elevenlabs_disabled" | "elevenlabs_key_missing" | "voice_not_approved"; message: string; details?: Record<string, unknown> };
 

@@ -1292,6 +1292,8 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   `instrumentation.ts`), шлюз `media-gateway/elevenlabs-api.ts` (единственный путь к `api.elevenlabs.io`, категория `elevenlabs_api`);
   выключено по умолчанию, лимиты в символах; USD — оценка по прайсу. Без клонирования (`no-clone.test.ts`). Перезапуск по простою
   ждёт и задания ElevenLabs (`elevenlabs_job`). Один дубль: Gemini ≤ 2500 символов, ElevenLabs ≤ 5000 (укладывается в таймаут вызова).
+  BL-250 (ADR 0057 поправка 1): месячный лимит ElevenLabs — лимит самого аккаунта (`GET /v1/user/subscription`), прочитанный и
+  сохранённый на компьютере (`elevenlabs_account_snapshot`, привязан к отпечатку ключа); число владельца `maxCharsPerMonth` — запасное.
   Лимиты символов ElevenLabs общие для всех компьютеров (семья `elevenlabs_settings`, документ `ytm-elevenlabs-settings`, правила как у
   лимитов Gemini, конфликты — группа «Лимиты ElevenLabs»; `/api/elevenlabs-speech/settings-sync`, `.../resolve`), расход суммируется по
   компьютерам с тем же ключом (семья `elevenlabs_spend`, отчёт `ytm-elevenlabs-spend`, отпечаток `ytm/elevenlabs-key-fingerprint/v1`;

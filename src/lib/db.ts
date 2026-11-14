@@ -16249,6 +16249,19 @@ export async function setElevenlabsSpeechSettingsJson(json: string, database: Ap
   await setAppSetting(ELEVENLABS_SPEECH_SETTINGS_KEY, json, database);
 }
 
+// BL-250 (owner msgs 4203/4205): the ElevenLabs account's subscription as last read on THIS computer (its monthly threshold), bound
+// to the key's fingerprint. "" = none. Device-local, not synced: each computer reads its own account.
+const ELEVENLABS_ACCOUNT_SNAPSHOT_KEY = "elevenlabs_account_snapshot";
+
+export async function getElevenlabsAccountSnapshotJson(database: AppDb = db): Promise<string | null> {
+  const value = await getAppSetting(ELEVENLABS_ACCOUNT_SNAPSHOT_KEY, database);
+  return value ? value : null;
+}
+
+export async function setElevenlabsAccountSnapshotJson(json: string | null, database: AppDb = db): Promise<void> {
+  await setAppSetting(ELEVENLABS_ACCOUNT_SNAPSHOT_KEY, json ?? "", database);
+}
+
 export type StoredElevenlabsSpeechJob = typeof elevenlabsSpeechJobs.$inferSelect;
 export type ElevenlabsSpeechJobStatusValue = StoredElevenlabsSpeechJob["status"];
 

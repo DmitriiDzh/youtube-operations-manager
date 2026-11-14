@@ -1,9 +1,11 @@
 import {
+  getElevenlabsAccountSnapshotJson,
   getElevenlabsSpeechJob,
   getElevenlabsSpeechJobByRequest,
   getElevenlabsSpeechSettingsJson,
   insertElevenlabsSpeechJob,
   listElevenlabsSpeechJobs,
+  setElevenlabsAccountSnapshotJson,
   setElevenlabsSpeechSettingsJson,
   updateElevenlabsSpeechJob,
 } from "@/lib/db";
@@ -15,6 +17,8 @@ export function createElevenlabsStore(): ElevenlabsStore {
   return {
     getSettingsJson: () => getElevenlabsSpeechSettingsJson(),
     setSettingsJson: (json) => setElevenlabsSpeechSettingsJson(json),
+    getAccountJson: () => getElevenlabsAccountSnapshotJson(),
+    setAccountJson: (json) => setElevenlabsAccountSnapshotJson(json),
     insertJob: (row) => insertElevenlabsSpeechJob(row),
     getJob: (jobId) => getElevenlabsSpeechJob(jobId),
     getJobByRequest: (createdBy, requestId) => getElevenlabsSpeechJobByRequest(createdBy, requestId),

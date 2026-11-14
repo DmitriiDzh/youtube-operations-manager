@@ -72,3 +72,14 @@ RISK-143.
 
 Two new tables (schema v115, additive), one traffic category, one secret slot, one gateway child, two feature modules + one shared
 module, seven factory and four agent tools. Gemini designed voices live about a year and a project holds at most 200 (RISK-144).
+
+## Amendment 1 (2026-11-14, BL-250, owner msgs 4203 / 4205 / 4207)
+
+The ElevenLabs **monthly** limit is the account's own: `GET /v1/user/subscription` (free) is read and stored on each computer as a
+snapshot bound to the key's fingerprint (app setting `elevenlabs_account_snapshot`, no schema change), and its `characterLimit` is the
+threshold (msg 4205: «записываем в память это значение и храним как наш порог»). Used = the account's `characterCount` plus this
+computer's jobs active or submitted after the read (the other computers are already in the count); past the reset date, only jobs
+since the reset. A failed read keeps the stored snapshot. The owner's `maxCharsPerMonth` applies only while no snapshot exists for the
+current key. Read at start, before a take when older than 10 minutes, right after the reset date, on key save / check and on the
+owner's «Обновить» -- automatically only with the switch on; no periodic read (msg 4207). Per take / per day / active jobs unchanged.
+Factory API 1.44.0 / Agent API 4.18.0 (additive). Plan and acceptance criteria: `docs/roadmap/plans/ELEVENLABS_ACCOUNT_LIMIT_PLAN.md`.

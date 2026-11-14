@@ -5110,6 +5110,11 @@ On branch `feature/bl-229-music-library`. No schema change; no YouTube call; not
   or `factory_voice_pick`) → provider port `save` (ElevenLabs `POST /v1/text-to-voice`; Gemini: the preview's id) → `approved`.
 - **Boundaries:** the registry imports no provider; the providers import only the registry's resolver; `composition/speech.ts` is the
   only place that knows both; generation-plans and the jobs pool know the `elevenlabs` folder as a contract string only.
+- **The monthly limit is the account's (BL-250, ADR 0057 amendment 1):** `elevenlabs-speech/services.ts` stores the subscription
+  read (`characterLimit`, `characterCount`, `nextResetAt`, `readAt`, key fingerprint) in the app setting `elevenlabs_account_snapshot`
+  and checks the month against it (count + this computer's jobs since the read; past the reset, jobs since the reset); the owner's
+  `maxCharsPerMonth` only while none is stored for the key. Reads: start / after the reset (`accountTick` in the share loop, switch on),
+  before a take when older than 10 min (outside the create lock), key save / check, the owner's «Обновить».
 - **Shared ElevenLabs limits and spend (owner msg 3823):** `elevenlabs-speech/settings-sync.ts` (the Gemini rules on the sync-gateway
   `elevenlabs-settings` document) applies the four character limits on the share loop (`instrumentation.ts`, 30 s) and publishes an
   owner's change on save; `spend-share.ts` writes this computer's `elevenlabs-spend` report; `account.ts` sums the peers with the same

@@ -583,6 +583,15 @@ async function startServerSession() {
       const paused = error instanceof Error && (error.name === "OperationLockError" || error.name === "RecoveryModeError");
       if (!paused) console.warn(`[elevenlabs-settings] ${error instanceof Error ? error.message : String(error)}`);
     }
+    // BL-250 (owner msgs 4205/4207): the account's monthly threshold -- read once at start and once right after its reset date,
+    // switch on only (it writes the stored snapshot, so it waits behind an import / migration like the settings above).
+    try {
+      await assertDeviceAvailableForMutation(rawSqlClient);
+      await elevenlabs.accountTick();
+    } catch (error) {
+      const paused = error instanceof Error && (error.name === "OperationLockError" || error.name === "RecoveryModeError");
+      if (!paused) console.warn(`[elevenlabs-account] ${error instanceof Error ? error.message : String(error)}`);
+    }
     setTimeout(() => void elevenlabsShareLoop(), GEMINI_SHARE_TICK_MS).unref();
   };
   setTimeout(() => void elevenlabsShareLoop(), 47_000).unref();

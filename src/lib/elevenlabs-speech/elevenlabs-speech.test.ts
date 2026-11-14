@@ -24,6 +24,7 @@ const KEY = "sk_live_TESTKEY_0123456789abcd";
 function memoryStore(): ElevenlabsStore & { jobs: Map<string, StoredElevenlabsSpeechJob> } {
   const jobs = new Map<string, StoredElevenlabsSpeechJob>();
   let settings: string | null = null;
+  let account: string | null = null;
   return {
     jobs,
     async getSettingsJson() {
@@ -31,6 +32,12 @@ function memoryStore(): ElevenlabsStore & { jobs: Map<string, StoredElevenlabsSp
     },
     async setSettingsJson(json) {
       settings = json;
+    },
+    async getAccountJson() {
+      return account;
+    },
+    async setAccountJson(json) {
+      account = json;
     },
     async insertJob(row) {
       if (row.requestId && [...jobs.values()].some((j) => j.createdBy === row.createdBy && j.requestId === row.requestId)) return false;
@@ -59,7 +66,11 @@ function memoryStore(): ElevenlabsStore & { jobs: Map<string, StoredElevenlabsSp
   };
 }
 
-async function harness(options: { enabled?: boolean; withKey?: boolean; settings?: Record<string, unknown>; now?: Date; peerSpendReports?: ElevenlabsSpeechDeps["peerSpendReports"] } = {}) {
+// BL-250: the account's subscription the fake answers. By default it has NO character limit, so nothing is stored and every test
+// written before BL-250 runs in state A (the owner's monthly number) unchanged; the BL-250 tests pass their own account.
+type FakeAccount = { tier: string | null; characterCount: number | null; characterLimit: number | null; nextResetAt: string | null } | "fail";
+
+async function harness(options: { enabled?: boolean; withKey?: boolean; settings?: Record<string, unknown>; now?: Date; peerSpendReports?: ElevenlabsSpeechDeps["peerSpendReports"]; account?: FakeAccount } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "elevenlabs-speech-"));
   const fromYtm = path.join(root, "From YTM");
   await mkdir(fromYtm, { recursive: true });
@@ -78,6 +89,9 @@ async function harness(options: { enabled?: boolean; withKey?: boolean; settings
   };
   const store = memoryStore();
   const calls: Array<{ method: string; apiKey: string; request?: unknown }> = [];
+  /** BL-250: the free account reads, kept apart from the paid calls the older tests count. */
+  const subscriptionCalls: string[] = [];
+  const account = { value: (options.account ?? { tier: "starter", characterCount: 500, characterLimit: null, nextResetAt: null }) as FakeAccount };
   const behaviour = {
     textToSpeech: async (): Promise<ElevenlabsSpeechResult> => ({ audio: { mimeType: "audio/mpeg", data: Buffer.from("ID3-take") }, chargedChars: 120, requestId: "r1" }),
     designVoice: async (): Promise<ElevenlabsVoiceDesignResult> => ({
@@ -92,8 +106,9 @@ async function harness(options: { enabled?: boolean; withKey?: boolean; settings
     store,
     api: {
       async getSubscription(apiKey) {
-        calls.push({ method: "getSubscription", apiKey });
-        return { tier: "starter", characterCount: 500, characterLimit: 30_000, nextResetAt: null };
+        subscriptionCalls.push(apiKey);
+        if (account.value === "fail") throw new DomainError({ code: "elevenlabs_unavailable", message: "ElevenLabs did not answer", details: { outcome: "not_sent" } });
+        return { ...account.value };
       },
       async textToSpeech(apiKey, request: ElevenlabsSpeechRequest) {
         calls.push({ method: "textToSpeech", apiKey, request });
@@ -146,8 +161,9 @@ async function harness(options: { enabled?: boolean; withKey?: boolean; settings
   const worker = createElevenlabsWorker(deps);
   if (options.withKey !== false) await services.setKey({ apiKey: KEY });
   calls.length = 0;
+  subscriptionCalls.length = 0; // the key save's own read is set-up, not part of a test
   await services.updateSettings({ enabled: options.enabled ?? true, ...(options.settings ?? {}) });
-  return { root, fromYtm, store, calls, behaviour, order, clock, services, worker, runTick: async () => Promise.all(await worker.tick()), keyFileText: () => keyFileText, cleanup: () => rm(root, { recursive: true, force: true }) };
+  return { root, fromYtm, store, calls, subscriptionCalls, account, behaviour, order, clock, services, worker, runTick: async () => Promise.all(await worker.tick()), keyFileText: () => keyFileText, cleanup: () => rm(root, { recursive: true, force: true }) };
 }
 
 async function expectCode(promise: Promise<unknown>, code: string): Promise<Record<string, unknown>> {
@@ -450,4 +466,185 @@ test("AC-EL-SH-07: the spend report carries this computer's characters and the k
   const [report] = published as Array<Record<string, unknown>>;
   assert.deepEqual([report.format, report.usedTodayChars, report.usedMonthChars, report.keyFingerprint], ["ytm-elevenlabs-spend", 120, 900, elevenlabsKeyFingerprint(KEY)]);
   assert.equal(JSON.stringify(report).includes(KEY), false);
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------------
+// BL-250 (owner msgs 4203/4205/4207; docs/roadmap/plans/ELEVENLABS_ACCOUNT_LIMIT_PLAN.md AC-EA-1..8): the monthly threshold is the
+// ElevenLabs account's own, read and stored here. Numbers by hand from the plan's three-state table.
+// ---------------------------------------------------------------------------------------------------------------------------------
+
+const ACCOUNT = { tier: "creator", characterCount: 29_000, characterLimit: 30_000, nextResetAt: "2026-11-20T00:00:00.000Z" };
+const doneJob = (id: string, chars: number, submittedAt: Date): StoredElevenlabsSpeechJob => ({
+  jobId: id, channelId: "UC1", requestId: null, requestHash: id, kind: "speech", model: "eleven_v4", text: "x", paramsJson: "{}", status: "done",
+  chars, estimateUsd: 0, costUsd: 0, costBasis: "list_price", chargedChars: chars, outputsJson: null, error: null, errorCode: null, attempts: 1,
+  nextAttemptAt: null, createdBy: "factory", createdAt: submittedAt, submittedAt, finishedAt: submittedAt, updatedAt: submittedAt, video: null,
+});
+
+test("AC-EA-1/7: saving the key stores the account snapshot bound to that key; a missing limit is never stored; removing the key drops it", async () => {
+  const h = await harness({ account: ACCOUNT, now: new Date("2026-11-14T10:00:00.000Z") });
+  const none = await harness({ now: new Date("2026-11-14T10:00:00.000Z") });
+  try {
+    const snap = await h.services.accountSnapshot();
+    assert.deepEqual(snap, { ...ACCOUNT, readAt: "2026-11-14T10:00:00.000Z", keyFingerprint: elevenlabsKeyFingerprint(KEY) });
+    assert.equal(await none.services.accountSnapshot(), null); // the fake answers characterLimit null
+    // a failed read keeps the stored snapshot
+    h.account.value = "fail";
+    const r = await h.services.refreshAccount();
+    assert.deepEqual(r, { errorCode: "elevenlabs_unavailable" });
+    assert.equal((await h.services.accountSnapshot())?.characterCount, 29_000);
+    await h.services.clearKey();
+    assert.equal(await h.store.getAccountJson(), null);
+  } finally {
+    await h.cleanup();
+    await none.cleanup();
+  }
+});
+
+test("AC-EA-2: state B -- limit 30 000, count 29 000 + 600 submitted after the read = 29 600; 400 fits (equal passes), 401 is per_month from the account", async () => {
+  const at = new Date("2026-11-14T10:00:00.000Z");
+  const h = await harness({ account: ACCOUNT, now: at, settings: { maxCharsPerJob: 5_000, maxCharsPerDay: 100_000, maxCharsPerMonth: 1_000_000 } });
+  try {
+    h.store.jobs.set("old", doneJob("old", 700, new Date("2026-11-14T09:00:00.000Z"))); // before the read: already in characterCount
+    h.store.jobs.set("new", doneJob("new", 600, new Date("2026-11-14T10:00:01.000Z")));
+    h.clock.at = new Date("2026-11-14T10:05:00.000Z"); // 5 min: fresh, no re-read
+    const m = await h.services.monthlyLimit(await h.services.getSettings(), await h.services.usage());
+    assert.deepEqual(m, { source: "elevenlabs_account", limitChars: 30_000, usedChars: 29_600, resetAt: ACCOUNT.nextResetAt });
+    const ok = (await h.services.createJob(take({ text: "a".repeat(400), dryRun: true }), "factory")) as { allowed: boolean };
+    assert.equal(ok.allowed, true);
+    const no = (await h.services.createJob(take({ text: "a".repeat(401), dryRun: true }), "factory")) as { allowed: boolean; refusal: { details: Record<string, unknown> } };
+    assert.equal(no.allowed, false);
+    assert.deepEqual(
+      { limit: no.refusal.details.limit, limitChars: no.refusal.details.limitChars, usedChars: no.refusal.details.usedChars, source: no.refusal.details.source, resetAt: no.refusal.details.resetAt },
+      { limit: "per_month", limitChars: 30_000, usedChars: 29_600, source: "elevenlabs_account", resetAt: ACCOUNT.nextResetAt }
+    );
+    assert.equal(h.subscriptionCalls.length, 0); // fresh snapshot: no read before the takes
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("AC-EA-3: state A -- no snapshot (or another key's) means the owner's maxCharsPerMonth and the old counting", async () => {
+  const at = new Date("2026-11-14T10:00:00.000Z");
+  const h = await harness({ now: at, settings: { maxCharsPerMonth: 1_000 } });
+  try {
+    h.store.jobs.set("j", doneJob("j", 900, new Date("2026-11-14T09:00:00.000Z")));
+    const m = await h.services.monthlyLimit(await h.services.getSettings(), await h.services.usage());
+    assert.deepEqual(m, { source: "settings", limitChars: 1_000, usedChars: 900, resetAt: null });
+    await h.store.setAccountJson(JSON.stringify({ ...ACCOUNT, readAt: at.toISOString(), keyFingerprint: "someoneelse" }));
+    assert.equal((await h.services.monthlyLimit(await h.services.getSettings(), await h.services.usage())).source, "settings");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("AC-EA-4: state C -- past the reset date only this computer's jobs since the reset count against the stored limit", async () => {
+  const h = await harness({ account: ACCOUNT, now: new Date("2026-11-14T10:00:00.000Z"), enabled: false });
+  try {
+    h.store.jobs.set("before", doneJob("before", 5_000, new Date("2026-11-19T12:00:00.000Z")));
+    h.store.jobs.set("after", doneJob("after", 250, new Date("2026-11-20T01:00:00.000Z")));
+    h.clock.at = new Date("2026-11-20T02:00:00.000Z");
+    const m = await h.services.monthlyLimit(await h.services.getSettings(), await h.services.usage());
+    assert.deepEqual(m, { source: "elevenlabs_account", limitChars: 30_000, usedChars: 250, resetAt: null });
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("AC-EA-5: a take reads the account first when the snapshot is older than 10 minutes, not when fresher; a failed read keeps the stored threshold", async () => {
+  const h = await harness({ account: ACCOUNT, now: new Date("2026-11-14T10:00:00.000Z"), settings: { maxCharsPerJob: 5_000, maxCharsPerDay: 100_000 } });
+  try {
+    h.clock.at = new Date("2026-11-14T10:09:59.000Z");
+    await h.services.createJob(take({ dryRun: true }), "factory");
+    assert.equal(h.subscriptionCalls.length, 0);
+    h.clock.at = new Date("2026-11-14T10:10:01.000Z");
+    h.account.value = { ...ACCOUNT, characterCount: 29_950 };
+    await h.services.createJob(take({ dryRun: true }), "factory");
+    assert.equal(h.subscriptionCalls.length, 1);
+    assert.equal((await h.services.accountSnapshot())?.characterCount, 29_950);
+    // 29 950 + 100 > 30 000: refused by the fresh number
+    assert.equal(((await h.services.createJob(take({ dryRun: true }), "factory")) as { allowed: boolean }).allowed, false);
+    h.clock.at = new Date("2026-11-14T10:30:00.000Z");
+    h.account.value = "fail";
+    const r = (await h.services.createJob(take({ text: "a".repeat(40), dryRun: true }), "factory")) as { allowed: boolean };
+    assert.equal(r.allowed, true); // the stored 29 950 still decides: 29 950 + 40 fits
+    assert.equal(h.subscriptionCalls.length, 2);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("AC-EA-6: the loop reads at start and right after the reset date, only with the switch on", async () => {
+  const off = await harness({ account: ACCOUNT, now: new Date("2026-11-14T10:00:00.000Z"), enabled: false });
+  const on = await harness({ account: ACCOUNT, now: new Date("2026-11-14T10:00:00.000Z") });
+  try {
+    off.subscriptionCalls.length = 0;
+    assert.deepEqual(await off.services.accountTick({ startedRead: false }), { read: false, startedRead: false, lastAttemptAt: null });
+    assert.equal(off.subscriptionCalls.length, 0);
+    on.subscriptionCalls.length = 0;
+    const first = await on.services.accountTick({ startedRead: false });
+    assert.deepEqual(first, { read: true, startedRead: true, lastAttemptAt: Date.parse("2026-11-14T10:00:00.000Z") });
+    assert.deepEqual(await on.services.accountTick({ startedRead: true, lastAttemptAt: first.lastAttemptAt }), { read: false, startedRead: true, lastAttemptAt: first.lastAttemptAt }); // no periodic read
+    on.clock.at = new Date("2026-11-20T00:00:30.000Z");
+    assert.equal((await on.services.accountTick({ startedRead: true })).read, true); // right after the reset date
+    assert.equal((await on.services.accountTick({ startedRead: true })).read, false); // read after the reset: done
+    assert.equal(on.subscriptionCalls.length, 2);
+  } finally {
+    await off.cleanup();
+    await on.cleanup();
+  }
+});
+
+test("AC-EA-8: the status shows the stored threshold and what the monthly check uses, without calling ElevenLabs", async () => {
+  const h = await harness({ account: ACCOUNT, now: new Date("2026-11-14T10:00:00.000Z") });
+  try {
+    h.subscriptionCalls.length = 0;
+    const s = (await h.services.getStatus()) as { accountLimit: Record<string, unknown>; monthlyLimit: Record<string, unknown> };
+    assert.deepEqual(s.accountLimit, { tier: "creator", characterLimit: 30_000, characterCount: 29_000, nextResetAt: ACCOUNT.nextResetAt, readAt: "2026-11-14T10:00:00.000Z" });
+    assert.deepEqual(s.monthlyLimit, { source: "elevenlabs_account", limitChars: 30_000, usedChars: 29_000, resetAt: ACCOUNT.nextResetAt });
+    assert.equal(h.subscriptionCalls.length, 0);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("AC-EA-6b (review): a failing account is not re-read every tick -- the start read is done once, a failed post-reset read retries at most hourly", async () => {
+  const h = await harness({ account: ACCOUNT, now: new Date("2026-11-14T10:00:00.000Z") });
+  try {
+    h.account.value = "fail"; // ElevenLabs stops answering after the key was saved
+    await h.store.setAccountJson(null);
+    let st: { startedRead: boolean; lastAttemptAt: number | null } = { startedRead: false, lastAttemptAt: null };
+    for (let i = 0; i < 5; i++) {
+      st = await h.services.accountTick(st);
+      h.clock.at = new Date(h.clock.at.getTime() + 30_000);
+    }
+    assert.equal(h.subscriptionCalls.length, 1); // five ticks, one read
+    // a stored snapshot whose reset passed, and ElevenLabs failing: one read, then nothing for the next hour
+    await h.store.setAccountJson(JSON.stringify({ ...ACCOUNT, readAt: "2026-11-14T10:00:00.000Z", keyFingerprint: elevenlabsKeyFingerprint(KEY) }));
+    h.clock.at = new Date("2026-11-20T00:00:10.000Z");
+    h.subscriptionCalls.length = 0;
+    for (let i = 0; i < 10; i++) {
+      st = await h.services.accountTick(st);
+      h.clock.at = new Date(h.clock.at.getTime() + 30_000);
+    }
+    assert.equal(h.subscriptionCalls.length, 1);
+    h.clock.at = new Date("2026-11-20T01:00:15.000Z");
+    st = await h.services.accountTick(st);
+    assert.equal(h.subscriptionCalls.length, 2); // an hour later: one retry
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("AC-EA-2b (review): a take sent before the read but finished after it still counts (it may not have been charged when the account answered)", async () => {
+  const h = await harness({ account: ACCOUNT, now: new Date("2026-11-14T10:00:00.000Z") });
+  try {
+    const inflight = doneJob("inflight", 2_000, new Date("2026-11-14T09:59:50.000Z"));
+    inflight.finishedAt = new Date("2026-11-14T10:00:20.000Z");
+    h.store.jobs.set("inflight", inflight);
+    h.clock.at = new Date("2026-11-14T10:01:00.000Z");
+    const m = await h.services.monthlyLimit(await h.services.getSettings(), await h.services.usage());
+    assert.equal(m.usedChars, 29_000 + 2_000);
+  } finally {
+    await h.cleanup();
+  }
 });
