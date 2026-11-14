@@ -13,18 +13,41 @@ import { useT } from "./ui-text-provider";
 // Facebook Page + Instagram professional account (Meta's consent window, then the owner picks the Page), or disconnect.
 
 type Network = "facebook" | "instagram";
-type Account = { channelId: string; network: Network; displayName: string; username: string | null; externalId: string };
-type Status = { metaApp: { configured: boolean; appId: string | null }; accounts: Account[]; callbackPath: string };
+type Account = {
+  channelId: string;
+  network: Network;
+  displayName: string;
+  username: string | null;
+  externalId: string;
+};
+type Status = {
+  metaApp: { configured: boolean; appId: string | null };
+  accounts: Account[];
+  callbackPath: string;
+};
 type Channel = { channelId: string; title: string };
-type Pick = { channelId: string; pages: { pageId: string; pageName: string; instagram: { igUserId: string; username: string | null } | null }[] };
+type Pick = {
+  channelId: string;
+  pages: {
+    pageId: string;
+    pageName: string;
+    instagram: { igUserId: string; username: string | null } | null;
+  }[];
+};
 
-const inputClass = "w-full max-w-xs rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm text-zinc-100 disabled:opacity-50";
-const buttonClass = "rounded-lg border border-zinc-700 px-3 py-1 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-50";
-const primaryClass = "rounded-lg bg-zinc-100 px-3 py-1 text-xs font-medium text-zinc-900 hover:bg-white disabled:opacity-50";
+const inputClass =
+  "w-full max-w-xs rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm text-zinc-100 disabled:opacity-50";
+const buttonClass =
+  "rounded-lg border border-zinc-700 px-3 py-1 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-50";
+const primaryClass =
+  "rounded-lg bg-zinc-100 px-3 py-1 text-xs font-medium text-zinc-900 hover:bg-white disabled:opacity-50";
 
 /** A Meta App ID is digits; an App Secret 32 hex characters (the same rule the server applies). */
 export function validMetaApp(appId: string, appSecret: string): boolean {
-  return /^\d{5,20}$/.test(appId.trim()) && /^[0-9a-fA-F]{32}$/.test(appSecret.trim());
+  return (
+    /^\d{5,20}$/.test(appId.trim()) &&
+    /^[0-9a-fA-F]{32}$/.test(appSecret.trim())
+  );
 }
 
 /** The query the callback lands with (`socialPick` or `socialError`), removed from the address once read. */
@@ -41,10 +64,16 @@ function takeCallbackParams(): { pick: string | null; error: string | null } {
   return { pick, error };
 }
 
-async function requestJson<T>(url: string, init: RequestInit | undefined, fallback: string, t: ReturnType<typeof useT>): Promise<T> {
+async function requestJson<T>(
+  url: string,
+  init: RequestInit | undefined,
+  fallback: string,
+  t: ReturnType<typeof useT>,
+): Promise<T> {
   const response = await fetch(url, init);
   const body = await response.json().catch(() => null);
-  if (!response.ok) throw new Error(errorText(t, body, fallback, { showErrorField: false }));
+  if (!response.ok)
+    throw new Error(errorText(t, body, fallback, { showErrorField: false }));
   return body as T;
 }
 
@@ -59,7 +88,10 @@ export function SocialAccountsSettings() {
   const [appId, setAppId] = useState("");
   const [appSecret, setAppSecret] = useState("");
   const [confirmClear, setConfirmClear] = useState(false);
-  const [confirmDisconnect, setConfirmDisconnect] = useState<{ channelId: string; network: Network } | null>(null);
+  const [confirmDisconnect, setConfirmDisconnect] = useState<{
+    channelId: string;
+    network: Network;
+  } | null>(null);
   const [pickId, setPickId] = useState<string | null>(null);
   const [pick, setPick] = useState<Pick | null>(null);
   const [origin, setOrigin] = useState("");
@@ -67,8 +99,18 @@ export function SocialAccountsSettings() {
   const load = useCallback(async () => {
     try {
       const [s, c] = await Promise.all([
-        requestJson<Status>("/api/social", undefined, t("settings.loadFailed"), t),
-        requestJson<{ channels?: Channel[] }>("/api/channels", undefined, t("settings.loadFailed"), t),
+        requestJson<Status>(
+          "/api/social",
+          undefined,
+          t("settings.loadFailed"),
+          t,
+        ),
+        requestJson<{ channels?: Channel[] }>(
+          "/api/channels",
+          undefined,
+          t("settings.loadFailed"),
+          t,
+        ),
       ]);
       setStatus(s);
       setChannels(Array.isArray(c.channels) ? c.channels : []);
@@ -83,7 +125,11 @@ export function SocialAccountsSettings() {
     const params = takeCallbackParams();
     if (params.error) {
       const key = `social.error.${params.error}` as UiTextKey;
-      setError(params.error === "consent_cancelled" ? t(key) : t("social.error.generic", { code: params.error }));
+      setError(
+        params.error === "consent_cancelled"
+          ? t(key)
+          : t("social.error.generic", { code: params.error }),
+      );
     }
     if (params.pick) setPickId(params.pick);
     void load();
@@ -91,7 +137,12 @@ export function SocialAccountsSettings() {
 
   useEffect(() => {
     if (!pickId) return;
-    requestJson<Pick>(`/api/social/meta/pick?id=${encodeURIComponent(pickId)}`, undefined, t("social.pick.expired"), t).then(setPick, (e: unknown) => {
+    requestJson<Pick>(
+      `/api/social/meta/pick?id=${encodeURIComponent(pickId)}`,
+      undefined,
+      t("social.pick.expired"),
+      t,
+    ).then(setPick, (e: unknown) => {
       setError(e instanceof Error ? e.message : t("social.pick.expired"));
       setPickId(null);
     });
@@ -112,7 +163,19 @@ export function SocialAccountsSettings() {
 
   const saveApp = () =>
     run(async () => {
-      await requestJson("/api/social/meta/app", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ appId: appId.trim(), appSecret: appSecret.trim() }) }, t("settings.saveFailed"), t);
+      await requestJson(
+        "/api/social/meta/app",
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            appId: appId.trim(),
+            appSecret: appSecret.trim(),
+          }),
+        },
+        t("settings.saveFailed"),
+        t,
+      );
       setAppId("");
       setAppSecret("");
       setMessage(t("social.meta.saved"));
@@ -122,20 +185,43 @@ export function SocialAccountsSettings() {
   const clearApp = () =>
     run(async () => {
       setConfirmClear(false);
-      await requestJson("/api/social/meta/app", { method: "DELETE" }, t("settings.saveFailed"), t);
+      await requestJson(
+        "/api/social/meta/app",
+        { method: "DELETE" },
+        t("settings.saveFailed"),
+        t,
+      );
       await load();
     });
 
   const connect = (channelId: string) =>
     run(async () => {
-      const { authorizeUrl } = await requestJson<{ authorizeUrl: string }>("/api/social/meta/connect", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ channelId }) }, t("social.error.generic", { code: "connect" }), t);
+      const { authorizeUrl } = await requestJson<{ authorizeUrl: string }>(
+        "/api/social/meta/connect",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ channelId }),
+        },
+        t("social.error.generic", { code: "connect" }),
+        t,
+      );
       window.location.assign(authorizeUrl);
     });
 
   const choose = (pageId: string) =>
     run(async () => {
       if (!pickId) return;
-      await requestJson("/api/social/meta/select", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ pickId, pageId }) }, t("social.pick.expired"), t);
+      await requestJson(
+        "/api/social/meta/select",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ pickId, pageId }),
+        },
+        t("social.pick.expired"),
+        t,
+      );
       setPickId(null);
       setPick(null);
       setMessage(t("social.connected"));
@@ -145,21 +231,38 @@ export function SocialAccountsSettings() {
   const disconnect = (target: { channelId: string; network: Network }) =>
     run(async () => {
       setConfirmDisconnect(null);
-      await requestJson("/api/social/disconnect", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(target) }, t("settings.saveFailed"), t);
+      await requestJson(
+        "/api/social/disconnect",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(target),
+        },
+        t("settings.saveFailed"),
+        t,
+      );
       await load();
     });
 
   if (!status) {
     return (
       <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-        <h3 className="mb-2 text-base font-semibold text-zinc-100">{t("social.title")}</h3>
-        {loadError ? <p className="text-sm text-red-400">{loadError}</p> : <LoadingIndicator />}
+        <h3 className="mb-2 text-base font-semibold text-zinc-100">
+          {t("social.title")}
+        </h3>
+        {loadError ? (
+          <p className="text-sm text-red-400">{loadError}</p>
+        ) : (
+          <LoadingIndicator />
+        )}
       </div>
     );
   }
 
   const onHttps = origin.startsWith("https://");
-  const pickChannel = pick ? channels.find((c) => c.channelId === pick.channelId) : null;
+  const pickChannel = pick
+    ? channels.find((c) => c.channelId === pick.channelId)
+    : null;
 
   return (
     <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
@@ -169,29 +272,66 @@ export function SocialAccountsSettings() {
       </h3>
 
       <section className="space-y-2">
-        <h4 className="text-sm font-medium text-zinc-200">{t("social.meta.title")}</h4>
-        <p className="text-sm text-zinc-400">{status.metaApp.configured ? t("social.meta.configured", { appId: status.metaApp.appId ?? "" }) : t("social.meta.notConfigured")}</p>
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
-          <label className="flex flex-col gap-1 text-xs text-zinc-400">
-            {t("social.meta.appId")}
-            <input className={inputClass} value={appId} onChange={(e) => setAppId(e.target.value)} inputMode="numeric" autoComplete="off" disabled={busy} />
-          </label>
-          <label className="flex flex-col gap-1 text-xs text-zinc-400">
-            {t("social.meta.appSecret")}
-            <MaskedSecretInput className={inputClass} value={appSecret} onChange={(e) => setAppSecret(e.target.value)} disabled={busy} />
-          </label>
-          <div className="flex gap-2">
-            <button type="button" className={primaryClass} onClick={saveApp} disabled={busy || !validMetaApp(appId, appSecret)}>
-              {t("social.meta.save")}
-            </button>
-            {status.metaApp.configured && (
-              <button type="button" className={buttonClass} onClick={() => setConfirmClear(true)} disabled={busy}>
-                {t("social.meta.clear")}
-              </button>
+        <h4 className="text-sm font-medium text-zinc-200">
+          {t("social.meta.title")}
+        </h4>
+        <p className="text-sm text-zinc-400">
+          {status.metaApp.configured
+            ? t("social.meta.configured", { appId: status.metaApp.appId ?? "" })
+            : t("social.meta.notConfigured")}
+        </p>
+        {/* The App Secret is saved on the Mac (localhost) only; the proxy refuses it on the Tailscale address (review 14.11). */}
+        {!onHttps && (
+          <>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+              <label className="flex flex-col gap-1 text-xs text-zinc-400">
+                {t("social.meta.appId")}
+                <input
+                  className={inputClass}
+                  value={appId}
+                  onChange={(e) => setAppId(e.target.value)}
+                  inputMode="numeric"
+                  autoComplete="off"
+                  disabled={busy}
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-xs text-zinc-400">
+                {t("social.meta.appSecret")}
+                <MaskedSecretInput
+                  className={inputClass}
+                  value={appSecret}
+                  onChange={(e) => setAppSecret(e.target.value)}
+                  disabled={busy}
+                />
+              </label>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  className={primaryClass}
+                  onClick={saveApp}
+                  disabled={busy || !validMetaApp(appId, appSecret)}
+                >
+                  {t("social.meta.save")}
+                </button>
+                {status.metaApp.configured && (
+                  <button
+                    type="button"
+                    className={buttonClass}
+                    onClick={() => setConfirmClear(true)}
+                    disabled={busy}
+                  >
+                    {t("social.meta.clear")}
+                  </button>
+                )}
+              </div>
+            </div>
+            {(appId || appSecret) && !validMetaApp(appId, appSecret) && (
+              <p className="text-xs text-amber-400">
+                {t("social.meta.invalid")}
+              </p>
             )}
-          </div>
-        </div>
-        {(appId || appSecret) && !validMetaApp(appId, appSecret) && <p className="text-xs text-amber-400">{t("social.meta.invalid")}</p>}
+          </>
+        )}
         <p className="text-xs text-zinc-500">{t("social.meta.macOnly")}</p>
         <p className="text-xs text-zinc-400">{t("social.meta.redirects")}</p>
         {onHttps ? (
@@ -207,15 +347,32 @@ export function SocialAccountsSettings() {
             {t("social.pick.title")}
             {pickChannel ? ` — ${pickChannel.title}` : ""}
           </h4>
-          {pick.pages.length === 0 && <p className="text-sm text-amber-400">{t("social.pick.none")}</p>}
+          {pick.pages.length === 0 && (
+            <p className="text-sm text-amber-400">{t("social.pick.none")}</p>
+          )}
           <ul className="space-y-2">
             {pick.pages.map((page) => (
-              <li key={page.pageId} className="flex flex-wrap items-center justify-between gap-2">
+              <li
+                key={page.pageId}
+                className="flex flex-wrap items-center justify-between gap-2"
+              >
                 <span className="text-sm text-zinc-200">
                   {page.pageName}
-                  <span className="ml-2 text-xs text-zinc-400">{page.instagram ? t("social.pick.instagram", { username: page.instagram.username ?? page.instagram.igUserId }) : t("social.pick.noInstagram")}</span>
+                  <span className="ml-2 text-xs text-zinc-400">
+                    {page.instagram
+                      ? t("social.pick.instagram", {
+                          username:
+                            page.instagram.username ?? page.instagram.igUserId,
+                        })
+                      : t("social.pick.noInstagram")}
+                  </span>
                 </span>
-                <button type="button" className={primaryClass} onClick={() => choose(page.pageId)} disabled={busy}>
+                <button
+                  type="button"
+                  className={primaryClass}
+                  onClick={() => choose(page.pageId)}
+                  disabled={busy}
+                >
                   {t("social.pick.choose")}
                 </button>
               </li>
@@ -226,27 +383,57 @@ export function SocialAccountsSettings() {
 
       <section className="space-y-3">
         {channels.map((channel) => {
-          const own = status.accounts.filter((a) => a.channelId === channel.channelId);
+          const own = status.accounts.filter(
+            (a) => a.channelId === channel.channelId,
+          );
           return (
-            <div key={channel.channelId} className="space-y-1 border-t border-zinc-800 pt-3">
+            <div
+              key={channel.channelId}
+              className="space-y-1 border-t border-zinc-800 pt-3"
+            >
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="text-sm font-medium text-zinc-100">{channel.title}</span>
-                <button type="button" className={buttonClass} onClick={() => connect(channel.channelId)} disabled={busy || !status.metaApp.configured || !onHttps}>
+                <span className="text-sm font-medium text-zinc-100">
+                  {channel.title}
+                </span>
+                <button
+                  type="button"
+                  className={buttonClass}
+                  onClick={() => connect(channel.channelId)}
+                  disabled={busy || !status.metaApp.configured || !onHttps}
+                >
                   {own.length ? t("social.reconnect") : t("social.connect")}
                 </button>
               </div>
               {own.length === 0 ? (
-                <p className="text-xs text-zinc-500">{t("social.notConnected")}</p>
+                <p className="text-xs text-zinc-500">
+                  {t("social.notConnected")}
+                </p>
               ) : (
                 <ul className="space-y-1">
                   {own.map((a) => (
-                    <li key={a.network} className="flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-300">
+                    <li
+                      key={a.network}
+                      className="flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-300"
+                    >
                       <span>
-                        {t(`social.network.${a.network}`)}: {a.username ? `@${a.username}` : a.displayName}
+                        {t(`social.network.${a.network}`)}:{" "}
+                        {a.username ? `@${a.username}` : a.displayName}
                       </span>
-                      <button type="button" className={buttonClass} onClick={() => setConfirmDisconnect({ channelId: a.channelId, network: a.network })} disabled={busy}>
-                        {t("social.disconnect")}
-                      </button>
+                      {!onHttps && (
+                        <button
+                          type="button"
+                          className={buttonClass}
+                          onClick={() =>
+                            setConfirmDisconnect({
+                              channelId: a.channelId,
+                              network: a.network,
+                            })
+                          }
+                          disabled={busy}
+                        >
+                          {t("social.disconnect")}
+                        </button>
+                      )}
                     </li>
                   ))}
                 </ul>
@@ -260,12 +447,21 @@ export function SocialAccountsSettings() {
       {error && <p className="text-sm text-red-400">{error}</p>}
 
       {confirmClear && (
-        <ConfirmDialog title={t("social.meta.clear")} description={t("social.meta.clearConfirm")} confirmLabel={t("social.meta.clear")} confirmVariant="danger" onCancel={() => setConfirmClear(false)} onConfirm={clearApp} />
+        <ConfirmDialog
+          title={t("social.meta.clear")}
+          description={t("social.meta.clearConfirm")}
+          confirmLabel={t("social.meta.clear")}
+          confirmVariant="danger"
+          onCancel={() => setConfirmClear(false)}
+          onConfirm={clearApp}
+        />
       )}
       {confirmDisconnect && (
         <ConfirmDialog
           title={t("social.disconnect")}
-          description={t("social.disconnectConfirm", { network: t(`social.network.${confirmDisconnect.network}`) })}
+          description={t("social.disconnectConfirm", {
+            network: t(`social.network.${confirmDisconnect.network}`),
+          })}
           confirmLabel={t("social.disconnect")}
           confirmVariant="danger"
           onCancel={() => setConfirmDisconnect(null)}

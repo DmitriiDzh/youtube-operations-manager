@@ -121,10 +121,11 @@ export function createCrossPostingServices(deps: CrossPostingDeps) {
       if (!pick) throw new DomainError({ code: "not_found", message: "This choice has expired. Start the connection again." });
       const page = pick.pages.find((p) => p.pageId === input.pageId);
       if (!page) throw new DomainError({ code: "validation_failed", message: "That Page was not among the ones Meta returned." });
+      // Used up before any await (review 14.11): two concurrent picks must not both store, interleaving Page A and Page B rows.
+      picks.delete(input.pickId);
       await requireChannel(pick.channelId);
       const sealed = await deps.sealer.seal(page.pageToken);
       if (!sealed) throw new DomainError({ code: "device_secret_unreadable", message: "This computer's secrets key is not available; the token cannot be stored." });
-      picks.delete(input.pickId);
       const now = deps.now();
       const tokenSealed = JSON.stringify(sealed);
       const base = { channelId: pick.channelId, pageId: page.pageId, tokenSealed, tokenExpiresAt: null, connectedAt: now };

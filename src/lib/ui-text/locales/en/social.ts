@@ -13,7 +13,7 @@ export const social = {
   "social.meta.clearConfirm": "Remove the Meta App ID and App Secret from this computer? Connected accounts stay, but cannot be connected again until it is saved.",
   "social.meta.invalid": "App ID: digits; App Secret: 32 characters 0-9 and a-f (Meta app → App settings → Basic).",
   "social.meta.redirects": "Enter this address in the Meta app: Facebook Login for Business → Settings → Valid OAuth Redirect URIs.",
-  "social.meta.macOnly": "The App Secret is entered only on the Mac itself (localhost).",
+  "social.meta.macOnly": "The App Secret is entered, and accounts are disconnected, only on the Mac itself (localhost).",
   "social.httpsOnly": "Meta accepts only an HTTPS return address. Open YT Manager at its Tailscale address (https://…ts.net) to see it and to connect accounts.",
   "social.channel": "Channel",
   "social.connect": "Connect Facebook and Instagram",
