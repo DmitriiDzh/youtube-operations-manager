@@ -150,6 +150,11 @@ async function elevenlabsCore() {
   return ((await import("@/lib/elevenlabs-speech")) as ElevenlabsModule).createElevenlabsSpeechCore();
 }
 
+/** BL-253 (FO-REQ-0054): an ElevenLabs sound effect or music track (the `elevenlabs-speech` module; no voice involved). */
+export async function createElevenlabsSound(kind: "sfx" | "music", input: unknown, actor: string): Promise<Record<string, unknown>> {
+  return { provider: "elevenlabs", ...record(await (await elevenlabsCore()).createSoundJob(input, actor, kind)) };
+}
+
 /** ElevenLabs as a speech provider (the `elevenlabs-speech` module). */
 function elevenlabsSpeechPort(): SpeechProviderPort {
   return {

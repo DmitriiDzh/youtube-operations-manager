@@ -33,6 +33,30 @@ export const ELEVENLABS_DEFAULT_MODEL = "eleven_v4";
 /** Voice Design v3 (the only design model used here). */
 export const ELEVENLABS_DESIGN_MODEL = "eleven_ttv_v3";
 
+/**
+ * BL-253 (FO-REQ-0054, docs/roadmap/plans/ELEVENLABS_SFX_MUSIC_PLAN.md): sound effects and music. Credits from the ElevenLabs site (read
+ * 2026-11-14): sound effects "40 credits per second when duration is specified" (capabilities/sound-effects); automatic duration is not
+ * priced there, so a job reserves the 30 s maximum and is counted afterwards at 40 x the file's length; music "Eleven Music 900
+ * credits per minute" (pricing FAQ, approximate). Credits are what the character limits count. `music_v1` is deprecated (31.01.2027).
+ */
+export const ELEVENLABS_SFX_MODEL = "eleven_text_to_sound_v2";
+export const ELEVENLABS_MUSIC_MODEL = "music_v2_5";
+export const ELEVENLABS_AUDIO_PRICES_AS_OF = "2026-11-14";
+export const ELEVENLABS_SFX = Object.freeze({ creditsPerSecond: 40, minSeconds: 0.5, maxSeconds: 30, promptMaxChars: 1000 });
+export const ELEVENLABS_MUSIC = Object.freeze({ creditsPerMinute: 900, minSeconds: 10, maxSeconds: 300, promptMaxChars: 2000, usdPerMinute: 0.15 });
+/** List-price USD per credit for the spend views (the subscription pays): Eleven v4's per-character price. */
+export const ELEVENLABS_USD_PER_CREDIT = 0.08 / 1000;
+
+/** Credits a sound effect is counted at: 40/s of the given length, else the 30 s maximum reserved until its length is known. */
+export function sfxCredits(durationSeconds: number | null): number {
+  return Math.ceil(ELEVENLABS_SFX.creditsPerSecond * (durationSeconds ?? ELEVENLABS_SFX.maxSeconds));
+}
+
+/** Credits a music track is counted at: 900 per minute of its length. */
+export function musicCredits(durationSeconds: number): number {
+  return Math.ceil((ELEVENLABS_MUSIC.creditsPerMinute * durationSeconds) / 60);
+}
+
 /** The output formats offered (ElevenLabs names; mp3 at 44.1 kHz 128 kbps is on every paid plan, the others may need a higher one). */
 export const ELEVENLABS_OUTPUT_FORMATS = ["mp3_44100_128", "mp3_44100_192", "mp3_44100_96", "mp3_44100_64", "pcm_24000", "pcm_44100", "pcm_48000"] as const;
 export type ElevenlabsOutputFormat = (typeof ELEVENLABS_OUTPUT_FORMATS)[number];
@@ -116,16 +140,21 @@ export type ElevenlabsJobOutput = {
 };
 
 export type ElevenlabsSpeechParams = { voice: { voiceId: string; name: string; providerVoiceId: string }; outputFormat: ElevenlabsOutputFormat };
+/** BL-253: `text` of the job is the sound prompt. */
+export type ElevenlabsSfxParams = { durationSeconds: number | null; promptInfluence: number | null; loop: boolean; outputFormat: ElevenlabsOutputFormat };
+/** BL-253: `text` of the job is the music prompt. */
+export type ElevenlabsMusicParams = { durationSeconds: number; forceInstrumental: boolean; outputFormat: ElevenlabsOutputFormat };
+export type ElevenlabsJobKind = "speech" | "voice_design" | "sfx" | "music";
 export type ElevenlabsDesignParams = { description: string; previewText: string; previews: number };
 
 export type ElevenlabsJobView = {
   jobId: string;
   channelId: string;
   requestId: string | null;
-  kind: "speech" | "voice_design";
+  kind: ElevenlabsJobKind;
   model: string;
   text: string;
-  params: ElevenlabsSpeechParams | ElevenlabsDesignParams;
+  params: ElevenlabsSpeechParams | ElevenlabsDesignParams | ElevenlabsSfxParams | ElevenlabsMusicParams;
   status: ElevenlabsJobStatus;
   /** The characters this job is counted at against the limits (the text's; once charged, what ElevenLabs reported). */
   chars: number;
@@ -204,10 +233,15 @@ export type ElevenlabsJobManifest = {
   schemaVersion: 1;
   jobId: string;
   channelId: string;
-  kind: "speech";
+  kind: "speech" | "sfx" | "music";
   model: string;
+  /** The spoken text (speech) or the prompt (sfx, music). */
   text: string;
-  voice: { voiceId: string; name: string; providerVoiceId: string };
+  /** Speech only. */
+  voice?: { voiceId: string; name: string; providerVoiceId: string };
+  /** BL-253: sfx / music parameters as sent, and the account tier last read (BL-250), for the terms' records. */
+  params?: ElevenlabsSfxParams | ElevenlabsMusicParams;
+  tier?: string | null;
   outputFormat: string;
   status: "done";
   chars: number;

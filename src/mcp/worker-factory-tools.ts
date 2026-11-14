@@ -292,6 +292,10 @@ export function pinFactoryDepsToChannel(
     // jobId is given, so the job's own channel is checked here); a reused requestId never names another channel's job.
     speech: {
       getStatus: () => deps().speech.getStatus(),
+      // BL-253: sound effects and music are the factory's only (FO-REQ-0054); no worker tool maps to them.
+      createSound: async () => {
+        throw new DomainError({ code: "validation_failed", message: "Sound effects and music are not available to channel workers (factory only)." });
+      },
       createJob: byChannel(async (input) => {
         try {
           return await deps().speech.createJob(input);

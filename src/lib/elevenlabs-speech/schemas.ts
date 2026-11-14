@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { parseWithSchema } from "@/lib/shared-domain";
-import { ELEVENLABS_JOB_STATUSES, ELEVENLABS_LIMITS, ELEVENLABS_OUTPUT_FORMATS, ELEVENLABS_SPEECH_MODELS, charCount, elevenlabsInvalidParams, ownEntry } from "./contracts";
+import { ELEVENLABS_JOB_STATUSES, ELEVENLABS_LIMITS, ELEVENLABS_MUSIC, ELEVENLABS_OUTPUT_FORMATS, ELEVENLABS_SFX, ELEVENLABS_SPEECH_MODELS, charCount, elevenlabsInvalidParams, ownEntry } from "./contracts";
 
 export { parseWithSchema };
 
@@ -23,6 +23,37 @@ export const createJobInputSchema = z
   .strict();
 
 export type CreateJobInput = z.infer<typeof createJobInputSchema>;
+
+/** BL-253: a sound effect -- `text` is the sound prompt; no duration = ElevenLabs picks it (the job reserves the maximum). */
+export const createSfxInputSchema = z
+  .object({
+    channelId: z.string().trim().min(1).max(64),
+    text: z.string().trim().min(1).max(ELEVENLABS_SFX.promptMaxChars),
+    durationSeconds: z.number().min(ELEVENLABS_SFX.minSeconds).max(ELEVENLABS_SFX.maxSeconds).optional(),
+    promptInfluence: z.number().min(0).max(1).optional(),
+    loop: z.boolean().optional(),
+    outputFormat: z.enum(ELEVENLABS_OUTPUT_FORMATS).optional(),
+    requestId: z.string().regex(ELEVENLABS_REQUEST_ID_PATTERN, "a request id: up to 120 letters, digits, '.', '_' or '-'").optional(),
+    dryRun: z.boolean().optional(),
+    videoNumber: z.string().regex(/^V[1-9][0-9]{0,5}$/, "a video number such as V49").optional(),
+  })
+  .strict();
+export type CreateSfxInput = z.infer<typeof createSfxInputSchema>;
+
+/** BL-253: a music track from a prompt (instrumental by default). */
+export const createMusicInputSchema = z
+  .object({
+    channelId: z.string().trim().min(1).max(64),
+    prompt: z.string().trim().min(1).max(ELEVENLABS_MUSIC.promptMaxChars),
+    durationSeconds: z.number().min(ELEVENLABS_MUSIC.minSeconds).max(ELEVENLABS_MUSIC.maxSeconds),
+    forceInstrumental: z.boolean().optional(),
+    outputFormat: z.enum(ELEVENLABS_OUTPUT_FORMATS).optional(),
+    requestId: z.string().regex(ELEVENLABS_REQUEST_ID_PATTERN, "a request id: up to 120 letters, digits, '.', '_' or '-'").optional(),
+    dryRun: z.boolean().optional(),
+    videoNumber: z.string().regex(/^V[1-9][0-9]{0,5}$/, "a video number such as V49").optional(),
+  })
+  .strict();
+export type CreateMusicInput = z.infer<typeof createMusicInputSchema>;
 
 export const designVoiceInputSchema = z
   .object({
