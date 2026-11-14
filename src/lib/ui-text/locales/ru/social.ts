@@ -52,4 +52,9 @@ export const social: Record<keyof typeof en, string> = {
   "social.job.failed": "ошибка",
   "social.job.open": "открыть",
   "social.job.retry": "Повторить",
+  "social.slot.summary": "Также в соцсети: {networks}",
+  "social.slot.problems": "проблем: {count}",
+  "social.slot.at": "в {time}",
+  "social.slot.problem": "не опубликуется: {code}",
+  "social.slot.note": "Одобряя слот, вы одобряете и эти посты; YT Manager опубликует их в своё время, если включена «Публикация в соцсети».",
 };

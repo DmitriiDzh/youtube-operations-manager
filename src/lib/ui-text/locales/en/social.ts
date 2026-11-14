@@ -50,4 +50,9 @@ export const social = {
   "social.job.failed": "failed",
   "social.job.open": "open",
   "social.job.retry": "Retry",
+  "social.slot.summary": "Also on social networks: {networks}",
+  "social.slot.problems": "{count} problem(s)",
+  "social.slot.at": "at {time}",
+  "social.slot.problem": "cannot post: {code}",
+  "social.slot.note": "Approving the slot approves these posts too; YT Manager posts them at their time when «Post to social networks» is on.",
 } as const;

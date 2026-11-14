@@ -100,3 +100,37 @@ async function entryOf(
     isAiGenerated: typeof raw.containsSyntheticMedia === "boolean" ? raw.containsSyntheticMedia : channelSynthetic,
   };
 }
+
+/**
+ * BL-252 stage 2 (AC-XP-15): what the owner sees on «План недели» before approving a slot -- the networks, texts and problems of
+ * the slot's package `crossPost` block, read from the manifest whose SHA-256 the screen shows (the one being approved). Read-only.
+ */
+export async function slotCrossPostPreview(channelId: string, video: string, manifestSha256: string): Promise<{ crossPost: unknown; videoSha256: string | null; durationSeconds: number | null; width: number | null; height: number | null; sizeBytes: number | null } | null> {
+  const workspace = await createChannelWorkspacesCore().getWorkspace({ channelId });
+  if (!workspace.configured) return null;
+  const root = await realpath(workspace.path).catch(() => null);
+  if (!root) return null;
+  const scan = await createPackageScanCore().scan(channelId);
+  if (scan.status !== "ok") return null;
+  const scanned = scan.packages.find((p) => p.manifestSha256 === manifestSha256 && p.pkg?.video === video);
+  if (!scanned) return null;
+  const manifestPath = await realpath(path.join(root, ...scanned.manifestPath.split("/")));
+  if (!isPathInsideOrEqual(root, manifestPath)) return null;
+  const bytes = await readFile(manifestPath);
+  if (bytes.byteLength > MANIFEST_MAX_BYTES || sha256Hex(bytes) !== manifestSha256) return null;
+  const raw = JSON.parse(bytes.toString("utf8")) as Record<string, unknown>;
+  if (raw.crossPost === undefined || raw.crossPost === null) return { crossPost: null, videoSha256: null, durationSeconds: null, width: null, height: null, sizeBytes: null };
+  const files = (raw.files ?? {}) as Record<string, unknown>;
+  const videoPath = typeof files.video === "string" ? await realpath(path.join(path.dirname(manifestPath), files.video)).catch(() => null) : null;
+  const inside = videoPath && isPathInsideOrEqual(root, videoPath) ? videoPath : null;
+  const tools = inside ? await ffprobe() : null;
+  const probe = tools && inside ? await probeMedia(tools, inside).catch(() => null) : null;
+  return {
+    crossPost: raw.crossPost,
+    videoSha256: typeof raw.sha256 === "string" && /^[0-9a-f]{64}$/i.test(raw.sha256) ? raw.sha256.toLowerCase() : null,
+    durationSeconds: probe?.durationSeconds ?? null,
+    width: probe?.video?.width ?? null,
+    height: probe?.video?.height ?? null,
+    sizeBytes: inside ? (await stat(inside)).size : null,
+  };
+}
