@@ -26,7 +26,7 @@ export type CrossPostingDeps = {
   store: CrossPostingStore;
   appSecret: Pick<DeviceSecretSlot, "read" | "write" | "clear" | "info">;
   sealer: { seal(plaintext: string): Promise<EncryptedPayload | null>; open(payload: EncryptedPayload): Promise<string | null> };
-  meta: MetaClient;
+  meta: Pick<MetaClient, "authorizeUrl" | "exchangeCode" | "listPages" | "inspectPageToken">;
   now: () => number;
   randomId: () => string;
 };

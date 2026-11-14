@@ -49,7 +49,7 @@ function harness() {
       return removed;
     },
   };
-  const meta: MetaClient = {
+  const meta: Pick<MetaClient, "authorizeUrl" | "exchangeCode" | "listPages" | "inspectPageToken"> = {
     authorizeUrl: ({ appId, redirectUri, state }) => `https://meta.test/dialog?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${state}`,
     exchangeCode: async (input) => (exchanged.push(input), { userToken: "USER-TOKEN", expiresAt: null }),
     listPages: async () => PAGES,

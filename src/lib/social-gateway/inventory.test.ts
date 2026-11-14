@@ -16,7 +16,7 @@ async function listFiles(dir: string): Promise<string[]> {
   return out;
 }
 
-const HOST_PATTERN = /graph\.facebook\.com|graph\.instagram\.com|www\.facebook\.com\/v\d|facebook\.com\/[^"'\s]*dialog\/oauth/;
+const HOST_PATTERN = /graph\.facebook\.com|graph\.instagram\.com|rupload\.facebook\.com|www\.facebook\.com\/v\d|facebook\.com\/[^"'\s]*dialog\/oauth/;
 
 test("social-gateway inventory: no production file outside src/lib/social-gateway references a Meta API host", async () => {
   const root = process.cwd();
