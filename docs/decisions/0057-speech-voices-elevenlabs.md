@@ -83,3 +83,16 @@ since the reset. A failed read keeps the stored snapshot. The owner's `maxCharsP
 current key. Read at start, before a take when older than 10 minutes, right after the reset date, on key save / check and on the
 owner's «Обновить» -- automatically only with the switch on; no periodic read (msg 4207). Per take / per day / active jobs unchanged.
 Factory API 1.44.0 / Agent API 4.18.0 (additive). Plan and acceptance criteria: `docs/roadmap/plans/ELEVENLABS_ACCOUNT_LIMIT_PLAN.md`.
+
+## Amendment 2 (2026-11-14, BL-253, FO-REQ-0054 + addition; owner TG 2089 / 2091 via the Operator)
+
+`elevenlabs-speech` also makes **sound effects** (kind `sfx`, `POST /v1/sound-generation`, `eleven_text_to_sound_v2`) and **music**
+(kind `music`, `POST /v1/music`, `music_v2_5` — `music_v1` is deprecated by ElevenLabs for 2027-01-31), for the factory only
+(`factory_sfx_create_job`, `factory_music_create_job`, Factory API 1.45.0; results via `factory_speech_get_job`). Same switch, same
+key, same per-job / day / month / active limits, counted in ElevenLabs credits (what the character limits already count):
+sound effects 40 credits per second of a given length (none given: the 30 s maximum is reserved and the job is counted at 40 × the
+file's length), music ≈ 900 credits per minute (elevenlabs.io capabilities page and pricing FAQ, read 2026-11-14; an answer's
+`character-cost` header wins when sent). Outputs `elevenlabs/<jobId>/sfx-1.*` / `music-1.*`, manifest last with kind, prompt, params
+and the account tier (for SOURCES.md). No voice and no audio input; channel workers get no tool. Unverified until the first paid
+call: the credits of an automatic-length sound effect, and whether these endpoints send `character-cost`.
+Plan and acceptance criteria: `docs/roadmap/plans/ELEVENLABS_SFX_MUSIC_PLAN.md`.

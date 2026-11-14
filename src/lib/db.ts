@@ -1437,7 +1437,7 @@ export const elevenlabsSpeechJobs = sqliteTable(
     channelId: text("channel_id").notNull(),
     requestId: text("request_id"),
     requestHash: text("request_hash").notNull(),
-    kind: text("kind", { enum: ["speech", "voice_design"] }).notNull(),
+    kind: text("kind", { enum: ["speech", "voice_design", "sfx", "music"] }).notNull(),
     model: text("model").notNull(),
     text: text("text").notNull(),
     paramsJson: text("params_json").notNull(),

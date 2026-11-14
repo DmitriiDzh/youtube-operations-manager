@@ -5,15 +5,24 @@ import {
   ELEVENLABS_ACTIVE_STATUSES,
   ELEVENLABS_LIMITS,
   ELEVENLABS_MANIFEST_FILE,
+  ELEVENLABS_MUSIC_MODEL,
   ELEVENLABS_OUTPUT_SUBDIR,
+  ELEVENLABS_SFX_MODEL,
   ELEVENLABS_SPEECH_MODELS,
+  ELEVENLABS_USD_PER_CREDIT,
+  mp3SecondsOf,
+  musicUsd,
+  sfxCredits,
   isDomainError,
   ownEntry,
   type ElevenlabsCostBasis,
   type ElevenlabsJobManifest,
   type ElevenlabsJobOutput,
+  type ElevenlabsMusicParams,
+  type ElevenlabsSfxParams,
   type ElevenlabsSpeechParams,
 } from "./contracts";
+import { ceil4 } from "@/lib/shared-money";
 import { audioOfFormat, createElevenlabsSpeechServices, jobView, listPriceUsd, rateOfFormat, type ElevenlabsSpeechDeps } from "./services";
 
 // BL-236 (ADR 0057): runs queued ElevenLabs takes. One `tick()` every few seconds from `src/instrumentation.ts`; every status
@@ -89,10 +98,16 @@ export function createElevenlabsWorker(deps: ElevenlabsSpeechDeps) {
       await fail(job, "submitting", { errorCode: "elevenlabs_output_failed", error: `The output folder is not available: ${error instanceof Error ? error.message : String(error)}`, charged: false });
       return;
     }
-    const params = JSON.parse(job.paramsJson) as ElevenlabsSpeechParams;
+    const params = JSON.parse(job.paramsJson) as ElevenlabsSpeechParams & Partial<ElevenlabsSfxParams> & Partial<ElevenlabsMusicParams>;
     let result: Awaited<ReturnType<ElevenlabsSpeechDeps["api"]["textToSpeech"]>>;
     try {
-      result = await deps.api.textToSpeech(apiKey, { voiceId: params.voice.providerVoiceId, text: job.text, modelId: job.model, outputFormat: params.outputFormat });
+      if (job.kind === "sfx") {
+        result = await deps.api.soundGeneration(apiKey, { text: job.text, modelId: job.model, outputFormat: params.outputFormat, durationSeconds: params.durationSeconds ?? null, promptInfluence: params.promptInfluence ?? null, loop: params.loop ?? false });
+      } else if (job.kind === "music") {
+        result = await deps.api.composeMusic(apiKey, { prompt: job.text, modelId: job.model, outputFormat: params.outputFormat, durationMs: Math.round((params.durationSeconds ?? 0) * 1000), forceInstrumental: params.forceInstrumental ?? true });
+      } else {
+        result = await deps.api.textToSpeech(apiKey, { voiceId: params.voice.providerVoiceId, text: job.text, modelId: job.model, outputFormat: params.outputFormat });
+      }
     } catch (error) {
       const verdict = classify(error);
       if (!verdict.retry) {
@@ -107,11 +122,16 @@ export function createElevenlabsWorker(deps: ElevenlabsSpeechDeps) {
       }
       return;
     }
-    const chargedChars = result.chargedChars ?? job.chars;
-    const costUsd = listPriceUsd(job.model, chargedChars);
-    const costBasis: ElevenlabsCostBasis = "list_price";
     const file = audioOfFormat(params.outputFormat, result.audio);
-    const name = `take-1.${file.extension}`;
+    // BL-253: a sound effect without a length reserved the 30 s maximum; it is counted at 40 credits per second of what came back.
+    // An mp3 carries no length in its header here: its constant bitrate gives it (review finding 1).
+    const seconds = file.durationSeconds ?? mp3SecondsOf(params.outputFormat, file.data.length);
+    const measured = job.kind === "sfx" && params.durationSeconds == null && seconds ? Math.min(job.chars, sfxCredits(seconds)) : null;
+    const chargedChars = result.chargedChars ?? measured ?? job.chars;
+    const costUsd = job.kind === "speech" ? listPriceUsd(job.model, chargedChars) : job.kind === "music" ? musicUsd(chargedChars) : ceil4(chargedChars * ELEVENLABS_USD_PER_CREDIT);
+    const costBasis: ElevenlabsCostBasis = "list_price";
+    const stem = job.kind === "sfx" ? "sfx-1" : job.kind === "music" ? "music-1" : "take-1";
+    const name = `${stem}.${file.extension}`;
     const localPath = path.join(dir, name);
     let output: ElevenlabsJobOutput;
     try {
@@ -127,8 +147,11 @@ export function createElevenlabsWorker(deps: ElevenlabsSpeechDeps) {
               assetType: "generated_audio",
               referenceKind: "local_path",
               referenceValue: localPath,
-              title: `${job.model} speech ${job.jobId}`,
-              provenance: { source: "elevenlabs_speech", jobId: job.jobId, model: job.model, voice: params.voice, outputFormat: params.outputFormat, text: job.text.slice(0, 2000), sha256: written.sha256, bytes: written.bytes },
+              title: `${job.model} ${job.kind === "speech" ? "speech" : job.kind} ${job.jobId}`,
+              provenance:
+                job.kind === "speech"
+                  ? { source: "elevenlabs_speech", jobId: job.jobId, model: job.model, voice: params.voice, outputFormat: params.outputFormat, text: job.text.slice(0, 2000), sha256: written.sha256, bytes: written.bytes }
+                  : { source: `elevenlabs_${job.kind}`, jobId: job.jobId, model: job.model, params, prompt: job.text.slice(0, 2000), sha256: written.sha256, bytes: written.bytes },
             })
           ).assetId;
       } catch (error) {
@@ -151,7 +174,7 @@ export function createElevenlabsWorker(deps: ElevenlabsSpeechDeps) {
       await deps.store.updateJob(job.jobId, "submitting", {
         status: "failed",
         errorCode: "elevenlabs_output_failed",
-        error: `The speech was generated (and charged) but could not be written: ${error instanceof Error ? error.message : String(error)}`.slice(0, 2000),
+        error: `The ${job.kind === "speech" ? "speech" : job.kind === "sfx" ? "sound effect" : "music"} was generated (and charged) but could not be written: ${error instanceof Error ? error.message : String(error)}`.slice(0, 2000),
         costUsd,
         costBasis,
         chargedChars,
@@ -166,10 +189,10 @@ export function createElevenlabsWorker(deps: ElevenlabsSpeechDeps) {
       schemaVersion: 1,
       jobId: job.jobId,
       channelId: job.channelId,
-      kind: "speech",
+      kind: job.kind === "sfx" || job.kind === "music" ? job.kind : "speech",
       model: job.model,
       text: job.text,
-      voice: params.voice,
+      ...(job.kind === "speech" ? { voice: params.voice } : { params: job.kind === "sfx" ? { durationSeconds: params.durationSeconds ?? null, promptInfluence: params.promptInfluence ?? null, loop: params.loop ?? false, outputFormat: params.outputFormat } : { durationSeconds: params.durationSeconds ?? 0, forceInstrumental: params.forceInstrumental ?? true, outputFormat: params.outputFormat }, tier: (await services.accountSnapshot().catch(() => null))?.tier ?? null }),
       outputFormat: params.outputFormat,
       status: "done",
       chars: job.chars,
@@ -218,7 +241,8 @@ export function createElevenlabsWorker(deps: ElevenlabsSpeechDeps) {
           await fail(job, "queued", { errorCode: "elevenlabs_disabled", error: "Speech through ElevenLabs was turned off before the job was sent.", charged: false });
           continue;
         }
-        if (job.kind !== "speech" || !ownEntry(ELEVENLABS_SPEECH_MODELS, job.model)) {
+        const runnable = job.kind === "speech" ? Boolean(ownEntry(ELEVENLABS_SPEECH_MODELS, job.model)) : job.kind === "sfx" ? job.model === ELEVENLABS_SFX_MODEL : job.kind === "music" && job.model === ELEVENLABS_MUSIC_MODEL;
+        if (!runnable) {
           await fail(job, "queued", { errorCode: "elevenlabs_invalid_request", error: `${job.model} is not offered here; the job was not sent.`, charged: false });
           continue;
         }

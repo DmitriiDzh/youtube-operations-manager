@@ -5,7 +5,7 @@ import { publishingPlanProgress } from "@/lib/publishing-plan-progress";
 import { createChannelPublishingCoverage, invalidateChannelTimeZone } from "@/composition/publishing-coverage";
 import { createChannelLocalizationsOperatorCore, operatorChannelLocalizations } from "@/lib/channel-localizations";
 import { createGeminiMediaCore } from "@/lib/gemini-media";
-import { createSpeechForProduction, voiceRegistryForProduction } from "@/composition/speech";
+import { createElevenlabsSound, createSpeechForProduction, voiceRegistryForProduction } from "@/composition/speech";
 import { uploadBandwidthReport, uploadBandwidthStatus } from "@/lib/upload-bandwidth";
 import { collectLiveEncoderReadings, collectLiveSourceStatus, collectLiveStreamEntries, createLiveSegmentSettingsCore, createLiveStreamsCore, createStreamLocalizationsCore, getLiveStreamsDeviceId, listPeerLiveStreams, localizationsStatusEntry } from "@/lib/live-streams";
 import { createGenerationPlansCore } from "@/lib/generation-plans";
@@ -56,6 +56,7 @@ export function createFactoryChannelDeps(): FactoryChannelDeps {
       getStatus: async () => ({ ...(await createSpeechForProduction().getStatus()) }),
       createJob: async (input) => ({ ...(await createSpeechForProduction().createJob(input, "factory")) }),
       getJobs: async (input) => ({ ...(await createSpeechForProduction().getJobs(input)) }),
+      createSound: async (kind, input) => createElevenlabsSound(kind, input, "factory"),
     },
     voices: {
       list: async (input) => ({ ...(await (await voiceRegistryForProduction()).list(input)) }),

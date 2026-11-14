@@ -191,7 +191,10 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 // BL-243 (owner msg 4039, ADR 0063): 1.43.0 -- a slot's statusCode gains video_deleted_on_youtube (status failed): its only package
 // names a video the sync found removed on YouTube -- nothing to approve, no date; factory_video_list's videos gain existsOnChannel
 // and removedAt (a deleted video still says how far its number got, but existsOnChannel false). Additive.
-export const FACTORY_API_VERSION = "1.44.0";
+// BL-253 (FO-REQ-0054, docs/roadmap/plans/ELEVENLABS_SFX_MUSIC_PLAN.md): 1.45.0 -- factory_sfx_create_job and factory_music_create_job
+// (ElevenLabs sound effects and music, paid, on the speech switch and limits, counted in credits); factory_speech_get_job returns
+// their jobs (kind sfx | music). Additive.
+export const FACTORY_API_VERSION = "1.45.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -257,6 +260,9 @@ export const FACTORY_TOOL_NAMES = [
   "factory_speech_get_status",
   "factory_speech_create_job",
   "factory_speech_get_job",
+  // BL-253 (FO-REQ-0054): ElevenLabs sound effects and music.
+  "factory_sfx_create_job",
+  "factory_music_create_job",
   "factory_voice_list",
   "factory_voice_design",
   "factory_voice_pick",
@@ -343,6 +349,9 @@ export const FACTORY_WRITE_TOOL_NAMES = [
   "factory_gemini_create_job",
   // BL-236: a paid speech take (a dry-run passes no gate), a paid voice design, the owner's relayed pick, a rename / archive.
   "factory_speech_create_job",
+  // BL-253: a paid sound effect or music track (a dry-run passes no gate).
+  "factory_sfx_create_job",
+  "factory_music_create_job",
   "factory_voice_design",
   "factory_voice_pick",
   "factory_voice_update",
@@ -463,6 +472,8 @@ export type FactoryToolDeps = {
     getStatus(): Promise<Record<string, unknown>>;
     createJob(input: unknown): Promise<Record<string, unknown>>;
     getJobs(input: unknown): Promise<Record<string, unknown>>;
+    /** BL-253 (FO-REQ-0054): an ElevenLabs sound effect or music track (the module validates every field and its limits). */
+    createSound(kind: "sfx" | "music", input: unknown): Promise<Record<string, unknown>>;
   };
   /** BL-236: the channel voice registry (the module validates every input strictly and checks the voice is the channel's). */
   voices: {
@@ -1447,6 +1458,62 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
       inputSchema: speechGetJobInput,
     },
     async (args) => successResult(await deps.speech.getJobs(parseInput(speechGetJobInput, args)))
+  );
+
+  // -- BL-253 (FO-REQ-0054, docs/roadmap/plans/ELEVENLABS_SFX_MUSIC_PLAN.md): ElevenLabs sound effects and music, on the speech switch
+  // and limits. The module validates every field; the schemas here name them.
+  const sfxCreateInput = z
+    .object({
+      channelId: z.string().min(1).max(64),
+      text: z.string().min(1).max(1000),
+      durationSeconds: z.number().optional(),
+      promptInfluence: z.number().optional(),
+      loop: z.boolean().optional(),
+      outputFormat: z.string().min(1).max(40).optional(),
+      requestId: z.string().min(1).max(120).optional(),
+      dryRun: z.boolean().optional(),
+      videoNumber: z.string().min(1).max(12).optional(),
+    })
+    .strict();
+  const musicCreateInput = z
+    .object({
+      channelId: z.string().min(1).max(64),
+      prompt: z.string().min(1).max(2000),
+      durationSeconds: z.number(),
+      forceInstrumental: z.boolean().optional(),
+      outputFormat: z.string().min(1).max(40).optional(),
+      requestId: z.string().min(1).max(120).optional(),
+      dryRun: z.boolean().optional(),
+      videoNumber: z.string().min(1).max(12).optional(),
+    })
+    .strict();
+  const SOUND_COMMON =
+    "Paid, on the owner's ElevenLabs switch and the same limits as speech (factory_speech_get_status elevenlabs: maxCharsPerJob / per day / per month (the account threshold) / active jobs, counted in ElevenLabs credits = characters). outputFormat? as speech (default the owner's mp3_44100_128; pcm_* saved as WAV). requestId? (the same id with the same request returns the first job; other content: elevenlabs_request_exists), dryRun? (true: { dryRun, kind, credits, estimateUsd, allowed, refusal, usage }, nothing sent or stored), videoNumber? ('V49') -> { provider: 'elevenlabs', job } (status queued; sent within seconds). Follow it with factory_speech_get_job { jobId } (kind sfx | music). The manifest.json (written last) records kind, prompt, params, model and the account tier (for SOURCES.md). Refusals: elevenlabs_disabled, elevenlabs_key_missing, elevenlabs_limit_exceeded (details.limit per_job | per_day | per_month | active_jobs), validation_failed (an out-of-range field), elevenlabs_workspace_unavailable, video_not_found. Terms (ElevenLabs): sound-effect output only combined with other material, never standalone; no building a music library for others from the output. Recorded as done by the Factory Operator.";
+
+  registerTool(
+    "factory_sfx_create_job",
+    {
+      description: `ONE sound effect through ElevenLabs Sound Effects (1.45.0, model eleven_text_to_sound_v2): { channelId, text (the sound, e.g. 'soft felt ding, short, warm'; <= 1000 characters), durationSeconds? (0.5-30; omitted: ElevenLabs picks it -- 1,200 credits (30 s) are reserved against the limits until it finishes, then it is counted at 40 per second of the result; give it for a pack of short sounds so the reservations do not crowd the daily limit), promptInfluence? (0-1, default 0.3: higher follows the prompt more literally), loop? (a seamless loop), ... } Credits: 40 per second (1.2 s = 48). Output: 99 Data Exchange/From YTM/elevenlabs/<jobId>/sfx-1.<mp3|wav>. ${SOUND_COMMON}`,
+      inputSchema: sfxCreateInput,
+    },
+    async (args) => {
+      const input = parseInput(sfxCreateInput, args);
+      if (!input.dryRun) await deps.assertMutationAllowed();
+      return successResult(await deps.speech.createSound("sfx", input));
+    }
+  );
+
+  registerTool(
+    "factory_music_create_job",
+    {
+      description: `ONE music track through ElevenLabs Music (1.45.0, model music_v2_5): { channelId, prompt (mood, instruments, tempo, structure; no artist names or song titles -- ElevenLabs Music terms; <= 2000 characters), durationSeconds (10-180: a longer track would not come back within the call's time limit), forceInstrumental? (default true: no vocals), ... } Credits: about 900 per minute (90 s = 1,350) -- the owner's per-job limit (default 2,000) allows about 2 minutes; list price $0.15 per minute. Output: 99 Data Exchange/From YTM/elevenlabs/<jobId>/music-1.<mp3|wav>. ${SOUND_COMMON}`,
+      inputSchema: musicCreateInput,
+    },
+    async (args) => {
+      const input = parseInput(musicCreateInput, args);
+      if (!input.dryRun) await deps.assertMutationAllowed();
+      return successResult(await deps.speech.createSound("music", input));
+    }
   );
 
   const VOICE_SHAPE =
