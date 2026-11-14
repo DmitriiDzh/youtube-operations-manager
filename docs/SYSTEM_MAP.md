@@ -1399,7 +1399,15 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   (одноразовый `state` 15 мин, выбор страницы), `social_accounts` (v121, device-local, токен страницы запечатан ключом устройства).
 - Маршруты `/api/social/*`: App Secret и отключение — только Mac; подключение — только с HTTPS-адреса Tailscale (Meta не
   принимает http://localhost). Карточка «Соцсети» в Настройки → Каналы.
-  Публикации пока нет (этап 2, только с одобрения владельца). TikTok/Pinterest на паузе.
+  Кнопка «Проверить» (AC-XP-8): ответ Meta о токене (действует, разрешения, страница, Instagram) против сохранённого.
+- **Этап 2 (ветка):** публикация идёт по слоту плана недели — блок `crossPost` в манифесте `yt-release-package/2`, одно
+  одобрение владельца покрывает YouTube и соцсети (SHA-256 манифеста; sha256 видео обязателен). `publishing-plans`
+  `socialSlotStates` (одобрение/вето/выпуск по отдельности, только этап packaged); `src/composition/cross-posting-plan.ts` +
+  `cross-posting-runner.ts` (один исполнитель на процесс, тик раз в минуту из instrumentation). Шлюз: Instagram Reels
+  (resumable, `rupload.facebook.com`) и Reels страницы, `is_ai_generated`; каждый изменяющий вызов — за переключателем
+  «Публикация в соцсети» (app_settings, выкл. по умолчанию, только Mac). Задания `social_post_jobs` (v122, device-local):
+  uploading → processing → published/failed, без повторной публикации при обрыве; лимиты 24 ч (AC-XP-16); загрузка держит
+  restart-when-idle. «План недели» показывает под слотом сети, тексты и проблемы. TikTok/Pinterest на паузе.
 
 ### 2.9bj YT Manager на телефоне (BL-254, `docs/roadmap/plans/MOBILE_UI_PLAN.md`) — **этап 1 IMPLEMENTED** (dev b38a79f4)
 - Ниже 768 px: `AppShell` прячет боковое меню (`max-md:hidden`), внизу `PhoneNav` (Главная · Контент · Медиа · Аналитика ·
