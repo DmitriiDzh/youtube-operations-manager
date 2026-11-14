@@ -4,7 +4,7 @@ import { authOptions } from "@/lib/auth";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { CLIP_ATTACHMENT_LIMITS, createClipReviewsOwnerCore, type ClipReviewsOwnerSurface } from "@/lib/clip-reviews";
 import { streamLocalFile } from "@/lib/local-file-response";
-import { isLoopbackRequest } from "@/lib/loopback-guard";
+import { isOwnerBrowserRequest } from "@/lib/loopback-guard";
 import { DomainError } from "@/lib/shared-domain";
 import { getVideoMetadataErrorStatus } from "../../../video-metadata/error-status";
 
@@ -27,7 +27,7 @@ const defaultDeps = (): ClipReviewRouteDeps => ({
     await createChannelAccessCore().assertActiveChannel(args);
   },
   service: createClipReviewsOwnerCore,
-  isLoopback: (request) => isLoopbackRequest(request.headers),
+  isLoopback: (request) => isOwnerBrowserRequest(request.headers), // BL-251 amendment 2: the phone plays them too
 });
 
 function errorResponse(error: unknown) {

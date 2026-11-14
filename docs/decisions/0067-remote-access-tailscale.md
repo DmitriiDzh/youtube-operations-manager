@@ -49,3 +49,10 @@ the right one pinned the Tailscale login, 5 wrong passwords locked even the righ
 in the tailnet's DNS settings (the owner's admin console) before `remote-access.sh enable`.
 
 **Amendment 1 (2026-11-14, owner msg 4236).** The app shell reads four status routes on every page; a phone session may `GET` `/api/operation-lock`, `/api/device-sync/status`, `/api/device-sync/divergence` and `/api/cloud-connection/status` (only with a current remote session; operation-lock has no session check of its own). Every other method on those routes, and everything else in the Mac-only list, stays refused.
+
+**Amendment 2 (2026-11-14, owner msg 4275: clips sent for review would not play on the phone).** The routes that send the
+owner's local media to a browser — clip reviews (the clip and its attachments), storyboard takes, plan auditions — used
+ADR 0029 §5's loopback-only rule. They now accept `isOwnerBrowserRequest`: this computer, or a remote request that came
+through the proxy's remote gate (switch on, a current phone session: epoch + pinned Tailscale login) and still passes the
+route's own session check. A request with a loopback Host and a foreign Origin (a page aiming at localhost) stays refused.
+The System topic routes keep the loopback-only rule.

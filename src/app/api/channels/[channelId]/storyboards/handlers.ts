@@ -7,7 +7,7 @@ import { createChannelAccessCore } from "@/lib/channel-access";
 import { DomainError } from "@/lib/shared-domain";
 import { createStoryboardsServiceForProduction, type StoryboardsService } from "@/lib/storyboards";
 import { streamLocalFile } from "@/lib/local-file-response";
-import { isLoopbackRequest } from "@/lib/loopback-guard";
+import { isOwnerBrowserRequest } from "@/lib/loopback-guard";
 import { getVideoMetadataErrorStatus } from "../../../video-metadata/error-status";
 import { listStoryboardTakes, resolveTakeFile, videoTypeOf, type StoryboardTake } from "@/lib/storyboard-takes";
 
@@ -40,7 +40,7 @@ const defaultDeps = (): StoryboardRouteDeps => ({
   readFile: (filePath) => readFile(filePath),
   takes: listStoryboardTakes,
   takeFile: resolveTakeFile,
-  isLoopback: (request) => isLoopbackRequest(request.headers),
+  isLoopback: (request) => isOwnerBrowserRequest(request.headers), // BL-251 amendment 2: the phone plays them too
 });
 
 /** The image types a keyframe may be (the viewer shows them as they are). */
