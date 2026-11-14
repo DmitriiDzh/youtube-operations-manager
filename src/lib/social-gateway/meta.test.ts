@@ -86,3 +86,93 @@ test("errors: OAuth error 190 -> social_token_invalid, code 4 -> social_rate_lim
   }) as unknown as typeof fetch;
   await assert.rejects(createMetaClient({ fetchImpl: failing }).listPages("T"), (e: unknown) => e instanceof DomainError && e.code === "social_unavailable");
 });
+
+test("inspectPageToken: debug_token with the APP token (never the Page token as caller), then the Page with its Instagram", async () => {
+  const { calls, impl } = fakeFetch([
+    { status: 200, body: { data: { is_valid: true, scopes: ["pages_manage_posts", "instagram_content_publish"], expires_at: 0 } } },
+    { status: 200, body: { id: "111", name: "WWE", instagram_business_account: { id: "1784", username: "w" } } },
+  ]);
+  const out = await createMetaClient({ fetchImpl: impl }).inspectPageToken({ appId: "1", appSecret: "S", pageId: "111", pageToken: "PT" });
+  assert.deepEqual(out, { valid: true, scopes: ["pages_manage_posts", "instagram_content_publish"], expiresAt: null, page: { pageId: "111", pageName: "WWE" }, instagram: { igUserId: "1784", username: "w" } });
+  assert.match(calls[0].url.pathname, /\/debug_token$/);
+  assert.equal(calls[0].url.searchParams.get("input_token"), "PT");
+  assert.equal(calls[0].url.searchParams.get("access_token"), "1|S");
+  assert.match(calls[1].url.pathname, /\/111$/);
+  assert.equal(calls[1].url.searchParams.get("access_token"), "PT");
+});
+
+test("inspectPageToken: an invalid token stops after debug_token (no Page read)", async () => {
+  const { calls, impl } = fakeFetch([{ status: 200, body: { data: { is_valid: false, scopes: [] } } }]);
+  const out = await createMetaClient({ fetchImpl: impl }).inspectPageToken({ appId: "1", appSecret: "S", pageId: "111", pageToken: "PT" });
+  assert.equal(out.valid, false);
+  assert.equal(calls.length, 1);
+});
+
+// BL-252 stage 2: the publishing calls, from Meta's documented flows (Instagram content publishing with upload_type=resumable;
+// Page Reels upload_phase start → rupload → finish). Every mutating call asks the switch first (AC-XP-2).
+const body = (text = "VIDEO") => ({ stream: () => new Blob([text]).stream(), sizeBytes: text.length });
+
+test("AC-XP-2: with the switch off (or absent) every mutating call fails before any request; reads still work", async () => {
+  for (const postingAllowed of [undefined, async () => false]) {
+    const { calls, impl } = fakeFetch([{ status: 200, body: { status_code: "FINISHED" } }]);
+    const client = createMetaClient({ fetchImpl: impl, postingAllowed });
+    const off = (e: unknown) => e instanceof DomainError && e.code === "social_posting_disabled";
+    await assert.rejects(client.igCreateReelContainer({ igUserId: "1", token: "T", caption: "c", shareToFeed: true, isAiGenerated: true }), off);
+    await assert.rejects(client.igUploadReel({ containerId: "C", token: "T", body: body() }), off);
+    await assert.rejects(client.igPublish({ igUserId: "1", containerId: "C", token: "T" }), off);
+    await assert.rejects(client.fbReelStart({ pageId: "P", token: "T" }), off);
+    await assert.rejects(client.fbUploadReel({ uploadUrl: "https://rupload.facebook.com/video-upload/v23.0/V", token: "T", body: body() }), off);
+    await assert.rejects(client.fbReelFinish({ pageId: "P", token: "T", videoId: "V", title: null, description: "d", isAiGenerated: true }), off);
+    assert.equal(calls.length, 0);
+    assert.equal(await client.igContainerStatus({ containerId: "C", token: "T" }), "FINISHED");
+  }
+});
+
+test("Instagram Reel: container (REELS, resumable, caption, is_ai_generated; token in the body), bytes to rupload with OAuth header, publish", async () => {
+  const { calls, impl } = fakeFetch([
+    { status: 200, body: { id: "C1" } },
+    { status: 200, body: { success: true } },
+    { status: 200, body: { id: "M1" } },
+    { status: 200, body: { permalink: "https://www.instagram.com/reel/abc/" } },
+  ]);
+  const client = createMetaClient({ fetchImpl: impl, postingAllowed: async () => true });
+  assert.deepEqual(await client.igCreateReelContainer({ igUserId: "1784", token: "PT", caption: "Hi #x", shareToFeed: true, isAiGenerated: true }), { containerId: "C1" });
+  const form = new URLSearchParams(String(calls[0].init?.body));
+  assert.match(calls[0].url.pathname, /\/1784\/media$/);
+  assert.equal(calls[0].url.search, "");
+  assert.deepEqual(Object.fromEntries(form), { media_type: "REELS", upload_type: "resumable", caption: "Hi #x", share_to_feed: "true", is_ai_generated: "true", access_token: "PT" });
+  await client.igUploadReel({ containerId: "C1", token: "PT", body: body("12345") });
+  assert.equal(calls[1].url.hostname, "rupload.facebook.com");
+  assert.match(calls[1].url.pathname, /^\/ig-api-upload\/v\d+\.\d+\/C1$/);
+  const h = new Headers(calls[1].init?.headers);
+  assert.equal(h.get("authorization"), "OAuth PT");
+  assert.equal(h.get("offset"), "0");
+  assert.equal(h.get("file_size"), "5");
+  assert.deepEqual(await client.igPublish({ igUserId: "1784", containerId: "C1", token: "PT" }), { mediaId: "M1" });
+  assert.equal(new URLSearchParams(String(calls[2].init?.body)).get("creation_id"), "C1");
+  assert.equal(await client.igPermalink({ mediaId: "M1", token: "PT" }), "https://www.instagram.com/reel/abc/");
+});
+
+test("Facebook Reel: start → upload to the returned rupload URL → finish PUBLISHED now (never SCHEDULED) with is_ai_generated", async () => {
+  const { calls, impl } = fakeFetch([
+    { status: 200, body: { video_id: "V1", upload_url: "https://rupload.facebook.com/video-upload/v23.0/V1" } },
+    { status: 200, body: { success: true } },
+    { status: 200, body: { success: true } },
+    { status: 200, body: { status: { video_status: "ready", publishing_phase: { status: "complete", publish_status: "published" } }, permalink_url: "/reel/123" } },
+  ]);
+  const client = createMetaClient({ fetchImpl: impl, postingAllowed: async () => true });
+  assert.deepEqual(await client.fbReelStart({ pageId: "P1", token: "PT" }), { videoId: "V1", uploadUrl: "https://rupload.facebook.com/video-upload/v23.0/V1" });
+  assert.equal(new URLSearchParams(String(calls[0].init?.body)).get("upload_phase"), "start");
+  await client.fbUploadReel({ uploadUrl: "https://rupload.facebook.com/video-upload/v23.0/V1", token: "PT", body: body() });
+  await client.fbReelFinish({ pageId: "P1", token: "PT", videoId: "V1", title: "T", description: "D #x", isAiGenerated: true });
+  assert.deepEqual(Object.fromEntries(new URLSearchParams(String(calls[2].init?.body))), { upload_phase: "finish", video_id: "V1", video_state: "PUBLISHED", description: "D #x", is_ai_generated: "true", access_token: "PT", title: "T" });
+  assert.deepEqual(await client.fbVideoStatus({ videoId: "V1", token: "PT" }), { videoStatus: "ready", publishStatus: "published", permalink: "https://www.facebook.com/reel/123" });
+});
+
+test("Facebook Reel: an upload address outside rupload.facebook.com is refused (start and upload)", async () => {
+  const { calls, impl } = fakeFetch([{ status: 200, body: { video_id: "V1", upload_url: "https://evil.example/x" } }]);
+  const client = createMetaClient({ fetchImpl: impl, postingAllowed: async () => true });
+  await assert.rejects(client.fbReelStart({ pageId: "P1", token: "PT" }), (e: unknown) => e instanceof DomainError && e.code === "social_request_rejected");
+  await assert.rejects(client.fbUploadReel({ uploadUrl: "https://evil.example/x", token: "PT", body: body() }), (e: unknown) => e instanceof DomainError && e.code === "social_request_rejected");
+  assert.equal(calls.length, 1);
+});

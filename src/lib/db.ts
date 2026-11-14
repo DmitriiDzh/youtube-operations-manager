@@ -2103,6 +2103,36 @@ export const socialAccounts = sqliteTable(
 );
 
 /**
+ * SCHEMA_MIGRATIONS version 122 (BL-252 stage 2, ADR 0068 amendment 1 §4): one job per (channel, slot, network) on the computer
+ * that posts -- the remote container / video id is stored BEFORE the publish / finish call, so a restart reads its status instead
+ * of posting twice (AC-XP-6). Device-local (each computer keeps its own; only the switched-on one posts).
+ */
+export const socialPostJobs = sqliteTable(
+  "social_post_jobs",
+  {
+    jobId: text("job_id").primaryKey().notNull(),
+    channelId: text("channel_id").notNull(),
+    slotId: text("slot_id").notNull(),
+    video: text("video").notNull(),
+    network: text("network", { enum: ["facebook", "instagram"] }).notNull(),
+    manifestSha256: text("manifest_sha256").notNull(),
+    plannedAt: integer("planned_at", { mode: "timestamp_ms" }).notNull(),
+    status: text("status", { enum: ["uploading", "processing", "published", "failed"] }).notNull(),
+    remoteId: text("remote_id"),
+    uploadUrl: text("upload_url"),
+    remotePostId: text("remote_post_id"),
+    permalink: text("permalink"),
+    /** 1 once a publishing call (Facebook finish / Instagram media_publish) was SENT: the post may be live, so it is never retried. */
+    publishAttempted: integer("publish_attempted", { mode: "boolean" }).notNull().default(false),
+    errorCode: text("error_code"),
+    errorMessage: text("error_message"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [index("social_post_jobs_channel_idx").on(table.channelId, table.slotId)]
+);
+
+/**
  * SCHEMA_MIGRATIONS version 45 (BL-118) -- CHANNEL-level daily totals (views, watch time, subscribers...) collected with the per-video
  * metrics, so the agent's channel analytics can be read locally instead of a live Analytics API call every time. Same shape and
  * rules as `video_metrics_daily` (the API omits zero-activity days: absence is not zero), device-local like it.
@@ -6151,6 +6181,33 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         connected_at INTEGER NOT NULL,
         PRIMARY KEY (channel_id, network)
       )`);
+    },
+  },
+  {
+    version: 122,
+    description:
+      "social_post_jobs -- BL-252 stage 2 (ADR 0068 amendment 1): one cross-posting job per (channel, slot, network) on the posting computer, remote ids kept before publish. Additive (one new table), device-local",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS social_post_jobs (
+        job_id TEXT PRIMARY KEY NOT NULL,
+        channel_id TEXT NOT NULL,
+        slot_id TEXT NOT NULL,
+        video TEXT NOT NULL,
+        network TEXT NOT NULL,
+        manifest_sha256 TEXT NOT NULL,
+        planned_at INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        remote_id TEXT,
+        upload_url TEXT,
+        remote_post_id TEXT,
+        permalink TEXT,
+        publish_attempted INTEGER NOT NULL DEFAULT 0,
+        error_code TEXT,
+        error_message TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS social_post_jobs_channel_idx ON social_post_jobs (channel_id, slot_id)");
     },
   },
 ];
@@ -16686,4 +16743,41 @@ export async function deleteSocialAccounts(channelId: string, network: "facebook
   const where = network === null ? eq(socialAccounts.channelId, channelId) : and(eq(socialAccounts.channelId, channelId), eq(socialAccounts.network, network));
   const deleted = await database.delete(socialAccounts).where(where).returning({ channelId: socialAccounts.channelId });
   return deleted.length;
+}
+
+// BL-252 stage 2: the cross-posting jobs of this computer and its switch «Публикация в соцсети» (app_settings, per device).
+export type StoredSocialPostJob = typeof socialPostJobs.$inferSelect;
+const SOCIAL_POSTING_SETTINGS_KEY = "social_posting_settings";
+
+export async function getSocialPostingSettingsJson(database: AppDb = db): Promise<string | null> {
+  return getAppSetting(SOCIAL_POSTING_SETTINGS_KEY, database);
+}
+
+export async function setSocialPostingSettingsJson(json: string, database: AppDb = db): Promise<void> {
+  await setAppSetting(SOCIAL_POSTING_SETTINGS_KEY, json, database);
+}
+
+export async function getSocialPostJob(jobId: string, database: AppDb = db): Promise<StoredSocialPostJob | null> {
+  const [row] = await database.select().from(socialPostJobs).where(eq(socialPostJobs.jobId, jobId));
+  return row ?? null;
+}
+
+export async function listSocialPostJobs(channelId: string | null, database: AppDb = db): Promise<StoredSocialPostJob[]> {
+  const query = database.select().from(socialPostJobs);
+  const rows = channelId === null ? await query : await query.where(eq(socialPostJobs.channelId, channelId));
+  return rows.sort((a, b) => b.plannedAt.getTime() - a.plannedAt.getTime() || a.network.localeCompare(b.network));
+}
+
+/** Inserts a new job; false when one with that id already exists (two ticks never both start a network's post). */
+export async function insertSocialPostJob(row: typeof socialPostJobs.$inferInsert, database: AppDb = db): Promise<boolean> {
+  const inserted = await database.insert(socialPostJobs).values(row).onConflictDoNothing().returning({ jobId: socialPostJobs.jobId });
+  return inserted.length === 1;
+}
+
+export async function updateSocialPostJob(jobId: string, set: Partial<typeof socialPostJobs.$inferInsert>, database: AppDb = db): Promise<void> {
+  await database.update(socialPostJobs).set(set).where(eq(socialPostJobs.jobId, jobId));
+}
+
+export async function deleteSocialPostJob(jobId: string, database: AppDb = db): Promise<void> {
+  await database.delete(socialPostJobs).where(eq(socialPostJobs.jobId, jobId));
 }

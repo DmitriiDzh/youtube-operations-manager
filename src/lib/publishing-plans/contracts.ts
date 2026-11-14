@@ -225,3 +225,20 @@ export type PlanSlotDecision =
   | { kind: "approved"; publishAt: string; package?: PublishingPlanPackageFingerprint }
   | { kind: "vetoed"; package?: PublishingPlanPackageFingerprint }
   | { kind: "pending" };
+
+/** BL-252 stage 2 (ADR 0068 amendment 1): one slot as cross-posting reads it -- approval, veto and release as separate facts. */
+export type SocialSlotState = {
+  slotId: string;
+  weekStart: string;
+  timeZone: string;
+  publishAtUtc: string;
+  released: boolean;
+  vetoed: boolean;
+  /** A standing owner approval covering the slot's CURRENT package, not vetoed (packaged stage only). */
+  approved: boolean;
+  /** The approved package (video number, manifest SHA-256, video id) when approved, else null. */
+  package: PublishingPlanPackageFingerprint | null;
+};
+
+/** Cross-posting looks back this far: a post may go out up to 12 h after its slot's time (plus a network's own later `at`). */
+export const SOCIAL_LOOKBACK_MS = 36 * 60 * 60_000;

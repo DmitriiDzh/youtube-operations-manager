@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { type Client } from "@libsql/client";
 import { createLibsqlClient } from "@/lib/libsql-client";
-import { createIsolatedDb, deleteSocialAccounts, initializeDatabaseSchema, listSocialAccounts, SCHEMA_MIGRATIONS, upsertSocialAccount } from "@/lib/db";
+import { createIsolatedDb, deleteSocialAccounts, getSocialPostJob, initializeDatabaseSchema, insertSocialPostJob, listSocialAccounts, SCHEMA_MIGRATIONS, updateSocialPostJob, upsertSocialAccount } from "@/lib/db";
 import { SNAPSHOT_DEVICE_LOCAL_TABLES } from "@/lib/snapshot/contracts";
 
 // BL-252 (ADR 0068): schema v121 adds `social_accounts` -- one row per (channel, network); a second connect replaces the row.
@@ -58,5 +58,22 @@ test("one row per (channel, network): a second connect replaces it; delete by ne
     assert.equal(await deleteSocialAccounts("UC1", "instagram", database), 1);
     assert.equal(await deleteSocialAccounts("UC1", null, database), 1);
     assert.deepEqual((await listSocialAccounts(null, database)).map((r) => r.channelId), ["UC2"]);
+  });
+});
+
+test("schema v122 social_post_jobs: a job id is inserted once (a second start is refused), updates keep the row; device-local", async () => {
+  assert.ok(SCHEMA_MIGRATIONS.find((m) => m.version === 122));
+  assert.ok(SNAPSHOT_DEVICE_LOCAL_TABLES.social_post_jobs);
+  await withDb(async (client) => {
+    const database = createIsolatedDb(client);
+    const at = new Date("2026-11-16T15:00:00Z");
+    const job = { jobId: "UC1|s1|instagram", channelId: "UC1", slotId: "s1", video: "V70", network: "instagram" as const, manifestSha256: "m", plannedAt: at, status: "uploading" as const, createdAt: at, updatedAt: at };
+    assert.equal(await insertSocialPostJob(job, database), true);
+    assert.equal(await insertSocialPostJob({ ...job, video: "V71" }, database), false);
+    await updateSocialPostJob(job.jobId, { status: "processing", remoteId: "C1" }, database);
+    const row = await getSocialPostJob(job.jobId, database);
+    assert.equal(row?.video, "V70");
+    assert.equal(row?.status, "processing");
+    assert.equal(row?.remoteId, "C1");
   });
 });

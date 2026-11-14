@@ -115,10 +115,20 @@ run in parallel with the code. I prepare the texts and the demo video each revie
   (amended 2026-11-14: the Meta app enforces HTTPS and its validator refused http://localhost, owner msgs 4315/4319); an OAuth callback with a missing, reused
   or foreign `state` is refused.
 - AC-XP-13 A channel only ever posts to the networks it connected; the per-channel list is the user's setting.
+- AC-XP-15 Scheduling in one place (owner msg 4339): a post to any network is planned like a YouTube upload, in the same
+  interface -- one file, one day, several networks (YouTube + Instagram + Facebook...) from one entry; each network's own
+  time may differ. YTM publishes to every network at the planned time itself (the computer whose switch is on must be
+  running then) -- never hands a scheduled post to the network (Facebook `scheduled_publish_time` is not used): a veto or a
+  change after approval must still stop it, and deleting posts is out of v1. Immediately before each mutating call: the
+  approval hash, the switch and the identity read (AC-XP-8). Approval covers the whole entry; changing it voids it (AC-XP-10).
+- AC-XP-16 Publishing limits watched like the YouTube quota (owner msg 4356): per channel and network, "used N of the limit in
+  the last 24 h" (Instagram: `content_publishing_limit`; Facebook Reels: our own count, 30 per Page per 24 h, rolling). Near the
+  limit nothing is started and the reason is shown. Meta charges nothing for these calls.
 - AC-XP-14 AI disclosure on by default (Producer 2026-11-14: our narration is an ElevenLabs voice; Meta requires labelling
   realistic AI audio, ElevenLabs music terms ask for platform disclosure): every post carries the network's AI-generated
-  content flag where its API has one; where it has none (to be checked against the docs at stage 2, UNVERIFIED for the
-  Instagram/Facebook publishing APIs), the approval screen says so and the caption carries the channel's AI note. Never the
+  content flag where its API has one -- verified 2026-11-14: `is_ai_generated=true` on the Instagram container and on the
+  Page Reel finish call (both Meta references); where a network has none, the approval screen says so and the caption
+  carries the channel's AI note (a per-channel setting, never text in this repository). Never the
   Instagram profile-level "AI-generated" toggle (that is for synthetic personas).
 
 ## Risks
@@ -160,3 +170,19 @@ the owner's approval (unless the owner decides so in Q2); channel worker or fact
 Consequences: stage 1 = Meta only (Instagram first) as a vertical slice; no generic six-network abstraction yet. Stage 1
 alone posts nothing, so it stays on the branch and merges together with stage 2 (first real post). TikTok and Pinterest:
 the owner decides whether to apply for the reviews (TikTok audit; Pinterest needs a public privacy policy page).
+
+## Stage 2 findings — official docs (2026-11-14)
+
+- Instagram Reel from a local file: container `POST /{ig-user-id}/media` (`media_type=REELS`, `upload_type=resumable`,
+  `caption`, `share_to_feed`, `thumb_offset`, `is_ai_generated`) → bytes to `rupload.facebook.com/ig-api-upload/{container}`
+  (`Authorization: OAuth`, `offset`, `file_size`) → poll `status_code` (IN_PROGRESS/FINISHED/ERROR/EXPIRED/PUBLISHED, about once
+  a minute, a container expires after 24 h) → `media_publish` → `permalink`. Limits: 3 s–15 min, 300 MB, 23–60 fps, H.264/HEVC +
+  AAC, caption 2200 chars / 30 hashtags / 20 mentions, 100 API posts per 24 h (`content_publishing_limit`; budget 50).
+- Facebook Page Reel: `POST /{page-id}/video_reels` `upload_phase=start` → bytes to the returned `upload_url` → `finish` with
+  `video_state=PUBLISHED`, `description`, `title`, `is_ai_generated`; status `GET /{video-id}?fields=status`. 3–90 s, 9:16,
+  ≥540×960, 24–60 fps; 30 API Reels per Page per 24 h. The Pages posts doc also lists `publish_video` (check at the first post).
+- **Development mode hides posts:** "Any data generated while an app is in Development mode … can only be seen by role
+  users" (App Modes doc). Public posts need the app **Live**, which needs a Privacy Policy URL in Basic Settings (an owner
+  decision: publishing the policy page). For the owner's own accounts Standard Access suffices (no App Review expected).
+- Token for Instagram: the docs disagree (Page token vs user token); the stored Page token is tried first, the identity read
+  (AC-XP-8) confirms its scopes.

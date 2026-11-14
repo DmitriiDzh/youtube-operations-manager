@@ -34,6 +34,24 @@ export type PendingPageView = { pageId: string; pageName: string; instagram: { i
 
 export type MetaAppStatus = { configured: boolean; appId: string | null };
 
+/** What posting to Instagram and a Facebook Page needs from the stored Page token (AC-XP-8 identity read). */
+export const META_POSTING_SCOPES = ["pages_show_list", "pages_read_engagement", "pages_manage_posts", "instagram_basic", "instagram_content_publish"] as const;
+
+export type AccountCheckProblem = "token_invalid" | "scope_missing" | "page_mismatch" | "instagram_mismatch" | "instagram_unlinked";
+
+/** The identity read of a channel's connected Meta accounts: Meta's live answer against what is stored (never a token). */
+export type AccountCheck = {
+  channelId: string;
+  checkedAt: number;
+  ok: boolean;
+  problems: AccountCheckProblem[];
+  missingScopes: string[];
+  scopes: string[];
+  tokenExpiresAt: number | null;
+  facebook: { stored: string; live: string | null; name: string | null } | null;
+  instagram: { stored: string | null; live: string | null; username: string | null } | null;
+};
+
 export function notConfigured(): DomainError {
   return new DomainError({ code: "social_not_configured", message: "The Meta app (App ID and App Secret) is not saved on this computer yet (Settings → Channels → Social networks)." });
 }

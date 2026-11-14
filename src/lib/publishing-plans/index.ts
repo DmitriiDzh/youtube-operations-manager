@@ -64,8 +64,14 @@ export function createPublishingPlansUploadCore(progress?: PublishingPlansPorts[
   return uploadSurface(service(progress));
 }
 
-export { createPublishingPlansService, agentSurface, ownerSurface, uploadSurface } from "./services";
-export type { PublishingPlansService, PublishingPlansAgentSurface, PublishingPlansOwnerSurface, PublishingPlansUploadSurface } from "./services";
+export { createPublishingPlansService, agentSurface, ownerSurface, uploadSurface, socialSurface } from "./services";
+import { socialSurface as socialSurfaceOf } from "./services";
+export type { PublishingPlansService, PublishingPlansAgentSurface, PublishingPlansOwnerSurface, PublishingPlansUploadSurface, PublishingPlansSocialSurface } from "./services";
 export { contentHashOf, instantOf, isMonday, weekEndOf, addDays, planViewOf, slotViewOf, decisionStateOf, needsOwner, fingerprintOf, packageReady, lastApprovedPackageOf } from "./model";
 export * from "./contracts";
 export * from "./schemas";
+
+/** BL-252 stage 2: the slots as cross-posting reads them (the composition layer joins them to the runner); read-only. */
+export function createPublishingPlansSocialCore(progress?: PublishingPlansPorts["progress"]): import("./services").PublishingPlansSocialSurface {
+  return socialSurfaceOf(service(progress));
+}

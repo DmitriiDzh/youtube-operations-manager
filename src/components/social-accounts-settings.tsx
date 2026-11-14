@@ -6,6 +6,7 @@ import { ConfirmDialog } from "./confirm-dialog";
 import { InfoTooltip } from "./info-tooltip";
 import { MaskedSecretInput } from "./masked-secret-input";
 import { LoadingIndicator } from "./operation-progress";
+import { ToggleSwitch } from "./toggle-switch";
 import { useT } from "./ui-text-provider";
 
 // BL-252 (ADR 0068, CROSS_POSTING_PLAN.md) stage 1: Settings → Channels → Social networks. The Meta app (App ID + App Secret,
@@ -23,9 +24,35 @@ type Account = {
 type Status = {
   metaApp: { configured: boolean; appId: string | null };
   accounts: Account[];
+  posting?: { enabled: boolean };
   callbackPath: string;
 };
+type Job = {
+  jobId: string;
+  channelId: string;
+  video: string;
+  network: Network;
+  plannedAt: number;
+  status: "uploading" | "processing" | "published" | "failed";
+  remotePostId: string | null;
+  publishAttempted?: boolean;
+  permalink: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+};
+type Quota = {
+  instagram: { used: number | null; limit: number };
+  facebook: { used: number; limit: number };
+};
 type Channel = { channelId: string; title: string };
+type Check = {
+  channelId: string;
+  ok: boolean;
+  problems: string[];
+  missingScopes: string[];
+  facebook: { name: string | null } | null;
+  instagram: { username: string | null } | null;
+};
 type Pick = {
   channelId: string;
   pages: {
@@ -88,6 +115,7 @@ export function SocialAccountsSettings() {
   const [appId, setAppId] = useState("");
   const [appSecret, setAppSecret] = useState("");
   const [confirmClear, setConfirmClear] = useState(false);
+  const [checks, setChecks] = useState<Record<string, Check>>({});
   const [confirmDisconnect, setConfirmDisconnect] = useState<{
     channelId: string;
     network: Network;
@@ -95,6 +123,8 @@ export function SocialAccountsSettings() {
   const [pickId, setPickId] = useState<string | null>(null);
   const [pick, setPick] = useState<Pick | null>(null);
   const [origin, setOrigin] = useState("");
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [quotas, setQuotas] = useState<Record<string, Quota>>({});
 
   const load = useCallback(async () => {
     try {
@@ -115,6 +145,24 @@ export function SocialAccountsSettings() {
       setStatus(s);
       setChannels(Array.isArray(c.channels) ? c.channels : []);
       setLoadError(null);
+      const j = await requestJson<{ jobs: Job[] }>(
+        "/api/social/jobs",
+        undefined,
+        t("settings.loadFailed"),
+        t,
+      ).catch(() => ({ jobs: [] }));
+      setJobs(j.jobs);
+      for (const channelId of new Set(s.accounts.map((a) => a.channelId))) {
+        requestJson<Quota>(
+          `/api/social/quota?channelId=${encodeURIComponent(channelId)}`,
+          undefined,
+          t("settings.loadFailed"),
+          t,
+        ).then(
+          (q) => setQuotas((prev) => ({ ...prev, [channelId]: q })),
+          () => undefined,
+        );
+      }
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : t("settings.loadFailed"));
     }
@@ -228,6 +276,47 @@ export function SocialAccountsSettings() {
       await load();
     });
 
+  const setPosting = (enabled: boolean) =>
+    run(async () => {
+      await requestJson(
+        "/api/social/posting",
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ enabled }),
+        },
+        t("settings.saveFailed"),
+        t,
+      );
+      await load();
+    });
+
+  const retry = (jobId: string) =>
+    run(async () => {
+      await requestJson(
+        "/api/social/jobs/retry",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ jobId }),
+        },
+        t("settings.saveFailed"),
+        t,
+      );
+      await load();
+    });
+
+  const check = (channelId: string) =>
+    run(async () => {
+      const result = await requestJson<Check>(
+        `/api/social/meta/check?channelId=${encodeURIComponent(channelId)}`,
+        undefined,
+        t("social.check.failed"),
+        t,
+      );
+      setChecks((prev) => ({ ...prev, [channelId]: result }));
+    });
+
   const disconnect = (target: { channelId: string; network: Network }) =>
     run(async () => {
       setConfirmDisconnect(null);
@@ -270,6 +359,25 @@ export function SocialAccountsSettings() {
         {t("social.title")}
         <InfoTooltip>{t("social.info")}</InfoTooltip>
       </h3>
+
+      <section className="space-y-1">
+        <div className="flex items-center gap-3">
+          <ToggleSwitch
+            checked={status.posting?.enabled === true}
+            onChange={setPosting}
+            disabled={busy || onHttps}
+            label={t("social.posting.switch")}
+          />
+          <span className="text-sm text-zinc-200">
+            {t("social.posting.switch")}
+          </span>
+        </div>
+        <p className="text-xs text-zinc-500">
+          {status.posting?.enabled
+            ? t("social.posting.on")
+            : t("social.posting.off")}
+        </p>
+      </section>
 
       <section className="space-y-2">
         <h4 className="text-sm font-medium text-zinc-200">
@@ -395,15 +503,117 @@ export function SocialAccountsSettings() {
                 <span className="text-sm font-medium text-zinc-100">
                   {channel.title}
                 </span>
-                <button
-                  type="button"
-                  className={buttonClass}
-                  onClick={() => connect(channel.channelId)}
-                  disabled={busy || !status.metaApp.configured || !onHttps}
-                >
-                  {own.length ? t("social.reconnect") : t("social.connect")}
-                </button>
+                <div className="flex flex-wrap gap-2">
+                  {own.length > 0 && (
+                    <button
+                      type="button"
+                      className={buttonClass}
+                      onClick={() => check(channel.channelId)}
+                      disabled={busy}
+                    >
+                      {t("social.check.button")}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className={buttonClass}
+                    onClick={() => connect(channel.channelId)}
+                    disabled={busy || !status.metaApp.configured || !onHttps}
+                  >
+                    {own.length ? t("social.reconnect") : t("social.connect")}
+                  </button>
+                </div>
               </div>
+              {quotas[channel.channelId] && (
+                <p className="text-xs text-zinc-400">
+                  {t("social.quota", {
+                    ig:
+                      quotas[channel.channelId].instagram.used === null
+                        ? "?"
+                        : String(quotas[channel.channelId].instagram.used),
+                    igLimit: quotas[channel.channelId].instagram.limit,
+                    fb: quotas[channel.channelId].facebook.used,
+                    fbLimit: quotas[channel.channelId].facebook.limit,
+                  })}
+                </p>
+              )}
+              {jobs.filter((j) => j.channelId === channel.channelId).length >
+                0 && (
+                <ul className="space-y-1">
+                  {jobs
+                    .filter((j) => j.channelId === channel.channelId)
+                    .slice(0, 8)
+                    .map((j) => (
+                      <li
+                        key={j.jobId}
+                        className="flex flex-wrap items-center gap-2 text-xs text-zinc-300"
+                      >
+                        <span className="text-zinc-400">
+                          {new Date(j.plannedAt).toLocaleString(t.language)}
+                        </span>
+                        <span>{j.video}</span>
+                        <span>{t(`social.network.${j.network}`)}</span>
+                        <span
+                          className={
+                            j.status === "published"
+                              ? "text-emerald-400"
+                              : j.status === "failed"
+                                ? "text-red-400"
+                                : "text-amber-300"
+                          }
+                        >
+                          {t(`social.job.${j.status}`)}
+                        </span>
+                        {j.permalink && (
+                          <a
+                            href={j.permalink}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-sky-400 underline"
+                          >
+                            {t("social.job.open")}
+                          </a>
+                        )}
+                        {j.status === "failed" && (
+                          <span className="text-zinc-500">
+                            {j.errorMessage ?? j.errorCode}
+                          </span>
+                        )}
+                        {j.status === "failed" && !j.remotePostId && !j.publishAttempted && (
+                          <button
+                            type="button"
+                            className={buttonClass}
+                            onClick={() => retry(j.jobId)}
+                            disabled={busy}
+                          >
+                            {t("social.job.retry")}
+                          </button>
+                        )}
+                      </li>
+                    ))}
+                </ul>
+              )}
+              {checks[channel.channelId] &&
+                (checks[channel.channelId].ok ? (
+                  <p className="text-xs text-emerald-400">
+                    {t("social.check.ok")}
+                  </p>
+                ) : (
+                  <ul className="space-y-0.5 text-xs text-amber-400">
+                    {checks[channel.channelId].problems.map((p) => (
+                      <li key={p}>
+                        {p === "scope_missing"
+                          ? t("social.check.scope_missing", {
+                              scopes:
+                                checks[channel.channelId].missingScopes.join(
+                                  ", ",
+                                ),
+                            })
+                          : t(`social.check.${p}` as UiTextKey)}
+                      </li>
+                    ))}
+                  </ul>
+                ))}
               {own.length === 0 ? (
                 <p className="text-xs text-zinc-500">
                   {t("social.notConnected")}

@@ -6,8 +6,8 @@ import { META_CALLBACK_PATH, defaultSocialRouteDeps, socialHandler, type SocialR
 export function createSocialGetHandler(deps: SocialRouteDeps = defaultSocialRouteDeps()) {
   return socialHandler(deps, async ({ core, request }) => {
     const channelId = new URL(request.url).searchParams.get("channelId");
-    const [metaApp, accounts] = await Promise.all([core.getMetaApp(), core.listAccounts(channelId && channelId.trim() ? channelId.trim() : null)]);
-    return NextResponse.json({ metaApp, accounts, callbackPath: META_CALLBACK_PATH });
+    const [metaApp, accounts, posting] = await Promise.all([core.getMetaApp(), core.listAccounts(channelId && channelId.trim() ? channelId.trim() : null), core.getPostingSettings()]);
+    return NextResponse.json({ metaApp, accounts, posting, callbackPath: META_CALLBACK_PATH });
   });
 }
 

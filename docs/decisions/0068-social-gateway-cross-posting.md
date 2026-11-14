@@ -23,3 +23,26 @@ network with an API; each channel connects its own, chosen in the UI), 4279 (bac
 - Page tokens from a long-lived user token do not expire on a schedule, but revoking the app or changing the password does;
   a rejected token surfaces as `social_token_invalid` and the owner connects again.
 - Graph API version is pinned in `meta.ts` (`v23.0`), UNVERIFIED until the first real connect.
+
+## Amendment 1 — stage 2: posting rides on the weekly-plan slot (2026-11-14; owner msgs 4337/4339/4344)
+
+1. **One entry, one approval (AC-XP-10/15).** Social posts are part of the slot's `yt-release-package/2` manifest, in an
+   optional top-level `crossPost` block: `{ "instagram": { "caption", "shareToFeed"?, "at"? }, "facebook": { "title"?,
+   "description", "at"? } }` (`at` = "HH:MM" in the plan's time zone on the slot's date; absent = the slot's `publishAt`).
+   The publishing parser ignores unknown keys (checked: `packages.ts` picks fields), so older builds (Windows) are unaffected,
+   and the slot approval's manifest SHA-256 (ADR 0062) already covers the captions, networks and times — any change voids it.
+   A slot approved without a package fingerprint (the `slot` stage) never posts to a social network (fail closed). The video
+   is the package's own `files.video`. No separate post request, Producer tools or sync family (replaces the plan's earlier
+   "Post request" shape).
+2. **YTM fires every network itself** at the planned time; Facebook's own scheduling is not used (a veto or a change after
+   approval must still stop a post). Immediately before each mutating call: the switch «Публикация в соцсети» (this computer,
+   off by default), the slot decision (approved, same manifest SHA, not vetoed) and the identity read (AC-XP-8).
+3. **AI label:** `is_ai_generated` on the Instagram container and the Page Reel finish call — from the package's
+   `containsSyntheticMedia`, else the channel's publishing setting (the same value the YouTube upload sends).
+4. **Jobs:** one row per (channel, slot, network) on the computer that posts (device-local table); the remote container /
+   video id is stored before the publish / finish call, so a restart checks status instead of posting twice (AC-XP-6). An
+   in-flight social upload holds restart-when-idle (§N), like a YouTube upload.
+5. **Composition, not coupling (§M):** `src/composition/` joins the slot decisions and the package scan to the cross-posting
+   runner; `publishing` and `publishing-plans` never import `cross-posting`.
+6. **App mode:** while the Meta app is in development mode, posts are visible only to the app's roles (Meta App Modes doc);
+   public posts need the app Live, which needs a public Privacy Policy URL — an owner decision.

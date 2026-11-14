@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DomainError } from "@/lib/shared-domain";
-import type { MetaClient, MetaPage } from "@/lib/social-gateway";
+import type { MetaClient, MetaPage, MetaTokenInspection } from "@/lib/social-gateway";
 import { createCrossPostingServices, type CrossPostingStore, type SocialAccountRow } from "./index";
 
 // BL-252 (ADR 0068, CROSS_POSTING_PLAN.md stage 1) acceptance:
@@ -24,6 +24,14 @@ function harness() {
   let secret: { plaintext: string; hints: Record<string, string | null> } | null = null;
   const rows: SocialAccountRow[] = [];
   const exchanged: Array<{ code: string; redirectUri: string; appSecret: string }> = [];
+  const inspected: Array<{ pageId: string; pageToken: string }> = [];
+  let inspection: MetaTokenInspection = {
+    valid: true,
+    scopes: ["pages_show_list", "pages_read_engagement", "pages_manage_posts", "business_management", "instagram_basic", "instagram_content_publish"],
+    expiresAt: null,
+    page: { pageId: "111", pageName: "WWE" },
+    instagram: { igUserId: "1784", username: "wwexplained" },
+  };
   const store: CrossPostingStore = {
     channelExists: async (id) => id === "UC1" || id === "UC2",
     list: async (id) => rows.filter((r) => id === null || r.channelId === id),
@@ -41,10 +49,11 @@ function harness() {
       return removed;
     },
   };
-  const meta: MetaClient = {
+  const meta: Pick<MetaClient, "authorizeUrl" | "exchangeCode" | "listPages" | "inspectPageToken"> = {
     authorizeUrl: ({ appId, redirectUri, state }) => `https://meta.test/dialog?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${state}`,
     exchangeCode: async (input) => (exchanged.push(input), { userToken: "USER-TOKEN", expiresAt: null }),
     listPages: async () => PAGES,
+    inspectPageToken: async (input) => (inspected.push({ pageId: input.pageId, pageToken: input.pageToken }), inspection),
   };
   const core = createCrossPostingServices({
     store,
@@ -54,12 +63,18 @@ function harness() {
       clear: async () => void (secret = null),
       info: async () => (secret ? { hints: secret.hints, status: null, verifiedAt: null, updatedAt: now, version: "v" } : null),
     },
-    sealer: { seal: async (plaintext) => ({ ciphertext: Buffer.from(`sealed:${plaintext}`).toString("base64"), iv: "iv", authTag: "tag" }) },
+    sealer: {
+      seal: async (plaintext) => ({ ciphertext: Buffer.from(`sealed:${plaintext}`).toString("base64"), iv: "iv", authTag: "tag" }),
+      open: async (payload) => {
+        const text = Buffer.from(payload.ciphertext, "base64").toString();
+        return text.startsWith("sealed:") ? text.slice("sealed:".length) : null;
+      },
+    },
     meta,
     now: () => now,
     randomId: () => `random-id-${String(++n).padStart(8, "0")}`,
   });
-  return { core, rows, exchanged, advance: (ms: number) => (now += ms), getSecret: () => secret };
+  return { core, rows, exchanged, inspected, setInspection: (i: MetaTokenInspection) => (inspection = i), advance: (ms: number) => (now += ms), getSecret: () => secret };
 }
 
 const stateOf = (url: string) => new URL(url).searchParams.get("state")!;
@@ -171,4 +186,54 @@ test("AC-5: a pick is single-use, expires after 15 minutes, refuses a Page not o
   assert.deepEqual((await h.core.listAccounts("UC1")).map((a) => a.network), ["facebook"]);
   assert.deepEqual(await h.core.disconnect({ channelId: "UC1" }), { removed: 1 });
   assert.deepEqual(await h.core.listAccounts(null), []);
+});
+
+// AC-XP-8 (CROSS_POSTING_PLAN.md): before anything is posted, Meta's live answer about the stored token must match what the channel
+// stored -- the same Page, the same Instagram account, every posting scope; otherwise posting is refused (fail closed).
+async function connected(pageId = "111") {
+  const h = harness();
+  await h.core.setMetaApp(APP);
+  const state = stateOf((await h.core.startConnect({ channelId: "UC1" }, REDIRECT)).authorizeUrl);
+  const { pickId } = await h.core.completeConnect({ state, code: "C", redirectUri: REDIRECT });
+  await h.core.selectPage({ pickId, pageId });
+  return h;
+}
+
+test("AC-XP-8: the identity read opens the stored Page token, asks Meta, and is ok when Page, Instagram and scopes match", async () => {
+  const h = await connected();
+  const check = await h.core.checkAccounts("UC1");
+  assert.deepEqual(h.inspected, [{ pageId: "111", pageToken: "PAGE-TOKEN-1" }]);
+  assert.equal(check.ok, true);
+  assert.deepEqual(check.problems, []);
+  assert.deepEqual(check.facebook, { stored: "111", live: "111", name: "WWE" });
+  assert.deepEqual(check.instagram, { stored: "1784", live: "1784", username: "wwexplained" });
+  assert.ok(!JSON.stringify(check).includes("PAGE-TOKEN"));
+});
+
+test("AC-XP-8: a missing posting scope, another Page, another or unlinked Instagram, or an invalid token each fail the check", async () => {
+  const base = { valid: true, scopes: ["pages_show_list", "pages_read_engagement", "pages_manage_posts", "instagram_basic", "instagram_content_publish"], expiresAt: null, page: { pageId: "111", pageName: "WWE" }, instagram: { igUserId: "1784", username: "w" } };
+  const cases: Array<[MetaTokenInspection, string[], string[]]> = [
+    [{ ...base, scopes: base.scopes.filter((s) => s !== "instagram_content_publish") }, ["scope_missing"], ["instagram_content_publish"]],
+    [{ ...base, page: { pageId: "999", pageName: "Other" } }, ["page_mismatch"], []],
+    [{ ...base, instagram: { igUserId: "555", username: "x" } }, ["instagram_mismatch"], []],
+    [{ ...base, instagram: null }, ["instagram_unlinked"], []],
+    [{ valid: false, scopes: [], expiresAt: null, page: null, instagram: null }, ["token_invalid"], []],
+  ];
+  for (const [inspection, problems, missing] of cases) {
+    const h = await connected();
+    h.setInspection(inspection);
+    const check = await h.core.checkAccounts("UC1");
+    assert.equal(check.ok, false);
+    assert.deepEqual(check.problems, problems);
+    assert.deepEqual(check.missingScopes, missing);
+  }
+});
+
+test("AC-XP-8: no connected Page -> not_found; a token that does not open with this computer's key -> device_secret_unreadable", async () => {
+  const h = harness();
+  await h.core.setMetaApp(APP);
+  await assert.rejects(h.core.checkAccounts("UC1"), isCode("not_found"));
+  const c = await connected();
+  for (const row of c.rows) row.tokenSealed = JSON.stringify({ ciphertext: Buffer.from("garbage").toString("base64"), iv: "iv", authTag: "tag" });
+  await assert.rejects(c.core.checkAccounts("UC1"), isCode("device_secret_unreadable"));
 });
