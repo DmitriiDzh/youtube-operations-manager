@@ -1,5 +1,6 @@
 "use client";
 
+import { isRemoteHost } from "./remote-host";
 import { errorText } from "@/lib/ui-text";
 import { useState } from "react";
 import { signIn, signOut } from "next-auth/react";
@@ -64,7 +65,8 @@ export function ChannelConnectionsSettings() {
       }
       setPendingDisconnect(null);
       if (data.forceSignOut) {
-        await signOut();
+        await signOut({ redirect: false }); // BL-251: never NextAuth's localhost redirect (a phone cannot open it)
+        window.location.href = "/";
         return;
       }
       await refetch();
@@ -117,12 +119,14 @@ export function ChannelConnectionsSettings() {
                           >
                             {dead ? t("shell.reconnectNeeded") : t("settingsCards.channels.expiresIn", { days: h.daysLeft ?? "?" })}
                           </span>
-                          <button
-                            onClick={() => void signIn("google", undefined, { login_hint: c.connectedEmail })}
-                            className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800"
-                          >
-                            {t("settingsCards.reconnect")}
-                          </button>
+                          {!isRemoteHost() && (
+                            <button
+                              onClick={() => void signIn("google", undefined, { login_hint: c.connectedEmail })}
+                              className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800"
+                            >
+                              {t("settingsCards.reconnect")}
+                            </button>
+                          )}
                         </>
                       );
                     })()}
@@ -162,12 +166,16 @@ export function ChannelConnectionsSettings() {
         </ul>
       )}
 
-      <button
-        onClick={() => signIn("google")}
-        className="rounded-md border border-zinc-700 px-4 py-1.5 text-sm font-medium text-zinc-200 hover:border-zinc-500 hover:bg-zinc-800"
-      >
-        {t("settingsCards.channels.connectNew")}
-      </button>
+      {isRemoteHost() ? (
+        <p className="text-xs text-zinc-500">{t("remoteAccess.onMacOnly")}</p>
+      ) : (
+        <button
+          onClick={() => signIn("google")}
+          className="rounded-md border border-zinc-700 px-4 py-1.5 text-sm font-medium text-zinc-200 hover:border-zinc-500 hover:bg-zinc-800"
+        >
+          {t("settingsCards.channels.connectNew")}
+        </button>
+      )}
 
       {error && <p className="text-xs text-red-400">{error}</p>}
 

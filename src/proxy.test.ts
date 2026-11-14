@@ -510,3 +510,65 @@ test("AC-HM-11: /api/mcp is not blocked by the operation lock, while another mut
     await releaseOperationLock(rawSqlClient);
   }
 });
+
+// ---- BL-251 (docs/roadmap/plans/REMOTE_ACCESS_PLAN.md AC-RA-3/6): requests from the owner's other devices (tailscale serve).
+const TS = { host: "127.0.0.1:3000", "x-forwarded-for": "100.64.0.7", "x-forwarded-host": "mac.tail1234.ts.net", "x-forwarded-proto": "https", "tailscale-user-login": "owner@example.com" };
+const remoteReq = (method: string, pathname: string, extra: Record<string, string> = {}) =>
+  new NextRequest(new Request(`http://127.0.0.1:3000${pathname}`, { method, headers: { ...TS, ...extra } }));
+
+async function remoteOn(on: boolean) {
+  const { getRemoteAccess } = await import("@/lib/remote-access");
+  const ra = getRemoteAccess();
+  await ra.setPassword("correct horse");
+  await ra.setEnabled(on);
+  return ra;
+}
+
+test("AC-RA-3: switch off -- every remote request is refused, a page and an API; local requests untouched", async () => {
+  await remoteOn(false);
+  assert.equal((await proxy(remoteReq("GET", "/home"))).status, 403);
+  const api = await proxy(remoteReq("GET", "/api/channels"));
+  assert.equal(api.status, 403);
+  assert.equal((await api.json()).error, "remote_access_disabled");
+  assert.equal((await proxy(remoteReq("POST", "/api/device-handoff/export", { origin: "https://mac.tail1234.ts.net" }))).status, 403); // before its exemption
+  assert.equal((await proxy(readRequest("/api/channels"))).status, 200);
+});
+
+test("AC-RA-3: switch on -- MCP and Mac-only routes 403, CSRF origin enforced, the password callback passes", async () => {
+  await remoteOn(true);
+  const origin = { origin: "https://mac.tail1234.ts.net" };
+  for (const p of ["/api/mcp", "/api/mcp/factory", "/api/agent-tokens", "/api/cloud-credentials/export", "/api/auth/signin/google"]) {
+    const r = await proxy(remoteReq("POST", p, origin));
+    assert.equal(r.status, 403, p);
+    assert.equal((await r.json()).error, "remote_access_mac_only", p);
+  }
+  assert.equal((await proxy(remoteReq("PUT", "/api/remote-access", origin))).status, 403);
+  assert.equal((await proxy(remoteReq("GET", "/api/remote-access"))).status, 200);
+  assert.equal((await proxy(remoteReq("POST", "/api/channels/sync"))).status, 403); // no Origin
+  assert.equal((await proxy(remoteReq("POST", "/api/channels/sync", { origin: "https://evil.example" }))).status, 403);
+  assert.equal((await proxy(remoteReq("POST", "/api/auth/callback/remote-password", origin))).status, 200);
+  assert.equal((await proxy(remoteReq("GET", "/home"))).status, 200);
+});
+
+test("AC-RA-6: a phone session works only with the current epoch; a stale one is signed out", async () => {
+  const ra = await remoteOn(true);
+  const { encode } = await import("next-auth/jwt");
+  const previous = process.env.NEXTAUTH_SECRET;
+  process.env.NEXTAUTH_SECRET = "test-secret-remote-access";
+  try {
+    const { epoch } = await ra.verifyPassword("correct horse", "owner@example.com");
+    const cookie = async (claims: Record<string, unknown>) =>
+      `next-auth.session-token=${await encode({ token: { sub: "u1", ...claims }, secret: "test-secret-remote-access" })}`;
+    const good = await cookie({ remote: true, remoteEpoch: epoch });
+    assert.equal((await proxy(remoteReq("GET", "/api/channels", { cookie: good }))).status, 200);
+    const notRemote = await cookie({});
+    assert.equal((await proxy(remoteReq("GET", "/api/channels", { cookie: notRemote }))).status, 401);
+    await ra.setPassword("another horse"); // bumps the epoch
+    assert.equal((await proxy(remoteReq("GET", "/api/channels", { cookie: good }))).status, 401);
+    const session = await proxy(remoteReq("GET", "/api/auth/session", { cookie: good }));
+    assert.deepEqual(await session.json(), {});
+  } finally {
+    if (previous === undefined) delete process.env.NEXTAUTH_SECRET;
+    else process.env.NEXTAUTH_SECRET = previous;
+  }
+});

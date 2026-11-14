@@ -97,7 +97,6 @@ const REMOTE_BLOCKED_PREFIXES = [
   "/api/operation-lock",
   "/api/auth/signin/google",
   "/api/auth/callback/google",
-  "/api/auth/callback/channel-connections",
 ];
 
 function blocked(status: number, code: string, message: string, api: boolean) {

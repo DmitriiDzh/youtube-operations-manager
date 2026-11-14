@@ -2,11 +2,69 @@
 
 import { signIn, useSession } from "next-auth/react";
 import { redirect } from "next/navigation";
+import { useState, useSyncExternalStore, type FormEvent } from "react";
+import { isRemoteHost } from "@/components/remote-host";
 import { useT } from "@/components/ui-text-provider";
+import type { UiTextKey } from "@/lib/ui-text";
+
+// BL-251: the error codes the password sign-in returns (src/lib/auth.ts `remote-password`) and what the page says for them.
+const REMOTE_ERRORS: Record<string, UiTextKey> = {
+  remote_access_bad_password: "remoteAccess.login.wrong",
+  remote_access_locked: "remoteAccess.login.locked",
+  remote_access_disabled: "remoteAccess.login.disabled",
+  no_connected_channel: "remoteAccess.login.noChannel",
+  CredentialsSignin: "remoteAccess.login.wrong",
+};
+
+const noSubscribe = () => () => undefined;
+
+/** BL-251: on another device (through tailscale serve) the owner signs in with the password set on the Mac. */
+function RemotePasswordLogin() {
+  const t = useT();
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    // redirect: false -- NEXTAUTH_URL is this Mac's localhost; the page moves on by itself.
+    const result = await signIn("remote-password", { password, redirect: false });
+    setBusy(false);
+    if (result?.ok && !result.error) {
+      window.location.href = "/home";
+      return;
+    }
+    setError(t(REMOTE_ERRORS[result?.error ?? ""] ?? "remoteAccess.login.failed"));
+  }
+
+  return (
+    <form onSubmit={submit} className="flex w-full max-w-xs flex-col gap-3">
+      <h2 className="text-center text-lg font-medium text-zinc-200">{t("remoteAccess.login.title")}</h2>
+      <input
+        type="password"
+        autoComplete="current-password"
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+        disabled={busy}
+        aria-label={t("remoteAccess.login.password")}
+        placeholder={t("remoteAccess.login.password")}
+        className="rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-base text-zinc-100"
+      />
+      <button type="submit" disabled={busy || password.length === 0} className="rounded-xl bg-white px-6 py-3 text-sm font-semibold text-zinc-900 disabled:opacity-50">
+        {t("remoteAccess.login.submit")}
+      </button>
+      {error && <p className="text-center text-sm text-red-400">{error}</p>}
+    </form>
+  );
+}
 
 export default function Home() {
   const { data: session, status } = useSession();
   const t = useT();
+  // BL-251: false on the server render, the real answer in the browser (no hydration mismatch, no effect).
+  const remote = useSyncExternalStore(noSubscribe, isRemoteHost, () => false);
 
   if (status === "loading") {
     return (
@@ -32,7 +90,7 @@ export default function Home() {
         </p>
       </div>
 
-      <button
+      {remote ? <RemotePasswordLogin /> : <button
         onClick={() => signIn("google")}
         className="flex items-center gap-3 rounded-xl bg-white px-6 py-3 text-sm font-semibold text-zinc-900 shadow-sm transition-colors hover:bg-zinc-100"
       >
@@ -55,7 +113,7 @@ export default function Home() {
           />
         </svg>
         {t("signIn.google")}
-      </button>
+      </button>}
     </div>
   );
 }

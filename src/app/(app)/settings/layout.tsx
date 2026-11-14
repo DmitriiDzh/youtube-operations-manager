@@ -35,6 +35,7 @@ import { SystemTopicSettings } from "@/components/system-topic-settings";
 import { InfoTooltip } from "@/components/info-tooltip";
 import { FeatureErrorBoundary } from "@/components/feature-error-boundary";
 import { UiLanguageSettings } from "@/components/ui-language-settings";
+import { RemoteAccessSettings } from "@/components/remote-access-settings";
 import { useT } from "@/components/ui-text-provider";
 import type { UiTextKey } from "@/lib/ui-text";
 
@@ -87,6 +88,9 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
         </FeatureErrorBoundary>
         <FeatureErrorBoundary label={section("settingsCard.analyticsCollection")}>
           <AnalyticsCollectionSettings />
+        </FeatureErrorBoundary>
+        <FeatureErrorBoundary label={section("settingsCard.remoteAccess")}>
+          <RemoteAccessSettings />
         </FeatureErrorBoundary>
       </div>
 

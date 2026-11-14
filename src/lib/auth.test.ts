@@ -218,3 +218,31 @@ test("signIn callback still runs upsertUserOAuthOnSignIn for a real Google sign-
   assert.equal(tokens?.accessToken, "fresh-access-token");
   assert.equal(tokens?.refreshToken, "fresh-refresh-token");
 });
+
+// BL-251 (REMOTE_ACCESS_PLAN.md AC-RA-5): the password sign-in reuses a stored identity -- its tokens must stay byte-equal.
+test("BL-251: signIn callback skips the token upsert for remote-password; jwt carries the phone flag and epoch", async () => {
+  await upsertUserOAuthOnSignIn({
+    userId: "test-user-remote", name: "Owner", email: "owner@example.com", image: null,
+    accessToken: "stored-access", refreshToken: "stored-refresh", tokenExpiry: 1234567890, scope: "stored-scope",
+  });
+  const signIn = authOptions.callbacks!.signIn!;
+  const result = await signIn({
+    user: { id: "test-user-remote", email: "owner@example.com" },
+    account: { provider: "remote-password", type: "credentials", providerAccountId: "test-user-remote" },
+  } as Parameters<typeof signIn>[0]);
+  assert.equal(result, true);
+  const tokens = await getUserOAuthTokens("test-user-remote");
+  assert.equal(tokens?.accessToken, "stored-access");
+  assert.equal(tokens?.refreshToken, "stored-refresh");
+  const jwt = authOptions.callbacks!.jwt!;
+  const token = await jwt({ token: { sub: "test-user-remote" }, user: { id: "test-user-remote", remote: true, remoteEpoch: 7 } } as unknown as Parameters<typeof jwt>[0]);
+  assert.deepEqual([token.remote, token.remoteEpoch], [true, 7]);
+  const plain = await jwt({ token: { sub: "x" }, user: { id: "x" } } as unknown as Parameters<typeof jwt>[0]);
+  assert.equal(plain.remote, undefined);
+});
+
+test("BL-251: the remote-password provider refuses a request made on the Mac itself", async () => {
+  const provider = authOptions.providers.find((p) => (p as unknown as { options?: { id?: string } }).options?.id === "remote-password") as unknown as { options: { authorize: (c: unknown, r: unknown) => Promise<unknown> } };
+  const user = await provider.options.authorize({ password: "whatever1" }, { headers: { host: "localhost:3000" } });
+  assert.equal(user, null);
+});

@@ -561,7 +561,12 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       storyboardEntries={otherChannelStoryboardEntries(t, storyboardAlerts, storyboardAlertsActiveId)}
       onOpenChannelWork={(channelId, href) => void openChannelWork(channelId, href)}
       channelUnavailable={channelUnavailable}
-      onSignOut={() => signOut()}
+      onSignOut={() => {
+        // BL-251: no NextAuth redirect -- NEXTAUTH_URL is this Mac's localhost, which a phone cannot open.
+        void signOut({ redirect: false }).then(() => {
+          window.location.href = "/";
+        });
+      }}
     >
       <ConnectionHealthDialog health={connectionHealth.health} />
       {showStartupWindow === true && startupInProgress(startup) && !startupDismissed && !reloginBlocking && (
